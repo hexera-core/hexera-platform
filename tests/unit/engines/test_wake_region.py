@@ -30,9 +30,10 @@ class TestTheBoxesFollowTheFlow:
         assert [t.level for t in p.tiers] == [4, 3, 2]
         assert [round(t.cell_m, 6) for t in p.tiers] == [0.0125, 0.025, 0.05]
 
-    def test_each_box_starts_at_the_trailing_extent_and_reaches_1_2_4_lengths(self):
+    def test_each_box_starts_at_the_trailing_extent_and_reaches_1_5_2_4_lengths(self):
+        # PLAN-cfd-7: the near wake reaches 1.5 lengths, so one length behind sits inside it, not on its edge
         p = _plan()
-        for t, reach in zip(p.tiers, (1.0, 2.0, 4.0)):
+        for t, reach in zip(p.tiers, (1.5, 2.0, 4.0)):
             assert t.box_min[0] == pytest.approx(1.0 - 0.1)       # a tenth of the body upstream
             assert t.box_max[0] == pytest.approx(1.0 + reach)
             assert t.reach_m == pytest.approx(reach)
@@ -45,7 +46,7 @@ class TestTheBoxesFollowTheFlow:
 
     def test_the_cross_section_is_the_body_grown_modestly(self):
         t = _plan().tiers[0]
-        grow = 0.1 * 0.4 + 0.05 * 1.0 + 2 * 0.0125
+        grow = 0.1 * 0.4 + 0.05 * 1.5 + 2 * 0.0125
         assert t.box_min[1] == pytest.approx(-0.2 - grow)
         assert t.box_max[1] == pytest.approx(0.2 + grow)
         assert t.box_max[2] - BODY_MAX[2] < 0.15                  # not a slab of the whole domain
@@ -100,19 +101,32 @@ class TestTheBudget:
     def test_over_budget_it_is_shortened_then_made_coarser_and_says_so(self):
         full = _plan()
         p = _plan(budget_cells=full.cells / W.WAKE_BUDGET_SHARE / 20)
-        assert p.active and p.cells <= p.allowance
+        # the near wake's floor is kept, what it costs past the share added to the budget
+        assert p.active and p.cells - p.raised == pytest.approx(min(p.cells, p.allowance))
         assert p.changes and p.changes[0].startswith("shortened")
-        assert any("coarser" in c for c in p.changes)
+        # PLAN-cfd-7: the far wake goes first (shorter, then the outer boxes), the near wake keeps its floor
+        assert any("outer one dropped" in c for c in p.changes)
+        assert p.scale_m / p.tiers[0].cell_m >= W.NEAR_WAKE_CELLS
+        assert p.tiers[0].reach_m >= W.NEAR_WAKE_REACH * p.scale_m * (1 - 1e-9)
         assert "cell budget" in p.summary() and "it was shortened" in p.summary()
         assert p.record()["reduced"] == p.changes
 
-    def test_no_room_at_all_drops_it_and_says_why(self):
+    def test_no_room_at_all_keeps_the_near_wake_and_prices_it_in(self):
+        # PLAN-cfd-7: the near wake is never dropped for the budget; what it costs is added to it, said
         p = _plan(budget_cells=100)
+        assert p.active and len(p.tiers) == 1 and p.raised > 0 and "budget raised" in p.changes[-1]
+        assert p.scale_m / p.tiers[0].cell_m >= W.NEAR_WAKE_CELLS
+
+    def test_a_coarser_wake_asked_is_still_dropped_with_no_room_and_says_why(self):
+        p = _plan(budget_cells=100, knobs={"levels_below_surface": 2})
         assert not p.active and "budget" in p.reason
         assert p.summary().startswith("no wake refinement")
 
-    def test_a_wall_one_level_above_the_background_needs_no_wake_box(self):
+    def test_a_wall_one_level_above_the_background_keeps_a_near_wake_at_the_wall_level(self):
+        # PLAN-cfd-7: the wall's cells are coarse for the body (5 per length): the wake gets the wall's own level
         p = _plan(surface_level=1)
+        assert p.active and [t.level for t in p.tiers] == [1]
+        p = _plan(surface_level=1, knobs={"levels_below_surface": 2})
         assert not p.active and p.reason
 
 
@@ -130,7 +144,10 @@ class TestTheKnob:
         assert p.tiers[-1].reach_m == pytest.approx(8.0)
 
     def test_fewer_levels_than_tiers_still_reaches_the_whole_length(self):
-        p = _plan(surface_level=2)               # only level 1 is left for the wake
+        p = _plan(surface_level=2)               # 10 cells per length at the wall: the near wake takes its level
+        assert [t.level for t in p.tiers] == [2, 1]
+        assert p.tiers[-1].reach_m == pytest.approx(4.0)
+        p = _plan(surface_level=3, knobs={"levels_below_surface": 2})     # a coarser wake asked: only level 1
         assert [t.level for t in p.tiers] == [1]
         assert p.tiers[0].reach_m == pytest.approx(4.0)
 
@@ -217,8 +234,10 @@ class TestTheBodyKeepsItsShare:
         assert p.cells <= 200_000
         assert "the body itself needs about 3.8 M" in p.summary()
 
-    def test_a_body_that_fills_the_budget_gets_no_wake_and_is_told_why(self):
+    def test_a_body_that_fills_the_budget_keeps_its_near_wake_priced_in(self):
         p = _plan(budget_cells=2_000_000, body_cells=2_400_000)
+        assert p.active and p.raised == pytest.approx(p.cells)
+        p = _plan(budget_cells=2_000_000, body_cells=2_400_000, knobs={"levels_below_surface": 2})
         assert not p.active
         assert "raise max_cells" in p.reason
 

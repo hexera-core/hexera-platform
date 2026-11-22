@@ -352,6 +352,8 @@ def with_conditions(sec: dict, state) -> dict:
         lay["y_plus"] = float(c["y_plus"])
         # CFDREQ-13: which wall treatment this y+ stands for - the engines fit the first layer to it (wall_fit)
         lay["treatment"] = c["wall"]
+        # CFDREQ-17: whether the user said it (a button or their words) or only accepted the proposal
+        lay["treatment_said"] = bool(c.get("wall_said"))
         if ph.get("velocity_ms") is None and c["velocity_ms"] is not None:
             ph["velocity_ms"] = float(c["velocity_ms"])
         if ph.get("fluid") is None and c["fluid"] in FC.NU:
@@ -407,6 +409,8 @@ class Ask:
         self.y_plus = lay.get("y_plus")
         #: CFDREQ-13: "functions" / "resolved" when the y+ is the wall treatment's (the conditions), else None
         self.treatment = lay.get("treatment")
+        #: CFDREQ-17: the user said the wall treatment themselves (not only accepted the proposal)
+        self.treatment_said = bool(lay.get("treatment_said"))
         self.local = [dict(e) for e in self.req.get("local") or []]
         self.limits = [dict(lim) for lim in self.req.get("limits") or []]
         #: the case's reference length for a y+ (the engine sets it: the user's ruler, else the body's length)
@@ -585,14 +589,17 @@ class Ask:
             return None
         self.how = how
         body = (self.req.get("physics") or {}).get("flow") != "internal"
-        if self.treatment == "functions" and body:
+        typed_wf = self.treatment is None and float(self.y_plus) >= WALL_FUNCTIONS_BAND[0]
+        if (self.treatment == "functions" or typed_wf) and body:
             # CFDREQ-17: A BODY WALL FUNCTIONS DO NOT SUIT IS RESOLVED, NEVER LEFT IN THE BUFFER LAYER. A laminar body
             # (too slow or too small: Re under 5e5 on its length) has no log layer for a wall function to sit in, and
             # a y+ 30 cell would be about as thick as its whole boundary layer (abc 00050662: 60 mm long at 10 m/s,
             # Re 4e4: 1.36 mm against a 1.5 mm layer). Before, the mesher's relative layers were kept - 0.169 of the
             # local cell, y+ 2-5 on 107 of 120 external bodies (the CFD board's external sweep, 22 Nov): too coarse to
-            # resolve, too fine for wall functions. Now such a wall is resolved (a y+ 1 first layer), said.
-            fb = resolved_fallback(self, h, how)
+            # resolve, too fine for wall functions. Now such a wall is resolved (a y+ 1 first layer), said. Accepted
+            # (the proposal promised it): applied; asked in so many words (chosen, or a y+ of 30 or more typed):
+            # the nearest there is, with the reason
+            fb = resolved_fallback(self, h, how, said=typed_wf or self.treatment_said)
             if fb is not None:
                 return fb
         if self.treatment == "functions" and how.get("laminar"):
@@ -654,7 +661,7 @@ def boundary_layer_m(how: Mapping) -> float | None:
     return 5.0 * L / math.sqrt(re_n) if how.get("laminar") else 0.37 * L * re_n ** -0.2
 
 
-def resolved_fallback(ask: Ask, wf_first_m: float, how: Mapping) -> float | None:
+def resolved_fallback(ask: Ask, wf_first_m: float, how: Mapping, *, said: bool = False) -> float | None:
     """CFDREQ-17: the resolved wall's first layer (y+ 1 at its top, the same estimate) for a body in wall-function
     mode that wall functions do not suit, with `ask.fallback` set and the y+ row said; None when they suit it.
     They do not when the flow is laminar on the body's length (no log layer at all) or when the wall-function first
@@ -671,9 +678,11 @@ def resolved_fallback(ask: Ask, wf_first_m: float, how: Mapping) -> float | None
         return None
     h1 = RESOLVED_Y_PLUS * visc
     ask.fallback = {"why": why, "reynolds": float(how.get("reynolds") or 0.0), "delta_m": delta,
-                    "wf_first_m": float(wf_first_m), "first_m": h1, "length_from": how.get("length_from")}
-    ask.done("layers:y_plus", fallback_words(ask, h1, None, None),
-             **{k: v for k, v in how.items() if k not in ("visc_m", "first_exact_m")}, fallback=why)
+                    "wf_first_m": float(wf_first_m), "first_m": h1, "length_from": how.get("length_from"),
+                    "said": bool(said)}
+    tell = ask.nearest if said else ask.done
+    facts = {**{k: v for k, v in how.items() if k not in ("visc_m", "first_exact_m")}, "first_m": h1, "fallback": why}
+    tell("layers:y_plus", fallback_words(ask, h1, None, None), **facts)
     return h1
 
 
@@ -682,9 +691,9 @@ def fallback_words(ask: Ask, first_m: float, n: int | None, across: float | None
     fb = ask.fallback or {}
     re_s = MR._g(float(f"{float(fb.get('reynolds') or 0.0):.2g}"))
     if fb.get("why") == "laminar":
-        lead = f"This flow is too slow, or the body too small, for wall functions (Re {re_s} on {fb.get('length_from')})"
+        lead = f"this flow is too slow, or the body too small, for wall functions (Re {re_s} on {fb.get('length_from')})"
     else:
-        lead = (f"A wall-function first cell ({_mm(float(fb.get('wf_first_m') or 0.0))}) would be too thick for this "
+        lead = (f"a wall-function first cell ({_mm(float(fb.get('wf_first_m') or 0.0))}) would be too thick for this "
                 f"body's boundary layer (Re {re_s} on {fb.get('length_from')})")
     out = f"{lead}: the wall is resolved instead: first cell {_mm(first_m)}"
     if n:
@@ -736,7 +745,8 @@ def wall_fit(ask: Ask, first_m: float, wall_cell_m: float, *, cap_rel: float = F
     resolved first layer already: kept, resolved."""
     if ask.fallback is not None:
         return {"treatment": "resolved", "first_m": float(first_m), "y_plus": y_plus_of(first_m, ask.how or {}),
-                "why": fallback_words(ask, float(first_m), None, None), "fallback": ask.fallback.get("why")}
+                "why": fallback_words(ask, float(first_m), None, None), "fallback": ask.fallback.get("why"),
+                "said": bool(ask.fallback.get("said"))}
     yp = float(ask.y_plus or 50.0)
     how = ask.how or {"visc_m": float(first_m) / (2.0 * yp)}
     visc = float(how.get("visc_m") or float(first_m) / (2.0 * yp))
@@ -1996,6 +2006,10 @@ def _snappy_layers(ask: Ask, text: str, wall_cell_m: float | None, bridge: Mappi
         else:
             wf = {"treatment": "resolved", "first_m": float(first), "y_plus": y_plus_of(float(first), ask.how),
                   "why": ""}
+    if wf is None and ask.fallback is not None and first is not None:
+        # CFDREQ-17: a typed wall-function y+ on a body wall functions do not suit - resolved, the nearest there is
+        wf = {"treatment": "resolved", "first_m": float(first), "y_plus": y_plus_of(float(first), ask.how),
+              "why": "", "fallback": ask.fallback.get("why"), "said": bool(ask.fallback.get("said"))}
     bridged = None
     if (bridge is not None and first is not None and total is None and ask.n_layers is None and n > 0
             and wall_cell_m and wall_cell_m / first > THIN_LAYER_RATIO):
@@ -2191,7 +2205,10 @@ def _say_wall(ask: Ask, fit: Mapping, n: int, g: float, *, engine_words: str = "
     if not rid:
         return
     words = fit.get("words") or wall_words(ask, fit, n, g, engine_words=engine_words)
-    moved = fit["treatment"] != ask.treatment or bool(fit.get("why"))
+    # CFDREQ-17: a resolved wall for a body wall functions do not suit is what the accepted proposal itself promised
+    # ("where ... too fine for that, the wall is resolved instead, and the result says which"): applied, said
+    moved = ((fit["treatment"] != ask.treatment or bool(fit.get("why")))
+             and not (fit.get("fallback") and not fit.get("said")))
     prev = ask.rows.get(rid, {})
     extra = prev.get("built", "") if "layers" in prev and "stack fills" in prev.get("built", "") else ""
     row = {"first_m": float(f"{float(fit['first_m']):.4g}"), "layers": int(n), "treatment": fit["treatment"],
@@ -2396,6 +2413,12 @@ def report(workspace, quality: Mapping, engine: str) -> dict | None:
         elif field in ("layers:y_plus", "layers:first_height") and status == "applied" and (
                 fl := _first_layer_row(workspace, req, q, p)) is not None:
             got = fl
+        elif field == "layers:y_plus" and status == "nearest" and p.get("fallback") and (
+                fl := _first_layer_row(workspace, req, q, p)) is not None:
+            # CFDREQ-17: a typed wall-function ask on a body wall functions do not suit: the nearest there is, told with
+            # the first cell built - the switch alone is no miss (met None); resolved layers lost still are
+            got = {**fl, "met": False if fl.get("met") is False else None,
+                   "delivered": f"not possible as asked - {built}; {fl['delivered']}"}
         elif field == "control:surface_level" and status in ("applied", "nearest") and (
                 lv := _level_row(workspace, req)) is not None:
             got = lv

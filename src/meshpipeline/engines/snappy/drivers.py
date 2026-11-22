@@ -926,6 +926,28 @@ def confirmed_margins(strategy: dict, requested: dict | None, ruler_m: float | N
     return {**(strategy or {}), "domain_margin": margin}
 
 
+#: PLAN-cfd-6: the record of a far field widened for blockage, beside the case
+BLOCKAGE_FILE = "far_field_blockage.json"
+
+
+def _say_blockage(workspace, rec: dict) -> None:
+    """PLAN-cfd-6: a far field widened for blockage is said (the run log) and kept beside the case; a box left as
+    planned removes a stale record."""
+    import json as _json
+
+    from meshpipeline.engines.far_field import blockage_words
+    p = Path(workspace) / BLOCKAGE_FILE
+    try:
+        if rec:
+            words = blockage_words(rec)
+            logger.warning("far field: %s", words)
+            p.write_text(_json.dumps({**rec, "words": words}, indent=1))
+        elif p.exists():
+            p.unlink()
+    except OSError:
+        logger.debug("blockage record not kept", exc_info=True)
+
+
 def _domain_preflight(state, analysis: dict, dmin, dmax, *,
                       grounded: bool, symmetry_faces: list | None = None
                       ) -> PreflightRefusal | None:
@@ -1147,6 +1169,7 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
     _cavity_cache: dict = {}
     _part_cache: dict = {}
     _field_cache: dict = {}
+    _frontal_cache: dict = {}
 
     # SYMMETRY (3D external) comes in two shapes, told apart by how many patches were declared:
     # ONE is a half-model, cut on a plane, meshed on one side; TWO is a 2.5D slab - an extruded
@@ -1399,10 +1422,17 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
                                          state.get("reference_length_m"))
             # the approved ruler travels with the box it sizes - the same length the extent
             # gate will judge the delivered box in (see domain_from_strategy)
+            # PLAN-cfd-6: the cross-section widened for blockage, from the body's own frontal area (read once)
+            if "areas" not in _frontal_cache:
+                from meshpipeline.engines.far_field import projected_areas_of
+                _frontal_cache["areas"] = projected_areas_of(workspace / "input.stl")
+            _blockage: dict = {}
             dmin, dmax = R.domain_from_strategy(analysis, strategy, symmetry,
                                                 flow_axis=state.get("flow_axis"),
                                                 ruler_m=state.get("reference_length_m"),
-                                                ground=bool(_ground), contact=_contact, floor=_floor)
+                                                ground=bool(_ground), contact=_contact, floor=_floor,
+                                                frontal_m2=_frontal_cache["areas"], blockage=_blockage)
+            _say_blockage(workspace, _blockage)
             # DOMAIN PRE-FLIGHT, before the box is written: the post-mesh extent gate measures
             # exactly this prepared box, so a box it would block is known now. Re-plan instead of
             # meshing it (nothing is written yet, so the previous pass's files stay as they were).

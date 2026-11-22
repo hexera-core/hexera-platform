@@ -67,10 +67,47 @@ def test_a_small_slow_body_is_resolved_not_left_in_the_buffer_layer():
     n = int(_num(out, "nSurfaceLayers"))
     assert n > 5 and CR.cells_across(h, 1.2, n, 0.0016, delta) >= CR.BL_CELLS
     row = _y_row(ask)
-    assert row["status"] == "nearest" and row["treatment"] == "resolved" and row["fallback"] == "laminar"
-    assert row["built"].startswith("This flow is too slow, or the body too small, for wall functions (Re 4")
+    # what the accepted proposal promised ("... the wall is resolved instead, and the result says which"): applied
+    assert row["status"] == "applied" and row["treatment"] == "resolved" and row["fallback"] == "laminar"
+    assert row["built"].startswith("this flow is too slow, or the body too small, for wall functions (Re 4")
     assert "the wall is resolved instead: first cell" in row["built"] and f"{n} layers" in row["built"]
     assert "cells across its boundary layer" in row["built"] and row["cells_across_bl"] >= CR.BL_CELLS
+
+
+def test_wall_functions_the_user_chose_on_a_small_body_are_the_nearest_there_is():
+    # said in so many words (the conditions step's button), not only accepted: never a silent switch
+    txt = ("External flow around the car, confirmed by the user on the geometry stage. "
+           + FC.sentence("air at 20 °C", "10 m/s", "functions", internal=False, wall_said=True)
+           + " The flow travels along +x.")
+    sec = CR.with_conditions(MR.section("none"), {"request_txt": txt, "intake_patches": [], "purpose": "external_cfd"})
+    ask = CR.Ask(MR.requirements_of(sec), "snappy")
+    assert ask.treatment == "functions" and ask.treatment_said
+    ask.length_m, ask.length_from = 0.06, "the body's length"
+    out = CR.snappy_dict(ask, SHM, wall_cell_m=0.0016)
+    assert _num(out, "firstLayerThickness") == pytest.approx(ask.how["visc_m"], rel=1e-4)
+    row = _y_row(ask)
+    assert row["status"] == "nearest" and row["fallback"] == "laminar" and "resolved instead" in row["built"]
+    assert "not possible as asked" in " ".join(ask.lines())
+
+
+def test_a_typed_wall_function_y_plus_on_a_small_body_is_the_nearest_there_is():
+    from tests.unit.engines.test_cfd_requirements import _read
+    req, _d, _ = _read("y+ 30 to 100", layers=[{"what": "y_plus", "value": 30, "unit": "none", "quote": "y+ 30 to 100"}])
+    sec = CR.with_conditions(MR.section("used", requirements=req), {"request_txt": _ext("10 m/s"),
+                                                                    "intake_patches": [], "purpose": "external_cfd"})
+    ask = CR.Ask(MR.requirements_of(sec), "snappy")
+    assert ask.treatment is None and ask.y_plus == 30
+    ask.length_m, ask.length_from = 0.06, "the body's length"
+    out = CR.snappy_dict(ask, SHM, wall_cell_m=0.0016)
+    assert "relativeSizes false;" in out
+    assert _num(out, "firstLayerThickness") == pytest.approx(ask.how["visc_m"], rel=1e-4)
+    row = _y_row(ask)
+    assert row["status"] == "nearest" and row["treatment"] == "resolved" and "too small" in row["built"]
+    # on a body wall functions suit, the typed y+ is built as typed
+    big = CR.Ask(MR.requirements_of(sec), "snappy")
+    big.length_m, big.length_from = 4.0, "the body's length"
+    h = big.first_layer(length_m=4.0, length_from="the body's length")
+    assert big.fallback is None and CR.y_plus_of(h, big.how) == pytest.approx(30.0)
 
 
 def test_a_turbulent_body_keeps_its_wall_functions():
