@@ -2336,7 +2336,8 @@ _RUN: dict[str, Any] = {"end": None, "first_s": None, "cut": False}
 #: an outer stop) tells it when that stop comes, as seconds since the epoch in this environment variable; the shell
 #: mesh then takes what is left before it less END_MARGIN_S (the decks still to write), at most MESH_DEADLINE_S, so no
 #: pass starts that cannot finish before the outer stop. On the integration board a part extracted for 620-730 s
-#: then meshed under its own 900 s from there, and the run was cut from outside with no mesh
+#: then meshed under its own 900 s from there, and the run was cut from outside with no mesh. The name is declared
+#: in the settings inventory (Platform-supplied: the parent process sets it) and read through the settings loader
 SHELL_END_ENV = "HEXERA_SHELL_RUN_END"
 END_MARGIN_S = 60.0
 
@@ -2344,11 +2345,11 @@ END_MARGIN_S = 60.0
 def _deadline_s() -> float:
     """SHMESH-31g: the seconds this shell mesh may take from now - MESH_DEADLINE_S, or less where the run's outer stop
     (SHELL_END_ENV) comes sooner (never under 1 s)."""
-    import os
+    from meshpipeline.settings.env import optional_env
 
     allowed = float(MESH_DEADLINE_S)
     try:
-        end = float(os.environ.get(SHELL_END_ENV) or "nan")
+        end = float(optional_env("HEXERA_SHELL_RUN_END", "") or "nan")
     except ValueError:
         end = float("nan")
     if end == end:

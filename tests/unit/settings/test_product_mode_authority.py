@@ -51,9 +51,6 @@ LIBRARY_CONTRACTS = {
     # Forwards the parent's environment to the shell mesh child, plus that run's own stop time
     # (HEXERA_SHELL_RUN_END, SHMESH-31g) - a per-run argument, not a developer setting.
     "engines/fea_driver.py",
-    # Reads that per-run stop time (HEXERA_SHELL_RUN_END) its parent set for this one run, so it
-    # starts no pass that cannot finish. A per-run argument, as the mesh job's own inputs are.
-    "engines/gmsh/shell_adapter.py",
 }
 
 
