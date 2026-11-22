@@ -1869,8 +1869,10 @@ def through_part_openings(facts: dict) -> None:
     where the map finds a way through") is asked, its best guess flow through it (application/flow_kind); its
     openings are then the mouths of those passages - the flat face's hole of each bore, measured exactly - never
     the flat ends' whole discs of metal round them (an end plug's 56 mm end face over its 16 mm bore). Face-read
-    openings that are those mouths stay as read; the others are kept as not openings, for the stage's click.
-    Openings that already are the mouths are left as they are. Never fails the scout."""
+    openings that are those mouths stay as read; a flat end's disc and a blind hole's mouth (a side pocket of the
+    map: a bolt hole) are kept as not openings, for the stage's click; any other hole the faces read stays proposed
+    after the mouths (the map may not see it). Openings that already are the mouths are left as they are. Never
+    fails the scout."""
     from meshpipeline.application.flow_kind import THROUGH_CASE, geometry_reading
     try:
         if geometry_reading(facts).case != THROUGH_CASE:
@@ -1897,7 +1899,12 @@ def through_part_openings(facts: dict) -> None:
             match[i] = o
             if o is not None:
                 kept_ids.add(id(o))
-        if all(match.values()) and len(kept_ids) == len(ports):
+        # a face-read opening no mouth of the way is: a flat end's disc of metal, or the mouth of a blind side pocket
+        # (a bolt hole), is set aside; any other hole the faces read stays proposed (the map may not see it)
+        blind = [h for h in facts.get("holes") or [] if not h.get("passage", True)]
+        aside_ids = {id(o) for o in ports if id(o) not in kept_ids
+                     and (o.get("kind") == "disc" or any(_is_mouth(o, h) for h in blind))}
+        if all(match.values()) and not aside_ids:
             return                                         # the faces read the mouths already
         new: list[dict] = []
         for i, m in sorted(enumerate(mouths), key=lambda im: -float(im[1].get("area_mm2") or 0.0)):
@@ -1917,20 +1924,21 @@ def through_part_openings(facts: dict) -> None:
                 if m.get(key) is not None:
                     o[key] = m[key]
             new.append(o)
+        n_mouths = len(new)
+        new += [dict(o) for o in ports if id(o) not in kept_ids and id(o) not in aside_ids]
         n = len(new)
         for k, o in enumerate(new, start=1):
             o["id"], o["role"] = k, "inlet" if k == 1 else "outlet"
             o["name"] = "inlet" if k == 1 else "outlet" if n == 2 else f"outlet_{k - 1}"
-        aside = [{**o, "role": "not_an_opening"} for o in ports if id(o) not in kept_ids]
+        aside = [{**o, "role": "not_an_opening"} for o in ports if id(o) in aside_ids]
         rest = [dict(o) for o in ops if o.get("role") not in ("inlet", "outlet")]
         for k, o in enumerate([*aside, *rest], start=n + 1):
             o["id"] = k
         facts["openings"] = [*new, *aside, *rest]
         facts.setdefault("notes", []).append(
-            f"its faces read as a body, but its inside-space map finds a way through it: the {n} mouths of that way "
-            f"are proposed as its openings, for you to confirm ({THROUGH_GUESS_RULE})"
-            + (f"; {len(aside)} flat end(s) or hole(s) that are no mouth of it are proposed as not openings"
-               if aside else ""))
+            f"its faces read as a body, but its inside-space map finds a way through it: the {n_mouths} mouths of that "
+            f"way are proposed as its openings, for you to confirm ({THROUGH_GUESS_RULE})"
+            + (f"; {len(aside)} flat end(s) of metal or blind hole(s) are proposed as not openings" if aside else ""))
     except Exception as exc:  # noqa: BLE001 - the openings as read stand
         logger.warning("geometry check: the map's mouths could not be proposed (%s: %s)", type(exc).__name__,
                        str(exc)[:200])
