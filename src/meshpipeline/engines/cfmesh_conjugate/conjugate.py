@@ -1968,7 +1968,7 @@ def build(workspace, *, block_stl: str = "constant/triSurface/block.stl",
         ldir.mkdir(parents=True, exist_ok=True)
         (ldir / "snappyHexMeshDict").write_text(LY.render_layers_dict(
             interface_patch=FLUID_TO_SOLID, interface_cell_m=_cell, **geom))
-        (ldir / "meshQualityDict").write_text(LY.render_mesh_quality_dict())
+        (ldir / "meshQualityDict").write_text(LY.render_mesh_quality_dict(_cell))
         (ldir / "decomposeParDict").write_text(LY.render_decompose_dict(int(ranks)))
         for name, body in LY.render_support_dicts().items():
             (ldir / name).write_text(body)

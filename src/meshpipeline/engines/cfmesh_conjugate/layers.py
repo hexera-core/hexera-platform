@@ -135,8 +135,31 @@ def max_layers() -> int:
 #: - and the first run of this stage is what measures it.
 LAYER_PEAK_MARGIN = 1.25
 
-#: `meshQualityControls/minVol`, and the module docstring is about this one line.
-MIN_VOL = 1e-20
+#: `meshQualityControls/minVol` AS A FRACTION OF THE INTERFACE CELL, and the module docstring is
+#: about this one line.
+#:
+#: It is an ABSOLUTE volume and OpenFOAM ships it at 1e-13, which on a 25 um mesh condemns every
+#: face of a geometrically perfect mesh - that is the silent total failure the docstring describes,
+#: and it is why this carried a flat 1e-20 instead. But 1e-20 IS NOT A SMALLER FLOOR, IT IS NO
+#: FLOOR. The thinnest legitimate face pyramid in a three-layer stack on a 25.1578 um cell is
+#: (1/3)(25.1578e-6 x 4.15e-6)(25.1578e-6 / 2) = 4.38e-16 m3, four orders of magnitude above it.
+#: The 155 M plate's smallest cell came back at 3.74e-17 m3 - a layer 0.059 um thick in a 25 um
+#: cell - and nothing in the dictionary objected to it.
+#:
+#: A thousandth of the interface cell's own volume is about 30x under the thinnest legitimate
+#: pyramid and about 170x over a hairline, and it reproduces the shipped behaviour where the
+#: shipped behaviour was right: on the 22.0035 um blockMesh of the ablation it is 1.07e-17 against
+#: a real pyramid of 1.78e-15, so layers still grow there. Scaling it is what makes it safe to
+#: enforce during the relaxed iterations as well as the strict ones.
+MIN_VOL_FRACTION = 1.0e-3
+
+
+def min_vol_for(interface_cell_m: float) -> float:
+    """The `minVol` floor for a mesh whose cells at the interface are this big."""
+    cell = float(interface_cell_m)
+    if not cell > 0:
+        raise LayerError("minVol scales with the interface cell, so the cell has to be positive")
+    return MIN_VOL_FRACTION * cell ** 3
 #: Left at OpenFOAM's own value deliberately: tet quality is dimensionless, so it was never what
 #: blocked the extrusion, and relaxing it would only switch off inverted-cell detection.
 MIN_TET_QUALITY = 1e-30
@@ -145,6 +168,31 @@ MIN_TET_QUALITY = 1e-30
 #: double 4e+09" after 689 s, 665 of them already spent reading the mesh.
 MAX_GLOBAL_CELLS = 2_000_000_000
 MAX_LOCAL_CELLS = 400_000_000
+
+#: HOW FAR BACK FROM A TERMINATION THE MOVER STOPS EXTRUDING, and it is worth a tenth of the
+#: bad cells.
+#:
+#: Where a layer stops is where the mesh is worst. Both of the mover's repairs - removing a layer,
+#: thinning one - leave a face carrying three prisms against a face carrying none, and at 0 that
+#: step is one face wide: a fifth-height cell against a full one is a volume ratio of five and an
+#: interpolation weight at the floor. A buffer of 1 stops the extrusion one cell earlier all round
+#: a termination, so the step is spread over two faces.
+#:
+#: Measured on two_scale_plate_ported at 2 across, 4 ranks, 3 layers, 506,298 interface faces,
+#: against the 0 this shipped with:
+#:
+#:     coverage                           95.9121% -> 95.9350%
+#:     illegal faces at the end                  8 -> 2
+#:     concave cells                        42,702 -> 38,597
+#:     faces under interpolation 0.05        1,452 -> 1,306
+#:     worst interpolation weight         0.020620 -> 0.022364
+#:     worst cell determinant          3.90492e-05 -> 4.94893e-05
+#:     cells under determinant 0.001         1,256 -> 1,220
+#:     layer pass                          123.7 s -> 123.0 s
+#:
+#: Better on every measure that moved, and not slower. `engines/snappy` carries 0 for the same
+#: entry on a different kind of part and is not changed by this.
+BUFFER_CELLS_NO_EXTRUDE = 1
 
 #: The smoothing, and it is load-bearing at these values.
 #:
@@ -417,23 +465,68 @@ def fit_complaint(*, first_layer_m: float, expansion: float, n_layers: int,
     return ""
 
 
-def render_mesh_quality_dict() -> str:
+#: THE FOUR LIMITS A RELAXED ITERATION MAY LOOSEN, and they are all about SHAPE.
+#:
+#: A relaxed iteration is the mover saying "I cannot fix this, let me accept a worse cell". A
+#: worse-shaped cell is a fair thing to accept: a bit more non-orthogonality or skew costs the
+#: solver accuracy and nothing else. A THINNER cell is not, because thin has no floor of its own -
+#: it goes to zero, and a cell of zero thickness is not a worse answer, it is not an answer.
+RELAXED_SHAPE: dict[str, str] = {
+    "maxNonOrtho": "75",
+    "maxBoundarySkewness": "25",
+    "maxInternalSkewness": "6",
+    "maxConcave": "85",
+}
+
+
+def _quality_lines(*, min_vol: float, relaxed: bool = False) -> list[str]:
+    """Every `meshQualityControls` entry, as `key value;` lines. THE ONLY PLACE A FLOOR IS WRITTEN.
+
+    THE RELAXED BLOCK IS NOT A PATCH ON THE STRICT ONE - OpenFOAM READS IT ALONE. `nRelaxedIter`
+    swaps `meshQualityControls` for its `relaxed` sub-dictionary wholesale, and that sub-dictionary
+    is read as a dictionary in its own right: every key it does not contain is defaulted away, not
+    inherited. The one-line `relaxed { maxNonOrtho 75; }` that the tutorials write - and that this
+    module wrote - therefore switches OFF `minVol`, `minTetQuality`, `minDeterminant`,
+    `minFaceWeight`, `minVolRatio` and `minTwist` for every relaxed iteration.
+
+    On the delivered 155 M plate that was seven of ten iterations, and the mesh came back with a
+    cell determinant of 0 against this dict's own `minDeterminant 0.001`, an interpolation weight
+    of 0.0107 against its `minFaceWeight 0.02`, a volume ratio of 0.0065 against its
+    `minVolRatio 0.01` and a smallest cell of 3.74e-17 m3 - a layer 0.059 um thick. The mover
+    reported 133 illegal faces, because with the floors defaulted away almost nothing was illegal.
+
+    So both blocks come from here, and they differ only by `RELAXED_SHAPE`. A floor cannot be
+    dropped from one of them by editing the other.
+    """
+    entry = {
+        "maxNonOrtho": "65",
+        "maxBoundarySkewness": "20",
+        "maxInternalSkewness": "4",
+        "maxConcave": "80",
+        "minVol": f"{float(min_vol):g}",
+        "minTetQuality": f"{MIN_TET_QUALITY:g}",
+        "minArea": "-1",
+        "minTwist": "0.02",
+        "minDeterminant": "0.001",
+        "minFaceWeight": "0.02",
+        "minVolRatio": "0.01",
+        "minTriangleTwist": "-1",
+    }
+    if relaxed:
+        entry.update(RELAXED_SHAPE)
+    return [f"{k:<22}{v};" for k, v in entry.items()]
+
+
+def render_mesh_quality_dict(interface_cell_m: float) -> str:
     """`system/meshQualityDict`, which `checkMesh -meshQuality` finds by name and cannot be given
-    with `-dict` because checkMesh has no such option."""
+    with `-dict` because checkMesh has no such option.
+
+    It takes the cell for the same reason `render_layers_dict` does: `minVol` is an absolute
+    volume, so the only honest floor is one derived from the mesh it is judging.
+    """
     return "\n".join([
         "FoamFile { version 2.0; format ascii; class dictionary; object meshQualityDict; }",
-        "maxNonOrtho          65;",
-        "maxBoundarySkewness  20;",
-        "maxInternalSkewness   4;",
-        "maxConcave           80;",
-        f"minVol               {MIN_VOL:g};",
-        f"minTetQuality        {MIN_TET_QUALITY:g};",
-        "minArea              -1;",
-        "minTwist             0.02;",
-        "minDeterminant       0.001;",
-        "minFaceWeight        0.02;",
-        "minVolRatio          0.01;",
-        "minTriangleTwist     -1;",
+        *_quality_lines(min_vol=min_vol_for(interface_cell_m)),
         "nSmoothScale          4;",
         "errorReduction        0.75;",
         "",
@@ -506,25 +599,21 @@ def render_layers_dict(*, interface_patch: str, interface_cell_m: float, n_layer
         f"    nSmoothNormals              {SMOOTH_NORMALS};",
         "    slipFeatureAngle           30;",
         "    nRelaxIter                  5;",
-        "    nBufferCellsNoExtrude       0;",
+        # A LAYER THAT STOPS, STOPS GRADUALLY. See BUFFER_CELLS_NO_EXTRUDE.
+        f"    nBufferCellsNoExtrude       {BUFFER_CELLS_NO_EXTRUDE};",
         "    nLayerIter                 10;",
         "    nRelaxedIter                3;",
         "}",
         "meshQualityControls",
         "{",
-        "    maxNonOrtho          65;",
-        "    maxBoundarySkewness  20;",
-        "    maxInternalSkewness   4;",
-        "    maxConcave           80;",
-        f"    minVol               {MIN_VOL:g};",
-        f"    minTetQuality        {MIN_TET_QUALITY:g};",
-        "    minArea              -1;",
-        "    minTwist             0.02;",
-        "    minDeterminant       0.001;",
-        "    minFaceWeight        0.02;",
-        "    minVolRatio          0.01;",
-        "    minTriangleTwist     -1;",
-        "    relaxed { maxNonOrtho 75; }",
+        *[f"    {line}" for line in _quality_lines(min_vol=min_vol_for(interface_cell_m))],
+        # WRITTEN OUT IN FULL, because OpenFOAM reads this sub-dictionary alone and defaults away
+        # every key it does not find. See `_quality_lines`.
+        "    relaxed",
+        "    {",
+        *[f"        {line}" for line in
+          _quality_lines(min_vol=min_vol_for(interface_cell_m), relaxed=True)],
+        "    }",
         "    nSmoothScale 4;",
         "    errorReduction 0.75;",
         "}",
@@ -722,7 +811,8 @@ def complain(report: dict, *, interface_patch: str, n_layers: int = 0,
     got = dict(report or {})
     if not got.get("iterations"):
         return ("the layer pass reported no extrusion at all, so no layers were added. With "
-                f"OpenFOAM's shipped minVol of 1e-13 this is what a {MIN_VOL:g} case looks like: "
+                "OpenFOAM's shipped minVol of 1e-13 this is what a scaled-floor case looks "
+                "like: "
                 "every face of a geometrically correct microchannel mesh is flagged on length "
                 "scale alone, nothing is extruded, and the run still exits 0")
     cover = got.get("coverage_pct")
@@ -828,7 +918,8 @@ def measured(report: dict, *, interface_patch: str) -> dict:
 
 
 __all__ = ["LAYER_CASE", "LAYER_STAGE", "LayerError", "MAX_GLOBAL_CELLS", "MAX_LOCAL_CELLS",
-           "MIN_VOL", "MIN_TET_QUALITY", "N_SURFACE_LAYERS", "EXPANSION_RATIO",
+           "MIN_VOL_FRACTION", "min_vol_for", "RELAXED_SHAPE", "MIN_TET_QUALITY",
+           "BUFFER_CELLS_NO_EXTRUDE", "N_SURFACE_LAYERS", "EXPANSION_RATIO",
            "FIRST_LAYER_FRACTION", "MIN_THICKNESS_FRACTION", "MAX_STACK_FRACTION",
            "SMOOTH_SURFACE_NORMALS", "SMOOTH_THICKNESS", "SMOOTH_NORMALS", "COVERAGE_FLOOR_PCT",
            "THICKNESS_FLOOR_PCT", "LAYERS_FLOOR_FRACTION", "ILLEGAL_PER_MILLION_CEILING",

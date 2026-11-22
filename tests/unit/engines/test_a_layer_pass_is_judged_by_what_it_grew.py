@@ -204,10 +204,12 @@ def test_the_quality_block_is_written_out_and_never_included():
     text = L.render_layers_dict(interface_patch=INTERFACE, interface_cell_m=BL8_CELL_M,
                                 **_geom())
     assert "#include" not in text
-    assert "minVol               1e-20;" in text
+    # The floor is derived from the cell now, not a literal - see
+    # `test_a_relaxed_iteration_may_accept_a_worse_shape_but_not_a_thinner_cell`.
+    assert "minVol" in text and f"{L.min_vol_for(BL8_CELL_M):g}" in text
     assert not G._HASH_DIRECTIVE.search(text), "the case guard would refuse this dict"
     for name, body in list(L.render_support_dicts().items()) + [
-            ("meshQualityDict", L.render_mesh_quality_dict()),
+            ("meshQualityDict", L.render_mesh_quality_dict(BL8_CELL_M)),
             ("decomposeParDict", L.render_decompose_dict(8))]:
         assert not G._HASH_DIRECTIVE.search(body), name
 
@@ -215,9 +217,9 @@ def test_the_quality_block_is_written_out_and_never_included():
 def test_the_dict_carries_the_one_setting_that_decides_whether_anything_extrudes():
     text = L.render_layers_dict(interface_patch=INTERFACE, interface_cell_m=BL8_CELL_M,
                                 **_geom())
-    assert f"minVol               {L.MIN_VOL:g};" in text
-    assert L.MIN_VOL < 1e-13, "OpenFOAM's shipped value extrudes nothing on a microchannel mesh"
-    assert "-1e30" not in text and "minTetQuality        1e-30;" in text
+    assert f"{L.min_vol_for(BL8_CELL_M):g};" in text
+    assert L.min_vol_for(BL8_CELL_M) < 1e-13, "OpenFOAM shipped value extrudes nothing here"
+    assert "-1e30" not in text and "minTetQuality         1e-30;" in text
 
 
 def test_the_dict_keeps_the_blocks_snappy_refuses_to_run_without():
