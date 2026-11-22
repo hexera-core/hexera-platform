@@ -204,13 +204,22 @@ def near_edge(q: dict | None, limit: float | None = None) -> str:
     return ""
 
 
+#: The worst non-orthogonality a CFD solver can correct (engine_fallback.SOLVER_HARD_NON_ORTHO): a candidate past
+#: it ranks under every one inside it, whatever its layers.
+HARD_NON_ORTHO = 85.0
+
+
 def rank(q: dict | None) -> tuple:
-    """The order candidates are kept in, lower first: no fatal defect, then the wall's layers kept at the planned
-    height (CFDREQ-14: not `layers_lost`), then the lowest worst non-orthogonality, then the fewest highly skewed
-    faces."""
+    """The order candidates are kept in, lower first: checkMesh-valid (the fewest fatal defects, none beats any);
+    inside the solver's hard limit (HARD_NON_ORTHO); the wall's layers kept at the planned height (CFDREQ-14: not
+    `layers_lost`); then the lowest worst non-orthogonality, then the fewest highly skewed faces. The cfMesh resolve
+    parts (CFD board, 22 Nov): kept as built for their layers they read 84.7-88.7 degrees, where the optimised
+    candidates read 45-71 with no layer at the planned height - neither has both, and a mesh past 85 is not one a
+    solver takes."""
     q = q or {}
     no = _num(q.get("max_non_ortho"))
-    return (1 if q.get("fatal") else 0, 1 if q.get("layers_lost") else 0, 180.0 if no is None else no,
+    over = 1 if no is None or no > HARD_NON_ORTHO else 0
+    return (len(q.get("fatal") or []), over, 1 if q.get("layers_lost") else 0, 180.0 if no is None else no,
             int(_num(q.get("skew_faces")) or 0))
 
 
@@ -260,11 +269,10 @@ def better(cand: dict | None, best: dict | None) -> bool:
     if not measured(cand):
         return False
     a, b = rank(cand), rank(best)
-    if a[0] != b[0]:
-        return a[0] < b[0]
-    if a[1] != b[1]:
-        return a[1] < b[1]
-    return a[2] < b[2] - MIN_GAIN_DEG
+    for i in (0, 1, 2):
+        if a[i] != b[i]:
+            return a[i] < b[i]
+    return a[3] < b[3] - MIN_GAIN_DEG
 
 
 def protective_meshdict(text: str) -> str | None:
@@ -345,6 +353,7 @@ def rescue(workspace, q: dict, *, bashrc: str, deadline: float, mesher_seconds: 
     base_layers = count_layers(ws)
     if base_layers is not None:
         q = {**q, "layer_area_at_plan_pct": base_layers}
+        record["before"] = _brief(q)
     scratch = ws / SCRATCH
     shutil.rmtree(scratch, ignore_errors=True)
     scratch.mkdir(parents=True)
@@ -460,7 +469,10 @@ def rescue(workspace, q: dict, *, bashrc: str, deadline: float, mesher_seconds: 
         # 2. a protective re-mesh, when the best is still near the edge (its cell limit decides,
         #    never the time left)
         protective = protective_meshdict(asked_dict) if asked_dict else None
-        if near_edge(best_q, limit) and protective is not None and not record.get("guard_tripped"):
+        # ... or when the best so far bought its angle with the wall's planned layers (CFDREQ-14): the re-mesh
+        # that protects them may have both
+        if ((near_edge(best_q, limit) or best_q.get("layers_lost")) and protective is not None
+                and not record.get("guard_tripped")):
             if cells > REMESH_MAX_CELLS:
                 record["tried"].append({"step": REMESHED, "skipped": (
                     f"{int(cells):,} cells is over the {REMESH_MAX_CELLS:,} a second run may "
@@ -538,6 +550,9 @@ def note(record: dict) -> str:
         return (f"{head} The '{record['guard_tripped']}' step ran past its guard clock - an "
                 "infrastructure stop, not a result: this attempt is run again as it was.")
     tried = [s["step"] for s in record.get("tried") or [] if not s.get("skipped")]
+    short = wall_short(record)
+    if short:
+        head = f"{head} {short}"
     if record.get("kept") == "as built":
         lost = [s["step"] for s in record.get("tried") or [] if s.get("layers_lost") and not s.get("fatal")]
         why = (f" ({' and '.join(lost)} took the wall's layers away from the planned height)" if lost else "")
@@ -545,6 +560,31 @@ def note(record: dict) -> str:
                 f"better{why}, so the mesh as built is kept.")
     return (f"{head} Kept the {record.get('kept')} mesh: "
             f"{_words(before)} before, {_words(after)} after.")
+
+
+def wall_short(record: dict) -> str:
+    """The plain words when no candidate had both - inside the hard limit AND the wall's layers at the planned
+    height - and the kept one gave one of them up ('' when the kept mesh has both, or nothing was measured)."""
+    tried = [s for s in record.get("tried") or [] if not s.get("skipped") and s.get("max_non_ortho") is not None]
+    cands = [record.get("before") or {}, *tried]
+    if not any("layer_area_at_plan_pct" in c for c in cands):
+        return ""
+
+    def both(c: dict) -> bool:
+        no = _num(c.get("max_non_ortho"))
+        return no is not None and no <= HARD_NON_ORTHO and not c.get("layers_lost") and not c.get("fatal")
+    if any(both(c) for c in cands):
+        return ""
+    after = record.get("after") or {}
+    at = after.get("layer_area_at_plan_pct")
+    no = _num(after.get("max_non_ortho"))
+    if no is not None and no > HARD_NON_ORTHO:
+        return (f"The resolved wall could not be built inside the limits: the mesh that keeps the planned first layer "
+                f"has a worst cell of {no:.1f} degrees, past the {HARD_NON_ORTHO:.0f} a solver can correct, and every "
+                "mesh inside that limit lost the planned first layer.")
+    return ("The resolved wall could not be built inside the limits: the mesh kept is inside them, but its first cell "
+            f"is at the planned height on {at if isinstance(at, (int, float)) else 0:.0f}% of the wall only - every "
+            "mesh that kept the planned first layer was past the limits.")
 
 
 def _words(b: dict) -> str:
@@ -607,6 +647,6 @@ def _num(v) -> float | None:
         return None
 
 
-__all__ = ["LAYER_LOSS_PTS", "MIN_GAIN_DEG", "NEAR_EDGE_NON_ORTHO", "layers_at_plan", "PROTECTIVE_LAYER_OPTIMISATION",
+__all__ = ["HARD_NON_ORTHO", "wall_short", "LAYER_LOSS_PTS", "MIN_GAIN_DEG", "NEAR_EDGE_NON_ORTHO", "layers_at_plan", "PROTECTIVE_LAYER_OPTIMISATION",
            "REMESH_MAX_CELLS", "RESCUE_FILE", "RESCUE_MAX_CELLS", "better", "near_edge", "note",
            "protective_meshdict", "rank", "rescue"]

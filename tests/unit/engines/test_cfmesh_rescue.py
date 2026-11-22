@@ -456,3 +456,49 @@ def test_validity_still_comes_before_the_layers(tmp_path):
 def test_with_no_planned_height_the_layers_are_not_read(tmp_path):
     ws = _ws(tmp_path)
     assert RS.layers_at_plan(ws) is None
+
+
+def test_fewer_fatal_defects_rank_first():
+    one = {"cells": 1, "max_non_ortho": 99.0, "fatal": ["faces 90 degrees or more out of square"]}
+    two = {"cells": 1, "max_non_ortho": 91.0, "fatal": ["zero-area faces", "faces 90 degrees or more out of square"]}
+    assert RS.better(one, two) and not RS.better(two, one)
+
+
+# THE RANKING: VALID, INSIDE THE HARD LIMIT, THE WALL ASK, THEN QUALITY - AND SAID WHEN NONE HAS BOTH
+
+def test_a_mesh_past_the_hard_limit_never_beats_one_inside_it_whatever_its_layers():
+    inside = {"cells": 1, "max_non_ortho": 69.3, "fatal": [], "layers_lost": True}
+    past = {"cells": 1, "max_non_ortho": 86.8, "fatal": [], "layers_lost": False}
+    assert RS.better(inside, past) and not RS.better(past, inside)
+    both = {"cells": 1, "max_non_ortho": 80.0, "fatal": [], "layers_lost": False}
+    assert RS.better(both, inside)
+
+
+def test_when_no_candidate_has_both_the_result_says_the_resolved_wall_was_not_built(tmp_path):
+    # transition_005 on 765552c9: as built 86.8 degrees with the first layer at plan; every candidate inside 85
+    # lost it; the re-mesh that keeps it read 88.7
+    ws = _ws(tmp_path)
+    calls: list = []
+    table = {"optimised(as built)": {"cells": 320_412, "max_non_ortho": 69.3, "fatal": []},
+             "remeshed": {"cells": 320_412, "max_non_ortho": 88.7, "fatal": []},
+             "optimised(remeshed)": {"cells": 320_412, "max_non_ortho": 70.8, "fatal": []}}
+    at_plan = {"as built": 100.0, "optimised(as built)": 0.0, "remeshed": 100.0, "optimised(remeshed)": 0.0}
+    out = RS.rescue(ws, {"cells": 320_412, "max_non_ortho": 86.8, "fatal": []}, bashrc="/dev/null",
+                    deadline=time.monotonic() + 3600.0, mesher_seconds=30.0, measure=_measure(table),
+                    runner=_runner(calls), env={},
+                    layers=lambda w: at_plan[(Path(w) / "constant" / "polyMesh" / "owner").read_text()])
+    assert out["max_non_ortho"] <= RS.HARD_NON_ORTHO
+    assert "could not be built inside the limits" in out["rescue"]["note"]
+    assert "0% of the wall" in out["rescue"]["note"]
+
+
+def test_a_candidate_with_both_is_said_plainly(tmp_path):
+    ws = _ws(tmp_path)
+    calls: list = []
+    table = {"optimised(as built)": {"cells": 1000, "max_non_ortho": 70.0, "fatal": []}}
+    out = RS.rescue(ws, {"cells": 1000, "max_non_ortho": 86.0, "fatal": []}, bashrc="/dev/null",
+                    deadline=time.monotonic() + 3600.0, mesher_seconds=30.0, measure=_measure(table),
+                    runner=_runner(calls), env={},
+                    layers=lambda w: 100.0)
+    assert out["rescue"]["kept"] == "optimised"
+    assert "could not be built" not in out["rescue"]["note"]
