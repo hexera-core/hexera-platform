@@ -57,6 +57,13 @@ MAX_ROUNDS = 24
 #: A loop strays from its plane by more than this share of its size: its cap is the lid builder's
 #: own surface (cad/lids), not the flat disc of its plane.
 CURVED_LOOP = 0.03
+#: INS-24: a smooth patch's outline whose points stray from their own plane by more than this many of its own
+#: widths is the outline of a band - a cylinder wall cut by a notch, whose one loop runs round its foot, up the
+#: notch, back round its top and down - never the rim of one opening. An equal tee's saddle-shaped branch hole
+#: strays half its width; the notched ring adapter's band (batch 4) 1.24.
+BAND_LOOP = 1.0
+#: docs/RULES.md id of that reading
+BAND_LOOP_RULE = "INS-24"
 #: A pocket counts as a passage of the part when it holds at least this share of the largest
 #: pocket's space; a smaller one (a bolt hole beside a flange's bore, a blind dimple) is a side
 #: pocket: its mouths are kept, proposed as not an opening.
@@ -539,6 +546,15 @@ def _loops(mesh, grid: Grid) -> tuple[list[_Loop], int]:
         if mesh.shape(found) is None and mesh.why.startswith("covered"):
             continue
         rim = bool(np.all(mesh.count[eidx] == 1))
+        if not rim and dev > BAND_LOOP * d:
+            # INS-24: THE OUTLINE OF A BAND IS NO OPENING'S RIM. A ring wall notched from its foot to its top is
+            # one smooth patch whose outline runs round its foot, up the notch, back round its top and down: one
+            # loop across the whole part, its flat projection a sliver. Capped "toward the smallest area" it
+            # spanned the ring's inside, cut that space off as a pocket of its own and was proposed as a second
+            # opening of the part's one open end (a ring adapter, batch 4: capped at its bore's top and again
+            # "beside the tab", staged as two separate passages). Its edges stay wall; the space it rings is
+            # whatever the other loops make of it.
+            continue
         lp = _Loop(vidx=np.asarray(vidx), eidx=np.asarray(eidx), P=P, c=c, n=n, area=area, dev=dev,
                    wh=wh, kind="rim" if rim else "bore")
         if d < MIN_ACROSS * grid.h:
