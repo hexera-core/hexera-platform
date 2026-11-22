@@ -332,8 +332,10 @@ def fluid_wall(wall, lids: list, interior_point):
         return wall
     b = np.asarray(scene.bounds, dtype=float).reshape(3, 2)
     reach = 2.0 * float(np.linalg.norm(b[:, 1] - b[:, 0]))
+    from meshpipeline.engines.radius_chords import TREE_TOLERANCE_OF_SIZE
     obb = vtk.vtkOBBTree()
     obb.SetDataSet(scene)
+    obb.SetTolerance(0.5 * reach * TREE_TOLERANCE_OF_SIZE)    # never VTK's absolute 0.01 (radius_chords)
     obb.BuildLocator()
     hits_n = np.zeros(n, dtype=int)
     pts, ids = vtk.vtkPoints(), vtk.vtkIdList()
@@ -412,8 +414,10 @@ def orient_out_of_fluid(lumen, lids: list, interior_point):
                                          np.arange(len(flat), dtype=np.int64).reshape(-1, 3)]).ravel())
     normal = np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0])
     reach = 2.0 * float(np.linalg.norm(flat.max(axis=0) - flat.min(axis=0)))
+    from meshpipeline.engines.radius_chords import TREE_TOLERANCE_OF_SIZE
     obb = vtk.vtkOBBTree()
     obb.SetDataSet(scene)
+    obb.SetTolerance(0.5 * reach * TREE_TOLERANCE_OF_SIZE)    # never VTK's absolute 0.01 (radius_chords)
     obb.BuildLocator()
     vote = np.zeros(n_regions)
     seen = np.zeros(n_regions, dtype=int)

@@ -32,6 +32,23 @@ logger = logging.getLogger(__name__)
 #: imported, the tree built) costs about two seconds, and 4,000 rays take about seven on one core.
 PARALLEL_FROM = 4000
 
+#: THE TREE'S TOLERANCE IS THE SURFACE'S OWN SIZE, NEVER VTK'S ABSOLUTE 0.01. vtkOBBTree widens every
+#: box it tests a ray against by its Tolerance, 0.01 by default - in the metres every staged surface
+#: is in, 10 mm. On a part a few centimetres across every box then meets every ray, and each ray tests
+#: every triangle: 11-17 ms a ray on abc 00160152 (59 mm across) and 00088953 (77 mm), 0.2 ms with a
+#: tolerance of a millionth of the part (2026-11-22, testlab-4); on a 4 m pipe 0.4 against 0.2 ms.
+#: The radius field of 00160152 took 232 s of its 352 s staging for 72 k points.
+TREE_TOLERANCE_OF_SIZE = 1e-6
+
+
+def tree_tolerance(points) -> float:
+    """The tolerance a vtkOBBTree over `points` is built with: TREE_TOLERANCE_OF_SIZE of their box's
+    diagonal."""
+    p = np.asarray(points, dtype=float).reshape(-1, 3)
+    if not len(p):
+        return 1e-12
+    return max(float(np.linalg.norm(p.max(axis=0) - p.min(axis=0))) * TREE_TOLERANCE_OF_SIZE, 1e-12)
+
 
 def workers_for(n_points: int) -> int:
     """How many processes cast `n_points` rays: the cores this process may run on, no more than
@@ -65,6 +82,7 @@ def cast(points, faces, normals, face_normals, ring, fold, eps: float, reach: fl
     mesh = pv.PolyData(pts, np.hstack([np.full((len(f), 1), 3, dtype=np.int64), f]).ravel())
     obb = vtk.vtkOBBTree()
     obb.SetDataSet(mesh)
+    obb.SetTolerance(tree_tolerance(pts))
     obb.BuildLocator()
     hits = vtk.vtkPoints()
     ids = vtk.vtkIdList()

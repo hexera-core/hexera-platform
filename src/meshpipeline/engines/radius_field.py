@@ -104,8 +104,10 @@ def local_radius(points: np.ndarray, faces: np.ndarray, interior_point, r_lo: fl
                          > 0).mean() > 0.5:
         n = -n
         fn = -fn
+    from meshpipeline.engines.radius_chords import tree_tolerance
     obb = vtk.vtkOBBTree()
     obb.SetDataSet(mesh)
+    obb.SetTolerance(tree_tolerance(pts))          # never VTK's absolute 0.01 (radius_chords)
     obb.BuildLocator()
     reach = 4.0 * r_hi
     hits = vtk.vtkPoints()
