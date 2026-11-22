@@ -94,6 +94,7 @@ def test_a_stopped_pass_left_beside_the_mesh_is_never_read_for_it(tmp_path):
     # field only) beside the delivered cr_ws_9vz6v0eq_0; by name the stopped one came last, and the CAD check
     # read no body off a 6 M-cell production-grade mesh. The case written last is the mesh on disk.
     import os
+
     from meshpipeline.engines.surface_deliverable import _patch_files
     stamps = {"cr_ws_rm21egpm_0": 1_000.0, "cr_ws__1s7fvww_0": 2_000.0, "cr_ws_9vz6v0eq_0": 3_000.0}
     for case, t in stamps.items():
