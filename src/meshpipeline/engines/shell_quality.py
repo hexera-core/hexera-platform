@@ -2473,9 +2473,18 @@ def _mend_round(xyz, Q, T, qf, tf, node_kind, node_edge, vertex_edges, limits, q
         gate_ok = _short_gate_ok(cands, conn, face, nq, g_now, g_q, g_t, lines_limits, short_gate,
                                  set(lines_limits.protect))
 
+    # (SHMESH-70's guard reads each element's longest edge once a round: the nodes stand still while the changes are
+    # judged, so every candidate that holds an element reads the same float as before; s33 spent a third of its time
+    # recomputing it, 4 million times)
+    longest_at: dict[tuple, float] = {}
+
     def longest(c_) -> float:
-        p_ = xyz[list(c_)]
-        return float(np.linalg.norm(p_ - np.roll(p_, -1, axis=0), axis=1).max())
+        k_ = tuple(c_)
+        got = longest_at.get(k_)
+        if got is None:
+            p_ = xyz[list(c_)]
+            got = longest_at[k_] = float(np.linalg.norm(p_ - np.roll(p_, -1, axis=0), axis=1).max())
+        return got
 
     for ci, (ok, rise_, _near_rise, worst_ok, better, rank) in enumerate(judged):
         if rise_ is not None:
