@@ -339,7 +339,9 @@ def test_a_solid_run_applies_the_global_size_and_tells_asked_against_delivered(t
     assert rows["limit:warpage"]["met"] is None                       # no such figure on a tetrahedron: said
     block = results(ws)
     asked = [r for r in block["check"]["rows"] if r["key"].startswith("asked_")]
-    assert [r["key"] for r in asked] == ["asked_r1", "asked_r2"] and not any(r["gating"] for r in asked)
+    # (m485w round 15: every typed ask has its row - the warpage, no figure on a tetrahedron, is told, not judged)
+    assert [r["key"] for r in asked] == ["asked_r1", "asked_r2", "asked_r3"] and not any(r["gating"] for r in asked)
+    assert [r.get("told") for r in asked] == [None, None, "not_applied"] and asked[2]["ok"] is None
     assert block["check"]["outcome"] != "fail"
     assert any(w.startswith("Global element size 7 mm: met") for w in block["plan_words"])
     assert any(w.startswith("Warpage under 15°: not applied") for w in block["plan_words"])

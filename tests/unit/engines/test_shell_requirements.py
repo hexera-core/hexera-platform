@@ -417,7 +417,9 @@ def test_the_criteria_list_on_a_plate_is_delivered_and_told_row_by_row(tmp_path,
     block = results(ws)
     # one row per measured requirement; the user's Jacobian line is the header's worst-quality row (SHMESH-26)
     asked = [r for r in block["check"]["rows"] if r["key"].startswith("asked_") or r.get("asked")]
-    assert len(asked) == sum(1 for r in rows if r["met"] is not None) >= 8 and all(not r["gating"] for r in asked)
+    # (m485w round 15: every typed ask has its row, the ones with nothing to judge them by told, not judged)
+    assert len(asked) == len(rows) >= 8 and all(not r["gating"] for r in asked)
+    assert all(r["ok"] is None for r in asked if r.get("told"))
     head = next(r for r in asked if r["key"] == SD.WORST_KEY)
     assert head["words"].startswith("Jacobian over 0.6") and head["limit"] == 0.4 and head["ok"] is True
     warp = next(r for r in asked if r["key"] == "asked_r4")

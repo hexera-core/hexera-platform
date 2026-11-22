@@ -1874,16 +1874,44 @@ def report_words(rep: Mapping | None) -> list[str]:
     return [line(r) for r in (rep or {}).get("rows") or []]
 
 
-def asked_rows(quality: Mapping | None, *, source: str = "your notes") -> list[dict]:
+def told_status(r: Mapping) -> tuple[str, str, str]:
+    """(how a row that is told, not judged, stands; its status in plain words; its measured figure in words) for a
+    requirement row with no met / not met: an edge-length target with its share outside, the nearest there is, a
+    setting applied, or not applied."""
+    if r.get("target"):
+        share = float(r.get("outside_pct") or 0.0)
+        side = "under" if r.get("field") == "min_edge" else "over"
+        return ("target", "Target, not met" if r.get("outside") else "Met",
+                f"{share:g}% of elements {side}" if r.get("outside") else "0 outside")
+    if r.get("nearest"):
+        return "nearest", "Nearest there is", ""
+    if r.get("applied") is False:
+        return "not_applied", "Not applied", ""
+    return "setting", "Applied (a setting)", ""
+
+
+def asked_rows(quality: Mapping | None, *, source: str = "your notes", told: bool = False) -> list[dict]:
     """THE USER'S OWN REQUIREMENTS as rows of the result's and the verdict's one list of limits (quality.json's
     "requirements", written by the route that measured them): each measured as the elements outside what was
     asked (0 when met), with the plain line that says asked against delivered (`said`). One not reached is a
-    note - the mesh is delivered - never a failure; one with nothing to measure it against (applied as a setting,
-    or not applied) is no row: it is told in the plan's words."""
+    note - the mesh is delivered - never a failure. `told` (the report's own list): EVERY typed ask has its row, met
+    or not - one with nothing to judge it by (an edge-length target past its share, the nearest there is, a setting,
+    not applied) too, with its status and figure in plain words (`told`, `status`, `shown`), never judged (measured 0)
+    and never a verdict's limit (m485w round 15: the table showed only the asks that passed)."""
     rep = (quality or {}).get("requirements")
     out = []
     for r in (rep.get("rows") if isinstance(rep, Mapping) else None) or []:
-        if not isinstance(r, Mapping) or r.get("met") not in (True, False):
+        if not isinstance(r, Mapping):
+            continue
+        if r.get("met") not in (True, False):
+            if not told:
+                continue
+            kind, status, shown = told_status(r)
+            came = str(r.get("from") or "")
+            label = (f"Chosen on the stage: {r.get('asked')}" if came == "stage"
+                     else f"Your {came} ask: {r.get('asked')}" if came else f"You asked: {r.get('asked')}")
+            out.append({"key": f"asked_{r.get('id')}", "label": label, "op": "==", "limit": 0, "measured": 0,
+                        "said": line(r), "source": source, "told": kind, "status": status, "shown": shown})
             continue
         came = str(r.get("from") or "")
         label = (f"Chosen on the stage: {r.get('asked')}" if came == "stage"
