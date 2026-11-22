@@ -210,6 +210,25 @@ def _zone_row(z: Mapping, spots: Mapping[str, Mapping]) -> dict:
     return row
 
 
+#: NOTE-13: where the run hands the AI step the asks the rules apply themselves (with_rules_asks)
+RULES_ASKS_KEY = "fea_notes_by_rules"
+
+
+def rules_asks(sec: Mapping | None) -> list[str]:
+    """Every ask of the notes' reading (the section engines/mesh_requirements returns) the rules decide and tell with
+    what was built - applied, the nearest, set aside by the checks, or no setting of ours (mesh_requirements.
+    decided_asks) - but an element count (the AI reads that, AI-fea-4) and a size in one named place (the parts
+    reader's, AI-fea-9)."""
+    from meshpipeline.engines.mesh_requirements import decided_asks
+    return decided_asks(sec, skip=("cells:", "local"))
+
+
+def with_rules_asks(state: Mapping, sec: Mapping | None) -> Mapping:
+    """The run's state with the asks the rules decide (rules_asks), for the AI's brief; `state` itself when none."""
+    asks = rules_asks(sec)
+    return {**state, RULES_ASKS_KEY: asks} if asks else state
+
+
 def brief(record: Mapping, state: Mapping, zone_list: list[dict], *, diag_m: float, limit: int) -> dict:
     """Everything the model is shown, as plain data with a fixed order (the decision cache keys the
     round by it: the same part and the same words give the same message)."""
@@ -246,6 +265,13 @@ def brief(record: Mapping, state: Mapping, zone_list: list[dict], *, diag_m: flo
             "they care about is a zone to refine; an element count they named is target_elements (a range: target_min and target_max); supports, "
             "loads, load histories and joints between parts are theirs to set in their solver on the "
             "named faces (joints may be suggested). Say in notes_remark what you did with them.")
+        done = [str(a) for a in s.get(RULES_ASKS_KEY) or [] if str(a).strip()]
+        if done:
+            # NOTE-13: every ask the rules decide (applied, the nearest, set aside, no setting of ours), so the remark
+            # never calls one "guidance", claims one the rules refused, or says it found nothing to do
+            from meshpipeline.engines.mesh_requirements import DECIDED_WORDS
+            out["notes_decided_by_rules"] = done[:30]
+            out["user_notes_fea"] += " " + DECIDED_WORDS.format(key="notes_decided_by_rules")
     # AN ASSEMBLY (PLAN-fea-17, engines/fea_driver.prepare_assembly): its parts and where they meet,
     # for the joint suggestion (AI-fea-7) - the user's own answer on the stage is shown too
     asm = record.get("assembly_plan") or {}

@@ -28,7 +28,7 @@ Reply with ONLY a JSON object (no prose, no markdown fences) - the plan the buil
   "domain_margin": {"up": <n>, "down": <n>, "side": <n>, "vert": <n>},
   "reference_length_m": <metres or null>,
   "n_layers": <int>,
-  "first_layer_rel": <float>,
+  "last_layer_rel": <float>,
   "quality": "balanced" | "strict",
   "max_cells": <int>,
   "wake": {"enabled": true, "length": <wake lengths downstream>, "levels_below_surface": <int>, "tiers": <int>},
@@ -36,7 +36,7 @@ Reply with ONLY a JSON object (no prose, no markdown fences) - the plan the buil
   "risks": "<the likely failure mode + the ONE strategy change to make if it happens>"
 }
 
-Guidance: reference_length_m REPORTS the metres value of ONE of the user's quoted units - if they sized the far-field in 'chords' and stated the chord, this is that chord in metres; null when they quoted no reference length. When a reference length is stated, domain_margin is in THAT unit - the number the user asked for is the number you write ('5 diameters upstream' is up: 5), the box is built as multiples of it from the body's bounding box, and the delivered box is judged in it; with no stated reference, domain_margin is in body-lengths L (the streamwise extent), measured from the body's bounding box. Each key names a DIRECTION - do not guess them: 'up' is UPSTREAM and 'down' is DOWNSTREAM along the flow; 'vert' is ABOVE AND BELOW the body, perpendicular to the flow - this is where a lifting body needs room and it must never be 0; 'side' is SPANWISE, and it is the only one that may be 0, for a slab whose symmetry planes sit on its own end faces. Size the far-field from your own knowledge of standard external-aero practice so the outer boundaries never disturb the flow around the body. It scales with the regime (a compressible/transonic case needs a MUCH larger domain than a low-speed one, to avoid blockage and wave reflection) and a lifting body needs extra length downstream for its wake. Do NOT under-size it - a cramped far-field is a common failure the reviewer rejects. n_layers 3-5. first_layer_rel 0.25-0.5. Quality: START WITH 'balanced'. Choose 'strict' only when a PREVIOUS attempt of this job MEASURED widespread skew (the critique will say so) - strict enforces checkMesh skew<4 but its mechanics suppress prism-layer inflation on small or sharp geometry, so defaulting to it trades a failure you might get for a layer failure you will get.
+Guidance: reference_length_m REPORTS the metres value of ONE of the user's quoted units - if they sized the far-field in 'chords' and stated the chord, this is that chord in metres; null when they quoted no reference length. When a reference length is stated, domain_margin is in THAT unit - the number the user asked for is the number you write ('5 diameters upstream' is up: 5), the box is built as multiples of it from the body's bounding box, and the delivered box is judged in it; with no stated reference, domain_margin is in body-lengths L (the streamwise extent), measured from the body's bounding box. Each key names a DIRECTION - do not guess them: 'up' is UPSTREAM and 'down' is DOWNSTREAM along the flow; 'vert' is ABOVE AND BELOW the body, perpendicular to the flow - this is where a lifting body needs room and it must never be 0; 'side' is SPANWISE, and it is the only one that may be 0, for a slab whose symmetry planes sit on its own end faces. Size the far-field from your own knowledge of standard external-aero practice so the outer boundaries never disturb the flow around the body. It scales with the regime (a compressible/transonic case needs a MUCH larger domain than a low-speed one, to avoid blockage and wave reflection) and a lifting body needs extra length downstream for its wake. Do NOT under-size it - a cramped far-field is a common failure the reviewer rejects. n_layers 3-5. last_layer_rel 0.25-0.5: the OUTERMOST prism layer's thickness as a share of the wall cell (each layer under it is 1.2 times thinner). Quality: START WITH 'balanced'. Choose 'strict' only when a PREVIOUS attempt of this job MEASURED widespread skew (the critique will say so) - strict enforces checkMesh skew<4 but its mechanics suppress prism-layer inflation on small or sharp geometry, so defaulting to it trades a failure you might get for a layer failure you will get.
 
 wake is the refined region BEHIND the body, built along the declared flow as nested boxes - each one level coarser and twice as long as the one inside it, so the mesh grades from the wall back to the far field instead of dropping straight to background cells. It is standard external-aero practice and it is ON by default; write "wake": false ONLY when the user's brief explicitly asks for no wake refinement. length is in wake lengths (the reference length, or the body's length along the flow, whichever is larger): 4 is the default; 2-3 for a streamlined body where only the near wake matters, 4-8 for a bluff body, a car, or a lifting body whose wake and tip vortices matter downstream. levels_below_surface: the finest wake cells are this many levels coarser than the wall (default 1; 2 for a cheaper mesh). tiers: 1-4 boxes (default 3). The wake's cells come out of max_cells (at most a quarter of it): when it does not fit it is shortened, then made coarser, automatically - so a long fine wake on a big body needs a larger max_cells. If a review says the wake is not resolved, make it longer and/or keep levels_below_surface at 1, and raise max_cells to pay for it.
 
@@ -56,16 +56,16 @@ Reply with ONLY a JSON object (no prose, no markdown fences):
   "surface_level": <int>,
   "feature_level": <int>,
   "n_layers": <int>,
-  "first_layer_rel": <float>,
+  "last_layer_rel": <float>,
   "quality": "balanced" | "strict",
   "max_cells": <int>,
   "focus": "<where resolution/attention must go>",
   "risks": "<the likely failure mode + the ONE strategy change to make if it happens>"
 }
 
-Guidance: cells_across_diameter 16-40 - how many cells span the bore. Use the HIGH end for curved/bending or branching passages (to capture secondary flow), the low end for a plain straight duct. surface_level 1-3 (wall refinement). feature_level = surface_level+1 (sharpens the inlet/outlet rims). n_layers 3-6 - internal wall-bounded flow is MORE layer-critical than external aero (y+ and pressure drop depend on it). first_layer_rel 0.2-0.4. Quality: START WITH 'balanced'; choose 'strict' only when a previous attempt of this job MEASURED widespread skew (strict suppresses layer inflation, and internal flow is layer-critical). max_cells is a lever - raise it when a long or geometrically complex passage at your chosen resolution needs the cells, but NEVER exceed max_cells_HARD_CEILING (the compute limit). There is NO domain_margin here - the part is the domain, so spend every cell inside the passage.
+Guidance: cells_across_diameter 16-40 - how many cells span the bore. Use the HIGH end for curved/bending or branching passages (to capture secondary flow), the low end for a plain straight duct. surface_level 1-3 (wall refinement). feature_level = surface_level+1 (sharpens the inlet/outlet rims). n_layers 3-6 - internal wall-bounded flow is MORE layer-critical than external aero (y+ and pressure drop depend on it). last_layer_rel 0.2-0.4: the OUTERMOST prism layer's thickness as a share of the wall cell (each layer under it is 1.2 times thinner). Quality: START WITH 'balanced'; choose 'strict' only when a previous attempt of this job MEASURED widespread skew (strict suppresses layer inflation, and internal flow is layer-critical). max_cells is a lever - raise it when a long or geometrically complex passage at your chosen resolution needs the cells, but NEVER exceed max_cells_HARD_CEILING (the compute limit). There is NO domain_margin here - the part is the domain, so spend every cell inside the passage.
 
-REVISING: if shown your PREVIOUS plan with a concrete critique, change the offending value(s) by a MEANINGFUL amount - do not restate the same numbers. Widespread skew -> quality 'strict' and/or fewer/thinner layers; a timeout or over-budget -> lower cells_across_diameter or surface_level. Low or zero LAYER COVERAGE: if quality was 'strict', switch to 'balanced' FIRST (strict's layer mechanics are usually the cause); and never respond by thinning first_layer_rel further - layers that collapsed collapse HARDER when thinner (a real case walked 0.35 -> 0.25 and coverage fell 42% -> 24%). If the previous revision moved a knob and the measured coverage got WORSE, reverse that knob past its original value instead of continuing. Treat the critique as a measurement of how far off you were."""
+REVISING: if shown your PREVIOUS plan with a concrete critique, change the offending value(s) by a MEANINGFUL amount - do not restate the same numbers. Widespread skew -> quality 'strict' and/or fewer/thinner layers; a timeout or over-budget -> lower cells_across_diameter or surface_level. Low or zero LAYER COVERAGE: if quality was 'strict', switch to 'balanced' FIRST (strict's layer mechanics are usually the cause); and never respond by thinning last_layer_rel further - layers that collapsed collapse HARDER when thinner (a real case walked 0.35 -> 0.25 and coverage fell 42% -> 24%). If the previous revision moved a knob and the measured coverage got WORSE, reverse that knob past its original value instead of continuing. Treat the critique as a measurement of how far off you were."""
 
 
 def overshoot_corrected_budget(prev_budget: object, prev_actual: object, *, ceiling: int,
@@ -117,19 +117,23 @@ def clamp_cell_budget(raw: object, *, ceiling: int, default: int = 4_000_000) ->
 #: The keys each brief's JSON schema names (PLANNER_SYSTEM / INTERNAL_PLANNER_SYSTEM).
 _TEXT_KEYS = ("approach", "focus", "risks")
 _EXTERNAL_KEYS = frozenset({*_TEXT_KEYS, "domain_margin", "reference_length_m", "n_layers",
-                            "first_layer_rel", "quality", "max_cells", "wake"})
+                            "last_layer_rel", "quality", "max_cells", "wake"})
 _INTERNAL_KEYS = frozenset({*_TEXT_KEYS, "cells_across_diameter", "surface_level",
-                            "feature_level", "n_layers", "first_layer_rel", "quality",
+                            "feature_level", "n_layers", "last_layer_rel", "quality",
                             "max_cells"})
-#: The ranges each brief states, word for word: external "n_layers 3-5. first_layer_rel
+#: The ranges each brief states, word for word: external "n_layers 3-5. last_layer_rel
 #: 0.25-0.5"; internal "cells_across_diameter 16-40 ... surface_level 1-3 ... feature_level =
-#: surface_level+1 ... n_layers 3-6 ... first_layer_rel 0.2-0.4". The drivers' own defaults
-#: (n_layers 3, first_layer_rel 0.35 / 0.3, cells across 24, surface level 2) sit inside them.
+#: surface_level+1 ... n_layers 3-6 ... last_layer_rel 0.2-0.4". The drivers' own defaults
+#: (n_layers 3, last_layer_rel 0.35 / 0.3, cells across 24, surface level 2) sit inside them.
 _EXTERNAL_RANGES: dict[str, tuple[float, float]] = {
-    "n_layers": (3, 5), "first_layer_rel": (0.25, 0.5)}
+    "n_layers": (3, 5), "last_layer_rel": (0.25, 0.5)}
 _INTERNAL_RANGES: dict[str, tuple[float, float]] = {
     "cells_across_diameter": (16, 40), "surface_level": (1, 3), "feature_level": (2, 4),
-    "n_layers": (3, 6), "first_layer_rel": (0.2, 0.4)}
+    "n_layers": (3, 6), "last_layer_rel": (0.2, 0.4)}
+#: KNOBS RENAMED so the name says what the knob does: "first_layer_rel" was written to snappyHexMesh's
+#: finalLayerThickness - the OUTERMOST layer, as a share of the wall cell - so it is "last_layer_rel" now. The old
+#: name in a saved plan still reads as the new one.
+_OLD_NAMES = {"first_layer_rel": "last_layer_rel"}
 _INT_KNOBS = frozenset({"n_layers", "cells_across_diameter", "surface_level", "feature_level",
                         "max_cells"})
 #: The far-field margins, in reference lengths (or body lengths): the product default box is
@@ -248,6 +252,10 @@ def validate_plan(plan: object, *, flow_regime: str = "external",
     internal = flow_regime == "internal"
     keys = _INTERNAL_KEYS if internal else _EXTERNAL_KEYS
     ranges = _INTERNAL_RANGES if internal else _EXTERNAL_RANGES
+    for old, new in _OLD_NAMES.items():
+        # a plan written before the knob was renamed (a saved answer the decision cache replays) still reads
+        if old in plan and new not in plan:
+            plan = {**{k: v for k, v in plan.items() if k != old}, new: plan[old]}
     out: dict = {}
     unknown = sorted(str(k) for k in plan if k not in keys)
     if unknown:
@@ -586,6 +594,12 @@ async def plan_with_accounting(*, workspace, job_id: str, request_txt: str,
             user += ("\n\n" + _notes + "\nAdd \"notes_remark\": \"<one plain line on what the plan "
                      "did with the notes>\" to your JSON - this plan's own, even when an earlier "
                      "engine already planned this part.")
+            # NOTE-13: the asks the rules decide over this plan (the attempt's reading of the notes), so the plan does
+            # not act on them a second time and the remark never contradicts what the result says of them
+            from meshpipeline.engines import mesh_requirements as _MRq
+            _decided = _MRq.decided_block(_MRq.read(workspace)) if workspace else ""
+            if _decided:
+                user += "\n\n" + _decided
         if prior_feedback and previous_plan:
             user += ("\n\nYour PREVIOUS plan (which you must REVISE, not repeat) was:\n"
                      + json.dumps(previous_plan, indent=1)
@@ -632,7 +646,11 @@ async def plan_with_accounting(*, workspace, job_id: str, request_txt: str,
         m = re.search(r"\{.*\}", content, re.S)
         plan = json.loads(m.group(0)) if m else None
         if isinstance(plan, dict) and plan.get("notes_remark"):
-            _un.record_remark(workspace, plan.pop("notes_remark"), by="snappy_planner")
+            _said = plan.pop("notes_remark")
+            # NOTE-13: not beside the rules' own rows for the same asks (mesh_requirements.ai_remark_kept)
+            from meshpipeline.engines.mesh_requirements import ai_remark_kept
+            if ai_remark_kept(workspace):
+                _un.record_remark(workspace, _said, by="snappy_planner")
         # THE GUARD: what leaves the planner is only what the drivers can use - every value that
         # is not a usable number goes back to the rules default, every usable one is held to the
         # brief's own range. The raw answer is still what the training record keeps.

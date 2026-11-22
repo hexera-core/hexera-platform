@@ -77,7 +77,7 @@ function markWords(h) {
 }
 /** A mark's kind, for its look: a hot spot, a join (where parts touch, or across a small gap), or a
  *  problem the user should see (parts that pass into each other, plates that do not meet), or a
- *  region that stays solid. */
+ *  region the shell leaves out. */
 function markKind(type) {
   const t = String(type || "");
   if (t === "interface_overlap" || t === "shell_open") return "k-problem";

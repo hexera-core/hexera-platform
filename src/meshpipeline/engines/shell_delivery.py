@@ -145,8 +145,19 @@ def asked_rows(quality: Mapping) -> list[dict]:
     """SHMESH-26: THE USER'S OWN REQUIREMENTS (read from their notes) as rows of the same list
     (engines/mesh_requirements.asked_rows): measured as the elements outside what was asked, never a blocker."""
     from meshpipeline.engines.mesh_requirements import asked_rows as rows
+    from meshpipeline.engines.mesh_requirements import line
 
-    return rows(quality, source="your notes (engines/shell_requirements.py)")
+    out = rows(quality, source="your notes (engines/shell_requirements.py)")
+    # EVERY ASK READ HAS ITS ROW (round 4 G): one applied with no measure to judge it by - the nearest there is (a
+    # size asked on a piece of a part that is no face of its own, SHMESH-52) - is listed too, with its own words,
+    # never dropped from the report (the L plate's "1.5 mm on the vertical leg" had no row at all, m483 round 9)
+    rep = _map(quality.get("requirements"))
+    for r in rep.get("rows") or []:
+        if isinstance(r, Mapping) and r.get("met") is None and r.get("nearest") and r.get("applied") is not False:
+            out.append({"key": f"asked_{r.get('id')}", "label": f"You asked: {r.get('asked')}", "op": "==",
+                        "limit": 0, "measured": 0, "said": line(r),
+                        "source": "your notes (engines/shell_places.py, the nearest there is)"})
+    return out
 
 
 def user_line(row: Mapping) -> str:
@@ -189,7 +200,7 @@ def quality_of(rec: Mapping, parts: Mapping | None = None) -> dict:
     faces = list(rec.get("faces") or [])
     return {
         "cells": int(rec.get("elements") or 0), "nodes": int(rec.get("nodes") or 0), "element_order": 1,
-        "fatal": [f"{invalid} elements are folded or flat"] if invalid else [],
+        "fatal": [f"{invalid} elements are folded, flat or written twice"] if invalid else [],  # SHMESH-81
         "bounds": rec.get("bounds_m") or [0, 0, 0, 1, 1, 1],
         # NO "free" GROUP: every element of a shell is in its mid-face's group, so a default group would be an
         # empty row in the viewer's parts list; the parts are the drawn surfaces themselves (part_tags)
@@ -238,9 +249,9 @@ def deliver(workspace, rec: Mapping, *, target: Mapping | None = None) -> bool:
         plan["words"] = [*list(plan["words"] or []), *asked_words(rec["requirements"])]
     from meshpipeline.engines import mesh_requirements as MR
 
-    told = MR.not_applied_words(MR.read(ws))
+    told = MR.told_words(MR.read(ws))
     if told:
-        # NOTE-8: what the notes say about the mesh that was not applied stays with the result
+        # NOTE-8 / NOTE-12: what the notes asked that was not applied, or is no mesh setting, stays with the result
         plan["not_applied"] = told
         plan["words"] = [*list(plan["words"] or []), *told]
     (ws / "fea_plan.json").write_text(json.dumps(plan, indent=1, sort_keys=True, default=float))
@@ -288,6 +299,13 @@ def results(workspace, q: Mapping, plan: Mapping) -> dict:
     mine = bool(user_limits(q))
     asked = [r for r in _map(q.get("requirements")).get("rows") or [] if isinstance(r, Mapping)]
     missed = sum(1 for r in asked if r.get("met") is False)
+    fw = _map(sq.get("face_watch"))
+    gone = int(fw.get("left_out") or 0)
+    if gone:
+        # SHMESH-74: faces left out are an opening in the mesh: a row of their own, never inside a quiet pass
+        rows.insert(len(gating), {"key": "faces_left_out", "label": "Faces left out (an opening in the mesh)",
+                                  "op": "==", "limit": 0, "measured": gone, "ok": False, "gating": False,
+                                  "words": f"{gone} face(s) left out, {sum(fw.get('left_out_mm2') or []):.0f} mm2"})
     if any(r["ok"] is False and r["gating"] for r in rows) or q.get("fatal"):
         outcome, said = "fail", "The mesh fails a check no solver can work around."
     elif any(r["ok"] is False for r in rows):
@@ -309,6 +327,19 @@ def results(workspace, q: Mapping, plan: Mapping) -> dict:
                 said += " Edge-length targets: " + "; ".join(shares) + "."
         elif asked and all(r.get("met") is True for r in asked):
             said += " Everything your notes asked for is met."
+    if gone:
+        from meshpipeline.engines.gmsh import shell_adapter as _sa
+
+        share = float(fw.get("left_out_share") or 0.0)
+        area = sum(fw.get("left_out_mm2") or [])
+        if share > _sa.FACE_OUT_SHARE or gone > _sa.FACE_OUT_MANY:
+            outcome = "fail" if outcome == "fail" else "concerns"
+            said = (f"Meshed with faces missing: {gone} face(s), {area:.0f} mm2 ({100 * share:.1f}% of the part), could "
+                    "not be meshed and were left out; the mesh has an opening there. This is ours to fix. " + said)
+        else:
+            outcome = "fail" if outcome == "fail" else "concerns"
+            said = (f"Delivered with {gone} small face(s) left out ({area:.0f} mm2, {100 * share:.1f}% of the part): "
+                    "the mesh has an opening there. " + said)
     extra: dict[str, Any] = {}
     if asked:
         extra["requirements"] = {"rows": asked, "missed": missed,
@@ -343,6 +374,14 @@ def results(workspace, q: Mapping, plan: Mapping) -> dict:
         t_mm = _map(rec.get("surface")).get("thickness_mm")
         summary = (TRIA_SURFACE_SUMMARY if tria else SURFACE_SUMMARY).format(
             n=cells, q=q_n, t=t_n, thick=f"{mm_words(t_mm)} thick" if t_mm else "thickness not set")
+    from meshpipeline.cad.shell_words import left_out_short, left_out_words
+
+    lo = _map(rec.get("left_out"))
+    if lo.get("regions"):
+        # SHSTAGE-9: the result's first line says what this mesh has no elements for; its words say the rest
+        summary = f"{summary} {left_out_short(lo)}"
+        extra = {**extra, "left_out": {"words": left_out_words(lo), "regions": len(lo["regions"]),
+                                       "volume_share": lo.get("volume_share"), "area_share": lo.get("area_share")}}
     return {**extra,
             "title": "FEA shell mesh",
             "shell": {"walls_mm": walls, "quads": q_n, "trias": t_n,

@@ -81,6 +81,9 @@ WHY_SHORT = (" {n} wall{s} reach{es} under {k:g} times {its} thickness from a jo
 #: with too little shell left is meshed solid (the rule as it was before SHELL-23)
 REACH_GATE = False
 #: MIXED-8 in words, when the walls kept solid leave a split that cannot be made
+#: MIXED-10, THE SPLIT'S OWN REASON: when the thin walls and the thick regions cannot be cut apart and no wall was kept
+#: solid (MIXED-8 advice only, or no wall too short), the words give the split's own reason, never the walls
+WHY_SPLIT = "The thin walls and the thick regions could not be cut apart ({why}). It is meshed as a solid."
 WHY_THICK_SPLIT = ("Walls too thick for shells: {n} of its {m} thin walls reach less than {k:g} times their thickness "
                    "from the nearest joint or thick region, and with them kept solid the rest could not be cut apart "
                    "({why}). It is meshed as a solid.")
@@ -342,9 +345,11 @@ def build(step: Path | str, out: Path, *, mm_per_unit: float, rec: dict, require
                     "solid_share": round(split.solid_volume / split.body_volume, 4) if split.body_volume else None,
                     "notes": split.notes}
     if not split.ok:
-        if bad:
+        if bad and REACH_GATE:
             raise _Stop(WHY_THICK_SPLIT.format(n=len(bad), m=len(reach), k=mx.REACH_WALLS, why=split.why))
-        raise _Stop(split.why)
+        # MIXED-10: the split's own reason - while MIXED-8 is advice no wall was kept solid, so the walls too short for
+        # shell theory are not why the split failed (34 of 51 board parts were told they were)
+        raise _Stop(WHY_SPLIT.format(why=split.why))
     rec2 = copy.deepcopy(record)
     rec2["surface_faces"] = [record["surface_faces"][order[k]] for k in split.shell_from]
     rec2["panel_walls"] = MIXED_PANEL_WALLS

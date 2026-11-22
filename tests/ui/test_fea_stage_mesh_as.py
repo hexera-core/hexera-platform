@@ -53,8 +53,12 @@ def _ready() -> dict:
     ox, oy, oz = (1000 * v for v in ORIGIN)
     return _shell("ready", share=0.95, t_min_mm=8.0, t_max_mm=12.0, bodies=[{"body": "Part_1", "verdict": "shell"}],
                   not_shelled=[
-                      {"id": "S1", "kind": "solid", "words": "A thick region of the part (4 faces) stays solid: it is "
-                       "30 mm thick or more, too thick for a shell.", "short": "Thick region · 30 mm+ thick, 4 faces", "at_mm": [ox + 50, oy + 1000 * R_OUT, oz], "faces": []},
+                      {"id": "", "kind": "solid_head", "words": "1 thick region (12% of the part's volume) is not in "
+                       "this shell mesh. For a mesh that includes it, ask for a solid mesh.", "short": "1 thick region "
+                       "(12% of the part's volume) is not in this shell mesh.", "at_mm": None, "faces": []},
+                      {"id": "S1", "kind": "solid", "words": "A thick region of the part (4 faces, 12% of the part's "
+                       "volume) is not in this shell mesh: it is 30 mm thick or more, too thick for a shell.",
+                       "short": "Thick region · 30 mm+ thick · not in the mesh", "at_mm": [ox + 50, oy + 1000 * R_OUT, oz], "faces": []},
                       {"id": "", "kind": "open_head", "words": "The plates do not meet at 1 place: shown in red.",
                        "at_mm": None, "faces": []},
                       {"id": "O1", "kind": "open", "words": "Plates do not meet here (1 of 1).",
@@ -156,14 +160,14 @@ def test_a_said_shell_follows_the_check_and_draws_the_mid_surface(live):
     s = _state(live, sid)
     assert not s["measuring"] and " ".join(s["head"].split()) == "Not in the shell 2"
     assert s["rows"] == ["S1", "O1"] and s["list"] and s["legend"] and s["legendText"] == "8 mm – 12 mm"
-    assert s["sum"] == "1 region stays solid · 1 open" and s["closed"]
-    # the mark of what stays solid, clicked on the part, opens its fold and lights its line
+    assert s["sum"] == "1 region left out · 1 open" and s["closed"]
+    # the mark of what the shell leaves out, clicked on the part, opens its fold and lights its line
     lit = live.evaluate(f"""(() => {{
       const root = document.getElementById('gstage-{sid}');
       root.querySelector('.fea-shell-pin[data-spot="S1"]').click();
       const row = root.querySelector('.fea-shell-row[data-spot="S1"]');
       return [!!row.closest('[hidden]'), row.classList.contains('sel'), row.textContent.trim()]; }})()""")
-    assert lit == [False, True, "S1Thick region · 30 mm+ thick, 4 faces"]
+    assert lit == [False, True, "S1Thick region · 30 mm+ thick · not in the mesh"]
     assert s["pins"] == ["S1", "O1"]
     assert s["shell"]["actors"] == 2 and s["fetches"] == 1           # the surface and the open edges
     # a later poll with the same view changes nothing

@@ -142,3 +142,25 @@ def test_the_models_answer_is_checked_before_it_is_used(tmp_path, monkeypatch):
     out = asyncio.run(PW.decide(tmp_path, {}, _surface(), _state(), consumer="fea_part_sizes"))
     assert out["status"] == "used" and set(PW.per_part(out["entries"])) == {"Part_1"}
     assert len(out["dropped"]) == 1 and any(w.startswith("Not applied:") for w in PW.words(out))
+
+
+def test_words_about_the_holes_are_tied_to_our_holes_even_when_the_reader_is_unsure():
+    """fea0184: "0.4 mm elements on the holes" - the reader was unsure the one bore it saw was "the holes" and the ask
+    ended "could not be applied" in one run, applied in another. Words naming holes go to every hole area our own hole
+    finding found, every run; words about something else are left to the reader."""
+    import json as _json
+
+    from meshpipeline.cad import part_words as _PW
+    table = [{"id": "Part_1", "name": ""},
+             {"id": "Feature_1", "feature": True, "kind": "bore", "name": "a bore, 6 mm across"},
+             {"id": "Feature_2", "feature": True, "kind": "fillets", "name": "4 fillets, radius 2 mm"}]
+    phrase = {"everything_else": False, "ask": "size", "min": 0.4, "max": 0.4, "unit": "mm", "piece": False}
+    args = _json.dumps({"phrases": [{**phrase, "parts": ["Feature_1"], "quote": "0.4 mm elements on the holes",
+                                      "why": "only one bore is listed", "confidence": 0.4}], "words": []})
+    entries, dropped, _w = _PW.check(args, table, "0.4 mm elements on the holes")
+    assert [e["parts"] for e in entries] == [["Feature_1"]] and dropped == []
+    # an unsure tie of words about something else is still dropped, as before
+    args = _json.dumps({"phrases": [{**phrase, "parts": ["Feature_2"], "quote": "0.4 mm elements on the ribs",
+                                      "why": "unsure", "confidence": 0.4}], "words": []})
+    entries, dropped, _w = _PW.check(args, table, "0.4 mm elements on the ribs")
+    assert entries == [] and dropped

@@ -704,7 +704,9 @@ def test_the_run_seeds_provenance_after_the_pin_and_the_dispute():
     import meshpipeline.application.pipeline_run as pr
 
     src = inspect.getsource(pr._run_async)
-    at = src.index("engine_provenance(")
+    # (ENG-asks reads who chose the engine BEFORE the pin, from the submission alone, only to know whether the engine
+    # may be changed for the notes' asks; the state's engine_source is still seeded after the pin and the dispute)
+    at = src.index('initial_state["engine_source"] = engine_provenance(')
     assert src.index("pin_selected_engine(") < at and src.index("seed_dispute_run(") < at
 
 

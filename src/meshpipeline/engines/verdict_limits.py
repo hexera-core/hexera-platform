@@ -242,6 +242,17 @@ FEA_RULES_ROW = ("fea_rules_short", "Mesh zones short of the FEA plan's rules", 
                  "engines/fea_checks.py (elements per quarter-turn and through the wall at each hot spot)")
 
 
+def through_wall_planned(fea: Mapping | None) -> tuple[int, float, str]:
+    """(elements planned through every wall, the fewest the mesh may read - planned, read to within 10% - and why it
+    is that number in words): the count the notes asked (NOTE-13, quality.fea.through_wall_asked), else PLAN-fea-3's
+    2. One source for the verdict's row, the result's wall line and the report's header."""
+    from meshpipeline.engines.fea_checks import TOLERANCE
+    asked = (fea or {}).get("through_wall_asked")
+    if isinstance(asked, (int, float)) and not isinstance(asked, bool) and asked >= 1:
+        return int(asked), float(f"{int(asked) * TOLERANCE:.4g}"), ", as your notes ask"
+    return 2, float(f"{2 * TOLERANCE:.4g}"), ""
+
+
 def fea_limits(quality: Mapping) -> list[dict]:
     """THE FEA ROWS (VER-2), for a mesh built from an FEA plan only (quality.fea.plan): the element
     quality limits - the strictest of the version-1 solvers (engines/fea_quality.LIMITS) - and the
@@ -262,12 +273,13 @@ def fea_limits(quality: Mapping) -> list[dict]:
     # verdict reads - the quality note floor and the elements through the thinnest wall first, as
     # the screen lists them (a job said "Review: passed" while its screen said "with notes")
     from meshpipeline.engines.gmsh.gates import FEA_WALL_FLOOR
+    planned, wall_floor, wall_why = through_wall_planned(fea_m)
     rows = [{"key": "elements_under_floor", "op": "==", "limit": 0,
              "label": f"Elements under the quality note floor (SICN {float(quality.get('sicn_floor') or 0.1):g})",
              "measured": _plain(quality.get("elements_under_floor")),
              "source": "engines/gmsh/fea_adapter.py (the note floor: SICN 0.1 straight, 0.01 curved)"},
-            {"key": "through_wall_min", "op": ">=", "limit": FEA_WALL_FLOOR,
-             "label": "Elements through the thinnest wall (2 planned; read to within 10%)",
+            {"key": "through_wall_min", "op": ">=", "limit": wall_floor if wall_why else FEA_WALL_FLOOR,
+             "label": f"Elements through the thinnest wall ({planned} planned{wall_why}; read to within 10%)",
              "measured": _plain(fea_m.get("through_wall_min")),
              "source": "docs/RULES.md PLAN-fea-3 (engines/fea_checks.py)"}]
     rows += [{"key": k, "label": lab, "op": op, "limit": lim, "measured": _plain(quality.get(k)),

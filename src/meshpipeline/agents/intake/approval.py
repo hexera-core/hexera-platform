@@ -253,7 +253,12 @@ def changes_between(before: dict | None, after: dict | None, *, limit: int = 6) 
     a, b = dict(before or {}), dict(after or {})
     out: list[str] = []
     pa, pb = dict(a.get("engine_params") or {}), dict(b.get("engine_params") or {})
+    switched = a.get("mesh_engine") != b.get("mesh_engine")
     for key in sorted(set(pa) | set(pb)):
+        if switched and key not in pb:
+            # a setting only the old engine has is not "turned off" by a switch ("wall layers: on -> none" when
+            # VMTK's own wall_layers switch went with VMTK; the new engine's layers are its own - round 4)
+            continue
         if pa.get(key) != pb.get(key):
             out.append(f"{key.replace('_', ' ')}: {_shown(pa.get(key))} -> {_shown(pb.get(key))}")
     for key, label in _CHANGE_LABELS:

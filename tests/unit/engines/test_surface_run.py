@@ -429,7 +429,7 @@ def test_a_solid_and_faces_that_close_never_reach_the_surface_run(tmp_path, monk
     for k, (shape, made) in enumerate(((sx.box_solid(), 0), (sx.closed_skin(), 1))):
         ws = _stage(shape, tmp_path / str(k))
         seen: dict = {}
-        assert FD.solids_from_shells(ws, seen) == made and seen == {}
+        assert FD.solids_from_shells(ws, seen) == made and seen == ({"closed": made} if made else {})  # SURF-14
         assert FD.solids_from_shells(ws) in (0, made)            # the call as it was still works
     ws = _stage(sx.bracket(), tmp_path / "open")
     seen = {}
@@ -515,7 +515,7 @@ def test_the_notes_requirements_reader_is_called_for_a_surface_file_when_it_is_b
     async def decide(record, state, zones, **kw):
         return {"status": "off"}
 
-    async def reader(w, state, *, job_id, run=None, publish=None):
+    async def reader(w, state, *, job_id, run=None, publish=None, say=True):
         order.append("requirements")
         return {"status": "none"}
 
@@ -592,7 +592,7 @@ def test_an_iges_copy_of_a_solid_is_staged_as_the_solid_its_step_is(tmp_path):
     assert not TopExp_Explorer(raw, TopAbs_SOLID).More() and "Cylinder" not in _kinds(raw)
     ws = _stage_file(igs, tmp_path / "ws")
     seen: dict = {}
-    assert FD.solids_from_shells(ws, seen) == 1 and seen == {}
+    assert FD.solids_from_shells(ws, seen) == 1 and seen == {"closed": 1}  # SURF-14: told the solid came from closed surfaces
     staged = read_cad(ws / "geometry.brep")
     assert TopExp_Explorer(staged, TopAbs_SOLID).More()
     assert _kinds(staged) == {"Plane": 6, "Cylinder": 1}

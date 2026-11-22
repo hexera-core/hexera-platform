@@ -674,3 +674,110 @@ def welded_pedestal():
     from meshpipeline.cad.midsurface import _compound
 
     return _compound(bodies)
+
+
+def _smooth_step(u):
+    import numpy as np
+
+    u = np.clip(u, 0.0, 1.0)
+    return u * u * u * (u * (6 * u - 15) + 10)
+
+
+def stamped_skins(lx: float = 60.0, ly: float = 40.0, t: float = 1.0, step: float = 3.0, swage: float = 10.0,
+                  rise: float = 3.0, ramp: float = 3.0):
+    """A press-formed panel the way a stamping's two skins are often written: the outer skin a B-spline through a grid
+    (every `step` mm) on z = h(x, y) - a flat-topped swage `swage` wide and `rise` high along x, its ramps `ramp` wide -
+    and the inner skin a B-spline through the same grid moved `t` along the surface normal; the four edges closed by
+    ruled faces. Between the grid points the inner skin is not the outer's offset: where the grid is coarse against
+    the ramps the two wave apart (a few % of the wall), and on a fine grid they are an even wall."""
+    import numpy as np
+    from OCP.BRepBuilderAPI import (
+        BRepBuilderAPI_MakeEdge,
+        BRepBuilderAPI_MakeFace,
+        BRepBuilderAPI_MakeSolid,
+        BRepBuilderAPI_Sewing,
+    )
+    from OCP.BRepFill import BRepFill
+    from OCP.BRepLib import BRepLib
+    from OCP.GeomAPI import GeomAPI_PointsToBSplineSurface
+    from OCP.gp import gp_Pnt
+    from OCP.TColgp import TColgp_Array2OfPnt
+    from OCP.TopAbs import TopAbs_SHELL
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS
+
+    def z(x, y):
+        return rise * _smooth_step((swage / 2.0 - np.abs(y - ly / 2.0)) / ramp)
+
+    def spline(p):
+        arr = TColgp_Array2OfPnt(1, p.shape[0], 1, p.shape[1])
+        for i in range(p.shape[0]):
+            for j in range(p.shape[1]):
+                arr.SetValue(i + 1, j + 1, gp_Pnt(*map(float, p[i, j])))
+        api = GeomAPI_PointsToBSplineSurface()
+        api.Interpolate(arr)
+        return api.Surface()
+
+    nx, ny = int(round(lx / step)) + 1, int(round(ly / step)) + 1
+    X, Y = np.meshgrid(np.linspace(0, lx, nx), np.linspace(0, ly, ny), indexing="ij")
+    h = 1e-4
+    zx = (z(X + h, Y) - z(X - h, Y)) / (2 * h)
+    zy = (z(X, Y + h) - z(X, Y - h)) / (2 * h)
+    n = np.sqrt(zx * zx + zy * zy + 1.0)
+    top = np.stack([X, Y, z(X, Y)], axis=-1)
+    s1, s2 = spline(top), spline(top - t * np.stack([-zx / n, -zy / n, 1.0 / n], axis=-1))
+    faces = [BRepBuilderAPI_MakeFace(s1, 1e-6).Face(), BRepBuilderAPI_MakeFace(s2, 1e-6).Face()]
+    a0, a1, b0, b1 = s1.Bounds()
+    for iso, val in (("U", a0), ("U", a1), ("V", b0), ("V", b1)):
+        ca = s1.UIso(val) if iso == "U" else s1.VIso(val)
+        cb = s2.UIso(val) if iso == "U" else s2.VIso(val)
+        faces.append(BRepFill.Face_s(BRepBuilderAPI_MakeEdge(ca).Edge(), BRepBuilderAPI_MakeEdge(cb).Edge()))
+    sw = BRepBuilderAPI_Sewing(1e-4)
+    for f in faces:
+        sw.Add(f)
+    sw.Perform()
+    ex = TopExp_Explorer(sw.SewedShape(), TopAbs_SHELL)
+    solid = BRepBuilderAPI_MakeSolid(TopoDS.Shell_s(ex.Current())).Solid()
+    BRepLib.OrientClosedSolid_s(solid)
+    return solid
+
+
+def funnel_with_spout(t: float = 5.0):
+    """SHELL-55: a 45-degree funnel wall t thick (two coaxial cones, the outer one the shorter), a spout below its
+    narrow end and a thick band round its top: points of the outer cone near the spout find their foot past the inner
+    cone's apex. Revolved from its profile (r, z)."""
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakePolygon
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeRevol
+    from OCP.gp import gp_Ax1, gp_Dir, gp_Pnt
+
+    d = t * math.sqrt(2.0)                    # a 45-degree line t away lies d further out
+    pts = [(1.0, 0.0), (41.0, 40.0), (45.0, 40.0), (45.0, 29.0 - d), (30.0, 29.0 - d), (d - 5.0, -6.0), (1.0, -6.0)]
+    poly = BRepBuilderAPI_MakePolygon()
+    for r, z in pts:
+        poly.Add(gp_Pnt(r, 0.0, z))
+    poly.Close()
+    face = BRepBuilderAPI_MakeFace(poly.Wire(), True).Face()
+    return BRepPrimAPI_MakeRevol(face, gp_Ax1(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1)), 2 * math.pi).Shape()
+
+
+def plate_with_pins(t: float = 3.0, r: float = 1.0, h: float = 1.0, boss: bool = False):
+    """SHELL-56: a 120 x 80 x `t` plate with four pins of radius `r`, `h` high on top (a speck each: far less
+    surface than a lump of metal thicker than the plate needs); `boss` adds a 20 mm cube boss (thick metal)."""
+    shape = _box(0, 0, 0, 120, 80, t)
+    for x, y in ((20, 20), (100, 20), (20, 60), (100, 60)):
+        shape = _fuse(shape, _cyl(x, y, t, r, h))
+    if boss:
+        shape = _fuse(shape, _box(50, 30, t, 20, 20, 20))
+    return shape
+
+
+def ribbed_floor(t: float = 3.5, h: float = 0.5, w: float = 2.0, gap: float = 3.0, length: float = 70.0,
+                 width: float = 40.0):
+    """SHELL-57: a `t` thick floor with ribs `w` wide and `h` high along it, `gap` apart (a printed lid's ribbed
+    floor): its top is cut into strips by the ribs' sides."""
+    shape = _box(0, 0, 0, length, width, t)
+    y = gap
+    while y + w < width - 2.0:
+        shape = _fuse(shape, _box(2.0, y, t, length - 4.0, w, h))
+        y += w + gap
+    return shape

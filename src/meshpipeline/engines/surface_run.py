@@ -74,7 +74,9 @@ def words(rec: dict) -> str:
         return (f"This file is a surface, not a solid, so it can only be meshed as a shell - and the shell mesh could "
                 f"not be made: {rec.get('why') or 'it could not be made'}.")
     n, q, t = int(rec.get("elements") or 0), int(rec.get("quads") or 0), int(rec.get("trias") or 0)
-    said = [line(s.get("thickness_mm")),
+    gone = ((rec.get("quality") or {}).get("face_watch") or {}).get("words")
+    said = [*([gone] if gone else []),      # SHMESH-74: faces left out are said first
+            line(s.get("thickness_mm")),
             f"{n:,} elements ({q:,} quads, {t:,} triangles). Files: Nastran .bdf, CalculiX and Abaqus .inp, Ansys .cdb."]
     if not s.get("thickness_mm"):
         said.append(NO_THICKNESS)
@@ -472,7 +474,7 @@ def run(workspace: Path | str, step: Path | str, *, mm_per_unit: float, thicknes
         source: str = "", target: dict | None = None, said_shell: bool = False, others_mm: list | None = None,
         unread: str = "", stitch: bool = True, sew_mm: float | None = None, holes_mm: float | None = None,
         requirements: dict | None = None, mend: bool = True,
-        thickness_how: dict | None = None) -> dict:
+        thickness_how: dict | None = None, closed_skin: bool = False) -> dict:
     """Read `step` (coordinates `mm_per_unit` mm each); when it is a surface, sew it, mesh it as a shell and write
     every file a shell run writes into `workspace`. Returns the run's record, shell_run.json's shape plus "surface":
     {"kind", "why", "thickness_mm", "thickness_set", "sizing_wall_mm", "sheets", "faces", "open_share", ...}.
@@ -481,7 +483,9 @@ def run(workspace: Path | str, step: Path | str, *, mm_per_unit: float, thicknes
     they asked for (SHMESH-23). `requirements`: the mesh requirements read from the user's notes
     (engines/mesh_requirements) - applied as on any shell (SHMESH-24..26) and told asked against delivered; a global
     size among them sizes a sheet with no thickness (SURF-7). `thickness_how`: where the thickness came from
-    (engines/surface_requirements.thickness). None: the rules' own surface shell, exactly as before."""
+    (engines/surface_requirements.thickness). None: the rules' own surface shell, exactly as before. `closed_skin`
+    (SURF-14): the file's faces close, but the solid they bound has no wall a shell could stand for and a shell was
+    asked for - they are read as the part's skin."""
     import numpy as np
 
     from meshpipeline.cad import midsurface as ms
@@ -499,7 +503,8 @@ def run(workspace: Path | str, step: Path | str, *, mm_per_unit: float, thicknes
         given = wall > 0
         reading, sewn = sm.read(read_cad(Path(step)), mm_per_unit=mm_per_unit, said_shell=said_shell or given,
                                 stitch=stitch, sew_mm=sew_mm, holes_mm=holes_mm, mend=mend,
-                                element_mm=_global_mm(requirements), wall_mm=wall if given else None)
+                                element_mm=_global_mm(requirements), wall_mm=wall if given else None,
+                                closed_skin=closed_skin)
         (ws / READING).write_text(json.dumps(reading, indent=1, sort_keys=True, default=float))
         rec["surface"] = {"kind": reading["kind"], "why": reading.get("why"), "faces": reading.get("faces"),
                           "open_share": reading.get("open_share"), "sheets": len(reading.get("sheets") or []),
@@ -629,6 +634,48 @@ def read(workspace: Path | str) -> dict:
         return {}
 
 
+#: SURF-14, A CLOSED SKIN WITH NO WALL IN IT IS THE PART'S SKIN: a file with no solid whose surfaces close is read
+#: as the solid they bound (MESH-1) and that solid's mid-surface is extracted (SHSTAGE-6). When the user asked for a
+#: shell and the extraction finds no wall a shell could stand for in any body (every body solid, "no wall of it is a
+#: plate": a boat hull 2 m long whose only "wall" is the 55 mm across its inside), the surfaces themselves are the
+#: part's skin: meshed as a surface part (SURF-3) at the user's thickness (SURF-4) or none (SURF-5), and told in one
+#: line. A closed skin whose solid has a shell wall (a solid written as its surfaces) keeps its extracted shell; a
+#: file whose surfaces do not close, or a run that did not ask for a shell, is read exactly as before.
+CLOSED_SKIN_NO_PLATE = "no wall of it is a plate"
+
+
+def closed_skin_no_wall(record: dict | None) -> bool:
+    """SURF-14: does the mid-surface extraction's record (cad/midsurface) say every body is solid with no wall a shell
+    could stand for?"""
+    bodies = (record or {}).get("bodies") or []
+    return bool(bodies) and all(str(b.get("verdict")) == "solid" and CLOSED_SKIN_NO_PLATE in str(b.get("why") or "")
+                                for b in bodies)
+
+
+def closed_skin_check(ws: Path) -> bool:
+    """SURF-14: the staged solid (made from the file's closed surfaces, MESH-1) read by the mid-surface extraction
+    alone, in a process of its own: True when no body has a wall a shell could stand for."""
+    from meshpipeline.cad import midsurface as ms
+    from meshpipeline.engines.fea_driver import staged_mm_per_unit
+    from meshpipeline.engines.fea_plan import STAGED_SOLIDS
+
+    step = next((ws / n for n in STAGED_SOLIDS if (ws / n).exists()), None)
+    if step is None:
+        return False
+    try:
+        return closed_skin_no_wall(ms.extract_file(step, None, mm_per_unit=staged_mm_per_unit(step)))
+    except Exception as exc:  # noqa: BLE001 - read as before: the solid route
+        logger.warning("surface run: the closed skin could not be read (%s)", type(exc).__name__)
+        return False
+
+
+def closed_skin_words(rec: dict | None) -> str:
+    """SURF-14's one told line."""
+    t = ((rec or {}).get("surface") or {}).get("thickness_mm")
+    wall = f", {_mm(t)} thick" if t else ", with no thickness given (sized as a thin sheet)"
+    return f"The file's surfaces close round a space with no wall in it, so they were meshed as the part's skin{wall}."
+
+
 def is_surface(rec: dict | None) -> bool:
     """Whether a run's record (shell_run.json or surface_run.json) is a surface file's."""
     return isinstance(rec, dict) and (rec.get("surface") or {}).get("kind") == "surface"
@@ -661,7 +708,7 @@ def thickness_for(state):
 
 
 async def surface_pass(ws: Path, state, *, job_id: str, run=None, target: dict | None = None, cite=None,
-                       left_s: float | None = None) -> dict | None:
+                       left_s: float | None = None, closed_skin: bool = False) -> dict | None:
     """SURF-3: the FEA driver's step for a file with no solid whose faces do not close. Reads the user's thickness
     (SURF-4), runs the surface run in a process of its own and cites what it found. Returns the run's record when
     the file IS a surface part (made or not - there is no solid to fall back to), None when it is not (the driver
@@ -687,7 +734,7 @@ async def surface_pass(ws: Path, state, *, job_id: str, run=None, target: dict |
             "said_shell": said_shell(state), "target": {k: target[k] for k in ("elements", "mode", "low", "high")
                                                          if k in target} if target and target.get("elements") else None,
             "stitch": not sewing.off, "sew_mm": sewing.mm, "holes_mm": sewing.holes_mm,
-            "mend": not sewing.keep_surfaces}
+            "mend": not sewing.keep_surfaces, **({"closed_skin": True} if closed_skin else {})}
     limit = float(RUN_LIMIT_S)
     if left_s is not None:
         limit = max(120.0, min(limit, 0.8 * left_s))
@@ -756,7 +803,7 @@ def _clean_cites(cleaned: dict | None, sewing) -> list[dict]:
 
 def main(argv: list[str] | None = None) -> int:
     """python -m meshpipeline.engines.surface_run <workspace> <staged file> <mm per unit | staged> [<JSON: thickness_mm,
-    others_mm, unread, said_shell, target, thickness_how, stitch, sew_mm, holes_mm>] (the mesh requirements read from
+    others_mm, unread, said_shell, target, thickness_how, stitch, sew_mm, holes_mm, closed_skin>] (the mesh requirements read from
     the notes are the workspace's own file, as for engines/shell_run)"""
     args = list(sys.argv[1:] if argv is None else argv)
     more: dict = {}
@@ -791,7 +838,8 @@ def main(argv: list[str] | None = None) -> int:
         unread=str(more.get("unread") or ""), stitch=more.get("stitch") is not False,
         sew_mm=float(sew_mm) if sew_mm else None, holes_mm=float(holes_mm) if holes_mm else None,
         requirements=requirements_in(ws), mend=more.get("mend") is not False,
-        thickness_how=more.get("thickness_how") if isinstance(more.get("thickness_how"), dict) else None)
+        thickness_how=more.get("thickness_how") if isinstance(more.get("thickness_how"), dict) else None,
+        closed_skin=bool(more.get("closed_skin")))
     return 0
 
 
@@ -800,5 +848,5 @@ if __name__ == "__main__":
 
 
 __all__ = ["GATE", "NO_THICKNESS", "NO_THICKNESS_YET", "READING", "SIZING_AGAIN", "SIZING_DIVISIONS", "clean_words",
-           "deck_notes", "gap_words", "is_surface", "line", "main", "read", "requirements_in", "run", "said_shell",
+           "closed_skin_check", "closed_skin_no_wall", "closed_skin_words", "deck_notes", "gap_words", "is_surface", "line", "main", "read", "requirements_in", "run", "said_shell",
            "sizing_wall", "stitch_for", "surface_pass", "thickness_for", "words"]

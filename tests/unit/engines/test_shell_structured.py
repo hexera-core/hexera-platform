@@ -15,6 +15,7 @@ from tests.unit.engines.test_mesh_requirements import CRITERIA, criteria_answer
 
 from meshpipeline.engines import mesh_requirements as MR
 from meshpipeline.engines import shell_structure as SS
+from meshpipeline.engines.gmsh import shell_adapter as SA
 from meshpipeline.engines.gmsh import shell_structured as ST
 from meshpipeline.engines.shell_mesh import ShellMesh
 
@@ -73,6 +74,21 @@ def test_an_o_grid_boxs_rows_from_ring_to_box_fit_the_users_edges():
             old = ST._boxed(r, 5.0, h, lo, hi)
             assert (old is None) == (ST._boxed(r, 5.0, h, lo, hi, rows_fit=True) is None)
     assert ST._boxed(16.5, 5.0, 10.0, 5.0, 15.0) == (20, 2, 1.75, 33.875)
+
+
+def test_with_no_row_count_inside_the_margins_the_users_own_lines_pick_the_rows():
+    """SHMESH-51o84: a box with a ring 16 mm, side 21 mm, far corner 30.78 mm, edges 5 to 15 mm has no count inside
+    our margins (one row 14.78 mm at the corner, over 0.98 x 15); inside the user's own 15 mm one row leaves no element
+    outside (the product asks this only of square boxes). A column-like sector (ring 36.6 mm in a 46.6 mm square box)
+    takes 2 rows, none under 5 mm, where the cut's length alone gave 3 (3.3 mm across the side's middle)."""
+    assert ST._ring_box_rows(16.0, 21.0, 30.777, 10.0, 5.0, 0.98 * 15.0) is None
+    assert ST._ring_box_least(16.0, 21.0, 30.777, 10.0, 5.0, 15.0, 4) == (1, 0, 0)
+    b = 46.6
+    k, over, under = ST._ring_box_least(36.6, b, b * math.sqrt(2), 10.0, 5.0, 15.0, 7)
+    assert (k, over, under) == (2, 0, 0)
+    # with a 12 mm longest edge no count fits both: the fewest elements outside win (2 rows: the 4 corner elements
+    # over 12 mm; 3 rows: the side's middle under 5 mm), and they are counted
+    assert ST._ring_box_least(36.6, b, b * math.sqrt(2), 10.0, 5.0, 12.0, 7) == (2, 4, 0)
 
 
 def test_a_chain_takes_its_opposite_sides_count_spread_by_length():
@@ -373,6 +389,9 @@ def test_a_ring_that_cannot_be_built_keeps_gmshs_mesh_there(web, monkeypatch):
 
     monkeypatch.setattr(ST, "ring_mesh", flaky)
     monkeypatch.setattr(ST, "BLOCKS", False)          # every washer then takes its own ring
+    # (SHMESH-51o would mesh the plate again with one ring round its bolt holes - the paving left where the ring failed
+    # has triangles - and that mesh, every ring built, would win: the washer guard alone is tested here)
+    monkeypatch.setattr(SA, "BOLT_TRIA_GUARD", False)
     mesh, applied = _mesh(brep, rec, _criteria())
     q = applied["quality"]
     assert q["valid"] and mesh.n_elements > 0
@@ -470,6 +489,7 @@ def test_every_hole_has_its_line_in_the_record(web, monkeypatch):
         return real(gmsh, w, index, xyz, mm)
 
     monkeypatch.setattr(ST, "ring_mesh", flaky)
+    monkeypatch.setattr(SA, "BOLT_TRIA_GUARD", False)     # (as above: the one-ring trial would build every ring)
     monkeypatch.setattr(ST, "BLOCKS", False)
     _mesh_, applied = _mesh(brep, rec, _criteria())
     lines = applied["quality"]["structure"]["hole_list"]
@@ -707,6 +727,9 @@ def test_holes_out_of_step_keep_their_grid(tmp_path, monkeypatch, limited):
     side moved 7.5 mm into its ring's room and the web was left free; now the chain is two lines, every ring keeps
     its room and the web is gridded with every line met."""
     monkeypatch.setattr(ST, "SNAP_LIMITS", limited)
+    # (the rule under test is the grid's; the four alike holes are bolt holes to SHMESH-51, whose two rings this web has
+    # no grid for - its free mesh with them is the better one there, and the guard keeps it)
+    monkeypatch.setattr(ST, "BOLTS", False)
     brep, rec = _plate_with_holes(tmp_path, [(97.3, 61.5, 17.4), (147.7, 140.0, 17.4), (152.7, 301.5, 17.4),
                                              (112.3, 220.0, 17.4)], size=(400.0, 363.0, 10.0))
     mesh, applied = _mesh(brep, rec, _criteria())
@@ -750,6 +773,9 @@ def test_a_channels_web_and_flanges_are_gridded_across_their_joints(tmp_path, mo
     BRepTools.Write_s(surf, str(brep))
     monkeypatch.setattr(ST, "JOIN", join)
     monkeypatch.setattr(ST, "JOIN_STRIPS", join)      # (this channel's faces meet through narrow strips)
+    # (the joints' rule is under test, with the strips joined - off in the product; there the web's two-ring bolt boxes
+    # of SHMESH-51 leave edges over the 15 mm line and the guard keeps the free mesh with its rings)
+    monkeypatch.setattr(ST, "BOLTS", False)
     mesh, applied = _mesh(brep, rec, _criteria())
     s = applied["quality"]["structure"]
     assert "guard" not in s, s.get("guard")
@@ -1034,3 +1060,52 @@ def test_a_trial_is_taken_out_leaving_the_same_model_and_next_tags():
     slow, fast = _trial_left(False), _trial_left(True)
     assert fast == slow
     assert len(slow[0][2]) == 6 + 1                     # the other faces and the face itself, nothing of the trial
+
+
+def test_a_free_cell_with_sides_of_4_and_6_takes_rows_with_a_three_to_one_step():
+    """SHMESH-51o17: a four-sided cell whose opposite sides carry 4 and 6 segments (the other two 2 each) - gmsh paves
+    it with triangles; its own rows have the coarse count and one three-to-one step along the fine side: all quads,
+    inside the solver's limits, every boundary node kept."""
+    import gmsh
+
+    from meshpipeline.engines import shell_quality as SQ
+
+    gmsh.initialize()
+    try:
+        gmsh.option.setNumber("General.Terminal", 0)
+        occ = gmsh.model.occ
+        t = occ.addRectangle(0, 0, 0, 56.0, 24.0)
+        occ.synchronize()
+        curves = sorted(abs(int(c)) for _d, c in gmsh.model.getBoundary([(2, t)], oriented=False))
+        for c in curves:
+            a, b = gmsh.model.getBoundingBox(1, c)[0:3], gmsh.model.getBoundingBox(1, c)[3:6]
+            along_x = abs(b[0] - a[0]) > abs(b[1] - a[1])
+            low = along_x and a[1] < 1.0
+            gmsh.model.mesh.setTransfiniteCurve(c, (5 if low else 7) if along_x else 3)
+        gmsh.model.mesh.generate(2)
+        tags, coords, _p = gmsh.model.mesh.getNodes()
+        index = np.zeros(int(tags.max()) + 1, dtype=np.int64)
+        index[np.asarray(tags, dtype=np.int64)] = np.arange(len(tags))
+        xyz = np.asarray(coords, dtype=float).reshape(-1, 3)
+        pts, quads = ST.transition_cell(gmsh, t, index, xyz, 1.0)
+        X = np.vstack([xyz, pts])
+        assert len(quads) == 4 * 1 + 3 + 4      # one row of 4 below, then 3 plain and one step of 4
+        m = SQ.quad_measures(X, quads)
+        assert (m["min_jacobian"] > 0).all() and not SQ._quad_past(m).any()
+        on_edge = {int(index[x]) for c in curves for x in gmsh.model.mesh.getNodes(1, c, includeBoundary=True)[0]}
+        assert on_edge <= {int(x) for x in np.unique(quads)}
+    finally:
+        gmsh.finalize()
+
+
+def test_a_free_cells_count_is_evened_without_going_under_the_shortest_edge(monkeypatch):
+    """SHMESH-51o82: a free cell's last open curve evens its cell's count by one segment more, unless that takes it
+    under the user's shortest edge (an 8.5 mm cut curve: 1 -> 2 segments of 4.25 mm under 5 mm, the look-alike
+    w7_0's 472 quads); then one fewer inside the longest edge, else the count stays (one triangle in the cell)."""
+    assert SA._even_count(30.0, 3, 5.0, 15.0) == 4          # 7.5 mm segments: one more, as before
+    assert SA._even_count(8.5, 1, 5.0, 15.0) == 1           # one more would be 4.25 mm; none is no count: stays
+    assert SA._even_count(14.0, 3, 5.0, 15.0) == 2          # 3.5 mm under: one fewer, 7 mm inside 15
+    assert SA._even_count(40.0, 3, 15.0, 15.0) == 3         # one fewer would be 20 mm over 15: stays
+    assert SA._even_count(8.5, 1, None, None) == 2          # no shortest edge asked: as before
+    monkeypatch.setattr(SA, "EVEN_KEEPS_LOW", False)
+    assert SA._even_count(8.5, 1, 5.0, 15.0) == 2
