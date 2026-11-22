@@ -850,6 +850,19 @@ def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analy
             _ask, base_actual, floor=floor, level=smax, flevel=flevel, regions=surface_regions or [],
             part_levels=bool(part_sizes and (part_sizes.get("reading") or {}).get("status") == "used"))
         wake = _user_wake(_ask, wake, wall_cell=base_actual / 2 ** smax)
+    _wake_level = smax
+    if _ask is not None:
+        # CFDREQ-17: in wall-function mode the wall's cells and the first layer are chosen together - the wall is
+        # coarsened (never past the sealing floor, nor under 100 cells along the body) until the y+ 50 first layer
+        # fits under its cells; the wake keeps the wall's planned level
+        from meshpipeline.engines import cfd_requirements as _CRw
+        _lv_wf = _CRw.wall_function_level(_ask, base_actual, level=smax, floor=floor)
+        if _lv_wf < smax:
+            logger.info("render_snappy_case: wall level %d -> %d so the wall-function first layer fits (%s)",
+                        smax, _lv_wf, _ask.wall_level_note)
+            smax = _lv_wf
+            smin = min(smin, smax)
+            flevel = max(flevel, smax)
     if deficit:
         logger.info("render_snappy_case: clamp deficit=%d → levels bumped (base_assumed=%.4g "
                     "base_actual=%.4g surf=%d feat=%d) to hold absolute wall resolution",
@@ -1012,7 +1025,7 @@ def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analy
     if wake is not None:
         _wake = plan_wake(body_min=analysis["bbox_min"], body_max=analysis["bbox_max"],
                           domain_min=domain_min, domain_max=domain_max,
-                          flow_axis=wake.flow_axis, base_cell=base_actual, surface_level=smax,
+                          flow_axis=wake.flow_axis, base_cell=base_actual, surface_level=_wake_level,
                           budget_cells=max_cells, knobs=wake.knobs, ruler_m=wake.ruler_m,
                           grounded=bool(ground), floor=ground_floor,
                           # what the body itself costs, so the wake never starves the wall's

@@ -420,6 +420,11 @@ class Ask:
         #: CFDREQ-13: how the y+ was turned into a height (y_plus_height's record), and a laminar flow seen
         self.how: dict = {}
         self.laminar = False
+        #: CFDREQ-17: a body that wall functions do not suit (too slow or too small) is resolved instead - the why,
+        #: the Reynolds number and the boundary layer's estimated thickness; None when no such fallback was taken
+        self.fallback: dict | None = None
+        #: CFDREQ-17: the wall cells coarsened so a wall-function first layer fits under them, said ("" when not)
+        self.wall_level_note = ""
 
     @classmethod
     def of(cls, workspace, engine: str) -> Ask | None:
@@ -579,6 +584,17 @@ class Ask:
                                            "the layers keep our sizing")
             return None
         self.how = how
+        body = (self.req.get("physics") or {}).get("flow") != "internal"
+        if self.treatment == "functions" and body:
+            # CFDREQ-17: A BODY WALL FUNCTIONS DO NOT SUIT IS RESOLVED, NEVER LEFT IN THE BUFFER LAYER. A laminar body
+            # (too slow or too small: Re under 5e5 on its length) has no log layer for a wall function to sit in, and
+            # a y+ 30 cell would be about as thick as its whole boundary layer (abc 00050662: 60 mm long at 10 m/s,
+            # Re 4e4: 1.36 mm against a 1.5 mm layer). Before, the mesher's relative layers were kept - 0.169 of the
+            # local cell, y+ 2-5 on 107 of 120 external bodies (the CFD board's external sweep, 22 Nov): too coarse to
+            # resolve, too fine for wall functions. Now such a wall is resolved (a y+ 1 first layer), said.
+            fb = resolved_fallback(self, h, how)
+            if fb is not None:
+                return fb
         if self.treatment == "functions" and how.get("laminar"):
             # CFDREQ-13: a laminar (or transitional) flow has no wall-function band and no buffer layer to avoid: the
             # wall is resolved by the cells across the passage, with our own layers. A resolved wall the user CHOSE is
@@ -619,6 +635,96 @@ STACK_TOP_REL = 0.4
 MAX_WALL_FUNCTION_LAYERS = 10
 
 
+#: CFDREQ-17: a wall-function first cell may reach at most this share of a turbulent boundary layer's thickness (the
+#: log layer ends at about 0.1-0.2 of it; past it the cell is in the outer, wake part of the layer)
+WALL_FUNCTION_BL_SHARE = 0.2
+#: CFDREQ-17: the cells a resolved body wall puts across its boundary layer (the layers and the core cells under the
+#: layer's edge): a laminar layer is resolved with about 10 or more (Blasius profile; the usual CFD guides' 10-15)
+BL_CELLS = 10
+
+
+def boundary_layer_m(how: Mapping) -> float | None:
+    """CFDREQ-17: the boundary layer's thickness at the body's end, metres, from the case's Reynolds number on its
+    length: laminar 5.0 L / sqrt(Re) (Blasius), turbulent 0.37 L Re^-0.2 (the flat plate's 1/7 power law). None when
+    the length or the Reynolds number is not in `how`."""
+    L, re_n = how.get("length_m"), how.get("reynolds")
+    if not L or not re_n:
+        return None
+    L, re_n = float(L), max(float(re_n), 1.0)
+    return 5.0 * L / math.sqrt(re_n) if how.get("laminar") else 0.37 * L * re_n ** -0.2
+
+
+def resolved_fallback(ask: Ask, wf_first_m: float, how: Mapping) -> float | None:
+    """CFDREQ-17: the resolved wall's first layer (y+ 1 at its top, the same estimate) for a body in wall-function
+    mode that wall functions do not suit, with `ask.fallback` set and the y+ row said; None when they suit it.
+    They do not when the flow is laminar on the body's length (no log layer at all) or when the wall-function first
+    cell (`wf_first_m`) is thicker than WALL_FUNCTION_BL_SHARE of the turbulent layer."""
+    delta = boundary_layer_m(how)
+    if how.get("laminar"):
+        why = "laminar"
+    elif delta and float(wf_first_m) > WALL_FUNCTION_BL_SHARE * delta:
+        why = "thick"
+    else:
+        return None
+    visc = float(how.get("visc_m") or 0.0)
+    if visc <= 0:
+        return None
+    h1 = RESOLVED_Y_PLUS * visc
+    ask.fallback = {"why": why, "reynolds": float(how.get("reynolds") or 0.0), "delta_m": delta,
+                    "wf_first_m": float(wf_first_m), "first_m": h1, "length_from": how.get("length_from")}
+    ask.done("layers:y_plus", fallback_words(ask, h1, None, None),
+             **{k: v for k, v in how.items() if k not in ("visc_m", "first_exact_m")}, fallback=why)
+    return h1
+
+
+def fallback_words(ask: Ask, first_m: float, n: int | None, across: float | None) -> str:
+    """CFDREQ-17's plain line: why wall functions do not suit this body, and the resolved wall built instead."""
+    fb = ask.fallback or {}
+    re_s = MR._g(float(f"{float(fb.get('reynolds') or 0.0):.2g}"))
+    if fb.get("why") == "laminar":
+        lead = f"This flow is too slow, or the body too small, for wall functions (Re {re_s} on {fb.get('length_from')})"
+    else:
+        lead = (f"A wall-function first cell ({_mm(float(fb.get('wf_first_m') or 0.0))}) would be too thick for this "
+                f"body's boundary layer (Re {re_s} on {fb.get('length_from')})")
+    out = f"{lead}: the wall is resolved instead: first cell {_mm(first_m)}"
+    if n:
+        out += f", {int(n)} layer{'s' if int(n) != 1 else ''}"
+    if across is not None and fb.get("delta_m"):
+        out += (f", about {int(round(across))} cells across its boundary layer "
+                f"(about {_mm(float(fb['delta_m']))} thick)")
+    return out
+
+
+def cells_across(first_m: float, growth: float, n: int, wall_cell_m: float, delta_m: float) -> float:
+    """CFDREQ-17: the cells across a boundary layer `delta_m` thick - the layers under its edge (a part of the one
+    the edge cuts) and, past the stack, the wall cells up to it."""
+    g, h, z, k = max(float(growth), 1.0), float(first_m), 0.0, 0.0
+    for _ in range(max(0, int(n))):
+        if z + h >= delta_m:
+            return k + (delta_m - z) / h
+        z += h
+        k += 1.0
+        h *= g
+    return k + max(0.0, delta_m - z) / max(float(wall_cell_m), 1e-30)
+
+
+def bl_layers(first_m: float, growth: float, n_plan: int, wall_cell_m: float, delta_m: float, *,
+              stack_max_m: float, max_layers: int | None = None) -> int:
+    """CFDREQ-17: the fewest layers, never fewer than the plan's, that put BL_CELLS across the boundary layer -
+    at most `max_layers` (MAX_BRIDGE_LAYERS), and never a stack past `stack_max_m` (the stack the wall's cells hold:
+    CFDREQ-9) or past the layer's own edge (a layer past it adds nothing across it)."""
+    g, n = max(float(growth), 1.0), max(1, int(n_plan))
+    max_layers = int(max_layers if max_layers is not None else MAX_BRIDGE_LAYERS)
+
+    def height(k: int) -> float:
+        return first_m * k if g <= 1.0001 else first_m * (g ** k - 1.0) / (g - 1.0)
+
+    while (n < max_layers and cells_across(first_m, g, n, wall_cell_m, delta_m) < BL_CELLS
+           and height(n) < delta_m and height(n + 1) <= stack_max_m * (1 + 1e-9)):
+        n += 1
+    return n
+
+
 def wall_fit(ask: Ask, first_m: float, wall_cell_m: float, *, cap_rel: float = FIRST_CAP_REL) -> dict:
     """CFDREQ-13: what a wall-function first layer of `first_m` (sized for the conditions' y+) becomes under wall
     cells of `wall_cell_m`: {"treatment", "first_m", "y_plus", "why"}.
@@ -626,7 +732,11 @@ def wall_fit(ask: Ask, first_m: float, wall_cell_m: float, *, cap_rel: float = F
       - it does not, but the thickest that fits still puts the first cell centre at y+ 30 or more: that one;
       - else wall functions do not suit this wall (the cells the passage needs across are finer than a wall-function
         first cell): the wall is resolved - the first layer for y+ 1, by the same estimate.
-    A laminar flow never reaches here (Ask.first_layer)."""
+    A laminar flow never reaches here (Ask.first_layer); a body wall functions do not suit (CFDREQ-17) has its
+    resolved first layer already: kept, resolved."""
+    if ask.fallback is not None:
+        return {"treatment": "resolved", "first_m": float(first_m), "y_plus": y_plus_of(first_m, ask.how or {}),
+                "why": fallback_words(ask, float(first_m), None, None), "fallback": ask.fallback.get("why")}
     yp = float(ask.y_plus or 50.0)
     how = ask.how or {"visc_m": float(first_m) / (2.0 * yp)}
     visc = float(how.get("visc_m") or float(first_m) / (2.0 * yp))
@@ -850,6 +960,40 @@ def snappy_levels(ask: Ask, base: float, *, floor: int, level: int, flevel: int,
         lv = min(lv, cap)
         ask.region_levels = {r: (min(a, cap), min(b, cap)) for r, (a, b) in ask.region_levels.items()}
     return cap, lv, lv, min(cap, max(lv, int(flevel)))
+
+
+#: CFDREQ-17: the cells a body's wall keeps along its length however coarse a wall-function first layer would want them
+#: (the CFD board's proof rule CB-E4: 100 wall faces along the body)
+BODY_CELLS_ALONG = 100
+
+
+def wall_function_level(ask: Ask | None, base: float, *, level: int, floor: int) -> int:
+    """CFDREQ-17, THE WALL'S CELLS AND ITS FIRST LAYER CHOSEN TOGETHER (snappyHexMesh, a body in wall-function mode):
+    the wall level, coarsened from `level` only as far as the wall-function first layer needs to fit under its wall
+    cell (FIRST_CAP_REL) - never coarser than the body-sealing `floor` nor than BODY_CELLS_ALONG cells along the
+    body. `level` unchanged when nothing of this applies: no wall-function y+, a height, stack, wall size or local
+    size of the user's, a body wall functions do not suit (the resolved fallback), or a first layer that fits."""
+    if (ask is None or ask.treatment != "functions" or ask.first_m is not None or ask.total_m is not None
+            or ask.wall_m is not None or not ask.length_m or ask.y_plus is None
+            or any("wake" not in str(e.get("where") or "").casefold() for e in ask.local)
+            or (ask.req.get("physics") or {}).get("flow") == "internal"):
+        return int(level)
+    h, missing, how = y_plus_height(float(ask.y_plus), ask.req.get("physics"), length_m=ask.length_m,
+                                    length_from=ask.length_from)
+    if h is None or missing or how.get("laminar"):
+        return int(level)
+    delta = boundary_layer_m(how)
+    if delta and h > WALL_FUNCTION_BL_SHARE * delta:
+        return int(level)
+    need = float(h) / FIRST_CAP_REL
+    most = float(ask.length_m) / BODY_CELLS_ALONG
+    lv = int(level)
+    while base / 2 ** lv < need * (1 - 1e-9) and lv - 1 >= int(floor) and base / 2 ** (lv - 1) <= most * (1 + 1e-9):
+        lv -= 1
+    if lv < int(level):
+        ask.wall_level_note = (f"the wall cells are {_mm(base / 2 ** lv)} (not {_mm(base / 2 ** int(level))}) so the "
+                               f"wall-function first layer ({_mm(h)}) fits under them")
+    return lv
 
 
 @guarded(lambda ask, wake, **_k: wake)
@@ -1886,6 +2030,26 @@ def _snappy_layers(ask: Ask, text: str, wall_cell_m: float | None, bridge: Mappi
             out = re.sub(r"\bnSurfaceLayers\s+[1-9][0-9]*\s*;", f"nSurfaceLayers {n_new};", out)
             thick = (n, n_new, first, first_new, stack)
             n, first = n_new, first_new
+    across = None
+    if ask.fallback is not None and first is not None and wall_cell_m and n > 0:
+        # CFDREQ-17: THE RESOLVED BODY WALL RESOLVES ITS BOUNDARY LAYER - BL_CELLS across it, the layers counted up
+        # from the plan's (never past the stack the wall's cells hold, nor past the cap a tight wall set), unless the
+        # user gave a count
+        delta = float(ask.fallback.get("delta_m") or 0.0)
+        if delta > 0:
+            if (ask.n_layers is None and total is None and bridged is None and capped is None
+                    and thick is None):
+                last_rel = _num(out, "finalLayerThickness") or 0.3
+                held = float(last_rel) * float(wall_cell_m) * sum(g ** -k for k in range(max(1, n)))
+                most = min(held, float(cap)) if cap else held
+                n_bl = bl_layers(first, g, n, float(wall_cell_m), delta, stack_max_m=most)
+                if bridge is not None and bridge.get("faces") and bridge.get("room") is not None:
+                    n_bl = min(n_bl, n + int(max(0.0, float(bridge["room"])) // max(1.0, float(bridge["faces"]))))
+                if n_bl > n:
+                    out = re.sub(r"\bnSurfaceLayers\s+[1-9][0-9]*\s*;", f"nSurfaceLayers {n_bl};", out)
+                    n = n_bl
+            across = cells_across(first, g, n, float(wall_cell_m), delta)
+            ask.fallback.update(layers=int(n), cells_across=round(across, 1))
     spec = []
     if first is not None and total is not None and ask.layer_growth is None:
         spec = [f"firstLayerThickness {first:.6g};", f"thickness {total:.6g};"]
@@ -1940,6 +2104,11 @@ def _snappy_layers(ask: Ask, text: str, wall_cell_m: float | None, bridge: Mappi
         _say_thick(ask, thick, g, float(wall_cell_m or 0.0))
     if wf is not None and first is not None:
         built = dict(wf, first_m=float(first), y_plus=y_plus_of(float(first), ask.how) if ask.how else wf["y_plus"])
+        if ask.fallback is not None:
+            built["why"] = ""
+            built["words"] = fallback_words(ask, float(first), n, across)
+            if across is not None:
+                built["cells_across_bl"] = round(across, 1)
         _say_wall(ask, built, n, g)
     return out
 
@@ -2021,13 +2190,18 @@ def _say_wall(ask: Ask, fit: Mapping, n: int, g: float, *, engine_words: str = "
     rid = ask.rid("layers:y_plus")
     if not rid:
         return
-    words = wall_words(ask, fit, n, g, engine_words=engine_words)
+    words = fit.get("words") or wall_words(ask, fit, n, g, engine_words=engine_words)
     moved = fit["treatment"] != ask.treatment or bool(fit.get("why"))
     prev = ask.rows.get(rid, {})
     extra = prev.get("built", "") if "layers" in prev and "stack fills" in prev.get("built", "") else ""
     row = {"first_m": float(f"{float(fit['first_m']):.4g}"), "layers": int(n), "treatment": fit["treatment"],
            "y_plus_expected": float(f"{float(fit['y_plus']):.3g}"), **{k: v for k, v in (ask.how or {}).items()
                                                                        if k in ("reynolds", "cf", "friction")}}
+    for k in ("fallback", "cells_across_bl"):
+        if fit.get(k) is not None:
+            row[k] = fit[k]
+    if ask.wall_level_note and fit["treatment"] == "functions":
+        words += f"; {ask.wall_level_note}"
     if moved:
         ask.nearest(rid, words + (f"; {extra.split('; ', 1)[1]}" if "; " in extra else ""), **row)
     else:
