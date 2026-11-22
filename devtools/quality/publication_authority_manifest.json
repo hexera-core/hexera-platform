@@ -5422,6 +5422,32 @@
   "roots": []
  },
  {
+  "context": "engines/notes_acted.py::wall_said::search#1|NotAPublisher|not-a-publisher|",
+  "path": "engines/notes_acted.py",
+  "qualname": "wall_said",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "_RESOLVED_WORDS",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "engines/notes_acted.py::wall_said::search#2|NotAPublisher|not-a-publisher|",
+  "path": "engines/notes_acted.py",
+  "qualname": "wall_said",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 2,
+  "receiver": "_FUNCTIONS_WORDS",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "engines/size_brake.py::case_budget::search#1|NotAPublisher|not-a-publisher|",
   "path": "engines/size_brake.py",
   "qualname": "case_budget",

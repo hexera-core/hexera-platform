@@ -225,6 +225,94 @@ def _only_unit(quote: str, covered: list[str]) -> bool:
             and all(w in _UNIT_WORDS for w in rest))
 
 
+#: THE WALL TREATMENT IN WORDS (CFDREQ-8's two: a resolved wall, or wall functions) - the same control as a y+
+_RESOLVED_WORDS = re.compile(r"\bresolv\w*\b[^.;]{0,30}?\b(?:wall|walls|boundary\s+layers?|near[- ]wall)\b"
+                             r"|\bwall[- ]resolv\w*|\b(?:no|without)\s+wall[- ]functions?\b|\blow[- ]re(?:ynolds)?\b",
+                             re.I)
+_FUNCTIONS_WORDS = re.compile(r"\bwall[- ]functions?\b", re.I)
+#: ...and the words around it that ask nothing more ("resolve the wall - y+ around 1", "wall functions are fine")
+_WALL_WORDS = frozenset("resolve resolved resolving wall walls boundary layer layers near functions function no "
+                        "without low re reynolds fine good y yplus around about approximately roughly at on".split())
+#: a y+ at or under this is a resolved wall, at or over WALL_FN_YPLUS wall functions (CFDREQ-8: y+ 1, and 30-300)
+RESOLVED_YPLUS, WALL_FN_YPLUS = 5.0, 20.0
+
+
+def wall_said(quote: str) -> str:
+    """The wall treatment a quote names: "resolved", "functions" or ""."""
+    if _RESOLVED_WORDS.search(str(quote or "")):
+        return "resolved"
+    return "functions" if _FUNCTIONS_WORDS.search(str(quote or "")) else ""
+
+
+def wall_built(sec: Mapping, facts: Mapping) -> str:
+    """The wall treatment the reading and the confirmed conditions build: a y+ of the rows first, then the treatment
+    the user chose at intake ("" when neither says)."""
+    lay = ((sec.get("requirements") or {}).get("layers") or {}) if isinstance(sec, Mapping) else {}
+    yp = lay.get("y_plus")
+    if isinstance(yp, (int, float)):
+        return "resolved" if yp <= RESOLVED_YPLUS else "functions" if yp >= WALL_FN_YPLUS else ""
+    c = facts.get("conditions") if isinstance(facts, Mapping) else None
+    return str(c.get("wall") or "") if isinstance(c, Mapping) and c.get("wall_said", True) else ""
+
+
+def _wall_act(quote: str, sec: dict, facts: Mapping) -> bool:
+    """CFDREQ-8 x NOTE-15: words that only name the wall treatment ("resolve the wall", "wall-resolved", "no wall
+    functions", "wall functions are fine") are the same ask as the y+ that builds it - met with it, never a second
+    ask "not applied". Alone, "resolve the wall" is that ask itself: y+ about 1 at the walls (a row of the reading,
+    sized from the confirmed fluid and speed). Words naming the OTHER treatment than the one built stay told."""
+    said = wall_said(quote)
+    if not said:
+        return False
+    rest = [w for w in _TOKENS.findall(str(quote).lower().replace("y+", " yplus "))
+            if w not in _FILLER and w not in _WALL_WORDS and not re.fullmatch(r"[\d.]+", w)]
+    if rest:
+        return False
+    built = wall_built(sec, facts)
+    if built:
+        return built == said
+    if said != "resolved" or sec.get("status") != "used":
+        return False
+    import copy
+
+    from meshpipeline.engines import mesh_requirements as MR
+    req = copy.deepcopy(dict(sec.get("requirements") or MR.empty()))
+    req.setdefault("layers", {})["y_plus"] = 1.0
+    ph = req.setdefault("physics", {})
+    c = facts.get("conditions") if isinstance(facts, Mapping) else None
+    if isinstance(c, Mapping):
+        from meshpipeline.contracts import flow_conditions as FC
+        if ph.get("velocity_ms") is None and c.get("velocity_ms") is not None:
+            ph["velocity_ms"] = float(c["velocity_ms"])
+        if ph.get("fluid") is None and c.get("fluid") in FC.NU:
+            ph["fluid"] = c["fluid"]
+    req.setdefault("rows", []).append({"id": "w1", "field": "layers:y_plus", "quote": " ".join(str(quote).split()),
+                                       "asked": "y+ of about 1 at the walls (a resolved wall)"})
+    sec["requirements"] = req
+    return True
+
+
+def _stem(word: str) -> str:
+    return re.sub(r"(?:ing|ed|es|e|s)$", "", word) if len(word) > 4 else word
+
+
+def _covered_by_rows(quote: str, sec: Mapping) -> bool:
+    """NOTE-15's general guard: words whose every word an applied row of the reading already holds (its quote or its
+    plain words) mean that row's ask - told by the row, never again as "not applied"."""
+    words = {_stem(w) for w in _TOKENS.findall(str(quote).lower()) if w not in _FILLER}
+    if not words:
+        return False
+    for r in ((sec.get("requirements") or {}).get("rows") or []) if isinstance(sec, Mapping) else []:
+        if not isinstance(r, Mapping):
+            continue
+        meant = {_stem(w) for w in _TOKENS.findall(str(r.get("asked") or "").lower()) if w not in _FILLER}
+        held = meant | {_stem(w) for w in _TOKENS.findall(str(r.get("quote") or "").lower())}
+        # (and the words name what the row asks, not only share its sentence: "keep the cells cubic at the outlet"
+        # inside a y+ row's quote is still an ask of its own)
+        if words <= held and words & meant:
+            return True
+    return False
+
+
 def _act_of(quote: str, facts: Mapping, covered: list[str], asked: str) -> tuple[str, str]:
     """(the act a quote is only one of, its line - "" for the engine's own entry); ("", "") for none."""
     from meshpipeline.engines.mesh_requirements import _short
@@ -284,6 +372,11 @@ def _apply(sec: dict, notes: str, facts: Mapping) -> dict:
     gone_lines: list[str] = []
 
     def absorbed(q: str, *, engine_only: bool = False) -> bool:
+        if not engine_only and (_wall_act(q, sec, facts) or _covered_by_rows(q, sec)):
+            # the wall treatment the rows build, or words an applied row already holds the meaning of: one ask,
+            # told by its row - never a second one "not applied"
+            entries.append({"act": "covered", "quotes": [q], "line": ""})
+            return True
         act, line = (("engine", "") if asked and _only_engine(q, asked, covered) else ("", "")) if engine_only \
             else _act_of(q, facts, covered, asked)
         if not act:
@@ -318,7 +411,8 @@ def _apply(sec: dict, notes: str, facts: Mapping) -> dict:
         return sec
     sec["not_applied"], sec["dropped"] = kept_not, kept_drop
     if req is not None and req.get("not_mesh") is not None:
-        req = copy.deepcopy(dict(req))
+        # (the set as it stands now: a wall treatment's y+ may have been added to it above)
+        req = copy.deepcopy(dict(sec.get("requirements") or req))
         if kept_mesh:
             req["not_mesh"] = kept_mesh
         else:
