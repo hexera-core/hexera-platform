@@ -8,6 +8,8 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 SURFACE_MSH = "surface_mesh.msh"
+#: The rule that reads the mesh on disk from the case written last (docs/RULES.md).
+VER_NEWEST_CASE = "VER-8"
 
 
 def _patch_files(ws: Path) -> list[Path]:
@@ -19,7 +21,7 @@ def _patch_files(ws: Path) -> list[Path]:
     boundary duplicated on top of itself. Only the newest time directory describes the mesh as
     delivered, so take that one and nothing else.
 
-    THE NEWEST CASE FIRST, THEN ITS LATEST TIME (VER-3). A pass the size brake stopped leaves its own
+    THE NEWEST CASE FIRST, THEN ITS LATEST TIME (VER-8). A pass the size brake stopped leaves its own
     VTK/<case>_0 beside the delivered one (snappy's runs are cr_ws_<random>), and every one is time 0: ordered
     by name, RM3's cr_ws_rm21egpm_0 (a stopped pass, far field only) sorted after the delivered cr_ws_9vz6v0eq_0
     and the CAD check read "the body was not read" off a 6 M-cell production-grade mesh (RM5: "100% of your CAD
