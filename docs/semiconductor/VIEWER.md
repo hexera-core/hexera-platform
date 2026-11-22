@@ -483,9 +483,48 @@ index knows its faces exactly and its cells not at all and the builder refuses t
 panel says 47,672,886 boundary faces and the 413,273,323 cells live only in
 `COUPLED_MESH_DELIVERY.md`. Closable by carrying the per-region counts through from checkMesh.
 
-**"Worst" has nothing to fly to.** `cbox2`'s `quality_fields.hotspots` is `[]`. The sidecar can
-produce them (`boundary_quality._sidecar_hotspots`, `MAX_HOTSPOTS_PER_METRIC` = 60) and the payload
-builder did not ask. Cheapest real improvement here: the arrays already exist.
+**"Worst" had nothing to fly to, and that was switching off the whole heatmap.** Done,
+2026-11-22. `_sidecar_hotspots` selected `v > limit` and returned `[]` when nothing was over - which
+is every metric of every mesh we deliver, since they all pass. The cost was not the one button.
+`viewer.js` gives up on the entire heatmap when it has neither per-face arrays nor hotspots:
+
+```
+if(!entries.some(en=>Object.keys(en.q).length)&&!(qf.hotspots||[]).length)return;
+```
+
+and a merged payload has no per-face arrays by construction, because `cfmesh_conjugate/viewer.py`
+drops `patches` whenever the drawing was merged. So that line returned on every delivered mesh and
+took the ramp, the legend, the metric switcher, the problem-areas panel, the probe, `flyTo` and
+`window._vdbg[job+':heat']` with it, silently. Publishing the worst sixty faces whether or not they
+cleared a bar turns all of it back on: measured on `cbox8`, the three figures become colour
+controls (`wired` 0 to 3) and Worst flies to (0.05236, 0.03342, 0.06644) and cuts 3,850 real
+unmerged cells there. No test in this repo had ever shipped a non-empty hotspots list, so none of
+that path had run in a browser.
+
+The places are spread rather than ranked, at a bounding diagonal over 60 - 3.0 mm on this plate
+against a 201 um channel pitch - because the worst faces of a mesh are each other's neighbours and
+sixty by value alone is sixty faces of one corner.
+
+**The panel shows the distribution, not only the max.** Done, same change. It read "Max aspect
+ratio 3.76" and nothing else, because `meshFacts` reads `surf.quality` - checkMesh's summary block
+- and the only bridge to `quality_fields` covered aspect ratio. Every metric here passes its bar, so
+three maxima say "fine" three times. Per region now, with a log-height histogram and the
+percentiles behind it, which costs 1.7 s at build and 97 KiB on a 73 MB payload because it rides
+on the pass that already takes the max:
+
+| region | metric | median | p99.9 | max | max / p99.9 |
+|---|---|---|---|---|---|
+| fluid | non-ortho | 0 | 41.73 | 46.91 | 1.1 |
+| chip | non-ortho | 0 | 3.85e-05 | 0.0024 | 62.7 |
+
+Same verdict, two different meshes: on the coolant the worst face stands in a population of
+sixteen thousand like it, and on the chip it is one stray. The aspect ratio's median is exactly
+3.000 on metal and coolant, so the mesh IS a uniform 3:1 stretch and 3.76 is its edge.
+
+**All three metrics now say where their colours should span.** `rampOf` already spans a metric's
+own range when the bar sits far above anything the mesh has, and switches on `scale_to`, which only
+aspect ratio carried - so the legend ran to 84.5 deg against a worst face of 48.39, and skewness to
+26 against 1.65, which is 6.3% of the colours doing all the work.
 
 **No channel width anywhere.** The finding that matters most on this part is in
 `MESH_QUANTISATION.md`: the mesh snaps every 100 um channel to 88.014, 110.017 or 132.021 um, 3.38x
