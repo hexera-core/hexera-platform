@@ -146,10 +146,30 @@ def prepare_surface(workspace, *, geometry_file: str,
             "surface_regions": list(regions)}
 
 
+#: LAD-cfd-10: the rule that meshes a wrapped skin on cfMesh with no feature edges but its patch borders.
+LAD_WRAP_NO_FEATURES = "LAD-cfd-10"
+
+
+def wrapped_skin(ws: Path) -> bool:
+    """Whether this case meshes the wrap rung's skin (the run's wrap request beside it: pipeline/cfd_wrap)."""
+    from meshpipeline.cad.surface_wrap import WRAP_REQUEST_FILE
+    return (Path(ws) / WRAP_REQUEST_FILE).exists()
+
+
 def _to_fms(ws: Path, feature_angle: float, bashrc: str) -> str:
     reason = scan_case_dicts(ws)
     if reason:
         raise ValueError(f"case dicts rejected: {reason}")
+    if wrapped_skin(ws):
+        # LAD-cfd-10: A WRAPPED SKIN HAS NO CAD EDGES. Its folds are the wrap's own creases (61 to 120 degrees at
+        # every zero-area face cfMesh left on the cooling pipe, the manifold and abc 00063643); feature edges at
+        # 30 degrees pin cfMesh's snapping to them and it collapses faces there. The named STL keeps each patch
+        # border (cfMesh keeps the edges between solids), so the openings are kept: on the pipe's skin no feature
+        # file gave the same patches, checkMesh OK, non-ortho 65.9 where 30 degrees gave 5 zero-area faces.
+        logger.info("cfMesh: the wrapped skin is meshed from its named STL with no feature edges but its "
+                    "patch borders (%s)", LAD_WRAP_NO_FEATURES)
+        (ws / "geom.fms").unlink(missing_ok=True)
+        return "geom.stl"
     fms = ws / "geom.fms"
     cmd = (f"source {bashrc} >/dev/null 2>&1 && "
            f"surfaceFeatureEdges -angle {feature_angle} geom.stl geom.fms")

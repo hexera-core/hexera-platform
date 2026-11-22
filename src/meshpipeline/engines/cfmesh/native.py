@@ -148,8 +148,13 @@ def mesh_passages(ws: Path, *, bashrc: str = _DEFAULT_BASHRC, timeout: float = 1
                                    stall_s=STALL_WINDOW_S).returncode
 
         try:
-            surface = "geom.fms" if _run(f"surfaceFeatureEdges -angle {angle:g} geom.stl geom.fms", sub,
-                                         "surfaceFeatureEdges.log") == 0 and (sub / "geom.fms").exists() else "geom.stl"
+            from meshpipeline.cad.surface_wrap import WRAP_REQUEST_FILE
+            if (ws / WRAP_REQUEST_FILE).exists():
+                # LAD-cfd-10: a wrapped skin is meshed with no feature edges but its patch borders
+                surface = "geom.stl"
+            else:
+                surface = "geom.fms" if _run(f"surfaceFeatureEdges -angle {angle:g} geom.stl geom.fms", sub,
+                                             "surfaceFeatureEdges.log") == 0 and (sub / "geom.fms").exists() else "geom.stl"
             md = sub / "system" / "meshDict"
             md.write_text(_SURFACE_FILE.sub(f'surfaceFile "{surface}";', md.read_text(), count=1))
             if _run(CARTESIAN_MESH, sub, "cartesianMesh.log") != 0 or not (sub / "constant" / "polyMesh" / "owner").exists():

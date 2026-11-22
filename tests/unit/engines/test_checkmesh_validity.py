@@ -112,4 +112,6 @@ def test_the_cfmesh_rescue_never_keeps_such_a_mesh_as_valid():
     from meshpipeline.engines.cfmesh import rescue as RS
     as_read = {"cells": 1059052, "max_non_ortho": 118.682, "fatal": fatal_defects(_INVALID)}
     assert RS.near_edge(as_read).startswith("checkMesh found zero-area faces")
-    assert RS.rank(as_read)[0] == 1
+    # ranked by the number of fatal defects (ea3caae9): behind any valid mesh, however skewed
+    assert RS.rank(as_read)[0] == 2
+    assert RS.rank(as_read) > RS.rank({"cells": 1059052, "max_non_ortho": 89.0, "fatal": []})
