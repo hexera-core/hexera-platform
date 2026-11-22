@@ -2183,7 +2183,9 @@ def mesh_shell(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log:
 
     SHMESH-21: run in a forked child stopped after MESH_DEADLINE_S (ValueError, in words): gmsh can hang on a face
     with no way back to Python (fresh fr017's re-made faces: over 20 minutes on one 2D mesh), and a hung mesh must
-    fail fast for the solid mesh to be delivered. Without fork (not Linux), or with no deadline, it runs here."""
+    fail fast for the solid mesh to be delivered. Without fork (not Linux), or with no deadline, it runs here.
+    SHMESH-21b: at the stop, the best whole mesh the run made so far is delivered, told; none only when it made no
+    valid one (the ValueError as before)."""
     _step_reset()
     import multiprocessing as mp
     import tempfile
@@ -2193,6 +2195,27 @@ def mesh_shell(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log:
         return _mesh_shell(brep, record, mm_per_unit=mm_per_unit, log=log, target=target, correction=correction,
                            requirements=requirements)
     allowed = _deadline_s()                     # (SHMESH-31g: what is left of the run's outer stop, at most 900 s)
+    # SHMESH-21b: the whole meshes the forked runs make are kept in hand here; the best is delivered at the stop
+    with tempfile.TemporaryDirectory(prefix="shell_best_") as bdir:
+        _SO_FAR.update(dir=bdir if BEST_SO_FAR else None, mine=None, file=None, label="the first path", t0=time.time())
+        try:
+            return _mesh_shell_watched(brep, record, mm_per_unit=mm_per_unit, log=log, target=target,
+                                       correction=correction, requirements=requirements, allowed=allowed)
+        except _PastLimit as exc:
+            got = _so_far_deliver(bdir, requirements, allowed, str(exc)) if BEST_SO_FAR else None
+            if got is None:
+                raise
+            return got
+        finally:
+            _SO_FAR.update(dir=None, mine=None, file=None, label="the first path")
+
+
+def _mesh_shell_watched(brep, record, *, mm_per_unit, log, target, correction, requirements,
+                        allowed: float) -> tuple[ShellMesh, dict]:
+    """SHMESH-21/71: mesh_shell's forked runs, one after another while a face's watchdog trips (SHMESH-71/72), all
+    under `allowed` seconds from now (_PastLimit past it)."""
+    import tempfile
+
     trips = 0
     started = time.monotonic()
     while True:
@@ -2287,7 +2310,7 @@ def _mesh_shell_child(brep, record, *, mm_per_unit, target, correction, requirem
         while True:
             left = deadline - (time.monotonic() - t0)
             if left <= 0:
-                raise ValueError(f"the shell mesh ran past {MESH_DEADLINE_S / 60:.0f} minutes and was stopped "
+                raise _PastLimit(f"the shell mesh ran past {MESH_DEADLINE_S / 60:.0f} minutes and was stopped "
                                  "(SHMESH-21)")
             if recv.poll(min(left, FACE_WATCH_POLL) if watch_dir is not None else left):
                 return recv.recv()
@@ -2396,6 +2419,173 @@ def _affords_step(price: float, past_n: int, requirements: dict | None = None) -
     owed = float(_RUN.get("first_s") or 0.0) if (past_n and requirements and OWN_SIZE_RETRIES) else 0.0
     lim = _limit()
     return lim is None or (lim > 0 and lim >= float(price) + owed)
+
+
+#: SHMESH-21b: THE BEST MESH SO FAR AT THE LIMIT - every whole mesh a shell mesh makes (each path's mesh, #435's mesh,
+#: the per-face keep's) is left in hand: written with its record to a folder the forked run's parent owns, whenever it
+#: stands better (_so_far_beats) than the best this process wrote before it. When SHMESH-21's stop (or the run's one
+#: clock, SHMESH-31g) ends the run, the parent delivers the best of them and the record and a note say so; only a run
+#: with no valid whole mesh ends with none, as before. A stamped lab part (s33, crests r45 across) worked through the
+#: stamped stream's candidates to 910 s and was stopped with no mesh, its first path's mesh long made. Writing a mesh
+#: changes no mesh. False: the stop delivers nothing, as before
+BEST_SO_FAR = True
+#: (the folder for this shell mesh's forked runs, set by mesh_shell; the best this process wrote - its standing figures
+#: and file; what the mesh being made is called in the record; when the shell mesh started, seconds since the epoch)
+_SO_FAR: dict[str, Any] = {"dir": None, "mine": None, "file": None, "label": "the first path", "t0": 0.0}
+
+
+class _PastLimit(ValueError):
+    """SHMESH-21: the forked shell mesh ran past its deadline and was stopped (the words as before)."""
+
+
+def _so_far_view(mesh: ShellMesh, applied: dict, past_n: int) -> dict:
+    """SHMESH-21b: what _so_far_beats reads of a whole mesh - kept apart from the record, which goes on changing."""
+    import copy
+
+    q = applied.get("quality") or {}
+    rows = (applied.get("requirements") or {}).get("rows") or []
+    return {"past": _past(applied), "gone": float((q.get("face_watch") or {}).get("left_out_share") or 0.0),
+            "applied": {"requirements": {"rows": copy.deepcopy(rows)}}, "past_n": int(past_n),
+            "trias": int(len(mesh.trias)), "elements": int(mesh.n_elements)}
+
+
+def _so_far_beats(a: dict, b: dict, requirements: dict | None) -> bool:
+    """SHMESH-21b: whether whole mesh `a` stands better than `b` (_so_far_view), in the order the mesher keeps one
+    candidate over another: valid, then inside Nastran's limits (_past), then less of the part left out (SHMESH-72),
+    then SHMESH-36's standing against each other (the user's lines; SHMESH-36b where each is worse on some line), then
+    fewer triangles, then fewer elements. A tie keeps `b` (the mesh made first)."""
+    head_a, head_b = (a["past"][0], a["past"][1], a["gone"]), (b["past"][0], b["past"][1], b["gone"])
+    if head_a != head_b:
+        return head_a < head_b
+    s_a = _standing(a["applied"], a["past_n"], b["applied"], requirements)
+    s_b = _standing(b["applied"], b["past_n"], a["applied"], requirements)
+    if MIXED_BY_SHARE and s_a[0] == s_b[0] and _each_worse(a["applied"], b["applied"]):
+        m_a, m_b = _mixed_key(a["applied"], requirements), _mixed_key(b["applied"], requirements)
+        if m_a != m_b:
+            return m_a < m_b
+    elif s_a != s_b:
+        return s_a < s_b
+    return (a["trias"], a["elements"]) < (b["trias"], b["elements"])
+
+
+@contextlib.contextmanager
+def _so_far_named(name: str):
+    """SHMESH-21b: what the whole meshes made inside the block are called in the record, put back after."""
+    saved = _SO_FAR.get("label")
+    _SO_FAR["label"] = name
+    try:
+        yield
+    finally:
+        _SO_FAR["label"] = saved
+
+
+def _so_far(mesh: ShellMesh, applied: dict, past_n: int, requirements: dict | None, name: str | None = None) -> None:
+    """SHMESH-21b: one whole mesh made - counted, and written to the run's folder when it stands better than the best
+    this process wrote (then that one's file goes). Never raises, never changes the mesh or its record."""
+    import os
+    import pickle
+
+    d = _SO_FAR.get("dir")
+    if not (BEST_SO_FAR and d):
+        return
+    try:
+        folder = Path(d)
+        pid = os.getpid()
+        (folder / f"made_{time.time_ns()}_{pid}").touch()
+        n = len(list(folder.glob("made_*")))
+        view = _so_far_view(mesh, applied, past_n)
+        mine = _SO_FAR.get("mine")
+        if mine is not None and not _so_far_beats(view, mine, requirements):
+            return
+        label = name or str(_SO_FAR.get("label") or "a whole mesh")
+        data = pickle.dumps({"name": label, "n": n, "at_s": round(time.time() - float(_SO_FAR.get("t0") or 0.0), 1),
+                             "mesh": mesh, "applied": applied, "past_n": int(past_n)})
+        part = folder / f".best_{n:04d}_{pid}.part"
+        part.write_bytes(data)
+        out = folder / f"best_{n:04d}_{pid}.pkl"
+        os.replace(part, out)
+        old = _SO_FAR.get("file")
+        if old is not None and old[0] == pid:
+            Path(old[1]).unlink(missing_ok=True)
+        _SO_FAR.update(mine=view, file=(pid, str(out)))
+    except Exception as exc:  # noqa: BLE001 - a mesh not kept in hand costs nothing but the hand
+        logger.info("shell mesh: a whole mesh was not kept in hand (%s)", exc)
+
+
+def _so_far_best(folder: Path | str, requirements: dict | None) -> tuple[int, dict | None]:
+    """SHMESH-21b: (the whole meshes the run made, the best valid one written - its name, number, seconds, mesh,
+    record and elements past the solver's limits; None when none was valid)."""
+    import pickle
+
+    d = Path(folder)
+    made = len(list(d.glob("made_*")))
+    best: tuple[dict, dict] | None = None
+    for f in sorted(d.glob("best_*.pkl")):
+        try:
+            c = pickle.loads(f.read_bytes())  # noqa: S301 - our own forked children's meshes, in our own folder
+        except Exception as exc:  # noqa: BLE001 - a file cut off as the child was stopped
+            logger.info("shell mesh: a kept mesh was not read back (%s)", exc)
+            continue
+        v = _so_far_view(c["mesh"], c["applied"], c["past_n"])
+        if v["past"][0]:
+            continue
+        if best is None or _so_far_beats(v, best[0], requirements):
+            best = (v, c)
+    return made, (best[1] if best is not None else None)
+
+
+def _so_far_deliver(folder: Path | str, requirements: dict | None, allowed: float,
+                    stopped: str) -> tuple[ShellMesh, dict] | None:
+    """SHMESH-21b: at the stop, the best whole mesh made so far, told (quality.time_limit, a note, the run's
+    time_limited); None when no valid whole mesh was made."""
+    made, c = _so_far_best(folder, requirements)
+    if c is None:
+        return None
+    mesh, applied = c["mesh"], c["applied"]
+    minutes = f"{allowed / 60:.0f}" if allowed >= 60 else f"{allowed:.0f} s"
+    unit = " minutes" if allowed >= 60 else ""
+    applied.setdefault("quality", {})["time_limit"] = {
+        "rule": "SHMESH-21b", "reached": True, "limit_s": round(float(allowed), 1), "meshes_made": int(made),
+        "delivered": c["name"], "delivered_mesh": int(c["n"]), "made_at_s": c["at_s"], "stopped": stopped[:200],
+        "why": f"the shell mesh reached its time limit after {made} whole mesh(es); the best made so far is delivered"}
+    mesh.notes.append(f"The shell mesh reached its time limit ({minutes}{unit}) after {made} whole mesh(es) and was "
+                      f"stopped; the best mesh made so far (mesh {c['n']} of {made}: {c['name']}) is delivered "
+                      "(SHMESH-21b).")
+    logger.warning("shell mesh: stopped at its time limit after %d whole meshes; mesh %d (%s) delivered (SHMESH-21b)",
+                   made, c["n"], c["name"])
+    try:
+        from meshpipeline.engines.determinism import note_time_limit
+
+        note_time_limit("shell_mesh", "the shell mesh reached its time limit: the best mesh made so far is delivered",
+                        limit_s=float(allowed), meshes_made=int(made), delivered_mesh=int(c["n"]))
+    except Exception as exc:  # noqa: BLE001 - the record and the note still say it
+        logger.debug("shell mesh: the time limit was not recorded (%s)", type(exc).__name__)
+    return mesh, applied
+
+
+#: SHMESH-21c: the stamped stream's optional whole meshes (SHMESH-76's meshes without the steps or the fit, SHMESH-77's
+#: fit kept where it pays, SHMESH-90's steps kept where they pay; SHMESH-91's per-face keep) start only when the time
+#: left (_limit: the clock less TIME_MARGIN_S) covers what the last one of their kind cost, plus PRICE_MARGIN of it;
+#: one not started is recorded (strip_steps_kept.skipped) and told, and the run ends inside its limit with the best it
+#: has. The rules that judge them are unchanged. False: started whatever the time left, as before
+STAMPED_PRICED = True
+PRICE_MARGIN = 0.1
+#: SHMESH-21c: the per-face keep has no earlier one of its kind in a run: it is priced at this (it stitches meshes
+#: made, no gmsh; measured on the stamped lab, see quality.strip_steps_kept.face_keep_s)
+FACE_KEEP_PRICE_S = 10.0
+#: (what a stamped optional mesh not started is told)
+PRICED_WHY = "not started: the time left would not cover one more (SHMESH-21c)"
+
+
+def _priced_affords(price: float | None) -> bool:
+    """SHMESH-21c: whether an optional stamped mesh (or the per-face keep) priced at `price` seconds - the last of its
+    kind - may start: no once a spot pass was cut off at the deadline; else when the time left covers it and its
+    margin."""
+    if not STAMPED_PRICED:
+        return True
+    if _RUN.get("cut"):
+        return False
+    return _affords(float(price or 0.0) * (1.0 + PRICE_MARGIN))
 
 
 def _short_mend(xyz, Q, T, q_face, t_face, node_kind, node_edge, vertex_edges, lim, low: float,
@@ -2585,7 +2775,7 @@ def _mesh_shell_timed(brep: Path | str, record: dict, *, mm_per_unit: float = 1.
         return mesh, applied
 
     def classic_path():
-        with _classic():
+        with _classic(), _so_far_named("#435's steps (SHMESH-36)"):
             return _mesh_path(brep, record, mm_per_unit=mm_per_unit, log=None, target=target, correction=correction,
                               requirements=requirements)
 
@@ -2693,9 +2883,15 @@ def _yield_both(brep, record, **kw):
     and the better kept (_standing against each other, then fewer triangles, then fewer elements)."""
     # (every argument passed on whole: a parameter another step adds to _guarded_path reaches it)
     requirements = kw.get("requirements")
-    mesh, applied, past_n = _narrow_kept_path(brep, record, **kw)
+    t_c = time.monotonic()
+    with _so_far_named("all on (the first path)"):
+        mesh, applied, past_n = _narrow_kept_path(brep, record, **kw)
     if _YIELD_OFF[0] or not NO_WORSE:
         return mesh, applied, past_n
+    # (SHMESH-21c: each optional mesh below priced at the last whole mesh's seconds; those not started)
+    last_s = time.monotonic() - t_c
+    skipped: list[dict] = []
+    face_keep_s: float | None = None
     best = ("all on", mesh, applied, past_n)
     pool = [best]                 # (SHMESH-91: every candidate made, for the per-face keep)
     tried = []
@@ -2717,13 +2913,18 @@ def _yield_both(brep, record, **kw):
                      or (bool(q_.get("fit_mapped")) and "FIT_MAP" in off))
         if not acted:
             continue
+        if not _priced_affords(last_s):
+            skipped.append({"mesh": name, "price_s": round(last_s, 1), "why": PRICED_WHY})
+            continue
         saved = {n_: g_[n_] for n_ in off}
         _YIELD_OFF[0] = True
         if per_face:
             _FIT_EXCLUDE[:] = [(np.asarray(c_, dtype=float), float(a_)) for c_, a_ in q_["fit_bad"]]
+        t_c = time.monotonic()
         try:
             g_.update(off)
-            other, applied_o, other_n = _narrow_kept_path(brep, record, **{**kw, "log": None})
+            with _so_far_named(name):
+                other, applied_o, other_n = _narrow_kept_path(brep, record, **{**kw, "log": None})
         except (ValueError, _Periodic) as exc:
             logger.info("shell mesh: no mesh %s to compare (%s)", name, exc)
             continue
@@ -2731,6 +2932,7 @@ def _yield_both(brep, record, **kw):
             _YIELD_OFF[0] = False
             g_.update(saved)
             _FIT_EXCLUDE.clear()
+            last_s = time.monotonic() - t_c
         _n, m_b, a_b, p_b = best
         mine = (*_standing(a_b, p_b, applied_o, requirements), len(m_b.trias), int(m_b.n_elements))
         theirs = (*_standing(applied_o, other_n, a_b, requirements), len(other.trias), int(other.n_elements))
@@ -2742,7 +2944,8 @@ def _yield_both(brep, record, **kw):
 
         pool.append((name, other, applied_o, other_n))
         tried.append({"mesh": name, "against": best[0], "kept": theirs < mine, "this": list(theirs),
-                      "that": list(mine), "this_did": did(applied_o["quality"]), "that_did": did(a_b["quality"])})
+                      "that": list(mine), "this_did": did(applied_o["quality"]), "that_did": did(a_b["quality"]),
+                      "seconds": round(last_s, 1)})
         seen.append(applied_o["quality"])
         if theirs < mine:
             applied_o["quality"]["strip_log"] = applied_o["quality"].get("strip_log") or q_.get("strip_log")
@@ -2768,13 +2971,20 @@ def _yield_both(brep, record, **kw):
         per_face_rec["split"] = ("tried" if worse and len(worse) < len(ff) else
                                   "not tried: every fit face costs triangles (the mesh without the fit is that split)"
                                   if worse else "not tried: no fit face costs triangles")
-        if worse and len(worse) < len(ff):
+        name = f"the fit kept where it pays ({len(ff) - len(worse)} of {len(ff)} faces)"
+        if worse and len(worse) < len(ff) and not _priced_affords(last_s):
+            # (SHMESH-21c: not started - the time left would not cover it)
+            per_face_rec["split"] = "not tried: " + PRICED_WHY
+            skipped.append({"mesh": name, "price_s": round(last_s, 1), "why": PRICED_WHY})
+        elif worse and len(worse) < len(ff):
             _FIT_EXCLUDE[:] = [(np.asarray(ff[k_]["key"][0], dtype=float), float(ff[k_]["key"][1])) for k_ in worse]
             saved = {"TRANSITIONS": g_["TRANSITIONS"]}
             _YIELD_OFF[0] = True
+            t_c = time.monotonic()
             try:
                 g_["TRANSITIONS"] = False
-                other, applied_o, other_n = _narrow_kept_path(brep, record, **{**kw, "log": None})
+                with _so_far_named(name):
+                    other, applied_o, other_n = _narrow_kept_path(brep, record, **{**kw, "log": None})
             except (ValueError, _Periodic) as exc:
                 logger.info("shell mesh: no mesh with the fit kept where it pays (%s)", exc)
                 other = None
@@ -2782,14 +2992,14 @@ def _yield_both(brep, record, **kw):
                 _YIELD_OFF[0] = False
                 g_.update(saved)
                 _FIT_EXCLUDE.clear()
+                last_s = time.monotonic() - t_c
             if other is not None:
                 _n, m_b, a_b, p_b = best
                 mine = (*_standing(a_b, p_b, applied_o, requirements), len(m_b.trias), int(m_b.n_elements))
                 theirs = (*_standing(applied_o, other_n, a_b, requirements), len(other.trias), int(other.n_elements))
-                name = f"the fit kept where it pays ({len(ff) - len(worse)} of {len(ff)} faces)"
                 pool.append((name, other, applied_o, other_n))
                 tried.append({"mesh": name, "against": best[0], "kept": theirs < mine, "this": list(theirs),
-                              "that": list(mine)})
+                              "that": list(mine), "seconds": round(last_s, 1)})
                 if theirs < mine:
                     best = (name, other, applied_o, other_n)
     with_st = next((q_c for q_c in seen_q if q_c.get("step_faces")), None)
@@ -2806,34 +3016,51 @@ def _yield_both(brep, record, **kw):
         def near_tri(t_: dict, v_: dict) -> int:
             return sum(int(t_.get(str(n_), 0)) for n_ in v_["near"])
         worse = [k_ for k_, v_ in sf.items() if near_tri(tw, v_) > near_tri(tn, v_)]
-        if worse and len(worse) < len(sf):
+        name = f"the steps kept where they pay ({len(sf) - len(worse)} of {len(sf)} strips)"
+        if worse and len(worse) < len(sf) and not _priced_affords(last_s):
+            # (SHMESH-21c: not started - the time left would not cover it)
+            skipped.append({"mesh": name, "price_s": round(last_s, 1), "why": PRICED_WHY})
+        elif worse and len(worse) < len(sf):
             _STEP_EXCLUDE[:] = [(np.asarray(sf[k_]["key"][0], dtype=float), float(sf[k_]["key"][1])) for k_ in worse]
+            t_c = time.monotonic()
             try:
-                other, applied_o, other_n = _narrow_kept_path(brep, record, **{**kw, "log": None})
+                with _so_far_named(name):
+                    other, applied_o, other_n = _narrow_kept_path(brep, record, **{**kw, "log": None})
             except (ValueError, _Periodic) as exc:
                 logger.info("shell mesh: no mesh with the steps kept where they pay (%s)", exc)
                 other = None
             finally:
                 _STEP_EXCLUDE.clear()
+                last_s = time.monotonic() - t_c
             if other is not None:
                 _n, m_b, a_b, p_b = best
                 mine = (*_standing(a_b, p_b, applied_o, requirements), len(m_b.trias), int(m_b.n_elements))
                 theirs = (*_standing(applied_o, other_n, a_b, requirements), len(other.trias), int(other.n_elements))
-                name = f"the steps kept where they pay ({len(sf) - len(worse)} of {len(sf)} strips)"
                 pool.append((name, other, applied_o, other_n))
                 tried.append({"mesh": name, "against": best[0], "kept": theirs < mine, "this": list(theirs),
-                              "that": list(mine)})
+                              "that": list(mine), "seconds": round(last_s, 1)})
                 if theirs < mine:
                     best = (name, other, applied_o, other_n)
-    if FACE_KEEP and len(pool) > 1:
+    if FACE_KEEP and len(pool) > 1 and not _priced_affords(FACE_KEEP_PRICE_S):
+        # (SHMESH-21c: the per-face keep not started - the time left would not cover it)
+        skipped.append({"mesh": "the per-face keep (SHMESH-91)", "price_s": FACE_KEEP_PRICE_S, "why": PRICED_WHY})
+    elif FACE_KEEP and len(pool) > 1:
         # SHMESH-91: the delivered mesh takes, face by face, the best of each face across the candidates whose nodes
         # on that face's boundary are the same (kept only when the whole stands no worse)
+        t_c = time.monotonic()
         got_k = _face_keep(best, pool, requirements)
+        face_keep_s = round(time.monotonic() - t_c, 1)
         if got_k is not None:
             best = got_k
+            _so_far(best[1], best[2], best[3], requirements, name=best[0])
     _n, mesh, applied, past_n = best
-    if tried:
-        applied["quality"]["strip_steps_kept"] = {"kept": best[0], "tried": tried}
+    if skipped:
+        mesh.notes.append(f"{len(skipped)} optional stamped-sheet mesh(es) were not started: the time left before the "
+                          "shell mesh's limit would not cover one more; the best mesh made is delivered (SHMESH-21c).")
+    if tried or skipped:
+        applied["quality"]["strip_steps_kept"] = {"kept": best[0], "tried": tried,
+                                                  **({"skipped": skipped} if skipped else {}),
+                                                  **({"face_keep_s": face_keep_s} if face_keep_s is not None else {})}
     if per_face_rec:
         applied["quality"]["fit_per_face"] = per_face_rec
     return mesh, applied, past_n
@@ -3366,9 +3593,16 @@ def _candidate(name: str, mesh: ShellMesh, applied: dict, past_n: int) -> dict:
                       for r in rows if str(r.get("field", "")).startswith("limit:")]}
 
 
-def _mesh_path(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log: list | None = None,
-               target: dict | None = None, correction: float = 1.0,
-               requirements: dict | None = None) -> tuple[ShellMesh, dict, int]:
+def _mesh_path(brep: Path | str, record: dict, **kw) -> tuple[ShellMesh, dict, int]:
+    """_mesh_path_made (every argument passed on whole); SHMESH-21b: its mesh is kept in hand (_so_far) for the stop."""
+    mesh, applied, past_n = _mesh_path_made(brep, record, **kw)
+    _so_far(mesh, applied, past_n, kw.get("requirements"))
+    return mesh, applied, past_n
+
+
+def _mesh_path_made(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log: list | None = None,
+                    target: dict | None = None, correction: float = 1.0,
+                    requirements: dict | None = None) -> tuple[ShellMesh, dict, int]:
     """The whole path of one shell mesh: closed faces cut, faces gmsh cannot mesh re-made, SHMESH-31's local
     re-mesh. Returns (the mesh, the plan as applied, its elements past the solver's own limits - with requirements
     only)."""
