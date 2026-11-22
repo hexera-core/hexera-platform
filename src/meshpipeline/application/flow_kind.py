@@ -23,6 +23,9 @@ DECIDE_AT = 0.6
 PICTURE_MARGIN = 0.15
 
 RULE_WORDS, RULE_GEOMETRY, RULE_PICTURES, RULE_UNDECIDED, RULE_FILE = "FLOW-1", "FLOW-2", "FLOW-3", "FLOW-4", "FLOW-5"
+#: FLOW-9: the undecided case whose best guess is flow through the part - its faces read a body, its inside-space map
+#: finds a way through it with two mouths or more
+RULE_THROUGH_GUESS, THROUGH_CASE = "FLOW-9", "map_disagrees"
 
 
 def _rx(*parts: str) -> re.Pattern:
@@ -368,6 +371,10 @@ def _decide(facts: dict, words: str, vision: dict | None) -> dict:
                 if geo.kind in (INTERNAL, EXTERNAL) else f"the shape alone cannot tell: {geo.reason}")
     best = geo.kind if geo.kind in (INTERNAL, EXTERNAL) else (str(facts.get("flow_scout") or facts.get("flow") or "")
                                                               or INTERNAL)
+    if geo.case == THROUGH_CASE:
+        # FLOW-9: faces that read a body while the map finds a way through it with two mouths or more - drawn as flow
+        # through it until the user says (still asked, FLOW-4): the way through is what the fluid has to pass
+        best = INTERNAL
     # FLOW-1: THE USER'S STATED WORDS WIN, whatever the shape says (the shape's reading is kept as a reason)
     if said.tier == "said":
         reasons = [f"you said {_quote(said.words)}"]
@@ -408,7 +415,10 @@ def _decide(facts: dict, words: str, vision: dict | None) -> dict:
     if kind == UNDECIDED:
         rule = RULE_UNDECIDED
         by = "guess"
-    return _record(kind, best if kind == UNDECIDED else kind, conf, by, rule, reasons, geo, facts, said_kind)
+    out = _record(kind, best if kind == UNDECIDED else kind, conf, by, rule, reasons, geo, facts, said_kind)
+    if kind == UNDECIDED and geo.case == THROUGH_CASE and best == INTERNAL:
+        out["guess_rule"] = RULE_THROUGH_GUESS
+    return out
 
 
 def answer(record: dict, facts: dict, text: str) -> dict:

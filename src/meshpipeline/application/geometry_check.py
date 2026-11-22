@@ -1332,6 +1332,8 @@ def _scout_exact_rest(facts: dict, skin: Path, local_path: Path, work: Path, int
         read_whole_shape(facts, skin)
         if shape is not None and facts.get("openings_from") != "fluid_volume":
             perforated_openings(facts, shape, prepared)
+        # FLOW-9: a part read as a body the map finds a way through is asked, with that way's mouths proposed
+        through_part_openings(facts)
     settle_flow_kind(facts)
     return facts, skin
 
@@ -1757,6 +1759,115 @@ def map_openings(facts: dict) -> None:
                               "where that bore meets the part's flat face, measured exactly (INS-13)")
 
 
+#: docs/RULES.md: a part read as a body that the map finds a way through is proposed as flow through it, asked
+THROUGH_GUESS_RULE = "FLOW-9"
+#: FLOW-9: a face-read opening IS a mouth of the map when its centre lies within this share of the wider one's width
+#: of the mouth's, it faces the same way (normals' dot at least MOUTH_FACING) and its size is within MOUTH_SIZE of it
+MOUTH_NEAR, MOUTH_FACING, MOUTH_SIZE = 0.5, 0.9, 1.25
+
+
+def _mouth_hole_exact(h: dict, flats: list) -> dict:
+    """A mouth of the map as the opening it is: the flat face's hole of its bore, measured exactly, when the map
+    tied it to one (INS-13), else the mouth as the map read it on the drawn skin."""
+    k = h.get("flat_hole")
+    if k is None or not 0 <= int(k) < len(flats):
+        return h
+    f = flats[int(k)]
+    round_hole = abs(float(f.get("width_mm") or 0) - float(f.get("height_mm") or 0)) <= 0.1 * float(
+        f.get("width_mm") or 1.0)
+    return {**{key: h[key] for key in ("confidence", "passage_mouths") if key in h},
+            "kind": "ring", "shape": "circle" if round_hole else "other", "flat_hole": int(k),
+            "centroid_m": f["centroid_m"], "centroid_mm": f["centroid_mm"], "normal": f["normal"],
+            "area_mm2": f["area_mm2"], "diameter_mm": f["diameter_mm"],
+            **({} if round_hole else {"width_mm": f["width_mm"], "height_mm": f["height_mm"]})}
+
+
+def _is_mouth(o: dict, m: dict) -> bool:
+    """A face-read opening that is this mouth: a hole (never a flat end's whole disc of metal), centred on it,
+    facing the same way, about its size."""
+    if o.get("kind") == "disc" or not o.get("centroid_mm") or not m.get("centroid_mm"):
+        return False
+    do, dm = float(o.get("diameter_mm") or 0.0), float(m.get("diameter_mm") or 0.0)
+    if do <= 0.0 or dm <= 0.0 or max(do, dm) > MOUTH_SIZE * min(do, dm):
+        return False
+    if sum(a * b for a, b in zip(o.get("normal") or [0, 0, 0], m.get("normal") or [0, 0, 0])) < MOUTH_FACING:
+        return False
+    return math.dist(o["centroid_mm"], m["centroid_mm"]) <= MOUTH_NEAR * max(do, dm)
+
+
+def through_part_openings(facts: dict) -> None:
+    """FLOW-9, A BODY THE MAP FINDS A WAY THROUGH IS PROPOSED WITH THE WAY'S MOUTHS. A part whose faces read as a body
+    in a flow while its inside-space map finds a passage with two mouths or more (FLOW-2's "faces that read a body
+    where the map finds a way through") is asked, its best guess flow through it (application/flow_kind); its
+    openings are then the mouths of those passages - the flat face's hole of each bore, measured exactly - never
+    the flat ends' whole discs of metal round them (an end plug's 56 mm end face over its 16 mm bore). Face-read
+    openings that are those mouths stay as read; the others are kept as not openings, for the stage's click.
+    Openings that already are the mouths are left as they are. Never fails the scout."""
+    from meshpipeline.application.flow_kind import THROUGH_CASE, geometry_reading
+    try:
+        if geometry_reading(facts).case != THROUGH_CASE:
+            return
+        flats = facts.get("flat_holes") or []
+        mouths, used = [], set()
+        for h in facts.get("holes") or []:
+            if not h.get("passage", True) or int(h.get("passage_mouths") or 0) < 2:
+                continue
+            k = h.get("flat_hole")
+            if k is not None and int(k) in used:
+                continue                                  # two loops of one bore: one opening
+            if k is not None:
+                used.add(int(k))
+            mouths.append(_mouth_hole_exact(h, flats))
+        if len(mouths) < 2:
+            return
+        ops = [o for o in facts.get("openings") or [] if isinstance(o, dict)]
+        ports = [o for o in ops if o.get("role") in ("inlet", "outlet")]
+        match: dict[int, dict | None] = {}
+        kept_ids: set[int] = set()
+        for i, m in enumerate(mouths):
+            o = next((o for o in ports if id(o) not in kept_ids and _is_mouth(o, m)), None)
+            match[i] = o
+            if o is not None:
+                kept_ids.add(id(o))
+        if all(match.values()) and len(kept_ids) == len(ports):
+            return                                         # the faces read the mouths already
+        new: list[dict] = []
+        for i, m in sorted(enumerate(mouths), key=lambda im: -float(im[1].get("area_mm2") or 0.0)):
+            o = match[i]
+            if o is not None:
+                new.append(dict(o))
+                continue
+            o = {"face": int(flats[int(m["flat_hole"])].get("face", -1)) if m.get("flat_hole") is not None else -1,
+                 "kind": "rim" if m.get("kind") == "rim" else "ring", "shape": m.get("shape") or "other",
+                 "confidence": float(m.get("confidence") or 0.6),
+                 "centroid_m": list(m.get("centroid_m") or []), "centroid_mm": list(m.get("centroid_mm") or []),
+                 "normal": list(m.get("normal") or []),
+                 "area_m2": round(float(m.get("area_mm2") or 0.0) * 1e-6, 12),
+                 "area_mm2": float(m.get("area_mm2") or 0.0), "diameter_mm": m.get("diameter_mm"),
+                 "on_extremity": True, "clear_ahead": True, "from_map": True}
+            for key in ("width_mm", "height_mm", "inner_diameter_mm", "flow_area_mm2"):
+                if m.get(key) is not None:
+                    o[key] = m[key]
+            new.append(o)
+        n = len(new)
+        for k, o in enumerate(new, start=1):
+            o["id"], o["role"] = k, "inlet" if k == 1 else "outlet"
+            o["name"] = "inlet" if k == 1 else "outlet" if n == 2 else f"outlet_{k - 1}"
+        aside = [{**o, "role": "not_an_opening"} for o in ports if id(o) not in kept_ids]
+        rest = [dict(o) for o in ops if o.get("role") not in ("inlet", "outlet")]
+        for k, o in enumerate([*aside, *rest], start=n + 1):
+            o["id"] = k
+        facts["openings"] = [*new, *aside, *rest]
+        facts.setdefault("notes", []).append(
+            f"its faces read as a body, but its inside-space map finds a way through it: the {n} mouths of that way "
+            f"are proposed as its openings, for you to confirm ({THROUGH_GUESS_RULE})"
+            + (f"; {len(aside)} flat end(s) or hole(s) that are no mouth of it are proposed as not openings"
+               if aside else ""))
+    except Exception as exc:  # noqa: BLE001 - the openings as read stand
+        logger.warning("geometry check: the map's mouths could not be proposed (%s: %s)", type(exc).__name__,
+                       str(exc)[:200])
+
+
 def skin_holes(skin: Path, facts: dict | None = None) -> list[dict]:
     """The holes of the skin the stage draws, by the one definition the triangle scout uses
     (cad/open_ends: the mouths of the part's inside-space map) - what "Add an opening" snaps to.
@@ -1774,6 +1885,13 @@ def skin_holes(skin: Path, facts: dict | None = None) -> list[dict]:
         mesh = surface(tris)
         found = find_holes(mesh=mesh) if mesh is not None else []
         holes = [h.as_dict() for h in found]
+        if facts is not None and mesh is not None:
+            # FLOW-9: how many mouths the passage a hole opens has (the map is read once per surface): a mouth of
+            # a way through the part (two mouths or more) is what a part read as a body proposes when asked
+            pockets = getattr(inside_map(mesh), "pockets", None) or []
+            for h, d in zip(found, holes):
+                if d.get("passage", True) and 0 <= int(h.pocket) < len(pockets):
+                    d["passage_mouths"] = len(pockets[int(h.pocket)].mouths)
         if facts is not None and int(facts.get("solids") or 0) >= 1:
             # INS-22: A GAP IN A CAD SOLID'S TESSELLATION IS NO OPENING. The B-rep closes the solid, so an open
             # rim of its skin is where OpenCASCADE left a face bare (a sliver it gives "null triangulation")
