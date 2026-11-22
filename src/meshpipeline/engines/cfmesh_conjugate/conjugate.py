@@ -1786,6 +1786,49 @@ def _layer_chain(ranks: int, layers: int) -> tuple:
         mpi=mpi_command("snappyHexMesh -overwrite", int(ranks)))),)
 
 
+def _pinch_chain(ranks: int) -> tuple[tuple[str, str], ...]:
+    """The three stages that reconnect metal the voxel split severed at a diagonal step.
+
+    `surfaceToCell useSurfaceOrientation` tags a cell as coolant when its CENTRE is inside the
+    coolant surface, so the interface is a staircase of whole cells and a metal web narrower than
+    one cell loses its middle to the coolant. The metal either side is then touching along an EDGE,
+    which `checkMesh` counts as separate regions and a solver sees as fins that conduct nothing.
+    The plate came back in 59 pieces at 8 across and 5 at 2 across, with the fragments identical in
+    size at each resolution because they are one repeated design feature, and the count GROWING
+    with refinement - so it is the classification and not the cell size.
+
+    Measured on the 2-across case: each fragment shares exactly 36 points and ZERO faces with the
+    main body, so the metal is one body; moving 296 coolant cells of 2,425,414 - 0.0122% of them,
+    0.0089% of the coolant's volume - takes the solid from 5 regions to 1 (OK) without severing the
+    coolant, which was the real risk since a diagonal cuts both ways.
+
+    BEFORE THE SPLIT, AND IT CANNOT BE ANYWHERE ELSE. After it, the layer pass has already run on
+    the split mesh and re-splitting would throw its layers away. Before it there is no
+    `cellToRegion` to read, which is what the detect pass is for: `-cellZones` walks face
+    connectivity FIRST - exactly "connected components within each zone" - and `-detectOnly` writes
+    that answer without building a mesh per region. `SPLIT_ARGS` warns that `-cellZones` was slow
+    on an array of 100 channels; that was the full split building 84 meshes, and the walk alone is
+    9.1 s against that case's 25 s split.
+
+    PARALLEL ONLY, as the layer pass is: every measurement of this is on a decomposed case and
+    `cellToRegion` is read per processor directory. Nothing is added to a serial chain.
+    """
+    if int(ranks) <= 1:
+        return ()
+    from meshpipeline.engines.cfmesh_conjugate import pinch as PI
+
+    return (
+        ("pinchDetect", mpi_command(" ".join(PI.DETECT_ARGS), int(ranks))),
+        # NOT under mpirun: it reads every rank's `cellToRegion` in one process, because the
+        # majority region has to be decided across all of them at once. A region can straddle
+        # ranks, and picking the biggest piece rank by rank would call the main body an island
+        # wherever it happens to be thin.
+        ("pinchBridge", "python3 -m meshpipeline.engines.cfmesh_conjugate.pinch"),
+        ("pinchZones", mpi_command(
+            f"topoSet -noZero -dict system/{PI.PINCH_DICT}", int(ranks))),
+    )
+
+
 def _port_chain(ranks: int) -> list[tuple[str, str]]:
     """The two stages that cut the named port patches out of the coolant's block face.
 
@@ -1975,6 +2018,16 @@ def build(workspace, *, block_stl: str = "constant/triSurface/block.stl",
         for name, body in LY.render_support_dicts().items():
             (ldir / name).write_text(body)
 
+    # THE PINCH DICTIONARY, BEFORE THE SCAN, for the reason spelled out above the layer ones:
+    # the `pinchBridge` stage runs in the middle of the chain, so a dictionary it wrote would be
+    # read first by `check_mesh` with the whole mesh already built behind it. Its content depends
+    # on nothing but the zone names, so there is no reason for it to be late; only `islandCells`
+    # has to wait for the detect pass, and a cellSet is not a dictionary the guard reads.
+    if int(ranks) > 1:
+        from meshpipeline.engines.cfmesh_conjugate import pinch as _PI
+        (ws / "system" / _PI.PINCH_DICT).write_text(_PI.render_pinch_toposetdict(
+            fluid_zone=FLUID_REGION, solid_zone=SOLID_REGION))
+
     reason = scan_case_dicts(ws)
     if reason:
         raise ConjugateError(f"the case dictionaries were rejected before any stage ran: {reason}")
@@ -2043,6 +2096,10 @@ def build(workspace, *, block_stl: str = "constant/triSurface/block.stl",
             (PREPARE_PAR, PREPARE_PAR),
             ("cartesianMesh", mpi_command("cartesianMesh", int(ranks))),
             ("topoSet", mpi_command("topoSet", int(ranks))),
+            # RECONNECT THE METAL BEFORE THE SPLIT. See `_pinch_chain`: the voxel interface severs
+            # a metal web narrower than one cell, and after the split the layer pass has already
+            # run on the result.
+            *_pinch_chain(int(ranks)),
             ("splitMeshRegions", mpi_command(" ".join(SPLIT_ARGS), int(ranks))),
             # THE LAYER PASS, after the split and before the reconstruct. It extrudes from
             # `fluid_to_solid`, which does not exist until the split has cut it, and the ordering
