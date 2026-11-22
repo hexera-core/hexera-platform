@@ -148,6 +148,94 @@ def test_an_optional_stamped_mesh_the_time_left_does_not_cover_is_not_started(mo
     assert any("SHMESH-21c" in n for n in mesh.notes)
 
 
+def _choosing_path(clock, calls, spot_s):
+    """A fake candidate path whose spot pass is decided as _mesh_path decides it (SHMESH-21d / 31h): the first path
+    keeps back the first meshes owed after it, a spot pass that the time left less that cannot afford (priced at
+    _spot_price) waits, one that runs past its bound is stopped and waits; a spot pass made clears the elements past
+    the solver's limits. Each call is recorded as (its name, TRANSITIONS, whether its spot pass waited)."""
+
+    def path(*_a, **_k):
+        label, trans = sa._SO_FAR["label"], sa.TRANSITIONS
+        clock.sleep(50.0 if not calls else 10.0)
+        if sa._RUN.get("first_s") is None:
+            sa._RUN["first_s"] = 50.0
+        applied = _applied(past=3)
+        applied["quality"].update(strip_yield=True, fit_mapped=3)
+        reserve = sa._choose_reserve(applied)
+        waited = bool(sa._CHOOSE.get("defer"))
+        if not waited and not sa._affords(sa._spot_price() + reserve):
+            assert reserve and sa._affords(reserve)
+            sa._choose_start("the spot pass and the meshes to compare would not fit")
+            waited = True
+        if not waited:
+            bound = sa._limit() - reserve
+            if spot_s > bound:
+                clock.sleep(bound)
+                sa._SPOT_COST["s"] = bound
+                sa._choose_start("the spot pass was stopped")
+                waited = True
+            else:
+                clock.sleep(spot_s)
+                sa._SPOT_COST["s"] = max(sa._SPOT_COST["s"] or 0.0, spot_s)
+        calls.append((label, trans, waited))
+        past = 3 if waited else 0
+        applied["quality"]["nastran_past"] = {"taper": past} if past else {}
+        if waited:
+            applied["quality"]["own_size_deferred"] = True
+        return _mesh(4 if trans else 2), applied, past
+
+    return path
+
+
+def _choose_setup(monkeypatch, left_s, spot_s):
+    clock = _Clock()
+    monkeypatch.setattr(sa, "time", clock)
+    calls: list = []
+    monkeypatch.setattr(sa, "_narrow_kept_path", _choosing_path(clock, calls, spot_s))
+    for flag in ("FACE_KEEP", "FIT_PER_FACE", "STEP_PER_STRIP"):
+        monkeypatch.setattr(sa, flag, False)
+    monkeypatch.setitem(sa._RUN, "end", clock.now + left_s)
+    monkeypatch.setitem(sa._RUN, "first_s", None)
+    monkeypatch.setitem(sa._RUN, "cut", False)
+    monkeypatch.setitem(sa._SPOT_COST, "s", None)
+    return calls
+
+
+def test_when_time_is_short_the_candidates_are_chosen_first_and_the_one_kept_repaired_last(monkeypatch):
+    # SHMESH-21d (fake clock): 210 s; the first mesh 50 s, two meshes to compare owed (110 s kept back): its spot pass
+    # (priced at 50 s) and they would not fit, so it waits; both candidates are made as first meshes (10 s each), the
+    # better (fewer triangles) is kept and made again with its spot pass - delivered with none past the solver's limits
+    calls = _choose_setup(monkeypatch, 210.0, 50.0)
+    mesh, applied, n = sa._yield_both("x.brep", {}, requirements={"limits": []})
+    assert [c[2] for c in calls] == [True, True, True, False]          # three first meshes, then the repair
+    assert calls[-1] == ("without the steps, repaired", False, False)
+    chose = applied["quality"]["chose_first"]
+    assert chose["kept"] == "without the steps" and chose["repaired"] == "kept"
+    assert n == 0 and len(mesh.trias) == 2
+    assert sa._CHOOSE["tight"] is False and sa._CHOOSE["defer"] is False
+
+
+def test_a_spot_pass_that_runs_into_the_meshes_to_compare_is_stopped_and_they_are_made(monkeypatch):
+    # SHMESH-21d (fake clock), s33's shape: 900 s; the first mesh 50 s, its spot pass would take 750 s - it is stopped
+    # at the time left less the two first meshes owed (820 s - 110 s), both are made, the best first mesh is kept; no
+    # time is left for its repair (priced at the spot pass measured): told, nothing cut
+    calls = _choose_setup(monkeypatch, 900.0, 750.0)
+    mesh, applied, n = sa._yield_both("x.brep", {}, requirements={"limits": []})
+    assert [c[2] for c in calls] == [True, True, True]
+    chose = applied["quality"]["chose_first"]
+    assert chose["kept"] == "without the steps" and chose["repaired"].startswith("not started")
+    assert len(mesh.trias) == 2 and n == 3 and not sa._RUN["cut"]
+    assert any("SHMESH-21d" in t for t in mesh.notes)
+
+
+def test_with_time_for_everything_each_candidate_is_made_whole_as_before(monkeypatch):
+    # SHMESH-21d: 900 s and spot passes of 50 s - nothing waits, nothing is chosen first, no repair pass
+    calls = _choose_setup(monkeypatch, 900.0, 50.0)
+    _m, applied, n = sa._yield_both("x.brep", {}, requirements={"limits": []})
+    assert [c[2] for c in calls] == [False, False, False] and "chose_first" not in applied["quality"]
+    assert n == 0
+
+
 def test_with_time_to_spare_every_optional_mesh_starts_as_before(monkeypatch):
     # SHMESH-21c: a run far inside its limit starts each optional mesh exactly as before
     clock = _Clock()

@@ -2588,6 +2588,57 @@ def _priced_affords(price: float | None) -> bool:
     return _affords(float(price or 0.0) * (1.0 + PRICE_MARGIN))
 
 
+#: SHMESH-21d: CHOOSE FIRST, REPAIR LAST - where the time left cannot hold the first path's spot pass (SHMESH-31,
+#: priced by its work: _spot_price) and the first mesh of each of SHMESH-76's meshes the first path's mesh sets going,
+#: the spot passes wait: each candidate is made as its first mesh only (priced at the last first mesh's seconds), they
+#: are ranked as they stand (SHMESH-76's order: SHMESH-36's standing, then triangles, then elements), and only the one
+#: kept is made again with its spot passes, with the time that is left (none when even that cannot fit: told). Where
+#: the time holds it all, nothing changes: the candidates are made whole, one after another, as before. On s33 the
+#: first path's spot pass took 610 s of 900 and was then dropped (it cleared nothing), and the two meshes it was to be
+#: set against were never made. False: every path makes its spot passes at once, as before
+CHOOSE_FIRST = True
+#: (the first path to reach its spot passes decides (armed); tight: the run chooses first; defer: the spot passes of
+#: the paths made now wait; price: the first path's spot pass, seconds; owed: SHMESH-76's meshes it sets going)
+_CHOOSE: dict[str, Any] = {"armed": False, "tight": False, "defer": False, "price": None, "owed": 0, "why": ""}
+
+
+def _choose_owed(q: dict) -> int:
+    """SHMESH-21d: how many of SHMESH-76's three meshes a first mesh (its quality record) sets going, read as
+    _yield_both reads them."""
+    steps = bool(q.get("strip_yield")) or bool((q.get("strip_steps") or {}).get("planned"))
+    return int(steps) + int(bool(q.get("fit_bad"))) + int(steps or bool(q.get("fit_mapped")))
+
+
+def _choose_reserve(applied: dict) -> float:
+    """SHMESH-21d: at the first path's spot passes (once a run, the path armed by _yield_both): the seconds kept back
+    for the first mesh of each of SHMESH-76's meshes the first path's mesh sets going (each at the first mesh's own
+    time, with PRICE_MARGIN); 0 for any other path."""
+    if not (CHOOSE_FIRST and _CHOOSE.get("armed")):
+        return 0.0
+    _CHOOSE["armed"] = False
+    owed = _choose_owed(applied.get("quality") or {})
+    _CHOOSE["owed"] = owed
+    return owed * float(_RUN.get("first_s") or 0.0) * (1.0 + PRICE_MARGIN)
+
+
+def _choose_start(why: str) -> None:
+    """SHMESH-21d: from now on the run chooses first - the paths made now wait with their spot passes."""
+    _CHOOSE.update(tight=True, defer=True, why=why)
+
+
+#: SHMESH-31h: the longest spot pass this shell mesh measured, seconds (None: none yet); reset with the run's clock
+_SPOT_COST: dict[str, float | None] = {"s": None}
+
+
+def _spot_price() -> float:
+    """SHMESH-31h: what a spot pass is priced at - the first mesh's own time (SHMESH-31b), or the longest spot pass
+    this shell mesh has measured when that is longer: a spot pass re-meshes the whole part with finer boxes, and its
+    clean-up can cost many times the first mesh's (s33: 610 s against a first mesh of 91 s; most parts 0.9 to 2.4
+    times). Its work cannot be read before it runs (s33 had 10 boxes; fr014, 64 boxes and twice the elements, took 1.1
+    times its first mesh), so the first spot pass of a run is priced at the first mesh and held to its bound."""
+    return max(float(_RUN.get("first_s") or 0.0), float(_SPOT_COST.get("s") or 0.0))
+
+
 def _short_mend(xyz, Q, T, q_face, t_face, node_kind, node_edge, vertex_edges, lim, low: float,
                 high: float | None, forced_curves: set[int], movable, project, hard_long, price: float,
                 requirements: dict | None, tri_ok: bool = True):
@@ -2745,11 +2796,13 @@ def _mesh_shell(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log
     the time left (priced at the first mesh's own time, and bounded), and never once a spot pass was cut off - the
     mesh made stands, told."""
     _RUN.update(end=time.monotonic() + _deadline_s() if MESH_DEADLINE_S > 0 else None, first_s=None, cut=False)
+    _SPOT_COST["s"] = None
     try:
         return _mesh_shell_timed(brep, record, mm_per_unit=mm_per_unit, log=log, target=target,
                                  correction=correction, requirements=requirements)
     finally:
         _RUN.update(end=None, first_s=None, cut=False)
+        _SPOT_COST["s"] = None
 
 
 def _mesh_shell_timed(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log: list | None = None,
@@ -2884,13 +2937,79 @@ def _yield_both(brep, record, **kw):
     # (every argument passed on whole: a parameter another step adds to _guarded_path reaches it)
     requirements = kw.get("requirements")
     t_c = time.monotonic()
-    with _so_far_named("all on (the first path)"):
-        mesh, applied, past_n = _narrow_kept_path(brep, record, **kw)
+    # (SHMESH-21d: the first path's spot passes decide whether this run chooses first and repairs last)
+    choose = bool(CHOOSE_FIRST and NO_WORSE and not _YIELD_OFF[0] and requirements and _RUN.get("end") is not None)
+    _CHOOSE.update(armed=choose, tight=False, defer=False, price=None, owed=0, why="")
+    try:
+        with _so_far_named("all on (the first path)"):
+            mesh, applied, past_n = _narrow_kept_path(brep, record, **kw)
+    finally:
+        _CHOOSE["armed"] = False
+    tight = bool(_CHOOSE.get("tight"))
     if _YIELD_OFF[0] or not NO_WORSE:
+        _CHOOSE.update(tight=False, defer=False)
         return mesh, applied, past_n
+    try:
+        return _yield_rest(brep, record, kw, mesh, applied, past_n, time.monotonic() - t_c, tight)
+    finally:
+        _CHOOSE.update(tight=False, defer=False)
+
+
+def _yield_remake(brep, record, kw: dict, recipe: tuple, name: str):
+    """SHMESH-21d: one of _yield_both's meshes made again from its recipe (the switches off, _YIELD_OFF, the fit
+    faces and strips set aside), exactly as it was set up the first time."""
+    off, yield_off, fit_ex, step_ex = recipe
+    g_ = globals()
+    saved = {n_: g_[n_] for n_ in off}
+    if yield_off:
+        _YIELD_OFF[0] = True
+    if fit_ex is not None:
+        _FIT_EXCLUDE[:] = list(fit_ex)
+    if step_ex is not None:
+        _STEP_EXCLUDE[:] = list(step_ex)
+    try:
+        g_.update(off)
+        with _so_far_named(name):
+            return _narrow_kept_path(brep, record, **{**kw, "log": None})
+    finally:
+        if yield_off:
+            _YIELD_OFF[0] = False
+        g_.update(saved)
+        if fit_ex is not None:
+            _FIT_EXCLUDE.clear()
+        if step_ex is not None:
+            _STEP_EXCLUDE.clear()
+
+
+def _yield_rest(brep, record, kw: dict, mesh, applied, past_n, last_s: float, tight: bool):
+    """_yield_both after its first path: SHMESH-76/77/90's meshes and SHMESH-91's per-face keep; SHMESH-21d: with
+    `tight`, the meshes are first meshes only and the one kept is repaired last (_yield_remake)."""
+    requirements = kw.get("requirements")
+    # (SHMESH-21d: how each mesh is made again, and its first mesh's seconds; the last first mesh's seconds)
+    recipes: dict[str, tuple] = {"all on": ({}, False, None, None)}
+    last_first = float(_RUN.get("first_s") or last_s)
+    first_secs: dict[str, float] = {"all on": last_first}
+    can_choose = bool(CHOOSE_FIRST and requirements and _RUN.get("end") is not None)
+    other: ShellMesh | None
     # (SHMESH-21c: each optional mesh below priced at the last whole mesh's seconds; those not started)
-    last_s = time.monotonic() - t_c
     skipped: list[dict] = []
+
+    def may_start(name_: str) -> bool:
+        """SHMESH-21c/21d: whether the next mesh starts - whole, when the time affords the last whole mesh's seconds
+        (and the run is not choosing first); else as a first mesh, when it affords the last first mesh's (the run
+        chooses first from here on); else not (recorded)."""
+        nonlocal tight
+        if not tight and _priced_affords(last_s):
+            return True
+        if can_choose and _priced_affords(last_first):
+            if not tight:
+                tight = True
+                _choose_start(f"{name_}: a whole mesh ({last_s:.0f} s) would not fit in the time left, its first mesh "
+                              f"({last_first:.0f} s) does")
+            return True
+        skipped.append({"mesh": name_, "price_s": round(last_first if tight else last_s, 1), "why": PRICED_WHY})
+        return False
+
     face_keep_s: float | None = None
     best = ("all on", mesh, applied, past_n)
     pool = [best]                 # (SHMESH-91: every candidate made, for the per-face keep)
@@ -2913,13 +3032,13 @@ def _yield_both(brep, record, **kw):
                      or (bool(q_.get("fit_mapped")) and "FIT_MAP" in off))
         if not acted:
             continue
-        if not _priced_affords(last_s):
-            skipped.append({"mesh": name, "price_s": round(last_s, 1), "why": PRICED_WHY})
+        if not may_start(name):
             continue
         saved = {n_: g_[n_] for n_ in off}
         _YIELD_OFF[0] = True
+        _fit_ex = [(np.asarray(c_, dtype=float), float(a_)) for c_, a_ in q_["fit_bad"]] if per_face else []
         if per_face:
-            _FIT_EXCLUDE[:] = [(np.asarray(c_, dtype=float), float(a_)) for c_, a_ in q_["fit_bad"]]
+            _FIT_EXCLUDE[:] = list(_fit_ex)
         t_c = time.monotonic()
         try:
             g_.update(off)
@@ -2933,6 +3052,8 @@ def _yield_both(brep, record, **kw):
             g_.update(saved)
             _FIT_EXCLUDE.clear()
             last_s = time.monotonic() - t_c
+            if tight:
+                last_first = last_s
         _n, m_b, a_b, p_b = best
         mine = (*_standing(a_b, p_b, applied_o, requirements), len(m_b.trias), int(m_b.n_elements))
         theirs = (*_standing(applied_o, other_n, a_b, requirements), len(other.trias), int(other.n_elements))
@@ -2943,6 +3064,8 @@ def _yield_both(brep, record, **kw):
                     **({"steps": q__["strip_steps"]} if q__.get("strip_steps") else {})}
 
         pool.append((name, other, applied_o, other_n))
+        recipes[name] = (dict(off), True, list(_fit_ex) if per_face else None, None)
+        first_secs[name] = float(last_s)
         tried.append({"mesh": name, "against": best[0], "kept": theirs < mine, "this": list(theirs),
                       "that": list(mine), "this_did": did(applied_o["quality"]), "that_did": did(a_b["quality"]),
                       "seconds": round(last_s, 1)})
@@ -2972,11 +3095,11 @@ def _yield_both(brep, record, **kw):
                                   "not tried: every fit face costs triangles (the mesh without the fit is that split)"
                                   if worse else "not tried: no fit face costs triangles")
         name = f"the fit kept where it pays ({len(ff) - len(worse)} of {len(ff)} faces)"
-        if worse and len(worse) < len(ff) and not _priced_affords(last_s):
+        go = bool(worse and len(worse) < len(ff)) and may_start(name)
+        if worse and len(worse) < len(ff) and not go:
             # (SHMESH-21c: not started - the time left would not cover it)
             per_face_rec["split"] = "not tried: " + PRICED_WHY
-            skipped.append({"mesh": name, "price_s": round(last_s, 1), "why": PRICED_WHY})
-        elif worse and len(worse) < len(ff):
+        elif go:
             _FIT_EXCLUDE[:] = [(np.asarray(ff[k_]["key"][0], dtype=float), float(ff[k_]["key"][1])) for k_ in worse]
             saved = {"TRANSITIONS": g_["TRANSITIONS"]}
             _YIELD_OFF[0] = True
@@ -2993,11 +3116,17 @@ def _yield_both(brep, record, **kw):
                 g_.update(saved)
                 _FIT_EXCLUDE.clear()
                 last_s = time.monotonic() - t_c
+                if tight:
+                    last_first = last_s
             if other is not None:
                 _n, m_b, a_b, p_b = best
                 mine = (*_standing(a_b, p_b, applied_o, requirements), len(m_b.trias), int(m_b.n_elements))
                 theirs = (*_standing(applied_o, other_n, a_b, requirements), len(other.trias), int(other.n_elements))
                 pool.append((name, other, applied_o, other_n))
+                recipes[name] = ({"TRANSITIONS": False}, True,
+                                 [(np.asarray(ff[k_]["key"][0], dtype=float), float(ff[k_]["key"][1])) for k_ in worse],
+                                 None)
+                first_secs[name] = float(last_s)
                 tried.append({"mesh": name, "against": best[0], "kept": theirs < mine, "this": list(theirs),
                               "that": list(mine), "seconds": round(last_s, 1)})
                 if theirs < mine:
@@ -3017,10 +3146,7 @@ def _yield_both(brep, record, **kw):
             return sum(int(t_.get(str(n_), 0)) for n_ in v_["near"])
         worse = [k_ for k_, v_ in sf.items() if near_tri(tw, v_) > near_tri(tn, v_)]
         name = f"the steps kept where they pay ({len(sf) - len(worse)} of {len(sf)} strips)"
-        if worse and len(worse) < len(sf) and not _priced_affords(last_s):
-            # (SHMESH-21c: not started - the time left would not cover it)
-            skipped.append({"mesh": name, "price_s": round(last_s, 1), "why": PRICED_WHY})
-        elif worse and len(worse) < len(sf):
+        if worse and len(worse) < len(sf) and may_start(name):
             _STEP_EXCLUDE[:] = [(np.asarray(sf[k_]["key"][0], dtype=float), float(sf[k_]["key"][1])) for k_ in worse]
             t_c = time.monotonic()
             try:
@@ -3032,15 +3158,53 @@ def _yield_both(brep, record, **kw):
             finally:
                 _STEP_EXCLUDE.clear()
                 last_s = time.monotonic() - t_c
+                if tight:
+                    last_first = last_s
             if other is not None:
                 _n, m_b, a_b, p_b = best
                 mine = (*_standing(a_b, p_b, applied_o, requirements), len(m_b.trias), int(m_b.n_elements))
                 theirs = (*_standing(applied_o, other_n, a_b, requirements), len(other.trias), int(other.n_elements))
                 pool.append((name, other, applied_o, other_n))
+                recipes[name] = ({}, False, None,
+                                 [(np.asarray(sf[k_]["key"][0], dtype=float), float(sf[k_]["key"][1])) for k_ in worse])
+                first_secs[name] = float(last_s)
                 tried.append({"mesh": name, "against": best[0], "kept": theirs < mine, "this": list(theirs),
                               "that": list(mine), "seconds": round(last_s, 1)})
                 if theirs < mine:
                     best = (name, other, applied_o, other_n)
+    chose: dict | None = None
+    if tight:
+        # SHMESH-21d: the candidates stood as first meshes; the one kept is made again with its spot passes, with the
+        # time that is left (its first mesh again, then the spot pass at its price)
+        _CHOOSE["defer"] = False
+        name_b = best[0]
+        price_b = (first_secs.get(name_b, last_first) + _spot_price()) * (1.0 + PRICE_MARGIN)
+        chose = {"rule": "SHMESH-21d", "why": str(_CHOOSE.get("why") or ""), "kept": name_b,
+                 "first_meshes": {k_: round(v_, 1) for k_, v_ in first_secs.items()}, "repair_price_s": round(price_b, 1)}
+        if name_b not in recipes or not best[3] or not best[2]["quality"].get("own_size_deferred"):
+            chose["repaired"] = "no repair: " + ("nothing past the solver's limits" if not best[3] else
+                                                 "its spot passes were made" if name_b in recipes else "no recipe")
+        elif _RUN.get("cut") or not _affords(price_b):
+            chose["repaired"] = "not started: the time left would not cover it"
+        else:
+            t_c = time.monotonic()
+            try:
+                other, applied_o, other_n = _yield_remake(brep, record, kw, recipes[name_b], name_b + ", repaired")
+            except (ValueError, _Periodic) as exc:
+                logger.info("shell mesh: the mesh kept was not repaired (%s)", exc)
+                chose["repaired"] = f"failed ({type(exc).__name__})"
+            else:
+                _n, m_b, a_b, p_b = best
+                mine = (*_standing(a_b, p_b, applied_o, requirements), len(m_b.trias), int(m_b.n_elements))
+                theirs = (*_standing(applied_o, other_n, a_b, requirements), len(other.trias), int(other.n_elements))
+                chose.update(repaired="kept" if not mine < theirs else "worse: the first mesh stands",
+                             repair_s=round(time.monotonic() - t_c, 1), this=list(theirs), that=list(mine))
+                if not mine < theirs:
+                    pool = [c_ for c_ in pool if c_[0] != name_b] + [(name_b, other, applied_o, other_n)]
+                    best = (name_b, other, applied_o, other_n)
+        if chose["repaired"] != "kept" and best[3]:
+            best[1].notes.append("The spots past the solver's own limits were not meshed finer: the time left went to "
+                                 "choosing the better mesh first (SHMESH-21d).")
     if FACE_KEEP and len(pool) > 1 and not _priced_affords(FACE_KEEP_PRICE_S):
         # (SHMESH-21c: the per-face keep not started - the time left would not cover it)
         skipped.append({"mesh": "the per-face keep (SHMESH-91)", "price_s": FACE_KEEP_PRICE_S, "why": PRICED_WHY})
@@ -3054,6 +3218,8 @@ def _yield_both(brep, record, **kw):
             best = got_k
             _so_far(best[1], best[2], best[3], requirements, name=best[0])
     _n, mesh, applied, past_n = best
+    if chose is not None:
+        applied["quality"]["chose_first"] = chose
     if skipped:
         mesh.notes.append(f"{len(skipped)} optional stamped-sheet mesh(es) were not started: the time left before the "
                           "shell mesh's limit would not cover one more; the best mesh made is delivered (SHMESH-21c).")
@@ -4002,13 +4168,19 @@ def _mesh_path_made(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0,
             spot_stopped = spot_late = False
             first_n = float(mesh.n_elements)            # (SHMESH-31b: the runaway guard against the first mesh)
             readd, went_h0 = True, False
+            reserve, deferred = 0.0, False
+            if past and requirements and OWN_SIZE_RETRIES:
+                # SHMESH-21d: the first path keeps back the time of the first meshes owed after it; while the run
+                # chooses first, the spot passes wait for the mesh kept
+                reserve = _choose_reserve(applied)
+                deferred = bool(_CHOOSE.get("defer"))
             # (SHMESH-36's #435 steps have no spot pass, OWN_SIZE_RETRIES 0: the steps add none to them either)
             for step_ in range(1, 1 + (OWN_SIZE_RETRIES + (SPOT_STEP_PASSES if SPOT_STEPS and OWN_SIZE_RETRIES else 0))
                                if requirements else 0):
                 # SHMESH-31: elements past the solver's own limits under the user's sizes: round each of them the
                 # mesh is made again at our rules' own size for its face (finer), graded back to the user's; the
                 # mesh with fewer past is kept
-                if not past:
+                if not past or deferred:
                     break
                 # (SHMESH-31c: each spot carries its step - the spots found now take this pass's, the earlier keep theirs)
                 # (SHMESH-31e: a box whose reach holds an element still past grows to it; the new spots join tight)
@@ -4021,21 +4193,42 @@ def _mesh_path_made(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0,
                 # left before the deadline less what must follow (past it, the best mesh so far is kept); a pass that
                 # cannot finish in it (priced at the first mesh's own time) is not started
                 budget = SPOT_PLAN_MULT * first_n
-                if not _affords(_RUN.get("first_s")):
+                # (SHMESH-31h: priced at the first mesh, or the longest spot pass measured; SHMESH-21d: with the
+                # first meshes owed after this path kept back)
+                if not _affords(_spot_price() + reserve):
+                    if reserve and _affords(reserve):
+                        # SHMESH-21d: the meshes to compare still fit, the spot pass with them does not: choose first
+                        _choose_start(f"the spot pass ({_spot_price():.0f} s) and the {_CHOOSE.get('owed')} "
+                                      f"mesh(es) to compare ({reserve:.0f} s) would not fit in the time left")
+                        deferred = True
+                        passes.append(["finer at spots: waits, the meshes to compare first (SHMESH-21d)", 0.0])
+                        break
                     spot_late = True
                     break
+                lim_s = _limit()
                 try:
                     again, applied2 = _bounded(functools.partial(
                         _mesh_once, Path(brep), record, owners, float(mm_per_unit), None,
                         hole_before=tuple((tuple(c), e) for c, e in redrawn), target=target, correction=correction,
                         requirements=requirements, own_spots=tuple(own), unmap=frozenset(unmap),
                         no_cut=frozenset(no_cut), check_maps=False, one_ring_at=tuple(one_ring_at),
-                        spot_budget=budget), _limit())
+                        spot_budget=budget), lim_s - reserve if (lim_s is not None and reserve) else lim_s)
                     passes.append(["finer at spots past the solver's limits", round(time.monotonic() - t_pass, 1)])
+                    _SPOT_COST["s"] = max(float(_SPOT_COST.get("s") or 0.0), time.monotonic() - t_pass)
                 except (ValueError, _Periodic) as exc:
                     logger.info("shell mesh: the spots past the solver's limits were not meshed again (%s)", exc)
                     spot_stopped = "stopped" in str(exc)
                     if spot_stopped:
+                        _SPOT_COST["s"] = max(float(_SPOT_COST.get("s") or 0.0), time.monotonic() - t_pass)
+                    if spot_stopped and reserve:
+                        # SHMESH-21d: stopped where the meshes to compare begin - no cut: the run chooses first
+                        spot_stopped = False
+                        _choose_start(f"the spot pass ran past {time.monotonic() - t_pass:.0f} s, the time left less "
+                                      f"the {_CHOOSE.get('owed')} mesh(es) to compare ({reserve:.0f} s)")
+                        deferred = True
+                        passes.append(["finer at spots: stopped, the meshes to compare first (SHMESH-21d)",
+                                       round(time.monotonic() - t_pass, 1)])
+                    elif spot_stopped:
                         _RUN["cut"] = True              # (SHMESH-31b: then no whole mesh more is started)
                         passes.append(["finer at spots: stopped at the deadline", round(time.monotonic() - t_pass, 1)])
                     break
@@ -4060,6 +4253,8 @@ def _mesh_path_made(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0,
                 mesh, applied, past, past_n = again, applied2, past2, n2
                 applied["quality"]["own_size_spots"] = len(own) - trimmed2
                 spot_left, spot_trimmed = left2, trimmed2
+            if deferred and past:
+                applied["quality"]["own_size_deferred"] = True     # (SHMESH-21d: repaired last, if it is kept)
             if applied["quality"].get("own_size_spots"):
                 mesh.notes.append(f"In {applied['quality']['own_size_spots']} spot(s) the mesh is finer than the size "
                                   "you asked for: at your size some elements there were past the solver's own limits "
@@ -4169,8 +4364,9 @@ def _mesh_path_made(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0,
                     mesh.notes.append(f"One ring round the bolt holes of {len(guard_faces[-1])} face(s): with two "
                                       f"rings the mesh had {guard_log[-1]['triangles_two']} triangle(s), with one "
                                       f"{guard_log[-1]['triangles_one']} (SHMESH-51o).")
-            if (BOLT_TRIA_GUARD and ST.BOLTS and not resplined and len(guard_faces) < 2
+            if (BOLT_TRIA_GUARD and ST.BOLTS and not resplined and len(guard_faces) < 2 and not deferred
                     and (MESH_DEADLINE_S <= 0 or time.monotonic() - started < GUARD_START * MESH_DEADLINE_S)):
+                # (SHMESH-21d: not while the run chooses first - the trial waits with the spot passes, for the mesh kept)
                 # SHMESH-51o: two rings never cost triangles one ring a hole would not have. SHMESH-51o4: first the
                 # face with the most triangles of its own among those with two-ring holes, alone (another face's
                 # triangles may be its doing: a 12-hole plate's bands were made and its 12 triangles went when the
