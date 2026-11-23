@@ -339,8 +339,9 @@ class AIProposer:
             )
         if not isinstance(ledger, WaveLedger):
             raise TypeError("a WaveLedger is required: the cap is not optional")
-        if ledger.provenance not in ("shard", "test"):
-            raise TypeError("the ledger was not built with WaveLedger.for_shard; refusing to spend against it")
+        if ledger.provenance not in ("shard", "test", "file"):
+            raise TypeError(
+                "the ledger was not built with WaveLedger.for_shard (or for_file); refusing to spend against it")
         self.route = route
         self.max_turns = max_turns
         self.usd_ceiling = usd_ceiling

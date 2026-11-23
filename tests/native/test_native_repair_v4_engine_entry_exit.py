@@ -49,7 +49,7 @@ def seam(monkeypatch: pytest.MonkeyPatch) -> dict:
         return search_mod.SearchResult(best=ws, best_verdict=_verdict(3), clean=False, trace=trace,
                                        changed=state["changed"], reason="patience")
 
-    monkeypatch.setattr(v4, "_make_judge", lambda: SimpleNamespace(full=lambda p, w, o: _verdict(1)))
+    monkeypatch.setattr(v4, "_make_judge", lambda pool, ws: SimpleNamespace(full=lambda p, w, o: _verdict(1)))
     monkeypatch.setattr(v4, "_find_best", find_best)
     monkeypatch.setattr(search_mod, "score", lambda v: (1, v.q, 0.0, 0.0, 0))
     return state

@@ -81,7 +81,7 @@ class World:
         self.judge_raises: BaseException | None = None
         self.middle_args: dict = {}
 
-    def judge(self) -> Any:
+    def judge(self, pool: Any = None, ws: Any = None) -> Any:
         def full(pool: Any, ws: Workspace, original: str) -> FakeVerdict:
             if self.judge_raises:
                 raise self.judge_raises

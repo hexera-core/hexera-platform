@@ -308,6 +308,15 @@ class WaveLedger:
         return ledger
 
     @classmethod
+    def for_file(cls, cap_usd: float) -> WaveLedger:
+        """An in-memory ledger for ONE file on the engine path (`repair_v4()`), capped at that file's own model
+        budget. There is no wave here (a service request has no shard, no marker bucket and no restart to survive),
+        so the bound is the per-call reservation of `admit` against `cap_usd`; a wave shard keeps using `for_shard`."""
+        ledger = cls(cap_usd, None, _factory=_FACTORY)
+        ledger.provenance = "file"
+        return ledger
+
+    @classmethod
     def for_shard(cls, wave: WaveType, *, wave_id: str, n_shards: int, shard_index: int,
                   path: str | Path, markers: MarkerStore) -> WaveLedger:
         """This shard's slice of a wave: `WAVE_CAPS_USD[wave] / n_shards`, in a log at `path` (durable local
