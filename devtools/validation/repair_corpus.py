@@ -26,6 +26,7 @@ import json
 import math
 import os
 import random
+import signal
 import statistics
 import sys
 import tempfile
@@ -2067,17 +2068,23 @@ def _input_stamp(path: Path, by_sha: dict) -> dict:
 
 
 CRASHED = "crashed"
+TIMEOUT = "timeout"
 
 
-def _isolated(path: Path, body, *, mesh_probe: bool) -> dict:
+def _isolated(path: Path, body, *, mesh_probe: bool, file_timeout_s: float = 0.0) -> dict:
     """Run `body(stage)` for one file in a FORKED CHILD and return its row. A child that dies (a
     native segfault in OCC's ShapeFix took down a whole shard on a real ABC part) becomes a
     `crashed` row naming the signal or exit code and the last stage it reported, and the run goes
     on to the next file. In-memory state the child changes (counters, collected records) does not
     reach the parent; anything that must survive is written to a file as it happens.
 
+    A child that HANGS (OCCT and gmsh can hang in native code no in-child timeout interrupts) is
+    SIGKILLed by the parent after `file_timeout_s` seconds (0 = no limit) and becomes a `timeout`
+    row; SIGKILL is the only signal guaranteed to land.
+
     PRODUCT NOTE: this protects the benchmark only. The same crash in a worker is a product bug."""
     import pickle
+    import threading
 
     # A pending stdout/stderr buffer would be inherited and printed twice: empty it first.
     sys.stdout.flush()
@@ -2109,6 +2116,20 @@ def _isolated(path: Path, body, *, mesh_probe: bool) -> dict:
                 os._exit(code)
     os.close(write_fd)
     stage, facts, row, error = "start", {}, None, None
+    timed_out = threading.Event()
+
+    def _wall_kill():
+        timed_out.set()
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+    # The kill closes the child's end of the pipe, so the read below ends in EOF.
+    watchdog = threading.Timer(file_timeout_s, _wall_kill) if file_timeout_s > 0 else None
+    if watchdog is not None:
+        watchdog.daemon = True
+        watchdog.start()
     with os.fdopen(read_fd, "rb") as src:
         while True:
             try:
@@ -2122,7 +2143,23 @@ def _isolated(path: Path, body, *, mesh_probe: bool) -> dict:
                 row = msg[1]
             elif msg[0] == "error":
                 error = msg[1]
-    _, status = os.waitpid(pid, 0)
+    while True:  # poll, never block forever on a child that closed its pipe and hung
+        done, status = os.waitpid(pid, os.WNOHANG)
+        if done:
+            break
+        time.sleep(0.01)
+    if watchdog is not None:
+        watchdog.cancel()
+    if timed_out.is_set() and os.WIFSIGNALED(status) and os.WTERMSIG(status) == signal.SIGKILL:
+        timed: dict = {"file": path.name, "outcome": TIMEOUT,
+               "timeout": {"stage": stage, "file_timeout_s": file_timeout_s},
+               "error": f"child killed after {file_timeout_s:g}s wall clock during {stage}"}
+        if mesh_probe and "meshes_before" in facts:
+            before = bool(facts["meshes_before"])
+            timed.update(meshes_before=before, mesh_kind_before="" if before else "other",
+                       meshes_after=False if before else None,
+                       mesh_kind_after=TIMEOUT if before else "")
+        return timed
     if row is not None and os.WIFEXITED(status) and os.WEXITSTATUS(status) == 0:
         return row
     if error is not None and os.WIFEXITED(status):
@@ -2146,7 +2183,7 @@ def run_files(files: list[Path], scratch: Path, *, mode: str = "off", loop: bool
               bundle=None, mesh_probe: bool = False, force_repair: bool = False,
               goal=None, sink=None, entries=None, isolate: bool = False,
               tolerant_delivery: bool = False, row_marks: dict | None = None,
-              meshability: bool = False) -> list[dict]:
+              meshability: bool = False, file_timeout_s: float = 0.0) -> list[dict]:
     """Run the repair loop over `files`, printing a line per file; returns the rows. When `bundle`
     is a BundleWriter every row is streamed into it AS IT IS PRODUCED, so a run that dies half way
     leaves its evidence-so-far on disk rather than in a list that was never written.
@@ -2190,7 +2227,8 @@ def run_files(files: list[Path], scratch: Path, *, mode: str = "off", loop: bool
                 score_or_mark(row, path, scratch, since=since)
             return row
 
-        row = _isolated(path, scored, mesh_probe=mesh_probe) if isolate else scored()
+        row = (_isolated(path, scored, mesh_probe=mesh_probe, file_timeout_s=file_timeout_s)
+               if isolate else scored())
         if tolerant_delivery:
             _tolerant_delivery(row, path, scratch)
         row.update(stamp)
@@ -2289,6 +2327,9 @@ def main() -> int:
     parser.add_argument("--isolate-files", dest="isolate", action="store_true",
                         help="repair each file in a forked child: a native crash becomes a "
                              "`crashed` row and the run continues (POSIX; benchmark harness)")
+    parser.add_argument("--file-timeout-s", dest="file_timeout_s", type=float, default=0.0,
+                        help="with --isolate-files: SIGKILL a file's child after this many "
+                             "seconds and record a `timeout` row (0 = no limit)")
     # THE INVESTIGATOR (cad/repair/investigator.py). Off is today's behaviour exactly: no record,
     # no row key, no summary block and no settings key. `shadow` investigates and keeps its
     # packages out of the kernel; `live` authors with them. NOT GIVEN (None) keeps the
@@ -2511,6 +2552,7 @@ def main() -> int:
     rows = run_files(files, scratch, mode=args.planner, loop=args.loop, bundle=writer,
                      mesh_probe=args.mesh_probe, force_repair=args.force_repair,
                      goal=goal, sink=sink, entries=sample_entries, isolate=args.isolate,
+                     file_timeout_s=args.file_timeout_s,
                      tolerant_delivery=args.tolerant_delivery, row_marks=row_marks,
                      meshability=args.meshability)
     if sink is not None:
