@@ -347,7 +347,11 @@ def find_sites(pool: WorkerPool, ws: Workspace, verdict: Any, *, h_mm: float,
             implicate(sid, None, _HARD_KINDS[finding.code], "valid",
                       {"mesher": "valid", "error_kind": finding.code, "message": "", "tag": finding.code})
         if not resolved:
-            whole_part["unlocated"].add("valid")
+            # The finding NAMES the defect even when it cannot place it (an open shell is reported
+            # against a shell "H1", which has no stable id; `no_solids` names nothing). Filing it as
+            # "unlocated" threw the kind away, and `DetGenerator` sweeps nothing for "unlocated", so
+            # the canonical open shell produced no candidate at all. Keep the kind, drop only the place.
+            whole_part[_HARD_KINDS[finding.code]].add("valid")
 
     sites: list[Site] = []
     if nodes or points:

@@ -665,3 +665,14 @@ def test_registry_does_not_hand_a_carried_id_to_an_unrelated_new_site() -> None:
     again = find_sites(pool, ws, _verdict(_fail("gmsh", "other", Located("F5", None, "a"),
                                                 Located("F9", None, "b"))), h_mm=H, registry=registry)
     assert sorted(s.id for s in again) == ["S@F5", "S@F9"]
+
+
+def test_hard_finding_that_cannot_be_placed_keeps_its_kind() -> None:
+    """An open shell is reported against the shell `H1`, which has no stable id. It is still an OPEN site
+    (whole part, no entities), not an `unlocated` one: the det sweep proposes nothing for `unlocated`."""
+    ws = _ws()
+    pool = ScriptedPool(ws, _boxes(ws))
+    verdict = _verdict(MemberResult("gmsh", "pass"), hard=[Finding("open_shell", ["H1"], {"free_edges": 4})])
+    (site,) = find_sites(pool, ws, verdict, h_mm=H)
+    assert site.kind == "open" and site.entities == [] and site.meshers_failing == ["valid"]
+    assert site.id == "S@open"
