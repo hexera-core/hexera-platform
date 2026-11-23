@@ -15,7 +15,6 @@ import warnings
 from pathlib import Path
 
 import pytest
-
 from tests.native._v4_flush_patch_part import write_flush_patch_box
 
 pytest.importorskip("OCP.BRepCheck", reason="the CAD kernel is a native-tier dependency")

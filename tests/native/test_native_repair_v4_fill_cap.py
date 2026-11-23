@@ -16,16 +16,17 @@ import pytest
 
 pytest.importorskip("OCP.STEPControl", reason="the CAD kernel is a native-tier dependency")
 
+from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE  # noqa: E402
+from OCP.TopExp import TopExp  # noqa: E402
+from OCP.TopTools import TopTools_IndexedDataMapOfShapeListOfShape  # noqa: E402
+from tests.native._v4_flush_patch_part import write_flush_patch_box  # noqa: E402
+
 import meshpipeline.cad.repair_v4.ops  # noqa: E402,F401  (the ops register their kernel functions on import)
 from meshpipeline.cad.repair_v4 import limits, ws_kernel  # noqa: E402
 from meshpipeline.cad.repair_v4 import search as search_mod  # noqa: E402
 from meshpipeline.cad.repair_v4.ops import REGISTRY, OpDeclined  # noqa: E402
 from meshpipeline.cad.repair_v4.verdict.assemble import default_members  # noqa: E402
 from meshpipeline.cad.repair_v4.worker_pool import WorkerPool  # noqa: E402
-from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE  # noqa: E402
-from OCP.TopExp import TopExp  # noqa: E402
-from OCP.TopTools import TopTools_IndexedDataMapOfShapeListOfShape  # noqa: E402
-from tests.native._v4_flush_patch_part import write_flush_patch_box  # noqa: E402
 
 _HERE = Path(__file__).resolve()
 
@@ -94,7 +95,7 @@ def test_a_small_deleted_face_is_repaired_to_a_clean_verdict(clean_source: Path,
     members = [m.name for m in default_members("full")]
     assert not verdict.inconclusive, "the panel could not measure the repaired part"
     assert verdict.valid.ok and verdict.faithful is not None and verdict.faithful.ok
-    assert {m.name: m.status for m in verdict.panel} == {n: "pass" for n in members}, verdict.panel
+    assert {m.name: m.status for m in verdict.panel} == dict.fromkeys(members, "pass"), verdict.panel
     assert verdict.clean is True
     print(f"\nFIXABLE: loop {measured['span_ratio']:.4%} of the diagonal ({measured['span_mm']:.3f} mm), "
           f"fill_loop({loop}, G0) then make_volume({len(faces)} faces) -> clean={verdict.clean}; fill: {measured}")

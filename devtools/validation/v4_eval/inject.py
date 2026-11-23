@@ -75,7 +75,7 @@ KIND_STATUS: dict[str, str] = {
 }
 #: The kinds whose correct outcome is a decline, and what the label says that outcome is.
 DECLINED_STRATUM_KINDS: tuple[str, ...] = tuple(k for k in KINDS if KIND_STATUS[k] == "declined_stratum")
-EXPECTED_OUTCOME: dict[str, str] = {k: "correctly_declined" for k in DECLINED_STRATUM_KINDS}
+EXPECTED_OUTCOME: dict[str, str] = dict.fromkeys(DECLINED_STRATUM_KINDS, "correctly_declined")
 QUARANTINED_KINDS: tuple[str, ...] = tuple(k for k in KINDS if KIND_STATUS[k] == "quarantined")
 #: What a benchmark build should draw from by default: kinds whose damage is shown, not merely claimed.
 DEFAULT_KINDS: tuple[str, ...] = tuple(k for k in KINDS if KIND_STATUS[k] == "structural")

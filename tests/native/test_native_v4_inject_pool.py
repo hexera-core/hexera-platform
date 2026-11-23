@@ -12,7 +12,6 @@ import time
 from pathlib import Path
 
 import pytest
-
 from tests.native._v4_flush_patch_part import imprint_squares
 
 pytest.importorskip("OCP.BRepCheck", reason="the CAD kernel is a native-tier dependency")

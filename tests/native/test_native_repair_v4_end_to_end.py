@@ -26,12 +26,13 @@ import pytest
 
 pytest.importorskip("OCP.STEPControl", reason="the CAD kernel is a native-tier dependency")
 
+from tests.native._v4_flush_patch_part import write_flush_patch_box  # noqa: E402
+
 import meshpipeline.cad.repair_v4 as v4  # noqa: E402
 from meshpipeline.cad.repair_v4 import search as search_mod  # noqa: E402
 from meshpipeline.cad.repair_v4.measurement import file_unmeasured  # noqa: E402  - the ONE rule, not restated
 from meshpipeline.cad.repair_v4.verdict.assemble import default_members  # noqa: E402
 from meshpipeline.cad.repair_v4.worker_pool import WorkerPool  # noqa: E402
-from tests.native._v4_flush_patch_part import write_flush_patch_box  # noqa: E402
 
 ARMS = ("input_only", "staged", "search_det", "search_ai")
 ROUTE = "openai:gpt-6-astra"
