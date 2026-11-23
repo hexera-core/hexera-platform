@@ -26,7 +26,7 @@ from meshpipeline.engines import fea_mesh_config as FEA_MESH_CONFIG
 from meshpipeline.engines.gmsh import fea_tiny as TINY
 
 #: 3D algorithms the plan may name (gmsh's Mesh.Algorithm3D numbers).
-ALGORITHMS_3D = {"delaunay": 1, "hxt": 10}
+ALGORITHMS_3D = {"delaunay": 1, "hxt": FEA_MESH_CONFIG.HXT_ALGORITHM_3D}
 
 
 #: THE STEP THE FEA MESHER IS ON (engines/mesher_stage.py reads it for the live line; the runner's
@@ -136,6 +136,13 @@ def apply_global_options(gmsh, run: dict) -> None:
     for key, value in FEA_MESH_CONFIG.fixed_options().items():
         gmsh.option.setNumber(key, value)
     gmsh.option.setNumber("Mesh.Algorithm3D", ALGORITHMS_3D.get(algorithm_3d(run), 1))
+
+
+def apply_surface_switch(gmsh, run: dict) -> None:
+    """Whether gmsh retries a stalled surface with another 2D algorithm, as `fea_mesh_config` has it."""
+    gmsh.option.setNumber(
+        "Mesh.AlgorithmSwitchOnFailure", FEA_MESH_CONFIG.algorithm_switch_on_failure(run.get("surface_switch"))
+    )
 
 
 #: MESH-25: the 3D algorithm a failed pass is filled again with (set by `mesh` around its second attempt)
@@ -1671,7 +1678,7 @@ def _build(gmsh, ws: Path, plan: dict, geom: Path, asm: dict | None, sidecar: di
         surfaces = {abs(int(t)) for v in rest for _d, t in gmsh.model.getBoundary([(3, v)], oriented=False)} & surfaces
     # LAD-fea-8: after a surface stage that stalled, gmsh's first mesh of every face is kept (its repeats
     # dropped below, MESH-5) rather than thrown away for a MeshAdapt run that never ends
-    gmsh.option.setNumber("Mesh.AlgorithmSwitchOnFailure", 0 if run.get("surface_switch") is False else 1)
+    apply_surface_switch(gmsh, run)
     note_stage(ws, "surface", "meshing the surfaces")
     # gmsh's surface stage throws away every volume's mesh: the kept parts' are held aside through it, and no
     # node is numbered afresh meanwhile (the held elements name their curves' nodes by tag; the fill numbers all)

@@ -58,9 +58,64 @@ def test_box_passes_all_three(pool: WorkerPool, box_step: str) -> None:
         assert r.seconds > 0
 
 
+@pytest.fixture(scope="module")
+def slab_step(tmp_path_factory: pytest.TempPathFactory) -> str:
+    """A 1000 x 1000 x 0.1 mm plate: it meshes, into slivers. Real gmsh gives it a minimum SICN of about
+    0.001 to 0.002 on every profile (measured), a tenth of the way to the floor and well clear of it."""
+    path = tmp_path_factory.mktemp("panel") / "slab.step"
+    writer = STEPControl_Writer()
+    writer.Transfer(BRepPrimAPI_MakeBox(gp_Pnt(0, 0, 0), 1000.0, 1000.0, 0.1).Shape(), STEPControl_AsIs)
+    assert writer.Write(str(path)) == IFSelect_RetDone
+    return str(path)
+
+
+def test_a_real_sliver_mesh_is_rejected_by_the_sicn_floor(pool: WorkerPool, slab_step: str) -> None:
+    """The floor, shown rejecting a real file: gmsh produces a tet mesh with no inverted element, and the
+    only reason each member fails it is `min_sicn < 0.01`."""
+    results = run_panel(pool, slab_step, [GmshProd(), GmshDefault(), GmshAlt()], timeout_s=TIMEOUT_S)
+    for r in results:
+        assert r.status == "fail" and r.error_kind == "low_quality", r
+        assert r.elements > 0 and r.min_sicn is not None
+        assert 0.0 < r.min_sicn < 0.01  # a tet mesh was made, none of it inverted, the worst is too thin
+
+
+def test_installed_gmsh_defaults_are_the_ones_the_panel_assumes() -> None:
+    """`GMSH_DEFAULT_ALGORITHM_*` stand in for options a profile leaves unset: read them from the gmsh here."""
+    import gmsh
+
+    from meshpipeline.cad.repair_v4.verdict import mesh_child
+
+    gmsh.initialize()
+    try:
+        assert gmsh.option.getNumber("Mesh.Algorithm") == mesh_child.GMSH_DEFAULT_ALGORITHM_2D
+        assert gmsh.option.getNumber("Mesh.Algorithm3D") == mesh_child.GMSH_DEFAULT_ALGORITHM_3D
+    finally:
+        gmsh.finalize()
+
+
+@pytest.mark.parametrize("profile", ["prod", "default", "alt"])
+def test_each_profile_really_meshes_with_its_algorithm_pair(profile: str) -> None:
+    """Set a profile's options in real gmsh, read the two algorithm options back: they are `algorithms()`."""
+    import gmsh
+
+    from meshpipeline.cad.repair_v4.verdict import mesh_child
+
+    gmsh.initialize()
+    try:
+        _scale, options = mesh_child._profile(profile, 1.0)
+        for key, value in options.items():
+            mesh_child._set(gmsh, key, value)
+        assert (int(gmsh.option.getNumber("Mesh.Algorithm")), int(gmsh.option.getNumber("Mesh.Algorithm3D"))) == (
+            mesh_child.algorithms(profile)
+        )
+    finally:
+        gmsh.finalize()
+
+
 def test_members_apply_their_own_sizes(pool: WorkerPool, box_step: str) -> None:
     """The options take effect: Alt meshes at a twentieth of the diagonal and Prod at a tenth, so Alt
-    has more tets; and the three members do not all mesh the box the same way."""
+    has more tets; and the three members do not all mesh the box the same way. (Element counts differ on
+    size alone, so this cannot show algorithm diversity: `test_panel` pins the algorithm pairs.)"""
     prod, default, alt = run_panel(pool, box_step, [GmshProd(), GmshDefault(), GmshAlt()], timeout_s=TIMEOUT_S)
     assert alt.elements > prod.elements
     assert len({prod.elements, default.elements, alt.elements}) == 3

@@ -1,6 +1,7 @@
 # Responsibility: The gmsh options Hexera's production FEA mesh runs with, as data.
-# Owns: `fixed_options` (the run-independent part, which `gmsh/fea_adapter` applies) and `options`
-#       (that plus the diagonal-dependent size and the fill/fallback settings), plus their constants.
+# Owns: `fixed_options` (the run-independent part, which `gmsh/fea_adapter` applies), `options` (that
+#       plus the diagonal-dependent size and the fill/fallback settings), `algorithm_switch_on_failure`
+#       and the constants (`HXT_ALGORITHM_3D`, `LC_INTEGRATION_PRECISION`).
 # Boundaries: pure - no gmsh, no I/O. The plan's zones, size fields, thread count and 3D-algorithm
 #             override stay with the adapter; this is only what every production run sets the same way.
 # Collaborates with: engines/gmsh/fea_adapter.py (applies `fixed_options`), engines/fea_plan.py
@@ -9,8 +10,18 @@
 
 The CRS v4 checker meshes every repaired file with these same options (its `GmshProd` member), so
 "meshes for Hexera's FEA" is judged by the settings that really deliver a mesh, not by a copy that
-drifts. The adapter applies `fixed_options()`; `test_fea_mesh_config_matches_adapter` holds the
-values to what the adapter set before this module existed.
+drifts. What is shared with the adapter, value for value:
+
+- `fixed_options()`: the adapter applies it (`fea_adapter.apply_global_options`).
+- `HXT_ALGORITHM_3D`: the adapter's `ALGORITHMS_3D["hxt"]` IS this constant.
+- `algorithm_switch_on_failure`: the adapter calls it where it sets `Mesh.AlgorithmSwitchOnFailure`.
+- the base element size: both call `fea_plan.base_size`; the adapter reads it back out of the plan's
+  `base_size_m` (rounded to 6 figures by `fea_plan.finish`).
+
+What is NOT shared, and can drift without moving `options()`: the plan's zones, size fields, thread
+counts, the Delaunay fallback pass and a plan's own `base_size_m` when a user's element count or
+sizes change it (`scale`, `beyond`). `options()` is the DEFAULT plan only. `tests/unit/engines/test_fea_mesh_config.py` holds the
+four shared points to the adapter; nothing holds the unshared ones.
 """
 
 from __future__ import annotations
@@ -25,6 +36,12 @@ LC_INTEGRATION_PRECISION = 1e-3
 
 #: gmsh's Mesh.Algorithm3D number for HXT, the production fill (`fea_adapter.DEFAULT_ALGORITHM_3D`).
 HXT_ALGORITHM_3D = 10
+
+
+def algorithm_switch_on_failure(surface_switch: bool | None = None) -> int:
+    """`Mesh.AlgorithmSwitchOnFailure`: 1 (gmsh retries a stalled surface with another 2D algorithm)
+    unless the run turned the switch off (`surface_switch` is False). The adapter sets it from here."""
+    return 0 if surface_switch is False else 1
 
 
 def fixed_options() -> dict[str, float | int]:
@@ -55,5 +72,5 @@ def options(diag_m: float) -> dict[str, float | int]:
         **fixed_options(),
         "Mesh.Algorithm3D": HXT_ALGORITHM_3D,
         "Mesh.MeshSizeMax": base_size(diag_m),
-        "Mesh.AlgorithmSwitchOnFailure": 1,
+        "Mesh.AlgorithmSwitchOnFailure": algorithm_switch_on_failure(),
     }
