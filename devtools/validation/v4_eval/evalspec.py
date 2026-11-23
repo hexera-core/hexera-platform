@@ -46,11 +46,12 @@ MAX_TOTAL_VCPU = 100
 DEFAULT_FILE_TIMEOUT_S = 900.0
 
 #: Minutes of one vCPU per file for the FULL verdict (layer 1 + the panel + layer 3). The re-probe runs it on
-#: every file (plan amendment 2026-11-23 19:15: the cheap-first pass is dropped). MEASURED, Task 43, x86
-#: c2d-standard-8, 8 shards in parallel, workers=1: 98 s/file is the cheap+full mean (n=73); the full tier
-#: alone measured 82.4 s, so 98 s carries ~19% headroom. The sample over-weights large parts, and its mean
-#: is dominated by the ~7% of files that hit a 300 s / 900 s wall: the tail, not the median (22 s), is the cost.
-FULL_MIN_PER_FILE = 98.0 / 60
+#: every file (plan amendment 2026-11-23 19:15: the cheap-first pass is dropped). MEASURED by lane D on 2026-11-23 at
+#: commit 5eefb130 (Lane A's 2.6x layer 1/3 speed-up included): 59 diagonal-stratified files, 8 shards pinned to
+#: 4 cores' hyperthread pairs (a c2d-standard-8's shape), --cpus=1, cold cache. Sample median 25.5 s, mean 136 s,
+#: p90 620 s; 5.1% hit the 900 s file wall. Re-weighted to the pool's file sizes (project_reprobe.py): 336 vCPU-h
+#: for 10,887 files = 111 s/file. One file used exactly one vCPU (cgroup CPU/wall 1.00, 1.2 s throttled in 8,023 s).
+FULL_MIN_PER_FILE = 111.0 / 60
 #: Slowest-shard / mean-shard wall. Hash-partitioned shards are balanced in file COUNT, not in time:
 #: 900 s timeouts and heavy parts make a long tail, and the slowest shard sets the billed time.
 SKEW = 1.5
@@ -123,7 +124,7 @@ def shard_of(sha256: str, i: int, n: int) -> bool:
 SHARD_PLAN_VERSION = 1
 #: log(wall_s) = a + b * log(bytes), fitted by project_reprobe.py on measure_reprobe.py's sample. Only the ORDER of
 #: predicted costs matters to LPT; the absolute scale is for the printed projection.
-COST_MODEL: tuple[float, float] = (-2.0, 0.40)
+COST_MODEL: tuple[float, float] = (-1.263, 0.360)  # lane D, 59 files, R^2 0.21 (timeouts are not size-predictable)
 
 
 def predicted_cost_s(size_bytes: int, model: tuple[float, float] = COST_MODEL) -> float:

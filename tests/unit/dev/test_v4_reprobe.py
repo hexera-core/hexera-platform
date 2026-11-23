@@ -621,8 +621,8 @@ def test_projection_formula() -> None:
 
 
 def test_the_default_minutes_are_task_43s_measured_mean() -> None:
-    """98 s/file: Task 43's x86 mean (n=73, 8 shards in parallel on one c2d-standard-8, workers=1)."""
-    assert evalspec.FULL_MIN_PER_FILE == pytest.approx(98.0 / 60)
+    """111 s/file: lane D's measurement on the current tip, re-weighted to the pool's file sizes."""
+    assert evalspec.FULL_MIN_PER_FILE == pytest.approx(111.0 / 60)
     assert not hasattr(evalspec, "CHEAP_MIN_PER_FILE") and not hasattr(evalspec, "PASS_SAMPLE_FRACTION")
 
 
