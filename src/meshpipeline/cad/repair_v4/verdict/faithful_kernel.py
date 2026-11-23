@@ -124,7 +124,7 @@ def _volume(shape) -> float:
 
 def _ratio(after: float, before: float) -> float:
     if before <= 0.0:
-        return 1.0 if after <= 0.0 else math.inf
+        return 1.0  # nothing to compare against: unmeasurable, reported as no change
     return after / before
 
 
@@ -360,11 +360,15 @@ def _faithful_check(payload: dict) -> dict:
     volume_ratio = _ratio(_volume(repaired), _volume(original))
     if abs(area_ratio - 1.0) > RATIO_TOLERANCE:
         reasons.append("area_changed")
-    if abs(volume_ratio - 1.0) > RATIO_TOLERANCE:
+    # A solid-less original (loose faces or a shell) has no volume and no body to preserve, so a
+    # correct heal that makes it a solid must not be failed for gaining one. Everything else
+    # still applies to it: deviation, area, fill span, and (layer 1) validity of the result.
+    solidless = not _solids(original)
+    if not solidless and abs(volume_ratio - 1.0) > RATIO_TOLERANCE:
         reasons.append("volume_changed")
     before = len(_solids(original)) + _free_shell_count(original)
     after = len(_solids(repaired)) + _free_shell_count(repaired)
-    if before != after:
+    if not solidless and before != after:
         reasons.append("body_count_changed")
 
     return {

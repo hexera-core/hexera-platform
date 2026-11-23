@@ -25,6 +25,7 @@ from meshpipeline.cad.repair_v4.verdict.cache import (
     PanelConfigError,
     VerdictCache,
     file_sha256,
+    mesher_versions,
     panel_config_hash,
 )
 from meshpipeline.cad.repair_v4.verdict.faithful import FaithfulReport, check_faithful
@@ -316,3 +317,17 @@ def test_declared_default_is_not_shared_between_calls(layers) -> None:
     _run(layers, [FakeMember("a")])
     assert Declared().added == [] and Declared().removed == []
     assert Declared() is not Declared()
+
+
+def test_a_member_with_config_none_fails_closed() -> None:
+    with pytest.raises(PanelConfigError):
+        panel_config_hash([FakeMember("a", config=None)], 300, {})  # type: ignore[arg-type]
+
+
+def test_mesher_versions_pool_failure_is_checker_unavailable() -> None:
+    class Pool:
+        def call(self, name, payload, *, timeout_s):
+            return CallResult(False, None, "worker died", "crashed", 0.1)
+
+    with pytest.raises(CheckerUnavailable):
+        mesher_versions(Pool())
