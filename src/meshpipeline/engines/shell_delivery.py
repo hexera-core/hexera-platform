@@ -101,7 +101,7 @@ def coverage(mesh, *, part_mm2: float, mid: bool, kept: float = 1.0, told_share:
     area = mesh_area_mm2(mesh)
     return {"share": round(area / expected, 4), "mesh_mm2": round(area, 1), "expected_mm2": round(expected, 1),
             "of": "mid-surface" if mid else "surface", "kept_share": round(float(kept), 5),
-            "told_share": round(float(told_share or 0.0), 5), "limit": COVER_SHARE}
+            "told_share": round(float(told_share or 0.0), 5), "limit": COVER_SHARE, "rule": "MESH-1c"}
 
 
 def _pct(share: float) -> str:

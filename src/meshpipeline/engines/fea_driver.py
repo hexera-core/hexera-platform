@@ -2594,6 +2594,13 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
             _cite(job_id, [{"stage": "fea_plan", "decided": "closed shells read as solids", "value": made,
                             "rule": "MESH-1", "inputs": {"solids": made},
                             "words": f"The file's {made} closed shell(s) were read as the solid(s) they bound."}])
+        elif seen.get("partial"):
+            part = seen["partial"]
+            _cite(job_id, [{"stage": "fea_plan", "decided": "closed shells not read as the part", "rule": "MESH-1b",
+                            "value": part.get("area_share"), "inputs": part,
+                            "words": (f"{part.get('faces_held')} of the file's {part.get('faces')} faces close into "
+                                      f"solids, {100 * float(part.get('area_share') or 0):.0f}% of its area: they are "
+                                      "not the part, so the file is meshed as the surface it is.")}])
     except Exception as exc:  # noqa: BLE001 - the part is meshed, or refused, as it stands
         logger.warning("fea driver: closed shells not read as solids (%s)", type(exc).__name__)
     asked: dict | None = None
