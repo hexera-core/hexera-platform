@@ -66,6 +66,21 @@ PORT_REGION_WAY_OUT = ("That opening most likely reaches the rest of its passage
                        "the cells there: widen or close that gap in the CAD, or ask for a smaller cell size near "
                        "that opening in the notes.")
 PASSAGE_PORTS_RULE = "INS-29"
+#: INS-35: a passage that lost an opening still brings the openings it kept into the mesh, and the refusal names
+#: the passages the run never meshed
+PASSAGE_KEPT_RULE = "INS-35"
+
+
+def _not_meshed(port_lists: list[list[str]], first: int) -> str:
+    """INS-35: the passages from number `first` on, which the run stopped before meshing, with their openings -
+    so a gate that finds those openings with no faces is read for what it is ('' when there are none)."""
+    rest = [(k, ports) for k, ports in enumerate(port_lists, start=1) if k >= first and ports]
+    if not rest:
+        return ""
+    return " Not meshed, as the run stopped here: " + "; ".join(
+        f"passage {k} ({', '.join(ports)})" for k, ports in rest) + "."
+
+
 _CELL_SIZES = re.compile(r"\b(maxCellSize|cellSize|boundaryCellSize)(\s+)([0-9.eE+-]+)(\s*;)")
 _N_CELLS = re.compile(rb"nCells:\s*(\d+)")
 _N_LISTED = re.compile(rb"^\s*(\d+)\s*\(", re.M)
@@ -298,7 +313,7 @@ def mesh_passages(ws: Path, *, bashrc: str = _DEFAULT_BASHRC, timeout: float = 1
     lost = ports_without_faces(ws / "constant" / "polyMesh", port_lists[0]) if port_lists else None
     if lost:
         return 1, False, (f"[CFMESH] passage 1: {PORT_REGION_DROPPED} ({', '.join(lost)} has no faces) - the "
-                          "same plan drops it again. " + PORT_REGION_WAY_OUT)
+                          "same plan drops it again." + _not_meshed(port_lists, 2) + " " + PORT_REGION_WAY_OUT)
     for k, rel in enumerate(spec.get("runs") or [], start=2):
         sub = (ws / str(rel)).resolve()
         if ws.resolve() not in sub.parents or not (sub / "geom.stl").exists():
@@ -341,9 +356,18 @@ def mesh_passages(ws: Path, *, bashrc: str = _DEFAULT_BASHRC, timeout: float = 1
                     break
                 cells = cells_of(sub / "constant" / "polyMesh")
                 if refined == PASSAGE_REFINES or cells is None or 8 * cells > PASSAGE_REFINE_CELLS:
+                    # INS-35: the passage's openings that DID keep their faces go into the mesh the gate judges -
+                    # never read as zero because another opening of the passage was lost (abc 63401: outlet_2
+                    # had 6,392 faces in its passage's mesh, yet read zero beside the lost outlet_3)
+                    kept = [p for p in mine if p not in lost]
+                    held = ""
+                    if kept and cells and _run(f"mergeMeshes -overwrite . {shlex.quote(str(rel))}", ws,
+                                               f"mergeMeshes_p{k}.log") == 0:
+                        held = f" In the mesh with its faces: {', '.join(kept)}."
                     return 1, False, (f"[CFMESH] passage {k}: {PORT_REGION_DROPPED} ({', '.join(lost)} has no "
                                       f"faces after {refined} finer re-mesh(es), {cells or 0:,} cells) - the same "
-                                      "plan drops it again. " + PORT_REGION_WAY_OUT)
+                                      "plan drops it again." + held + _not_meshed(port_lists, k + 1) + " "
+                                      + PORT_REGION_WAY_OUT)
                 logger.info("cfMesh: INS-29 - passage %d: %s has no faces (%s cells): meshed again at half the "
                             "cell size", k, ", ".join(lost), cells)
                 md.write_text(finer_mesh_dict(md.read_text()))

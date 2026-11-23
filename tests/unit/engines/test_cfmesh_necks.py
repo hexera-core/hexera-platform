@@ -272,3 +272,28 @@ def test_a_passage_piece_the_limit_cannot_reach_stops_the_plan_saying_a_piece_of
                             limit=1_000)
     assert [b["neck_of"] for b in boxes] == [[None]]
     assert stop.startswith("A piece of the passage reaches the rest of its passage only through a gap about 0.3 mm")
+
+
+# INS-34: the walk reads as many narrow spots in a row as the opening needs - abc 63401's outlet_3 needed nine and a
+# cap of eight left the ninth (a 1.6 mm gap) unboxed at 1.9 cells across; cfMesh cut it and dropped outlet_3
+
+def _chain_xs(n: int) -> list[float]:
+    """A chamber (x 0-30 mm) then `n` slits (2 mm long) each into a small pocket (3.6 mm) - the outlet on the last."""
+    xs = [0.0, 30.0]
+    for _ in range(n):
+        xs += [xs[-1] + 2.0, xs[-1] + 5.6]
+    return xs
+
+
+def test_an_opening_behind_nine_slits_in_a_row_needs_all_nine(monkeypatch):
+    import sys
+    n = 9
+    xs = _chain_xs(n)
+    mod = sys.modules[__name__]
+    monkeypatch.setattr(mod, "XS", xs)
+    monkeypatch.setattr(mod, "_filled", lambda i, j, k: i % 2 == 0 or j == 1)   # odd columns: the slit only
+    spots = [{"min": [xs[2 * s + 1] * MM, 4.7 * MM, 0.0], "max": [xs[2 * s + 2] * MM, 5.3 * MM, 10.0 * MM],
+              "radius_m": 0.15 * MM} for s in range(n)]
+    got = opening_necks(_surface(), "wall", spots, need_m=3.0 * MM)
+    assert sorted(r["box"] for r in got) == list(range(n))           # 8 on the old fixed cap of 8 steps
+    assert all(r["openings"] == ["outlet"] for r in got)

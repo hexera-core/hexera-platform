@@ -830,8 +830,12 @@ def _widest_join(cubes: np.ndarray, nb: np.ndarray, flat_lab: np.ndarray, dist: 
 #: INS-32: a piece of a passage this share of its largest piece's size (or more) is a passage piece the
 #: mesh must keep, even with no opening on it
 NECK_PIECE_SHARE = 0.05
-#: INS-32: the most narrow spots read in a row on the way from one opening to the rest of its passage
-NECK_MAX_STEPS = 8
+#: INS-34: the walk from one opening to the rest of its passage reads narrow spots in a row until the opening
+#: joins at the needed size or the narrowest step is no measured spot - never a fixed number of steps. Each
+#: step names a spot not named before (a named spot is meshed across), so the walk ends within one step per
+#: measured spot. abc 63401: outlet_3 needed nine (eight 0.1 mm slits and a 1.6 mm gap); a cap of 8 left the
+#: ninth unboxed at 1.9 cells across, cfMesh cut it and dropped outlet_3's piece.
+NECK_RULE_WALK = "INS-34"
 
 
 #: INS-33: how far (in cubes) round a needed spot's box the gap's own extent is read
@@ -991,7 +995,8 @@ def opening_necks(solids, wall_key: str, boxes, *, need_m: float, cells: int = G
         marks[seeds] = 1
         nb = np.r_[seeds, main_cubes]
         cubes = np.flatnonzero(passable & (marks == 0))
-        for _ in range(NECK_MAX_STEPS):
+        # INS-34: one step per measured spot at most - each names a spot not yet meshed across for this target
+        for _ in range(len(boxes) + 1):
             got = _widest_join(cubes, nb, marks, cl, shape, {1})
             if got is None or got[0] >= half - 1e-9:
                 break
@@ -1826,5 +1831,5 @@ def leak_test(V: np.ndarray, F: np.ndarray, seed, *, cells: int = GRID_CELLS) ->
 
 
 __all__ = ["GRID_CELLS", "MAP_MAX_TRIANGLES", "MIN_ACROSS", "PASSAGE_SHARE", "Grid", "InsideMap", "Leak", "PartialMap",
-           "Mouth", "NECK_MAX_STEPS", "NECK_PIECE_SHARE", "Pocket", "leak_test", "opening_necks", "raster",
+           "Mouth", "NECK_PIECE_SHARE", "NECK_RULE_WALK", "Pocket", "leak_test", "opening_necks", "raster",
            "read_inside", "read_inside_or_none"]

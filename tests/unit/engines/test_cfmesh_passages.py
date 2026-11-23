@@ -17,7 +17,6 @@ from meshpipeline.engines.case_contract import _passage_solids, stl_solid_names
 from meshpipeline.engines.cfmesh.cfmesh_runner import _stage_passages
 from meshpipeline.engines.cfmesh.solvability import _passage_pins
 
-
 _RESCUE_PASSAGE = N.rescue_passage
 
 
@@ -308,3 +307,46 @@ def test_the_passage_check_runs_between_its_mesh_and_the_merge(tmp_path, monkeyp
     assert N.mesh_passages(ws)[0] == 0
     i = order.index(("check", sub.resolve()))
     assert order[i - 1] == "cartesianMesh" and order[i + 1] == "mergeMeshes"
+
+
+# INS-35: a passage that lost an opening still brings the openings it kept into the mesh the gate judges
+
+def test_a_passage_that_lost_one_opening_still_merges_the_one_it_kept_and_names_only_the_lost_one(tmp_path, monkeypatch):
+    """abc 63401: passage 2's mesh held outlet_2 (6,392 faces) and lost outlet_3; it was never merged, so the gate
+    read outlet_2 AND outlet_3 at zero faces. Now outlet_2 is merged in and the refusal names outlet_3 alone."""
+    _two_passage_case(tmp_path)
+    sizes: list[str] = []
+    mesher = _fake_mesher([0], sizes)
+    merged: list[str] = []
+
+    def _fake(argv, **kw):
+        if "mergeMeshes" in argv[-1]:
+            merged.append(argv[-1])
+        return mesher(argv, **kw)
+    monkeypatch.setattr(N, "run_guarded", _fake)
+    rc, _t, why = N.mesh_passages(tmp_path)
+    assert rc == 1 and N.PORT_REGION_DROPPED in why
+    assert len(merged) == 1 and "_passages/p1" in merged[0]         # what the passage built is in the mesh
+    assert "(outlet_3 has no faces" in why and "In the mesh with its faces: outlet_2." in why
+    assert len(why.splitlines()) == 1                               # one line: the builder quotes that line
+
+
+def test_a_passage_with_every_opening_lost_merges_nothing(tmp_path, monkeypatch):
+    _two_passage_case(tmp_path)
+    (tmp_path / PASSAGES_FILE).write_text(json.dumps({"runs": ["_passages/p1"], "ports": [["inlet"], ["outlet_3"]]}))
+    merged: list[str] = []
+    mesher = _fake_mesher([0], [])
+    monkeypatch.setattr(N, "run_guarded", lambda argv, **kw: merged.append(argv[-1]) if "mergeMeshes" in argv[-1]
+                        else mesher(argv, **kw))
+    rc, _t, why = N.mesh_passages(tmp_path)
+    assert rc == 1 and not merged and "In the mesh" not in why
+
+
+def test_the_first_passage_s_lost_opening_names_the_passages_the_run_never_meshed(tmp_path, monkeypatch):
+    _two_passage_case(tmp_path)
+    pm = tmp_path / "constant" / "polyMesh"
+    pm.mkdir(parents=True)
+    (pm / "boundary").write_text(_boundary_text({"wall": 900, "inlet": 0}))
+    monkeypatch.setattr(N, "run_guarded", lambda argv, **kw: _Proc(0))
+    rc, _t, why = N.mesh_passages(tmp_path)
+    assert rc == 1 and "Not meshed, as the run stopped here: passage 2 (outlet_2, outlet_3)." in why
