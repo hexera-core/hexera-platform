@@ -21,13 +21,13 @@ from OCP.gp import gp_Pnt  # noqa: E402
 from OCP.TopAbs import TopAbs_FACE  # noqa: E402
 from OCP.TopExp import TopExp_Explorer  # noqa: E402
 from OCP.TopoDS import TopoDS, TopoDS_Compound, TopoDS_Shell  # noqa: E402
+from tests.native._v4_flush_patch_part import flush_patch_box, three_hole_box, write_three_hole_box  # noqa: E402
 
 import meshpipeline.cad.repair_v4 as v4  # noqa: E402
 import meshpipeline.cad.repair_v4.kernel_calls  # noqa: E402,F401  (import order: registers the kernel functions)
 from meshpipeline.cad.repair_v4 import ws_kernel  # noqa: E402
 from meshpipeline.cad.repair_v4.ops import shells  # noqa: E402
 from meshpipeline.cad.repair_v4.sites_kernel import volume_possibility  # noqa: E402
-from tests.native._v4_flush_patch_part import flush_patch_box, three_hole_box, write_three_hole_box  # noqa: E402
 
 
 def _faces(shape: Any) -> list:

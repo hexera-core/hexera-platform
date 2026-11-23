@@ -700,10 +700,11 @@ def _attach_free_loops(pool: WorkerPool, ws: Workspace, sites: list[Site], rever
         site.graph["free_loops"] = loops[:MAX_FREE_LOOPS]
         site.graph["free_loops_total"] = len(loops)
         site.graph["diagonal_mm"] = float((answer or {}).get("diagonal", 0.0))
-        if isinstance((answer or {}).get("volume"), dict):
+        volume = (answer or {}).get("volume")
+        if isinstance(volume, dict):
             # What topology can say about `make_volume` / `sew` (sites_kernel.volume_possibility). ABSENT when the call
             # failed, and absent means unknown: the generator proposes. Not shown to the model (`observation` selects).
-            site.graph["volume"] = dict(answer["volume"])
+            site.graph["volume"] = dict(volume)
 
 
 def _attach_graphs(pool: WorkerPool, ws: Workspace, sites: list[Site], reverse: dict, h_mm: float) -> None:
