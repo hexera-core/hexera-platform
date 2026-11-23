@@ -141,7 +141,7 @@ elif key.startswith("instance/attributes/") and key.split("/")[-1] in meta:
 else: sys.exit(22)
 """
 _GCLOUD = """#!/bin/bash
-echo "$*" >> "$LOG"
+echo "$*" > "$LOG/$$"
 if [ "$1 $2" = "storage cp" ]; then
   dst="${@: -1}"
   case "$dst" in gs://*|-) ;; *) mkdir -p "$(dirname "$dst")"
@@ -152,29 +152,29 @@ exit 0
 """
 _DOCKER = """#!/bin/bash
 if [ "$1" = "ps" ]; then echo a; echo b; echo c; echo d; exit 0; fi
-echo "docker $*" >> "$LOG"
+echo "docker $*" > "$LOG/$$"
 exit 0
 """
 
 
-def _startup(tmp_path: Path, meta: dict[str, str]) -> list[str]:
+def _startup(tmp_path: Path, meta: dict[str, str], expect_rc: int = 0) -> list[str]:
     b = tmp_path / "bin"
     b.mkdir()
     for name, body in (("curl", _CURL), ("gcloud", _GCLOUD), ("docker", _DOCKER),
                        ("sleep", "#!/bin/bash\nexit 1\n"), ("chown", "#!/bin/bash\nexit 0\n"),
-                       ("python3", '#!/bin/bash\necho "python3 $*" >> "$LOG"\nexit 0\n')):
+                       ("python3", '#!/bin/bash\necho "python3 $*" > "$LOG/$$"\nexit 0\n')):
         (b / name).write_text(body)
         (b / name).chmod(0o755)
     (tmp_path / "meta.json").write_text(json.dumps(meta))
-    (tmp_path / "log").write_text("")
+    (tmp_path / "log").mkdir()   # one file per stub call: parallel shards cannot tear a line
     env = {"PATH": f"{b}:/usr/bin:/bin", "META": str(tmp_path / "meta.json"),
            "LOG": str(tmp_path / "log"), "V3EVAL_WORKDIR": str(tmp_path / "w"),
            "V3EVAL_RETRY_SLEEP": "0"}
     r = subprocess.run(["bash", str(V3 / "vm_startup.sh")], env=env, capture_output=True, text=True,
                        timeout=60)
-    assert r.returncode == 0, r.stderr
+    assert r.returncode == expect_rc, r.stderr
     return sorted(ln.replace(str(tmp_path / "w"), "ROOT")
-                  for ln in (tmp_path / "log").read_text().splitlines())
+                  for f in (tmp_path / "log").iterdir() for ln in f.read_text().splitlines())
 
 
 V3_META = {
@@ -222,11 +222,11 @@ def test_v4_dry_run_is_one_wave_of_v4_labelled_self_deleting_vms(tmp_path):
     assert len(creates) == 12                      # 96 shards, 8 per c2d-standard-8
     units: list[str] = []
     for j, line in enumerate(creates, start=1):
-        assert "dev-crsv4-v4e-" in line and f"{j}of12" in line
-        assert "deployment-id=dev-crsv4" in line and "purpose=v4-eval" in line
+        assert "dev-crsv3-v4e-" in line and f"{j}of12" in line
+        assert "deployment-id=dev-crsv3" in line and "purpose=v4-eval" in line
         assert "managed-by=v4-eval" in line and "arms=reprobe" in line
         for gone in ("v3-", "v3e", "purpose=v3", "crsv3-verdict", "openai-api-key"):
-            assert gone not in line.replace("gs://dev-crsv3-transfer", ""), gone
+            assert gone not in line.replace("gs://dev-crsv3-transfer", "").replace("dev-crsv3", ""), gone
         for key in ("v4-image=", "v4-commit=", "v4-units=", "v4-code=", "v4-run-arm=",
                     "v4-pool=", "v4-cache-uri=", "v4-sources="):
             assert key in line, key
@@ -235,6 +235,28 @@ def test_v4_dry_run_is_one_wave_of_v4_labelled_self_deleting_vms(tmp_path):
         assert "--instance-termination-action=DELETE" in line and "--machine-type=c2d-standard-8" in line
         units += line.split("v4-units=")[1].split("|")[0].split(",")
     assert sorted(units) == sorted(f"reprobe:pool:{i}/96" for i in range(1, 97))
+
+
+def test_pool_sources_match_the_pool_module_s_source_type():
+    import typing
+    ev = _load("v4_evalspec_under_test2", V4 / "evalspec.py")
+    pool = _load("v4_pool_under_test", V4 / "pool.py")
+    assert set(ev.POOL_SOURCES) == set(typing.get_args(pool.Source))
+
+
+def test_v4_vms_are_swept_by_the_crsv3_destroy_and_still_distinguishable(tmp_path):
+    r = _v4("--dry-run", tmp_path=tmp_path)
+    assert all("deployment-id=dev-crsv3," in c and "purpose=v4-eval" in c for c in _creates(r.stdout))
+
+
+def test_v4_startup_refuses_without_the_source_list(tmp_path):
+    meta = {"v4-image": "IMG@sha256:x", "v4-commit": "c" * 40, "v4-image-commit": "abc1234",
+            "v4-units": "reprobe:pool:1/2", "v4-bucket": "gs://B", "v4-prefix": "gs://B/p",
+            "v4-code": "gs://B/p/code-cccccccccccc/code.tgz", "v4-machine-type": "c2d-standard-8",
+            "v4-run-arm": "devtools/validation/v4_eval/run_arm.py"}
+    log = _startup(tmp_path, meta, expect_rc=1)
+    assert not any(ln.startswith("docker run") for ln in log)
+    assert any(ln.endswith("/FAILED") or "FAILED" in ln for ln in log)
 
 
 def test_v4_default_sources_exclude_fusion_360_and_count_the_cleared_files(tmp_path):
@@ -274,7 +296,10 @@ def test_the_source_filter_reaches_the_vms_and_run_arm_applies_it(tmp_path):
     pool = ra.pool_mod.read_pool(POOL)
     kept = ra.select_sources(pool, "abc_fail,inject")
     assert kept and {e.source for e in kept} == {"abc_fail"}      # the committed pool has no inject
-    assert len(ra.select_sources(pool, "")) == len(pool)             # no filter = whole pool (local use)
+    # an EMPTY filter (missing flag / metadata key) means the cleared sources, never the whole pool
+    empty = ra.select_sources(pool, "")
+    assert empty and all(e.source != "f360" for e in empty) and len(empty) < len(pool)
+    assert {e.source for e in empty} == {e.source for e in pool} - {"f360"}
     with pytest.raises(ValueError, match="not cleared"):
         ra.select_sources(pool, "abc_fail,f360")                     # run_arm refuses it too
 

@@ -62,13 +62,12 @@ def shard_entries(entries: list[Any], shard: str) -> list[Any]:
 
 
 def select_sources(entries: list[Any], sources: str) -> list[Any]:
-    """The pool entries whose source the wave may run (a comma list of pool source labels). An empty
-    list means every source in the pool; the fleet launcher always passes the cleared list, so a pool
-    that carries Fusion 360 entries is never probed for them. A label that is not cleared is refused
-    here as well as at launch."""
-    if not sources:
-        return entries
-    wanted = set(evalspec.resolve_sources(sources.split(",")))
+    """The pool entries whose source the wave may run (a comma list of pool source labels). An EMPTY
+    list means the CLEARED sources, never the whole pool: a missing flag or metadata key must not open
+    the pool to an uncleared dataset (Fusion 360). A label that is not cleared is refused here as well
+    as at launch."""
+    wanted = set(evalspec.resolve_sources(sources.split(",") if sources else
+                                          list(evalspec.CLEARED_SOURCES)))
     return [e for e in entries if e.source in wanted]
 
 
@@ -93,7 +92,7 @@ def run_reprobe(args: argparse.Namespace, out: Path, prov: dict) -> int:
     reprobe_mod.check_not_quarantined(whole_pool)  # pool-level: any source, before any shard work
     entries = shard_entries(select_sources(whole_pool, args.sources), args.shard)
     prov["shard_files"] = len(entries)
-    prov["sources"] = args.sources or "all"
+    prov["sources"] = args.sources or "cleared"
     cache = make_cache(args.cache_uri) if args.cache_uri else None
     prov["cache_uri"] = args.cache_uri or None
     pool = WorkerPool(args.workers)
@@ -135,7 +134,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out", default="/eval/out")
     parser.add_argument("--pool", default=str(pool_mod.OUT))
     parser.add_argument("--sources", default="",
-                        help="comma list of pool source labels to run (default: the whole pool); "
+                        help="comma list of pool source labels to run (default: the cleared ones); "
                              "uncleared sources are refused")
     parser.add_argument("--cache-uri", default="", help="gs://... or a directory: the verdict cache")
     parser.add_argument("--workers", type=int, default=1)

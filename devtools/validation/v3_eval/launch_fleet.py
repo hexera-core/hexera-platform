@@ -252,7 +252,7 @@ V3 = V3Profile(
     kinds=evalspec.KINDS, run_arm=None, model_secret=evalspec.MODEL_SECRET,
     stage_hint="run stage.py")
 V4 = V4Profile(
-    name="v4", meta="v4", purpose="v4-eval", managed_by="v4-eval", deployment_id="dev-crsv4",
+    name="v4", meta="v4", purpose="v4-eval", managed_by="v4-eval", deployment_id=DEPLOYMENT_ID,
     vm_tag="v4e", prefix_required="gs://dev-crsv3-", prefix_owner="an existing eval bucket",
     default_prefix=V4_PREFIX, default_max_run_hours=8, arms=("reprobe",), kinds=("pool",),
     run_arm="devtools/validation/v4_eval/run_arm.py", model_secret=None,

@@ -134,6 +134,14 @@ if [ "${P}" = "v3" ]; then
   done
 else
   # v4: one input set for the whole pool, laid out <sha256>/<basename> (run_arm.input_path)
+  # FAIL CLOSED: without the source list run_arm could not know what it may probe.
+  [ -n "${SOURCES}" ] || fail_all "no v4-sources metadata: refusing to probe an unspecified pool"
+  # Disk headroom: the whole input set is copied to every VM; refuse if it would not fit.
+  NEED="$(gcloud storage du -s "${PREFIX}/inputs" 2>/dev/null | awk 'NR==1{print $1}')"
+  HAVE="$(df -B1 --output=avail "${W}" 2>/dev/null | tail -1 | tr -d ' ')"
+  if [ -n "${NEED}" ] && [ -n "${HAVE}" ] && [ "${NEED}" -gt $((HAVE * 8 / 10)) ]; then
+    fail_all "inputs (${NEED} bytes) exceed 80% of free disk (${HAVE} bytes)"
+  fi
   gcloud storage cp "${POOL}" "${W}/pool.json" || fail_all "no staged pool.json at ${POOL}"
   mkdir -p "${W}/inputs/pool"
   gcloud storage cp -r "${PREFIX}/inputs/*" "${W}/inputs/pool/" || fail_all "no staged pool inputs"
