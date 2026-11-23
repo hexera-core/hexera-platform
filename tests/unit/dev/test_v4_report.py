@@ -221,8 +221,10 @@ def test_heldout_report_requires_frozen_commit(tmp_path) -> None:
     with pytest.raises(report.ReportRefused, match="not the frozen"):
         report.load_wave(tmp_path, wave, split, n_shards=2, frozen_commit="c" * 40)
     rep = report.build_report(report.load_wave(tmp_path, wave, split, n_shards=2, frozen_commit=COMMIT))
-    assert rep["primary_artifact"] and rep["frozen_commit_checked"] and rep["split"] == "heldout"
-    assert "PRIMARY ARTIFACT" in report.render_text(rep)
+    # frozen commit checked, but the slot was only read from the shards' own provenance: NOT the primary artifact yet
+    assert rep["frozen_commit_checked"] and rep["split"] == "heldout" and rep["heldout_split"]
+    assert rep["primary_artifact"] is False
+    assert "PRIMARY ARTIFACT" not in report.render_text(rep)
 
 
 def test_dev_report_is_the_same_code_path_and_needs_no_frozen_commit(good) -> None:
@@ -800,3 +802,187 @@ def test_the_refusal_for_a_missing_slot_says_what_to_wire(tmp_path) -> None:
     wave, split = _heldout(tmp_path, slot=None)
     with pytest.raises(report.ReportRefused, match=r"copy\s+plan_wave\(\.\.\.\)\.provenance\(\)"):
         report.load_wave(tmp_path, wave, split, n_shards=2, frozen_commit=COMMIT)
+
+
+# ================================================================== Task 24: the carry-ins from Task 21's review
+
+def mixed_split(n: int = 40) -> list:
+    """A dev-shaped split in which every fifth INPUT is already clean, so `in_clean` is True for some files and
+    `clean_gain` is no longer equal to `clean_out` (every other fixture here has in_clean=False throughout)."""
+    out = []
+    for i in range(n):
+        c = i % 5 == 0
+        out.append(rp.ProbeRow(f"f{i}.step", _sha(i), "abc_fail", {"tier": "full", "clean": c, "counts_for_scoreboard": True},
+                               None if c else "panel", "" if c else KINDS[i % 4], None))
+    return out
+
+
+def _gain(arm: str, idx) -> int:
+    """Files the arm FIXED (clean out, not clean in), counted over the fixture's own definition, not the report's."""
+    return sum(_fixed(i, arm) and i % 5 != 0 for i in idx)
+
+
+def test_clean_gain_and_paired_clean_in_are_asserted_numerically_on_a_split_with_clean_inputs(tmp_path) -> None:
+    split = mixed_split()
+    dropped = {split[i].sha256 for i in (5, 6, 7)}  # staged loses one CLEAN input (f5) and two dirty ones
+    build(tmp_path, WAVE, split, rows_for=lambda b, i, a: arm_row(b, i, a, inconclusive=(a == "staged" and b.sha256 in dropped)))
+    rep = report.build_report(load(tmp_path, split))
+    allf, shared = range(40), [i for i in range(40) if i not in (5, 6, 7)]
+    clean_inputs_all, clean_inputs_shared = 8, 7
+    for arm in ("input_only", "staged", "search_det", "search_ai"):
+        a = rep["arms"][arm]
+        own = [i for i in allf if not (arm == "staged" and i in (5, 6, 7))]
+        out_n = sum(i % 5 == 0 or _fixed(i, arm) for i in own)
+        in_n = sum(i % 5 == 0 for i in own)
+        assert (a["clean_out"], a["clean_in"]) == (out_n, in_n)
+        assert a["clean_gain"] == out_n - in_n == _gain(arm, own)
+        # the gain is neither clean_out (which is what every dev fixture reduces it to) nor clean_out + clean_in
+        if arm != "input_only":
+            assert a["clean_gain"] not in (a["clean_out"], a["clean_out"] + a["clean_in"])
+        p = a["paired"]
+        assert p["n"] == 37 and p["clean_in"] == clean_inputs_shared
+        assert p["clean"] == sum(i % 5 == 0 or _fixed(i, arm) for i in shared)
+        assert p["clean_gain"] == p["clean"] - p["clean_in"] == _gain(arm, shared)
+    assert rep["arms"]["input_only"]["clean_gain"] == 0 and rep["arms"]["input_only"]["paired"]["clean_gain"] == 0
+    assert clean_inputs_all - clean_inputs_shared == 1  # the dropped clean input really did change the paired count
+    assert "+0" in report.render_text(rep)
+
+
+def test_primary_artifact_needs_a_slot_the_marker_store_confirmed(tmp_path) -> None:
+    wave, split = _heldout(tmp_path)
+    unverified = report.build_report(report.load_wave(tmp_path, wave, split, n_shards=2, frozen_commit=COMMIT))
+    assert unverified["primary_artifact"] is False and unverified["heldout_split"] is True
+    text = report.render_text(unverified)
+    assert "PRIMARY ARTIFACT" not in text.replace("NOT the primary artifact", "") and "NOT the primary artifact" in text
+    verified = report.build_report(report.load_wave(tmp_path, wave, split, n_shards=2, frozen_commit=COMMIT,
+                                                     markers=_Store({"slot/held_out/1": "wv1"})))
+    assert verified["primary_artifact"] is True
+    assert "[PRIMARY ARTIFACT, frozen commit verified, once-only slot verified]" in report.render_text(verified)
+
+
+def test_a_dev_report_is_never_the_primary_artifact_even_with_a_verified_slot(tmp_path) -> None:
+    split = split_rows()
+    build(tmp_path, WAVE, split, prov={"slot": "slot/checkpoint/1"})
+    rep = report.build_report(load(tmp_path, split, markers=_Store({"slot/checkpoint/1": "wv1"})))
+    assert rep["slot_verified_against_store"] is True and rep["primary_artifact"] is False
+    assert "PRIMARY ARTIFACT" not in report.render_text(rep)
+
+
+def _same_outcome(b, i, a, **over):
+    """search_det and search_ai made EXACTLY the same repairs (a legitimate result: see FALSE_POSITIVE_NOTE)."""
+    ok = i % 3 == 0
+    return arm_row(b, i, a, out_clean=ok, out_panel_passes=PANEL if ok else 1,
+                   reason="clean" if ok else "patience", **over)
+
+
+def test_the_indistinguishable_warning_never_names_an_arm_that_is_not_measured(tmp_path) -> None:
+    wave, split = ev.WAVES["dev_search"], split_rows()
+    inc = {b.sha256 for b in split[:12]}  # 30%: search_ai is NOT MEASURED; its 28 surviving files equal search_det's
+    build(tmp_path, wave, split, rows_for=lambda b, i, a: _same_outcome(b, i, a) if a != "search_ai" or b.sha256 not in inc
+          else arm_row(b, i, a, inconclusive=True))
+    rep = report.build_report(load(tmp_path, split, wave))
+    assert rep["arms"]["search_ai"]["measured"] is False
+    leaked = [w for w in rep["warnings"] if "indistinguishable" in w]
+    assert leaked == [], leaked
+    assert any(w.startswith("search_ai: NOT MEASURED") for w in rep["warnings"])
+    # the sibling: the same two arms, BOTH measured and identical, ARE flagged, so the filter is not a blanket silence
+    sib = tmp_path / "sib"
+    build(sib, wave, split, rows_for=_same_outcome)
+    flagged = report.build_report(load(sib, split, wave))["warnings"]
+    assert any("search_det and search_ai are indistinguishable on all 40 files" in w for w in flagged)
+
+
+def test_per_kind_cells_on_a_measured_arm_are_withheld_when_that_kind_is_over_ten_percent_inconclusive(tmp_path) -> None:
+    split = split_rows()
+    inc = {split[0].sha256, split[4].sha256}  # two of plc_intersection's ten files: 20% of the KIND, 5% of the arm
+    build(tmp_path, WAVE, split, rows_for=lambda b, i, a: arm_row(b, i, a, inconclusive=(a == "staged" and b.sha256 in inc)))
+    rep = report.build_report(load(tmp_path, split))
+    st = rep["arms"]["staged"]
+    assert st["measured"] is True and st["clean_rate"] is not None
+    k = st["by_defect_kind"]["plc_intersection"]
+    assert k["inconclusive"] == 2 and k["measured"] is False
+    assert k["clean"] is None and k["clean_rate"] is None  # the count recovers the rate: it is withheld too
+    assert st["by_defect_kind"]["plc_open_shell"]["clean"] == 0 and st["by_defect_kind"]["plc_open_shell"]["measured"] is True
+    row = next(r for r in _kind_section(report.render_text(rep), "staged") if r[0] == "plc_intersection")
+    assert row[-2:] == ["withheld", "withheld"]
+    # the sibling kind, and the same kind on an arm that dropped nothing, still print their figures
+    other = next(r for r in _kind_section(report.render_text(rep), "staged") if r[0] == "plc_open_shell")
+    assert other[-2] != "withheld"
+    full = next(r for r in _kind_section(report.render_text(rep), "search_det") if r[0] == "plc_intersection")
+    assert full[-2] != "withheld" and full[-1] != "withheld"
+
+
+def test_a_search_row_whose_start_is_clean_is_measured_even_with_inconclusive_candidates_and_no_verdict(tmp_path) -> None:
+    """verdict_candidates=0, inconclusive_candidates>0, out_clean=True: the `not out_clean` clause is what keeps this
+    file MEASURED (the start was clean and stays clean), so it is the clause under test, not the other two."""
+    split = mixed_split()
+    clean_start = {split[i].sha256 for i in range(0, 40, 5)}
+
+    def rows(b, i, a):
+        if a == "search_det" and b.sha256 in clean_start:
+            return arm_row(b, i, a, reason="patience", verdict_candidates=0, inconclusive_candidates=3,
+                           infrastructure_failed=False)
+        return arm_row(b, i, a)
+
+    build(tmp_path, WAVE, split, rows_for=rows)
+    rep = report.build_report(load(tmp_path, split))
+    det = rep["arms"]["search_det"]
+    assert det["inconclusive"] == 0 and det["conclusive"] == 40  # measured: counted, not dropped
+    # the same fields on a file whose start is NOT clean say nothing was measured, and a row calling it conclusive is refused
+    dirty = tmp_path / "dirty"
+    build(dirty, WAVE, split, rows_for=lambda b, i, a: arm_row(
+        b, i, a, reason="patience", verdict_candidates=0, inconclusive_candidates=3, infrastructure_failed=False)
+        if a == "search_det" and b.sha256 not in clean_start else arm_row(b, i, a))
+    with pytest.raises(report.ReportRefused, match="never got a verdict"):
+        load(dirty, split)
+
+
+def test_four_measured_arms_that_each_drop_different_files_warn_that_the_paired_set_shrank(tmp_path) -> None:
+    split = split_rows()
+    drops = {"input_only": (0, 1, 2), "staged": (3, 4, 5), "search_det": (6, 7, 8), "search_ai": (9, 10, 11)}
+    build(tmp_path, WAVE, split, rows_for=lambda b, i, a: arm_row(b, i, a, inconclusive=i in drops[a]))
+    rep = report.build_report(load(tmp_path, split))
+    assert all(rep["arms"][a]["measured"] for a in drops)  # each arm is under the per-arm limit (7.5%)
+    assert rep["paired_set"]["n_files"] == 28 < report.MIN_PAIRED_FRACTION * 40
+    assert any("PAIRED columns cover only 28 of 40" in w for w in rep["warnings"])
+    assert rep["status"] == "UNRELIABLE" and rep["numbers_valid"] is False
+    # the sibling: the same arms dropping the SAME three files leave 37 of 40 and no such warning
+    sib = tmp_path / "sib"
+    build(sib, WAVE, split, rows_for=lambda b, i, a: arm_row(b, i, a, inconclusive=i in (0, 1, 2)))
+    assert not any("PAIRED columns cover only" in w for w in report.build_report(load(sib, split))["warnings"])
+
+
+# ---- the row contract is the search driver's, not a copy
+
+def test_the_row_carries_exactly_the_fields_the_search_driver_defines() -> None:
+    import dataclasses
+
+    from meshpipeline.cad.repair_v4 import measurement, search
+
+    fields = {"reason", "verdict_candidates", "inconclusive_candidates", "infrastructure_failed"}
+    assert fields <= {f.name for f in dataclasses.fields(search.SearchResult)}
+    assert fields <= {f.name for f in dataclasses.fields(report.ArmRow)}
+    for name in fields:  # the same type on both sides, so a field retyped on one side fails here
+        assert str(report.ArmRow.__dataclass_fields__[name].type).replace(" | None", "") == \
+            str(search.SearchResult.__dataclass_fields__[name].type).replace(" | None", ""), name
+    assert report.SEARCH_ARMS == tuple(search.ARMS)  # the second hard-coded list, pinned to the driver's own
+    src = __import__("inspect").getsource(report.ArmRow.derived_inconclusive.fget)
+    assert "file_unmeasured" in src and "no_verdict" not in src  # delegated, not restated
+    assert measurement.NO_VERDICT == "no_verdict"
+
+
+def test_a_real_search_result_and_the_report_row_agree_on_whether_a_file_was_measured() -> None:
+    from meshpipeline.cad.repair_v4 import search
+
+    for reason in ("clean", "patience", "no_verdict"):
+        for inc in (0, 2):
+            for ver in (0, 5):
+                for failed in (False, True):
+                    for clean in (False, True):
+                        res = search.SearchResult(best=None, best_verdict=None, clean=clean, trace=None, reason=reason,
+                                                  inconclusive_candidates=inc, verdict_candidates=ver,
+                                                  infrastructure_failed=failed)
+                        row = report.ArmRow("f", "0" * 64, "abc_fail", "search_det", False, 0.0, 1.0, out_clean=clean,
+                                            reason=reason, inconclusive_candidates=inc, verdict_candidates=ver,
+                                            infrastructure_failed=failed)
+                        assert res.unmeasured == row.derived_inconclusive, (reason, inc, ver, failed, clean)

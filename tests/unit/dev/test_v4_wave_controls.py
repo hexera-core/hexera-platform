@@ -363,7 +363,7 @@ def test_a_dry_run_refuses_a_bad_probe_and_claims_nothing(live, tmp_path, capsys
     gates = (ml.FileMarkerStore(tmp_path / "none"), BACKEND)
     assert _dry(tmp_path, gates=gates) == 1
     assert "no probe record" in capsys.readouterr().err
-    assert gates[0].get("_waves/checkpoint-1") is None               # read-only: nothing claimed
+    assert gates[0].get("slot/checkpoint/1") is None               # read-only: nothing claimed
 
 
 def test_a_dry_run_refuses_an_exhausted_wave_count(live, tmp_path, capsys):
@@ -463,7 +463,7 @@ def test_a_refused_launch_does_not_burn_a_checkpoint_slot(live, tmp_path):
     gates = (ml.FileMarkerStore(tmp_path / "none"), BACKEND)            # no probe: refused
     assert _live(live, tmp_path, gates=gates) == 1
     assert wl.check_wave_count(gates[0], "checkpoint", "other", claim=False) is None
-    assert gates[0].get("_waves/checkpoint-1") is None
+    assert gates[0].get("slot/checkpoint/1") is None
 
 
 def test_create_wave_itself_refuses_when_the_gate_refuses(live):

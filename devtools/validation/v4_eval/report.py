@@ -66,6 +66,10 @@ MAX_INCONCLUSIVE_FRACTION = 0.10
 #: 2 x 0.5^5 = 6%), at 10 that chance is ~0.2%, and a wave of dev/held-out size (100s of files) is far above it.
 #: Anything from ~8 to ~20 would be defensible; do not read it as a threshold the data picked.
 MIN_FILES_FOR_CONSTANT_WARNING = 10
+#: PROVISIONAL, owner's to set: the paired set (files EVERY measured arm judged) must cover at least this share of
+#: the split, else the report warns and says the numbers are UNRELIABLE. Four measured arms each dropping ~10% on
+#: different files leave ~66% of the split, which is under this limit on purpose: that is the case it exists for.
+MIN_PAIRED_FRACTION = 0.80
 #: The arms whose rows come from a best-first SEARCH and so carry SearchResult's reason / candidate counts. A
 #: conclusive row of one of these without them cannot be told from "never measured" and is refused.
 SEARCH_ARMS = ("search_det", "search_ai")
@@ -254,8 +258,8 @@ def load_wave(root: Path, wave: Any, split_rows: Iterable[Any], *, n_shards: int
               purpose: str = "report", markers: Any = None) -> WaveResult:
     """Every gate, then the rows. `split_rows` are the split file's ProbeRows (rp.read_split).
 
-    ONCE-ONLY, enforced at READ time (nothing in production calls `plan_wave` yet, so this is the one place the
-    held-out and checkpoint counts can still bite): the shards of a held-out or checkpoint wave must carry the
+    ONCE-ONLY, enforced at READ time as well as at launch (the launcher calls `plan_wave`; this is the check that
+    does not trust the launcher): the shards of a held-out or checkpoint wave must carry the
     `slot` that `plan_wave` claimed (WavePlan.provenance), agreed by every shard and one of the type's own keys.
     A run launched around `plan_wave` has none and is refused. When the durable `markers` store is passed, the
     slot must also be held by THIS wave_id there; without it the report says the slot was not verified."""
@@ -413,7 +417,7 @@ def _arm_block(arm: str, rows: list[ArmRow], kinds: Mapping[str, str], n_files: 
         kind_inc = len(rs) - len(con)
         ok = measured and bool(con) and kind_inc / len(rs) <= MAX_INCONCLUSIVE_FRACTION
         by_kind[kind] = {"files": len(rs), "conclusive": len(con), "inconclusive": kind_inc,
-                         "clean": sum(r.clean for r in con) if measured else None,
+                         "clean": sum(r.clean for r in con) if ok else None,
                          "clean_rate": _rate(sum(r.clean for r in con), len(con)) if ok else None,
                          "measured": ok}
     metered = ev.ARMS[arm].spend_metered
@@ -496,7 +500,9 @@ def build_report(result: WaveResult) -> dict[str, Any]:
                 and b["clean_out"] in (0, b["conclusive"]):
             warnings.append(f"{a}: every conclusive file has the same outcome ({b['clean_out']}/{b['conclusive']} clean): "
                             "a constant verdict looks like a broken harness, not a result - but " + FALSE_POSITIVE_NOTE)
-    names = list(wave.arms)
+    # An arm whose numbers are withheld is not compared at all: "X and Y are indistinguishable on N files" would
+    # leak that X's outcomes equal Y's on those files, which is exactly what withholding X's rate is meant to hide.
+    names = [a for a in wave.arms if blocks[a]["measured"]]
     for i, a in enumerate(names):
         for b in names[i + 1:]:
             both = [s for s, by in by_sha.items() if by[a].counts and by[b].counts]
@@ -505,12 +511,21 @@ def build_report(result: WaveResult) -> dict[str, Any]:
                     for s in both):
                 warnings.append(f"{a} and {b} are indistinguishable on all {len(both)} files they share: "
                                 "check that the harness varies the arm; " + FALSE_POSITIVE_NOTE)
+    if paired_set["arms"] and paired_set["n_files"] < MIN_PAIRED_FRACTION * result.n_files:
+        warnings.append(
+            f"the PAIRED columns cover only {paired_set['n_files']} of {result.n_files} files "
+            f"({paired_set['n_files'] / result.n_files:.0%}; minimum {MIN_PAIRED_FRACTION:.0%}): each measured arm "
+            "drops different files, so the shared set is no longer the split and the paired rates are about a "
+            "subset the arms agreed to judge, not the corpus")
     shard_wall = list(result.shard_wall_seconds)
     return {
         "wave": wave.name, "wave_id": result.wave_id, "wave_type": wave.wave_type, "split": wave.split,
         "commit": result.commit, "image": result.image, "frozen_commit_checked": result.frozen,
         "slot": result.slot, "slot_verified_against_store": result.slot_verified,
-        "primary_artifact": wave.split == ev.HELDOUT,
+        #: the held-out split is spent in ONE use, so this label is available only when the marker store confirmed
+        #: this wave_id holds the once-only slot. A slot named in the shards' own provenance proves nothing.
+        "primary_artifact": wave.split == ev.HELDOUT and result.slot_verified,
+        "heldout_split": wave.split == ev.HELDOUT,
         "files": result.n_files, "arms": blocks, "paired_set": paired_set,
         "marginals": {"ai_marginal (search_ai - search_det)": _paired(by_sha, "search_ai", "search_det", blocks),
                       "deterministic_marginal (staged - input_only)": _paired(by_sha, "staged", "input_only", blocks)},
@@ -538,7 +553,9 @@ def _pct(x: float | None) -> str:
 def render_text(rep: dict[str, Any]) -> str:
     out = [f"# {rep['wave']} ({rep['split']}, {rep['wave_type']}) - {rep['status']}",
            f"commit {rep['commit']}  image {rep['image']}  files {rep['files']}"
-           + ("  [PRIMARY ARTIFACT, frozen commit verified]" if rep["primary_artifact"] else "")]
+           + ("  [PRIMARY ARTIFACT, frozen commit verified, once-only slot verified]" if rep["primary_artifact"]
+              else "  [held-out split, once-only slot NOT verified: NOT the primary artifact]" if rep["heldout_split"]
+              else "")]
     if rep["slot"]:
         out.append(f"once-only slot {rep['slot']}: "
                    + ("held by this wave_id in the marker store" if rep["slot_verified_against_store"]

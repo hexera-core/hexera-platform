@@ -240,8 +240,20 @@ class V4Profile(Profile):
                 *([f"v4-wave={args.wave}", f"v4-arms={','.join(args.arms_list)}", f"v4-split={args.split}",
                    f"v4-split-uri={args.split_uri}", f"v4-h-mm={args.h_mm if args.h_mm is not None else ''}"]
                   if getattr(args, "arms_list", None) else []),
+                *self.plan_metadata(args),
                 # a model arm's key: ONLY a secret the operator named (--model-secret); there is no default
                 *([f"v4-model-secret={args.model_secret}"] if getattr(args, "model_secret", None) else [])]
+
+    def plan_metadata(self, args) -> list[str]:
+        """An ARMS wave hands every shard `plan_wave(...).provenance()` so the shard can check it against its own flags
+        and copy it into its PROVENANCE.json. Before the slot is claimed (a dry run) the value says so instead of
+        inventing a slot; `vm_startup.sh` refuses a value that is not a JSON object."""
+        if getattr(args, "wave", None) is None:
+            return []
+        plan = getattr(args, "plan", None)
+        if plan is None:
+            return ["v4-plan-provenance=UNCLAIMED-dry-run"]
+        return [f"v4-plan-provenance={json.dumps(plan.provenance(), sort_keys=True)}"]
 
     def pool_files(self, args) -> int:
         """Files the wave will probe: --files, else the pool manifest's entries in the named sources."""
@@ -588,6 +600,20 @@ def v4_gate_problems(args, markers, backend: str, *, claim: bool) -> list[str]:
         refusal = wave_limits.check_wave_count(markers, args.wave_type, args.wave_id, claim=claim)
         if refusal:
             problems.append(refusal)
+    if not problems and getattr(args, "wave", None) is not None:
+        # an ARM wave: plan_wave claims the slot the REPORT checks (`slot/...`), alongside the launcher's own count.
+        # Without `claim` the slot is only looked at, never taken.
+        wave_def = budget_spec.wave(args.wave)
+        if claim:
+            try:
+                args.plan = budget_spec.plan_wave(wave_def, wave_id=args.wave_id, n_shards=args.shards_total,
+                                                  markers=markers)
+            except (budget_spec.WaveSlotSpent, ValueError) as exc:
+                problems.append(str(exc))
+        else:
+            refusal = budget_spec.wave_slot_problem(wave_def, args.wave_id, markers)
+            if refusal:
+                problems.append(refusal)
     return problems
 
 
@@ -652,6 +678,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--wave-type", choices=sorted(wave_limits.WAVE_CAPS_USD), default=None,
                         help="v4 only, REQUIRED: the wave type; its model-spend cap comes from the ledger's "
                              "WAVE_CAPS_USD table (normal, checkpoint <= 3 waves, held_out exactly one)")
+    parser.add_argument("--wave", choices=sorted(budget_spec.WAVES), default=None,
+                        help="v4 only: run a named ARM wave (evalspec.WAVES): its type, split and arms come from the "
+                             "definition and the launch goes through evalspec.plan_wave, which claims the once-only "
+                             "slot and binds the cap. Without it the launch is the re-probe wave.")
     parser.add_argument("--wave-id", default=None,
                         help="v4 only, REQUIRED: this wave's id (lowercase letters, digits, dashes); reuse it to "
                              "resume the same wave, never for a different one")
@@ -659,7 +689,6 @@ def build_parser() -> argparse.ArgumentParser:
                         help="v4 only: run these ARMS (comma list of input_only, staged, search_det, search_ai) over "
                              "a split instead of the re-probe; the shard runs them all under ONE ledger. Needs "
                              "--wave --split-uri --h-mm")
-    parser.add_argument("--wave", default=None, help="v4 --arms only: the evalspec.WAVES entry (its split, type and arms)")
     parser.add_argument("--split-uri", default=None, help="v4 --arms only: gs:// URI of the split json to stage")
     parser.add_argument("--h-mm", type=float, default=None, help="v4 --arms only: element size for the search arms")
     parser.add_argument("--model-secret", default=None,
@@ -668,6 +697,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dry-run", action="store_true")
     # derived in main (_resolve_v4_arms); declared so the parser names every attribute the launcher reads
     parser.set_defaults(arms_list=None, unit_arm="reprobe", split=None)
+    parser.set_defaults(plan=None)  # the WavePlan plan_wave returns at the claim; never a flag
     return parser
 
 
@@ -718,12 +748,18 @@ def main(argv: list[str] | None = None, *, gates=None) -> int:
     if args.max_run_hours is None:
         args.max_run_hours = profile.default_max_run_hours
     if profile is V3:
-        stray = [f for f, v in (("--sources", args.sources), ("--pool", args.pool),
+        stray = [f for f, v in (("--wave", args.wave), ("--sources", args.sources), ("--pool", args.pool),
                                 ("--files", args.files), ("--wave-type", args.wave_type),
                                 ("--wave-id", args.wave_id)) if v is not None]
         if stray:
             parser.error(f"{', '.join(stray)} apply to --profile v4 only")
     else:
+        if args.wave is not None:
+            wave_def = budget_spec.wave(args.wave)
+            if args.wave_type not in (None, wave_def.wave_type):
+                parser.error(f"--wave-type {args.wave_type} disagrees with wave {args.wave!r}, which is a "
+                             f"{wave_def.wave_type} wave: the type comes from the wave's definition")
+            args.wave_type = wave_def.wave_type   # the cap is the ledger's for THIS type, never a typed one
         if args.wave_type is None or args.wave_id is None:
             parser.error("--profile v4 needs --wave-type and --wave-id: the model-spend cap comes from the "
                          "wave type and every shard's ledger is keyed by the wave id")
@@ -836,6 +872,12 @@ def main(argv: list[str] | None = None, *, gates=None) -> int:
             refused = v4_gate_problems(args, *gate_ctx, claim=True)
             if refused:
                 raise wave_limits.WaveRefused("; ".join(refused))
+            # the slot is known only now: re-render every VM's metadata with the plan's provenance, in place, so the
+            # creates that follow carry what was claimed and not what was assumed
+            cmds[:] = [create_command(args, launch_id, j, len(vms), vm_units)
+                       for j, vm_units in enumerate(vms, start=1)]
+            if args.wave is not None and getattr(args, "plan", None) is None:
+                raise wave_limits.WaveRefused("an arm wave was not planned through plan_wave: refusing to launch")
         try:
             create_wave(cmds, projection, allow_over_budget=args.allow_over_budget,
                         notes=[f"({len(u)} shards)" for u in vms],
