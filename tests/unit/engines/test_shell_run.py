@@ -69,6 +69,32 @@ def test_the_shell_is_meshed_and_written_for_every_solver(tmp_path, tjoint):
     assert len(sw.read_inp(ws / "shell.inp").elements) == rec["elements"]
 
 
+def test_a_part_staged_in_metres_is_shelled_in_millimetres(tmp_path, tjoint, monkeypatch):
+    """SHELL-18m: the website stages the part in metres, the lab hands the mesher millimetres, and the same thin
+    casting came out 2,296 elements against 3,815. The staged solid is now put in millimetres (its faces in the same
+    order) before the extraction and the mesher see it, and the run's files stay in metres."""
+    seen: list = []
+    real = shell_run.run
+
+    def spy(ws, step, *, mm_per_unit, **more):
+        seen.append((Path(step).name, mm_per_unit))
+        return real(ws, step, mm_per_unit=mm_per_unit, **more)
+
+    monkeypatch.setattr(shell_run, "run", spy)
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (ws / "geometry.step").write_bytes((tjoint / "geometry.step").read_bytes())
+    assert FD.staged_mm_per_unit(ws / "geometry.step") == 1000.0
+    assert shell_run.main([str(ws), str(ws / "geometry.step"), "staged"]) == 0
+    assert seen == [(shell_run.MM_COPY, 1.0)]
+    rec = shell_run.read(ws)
+    assert rec["made"] and rec["walls_mm"] == [4.0, 5.0] and rec["mm_per_unit"] == 1.0
+    lo, hi = rec["bounds_m"][:3], rec["bounds_m"][3:]
+    assert 0.01 < max(h - lo_ for lo_, h in zip(lo, hi)) < 1.0          # metres, as before
+    back = sw.read_bdf(ws / "shell.bdf")
+    assert sorted({round(float(t) * 1000.0, 3) for t in back.walls.values()}) == [4.0, 5.0]
+
+
 def test_a_part_with_no_thin_wall_makes_no_shell_and_says_why(tmp_path):
     ws = _stage(sf.chunky_block(), tmp_path / "block")
     rec = shell_run.run(ws, ws / "geometry.step", mm_per_unit=FD.staged_mm_per_unit(ws / "geometry.step"))

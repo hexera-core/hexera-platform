@@ -339,14 +339,41 @@ def main(argv: list[str] | None = None) -> int:
             return 0
     else:
         mm = float(args[2])
-    run(args[0], args[1], mm_per_unit=mm, source=Path(args[1]).name, target=target,
+    step = args[1]
+    if args[2] == "staged" and abs(mm - 1.0) > 1e-9:
+        # SHELL-18m: the staged solid (metres) is handed to the extraction and the mesher in millimetres
+        try:
+            step, mm = str(in_millimetres(Path(args[0]), Path(args[1]), mm)), 1.0
+        except Exception as exc:  # noqa: BLE001 - meshed in the staged unit, as before
+            logger.warning("shell run: the staged solid was not put in millimetres (%s)", type(exc).__name__)
+    run(args[0], step, mm_per_unit=mm, source=Path(args[1]).name, target=target,
         requirements=with_places(args[0], requirements_in(args[0])))
     return 0
+
+
+#: SHELL-18m: the staged solid in millimetres, beside it in the workspace
+MM_COPY = "staged_mm.brep"
+
+
+def in_millimetres(ws: Path, step: Path, mm_per_unit: float) -> Path:
+    """SHELL-18m: THE SHELL IS MADE ON THE PART IN MILLIMETRES, whatever unit it was staged in. The mid-surface
+    extraction and the shell mesher are built and proven on millimetre geometry (every lab and scoreboard run), and
+    the same part staged in metres came out otherwise: a thin casting's mid-surface kept 0.18 mm gaps and 0.22 mm
+    edges the millimetre reading has not, 2,296 elements where the lab made 3,815. Writes MM_COPY (the staged shape
+    scaled by `mm_per_unit`, its faces in the same order) and returns its path."""
+    from OCP.BRepTools import BRepTools
+
+    from meshpipeline.cad.fea_assembly import _scaled
+    from meshpipeline.cad.scout import read_cad
+
+    out = Path(ws) / MM_COPY
+    BRepTools.Write_s(_scaled(read_cad(step), float(mm_per_unit)), str(out))
+    return out
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
 
 
-__all__ = ["FILES", "MSH", "RECORD", "main", "name_parts", "parts_of", "read", "requirements_in", "run", "with_places",
+__all__ = ["FILES", "MM_COPY", "MSH", "RECORD", "in_millimetres", "main", "name_parts", "parts_of", "read", "requirements_in", "run", "with_places",
            "words", "write_msh"]
