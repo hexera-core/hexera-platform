@@ -69,6 +69,31 @@ def test_the_shell_is_meshed_and_written_for_every_solver(tmp_path, tjoint):
     assert len(sw.read_inp(ws / "shell.inp").elements) == rec["elements"]
 
 
+def test_the_shell_says_how_much_of_the_part_it_covers(tmp_path, tjoint):
+    """MESH-1c on a solid: the elements' area against the mid-surface's (half the solid's face area). The same
+    T-joint staged with a tenth of its upload (as a reading that dropped faces before the mesher would leave it)
+    reads with a concern, never a pass."""
+    import json
+
+    from meshpipeline.engines import shell_delivery as SD
+
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (ws / "geometry.step").write_bytes((tjoint / "geometry.step").read_bytes())
+    assert shell_run.main([str(ws), str(ws / "geometry.step"), "staged"]) == 0
+    cov = shell_run.read(ws)["coverage"]
+    assert cov["of"] == "mid-surface" and cov["kept_share"] == 1.0 and 0.8 < cov["share"] <= 1.05
+    assert not SD.cover_short(cov) and SD.cover_words(cov).startswith("The elements cover ")
+    SD.write_kept(ws, ws / "geometry.step", 0.1)
+    assert shell_run.main([str(ws), str(ws / "geometry.step"), "staged"]) == 0
+    rec = shell_run.read(ws)
+    assert rec["coverage"]["share"] == pytest.approx(0.1 * cov["share"], rel=1e-3)
+    assert rec["words"].startswith("This shell covers only ")
+    assert SD.deliver(ws, rec)
+    res = SD.results(ws, json.loads((ws / "quality.json").read_text()), json.loads((ws / "fea_plan.json").read_text()))
+    assert res["check"]["outcome"] in ("concerns", "fail") and "of it has no elements" in res["check"]["words"]
+
+
 def test_a_part_staged_in_metres_is_shelled_in_millimetres(tmp_path, tjoint, monkeypatch):
     """SHELL-18m: the website stages the part in metres, the lab hands the mesher millimetres, and the same thin
     casting came out 2,296 elements against 3,815. The staged solid is now put in millimetres (its faces in the same

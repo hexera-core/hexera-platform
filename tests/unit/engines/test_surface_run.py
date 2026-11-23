@@ -638,6 +638,40 @@ def test_a_sheet_with_a_small_closed_pocket_is_the_sheet_not_the_pocket(tmp_path
     assert FD.solids_from_shells(whole, seen) == 1 and seen == {"closed": 1}
 
 
+def _shell_result(ws: Path, staged: str, more: dict) -> tuple[dict, dict]:
+    from meshpipeline.engines import shell_delivery as SD
+
+    assert surface_run.main([str(ws), str(ws / staged), "staged", json.dumps(more)]) == 0
+    rec = shell_run.read(ws)
+    assert rec["made"] is True and SD.deliver(ws, rec)
+    q = json.loads((ws / "quality.json").read_text())
+    return rec, SD.results(ws, q, json.loads((ws / "fea_plan.json").read_text()))
+
+
+def test_a_shell_that_covers_a_fraction_of_the_part_is_never_a_pass(tmp_path, monkeypatch):
+    """MESH-1c: the delivered shell is measured against the upload. The old reading of s33 (MESH-1b off: the two
+    bead pockets read as THE solid) made a shell on 7% of the part and the result said "passed"; it now reads with a
+    concern naming how much of the part has no elements. A sheet meshed whole covers all of it, said."""
+    pocket = sx.moved(sx.closed_skin(10.0, 10.0, 5.0), (20.0, 20.0, 1.0))
+    part = sx.compound([sx.plate_with_hole(), pocket])
+    old = _stage(part, tmp_path / "old")
+    monkeypatch.setattr(FD, "SOLIDS_HOLD_SHARE", 0.0)       # the reading before MESH-1b
+    assert FD.solids_from_shells(old, {}) == 1
+    rec, res = _shell_result(old, "geometry.brep", {"thickness_mm": 1.2, "said_shell": True, "closed_skin": True})
+    assert rec["coverage"]["kept_share"] < 0.05 and rec["coverage"]["share"] < 0.05
+    assert res["check"]["outcome"] == "concerns" and res["check"]["words"].startswith("This shell covers only ")
+    assert "of it has no elements" in rec["words"]
+    assert [r["key"] for r in res["check"]["rows"] if r["key"] == "part_covered"] == ["part_covered"]
+    monkeypatch.undo()
+    new = _stage(sx.plate_with_hole(), tmp_path / "new")
+    seen: dict = {}
+    assert FD.solids_from_shells(new, seen) == 0 and seen.get("open") is True
+    rec, res = _shell_result(new, "geometry.step", {"thickness_mm": 1.2, "said_shell": True})
+    assert rec["coverage"]["kept_share"] == 1.0 and 0.95 < rec["coverage"]["share"] <= 1.01
+    assert res["check"]["outcome"] == "pass" and "covers only" not in res["check"]["words"]
+    assert any(w.startswith("The elements cover ") for w in res["plan_words"])
+
+
 def _volumes(shape) -> list[float]:
     from OCP.TopAbs import TopAbs_SOLID
 

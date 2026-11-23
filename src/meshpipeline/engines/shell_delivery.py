@@ -48,6 +48,83 @@ CONTAINS = (
     ("shell.cdb", "Ansys MAPDL archive: SHELL181, a section per wall thickness"),
     ("shell_run.json", "how the shell was made: the mid-surface, the walls and the sizes"),
 )
+#: MESH-1c: a delivered shell that covers less than this share of the part is never a pass: it reads with a concern
+#: naming how much of the part has no elements (set under every good run of board-36 and the 26 stamped lab parts)
+COVER_SHARE = 0.5
+#: MESH-1c: the record of a staged file the FEA driver wrote again with less than the upload's face area
+#: (fea_driver.solids_from_shells): {"file", "bytes", "area_share"} - the share of the upload it still holds
+KEPT_FILE = "staged_kept.json"
+
+
+def mesh_area_mm2(mesh) -> float:
+    """MESH-1c: the area the shell's elements cover, mm2 (a quad as its two triangles)."""
+    import numpy as np
+
+    xyz = np.asarray(mesh.xyz, dtype=float)
+    tris = [np.asarray(mesh.trias, dtype=np.int64).reshape(-1, 3)]
+    quads = np.asarray(mesh.quads, dtype=np.int64).reshape(-1, 4)
+    if len(quads):
+        tris += [quads[:, [0, 1, 2]], quads[:, [0, 2, 3]]]
+    p = xyz[np.concatenate(tris)] if len(xyz) else np.zeros((0, 3, 3))
+    if not len(p):
+        return 0.0
+    return float(0.5 * np.linalg.norm(np.cross(p[:, 1] - p[:, 0], p[:, 2] - p[:, 0]), axis=1).sum())
+
+
+def write_kept(ws, staged: Path, share: float) -> None:
+    """MESH-1c: say that the staged file `staged` was written again holding `share` of the upload's face area."""
+    (Path(ws) / KEPT_FILE).write_text(json.dumps({"file": staged.name, "bytes": staged.stat().st_size,
+                                                  "area_share": round(float(share), 5)}))
+
+
+def kept_share(ws, source: str) -> float:
+    """MESH-1c: the share of the upload's face area the staged file `source` (a name in `ws`) holds: KEPT_FILE's when
+    it was written for that very file, else 1.0 (the file is the upload as staged, or a lab run's own part)."""
+    rec = _read(Path(ws) / KEPT_FILE)
+    f = Path(ws) / str(source or "")
+    if not rec or not source or rec.get("file") != f.name or not f.is_file() \
+            or f.stat().st_size != int(rec.get("bytes") or -1):
+        return 1.0
+    share = float(rec.get("area_share") or 0.0)
+    return share if 0.0 < share <= 1.0 else 1.0
+
+
+def coverage(mesh, *, part_mm2: float, mid: bool, kept: float = 1.0, told_share: float = 0.0) -> dict | None:
+    """MESH-1c: HOW MUCH OF THE PART THE SHELL COVERS - the elements' own area against the area the shell should
+    have: a surface file's face area as uploaded (`mid` False), or for a solid its mid-surface's, taken as half its
+    face area (`mid`: two skins a wall apart; a plate's rim makes it a little more), less the regions already told
+    as left out (`told_share` of its face area, SHSTAGE-9). `part_mm2`: the face area of the file the run read;
+    `kept`: the share of the upload that file holds (kept_share). None when there is no area to measure against."""
+    expected = float(part_mm2) * max(0.0, 1.0 - float(told_share or 0.0)) * (0.5 if mid else 1.0) / max(kept, 1e-9)
+    if expected <= 0.0:
+        return None
+    area = mesh_area_mm2(mesh)
+    return {"share": round(area / expected, 4), "mesh_mm2": round(area, 1), "expected_mm2": round(expected, 1),
+            "of": "mid-surface" if mid else "surface", "kept_share": round(float(kept), 5),
+            "told_share": round(float(told_share or 0.0), 5), "limit": COVER_SHARE}
+
+
+def _pct(share: float) -> str:
+    v = 100.0 * float(share)
+    return f"{v:.1f}" if v < 10.0 else f"{v:.0f}"
+
+
+def cover_short(cov: Mapping | None) -> bool:
+    """MESH-1c: the shell covers less of the part than COVER_SHARE."""
+    share = _map(cov).get("share")
+    return share is not None and float(share) < float(_map(cov).get("limit") or COVER_SHARE)
+
+
+def cover_words(cov: Mapping | None) -> str:
+    """MESH-1c: the coverage in plain words: one line for the result; a short one says how much has no elements."""
+    c = _map(cov)
+    if c.get("share") is None:
+        return ""
+    share = min(1.0, float(c["share"]))
+    if cover_short(c):
+        return (f"This shell covers only {_pct(share)}% of your part: {_pct(1.0 - share)}% of it has no elements. "
+                "Check the mesh before you use it; this is ours to fix.")
+    return f"The elements cover {_pct(share)}% of your part."
 
 
 def _read(p: Path) -> dict:
@@ -340,6 +417,15 @@ def results(workspace, q: Mapping, plan: Mapping) -> dict:
             outcome = "fail" if outcome == "fail" else "concerns"
             said = (f"Delivered with {gone} small face(s) left out ({area:.0f} mm2, {100 * share:.1f}% of the part): "
                     "the mesh has an opening there. " + said)
+    cov = _map(rec.get("coverage"))
+    if cover_short(cov):
+        # MESH-1c: a shell that covers a fraction of the part is never a pass, whatever path dropped the rest
+        rows.insert(len(gating), {"key": "part_covered", "label": "Share of the part the elements cover",
+                                  "op": ">=", "limit": float(cov.get("limit") or COVER_SHARE),
+                                  "measured": float(cov["share"]), "ok": False, "gating": False,
+                                  "words": cover_words(cov)})
+        outcome = "fail" if outcome == "fail" else "concerns"
+        said = f"{cover_words(cov)} {said}"
     extra: dict[str, Any] = {}
     if asked:
         extra["requirements"] = {"rows": asked, "missed": missed,
@@ -365,7 +451,8 @@ def results(workspace, q: Mapping, plan: Mapping) -> dict:
     walls = list((q.get("fea") or {}).get("walls_mm") or [])
     elements = _map(plan.get("elements"))
     plan_words = ([w for w in [rec.get("words"), elements.get("words")] if w] + [user_line(r) for r in asked]
-                  + [str(w) for w in plan.get("not_applied") or []] + [w for w in [also_measured(q)] if w])
+                  + [str(w) for w in plan.get("not_applied") or []] + [w for w in [also_measured(q)] if w]
+                  + [w for w in [cover_words(cov)] if w])
     summary = (TRIA_SUMMARY if tria else SUMMARY).format(n=cells, q=q_n, t=t_n)
     if _map(rec.get("surface")).get("kind") == "surface":
         # SURF-6: said as what it is - on the user's surface, at their thickness (or none set)
@@ -403,7 +490,8 @@ def results(workspace, q: Mapping, plan: Mapping) -> dict:
             "solvers": solvers}
 
 
-__all__ = ["CONTAINS", "LABELS", "MARKER_SOURCE", "SUMMARY", "SURFACE_SUMMARY", "WORST_KEY", "also_measured",
-           "asked_rows", "header_row", "user_limits", "deliver", "is_shell", "part_names", "part_tags",
+__all__ = ["CONTAINS", "COVER_SHARE", "KEPT_FILE", "LABELS", "MARKER_SOURCE", "SUMMARY", "SURFACE_SUMMARY", "WORST_KEY",
+           "also_measured", "asked_rows", "cover_short", "cover_words", "coverage", "header_row", "kept_share",
+           "mesh_area_mm2", "user_limits", "deliver", "is_shell", "part_names", "part_tags", "write_kept",
            "is_shell_workspace",
            "limits", "quality_of", "results"]

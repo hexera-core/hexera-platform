@@ -69,6 +69,10 @@ def words(rec: dict) -> str:
     gone = ((rec.get("quality") or {}).get("face_watch") or {}).get("words")
     if gone:
         said = f"{gone} {said}"      # SHMESH-74: faces left out are said first
+    from meshpipeline.engines.shell_delivery import cover_short, cover_words
+
+    if cover_short(rec.get("coverage")):
+        said = f"{cover_words(rec.get('coverage'))} {said}"      # MESH-1c: a shell short of the part, said first
     walls = rec.get("walls_mm") or []
     if walls:
         said += f", walls {min(walls):.3g} to {max(walls):.3g} mm" if len(walls) > 1 else f", wall {walls[0]:.3g} mm"
@@ -261,6 +265,15 @@ def run(workspace: Path | str, step: Path | str, *, mm_per_unit: float, source: 
                        walls_mm=sorted({round(float(w), 3) for w in mesh.wall}),
                        quality=q if isinstance(q, dict) else None, exports={k: v for k, v in exports.items()
                                                                             if isinstance(v, dict)})
+            # MESH-1c: how much of the part the shell covers (its mid-surface: half the solid's face area, less the
+            # regions told as left out), against the upload when the driver staged less of it
+            from meshpipeline.engines import shell_delivery as SD
+
+            cov = SD.coverage(mesh, part_mm2=sum(float(b.get("area_mm2") or 0.0) for b in record.get("bodies") or []),
+                              mid=True, kept=SD.kept_share(ws, source),
+                              told_share=float((rec.get("left_out") or {}).get("area_share") or 0.0))
+            if cov:
+                rec["coverage"] = cov
             if isinstance(applied, dict) and isinstance(applied.get("target"), dict):
                 rec["target"] = applied["target"]
             if isinstance(applied, dict) and requirements:

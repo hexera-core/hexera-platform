@@ -75,7 +75,11 @@ def words(rec: dict) -> str:
                 f"not be made: {rec.get('why') or 'it could not be made'}.")
     n, q, t = int(rec.get("elements") or 0), int(rec.get("quads") or 0), int(rec.get("trias") or 0)
     gone = ((rec.get("quality") or {}).get("face_watch") or {}).get("words")
-    said = [*([gone] if gone else []),      # SHMESH-74: faces left out are said first
+    from meshpipeline.engines.shell_delivery import cover_short, cover_words
+
+    short = cover_words(rec.get("coverage")) if cover_short(rec.get("coverage")) else ""
+    said = [*([short] if short else []),      # MESH-1c: a shell short of the part, said first
+            *([gone] if gone else []),      # SHMESH-74: faces left out are said first
             line(s.get("thickness_mm")),
             f"{n:,} elements ({q:,} quads, {t:,} triangles). Files: Nastran .bdf, CalculiX and Abaqus .inp, Ansys .cdb."]
     if not s.get("thickness_mm"):
@@ -501,7 +505,9 @@ def run(workspace: Path | str, step: Path | str, *, mm_per_unit: float, thicknes
     try:
         wall = float(thickness_mm or 0.0)
         given = wall > 0
-        reading, sewn = sm.read(read_cad(Path(step)), mm_per_unit=mm_per_unit, said_shell=said_shell or given,
+        shape = read_cad(Path(step))
+        part_mm2 = float(ms._area(shape)) * float(mm_per_unit) ** 2      # MESH-1c: the file's face area, as read
+        reading, sewn = sm.read(shape, mm_per_unit=mm_per_unit, said_shell=said_shell or given,
                                 stitch=stitch, sew_mm=sew_mm, holes_mm=holes_mm, mend=mend,
                                 element_mm=_global_mm(requirements), wall_mm=wall if given else None,
                                 closed_skin=closed_skin)
@@ -598,6 +604,12 @@ def run(workspace: Path | str, step: Path | str, *, mm_per_unit: float, thicknes
                        walls_mm=sorted({round(float(w), 3) for w in mesh.wall}) if given else [],
                        quality=q if isinstance(q, dict) else None,
                        exports={k: v for k, v in exports.items() if isinstance(v, dict)})
+            # MESH-1c: how much of the surface the shell covers, against the upload when the driver staged less of it
+            from meshpipeline.engines import shell_delivery as SD
+
+            cov = SD.coverage(mesh, part_mm2=part_mm2, mid=False, kept=SD.kept_share(ws, source))
+            if cov:
+                rec["coverage"] = cov
             if isinstance(applied, dict) and isinstance(applied.get("target"), dict):
                 rec["target"] = applied["target"]
             if isinstance(applied, dict) and requirements:

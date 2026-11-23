@@ -340,6 +340,11 @@ def solids_from_shells(ws: Path, seen: dict | None = None) -> int:
         made = 0
     if made:
         BRepTools.Write_s(comp, str(ws / "geometry.brep"))
+        from meshpipeline.engines.shell_delivery import write_kept
+
+        # MESH-1c: the staged file now holds this share of the upload - a shell made on it is measured against the
+        # upload, so a reading that dropped faces is never a quiet pass
+        write_kept(ws, ws / "geometry.brep", _held_share(shape, comp))
         if seen is not None:
             seen["closed"] = made          # SURF-14: the solids came from the file's closed surfaces
     elif seen is not None:
