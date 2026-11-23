@@ -95,6 +95,9 @@ class Workspace:
     counters: dict[str, int] = field(default_factory=dict)
     #: live stable id -> that entity's index in `brep_path`'s per-kind indexed map
     indices: dict[StableId, int] = field(default_factory=dict)
+    #: `ws_kernel.shape_signature` of `brep_path`: orientation, shell layout and closedness, which no entity
+    #: fingerprint sees. Empty for a workspace the kernel never described (every fake in the unit tier).
+    signature: tuple = ()
 
     def __post_init__(self) -> None:
         for sid in self.ids:
@@ -117,7 +120,8 @@ class Workspace:
         if not result.ok or result.value is None:
             raise RuntimeError(f"cannot index {brep_path!r}: {result.status}: {result.error}")
         ws = cls(brep_path=brep_path, ids={}, labels=copy.deepcopy(labels or {}), history=[],
-                 original=brep_path, quantum=float(result.value["quantum"]))
+                 original=brep_path, quantum=float(result.value["quantum"]),
+                 signature=tuple(result.value.get("signature") or ()))
         for entity in result.value["entities"]:
             sid = ws._mint(entity["type"])
             ws.ids[sid] = entity["fp"]
@@ -135,7 +139,7 @@ class Workspace:
         return Workspace(brep_path=self.brep_path, ids=dict(self.ids),
                          labels=copy.deepcopy(self.labels), history=copy.deepcopy(self.history),
                          original=self.original, quantum=self.quantum,
-                         counters=dict(self.counters), indices=dict(self.indices))
+                         counters=dict(self.counters), indices=dict(self.indices), signature=self.signature)
 
     def resolve(self, ids: list[StableId]) -> list[StableId]:
         """`ids` unchanged if all are live; else UnknownTarget for the first that is not."""
@@ -288,6 +292,7 @@ def apply_history(ws: Workspace, history_json: dict) -> Workspace:
     new.indices = new_indices
     new.labels = new_labels
     new.brep_path = history_json["brep_path"]
+    new.signature = tuple(history_json.get("signature") or ())
     new.history.append(Diff(
         op=history_json["op"], params=params, modified=modified, generated=generated,
         removed=removed, declared_added=list(history_json.get("declared_added", [])),

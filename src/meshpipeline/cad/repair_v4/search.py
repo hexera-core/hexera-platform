@@ -550,8 +550,11 @@ def _estimate(parent: SearchState, child_cheap: Score) -> Score:
 
 
 def _fingerprint(ws: Workspace) -> tuple:
-    """Two workspaces with the same entity fingerprints are the same geometry, however reached."""
-    return tuple(sorted(ws.ids.values()))
+    """Two workspaces with the same entity fingerprints AND the same shape signature are the same state, however
+    reached. Entity fingerprints are centroid-and-box only, so alone they merged a solid with its inside-out
+    twin and discarded `orient_and_close`'s output as a duplicate (Task 45); the signature carries orientation,
+    shell layout and closedness."""
+    return (tuple(sorted(ws.ids.values())), ws.signature)
 
 
 @dataclass
