@@ -40,6 +40,7 @@ STATUS = {"loose_reapprox": "quarantined", "unsew_perturb": "structural", "toler
           "face_delete": "structural", "assembly_overlap": "structural", "precision_truncate": "quarantined",
           "iges_roundtrip": "structural"}
 BASE = "https://bucket.example/v4-injected"
+DIGEST = "sha256:" + "d" * 64
 
 
 class NotApplicable(ValueError):
@@ -65,7 +66,16 @@ class FakeBackend:
         self.calls: list[tuple[str, str, int]] = []
         self.skew = 0
 
+    OCCT = "fake-ocp==7.9.1"
+    FIDELITY = "damaged_input"
+    RAISE: Exception | None = None
+
+    def occt_version(self):
+        return self.OCCT
+
     def inject(self, src_step, kind, seed, out_dir=None):
+        if self.RAISE is not None:
+            raise self.RAISE
         src = Path(src_step)
         self.calls.append((src.name, kind, seed))
         if kind == "pcurve_corrupt":
@@ -83,7 +93,7 @@ class FakeBackend:
                        f"ENDSEC;\nDATA;\n#7 = PRODUCT('Open CASCADE STEP translator 7.9 {count}','x','',(#8));\n"
                        f"/* {payload} */\nENDSEC;\nEND-ISO-10303-21;\n")
         label = {"kind": kind, "seed": seed, "status": STATUS[kind], "clean_source": str(src),
-                 "fidelity_reference": "damaged_input",
+                 "fidelity_reference": self.FIDELITY,
                  "entities": [{"type": "face", "src_index": 3, "center": [1.0, 2.0, 3.0], "area": 4.5}]}
         if kind == "iges_roundtrip":
             label["iges_file"] = str(out.with_suffix(".igs"))   # a temp path: must not reach the manifest
@@ -280,10 +290,12 @@ def test_the_label_is_carried_and_portable(clean, tmp_path, backend):
         assert recipe.label["clean_source_sha256"] == recipe.source_sha256
 
 
-def test_nothing_encourages_measuring_against_the_clean_source(clean, tmp_path, backend):
-    res = _generate(clean, tmp_path, backend)
-    text = (EVAL / "inject_pool.py").read_text()
-    assert "fidelity_reference" in text and "damaged input" in text.lower()
+def test_an_injector_that_names_the_clean_source_as_fidelity_reference_is_overridden(clean, tmp_path):
+    """Design 7.2: the reference is the damaged input. A backend label saying otherwise must not survive."""
+    class Wrong(FakeBackend):
+        FIDELITY = "clean_source"
+    res = _generate(clean, tmp_path, Wrong())
+    assert res.recipes
     for recipe in res.recipes:
         assert recipe.label["fidelity_reference"] == "damaged_input"
     for entry in res.entries:   # the entry points at the damaged file only
@@ -296,7 +308,7 @@ def test_records_round_trip_and_hold_what_regeneration_needs(clean, tmp_path, ba
     res = _generate(clean, tmp_path, backend)
     path = tmp_path / "injected.json"
     gen.write_records(path, res.recipes, skipped=res.skipped)
-    back = gen.read_records(path)
+    back = gen.read_records(path, backend)
     assert back == sorted(res.recipes, key=lambda r: r.sha256)
     row = json.loads(path.read_text())["records"][0]
     assert {"sha256", "name", "source_name", "source_sha256", "source_source", "kind", "seed", "label",
@@ -426,7 +438,8 @@ def test_cli_generate_then_verify(clean, tmp_path, backend, monkeypatch):
     records = tmp_path / "injected.json"
     rc = gen.main(["generate", "--pool", str(manifest), "--inputs", str(tmp_path / "inputs"),
                    "--out", str(tmp_path / "out"), "--base-url", BASE, "--records", str(records),
-                   "--kinds", "face_delete,unsew_perturb", "--seeds", "1", "--max-sources", "2"], backend=backend)
+                   "--kinds", "face_delete,unsew_perturb", "--seeds", "1", "--max-sources", "2",
+                   "--image-digest", DIGEST], backend=backend)
     assert rc == 0 and records.exists()
     assert sum(1 for e in pool.read_pool(manifest) if e.source == "inject") == 4
     assert gen.main(["verify", "--pool", str(manifest), "--inputs", str(tmp_path / "inputs"),
@@ -454,3 +467,115 @@ def test_module_imports_without_the_cad_kernel():
             "m=importlib.util.module_from_spec(s);sys.modules['m']=m;s.loader.exec_module(m);"
             "assert 'OCP' not in sys.modules")
     assert subprocess.run([sys.executable, "-c", code], check=False).returncode == 0
+
+
+# --------------------------------------------------------------------------- build pinning
+
+def _env(backend, digest=DIGEST):
+    return gen.current_environment(backend, digest)
+
+
+def test_each_recipe_records_the_build_that_made_it(clean, tmp_path, backend):
+    res = gen.generate(clean, kinds=None, seeds=(0,), out_dir=tmp_path / "out", base_url=BASE, backend=backend,
+                       environment=_env(backend))
+    assert res.recipes
+    for r in res.recipes:
+        assert (r.occt_version, r.image_digest) == ("fake-ocp==7.9.1", DIGEST)
+        assert len(r.inject_revision) == 64
+    path = tmp_path / "injected.json"
+    gen.write_records(path, res.recipes, skipped=[])
+    assert gen.read_records(path, backend) == sorted(res.recipes, key=lambda r: r.sha256)
+
+
+def test_verify_explains_a_hash_difference_by_a_build_mismatch(clean, tmp_path, backend):
+    res = gen.generate(clean, kinds=["face_delete"], seeds=(0,), out_dir=tmp_path / "out", base_url=BASE,
+                       backend=backend, environment=_env(backend))
+    tampered = [dataclasses.replace(r, sha256="0" * 64) for r in res.recipes]
+    entries = [dataclasses.replace(e, sha256="0" * 64) for e in res.entries]
+    newer = _env(backend, "sha256:" + "e" * 64)
+    problems = gen.verify(tampered, entries, _lookup(clean), backend, newer)
+    assert problems and all("EXPECTED, the build differs" in p and "mesh image digest" in p for p in problems)
+    same = gen.verify(tampered, entries, _lookup(clean), backend, _env(backend))
+    assert same and not any("EXPECTED" in p for p in same)   # same build: a real mismatch, no excuse
+
+
+def test_cli_verify_warns_loudly_on_a_build_mismatch_and_generate_refuses_unpinned(clean, tmp_path, backend, capsys):
+    manifest = tmp_path / "pool.json"
+    pool.write_pool([e for e, _ in clean], manifest, sources_included=["abc"])
+    records = tmp_path / "injected.json"
+    base = ["--pool", str(manifest), "--inputs", str(tmp_path / "inputs"), "--records", str(records)]
+    unpinned = ["generate", *base, "--out", str(tmp_path / "out"), "--base-url", BASE, "--kinds", "face_delete"]
+    assert gen.main(unpinned, backend=backend) == 2 and not records.exists()
+    assert gen.main([*unpinned, "--image-digest", DIGEST], backend=backend) == 0
+    capsys.readouterr()
+    assert gen.main(["verify", *base, "--image-digest", DIGEST], backend=backend) == 0
+    assert "BUILD MISMATCH" not in capsys.readouterr().err
+    backend.OCCT = "fake-ocp==7.10.0"
+    gen.main(["verify", *base, "--image-digest", "sha256:" + "f" * 64], backend=backend)
+    err = capsys.readouterr().err
+    assert "BUILD MISMATCH" in err and "7.9.1" in err and "7.10.0" in err and "mesh image digest" in err
+
+
+# --------------------------------------------------------------------------- errors are not "not applicable"
+
+def test_a_plain_value_error_from_the_injector_is_not_swallowed_as_a_skip(clean, tmp_path):
+    class Broken(FakeBackend):
+        RAISE = ValueError("STEP read failed")
+    with pytest.raises(ValueError, match="STEP read failed"):
+        _generate(clean, tmp_path, Broken(), kinds=["face_delete"])
+
+
+# --------------------------------------------------------------------------- regeneration hazards
+
+def test_deduped_counts_this_run_not_every_run(clean, tmp_path, backend):
+    manifest = tmp_path / "pool.json"
+    pool.write_pool([e for e, _ in clean], manifest, sources_included=["abc"])
+    res = _generate(clean, tmp_path, backend, kinds=["face_delete"])
+    dup = dataclasses.replace(res.entries[0], name="inject/dup")   # same sha256 as another: dropped by the dedupe
+    for _ in range(3):
+        gen.merge_into_pool(manifest, [*res.entries, dup])
+    assert json.loads(manifest.read_text())["deduped"] == 1
+
+
+def test_a_partial_run_keeps_earlier_entries_instead_of_truncating(clean, tmp_path, backend):
+    manifest = tmp_path / "pool.json"
+    pool.write_pool([e for e, _ in clean], manifest, sources_included=["abc"])
+    records = tmp_path / "injected.json"
+    argv = ["generate", "--pool", str(manifest), "--inputs", str(tmp_path / "inputs"), "--out", str(tmp_path / "out"),
+            "--base-url", BASE, "--records", str(records), "--image-digest", DIGEST]
+    assert gen.main([*argv, "--kinds", "face_delete,unsew_perturb"], backend=backend) == 0
+    full = {r.sha256 for r in gen.read_records(records, backend)}
+    assert len(full) == 4
+    assert gen.main([*argv, "--kinds", "face_delete", "--max-sources", "1"], backend=backend) == 0
+    assert {r.sha256 for r in gen.read_records(records, backend)} == full
+    assert {e.sha256 for e in pool.read_pool(manifest) if e.source == "inject"} == full
+    assert gen.main(["verify", "--pool", str(manifest), "--inputs", str(tmp_path / "inputs"),
+                     "--records", str(records), "--image-digest", DIGEST], backend=backend) == 0
+
+
+def test_a_rerun_refreshes_a_recipe_instead_of_duplicating_it(clean, tmp_path, backend):
+    manifest = tmp_path / "pool.json"
+    pool.write_pool([e for e, _ in clean], manifest, sources_included=["abc"])
+    records = tmp_path / "injected.json"
+    argv = ["generate", "--pool", str(manifest), "--inputs", str(tmp_path / "inputs"), "--out", str(tmp_path / "out"),
+            "--base-url", BASE, "--records", str(records), "--image-digest", DIGEST, "--kinds", "face_delete"]
+    for _ in range(2):
+        assert gen.main(argv, backend=backend) == 0
+    assert len(gen.read_records(records, backend)) == 2
+    assert sum(1 for e in pool.read_pool(manifest) if e.source == "inject") == 2
+
+
+# --------------------------------------------------------------------------- pool.py build
+
+def test_pool_build_survives_inject_entries_with_no_inject_note(clean, tmp_path, backend):
+    """A manifest written by write_pool without notes (so no source_notes.inject) must not break `build` (KeyError)."""
+    res = _generate(clean, tmp_path, backend)
+    manifest = tmp_path / "pool.json"
+    pool.write_pool([e for e, _ in clean] + res.entries, manifest, sources_included=["abc", "inject"])
+    assert "inject" not in (json.loads(manifest.read_text()).get("source_notes") or {})
+    assert pool.main(["build", "--out", str(manifest)]) == 0
+    doc = json.loads(manifest.read_text())
+    assert doc["source_notes"]["inject"] == pool.INJECT_NOTE
+    back = pool.read_pool(manifest)
+    assert {e.sha256 for e in back if e.source == "inject"} == {e.sha256 for e in res.entries}
+    assert all(e.licence for e in back)

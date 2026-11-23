@@ -105,6 +105,17 @@ SOURCE_NOTES = {
              "as min(0.1 mm, 0.001 x diagonal) mean something different on these parts."),
 }
 
+#: The note an `inject` source carries when the manifest holds inject entries but no note for them. Owned here so
+#: `build` can fall back to it; inject_pool.py re-exports it.
+INJECT_NOTE = ("Injected-defect variants of clean parts (the five structural kinds only; the four quarantined kinds "
+               "are excluded because they read back as valid solids). Each entry is a direct file whose recipe "
+               "(clean source sha256, kind, seed, label, OCCT version, mesh image digest) is in injected.json; the "
+               "hosted file, addressed by its sha256, is the canonical artifact and regeneration is an audit under "
+               "the pinned image. The label is in injected.json, not here: join on sha256. Fidelity for these is "
+               "measured against the damaged input, never the clean source. The licence is the clean source's. "
+               "They stand in for customer translation defects that no public source reproduces: they are "
+               "SYNTHETIC, not real vendor translations.")
+
 _STEP_SUFFIXES = (".stp", ".step")
 
 
@@ -397,8 +408,8 @@ def main(argv: list[str] | None = None) -> int:
     _log_dedupe(dropped)
     write_pool(entries, Path(args.out), sources_included=included, deduped=len(dropped),
                notes={**{k: v for k, v in SOURCE_NOTES.items() if k in included},
-                      **({"inject": json.loads(out_path.read_text())["source_notes"]["inject"]}
-                         if carried else {})})
+                      **({"inject": ((json.loads(out_path.read_text()).get("source_notes") or {})
+                                     .get("inject", INJECT_NOTE))} if carried else {})})
     print(f"wrote {args.out}: {len(entries)} entries {counts}; sources {included}; "
           f"{len(dropped)} duplicate(s) dropped by sha256")
     return 0
