@@ -28,7 +28,7 @@ import time
 from typing import Any
 
 from meshpipeline.cad.repair_v4.kernel_calls import register as register_kernel_fn
-from meshpipeline.cad.repair_v4.ops import OpDeclined, check_call, register, run_kernel_op
+from meshpipeline.cad.repair_v4.ops import check_call, register, run_kernel_op
 from meshpipeline.cad.repair_v4.types import Site, StableId
 from meshpipeline.cad.repair_v4.worker_pool import WorkerPool
 from meshpipeline.cad.repair_v4.workspace import Diff, Workspace
@@ -44,19 +44,59 @@ MAX_ISO_EDGES = 1200
 # --- kernel side --------------------------------------------------------------------------------
 
 
-def _finish(old: Any, new: Any, history: Any, payload: dict, *, op: str, params: dict,
-            start: float) -> dict:
-    """Write `new`, then the history record - or decline when nothing changed."""
+def _solid_count(shape: Any) -> int:
     from meshpipeline.cad.repair_v4 import ws_kernel
 
-    ws_kernel.write_brep(new, payload["out_path"])
-    record = ws_kernel.history_record(
-        old, new, history, op=op, params=params, old_path=payload["brep_path"],
-        new_path=payload["out_path"], quantum=payload["quantum"],
-        seconds=time.perf_counter() - start)
+    return int(ws_kernel._maps(shape)["solid"].Extent())
+
+
+def guard(old: Any, new: Any) -> str | None:
+    """Why `new` may not replace `old`, or None. A split must keep the solid count, keep a valid
+    part valid, and move neither area nor volume beyond integration noise (adaptive integration,
+    gap_split's measured noise bounds). This is what makes "splits cause zero deviation" a runtime
+    guarantee instead of a property of the fixtures: ShapeDivideContinuity and UnifySameDomain can
+    reparametrise or re-segment surfaces, so the geometry is MEASURED, not assumed."""
+    from OCP.BRepCheck import BRepCheck_Analyzer
+
+    from meshpipeline.cad.repair import gap_split
+
+    before, after = _solid_count(old), _solid_count(new)
+    if before != after:
+        return f"split_failed: the op changed the solid count from {before} to {after}"
+    if BRepCheck_Analyzer(old).IsValid() and not BRepCheck_Analyzer(new).IsValid():
+        return "invalidated: the result is not BRepCheck-valid"
+    area0, volume0 = gap_split._precise(old)
+    area1, volume1 = gap_split._precise(new)
+    d_area, d_volume = area1 - area0, volume1 - volume0
+    moved_volume = before > 0 and abs(d_volume) > gap_split.MAX_VOLUME_NOISE_RATIO * max(volume0, 1e-12)
+    if abs(d_area) > gap_split.MAX_AREA_NOISE_RATIO * max(area0, 1e-12) or moved_volume:
+        return (f"geometry_moved: area {d_area:.6g} mm2, volume {d_volume:.6g} mm3 after an op "
+                "that should move neither")
+    return None
+
+
+def _finish(old: Any, new: Any, history: Any, payload: dict, *, op: str, params: dict,
+            start: float) -> dict:
+    """Guard `new`, write it, then the history record - or decline. Never leaves `out_path`
+    behind on a decline or an error."""
+    from meshpipeline.cad.repair_v4 import ws_kernel
+
+    reason = guard(old, new)
+    if reason is not None:
+        return {"declined": reason}
+    out = payload["out_path"]
+    try:
+        ws_kernel.write_brep(new, out)
+        record = ws_kernel.history_record(
+            old, new, history, op=op, params=params, old_path=payload["brep_path"],
+            new_path=out, quantum=payload["quantum"], seconds=time.perf_counter() - start)
+    except BaseException:
+        if os.path.exists(out):
+            os.unlink(out)
+        raise
     if not any(r["modified"] or r["generated"] or r["removed"] or not r["now"]
                for r in record["history"]):
-        os.unlink(payload["out_path"])
+        os.unlink(out)
         return {"declined": f"no_change: {op} left the part as it was"}
     return record
 
@@ -83,11 +123,14 @@ def _divide_faces(payload: dict, make_divider: Any, *, op: str, params: dict) ->
 
     start = time.perf_counter()
     old = ws_kernel.read_brep(payload["brep_path"])
-    divider = make_divider(_face_compound(old, payload["faces"]))
-    if not divider.Perform(True):
-        return {"declined": f"no_change: {op} found nothing to divide on the target faces"}
-    context = divider.GetContext()
-    new = context.Apply(old)
+    try:
+        divider = make_divider(_face_compound(old, payload["faces"]))
+        if not divider.Perform(True):
+            return {"declined": f"no_change: {op} found nothing to divide on the target faces"}
+        context = divider.GetContext()
+        new = context.Apply(old)
+    except Exception as exc:  # noqa: BLE001 - a kernel refusal is a decline, not a crash
+        return {"declined": f"split_failed ({type(exc).__name__})"}
     return _finish(old, new, context.History(), payload, op=op, params=params, start=start)
 
 
@@ -176,7 +219,10 @@ def _split_by_proximity(payload: dict) -> dict:
     splitter.SetTools(tools)
     splitter.SetToFillHistory(True)
     splitter.SetRunParallel(False)  # identical runs must give identical shapes
-    splitter.Build()
+    try:
+        splitter.Build()
+    except Exception as exc:  # noqa: BLE001 - a kernel refusal is a decline, as in gap_split
+        return {"declined": f"split_failed ({type(exc).__name__})"}
     if not splitter.IsDone():
         return {"declined": "split_failed: the splitter reported errors"}
     return _finish(old, splitter.Shape(), splitter.History(), payload, op="split_by_proximity",
@@ -209,7 +255,10 @@ def _unify_same_domain(payload: dict) -> dict:
             owners = [maps["face"].FindIndex(TopoDS.Face_s(f)) for f in ancestors.FindFromIndex(i)]
             if any(o not in inside for o in owners):
                 unifier.KeepShape(ancestors.FindKey(i))
-    unifier.Build()
+    try:
+        unifier.Build()
+    except Exception as exc:  # noqa: BLE001
+        return {"declined": f"split_failed ({type(exc).__name__})"}
     return _finish(old, unifier.Shape(), unifier.History(), payload, op="unify_same_domain",
                    params={"scope": payload["scope"], "keep": payload["keep_ids"]}, start=start)
 
@@ -334,15 +383,31 @@ class UnifySameDomain:
     def applies_to(self, site: Site) -> bool:
         return site.kind == "sliver"
 
+    def extra_errors(self, targets: list[StableId], params: dict) -> list[str]:
+        """validate_call's cross-field rule: targets exist exactly when scope is "targets"."""
+        scope = params.get("scope")
+        if scope == "targets" and not targets:
+            return ["scope 'targets' needs target faces; none were given"]
+        if scope == "all" and targets:
+            return ["scope 'all' takes no targets; use scope 'targets' to restrict it"]
+        return []
+
     def apply(self, pool: WorkerPool, ws: Workspace, targets: list[StableId], params: dict, *,
               timeout_s: float) -> tuple[Workspace, Diff]:
         check_call(self.name, targets, params, ws)
-        if params["scope"] == "targets" and not targets:
-            raise OpDeclined("scope 'targets' needs target faces; none were given")
-        if params["scope"] == "all" and targets:
-            raise OpDeclined("scope 'all' takes no targets; use scope 'targets' to restrict it")
         return run_kernel_op(
             pool, ws, kernel_fn="op_unify_same_domain", op=self.name,
             payload={"faces": _indices(ws, targets), "keep": _indices(ws, params["keep"]),
                      "keep_ids": list(params["keep"]), "scope": params["scope"]},
             timeout_s=timeout_s)
+
+
+if os.environ.get("HEXERA_TEST_KERNEL_FNS") == "1":
+
+    @register_kernel_fn("op_test_write_then_hang")
+    def _write_then_hang(payload: dict) -> dict:
+        """Test op: leave a partial output file behind, then never answer (a timed-out op)."""
+        with open(payload["out_path"], "w") as handle:
+            handle.write("partial")
+        time.sleep(3600)
+        return {}

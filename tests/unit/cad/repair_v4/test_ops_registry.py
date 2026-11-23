@@ -6,11 +6,22 @@
 #             tests/native/test_native_repair_v4_ops_split.py.
 from __future__ import annotations
 
+import math
+from pathlib import Path
+
 import pytest
 
 from meshpipeline.cad.repair_v4 import ops
-from meshpipeline.cad.repair_v4.ops import REGISTRY, register, validate_call
+from meshpipeline.cad.repair_v4.ops import (
+    REGISTRY,
+    OpDeclined,
+    OpFailed,
+    register,
+    run_kernel_op,
+    validate_call,
+)
 from meshpipeline.cad.repair_v4.types import Site
+from meshpipeline.cad.repair_v4.worker_pool import CallResult
 from meshpipeline.cad.repair_v4.workspace import Diff, Workspace
 
 SPLIT_OPS = ["split_by_proximity", "split_angle", "split_closed", "split_continuity",
@@ -92,9 +103,9 @@ def test_validate_call_rejects_removed_target() -> None:
 
 def test_validate_call_rejects_wrong_kind_unknown_op_and_malformed_inputs() -> None:
     ws = _ws()
-    assert any("E1 is a edge, not a face" in e
+    assert any("E1 is an edge, not a face" in e
                for e in validate_call("split_angle", ["E1"], {"max_deg": 90}, ws))
-    assert any("F1 is a face, not a edge" in e for e in validate_call(
+    assert any("F1 is a face, not an edge" in e for e in validate_call(
         "unify_same_domain", [], {"scope": "all", "keep": ["F1"]}, ws))
     assert any("takes at most 0" in e for e in validate_call(
         "split_by_proximity", ["F1"], {"face_pairs": [["F1", "F2"]], "target_ratio": 0.5}, ws))
@@ -140,3 +151,115 @@ def test_kernel_functions_are_registered_for_the_workers() -> None:
     for fn in ("op_split_by_proximity", "op_split_angle", "op_split_closed",
                "op_split_continuity", "op_unify_same_domain"):
         assert fn in kernel_calls.REGISTRY
+
+
+@pytest.mark.parametrize("bad", [math.nan, math.inf, -math.inf])
+def test_validate_call_rejects_non_finite_numbers(bad: float) -> None:
+    errors = validate_call("split_by_proximity", [], {"face_pairs": [["F1", "F2"]],
+                                                      "target_ratio": bad}, _ws())
+    assert any("not a finite number" in e for e in errors), errors
+    assert validate_call("split_angle", ["F1"], {"max_deg": bad}, _ws())
+
+
+def test_unify_scope_rules_are_validate_call_errors_not_apply_surprises() -> None:
+    ws = _ws()
+    assert any("needs target faces" in e for e in validate_call(
+        "unify_same_domain", [], {"scope": "targets", "keep": []}, ws))
+    assert any("takes no targets" in e for e in validate_call(
+        "unify_same_domain", ["F1"], {"scope": "all", "keep": []}, ws))
+    assert validate_call("unify_same_domain", ["F1"], {"scope": "targets", "keep": []}, ws) == []
+    with pytest.raises(ValueError, match="needs target faces"):  # apply refuses the same call
+        REGISTRY["unify_same_domain"].apply(None, ws, [], {"scope": "targets", "keep": []},  # type: ignore[arg-type]
+                                            timeout_s=1)
+
+
+def test_a_schema_the_validator_cannot_enforce_is_refused_at_registration() -> None:
+    def op_with(schema: dict) -> type:
+        class _Bad:
+            name = "_bad_op"
+            params_schema = schema
+
+            def applies_to(self, site: Site) -> bool:
+                return False
+
+            def apply(self, pool, ws, targets, params, *, timeout_s):  # type: ignore[no-untyped-def]
+                raise NotImplementedError
+
+        return _Bad
+
+    for schema, needle in [
+        ({"type": "object", "properties": {"x": {"type": "number", "exclusiveMinimum": 0}}},
+         "exclusiveMinimum"),
+        ({"type": "object", "properties": {"x": {"oneOf": []}}}, "oneOf"),
+        ({"type": "object", "properties": {"x": {"type": "complex"}}}, "complex"),
+    ]:
+        with pytest.raises(ValueError, match=needle):
+            register(op_with(schema))
+    assert "_bad_op" not in REGISTRY
+
+
+def test_union_and_null_types_are_checked_without_raising() -> None:
+    @register
+    class _Union:
+        name = "_union_op"
+        params_schema = {"type": "object",
+                         "properties": {"v": {"type": ["string", "null"]}}}
+
+        def applies_to(self, site: Site) -> bool:
+            return False
+
+        def apply(self, pool, ws, targets, params, *, timeout_s):  # type: ignore[no-untyped-def]
+            raise NotImplementedError
+
+    try:
+        assert validate_call("_union_op", [], {"v": None}, _ws()) == []
+        assert validate_call("_union_op", [], {"v": "a"}, _ws()) == []
+        assert any("string or null" in e for e in validate_call("_union_op", [], {"v": 3}, _ws()))
+    finally:
+        del REGISTRY["_union_op"]
+
+
+class _FakePool:
+    """A pool whose call leaves a partial output file (as a killed worker would) and answers `result`."""
+
+    def __init__(self, result: CallResult) -> None:
+        self.result = result
+        self.out_paths: list[str] = []
+
+    def call(self, fn_name: str, payload: dict, *, timeout_s: float) -> CallResult:
+        self.out_paths.append(payload["out_path"])
+        Path(payload["out_path"]).write_text("partial")
+        return self.result
+
+
+@pytest.mark.parametrize("status", ["timeout", "crashed", "error"])
+def test_a_failed_worker_raises_op_failed_and_leaves_no_orphan(tmp_path: Path, status: str) -> None:
+    work = tmp_path / "work"
+    work.mkdir()
+    ws = _ws()
+    ws.brep_path = str(work / "a.brep")
+    pool = _FakePool(CallResult(ok=False, value=None, error="boom", status=status, seconds=1.0))  # type: ignore[arg-type]
+    with pytest.raises(OpFailed) as caught:
+        run_kernel_op(pool, ws, kernel_fn="x", op="x", payload={}, timeout_s=1)  # type: ignore[arg-type]
+    assert caught.value.status == status
+    assert not Path(pool.out_paths[0]).exists()
+    assert list(work.iterdir()) == []
+
+
+def test_a_declining_worker_raises_op_declined_and_leaves_no_orphan(tmp_path: Path) -> None:
+    work = tmp_path / "work"
+    work.mkdir()
+    ws = _ws()
+    ws.brep_path = str(work / "a.brep")
+    pool = _FakePool(CallResult(ok=True, value={"declined": "geometry_moved: x"}, error=None,
+                                status="ok", seconds=0.1))
+    with pytest.raises(OpDeclined, match="geometry_moved"):
+        run_kernel_op(pool, ws, kernel_fn="x", op="x", payload={}, timeout_s=1)  # type: ignore[arg-type]
+    assert list(work.iterdir()) == []
+
+
+def test_every_module_of_the_ops_package_is_imported_by_discovery() -> None:
+    import pkgutil
+
+    for module in pkgutil.iter_modules(ops.__path__):
+        assert f"{ops.__name__}.{module.name}" in __import__("sys").modules

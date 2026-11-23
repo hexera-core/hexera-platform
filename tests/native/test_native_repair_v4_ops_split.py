@@ -14,7 +14,13 @@ import pytest
 
 pytest.importorskip("OCP.ShapeUpgrade", reason="the CAD kernel is a native-tier dependency")
 
-from meshpipeline.cad.repair_v4.ops import REGISTRY, OpDeclined, validate_call  # noqa: E402
+from meshpipeline.cad.repair_v4.ops import (
+    REGISTRY,
+    OpDeclined,
+    OpFailed,
+    run_kernel_op,
+    validate_call,
+)  # noqa: E402
 from meshpipeline.cad.repair_v4.worker_pool import WorkerPool  # noqa: E402
 from meshpipeline.cad.repair_v4.workspace import Workspace, apply_history  # noqa: E402
 
@@ -315,12 +321,12 @@ def test_unify_same_domain_scope_targets_merges_only_among_the_targets(pool: Wor
                                             timeout_s=TIMEOUT_S)
 
 
-def test_unify_same_domain_scope_targets_needs_targets(pool: WorkerPool, tmp_path: Path) -> None:
+def test_unify_same_domain_scope_rules_refuse_the_call(pool: WorkerPool, tmp_path: Path) -> None:
     ws = _cylinder_ws(pool, tmp_path)
-    with pytest.raises(OpDeclined, match="needs target faces"):
+    with pytest.raises(ValueError, match="needs target faces"):
         REGISTRY["unify_same_domain"].apply(pool, ws, [], {"scope": "targets", "keep": []},
                                             timeout_s=TIMEOUT_S)
-    with pytest.raises(OpDeclined, match="takes no targets"):
+    with pytest.raises(ValueError, match="takes no targets"):
         REGISTRY["unify_same_domain"].apply(pool, ws, [_lateral(ws)], {"scope": "all", "keep": []},
                                             timeout_s=TIMEOUT_S)
 
@@ -384,3 +390,49 @@ def test_split_by_proximity_turns_the_refused_thin_wall_into_a_meshable_part(
     assert len(diff.modified[outer]) > 1 and len(diff.modified[inner]) > 1
     _assert_no_deviation(ws.brep_path, new.brep_path)  # topology only: no surface moved
     assert _meshes(new.brep_path, tmp_path, "after") == (True, "")
+
+
+# --- runtime guard and worker failure -----------------------------------------------------------
+
+
+def test_guard_declines_a_result_that_moved_geometry_or_changed_the_solid_count(
+        tmp_path: Path) -> None:
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox, BRepPrimAPI_MakeCylinder
+
+    from meshpipeline.cad.repair_v4.ops.split import guard
+
+    box = BRepPrimAPI_MakeBox(10.0, 10.0, 10.0).Shape()
+    assert guard(box, box) is None
+    assert "geometry_moved" in str(guard(box, BRepPrimAPI_MakeBox(10.0, 10.0, 10.5).Shape()))
+    assert "geometry_moved" in str(guard(box, BRepPrimAPI_MakeCylinder(5.0, 10.0).Shape()))
+    from OCP.BRep import BRep_Builder
+    from OCP.TopoDS import TopoDS_Compound
+
+    two = TopoDS_Compound()
+    builder = BRep_Builder()
+    builder.MakeCompound(two)
+    builder.Add(two, box)
+    builder.Add(two, BRepPrimAPI_MakeBox(10.0, 10.0, 10.0).Shape())
+    assert "solid count" in str(guard(box, two))
+
+
+def test_a_timed_out_op_raises_op_failed_and_leaves_no_partial_file(pool: WorkerPool,
+                                                                   tmp_path: Path) -> None:
+    ws = _cylinder_ws(pool, tmp_path)
+    before = sorted(p.name for p in tmp_path.iterdir())
+    with pytest.raises(OpFailed) as caught:
+        run_kernel_op(pool, ws, kernel_fn="op_test_write_then_hang", op="hang", payload={},
+                      timeout_s=5)
+    assert caught.value.status == "timeout"
+    assert sorted(p.name for p in tmp_path.iterdir()) == before  # the partial output was removed
+
+
+def test_a_crashed_or_unknown_kernel_call_raises_op_failed(pool: WorkerPool,
+                                                           tmp_path: Path) -> None:
+    ws = _cylinder_ws(pool, tmp_path)
+    with pytest.raises(OpFailed) as crashed:
+        run_kernel_op(pool, ws, kernel_fn="abort", op="abort", payload={}, timeout_s=60)
+    assert crashed.value.status == "crashed"
+    with pytest.raises(OpFailed) as unknown:
+        run_kernel_op(pool, ws, kernel_fn="no_such_fn", op="x", payload={}, timeout_s=60)
+    assert unknown.value.status == "error" and "no_such_fn" in unknown.value.message

@@ -20,11 +20,12 @@ ADDING AN OP never edits this file's logic. An op module does two things:
         def applies_to(self, site): ...
         def apply(self, pool, ws, targets, params, *, timeout_s): ...
 
-and then adds ONE import line to the foot of this file. `kernel_calls` imports this package, so the
-kernel function is registered in every worker without a second edit.
+and nothing else: the foot of this file imports every module in this package. `kernel_calls`
+imports this package, so the kernel function is registered in every worker too.
 
 `params_schema` is a JSON Schema (the subset `validate_call` understands: type, enum, minimum,
-maximum, minItems, maxItems, items, properties, required, additionalProperties). Two annotations
+maximum, minItems, maxItems, items, properties, required, additionalProperties; `register` refuses
+a schema using anything else, so a bound is never silently unenforced). Two annotations
 ride along as ordinary schema keywords, which any validator ignores:
 
     "x-entity": "face" | "edge" | "solid"   on a string: it must be a LIVE stable id of that kind
@@ -36,15 +37,19 @@ back as a message ("F7: removed by op 'split_angle'; it no longer exists") to re
 
 from __future__ import annotations
 
+import importlib
+import math
+import pkgutil
 import uuid
 from pathlib import Path
 from typing import Any, Protocol, TypeVar
 
 from meshpipeline.cad.repair_v4.types import Site, StableId
 from meshpipeline.cad.repair_v4.worker_pool import WorkerPool
+from meshpipeline.cad.repair_v4.workspace import (
+    _KIND as _KIND_OF_PREFIX,
+)
 from meshpipeline.cad.repair_v4.workspace import Diff, UnknownTarget, Workspace, apply_history
-
-_KIND_OF_PREFIX = {"F": "face", "E": "edge", "B": "solid"}
 
 
 class Op(Protocol):
@@ -88,8 +93,12 @@ _C = TypeVar("_C", bound=type)
 
 
 def register(cls: _C) -> _C:
-    """Class decorator: instantiate `cls()` and file it in `REGISTRY` under its `name`."""
+    """Class decorator: instantiate `cls()` and file it in `REGISTRY` under its `name`. Refuses a
+    `params_schema` that uses a keyword or type `validate_call` cannot enforce."""
     op = cls()
+    problems = _unsupported(op.params_schema, "params_schema")
+    if problems:
+        raise ValueError(f"op {op.name!r}: " + "; ".join(problems))
     if op.name in REGISTRY:
         raise ValueError(f"op {op.name!r} is already registered")
     REGISTRY[op.name] = op
@@ -99,8 +108,32 @@ def register(cls: _C) -> _C:
 # --- validate_call ------------------------------------------------------------------------------
 
 _TYPES: dict[str, Any] = {
-    "object": dict, "array": list, "string": str, "boolean": bool,
+    "object": dict, "array": list, "string": str, "boolean": bool, "null": type(None),
 }
+#: Keywords `_check` enforces, plus annotations it knows are inert. Anything else is refused at
+#: registration, because ignoring (say) `exclusiveMinimum` would mean an unenforced bound.
+_ENFORCED = {"type", "enum", "minimum", "maximum", "minItems", "maxItems", "items", "properties",
+             "required", "additionalProperties"}
+_INERT = {"description", "title", "default"}
+
+
+def _unsupported(schema: Any, path: str) -> list[str]:
+    if not isinstance(schema, dict):
+        return [f"{path}: a schema must be an object"]
+    out: list[str] = []
+    for key in schema:
+        if key in _ENFORCED or key in _INERT or key.startswith("x-"):
+            continue
+        out.append(f"{path}: keyword {key!r} is not supported by validate_call")
+    types = schema.get("type", [])
+    for t in types if isinstance(types, list) else [types]:
+        if t not in _TYPES and t not in ("number", "integer"):
+            out.append(f"{path}: type {t!r} is not supported by validate_call")
+    if "items" in schema:
+        out += _unsupported(schema["items"], f"{path}.items")
+    for key, sub in (schema.get("properties") or {}).items():
+        out += _unsupported(sub, f"{path}.properties.{key}")
+    return out
 
 
 def _type_ok(value: Any, expected: str) -> bool:
@@ -108,17 +141,25 @@ def _type_ok(value: Any, expected: str) -> bool:
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             return False
         return expected == "number" or float(value).is_integer()
+    if expected not in _TYPES:
+        return False
     return isinstance(value, _TYPES[expected])
 
 
 def _check(value: Any, schema: dict, path: str, ws: Workspace, errors: list[str]) -> None:
     expected = schema.get("type")
-    if expected is not None and not _type_ok(value, expected):
-        errors.append(f"{path}: expected {expected}, got {type(value).__name__}")
-        return
+    if expected is not None:
+        options = expected if isinstance(expected, list) else [expected]
+        if not any(_type_ok(value, t) for t in options):
+            errors.append(f"{path}: expected {' or '.join(map(str, options))}, "
+                          f"got {type(value).__name__}")
+            return
     if "enum" in schema and value not in schema["enum"]:
         errors.append(f"{path}: {value!r} is not one of {schema['enum']}")
     if isinstance(value, (int, float)) and not isinstance(value, bool):
+        if not math.isfinite(value):
+            errors.append(f"{path}: {value} is not a finite number")
+            return
         if "minimum" in schema and value < schema["minimum"]:
             errors.append(f"{path}: {value} is below the minimum {schema['minimum']}")
         if "maximum" in schema and value > schema["maximum"]:
@@ -144,6 +185,10 @@ def _check(value: Any, schema: dict, path: str, ws: Workspace, errors: list[str]
                 errors.append(f"{path}: unknown parameter {key!r} (allowed: {sorted(props)})")
 
 
+def _a(kind: str) -> str:
+    return f"an {kind}" if kind[0] in "aeiou" else f"a {kind}"
+
+
 def _check_entity(sid: str, kind: str | None, path: str, ws: Workspace, errors: list[str]) -> None:
     try:
         ws.resolve([sid])
@@ -151,7 +196,8 @@ def _check_entity(sid: str, kind: str | None, path: str, ws: Workspace, errors: 
         errors.append(f"{path}: {gone}")
         return
     if kind is not None and _KIND_OF_PREFIX.get(sid[:1]) != kind:
-        errors.append(f"{path}: {sid} is a {_KIND_OF_PREFIX.get(sid[:1], 'unknown')}, not a {kind}")
+        errors.append(f"{path}: {sid} is {_a(_KIND_OF_PREFIX.get(sid[:1], 'unknown'))}, "
+                      f"not {_a(kind)}")
 
 
 def validate_call(name: str, targets: list[StableId], params: dict, ws: Workspace) -> list[str]:
@@ -159,7 +205,10 @@ def validate_call(name: str, targets: list[StableId], params: dict, ws: Workspac
 
     Checks: the op exists; every target is live (a removed or replaced one says which op did it)
     and of the kind the op's `x-targets` asks for, in the count it allows; `params` meets the
-    schema's types, enums and bounds; every `x-entity` id inside params is live and of that kind.
+    schema's types, enums and bounds (non-finite numbers are refused); every `x-entity` id inside
+    params is live and of that kind; and, if the op defines the optional hook
+    `extra_errors(targets, params) -> list[str]`, its cross-field rules (run only once the rest
+    is clean, so it may assume well-typed params).
     """
     op = REGISTRY.get(name)
     if op is None:
@@ -179,6 +228,9 @@ def validate_call(name: str, targets: list[StableId], params: dict, ws: Workspac
         errors.append("params: expected an object")
     else:
         _check(params, op.params_schema, "params", ws, errors)
+        extra = getattr(op, "extra_errors", None)
+        if extra is not None and isinstance(targets, list) and not errors:
+            errors.extend(extra(targets, params))
     return errors
 
 
@@ -203,16 +255,23 @@ def run_kernel_op(pool: WorkerPool, ws: Workspace, *, kernel_fn: str, op: str, p
     out_path = str(Path(ws.brep_path).parent / f"{op}-{uuid.uuid4().hex[:12]}.brep")
     result = pool.call(kernel_fn, {**payload, "brep_path": ws.brep_path, "out_path": out_path,
                                    "quantum": ws.quantum}, timeout_s=timeout_s)
-    if not result.ok or result.value is None:
-        raise OpFailed(result.status, result.error or "no answer")
-    if "declined" in result.value:
-        raise OpDeclined(str(result.value["declined"]))
-    new = apply_history(ws, result.value)
+    try:
+        if not result.ok or result.value is None:
+            raise OpFailed(result.status, result.error or "no answer")
+        if "declined" in result.value:
+            raise OpDeclined(str(result.value["declined"]))
+        new = apply_history(ws, result.value)
+    except BaseException:
+        # A killed or declining worker may have left a partial `out_path`; nobody will read it.
+        Path(out_path).unlink(missing_ok=True)
+        raise
     return new, new.history[-1]
 
 
 __all__ = ["Op", "OpDeclined", "OpFailed", "REGISTRY", "Site", "check_call", "register",
            "run_kernel_op", "validate_call"]
 
-# One import per op module, for its `@register` side effect. Add yours here; touch nothing above.
-from meshpipeline.cad.repair_v4.ops import split  # noqa: E402,F401
+# Every sibling module of this package is imported for its `@register` side effect: a new op is a
+# new file here, with no edit to this one. (A module whose name starts with "_" is skipped.)
+for _module in sorted(m.name for m in pkgutil.iter_modules(__path__) if not m.name.startswith("_")):
+    importlib.import_module(f"{__name__}.{_module}")
