@@ -312,11 +312,52 @@ def family_of(v: Any, layer: Layer | None) -> str:
         return NO_SOLIDS if NO_SOLIDS in codes else (codes[0] if codes else "valid_other")
     if layer == "faithful":
         return str(v.faithful.reason or "unfaithful") if v.faithful is not None else "unfaithful"
-    failing = next(r for r in v.panel if r.status != "pass")
-    family = failure_family(str(getattr(failing, "message", "") or ""))
-    if family == "other" and failing.status in ("timeout", "crashed"):
+    return panel_family([(r.status, getattr(r, "error_kind", None), str(getattr(r, "message", "") or ""))
+                         for r in v.panel])
+
+
+#: `MemberResult.error_kind` values that already ARE a family: each names what the mesher found wrong. Every
+#: one occurs in the 86-file measurement (Task 43); `other` is deliberately absent - it says nothing.
+_KIND_FAMILIES = frozenset({"low_quality", "no_volume", "overlapping_facets", "edge_through_face",
+                            "periodic_surface", "netgen_meshing_failed"})
+HXT_FAILED = "hxt_3d_failed"  # gmsh's HXT 3D fill gave up; error_kind says only `other`, the text says why
+#: Which of a file's failing members NAMES the file, most informative first. A geometric defect the mesher
+#: found (a surface that cannot be meshed as it is, a boundary that overlaps itself) is a statement about the
+#: FILE; an abort or timeout, and a quality threshold crossed, are statements about the mesher's day. The
+#: order is by that, and NOT by which member happens to run first: Task 43 measured the panel disagreeing
+#: with itself on 51 of 73 files, so "first failing member" labelled 33 failures by a coin that was
+#: gmsh_prod 31 times. Ties inside a rank break alphabetically, so the label never depends on member order.
+_PANEL_RANK = ("periodic_surface", "overlapping_facets", "edge_through_face", "no_volume",
+               "netgen_meshing_failed", "timeout_crash", HXT_FAILED, "low_quality")
+
+
+def member_family(status: str, error_kind: str | None, message: str) -> str:
+    """The family of ONE failing panel member: its error_kind when that names a cause, else its message."""
+    if error_kind in _KIND_FAMILIES:
+        return str(error_kind)
+    family = failure_family(message)
+    if family == "other" and "HXT 3D mesh failed" in message:
+        return HXT_FAILED
+    if family == "other" and status in ("timeout", "crashed"):
         return "timeout_crash"
     return family
+
+
+def panel_family(members: Iterable[tuple[str, str | None, str]]) -> str:
+    """One family for a failing panel, from `(status, error_kind, message)` per member (passes ignored):
+    the best-ranked family any failing member has. A family outside `_PANEL_RANK` (plc_intersection,
+    open_loop ... as the message names it) is a specific geometric finding and ranks with the geometric
+    ones; `other` ranks last, and is the label only when NO failing member said anything more."""
+    families = sorted({member_family(st, kind, msg) for st, kind, msg in members if st != "pass"})
+    if not families:
+        return "other"
+
+    def rank(f: str) -> int:
+        if f == "other":
+            return len(_PANEL_RANK) + 1
+        return _PANEL_RANK.index(f) if f in _PANEL_RANK else 0
+
+    return min(families, key=rank)
 
 
 class FileTimeout(Exception):
