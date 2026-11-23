@@ -366,6 +366,60 @@ def sites_graph(payload: dict) -> dict:
     return {"graphs": out}
 
 
+@register("sites_free_loops")
+def sites_free_loops(payload: dict) -> dict:
+    """The closed loops of free edges (edges bordering exactly one face), each as its kernel edge indices and
+    the diagonal of its bounding box: `{"loops": [{"edges": [i, ...], "span": mm}], "open_wires": n, "diagonal"}`.
+
+    This is the edge list `fill_loop` needs and an open-shell finding does not carry (layer 1 names a shell, which has no
+    stable id). The edges are the shape's own, so the indices are the workspace's. A free chain that does not close
+    cannot be filled and is only counted."""
+    from OCP.Bnd import Bnd_Box
+    from OCP.BRepBndLib import BRepBndLib
+    from OCP.BRep import BRep_Tool
+    from OCP.ShapeAnalysis import ShapeAnalysis_FreeBounds
+    from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE
+    from OCP.TopExp import TopExp, TopExp_Explorer
+    from OCP.TopoDS import TopoDS
+    from OCP.TopTools import TopTools_HSequenceOfShape, TopTools_IndexedDataMapOfShapeListOfShape
+
+    shape = read_brep(payload["brep_path"])
+    edge_index = _maps(shape)["edge"]
+    ancestors = TopTools_IndexedDataMapOfShapeListOfShape()
+    TopExp.MapShapesAndAncestors_s(shape, TopAbs_EDGE, TopAbs_FACE, ancestors)
+    free = TopTools_HSequenceOfShape()
+    for i in range(1, ancestors.Extent() + 1):
+        edge = TopoDS.Edge_s(ancestors.FindKey(i))
+        if not BRep_Tool.Degenerated_s(edge) and ancestors.FindFromIndex(i).Size() == 1:
+            free.Append(edge)
+    wires = TopTools_HSequenceOfShape()
+    if free.Length():
+        ShapeAnalysis_FreeBounds.ConnectEdgesToWires_s(free, 1e-7, True, wires)
+    loops: list[dict] = []
+    open_wires = 0
+    for w in range(1, wires.Length() + 1):
+        wire = wires.Value(w)
+        if not wire.Closed():
+            open_wires += 1
+            continue
+        indices: list[int] = []
+        explorer = TopExp_Explorer(wire, TopAbs_EDGE)
+        while explorer.More():
+            index = edge_index.FindIndex(TopoDS.Edge_s(explorer.Current()))
+            if index > 0 and index not in indices:
+                indices.append(index)
+            explorer.Next()
+        box = Bnd_Box()
+        BRepBndLib.Add_s(wire, box)
+        if box.IsVoid() or not indices:
+            continue
+        x0, y0, z0, x1, y1, z1 = box.Get()
+        loops.append({"edges": sorted(indices), "span": math.dist((x0, y0, z0), (x1, y1, z1))})
+    whole = _box(shape)
+    return {"loops": loops, "open_wires": open_wires,
+            "diagonal": 0.0 if whole is None else math.dist(whole[:3], whole[3:])}
+
+
 @register("render_view")
 def render_view(payload: dict) -> dict:
     """A PNG of the part framed on the given entities (and points), `size` px square.

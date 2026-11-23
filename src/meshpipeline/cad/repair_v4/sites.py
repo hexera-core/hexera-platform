@@ -366,6 +366,7 @@ def find_sites(pool: WorkerPool, ws: Workspace, verdict: Any, *, h_mm: float,
     sites.sort(key=order)
     _assign_ids(sites)
     _attach_graphs(pool, ws, sites, reverse, h_mm)
+    _attach_free_loops(pool, ws, sites, reverse)
     if registry is not None:
         registry.apply(ws, sites)
     return sites
@@ -672,6 +673,33 @@ def _attach_distances(pool: WorkerPool, ws: Workspace, sites: list[Site], compon
                                        key=lambda c: (c["dist_mm"], c["a"], c["b"]))[:MAX_CLASH_PAIRS]
 
 
+#: Free loops kept per site (smallest first): the ones `fill_loop` can take are the small ones.
+MAX_FREE_LOOPS = 6
+
+
+def _attach_free_loops(pool: WorkerPool, ws: Workspace, sites: list[Site], reverse: dict) -> None:
+    """Put the part's closed free-edge loops on every `open` site as `graph["free_loops"]`.
+
+    An open finding names a shell (no stable id) or a solid, so the site carries no EDGES, and `fill_loop`
+    takes edges. The kernel finds the free loops once; each is `{"edges": [stable ids], "span_mm"}` and the part's
+    `diagonal_mm` rides with them so a consumer can read the span as a fraction without a second call. Loops are not
+    entities of the site: the site's id and identity are unchanged. A failed call leaves `free_loops` empty."""
+    open_sites = [s for s in sites if s.kind == "open"]
+    if not open_sites:
+        return
+    answer = _call(pool, "sites_free_loops", {"brep_path": ws.brep_path})
+    loops: list[dict] = []
+    for loop in (answer or {}).get("loops", []):
+        ids = [reverse[("E", int(i))] for i in loop["edges"] if ("E", int(i)) in reverse]
+        if len(ids) == len(loop["edges"]):
+            loops.append({"edges": sorted(ids, key=_number), "span_mm": float(loop["span"])})
+    loops.sort(key=lambda l: (l["span_mm"], l["edges"]))
+    for site in open_sites:
+        site.graph["free_loops"] = loops[:MAX_FREE_LOOPS]
+        site.graph["free_loops_total"] = len(loops)
+        site.graph["diagonal_mm"] = float((answer or {}).get("diagonal", 0.0))
+
+
 def _attach_graphs(pool: WorkerPool, ws: Workspace, sites: list[Site], reverse: dict, h_mm: float) -> None:
     """The k = 2 neighbourhood of each site, from the kernel, with kernel indices named as stable ids."""
     asks = []
@@ -765,6 +793,9 @@ def _site_entry(ws: Workspace, site: Site, level: tuple) -> dict:
     if len(site.entities) > n_ent:
         entry["entities_omitted"] = len(site.entities) - n_ent
     sub: dict = {k: graph[k] for k in ("k", "error", "note", "truncated") if k in graph}
+    if graph.get("free_loops"):
+        sub["free_loops"] = _round(graph["free_loops"])  # the edges fill_loop takes, smallest loop first
+        sub["diagonal_mm"] = _round(graph.get("diagonal_mm"))
     if graph.get("unmeasured_pairs"):
         sub["unmeasured_pairs"] = graph["unmeasured_pairs"]  # near pairs left UNmerged: may be one part
     if graph.get("id_carried"):
