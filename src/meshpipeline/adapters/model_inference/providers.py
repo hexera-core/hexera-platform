@@ -24,6 +24,10 @@ def client_for(target: RouteTarget):
         "Configured providers: deepinfra, deepseek, openai.")
 
 
+#: OpenAI 429 error codes that mean "pay or raise the limit", not "slow down".
+_QUOTA_429_CODES = ("insufficient_quota", "billing_hard_limit_reached")
+
+
 def classify(exc: BaseException) -> FailureCategory:
     try:
         import openai
@@ -57,6 +61,11 @@ def classify(exc: BaseException) -> FailureCategory:
             return FailureCategory.INSUFFICIENT_BALANCE
  # transient: the provider is having a bad moment
         if isinstance(exc, openai.RateLimitError):
+            # A 429 is also how OpenAI says the account is out of quota or past its hard spend limit. Retrying
+            # cannot fix either (the rate-limit guide stops retrying on exactly these codes), so they are a balance
+            # problem, terminal, never a rate limit to wait out.
+            if getattr(exc, "code", None) in _QUOTA_429_CODES or any(c in str(exc) for c in _QUOTA_429_CODES):
+                return FailureCategory.INSUFFICIENT_BALANCE
             return FailureCategory.RATE_LIMIT
         if isinstance(exc, openai.APITimeoutError):
             return FailureCategory.TIMEOUT

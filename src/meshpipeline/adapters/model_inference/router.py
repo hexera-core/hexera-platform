@@ -266,6 +266,9 @@ async def call_summarizer_model(messages: Conversation, job_id: str = "") -> Mod
 # per-file and per-wave caps are only as good as the meter, so an unpriced key is refused before dialling.
 _PROPOSE_ROLE = "repair_v4_propose"
 _PROPOSE_SPEC = SamplingSpec(max_tokens=REPAIR_V4_PROPOSE_MAX_OUTPUT_TOKENS, thinking_off=True)
+#: one attempt of a repair_v4_propose round, and the whole round (both attempts and the backoff), in seconds
+PROPOSE_ATTEMPT_TIMEOUT_S = 120.0
+PROPOSE_ROUND_DEADLINE_S = 300.0
 
 
 def _propose_route(provider: str, model: str) -> ModelRoute:
@@ -273,7 +276,11 @@ def _propose_route(provider: str, model: str) -> ModelRoute:
         role=_PROPOSE_ROLE,
         primary=RouteTarget(provider=provider, model=model, circuit_group=f"{_PROPOSE_ROLE}:{model}"),
         required_capabilities=frozenset({Capability.TOOLS, Capability.MULTIMODAL}),
-        timeout_s=300.0, retry=RetryPolicy(max_attempts=2, backoff_base_s=5.0, backoff_max_s=30.0),
+        # One round must fit well inside a file's 600 s wall (evalspec.SHARED_BUDGET): an attempt is cut at 120 s
+        # (4096 output tokens at the slowest plausible rate) and the whole round - admission, both attempts and the
+        # backoff between them - at 300 s. Measured rounds take 3-4 s.
+        timeout_s=PROPOSE_ATTEMPT_TIMEOUT_S, total_deadline_s=PROPOSE_ROUND_DEADLINE_S,
+        retry=RetryPolicy(max_attempts=2, backoff_base_s=5.0, backoff_max_s=30.0),
         concurrency_budget=4, queue_deadline_s=60.0, require_price=True)
 
 

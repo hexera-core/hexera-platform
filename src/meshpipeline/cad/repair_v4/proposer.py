@@ -73,9 +73,15 @@ _T = TypeVar("_T")
 #: the hard per-file model spend ceiling (spec 5.9); no proposer may be built above it
 FILE_USD_CEILING = 1.00
 
-StopReason = Literal["wave_cap", "file_ceiling", "max_turns", "model_failure", "input_too_large"]
+#: The AI's part in a file ended because the model could not be reached: MAX_CONSECUTIVE_FAILURES rounds in a row
+#: failed after the router's own retries (429, 5xx, timeouts, a throttle slot that never came). Infrastructure, not a
+#: verdict: an evaluation row whose AI stopped for this reason is INCONCLUSIVE, never a failed repair.
+MODEL_UNAVAILABLE: Literal["model_unavailable"] = "model_unavailable"
+StopReason = Literal["wave_cap", "file_ceiling", "max_turns", "model_unavailable", "input_too_large"]
 #: Consecutive failed model rounds (the router has already retried each) before the AI is given up on for a file.
 MAX_CONSECUTIVE_FAILURES = 3
+#: The router's failure marker for a round whose final word was a rate limit (`router._PROPOSE_ROLE:<category>`).
+_RATE_LIMITED_MARKER = "repair_v4_propose:rate_limit"
 
 ModelCall = Callable[..., Awaitable[ProposeReply]]
 
@@ -419,7 +425,7 @@ class AIProposer:
                  stage_names: Sequence[str] = (), unfixable: UnfixableRegistry | None = None,
                  prices: tuple[float, float, float] | None = None,
                  output_tokens: int = REPAIR_V4_PROPOSE_MAX_OUTPUT_TOKENS,
-                 max_input_tokens: int = MAX_INPUT_TOKENS) -> None:
+                 max_input_tokens: int = MAX_INPUT_TOKENS, throttle: Any = None) -> None:
         if max_turns < 1:
             raise ValueError("max_turns must be at least 1")
         if not (0 < usd_ceiling <= FILE_USD_CEILING):  # a chained comparison is False for inf and nan too
@@ -452,7 +458,13 @@ class AIProposer:
         self._output_tokens = output_tokens
         self._max_input_tokens = max_input_tokens
         self._last_cost: float | None = None
+        self._last_tokens = 0
+        #: the shard's `model_throttle.WaveThrottle` (None: unthrottled, e.g. one file on the engine path)
+        self._throttle = throttle
         self._failures = 0
+        #: rounds the model answered / rounds that failed after the router's retries (or never got a throttle slot)
+        self.answered_rounds = 0
+        self.failed_rounds = 0
         self.truncated_rounds = 0
         #: for the eval's failure triage: tool calls answered `ok: false`, the candidates they refused, and the
         #: `declare_unfixable` calls accepted from THIS proposer (the registry may be shared)
@@ -475,6 +487,13 @@ class AIProposer:
         """True when a spending limit - the shared wave cap or this file's own ceiling - ended the AI's part
         in this file. The file then runs deterministic-only and is marked `ai_capped`."""
         return self.stop_reason in ("wave_cap", "file_ceiling")
+
+    @property
+    def model_unavailable(self) -> bool:
+        """True when the model was never really there for this file: the AI was stopped as `model_unavailable`, or
+        it tried and not one round was answered (the search can end before the third failure stops it). Such a
+        file ran deterministic-only, so an evaluation must not charge its outcome to the AI arm."""
+        return self.stop_reason == MODEL_UNAVAILABLE or (self.failed_rounds > 0 and self.answered_rounds == 0)
 
     @property
     def messages(self) -> list[dict]:
@@ -509,23 +528,32 @@ class AIProposer:
                     self._stop(admission.reason)
                 break
             assert admission.reservation is not None
+            if self._throttle is not None and not self._throttle.acquire(self._last_tokens):
+                # the shard's slice of the wave's rate limit never came free: a failed round, nothing was sent
+                self._ledger.release(admission.reservation)
+                self._failed_round()
+                break
             try:
                 priced = await self._ask(admission.reservation)
             except BaseException:
                 self._ledger.release(admission.reservation)      # an unpriced or cancelled call spent nothing
+                if self._throttle is not None:
+                    self._throttle.release()
                 raise
             reply = priced.reply
+            if self._throttle is not None:
+                self._throttle.release(rate_limited=reply.failure_marker == _RATE_LIMITED_MARKER)
             self.turns_used += 1
             if reply.failure_marker:
                 # One failed round (the router has already retried it) must not end the AI for the file;
                 # only MAX_CONSECUTIVE_FAILURES in a row do. The round returns what it has and the driver
-                # asks again next round.
+                # asks again next round. A failed round was not billed, so its reservation is RELEASED, not
+                # settled: the ledger holds billed usage only.
                 self._ledger.release(admission.reservation)
-                self._failures += 1
-                if self._failures >= MAX_CONSECUTIVE_FAILURES:
-                    self._stop("model_failure")
+                self._failed_round()
                 break
             self._failures = 0
+            self.answered_rounds += 1
             if reply.finish_reason == "length" and not reply.tool_calls:
                 self.truncated_rounds += 1     # the output limit was spent on reasoning: a signal to raise it
             self._ledger.settle(admission.reservation, file_id=self.file_id, job_id=self.job_id,
@@ -562,7 +590,17 @@ class AIProposer:
             return None
         if self._last_cost is not None:
             usd = max(usd, self._last_cost * _GROWTH)
+        self._last_tokens = tokens
         return self._ledger.admit(self.file_id, usd, file_ceiling_usd=self.usd_ceiling)
+
+    def _failed_round(self) -> bool:
+        """Count a failed model round; True (and the stop recorded) when it was the last one allowed."""
+        self._failures += 1
+        self.failed_rounds += 1
+        if self._failures >= MAX_CONSECUTIVE_FAILURES:
+            self._stop(MODEL_UNAVAILABLE)
+            return True
+        return False
 
     def _stop(self, reason: StopReason) -> None:
         """End the AI's part in this file and record why in the ledger, not just on this object."""
@@ -574,7 +612,9 @@ class AIProposer:
     def result(self) -> dict:
         """What the driver records for this file: the AI's spend and why it stopped."""
         return {"file_id": self.file_id, "ai_capped": self.ai_capped, "stop_reason": self.stop_reason,
-                "turns": self.turns_used, "truncated_rounds": self.truncated_rounds, "spent_usd": self._ledger.file_spent_usd(self.file_id),
+                "turns": self.turns_used, "truncated_rounds": self.truncated_rounds,
+                "answered_rounds": self.answered_rounds, "failed_rounds": self.failed_rounds,
+                "model_unavailable": self.model_unavailable, "spent_usd": self._ledger.file_spent_usd(self.file_id),
                 "tool_errors": self.tool_errors, "candidate_errors": self.candidate_errors,
                 "declared_unfixable": self.declared_unfixable}
 
@@ -764,6 +804,7 @@ async def select_route(routes: Sequence[str], *, call: ModelCall | None = None) 
     raise NoUsableRoute("no repair_v4_propose route passed the probe: " + "; ".join(failures))
 
 
-__all__ = ["AIProposer", "DECLARE_UNFIXABLE", "IMAGE_KINDS", "MAX_CONSECUTIVE_FAILURES", "NoUsableRoute",
+__all__ = ["AIProposer", "DECLARE_UNFIXABLE", "IMAGE_KINDS", "MAX_CONSECUTIVE_FAILURES", "MODEL_UNAVAILABLE",
+           "NoUsableRoute",
            "Outcome", "PROPOSE", "ProbeResult", "ProposedCandidate", "UnfixableRegistry", "cache_key_for",
            "estimate_call_usd", "lineage_of", "probe_route", "select_route", "system_prompt", "tool_schemas"]

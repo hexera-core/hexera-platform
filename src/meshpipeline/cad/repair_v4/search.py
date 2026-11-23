@@ -52,8 +52,8 @@ Wiring (Task 18b).
   * VIEWS. For a model generator, sites of the kinds the proposer shows pictures for are drawn once with
     `render.view(pool, ws, site)`.
   * STOP REASON. `SearchResult.ai_stop_reason` is the proposer's own reason (`file_ceiling`, `input_too_large`,
-    `model_failure`, ...) or `model_budget` when this driver capped it; `ai_capped` is true for a spending
-    limit only, so `input_too_large` and `model_failure` are NOT `ai_capped`.
+    `model_unavailable`, ...) or `model_budget` when this driver capped it; `ai_capped` is true for a spending
+    limit only, so `input_too_large` and `model_unavailable` are NOT `ai_capped`.
   * INFRASTRUCTURE IS NOT A VERDICT. `InconclusiveVerdict` (from `score`) and `CheckerUnavailable` (the STEP
     export, the original's facts, the re-run layer 3, or layer 1/3 of the checker) are retried, then the
     candidate is an `inconclusive` outcome: traced, never ranked, never counted, never told to the proposer as
@@ -310,10 +310,10 @@ class SearchResult:
     #: False when nothing beat the start (best is the start workspace)
     changed: bool = False
     #: a SPENDING limit ended the AI's part (the wave cap, the file's own ceiling, or this search's model budget)
-    #: and the search finished deterministic-only. `input_too_large` and `model_failure` are NOT this.
+    #: and the search finished deterministic-only. `input_too_large` and `model_unavailable` are NOT this.
     ai_capped: bool = False
     #: why the AI stopped, when it did: the proposer's own `stop_reason` (`wave_cap`, `file_ceiling`, `max_turns`,
-    #: `model_failure`, `input_too_large`) or `model_budget` when this driver capped it; None when it never stopped
+    #: `model_unavailable`, `input_too_large`) or `model_budget` when this driver capped it; None when it never stopped
     ai_stop_reason: str | None = None
     #: `AIProposer.result()` of each proposer in the search (spend, turns, reason)
     ai: list[dict] = field(default_factory=list)

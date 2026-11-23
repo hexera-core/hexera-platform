@@ -113,8 +113,9 @@ def _usable(v: Any, what: str) -> str | None:
 
 def run_file(arm_name: str, entry: Any, source: str, *, pool: Any, engine: Engine, ledger: Any | None,
              arm: Any, budget: Any, h_mm: float | None, route: str | None, max_turns: int, job_id: str,
-             workdir: str, workers: int = 1, clock: Any = time.monotonic) -> ArmOutcome:
-    """Run one file through one arm. `arm` is the `evalspec.Arm`, `budget` the arm's `evalspec.Budget`."""
+             workdir: str, workers: int = 1, clock: Any = time.monotonic, throttle: Any = None) -> ArmOutcome:
+    """Run one file through one arm. `arm` is the `evalspec.Arm`, `budget` the arm's `evalspec.Budget`. `throttle`
+    is the shard's `model_throttle.WaveThrottle`, handed to the AI proposer (None: unthrottled)."""
     from meshpipeline.cad.repair_v4.verdict.assemble import InconclusiveVerdict
     from meshpipeline.cad.repair_v4.verdict.valid import CheckerUnavailable
 
@@ -149,7 +150,7 @@ def run_file(arm_name: str, entry: Any, source: str, *, pool: Any, engine: Engin
             out_v, extra, usd = _search_arm(arm_name, pool=pool, ws=ws, start=start, source=source, judge=judge,
                                             v_in=v_in, ledger=ledger, arm=arm, budget=budget, h_mm=h_mm, route=route,
                                             max_turns=max_turns, job_id=job_id, entry=entry, workers=workers,
-                                            clock=clock, full=full)
+                                            clock=clock, full=full, throttle=throttle)
         else:
             raise ValueError(f"arm {arm_name!r} is not dispatchable here")
     except (CheckerUnavailable, InconclusiveVerdict, EngineUnavailable) as exc:
@@ -170,26 +171,36 @@ def run_file(arm_name: str, entry: Any, source: str, *, pool: Any, engine: Engin
 
 def _search_arm(arm_name: str, *, pool: Any, ws: Any, start: Any, source: str, judge: Any, v_in: Any, ledger: Any,
                 arm: Any, budget: Any, h_mm: float | None, route: str | None, max_turns: int, job_id: str, entry: Any,
-                workers: int, clock: Any, full: Any) -> tuple[Any, dict, float]:
+                workers: int, clock: Any, full: Any, throttle: Any = None) -> tuple[Any, dict, float]:
     """(output verdict, the SearchResult's own measured-ness fields, model USD) for a search arm."""
     from meshpipeline.cad.repair_v4 import search as S
+    from meshpipeline.cad.repair_v4.proposer import MODEL_UNAVAILABLE
 
     ai_kwargs: dict[str, Any] = {}
     if arm_name == "search_ai":
         if not route:
             raise ValueError("search_ai needs a route (provider:model)")
         ai_kwargs = {"route": route, "ledger": ledger, "max_turns": max_turns, "usd_ceiling": arm.budget.model_usd,
-                     "file_id": entry.sha256, "job_id": job_id}
+                     "file_id": entry.sha256, "job_id": job_id, "throttle": throttle}
     generators, proposer = S.arm_generators(arm_name, **ai_kwargs)
     sbudget = S.Budget(wall_s=budget.wall_s, ops=budget.ops, model_calls=max_turns if proposer else 0,
                        model_usd=budget.model_usd)
     result = S.search(pool, start, source, generators, sbudget, workers=workers, judge=judge, h_mm=h_mm, clock=clock)
     usd = float(proposer.result()["spent_usd"]) if proposer is not None else 0.0
+    # A search_ai file whose model could not be reached ran deterministic-only: its outcome measures search_det, not
+    # the AI arm. It is INCONCLUSIVE for search_ai (never a failed repair, never a success credited to the AI), so an
+    # outage that takes the model away from many files makes the arm NOT MEASURED instead of quietly search_det.
+    # `model_unavailable` also covers a file whose every model round failed but whose search ended before the third
+    # failure could stop the AI: the model was never there, whatever the stop rule had time to record.
+    ai_unavailable = proposer is not None and proposer.model_unavailable
     fields = {"reason": result.reason, "verdict_candidates": result.verdict_candidates,
               "inconclusive_candidates": result.inconclusive_candidates,
-              "infrastructure_failed": result.infrastructure_failed, "_unmeasured": result.unmeasured,
+              "infrastructure_failed": result.infrastructure_failed,
+              "_unmeasured": bool(result.unmeasured or ai_unavailable),
               "cheap_full": cheap_full_cells(result.trace.of_kind("confirm")),
               "_triage": {"search": search_triage(result, generators)}}
+    if proposer is not None:
+        fields["ai_stop_reason"] = MODEL_UNAVAILABLE if ai_unavailable else result.ai_stop_reason
     # `result.changed` says whether anything beat the search's START, which is the staged output, not the input: a
     # file the healer improved and the search could not improve further must still ship the healer's state. The
     # engine has this bug today (`_find_best`; strict xfail in test_engine_arms.py); the eval applies the rule as the

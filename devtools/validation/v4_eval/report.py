@@ -134,6 +134,9 @@ class ArmRow:
     #: WHY the output is what it is (`arms.verdict_triage` / `search_triage` / `stages_triage`), read by triage.py and
     #: by nothing that computes a rate. Optional: rows written before it existed carry none.
     triage: dict | None = None
+    #: search_ai only: why the AI stopped (`proposer.StopReason`, or `model_budget`). `model_unavailable` = the model
+    #: could not be reached after the router's retries, so the row is INCONCLUSIVE: the arm was never really run.
+    ai_stop_reason: str | None = None
 
     @property
     def clean(self) -> bool:

@@ -481,3 +481,48 @@ def test_the_wave_cache_reaches_the_engines_own_judges_and_is_restored(shard, mo
     assert isinstance(seen["judge_cache"].store, cache_mod.GcsStore)
     assert cache_mod.CACHE_URI_ENV not in __import__("os").environ  # restored: no leak into the next caller
     cache_mod.reset_default_verdict_cache()
+
+
+# ------------------------------------------------------------------ the model goes away mid-wave
+
+def test_a_search_ai_file_whose_model_is_unreachable_is_inconclusive_not_a_failed_repair(shard: Any, wire: Wire) -> None:  # noqa: F811
+    """The probe passes, then every proposer round fails (the router's retries included). The file ran
+    deterministic-only, so its outcome measures search_det, not the AI arm: the row must be INCONCLUSIVE with the
+    reason named - never a conclusive failure charged to the AI, and never a crash."""
+    real_client = wire.client
+
+    def client(target: Any) -> Any:
+        inner = real_client(target)
+
+        async def create(**kw: Any) -> Any:
+            if "propose" in [t["name"] for t in kw.get("tools", [])]:
+                wire.requests.append(kw)
+                raise ValueError("the provider is gone")        # terminal: the router returns a failure marker
+            return await inner.responses.create(**kw)
+        return SimpleNamespace(responses=SimpleNamespace(create=create))
+
+    import meshpipeline.adapters.model_inference.providers as providers_mod
+    providers_mod.client_for = client  # restored by the wire fixture's monkeypatch on teardown
+    ledger = ledgered()
+    rows, excluded = go(shard, "search_ai", ledger)
+    [row] = rows
+    assert excluded == []
+    assert row["inconclusive"] is True and row["ai_stop_reason"] == "model_unavailable", (row, len(wire.requests))
+    assert row["model_usd"] == 0.0 and ledger.entries() == [] and ledger.reserved_usd() == 0.0
+    parsed = report._row_from_dict(row)
+    assert parsed.inconclusive and not parsed.counts and parsed.ai_stop_reason == "model_unavailable"
+
+
+def test_search_det_rows_carry_no_ai_stop_reason(shard: Any) -> None:
+    rows, _ = go(shard, "search_det", None)
+    assert "ai_stop_reason" not in rows[0]
+
+
+def test_run_arm_slices_the_wave_throttle_per_shard(shard: Any, wire: Wire) -> None:  # noqa: F811
+    wire.candidate = CLEAN_CANDIDATE
+    prov: dict = {}
+    args = run_arm.parse_args([*shard.argv, "--arms", "search_ai", "--wave-type", "normal", "--wave-id", "w1",
+                               "--n-shards", "1", "--ledger-path", "/x", "--marker-bucket", "b",
+                               "--model-max-in-flight", "4"])
+    run_arm.run_arms(args, shard.out, prov, ledgered(), engine=FakeEngine())
+    assert prov["model_throttle"]["max_in_flight"] == 4 and prov["model_throttle"]["n_shards"] == 1
