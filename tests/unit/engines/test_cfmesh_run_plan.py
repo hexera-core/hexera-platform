@@ -184,3 +184,18 @@ def test_a_run_stopped_by_its_guard_is_a_guard_trip_never_a_broken_mesh(tmp_path
     assert "43,771 bad faces" in trips[0]["repairing"]          # words for the record only
     # ...and a second run_mesh in the same attempt is refused: the attempt ends on the trip
     assert meshing._attempt_tripped(tmp_path)
+
+
+def test_a_result_that_ran_no_mesher_is_told_by_its_own_reason_never_a_key_error(tmp_path, monkeypatch):
+    # abc 00063401 on the lab (23 Nov): the run was routed to a 64 GiB VM the lab does not have, and the result -
+    # {"rc": 1, "error": ...}, no log tail - crashed run_mesh with KeyError 'log_tail'
+    import meshpipeline.engines.runtime as rt
+    from meshpipeline.agents.builder.tool_context import BuilderToolContext
+    from meshpipeline.agents.builder.tools import meshing
+
+    res = {"rc": 1, "success": False, "timed_out": False,
+           "error": "needs a 64 GiB machine (the lab's container has 30 GiB)"}
+    monkeypatch.setattr(rt, "get_engine", lambda n="": _FakeCfMesh(res, []))
+    ctx = BuilderToolContext(workspace=tmp_path, geometry=None, engine="cfmesh")
+    out = meshing._run_and_judge(ctx, meshing.PreparedMeshRun(engine="cfmesh", cap=60))
+    assert out["success"] is False and "needs a 64 GiB machine" in out["log_tail"]
