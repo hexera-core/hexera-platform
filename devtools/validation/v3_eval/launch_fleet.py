@@ -674,6 +674,7 @@ def build_parser() -> argparse.ArgumentParser:
                         help="v4 only, REQUIRED: this wave's id (lowercase letters, digits, dashes); reuse it to "
                              "resume the same wave, never for a different one")
     parser.add_argument("--dry-run", action="store_true")
+    parser.set_defaults(plan=None)  # the WavePlan plan_wave returns at the claim; never a flag
     return parser
 
 

@@ -230,12 +230,13 @@ def run_harness(args: argparse.Namespace, out: Path, prov: dict, *, runner: ArmR
         return run_repair_corpus(args, out, prov)  # no wave: the plain repair_corpus run, which writes no ArmRows
     if runner is None:
         raise ArmDispatchMissing("--mode harness has no arm runner: pass one (Task 22c's arms.run_file adapter)")
+    split_file = getattr(args, "split_file", None)  # Task 22c's flag; absent until it lands
     # held-out files are reported, never tuned on: a harness run is a REPORT purpose; a tuning purpose is refused
     # for the held-out split here, not left to the caller to remember
     if getattr(args, "purpose", "report") == "tuning":
-        evalspec.refuse_heldout_for_tuning(plan["split"], *( [args.split_file] if getattr(args, "split_file", None) else []))
+        evalspec.refuse_heldout_for_tuning(plan["split"], *([split_file] if split_file else []))
     arm_names = [a for a in plan["arms"] if a in getattr(evalspec, "DISPATCHABLE_ARMS", tuple(plan["arms"]))]
-    path = Path(getattr(args, "split_file", None) or reprobe_mod.SPLITS_DIR / f"{plan['split']}.json")
+    path = Path(split_file or reprobe_mod.SPLITS_DIR / f"{plan['split']}.json")
     split = reprobe_mod.read_split(path)
     reprobe_mod.check_sources(split)  # Fusion 360 is in no split, row or report
     by_sha = {e.sha256: e for e in pool_mod.read_pool(Path(args.pool))}
