@@ -33,8 +33,9 @@ class ScriptedPool:
     """Boxes by stable-id; face i is the unit cube at x = 10 * i unless overridden."""
 
     def __init__(self, ws: Workspace, boxes: dict[str, list[float]], *, locate=None, fail=(),
-                 prox=(), distance=None) -> None:
+                 prox=(), distance=None, loops=()) -> None:
         self.ws, self.boxes, self.locate, self.fail = ws, boxes, locate or {}, set(fail)
+        self.loops = list(loops)  # [(kernel edge indices, span mm)] the free loops `sites_free_loops` reports
         self.prox, self.distance = list(prox), distance or (lambda a, b: 0.4)
         self.calls: list[str] = []
 
@@ -67,6 +68,9 @@ class ScriptedPool:
                                      "area": 1.0, "min_width": 1.0, "angular_span_deg": None, "hop": 0}
                                     for e in s["seeds"]], "edges": [], "truncated": False}
                 for s in payload["sites"]}})
+        if fn == "sites_free_loops":
+            return _ok({"loops": [{"edges": list(e), "span": span} for e, span in self.loops], "open_wires": 0,
+                        "diagonal": 100.0})
         raise AssertionError(f"unscripted kernel call {fn}")
 
 
@@ -74,7 +78,9 @@ def _ws(n_faces: int = 12, *, shift: int = 0) -> Workspace:
     """Stable id F<i> sits at kernel index i + shift."""
     ids = {f"F{i}": f"fp{i}" for i in range(1, n_faces + 1)}
     ids["B1"] = "fpB"
+    ids.update({f"E{i}": f"fpE{i}" for i in range(1, 9)})
     indices = {f"F{i}": i + shift for i in range(1, n_faces + 1)}
+    indices.update({f"E{i}": i for i in range(1, 9)})
     indices["B1"] = 1
     return Workspace(brep_path="x.brep", ids=ids, labels={"F1": {"name": "bracket top"}}, history=[],
                      original="x.brep", indices=indices)
@@ -686,3 +692,41 @@ def test_hard_finding_that_cannot_be_placed_keeps_its_kind() -> None:
     (site,) = find_sites(pool, ws, verdict, h_mm=H)
     assert site.kind == "open" and site.entities == [] and site.meshers_failing == ["valid"]
     assert site.id == "S@open"
+
+
+def test_an_open_site_carries_the_free_loops_as_stable_edge_ids_and_keeps_its_identity() -> None:
+    """An open finding names a shell, so the site has no edges for `fill_loop` to take. The kernel's free loops are put on
+    the site's graph, smallest first, as stable ids; the site's entities and id are untouched."""
+    ws = _ws()
+    pool = ScriptedPool(ws, _boxes(ws), loops=[((5, 6, 7, 8), 40.0), ((1, 2, 3, 4), 4.0)])
+    verdict = _verdict(MemberResult("gmsh", "pass"), hard=[Finding("open_shell", ["H1"], {"free_edges": 8})])
+    (site,) = find_sites(pool, ws, verdict, h_mm=H)
+    assert site.id == "S@open" and site.entities == []
+    assert site.graph["free_loops"] == [{"edges": ["E1", "E2", "E3", "E4"], "span_mm": 4.0},
+                                        {"edges": ["E5", "E6", "E7", "E8"], "span_mm": 40.0}]
+    assert site.graph["diagonal_mm"] == 100.0
+    seen = observation(ws, verdict, [site], {"usd": 1.0})["sites"][0]["graph"]
+    assert seen["free_loops"][0]["edges"] == ["E1", "E2", "E3", "E4"]  # the proposer is told which edges to name
+
+
+def test_no_free_loop_call_is_made_for_a_site_that_is_not_open() -> None:
+    ws = _ws()
+    pool = ScriptedPool(ws, _boxes(ws))
+    find_sites(pool, ws, _verdict(_fail("gmsh", "overlapping_facets", Located("F1", None, "s1"))), h_mm=H)
+    assert "sites_free_loops" not in pool.calls
+
+
+def test_a_failed_free_loop_call_degrades_the_site_to_no_loops_not_to_no_site() -> None:
+    ws = _ws()
+    pool = ScriptedPool(ws, _boxes(ws), fail=("sites_free_loops",))
+    verdict = _verdict(MemberResult("gmsh", "pass"), hard=[Finding("open_shell", ["H1"], {"free_edges": 4})])
+    (site,) = find_sites(pool, ws, verdict, h_mm=H)
+    assert site.kind == "open" and site.graph["free_loops"] == []
+
+
+def test_a_whole_part_site_records_which_finding_put_it_there() -> None:
+    ws = _ws()
+    pool = ScriptedPool(ws, _boxes(ws))
+    verdict = _verdict(MemberResult("gmsh", "pass"), hard=[Finding("no_solids", [], {"free_shells": 1})])
+    (site,) = find_sites(pool, ws, verdict, h_mm=H)
+    assert site.kind == "invalid" and site.graph["hard_codes"] == ["no_solids"]

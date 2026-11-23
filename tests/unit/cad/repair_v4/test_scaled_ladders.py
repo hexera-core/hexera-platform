@@ -146,3 +146,59 @@ def test_the_staged_shells_default_is_sized_against_the_part(monkeypatch: pytest
     for p, diag in zip(sews, (1.7, 1_732.0), strict=True):
         lo, hi = _window(diag)
         assert all(lo <= r <= hi for r in p["tol_ladder"])
+
+
+# --- fill_loop on an open site (Task 42) ---------------------------------------------------------------------------
+
+
+def _open_site_with(loops: list[tuple[list[str], float]], diagonal: float = 127.0) -> Site:
+    return Site(id="S@open", kind="open", entities=[], xyz=[], meshers_failing=["valid"], dist_over_h=None,
+                graph={"free_loops": [{"edges": e, "span_mm": s} for e, s in loops], "diagonal_mm": diagonal},
+                view_png=None)
+
+
+def _state_of(site: Site) -> SearchState:
+    ws = Workspace(brep_path="/fake/a.brep", ids={"F1": "fp1"}, labels={}, history=[], original="/fake/o.brep")
+    return SearchState(id="S0", ws=ws, verdict=None, score=(0, 0, 0.0, 0.0, 0), sites=[site], depth=0, parent=None,
+                       via=None)
+
+
+def test_the_sweep_proposes_fill_loop_for_each_loop_inside_the_cap_and_none_beyond_it() -> None:
+    small, big = (["E1", "E2", "E3", "E4"], 4.24), (["E5", "E6"], 0.06 * 127.0)  # 3.3% and 6% of the diagonal
+    gen = DetGenerator(diagonal=lambda ws: 127.0)
+    got = [c for c in gen.propose(_state_of(_open_site_with([small, big])), 50) if c.op == "fill_loop"]
+    assert [c.targets for c in got] == [small[0]] and got[0].params == {"continuity": "G0"}
+    assert any("beyond the fill cap" in n for n in gen.notes)  # the loop it did not propose is on the record
+    from meshpipeline.cad.repair_v4.ops import REGISTRY, validate_call
+
+    assert "fill_loop" in REGISTRY
+    assert validate_call("fill_loop", got[0].targets, got[0].params, _state_of(_open_site_with([small])).ws) == []
+
+
+def test_the_cap_is_read_from_the_one_home_not_restated() -> None:
+    from meshpipeline.cad.repair_v4 import limits
+
+    span = 4.0
+    loop = (["E1", "E2", "E3"], span)
+    edge = span / limits.MAX_FILL_SPAN_RATIO  # the diagonal at which this loop sits exactly on the cap
+    gen = DetGenerator(diagonal=lambda ws: edge)
+    on = [c for c in gen.propose(_state_of(_open_site_with([loop], edge)), 50) if c.op == "fill_loop"]
+    just_over = [c for c in gen.propose(_state_of(_open_site_with([loop], edge * 0.99)), 50) if c.op == "fill_loop"]
+    assert len(on) == 1 and just_over == []
+
+
+def test_an_open_site_without_loops_says_so_and_still_proposes_the_others() -> None:
+    gen = DetGenerator(diagonal=lambda ws: 127.0)
+    got = gen.propose(_state_of(_open_site_with([])), 50)
+    assert not [c for c in got if c.op == "fill_loop"] and {c.op for c in got} >= {"sew", "make_volume"}
+    assert any("fill_loop not proposed" in n for n in gen.notes)
+
+
+def test_a_no_solids_site_proposes_make_volume_and_other_invalid_sites_do_not() -> None:
+    def invalid(codes: list[str]) -> Site:
+        return Site(id="S@invalid", kind="invalid", entities=[], xyz=[], meshers_failing=["valid"], dist_over_h=None,
+                    graph={"hard_codes": codes}, view_png=None)
+
+    gen = DetGenerator(diagonal=lambda ws: 127.0)
+    assert "make_volume" in {c.op for c in gen.propose(_state_of(invalid(["no_solids"])), 50)}
+    assert "make_volume" not in {c.op for c in gen.propose(_state_of(invalid(["brep_invalid"])), 50)}
