@@ -243,3 +243,32 @@ def test_the_plan_stop_reaches_the_user_s_result_with_the_opening_the_gap_and_th
                            "a gap about 0.3 mm wide")
     assert "came out of the mesher" not in what and "run it again" not in next_step
     assert next_step == "Widen or close that gap in the CAD, allow more cells, or drop that opening."
+
+
+def _two_chambers_one_with_no_opening() -> dict:
+    """The same chamber + slit + pocket, but both openings on the chamber (its x = 0 face split in two) and the
+    pocket's x = 20 face wall: the pocket is a sizeable passage piece no opening is on (abc 99768's kind: cfMesh
+    keeps the largest region, '61 unconnected regions')."""
+    s = _surface()
+    inlet = np.asarray(s.pop("inlet"))
+    s["wall"] = np.concatenate([s["wall"], s.pop("outlet")])
+    low = inlet[:, :, 1].mean(axis=1) < 5.0 * MM            # the x = 0 face split at y = 5 mm
+    s["inlet"], s["outlet"] = inlet[low], inlet[~low]
+    return s
+
+
+def test_a_passage_piece_cut_off_by_a_slit_needs_the_slit_with_no_opening_named():
+    spots = [*_hairlines(), dict(SLIT_BOX)]
+    got = opening_necks(_two_chambers_one_with_no_opening(), "wall", spots, need_m=3.0 * MM)
+    assert [r["box"] for r in got] == [len(spots) - 1]
+    assert got[0]["openings"] == [None]                     # the piece, not an opening
+    assert abs(got[0]["width_m"] - 0.3 * MM) < 1e-9
+
+
+def test_a_passage_piece_the_limit_cannot_reach_stops_the_plan_saying_a_piece_of_the_passage():
+    from meshpipeline.engines.cfmesh.cfmesh_runner import neck_plan
+    spots = [*_hairlines(), dict(SLIT_BOX)]
+    boxes, stop = neck_plan([_two_chambers_one_with_no_opening()], "wall", spots, wall_cell=1.0 * MM, base=0.0,
+                            limit=1_000)
+    assert [b["neck_of"] for b in boxes] == [[None]]
+    assert stop.startswith("A piece of the passage reaches the rest of its passage only through a gap about 0.3 mm")
