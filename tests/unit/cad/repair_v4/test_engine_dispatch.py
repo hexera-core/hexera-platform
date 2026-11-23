@@ -112,7 +112,13 @@ def test_undelivered_result_is_a_refusal_not_a_report(monkeypatch, tmp_path):
     assert err.value.measurements["engine"] == "search"
 
 
-def test_unwired_search_is_unavailable_not_a_verdict(monkeypatch, tmp_path):
+def test_an_engine_that_cannot_run_is_unavailable_not_a_verdict(monkeypatch, tmp_path):
+    """The real `repair_v4` runs; its worker pool cannot start, which is OUR limit, so the caller sees
+    RepairUnavailable and never a RepairRefused (a statement about the file)."""
+    def no_pool(*a, **k):
+        raise RuntimeError("kernel worker did not start")
+
+    monkeypatch.setattr("meshpipeline.cad.repair_v4.worker_pool.WorkerPool", no_pool)
     monkeypatch.setattr(rcfg, "CAD_REPAIR_ENGINE", "search")
     with pytest.raises(conservative.RepairUnavailable):
         conservative.repair_step_file(tmp_path / "a", tmp_path / "b")
