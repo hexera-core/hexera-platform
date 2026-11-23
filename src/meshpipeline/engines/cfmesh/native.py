@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import re
 import shlex
 import shutil
@@ -120,6 +121,84 @@ def untangle_stall(log_tail: str) -> list[str]:
     bad = int(counts[-1].group(1))
     return [f"{bad:,} bad faces cfMesh could not untangle"
             + (f", {wrong[-1]:,} of them pointing the wrong way" if wrong else "")]
+
+
+#: TIME-12: THE MESHER IS STOPPED WHEN IT IS NOT UNTANGLING, read from its own counts, never the clock.
+#: cartesianMesh untangles in passes of at most UNTANGLE_PASS_ITERATIONS iterations, printing its bad
+#: faces at each. static_mixer_004 (c2_res5t) spent 4,531 s of 5,514 s in 108 such passes; its last
+#: rose to 64,438 bad faces and ended at 2,107, and the mesh was refused anyway. A pass is judged once
+#: UNTANGLE_FAILED_PASSES earlier passes of the run have ended with bad faces left: at the geometric rate
+#: of its last UNTANGLE_RATE_WINDOW iterations, a pass still at UNTANGLE_WATCH_MIN_FACES or more that
+#: would need more iterations than it has left is not converging, and the run moves to the next engine.
+UNTANGLE_RULE = "TIME-12"
+UNTANGLE_PASS_ITERATIONS = 50
+UNTANGLE_RATE_WINDOW = 10
+UNTANGLE_FAILED_PASSES = 2
+UNTANGLE_WATCH_MIN_FACES = 1000
+_UNTANGLE_START = "Starting untangling the mesh"
+_UNTANGLE_END = "Finished untangling the mesh"
+_ITERATION_BAD = re.compile(r"Iteration (\d+)\. Number of bad faces is (\d+)")
+
+
+def untangle_not_converging(log_text: str) -> str:
+    """TIME-12: why the cartesianMesh run whose log reads `log_text` is not untangling ('' while it
+    may be). The same log gives the same answer on any machine."""
+    failed = 0
+    cur: list[int] | None = None
+    for line in str(log_text or "").splitlines():
+        if _UNTANGLE_START in line:
+            cur = []
+        elif _UNTANGLE_END in line:
+            failed += 1 if cur and cur[-1] > 0 else 0
+            cur = None
+        elif cur is not None:
+            m = _ITERATION_BAD.search(line)
+            if m:
+                cur.append(int(m.group(2)))
+    if cur is None or len(cur) <= UNTANGLE_RATE_WINDOW or failed < UNTANGLE_FAILED_PASSES:
+        return ""
+    now, then = cur[-1], cur[-1 - UNTANGLE_RATE_WINDOW]
+    left = UNTANGLE_PASS_ITERATIONS - len(cur)
+    if now < UNTANGLE_WATCH_MIN_FACES:
+        return ""
+    rate = now / then if then > 0 else float("inf")
+    need = (UNTANGLE_RATE_WINDOW * math.log(now) / -math.log(rate)) if rate < 1.0 else float("inf")
+    if need <= left:
+        return ""
+    return (f"cfMesh was not untangling the mesh: {failed} untangling passes had already ended with bad faces "
+            f"left, and this one was at {now:,} bad faces after {len(cur)} iterations ({then:,} "
+            f"{UNTANGLE_RATE_WINDOW} iterations before) - "
+            + ("they were not falling" if need == float("inf") else
+               f"at that rate it needed about {need:.0f} more iterations, and had {max(left, 0)} left"))
+
+
+class UntangleWatch:
+    """TIME-12 as a run watch: reads the growing log at each look and says why to stop, once."""
+
+    def __init__(self, log: Path):
+        self.log = Path(log)
+        self.tripped = ""
+
+    def __call__(self) -> str | None:
+        if not self.tripped:
+            try:
+                self.tripped = untangle_not_converging(self.log.read_text(errors="replace"))
+            except OSError:
+                return None
+        return self.tripped or None
+
+
+def _watches(*watches):
+    """One run watch from several: the first that says stop."""
+    live = [w for w in watches if w is not None]
+
+    def watch() -> str | None:
+        for w in live:
+            why = w()
+            if why:
+                return why
+        return None
+    return watch
 
 
 #: What the run keeps back from its cap for the steps after the mesher (passage measure, layer
@@ -319,11 +398,12 @@ def _run_cartesian_mesh_local(workspace, *, bashrc: str = _DEFAULT_BASHRC,
     # octree before it maps the surface, adds layers and optimises; a count far past the case's own
     # run plan stops it there - deterministic, no clock - and the builder is told by how much
     brake = _cfmesh_brake(ws, log)
+    untangle = UntangleWatch(log)       # TIME-12: an untangling that is not converging stops the run
     try:
         with log.open("w") as fh:
             proc = run_guarded(["bash", "-lc", cmd], cwd=str(ws), env=_foam_env(),
                                stdout=fh, stderr=subprocess.STDOUT, timeout=timeout,
-                               stall_s=STALL_WINDOW_S, watch=brake)
+                               stall_s=STALL_WINDOW_S, watch=_watches(brake, untangle))
         rc, timed_out = proc.returncode, False
         if rc == 0 and is_2d and (ws / "system" / "createPatchDict").exists():
             with (ws / "createPatch.log").open("w") as fh:
@@ -365,6 +445,10 @@ def _run_cartesian_mesh_local(workspace, *, bashrc: str = _DEFAULT_BASHRC,
         out.update(out_of_memory=True, timed_out=False, used_gib=oom_gib)
     if brake is not None and brake.tripped:
         out["oversize"] = dict(brake.tripped)
+    elif untangle.tripped:
+        out["untangle_not_converging"] = {"words": untangle.tripped, "rule": UNTANGLE_RULE}
+        tail = (tail + "\n[CFMESH] " + untangle.tripped).strip()
+        out["log_tail"] = tail
     # QUALITY IS MEASURED HERE, beside the mesh, and travels home with it. finalize and the
     # solvability gate call check_mesh on the worker, which carries no OpenFOAM: on the Cloud
     # Run path every figure came back empty and the reviewer refused a finished, paid-for mesh

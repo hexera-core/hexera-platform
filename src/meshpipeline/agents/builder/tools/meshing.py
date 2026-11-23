@@ -649,6 +649,23 @@ def _run_and_judge(ctx: BuilderToolContext, prepared: PreparedMeshRun) -> dict:
                              "end your turn now; the run moves on to the next engine, which builds the "
                              "layers the plan asks for."),
                 "log_tail": res.get("log_tail", "")}
+    if res.get("untangle_not_converging"):
+        # TIME-12: cartesianMesh stopped on its own counts - its untangling was not converging. The same plan
+        # tangles the same way, so the run moves on to the next engine (as VMTK's layers above)
+        from meshpipeline.contracts.failure_cause import FailureCause
+        from meshpipeline.engines.preflight import PreflightRefusal
+        _u = dict(res["untangle_not_converging"])
+        _words = str(_u.get("words") or "cfMesh was not untangling the mesh")
+        logger.warning("run_mesh: %s", _words)
+        PreflightRefusal(
+            gate="finalize", cause=FailureCause.ENGINE_CRASHED.value,
+            builder_text=f"[CFMESH_UNTANGLE_NOT_CONVERGING] {_words}",
+            facts={"untangle_not_converging": True, "deterministic": True, "rule": _u.get("rule"),
+                   "meshers_started": 1}).write(workspace)
+        return {"success": False, "untangle_not_converging": _u, HANDS_OFF: True,
+                "guidance": (f"Not meshed: {_words}. Do NOT run_mesh again and do NOT reconfigure - end your "
+                             "turn now; the run moves on to the next engine."),
+                "log_tail": res.get("log_tail", "")}
     from meshpipeline.engines.cfmesh.native import PORT_REGION_DROPPED
     if not res.get("timed_out") and PORT_REGION_DROPPED in str(res.get("log_tail") or ""):
         # INS-29: AN OPENING LANDED IN A REGION THE MESHER DROPPED, after the passage was meshed finer: the same
