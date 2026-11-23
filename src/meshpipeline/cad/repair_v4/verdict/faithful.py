@@ -33,8 +33,10 @@ class FaithfulReport:
     ok: bool
     max_dev_mm: float
     bound_mm: float
-    area_ratio: float
-    volume_ratio: float
+    # None = the original has no area/volume to compare against; whether that is a change is in
+    # `reasons` (`area_changed`, `volume_changed`), never inferred from the ratio.
+    area_ratio: float | None
+    volume_ratio: float | None
     bodies_before: int
     bodies_after: int
     declared_added: list[str] = field(default_factory=list)
@@ -85,8 +87,8 @@ def check_faithful(
         ok=bool(v["ok"]),
         max_dev_mm=float(v["max_dev_mm"]),
         bound_mm=float(v["bound_mm"]),
-        area_ratio=float(v["area_ratio"]),
-        volume_ratio=float(v["volume_ratio"]),
+        area_ratio=None if v["area_ratio"] is None else float(v["area_ratio"]),
+        volume_ratio=None if v["volume_ratio"] is None else float(v["volume_ratio"]),
         bodies_before=int(v["bodies_before"]),
         bodies_after=int(v["bodies_after"]),
         declared_added=list(declared_added),

@@ -50,7 +50,7 @@ def panel_config_hash(members: Sequence[Any], timeout_s: float, versions: dict[s
     library versions (`versions`, from `mesher_versions`). Order-independent over members."""
     entries = []
     for member in members:
-        if not hasattr(member, "config"):
+        if getattr(member, "config", None) is None:  # missing, or None, which would key on nothing
             raise PanelConfigError(f"panel member {getattr(member, 'name', member)!r} has no `config`")
         entries.append(json.dumps([member.name, member.config], sort_keys=True))
     payload = [sorted(entries), float(timeout_s), dict(sorted(versions.items()))]
@@ -67,7 +67,9 @@ def mesher_versions(pool: Any) -> dict[str, str]:
         return cached
     result = pool.call("mesher_versions", {}, timeout_s=60.0)
     if not result.ok or result.value is None:
-        raise RuntimeError(f"mesher_versions: {result.status}: {result.error}")
+        from meshpipeline.cad.repair_v4.verdict.valid import CheckerUnavailable
+
+        raise CheckerUnavailable(f"mesher_versions: {result.status}: {result.error}")
     _VERSIONS[pool] = dict(result.value)
     return _VERSIONS[pool]
 

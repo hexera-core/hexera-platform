@@ -25,6 +25,7 @@ from meshpipeline.cad.repair_v4.verdict.cache import (
     PanelConfigError,
     VerdictCache,
     file_sha256,
+    mesher_versions,
     panel_config_hash,
 )
 from meshpipeline.cad.repair_v4.verdict.faithful import FaithfulReport, check_faithful
@@ -316,3 +317,31 @@ def test_declared_default_is_not_shared_between_calls(layers) -> None:
     _run(layers, [FakeMember("a")])
     assert Declared().added == [] and Declared().removed == []
     assert Declared() is not Declared()
+
+
+def test_a_member_with_config_none_fails_closed() -> None:
+    with pytest.raises(PanelConfigError):
+        panel_config_hash([FakeMember("a", config=None)], 300, {})  # type: ignore[arg-type]
+
+
+def test_mesher_versions_pool_failure_is_checker_unavailable() -> None:
+    class Pool:
+        def call(self, name, payload, *, timeout_s):
+            return CallResult(False, None, "worker died", "crashed", 0.1)
+
+    with pytest.raises(CheckerUnavailable):
+        mesher_versions(Pool())
+
+
+def test_a_zero_baseline_still_flags_any_growth_and_is_json_safe() -> None:
+    """The ratio check must not go silent when the original has no area or volume: a zero-volume
+    SOLID original (no solid-less exemption applies) with a real volume afterwards, and a zero-area
+    original with area afterwards, are changes. Zero to zero is not."""
+    from meshpipeline.cad.repair_v4.verdict.faithful_kernel import _changed, _ratio
+
+    assert _changed(100.0, 0.0) is True
+    assert _changed(1e-9, 0.0) is True
+    assert _changed(0.0, 0.0) is False
+    assert _changed(102.5, 100.0) is True and _changed(101.9, 100.0) is False
+    assert _ratio(100.0, 0.0) is None and _ratio(0.0, 0.0) is None  # None, not 1.0 and not inf
+    assert _ratio(100.0, 100.0) == 1.0  # a genuine no-change stays distinguishable

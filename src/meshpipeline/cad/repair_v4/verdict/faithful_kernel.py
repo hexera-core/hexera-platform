@@ -122,10 +122,18 @@ def _volume(shape) -> float:
     return total
 
 
-def _ratio(after: float, before: float) -> float:
+def _ratio(after: float, before: float) -> float | None:
+    """after/before, or None when there is no baseline (before <= 0). None is JSON-safe and is NOT
+    the same as "no change": whether a missing baseline is a change is `_changed`'s call."""
+    return None if before <= 0.0 else after / before
+
+
+def _changed(after: float, before: float) -> bool:
+    """Did a quantity move by more than the tolerance? From a zero baseline ANY positive result is
+    a change (it used to be inf and flagged; it must still fire), and zero -> zero is not."""
     if before <= 0.0:
-        return 1.0 if after <= 0.0 else math.inf
-    return after / before
+        return after > 0.0
+    return abs(after / before - 1.0) > RATIO_TOLERANCE
 
 
 def _face_points(face, count: int) -> list[tuple[float, float, float]]:
@@ -356,15 +364,21 @@ def _faithful_check(payload: dict) -> dict:
     if fill_span > FILL_SPAN_FRACTION * diag:
         reasons.append("fill_too_large")
 
-    area_ratio = _ratio(_area(repaired), _area(original))
-    volume_ratio = _ratio(_volume(repaired), _volume(original))
-    if abs(area_ratio - 1.0) > RATIO_TOLERANCE:
+    area_before, area_after = _area(original), _area(repaired)
+    volume_before, volume_after = _volume(original), _volume(repaired)
+    area_ratio = _ratio(area_after, area_before)
+    volume_ratio = _ratio(volume_after, volume_before)
+    if _changed(area_after, area_before):
         reasons.append("area_changed")
-    if abs(volume_ratio - 1.0) > RATIO_TOLERANCE:
+    # A solid-less original (loose faces or a shell) has no volume and no body to preserve, so a
+    # correct heal that makes it a solid must not be failed for gaining one. Everything else
+    # still applies to it: deviation, area, fill span, and (layer 1) validity of the result.
+    solidless = not _solids(original)
+    if not solidless and _changed(volume_after, volume_before):
         reasons.append("volume_changed")
     before = len(_solids(original)) + _free_shell_count(original)
     after = len(_solids(repaired)) + _free_shell_count(repaired)
-    if before != after:
+    if not solidless and before != after:
         reasons.append("body_count_changed")
 
     return {
