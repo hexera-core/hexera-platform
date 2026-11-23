@@ -1843,15 +1843,18 @@ def split_closed(brep: Path, owners: list[str], out: Path) -> list[str]:
     return _rebuild(brep, owners, out, cut)
 
 
-def respline(brep: Path, owners: list[str], face: int, out: Path, *, kin: bool = False) -> tuple[list[str], int]:
+def respline(brep: Path, owners: list[str], face: int, out: Path, *, kin: bool = False,
+             fixed: list | None = None) -> tuple[list[str], int]:
     """SHMESH-11: sewn face `face` re-made as a B-spline surface (exactly the same surface, without its period);
     with `kin`, every sewn face that lies on the same surface too (SHMESH-11b: a hull cylinder's four slotted halves
-    each stopped gmsh in turn, a whole mesh each). Returns (the owners, how many faces were re-made)."""
+    each stopped gmsh in turn, a whole mesh each). Returns (the owners, how many faces were re-made); each face whose
+    wires SHMESH-11i's fix changed is added to `fixed`."""
     from OCP.BRep import BRep_Builder, BRep_Tool
     from OCP.BRepBuilderAPI import BRepBuilderAPI_NurbsConvert
     from OCP.BRepTools import BRepTools
     from OCP.GeomAPI import GeomAPI_ProjectPointOnSurf
     from OCP.gp import gp_Pnt
+    from OCP.ShapeExtend import ShapeExtend_Status
     from OCP.ShapeFix import ShapeFix_Face
     from OCP.TopoDS import TopoDS_Shape
 
@@ -1886,6 +1889,8 @@ def respline(brep: Path, owners: list[str], face: int, out: Path, *, kin: bool =
             # instead of its 20,735)
             fix = ShapeFix_Face(f)
             fix.Perform()
+            if fixed is not None and fix.Status(ShapeExtend_Status.ShapeExtend_DONE):
+                fixed.append(k)     # (the run record counts where the fix changed a face)
             f = fix.Face()
         nc = BRepBuilderAPI_NurbsConvert(f, True)
         return ms._faces(nc.Shape())
@@ -3946,6 +3951,7 @@ def _mesh_path_made(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0,
         redraw_pass = not (ST.RESEAT and ST.WASHERS and SR.structure_of(requirements) not in ("free", "no_washers"))
         redraw_off = redraw_pass
         resplined = loops = 0
+        wires_fixed: list[int] = []     # (SHMESH-11i: faces whose wires were fixed on their re-make)
         _FACE_FATE["out_path"] = []         # (SHMESH-72: faces left out in this guarded path only)
         started = time.monotonic()
         unmap: set[int] = set()
@@ -4243,7 +4249,7 @@ def _mesh_path_made(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0,
                     marker.write_text(json.dumps({"since": time.time(), "centre": list(map(float, key_p[0])),
                                                   "area": float(key_p[1])}))
                 try:
-                    owners, made = respline(Path(brep), owners, p.face, nxt, kin=p.kin)
+                    owners, made = respline(Path(brep), owners, p.face, nxt, kin=p.kin, fixed=wires_fixed)
                 except _NotRemade as nr:
                     if marker is not None:
                         marker.unlink(missing_ok=True)
@@ -4443,6 +4449,7 @@ def _mesh_path_made(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0,
                                   "meshed finer (the plan would have been too large); the clean-up took them as they "
                                   "were (SHMESH-31b).")
             applied["quality"]["resplined_faces"] = resplined
+            applied["quality"]["resplined_wires_fixed"] = len(wires_fixed)  # (SHMESH-11i: fixed on their re-make)
             # SHMESH-48l: every whole mesh this path made, in order (what followed it; its seconds apart, in passes_s,
             # so a record without timings stays the same from run to run)
             applied["quality"]["passes"] = [str(x[0]) for x in passes]

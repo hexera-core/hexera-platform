@@ -100,8 +100,10 @@ def _cut_tube(tmp_path):
 def test_a_face_re_made_as_a_b_spline_keeps_the_surfaces_area(tmp_path):
     # SHMESH-11i: the face re-made from its fixed wires, fused back: the same faces, the same area
     cut, owners, k = _cut_tube(tmp_path)
-    got, made = sa.respline(cut, owners, k, tmp_path / "re.brep")
+    fixed: list = []
+    got, made = sa.respline(cut, owners, k, tmp_path / "re.brep", fixed=fixed)
     assert made == 1
+    assert set(fixed) <= {k}    # (counted only for the face re-made, and only where the fix changed it)
     assert len(got) == len(owners)
     # (a B-spline cylinder reads 1.6e-4 more than the circle's: well inside the guard's tolerance)
     assert sa._surface_area(tmp_path / "re.brep") == pytest.approx(sa._surface_area(cut), rel=sa.REMAKE_AREA_TOL / 10)
