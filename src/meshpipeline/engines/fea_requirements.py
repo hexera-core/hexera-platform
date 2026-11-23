@@ -58,6 +58,11 @@ def whole_sizes(sizes: Mapping[str, Mapping] | None, req: Mapping | None, part_i
             return out                      # a longest edge the rules' own sizes are already under: nothing to hold
     low = min(low, mid)
     entry = {"min_m": float(f"{low:.6g}"), "max_m": float(f"{2.0 * mid - low:.6g}"), "name": WHOLE, "whole": True}
+    if G is None:
+        # sized by edge lengths alone, the range is the rules' size held by them - not an ask: the plan says what
+        # was asked (engines/fea_plan.user_words)
+        entry["asked"] = " and ".join(f"a {w} edge of {float(v):g} mm" for w, v in (("shortest", lo), ("longest", hi))
+                                      if v is not None)
     if lo is not None and any(r.get("field") == "min_edge" and r.get("strictness") == "flexible"
                               for r in (req or {}).get("rows") or []):
         # NOTE-14: a shortest edge the user said is flexible is a target: the zones the accuracy rules make finer (a

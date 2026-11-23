@@ -138,8 +138,11 @@ def test_a_flexible_limit_outside_in_places_is_told_never_not_met():
     assert MR.line(row) == "Warpage under 15°: flexible - 1.2% of elements (12) are past it, the worst 22°."
     assert MR.summary(rep) == ("Of the 1 thing you asked for: 0 met; 1 flexible limit: 1.2% of elements outside "
                                "warpage under 15°.")
-    asked = MR.asked_rows({"requirements": rep})
-    assert [a["label"] for a in asked] == ["You asked: warpage under 15°"] and asked[0]["measured"] == 0
+    # no limit of the verdict (neither met nor missed); the result's table tells it, "Flexible" with its share
+    assert MR.asked_rows({"requirements": rep}) == []
+    asked = MR.asked_rows({"requirements": rep}, told=True)
+    assert [(a["label"], a["status"], a["shown"]) for a in asked] == [
+        ("You asked: warpage under 15°", "Flexible", "1.2% of elements outside")]
     # said nothing about it: the limit as before - not fully met, and a row of the verdict
     rep = MR.finish_report([_limit_row()], 1000, "")
     assert rep["rows"][0]["met"] is False and rep["missed"] == 1 and "flexible" not in rep["rows"][0]

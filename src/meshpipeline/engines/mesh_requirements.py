@@ -2133,12 +2133,14 @@ def report_words(rep: Mapping | None) -> list[str]:
 def told_status(r: Mapping) -> tuple[str, str, str]:
     """(how a row that is told, not judged, stands; its status in plain words; its measured figure in words) for a
     requirement row with no met / not met: an edge-length target with its share outside, the nearest there is, a
-    setting applied, or not applied."""
+    setting applied, or not applied. NOTE-14: a limit the user said is flexible, outside in places, is "Flexible" -
+    never "Met", never "not met" - with the share outside (of a quality limit: "outside", it may bound either way)."""
     if r.get("target"):
         share = float(r.get("outside_pct") or 0.0)
-        side = "under" if r.get("field") == "min_edge" else "over"
-        return ("target", "Target, not met" if r.get("outside") else "Met",
-                f"{share:g}% of elements {side}" if r.get("outside") else "0 outside")
+        f = str(r.get("field") or "")
+        side = "under" if f == "min_edge" else "outside" if f.startswith("limit:") else "over"
+        status = ("Flexible" if r.get("flexible") else "Target, not met") if r.get("outside") else "Met"
+        return "target", status, f"{share:g}% of elements {side}" if r.get("outside") else "0 outside"
     if r.get("nearest"):
         return "nearest", "Nearest there is", ""
     if r.get("applied") is False:
@@ -2159,8 +2161,9 @@ def asked_rows(quality: Mapping | None, *, source: str = "your notes", told: boo
     for r in (rep.get("rows") if isinstance(rep, Mapping) else None) or []:
         if not isinstance(r, Mapping):
             continue
-        # NOTE-14: a limit the user said is flexible, outside in places, is a row too - information, never a miss
-        if r.get("met") not in (True, False) and not r.get("flexible") and not r.get("finer_than_asked"):
+        # NOTE-14: a limit the user said is flexible, outside in places, is told like any target - information, never
+        # a verdict's limit (it read "0 | exactly 0 | Met" with every element under it, case F1)
+        if r.get("met") not in (True, False) and not r.get("finer_than_asked"):
             if not told:
                 continue
             kind, status, shown = told_status(r)
@@ -2218,18 +2221,22 @@ def summary(rep: Mapping | None, *, kind: str = "mesh", limit: int = 380, not_ap
             out, shown = out + more, shown + 1
         if shown < len(missed):
             out += f"{'; and ' if shown else ': '}{len(missed) - shown} more, listed on the result"
-    edges = [r for r in targets if r.get("field") in ("min_edge", "max_edge")]
+    def outside(r: Mapping) -> str:
+        if r.get("field") in ("min_edge", "max_edge"):
+            return (f"{r.get('outside_pct'):g}% of elements have an edge "
+                    f"{'shorter' if r.get('field') == 'min_edge' else 'longer'} than you asked")
+        return f"{r.get('outside_pct'):g}% of elements outside {r['asked']}"
+
+    edges = [r for r in targets if r.get("field") in ("min_edge", "max_edge") and not r.get("flexible")]
     if edges:
-        shares = [f"{r.get('outside_pct'):g}% of elements have an edge "
-                  f"{'shorter' if r.get('field') == 'min_edge' else 'longer'} than you asked"
-                  for r in edges if r.get("outside")]
+        shares = [outside(r) for r in edges if r.get("outside")]
         out += (f"; {len(edges)} edge-length target{'' if len(edges) == 1 else 's'}"
                 + (": " + ", ".join(shares) if shares else ""))
     flexible = [r for r in targets if r not in edges]
     if flexible:
-        # NOTE-14: a limit the user said is flexible, told with the share outside it - information, never "not met"
-        shares = [f"{r.get('outside_pct'):g}% of elements outside {r['asked']}" for r in flexible
-                  if r.get("outside_pct") is not None and r.get("outside")]
+        # NOTE-14: a limit the user said is flexible (an edge length too), told with the share outside it -
+        # information, never "not met"
+        shares = [outside(r) for r in flexible if r.get("outside_pct") is not None and r.get("outside")]
         out += (f"; {len(flexible)} flexible limit{'' if len(flexible) == 1 else 's'}"
                 + (": " + ", ".join(shares) if shares else ""))
     if settings:
