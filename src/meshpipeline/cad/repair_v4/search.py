@@ -93,6 +93,7 @@ from typing import Any, Literal, Protocol
 from meshpipeline.cad.repair_v4 import render
 from meshpipeline.cad.repair_v4.measurement import NO_VERDICT, file_unmeasured, no_verdict_failure
 from meshpipeline.cad.repair_v4.ops import REGISTRY, OpDeclined, OpFailed, validate_call
+from meshpipeline.cad.repair_v4.ops.shells import scaled_sew_ladder, scaled_sliver_widths
 from meshpipeline.cad.repair_v4.proposer import (
     IMAGE_KINDS,
     AIProposer,
@@ -105,6 +106,7 @@ from meshpipeline.cad.repair_v4.stages import (
     DEFAULTS,
     STAGES,
     declared_edits,
+    diagonal_mm,
     original_facts,
     run_stage,
     step_for,
@@ -256,13 +258,7 @@ def h_mm_for(pool: Any, ws: Workspace) -> float:
     invented, and it is infrastructure, not a verdict."""
     from meshpipeline.engines.fea_plan import base_size
 
-    result = pool.call("ws_diagonal", {"brep_path": ws.brep_path}, timeout_s=60.0)
-    if not result.ok or result.value is None:
-        raise CheckerUnavailable(f"ws_diagonal: {result.status}: {result.error}")
-    diag_mm = float(result.value["diag_mm"])
-    if not math.isfinite(diag_mm) or diag_mm <= 0.0:
-        raise CheckerUnavailable(f"cannot size the mesh: the part's diagonal is {diag_mm!r} mm")
-    return base_size(diag_mm / 1000.0) * 1000.0
+    return base_size(diagonal_mm(pool, ws) / 1000.0) * 1000.0
 
 
 def default_judge_for(pool: Any, ws: Workspace, *, cache: VerdictCache | None = None) -> Judge:
@@ -351,8 +347,6 @@ class SearchResult:
 
 _PROXIMITY_RATIOS = (0.25, 0.125, 0.06)  # gap_split's rungs
 _SPLIT_ANGLES = (90, 60, 45)
-_SLIVER_WIDTHS_MM = (0.001, 0.01, 0.05)
-_SEW_LADDER = [1e-4, 1e-3, 1e-2]
 _MAX_PAIRS = 16  # split_by_proximity's maxItems
 
 
@@ -367,20 +361,57 @@ class DetGenerator:
     `unfixable` is the registry shared with the AI proposer: a site the model declared unfixable within the
     fidelity budget is not swept (`ai_generators` builds the pair; `search` refuses a mismatch)."""
 
-    def __init__(self, unfixable: UnfixableRegistry | None = None) -> None:
+    def __init__(
+        self,
+        unfixable: UnfixableRegistry | None = None,
+        *,
+        diagonal: Callable[[Workspace], float] | None = None,
+    ) -> None:
         self.unfixable = unfixable
+        #: workspace -> bounding-box diagonal in mm. `search()` binds the kernel's `ws_diagonal` (`bind_pool`) when
+        #: this is None. Without one no size can be made: the ops that take a size (`sew`, `remove_small`) are
+        #: not proposed, and `notes` says so.
+        self.diagonal = diagonal
+        #: why a sweep row was not made (no diagonal, empty window): the absence is on the record, not silent
+        self.notes: list[str] = []
+        self._diag_cache: dict[str, float] = {}
+
+    def _note(self, text: str) -> None:
+        if text not in self.notes:
+            self.notes.append(text)
+
+    def bind_pool(self, pool: Any) -> None:
+        """Measure diagonals with `pool`'s `ws_diagonal` (the call `h_mm_for` uses), unless one was given."""
+        if self.diagonal is not None:
+            return
+
+        def measure(ws: Workspace) -> float:
+            return diagonal_mm(pool, ws)
+
+        self.diagonal = measure
+
+    def _diag_of(self, ws: Workspace) -> float | None:
+        if self.diagonal is None:
+            return None
+        if ws.brep_path not in self._diag_cache:
+            try:
+                self._diag_cache[ws.brep_path] = float(self.diagonal(ws))
+            except CheckerUnavailable as exc:
+                self._note(f"no diagonal, so no sized ops: {exc}")
+                return None
+        return self._diag_cache[ws.brep_path]
 
     def propose(self, state: SearchState, k: int) -> list[Candidate]:
         out: list[Candidate] = []
         sites = self.unfixable.filter(state.sites, state.lineage) if self.unfixable is not None else state.sites
+        diag = self._diag_of(state.ws) if any(s.kind in ("sliver", "open") for s in sites) else None
         for site in sites:
-            for op, targets, params, why in self._sweep(site):
+            for op, targets, params, why in self._sweep(site, diag):
                 if op in REGISTRY:
                     out.append(Candidate(op, targets, params, "det", f"{why} (site {site.id}, {site.kind})"))
         return out[:k]
 
-    @staticmethod
-    def _sweep(site: Site) -> list[tuple[str, list[StableId], dict, str]]:
+    def _sweep(self, site: Site, diag: float | None) -> list[tuple[str, list[StableId], dict, str]]:
         faces = _of_kind(site.entities, "F")
         solids = _of_kind(site.entities, "B")
         rows: list[tuple[str, list[StableId], dict, str]] = []
@@ -407,7 +438,9 @@ class DetGenerator:
                     rows.append(("split_continuity", faces, {"order": order}, f"split faces at C{order} breaks"))
             rows.append(("orient_and_close", solids, {}, "fix shell orientation"))
         if kind == "sliver":
-            for width in _SLIVER_WIDTHS_MM:
+            if diag is None:
+                self._note(f"site {site.id}: remove_small not proposed: the part's diagonal is unknown")
+            for width in scaled_sliver_widths(diag) if diag is not None else ():
                 rows.append(
                     (
                         "remove_small",
@@ -418,14 +451,21 @@ class DetGenerator:
                 )
             rows.append(("unify_same_domain", [], {"scope": "all", "keep": []}, "merge same-domain faces"))
         if kind == "open":
-            rows.append(
-                (
-                    "sew",
-                    site.entities if site.entities else [],
-                    {"tol_ladder": _SEW_LADDER},
-                    "sew at the tightest closing tolerance",
+            ladder = scaled_sew_ladder(diag) if diag is not None else []
+            if ladder:
+                rows.append(
+                    (
+                        "sew",
+                        site.entities if site.entities else [],
+                        {"tol_ladder": ladder},
+                        "sew at the tightest closing tolerance",
+                    )
                 )
-            )
+            else:
+                self._note(
+                    f"site {site.id}: sew not proposed: "
+                    + ("the part's diagonal is unknown" if diag is None else f"no rung fits the kernel window on a {diag:.6g} mm part")
+                )
             rows.append(("make_volume", faces, {}, "build a solid from the loose faces"))
             rows.append(("orient_and_close", solids, {}, "orient and close the shell"))
         if kind in ("overlap", "intersection"):
@@ -693,6 +733,9 @@ def search(
     if not math.isfinite(budget.model_usd) or budget.model_usd < 0:
         raise ValueError(f"Budget.model_usd must be a finite, non-negative dollar cap, got {budget.model_usd!r}")
     unfixable = _shared_unfixable(generators)
+    for g in generators:
+        if isinstance(g, DetGenerator):
+            g.bind_pool(pool)  # the sweep sizes its ops against this part's diagonal
     any_gens: list[Any] = list(generators)  # generators may also carry feedback()/result(), outside the protocol
     trace = Trace(clock)
     t0 = clock()

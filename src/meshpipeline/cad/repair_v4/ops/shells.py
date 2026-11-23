@@ -20,6 +20,7 @@ Identity under each op (measured on the real kernel, see tests/native/..._ops_sh
 
 from __future__ import annotations
 
+import math
 import time
 from pathlib import Path
 from typing import Any
@@ -41,6 +42,33 @@ _BOUND_MM = 0.1
 _BOUND_FRACTION = 0.001
 _LADDER_FLOOR_FRACTION = 1e-6
 _KIND_OF_PREFIX = {"F": "face", "E": "edge", "B": "solid"}
+
+_SPLIT_ANGLES = (90, 60, 45)
+#: `remove_small` widths and `sew` rungs as FRACTIONS of the kernel's bound, min(0.1 mm, 0.001 x diagonal)
+#: (`fidelity_bound`): the sizes are made per part, never absolute, so one cannot fall outside the
+#: window the kernel accepts. On a part of 100 mm or more these are the old 0.001 / 0.01 / 0.05 mm widths and a
+#: 0.001 / 0.01 / 0.1 mm ladder.
+_SLIVER_WIDTH_FRACTIONS = (0.01, 0.1, 0.5)
+_SEW_RUNG_FRACTIONS = (0.01, 0.1, 1.0)
+
+
+def scaled_sliver_widths(diag_mm: float) -> tuple[float, ...]:
+    """`remove_small` widths (mm) for a part of this diagonal: fractions of `fidelity_bound`. Every one is in
+    (0, bound]; a part with no usable diagonal has none."""
+    if not math.isfinite(diag_mm) or diag_mm <= 0.0:
+        return ()
+    bound = fidelity_bound(diag_mm)
+    return tuple(f * bound for f in _SLIVER_WIDTH_FRACTIONS)
+
+
+def scaled_sew_ladder(diag_mm: float) -> list[float]:
+    """A `sew` ladder (mm, tightest first) for a part of this diagonal: fractions of `fidelity_bound`, each kept
+    only if it lies in the kernel's window [1e-6 x diagonal, bound]. The window is empty for a part over 100 m
+    (the floor passes the 0.1 mm cap): then there is no ladder, `[]`, and the sweep proposes no sew."""
+    if not math.isfinite(diag_mm) or diag_mm <= 0.0:
+        return []
+    floor, bound = ladder_floor(diag_mm), fidelity_bound(diag_mm)
+    return [r for r in (f * bound for f in _SEW_RUNG_FRACTIONS) if floor <= r <= bound]
 
 
 # --- parent side ---------------------------------------------------------------------------------
@@ -169,12 +197,24 @@ def _entities(shape: Any, kind: str) -> list[Any]:
     return [indexed.FindKey(i) for i in range(1, indexed.Extent() + 1)]
 
 
+def fidelity_bound(diag_mm: float) -> float:
+    """The upper edge of every size this module's ops accept: min(0.1 mm, 0.001 x diagonal), in MILLIMETRES.
+    The generators (`search.DetGenerator`, `stages._shells`) derive their rungs from this, so a rung they make
+    cannot fall outside what the kernel accepts."""
+    return min(_BOUND_MM, _BOUND_FRACTION * diag_mm)
+
+
+def ladder_floor(diag_mm: float) -> float:
+    """The lower edge of a sew rung: 1e-6 x diagonal, in millimetres. (`remove_small` has no floor, only > 0.)"""
+    return _LADDER_FLOOR_FRACTION * diag_mm
+
+
 def _bound(shape: Any) -> tuple[float, float]:
     """(diagonal, fidelity bound) of `shape`."""
     from meshpipeline.cad.repair_v4.ws_kernel import diagonal_of
 
     diag = diagonal_of(shape)
-    return diag, min(_BOUND_MM, _BOUND_FRACTION * diag)
+    return diag, fidelity_bound(diag)
 
 
 def _record(old: Any, new: Any, history: Any, payload: dict, op: str, params: dict, start: float,
@@ -272,8 +312,9 @@ def _remove_small(payload: dict) -> dict:
     max_width = float(params["max_width_mm"])
     _, bound = _bound(old)
     if not 0 < max_width <= bound:
-        raise ValueError(f"max_width_mm {max_width} is outside (0, {bound}] for this part: "
-                         "min(0.1 mm, 0.001 x diagonal)")
+        # the op does not apply at this width on this part: a decline, not a failure. The bound is unchanged.
+        return {"declined": f"max_width_mm {max_width} is outside (0, {bound}] for this part: "
+                            "min(0.1 mm, 0.001 x diagonal)"}
     by_kind = {"face": _entities(old, "face"), "edge": _entities(old, "edge")}
     wanted: dict[str, list[Any]] = {"face": [], "edge": []}
     for target in payload["targets"]:
@@ -359,12 +400,13 @@ def _sew(payload: dict) -> dict:
     old = ws_kernel.read_brep(payload["brep_path"])
     params = dict(payload["params"])
     diag, bound = _bound(old)
-    floor = _LADDER_FLOOR_FRACTION * diag
+    floor = ladder_floor(diag)
     ladder = sorted({float(t) for t in params["tol_ladder"]})
     off = [t for t in ladder if not floor <= t <= bound]
     if not ladder or off:
-        raise ValueError(f"tol_ladder rungs {off or ladder} must lie in [{floor}, {bound}] "
-                         "(1e-6 x diagonal .. min(0.1 mm, 0.001 x diagonal))")
+        # the ladder does not apply to this part: a decline, not a failure. The window is unchanged.
+        return {"declined": f"tol_ladder rungs {off or ladder} must lie in [{floor}, {bound}] "
+                            "(1e-6 x diagonal .. min(0.1 mm, 0.001 x diagonal))"}
     if _entities(old, "solid"):
         return {"declined": "input carries a solid; sewing returns shells and would destroy it "
                             "(undeclared). Sew only open shells or loose faces"}
