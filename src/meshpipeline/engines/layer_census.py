@@ -229,6 +229,7 @@ def census(polymesh, n_layers: int, patches, planned_first_m: float | None = Non
         count = np.zeros(nf, dtype=np.int64)
         heights = np.zeros((nf, depth))
         first_cell = np.zeros(nf)                             # the wall's own first cell, layer or not
+        first_par = np.zeros(nf)                              # how parallel its far face is to the wall
         cur_cell = owner[wall].copy()
         cur_c = wc.copy()                                     # centre of the face entered through
         prev_h = np.full(nf, np.inf)
@@ -256,6 +257,8 @@ def census(polymesh, n_layers: int, patches, planned_first_m: float | None = Non
             nj = ufa[inv[rows, j]]
             nj = nj / np.maximum(np.linalg.norm(nj, axis=1), 1e-300)[:, None]
             par = np.abs((nj * n0[idx]).sum(axis=1))
+            if step == 0:
+                first_par[idx] = par
             layer = ((h > 0) & (h < FLAT_RATIO * width[idx]) & (par > PARALLEL_COS)
                      & (h <= GROWTH_MAX * prev_h[idx]))
             hit = idx[layer]
@@ -291,12 +294,20 @@ def census(polymesh, n_layers: int, patches, planned_first_m: float | None = Non
             "first_cell_p90_m": _quantile(first_cell, A, 0.90),
         }
         if planned_first_m and planned_first_m > 0.0:
-            at_plan = with_any & (first_cell <= PLAN_FIRST_TOL * float(planned_first_m))
+            tall_ok = first_cell <= PLAN_FIRST_TOL * float(planned_first_m)
+            # CFDREQ-21: ONE LAYER AT THE HEIGHT ASKED IS TOLD BY ITS HEIGHT. A wall-function layer is built about
+            # half the wall cell high (cfMesh's whole stack; snappyHexMesh's cap 0.6): past FLAT_RATIO of a face's
+            # width on faces narrower than the cell, so the shape test read a single full layer as 0-3% of the wall
+            # while its first cell sat at y+ 41-63 (yplab_14f21bdd). With a plan, a first cell at the planned height,
+            # its far face parallel to the wall and no taller than the face is wide, is that layer
+            one = (first_cell > 0) & (first_par > PARALLEL_COS) & (first_cell < width) & tall_ok
+            at_plan = (with_any | one) & tall_ok
+            capped_p = np.minimum(np.where(one & (count == 0), 1, count), n_layers)
             med = _median(first_cell, A)
             res[name].update({
                 "planned_first_m": float(planned_first_m),
                 "area_at_plan": round(float(A[at_plan].sum() / total), 4),
-                "coverage_at_plan_pct": round(float(100.0 * capped[at_plan].sum() / (n_layers * nf)), 2),
+                "coverage_at_plan_pct": round(float(100.0 * capped_p[at_plan].sum() / (n_layers * nf)), 2),
                 "first_vs_plan": (round(float(med) / float(planned_first_m), 2) if med is not None else None),
             })
     return res, ""

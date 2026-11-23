@@ -216,3 +216,23 @@ def test_the_planned_first_layer_is_read_from_the_case(tmp_path):
     assert planned_first_of(tmp_path) == 2.09567e-05
     (tmp_path / "system" / "snappyHexMeshDict").write_text("relativeSizes true; firstLayerThickness 0.3;")
     assert planned_first_of(tmp_path) is None
+
+
+# CFDREQ-21: one wall-function layer at the height asked is a layer, whatever its share of the face's width
+def test_one_wall_function_layer_at_the_planned_height_covers_the_wall(tmp_path):
+    from meshpipeline.engines import layer_census as lc
+    pm = tmp_path / "polyMesh"
+    # unit-wide wall faces, one layer 0.62 high (planned 0.5: half the wall cell), then the core
+    _write_column_mesh(pm, [0.62, 0.5, 1.0, 1.0])
+    out, _ = lc.census(pm, 1, ["wall"], planned_first_m=0.5)
+    w = out["wall"]
+    assert w["coverage_pct"] == 0.0                       # by shape: too tall for FLAT_RATIO
+    assert w["area_at_plan"] == 1.0 and w["coverage_at_plan_pct"] == 100.0
+    assert lc.height_quality(out)["layer_coverage_at_plan_pct"] == 100.0
+    # the first cell twice the plan is not the layer asked, nor is a wall cell as tall as it is wide
+    out, _ = lc.census(pm, 1, ["wall"], planned_first_m=0.3)
+    assert out["wall"]["area_at_plan"] == 0.0 and out["wall"]["coverage_at_plan_pct"] == 0.0
+    pm2 = tmp_path / "cubes" / "polyMesh"
+    _write_column_mesh(pm2, [1.0, 1.0, 1.0])
+    out, _ = lc.census(pm2, 1, ["wall"], planned_first_m=0.7)
+    assert out["wall"]["area_at_plan"] == 0.0
