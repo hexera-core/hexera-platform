@@ -336,7 +336,7 @@ def test_consecutive_provider_failures_give_the_ai_up_for_the_file():
     p = make(fake)
     for _ in range(3):
         p.propose(state([site("S1", "proximity")]), k=3)
-    assert p.stop_reason == "model_failure" and not p.ai_capped
+    assert p.stop_reason == "model_unavailable" and not p.ai_capped
     assert p.propose(state([site("S1", "proximity")]), k=3) == [] and len(fake.calls) == 3
 
 
@@ -705,5 +705,6 @@ def test_the_stop_is_written_to_the_ledger_and_to_the_result(tmp_path):
     assert p.propose(state([site("S1", "proximity")]), k=3) == []
     assert ledger.file_statuses()["fileZ"] == {"stop_reason": "wave_cap", "ai_capped": True}
     assert p.result() == {"file_id": "fileZ", "ai_capped": True, "stop_reason": "wave_cap", "turns": 0,
-                          "truncated_rounds": 0, "spent_usd": 0.0, "tool_errors": 0, "candidate_errors": 0,
+                          "truncated_rounds": 0, "answered_rounds": 0, "failed_rounds": 0,
+                          "model_unavailable": False, "spent_usd": 0.0, "tool_errors": 0, "candidate_errors": 0,
                           "declared_unfixable": 0}

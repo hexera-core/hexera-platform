@@ -338,7 +338,7 @@ def test_ai_generators_refuses_a_ledger_that_is_not_a_wave_ledger() -> None:
                       job_id="j", call=FakeModel([]), prices=ASTRA)
 
 
-def test_input_too_large_and_model_failure_are_recorded_and_are_not_ai_capped() -> None:
+def test_input_too_large_and_model_unavailable_are_recorded_and_are_not_ai_capped() -> None:
     ai = proposer(FakeModel([]), max_input_tokens=1)
     r = run([ai], World())
     assert r.ai_stop_reason == "input_too_large" and r.ai_capped is False

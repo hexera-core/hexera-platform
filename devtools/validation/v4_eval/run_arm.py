@@ -220,8 +220,10 @@ def run_arms(args: argparse.Namespace, out: Path, prov: dict, ledger: Any | None
     entries = shard_entries([e for e in select_sources(whole_pool, args.sources) if e.sha256 in in_split],
                             args.shard)
     route = None
+    throttle = None
     if model_arms and runner is None:  # an injected runner (a test, the infra check) replaces the dispatch AND its route
         route = _prepare_model_route(args, prov)
+        throttle = build_throttle(args, route, prov)
     engine = engine if engine is not None else arms_mod.RealEngine()
     # `arms` / `split` / `wave` are the PLAN's when there is one (copied before this runs) and the report compares
     # them with the wave definition, so they are not overwritten; what this shard ran is `arms_run`
@@ -250,7 +252,8 @@ def run_arms(args: argparse.Namespace, out: Path, prov: dict, ledger: Any | None
                                     name, entry, source, pool=pool, engine=engine, ledger=ledger, arm=spec,
                                     budget=spec.budget, h_mm=args.h_mm, route=route, max_turns=args.max_turns,
                                     job_id=f"{args.wave_id or 'wave'}:{entry.sha256[:12]}:{name}",
-                                    workdir=str(out / "work" / entry.sha256[:12] / name), workers=args.workers)
+                                    workdir=str(out / "work" / entry.sha256[:12] / name), workers=args.workers,
+                                    throttle=throttle)
                     except FileNotFoundError as exc:
                         outcome = arms_mod.ArmOutcome(excluded=f"input_missing: {exc}")
                     except reprobe_mod.FileTimeout as exc:
@@ -291,6 +294,21 @@ def _prepare_model_route(args: argparse.Namespace, prov: dict) -> str:
     route = model_route.probe_route_chain(routes)
     prov["route_probe"] = {"candidates": list(routes), "chosen": route}
     return route
+
+
+def build_throttle(args: argparse.Namespace, route: str, prov: dict) -> Any:
+    """This shard's slice of the wave's model-call allowance on `route` (`model_throttle.WaveThrottle.for_shard`):
+    1/N of the wave's in-flight ceiling (`--model-max-in-flight`, default derived from the route's measured limits),
+    requests and tokens per minute. A wave with more shards than in-flight calls is refused here, before any file."""
+    from meshpipeline.cad.repair_v4.model_throttle import WaveThrottle
+
+    n_shards = getattr(args, "n_shards", None) or evalspec.parse_shard(args.shard)[1]
+    throttle = WaveThrottle.for_shard(route, n_shards=n_shards,
+                                      max_in_flight=getattr(args, "model_max_in_flight", None))
+    s = throttle.slice
+    prov["model_throttle"] = {"n_shards": n_shards, "max_in_flight": s.max_in_flight, "rpm": round(s.rpm, 2),
+                              "tpm": round(s.tpm)}
+    return throttle
 
 
 def run_repair_corpus(args: argparse.Namespace, out: Path, prov: dict) -> int:
@@ -475,6 +493,9 @@ def build_parser() -> argparse.ArgumentParser:
                         help="what this run is FOR; `tuning` is refused for the held-out split")
     parser.add_argument("--n-shards", type=int, default=None, help="the wave's N; must equal the N in --shard")
     parser.add_argument("--ledger-path", default=None, help="the shard's durable ledger log")
+    parser.add_argument("--model-max-in-flight", type=int, default=None,
+                        help="the WAVE's ceiling on in-flight model calls, split 1/N per shard (default: derived from "
+                             "the route's measured rate limit, model_throttle.wave_max_in_flight)")
     parser.add_argument("--marker-bucket", default=None,
                         help="the wave bucket holding the ledger's markers (native GCS, VM service account)")
     # derived by parse_args (_resolve_arms); declared so the one argument contract names every attribute read

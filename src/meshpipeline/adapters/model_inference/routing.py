@@ -88,6 +88,38 @@ def _backoff(route: ModelRoute, category: FailureCategory, attempt: int) -> floa
     return max(0.0, raw * (1.0 + random.uniform(-j, j)))
 
 
+#: The longest Retry-After this router will wait for between attempts (the OpenAI SDK applies the same 60 s bound
+#: to its own retries). A longer one is waited for this long; the next attempt then reports what it gets.
+RETRY_AFTER_MAX_S = 60.0
+
+
+def _retry_after_s(exc: BaseException | None) -> float | None:
+    """The provider's own Retry-After on the failed response (`retry-after-ms`, else `retry-after` seconds), or None.
+    Present on temporary 429s and 503s; OpenAI documents it as the MINIMUM wait."""
+    headers = getattr(getattr(exc, "response", None), "headers", None)
+    if headers is None:
+        return None
+    for name, scale in (("retry-after-ms", 1000.0), ("retry-after", 1.0)):
+        try:
+            value = float(headers.get(name)) / scale
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            return min(value, RETRY_AFTER_MAX_S)
+    return None
+
+
+def _retry_delay(route: ModelRoute, category: FailureCategory, attempt: int, cause: BaseException | None) -> float:
+    """The jittered backoff, but never shorter than the provider's Retry-After (plus up to `jitter` of it, so a
+    fleet told the same Retry-After does not come back in the same instant)."""
+    delay = _backoff(route, category, attempt)
+    if category in (FailureCategory.RATE_LIMIT, FailureCategory.SERVICE_UNAVAILABLE, FailureCategory.OVERLOAD):
+        after = _retry_after_s(cause)
+        if after is not None:
+            delay = max(delay, after * (1.0 + random.uniform(0.0, max(route.retry.jitter, 0.0))))
+    return delay
+
+
 class _Budget:
 
     __slots__ = ("_deadline",)
@@ -308,7 +340,7 @@ async def _attempt_target(route, target, invoke, classify, budget: _Budget):
             return (None, category, detail, attempt + 1, usage, time.monotonic() - t0, started,
                     cause)
         if attempt < route.retry.max_attempts - 1:
-            delay = budget.cap(_backoff(route, category, attempt))
+            delay = budget.cap(_retry_delay(route, category, attempt, cause))
             if budget.expired():
                 break
             await asyncio.sleep(delay)
