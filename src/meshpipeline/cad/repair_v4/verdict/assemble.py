@@ -13,15 +13,17 @@ non-passes; they are never cached.
 from __future__ import annotations
 
 import importlib
+import logging
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol
 
 from meshpipeline.cad.repair_v4.verdict.cache import VerdictCache, file_sha256, mesher_versions, panel_config_hash
 from meshpipeline.cad.repair_v4.verdict.faithful import FaithfulReport, check_faithful_steps
-from meshpipeline.cad.repair_v4.verdict.valid import ValidReport, check_valid
+from meshpipeline.cad.repair_v4.verdict.valid import CheckerUnavailable, ValidReport, check_valid
 from meshpipeline.cad.repair_v4.worker_pool import WorkerPool
 
+logger = logging.getLogger(__name__)
 MEMBER_TIMEOUT_S = 300.0
 UNMEASURED_SICN = -1.0  # a mesher that produced no mesh has no SICN; it ranks below any real one
 
@@ -138,13 +140,16 @@ def _assemble(
     sha = config = None
     panel: list[Any] | None = None
     if cache is not None:
-        sha = file_sha256(step)
-        config = panel_config_hash(chosen, MEMBER_TIMEOUT_S, mesher_versions(pool))
-        panel = cache.get(sha, config)
+        try:
+            sha = file_sha256(step)
+        except OSError as exc:  # a STEP that is not there is a broken export, not a file that failed
+            raise CheckerUnavailable(f"cannot read {step!r} to key the verdict cache: {exc}") from exc
+        config = panel_config_hash(chosen, MEMBER_TIMEOUT_S, mesher_versions(pool))  # fails closed, loudly
+        panel = _cache_get(cache, sha, config)
     if panel is None:
         panel = list(runner(pool, step, chosen, timeout_s=MEMBER_TIMEOUT_S))
         if cache is not None and sha is not None and config is not None:
-            cache.put(sha, config, panel)
+            _cache_put(cache, sha, config, panel)
 
     faithful: FaithfulReport | None = None
     if valid.ok:  # an unreadable or solid-less repaired file has nothing to compare
@@ -156,6 +161,22 @@ def _assemble(
 
     clean = clean_of(tier=tier, inconclusive=inconclusive, valid=valid, panel=panel, faithful=faithful)
     return Verdict(valid, panel, faithful, clean, tier, inconclusive)
+
+
+def _cache_get(cache: VerdictCache, sha: str, config: str) -> list[Any] | None:
+    """A cache that cannot answer (a store outage) is a miss, never a verdict and never a crash."""
+    try:
+        return cache.get(sha, config)
+    except Exception as exc:  # noqa: BLE001 - any store failure
+        logger.warning("verdict cache unreadable, meshing instead: %s: %s", type(exc).__name__, exc)
+        return None
+
+
+def _cache_put(cache: VerdictCache, sha: str, config: str, panel: Sequence[Any]) -> None:
+    try:
+        cache.put(sha, config, panel)
+    except Exception as exc:  # noqa: BLE001 - the measurement stands; only its memo is lost
+        logger.warning("verdict cache write failed: %s: %s", type(exc).__name__, exc)
 
 
 def verdict(

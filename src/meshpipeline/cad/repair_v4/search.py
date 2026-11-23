@@ -119,6 +119,7 @@ from meshpipeline.cad.repair_v4.verdict.assemble import (
     score,
     verdict,
 )
+from meshpipeline.cad.repair_v4.verdict.cache import VerdictCache, default_verdict_cache
 from meshpipeline.cad.repair_v4.verdict.faithful import DeclaredIdError, FaithfulReport, check_faithful
 from meshpipeline.cad.repair_v4.verdict.valid import CheckerUnavailable
 from meshpipeline.cad.repair_v4.workspace import Diff, UnknownTarget, Workspace
@@ -221,7 +222,8 @@ def _clean_with(v: Verdict, faithful: FaithfulReport | None) -> bool:
     )
 
 
-def _judged(fn: Callable[..., Verdict], pool: Any, ws: Workspace, original: str) -> Verdict:
+def _judged(fn: Callable[..., Verdict], pool: Any, ws: Workspace, original: str,
+            cache: VerdictCache | None = None) -> Verdict:
     """`fn` (`cheap_verdict` / `verdict`) on workspace `ws`, judged as Task 16's `stages._judge` judges it.
 
     The checker reads STEP files, a workspace is a BREP, so the BREP is exported first (`step_for`). Declared
@@ -230,7 +232,9 @@ def _judged(fn: Callable[..., Verdict], pool: Any, ws: Workspace, original: str)
     whenever the lineage declared anything; `clean` is recomputed from that report. A declared id the shapes do not
     match is judged undeclared rather than crashing the run (as `stages._judge` does)."""
     faces, _solids = original_facts(pool, ws.original)
-    v: Verdict = fn(pool, step_for(pool, ws.brep_path), original)
+    step = step_for(pool, ws.brep_path)
+    # the cache holds only the panel (the meshing); layers 1 and 3 are recomputed, so a hit never skips a check
+    v: Verdict = fn(pool, step, original) if cache is None else fn(pool, step, original, cache=cache)
     declared = declared_edits(ws, faces)
     if v.valid.ok and (declared.added or declared.removed):
         try:
@@ -243,14 +247,44 @@ def _judged(fn: Callable[..., Verdict], pool: Any, ws: Workspace, original: str)
     return v
 
 
-def default_judge(*, h_mm: float) -> Judge:
+def h_mm_for(pool: Any, ws: Workspace) -> float:
+    """The target element size, in MILLIMETRES, for the part in `ws`: the production FEA mesh's base size
+    (`fea_plan.base_size`, a tenth of the part diagonal, the same function `GmshProd` meshes with), so failure
+    sites cluster at the scale the clean-STEP definition is written against. `base_size` works in METRES and the
+    workspace in millimetres; the conversion is the only arithmetic here, and it is tested on parts decades
+    apart. A part the kernel cannot measure (or one with no extent) raises `CheckerUnavailable`: no size is
+    invented, and it is infrastructure, not a verdict."""
+    from meshpipeline.engines.fea_plan import base_size
+
+    result = pool.call("ws_diagonal", {"brep_path": ws.brep_path}, timeout_s=60.0)
+    if not result.ok or result.value is None:
+        raise CheckerUnavailable(f"ws_diagonal: {result.status}: {result.error}")
+    diag_mm = float(result.value["diag_mm"])
+    if not math.isfinite(diag_mm) or diag_mm <= 0.0:
+        raise CheckerUnavailable(f"cannot size the mesh: the part's diagonal is {diag_mm!r} mm")
+    return base_size(diag_mm / 1000.0) * 1000.0
+
+
+def default_judge_for(pool: Any, ws: Workspace, *, cache: VerdictCache | None = None) -> Judge:
+    """`default_judge` with `h_mm` derived from the part (`h_mm_for`); what the engine calls."""
+    return default_judge(h_mm=h_mm_for(pool, ws), cache=cache)
+
+
+def default_judge(*, h_mm: float, cache: VerdictCache | None = None) -> Judge:
     """The real verdict (Task 5) and sites (Task 17). `h_mm` (the mesh size) is required: it sets site
     clustering and the proximity threshold, so a silent default would aim every candidate at the wrong sites.
     `original` is the STEP the product was handed; faithfulness compares against it (and, for declared edits,
-    against the lineage's original BREP)."""
+    against the lineage's original BREP).
+
+    THE VERDICT CACHE. Both tiers read and write `cache` (default: the process-wide `default_verdict_cache()`,
+    the one `stages` judges with), keyed by (STEP sha256, panel config hash, verdict code version), so a state
+    the staged healer already meshed, or one reached by two branches, is not meshed again. Without it the
+    verdict functions never touch a cache (only `reprobe` passed one). The panel's member count is never
+    assumed here: the key follows whatever `default_members(tier)` returns."""
+    cache = cache if cache is not None else default_verdict_cache()
     return Judge(
-        cheap=lambda pool, ws, original: _judged(cheap_verdict, pool, ws, original),
-        full=lambda pool, ws, original: _judged(verdict, pool, ws, original),
+        cheap=lambda pool, ws, original: _judged(cheap_verdict, pool, ws, original, cache),
+        full=lambda pool, ws, original: _judged(verdict, pool, ws, original, cache),
         score=score,
         sites=lambda pool, ws, v: find_sites(pool, ws, v, h_mm=h_mm),
     )
@@ -1124,6 +1158,8 @@ __all__ = [
     "SearchState",
     "ai_generators",
     "default_judge",
+    "default_judge_for",
+    "h_mm_for",
     "deliverable",
     "panel_passes",
     "search",
