@@ -83,11 +83,13 @@ class SessionRepository:
         return result.scalar_one_or_none()
 
     async def append_message(self, db: AsyncSession, session_id: uuid.UUID,
-                              role: str, content: str) -> None:
+                              role: str, content: str, *, extra: dict | None = None) -> None:
+        """One turn appended. `extra`: what a user's turn carries beside its words (its attachments and picked
+        faces, contracts/user_notes.carried) - plain rows, never a file's bytes."""
         s = await self.get_internal(db, session_id)
         if s:
             msgs = list(s.messages or [])
-            msgs.append({"role": role, "content": content})
+            msgs.append({"role": role, "content": content, **(extra or {})})
             s.messages = msgs
 
     async def set_messages(self, db: AsyncSession, session_id: uuid.UUID,

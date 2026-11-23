@@ -197,10 +197,36 @@ def is_skip(text: Any) -> bool:
     return bool(t) and bool(_SKIP.match(t))
 
 
-def make(text: str, *, source: str, turn: int | None = None, at: str = "") -> dict:
-    """One note: the user's words exactly as typed (only cut past MAX_NOTE_CHARS)."""
-    return {"text": str(text)[:MAX_NOTE_CHARS], "source": source,
-            "turn": int(turn) if turn is not None else None, "at": at or _now()}
+#: WHAT A NOTE MAY CARRY BESIDE ITS WORDS: the files the user attached and the faces they picked on the model. Each
+#: is a list of plain rows, kept only with the keys below (never a picture's bytes or a data URL: those are built
+#: from the stored file when a model is called), and only when the note has one - a note without them is as before.
+ATTACHMENT_KEYS = ("id", "kind", "name", "mime", "bytes", "pages", "chars", "cut", "width", "height")
+FACE_KEYS = ("id", "label", "sig")
+
+
+def _rows(raw: Any, keys: Sequence[str]) -> list[dict]:
+    return [{k: r[k] for k in keys if k in r} for r in raw or () if isinstance(r, Mapping) and str(r.get("id") or "")]
+
+
+def carried(note: Any) -> dict:
+    """The attachments and faces a stored note or message carries, cleaned ({} with none)."""
+    if not isinstance(note, Mapping):
+        return {}
+    out = {}
+    for key, keys in (("attachments", ATTACHMENT_KEYS), ("faces", FACE_KEYS)):
+        rows = _rows(note.get(key), keys)
+        if rows:
+            out[key] = rows
+    return out
+
+
+def make(text: str, *, source: str, turn: int | None = None, at: str = "",
+         attachments: Iterable[Any] = (), faces: Iterable[Any] = ()) -> dict:
+    """One note: the user's words exactly as typed (only cut past MAX_NOTE_CHARS), with the files they attached and
+    the faces they picked when it has them (a note of a picture alone has no words)."""
+    return {"text": str(text or "")[:MAX_NOTE_CHARS], "source": source,
+            "turn": int(turn) if turn is not None else None, "at": at or _now(),
+            **carried({"attachments": list(attachments or ()), "faces": list(faces or ())})}
 
 
 def clicked(text: Any, asked: Any, offered: Callable[[str], Iterable[Mapping]] | None) -> bool:
@@ -234,12 +260,14 @@ def capture(messages: Iterable[Any], quotes: Sequence[Any] = (), *, consumer: st
     with no number in it: "FEA shell mesh" was kept as a note and the solid AI remarked on it on a shell run with
     nothing typed (round 4, L1)."""
     _reader(consumer)
-    turns, turn, asked_before, clicks = [], 0, "", set()
+    turns, turn, asked_before, clicks, with_files = [], 0, "", set(), {}
     for m in _own(messages):
         if m.get("role") == "user":
             turn += 1
             text = str(m.get("content") or "")
             turns.append((turn, text))
+            if carried(m):
+                with_files[turn] = m
             if clicked(text, asked_before, offered) or (
                     route_question is not None and route_question(asked_before)
                     and not any(ch.isdigit() for ch in text)):
@@ -260,18 +288,24 @@ def capture(messages: Iterable[Any], quotes: Sequence[Any] = (), *, consumer: st
             unmatched.append(str(q))
         elif not is_skip(hit[1]) and hit[0] not in clicks:
             picked[hit[0]] = hit[1]
-    return [make(text, source=SOURCE_CHAT, turn=t) for t, text in sorted(picked.items())], unmatched
+    # A MESSAGE THAT CARRIES FILES OR PICKED FACES is always kept (NOTE-16): what the user attached or picked is
+    # what they asked about, and the readers see it only as a note
+    for t, m in with_files.items():
+        if t not in clicks:
+            picked.setdefault(t, str(m.get("content") or ""))
+    return [make(text, source=SOURCE_CHAT, turn=t, **carried(with_files.get(t)))
+            for t, text in sorted(picked.items())], unmatched
 
 
 def clean(raw: Any) -> list[dict]:
     """Stored notes as notes: anything that is not one is left out, and the ids are numbered."""
     out = []
     for n in raw or ():
-        if isinstance(n, Mapping) and str(n.get("text") or "").strip():
-            out.append({"text": str(n["text"])[:MAX_NOTE_CHARS],
+        if isinstance(n, Mapping) and (str(n.get("text") or "").strip() or carried(n)):
+            out.append({"text": str(n.get("text") or "")[:MAX_NOTE_CHARS],
                         "source": str(n.get("source") or SOURCE_CHAT),
                         "turn": n.get("turn") if isinstance(n.get("turn"), int) else None,
-                        "at": str(n.get("at") or "")})
+                        "at": str(n.get("at") or ""), **carried(n)})
     return [{"id": f"n{i}", **n} for i, n in enumerate(out, start=1)]
 
 
@@ -280,7 +314,9 @@ def merge(existing: Any, new: Any) -> list[dict]:
     never reworded; the first capture keeps its time."""
     out, seen = [], set()
     for n in [*clean(existing), *clean(new)]:
-        key = (n["source"], n["turn"] if n["source"] == SOURCE_CHAT else None, _norm(n["text"]))
+        key = (n["source"], n["turn"] if n["source"] == SOURCE_CHAT else None, _norm(n["text"]),
+               tuple(str(a["id"]) for a in n.get("attachments") or ()),
+               tuple(str(f["id"]) for f in n.get("faces") or ()))
         if key not in seen:
             seen.add(key)
             out.append(n)
@@ -305,13 +341,22 @@ def own_notes(notes: Any) -> list[dict]:
     return clean([n for n in clean(notes) if not system_written(n.get("text"))])
 
 
+def _carried_lines(note: Mapping) -> str:
+    """Under a note's words: the files attached with it and the faces picked with it, by the names the user sees."""
+    lines = [f"[attached: {a.get('name') or a['id']}]" for a in note.get("attachments") or ()]
+    faces = [f"{f['id']} ({f['label']})" if f.get("label") else str(f["id"]) for f in note.get("faces") or ()]
+    if faces:
+        lines.append("[picked on the model: " + ", ".join(faces) + "]")
+    return "".join("\n" + line for line in lines)
+
+
 def render(notes: Any, *, limit: int | None = None) -> str:
     """The notes as a model reads them: each verbatim between markers. `limit` cuts the text (the
     full notes stay in user_notes.txt)."""
     rows = clean(notes)
     if not rows:
         return ""
-    text = "\n\n".join(f"[{n['id']}] ({_where(n)})\n<<<\n{n['text']}\n>>>" for n in rows)
+    text = "\n\n".join(f"[{n['id']}] ({_where(n)})\n<<<\n{n['text']}\n>>>{_carried_lines(n)}" for n in rows)
     if limit is not None and len(text) > limit:
         text = text[:limit] + f"\n... (cut here; the full notes are in {NOTES_FILE})"
     return text
@@ -482,7 +527,7 @@ def result_lines(remarks: Sequence[Any], *, consumer: str = "delivery") -> list[
             for r in remarks or () if str(r).strip()]
 
 
-__all__ = ["COMMON_CONSUMERS", "CONSUMERS", "ENGINE_CONSUMERS", "GUIDANCE", "NOTES_FILE",
+__all__ = ["ATTACHMENT_KEYS", "FACE_KEYS", "carried", "COMMON_CONSUMERS", "CONSUMERS", "ENGINE_CONSUMERS", "GUIDANCE", "NOTES_FILE",
            "QUESTION", "REMARKS_FILE", "REMARK_DESCRIPTION", "ROUTE_CONSUMERS", "RULE_EVERY_ROUTE",
            "RULE_NEVER_FAILS", "RULE_VERBATIM", "SOURCE_CHAT", "SOURCE_CONSOLE", "SOURCE_SETTINGS", "answer",
            "answers_now", "asked", "capture", "chat_block", "clean", "clicked", "context_block", "drop_remark", "is_skip", "make",

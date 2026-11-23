@@ -222,8 +222,8 @@ function openBox(id, { sessionId = null } = {}) {
 }
 
 /* THE NOTES BOX under the plan: the user's own text, kept as typed; the card redraws with it */
-async function addBriefNote(text) {
-  const d = await addNote(getState.sessionId(), text);
+async function addBriefNote(text, extra = {}) {
+  const d = await addNote(getState.sessionId(), text, extra);
   Stage.brief(d.brief, addBriefNote, briefParts, proceedPlan);
   // "use cfMesh" in a note chooses the engine as it does in the chat: said there for the user
   if (d.say) say(d.say);

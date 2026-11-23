@@ -15,6 +15,7 @@ import { ASSEMBLY_UPLOAD_MAX_BYTES, confirmGeometryCheck, getGeometryCheck, retr
 import { acceptAttribute, isOfferable, loadIntakeFormats, refusalCopy, shortSupportedCopy, supportedCopy }
   from "./intake_formats.js";
 import { get as getState, set as setState } from "../core/state.js";
+import * as chips from "./chips.js";
 
 
 const MAX_INPUT_HEIGHT = 140;
@@ -446,19 +447,25 @@ function startsRun(d) { return !!(d && d.done && d.job_id); }
 
 async function send() {
   const inp = $("chat-input");
-  await sendText(inp.value.trim());
+  // a file still uploading: the send waits for it (its chip shows it going)
+  if (chips.busy("chat")) return;
+  await sendText(inp.value.trim(), { extra: chips.payload("chat") });
 }
 
-async function sendText(txt, { again = false } = {}) {
+/* `extra`: what the message carries beside its words - the files attached and faces picked under the box
+   (shell/chips.js payload); with either, the words may be empty. A button's own words carry nothing. */
+async function sendText(txt, { again = false, extra = null } = {}) {
   const inp = $("chat-input");
   const sessionId = getState.sessionId();
-  if (!txt || !sessionId) return;
+  const carries = !!(extra && (extra.attachments.length || extra.faces.length));
+  if ((!txt && !carries) || !sessionId) return;
   clearNewRunOffer();
   inp.value = ""; autoResize(inp);
+  if (carries) chips.clear("chat");
   if (!again) deps.chat("user", txt);
   disableInput();
   try {
-    const d = await sendMessage(sessionId, txt);
+    const d = await sendMessage(sessionId, txt, extra || {});
     if (!startsRun(d)) deps.chat("assistant", d.reply);
     deps.choices(d.choices || [], sendText);
     deps.brief(d.brief);
@@ -535,6 +542,8 @@ export function mountComposer() {
   });
 
   $("send-btn").addEventListener("click", send);
+  // THE CHIP ROW under the chat box: files attached and faces picked, empty and hidden until there is one
+  chips.mount("chat", $("input-inner"), { input: $("chat-input") });
   $("chat-input").addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
   });
