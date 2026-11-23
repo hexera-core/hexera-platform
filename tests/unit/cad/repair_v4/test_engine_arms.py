@@ -11,7 +11,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from test_engine_entry_exit import FakePool, FakeVerdict, World, _run, files, world  # noqa: F401  - shared fixtures
+from .test_engine_entry_exit import FakePool, FakeVerdict, World, _run, files, world  # noqa: F401  - shared fixtures
 
 import meshpipeline.cad.repair_v4 as v4
 from meshpipeline.cad.repair_v4 import search as search_mod
