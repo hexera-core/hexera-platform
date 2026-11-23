@@ -1,0 +1,12 @@
+{
+ "pass": 2,
+ "seconds": 200.92792470600034,
+ "cache_get": 12,
+ "cache_hit": 10,
+ "mesher_runs": {
+  "gmsh_default": 2,
+  "gmsh_prod": 2,
+  "gmsh_alt": 2,
+  "netgen_occ": 2
+ }
+}
