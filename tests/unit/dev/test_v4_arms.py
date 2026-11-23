@@ -697,3 +697,21 @@ def test_the_search_arms_start_from_the_confirmed_staged_state_not_the_damaged_o
     monkeypatch.setattr(S, "search", spy)
     go(shard, "search_det", None, BreakingEngine(staged_q=2))
     assert starts == [3], "the search started from the state the healer damaged"
+
+
+@pytest.mark.parametrize("arm", ["search_det", "search_ai"])
+def test_a_clean_input_the_healer_damages_costs_no_model_call_and_comes_out_clean(shard: Any, wire: Wire,  # noqa: F811
+                                                                                  arm: str) -> None:
+    """LEAD-2's snapshot-v1 data point (00614313_..._003 on 5dc953ea): search_ai spent $0.044 on a CLEAN input,
+    because the search started from the healer's damaged state. With the full-panel confirmation the search starts
+    from the clean state, the proposer stops at once (it never calls a model on a clean start), and the row is
+    clean. The delivery gate kept the OUTPUT clean even before the fix; what the fix removes is the wasted spend
+    and the search working on a damaged part."""
+    wire.candidate = CLEAN_CANDIDATE
+    ledger = ledgered() if arm == "search_ai" else None
+    [row], _ = go(shard, arm, ledger, BreakingEngine(staged_q=2))
+    proposals = [r for r in wire.requests if "propose" in [t["name"] for t in r.get("tools", [])]]
+    assert row["out_clean"] is True and row["out_panel_passes"] == 3
+    assert proposals == [], f"{arm} called the model {len(proposals)} time(s) on a clean input"
+    if ledger is not None:
+        assert ledger.file_spent_usd(SHA) == 0.0
