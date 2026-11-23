@@ -333,14 +333,22 @@ def build(step: Path | str, out: Path, *, mm_per_unit: float, rec: dict, require
         raise _Stop(f"the part reads as {len(solids)} solids, not one closed body")
     # MIXED-8: the walls too thick for shells are kept solid, as thick regions (their mid-faces mark them); with
     # too little shell left, the part is meshed solid
-    t1 = time.time()
-    reach = reach_of(record, solids[0], surf, mm_per_unit)
-    bad, _share, stop = too_thick(record, reach)
-    ok, why = recommend(record, reach)
-    rec.update(reach_s=round(time.time() - t1, 1), recommended=ok, recommend_why=why, too_thick=bad,
-               reach_gate=REACH_GATE, reach_mm={o: round(r, 4) for o, r in reach.items()})
-    if stop:
-        raise _Stop(stop)
+    def advice() -> tuple[list[str], str]:
+        t1 = time.time()
+        reach = reach_of(record, solids[0], surf, mm_per_unit)
+        bad, _share, stop = too_thick(record, reach)
+        ok, why = recommend(record, reach)
+        rec.update(reach_s=round(time.time() - t1, 1), recommended=ok, recommend_why=why, too_thick=bad,
+                   reach_gate=REACH_GATE, reach_mm={o: round(r, 4) for o, r in reach.items()})
+        return bad, stop
+
+    # MIXED-20: while MIXED-8 is advice (REACH_GATE off) its reading decides nothing here, so it is read last, once
+    # the mesh is joined: an attempt that fails no longer pays for it first (21 to 40 s on four board parts)
+    bad: list[str] = []
+    if REACH_GATE:
+        bad, stop = advice()
+        if stop:
+            raise _Stop(stop)
     # SHELL-23: while MIXED-8 is advice no shell wall is kept solid - a short plate is a shell here as it is in the
     # shell files, never a thick region
     order, shell_walls, marks = kept_solid(record, kept, thick, bad if REACH_GATE else [])
@@ -350,7 +358,8 @@ def build(step: Path | str, out: Path, *, mm_per_unit: float, rec: dict, require
                     "notes": split.notes}
     if not split.ok:
         if bad and REACH_GATE:
-            raise _Stop(WHY_THICK_SPLIT.format(n=len(bad), m=len(reach), k=mx.REACH_WALLS, why=split.why))
+            raise _Stop(WHY_THICK_SPLIT.format(n=len(bad), m=len(rec.get("reach_mm") or {}), k=mx.REACH_WALLS,
+                                               why=split.why))
         # MIXED-10: the split's own reason - while MIXED-8 is advice no wall was kept solid, so the walls too short for
         # shell theory are not why the split failed (34 of 51 board parts were told they were)
         raise _Stop(WHY_SPLIT.format(why=split.why))
@@ -395,12 +404,16 @@ def build(step: Path | str, out: Path, *, mm_per_unit: float, rec: dict, require
         # SHLINK-4 with them), as a shell-only run measures its own
         from meshpipeline.engines import shell_quality
 
+        # MIXED-22: an overlap quad past Nastran's own limits is cut into two triangles first (SHMESH-10's cut)
+        rec["overlap_split"] = mm.split_past_overlap(joined)
         q = dict(q)
         q.update(shell_quality.measure(joined.shell))
         if q.get("valid") is False:
             raise _Stop("the shell elements at the join are not valid")
     rec.update(regions=split.cores, shell_quality=q if isinstance(q, dict) else None,
                solid_quality={k: sq.get(k) for k in ("elements", "valid", "fatal") if k in sq})
+    if not REACH_GATE:
+        advice()            # MIXED-20: the advice, read once the mesh is made
     return joined
 
 

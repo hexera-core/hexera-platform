@@ -327,11 +327,25 @@ def _build_kept(step, out: Path, mm_per_unit: float, requirements: dict | None, 
     return joined, sub
 
 
-def _guarded(fn, budget_s: float, ws: Path):
+#: MIXED-25, A THICK REGION'S GROWTH IS BOUNDED BY THE PART'S OWN COST: growing a core into its walls is one OCC offset
+#: per core (cad/mixed_split.grown, up to 10 ways tried), which cannot be stopped from inside. Where it cannot grow it
+#: runs long and then fails: cen_r0533's one core still growing after 287 s (its attempt stopped by the 300 s
+#: guard), pub_0013 46 s and lab_fr003 24 s before "a thick core could not be grown". Every core grown on the parts
+#: that kept thick regions solid grew in under 8 s (cen_s0190's three together 8.0 s; the 14 development parts 0.5 to
+#: 1.4 s a part, on extractions of 3 to 15 s). A growth that has not finished after GROW_S (about twice the slowest
+#: measured) is stopped with the attempt (the child reports when a growth starts), and the shell is made as before,
+#: said. Scaling it with the extraction's seconds was weighed and not taken: no part that kept its regions grew
+#: slower on a slower extraction, and on cen_r0533 (68 s extraction) it would have paid 53 s more for nothing.
+GROW_S = 15.0
+KEPT_GROW = "growing a thick region into its walls had not finished after {s:.0f} s"
+
+
+def _guarded(fn, budget_s: float, ws: Path, grow_s: float | None = None):
     """fn() in a forked child, stopped past `budget_s`: its result, or its exception raised here (a _Stop with
-    KEPT_SLOW when the guard trips)."""
+    KEPT_SLOW when the guard trips). `grow_s`: MIXED-25, one core's growth is stopped past it (KEPT_GROW)."""
     import multiprocessing as mp
 
+    from meshpipeline.cad import mixed_split as mx
     from meshpipeline.engines import mixed_run as mr
 
     if budget_s <= 0:
@@ -343,6 +357,7 @@ def _guarded(fn, budget_s: float, ws: Path):
         import os
 
         os.setsid()            # its own group: a stop takes the solid mesher's workers with it
+        mx.STEP = lambda name: tx.send(("step", name, time.time()))
         try:
             tx.send(("ok", fn()))
         except BaseException as exc:  # noqa: BLE001 - handed to the parent
@@ -351,8 +366,19 @@ def _guarded(fn, budget_s: float, ws: Path):
     p = ctx.Process(target=child)       # not a daemon: the solid mesher starts processes of its own
     p.start()
     tx.close()
-    got = rx.recv() if rx.poll(budget_s) else None
-    p.join(5.0)
+    end = time.time() + budget_s
+    got, growing, slow = None, None, ""
+    while got is None:
+        limit = end if growing is None or grow_s is None else min(end, growing + grow_s)
+        if not rx.poll(max(0.0, limit - time.time())):
+            slow = KEPT_GROW.format(s=grow_s) if limit < end else ""
+            break
+        msg = rx.recv()
+        if msg[0] == "step":
+            growing = float(msg[2]) if msg[1] == mx.GROW_STEP else None
+            continue
+        got = msg
+    p.join(5.0 if got is not None else 0.0)        # a stopped child is not waited for (it would cost 5 s more)
     if p.is_alive():
         import os
         import signal
@@ -368,21 +394,51 @@ def _guarded(fn, budget_s: float, ws: Path):
         from meshpipeline.engines.determinism import note_guard_trip
 
         try:
-            note_guard_trip("shell_thick_kept", workspace=ws, rule="MIXED-12", budget_s=float(budget_s))
+            note_guard_trip("shell_thick_kept", workspace=ws, rule="MIXED-25" if slow else "MIXED-12",
+                            budget_s=float(grow_s if slow and grow_s is not None else budget_s))
         except Exception:  # noqa: BLE001 - the record says it all the same
             pass
-        raise mr._Stop(KEPT_SLOW.format(s=max(0.0, budget_s)))
+        raise mr._Stop(slow or KEPT_SLOW.format(s=max(0.0, budget_s)))
     kind, value = got
     if kind == "err":
         raise value
     return value
 
 
+#: MIXED-23, KEEPING A REGION SOLID NEVER COSTS NASTRAN'S LIMITS: the product ranks a mesh valid first, then inside
+#: Nastran's own limits, then the user's shape lines, structure, edge lengths, triangles. When the mesh with its thick
+#: regions kept solid still has shell elements past Nastran's limits (after MIXED-22's cut of the overlap quads), it is
+#: held, and the all-shell mesh is made as for an attempt that failed: inside the limits (and valid) it is delivered,
+#: said (KEPT_PAST); past them too, the two are level on that rank and the kept one is delivered (more of the part's
+#: structure), said (KEPT_OVER). It costs the all-shell mesh only on such parts.
+KEPT_PAST = "its shell elements were past Nastran's limits at the junction, and the all-shell mesh is inside them"
+KEPT_OVER = (" Its shell elements are past Nastran's limits at the junction; the all-shell mesh was past them too, "
+             "so the mesh with its thick regions kept solid is delivered.")
+
+
+def _plain_inside(rec: dict) -> bool:
+    """MIXED-23: the all-shell mesh made, valid and inside Nastran's limits."""
+    q = rec.get("quality") or {}
+    return bool(rec.get("made")) and q.get("valid") is not False and q.get("within_nastran") is True
+
+
+def _held_delivered(ws: Path, held: dict, record: dict, rec: dict, before: dict, *, source: str,
+                    requirements: dict | None) -> None:
+    """MIXED-23: the all-shell mesh is no better on Nastran's limits (or was not made): the held kept-solid mesh is
+    delivered over it, its files written over the all-shell one's, the record as the attempt left it, said."""
+    rec.clear()
+    rec.update(before)
+    rec.pop("kept_solid_why", None)
+    _deliver_kept(ws, held["joined"], held["sub"], record, rec, source=source, t1=float(held["t1"]),
+                  requirements=requirements)
+    rec["kept_solid"]["words"] = str(rec["kept_solid"].get("words") or "") + KEPT_OVER
+
+
 def _thick_kept(ws: Path, out: Path, step, record: dict, rec: dict, *, mm_per_unit: float, source: str,
-                target: dict | None, requirements: dict | None) -> bool:
+                target: dict | None, requirements: dict | None, held: dict | None = None) -> bool:
     """MIXED-12: the shell with its thick regions kept as solid, joined, written under the shell's names. True when
-    made (rec filled as a shell run's, with "kept_solid"); False with rec["kept_solid_why"] when not."""
-    from meshpipeline.engines import mixed_mesh as mm
+    made (rec filled as a shell run's, with "kept_solid"); False with rec["kept_solid_why"] when not. `held`: MIXED-23,
+    a kept mesh past Nastran's limits is put there (joined, sub, t1) and False returned, for run() to weigh."""
     from meshpipeline.engines import mixed_run as mr
 
     t1 = time.time()
@@ -397,7 +453,8 @@ def _thick_kept(ws: Path, out: Path, step, record: dict, rec: dict, *, mm_per_un
             note_guard_trip("shell_thick_kept", workspace=ws, rule="MIXED-16", budget_s=float(budget),
                             extract_s=float(rec.get("extract_s") or 0.0))
             raise mr._Stop(ahead)
-        joined, sub = _guarded(lambda: _build_kept(step, out, mm_per_unit, requirements, record, target), budget, ws)
+        joined, sub = _guarded(lambda: _build_kept(step, out, mm_per_unit, requirements, record, target), budget, ws,
+                               grow_s=GROW_S)
         sq = sub.get("solid_quality") or {}
         if sq.get("valid") is False or sq.get("fatal"):
             raise mr._Stop("the solid mesh of the thick regions is not valid")
@@ -406,6 +463,19 @@ def _thick_kept(ws: Path, out: Path, step, record: dict, rec: dict, *, mm_per_un
         rec["kept_solid_why"] = KEPT_NOT.format(why=why.rstrip(". ") or "the join could not be made")
         logger.info("shell run: thick regions not kept solid (%s)", why[:300])
         return False
+    if held is not None and (sub.get("shell_quality") or {}).get("within_nastran") is False:
+        held.update(joined=joined, sub=sub, t1=t1)          # MIXED-23: weighed against the all-shell mesh
+        rec["kept_solid_why"] = KEPT_NOT.format(why=KEPT_PAST)
+        return False
+    _deliver_kept(ws, joined, sub, record, rec, source=source, t1=t1, requirements=requirements)
+    return True
+
+
+def _deliver_kept(ws: Path, joined, sub: dict, record: dict, rec: dict, *, source: str, t1: float,
+                  requirements: dict | None) -> None:
+    """MIXED-12: the joined mesh written under the shell's names, rec filled as a shell run's, with "kept_solid"."""
+    from meshpipeline.engines import mixed_mesh as mm
+
     rec["mesh_s"] = round(time.time() - t1, 1)
     shell = joined.shell
     name_parts(shell, ws)
@@ -442,7 +512,6 @@ def _thick_kept(ws: Path, out: Path, step, record: dict, rec: dict, *, mm_per_un
         rec["coverage"] = cov
     if not rec["made"]:
         rec["why"] = "the solver files could not all be written"
-    return True
 
 
 def run(workspace: Path | str, step: Path | str, *, mm_per_unit: float, source: str = "",
@@ -460,21 +529,26 @@ def run(workspace: Path | str, step: Path | str, *, mm_per_unit: float, source: 
     ws = Path(workspace)
     started = time.time()
     rec: dict = {"made": False, "mm_per_unit": float(mm_per_unit)}
+    held: dict = {}             # MIXED-23: a kept-solid mesh past Nastran's limits, weighed against the all-shell one
+    before: dict = {}
+    kept_record: dict = {}
     try:
         out = ws / FOLDER
         out.mkdir(parents=True, exist_ok=True)
         record = ms.extract_file(step, out, mm_per_unit=mm_per_unit)
         rec.update(extract_s=round(time.time() - started, 1), advice=str(record.get("advice") or ""))
         _again(rec, record)
+        kept_record = record
         if not record.get("surface_faces"):
             rec["why"] = no_shell_why(record)
         elif KEEP_THICK and keeps_thick(record) and _thick_kept(ws, out, step, record, rec, mm_per_unit=mm_per_unit,
                                                                 source=source, target=target,
-                                                                requirements=requirements):
+                                                                requirements=requirements, held=held):
             pass        # MIXED-12: the shell with its thick regions kept solid is made
         else:
             if KEEP_THICK and _kept_shape(record) and kept_cannot_pay(record):
                 rec["kept_solid_why"] = KEPT_NOT.format(why=kept_cannot_pay(record))      # MIXED-18, said
+            before.update(rec)      # MIXED-23: as they were, should the held mesh be delivered
             t1 = time.time()
             try:
                 mesh, applied = sa.mesh_run(out, mm_per_unit=mm_per_unit, target=target, requirements=requirements)
@@ -542,6 +616,8 @@ def run(workspace: Path | str, step: Path | str, *, mm_per_unit: float, source: 
                         rec[key] = applied[key]
             if not rec["made"]:
                 rec["why"] = "the solver files could not all be written"
+            if held and not _plain_inside(rec):
+                _held_delivered(ws, held, kept_record, rec, before, source=source, requirements=requirements)
         for name in (ms.RECORD_FILE, ms.SURFACE_FILE):
             if (out / name).exists():
                 shutil.copyfile(out / name, ws / (name if name != ms.RECORD_FILE else "shell.json"))
@@ -549,7 +625,11 @@ def run(workspace: Path | str, step: Path | str, *, mm_per_unit: float, source: 
         logger.warning("shell run: no shell mesh (%s: %s)", type(exc).__name__, str(exc)[:300])
         from meshpipeline.engines.gmsh.shell_adapter import said_words
 
-        rec.update(made=False, why=said_words(exc) or f"the shell mesh could not be made ({type(exc).__name__})")
+        if held:
+            # MIXED-23: the all-shell mesh could not be made, so the held one is delivered
+            _held_delivered(ws, held, kept_record, rec, before, source=source, requirements=requirements)
+        else:
+            rec.update(made=False, why=said_words(exc) or f"the shell mesh could not be made ({type(exc).__name__})")
     rec["seconds"] = round(time.time() - started, 1)
     rec["words"] = words(rec)
     (ws / RECORD).write_text(json.dumps(rec, indent=1, sort_keys=True, default=float))

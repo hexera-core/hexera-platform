@@ -364,8 +364,37 @@ def _defeatured(shape, faces: list):
     return got[0] if len(got) == 1 and len(ms._faces(got[0])) < len(ms._faces(shape)) else None
 
 
-def _near(shape, p: np.ndarray, tol: float) -> bool:
+def _near(shape, p: np.ndarray, tol: float, box: tuple | None = None) -> bool:
+    """Is point p within tol of the shape? `box`: the shape's box (ms._box), read first (MIXED-21)."""
+    if box is not None and ms._box_gap((np.asarray(p, float), np.asarray(p, float)), box) > tol:
+        return False
     return ms._dist(ms._vertex(p), shape) <= tol
+
+
+#: MIXED-21, A DISTANCE IS READ ONLY WHERE THE BOXES ALLOW IT: the split's distance readings (each wall against each
+#: core, each trimmed piece against every wall, each face of the solid against every wall, each mark against each
+#: piece) are OCC's exact distances, 14 to 115 ms each on curved walls: 1,753 of them took 25 s on a 16-wall part,
+#: 260 took 31 s on a pipe tee, and on a 133-wall panel they ran its attempt past the 300 s guard. Two boxes' gap is
+#: never more than the distance of what they hold (SHELL-53's ms._box_gap), so a pair whose boxes are already
+#: further apart than the reading needs is not read: the same answers, the split made exactly as before.
+def _within(faces: list, boxes: list, other, reach: list[float], box) -> list[int]:
+    """The indices k of `faces` with ms._dist(faces[k], other) <= reach[k] (`boxes` theirs, `box` other's)."""
+    return [k for k, f in enumerate(faces) if ms._box_gap(boxes[k], box) <= reach[k] and ms._dist(f, other) <= reach[k]]
+
+
+def _nearest(p, faces: list, boxes: list) -> int:
+    """The index of the face nearest point p, the lowest index on a tie (as min over (distance, index))."""
+    pb = (np.asarray(p, float), np.asarray(p, float))
+    gaps = [ms._box_gap(pb, b) for b in boxes]
+    v = ms._vertex(p)
+    best: tuple[float, int] | None = None
+    for k in sorted(range(len(faces)), key=lambda i: (gaps[i], i)):
+        if best is not None and gaps[k] > best[0]:
+            break
+        got = (ms._dist(v, faces[k]), k)
+        if best is None or got < best:
+            best = got
+    return best[1] if best is not None else 0
 
 
 #: MIXED-11, A PIECE IS AS THICK AS ITS DEEPEST POINT: MIXED-1b reads a left-over piece's thickness as twice its volume
@@ -617,11 +646,41 @@ def split_body(body, kept: list[tuple[object, float, float]], thick_faces: list,
     return out
 
 
+#: MIXED-25: the step a watcher may bound (engines/shell_run._guarded): STEP, when set, is called with GROW_STEP as a
+#: core starts growing (OCC's offset, which cannot be stopped from inside) and with None once it has grown
+GROW_STEP = "grow"
+STEP = None
+
+
+def _step(name: str | None) -> None:
+    if STEP is not None:
+        STEP(name)
+
+
+#: MIXED-24, NO CUT WITH A BROKEN TOOL: OCC's Booleans need valid arguments; a wall's slab its own check
+#: (BRepCheck_Analyzer) calls invalid - a B-spline wall's offset folding on itself - makes the body-less-slabs cut fail
+#: or run long. Measured at 3069319e: cen_r0516 (4 of 131 slabs invalid: the cut failed after 178 s), pub_0029 (1 of
+#: 125: failed after 84 s), pub_0021 (7 of 164: cut in 43 s, then no core could be grown); the parts that kept thick
+#: regions solid had none (cen_s0190, cen_s0186, lab_sh0023, lab_sh0028, pub_0020, pub_0031). The check costs under
+#: half a second, so the split stops before the cut, said.
+SLAB_INVALID = "{n} of the {m} wall slabs are not valid solids (OCC's own check), so the walls cannot be cut out"
+
+
+def _invalid(shapes: list) -> int:
+    from OCP.BRepCheck import BRepCheck_Analyzer
+
+    return sum(1 for s in shapes if not BRepCheck_Analyzer(s).IsValid())
+
+
 def _split(body, kept, thick_faces, scale: float, out: Split) -> None:
     out.body_volume = ms._volume(body)
     t_min = min(t for _f, t, _o in kept)
     tol = 1e-3 * t_min
     slabs = [slab(f, 0.5 * t * (1.0 + SLAB_SLACK) + abs(o)) for f, t, o in kept]
+    bad = _invalid(slabs)
+    if bad:
+        out.why = SLAB_INVALID.format(n=bad, m=len(slabs))
+        return
     left = _solids(_bop("cut", body, slabs))
     # MIXED-1: the cores - left-over pieces holding a thick face (a point inside one of the thick faces on the piece)
     marks = [p for p in (ms._inner_point(f) for f in thick_faces) if p is not None]
@@ -636,8 +695,10 @@ def _split(body, kept, thick_faces, scale: float, out: Split) -> None:
         # MIXED-1b: a piece thinner than half the thinnest wall (twice its volume over its area: a slab's own
         # thickness) is no thick region but a rim the slabs left - the 0.6 mm ring round each hole of a 4 mm plate
         # whose bores were read thick; grown it crashed OCC's offset. It is left-over metal as a junction's is
-        core = any(_near(piece, p, tol) for p in marks) and 2.0 * vol >= floor * ms._area(piece)
-        if not core and CORE_THICKNESS and any(_near(piece, p, tol) for p in marks):
+        piece_box = ms._box(piece)
+        marked = any(_near(piece, p, tol, piece_box) for p in marks)      # MIXED-21: read once, box first
+        core = marked and 2.0 * vol >= floor * ms._area(piece)
+        if not core and CORE_THICKNESS and marked:
             deep = thickness(piece)
             if deep is None:
                 out.why = NOT_MEASURED.format(s=CORE_THICKNESS_S)
@@ -660,12 +721,17 @@ def _split(body, kept, thick_faces, scale: float, out: Split) -> None:
         return
     # MIXED-2: each core grown CUT_WALLS of the thickest wall running into it; the solid is the body's metal inside
     regions = []
+    kept_faces = [f for f, _t, _o in kept]
+    kept_boxes = [ms._box(f) for f in kept_faces]          # MIXED-21: each wall's box, read once
     for core in cores:
-        walls = [t for (f, t, _o) in kept if ms._dist(f, core) <= 0.5 * t * (1 + SLAB_SLACK) + tol + 0.5 * t]
+        reach = [0.5 * t * (1 + SLAB_SLACK) + tol + 0.5 * t for _f, t, _o in kept]
+        walls = [kept[k][1] for k in _within(kept_faces, kept_boxes, core, reach, ms._box(core))]
         d = CUT_WALLS * (max(walls) if walls else t_min)
         out.cut_distance.append(d * scale)
         out.core_volumes.append(ms._volume(core) * scale ** 3)
+        _step(GROW_STEP)
         regions.append(grown(core, d))
+        _step(None)
     zone = regions[0] if len(regions) == 1 else _bop("fuse", regions[0], regions[1:])
     solid = _solids(_bop("common", body, [zone]))
     if not solid:
@@ -682,7 +748,7 @@ def _split(body, kept, thick_faces, scale: float, out: Split) -> None:
         q = ms._inner_point(p)
         if q is None:
             continue
-        k = min(range(len(kept)), key=lambda i: (ms._dist(ms._vertex(q), kept[i][0]), i))
+        k = _nearest(q, kept_faces, kept_boxes)                 # MIXED-21: min over (distance, index), box first
         t = kept[k][1]
         # every piece is kept, however narrow: the sewn surface holds junction strips half a wall wide (a stiffener's
         # mid-face carried down to the plate's mid-plane), and dropping them parted a stiffened panel's stiffeners
@@ -696,7 +762,8 @@ def _split(body, kept, thick_faces, scale: float, out: Split) -> None:
         p = ms._inner_point(f)
         if p is None or _near(skin, p, tol):
             continue
-        walls = [t for (sf, t, _o) in kept if ms._dist(sf, f) <= tol + 0.5 * t]
+        walls = [kept[k][1] for k in _within(kept_faces, kept_boxes, f, [tol + 0.5 * t for _f, t, _o in kept],
+                                              ms._box(f))]
         out.cut_faces.append(f)
         out.cut_walls.append(max(walls) if walls else t_min)
     held = (out.solid_volume + out.shell_volume) / out.body_volume if out.body_volume > 0 else 0.0

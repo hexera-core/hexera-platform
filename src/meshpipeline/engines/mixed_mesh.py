@@ -314,6 +314,50 @@ def join(shell: ShellMesh, solid: SolidPart, cut_faces: list, *, part: str,
     return MixedMesh(shell=ext, solid=solid, part=part, ties=ties, links=links, n_overlap=len(q), notes=notes)
 
 
+def split_past_overlap(mixed: MixedMesh) -> int:
+    """MIXED-22, A JOIN NEVER COSTS NASTRAN'S LIMITS WHERE A CUT CAN MEND IT: an overlap quad (SHLINK-4) runs its link
+    edge on into the solid along the rows' averaged inward direction, so where a cut face turns a corner it comes out
+    a trapezium (lab_sh0028: 6 of its 54 at 151 to 156 degrees, taper 0.54 to 0.63, past Q4_IAMAX and Q4_TAPER, on a
+    shell mesh the walls' own run had inside every limit). Each such quad is cut into two triangles on its better
+    diagonal (shell_quality.split_past_quads, SHMESH-10's cut); its nodes and so its ties are unchanged. The mesh is
+    changed in place (the triangles after the old ones, groups and per-element arrays carried); the quads cut."""
+    from meshpipeline.engines import shell_quality as sq
+
+    sh = mixed.shell
+    n_q, n = len(sh.quads), sh.n_elements
+    ov = np.asarray(sh.groups.get(OVERLAP_GROUP, np.zeros(0)), dtype=np.int64)
+    ov_q = ov[ov < n_q]
+    if not len(ov_q):
+        return 0
+    keep_l, tri, came_l = sq.split_past_quads(sh.xyz, sh.quads[ov_q])
+    if not len(tri):
+        return 0
+    cut = np.setdiff1d(ov_q, ov_q[keep_l])
+    came = ov_q[came_l]
+    keep_q = np.setdiff1d(np.arange(n_q), cut)
+    src = np.concatenate([keep_q, np.arange(n_q, n), came])            # each new element's old element
+    new_of = np.full(n, -1, dtype=np.int64)
+    new_of[keep_q] = np.arange(len(keep_q))
+    new_of[n_q:] = len(keep_q) + np.arange(n - n_q)
+    first_new = len(keep_q) + (n - n_q)
+    groups = {}
+    for g, v in sh.groups.items():
+        v = np.asarray(v, dtype=np.int64)
+        moved = new_of[v]
+        groups[g] = np.sort(np.concatenate([moved[moved >= 0], first_new + np.flatnonzero(np.isin(came, v))]))
+    out = ShellMesh(xyz=sh.xyz, quads=sh.quads[keep_q], trias=np.vstack([sh.trias.reshape(-1, 3), tri]),
+                    wall=np.asarray(sh.wall)[src], mid=[sh.mid[i] for i in src.tolist()],
+                    part=[sh.part[i] for i in src.tolist()], groups=groups, node_wall=sh.node_wall,
+                    notes=list(sh.notes), part_names=dict(sh.part_names))
+    for name in ("varies", "zoffs"):
+        arr = getattr(sh, name)
+        if arr is not None:
+            setattr(out, name, np.asarray(arr)[src])
+    mixed.shell = out
+    mixed.n_overlap = int(len(groups[OVERLAP_GROUP]))
+    return int(len(cut))
+
+
 def _segs(lk: Link) -> list[tuple[int, int]]:
     c = lk.on_face
     return [(c[i], c[(i + 1) % len(c)]) for i in range(len(c) if lk.closed else len(c) - 1)]
