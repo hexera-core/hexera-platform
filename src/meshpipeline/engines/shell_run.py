@@ -66,6 +66,12 @@ def words(rec: dict) -> str:
                 "instead.")
     n, q, t = int(rec.get("elements") or 0), int(rec.get("quads") or 0), int(rec.get("trias") or 0)
     said = f"Shell mesh: {n:,} elements ({q:,} quads, {t:,} triangles) on the mid-surface"
+    kept = rec.get("kept_solid") or {}
+    if kept:
+        # MIXED-14: the shells and the solids named apart
+        c = kept.get("counts") or {}
+        said = (f"Shell and solid mesh: {n:,} elements ({q:,} quads, {t:,} triangles on the mid-surface; "
+                f"{int(c.get('solid_elements') or 0):,} 10-node tetrahedra in the thick regions)")
     gone = ((rec.get("quality") or {}).get("face_watch") or {}).get("words")
     if gone:
         said = f"{gone} {said}"      # SHMESH-74: faces left out are said first
@@ -109,11 +115,14 @@ def words(rec: dict) -> str:
 MSH = "shell.msh"
 
 
-def write_msh(path: Path, mesh) -> list[dict]:
+def write_msh(path: Path, mesh, solid=None) -> list[dict]:
     """The shell mesh as a gmsh MSH 2.2 ASCII file in metres: 4-node quads and 3-node triangles, each mid-face its own
     surface entity and physical group (k, named Mid_k), so the viewer draws one part per mid-face. Returns the faces:
     [{"tag", "name", "wall_mm", "elements", "part", "part_name"}] in tag order - SHWRITE-1: "part" the body the
-    mid-face belongs to (Part_k) and "part_name" its name as the solver files write it (the CAD's, else Part_k)."""
+    mid-face belongs to (Part_k) and "part_name" its name as the solver files write it (the CAD's, else Part_k).
+    `solid`: MIXED-14, the thick regions kept solid (engines/mixed_mesh.SolidPart, mm) - drawn by their outer skin
+    (the 10-node tetrahedra's boundary faces, as 3-node triangles) in one more group, SOLID_GROUP, listed last with
+    "solid": True and "elements" its tetrahedra."""
     import numpy as np
 
     from meshpipeline.engines.shell_writers import part_labels
@@ -127,21 +136,45 @@ def write_msh(path: Path, mesh) -> list[dict]:
     walls: dict[str, list[float]] = {}
     lines = ["$MeshFormat", "2.2 0 8", "$EndMeshFormat", "$PhysicalNames", str(len(mids))]
     lines += [f'2 {tag_of[m]} "{m}"' for m in mids]
-    lines += ["$EndPhysicalNames", "$Nodes", str(len(mesh.xyz))]
-    xyz = np.asarray(mesh.xyz, dtype=float) / 1000.0
+    skin = np.zeros((0, 3), dtype=np.int64)
+    s_xyz = np.zeros((0, 3))
+    s_tag = len(mids) + 1
+    if solid is not None and len(solid.tets):
+        from meshpipeline.engines.mixed_mesh import boundary_triangles
+
+        tri = boundary_triangles(solid.tets, np.ones(solid.n_nodes + 1, dtype=bool))[:, :3]
+        used = np.unique(tri)                                  # the skin's corners (1-based solid ids)
+        new = np.zeros(solid.n_nodes + 1, dtype=np.int64)
+        new[used] = np.arange(len(used)) + len(mesh.xyz) + 1   # numbered after the shell's nodes
+        skin, s_xyz = new[tri], np.asarray(solid.xyz, dtype=float)[used - 1]
+        lines.append(f'2 {s_tag} "{SOLID_GROUP}"')
+    lines[4] = str(len(mids) + (1 if len(skin) else 0))
+    lines += ["$EndPhysicalNames", "$Nodes", str(len(mesh.xyz) + len(s_xyz))]
+    xyz = np.vstack([np.asarray(mesh.xyz, dtype=float), s_xyz]) / 1000.0
     lines += [f"{i} {x:.9g} {y:.9g} {z:.9g}" for i, (x, y, z) in enumerate(xyz, start=1)]
-    lines += ["$EndNodes", "$Elements", str(mesh.n_elements)]
+    lines += ["$EndNodes", "$Elements", str(mesh.n_elements + len(skin))]
     for e, conn in enumerate(mesh.elements()):
         m = mesh.mid[e]
         k = tag_of[m]
         walls.setdefault(m, []).append(float(mesh.wall[e]))
         kind = 3 if len(conn) == 4 else 2
         lines.append(f"{e + 1} {kind} 2 {k} {k} " + " ".join(str(int(n) + 1) for n in conn))
+    e0 = mesh.n_elements + 1
+    lines += [f"{e0 + j} 2 2 {s_tag} {s_tag} {a} {b} {c}" for j, (a, b, c) in enumerate(skin.tolist())]
     lines.append("$EndElements")
     Path(path).write_text("\n".join(lines) + "\n")
-    return [{"tag": tag_of[m], "name": m, "elements": len(walls.get(m) or []),
-             "wall_mm": round(float(np.median(walls[m])), 4) if walls.get(m) else None,
-             "part": part_of[m], "part_name": labels.get(part_of[m], part_of[m])} for m in mids]
+    faces = [{"tag": tag_of[m], "name": m, "elements": len(walls.get(m) or []),
+              "wall_mm": round(float(np.median(walls[m])), 4) if walls.get(m) else None,
+              "part": part_of[m], "part_name": labels.get(part_of[m], part_of[m])} for m in mids]
+    if len(skin):
+        p0 = str(mesh.part[0]) if len(mesh.part) else ""
+        faces.append({"tag": s_tag, "name": SOLID_GROUP, "elements": int(len(solid.tets)), "wall_mm": None,
+                      "part": p0, "part_name": labels.get(p0, p0), "solid": True})
+    return faces
+
+
+#: MIXED-14: the viewer's group of the thick regions kept solid (their skin)
+SOLID_GROUP = "Solid"
 
 
 def name_parts(mesh, ws: Path) -> None:
@@ -322,10 +355,11 @@ def _thick_kept(ws: Path, out: Path, step, record: dict, rec: dict, *, mm_per_un
     shell = joined.shell
     name_parts(shell, ws)
     exports = mm.write_all(ws, joined, units="m", source=source, stem="shell")
-    (ws / "shell_quality.json").write_text(json.dumps({"quality": sub.get("shell_quality"),
+    (ws / "shell_quality.json").write_text(json.dumps({**(sub.get("shell_plan") or {}),
+                                                      "quality": sub.get("shell_quality"),
                                                       "solid_quality": sub.get("solid_quality")},
                                                      indent=1, sort_keys=True, default=float))
-    faces = write_msh(ws / MSH, shell)
+    faces = write_msh(ws / MSH, shell, solid=joined.solid)      # MIXED-14: the whole mesh
     xyz_m = shell.xyz / 1000.0
     told = float((rec.get("left_out") or {}).get("area_share") or 0.0)
     c = joined.counts
@@ -341,6 +375,10 @@ def _thick_kept(ws: Path, out: Path, step, record: dict, rec: dict, *, mm_per_un
                made=all((ws / f).exists() and (ws / f).stat().st_size > 0 for f in FILES))
     if sub.get("requirements"):
         rec["requirements"] = sub["requirements"]
+    # MIXED-13: the shell part's count, sizing and places told as a shell-only run tells them
+    for key, val in (sub.get("shell_plan") or {}).items():
+        if key == "target" or requirements:
+            rec[key] = val
     from meshpipeline.engines import shell_delivery as SD
 
     cov = SD.coverage(shell, part_mm2=sum(float(b.get("area_mm2") or 0.0) for b in record.get("bodies") or []),

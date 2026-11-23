@@ -35,6 +35,9 @@ WORST_KEY = "shell_jacobian_ratio"
 #: the one plain line every shell result says
 SUMMARY = ("A mid-surface shell: {n:,} plate elements ({q:,} quads, {t:,} triangles); each element carries its wall "
            "thickness in the file.")
+#: MIXED-14: the line for a shell that kept its thick regions as solid elements in the same mesh
+KEPT_SUMMARY = ("A mid-surface shell with its thick regions solid: {n:,} elements - {s:,} plate elements ({q:,} quads, "
+                "{t:,} triangles) and {k:,} 10-node tetrahedra, joined in the file.")
 #: SURF-6: the same line for a shell made on a surface file (engines/surface_run): what it lies on, and its thickness
 SURFACE_SUMMARY = "A shell on your surface: {n:,} plate elements ({q:,} quads, {t:,} triangles), {thick}."
 #: STD-4: the same lines for an all-triangle shell (Triangles picked on the stage, or asked in the notes or settings)
@@ -260,12 +263,27 @@ def part_tags(workspace, rec: Mapping) -> dict[str, list[int]]:
     body_of = {str(m.get("id")): str(m.get("body") or "") for m in mids if isinstance(m, Mapping)}
     names = part_names(workspace)
     out: dict[str, list[int]] = {}
+    body_of_part: dict[str, str] = {}
     for f in rec.get("faces") or []:
         body = body_of.get(str(f.get("name")))
+        if body:
+            body_of_part.setdefault(str(f.get("part")), body)
+        elif f.get("solid"):
+            body = body_of_part.get(str(f.get("part")))    # MIXED-14: the solid regions drawn with their body
         if not body or not f.get("tag"):
             return {}
         out.setdefault(names.get(body, body), []).append(int(f["tag"]))
     return out
+
+
+def kept_counts(rec: Mapping) -> dict:
+    """MIXED-14: a shell that kept its thick regions solid, its elements named apart: {"shell": plate elements (the
+    join's overlap quads with them), "solid": 10-node tetrahedra}; {} for a shell alone."""
+    c = _map(_map(rec.get("kept_solid")).get("counts"))
+    if not c:
+        return {}
+    return {"shell": int(c.get("shell_elements") or 0) + int(c.get("overlap_elements") or 0),
+            "solid": int(c.get("solid_elements") or 0)}
 
 
 def quality_of(rec: Mapping, parts: Mapping | None = None) -> dict:
@@ -283,6 +301,7 @@ def quality_of(rec: Mapping, parts: Mapping | None = None) -> dict:
         "quality_bar": "fea", "min_sicn": None, "fea_inverted": invalid,
         "shell_quality": sq,
         **({"requirements": rec["requirements"]} if rec.get("requirements") else {}),
+        **({"element_counts": kept_counts(rec)} if kept_counts(rec) else {}),
         "fea": {"plan": True, "shell": True, "walls_mm": list(rec.get("walls_mm") or []),
                 # SURF-3: a shell made on a surface file, and whether the user gave its thickness
                 **({"surface": True, "thickness_set": bool(_map(rec.get("surface")).get("thickness_set"))}
@@ -460,6 +479,10 @@ def results(workspace, q: Mapping, plan: Mapping) -> dict:
                   + [str(w) for w in plan.get("not_applied") or []] + [w for w in [also_measured(q)] if w]
                   + [w for w in [cover_words(cov)] if w])
     summary = (TRIA_SUMMARY if tria else SUMMARY).format(n=cells, q=q_n, t=t_n)
+    apart = kept_counts(rec)
+    if apart:
+        # MIXED-14: the plates and the tetrahedra named apart (the cells hold both)
+        summary = KEPT_SUMMARY.format(n=cells, s=apart["shell"], q=q_n, t=t_n, k=apart["solid"])
     if _map(rec.get("surface")).get("kind") == "surface":
         # SURF-6: said as what it is - on the user's surface, at their thickness (or none set)
         from meshpipeline.contracts.shell_thickness import words as mm_words
@@ -478,7 +501,8 @@ def results(workspace, q: Mapping, plan: Mapping) -> dict:
     return {**extra,
             "title": "FEA shell mesh",
             "shell": {"walls_mm": walls, "quads": q_n, "trias": t_n,
-                      **({"elements": dict(elements)} if elements else {})},
+                      **({"elements": dict(elements)} if elements else {}),
+                      **({"plate_elements": apart["shell"], "solid_elements": apart["solid"]} if apart else {})},
             "summary": summary,
             "level": "Shell",
             "units": {"mesh": COMPLETED_MESH_UNIT.value, "words": export_units_words()},

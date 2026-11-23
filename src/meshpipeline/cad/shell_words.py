@@ -173,6 +173,28 @@ def left_out_words(lo: Mapping | None) -> str:
     return f"{first} For a mesh that includes {'them' if many else 'it'}, ask for a solid mesh."
 
 
+def kept_short(lo: Mapping | None) -> str:
+    """MIXED-15: the first sentence when a shell run will keep the thick regions as solid (engines/shell_run
+    .keeps_thick): what will be kept, with the one region's size and the share of the part's volume ("" when
+    nothing would be left out)."""
+    first = left_out_short(lo)
+    if not first:
+        return ""
+    many = _said(lo or {})[1]
+    return first[: -len(" not in this shell mesh.")].rsplit(" ", 1)[0] + (
+        f" {'are' if many else 'is'} kept as solid elements in the same mesh.")
+
+
+def kept_words(lo: Mapping | None) -> str:
+    """MIXED-15: the two short sentences: what will be kept as solid, and what happens if the join cannot be made."""
+    first = kept_short(lo)
+    if not first:
+        return ""
+    many = _said(lo or {})[1]
+    return f"{first} If {'they' if many else 'it'} cannot be joined to the shell, {'they are' if many else 'it is'} " \
+           "left out and the result says so."
+
+
 def left_out_lines(lo: Mapping | None, *, most: int = 20) -> list[str]:
     """The decks' header lines (engines/shell_writers `notes`): the sentence, then one line a region."""
     if not lo or not lo.get("regions"):
@@ -199,5 +221,5 @@ def left_out_lines(lo: Mapping | None, *, most: int = 20) -> list[str]:
     return lines
 
 
-__all__ = ["JOINT_WORDS", "SPAN_OFF", "SPAN_WALLS", "WIDTH_OFF", "WIDTH_WALLS", "dims",
+__all__ = ["kept_short", "kept_words", "JOINT_WORDS", "SPAN_OFF", "SPAN_WALLS", "WIDTH_OFF", "WIDTH_WALLS", "dims",
            "left_out", "left_out_lines", "left_out_short", "left_out_words", "num", "pct", "short_wall_words"]

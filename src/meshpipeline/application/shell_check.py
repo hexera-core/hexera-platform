@@ -219,6 +219,8 @@ def summarise(record: dict, drawn: dict | None = None) -> dict:
             "open_at_mm": opened[:400], "connected": bool((record.get("checks") or {}).get("connected", True)),
             "complete": bool(record.get("complete", False)), "notes": list(record.get("notes") or [])[:6],
             "left_out": {k: v for k, v in lo.items() if k != "regions"},
+            # MIXED-15: the shell run will keep the thick regions as solid in the same mesh (MIXED-12)
+            "keeps_thick": _keeps_thick(record),
             # SHELL-23: the walls that are a shell only because the user asked (short for their thickness): the
             # stage says one line of advice from these rows, in the unit it shows
             "short_walls": [{k: r.get(k) for k in ("body", "sheet", "thickness_mm", "span_mm", "width_mm", "span_walls",
@@ -228,6 +230,14 @@ def summarise(record: dict, drawn: dict | None = None) -> dict:
 
 
 # ------------------------------------------------------------------------------------------------ the stage
+
+
+def _keeps_thick(record: dict) -> bool:
+    """MIXED-15: a shell run of this part will try to keep its thick regions as solid (engines/shell_run.keeps_thick,
+    under its switch)."""
+    from meshpipeline.engines import shell_run
+
+    return bool(shell_run.KEEP_THICK and shell_run.keeps_thick(record))
 
 
 def _mm(v) -> str:
@@ -296,16 +306,17 @@ def not_shelled(summary: dict | None) -> list[dict]:
     there), and where the plates do not meet, each in plain words with a tag and a place to mark: S1, S2 ... for the
     regions left out, O1, O2 ... for open places; first a head row with the totals and the way on. Each also carries
     `short`, the same in a few words for the stage's one line (the full words stay for its tooltip)."""
-    from meshpipeline.cad.shell_words import left_out_short, left_out_words
+    from meshpipeline.cad.shell_words import kept_short, kept_words, left_out_short, left_out_words
 
     s = summary or {}
     many = len(s.get("bodies") or []) > 1
     out: list[dict] = []
     lo = s.get("left_out") or {}
+    kept = bool(s.get("keeps_thick"))           # MIXED-15: kept as solid, not left out
     if lo and s.get("solid_regions"):
         out.append({"id": "", "kind": "solid_head", "at_mm": None, "faces": [],
-                    "words": left_out_words({**lo, "regions": s["solid_regions"]}),
-                    "short": left_out_short({**lo, "regions": s["solid_regions"]})})
+                    "words": (kept_words if kept else left_out_words)({**lo, "regions": s["solid_regions"]}),
+                    "short": (kept_short if kept else left_out_short)({**lo, "regions": s["solid_regions"]})})
     for k, reg in enumerate(s.get("solid_regions") or [], start=1):
         who = reg.get("body") if many else "The part"
         name = reg.get("body") if many else "Whole part"
@@ -327,8 +338,13 @@ def not_shelled(summary: dict | None) -> list[dict]:
             short = (f"{reg.get('body') if many else 'Thick region'} · "
                      + (f"{_mm(reg['thick_mm'])}+ thick{size}" if reg.get("thick_mm") else f"not a thin wall{size}")
                      + " · not in the mesh")
+            if kept:
+                words = (f"{where} is kept as solid elements: it is {_mm(reg['thick_mm'])} thick or more, too thick "
+                         "for a shell." if reg.get("thick_mm") else f"{where} is kept as solid elements: it is not a "
+                         "thin wall.")
+                short = short[: -len("not in the mesh")] + "kept as solid"
         out.append({"id": f"S{k}", "kind": "solid", "words": words, "short": short, "at_mm": reg.get("at_mm"),
-                    "faces": list(reg.get("faces") or [])})
+                    "faces": list(reg.get("faces") or []), **({"kept": True} if kept and not reg.get("whole") else {})})
     if s.get("solid_more"):
         out.append({"id": "", "kind": "solid", "words": f"And {s['solid_more']} more regions are not in this shell mesh.",
                     "short": f"+{s['solid_more']} more not in the mesh", "at_mm": None, "faces": []})
@@ -398,9 +414,11 @@ def shell_view(status: dict | None, facts: dict | None, said: dict | None = None
             and summary.get("solid_regions"):
         # SHSTAGE-9: what this shell mesh has no elements for is said where the user reads the choice, and settled
         # with it (the declaration carries it to the request card and the run)
-        from meshpipeline.cad.shell_words import left_out_words
+        from meshpipeline.cad.shell_words import kept_words, left_out_words
 
-        left = left_out_words({**summary["left_out"], "regions": summary["solid_regions"]})
+        # MIXED-15: a part the run will keep whole says so, and what happens if the join fails
+        left = (kept_words if summary.get("keeps_thick") else left_out_words)(
+            {**summary["left_out"], "regions": summary["solid_regions"]})
         why = f"{left} {why}".strip()
         settle_why = f"{SAID_SHELL} {left}"
     out: dict = {"question": QUESTION, "state": state, "said": pm.MESH_SHELL, "said_words": SAID_SHELL,

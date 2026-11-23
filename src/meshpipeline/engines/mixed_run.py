@@ -359,8 +359,13 @@ def build(step: Path | str, out: Path, *, mm_per_unit: float, rec: dict, require
     rec2["panel_walls"] = MIXED_PANEL_WALLS
     BRepTools.Write_s(ms._compound(split.shell_faces), str(out / "shell_trimmed.brep"))
     t1 = time.time()
-    shell, applied = sa.mesh_shell(out / "shell_trimmed.brep", rec2, mm_per_unit=mm_per_unit,
-                                   requirements=requirements, target=target)
+    # MIXED-13: the walls are meshed by the shell-only run's own path (sa.mesh_run: its count set aside beside a typed
+    # global size, its count aimed again, its whole-face retry, its plan), not by the bare mesher
+    shell, applied = sa.mesh_run(out, mm_per_unit=mm_per_unit, requirements=requirements, target=target,
+                                 surface=out / "shell_trimmed.brep", record=rec2)
+    if isinstance(applied, dict):
+        rec["shell_plan"] = {k: applied[k] for k in ("target", "sizing", "count_set_aside", "places")
+                             if applied.get(k)}
     if requirements and isinstance(applied, dict) and applied.get("requirements"):
         # SHMESH-26: asked against delivered, on the shell part
         rec["requirements"] = applied["requirements"]
@@ -385,6 +390,15 @@ def build(step: Path | str, out: Path, *, mm_per_unit: float, rec: dict, require
     joined = mm.join(shell, solid, cut, part=str(bodies[0]["body"]))
     if joined.notes:
         raise _Stop("; ".join(joined.notes))
+    if isinstance(q, dict):
+        # MIXED-13: validity and Nastran's limits measured on the shell elements delivered (the overlap quads of
+        # SHLINK-4 with them), as a shell-only run measures its own
+        from meshpipeline.engines import shell_quality
+
+        q = dict(q)
+        q.update(shell_quality.measure(joined.shell))
+        if q.get("valid") is False:
+            raise _Stop("the shell elements at the join are not valid")
     rec.update(regions=split.cores, shell_quality=q if isinstance(q, dict) else None,
                solid_quality={k: sq.get(k) for k in ("elements", "valid", "fatal") if k in sq})
     return joined
