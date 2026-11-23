@@ -200,9 +200,15 @@ def cmd_probe(args: argparse.Namespace) -> int:
             self.name, self.sha256, self.source, self.group = s["name"], s["sha256"], s["source"], s["group"]
 
     results: list[dict] = []
+    done_path = out / "files.jsonl"
+    done = {json.loads(line)["sha256"]: json.loads(line) for line in done_path.read_text().splitlines()
+            if line.strip()} if done_path.exists() else {}  # resume: a restarted shard skips what it already wrote
+    results += done.values()
     try:
-        with (out / "files.jsonl").open("w") as handle:
+        with done_path.open("a") as handle:
             for s in mine:
+                if s["sha256"] in done:
+                    continue
                 e = Entry(s)
                 rec = {"name": s["name"], "sha256": s["sha256"], "source": s["source"], "size": s["size"],
                        "diag_mm": s["diag_mm"], "group": s["group"]}
@@ -219,7 +225,14 @@ def cmd_probe(args: argparse.Namespace) -> int:
                             break  # the real flow does not pay for these twice
                     exc: list = []
                     t = time.monotonic()
-                    rows = reprobe_mod.reprobe([e], tier=tier, excluded=exc, **kw)
+                    try:
+                        rows = reprobe_mod.reprobe([e], tier=tier, excluded=exc, **kw)
+                    except Exception as err:  # noqa: BLE001 - recorded, never swallowed: reported as a driver_error
+                        rows = []
+                        rec[f"{tier}_driver_error"] = f"{type(err).__name__}: {err}"
+                        pool.close()  # a pool that was interrupted mid-call may hold a stale reply: start a clean one
+                        pool = WorkerPool(args.workers)
+                        kw["pool"] = pool
                     rec[f"{tier}_s"] = time.monotonic() - t
                     rec[f"{tier}_row"] = asdict(rows[0]) if rows else None
                     rec[f"{tier}_excluded"] = asdict(exc[0]) if exc else None
