@@ -259,7 +259,8 @@ def test_target_rel_outside_its_bounds_is_refused(pool: WorkerPool, tmp_path: Pa
         TightenTolerances().apply(pool, ws, [], {"target_rel": 1e-2}, timeout_s=300)
 
 
-def _sphere_missing_poles(tmp_path: Path) -> str:
+def _broken_sphere(radius: float = 50.0):
+    """A sphere solid whose wire lost both degenerate pole edges (asserted invalid)."""
     from OCP.BRep import BRep_Builder, BRep_Tool
     from OCP.BRepBuilderAPI import BRepBuilderAPI_Copy
     from OCP.BRepPrimAPI import BRepPrimAPI_MakeSphere
@@ -267,7 +268,7 @@ def _sphere_missing_poles(tmp_path: Path) -> str:
     from OCP.TopExp import TopExp_Explorer
     from OCP.TopoDS import TopoDS, TopoDS_Iterator
 
-    sphere = BRepBuilderAPI_Copy(BRepPrimAPI_MakeSphere(50.0).Shape(), True).Shape()
+    sphere = BRepBuilderAPI_Copy(BRepPrimAPI_MakeSphere(radius).Shape(), True).Shape()
     wire = TopoDS.Wire_s(TopExp_Explorer(TopExp_Explorer(sphere, TopAbs_FACE).Current(), TopAbs_WIRE).Current())
     wire.Free(True)
     degenerate = []
@@ -280,7 +281,35 @@ def _sphere_missing_poles(tmp_path: Path) -> str:
     for e in degenerate:
         BRep_Builder().Remove(wire, e)
     assert not _valid(sphere), "fixture must actually be broken"
-    return _write(sphere, tmp_path / "sphere.brep")
+    return sphere
+
+
+def _compound(*shapes):
+    from OCP.BRep import BRep_Builder
+    from OCP.TopoDS import TopoDS_Compound
+
+    comp = TopoDS_Compound()
+    builder = BRep_Builder()
+    builder.MakeCompound(comp)
+    for sh in shapes:
+        builder.Add(comp, sh)
+    return comp
+
+
+def _sphere_missing_poles(tmp_path: Path) -> str:
+    return _write(_broken_sphere(), tmp_path / "sphere.brep")
+
+
+def _invalid_faces(shape) -> int:
+    from OCP.BRepCheck import BRepCheck_Analyzer
+    from OCP.TopAbs import TopAbs_FACE
+    from OCP.TopExp import TopExp_Explorer
+
+    an, n, ex = BRepCheck_Analyzer(shape), 0, TopExp_Explorer(shape, TopAbs_FACE)
+    while ex.More():
+        n += 0 if an.IsValid(ex.Current()) else 1
+        ex.Next()
+    return n
 
 
 def test_fix_poles_restores_a_sphere_with_missing_degenerate_edges(pool: WorkerPool, tmp_path: Path) -> None:
@@ -433,6 +462,8 @@ def test_tighten_does_not_fail_on_an_untouched_edge_that_under_reports(pool: Wor
     ws0 = Workspace.from_brep(pool, path)
     ws1, diff = TightenTolerances().apply(pool, ws0, [], {"target_rel": 1e-5}, timeout_s=300)
     assert diff.modified == {} and ws1.ids == ws0.ids
+    ((index, dev),) = diff.params["under_reported"]      # a blind spot is not silent: it is listed
+    assert index == 1 and dev > 5e-3
 
 
 def test_a_raised_tolerance_is_reported_as_a_modification(pool: WorkerPool, tmp_path: Path) -> None:
@@ -454,3 +485,50 @@ def test_fix_poles_fails_loudly_when_it_changes_nothing(pool: WorkerPool, tmp_pa
     (face_id,) = [s for s in ws0.ids if s.startswith("F")]
     with pytest.raises(RuntimeError, match="changed nothing"):
         FixPoles().apply(pool, ws0, [face_id], {}, timeout_s=300)
+
+
+def test_fix_poles_works_when_the_rest_of_the_shape_is_still_invalid(pool: WorkerPool, tmp_path: Path) -> None:
+    """The usual repair input is invalid somewhere else: fixing one face must not demand that the
+    whole shape be valid."""
+    path = _write(_compound(_broken_sphere(50.0), _translated(_broken_sphere(20.0), 200.0)), tmp_path / "two.brep")
+    ws0 = Workspace.from_brep(pool, path)
+    first = sorted((s for s in ws0.ids if s.startswith("F")), key=lambda s: int(s[1:]))[0]
+    assert _invalid_faces(_read(path)) == 2
+    ws1, _ = FixPoles().apply(pool, ws0, [first], {}, timeout_s=300)
+    after = _read(ws1.brep_path)
+    assert not _valid(after) and _invalid_faces(after) == 1   # one fixed, the other left alone
+
+
+def _translated(shape, dx: float):
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
+    from OCP.gp import gp_Trsf, gp_Vec
+
+    t = gp_Trsf()
+    t.SetTranslation(gp_Vec(dx, 0, 0))
+    return BRepBuilderAPI_Transform(shape, t, True).Shape()
+
+
+def test_fix_poles_refuses_when_only_some_targeted_faces_changed(pool: WorkerPool, tmp_path: Path) -> None:
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeSphere
+
+    good = _translated(BRepPrimAPI_MakeSphere(20.0).Shape(), 200.0)
+    path = _write(_compound(_broken_sphere(50.0), good), tmp_path / "mixed.brep")
+    ws0 = Workspace.from_brep(pool, path)
+    faces = [s for s in ws0.ids if s.startswith("F")]
+    assert len(faces) == 2
+    with pytest.raises(RuntimeError, match="changed nothing on face"):
+        FixPoles().apply(pool, ws0, faces, {}, timeout_s=300)
+
+
+def test_the_no_new_invalid_gate_can_reject_and_works_on_invalid_inputs() -> None:
+    """The in-context gate must be able to fail: a valid sphere turned into the broken one is
+    rejected, while the same broken shape in and out (invalid input) is not."""
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeSphere
+
+    from meshpipeline.cad.repair_v4.ops import edges as ops_edges
+
+    good, broken = BRepPrimAPI_MakeSphere(50.0).Shape(), _broken_sphere()
+    with pytest.raises(RuntimeError, match="accepted before"):
+        ops_edges._assert_no_new_invalid("x", good, broken, same_indices=False)
+    ops_edges._assert_no_new_invalid("x", broken, _broken_sphere(), same_indices=False)   # no raise
+    ops_edges._assert_no_new_invalid("x", broken, broken, same_indices=True)              # no raise

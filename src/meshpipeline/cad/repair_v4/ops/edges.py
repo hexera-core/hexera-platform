@@ -13,6 +13,14 @@ mesh leave the surface (gmsh "overlapping facets"). Tightening is measurement, n
 tolerance is only ever lowered to a value the geometry has been measured to satisfy, and an edge
 that cannot reach the target keeps its honest, larger value and is REPORTED, never clamped.
 
+WHAT IS AND IS NOT GUARANTEED. An edge tolerance is at least the kernel's own forced-SameParameter
+result and at least a measured pcurve/3D deviation (513 uniform samples + a local golden-section
+refinement around the worst). That is trustworthy for smooth edges; it is NOT a proven bound:
+sampling is uniform, not curvature-aware, and the refinement finds a local maximum, so a spike
+narrower than a sample cell or a second peak elsewhere can be missed. Independent evidence is only
+BRepCheck: no sub-shape may be newly invalid (`_assert_no_new_invalid`), which works on inputs that
+are already invalid. Face tolerances are not measured; see `_tighten_tolerances`.
+
 Identity: tolerance ops mutate TShapes in place, so the kernel reads the BREP twice - `old` (to
 fingerprint, since a bbox includes tolerance) and `base` (to mutate) - and tells the workspace what
 became what through a BRepTools_History it composes (`_compose_history`). Only entities that really
@@ -126,11 +134,11 @@ def _settle_tolerance(edge: Any, faces: list[Any]) -> float:
 
     The tolerance is reset to the floor so that a forced BRepLib::SameParameter reports what it
     actually reaches (it never lowers an inflated value on its own); the result is
-    max(kernel tolerance, dense measured deviation, 1e-7) with no margin. It is then gated on
-    BRepCheck's own verdict for the edge: while that fails the tolerance is raised 1.5x (at most
-    12 times) and then the op fails rather than hand back an edge the kernel calls invalid."""
+    max(kernel tolerance, measured deviation, 1e-7), no margin. There is deliberately NO per-edge
+    BRepCheck here: an edge analysed alone has no face context and cannot see orientation or
+    in-face problems, so such a check could not reject anything. The in-context check is
+    `_assert_no_new_invalid`, run on the whole result by `_finish`."""
     from OCP.BRep import BRep_Builder, BRep_Tool
-    from OCP.BRepCheck import BRepCheck_Analyzer
     from OCP.BRepLib import BRepLib
     from OCP.ShapeFix import ShapeFix_ShapeTolerance
     from OCP.TopAbs import TopAbs_EDGE
@@ -139,17 +147,46 @@ def _settle_tolerance(edge: Any, faces: list[Any]) -> float:
     setter.SetTolerance(edge, 1e-7, TopAbs_EDGE)
     BRepLib.SameParameter_s(edge, 1e-7, True)   # returns nothing: the flag and tolerance are read back
     dev = edge_deviation(edge, faces)
-    tol = max(float(BRep_Tool.Tolerance_s(edge)), dev, 1e-7)
-    setter.SetTolerance(edge, tol, TopAbs_EDGE)
+    setter.SetTolerance(edge, max(float(BRep_Tool.Tolerance_s(edge)), dev, 1e-7), TopAbs_EDGE)
     if not BRep_Tool.SameParameter_s(edge):
         BRep_Builder().SameParameter(edge, True)  # only reached when `dev` above is the evidence
-    for _ in range(12):
-        if BRepCheck_Analyzer(edge).IsValid():
-            return dev
-        tol *= 1.5
-        setter.SetTolerance(edge, tol, TopAbs_EDGE)
-    raise RuntimeError(f"BRepCheck still rejects the edge at tolerance {tol:.3g} "
-                       f"(measured deviation {dev:.3g})")
+    return dev
+
+
+def _invalid_subshapes(shape: Any) -> set[tuple[str, int]]:
+    """Every face, edge, wire, shell and solid that BRepCheck_Analyzer rejects, judged in the
+    context of the whole shape, as (kind, 1-based index)."""
+    from OCP.BRepCheck import BRepCheck_Analyzer
+    from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_SHELL, TopAbs_SOLID, TopAbs_WIRE
+    from OCP.TopExp import TopExp
+    from OCP.TopTools import TopTools_IndexedMapOfShape
+
+    analyzer = BRepCheck_Analyzer(shape)
+    out: set[tuple[str, int]] = set()
+    for kind, topabs in (("face", TopAbs_FACE), ("edge", TopAbs_EDGE), ("wire", TopAbs_WIRE),
+                         ("shell", TopAbs_SHELL), ("solid", TopAbs_SOLID)):
+        indexed = TopTools_IndexedMapOfShape()
+        TopExp.MapShapes_s(shape, topabs, indexed)
+        out.update((kind, i) for i in range(1, indexed.Extent() + 1)
+                   if not analyzer.IsValid(indexed.FindKey(i)))
+    return out
+
+
+def _assert_no_new_invalid(op: str, old: Any, result: Any, *, same_indices: bool) -> None:
+    """Fail if the op made BRepCheck reject anything it accepted before. Unlike a whole-shape
+    validity test this works on the usual repair input, which is already invalid elsewhere.
+    `same_indices`: in-place ops keep every index, so sub-shapes are compared one to one; a rebuilt
+    shape (fix_poles) renumbers, so only the count per kind may not grow."""
+    before, after = _invalid_subshapes(old), _invalid_subshapes(result)
+    fresh: list[Any]
+    if same_indices:
+        fresh = sorted(after - before)
+    else:
+        kinds = {k for k, _ in after}
+        fresh = sorted(k for k in kinds
+                       if sum(1 for x, _ in after if x == k) > sum(1 for x, _ in before if x == k))
+    if fresh:
+        raise RuntimeError(f"{op}: BRepCheck rejects sub-shapes it accepted before the op: {fresh}")
 
 
 def _mapping_and_changed(old: Any, base: Any, result: Any, h: Any, quantum: float,
@@ -204,16 +241,14 @@ def _mapping_and_changed(old: Any, base: Any, result: Any, h: Any, quantum: floa
 
 
 def _finish(payload: dict, op: str, params: dict, old: Any, base: Any, result: Any, h: Any,
-            force_changed: set[tuple[str, int]], start: float, *, must_be_valid: bool = False) -> dict:
+            force_changed: set[tuple[str, int]], start: float) -> dict:
     from OCP.BRepCheck import BRepCheck_Analyzer
 
     from meshpipeline.cad.repair_v4.ws_kernel import diagonal_of, history_record, write_brep
 
     quantum = float(payload["quantum"])
+    _assert_no_new_invalid(op, old, result, same_indices=result is base)
     valid_after = bool(BRepCheck_Analyzer(result).IsValid())
-    if not valid_after and (must_be_valid or BRepCheck_Analyzer(old).IsValid()):
-        raise RuntimeError(f"{op}: the result fails BRepCheck_Analyzer"
-                           + ("" if must_be_valid else " although the input passed it"))
     history, changed = _mapping_and_changed(old, base, result, h, quantum, force_changed)
     write_brep(result, payload["out_path"])
     rec = history_record(old, result, history, op=op, params=params, old_path=payload["brep_path"],
@@ -280,7 +315,10 @@ def _tighten_tolerances(payload: dict) -> dict:
     edge needs more. A face in scope is lowered to the largest tolerance of its own edges (never
     below 1e-7): a face cannot honestly be tighter than its boundary, and it is not independently
     measurable, so it is not clamped to the target. Anything left above the target is reported in
-    `over_target` / `faces_over_target`, never relabelled."""
+    `over_target` / `faces_over_target`, never relabelled. Faces are only CAPPED at
+    max(target, edge tolerances) - their tolerance is not measured. Edges that already claim at or
+    below the target are not changed but ARE measured, and any that under-report are listed in
+    `under_reported` as [index, measured deviation]."""
     from OCP.BRep import BRep_Tool
     from OCP.BRepLib import BRepLib
     from OCP.ShapeFix import ShapeFix_Edge, ShapeFix_ShapeTolerance
@@ -343,19 +381,22 @@ def _tighten_tolerances(payload: dict) -> dict:
             ex.Next()
         floor = max([1e-7, *edge_tols])
         if BRep_Tool.Tolerance_s(face) > max(target, floor):
-            setter.SetTolerance(face, floor, TopAbs_FACE)
+            # Not measurable on the surface, so never below the target the caller accepted: lowered
+            # to max(target, its edges' tolerance), which is a cap, not a finding.
+            setter.SetTolerance(face, max(target, floor), TopAbs_FACE)
             force.add(("face", findex))
         if BRep_Tool.Tolerance_s(face) > target:
             faces_over.append(findex)
-    # SameParameter must really hold on every edge this op touched: measured, not asserted
-    for edge in touched:
+    under: list[list[float]] = []
+    for edge in edges:   # a claim at/below target is left alone, but a false one is reported
+        if BRep_Tool.Degenerated_s(edge) or any(edge.IsSame(t) for t in touched):
+            continue
         dev = edge_deviation(edge, _distinct_faces(anc, edge))
         if dev > BRep_Tool.Tolerance_s(edge):
-            raise RuntimeError(f"edge {emap.FindIndex(edge)}: deviation {dev:.3g} exceeds its "
-                               f"tolerance {BRep_Tool.Tolerance_s(edge):.3g} after tightening")
+            under.append([emap.FindIndex(edge), dev])
     params = {"target_rel": target_rel, "target_tolerance": target,
               "max_edge_tolerance_before": before, "over_target": over,
-              "faces_over_target": faces_over}
+              "faces_over_target": faces_over, "under_reported": under}
     return _finish(payload, "tighten_tolerances", params, old, base, base, _no_history(), force, start)
 
 
@@ -469,7 +510,12 @@ def _rebuild_edge_as_intersection(payload: dict) -> dict:
 @register("v4_fix_poles")
 def _fix_poles(payload: dict) -> dict:
     """Run ShapeFix_Face on the faces (wire fixing incl. FixDegenerated, missing seam), through one
-    ReShape context so the rebuilt faces and their containers come back with a history."""
+    ReShape context so the rebuilt faces and their containers come back with a history.
+
+    Every targeted face must have been changed (a face ShapeFix leaves alone is reported, not
+    skipped silently) and every rebuilt face must pass BRepCheck_Analyzer. The rest of the shape
+    may be invalid already; it only may not get worse (`_finish`)."""
+    from OCP.BRepCheck import BRepCheck_Analyzer
     from OCP.ShapeBuild import ShapeBuild_ReShape
     from OCP.ShapeFix import ShapeFix_Face
     from OCP.TopoDS import TopoDS
@@ -480,18 +526,24 @@ def _fix_poles(payload: dict) -> dict:
     old, base = read_brep(payload["brep_path"]), read_brep(payload["brep_path"])
     fmap = _indexed(base, "face")
     ctx = ShapeBuild_ReShape()
-    changed_any = False
+    unchanged: list[int] = []
+    faces: dict[int, Any] = {}
     for index in payload["targets"]["face"]:
-        fixer = ShapeFix_Face(TopoDS.Face_s(fmap.FindKey(index)))
+        face = TopoDS.Face_s(fmap.FindKey(index))
+        faces[index] = face
+        fixer = ShapeFix_Face(face)
         fixer.SetContext(ctx)
-        changed_any = bool(fixer.Perform()) or changed_any
-    if not changed_any:
-        raise RuntimeError("ShapeFix_Face.Perform changed nothing on the targeted faces")
+        if not fixer.Perform():
+            unchanged.append(index)
+    if unchanged:
+        raise RuntimeError(f"ShapeFix_Face.Perform changed nothing on face(s) {unchanged}")
     result = ctx.Apply(base)
+    bad = [i for i, f in faces.items() if not BRepCheck_Analyzer(ctx.Value(f)).IsValid()]
+    if bad:
+        raise RuntimeError(f"fix_poles: the rebuilt face(s) {bad} still fail BRepCheck_Analyzer")
     params = {"faces": list(payload["targets"]["face"]),
               "max_edge_tolerance_before": max_edge_tolerance(base)}
-    return _finish(payload, "fix_poles", params, old, base, result, ctx.History(), set(), start,
-                   must_be_valid=True)
+    return _finish(payload, "fix_poles", params, old, base, result, ctx.History(), set(), start)
 
 
 # ---------------------------------------------------------------- parent half (no OCCT)
