@@ -236,6 +236,8 @@ class V4Profile(Profile):
                 f"v4-sources={','.join(args.sources)}",
                 f"v4-wave-id={args.wave_id}", f"v4-wave-type={args.wave_type}",
                 f"v4-n-shards={args.shards_total}", f"v4-marker-bucket={MARKER_BUCKET}",
+                # a cost-balanced shard plan (wave.py): every shard is cut from it instead of the hash
+                *([f"v4-shard-plan={args.shard_plan_uri}"] if getattr(args, "shard_plan_uri", None) else []),
                 # an ARMS wave (below) only; empty for the re-probe, whose startup command is unchanged
                 *([f"v4-wave={args.wave}", f"v4-arms={','.join(args.arms_list)}", f"v4-split={args.split}",
                    f"v4-split-uri={args.split_uri}", f"v4-h-mm={args.h_mm if args.h_mm is not None else ''}"]
@@ -292,7 +294,8 @@ class V4Profile(Profile):
 
     def required_objects(self, args) -> list[str]:
         return [code_uri(args.commit, args.prefix), f"{args.prefix}/pool.json",
-                *([args.split_uri] if getattr(args, "arms_list", None) else [])]
+                *([args.split_uri] if getattr(args, "arms_list", None) else []),
+                *([args.shard_plan_uri] if getattr(args, "shard_plan_uri", None) else [])]
 
     def required_dirs(self, args) -> list[str]:
         return [f"{args.prefix}/inputs/"]
@@ -700,6 +703,9 @@ def build_parser() -> argparse.ArgumentParser:
                              "a split instead of the re-probe; the shard runs them all under ONE ledger. Needs "
                              "--wave --split-uri --h-mm")
     parser.add_argument("--split-uri", default=None, help="v4 --arms only: gs:// URI of the split json to stage")
+    parser.add_argument("--shard-plan-uri", default=None,
+                        help="v4 only: gs:// URI of a cost-balanced shard plan (evalspec.build_shard_plan); every shard "
+                             "is cut from it instead of the hash partition. Its n must equal --shards-total")
     parser.add_argument("--h-mm", type=float, default=None, help="v4 --arms only: element size for the search arms")
     parser.add_argument("--model-secret", default=None,
                         help="v4 --arms only: the Secret Manager secret holding OPENAI_API_KEY, REQUIRED when an arm "
@@ -760,7 +766,8 @@ def main(argv: list[str] | None = None, *, gates=None) -> int:
     if profile is V3:
         stray = [f for f, v in (("--wave", args.wave), ("--sources", args.sources), ("--pool", args.pool),
                                 ("--files", args.files), ("--wave-type", args.wave_type),
-                                ("--wave-id", args.wave_id)) if v is not None]
+                                ("--wave-id", args.wave_id), ("--shard-plan-uri", args.shard_plan_uri))
+                 if v is not None]
         if stray:
             parser.error(f"{', '.join(stray)} apply to --profile v4 only")
     else:

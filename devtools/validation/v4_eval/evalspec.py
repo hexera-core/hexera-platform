@@ -26,10 +26,12 @@ wave's PROVENANCE after it runs (collect.py --measure).
 from __future__ import annotations
 
 import hashlib
+import heapq
 import json
 import math
 import re
 import sys
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -109,6 +111,52 @@ def shard_of(sha256: str, i: int, n: int) -> bool:
     """Whether a file belongs to shard i of n: by hash, so the partition does not depend on the order
     of the manifest and every shard of a resumed wave takes the same files."""
     return int(hashlib.sha256(f"{SEED}:{sha256}".encode()).hexdigest()[:12], 16) % n == i - 1
+
+
+# --------------------------------------------------------------------------- cost-balanced shards
+#
+# The hash partition (shard_of) balances file COUNT, not time: a few 900 s files decide the slowest shard. A SHARD PLAN
+# assigns files largest-first by PREDICTED cost to the currently lightest shard (LPT). The predictor is file size, the
+# one feature known for every pool file before any CAD is read. A plan is a file; run_arm cuts from it, collect and
+# report check against it, and every shard records its digest so a check against another plan (or none) refuses.
+
+SHARD_PLAN_VERSION = 1
+#: log(wall_s) = a + b * log(bytes), fitted by project_reprobe.py on measure_reprobe.py's sample. Only the ORDER of
+#: predicted costs matters to LPT; the absolute scale is for the printed projection.
+COST_MODEL: tuple[float, float] = (-2.0, 0.40)
+
+
+def predicted_cost_s(size_bytes: int, model: tuple[float, float] = COST_MODEL) -> float:
+    a, b = model
+    return math.exp(a + b * math.log(max(int(size_bytes), 1)))
+
+
+def build_shard_plan(costs: Mapping[str, float], n: int, *, model: tuple[float, float] = COST_MODEL) -> dict:
+    """Largest-first: each file, by descending predicted cost (ties by sha256), onto the lightest shard (ties by
+    index). Deterministic, so a relaunch or a second host rebuilds the same plan from the same costs."""
+    if n < 1:
+        raise ValueError("a shard plan needs n >= 1")
+    heap = [(0.0, i) for i in range(1, n + 1)]
+    assign: dict[str, int] = {}
+    for sha, cost in sorted(costs.items(), key=lambda kv: (-float(kv[1]), kv[0])):
+        load, i = heapq.heappop(heap)
+        assign[sha] = i
+        heapq.heappush(heap, (load + float(cost), i))
+    return {"version": SHARD_PLAN_VERSION, "n": n, "model": list(model), "assign": dict(sorted(assign.items()))}
+
+
+def plan_digest(plan: Mapping[str, Any]) -> str:
+    return hashlib.sha256(json.dumps(plan, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def load_shard_plan(path: str | Path) -> dict:
+    plan = json.loads(Path(path).read_text())
+    if plan.get("version") != SHARD_PLAN_VERSION or not isinstance(plan.get("assign"), dict):
+        raise ValueError(f"{path} is not a v{SHARD_PLAN_VERSION} shard plan")
+    n = int(plan["n"])
+    if any(not 1 <= int(i) <= n for i in plan["assign"].values()):
+        raise ValueError(f"{path}: a shard index outside 1..{n}")
+    return plan
 
 
 def vcpus_of(machine_type: str) -> int:

@@ -17,8 +17,8 @@ def _load(name: str, where: Path = V4, file: str | None = None):
     return mod
 
 
-pr = _load("project_reprobe")
-ev = _load("evalspec")
+pr = _load("project_reprobe_under_test", V4, "project_reprobe")
+ev = _load("v4_evalspec_under_test", V4, "evalspec")
 v3 = _load("v3_evalspec_for_pack", V4.parent / "v3_eval", "evalspec")  # the launcher packs with v3's
 
 

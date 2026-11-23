@@ -257,13 +257,20 @@ def _shas(shard: dict) -> set[str]:
     return {r.sha256 for r in shard["rows"]} | {x["sha256"] for x in shard["excluded"]}
 
 
-def check_partition(shards: list[dict]) -> None:
-    """Every file sits in the shard its hash assigns, and in only one. A violation means the shards were
-    cut from different plans or a shard was run twice with different inputs."""
+def check_partition(shards: list[dict], plan: dict | None = None) -> None:
+    """Every file sits in the shard the wave's partition assigns, and in only one. The partition is the hash, or the
+    cost-balanced shard `plan` whose digest every shard recorded: plan-cut shards checked without their plan, hash-cut
+    shards checked against a plan, or a plan with another digest, are refused (they were not cut from one plan)."""
+    digests = {s["prov"].get("shard_plan") for s in shards}
+    want = evalspec.plan_digest(plan) if plan is not None else None
+    if digests != {want}:
+        raise CollectRefused(f"shard plan mismatch: the shards were cut by {sorted(str(d) for d in digests)}, "
+                             f"checked against {want or 'the hash (no --shard-plan)'}")
     seen: dict[str, str] = {}
     for s in shards:
         for sha in sorted(_shas(s)):
-            if not evalspec.shard_of(sha, s["i"], s["n"]):
+            home = (int(plan["assign"].get(sha, 0)) == s["i"]) if plan is not None else evalspec.shard_of(sha, s["i"], s["n"])
+            if not home:
                 raise CollectRefused(f"{s['dir'].name} holds {sha[:12]}, which belongs to another shard "
                                      "(partition mismatch: the shards were not cut from one plan)")
             if sha in seen:
@@ -329,6 +336,8 @@ def main(argv: list[str] | None = None, *, transport: Transport | None = None) -
     parser.add_argument("--to", default="", help="local directory the --pull fills (required with --pull)")
     parser.add_argument("--status", default="", help="gs://... : per-shard DONE / FAILED / running; no fetch")
     parser.add_argument("--pool", default=str(pool_mod.OUT), help="the pool manifest every file is checked against")
+    parser.add_argument("--shard-plan", default=None,
+                        help="the cost-balanced shard plan the wave was cut by (default: the hash partition)")
     parser.add_argument("--no-pool-check", action="store_true",
                         help="skip the pool completeness check (the wave may be missing files)")
     parser.add_argument("--measure", action="store_true",
@@ -356,7 +365,7 @@ def main(argv: list[str] | None = None, *, transport: Transport | None = None) -
         if args.measure:
             return run_measure(args)
         shards = load_shards(Path(args.src), args.shards)
-        check_partition(shards)
+        check_partition(shards, evalspec.load_shard_plan(args.shard_plan) if args.shard_plan else None)
         if args.no_pool_check:
             print("WARN    --no-pool-check: nothing proves the wave holds every pool file", file=sys.stderr)
         else:
