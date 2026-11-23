@@ -653,3 +653,55 @@ def test_a_trip_inside_one_passage_rescue_keeps_the_passage_and_does_not_end_the
     with det.recording() as rec2:
         _rescue(ws2, dict(_BROKEN), dict(_NOT_FIXED), [], optimise_rc=-1)
     assert [t["rule"] for t in rec2.guard_trips] == ["TIME-3"] and ends_attempt(rec2.guard_trips[0])
+
+
+def _fid(missed: float) -> dict:
+    return {"verdict": "rebuild", "verdicts": {"cad_to_mesh": "rebuild"},
+            "surface": {"cad_to_mesh": {"cad_missed_share": missed}, "mesh_to_cad": {"wall_off_share": 0.0}},
+            "volume": {}}
+
+
+def test_a_mesh_that_misses_most_of_the_cad_is_not_rescued(tmp_path):
+    """TIME-15 (abc 99768, c2e14_p35b): ~30 min of rescue on a mesh the CAD check then refused at 55.0% of the CAD
+    surface not reached. A rescue moves points on the same cells; it cannot bring that surface back. Checked first, it
+    is not run, and the attempt ends with the CAD check's own words, standing over the mesh."""
+    from meshpipeline.application.final_result import _cause_account
+    from meshpipeline.engines.gates import cause_of, facts_of
+    from meshpipeline.engines.preflight import read_refusal
+    from meshpipeline.pipeline.executor import refusal_stands_over_mesh
+    ws, calls = _ws(tmp_path), []
+    out = RS.rescue(ws, dict(_BROKEN), bashrc="/dev/null", deadline=time.monotonic() + 3600.0, mesher_seconds=0.0,
+                    measure=_measure(dict(_NOT_FIXED)), runner=_runner(calls), env={}, fidelity=lambda w: _fid(0.55))
+    assert calls == [] and out["rescue"]["rule"] == RS.FIDELITY_FIRST_RULE
+    first = out["rescue"]["fidelity_first"]
+    assert first["missed_share"] == 0.55 and "55.0%" in first["words"]
+    assert "No second try" in out["rescue"]["note"] and "cannot bring that surface back" in out["rescue"]["note"]
+    ref = RS.fidelity_first_refusal(first)
+    assert refusal_stands_over_mesh(ref)
+    ref.write(ws)
+    fb = read_refusal(ws).as_feedback()
+    _, what, _ = _cause_account("cad_fidelity", cause_of(fb), facts_of(fb), "cfmesh")
+    assert what.startswith("The mesh was not delivered: the mesh does not follow your CAD: About 55.0%")
+
+
+@pytest.mark.parametrize("missed", [0.09, 0.3, 0.5, None])
+def test_a_mesh_within_reach_of_the_cad_is_rescued_as_before(tmp_path, missed):
+    """TIME-15 never skips a rescue at or below the not-the-part bar, nor on a check that could not measure."""
+    ws, calls = _ws(tmp_path), []
+    fid = (lambda w: _fid(missed)) if missed is not None else (lambda w: {"verdict": "unmeasured"})
+    out = RS.rescue(ws, dict(_BROKEN), bashrc="/dev/null", deadline=time.monotonic() + 3600.0, mesher_seconds=0.0,
+                    measure=_measure(dict(_NOT_FIXED)), runner=_runner(calls), env={}, fidelity=fid)
+    assert calls and "fidelity_first" not in out["rescue"]
+
+
+def test_the_cad_check_first_is_asked_only_before_a_long_rescue(tmp_path):
+    from meshpipeline.pipeline.engine_fallback import NOT_THE_PART_SHARE
+    asked: list = []
+    ws = _ws(tmp_path)
+    small = {**_BROKEN, "cells": 100}
+    assert RS.planned_rescue_seconds(100) < RS.FIDELITY_FIRST_MIN_S <= RS.planned_rescue_seconds(_BROKEN["cells"])
+    RS.rescue(ws, small, bashrc="/dev/null", deadline=time.monotonic() + 3600.0, mesher_seconds=0.0,
+              measure=_measure(dict(_NOT_FIXED)), runner=_runner([]), env={},
+              fidelity=lambda w: asked.append(w) or _fid(0.9))
+    assert asked == []
+    assert RS.FIDELITY_FIRST_MISSED_SHARE == NOT_THE_PART_SHARE

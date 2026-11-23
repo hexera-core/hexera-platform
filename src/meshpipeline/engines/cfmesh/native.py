@@ -229,6 +229,30 @@ def _watches(*watches):
 POST_MESH_RESERVE_S = 120.0
 
 
+def as_built_fidelity(ws: Path, *, bashrc: str, flow: str) -> dict | None:
+    """TIME-15: the CAD check's own measure (engines/cad_fidelity.measure) of the mesh as it stands in `ws`, its boundary
+    written by foamToVTK first (removed again when this wrote it). None when it cannot be measured."""
+    from meshpipeline.engines.cad_fidelity import measure
+    from meshpipeline.engines.cfmesh.foam_exec import export_volume_vtk
+    ws = Path(ws)
+    had = (ws / "VTK").exists()
+    try:
+        export_volume_vtk(ws, bashrc=bashrc)
+        if not any(ws.glob("VTK/**/boundary/*.vtp")):
+            return None
+        return measure(ws, intake_patches=[], flow=flow)
+    finally:
+        if not had:
+            shutil.rmtree(ws / "VTK", ignore_errors=True)
+
+
+def _fidelity_of(bashrc: str, flow: str):
+    """The TIME-15 check the rescue asks for: only an internal flow is held to all of its staged boundary."""
+    if flow != "internal":
+        return None
+    return lambda w: as_built_fidelity(w, bashrc=bashrc, flow=flow)
+
+
 def _rescued(ws: Path, q: dict, *, bashrc: str, timing: dict, t0: float, timeout: int,
              is_2d: bool) -> dict:
     """The quality record after a near-edge rescue (engines/cfmesh/rescue.py) - `q` unchanged
@@ -244,8 +268,14 @@ def _rescued(ws: Path, q: dict, *, bashrc: str, timing: dict, t0: float, timeout
                                       + POST_MESH_RESERVE_S)
     mesher_s = float(timing.get(f"{CARTESIAN_2D_MESH if is_2d else CARTESIAN_MESH}_s") or 0.0)
     try:
+        from meshpipeline.engines.workspace_facts import read_flow_topology
+        flow = read_flow_topology(ws)
+    except Exception:  # noqa: BLE001 - an unread flow asks for no CAD check first
+        flow = ""
+    try:
         out = rescue(ws, q, bashrc=bashrc, deadline=deadline, mesher_seconds=mesher_s,
-                     check_seconds=float(timing.get("checkMesh_s") or 0.0), is_2d=is_2d, limit=limit)
+                     check_seconds=float(timing.get("checkMesh_s") or 0.0), is_2d=is_2d, limit=limit,
+                     fidelity=_fidelity_of(bashrc, flow))
     except Exception:  # noqa: BLE001 - a second chance must never lose the first mesh
         logger.warning("cfMesh rescue errored; the mesh as built stands", exc_info=True)
         return q
@@ -286,7 +316,9 @@ def rescue_passage(sub: Path, *, bashrc: str, deadline: float) -> dict | None:
     try:
         # TIME-14: a guard trip in here stops this passage's rescue only - the passage is merged as built and the
         # attempt goes on to finish (and have judged) its own mesh
-        return rescue(sub, q, bashrc=bashrc, deadline=deadline, mesher_seconds=0.0, step_only=True)
+        # TIME-15: a passage (always an internal flow) that misses most of its own surface is merged as built
+        return rescue(sub, q, bashrc=bashrc, deadline=deadline, mesher_seconds=0.0, step_only=True,
+                      fidelity=_fidelity_of(bashrc, "internal"))
     except Exception:  # noqa: BLE001 - the rescue keeps the best mesh so far in place; the passage is merged with it
         logger.warning("cfMesh: %s - the passage rescue in %s failed", PASSAGE_RESCUE_RULE, sub.name, exc_info=True)
         return q
@@ -565,6 +597,11 @@ def _run_cartesian_mesh_local(workspace, *, bashrc: str = _DEFAULT_BASHRC,
                 except Exception:  # noqa: BLE001 - evidence, not a verdict
                     logger.warning("layer census after meshing failed; omitted", exc_info=True)
                 out["quality"] = q
+                _first = (q.get("rescue") or {}).get("fidelity_first") if isinstance(q.get("rescue"), dict) else None
+                if _first:
+                    # TIME-15: the mesh as built misses more of the CAD than a rescue can bring back - the builder
+                    # ends the attempt with the CAD check's own words (agents/builder/tools/meshing)
+                    out["fidelity_first"] = dict(_first)
                 (ws / QUALITY_FILE).write_text(json.dumps(q, default=str))
         except Exception:  # noqa: BLE001 - a measurement must never lose a finished mesh
             logger.warning("checkMesh after meshing failed; quality omitted", exc_info=True)

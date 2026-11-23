@@ -666,6 +666,17 @@ def _run_and_judge(ctx: BuilderToolContext, prepared: PreparedMeshRun) -> dict:
                 "guidance": (f"Not meshed: {_words}. Do NOT run_mesh again and do NOT reconfigure - end your "
                              "turn now; the run moves on to the next engine."),
                 "log_tail": res.get("log_tail", "")}
+    if res.get("fidelity_first"):
+        # TIME-15: the mesh as built misses more of the CAD than a rescue can bring back - not rescued, and refused in
+        # the CAD check's own words; that refusal stands over the mesh on disk (pipeline/executor)
+        from meshpipeline.engines.cfmesh.rescue import fidelity_first_refusal
+        _r = fidelity_first_refusal(dict(res["fidelity_first"]))
+        _r.write(workspace)
+        logger.warning("run_mesh: %s", _r.builder_text)
+        return {"success": False, "fidelity_first": dict(res["fidelity_first"]), HANDS_OFF: True,
+                "guidance": (f"Not delivered: {_r.builder_text}. Do NOT run_mesh again and do NOT reconfigure - end "
+                             "your turn now."),
+                "log_tail": res.get("log_tail", "")}
     from meshpipeline.engines.cfmesh.native import PORT_REGION_DROPPED
     if not res.get("timed_out") and PORT_REGION_DROPPED in str(res.get("log_tail") or ""):
         # INS-29: AN OPENING LANDED IN A REGION THE MESHER DROPPED, after the passage was meshed finer: the same

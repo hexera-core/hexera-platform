@@ -217,6 +217,78 @@ def remesh_first(cells: float | None) -> bool:
     return r is not None and o is not None and r < o
 
 
+#: TIME-15: the CAD check runs on the mesh as built before a rescue whose planned work (re-mesh + optimiser, at their
+#: slow rates) is at least this - a step's least guard; the check itself is one foamToVTK and one surface measure
+FIDELITY_FIRST_MIN_S = STEP_FLOOR_S
+#: TIME-15: a mesh as built that misses more than this share of the CAD surface the flow reaches is beyond any rescue:
+#: LAD-cfd-8's "not the part" bar (pipeline/engine_fallback.NOT_THE_PART_SHARE), past which no refused mesh is ever
+#: delivered. The fidelity gate refuses past 8% (cad_fidelity.CAD_MISSED_REBUILD); a rescue would have to bring back
+#: over 42% of the CAD surface with the same cells, and it only moves points within a cell or re-fits layers
+FIDELITY_FIRST_MISSED_SHARE = 0.5
+FIDELITY_FIRST_RULE = "TIME-15"
+
+
+def planned_rescue_seconds(cells: float | None) -> float | None:
+    """The rescue's planned work in seconds at its slow rates (TIME-15): the protective re-mesh and the optimiser."""
+    parts = [w.planned_seconds for w in (remesh_work(cells, ceiling_s=1e9), optimise_work(cells, ceiling_s=1e9))]
+    known = [float(p) for p in parts if p is not None]
+    return sum(known) if known else None
+
+
+def beyond_rescue(fid: dict | None) -> dict | None:
+    """TIME-15: {"missed_share", "words"} when the CAD check's record `fid` of the mesh as built misses more of the
+    CAD surface than FIDELITY_FIRST_MISSED_SHARE; None otherwise (unmeasured, or within reach)."""
+    if not isinstance(fid, dict):
+        return None
+    c2m = (fid.get("surface") or {}).get("cad_to_mesh") if isinstance(fid.get("surface"), dict) else None
+    missed = _num((c2m or {}).get("cad_missed_share")) if isinstance(c2m, dict) else None
+    if missed is None or missed <= FIDELITY_FIRST_MISSED_SHARE:
+        return None
+    from meshpipeline.engines.cad_fidelity import concerns
+    words = " ".join(concerns(fid)) or f"About {missed * 100:.1f}% of your CAD surface is not reached by the mesh."
+    return {"missed_share": round(missed, 4), "words": words}
+
+
+def fidelity_first_refusal(first: dict):
+    """TIME-15: the refusal an attempt ends with when its mesh as built was beyond any rescue - the CAD check's own
+    gate and words (engines/cad_fidelity.gate_cad_fidelity), standing over the mesh on disk (pipeline/executor
+    refusal_stands_over_mesh). No retry or other engine changes it (LAD-cfd-8: nothing bears on cad_fidelity)."""
+    from meshpipeline.contracts.failure_cause import FailureCause
+    from meshpipeline.engines.preflight import PreflightRefusal
+    detail = f"the mesh does not follow your CAD: {first.get('words') or ''}".strip()
+    return PreflightRefusal(
+        gate="cad_fidelity", cause=FailureCause.PATCH_NOT_CAPTURED.value,
+        builder_text=(f"[FIDELITY] {detail} The mesh was checked as built, before the rescue: a rescue moves points "
+                      "on the same cells and cannot bring that surface back."),
+        facts={"fidelity_first": True, "after_build": True, "deterministic": True, "rule": FIDELITY_FIRST_RULE,
+               "detail": detail, "fidelity": first.get("fidelity"), "missed_share": first.get("missed_share"),
+               "meshers_started": 1})
+
+
+def _fidelity_first(ws: Path, cells: float, fidelity: Callable[[Path], dict | None] | None) -> dict | None:
+    if fidelity is None:
+        return None
+    planned = planned_rescue_seconds(cells)
+    if planned is None or planned < FIDELITY_FIRST_MIN_S:
+        return None
+    try:
+        fid = fidelity(ws)
+    except Exception:  # noqa: BLE001 - a check that could not run never skips the rescue
+        logger.warning("cfMesh rescue: %s - the CAD check on the mesh as built could not run", FIDELITY_FIRST_RULE,
+                       exc_info=True)
+        return None
+    gone = beyond_rescue(fid)
+    if gone is None:
+        return None
+    gone.update(planned_s=round(planned, 1), fidelity={k: (fid or {}).get(k) for k in ("verdicts", "surface",
+                                                                                         "volume")},
+                skipped=(f"the mesh as built misses {gone['missed_share'] * 100:.1f}% of the CAD surface, more than "
+                         f"{FIDELITY_FIRST_MISSED_SHARE * 100:.0f}%, and a rescue moves points on the same cells - it "
+                         f"cannot bring that surface back ({FIDELITY_FIRST_RULE}; about {planned / 60:.0f} min of "
+                         "planned rescue not run)"))
+    return gone
+
+
 def near_edge(q: dict | None, limit: float | None = None) -> str:
     """Why this mesh is at its validity edge, in words ('' when it is not). `limit`: a non-orthogonality the user
     asked for under ours (CFDREQ-5, engines/cfd_requirements.non_ortho_limit) - the engine's own levers are tried
@@ -342,7 +414,8 @@ def rescue(workspace, q: dict, *, bashrc: str, deadline: float, mesher_seconds: 
            is_2d: bool = False, limit: float | None = None,
            layers: Callable[..., float | None] | None = None,
            passages: Callable[..., tuple[int, bool, str]] | None = None,
-           step_only: bool = False) -> dict:
+           step_only: bool = False,
+           fidelity: Callable[[Path], dict | None] | None = None) -> dict:
     """The quality record of the mesh left in `workspace` after the rescue: `q` itself when the
     mesh is not near its edge (or it is past a rescue's cell limit), else the best measured
     candidate's record, with `rescue` saying what was tried and kept. Each step runs its PLANNED
@@ -356,7 +429,10 @@ def rescue(workspace, q: dict, *, bashrc: str, deadline: float, mesher_seconds: 
     meshed and merged again (`passages`, engines/cfmesh/native.mesh_passages) before it is measured - the re-mesh
     reads the case's own surface, the first passage only (abc 99768: outlet_3 lost in every rescued mesh).
     `step_only` (TIME-14): the rescue of ONE passage before it is merged (INS-31) - a trip with nothing valid in hand
-    stops this rescue only, the passage goes on as built and the attempt is NOT ended (`guard_step_only`)."""
+    stops this rescue only, the passage goes on as built and the attempt is NOT ended (`guard_step_only`).
+    `fidelity` (TIME-15): the CAD check's measure of the mesh as it stands (engines/cad_fidelity.measure), asked only
+    before a rescue whose planned work is at least FIDELITY_FIRST_MIN_S; a mesh that misses more of the CAD than
+    FIDELITY_FIRST_MISSED_SHARE is not rescued (`fidelity_first` in the record)."""
     why = near_edge(q, limit)
     if not why:
         return q
@@ -370,6 +446,12 @@ def rescue(workspace, q: dict, *, bashrc: str, deadline: float, mesher_seconds: 
             f"{int(cells):,} cells is over the {RESCUE_MAX_CELLS:,} a rescue may copy")})
     if not (ws / _POLYMESH / "owner").exists():
         return q
+    # TIME-15: THE CAD CHECK FIRST, before a long rescue. A rescue moves points and re-fits layers on the same cells;
+    # it never brings back CAD surface the mesh as built does not reach
+    gone = _fidelity_first(ws, cells, fidelity)
+    if gone:
+        return _done(ws, q, {**record, "skipped": gone["skipped"], "rule": FIDELITY_FIRST_RULE,
+                             "fidelity_first": gone})
     held = faced_patches(ws / _POLYMESH) or set()
 
     def _lost() -> list[str]:

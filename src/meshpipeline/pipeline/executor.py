@@ -166,9 +166,11 @@ def _broken_mesh(workspace, before: tuple[int, int] | None) -> list[str]:
 
 def refusal_stands_over_mesh(refusal) -> bool:
     """INS-36: a refusal written AFTER a mesh was built about that mesh (an opening it lost, in the plan-time stop's
-    words) is the attempt's verdict - the mesh on disk is not judged over it again into a manifest error."""
+    words) is the attempt's verdict - the mesh on disk is not judged over it again into a manifest error. TIME-15: so is
+    the CAD check's refusal of a mesh as built that missed more of the CAD than a rescue could bring back (it was not
+    rescued, so its cells were never meant to be judged)."""
     facts = getattr(refusal, "facts", None) or {}
-    return bool(facts.get("after_build") and facts.get("port_region_dropped"))
+    return bool(facts.get("after_build") and (facts.get("port_region_dropped") or facts.get("fidelity_first")))
 
 
 def _attempt_ending(trips) -> list[dict]:
