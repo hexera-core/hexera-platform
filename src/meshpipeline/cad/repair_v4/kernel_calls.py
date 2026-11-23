@@ -49,3 +49,7 @@ if os.environ.get("HEXERA_TEST_KERNEL_FNS") == "1":
 # Registered for their side effect on REGISTRY; the workspace's kernel half. At the foot so that
 # `register` and `REGISTRY` exist before the module that uses them is imported.
 from meshpipeline.cad.repair_v4 import ws_kernel  # noqa: E402,F401
+
+# TEMPORARY (Task 15): registers the shell ops' kernel functions in every worker. Task 11's
+# ops/__init__ imports every op module, which makes this line redundant - delete it at integration.
+from meshpipeline.cad.repair_v4.ops import shells  # noqa: E402,F401
