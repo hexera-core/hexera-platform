@@ -11,20 +11,23 @@ import json
 import math
 import re
 import sys
+import warnings
 from pathlib import Path
 
 import pytest
 
 pytest.importorskip("OCP.BRepCheck", reason="the CAD kernel is a native-tier dependency")
 
-from OCP.BRep import BRep_Tool  # noqa: E402
+from OCP.BRep import BRep_Builder, BRep_Tool  # noqa: E402
 from OCP.BRepAlgoAPI import BRepAlgoAPI_Common, BRepAlgoAPI_Cut  # noqa: E402
 from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform  # noqa: E402
 from OCP.BRepCheck import BRepCheck_Analyzer  # noqa: E402
 from OCP.BRepFilletAPI import BRepFilletAPI_MakeFillet  # noqa: E402
 from OCP.BRepGProp import BRepGProp  # noqa: E402
 from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox, BRepPrimAPI_MakeCylinder  # noqa: E402
-from OCP.gp import gp_Ax1, gp_Ax2, gp_Dir, gp_Pnt, gp_Trsf  # noqa: E402
+from OCP.BRepTools import BRepTools  # noqa: E402
+from OCP.GeomAPI import GeomAPI_ProjectPointOnSurf  # noqa: E402
+from OCP.gp import gp_Ax1, gp_Ax2, gp_Dir, gp_Pnt, gp_Trsf, gp_Vec2d  # noqa: E402
 from OCP.GProp import GProp_GProps  # noqa: E402
 from OCP.IFSelect import IFSelect_RetDone  # noqa: E402
 from OCP.ShapeAnalysis import ShapeAnalysis_ShapeTolerance  # noqa: E402
@@ -151,6 +154,41 @@ def _face_exists(path: Path, centre, area, tol=1e-3) -> bool:
     return False
 
 
+#: The spec's deviation scale (the repair tier's CAD_REPAIR_MAX_DEVIATION_RATIO is 0.001 of the diagonal): a defect
+#: measured in geometry should exceed what the repair tier itself treats as noise.
+DEVIATION_RATIO = 1e-3
+
+
+def _diag(shape) -> float:
+    from OCP.Bnd import Bnd_Box
+    from OCP.BRepBndLib import BRepBndLib
+    box = Bnd_Box()
+    BRepBndLib.Add_s(shape, box)
+    x0, y0, z0, x1, y1, z1 = box.Get()
+    return math.dist((x0, y0, z0), (x1, y1, z1))
+
+
+def _surface_deviation(src_path: Path, out_path: Path, centre) -> float:
+    """Sampled distance from the SOURCE face's surface to the damaged file's surface for the face named by `centre`."""
+    sf = min(_all(_read(src_path), TopAbs_FACE), key=lambda f: math.dist(_centre(f)[0], centre))
+    of = min(_all(_read(out_path), TopAbs_FACE), key=lambda f: math.dist(_centre(f)[0], centre))
+    u0, u1, v0, v1 = BRepTools.UVBounds_s(TopoDS.Face_s(sf))
+    s_surf, o_surf = BRep_Tool.Surface_s(TopoDS.Face_s(sf)), BRep_Tool.Surface_s(TopoDS.Face_s(of))
+    worst = 0.0
+    for a in range(6):
+        for b in range(6):
+            p = s_surf.Value(u0 + (u1 - u0) * a / 5, v0 + (v1 - v0) * b / 5)
+            worst = max(worst, GeomAPI_ProjectPointOnSurf(p, o_surf).LowerDistance())
+    return worst
+
+
+def _vertex_drift(src_path: Path, out_path: Path) -> float:
+    """Largest distance from any source vertex to the nearest vertex of the damaged file."""
+    out_pts = [BRep_Tool.Pnt_s(TopoDS.Vertex_s(v)) for v in _all(_read(out_path), TopAbs_VERTEX)]
+    return max(min(p.Distance(q) for q in out_pts)
+               for p in (BRep_Tool.Pnt_s(TopoDS.Vertex_s(v)) for v in _all(_read(src_path), TopAbs_VERTEX)))
+
+
 @pytest.fixture(scope="module")
 def base(src) -> dict:
     return _probe(src)
@@ -163,14 +201,18 @@ def test_the_fixture_is_clean(base):
 
 # ---- per kind: the damage is real in the file, and the label names it ---------------------------------------------
 
-def test_loose_reapprox(cases, base):
+def test_loose_reapprox(cases, base, src):
     case = cases["loose_reapprox"]
     p = _probe(case.path)
-    assert p["valid"] and p["max_tol"] > 1e-3 > base["max_tol"]          # edges no longer lie on their refitted faces
+    # QUARANTINED kind (see inject.py): this proves the surface really moved, not that the file fails clean-STEP.
+    assert p["max_tol"] > 1e-3 > base["max_tol"]
     ents = case.label["entities"]
     assert ents and all(e["type"] == "face" for e in ents)
     for e in ents:                                                       # the damage is on the NAMED faces
         assert _nearest_face_edge_tol(case.path, e["center"]) > 1e-3
+        # Measured 0.031 on a 70 mm diagonal: the surface really moved, yet LESS than DEVIATION_RATIO * diagonal (0.07),
+        # the scale the repair tier itself treats as noise. That is why this kind stays quarantined.
+        assert _surface_deviation(src, case.path, e["center"]) > 1e-2
 
 
 def test_unsew_perturb(cases, base):
@@ -184,7 +226,7 @@ def test_unsew_perturb(cases, base):
 def test_tolerance_inflate(cases, base):
     case = cases["tolerance_inflate"]
     p = _probe(case.path)
-    assert p["valid"] and p["solids"] == 1 and p["max_tol"] > 1e-3 > base["max_tol"]
+    assert p["solids"] == 1 and p["max_tol"] > 1e-3 > base["max_tol"]      # QUARANTINED kind: tolerance-only damage
     verts = [e for e in case.label["entities"] if e["type"] == "vertex"]
     assert verts and any(e["type"] == "edge" for e in case.label["entities"])
     shape = _read(case.path)
@@ -196,9 +238,38 @@ def test_tolerance_inflate(cases, base):
 
 def test_pcurve_corrupt_is_infeasible_and_says_so(src, out_dir):
     # Pcurve damage does not survive OCCT's STEP reader (it rebuilds pcurves on import), so the injector must refuse
-    # rather than write a file that reads back clean. See the injector's docstring for what was tried.
+    # rather than write a file that reads back clean.
     with pytest.raises(inj.InjectionInfeasible, match="rebuilds pcurves"):
         inj.inject(src, "pcurve_corrupt", SEED, out_dir)
+
+
+def test_infeasible_is_not_a_not_applicable_skip():
+    assert not issubclass(inj.InjectionInfeasible, inj.InjectionNotApplicable)
+    assert not issubclass(inj.InjectionNotApplicable, inj.InjectionInfeasible)
+
+
+def test_canary_pcurve_corruption_is_healed_by_the_step_reader(src, tmp_path):
+    """Pins the negative result behind pcurve_corrupt. If this fails, the reader no longer heals pcurves (or the
+    config changed) and pcurve_corrupt may have become feasible: revisit the injector."""
+    shape = inj.read_step(src)
+    builder, corrupted = BRep_Builder(), 0
+    for f in _all(shape, TopAbs_FACE):
+        face = TopoDS.Face_s(f)
+        u0, u1, v0, v1 = BRepTools.UVBounds_s(face)
+        for e in _all(face, TopAbs_EDGE):
+            edge = TopoDS.Edge_s(e)
+            pc = BRep_Tool.CurveOnSurface_s(edge, face, 0.0, 0.0)
+            if pc is None:
+                continue
+            moved = pc.Copy()
+            moved.Translate(gp_Vec2d((u1 - u0) * 0.1, (v1 - v0) * 0.1))
+            builder.UpdateEdge(edge, moved, face, BRep_Tool.Tolerance_s(edge))
+            corrupted += 1
+    assert corrupted and not BRepCheck_Analyzer(shape).IsValid()         # the corruption is real in memory
+    written = tmp_path / "pcurve_corrupt.step"
+    inj.write_step(shape, written)
+    p = _probe(written)
+    assert p["valid"] and p["max_tol"] < 1e-6                            # ...and gone once read back
 
 
 def test_seam_variant(cases, base):
@@ -241,10 +312,11 @@ def test_assembly_overlap(cases, base):
     assert [e["body_index"] for e in case.label["entities"]] == [0, 1]
 
 
-def test_precision_truncate(cases, base):
+def test_precision_truncate(cases, base, src):
     case = cases["precision_truncate"]
     p = _probe(case.path)
-    assert p["max_tol"] > 1e-3 > base["max_tol"]                         # vertices and curves no longer meet exactly
+    assert p["max_tol"] > 1e-3 > base["max_tol"]                         # QUARANTINED kind: tolerance-only damage
+    assert _vertex_drift(src, case.path) > DEVIATION_RATIO * _diag(_read(src)) / 10   # the cut coordinates really moved
     places = case.label["decimals"]
     ents = case.label["entities"]
     assert ents
@@ -308,9 +380,32 @@ def test_inapplicable_kind_is_refused_not_faked(tmp_path):
         inj.inject(plain, "loose_reapprox", SEED, tmp_path)
 
 
+def test_quarantine_is_explicit_and_labelled(cases):
+    assert set(inj.QUARANTINED_KINDS) == {"loose_reapprox", "tolerance_inflate", "seam_variant", "precision_truncate"}
+    assert not set(inj.DEFAULT_KINDS) & set(inj.QUARANTINED_KINDS) and "pcurve_corrupt" not in inj.DEFAULT_KINDS
+    assert set(inj.DEFAULT_KINDS) == {"unsew_perturb", "small_entities", "face_delete", "assembly_overlap", "iges_roundtrip"}
+    for kind, case in cases.items():
+        assert case.label["status"] == inj.KIND_STATUS[kind]
+
+
+def test_a_noop_injection_is_refused_not_written(tmp_path):
+    # integer coordinates: truncating them changes nothing, so there is nothing to label
+    plain = _write_step(BRepPrimAPI_MakeBox(10.0, 10.0, 10.0).Shape(), tmp_path / "box.step")
+    with pytest.raises(inj.InjectionNotApplicable, match="nothing"):
+        inj.inject(plain, "precision_truncate", SEED, tmp_path)
+    assert not (tmp_path / "box.precision_truncate.1.step").exists()
+
+
+def test_precision_truncate_reads_a_source_whose_exporter_wraps_lines(src, tmp_path):
+    wrapped = tmp_path / "wrapped.step"
+    wrapped.write_text(re.sub(r"(CARTESIAN_POINT\('',)\(", r"\1\n  (", src.read_text()).replace(",", ",\n   ", 40))
+    case = inj.inject(wrapped, "precision_truncate", SEED, tmp_path)
+    assert case.label["entities"]
+
+
 # ---- calibrate ----------------------------------------------------------------------------------------------------
 
-def _fake(kind, observed=None):
+def _case(kind, observed=None):
     label = {"observed_family": observed} if observed else {}
     return inj.InjectedCase(path=Path("x.step"), kind=kind, label=label)
 
@@ -324,25 +419,43 @@ def test_target_histogram_is_the_real_corpus_histogram():
     assert hist["overlapping_facets"] > hist["plc_intersection"] > 0.05
 
 
-def test_calibrate_reproduces_the_target_over_reachable_families():
+def test_calibrate_from_observed_families_reproduces_the_target_it_can_reach():
+    # Observed families chosen here, independent of any prior; the expected weights are worked out by hand from the
+    # real histogram: two kinds share one family, the others are alone, the unreached families are reported dropped.
     hist = inj.target_histogram(CORPUS)
-    cases = [_fake(k) for k in inj.KINDS]
-    weights = inj.calibrate(cases, hist)
-    assert set(weights) == set(inj.KINDS) and sum(weights.values()) == pytest.approx(1.0)
-    induced: dict[str, float] = {}
-    for kind, w in weights.items():
-        induced[inj.KIND_FAMILY_PRIOR[kind]] = induced.get(inj.KIND_FAMILY_PRIOR[kind], 0.0) + w
-    reach = sum(hist[f] for f in induced)
-    for family, share in induced.items():
-        assert share == pytest.approx(hist[family] / reach)
+    cases = [_case("face_delete", "no_volume"), _case("unsew_perturb", "open_loop"),
+             _case("assembly_overlap", "plc_intersection"), _case("small_entities", "plc_intersection")]
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")                                   # observed cases must not warn
+        weights = inj.calibrate(cases, hist)
+    reach = hist["no_volume"] + hist["open_loop"] + hist["plc_intersection"]
+    assert weights == {"face_delete": pytest.approx(hist["no_volume"] / reach),
+                       "unsew_perturb": pytest.approx(hist["open_loop"] / reach),
+                       "assembly_overlap": pytest.approx(hist["plc_intersection"] / reach / 2),
+                       "small_entities": pytest.approx(hist["plc_intersection"] / reach / 2)}
+    assert weights.basis == "observed"
+    assert weights.dropped_mass == pytest.approx(1.0 - reach)
+    assert weights.dropped_mass > 0.3 and "overlapping_facets" in weights.dropped_families   # the large unmatched share
 
 
-def test_observed_family_overrides_the_prior():
-    hist = {"no_volume": 0.5, "plc_intersection": 0.5}
-    weights = inj.calibrate([_fake("face_delete", "plc_intersection"), _fake("assembly_overlap")], hist)
-    assert weights == {"face_delete": pytest.approx(0.5), "assembly_overlap": pytest.approx(0.5)}   # one family, shared
+def test_calibrate_says_so_when_it_leans_on_the_prior():
+    hist = inj.target_histogram(CORPUS)
+    with pytest.warns(UserWarning, match="no observed_family"):
+        weights = inj.calibrate([_case("face_delete"), _case("unsew_perturb", "open_loop")], hist)
+    assert weights.basis == "mixed"
+    with pytest.warns(UserWarning):
+        assert inj.calibrate([_case("face_delete")], hist).basis == "prior"
+
+
+def test_calibrate_refuses_a_kind_with_neither_observation_nor_prior():
+    hist = inj.target_histogram(CORPUS)
+    for kind in inj.QUARANTINED_KINDS:
+        assert kind not in inj.KIND_FAMILY_PRIOR
+        with pytest.raises(ValueError, match="no prior"):
+            inj.calibrate([_case(kind)], hist)
+    assert "pcurve_corrupt" not in inj.KIND_FAMILY_PRIOR
 
 
 def test_calibrate_refuses_when_nothing_is_reachable():
     with pytest.raises(ValueError):
-        inj.calibrate([_fake("face_delete")], {"plc_intersection": 1.0})
+        inj.calibrate([_case("face_delete", "no_volume")], {"plc_intersection": 1.0})

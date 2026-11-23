@@ -4,6 +4,18 @@
 # Design 7.2: for an injected file "the original" used for fidelity is the DAMAGED INPUT (`InjectedCase.path`),
 # never the clean source. The product never sees the clean source; it is consulted here only to label the
 # defect (`label["clean_source"]`, `label["entities"]`), and `InjectedCase.fidelity_reference` says so.
+#
+# EVIDENCE STATUS (`KIND_STATUS`, also written to every label as `label["status"]`):
+#   structural   the damage is a structural fault the re-read file shows directly (open shell, missing face, two
+#                interpenetrating solids, a tiny feature, an IGES round trip). Verified in the native tests.
+#   quarantined  loose_reapprox, tolerance_inflate, seam_variant, precision_truncate. After the STEP reader's own
+#                healing, all four are one observable defect: a vertex or edge off its curve/surface, which the reader
+#                answers by raising a tolerance. The files read back as valid solids; that is not shown to fail the
+#                clean-STEP definition (layer 1 requires valid, no free edges, no small-edge errors; layer 3 measures
+#                against the damaged input, where the injected deviation is invisible). INCLUSION IN THE BENCHMARK IS
+#                GATED ON LAYER-2 EVIDENCE (a gmsh probe that actually fails on the injected file). Until then,
+#                `DEFAULT_KINDS` excludes them and Task 8 must too.
+#   infeasible   pcurve_corrupt: no damage survives the STEP reader (pinned by a canary test); inject() raises.
 from __future__ import annotations
 
 import json
@@ -11,6 +23,7 @@ import math
 import random
 import re
 import tempfile
+import warnings
 from collections import Counter
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -45,12 +58,24 @@ KINDS: tuple[str, ...] = (
 )
 
 
+KIND_STATUS: dict[str, str] = {
+    "loose_reapprox": "quarantined", "unsew_perturb": "structural", "tolerance_inflate": "quarantined",
+    "pcurve_corrupt": "infeasible", "seam_variant": "quarantined", "small_entities": "structural",
+    "face_delete": "structural", "assembly_overlap": "structural", "precision_truncate": "quarantined",
+    "iges_roundtrip": "structural",
+}
+QUARANTINED_KINDS: tuple[str, ...] = tuple(k for k in KINDS if KIND_STATUS[k] == "quarantined")
+#: What a benchmark build should draw from by default: kinds whose damage is shown, not merely claimed.
+DEFAULT_KINDS: tuple[str, ...] = tuple(k for k in KINDS if KIND_STATUS[k] == "structural")
+
+
 class InjectionNotApplicable(ValueError):
-    """The source has nothing this kind can damage (e.g. seam_variant on a part with no periodic face)."""
+    """This source has nothing this kind can damage (e.g. seam_variant on a part with no cylindrical seam)."""
 
 
-class InjectionInfeasible(InjectionNotApplicable):
-    """The kind cannot produce damage that survives writing the file and reading it back."""
+class InjectionInfeasible(ValueError):
+    """The kind can never produce damage that survives writing and re-reading. A sibling of InjectionNotApplicable,
+    not a subclass: a caller that skips "nothing to damage in THIS source" must not skip this kind for every source."""
 
 
 @dataclass(frozen=True)
@@ -322,7 +347,10 @@ def _small_entities(shape, rng, work):
     adaptor = BRepAdaptor_Surface(face)
     p, n = adaptor.Value(u, v), adaptor.Plane().Axis().Direction()
     cutter = BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(p.X() - n.X() * depth, p.Y() - n.Y() * depth, p.Z() - n.Z() * depth), n), radius, 2 * depth).Shape()
-    out = BRepAlgoAPI_Cut(shape, cutter).Shape()
+    cut = BRepAlgoAPI_Cut(shape, cutter)
+    if not cut.IsDone():
+        raise InjectionNotApplicable("small_entities: the boolean cut failed on this shape")
+    out = cut.Shape()
     before = {tuple(_center_area(f)[0]) for f in faces}
     tiny = [f for f in _entities(out, TopAbs_FACE) if _center_area(f)[1] < math.pi * (3 * radius) ** 2 + 1e-9
             and tuple(_center_area(f)[0]) not in before]
@@ -330,6 +358,8 @@ def _small_entities(shape, rng, work):
     for f in tiny:
         c, a = _center_area(f)
         refs.append({"type": "face", "src_index": None, "center": c, "area": a})
+    if not refs:
+        raise InjectionNotApplicable("small_entities: the cut produced no new small face")
     return out, {"entities": refs, "host_face": _face_ref(shape, faces, i), "radius": radius, "depth": depth,
                  "at": [round(p.X(), 6), round(p.Y(), 6), round(p.Z(), 6)]}
 
@@ -339,7 +369,10 @@ def _face_delete(shape, rng, work):
     i = rng.randrange(len(faces))
     reshape = BRepTools_ReShape()
     reshape.Remove(faces[i])
-    return reshape.Apply(shape), {"entities": [_face_ref(shape, faces, i)]}
+    out = reshape.Apply(shape)
+    if len(_entities(out, TopAbs_FACE)) != len(faces) - 1:
+        raise InjectionNotApplicable("face_delete: the face could not be removed from this shape")
+    return out, {"entities": [_face_ref(shape, faces, i)]}
 
 
 def _assembly_overlap(shape, rng, work):
@@ -365,7 +398,8 @@ def _assembly_overlap(shape, rng, work):
 
 
 _REAL = r"[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?"
-_TUPLE_LINE = re.compile(r"^(#(\d+)\s*=\s*(CARTESIAN_POINT|DIRECTION)\s*\(\s*'[^']*'\s*,\s*\()([^)]*)(\)\s*\)\s*;)\s*$")
+# A whole statement, whichever way the exporter wrapped it across lines.
+_TUPLE_STMT = re.compile(r"(#(\d+)\s*=\s*(CARTESIAN_POINT|DIRECTION)\s*\(\s*'[^']*'\s*,\s*\()([^()]*)(\)\s*\)\s*;)")
 
 
 def _truncate(x: float, places: int) -> str:
@@ -377,21 +411,21 @@ def _precision_truncate(shape, rng, ctx):
     """Re-export with the coordinates cut to few decimals, as a lossy exporter or a hand-trimmed file does."""
     quantum = _diag(shape) * 2e-3
     places = max(0, math.ceil(-math.log10(quantum))) + rng.choice([0, 1])
-    lines, changed = ctx.src.read_text().split("\n"), []
-    for n, line in enumerate(lines):
-        m = _TUPLE_LINE.match(line.strip())
-        if not m:
-            continue
+    changed: list[dict[str, Any]] = []
+
+    def cut(m: re.Match[str]) -> str:
         head, ident, entity, body, tail = m.groups()
-        p = places if entity == "CARTESIAN_POINT" else places + 2   # a direction cut as hard as a point is not a direction
         values = re.findall(_REAL, body)
         if len(values) != 3:                 # 2D parameter-space points are healed on read; only model-space ones matter
-            continue
+            return m.group(0)
+        p = places if entity == "CARTESIAN_POINT" else places + 2   # a direction cut as hard as a point is not a direction
         new_body = ",".join(_truncate(float(x), p) for x in values)
-        if new_body != ",".join(x.strip() for x in body.split(",")):
-            lines[n] = f"{head}{new_body}{tail}"
-            changed.append({"type": "step_entity", "id": f"#{ident}", "entity": entity})
-    ctx.out.write_text("\n".join(lines))
+        if [float(x) for x in new_body.split(",")] == [float(x) for x in values]:
+            return m.group(0)
+        changed.append({"type": "step_entity", "id": f"#{ident}", "entity": entity})
+        return f"{head}{new_body}{tail}"
+
+    ctx.out.write_text(_TUPLE_STMT.sub(cut, ctx.src.read_text()))
     return None, {"entities": changed, "decimals": places, "scope": "whole_file"}
 
 
@@ -439,8 +473,15 @@ def inject(src_step: Path | str, kind: str, seed: int, out_dir: Path | None = No
     damaged, fields = _INJECTORS[kind](shape, rng, _Ctx(src=src, out=out))
     if damaged is not None:
         write_step(damaged, out)
+    # Post-conditions: an OCCT call that quietly did nothing must not leave a clean file labelled as damaged.
+    if not fields.get("entities"):
+        out.unlink(missing_ok=True)
+        raise InjectionNotApplicable(f"{kind}: nothing in {src.name} was damaged (no entity to name)")
+    if out.read_bytes() == src.read_bytes():
+        out.unlink(missing_ok=True)
+        raise InjectionNotApplicable(f"{kind}: the damaged file is identical to {src.name}")
     label = {
-        "kind": kind, "seed": seed, "clean_source": str(src),
+        "kind": kind, "seed": seed, "status": KIND_STATUS[kind], "clean_source": str(src),
         "fidelity_reference": "damaged_input",     # design 7.2: the clean source only labels the defect
         **fields,
     }
@@ -464,11 +505,9 @@ _FAMILIES: tuple[tuple[str, str], ...] = (
 #: What each kind is EXPECTED to fail as in gmsh. A prior, not a measurement: the re-probe (Task 8) runs gmsh
 #: on the injected files and records the observed family in `label["observed_family"]`, which wins.
 KIND_FAMILY_PRIOR: dict[str, str] = {
-    "loose_reapprox": "overlapping_facets", "unsew_perturb": "open_loop", "tolerance_inflate": "plc_intersection",
-    "pcurve_corrupt": "overlapping_facets", "seam_variant": "periodic_surface", "small_entities": "overlapping_facets",
-    "face_delete": "no_volume", "assembly_overlap": "plc_intersection", "precision_truncate": "overlapping_facets",
-    "iges_roundtrip": "open_loop",
-}
+    "unsew_perturb": "open_loop", "face_delete": "no_volume", "assembly_overlap": "plc_intersection",
+    "small_entities": "overlapping_facets", "iges_roundtrip": "open_loop",
+}   # quarantined kinds are one observable defect (vertex off curve) and have no basis for a family: none given
 
 
 def failure_family(gmsh_error: str) -> str:
@@ -487,18 +526,43 @@ def target_histogram(corpus: Path | str) -> dict[str, float]:
 
 
 def _case_family(case: InjectedCase) -> str:
-    return str(case.label.get("observed_family") or KIND_FAMILY_PRIOR[case.kind])
+    observed = case.label.get("observed_family")
+    if observed:
+        return str(observed)
+    if case.kind not in KIND_FAMILY_PRIOR:
+        raise ValueError(f"{case.kind}: no observed_family on the case and no prior for the kind; run the gmsh re-probe")
+    return KIND_FAMILY_PRIOR[case.kind]
 
 
-def calibrate(cases: Sequence[InjectedCase], target_hist: dict[str, float]) -> dict[str, float]:
-    """Weight each kind so a weighted draw of `cases` reproduces `target_hist` over failure families.
+class Calibration(dict):
+    """kind -> weight, plus what the weights are worth: `basis` ("observed", "prior" or "mixed"), the target share
+    that no case reaches (`dropped_mass`, over `dropped_families`) and the family each kind was placed in."""
 
-    A kind belongs to the family most of its cases fall in; a family's target share is split evenly among the kinds
-    present in it. Families no case reaches cannot be matched: their share is dropped and the rest renormalised.
+    basis: str
+    dropped_mass: float
+    dropped_families: dict[str, float]
+    kind_family: dict[str, str]
+
+
+def calibrate(cases: Sequence[InjectedCase], target_hist: dict[str, float]) -> Calibration:
+    """Weight each kind so that a weighted draw of `cases` follows `target_hist` over the families the cases reach.
+
+    A kind sits in the family most of its cases were OBSERVED in (`label["observed_family"]`, from the gmsh re-probe);
+    without that it falls back to `KIND_FAMILY_PRIOR`, a guess, and a warning says so. A family's target share is split
+    evenly among the kinds in it. Families no case reaches cannot be matched: their share is NOT silently absorbed; it is
+    reported as `dropped_mass` and the rest renormalised, so read `basis` and `dropped_mass` before trusting a match.
     """
     by_kind: dict[str, Counter[str]] = {}
+    observed = prior = 0
     for c in cases:
         by_kind.setdefault(c.kind, Counter())[_case_family(c)] += 1
+        if c.label.get("observed_family"):
+            observed += 1
+        else:
+            prior += 1
+    if prior:
+        warnings.warn(f"calibrate: {prior} of {observed + prior} cases have no observed_family; their family is a prior "
+                      "guess, not a measurement", stacklevel=2)
     kind_family = {k: sorted(cnt.items(), key=lambda kv: (-kv[1], kv[0]))[0][0] for k, cnt in by_kind.items()}
     members: dict[str, list[str]] = {}
     for kind, family in sorted(kind_family.items()):
@@ -507,4 +571,9 @@ def calibrate(cases: Sequence[InjectedCase], target_hist: dict[str, float]) -> d
     total = sum(reachable.values())
     if total <= 0:
         raise ValueError("no injected kind reaches any family with weight in the target histogram")
-    return {kind: reachable[family] / total / len(kinds) for family, kinds in members.items() for kind in kinds}
+    result = Calibration({kind: reachable[family] / total / len(kinds) for family, kinds in members.items() for kind in kinds})
+    result.basis = "observed" if not prior else ("prior" if not observed else "mixed")
+    result.dropped_families = {f: v for f, v in target_hist.items() if f not in members and v > 0}
+    result.dropped_mass = sum(result.dropped_families.values())
+    result.kind_family = kind_family
+    return result
