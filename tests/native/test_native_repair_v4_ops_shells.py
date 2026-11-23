@@ -206,9 +206,10 @@ def test_sew_with_a_ladder_too_tight_for_the_gaps_declines_rather_than_going_loo
         OPS["sew"].apply(pool, ws, [], {"tol_ladder": [2e-5, 1e-4]}, timeout_s=TIMEOUT)
 
 
-def test_sew_refuses_rungs_outside_the_allowed_band(pool: WorkerPool, tmp_path: Path) -> None:
+def test_sew_declines_rungs_outside_the_allowed_band(pool: WorkerPool, tmp_path: Path) -> None:
+    # outside the window the op does not apply to this part: a decline (not a failure); the window itself is unchanged
     ws = Workspace.from_brep(pool, _write(_loose_faces(1e-4), tmp_path / "loose.brep"))
-    with pytest.raises(shells.OpFailed, match="tol_ladder"):
+    with pytest.raises(shells.OpDeclined, match="tol_ladder"):
         OPS["sew"].apply(pool, ws, [], {"tol_ladder": [1e-4, 0.05]}, timeout_s=TIMEOUT)  # 0.05 > bound
 
 
@@ -350,9 +351,9 @@ def test_remove_small_refuses_an_entity_wider_than_max_width(pool: WorkerPool, t
         OPS["remove_small"].apply(pool, ws, [big], {"max_width_mm": 0.05}, timeout_s=TIMEOUT)
 
 
-def test_remove_small_refuses_a_width_over_the_fidelity_bound(pool: WorkerPool, tmp_path: Path) -> None:
+def test_remove_small_declines_a_width_over_the_fidelity_bound(pool: WorkerPool, tmp_path: Path) -> None:
     ws = Workspace.from_brep(pool, _write(_chamfered_box(0.01), tmp_path / "sliver.brep"))
-    with pytest.raises(shells.OpFailed, match="max_width_mm"):
+    with pytest.raises(shells.OpDeclined, match="max_width_mm"):
         OPS["remove_small"].apply(pool, ws, [_id_of_narrowest_face(ws)], {"max_width_mm": 0.5},
                                   timeout_s=TIMEOUT)
 
