@@ -62,14 +62,22 @@ class RouteExhausted(Exception):
 
 class Usage:
 
-    __slots__ = ("input_tokens", "cached_input_tokens", "output_tokens", "ttft_s")
+    __slots__ = ("input_tokens", "cached_input_tokens", "output_tokens", "ttft_s",
+                 "cache_write_tokens", "cache_write_30m_tokens")
 
     def __init__(self, input_tokens: int = 0, cached_input_tokens: int = 0,
-                 output_tokens: int = 0, ttft_s: float | None = None) -> None:
+                 output_tokens: int = 0, ttft_s: float | None = None,
+                 cache_write_tokens: int = 0, cache_write_30m_tokens: int = 0) -> None:
         self.input_tokens = input_tokens
         self.cached_input_tokens = cached_input_tokens
         self.output_tokens = output_tokens
         self.ttft_s = ttft_s
+        # Tokens the provider wrote to its prompt cache on this call, a SUBSET of input_tokens (like the
+        # cached ones) billed above the fresh-input rate. `cache_write_30m_tokens` is the part the
+        # provider says was written at the 30-minute TTL; the rest of the total is billed at the dearer
+        # 12-hour rate, so an unattributed write can only over-count.
+        self.cache_write_tokens = cache_write_tokens
+        self.cache_write_30m_tokens = min(cache_write_30m_tokens, cache_write_tokens)
 
 
 def _backoff(route: ModelRoute, category: FailureCategory, attempt: int) -> float:

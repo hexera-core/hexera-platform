@@ -31,7 +31,16 @@ class Wire:
         self.requests: list[dict] = []
         self.fail_models: set[str] = set()
         self.input_tokens, self.output_tokens = 1000, 100
+        self.cache_write = None          # (total, ttl_30m) the provider reports writing to its cache
         self.candidate = CANDIDATE
+
+    def _details(self) -> dict:
+        d: dict = {"cached_tokens": 0}
+        if self.cache_write is not None:
+            total, w30 = self.cache_write
+            d.update(cache_write_tokens=total, cache_write_tokens_details={
+                "ttl_30m_tokens": w30, "ttl_12h_tokens": total - w30})
+        return d
 
     def client(self, target):  # noqa: ANN001
         async def create(**kw):
@@ -46,7 +55,7 @@ class Wire:
             return SimpleNamespace(
                 output=[{"type": "function_call", "call_id": "c1", **call}],
                 usage={"input_tokens": self.input_tokens, "output_tokens": self.output_tokens,
-                       "input_tokens_details": {"cached_tokens": 0}, "output_tokens_details": {"reasoning_tokens": 0}},
+                       "input_tokens_details": self._details(), "output_tokens_details": {"reasoning_tokens": 0}},
                 status="completed")
         return SimpleNamespace(responses=SimpleNamespace(create=create))
 
@@ -88,6 +97,51 @@ def test_the_default_path_reaches_the_real_router_and_is_priced_into_the_ledger(
     assert ledger.spent_usd() == pytest.approx((1000 * 10 + 100 * 50) / 1e6)
     [row] = ledger.entries()
     assert (row["provider"], row["model"]) == ("openai", "gpt-6-astra") and row["job_id"] == "job-1"
+
+
+def _settled_with(wire, cache_write):
+    model_route.install_router()
+    ledger = WaveLedger.for_test(cap_usd=100.0)
+    wire.input_tokens, wire.output_tokens, wire.cache_write = 4060, 106, cache_write
+    _proposer(ledger).propose(_state(), k=3)
+    return ledger
+
+
+def test_cache_write_tokens_are_settled_above_the_same_usage_without_them(wire):
+    # THE guard against re-introducing the under-recording: the same wire usage, once with and once
+    # without cache_write_tokens, must settle strictly higher with them (astra 30m write $12.50/M > $10/M).
+    without = _settled_with(wire, None)
+    with_writes = _settled_with(wire, (4057, 4057))
+    assert with_writes.spent_usd() > without.spent_usd()
+    # and the settled row is exactly usage x rates, writes included, to the micro-dollar
+    assert with_writes.spent_usd() == pytest.approx((3 * 10.0 + 4057 * 12.50 + 106 * 50.0) / 1e6, abs=1e-6)
+    [row] = with_writes.entries()
+    assert (row["cache_write_tokens"], row["cache_write_30m_tokens"]) == (4057, 4057)
+
+
+def test_an_unattributed_cache_write_settles_at_the_dearer_12h_rate(wire):
+    ledger = _settled_with(wire, (4057, 0))
+    assert ledger.spent_usd() == pytest.approx((3 * 10.0 + 4057 * 25.00 + 106 * 50.0) / 1e6, abs=1e-6)
+
+
+def test_lane_b_live_usage_settles_to_the_corrected_figure(wire):
+    # The seven real gpt-6-astra payloads of Lane B (probe, search-run1, search-run2). The ledger then
+    # recorded $0.1345 (writes at $10/M); the pricing page bills them at $12.50/M: $0.1592.
+    from meshpipeline.adapters.inference_telemetry.pricing import estimate_cost
+    calls = [(86, 0, 0, 18), (2370, 0, 2244, 27), (2370, 2215, 29, 27), (3469, 2338, 1128, 89),
+             (4653, 3466, 1184, 68), (4060, 0, 4057, 106), (5279, 4057, 1219, 71)]
+    new = sum(estimate_cost("openai", "gpt-6-astra", input_tokens=i, cached_input_tokens=c,
+                            cache_write_tokens=w, cache_write_30m_tokens=w, output_tokens=o)
+              for i, c, w, o in calls)
+    old = sum(estimate_cost("openai", "gpt-6-astra", input_tokens=i, cached_input_tokens=c, output_tokens=o)
+              for i, c, w, o in calls)
+    assert round(old, 4) == 0.1345 and round(new, 4) == 0.1592
+
+
+def test_the_reservation_prices_input_at_the_dearest_rate_a_write_can_bill_at(wire):
+    from meshpipeline.adapters.model_inference.router import repair_v4_prices
+    assert repair_v4_prices(ASTRA) == (12.50, 50.0, 1.0)        # fresh input 10, but a 30m write is 12.50
+    assert repair_v4_prices(TERRA) == (2.0, 12.0, 0.2)          # no confirmed write rate: unchanged
 
 
 def test_without_an_installed_router_the_default_path_cannot_reach_a_model(wire):

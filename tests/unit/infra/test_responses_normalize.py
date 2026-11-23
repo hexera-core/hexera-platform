@@ -118,3 +118,17 @@ def test_only_summary_text_parts_become_reasoning_text():
 def test_output_items_is_what_the_protocol_asks_for_emptiness_with():
     assert rn.output_items(SimpleNamespace(output=None, usage=None, status="failed")) == []
     assert len(rn.output_items(_resp([{"type": "message", "content": []}]))) == 1
+
+
+def test_cache_write_tokens_survive_normalisation_with_their_ttl():
+    u = dict(USAGE, input_tokens_details={
+        "cached_tokens": 3, "cache_write_tokens": 4,
+        "cache_write_tokens_details": {"ttl_30m_tokens": 1, "ttl_12h_tokens": 3}})
+    assert (rn.usage_from(_resp([], u)).cache_write_tokens, rn.usage_from(_resp([], u)).cache_write_30m_tokens) == (4, 1)
+    r = rn.normalize(_resp([], u), TARGET, 1)
+    assert (r.cache_write_tokens, r.cache_write_30m_tokens) == (4, 1)
+
+
+def test_absent_cache_write_reports_zero():
+    r = rn.normalize(_resp([], USAGE), TARGET, 1)
+    assert (r.cache_write_tokens, r.cache_write_30m_tokens) == (0, 0)

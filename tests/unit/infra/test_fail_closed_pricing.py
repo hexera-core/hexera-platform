@@ -247,3 +247,31 @@ def test_the_installed_caching_router_forwards_the_call_kind_without_recording_i
     finally:
         mi.set_model_router(router)
     assert out == "forwarded" and seen["job_id"] == "j" and seen["route"] == "openai:gpt-6-astra"
+
+
+# --- cache-write pricing -------------------------------------------------------------------------------------
+
+
+def test_cache_write_tokens_cost_their_own_rate_not_the_input_rate():
+    base = dict(input_tokens=1_000_000, output_tokens=0)
+    plain = pricing.estimate_cost("openai", "gpt-6-astra", **base)
+    w30 = pricing.estimate_cost("openai", "gpt-6-astra", **base, cache_write_tokens=1_000_000,
+                                cache_write_30m_tokens=1_000_000)
+    w12 = pricing.estimate_cost("openai", "gpt-6-astra", **base, cache_write_tokens=1_000_000)
+    assert (plain, w30, w12) == (10.0, 12.5, 25.0)
+
+
+def test_a_model_with_unconfirmed_write_rates_is_flagged_and_never_given_an_invented_one(caplog):
+    assert pricing.cache_write_unpriced() == ["openai:gpt-5.6-luna", "openai:gpt-5.6-sol", "openai:gpt-5.6-terra"]
+    pricing._warned.discard("cw:openai:gpt-5.6-terra")
+    with caplog.at_level("WARNING"):
+        cost = pricing.estimate_cost("openai", "gpt-5.6-terra", input_tokens=1_000_000, output_tokens=0,
+                                     cache_write_tokens=1_000_000, cache_write_30m_tokens=1_000_000)
+    assert cost == 2.0 and "no confirmed cache-write price" in caplog.text
+
+
+def test_cache_write_tokens_are_not_billed_twice():
+    # the write tokens are part of input_tokens: fresh input is what is left after cached AND written
+    c = pricing.estimate_cost("openai", "gpt-6-astra", input_tokens=100, output_tokens=0,
+                              cached_input_tokens=40, cache_write_tokens=50, cache_write_30m_tokens=50)
+    assert c == pytest.approx((10 * 10.0 + 40 * 1.0 + 50 * 12.5) / 1e6)
