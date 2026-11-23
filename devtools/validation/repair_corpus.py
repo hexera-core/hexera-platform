@@ -1018,7 +1018,7 @@ def _score_returned(row: dict, path: Path, scratch: Path, *, since: float,
     `extra`, `default_probe`, `inspect`, `hints_mod` and `hinted_probe` are test seams
     (meshability_probe.probe, mesh_probe.probe_file, _inspect, cad/repair/mesh_hints,
     mesh_probe.probe_file with hints=)."""
-    if row.get("outcome") in ("unreadable", CRASHED):
+    if row.get("outcome") in ("unreadable", CRASHED, TIMEOUT):
         return
     if extra is None:
         extra = _load_sibling("meshability_probe").probe
@@ -1144,8 +1144,9 @@ SCORE_ERROR = "meshability_score_error"
 
 
 def _scorable(row: dict) -> bool:
-    """A file the meshability report must account for: anything that was read and did not crash."""
-    return row.get("outcome") not in ("unreadable", CRASHED)
+    """A file the meshability report must account for: anything that was read and did not crash
+    or time out (scoring runs in the child, which died with the file)."""
+    return row.get("outcome") not in ("unreadable", CRASHED, TIMEOUT)
 
 
 def score_or_mark(row: dict, path: Path, scratch: Path, *, since: float,
@@ -1193,6 +1194,7 @@ def meshability_summary(rows: list[dict]) -> dict:
     return {
         "files": len(scored),
         "crashed": sum(1 for r in rows if r.get("outcome") == CRASHED),
+        "timeouts": sum(1 for r in rows if r.get("outcome") == TIMEOUT),
         # COUNTED APART, never silently missing: a readable file whose scoring failed.
         "score_errors": sum(1 for r in rows if SCORE_ERROR in r),
         "unreadable": sum(1 for r in rows if r.get("outcome") == "unreadable"),
@@ -1255,12 +1257,14 @@ def meshing_summary(rows: list[dict]) -> dict:
     # one that did not mesh before has meshes_after=None and is neither broken nor meshed. The key
     # appears only when a crash happened, so a run without one summarises byte-identically.
     crashed = sum(1 for r in rows if r.get("outcome") == CRASHED)
+    timeouts = sum(1 for r in rows if r.get("outcome") == TIMEOUT)  # killed at --file-timeout-s
     # THE TOLERANT ROUTE IS ITS OWN COUNT, present only when a row carries the reading, and never
     # added to meshed_after or newly_meshed.
     tolerant = [r for r in rows if "tolerant_delivery" in r]
     return {
         **({"forced_repairs": forced} if forced else {}),
         **({"crashed": crashed} if crashed else {}),
+        **({"timeouts": timeouts} if timeouts else {}),
         **({"tolerant_delivery_attempted": sum(
                 1 for r in tolerant if r["tolerant_delivery"].get("attempted")),
             "delivered_via_tolerant_mesher": sum(
@@ -2125,7 +2129,11 @@ def _isolated(path: Path, body, *, mesh_probe: bool, file_timeout_s: float = 0.0
         except ProcessLookupError:
             pass
 
-    # The kill closes the child's end of the pipe, so the read below ends in EOF.
+    # The kill closes the child's end of the pipe, so the read below ends in EOF. Grandchildren
+    # (bounded_child, mesh_probe, tolerant_probe: fTetWild, gmsh) do not hold the pipe's write end
+    # (Popen close_fds=True, os.pipe fds non-inheritable), so the EOF is reliable. They run in
+    # their own sessions with their own budgets and reapers, so this kill does not reach them: a
+    # timeout may leave a bounded orphan burning CPU until its own reaper fires.
     watchdog = threading.Timer(file_timeout_s, _wall_kill) if file_timeout_s > 0 else None
     if watchdog is not None:
         watchdog.daemon = True
@@ -2143,17 +2151,17 @@ def _isolated(path: Path, body, *, mesh_probe: bool, file_timeout_s: float = 0.0
                 row = msg[1]
             elif msg[0] == "error":
                 error = msg[1]
+    if watchdog is not None:
+        watchdog.cancel()  # before reaping: a late fire must not signal a reused pid
     while True:  # poll, never block forever on a child that closed its pipe and hung
         done, status = os.waitpid(pid, os.WNOHANG)
         if done:
             break
         time.sleep(0.01)
-    if watchdog is not None:
-        watchdog.cancel()
     if timed_out.is_set() and os.WIFSIGNALED(status) and os.WTERMSIG(status) == signal.SIGKILL:
         timed: dict = {"file": path.name, "outcome": TIMEOUT,
-               "timeout": {"stage": stage, "file_timeout_s": file_timeout_s},
-               "error": f"child killed after {file_timeout_s:g}s wall clock during {stage}"}
+                     "timeout": {"stage": stage, "file_timeout_s": file_timeout_s},
+                     "error": f"child killed after {file_timeout_s:g}s wall clock during {stage}"}
         if mesh_probe and "meshes_before" in facts:
             before = bool(facts["meshes_before"])
             timed.update(meshes_before=before, mesh_kind_before="" if before else "other",
