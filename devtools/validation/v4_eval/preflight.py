@@ -99,7 +99,8 @@ _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 #: Sources the benchmark may measure: stage.py's allow-list, imported so the two cannot diverge.
 #: Fusion 360 ("f360") is on licence hold and is absent from both until the owner rules.
 ALLOWED_SOURCES: frozenset[str] = _stage.ALLOWED_SOURCES
-_HELD_OUT_PATH = re.compile(r"f360|fusion[\s_-]*360", re.IGNORECASE)
+#: `f360` standing alone, not inside a hex run (ABC ids are hex: abc/0059_00593670_f36073a8... is cleared ABC)
+_HELD_OUT_PATH = re.compile(r"(?<![0-9a-f])f360(?![0-9a-f])|fusion[\s_-]*360", re.IGNORECASE)
 _SHA_DIR = re.compile(r"^[0-9a-f]{64}/")
 
 GET, LIST = "storage.objects.get", "storage.objects.list"

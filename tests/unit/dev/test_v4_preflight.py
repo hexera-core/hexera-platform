@@ -628,3 +628,16 @@ def test_the_inputs_are_listed_flat_not_recursively():
     _run(fake)
     listings = [c for c in fake.calls if c[1:3] == ["storage", "ls"]]
     assert listings == [["gcloud", "storage", "ls", f"{pf.INPUTS}/**"]]
+
+
+def test_an_abc_name_whose_hex_id_contains_f360_is_not_a_licence_hit():
+    """The real cleared pool holds abc/0059_00593670_f36073a853d1bbbdb978a01e_step_000.step: `f360` inside ABC's
+    hex object id. A bare substring match refused the fully staged corpus. Only `f360` standing alone (not inside
+    a hex run) is a name hit; a real F360 file is caught by its sha256 against the manifest in any case."""
+    name = "0059_00593670_f36073a853d1bbbdb978a01e_step_000.step"
+    exp = ({SHA_A, SHA_B}, {SHA_F360})
+    report = _run(FakeGcloud(listing=[f"{pf.INPUTS}/{SHA_A}/{name}"] + _inputs(SHA_B)), expected=exp)
+    assert "inputs_sources" not in _failed(report)
+    for bad in ("f360_part.step", "x.f360.step", "parts-F360/a.step", "fusion360.step"):
+        rep = _run(FakeGcloud(listing=[f"{pf.INPUTS}/{SHA_A}/{bad}"] + _inputs(SHA_B)), expected=exp)
+        assert "inputs_sources" in _failed(rep), bad
