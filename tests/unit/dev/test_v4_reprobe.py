@@ -8,6 +8,7 @@ import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -782,3 +783,20 @@ def test_launcher_counts_only_allowed_sources(tmp_path, capsys) -> None:
     pool_mod.write_pool(entries, pool_json, sources_included=["abc_fail", "f360"])
     assert launch.main(["--pool", str(pool_json), "--shards", "8", "--max-run-hours", "5"]) == 0
     assert capsys.readouterr().out.startswith("3 files")
+
+
+def test_unbounded_inputs_are_counted_but_never_a_failure_and_are_tallied_alone() -> None:
+    rows = [_row(i, "panel", "other") for i in range(2, 12)]
+    unbounded = [_row(100 + i, "valid", "unbounded_geometry", extra={"out_of_scope": True}) for i in range(7)]
+    splits = rp.build_splits([*rows, *unbounded], dev=3, heldout=2, clean=0)
+    ids = {r.sha256 for r in splits.dev + splits.heldout + splits.clean}
+    assert not [r for r in unbounded if r.sha256 in ids]
+    assert splits.excluded_unbounded == 7 and splits.excluded_uncounted == 0 and splits.excluded_no_solids == 0
+    assert all(rp.is_unbounded(r) for r in unbounded) and not any(rp.is_unbounded(r) for r in rows)
+    assert "unbounded_geometry" not in splits.strata["failing_population"]
+
+
+def test_unbounded_rows_do_not_get_the_full_panel() -> None:
+    row = _row(1, "valid", "unbounded_geometry")
+    ent = SimpleNamespace(name=row.name, sha256=row.sha256, source=row.source)
+    assert rp.full_tier_entries([ent], [row]) == []

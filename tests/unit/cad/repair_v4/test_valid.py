@@ -68,6 +68,7 @@ def test_code_sets_are_exactly_the_binding_ones() -> None:
         "units_changed",
         "round_trip_invalid",
         "no_solids",
+        "unbounded_geometry",
     }
     assert set(SOFT_CODES) == {"small_edge", "small_face", "large_tolerance"}
 
@@ -161,3 +162,16 @@ def test_unwritable_unit_round_trips_in_mm_and_is_not_a_failure() -> None:
     report = check_valid(pool, "a.step", original_units="yard")
     assert report.ok is True and report.round_trip_ok is True
     assert report.units == "yard"
+
+
+def test_an_unbounded_finding_stops_layer_1_before_the_round_trip() -> None:
+    pool = ScriptedPool(hard=["unbounded_geometry"])
+    report = check_valid(pool, "a.step", original_units="inch")  # a units mismatch is NOT also reported
+    assert report.unbounded and not report.ok
+    assert [f.code for f in report.hard] == ["unbounded_geometry"]
+    assert pool.checks == 1  # the shape was checked once; no round trip re-checked it
+
+
+def test_only_the_unbounded_code_makes_a_report_unbounded() -> None:
+    assert not check_valid(ScriptedPool(hard=["open_shell"]), "a.step", original_units=None).unbounded
+    assert not check_valid(ScriptedPool(), "a.step", original_units=None).unbounded
