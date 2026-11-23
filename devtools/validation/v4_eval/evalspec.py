@@ -12,11 +12,12 @@ a hung native call then burns the shard. `harness_argv` cannot be built without 
 
 THE COST CONTROL. ~600 c2d VM-hours is the owner's ceiling for the sprint. `project` turns a wave
 (files, tier mix, shards, machine, max run hours) into projected VM-hours and wall-clock hours;
-`check_budget` refuses a wave over the ceiling, or one whose wall exceeds the VM's --max-run-duration
+`check_budget` refuses a wave whose expected OR worst-case VM-hours exceed the ceiling, or one whose wall exceeds the VM's --max-run-duration
 (the VM would be DELETED mid-run), unless the caller passes `allow_over_budget`.
 
-    vm_hours = ceil(slots_needed / vcpus) VMs  x  wall_hours
-    wall_hours = cpu_hours / slots                     # shards run one per vCPU, in parallel
+    wall_hours = SKEW x cpu_hours / shards    # shards run one per vCPU; the SLOWEST shard bills
+    vm_hours = VMs x wall_hours               # expected
+    worst_vm_hours = VMs x max_run_hours      # what the VMs can bill before --max-run-duration deletes them
     cpu_hours = (files x cheap_min + full_files x full_min) / 60
 
 The per-file minutes are SIZING ESTIMATES, not measurements (the first wave measures them): refresh
@@ -45,6 +46,9 @@ FULL_MIN_PER_FILE = 2.5
 #: purpose: the old benchmark's failing share, not the measured one.
 ASSUMED_CHEAP_FAIL_FRACTION = 0.5
 PASS_SAMPLE_FRACTION = 0.10
+#: Slowest-shard / mean-shard wall. Hash-partitioned shards are balanced in file COUNT, not in time:
+#: 900 s timeouts and heavy parts make a long tail, and the slowest shard sets the billed time.
+SKEW = 1.5
 
 HARNESS_FLAGS: tuple[str, ...] = ("--mesh-probe", "--force-repair", "--goal", "benchmark",
                                   "--isolate-files", "--meshability")
@@ -94,17 +98,21 @@ class Projection:
     wall_hours: float
     vm_hours: float
     max_run_hours: float
+    worst_vm_hours: float = 0.0
+    skew: float = SKEW
 
     def describe(self) -> str:
         return (f"{self.files} files ({self.full_files} on the full panel) on {self.shards} shards = "
                 f"{self.vms} VM(s) x {self.vcpus_per_vm} vCPU; {self.cpu_hours:.0f} vCPU-h of work, "
-                f"~{self.wall_hours:.1f} h wall (VM cap {self.max_run_hours:g} h); "
-                f"PROJECTED {self.vm_hours:.0f} c2d VM-hours (ceiling {MAX_VM_HOURS:g})")
+                f"~{self.wall_hours:.1f} h wall for the slowest shard (skew x{self.skew:g}; VM cap "
+                f"{self.max_run_hours:g} h); PROJECTED {self.vm_hours:.0f} c2d VM-hours, WORST CASE "
+                f"{self.worst_vm_hours:.0f} (VMs x cap), ceiling {MAX_VM_HOURS:g}")
 
 
 def project(files: int, *, shards: int, machine_type: str = DEFAULT_MACHINE, max_run_hours: float = 3.0,
             cheap_fail_fraction: float = ASSUMED_CHEAP_FAIL_FRACTION,
-            cheap_min: float = CHEAP_MIN_PER_FILE, full_min: float = FULL_MIN_PER_FILE) -> Projection:
+            cheap_min: float = CHEAP_MIN_PER_FILE, full_min: float = FULL_MIN_PER_FILE,
+            skew: float = SKEW) -> Projection:
     if files < 0 or shards < 1:
         raise ValueError("files must be >= 0 and shards >= 1")
     vcpus = vcpus_of(machine_type)
@@ -112,8 +120,9 @@ def project(files: int, *, shards: int, machine_type: str = DEFAULT_MACHINE, max
     full_files = failing + math.ceil((files - failing) * PASS_SAMPLE_FRACTION)
     cpu_hours = (files * cheap_min + full_files * full_min) / 60.0
     vms = math.ceil(shards / vcpus)
-    wall = cpu_hours / shards
-    return Projection(files, full_files, shards, vms, vcpus, cpu_hours, wall, vms * wall, max_run_hours)
+    wall = skew * cpu_hours / shards
+    return Projection(files, full_files, shards, vms, vcpus, cpu_hours, wall, vms * wall, max_run_hours,
+                      vms * max_run_hours, skew)
 
 
 class BudgetRefused(RuntimeError):
@@ -126,9 +135,10 @@ def check_budget(p: Projection, *, allow_over_budget: bool = False, ceiling: flo
     `allow_over_budget` waives the VM-hours ceiling ONLY; the vCPU limit and the run-duration limit
     are physical, not budgetary."""
     reasons: list[str] = []
-    if p.vm_hours > ceiling and not allow_over_budget:
-        reasons.append(f"projected {p.vm_hours:.0f} VM-hours exceeds the {ceiling:g} VM-hour ceiling "
-                       "(--allow-over-budget to override)")
+    billed = max(p.vm_hours, p.worst_vm_hours)
+    if billed > ceiling and not allow_over_budget:
+        reasons.append(f"projected {p.vm_hours:.0f} / worst-case {p.worst_vm_hours:.0f} VM-hours exceeds the "
+                       f"{ceiling:g} VM-hour ceiling (--allow-over-budget to override)")
     if p.vms * p.vcpus_per_vm > MAX_TOTAL_VCPU:
         reasons.append(f"{p.vms} VMs x {p.vcpus_per_vm} vCPU = {p.vms * p.vcpus_per_vm} vCPU, over the "
                        f"{MAX_TOTAL_VCPU}-vCPU ceiling")

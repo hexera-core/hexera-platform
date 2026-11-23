@@ -78,7 +78,9 @@ def make_cache(uri: str) -> Any:
 def run_reprobe(args: argparse.Namespace, out: Path, prov: dict) -> int:
     from meshpipeline.cad.repair_v4.worker_pool import WorkerPool
 
-    entries = shard_entries(pool_mod.read_pool(Path(args.pool)), args.shard)
+    whole_pool = pool_mod.read_pool(Path(args.pool))
+    reprobe_mod.check_not_quarantined(whole_pool)  # pool-level: any source, before any shard work
+    entries = shard_entries(whole_pool, args.shard)
     prov["shard_files"] = len(entries)
     cache = make_cache(args.cache_uri) if args.cache_uri else None
     prov["cache_uri"] = args.cache_uri or None

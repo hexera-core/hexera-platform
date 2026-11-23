@@ -82,7 +82,9 @@ def merge(shards: list[dict]) -> dict[str, Any]:
         excluded += s["excluded"]
     final = [r for r in rows.values() if rp.is_counted(r)]  # an uncounted row never reaches a count
     full = [r for r in final if r.verdict_summary.get("tier") == "full"]
-    return {"rows": final, "cheap": list(cheap.values()), "full": full, "excluded": excluded}
+    cheap_failed = {sha for sha, r in cheap.items() if r.first_failing_layer is not None}
+    return {"rows": final, "cheap": list(cheap.values()), "full": full, "excluded": excluded,
+            "cheap_failed": cheap_failed}
 
 
 def report(merged: dict[str, Any], splits: Any | None) -> dict:
@@ -92,6 +94,8 @@ def report(merged: dict[str, Any], splits: Any | None) -> dict:
     return {
         "probed_conclusive": len(rows),
         "excluded_inconclusive": len(merged["excluded"]),
+        "excluded_fraction": excluded_fraction(merged),
+        "excluded_by_source": dict(Counter(x["source"] for x in merged["excluded"])),
         "excluded_by_reason": dict(Counter(x["reason"].split(":")[0] for x in merged["excluded"])),
         "failing": len(failing) - len(no_solids),
         "no_solids_not_repairable": len(no_solids),
@@ -105,6 +109,16 @@ def report(merged: dict[str, Any], splits: Any | None) -> dict:
     }
 
 
+#: Above this share of the pool excluded, the wave is refused: a timeout excludes the most pathological
+#: files, so a large exclusion silently biases the failing set toward easy defects.
+MAX_EXCLUDED_FRACTION = 0.02
+
+
+def excluded_fraction(merged: dict[str, Any]) -> float:
+    total = len(merged["rows"]) + len(merged["excluded"])
+    return len(merged["excluded"]) / total if total else 0.0
+
+
 def pull_command(src: str, dest: Path) -> list[str]:
     return ["gcloud", "storage", "rsync", "-r", src, str(dest)]
 
@@ -113,6 +127,12 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--from", dest="src", help="directory holding shard-I-of-N/")
     parser.add_argument("--shards", type=int, default=None)
+    parser.add_argument("--dev", type=int, default=300)
+    parser.add_argument("--heldout", type=int, default=200)
+    parser.add_argument("--clean", type=int, default=150)
+    parser.add_argument("--allow-shortfall", action="store_true", help="write splits that are short")
+    parser.add_argument("--allow-excluded", action="store_true",
+                        help=f"proceed although more than {MAX_EXCLUDED_FRACTION:.0%} of the pool was excluded")
     parser.add_argument("--report-only", action="store_true")
     parser.add_argument("--out-dir", default=str(rp.SPLITS_DIR))
     parser.add_argument("--pull", default="")
@@ -130,8 +150,28 @@ def main(argv: list[str] | None = None) -> int:
     except CollectRefused as exc:
         print(f"REFUSED {exc}", file=sys.stderr)
         return 1
-    splits = None if args.report_only else rp.build_splits(merged["rows"], out_dir=args.out_dir)
+    frac = excluded_fraction(merged)
+    problems: list[str] = []
+    if frac > MAX_EXCLUDED_FRACTION and not args.allow_excluded:
+        problems.append(f"{frac:.1%} of the pool was excluded (limit {MAX_EXCLUDED_FRACTION:.0%}): the failing "
+                        "set is biased toward files the checker could finish; rerun the excluded shards")
+    splits = None
+    if not args.report_only:
+        try:
+            splits = rp.build_splits(merged["rows"], dev=args.dev, heldout=args.heldout, clean=args.clean,
+                                     cheap_failed=merged["cheap_failed"])
+        except ValueError as exc:
+            print(f"REFUSED cannot cut the splits: {exc}", file=sys.stderr)
+            return 2
+    if splits is not None and splits.shortfall and not args.allow_shortfall:
+        problems.append(f"splits are short: {splits.shortfall}")
     print(json.dumps(report(merged, splits), indent=1, sort_keys=True))
+    if problems:
+        for text in problems:
+            print(f"REFUSED {text}; no split was written", file=sys.stderr)
+        return 2
+    if splits is not None:
+        rp.write_splits(splits, args.out_dir)
     return 0
 
 

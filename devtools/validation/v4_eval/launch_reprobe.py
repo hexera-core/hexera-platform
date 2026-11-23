@@ -8,6 +8,8 @@
 
     launch_reprobe.py --files 53799 --shards 96 --machine-type c2d-standard-8 --max-run-hours 24
 
+`launch(projection, create_vms)` is the gated entry any VM creation must go through.
+
 Exit 0 and a printed projection when the wave is within ~600 c2d VM-hours, inside the 100-vCPU ceiling
 and short enough for the VMs' --max-run-duration; exit 1 and the reasons otherwise.
 `--allow-over-budget` waives the VM-hour ceiling only, and says so.
@@ -24,6 +26,14 @@ import run_arm as _ra  # noqa: E402
 evalspec = _ra.evalspec
 
 
+def launch(projection, create_vms, *, allow_over_budget: bool = False):
+    """THE ONLY WAY a v4 wave creates VMs: `evalspec.enforce_budget` runs first and raises
+    BudgetRefused, and `create_vms` (the callable that issues the gcloud creates) is not reached.
+    The v4 fleet launcher must call this, not gcloud directly."""
+    evalspec.enforce_budget(projection, allow_over_budget=allow_over_budget)
+    return create_vms()
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--files", type=int, help="pool size (default: read the pool manifest)")
@@ -31,6 +41,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--shards", type=int, default=96)
     parser.add_argument("--machine-type", default=evalspec.DEFAULT_MACHINE)
     parser.add_argument("--max-run-hours", type=float, default=3.0)
+    parser.add_argument("--create", action="store_true",
+                        help="create the VMs. There is no v4 fleet launcher yet, so this refuses after the gate")
     parser.add_argument("--allow-over-budget", action="store_true",
                         help="waive the VM-hour ceiling (not the vCPU or run-duration limits)")
     args = parser.parse_args(argv)
@@ -43,7 +55,19 @@ def main(argv: list[str] | None = None) -> int:
         print(f"WARN    over the {evalspec.MAX_VM_HOURS:g} VM-hour ceiling: overridden", file=sys.stderr)
     for r in reasons:
         print(f"REFUSE  {r}", file=sys.stderr)
-    return 1 if reasons else 0
+    if reasons:
+        return 1
+    if args.create:
+        def no_launcher():
+            raise SystemExit("REFUSE  no v4 fleet launcher exists: wire its VM creation through "
+                             "launch_reprobe.launch(projection, create_vms)")
+
+        try:
+            launch(projection, no_launcher, allow_over_budget=args.allow_over_budget)
+        except evalspec.BudgetRefused as exc:  # pragma: no cover - check_budget already returned
+            print(f"REFUSE  {exc}", file=sys.stderr)
+            return 1
+    return 0
 
 
 if __name__ == "__main__":

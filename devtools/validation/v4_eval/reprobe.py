@@ -32,7 +32,7 @@ import signal
 import sys
 import types
 from collections import Counter, defaultdict
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Collection, Iterable, Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Literal
@@ -113,20 +113,44 @@ def injected_kind(name: str) -> str | None:
     return match.group(1) if match else None
 
 
+def not_default_kinds() -> list[str]:
+    """Every injector kind that is NOT in DEFAULT_KINDS (quarantined or infeasible)."""
+    inject = load_inject()
+    return [k for k in inject.KINDS if k not in set(inject.DEFAULT_KINDS)]
+
+
+def banned_kind_in(text: str) -> str | None:
+    """A non-default injector kind named anywhere in `text`, delimited by non-alphanumerics."""
+    for kind in not_default_kinds():
+        if re.search(r"(?<![A-Za-z0-9])" + re.escape(kind) + r"(?![A-Za-z0-9])", text):
+            return kind
+    return None
+
+
 def check_not_quarantined(items: Iterable[Any]) -> None:
-    """Refuse any `inject` entry (a PoolEntry or a ProbeRow) whose kind is not in DEFAULT_KINDS.
-    `inject()` does not enforce the quarantine; this is where it is enforced. A kind that cannot be read
-    off the name is refused too: unknown damage is not proven damage."""
+    """Refuse the pool/rows if a quarantined kind can get through, whatever the source label.
+
+    1. POOL-LEVEL: no entry of ANY source (name or group) may carry a non-default injector kind. A
+       quarantined file relabelled, or renamed by a pool adapter, is caught here: those kinds are not
+       proven damage under the clean-STEP definition and would pad the failing set with clean files.
+    2. An `inject` entry must additionally name a kind in `inject.DEFAULT_KINDS`; an unreadable kind is
+       refused too (unknown damage is not proven damage).
+    `inject()` does not enforce the quarantine; this is where it is enforced."""
     allowed = set(load_inject().DEFAULT_KINDS)
     for item in items:
+        for text in (item.name, getattr(item, "group", None) or ""):
+            banned = banned_kind_in(text)
+            if banned is not None:
+                raise QuarantinedKind(
+                    f"{item.name} ({item.source}): carries non-default injector kind {banned!r}; "
+                    "quarantined kinds stay out of the benchmark until layer-2 evidence exists")
         if item.source != "inject":
             continue
         kind = injected_kind(item.name)
         if kind is None or kind not in allowed:
             raise QuarantinedKind(
                 f"{item.name}: injector kind {kind!r} is not in DEFAULT_KINDS {sorted(allowed)}; "
-                "quarantined kinds stay out of the benchmark until layer-2 evidence exists"
-            )
+                "quarantined kinds stay out of the benchmark until layer-2 evidence exists")
 
 
 def failure_family(message: str) -> str:
@@ -163,7 +187,7 @@ def is_no_solids(row: ProbeRow) -> bool:
 def is_counted(row: ProbeRow) -> bool:
     """Only rows a conclusive verdict produced exist, but the summary says so explicitly: a row written
     from an inconclusive verdict must never count."""
-    return bool(row.verdict_summary.get("counts_for_scoreboard", True))
+    return bool(row.verdict_summary.get("counts_for_scoreboard", False))  # fail closed: unknown is not counted
 
 
 def summarise(v: Any) -> dict:
@@ -414,7 +438,7 @@ def _shuffled(rows: list[ProbeRow], key: str, seed: int) -> list[ProbeRow]:
 
 def build_splits(
     rows: Iterable[ProbeRow], *, dev: int = 300, heldout: int = 200, clean: int = 150, seed: int = SEED,
-    out_dir: Path | str | None = None,
+    out_dir: Path | str | None = None, cheap_failed: Collection[str] = (),
 ) -> Splits:
     """Stratified dev / held-out / clean splits.
 
@@ -424,7 +448,10 @@ def build_splits(
     (largest remainder), and within a stratum a seeded shuffle of sha256-sorted rows gives dev first and
     held-out from what is left, so the two are disjoint by construction. Variants of one part (a shared
     `group`) never straddle dev and held-out: held-out skips any group dev already holds.
-    Clean: full-tier passes only (a cheap pass is not certified clean), stratified by source.
+    Clean: full-tier passes only (a cheap pass is not certified clean), stratified by source. Files the
+    cheap tier FAILED and the full tier passed (`cheap_failed`: the marginal, possibly flaky ones) are
+    used only to top up when the genuine cheap-pass population is too small; the count drawn from them
+    is reported as `clean_from_cheap_fail` so the bias is visible.
     Raises ValueError when the failing set has fewer than dev + heldout files rather than shrinking a
     split silently; a group conflict that leaves a split short is reported in `shortfall`.
     Writes dev.json / heldout.json / clean.json under `out_dir` when given.
@@ -464,21 +491,29 @@ def build_splits(
     if len(held_rows) < heldout:
         shortfall["heldout"] = heldout - len(held_rows)
 
-    clean_by_source: dict[str, list[ProbeRow]] = defaultdict(list)
-    for r in certified:
-        clean_by_source[r.source].append(r)
-    clean_n = min(clean, len(certified))
-    if clean_n < clean:
-        shortfall["clean"] = clean - clean_n
-    clean_quota = _apportion({k: len(v) for k, v in clean_by_source.items()}, clean_n) if clean_n else {}
-    clean_rows = [r for k in sorted(clean_by_source) for r in _shuffled(clean_by_source[k], k, seed)[: clean_quota[k]]]
+    primary = [r for r in certified if r.sha256 not in cheap_failed]
+    marginal = [r for r in certified if r.sha256 in cheap_failed]
+
+    def draw(pop: list[ProbeRow], n: int) -> list[ProbeRow]:
+        by_source: dict[str, list[ProbeRow]] = defaultdict(list)
+        for r in pop:
+            by_source[r.source].append(r)
+        quota = _apportion({k: len(v) for k, v in by_source.items()}, n)
+        return [r for k in sorted(by_source) for r in _shuffled(by_source[k], k, seed)[: quota[k]]]
+
+    clean_rows = draw(primary, min(clean, len(primary)))
+    topped = draw(marginal, min(clean - len(clean_rows), len(marginal)))
+    clean_rows += topped
+    if len(clean_rows) < clean:
+        shortfall["clean"] = clean - len(clean_rows)
 
     result = Splits(
         dev_rows, held_rows, clean_rows, seed, len(no_solids), len(uncounted), shortfall,
         {"failing_population": {"/".join(k): n for k, n in sorted(sizes.items())},
          "dev": dict(Counter("/".join(_stratum(r)) for r in dev_rows)),
          "heldout": dict(Counter("/".join(_stratum(r)) for r in held_rows)),
-         "clean": dict(Counter(r.source for r in clean_rows))},
+         "clean": dict(Counter(r.source for r in clean_rows)),
+         "clean_from_cheap_fail": {"count": len(topped)}},
     )
     assert_disjoint(result)
     if out_dir is not None:

@@ -411,9 +411,9 @@ def test_shards_partition_the_pool_exactly() -> None:
 # ------------------------------------------------------------------ the cost gate
 
 def test_the_real_pool_at_the_ceiling_is_refused_and_a_sane_wave_is_not() -> None:
-    real = evalspec.project(53_799, shards=96, max_run_hours=24)
+    real = evalspec.project(53_799, shards=96, max_run_hours=30)
     assert evalspec.check_budget(real) == []
-    huge = evalspec.project(53_799, shards=96, max_run_hours=300, full_min=40.0)
+    huge = evalspec.project(53_799, shards=96, max_run_hours=400, full_min=40.0)
     reasons = evalspec.check_budget(huge)
     assert huge.vm_hours > evalspec.MAX_VM_HOURS and any("VM-hour ceiling" in r for r in reasons)
     with pytest.raises(evalspec.BudgetRefused):
@@ -421,27 +421,116 @@ def test_the_real_pool_at_the_ceiling_is_refused_and_a_sane_wave_is_not() -> Non
     assert evalspec.check_budget(huge, allow_over_budget=True) == []
 
 
+def test_worst_case_bills_against_max_run_hours_not_average_wall() -> None:
+    # expected VM-hours are small, but 12 VMs allowed to run 80 h each could bill 960
+    p = evalspec.project(53_799, shards=96, max_run_hours=80)
+    assert p.vm_hours < evalspec.MAX_VM_HOURS < p.worst_vm_hours
+    assert any("worst-case" in r for r in evalspec.check_budget(p))
+
+
+def test_skew_makes_the_slowest_shard_set_the_wall() -> None:
+    flat = evalspec.project(53_799, shards=96, max_run_hours=99, skew=1.0)
+    skewed = evalspec.project(53_799, shards=96, max_run_hours=99)
+    assert skewed.wall_hours == pytest.approx(flat.wall_hours * evalspec.SKEW)
+    tight = evalspec.project(53_799, shards=96, max_run_hours=flat.wall_hours * 1.2)
+    assert any("deleted" in r for r in evalspec.check_budget(tight))  # fits balanced, not skewed
+
+
 def test_override_does_not_waive_the_run_duration_or_vcpu_limits() -> None:
     short = evalspec.project(53_799, shards=96, max_run_hours=3)
     assert any("deleted" in r for r in evalspec.check_budget(short, allow_over_budget=True))
-    wide = evalspec.project(53_799, shards=200, max_run_hours=24)
+    wide = evalspec.project(53_799, shards=200, max_run_hours=30)
     assert any("vCPU" in r for r in evalspec.check_budget(wide, allow_over_budget=True))
 
 
 def test_projection_formula() -> None:
     p = evalspec.project(600, shards=8, machine_type="c2d-standard-8", cheap_fail_fraction=0.5,
-                         cheap_min=1.0, full_min=3.0)
-    # 300 failing + ceil(300 * 0.1) = 330 full files; (600*1 + 330*3)/60 = 26.5 vCPU-h; 3.3125 h wall; 1 VM
+                         cheap_min=1.0, full_min=3.0, skew=2.0, max_run_hours=10)
+    # 300 failing + ceil(300 * 0.1) = 330 full files; (600*1 + 330*3)/60 = 26.5 vCPU-h
     assert (p.full_files, p.vms) == (330, 1)
-    assert p.cpu_hours == pytest.approx(26.5) and p.wall_hours == pytest.approx(26.5 / 8)
-    assert p.vm_hours == pytest.approx(26.5 / 8)
+    assert p.cpu_hours == pytest.approx(26.5) and p.wall_hours == pytest.approx(2 * 26.5 / 8)
+    assert p.vm_hours == pytest.approx(2 * 26.5 / 8) and p.worst_vm_hours == 10
+
+
+def test_launch_is_gated_and_never_reaches_the_creator_over_budget() -> None:
+    created = []
+    over = evalspec.project(53_799, shards=96, max_run_hours=3)
+    with pytest.raises(evalspec.BudgetRefused):
+        launch.launch(over, lambda: created.append(1))
+    assert created == []
+    ok = evalspec.project(53_799, shards=96, max_run_hours=30)
+    launch.launch(ok, lambda: created.append(1))
+    assert created == [1]
+
+
+def test_create_flag_refuses_because_no_v4_launcher_exists(capsys) -> None:
+    with pytest.raises(SystemExit, match="no v4 fleet launcher"):
+        launch.main(["--files", "53799", "--shards", "96", "--max-run-hours", "30", "--create"])
+    assert launch.main(["--files", "5000000", "--shards", "96", "--max-run-hours", "30", "--create"]) == 1
 
 
 def test_launcher_preflight_prints_and_refuses(capsys) -> None:
-    assert launch.main(["--files", "53799", "--shards", "96", "--max-run-hours", "24"]) == 0
+    assert launch.main(["--files", "53799", "--shards", "96", "--max-run-hours", "30"]) == 0
     assert "PROJECTED" in capsys.readouterr().out
-    assert launch.main(["--files", "5000000", "--shards", "96", "--max-run-hours", "24"]) == 1
+    assert launch.main(["--files", "5000000", "--shards", "96", "--max-run-hours", "30"]) == 1
     err = capsys.readouterr().err
     assert "REFUSE" in err and "ceiling" in err
     assert launch.main(["--files", "5000000", "--shards", "96", "--max-run-hours", "9999",
                         "--allow-over-budget"]) == 0
+
+
+# ------------------------------------------------------------------ fail-closed defaults and new gates
+
+def test_a_row_with_no_counts_for_scoreboard_key_is_not_counted() -> None:
+    row = rp.ProbeRow("a", _sha(1), "abc_fail", {"tier": "full"}, "panel", "other")
+    assert rp.is_counted(row) is False
+
+
+@pytest.mark.parametrize("source", ["abc_fail", "abc_pass", "occt", "nist", "f360"])
+def test_a_quarantined_kind_is_refused_under_any_source_label(source) -> None:
+    with pytest.raises(rp.QuarantinedKind):
+        rp.check_not_quarantined([Entry("abc_0001.seam_variant.3.step", _sha(1), source)])
+    with pytest.raises(rp.QuarantinedKind):
+        rp.check_not_quarantined([Entry("renamed.step", _sha(1), source, group="x-tolerance_inflate-1")])
+    rp.check_not_quarantined([Entry("00500400_seamless.step", _sha(2), source)])  # substring-safe
+
+
+def test_run_arm_checks_the_whole_pool_before_sharding(tmp_path) -> None:
+    pool_json = tmp_path / "pool.json"
+    pool_mod = run_arm.pool_mod
+    entries = [pool_mod.PoolEntry("p.loose_reapprox.1.step", "f360", _sha(1), "u", None, "lic")]
+    pool_mod.write_pool(entries, pool_json, sources_included=["f360"])
+    with pytest.raises(rp.QuarantinedKind):
+        run_arm.run_reprobe(run_arm.argparse.Namespace(pool=str(pool_json), shard="1/1", cache_uri="",
+                                                       workers=1, inputs="/i", file_timeout_s=5.0),
+                            tmp_path, {})
+
+
+def test_collect_refuses_short_splits_and_big_exclusions(tmp_path, capsys) -> None:
+    src, out = tmp_path / "w", tmp_path / "out"
+    _shard(src, 1, 1, [_row(i, "panel", "other") for i in range(1, 30)])
+    args = ["--from", str(src), "--out-dir", str(out), "--dev", "5", "--heldout", "5", "--clean", "10"]
+    assert collect.main(args) == 2  # no clean files at all: the clean split is short
+    assert "splits are short" in capsys.readouterr().err and not out.exists()
+    assert collect.main([*args, "--allow-shortfall"]) == 0 and (out / "clean.json").is_file()
+    assert collect.main(["--from", str(src), "--dev", "500"]) == 2  # failing set smaller than asked
+    # 3 of 32 = 9% excluded
+    big = tmp_path / "x"
+    ex = [rp.Excluded(f"e{i}", _sha(900 + i), "abc_fail", "file_timeout: 900s") for i in range(3)]
+    _shard(big, 1, 1, [_row(i, "panel", "other") for i in range(1, 30)], excluded=ex)
+    assert collect.main(["--from", str(big), "--out-dir", str(tmp_path / "o2"), "--dev", "5", "--heldout", "5",
+                         "--clean", "0"]) == 2
+    assert "excluded" in capsys.readouterr().err
+    assert collect.main(["--from", str(big), "--out-dir", str(tmp_path / "o2"), "--dev", "5", "--heldout", "5",
+                         "--clean", "0", "--allow-excluded"]) == 0
+
+
+def test_clean_split_prefers_genuine_cheap_passes_and_reports_the_marginal_top_up() -> None:
+    genuine = [_row(i, None, "", "abc_pass", tier="full", clean=True) for i in range(1, 11)]
+    marginal = [_row(i, None, "", "abc_pass", tier="full", clean=True) for i in range(11, 21)]
+    failing = [_row(i, "panel", "other") for i in range(100, 120)]
+    cf = {r.sha256 for r in marginal}
+    s = rp.build_splits(genuine + marginal + failing, dev=5, heldout=5, clean=8, cheap_failed=cf)
+    assert {r.sha256 for r in s.clean} <= {r.sha256 for r in genuine} and s.strata["clean_from_cheap_fail"]["count"] == 0
+    s = rp.build_splits(genuine + marginal + failing, dev=5, heldout=5, clean=15, cheap_failed=cf)
+    assert len(s.clean) == 15 and s.strata["clean_from_cheap_fail"]["count"] == 5
