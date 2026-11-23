@@ -30,19 +30,10 @@ from meshpipeline.cad.repair_v4.types import Site, StableId
 from meshpipeline.cad.repair_v4.worker_pool import WorkerPool
 from meshpipeline.cad.repair_v4.workspace import Diff, Workspace, apply_history
 
-try:  # Task 11's ops/__init__ owns these; until it is integrated, plain exceptions stand in.
-    from meshpipeline.cad.repair_v4.ops import OpDeclined, OpFailed  # type: ignore[attr-defined]
-except ImportError:  # pragma: no cover - replaced by the real classes at integration
-    class OpDeclined(Exception):  # type: ignore[no-redef]
-        def __init__(self, reason: str) -> None:
-            super().__init__(reason)
-            self.reason = reason
-
-    class OpFailed(Exception):  # type: ignore[no-redef]
-        def __init__(self, status: str, message: str) -> None:
-            super().__init__(f"{status}: {message}")
-            self.status = status
-            self.message = message
+# Task 11's ops/__init__ owns these. This was a try/except shim while the two tasks ran in
+# parallel; a swallowed ImportError would have silently installed DIFFERENT exception classes, so
+# `except ops.OpDeclined` elsewhere would miss them while these tests still passed. Hard import.
+from meshpipeline.cad.repair_v4.ops import OpDeclined, OpFailed
 
 #: The fidelity bound is min(0.1 mm, 0.001 x diagonal). Duplicated from the contract, not imported,
 #: because the checker (Tasks 2-5) is not a dependency of an op.

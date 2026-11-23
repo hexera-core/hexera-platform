@@ -28,7 +28,12 @@ from OCP.gp import gp_Pnt  # noqa: E402
 from OCP.GProp import GProp_GProps  # noqa: E402
 from OCP.Interface import Interface_Static  # noqa: E402
 from OCP.STEPCAFControl import STEPCAFControl_Reader, STEPCAFControl_Writer  # noqa: E402
-from OCP.STEPControl import STEPControl_AsIs, STEPControl_Reader, STEPControl_ShellBasedSurfaceModel, STEPControl_Writer  # noqa: E402
+from OCP.STEPControl import (  # noqa: E402
+    STEPControl_AsIs,
+    STEPControl_Reader,
+    STEPControl_ShellBasedSurfaceModel,
+    STEPControl_Writer,
+)
 from OCP.TCollection import TCollection_ExtendedString  # noqa: E402
 from OCP.TDF import TDF_LabelSequence  # noqa: E402
 from OCP.TDocStd import TDocStd_Document  # noqa: E402
