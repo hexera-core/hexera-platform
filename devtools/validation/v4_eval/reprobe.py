@@ -163,30 +163,69 @@ def banned_kind_in(text: str) -> str | None:
     return None
 
 
+def declared_kinds(item: Any) -> list[str]:
+    """Every injector kind an entry declares, by ANY route: a `kind` attribute, a `label` mapping's kind, and the
+    kind in an `inject()` output name. None of them need the kind string to be in the name."""
+    kinds: list[str] = []
+    label = getattr(item, "label", None)
+    for declared in (getattr(item, "kind", None), label.get("kind") if isinstance(label, dict) else None,
+                     injected_kind(item.name)):
+        if isinstance(declared, str) and declared not in kinds:
+            kinds.append(declared)
+    return kinds
+
+
 def check_not_quarantined(items: Iterable[Any]) -> None:
     """Refuse the pool/rows if a quarantined kind can get through, whatever the source label.
 
-    1. POOL-LEVEL: no entry of ANY source (name or group) may carry a non-default injector kind. A
-       quarantined file relabelled, or renamed by a pool adapter, is caught here: those kinds are not
-       proven damage under the clean-STEP definition and would pad the failing set with clean files.
-    2. An `inject` entry must additionally name a kind in `inject.DEFAULT_KINDS`; an unreadable kind is
-       refused too (unknown damage is not proven damage).
+    1. STATUS, for EVERY entry: each kind the entry declares (see `declared_kinds`) must be in `KIND_STATUS` with
+       the allowed status (`structural`, i.e. `DEFAULT_KINDS`), and an entry carrying a `status` of its own
+       (an attribute, or a label's `status`) must carry that one too. A quarantined entry whose name happens
+       not to contain the kind string is caught here: those kinds read back as valid solids with a raised
+       tolerance, so leaking them pads the failing set with files that are not broken.
+    2. NAME/GROUP: no entry of ANY source may carry a non-default kind string in its name or group (a file
+       renamed by a pool adapter).
+    3. An `inject` entry must DECLARE its kind and status (`PoolEntry.kind` / `.kind_status`, from the injector's
+       label) and the status must be the injector's own for that kind; a missing declaration is refused, never
+       inferred from the name.
     `inject()` does not enforce the quarantine; this is where it is enforced."""
-    allowed = set(load_inject().DEFAULT_KINDS)
+    inject = load_inject()
+    allowed = set(inject.DEFAULT_KINDS)
+    status_of: dict[str, str] = inject.KIND_STATUS
     for item in items:
+        for kind in declared_kinds(item):
+            status = status_of.get(kind)
+            if status is None or kind not in allowed:
+                raise QuarantinedKind(
+                    f"{item.name} ({item.source}): injector kind {kind!r} has status {status!r}, not "
+                    f"'structural' (allowed: {sorted(allowed)}); quarantined kinds stay out of the benchmark "
+                    "until layer-2 evidence exists")
+        label = getattr(item, "label", None)
+        own = [getattr(item, "kind_status", None), label.get("status") if isinstance(label, dict) else None]
+        for declared_status in own:
+            if declared_status is not None and declared_status != "structural":
+                raise QuarantinedKind(
+                    f"{item.name} ({item.source}): the entry's own kind status is {declared_status!r}, not "
+                    "'structural'; quarantined kinds stay out of the benchmark until layer-2 evidence exists")
         for text in (item.name, getattr(item, "group", None) or ""):
             banned = banned_kind_in(text)
             if banned is not None:
                 raise QuarantinedKind(
                     f"{item.name} ({item.source}): carries non-default injector kind {banned!r}; "
                     "quarantined kinds stay out of the benchmark until layer-2 evidence exists")
-        if item.source != "inject":
-            continue
-        kind = injected_kind(item.name)
-        if kind is None or kind not in allowed:
-            raise QuarantinedKind(
-                f"{item.name}: injector kind {kind!r} is not in DEFAULT_KINDS {sorted(allowed)}; "
-                "quarantined kinds stay out of the benchmark until layer-2 evidence exists")
+        if item.source == "inject":
+            # The injector's own declaration is REQUIRED: a missing kind or status is refused, never inferred
+            # from the name (the name check above stays as a second layer, not the only one).
+            declared_kind, declared = getattr(item, "kind", None), getattr(item, "kind_status", None)
+            if declared_kind is None or declared is None:
+                raise QuarantinedKind(
+                    f"{item.name}: an inject entry must declare its injector kind and status (kind={declared_kind!r}, "
+                    f"status={declared!r}); unknown damage is not proven damage, and quarantined kinds stay out "
+                    "of the benchmark until layer-2 evidence exists")
+            if status_of.get(declared_kind) != declared:
+                raise QuarantinedKind(
+                    f"{item.name}: declared status {declared!r} is not the injector's status for kind {declared_kind!r} "
+                    f"({status_of.get(declared_kind)!r})")
 
 
 def failure_family(message: str) -> str:
@@ -204,6 +243,8 @@ class ProbeRow:
     first_failing_layer: Layer | None
     family: str
     group: str | None = None  # variants of one part (NIST) share a group; splits keep them together
+    kind: str | None = None  # `inject` rows: the injector's declared kind / status, carried from the pool entry
+    kind_status: str | None = None
 
 
 @dataclass(frozen=True)
@@ -351,7 +392,8 @@ def reprobe(
             continue
         layer = first_failing_layer(v)
         row = ProbeRow(entry.name, entry.sha256, entry.source, summarise(v), layer,
-                       family_of(v, layer), getattr(entry, "group", None))
+                       family_of(v, layer), getattr(entry, "group", None),
+                       getattr(entry, "kind", None), getattr(entry, "kind_status", None))
         rows.append(row)
         if on_row is not None:
             on_row(row)

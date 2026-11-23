@@ -314,8 +314,12 @@ def generate(clean: Sequence[tuple[Any, Path]], *, kinds: Sequence[str] | None, 
                 seen[sha] = name
                 result.recipes.append(Recipe(name, sha, source.name, source.sha256, source.source, kind, seed, label,
                                              NORMALIZER, env.occt_version, env.image_digest, env.inject_revision))
-                result.entries.append(PoolEntry(name, "inject", sha, f"{base}/{sha}/{base_name}", None,
-                                                source.licence, f"inject-{source.sha256[:12]}"))
+                # Task 8f's `pool.inject_entry` is THE adapter: it derives the licence from the clean
+                # source (never accepts one) and carries the injector label's kind/status, which the
+                # merged quarantine gate requires. Building a PoolEntry here directly would set no
+                # kind_status, and every inject entry would then be refused.
+                result.entries.append(pool.inject_entry(source, name=name, sha256=sha,
+                                                        url=f"{base}/{sha}/{base_name}", label=label))
     return result
 
 

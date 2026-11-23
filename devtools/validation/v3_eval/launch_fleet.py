@@ -93,6 +93,16 @@ evalspec = _load("evalspec", HERE / "evalspec.py")
 #: The v4 spec holds the cost control (Projection, check_budget, enforce_budget, BudgetRefused) for
 #: BOTH profiles, and the cleared-source list. It is loaded under the name run_arm.py uses for it.
 budget_spec = _load("v4_evalspec", REPO / "devtools" / "validation" / "v4_eval" / "evalspec.py")
+# V4_PREFIX now comes from wave_spec (task 8d): one definition of the wave's prefix, imported above.
+#: The v4 wave controls: the probe + its pass record, and the wave-count limits / shard-index arithmetic.
+#: Loaded for BOTH profiles' sake of one module graph, but only the v4 path ever calls them.
+marker_probe = _load("v4_marker_probe", REPO / "devtools" / "validation" / "v4_eval" / "marker_probe.py")
+wave_limits = _load("v4_wave_limits", REPO / "devtools" / "validation" / "v4_eval" / "wave_limits.py")
+#: The bucket the ledger's markers live in: the wave bucket itself, written with the native GCS conditional
+#: create over ADC (the controller's here, the VM service account's on a shard). The probe proves THIS bucket; a
+#: shard is handed the same name by metadata and refuses unless it reads the probe's record back.
+MARKER_BUCKET = BUCKET.removeprefix("gs://")
+MARKER_BACKEND = f"gcs/{MARKER_BUCKET}"
 
 
 @dataclass(frozen=True)
@@ -219,8 +229,13 @@ class V4Profile(Profile):
         return [f"reprobe:pool:{i}/{total}" for i in range(1, total + 1)]
 
     def extra_metadata(self, args) -> list[str]:
+        # the model ledger's inputs: the wave type (the cap comes from its table), its id, N (the same N for
+        # every shard) and the bucket whose markers they use (the one the probe proved; they re-check it)
         return [f"v4-run-arm={self.run_arm}", f"v4-pool={args.prefix}/pool.json",
-                f"v4-cache-uri={wave_spec.verdict_cache_uri(args.prefix)}", f"v4-sources={','.join(args.sources)}"]
+                f"v4-cache-uri={wave_spec.verdict_cache_uri(args.prefix)}",
+                f"v4-sources={','.join(args.sources)}",
+                f"v4-wave-id={args.wave_id}", f"v4-wave-type={args.wave_type}",
+                f"v4-n-shards={args.shards_total}", f"v4-marker-bucket={MARKER_BUCKET}"]
 
     def pool_files(self, args) -> int:
         """Files the wave will probe: --files, else the pool manifest's entries in the named sources."""
@@ -248,7 +263,10 @@ class V4Profile(Profile):
                 [f"preflight {c.name}: {c.caveat}" for c in report.checks if c.ok and c.caveat])
 
     def launch_tail(self, args) -> str:
-        return f"sources {','.join(args.sources)}; the checker needs no model key"
+        cap = wave_limits.WAVE_CAPS_USD[args.wave_type]
+        return (f"sources {','.join(args.sources)}; the checker needs no model key; {args.wave_type} wave "
+                f"{args.wave_id}: model cap ${cap:,.2f} over {args.shards_total} shards = "
+                f"${cap / args.shards_total:,.4f} each")
 
     def required_objects(self, args) -> list[str]:
         return [code_uri(args.commit, args.prefix), f"{args.prefix}/pool.json"]
@@ -518,20 +536,76 @@ def preflight_settings(arm: str) -> list[str]:
                      [f"{arm}: preflight did not run: {out.stderr.strip()[-400:]}"])
 
 
+def store_unreachable_errors() -> tuple[type[BaseException], ...]:
+    """The exceptions that mean "the wave bucket could not be reached from this host" and nothing else.
+
+    Deliberately NOT included: `google.auth.exceptions.RefreshError` (an expired or revoked ADC). It is not a
+    `DefaultCredentialsError`, so on a dry run it is a refusal, not the UNCHECKED warning; that is the safe
+    direction (the operator re-authenticates before spending). If the google libraries are not importable the
+    tuple narrows to OSError: the ImportError raised by the gate code itself is then a refusal (exit 1), never
+    a traceback out of the `except` clause that calls this."""
+    try:
+        from google.api_core.exceptions import GoogleAPICallError
+        from google.auth.exceptions import DefaultCredentialsError
+    except ImportError:
+        return (OSError,)
+    return (OSError, GoogleAPICallError, DefaultCredentialsError)
+
+
+def default_gates():
+    """(marker store, backend id) for the wave bucket over this host's ADC. Opening is lazy; the bucket is first
+    touched when the gates read it."""
+    return marker_probe.open_markers(f"gcs:{MARKER_BUCKET}")
+
+
+def v4_gate_problems(args, markers, backend: str, *, claim: bool) -> list[str]:
+    """Everything between a v4 wave and its first VM, as refusals: the marker store is the wave bucket, the probe
+    has passed against it, and the wave-count limits allow this wave. With `claim`, a first launch takes its
+    checkpoint / held-out slot (nothing is written without it)."""
+    expected = MARKER_BACKEND
+    problems: list[str] = []
+    # NOT a binding: `backend` and `expected` both derive from MARKER_BUCKET, so no comparison of them can fail.
+    # The binding is `marker_probe.probe_problem`, which reads the probe record through the store and refuses
+    # unless the record names exactly `expected`.
+    if backend != expected:  # a consistency check only (see above); it cannot fail on the real path
+        problems.append(f"the marker store on this host is {backend!r}, not the wave bucket {expected!r}: what "
+                        "it says about conditional create says nothing about the wave bucket")
+    problem = marker_probe.probe_problem(markers, expected_backend=expected)
+    if problem:
+        problems.append(problem)
+    if not problems:
+        refusal = wave_limits.check_wave_count(markers, args.wave_type, args.wave_id, claim=claim)
+        if refusal:
+            problems.append(refusal)
+    return problems
+
+
 def create_wave(cmds: list[list[str]], projection, *, allow_over_budget: bool = False,
-                notes: list[str] | None = None) -> None:
+                notes: list[str] | None = None, gate=None, profile: Profile | None = None) -> None:
     """THE ONLY PLACE A VM IS CREATED, for both profiles. `enforce_budget` runs first and raises
     BudgetRefused, so a wave that fails the gate reaches no `gcloud compute instances create`.
-    `allow_over_budget` waives the VM-hour ceiling only (the vCPU and run-duration limits stand)."""
+    `allow_over_budget` waives the VM-hour ceiling only (the vCPU and run-duration limits stand).
+    `gate`, when given (the v4 wave controls), runs after the budget and before the first create and raises
+    WaveRefused to stop the wave; it is where a checkpoint / held-out slot is CLAIMED. `profile` is REQUIRED
+    to be given, and a v4 wave without a gate is refused: forgetting it must not skip the probe and the
+    wave-count limits."""
+    if profile is None:
+        raise TypeError("create_wave needs the profile of the wave it creates")
+    if profile is V4 and gate is None:
+        raise wave_limits.WaveRefused("a v4 wave is not created without its probe and wave-count gate")
     if projection is None:
         raise budget_spec.BudgetRefused("no cost projection: a wave is not created without one")
     budget_spec.enforce_budget(projection, allow_over_budget=allow_over_budget)
+    if gate is not None:
+        gate()
     for n, cmd in enumerate(cmds):
         print(f"create   {cmd[4]}  {(notes or [''] * len(cmds))[n]}".rstrip(), flush=True)
         subprocess.run(cmd, check=True)
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None, *, gates=None) -> int:
+    """`gates` is (marker store, backend id) for the v4 wave controls; None means the wave bucket's own
+    (default_gates). Tests inject a directory store; a v3 launch never reads it."""
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--profile", choices=sorted(PROFILES), default="v3",
@@ -564,6 +638,12 @@ def main(argv: list[str] | None = None) -> int:
                         help="v4 only: the pool manifest the file count is read from")
     parser.add_argument("--files", type=int, default=None,
                         help="v4 only: the file count to cost the wave at (default: the pool's)")
+    parser.add_argument("--wave-type", choices=sorted(wave_limits.WAVE_CAPS_USD), default=None,
+                        help="v4 only, REQUIRED: the wave type; its model-spend cap comes from the ledger's "
+                             "WAVE_CAPS_USD table (normal, checkpoint <= 3 waves, held_out exactly one)")
+    parser.add_argument("--wave-id", default=None,
+                        help="v4 only, REQUIRED: this wave's id (lowercase letters, digits, dashes); reuse it to "
+                             "resume the same wave, never for a different one")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
     profile = profile_of(args)
@@ -573,10 +653,16 @@ def main(argv: list[str] | None = None) -> int:
         args.max_run_hours = profile.default_max_run_hours
     if profile is V3:
         stray = [f for f, v in (("--sources", args.sources), ("--pool", args.pool),
-                                ("--files", args.files)) if v is not None]
+                                ("--files", args.files), ("--wave-type", args.wave_type),
+                                ("--wave-id", args.wave_id)) if v is not None]
         if stray:
             parser.error(f"{', '.join(stray)} apply to --profile v4 only")
     else:
+        if args.wave_type is None or args.wave_id is None:
+            parser.error("--profile v4 needs --wave-type and --wave-id: the model-spend cap comes from the "
+                         "wave type and every shard's ledger is keyed by the wave id")
+        if not wave_limits.WAVE_ID_RE.match(args.wave_id):
+            parser.error(f"--wave-id {args.wave_id!r} must be 3-40 lowercase letters, digits or dashes")
         try:
             args.sources = budget_spec.resolve_sources(
                 sorted(budget_spec.CLEARED_SOURCES) if args.sources is None
@@ -624,6 +710,29 @@ def main(argv: list[str] | None = None) -> int:
         problems += more
         warnings += warned
 
+    gate_ctx = None
+    if profile is V4 and units:
+        try:
+            wave_limits.shard_assignments(units, args.shards_total)
+        except wave_limits.WaveRefused as exc:
+            problems.append(str(exc))
+        # The read-only half (claim=False) runs on a dry run too, so a broken wave-count gate shows up for free
+        # instead of only on a live run. A bad answer refuses; an UNREACHABLE store on a dry run is a warning
+        # (a dry run is often run without bucket access); on a live run it is a refusal.
+        try:
+            gate_ctx = gates if gates is not None else default_gates()
+            problems += v4_gate_problems(args, *gate_ctx, claim=False)
+        except Exception as exc:  # noqa: BLE001 - only a reachability failure is ever downgraded, below
+            # Only a store that genuinely cannot be reached downgrades to a dry-run warning. A TypeError or
+            # KeyError out of the gate code is a BUG: a dry run must fail on it (exit 1), not exit 0 and leave
+            # it for a paid live run. On a live run every exception is a refusal.
+            if args.dry_run and isinstance(exc, store_unreachable_errors()):
+                warnings.append(f"dry run: the marker store could not be reached ({exc}); the probe record and "
+                                "wave-count limits are UNCHECKED and will be enforced on a live launch")
+            else:
+                problems.append(f"cannot open or read the marker store, or the gate code failed: "
+                                f"{type(exc).__name__}: {exc}")
+
     # THE BUDGET GATE, in the report: the same check create_wave enforces before any VM exists.
     projection = profile.projection(args, units, len(vms), slots) if units else None
     if projection is not None:
@@ -654,8 +763,19 @@ def main(argv: list[str] | None = None) -> int:
             line = " ".join(shlex.quote(c) for c in cmd)
             print(f"{'DRY-RUN  ' if args.dry_run else 'WOULD    '}{line}")
     else:
-        create_wave(cmds, projection, allow_over_budget=args.allow_over_budget,
-                    notes=[f"({len(u)} shards)" for u in vms])
+        def claim_slot() -> None:
+            if gate_ctx is None:
+                raise wave_limits.WaveRefused("the v4 wave controls were not evaluated: refusing to launch")
+            refused = v4_gate_problems(args, *gate_ctx, claim=True)
+            if refused:
+                raise wave_limits.WaveRefused("; ".join(refused))
+        try:
+            create_wave(cmds, projection, allow_over_budget=args.allow_over_budget,
+                        notes=[f"({len(u)} shards)" for u in vms],
+                        gate=claim_slot if profile is V4 else None, profile=profile)
+        except wave_limits.WaveRefused as exc:
+            print(f"REFUSE  {exc}", file=sys.stderr)
+            return 1
     if problems:
         print(f"\n{len(problems)} problem(s): "
               f"{'nothing would launch' if args.dry_run else 'nothing launched'}", file=sys.stderr)

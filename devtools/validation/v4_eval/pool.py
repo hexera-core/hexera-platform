@@ -48,7 +48,7 @@ import zipfile
 from collections.abc import Callable, Iterable
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Literal, Protocol
+from typing import Any, Literal, Protocol
 
 log = logging.getLogger(__name__)
 
@@ -128,6 +128,10 @@ class PoolEntry:
     archive_sha256: str | None
     licence: str
     group: str | None = None  # variants of one part (NIST translators) share a group
+    # `inject` entries only: the injector's own label (`label["kind"]`, `label["status"]`), carried so the
+    # quarantine gate reads what the injector declared instead of guessing from the file name. None elsewhere.
+    kind: str | None = None
+    kind_status: str | None = None
 
 
 class PoolSource(Protocol):
@@ -172,6 +176,51 @@ def _zip_step_entries(archive: Path, url: str, source: Source, licence: str,
 
 
 # --------------------------------------------------------------------------- sources
+
+#: Pool sources an injected variant may be derived from (a clean part with a cleared licence).
+INJECT_SOURCES: frozenset[str] = frozenset({"abc_pass", "occt", "nist"})
+
+
+def inject_group(source: PoolEntry) -> str:
+    """The group every injected variant of `source` carries; it is also how a pool entry names its clean source."""
+    return f"inject-{source.sha256[:12]}"
+
+
+def inject_entry(source: PoolEntry, *, name: str, sha256: str, url: str, label: dict[str, Any]) -> PoolEntry:
+    """THE adapter for an injected-variant pool entry; nothing else may construct an `inject` PoolEntry.
+
+    An injected variant of a part is governed by that part's terms, so the licence is DERIVED from `source`
+    verbatim and cannot be passed: there is no licence parameter. The group is derived too (`inject_group`), so
+    the entry names its clean source. The kind and its evidence status come from the injector's own label
+    (`label["kind"]`, `label["status"]`); a label missing either carries None, and the quarantine gate refuses
+    an `inject` entry with either missing. `check_inject_licences` re-proves the derivation on every manifest
+    write, so an entry built by hand with another licence is refused there."""
+    if source.source not in INJECT_SOURCES:
+        raise ValueError(f"{name}: cannot derive an injected variant from a {source.source!r} entry; "
+                         f"clean sources are {sorted(INJECT_SOURCES)}")
+    return PoolEntry(name, "inject", sha256, url, None, source.licence, inject_group(source),
+                     kind=label.get("kind"), kind_status=label.get("status"))
+
+
+def inject_entry_from_case(source: PoolEntry, case: Any, *, url: str) -> PoolEntry:
+    """`inject_entry` for one `inject()` output (a file on disk plus its label)."""
+    return inject_entry(source, name=case.path.name, sha256=sha256_file(case.path), url=url, label=case.label)
+
+
+def check_inject_licences(entries: Iterable[PoolEntry]) -> None:
+    """Refuse an `inject` entry whose licence differs from its clean source's (found by its group). An entry
+    whose source is not among `entries` is not judged here (a partial pool; `inject_pool.check_pool` reports
+    that case); one whose licence is wrong is always refused."""
+    entries = list(entries)
+    clean = {inject_group(e): e for e in entries if e.source != "inject"}
+    for e in entries:
+        if e.source != "inject":
+            continue
+        source = clean.get(e.group or "")
+        if source is not None and e.licence != source.licence:
+            raise ValueError(f"{e.name}: licence differs from its clean source {source.name}'s; an injected "
+                             f"variant is governed by its source's terms")
+
 
 class StaticSource:
     """Entries already in hand (also the home of `inject` entries from the injector)."""
@@ -341,6 +390,7 @@ def write_pool(entries: list[PoolEntry], out: Path = OUT, *, sources_included: l
 
     `sources_included` records which flag set built this file, so a partial pool is never mistaken
     for the full one."""
+    check_inject_licences(entries)
     licences: dict[str, str] = {}
     archives: dict[str, dict[str, str | None]] = {}
     rows = []
@@ -350,6 +400,9 @@ def write_pool(entries: list[PoolEntry], out: Path = OUT, *, sources_included: l
         if not e.url.strip():
             raise ValueError(f"{e.name}: url is required on every pool entry")
         row = asdict(e)
+        for optional in ("kind", "kind_status"):  # additive: a pool with no inject entries is byte-identical
+            if row[optional] is None:
+                del row[optional]
         row["licence_id"] = _licence_id(row.pop("licence"))
         licences[row["licence_id"]] = e.licence
         row["archive_id"] = _archive_id(e.url, e.archive_sha256)

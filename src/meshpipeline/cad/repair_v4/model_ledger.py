@@ -127,6 +127,53 @@ class FileMarkerStore:
         os.replace(tmp, self._path(key))
 
 
+class GcsObjectStore:
+    """The wave bucket through the native GCS client and the caller's Application Default Credentials (on a
+    wave VM, the VM service account - the same identity `gcloud` uses there). `create_object_if_absent` is
+    `upload_from_string(..., if_generation_match=0)`: the server refuses with HTTP 412 when the object exists,
+    which is the atomic create the model ledger needs. No HMAC keys, no secret, no private client methods.
+    `bucket` is a client Bucket-like (tests inject one); omit it and `bucket_name` is opened lazily."""
+
+    def __init__(self, bucket_name: str, *, bucket: Any = None) -> None:
+        if not bucket_name:
+            raise ValueError("GcsObjectStore needs a bucket name")
+        self.bucket_name = bucket_name
+        self._bucket = bucket
+
+    @property
+    def backend_id(self) -> str:
+        return f"gcs/{self.bucket_name}"
+
+    def _b(self) -> Any:
+        if self._bucket is None:
+            from google.cloud import storage  # in the mesh image via requirements/runtime.txt
+            self._bucket = storage.Client().bucket(self.bucket_name)
+        return self._bucket
+
+    def exists(self, *, object_key: str) -> bool:
+        return bool(self._b().blob(object_key).exists())
+
+    def get_bytes(self, *, object_key: str) -> bytes:
+        return bytes(self._b().blob(object_key).download_as_bytes())
+
+    def upload_file(self, *, local_path: Path, object_key: str, content_type: str | None = None) -> None:
+        self._b().blob(object_key).upload_from_string(
+            Path(local_path).read_bytes(), content_type=content_type or "application/octet-stream")
+
+    def create_object_if_absent(self, *, local_path: Path, object_key: str,
+                                content_type: str | None = None) -> bool:
+        """True if THIS call created the object, False if it already existed (HTTP 412). Any other error
+        propagates: an unknown outcome is never reported as a win."""
+        from google.api_core.exceptions import PreconditionFailed
+        try:
+            self._b().blob(object_key).upload_from_string(
+                Path(local_path).read_bytes(), content_type=content_type or "application/octet-stream",
+                if_generation_match=0)
+        except PreconditionFailed:
+            return False
+        return True
+
+
 class ObjectMarkerStore:
     """Markers as objects in the wave bucket. `create` is a server-side PRECONDITION write
     (`create_object_if_absent` on the object store, e.g. the MinIO adapter's If-None-Match / generation-match

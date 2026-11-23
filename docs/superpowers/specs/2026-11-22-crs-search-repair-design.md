@@ -224,6 +224,14 @@ v3's 13 ops are mapped into this interface where they overlap; for example, `fix
   - A regression is any clean input made unclean, or any output that passes **fewer panel members** than its input.
   - When nothing comes out clean, the delivered state is the best-scoring state only if it passes at least as many panel members as the input; otherwise the input is passed through.
 
+8. **Benchmark distribution. Settled 2026-11-22: internal only.** Corpus files, injected derivatives
+   and per-file results stay in the private eval bucket; any external write-up carries aggregate
+   numbers plus names and hashes only. This removes the ABC/OCCT redistribution question from the
+   critical path - it remains an open owner item should external distribution ever be wanted, and
+   the OCCT licence text is still marked UNVERIFIED. The "an injected variant is governed by its
+   clean source's terms" invariant stands regardless of distribution, because it is what makes the
+   provenance of a derived file answerable at all.
+
 ## 8. Left to the builder
 Exact panel wall times; cheap-tier composition; split sizes within compute; search hyperparameters (K, N workers, M rounds); site clustering thresholds; injector calibration; the Netgen integration route; how the production FEA config is extracted.
 

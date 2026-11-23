@@ -43,8 +43,9 @@ def _launch(*argv: str, tmp_path: Path) -> subprocess.CompletedProcess[str]:
 
 
 def _v4(*extra: str, tmp_path: Path) -> subprocess.CompletedProcess[str]:
+    wave = [] if "--wave-type" in extra else ["--wave-type", "normal", "--wave-id", "w-test"]
     return _launch("--profile", "v4", "--image", IMAGE, "--commit", HEAD, "--image-commit", HEAD,
-                   "--skip-preflight", *extra, tmp_path=tmp_path)
+                   "--skip-preflight", *wave, *extra, tmp_path=tmp_path)
 
 
 def _creates(out: str) -> list[str]:
@@ -142,13 +143,22 @@ else: sys.exit(22)
 """
 _GCLOUD = """#!/bin/bash
 echo "$*" > "$LOG/$$"
+if [ "$1 $2" = "storage du" ]; then
+  printf '%b' "${DU_OUT-1000 gs://B/eval/inputs\\n}"; exit "${DU_RC:-0}"
+fi
 if [ "$1 $2" = "storage cp" ]; then
   dst="${@: -1}"
   case "$dst" in gs://*|-) ;; *) mkdir -p "$(dirname "$dst")"
     case "$dst" in *code.tgz) tar -czf "$dst" -T /dev/null;; *) echo '{}' > "$dst";; esac;; esac
 fi
-[ "$1 $2" = "storage ls" ] && exit 1
+if [ "$1 $2" = "storage ls" ]; then
+  [ -n "${LS_OK:-}" ] && [[ "$*" == *${LS_OK}* ]] && exit 0
+  exit 1
+fi
 exit 0
+"""
+_DF = """#!/bin/bash
+printf '%b\\n' "${DF_OUT-Avail\\n99999999999}"
 """
 _DOCKER = """#!/bin/bash
 if [ "$1" = "ps" ]; then echo a; echo b; echo c; echo d; exit 0; fi
@@ -157,11 +167,12 @@ exit 0
 """
 
 
-def _startup(tmp_path: Path, meta: dict[str, str], expect_rc: int = 0) -> list[str]:
+def _startup(tmp_path: Path, meta: dict[str, str], expect_rc: int = 0,
+             extra_env: dict[str, str] | None = None) -> list[str]:
     b = tmp_path / "bin"
     b.mkdir()
     for name, body in (("curl", _CURL), ("gcloud", _GCLOUD), ("docker", _DOCKER),
-                       ("sleep", "#!/bin/bash\nexit 1\n"), ("chown", "#!/bin/bash\nexit 0\n"),
+                       ("df", _DF), ("sleep", "#!/bin/bash\nexit 1\n"), ("chown", "#!/bin/bash\nexit 0\n"),
                        ("python3", '#!/bin/bash\necho "python3 $*" > "$LOG/$$"\nexit 0\n')):
         (b / name).write_text(body)
         (b / name).chmod(0o755)
@@ -169,7 +180,7 @@ def _startup(tmp_path: Path, meta: dict[str, str], expect_rc: int = 0) -> list[s
     (tmp_path / "log").mkdir()   # one file per stub call: parallel shards cannot tear a line
     env = {"PATH": f"{b}:/usr/bin:/bin", "META": str(tmp_path / "meta.json"),
            "LOG": str(tmp_path / "log"), "V3EVAL_WORKDIR": str(tmp_path / "w"),
-           "V3EVAL_RETRY_SLEEP": "0"}
+           "V3EVAL_RETRY_SLEEP": "0", **(extra_env or {})}
     r = subprocess.run(["bash", str(V3 / "vm_startup.sh")], env=env, capture_output=True, text=True,
                        timeout=60)
     assert r.returncode == expect_rc, r.stderr
@@ -197,7 +208,9 @@ def test_v4_startup_runs_the_v4_run_arm_with_the_v4_arguments(tmp_path):
             "v4-machine-type": "c2d-standard-8",
             "v4-run-arm": "devtools/validation/v4_eval/run_arm.py",
             "v4-pool": "gs://B/eval/v4-reprobe/pool.json",
-            "v4-cache-uri": "gs://B/eval/v4-reprobe/verdict-cache", "v4-sources": "abc_fail,abc_pass"}
+            "v4-cache-uri": "gs://B/eval/v4-reprobe/verdict-cache", "v4-sources": "abc_fail,abc_pass",
+            "v4-wave-id": "w-test", "v4-wave-type": "normal", "v4-n-shards": "2",
+            "v4-marker-bucket": "B"}
     log = _startup(tmp_path, meta)
     runs = [ln for ln in log if ln.startswith("docker run")]
     assert len(runs) == 2
@@ -209,7 +222,8 @@ def test_v4_startup_runs_the_v4_run_arm_with_the_v4_arguments(tmp_path):
         assert "--sources abc_fail,abc_pass" in run
         assert "sample.json" not in run and "secret.env" not in run   # no model key for the checker
     assert any(ln.startswith("storage cp gs://B/eval/v4-reprobe/pool.json") for ln in log)
-    assert not any("secrets versions access" in ln for ln in log)
+    # the checker needs no MODEL key and the markers use the VM's own identity: NO secret is read at all
+    assert not any("secrets" in ln for ln in log)
     assert any("gs://B/eval/reprobe-cccccccccccc/pool/shard-1-of-2/DONE" in ln for ln in log)
 
 
@@ -253,7 +267,8 @@ def test_v4_startup_refuses_without_the_source_list(tmp_path):
     meta = {"v4-image": "IMG@sha256:x", "v4-commit": "c" * 40, "v4-image-commit": "abc1234",
             "v4-units": "reprobe:pool:1/2", "v4-bucket": "gs://B", "v4-prefix": "gs://B/p",
             "v4-code": "gs://B/p/code-cccccccccccc/code.tgz", "v4-machine-type": "c2d-standard-8",
-            "v4-run-arm": "devtools/validation/v4_eval/run_arm.py"}
+            "v4-run-arm": "devtools/validation/v4_eval/run_arm.py", "v4-wave-id": "w-test",
+            "v4-wave-type": "normal", "v4-n-shards": "2", "v4-marker-bucket": "B"}
     log = _startup(tmp_path, meta, expect_rc=1)
     assert not any(ln.startswith("docker run") for ln in log)
     assert any(ln.endswith("/FAILED") or "FAILED" in ln for ln in log)
@@ -291,7 +306,7 @@ def test_the_source_list_is_pluggable_data_not_launcher_code():
 def test_the_source_filter_reaches_the_vms_and_run_arm_applies_it(tmp_path):
     ok = _v4("--dry-run", "--sources", "abc_fail", tmp_path=tmp_path)
     assert ok.returncode == 0, ok.stderr
-    assert all(c.endswith("v4-sources=abc_fail'") for c in _creates(ok.stdout))
+    assert all("v4-sources=abc_fail|" in c for c in _creates(ok.stdout))
     ra = _load("v4_run_arm_under_test", V4 / "run_arm.py")
     pool = ra.pool_mod.read_pool(POOL)
     kept = ra.select_sources(pool, "abc_fail,inject")
@@ -355,8 +370,20 @@ def live(monkeypatch):
 
 
 def _main(*argv: str) -> int:
+    if "v4" not in argv:
+        return lf.main(["--image", IMAGE, "--commit", HEAD, "--image-commit", HEAD, "--skip-preflight",
+                        *argv])
+    # a v4 wave is gated on the conditional-create probe and the wave-count limits: give it a marker
+    # store whose probe has passed, in a temp directory (nothing reaches a bucket)
+    import tempfile
+    ml = _load("model_ledger_under_test",
+               REPO / "src" / "meshpipeline" / "cad" / "repair_v4" / "model_ledger.py")
+    mp = _load("marker_probe_under_test_main", V4 / "marker_probe.py")
+    backend = "gcs/dev-crsv3-transfer-224734058693"
+    markers = ml.FileMarkerStore(tempfile.mkdtemp())
+    mp.record_pass(markers, backend=backend, run_id="t", rounds=50)
     return lf.main(["--image", IMAGE, "--commit", HEAD, "--image-commit", HEAD, "--skip-preflight",
-                    *argv])
+                    "--wave-type", "normal", "--wave-id", "w-test", *argv], gates=(markers, backend))
 
 
 @pytest.mark.parametrize("profile_args", [[], ["--profile", "v4"]], ids=["v3", "v4"])
@@ -382,7 +409,7 @@ def test_create_wave_is_gated_even_when_called_directly(live):
     over = ev.Projection(files=1, full_files=0, shards=96, vms=12, vcpus_per_vm=8, cpu_hours=1.0,
                          wall_hours=1.0, vm_hours=700.0, max_run_hours=3, worst_vm_hours=700.0)
     with pytest.raises(ev.BudgetRefused):
-        lf.create_wave([["gcloud", "compute", "instances", "create", "x"]], over)
+        lf.create_wave([["gcloud", "compute", "instances", "create", "x"]], over, profile=lf.V3)
     assert live.calls == []
 
 

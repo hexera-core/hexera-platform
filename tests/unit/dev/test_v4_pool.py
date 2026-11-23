@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import io
+import json
 import sys
 import zipfile
 from pathlib import Path
@@ -228,3 +229,59 @@ def test_archives_are_interned_and_round_trip(tmp_path):
 def test_write_pool_refuses_an_empty_url(tmp_path):
     with pytest.raises(ValueError, match="url is required"):
         pool.write_pool([_entry(url=" ")], tmp_path / "pool.json", sources_included=["abc"])
+
+
+# ------------------------------------------------------------------ inject entries carry their source's licence
+
+def _clean_part(source: str = "abc_pass", licence: str | None = None):
+    return pool.PoolEntry("part.step", source, SHA_A, "https://x/abc.7z", SHA_B,
+                          licence if licence is not None else pool.LICENCE["abc"])
+
+
+def _derived(clean, sha: str = "e" * 64):
+    return pool.inject_entry(clean, name="inject/part.step", sha256=sha, url=f"https://h/{sha}/part.step",
+                             label={"kind": "inject_kind", "status": "structural"})
+
+
+def test_an_inject_entry_derives_its_licence_and_group_from_its_clean_source() -> None:
+    clean = _clean_part()
+    entry = _derived(clean)
+    assert entry.licence == clean.licence  # verbatim
+    assert entry.group == pool.inject_group(clean) == f"inject-{SHA_A[:12]}"
+    assert (entry.kind, entry.kind_status, entry.source, entry.archive_sha256) == (
+        "inject_kind", "structural", "inject", None)
+    import inspect
+    assert "licence" not in inspect.signature(pool.inject_entry).parameters  # it cannot be passed
+
+
+@pytest.mark.parametrize("source", ["abc_fail", "inject", "f360"])
+def test_an_inject_entry_cannot_be_derived_from_an_uncleared_or_damaged_source(source) -> None:
+    with pytest.raises(ValueError, match="cannot derive"):
+        _derived(_clean_part(source))
+
+
+def test_a_hand_built_inject_entry_with_another_licence_is_refused_on_write(tmp_path) -> None:
+    clean = _clean_part()
+    forged = pool.PoolEntry("inject/part.step", "inject", "e" * 64, "https://h/x", None, "test licence",
+                            pool.inject_group(clean), kind="k", kind_status="structural")
+    with pytest.raises(ValueError, match="licence differs from its clean source"):
+        pool.write_pool([clean, forged], tmp_path / "pool.json", sources_included=["abc", "inject"])
+    assert not (tmp_path / "pool.json").exists()
+    pool.write_pool([clean, _derived(clean)], tmp_path / "ok.json", sources_included=["abc", "inject"])
+    back = {e.name: e for e in pool.read_pool(tmp_path / "ok.json")}
+    assert back["inject/part.step"].licence == clean.licence
+
+
+def test_the_licence_check_follows_the_source_when_its_licence_changes(tmp_path) -> None:
+    """An entry derived under the old terms is stale once the source's licence text is corrected."""
+    old = _clean_part(licence="old terms")
+    entry = _derived(old)
+    with pytest.raises(ValueError, match="licence differs"):
+        pool.write_pool([_clean_part(licence="new terms"), entry], tmp_path / "p.json", sources_included=["abc", "inject"])
+
+
+def test_a_pool_with_no_inject_entries_is_unchanged_by_the_licence_check(tmp_path) -> None:
+    pool.write_pool([_clean_part()], tmp_path / "p.json", sources_included=["abc"])
+    manifest = json.loads((tmp_path / "p.json").read_text())
+    assert manifest["version"] == 3
+    assert all("kind" not in row and "kind_status" not in row for row in manifest["files"])

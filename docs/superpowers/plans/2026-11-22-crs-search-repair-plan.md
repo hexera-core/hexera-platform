@@ -645,3 +645,36 @@ tests/unit/cad/repair_v4/...   tests/native/test_native_repair_v4_*.py
 | 2 | 3, 4, 5 (finishing L0); 11–15 in parallel (op lanes); 16 once 11 lands. First `staged` wave on dev as soon as the dev split exists. |
 | 3 | 17, 18, 19, 20; first `search_det` / `search_ai` waves |
 | 4–5 | Dev tuning waves; held-out freeze and report |
+
+## Task 22 (added 2026-11-22 by the controller) — wire `_run_search`, the engine seam
+
+**Why it exists.** Three tasks each built their side of the engine seam and none owns the join, so
+**neither search arm is reachable from the engine today.** `repair_v4/__init__.py:51-60` is still a
+stub raising `SearchUnavailable`; the path is `repair_step_file` → `_repair_via_v4` → `repair_v4` →
+`_run_search`. Task 18b added `search.arm_generators(arm, **ai_kwargs)` (`search_det` → the
+deterministic sweep with no proposer, `search_ai` → `ai_generators`, anything else a `ValueError`)
+and correctly stopped there: wiring the stub needs a worker pool, a judge, delivery gating and a
+real model route, none of which belong to a wiring task. Task 21's arm table also has to call it.
+
+This was a gap in my decomposition, not in any task. Nobody was asked to own the seam, so each lane
+built to its own edge and stopped — and the per-task reviews could not catch it, because every task
+was complete against its own brief.
+
+**Scope.**
+
+1. Implement `_run_search` for real: construct the pool, build the judge, call `arm_generators` for
+   the named arm, and honour delivery gating.
+2. Have Task 21's arm table dispatch through it, so `search_det` and `search_ai` are selectable as
+   arms rather than only as library calls.
+3. `CAD_REPAIR_ENGINE=search` must actually select it. **Note the separate, still-open gap:
+   `CAD_REPAIR_ENGINE` is not plumbed through `create-api-service.sh`/`startup.sh`, so a personal
+   dev slug cannot select `search` yet** — decide whether that belongs here or in its own change.
+4. A test that proves the arm is reachable end to end, not just that the mapping function returns
+   the right generators.
+
+**Binding.** `CheckerUnavailable` stays infrastructure, never a verdict. The $1.00 per-file ceiling
+holds through `ledger.admit`'s per-call reservation; `Budget.model_usd` is advisory. Production
+posture is untouched: `CAD_REPAIR_ENGINE` defaults to v3 and prod never sets it.
+
+**Blocked on** the panel merging (Task 3), since the real `cheap_verdict` raises `ImportError`
+without it.

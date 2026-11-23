@@ -185,28 +185,193 @@ def test_cache_prevents_a_second_mesh(layers, tmp_path) -> None:
 
 
 # ------------------------------------------------------------------ quarantine
+# Fixtures are REAL: a real `inject()` output wrapped by the real `pool.inject_entry` into a real `PoolEntry`.
+# (An earlier fixture invented a `kind_status` attribute no production type had, and so passed while the real
+# path never fed the check a kind.)
 
-def test_default_kinds_are_what_the_gate_allows() -> None:
+pool_mod = run_arm.pool_mod
+
+
+@pytest.fixture(scope="module")
+def clean_source() -> object:
+    """The clean pool entry the injected variants derive from; its licence is what they must carry."""
+    return pool_mod.PoolEntry("clean_part.step", "abc_pass", "c" * 64, "https://x/abc.7z", "d" * 64,
+                              pool_mod.LICENCE["abc"])
+
+
+@pytest.fixture(scope="module")
+def clean_step(tmp_path_factory) -> Path:
+    # Both gating tiers (meshpipeline-validation:local, meshpipeline-mesh:native) are known to carry OCP, so this runs
+    # where merges are gated. Anywhere without OCP this skip would silently hide ALL the quarantine coverage below.
+    pytest.importorskip("OCP.BRepCheck", reason="the CAD kernel is a native-tier dependency")
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox, BRepPrimAPI_MakeCylinder
+    from OCP.gp import gp_Ax1, gp_Ax2, gp_Dir, gp_Pnt, gp_Trsf
+    from OCP.IFSelect import IFSelect_RetDone
+    from OCP.STEPControl import STEPControl_AsIs, STEPControl_Writer
+
+    box = BRepPrimAPI_MakeBox(40.0, 30.0, 20.0).Shape()
+    hole = BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(20.0, 15.0, -1.0), gp_Dir(0, 0, 1)), 4.0, 22.0).Shape()
+    turn = gp_Trsf()
+    turn.SetRotation(gp_Ax1(gp_Pnt(3.3, 1.7, 0.9), gp_Dir(1, 2, 3)), 0.37)
+    part = BRepBuilderAPI_Transform(BRepAlgoAPI_Cut(box, hole).Shape(), turn, True).Shape()
+    writer = STEPControl_Writer()
+    writer.Transfer(part, STEPControl_AsIs)
+    path = tmp_path_factory.mktemp("clean") / "clean_part.step"
+    assert writer.Write(str(path)) == IFSelect_RetDone
+    return path
+
+
+@pytest.fixture(scope="module")
+def real_entries(clean_step, clean_source, tmp_path_factory) -> dict:
+    """kind -> a real PoolEntry built from real inject() output, for every kind that applies to the fixture."""
+    inject = rp.load_inject()
+    out_dir = tmp_path_factory.mktemp("injected")
+    entries = {}
+    for kind in inject.KINDS:
+        try:
+            case = inject.inject(clean_step, kind, 1, out_dir)
+        except (inject.InjectionNotApplicable, inject.InjectionInfeasible):
+            continue
+        entries[kind] = pool_mod.inject_entry_from_case(clean_source, case, url="gs://bucket/inj.tar")
+    return entries
+
+
+def _clean_named(entry):
+    """The same real entry as a pool adapter might rename it: no kind string in the name."""
+    import dataclasses
+    renamed = dataclasses.replace(entry, name="clean_looking_part.step")
+    assert rp.banned_kind_in(renamed.name) is None and rp.injected_kind(renamed.name) is None
+    return renamed
+
+
+def test_the_real_fixture_covers_both_structural_and_quarantined_kinds(real_entries) -> None:
+    inject = rp.load_inject()
+    assert set(real_entries) & set(inject.DEFAULT_KINDS) and set(real_entries) & set(inject.QUARANTINED_KINDS)
+
+
+def test_inject_entries_carry_the_injectors_own_kind_and_status(real_entries) -> None:
+    inject = rp.load_inject()
+    for kind, entry in real_entries.items():
+        assert isinstance(entry, pool_mod.PoolEntry)
+        assert (entry.kind, entry.kind_status) == (kind, inject.KIND_STATUS[kind])
+
+
+def test_default_kinds_are_what_the_gate_allows(real_entries) -> None:
     inject = rp.load_inject()
     assert set(inject.DEFAULT_KINDS).isdisjoint(inject.QUARANTINED_KINDS)
-    for kind in inject.DEFAULT_KINDS:
-        rp.check_not_quarantined([Entry(f"part.{kind}.7.step", _sha(1), "inject")])
+    structural = [e for k, e in real_entries.items() if k in inject.DEFAULT_KINDS]
+    assert structural
+    rp.check_not_quarantined(structural)
+    rp.check_not_quarantined([_clean_named(e) for e in structural])
 
 
-@pytest.mark.parametrize("kind", ["loose_reapprox", "tolerance_inflate", "seam_variant", "precision_truncate",
-                                  "pcurve_corrupt"])
-def test_quarantined_and_infeasible_kinds_are_refused_before_any_mesh(layers, kind) -> None:
-    member = FakeMember("gmsh_default")
+def test_a_quarantined_real_entry_is_refused_by_status_though_its_name_never_says_so(real_entries) -> None:
+    """THE LEAK: real quarantined inject output, renamed so the name check cannot see it."""
+    inject = rp.load_inject()
+    quarantined = [e for k, e in real_entries.items() if k in inject.QUARANTINED_KINDS]
+    assert quarantined
+    for entry in quarantined:
+        with pytest.raises(rp.QuarantinedKind):
+            rp.check_not_quarantined([entry])
+        with pytest.raises(rp.QuarantinedKind):
+            rp.check_not_quarantined([_clean_named(entry)])
+
+
+def test_a_quarantined_real_entry_is_refused_before_any_mesh_and_by_build_splits(layers, real_entries) -> None:
+    inject = rp.load_inject()
+    for kind, entry in real_entries.items():
+        if kind not in inject.QUARANTINED_KINDS:
+            continue
+        member = FakeMember("gmsh_default")
+        with pytest.raises(rp.QuarantinedKind):
+            _probe([_clean_named(entry)], members=[member])
+        assert member.runs == 0
+        with pytest.raises(rp.QuarantinedKind):
+            rp.build_splits([_row(1, "panel", "other", source="inject", name="clean_looking_part.step",
+                                  kind=entry.kind, kind_status=entry.kind_status)], dev=1, heldout=0, clean=0)
+
+
+@pytest.mark.parametrize("missing", ["kind", "kind_status", "both"])
+def test_an_inject_entry_missing_its_declared_kind_or_status_is_refused(real_entries, missing) -> None:
+    """Refused, not inferred from the name: even a structural kind whose name reads fine."""
+    import dataclasses
+    inject = rp.load_inject()
+    entry = next(e for k, e in real_entries.items() if k in inject.DEFAULT_KINDS)
+    gaps = {"kind": {"kind": None}, "kind_status": {"kind_status": None},
+            "both": {"kind": None, "kind_status": None}}[missing]
+    stripped = dataclasses.replace(entry, **gaps)
+    assert rp.injected_kind(stripped.name) is not None   # the name WOULD have told the old check the kind
     with pytest.raises(rp.QuarantinedKind):
-        _probe([Entry(f"part.{kind}.7.step", _sha(1), "inject")], members=[member])
-    assert member.runs == 0
-    with pytest.raises(rp.QuarantinedKind):
-        rp.build_splits([_row(1, "panel", "other", source="inject", name=f"part.{kind}.7.step")], dev=1, heldout=0, clean=0)
+        rp.check_not_quarantined([stripped])
 
 
-def test_an_injected_entry_with_no_readable_kind_is_refused() -> None:
+def test_an_inject_entry_whose_status_contradicts_its_kind_is_refused(real_entries) -> None:
+    import dataclasses
+    inject = rp.load_inject()
+    entry = next(e for k, e in real_entries.items() if k in inject.QUARANTINED_KINDS)
+    with pytest.raises(rp.QuarantinedKind):   # a quarantined kind relabelled structural
+        rp.check_not_quarantined([dataclasses.replace(entry, kind_status="structural")])
+
+
+def test_the_name_check_stays_as_a_second_layer(real_entries) -> None:
+    """A structural declaration on a file NAMED as a quarantined kind is still refused."""
+    import dataclasses
+    inject = rp.load_inject()
+    entry = next(e for k, e in real_entries.items() if k in inject.DEFAULT_KINDS)
     with pytest.raises(rp.QuarantinedKind):
-        rp.check_not_quarantined([Entry("mystery.step", _sha(1), "inject")])
+        rp.check_not_quarantined([dataclasses.replace(entry, name="part.loose_reapprox.7.step")])
+
+
+def test_the_probe_row_carries_the_declared_kind_and_status(layers, real_entries) -> None:
+    inject = rp.load_inject()
+    entry = next(e for k, e in real_entries.items() if k in inject.DEFAULT_KINDS)
+    rows, _ = _probe([entry], members=[FakeMember("gmsh_default")])
+    assert (rows[0].kind, rows[0].kind_status) == (entry.kind, entry.kind_status)
+    assert rp.asdict(rows[0])["kind"] == entry.kind
+    rp.check_not_quarantined(rows)
+
+
+def test_write_pool_round_trips_the_declared_kind_and_leaves_other_rows_alone(real_entries, tmp_path) -> None:
+    inject = rp.load_inject()
+    inj = list(real_entries.values())
+    plain = pool_mod.PoolEntry("p.step", "abc_fail", _sha(9), "u", None, "lic", None)
+    path = tmp_path / "pool.json"
+    pool_mod.write_pool([*inj, plain], path, sources_included=["inject"])
+    back = {e.name: e for e in pool_mod.read_pool(path)}
+    for e in inj:
+        assert back[e.name] == e and back[e.name].kind in inject.KINDS
+    assert back["p.step"] == plain and back["p.step"].kind is None
+    rows = {r["name"]: r for r in json.loads(path.read_text())["files"]}
+    assert "kind" not in rows["p.step"] and "kind_status" not in rows["p.step"]   # additive: not written when None
+
+
+def test_a_pool_read_back_from_disk_still_refuses_a_quarantined_inject_entry(real_entries, tmp_path) -> None:
+    """The real run_arm path: pool.json -> read_pool -> check_not_quarantined."""
+    inject = rp.load_inject()
+    entry = _clean_named(next(e for k, e in real_entries.items() if k in inject.QUARANTINED_KINDS))
+    path = tmp_path / "pool.json"
+    pool_mod.write_pool([entry], path, sources_included=["inject"])
+    with pytest.raises(rp.QuarantinedKind):
+        rp.check_not_quarantined(pool_mod.read_pool(path))
+
+
+@pytest.mark.parametrize("source", ["abc_fail", "abc_pass", "occt", "nist", "f360"])
+def test_a_non_inject_entry_with_no_kind_is_not_refused(source) -> None:
+    rp.check_not_quarantined([pool_mod.PoolEntry("part.step", source, _sha(1), "u", None, "lic", None)])
+
+
+def test_an_unknown_declared_kind_is_refused() -> None:
+    entry = pool_mod.PoolEntry("part.step", "inject", _sha(1), "u", None, "lic", None, kind="not_a_kind",
+                               kind_status="structural")
+    with pytest.raises(rp.QuarantinedKind):
+        rp.check_not_quarantined([entry])
+
+
+def test_an_injected_entry_with_no_declaration_is_refused() -> None:
+    with pytest.raises(rp.QuarantinedKind):
+        rp.check_not_quarantined([pool_mod.PoolEntry("mystery.step", "inject", _sha(1), "u", None, "lic", None)])
 
 
 # ------------------------------------------------------------------ the plan
@@ -240,10 +405,11 @@ def test_agreement_counts_the_cheap_tiers_misses() -> None:
 
 # ------------------------------------------------------------------ splits
 
-def _row(i, layer, family, source="abc_fail", name=None, group=None, tier="cheap", clean=False, extra=None):
+def _row(i, layer, family, source="abc_fail", name=None, group=None, tier="cheap", clean=False, extra=None,
+         kind=None, kind_status=None):
     summary = {"tier": tier, "clean": clean, "counts_for_scoreboard": True, "hard": [family] if layer == "valid" else []}
     summary.update(extra or {})
-    return rp.ProbeRow(name or f"f{i}.step", _sha(i), source, summary, layer, family, group)
+    return rp.ProbeRow(name or f"f{i}.step", _sha(i), source, summary, layer, family, group, kind, kind_status)
 
 
 def _population():
