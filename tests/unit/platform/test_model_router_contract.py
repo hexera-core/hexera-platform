@@ -16,6 +16,7 @@ ROLE_OPERATIONS = [
     "call_repair_review_model",
     "call_reviewer_with_tools",
     "call_summarizer_model",
+    "call_repair_v4_propose",
 ]
 
 

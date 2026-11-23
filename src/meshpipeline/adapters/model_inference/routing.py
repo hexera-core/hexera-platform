@@ -145,6 +145,15 @@ async def execute(
         reason = _selection_reason(is_standby, last_category, route)
         last_target = target
 
+        # FAIL CLOSED ON PRICE, before anything is dialled or admitted, for a route that asked for it
+        # (ModelRoute.require_price: its caller enforces a spending cap, which an unpriced model - metered
+        # at $0.00 - could never trip). Raises UnpricedModel, naming MODEL_PRICE_OVERRIDES. It is not a
+        # RouteExhausted, so no retry or failover is tried: a standby would be as unpriced, and a missing
+        # price is a configuration defect.
+        if route.require_price:
+            from meshpipeline.adapters.inference_telemetry.pricing import require_price
+            require_price(target.provider, target.model)
+
         breaker = _breaker_for(target)
         if not breaker.allow():
             last_category, last_phase = FailureCategory.CIRCUIT_OPEN, Phase.CIRCUIT
