@@ -1120,8 +1120,11 @@ def search(
                 if child.score > best.score:
                     trace.record("best", state=child.id, score=child.score, previous=best.id, previous_score=best.score)
                     best, improved = child, True
-                if child.score >= state.score:
-                    progressed = True  # a new state that is no worse than its parent: a step of a multi-op repair
+                if child.score >= best.score:
+                    # A new state that ties the best so far (or beats it) is a step of a multi-op repair. Judged
+                    # against the BEST, not the parent: a child of a worse state that merely ties its worse parent
+                    # is a search wandering at a loss, and must still run out of patience.
+                    progressed = True
 
             # tell each generator that listens what became of ITS candidates (after confirmation, so a confirmed
             # child's delta is the full-panel one)

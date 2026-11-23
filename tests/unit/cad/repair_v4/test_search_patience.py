@@ -142,3 +142,11 @@ def test_the_same_dead_ends_end_the_search_on_a_part_that_presents_few_holes() -
     makes the test above able to fail: it is red under a constant patience."""
     r = run([_dead_ends_then_the_way(5)], World(target=CLEAN_Q, sites_fn=_open_site(1)), start=make_ws(30))
     assert r.reason == "patience" and not r.clean, (r.reason, _stop(r)["spent"])
+
+
+def test_a_state_that_only_ties_a_parent_worse_than_the_best_is_not_progress() -> None:
+    """Found by `test_search.py::test_patience_stops_flat_search` on the first version of the rule, which compared a
+    child with its PARENT: the child of a worse state that ties that worse state ran the search to the op budget. The
+    reference is the best so far."""
+    r = run([Scripted(lambda s: [cand(0)])], World(target=CLEAN_Q, sites_fn=_open_site(1)), start=make_ws(5))
+    assert r.reason == "patience" and _stop(r)["spent"]["ops"] <= 4, (r.reason, _stop(r)["spent"])
