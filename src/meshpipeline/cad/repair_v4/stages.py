@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import atexit
 import os
+import re
 import shutil
 import tempfile
 from collections.abc import Callable
@@ -262,8 +263,26 @@ _STEPS_DIR: list[str] = []
 _STEP_FOR: dict[tuple[str, float], str] = {}
 
 
+#: the STEP writer stamps FILE_NAME with the wall-clock second; nothing about the geometry changes with it
+_STEP_STAMP = re.compile(rb"(FILE_NAME\('[^']*',')[^']*(')")
+_EPOCH = b"1970-01-01T00:00:00"
+
+
+def _deterministic(path: str) -> None:
+    """Make the export a function of the geometry alone: the verdict cache keys on the STEP's sha256, and a
+    timestamp in the header gave two exports of one BREP two keys (so a durable cache could never hit, and two
+    workspaces with identical geometry never shared a verdict). Only the header stamp is rewritten."""
+    with open(path, "rb") as handle:
+        data = handle.read()
+    fixed = _STEP_STAMP.sub(rb"\g<1>" + _EPOCH + rb"\g<2>", data, count=1)
+    if fixed != data:
+        with open(path, "wb") as handle:
+            handle.write(fixed)
+
+
 def step_for(pool: WorkerPool, brep: str) -> str:
-    """The workspace's BREP as a STEP file (mm), written once per BREP path, for the checker."""
+    """The workspace's BREP as a STEP file (mm), written once per BREP path, for the checker. The bytes depend
+    only on the geometry (`_deterministic`), so equal geometry means an equal verdict-cache key."""
     key = (brep, os.stat(brep).st_mtime)
     if key in _STEP_FOR and os.path.exists(_STEP_FOR[key]):
         return _STEP_FOR[key]
@@ -275,6 +294,10 @@ def step_for(pool: WorkerPool, brep: str) -> str:
                        timeout_s=120)
     if not result.ok:
         raise CheckerUnavailable(f"cannot write {brep!r} as STEP: {result.status}: {result.error}")
+    try:
+        _deterministic(out)
+    except OSError as exc:
+        raise CheckerUnavailable(f"cannot read back the STEP written for {brep!r}: {exc}") from exc
     _STEP_FOR[key] = out
     return out
 

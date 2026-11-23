@@ -56,9 +56,11 @@ class Pool:
     """The kernel boundary: STEP export (content follows the BREP's), indexing, versions. `versions_ok=False`
     is a dead pool."""
 
-    def __init__(self, versions_ok: bool = True) -> None:
+    def __init__(self, versions_ok: bool = True, diag_mm: float = 53.85) -> None:
         self.versions_ok = versions_ok
+        self.diag_mm = diag_mm
         self.calls: list[str] = []
+        self.exports = 0
 
     def call(self, fn: str, payload: dict, *, timeout_s: float) -> CallResult:
         self.calls.append(fn)
@@ -66,11 +68,20 @@ class Pool:
             if not self.versions_ok:
                 return CallResult(False, None, "pool died", "crashed", 0.0)
             return CallResult(True, {"gmsh": "4.15.2", "netgen": "6.2", "ocp": "7.8"}, None, "ok", 0.0)
+        if fn == "ws_diagonal":
+            if self.diag_mm is None:
+                return CallResult(False, None, "unreadable", "error", 0.0)
+            return CallResult(True, {"diag_mm": self.diag_mm}, None, "ok", 0.0)
         if fn == "ws_index":
             ents = [{"type": "face", "index": k, "fp": f"f{k}"} for k in (1, 2)] + [{"type": "solid", "index": 1}]
             return CallResult(True, {"entities": ents, "quantum": 1e-6}, None, "ok", 0.0)
         if fn == "write_step_xcaf":
-            Path(payload["path"]).write_bytes(b"STEP of " + Path(payload["brep"]).read_bytes())
+            # like OCCT's writer: the header carries a timestamp that differs on every export
+            self.exports += 1
+            stamp = f"2026-11-23T08:53:{self.exports:02d}".encode()
+            Path(payload["path"]).write_bytes(
+                b"ISO-10303-21;\nHEADER;\nFILE_NAME('Open CASCADE Shape Model','" + stamp + b"',('Author'));\nDATA;\n"
+                + Path(payload["brep"]).read_bytes())
             return CallResult(True, {}, None, "ok", 0.0)
         return CallResult(False, None, f"no such kernel fn {fn}", "error", 0.0)
 
@@ -317,3 +328,76 @@ def test_a_cache_store_outage_is_a_miss_not_a_crash_and_not_a_verdict(checker: C
     v = j.cheap(Pool(), make_ws(tmp_path), "o.step")
     assert v.panel[0].status == "pass" and not v.inconclusive
     assert checker.meshes("cheap") == 1
+
+
+# --- the input verdict is not computed twice ------------------------------------------------------------------
+
+
+def test_a_second_judge_over_the_same_state_does_not_re_mesh_it(checker: Checker, tmp_path: Path) -> None:
+    """22a judges the input, then `search` (with its own judge) judges its start: when the staged healer changed
+    nothing those are the same state, and the second full panel run is the duplicate that cost a whole panel per
+    file. Two independent `default_judge` instances share the process cache, so it is a hit."""
+    pool, ws = Pool(), make_ws(tmp_path)
+    default_judge(h_mm=1.0).full(pool, ws, "o.step")
+    n = checker.meshes("full")
+    assert n == len(checker.members["full"])
+    default_judge(h_mm=2.0).full(pool, ws, "o.step")
+    assert checker.meshes("full") == n
+
+
+def test_equal_geometry_at_two_paths_shares_one_verdict_despite_the_writers_timestamp(
+        checker: Checker, tmp_path: Path) -> None:
+    pool = Pool()
+    a, b = make_ws(tmp_path, "a", body=b"same geometry"), make_ws(tmp_path, "b", body=b"same geometry")
+    j = default_judge(h_mm=1.0)
+    j.cheap(pool, a, "o.step")
+    j.cheap(pool, b, "o.step")
+    assert pool.exports == 2  # two real exports, two different timestamps...
+    assert checker.meshes("cheap") == 1  # ...and still one key
+    j.cheap(pool, make_ws(tmp_path, "c", body=b"other geometry"), "o.step")
+    assert checker.meshes("cheap") == 2
+
+
+def test_step_export_header_stamp_is_the_only_thing_normalised(tmp_path: Path) -> None:
+    pool = Pool()
+    ws = make_ws(tmp_path, "z", body=b"payload F1 F2")
+    text = Path(stages.step_for(pool, ws.brep_path)).read_bytes()
+    assert b"1970-01-01T00:00:00" in text and b"2026-11-23" not in text
+    assert text.endswith(b"payload F1 F2") and b"Open CASCADE Shape Model" in text
+
+
+# --- h_mm comes from the part ----------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(("diag_mm", "h_mm"), [(17.32, 1.732), (1732.0, 173.2), (1_732_000.0, 173_200.0),
+                                                (0.01732, 0.001732)])
+def test_h_mm_is_a_tenth_of_the_diagonal_in_millimetres_at_every_scale(diag_mm: float, h_mm: float,
+                                                                      tmp_path: Path) -> None:
+    """Literals, not `base_size` again: a factor-of-1000 slip passes a 1 mm part and ruins a real one."""
+    got = search.h_mm_for(Pool(diag_mm=diag_mm), make_ws(tmp_path))
+    assert got == pytest.approx(h_mm, rel=1e-9)
+
+
+def test_h_mm_is_the_function_production_meshes_with(tmp_path: Path) -> None:
+    from meshpipeline.engines.fea_plan import base_size
+
+    for diag_mm in (3.0, 53.85, 4200.0):
+        assert search.h_mm_for(Pool(diag_mm=diag_mm), make_ws(tmp_path)) == pytest.approx(
+            1000.0 * base_size(diag_mm / 1000.0))
+
+
+@pytest.mark.parametrize("diag_mm", [None, 0.0, float("nan"), -1.0])
+def test_a_part_that_cannot_be_sized_is_checker_unavailable_never_an_invented_size(diag_mm: Any,
+                                                                                    tmp_path: Path) -> None:
+    with pytest.raises(CheckerUnavailable):
+        search.h_mm_for(Pool(diag_mm=diag_mm), make_ws(tmp_path))
+
+
+def test_default_judge_for_hands_the_derived_size_to_the_sites(checker: Checker, tmp_path: Path,
+                                                               monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[float] = []
+    monkeypatch.setattr(search, "find_sites", lambda pool, ws, v, *, h_mm: seen.append(h_mm) or [])
+    pool, ws = Pool(diag_mm=2000.0), make_ws(tmp_path)
+    j = search.default_judge_for(pool, ws)
+    j.sites(pool, ws, None)
+    assert seen == [pytest.approx(200.0)]

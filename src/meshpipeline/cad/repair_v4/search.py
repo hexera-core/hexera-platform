@@ -245,6 +245,29 @@ def _judged(fn: Callable[..., Verdict], pool: Any, ws: Workspace, original: str,
     return v
 
 
+def h_mm_for(pool: Any, ws: Workspace) -> float:
+    """The target element size, in MILLIMETRES, for the part in `ws`: the production FEA mesh's base size
+    (`fea_plan.base_size`, a tenth of the part diagonal, the same function `GmshProd` meshes with), so failure
+    sites cluster at the scale the clean-STEP definition is written against. `base_size` works in METRES and the
+    workspace in millimetres; the conversion is the only arithmetic here, and it is tested on parts decades
+    apart. A part the kernel cannot measure (or one with no extent) raises `CheckerUnavailable`: no size is
+    invented, and it is infrastructure, not a verdict."""
+    from meshpipeline.engines.fea_plan import base_size
+
+    result = pool.call("ws_diagonal", {"brep_path": ws.brep_path}, timeout_s=60.0)
+    if not result.ok or result.value is None:
+        raise CheckerUnavailable(f"ws_diagonal: {result.status}: {result.error}")
+    diag_mm = float(result.value["diag_mm"])
+    if not math.isfinite(diag_mm) or diag_mm <= 0.0:
+        raise CheckerUnavailable(f"cannot size the mesh: the part's diagonal is {diag_mm!r} mm")
+    return base_size(diag_mm / 1000.0) * 1000.0
+
+
+def default_judge_for(pool: Any, ws: Workspace, *, cache: VerdictCache | None = None) -> Judge:
+    """`default_judge` with `h_mm` derived from the part (`h_mm_for`); what the engine calls."""
+    return default_judge(h_mm=h_mm_for(pool, ws), cache=cache)
+
+
 def default_judge(*, h_mm: float, cache: VerdictCache | None = None) -> Judge:
     """The real verdict (Task 5) and sites (Task 17). `h_mm` (the mesh size) is required: it sets site
     clustering and the proximity threshold, so a silent default would aim every candidate at the wrong sites.
@@ -1106,6 +1129,8 @@ __all__ = [
     "SearchState",
     "ai_generators",
     "default_judge",
+    "default_judge_for",
+    "h_mm_for",
     "deliverable",
     "panel_passes",
     "search",

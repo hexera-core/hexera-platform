@@ -176,6 +176,12 @@ def _ws_index(payload: dict) -> dict:
     return {"quantum": quantum, "entities": entities_of(shape, quantum)}
 
 
+@register("ws_diagonal")
+def _ws_diagonal(payload: dict) -> dict:
+    """The bounding-box diagonal of a BREP, in the BREP's own unit (millimetres: every workspace is)."""
+    return {"diag_mm": diagonal_of(read_brep(payload["brep_path"]))}
+
+
 def _register_test_fns() -> None:
     @register("ws_face_ids_at_z")
     def _faces_at_z(payload: dict) -> dict:
