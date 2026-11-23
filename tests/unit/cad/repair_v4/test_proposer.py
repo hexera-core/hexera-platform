@@ -182,12 +182,62 @@ def test_candidates_beyond_k_are_not_returned_and_the_model_is_told():
 
 def test_run_stage_is_accepted_only_for_a_declared_stage():
     fake = Fake([reply(call_of("propose", {"candidates": [{"run_stage": "nope", "rationale": "r"}]})),
-                 reply(call_of("propose", {"candidates": [{"run_stage": "faces", "params": {"tol": 1},
+                 reply(call_of("propose", {"candidates": [{"run_stage": "faces", "params": {"tol_mm": 0.02},
                                                            "rationale": "r"}]}, "c2"))])
     out = make(fake, stage_names=("faces", "shells")).propose(state([site("S1", "proximity")]), k=3)
     [result] = tool_results(fake.calls[1].messages)
     assert "unknown stage" in json.dumps(result) and "faces" in json.dumps(result)
-    assert [(c.op, c.targets, c.params) for c in out] == [("run_stage", [], {"stage": "faces", "params": {"tol": 1}})]
+    assert [(c.op, c.targets, c.params) for c in out] == [("run_stage", [], {"stage": "faces", "params": {"tol_mm": 0.02}})]
+
+
+def test_run_stage_refuses_a_parameter_the_stage_does_not_read_and_targets_it_ignores():
+    """A stage merges params over its defaults, so a misspelt key used to be ignored in silence and the model was
+    never told. It is now a structured error naming the stage's real parameters; so are targets, which a stage
+    does not take."""
+    bad_key = {"run_stage": "faces", "params": {"tol": 1}, "rationale": "r"}
+    with_targets = {"run_stage": "shells", "targets": ["E1"], "params": {}, "rationale": "r"}
+    good = {"run_stage": "shells", "params": {"fill_edges": ["E1"]}, "rationale": "r"}
+    fake = Fake([reply(call_of("propose", {"candidates": [bad_key, with_targets, good]}))])
+    p = make(fake, stage_names=("faces", "shells"))
+    out = p.propose(state([site("S1", "open")]), k=3)
+    assert [(c.op, c.params) for c in out] == [("run_stage", {"stage": "shells", "params": {"fill_edges": ["E1"]}})]
+    [result] = tool_results(p.messages)
+    errors = {e["index"]: " ".join(e["errors"]) for e in result["errors"]}
+    assert set(errors) == {0, 1} and result["accepted"] == 1
+    assert "'tol'" in errors[0] and "tol_mm" in errors[0]          # names the real parameter
+    assert "no targets" in errors[1]
+
+
+def test_the_stage_catalogue_is_generated_from_the_stages_own_defaults():
+    from meshpipeline.cad.repair_v4.stages import DEFAULTS
+    text = P.system_prompt(stage_names=("faces", "shells"))
+    for name in ("faces", "shells"):
+        assert f"  {name}: " + json.dumps(DEFAULTS[name], sort_keys=True, separators=(",", ":")) in text
+
+
+def test_what_clean_means_is_written_from_the_checkers_constants(monkeypatch):
+    """The prompt's definition of clean is generated from the checker's own constants, so it cannot drift: every
+    hard code is listed with a description, every soft code is said NOT to fail, and the numeric limits are the
+    checker's. Changing a constant changes the prompt."""
+    from meshpipeline.cad.repair_v4.verdict import faithful_kernel, mesh_child, valid
+
+    assert set(P.HARD_CODE_TEXT) == set(valid.HARD_CODES)
+    text = P.system_prompt(stage_names=())
+    valid_para = text.split("1. Valid:")[1].split("2. Meshable:")[0]
+    for code in valid.HARD_CODES:
+        assert f"   - {code}: {P.HARD_CODE_TEXT[code]}" in valid_para
+    soft_line = next(line for line in valid_para.splitlines() if "SOFT" in line)
+    assert all(code in soft_line for code in valid.SOFT_CODES) and "do NOT fail" in valid_para
+    assert not any(f"- {code}:" in valid_para for code in valid.SOFT_CODES)
+    assert "(undescribed)" not in text
+    assert "at least 0.01" in text and "min(0.1 mm" in text and "0.1% of the part diagonal" in text
+    flat = " ".join(text.split())
+    assert "total area changes by at most 2%" in flat and "unless the original holds no solid" in flat
+    monkeypatch.setattr(mesh_child, "MIN_SICN", 0.05)
+    monkeypatch.setattr(faithful_kernel, "BOUND_ABS_MM", 0.2)
+    monkeypatch.setattr(valid, "SOFT_CODES", ("small_edge", "tiny_thing"))
+    changed = P.system_prompt(stage_names=())
+    assert "at least 0.05" in changed and "min(0.2 mm" in changed and "tiny_thing" in changed
 
 
 def test_without_declared_stages_run_stage_is_not_offered():

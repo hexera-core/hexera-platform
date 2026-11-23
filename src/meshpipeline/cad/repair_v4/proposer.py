@@ -39,6 +39,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any, Literal, TypeVar
 
+from meshpipeline.cad.repair_v4.limits import MAX_FILL_SPAN_RATIO
 from meshpipeline.cad.repair_v4.model_ledger import Admission, WaveLedger
 from meshpipeline.cad.repair_v4.ops import REGISTRY, validate_call
 from meshpipeline.cad.repair_v4.types import Site
@@ -158,8 +159,8 @@ OP_SUMMARIES: dict[str, str] = {
                     "`cut_by:B<n>` subtracts body B<n> (only when the overlap is within the fidelity bound); never "
                     "fuses. For overlap sites.",
     "fill_loop": "close ONE free (open) loop with one new declared face; targets are the loop's edges. Leaves faces "
-                 "loose: follow with make_volume to rebuild the solid. For open sites; loops over 5% of the "
-                 "diagonal are declined.",
+                 "loose: follow with make_volume to rebuild the solid. For open sites; loops spanning over "
+                 f"{MAX_FILL_SPAN_RATIO:.0%} of the diagonal are declined.",
     "fix_poles": "ShapeFix_Face wire repair (degenerate edges at a pole, missing seam) on the target faces. For "
                  "pole/periodic/invalid sites.",
     "make_volume": "build solid(s) from the target faces, or from every face not already in a solid when none are "
@@ -197,9 +198,66 @@ def _catalogue(stage_names: Sequence[str]) -> str:
         schema = json.dumps(REGISTRY[name].params_schema, sort_keys=True, separators=(',', ':'))
         lines.append(f"- {name}: {OP_SUMMARIES.get(name, '(no summary)')}\n  params: {schema}")
     if stage_names:
-        lines.append("- run_stage: a whole deterministic healing stage, one of "
-                     + ", ".join(sorted(stage_names)) + "; give {\"run_stage\": <name>, \"params\": {...}}")
+        lines.append("- run_stage: a whole deterministic healing stage (one candidate, one op of budget). Give "
+                     "{\"run_stage\": <name>, \"params\": {...}} with only that stage's keys; its defaults:")
+        for name in sorted(stage_names):
+            keys = _stage_defaults(name)
+            shown = "(unknown stage)" if keys is None else json.dumps(keys, sort_keys=True, separators=(',', ':'))
+            lines.append(f"  {name}: {shown}")
     return "\n".join(lines)
+
+
+def _stage_defaults(name: str) -> dict | None:
+    """The parameters a stage reads, with their defaults (`stages.DEFAULTS`), or None for a stage it does not know."""
+    from meshpipeline.cad.repair_v4.stages import DEFAULTS
+    return DEFAULTS.get(name)
+
+
+#: Every hard code layer 1 can raise, as the model should read it. Keyed by `verdict.valid.HARD_CODES` and checked
+#: against it (tests/unit/cad/repair_v4/test_proposer.py), so a new hard code cannot reach the model unexplained.
+HARD_CODE_TEXT: dict[str, str] = {
+    "brep_invalid": "BRepCheck rejects a sub-shape, or the file does not read",
+    "open_shell": "a solid or shell has free (unshared) edges",
+    "non_manifold": "an edge is shared by more than two faces",
+    "non_positive_volume": "a solid has zero or negative volume (inside out)",
+    "self_intersection": "a solid's faces intersect each other",
+    "body_overlap": "two bodies overlap in volume instead of sharing faces exactly (conformal contact)",
+    "units_changed": "the length unit differs from the input's, or does not survive the round trip",
+    "round_trip_invalid": "the written STEP does not re-read valid",
+    "no_solids": "the part holds no solid at all (only faces or shells)",
+    "unbounded_geometry": "infinite extent: OUT OF SCOPE, not a defect you can repair - declare it unfixable",
+}
+
+
+def _clean_definition() -> str:
+    """WHAT CLEAN MEANS, written from the checker's own constants so the model is told what the checker enforces and
+    nothing else: the hard and soft codes of layer 1, the SICN floor and member time limit of layer 2, and the
+    fidelity bound, area/volume tolerance and fill cap of layer 3."""
+    from meshpipeline.cad.repair_v4.verdict.assemble import MEMBER_TIMEOUT_S
+    from meshpipeline.cad.repair_v4.verdict.faithful_kernel import (
+        BOUND_ABS_MM,
+        BOUND_DIAG_FRACTION,
+        RATIO_TOLERANCE,
+    )
+    from meshpipeline.cad.repair_v4.verdict.mesh_child import MIN_SICN
+    from meshpipeline.cad.repair_v4.verdict.valid import HARD_CODES, SOFT_CODES
+
+    hard = "\n".join(f"   - {code}: {HARD_CODE_TEXT.get(code, '(undescribed)')}" for code in HARD_CODES)
+    return f"""WHAT CLEAN MEANS. A file is clean only when it passes all three layers of the checker, and the checker - not you,
+and not a rule of thumb - decides.
+1. Valid: it fails on any of these HARD findings (the codes you will see in `valid.hard`):
+{hard}
+   SOFT findings ({", ".join(SOFT_CODES)}) are reported but do NOT fail this layer: fix them only where a
+   mesher fails because of them. Findings name solids and shells by position (S1, H1); ops take the stable ids.
+2. Meshable: it meshes in every mesher on a fixed panel, each within {MEMBER_TIMEOUT_S:.0f} s, with no tolerant
+   fallback and no hints sidecar, and the worst element quality (min SICN) is at least {MIN_SICN:g}.
+3. Faithful, against the original: the maximum sampled surface distance is at most min({BOUND_ABS_MM:g} mm,
+   {BOUND_DIAG_FRACTION:.1%} of the part diagonal) - faces an op DECLARES added are measured one way only
+   (original -> repaired) and faces it declares removed are exempt; total area changes by at most
+   {RATIO_TOLERANCE:.0%}; unless the original holds no solid (then building solids is the repair), volume also
+   changes by at most {RATIO_TOLERANCE:.0%} and the number of bodies does not change; no filled loop spans over
+   {MAX_FILL_SPAN_RATIO:.0%} of the diagonal. A repair that makes a mesher happy by moving the surface farther than
+   the bound is a failure, not a fix."""
 
 
 def system_prompt(*, stage_names: Sequence[str] = ()) -> str:
@@ -209,19 +267,7 @@ def system_prompt(*, stage_names: Sequence[str] = ()) -> str:
 time, in one conversation: you see the failure sites of the current best state, propose parametric repair
 operations on them, and are told what each of your candidates did to the part.
 
-WHAT CLEAN MEANS. A file is clean only when it passes all three layers of the checker, and the checker - not you,
-and not a rule of thumb - decides.
-1. Valid: it re-reads after a STEP write/read round trip and BRepCheck reports every solid valid; every body is a
-   closed, manifold, consistently oriented solid with positive volume; no free edges, no self-intersecting faces
-   or wires; bodies do not overlap except where they share faces exactly (conformal contact); units are
-   unchanged. Small edges, small faces and large tolerances are reported but do NOT fail this layer: fix them
-   only where a mesher fails because of them.
-2. Meshable: it meshes in every mesher on a fixed panel, within the time limit, with no tolerant fallback and no
-   hints sidecar, and the worst element quality (min SICN) is above 0.01.
-3. Faithful: the maximum sampled surface distance from the original is at most min(0.1 mm, 0.1% of the part
-   diagonal); area and volume changes stay under their limits; no body is lost and no face is lost except a
-   declared sliver below the threshold. A repair that makes a mesher happy by moving the surface farther than that
-   bound is a failure, not a fix.
+{_clean_definition()}
 
 WHAT YOU OWN. The checker finds sites; you supply the judgement deterministic sweeps cannot:
 - overlap intent: are two overlapping bodies a duplicate, a fit, or one meant to be subtracted from the other?
@@ -235,7 +281,7 @@ WHAT YOU OWN. The checker finds sites; you supply the judgement deterministic sw
 
 HOW YOU ACT. Reply only with tool calls.
 - {PROPOSE}(candidates): one to a few candidates, each {{op | run_stage, targets, params, rationale}}. `targets` are
-  stable entity ids such as "F41" (face), "E7" (edge), "B2" (solid); an id keeps its name across ops that only
+  stable entity ids such as "F41" (face), "E7" (edge), "B2" (solid body); an id keeps its name across ops that only
   trim or heal it, and an id that an op removed or replaced is dead - use the ids in the latest observation.
   Candidates are evaluated for you in parallel; you will see each one's Diff and the change in the verdict next
   round. A candidate that makes the verdict worse is simply discarded; you lose a turn, never the file.
@@ -611,6 +657,13 @@ class AIProposer:
                 return [f"unknown stage {stage!r}; known stages: {list(self.stage_names)}"], None
             if not isinstance(params, dict):
                 return ["params: expected an object"], None
+            known = _stage_defaults(stage)
+            # a stage merges params over its defaults, so a misspelt key would be silently ignored: refuse it here
+            unknown_keys = sorted(set(params) - set(known)) if known is not None else []
+            if unknown_keys:
+                return [f"stage {stage!r} has no parameter(s) {unknown_keys}; its parameters: {sorted(known or {})}"], None
+            if targets not in ([], None):
+                return [f"run_stage takes no targets (give ids through the stage's own params); got {targets!r}"], None
             return [], ProposedCandidate("run_stage", [], {"stage": stage, "params": params}, "ai", rationale)
         if not isinstance(op, str):
             return ["op: expected a string"], None
