@@ -655,3 +655,18 @@ def test_a_wall_stop_written_as_a_conclusive_failure_is_refused_by_the_report() 
     with pytest.raises(report.ReportRefused, match="NOT a conclusive failure"):
         report._row_from_dict(row)
     assert report._row_from_dict({**row, "inconclusive": True}).counts is False
+
+
+def test_a_wall_stop_through_the_real_arm_path_is_an_inconclusive_row(shard: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The same stop through run_arms -> arms.run_file -> search: a search whose wall is already spent stops on `wall`;
+    its row must say inconclusive, and the report must accept it as such (not count it as a failure)."""
+    import dataclasses
+
+    det = ev.ARMS["search_det"]
+    monkeypatch.setitem(ev.ARMS, "search_det", dataclasses.replace(det, budget=dataclasses.replace(det.budget, wall_s=1e-9)))
+    rows, excluded = go(shard, "search_det", None)
+    [row] = rows
+    assert excluded == [] and row["reason"] == "wall"
+    assert row["inconclusive"] is True
+    loaded = report._row_from_dict(row)
+    assert loaded.derived_inconclusive and not loaded.counts
