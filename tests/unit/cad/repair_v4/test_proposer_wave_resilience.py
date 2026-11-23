@@ -26,6 +26,8 @@ from meshpipeline.cad.repair_v4.model_throttle import (
     COOLDOWN_S,
     Slice,
     ThrottleConfigError,
+    WAVE_SHARE,
+    WaveBackoffGuard,
     WaveThrottle,
     wave_max_in_flight,
 )
@@ -325,16 +327,124 @@ def test_the_requests_and_tokens_per_minute_slices_hold() -> None:
     assert not throttle.acquire(2_000, wait_s=0)                     # 11k tokens would exceed 10k in the window
 
 
-def test_a_wave_is_sliced_one_nth_per_shard_and_refused_when_it_cannot_be() -> None:
+def test_a_wave_is_sliced_one_nth_per_shard_and_floored_at_one_call() -> None:
     m = wave_max_in_flight(ROUTE)
-    assert m == 375                                                  # 0.5 x 15000 rpm x 3 s / 60
+    assert WAVE_SHARE == 0.05
+    assert m == 37                                                   # 0.05 x 15000 rpm x 3 s / 60, floored
     s = WaveThrottle.for_shard(ROUTE, n_shards=96).slice
-    assert s.max_in_flight == 3 and s.max_in_flight * 96 <= m
-    assert s.rpm == pytest.approx(0.5 * 15_000 / 96) and s.tpm == pytest.approx(0.5 * 40_000_000 / 96)
-    with pytest.raises(ThrottleConfigError):
-        WaveThrottle.for_shard(ROUTE, n_shards=96, max_in_flight=50)  # a slice below one call
+    # 37 // 96 == 0: the slice is floored to one call, so a 96-shard wave may have 96 in flight (> 37) ON PURPOSE;
+    # the per-shard RPM/TPM slices are the binding protection, and the slice says it was floored
+    assert s.max_in_flight == 1 and s.floored and s.max_in_flight * 96 > m
+    assert s.rpm == pytest.approx(0.05 * 15_000 / 96) and s.tpm == pytest.approx(0.05 * 40_000_000 / 96)
+    assert s.rpm * 96 == pytest.approx(750) and s.tpm * 96 == pytest.approx(2_000_000)    # the wave's whole share
+    few = WaveThrottle.for_shard(ROUTE, n_shards=4).slice
+    assert few.max_in_flight == 9 and not few.floored                # 37 // 4: no floor needed
+    assert WaveThrottle.for_shard(ROUTE, n_shards=96, max_in_flight=50).slice.max_in_flight == 1
     with pytest.raises(ThrottleConfigError):
         WaveThrottle.for_shard("openai:unmeasured", n_shards=1)
+    with pytest.raises(ThrottleConfigError):
+        WaveThrottle.for_shard(ROUTE, n_shards=0)
+
+
+# --- the wave-level 429 guard ---------------------------------------------------------------------------------------
+
+
+class Clock:
+    def __init__(self) -> None:
+        self.t = 1_000_000.0
+
+    def __call__(self) -> float:
+        return self.t
+
+
+def guard_for(store: Any, shard: str, clock: Clock, **kw: Any) -> WaveBackoffGuard:
+    return WaveBackoffGuard(store, wave_id="w1", shard_id=shard, wall=clock, check_interval_s=0.0,
+                            resume_spread_s=0.0, **kw)
+
+
+def test_429s_across_shards_past_the_threshold_trip_the_whole_wave(tmp_path: Any) -> None:
+    from meshpipeline.cad.repair_v4.model_ledger import FileMarkerStore
+
+    store, clock = FileMarkerStore(tmp_path), Clock()
+    shards = [guard_for(store, f"{i}/6", clock, threshold=5) for i in range(1, 7)]
+    assert all(g.hold_for() == 0 for g in shards)
+    # six DIFFERENT shards each see one rate-limited call: no shard is anywhere near a per-shard threshold
+    results = [g.report_429() for g in shards]
+    assert results == [False] * 5 + [True]                           # the sixth claims the last slot and trips
+    for g in shards:                                                 # every shard - including ones that never 429ed
+        assert g.hold_for() > 0
+    clock.t += 301
+    assert all(g.hold_for() == 0 for g in shards)                    # and the back-off ends
+
+
+def test_429s_at_or_below_the_threshold_do_not_trip(tmp_path: Any) -> None:
+    from meshpipeline.cad.repair_v4.model_ledger import FileMarkerStore
+
+    store, clock = FileMarkerStore(tmp_path), Clock()
+    shards = [guard_for(store, f"{i}/6", clock, threshold=5) for i in range(1, 6)]
+    for g in shards:
+        g.report_429()
+    assert all(g.hold_for() == 0 for g in shards)                    # five is not MORE than five
+
+
+def test_the_throttle_holds_every_new_call_while_the_wave_is_tripped(tmp_path: Any) -> None:
+    from meshpipeline.cad.repair_v4.model_ledger import FileMarkerStore
+
+    store, clock = FileMarkerStore(tmp_path), Clock()
+    other = guard_for(store, "2/2", clock, threshold=1)
+    other.report_429()
+    assert other.report_429() is True                                # a different shard trips the wave
+    mine = guard_for(store, "1/2", clock, threshold=1)
+    t = [0.0]
+
+    def sleep(s: float) -> None:
+        t[0] += s
+        clock.t += s
+
+    throttle = WaveThrottle(Slice(4, 1000, 1e9), clock=lambda: t[0], sleep=sleep, guard=mine)
+    assert throttle.acquire(10, wait_s=5)                            # held ~300 s, and NOT failed at wait_s=5
+    assert t[0] >= 299 and mine.describe()["held_s"] >= 299 and mine.describe()["holds"] >= 1
+    assert mine.describe()["trips_seen"] and mine.describe()["trips_seen"][0]["by_shard"] == "2/2"
+
+
+def test_a_marker_store_failure_fails_open_and_is_recorded() -> None:
+    class Broken:
+        def create(self, *a: Any) -> bool:
+            raise OSError("bucket gone")
+
+        def get(self, *a: Any) -> str | None:
+            raise OSError("bucket gone")
+
+    g = guard_for(Broken(), "1/2", Clock())
+    assert g.report_429() is False and g.hold_for() == 0.0
+    assert g.describe()["store_errors"] == 2
+
+
+def test_insufficient_quota_is_never_reported_to_the_wave_guard(net: Any, tmp_path: Any) -> None:
+    from meshpipeline.cad.repair_v4.model_ledger import FileMarkerStore
+
+    use, _ = net
+    t = use(Transport([rate_limited(retry_after_ms=None, code="insufficient_quota")]))
+    guard = guard_for(FileMarkerStore(tmp_path), "1/1", Clock(), threshold=1)
+    throttle = WaveThrottle(Slice(1, 1000, 1e9), guard=guard)
+    proposer(WaveLedger.for_test(cap_usd=10.0), throttle=throttle).propose(
+        state([site("S1", "proximity")], ws=make_ws()), k=3)
+    assert t.requests == 1                                           # still un-retried
+    assert guard.describe()["reported_429"] == 0 and throttle.rate_limited == 0
+
+
+def test_a_429ing_provider_across_shards_trips_the_wave_through_the_proposer(net: Any, tmp_path: Any) -> None:
+    from meshpipeline.cad.repair_v4.model_ledger import FileMarkerStore
+
+    use, _ = net
+    use(Transport([rate_limited(retry_after_ms=10)]))
+    store, clock = FileMarkerStore(tmp_path), Clock()
+    guards = [guard_for(store, f"{i}/3", clock, threshold=2) for i in (1, 2, 3)]
+    for g in guards:                                                 # one rate-limited file on each of three shards
+        proposer(WaveLedger.for_test(cap_usd=10.0), throttle=WaveThrottle(Slice(1, 1000, 1e9), guard=g)).propose(
+            state([site("S1", "proximity")], ws=make_ws()), k=3)
+    assert guards[0].hold_for() > 0 and guards[1].hold_for() > 0     # shards 1 and 2 are held by shard 3's trip
+    assert sum(g.describe()["tripped_here"] for g in guards) == 1
 
 
 def test_one_round_cannot_outlast_half_a_files_wall_clock() -> None:
