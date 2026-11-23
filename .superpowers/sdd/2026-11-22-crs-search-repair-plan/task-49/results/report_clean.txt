@@ -1,0 +1,34 @@
+# t2_smoke_clean (clean, normal) - OK
+commit 1b57059222998a3f0175794e29aeed8112321f01  image sha256:633e1c3bfd8e2c0fb97b166fa28ff834d0433b84ca8e77c24eb4b00c83ece361  files 8
+
+HOW TO READ THE RATES: 'per-arm' columns use each arm's OWN conclusive files, and the dropouts differ by arm (and tend to be the hard files), so per-arm rates are NOT comparable with each other. Only the PAIRED columns (the 8 of 8 files every measured arm judged conclusively; arms: input_only, staged, search_det) support arm-to-arm comparison.
+
+| arm | measured | inconclusive (n) | inconclusive rate | PER-ARM clean rate (own files; not for comparison) | PER-ARM gain | PAIRED clean rate (shared files) | PAIRED gain | regress (c->u / fewer panel) | $ total | wall/file s |
+|---|---|---|---|---|---|---|---|---|---|---|
+| input_only | yes | 0/8 | 0.0% | 100.0% | +0 | 100.0% (n=8) | +0 | 0 / 0 | 0.00 | 12.1 |
+| staged | yes | 0/8 | 0.0% | 87.5% | -1 | 87.5% (n=8) | -1 | 1 / 1 | 0.00 | 21.4 |
+| search_det | yes | 0/8 | 0.0% | 100.0% | +0 | 100.0% (n=8) | +0 | 0 / 0 | 0.00 | 3.8 |
+
+PAIRED columns cover the 8 of 8 files judged conclusively by ALL of these 3 measured arm(s): input_only, staged, search_det.
+
+## Marginals (paired, files both arms judged)
+- ai_marginal (search_ai - search_det): withheld - arm search_ai is not in this wave
+- deterministic_marginal (staged - input_only): -12.5% (-1 files over 8)
+
+## input_only: by defect kind (per-arm, own files)
+| kind | files | inconclusive | inconclusive rate | clean | clean rate |
+|---|---|---|---|---|---|
+| clean_control | 8 | 0 | 0.0% | 8/8 | 100.0% |
+
+## staged: by defect kind (per-arm, own files)
+| kind | files | inconclusive | inconclusive rate | clean | clean rate |
+|---|---|---|---|---|---|
+| clean_control | 8 | 0 | 0.0% | 7/8 | 87.5% |
+
+## search_det: by defect kind (per-arm, own files)
+| kind | files | inconclusive | inconclusive rate | clean | clean rate |
+|---|---|---|---|---|---|
+| clean_control | 8 | 0 | 0.0% | 8/8 | 100.0% |
+
+model spend $0.00 of the $50 wave cap; slowest shard 300 s
+

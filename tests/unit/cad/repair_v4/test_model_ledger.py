@@ -327,3 +327,39 @@ def test_a_settled_row_records_the_cache_write_tokens_it_was_priced_on():
                   cache_write_tokens=60, cache_write_30m_tokens=50)
     [row] = ledger.entries()
     assert (row["cache_write_tokens"], row["cache_write_30m_tokens"]) == (60, 50)
+def test_cap_to_lowers_a_shard_slice_and_the_lowered_cap_binds(tmp_path):
+    # Task 49: a $5 smoke inside the $50 normal wave. 12 admissions of $0.40 fit $5.00 exactly (12 x 0.40 = 4.80),
+    # the 13th would make $5.20 and is refused by the WAVE cap, not by luck.
+    ledger = shard(tmp_path, 0, n=1)
+    assert ledger.cap_usd == 50.0
+    ledger.cap_to(5.0)
+    assert ledger.cap_usd == 5.0
+    spent = 0.0
+    for i in range(12):
+        a = ledger.admit(f"file-{i}", 0.40, file_ceiling_usd=0.50)
+        assert a.ok, i
+        _settle(ledger, a.reservation, f"file-{i}", 0.40)
+        spent += 0.40
+    refused = ledger.admit("file-12", 0.40, file_ceiling_usd=0.50)
+    assert (refused.ok, refused.reason) == (False, "wave_cap")
+    assert ledger.spent_usd() == pytest.approx(4.80) and ledger.spent_usd() <= 5.0
+
+
+def test_cap_to_never_raises_the_cap_and_refuses_nonsense(tmp_path):
+    ledger = shard(tmp_path, 0, n=12)           # slice = 50/12
+    with pytest.raises(ValueError, match="only lower"):
+        ledger.cap_to(10.0)
+    for bad in (0.0, -1.0, float("nan"), float("inf")):
+        with pytest.raises(ValueError):
+            ledger.cap_to(bad)
+    assert ledger.cap_usd == pytest.approx(50.0 / 12)
+
+
+def test_the_file_ceiling_binds_under_a_lowered_cap(tmp_path):
+    ledger = shard(tmp_path, 0, n=1)
+    ledger.cap_to(5.0)
+    a = ledger.admit("f", 0.30, file_ceiling_usd=0.50)
+    _settle(ledger, a.reservation, "f", 0.30)
+    refused = ledger.admit("f", 0.30, file_ceiling_usd=0.50)          # 0.60 > 0.50 on ONE file; the wave has room
+    assert (refused.ok, refused.reason) == (False, "file_ceiling")
+    assert ledger.admit("g", 0.30, file_ceiling_usd=0.50).ok          # another file is unaffected

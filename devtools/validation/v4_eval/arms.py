@@ -26,6 +26,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
+#: `--h-mm auto`: derive the element size from each part (`search.h_mm_for`) instead of one size for every file.
+H_MM_AUTO = float("inf")
+
 
 class Engine(Protocol):
     """What the arms need from the lanes that do not belong to this module. `RealEngine` is the production one;
@@ -129,6 +132,10 @@ def run_file(arm_name: str, entry: Any, source: str, *, pool: Any, engine: Engin
 
     try:
         ws = engine.open_workspace(pool, source, workdir)
+        if h_mm is not None and h_mm == H_MM_AUTO:
+            from meshpipeline.cad.repair_v4.search import h_mm_for
+
+            h_mm = h_mm_for(pool, ws)  # CheckerUnavailable (unmeasurable part) is caught below: infrastructure
         judge = engine.judge(h_mm)
         full = judge.full
         v_in = full(pool, ws, source)

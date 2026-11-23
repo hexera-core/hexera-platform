@@ -37,6 +37,7 @@ import argparse
 import datetime as dt
 import importlib.util
 import json
+import math
 import platform
 import socket
 import sys
@@ -239,7 +240,7 @@ def run_arms(args: argparse.Namespace, out: Path, prov: dict, ledger: Any | None
         with partial.open("w", encoding="utf-8") as handle:
             for entry in entries:
                 for name in names:
-                    spec = evalspec.ARMS[name]
+                    spec = effective_arm(evalspec.ARMS[name], args)
                     try:
                         source = input_path(Path(args.inputs), entry)
                         with reprobe_mod._WallClock(args.file_timeout_s):
@@ -450,6 +451,30 @@ def build_ledger(args: argparse.Namespace, markers: Any) -> Any:
                                 path=args.ledger_path, markers=markers)
 
 
+def _h_mm(text: str) -> float:
+    """`--h-mm`: a size in mm, or `auto` (derive it per part; the sentinel is +inf, see arms.H_MM_AUTO)."""
+    if text.strip().lower() == "auto":
+        return arms_mod.H_MM_AUTO
+    return float(text)
+
+
+def effective_arm(spec: Any, args: argparse.Namespace) -> Any:
+    """`spec` with the command line's op budget and per-file model ceiling applied. Both can only LOWER what the
+    arm declares (a ceiling flag that could raise the money would be a way round the owner's limit); a model arm
+    keeps a positive ceiling, and a non-model arm never gains one."""
+    import dataclasses
+
+    budget = spec.budget
+    ops = budget.ops if getattr(args, "ops", None) is None else args.ops
+    usd = budget.model_usd
+    cap = getattr(args, "file_usd_cap", None)
+    if cap is not None and spec.uses_model:
+        usd = min(usd, cap)
+    if (ops, usd) == (budget.ops, budget.model_usd):
+        return spec
+    return dataclasses.replace(spec, budget=evalspec.Budget(wall_s=budget.wall_s, ops=ops, model_usd=usd))
+
+
 def build_parser() -> argparse.ArgumentParser:
     """The one argument contract. Tests build their `args` from it, never from a hand-written Namespace,
     so a flag added here cannot leave a test calling run_reprobe with an attribute missing."""
@@ -464,8 +489,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--split", default=None, choices=evalspec.SPLITS,
                         help="the split the arms run over (default: the wave's)")
     parser.add_argument("--split-file", default=None, help="the split's json (default: the corpus's <split>.json)")
-    parser.add_argument("--h-mm", type=float, default=None,
-                        help="target element size for site finding; NO default (required by the search arms)")
+    parser.add_argument("--h-mm", type=_h_mm, default=None,
+                        help="target element size for site finding; NO default (required by the search arms). "
+                             "`auto` derives it per part (search.h_mm_for: a tenth of the diagonal, the production "
+                             "base size): one fixed size is wrong on a panel spanning 10 mm to 10 m")
+    parser.add_argument("--ops", type=int, default=None,
+                        help="op budget per file for every arm (default: the arm's own, evalspec.Budget.ops)")
+    parser.add_argument("--model-usd-cap", type=float, default=None,
+                        help="LOWER this shard's ledger cap to this many dollars (never raises it)")
+    parser.add_argument("--file-usd-cap", type=float, default=None,
+                        help="LOWER the model arm's per-file ceiling to this many dollars (never raises it)")
     parser.add_argument("--route", default=None, help="pin the AI proposer's provider:model (default: the first "
                         "of REPAIR_V4_PROPOSE_ROUTES that passes the probe)")
     parser.add_argument("--max-turns", type=int, default=12, help="the AI proposer's model rounds per file")
@@ -555,6 +588,11 @@ def _resolve_arms(parser: argparse.ArgumentParser, args: argparse.Namespace) -> 
                      "--marker-bucket): a cap nothing consults is not a cap")
     if args.max_turns < 1:
         parser.error("--max-turns must be at least 1")
+    if args.ops is not None and args.ops < 1:
+        parser.error("--ops must be at least 1")
+    for flag, value in (("--model-usd-cap", args.model_usd_cap), ("--file-usd-cap", args.file_usd_cap)):
+        if value is not None and not (math.isfinite(value) and value > 0):
+            parser.error(f"{flag} must be a finite positive number of dollars")
     args.arms_resolved = tuple(names)
 
 
@@ -606,6 +644,8 @@ def main(argv: list[str] | None = None) -> int:
                 if unbound:
                     raise MarkerBackendMismatch(unbound)
                 ledger = build_ledger(args, markers)
+                if args.model_usd_cap is not None:
+                    ledger.cap_to(args.model_usd_cap)  # only ever lowers; the slice stays the ceiling
             except (LostShardLog, ShardArithmeticError, MarkerBackendMismatch):
                 # the shard refuses rather than start at an unknown spend; the reason is in PROVENANCE
                 prov["error"] = traceback.format_exc()[-4000:]
@@ -615,7 +655,8 @@ def main(argv: list[str] | None = None) -> int:
             # by every report ("ran without a shard ledger") whatever the shard did.
             prov["ledger"] = ledger.provenance
             prov["ledger_detail"] = {"wave_type": args.wave_type, "wave_id": args.wave_id,
-                                     "n_shards": args.n_shards, "cap_usd": ledger.cap_usd, "path": args.ledger_path}
+                                     "n_shards": args.n_shards, "cap_usd": ledger.cap_usd, "path": args.ledger_path,
+                                     "model_usd_cap_flag": args.model_usd_cap, "file_usd_cap_flag": args.file_usd_cap}
         plan = load_plan_provenance(args.plan_provenance)
         if plan is not None:
             if args.mode == "harness":
