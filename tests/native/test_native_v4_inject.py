@@ -117,11 +117,15 @@ def mixed_src(tmp_path_factory) -> Path:
     return write_chamfered_flush_patch_box(tmp_path_factory.mktemp("mixed") / "chamfered_flush_patch_box.step")
 
 
+def _source_of(kind: str, src: Path, fixable_src: Path, mixed_src: Path) -> Path:
+    """The clean part a kind needs: the small-face kinds need small faces (`src` has none)."""
+    return {"face_delete": fixable_src, "face_delete_inclined": mixed_src}.get(kind, src)
+
+
 @pytest.fixture(scope="module")
 def cases(src, fixable_src, mixed_src, out_dir) -> dict:
     """Every feasible kind, injected once. Cached: each is a real OCCT job, slow under emulation."""
-    return {k: inj.inject(fixable_src if k == "face_delete" else mixed_src if k == "face_delete_inclined" else src, k,
-                          SEED, out_dir)
+    return {k: inj.inject(_source_of(k, src, fixable_src, mixed_src), k, SEED, out_dir)
             for k in inj.KINDS if k != "pcurve_corrupt"}
 
 
@@ -497,10 +501,10 @@ def test_iges_roundtrip(cases, base):
 
 # ---- the interface contract ---------------------------------------------------------------------------------------
 
-def test_every_label_names_its_kind_seed_and_clean_source_and_keeps_fidelity_on_the_damaged_input(cases, src, fixable_src):
+def test_every_label_names_its_kind_seed_and_clean_source_and_keeps_fidelity_on_the_damaged_input(cases, src, fixable_src, mixed_src):
     for kind, case in cases.items():
         assert case.kind == kind and case.label["kind"] == kind and case.label["seed"] == SEED
-        assert case.label["clean_source"] == str(fixable_src if kind == "face_delete" else src)
+        assert case.label["clean_source"] == str(_source_of(kind, src, fixable_src, mixed_src))
         assert case.label["fidelity_reference"] == "damaged_input"
         assert case.fidelity_reference == case.path != src               # fidelity is measured on the damaged file
         assert case.label["entities"], f"{kind} names no damaged entity"
@@ -520,8 +524,8 @@ def _normalised(path: Path) -> str:
 
 
 @pytest.mark.parametrize("kind", [k for k in inj.KINDS if k != "pcurve_corrupt"])
-def test_same_source_kind_and_seed_give_the_same_damage(kind, src, fixable_src, cases, tmp_path):
-    again = inj.inject(fixable_src if kind == "face_delete" else src, kind, SEED, tmp_path)
+def test_same_source_kind_and_seed_give_the_same_damage(kind, src, fixable_src, mixed_src, cases, tmp_path):
+    again = inj.inject(_source_of(kind, src, fixable_src, mixed_src), kind, SEED, tmp_path)
     first = cases[kind]
     drop = {"iges_file"}
     assert {k: v for k, v in again.label.items() if k not in drop} == {k: v for k, v in first.label.items() if k not in drop}
