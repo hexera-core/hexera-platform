@@ -365,3 +365,48 @@ def test_the_after_build_refusal_stands_over_the_mesh_on_disk_and_a_plan_stop_st
     assert refusal_stands_over_mesh(neck_stop_refusal("x reaches ...", after_build=True))
     assert not refusal_stands_over_mesh(neck_stop_refusal("x reaches ..."))
     assert not refusal_stands_over_mesh(None)
+
+
+def _single_passage(ws, counts: dict, types: dict, spots: list):
+    from meshpipeline.engines.cfmesh.cfmesh_runner import NECK_SPOTS_FILE
+    ws.mkdir()
+    (ws / "system").mkdir()
+    (ws / NECK_SPOTS_FILE).write_text(json.dumps(spots))
+    return {"patch_types": types}, {n: c > 0 for n, c in counts.items()}
+
+
+def test_a_single_passage_mesh_that_lost_an_opening_is_told_in_the_same_words(tmp_path):
+    """INS-37: E14's INS-36 words reached only a case with a passages file; a single-passage cfMesh mesh that lost an
+    opening still ended "these patches have zero faces". Same words, same functions; no gap invented when none was
+    measured; the zero-face check's cause and facts (and so its retries) are unchanged."""
+    from meshpipeline.application.final_result import _cause_account
+    from meshpipeline.engines.cfmesh import flow_gates as fg
+    from meshpipeline.engines.cfmesh.cfmesh_runner import LOST_OPENING_WAYS_OUT, NECK_WAYS_OUT, neck_words
+    from meshpipeline.engines.gates import cause_of, facts_of, refuse
+
+    def zero(empty):
+        return refuse(f"mesh_manifest.json: these patches have zero faces: {empty}", "patch_not_captured",
+                      patches=list(empty))
+    types = {"inlet": "inlet", "outlet_1": "outlet", "outlet_2": "outlet", "wall": "wall"}
+    counts = {"inlet": 10, "outlet_1": 0, "outlet_2": 5, "wall": 99}
+    # no narrow spot measured: the opening and what is in the mesh, no gap named
+    ws = tmp_path / "a"
+    manifest, val = _single_passage(ws, counts, types, [])
+    fb = fg._lost_openings_said(ws, manifest, val, ["outlet_1"], zero(["outlet_1"]))
+    facts = facts_of(fb)
+    assert facts["patches"] == ["outlet_1"] and cause_of(fb) == "patch_not_captured"
+    assert "port_region_dropped" not in facts and "these patches have zero faces: ['outlet_1']" in str(fb)
+    _, what, nxt = _cause_account("manifest_valid", cause_of(fb), facts, "cfmesh")
+    assert what.startswith("The mesh was not delivered: the mesh was built, but outlet_1 came out with no faces")
+    assert "gap" not in what and "In the mesh with its faces: inlet, outlet_2" in what and nxt == LOST_OPENING_WAYS_OUT
+    assert "zero faces" not in what
+    # a narrow spot measured on its way: neck_words, as INS-36
+    ws = tmp_path / "b"
+    manifest, val = _single_passage(ws, counts, types, [{"width_m": 1e-4, "where_m": [0, 0, 0],
+                                                         "openings": ["outlet_1"]}])
+    fb = fg._lost_openings_said(ws, manifest, val, ["outlet_1"], zero(["outlet_1"]))
+    _, what, nxt = _cause_account("manifest_valid", cause_of(fb), facts_of(fb), "cfmesh")
+    assert neck_words(["outlet_1"], 1e-4, [0, 0, 0]) in what and nxt == NECK_WAYS_OUT
+    # a wall with no faces is not an opening: the zero-face check's own words stand
+    fb0 = zero(["wall"])
+    assert fg._lost_openings_said(ws, manifest, {**val, "wall": False}, ["wall"], fb0) is fb0

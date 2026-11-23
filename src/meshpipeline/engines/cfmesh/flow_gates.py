@@ -37,6 +37,28 @@ def _polymesh_is_complete(pm: Path, engine_label: str) -> tuple[bool, str]:
     return True, ""
 
 
+def _lost_openings_said(workspace: Path, manifest: dict, patch_val: dict, empty: list, fb):
+    """INS-37: a mesh cfMesh built whose OPENINGS (never a wall) came out with no faces is refused in INS-36's words
+    (cfmesh_runner.lost_opening_words: the openings, the narrowest gap measured on their way if any, what is in the mesh,
+    the ways out) - the same refusal a case of several passages gets, never "these patches have zero faces". The
+    cause and every other fact are the zero-face check's own, so the retries that follow are unchanged."""
+    from meshpipeline.engines.gates import GateFeedback, cause_of, facts_of
+    if cause_of(fb) != FailureCause.PATCH_NOT_CAPTURED.value:
+        return fb
+    types = manifest.get("patch_types") if isinstance(manifest.get("patch_types"), dict) else {}
+    if not types or any(str(types.get(n) or "wall") == "wall" for n in empty):
+        return fb
+    try:
+        from meshpipeline.engines.cfmesh.cfmesh_runner import lost_opening_facts
+        built = [n for n, ok in patch_val.items() if ok and str(types.get(n) or "wall") != "wall"]
+        said = lost_opening_facts(Path(workspace), list(empty), built)
+    except Exception:  # noqa: BLE001 - the words are the user's; the refusal stands without them
+        logger.warning("cfMesh: INS-37 words for the lost openings not written", exc_info=True)
+        return fb
+    return GateFeedback(f"[MESH_LOST_OPENING] {said['plan_stop']} {said['ways_out']}\n{fb}", cause=cause_of(fb),
+                        facts={**facts_of(fb), **said})
+
+
 def _validate_manifest(workspace: Path, domain: str = "") -> tuple[bool, str]:
     manifest_path = workspace / "mesh_manifest.json"
 
@@ -80,8 +102,8 @@ def _validate_manifest(workspace: Path, domain: str = "") -> tuple[bool, str]:
     _empty = [name for name, has_faces in _patch_val.items() if not has_faces]
     if _empty:
         from meshpipeline.engines.preflight import zero_face_feedback
-        return False, zero_face_feedback(
-            f"mesh_manifest.json: these patches have zero faces: {_empty}", _empty, workspace)
+        fb = zero_face_feedback(f"mesh_manifest.json: these patches have zero faces: {_empty}", _empty, workspace)
+        return False, _lost_openings_said(workspace, manifest, _patch_val, _empty, fb)
 
     # THE CELL LIMIT is its own gate now (resolution_policy.gate_cell_limit, cell_limit below):
     # a note on a sound mesh, never a failure here (LAD-cfd-4).

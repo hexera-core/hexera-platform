@@ -1240,26 +1240,45 @@ def after_build_refusal(ws: Path):
     built = [p for p in ports if p in faced]
     if not lost:
         return None
+    why, ways = lost_opening_words(ws, lost, built)
+    return neck_stop_refusal(why, after_build=True, ways_out=ways)
+
+
+#: INS-37: the ways out of a lost opening where no narrow spot on its way was measured (no gap is named)
+LOST_OPENING_WAYS_OUT = "Allow more cells, check that opening on the geometry stage, or drop that opening."
+#: INS-37: a single-passage cfMesh mesh that lost an opening is told in INS-36's words (lost_opening_words)
+LOST_OPENING_RULE = "INS-37"
+
+
+def lost_opening_words(ws: Path, lost: list, built: list) -> tuple[str, str]:
+    """INS-36 / INS-37: (the sentence, the ways out) for a mesh that was built with the openings `lost` at no faces and
+    `built` with faces. The narrowest gap the plan measured on their way (NECK_SPOTS_FILE: neck_words, width and where)
+    when there is one; else the openings and what is in the mesh, with no gap named."""
+    lost, built = [str(n) for n in lost if n], [str(n) for n in built if n]
     try:
-        spots = json.loads((ws / NECK_SPOTS_FILE).read_text())
+        spots = json.loads((Path(ws) / NECK_SPOTS_FILE).read_text())
     except (OSError, ValueError):
         spots = []
     mine = [s for s in spots if isinstance(s, dict) and set(s.get("openings") or ()) & set(lost)]
     tight = min(mine, key=lambda s: float(s.get("width_m") or 1e9)) if mine else None
-    if tight is not None:
-        named = [n for n in lost if n in (tight.get("openings") or ())]
-        head = neck_words(named, float(tight["width_m"]), tight.get("where_m"))
-    else:
-        named = lost
-        head = (f"{' and '.join(lost)} {'reach' if len(lost) > 1 else 'reaches'} the rest of its passage only "
-                "through a gap narrower than the cells there")
+    held = f" In the mesh with its faces: {', '.join(built)}." if built else ""
+    if tight is None:
+        return (f"the mesh was built, but {' and '.join(lost)} came out with no faces: the mesher kept no cells where "
+                f"{'they open' if len(lost) > 1 else 'it opens'}.{held}", LOST_OPENING_WAYS_OUT)
+    named = [n for n in lost if n in (tight.get("openings") or ())]
     rest = [n for n in lost if n not in named]
-    why = (f"{head}; the mesh was built, but the mesher kept no cells across that gap, so "
-           f"{' and '.join(named)} came out with no faces."
-           + (f" Also without faces: {', '.join(rest)}." if rest else "")
-           + (f" In the mesh with its faces: {', '.join(built)}." if built else "")
-           + f" {NECK_WAYS_OUT}")
-    return neck_stop_refusal(why, after_build=True)
+    head = neck_words(named, float(tight["width_m"]), tight.get("where_m"))
+    return (f"{head}; the mesh was built, but the mesher kept no cells across that gap, so "
+            f"{' and '.join(named)} came out with no faces."
+            + (f" Also without faces: {', '.join(rest)}." if rest else "") + held, NECK_WAYS_OUT)
+
+
+def lost_opening_facts(ws: Path, lost: list, built: list) -> dict:
+    """INS-37: the facts a manifest refusal of a single-passage mesh that lost an opening carries, so the user's result
+    says INS-36's words (failure_cause: plan_stop, after_build, ways_out). No port_region_dropped: the retry that
+    refines a missed opening (LAD-cfd-8, gate_facts.missed_ports) and the wrap rung still follow as before."""
+    why, ways = lost_opening_words(ws, lost, built)
+    return {"plan_stop": why, "ways_out": ways, "after_build": True, "rule": LOST_OPENING_RULE}
 
 
 def passage_surfaces(ws: Path, surface_file: str) -> list[dict]:
@@ -1331,7 +1350,7 @@ def neck_plan(surfaces: list, wall_patch: str, spots: list, *, wall_cell: float,
                    f"{float(limit) / 1e6:.3g} M limit. {NECK_WAYS_OUT}")
 
 
-def neck_stop_refusal(why: str, *, after_build: bool = False):
+def neck_stop_refusal(why: str, *, after_build: bool = False, ways_out: str = NECK_WAYS_OUT):
     """INS-32's plan-time stop as the refusal the run records: a dropped opening (PATCH_NOT_CAPTURED
     with port_region_dropped, so no wrap rung follows: LAD-cfd-12), decided before any mesher
     started. Its facts carry the stop's own sentence and its ways out, which the user's result says
@@ -1340,13 +1359,14 @@ def neck_stop_refusal(why: str, *, after_build: bool = False):
     opening - it stands over that mesh (pipeline/executor), never a manifest error."""
     from meshpipeline.contracts.failure_cause import FailureCause
     from meshpipeline.engines.preflight import PreflightRefusal
+    stop = why.replace(ways_out, "").strip()
     return PreflightRefusal(
         gate="finalize", cause=FailureCause.PATCH_NOT_CAPTURED.value,
-        builder_text=f"[PORT_REGION_DROPPED] {why}",
+        builder_text=f"[PORT_REGION_DROPPED] {stop} {ways_out}",
         facts={"port_region_dropped": True, "deterministic": True, "ladder_exhausted": True,
                "before_meshing": not after_build, "meshers_started": 1 if after_build else 0,
                **({"after_build": True, "rule": NECK_AFTER_BUILD_RULE} if after_build else {}),
-               "plan_stop": why.replace(NECK_WAYS_OUT, "").strip(), "ways_out": NECK_WAYS_OUT})
+               "plan_stop": stop, "ways_out": ways_out})
 
 
 def _neck_boxes(found: dict, spots: list, wall_cell: float, across: float) -> list[dict]:
