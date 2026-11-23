@@ -58,7 +58,7 @@ from OCP.TopLoc import TopLoc_Location
 from OCP.TopoDS import TopoDS, TopoDS_Compound, TopoDS_Shape
 from OCP.TopTools import TopTools_IndexedMapOfShape
 
-from meshpipeline.cad.repair_v4.limits import MAX_FILL_SPAN_RATIO, fill_span_allowed  # the op's own 5%
+from meshpipeline.cad.repair_v4 import limits  # the op's own 5%: read through the module, never copied
 
 KINDS: tuple[str, ...] = (
     "loose_reapprox", "unsew_perturb", "tolerance_inflate", "pcurve_corrupt", "seam_variant",
@@ -394,12 +394,12 @@ def _delete_face(shape, rng, large: bool):
     lost in translation. `large=True`: only faces it may NOT (the declined stratum). Same predicate, one 5%."""
     faces = _entities(shape, TopAbs_FACE)
     chosen = [i for i, f in enumerate(faces)
-              if fill_span_allowed(*_loop_span(shape, f)) is not large]
+              if limits.fill_span_allowed(*_loop_span(shape, f)) is not large]
     name = "face_delete_large" if large else "face_delete"
     if not chosen:
         raise InjectionNotApplicable(
             f"{name}: no face has a boundary loop {'above' if large else 'within'} "
-            f"{100 * MAX_FILL_SPAN_RATIO:g}% of the part diagonal")
+            f"{100 * limits.MAX_FILL_SPAN_RATIO:g}% of the part diagonal")
     i = rng.choice(chosen)
     reshape = BRepTools_ReShape()
     reshape.Remove(faces[i])
@@ -408,12 +408,12 @@ def _delete_face(shape, rng, large: bool):
         raise InjectionNotApplicable(f"{name}: the face could not be removed from this shape")
     span, diagonal = _loop_span(out, faces[i])  # re-measured against the damaged part, as the op will see it
     ratio = span / diagonal
-    if fill_span_allowed(span, diagonal) is large:
+    if limits.fill_span_allowed(span, diagonal) is large:
         raise InjectionNotApplicable(
-            f"{name}: deleting the face moved the part diagonal across the {100 * MAX_FILL_SPAN_RATIO:g}% line "
+            f"{name}: deleting the face moved the part diagonal across the {100 * limits.MAX_FILL_SPAN_RATIO:g}% line "
             f"(loop span {100 * ratio:.2f}% of the damaged part's diagonal)")
     return out, {"entities": [_face_ref(shape, faces, i)], "loop_span_ratio": round(ratio, 6),
-                 "fill_cap_ratio": MAX_FILL_SPAN_RATIO}
+                 "fill_cap_ratio": limits.MAX_FILL_SPAN_RATIO}
 
 
 def _face_delete(shape, rng, work):

@@ -344,10 +344,25 @@ def test_the_injector_and_the_op_share_one_fill_cap():
     from meshpipeline.cad.repair_v4.ops import faces
     from meshpipeline.cad.repair_v4.verdict import faithful_kernel
 
-    assert inj.MAX_FILL_SPAN_RATIO is limits.MAX_FILL_SPAN_RATIO
+    assert inj.limits is limits                                          # read through the module, never copied
     assert faces.MAX_FILL_SPAN_RATIO is limits.MAX_FILL_SPAN_RATIO
     assert faithful_kernel.FILL_SPAN_FRACTION is limits.MAX_FILL_SPAN_RATIO
     assert limits.MAX_FILL_SPAN_RATIO == 0.05                            # design 7 decision 2: not ours to move here
+
+
+def test_the_injector_follows_the_shared_cap_when_it_moves(fixable_src, tmp_path, monkeypatch):
+    """Drift proof: move the ONE constant and the injector moves with it. A second typed 5% in inject.py would not."""
+    from meshpipeline.cad.repair_v4 import limits
+
+    with monkeypatch.context() as m:
+        m.setattr(limits, "MAX_FILL_SPAN_RATIO", 0.001)                  # nothing is small any more
+        with pytest.raises(inj.InjectionNotApplicable, match="no face has a boundary loop within 0.1%"):
+            inj.inject(fixable_src, "face_delete", SEED, tmp_path)
+        assert inj.inject(fixable_src, "face_delete_large", SEED, tmp_path).label["fill_cap_ratio"] == 0.001
+    with monkeypatch.context() as m:
+        m.setattr(limits, "MAX_FILL_SPAN_RATIO", 0.99)                   # nothing is large any more
+        with pytest.raises(inj.InjectionNotApplicable, match="no face has a boundary loop above 99%"):
+            inj.inject(fixable_src, "face_delete_large", SEED, tmp_path)
 
 
 def test_face_delete_refuses_a_part_that_has_no_small_face(tmp_path):
