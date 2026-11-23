@@ -235,8 +235,13 @@ def _history_from_lookup(old: Any, lookup: Any) -> Any:
 
 
 def _width(sub: Any, kind: str) -> float:
-    """How narrow a target is: an edge's length; a face's 2 x area / perimeter (the width of a
-    strip, ~ its short side)."""
+    """How narrow a target is, never UNDER-measuring (a removal is declared exempt from fidelity).
+    An edge: its length. A face: the larger of (a) the inertia width sqrt(12 x I_min / area) - the
+    short side of a rectangle, sqrt(3) x r of a disc - and (b) the second-largest bounding-box
+    extent (a disc's full diameter, a square's side). Over-measuring a tilted face only makes the
+    guard stricter."""
+    from OCP.Bnd import Bnd_Box
+    from OCP.BRepBndLib import BRepBndLib
     from OCP.BRepGProp import BRepGProp
     from OCP.GProp import GProp_GProps
 
@@ -244,18 +249,22 @@ def _width(sub: Any, kind: str) -> float:
     if kind == "edge":
         BRepGProp.LinearProperties_s(sub, props)
         return float(props.Mass())
-    area = GProp_GProps()
-    BRepGProp.SurfaceProperties_s(sub, area)
-    from OCP.TopAbs import TopAbs_EDGE
-    from OCP.TopExp import TopExp_Explorer
-    perimeter = 0.0
-    ex = TopExp_Explorer(sub, TopAbs_EDGE)
-    while ex.More():
-        edge_props = GProp_GProps()
-        BRepGProp.LinearProperties_s(ex.Current(), edge_props)
-        perimeter += float(edge_props.Mass())
-        ex.Next()
-    return 2.0 * float(area.Mass()) / perimeter if perimeter > 0 else 0.0
+    BRepGProp.SurfaceProperties_s(sub, props)
+    area = float(props.Mass())
+    if area <= 0:
+        return 0.0
+    i_min = min(props.PrincipalProperties().Moments())
+    inertia = (12.0 * max(i_min, 0.0) / area) ** 0.5
+    box = Bnd_Box()
+    BRepBndLib.Add_s(sub, box)
+    x0, y0, z0, x1, y1, z1 = box.Get()
+    second = sorted((x1 - x0, y1 - y0, z1 - z0))[1]
+    return max(inertia, second)
+
+
+def _count_small(shape: Any, max_width: float) -> dict[str, int]:
+    return {"faces": sum(1 for f in _entities(shape, "face") if _width(f, "face") <= max_width),
+            "edges": sum(1 for e in _entities(shape, "edge") if _width(e, "edge") <= max_width)}
 
 
 @register_kernel_fn("op_remove_small")
@@ -325,6 +334,10 @@ def _remove_small(payload: dict) -> dict:
     if history is None or not (history.HasRemoved() or history.HasModified()):
         return {"declined": f"nothing at or under {max_width} mm to remove at {[t['id'] for t in payload['targets']]}"}
     params["via"] = via
+    # Work still to do: a caller must see it, since the shape can pass BRepCheck with these left
+    remaining = _count_small(shape, max_width)
+    params["small_faces_remaining"] = remaining["faces"]
+    params["small_edges_remaining"] = remaining["edges"]
     return _record(old, shape, history, payload, "remove_small", params, start, declare_removed=True)
 
 
@@ -361,7 +374,12 @@ def _sew(payload: dict) -> dict:
     if not ladder or off:
         raise ValueError(f"tol_ladder rungs {off or ladder} must lie in [{floor}, {bound}] "
                          "(1e-6 x diagonal .. min(0.1 mm, 0.001 x diagonal))")
+    if _entities(old, "solid"):
+        return {"declined": "input carries a solid; sewing returns shells and would destroy it "
+                            "(undeclared). Sew only open shells or loose faces"}
     before = _free_edge_count(old)
+    if before == 0:
+        return {"declined": "input has no free edges; nothing to sew"}
     best: tuple[int, float, Any, Any] | None = None
     tried: list[dict] = []
     for tol in ladder:

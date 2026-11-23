@@ -229,11 +229,12 @@ def test_sew_keeps_the_ids_of_faces_it_leaves_alone(pool: WorkerPool, tmp_path: 
 
         box = Bnd_Box()
         BRepBndLib.Add_s(face, box)
-        if abs(box.Get()[2] - 10.0) < 1e-9 and abs(box.Get()[5] - 10.0) < 1e-9:
+        if abs(box.Get()[2] - 10.0) < 1e-6 and abs(box.Get()[5] - 10.0) < 1e-6:
             move = gp_Trsf()
             move.SetTranslation(gp_Vec(0, 0, 8e-5))
             face = BRepBuilderAPI_Transform(face, move, True).Shape()
         builder.Add(compound, face)
+    assert _free_edges(compound) > 0  # the displaced face really is open (the box tolerance is ~1e-7)
     ws = Workspace.from_brep(pool, _write(compound, tmp_path / "one_off.brep"))
     sewn, diff = OPS["sew"].apply(pool, ws, [], {"tol_ladder": [2e-5, 1e-4]}, timeout_s=TIMEOUT)
     assert _ids(sewn, "F") == _ids(ws, "F")
@@ -331,6 +332,7 @@ def test_remove_small_removes_a_001mm_sliver_face_and_declares_it(
     # the removal is DECLARED (exempt from fidelity but counted), and is exactly what the kernel's
     # own history reports removed - the sliver and nothing larger
     assert sliver in diff.declared_removed and sliver in diff.removed
+    assert diff.params["small_faces_remaining"] == 0
     assert set(diff.declared_removed) == set(diff.removed)
     assert {i for i in diff.declared_removed if i.startswith("F")} == {sliver}
     # every other face keeps its id (Defeaturing reports each as Modified 1:1)
@@ -405,6 +407,8 @@ def test_remove_small_collapses_a_tiny_edge_and_declares_it(pool: WorkerPool, tm
     after, diff = OPS["remove_small"].apply(pool, ws, tiny, {"max_width_mm": 0.05}, timeout_s=TIMEOUT)
     result = _read(after.brep_path)
     assert diff.params["via"] == ["fix_small_edges"]
+    # the zero-width strip face is still there and the op says so, rather than reporting clean
+    assert diff.params["small_faces_remaining"] >= 1
     assert sorted(diff.declared_removed) == sorted(tiny) and set(diff.removed) == set(tiny)
     assert _valid(result) and _free_edges(result) == 0 and _volume(result) > 0
     assert _count(result, "solid") == 1
@@ -427,3 +431,58 @@ def test_orient_and_close_fixes_a_bare_shell_with_one_flipped_face(pool: WorkerP
     result = _read(after.brep_path)
     assert not _inconsistent_orientation(result) and _valid(result) and _free_edges(result) == 0
     assert _count(result, "face") == 6 and _ids(after, "F") == _ids(ws, "F") and diff.removed == []
+
+
+# --- review fixes: sew guard, width guard, unfinished-work signal ----------------------------------
+
+def test_sew_declines_on_a_closed_solid_rather_than_destroying_it(pool: WorkerPool, tmp_path: Path) -> None:
+    ws = Workspace.from_brep(pool, _write(_box(), tmp_path / "solid.brep"))
+    with pytest.raises(shells.OpDeclined):
+        OPS["sew"].apply(pool, ws, [], {"tol_ladder": [2e-5, 1e-4]}, timeout_s=TIMEOUT)
+
+
+def test_sew_declines_on_a_closed_shell_with_nothing_to_sew(pool: WorkerPool, tmp_path: Path) -> None:
+    from OCP.TopAbs import TopAbs_SHELL
+    from OCP.TopExp import TopExp_Explorer
+
+    shell = TopExp_Explorer(_box(), TopAbs_SHELL).Current()
+    ws = Workspace.from_brep(pool, _write(shell, tmp_path / "shell.brep"))
+    with pytest.raises(shells.OpDeclined):
+        OPS["sew"].apply(pool, ws, [], {"tol_ladder": [2e-5, 1e-4]}, timeout_s=TIMEOUT)
+
+
+def _big_box_with_loose_face(face: Any, tmp_path: Path) -> tuple[Any, str]:
+    from OCP.BRep import BRep_Builder
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
+    from OCP.TopoDS import TopoDS_Compound
+
+    compound = TopoDS_Compound()
+    builder = BRep_Builder()
+    builder.MakeCompound(compound)
+    builder.Add(compound, BRepPrimAPI_MakeBox(100.0, 100.0, 100.0).Shape())
+    builder.Add(compound, face)
+    return compound, _write(compound, tmp_path / "with_face.brep")
+
+
+@pytest.mark.parametrize("shape_name", ["square", "disc"])
+def test_remove_small_width_guard_does_not_pass_a_face_twice_max_width_across(
+    pool: WorkerPool, tmp_path: Path, shape_name: str,
+) -> None:
+    """max_width_mm 0.05; a 0.06 mm square (old 2A/P measure: 0.03) and a 0.06 mm disc (old: 0.03)
+    are wider than that and must be refused, not removed and declared exempt."""
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge, BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakeWire
+    from OCP.gp import gp_Ax2, gp_Circ, gp_Dir, gp_Pln, gp_Pnt
+
+    if shape_name == "square":
+        face = BRepBuilderAPI_MakeFace(gp_Pln(gp_Pnt(200, 0, 0), gp_Dir(0, 0, 1)),
+                                       0.0, 0.06, 0.0, 0.06).Face()
+    else:
+        circle = gp_Circ(gp_Ax2(gp_Pnt(200, 0, 0), gp_Dir(0, 0, 1)), 0.03)
+        wire = BRepBuilderAPI_MakeWire(BRepBuilderAPI_MakeEdge(circle).Edge()).Wire()
+        face = BRepBuilderAPI_MakeFace(wire).Face()
+    assert shells._width(face, "face") >= 0.06 - 1e-9  # measured at (not under) its true width
+    _, path = _big_box_with_loose_face(face, tmp_path)
+    ws = Workspace.from_brep(pool, path)
+    target = _id_of_narrowest_face(ws)
+    with pytest.raises(shells.OpFailed, match="not small"):
+        OPS["remove_small"].apply(pool, ws, [target], {"max_width_mm": 0.05}, timeout_s=TIMEOUT)
