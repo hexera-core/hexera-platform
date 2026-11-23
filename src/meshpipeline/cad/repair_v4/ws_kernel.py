@@ -93,9 +93,10 @@ def shape_signature(shape: Any) -> list:
 
     * the top shape's TopAbs type;
     * the counts of compounds, compsolids, solids and shells, and how many shells are closed;
-    * per solid, its SIGNED volume to six significant figures, sorted. Reversing a solid negates it
-      and reversing one face of it changes it by twice that face's contribution, so both are seen;
-      the same geometry reached by two routes agrees to ~1e-12, far inside the rounding.
+    * per SHELL (those inside solids and bare ones alike), its SIGNED volume to six significant figures,
+      sorted. Reversing a solid or shell negates it and reversing one face of it changes it by twice that
+      face's contribution, so both are seen; the same geometry reached by two routes agrees to ~1e-12,
+      far inside the rounding.
     """
     from OCP.BRep import BRep_Tool
     from OCP.BRepGProp import BRepGProp
@@ -112,9 +113,9 @@ def shape_signature(shape: Any) -> list:
     solids, shells = indexed(TopAbs_SOLID), indexed(TopAbs_SHELL)
     closed = sum(1 for i in range(1, shells.Extent() + 1) if BRep_Tool.IsClosed_s(shells.FindKey(i)))
     volumes: list[str] = []
-    for i in range(1, solids.Extent() + 1):
+    for i in range(1, shells.Extent() + 1):
         props = GProp_GProps()
-        BRepGProp.VolumeProperties_s(solids.FindKey(i), props)
+        BRepGProp.VolumeProperties_s(shells.FindKey(i), props)
         volumes.append(f"{props.Mass():.6g}")
     return [int(shape.ShapeType()), indexed(TopAbs_COMPOUND).Extent(), indexed(TopAbs_COMPSOLID).Extent(),
             solids.Extent(), shells.Extent(), closed, *sorted(volumes)]
