@@ -165,6 +165,16 @@ def test_failure_without_location_is_one_unlocated_site_not_dropped() -> None:
     assert site.kind == "unlocated" and site.entities == [] and site.meshers_failing == ["gmsh", "netgen"]
 
 
+def test_an_unlocated_site_is_observable_by_the_proposer() -> None:
+    """`unmeasured_pairs` is a count; a site that was never clustered used to carry `[]` there and `observation`
+    crashed in `int()`, so the AI proposer never put a request on the wire for a part whose only site was this one."""
+    ws = _ws()
+    verdict = _verdict(_fail("gmsh", "other"))
+    sites = find_sites(ScriptedPool(ws, _boxes(ws)), ws, verdict, h_mm=H)
+    assert sites[0].graph["unmeasured_pairs"] == 0
+    assert observation(ws, verdict, sites, {})["unmeasured_pairs"] == 0
+
+
 def test_timeout_without_location_is_a_timeout_site() -> None:
     ws = _ws()
     pool = ScriptedPool(ws, _boxes(ws))

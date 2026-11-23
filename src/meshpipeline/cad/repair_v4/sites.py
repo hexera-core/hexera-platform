@@ -682,7 +682,9 @@ def _attach_graphs(pool: WorkerPool, ws: Workspace, sites: list[Site], reverse: 
         soft, box = site.graph.get("soft", []), site.graph.get("box")
         graph: dict = {"k": GRAPH_HOPS, "h_mm": h_mm}
         for key in ("failures", "points", "clashes", "failure_entities", "unmeasured_pairs"):
-            graph[key] = site.graph.get(key, [])
+            # `unmeasured_pairs` is a COUNT (line 562 writes an int); every other key is a list. A site that was
+            # never clustered (an `unlocated` one) has neither, and a `[]` there crashed `observation`'s int().
+            graph[key] = site.graph.get(key, 0 if key == "unmeasured_pairs" else [])
         raw = graphs.get(site.id)
         if raw is not None:
             def name(prefix: str, value: Any) -> Any:
