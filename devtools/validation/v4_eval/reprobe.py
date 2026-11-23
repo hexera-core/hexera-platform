@@ -47,6 +47,42 @@ Tier = Literal["cheap", "full"]
 NO_SOLIDS = "no_solids"
 
 
+# --------------------------------------------------------------------------- source allow-list
+
+#: Sources the benchmark may measure. Fusion 360 ("f360") is HELD OUT: its licence (non-commercial
+#: research, redistribution barred) has not been ruled on by the owner. It is a licence hold, not a
+#: design decision: add "f360" here (and only here) when cleared. `reprobe` and `build_splits` both
+#: refuse any entry or row outside this set, so the hold does not depend on a caller passing a flag.
+ALLOWED_SOURCES: frozenset[str] = frozenset({"abc_fail", "abc_pass", "occt", "nist", "inject"})
+
+
+class DisallowedSource(ValueError):
+    """An entry or row from a source that is not in ALLOWED_SOURCES (licence hold)."""
+
+
+def check_sources(items: Iterable[Any], allowed: Collection[str] | None = None) -> None:
+    allowed = ALLOWED_SOURCES if allowed is None else allowed
+    for item in items:
+        if item.source not in allowed:
+            raise DisallowedSource(
+                f"{item.name}: source {item.source!r} is not in the allow-list {sorted(allowed)} "
+                "(Fusion 360 is on licence hold until the owner rules)")
+
+
+def split_allowed(entries: Iterable[Any], allowed: Collection[str] | None = None) -> tuple[list[Any], dict[str, int]]:
+    """(kept, dropped-count-by-source): the EXPLICIT pool-level filter run_arm applies to a manifest
+    that still lists held-out sources, so the drop is counted and recorded, never silent."""
+    allowed = ALLOWED_SOURCES if allowed is None else allowed
+    kept: list[Any] = []
+    dropped: Counter[str] = Counter()
+    for e in entries:
+        if e.source in allowed:
+            kept.append(e)
+        else:
+            dropped[e.source] += 1
+    return kept, dict(dropped)
+
+
 # --------------------------------------------------------------------------- injector quarantine
 
 class _OcpStub(importlib.abc.MetaPathFinder, importlib.abc.Loader):
@@ -284,6 +320,7 @@ def reprobe(
     from meshpipeline.cad.repair_v4.verdict.valid import CheckerUnavailable
 
     entries = list(entries)
+    check_sources(entries)
     check_not_quarantined(entries)  # before any mesh: a quarantined kind must cost nothing
     check = cheap_verdict if tier == "cheap" else verdict
     rows: list[ProbeRow] = []
@@ -457,6 +494,7 @@ def build_splits(
     Writes dev.json / heldout.json / clean.json under `out_dir` when given.
     """
     rows = list({r.sha256: r for r in sorted(rows, key=lambda r: r.sha256)}.values())
+    check_sources(rows)
     check_not_quarantined(rows)
     uncounted = [r for r in rows if not is_counted(r)]
     rows = [r for r in rows if is_counted(r)]

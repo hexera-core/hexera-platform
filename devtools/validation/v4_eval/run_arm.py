@@ -88,7 +88,10 @@ def make_cache(uri: str) -> Any:
 def run_reprobe(args: argparse.Namespace, out: Path, prov: dict) -> int:
     from meshpipeline.cad.repair_v4.worker_pool import WorkerPool
 
-    whole_pool = pool_mod.read_pool(Path(args.pool))
+    listed = pool_mod.read_pool(Path(args.pool))
+    whole_pool, dropped = reprobe_mod.split_allowed(listed)  # licence hold: F360 never reaches a shard
+    prov["pool_listed"], prov["pool_dropped_by_source"] = len(listed), dropped
+    print(f"pool: {len(listed)} listed, {len(whole_pool)} allowed, dropped {dropped}", file=sys.stderr)
     reprobe_mod.check_not_quarantined(whole_pool)  # pool-level: any source, before any shard work
     entries = shard_entries(select_sources(whole_pool, args.sources), args.shard)
     prov["shard_files"] = len(entries)

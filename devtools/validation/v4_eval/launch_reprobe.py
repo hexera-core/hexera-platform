@@ -48,7 +48,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--allow-over-budget", action="store_true",
                         help="waive the VM-hour ceiling (not the vCPU or run-duration limits)")
     args = parser.parse_args(argv)
-    files = args.files if args.files is not None else len(_ra.pool_mod.read_pool(Path(args.pool)))
+    if args.files is not None:
+        files = args.files
+    else:  # only the sources the benchmark may measure (Fusion 360 is on licence hold)
+        files = len(_ra.reprobe_mod.split_allowed(_ra.pool_mod.read_pool(Path(args.pool)))[0])
     projection = evalspec.project(files, shards=args.shards, machine_type=args.machine_type,
                                   max_run_hours=args.max_run_hours)
     print(projection.describe())
