@@ -672,6 +672,10 @@ def snappy_levels(ask: Ask, base: float, *, floor: int, level: int, flevel: int,
         where = str(e.get("where") or "")
         if "wake" in where.casefold():
             continue                                   # snappy_wake
+        if e.get("faces"):
+            # NOTE-17: a size typed with picked faces is for those faces only - never spread to a part or every wall
+            ask.not_here(e["id"], "a size on only the faces you picked is not available on this mesher yet")
+            continue
         if part_levels:
             ask.done(e["id"], "set part by part (see the lines about your parts)")
             continue

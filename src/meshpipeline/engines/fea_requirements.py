@@ -154,8 +154,12 @@ def report(mesh, req: Mapping | None, *, mm_per_unit: float = 1000.0, order: int
             # NOTE-6: a size in one named place the parts reader tied to no part or area of this one: nothing was set
             # there, so never "applied as a setting" ("make the mesh finer at the fillets", fea0254, round 4: J)
             where = next((str(e.get("where") or "") for e in req.get("local") or [] if e.get("id") == row["id"]), "")
+            picked = any(e.get("faces") for e in req.get("local") or [] if e.get("id") == row["id"])
             flow = {"applied": False, "met": None,
-                    "delivered": (f"not applied - no such place was found on the part{f' ({where})' if where else ''}"
+                    # NOTE-17: a size on picked faces until the parts reader sizes them (its Pick_n area)
+                    "delivered": "not applied yet - a size on only the faces you picked is not set on this mesh yet"
+                    if picked else
+                    (f"not applied - no such place was found on the part{f' ({where})' if where else ''}"
                                   if places.get("status") == "used" else
                                   "not applied - the notes about parts were not read this run, so no place was sized")}
         if flow is not None:
