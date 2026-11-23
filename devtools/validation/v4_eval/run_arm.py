@@ -150,7 +150,9 @@ def split_entries(whole_pool: list[Any], split: str, split_file: str | None) -> 
     """The pool entries of a split, by sha256. A split that names a file the pool does not carry is refused: a
     silently smaller split would make an arm's clean rate a rate over a different set."""
     path = Path(split_file) if split_file else reprobe_mod.SPLITS_DIR / f"{split}.json"
-    shas = [r.sha256 for r in reprobe_mod.read_split(path)]
+    split_rows = reprobe_mod.read_split(path)
+    reprobe_mod.check_sources(split_rows)  # Fusion 360 is in no split, row or report: refused by name, not by omission
+    shas = [r.sha256 for r in split_rows]
     by_sha = {e.sha256: e for e in whole_pool}
     missing = [h for h in shas if h not in by_sha]
     if missing:
@@ -195,7 +197,7 @@ def run_arms(args: argparse.Namespace, out: Path, prov: dict, ledger: Any | None
     entries = shard_entries([e for e in select_sources(whole_pool, args.sources) if e.sha256 in in_split],
                             args.shard)
     route = None
-    if model_arms:
+    if model_arms and runner is None:  # an injected runner (a test, the infra check) replaces the dispatch AND its route
         route = _prepare_model_route(args, prov)
     engine = engine if engine is not None else arms_mod.RealEngine()
     # `arms` / `split` / `wave` are the PLAN's when there is one (copied before this runs) and the report compares

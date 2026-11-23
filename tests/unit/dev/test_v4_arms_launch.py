@@ -65,7 +65,9 @@ def _meta(**extra: str) -> dict[str, str]:
             "v4-run-arm": "devtools/validation/v4_eval/run_arm.py", "v4-pool": "gs://B/eval/v4-reprobe/pool.json",
             "v4-cache-uri": "gs://B/c", "v4-sources": "abc_fail", "v4-wave-id": "w-test", "v4-wave-type": "normal",
             "v4-n-shards": "1", "v4-marker-bucket": "B", "v4-wave": "dev_search", "v4-arms": "search_det,search_ai",
-            "v4-split": "dev", "v4-split-uri": SPLIT_URI, "v4-h-mm": "0.5", **extra}
+            "v4-split": "dev", "v4-split-uri": SPLIT_URI, "v4-h-mm": "0.5",
+            # the plan the launcher claimed (plan_wave(...).provenance()): the startup refuses an arms wave without it
+            "v4-plan-provenance": '{"wave": "dev_search", "slot": null}', **extra}
 
 
 def test_startup_runs_run_arm_in_arms_mode_with_the_split_mounted(tmp_path):
@@ -77,6 +79,16 @@ def test_startup_runs_run_arm_in_arms_mode_with_the_split_mounted(tmp_path):
     assert "--ledger-path /eval/ledger/log.jsonl" in run and "--wave-type normal" in run
     assert any(ln.startswith(f"storage cp {SPLIT_URI}") for ln in log)
     assert "secret.env" not in run                    # no secret named: no key mounted
+    assert "--plan-provenance" in run and '"wave": "dev_search"' in run  # the claimed plan rides on the SAME command
+
+
+def test_startup_refuses_an_arms_wave_whose_plan_was_not_claimed(tmp_path):
+    for i, bad in enumerate(("", "UNCLAIMED-dry-run")):
+        sub = tmp_path / str(i)
+        sub.mkdir()
+        log = base._startup(sub, {**_meta(), "v4-plan-provenance": bad}, expect_rc=1)
+        assert not [ln for ln in log if ln.startswith("docker run")], bad
+        assert any(ln.endswith("/FAILED") for ln in log), bad  # reported as the unit's failure, not a silent skip
 
 
 def test_startup_reads_the_secret_only_when_the_launcher_named_one(tmp_path):

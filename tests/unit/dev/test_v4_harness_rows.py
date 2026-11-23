@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import shutil
 import sys
 from dataclasses import asdict
 from pathlib import Path
@@ -72,7 +73,7 @@ def run_shard(tmp_path, wave, *, runner, plan=None, extra=(), split_name=None, n
             "--commit", COMMIT, "--image", IMAGE, "--sources", source,
             "--wave-type", wave.wave_type, "--wave-id", "wv1", "--n-shards", "1",
             "--ledger-path", str(tmp_path / "ledger.jsonl"), "--marker-bucket", "dev-crsv3-transfer-224734058693",
-            *(plan.provenance_argv() if plan is not None else []), *extra]
+            "--h-mm", "0.5", *(plan.provenance_argv() if plan is not None else []), *extra]
     return argv, out, sp
 
 
@@ -133,6 +134,15 @@ def test_plan_provenance_is_copied_into_the_shard_and_the_report_can_verify_the_
         assert prov[key] == want, key
     assert prov["slot"] == "slot/held_out/1" and prov["ledger"] == "shard"
     assert prov["ledger_detail"]["cap_usd"] == 250.0  # the table's cap over one shard
+    # The held-out wave lists v3_meshability_pass_ai, which run_arm cannot run (v3_eval runs it). The report needs a row
+    # for every (file, arm), so the MERGE step must add v3's rows; until it exists the report refuses, which is right.
+    unmerged = tmp_path / "unmerged" / "shard-1-of-1"
+    shutil.copytree(out, unmerged)
+    with pytest.raises(report.ReportRefused, match="v3_meshability_pass_ai"):
+        report.load_wave(unmerged.parent, wave, rp.read_split(sp), n_shards=1, frozen_commit=COMMIT, markers=world)
+    rows_path = out / "rows.json"
+    v3_rows = [conclusive_row(Entry(i), "v3_meshability_pass_ai") for i in range(12)]
+    rows_path.write_text(json.dumps([*json.loads(rows_path.read_text()), *v3_rows], sort_keys=True))
     shard = tmp_path / "wave" / "shard-1-of-1"
     shard.parent.mkdir()
     out.rename(shard)
@@ -218,12 +228,21 @@ def test_a_missing_input_is_excluded_not_a_failure(tmp_path, monkeypatch, world)
     assert [x["reason"].split(":")[0] for x in json.loads((out / "EXCLUDED.json").read_text())] == ["input_missing"] * 2
 
 
-def test_no_arm_runner_refuses_instead_of_writing_unmeasured_rows(tmp_path, monkeypatch, world) -> None:
+def test_with_no_runner_the_harness_calls_the_real_arm_dispatch_not_a_second_one(tmp_path, monkeypatch, world) -> None:
+    """`--mode harness` with a plan IS `run_arms`: with no per-file runner it calls `arms.run_file` (22c's dispatch);
+    the old refusal (ArmDispatchMissing) is gone because the dispatch it waited for exists."""
     wave = ev.WAVES["dev_deterministic"]
     plan = ev.plan_wave(wave, wave_id="wv1", n_shards=1, markers=world)
     argv, out, sp = run_shard(tmp_path, wave, runner=None, plan=plan)
-    assert go(monkeypatch, argv, sp, None) == 4
-    assert "ArmDispatchMissing" in prov_of(out)["error"] and not (out / "rows.json").exists()
+    seen: list[str] = []
+
+    def real(name, entry, source, **kw):
+        seen.append(name)
+        return ra.arms_mod.ArmOutcome(row=conclusive_row(entry, name))
+
+    monkeypatch.setattr(ra.arms_mod, "run_file", real)
+    assert go(monkeypatch, argv, sp, None) == 0, prov_of(out).get("error")
+    assert len(seen) == 12 * 2 and len(json.loads((out / "rows.json").read_text())) == 24
 
 
 # ------------------------------------------------------------------ the held-out and Fusion 360 boundaries
@@ -282,7 +301,17 @@ def _gates(tmp_path):
     return markers, f"gcs/{BUCKET}"
 
 
+def _arm_flags(wave_name: str) -> list[str]:
+    """What an arms wave launch must carry in the merged launcher: the dispatchable arms of the wave, where its split
+    json is staged, the element size, and a secret iff an arm calls a model."""
+    names = [a for a in ev.WAVES[wave_name].arms if a in ev.DISPATCHABLE_ARMS]
+    return ["--arms", ",".join(names), "--split-uri", "gs://bkt/splits/s.json", "--h-mm", "0.5",
+            *(["--model-secret", "some-secret"] if any(ev.ARMS[a].uses_model for a in names) else [])]
+
+
 def _launch(tmp_path, *extra, gates=None):
+    if "--wave" in extra and extra[extra.index("--wave") + 1] in ev.WAVES:
+        extra = (*extra, *_arm_flags(extra[extra.index("--wave") + 1]))
     return lf.main(["--image", base.IMAGE, "--commit", base.HEAD, "--image-commit", base.HEAD, "--skip-preflight",
                     "--profile", "v4", "--max-run-hours", "8", *extra], gates=gates or _gates(tmp_path))
 
@@ -349,11 +378,13 @@ def test_v3_refuses_the_wave_flag(live, tmp_path) -> None:
                  "--wave", "heldout", "--dry-run"], gates=_gates(tmp_path))
 
 
-def test_the_startup_script_runs_harness_with_the_plan_only_for_an_arm_wave() -> None:
+def test_the_startup_script_hands_an_arm_wave_its_plan_arms_and_element_size_and_fails_closed_without_it() -> None:
     text = (Path(__file__).resolve().parents[3] / "devtools/validation/v3_eval/vm_startup.sh").read_text()
     assert 'PLAN_PROV="$(attr v4-plan-provenance)"' in text
-    assert '[ -n "${PLAN_PROV}" ] && { MODE=harness; planarg=(--plan-provenance "${PLAN_PROV}"); }' in text
-    assert "MODE=reprobe" in text and '--mode "${MODE}"' in text
+    # ONE dispatch: an arms wave is `--mode arms` with the plan, the arms and --h-mm, never a second harness mode
+    assert 'mode=(--mode arms --wave "${WAVE}" --arms "${ARMS}" --split "${SPLIT}" --split-file /eval/split.json --h-mm "${HMM}")' in text
+    assert 'planarg=(--plan-provenance "${PLAN_PROV}")' in text and "MODE=harness" not in text
+    assert 'case "${PLAN_PROV}" in' in text and "refusing an arms wave whose slot was not claimed" in text
 
 
 def test_a_dry_run_of_a_second_heldout_wave_is_refused_without_claiming(live, tmp_path, capsys) -> None:
@@ -361,4 +392,6 @@ def test_a_dry_run_of_a_second_heldout_wave_is_refused_without_claiming(live, tm
     assert gates[0].create("slot/held_out/1", "ho-one")  # somebody already ran the held-out wave
     assert _launch(tmp_path, "--wave", "heldout", "--wave-id", "ho-two", "--dry-run", gates=gates) == 1
     assert gates[0].get("slot/held_out/1") == "ho-one" and live.creates() == []
-    assert "every held_out slot is taken" in capsys.readouterr().err
+    # ONE slot ledger: the launcher's own count reads the very key plan_wave and the report read, so it refuses first
+    seen = capsys.readouterr()
+    assert "held-out wave was already launched as 'ho-one'" in seen.out + seen.err
