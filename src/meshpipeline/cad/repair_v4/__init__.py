@@ -51,16 +51,37 @@ class V4Result:
     def passthrough(self) -> bool:
         return not self.delivered
 
+    @property
+    def file_unmeasured(self) -> bool:
+        """True when the engine never measured this file (the SHARED rule, `measurement.file_unmeasured`, applied to
+        `verdict_summary["search"]`). A summary with no search block (a deadline passthrough) was not measured."""
+        from meshpipeline.cad.repair_v4.measurement import file_unmeasured
+
+        search = self.verdict_summary.get("search")
+        if not search:
+            return True
+        return file_unmeasured(
+            reason=search.get("reason"), infrastructure_failed=search.get("infrastructure_failed"),
+            inconclusive_candidates=search.get("inconclusive_candidates"),
+            verdict_candidates=search.get("verdict_candidates"), out_clean=search.get("clean"))
+
 
 class SearchUnavailable(RuntimeError):
     """The v4 search cannot run here (no worker pool, unreadable by our STEP reader, or a checker that could not run). OUR limitation, never a statement
     about the customer's file."""
 
 
-#: Mesh size the judge clusters sites with. UNOWNED DECISION: nothing in the tree derives it from a part.
-H_MM = 1.0
-#: The generator arm. `search_ai` needs a ledger, a route and a model key the v4 VM does not have (22c).
+#: The arm. The four the evaluation compares, all selectable here: `input_only` (the do-nothing control: the
+#: input's verdict and a passthrough, nothing touched), `staged` (the deterministic staged healers alone),
+#: `search_det` and `search_ai` (best-first search without / with the model proposer).
 ARM = "search_det"
+#: Arms that run no search: they ask the judge for verdicts and hand back what the staged healers (or nothing) made.
+VERDICT_ONLY_ARMS = ("input_only", "staged")
+#: The `search_ai` route on the engine path: a `provider:model`, or None for the strongest of
+#: `contracts.model_inference.REPAIR_V4_PROPOSE_ROUTES`. The engine does NOT probe per file (a probe is a model call,
+#: cents each, on every one of the wave's files); a wave probes once per shard (`model_route.probe_route_chain`)
+#: and pins the winner here, and the price check inside the router refuses an unpriced route before dialling.
+ROUTE: str | None = None
 #: Time kept back out of the deadline for the STEP write and the teardown.
 WRITE_RESERVE_S = 30.0
 READ_TIMEOUT_S = 120.0
@@ -79,8 +100,59 @@ def _summarise(verdict: Any) -> dict:
     }
 
 
+def _search_summary(result: Any) -> dict:
+    """The search's outcome as plain data: everything `measurement.file_unmeasured` reads, so the one shared rule
+    applies to a `V4Result` as it does to an evaluation row (`V4Result.file_unmeasured`)."""
+    return {"reason": getattr(result, "reason", None), "changed": bool(result.changed),
+            "clean": bool(result.clean),
+            "verdict_candidates": int(getattr(result, "verdict_candidates", 0)),
+            "inconclusive_candidates": int(getattr(result, "inconclusive_candidates", 0)),
+            "infrastructure_failed": bool(getattr(result, "infrastructure_failed", False))}
+
+
 def _workers() -> int:
     return max(1, min(4, os.cpu_count() or 1))
+
+
+def _route() -> str:
+    from meshpipeline.contracts.model_inference import REPAIR_V4_PROPOSE_ROUTES
+
+    return ROUTE or REPAIR_V4_PROPOSE_ROUTES[0]
+
+
+def _ai_kwargs(source: str, budget: Budget) -> dict[str, Any]:
+    """What `ai_generators` needs on the engine path: the route, one in-memory ledger capped at this file's model
+    budget (every request is admitted against it before it is sent, so the file's ceiling holds per call whatever
+    `Budget.model_usd` advises), the turn cap, and the file's identity (the STEP's sha256)."""
+    import hashlib
+
+    from meshpipeline.cad.repair_v4.model_ledger import WaveLedger
+
+    digest = hashlib.sha256(Path(source).read_bytes()).hexdigest()
+    return {"route": _route(), "ledger": WaveLedger.for_file(budget.model_usd), "max_turns": budget.model_calls,
+            "usd_ceiling": budget.model_usd, "file_id": digest, "job_id": f"repair_v4:{digest[:12]}"}
+
+
+def _verdict_only(pool: WorkerPool, ws: Workspace, source: str, *, input_verdict: Any, judge: Any) -> SearchResult:
+    """The `input_only` and `staged` arms as a `SearchResult`, so one delivery gate and one summary serve all four.
+    `input_only` changes nothing; `staged` runs the staged healers and is judged once more. No candidate goes
+    through a search, so there are none to count."""
+    from meshpipeline.cad.repair_v4.search import SearchResult
+    from meshpipeline.cad.repair_v4.stages import run_staged
+    from meshpipeline.cad.repair_v4.trace import Trace
+    from meshpipeline.cad.repair_v4.verdict.assemble import InconclusiveVerdict
+
+    trace = Trace()
+    trace.record("start")
+    if ARM == "input_only":
+        return SearchResult(best=ws, best_verdict=input_verdict, clean=bool(input_verdict.clean), trace=trace,
+                            changed=False, reason="input_only")
+    staged = run_staged(pool, ws)
+    verdict = judge.full(pool, staged.ws, source)
+    if getattr(verdict, "inconclusive", False):
+        raise InconclusiveVerdict("the staged output could not be measured")
+    return SearchResult(best=staged.ws, best_verdict=verdict, clean=bool(verdict.clean), trace=trace,
+                        changed=staged.ws.brep_path != ws.brep_path, reason="staged")
 
 
 def _find_best(pool: WorkerPool, ws: Workspace, source: str, *, budget: Budget, deadline_s: float,
@@ -92,17 +164,20 @@ def _find_best(pool: WorkerPool, ws: Workspace, source: str, *, budget: Budget, 
     from meshpipeline.cad.repair_v4.stages import run_staged
 
     staged = run_staged(pool, ws)
-    generators, _proposer = arm_generators(ARM)
+    ai = _ai_kwargs(source, budget) if ARM == "search_ai" else {}
+    generators, _proposer = arm_generators(ARM, **ai)
     remaining = deadline_s - time.monotonic() - WRITE_RESERVE_S
     capped = SearchBudget(wall_s=max(0.0, min(budget.wall_s, remaining)), ops=budget.ops,
                           model_calls=budget.model_calls, model_usd=budget.model_usd)
     return search(pool, staged.ws, source, generators, capped, workers=_workers(), judge=judge)
 
 
-def _make_judge() -> Any:
-    from meshpipeline.cad.repair_v4.search import default_judge
+def _make_judge(pool: WorkerPool, ws: Workspace) -> Any:
+    """The judge, sized from the part: `h_mm` is the production FEA mesh's base size for THIS part's diagonal
+    (`search.default_judge_for`), not a constant."""
+    from meshpipeline.cad.repair_v4.search import default_judge_for
 
-    return default_judge(h_mm=H_MM)
+    return default_judge_for(pool, ws)
 
 
 def _run_search(source: str, dest: str, *, budget: Budget, deadline_s: float) -> V4Result:
@@ -122,6 +197,11 @@ def _run_search(source: str, dest: str, *, budget: Budget, deadline_s: float) ->
         shutil.copyfile(source, dest)
         return V4Result(trace_path=trace, verdict_summary=summary, delivered=False)
 
+    if ARM not in VERDICT_ONLY_ARMS:
+        from meshpipeline.cad.repair_v4.search import ARMS
+
+        if ARM not in ARMS:
+            raise ValueError(f"unknown search arm {ARM!r}; the arms are {VERDICT_ONLY_ARMS + tuple(ARMS)}")
     if deadline_s - time.monotonic() <= 0:
         return passthrough({"status": "not_measured", "reason": "deadline_expired"})
     try:
@@ -144,11 +224,14 @@ def _run_search(source: str, dest: str, *, budget: Budget, deadline_s: float) ->
             except RuntimeError as exc:
                 raise SearchUnavailable(f"the v4 engine could not index the part: {exc}") from exc
             try:
-                judge = _make_judge()
+                judge = _make_judge(pool, start)
                 input_verdict = judge.full(pool, start, source)
                 if getattr(input_verdict, "inconclusive", False):
                     raise InconclusiveVerdict("the input could not be measured")
-                result = _find_best(pool, start, source, budget=budget, deadline_s=deadline_s, judge=judge)
+                if ARM in VERDICT_ONLY_ARMS:
+                    result = _verdict_only(pool, start, source, input_verdict=input_verdict, judge=judge)
+                else:
+                    result = _find_best(pool, start, source, budget=budget, deadline_s=deadline_s, judge=judge)
                 if getattr(result, "infrastructure_failed", False):
                     raise InconclusiveVerdict("the search measured nothing (checker infrastructure)")
             except infra as exc:
@@ -163,8 +246,7 @@ def _run_search(source: str, dest: str, *, budget: Budget, deadline_s: float) ->
             summary: dict = {
                 "status": "clean" if input_verdict.clean else "not_clean",
                 "input": _summarise(input_verdict),
-                "search": {"reason": getattr(result, "reason", None), "changed": bool(result.changed),
-                           "clean": bool(result.clean)},
+                "search": _search_summary(result),
             }
             best = deliverable(result, input_verdict)
             if best is None:
