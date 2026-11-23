@@ -820,3 +820,16 @@ def test_face_delete_large_is_not_a_default_draw_but_is_an_admitted_kind() -> No
     assert inject.EXPECTED_OUTCOME == {"face_delete_large": "correctly_declined"}
     assert "face_delete_large" not in rp.not_default_kinds()
     assert rp.injected_kind("part.face_delete_large.3.step") == "face_delete_large"   # not mistaken for face_delete
+
+
+@pytest.mark.parametrize("status", ["quarantined", "declined", "infeasible"])
+def test_an_entry_of_any_source_carrying_a_status_the_gate_does_not_admit_is_refused(status) -> None:
+    """The own-status branch, reached with NO kind to catch it first: a status that is neither `structural` nor
+    `declined_stratum` is refused whatever the entry's source or name."""
+    from types import SimpleNamespace
+
+    item = SimpleNamespace(name="plain.step", source="abc_pass", group=None, label={"status": status})
+    with pytest.raises(rp.QuarantinedKind, match="own kind status"):
+        rp.check_not_quarantined([item])
+    rp.check_not_quarantined([SimpleNamespace(name="plain.step", source="abc_pass", group=None,
+                                              label={"status": "declined_stratum"})])
