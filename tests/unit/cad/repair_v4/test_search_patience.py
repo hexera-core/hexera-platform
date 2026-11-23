@@ -121,3 +121,26 @@ def test_scaled_patience_never_exceeds_what_the_op_budget_allows() -> None:
             start=make_ws(30), budget=Budget(wall_s=1000, ops=6, model_calls=0, model_usd=0.0))
     assert next(e for e in r.trace.events if e["kind"] == "patience")["patience"] == 502
     assert r.reason == "ops" and _stop(r)["spent"]["ops"] == 6
+
+
+def _dead_ends_then_the_way(siblings: int) -> Scripted:
+    """The start proposes `siblings` tied states, the last of which is the way out. Every other one only proposes a
+    strictly worse state, so expanding it is a flat round. This is the shape patience exists for even WITH the tie rule:
+    the part presents many holes, and the search must be willing to try the dead ends first."""
+    def script(s: Any) -> list:
+        if s.depth == 0:
+            return [cand(_q(s.ws), to="GOOD" if i == siblings - 1 else f"X{i}") for i in range(siblings)]
+        return [cand(CLEAN_Q)] if "GOOD" in s.ws.ids else [cand(max(0, _q(s.ws) - 1))]
+    return Scripted(script)
+
+
+def test_patience_scales_so_dead_ends_before_the_way_out_do_not_end_the_search() -> None:
+    r = run([_dead_ends_then_the_way(5)], World(target=CLEAN_Q, sites_fn=_open_site(5)), start=make_ws(30))
+    assert r.clean and r.reason == "clean", (r.reason, _stop(r)["spent"])
+
+
+def test_the_same_dead_ends_end_the_search_on_a_part_that_presents_few_holes() -> None:
+    """The control: the identical search on a 1-hole part has patience 3, which four dead ends exceed. This is what
+    makes the test above able to fail: it is red under a constant patience."""
+    r = run([_dead_ends_then_the_way(5)], World(target=CLEAN_Q, sites_fn=_open_site(1)), start=make_ws(30))
+    assert r.reason == "patience" and not r.clean, (r.reason, _stop(r)["spent"])
