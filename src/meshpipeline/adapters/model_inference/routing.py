@@ -320,9 +320,15 @@ async def _attempt_target(route, target, invoke, classify, budget: _Budget):
         # declared.
         attempt_timeout = budget.cap(route.timeout_s)
         if budget.expired():
+            # `attempt` ATTEMPTS WERE MADE, and when the budget died during admission that is
+            # zero. This count is what RouteExhausted.attempts carries into
+            # ProviderAttemptInfo, the wave ledger and the report, so rounding it up to 1
+            # would attribute a call no provider ever received - the same fiction as an
+            # unreached model's row written as conclusive. The admission path above already
+            # reports attempts=0 for the same condition; these two must agree.
             return (None, FailureCategory.TIMEOUT,
                     f"route deadline {route.total_deadline_s}s exhausted after {attempt} attempt(s)",
-                    attempt or 1, usage, time.monotonic() - t0, started, cause)
+                    attempt, usage, time.monotonic() - t0, started, cause)
         try:
             result, usage = await asyncio.wait_for(invoke(target), timeout=attempt_timeout)
             return result, None, "", attempt + 1, usage, time.monotonic() - t0, started, None

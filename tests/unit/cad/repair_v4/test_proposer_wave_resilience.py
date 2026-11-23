@@ -347,14 +347,23 @@ def test_one_round_cannot_outlast_half_a_files_wall_clock() -> None:
 
 
 def test_a_hung_provider_ends_the_round_at_the_round_deadline(net: Any, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Every attempt hangs; the round still returns a timeout marker, and only as many attempts as fit."""
+    """Every attempt hangs; the round still returns a timeout marker, only as many attempts as fit, and
+    the attempt count the ledger and the report are shown is the number that REACHED the provider."""
     import asyncio
 
     from meshpipeline.adapters.model_inference import router
 
+    use, _ = net
+    # Warm the call path before shrinking the timeouts. The first propose call in a process spends
+    # ~0.6-1.0 s inside `invoke` on imports, pricing and client construction BEFORE the request reaches
+    # the wire; against the 50 ms attempt timeout below that alone ends the round with the transport
+    # never asked, which measures the shrunken timeout rather than the hang. Production's timeout is
+    # 120 s against the same ~1 s, so nothing real rides on this (see task-56 report).
+    use(Transport(["ok"]))
+    assert anyio.run(one_round).reply.ok
+
     monkeypatch.setattr(router, "PROPOSE_ATTEMPT_TIMEOUT_S", 0.05)
     monkeypatch.setattr(router, "PROPOSE_ROUND_DEADLINE_S", 0.2)
-    use, _ = net
 
     class Hang(Transport):
         async def handle(self, request: httpx.Request) -> httpx.Response:
@@ -367,3 +376,6 @@ def test_a_hung_provider_ends_the_round_at_the_round_deadline(net: Any, monkeypa
     reply = anyio.run(one_round)
     assert reply.reply.failure_marker == "repair_v4_propose:timeout"
     assert time.monotonic() - t0 < 2.0 and 1 <= t.requests <= 2
+    # No fabricated attempts: every attempt the ledger will charge to this round is one a provider
+    # really received. A count above t.requests would attribute a call that never left the process.
+    assert reply.reply.provider.attempts == t.requests
