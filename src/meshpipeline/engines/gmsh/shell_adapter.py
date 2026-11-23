@@ -1852,6 +1852,7 @@ def respline(brep: Path, owners: list[str], face: int, out: Path, *, kin: bool =
     from OCP.BRepTools import BRepTools
     from OCP.GeomAPI import GeomAPI_ProjectPointOnSurf
     from OCP.gp import gp_Pnt
+    from OCP.ShapeFix import ShapeFix_Face
     from OCP.TopoDS import TopoDS_Shape
 
     from meshpipeline.cad import midsurface as ms
@@ -1880,10 +1881,53 @@ def respline(brep: Path, owners: list[str], face: int, out: Path, *, kin: bool =
     def convert(k, f):
         if k not in picked:
             return None
+        if REMAKE_FIXED:
+            # SHMESH-11i: its wires fixed first (a seam-cut sphere half's own wire read 23,552 mm2 as a B-spline
+            # instead of its 20,735)
+            fix = ShapeFix_Face(f)
+            fix.Perform()
+            f = fix.Face()
         nc = BRepBuilderAPI_NurbsConvert(f, True)
         return ms._faces(nc.Shape())
 
-    return _rebuild(brep, owners, out, convert), len(picked)
+    new_owners = _rebuild(brep, owners, out, convert)
+    if REMAKE_FIXED:
+        # SHMESH-11i: a re-made surface that lost area (a face fused back with a broken trim: gmsh meshes nothing
+        # there and says nothing) is not used
+        before, after = _surface_area(brep), _surface_area(out)
+        if abs(after - before) > REMAKE_AREA_TOL * before:
+            raise _NotRemade(f"re-made as a B-spline, the surface read {after:.0f} of its {before:.0f} "
+                             "(model units squared)")
+    return new_owners, len(picked)
+
+
+#: SHMESH-11i, A FACE IS RE-MADE FROM ITS FIXED WIRES, AND A RE-MAKE THAT LOSES AREA IS NOT USED: SHMESH-11 re-made a
+#: face that stopped gmsh as a B-spline straight from its wires; on a stamped dome (s21/s27) the seam-cut sphere half
+#: (an invalid face: its wire not closed on the surface) came out with the wrong trim and, fused back, both halves read
+#: negative area - gmsh meshed neither and said nothing (41,470 of 69,794 mm2 delivered bare). Now the face's wires are
+#: fixed first (ShapeFix_Face), and a re-made surface whose face areas sum other than the surface's before (past
+#: REMAKE_AREA_TOL of it) raises _NotRemade: the face is left out and said (SHMESH-72).
+REMAKE_FIXED = True
+REMAKE_AREA_TOL = 0.01
+
+
+class _NotRemade(ValueError):
+    """SHMESH-11i: the face could not be re-made as a B-spline without losing the surface's area."""
+
+
+def _surface_area(brep: Path) -> float:
+    """The sewn faces' areas summed, each as it reads (a face whose trim came out turned inside out reads its small
+    remainder, not its surface: s21's dome halves 248 and 2,562 of 20,735 each), model units squared."""
+    from OCP.BRep import BRep_Builder
+    from OCP.BRepTools import BRepTools
+    from OCP.TopoDS import TopoDS_Shape
+
+    from meshpipeline.cad import midsurface as ms
+
+    shape = TopoDS_Shape()
+    if not BRepTools.Read_s(shape, str(brep), BRep_Builder()):
+        raise ValueError("the mid-surface could not be read")
+    return sum(ms._area(f) for f in ms._faces(shape))
 
 
 def _surface_type(face):
@@ -4198,7 +4242,20 @@ def _mesh_path_made(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0,
                     # (SHMESH-72: the parent watches the fuse back)
                     marker.write_text(json.dumps({"since": time.time(), "centre": list(map(float, key_p[0])),
                                                   "area": float(key_p[1])}))
-                owners, made = respline(Path(brep), owners, p.face, nxt, kin=p.kin)
+                try:
+                    owners, made = respline(Path(brep), owners, p.face, nxt, kin=p.kin)
+                except _NotRemade as nr:
+                    if marker is not None:
+                        marker.unlink(missing_ok=True)
+                    if key_p is None or not REMADE_ONCE:
+                        raise ValueError(f"gmsh stopped on a face and it could not be re-made: {nr}") from p
+                    # SHMESH-11i: a face that cannot be re-made without losing area is left out (said, SHMESH-72)
+                    if len(_FACE_FATE["out"]) + len(_FACE_FATE["out_path"]) >= FACE_OUT_MAX:
+                        raise ValueError(f"gmsh stopped on {len(_FACE_FATE['out']) + len(_FACE_FATE['out_path']) + 1} "
+                                         "faces; the shell mesh is given up (SHMESH-72)") from p
+                    _FACE_FATE["out_path"].append(key_p)
+                    logger.info("shell mesh: a face left out (it could not be re-made; SHMESH-11i)")
+                    continue
                 if marker is not None:
                     marker.unlink(missing_ok=True)
                 if REMADE_ONCE:
