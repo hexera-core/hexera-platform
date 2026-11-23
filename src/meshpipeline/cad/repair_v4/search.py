@@ -114,6 +114,7 @@ from meshpipeline.cad.repair_v4.stages import (
 )
 from meshpipeline.cad.repair_v4.trace import Trace
 from meshpipeline.cad.repair_v4.types import Site, StableId
+from meshpipeline.cad.repair_v4.units import UNBOUNDED_DIAGONAL_MM
 from meshpipeline.cad.repair_v4.verdict.assemble import (
     InconclusiveVerdict,
     Verdict,
@@ -402,6 +403,16 @@ class DetGenerator:
                 return None
         return self._diag_cache[ws.brep_path]
 
+    @staticmethod
+    def _why_no_size(diag: float | None) -> str:
+        """Why no size can be made from `diag`: unknown, unbounded (the real reason for a 1e100 mm part) or no window."""
+        if diag is None:
+            return "the part's diagonal is unknown"
+        if diag > UNBOUNDED_DIAGONAL_MM:
+            return (f"the input is unbounded (diagonal {diag:.3g} mm exceeds {UNBOUNDED_DIAGONAL_MM:.0e} mm, "
+                    "layer 1 reports unbounded_geometry): no diagonal-relative op applies")
+        return f"no rung fits the kernel window on a {diag:.6g} mm part"
+
     def propose(self, state: SearchState, k: int) -> list[Candidate]:
         out: list[Candidate] = []
         sites = self.unfixable.filter(state.sites, state.lineage) if self.unfixable is not None else state.sites
@@ -462,9 +473,10 @@ class DetGenerator:
                 # made a solid. make_volume declines when the faces enclose nothing.
                 rows.append(("make_volume", faces, {}, "no solid exists: build one from the closed shell"))
         if kind == "sliver":
-            if diag is None:
-                self._note(f"site {site.id}: remove_small not proposed: the part's diagonal is unknown")
-            for width in scaled_sliver_widths(diag) if diag is not None else ():
+            sized = diag is not None and diag <= UNBOUNDED_DIAGONAL_MM
+            if not sized:
+                self._note(f"site {site.id}: remove_small not proposed: {self._why_no_size(diag)}")
+            for width in scaled_sliver_widths(diag) if diag is not None and sized else ():
                 rows.append(
                     (
                         "remove_small",
@@ -475,7 +487,7 @@ class DetGenerator:
                 )
             rows.append(("unify_same_domain", [], {"scope": "all", "keep": []}, "merge same-domain faces"))
         if kind == "open":
-            ladder = scaled_sew_ladder(diag) if diag is not None else []
+            ladder = scaled_sew_ladder(diag) if diag is not None and diag <= UNBOUNDED_DIAGONAL_MM else []
             if ladder:
                 rows.append(
                     (
@@ -486,10 +498,7 @@ class DetGenerator:
                     )
                 )
             else:
-                self._note(
-                    f"site {site.id}: sew not proposed: "
-                    + ("the part's diagonal is unknown" if diag is None else f"no rung fits the kernel window on a {diag:.6g} mm part")
-                )
+                self._note(f"site {site.id}: sew not proposed: {self._why_no_size(diag)}")
             rows.extend(self._fill_rows(site, diag))
             rows.append(("make_volume", faces, {}, "build a solid from the loose faces"))
             rows.append(("orient_and_close", solids, {}, "orient and close the shell"))

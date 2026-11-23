@@ -58,6 +58,7 @@ from meshpipeline.cad.repair_v4 import ops
 from meshpipeline.cad.repair_v4.ops import OpDeclined, OpFailed
 from meshpipeline.cad.repair_v4.ops.shells import scaled_sew_ladder, scaled_sliver_widths
 from meshpipeline.cad.repair_v4.types import StableId
+from meshpipeline.cad.repair_v4.units import UNBOUNDED_DIAGONAL_MM
 from meshpipeline.cad.repair_v4.verdict.assemble import (
     Declared,
     InconclusiveVerdict,
@@ -107,12 +108,18 @@ class _Steps:
         self.notes: list[str] = []
 
     def diagonal(self) -> float | None:
-        """This part's diagonal (mm), or None when the kernel cannot measure it (noted, never invented)."""
+        """This part's diagonal (mm), or None when the kernel cannot measure it or the part is unbounded (the reason
+        is noted either way, a size is never invented)."""
         try:
-            return diagonal_mm(self.pool, self.ws)
+            diag = diagonal_mm(self.pool, self.ws)
         except CheckerUnavailable as why:
             self.notes.append(f"no diagonal: {why}")
             return None
+        if diag > UNBOUNDED_DIAGONAL_MM:  # the diagonal is right; the input is the problem
+            self.notes.append(f"unbounded input: diagonal {diag:.3g} mm exceeds {UNBOUNDED_DIAGONAL_MM:.0e} mm "
+                              "(layer 1 reports unbounded_geometry): no diagonal-relative op applies")
+            return None
+        return diag
 
     def ids(self, prefix: str) -> list[StableId]:
         return sorted((s for s in self.ws.ids if s[0] == prefix), key=lambda s: int(s[1:]))
@@ -196,7 +203,7 @@ def _shells(s: _Steps, p: dict) -> None:
             widths = scaled_sliver_widths(diag) if diag is not None else ()
             width = widths[-1] if widths else None
         if width is None:
-            s.notes.append("remove_small: declined: the part's diagonal is unknown, so no width can be sized")
+            s.notes.append("remove_small: declined: no width can be sized (see the diagonal note above)")
         else:
             s.apply("remove_small", list(p["small"]), {"max_width_mm": width})
     if p["fill_edges"]:
@@ -210,7 +217,7 @@ def _shells(s: _Steps, p: dict) -> None:
         diag = s.diagonal()
         ladder = scaled_sew_ladder(diag) if diag is not None else []
         if not ladder:
-            s.notes.append("sew: declined: no rung fits the kernel window on this part (or its diagonal is unknown)")
+            s.notes.append("sew: declined: no rung can be sized for this part (no rung fits the kernel window, or see the diagonal note above)")
             return
     if s.apply("sew", [], {"tol_ladder": list(ladder)}):
         s.apply("make_volume", [], {}, required=True)

@@ -345,3 +345,24 @@ def test_a_zero_baseline_still_flags_any_growth_and_is_json_safe() -> None:
     assert _changed(102.5, 100.0) is True and _changed(101.9, 100.0) is False
     assert _ratio(100.0, 0.0) is None and _ratio(0.0, 0.0) is None  # None, not 1.0 and not inf
     assert _ratio(100.0, 100.0) == 1.0  # a genuine no-change stays distinguishable
+
+
+def test_an_unbounded_input_is_measured_out_of_scope_and_never_meshed(monkeypatch) -> None:
+    """Not clean, not inconclusive, not a panel failure: a verdict about the file that no mesher was asked for."""
+    from meshpipeline.cad.repair_v4.verdict.valid import Finding
+
+    unbounded = ValidReport(False, [Finding("unbounded_geometry", [], {"diagonal_mm": 3.46e100})], [], "mm", 1, False)
+    monkeypatch.setattr(assemble, "check_valid", lambda pool, step, *, original_units: unbounded)
+    monkeypatch.setattr(assemble, "mesher_versions", lambda pool: {"gmsh": "4.15.2"})
+    member = FakeMember("a")
+    for tier in (verdict, cheap_verdict):
+        v = tier(None, "s.step", "o.step", members=[member], run_panel=run_panel)  # type: ignore[arg-type]
+        assert v.out_of_scope and not v.clean and not v.inconclusive
+        assert v.counts_for_scoreboard  # measured: the unmeasured (inconclusive) rate does not move
+        assert v.panel == [] and v.faithful is None
+    assert member.runs == 0  # no mesher saw it
+
+
+def test_only_an_unbounded_report_is_out_of_scope() -> None:
+    assert not _v(True, _passes(1), _faith()).out_of_scope
+    assert not _v(False).out_of_scope

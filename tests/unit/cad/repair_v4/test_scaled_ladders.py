@@ -203,3 +203,34 @@ def test_a_no_solids_site_proposes_make_volume_and_other_invalid_sites_do_not() 
     gen = DetGenerator(diagonal=lambda ws: 127.0)
     assert "make_volume" in {c.op for c in gen.propose(_state_of(invalid(["no_solids"])), 50)}
     assert "make_volume" not in {c.op for c in gen.propose(_state_of(invalid(["brep_invalid"])), 50)}
+
+
+def _unbounded_notes(kind: str) -> list[str]:
+    gen = DetGenerator(diagonal=lambda ws: 3.46e100)
+    assert not {c.op for c in gen.propose(_state(kind), 50)} & {"sew", "remove_small"}
+    return gen.notes
+
+
+def test_an_unbounded_part_is_noted_as_unbounded_not_as_an_empty_window() -> None:
+    for kind in ("open", "sliver"):
+        notes = _unbounded_notes(kind)
+        assert any("unbounded" in n and "unbounded_geometry" in n for n in notes), notes
+        assert not any("kernel window" in n or "diagonal is unknown" in n for n in notes), notes
+
+
+def test_a_large_but_bounded_part_keeps_its_window_note() -> None:
+    gen = DetGenerator(diagonal=lambda ws: 5e8)  # 500 km: far over 100 m, still under the unbounded limit
+    gen.propose(_state("open"), 50)
+    assert any("kernel window" in n for n in gen.notes) and not any("unbounded" in n for n in gen.notes)
+
+
+def test_the_staged_shells_note_an_unbounded_part_as_unbounded(monkeypatch: pytest.MonkeyPatch) -> None:
+    from meshpipeline.cad.repair_v4 import stages
+
+    steps = _Steps(_Pool(3.46e100), Workspace(brep_path="/fake/x.brep", ids={"F1": "fp"}, labels={}, history=[],
+                                              original="/fake/o.brep"), 1.0)
+    applied: list[str] = []
+    monkeypatch.setattr(steps, "apply", lambda op, targets, params, **kw: applied.append(op) or False)
+    _shells(steps, {**stages.DEFAULTS["shells"], "small": ["F1"]})
+    assert "sew" not in applied and "remove_small" not in applied
+    assert sum("unbounded input" in n and "unbounded_geometry" in n for n in steps.notes) == 2, steps.notes

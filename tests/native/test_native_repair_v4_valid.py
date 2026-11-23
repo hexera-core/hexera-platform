@@ -560,3 +560,57 @@ def test_yard_file_is_not_a_round_trip_failure(pool: WorkerPool, tmp_path: Path)
     assert report.units == "yard"
     assert report.hard == [], [(f.code, f.detail) for f in report.hard]
     assert report.round_trip_ok is True
+
+
+# --- unbounded input: layer 1 says "outside what the definition can judge" before anything meshes it ---------
+
+
+def _with_infinite_line(solid):
+    """`solid` plus an edge on an unbounded Geom_Line: it survives STEP and gives the +-1e100 box the corpus showed."""
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge
+    from OCP.gp import gp_Lin
+
+    return _compound(solid, BRepBuilderAPI_MakeEdge(gp_Lin(gp_Pnt(0, 0, 0), gp_Dir(1, 1, 1))).Edge())
+
+
+def test_a_solid_carrying_an_infinite_curve_is_unbounded_not_valid(pool: WorkerPool, tmp_path: Path) -> None:
+    step = _write_plain(_with_infinite_line(_box()), tmp_path / "unbounded.step")
+    report = check_valid(pool, step, original_units=None)
+    assert report.unbounded and report.ok is False
+    assert _codes(report.hard) == {"unbounded_geometry"}  # and nothing else: the rest was not run
+    (finding,) = report.hard
+    assert finding.detail["diagonal_mm"] > 1e99 and finding.detail["limit_mm"] == 1e9
+    assert report.solids == 1 and report.round_trip_ok is False
+
+
+def test_an_infinite_half_space_is_unbounded(pool: WorkerPool, tmp_path: Path) -> None:
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeHalfSpace
+
+    face = BRepBuilderAPI_MakeFace(gp_Pln(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1))).Face()
+    half = BRepPrimAPI_MakeHalfSpace(face, gp_Pnt(0, 0, -1)).Solid()
+    found = _kernel_check(pool, half, tmp_path)
+    assert [f["code"] for f in found["hard"]] == ["unbounded_geometry"]
+    assert found["hard"][0]["detail"]["open_sides"]  # OCCT marks the box open on the infinite sides
+
+
+@pytest.mark.parametrize(
+    "dims", [(200_000.0, 200_000.0, 200_000.0), (100_000_000.0, 3_000.0, 3_000.0), (4.4, 1.0, 1.0)],
+    ids=["200m-cube", "100km-beam", "corpus-minimum-4mm"],
+)
+def test_a_legitimate_large_or_small_part_is_not_unbounded(pool: WorkerPool, tmp_path: Path, dims) -> None:
+    step = _write_plain(BRepPrimAPI_MakeBox(gp_Pnt(0, 0, 0), *dims).Shape(), tmp_path / "part.step")
+    report = check_valid(pool, step, original_units=None)
+    assert not report.unbounded
+    assert "unbounded_geometry" not in _codes(report.hard)
+
+
+def test_the_verdict_on_an_unbounded_file_is_out_of_scope_and_nothing_meshes_it(pool: WorkerPool, tmp_path: Path) -> None:
+    from meshpipeline.cad.repair_v4.verdict import verdict
+
+    def panel_must_not_run(*args, **kwargs):
+        raise AssertionError("an unbounded input was handed to the panel")
+
+    step = _write_plain(_with_infinite_line(_box()), tmp_path / "unbounded.step")
+    v = verdict(pool, step, step, members=[object()], run_panel=panel_must_not_run)
+    assert v.out_of_scope and not v.clean and not v.inconclusive and v.counts_for_scoreboard
+    assert v.panel == [] and v.faithful is None

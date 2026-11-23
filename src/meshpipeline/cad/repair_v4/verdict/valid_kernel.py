@@ -12,6 +12,7 @@ the failing set.
 from __future__ import annotations
 
 from meshpipeline.cad.repair_v4.kernel_calls import register
+from meshpipeline.cad.repair_v4.units import UNBOUNDED_DIAGONAL_MM
 
 OVERLAP_FRACTION = 1e-9  # Common volume above this fraction of the smaller body is overlap
 OVERLAP_THICKNESS_FRACTION = 1e-6  # of the bounding-box diagonal; thinner is contact
@@ -231,6 +232,33 @@ def _soft_findings(shape) -> list[dict]:
     return soft
 
 
+def _unbounded_finding(shape) -> dict | None:
+    """`unbounded_geometry` when the shape's bounding box is open or its diagonal is beyond `UNBOUNDED_DIAGONAL_MM`.
+
+    This is decided before anything else is run on the shape: BRepCheck, the Booleans and (later) a mesher all
+    take the infinite extent as input, and none of them can say anything useful about it."""
+    from OCP.Bnd import Bnd_Box
+    from OCP.BRepBndLib import BRepBndLib
+
+    box = Bnd_Box()
+    BRepBndLib.Add_s(shape, box)
+    if box.IsVoid():
+        return None
+    xmin, ymin, zmin, xmax, ymax, zmax = box.Get()
+    diag = ((xmax - xmin) ** 2 + (ymax - ymin) ** 2 + (zmax - zmin) ** 2) ** 0.5
+    open_sides = [
+        name
+        for name, is_open in (
+            ("xmin", box.IsOpenXmin()), ("xmax", box.IsOpenXmax()), ("ymin", box.IsOpenYmin()),
+            ("ymax", box.IsOpenYmax()), ("zmin", box.IsOpenZmin()), ("zmax", box.IsOpenZmax()),
+        )
+        if is_open
+    ]  # fmt: skip
+    if diag == diag and diag <= UNBOUNDED_DIAGONAL_MM and not open_sides:  # `diag == diag`: False for NaN
+        return None
+    return _finding("unbounded_geometry", [], diagonal_mm=diag, limit_mm=UNBOUNDED_DIAGONAL_MM, open_sides=open_sides)
+
+
 def check_shape(brep_path: str) -> dict:
     """Run every layer 1 rule that needs the kernel on the BREP at `brep_path`."""
     from OCP.BRep import BRep_Builder
@@ -243,6 +271,9 @@ def check_shape(brep_path: str) -> dict:
         raise ValueError(f"could not read BREP {brep_path}")
 
     solids = _children(shape, TopAbs_SOLID)
+    unbounded = _unbounded_finding(shape)
+    if unbounded is not None:  # the input is outside what the definition can judge: say so and stop
+        return {"solids": len(solids), "hard": [unbounded], "soft": []}
     shells = _free_shells(shape)
     hard: list[dict] = []
     if not solids:
