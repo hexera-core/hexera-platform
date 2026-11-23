@@ -536,6 +536,12 @@ def _describe(cause: object, facts: Mapping | None = None, *,
                     "cells, or drop that opening.")
         patches = [str(p) for p in (f.get("patches") or [])]
         detail = clean_reason(f.get("detail"))
+        if detail and f.get("fidelity") is not None and not patches and not f.get("wrong_region"):
+            # THE CAD CHECK REFUSED THE MESH (cad_fidelity shares this cause): said as that check's own finding, never
+            # as "a boundary did not come out of the mesher"
+            return (f"The mesh was not delivered: {detail[0].lower() + detail[1:]}.",
+                    "Ask for finer cells at the walls in your notes (a size in mm), or mesh the part with its thin "
+                    "details removed.")
         what = (f"The mesher lost the boundary {_names(patches)}: it came out with no faces, "
                 "usually because it is smaller than the cells around it."
                 if patches else

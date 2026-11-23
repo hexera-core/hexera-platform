@@ -196,3 +196,54 @@ def test_the_mesh_report_lists_the_wrap():
                                                  "max_m": 0.002, "area_m2": 1e-6}]}})
     assert "Wrapped surface" in html and "Bridged at" in html
     assert "Wrapped surface" not in mesh_report_html({})
+
+
+_FIDELITY_WORDS = ("[FIDELITY] the mesh does not follow your CAD: About 55.0% of your CAD surface is not reached by the "
+                   "mesh (more than 2 cells away).")
+
+
+def test_a_judged_refusal_stays_the_final_word_when_the_wrap_leaves_no_mesh(monkeypatch):
+    """LAD-cfd-13 (abc 99768, c2e14_p35b): the CAD check refused the built mesh in plain words; the wrap rung then left
+    no polyMesh, and ITS failure ("constant/polyMesh is incomplete") became the run's final reason. The judged refusal
+    stays the final word; a wrapped mesh that was itself judged keeps its own."""
+    import meshpipeline.pipeline.engine_select as es
+    from meshpipeline.application.review_delivery import select
+
+    async def _quiet(*a, **k):
+        return None
+    monkeypatch.setattr(es, "_publish", _quiet)
+    facts = {"detail": "the mesh does not follow your CAD: About 55.0% ...", "fidelity": {"verdicts": {}}}
+    st = _failed(purpose="internal_flow", executor_failed_gate="cad_fidelity",
+                 executor_failure_cause="patch_not_captured", executor_failure_facts=facts,
+                 executor_output=_FIDELITY_WORDS)
+    st.update(asyncio.run(cw.node_cfd_wrap(st)))
+    assert st[cw.STATE_KEY]["judged"]["executor_failed_gate"] == "cad_fidelity"
+    # every wrap step fails without a mesh; the record is carried from step to step
+    unjudged = {"executor_success": False, "executor_failed_gate": "finalize", "executor_failure_cause": "not_built",
+                "executor_failure_facts": {}, "executor_output": "[CFMESH] constant/polyMesh is incomplete"}
+    st.update(unjudged)
+    st.update(asyncio.run(cw.node_cfd_wrap(st)))
+    assert st[cw.STATE_KEY]["judged"]["executor_output"] == _FIDELITY_WORDS
+    st.update(unjudged)
+    end = select(st)
+    assert end["executor_failed_gate"] == "cad_fidelity" and end["executor_output"] == _FIDELITY_WORDS
+    assert end["executor_failure_facts"]["judged_stands"] == cw.RULE_JUDGED_STANDS
+    assert "polyMesh is incomplete" in end["executor_failure_facts"]["wrap_failure"]
+    # the wrapped mesh was itself judged: its own refusal is the final word
+    judged_wrap = {**st, "executor_failed_gate": "quality_floor", "executor_failure_cause": "mesh_quality",
+                   "executor_output": "[QUALITY] the wrapped mesh"}
+    assert select(judged_wrap)["executor_output"] == "[QUALITY] the wrapped mesh"
+    # a run off the rung, or whose earlier failure was never judged, is unchanged
+    off = _failed()
+    assert cw.with_judged_refusal(off) == off
+    assert cw.judged_refusal(_failed()) is None
+
+
+def test_the_judged_refusal_is_told_as_the_cad_check_s_finding():
+    """LAD-cfd-13: the CAD check's refusal reads as that check's finding, never as 'a boundary did not come out'."""
+    from meshpipeline.application.final_result import _cause_account
+    facts = {"detail": "the mesh does not follow your CAD: About 55.0% of your CAD surface is not reached by the mesh",
+             "fidelity": {"verdicts": {"cad_to_mesh": "rebuild"}}}
+    cause, what, nxt = _cause_account("cad_fidelity", "patch_not_captured", facts, "cfmesh")
+    assert what.startswith("The mesh was not delivered: the mesh does not follow your CAD: About 55.0%")
+    assert "boundary" not in what and "finer cells at the walls" in nxt
