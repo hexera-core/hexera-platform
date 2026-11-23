@@ -21,6 +21,7 @@ changed appear in `Diff.modified`.
 
 from __future__ import annotations
 
+import logging
 import os
 import time
 import uuid
@@ -31,7 +32,11 @@ from meshpipeline.cad.repair_v4.types import Site, StableId
 from meshpipeline.cad.repair_v4.worker_pool import WorkerPool
 from meshpipeline.cad.repair_v4.workspace import Diff, Workspace, apply_history
 
-_SAMPLES = 33
+logger = logging.getLogger(__name__)
+
+#: Dense uniform samples per pcurve, then a golden-section refinement around the worst one, so a
+#: peak between samples on a curved edge is found rather than skipped.
+_SAMPLES = 513
 _SIDE_KINDS = ("invalid", "self_overlap", "overlap", "intersection", "proximity")
 _KIND_OF_PREFIX = {"F": "face", "E": "edge", "B": "solid"}
 
@@ -64,20 +69,35 @@ def _distinct_faces(anc: Any, edge: Any) -> list[Any]:
 
 
 def edge_deviation(edge: Any, faces: list[Any]) -> float:
-    """Largest distance between the edge's 3D curve and each of its pcurves lifted onto its face,
-    sampled at the same parameter: the quantity SameParameter promises is <= the tolerance."""
+    """Largest distance between the edge's 3D curve and each of its pcurves lifted onto its face at
+    the same parameter: the quantity SameParameter promises is <= the tolerance. `_SAMPLES` uniform
+    samples, then a golden-section search for the maximum inside the two cells around the worst."""
     from OCP.BRepAdaptor import BRepAdaptor_Curve, BRepAdaptor_Curve2d, BRepAdaptor_Surface
 
     curve = BRepAdaptor_Curve(edge)
     first, last = curve.FirstParameter(), curve.LastParameter()
+    step = (last - first) / (_SAMPLES - 1)
     worst = 0.0
     for face in faces:
         pc = BRepAdaptor_Curve2d(edge, face)
         surf = BRepAdaptor_Surface(face)
-        for i in range(_SAMPLES):
-            t = first + (last - first) * i / (_SAMPLES - 1)
+
+        def gap(t: float, pc: Any = pc, surf: Any = surf) -> float:
             uv = pc.Value(t)
-            worst = max(worst, curve.Value(t).Distance(surf.Value(uv.X(), uv.Y())))
+            return float(curve.Value(t).Distance(surf.Value(uv.X(), uv.Y())))
+
+        values = [gap(first + step * i) for i in range(_SAMPLES)]
+        peak = max(range(_SAMPLES), key=values.__getitem__)
+        worst = max(worst, values[peak])
+        lo, hi = first + step * max(peak - 1, 0), first + step * min(peak + 1, _SAMPLES - 1)
+        phi = 0.6180339887498949
+        for _ in range(40):
+            x1, x2 = hi - phi * (hi - lo), lo + phi * (hi - lo)
+            if gap(x1) < gap(x2):
+                lo = x1
+            else:
+                hi = x2
+            worst = max(worst, gap(x1), gap(x2))
     return worst
 
 
@@ -102,18 +122,34 @@ def _indexed(shape: Any, kind: str) -> Any:
 
 
 def _settle_tolerance(edge: Any, faces: list[Any]) -> float:
-    """Set the edge's tolerance to what its measured pcurve/3D deviation needs (+5 %, floor 1e-7):
-    lower if it was inflated, higher if the geometry is worse than claimed. Returns the deviation.
-    BRepLib::SameParameter only ever helps when it finds the gap; this is the measurement that
-    decides, and it is the same one `_tighten_tolerances` re-checks at the end."""
-    from OCP.BRep import BRep_Builder
+    """Give the edge the tolerance the KERNEL reaches, never less than the measured deviation.
+
+    The tolerance is reset to the floor so that a forced BRepLib::SameParameter reports what it
+    actually reaches (it never lowers an inflated value on its own); the result is
+    max(kernel tolerance, dense measured deviation, 1e-7) with no margin. It is then gated on
+    BRepCheck's own verdict for the edge: while that fails the tolerance is raised 1.5x (at most
+    12 times) and then the op fails rather than hand back an edge the kernel calls invalid."""
+    from OCP.BRep import BRep_Builder, BRep_Tool
+    from OCP.BRepCheck import BRepCheck_Analyzer
+    from OCP.BRepLib import BRepLib
     from OCP.ShapeFix import ShapeFix_ShapeTolerance
     from OCP.TopAbs import TopAbs_EDGE
 
+    setter = ShapeFix_ShapeTolerance()
+    setter.SetTolerance(edge, 1e-7, TopAbs_EDGE)
+    BRepLib.SameParameter_s(edge, 1e-7, True)   # returns nothing: the flag and tolerance are read back
     dev = edge_deviation(edge, faces)
-    ShapeFix_ShapeTolerance().SetTolerance(edge, max(1e-7, dev * 1.05), TopAbs_EDGE)
-    BRep_Builder().SameParameter(edge, True)
-    return dev
+    tol = max(float(BRep_Tool.Tolerance_s(edge)), dev, 1e-7)
+    setter.SetTolerance(edge, tol, TopAbs_EDGE)
+    if not BRep_Tool.SameParameter_s(edge):
+        BRep_Builder().SameParameter(edge, True)  # only reached when `dev` above is the evidence
+    for _ in range(12):
+        if BRepCheck_Analyzer(edge).IsValid():
+            return dev
+        tol *= 1.5
+        setter.SetTolerance(edge, tol, TopAbs_EDGE)
+    raise RuntimeError(f"BRepCheck still rejects the edge at tolerance {tol:.3g} "
+                       f"(measured deviation {dev:.3g})")
 
 
 def _mapping_and_changed(old: Any, base: Any, result: Any, h: Any, quantum: float,
@@ -168,12 +204,16 @@ def _mapping_and_changed(old: Any, base: Any, result: Any, h: Any, quantum: floa
 
 
 def _finish(payload: dict, op: str, params: dict, old: Any, base: Any, result: Any, h: Any,
-            force_changed: set[tuple[str, int]], start: float) -> dict:
+            force_changed: set[tuple[str, int]], start: float, *, must_be_valid: bool = False) -> dict:
     from OCP.BRepCheck import BRepCheck_Analyzer
 
     from meshpipeline.cad.repair_v4.ws_kernel import diagonal_of, history_record, write_brep
 
     quantum = float(payload["quantum"])
+    valid_after = bool(BRepCheck_Analyzer(result).IsValid())
+    if not valid_after and (must_be_valid or BRepCheck_Analyzer(old).IsValid()):
+        raise RuntimeError(f"{op}: the result fails BRepCheck_Analyzer"
+                           + ("" if must_be_valid else " although the input passed it"))
     history, changed = _mapping_and_changed(old, base, result, h, quantum, force_changed)
     write_brep(result, payload["out_path"])
     rec = history_record(old, result, history, op=op, params=params, old_path=payload["brep_path"],
@@ -181,7 +221,7 @@ def _finish(payload: dict, op: str, params: dict, old: Any, base: Any, result: A
                          seconds=time.perf_counter() - start)
     rec["changed"] = changed
     rec["params"]["max_edge_tolerance_after"] = max_edge_tolerance(result)
-    rec["params"]["valid_after"] = bool(BRepCheck_Analyzer(result).IsValid())
+    rec["params"]["valid_after"] = valid_after
     rec["params"]["diagonal"] = diagonal_of(result)
     return rec
 
@@ -209,19 +249,43 @@ def _targets_to_edges(base: Any, targets: dict[str, list[int]]) -> list[Any]:
     return [picked[k] for k in sorted(picked)]
 
 
+def _targets_to_faces(base: Any, targets: dict[str, list[int]]) -> list[Any]:
+    """Faces in scope: targeted faces and the faces of targeted solids; all when nothing is given;
+    none when only edges are given."""
+    from OCP.TopAbs import TopAbs_FACE
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS
+
+    fmap = _indexed(base, "face")
+    if not any(targets.values()):
+        return [TopoDS.Face_s(fmap.FindKey(i)) for i in range(1, fmap.Extent() + 1)]
+    picked: dict[int, Any] = {i: TopoDS.Face_s(fmap.FindKey(i)) for i in targets.get("face", [])}
+    smap = _indexed(base, "solid")
+    for i in targets.get("solid", []):
+        ex = TopExp_Explorer(smap.FindKey(i), TopAbs_FACE)
+        while ex.More():
+            f = TopoDS.Face_s(ex.Current())
+            picked[fmap.FindIndex(f)] = f
+            ex.Next()
+    return [picked[k] for k in sorted(picked)]
+
+
 @register("v4_tighten_tolerances")
 def _tighten_tolerances(payload: dict) -> dict:
-    """Lower edge and vertex tolerances to what the geometry has been measured to satisfy.
+    """Lower edge, vertex and face tolerances to what the geometry has been shown to satisfy.
 
-    Per edge above the target: rebuild pcurves with a FORCED SameParameter (which sets the tolerance
-    to the deviation it reaches, not to a label), keep that if it is lower. Vertices in scope are
-    capped to the target and then re-covered wherever an edge needs more, so nothing is ever claimed
-    tighter than it measures. An edge that stays above the target is reported in `over_target`."""
+    Per edge above the target: forced SameParameter, then the tolerance is the kernel's reached
+    value or the dense measured deviation, whichever is larger, gated on BRepCheck (see
+    `_settle_tolerance`). Vertices in scope are capped to the target and then re-covered wherever an
+    edge needs more. A face in scope is lowered to the largest tolerance of its own edges (never
+    below 1e-7): a face cannot honestly be tighter than its boundary, and it is not independently
+    measurable, so it is not clamped to the target. Anything left above the target is reported in
+    `over_target` / `faces_over_target`, never relabelled."""
     from OCP.BRep import BRep_Tool
     from OCP.BRepLib import BRepLib
     from OCP.ShapeFix import ShapeFix_Edge, ShapeFix_ShapeTolerance
-    from OCP.TopAbs import TopAbs_VERTEX
-    from OCP.TopExp import TopExp
+    from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_VERTEX
+    from OCP.TopExp import TopExp, TopExp_Explorer
     from OCP.TopoDS import TopoDS
 
     from meshpipeline.cad.repair_v4.ws_kernel import diagonal_of, read_brep
@@ -235,49 +299,63 @@ def _tighten_tolerances(payload: dict) -> dict:
     target = target_rel * diag
     before = max_edge_tolerance(base)
     anc = _edge_faces(base)
-    edges = _targets_to_edges(base, payload.get("targets") or {})
-    emap = _indexed(base, "edge")
+    targets = payload.get("targets") or {}
+    edges = _targets_to_edges(base, targets)
+    faces = _targets_to_faces(base, targets)
+    emap, fmap = _indexed(base, "edge"), _indexed(base, "face")
     force: set[tuple[str, int]] = set()
     over: list[int] = []
     fixer = ShapeFix_Edge()
+    setter = ShapeFix_ShapeTolerance()
     # Vertices first: an edge's reached tolerance is floored by its vertices'.
-    limit = ShapeFix_ShapeTolerance()
     seen: list[Any] = []
     for edge in edges:
         for v in (TopExp.FirstVertex_s(edge, True), TopExp.LastVertex_s(edge, True)):
             if not any(v.IsSame(s) for s in seen):
                 seen.append(v)
                 if BRep_Tool.Tolerance_s(TopoDS.Vertex_s(v)) > target:
-                    limit.LimitTolerance(v, 0.0, target, TopAbs_VERTEX)
+                    setter.LimitTolerance(v, 0.0, target, TopAbs_VERTEX)
+    touched: list[Any] = []
     for edge in edges:
-        if BRep_Tool.Degenerated_s(edge):
-            continue
-        if BRep_Tool.Tolerance_s(edge) <= target:
-            continue
+        if BRep_Tool.Degenerated_s(edge) or BRep_Tool.Tolerance_s(edge) <= target:
+            continue   # at or below target: not ours to touch, and not ours to re-judge
         index = emap.FindIndex(edge)
-        if not BRep_Tool.IsGeometric_s(edge):
-            BRepLib.BuildCurves3d_s(edge, 1e-7)
+        if not BRep_Tool.IsGeometric_s(edge) and not BRepLib.BuildCurves3d_s(edge, 1e-7):
+            raise RuntimeError(f"edge {index} has no 3D curve and BuildCurves3d could not make one")
         was = BRep_Tool.Tolerance_s(edge)
-        BRepLib.SameParameter_s(edge, 1e-7, True)
         _settle_tolerance(edge, _distinct_faces(anc, edge))
-        if BRep_Tool.Tolerance_s(edge) < was:
-            force.add(("edge", index))
+        touched.append(edge)
+        if BRep_Tool.Tolerance_s(edge) != was:
+            force.add(("edge", index))     # lowered OR raised: both are real changes
         if BRep_Tool.Tolerance_s(edge) > target:
             over.append(index)
     for i in range(1, emap.Extent() + 1):  # re-cover vertices that an edge still needs
         e = TopoDS.Edge_s(emap.FindKey(i))
-        if not BRep_Tool.Degenerated_s(e):
-            fixer.FixVertexTolerance(e)
-    # the deviation must really be inside the tolerance now (SameParameter satisfied)
-    for edge in edges:
-        if not BRep_Tool.Degenerated_s(edge):
-            faces = _distinct_faces(anc, edge)
-            dev = edge_deviation(edge, faces)
-            if dev > BRep_Tool.Tolerance_s(edge) + 1e-9:
-                raise RuntimeError(f"edge {emap.FindIndex(edge)}: deviation {dev:.3g} exceeds its "
-                                   f"tolerance {BRep_Tool.Tolerance_s(edge):.3g} after tightening")
+        if not BRep_Tool.Degenerated_s(e) and fixer.FixVertexTolerance(e):
+            logger.debug("tighten: raised a vertex tolerance to cover edge %d", i)
+    faces_over: list[int] = []
+    for face in faces:
+        findex = fmap.FindIndex(face)
+        edge_tols = []
+        ex = TopExp_Explorer(face, TopAbs_EDGE)
+        while ex.More():
+            edge_tols.append(BRep_Tool.Tolerance_s(TopoDS.Edge_s(ex.Current())))
+            ex.Next()
+        floor = max([1e-7, *edge_tols])
+        if BRep_Tool.Tolerance_s(face) > max(target, floor):
+            setter.SetTolerance(face, floor, TopAbs_FACE)
+            force.add(("face", findex))
+        if BRep_Tool.Tolerance_s(face) > target:
+            faces_over.append(findex)
+    # SameParameter must really hold on every edge this op touched: measured, not asserted
+    for edge in touched:
+        dev = edge_deviation(edge, _distinct_faces(anc, edge))
+        if dev > BRep_Tool.Tolerance_s(edge):
+            raise RuntimeError(f"edge {emap.FindIndex(edge)}: deviation {dev:.3g} exceeds its "
+                               f"tolerance {BRep_Tool.Tolerance_s(edge):.3g} after tightening")
     params = {"target_rel": target_rel, "target_tolerance": target,
-              "max_edge_tolerance_before": before, "over_target": over}
+              "max_edge_tolerance_before": before, "over_target": over,
+              "faces_over_target": faces_over}
     return _finish(payload, "tighten_tolerances", params, old, base, base, _no_history(), force, start)
 
 
@@ -295,6 +373,7 @@ def _rebuild_edge_as_intersection(payload: dict) -> dict:
     from OCP.GeomAPI import GeomAPI_IntSS, GeomAPI_ProjectPointOnCurve
     from OCP.ShapeBuild import ShapeBuild_Edge
     from OCP.ShapeFix import ShapeFix_Edge
+    from OCP.TopAbs import TopAbs_FORWARD
     from OCP.TopExp import TopExp
     from OCP.TopLoc import TopLoc_Location
     from OCP.TopoDS import TopoDS
@@ -316,7 +395,9 @@ def _rebuild_edge_as_intersection(payload: dict) -> dict:
         if BRep_Tool.Degenerated_s(edge) or len(faces) != 2:
             raise ValueError(f"edge {index} does not lie between exactly two faces "
                              f"({len(faces)} found, degenerated={BRep_Tool.Degenerated_s(edge)})")
-        v1, v2 = TopExp.FirstVertex_s(edge, True), TopExp.LastVertex_s(edge, True)
+        # vertices in the order of the edge's STORED curve parameter, whatever its face orientation
+        forward = TopoDS.Edge_s(edge.Oriented(TopAbs_FORWARD))
+        v1, v2 = TopExp.FirstVertex_s(forward, True), TopExp.LastVertex_s(forward, True)
         if v1.IsSame(v2):
             raise ValueError(f"edge {index} is closed; rebuilding a closed edge is not supported")
         p1, p2 = BRep_Tool.Pnt_s(v1), BRep_Tool.Pnt_s(v2)
@@ -330,6 +411,12 @@ def _rebuild_edge_as_intersection(payload: dict) -> dict:
         best: tuple[float, Any, float, float] | None = None
         for li in range(1, inter.NbLines() + 1):
             line = inter.Line(li)
+            # IntSS returns a trimmed circle spanning the whole period: use the periodic basis so an
+            # edge that wraps the trim point is representable.
+            basis = getattr(line, "BasisCurve", None)
+            if basis is not None and basis().IsPeriodic() and \
+                    abs((line.LastParameter() - line.FirstParameter()) - basis().Period()) < 1e-9:
+                line = basis()
             for candidate in (line, line.Reversed()):
                 a = GeomAPI_ProjectPointOnCurve(p1, candidate)
                 b = GeomAPI_ProjectPointOnCurve(p2, candidate)
@@ -360,11 +447,18 @@ def _rebuild_edge_as_intersection(payload: dict) -> dict:
         builder.Range(edge, u1, u2)
         sbe, fixer = ShapeBuild_Edge(), ShapeFix_Edge()
         for face in faces:
-            sbe.RemovePCurve(edge, face)
-            fixer.FixAddPCurve(edge, face, False, 1e-7)
-        fixer.FixSameParameter(edge, 1e-7)
+            sbe.RemovePCurve(edge, face)   # stale pcurves are dropped, never trusted
+            if not fixer.FixAddPCurve(edge, face, False, 1e-7):
+                # False is "nothing to add": benign only if the kernel can still give a pcurve (on a
+                # plane it derives one by projection). If it cannot, the op must not continue.
+                if BRep_Tool.CurveOnSurface_s(edge, face, 0.0, 0.0) is None:
+                    raise RuntimeError(f"edge {index}: FixAddPCurve added no pcurve and none exists")
+                logger.debug("rebuild: edge %d already has a derivable pcurve on a face", index)
+        if fixer.FixSameParameter(edge, 1e-7):
+            logger.debug("rebuild: FixSameParameter adjusted edge %d", index)
         _settle_tolerance(edge, faces)
-        fixer.FixVertexTolerance(edge)
+        if fixer.FixVertexTolerance(edge):
+            logger.debug("rebuild: raised a vertex tolerance to cover edge %d", index)
         force.add(("edge", index))
     params = {"edges": list(payload["targets"]["edge"]), "max_edge_tolerance_before": before,
               "max_move": max(moves.values(), default=0.0), "fidelity_bound": bound}
@@ -386,14 +480,18 @@ def _fix_poles(payload: dict) -> dict:
     old, base = read_brep(payload["brep_path"]), read_brep(payload["brep_path"])
     fmap = _indexed(base, "face")
     ctx = ShapeBuild_ReShape()
+    changed_any = False
     for index in payload["targets"]["face"]:
         fixer = ShapeFix_Face(TopoDS.Face_s(fmap.FindKey(index)))
         fixer.SetContext(ctx)
-        fixer.Perform()
+        changed_any = bool(fixer.Perform()) or changed_any
+    if not changed_any:
+        raise RuntimeError("ShapeFix_Face.Perform changed nothing on the targeted faces")
     result = ctx.Apply(base)
     params = {"faces": list(payload["targets"]["face"]),
               "max_edge_tolerance_before": max_edge_tolerance(base)}
-    return _finish(payload, "fix_poles", params, old, base, result, ctx.History(), set(), start)
+    return _finish(payload, "fix_poles", params, old, base, result, ctx.History(), set(), start,
+                   must_be_valid=True)
 
 
 # ---------------------------------------------------------------- parent half (no OCCT)

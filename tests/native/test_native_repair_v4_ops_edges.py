@@ -87,7 +87,7 @@ def _valid(shape) -> bool:
     return bool(BRepCheck_Analyzer(shape).IsValid())
 
 
-def _worst_deviation(shape) -> float:
+def _worst_deviation(shape, samples: int = 41, only_edge: int | None = None) -> float:
     """Independent of the op's own measurement: 3D curve vs each pcurve lifted onto its face."""
     from OCP.BRep import BRep_Tool
     from OCP.BRepAdaptor import BRepAdaptor_Curve, BRepAdaptor_Curve2d, BRepAdaptor_Surface
@@ -99,24 +99,33 @@ def _worst_deviation(shape) -> float:
     anc = TopTools_IndexedDataMapOfShapeListOfShape()
     TopExp.MapShapesAndAncestors_s(shape, TopAbs_EDGE, TopAbs_FACE, anc)
     worst = 0.0
-    for e in _edges(shape):
-        if BRep_Tool.Degenerated_s(e):
+    for n, e in enumerate(_edges(shape), 1):
+        if BRep_Tool.Degenerated_s(e) or (only_edge is not None and n != only_edge):
             continue
         c = BRepAdaptor_Curve(e)
         for f in anc.FindFromKey(e):
             face = TopoDS.Face_s(f)
             pc, s = BRepAdaptor_Curve2d(e, face), BRepAdaptor_Surface(face)
-            for i in range(41):
-                t = c.FirstParameter() + (c.LastParameter() - c.FirstParameter()) * i / 40
+            for i in range(samples):
+                t = c.FirstParameter() + (c.LastParameter() - c.FirstParameter()) * i / (samples - 1)
                 uv = pc.Value(t)
                 worst = max(worst, c.Value(t).Distance(s.Value(uv.X(), uv.Y())))
     return worst
 
 
 def _same_parameter_everywhere(shape) -> bool:
+    """The flag is only a claim, so it is not enough: every edge's independently measured
+    pcurve/3D deviation (401 samples) must also be inside its own tolerance."""
     from OCP.BRep import BRep_Tool
 
-    return all(BRep_Tool.SameParameter_s(e) for e in _edges(shape) if not BRep_Tool.Degenerated_s(e))
+    for n, e in enumerate(_edges(shape), 1):
+        if BRep_Tool.Degenerated_s(e):
+            continue
+        if not BRep_Tool.SameParameter_s(e):
+            return False
+        if _worst_deviation(shape, 401, only_edge=n) > BRep_Tool.Tolerance_s(e) + 1e-12:
+            return False
+    return True
 
 
 def _inflated_box(tmp_path: Path, which: int = 0) -> tuple[str, int]:
@@ -165,7 +174,7 @@ def test_both_ops_bring_an_inflated_box_edge_inside_1e5_diag(pool: WorkerPool, t
     # identity: nothing was retired; only the inflated edge counts as modified by the rebuild
     assert set(ws2.ids) == set(ws0.ids)
     assert list(d1.modified) == [edge_id] and d1.removed == []
-    assert set(d2.modified) <= {edge_id}   # tighten has nothing else to lower
+    assert d2.modified == {}   # the rebuild already settled the edge; tighten must change no entity
     assert not any(s.startswith("F") for s in d1.modified)
 
 
@@ -182,7 +191,7 @@ def test_tighten_alone_lowers_tolerance_and_leaves_satisfied_geometry_alone(
     assert set(ws1.ids) == set(ws0.ids)
 
 
-def _box_with_off_surface_edge(tmp_path: Path, shift: float) -> tuple[str, int]:
+def _box_with_off_surface_edge(tmp_path: Path, shift: float, claimed: float = 0.02) -> tuple[str, int]:
     """A box whose first edge's 3D curve is moved `shift` along (1,1,1) off its faces (tolerance
     claimed 0.02), so the pcurve/3D mismatch is REAL. Returns (path, kernel index of that edge)."""
     from OCP.BRep import BRep_Builder, BRep_Tool
@@ -199,7 +208,7 @@ def _box_with_off_surface_edge(tmp_path: Path, shift: float) -> tuple[str, int]:
     a, b = c.Value(c.FirstParameter()), c.Value(c.LastParameter())
     d = gp_Dir(b.X() - a.X(), b.Y() - a.Y(), b.Z() - a.Z())
     BRep_Builder().UpdateEdge(
-        edge, Geom_Line(gp_Pnt(a.X() + shift, a.Y() + shift, a.Z() + shift), d), TopLoc_Location(), 0.02)
+        edge, Geom_Line(gp_Pnt(a.X() + shift, a.Y() + shift, a.Z() + shift), d), TopLoc_Location(), claimed)
     return _write(box, tmp_path / "off.brep"), 1
 
 
@@ -298,3 +307,150 @@ def test_ops_publish_the_protocol_surface() -> None:
     assert [op.name for op in OPS] == ["rebuild_edge_as_intersection", "tighten_tolerances", "fix_poles"]
     schema = TightenTolerances.params_schema["properties"]["target_rel"]
     assert (schema["minimum"], schema["maximum"]) == (1e-7, 1e-4)
+
+
+def _half_cylinder_with_arc_off_surface(tmp_path: Path, off: float) -> tuple[str, int]:
+    """A half cylinder (r=20, h=50). Its first circular edge (plane x cylinder) gets a concentric
+    circle `off` larger as 3D curve - a REAL mismatch on a CURVED edge. Returns (path, edge index)."""
+    import math
+
+    from OCP.BRep import BRep_Builder
+    from OCP.BRepAdaptor import BRepAdaptor_Curve
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeCylinder
+    from OCP.Geom import Geom_Circle
+    from OCP.GeomAbs import GeomAbs_Circle
+    from OCP.gp import gp_Ax2, gp_Circ, gp_Dir, gp_Pnt
+    from OCP.TopLoc import TopLoc_Location
+
+    shape = BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1)), 20.0, 50.0, math.pi).Shape()
+    for n, e in enumerate(_edges(shape), 1):
+        c = BRepAdaptor_Curve(e)
+        if c.GetType() == GeomAbs_Circle:
+            circ = c.Circle()
+            BRep_Builder().UpdateEdge(
+                e, Geom_Circle(gp_Circ(circ.Position(), circ.Radius() + off)), TopLoc_Location(), 0.02)
+            return _write(shape, tmp_path / "arc.brep"), n
+    raise AssertionError("no circular edge")
+
+
+def test_curved_edge_tolerance_covers_the_dense_independent_deviation(pool: WorkerPool, tmp_path: Path) -> None:
+    """On a circle the 513-sample + refinement measure must not sit below the true gap: check
+    against a 20001-sample independent measurement, and that BRepCheck accepts the result."""
+    path, eindex = _half_cylinder_with_arc_off_surface(tmp_path, 0.007)
+    ws0 = Workspace.from_brep(pool, path)
+    ws1, diff = TightenTolerances().apply(pool, ws0, [], {"target_rel": 1e-5}, timeout_s=300)
+    after = _read(ws1.brep_path)
+    from OCP.BRep import BRep_Tool
+
+    tol = BRep_Tool.Tolerance_s(_edges(after)[eindex - 1])
+    truth = _worst_deviation(after, 20001, only_edge=eindex)
+    assert truth > 5e-3 and tol >= truth - 1e-12        # not below the real gap
+    assert eindex in diff.params["over_target"]         # and reported, not clamped
+    assert _valid(after)
+
+
+def test_rebuild_restores_a_curved_edge_from_the_plane_cylinder_intersection(
+    pool: WorkerPool, tmp_path: Path,
+) -> None:
+    path, eindex = _half_cylinder_with_arc_off_surface(tmp_path, 0.007)
+    ws0 = Workspace.from_brep(pool, path)
+    edge_id = _id_of(ws0, "E", eindex)
+    ws1, d1 = RebuildEdgeAsIntersection().apply(pool, ws0, [edge_id], {}, timeout_s=300)
+    ws2, d2 = TightenTolerances().apply(pool, ws1, [], {"target_rel": 1e-5}, timeout_s=300)
+    after = _read(ws2.brep_path)
+    assert d1.params["max_move"] == pytest.approx(0.007, rel=1e-3)
+    assert _worst_deviation(after, 20001, only_edge=eindex) < 1e-6
+    assert _max_edge_tolerance_ok(after) and _valid(after) and _same_parameter_everywhere(after)
+    assert d2.params["over_target"] == [] and set(ws2.ids) == set(ws0.ids) and edge_id in d1.modified
+
+
+def _max_edge_tolerance_ok(shape) -> bool:
+    return _max_edge_tol(shape) <= 1e-5 * _diag(shape)
+
+
+def test_rebuild_replaces_a_wrong_pcurve(pool: WorkerPool, tmp_path: Path) -> None:
+    """The 3D curve is right but one pcurve is 0.3 off in UV: the stale pcurve must be dropped and
+    re-derived, not kept."""
+    from OCP.BRep import BRep_Builder, BRep_Tool
+    from OCP.BRepAdaptor import BRepAdaptor_Curve2d
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
+    from OCP.Geom2d import Geom2d_Line
+    from OCP.gp import gp_Dir2d, gp_Pnt2d
+    from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE
+    from OCP.TopExp import TopExp
+    from OCP.TopoDS import TopoDS
+    from OCP.TopTools import TopTools_IndexedDataMapOfShapeListOfShape
+
+    box = BRepPrimAPI_MakeBox(BOX, BOX, BOX).Shape()
+    edge = _edges(box)[0]
+    anc = TopTools_IndexedDataMapOfShapeListOfShape()
+    TopExp.MapShapesAndAncestors_s(box, TopAbs_EDGE, TopAbs_FACE, anc)
+    face = TopoDS.Face_s(next(iter(anc.FindFromKey(edge))))
+    pc = BRepAdaptor_Curve2d(edge, face)
+    a, b = pc.Value(pc.FirstParameter()), pc.Value(pc.LastParameter())
+    dx, dy = b.X() - a.X(), b.Y() - a.Y()
+    n = (dx * dx + dy * dy) ** 0.5
+    wrong = Geom2d_Line(gp_Pnt2d(a.X() - 0.3 * dy / n, a.Y() + 0.3 * dx / n), gp_Dir2d(dx, dy))
+    BRep_Builder().UpdateEdge(edge, wrong, face, 0.5)
+    path = _write(box, tmp_path / "wrongpc.brep")
+    assert _worst_deviation(_read(path)) > 0.25 and BRep_Tool.Tolerance_s(_edges(_read(path))[0]) == 0.5
+
+    ws0 = Workspace.from_brep(pool, path)
+    ws1, _ = RebuildEdgeAsIntersection().apply(pool, ws0, [_id_of(ws0, "E", 1)], {}, timeout_s=300)
+    after = _read(ws1.brep_path)
+    assert _worst_deviation(after, 401) < 1e-6
+    ws2, d2 = TightenTolerances().apply(pool, ws1, [], {"target_rel": 1e-5}, timeout_s=300)
+    after = _read(ws2.brep_path)
+    assert _max_edge_tolerance_ok(after) and _valid(after) and _same_parameter_everywhere(after)
+
+
+def test_tighten_lowers_face_tolerances_and_reports_them(pool: WorkerPool, tmp_path: Path) -> None:
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
+    from OCP.ShapeFix import ShapeFix_ShapeTolerance
+    from OCP.TopAbs import TopAbs_FACE
+
+    box = BRepPrimAPI_MakeBox(BOX, BOX, BOX).Shape()
+    ShapeFix_ShapeTolerance().SetTolerance(box, INFLATED, TopAbs_FACE)
+    path = _write(box, tmp_path / "facetol.brep")
+    ws0 = Workspace.from_brep(pool, path)
+    ws1, diff = TightenTolerances().apply(pool, ws0, [], {"target_rel": 1e-5}, timeout_s=300)
+    from OCP.BRep import BRep_Tool
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS
+
+    ex, tols = TopExp_Explorer(_read(ws1.brep_path), TopAbs_FACE), []
+    while ex.More():
+        tols.append(BRep_Tool.Tolerance_s(TopoDS.Face_s(ex.Current())))
+        ex.Next()
+    assert len(tols) == 6 and max(tols) <= 1e-5 * _diag(box)
+    assert len([s for s in diff.modified if s.startswith("F")]) == 6 and diff.params["faces_over_target"] == []
+
+
+def test_tighten_does_not_fail_on_an_untouched_edge_that_under_reports(pool: WorkerPool, tmp_path: Path) -> None:
+    """Edge claims 1e-7 but is really 0.01 off: it is already 'tighter than target', so this op does
+    not touch or judge it (and must not fail on it)."""
+    path, _ = _box_with_off_surface_edge(tmp_path, 0.007, claimed=1e-7)
+    ws0 = Workspace.from_brep(pool, path)
+    ws1, diff = TightenTolerances().apply(pool, ws0, [], {"target_rel": 1e-5}, timeout_s=300)
+    assert diff.modified == {} and ws1.ids == ws0.ids
+
+
+def test_a_raised_tolerance_is_reported_as_a_modification(pool: WorkerPool, tmp_path: Path) -> None:
+    path, eindex = _box_with_off_surface_edge(tmp_path, 0.05, claimed=0.02)   # real gap ~0.07 > claim
+    ws0 = Workspace.from_brep(pool, path)
+    ws1, diff = TightenTolerances().apply(pool, ws0, [], {"target_rel": 1e-5}, timeout_s=300)
+    from OCP.BRep import BRep_Tool
+
+    tol = BRep_Tool.Tolerance_s(_edges(_read(ws1.brep_path))[eindex - 1])
+    assert tol > 0.02 and tol >= _worst_deviation(_read(ws1.brep_path), 401, only_edge=eindex) - 1e-12
+    assert _id_of(ws0, "E", eindex) in diff.modified
+
+
+def test_fix_poles_fails_loudly_when_it_changes_nothing(pool: WorkerPool, tmp_path: Path) -> None:
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeSphere
+
+    path = _write(BRepPrimAPI_MakeSphere(50.0).Shape(), tmp_path / "good_sphere.brep")
+    ws0 = Workspace.from_brep(pool, path)
+    (face_id,) = [s for s in ws0.ids if s.startswith("F")]
+    with pytest.raises(RuntimeError, match="changed nothing"):
+        FixPoles().apply(pool, ws0, [face_id], {}, timeout_s=300)
