@@ -46,6 +46,9 @@ def _register_test_fns() -> None:
 if os.environ.get("HEXERA_TEST_KERNEL_FNS") == "1":
     _register_test_fns()
 
-# Registered for their side effect on REGISTRY; the workspace's kernel half. At the foot so that
-# `register` and `REGISTRY` exist before the module that uses them is imported.
+# Kernel functions that need OCCT register themselves on import. They import OCP lazily, so these
+# imports are safe on a host without it. At the foot so that `register` and `REGISTRY` exist
+# before the modules that use them are imported.
 from meshpipeline.cad.repair_v4 import ws_kernel  # noqa: E402,F401
+from meshpipeline.cad.repair_v4 import xcaf_io as _xcaf_io  # noqa: E402,F401
+from meshpipeline.cad.repair_v4.verdict import valid_kernel as _valid_kernel  # noqa: E402,F401
