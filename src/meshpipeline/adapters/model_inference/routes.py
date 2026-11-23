@@ -104,10 +104,17 @@ def missing_provider_credentials() -> list[str]:
     return missing
 
 
-def unpriced_models() -> list[str]:
-    """Every `provider:model` this deployment can call that has no declared price: the configured
-    role routes AND the repair_v4 proposer's chain. The startup half of the fail-closed pricing
-    check (routing.execute is the per-call half): an unpriced model would meter at $0.00."""
+def unpriced_role_models() -> list[str]:
+    """Configured role-route `provider:model`s with no declared price (they would meter at $0.00). Legacy roles:
+    reported, never a reason to refuse to start."""
+    from meshpipeline.adapters.inference_telemetry.pricing import unpriced_route_models
+    return unpriced_route_models()
+
+
+def unpriced_proposer_models() -> list[str]:
+    """The repair_v4 proposer chain's `provider:model`s with no declared price. These sit under a spending cap
+    that an unpriced model could never trip, so startup may refuse them (routing.execute is the per-call half)."""
     from meshpipeline.adapters.inference_telemetry.pricing import unpriced_route_models
     from meshpipeline.contracts import model_inference as mi
-    return unpriced_route_models(extra=tuple(mi.REPAIR_V4_PROPOSE_ROUTES))
+    chain = tuple(mi.REPAIR_V4_PROPOSE_ROUTES)
+    return [k for k in unpriced_route_models(extra=chain) if k in chain]

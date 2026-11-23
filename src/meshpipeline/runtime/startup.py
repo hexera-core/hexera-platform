@@ -46,20 +46,25 @@ from meshpipeline.settings.runtime import (
 
 
 def check_models_priced(*, hardened: bool) -> None:
-    """Refuse (hardened) or warn (otherwise) when a callable model has no declared price.
+    """Report callable models with no declared price; refuse to start only for the repair_v4 proposer chain.
 
-    An unpriced model meters at $0.00, so a spending cap on it can never trip. routing.execute
-    refuses the call itself; this is the same check at boot, so a bad MODEL override fails the
-    deploy rather than the first job."""
+    An unpriced model meters at $0.00, so a spending cap on it can never trip. The proposer's route is the one
+    under a cap, so an unpriced model in ITS chain is a refusal in a hardened environment (a warning elsewhere).
+    Every legacy role route only WARNS: production posture is untouched, and those roles carry no cap that
+    depends on the meter. routing.execute refuses the proposer's call itself, per call, regardless of this."""
     import warnings as _warnings
 
-    unpriced = _routes.unpriced_models()
-    if not unpriced:
+    remedy = ("Add '<provider>:<model>=<in>,<out>,<cached>' (USD per 1M tokens) to MODEL_PRICE_OVERRIDES, "
+              "or point the route at a priced model.")
+    legacy = _routes.unpriced_role_models()
+    if legacy:
+        _warnings.warn("No price is declared for: " + ", ".join(legacy) + ". Their spend meters at $0.00. "
+                       + remedy, RuntimeWarning, stacklevel=3)
+    proposer = _routes.unpriced_proposer_models()
+    if not proposer:
         return
-    message = ("No price is declared for: " + ", ".join(unpriced) + ". Their spend would meter at "
-               "$0.00 and no cost cap could trip, so calls to them are refused. Add "
-               "'<provider>:<model>=<in>,<out>,<cached>' (USD per 1M tokens) to MODEL_PRICE_OVERRIDES, "
-               "or point the route at a priced model.")
+    message = ("No price is declared for the repair_v4 proposer model(s): " + ", ".join(proposer)
+               + ". Their spend could not be metered or capped, so calls to them are refused. " + remedy)
     if hardened:
         raise ConfigurationError(f"{message} - refusing to start.")
     _warnings.warn(message, RuntimeWarning, stacklevel=3)

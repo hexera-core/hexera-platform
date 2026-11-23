@@ -137,7 +137,7 @@ class ModelRoute:
     # (routing.execute raises UnpricedModel first). Cost telemetry degrades an unpriced model to $0.00,
     # which a dashboard can live with and a spending cap cannot: a call that meters at nothing never
     # trips it. Opt-in, because only a route whose caller ENFORCES a cap needs the refusal at call time;
-    # every configured role is held to the same standard at startup (routes.unpriced_models).
+    # the configured roles are only REPORTED at startup (routes.unpriced_role_models), never refused.
     require_price: bool = False
 
     def __post_init__(self) -> None:

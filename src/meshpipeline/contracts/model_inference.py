@@ -234,6 +234,10 @@ REPAIR_V4_PROPOSE_ROUTES: tuple[str, ...] = ("openai:gpt-6-astra", "openai:gpt-5
 fallback when the first fails its probe (repair_v4.proposer.select_route). Not a role route: it is
 declared here, not in ROUTE_MATRIX, so it adds no per-role setting, spec or marker vocabulary."""
 
+REPAIR_V4_PROPOSE_MAX_OUTPUT_TOKENS = 8192
+"""The hard ceiling on one repair_v4_propose answer (reasoning included). The proposer reserves against it, so
+its spending estimate is an upper bound on the output side by construction."""
+
 _router: ModelRouter | None = None
 
 

@@ -98,3 +98,57 @@ def test_a_negative_or_nonfinite_cost_is_refused_rather_than_recorded():
     for bad in (-0.01, float("nan"), float("inf")):
         with pytest.raises(ValueError):
             _settle(ledger, a.reservation, "f1", bad)
+
+
+@pytest.mark.parametrize("cap", [float("inf"), float("nan"), 0.0, -1.0])
+def test_a_ledger_refuses_a_cap_that_is_not_a_cap(cap):
+    with pytest.raises(ValueError):
+        WaveLedger(cap_usd=cap)
+
+
+def test_shard_slices_bound_the_wave_with_no_shared_state(tmp_path):
+    # 12 shards, each on its own "host" (its own log file, no common lock), $60 wave
+    n, wave = 12, 60.0
+    shards = [WaveLedger.for_shard(wave, n, i, tmp_path / f"shard{i}.jsonl") for i in range(n)]
+    assert all(s.cap_usd == pytest.approx(5.0) for s in shards)
+    total = 0.0
+    for ledger in shards:
+        for _ in range(1000):
+            a = ledger.admit("f", 0.37, file_ceiling_usd=1e9)
+            if not a.ok:
+                assert a.reason == "wave_cap"
+                break
+            _settle(ledger, a.reservation, "f", 0.37)
+            total += 0.37
+    assert total <= wave                                   # the wave bound, whatever the placement
+    assert total > wave - n * 0.37                         # and the slices are actually used
+
+
+def test_a_restarted_shard_resumes_its_spend_rather_than_resetting_it(tmp_path):
+    path = tmp_path / "s.jsonl"
+    first = WaveLedger.for_shard(10.0, 2, 0, path)
+    a = first.admit("f", 1.0, file_ceiling_usd=100.0)
+    _settle(first, a.reservation, "f", 4.5)
+    again = WaveLedger.for_shard(10.0, 2, 0, path)         # the process restarted
+    assert again.spent_usd() == pytest.approx(4.5)
+    assert not again.admit("g", 1.0, file_ceiling_usd=100.0).ok
+
+
+@pytest.mark.parametrize("n, i", [(0, 0), (3, 3), (3, -1)])
+def test_an_invalid_shard_is_refused(tmp_path, n, i):
+    with pytest.raises(ValueError):
+        WaveLedger.for_shard(10.0, n, i, tmp_path / "x.jsonl")
+
+
+def test_the_stop_reason_is_recorded_in_the_ledger(tmp_path):
+    ledger = WaveLedger(cap_usd=1.0, path=tmp_path / "w.jsonl")
+    ledger.mark("f1", stop_reason="wave_cap", ai_capped=True)
+    ledger.mark("f2", stop_reason="max_turns", ai_capped=False)
+    assert ledger.file_statuses() == {"f1": {"stop_reason": "wave_cap", "ai_capped": True},
+                                      "f2": {"stop_reason": "max_turns", "ai_capped": False}}
+
+
+def test_a_custom_store_plugs_in_behind_the_same_interface():
+    from meshpipeline.cad.repair_v4.model_ledger import MemoryStore
+    ledger = WaveLedger(cap_usd=1.0, store=MemoryStore())
+    assert ledger.admit("f", 0.5, file_ceiling_usd=1.0).ok

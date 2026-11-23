@@ -87,6 +87,7 @@ class Fake:
 
 
 def make(fake: Fake, *, ceiling=1.0, max_turns=6, ledger=None, **kw) -> P.AIProposer:
+    kw.setdefault("output_tokens", 1000)       # reserve for a short answer so small test ceilings stay usable
     return P.AIProposer(ROUTE, max_turns=max_turns, usd_ceiling=ceiling, call=fake, observe=fake_observe,
                         ledger=ledger or WaveLedger(cap_usd=100.0), file_id=kw.pop("file_id", "f1"),
                         job_id=kw.pop("job_id", "job-9"), **kw)
@@ -246,12 +247,24 @@ def test_max_turns_bounds_the_conversation_across_rounds():
     assert len(fake.calls) == 2 and p.stop_reason == "max_turns"
 
 
-def test_a_provider_failure_stops_the_file_cleanly_and_releases_its_reservation():
+def test_one_provider_failure_does_not_disable_the_ai_for_the_file():
     ledger = WaveLedger(cap_usd=100.0)
-    fake = Fake([ModelRoundResult(failure_marker="<<API_FAILURE:x>>")], cost=0.0)
+    fake = Fake([ModelRoundResult(failure_marker="x:timeout"),
+                 reply(call_of("propose", {"candidates": [cand()]}))], cost=0.05)
     p = make(fake, ledger=ledger)
     assert p.propose(state([site("S1", "proximity")]), k=3) == []
-    assert p.stop_reason == "model_failure" and ledger.reserved_usd() == 0.0
+    assert p.stop_reason is None and ledger.reserved_usd() == 0.0          # released, nothing billed
+    assert len(p.propose(state([site("S1", "proximity")]), k=3)) == 1      # and the next round works
+
+
+def test_consecutive_provider_failures_give_the_ai_up_for_the_file():
+    fail = ModelRoundResult(failure_marker="x:down")
+    fake = Fake([fail, fail, fail, reply()])
+    p = make(fake)
+    for _ in range(3):
+        p.propose(state([site("S1", "proximity")]), k=3)
+    assert p.stop_reason == "model_failure" and not p.ai_capped
+    assert p.propose(state([site("S1", "proximity")]), k=3) == [] and len(fake.calls) == 3
 
 
 def test_an_unpriced_model_propagates_and_is_never_metered_as_free():
@@ -466,3 +479,68 @@ def test_select_route_refuses_when_nothing_passes_rather_than_guessing():
         raise RuntimeError("down")
     with pytest.raises(P.NoUsableRoute):
         asyncio.run(P.select_route(("openai:a", "openai:b"), call=call))
+
+
+# --- the cap is not optional, the estimate is an upper bound, and the stop is recorded ---------------------
+
+
+def test_a_ledger_is_required_and_the_cap_cannot_be_forgotten():
+    with pytest.raises(TypeError):
+        P.AIProposer(ROUTE, max_turns=3, usd_ceiling=1.0, call=Fake([]), observe=fake_observe)   # type: ignore[call-arg]
+    with pytest.raises(TypeError):
+        P.AIProposer(ROUTE, max_turns=3, usd_ceiling=1.0, ledger=None, call=Fake([]))            # type: ignore[arg-type]
+
+
+def test_the_estimate_grows_with_the_prompt_and_counts_every_image_every_call():
+    small = [{"role": "user", "content": "x" * 3000}]
+    big = [{"role": "user", "content": "x" * 300_000}]
+    with_image = small + [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": "d"}}]}]
+    prices = (10.0, 50.0, 1.0)
+    kw = {"prices": prices, "output_tokens": 0}
+    e_small, t_small = P.estimate_call_usd(small, [], **kw)
+    e_big, t_big = P.estimate_call_usd(big, [], **kw)
+    e_img, t_img = P.estimate_call_usd(with_image, [], **kw)
+    assert t_small == 1000 and t_big == 100_000 and e_big == pytest.approx(1.0)
+    assert t_img - t_small == P.IMAGE_TOKENS and e_img > e_small
+    # output is reserved in full, and a cached prefix is priced at the cached rate
+    assert P.estimate_call_usd(small, [], prices=prices, output_tokens=8192)[0] == pytest.approx(e_small + 0.4096)
+    assert P.estimate_call_usd(small, [], prices=prices, output_tokens=0, cached_prefix_tokens=1000)[0] == \
+        pytest.approx(0.001)
+
+
+def test_a_call_whose_estimate_exceeds_the_file_ceiling_is_refused_before_it_is_made():
+    fake = Fake([reply()])
+    big_observe = lambda st, sites: {"blob": "x" * 150_000}          # noqa: E731  ~ 50k tokens ~ $0.5 at astra
+    p = P.AIProposer(ROUTE, max_turns=3, usd_ceiling=0.2, call=fake, observe=big_observe,
+                     ledger=WaveLedger(cap_usd=100.0), file_id="f1")
+    assert p.propose(state([site("S1", "proximity")]), k=3) == []
+    assert fake.calls == [] and p.stop_reason == "file_ceiling" and p.ai_capped
+
+
+def test_an_oversize_input_is_refused_at_admit_even_with_budget_to_spare():
+    fake = Fake([reply()])
+    huge = lambda st, sites: {"blob": "x" * 700_000}                 # noqa: E731  ~ 233k tokens
+    p = P.AIProposer(ROUTE, max_turns=3, usd_ceiling=1e6, call=fake, observe=huge,
+                     ledger=WaveLedger(cap_usd=1e6), file_id="f1")
+    assert p.propose(state([site("S1", "proximity")]), k=3) == []
+    assert fake.calls == [] and p.stop_reason == "input_too_large" and not p.ai_capped
+
+
+def test_the_history_that_is_resent_is_what_is_estimated():
+    # round 1 is cheap, but the conversation (including the first round's image) is re-sent in round 2
+    fake = Fake([reply(call_of("propose", {"candidates": [cand()]})), reply()], cost=0.01)
+    p = make(fake)
+    p.propose(state([site("S1", "overlap")]), k=3)
+    before = P._message_tokens(p.messages)
+    p.propose(state([site("S1", "overlap")]), k=3)
+    assert P._message_tokens(p.messages) > before and before >= P.IMAGE_TOKENS
+
+
+def test_the_stop_is_written_to_the_ledger_and_to_the_result(tmp_path):
+    ledger = WaveLedger(cap_usd=0.05, path=tmp_path / "w.jsonl")
+    fake = Fake([reply()])
+    p = make(fake, ledger=ledger, file_id="fileZ")
+    assert p.propose(state([site("S1", "proximity")]), k=3) == []
+    assert ledger.file_statuses()["fileZ"] == {"stop_reason": "wave_cap", "ai_capped": True}
+    assert p.result() == {"file_id": "fileZ", "ai_capped": True, "stop_reason": "wave_cap", "turns": 0,
+                          "spent_usd": 0.0}

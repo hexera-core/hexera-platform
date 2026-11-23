@@ -102,32 +102,46 @@ def test_a_route_that_did_not_ask_keeps_the_lenient_behaviour():
 # --- the startup seam --------------------------------------------------------------------------------------------
 
 
-def test_unpriced_models_is_empty_for_the_shipped_configuration():
-    assert routecfg.unpriced_models() == []
+def test_nothing_is_unpriced_in_the_shipped_configuration():
+    assert routecfg.unpriced_role_models() == [] and routecfg.unpriced_proposer_models() == []
 
 
-def test_unpriced_models_names_a_configured_route_model_with_no_price(monkeypatch):
+def test_a_legacy_role_override_is_reported_as_a_role_model_not_a_proposer_one(monkeypatch):
     monkeypatch.setenv("BUILDER_MODEL", "gpt-9-mystery")
-    assert "openai:gpt-9-mystery" in routecfg.unpriced_models()
+    assert "openai:gpt-9-mystery" in routecfg.unpriced_role_models()
+    assert routecfg.unpriced_proposer_models() == []
 
 
-def test_unpriced_models_includes_the_repair_v4_propose_chain(monkeypatch):
-    monkeypatch.setattr(mi, "REPAIR_V4_PROPOSE_ROUTES", ("openai:gpt-9-mystery",))
-    assert routecfg.unpriced_models() == ["openai:gpt-9-mystery"]
+def test_the_proposer_chain_is_checked_separately(monkeypatch):
+    monkeypatch.setattr(mi, "REPAIR_V4_PROPOSE_ROUTES", ("openai:gpt-9-mystery", "openai:gpt-6-astra"))
+    assert routecfg.unpriced_proposer_models() == ["openai:gpt-9-mystery"]
 
 
-def test_hardened_startup_refuses_an_unpriced_model_and_a_dev_one_warns(monkeypatch):
+def _warnings_of(fn):
     import warnings
-
-    from meshpipeline.runtime import startup
-    from meshpipeline.settings.env import ConfigurationError
-    monkeypatch.setattr(routecfg, "unpriced_models", lambda: ["openai:gpt-9-mystery"])
-    with pytest.raises(ConfigurationError, match="MODEL_PRICE_OVERRIDES"):
-        startup.check_models_priced(hardened=True)
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        startup.check_models_priced(hardened=False)
-    assert any("MODEL_PRICE_OVERRIDES" in str(w.message) for w in caught)
+        fn()
+    return [str(w.message) for w in caught]
+
+
+def test_hardened_startup_refuses_only_an_unpriced_proposer_model(monkeypatch):
+    from meshpipeline.runtime import startup
+    from meshpipeline.settings.env import ConfigurationError
+    monkeypatch.setattr(routecfg, "unpriced_role_models", lambda: [])
+    monkeypatch.setattr(routecfg, "unpriced_proposer_models", lambda: ["openai:gpt-9-mystery"])
+    with pytest.raises(ConfigurationError, match="MODEL_PRICE_OVERRIDES"):
+        startup.check_models_priced(hardened=True)
+    assert any("MODEL_PRICE_OVERRIDES" in m for m in _warnings_of(lambda: startup.check_models_priced(hardened=False)))
+
+
+def test_hardened_startup_never_refuses_because_of_a_legacy_role(monkeypatch):
+    # production posture is untouched: a legacy role with an unpriced override warns and boots
+    from meshpipeline.runtime import startup
+    monkeypatch.setattr(routecfg, "unpriced_role_models", lambda: ["openai:gpt-9-legacy"])
+    monkeypatch.setattr(routecfg, "unpriced_proposer_models", lambda: [])
+    messages = _warnings_of(lambda: startup.check_models_priced(hardened=True))     # does not raise
+    assert any("gpt-9-legacy" in m for m in messages)
 
 
 # --- the repair_v4_propose call kind -------------------------------------------------------------------------------

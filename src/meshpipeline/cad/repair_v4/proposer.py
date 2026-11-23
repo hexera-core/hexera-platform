@@ -39,11 +39,12 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any, Literal, TypeVar
 
-from meshpipeline.cad.repair_v4.model_ledger import WaveLedger
+from meshpipeline.cad.repair_v4.model_ledger import Admission, WaveLedger
 from meshpipeline.cad.repair_v4.ops import REGISTRY, validate_call
 from meshpipeline.cad.repair_v4.types import Site
 from meshpipeline.cad.repair_v4.workspace import Diff
 from meshpipeline.contracts.model_inference import (
+    REPAIR_V4_PROPOSE_MAX_OUTPUT_TOKENS,
     ModelRoundResult,
     ProposeReply,
     ToolCallRequest,
@@ -60,13 +61,20 @@ IMAGE_KINDS = frozenset({"overlap", "open"})
 PROPOSE = "propose"
 DECLARE_UNFIXABLE = "declare_unfixable"
 
-#: What a first call is assumed to cost before one has been observed (USD). Replaced by 1.25 x the last
-#: observed call for the same file, so a conversation that grows is reserved for as it grows.
-FIRST_CALL_ESTIMATE_USD = 0.15
+#: USD per 1M tokens (fresh input, output, cached input) the estimator assumes: the dearest tier on the chain
+#: (gpt-6-astra), so a cheaper fallback is over-reserved, never under-reserved.
+DEFAULT_PRICES = (10.0, 50.0, 1.0)
+#: A conservative characters-per-token (real text runs nearer 4) and what one image is assumed to cost in tokens.
+_CHARS_PER_TOKEN = 3.0
+IMAGE_TOKENS = 2000
+#: Refuse a call whose estimated INPUT exceeds this many tokens (at admit, before it is made).
+MAX_INPUT_TOKENS = 120_000
 _GROWTH = 1.25
 _T = TypeVar("_T")
 
-StopReason = Literal["wave_cap", "file_ceiling", "max_turns", "model_failure"]
+StopReason = Literal["wave_cap", "file_ceiling", "max_turns", "model_failure", "input_too_large"]
+#: Consecutive failed model rounds (the router has already retried each) before the AI is given up on for a file.
+MAX_CONSECUTIVE_FAILURES = 3
 
 ModelCall = Callable[..., Awaitable[ProposeReply]]
 
@@ -261,6 +269,39 @@ def _outcome_json(o: Outcome) -> dict:
             "status": o.status, "message": o.message, "diff": _diff_json(o.diff), "delta": o.delta}
 
 
+def _message_tokens(messages: Sequence[dict]) -> int:
+    chars, images = 0, 0
+    for m in messages:
+        content = m.get("content")
+        if isinstance(content, str):
+            chars += len(content)
+        elif isinstance(content, list):
+            for part in content:
+                if part.get("type") == "image_url":
+                    images += 1
+                else:
+                    chars += len(part.get("text", ""))
+        for call in m.get("tool_calls") or ():
+            chars += len(call["function"]["arguments"]) + len(call["function"]["name"])
+    return int(chars / _CHARS_PER_TOKEN) + images * IMAGE_TOKENS
+
+
+def estimate_call_usd(messages: Sequence[dict], tools: Sequence[dict], *, prices: tuple[float, float, float],
+                      output_tokens: int, cached_prefix_tokens: int = 0) -> tuple[float, int]:
+    """(an UPPER BOUND on what sending `messages` will cost, the estimated input tokens).
+
+    Input is chars/3 per token plus a flat allowance per image (history is re-sent whole, images included, so
+    they are counted every call); at most `cached_prefix_tokens` of it - what the previous call reported as its
+    input - is priced at the cached rate, the rest fresh. Output is reserved at the full `output_tokens` the
+    router will allow, reasoning included. Real usage cannot exceed this unless the tokenizer is far worse than
+    3 chars/token."""
+    p_in, p_out, p_cached = prices
+    tokens = _message_tokens(messages) + int(len(json.dumps(tools)) / _CHARS_PER_TOKEN)
+    cached = min(cached_prefix_tokens, tokens)
+    usd = ((tokens - cached) * p_in + cached * p_cached + output_tokens * p_out) / 1e6
+    return usd, tokens
+
+
 # --- the proposer ----------------------------------------------------------------------------------------------------
 
 
@@ -274,15 +315,19 @@ class AIProposer:
     it is delivered on the next `propose`.
     """
 
-    def __init__(self, route: str, *, max_turns: int, usd_ceiling: float, call: ModelCall | None = None,
-                 ledger: WaveLedger | None = None, file_id: str = "", job_id: str = "", user_id: str = "",
+    def __init__(self, route: str, *, max_turns: int, usd_ceiling: float, ledger: WaveLedger,
+                 call: ModelCall | None = None, file_id: str = "", job_id: str = "", user_id: str = "",
                  observe: Callable[[Any, list[Site]], dict] | None = None,
                  stage_names: Sequence[str] = (), unfixable: UnfixableRegistry | None = None,
-                 first_call_estimate_usd: float = FIRST_CALL_ESTIMATE_USD) -> None:
+                 prices: tuple[float, float, float] = DEFAULT_PRICES,
+                 output_tokens: int = REPAIR_V4_PROPOSE_MAX_OUTPUT_TOKENS,
+                 max_input_tokens: int = MAX_INPUT_TOKENS) -> None:
         if max_turns < 1:
             raise ValueError("max_turns must be at least 1")
         if not usd_ceiling > 0:
             raise ValueError("usd_ceiling must be positive")
+        if not isinstance(ledger, WaveLedger):
+            raise TypeError("a WaveLedger is required: the cap is not optional")
         self.route = route
         self.max_turns = max_turns
         self.usd_ceiling = usd_ceiling
@@ -294,10 +339,14 @@ class AIProposer:
         self.turns_used = 0
         self.stop_reason: StopReason | None = None
         self._call = call
-        self._ledger = ledger if ledger is not None else WaveLedger(cap_usd=float("inf"))
+        self._ledger = ledger
         self._observe = observe or _default_observe
-        self._estimate = first_call_estimate_usd
+        self._prices = prices
+        self._output_tokens = output_tokens
+        self._max_input_tokens = max_input_tokens
         self._last_cost: float | None = None
+        self._last_input_tokens = 0
+        self._failures = 0
         system = system_prompt(stage_names=self.stage_names)
         self._tools = tool_schemas(stage_names=self.stage_names)
         self._cache_key = cache_key_for(system, self._tools)
@@ -330,19 +379,20 @@ class AIProposer:
         if self.stop_reason is not None or getattr(state.verdict, "clean", False):
             return []                                  # stop a file the moment it is clean
         if self.turns_used >= self.max_turns:
-            self.stop_reason = "max_turns"
+            self._stop("max_turns")
             return []
         sites = self.unfixable.filter(state.sites)
         self._messages.append(self._user_turn(state, sites))
         collected: list[ProposedCandidate] = []
         while len(collected) < k:
             if self.turns_used >= self.max_turns:
-                self.stop_reason = "max_turns"
+                self._stop("max_turns")
                 break
-            admission = self._ledger.admit(self.file_id, self._next_estimate(),
-                                           file_ceiling_usd=self.usd_ceiling)
-            if not admission.ok:
-                self.stop_reason = admission.reason
+            admission = self._admit()
+            if admission is None or not admission.ok:
+                if admission is not None:
+                    assert admission.reason is not None
+                    self._stop(admission.reason)
                 break
             assert admission.reservation is not None
             try:
@@ -353,9 +403,16 @@ class AIProposer:
             reply = priced.reply
             self.turns_used += 1
             if reply.failure_marker:
+                # One failed round (the router has already retried it) must not end the AI for the file;
+                # only MAX_CONSECUTIVE_FAILURES in a row do. The round returns what it has and the driver
+                # asks again next round.
                 self._ledger.release(admission.reservation)
-                self.stop_reason = "model_failure"
+                self._failures += 1
+                if self._failures >= MAX_CONSECUTIVE_FAILURES:
+                    self._stop("model_failure")
                 break
+            self._failures = 0
+            self._last_input_tokens = reply.input_tokens
             self._ledger.settle(admission.reservation, file_id=self.file_id, job_id=self.job_id,
                                 provider=priced.provider, model=priced.model,
                                 input_tokens=reply.input_tokens, cached_input_tokens=reply.cached_input_tokens,
@@ -376,8 +433,29 @@ class AIProposer:
 
     # --- one round trip ------------------------------------------------------------------------------------------
 
-    def _next_estimate(self) -> float:
-        return self._estimate if self._last_cost is None else max(self._last_cost * _GROWTH, 0.001)
+    def _admit(self) -> Admission | None:
+        """Reserve this call's estimated cost, or None (and a stop) when the call is too large to make."""
+        usd, tokens = estimate_call_usd(self._messages, self._tools, prices=self._prices,
+                                        output_tokens=self._output_tokens,
+                                        cached_prefix_tokens=self._last_input_tokens)
+        if tokens > self._max_input_tokens:
+            self._stop("input_too_large")
+            return None
+        if self._last_cost is not None:
+            usd = max(usd, self._last_cost * _GROWTH)
+        return self._ledger.admit(self.file_id, usd, file_ceiling_usd=self.usd_ceiling)
+
+    def _stop(self, reason: StopReason) -> None:
+        """End the AI's part in this file and record why in the ledger, not just on this object."""
+        if self.stop_reason == reason:
+            return
+        self.stop_reason = reason
+        self._ledger.mark(self.file_id, stop_reason=reason, ai_capped=self.ai_capped)
+
+    def result(self) -> dict:
+        """What the driver records for this file: the AI's spend and why it stopped."""
+        return {"file_id": self.file_id, "ai_capped": self.ai_capped, "stop_reason": self.stop_reason,
+                "turns": self.turns_used, "spent_usd": self._ledger.file_spent_usd(self.file_id)}
 
     async def _ask(self, reservation: str) -> ProposeReply:
         call = self._call
@@ -555,6 +633,6 @@ async def select_route(routes: Sequence[str], *, call: ModelCall | None = None) 
     raise NoUsableRoute("no repair_v4_propose route passed the probe: " + "; ".join(failures))
 
 
-__all__ = ["AIProposer", "DECLARE_UNFIXABLE", "FIRST_CALL_ESTIMATE_USD", "IMAGE_KINDS", "NoUsableRoute",
+__all__ = ["AIProposer", "DECLARE_UNFIXABLE", "DEFAULT_PRICES", "IMAGE_KINDS", "MAX_CONSECUTIVE_FAILURES", "NoUsableRoute",
            "Outcome", "PROPOSE", "ProbeResult", "ProposedCandidate", "UnfixableRegistry", "cache_key_for",
-           "probe_route", "select_route", "system_prompt", "tool_schemas"]
+           "estimate_call_usd", "probe_route", "select_route", "system_prompt", "tool_schemas"]

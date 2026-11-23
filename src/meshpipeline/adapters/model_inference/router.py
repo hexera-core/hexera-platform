@@ -28,6 +28,7 @@ from meshpipeline.adapters.model_inference.routing import (
 )
 from meshpipeline.contracts.model_capacity import CapacityError
 from meshpipeline.contracts.model_inference import (
+    REPAIR_V4_PROPOSE_MAX_OUTPUT_TOKENS,
     Conversation,
     ModelRoundResult,
     ParallelToolCalls,
@@ -262,7 +263,7 @@ async def call_summarizer_model(messages: Conversation, job_id: str = "") -> Mod
 # adds no per-role setting, sampling branch or marker vocabulary. What it does NOT skip is pricing: the
 # per-file and per-wave caps are only as good as the meter, so an unpriced key is refused before dialling.
 _PROPOSE_ROLE = "repair_v4_propose"
-_PROPOSE_SPEC = SamplingSpec(max_tokens=8192, thinking_off=True)
+_PROPOSE_SPEC = SamplingSpec(max_tokens=REPAIR_V4_PROPOSE_MAX_OUTPUT_TOKENS, thinking_off=True)
 
 
 def _propose_route(provider: str, model: str) -> ModelRoute:
