@@ -1,0 +1,102 @@
+{
+ "route": "openai:gpt-6-astra",
+ "probe_ok": true,
+ "probe_detail": "tool call and image both understood",
+ "calls": [
+  {
+   "route": "openai:gpt-6-astra",
+   "model": "gpt-6-astra",
+   "estimate_usd": 0.22605,
+   "cost_usd": 0.00176,
+   "input": 86,
+   "cached": 0,
+   "output": 18,
+   "reasoning": 0,
+   "finish": "tool_calls",
+   "failure": "",
+   "tools": [
+    [
+     "report_colour",
+     "{\"colour\":\"red\"}"
+    ]
+   ]
+  },
+  {
+   "route": "openai:gpt-6-astra",
+   "model": "gpt-6-astra",
+   "estimate_usd": 0.2368,
+   "cost_usd": 0.02505,
+   "input": 2370,
+   "cached": 0,
+   "output": 27,
+   "reasoning": 0,
+   "finish": "tool_calls",
+   "failure": "",
+   "tools": [
+    [
+     "declare_unfixable",
+     "{\"site_id\":\"S0\",\"reason\":\"probe\"}"
+    ]
+   ]
+  },
+  {
+   "route": "openai:gpt-6-astra",
+   "model": "gpt-6-astra",
+   "estimate_usd": 0.2368,
+   "cost_usd": 0.005115,
+   "input": 2370,
+   "cached": 2215,
+   "output": 27,
+   "reasoning": 0,
+   "finish": "tool_calls",
+   "failure": "",
+   "tools": [
+    [
+     "declare_unfixable",
+     "{\"site_id\":\"S0\",\"reason\":\"probe\"}"
+    ]
+   ]
+  }
+ ],
+ "cache_key": "crs-v4-43d6b5ae2c6fe460f50ce963",
+ "second_call_cached_tokens": 2215,
+ "ledger_spent_usd": 0.031925,
+ "ledger_entries": [
+  {
+   "file_id": "probe",
+   "job_id": "",
+   "provider": "openai",
+   "model": "gpt-6-astra",
+   "input_tokens": 86,
+   "cached_input_tokens": 0,
+   "output_tokens": 18,
+   "usd": 0.00176,
+   "kind": "repair_v4_propose",
+   "at": 1795463158.762061
+  },
+  {
+   "file_id": "probe",
+   "job_id": "live-readiness-cache-0",
+   "provider": "openai",
+   "model": "gpt-6-astra",
+   "input_tokens": 2370,
+   "cached_input_tokens": 0,
+   "output_tokens": 27,
+   "usd": 0.02505,
+   "kind": "repair_v4_propose",
+   "at": 1795463160.308179
+  },
+  {
+   "file_id": "probe",
+   "job_id": "live-readiness-cache-1",
+   "provider": "openai",
+   "model": "gpt-6-astra",
+   "input_tokens": 2370,
+   "cached_input_tokens": 2215,
+   "output_tokens": 27,
+   "usd": 0.005115,
+   "kind": "repair_v4_propose",
+   "at": 1795463166.099086
+  }
+ ]
+}

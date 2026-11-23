@@ -1,0 +1,9 @@
+{"at": 1795463205.8527231, "n_shards": 1, "shard_index": 0, "t": "init", "wave": "normal", "wave_id": "live-readiness"}
+{"at": 1795463261.2125003, "file": "search", "id": "899605dde0ec43a1b065f954dc0d4fc8", "t": "reserve", "u": 264350}
+{"at": 1795463268.2233722, "cached": 2338, "file": "search", "id": "899605dde0ec43a1b065f954dc0d4fc8", "in": 3469, "job": "repair_v4:7183baff25e3", "kind": "repair_v4_propose", "model": "gpt-6-astra", "out": 89, "provider": "openai", "t": "settle", "u": 18098}
+{"at": 1795463275.347364, "file": "search", "id": "1727d5fb06104610b2da658139f32bcc", "t": "reserve", "u": 276160}
+{"at": 1795463278.3790174, "cached": 3466, "file": "search", "id": "1727d5fb06104610b2da658139f32bcc", "in": 4653, "job": "repair_v4:7183baff25e3", "kind": "repair_v4_propose", "model": "gpt-6-astra", "out": 68, "provider": "openai", "t": "settle", "u": 18736}
+{"at": 1795463544.966586, "file": "search", "id": "7c634e42e68747b19e78a62f7c992c68", "t": "reserve", "u": 272840}
+{"at": 1795463550.505291, "cached": 0, "file": "search", "id": "7c634e42e68747b19e78a62f7c992c68", "in": 4060, "job": "repair_v4:6b59d568b685", "kind": "repair_v4_propose", "model": "gpt-6-astra", "out": 106, "provider": "openai", "t": "settle", "u": 45900}
+{"at": 1795463557.5295813, "file": "search", "id": "dbc6db1388c34635b04adf38a0a7eaff", "t": "reserve", "u": 284900}
+{"at": 1795463562.1719031, "cached": 4057, "file": "search", "id": "dbc6db1388c34635b04adf38a0a7eaff", "in": 5279, "job": "repair_v4:6b59d568b685", "kind": "repair_v4_propose", "model": "gpt-6-astra", "out": 71, "provider": "openai", "t": "settle", "u": 19827}
