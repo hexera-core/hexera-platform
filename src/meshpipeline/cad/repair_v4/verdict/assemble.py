@@ -99,6 +99,22 @@ def default_members(tier: Literal["cheap", "full"]) -> list[Any]:
     return [members.GmshProd(), members.GmshDefault(), members.GmshAlt()]
 
 
+def clean_of(
+    *, tier: str, inconclusive: bool, valid: Any, panel: Sequence[Any], faithful: FaithfulReport | None
+) -> bool:
+    """The ONE rule for `Verdict.clean`. A cheap verdict ran a partial panel, so it can never certify a file
+    clean; an inconclusive one is neither clean nor unclean; every panel member must pass and layer 3 must hold."""
+    return (
+        tier == "full"
+        and not inconclusive
+        and bool(valid.ok)
+        and bool(panel)
+        and all(r.status == "pass" for r in panel)
+        and faithful is not None
+        and faithful.ok
+    )
+
+
 def _assemble(
     pool: WorkerPool,
     step: str,
@@ -133,16 +149,7 @@ def _assemble(
 
     inconclusive = any(is_infrastructure_failure(r) for r in panel)
 
-    # A cheap verdict ran a partial panel, so it can never certify a file clean.
-    clean = (
-        tier == "full"
-        and not inconclusive
-        and valid.ok
-        and bool(panel)
-        and all(r.status == "pass" for r in panel)
-        and faithful is not None
-        and faithful.ok
-    )
+    clean = clean_of(tier=tier, inconclusive=inconclusive, valid=valid, panel=panel, faithful=faithful)
     return Verdict(valid, panel, faithful, clean, tier, inconclusive)
 
 

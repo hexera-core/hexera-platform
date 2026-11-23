@@ -363,7 +363,7 @@ def test_unfixable_site_excluded_from_det_sweeps():
     sites = [site("S1", "proximity"), site("S2", "overlap")]
     p.propose(state(sites), k=3)
 
-    assert "S2" in registry and registry.reasons["S2"] == "needs 0.4 mm > bound"
+    assert registry.is_declared("S2") and registry.reasons[("", "S2")] == "needs 0.4 mm > bound"
     assert [s.id for s in registry.filter(sites)] == ["S1"]         # what a det generator sweeps
     [ack] = tool_results(fake.calls[1].messages)
     assert ack["ok"] is True
@@ -376,14 +376,14 @@ def test_declaring_an_unknown_site_is_a_structured_error():
     registry = P.UnfixableRegistry()
     make(fake, unfixable=registry).propose(state([site("S1", "proximity")]), k=3)
     [res] = tool_results(fake.calls[1].messages)
-    assert res["ok"] is False and "S404" in json.dumps(res) and "S404" not in registry
+    assert res["ok"] is False and "S404" in json.dumps(res) and not registry.is_declared("S404")
 
 
 def test_declare_unfixable_requires_a_reason():
     fake = Fake([reply(call_of("declare_unfixable", {"site_id": "S1", "reason": " "})), reply()])
     registry = P.UnfixableRegistry()
     make(fake, unfixable=registry).propose(state([site("S1", "proximity")]), k=3)
-    assert "S1" not in registry
+    assert not registry.is_declared("S1")
 
 
 # --- the static prefix, and the system prompt ---------------------------------------------------------------

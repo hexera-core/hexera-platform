@@ -36,8 +36,12 @@ Wiring (Task 18b).
   * FEEDBACK. A generator with `feedback(list[proposer.Outcome])` (the AI proposer) is told, after each
     round, what became of ITS OWN candidates: the Diff, and the verdict delta (cheap tier against the parent's
     cheap score, or full against full once confirmed) for the ones that became states, the reason for the rest.
-  * ONE `UnfixableRegistry` is shared by the AI proposer and every `DetGenerator` (`ai_generators` builds
-    them so; `search` refuses a mismatch), so a site the model declared unfixable is not swept either.
+  * ONE `UnfixableRegistry` OBJECT is shared by the AI proposer and every `DetGenerator` (`ai_generators`
+    builds them so; `search` refuses a mismatch), so a site the model declared unfixable is not swept either.
+    What it HOLDS is per lineage: a declaration is keyed `(declaring state, site id)` and seen by that state
+    and its descendants only. Site ids are not globally unique (two siblings mint the same id for different new
+    geometry), so a verdict on branch A must not remove branch B's site. `viewed` ("picture already drawn") is
+    per lineage for the same reason.
   * SITE IDS. Site ids are carried across rounds by a `SiteRegistry`, which follows ONE LINEAR LINEAGE and
     raises on a fork. A best-first search forks constantly, so the registry is per STATE, not per search: a
     state inherits (by reference) the registry as its parent left it, and on expansion works on a DEEP COPY of
@@ -50,8 +54,21 @@ Wiring (Task 18b).
   * STOP REASON. `SearchResult.ai_stop_reason` is the proposer's own reason (`file_ceiling`, `input_too_large`,
     `model_failure`, ...) or `model_budget` when this driver capped it; `ai_capped` is true for a spending
     limit only, so `input_too_large` and `model_failure` are NOT `ai_capped`.
-  * An INCONCLUSIVE verdict (`InconclusiveVerdict` from `score`) is retried once, then the candidate is a
-    "failed" outcome; it never ends a branch and is never ranked.
+  * INFRASTRUCTURE IS NOT A VERDICT. `InconclusiveVerdict` (from `score`) and `CheckerUnavailable` (the STEP
+    export, the original's facts, the re-run layer 3, or layer 1/3 of the checker) are retried, then the
+    candidate is an `inconclusive` outcome: traced, never ranked, never counted, never told to the proposer as
+    a failure (it learns nothing from a dead worker), and never a rejection. A genuine candidate failure
+    (`OpFailed`, a verdict that scores badly) is still a failure and is still fed back. `judge.full(start)` is
+    NOT guarded: a checker that cannot judge the START propagates out of `search`, because there is nothing to
+    search from; callers must treat that as "no result", not as "not clean".
+  * KNOWN PROPERTIES, not defects of this task. (1) One `AIProposer` keeps ONE message list for the whole
+    search, so the model's conversation is not per lineage: after the search jumps between branches it has been
+    shown states from several, and its memory of "what I tried" mixes them (the feedback it is sent names the
+    state each candidate became). (2) The model cap is checked once per EXPANSION, so one `propose` may make
+    up to `max_turns` calls, bounded by the ledger and the proposer's own `usd_ceiling`, not by `model_usd`.
+    (3) `render.view` runs synchronously on the expansion thread, and keeps being asked for pictures after the
+    proposer stopped for a reason of its own (`model_gens.intersection(active)` stays true): it is not paid
+    for, but it is time.
 """
 
 from __future__ import annotations
@@ -59,6 +76,7 @@ from __future__ import annotations
 import copy
 import heapq
 import itertools
+import math
 import time
 from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
@@ -67,20 +85,34 @@ from typing import Any, Literal, Protocol
 
 from meshpipeline.cad.repair_v4 import render
 from meshpipeline.cad.repair_v4.ops import REGISTRY, OpDeclined, OpFailed, validate_call
-from meshpipeline.cad.repair_v4.proposer import IMAGE_KINDS, AIProposer, Outcome, ProposedCandidate, UnfixableRegistry
+from meshpipeline.cad.repair_v4.proposer import (
+    IMAGE_KINDS,
+    AIProposer,
+    Outcome,
+    ProposedCandidate,
+    UnfixableRegistry,
+)
 from meshpipeline.cad.repair_v4.sites import SiteRegistry, find_sites
 from meshpipeline.cad.repair_v4.stages import (
     DEFAULTS,
     STAGES,
-    _original_facts,
-    _step_for,
     declared_edits,
+    original_facts,
     run_stage,
+    step_for,
 )
 from meshpipeline.cad.repair_v4.trace import Trace
 from meshpipeline.cad.repair_v4.types import Site, StableId
-from meshpipeline.cad.repair_v4.verdict.assemble import InconclusiveVerdict, Verdict, cheap_verdict, score, verdict
+from meshpipeline.cad.repair_v4.verdict.assemble import (
+    InconclusiveVerdict,
+    Verdict,
+    cheap_verdict,
+    clean_of,
+    score,
+    verdict,
+)
 from meshpipeline.cad.repair_v4.verdict.faithful import DeclaredIdError, FaithfulReport, check_faithful
+from meshpipeline.cad.repair_v4.verdict.valid import CheckerUnavailable
 from meshpipeline.cad.repair_v4.workspace import Diff, UnknownTarget, Workspace
 
 #: the op name of the macro action: `params={"stage": name, "params": {...}}`, no targets
@@ -138,6 +170,9 @@ class SearchState:
     #: the `SiteRegistry` of this state's lineage. Before expansion: the PARENT's, as the parent left it (never
     #: mutated again). On expansion it is replaced by this state's own deep copy with its sites applied.
     site_registry: Any = None
+    #: the state ids from the start down to this state (its own last). Site ids are minted per lineage, so
+    #: anything keyed by a site id (an unfixable declaration, "picture already drawn") is keyed by this too.
+    lineage: tuple[str, ...] = ()
     #: score from the cheap tier (None when unknown); with `rank`, see the module docstring
     cheap_score: Score | None = None
     rank: Score | None = None
@@ -163,29 +198,29 @@ class Judge:
 
 
 def _clean_with(v: Verdict, faithful: FaithfulReport | None) -> bool:
-    """`Verdict.clean` as `assemble._assemble` computes it, for a verdict whose layer 3 was replaced. A test pins
-    this against the real assembly, so a change to the rule there fails here instead of silently disagreeing."""
-    return (
-        v.tier == "full"
-        and not v.inconclusive
-        and v.valid.ok
-        and bool(v.panel)
-        and all(r.status == "pass" for r in v.panel)
-        and faithful is not None
-        and faithful.ok
+    """`Verdict.clean` for a verdict whose layer 3 was replaced, by the ONE rule (`assemble.clean_of`).
+
+    OPEN OWNER DECISION, deliberately not changed here: when the ORIGINAL has no solid, layer 3 always reports
+    `volume_changed` / `body_count_changed`, so `faithful.ok` is False, `Judge.score` key 0 is permanently 0 and
+    `clean` permanently False. The search then never stops at "clean", `SearchResult.clean` cannot be True, and
+    ordering degrades to panel passes. Task 16's local gate (`stages._judge`, `_SOLIDLESS_OK_REASONS`) already
+    treats those reasons as acceptable, so stage keep/rollback and search ranking disagree for such files.
+    Resolving it changes what "clean" means; see the Task 18b report, item "escalated"."""
+    return clean_of(
+        tier=v.tier, inconclusive=v.inconclusive, valid=v.valid, panel=v.panel, faithful=faithful
     )
 
 
 def _judged(fn: Callable[..., Verdict], pool: Any, ws: Workspace, original: str) -> Verdict:
     """`fn` (`cheap_verdict` / `verdict`) on workspace `ws`, judged as Task 16's `stages._judge` judges it.
 
-    The checker reads STEP files, a workspace is a BREP, so the BREP is exported first (`_step_for`). Declared
+    The checker reads STEP files, a workspace is a BREP, so the BREP is exported first (`step_for`). Declared
     edits are `F<k>` indices of the BREP the checker reads, NOT stable ids (`declared_edits` translates them),
     and a STEP round trip may renumber faces, so layer 3 is re-run on the two BREPs, where the indices are exact,
     whenever the lineage declared anything; `clean` is recomputed from that report. A declared id the shapes do not
     match is judged undeclared rather than crashing the run (as `stages._judge` does)."""
-    faces, _solids = _original_facts(pool, ws.original)
-    v: Verdict = fn(pool, _step_for(pool, ws.brep_path), original)
+    faces, _solids = original_facts(pool, ws.original)
+    v: Verdict = fn(pool, step_for(pool, ws.brep_path), original)
     declared = declared_edits(ws, faces)
     if v.valid.ok and (declared.added or declared.removed):
         try:
@@ -265,7 +300,7 @@ class DetGenerator:
 
     def propose(self, state: SearchState, k: int) -> list[Candidate]:
         out: list[Candidate] = []
-        sites = self.unfixable.filter(state.sites) if self.unfixable is not None else state.sites
+        sites = self.unfixable.filter(state.sites, state.lineage) if self.unfixable is not None else state.sites
         for site in sites:
             for op, targets, params, why in self._sweep(site):
                 if op in REGISTRY:
@@ -374,7 +409,7 @@ def _fingerprint(ws: Workspace) -> tuple:
 class _Outcome:
     candidate: Candidate
     gen: int
-    kind: Literal["ok", "validate", "declined", "failed", "error"]
+    kind: Literal["ok", "validate", "declined", "failed", "error", "inconclusive"]
     errors: list[str] = field(default_factory=list)
     ws: Workspace | None = None
     verdict: Any = None
@@ -459,7 +494,7 @@ def _delta(before: Score, after: Score) -> dict:
 
 _STATUS: dict[str, Literal["applied", "declined", "failed", "invalid"]] = {
     "ok": "applied", "validate": "invalid", "declined": "declined", "failed": "failed", "error": "failed",
-}
+}  # "inconclusive" is deliberately absent: it is never turned into feedback
 
 
 def _feedback_for(out: _Outcome, parent: SearchState, child: SearchState | None, duplicate: bool) -> Outcome:
@@ -510,6 +545,22 @@ def _model_usage(g: Any) -> tuple[int, float] | None:
     return None
 
 
+#: the per-file model spend ceiling of a `search_ai` run (spec 5.9): enforced where the proposer is built
+FILE_USD_CEILING = 1.00
+ARMS = ("search_det", "search_ai")
+
+
+def arm_generators(arm: str, **ai_kwargs: Any) -> tuple[list[Any], AIProposer | None]:
+    """The generators of an eval/engine arm: `search_det` -> the deterministic sweep only (no proposer is built,
+    so no model can be reached); `search_ai` -> `ai_generators(**ai_kwargs)`. An unknown arm is a ValueError.
+    The entry points that select an arm (`repair_v4._run_search`, Task 20; the eval arms, Task 21) call this."""
+    if arm == "search_det":
+        return [DetGenerator()], None
+    if arm == "search_ai":
+        return ai_generators(**ai_kwargs)
+    raise ValueError(f"unknown search arm {arm!r}; the arms are {ARMS}")
+
+
 def ai_generators(
     route: str,
     *,
@@ -526,6 +577,10 @@ def ai_generators(
     """The generators of an `search_ai` run: the deterministic sweeps and the AI proposer, built around ONE
     `UnfixableRegistry`, with the proposer told every stage name (so it may propose `run_stage`). `ledger` must be
     a `WaveLedger.for_shard` one (the proposer refuses any other). Returns (generators, proposer)."""
+    if not (0 < usd_ceiling <= FILE_USD_CEILING):  # a chained comparison is False for inf and nan too
+        raise ValueError(
+            f"usd_ceiling must be finite and in (0, {FILE_USD_CEILING}] dollars per file, got {usd_ceiling!r}"
+        )
     shared = UnfixableRegistry()
     proposer = AIProposer(
         route, max_turns=max_turns, usd_ceiling=usd_ceiling, ledger=ledger, call=call, file_id=file_id,
@@ -554,6 +609,8 @@ def search(
         if h_mm is None:
             raise ValueError("search needs either a judge or h_mm for the real one; there is no default")
         judge = default_judge(h_mm=h_mm)
+    if not math.isfinite(budget.model_usd) or budget.model_usd < 0:
+        raise ValueError(f"Budget.model_usd must be a finite, non-negative dollar cap, got {budget.model_usd!r}")
     unfixable = _shared_unfixable(generators)
     any_gens: list[Any] = list(generators)  # generators may also carry feedback()/result(), outside the protocol
     trace = Trace(clock)
@@ -561,6 +618,7 @@ def search(
     state_ids = itertools.count()
     tie = itertools.count()
     spent = {"ops": 0}
+    lineages: dict[str, tuple[str, ...]] = {}
 
     def usage() -> tuple[int, float]:
         calls, usd = 0, 0.0
@@ -592,8 +650,10 @@ def search(
         via: dict | None,
         registry: SiteRegistry | None = None,
     ) -> SearchState:
+        sid = f"S{next(state_ids)}"
+        lineages[sid] = (lineages.get(parent, ()) if parent is not None else ()) + (sid,)
         return SearchState(
-            id=f"S{next(state_ids)}",
+            id=sid,
             ws=ws,
             verdict=verdict,
             score=sc,
@@ -603,17 +663,19 @@ def search(
             via=via,
             tier=tier,
             site_registry=registry,
+            lineage=lineages[sid],
         )
 
     def judge_cheap(ws: Workspace) -> tuple[Any, Score]:
         """The cheap verdict and its score. An inconclusive verdict (the pool failed, not the part) is retried;
-        what stays inconclusive raises `InconclusiveVerdict` to the caller, which owns the branch."""
-        last: InconclusiveVerdict | None = None
+        what stays inconclusive raises `InconclusiveVerdict` / `CheckerUnavailable` to the caller, which owns the
+        branch. Both are the checker's infrastructure failing, not a statement about the part."""
+        last: InconclusiveVerdict | CheckerUnavailable | None = None
         for _ in range(JUDGE_ATTEMPTS):
-            v = judge.cheap(pool, ws, original)
             try:
+                v = judge.cheap(pool, ws, original)
                 return v, judge.score(v)
-            except InconclusiveVerdict as exc:
+            except (InconclusiveVerdict, CheckerUnavailable) as exc:
                 last = exc
         assert last is not None
         raise last
@@ -622,7 +684,8 @@ def search(
     active = list(range(len(generators)))
     ai_capped = False
     ai_stopped: dict[int, str] = {}
-    viewed: set[str] = set()
+    #: state id -> the site ids already drawn in its lineage (a child inherits its parent's, after the parent's draws)
+    viewed_in: dict[str, frozenset[str]] = {}
 
     start_verdict = judge.full(pool, start, original)
     s0 = new_state(start, start_verdict, judge.score(start_verdict), "full", 0, None, None, SiteRegistry())
@@ -676,7 +739,10 @@ def search(
             else:
                 state.site_registry = _carry_site_ids(state, trace)
             state.budget = {"spent": spent_now(), "limits": budget.__dict__}
-            declared_unfixable = [s.id for s in state.sites if unfixable is not None and s.id in unfixable]
+            declared_unfixable = [
+                s.id for s in state.sites if unfixable is not None and unfixable.is_declared(s.id, state.lineage)
+            ]
+            viewed = set(viewed_in.get(state.parent, frozenset())) if state.parent is not None else set()
             if model_gens.intersection(active):
                 for s in state.sites:
                     if s.kind in IMAGE_KINDS and s.id not in viewed and s.id not in declared_unfixable:
@@ -686,6 +752,7 @@ def search(
                         except Exception as exc:  # a picture is optional evidence
                             trace.record("judge_error", where="render", state=state.id,
                                          error=f"{type(exc).__name__}: {exc}")
+            viewed_in[state.id] = frozenset(viewed)
             trace.record(
                 "expand",
                 state=state.id,
@@ -764,8 +831,9 @@ def search(
                     return _Outcome(c, gi, "declined", [exc.reason])
                 except OpFailed as exc:
                     return _Outcome(c, gi, "failed", [f"{exc.status}: {exc.message}"])
-                except InconclusiveVerdict as exc:
-                    return _Outcome(c, gi, "failed", [f"inconclusive: the checker could not judge this state ({exc})"])
+                except (InconclusiveVerdict, CheckerUnavailable) as exc:
+                    # infrastructure, not a verdict on the candidate: never a failure, never fed back
+                    return _Outcome(c, gi, "inconclusive", [f"{type(exc).__name__}: {exc}"])
                 except (UnknownTarget, ValueError) as exc:
                     return _Outcome(c, gi, "validate", [str(exc)])
                 except Exception as exc:  # one broken branch must not end the search
@@ -773,6 +841,9 @@ def search(
 
             children: list[SearchState] = []
             for out in [f.result() for f in [executor.submit(evaluate, i) for i in to_run]]:
+                if out.kind == "inconclusive":
+                    _record_candidate(trace, state, out.candidate, "inconclusive", errors=out.errors)
+                    continue  # not a rejection and no fate: the generator is not told its candidate failed
                 if out.kind != "ok":
                     _reject(trace, rejections, state, out.gen, out.candidate, out.kind, out.errors)
                     fates.append((out.gen, out, None, False))

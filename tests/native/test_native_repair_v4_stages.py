@@ -157,8 +157,8 @@ def test_unsewn_box_comes_back_clean(pool: WorkerPool, tmp_path: Path) -> None:
     # Layer 1: the healed file is valid and one solid. Layer 3 compares it with the DAMAGED input,
     # which has no solid, so volume and body count legitimately differ (6 loose faces -> 1 body);
     # nothing else may: same area, no deviation. (That is why `score`'s first key stays 0 here.)
-    v = cheap_verdict(pool, stages._step_for(pool, res.ws.brep_path),
-                      stages._step_for(pool, ws.original),
+    v = cheap_verdict(pool, stages.step_for(pool, res.ws.brep_path),
+                      stages.step_for(pool, ws.original),
                       members=[_StandInGmshDefault()], run_panel=_run_panel)
     assert v.valid.ok and v.valid.solids == 1, v.valid
     assert v.faithful is not None
@@ -303,7 +303,7 @@ def test_declared_removal_reaches_layer_three(pool: WorkerPool, tmp_path: Path,
 
     ws = Workspace.from_brep(pool, _clean_part(tmp_path / "clean.brep"))
     new, _ = _DeleteAFaceDeclared().apply(pool, ws, [], {}, timeout_s=60)
-    faces, _solids = stages._original_facts(pool, ws.original)
+    faces, _solids = stages.original_facts(pool, ws.original)
     declared = stages.declared_edits(new, faces)
     assert declared.removed == ["F1"] and declared.added == []
     undeclared = check_faithful(pool, ws.original, new.brep_path, declared_added=[], declared_removed=[])

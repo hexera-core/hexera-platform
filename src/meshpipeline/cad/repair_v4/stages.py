@@ -44,7 +44,9 @@ Stage defaults (override per stage through `params[<stage>]`):
 
 from __future__ import annotations
 
+import atexit
 import os
+import shutil
 import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
@@ -259,13 +261,14 @@ _STEPS_DIR: list[str] = []
 _STEP_FOR: dict[tuple[str, float], str] = {}
 
 
-def _step_for(pool: WorkerPool, brep: str) -> str:
+def step_for(pool: WorkerPool, brep: str) -> str:
     """The workspace's BREP as a STEP file (mm), written once per BREP path, for the checker."""
     key = (brep, os.stat(brep).st_mtime)
     if key in _STEP_FOR and os.path.exists(_STEP_FOR[key]):
         return _STEP_FOR[key]
     if not _STEPS_DIR:
         _STEPS_DIR.append(tempfile.mkdtemp(prefix="stages_step_"))
+        atexit.register(shutil.rmtree, _STEPS_DIR[0], True)  # the exports are scratch: gone when the process is
     out = os.path.join(_STEPS_DIR[0], f"state_{len(_STEP_FOR)}.step")
     result = pool.call("write_step_xcaf", {"brep": brep, "labels": {}, "units": "mm", "path": out},
                        timeout_s=120)
@@ -277,12 +280,14 @@ def _step_for(pool: WorkerPool, brep: str) -> str:
 
 #: what layer 3 always reports when the ORIGINAL has no solid (6 loose faces -> 1 body, no volume)
 _SOLIDLESS_OK_REASONS = frozenset({"volume_changed", "body_count_changed"})
-_ORIGINAL_FACTS: dict[str, tuple[int, int]] = {}
+_ORIGINAL_FACTS: dict[tuple[str, float], tuple[int, int]] = {}
 
 
-def _original_facts(pool: WorkerPool, brep: str) -> tuple[int, int]:
-    """(faces, solids) of the lineage's original BREP, read once."""
-    if brep not in _ORIGINAL_FACTS:
+def original_facts(pool: WorkerPool, brep: str) -> tuple[int, int]:
+    """(faces, solids) of the lineage's original BREP, read once per (path, mtime): a reused path whose file was
+    rewritten is read again, not served stale."""
+    key = (brep, os.stat(brep).st_mtime)
+    if key not in _ORIGINAL_FACTS:
         result = pool.call("ws_index", {"brep_path": brep}, timeout_s=120)
         if not result.ok or result.value is None:
             raise CheckerUnavailable(f"cannot index {brep!r}: {result.status}: {result.error}")
@@ -290,8 +295,8 @@ def _original_facts(pool: WorkerPool, brep: str) -> tuple[int, int]:
         faces = sorted(int(e["index"]) for e in entities if e["type"] == "face")
         if faces != list(range(1, len(faces) + 1)):
             raise CheckerUnavailable(f"face indices of {brep!r} are not 1..n")
-        _ORIGINAL_FACTS[brep] = (len(faces), sum(1 for e in entities if e["type"] == "solid"))
-    return _ORIGINAL_FACTS[brep]
+        _ORIGINAL_FACTS[key] = (len(faces), sum(1 for e in entities if e["type"] == "solid"))
+    return _ORIGINAL_FACTS[key]
 
 
 def _successors(ws: Workspace, sid: StableId, after: int) -> list[StableId]:
@@ -335,8 +340,8 @@ def _judge(pool: WorkerPool, ws: Workspace) -> Score:
       * an original with NO SOLID: layer 3 then always reports volume_changed/body_count_changed,
         and `valid.ok` lives only in score key 0, so key 0 is replaced by a local gate: valid AND
         every layer-3 reason is one of those two (area and deviation reasons are not)."""
-    faces, solids = _original_facts(pool, ws.original)
-    v = cheap_verdict(pool, _step_for(pool, ws.brep_path), _step_for(pool, ws.original))
+    faces, solids = original_facts(pool, ws.original)
+    v = cheap_verdict(pool, step_for(pool, ws.brep_path), step_for(pool, ws.original))
     declared = declared_edits(ws, faces)
     if v.valid.ok and (declared.added or declared.removed):
         report: FaithfulReport | None
