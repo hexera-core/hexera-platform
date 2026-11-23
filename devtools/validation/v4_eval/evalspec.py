@@ -380,6 +380,9 @@ WAVES: dict[str, WaveDef] = {w.name: w for w in (
     # under `dev_search`, because a wave must have a row for every (file, arm).
     WaveDef("t2_smoke_dev", "normal", "dev", ("input_only", "staged", "search_det")),
     WaveDef("t2_smoke_clean", "normal", "clean", ("input_only", "staged", "search_det")),
+    # Dev snapshot v1: all four v4 arms over a split in a NORMAL wave, so no checkpoint slot is spent.
+    WaveDef("snap_v1_dev", "normal", "dev", _ALL[:4]),
+    WaveDef("snap_v1_clean", "normal", "clean", _ALL[:4]),
 )}
 
 
