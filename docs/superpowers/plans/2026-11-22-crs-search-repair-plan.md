@@ -54,6 +54,34 @@
   - wave results attached when the PR changes repair behaviour.
 - **Held-out split** is never used for tuning or for recipe memory.
 
+## Testing and Cost Policy (binding on every lane)
+
+Test in tiers, and spend money only at the outermost one.
+
+| Tier | What runs | Where | When | Cost |
+|---|---|---|---|---|
+| T0 | Unit tests with fake pool, fake verdict, scripted fake model | laptop | every change | free |
+| T1 | Native repair tier (real OCCT/gmsh/Netgen) | local mesh Docker image | before every merge | free |
+| T2 | **Smoke slice**: 30 dev files, stratified, frozen list. All deterministic arms. `search_ai` on 10 of them at $0.50/file | laptop, or 1 spot VM | per PR that changes repair behaviour | < $5 |
+| T3 | Dev wave | spot c2d fleet, self-deleting | deterministic arms whenever useful; `search_ai` on a **rotating 100-file dev subset**, with the full 300 only at checkpoints (≤ 3 times) | VM ~$1–5 per wave; model hard cap **$50 per wave** (checkpoint waves $300) |
+| T4 | Held-out + clean control | fleet | **once**, at a frozen commit | model hard cap $250 |
+
+**Cost controls (must be implemented, not just followed):**
+- **Verdict cache.** Key: (STEP sha256, panel config hash, verdict code version). Stored in the eval bucket and read before any mesher runs. Unchanged inputs and states are never re-meshed. The re-probe runs once, and each arm reuses it as `input_only`.
+- **Ledger and hard cap.** Every model call is written to a per-wave ledger. `launch_fleet`/`run_arm` refuse to start without `--model-usd-cap`, and each shard stops calling the model once the shared ledger reaches the cap; remaining files run deterministic-only and are marked `ai_capped`.
+- **Cheap model hygiene.**
+  - Prompt caching on the static system prompt and op schemas.
+  - Images only for sites whose kind needs an intent call (overlap, open loop/fill).
+  - Stop a file the moment it is clean.
+  - Per-file $ ceiling from the Global Constraints.
+- **Compute.**
+  - Spot VMs that self-delete with a 3 h backstop.
+  - The cheap tier is used to rank; the full panel runs only on the top-K states.
+  - The launcher preflight prints the projected VM-hours and refuses above the sprint ceiling (~600 c2d VM-hours) without an override flag.
+- **Sprint estimate:** VM ~$50–100 for the whole sprint (re-probe included); model ~$150–350, dominated by 2–3 checkpoint waves and the held-out run.
+
+Owner tasks for these controls: the verdict cache goes in Task 5, the ledger and cap in Tasks 19/21, the preflight in Task 8.
+
 ## Review Focus
 
 1. **Touching multi-body part after a STEP round trip** comes back with coincident duplicate faces. Expect: the checker and `conformalise` handle it, and the part is not reported as a false overlap. Test in Task 3 and Task 12.
