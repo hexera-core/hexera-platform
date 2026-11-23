@@ -75,6 +75,9 @@ WAVE_ID=""; WAVE_TYPE=""; NSHARDS=""; MARKER_BUCKET=""
 if [ "${P}" = "v4" ]; then
   WAVE_ID="$(attr v4-wave-id)"; WAVE_TYPE="$(attr v4-wave-type)"; NSHARDS="$(attr v4-n-shards)"
   MARKER_BUCKET="$(attr v4-marker-bucket)"
+  # an ARM wave (launch_fleet --wave): the plan_wave provenance the launcher claimed, copied by every shard into its
+  # PROVENANCE.json. Empty for the re-probe wave, which runs --mode reprobe exactly as before.
+  PLAN_PROV="$(attr v4-plan-provenance)"
 fi
 W="${V3EVAL_WORKDIR:-/var/lib/v3eval}"   # vm_shutdown.sh reads the same directory; tests override it
 
@@ -229,13 +232,15 @@ run_unit() {
   else
   # v4: the key file is mounted only when the launcher named a secret
   local keyenv=(); [ -f "${W}/secret.env" ] && keyenv=(--env-file "${W}/secret.env")
+  local MODE=reprobe planarg=()
+  [ -n "${PLAN_PROV}" ] && { MODE=harness; planarg=(--plan-provenance "${PLAN_PROV}"); }
   docker run --rm --name "v4eval-${k}" --cpus=1 -e PYTHONPATH=/eval/code/src \
     --env-file "${dir}.env" ${keyenv[@]+"${keyenv[@]}"} \
     -v "${W}/code:/eval/code:ro" -v "${W}/inputs/${kind}:/eval/inputs:ro" -v "${dir}:/eval/out" \
     -v "${ldir}:/eval/ledger" \
     -v "${W}/pool.json:/eval/pool.json:ro" \
     --entrypoint python "${IMAGE}" "/eval/code/${RUN_ARM}" \
-    --mode reprobe --shard "${shard}" --inputs /eval/inputs --out /eval/out \
+    --mode "${MODE}" ${planarg[@]+"${planarg[@]}"} --shard "${shard}" --inputs /eval/inputs --out /eval/out \
     --pool /eval/pool.json --cache-uri "${CACHE}" --sources "${SOURCES}" --commit "${COMMIT}" \
     --image "${IMAGE}" --machine-type "${MACHINE}" \
     --wave-type "${WAVE_TYPE}" --wave-id "${WAVE_ID}" --n-shards "${NSHARDS}" \

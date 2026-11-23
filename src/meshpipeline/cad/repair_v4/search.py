@@ -90,6 +90,7 @@ from dataclasses import dataclass, field, replace
 from typing import Any, Literal, Protocol
 
 from meshpipeline.cad.repair_v4 import render
+from meshpipeline.cad.repair_v4.measurement import NO_VERDICT, file_unmeasured, no_verdict_failure
 from meshpipeline.cad.repair_v4.ops import REGISTRY, OpDeclined, OpFailed, validate_call
 from meshpipeline.cad.repair_v4.proposer import (
     IMAGE_KINDS,
@@ -295,6 +296,14 @@ class SearchResult:
     #: says nothing about whether the file is repairable, so it must not be read as "search failed". `reason` is
     #: then "no_verdict" (the stop that would otherwise have been reported is kept in the trace as `ended_by`).
     infrastructure_failed: bool = False
+
+    @property
+    def unmeasured(self) -> bool:
+        """True when this outcome says nothing about the file (never measured, as opposed to measured and failed).
+        The same rule the report applies to a row (`measurement.file_unmeasured`)."""
+        return file_unmeasured(reason=self.reason, infrastructure_failed=self.infrastructure_failed,
+                               inconclusive_candidates=self.inconclusive_candidates,
+                               verdict_candidates=self.verdict_candidates, out_clean=self.clean)
 
     @property
     def inconclusive_rate(self) -> float:
@@ -968,9 +977,10 @@ def search(
                 reason = "patience"
 
     ended_by = reason
-    infrastructure_failed = bool(n_inconclusive and not n_verdicts and not best.verdict.clean)
+    infrastructure_failed = no_verdict_failure(
+        inconclusive_candidates=n_inconclusive, verdict_candidates=n_verdicts, best_clean=bool(best.verdict.clean))
     if infrastructure_failed:
-        reason = "no_verdict"  # never a patience/exhausted exit: nothing was measured
+        reason = NO_VERDICT  # never a patience/exhausted exit: nothing was measured
     ai_capped = ai_capped or any(bool(getattr(generators[gi], "ai_capped", False)) for gi in model_gens)
     ai_stop_reason = next(iter(ai_stopped.values()), "model_budget" if ai_capped else None)
     ai_results = [g.result() for g in any_gens if isinstance(g, AIProposer)]

@@ -373,6 +373,17 @@ def claim_wave_slot(w: WaveDef, wave_id: str, markers: Any) -> str | None:
                         f"checkpoint waves are limited to {MAX_CHECKPOINT_WAVES}")
 
 
+def wave_slot_problem(w: WaveDef, wave_id: str, markers: Any) -> str | None:
+    """`claim_wave_slot` without the claim: why this wave_id could not take (or already does not hold) a slot, or
+    None. Writes nothing, so a dry run can ask it."""
+    keys = slot_keys(w.wave_type)
+    if not keys or any(markers.get(k) == wave_id for k in keys):
+        return None
+    if any(markers.get(k) is None for k in keys):
+        return None
+    return (f"every {w.wave_type} slot is taken ({[markers.get(k) for k in keys]}); wave {wave_id!r} cannot run")
+
+
 _TOKEN = object()
 
 
@@ -412,6 +423,11 @@ class WavePlan:
         return {"wave": self.wave.name, "wave_id": self.wave_id, "wave_type": self.wave.wave_type,
                 "split": self.wave.split, "arms": list(self.wave.arms), "n_shards": self.n_shards,
                 "wave_cap_usd": self.cap_usd, "shard_cap_usd": self.shard_cap_usd, "slot": self.slot}
+
+    def provenance_argv(self) -> list[str]:
+        """`--plan-provenance <json>`: what a shard copies into its PROVENANCE.json. Every shard of one plan gets the
+        same string, and the report refuses shards whose `slot` is not the one this plan claimed."""
+        return ["--plan-provenance", json.dumps(self.provenance(), sort_keys=True)]
 
 
 def plan_wave(w: WaveDef, *, wave_id: str, n_shards: int, markers: Any) -> WavePlan:
