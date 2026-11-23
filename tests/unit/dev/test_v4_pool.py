@@ -210,3 +210,21 @@ def test_write_pool_refuses_an_empty_licence(tmp_path):
 
 def test_occt_licence_carries_unverified_marker():
     assert pool.LICENCE["occt"].startswith("UNVERIFIED")
+
+
+def test_archives_are_interned_and_round_trip(tmp_path):
+    out = tmp_path / "pool.json"
+    shared = {"url": "https://x/a.zip", "archive_sha256": "9" * 64}
+    entries = [_entry(name=f"m{i}", sha256=f"{i:064x}", **shared) for i in range(3)]
+    entries.append(_entry(name="solo", sha256="f" * 64, url="https://x/b.zip", archive_sha256=None))
+    pool.write_pool(entries, out, sources_included=["abc"])
+    import json
+    manifest = json.loads(out.read_text())
+    assert manifest["version"] == 3 and len(manifest["archives"]) == 2
+    assert all({"url", "archive_sha256"}.isdisjoint(r) for r in manifest["files"])
+    assert sorted(pool.read_pool(out), key=lambda e: e.name) == sorted(entries, key=lambda e: e.name)
+
+
+def test_write_pool_refuses_an_empty_url(tmp_path):
+    with pytest.raises(ValueError, match="url is required"):
+        pool.write_pool([_entry(url=" ")], tmp_path / "pool.json", sources_included=["abc"])

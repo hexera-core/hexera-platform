@@ -308,36 +308,50 @@ def _licence_id(text: str) -> str:
     return hashlib.sha256(text.encode()).hexdigest()[:12]
 
 
+def _archive_id(url: str, archive_sha256: str | None) -> str:
+    return hashlib.sha256(f"{url}\n{archive_sha256}".encode()).hexdigest()[:12]
+
+
 def write_pool(entries: list[PoolEntry], out: Path = OUT, *, sources_included: list[str],
                deduped: int = 0, notes: dict[str, str] | None = None) -> None:
-    """Compact JSON with licences interned: a top-level `licences` table (id -> text) and a
-    `licence_id` on every entry. Every entry still carries a non-empty licence; this is storage only.
+    """Compact JSON with repeated values interned. Two tables, each entry pointing into them:
+    `licences` (id -> text, via `licence_id`) and `archives` (id -> {url, archive_sha256}, via
+    `archive_id`; one archive URL/hash serves every member it holds). Every entry still carries a
+    non-empty licence and url - this is storage only, and an entry lacking either is refused.
 
     `sources_included` records which flag set built this file, so a partial pool is never mistaken
     for the full one."""
     licences: dict[str, str] = {}
+    archives: dict[str, dict[str, str | None]] = {}
     rows = []
     for e in sorted(entries, key=lambda e: (e.source, e.name)):
         if not e.licence.strip():
             raise ValueError(f"{e.name}: licence is required on every pool entry")
+        if not e.url.strip():
+            raise ValueError(f"{e.name}: url is required on every pool entry")
         row = asdict(e)
         row["licence_id"] = _licence_id(row.pop("licence"))
         licences[row["licence_id"]] = e.licence
+        row["archive_id"] = _archive_id(e.url, e.archive_sha256)
+        archives[row["archive_id"]] = {"url": row.pop("url"), "archive_sha256": row.pop("archive_sha256")}
         rows.append(row)
     out.parent.mkdir(parents=True, exist_ok=True)
-    manifest = {"version": 2, "sources_included": sources_included, "deduped": deduped,
-                "source_notes": notes or {}, "licences": licences, "files": rows}
+    manifest = {"version": 3, "sources_included": sources_included, "deduped": deduped,
+                "source_notes": notes or {}, "licences": licences, "archives": archives, "files": rows}
     out.write_text(json.dumps(manifest, separators=(",", ":"), sort_keys=True) + "\n")
 
 
 def read_pool(path: Path = OUT) -> list[PoolEntry]:
-    """Inverse of `write_pool`: rehydrates each entry's licence from the table."""
+    """Inverse of `write_pool`: rehydrates each entry's licence, url and archive_sha256."""
     manifest = json.loads(path.read_text())
-    licences = manifest["licences"]
+    if manifest.get("version") != 3:
+        raise ValueError(f"{path}: pool manifest version {manifest.get('version')}, expected 3")
     out = []
     for row in manifest["files"]:
-        licence = licences[row.pop("licence_id")]
-        out.append(PoolEntry(**row, licence=licence))
+        licence = manifest["licences"][row.pop("licence_id")]
+        archive = manifest["archives"][row.pop("archive_id")]
+        out.append(PoolEntry(**row, licence=licence, url=archive["url"],
+                             archive_sha256=archive["archive_sha256"]))
     return out
 
 
