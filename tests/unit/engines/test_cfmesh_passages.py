@@ -130,3 +130,78 @@ def test_an_unreadable_passages_record_is_refused_by_the_launch_check(tmp_path, 
     (tmp_path / PASSAGES_FILE).write_text(bad)
     with pytest.raises(CaseUnreadable):
         _passage_solids(tmp_path)
+
+
+# INS-29: an opening of a further passage that lands in a region cartesianMesh dropped
+
+def _boundary_text(counts: dict) -> str:
+    body = "".join(f"    {n}\n    {{\n        type patch;\n        nFaces {c};\n        startFace 0;\n    }}\n"
+                   for n, c in counts.items())
+    return f"FoamFile\n{{\n    format ascii;\n    class polyBoundaryMesh;\n}}\n{len(counts)}\n(\n{body})\n"
+
+
+def _two_passage_case(ws: Path) -> Path:
+    (ws / "system").mkdir()
+    (ws / "system" / "meshDict").write_text('surfaceFile "geom.fms";\nmaxCellSize 0.1;\nlocalRefinement\n{\n'
+                                            "    wall { cellSize 0.02; }\n}\n")
+    sub = ws / "_passages" / "p1"
+    sub.mkdir(parents=True)
+    (sub / "geom.stl").write_text("solid wall\nendsolid wall\n")
+    (ws / PASSAGES_FILE).write_text(json.dumps({"runs": ["_passages/p1"],
+                                                "ports": [["inlet"], ["outlet_2", "outlet_3"]]}))
+    return sub
+
+
+def _fake_mesher(found: list[int], sizes: list[str]):
+    """cartesianMesh on the passage: outlet_3 gets `found[i]` faces on its i-th run, 4,350 cells each time."""
+    def _fake(argv, **kw):
+        cmd, cwd = argv[-1], Path(kw["cwd"])
+        if "cartesianMesh" in cmd:
+            sizes.append((cwd / "system" / "meshDict").read_text())
+            pm = cwd / "constant" / "polyMesh"
+            pm.mkdir(parents=True, exist_ok=True)
+            (pm / "owner").write_text('FoamFile { note "nPoints:9  nCells:4350  nFaces:9"; }\n')
+            n3 = found[min(len(sizes), len(found)) - 1]
+            (pm / "boundary").write_text(_boundary_text({"wall": 900, "outlet_2": 40, "outlet_3": n3}))
+        return _Proc(1 if "surfaceFeatureEdges" in cmd else 0)
+    return _fake
+
+
+def test_a_further_passage_whose_opening_was_dropped_is_meshed_again_finer(tmp_path, monkeypatch):
+    """abc 63401 / 99768: the passage's outlet_3 came back with no faces (cartesianMesh kept another region);
+    the passage is meshed again at half every cell size, and that mesh - outlet_3 with faces - is merged."""
+    sub = _two_passage_case(tmp_path)
+    sizes: list[str] = []
+    monkeypatch.setattr(N, "run_guarded", _fake_mesher([0, 12], sizes))
+    rc, timed_out, why = N.mesh_passages(tmp_path)
+    assert (rc, timed_out, why) == (0, False, "")
+    assert len(sizes) == 2 and "maxCellSize 0.1;" in sizes[0]
+    assert "maxCellSize 0.05;" in sizes[1] and "cellSize 0.01;" in sizes[1]
+    assert not (sub / "constant" / "polyMesh").exists()            # merged into the case
+
+
+def test_an_opening_still_dropped_fails_the_attempt_saying_the_same_plan_drops_it(tmp_path, monkeypatch):
+    _two_passage_case(tmp_path)
+    sizes: list[str] = []
+    monkeypatch.setattr(N, "run_guarded", _fake_mesher([0], sizes))
+    rc, _t, why = N.mesh_passages(tmp_path)
+    assert rc == 1 and N.PORT_REGION_DROPPED in why and "outlet_3" in why
+    # 4,350 cells (the fake's every run) -> 3 finer runs at most: PASSAGE_REFINES
+    assert len(sizes) == N.PASSAGE_REFINES + 1
+
+
+def test_the_first_passages_dropped_opening_fails_before_the_further_passages_run(tmp_path, monkeypatch):
+    _two_passage_case(tmp_path)
+    pm = tmp_path / "constant" / "polyMesh"
+    pm.mkdir(parents=True)
+    (pm / "boundary").write_text(_boundary_text({"wall": 900, "inlet": 0}))
+    calls: list = []
+    monkeypatch.setattr(N, "run_guarded", lambda argv, **kw: calls.append(argv) or _Proc(0))
+    rc, _t, why = N.mesh_passages(tmp_path)
+    assert rc == 1 and "passage 1" in why and "inlet" in why and not calls
+
+
+def test_finer_mesh_dict_halves_every_cell_size_and_nothing_else():
+    text = "maxCellSize 0.004;\nlocalRefinement { wall { cellSize 0.001; refinementThickness 0.003; } }\n"
+    out = N.finer_mesh_dict(text)
+    assert "maxCellSize 0.002;" in out and "cellSize 0.0005;" in out and "refinementThickness 0.003;" in out

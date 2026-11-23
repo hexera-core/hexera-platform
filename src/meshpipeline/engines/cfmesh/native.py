@@ -51,6 +51,44 @@ TIMING_FILE = "mesh_timing.json"
 #: directory of its own (its surface only), meshed here with the same meshDict and merged in.
 _SURFACE_FILE = re.compile(r'surfaceFile\s+"[^"]*"\s*;')
 
+#: INS-29: how many times a further passage is meshed again, its cells halved each time, when one of its
+#: openings came back with no faces - cartesianMesh keeps one closed region, and a passage whose neck is
+#: under a cell across meshes as several (abc 63401's passage 2: 3 regions; abc 99768's: 9, 4,350 cells)
+PASSAGE_REFINES = 3
+#: INS-29: the cells a further passage may reach while it is refined for its openings (8 times per halving)
+PASSAGE_REFINE_CELLS = 2_000_000
+#: INS-29: the words a run whose opening landed in a dropped region fails with: the same plan run again
+#: drops it again, so the ladder does not repeat it (pipeline/engine_fallback)
+PORT_REGION_DROPPED = "an opening landed in a piece of its passage the mesher dropped"
+_CELL_SIZES = re.compile(r"\b(maxCellSize|cellSize|boundaryCellSize)(\s+)([0-9.eE+-]+)(\s*;)")
+_N_CELLS = re.compile(rb"nCells:\s*(\d+)")
+
+
+def ports_without_faces(polymesh: Path, ports: list[str]) -> list[str] | None:
+    """INS-29: the `ports` a mesh holds no face of (missing or nFaces 0), or None when its boundary cannot be
+    read (nothing judged)."""
+    from meshpipeline.engines.layer_census import NotMeasurable, _boundary
+    try:
+        patches = _boundary(polymesh / "boundary")
+    except (OSError, NotMeasurable):
+        return None
+    return [p for p in ports if int(patches.get(p, (0, 0))[1]) <= 0]
+
+
+def cells_of(polymesh: Path) -> int | None:
+    """The cell count an OpenFOAM owner file's header notes, or None."""
+    try:
+        with (polymesh / "owner").open("rb") as fh:
+            m = _N_CELLS.search(fh.read(4096))
+    except OSError:
+        return None
+    return int(m.group(1)) if m else None
+
+
+def finer_mesh_dict(text: str, factor: float = 0.5) -> str:
+    """INS-29: a meshDict with every cell size it sets (background, wall band, local boxes) times `factor`."""
+    return _CELL_SIZES.sub(lambda m: f"{m.group(1)}{m.group(2)}{float(m.group(3)) * factor:.6g}{m.group(4)}", text)
+
 _BAD_FACES = re.compile(r"Number of bad faces is\s+(\d+)")
 _WRONG_WAY = re.compile(r"(\d+)\s+faces pointing the wrong way")
 _UNTANGLED = ("Finished untangling the mesh", "Finished renaming boundary patches")
@@ -128,6 +166,13 @@ def mesh_passages(ws: Path, *, bashrc: str = _DEFAULT_BASHRC, timeout: float = 1
         return 1, False, f"[CFMESH] the passages record could not be read: {exc}"
     deadline = time.monotonic() + float(timeout)
     angle = float(spec.get("feature_angle", 30.0))
+    port_lists = [list(p or []) for p in (spec.get("ports") or [])]
+    # INS-29: the first passage's openings are on the case's own mesh before anything is merged in: one that
+    # landed in a dropped region fails the run here, before the further passages, the rescue and the exports
+    lost = ports_without_faces(ws / "constant" / "polyMesh", port_lists[0]) if port_lists else None
+    if lost:
+        return 1, False, (f"[CFMESH] passage 1: {PORT_REGION_DROPPED} ({', '.join(lost)} has no faces) - the "
+                          "same plan drops it again")
     for k, rel in enumerate(spec.get("runs") or [], start=2):
         sub = (ws / str(rel)).resolve()
         if ws.resolve() not in sub.parents or not (sub / "geom.stl").exists():
@@ -157,9 +202,26 @@ def mesh_passages(ws: Path, *, bashrc: str = _DEFAULT_BASHRC, timeout: float = 1
                                              "surfaceFeatureEdges.log") == 0 and (sub / "geom.fms").exists() else "geom.stl"
             md = sub / "system" / "meshDict"
             md.write_text(_SURFACE_FILE.sub(f'surfaceFile "{surface}";', md.read_text(), count=1))
-            if _run(CARTESIAN_MESH, sub, "cartesianMesh.log") != 0 or not (sub / "constant" / "polyMesh" / "owner").exists():
-                tail = "\n".join((sub / "cartesianMesh.log").read_text(errors="replace").splitlines()[-LOG_TAIL_LINES:])
-                return 1, False, f"[CFMESH] passage {k} ({', '.join(spec.get('ports', [[]] * k)[k - 1])}) did not mesh:\n{tail}"
+            mine = port_lists[k - 1] if len(port_lists) >= k else []
+            for refined in range(PASSAGE_REFINES + 1):
+                if _run(CARTESIAN_MESH, sub, "cartesianMesh.log") != 0 or not (sub / "constant" / "polyMesh" / "owner").exists():
+                    tail = "\n".join((sub / "cartesianMesh.log").read_text(errors="replace").splitlines()[-LOG_TAIL_LINES:])
+                    return 1, False, f"[CFMESH] passage {k} ({', '.join(spec.get('ports', [[]] * k)[k - 1])}) did not mesh:\n{tail}"
+                # INS-29: EVERY OPENING OF THE PASSAGE HAS FACES, or the passage is meshed again finer - its own
+                # resolution, never the case's cell carried over: cartesianMesh kept one region and the one
+                # holding the opening was dropped (a neck under a cell across)
+                lost = ports_without_faces(sub / "constant" / "polyMesh", mine)
+                if not lost:
+                    break
+                cells = cells_of(sub / "constant" / "polyMesh")
+                if refined == PASSAGE_REFINES or cells is None or 8 * cells > PASSAGE_REFINE_CELLS:
+                    return 1, False, (f"[CFMESH] passage {k}: {PORT_REGION_DROPPED} ({', '.join(lost)} has no "
+                                      f"faces after {refined} finer re-mesh(es), {cells or 0:,} cells) - the same "
+                                      "plan drops it again")
+                logger.info("cfMesh: INS-29 - passage %d: %s has no faces (%s cells): meshed again at half the "
+                            "cell size", k, ", ".join(lost), cells)
+                md.write_text(finer_mesh_dict(md.read_text()))
+                shutil.rmtree(sub / "constant" / "polyMesh", ignore_errors=True)
             if _run(f"mergeMeshes -overwrite . {shlex.quote(str(rel))}", ws, f"mergeMeshes_p{k}.log") != 0:
                 tail = "\n".join((ws / f"mergeMeshes_p{k}.log").read_text(errors="replace").splitlines()[-LOG_TAIL_LINES:])
                 return 1, False, f"[CFMESH] passage {k} could not be merged into the mesh:\n{tail}"
