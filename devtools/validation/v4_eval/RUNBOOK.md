@@ -272,3 +272,20 @@ See the table under "Why the first shard is measured": 64 projected / 96 worst c
 128 projected at 2x, 319 at 5x, against the ~600 ceiling. Record what the shard measured next to them.
 
 Quota: C2D_CPUS limit 100 (this wave takes 96); `PREEMPTIBLE_CPUS` is 0, hence STANDARD VMs.
+
+## Arm waves and the report (Task 21)
+
+Arms and waves are data in `evalspec.py` (`ARMS`, `WAVES`); the cap of a wave is its TYPE's entry in
+`model_ledger.WAVE_CAPS_USD` (normal $50, checkpoint $300 at most three, held_out $250 once). A wave is
+launched only through `evalspec.plan_wave`, which claims the once/three-times slot and binds the cap; each
+shard opens its slice with `plan.open_ledger`. Fusion 360 is not in any split or report.
+
+    report.py --from <dir/shard-I-of-N> --wave <name> --shards N --split corpora/v4/<split>.json \
+        [--frozen-commit <40-hex>]     # required for the held-out wave
+
+Exit 0 = report OK, 2 = report written but UNRELIABLE (read the warnings first), 1 = REFUSED (partial wave,
+mixed commit or image, uncleared source, missing frozen commit, a row the checker's own definition
+contradicts). An arm with more than 10% inconclusive files is NOT MEASURED and its clean rate is withheld.
+The held-out split is for this report only: never for tuning, prompt selection, thresholds or memory
+(`evalspec.refuse_heldout_for_tuning`). The harness-side writer of arm rows (`run_arm --mode harness`
+emitting `ArmRow`s with the wave provenance) is not built yet; it waits on the search arms (Tasks 17-19).
