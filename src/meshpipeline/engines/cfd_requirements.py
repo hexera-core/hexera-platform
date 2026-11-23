@@ -1011,6 +1011,39 @@ def wall_function_level(ask: Ask | None, base: float, *, level: int, floor: int)
     return lv
 
 
+#: CFDREQ-18: the fewest cells a passage keeps across its bore however coarse a wall-function first layer would want
+#: the wall cells (engines/passage's resolution target, the CFD board's passage_cells_across limit)
+WALL_FUNCTION_MIN_CELLS_ACROSS = 13
+
+
+def wall_function_bore_cells(ask: Ask | None, *, bore_D: float, cells_across: int,
+                             cap_rel: float | None = None) -> int:
+    """CFDREQ-18, AN INTERNAL FLOW'S WALL CELLS AND ITS WALL-FUNCTION FIRST LAYER CHOSEN TOGETHER: the cells across the
+    bore (`bore_D`, the wall cell is bore / cells across), lowered from the plan's `cells_across` only as far as the
+    wall-function first layer the conditions' y+ gives needs to fit under the wall cell (FIRST_CAP_REL) - never under
+    WALL_FUNCTION_MIN_CELLS_ACROSS. Before, the passage plan's fine wall cells (0.5-0.7 mm across a 44 mm venturi)
+    left no room for a y+ 50 layer (1.9 mm in water at 1 m/s): wall_fit fell to a resolved wall, y+ 0.5 against the
+    50 asked, on 92 of 96 internal parts (the CFD board, batch 6). Narrow passages keep their own refinement (the gap
+    plan). `cap_rel`: the engine's thickest first layer as a share of the wall cell (cfMesh: CFMESH_STACK_REL).
+    `cells_across` unchanged with no wall-function y+, a height, stack, wall or smallest size of the user's,
+    a laminar flow, or a first layer that fits already; one too thick for the bore's log layer (past
+    WALL_FUNCTION_BL_SHARE of its radius) is left to wall_fit, which says why."""
+    if (ask is None or ask.treatment != "functions" or ask.y_plus is None or ask.first_m is not None
+            or ask.total_m is not None or ask.wall_m is not None or ask.min_m is not None or not bore_D
+            or (ask.req.get("physics") or {}).get("flow") != "internal"):
+        return int(cells_across)
+    h, missing, how = y_plus_height(float(ask.y_plus), ask.req.get("physics"), length_m=float(bore_D),
+                                    length_from="the bore")
+    if h is None or missing or how.get("laminar") or h > WALL_FUNCTION_BL_SHARE * 0.5 * float(bore_D):
+        return int(cells_across)
+    want = int(math.floor(float(cap_rel or FIRST_CAP_REL) * float(bore_D) / float(h)))
+    n = max(min(int(cells_across), want), min(int(cells_across), WALL_FUNCTION_MIN_CELLS_ACROSS))
+    if n < int(cells_across):
+        ask.wall_level_note = (f"the wall cells are {_mm(float(bore_D) / n)} ({n} across the bore, not "
+                               f"{int(cells_across)}) so the wall-function first layer ({_mm(h)}) fits under them")
+    return n
+
+
 @guarded(lambda ask, wake, **_k: wake)
 def snappy_wake(ask: Ask, wake, *, wall_cell: float):
     """The wake request with the user's wake size or refinement (levels under the wall's), or unchanged."""

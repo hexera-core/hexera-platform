@@ -754,6 +754,14 @@ def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
             wall_cell, _band_r = float(_knobs["wall_cell"]), 0.0
             _asked_across = (_ask.req.get("controls") or {}).get("cells_across")
             max_halvings = max(int(max_halvings), math.ceil(math.log2(max(max_cell / wall_cell, 1.0))))
+        elif _passage_d > 0.0 and wall_cell > 0.0:
+            # CFDREQ-18: in wall-function mode the wall cell is chosen with the first layer the y+ gives (its
+            # stack is half the wall cell here); the band's finer cells would squash it, so there is none
+            _n0 = max(1, int(round(_passage_d / wall_cell)))
+            _n_wf = CR.wall_function_bore_cells(_ask, bore_D=_passage_d, cells_across=_n0,
+                                                cap_rel=CR.CFMESH_STACK_REL)
+            if _n_wf < _n0:
+                wall_cell, _band_r = min(max_cell, _passage_d / _n_wf), 0.0
     wall_cell = max(wall_cell, max_cell / float(2 ** max(1, int(max_halvings))))
     if snap_wall:
         # a wall size the engine chose from the budget: the octree level at or above it

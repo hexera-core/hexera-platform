@@ -2589,6 +2589,9 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
             cells_across, surface_level, feature_level = _ask_internal_sizes(
                 _ask, bore_D=float(bore_D), cells_across=cells_across, surface_level=surface_level,
                 feature_level=feature_level)
+            # CFDREQ-18: in wall-function mode the wall cell is chosen with the first layer the y+ gives
+            from meshpipeline.engines import cfd_requirements as _CRb
+            cells_across = _CRb.wall_function_bore_cells(_ask, bore_D=float(bore_D), cells_across=cells_across)
             # NOTE-13: the controls the user's words set (cells across the bore, the wall's level) - one loop
             _knobs = _ask.controls({"internal": True, "cells_across": cells_across, "surface_level": surface_level,
                                     "feature_level": feature_level})
