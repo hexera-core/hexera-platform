@@ -69,9 +69,56 @@ CASE = Path(os.environ.get("INDEX_CASE") or "/mnt/work/cbox8")
 OUT = Path(os.environ.get("INDEX_OUT") or "/home/rehaan/cb8")
 NPROC = int(os.environ.get("INDEX_NPROC") or 8)
 
-#: What the real (non-`processor`) patches must come to, per region. From the processors' own
-#: boundary files, cross-checked against checkMesh's global counts before this script was written.
-EXPECT = {"fluid": 16_622_416, "solid": 18_104_116, "chip": 1_763_676}
+#: What the real (non-`processor`) patches must come to, per region: an INDEPENDENT count the
+#: assembled index is checked against, so faces that were dropped or doubled cannot pass.
+#:
+#: IT USED TO BE THREE LITERALS, cbox8's own numbers, and that made the gate refuse every OTHER
+#: mesh this script was pointed at - run 5 of the Corintis plate has two regions and different
+#: counts, and the gate fired on the correct answer. The counts are now read from the mesh's own
+#: delivered report, which is where the same numbers already live, and `INDEX_EXPECT` overrides
+#: that for a deliberate cross-check ("fluid=16622416,solid=18104116").
+#:
+#: AND A MISSING COUNT IS SAID, NOT SKIPPED. With no report and no override there is nothing to
+#: check against, so the only remaining gates are the internal ones (the patch table sums, the
+#: connectivity is the right length, no face points past the end). That is weaker, and a reader of
+#: the output is told so rather than left to assume the strong gate ran.
+def _expected_faces() -> tuple[dict[str, int], str]:
+    raw = os.environ.get("INDEX_EXPECT", "").strip()
+    if raw:
+        out = {}
+        for bit in raw.split(","):
+            name, _, n = bit.partition("=")
+            if name.strip() and n.strip().isdigit():
+                out[name.strip()] = int(n)
+        if out:
+            return out, "INDEX_EXPECT"
+    for name in ("conjugate_report.json", "snapgrid_report.json"):
+        p = CASE / name
+        if not p.is_file():
+            continue
+        try:
+            body = json.loads(p.read_text())
+        except Exception:                       # noqa: BLE001 - an unreadable report is no report
+            continue
+        out = {}
+        for region in ("fluid", "solid", "chip"):
+            block = body.get(region)
+            if isinstance(block, dict):
+                for key in ("boundary_faces", "patch_faces"):
+                    if isinstance(block.get(key), int):
+                        out[region] = int(block[key])
+                        break
+                else:
+                    patches = block.get("patches")
+                    if isinstance(patches, dict) and all(isinstance(v, int)
+                                                         for v in patches.values()):
+                        out[region] = sum(patches.values())
+        if out:
+            return out, name
+    return {}, ""
+
+
+EXPECT, EXPECT_FROM = _expected_faces()
 
 #: A foam list's own header: the count on its own line, then the opening bracket.
 _LIST_RE = re.compile(rb"(\d+)\s*\n\(")
@@ -237,8 +284,15 @@ def assemble(region):
     # faces were dropped or doubled, and an index like that is worse than none.
     want = EXPECT.get(region)
     if want is not None and n_faces != want:
-        raise SystemExit("%s: assembled %d faces, the boundary files declare %d" %
-                         (region, n_faces, want))
+        raise SystemExit("%s: assembled %d faces, %s declares %d" %
+                         (region, n_faces, EXPECT_FROM or "the expected count", want))
+    if want is None:
+        print("   %-6s NO INDEPENDENT COUNT TO CHECK AGAINST: assembled %s faces, and nothing "
+              "outside this script says what it should be. Set INDEX_EXPECT, or put the delivered "
+              "report beside the case, to gate it." % (region, f"{n_faces:,}"), flush=True)
+    else:
+        print("   %-6s %s faces, which is what %s declares" %
+              (region, f"{n_faces:,}", EXPECT_FROM), flush=True)
     if sum(p["n_faces"] for p in patches) != n_faces:
         raise SystemExit("%s: patch table does not sum to %d" % (region, n_faces))
 

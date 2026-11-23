@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import json
 import multiprocessing as mp
+import os
 import re
 import sys
 import time
@@ -42,9 +43,13 @@ sys.path.insert(0, "/opt/mp/src")
 from meshpipeline.engines.cfmesh_conjugate.polymesh_surface import read_boundary_patches  # noqa: E402
 from meshpipeline.render.boundary_quality import QUALITY_VERSION, _internal_field  # noqa: E402
 
-CASE = Path("/mnt/work/cbox8")
-OUT = Path("/home/rehaan/cb8")
-NPROC = 8
+#: WHERE IT READS AND WRITES. Three literals, the box this was written on, which meant the script
+#: could only ever be run against cbox8 - its sibling par_boundary_index.py already took these from
+#: the environment and these did not, so the pair could be pointed at two different meshes without
+#: a word. Same names, same defaults.
+CASE = Path(os.environ.get("INDEX_CASE") or "/mnt/work/cbox8")
+OUT = Path(os.environ.get("INDEX_OUT") or "/home/rehaan/cb8")
+NPROC = int(os.environ.get("INDEX_NPROC") or 8)
 
 FIELDS = {"skewness": "patch", "non_ortho": "owner_cell", "aspect_ratio": "owner_cell"}
 FIELD_FILES = {"skewness": "skewness", "non_ortho": "nonOrthoAngle",
