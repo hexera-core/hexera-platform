@@ -233,6 +233,64 @@ def test_a_search_row_carries_the_cheap_full_table_of_the_states_it_confirmed(sh
     assert det["cheap_full"] == dict.fromkeys(report.CHEAP_FULL_CELLS, 0)  # nothing confirmed: zeros, not absent
 
 
+def test_every_conclusive_row_carries_a_triage_block_from_its_output_verdict(shard: Any) -> None:
+    rows, _ = go(shard, "input_only,staged,search_det", None)
+    by = {r["arm"]: r for r in rows}
+    for r in rows:
+        t = r["triage"]
+        assert t["valid"] == {"ok": True, "hard": []}
+        assert t["deviation"]["ok"] is True and t["deviation"]["used"] == 0.0
+    assert [m["name"] for m in by["input_only"]["triage"]["panel_failing"]] == ["m0", "m1", "m2"]
+    assert [m["name"] for m in by["staged"]["triage"]["panel_failing"]] == ["m1", "m2"]
+    assert "search" not in by["staged"]["triage"]
+    s = by["search_det"]["triage"]["search"]
+    assert s["stop"]["reason"] == "exhausted" and s["open_sites"] == {"no_such_kind": 1}
+    assert s["ops"] == {} and s["ai"] is None   # DetGenerator has no sweep here: nothing proposed, no proposer
+
+
+def test_a_search_ai_row_triages_its_ops_and_its_model_use(shard: Any, wire: Wire) -> None:  # noqa: F811
+    wire.candidate = CLEAN_CANDIDATE
+    [row], _ = go(shard, "search_ai", ledgered())
+    s = row["triage"]["search"]
+    assert s["stop"]["reason"] == "clean" and s["open_sites_at"] in ("best", "last_expanded")
+    op = s["ops"]["t18_set"]
+    assert op["ai"] >= 1 and op["evaluated"] >= 1 and op["det"] == 0
+    ai = s["ai"]
+    assert ai["turns"] >= 1 and ai["spent_usd"] == pytest.approx(row["model_usd"]) and ai["tool_errors"] == 0
+    assert row["triage"]["panel_failing"] == []
+
+
+def test_an_unmeasured_search_row_still_says_why_it_stopped(shard: Any, wire: Wire) -> None:  # noqa: F811
+    wire.candidate = INCONCLUSIVE_CANDIDATE
+    [row], _ = go(shard, "search_ai", ledgered())
+    assert row["inconclusive"] is True and row["triage"]["search"]["stop"]["reason"] == "no_verdict"
+    assert row["triage"]["search"]["ops"]["t18_set"]["inconclusive"] >= 1
+
+
+def test_search_triage_counts_each_fate_and_keeps_the_top_reasons() -> None:
+    from meshpipeline.cad.repair_v4.trace import Trace
+
+    t = Trace()
+    t.record("expand", state="s0", sites=[{"kind": "open"}, {"kind": "open"}, {"kind": "proximity"}])
+    for outcome, extra in (("evaluated", {}), ("duplicate", {}), ("rejected", {"stage": "declined", "errors": ["fill_too_large: span 9 mm"]}),
+                           ("rejected", {"stage": "failed", "errors": ["timeout: worker killed"]}),
+                           ("rejected", {"stage": "validate", "errors": ["F9 removed"]}), ("skipped_budget", {})):
+        t.record("candidate", state="s0", outcome=outcome, op="fill_loop", source="det", params={}, **extra)
+    t.record("candidate", state="s0", outcome="evaluated", op="run_stage", source="ai", params={"stage": "shells"})
+    t.record("stop", reason="ops", ended_by="ops", best="s0", spent={"ops": 6})
+    gen = SimpleNamespace(skipped={"no_solid": 2})
+    res = SimpleNamespace(trace=t, ai=[], ai_capped=False, ai_stop_reason=None)
+    s = run_arm.arms_mod.search_triage(res, [gen])
+    assert s["stop"] == {"reason": "ops", "ended_by": "ops", "spent": {"ops": 6}}
+    assert s["open_sites"] == {"open": 2, "proximity": 1} and s["open_sites_at"] == "best"
+    f = s["ops"]["fill_loop"]
+    assert (f["det"], f["evaluated"], f["duplicate"], f["skipped_budget"]) == (6, 1, 1, 1)
+    assert f["declined"] == {"fill_too_large: span 9 mm": 1} and f["failed"] == {"timeout: worker killed": 1}
+    assert f["invalid"] == {"F9 removed": 1}
+    assert s["ops"]["run_stage:shells"]["ai"] == 1
+    assert s["not_proposed"] == {"no_solid": 2} and s["ai"] is None
+
+
 def test_cheap_full_cells_reads_the_confirm_events() -> None:
     cells = run_arm.arms_mod.cheap_full_cells([
         {"cheap_score": [1, 1, 0.3, 0.0, 0], "clean": True}, {"cheap_score": [1, 1, 0.3, 0.0, 0], "clean": False},

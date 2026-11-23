@@ -141,6 +141,7 @@ def run_file(arm_name: str, entry: Any, source: str, *, pool: Any, engine: Engin
         elif arm_name == "staged":
             staged = engine.run_staged(pool, ws)
             out_v = full(pool, staged.ws, source)
+            extra["_triage"] = {"stages": stages_triage(staged)}
         elif arm_name in ("search_det", "search_ai"):
             # the seam contract's call order (spec 04; `repair_v4._find_best`): the search starts from the staged
             # healer's output, never the raw input, or the arm would measure a pipeline the engine does not ship
@@ -155,14 +156,16 @@ def run_file(arm_name: str, entry: Any, source: str, *, pool: Any, engine: Engin
         return excluded(f"checker_unavailable: {type(exc).__name__}: {exc}")
     wall = round(clock() - t0, 3)
     unmeasured = bool(extra.get("_unmeasured"))
-    extra = {k: v for k, v in extra.items() if k != "_unmeasured"}
+    triage = {k: v for k, v in (extra.get("_triage") or {}).items() if v is not None}
+    extra = {k: v for k, v in extra.items() if k not in ("_unmeasured", "_triage")}
     if unmeasured:
-        return ArmOutcome(row={**base, "inconclusive": True, "model_usd": usd, "wall_s": wall, **extra})
+        return ArmOutcome(row={**base, "inconclusive": True, "model_usd": usd, "wall_s": wall, **extra,
+                               "triage": triage})
     bad = _usable(out_v, "the output")
     if bad:
         return excluded(bad)
     return ArmOutcome(row={**base, "inconclusive": False, "model_usd": usd, "wall_s": wall,
-                           **_verdict_fields(v_in, out_v), **extra})
+                           **_verdict_fields(v_in, out_v), **extra, "triage": {**verdict_triage(out_v), **triage}})
 
 
 def _search_arm(arm_name: str, *, pool: Any, ws: Any, start: Any, source: str, judge: Any, v_in: Any, ledger: Any,
@@ -185,7 +188,8 @@ def _search_arm(arm_name: str, *, pool: Any, ws: Any, start: Any, source: str, j
     fields = {"reason": result.reason, "verdict_candidates": result.verdict_candidates,
               "inconclusive_candidates": result.inconclusive_candidates,
               "infrastructure_failed": result.infrastructure_failed, "_unmeasured": result.unmeasured,
-              "cheap_full": cheap_full_cells(result.trace.of_kind("confirm"))}
+              "cheap_full": cheap_full_cells(result.trace.of_kind("confirm")),
+              "_triage": {"search": search_triage(result, generators)}}
     # `result.changed` says whether anything beat the search's START, which is the staged output, not the input: a
     # file the healer improved and the search could not improve further must still ship the healer's state. The
     # engine has this bug today (`_find_best`; strict xfail in test_engine_arms.py); the eval applies the rule as the
@@ -213,6 +217,94 @@ def cheap_full_cells(confirms: list[dict]) -> dict[str, int]:
         cheap_pass = int(cheap[0]) == 1 and int(cheap[1]) >= 1
         cells[f"cheap_{'pass' if cheap_pass else 'fail'}_full_{'pass' if e['clean'] else 'fail'}"] += 1
     return cells
+
+
+# ------------------------------------------------------------------ failure triage (read by triage.py)
+#
+# Every row carries `triage`: WHY its output is what it is, in a compact, bounded form a wave-level report can
+# aggregate. From the OUTPUT verdict (every arm): the panel members still failing and their error kinds, the deviation
+# budget used, the hard layer-1 findings. From the search (search arms): the stop reason, the open site kinds at the
+# stop, each op's fate (proposed by det/ai, evaluated, declined / failed / invalid with their reasons), what the
+# deterministic sweep declined to propose, and the proposer's turns, tool errors and dollars. From the staged healer
+# (staged arm): which stages were kept and which rolled back.
+
+#: reasons are free text; each is cut to this and each fate keeps only its most common few, so a row stays small
+TRIAGE_REASON_CHARS = 120
+TRIAGE_TOP_REASONS = 5
+_REJECTED_AS = {"validate": "invalid", "declined": "declined", "failed": "failed", "error": "failed"}
+_COUNTED = ("evaluated", "duplicate", "inconclusive", "skipped_budget")
+
+
+def _short(text: Any) -> str:
+    return " ".join(str(text).split())[:TRIAGE_REASON_CHARS]
+
+
+def _top(counter: Any) -> dict[str, int]:
+    """The most common reasons; the rest folded into `(other)` so the count still adds up."""
+    items = sorted(counter.items(), key=lambda kv: (-kv[1], kv[0]))
+    top = dict(items[:TRIAGE_TOP_REASONS])
+    rest = sum(n for _, n in items[TRIAGE_TOP_REASONS:])
+    if rest:
+        top["(other)"] = rest
+    return top
+
+
+def verdict_triage(v: Any) -> dict[str, Any]:
+    f = v.faithful
+    deviation = None if f is None else {
+        "ok": bool(f.ok), "max_dev_mm": f.max_dev_mm, "bound_mm": f.bound_mm,
+        "used": (f.max_dev_mm / f.bound_mm) if f.bound_mm else None, "reasons": list(getattr(f, "reasons", []))}
+    return {"panel_failing": [{"name": m.name, "status": m.status, "error_kind": getattr(m, "error_kind", None)}
+                              for m in v.panel if m.status != "pass"],
+            "deviation": deviation,
+            "valid": {"ok": bool(v.valid.ok), "hard": [x.code for x in v.valid.hard]}}
+
+
+def stages_triage(staged: Any) -> dict[str, Any] | None:
+    kept, rolled = getattr(staged, "kept", None), getattr(staged, "rolled_back", None)
+    if kept is None and rolled is None:
+        return None
+    return {"kept": list(kept or []), "rolled_back": list(rolled or [])}
+
+
+def search_triage(result: Any, generators: Any) -> dict[str, Any]:
+    from collections import Counter
+
+    trace = result.trace
+    stops = trace.of_kind("stop")
+    stop = stops[-1] if stops else {}
+    expands = trace.of_kind("expand")
+    at = next((e for e in reversed(expands) if e.get("state") == stop.get("best")), None)
+    where = "best" if at is not None else ("last_expanded" if expands else None)
+    at = at if at is not None else (expands[-1] if expands else {"sites": []})
+    ops: dict[str, dict[str, Any]] = {}
+    for e in trace.of_kind("candidate"):
+        op = str(e.get("op"))
+        if op == "run_stage":
+            op = f"run_stage:{(e.get('params') or {}).get('stage')}"
+        d = ops.setdefault(op, {"det": 0, "ai": 0, **dict.fromkeys(_COUNTED, 0),
+                                "declined": Counter(), "failed": Counter(), "invalid": Counter()})
+        d[e.get("source") if e.get("source") in ("det", "ai") else "det"] += 1
+        outcome = e.get("outcome")
+        if outcome in _COUNTED:
+            d[outcome] += 1
+        elif outcome == "rejected":
+            errors = e.get("errors") or ["(no reason recorded)"]
+            d[_REJECTED_AS.get(e.get("stage"), "failed")][_short(errors[0])] += 1
+    for d in ops.values():
+        for k in ("declined", "failed", "invalid"):
+            d[k] = _top(d[k])
+    skipped: Counter = Counter()
+    for g in generators or ():
+        skipped.update(getattr(g, "skipped", None) or {})
+    ai = None
+    if result.ai:
+        keys = ("turns", "tool_errors", "candidate_errors", "declared_unfixable", "truncated_rounds", "spent_usd")
+        ai = {k: sum(float(r.get(k) or 0) if k == "spent_usd" else int(r.get(k) or 0) for r in result.ai) for k in keys}
+        ai.update(stop_reason=result.ai_stop_reason, ai_capped=bool(result.ai_capped))
+    return {"stop": {"reason": stop.get("reason"), "ended_by": stop.get("ended_by"), "spent": stop.get("spent")},
+            "open_sites": dict(Counter(str(s.get("kind")) for s in at.get("sites") or [])), "open_sites_at": where,
+            "ops": ops, "not_proposed": _top(skipped), "ai": ai}
 
 
 def failure_reason(exc: BaseException) -> str:
