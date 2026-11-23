@@ -34,6 +34,17 @@ Two hosts (the strongest form): on host 1 and host 2, at the same instant T (epo
     python marker_probe.py --store gcs:<bucket> --role writer --writer B --run-id R --start-at T   # host 2
     python marker_probe.py --store gcs:<bucket> --role verify --run-id R                           # anywhere, after
 Exit 0 only when the probe passed and the record was written.
+
+THE OVERLAP FLOOR NEEDS A SLOW BACKEND. Two writers are separate processes released by a wall-clock barrier, so
+their start times differ by clock and scheduling jitter of MILLISECONDS (measured inside meshpipeline-validation:local,
+amd64 under arm64 emulation with other containers running). Two calls overlap only if that skew is smaller than the
+create itself. A `localdir` create measured median 352 us, p95 538 us, max 8253 us (300 creates): one to two orders
+of magnitude SHORTER than the jitter, so the intervals essentially never overlap (1 of 50 rounds was the expected
+result, not a flake). A real GCS create takes tens to hundreds of ms, far longer than the jitter, so overlap there is
+near-certain and the floor is meaningful. Consequence: a microsecond-fast local store cannot demonstrate a race, so
+`localdir` exercises the probe's LOGIC and proves nothing about atomicity; only a networked backend can. To test the
+floor honestly against a local store, give it latency (`localdir@15:<dir>`, 15 ms inside every create) so the writers
+really do race; never relax MIN_OVERLAPPING_ROUNDS to make a fast store pass.
 """
 from __future__ import annotations
 
@@ -74,10 +85,10 @@ class LocalDirStore:
 
     MODES = ("honour", "ignores-precondition", "overwrites-silently", "never-creates")
 
-    def __init__(self, root: str | Path, mode: str = "honour") -> None:
+    def __init__(self, root: str | Path, mode: str = "honour", latency_s: float = 0.0) -> None:
         if mode not in self.MODES:
             raise ValueError(f"unknown mode {mode!r}")
-        self._root, self._mode = Path(root), mode
+        self._root, self._mode, self._latency_s = Path(root), mode, latency_s
 
     def _path(self, key: str) -> Path:
         return self._root / key
@@ -97,6 +108,8 @@ class LocalDirStore:
 
     def create_object_if_absent(self, *, local_path: Path, object_key: str, content_type: str | None = None) -> bool:
         import os
+        if self._latency_s:
+            time.sleep(self._latency_s)   # a networked backend's create is slow; this is what lets writers overlap
         path = self._path(object_key)
         path.parent.mkdir(parents=True, exist_ok=True)
         data = Path(local_path).read_bytes()
@@ -121,7 +134,8 @@ class LocalDirStore:
 def open_markers(spec: str) -> tuple[Any, str]:
     """(ObjectMarkerStore, backend id) for a store spec: `gcs:<bucket>` (the native GCS conditional write over
     this host's ADC - what the shards use; backend id `gcs/<bucket>`), `minio` (MINIO_* env, kept for
-    non-GCS deployments) or `localdir[-<mode>]:<dir>` (a directory, for the probe's own tests)."""
+    non-GCS deployments) or `localdir[-<mode>][@<ms>]:<dir>` (a directory, for the probe's own tests; `@<ms>` adds that many
+    milliseconds of latency to every create, so two local processes can genuinely overlap - see the module docstring)."""
     from meshpipeline.cad.repair_v4.model_ledger import GcsObjectStore, ObjectMarkerStore
     if spec.startswith("gcs:") and len(spec) > 4:
         store = GcsObjectStore(spec[4:])
@@ -132,9 +146,10 @@ def open_markers(spec: str) -> tuple[Any, str]:
         return ObjectMarkerStore(MinioStore()), f"{provcfg.MINIO_ENDPOINT}/{provcfg.MINIO_BUCKET}"
     head, _, root = spec.partition(":")
     if head.startswith("localdir") and root:
+        head, _, ms = head.partition("@")
         mode = head[len("localdir-"):] if head.startswith("localdir-") else "honour"
-        return ObjectMarkerStore(LocalDirStore(root, mode)), f"localdir:{Path(root).resolve()}"
-    raise ValueError(f"unknown store spec {spec!r}: use `gcs:<bucket>`, `minio` or `localdir[-mode]:<dir>`")
+        return ObjectMarkerStore(LocalDirStore(root, mode, float(ms or 0) / 1000)), f"localdir:{Path(root).resolve()}"
+    raise ValueError(f"unknown store spec {spec!r}: use `gcs:<bucket>`, `minio` or `localdir[-mode][@ms]:<dir>`")
 
 
 # --- the checks -----------------------------------------------------------------------------------------

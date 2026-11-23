@@ -407,9 +407,24 @@ def _launcher():
 
 
 def _v4_args(lf):
-    import types
-    return types.SimpleNamespace(profile="v4", prefix=lf.V4_PREFIX, sources=sorted(pf.ALLOWED_SOURCES), commit=COMMIT,
-                                 image=IMAGE, image_commit=COMMIT[:12], run_arm=None, pool=str(pf.DEFAULT_POOL))
+    """The namespace `main` would hand the launcher for a v4 wave: parsed by the launcher's OWN parser, so a flag
+    added to launch_fleet is here by construction (a hand-built namespace drifted three times in one sprint).
+    Only what `main` derives after parsing is set by hand: the defaults it fills in and the resolved sources."""
+    args = lf.build_parser().parse_args(
+        ["--profile", "v4", "--image", IMAGE, "--commit", COMMIT, "--image-commit", COMMIT[:12],
+         "--wave-id", "w-test", "--wave-type", "normal", "--pool", str(pf.DEFAULT_POOL)])
+    args.prefix = lf.V4_PREFIX
+    args.sources = sorted(pf.ALLOWED_SOURCES)
+    return args
+
+
+def test_the_launcher_parser_defines_every_arg_the_launcher_reads():
+    import re
+    lf = _launcher()
+    read = set(re.findall(r"\bargs\.([a-z_]+)", Path(lf.__file__).read_text()))
+    have = set(vars(lf.build_parser().parse_args(["--image", "i", "--commit", "c", "--image-commit", "c"])))
+    derived = {"files_counted"}        # set by main after parsing, never a flag
+    assert read - derived <= have, f"launch_fleet reads args the parser does not define: {sorted(read - derived - have)}"
 
 
 def test_the_preflight_checks_exactly_the_locations_the_launcher_writes():
