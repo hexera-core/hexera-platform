@@ -133,7 +133,7 @@ def _run(files: tuple[str, str], *, deadline_in: float = 600.0) -> v4.V4Result:
 
 def test_budget_is_searchs_own_and_the_placeholder_is_gone() -> None:
     assert v4.Budget is search_mod.Budget
-    assert [f for f in v4.Budget.__dataclass_fields__] == ["wall_s", "ops", "model_calls", "model_usd"]
+    assert list(v4.Budget.__dataclass_fields__) == ["wall_s", "ops", "model_calls", "model_usd"]
 
 
 def test_in_reads_xcaf_and_hands_the_labels_to_from_brep(world: World, files: tuple[str, str]) -> None:
