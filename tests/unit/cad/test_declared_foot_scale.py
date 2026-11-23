@@ -67,7 +67,11 @@ def test_a_file_in_millimetres_is_read_as_before(tmp_path):
 def _iges_cube_in(tmp_path, unit: str):
     from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
     from OCP.IGESControl import IGESControl_Writer
+    from OCP.STEPControl import STEPControl_Writer
 
+    # (OCC: an IGES writer made before any STEP writer leaves "write.step.unit" unregistered, and the STEP tests of
+    # this file - in whatever order they run - would then write millimetres)
+    STEPControl_Writer()
     side_mm = {"FT": 304.8, "MM": 1.0, "IN": 25.4}[unit]
     w = IGESControl_Writer(unit, 1)
     w.AddShape(BRepPrimAPI_MakeBox(side_mm, side_mm, side_mm).Shape())
