@@ -512,6 +512,14 @@ def preflight_settings(arm: str) -> list[str]:
                      [f"{arm}: preflight did not run: {out.stderr.strip()[-400:]}"])
 
 
+def store_unreachable_errors() -> tuple[type[BaseException], ...]:
+    """The exceptions that mean "the wave bucket could not be reached from this host" and nothing else."""
+    from google.api_core.exceptions import GoogleAPICallError
+    from google.auth.exceptions import DefaultCredentialsError
+
+    return (OSError, GoogleAPICallError, DefaultCredentialsError)
+
+
 def default_gates():
     """(marker store, backend id) for the wave bucket over this host's ADC. Opening is lazy; the bucket is first
     touched when the gates read it."""
@@ -524,7 +532,10 @@ def v4_gate_problems(args, markers, backend: str, *, claim: bool) -> list[str]:
     checkpoint / held-out slot (nothing is written without it)."""
     expected = MARKER_BACKEND
     problems: list[str] = []
-    if backend != expected:
+    # NOT a binding: `backend` and `expected` both derive from MARKER_BUCKET, so no comparison of them can fail.
+    # The binding is `marker_probe.probe_problem`, which reads the probe record through the store and refuses
+    # unless the record names exactly `expected`.
+    if backend != expected:  # a consistency check only (see above); it cannot fail on the real path
         problems.append(f"the marker store on this host is {backend!r}, not the wave bucket {expected!r}: what "
                         "it says about conditional create says nothing about the wave bucket")
     problem = marker_probe.probe_problem(markers, expected_backend=expected)
@@ -679,12 +690,16 @@ def main(argv: list[str] | None = None, *, gates=None) -> int:
         try:
             gate_ctx = gates if gates is not None else default_gates()
             problems += v4_gate_problems(args, *gate_ctx, claim=False)
-        except Exception as exc:  # noqa: BLE001 - an unreadable marker store is never a pass
-            if args.dry_run:
-                warnings.append(f"dry run: the marker store could not be read ({exc}); the probe record and "
+        except Exception as exc:  # noqa: BLE001 - only a reachability failure is ever downgraded, below
+            # Only a store that genuinely cannot be reached downgrades to a dry-run warning. A TypeError or
+            # KeyError out of the gate code is a BUG: a dry run must fail on it (exit 1), not exit 0 and leave
+            # it for a paid live run. On a live run every exception is a refusal.
+            if args.dry_run and isinstance(exc, store_unreachable_errors()):
+                warnings.append(f"dry run: the marker store could not be reached ({exc}); the probe record and "
                                 "wave-count limits are UNCHECKED and will be enforced on a live launch")
             else:
-                problems.append(f"cannot open or read the marker store: {exc}")
+                problems.append(f"cannot open or read the marker store, or the gate code failed: "
+                                f"{type(exc).__name__}: {exc}")
 
     # THE BUDGET GATE, in the report: the same check create_wave enforces before any VM exists.
     projection = profile.projection(args, units, len(vms), slots) if units else None

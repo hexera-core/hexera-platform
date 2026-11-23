@@ -146,7 +146,10 @@ def check_marker_binding(markers: Any, backend: str, expected_bucket: str) -> st
     passing probe record. The shard reads the record through its own store, so a store pointing anywhere else
     finds no record for its backend and refuses (a different backend is as good as unproven)."""
     expected = f"gcs/{expected_bucket}"
-    if backend != expected:
+    # NOT a binding: `backend` comes from `make_marker_store(expected_bucket)`, so comparing it with a value
+    # built from the same bucket can never fail. The binding is `probe_problem`, which refuses unless the probe
+    # record read through this store names exactly `expected`.
+    if backend != expected:  # a consistency check only (see above); it cannot fail on the real path
         return f"this shard's marker store is {backend!r}, not the wave bucket {expected!r}"
     return marker_probe.probe_problem(markers, expected_backend=expected)
 

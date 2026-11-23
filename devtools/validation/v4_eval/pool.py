@@ -47,7 +47,7 @@ import zipfile
 from collections.abc import Callable, Iterable
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Literal, Protocol
+from typing import Any, Literal, Protocol
 
 log = logging.getLogger(__name__)
 
@@ -116,6 +116,10 @@ class PoolEntry:
     archive_sha256: str | None
     licence: str
     group: str | None = None  # variants of one part (NIST translators) share a group
+    # `inject` entries only: the injector's own label (`label["kind"]`, `label["status"]`), carried so the
+    # quarantine gate reads what the injector declared instead of guessing from the file name. None elsewhere.
+    kind: str | None = None
+    kind_status: str | None = None
 
 
 class PoolSource(Protocol):
@@ -160,6 +164,15 @@ def _zip_step_entries(archive: Path, url: str, source: Source, licence: str,
 
 
 # --------------------------------------------------------------------------- sources
+
+def inject_entry(case: Any, *, url: str, licence: str, group: str | None = None) -> PoolEntry:
+    """The pool entry of one `inject()` output. The kind and its evidence status come from the injector's own
+    label (`label["kind"]`, `label["status"]`, written by `inject()`); a label missing either carries None, and
+    the quarantine gate refuses an `inject` entry with either missing."""
+    label = case.label
+    return PoolEntry(case.path.name, "inject", sha256_file(case.path), url, None, licence, group,
+                     kind=label.get("kind"), kind_status=label.get("status"))
+
 
 class StaticSource:
     """Entries already in hand (also the home of `inject` entries from the injector)."""
@@ -330,6 +343,9 @@ def write_pool(entries: list[PoolEntry], out: Path = OUT, *, sources_included: l
         if not e.url.strip():
             raise ValueError(f"{e.name}: url is required on every pool entry")
         row = asdict(e)
+        for optional in ("kind", "kind_status"):  # additive: a pool with no inject entries is byte-identical
+            if row[optional] is None:
+                del row[optional]
         row["licence_id"] = _licence_id(row.pop("licence"))
         licences[row["licence_id"]] = e.licence
         row["archive_id"] = _archive_id(e.url, e.archive_sha256)

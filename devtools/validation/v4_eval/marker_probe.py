@@ -55,9 +55,11 @@ if str(REPO / "src") not in sys.path:
 PROBE_KEY = "_probe/conditional-create"
 PROBE_VERSION = 1
 PROBE_ROUNDS = 50
-#: A pass needs at least this many rounds in which the two create calls OVERLAPPED in time. A non-atomic
-#: check-then-write passes if the writers never raced; 10 of the default 50 rounds is a fifth of them, far
-#: above what a backend that really serialises needs and far below what two barrier-released writers manage.
+#: A "did they race at all" floor, NOT a power claim: a pass needs at least this many rounds in which the two
+#: create calls' time intervals OVERLAPPED. That is weaker than two calls colliding inside a check-then-write
+#: window, so it only rules out a probe whose writers never ran concurrently. Atomicity rests mainly on GCS's
+#: documented `ifGenerationMatch` semantics plus the sequential and read-back checks. Consequence: `--rounds`
+#: below this value can never pass.
 MIN_OVERLAPPING_ROUNDS = 10
 PROBE_MAX_AGE_S = 14 * 86400      # a backend can be reconfigured: the pass expires
 WRITERS = ("A", "B")

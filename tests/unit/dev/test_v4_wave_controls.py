@@ -341,14 +341,30 @@ def test_a_dry_run_refuses_an_exhausted_wave_count(live, tmp_path, capsys):
     assert wl.check_wave_count(gates[0], "checkpoint", "another", claim=False) is not None   # still 3, not 4
 
 
-def test_a_dry_run_warns_instead_of_skipping_when_the_store_is_unreachable(live, tmp_path, monkeypatch, capsys):
+@pytest.mark.parametrize("make_exc", [lambda: OSError("no route"),
+                                      lambda: __import__("google.auth.exceptions", fromlist=["x"])
+                                      .DefaultCredentialsError("no ADC"),
+                                      lambda: __import__("google.api_core.exceptions", fromlist=["x"])
+                                      .ServiceUnavailable("503")])
+def test_a_dry_run_warns_instead_of_skipping_when_the_store_is_unreachable(live, tmp_path, monkeypatch, capsys,
+                                                                           make_exc):
     def boom():
-        raise RuntimeError("no ADC")
+        raise make_exc()
     monkeypatch.setattr(lf, "default_gates", boom)
     assert lf.main(["--image", base.IMAGE, "--commit", base.HEAD, "--image-commit", base.HEAD,
                     "--skip-preflight", "--profile", "v4", *WAVE, "--dry-run"]) == 0
     err = capsys.readouterr().err
-    assert "WARN" in err and "UNCHECKED" in err and "no ADC" in err
+    assert "WARN" in err and "UNCHECKED" in err
+
+
+@pytest.mark.parametrize("bug", [TypeError("bad arg"), KeyError("missing"), RuntimeError("no ADC")])
+def test_a_bug_in_the_wave_count_check_fails_a_dry_run(live, tmp_path, monkeypatch, capsys, bug):
+    """A dry run only downgrades REACHABILITY failures; a bug inside check_wave_count must not exit 0."""
+    def broken(*a, **k):
+        raise bug
+    monkeypatch.setattr(lf.wave_limits, "check_wave_count", broken)
+    assert _dry(tmp_path, gates=_gates(tmp_path)) == 1
+    assert "UNCHECKED" not in capsys.readouterr().err
 
 
 def test_a_dry_run_of_v3_never_touches_the_marker_store(live, tmp_path):
