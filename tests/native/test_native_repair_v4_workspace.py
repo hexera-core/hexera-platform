@@ -40,8 +40,8 @@ def _face_id_at_z(ws: Workspace, pool: WorkerPool, z: float) -> str:
                                             "quantum": ws.quantum}, timeout_s=60)
     assert result.ok, result.error
     assert result.value is not None
-    (fp,) = result.value["fingerprints"]
-    (face_id,) = [i for i, f in ws.ids.items() if f == fp]
+    (index,) = result.value["indices"]
+    (face_id,) = [i for i, n in ws.indices.items() if n == index and i.startswith("F")]
     return face_id
 
 
@@ -80,3 +80,26 @@ def test_split_face_maps_old_id_to_two_generated_ids_and_names_propagate(
         after.resolve([top])
     assert all(k in info.value.reason for k in kids)
     assert after.resolve(kids) == kids
+
+
+def test_one_to_one_modified_face_keeps_its_stable_id(pool: WorkerPool, tmp_path: Path) -> None:
+    """Cut a notch from one side: the top face is trimmed IN PLACE (bbox changes), so "face 41"
+    must still be face 41 afterwards, with its label and a refreshed fingerprint."""
+    ws = Workspace.from_brep(pool, _box_brep(tmp_path))
+    top = _face_id_at_z(ws, pool, 10.0)
+    ws.labels[top] = {"name": "the-top"}
+    before = ws.ids[top]
+
+    result = pool.call("ws_cut_box", {
+        "brep_path": ws.brep_path, "out_path": str(tmp_path / "cut.brep"),
+        "quantum": ws.quantum, "corner": [-1.0, -1.0, 5.0], "size": [4.0, 12.0, 6.0],
+    }, timeout_s=60)
+    assert result.ok, result.error
+    assert result.value is not None
+    after = apply_history(ws, result.value)
+
+    assert after.history[-1].modified[top] == [top]
+    assert top in after.ids and after.resolve([top]) == [top]
+    assert after.ids[top] != before  # it really was trimmed: its bounding box moved
+    assert after.labels[top] == {"name": "the-top"}
+    assert _face_id_at_z(after, pool, 10.0) == top  # the kernel agrees it is the z=10 face

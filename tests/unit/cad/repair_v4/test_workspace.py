@@ -1,5 +1,6 @@
 # Responsibility: Verify the v4 Workspace's identity rules without a kernel: fork independence,
-#                 UnknownTarget on removed/replaced/unknown ids, monotonic ids, label inheritance.
+#                 UnknownTarget on removed/replaced/unknown ids, monotonic ids, label inheritance,
+#                 1:1 Modified keeping its id, and index-keyed binding under fingerprint collisions.
 # Boundaries: hermetic - history records are hand-built; the real BRepTools_History mapping is
 #             proven natively in tests/native/test_native_repair_v4_workspace.py.
 from __future__ import annotations
@@ -17,38 +18,51 @@ def _ws() -> Workspace:
         labels={"F1": {"name": "top"}, "F2": {"name": "side"}},
         history=[],
         original="/tmp/a.brep",
+        indices={"F1": 1, "F2": 2, "E1": 1, "B1": 1},
     )
 
 
+def _ent(kind: str, index: int, fp: str) -> dict:
+    return {"type": kind, "index": index, "fp": fp}
+
+
+def _row(kind: str, index: int, *, now: int | None = None, removed: bool = False,
+         modified: list | None = None, generated: list | None = None) -> dict:
+    return {"type": kind, "index": index, "now": index if now is None else now,
+            "removed": removed, "modified": modified or [], "generated": generated or []}
+
+
+def _kid(kind: str, index: int) -> dict:
+    return {"type": kind, "index": index}
+
+
+def _record(op: str, entities: list, history: list, path: str = "/tmp/b.brep", **extra) -> dict:
+    return {"op": op, "params": {}, "brep_path": path, "seconds": 0.0,
+            "declared_added": [], "declared_removed": [], "entities": entities,
+            "history": history, **extra}
+
+
 def _split_f1() -> dict:
-    """F1 (face:aa) split in two by an op; everything else untouched."""
-    return {
-        "op": "split",
-        "params": {"at": 0.5},
-        "brep_path": "/tmp/b.brep",
-        "seconds": 0.25,
-        "declared_added": [],
-        "declared_removed": [],
-        "entities": [
-            {"type": "face", "fp": "face:a1"}, {"type": "face", "fp": "face:a2"},
-            {"type": "face", "fp": "face:bb"}, {"type": "edge", "fp": "edge:cc"},
-            {"type": "edge", "fp": "edge:new"}, {"type": "solid", "fp": "solid:dd"},
-        ],
-        "history": [
-            {"type": "face", "fp": "face:aa", "removed": False,
-             "modified": [{"type": "face", "fp": "face:a1"}, {"type": "face", "fp": "face:a2"}],
-             "generated": []},
-        ],
-    }
+    """F1 (face 1) split in two by an op (new faces 1 and 3); everything else untouched."""
+    rec = _record(
+        "split",
+        [_ent("face", 1, "face:a1"), _ent("face", 2, "face:bb"), _ent("face", 3, "face:a2"),
+         _ent("edge", 1, "edge:cc"), _ent("edge", 2, "edge:new"), _ent("solid", 1, "solid:dd")],
+        [_row("face", 1, now=0, modified=[_kid("face", 1), _kid("face", 3)]),
+         _row("face", 2), _row("edge", 1), _row("solid", 1)])
+    rec["params"] = {"at": 0.5}
+    rec["seconds"] = 0.25
+    return rec
 
 
 def test_fork_is_independent() -> None:
     parent = _ws()
     child = parent.fork()
     child.ids["F9"] = "face:zz"
+    child.indices["F9"] = 9
     child.labels["F1"]["name"] = "changed"
     child.history.append(apply_history(parent, _split_f1()).history[0])
-    assert "F9" not in parent.ids
+    assert "F9" not in parent.ids and "F9" not in parent.indices
     assert parent.labels["F1"] == {"name": "top"}
     assert parent.history == []
     assert child is not parent and child.brep_path == parent.brep_path
@@ -73,8 +87,68 @@ def test_apply_history_maps_split_and_does_not_mutate_parent() -> None:
     assert "F1" not in child.ids
     assert parent.ids["F1"] == "face:aa" and parent.history == []
     assert child.brep_path == "/tmp/b.brep" and child.original == "/tmp/a.brep"
-    # the unattributed new edge still gets an id
-    assert "edge:new" in child.ids.values()
+    assert "edge:new" in child.ids.values()  # the unattributed new edge still gets an id
+    assert diff.params["unattributed"] == ["E2"]
+
+
+def test_one_to_one_modified_keeps_the_id_and_refreshes_the_fingerprint() -> None:
+    rec = _record(
+        "trim",
+        [_ent("face", 1, "face:aa-trimmed"), _ent("face", 2, "face:bb"),
+         _ent("edge", 1, "edge:cc"), _ent("solid", 1, "solid:dd")],
+        [_row("face", 1, now=0, modified=[_kid("face", 1)]), _row("face", 2),
+         _row("edge", 1), _row("solid", 1)])
+    child = apply_history(_ws(), rec)
+    assert child.ids["F1"] == "face:aa-trimmed"
+    assert child.history[-1].modified == {"F1": ["F1"]}
+    assert child.labels["F1"] == {"name": "top"}
+    assert child.resolve(["F1"]) == ["F1"]
+    assert set(child.ids) == {"F1", "F2", "E1", "B1"}  # nothing minted
+
+
+def test_one_to_one_modified_follows_a_renumbered_index() -> None:
+    rec = _record(
+        "heal",
+        [_ent("face", 1, "face:bb"), _ent("face", 2, "face:aa2"),
+         _ent("edge", 1, "edge:cc"), _ent("solid", 1, "solid:dd")],
+        [_row("face", 1, now=0, modified=[_kid("face", 2)]), _row("face", 2, now=1),
+         _row("edge", 1), _row("solid", 1)])
+    child = apply_history(_ws(), rec)
+    assert child.ids["F1"] == "face:aa2" and child.indices["F1"] == 2
+    assert child.ids["F2"] == "face:bb" and child.indices["F2"] == 1
+
+
+def test_many_to_one_merge_retires_parents_and_mints_one_child() -> None:
+    rec = _record(
+        "merge",
+        [_ent("face", 1, "face:m"), _ent("edge", 1, "edge:cc"), _ent("solid", 1, "solid:dd")],
+        [_row("face", 1, now=0, modified=[_kid("face", 1)]),
+         _row("face", 2, now=0, modified=[_kid("face", 1)]), _row("edge", 1), _row("solid", 1)])
+    child = apply_history(_ws(), rec)
+    assert child.history[-1].modified == {"F1": ["F3"], "F2": ["F3"]}
+    assert "F1" not in child.ids and "F2" not in child.ids and child.ids["F3"] == "face:m"
+    assert child.labels["F3"] == {"name": "top"}  # first parent's label wins
+
+
+def test_identical_fingerprints_do_not_misbind_ids() -> None:
+    """F1 and F2 are coincident faces (same fingerprint). Removing the SECOND must retire F2."""
+    ws = Workspace(brep_path="/tmp/a.brep", ids={"F1": "face:dup", "F2": "face:dup"},
+                   labels={"F1": {"name": "one"}, "F2": {"name": "two"}}, history=[],
+                   original="/tmp/a.brep", indices={"F1": 1, "F2": 2})
+    rec = _record("cut", [_ent("face", 1, "face:dup")],
+                  [_row("face", 1), _row("face", 2, now=0, removed=True)])
+    child = apply_history(ws, rec)
+    assert child.history[-1].removed == ["F2"]
+    assert child.ids == {"F1": "face:dup"} and child.labels == {"F1": {"name": "one"}}
+    with pytest.raises(UnknownTarget):
+        child.resolve(["F2"])
+
+
+def test_apply_history_refuses_a_workspace_without_kernel_indices() -> None:
+    ws = Workspace(brep_path="/tmp/a.brep", ids={"F1": "face:aa"}, labels={}, history=[],
+                   original="/tmp/a.brep")
+    with pytest.raises(ValueError, match="kernel index"):
+        apply_history(ws, _record("noop", [], []))
 
 
 def test_labels_propagate_to_children_and_drop_with_removed() -> None:
@@ -86,17 +160,13 @@ def test_labels_propagate_to_children_and_drop_with_removed() -> None:
 
 
 def test_generated_children_inherit_labels_and_removed_is_reported() -> None:
-    rec = {
-        "op": "cut", "params": {}, "brep_path": "/tmp/c.brep", "seconds": 0.1,
-        "declared_added": ["F9"], "declared_removed": ["F2"],
-        "entities": [{"type": "face", "fp": "face:aa"}, {"type": "face", "fp": "face:g"},
-                     {"type": "edge", "fp": "edge:cc"}, {"type": "solid", "fp": "solid:dd"}],
-        "history": [
-            {"type": "face", "fp": "face:aa", "removed": False, "modified": [],
-             "generated": [{"type": "face", "fp": "face:g"}]},
-            {"type": "face", "fp": "face:bb", "removed": True, "modified": [], "generated": []},
-        ],
-    }
+    rec = _record(
+        "cut",
+        [_ent("face", 1, "face:aa"), _ent("face", 2, "face:g"),
+         _ent("edge", 1, "edge:cc"), _ent("solid", 1, "solid:dd")],
+        [_row("face", 1, generated=[_kid("face", 2)]),
+         _row("face", 2, now=0, removed=True), _row("edge", 1), _row("solid", 1)],
+        declared_added=["F9"], declared_removed=["F2"])
     child = apply_history(_ws(), rec)
     assert child.history[-1].generated == {"F1": ["F3"]}
     assert child.history[-1].removed == ["F2"]
@@ -108,17 +178,17 @@ def test_generated_children_inherit_labels_and_removed_is_reported() -> None:
 
 def test_ids_are_monotonic_across_ops_and_never_reused() -> None:
     first = apply_history(_ws(), _split_f1())  # F3, F4 and E2 minted
-    rec = {
-        "op": "split", "params": {}, "brep_path": "/tmp/c.brep", "seconds": 0.0,
-        "declared_added": [], "declared_removed": [],
-        "entities": [{"type": "face", "fp": "face:a1x"}, {"type": "face", "fp": "face:a2"},
-                     {"type": "face", "fp": "face:bb"}, {"type": "edge", "fp": "edge:cc"},
-                     {"type": "edge", "fp": "edge:new"}, {"type": "solid", "fp": "solid:dd"}],
-        "history": [{"type": "face", "fp": "face:a1", "removed": False,
-                     "modified": [{"type": "face", "fp": "face:a1x"}], "generated": []}],
-    }
+    rec = _record(
+        "split",
+        [_ent("face", 1, "face:a1x"), _ent("face", 2, "face:bb"), _ent("face", 3, "face:a2"),
+         _ent("face", 4, "face:a1y"), _ent("edge", 1, "edge:cc"), _ent("edge", 2, "edge:new"),
+         _ent("solid", 1, "solid:dd")],
+        [_row("face", 1, now=0, modified=[_kid("face", 1), _kid("face", 4)]),
+         _row("face", 2), _row("face", 3), _row("edge", 1), _row("edge", 2), _row("solid", 1)],
+        path="/tmp/c.brep")
     second = apply_history(first, rec)
-    assert second.history[-1].modified == {"F3": ["F5"]}  # counters are per kind
+    # first.indices: F3->1, F2->2, F4->3 (kernel order); F3 splits into two new children
+    assert second.history[-1].modified == {"F3": ["F5", "F6"]}
     assert {"F3", "F1"}.isdisjoint(second.ids)
 
 
@@ -135,21 +205,17 @@ def test_resolve_removed_id_raises_unknown_target() -> None:
 
 
 def test_resolve_distinguishes_removed_from_never_existed() -> None:
-    rec = {
-        "op": "cut", "params": {}, "brep_path": "/tmp/c.brep", "seconds": 0.0,
-        "declared_added": [], "declared_removed": [],
-        "entities": [{"type": "face", "fp": "face:aa"}, {"type": "edge", "fp": "edge:cc"},
-                     {"type": "solid", "fp": "solid:dd"}],
-        "history": [{"type": "face", "fp": "face:bb", "removed": True, "modified": [],
-                     "generated": []}],
-    }
+    rec = _record("cut", [_ent("face", 1, "face:aa"), _ent("edge", 1, "edge:cc"),
+                          _ent("solid", 1, "solid:dd")],
+                  [_row("face", 1), _row("face", 2, now=0, removed=True), _row("edge", 1),
+                   _row("solid", 1)], path="/tmp/c.brep")
     child = apply_history(_ws(), rec)
     with pytest.raises(UnknownTarget) as removed:
         child.resolve(["F2"])
     with pytest.raises(UnknownTarget) as never:
         child.resolve(["F999"])
     assert "removed" in removed.value.reason and "cut" in removed.value.reason
-    assert "never existed" in never.value.reason or "unknown" in never.value.reason
+    assert "never existed" in never.value.reason
     assert removed.value.reason != never.value.reason
 
 

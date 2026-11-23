@@ -10,22 +10,29 @@ then CARRIED across ops by the BRepTools_History the op's kernel function return
 can keep talking about geometry after an op has rebuilt it. Ids are never reused within a lineage:
 a removed or replaced id stays dead, and `resolve` says which and why.
 
-The history record (JSON, from `ws_kernel.history_record`):
+The history record (JSON, from `ws_kernel.history_record`). Entities are matched by KERNEL INDEX
+(1-based, per kind, in the indexed map of the shape), never by fingerprint, because fingerprints
+can collide (duplicate or coincident entities) and a collision must not mis-bind an id:
 
     {"op", "params", "brep_path", "seconds", "declared_added", "declared_removed",
-     "entities": [{"type", "fp"}, ...],             # every face/edge/solid of the NEW shape
-     "history":  [{"type", "fp", "removed",          # one row per OLD entity
-                   "modified": [{"type", "fp"}...], "generated": [{"type", "fp"}...]}, ...]}
+     "entities": [{"type", "index", "fp"}, ...],     # every face/edge/solid of the NEW shape
+     "history":  [{"type", "index",                  # one row per OLD entity
+                   "now",                            # its own index in the new shape, 0 if gone
+                   "removed",
+                   "modified":  [{"type", "index"}...],     # child indices in the NEW shape
+                   "generated": [{"type", "index"}...]}, ...]}
 
-Identity within a shape is the fingerprint, so two entities sharing a fingerprint are matched
-first-come; the kernel cannot tell them apart either (`identity.EntityRef.ambiguous`).
+Modified rules: an entity Modified into exactly ONE same-kind child that no other entity also
+modifies into (1:1) KEEPS its id - a trimmed or healed face stays "face 41" - with its fingerprint
+refreshed, its label carried and `Diff.modified[id] == [id]`. 1:N (a split) and N:M (a merge) retire
+the parents and mint fresh ids for the children, which inherit the parents' labels.
+`declared_added` / `declared_removed` are caller-supplied claims, passed through unchecked.
 """
 
 from __future__ import annotations
 
 import copy
 import re
-from collections import Counter
 from dataclasses import dataclass, field
 
 from meshpipeline.cad.repair_v4.types import StableId
@@ -78,6 +85,8 @@ class Workspace:
     quantum: float = 0.0
     #: highest number ever minted per prefix in this lineage; ids are never reused
     counters: dict[str, int] = field(default_factory=dict)
+    #: live stable id -> that entity's index in `brep_path`'s per-kind indexed map
+    indices: dict[StableId, int] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         for sid in self.ids:
@@ -102,7 +111,9 @@ class Workspace:
         ws = cls(brep_path=brep_path, ids={}, labels=copy.deepcopy(labels or {}), history=[],
                  original=brep_path, quantum=float(result.value["quantum"]))
         for entity in result.value["entities"]:
-            ws.ids[ws._mint(entity["type"])] = entity["fp"]
+            sid = ws._mint(entity["type"])
+            ws.ids[sid] = entity["fp"]
+            ws.indices[sid] = int(entity["index"])
         return ws
 
     def _mint(self, kind: str) -> StableId:
@@ -116,7 +127,7 @@ class Workspace:
         return Workspace(brep_path=self.brep_path, ids=dict(self.ids),
                          labels=copy.deepcopy(self.labels), history=copy.deepcopy(self.history),
                          original=self.original, quantum=self.quantum,
-                         counters=dict(self.counters))
+                         counters=dict(self.counters), indices=dict(self.indices))
 
     def resolve(self, ids: list[StableId]) -> list[StableId]:
         """`ids` unchanged if all are live; else UnknownTarget for the first that is not."""
@@ -138,65 +149,78 @@ class Workspace:
 def apply_history(ws: Workspace, history_json: dict) -> Workspace:
     """A NEW workspace after the op `history_json` describes; `ws` is not modified.
 
-    Entities the op left alone keep their ids; a Modified or Generated child gets a fresh id and
-    its parent's label; a removed (or vanished) entity's id is retired.
+    Untouched entities and 1:1 Modified entities keep their ids; 1:N and N:M Modified children and
+    Generated children get fresh ids and their parents' labels; removed entities' ids are retired.
     """
+    missing = [sid for sid in ws.ids if sid not in ws.indices]
+    if missing:
+        raise ValueError(f"workspace has no kernel index for {missing}; build it with from_brep")
     new = ws.fork()
-    rows: dict[tuple[str, str], list[dict]] = {}
-    for row in history_json["history"]:
-        rows.setdefault((row["type"], row["fp"]), []).append(row)
-    pool = Counter((e["type"], e["fp"]) for e in history_json["entities"])
+    by_old: dict[tuple[str, int], dict] = {
+        (r["type"], int(r["index"])): r for r in history_json["history"]}
+    entity: dict[tuple[str, int], str] = {
+        (e["type"], int(e["index"])): e["fp"] for e in history_json["entities"]}
+    unclaimed = set(entity)
 
     old = sorted(ws.ids, key=lambda s: (s[0], _number(s)))
+    rows = {sid: by_old.get((_KIND[sid[0]], ws.indices[sid])) for sid in old}
+
+    def kids_of(sid: StableId, field_name: str) -> list[tuple[str, int]]:
+        row = rows[sid]
+        return [] if row is None else [(c["type"], int(c["index"])) for c in row[field_name]]
+
+    # Who modifies into each child: a child with one parent that has one child is a 1:1 case.
+    parents_of: dict[tuple[str, int], list[StableId]] = {}
+    for sid in old:
+        for key in kids_of(sid, "modified"):
+            parents_of.setdefault(key, []).append(sid)
+
     new_ids: dict[StableId, str] = {}
+    new_indices: dict[StableId, int] = {}
     new_labels: dict = {}
     removed: list[StableId] = []
-    survivors: list[tuple[StableId, dict | None]] = []
+    modified: dict[StableId, list[StableId]] = {}
+    generated: dict[StableId, list[StableId]] = {}
+    minted: dict[tuple[str, int], StableId] = {}
+    survivors: list[StableId] = []
+    pending: list[StableId] = []
 
-    def row_for(sid: StableId) -> dict | None:
-        key = (_KIND[sid[0]], ws.ids[sid])
-        return rows[key].pop(0) if rows.get(key) else None
-
-    def keep(sid: StableId, fp: str) -> None:
-        new_ids[sid] = fp
+    def place(sid: StableId, key: tuple[str, int]) -> None:
+        unclaimed.discard(key)
+        new_ids[sid] = entity[key]
+        new_indices[sid] = key[1]
         if sid in ws.labels:
             new_labels[sid] = copy.deepcopy(ws.labels[sid])
 
-    # Pass 1: untouched survivors claim their entity first, so a child can't steal it.
-    pending: list[tuple[StableId, dict]] = []
     for sid in old:
-        kind, fp = _KIND[sid[0]], ws.ids[sid]
-        row = row_for(sid)
-        replaced = row is not None and bool(row["modified"])
-        if row is not None and replaced and any((c["type"], c["fp"]) == (kind, fp) for c in row["modified"]):
-            replaced = False  # Modified to itself: the entity (and its id) survives
-        if row is not None and row["removed"] and not row["modified"]:
+        row, kind = rows[sid], _KIND[sid[0]]
+        kids = kids_of(sid, "modified")
+        if row is None:
+            removed.append(sid)  # the kernel gave no account of it: not silently kept
+        elif len(kids) == 1 and kids[0][0] == kind and len(parents_of[kids[0]]) == 1 \
+                and kids[0] in entity:
+            place(sid, kids[0])  # 1:1 Modified: same entity, same id
+            modified[sid] = [sid]
+            if row["generated"]:
+                survivors.append(sid)
+        elif kids:
+            pending.append(sid)
+        elif row["removed"] or int(row["now"]) == 0 or (kind, int(row["now"])) not in entity:
             removed.append(sid)
-        elif row is not None and replaced:
-            pending.append((sid, row))
-        elif pool[(kind, fp)] > 0:
-            pool[(kind, fp)] -= 1
-            keep(sid, fp)
-            survivors.append((sid, row))
         else:
-            removed.append(sid)  # the shape no longer holds it and history did not say why
+            place(sid, (kind, int(row["now"])))
+            survivors.append(sid)
 
-    modified: dict[StableId, list[StableId]] = {}
-    generated: dict[StableId, list[StableId]] = {}
-    minted: dict[tuple[str, str], StableId] = {}
-
-    def child_ids(parent: StableId, kids: list[dict]) -> list[StableId]:
+    def child_ids(parent: StableId, keys: list[tuple[str, int]]) -> list[StableId]:
         out: list[StableId] = []
-        for kid in kids:
-            key = (kid["type"], kid["fp"])
-            if key == (_KIND[parent[0]], ws.ids[parent]):
-                continue
+        for key in keys:
+            if key not in entity or (key not in minted and key not in unclaimed):
+                continue  # not in the new shape, or already owned by another id
             if key not in minted:
-                if pool[key] <= 0:
-                    continue
-                pool[key] -= 1
-                minted[key] = new._mint(kid["type"])
-                new_ids[minted[key]] = kid["fp"]
+                minted[key] = new._mint(key[0])
+                unclaimed.discard(key)
+                new_ids[minted[key]] = entity[key]
+                new_indices[minted[key]] = key[1]
             cid = minted[key]
             if cid not in out:
                 out.append(cid)
@@ -204,30 +228,29 @@ def apply_history(ws: Workspace, history_json: dict) -> Workspace:
                 new_labels.setdefault(cid, copy.deepcopy(ws.labels[parent]))
         return out
 
-    # Pass 2: replaced entities, then what survivors generated.
-    for sid, row in pending:
-        modified[sid] = child_ids(sid, row["modified"])
-        gen = child_ids(sid, row["generated"])
+    for sid in pending:
+        modified[sid] = child_ids(sid, kids_of(sid, "modified"))
+        gen = child_ids(sid, kids_of(sid, "generated"))
         if gen:
             generated[sid] = gen
-    for sid, row in survivors:
-        if row and row["generated"]:
-            gen = child_ids(sid, row["generated"])
-            if gen:
-                generated[sid] = gen
+    for sid in survivors:
+        gen = child_ids(sid, kids_of(sid, "generated"))
+        if gen:
+            generated[sid] = gen
 
     # Whatever the new shape holds that no history row explains still gets a name.
     unattributed: list[StableId] = []
-    for (kind, fp), count in sorted(pool.items()):
-        for _ in range(max(count, 0)):
-            sid = new._mint(kind)
-            new_ids[sid] = fp
-            unattributed.append(sid)
+    for key in sorted(unclaimed):
+        sid = new._mint(key[0])
+        new_ids[sid] = entity[key]
+        new_indices[sid] = key[1]
+        unattributed.append(sid)
 
     params = dict(history_json.get("params") or {})
     if unattributed:
         params["unattributed"] = unattributed
     new.ids = new_ids
+    new.indices = new_indices
     new.labels = new_labels
     new.brep_path = history_json["brep_path"]
     new.history.append(Diff(

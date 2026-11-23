@@ -51,65 +51,77 @@ def diagonal_of(shape: Any) -> float:
     return float(((x1 - x0) ** 2 + (y1 - y0) ** 2 + (z1 - z0) ** 2) ** 0.5)
 
 
-def fingerprint(kind: str, sub: Any, quantum: float, fallback_index: int) -> str:
-    """`identity.fingerprint_of` over the localiser's own box. An entity with no measurable extent
-    cannot be fingerprinted; it gets an index name, valid for this shape only."""
+def fingerprint(kind: str, sub: Any, quantum: float, index: int) -> str:
+    """`identity.fingerprint_of` over the localiser's own box. INFORMATIONAL: identity is carried by
+    kernel index (see `history_record`), never by this name, because fingerprints can collide. An
+    entity with no measurable extent gets `kind:#index`, valid for this shape only."""
     from meshpipeline.cad.repair.identity import fingerprint_of
     from meshpipeline.cad.repair.localize import _centroid_and_box
 
-    return fingerprint_of(kind, _centroid_and_box(sub), quantum=quantum) or f"{kind}:#{fallback_index}"
+    return fingerprint_of(kind, _centroid_and_box(sub), quantum=quantum) or f"{kind}:#{index}"
 
 
-def entities_of(shape: Any, quantum: float) -> list[dict]:
+def _maps(shape: Any) -> dict[str, Any]:
     from OCP.TopExp import TopExp
     from OCP.TopTools import TopTools_IndexedMapOfShape
 
-    out: list[dict] = []
+    out: dict[str, Any] = {}
     for kind, topabs in _topabs().items():
         indexed = TopTools_IndexedMapOfShape()
         TopExp.MapShapes_s(shape, topabs, indexed)
+        out[kind] = indexed
+    return out
+
+
+def entities_of(shape: Any, quantum: float) -> list[dict]:
+    """Every face, edge and solid with its 1-based index in the shape's per-kind indexed map."""
+    out: list[dict] = []
+    for kind, indexed in _maps(shape).items():
         for i in range(1, indexed.Extent() + 1):
-            out.append({"type": kind, "fp": fingerprint(kind, indexed.FindKey(i), quantum, i)})
+            out.append({"type": kind, "index": i,
+                        "fp": fingerprint(kind, indexed.FindKey(i), quantum, i)})
     return out
 
 
 def _kind_of(sub: Any) -> str | None:
-    topabs = _topabs()
-    for kind, value in topabs.items():
+    for kind, value in _topabs().items():
         if sub.ShapeType() == value:
             return kind
     return None
 
 
-def _children(shapes: Any, quantum: float) -> list[dict]:
+def _children(shapes: Any, new_maps: dict[str, Any]) -> list[dict]:
+    """The listed shapes as `{type, index}` in the NEW shape. A shape the new shape does not hold
+    (index 0) is not an identity the workspace can use, so it is left out."""
     out: list[dict] = []
     for sub in shapes:
         kind = _kind_of(sub)
-        if kind is not None:
-            out.append({"type": kind, "fp": fingerprint(kind, sub, quantum, 0)})
+        if kind is None:
+            continue
+        index = new_maps[kind].FindIndex(sub)
+        if index > 0:
+            out.append({"type": kind, "index": index})
     return out
 
 
 def history_record(old: Any, new: Any, history: Any, *, op: str, params: dict, new_path: str,
                    quantum: float, seconds: float, declared_added: list[str] | None = None,
                    declared_removed: list[str] | None = None) -> dict:
-    """The record `workspace.apply_history` consumes: the new shape's entities plus, for each OLD
-    entity, whether `history` removed it and what it Modified / Generated into."""
-    from OCP.TopExp import TopExp
-    from OCP.TopTools import TopTools_IndexedMapOfShape
-
+    """The record `workspace.apply_history` consumes. Entities are matched by KERNEL INDEX, not by
+    fingerprint: for each OLD entity, `now` is its own index in the new shape (0 if absent),
+    `removed` is history.IsRemoved, and `modified`/`generated` are child indices in the new shape.
+    `declared_added`/`declared_removed` are caller-supplied claims, passed through unchecked."""
+    new_maps = _maps(new)
     rows: list[dict] = []
-    for kind, topabs in _topabs().items():
-        indexed = TopTools_IndexedMapOfShape()
-        TopExp.MapShapes_s(old, topabs, indexed)
+    for kind, indexed in _maps(old).items():
         for i in range(1, indexed.Extent() + 1):
             sub = indexed.FindKey(i)
             rows.append({
-                "type": kind,
-                "fp": fingerprint(kind, sub, quantum, i),
+                "type": kind, "index": i,
+                "now": int(new_maps[kind].FindIndex(sub)),
                 "removed": bool(history.IsRemoved(sub)),
-                "modified": _children(history.Modified(sub), quantum),
-                "generated": _children(history.Generated(sub), quantum),
+                "modified": _children(history.Modified(sub), new_maps),
+                "generated": _children(history.Generated(sub), new_maps),
             })
     return {
         "op": op, "params": params, "brep_path": new_path, "seconds": seconds,
@@ -141,13 +153,15 @@ def _register_test_fns() -> None:
         indexed = TopTools_IndexedMapOfShape()
         TopExp.MapShapes_s(shape, _topabs()["face"], indexed)
         found: list[str] = []
+        indices: list[int] = []
         for i in range(1, indexed.Extent() + 1):
             box = Bnd_Box()
             BRepBndLib.Add_s(indexed.FindKey(i), box)
             _, _, z0, _, _, z1 = box.Get()
             if abs(z0 - payload["z"]) < 1e-6 and abs(z1 - payload["z"]) < 1e-6:
                 found.append(fingerprint("face", indexed.FindKey(i), payload["quantum"], i))
-        return {"fingerprints": found}
+                indices.append(i)
+        return {"fingerprints": found, "indices": indices}
 
     @register("ws_split_face_by_edge")
     def _split_face_by_edge(payload: dict) -> dict:
@@ -176,6 +190,37 @@ def _register_test_fns() -> None:
         write_brep(new, payload["out_path"])
         return history_record(old, new, splitter.History(), op="split_face_by_edge",
                               params={"p1": payload["p1"], "p2": payload["p2"]},
+                              new_path=payload["out_path"], quantum=payload["quantum"],
+                              seconds=time.perf_counter() - start)
+
+    @register("ws_cut_box")
+    def _cut_box(payload: dict) -> dict:
+        """Test op: cut an axis-aligned box out of the part, keeping the Cut's BRepTools_History.
+        Faces the box only trims are Modified 1:1 with a changed bounding box."""
+        import time
+
+        from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
+        from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
+        from OCP.gp import gp_Pnt
+        from OCP.TopTools import TopTools_ListOfShape
+
+        start = time.perf_counter()
+        old = read_brep(payload["brep_path"])
+        tool = BRepPrimAPI_MakeBox(gp_Pnt(*payload["corner"]), *payload["size"]).Shape()
+        args, tools = TopTools_ListOfShape(), TopTools_ListOfShape()
+        args.Append(old)
+        tools.Append(tool)
+        cut = BRepAlgoAPI_Cut()
+        cut.SetArguments(args)
+        cut.SetTools(tools)
+        cut.SetToFillHistory(True)
+        cut.Build()
+        if not cut.IsDone():
+            raise RuntimeError("cut failed")
+        new = cut.Shape()
+        write_brep(new, payload["out_path"])
+        return history_record(old, new, cut.History(), op="cut_box",
+                              params={"corner": payload["corner"], "size": payload["size"]},
                               new_path=payload["out_path"], quantum=payload["quantum"],
                               seconds=time.perf_counter() - start)
 
