@@ -53,8 +53,10 @@ def _ok(value: dict) -> CallResult:
 class ScriptedPool:
     """Boxes by stable-id; face i is the unit cube at x = 10 * i unless overridden."""
 
-    def __init__(self, ws: Workspace, boxes: dict[str, list[float]], *, locate=None, fail=()) -> None:
+    def __init__(self, ws: Workspace, boxes: dict[str, list[float]], *, locate=None, fail=(),
+                 prox=(), distance=None) -> None:
         self.ws, self.boxes, self.locate, self.fail = ws, boxes, locate or {}, set(fail)
+        self.prox, self.distance = list(prox), distance or (lambda a, b: 0.4)
         self.calls: list[str] = []
 
     def call(self, fn: str, payload: dict, *, timeout_s: float) -> CallResult:
@@ -73,11 +75,13 @@ class ScriptedPool:
         if fn == "sites_locate_points":
             return _ok({"faces": [self.locate.get(tuple(p), []) for p in payload["points"]]})
         if fn == "sites_proximity":
-            return _ok({"pairs": []})
+            return _ok({"pairs": [{"a": a, "b": b, "dist": d, "point_a": [1.0, 2.0, 3.0],
+                                   "point_b": [1.0, 2.5, 3.0]} for a, b, d in self.prox]})
         if fn == "sites_distance":
             return _ok({"distances": [
-                {"dist": 0.4, "adjacent": False, "point_a": [0, 0, 0], "point_b": [0, 0, 0]}
-                for _ in payload["pairs"]]})
+                {"dist": self.distance(p["a"]["id"], p["b"]["id"]), "adjacent": False,
+                 "point_a": [0, 0, 0], "point_b": [0, 0, 0.4]}
+                for p in payload["pairs"]]})
         if fn == "sites_graph":
             return _ok({"graphs": {
                 s["id"]: {"nodes": [{"id": f"{e['type'][0].upper()}{e['index']}", "surface": "plane",
@@ -304,3 +308,102 @@ def test_a_realistic_observation_is_far_under_the_cap() -> None:
     verdict = _verdict(_fail("gmsh", "edge_through_face", *[Located(f"F{i}", None, "t") for i in range(1, 11)]))
     obs = observation(ws, verdict, find_sites(pool, ws, verdict, h_mm=H), {})
     assert len(json.dumps(obs)) < 15_000
+
+
+def test_observation_states_the_element_size_at_top_level() -> None:
+    ws = _ws()
+    pool = ScriptedPool(ws, _boxes(ws))
+    verdict = _verdict(_fail("gmsh", "overlapping_facets", Located("F1", None, "s1")))
+    sites = find_sites(pool, ws, verdict, h_mm=2.5)
+    assert observation(ws, verdict, sites, {})["h_mm"] == 2.5
+    assert observation(ws, verdict, [], {}, h_mm=4.0)["h_mm"] == 4.0
+
+
+def test_boxes_within_2h_but_exactly_far_apart_are_not_one_site() -> None:
+    ws = _ws()
+    boxes = _boxes(ws)
+    boxes["F2"] = [10.0, 1.5, 0.0, 11.0, 2.5, 1.0]  # boxes 0.5 apart ...
+    pool = ScriptedPool(ws, boxes, distance=lambda a, b: 40.0)  # ... but the faces are 40 mm apart
+    verdict = _verdict(_fail("gmsh", "overlapping_facets", Located("F1", None, "a"), Located("F2", None, "b")))
+    assert sorted(tuple(s.entities) for s in find_sites(pool, ws, verdict, h_mm=H)) == [("F1",), ("F2",)]
+
+
+def test_proximity_pairs_cannot_chain_two_failures_into_one_site() -> None:
+    ws = _ws()
+    # F1 and F8 fail, 70 mm apart; a close pair (F4, F5) lies between them. The pair is context, not a node.
+    pool = ScriptedPool(ws, _boxes(ws), prox=[(4, 5, 0.3)])
+    verdict = _verdict(_fail("gmsh", "other", Located("F1", None, "a"), Located("F8", None, "b")))
+    sites = find_sites(pool, ws, verdict, h_mm=H)
+    assert sorted(tuple(s.entities) for s in sites) == [("F1",), ("F8",)]
+
+
+def test_proximity_pair_touching_a_failure_attaches_with_its_clash_points() -> None:
+    ws = _ws()
+    boxes = _boxes(ws)
+    boxes["F2"] = [10.0, 1.5, 0.0, 11.0, 2.5, 1.0]
+    pool = ScriptedPool(ws, boxes, prox=[(1, 2, 0.3)])
+    verdict = _verdict(_fail("gmsh", "overlapping_facets", Located("F1", None, "surf 1")))
+    (site,) = find_sites(pool, ws, verdict, h_mm=H)
+    assert site.entities == ["F1", "F2"] and site.dist_over_h == 0.3
+    (clash,) = site.graph["clashes"]
+    assert {clash["a"], clash["b"]} == {"F1", "F2"} and clash["point_a"] == [1.0, 2.0, 3.0]
+    obs = observation(ws, verdict, [site], {})
+    assert obs["sites"][0]["clashes"][0]["point_b"] == [1.0, 2.5, 3.0]
+
+
+def test_site_ids_do_not_change_when_other_sites_appear_or_vanish() -> None:
+    ws = _ws()
+    pool = ScriptedPool(ws, _boxes(ws))
+    one = find_sites(pool, ws, _verdict(_fail("gmsh", "other", Located("F5", None, "a"))), h_mm=H)
+    more = find_sites(pool, ws, _verdict(
+        _fail("gmsh", "other", Located("F5", None, "a"), Located("F2", None, "b")),
+        _fail("netgen", "edge_through_face", Located("F9", None, "c"))), h_mm=H)
+    ids = {tuple(s.entities): s.id for s in more}
+    assert one[0].id == ids[("F5",)] == "S@F5"
+    assert ids[("F9",)] == "S@F9" and ids[("F2",)] == "S@F2"
+
+
+def test_a_stale_entity_with_a_point_falls_back_to_the_point() -> None:
+    ws = _ws()
+    point = (20.5, 0.5, 0.5)
+    pool = ScriptedPool(ws, _boxes(ws), locate={point: [2]})
+    verdict = _verdict(_fail("gmsh", "edge_through_face", Located("F404", point, "plc")))
+    (site,) = find_sites(pool, ws, verdict, h_mm=H)
+    assert site.entities == ["F2"]
+
+
+def test_each_site_carries_its_own_message_tag_and_point() -> None:
+    ws = _ws()
+    pool = ScriptedPool(ws, _boxes(ws))
+    first = MemberResult("gmsh", "fail", "edge_through_face", "PLC: segment and a facet intersect",
+                         [Located("F1", (10.5, 0.5, 0.5), "surface 12")])
+    second = MemberResult("gmsh", "fail", "overlapping_facets", "overlapping facets 80 81",
+                          [Located("F8", (80.5, 0.5, 0.5), "surface 80")])
+    verdict = _verdict(first, second)
+    by_entity = {tuple(s.entities): s for s in find_sites(pool, ws, verdict, h_mm=H)}
+    obs = {e["id"]: e for e in observation(ws, verdict, list(by_entity.values()), {})["sites"]}
+    one, eight = obs["S@F1"], obs["S@F8"]
+    assert one["failures"][0]["message"].startswith("PLC") and one["failures"][0]["tag"] == "surface 12"
+    assert eight["failures"][0]["message"].startswith("overlapping")
+    assert one["points"][0] == {"xyz": [10.5, 0.5, 0.5], "entity": "F1", "mesher": "gmsh", "tag": "surface 12"}
+
+
+def test_oversize_base_is_flagged_and_caller_fields_are_bounded() -> None:
+    ws = _ws()
+    huge = {"blob": "x" * 500_000}
+    members = [MemberResult(f"m{i}", "fail", "other", "m" * 400, []) for i in range(900)]
+    verdict = Verdict(_valid(), members, faithful=huge)
+    obs = observation(ws, verdict, [], {"note": "y" * 500_000})
+    assert obs["oversize"] is True and obs["trimmed"] is True
+    assert len(json.dumps(obs).encode()) < 60_000
+    small = observation(ws, _verdict(MemberResult("gmsh", "pass")), [], {"usd": 1})
+    assert "oversize" not in small and small["trimmed"] is False
+    assert "truncated" in observation(ws, Verdict(_valid(), [], faithful=huge), [], {})["faithful"]
+
+
+def test_unknown_error_kind_is_pinned_to_invalid() -> None:
+    ws = _ws()
+    pool = ScriptedPool(ws, _boxes(ws))
+    verdict = _verdict(_fail("netgen", "some_new_kind", Located("F1", None, "a")))
+    (site,) = find_sites(pool, ws, verdict, h_mm=H)
+    assert site.kind == "invalid"

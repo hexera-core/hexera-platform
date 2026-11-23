@@ -136,6 +136,34 @@ def test_two_hop_graph_of_a_box_face(pool: WorkerPool, tmp_path: Path) -> None:
     assert edge["tolerance"] > 0
 
 
+def test_free_edges_of_an_open_shell_are_in_the_graph(pool: WorkerPool, tmp_path: Path) -> None:
+    """For an open site the free edges ARE the defect: a lone square face has four, and a closed
+    box has none."""
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace
+    from OCP.gp import gp_Pln
+
+    path = tmp_path / "square.brep"
+    assert BRepTools.Write_s(BRepBuilderAPI_MakeFace(gp_Pln(), 0.0, 10.0, 0.0, 10.0).Face(), str(path))
+    got = pool.call("sites_graph", {"brep_path": str(path), "k": 2, "sites": [
+        {"id": "S", "seeds": [{"id": "F", "type": "face", "index": 1}]}]}, timeout_s=120)
+    assert got.ok and got.value is not None, got.error
+    edges = got.value["graphs"]["S"]["edges"]
+    assert sorted(e["kind"] for e in edges) == ["free"] * 4
+    assert all(e["faces"] == ["F1"] and e["tolerance"] > 0 for e in edges)
+    closed = pool.call("sites_graph", {"brep_path": _two_boxes(tmp_path), "k": 2, "sites": [
+        {"id": "S", "seeds": [{"id": "F", "type": "face", "index": 1}]}]}, timeout_s=120)
+    assert closed.ok and closed.value is not None
+    assert not [e for e in closed.value["graphs"]["S"]["edges"] if "kind" in e]
+
+
+def test_proximity_ties_are_broken_by_place_not_face_order(pool: WorkerPool, tmp_path: Path) -> None:
+    brep = _two_boxes(tmp_path)
+    full = pool.call("sites_proximity", {"brep_path": brep, "max_dist": 1.0, "max_pairs": 50}, timeout_s=120)
+    assert full.ok and full.value is not None
+    keys = [(round(p["dist"], 4), [round(c, 3) for c in p["point_a"]]) for p in full.value["pairs"]]
+    assert keys == sorted(keys) and all(p["point_a"] and p["point_b"] for p in full.value["pairs"])
+
+
 def test_cylinder_reports_its_angular_span(pool: WorkerPool, tmp_path: Path) -> None:
     from OCP.BRepPrimAPI import BRepPrimAPI_MakeCylinder
 

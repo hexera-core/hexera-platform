@@ -173,8 +173,12 @@ def sites_proximity(payload: dict) -> dict:
             continue
         d = _extrema(a, b)
         if d["dist"] is not None and d["dist"] < limit:
-            pairs.append({"a": i, "b": j, "dist": round(d["dist"], 6), "point": d["point_a"]})
-    pairs.sort(key=lambda p: p["dist"])
+            pairs.append({"a": i, "b": j, "dist": round(d["dist"], 6),
+                          "point_a": d["point_a"], "point_b": d["point_b"]})
+    # Ties are common (coplanar sides); break them by WHERE the pair is, never by face order, which
+    # changes whenever an op rebuilds the shape: the capped set must not depend on indices.
+    pairs.sort(key=lambda p: (round(p["dist"], 4), [round(c, 3) for c in p["point_a"] or []],
+                              [round(c, 3) for c in p["point_b"] or []], p["a"], p["b"]))
     return {"pairs": pairs[: int(payload["max_pairs"])]}
 
 
@@ -256,6 +260,7 @@ def _edge_facts(edge: Any, f1: Any, f2: Any) -> dict:
 
 
 def _neighbourhood(shape: Any, seeds: list[Any], faces: Any, edges: Any, hops: int) -> dict:
+    from OCP.BRep import BRep_Tool
     from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE
     from OCP.TopExp import TopExp
     from OCP.TopoDS import TopoDS
@@ -311,6 +316,7 @@ def _neighbourhood(shape: Any, seeds: list[Any], faces: Any, edges: Any, hops: i
 
     seen: set[int] = set()
     out_edges: list[dict] = []
+    defects: list[dict] = []
     for index in hop_of:
         for edge in edges_of(faces.FindKey(index)):
             e = edges.FindIndex(edge)
@@ -318,8 +324,22 @@ def _neighbourhood(shape: Any, seeds: list[Any], faces: Any, edges: Any, hops: i
                 continue
             seen.add(e)
             pair = sorted({faces.FindIndex(f) for f in faces_of(edge)})
-            if len(pair) != 2 or any(p not in hop_of for p in pair):
-                continue  # a seam, a free edge, or an edge leaving the neighbourhood
+            inside = [p for p in pair if p in hop_of]
+            if not inside or BRep_Tool.Degenerated_s(TopoDS.Edge_s(edge)):
+                continue
+            defect = None
+            if len(pair) == 1 and not BRep_Tool.IsClosed_s(TopoDS.Edge_s(edge), TopoDS.Face_s(
+                    faces.FindKey(pair[0]))):
+                defect = "free"  # one face and no seam: the boundary of an open shell
+            elif len(pair) > 2:
+                defect = "non_manifold"
+            if defect is not None:
+                # For an open or invalid site these ARE the defect, so they come first and are kept.
+                defects.append({"edge": f"E{e}", "faces": [f"F{p}" for p in inside], "kind": defect,
+                                "tolerance": float(BRep_Tool.Tolerance_s(TopoDS.Edge_s(edge)))})
+                continue
+            if len(pair) != 2 or len(inside) != 2:
+                continue  # a seam, or an edge leaving the neighbourhood
             facts = _edge_facts(TopoDS.Edge_s(edge), TopoDS.Face_s(faces.FindKey(pair[0])),
                                 TopoDS.Face_s(faces.FindKey(pair[1])))
             out_edges.append({"edge": f"E{e}", "faces": [f"F{p}" for p in pair], **facts})
@@ -328,7 +348,8 @@ def _neighbourhood(shape: Any, seeds: list[Any], faces: Any, edges: Any, hops: i
                 break
         if len(out_edges) >= MAX_GRAPH_EDGES:
             break
-    return {"nodes": nodes, "edges": out_edges, "truncated": truncated}
+    return {"nodes": nodes, "edges": [*defects[:MAX_GRAPH_EDGES], *out_edges][:MAX_GRAPH_EDGES],
+            "truncated": truncated or len(defects) + len(out_edges) > MAX_GRAPH_EDGES}
 
 
 @register("sites_graph")

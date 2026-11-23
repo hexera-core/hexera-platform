@@ -25,6 +25,7 @@ shape), so they are translated through `ws.indices`; they are never read as stab
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import json
 import re
 from collections import defaultdict
@@ -41,6 +42,10 @@ PROXIMITY_FACTOR = 1.0
 #: A warning is "inside" a site when its box centre is within the site's box grown by this x h.
 SOFT_MARGIN_FACTOR = 1.0
 MAX_NODES = 1500
+MAX_CLUSTER_PAIRS = 1500
+MESSAGE_CHARS = 200
+MAX_NOTES = 6
+MAX_CLASH_PAIRS = 6
 MAX_SOFT_ENTITIES = 3000
 MAX_PROXIMITY_PAIRS = 8
 MAX_DISTANCE_FACES = 4
@@ -103,6 +108,8 @@ class _Node:
         self.sources: set[str] = set()
         self.box: Box | None = None
         self.proximity_dist: float | None = None
+        #: who said what about this node: {mesher, error_kind, message, tag, xyz, entity}
+        self.notes: list[dict] = []
 
 
 def _gap(a: Box, b: Box) -> float:
@@ -173,7 +180,8 @@ def find_sites(pool: WorkerPool, ws: Workspace, verdict: Any, *, h_mm: float) ->
     points: list[_Node] = []
     whole_part: dict[SiteKind, set[str]] = defaultdict(set)
 
-    def implicate(entity: StableId | None, xyz: tuple | None, kind: SiteKind, source: str) -> None:
+    def implicate(entity: StableId | None, xyz: tuple | None, kind: SiteKind, source: str,
+                  note: dict) -> None:
         if entity is not None:
             node = nodes.setdefault(entity, _Node(entity, None))
             if xyz is not None and xyz not in node.xyz:
@@ -183,25 +191,31 @@ def find_sites(pool: WorkerPool, ws: Workspace, verdict: Any, *, h_mm: float) ->
             points.append(node)
         node.kinds.add(kind)
         node.sources.add(source)
+        node.notes.append({**note, "entity": entity, "xyz": xyz})
 
     for member in failing:
         kind = _member_kind(member)
         used = False
         for loc in getattr(member, "located", []) or []:
             xyz = tuple(float(v) for v in loc.xyz) if loc.xyz is not None else None
-            if loc.entity is not None:
-                if _live(ws, loc.entity):
-                    implicate(loc.entity, xyz, kind, member.name)
-                    used = True
+            note = {"mesher": member.name, "error_kind": getattr(member, "error_kind", None),
+                    "message": str(getattr(member, "message", "") or "")[:MESSAGE_CHARS],
+                    "tag": str(getattr(loc, "mesher_tag", "") or "")}
+            if loc.entity is not None and _live(ws, loc.entity):
+                implicate(loc.entity, xyz, kind, member.name, note)
+                used = True
             elif xyz is not None:
-                implicate(None, xyz, kind, member.name)
+                # no entity, or one that is not live (a stale or foreign id): the point still
+                # says where, and the kernel resolves it to live faces
+                implicate(None, xyz, kind, member.name, note)
                 used = True
         if not used:
             whole_part["timeout" if kind == "timeout" else "unlocated"].add(member.name)
     for finding in hard:
         resolved = _kernel_entities(ws, list(finding.entities), reverse)
         for sid in resolved:
-            implicate(sid, None, _HARD_KINDS[finding.code], "valid")
+            implicate(sid, None, _HARD_KINDS[finding.code], "valid",
+                      {"mesher": "valid", "error_kind": finding.code, "message": "", "tag": finding.code})
         if not resolved:
             whole_part["unlocated"].add("valid")
 
@@ -216,10 +230,27 @@ def find_sites(pool: WorkerPool, ws: Workspace, verdict: Any, *, h_mm: float) ->
                 min((_number(e) for e in site.entities), default=0), site.entities[:1])
 
     sites.sort(key=order)
-    for n, site in enumerate(sites, start=1):
-        site.id = f"S{n}"
-    _attach_graphs(pool, ws, sites, reverse)
+    _assign_ids(sites)
+    _attach_graphs(pool, ws, sites, reverse, h_mm)
     return sites
+
+
+def _assign_ids(sites: list[Site]) -> None:
+    """Ids from WHAT the site is, not where it sits in this round's ordering: a proposer that
+    discussed "S@F12" last round must find the same geometry under that name now. The anchor is the
+    lowest entity (stable ids are never reused), a whole-part site is named by its kind, a point-only
+    site by a hash of its first point. Collisions get -2, -3 in sort order."""
+    taken: dict[str, int] = {}
+    for site in sites:
+        if site.entities:
+            anchor = min(site.entities, key=lambda e: (e[0], _number(e)))
+        elif site.xyz:
+            anchor = "p" + hashlib.sha1(repr([round(c, 3) for c in site.xyz[0]]).encode()).hexdigest()[:6]
+        else:
+            anchor = site.kind
+        base = f"S@{anchor}"
+        taken[base] = taken.get(base, 0) + 1
+        site.id = base if taken[base] == 1 else f"{base}-{taken[base]}"
 
 
 def _geometric_sites(pool: WorkerPool, ws: Workspace, valid: Any, nodes: dict[StableId, _Node],
@@ -242,35 +273,38 @@ def _geometric_sites(pool: WorkerPool, ws: Workspace, valid: Any, nodes: dict[St
                 target = nodes.setdefault(sid, _Node(sid, None))
                 target.kinds |= node.kinds
                 target.sources |= node.sources
+                target.notes.extend({**n, "entity": sid} for n in node.notes)
                 if node.xyz[0] not in target.xyz:
                     target.xyz.append(node.xyz[0])
                 node.kinds = set()
         points = [p for p in points if p.kinds]
 
+    # Close face pairs are CONTEXT for a failure site, never a failure: they are attached after the
+    # failure nodes have been clustered, and cannot chain two failures into one site.
     prox = _call(pool, "sites_proximity", {
         "brep_path": ws.brep_path, "max_dist": PROXIMITY_FACTOR * h_mm,
         "max_pairs": MAX_PROXIMITY_PAIRS})
+    prox_pairs = []
     for pair in (prox or {}).get("pairs", []):
-        for key in ("a", "b"):
-            sid = reverse.get(("F", int(pair[key])))
-            if sid is None:
-                continue
-            node = nodes.setdefault(sid, _Node(sid, None))
-            node.kinds.add("proximity")
-            node.sources.add("proximity")
-            d = float(pair["dist"])
-            node.proximity_dist = d if node.proximity_dist is None else min(node.proximity_dist, d)
+        a, b = reverse.get(("F", int(pair["a"]))), reverse.get(("F", int(pair["b"])))
+        if a is not None and b is not None:
+            prox_pairs.append((a, b, pair))
 
+    want = set(nodes) | {x for a, b, _ in prox_pairs for x in (a, b)}
     geometry = _call(pool, "sites_geometry", {
-        "brep_path": ws.brep_path, "entities": [_ref(ws, sid) for sid in sorted(nodes)]}) if nodes else None
+        "brep_path": ws.brep_path, "entities": [_ref(ws, sid) for sid in sorted(want)]}) if want else None
     boxes = (geometry or {}).get("geometry", {})
-    everyone = [*nodes.values(), *points]
-    for node in everyone:
+
+    def boxed(node: _Node) -> None:
         if node.entity is not None and node.entity in boxes:
             node.box = cast(Box, tuple(float(v) for v in boxes[node.entity]["box"]))
         elif node.xyz:
             x, y, z = node.xyz[0]
             node.box = (x, y, z, x, y, z)
+
+    everyone = [*nodes.values(), *points]
+    for node in everyone:
+        boxed(node)
 
     parent = list(range(len(everyone)))
 
@@ -280,26 +314,73 @@ def _geometric_sites(pool: WorkerPool, ws: Workspace, valid: Any, nodes: dict[St
             i = parent[i]
         return i
 
+    # Candidates by box gap (cheap), then CONFIRMED by exact distance when both are entities: a big
+    # plane has a huge box and would otherwise chain every failure near it into one mega-site.
     reach = CLUSTER_FACTOR * h_mm
+    candidates: list[tuple[int, int]] = []
     for i, a in enumerate(everyone):
         if a.box is None:
             continue
         for j in range(i + 1, len(everyone)):
             b = everyone[j]
             if b.box is not None and _gap(a.box, b.box) <= reach:
-                parent[find(i)] = find(j)
+                candidates.append((i, j))
+    exact = [(i, j) for i, j in candidates
+             if everyone[i].entity is not None and everyone[j].entity is not None
+             and everyone[i].entity != everyone[j].entity][:MAX_CLUSTER_PAIRS]
+    measured: dict[tuple[int, int], float] = {}
+    if exact:
+        answer = _call(pool, "sites_distance", {"brep_path": ws.brep_path, "pairs": [
+            {"a": _ref(ws, cast(str, everyone[i].entity)), "b": _ref(ws, cast(str, everyone[j].entity))}
+            for i, j in exact]})
+        for (i, j), item in zip(exact, (answer or {}).get("distances", []), strict=False):
+            if item.get("dist") is not None:
+                measured[(i, j)] = float(item["dist"])
+    for i, j in candidates:
+        if measured.get((i, j), 0.0) <= reach:  # unmeasured: the box gap stands
+            parent[find(i)] = find(j)
     groups: dict[int, list[_Node]] = defaultdict(list)
     for i, node in enumerate(everyone):
         groups[find(i)].append(node)
-
     components = list(groups.values())
-    real = [c for c in components if any(n.sources != {"proximity"} for n in c)]
-    # A pair of close faces nobody's failure touches is not a site - unless nothing else located.
-    components = real or components[:MAX_PROXIMITY_PAIRS]
+    clashes: list[list[dict]] = [[] for _ in components]
+
+    owner = {n.entity: k for k, c in enumerate(components) for n in c if n.entity is not None}
+    standalone: list[list[_Node]] = []
+    for a, b, pair in prox_pairs:
+        entry = {"a": a, "b": b, "dist_mm": round(float(pair["dist"]), 4),
+                 "point_a": pair.get("point_a"), "point_b": pair.get("point_b")}
+        home = owner.get(a, owner.get(b))
+        if home is not None:
+            for x in (a, b):
+                node = nodes.get(x) or _Node(x, None)
+                if x not in owner:
+                    node.kinds.add("proximity")
+                    node.sources.add("proximity")
+                    node.notes.append({"mesher": "proximity", "error_kind": "proximity", "message": "",
+                                       "tag": "", "entity": x, "xyz": None})
+                    boxed(node)
+                    components[home].append(node)
+                    owner[x] = home
+                node.proximity_dist = (entry["dist_mm"] if node.proximity_dist is None
+                                       else min(node.proximity_dist, entry["dist_mm"]))
+            clashes[home].append(entry)
+        elif not everyone:  # nothing was located anywhere: close faces are the best lead there is
+            pair_nodes = []
+            for x in (a, b):
+                node = _Node(x, None)
+                node.kinds.add("proximity")
+                node.sources.add("proximity")
+                node.proximity_dist = entry["dist_mm"]
+                boxed(node)
+                pair_nodes.append(node)
+            standalone.append(pair_nodes)
+            clashes.append([entry])
+    components.extend(standalone)
 
     sites = [_site_of(c, boxes) for c in components]
     _attach_soft(pool, ws, valid, sites, reverse, h_mm)
-    _attach_distances(pool, ws, sites, components, h_mm)
+    _attach_distances(pool, ws, sites, components, clashes, h_mm)
     return sites
 
 
@@ -320,6 +401,22 @@ def _site_of(component: list[_Node], boxes: dict) -> Site:
     kind = next(k for k in _PRIORITY if k in kinds)
     meshers = sorted({s for n in component for s in n.sources if s != "proximity"})
     site = Site("", kind, entities, xyz[:20], meshers, None, {}, None)
+    seen_notes: set[tuple] = set()
+    failures: list[dict] = []
+    located: list[dict] = []
+    for node in component:
+        for note in node.notes:
+            if note["mesher"] == "proximity":
+                continue
+            key = (note["mesher"], note["error_kind"], note["tag"], note["message"])
+            if key not in seen_notes and len(failures) < MAX_NOTES:
+                seen_notes.add(key)
+                failures.append({k: note[k] for k in ("mesher", "error_kind", "tag", "message")})
+            if note["xyz"] is not None and len(located) < MAX_NOTES:
+                located.append({"xyz": [round(c, 3) for c in note["xyz"]], "entity": note["entity"],
+                                "mesher": note["mesher"], "tag": note["tag"]})
+    site.graph["failures"] = failures
+    site.graph["points"] = located
     site_box = _union_box([n.box for n in component if n.box is not None])
     site.graph["box"] = list(site_box) if site_box else None
     return site
@@ -356,9 +453,9 @@ def _attach_soft(pool: WorkerPool, ws: Workspace, valid: Any, sites: list[Site],
 
 
 def _attach_distances(pool: WorkerPool, ws: Workspace, sites: list[Site], components: list[list[_Node]],
-                      h_mm: float) -> None:
+                      clashes: list[list[dict]], h_mm: float) -> None:
     requests: list[tuple[Site, dict]] = []
-    for site, component in zip(sites, components, strict=True):
+    for site, component, known in zip(sites, components, clashes, strict=True):
         faces = [e for e in site.entities if e[0] == "F"][:MAX_DISTANCE_FACES]
         pairs = [(a, b) for i, a in enumerate(faces) for b in faces[i + 1:]]
         for a, b in pairs:
@@ -366,18 +463,26 @@ def _attach_distances(pool: WorkerPool, ws: Workspace, sites: list[Site], compon
         prox = [n.proximity_dist for n in component if n.proximity_dist is not None]
         if prox:
             site.dist_over_h = round(min(prox) / h_mm, 4)
+        site.graph["clashes"] = list(known)
     if not requests:
         return
     answer = _call(pool, "sites_distance", {
         "brep_path": ws.brep_path, "pairs": [r for _, r in requests]})
-    for (site, _), item in zip(requests, (answer or {}).get("distances", []), strict=False):
+    for (site, ask), item in zip(requests, (answer or {}).get("distances", []), strict=False):
         if item.get("dist") is None or item.get("adjacent"):
             continue  # a shared edge is distance 0 for a reason that says nothing about the gap
         d = round(float(item["dist"]) / h_mm, 4)
         site.dist_over_h = d if site.dist_over_h is None else min(site.dist_over_h, d)
+        entry = {"a": ask["a"]["id"], "b": ask["b"]["id"], "dist_mm": round(float(item["dist"]), 4),
+                 "point_a": item.get("point_a"), "point_b": item.get("point_b")}
+        if not any({c["a"], c["b"]} == {entry["a"], entry["b"]} for c in site.graph["clashes"]):
+            site.graph["clashes"].append(entry)
+    for site in sites:
+        site.graph["clashes"] = sorted(site.graph.get("clashes", []),
+                                       key=lambda c: (c["dist_mm"], c["a"], c["b"]))[:MAX_CLASH_PAIRS]
 
 
-def _attach_graphs(pool: WorkerPool, ws: Workspace, sites: list[Site], reverse: dict) -> None:
+def _attach_graphs(pool: WorkerPool, ws: Workspace, sites: list[Site], reverse: dict, h_mm: float) -> None:
     """The k = 2 neighbourhood of each site, from the kernel, with kernel indices named as stable ids."""
     asks = []
     for site in sites:
@@ -389,7 +494,9 @@ def _attach_graphs(pool: WorkerPool, ws: Workspace, sites: list[Site], reverse: 
     graphs = (answer or {}).get("graphs", {})
     for site in sites:
         soft, box = site.graph.get("soft", []), site.graph.get("box")
-        graph: dict = {"k": GRAPH_HOPS}
+        graph: dict = {"k": GRAPH_HOPS, "h_mm": h_mm}
+        for key in ("failures", "points", "clashes"):
+            graph[key] = site.graph.get(key, [])
         raw = graphs.get(site.id)
         if raw is not None:
             def name(prefix: str, value: Any) -> Any:
@@ -440,6 +547,13 @@ def _plain(value: Any) -> Any:
     return json.loads(json.dumps(value, default=str))
 
 
+def _cap(value: Any, limit: int = 2000) -> Any:
+    """`value` if its JSON fits `limit` bytes, else a marker holding its head: these two fields are
+    caller-supplied and must not be able to blow the observation's size."""
+    text = json.dumps(value, default=str)
+    return value if len(text) <= limit else {"truncated": text[:limit]}
+
+
 def _site_entry(ws: Workspace, site: Site, level: tuple) -> dict:
     _, n_ent, n_nodes, n_edges, n_soft, n_xyz = level
     graph = site.graph or {}
@@ -452,6 +566,10 @@ def _site_entry(ws: Workspace, site: Site, level: tuple) -> dict:
         "labels": {e: ws.labels[e]["name"] for e in site.entities[:n_ent]
                    if isinstance(ws.labels.get(e), dict) and ws.labels[e].get("name")},
     }
+    n_fail = max(1, n_ent // 4)
+    entry["failures"] = list(graph.get("failures", []))[:n_fail]  # who said what, for THIS site
+    entry["points"] = _round(list(graph.get("points", []))[:n_xyz])  # where, by mesher and entity
+    entry["clashes"] = _round(list(graph.get("clashes", []))[:max(1, n_ent // 4)])  # which faces, where
     if len(site.entities) > n_ent:
         entry["entities_omitted"] = len(site.entities) - n_ent
     sub: dict = {k: graph[k] for k in ("k", "error", "note", "truncated") if k in graph}
@@ -469,13 +587,15 @@ def _site_entry(ws: Workspace, site: Site, level: tuple) -> dict:
     return entry
 
 
-def observation(ws: Workspace, verdict: Any, sites: list[Site], budget: Any) -> dict:
+def observation(ws: Workspace, verdict: Any, sites: list[Site], budget: Any, *,
+                h_mm: float | None = None) -> dict:
     """What the proposer is told: the part's state, what each mesher said, and each failure site.
 
     JSON-serialisable and no larger than `OBSERVATION_MAX_BYTES`: it is read by a model with a
     per-file dollar budget. When the full picture does not fit it is thinned in a fixed order -
     graph detail first, then entities, then whole sites - and the omissions are counted, never
-    silent. Pixels (`view_png`) are not part of it. A site naming an entity that is no longer live
+    silent (`trimmed`; `oversize` if even one site will not fit). `h_mm`, the element size every
+    figure is to be read against, is top-level (taken from the sites when not passed). Pixels (`view_png`) are not part of it. A site naming an entity that is no longer live
     in `ws` is dropped and listed under `stale_sites`.
     """
     live: list[Site] = []
@@ -487,19 +607,22 @@ def observation(ws: Workspace, verdict: Any, sites: list[Site], budget: Any) -> 
         except UnknownTarget:
             stale.append(site.id)
     valid = verdict.valid
+    if h_mm is None:
+        h_mm = next((s.graph["h_mm"] for s in sites if s.graph.get("h_mm")), None)
     base: dict = {
+        "h_mm": h_mm,
         "valid": {"ok": bool(valid.ok), "units": valid.units, "solids": valid.solids,
                   "round_trip_ok": bool(valid.round_trip_ok),
                   "hard": [{"code": f.code, "entities": list(f.entities)[:10]} for f in valid.hard[:12]]},
         "panel": [{"name": m.name, "status": m.status, "error_kind": m.error_kind,
-                   "message": str(m.message or "")[:300], "min_sicn": _round(m.min_sicn),
+                   "message": str(m.message or "")[:MESSAGE_CHARS], "min_sicn": _round(m.min_sicn),
                    "elements": m.elements, "located": len(m.located or [])}
                   for m in getattr(verdict, "panel", [])],
         "tier": getattr(verdict, "tier", None),
         "clean": getattr(verdict, "clean", None),
-        "faithful": _plain(getattr(verdict, "faithful", None)),
-        "budget": _plain(budget) if isinstance(budget, dict) or dataclasses.is_dataclass(budget)
-        else {"value": budget},
+        "faithful": _cap(_plain(getattr(verdict, "faithful", None))),
+        "budget": _cap(_plain(budget) if isinstance(budget, dict) or dataclasses.is_dataclass(budget)
+                       else {"value": budget}),
         "stale_sites": stale,
     }
 
@@ -510,9 +633,18 @@ def observation(ws: Workspace, verdict: Any, sites: list[Site], budget: Any) -> 
         out["sites_omitted"] = len(live) - len(kept)
         return out
 
-    out = build(_LEVELS[-1])
-    for level in _LEVELS:
+    for n, level in enumerate(_LEVELS):
         out = build(level)
+        out["trimmed"] = n > 0
         if len(json.dumps(out).encode()) <= OBSERVATION_MAX_BYTES:
             return out
+    # Even one thinned site does not fit: say so, and drop what is droppable rather than send more.
+    out = build(_LEVELS[-1])
+    out["panel"] = [{"name": m["name"], "status": m["status"], "error_kind": m["error_kind"]}
+                    for m in base["panel"]]
+    out["valid"] = {"ok": base["valid"]["ok"], "hard": [h["code"] for h in base["valid"]["hard"]]}
+    out["trimmed"] = True
+    if len(json.dumps(out).encode()) > OBSERVATION_MAX_BYTES:
+        out["sites"], out["sites_omitted"] = [], len(live)
+    out["oversize"] = True
     return out
