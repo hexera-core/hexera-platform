@@ -309,3 +309,20 @@ def check_shape(brep_path: str) -> dict:
 @register("check_valid")
 def _check_valid(payload: dict) -> dict:
     return check_shape(payload["brep"])
+
+
+@register("valid_extent")
+def _valid_extent(payload: dict) -> dict:
+    """Is the BREP unbounded, by the very rule `check_shape` stops at? A bounding box only, so it is cheap.
+
+    It decides nothing about the file. `valid.check_valid` asks it first so that it can run the round trip
+    alongside the shape check without ever writing back an infinite part; the report still comes from
+    `check_shape` alone."""
+    from OCP.BRep import BRep_Builder
+    from OCP.BRepTools import BRepTools
+    from OCP.TopoDS import TopoDS_Shape
+
+    shape = TopoDS_Shape()
+    if not BRepTools.Read_s(shape, payload["brep"], BRep_Builder()):
+        raise ValueError(f"could not read BREP {payload['brep']}")
+    return {"unbounded": _unbounded_finding(shape) is not None}
