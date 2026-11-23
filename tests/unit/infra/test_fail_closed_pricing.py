@@ -253,7 +253,7 @@ def test_the_installed_caching_router_forwards_the_call_kind_without_recording_i
 
 
 def test_cache_write_tokens_cost_their_own_rate_not_the_input_rate():
-    base = dict(input_tokens=1_000_000, output_tokens=0)
+    base = {"input_tokens": 1_000_000, "output_tokens": 0}
     plain = pricing.estimate_cost("openai", "gpt-6-astra", **base)
     w30 = pricing.estimate_cost("openai", "gpt-6-astra", **base, cache_write_tokens=1_000_000,
                                 cache_write_30m_tokens=1_000_000)

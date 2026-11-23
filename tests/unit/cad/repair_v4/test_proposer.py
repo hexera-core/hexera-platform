@@ -568,7 +568,7 @@ def test_the_proposer_sizes_reservations_from_its_routes_own_prices(monkeypatch)
                          ledger=WaveLedger.for_test(cap_usd=10.0))
     terra = P.AIProposer("openai:gpt-5.6-terra", max_turns=3, usd_ceiling=1.0, call=Fake([]),
                          ledger=WaveLedger.for_test(cap_usd=10.0))
-    assert astra._prices == (10.0, 50.0, 1.0) and terra._prices == (2.0, 12.0, 0.2)
+    assert astra._prices == (12.5, 50.0, 1.0) and terra._prices == (2.0, 12.0, 0.2)
     with pytest.raises(UnpricedModel, match="MODEL_PRICE_OVERRIDES"):
         P.AIProposer("openai:gpt-9-mystery", max_turns=3, usd_ceiling=1.0, call=Fake([]),
                      ledger=WaveLedger.for_test(cap_usd=10.0))

@@ -126,7 +126,7 @@ def test_an_unattributed_cache_write_settles_at_the_dearer_12h_rate(wire):
 
 def test_lane_b_live_usage_settles_to_the_corrected_figure(wire):
     # The seven real gpt-6-astra payloads of Lane B (probe, search-run1, search-run2). The ledger then
-    # recorded $0.1345 (writes at $10/M); the pricing page bills them at $12.50/M: $0.1592.
+    # recorded $0.1345 (writes at $10/M); the pricing page bills them at $12.50/M: $0.1591.
     from meshpipeline.adapters.inference_telemetry.pricing import estimate_cost
     calls = [(86, 0, 0, 18), (2370, 0, 2244, 27), (2370, 2215, 29, 27), (3469, 2338, 1128, 89),
              (4653, 3466, 1184, 68), (4060, 0, 4057, 106), (5279, 4057, 1219, 71)]
@@ -135,7 +135,7 @@ def test_lane_b_live_usage_settles_to_the_corrected_figure(wire):
               for i, c, w, o in calls)
     old = sum(estimate_cost("openai", "gpt-6-astra", input_tokens=i, cached_input_tokens=c, output_tokens=o)
               for i, c, w, o in calls)
-    assert round(old, 4) == 0.1345 and round(new, 4) == 0.1592
+    assert round(old, 4) == 0.1345 and round(new, 4) == 0.1591
 
 
 def test_the_reservation_prices_input_at_the_dearest_rate_a_write_can_bill_at(wire):
