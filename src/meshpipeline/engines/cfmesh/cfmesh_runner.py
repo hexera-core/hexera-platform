@@ -677,6 +677,24 @@ def planned_cells_of(configured: dict) -> int | None:
     return int(v) if isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0 else None
 
 
+def wall_function_bore(passage_d: float, patches, port_widths: dict | None) -> float:
+    """CFDREQ-20: the bore a wall-function wall cell is chosen on (CFDREQ-18): the passage measured (twice its median
+    radius), else the inlets' widths (each lid's hydraulic diameter, the widest inlet - snappyHexMesh's bore is its
+    inlet's too), else the widest opening's. 0.0 when the case has neither."""
+    if passage_d and float(passage_d) > 0.0:
+        return float(passage_d)
+    widths: dict[str, float] = {}
+    for name, w in (port_widths or {}).items():
+        try:
+            if float(w) > 0.0:
+                widths[str(name)] = float(w)
+        except (TypeError, ValueError):
+            continue
+    inlets = [widths[str(p.get("name"))] for p in patches or []
+              if isinstance(p, dict) and str(p.get("type") or "") == "inlet" and str(p.get("name")) in widths]
+    return max(inlets or list(widths.values()) or [0.0])
+
+
 def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
                        patches: list, body_bbox, L: float,
                        domain_min, domain_max, strategy: dict | None = None,
@@ -754,14 +772,16 @@ def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
             wall_cell, _band_r = float(_knobs["wall_cell"]), 0.0
             _asked_across = (_ask.req.get("controls") or {}).get("cells_across")
             max_halvings = max(int(max_halvings), math.ceil(math.log2(max(max_cell / wall_cell, 1.0))))
-        elif _passage_d > 0.0 and wall_cell > 0.0:
+        elif (_bore := wall_function_bore(_passage_d, patches, port_widths)) > 0.0 and wall_cell > 0.0:
             # CFDREQ-18: in wall-function mode the wall cell is chosen with the first layer the y+ gives (its
-            # stack is half the wall cell here); the band's finer cells would squash it, so there is none
-            _n0 = max(1, int(round(_passage_d / wall_cell)))
-            _n_wf = CR.wall_function_bore_cells(_ask, bore_D=_passage_d, cells_across=_n0,
+            # stack is half the wall cell here); the band's finer cells would squash it, so there is none.
+            # CFDREQ-20: on the passage measured, else on the openings' bore - a case whose passage reading did not
+            # close (no passage_radius) kept the builder's 0.7 mm wall cells and a y+ 0.5 wall
+            _n0 = max(1, int(round(_bore / wall_cell)))
+            _n_wf = CR.wall_function_bore_cells(_ask, bore_D=_bore, cells_across=_n0,
                                                 cap_rel=CR.CFMESH_STACK_REL)
             if _n_wf < _n0:
-                wall_cell, _band_r = min(max_cell, _passage_d / _n_wf), 0.0
+                wall_cell, _band_r = min(max_cell, _bore / _n_wf), 0.0
     wall_cell = max(wall_cell, max_cell / float(2 ** max(1, int(max_halvings))))
     if snap_wall:
         # a wall size the engine chose from the budget: the octree level at or above it

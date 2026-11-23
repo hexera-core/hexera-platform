@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from meshpipeline.contracts import flow_conditions as FC
 from meshpipeline.engines import cfd_requirements as CR
 from meshpipeline.engines import mesh_requirements as MR
@@ -52,3 +54,43 @@ def test_cfmesh_fits_its_stack_under_half_the_wall_cell():
     fit = CR.wall_fit(ask, h, D / n, cap_rel=CR.CFMESH_STACK_REL)
     assert fit["treatment"] == "functions" and fit["y_plus"] >= 30.0
     assert CR.wall_fit(ask, h, D / 68, cap_rel=CR.CFMESH_STACK_REL)["treatment"] == "resolved"   # the old wall cell
+
+
+def _render_cfmesh(tmp_path, *, passage_radius=None, wall_cell: float = 0.0007):
+    """cfMesh's sizing path as a real internal part reaches it: the conditions' wall functions in the workspace, no
+    size typed, the builder's fine wall cell, the openings' widths, and (as on 00131010, 00147438, 00164305) no
+    passage reading."""
+    import json
+    import re
+
+    from tests.unit.engines.test_cfd_wall_treatment import OK_INTERNAL, PATCHES
+
+    from meshpipeline.engines.cfmesh import cfmesh_runner as R
+
+    ws = tmp_path / "case"
+    (ws / "system").mkdir(parents=True)
+    MR.write(ws, CR.with_conditions(MR.section("none"), {"request_txt": OK_INTERNAL, "intake_patches": PATCHES,
+                                                         "purpose": "internal_cfd"}))
+    R.render_cfmesh_case(
+        ws, surface_file="geom.fms", wall_patch="wall",
+        patches=[{"name": "wall", "type": "wall"}, {"name": "inlet", "type": "inlet"},
+                 {"name": "outlet", "type": "outlet"}],
+        body_bbox=([0, 0, 0], [0.3, 0.05, 0.05]), L=0.3, domain_min=[0, 0, 0], domain_max=[0.3, 0.05, 0.05],
+        strategy={"n_layers": 2, "wall_cell": wall_cell}, cell_budget=8_000_000, passage_radius=passage_radius,
+        port_widths={"inlet": 0.04447, "outlet": 0.06})
+    md = (ws / "system" / "meshDict").read_text()
+    row = next(v for v in json.loads((ws / CR.PLAN_FILE).read_text())["rows"].values() if "y_plus_expected" in v)
+    return float(re.search(r"wall \{ cellSize ([-+0-9.eE]+)", md).group(1)), row
+
+
+def test_cfmesh_without_a_passage_reading_sizes_its_wall_cells_on_the_inlet_bore(tmp_path):
+    # CFDREQ-20: the hook read only the passage measured; with none the builder's 0.7 mm cells stood and the wall
+    # was resolved at y+ 0.5 (three cfMesh parts of yplab_14f21bdd)
+    from meshpipeline.engines.cfmesh import cfmesh_runner as R
+
+    wall, row = _render_cfmesh(tmp_path)
+    assert wall == pytest.approx(0.04447 / CR.WALL_FUNCTION_MIN_CELLS_ACROSS, rel=1e-3)
+    assert row["treatment"] == "functions" and 30.0 <= row["y_plus_expected"] <= 100.0
+    assert R.wall_function_bore(0.0, [{"name": "in", "type": "inlet"}], {"in": 0.03, "out": 0.05}) == 0.03
+    assert R.wall_function_bore(0.0, [], {"a": 0.03, "b": 0.05}) == 0.05
+    assert R.wall_function_bore(0.02, [], {"a": 0.05}) == 0.02 and R.wall_function_bore(0.0, [], None) == 0.0
