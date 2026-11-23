@@ -113,9 +113,12 @@ def _usable(v: Any, what: str) -> str | None:
 
 def run_file(arm_name: str, entry: Any, source: str, *, pool: Any, engine: Engine, ledger: Any | None,
              arm: Any, budget: Any, h_mm: float | None, route: str | None, max_turns: int, job_id: str,
-             workdir: str, workers: int = 1, clock: Any = time.monotonic, throttle: Any = None) -> ArmOutcome:
+             workdir: str, workers: int = 1, clock: Any = time.monotonic, throttle: Any = None,
+             recipes: Any = None) -> ArmOutcome:
     """Run one file through one arm. `arm` is the `evalspec.Arm`, `budget` the arm's `evalspec.Budget`. `throttle`
-    is the shard's `model_throttle.WaveThrottle`, handed to the AI proposer (None: unthrottled)."""
+    is the shard's `model_throttle.WaveThrottle`, handed to the AI proposer (None: unthrottled). `recipes` is the
+    shard's `recipes.RecipeMemory` (CAD_REPAIR_V4_RECIPES; None: off): the search arms read it, and a clean file of
+    the dev split writes to it."""
     from meshpipeline.cad.repair_v4.verdict.assemble import InconclusiveVerdict
     from meshpipeline.cad.repair_v4.verdict.valid import CheckerUnavailable
 
@@ -150,7 +153,7 @@ def run_file(arm_name: str, entry: Any, source: str, *, pool: Any, engine: Engin
             out_v, extra, usd = _search_arm(arm_name, pool=pool, ws=ws, start=start, source=source, judge=judge,
                                             v_in=v_in, ledger=ledger, arm=arm, budget=budget, h_mm=h_mm, route=route,
                                             max_turns=max_turns, job_id=job_id, entry=entry, workers=workers,
-                                            clock=clock, full=full, throttle=throttle)
+                                            clock=clock, full=full, throttle=throttle, recipes=recipes)
         else:
             raise ValueError(f"arm {arm_name!r} is not dispatchable here")
     except (CheckerUnavailable, InconclusiveVerdict, EngineUnavailable) as exc:
@@ -171,7 +174,8 @@ def run_file(arm_name: str, entry: Any, source: str, *, pool: Any, engine: Engin
 
 def _search_arm(arm_name: str, *, pool: Any, ws: Any, start: Any, source: str, judge: Any, v_in: Any, ledger: Any,
                 arm: Any, budget: Any, h_mm: float | None, route: str | None, max_turns: int, job_id: str, entry: Any,
-                workers: int, clock: Any, full: Any, throttle: Any = None) -> tuple[Any, dict, float]:
+                workers: int, clock: Any, full: Any, throttle: Any = None,
+                recipes: Any = None) -> tuple[Any, dict, float]:
     """(output verdict, the SearchResult's own measured-ness fields, model USD) for a search arm."""
     from meshpipeline.cad.repair_v4 import search as S
     from meshpipeline.cad.repair_v4.proposer import MODEL_UNAVAILABLE
@@ -182,7 +186,8 @@ def _search_arm(arm_name: str, *, pool: Any, ws: Any, start: Any, source: str, j
             raise ValueError("search_ai needs a route (provider:model)")
         ai_kwargs = {"route": route, "ledger": ledger, "max_turns": max_turns, "usd_ceiling": arm.budget.model_usd,
                      "file_id": entry.sha256, "job_id": job_id, "throttle": throttle}
-    generators, proposer = S.arm_generators(arm_name, **ai_kwargs)
+    generators, proposer = S.arm_generators(arm_name, recipes=recipes.book if recipes is not None else None,
+                                            **ai_kwargs)
     sbudget = S.Budget(wall_s=budget.wall_s, ops=budget.ops, model_calls=max_turns if proposer else 0,
                        model_usd=budget.model_usd)
     result = S.search(pool, start, source, generators, sbudget, workers=workers, judge=judge, h_mm=h_mm, clock=clock)
@@ -207,7 +212,17 @@ def _search_arm(arm_name: str, *, pool: Any, ws: Any, start: Any, source: str, j
     # delivery gate states it - against the INPUT - rather than measuring the bug.
     delivered = S.deliverable(dataclasses.replace(result, changed=result.changed or start.brep_path != ws.brep_path), v_in)
     out_v = v_in if delivered is None else full(pool, delivered, source)
+    if recipes is not None and bool(getattr(out_v, "clean", False)) and not fields["_unmeasured"]:
+        recipes.learn(result, file_sha256=entry.sha256, diagonal_mm=_diagonal_or_none(pool, start))
     return out_v, fields, usd
+
+
+def _diagonal_or_none(pool: Any, ws: Any) -> float | None:
+    from meshpipeline.cad.repair_v4.stages import diagonal_mm
+    try:
+        return float(diagonal_mm(pool, ws))
+    except Exception:  # noqa: BLE001 - the recipe falls back to the sites' own diagonal, or keeps raw mm
+        return None
 
 
 #: The four cells of the cheap-vs-full table, named as the re-probe's `reprobe.agreement` names them.

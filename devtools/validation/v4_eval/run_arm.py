@@ -221,6 +221,7 @@ def run_arms(args: argparse.Namespace, out: Path, prov: dict, ledger: Any | None
                             args.shard)
     route = None
     throttle = None
+    recipes = build_recipes(args, prov, plan) if any(a in SEARCH_ARMS for a in names) else None
     if model_arms and runner is None:  # an injected runner (a test, the infra check) replaces the dispatch AND its route
         route = _prepare_model_route(args, prov)
         throttle = build_throttle(args, route, prov)
@@ -253,7 +254,7 @@ def run_arms(args: argparse.Namespace, out: Path, prov: dict, ledger: Any | None
                                     budget=spec.budget, h_mm=args.h_mm, route=route, max_turns=args.max_turns,
                                     job_id=f"{args.wave_id or 'wave'}:{entry.sha256[:12]}:{name}",
                                     workdir=str(out / "work" / entry.sha256[:12] / name), workers=args.workers,
-                                    throttle=throttle)
+                                    throttle=throttle, recipes=recipes)
                     except FileNotFoundError as exc:
                         outcome = arms_mod.ArmOutcome(excluded=f"input_missing: {exc}")
                     except reprobe_mod.FileTimeout as exc:
@@ -271,6 +272,8 @@ def run_arms(args: argparse.Namespace, out: Path, prov: dict, ledger: Any | None
                                          "arm": name, "reason": outcome.excluded})
     finally:
         pool.close()
+        if recipes is not None:
+            prov["recipes"] = recipes.describe()   # with what this shard learned, for the A/B
     try:
         write_arm_rows(out, rows, excluded)
     finally:
@@ -294,6 +297,28 @@ def _prepare_model_route(args: argparse.Namespace, prov: dict) -> str:
     route = model_route.probe_route_chain(routes)
     prov["route_probe"] = {"candidates": list(routes), "chosen": route}
     return route
+
+
+def build_recipes(args: argparse.Namespace, prov: dict, plan: dict | None) -> Any:
+    """The shard's recipe memory when CAD_REPAIR_V4_RECIPES is on (None, and `prov["recipes"]` says off, when it is
+    not). It READS a snapshot taken now; it WRITES only on the dev split and never on the held-out wave."""
+    from meshpipeline.settings.cad_repair import recipes_enabled, recipes_uri
+
+    if not recipes_enabled():
+        prov["recipes"] = {"enabled": False}
+        return None
+    from meshpipeline.cad.repair_v4.recipes import RecipeMemory
+
+    uri = recipes_uri()
+    if not uri:
+        raise ValueError("CAD_REPAIR_V4_RECIPES is on but CAD_REPAIR_V4_RECIPES_URI is unset: no recipe location")
+    split = (plan or {}).get("split") or args.split
+    wave_type = (plan or {}).get("wave_type") or getattr(args, "wave_type", None)
+    memory = RecipeMemory.for_shard(uri, split=split, wave_type=wave_type,
+                                    provenance={"wave_id": getattr(args, "wave_id", None),
+                                                "commit": getattr(args, "commit", None)})
+    prov["recipes"] = memory.describe()
+    return memory
 
 
 def build_throttle(args: argparse.Namespace, route: str, prov: dict) -> Any:

@@ -526,3 +526,80 @@ def test_run_arm_slices_the_wave_throttle_per_shard(shard: Any, wire: Wire) -> N
                                "--model-max-in-flight", "4"])
     run_arm.run_arms(args, shard.out, prov, ledgered(), engine=FakeEngine())
     assert prov["model_throttle"]["max_in_flight"] == 4 and prov["model_throttle"]["n_shards"] == 1
+
+
+# ------------------------------------------------------------------ recipe memory (CAD_REPAIR_V4_RECIPES)
+
+def _recipes_on(monkeypatch: pytest.MonkeyPatch, where: Path) -> None:
+    monkeypatch.setenv("CAD_REPAIR_V4_RECIPES", "true")
+    monkeypatch.setenv("CAD_REPAIR_V4_RECIPES_URI", str(where))
+
+
+def _recipe_objects(where: Path) -> list[Path]:
+    return sorted(where.rglob("*.json"))
+
+
+def test_recipes_off_by_default_change_nothing(shard: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("CAD_REPAIR_V4_RECIPES", raising=False)
+    prov: dict = {}
+    args = run_arm.parse_args([*shard.argv, "--arms", "search_det"])
+    run_arm.run_arms(args, shard.out, prov, None, engine=FakeEngine())
+    assert prov["recipes"] == {"enabled": False}
+
+
+def test_a_clean_dev_file_teaches_the_det_arm_a_fix_it_could_not_find(shard: Any, wire: Wire, tmp_path: Path,  # noqa: F811
+                                                                      monkeypatch: pytest.MonkeyPatch) -> None:
+    """The A/B in miniature. The fake part's site is of a kind the deterministic sweep has no row for, so search_det
+    alone never fixes it. search_ai fixes it on the dev split, which writes a recipe; a LATER shard's search_det,
+    reading that recipe, replays the op and ends clean."""
+    store = tmp_path / "recipes"
+    _recipes_on(monkeypatch, store)
+    rows, _ = go(shard, "search_det", None)
+    assert rows[0]["out_clean"] is False and _recipe_objects(store) == []          # nothing to learn from
+
+    wire.candidate = CLEAN_CANDIDATE
+    rows, _ = go(shard, "search_ai", ledgered())
+    assert rows[0]["out_clean"] is True
+    [obj] = _recipe_objects(store)
+    body = json.loads(obj.read_text())
+    assert body["witness"] == {"file_sha256": SHA, "split": "dev", "wave_id": "w1"}
+    assert [s["op"] for s in body["steps"]] == ["t18_set"] and "a.step" not in obj.read_text()
+
+    prov: dict = {}
+    args = run_arm.parse_args([*shard.argv, "--arms", "search_det"])
+    run_arm.run_arms(args, shard.out, prov, None, engine=FakeEngine())
+    [row] = json.loads((shard.out / "rows.json").read_text())
+    assert row["out_clean"] is True, "search_det with the recipe should replay the fix"
+    assert prov["recipes"]["recipes"] == 1 and prov["recipes"]["writes"] is True
+
+
+@pytest.mark.parametrize("split,wave_type", [("heldout", "held_out"), ("clean", "normal")])
+def test_held_out_and_clean_control_files_never_write_a_recipe(shard: Any, wire: Wire, tmp_path: Path,  # noqa: F811
+                                                               monkeypatch: pytest.MonkeyPatch, split: str,
+                                                               wave_type: str) -> None:
+    store = tmp_path / "recipes"
+    _recipes_on(monkeypatch, store)
+    split_file = tmp_path / f"{split}.json"
+    split_file.write_text(json.dumps({"split": split, "files": [
+        {"name": "a.step", "sha256": SHA, "source": "abc_fail", "verdict_summary": {}, "first_failing_layer": "panel",
+         "family": "x", "group": None, "kind": None, "kind_status": None}]}))
+    argv = list(shard.argv)
+    argv[argv.index("--split") + 1] = split
+    argv[argv.index("--split-file") + 1] = str(split_file)
+    wire.candidate = CLEAN_CANDIDATE
+    prov: dict = {}
+    args = run_arm.parse_args([*argv, "--arms", "search_ai", "--wave-type", wave_type, "--wave-id", "w1",
+                               "--n-shards", "1", "--ledger-path", "/x/log", "--marker-bucket", "b"])
+    run_arm.run_arms(args, shard.out, prov, ledgered(), engine=FakeEngine())
+    [row] = json.loads((shard.out / "rows.json").read_text())
+    assert row["out_clean"] is True                       # the file DID come out clean...
+    assert _recipe_objects(store) == []                   # ...and still taught the memory nothing
+    assert prov["recipes"]["writes"] is False and prov["recipes"]["written"] == 0
+
+
+def test_recipes_on_without_a_location_is_refused(shard: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CAD_REPAIR_V4_RECIPES", "true")
+    monkeypatch.delenv("CAD_REPAIR_V4_RECIPES_URI", raising=False)
+    args = run_arm.parse_args([*shard.argv, "--arms", "search_det"])
+    with pytest.raises(ValueError, match="CAD_REPAIR_V4_RECIPES_URI"):
+        run_arm.run_arms(args, shard.out, {}, None, engine=FakeEngine())
