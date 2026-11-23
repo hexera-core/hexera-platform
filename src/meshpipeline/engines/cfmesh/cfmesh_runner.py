@@ -1181,6 +1181,8 @@ NECK_CELLS_ACROSS_MIN = 2.0
 NECK_COARSEN_STEP = 0.25
 NECK_TIGHT_RULE = "INS-33"
 NECK_RULE = "INS-32"
+#: INS-32: the three ways out of a plan stopped at a gap it cannot afford (the user's result says them)
+NECK_WAYS_OUT = "Widen or close that gap in the CAD, allow more cells, or drop that opening."
 
 
 def passage_surfaces(ws: Path, surface_file: str) -> list[dict]:
@@ -1252,8 +1254,23 @@ def neck_plan(surfaces: list, wall_patch: str, spots: list, *, wall_cell: float,
     return boxes, (f"{who} {'reach' if len(named) > 1 else 'reaches'} the rest of its passage only through "
                    f"a gap about {tight['width_m'] * 1e3:.2g} mm wide; meshing across it needs about "
                    f"{total / 1e6:.3g} M cells even at {across:g} cells across the gap, over the "
-                   f"{float(limit) / 1e6:.3g} M limit. Widen or close that gap in the CAD, allow more "
-                   "cells, or drop that opening.")
+                   f"{float(limit) / 1e6:.3g} M limit. {NECK_WAYS_OUT}")
+
+
+def neck_stop_refusal(why: str):
+    """INS-32's plan-time stop as the refusal the run records: a dropped opening (PATCH_NOT_CAPTURED
+    with port_region_dropped, so no wrap rung follows: LAD-cfd-12), decided before any mesher
+    started. Its facts carry the stop's own sentence and its ways out, which the user's result says
+    (failure_cause.describe) - never a boundary that "came out with no faces" from a mesher that
+    never started."""
+    from meshpipeline.contracts.failure_cause import FailureCause
+    from meshpipeline.engines.preflight import PreflightRefusal
+    return PreflightRefusal(
+        gate="finalize", cause=FailureCause.PATCH_NOT_CAPTURED.value,
+        builder_text=f"[PORT_REGION_DROPPED] {why}",
+        facts={"port_region_dropped": True, "deterministic": True, "ladder_exhausted": True,
+               "before_meshing": True, "meshers_started": 0,
+               "plan_stop": why.replace(NECK_WAYS_OUT, "").strip(), "ways_out": NECK_WAYS_OUT})
 
 
 def _neck_boxes(found: dict, spots: list, wall_cell: float, across: float) -> list[dict]:
@@ -1576,14 +1593,8 @@ def _configure_internal(workspace, *, strategy: dict, wall_patch: str,
         # INS-32: an opening reaches its passage only through a gap whose cells do not fit the limit -
         # said at plan time, with what the user can change, never found as a zero-face patch after an
         # hour; recorded as the dropped-opening refusal, so no wrap rung follows (LAD-cfd-12)
-        from meshpipeline.contracts.failure_cause import FailureCause
-        from meshpipeline.engines.preflight import PreflightRefusal
         _why = str(summary["neck_stop"])
-        PreflightRefusal(
-            gate="finalize", cause=FailureCause.PATCH_NOT_CAPTURED.value,
-            builder_text=f"[PORT_REGION_DROPPED] {_why}",
-            facts={"port_region_dropped": True, "deterministic": True, "ladder_exhausted": True,
-                   "before_meshing": True, "meshers_started": 0}).write(workspace)
+        neck_stop_refusal(_why).write(workspace)
         return {"success": False, "error": _why, **summary,
                 "next": "Do NOT run_mesh and do NOT reconfigure: no setting of this plan fits that gap. Relay "
                         "this to the user verbatim and end your turn."}

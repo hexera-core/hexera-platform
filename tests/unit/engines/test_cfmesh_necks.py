@@ -222,3 +222,24 @@ def test_needed_spots_that_do_not_fit_are_coarsened_towards_two_across_before_th
     assert boxes[0]["cells_across"] == 2.0
     assert stop.startswith("outlet reaches the rest of its passage only through a gap about 0.3 mm wide")
     assert "even at 2 cells across the gap" in stop
+
+
+def test_the_plan_stop_reaches_the_user_s_result_with_the_opening_the_gap_and_the_three_ways_out(tmp_path):
+    # E10 wrote the stop as a PATCH_NOT_CAPTURED refusal with no words of its own: the user read "A boundary you
+    # declared came out of the mesher with no faces ... run it again" from a plan that never started a mesher
+    from meshpipeline.application.final_result import _cause_account
+    from meshpipeline.engines.cfmesh.cfmesh_runner import neck_stop_refusal
+    from meshpipeline.engines.gates import cause_of, facts_of
+    from meshpipeline.engines.preflight import read_refusal
+    ws = tmp_path / "case"
+    ws.mkdir()
+    stop = _render(ws, 8_000)["neck_stop"]
+    neck_stop_refusal(stop).write(ws)
+    fb = read_refusal(ws).as_feedback()
+    assert facts_of(fb)["port_region_dropped"] and facts_of(fb)["before_meshing"]   # still no wrap (LAD-cfd-12)
+    cause, what, next_step = _cause_account("finalize", cause_of(fb), facts_of(fb), "cfmesh")
+    assert cause == "patch_not_captured"
+    assert what.startswith("The plan stopped before meshing: outlet reaches the rest of its passage only through "
+                           "a gap about 0.3 mm wide")
+    assert "came out of the mesher" not in what and "run it again" not in next_step
+    assert next_step == "Widen or close that gap in the CAD, allow more cells, or drop that opening."
