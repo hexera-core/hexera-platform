@@ -161,34 +161,56 @@ def _face_points(face, count: int) -> list[tuple[float, float, float]]:
     return points
 
 
-def _sample(faces: list) -> list[tuple[float, float, float]]:
-    """Points over `faces`, `SAMPLES` shared out by area, at least one per face."""
+def _share_out(faces: list) -> list[int]:
+    """`SAMPLES` shared out by area, at least one point per face."""
     areas = [max(_area(face), 0.0) for face in faces]
     total = sum(areas)
-    points: list[tuple[float, float, float]] = []
-    for face, area in zip(faces, areas, strict=True):
-        share = round(SAMPLES * area / total) if total > 0 else 1
-        points.extend(_face_points(face, max(1, share)))
-    return points
+    return [max(1, round(SAMPLES * area / total) if total > 0 else 1) for area in areas]
 
 
-def _worst(points: list, target, deadline: float) -> float:
-    """Furthest of `points` from `target`. A spent budget raises: a maximum over part of the
-    points is a lower bound, and a lower bound would read as faithful."""
+def _vertex_dist(point, target) -> float:
     from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeVertex
     from OCP.BRepExtrema import BRepExtrema_DistShapeShape
     from OCP.gp import gp_Pnt
 
+    dist = BRepExtrema_DistShapeShape(BRepBuilderAPI_MakeVertex(gp_Pnt(*point)).Vertex(), target)
+    if not dist.IsDone():
+        raise RuntimeError("BRepExtrema_DistShapeShape did not complete")
+    return float(dist.Value())
+
+
+def _worst(kept: list, others: list, other_keys: list, reach: float, deadline: float) -> float:
+    """Furthest sampled point of `kept` from the faces `others`. A spent budget raises: a maximum
+    over part of the points is a lower bound, and a lower bound would read as faithful.
+
+    Each sampled face is measured against only the other faces whose box is within `reach` of its
+    own: a point whose nearest face lies within `reach` has that face's box within `reach` of the
+    face's box, so the local answer is exact whenever it is <= reach. Beyond `reach` (or with no
+    candidate) the point is measured against everything, so no distance is ever under-reported."""
+    everything = _compound(others)
     worst = 0.0
-    for point in points:
-        if time.monotonic() > deadline:
-            raise RuntimeError("faithful_check sampling budget exceeded")
-        vertex = BRepBuilderAPI_MakeVertex(gp_Pnt(*point)).Vertex()
-        dist = BRepExtrema_DistShapeShape(vertex, target)
-        if not dist.IsDone():
-            raise RuntimeError("BRepExtrema_DistShapeShape did not complete")
-        worst = max(worst, float(dist.Value()))
+    for face, count in zip(kept, _share_out(kept), strict=True):
+        box = _box(face)
+        if box is None:
+            continue
+        near = [
+            o
+            for o, (_, ob) in zip(others, other_keys, strict=True)
+            if all(ob[k] <= box[k + 3] + reach and ob[k + 3] >= box[k] - reach for k in range(3))
+        ]
+        local = _compound(near) if near else None
+        for point in _face_points(face, count):
+            if time.monotonic() > deadline:
+                raise RuntimeError("faithful_check sampling budget exceeded")
+            d = _vertex_dist(point, local) if local is not None else math.inf
+            if d > reach:
+                d = _vertex_dist(point, everything)
+            worst = max(worst, d)
     return worst
+
+
+class DeclaredIdMismatch(ValueError):
+    """A declared id does not name what the caller claims. A caller bug, never infrastructure."""
 
 
 def _declared(ids: list[str], faces: list, side: str) -> list:
@@ -196,9 +218,89 @@ def _declared(ids: list[str], faces: list, side: str) -> list:
     for raw in ids:
         match = _FACE_ID.match(raw)
         if match is None or not 1 <= int(match.group(1)) <= len(faces):
-            raise ValueError(f"declared {side} face {raw!r} is not an index 'F<k>' into the {side} shape's faces")
+            raise DeclaredIdMismatch(
+                f"declared {side} face {raw!r} is not an index 'F<k>' into the {side} shape's faces"
+            )
         picked.append(faces[int(match.group(1)) - 1])
     return picked
+
+
+def _keys(faces: list) -> list[tuple[float, tuple[float, ...]]]:
+    """(area, bounding box) per face: the cheap fingerprint two copies of one face share."""
+    return [(_area(face), _box(face) or (0.0,) * 6) for face in faces]
+
+
+def _twinned(keys: list, other_keys: list, tol: float) -> set[int]:
+    """Indices of `keys` that have a twin in `other_keys`: same area (1e-6 relative) and a bounding
+    box within `tol` on every side. Candidates come from a grid on the box's min corner, so a part
+    made of thousands of identical faces is not quadratic."""
+    cell = 4.0 * tol
+    grid: dict[tuple[int, int, int], list[int]] = {}
+    for i, (_, box) in enumerate(other_keys):
+        grid.setdefault((int(box[0] // cell), int(box[1] // cell), int(box[2] // cell)), []).append(i)
+    found: set[int] = set()
+    for index, (area, box) in enumerate(keys):
+        slack = 1e-6 * max(area, 1.0) + tol * tol
+        cx, cy, cz = int(box[0] // cell), int(box[1] // cell), int(box[2] // cell)
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                for dz in (-1, 0, 1):
+                    for k in grid.get((cx + dx, cy + dy, cz + dz), ()):
+                        o_area, o_box = other_keys[k]
+                        if abs(o_area - area) <= slack and all(
+                            abs(x - y) <= tol for x, y in zip(box, o_box, strict=True)
+                        ):
+                            found.add(index)
+                            break
+                    if index in found:
+                        break
+                if index in found:
+                    break
+            if index in found:
+                break
+    return found
+
+
+def _require_genuinely_new(declared: list, ids: list[str], others: list, tol: float, claim: str) -> None:
+    """Ids are indices into a re-read BREP; an in-range index can name the wrong face. A face that
+    has an identical twin on the other side was not added (or removed) at all, so the claim and
+    the id disagree: refuse, because honouring it would exempt the wrong face from measurement."""
+    twinned = _twinned(_keys(declared), _keys(others), tol)
+    for index, raw in enumerate(ids):
+        if index in twinned:
+            raise DeclaredIdMismatch(f"declared {claim} face {raw!r} has an identical face on the other side")
+
+
+def _groups(faces: list) -> list[list]:
+    """Declared-added faces joined by a shared edge: one group is one fill. The spec's rule is the
+    span of a fill's loop, so it is measured per fill, never over the union of unrelated fills."""
+    from OCP.TopAbs import TopAbs_EDGE
+    from OCP.TopExp import TopExp
+    from OCP.TopTools import TopTools_IndexedMapOfShape
+
+    edges = TopTools_IndexedMapOfShape()
+    parent = list(range(len(faces)))
+
+    def find(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    owner: dict[int, int] = {}
+    for index, face in enumerate(faces):
+        local = TopTools_IndexedMapOfShape()
+        TopExp.MapShapes_s(face, TopAbs_EDGE, local)
+        for k in range(1, local.Extent() + 1):
+            key = edges.Add(local.FindKey(k))
+            if key in owner:
+                parent[find(index)] = find(owner[key])
+            else:
+                owner[key] = index
+    groups: dict[int, list] = {}
+    for index, face in enumerate(faces):
+        groups.setdefault(find(index), []).append(face)
+    return list(groups.values())
 
 
 def _is_in(face, group: list) -> bool:
@@ -224,20 +326,33 @@ def _faithful_check(payload: dict) -> dict:
     if r_box is None:
         reasons.append("repaired_empty")
 
+    if r_box is not None:
+        tol = max(bound, 1e-9)
+        _require_genuinely_new(added, added_ids, o_faces, tol, "added")
+        _require_genuinely_new(removed, removed_ids, r_faces, tol, "removed")
+
     deadline = time.monotonic() + BUDGET_S
     max_dev = math.inf
     if r_faces and o_faces:
         # repaired -> original: declared added faces are new surface, so they are exempt.
-        r_kept = [f for f in r_faces if not _is_in(f, added)]
-        o_kept = [f for f in o_faces if not _is_in(f, removed)]
-        dev_r = _worst(_sample(r_kept), _compound(o_faces), deadline) if r_kept else 0.0
+        # A face with an identical twin on the other side is unchanged (0 mm by construction), so it
+        # is not sampled; the search's states differ from the original in a few faces only, and this
+        # is what keeps layer 3 affordable. The twin test is far tighter than the bound.
+        twin_tol = max(0.01 * bound, 1e-9)
+        o_keys, r_keys = _keys(o_faces), _keys(r_faces)
+        r_twin = _twinned(r_keys, o_keys, twin_tol)
+        o_twin = _twinned(o_keys, r_keys, twin_tol)
+        r_kept = [f for i, f in enumerate(r_faces) if i not in r_twin and not _is_in(f, added)]
+        o_kept = [f for i, f in enumerate(o_faces) if i not in o_twin and not _is_in(f, removed)]
+        reach = 2.0 * bound
+        dev_r = _worst(r_kept, o_faces, o_keys, reach, deadline) if r_kept else 0.0
         # original -> repaired: declared removed faces are gone on purpose, so they are exempt.
-        dev_o = _worst(_sample(o_kept), _compound(r_faces), deadline) if o_kept else 0.0
+        dev_o = _worst(o_kept, r_faces, r_keys, reach, deadline) if o_kept else 0.0
         max_dev = max(dev_r, dev_o)
     if max_dev > bound:
         reasons.append("deviation_exceeds_bound")
 
-    fill_span = _diag(_box(_compound(added))) if added else 0.0
+    fill_span = max((_diag(_box(_compound(group))) for group in _groups(added)), default=0.0)
     if fill_span > FILL_SPAN_FRACTION * diag:
         reasons.append("fill_too_large")
 

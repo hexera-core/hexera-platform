@@ -7,7 +7,8 @@ Meshing is the expensive layer, so that is what is cached; layers 1 and 3 are re
 they depend on more than the STEP (the original's unit, the original shape, the declared edits).
 
 VERDICT_CODE_VERSION MUST be bumped by any change that can alter a panel result for the same file:
-a member's options, the pass threshold, SICN or error classification, a member added or removed.
+a member's options, the pass threshold, SICN or error classification, a member added or removed (a member's own `config` and the mesher library versions are keyed
+automatically, so those need no bump).
 The version is in the key AND re-checked on read, and a mismatch is a miss, never a warning: a
 stale hit after a checker change would corrupt every number downstream.
 
@@ -20,11 +21,14 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import json
+import logging
+import weakref
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any, Protocol
 
 VERDICT_CODE_VERSION = "crs-v4.verdict.1"
+logger = logging.getLogger(__name__)
 CACHEABLE_STATUSES = ("pass", "fail")
 
 
@@ -36,10 +40,36 @@ def file_sha256(path: str) -> str:
     return digest.hexdigest()
 
 
-def panel_config_hash(members: Sequence[Any], timeout_s: float) -> str:
-    """Names, per-member `config` (when a member exposes one) and the time limit, order-independent."""
-    entries = sorted(json.dumps([m.name, getattr(m, "config", None)], sort_keys=True, default=repr) for m in members)
-    return hashlib.sha256(json.dumps([entries, float(timeout_s)]).encode()).hexdigest()[:16]
+class PanelConfigError(ValueError):
+    """A panel member does not declare its `config`. Fail closed: a member whose options are not in
+    the key could change them and be served a stale verdict, with nothing to flag it."""
+
+
+def panel_config_hash(members: Sequence[Any], timeout_s: float, versions: dict[str, str]) -> str:
+    """Hash of every member's name and `config` (REQUIRED, JSON-able), the time limit and the mesher
+    library versions (`versions`, from `mesher_versions`). Order-independent over members."""
+    entries = []
+    for member in members:
+        if not hasattr(member, "config"):
+            raise PanelConfigError(f"panel member {getattr(member, 'name', member)!r} has no `config`")
+        entries.append(json.dumps([member.name, member.config], sort_keys=True))
+    payload = [sorted(entries), float(timeout_s), dict(sorted(versions.items()))]
+    return hashlib.sha256(json.dumps(payload).encode()).hexdigest()[:16]
+
+
+_VERSIONS: weakref.WeakKeyDictionary[Any, dict[str, str]] = weakref.WeakKeyDictionary()
+
+
+def mesher_versions(pool: Any) -> dict[str, str]:
+    """gmsh / netgen / OCP versions as the workers see them (asked once per pool)."""
+    cached = _VERSIONS.get(pool)
+    if cached is not None:
+        return cached
+    result = pool.call("mesher_versions", {}, timeout_s=60.0)
+    if not result.ok or result.value is None:
+        raise RuntimeError(f"mesher_versions: {result.status}: {result.error}")
+    _VERSIONS[pool] = dict(result.value)
+    return _VERSIONS[pool]
 
 
 class CacheStore(Protocol):
@@ -109,16 +139,21 @@ class VerdictCache:
         return f"verdict/{version}/{step_sha}/{config_hash}.json"
 
     def get(self, step_sha: str, config_hash: str, *, version: str = VERDICT_CODE_VERSION) -> list | None:
-        text = self.store.get(self.key(step_sha, config_hash, version))
+        key_ = self.key(step_sha, config_hash, version)
+        text = self.store.get(key_)
         if text is None:
             return None
         try:
             body = json.loads(text)
             if (body["version"], body["step_sha256"], body["config_hash"]) != (version, step_sha, config_hash):
+                logger.warning("verdict cache miss: record under %s carries a different version/sha/config", key_)
                 return None  # whatever the key says, a record that does not carry ours is a miss
             return [self._factory(item) for item in body["panel"]]
-        except (ValueError, KeyError, TypeError):
-            return None  # unreadable or foreign entry: re-mesh rather than trust it
+        except (ValueError, KeyError, TypeError, AttributeError) as exc:
+            # Re-mesh rather than trust it, but say why: a schema mismatch with the panel's result
+            # type would otherwise disable the cache without anyone seeing it.
+            logger.warning("verdict cache miss: unreadable entry %s: %s: %s", key_, type(exc).__name__, exc)
+            return None
 
     def put(
         self, step_sha: str, config_hash: str, panel: Sequence[Any], *, version: str = VERDICT_CODE_VERSION

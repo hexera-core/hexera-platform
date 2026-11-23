@@ -32,7 +32,8 @@ from OCP.TopTools import TopTools_IndexedMapOfShape
 
 from meshpipeline.cad.repair_v4.verdict import Declared, check_faithful, verdict
 from meshpipeline.cad.repair_v4.verdict.cache import DirStore, VerdictCache
-from meshpipeline.cad.repair_v4.verdict.faithful import check_faithful_steps
+from meshpipeline.cad.repair_v4.verdict.faithful import DeclaredIdError, check_faithful_steps
+from meshpipeline.cad.repair_v4.verdict.valid import CheckerUnavailable
 from meshpipeline.cad.repair_v4.worker_pool import WorkerPool
 
 
@@ -119,6 +120,19 @@ def _plate_with_open_hole(hole: float, *, patched: bool, size: float = 100.0):
     parts = [*others, *_faces(holed)]
     if patched:
         parts.append(cutter)
+    return _shell_of_faces(parts)
+
+
+def _plate_with_two_open_holes(*, patched: bool, size: float = 100.0, hole: float = 2.0):
+    box = _box(size)
+    top = max(_faces(box), key=lambda f: BRepGProp_centroid_z(f))
+    plane = gp_Pln(gp_Pnt(0, 0, size), gp_Dir(0, 0, 1))
+    cutters = [BRepBuilderAPI_MakeFace(plane, lo, lo + hole, lo, lo + hole).Face() for lo in (5.0, size - 5.0 - hole)]
+    holed = BRepAlgoAPI_Cut(top, cutters[0]).Shape()
+    holed = BRepAlgoAPI_Cut(holed, cutters[1]).Shape()
+    parts = [*[f for f in _faces(box) if not f.IsSame(top)], *_faces(holed)]
+    if patched:
+        parts.extend(cutters)
     return _shell_of_faces(parts)
 
 
@@ -215,9 +229,9 @@ def test_a_fill_spanning_more_than_5_percent_of_the_diagonal_is_too_large(pool, 
     assert report.reasons == ["fill_too_large"]  # nothing else is wrong: only the size
 
 
-def _with_stray_face(shell):
+def _with_stray_face(shell, x: float = 10.0):
     """`shell` plus a 1 mm face floating 3 mm above the top: a sliver the repair will drop."""
-    stray = BRepBuilderAPI_MakeFace(gp_Pln(gp_Pnt(0, 0, 103), gp_Dir(0, 0, 1)), 10, 11, 10, 11).Face()
+    stray = BRepBuilderAPI_MakeFace(gp_Pln(gp_Pnt(0, 0, 103), gp_Dir(0, 0, 1)), x, x + 1, 10, 11).Face()
     from OCP.BRep import BRep_Builder
     from OCP.TopoDS import TopoDS_Compound
 
@@ -239,12 +253,48 @@ def test_a_declared_removal_is_exempt_only_original_to_repaired(pool, tmp_path) 
     declared = _check(pool, with_stray, clean, tmp_path, removed=True)
     assert declared.ok is True, (declared.reasons, declared.max_dev_mm)
 
-    # The repair ADDED a stray face: declaring a removal elsewhere must not hide it, because
-    # removals are exempt in the other direction only.
-    added_stray = _check(pool, clean, with_stray, tmp_path, removed=True)
-    assert added_stray.ok is False and added_stray.reason == "deviation_exceeds_bound"
-    # and declaring it ADDED does.
-    assert _check(pool, clean, with_stray, tmp_path, added=True).ok is True
+    # The repair dropped stray A (declared) but ADDED stray B elsewhere (undeclared): the removal
+    # declaration is exempt original -> repaired only, so B is still measured repaired -> original.
+    swapped = _check(pool, with_stray, _with_stray_face(clean, 60.0), tmp_path, removed=True)
+    assert swapped.ok is False and swapped.reason == "deviation_exceeds_bound"
+    # Declaring B ADDED exempts it in that direction (and A removed in the other).
+    o = _write_brep(with_stray, tmp_path / "o2.brep")
+    r = _write_brep(_with_stray_face(clean, 60.0), tmp_path / "r2.brep")
+    both = check_faithful(pool, o, r, declared_added=[_smallest_face_id(r)], declared_removed=[_smallest_face_id(o)])
+    assert both.ok is True, (both.reasons, both.max_dev_mm)
+
+
+def test_two_small_fills_far_apart_are_not_one_large_fill(pool, tmp_path) -> None:
+    """The span rule is per fill: two 2 mm fills at opposite ends of a 173 mm part are two small
+    loops, not one 100 mm loop."""
+    original = _plate_with_two_open_holes(patched=False)
+    repaired = _plate_with_two_open_holes(patched=True)
+    o = _write_brep(original, tmp_path / "o.brep")
+    r = _write_brep(repaired, tmp_path / "r.brep")
+    shape = TopoDS_Shape()
+    from OCP.BRep import BRep_Builder
+
+    assert BRepTools.Read_s(shape, r, BRep_Builder())
+    faces = _faces(shape)
+    small = [f"F{i + 1}" for i, f in enumerate(faces) if _area(f) < 10]
+    assert len(small) == 2
+    report = check_faithful(pool, o, r, declared_added=small, declared_removed=[])
+    assert report.ok is True, (report.reasons, report.max_dev_mm)
+
+
+def test_an_in_range_but_wrong_declared_id_is_refused(pool, tmp_path) -> None:
+    """Declaring an UNCHANGED face as added would exempt it silently (and so could hide a real
+    deviation); ids that name a face the other shape also has are refused as the caller's bug."""
+    original = _plate_with_open_hole(2.0, patched=False)
+    repaired = _plate_with_open_hole(2.0, patched=True)
+    o = _write_brep(original, tmp_path / "o.brep")
+    r = _write_brep(repaired, tmp_path / "r.brep")
+    patch = int(_smallest_face_id(r)[1:])
+    wrong = f"F{1 if patch != 1 else 2}"
+    with pytest.raises(DeclaredIdError):
+        check_faithful(pool, o, r, declared_added=[wrong], declared_removed=[])
+    with pytest.raises(DeclaredIdError):  # the converse: a "removed" face the repaired shape still has
+        check_faithful(pool, o, r, declared_added=[], declared_removed=["F1"])
 
 
 def test_area_change_over_2_percent_fails(pool, tmp_path) -> None:
@@ -283,13 +333,11 @@ def test_body_count_must_be_preserved(pool, tmp_path) -> None:
     assert "body_count_changed" in report.reasons and report.ok is False
 
 
-def test_a_bad_declared_id_is_not_a_finding(pool, tmp_path) -> None:
-    from meshpipeline.cad.repair_v4.verdict.valid import CheckerUnavailable
-
-    box = _box()
-    path = _write_brep(box, tmp_path / "b.brep")
-    with pytest.raises(CheckerUnavailable):
+def test_an_out_of_range_declared_id_is_the_callers_bug_not_infrastructure(pool, tmp_path) -> None:
+    path = _write_brep(_box(), tmp_path / "b.brep")
+    with pytest.raises(DeclaredIdError) as raised:
         check_faithful(pool, path, path, declared_added=["F999"], declared_removed=[])
+    assert not isinstance(raised.value, CheckerUnavailable)
 
 
 # ---- the assembled verdict, with a fake layer 2 ---------------------------------------------
@@ -308,6 +356,7 @@ class _Member:
     name: str = "fake"
     status: str = "pass"
     runs: int = 0
+    config: dict = field(default_factory=dict)
 
     def run(self, pool, step_path, *, timeout_s):
         self.runs += 1

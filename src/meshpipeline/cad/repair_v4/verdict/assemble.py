@@ -17,7 +17,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol
 
-from meshpipeline.cad.repair_v4.verdict.cache import VerdictCache, file_sha256, panel_config_hash
+from meshpipeline.cad.repair_v4.verdict.cache import VerdictCache, file_sha256, mesher_versions, panel_config_hash
 from meshpipeline.cad.repair_v4.verdict.faithful import FaithfulReport, check_faithful_steps
 from meshpipeline.cad.repair_v4.verdict.valid import ValidReport, check_valid
 from meshpipeline.cad.repair_v4.worker_pool import WorkerPool
@@ -44,6 +44,21 @@ class PanelMemberLike(Protocol):
     def run(self, pool: WorkerPool, step_path: str, *, timeout_s: float) -> MemberResultLike: ...
 
 
+INFRASTRUCTURE_KIND = "infrastructure"  # MemberResult.error_kind for a pool failure, not a mesher one
+
+
+def is_infrastructure_failure(result: Any) -> bool:
+    """A timeout/crash the POOL caused (worker replaced, OOM, infrastructure kill), as the panel
+    marks it with `error_kind == "infrastructure"`. A mesher that overran its limit or segfaulted
+    on the geometry is the file failing the definition ("meshes within the normal time limit"), not
+    this."""
+    return result.status in ("timeout", "crashed") and getattr(result, "error_kind", None) == INFRASTRUCTURE_KIND
+
+
+class InconclusiveVerdict(RuntimeError):
+    """`score` was asked to rank a verdict that says nothing about the file."""
+
+
 PanelRunner = Callable[..., Sequence[Any]]
 
 
@@ -63,6 +78,13 @@ class Verdict:
     faithful: FaithfulReport | None
     clean: bool
     tier: Literal["cheap", "full"]
+    # True when a panel member failed for pool reasons: the verdict says nothing about the file.
+    # Not clean, not unclean: the scoreboard must exclude it and `score` refuses it.
+    inconclusive: bool = False
+
+    @property
+    def counts_for_scoreboard(self) -> bool:
+        return not self.inconclusive
 
 
 def _panel_module() -> Any:
@@ -95,7 +117,8 @@ def _assemble(
     sha = config = None
     panel: list[Any] | None = None
     if cache is not None:
-        sha, config = file_sha256(step), panel_config_hash(chosen, MEMBER_TIMEOUT_S)
+        sha = file_sha256(step)
+        config = panel_config_hash(chosen, MEMBER_TIMEOUT_S, mesher_versions(pool))
         panel = cache.get(sha, config)
     if panel is None:
         panel = list(runner(pool, step, chosen, timeout_s=MEMBER_TIMEOUT_S))
@@ -108,16 +131,19 @@ def _assemble(
             pool, original, step, declared_added=declared.added, declared_removed=declared.removed
         )
 
+    inconclusive = any(is_infrastructure_failure(r) for r in panel)
+
     # A cheap verdict ran a partial panel, so it can never certify a file clean.
     clean = (
         tier == "full"
+        and not inconclusive
         and valid.ok
         and bool(panel)
         and all(r.status == "pass" for r in panel)
         and faithful is not None
         and faithful.ok
     )
-    return Verdict(valid, panel, faithful, clean, tier)
+    return Verdict(valid, panel, faithful, clean, tier, inconclusive)
 
 
 def verdict(
@@ -125,7 +151,7 @@ def verdict(
     step: str,
     original: str,
     *,
-    declared: Declared = Declared(),
+    declared: Declared | None = None,
     members: Sequence[Any] | None = None,
     cache: VerdictCache | None = None,
     run_panel: PanelRunner | None = None,
@@ -133,7 +159,7 @@ def verdict(
 ) -> Verdict:
     """The full verdict on `step`, repaired from `original` (the STEP the product was handed; for an
     injected benchmark file the DAMAGED input, never the clean source)."""
-    return _assemble(pool, step, original, declared, "full", members, cache, run_panel, original_units)
+    return _assemble(pool, step, original, declared or Declared(), "full", members, cache, run_panel, original_units)
 
 
 def cheap_verdict(
@@ -141,25 +167,36 @@ def cheap_verdict(
     step: str,
     original: str,
     *,
-    declared: Declared = Declared(),
+    declared: Declared | None = None,
     members: Sequence[Any] | None = None,
     cache: VerdictCache | None = None,
     run_panel: PanelRunner | None = None,
     original_units: str | None = None,
 ) -> Verdict:
     """Layer 1, `GmshDefault` only, and layer 3. For the search's inner loop; never `clean`."""
-    return _assemble(pool, step, original, declared, "cheap", members, cache, run_panel, original_units)
+    return _assemble(pool, step, original, declared or Declared(), "cheap", members, cache, run_panel, original_units)
 
 
 def score(v: Verdict) -> tuple[int, int, float, float, int]:
-    """(valid, panel passes, min SICN over members, -max deviation mm, -topology churn), compared
-    lexicographically: validity outranks any amount of meshing, meshing outranks fidelity, and
-    churn (the declared edits) breaks the last tie."""
+    """(valid AND faithful, panel passes, min SICN over members, -max deviation mm, -topology churn),
+    compared lexicographically.
+
+    THE FIRST KEY IS A GATE, NOT JUST LAYER 1: it is 1 only when the file is valid and layer 3 says
+    faithful. Without that, a valid state that meshes everywhere but moved the part (`area_changed`,
+    `fill_too_large`, a deviation over the bound) would out-rank a clean one, because deviation is
+    only the fourth key. A search ranking on this tuple therefore never prefers an unfaithful state
+    to a faithful one; a state that is valid but unfaithful ties with invalid ones on key 1.
+
+    Raises `InconclusiveVerdict` for an inconclusive verdict: it must be re-run or dropped, never
+    ranked (and never ranked as bad). Check `Verdict.counts_for_scoreboard` first.
+    """
+    if v.inconclusive:
+        raise InconclusiveVerdict("a panel member failed for pool reasons; the verdict says nothing about the file")
     sicns = [r.min_sicn if r.min_sicn is not None else UNMEASURED_SICN for r in v.panel]
     dev = v.faithful.max_dev_mm if v.faithful is not None else 0.0
     churn = len(v.faithful.declared_added) + len(v.faithful.declared_removed) if v.faithful is not None else 0
     return (
-        int(v.valid.ok),
+        int(v.valid.ok and v.faithful is not None and v.faithful.ok),
         sum(1 for r in v.panel if r.status == "pass"),
         min(sicns) if sicns else UNMEASURED_SICN,
         -dev,

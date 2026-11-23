@@ -11,10 +11,18 @@ from pathlib import Path
 import pytest
 
 from meshpipeline.cad.repair_v4.verdict import assemble
-from meshpipeline.cad.repair_v4.verdict.assemble import Declared, Verdict, cheap_verdict, score, verdict
+from meshpipeline.cad.repair_v4.verdict.assemble import (
+    Declared,
+    InconclusiveVerdict,
+    Verdict,
+    cheap_verdict,
+    score,
+    verdict,
+)
 from meshpipeline.cad.repair_v4.verdict.cache import (
     VERDICT_CODE_VERSION,
     DirStore,
+    PanelConfigError,
     VerdictCache,
     file_sha256,
     panel_config_hash,
@@ -30,6 +38,7 @@ class FakeResult:
     status: str
     min_sicn: float | None = None
     located: list = field(default_factory=list)
+    error_kind: str | None = None
 
 
 @dataclass
@@ -38,10 +47,12 @@ class FakeMember:
     status: str = "pass"
     sicn: float | None = 0.3
     runs: int = 0
+    error_kind: str | None = None
+    config: dict = field(default_factory=dict)
 
     def run(self, pool, step_path, *, timeout_s):
         self.runs += 1
-        return FakeResult(self.name, self.status, self.sicn)
+        return FakeResult(self.name, self.status, self.sicn, error_kind=self.error_kind)
 
 
 def run_panel(pool, step, members, *, timeout_s):
@@ -115,6 +126,7 @@ def layers(monkeypatch):
 
     monkeypatch.setattr(assemble, "check_valid", fake_valid)
     monkeypatch.setattr(assemble, "check_faithful_steps", fake_faithful)
+    monkeypatch.setattr(assemble, "mesher_versions", lambda pool: {"gmsh": "4.15.2"})
     return state
 
 
@@ -177,7 +189,7 @@ def test_layer_3_infrastructure_failure_is_not_a_finding() -> None:
 
 
 def _fake_factory(data: dict) -> FakeResult:
-    return FakeResult(data["name"], data["status"], data["min_sicn"], data["located"])
+    return FakeResult(data["name"], data["status"], data["min_sicn"], data["located"], data["error_kind"])
 
 
 @pytest.fixture
@@ -242,8 +254,65 @@ def test_timeout_and_crash_are_never_cached(layers, step, tmp_path) -> None:
     assert flaky[0].runs == 2
 
 
-def test_panel_config_hash_tracks_members_and_timeout() -> None:
+def test_panel_config_hash_tracks_members_config_versions_and_timeout() -> None:
+    v = {"gmsh": "4.15.2"}
     a, b = FakeMember("a"), FakeMember("b")
-    assert panel_config_hash([a, b], 300) == panel_config_hash([b, a], 300)
-    assert panel_config_hash([a], 300) != panel_config_hash([a, b], 300)
-    assert panel_config_hash([a], 300) != panel_config_hash([a], 120)
+    assert panel_config_hash([a, b], 300, v) == panel_config_hash([b, a], 300, v)
+    assert panel_config_hash([a], 300, v) != panel_config_hash([a, b], 300, v)
+    assert panel_config_hash([a], 300, v) != panel_config_hash([a], 120, v)
+    assert panel_config_hash([a], 300, v) != panel_config_hash([FakeMember("a", config={"Mesh.Algorithm": 6})], 300, v)
+    assert panel_config_hash([a], 300, v) != panel_config_hash([a], 300, {"gmsh": "4.16.0"})  # a mesher upgrade
+
+
+def test_a_member_without_config_fails_closed() -> None:
+    class NoConfig:
+        name = "x"
+
+    with pytest.raises(PanelConfigError):
+        panel_config_hash([NoConfig()], 300, {})
+
+
+def test_cache_miss_is_logged_with_its_reason(step, tmp_path, caplog) -> None:
+    def broken(data: dict):
+        raise AttributeError("module has no attribute 'Located'")
+
+    cache = _cache(tmp_path)
+    cache.put(file_sha256(step), "cfg", _passes(1))
+    bad = VerdictCache(cache.store, result_factory=broken)
+    with caplog.at_level("WARNING"):
+        assert bad.get(file_sha256(step), "cfg") is None
+    assert "AttributeError" in caplog.text and "Located" in caplog.text
+
+
+def test_pool_failure_is_inconclusive_but_a_mesher_crash_is_a_verdict(layers) -> None:
+    pool_died = _run(
+        layers, [FakeMember("a"), FakeMember("b", status="crashed", sicn=None, error_kind="infrastructure")]
+    )
+    assert pool_died.inconclusive and not pool_died.clean and not pool_died.counts_for_scoreboard
+    with pytest.raises(InconclusiveVerdict):
+        score(pool_died)
+
+    for status in ("crashed", "timeout"):  # the mesher itself: the file failed the definition
+        mesher = _run(layers, [FakeMember("a"), FakeMember("b", status=status, sicn=None, error_kind="segfault")])
+        assert not mesher.inconclusive and mesher.counts_for_scoreboard and not mesher.clean
+        assert score(mesher)[1] == 1
+
+
+def test_an_inconclusive_panel_is_never_cached(layers, step, tmp_path) -> None:
+    cache = _cache(tmp_path)
+    member = FakeMember("a", status="crashed", sicn=None, error_kind="infrastructure")
+    verdict(None, step, "o.step", members=[member], run_panel=run_panel, cache=cache)  # type: ignore[arg-type]
+    verdict(None, step, "o.step", members=[member], run_panel=run_panel, cache=cache)  # type: ignore[arg-type]
+    assert member.runs == 2
+
+
+def test_an_unfaithful_state_never_outranks_a_faithful_one() -> None:
+    clean = _v(True, _passes(1, 0.05), _faith(ok=True, dev=0.09))
+    unfaithful = _v(True, _passes(3, 0.9), _faith(ok=False, dev=0.0))  # e.g. area_changed or fill_too_large
+    assert score(clean) > score(unfaithful)
+
+
+def test_declared_default_is_not_shared_between_calls(layers) -> None:
+    _run(layers, [FakeMember("a")])
+    assert Declared().added == [] and Declared().removed == []
+    assert Declared() is not Declared()

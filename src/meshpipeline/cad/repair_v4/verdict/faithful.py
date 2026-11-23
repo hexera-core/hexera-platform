@@ -17,6 +17,8 @@ the original and is exempt in the original -> repaired direction.
 
 from __future__ import annotations
 
+import atexit
+import os
 import shutil
 import tempfile
 from dataclasses import dataclass, field
@@ -45,6 +47,11 @@ class FaithfulReport:
         return self.reasons[0] if self.reasons else None
 
 
+class DeclaredIdError(ValueError):
+    """A declared added/removed id does not match the shapes. The CALLER's bug (a stale or mistranslated
+    id), so it is neither a finding about the file nor `CheckerUnavailable`."""
+
+
 def _unavailable(call: str, result: CallResult) -> CheckerUnavailable:
     return CheckerUnavailable(f"{call}: {result.status}: {result.error}")
 
@@ -69,6 +76,8 @@ def check_faithful(
         },
         timeout_s=CALL_TIMEOUT_S,
     )
+    if result.status == "error" and (result.error or "").startswith("DeclaredIdMismatch:"):
+        raise DeclaredIdError(result.error)
     if not result.ok or result.value is None:
         raise _unavailable("faithful_check", result)
     v = result.value
@@ -93,6 +102,27 @@ def _to_brep(pool: WorkerPool, step: str, out: Path) -> str:
     return str(read.value["brep"])
 
 
+_ORIGINALS: dict[tuple[str, int, int], str] = {}
+_ORIGINALS_DIR: list[Path] = []
+
+
+def _original_brep(pool: WorkerPool, step: str) -> str:
+    """The original's BREP, read once per (path, mtime, size) and kept for the process: the search
+    judges thousands of states against ONE original, and re-reading it each time is pure waste."""
+    stat = os.stat(step)
+    key = (os.path.abspath(step), stat.st_mtime_ns, stat.st_size)
+    cached = _ORIGINALS.get(key)
+    if cached is not None and os.path.exists(cached):
+        return cached
+    if not _ORIGINALS_DIR:
+        root = Path(tempfile.mkdtemp(prefix="faithful_originals_"))
+        atexit.register(shutil.rmtree, root, ignore_errors=True)
+        _ORIGINALS_DIR.append(root)
+    out = _ORIGINALS_DIR[0] / f"original_{len(_ORIGINALS)}.brep"
+    _ORIGINALS[key] = _to_brep(pool, step, out)
+    return _ORIGINALS[key]
+
+
 def check_faithful_steps(
     pool: WorkerPool,
     original_step: str,
@@ -101,12 +131,13 @@ def check_faithful_steps(
     declared_added: list[str],
     declared_removed: list[str],
 ) -> FaithfulReport:
-    """`check_faithful` on two STEP files (read to BREP, in mm, in a worker)."""
+    """`check_faithful` on two STEP files (read to BREP, in mm, in a worker). The original's BREP is
+    memoised across calls."""
     work = Path(tempfile.mkdtemp(prefix="faithful_"))
     try:
         return check_faithful(
             pool,
-            _to_brep(pool, original_step, work / "original.brep"),
+            _original_brep(pool, original_step),
             _to_brep(pool, repaired_step, work / "repaired.brep"),
             declared_added=declared_added,
             declared_removed=declared_removed,
