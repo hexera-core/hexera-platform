@@ -399,6 +399,27 @@ def internal_estimate(*, max_cell: float, wall_cell: float, thickness: float, n_
     return float(cells + max(0, int(n_layers)) * area / wall_cell ** 2)
 
 
+def coarser_wall(priced, *, est: float, wall_cell: float, max_cell: float, limit: float,
+                 median_radius: float = 0.0, max_levels: int = 8) -> tuple[float, float, float, int]:
+    """THE WALL A LEVEL COARSER AT A TIME while the plan's estimate `est` is over `limit` (rulebook 75):
+    `priced(wall, background)` is the plan's estimate at a wall and background cell; the background
+    follows the wall once the wall reaches it. PLAN-cfd-8: a level is taken only when it cuts the
+    estimate by MIN_LEVEL_CUT or more (where the wall does not carry the count, coarsening it buys
+    nothing and loses the wall), and never past USABLE_WALL_CELLS_ACROSS across the typical passage
+    (its median radius). Returns (wall, background, estimate, levels taken)."""
+    w, m, levels = float(wall_cell), float(max_cell), 0
+    while est > limit and levels < max_levels:
+        w2 = w * 2.0
+        if median_radius > 0.0 and 2.0 * median_radius / w2 < USABLE_WALL_CELLS_ACROSS:
+            break
+        m2 = max(m, w2)
+        e2 = float(priced(w2, m2))
+        if e2 > (1.0 - MIN_LEVEL_CUT) * est:
+            break
+        w, m, est, levels = w2, m2, e2, levels + 1
+    return w, m, est, levels
+
+
 def run_guard(estimated_cells: float | None):
     """The planned work and GUARD of a cfMesh run planned to make `estimated_cells` cells
     (contracts/work_limits.PlannedWork): GUARD_FACTOR times its planned time at the slow rate,
@@ -439,6 +460,10 @@ def machine_for_plan(workspace, plan: dict | None, *, user_cells: int = 0) -> di
     if int(user_cells or 0) > MM.normal_cells():
         # RUN-9: the user's own count past the standard machine's cells runs on a VM that carries it
         decision = MM.for_cells(max(int(user_cells), cells), why="the cell count asked for")
+    elif (plan or {}).get("over_limit") and cells > MM.normal_cells():
+        # PLAN-cfd-8: an internal plan still over the standard machine once nothing more could be made coarser runs
+        # where its memory fits, never on a machine sized for its files alone (our other plans move for time only)
+        decision = MM.for_cells(cells, why="the cells the plan comes to")
     seconds = (plan or {}).get("estimated_seconds")
     decision = MM.for_time(decision, planned_s=float(seconds) if seconds else None,
                            wall_s=float(CLOUD_RUN_WALL_S))
@@ -540,6 +565,13 @@ CFMESH_CELLS_ACROSS = 15.0
 #: the reading's own scatter along a plain pipe (14.98 here, 15.02 there) boxed whole walls one
 #: level finer - 16 to 31 times the cells on five dev bends, reducers and transitions, offline.
 CFMESH_MIN_CELLS_ACROSS = CFMESH_CELLS_ACROSS - 0.5
+#: PLAN-cfd-8: a level coarser at the wall is taken only when it cuts the plan's estimate by at least this share.
+#: Where the wall carries the count a level cuts it four to eight times; abc 00063401's 210 M cells were 209.3 M
+#: of narrow-gap boxes priced at their own cells, and eight levels (0.85 mm to 218 mm) cut 0.3% of it.
+MIN_LEVEL_CUT = 0.25
+#: ...and never past this many cells across the typical passage (its median diameter over the wall cell): a
+#: passage with fewer has no flow profile left in it (63401's eighth level left 0.06 across).
+USABLE_WALL_CELLS_ACROSS = 2.0
 #: When the background cell is at most this much coarser than the band needs, the whole background
 #: is made that little finer (at most twice its cells) rather than the band a whole level finer
 #: (eight times the cells over a band that, in a tube, is most of the fluid).
@@ -885,7 +917,7 @@ def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
             _narrow = list(narrow_passage_regions(
                 passage_field[0], passage_field[1], cell_m=wall_cell, areas=_areas,
                 target=CFMESH_CELLS_ACROSS * _rung, detect=_detect,
-                budget_cells=(0.5 * cell_budget if cell_budget else None)) or [])
+                budget_cells=0.5 * float(cell_budget or _limit), whole_box=True) or [])
         _narrow_note = (_gap.words(wall_cell) + (". Options: " + " ".join(
             f"({i}) {o}" for i, o in enumerate(_gap.options(), 1))
             if _gap.status in (GS.LIMITED, GS.OVER_LIMIT) else "")
@@ -949,11 +981,23 @@ def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
         _asked = max(float(_planned or 0.0), _priced(wall_cell, max_cell))
         # a level coarser at a time: the wall first, then - once the wall is the background, as in a
         # passage the band fills - the background with it
-        est, w, m, levels = _asked, wall_cell, max_cell, 0
-        while not _user_count and est > _limit and levels < 8:
-            w, levels = w * 2.0, levels + 1
-            m = max(m, w)
-            est = _priced(w, m)
+        _med = float((passage_radius or {}).get("median") or 0.0)
+        w, m, est, levels = ((wall_cell, max_cell, _asked, 0) if _user_count else
+                             coarser_wall(_priced, est=_asked, wall_cell=wall_cell, max_cell=max_cell,
+                                          limit=_limit, median_radius=_med))
+        _box_cells = box_cost(_narrow, w, whole_box=True)
+        if est > _limit:
+            # what the plan still comes to, and what carries it, said plainly (the machine that carries it is
+            # chosen from this count: machine_for_plan)
+            _carry = (f"{_box_cells / 1e6:.3g} M of them in the {len(_narrow)} narrow-gap refinement"
+                      f"{'s' if len(_narrow) != 1 else ''}, refined whole at their own cells"
+                      if _box_cells >= 0.5 * est else
+                      f"the wall at {w * 1e3:.3g} mm carries most of them")
+            _over_note = (f"As planned the mesh comes to about {est / 1e6:.3g} M cells, more than the "
+                          f"{_limit / 1e6:.3g} M one standard job builds: {_carry}.")
+            logger.warning("cfMesh internal plan: %s", _over_note)
+        else:
+            _over_note = ""
         if levels:
             if m > max_cell:
                 dict_parts[2] = f"maxCellSize {m:.6g};\n"
@@ -971,24 +1015,28 @@ def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
             if _ask is not None:
                 _local += _ask_local
             dict_parts[3] = f"localRefinement\n{{\n    {wall_patch} {{ cellSize {w:.6g};{_thick} }}\n{_local}}}\n"
-            _med = float((passage_radius or {}).get("median") or 0.0)
             _budget_note = (
                 f"The wall cells were made {levels} level{'s' if levels != 1 else ''} coarser "
-                f"({wall_cell * 1e3:.3g} mm -> {w * 1e3:.3g} mm) so the mesh fits the {_limit / 1e6:.3g} M "
+                f"({wall_cell * 1e3:.3g} mm -> {w * 1e3:.3g} mm) " + ("so the mesh fits" if est <= _limit else "to bring the mesh nearer") + f" the {_limit / 1e6:.3g} M "
                 f"cells one job builds: as planned it came to about {_asked / 1e6:.3g} M cells"
-                + (f"; about {2.0 * _med / w:.0f} cells now cross the typical passage" if _med > 0 else "")
+                + (f"; about {2.0 * _med / w:.0f} cells now cross the typical passage"
+                   if _med > 0 and 2.0 * _med / w >= 1.0 else "")
                 + (f", and it is still about {est / 1e6:.3g} M" if est > _limit else "")
                 + ". To keep the finer wall, ask for a cell count in your notes.")
             logger.warning("cfMesh internal plan: %s", _budget_note)
             wall_cell = w
+        if _over_note:
+            _budget_note = (_budget_note + " " + _over_note).strip()
         _planned = est
         seconds = est / CELLS_PER_SECOND
         plan = {"estimated_cells": int(est), "cells_per_second": CELLS_PER_SECOND,
                 "estimated_seconds": round(seconds, 1), "run_cap_s": run_cap_for(seconds),
                 "fits": fits_one_run(seconds), "wall_cell": wall_cell, "guard": run_guard(est).as_dict(),
                 "priced": "internal",
-                **({"coarsened_levels": levels, "cells_before": int(_asked), "note": _budget_note}
-                   if levels else {})}
+                **({"coarsened_levels": levels, "cells_before": int(_asked)} if levels else {}),
+                **({"note": _budget_note} if _budget_note else {}),
+                **({"box_cells": int(_box_cells)} if _box_cells else {}),
+                **({"over_limit": True} if est > _limit else {})}
 
     n_layers = max(0, int(strategy.get("n_layers", 0)))
     if n_layers > 0:

@@ -1194,7 +1194,7 @@ def narrow_passage_regions(points, radius, *, cell_m: float, areas=None,
                            target: float = PASSAGE_CELLS_ACROSS,
                            detect: float = NARROW_DETECT_CELLS, max_level_bump: int = 4,
                            max_regions: int = 128,
-                           budget_cells: float | None = None) -> NarrowRegions:
+                           budget_cells: float | None = None, whole_box: bool = False) -> NarrowRegions:
     """Boxes around the walls of passages too NARROW for the planned wall cell (fewer than
     `detect` cells across), each with the cell that puts `target` across its narrowest point
     (`cell_needed_m`) and the octree level bump over cell_m that reaches it (`level_bump`,
@@ -1214,7 +1214,10 @@ def narrow_passage_regions(points, radius, *, cell_m: float, areas=None,
     With a `budget_cells`, the extra levels are lowered while the boxes' cost exceeds it, and if
     even +1 does not fit, the cheapest boxes that fit are kept (and `note` says so). The cost is
     the fluid a box refines at its cell: with the wall `areas` of the points, the passage their
-    wall bounds (area x radius, a tube's volume twice over); without, the box's whole volume."""
+    wall bounds (area x radius, a tube's volume twice over); without, the box's whole volume.
+    `whole_box` costs every box at its whole volume whatever the areas say: what a mesher that refines
+    every cell inside a box (cfMesh's objectRefinements) makes there (gap_sizing.box_cost), so a budget
+    held here holds the plan that prices the boxes the same way (PLAN-cfd-8)."""
     pts = np.asarray(points, dtype=float)
     r = np.asarray(radius, dtype=float)
     out = NarrowRegions()
@@ -1278,8 +1281,13 @@ def narrow_passage_regions(points, radius, *, cell_m: float, areas=None,
                       # refined by distance instead of by the whole box: engines/gap_sizing)
                       "point_ids": where_narrow[idx]})
 
+    def _vol(b) -> float:
+        if whole_box:
+            return float(np.prod(np.maximum(np.asarray(b["max"]) - np.asarray(b["min"]), 0.0)))
+        return float(b["volume_m3"])
+
     def _cost(bs) -> float:
-        return sum(b["volume_m3"] / (float(cell_m) / (2 ** b["level_bump"])) ** 3 for b in bs)
+        return sum(_vol(b) / (float(cell_m) / (2 ** b["level_bump"])) ** 3 for b in bs)
 
     note = ""
     if budget_cells is not None and budget_cells > 0 and boxes:
@@ -1291,7 +1299,7 @@ def narrow_passage_regions(points, radius, *, cell_m: float, areas=None,
             note = "refinement held back by the cell budget"
         if _cost(boxes) > float(budget_cells):
             kept, spent = [], 0.0
-            for b in sorted(boxes, key=lambda b_: b_["volume_m3"]):
+            for b in sorted(boxes, key=_vol):
                 c = _cost([b])
                 if spent + c <= float(budget_cells):
                     kept.append(b)
