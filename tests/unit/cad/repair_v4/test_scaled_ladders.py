@@ -158,7 +158,8 @@ def _open_site_with(loops: list[tuple[list[str], float]], diagonal: float = 127.
 
 
 def _state_of(site: Site) -> SearchState:
-    ws = Workspace(brep_path="/fake/a.brep", ids={"F1": "fp1"}, labels={}, history=[], original="/fake/o.brep")
+    ids = {"F1": "fp1", **{f"E{i}": f"fpE{i}" for i in range(1, 9)}}
+    ws = Workspace(brep_path="/fake/a.brep", ids=ids, labels={}, history=[], original="/fake/o.brep")
     return SearchState(id="S0", ws=ws, verdict=None, score=(0, 0, 0.0, 0.0, 0), sites=[site], depth=0, parent=None,
                        via=None)
 
