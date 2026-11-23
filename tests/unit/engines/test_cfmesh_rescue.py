@@ -630,3 +630,26 @@ def test_a_step_its_own_guard_stops_says_a_replay_would_do_the_same_work(tmp_pat
     with det.recording() as rec:
         _rescue(ws, dict(_BROKEN), dict(_NOT_FIXED), [], optimise_rc=-1)
     assert [t.get("same_on_replay") for t in rec.guard_trips] == [True]
+
+
+def test_a_trip_inside_one_passage_rescue_keeps_the_passage_and_does_not_end_the_attempt(tmp_path, optimiser_first):
+    """TIME-14 (abc 99768, c2e13_p34d): passage 1's optimiser tripped its own guard with nothing valid in hand; the
+    attempt went on and finished its mesh, then threw it away for that passage trip. Inside a passage's rescue the trip
+    keeps the passage as built, is recorded, and does not end the attempt."""
+    from meshpipeline.contracts.work_limits import ends_attempt
+    from meshpipeline.engines import determinism as det
+    ws = _ws(tmp_path)
+    with det.recording() as rec:
+        out = RS.rescue(ws, dict(_BROKEN), bashrc="/dev/null", deadline=time.monotonic() + 3600.0,
+                        mesher_seconds=0.0, measure=_measure(dict(_NOT_FIXED)), runner=_runner([], optimise_rc=-1),
+                        env={}, step_only=True)
+    assert [(t["rule"], t.get("same_on_replay")) for t in rec.guard_trips] == [("TIME-14", True)]
+    assert not any(ends_attempt(t) for t in rec.guard_trips)
+    assert out["rescue"]["guard_step_only"] is True
+    assert (ws / "constant" / "polyMesh" / "owner").read_text() == "as built"
+    assert "goes on as built" in out["rescue"]["note"] and "run again" not in out["rescue"]["note"]
+    # the whole mesh's own rescue is unchanged: the same trip there still ends the attempt (TIME-3 / TIME-13)
+    ws2 = _ws(tmp_path / "whole")
+    with det.recording() as rec2:
+        _rescue(ws2, dict(_BROKEN), dict(_NOT_FIXED), [], optimise_rc=-1)
+    assert [t["rule"] for t in rec2.guard_trips] == ["TIME-3"] and ends_attempt(rec2.guard_trips[0])

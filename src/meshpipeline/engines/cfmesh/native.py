@@ -284,10 +284,53 @@ def rescue_passage(sub: Path, *, bashrc: str, deadline: float) -> dict | None:
     logger.warning("cfMesh: %s - the passage mesh in %s is at its validity edge (%s): rescued before the merge",
                    PASSAGE_RESCUE_RULE, sub.name, near_edge(q))
     try:
-        return rescue(sub, q, bashrc=bashrc, deadline=deadline, mesher_seconds=0.0)
+        # TIME-14: a guard trip in here stops this passage's rescue only - the passage is merged as built and the
+        # attempt goes on to finish (and have judged) its own mesh
+        return rescue(sub, q, bashrc=bashrc, deadline=deadline, mesher_seconds=0.0, step_only=True)
     except Exception:  # noqa: BLE001 - the rescue keeps the best mesh so far in place; the passage is merged with it
         logger.warning("cfMesh: %s - the passage rescue in %s failed", PASSAGE_RESCUE_RULE, sub.name, exc_info=True)
         return q
+
+
+#: TIME-14: the passages whose own rescue a guard stopped, each with the words the user is told (beside the case)
+PASSAGE_TRIPS_FILE = "passage_rescue_trips.json"
+
+
+def _note_passage_trip(ws: Path, k: int, kept: dict | None) -> None:
+    """Record, beside the case, that passage `k`'s own rescue was stopped by its guard (TIME-14) - in words."""
+    rec = (kept or {}).get("rescue") if isinstance(kept, dict) else None
+    if not isinstance(rec, dict) or not rec.get("guard_step_only"):
+        return
+    path = ws / PASSAGE_TRIPS_FILE
+    try:
+        have = json.loads(path.read_text()) if path.exists() else {}
+        have = have if isinstance(have, dict) else {}
+        have[str(k)] = f"Passage {k}, before it was merged: {rec.get('note') or ''}".strip()
+        path.write_text(json.dumps(have))
+    except (OSError, ValueError):
+        logger.warning("cfMesh: could not record passage %d's stopped rescue", k, exc_info=True)
+
+
+def passage_trip_words(ws: Path) -> str:
+    """The plain words for every passage whose own rescue its guard stopped (TIME-14); '' when none."""
+    try:
+        have = json.loads((Path(ws) / PASSAGE_TRIPS_FILE).read_text())
+    except (OSError, ValueError):
+        return ""
+    if not isinstance(have, dict):
+        return ""
+    return " ".join(str(have[k]) for k in sorted(have, key=lambda s: int(s) if str(s).isdigit() else 0))
+
+
+def _with_passage_trips(ws: Path, q: dict) -> dict:
+    """`q` with every stopped passage rescue told in the run's rescue note (the note the user hears, TIME-14)."""
+    words = passage_trip_words(ws)
+    if not words:
+        return q
+    rec = dict(q.get("rescue") or {}) if isinstance(q.get("rescue"), dict) else {}
+    rec["note"] = f"{rec.get('note') or ''} {words}".strip()
+    rec["passage_trips"] = True
+    return {**q, "rescue": rec}
 
 
 #: how mesh_passages says a passage was STUCK (no sign of life for the stall window), not slow
@@ -375,7 +418,7 @@ def mesh_passages(ws: Path, *, bashrc: str = _DEFAULT_BASHRC, timeout: float = 1
             # INS-31: the passage's own mesh is measured and, at its validity edge, given the engine's own second
             # chances BEFORE it is merged - merged, its bad cells are the whole mesh's (abc 99768: passage 2 carried
             # the 171-degree, negative-volume cells the merged mesh's rescue then could not clear)
-            rescue_passage(sub, bashrc=bashrc, deadline=deadline)
+            _note_passage_trip(ws, k, rescue_passage(sub, bashrc=bashrc, deadline=deadline))
             if _run(f"mergeMeshes -overwrite . {shlex.quote(str(rel))}", ws, f"mergeMeshes_p{k}.log") != 0:
                 tail = "\n".join((ws / f"mergeMeshes_p{k}.log").read_text(errors="replace").splitlines()[-LOG_TAIL_LINES:])
                 return 1, False, f"[CFMESH] passage {k} could not be merged into the mesh:\n{tail}"
@@ -420,6 +463,7 @@ def _run_cartesian_mesh_local(workspace, *, bashrc: str = _DEFAULT_BASHRC,
     # execution is invisible (Cloud Run execution f5r99, 2026-09-12).
     timing: dict[str, float] = {}
     t0 = time.monotonic()
+    (ws / PASSAGE_TRIPS_FILE).unlink(missing_ok=True)     # this run's stopped passage rescues only (TIME-14)
     # NO GUESSED TIME LIMIT (contracts/native_time): `timeout` is the machine's WALL, and the mesher
     # is WATCHED - stopped only when its log has not grown for the stall window
     from meshpipeline.contracts.native_time import STALL_WINDOW_S
@@ -495,8 +539,8 @@ def _run_cartesian_mesh_local(workspace, *, bashrc: str = _DEFAULT_BASHRC,
             q = check_mesh(ws, bashrc=bashrc)
             timing["checkMesh_s"] = round(time.monotonic() - t1, 1)
             if q:
-                q = _rescued(ws, q, bashrc=bashrc, timing=timing, t0=t0, timeout=timeout,
-                             is_2d=is_2d)
+                q = _with_passage_trips(ws, _rescued(ws, q, bashrc=bashrc, timing=timing, t0=t0,
+                                                     timeout=timeout, is_2d=is_2d))
                 # the passage measure beside the mesh too: cells across the local passage at
                 # every boundary point (flow_gates.resolution_floor holds 12 at the narrowest).
                 # It reads the boundary files only and gives up past its own budget.

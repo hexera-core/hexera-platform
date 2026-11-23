@@ -350,3 +350,16 @@ def test_the_first_passage_s_lost_opening_names_the_passages_the_run_never_meshe
     monkeypatch.setattr(N, "run_guarded", lambda argv, **kw: _Proc(0))
     rc, _t, why = N.mesh_passages(tmp_path)
     assert rc == 1 and "Not meshed, as the run stopped here: passage 2 (outlet_2, outlet_3)." in why
+
+
+def test_a_passage_whose_rescue_its_guard_stopped_is_told_in_the_finished_mesh_s_note(tmp_path):
+    """TIME-14: the passage goes on as built; the run's rescue note (what the user hears) says so in words."""
+    stopped = {"rescue": {"guard_step_only": True, "note": "The 'optimised' step ran past its guard clock."}}
+    N._note_passage_trip(tmp_path, 2, stopped)
+    N._note_passage_trip(tmp_path, 3, {"rescue": {"note": "Kept the optimised mesh."}})   # not stopped: not told
+    N._note_passage_trip(tmp_path, 4, None)
+    words = N.passage_trip_words(tmp_path)
+    assert words.startswith("Passage 2, before it was merged:") and "Passage 3" not in words
+    q = N._with_passage_trips(tmp_path, {"cells": 10, "rescue": {"note": "Kept the optimised mesh."}})
+    assert q["rescue"]["note"] == "Kept the optimised mesh. " + words
+    assert N._with_passage_trips(tmp_path / "none", {"cells": 10}) == {"cells": 10}

@@ -64,6 +64,7 @@ from typing import Any
 from meshpipeline.contracts.work_limits import (
     GUARD_FACTOR,
     TIME_KEEP_VALID,
+    TIME_PASSAGE_STEP,
     TIME_REPAIR_WORK,
     TIME_TRIP,
     PlannedWork,
@@ -340,7 +341,8 @@ def rescue(workspace, q: dict, *, bashrc: str, deadline: float, mesher_seconds: 
            runner: Callable[..., Any] | None = None, env: dict | None = None,
            is_2d: bool = False, limit: float | None = None,
            layers: Callable[..., float | None] | None = None,
-           passages: Callable[..., tuple[int, bool, str]] | None = None) -> dict:
+           passages: Callable[..., tuple[int, bool, str]] | None = None,
+           step_only: bool = False) -> dict:
     """The quality record of the mesh left in `workspace` after the rescue: `q` itself when the
     mesh is not near its edge (or it is past a rescue's cell limit), else the best measured
     candidate's record, with `rescue` saying what was tried and kept. Each step runs its PLANNED
@@ -352,7 +354,9 @@ def rescue(workspace, q: dict, *, bashrc: str, deadline: float, mesher_seconds: 
     measurement after it. Neither decides a step. INS-30: a candidate that lost an opening the mesh as built
     held is no candidate, and a protective re-mesh of a case with further passages (PASSAGES_FILE) has them
     meshed and merged again (`passages`, engines/cfmesh/native.mesh_passages) before it is measured - the re-mesh
-    reads the case's own surface, the first passage only (abc 99768: outlet_3 lost in every rescued mesh)."""
+    reads the case's own surface, the first passage only (abc 99768: outlet_3 lost in every rescued mesh).
+    `step_only` (TIME-14): the rescue of ONE passage before it is merged (INS-31) - a trip with nothing valid in hand
+    stops this rescue only, the passage goes on as built and the attempt is NOT ended (`guard_step_only`)."""
     why = near_edge(q, limit)
     if not why:
         return q
@@ -419,6 +423,9 @@ def rescue(workspace, q: dict, *, bashrc: str, deadline: float, mesher_seconds: 
         record["guard_tripped"] = name
         if keep:
             record["guard_kept"] = best_name
+        elif step_only:
+            # TIME-14: a passage's own rescue - the passage goes on as built, the attempt goes on to its own mesh
+            record["guard_step_only"] = True
         planned = work.planned_seconds
         record["tried"].append({"step": name, "guard_tripped": True, "guard_s": round(budget, 1),
                                 "planned_s": (round(planned, 1) if planned else None)})
@@ -426,7 +433,8 @@ def rescue(workspace, q: dict, *, bashrc: str, deadline: float, mesher_seconds: 
         # work on the same mesh when the attempt is run again - abc 99768's passage optimiser tripped at 316 s,
         # was run again unchanged and tripped at 316 s again - so the trip says so and no replay follows
         own = work.guard_seconds is not None and float(budget) >= float(work.guard_seconds) - 1.0
-        note_guard_trip("cfmesh.rescue", rule=(TIME_KEEP_VALID if keep else TIME_TRIP), step=name,
+        rule = TIME_KEEP_VALID if keep else (TIME_PASSAGE_STEP if step_only else TIME_TRIP)
+        note_guard_trip("cfmesh.rescue", rule=rule, step=name,
                         guard_s=float(budget), unit=work.unit, amount=work.amount,
                         planned_s=planned, kept=(best_name if keep else None),
                         same_on_replay=(True if own else None))
@@ -649,6 +657,10 @@ def note(record: dict) -> str:
                 f"({GUARD_FACTOR:g} times its planned work), so it was stopped; the "
                 f"{record['guard_kept']} mesh, measured valid before it, is kept: "
                 f"{_words(after)}.")
+    if record.get("guard_tripped") and record.get("guard_step_only"):
+        return (f"{head} The '{record['guard_tripped']}' step ran past its guard clock ({GUARD_FACTOR:g} times its "
+                f"planned work), so it was stopped before it finished; this part goes on as built ({_words(after)}) "
+                "and the finished mesh is checked like any other.")
     if record.get("guard_tripped"):
         return (f"{head} The '{record['guard_tripped']}' step ran past its guard clock - an "
                 "infrastructure stop, not a result: this attempt is run again as it was.")
