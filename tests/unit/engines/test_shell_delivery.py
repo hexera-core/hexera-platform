@@ -240,3 +240,14 @@ def test_a_shell_that_cannot_be_made_falls_through_to_the_solid(tmp_path, monkey
     assert shell_run.read(ws)["made"] is False
     assert not SD.is_shell_workspace(ws)
     assert shell_run.read(ws)["words"].endswith("A solid mesh is delivered instead.")
+
+
+def test_a_surface_is_held_to_a_closer_cover_than_a_solids_estimate():
+    """MESH-1c: a surface's cover is measured exactly (0.9); a solid's is against an estimate of its mid-surface
+    (0.3). The stamped dome whose main face had no elements (54%) reads short; a thick plate at 65% does not."""
+    assert SD.cover_short({"share": 0.54, "of": "surface"})
+    assert not SD.cover_short({"share": 0.993, "of": "surface"})
+    assert not SD.cover_short({"share": 0.65, "of": "mid-surface"})
+    assert SD.cover_short({"share": 0.07, "of": "mid-surface"})
+    assert SD.cover_words({"share": 0.54, "of": "surface"}).startswith("This shell covers only 54% of your part: 46%")
+    assert SD.cover_words({"share": 1.04, "of": "mid-surface"}) == "The elements cover 100% of your part."

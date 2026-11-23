@@ -49,8 +49,11 @@ CONTAINS = (
     ("shell_run.json", "how the shell was made: the mid-surface, the walls and the sizes"),
 )
 #: MESH-1c: a delivered shell that covers less than this share of the part is never a pass: it reads with a concern
-#: naming how much of the part has no elements (set under every good run of board-36 and the 26 stamped lab parts)
-COVER_SHARE = 0.5
+#: naming how much of the part has no elements. Set under every good run of board-36, the 26 stamped lab parts and the
+#: website set (23 Nov): a surface is measured exactly (good runs 0.993 to 1.007; the two stamped domes whose main
+#: face has no elements read 0.40 and 0.54); a solid's mid-surface is an estimate (half its face area: good runs down to
+#: 0.43 on a mixed casting, 0.65 on a thick plate with holes, whose rims count in the half)
+COVER_SHARE = {"surface": 0.9, "mid-surface": 0.3}
 #: MESH-1c: the record of a staged file the FEA driver wrote again with less than the upload's face area
 #: (fea_driver.solids_from_shells): {"file", "bytes", "area_share"} - the share of the upload it still holds
 KEPT_FILE = "staged_kept.json"
@@ -101,7 +104,8 @@ def coverage(mesh, *, part_mm2: float, mid: bool, kept: float = 1.0, told_share:
     area = mesh_area_mm2(mesh)
     return {"share": round(area / expected, 4), "mesh_mm2": round(area, 1), "expected_mm2": round(expected, 1),
             "of": "mid-surface" if mid else "surface", "kept_share": round(float(kept), 5),
-            "told_share": round(float(told_share or 0.0), 5), "limit": COVER_SHARE, "rule": "MESH-1c"}
+            "told_share": round(float(told_share or 0.0), 5), "limit": COVER_SHARE["mid-surface" if mid else "surface"],
+            "rule": "MESH-1c"}
 
 
 def _pct(share: float) -> str:
@@ -111,8 +115,10 @@ def _pct(share: float) -> str:
 
 def cover_short(cov: Mapping | None) -> bool:
     """MESH-1c: the shell covers less of the part than COVER_SHARE."""
-    share = _map(cov).get("share")
-    return share is not None and float(share) < float(_map(cov).get("limit") or COVER_SHARE)
+    c = _map(cov)
+    share = c.get("share")
+    limit = c.get("limit") or COVER_SHARE.get(str(c.get("of") or "surface"), COVER_SHARE["surface"])
+    return share is not None and float(share) < float(limit)
 
 
 def cover_words(cov: Mapping | None) -> str:
@@ -421,7 +427,7 @@ def results(workspace, q: Mapping, plan: Mapping) -> dict:
     if cover_short(cov):
         # MESH-1c: a shell that covers a fraction of the part is never a pass, whatever path dropped the rest
         rows.insert(len(gating), {"key": "part_covered", "label": "Share of the part the elements cover",
-                                  "op": ">=", "limit": float(cov.get("limit") or COVER_SHARE),
+                                  "op": ">=", "limit": float(cov.get("limit") or COVER_SHARE["surface"]),
                                   "measured": float(cov["share"]), "ok": False, "gating": False,
                                   "words": cover_words(cov)})
         outcome = "fail" if outcome == "fail" else "concerns"
