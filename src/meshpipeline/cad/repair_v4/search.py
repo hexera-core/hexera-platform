@@ -431,6 +431,9 @@ class DetGenerator:
         loops = site.graph.get("free_loops") or []
         part = float(site.graph.get("diagonal_mm") or diag or 0.0)
         rows: list[tuple[str, list[StableId], dict, str]] = []
+        if part > UNBOUNDED_DIAGONAL_MM:
+            self._note(f"site {site.id}: fill_loop not proposed: {self._why_no_size(part)}")
+            return rows
         if not loops:
             self._note(f"site {site.id}: fill_loop not proposed: the site carries no free loop")
         for loop in loops:

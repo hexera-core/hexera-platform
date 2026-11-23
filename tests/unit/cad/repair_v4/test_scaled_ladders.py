@@ -234,3 +234,10 @@ def test_the_staged_shells_note_an_unbounded_part_as_unbounded(monkeypatch: pyte
     _shells(steps, {**stages.DEFAULTS["shells"], "small": ["F1"]})
     assert "sew" not in applied and "remove_small" not in applied
     assert sum("unbounded input" in n and "unbounded_geometry" in n for n in steps.notes) == 2, steps.notes
+
+
+def test_an_unbounded_part_gets_no_fill_loop_and_says_why() -> None:
+    gen = DetGenerator(diagonal=lambda ws: 3.46e100)
+    got = gen.propose(_state_of(_open_site_with([(["E1", "E2", "E3"], 4.0)], diagonal=3.46e100)), 50)
+    assert "fill_loop" not in {c.op for c in got}
+    assert any("fill_loop not proposed" in n and "unbounded" in n for n in gen.notes), gen.notes
