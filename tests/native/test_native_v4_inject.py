@@ -15,7 +15,7 @@ import warnings
 from pathlib import Path
 
 import pytest
-from tests.native._v4_flush_patch_part import write_flush_patch_box
+from tests.native._v4_flush_patch_part import write_chamfered_flush_patch_box, write_flush_patch_box
 
 pytest.importorskip("OCP.BRepCheck", reason="the CAD kernel is a native-tier dependency")
 
@@ -111,9 +111,17 @@ def fixable_src(tmp_path_factory) -> Path:
 
 
 @pytest.fixture(scope="module")
-def cases(src, fixable_src, out_dir) -> dict:
+def mixed_src(tmp_path_factory) -> Path:
+    """Flush 3 x 3 mm patches (a plane restores them) AND one inclined 3 mm corner chamfer face (it does not): both
+    are within the 5% cap, so only the op's own fill separates them."""
+    return write_chamfered_flush_patch_box(tmp_path_factory.mktemp("mixed") / "chamfered_flush_patch_box.step")
+
+
+@pytest.fixture(scope="module")
+def cases(src, fixable_src, mixed_src, out_dir) -> dict:
     """Every feasible kind, injected once. Cached: each is a real OCCT job, slow under emulation."""
-    return {k: inj.inject(fixable_src if k == "face_delete" else src, k, SEED, out_dir)
+    return {k: inj.inject(fixable_src if k == "face_delete" else mixed_src if k == "face_delete_inclined" else src, k,
+                          SEED, out_dir)
             for k in inj.KINDS if k != "pcurve_corrupt"}
 
 
@@ -363,6 +371,72 @@ def test_the_injector_follows_the_shared_cap_when_it_moves(fixable_src, tmp_path
         m.setattr(limits, "MAX_FILL_SPAN_RATIO", 0.99)                   # nothing is large any more
         with pytest.raises(inj.InjectionNotApplicable, match="no face has a boundary loop above 99%"):
             inj.inject(fixable_src, "face_delete_large", SEED, tmp_path)
+
+
+SEEDS = range(1, 13)
+
+
+def _op_verdict(path: Path, tmp_path: Path) -> tuple[bool, str]:
+    """Run the real `fill_loop` kernel function on the FILE, with the free edges as the search would target them."""
+    from meshpipeline.cad.repair.identity import quantum_for
+    from meshpipeline.cad.repair_v4 import ws_kernel
+    from meshpipeline.cad.repair_v4.ops import faces as face_ops
+
+    read = STEPControl_Reader()
+    assert read.ReadFile(str(path)) == IFSelect_RetDone
+    read.TransferRoots()
+    brep = str(tmp_path / f"{path.stem}.brep")
+    ws_kernel.write_brep(read.OneShape(), brep)
+    shape = ws_kernel.read_brep(brep)
+    ancestors = TopTools_IndexedDataMapOfShapeListOfShape()
+    TopExp.MapShapesAndAncestors_s(shape, TopAbs_EDGE, TopAbs_FACE, ancestors)
+    index = ws_kernel._maps(shape)["edge"]
+    free = [index.FindIndex(ancestors.FindKey(i)) for i in range(1, ancestors.Extent() + 1)
+            if ancestors.FindFromIndex(i).Size() == 1]
+    answer = face_ops._fill_loop({"brep_path": brep, "out_path": str(tmp_path / f"{path.stem}.out.brep"),
+                                  "edges": free, "continuity": "G0", "quantum": quantum_for(ws_kernel.diagonal_of(shape))})
+    return "declined" not in answer, str(answer.get("declined", ""))
+
+
+def test_face_delete_never_deletes_a_face_the_op_declines_and_inclined_always_does(mixed_src, tmp_path):
+    """Both small-face kinds on a part holding a restorable and an unrestorable face, over many seeds. The verdict is the
+    op's, run on the written FILE (not the label, not the injector's own call)."""
+    seen_fixable_ratio = set()
+    for seed in SEEDS:
+        fixable = inj.inject(mixed_src, "face_delete", seed, tmp_path)
+        accepted, why = _op_verdict(fixable.path, tmp_path)
+        assert accepted, f"seed {seed}: face_delete produced a hole the op declines: {why}"
+        assert fixable.label["fill_loop_accepts"] is True and fixable.label["status"] == "structural"
+        assert fixable.label["fill_fill_to_surroundings"] <= fixable.label["fill_bound_mm"]
+        seen_fixable_ratio.add(fixable.label["loop_span_ratio"])
+
+        inclined = inj.inject(mixed_src, "face_delete_inclined", seed, tmp_path)
+        accepted, why = _op_verdict(inclined.path, tmp_path)
+        assert not accepted and "over_bound" in why, f"seed {seed}: the 'inclined' hole was fillable: {why!r}"
+        assert inclined.label["fill_loop_accepts"] is False and "over_bound" in inclined.label["fill_loop_declined"]
+        assert inclined.label["status"] == "declined_stratum" and inclined.label["expected_outcome"] == "correctly_declined"
+        assert inclined.label["loop_span_ratio"] <= inclined.label["fill_cap_ratio"]   # within the cap: a DIFFERENT reason
+    assert len(seen_fixable_ratio) >= 1
+
+
+def test_face_delete_inclined_is_a_declined_stratum_kind_not_a_default_draw():
+    assert inj.KIND_STATUS["face_delete_inclined"] == "declined_stratum"
+    assert "face_delete_inclined" not in inj.DEFAULT_KINDS and "face_delete_inclined" in inj.ADMITTED_KINDS
+    assert inj.EXPECTED_OUTCOME["face_delete_inclined"] == "correctly_declined"
+
+
+def test_face_delete_inclined_refuses_a_part_whose_small_faces_are_all_fillable(fixable_src, tmp_path):
+    with pytest.raises(inj.InjectionNotApplicable, match="no face has a boundary loop within 5%.*declines"):
+        inj.inject(fixable_src, "face_delete_inclined", SEED, tmp_path)
+
+
+def test_face_delete_refuses_a_part_whose_only_small_face_is_inclined(tmp_path):
+    from tests.native._v4_flush_patch_part import chamfer_corner
+
+    only = _write_step(chamfer_corner(BRepPrimAPI_MakeBox(100.0, 60.0, 40.0).Shape(), 3.0), tmp_path / "chamfer.step")
+    with pytest.raises(inj.InjectionNotApplicable, match="no face has a boundary loop within 5%.*accepts"):
+        inj.inject(only, "face_delete", SEED, tmp_path)
+    assert inj.inject(only, "face_delete_inclined", SEED, tmp_path).label["fill_loop_accepts"] is False
 
 
 def test_face_delete_refuses_a_part_that_has_no_small_face(tmp_path):

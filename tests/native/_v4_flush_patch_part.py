@@ -51,6 +51,34 @@ def flush_patch_box():
                            [(30, 20, 40, "z", HALF), (70, 40, 0, "z", HALF), (0, 30, 20, "x", HALF)])
 
 
+def chamfer_corner(shape, leg: float):
+    """`shape` (a box with a corner at the origin) with that corner cut off by a plane through (leg,0,0), (0,leg,0),
+    (0,0,leg): one small INCLINED triangular face. A planar fill of it is not coplanar with any face around it, which is
+    what `fill_loop`'s faithful check refuses."""
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakePrism
+    from OCP.gp import gp_Vec
+
+    polygon = BRepBuilderAPI_MakePolygon()
+    for point in (gp_Pnt(leg, 0, 0), gp_Pnt(0, leg, 0), gp_Pnt(0, 0, leg)):
+        polygon.Add(point)
+    polygon.Close()
+    tool = BRepPrimAPI_MakePrism(BRepBuilderAPI_MakeFace(polygon.Wire()).Face(), gp_Vec(-leg, -leg, -leg)).Shape()
+    cut = BRepAlgoAPI_Cut(shape, tool)
+    assert cut.IsDone(), "the corner could not be chamfered"
+    return cut.Shape()
+
+
+def chamfered_flush_patch_box(leg: float = 3.0):
+    """The flush-patch box plus one inclined corner face: it holds BOTH kinds of small face, the one a plane puts back
+    and the one it cannot."""
+    return chamfer_corner(flush_patch_box(), leg)
+
+
+def write_chamfered_flush_patch_box(path: Path) -> Path:
+    return write_step(chamfered_flush_patch_box(), path)
+
+
 def write_step(shape, path: Path) -> Path:
     writer = STEPControl_Writer()
     writer.Transfer(shape, STEPControl_AsIs)
