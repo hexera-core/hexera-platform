@@ -790,3 +790,10 @@ def mitred_frame(a: float = 30.0, t: float = 3.0, length: float = 700.0, width: 
     void = _cut(_box(t, t, t, length - 2 * t, width - 2 * t, a - 2 * t),
                 _box(a - t, a - t, -1, length - 2 * (a - t), width - 2 * (a - t), a + 2))
     return _cut(outer, void)
+
+
+def plate_with_lip(t: float = 2.0, bar: float = 6.0, length: float = 200.0, width: float = 180.0):
+    """A `length` x `width` x `t` panel with a `bar` x `bar` square lip ring round its edge, flush with its underside:
+    a thin plate and a ring of bar, as wide as its outline but only `bar` wide in its metal (SHELL-65)."""
+    ring = _cut(_box(0, 0, 0, length, width, bar), _box(bar, bar, -1, length - 2 * bar, width - 2 * bar, bar + 2))
+    return _fuse(_box(0, 0, 0, length, width, t), ring)

@@ -135,10 +135,14 @@ def test_the_stage_says_what_the_shell_leaves_out_and_settles_it(boss):
     _no_old_words(json.dumps(sc.not_shelled({**summary, "solid_more": 3})))
 
 
-def test_the_run_the_result_the_decks_and_the_reviewer_say_it(tmp_path):
+def test_the_run_the_result_the_decks_and_the_reviewer_say_it(tmp_path, monkeypatch):
     gmsh = pytest.importorskip("gmsh")  # noqa: F841
     from meshpipeline.engines import fea_results, fea_review, shell_delivery, shell_run
     from meshpipeline.engines import shell_writers as wr
+
+    # the shell without its thick region: what a run makes when MIXED-12 cannot keep it solid (tested on its own in
+    # test_shell_keeps_thick)
+    monkeypatch.setattr(shell_run, "KEEP_THICK", False)
 
     step = sf.write_step(sf.plate_with_boss(), tmp_path / "boss.step")
     ws = tmp_path / "ws"

@@ -1435,6 +1435,32 @@ PLATE_WIDTH_SAMPLES = 15
 PLATE_WIDTH_STEPS = 8
 
 
+#: SHELL-65, A THIN WALL IS WIDE IN ITS METAL, NOT ONLY BY ITS OUTLINE: SHELL-2 reads a sheet's width from its outline
+#: (width_of: its box and 4 x area / OUTER perimeter, its holes not counted), so a ring of bar - a 6 x 6 mm lip round a
+#: 200 x 180 mm plate - read as wide as its outline and passed as a thin wall 6 mm thick, and its mid-surface held 29 to
+#: 47% more metal than the part (the plate-with-lip development parts, volume check False). A sheet SHELL-2 calls thin
+#: must also be at least 1 / PLATE_WIDTH_RATIO of its walls wide at its widest place (inscribed_width, SHELL-23's
+#: measure) on some mid-face of it; a face whose area over its whole outline (every hole counted) already reaches that
+#: is wide without the measure (a region holds a circle about that wide), so the measure is paid only on narrow faces.
+THIN_WIDEST = True
+
+
+def wide_somewhere(faces: list, need: float) -> bool:
+    """SHELL-65: some face of `faces` is at least `need` wide at its widest place (own units). A face whose area over
+    its whole outline reaches `need` is wide without inscribed_width; a face that cannot be measured counts wide."""
+    for f in faces:
+        try:
+            per = _length(f)
+            if per > 0 and _area(f) / per >= need:
+                return True
+            if inscribed_width(f) >= need * (1.0 - 1e-9):
+                return True
+        except Exception as exc:  # noqa: BLE001 - read as before SHELL-65
+            logger.debug("shell: a face's widest place could not be read (%s)", exc)
+            return True
+    return False
+
+
 def inscribed_width(face) -> float:
     """SHELL-23: a face's WIDEST PLACE, its own units: twice the largest distance from a point inside it to its
     outline, every hole's edge counted - the diameter of the largest circle that fits in it. A strip reads its
@@ -6293,6 +6319,10 @@ def _extract(shape, *, mm_per_unit: float, names: list[str] | None, clock: _Cloc
                 pass
         t = max(pairs[i].thickness for i in group)
         shell = t <= sp.SHELL_RATIO * size and t <= sp.SHELL_WIDTH_RATIO * width
+        if shell and THIN_WIDEST:
+            # SHELL-65: wide by its outline, and wide somewhere in its metal too (a lip ring is as wide as its bar)
+            clock.check("reading the walls")
+            shell = wide_somewhere(sheet_faces, t / sp.PLATE_WIDTH_RATIO / mm)
         if not shell:
             thick_sheets.append((t, s_i, group, size, own_width, sheet_faces, width))
         for i in group:

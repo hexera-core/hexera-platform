@@ -442,13 +442,15 @@ def write_cdb(path: Path | str, mm: MixedMesh, *, units: str = "m", source: str 
     return {**got, "elements": int(e0 + len(mm.solid.tets)), "ties": len(mm.ties)}
 
 
-def write_all(workspace: Path | str, mm: MixedMesh, *, units: str = "m", source: str = "") -> dict:
-    """mixed.inp (CalculiX), mixed_abaqus.inp, mixed.bdf and mixed.cdb, one numbering."""
+def write_all(workspace: Path | str, mm: MixedMesh, *, units: str = "m", source: str = "",
+              stem: str = "mixed") -> dict:
+    """mixed.inp (CalculiX), mixed_abaqus.inp, mixed.bdf and mixed.cdb, one numbering. `stem`: the files' name
+    ("shell" when a shell run keeps its thick regions solid, MIXED-12)."""
     ws = Path(workspace)
-    return {"calculix": write_inp(ws / "mixed.inp", mm, units=units, source=source),
-            "abaqus": write_inp(ws / "mixed_abaqus.inp", mm, units=units, source=source, solver="abaqus"),
-            "nastran": write_bdf(ws / "mixed.bdf", mm, units=units, source=source),
-            "ansys": write_cdb(ws / "mixed.cdb", mm, units=units, source=source)}
+    return {"calculix": write_inp(ws / f"{stem}.inp", mm, units=units, source=source),
+            "abaqus": write_inp(ws / f"{stem}_abaqus.inp", mm, units=units, source=source, solver="abaqus"),
+            "nastran": write_bdf(ws / f"{stem}.bdf", mm, units=units, source=source),
+            "ansys": write_cdb(ws / f"{stem}.cdb", mm, units=units, source=source)}
 
 
 __all__ = ["Link", "MixedMesh", "OVERLAP_GROUP", "SolidPart", "boundary_triangles", "join", "read_solid_deck",

@@ -77,6 +77,10 @@ def words(rec: dict) -> str:
     if walls:
         said += f", walls {min(walls):.3g} to {max(walls):.3g} mm" if len(walls) > 1 else f", wall {walls[0]:.3g} mm"
     said += ". Files: Nastran .bdf, CalculiX and Abaqus .inp, Ansys .cdb."
+    if rec.get("kept_solid"):
+        said += " " + str(rec["kept_solid"].get("words") or "")       # MIXED-12
+    elif rec.get("kept_solid_why"):
+        said += " " + str(rec["kept_solid_why"])                       # MIXED-12: the join failed, said
     if rec.get("left_out"):
         # SHSTAGE-9: what the mesh has no elements for, in numbers, and the way on
         from meshpipeline.cad.shell_words import left_out_words
@@ -191,6 +195,80 @@ def _again(rec: dict, record: dict) -> None:
                left_out=left_out(record))
 
 
+#: MIXED-12, A SHELL KEEPS ITS THICK REGIONS AS SOLID: when the user asks for a shell, what can be shelled is shell and
+#: the thick regions of a body of thin walls and thick regions (bosses, lugs, lips, thick flanges) are kept as solid
+#: elements in the same mesh, joined to the shell (engines/mixed_run.build: the split, the shell of the trimmed walls,
+#: the solid region, SHLINK-4's ties). The run's files are that one mesh, under the shell's names. A join that cannot
+#: be made leaves the shell as before (its thick regions left out, SHSTAGE-9), and says why.
+KEEP_THICK = True
+KEPT_WORDS = ("{n} thick region{s} (bosses, lugs, lips or thick flanges) kept as solid elements in the same mesh "
+              "({tets:,} 10-node tetrahedra), joined to the shell; the join is MPC set 1 in the Nastran file.")
+KEPT_NOT = "The thick regions could not be kept as solid and joined to the shell ({why}), so they are left out."
+
+
+def keeps_thick(record: dict) -> bool:
+    """MIXED-12: the record is one body of thin walls and thick regions whose mid-surfaces meet (no open edge) - the
+    part mixed_run.build can split, mesh and join."""
+    bodies = record.get("bodies") or []
+    return (len(bodies) == 1 and bodies[0].get("verdict") == "mixed" and bool(bodies[0].get("solid_regions"))
+            and bool(record.get("surface_faces"))
+            and not any(int(r.get("open_edges") or 0) for r in record.get("sewn") or []))
+
+
+def _thick_kept(ws: Path, out: Path, step, record: dict, rec: dict, *, mm_per_unit: float, source: str,
+                target: dict | None, requirements: dict | None) -> bool:
+    """MIXED-12: the shell with its thick regions kept as solid, joined, written under the shell's names. True when
+    made (rec filled as a shell run's, with "kept_solid"); False with rec["kept_solid_why"] when not."""
+    from meshpipeline.engines import mixed_mesh as mm
+    from meshpipeline.engines import mixed_run as mr
+
+    t1 = time.time()
+    sub: dict = {}
+    try:
+        joined = mr.build(step, out, mm_per_unit=mm_per_unit, rec=sub, requirements=requirements, record=record,
+                          target=target)
+        sq = sub.get("solid_quality") or {}
+        if sq.get("valid") is False or sq.get("fatal"):
+            raise mr._Stop("the solid mesh of the thick regions is not valid")
+    except Exception as exc:  # noqa: BLE001 - the shell is still made, without its thick regions, said
+        why = str(exc) if isinstance(exc, mr._Stop) else f"{type(exc).__name__}: {str(exc)[:200]}"
+        rec["kept_solid_why"] = KEPT_NOT.format(why=why.rstrip(". ") or "the join could not be made")
+        logger.info("shell run: thick regions not kept solid (%s)", why[:300])
+        return False
+    rec["mesh_s"] = round(time.time() - t1, 1)
+    shell = joined.shell
+    name_parts(shell, ws)
+    exports = mm.write_all(ws, joined, units="m", source=source, stem="shell")
+    (ws / "shell_quality.json").write_text(json.dumps({"quality": sub.get("shell_quality"),
+                                                      "solid_quality": sub.get("solid_quality")},
+                                                     indent=1, sort_keys=True, default=float))
+    faces = write_msh(ws / MSH, shell)
+    xyz_m = shell.xyz / 1000.0
+    told = float((rec.get("left_out") or {}).get("area_share") or 0.0)
+    c = joined.counts
+    n = len(record["bodies"][0].get("solid_regions") or []) or 1
+    rec.update(nodes=int(c["shell_nodes"] + c["solid_nodes"]), faces=faces, parts=parts_of(shell, faces),
+               bounds_m=[float(v) for v in (*xyz_m.min(axis=0), *xyz_m.max(axis=0))] if len(xyz_m) else None,
+               elements=int(shell.n_elements + c["solid_elements"]), quads=int(len(shell.quads)),
+               trias=int(len(shell.trias)), walls_mm=sorted({round(float(w), 3) for w in shell.wall}),
+               quality=sub.get("shell_quality"), exports={k: v for k, v in exports.items() if isinstance(v, dict)},
+               left_out={}, solid_bodies=0, kept_solid={"regions": n, "counts": c, "split": sub.get("split"),
+                                        "words": KEPT_WORDS.format(n=n, s="" if n == 1 else "s",
+                                                                   tets=int(c["solid_elements"]))},
+               made=all((ws / f).exists() and (ws / f).stat().st_size > 0 for f in FILES))
+    if sub.get("requirements"):
+        rec["requirements"] = sub["requirements"]
+    from meshpipeline.engines import shell_delivery as SD
+
+    cov = SD.coverage(shell, part_mm2=sum(float(b.get("area_mm2") or 0.0) for b in record.get("bodies") or []),
+                      mid=True, kept=SD.kept_share(ws, source), told_share=told)
+    if cov:
+        rec["coverage"] = cov
+    if not rec["made"]:
+        rec["why"] = "the solver files could not all be written"
+    return True
+
+
 def run(workspace: Path | str, step: Path | str, *, mm_per_unit: float, source: str = "",
         target: dict | None = None, requirements: dict | None = None) -> dict:
     """Extract, mesh and write the shell of `step` (coordinates `mm_per_unit` mm each) into `workspace`. `target`: the
@@ -214,6 +292,10 @@ def run(workspace: Path | str, step: Path | str, *, mm_per_unit: float, source: 
         _again(rec, record)
         if not record.get("surface_faces"):
             rec["why"] = no_shell_why(record)
+        elif KEEP_THICK and keeps_thick(record) and _thick_kept(ws, out, step, record, rec, mm_per_unit=mm_per_unit,
+                                                                source=source, target=target,
+                                                                requirements=requirements):
+            pass        # MIXED-12: the shell with its thick regions kept solid is made
         else:
             t1 = time.time()
             try:

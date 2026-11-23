@@ -290,9 +290,12 @@ def run(workspace: Path | str, step: Path | str, *, mm_per_unit: float, source: 
     return rec
 
 
-def build(step: Path | str, out: Path, *, mm_per_unit: float, rec: dict, requirements: dict | None = None):
+def build(step: Path | str, out: Path, *, mm_per_unit: float, rec: dict, requirements: dict | None = None,
+          record: dict | None = None, target: dict | None = None):
     """MIXED-5 up to the join: extract, split, mesh the shell and the solid region, join them (a MixedMesh, mm).
-    Fills `rec` with what it read; raises _Stop with the reason when the rules make no mixed mesh."""
+    Fills `rec` with what it read; raises _Stop with the reason when the rules make no mixed mesh. `record`: the
+    extraction already made into `out` (MIXED-12, engines/shell_run: not made twice); `target`: the user's element
+    count for the shell part (SHMESH-23)."""
     from OCP.BRep import BRep_Builder
     from OCP.BRepTools import BRepTools
     from OCP.TopoDS import TopoDS_Shape
@@ -305,7 +308,8 @@ def build(step: Path | str, out: Path, *, mm_per_unit: float, rec: dict, require
 
     started = time.time()
     out.mkdir(parents=True, exist_ok=True)
-    record = ms.extract_file(step, out, mm_per_unit=mm_per_unit)
+    if record is None:
+        record = ms.extract_file(step, out, mm_per_unit=mm_per_unit)
     ok, why = recommend(record)
     rec.update(extract_s=round(time.time() - started, 1), thin_share=round(thin_share(record), 4),
                recommended=ok, recommend_why=why)
@@ -356,7 +360,7 @@ def build(step: Path | str, out: Path, *, mm_per_unit: float, rec: dict, require
     BRepTools.Write_s(ms._compound(split.shell_faces), str(out / "shell_trimmed.brep"))
     t1 = time.time()
     shell, applied = sa.mesh_shell(out / "shell_trimmed.brep", rec2, mm_per_unit=mm_per_unit,
-                                   requirements=requirements)
+                                   requirements=requirements, target=target)
     if requirements and isinstance(applied, dict) and applied.get("requirements"):
         # SHMESH-26: asked against delivered, on the shell part
         rec["requirements"] = applied["requirements"]
