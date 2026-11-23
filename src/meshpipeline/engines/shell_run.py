@@ -239,13 +239,42 @@ KEPT_WORDS = ("{n} thick region{s} (bosses, lugs, lips or thick flanges) kept as
 KEPT_NOT = "The thick regions could not be kept as solid and joined to the shell ({why}), so they are left out."
 
 
-def keeps_thick(record: dict) -> bool:
-    """MIXED-12: the record is one body of thin walls and thick regions whose mid-surfaces meet (no open edge) - the
-    part mixed_run.build can split, mesh and join."""
+def _kept_shape(record: dict) -> bool:
+    """MIXED-12: the record is one body of thin walls and thick regions whose mid-surfaces meet (no open edge)."""
     bodies = record.get("bodies") or []
     return (len(bodies) == 1 and bodies[0].get("verdict") == "mixed" and bool(bodies[0].get("solid_regions"))
             and bool(record.get("surface_faces"))
             and not any(int(r.get("open_edges") or 0) for r in record.get("sewn") or []))
+
+
+#: MIXED-18, KEEPING THICK REGIONS SOLID PAYS ONLY WHERE THE WALLS HOLD THE METAL: the attempt cuts every wall's slab
+#: out of the body and grows each thick region back into the walls; when the walls hold little of the metal the
+#: "thick region" is most of the part (a 3D-printed case whose 2 mm walls were sewn only in part: 2 to 10% of the
+#: metal), the cut is the whole body's, and on the board (e398a798) every such attempt failed or ran out its 300 s
+#: guard and came back with the shell made before. Measured on mixed_run.thin_share (the sewn mid-faces times their
+#: walls over the volume): parts that kept their thick regions solid well read 0.35 to 1.0 (9 board parts, 14
+#: development parts); parts whose attempt paid and failed read 0.016, 0.065, 0.096 and 0.22, others 0.59 to 0.85
+#: (not separable on this share; MIXED-19 makes their failures cheap). Under KEPT_MIN_SHARE the attempt is not made,
+#: said, and the stage does not promise it (application/shell_check reads keeps_thick).
+KEPT_MIN_SHARE = 0.3
+KEPT_LOW = ("its shell walls hold {p:.0f}% of its metal, and keeping thick regions solid pays only when they hold at "
+            "least {m:.0f}%")
+
+
+def kept_cannot_pay(record: dict) -> str:
+    """MIXED-18: why keeping the thick regions solid cannot pay on this record (words), or "" when it can."""
+    from meshpipeline.engines import mixed_run as mr
+
+    share = mr.thin_share(record)
+    if share < KEPT_MIN_SHARE:
+        return KEPT_LOW.format(p=100 * share, m=100 * KEPT_MIN_SHARE)
+    return ""
+
+
+def keeps_thick(record: dict) -> bool:
+    """MIXED-12: the record is one body of thin walls and thick regions whose mid-surfaces meet (no open edge) - the
+    part mixed_run.build can split, mesh and join - and MIXED-18: its walls hold enough of its metal to pay."""
+    return _kept_shape(record) and not kept_cannot_pay(record)
 
 
 #: MIXED-12's guard: the shell-and-solid attempt gets at most KEPT_BUDGET_S, and never the time the shell itself needs
@@ -444,6 +473,8 @@ def run(workspace: Path | str, step: Path | str, *, mm_per_unit: float, source: 
                                                                 requirements=requirements):
             pass        # MIXED-12: the shell with its thick regions kept solid is made
         else:
+            if KEEP_THICK and _kept_shape(record) and kept_cannot_pay(record):
+                rec["kept_solid_why"] = KEPT_NOT.format(why=kept_cannot_pay(record))      # MIXED-18, said
             t1 = time.time()
             try:
                 mesh, applied = sa.mesh_run(out, mm_per_unit=mm_per_unit, target=target, requirements=requirements)

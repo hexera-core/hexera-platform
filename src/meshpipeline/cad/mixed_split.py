@@ -28,6 +28,7 @@ does not is not used, and the body is meshed solid, with the reason.
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -376,15 +377,24 @@ def _near(shape, p: np.ndarray, tol: float) -> bool:
 #: is no core (its grid holds no point deeper than its half-thickness). A piece MIXED-1b takes is taken as before.
 CORE_THICKNESS = True
 CORE_THICKNESS_POINTS = 2000
+#: MIXED-19, A THICKNESS READING HAS A BOUND: each of MIXED-11's readings is an exact distance to the piece's skin,
+#: milliseconds on most pieces but about a second on a left-over piece of a syphon reducer (pub_0018) whose skin is
+#: one B-spline sheet: its ~2000-point scan and ~300-step climb ran past 7 minutes and the shell-and-solid attempt
+#: past its 300 s guard. Past CORE_THICKNESS_S the reading stops and the piece's thickness is not known (None): the
+#: split then stops and says so, and the shell is made as before.
+CORE_THICKNESS_S = 20.0
+EARLY_STOP = True
+NOT_MEASURED = "a left-over piece's thickness could not be measured in {s:.0f} s"
 
 
-def thickness(piece) -> float:
+def thickness(piece, limit_s: float | None = None) -> float | None:
     """MIXED-11: twice the largest distance from a grid point inside `piece` to its skin (its own units); 0.0 when no
-    grid point falls inside it."""
+    grid point falls inside it; None (not known) when the readings pass `limit_s` (default CORE_THICKNESS_S, MIXED-19)."""
     from OCP.BRepClass3d import BRepClass3d_SolidClassifier
     from OCP.gp import gp_Pnt
     from OCP.TopAbs import TopAbs_IN
 
+    stop = time.monotonic() + (CORE_THICKNESS_S if limit_s is None else float(limit_s))
     lo, hi = ms._box(piece)
     ext = np.maximum(hi - lo, 1e-12)
     h = (float(np.prod(ext)) / CORE_THICKNESS_POINTS) ** (1.0 / 3.0)
@@ -394,30 +404,38 @@ def thickness(piece) -> float:
     skin = ms._compound(ms._faces(piece))
     clf = BRepClass3d_SolidClassifier(piece)
 
+    class _Late(Exception):
+        pass
+
     def depth(p) -> float:
+        if time.monotonic() > stop:
+            raise _Late
         clf.Perform(gp_Pnt(*map(float, p)), 1e-7 * h)
         return ms._dist(ms._vertex(p), skin) if clf.State() == TopAbs_IN else -1.0
 
     best, at = 0.0, None
-    for p in np.stack(np.meshgrid(*axes, indexing="ij"), axis=-1).reshape(-1, 3):
-        d = depth(p)
-        if d > best:
-            best, at = d, p
-    if at is None:
-        return 0.0
-    # the deepest grid point lies within half a step of the deepest point: climb to it, the step halved 6 times
-    step = 0.5 * h
-    moves = [np.array(v, dtype=float) for v in np.ndindex(3, 3, 3) if v != (1, 1, 1)]
-    for _ in range(6):
-        climbed = True
-        while climbed:
-            climbed = False
-            for mv in moves:
-                q = at + (mv - 1.0) * step
-                d = depth(q)
-                if d > best + 1e-12:
-                    best, at, climbed = d, q, True
-        step *= 0.5
+    try:
+        for p in np.stack(np.meshgrid(*axes, indexing="ij"), axis=-1).reshape(-1, 3):
+            d = depth(p)
+            if d > best:
+                best, at = d, p
+        if at is None:
+            return 0.0
+        # the deepest grid point lies within half a step of the deepest point: climb to it, the step halved 6 times
+        step = 0.5 * h
+        moves = [np.array(v, dtype=float) for v in np.ndindex(3, 3, 3) if v != (1, 1, 1)]
+        for _ in range(6):
+            climbed = True
+            while climbed:
+                climbed = False
+                for mv in moves:
+                    q = at + (mv - 1.0) * step
+                    d = depth(q)
+                    if d > best + 1e-12:
+                        best, at, climbed = d, q, True
+            step *= 0.5
+    except _Late:
+        return None
     return 2.0 * best
 
 
@@ -607,25 +625,38 @@ def _split(body, kept, thick_faces, scale: float, out: Split) -> None:
     left = _solids(_bop("cut", body, slabs))
     # MIXED-1: the cores - left-over pieces holding a thick face (a point inside one of the thick faces on the piece)
     marks = [p for p in (ms._inner_point(f) for f in thick_faces) if p is not None]
-    cores, dropped = [], 0.0
-    for piece in left:
-        vol = ms._volume(piece)
+    vols = [ms._volume(piece) for piece in left]
+    core_at, dropped = [], 0.0
+    floor = CORE_MIN_WALLS * t_min
+    # MIXED-19: the largest pieces are read first, and the split stops as soon as the metal left over passes
+    # LEFT_OVER_MAX (the same stop as below, reached before the costly readings of the rest); the cores keep their
+    # order, so a split that is made is made exactly as before
+    for k in sorted(range(len(left)), key=lambda i: (-vols[i], i)):
+        piece, vol = left[k], vols[k]
         # MIXED-1b: a piece thinner than half the thinnest wall (twice its volume over its area: a slab's own
         # thickness) is no thick region but a rim the slabs left - the 0.6 mm ring round each hole of a 4 mm plate
         # whose bores were read thick; grown it crashed OCC's offset. It is left-over metal as a junction's is
-        floor = CORE_MIN_WALLS * t_min
-        if any(_near(piece, p, tol) for p in marks) and (2.0 * vol >= floor * ms._area(piece)
-                                                        or (CORE_THICKNESS and thickness(piece) >= floor)):
-            cores.append(piece)
-        else:
-            dropped += vol
+        core = any(_near(piece, p, tol) for p in marks) and 2.0 * vol >= floor * ms._area(piece)
+        if not core and CORE_THICKNESS and any(_near(piece, p, tol) for p in marks):
+            deep = thickness(piece)
+            if deep is None:
+                out.why = NOT_MEASURED.format(s=CORE_THICKNESS_S)
+                return
+            core = deep >= floor
+        if core:
+            core_at.append(k)
+            continue
+        dropped += vol
+        if EARLY_STOP and dropped > LEFT_OVER_MAX * out.body_volume:
+            break
+    cores = [left[k] for k in sorted(core_at)]
     out.dropped_volume = dropped
-    if not cores:
-        out.why = "no thick region is left once the shell walls are taken out"
-        return
     if dropped > LEFT_OVER_MAX * out.body_volume:
         out.why = (f"{100 * dropped / out.body_volume:.0f}% of the metal is neither in a shell wall nor in a thick "
                    "region")
+        return
+    if not cores:
+        out.why = "no thick region is left once the shell walls are taken out"
         return
     # MIXED-2: each core grown CUT_WALLS of the thickest wall running into it; the solid is the body's metal inside
     regions = []

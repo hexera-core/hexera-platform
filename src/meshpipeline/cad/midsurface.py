@@ -3498,6 +3498,9 @@ def _thick_measure(solid, regions: list[list], walls: list[tuple], *, mm: float,
     clf = BRepClass3d_SolidClassifier(solid)
     tol = 1e-6 * h
     counts = [0] * len(regions)
+    inside = 0
+    metal_lo = [np.full(3, np.inf) for _ in regions]
+    metal_hi = [np.full(3, -np.inf) for _ in regions]
     for p, k in zip(pts, owner, strict=True):
         work[0] -= 1
         if work[0] < 0:
@@ -3505,6 +3508,7 @@ def _thick_measure(solid, regions: list[list], walls: list[tuple], *, mm: float,
         clf.Perform(gp_Pnt(*map(float, p)), tol)
         if clf.State() != TopAbs_IN:
             continue
+        inside += 1
         gap = np.linalg.norm(np.maximum(np.maximum(wall_lo - p, 0.0), p - wall_hi), axis=1)
         near = [int(j) for j in np.argsort(gap, kind="stable") if gap[j] <= half[j]]
         carried = False
@@ -3519,10 +3523,41 @@ def _thick_measure(solid, regions: list[list], walls: list[tuple], *, mm: float,
             return out
         if not carried:
             counts[int(k)] += 1
+            metal_lo[int(k)] = np.minimum(metal_lo[int(k)], p)
+            metal_hi[int(k)] = np.maximum(metal_hi[int(k)], p)
     cell = (h * mm) ** 3
-    for row, c in zip(out, counts, strict=True):
-        row["volume_mm3"] = _r(c * cell)
+    scale = _metal_scale(solid, grown, inside * cell, mm)
+    for row, c, lo, hi, (flo, fhi) in zip(out, counts, metal_lo, metal_hi, boxes, strict=True):
+        row["volume_mm3"] = _r(c * cell * scale)
+        if c:
+            # MIXED-17: a side of the faces' box thinner than one cell (a flat face's) is told as its metal's
+            ext = np.where(fhi - flo < h, hi - lo + h, fhi - flo)
+            row["size_mm"] = [_r(x * mm) for x in sorted(ext.tolist(), reverse=True)]
     return out
+
+
+#: MIXED-17, A REGION'S METAL IS NEVER MORE THAN THE BODY: SHELL-60 counts each inside grid point as a whole cell of
+#: side h = (grown boxes' volume / THICK_POINTS)^(1/3). Where h passes the wall (cen_r0553: h about 3.5 mm on 2 mm
+#: walls) the points fall on the walls in step with the grid and the count runs over the metal: one region read 59,667
+#: mm3 of a 49,873 mm3 body, "120% of the part's volume". The body's exact volume is known, so the count is scaled to
+#: it: when the grown boxes hold the whole body, the inside points stand for exactly the body's volume (each region
+#: then gets its share of the points times that volume - a ratio, true on average at any h); when they hold part of
+#: it, the inside points never stand for more than the body. Same points, same work: a finer grid would cost cubes.
+#: The told size was the faces' box (pub_0018's one flat annulus face: "60.5 x 60.5 x 2e-07 mm" for 5,123 mm3): a
+#: side of it thinner than one cell is now the side of the cells counted as the region's metal.
+METAL_TRUE = True
+
+
+def _metal_scale(solid, grown: list[tuple], counted_mm3: float, mm: float) -> float:
+    """MIXED-17: the factor the counted cells are scaled by (1.0 when off or unmeasurable)."""
+    if not METAL_TRUE or counted_mm3 <= 0:
+        return 1.0
+    body = _volume(solid) * mm ** 3
+    if body <= 0:
+        return 1.0
+    blo, bhi = _box(solid)
+    whole = any(bool(np.all(lo <= blo) and np.all(hi >= bhi)) for lo, hi in grown)
+    return body / counted_mm3 if whole else min(1.0, body / counted_mm3)
 
 
 #: SHELL-62, A THICK REGION HOLDS METAL: the faces a body's reading calls thick or solid make a thick region only when

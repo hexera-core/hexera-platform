@@ -115,6 +115,35 @@ def test_a_join_that_cannot_fit_its_time_is_not_started_and_the_shell_says_so(tm
     assert any(t.get("rule") == "MIXED-16" and t.get("where") == "shell_thick_kept" for t in trips)
 
 
+def _mixed(share: float) -> dict:
+    return {"bodies": [{"verdict": "mixed", "solid_regions": [{"faces": ["Face_1"]}], "volume_mm3": 1000.0,
+                        "mid_volume_ratio": share}], "surface_faces": ["Face_2"], "sewn": []}
+
+
+def test_keeping_thick_regions_solid_is_tried_only_where_the_walls_hold_the_metal():
+    # MIXED-18: board parts that kept thick regions solid well read a wall share of 0.35 to 1.0; parts whose attempt
+    # failed after paying up to 300 s read 0.016 to 0.22
+    assert shell_run.KEPT_MIN_SHARE == 0.3
+    for share in (0.35, 0.43, 1.0):
+        assert shell_run.keeps_thick(_mixed(share)) and shell_run.kept_cannot_pay(_mixed(share)) == ""
+    for share in (0.016, 0.096, 0.22):
+        assert not shell_run.keeps_thick(_mixed(share))
+    assert shell_run.kept_cannot_pay(_mixed(0.065)) == ("its shell walls hold 6% of its metal, and keeping thick "
+                                                        "regions solid pays only when they hold at least 30%")
+
+
+def test_a_part_whose_walls_hold_too_little_metal_is_not_tried_and_the_shell_says_so(tmp_path, monkeypatch):
+    def never(*a, **k):
+        raise AssertionError("the attempt was started")
+
+    monkeypatch.setattr(mixed_run, "build", never)
+    monkeypatch.setattr(shell_run, "KEPT_MIN_SHARE", 1.01)     # no wall share can pay
+    ws, rec = _run(tmp_path)
+    assert rec["made"] is True and "kept_solid" not in rec and rec["left_out"]["thick"] == 1
+    assert "could not be kept as solid and joined to the shell (its shell walls hold" in rec["words"]
+    assert "CTETRA" not in (ws / "shell.bdf").read_text()
+
+
 def test_a_join_that_cannot_be_made_leaves_the_shell_as_before_and_says_why(tmp_path, monkeypatch):
     def no(*a, **k):
         raise mixed_run._Stop("the thin walls and the thick regions could not be cut apart")
