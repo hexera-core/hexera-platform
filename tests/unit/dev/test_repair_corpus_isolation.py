@@ -129,3 +129,62 @@ def test_collect_counts_a_changed_clean_part_once_as_information():
             {"file": "b.step", "outcome": "crashed", "operations": []}]
     out = collect.clean_report(rows, {"meshing": {}})
     assert out["changed"] == 2   # a and b; a (kept op AND crash) counted once
+
+
+def _hang_stub():
+    def one(path, scratch, *, stage=None, **_):
+        if stage:
+            stage("repair", meshes_before=True)
+        if path.name.startswith("hang"):
+            signal.signal(signal.SIGTERM, signal.SIG_IGN)
+            while True:
+                signal.pause()
+        return {"file": path.name, "outcome": "repaired"}
+    return one
+
+
+def test_a_timeout_row_in_a_meshability_run_is_not_unscored(monkeypatch, tmp_path):
+    """Scoring runs in the child, which the wall kill ended: a timeout row, like a crashed one,
+    must not be demanded a score (collect refuses a wave with unscored rows)."""
+    def score(row, path, scratch, *, since):
+        row["returned_step"] = {"present": True}
+
+    monkeypatch.setattr(corpus, "_one", _hang_stub())
+    monkeypatch.setattr(corpus, "_score_returned", score)
+    rows = corpus.run_files(_files(tmp_path, "a.step", "hang.step"), tmp_path, mesh_probe=True,
+                            meshability=True, isolate=True, file_timeout_s=2.0)
+    assert rows[1]["outcome"] == "timeout" and "returned_step" not in rows[1]
+    assert corpus.unscored_rows(rows) == []
+    assert not corpus._scorable(rows[1])
+    summary = corpus.meshability_summary(rows)
+    assert summary["files"] == 1 and summary["timeouts"] == 1
+    assert corpus.meshing_summary(rows)["timeouts"] == 1
+
+
+def test_per_file_wall_kill(monkeypatch, tmp_path):
+    """A child that HANGS (native code no in-child timeout can interrupt) is SIGKILLed by the
+    parent after file_timeout_s, reaped, and recorded as a `timeout` row; the run continues."""
+    pid_file = tmp_path / "hung.pid"
+
+    def one(path, scratch, *, stage=None, **_):
+        if stage:
+            stage("repair", meshes_before=True)
+        if path.name.startswith("hang"):
+            pid_file.write_text(str(os.getpid()))
+            signal.signal(signal.SIGTERM, signal.SIG_IGN)  # only SIGKILL can end it
+            while True:
+                signal.pause()
+        return {"file": path.name, "outcome": "repaired"}
+
+    monkeypatch.setattr(corpus, "_one", one)
+    rows = corpus.run_files(_files(tmp_path, "a.step", "hang.step", "c.step"), tmp_path,
+                            mesh_probe=True, isolate=True, file_timeout_s=2.0)
+    assert [r["file"] for r in rows] == ["a.step", "hang.step", "c.step"]
+    assert rows[1]["outcome"] == "timeout"
+    assert rows[1]["timeout"]["stage"] == "repair"
+    assert rows[1]["timeout"]["file_timeout_s"] == 2.0
+    assert rows[1]["meshes_before"] is True and rows[1]["mesh_kind_after"] == "timeout"
+    assert rows[0]["outcome"] == rows[2]["outcome"] == "repaired"
+    # reaped and gone: no live process and no zombie left for this pid
+    with pytest.raises(ProcessLookupError):
+        os.kill(int(pid_file.read_text()), 0)
