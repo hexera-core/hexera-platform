@@ -93,3 +93,6 @@ test_fail_closed_pricing (3), test_model_ledger (1). Updated: `test_model_round_
 - ruff on changed files: found 1 (C408 dict() in a new test), fixed; mypy on the 7 changed src files: exit 0 "no issues".
 - mutation run: exit 0 (script), results above.
 - tests/unit/dev: see the addendum below.
+
+### Addendum: tests/unit/dev (full, in container, absolute PYTHONPATH)
+exit 1: 1 failed / 1278 passed / 2 skipped (853 s). The one failure, `test_onboarding_contract::test_the_settings_tier_passes_with_every_required_setting_hostile`, is the pre-existing settings test (re-run alone on base f0f901a3: see the base exit code in the final message; it fails there too).
