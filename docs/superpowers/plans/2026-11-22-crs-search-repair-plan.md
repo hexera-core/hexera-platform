@@ -741,3 +741,24 @@ different files the paired n can fall to ~60% of the split. There is no warning 
 smaller than the file count, and the pairwise marginals use their own pairwise intersection rather
 than the table's paired set - so subtracting two paired-column rates does not reproduce the printed
 marginal. Worth a minimum-paired-n warning when the harness makes real numbers available.
+
+## Amendments settled 2026-11-23 (builder calls under design 8; the owner may still override)
+
+1. **Patience scales with the work:** `patience = max(3, open_sites + 2)`, still bounded by the wall
+   and op budgets, and **a round that admits a new state counts as progress even if the score ties**.
+   Task 42 found `fill_loop` does not improve the score so it burned a round, and a part with three
+   or more holes stopped on patience before `make_volume`. A 3-hole part must now reach it (task 46).
+2. **Artifact Registry: approved for `hexera-dev` ONLY, never production.** The mesh and validation
+   images are pushed there, and the gates and the T2 smoke move onto x86 spot VMs labelled
+   `dev-crsv4` with a 3 h self-delete backstop. Both images are already `linux/amd64`, so they run
+   natively there with no rebuild. The reason is measured, not aesthetic: gates take 15+ minutes
+   under amd64 emulation with six lanes on one Docker daemon, and Task 44 hit
+   `kernel worker did not start within 30s` under that contention - a flake in the harness we
+   measure with.
+3. **`MIN_PAIRED_FRACTION = 0.80`** is the accepted default (Task 21's provisional figure). It must
+   be **reported** in the smoke and held-out reports alongside the **actual** paired fraction, so a
+   reader sees the threshold and the number it is judging.
+4. **`clean_control`'s wave cap** stands as the lanes pinned it (the normal cap, since the plan gives
+   it none of its own and it calls no model). Reported the same way.
+
+Both 3 and 4 were pinned with a test rather than guessed, which is why accepting them costs nothing.
