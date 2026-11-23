@@ -124,6 +124,7 @@ so a fleet deploy applies it). Prod keeps the default until dev has run with it.
 | Limit | Engines | Applies to | Limit value | Source |
 |---|---|---|---|---|
 | Worst face non-orthogonality | snappy, cfMesh, multi-region | every flow | at most 70 degrees | checkMesh warns above 70 |
+| Worst face non-orthogonality | VMTK | every flow | at most 70 degrees | VMTK's own quality record, measured as checkMesh measures it (`engines/vmtk/vmtk_runner.check_mesh`); the same bar as the other flow meshers |
 | Worst face non-orthogonality | gmsh | external and internal flow (not FEA) | at most 85 degrees | gmsh's own gating bar, so a mesh past it never validates |
 | Share of skewed faces | snappy, cfMesh | every flow | at most 0.05% | checkMesh's skewness bars as a share of all faces; a production limit on a sound mesh, never a validity bar (cfMesh often does not report it) |
 | Wall covered by prism layers | snappy, cfMesh, multi-region, VMTK | when the approved plan builds layers | at least 80% | lab history: below it wall shear and y+ are unreliable on a material share of the wall |

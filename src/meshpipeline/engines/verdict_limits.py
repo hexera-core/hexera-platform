@@ -66,6 +66,10 @@ PRODUCTION_LIMITS: tuple[Limit, ...] = (
     # carotid - so it is not held to one region)
     Limit("max_non_ortho", "Worst face non-orthogonality", "<=", 70.0, ("netgen",),
           source=_CHECKMESH),
+    # VMTK's tetrahedra + prisms: the same bar as the other flow meshers (VER-2), read off VMTK's own quality
+    # record, which measures non-orthogonality as checkMesh does (engines/vmtk/vmtk_runner.check_mesh)
+    Limit("max_non_ortho", "Worst face non-orthogonality", "<=", 70.0, ("vmtk",),
+          source="engines/vmtk/vmtk_runner.check_mesh (tet_non_orthogonality, checkMesh's measure)"),
     Limit("max_non_ortho", "Worst face non-orthogonality a CFD solver can correct", "<=", 85.0,
           ("gmsh",), topologies=_CFD,
           source="engines/gmsh/criteria.py (also gmsh's gating bar, so a mesh past it never "
