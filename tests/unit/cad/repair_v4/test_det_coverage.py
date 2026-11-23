@@ -1,0 +1,166 @@
+# Responsibility: The deterministic sweep covers every op the AI proposer can reach, so `search_ai - search_det`
+#                 measures the model's JUDGEMENT, not its exclusive access to an op. Pins, per op that used to be
+#                 AI-only (`rebuild_face`, `rebuild_edge_as_intersection`, `reapproximate`, `refit_cluster`): the site
+#                 kinds and evidence that make DetGenerator propose it, the fixed sweep, that every proposal is inside
+#                 the op's own schema, that nothing is proposed without the evidence, and that the op is reached
+#                 through `search()` on the search_det arm.
+# Boundaries: hermetic: fake sites and workspaces; the kernel side is the native tier
+#             (tests/native/test_native_repair_v4_det_coverage.py).
+from __future__ import annotations
+
+from typing import Any
+
+import pytest
+from tests.unit.cad.repair_v4.test_search_wiring import World, make_ws, run, world  # noqa: F401  (world: autouse)
+
+from meshpipeline.cad.repair_v4 import search
+from meshpipeline.cad.repair_v4.ops import validate_call
+from meshpipeline.cad.repair_v4.search import DetGenerator, SearchState
+from meshpipeline.cad.repair_v4.types import Site
+from meshpipeline.cad.repair_v4.workspace import Workspace
+
+DIAG = 120.0          # mm: bound = min(0.1, 0.001 x 120) = 0.1 mm
+BOUND = 0.1
+FACES = [f"F{i}" for i in range(1, 9)]
+EDGES = [f"E{i}" for i in range(1, 13)]
+
+
+def _site(kind: str, entities: list[str], **graph: Any) -> Site:
+    return Site(id=f"S@{kind}", kind=kind, entities=list(entities), xyz=[], meshers_failing=[], dist_over_h=None,
+                graph=dict(graph), view_png=None)  # type: ignore[arg-type]
+
+
+def _ws() -> Workspace:
+    ids = {**{f: f"fp{f}" for f in FACES}, **{e: f"fp{e}" for e in EDGES}, "B1": "fpB1"}
+    return Workspace(brep_path="/fake/a.brep", ids=ids, labels={}, history=[], original="/fake/o.brep",
+                     indices={sid: i for i, sid in enumerate(ids, start=1)})
+
+
+def _propose(sites: list[Site], *, diag: float | None = DIAG) -> tuple[list, DetGenerator]:
+    state = SearchState(id="S0", ws=_ws(), verdict=None, score=(0, 0, 0.0, 0.0, 0), sites=sites, depth=0,
+                        parent=None, via=None)
+    gen = DetGenerator(diagonal=(lambda w: diag) if diag is not None else None)
+    return gen.propose(state, 50), gen
+
+
+def _of(cands: list, op: str) -> list[tuple[list[str], dict]]:
+    return [(list(c.targets), dict(c.params)) for c in cands if c.op == op]
+
+
+def node(fid: str, surface: str, span: float | None = None) -> dict:
+    return {"id": fid, "hop": 0, "surface": surface, "area": 10.0, "min_width": 1.0, "angular_span_deg": span}
+
+
+def edge(eid: str, faces: list[str], tol: float, gap: float | None = 0.0, kind: str | None = None) -> dict:
+    e: dict = {"edge": eid, "faces": faces, "tolerance": tol}
+    if kind:
+        e["kind"] = kind
+    else:
+        e.update(gap=gap, continuity="C0", dihedral_deg=90.0)
+    return e
+
+
+# --- rebuild_face -----------------------------------------------------------------------------------------------------
+
+def test_a_self_overlap_site_gets_rebuild_face_on_its_first_two_faces_at_g0() -> None:
+    got, _ = _propose([_site("self_overlap", ["F1", "F2", "F3"])])
+    assert _of(got, "rebuild_face") == [(["F1"], {"continuity": "G0"}), (["F2"], {"continuity": "G0"})]
+
+
+def test_an_invalid_site_gets_rebuild_face_only_with_a_self_intersection_finding() -> None:
+    plain, _ = _propose([_site("invalid", ["F1"])])
+    assert _of(plain, "rebuild_face") == []
+    bad, _ = _propose([_site("invalid", ["F1"], hard_codes=["self_intersection"])])
+    assert _of(bad, "rebuild_face") == [(["F1"], {"continuity": "G0"})]
+
+
+# --- rebuild_edge_as_intersection ---------------------------------------------------------------------------------
+
+def test_an_edge_whose_tolerance_or_gap_exceeds_the_normalise_target_is_rebuilt_worst_first() -> None:
+    edges = [edge("E5", ["F1", "F2"], tol=0.01), edge("E6", ["F2", "F3"], tol=1e-7, gap=1e-7),
+             edge("E7", ["F1"], tol=0.5, kind="free"), edge("E8", ["F1", "F3"], tol=1e-7, gap=0.05),
+             edge("E9", ["F3", "F4"], tol=0.003)]
+    got, _ = _propose([_site("proximity", ["F1", "F2"], edges=edges)])
+    # target = 1e-5 x 120 mm = 0.0012 mm; E6 is fine, E7 is a free edge (no two faces to intersect)
+    assert _of(got, "rebuild_edge_as_intersection") == [(["E8"], {}), (["E5"], {})]
+
+
+def test_no_edge_rebuild_without_a_diagonal_or_outside_the_edge_kinds() -> None:
+    edges = [edge("E5", ["F1", "F2"], tol=0.01)]
+    none, gen = _propose([_site("proximity", ["F1"], edges=edges)], diag=None)
+    assert _of(none, "rebuild_edge_as_intersection") == []
+    assert any("rebuild_edge_as_intersection not proposed" in n for n in gen.notes)
+    sliver, _ = _propose([_site("sliver", ["F1"], edges=edges)])
+    assert _of(sliver, "rebuild_edge_as_intersection") == []
+
+
+# --- reapproximate ------------------------------------------------------------------------------------------------
+
+def test_reapproximate_sweeps_only_free_form_faces_inside_the_bound() -> None:
+    nodes = [node("F1", "bsplinesurface"), node("F2", "plane"), node("F3", "beziersurface")]
+    got, _ = _propose([_site("periodic", ["F1", "F2", "F3"], nodes=nodes)])
+    assert _of(got, "reapproximate") == [(["F1", "F3"], {"tol_mm": 0.25 * BOUND, "max_degree": 9}),
+                                         (["F1", "F3"], {"tol_mm": 0.5 * BOUND, "max_degree": 6})]
+
+
+def test_reapproximate_is_not_offered_for_analytic_faces_or_unmeasured_ones() -> None:
+    planes, gen = _propose([_site("proximity", ["F1", "F2"], nodes=[node("F1", "plane"), node("F2", "cylinder")])])
+    assert _of(planes, "reapproximate") == []
+    assert any("reapproximate not proposed" in n for n in gen.notes)
+    unmeasured, _ = _propose([_site("self_overlap", ["F1"])])  # no graph: the surface type is unknown
+    assert _of(unmeasured, "reapproximate") == []
+
+
+# --- refit_cluster ------------------------------------------------------------------------------------------------
+
+def _cluster(*faces: str, seam: str | None = None) -> dict:
+    nodes = [node(f, "cylinder", 360.0) if f == seam else node(f, "plane") for f in faces]
+    edges = [edge(f"E{i + 1}", [a, b], tol=1e-7) for i, (a, b) in enumerate(zip(faces, faces[1:]))]
+    return {"nodes": nodes, "edges": edges}
+
+
+def test_a_connected_cluster_of_two_to_six_faces_is_refit_mildest_first() -> None:
+    got, _ = _propose([_site("sliver", ["F1", "F2", "F3"], **_cluster("F1", "F2", "F3"))])
+    assert _of(got, "refit_cluster") == [(["F1", "F2", "F3"], {"tol_mm": 0.5 * BOUND}),
+                                         (["F1", "F2", "F3"], {"tol_mm": BOUND})]
+
+
+@pytest.mark.parametrize("why, site", [
+    ("one face", _site("sliver", ["F1"], **_cluster("F1"))),
+    ("seven faces", _site("overlap", FACES[:7], **_cluster(*FACES[:7]))),
+    ("not connected", _site("sliver", ["F1", "F2", "F3"], **_cluster("F1", "F2"))),
+    ("a seam face", _site("self_overlap", ["F1", "F2"], **_cluster("F1", "F2", seam="F2"))),
+    ("no graph", _site("sliver", ["F1", "F2"])),
+])
+def test_refit_cluster_is_not_offered_where_the_op_would_decline(why: str, site: Site) -> None:
+    got, _ = _propose([site])
+    assert _of(got, "refit_cluster") == [], why
+
+
+# --- every proposal is a valid call, and each op is reached through search() ---------------------------------------
+
+def _every_site() -> list[Site]:
+    nodes = [node("F1", "bsplinesurface"), node("F2", "plane")]
+    return [_site("self_overlap", ["F1", "F2"], nodes=nodes, edges=[edge("E1", ["F1", "F2"], tol=0.01)]),
+            _site("sliver", ["F3", "F4"], **_cluster("F3", "F4"))]
+
+
+def test_every_new_proposal_is_inside_its_ops_own_schema() -> None:
+    got, _ = _propose(_every_site())
+    new = [c for c in got if c.op in search.DET_COVERED_OPS]
+    assert {c.op for c in new} == set(search.DET_COVERED_OPS)
+    for c in new:
+        assert validate_call(c.op, list(c.targets), dict(c.params), _ws()) == [], (c.op, c.params)
+
+
+def test_each_op_is_reached_from_the_search_det_arm() -> None:
+    sites = _every_site()
+    gens, proposer = search.arm_generators("search_det")
+    assert proposer is None
+    for g in gens:
+        if isinstance(g, DetGenerator):
+            g.diagonal = lambda w: DIAG
+    r = run(gens, World(target=3, sites_fn=lambda pool, ws, v: sites), start=make_ws(0, ids=("F1", "F2", "F3", "F4", "E1")),
+            budget=search.Budget(wall_s=60, ops=60, model_calls=0, model_usd=0.0))
+    reached = {e["op"] for e in r.trace.of_kind("candidate") if e.get("source") == "det"}
+    assert set(search.DET_COVERED_OPS) <= reached, set(search.DET_COVERED_OPS) - reached
