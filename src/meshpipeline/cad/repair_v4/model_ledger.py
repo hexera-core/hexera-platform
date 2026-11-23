@@ -6,9 +6,9 @@
 
 THE BOUND, AND WHAT IT RESTS ON. A wave runs as N shards on SEPARATE HOSTS, so no host-local lock (flock, a
 thread lock) can make one wave cap bind across them, and GCS FUSE has no flock at all. This module therefore
-guarantees a bound that needs NO shared state: each shard owns a static slice, `WaveLedger.for_shard(wave_cap,
-n_shards, shard_index, path)`, whose cap is `wave_cap / n_shards`. Shards cannot overspend each other's slice, so
-the wave total is at most `wave_cap` however the shards are placed, restarted or requeued - at the price of idle
+guarantees a bound that needs NO shared state: each shard owns a static slice, `WaveLedger.for_shard(wave,
+wave_id=, n_shards=, shard_index=, path=, markers=)`, whose cap is `WAVE_CAPS_USD[wave] / n_shards`. Shards cannot overspend each other's slice, so
+the wave total is at most the wave's cap however the shards are placed, restarted or requeued - at the price of idle
 budget in a shard that finishes early. Within a shard, all files share the slice through the locked log below
 (`flock` is correct between the processes of ONE host, which is all a shard is).
 
@@ -22,7 +22,9 @@ raises `ShardArithmeticError`. The launcher's N is the single source of truth: s
 identity (an `init` row), so two shards cannot share a log or an index silently.
 
 Caps are named, not typed: `WAVE_CAPS_USD` holds the owner's limits and `for_shard` takes the wave TYPE.
-`WaveLedger(cap)` itself refuses anything above `MAX_WAVE_CAP_USD`. (How MANY checkpoint waves may run - at most
+The raw constructor is closed: `for_shard` is the only production way to get a ledger (it applies the marker, log and
+type checks), and `for_test` - which refuses to run outside pytest - is the only other. `AIProposer` refuses a
+ledger that came from neither. (How MANY checkpoint waves may run - at most
 3 - or that the held-out wave runs once is not enforceable here and belongs to the launcher.)
 
 A requeue of a FILE onto another shard starts that file at $0 on the new shard, so the per-file ceiling is
@@ -41,6 +43,11 @@ exceed its reservation; if one ever did, the overrun is recorded in full and the
 
 A ledger REFUSES a non-finite cap: a hard cap that can be forgotten is not one.
 
+ROLLBACK AND TRUNCATION. After every settle the shard writes its settled total to a spend marker; at start it
+refuses a log that shows LESS than the marker claims (truncated, emptied or rolled back) and a log with no `init`
+row when the shard's marker exists. Starting a shard twice under one index loses the marker create race and raises
+`ShardArithmeticError`.
+
 Money is held as integer micro-dollars so that ten admissions of $0.10 fill a $1.00 cap exactly.
 """
 
@@ -58,6 +65,7 @@ from pathlib import Path
 from typing import Any, Literal, Protocol
 
 _MICRO = 1_000_000
+_FACTORY = object()      # the private key to the constructor; only for_shard and for_test hold it
 
 WaveType = Literal["normal", "checkpoint", "held_out"]
 #: The owner's wave limits in USD: $50 a normal wave, $300 a checkpoint wave (at most 3), $250 the held-out wave (once).
@@ -75,11 +83,14 @@ class ShardArithmeticError(RuntimeError):
 
 
 class MarkerStore(Protocol):
-    """A small shared key-value store (the wave bucket). `create` is create-if-absent: True if this call wrote it."""
+    """A small shared key-value store (the wave bucket). `create` is create-if-absent and MUST be atomic: True if
+    this call wrote it, False if the key already existed. `put` overwrites."""
 
     def get(self, key: str) -> str | None: ...
 
     def create(self, key: str, value: str) -> bool: ...
+
+    def put(self, key: str, value: str) -> None: ...
 
 
 class FileMarkerStore:
@@ -107,13 +118,22 @@ class FileMarkerStore:
             handle.write(value)
         return True
 
+    def put(self, key: str, value: str) -> None:
+        self._root.mkdir(parents=True, exist_ok=True)
+        tmp = self._path(key).with_suffix(f".tmp{os.getpid()}")
+        tmp.write_text(value, encoding="utf-8")
+        os.replace(tmp, self._path(key))
+
 
 class ObjectMarkerStore:
-    """Markers as objects in the wave bucket (contracts.object_storage.ObjectStore). Existence is checked and then
-    written, which is not atomic: two shards starting the SAME index in the same instant could both pass. The
-    realistic failure this guards - a retry arriving after a shard's log was lost - is minutes later, not simultaneous."""
+    """Markers as objects in the wave bucket. `create` is a server-side PRECONDITION write
+    (`create_object_if_absent` on the object store, e.g. the MinIO adapter's If-None-Match / generation-match
+    write), so two shards starting the same index at once cannot both win. A store without that method is
+    refused outright rather than used with a weaker exists-then-write."""
 
     def __init__(self, store: Any, prefix: str = "model-ledger") -> None:
+        if not callable(getattr(store, "create_object_if_absent", None)):
+            raise TypeError("ObjectMarkerStore needs an object store with an atomic create_object_if_absent")
         self._store, self._prefix = store, prefix.strip("/")
 
     def _key(self, key: str) -> str:
@@ -124,16 +144,23 @@ class ObjectMarkerStore:
             return None
         return self._store.get_bytes(object_key=self._key(key)).decode("utf-8")
 
-    def create(self, key: str, value: str) -> bool:
+    def _write(self, key: str, value: str, *, only_if_absent: bool) -> bool:
         import tempfile
-        if self._store.exists(object_key=self._key(key)):
-            return False
         with tempfile.TemporaryDirectory() as tmp:
             local = Path(tmp) / "marker"
             local.write_text(value, encoding="utf-8")
+            if only_if_absent:
+                return bool(self._store.create_object_if_absent(
+                    local_path=local, object_key=self._key(key), content_type="application/json"))
             self._store.upload_file(local_path=local, object_key=self._key(key),
                                     content_type="application/json")
-        return True
+            return True
+
+    def create(self, key: str, value: str) -> bool:
+        return self._write(key, value, only_if_absent=True)
+
+    def put(self, key: str, value: str) -> None:
+        self._write(key, value, only_if_absent=False)
 
 
 def _micro(usd: float) -> int:
@@ -204,7 +231,10 @@ class FileStore:
 
 class WaveLedger:
     def __init__(self, cap_usd: float, path: str | Path | None = None, *,
-                 store: LedgerStore | None = None) -> None:
+                 store: LedgerStore | None = None, _factory: object = None) -> None:
+        if _factory is not _FACTORY:
+            raise TypeError("a WaveLedger is built with WaveLedger.for_shard (production) or for_test (tests); "
+                            "the raw constructor would skip the marker, log and wave-type checks")
         if not math.isfinite(cap_usd) or cap_usd <= 0:
             raise ValueError(f"a wave cap must be a finite, positive number of dollars, got {cap_usd!r}")
         if cap_usd > MAX_WAVE_CAP_USD:
@@ -213,6 +243,20 @@ class WaveLedger:
         self._cap = _micro(cap_usd)
         self._store: LedgerStore = store if store is not None else (
             FileStore(path) if path is not None else MemoryStore())
+        self._markers: MarkerStore | None = None
+        self._spend_key = ""
+        self.provenance: str = "unset"
+
+    @classmethod
+    def for_test(cls, cap_usd: float, path: str | Path | None = None, *,
+                 store: LedgerStore | None = None) -> WaveLedger:
+        """A ledger of any cap up to the largest wave limit, for tests. REFUSES to run outside pytest, so it is
+        not a second production door."""
+        if "PYTEST_CURRENT_TEST" not in os.environ:
+            raise RuntimeError("WaveLedger.for_test is for tests; production builds ledgers with for_shard")
+        ledger = cls(cap_usd, path, store=store, _factory=_FACTORY)
+        ledger.provenance = "test"
+        return ledger
 
     @classmethod
     def for_shard(cls, wave: WaveType, *, wave_id: str, n_shards: int, shard_index: int,
@@ -235,22 +279,39 @@ class WaveLedger:
         path = Path(path)
         had_log = path.exists()
         shard_key = f"{wave_id}/shard-{shard_index}"
-        if markers.get(shard_key) is not None and not had_log:
+        spend_key = f"{shard_key}-spent-micro"
+        marker_before = markers.get(shard_key)
+        if marker_before is not None and not had_log:
             raise LostShardLog(
                 f"shard {shard_index} of wave {wave_id!r} has started before (marker {shard_key}) but its "
                 f"local log {path} is missing, so what it already spent is unknown. Refusing to start it at "
                 "$0; restore the log, or abandon this shard's slice and launch a replacement wave.")
-        ledger = cls(WAVE_CAPS_USD[wave] / n_shards, path)
+        ledger = cls(WAVE_CAPS_USD[wave] / n_shards, path, _factory=_FACTORY)
         me = {**identity, "shard_index": shard_index}
 
         def check(rows, append):
             inits = [r for r in rows if r["t"] == "init"]
             if not inits:
+                if marker_before is not None:
+                    raise LostShardLog(f"the log {path} has no init row but shard {shard_index}'s marker "
+                                       "exists: the log was truncated or replaced")
                 append({"t": "init", **me, "at": time.time()})
             elif {k: inits[0].get(k) for k in me} != me:
                 raise ShardArithmeticError(f"the log {path} belongs to {inits[0]}, not to {me}")
-        ledger._transact(check)
-        markers.create(shard_key, json.dumps(me, sort_keys=True))
+            return cls._totals(rows)[0]
+        settled = ledger._transact(check)
+        claimed = int(markers.get(spend_key) or 0)
+        if settled < claimed:
+            raise LostShardLog(
+                f"shard {shard_index} of wave {wave_id!r} had spent ${claimed / _MICRO:,.4f} (its spend marker) "
+                f"but its log {path} shows ${settled / _MICRO:,.4f}: it was truncated or rolled back. Refusing "
+                "to continue from a lower figure.")
+        if marker_before is None and not markers.create(shard_key, json.dumps(me, sort_keys=True)):
+            raise ShardArithmeticError(
+                f"shard {shard_index} of wave {wave_id!r} was claimed by another process while this one "
+                "started: two shards were given the same index. The launcher must assign unique indexes.")
+        ledger._markers, ledger._spend_key = markers, spend_key
+        ledger.provenance = "shard"
         return ledger
 
     @property
@@ -301,6 +362,9 @@ class WaveLedger:
                     "model": model, "in": int(input_tokens), "cached": int(cached_input_tokens),
                     "out": int(output_tokens), "u": cost, "kind": kind, "at": time.time()})
         self._transact(go)
+        if self._markers is not None:
+            # the spend marker lets a restart notice a log that now shows LESS than was spent
+            self._markers.put(self._spend_key, str(self._transact(lambda rows, _a: self._totals(rows)[0])))
 
     def release(self, reservation: str) -> None:
         def go(rows, append):

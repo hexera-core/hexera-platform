@@ -323,6 +323,8 @@ class AIProposer:
             raise ValueError("usd_ceiling must be positive")
         if not isinstance(ledger, WaveLedger):
             raise TypeError("a WaveLedger is required: the cap is not optional")
+        if ledger.provenance not in ("shard", "test"):
+            raise TypeError("the ledger was not built with WaveLedger.for_shard; refusing to spend against it")
         self.route = route
         self.max_turns = max_turns
         self.usd_ceiling = usd_ceiling
@@ -345,6 +347,7 @@ class AIProposer:
         self._max_input_tokens = max_input_tokens
         self._last_cost: float | None = None
         self._failures = 0
+        self.truncated_rounds = 0
         system = system_prompt(stage_names=self.stage_names)
         self._tools = tool_schemas(stage_names=self.stage_names)
         self._cache_key = cache_key_for(system, self._tools)
@@ -410,6 +413,8 @@ class AIProposer:
                     self._stop("model_failure")
                 break
             self._failures = 0
+            if reply.finish_reason == "length" and not reply.tool_calls:
+                self.truncated_rounds += 1     # the output limit was spent on reasoning: a signal to raise it
             self._ledger.settle(admission.reservation, file_id=self.file_id, job_id=self.job_id,
                                 provider=priced.provider, model=priced.model,
                                 input_tokens=reply.input_tokens, cached_input_tokens=reply.cached_input_tokens,
@@ -451,7 +456,7 @@ class AIProposer:
     def result(self) -> dict:
         """What the driver records for this file: the AI's spend and why it stopped."""
         return {"file_id": self.file_id, "ai_capped": self.ai_capped, "stop_reason": self.stop_reason,
-                "turns": self.turns_used, "spent_usd": self._ledger.file_spent_usd(self.file_id)}
+                "turns": self.turns_used, "truncated_rounds": self.truncated_rounds, "spent_usd": self._ledger.file_spent_usd(self.file_id)}
 
     async def _ask(self, reservation: str) -> ProposeReply:
         call = self._call

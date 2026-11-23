@@ -234,9 +234,17 @@ REPAIR_V4_PROPOSE_ROUTES: tuple[str, ...] = ("openai:gpt-6-astra", "openai:gpt-5
 fallback when the first fails its probe (repair_v4.proposer.select_route). Not a role route: it is
 declared here, not in ROUTE_MATRIX, so it adds no per-role setting, spec or marker vocabulary."""
 
-REPAIR_V4_PROPOSE_MAX_OUTPUT_TOKENS = 8192
-"""The hard ceiling on one repair_v4_propose answer (reasoning included). The proposer reserves against it, so
-its spending estimate is an upper bound on the output side by construction."""
+REPAIR_V4_PROPOSE_MAX_OUTPUT_TOKENS = 4096
+"""The hard ceiling on one repair_v4_propose answer (hidden reasoning included). The router sends it as the
+request's output limit AND the proposer reserves against it, so the spending estimate is an upper bound on the
+output side by construction; change it here and both move together.
+
+MEASURED (derived from the tool schemas, no model call): the largest plausible `propose` call - 5 candidates, each
+with 30 targets, the largest params object any registered op accepts and a 400-character rationale, plus two
+`declare_unfixable` calls - is 6,485 characters, i.e. 1,850-2,600 tokens at 3.5-2.5 characters per token. A typical
+call (1-3 candidates, a handful of targets) is 300-500 tokens. 4096 covers the extreme call with ~1,500 tokens
+left for reasoning and a typical call with ~3,500. ASSUMED, not measured: how much hidden reasoning the model
+spends. If rounds come back truncated (`AIProposer.result()["truncated_rounds"]`), raise this."""
 
 _router: ModelRouter | None = None
 

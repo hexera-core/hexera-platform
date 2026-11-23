@@ -23,7 +23,7 @@ def _settle(ledger: WaveLedger, res: str, file_id: str, usd: float) -> None:
 
 
 def test_a_settled_call_counts_toward_the_wave_and_its_file():
-    ledger = WaveLedger(cap_usd=1.0)
+    ledger = WaveLedger.for_test(cap_usd=1.0)
     a = ledger.admit("f1", 0.1, file_ceiling_usd=1.0)
     assert a.ok and a.reservation
     _settle(ledger, a.reservation, "f1", 0.07)
@@ -35,7 +35,7 @@ def test_a_settled_call_counts_toward_the_wave_and_its_file():
 
 
 def test_an_open_reservation_is_held_against_the_cap_until_settled_or_released():
-    ledger = WaveLedger(cap_usd=0.25)
+    ledger = WaveLedger.for_test(cap_usd=0.25)
     first = ledger.admit("f1", 0.2, file_ceiling_usd=1.0)
     assert first.ok
     # the first call is still in flight; its estimate is already spoken for
@@ -46,7 +46,7 @@ def test_an_open_reservation_is_held_against_the_cap_until_settled_or_released()
 
 
 def test_the_file_ceiling_refuses_independently_of_the_wave():
-    ledger = WaveLedger(cap_usd=100.0)
+    ledger = WaveLedger.for_test(cap_usd=100.0)
     a = ledger.admit("f1", 0.1, file_ceiling_usd=0.5)
     _settle(ledger, a.reservation, "f1", 0.45)
     denied = ledger.admit("f1", 0.1, file_ceiling_usd=0.5)
@@ -56,7 +56,7 @@ def test_the_file_ceiling_refuses_independently_of_the_wave():
 
 def test_shards_over_one_file_share_one_total(tmp_path):
     path = tmp_path / "wave.jsonl"
-    shard_a, shard_b = WaveLedger(cap_usd=0.5, path=path), WaveLedger(cap_usd=0.5, path=path)
+    shard_a, shard_b = WaveLedger.for_test(cap_usd=0.5, path=path), WaveLedger.for_test(cap_usd=0.5, path=path)
     a = shard_a.admit("fa", 0.1, file_ceiling_usd=1.0)
     _settle(shard_a, a.reservation, "fa", 0.4)
     assert shard_b.spent_usd() == pytest.approx(0.4)
@@ -65,12 +65,12 @@ def test_shards_over_one_file_share_one_total(tmp_path):
 
 
 def test_concurrent_admissions_never_overbook_the_cap(tmp_path):
-    ledger = WaveLedger(cap_usd=1.0, path=tmp_path / "wave.jsonl")
+    ledger = WaveLedger.for_test(cap_usd=1.0, path=tmp_path / "wave.jsonl")
     admitted: list[str] = []
     lock = threading.Lock()
 
     def shard() -> None:
-        mine = WaveLedger(cap_usd=1.0, path=tmp_path / "wave.jsonl")
+        mine = WaveLedger.for_test(cap_usd=1.0, path=tmp_path / "wave.jsonl")
         for _ in range(10):
             a = mine.admit("f", 0.1, file_ceiling_usd=100.0)
             if a.ok:
@@ -87,7 +87,7 @@ def test_concurrent_admissions_never_overbook_the_cap(tmp_path):
 
 
 def test_a_settled_call_may_overrun_its_estimate_and_the_overrun_is_still_counted():
-    ledger = WaveLedger(cap_usd=0.3)
+    ledger = WaveLedger.for_test(cap_usd=0.3)
     a = ledger.admit("f1", 0.1, file_ceiling_usd=1.0)
     _settle(ledger, a.reservation, "f1", 0.25)        # costlier than estimated
     assert ledger.spent_usd() == pytest.approx(0.25)
@@ -96,11 +96,11 @@ def test_a_settled_call_may_overrun_its_estimate_and_the_overrun_is_still_counte
 
 def test_settling_an_unknown_reservation_is_refused():
     with pytest.raises(KeyError):
-        _settle(WaveLedger(cap_usd=1.0), "nope", "f1", 0.1)
+        _settle(WaveLedger.for_test(cap_usd=1.0), "nope", "f1", 0.1)
 
 
 def test_a_negative_or_nonfinite_cost_is_refused_rather_than_recorded():
-    ledger = WaveLedger(cap_usd=1.0)
+    ledger = WaveLedger.for_test(cap_usd=1.0)
     a = ledger.admit("f1", 0.1, file_ceiling_usd=1.0)
     for bad in (-0.01, float("nan"), float("inf")):
         with pytest.raises(ValueError):
@@ -110,7 +110,7 @@ def test_a_negative_or_nonfinite_cost_is_refused_rather_than_recorded():
 @pytest.mark.parametrize("cap", [float("inf"), float("nan"), 0.0, -1.0])
 def test_a_ledger_refuses_a_cap_that_is_not_a_cap(cap):
     with pytest.raises(ValueError):
-        WaveLedger(cap_usd=cap)
+        WaveLedger.for_test(cap_usd=cap)
 
 
 def shard(tmp_path, i, *, n=12, wave="normal", wave_id="w1", markers=None, path=None):
@@ -143,8 +143,8 @@ def test_the_wave_caps_are_the_owners_named_limits():
 
 def test_a_typed_number_above_the_largest_wave_is_refused():
     with pytest.raises(ValueError, match="largest wave"):
-        WaveLedger(cap_usd=1e6)
-    WaveLedger(cap_usd=300.0)
+        WaveLedger.for_test(cap_usd=1e6)
+    WaveLedger.for_test(cap_usd=300.0)
 
 
 def test_an_unknown_wave_type_is_refused(tmp_path):
@@ -195,20 +195,6 @@ def test_the_marker_store_creates_once(tmp_path):
     assert m.get("a/b") is None and m.create("a/b", "1") and not m.create("a/b", "2") and m.get("a/b") == "1"
 
 
-def test_the_object_marker_store_writes_through_an_object_store(tmp_path):
-    blobs = {}
-
-    class Fake:
-        def exists(self, *, object_key): return object_key in blobs
-        def get_bytes(self, *, object_key): return blobs[object_key]
-        def upload_file(self, *, local_path, object_key, content_type=None, metadata=None):
-            blobs[object_key] = local_path.read_bytes()
-
-    m = ObjectMarkerStore(Fake(), "ledger")
-    assert m.get("w/x") is None and m.create("w/x", "v") and not m.create("w/x", "v2")
-    assert m.get("w/x") == "v" and "ledger/w/x" in blobs
-
-
 @pytest.mark.parametrize("n, i", [(0, 0), (3, 3), (3, -1)])
 def test_an_invalid_shard_is_refused(tmp_path, n, i):
     with pytest.raises(ValueError):
@@ -216,7 +202,7 @@ def test_an_invalid_shard_is_refused(tmp_path, n, i):
 
 
 def test_the_stop_reason_is_recorded_in_the_ledger(tmp_path):
-    ledger = WaveLedger(cap_usd=1.0, path=tmp_path / "w.jsonl")
+    ledger = WaveLedger.for_test(cap_usd=1.0, path=tmp_path / "w.jsonl")
     ledger.mark("f1", stop_reason="wave_cap", ai_capped=True)
     ledger.mark("f2", stop_reason="max_turns", ai_capped=False)
     assert ledger.file_statuses() == {"f1": {"stop_reason": "wave_cap", "ai_capped": True},
@@ -225,5 +211,96 @@ def test_the_stop_reason_is_recorded_in_the_ledger(tmp_path):
 
 def test_a_custom_store_plugs_in_behind_the_same_interface():
     from meshpipeline.cad.repair_v4.model_ledger import MemoryStore
-    ledger = WaveLedger(cap_usd=1.0, store=MemoryStore())
+    ledger = WaveLedger.for_test(cap_usd=1.0, store=MemoryStore())
     assert ledger.admit("f", 0.5, file_ceiling_usd=1.0).ok
+
+
+# --- the marker race, the closed constructor, truncation and rollback ----------------------------------------------
+
+
+def test_a_shard_that_loses_the_marker_race_is_refused(tmp_path):
+    # the same index handed to two shards that start at once: the marker create is atomic and only one wins
+    class RacingMarkers(FileMarkerStore):
+        """The first get() sees no marker for both starters, as two simultaneous starts would."""
+        def get(self, key):
+            return None if key.endswith("shard-2") and not getattr(self, "raced", False) and self._lose() else super().get(key)
+
+        def _lose(self):
+            self.raced = True
+            FileMarkerStore.create(self, "w1/shard-2", "{\"someone else\": 1}")     # the other shard wins
+            return True
+
+    markers = RacingMarkers(tmp_path / "bucket")
+    with pytest.raises(ShardArithmeticError, match="unique indexes"):
+        shard(tmp_path, 2, n=4, markers=markers)
+
+
+def test_the_object_marker_store_needs_an_atomic_create(tmp_path):
+    class NoPrecondition:
+        def exists(self, *, object_key): return False
+    with pytest.raises(TypeError, match="atomic"):
+        ObjectMarkerStore(NoPrecondition())
+
+
+def test_the_object_marker_store_uses_the_precondition_write_and_never_exists_then_write(tmp_path):
+    blobs, calls = {}, []
+
+    class Store:
+        def exists(self, *, object_key): calls.append("exists"); return object_key in blobs
+        def get_bytes(self, *, object_key): return blobs[object_key]
+        def create_object_if_absent(self, *, local_path, object_key, content_type=None):
+            calls.append("create_if_absent")
+            if object_key in blobs:
+                return False
+            blobs[object_key] = local_path.read_bytes()
+            return True
+        def upload_file(self, *, local_path, object_key, content_type=None, metadata=None):
+            calls.append("upload"); blobs[object_key] = local_path.read_bytes()
+
+    m = ObjectMarkerStore(Store(), "ledger")
+    assert m.create("w/x", "v") and not m.create("w/x", "v2")
+    assert "exists" not in calls                           # create never probes first
+    m.put("w/x", "v3")
+    assert m.get("w/x") == "v3"
+
+
+def test_the_raw_constructor_is_closed():
+    with pytest.raises(TypeError, match="for_shard"):
+        WaveLedger(299.0)
+    with pytest.raises(TypeError):
+        WaveLedger(cap_usd=10.0, path=None)
+
+
+def test_for_test_refuses_to_run_outside_pytest(monkeypatch):
+    monkeypatch.delenv("PYTEST_CURRENT_TEST")
+    with pytest.raises(RuntimeError, match="for_shard"):
+        WaveLedger.for_test(10.0)
+
+
+def test_a_truncated_log_with_a_surviving_marker_is_refused(tmp_path):
+    first = shard(tmp_path, 1, n=4)
+    a = first.admit("f", 1.0, file_ceiling_usd=100.0)
+    _settle(first, a.reservation, "f", 3.0)
+    (tmp_path / "shard1.jsonl").write_text("")             # emptied, not deleted
+    with pytest.raises(LostShardLog, match="no init row"):
+        shard(tmp_path, 1, n=4)
+
+
+def test_a_rolled_back_log_that_shows_less_than_the_marker_claims_is_refused(tmp_path):
+    first = shard(tmp_path, 1, n=4)
+    a = first.admit("f", 1.0, file_ceiling_usd=100.0)
+    b = first.admit("f", 1.0, file_ceiling_usd=100.0)
+    _settle(first, a.reservation, "f", 3.0)
+    snapshot = (tmp_path / "shard1.jsonl").read_text()     # a backup taken here ...
+    _settle(first, b.reservation, "f", 4.0)                # ... then more is spent
+    (tmp_path / "shard1.jsonl").write_text(snapshot)       # and the VM comes back from the backup
+    with pytest.raises(LostShardLog, match="rolled back"):
+        shard(tmp_path, 1, n=4)
+
+
+def test_the_spend_marker_tracks_every_settle(tmp_path):
+    markers = FileMarkerStore(tmp_path / "bucket")
+    ledger = shard(tmp_path, 0, n=4, markers=markers)
+    a = ledger.admit("f", 1.0, file_ceiling_usd=100.0)
+    _settle(ledger, a.reservation, "f", 2.5)
+    assert markers.get("w1/shard-0-spent-micro") == "2500000"

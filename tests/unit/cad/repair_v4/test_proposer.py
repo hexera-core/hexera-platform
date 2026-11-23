@@ -92,7 +92,7 @@ def make(fake: Fake, *, ceiling=1.0, max_turns=6, ledger=None, **kw) -> P.AIProp
     kw.setdefault("prices", ASTRA)
     kw.setdefault("output_tokens", 1000)       # reserve for a short answer so small test ceilings stay usable
     return P.AIProposer(ROUTE, max_turns=max_turns, usd_ceiling=ceiling, call=fake, observe=fake_observe,
-                        ledger=ledger or WaveLedger(cap_usd=100.0), file_id=kw.pop("file_id", "f1"),
+                        ledger=ledger or WaveLedger.for_test(cap_usd=100.0), file_id=kw.pop("file_id", "f1"),
                         job_id=kw.pop("job_id", "job-9"), **kw)
 
 
@@ -140,7 +140,7 @@ def test_a_replaced_target_names_its_successors():
 ])
 def test_malformed_calls_are_structured_errors_that_cost_a_turn_and_nothing_else(args, needle):
     fake = Fake([reply(call_of("propose", args)), reply(call_of("propose", {"candidates": [cand()]}, "c2"))])
-    ledger = WaveLedger(cap_usd=100.0)
+    ledger = WaveLedger.for_test(cap_usd=100.0)
     p = make(fake, ledger=ledger)
     out = p.propose(state([site("S1", "proximity")]), k=3)
     [result] = tool_results(fake.calls[1].messages)
@@ -215,18 +215,18 @@ def test_usd_ceiling_stops_calls():
 def test_wave_cap_is_shared_across_shards_and_marks_the_rest_ai_capped(tmp_path):
     path = tmp_path / "wave.jsonl"
     first = Fake([reply(call_of("propose", {"candidates": [cand()]}))], cost=0.45)
-    a = make(first, ledger=WaveLedger(cap_usd=0.5, path=path), file_id="fa")
+    a = make(first, ledger=WaveLedger.for_test(cap_usd=0.5, path=path), file_id="fa")
     assert len(a.propose(state([site("S1", "proximity")]), k=3)) == 1
 
     second = Fake([reply(call_of("propose", {"candidates": [cand()]}))])
-    b = make(second, ledger=WaveLedger(cap_usd=0.5, path=path), file_id="fb")      # another shard, same wave
+    b = make(second, ledger=WaveLedger.for_test(cap_usd=0.5, path=path), file_id="fb")      # another shard, same wave
     assert b.propose(state([site("S1", "proximity")]), k=3) == []
     assert second.calls == []                          # the cap stopped the call, not the model
     assert b.ai_capped and b.stop_reason == "wave_cap"
 
 
 def test_every_call_is_written_to_the_ledger_with_its_job_and_model():
-    ledger = WaveLedger(cap_usd=100.0)
+    ledger = WaveLedger.for_test(cap_usd=100.0)
     fake = Fake([reply(call_of("propose", {"candidates": [cand()]}))])
     make(fake, ledger=ledger, file_id="fileA", job_id="job-77").propose(state([site("S1", "proximity")]), k=3)
     [row] = ledger.entries()
@@ -251,7 +251,7 @@ def test_max_turns_bounds_the_conversation_across_rounds():
 
 
 def test_one_provider_failure_does_not_disable_the_ai_for_the_file():
-    ledger = WaveLedger(cap_usd=100.0)
+    ledger = WaveLedger.for_test(cap_usd=100.0)
     fake = Fake([ModelRoundResult(failure_marker="x:timeout"),
                  reply(call_of("propose", {"candidates": [cand()]}))], cost=0.05)
     p = make(fake, ledger=ledger)
@@ -271,7 +271,7 @@ def test_consecutive_provider_failures_give_the_ai_up_for_the_file():
 
 
 def test_an_unpriced_model_propagates_and_is_never_metered_as_free():
-    ledger = WaveLedger(cap_usd=100.0)
+    ledger = WaveLedger.for_test(cap_usd=100.0)
     fake = Fake([UnpricedModel("openai:mystery")])
     p = make(fake, ledger=ledger)
     with pytest.raises(UnpricedModel):
@@ -487,6 +487,30 @@ def test_select_route_refuses_when_nothing_passes_rather_than_guessing():
 # --- the cap is not optional, the estimate is an upper bound, and the stop is recorded ---------------------
 
 
+def test_a_ledger_that_did_not_come_from_for_shard_is_refused_by_the_proposer(monkeypatch):
+    ledger = WaveLedger.for_test(10.0)
+    ledger.provenance = "unset"                            # as a hand-built one would be
+    with pytest.raises(TypeError, match="for_shard"):
+        P.AIProposer(ROUTE, max_turns=3, usd_ceiling=1.0, ledger=ledger, call=Fake([]), prices=ASTRA)
+
+
+def test_a_round_that_ran_out_of_output_on_reasoning_is_counted():
+    cut = ModelRoundResult(finish_reason="length")
+    fake = Fake([cut])
+    p = make(fake)
+    assert p.propose(state([site("S1", "proximity")]), k=3) == []
+    assert p.result()["truncated_rounds"] == 1 and p.stop_reason is None
+
+
+def test_the_output_limit_is_one_number_for_the_request_and_the_reservation():
+    from meshpipeline.adapters.model_inference import router
+    from meshpipeline.contracts import model_inference as mi
+    assert router._PROPOSE_SPEC.max_tokens == mi.REPAIR_V4_PROPOSE_MAX_OUTPUT_TOKENS == 4096
+    mi.set_model_router(router)
+    p = P.AIProposer(ROUTE, max_turns=3, usd_ceiling=1.0, call=Fake([]), ledger=WaveLedger.for_test(10.0))
+    assert p._output_tokens == router._PROPOSE_SPEC.max_tokens
+
+
 def test_a_ledger_is_required_and_the_cap_cannot_be_forgotten():
     with pytest.raises(TypeError):
         P.AIProposer(ROUTE, max_turns=3, usd_ceiling=1.0, call=Fake([]), observe=fake_observe, prices=ASTRA)   # type: ignore[call-arg]
@@ -521,43 +545,46 @@ def test_the_proposer_sizes_reservations_from_its_routes_own_prices(monkeypatch)
     from meshpipeline.contracts import model_inference as mi
     mi.set_model_router(router)
     astra = P.AIProposer("openai:gpt-6-astra", max_turns=3, usd_ceiling=1.0, call=Fake([]),
-                         ledger=WaveLedger(cap_usd=10.0))
+                         ledger=WaveLedger.for_test(cap_usd=10.0))
     terra = P.AIProposer("openai:gpt-5.6-terra", max_turns=3, usd_ceiling=1.0, call=Fake([]),
-                         ledger=WaveLedger(cap_usd=10.0))
+                         ledger=WaveLedger.for_test(cap_usd=10.0))
     assert astra._prices == (10.0, 50.0, 1.0) and terra._prices == (2.0, 12.0, 0.2)
     with pytest.raises(UnpricedModel, match="MODEL_PRICE_OVERRIDES"):
         P.AIProposer("openai:gpt-9-mystery", max_turns=3, usd_ceiling=1.0, call=Fake([]),
-                     ledger=WaveLedger(cap_usd=10.0))
+                     ledger=WaveLedger.for_test(cap_usd=10.0))
 
 
 def test_first_call_reservation_on_both_models_with_the_real_prefix():
     """The numbers the per-file ceiling decision rests on: a first call carrying the real system prompt, the real
-    tool schemas and a 20 kB observation, reserved at each route's own prices."""
+    tool schemas and a 20 kB observation, reserved at each route's own prices and the real output limit."""
+    from meshpipeline.contracts.model_inference import REPAIR_V4_PROPOSE_MAX_OUTPUT_TOKENS as LIMIT
     out = {}
     for name, prices in (("astra", ASTRA), ("terra", TERRA)):
-        p = make(Fake([]), prices=prices, output_tokens=8192)
+        p = make(Fake([]), prices=prices, output_tokens=LIMIT)
         p._messages.append({"role": "user", "content": "x" * 20_000})
-        usd, tokens = P.estimate_call_usd(p.messages, p._tools, prices=prices, output_tokens=8192)
+        usd, tokens = P.estimate_call_usd(p.messages, p._tools, prices=prices, output_tokens=LIMIT)
         out[name] = usd
         assert 3000 < tokens < 12_000                       # prefix + observation, in estimated tokens
-    assert 0.45 < out["astra"] < 0.55 and 0.10 < out["terra"] < 0.14
+    assert 0.28 < out["astra"] < 0.32 and 0.05 < out["terra"] < 0.08
     assert out["astra"] / out["terra"] > 3.5
 
 
 def test_a_first_call_above_59k_input_tokens_cannot_fit_a_one_dollar_astra_ceiling():
+    # at the 8192-token limit this review first assumed; at the real 4096 the threshold is higher (below)
     usd, tokens = P.estimate_call_usd([{"role": "user", "content": "x" * 3 * 60_000}], [],
                                       prices=ASTRA, output_tokens=8192)
     assert tokens == 60_000 and usd > 1.0
     usd, tokens = P.estimate_call_usd([{"role": "user", "content": "x" * 3 * 58_000}], [],
                                       prices=ASTRA, output_tokens=8192)
     assert usd < 1.0
+    assert (1.0 - 4096 * 50 / 1e6) / 10e-6 > 79_000        # with the real limit, ~79.5k input tokens fit
 
 
 def test_a_call_whose_estimate_exceeds_the_file_ceiling_is_refused_before_it_is_made():
     fake = Fake([reply()])
     big_observe = lambda st, sites: {"blob": "x" * 150_000}          # noqa: E731  ~ 50k tokens ~ $0.5 at astra
     p = P.AIProposer(ROUTE, max_turns=3, usd_ceiling=0.2, call=fake, observe=big_observe,
-                     ledger=WaveLedger(cap_usd=100.0), file_id="f1", prices=ASTRA)
+                     ledger=WaveLedger.for_test(cap_usd=100.0), file_id="f1", prices=ASTRA)
     assert p.propose(state([site("S1", "proximity")]), k=3) == []
     assert fake.calls == [] and p.stop_reason == "file_ceiling" and p.ai_capped
 
@@ -566,7 +593,7 @@ def test_an_oversize_input_is_refused_at_admit_even_with_budget_to_spare():
     fake = Fake([reply()])
     huge = lambda st, sites: {"blob": "x" * 700_000}                 # noqa: E731  ~ 233k tokens
     p = P.AIProposer(ROUTE, max_turns=3, usd_ceiling=1e6, call=fake, observe=huge,
-                     ledger=WaveLedger(cap_usd=300.0), file_id="f1", prices=ASTRA)
+                     ledger=WaveLedger.for_test(cap_usd=300.0), file_id="f1", prices=ASTRA)
     assert p.propose(state([site("S1", "proximity")]), k=3) == []
     assert fake.calls == [] and p.stop_reason == "input_too_large" and not p.ai_capped
 
@@ -582,10 +609,10 @@ def test_the_history_that_is_resent_is_what_is_estimated():
 
 
 def test_the_stop_is_written_to_the_ledger_and_to_the_result(tmp_path):
-    ledger = WaveLedger(cap_usd=0.05, path=tmp_path / "w.jsonl")
+    ledger = WaveLedger.for_test(cap_usd=0.05, path=tmp_path / "w.jsonl")
     fake = Fake([reply()])
     p = make(fake, ledger=ledger, file_id="fileZ")
     assert p.propose(state([site("S1", "proximity")]), k=3) == []
     assert ledger.file_statuses()["fileZ"] == {"stop_reason": "wave_cap", "ai_capped": True}
     assert p.result() == {"file_id": "fileZ", "ai_capped": True, "stop_reason": "wave_cap", "turns": 0,
-                          "spent_usd": 0.0}
+                          "truncated_rounds": 0, "spent_usd": 0.0}
