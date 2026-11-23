@@ -237,47 +237,53 @@ class SiteRegistry:
 
     def apply(self, ws: Workspace, sites: list[Site]) -> None:
         carried = self._forward(self._check_lineage(ws))
-        mine = {id(site): set(site.graph.get("failure_entities") or site.entities) for site in sites}
+        mine = [set(site.graph.get("failure_entities") or site.entities) for site in sites]
         scored = []
         predecessors: dict[int, list[str]] = defaultdict(list)
-        for site in sites:
+        for n, site in enumerate(sites):
             for old_id, old in carried.items():
-                shared = len(mine[id(site)] & old)
+                shared = len(mine[n] & old)
                 if shared:
-                    predecessors[id(site)].append(old_id)
-                    if (shared / len(mine[id(site)]) >= MIN_OVERLAP_FRACTION
+                    predecessors[n].append(old_id)
+                    if (shared / len(mine[n]) >= MIN_OVERLAP_FRACTION
                             and shared / len(old) >= MIN_OVERLAP_FRACTION):
-                        scored.append((-shared, _natural(old_id), old_id, id(site)))
+                        # fully deterministic: no memory addresses, so two equal halves of a split
+                        # always pick the same holder, run after run
+                        scored.append((-shared, _natural(old_id), old_id,
+                                       tuple(sorted(mine[n], key=_natural)), site.id, n))
         scored.sort()
         done: dict[int, str] = {}
         taken: set[str] = set()
-        for _, _, old_id, key in scored:
-            if key in done or old_id in taken:
+        for _, _, old_id, _, _, n in scored:
+            if n in done or old_id in taken:
                 continue
-            done[key] = old_id
+            done[n] = old_id
             taken.add(old_id)
-        for site in sites:
-            key = id(site)
-            inherited = done.get(key)
+        for n, site in enumerate(sites):
+            inherited = done.get(n)
             fresh = site.id
             if inherited is not None:
                 if fresh != inherited:
                     site.graph["id_carried"] = True
                 site.id = inherited
-            predecessors_of = sorted((p for p in predecessors[key] if p != inherited), key=_natural)
+            predecessors_of = sorted((p for p in predecessors[n] if p != inherited), key=_natural)
             if predecessors_of:
                 site.graph["was"] = predecessors_of
-        for site in sites:  # a site that carried nothing must not take a carried id
-            if id(site) in done:
+        for n, site in enumerate(sites):  # a site that carried nothing must not take a carried id
+            if n in done:
                 continue
-            base, n = site.id, 1
-            while site.id in taken or site.id in self._issued:
-                n += 1
-                site.id = f"{base}-{n}"
+            base, k = site.id, 1
+            # An entity-less site (a point, a whole-part failure) has no entity to be renamed
+            # through and its id is derived from what it IS, so it keeps that id every round; only
+            # an entity-anchored id can mean a DIFFERENT site and must not be reissued.
+            reissue_guard = bool(site.entities)
+            while site.id in taken or (reissue_guard and site.id in self._issued):
+                k += 1
+                site.id = f"{base}-{k}"
             taken.add(site.id)
         self.retired = sorted((o for o in carried if o not in taken), key=_natural)
-        self._previous = {site.id: mine[id(site)] for site in sites if site.entities}
-        self._issued |= {site.id for site in sites}
+        self._previous = {site.id: mine[n] for n, site in enumerate(sites) if site.entities}
+        self._issued |= {site.id for site in sites if site.entities}
         self._diffs = list(ws.history)
         self._original = ws.original
 

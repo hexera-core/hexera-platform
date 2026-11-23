@@ -574,7 +574,7 @@ def test_registry_partial_overlap_on_a_shared_big_face_is_a_new_site() -> None:
     assert registry.retired == ["S@F3"]
 
 
-def test_registry_refuses_a_workspace_from_another_lineage() -> None:
+def test_registry_refuses_a_diverging_or_rolled_back_history() -> None:
     import pytest
 
     from meshpipeline.cad.repair_v4.sites import LineageMismatch, SiteRegistry
@@ -582,21 +582,76 @@ def test_registry_refuses_a_workspace_from_another_lineage() -> None:
 
     registry, ws = SiteRegistry(), _ws()
     _round(registry, ws, {"x": ["F5"]})
-    sibling = _ws()
-    sibling.history = [Diff("split", {}, {"F1": ["F2"]}, {}, [], [], [], 0.0)]
-    _round(registry, sibling, {"x": ["F5"]})  # a continuation of the empty history: fine
-    other = _ws()
-    other.history = [Diff("sew", {}, {}, {}, [], [], [], 0.0)]  # a different branch from the same start
-    with pytest.raises(LineageMismatch):
-        _round(registry, other, {"x": ["F5"]})
-    rolled_back = _ws()  # shorter history than the registry has seen
-    with pytest.raises(LineageMismatch):
-        _round(registry, rolled_back, {"x": ["F5"]})
+    followed = _ws()
+    followed.history = [Diff("split", {}, {"F1": ["F2"]}, {}, [], [], [], 0.0)]
+    _round(registry, followed, {"x": ["F5"]})  # a continuation of the empty history: fine
+    branch = _ws()
+    branch.history = [Diff("sew", {}, {}, {}, [], [], [], 0.0)]  # a different branch, same start
+    with pytest.raises(LineageMismatch, match="history"):
+        _round(registry, branch, {"x": ["F5"]})
+    with pytest.raises(LineageMismatch, match="history"):
+        _round(registry, _ws(), {"x": ["F5"]})  # shorter than what was seen: a rollback
+
+
+def test_registry_refuses_a_workspace_with_another_original() -> None:
+    import pytest
+
+    from meshpipeline.cad.repair_v4.sites import LineageMismatch, SiteRegistry
+
+    registry = SiteRegistry()
+    _round(registry, _ws(), {"x": ["F5"]})  # empty history on both sides: only `original` differs
     alien = _ws()
     alien.original = "elsewhere.brep"
-    with pytest.raises(LineageMismatch):
-        _round(SiteRegistry(), ws, {"x": ["F5"]})
+    with pytest.raises(LineageMismatch, match="elsewhere.brep"):
         _round(registry, alien, {"x": ["F5"]})
+
+
+def test_entityless_sites_keep_their_ids_across_three_rounds() -> None:
+    from meshpipeline.cad.repair_v4.sites import SiteRegistry
+
+    registry, ws = SiteRegistry(), _ws()
+    pool = ScriptedPool(ws, _boxes(ws))
+    verdict = _verdict(_fail("gmsh", "edge_through_face", Located(None, (500.0, 0.0, 0.0), "plc")),
+                       MemberResult("netgen", "fail", "other", "no luck", []))
+    rounds = [find_sites(pool, ws, verdict, h_mm=H, registry=registry) for _ in range(3)]
+    for found in rounds:
+        assert sorted(s.id for s in found) == sorted(s.id for s in rounds[0])
+        assert all("was" not in s.graph and not s.graph.get("id_carried") for s in found)
+    ids = [s.id for s in rounds[0]]
+    assert any(i.startswith("S@p") for i in ids) and "S@unlocated" in ids
+    assert not any(i.endswith(("-2", "-3")) for r in rounds for i in (s.id for s in r))
+
+
+def test_split_tie_between_equal_halves_is_deterministic() -> None:
+    from meshpipeline.cad.repair_v4.sites import SiteRegistry
+
+    outcomes = set()
+    for _ in range(4):
+        registry, ws = SiteRegistry(), _ws(30)
+        boxes = _boxes(ws)
+        for k, e in enumerate(["F4", "F5", "F6", "F7"]):
+            boxes[e] = [0.0, 1.5 * k, 0.0, 1.0, 1.5 * k + 1.0, 1.0]
+        located = [Located(e, None, "t") for e in ("F4", "F5", "F6", "F7")]
+        find_sites(ScriptedPool(ws, boxes), ws, _verdict(_fail("gmsh", "other", *located)), h_mm=H,
+                   registry=registry)
+        after = _round(registry, ws, {"a": ["F4", "F5"], "b": ["F6", "F7"]})
+        outcomes.add(tuple(sorted((s.id, tuple(s.entities), tuple(s.graph.get("was", [])))
+                                  for s in after.values())))
+    assert len(outcomes) == 1
+    (only,) = outcomes
+    assert ("S@F4", ("F4", "F5"), ()) in only  # the half holding the anchor keeps the id
+
+
+def test_a_point_resolved_to_faces_is_measured_like_any_face() -> None:
+    """`sites_locate_points` adds the faces under a point as ordinary entity nodes, so their merging
+    is decided by exact distance: a point can never chain faces through a big box."""
+    ws = _ws()
+    point = (20.5, 0.5, 0.5)
+    pool = ScriptedPool(ws, _all_overlapping(ws), locate={point: [2]}, distance=lambda a, b: 40.0)
+    verdict = _verdict(_fail("gmsh", "other", Located("F1", None, "a"), Located(None, point, "plc")))
+    sites = find_sites(pool, ws, verdict, h_mm=H)
+    assert sorted(tuple(s.entities) for s in sites) == [("F1",), ("F2",)]
+    assert pool.calls.count("sites_distance") >= 1
 
 
 def test_a_point_never_chains_entities_through_a_large_faces_box() -> None:
