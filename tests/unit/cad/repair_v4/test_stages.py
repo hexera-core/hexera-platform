@@ -393,3 +393,49 @@ def test_original_facts_are_re_read_when_a_reused_path_holds_a_different_file(tm
     import os
     os.utime(brep, (1_000_000_000, 1_000_000_000))                                   # the path is reused, the file is not
     assert stages.original_facts(Pool(), str(brep)) == (5, 0) and n["calls"] == 2
+
+
+# --- Task 53: a stage says how many ops it applied, so the search can charge for them -----------
+
+
+def test_run_stage_reports_how_many_ops_it_applied(world):
+    """`shells` with no solid is a CHAIN (sew THEN make_volume): one stage, two ops. The count comes
+    from the diffs the op library produced, not from a table of stage names."""
+    SCORES["s_sewn"] = (1, 1, 0.3, 0.0, 0)
+    SCORES["s_solid"] = (1, 2, 0.4, 0.0, 0)
+    world.ops["sew"] = FakeOp("sew", to="s_sewn")
+    world.ops["make_volume"] = FakeOp("make_volume", to="s_solid")
+    start = _ws()
+    start.ids.pop("B1")
+    res = stages.run_stage(None, start, "shells")
+    assert res.kept == ["shells"] and res.applied_ops == {"shells": 2}
+
+
+def test_a_single_op_stage_reports_one(world):
+    SCORES["s_ok"] = (1, 1, 0.3, 0.0, 0)
+    world.ops["to_canonical"] = FakeOp("to_canonical", to="s_ok")
+    res = stages.run_stage(None, _ws(), "faces")
+    assert res.kept == ["faces"] and res.applied_ops == {"faces": 1}
+
+
+def test_applied_ops_counts_the_work_of_a_rolled_back_stage_and_a_broken_chain(world):
+    """The ops of a rolled-back stage, and of a chain abandoned halfway, really ran on the kernel.
+    They are reported, so nobody gets that geometry work for free."""
+    SCORES["s_bad"] = (0, 0, 0.0, 0.0, 0)
+    world.ops["to_canonical"] = FakeOp("to_canonical", to="s_bad")
+    rolled = stages.run_stage(None, _ws(), "faces")
+    assert rolled.rolled_back == ["faces"] and rolled.applied_ops == {"faces": 1}
+
+    SCORES["s_sewn"] = (1, 5, 0.9, 0.0, 0)
+    world.ops["sew"] = FakeOp("sew", to="s_sewn")
+    world.ops["make_volume"] = FakeOp("make_volume", raises=OpDeclined("no_closed_shell"))
+    start = _ws()
+    start.ids.pop("B1")
+    broken = stages.run_stage(None, start, "shells")
+    assert "shells" in broken.skipped and broken.applied_ops == {"shells": 1}
+
+
+def test_a_stage_that_applied_nothing_reports_zero(world):
+    world.ops["to_canonical"] = FakeOp("to_canonical", raises=OpDeclined("no_change"))
+    res = stages.run_stage(None, _ws(), "faces")
+    assert res.applied_ops == {"faces": 0}

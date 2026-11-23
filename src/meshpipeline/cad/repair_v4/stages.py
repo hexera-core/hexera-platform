@@ -98,7 +98,15 @@ DEFAULTS: dict[str, dict[str, Any]] = {
 
 
 class _ChainBroken(Exception):
-    """An op that a later op in the same stage depends on did not apply: discard the whole stage."""
+    """An op that a later op in the same stage depends on did not apply: discard the whole stage.
+
+    `applied` is how many ops of the stage DID apply before the break. The fork they ran on is thrown
+    away, but the kernel work was really done, so the count is still reported (`StagedResult.applied_ops`)
+    and the search still charges it to the op budget."""
+
+    def __init__(self, reason: str, applied: int = 0) -> None:
+        super().__init__(reason)
+        self.applied = applied
 
 
 class _Steps:
@@ -151,7 +159,7 @@ class _Steps:
             # carrying `params["declined"]` instead of raising: that is not a change.
             self.notes.append(f"{op}: declined: {declined}")
         if required:
-            raise _ChainBroken(self.notes[-1])
+            raise _ChainBroken(self.notes[-1], len(self.diffs))
         return False
 
 
@@ -304,6 +312,13 @@ class StagedResult:
     inconclusive: list[str] = field(default_factory=list)
     #: stage -> why it changed nothing: "no_change" or the first op trouble
     skipped: dict[str, str] = field(default_factory=dict)
+    #: stage -> how many ops of its body ACTUALLY applied, counted from the Diffs the op library returned
+    #: (never from a table of stage names: a stage body that changes must not leave a stale count behind).
+    #: A stage is a chain, so this is 2 or more for `shells` without a solid (sew + make_volume) and for any
+    #: stage whose rows all fire. It counts the work, not the outcome: a rolled-back stage and a chain
+    #: abandoned halfway report what ran before they were undone, because the kernel did that work. This is
+    #: what `search` charges to the op budget, so one candidate never buys several ops for the price of one.
+    applied_ops: dict[str, int] = field(default_factory=dict)
 
 
 # --- judging ------------------------------------------------------------------------------------
@@ -457,6 +472,7 @@ def _transact(pool: WorkerPool, ws: Workspace, stage: Stage, params: dict, befor
     """One stage as a transaction; returns the workspace that stands and its score."""
     name = stage.name
     if name == "baseline":
+        out.applied_ops[name] = 0  # the baseline applies no op: it is the verdict of the state as handed in
         score_now = before if before is not None else _judged(pool, ws)
         if score_now is None:
             out.inconclusive.append(name)
@@ -467,8 +483,11 @@ def _transact(pool: WorkerPool, ws: Workspace, stage: Stage, params: dict, befor
     try:
         steps = stage.execute(pool, ws, params)
     except Exception as why:  # noqa: BLE001 - an unexpected exception is a failed stage, never a crash
+        # a broken chain knows what it applied before it broke; any other exception does not, so it is 0
+        out.applied_ops[name] = why.applied if isinstance(why, _ChainBroken) else 0
         out.skipped[name] = f"{type(why).__name__}: {why}"
         return ws, before
+    out.applied_ops[name] = len(steps.diffs)
     if not steps.diffs:
         out.skipped[name] = steps.notes[0] if steps.notes else "no_change"
         return ws, before
@@ -527,7 +546,11 @@ def staged_start(pool: WorkerPool, ws: Workspace, *, params: dict[str, dict] | N
 
 
 def run_stage(pool: WorkerPool, ws: Workspace, name: str, params: dict | None = None) -> StagedResult:
-    """One stage as a transaction: the search's macro action. `params` are THAT stage's."""
+    """One stage as a transaction: the search's macro action. `params` are THAT stage's.
+
+    A stage body is a CHAIN of ops, so `result.applied_ops[name]` says how many ops actually applied;
+    the search charges that number to its op budget (Task 53), so a macro is never several ops for
+    the price of one."""
     if name not in _BY_NAME:
         raise ValueError(f"unknown stage {name!r}; known: {[s.name for s in STAGES]}")
     result = StagedResult(ws=ws)

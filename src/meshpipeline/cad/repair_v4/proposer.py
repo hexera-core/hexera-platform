@@ -204,7 +204,9 @@ def _catalogue(stage_names: Sequence[str]) -> str:
         schema = json.dumps(REGISTRY[name].params_schema, sort_keys=True, separators=(',', ':'))
         lines.append(f"- {name}: {OP_SUMMARIES.get(name, '(no summary)')}\n  params: {schema}")
     if stage_names:
-        lines.append("- run_stage: a whole deterministic healing stage (one candidate, one op of budget). Give "
+        lines.append("- run_stage: a whole deterministic healing stage. It is one candidate, but a stage body is a "
+                     "CHAIN of ops and the op budget is charged EVERY op it applies (so `shells` on a part with no "
+                     "solid is sew + make_volume, two ops), whether the stage is kept or rolled back. Give "
                      "{\"run_stage\": <name>, \"params\": {...}} with only that stage's keys; its defaults:")
         for name in sorted(stage_names):
             keys = _stage_defaults(name)
