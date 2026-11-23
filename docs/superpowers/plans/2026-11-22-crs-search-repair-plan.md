@@ -829,3 +829,38 @@ Standing separately: across three live runs and one fake-model run, the winning
 candidates have always been DETERMINISTIC, with the AI's identical proposals
 arriving as duplicates. The ~$0.07 AI-only ablation is the outstanding
 experiment.
+
+## Amendments settled 2026-11-23, 22:10 UTC
+
+5. **Excluded files: raise the walls, report the remainder as a stratum.** Lane
+   D3 measured wall-excluded files at ~8.7% pool-weighted against `collect`'s
+   hard 2% limit, so the re-probe would have ended at exit 2 with nothing. The
+   per-file and `check_valid` walls are raised to values chosen from the
+   measured timeout distribution (the chosen percentile and the residual
+   exclusion fraction are stated in the report, not rounded), and whatever
+   remains excluded is carried as an explicit reported stratum - counted and
+   named, never a failure, never in clean gain or regressions. `--allow-excluded`
+   is never passed blindly; if the raised walls still breach the limit the wave
+   refuses and says why. Booked as Task 55.
+
+6. **The op budget is charged per applied op.** Lane C3 found a single candidate
+   can apply a chain of ops for one budget unit (`shells` = sew + make_volume),
+   which hands extra geometry work to whichever arm happens to route through a
+   multi-op stage. `run_stage` now charges the real applied-op count for every
+   arm. Booked as Task 53.
+
+7. **The deterministic baseline must reach every op the AI can reach.**
+   `tighten_tolerances`, `fix_poles` and `to_canonical` ran only in the
+   pre-search staged healer, so during the search only the AI could re-run them.
+   They are added as search-time deterministic candidates, in the same class as
+   Lane C3's fix, and the coverage assertion is extended so the next op added
+   cannot repeat the bug. Booked as Task 54.
+
+**The AI marginal is measured only on a commit that contains Tasks 53 and 54.**
+Any earlier number overstates the AI, because it credits access to ops rather
+than judgement. The same applies to the re-probe and D4: the determinism fix
+must land first, or the re-probe's labels inherit the checker's flipping - two
+sources of run-to-run nondeterminism are now measured (a near-threshold min SICN
+of 0.0042 against the 0.01 floor flipping `gmsh_alt`, and a corrupted file
+flipping mesher-crash against mesher-failure), and splits built from one run of
+that checker will disagree with the next run on those files.
