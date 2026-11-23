@@ -18,10 +18,10 @@ from tests.native._v4_flush_patch_part import write_flush_patch_box, write_three
 
 import meshpipeline.cad.repair_v4 as v4  # noqa: E402
 
-#: ops the three-hole repair needs under the search's breadth-first order of tied states (measured: clean at 70 ops,
-#: not at 40). This is NOT a widened engine budget: it is what the test grants so that patience is the only thing
-#: standing between the part and its repair. See the Task 46 report.
-OPS_FOR_THREE_HOLES = 80
+#: ops the three-hole repair needs. Measured: 70 under Task 46's breadth-first order of tied states; 14 once the search
+#: goes deep on ties and stops proposing what the state rules out (Task 47; clean at 14, `ops` at 13). Not a widened
+#: engine budget: the exact number the repair costs, so a regression in waste fails this test.
+OPS_FOR_THREE_HOLES = 14
 
 
 def _run(source: Path, tmp: Path, monkeypatch: pytest.MonkeyPatch, *, ops: int = 12,
@@ -61,7 +61,7 @@ def test_with_the_default_twelve_ops_a_three_hole_part_is_cut_off_by_the_op_budg
     assert patience["open_sites"] == 3 and patience["patience"] == 5, patience
 
 
-def test_the_one_hole_case_still_runs_at_eight_ops_and_five_verdict_candidates(
+def test_the_one_hole_case_now_costs_five_ops_and_four_verdict_candidates(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     source = write_flush_patch_box(tmp_path / "box.step")
     from tests.native.test_native_repair_v4_end_to_end import _devtools
@@ -70,5 +70,5 @@ def test_the_one_hole_case_still_runs_at_eight_ops_and_five_verdict_candidates(
     result, events = _run(case.path, tmp_path, monkeypatch, ops=12)
     s = _summary(events)
     assert s["reason"] == "clean" and s["make_volume_evaluated"], s
-    assert (s["ops"], s["verdict_candidates"], s["patience"]) == (8, 5, None), s
+    assert (s["ops"], s["verdict_candidates"], s["patience"]) == (5, 4, None), s
     assert next(e for e in events if e.get("kind") == "patience")["open_sites"] == 1
