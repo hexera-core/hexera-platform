@@ -410,3 +410,16 @@ def test_a_slot_the_launcher_claimed_is_the_slot_plan_wave_returns(tmp_path) -> 
     assert ra.wave_limits.check_wave_count(markers, "held_out", "ho-1", claim=True) is None
     assert ev.plan_wave(ev.WAVES["heldout"], wave_id="ho-1", n_shards=1, markers=markers).slot == "slot/held_out/1"
     assert ra.wave_limits.check_wave_count(markers, "held_out", "ho-2", claim=True) is not None
+
+
+def test_a_harness_shard_of_a_search_wave_without_an_element_size_is_refused(tmp_path, monkeypatch, world) -> None:
+    """`--mode harness` skips the parser's arm resolution (the plan names the arms), so this is the only guard on that
+    path: there is no default element size, and a search without one is not a measurement."""
+    wave = ev.WAVES["dev_search"]
+    plan = ev.plan_wave(wave, wave_id="wv1", n_shards=1, markers=world)
+    argv, out, sp = run_shard(tmp_path, wave, runner=None, plan=plan)
+    i = argv.index("--h-mm")
+    del argv[i:i + 2]
+    called: list[str] = []
+    assert go(monkeypatch, argv, sp, lambda e, a, s: called.append(a) or (conclusive_row(e, a), None)) == 4
+    assert called == [] and "--h-mm" in prov_of(out)["error"] and not (out / "rows.json").exists()
