@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import os
 import shutil
 import tempfile
@@ -169,7 +170,14 @@ def _find_best(pool: WorkerPool, ws: Workspace, source: str, *, budget: Budget, 
     remaining = deadline_s - time.monotonic() - WRITE_RESERVE_S
     capped = SearchBudget(wall_s=max(0.0, min(budget.wall_s, remaining)), ops=budget.ops,
                           model_calls=budget.model_calls, model_usd=budget.model_usd)
-    return search(pool, staged.ws, source, generators, capped, workers=_workers(), judge=judge)
+    result = search(pool, staged.ws, source, generators, capped, workers=_workers(), judge=judge)
+    # `search` judges `changed` against ITS start, which is the staged healer's output. Delivery asks a different
+    # question - did the best state improve on the INPUT? - so a healer-only gain must still count as changed.
+    # `deliverable` still compares result.best_verdict (the verdict of that very state) with the input verdict,
+    # so a regression is refused exactly as before; no extra verdict is needed.
+    if not result.changed and result.best.brep_path != ws.brep_path:
+        result = dataclasses.replace(result, changed=True)
+    return result
 
 
 def _make_judge(pool: WorkerPool, ws: Workspace) -> Any:

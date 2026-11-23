@@ -134,12 +134,6 @@ def test_the_rule_is_applied_not_restated() -> None:
 _REAL_FIND_BEST = v4._find_best
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "ENGINE BUG found by the lane-C wiring audit, handed to the lead (src is not lane C's to edit): `_find_best` "
-    "starts the search from the staged healer's output, `search` reports changed=False when nothing beat THAT start, "
-    "and `deliverable` then ships the raw INPUT - so a search arm discards every gain the staged healer made, even a "
-    "file the healer made clean. Fix: judge `changed` against the input workspace (e.g. `changed or staged.ws is not "
-    "start` in `_find_best`), then remove this xfail."))
 @pytest.mark.parametrize("arm", ["search_det", "search_ai"])
 def test_a_search_arm_delivers_the_staged_healers_gain_when_the_search_adds_nothing(
         world: World, files: tuple[str, str], staged: list[Any], monkeypatch: pytest.MonkeyPatch, arm: str) -> None:
@@ -162,3 +156,70 @@ def test_a_search_arm_delivers_the_staged_healers_gain_when_the_search_adds_noth
     assert result.delivered is True, "the staged healer made the file clean and the search arm shipped the input"
     (_, payload) = [c for c in FakePool.instances[0].calls if c[0] == "write_step_xcaf"][0]
     assert payload["brep"] == "/w/staged.brep"
+
+
+def _arm_world(monkeypatch: pytest.MonkeyPatch, arm: str, *, input_v: Any, staged_v: Any, search_to: str | None,
+               search_v: Any = None) -> None:
+    """The real `_find_best`. `search_to=None`: the search adds nothing (best is its start, changed=False);
+    otherwise it returns a new state `search_to` with verdict `search_v`, changed=True."""
+    monkeypatch.setattr(v4, "ARM", arm)
+    monkeypatch.setattr(v4, "_find_best", _REAL_FIND_BEST)
+    monkeypatch.setattr(v4, "_ai_kwargs", lambda source, budget: {})
+    monkeypatch.setattr(search_mod, "arm_generators", lambda name, **kw: ([], None))
+    monkeypatch.setattr(v4, "_make_judge", lambda pool, ws: SimpleNamespace(
+        full=lambda p, w, o: staged_v if w.brep_path == "/w/staged.brep" else input_v))
+    monkeypatch.setattr(search_mod, "score", lambda v: (1, v.q, 0.0, 0.0, 0))
+
+    def search(pool: Any, start: Any, original: str, generators: Any, budget: Any, **kw: Any) -> Any:
+        if search_to is None:
+            return search_mod.SearchResult(best=start, best_verdict=staged_v, clean=bool(staged_v.clean),
+                                           trace=None, changed=False, reason="patience")
+        return search_mod.SearchResult(best=dataclasses.replace(start, brep_path=search_to), best_verdict=search_v,
+                                       clean=bool(search_v.clean), trace=None, changed=True, reason="clean")
+
+    monkeypatch.setattr(search_mod, "search", search)
+
+
+def _written(path: str) -> bool:
+    return [c for c in FakePool.instances[0].calls if c[0] == "write_step_xcaf"][0][1]["brep"] == path
+
+
+@pytest.mark.parametrize("arm", ["search_det", "search_ai"])
+def test_a_state_worse_than_the_input_is_still_refused_after_a_healer_only_change(
+        world: World, files: tuple[str, str], staged: list[Any], monkeypatch: pytest.MonkeyPatch, arm: str) -> None:
+    _arm_world(monkeypatch, arm, input_v=FakeVerdict(q=2), staged_v=FakeVerdict(q=0), search_to=None)
+    result = _run(files)
+    assert result.delivered is False
+    assert not [c for c in FakePool.instances[0].calls if c[0] == "write_step_xcaf"]
+
+
+@pytest.mark.parametrize("arm", ["search_det", "search_ai"])
+def test_a_clean_input_is_never_replaced_by_a_search_arm(
+        world: World, files: tuple[str, str], staged: list[Any], monkeypatch: pytest.MonkeyPatch, arm: str) -> None:
+    _arm_world(monkeypatch, arm, input_v=FakeVerdict(q=3, clean=True), staged_v=FakeVerdict(q=3, clean=True),
+               search_to=None)
+    assert _run(files).delivered is False
+
+
+@pytest.mark.parametrize("arm", ["search_det", "search_ai"])
+def test_a_search_that_improves_on_the_healer_is_delivered(
+        world: World, files: tuple[str, str], staged: list[Any], monkeypatch: pytest.MonkeyPatch, arm: str) -> None:
+    _arm_world(monkeypatch, arm, input_v=FakeVerdict(q=1), staged_v=FakeVerdict(q=2), search_to="/w/found.brep",
+               search_v=FakeVerdict(q=3, clean=True))
+    assert _run(files).delivered is True and _written("/w/found.brep")
+
+
+@pytest.mark.parametrize("arm", ["search_det", "search_ai"])
+def test_nothing_changed_at_all_delivers_nothing(
+        world: World, files: tuple[str, str], monkeypatch: pytest.MonkeyPatch, arm: str) -> None:
+    """The healer changed nothing (best is the input workspace) and the search added nothing: passthrough."""
+    monkeypatch.setattr(v4, "ARM", arm)
+    monkeypatch.setattr(v4, "_find_best", _REAL_FIND_BEST)
+    monkeypatch.setattr(v4, "_ai_kwargs", lambda source, budget: {})
+    monkeypatch.setattr(search_mod, "arm_generators", lambda name, **kw: ([], None))
+    monkeypatch.setattr("meshpipeline.cad.repair_v4.stages.run_staged", lambda pool, ws: SimpleNamespace(ws=ws))
+    monkeypatch.setattr(v4, "_make_judge", lambda pool, ws: SimpleNamespace(full=lambda p, w, o: FakeVerdict(q=1)))
+    monkeypatch.setattr(search_mod, "score", lambda v: (1, v.q, 0.0, 0.0, 0))
+    monkeypatch.setattr(search_mod, "search", lambda pool, start, *a, **k: search_mod.SearchResult(
+        best=start, best_verdict=FakeVerdict(q=1), clean=False, trace=None, changed=False, reason="patience"))
+    assert _run(files).delivered is False
