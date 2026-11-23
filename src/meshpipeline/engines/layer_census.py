@@ -182,37 +182,12 @@ def census(polymesh, n_layers: int, patches, planned_first_m: float | None = Non
     first_vs_plan (the median first cell over the plan). Counted by shape alone, a cfMesh mesh asked a
     0.021 mm first layer under 5.9 mm cells read "layers on 54% of the wall" where its first cell was
     3.2 mm (static_mixer_004, resolved wall): a stack 150 times the height asked is not the layer asked."""
-    pm = Path(polymesh)
     if n_layers <= 0:
         return {}, "no layers were asked for"
-    try:
-        owner = _labels(pm / "owner")
-        n_cells = int(owner.max()) + 1 if len(owner) else 0
-        if n_cells > CENSUS_MAX_CELLS:
-            return {}, f"{n_cells:,} cells, above the census limit of {CENSUS_MAX_CELLS:,}"
-        neigh = _labels(pm / "neighbour")
-        P = _points(pm / "points")
-        offs, dat = _faces(pm / "faces")
-        bnd = _boundary(pm / "boundary")
-    except NotMeasurable as exc:
-        return {}, str(exc)
-    except (OSError, ValueError, IndexError) as exc:
-        return {}, f"the polyMesh could not be read ({type(exc).__name__})"
-    geo = _Geometry(P, offs, dat)
-    # cfMesh writes a neighbour entry (-1) for every boundary face too: the internal faces are the
-    # ones before the first patch, never the length of that list
-    starts = [s for s, n in bnd.values() if n > 0]
-    if starts and len(neigh) > min(starts):
-        neigh = neigh[:min(starts)]
-    nF, nI = len(offs) - 1, len(neigh)
-    n_cells = max(n_cells, int(neigh.max()) + 1 if nI else 0)
-    cf_cell = np.concatenate([owner, neigh])
-    cf_face = np.concatenate([np.arange(nF), np.arange(nI)])
-    order = np.argsort(cf_cell, kind="stable")
-    cf_cell, cf_face = cf_cell[order], cf_face[order]
-    del order
-    cstart = np.searchsorted(cf_cell, np.arange(n_cells + 1))
-    del cf_cell
+    mesh, why = _read_mesh(polymesh)
+    if mesh is None:
+        return {}, why
+    owner, neigh, geo, bnd, cstart, cf_face, nI = mesh
     depth = min(MAX_STACK, int(n_layers) + 2)
     res = {}
     for name in patches:
@@ -311,6 +286,111 @@ def census(polymesh, n_layers: int, patches, planned_first_m: float | None = Non
                 "first_vs_plan": (round(float(med) / float(planned_first_m), 2) if med is not None else None),
             })
     return res, ""
+
+
+def _read_mesh(polymesh) -> tuple[tuple | None, str]:
+    """The polyMesh read for a walk out from the wall: ((owner, neighbour, geometry, boundary, cell -> face
+    starts, the faces in cell order, internal face count), "") - or (None, why) when it cannot be read."""
+    pm = Path(polymesh)
+    try:
+        owner = _labels(pm / "owner")
+        n_cells = int(owner.max()) + 1 if len(owner) else 0
+        if n_cells > CENSUS_MAX_CELLS:
+            return None, f"{n_cells:,} cells, above the census limit of {CENSUS_MAX_CELLS:,}"
+        neigh = _labels(pm / "neighbour")
+        P = _points(pm / "points")
+        offs, dat = _faces(pm / "faces")
+        bnd = _boundary(pm / "boundary")
+    except NotMeasurable as exc:
+        return None, str(exc)
+    except (OSError, ValueError, IndexError) as exc:
+        return None, f"the polyMesh could not be read ({type(exc).__name__})"
+    geo = _Geometry(P, offs, dat)
+    # cfMesh writes a neighbour entry (-1) for every boundary face too: the internal faces are the
+    # ones before the first patch, never the length of that list
+    starts = [s for s, n in bnd.values() if n > 0]
+    if starts and len(neigh) > min(starts):
+        neigh = neigh[:min(starts)]
+    nF, nI = len(offs) - 1, len(neigh)
+    n_cells = max(n_cells, int(neigh.max()) + 1 if nI else 0)
+    cf_cell = np.concatenate([owner, neigh])
+    cf_face = np.concatenate([np.arange(nF), np.arange(nI)])
+    order = np.argsort(cf_cell, kind="stable")
+    cf_cell, cf_face = cf_cell[order], cf_face[order]
+    del order
+    cstart = np.searchsorted(cf_cell, np.arange(n_cells + 1))
+    del cf_cell
+    return (owner, neigh, geo, bnd, cstart, cf_face, nI), ""
+
+
+#: CFDREQ-22: the most cells a walk across a boundary layer counts (well past the 10 a resolved one is planned with)
+BL_WALK_MAX = 40
+
+
+def bl_cells(polymesh, patches, delta_m: float, *, met_at: float) -> tuple[dict, str]:
+    """CFDREQ-22: THE CELLS ACROSS A BOUNDARY LAYER, COUNTED ON THE BUILT MESH. From every face of the wall
+    `patches`, cell after cell straight out (each cell's far face along the wall's normal, the walk census() makes
+    up a layer stack) - layer cells and core cells alike - the whole cells under `delta_m` and the share of the one
+    its edge cuts; a walk that meets another boundary first counts what it crossed. Summed over the patches by area:
+    ({"bl_delta_m", "bl_cells_median", "bl_cells_p10", "bl_area_met_pct" (the share of the wall with at least
+    `met_at` cells across), "bl_faces"}, "") - or ({}, why) when the mesh cannot be read or has no such wall."""
+    delta = float(delta_m)
+    if not delta > 0.0:
+        return {}, "no boundary layer thickness"
+    mesh, why = _read_mesh(polymesh)
+    if mesh is None:
+        return {}, why
+    owner, neigh, geo, bnd, cstart, cf_face, nI = mesh
+    ks, As = [], []
+    for name in patches:
+        if name not in bnd or bnd[name][1] == 0:
+            continue
+        s0, nf = bnd[name]
+        wall = np.arange(s0, s0 + nf)
+        wc, wa = geo.of(wall)
+        A = np.linalg.norm(wa, axis=1)
+        n0 = wa / np.maximum(A, 1e-300)[:, None]             # out of the domain
+        k, z = np.zeros(nf), np.zeros(nf)
+        cur_cell, cur_c = owner[wall].copy(), wc.copy()
+        alive = np.ones(nf, dtype=bool)
+        for _ in range(BL_WALK_MAX):
+            if not alive.any():
+                break
+            idx = np.flatnonzero(alive)
+            cells = cur_cell[idx]
+            cnt = cstart[cells + 1] - cstart[cells]
+            kmax = int(cnt.max())
+            slot = cstart[cells][:, None] + np.arange(kmax)[None, :]
+            valid = np.arange(kmax)[None, :] < cnt[:, None]
+            faces = cf_face[np.minimum(slot, len(cf_face) - 1)]
+            uniq, inv = np.unique(faces, return_inverse=True)
+            inv = inv.reshape(faces.shape)
+            ufc, _ufa = geo.of(uniq)
+            d = np.einsum("ijk,ik->ij", ufc[inv] - cur_c[idx][:, None, :], -n0[idx])
+            d = np.where(valid, d, -np.inf)
+            j = np.argmax(d, axis=1)
+            rows = np.arange(len(idx))
+            best_f, h = faces[rows, j], d[rows, j]
+            step = h > 0
+            reach = step & (z[idx] + h >= delta)
+            k[idx] += np.where(reach, (delta - z[idx]) / np.maximum(h, 1e-300), np.where(step, 1.0, 0.0))
+            z[idx] += np.where(step, h, 0.0)
+            go = step & ~reach & (best_f < nI)
+            alive[idx[~go]] = False
+            nxt, bf = idx[go], best_f[go]
+            o, nb = owner[bf], neigh[bf]
+            cur_cell[nxt] = np.where(o == cur_cell[nxt], nb, o)
+            cur_c[nxt] = ufc[inv[rows[go], j[go]]]
+        ks.append(k)
+        As.append(A)
+    if not ks:
+        return {}, "no wall faces"
+    k, A = np.concatenate(ks), np.concatenate(As)
+    total = float(A.sum()) or 1.0
+    return {"bl_delta_m": delta, "bl_cells_median": round(float(_median(k, A) or 0.0), 2),
+            "bl_cells_p10": round(float(_quantile(k, A, 0.10) or 0.0), 2),
+            "bl_area_met_pct": round(float(100.0 * A[k >= float(met_at)].sum() / total), 2),
+            "bl_faces": int(len(k))}, ""
 
 
 #: where each mesher's case carries the first layer height it was given, and the key (CFDREQ-6's reading too)

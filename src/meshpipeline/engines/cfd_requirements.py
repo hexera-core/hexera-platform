@@ -653,6 +653,83 @@ WALL_FUNCTION_BL_SHARE = 0.2
 #: CFDREQ-17: the cells a resolved body wall puts across its boundary layer (the layers and the core cells under the
 #: layer's edge): a laminar layer is resolved with about 10 or more (Blasius profile; the usual CFD guides' 10-15)
 BL_CELLS = 10
+#: CFDREQ-22: where along a laminar body its resolved wall is sized - the boundary layer a fifth of the way from the
+#: front (5 x / sqrt(Re_x) at x = 0.2 L: 0.45 of its thickness at the end). It only thickens behind that point, so
+#: the cells across it there are across it, or more, on the 80% of the length behind
+BL_SIZE_AT = 0.2
+#: CFDREQ-22: a laminar resolved stack stops at this many layers when the core cells inside the boundary layer make up
+#: the rest of BL_CELLS (snappyHexMesh kept its layers on 71 of 77 bodies planned with 8 or fewer, on 14 of 46 with
+#: 9-16 - the CFD board, batch 6); past it, layers alone make the cells across, up to BL_CELLS of them
+LAMINAR_LAYERS_KEPT = 8
+#: CFDREQ-22: the growth of a laminar resolved stack when the user gave none (never more than the plan's own)
+LAMINAR_GROWTH = 1.2
+#: CFDREQ-22: the built mesh holds BL_CELLS across where it holds this many (to the nearest cell), on this share of
+#: the wall
+BL_CELLS_MET = BL_CELLS - 0.5
+BL_WALL_SHARE = 80.0
+
+
+def laminar_bl_m(how: Mapping) -> float | None:
+    """CFDREQ-22: the laminar boundary layer's thickness the resolved wall is sized on, metres: 5 x / sqrt(Re_x) at
+    x = BL_SIZE_AT of the body's length (sqrt(BL_SIZE_AT) of the thickness at its end). None without the length or
+    the Reynolds number."""
+    end = boundary_layer_m({**how, "laminar": True})
+    return end * math.sqrt(BL_SIZE_AT) if end else None
+
+
+def stack_height(first_m: float, growth: float, n: int) -> float:
+    """A layer stack's depth: `n` layers from `first_m`, each `growth` times the one under it."""
+    g = float(growth)
+    return float(first_m) * n if g <= 1.0001 else float(first_m) * (g ** n - 1.0) / (g - 1.0)
+
+
+def laminar_stack(delta_m: float, wall_cell_m: float, growth: float, *, n_min: int = 1,
+                  n_max: int = BL_CELLS, n_fixed: int | None = None,
+                  stack_max_m: float | None = None) -> tuple[int, float, float]:
+    """CFDREQ-22: THE LAMINAR RESOLVED WALL'S STACK, FROM ITS BOUNDARY LAYER: (layers, first layer m, cells across
+    `delta_m`). The fewest layers from `n_min` (a count of the user's: `n_fixed`) that, with the thickest first layer
+    that still does it, put BL_CELLS across the layer - the layers under its edge and the core cells (`wall_cell_m`)
+    between the stack and the edge. Up to LAMINAR_LAYERS_KEPT layers while the core cells can make up the rest; past
+    that the stack alone fills the layer, at most `n_max` (BL_CELLS) layers. A first layer is never past
+    FIRST_CAP_REL of the wall cell at the stack's top, nor the stack past `stack_max_m` (a tight wall's cap). When
+    BL_CELLS cannot be reached, the most cells across these bounds allow (the stack filling the layer), said by the
+    caller."""
+    g, wc, delta = max(float(growth), 1.0), max(float(wall_cell_m), 1e-30), float(delta_m)
+    counts = [int(n_fixed)] if n_fixed else list(range(max(1, int(n_min)), max(int(n_min), int(n_max)) + 1))
+
+    def top(n: int) -> float:
+        # the thickest first layer n layers may start from: the stack inside the layer and the cap, its top layer
+        # under FIRST_CAP_REL of the wall cell
+        hi = delta / stack_height(1.0, g, n)
+        if stack_max_m:
+            hi = min(hi, float(stack_max_m) / stack_height(1.0, g, n))
+        return min(hi, FIRST_CAP_REL * wc / g ** max(0, n - 1))
+
+    # never a first layer thinner than the one a full stack (n_max layers filling the layer) starts from: a thinner
+    # one is harder to build and resolves nothing more
+    floor = delta / stack_height(1.0, g, max(int(n_max), int(n_fixed or 0), 1))
+    best = None
+    for n in counts:
+        hi = top(n)
+        if cells_across(hi, g, n, wc, delta) >= BL_CELLS - 1e-9:
+            # at its thickest the stack already gives them: keep the thickest
+            return n, hi, cells_across(hi, g, n, wc, delta)
+        if n > LAMINAR_LAYERS_KEPT and not n_fixed:
+            # past the kept count only a stack that fills the layer counts (see above)
+            best = (n, hi, cells_across(hi, g, n, wc, delta))
+            continue
+        lo = min(floor, hi)
+        if cells_across(lo, g, n, wc, delta) >= BL_CELLS:
+            # the thickest first layer between the floor and the top that still puts BL_CELLS across
+            for _ in range(60):
+                mid = math.sqrt(lo * hi)
+                lo, hi = (mid, hi) if cells_across(mid, g, n, wc, delta) >= BL_CELLS else (lo, mid)
+            return n, lo, cells_across(lo, g, n, wc, delta)
+        got = (n, hi, cells_across(hi, g, n, wc, delta))
+        if best is None or got[2] > best[2] + 1e-9:
+            best = got
+    assert best is not None
+    return best
 
 
 def boundary_layer_m(how: Mapping) -> float | None:
@@ -682,9 +759,17 @@ def resolved_fallback(ask: Ask, wf_first_m: float, how: Mapping, *, said: bool =
     if visc <= 0:
         return None
     h1 = RESOLVED_Y_PLUS * visc
+    bl = laminar_bl_m(how) if why == "laminar" else None
+    if bl:
+        # CFDREQ-22: A LAMINAR WALL IS RESOLVED ACROSS ITS BOUNDARY LAYER, NOT FROM Y+ 1. It has no viscous sublayer
+        # law to resolve; it needs BL_CELLS across the layer. Until the engine's wall cells are known: BL_CELLS layers
+        # growing LAMINAR_GROWTH that fill the layer a fifth of the way along the body (laminar_stack refines it on
+        # the wall cells). A y+ 1 first layer (0.026-0.034 mm) took 9-16 layers that snappyHexMesh cut short on 32 of
+        # 46 bodies (the CFD board, batch 6)
+        h1 = bl / stack_height(1.0, LAMINAR_GROWTH, BL_CELLS)
     ask.fallback = {"why": why, "reynolds": float(how.get("reynolds") or 0.0), "delta_m": delta,
                     "wf_first_m": float(wf_first_m), "first_m": h1, "length_from": how.get("length_from"),
-                    "said": bool(said)}
+                    "said": bool(said), **({"bl_delta_m": bl} if bl else {})}
     tell = ask.nearest if said else ask.done
     facts = {**{k: v for k, v in how.items() if k not in ("visc_m", "first_exact_m")}, "first_m": h1, "fallback": why}
     tell("layers:y_plus", fallback_words(ask, h1, None, None), **facts)
@@ -700,6 +785,20 @@ def fallback_words(ask: Ask, first_m: float, n: int | None, across: float | None
     else:
         lead = (f"a wall-function first cell ({_mm(float(fb.get('wf_first_m') or 0.0))}) would be too thick for this "
                 f"body's boundary layer (Re {re_s} on {fb.get('length_from')})")
+    if fb.get("bl_delta_m"):
+        # CFDREQ-22: the laminar wall in plain words - why not wall functions, and what was built instead
+        out = (f"the flow over this body is laminar at this speed (Re {re_s} on {fb.get('length_from')}), and wall "
+               f"functions need a turbulent one, so the wall is resolved instead: its boundary layer is about "
+               f"{_mm(float(fb['bl_delta_m']))} thick a fifth of the way along the body (thicker behind)")
+        if n:
+            out += (f", and {int(n)} layer{'s' if int(n) != 1 else ''} from {_mm(first_m)} put about "
+                    f"{int(round(across)) if across is not None else BL_CELLS} cells across it")
+            if across is not None and across < BL_CELLS_MET:
+                out += (f" (not the {BL_CELLS} a resolved layer needs: more would take layers thinner or more "
+                        "numerous than the mesher keeps, or finer wall cells)")
+        else:
+            out += f", with about {BL_CELLS} cells across it, the first {_mm(first_m)}"
+        return out
     out = f"{lead}: the wall is resolved instead: first cell {_mm(first_m)}"
     if n:
         out += f", {int(n)} layer{'s' if int(n) != 1 else ''}"
@@ -2150,8 +2249,12 @@ def _snappy_layers(ask: Ask, text: str, wall_cell_m: float | None, bridge: Mappi
         # CFDREQ-17: a typed wall-function y+ on a body wall functions do not suit - resolved, the nearest there is
         wf = {"treatment": "resolved", "first_m": float(first), "y_plus": y_plus_of(float(first), ask.how),
               "why": "", "fallback": ask.fallback.get("why"), "said": bool(ask.fallback.get("said"))}
+    # CFDREQ-22: a laminar resolved wall's stack is sized on its boundary layer below (laminar_stack), not bridged
+    # or thinned from a y+ height
+    lam = bool(ask.fallback is not None and ask.fallback.get("bl_delta_m") and first is not None and total is None
+               and wall_cell_m and n > 0)
     bridged = None
-    if (bridge is not None and first is not None and total is None and ask.n_layers is None and n > 0
+    if (bridge is not None and first is not None and total is None and ask.n_layers is None and n > 0 and not lam
             and wall_cell_m and wall_cell_m / first > THIN_LAYER_RATIO):
         last_rel = _num(out, "finalLayerThickness") or 0.3
         n_new, first_new, stack = layer_bridge(first, float(wall_cell_m), n_plan=n, growth=g, last_rel=last_rel,
@@ -2174,7 +2277,7 @@ def _snappy_layers(ask: Ask, text: str, wall_cell_m: float | None, bridge: Mappi
             n, g = n_c, g_c
     thick = None
     if (bridged is None and capped is None and first is not None and total is None and ask.n_layers is None and n > 0
-            and wall_cell_m and not (wf is not None and wf["treatment"] == "functions")):
+            and not lam and wall_cell_m and not (wf is not None and wf["treatment"] == "functions")):
         # CFDREQ-9, THE THICK SIDE: a first layer so thick that the plan's layers make a stack several wall cells
         # deep, which snappyHexMesh cannot shrink the mesh for (a y+ 50 layer, 1.35 mm under 1.72 mm cells: 5 layers
         # are 10 mm, and grew on 5.7% of the wall) - as few layers as fill the stack our own plan gives the wall
@@ -2185,7 +2288,23 @@ def _snappy_layers(ask: Ask, text: str, wall_cell_m: float | None, bridge: Mappi
             thick = (n, n_new, first, first_new, stack)
             n, first = n_new, first_new
     across = None
-    if ask.fallback is not None and first is not None and wall_cell_m and n > 0:
+    if lam and ask.fallback is not None:
+        # CFDREQ-22: the fewest layers, from the thickest first layer, that put BL_CELLS across the laminar boundary
+        # layer with the wall cells this plan has - a count or a growth of the user's kept
+        if ask.layer_growth is None:
+            g = min(g, LAMINAR_GROWTH)
+        room = None
+        if bridge is not None and bridge.get("faces") and bridge.get("room") is not None:
+            room = n + int(max(0.0, float(bridge["room"])) // max(1.0, float(bridge["faces"])))
+        n_lam, first, across = laminar_stack(
+            float(ask.fallback["bl_delta_m"]), float(wall_cell_m), g, n_min=1,
+            n_max=min(BL_CELLS, room) if room else BL_CELLS, n_fixed=n if ask.n_layers is not None else None,
+            stack_max_m=float(cap) if cap else None)
+        if n_lam != n:
+            out = re.sub(r"\bnSurfaceLayers\s+[1-9][0-9]*\s*;", f"nSurfaceLayers {n_lam};", out)
+            n = n_lam
+        ask.fallback.update(layers=int(n), cells_across=round(across, 1), first_m=float(first))
+    elif ask.fallback is not None and first is not None and wall_cell_m and n > 0:
         # CFDREQ-17: THE RESOLVED BODY WALL RESOLVES ITS BOUNDARY LAYER - BL_CELLS across it, the layers counted up
         # from the plan's (never past the stack the wall's cells hold, nor past the cap a tight wall set), unless the
         # user gave a count
@@ -2263,6 +2382,8 @@ def _snappy_layers(ask: Ask, text: str, wall_cell_m: float | None, bridge: Mappi
             built["words"] = fallback_words(ask, float(first), n, across)
             if across is not None:
                 built["cells_across_bl"] = round(across, 1)
+            if ask.fallback.get("bl_delta_m"):
+                built["bl_delta_m"] = float(f"{float(ask.fallback['bl_delta_m']):.4g}")
         _say_wall(ask, built, n, g)
     # CFDREQ-15: decided on the dict's final layer count, after the bridge, the cap and the thick side
     resolved = (wf["treatment"] == "resolved") if wf is not None else (
@@ -2357,7 +2478,7 @@ def _say_wall(ask: Ask, fit: Mapping, n: int, g: float, *, engine_words: str = "
     row = {"first_m": float(f"{float(fit['first_m']):.4g}"), "layers": int(n), "treatment": fit["treatment"],
            "y_plus_expected": float(f"{float(fit['y_plus']):.3g}"), **{k: v for k, v in (ask.how or {}).items()
                                                                        if k in ("reynolds", "cf", "friction")}}
-    for k in ("fallback", "cells_across_bl"):
+    for k in ("fallback", "cells_across_bl", "bl_delta_m"):
         if fit.get(k) is not None:
             row[k] = fit[k]
     if ask.wall_level_note and fit["treatment"] == "functions":
@@ -2588,6 +2709,14 @@ def report(workspace, quality: Mapping, engine: str) -> dict | None:
             got = _layers_row(req, q, built)
             if p.get("note") and got.get("met") is False:
                 got["delivered"] += f"; {p['note']}"
+        elif field == "layers:y_plus" and status in ("applied", "nearest") and p.get("bl_delta_m") and (
+                br := _bl_cells_row(workspace, p)) is not None:
+            # CFDREQ-22: a laminar resolved wall is judged by the cells across its boundary layer on the built mesh;
+            # the switch from a typed wall-function ask alone is no miss (CFDREQ-17), cells missing still are
+            got = br
+            if status == "nearest":
+                got = {**br, "met": False if br["met"] is False else None,
+                       "delivered": f"not possible as asked - {built}; {br['delivered']}"}
         elif field == "layers:y_plus" and status in ("applied", "nearest") and not p.get("fallback") and (
                 yr := _y_plus_row(workspace, req, q, p)) is not None:
             # CFDREQ-19: a wall-function y+ is judged by the y+ the built mesh's wall cells give
@@ -2646,6 +2775,51 @@ def _count_row(field: str, req: Mapping, n: int, p: Mapping) -> dict:
 
 #: CFDREQ-6: where each mesher writes the first layer height it was given (the dictionary in the case), and the key
 _FIRST_LAYER_IN = (("system/snappyHexMeshDict", "firstLayerThickness"), ("system/meshDict", "maxFirstLayerThickness"))
+
+
+def _bl_cells_row(workspace, p: Mapping) -> dict | None:
+    """CFDREQ-22: A LAMINAR RESOLVED WALL IS JUDGED BY WHAT IT PROMISED - BL_CELLS across its boundary layer (the
+    plan's `bl_delta_m`, a fifth of the way along the body) on BL_WALL_SHARE of the wall, counted on the built mesh
+    (layer_census.bl_cells: layer and core cells alike, to the nearest cell). Met, or missed with the share and the
+    cells there are. None when the mesh cannot be counted (the row is judged as before)."""
+    delta = _num_or_none(p.get("bl_delta_m"))
+    if not delta:
+        return None
+    got = built_bl_cells(workspace, delta)
+    if not got:
+        return None
+    share, med = float(got["bl_area_met_pct"]), float(got["bl_cells_median"])
+    ok = share >= BL_WALL_SHARE
+    said = (f"the wall is resolved; on the built mesh {BL_CELLS} or more cells (to the nearest cell) stand across "
+            f"its boundary layer ({_mm(delta)} thick, a fifth of the way along the body) on {MR._g(share)}% of the "
+            f"wall (median {MR._g(round(med, 1))})")
+    if not ok:
+        said += (f" - under the {MR._g(BL_WALL_SHARE)}% needed: elsewhere the layers were not built, so the boundary "
+                 "layer there has fewer cells across it than it needs")
+    return {"applied": True, "met": bool(ok), "measured": float(f"{med:.3g}"), "delivered": said,
+            "bl_cells_median": med, "bl_area_met_pct": share, "bl_cells_p10": got.get("bl_cells_p10"),
+            "bl_delta_m": float(f"{delta:.4g}")}
+
+
+def built_bl_cells(workspace, delta_m: float) -> dict:
+    """CFDREQ-22: the cells across a boundary layer `delta_m` thick on the delivered polyMesh's walls
+    (layer_census.bl_cells); {} when it cannot be counted."""
+    from meshpipeline.engines import layer_census as LC
+    from meshpipeline.engines.workspace_facts import contract_patches
+    ws = Path(workspace)
+    try:
+        walls = [str(c.get("name")) for c in contract_patches(ws) or []
+                 if isinstance(c, Mapping) and str(c.get("type") or "") == "wall" and c.get("name")]
+    except Exception:  # noqa: BLE001 - evidence, not a verdict
+        walls = []
+    if not walls or not (ws / "constant" / "polyMesh" / "owner").exists():
+        return {}
+    try:
+        got, _why = LC.bl_cells(ws / "constant" / "polyMesh", walls, float(delta_m), met_at=BL_CELLS_MET)
+    except Exception:  # noqa: BLE001 - evidence, not a verdict
+        logger.warning("boundary-layer cell count failed; the row is judged as before", exc_info=True)
+        return {}
+    return got
 
 
 def _first_layer_row(workspace, req: Mapping, q: Mapping, p: Mapping) -> dict | None:

@@ -60,18 +60,24 @@ def test_a_small_slow_body_is_resolved_not_left_in_the_buffer_layer():
     out = CR.snappy_dict(ask, SHM, wall_cell_m=0.0016)
     assert "relativeSizes false;" in out
     h = _num(out, "firstLayerThickness")
-    assert h == pytest.approx(ask.how["visc_m"], rel=1e-4)                 # y+ 1 at the first cell's top
     assert ask.fallback is not None and ask.fallback["why"] == "laminar"
     delta = CR.boundary_layer_m(ask.how)
     assert delta == pytest.approx(5.0 * 0.06 / math.sqrt(ask.how["reynolds"]), rel=1e-9)
+    # CFDREQ-22: sized on the layer a fifth of the way along the body, not from y+ 1
+    bl = CR.laminar_bl_m(ask.how)
+    assert bl == pytest.approx(delta * math.sqrt(CR.BL_SIZE_AT), rel=1e-9)
     n = int(_num(out, "nSurfaceLayers"))
-    assert n > 5 and CR.cells_across(h, 1.2, n, 0.0016, delta) >= CR.BL_CELLS
+    assert _num(out, "expansionRatio") == pytest.approx(1.2)
+    # 1.6 mm wall cells are thicker than the 0.67 mm layer: the stack alone fills it, at most BL_CELLS layers
+    assert n == CR.BL_CELLS and h == pytest.approx(bl / CR.stack_height(1.0, 1.2, n), rel=1e-4)
+    assert CR.cells_across(h, 1.2, n, 0.0016, bl) == pytest.approx(CR.BL_CELLS, abs=1e-3)
     row = _y_row(ask)
     # what the accepted proposal promised ("... the wall is resolved instead, and the result says which"): applied
     assert row["status"] == "applied" and row["treatment"] == "resolved" and row["fallback"] == "laminar"
-    assert row["built"].startswith("this flow is too slow, or the body too small, for wall functions (Re 4")
-    assert "the wall is resolved instead: first cell" in row["built"] and f"{n} layers" in row["built"]
-    assert "cells across its boundary layer" in row["built"] and row["cells_across_bl"] >= CR.BL_CELLS
+    assert row["built"].startswith("the flow over this body is laminar at this speed (Re 4")
+    assert "wall functions need a turbulent one, so the wall is resolved instead" in row["built"]
+    assert f"{n} layers from" in row["built"] and "about 10 cells across it" in row["built"]
+    assert row["bl_delta_m"] == pytest.approx(bl, rel=1e-3) and row["cells_across_bl"] >= CR.BL_CELLS - 0.05
 
 
 def test_wall_functions_the_user_chose_on_a_small_body_are_the_nearest_there_is():
@@ -84,7 +90,8 @@ def test_wall_functions_the_user_chose_on_a_small_body_are_the_nearest_there_is(
     assert ask.treatment == "functions" and ask.treatment_said
     ask.length_m, ask.length_from = 0.06, "the body's length"
     out = CR.snappy_dict(ask, SHM, wall_cell_m=0.0016)
-    assert _num(out, "firstLayerThickness") == pytest.approx(ask.how["visc_m"], rel=1e-4)
+    bl = CR.laminar_bl_m(ask.how)
+    assert _num(out, "firstLayerThickness") == pytest.approx(bl / CR.stack_height(1.0, 1.2, CR.BL_CELLS), rel=1e-4)
     row = _y_row(ask)
     assert row["status"] == "nearest" and row["fallback"] == "laminar" and "resolved instead" in row["built"]
     assert "not possible as asked" in " ".join(ask.lines())
@@ -100,9 +107,10 @@ def test_a_typed_wall_function_y_plus_on_a_small_body_is_the_nearest_there_is():
     ask.length_m, ask.length_from = 0.06, "the body's length"
     out = CR.snappy_dict(ask, SHM, wall_cell_m=0.0016)
     assert "relativeSizes false;" in out
-    assert _num(out, "firstLayerThickness") == pytest.approx(ask.how["visc_m"], rel=1e-4)
+    bl = CR.laminar_bl_m(ask.how)
+    assert _num(out, "firstLayerThickness") == pytest.approx(bl / CR.stack_height(1.0, 1.2, CR.BL_CELLS), rel=1e-4)
     row = _y_row(ask)
-    assert row["status"] == "nearest" and row["treatment"] == "resolved" and "too small" in row["built"]
+    assert row["status"] == "nearest" and row["treatment"] == "resolved" and "laminar at this speed" in row["built"]
     # on a body wall functions suit, the typed y+ is built as typed
     big = CR.Ask(MR.requirements_of(sec), "snappy")
     big.length_m, big.length_from = 4.0, "the body's length"
@@ -129,15 +137,17 @@ def test_a_wall_function_cell_too_thick_for_a_turbulent_layer_is_resolved_too(mo
     assert "would be too thick for this body's boundary layer" in _y_row(ask)["built"]
 
 
-def test_the_stack_never_grows_past_what_the_wall_cells_hold():
+def test_fine_wall_cells_let_a_short_stack_resolve_the_layer():
+    # CFDREQ-22: with wall cells fine against the layer the core cells inside it count, so fewer layers (at most
+    # LAMINAR_LAYERS_KEPT) from a thicker first layer put BL_CELLS across it
     ask = _ask("10 m/s", 0.06)
-    out = CR.snappy_dict(ask, SHM, wall_cell_m=0.0003)                     # fine cells: the core resolves the layer
+    out = CR.snappy_dict(ask, SHM, wall_cell_m=0.0001)
     n = int(_num(out, "nSurfaceLayers"))
     h = _num(out, "firstLayerThickness")
-    stack = h * (1.2 ** n - 1) / 0.2
-    ours = 0.3 * 0.0003 * sum(1.2 ** -k for k in range(5))
-    assert n >= 5 and stack <= max(ours, h * (1.2 ** 5 - 1) / 0.2) * (1 + 1e-9)
-    assert CR.cells_across(h, 1.2, n, 0.0003, CR.boundary_layer_m(ask.how)) >= CR.BL_CELLS
+    bl = CR.laminar_bl_m(ask.how)
+    assert n <= CR.LAMINAR_LAYERS_KEPT
+    assert CR.cells_across(h, 1.2, n, 0.0001, bl) >= CR.BL_CELLS - 1e-3
+    assert h * 1.2 ** (n - 1) <= CR.FIRST_CAP_REL * 0.0001 * (1 + 1e-4)     # its top layer under the wall cell's cap
 
 
 def test_a_count_of_the_user_s_stands():
@@ -151,7 +161,9 @@ def test_cfmesh_builds_the_resolved_fallback_too():
     ask = _ask("10 m/s", 0.06, engine="cfmesh")
     s = CR.cfmesh_strategy(ask, {"n_layers": 2}, length_m=0.06)
     h = s["first_layer_thickness"]
-    assert h == pytest.approx(ask.how["visc_m"], rel=1e-9)
+    # CFDREQ-22: before the wall cells are known, BL_CELLS layers filling the laminar layer
+    assert h == pytest.approx(CR.laminar_bl_m(ask.how) / CR.stack_height(1.0, CR.LAMINAR_GROWTH, CR.BL_CELLS),
+                              rel=1e-9)
     out = CR.cfmesh_layer_fit(ask, s, 0.0016)
     assert out["first_layer_thickness"] == pytest.approx(h) and out["n_layers"] > 2
     assert _y_row(ask)["treatment"] == "resolved"
@@ -184,3 +196,51 @@ def test_cells_across_counts_layers_then_core_cells():
     assert CR.cells_across(0.1, 1.0, 5, 1.0, 0.25) == pytest.approx(2.5)
     assert CR.cells_across(0.1, 1.0, 2, 0.1, 0.5) == pytest.approx(5.0)
     assert CR.boundary_layer_m({"length_m": 1.0, "reynolds": 1e6, "laminar": False}) == pytest.approx(0.37 * 1e6 ** -0.2, rel=1e-9)
+
+
+def test_the_laminar_stack_is_sized_on_its_boundary_layer():
+    # CFDREQ-22: coarse wall cells (thicker than the layer): the stack alone fills it, BL_CELLS layers
+    n, h, across = CR.laminar_stack(0.002, 0.003, 1.2)
+    assert n == CR.BL_CELLS and across == pytest.approx(CR.BL_CELLS, abs=1e-6)
+    assert h == pytest.approx(0.002 / CR.stack_height(1.0, 1.2, CR.BL_CELLS))
+    # fine wall cells: the core cells inside it count - at most LAMINAR_LAYERS_KEPT layers, a thicker first layer
+    n, h, across = CR.laminar_stack(0.002, 0.0004, 1.2)
+    assert 1 < n <= CR.LAMINAR_LAYERS_KEPT and across >= CR.BL_CELLS - 1e-6
+    # the thickest that still does it - or the thickest its top layer's cap (FIRST_CAP_REL of the wall cell) allows
+    assert (CR.cells_across(h * 1.01, 1.2, n, 0.0004, 0.002) < CR.BL_CELLS
+            or h * 1.2 ** (n - 1) == pytest.approx(CR.FIRST_CAP_REL * 0.0004))
+    assert CR.laminar_stack(0.002, 0.0004, 1.2, n_min=n - 1, n_max=n - 1)[2] < CR.BL_CELLS   # and the fewest layers
+    # cells a tenth of the layer: the core resolves it, one layer under the wall cell's cap
+    n, h, across = CR.laminar_stack(0.002, 0.0002, 1.2)
+    assert n == 1 and h == pytest.approx(CR.FIRST_CAP_REL * 0.0002) and across >= CR.BL_CELLS
+    # a count of the user's stands; the cells it reaches are what it reaches
+    n, h, across = CR.laminar_stack(0.002, 0.003, 1.2, n_fixed=4)
+    assert n == 4 and across < CR.BL_CELLS
+    # a tight wall's cap shortens the stack (thinner layers), never a stack past the cap
+    n, h, across = CR.laminar_stack(0.002, 0.003, 1.2, stack_max_m=0.001)
+    assert CR.stack_height(h, 1.2, n) <= 0.001 * (1 + 1e-9) and across >= CR.BL_CELLS
+    n, h, across = CR.laminar_stack(0.002, 0.003, 1.2, n_fixed=4)
+    words = CR.fallback_words(_ask_lam(), h, n, across)
+    assert "not the 10 a resolved layer needs" in words
+
+
+def _ask_lam() -> CR.Ask:
+    ask = _ask("10 m/s", 0.06)
+    ask.first_layer(length_m=ask.length_m, length_from=ask.length_from)
+    return ask
+
+
+def test_the_laminar_row_is_judged_by_the_cells_across_its_layer(monkeypatch, tmp_path):
+    # CFDREQ-22: met with BL_CELLS (to the nearest cell) across the layer on 80% of the wall; else missed, said
+    p = {"bl_delta_m": 0.0007, "fallback": "laminar", "first_m": 2.6e-5}
+    monkeypatch.setattr(CR, "built_bl_cells", lambda ws, d: {"bl_area_met_pct": 86.0, "bl_cells_median": 10.2,
+                                                             "bl_cells_p10": 7.0})
+    row = CR._bl_cells_row(tmp_path, p)
+    assert row["met"] is True and "on 86% of the wall" in row["delivered"]
+    monkeypatch.setattr(CR, "built_bl_cells", lambda ws, d: {"bl_area_met_pct": 52.0, "bl_cells_median": 6.1,
+                                                             "bl_cells_p10": 1.0})
+    row = CR._bl_cells_row(tmp_path, p)
+    assert row["met"] is False and "under the 80% needed" in row["delivered"]
+    monkeypatch.setattr(CR, "built_bl_cells", lambda ws, d: {})
+    assert CR._bl_cells_row(tmp_path, p) is None                               # not counted: judged as before
+    assert CR._bl_cells_row(tmp_path, {"fallback": "laminar"}) is None
