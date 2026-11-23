@@ -799,7 +799,7 @@ def _widest_join(cubes: np.ndarray, nb: np.ndarray, flat_lab: np.ndarray, dist: 
         m = np.zeros(int(np.prod(box)), dtype=bool)
         m[ls] = True
         m[ld] = True
-        inn = dc >= level - 1e-9
+        inn = dc >= level - 1e-6   # the levels are rounded to 1e-6
         m[lc[inn]] = True
         lab, _n = ndimage.label(m.reshape(box), structure=st)
         lab = lab.ravel()
@@ -822,7 +822,7 @@ def _widest_join(cubes: np.ndarray, nb: np.ndarray, flat_lab: np.ndarray, dist: 
         return None
     level = levels[best]
     inn, lab, joined = join(level)
-    on = inn & np.isin(lab[lc], list(joined)) & (np.abs(dc - level) <= 1e-9)
+    on = inn & np.isin(lab[lc], list(joined)) & (np.abs(dc - level) <= 1e-6)
     at = int(cubes[np.flatnonzero(on)[0]]) if on.any() else int(cubes[int(np.argmax(dc))])
     return float(level), at
 
@@ -883,10 +883,15 @@ def opening_necks(solids, wall_key: str, boxes, *, need_m: float, cells: int = G
         z = np.clip(np.floor((np.asarray(b["max"], dtype=float) - grid.origin) / h).astype(int), 0, sh - 1)
         ii, jj, kk = np.meshgrid(*[np.arange(a[d], z[d] + 1) for d in range(3)], indexing="ij")
         c = ((ii * shape[1] + jj) * shape[2] + kk).ravel()
-        c = c[inside[c] | drawn[c]]
-        owner[c] = i
-        clear[c] = np.maximum(clear[c], r / h)
-        passable[c] = True
+        owner[c[inside[c]]] = i
+        if r < h:
+            # a gap thinner than a cube is drawn shut: its drawn cubes pass the flow at its own width.
+            # A wider one the grid sees open, at its own clearance - opening its drawn cubes too would
+            # join pieces through the wall (abc 63401: one piece read where the passage has two)
+            c = c[drawn[c]]
+            owner[c] = i
+            clear[c] = r / h
+            passable[c] = True
     half = 0.5 * need_m / h
     slab, ns = _label((passable & (clear >= half - 1e-9)).reshape(shape))
     slab = slab.ravel()
