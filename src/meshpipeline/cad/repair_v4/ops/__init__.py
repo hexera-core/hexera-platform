@@ -274,4 +274,11 @@ __all__ = ["Op", "OpDeclined", "OpFailed", "REGISTRY", "Site", "check_call", "re
 # Every sibling module of this package is imported for its `@register` side effect: a new op is a
 # new file here, with no edit to this one. (A module whose name starts with "_" is skipped.)
 for _module in sorted(m.name for m in pkgutil.iter_modules(__path__) if not m.name.startswith("_")):
-    importlib.import_module(f"{__name__}.{_module}")
+    _mod = importlib.import_module(f"{__name__}.{_module}")
+    # Tasks 12-15 were told not to edit this file while they ran in parallel, so their ops arrive
+    # as a module-level `OPS` tuple rather than through `@register`. Both routes land in REGISTRY;
+    # a module that uses neither contributes no ops, which `test_every_op_module_registers` catches.
+    for _op in getattr(_mod, "OPS", ()):
+        if _op.name in REGISTRY and REGISTRY[_op.name] is not _op:
+            raise ValueError(f"op {_op.name!r} is already registered")
+        REGISTRY[_op.name] = _op
