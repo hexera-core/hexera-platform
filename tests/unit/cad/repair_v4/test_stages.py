@@ -242,7 +242,133 @@ def test_unknown_stage_and_param_names_are_refused(world):
 def test_judge_hands_an_inconclusive_verdict_to_score(monkeypatch):
     """The real `_judge` leaves the refusal to `score`; `_judged` then reports None, not a number."""
     monkeypatch.setattr(stages, "_step_for", lambda pool, brep: brep)
-    monkeypatch.setattr(stages, "cheap_verdict", lambda *a, **k: SimpleNamespace(inconclusive=True))
+    monkeypatch.setattr(stages, "_original_facts", lambda pool, brep: (6, 1))
+    monkeypatch.setattr(stages, "cheap_verdict", lambda *a, **k: _inconclusive())
     with pytest.raises(InconclusiveVerdict):
         stages._judge(None, _ws())
     assert stages._judged(None, _ws()) is None
+
+
+# --- review round: what each stage passes, declared edits, solid-less gate, dead checker --------
+
+
+def test_condition_passes_the_specified_values_to_the_ops(world):
+    seen: dict[str, dict] = {}
+
+    class Spy(FakeOp):
+        def apply(self, pool, ws, targets, params, *, timeout_s):
+            seen[self.name] = {"params": dict(params), "targets": list(targets)}
+            return super().apply(pool, ws, targets, params, timeout_s=timeout_s)
+
+    for name in ("split_angle", "split_closed", "split_continuity", "split_by_proximity"):
+        world.ops[name] = Spy(name, to="s0")
+    start = _ws()
+    start.ids["F3"] = "x"
+    stages.run_stage(None, start, "condition", {"face_pairs": [["F1", "F2"]]})
+    assert seen["split_angle"]["params"] == {"max_deg": 90.0}
+    assert seen["split_angle"]["targets"] == ["F1", "F2", "F3"]
+    assert seen["split_closed"]["params"] == {}
+    assert seen["split_continuity"]["params"] == {"order": 1}
+    assert seen["split_by_proximity"]["params"] == {"face_pairs": [["F1", "F2"]], "target_ratio": 0.25}
+
+
+def test_stage_run_is_the_path_the_transaction_uses(world):
+    SCORES["s_ok"] = (1, 1, 0.3, 0.0, 0)
+    world.ops["to_canonical"] = FakeOp("to_canonical", to="s_ok")
+    stage = next(s for s in stages.STAGES if s.name == "faces")
+    new, diffs = stage.run(None, _ws(), {})
+    assert new.brep_path == "s_ok" and [d.op for d in diffs] == ["to_canonical"]
+    res = stages.run_stage(None, _ws(), "faces")
+    assert res.ws.brep_path == new.brep_path
+
+
+def test_a_decline_reported_as_a_diff_is_not_a_change(world):
+    """conformalise answers a decline with an unchanged workspace and params['declined']."""
+
+    class Declining(FakeOp):
+        def apply(self, pool, ws, targets, params, *, timeout_s):
+            diff = _diff(self.name)
+            diff.params = {"declined": "unresolved_overlap"}
+            return ws, diff
+
+    world.ops["conformalise"] = Declining("conformalise")
+    two = _ws()
+    two.ids["B2"] = "d"
+    res = stages.run_stage(None, two, "bodies")
+    assert res.kept == [] and res.rolled_back == [] and "unresolved_overlap" in res.skipped["bodies"]
+
+
+def test_a_dead_checker_raises_rather_than_looking_like_no_progress(world):
+    from meshpipeline.cad.repair_v4.verdict.valid import CheckerUnavailable
+    SCORES["s_dead"] = CheckerUnavailable("down")
+    start = _ws()
+    start.brep_path = "s_dead"
+    with pytest.raises(CheckerUnavailable):
+        stages.run_staged(None, start)
+
+
+def test_declared_edits_are_translated_to_face_map_indices():
+    ws = Workspace(brep_path="n", ids={"F2": "a", "F9": "b", "F10": "c"}, labels={}, history=[],
+                   original="o", indices={"F2": 4, "F9": 7, "F10": 8})
+    fill = _diff("fill_loop")
+    fill.declared_added = ["F9"]
+    refit = _diff("refit_cluster")
+    refit.declared_added = ["F8"]            # later replaced by F10 (Modified 1:N)
+    refit.declared_removed = ["F1", "F3", "F12"]   # F12 was minted after the original's 6 faces
+    refit.modified = {}
+    later = _diff("split")
+    later.modified = {"F8": ["F10"]}
+    ws.history = [fill, refit, later]
+    d = stages.declared_edits(ws, 6)
+    assert d.added == ["F7", "F8"]           # indices in the REPAIRED shape
+    assert d.removed == ["F1", "F3"]         # indices in the ORIGINAL; F12 has none to exempt
+
+
+def _verdict(ok: bool, reasons: list[str], solids: int = 1):
+    from meshpipeline.cad.repair_v4.verdict.assemble import Verdict
+    from meshpipeline.cad.repair_v4.verdict.faithful import FaithfulReport
+    from meshpipeline.cad.repair_v4.verdict.valid import ValidReport
+    valid = ValidReport(ok, [], [], "mm", solids, ok)
+    faith = FaithfulReport(not reasons, 0.0, 0.05, 1.0, 1.0, 1, 1, reasons=reasons) if ok else None
+    return Verdict(valid, [SimpleNamespace(status="pass", min_sicn=0.3)], faith, False, "cheap")
+
+
+def test_judge_threads_declared_edits_into_layer_three(monkeypatch):
+    seen = {}
+
+    def fake_faithful(pool, original, repaired, *, declared_added, declared_removed):
+        seen.update(added=declared_added, removed=declared_removed, paths=(original, repaired))
+        from meshpipeline.cad.repair_v4.verdict.faithful import FaithfulReport
+        return FaithfulReport(True, 0.0, 0.05, 1.0, 1.0, 1, 1, declared_added, declared_removed)
+
+    monkeypatch.setattr(stages, "_step_for", lambda pool, brep: brep)
+    monkeypatch.setattr(stages, "_original_facts", lambda pool, brep: (6, 1))
+    monkeypatch.setattr(stages, "cheap_verdict", lambda *a, **k: _verdict(True, ["deviation_exceeds_bound"]))
+    monkeypatch.setattr(stages, "check_faithful", fake_faithful)
+    ws = Workspace(brep_path="n", ids={"F9": "a"}, labels={}, history=[], original="o", indices={"F9": 7})
+    d = _diff("fill_loop")
+    d.declared_added, d.declared_removed = ["F9"], ["F2"]
+    ws.history = [d]
+    out = stages._judge(None, ws)
+    assert seen == {"added": ["F7"], "removed": ["F2"], "paths": ("o", "n")}
+    assert out[0] == 1  # the undeclared verdict said unfaithful; declared, it is faithful
+    assert out[4] == -2  # and churn is no longer permanently 0
+
+
+def test_solidless_original_gates_on_validity_and_the_two_expected_reasons(monkeypatch):
+    monkeypatch.setattr(stages, "_step_for", lambda pool, brep: brep)
+    monkeypatch.setattr(stages, "_original_facts", lambda pool, brep: (6, 0))
+    ws = Workspace(brep_path="n", ids={}, labels={}, history=[], original="o")
+    expected = ["volume_changed", "body_count_changed"]
+    cases = [(True, expected, 1),                       # a correct heal of loose faces
+             (False, [], 0),                            # BRepCheck-invalid: must NOT pass on equal SICN
+             (True, expected + ["area_changed"], 0),
+             (True, expected + ["deviation_exceeds_bound"], 0)]
+    for ok, reasons, want in cases:
+        monkeypatch.setattr(stages, "cheap_verdict", lambda *a, _v=_verdict(ok, reasons), **k: _v)
+        assert stages._judge(None, ws)[0] == want, (ok, reasons)
+
+
+def _inconclusive():
+    from dataclasses import replace
+    return replace(_verdict(True, []), inconclusive=True)

@@ -47,13 +47,19 @@ from __future__ import annotations
 import os
 import tempfile
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from meshpipeline.cad.repair_v4 import ops
 from meshpipeline.cad.repair_v4.ops import OpDeclined, OpFailed
 from meshpipeline.cad.repair_v4.types import StableId
-from meshpipeline.cad.repair_v4.verdict.assemble import InconclusiveVerdict, cheap_verdict, score
+from meshpipeline.cad.repair_v4.verdict.assemble import (
+    Declared,
+    InconclusiveVerdict,
+    cheap_verdict,
+    score,
+)
+from meshpipeline.cad.repair_v4.verdict.faithful import DeclaredIdError, FaithfulReport, check_faithful
 from meshpipeline.cad.repair_v4.verdict.valid import CheckerUnavailable
 from meshpipeline.cad.repair_v4.worker_pool import WorkerPool
 from meshpipeline.cad.repair_v4.workspace import Diff, Workspace
@@ -111,9 +117,14 @@ class _Steps:
         except Exception as why:  # noqa: BLE001 - several ops raise RuntimeError/ValueError; a stage failure, not a crash
             self.notes.append(f"{op}: error: {type(why).__name__}: {why}")
         else:
-            self.ws = new
-            self.diffs.append(diff)
-            return True
+            declined = diff.params.get("declined")
+            if declined is None:
+                self.ws = new
+                self.diffs.append(diff)
+                return True
+            # Some ops (conformalise) answer a decline with an unchanged workspace and a Diff
+            # carrying `params["declined"]` instead of raising: that is not a change.
+            self.notes.append(f"{op}: declined: {declined}")
         if required:
             raise _ChainBroken(self.notes[-1])
         return False
@@ -209,9 +220,13 @@ class Stage:
         """Apply the stage's ops to `ws` (untouched) and return the new workspace and the Diffs.
         NOT transactional by itself: `run_staged` / `run_stage` judge and roll back. A chain that
         breaks halfway raises `_ChainBroken`; any other op trouble is just skipped."""
+        steps = self.execute(pool, ws, params)
+        return steps.ws, steps.diffs
+
+    def execute(self, pool: WorkerPool, ws: Workspace, params: dict) -> _Steps:
         steps = _Steps(pool, ws, float(params.get("timeout_s", DEFAULT_OP_TIMEOUT_S)))
         self.body(steps, {**DEFAULTS[self.name], **params})
-        return steps.ws, steps.diffs
+        return steps
 
 
 STAGES: list[Stage] = [
@@ -260,12 +275,83 @@ def _step_for(pool: WorkerPool, brep: str) -> str:
     return out
 
 
+#: what layer 3 always reports when the ORIGINAL has no solid (6 loose faces -> 1 body, no volume)
+_SOLIDLESS_OK_REASONS = frozenset({"volume_changed", "body_count_changed"})
+_ORIGINAL_FACTS: dict[str, tuple[int, int]] = {}
+
+
+def _original_facts(pool: WorkerPool, brep: str) -> tuple[int, int]:
+    """(faces, solids) of the lineage's original BREP, read once."""
+    if brep not in _ORIGINAL_FACTS:
+        result = pool.call("ws_index", {"brep_path": brep}, timeout_s=120)
+        if not result.ok or result.value is None:
+            raise CheckerUnavailable(f"cannot index {brep!r}: {result.status}: {result.error}")
+        entities = result.value["entities"]
+        faces = sorted(int(e["index"]) for e in entities if e["type"] == "face")
+        if faces != list(range(1, len(faces) + 1)):
+            raise CheckerUnavailable(f"face indices of {brep!r} are not 1..n")
+        _ORIGINAL_FACTS[brep] = (len(faces), sum(1 for e in entities if e["type"] == "solid"))
+    return _ORIGINAL_FACTS[brep]
+
+
+def _successors(ws: Workspace, sid: StableId, after: int) -> list[StableId]:
+    """The live ids `sid` became (itself if live), following Modified links from diff `after` on."""
+    if sid in ws.ids:
+        return [sid]
+    for k in range(after, len(ws.history)):
+        if sid in ws.history[k].modified:
+            return [t for kid in ws.history[k].modified[sid] for t in _successors(ws, kid, k + 1)]
+    return []
+
+
+def declared_edits(ws: Workspace, original_faces: int) -> Declared:
+    """The edits the workspace's ops DECLARED, as the checker wants them: `F<k>` is a face index of
+    the BREP it reads. Added faces are indexed in the repaired shape (`ws.indices`, following
+    Modified links to the id that now lives); removed faces in the ORIGINAL, where an id's number
+    is its index (ids are minted in index order and never reused, so a number above the original's
+    face count was minted later and has no original face to exempt)."""
+    added: list[str] = []
+    removed: list[str] = []
+    for k, diff in enumerate(ws.history):
+        for sid in diff.declared_added:
+            for live in _successors(ws, sid, k + 1):
+                if live[0] == "F" and f"F{ws.indices[live]}" not in added:
+                    added.append(f"F{ws.indices[live]}")
+        for sid in diff.declared_removed:
+            if sid[0] == "F" and sid not in ws.ids and int(sid[1:]) <= original_faces \
+                    and f"F{int(sid[1:])}" not in removed:
+                removed.append(f"F{int(sid[1:])}")
+    return Declared(added=added, removed=removed)
+
+
 def _judge(pool: WorkerPool, ws: Workspace) -> Score:
     """`score(cheap_verdict(...))` of `ws` against the lineage's original. Raises
-    `InconclusiveVerdict` / `CheckerUnavailable` when the checker could not say."""
-    step = _step_for(pool, ws.brep_path)
-    original = _step_for(pool, ws.original)
-    return score(cheap_verdict(pool, step, original))
+    `InconclusiveVerdict` / `CheckerUnavailable` when the checker could not say.
+
+    Two things `cheap_verdict` cannot know are added here:
+      * the edits the ops DECLARED (fill_loop, remove_small, refit_cluster add and remove surface on
+        purpose); without them layer 3 calls every such edit unfaithful and the op is rolled back
+        every time. Layer 3 is then re-run on the BREPs, where the declared indices are exact.
+      * an original with NO SOLID: layer 3 then always reports volume_changed/body_count_changed,
+        and `valid.ok` lives only in score key 0, so key 0 is replaced by a local gate: valid AND
+        every layer-3 reason is one of those two (area and deviation reasons are not)."""
+    faces, solids = _original_facts(pool, ws.original)
+    v = cheap_verdict(pool, _step_for(pool, ws.brep_path), _step_for(pool, ws.original))
+    declared = declared_edits(ws, faces)
+    if v.valid.ok and (declared.added or declared.removed):
+        report: FaithfulReport | None
+        try:
+            report = check_faithful(pool, ws.original, ws.brep_path, declared_added=declared.added,
+                                    declared_removed=declared.removed)
+        except DeclaredIdError:
+            report = v.faithful  # a mistranslated id must not crash a run; judge it undeclared
+        v = replace(v, faithful=report)
+    result = score(v)
+    if solids == 0:
+        gate = bool(v.valid.ok and v.faithful is not None
+                    and set(v.faithful.reasons) <= _SOLIDLESS_OK_REASONS)
+        result = (int(gate), *result[1:])
+    return result
 
 
 def _judged(pool: WorkerPool, ws: Workspace) -> Score | None:
@@ -291,8 +377,7 @@ def _transact(pool: WorkerPool, ws: Workspace, stage: Stage, params: dict, befor
             out.verdicts[name] = score_now
         return ws, score_now
     try:
-        steps = _Steps(pool, ws, float(params.get("timeout_s", DEFAULT_OP_TIMEOUT_S)))
-        stage.body(steps, {**DEFAULTS[name], **params})
+        steps = stage.execute(pool, ws, params)
     except Exception as why:  # noqa: BLE001 - an unexpected exception is a failed stage, never a crash
         out.skipped[name] = f"{type(why).__name__}: {why}"
         return ws, before
@@ -324,6 +409,10 @@ def run_staged(pool: WorkerPool, ws: Workspace, *, params: dict[str, dict] | Non
     for stage in STAGES:
         current, standing = _transact(pool, current, stage, params.get(stage.name, {}), standing, result)
         result.ws = current
+        if stage.name == "baseline" and "baseline" in result.inconclusive:
+            # A dead checker must not look like a healer that found nothing to do.
+            raise CheckerUnavailable("the baseline state could not be judged; no stage can be "
+                                     "kept or rolled back without a verdict")
     return result
 
 
