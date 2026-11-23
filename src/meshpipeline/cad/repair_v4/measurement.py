@@ -9,6 +9,10 @@ A search in which no candidate got a usable verdict and at least one was inconcl
 file is repairable: the checker, the mesher or the pool failed, not the part. That must never be tallied as a
 failure. `search.search` writes `SearchResult.infrastructure_failed` with `no_verdict_failure`, and the evaluation
 report decides whether a row counts with `file_unmeasured`; both live here so the two cannot drift apart.
+
+A search that stopped on its WALL (a time stop) without ending clean is also unmeasured: Task 49's smoke recorded such
+a stop, 900.9 s and 0 candidates, as a conclusive failure, which would inflate the failing set with files nobody
+measured.
 """
 
 from __future__ import annotations
@@ -16,6 +20,10 @@ from __future__ import annotations
 from typing import Any
 
 NO_VERDICT = "no_verdict"
+#: Search stops decided by the CLOCK. How far a search gets in its wall depends on the machine and its load (Task 49's
+#: smoke ran at load 18 on 16 vCPU), not on the file, so a time stop that did not end clean says nothing about whether
+#: the file is repairable. Count stops (ops, exhausted, patience) are the same on any machine and stay conclusive.
+TIME_STOPS = frozenset({"wall"})
 
 
 def no_verdict_failure(*, inconclusive_candidates: int, verdict_candidates: int, best_clean: bool) -> bool:
@@ -25,6 +33,8 @@ def no_verdict_failure(*, inconclusive_candidates: int, verdict_candidates: int,
 
 def file_unmeasured(*, reason: Any, infrastructure_failed: Any, inconclusive_candidates: Any,
                     verdict_candidates: Any, out_clean: Any) -> bool:
-    """What a row's search fields say about whether the file was measured at all (True = it was NOT)."""
+    """What a row's search fields say about whether the file was measured at all (True = it was NOT). A search that
+    stopped on its wall without ending clean was not measured either: that is the machine's time, not a verdict."""
     return bool(reason == NO_VERDICT or infrastructure_failed
-                or (bool(inconclusive_candidates) and verdict_candidates == 0 and not out_clean))
+                or (bool(inconclusive_candidates) and verdict_candidates == 0 and not out_clean)
+                or (reason in TIME_STOPS and not out_clean))

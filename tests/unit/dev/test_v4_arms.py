@@ -628,3 +628,30 @@ def test_recipes_on_without_a_location_is_refused(shard: Any, monkeypatch: pytes
     args = run_arm.parse_args([*shard.argv, "--arms", "search_det"])
     with pytest.raises(ValueError, match="CAD_REPAIR_V4_RECIPES_URI"):
         run_arm.run_arms(args, shard.out, {}, None, engine=FakeEngine())
+
+
+# ------------------------------------------------------------------ a wall stop is not a verdict on the file
+
+def test_a_search_that_stopped_on_its_wall_was_not_measured() -> None:
+    """Task 49's smoke: search_det on 0052... stopped on its own wall at 900.9 s with 0 verdict candidates and was
+    written as a CONCLUSIVE failure. Time is the machine's (the smoke ran at load 18 on 16 vCPU), not the file's: a
+    wall stop that did not end clean is inconclusive, with or without candidates. Count stops (ops, exhausted,
+    patience) stay conclusive: they are the same on any machine."""
+    smoke = dict(reason="wall", infrastructure_failed=False, inconclusive_candidates=0, verdict_candidates=0,
+                 out_clean=False)
+    assert measurement.file_unmeasured(**smoke) is True
+    assert measurement.file_unmeasured(**{**smoke, "verdict_candidates": 7}) is True
+    assert measurement.file_unmeasured(**{**smoke, "out_clean": True}) is False      # clean is clean, however late
+    for counted in ("ops", "exhausted", "patience"):
+        assert measurement.file_unmeasured(**{**smoke, "reason": counted, "verdict_candidates": 3}) is False
+
+
+def test_a_wall_stop_written_as_a_conclusive_failure_is_refused_by_the_report() -> None:
+    row = {"name": "0052_00528484_step_003.step", "sha256": SHA, "source": "abc_fail", "arm": "search_det",
+           "inconclusive": False, "model_usd": 0.0, "wall_s": 900.9, "reason": "wall", "verdict_candidates": 0,
+           "inconclusive_candidates": 0, "infrastructure_failed": False, "in_clean": False, "in_panel_passes": 3,
+           "in_valid": True, "in_faithful_ok": True, "out_valid": True, "out_faithful_ok": True,
+           "out_panel_passes": 3, "panel_size": 4, "out_tier": "full", "out_clean": False}
+    with pytest.raises(report.ReportRefused, match="NOT a conclusive failure"):
+        report._row_from_dict(row)
+    assert report._row_from_dict({**row, "inconclusive": True}).counts is False
