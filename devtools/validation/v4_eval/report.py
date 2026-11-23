@@ -50,9 +50,9 @@ import collect as _collect  # noqa: E402  (loads run_arm -> evalspec, reprobe, p
 ev = _collect.evalspec
 rp = _collect.rp
 
-#: Above this share of an arm's files inconclusive, the arm is NOT MEASURED and its rate is withheld. A
-#: proposal (open question for the owner), deliberately strict: collect.py already refuses a pool with 2%
-#: excluded, and 10% is where a rate stops describing the arm.
+#: PROVISIONAL, owned by the owner (not a settled constant): above this share of an arm's files inconclusive,
+#: the arm is NOT MEASURED and its rate is withheld. Deliberately strict: collect.py already refuses a pool
+#: with 2% excluded. Under the limit the rate is STILL printed on every arm, always, so 0.5% and 9.5% differ.
 MAX_INCONCLUSIVE_FRACTION = 0.10
 #: Fewer conclusive files than this and the constant-outcome warning is not raised (too few to call).
 MIN_FILES_FOR_CONSTANT_WARNING = 10
@@ -408,12 +408,12 @@ def render_text(rep: dict[str, Any]) -> str:
            + ("  [PRIMARY ARTIFACT, frozen commit verified]" if rep["primary_artifact"] else "")]
     if rep["warnings"]:
         out += ["", "!!! DO NOT READ THE NUMBERS BELOW WITHOUT THESE !!!"] + [f"  - {w}" for w in rep["warnings"]]
-    out += ["", "| arm | measured | inconclusive | clean rate | gain | regress (c->u / fewer panel) | $ total | wall/file s |",
-            "|---|---|---|---|---|---|---|---|"]
+    out += ["", "| arm | measured | inconclusive (n) | inconclusive rate | clean rate | gain | regress (c->u / fewer panel) | $ total | wall/file s |",
+            "|---|---|---|---|---|---|---|---|---|"]
     for a, b in rep["arms"].items():
         gain = "withheld" if b["clean_gain"] is None else f"{b['clean_gain']:+d}"
         out.append(f"| {a} | {'yes' if b['measured'] else 'NOT MEASURED'} | {b['inconclusive']}/{b['files']} "
-                   f"({b['inconclusive_rate']:.0%}) | {_pct(b['clean_rate'])} | {gain} | "
+                   f"| {b['inconclusive_rate']:.1%} | {_pct(b['clean_rate'])} | {gain} | "
                    f"{b['regressions']['clean_to_unclean']} / {b['regressions']['fewer_panel_passes']} | "
                    f"{b['model_usd']['total']:.2f} | {b['wall_s']['per_file_mean']:.1f} |")
     out += ["", "## Marginals (paired, files both arms judged)"]
@@ -421,9 +421,10 @@ def render_text(rep: dict[str, Any]) -> str:
         out.append(f"- {name}: " + (f"{m['value']:+.1%} ({m['files_gained']:+d} files over {m['n_paired']})"
                                     if m["value"] is not None else f"withheld - {m['reason']}"))
     for a, b in rep["arms"].items():
-        out += ["", f"## {a}: by defect kind", "| kind | files | inconclusive | clean | clean rate |", "|---|---|---|---|---|"]
+        out += ["", f"## {a}: by defect kind", "| kind | files | inconclusive | inconclusive rate | clean | clean rate |",
+                "|---|---|---|---|---|---|"]
         for k, v in b["by_defect_kind"].items():
-            out.append(f"| {k} | {v['files']} | {v['inconclusive']} | {v['clean']}/{v['conclusive']} | {_pct(v['clean_rate'])} |")
+            out.append(f"| {k} | {v['files']} | {v['inconclusive']} | {v['inconclusive'] / v['files']:.1%} | {v['clean']}/{v['conclusive']} | {_pct(v['clean_rate'])} |")
     out += ["", f"model spend ${rep['spend']['model_usd_total']:.2f} of the ${rep['spend']['cap_usd']:g} wave cap; "
             f"slowest shard {rep['wall']['slowest_shard_s']:.0f} s"]
     return "\n".join(out) + "\n"

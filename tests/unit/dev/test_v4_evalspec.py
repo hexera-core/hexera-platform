@@ -166,3 +166,12 @@ def test_the_heldout_firewall_refuses_the_split_and_its_files() -> None:
         with pytest.raises(ev.HeldOutInTuning):
             ev.refuse_heldout_for_tuning("dev", item)
     ev.refuse_heldout_for_tuning("dev", "devtools/validation/corpora/v4/dev.json", "clean")
+
+
+def test_the_firewall_hook_refuses_when_called_and_passes_dev_and_clean() -> None:
+    """No tuning path calls the hook yet; this proves it bites the day one does."""
+    with pytest.raises(ev.HeldOutInTuning, match="held-out"):
+        ev.refuse_heldout_for_tuning("heldout")
+    with pytest.raises(ev.HeldOutInTuning):
+        ev.refuse_heldout_for_tuning("devtools/validation/corpora/v4/heldout.json")
+    assert ev.refuse_heldout_for_tuning("dev", "clean", "corpora/v4/dev.json") is None

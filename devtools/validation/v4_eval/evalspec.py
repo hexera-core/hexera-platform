@@ -271,7 +271,8 @@ ARMS: dict[str, Arm] = {a.name: a for a in (
     Arm("v3_meshability_pass_ai", "v3 as it ships (meshability pass + AI), run once for comparison",
         SHARED_BUDGET, False),  # its own model spend is v3's and is not metered by this ledger
 )}
-#: Other names for an arm (the brief's wording); resolved, never a second arm.
+#: The plan/spec names above are CANONICAL. These aliases exist only for the brief's wording; do not "tidy"
+#: by deleting the real names (input_only is the do-nothing control every other arm is measured against).
 ARM_ALIASES: dict[str, str] = {"baseline": "v3_meshability_pass_ai", "heal_det": "staged"}
 
 

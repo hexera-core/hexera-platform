@@ -428,3 +428,26 @@ def test_cli_refuses_a_split_file_for_another_split(tmp_path) -> None:
     sp = tmp_path / "heldout.json"
     sp.write_text(json.dumps({"split": "heldout", "files": [asdict(r) for r in split]}))
     assert report.main(["--from", str(tmp_path / "w"), "--wave", "dev_checkpoint", "--shards", "2", "--split", str(sp)]) == 1
+
+
+def test_the_inconclusive_rate_is_printed_on_every_arm_even_under_the_limit(tmp_path) -> None:
+    split = split_rows()
+    inc = {split[0].sha256}  # 1 of 40 = 2.5%, well under the limit
+    build(tmp_path, WAVE, split, rows_for=lambda b, i, a: arm_row(b, i, a, inconclusive=(a == "staged" and b.sha256 in inc)))
+    text = report.render_text(report.build_report(load(tmp_path, split)))
+    rows = {ln.split("|")[1].strip(): ln.split("|") for ln in text.splitlines() if ln.startswith("| ") and "arm" not in ln[:8]}
+    assert rows["staged"][4].strip() == "2.5%" and rows["search_ai"][4].strip() == "0.0%"
+    assert rows["staged"][5].strip() != "withheld"  # under the limit: rate shown AND clean rate shown
+
+
+def test_cli_refuses_the_heldout_split_for_a_tuning_purpose(tmp_path, capsys) -> None:
+    """The firewall hook, exercised through its caller: it must refuse when it IS called."""
+    split = split_rows(40, "heldout")
+    build(tmp_path / "w", ev.WAVES["heldout"], split)
+    sp = tmp_path / "heldout.json"
+    sp.write_text(json.dumps({"split": "heldout", "files": [asdict(r) for r in split]}))
+    rc = report.main(["--from", str(tmp_path / "w"), "--wave", "heldout", "--shards", "2", "--split", str(sp),
+                      "--frozen-commit", COMMIT, "--purpose", "tuning"])
+    assert rc == 1 and "held-out" in capsys.readouterr().err
+    assert report.main(["--from", str(tmp_path / "w"), "--wave", "heldout", "--shards", "2", "--split", str(sp),
+                        "--frozen-commit", COMMIT]) == 0
