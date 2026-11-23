@@ -241,6 +241,11 @@ def deliver(workspace, rec: Mapping, *, target: Mapping | None = None) -> bool:
         plan["words"] = [*list(plan["words"] or []), *asked_words(rec["requirements"])]
     from meshpipeline.engines import mesh_requirements as MR
 
+    # NOTE-14: how strict the user said the limits are, in the plan's words as a solid's plan says it (A3, round 12:
+    # Val4's three "guidelines" were read flexible and held so, and no line said it)
+    strict = MR.strictness_words((MR.read(ws).get("requirements") or {}))
+    if strict:
+        plan["words"] = [*list(plan["words"] or []), *strict]
     told = MR.told_words(MR.read(ws))
     if told:
         # NOTE-8 / NOTE-12: what the notes asked that was not applied, or is no mesh setting, stays with the result

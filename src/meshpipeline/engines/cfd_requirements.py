@@ -147,6 +147,10 @@ async def read_for_attempt(workspace, state, *, job_id: str = "", publish=None, 
     from meshpipeline.engines import notes_acted as NA
     sec = NA.apply(sec, MR.notes_text(state or {}), NA.facts_of(state, engine))
     MR.write(ws, sec)
+    if MR.strictness_unnamed(sec):
+        # NOTE-14: a note on how strict the limits are that names none the user set: one fixed plain line
+        from meshpipeline.contracts.user_notes import record_remark
+        record_remark(ws, MR.NO_LIMIT_WORDS, by=MR.STRICTNESS_REMARK)
     (ws / PLAN_FILE).unlink(missing_ok=True)          # a carried plan never speaks for this attempt
     if off:
         MS.told_not_applied(ws, off)
