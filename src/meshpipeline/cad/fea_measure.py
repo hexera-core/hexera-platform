@@ -734,6 +734,22 @@ def measure_triangles(tris_mm) -> dict:
     """Measure a triangle file's surface ((m, 3, 3) millimetres). Its regions are the smooth
     stretches between sharp edges; its radii are fitted to the triangles."""
     started = time.time()
+    s, pairs, vol, depth = triangle_regions(tris_mm)
+    arcs = []
+    for tri_idx, bends in ff.curved_patches(s, pairs):
+        arc = ff.fit_round(*ff.patch_samples(s, pairs, bends), s.diag)
+        if arc is not None:
+            arc.labels = {int(x) for x in np.unique(s.label[tri_idx])}
+            arcs.append(arc)
+    # a body is an outer skin: a cavity's wall belongs to the body around it
+    bodies = int(np.count_nonzero((np.abs(vol) > 1e-12 * s.diag ** 3) & (depth % 2 == 0)))
+    return _record(s, arcs, bodies=bodies, basis="triangles", kinds=None, started=started, pairs=pairs)
+
+
+def triangle_regions(tris_mm) -> tuple[ff.Surface, ff.EdgePairs, np.ndarray, np.ndarray]:
+    """A triangle file's surface ((m, 3, 3) millimetres) as its smooth regions (Region_k: the stretches between
+    sharp edges, each closed piece wound outward), with its edge pairs and each closed piece's volume and nesting
+    depth. The one Region_k numbering: the FEA measurement and the face map (cad/face_map) both read it here."""
     tris = np.asarray(tris_mm, dtype=float).reshape(-1, 3, 3)
     xyz, t = _weld(tris.reshape(-1, 3), np.arange(len(tris) * 3).reshape(-1, 3))
     t = t[(t[:, 0] != t[:, 1]) & (t[:, 1] != t[:, 2]) & (t[:, 0] != t[:, 2])]
@@ -757,16 +773,7 @@ def measure_triangles(tris_mm) -> dict:
         pairs = ff.edge_pairs(s)
     label = ff.smooth_regions(t, pairs, len(t))
     names = [f"Region_{k}" for k in range(1, int(label.max()) + 2)]
-    s = ff.Surface(xyz=xyz, tris=t, label=label, names=names)
-    arcs = []
-    for tri_idx, bends in ff.curved_patches(s, pairs):
-        arc = ff.fit_round(*ff.patch_samples(s, pairs, bends), s.diag)
-        if arc is not None:
-            arc.labels = {int(x) for x in np.unique(label[tri_idx])}
-            arcs.append(arc)
-    # a body is an outer skin: a cavity's wall belongs to the body around it
-    bodies = int(np.count_nonzero((np.abs(vol) > 1e-12 * s.diag ** 3) & (depth % 2 == 0)))
-    return _record(s, arcs, bodies=bodies, basis="triangles", kinds=None, started=started, pairs=pairs)
+    return ff.Surface(xyz=xyz, tris=t, label=label, names=names), pairs, vol, depth
 
 
 # --------------------------------------------------------------------------------- record ----

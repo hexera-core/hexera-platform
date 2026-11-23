@@ -353,7 +353,8 @@ async def _nothing_remains(db: AsyncSession, org_id: uuid.UUID) -> bool:
 
 #: The geometry check's fixed records under `sessions/<id>/geometry_check/`. The pictures are not
 #: fixed-named; their keys are read out of scout.json below.
-_CHECK_RECORDS = ("scout.json", "naming.json", "confirmed.json", "skin.json", "upright.png")
+_CHECK_RECORDS = ("scout.json", "naming.json", "confirmed.json", "skin.json", "upright.png",
+                  "faces.npz")  # NOTE-17: the face map (application/face_pick)
 
 
 async def _erase_bytes(db: AsyncSession, store, org_id: uuid.UUID, at: datetime) -> None:

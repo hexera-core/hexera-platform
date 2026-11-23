@@ -1822,6 +1822,8 @@ def _name_after_wait(*, session_id: str, owner_id: str, purpose_text: str, inter
         from meshpipeline.cad.fea_measure import FACT_KEY
 
         facts[FACT_KEY] = fea_measurements(stored, facts, interpretation, early=early, owner_id=owner_id)
+        # NOTE-17: the faces a click on the settled stage can pick
+        keep_face_map(session_id, stored, facts, interpretation)
         # PLAN-fea-22: A CAD PART'S MESH IS SIZED once the stage is shown (the size choice lands on it after)
         from meshpipeline.application.fea_check import PLAN_FACT_KEY
         sizing = ""
@@ -1881,7 +1883,9 @@ def _name_after_wait(*, session_id: str, owner_id: str, purpose_text: str, inter
     # NOTE-5 ON THE FLOW ROUTE: a surface of several named parts (or a CAD file of several solids) keeps its parts
     # for the checklist before approval, as the FEA route's measurement does
     _keep_flow_parts(session_id, stored, facts, interpretation)
-    proposal = _proposal(facts, vision, words=purpose_text)
+    # NOTE-17: the faces a click on the settled stage can pick
+    keep_face_map(session_id, stored, facts, interpretation)
+    proposal =_proposal(facts, vision, words=purpose_text)
     # THE FLOW KIND THE INTAKE READS (facts["flow_kind"]): now with the user's words and the pictures - and
     # what the part is (facts["understanding"]), the same the stage shows
     stamp_flow_kind(facts, proposal["flow_kind"])
@@ -2172,6 +2176,49 @@ def _fea_measure_cad(path: Path, interp_ref, ref):
         if len(names) == len(surface.names):
             surface.names = list(names)
     return shape, record, surface
+
+
+def keep_face_map(session_id: str, stored: dict, facts: dict, interpretation: dict | None) -> None:
+    """NOTE-17: THE FACE MAP of every upload (cad/face_map), kept beside the check as faces.npz so a click on the
+    settled stage can name the face under it (application/face_pick): a CAD file's faces as the FEA deck numbers
+    them (Face_k, Part_k_Face_j), a triangle file's smooth regions (Region_k), in the skin's coordinates. Bounded:
+    a part over cad/face_map.MAX_TRIANGLES keeps none. Never fails the naming."""
+    started = time.time()
+    try:
+        from meshpipeline.application import face_pick
+        from meshpipeline.cad import face_map as FM
+        from meshpipeline.cad.ingest import canonicalise
+        from meshpipeline.contracts.geometry_source import GeometryInterpretationRef, GeometrySourceRef
+        from meshpipeline.contracts.intake_formats import GeometryKind
+
+        if not session_id or not isinstance(stored.get("source"), dict):
+            return
+        ref = GeometrySourceRef.from_payload(stored["source"])
+        scale = float(facts.get("scale_to_m") or 0.001)
+        with tempfile.TemporaryDirectory(prefix="face_map_") as tmp:
+            work = Path(tmp)
+            fetched = _fetch(ref, work)
+            _too_big(fetched)
+            canonical = canonicalise(fetched, work, stem="geometry", ecxml_form="placed")
+            if canonical.kind is GeometryKind.cad:
+                from meshpipeline.cad.normalise import occ_scale_transform
+                from meshpipeline.cad.scout import read_cad
+
+                interp_ref = GeometryInterpretationRef.from_payload(interpretation) if interpretation else None
+                prepared, _note = _prepared_coordinates(canonical.path, interp_ref, ref)
+                mm_per_unit = 1000.0 * float(occ_scale_transform(prepared).ScaleFactor())
+                fm = FM.from_cad(read_cad(canonical.path), mm_per_unit=mm_per_unit, scale_to_m=scale)
+            else:
+                from meshpipeline.cad.scout_mesh import read_triangles
+
+                fm = FM.from_triangles(read_triangles(canonical.path) * scale * 1000.0, scale_to_m=scale)
+        kept = face_pick.keep(session_id, fm)
+        if kept is not None:
+            kept["seconds"] = round(time.time() - started, 2)
+            facts[face_pick.FACT_KEY] = kept
+    except Exception as exc:  # noqa: BLE001 - no face pick, never a failed naming
+        logger.info("geometry naming: no face map kept (%s: %s)", type(exc).__name__, str(exc)[:200])
+    logger.info("geometry naming: face map in %.1fs", time.time() - started)
 
 
 def _keep_flow_parts(session_id: str, stored: dict, facts: dict, interpretation: dict | None) -> None:
