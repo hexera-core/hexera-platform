@@ -95,6 +95,7 @@ import heapq
 import itertools
 import json
 import math
+import os
 import time
 from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
@@ -263,6 +264,32 @@ def _judged(fn: Callable[..., Verdict], pool: Any, ws: Workspace, original: str,
             return v
         v = replace(v, faithful=report, clean=_clean_with(v, report))
     return v
+
+
+#: Where `engine_form` keeps the BREPs it reads (one per process, removed at exit with step_for's exports).
+_ENGINE_FORM_DIR: list[str] = []
+
+
+def engine_form(pool: Any, step_path: str, *, timeout_s: float = 300) -> str:
+    """The STEP the engine actually judges for an input file: read through XCAF into a BREP (what
+    `repair_v4.repair_v4` and the eval's `RealEngine.open_workspace` do) and exported back by `step_for`, which is
+    what `_judged` meshes for every workspace. The two forms are NOT the same geometry to a mesher: lane D measured
+    4 of 11 near-threshold files changing a panel member's pass/fail between the original STEP and this one (gmsh_alt
+    0.00417 fail -> 0.0494 pass on Task 49's flipped file), while each form was bit-identical run to run. Anything
+    that labels an input - the re-probe that cuts the splits - must judge this form, or its label and the arms'
+    input verdict measure different files. A file the reader cannot read raises `CheckerUnavailable`."""
+    import atexit
+    import shutil
+    import tempfile
+
+    if not _ENGINE_FORM_DIR:
+        _ENGINE_FORM_DIR.append(tempfile.mkdtemp(prefix="engine_form_"))
+        atexit.register(shutil.rmtree, _ENGINE_FORM_DIR[0], True)
+    brep = os.path.join(tempfile.mkdtemp(dir=_ENGINE_FORM_DIR[0]), "input.brep")
+    read = pool.call("read_step_xcaf", {"path": str(step_path), "brep_out": brep}, timeout_s=timeout_s)
+    if not read.ok or read.value is None:
+        raise CheckerUnavailable(f"read_step_xcaf could not read {step_path!r}: {read.status}: {read.error}")
+    return step_for(pool, read.value["brep"])
 
 
 def h_mm_for(pool: Any, ws: Workspace) -> float:
@@ -1590,6 +1617,7 @@ __all__ = [
     "ai_generators",
     "default_judge",
     "default_judge_for",
+    "engine_form",
     "h_mm_for",
     "deliverable",
     "panel_passes",

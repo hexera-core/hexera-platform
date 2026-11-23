@@ -37,6 +37,12 @@ import math
 from collections.abc import Sequence
 
 MIN_SICN = 0.01
+#: Set in every child before it meshes. These ARE gmsh 4.15.2's defaults (so no verdict changes), pinned so a
+#: changed default or a later tuning cannot make the panel run-to-run nondeterministic: HXT (gmsh_prod's 3D fill) is
+#: multi-threaded and order-dependent once threads are on. Lane D measured every panel member bit-identical over
+#: 5 fresh runs of 11 near-threshold files under these values.
+REPRODUCIBLE: dict[str, float] = {"General.NumThreads": 1, "Mesh.MaxNumThreads1D": 1, "Mesh.MaxNumThreads2D": 1,
+                                  "Mesh.MaxNumThreads3D": 1, "Mesh.RandomSeed": 1}
 ALT_SIZE_DIVISOR = 20.0  # GmshAlt's element size: this many elements across the part's diagonal
 _METRES_PER_MM = 1e-3
 _TET_TYPES = (4, 11)  # gmsh element types: 4-node and 10-node tetrahedron
@@ -219,6 +225,8 @@ def run_in_process(payload: dict) -> dict:
     gmsh.initialize(interruptible=False)
     try:
         gmsh.option.setNumber("General.Terminal", 0)
+        for key, value in REPRODUCIBLE.items():
+            _set(gmsh, key, value)
         gmsh.logger.start()
         stage = STAGE_IMPORT
         boxes: dict[int, tuple] = {}

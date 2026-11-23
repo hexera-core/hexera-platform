@@ -47,7 +47,8 @@ def cmd_run(args: argparse.Namespace) -> int:
     from meshpipeline.cad.repair_v4.worker_pool import WorkerPool
 
     files = json.loads(Path(args.files).read_text())
-    pool = WorkerPool(1)
+    # a loaded host can take >30 s to start a kernel worker (Task 44's flake); start-up time is not a verdict
+    pool = WorkerPool(1, start_timeout_s=args.start_timeout_s)
     env = {k: os.environ.get(k) for k in ("OMP_NUM_THREADS", "OMP_PROC_BIND", "MKL_NUM_THREADS")}
     try:
         with Path(args.out).open("w") as handle:
@@ -96,6 +97,7 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--inputs", required=True)
     r.add_argument("--out", required=True)
     r.add_argument("--timeout-s", type=float, default=300.0)
+    r.add_argument("--start-timeout-s", type=float, default=600.0)
     c = sub.add_parser("compare")
     c.add_argument("paths", nargs="+")
     c.add_argument("--json", default=None)

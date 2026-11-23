@@ -637,8 +637,8 @@ def test_a_search_that_stopped_on_its_wall_was_not_measured() -> None:
     written as a CONCLUSIVE failure. Time is the machine's (the smoke ran at load 18 on 16 vCPU), not the file's: a
     wall stop that did not end clean is inconclusive, with or without candidates. Count stops (ops, exhausted,
     patience) stay conclusive: they are the same on any machine."""
-    smoke = dict(reason="wall", infrastructure_failed=False, inconclusive_candidates=0, verdict_candidates=0,
-                 out_clean=False)
+    smoke = {"reason": "wall", "infrastructure_failed": False, "inconclusive_candidates": 0, "verdict_candidates": 0,
+                 "out_clean": False}
     assert measurement.file_unmeasured(**smoke) is True
     assert measurement.file_unmeasured(**{**smoke, "verdict_candidates": 7}) is True
     assert measurement.file_unmeasured(**{**smoke, "out_clean": True}) is False      # clean is clean, however late
