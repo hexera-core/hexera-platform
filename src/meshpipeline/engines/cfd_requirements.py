@@ -874,10 +874,16 @@ def wall_fit(ask: Ask, first_m: float, wall_cell_m: float, *, cap_rel: float = F
                 "why": f"the {_mm(wall_cell_m)} cells at the wall leave room for no thicker first layer"}
     h30 = 2.0 * WALL_FUNCTIONS_BAND[0] * visc
     h1 = RESOLVED_Y_PLUS * visc                     # a resolved wall's first layer: y+ 1 at its top, as typed
-    return {"treatment": "resolved", "first_m": h1, "y_plus": y_plus_of(h1, how, yp),
-            "why": (f"wall functions do not suit this wall at these conditions: a first cell at y+ 30 would be "
-                    f"{_mm(h30)} high, more than the {_mm(wall_cell_m)} cells the passage needs at the wall "
-                    "allow, and a thinner one sits in the buffer layer (y+ 5-30), which no wall treatment models")}
+    out = {"treatment": "resolved", "first_m": h1, "y_plus": y_plus_of(h1, how, yp),
+           "why": (f"wall functions do not suit this wall at these conditions: a first cell at y+ 30 would be "
+                   f"{_mm(h30)} high, more than the {_mm(wall_cell_m)} cells the passage needs at the wall "
+                   "allow, and a thinner one sits in the buffer layer (y+ 5-30), which no wall treatment models")}
+    if not wall_functions_typed(ask):
+        # CFDREQ-25: wall functions only ACCEPTED (the proposal, or nothing said): the proposal itself says the wall is
+        # resolved where they do not fit, so keeping our cells across and resolving it is the ask applied, said with why
+        # (judged on the resolved first layer built); typed, it stays the nearest there is, and the y+ row a miss
+        out.update(fallback="cells", said=False)
+    return out
 
 
 def wall_words(ask: Ask, fit: Mapping, n: int, g: float, *, engine_words: str = "") -> str:
@@ -1138,20 +1144,78 @@ def wall_function_bore_cells(ask: Ask | None, *, bore_D: float, cells_across: in
     `cells_across` unchanged with no wall-function y+, a height, stack, wall or smallest size of the user's,
     a laminar flow, or a first layer that fits already; one too thick for the bore's log layer (past
     WALL_FUNCTION_BL_SHARE of its radius) is left to wall_fit, which says why."""
-    if (ask is None or ask.treatment != "functions" or ask.y_plus is None or ask.first_m is not None
+    typed = wall_functions_typed(ask)
+    if (ask is None or (ask.treatment != "functions" and not typed) or ask.y_plus is None or ask.first_m is not None
             or ask.total_m is not None or ask.wall_m is not None or ask.min_m is not None or not bore_D
             or (ask.req.get("physics") or {}).get("flow") != "internal"):
         return int(cells_across)
     h, missing, how = y_plus_height(float(ask.y_plus), ask.req.get("physics"), length_m=float(bore_D),
                                     length_from="the bore")
-    if h is None or missing or how.get("laminar") or h > WALL_FUNCTION_BL_SHARE * 0.5 * float(bore_D):
+    if h is None or missing or how.get("laminar"):
         return int(cells_across)
-    want = int(math.floor(float(cap_rel or FIRST_CAP_REL) * float(bore_D) / float(h)))
-    n = max(min(int(cells_across), want), min(int(cells_across), WALL_FUNCTION_MIN_CELLS_ACROSS))
+    cap = float(cap_rel or FIRST_CAP_REL)
+    deepest = WALL_FUNCTION_BL_SHARE * 0.5 * float(bore_D)
+    if h > deepest:
+        # CFDREQ-25: typed, the thickest first layer the bore's log layer holds, if its centre is still at y+ 30+
+        if not typed or y_plus_of(deepest, how, float(ask.y_plus)) < WALL_FUNCTIONS_BAND[0] * (1 - 1e-9):
+            return int(cells_across)
+        h = deepest
+    want = int(math.floor(cap * float(bore_D) / float(h)))
+    # CFDREQ-25: wall functions the user TYPED win over our minimum of cells across (warned); accepted ones do not
+    least = wall_function_hard_cells(cap) if typed else WALL_FUNCTION_MIN_CELLS_ACROSS
+    n = max(min(int(cells_across), want), min(int(cells_across), least))
     if n < int(cells_across):
         ask.wall_level_note = (f"the wall cells are {_mm(float(bore_D) / n)} ({n} across the bore, not "
                                f"{int(cells_across)}) so the wall-function first layer ({_mm(h)}) fits under them")
+        if n < WALL_FUNCTION_MIN_CELLS_ACROSS:
+            ask.wall_level_note += (f"; the passage now has {n} cells across its bore - we would normally keep at "
+                                    f"least {WALL_FUNCTION_MIN_CELLS_ACROSS}, but you asked for wall functions, so "
+                                    "the flow across the passage is coarser than we would choose")
     return n
+
+
+#: CFDREQ-24: the most a wall-function first layer may stand over the cell above it, as a height ratio (the census's
+#: GROWTH_MAX: the step a layer stack may take)
+WALL_FUNCTION_JUMP = 2.0
+
+
+def wall_function_keep_cell(ask: Ask | None, *, bore_D: float, wall_cell_m: float,
+                            cap_rel: float = FIRST_CAP_REL) -> float | None:
+    """CFDREQ-24, LOCAL REFINEMENT AT THE WALL SUITS THE WALL-FUNCTION LAYER: the smallest cell a local refinement (a
+    thin feature's) may put at the wall of an internal flow in wall-function mode - the first layer that will be built
+    there (the conditions' y+ on the bore, capped at `cap_rel` of the wall cell as wall_fit caps it) over
+    WALL_FUNCTION_JUMP. None when there is no such layer: no wall-function y+, a height or stack of the user's, a
+    laminar flow, or a wall that will be resolved."""
+    if (ask is None or (ask.treatment != "functions" and not wall_functions_typed(ask)) or ask.y_plus is None
+            or ask.first_m is not None or ask.total_m is not None or not bore_D or not wall_cell_m
+            or (ask.req.get("physics") or {}).get("flow") != "internal"):
+        return None
+    h, missing, how = y_plus_height(float(ask.y_plus), ask.req.get("physics"), length_m=float(bore_D),
+                                    length_from="the bore")
+    if h is None or missing or how.get("laminar"):
+        return None
+    built = float(h) if ask.treatment is None else min(float(h), float(cap_rel) * float(wall_cell_m))
+    if y_plus_of(built, how, float(ask.y_plus)) < WALL_FUNCTIONS_BAND[0] * (1 - 1e-9):
+        return None
+    return built / WALL_FUNCTION_JUMP
+
+
+def wall_functions_typed(ask: Ask | None) -> bool:
+    """CFDREQ-25: the user asked for wall functions in so many words - the conditions step's choice (not only the
+    proposal accepted), or a y+ of 30 or more typed in the notes (no wall treatment of the conditions behind it)."""
+    if ask is None or ask.y_plus is None:
+        return False
+    if ask.treatment == "functions":
+        return bool(ask.treatment_said)
+    return ask.treatment is None and float(ask.y_plus) >= WALL_FUNCTIONS_BAND[0]
+
+
+def wall_function_hard_cells(cap_rel: float) -> int:
+    """CFDREQ-25: the fewest cells across a bore that a TYPED wall-function ask may lower it to - the count at which the
+    engine's thickest first layer (`cap_rel` of the wall cell) is still inside the bore's log layer, a fifth of its
+    radius (WALL_FUNCTION_BL_SHARE; past it the outer flow, not the log law, sets the velocity at the first cell's
+    centre, so a wall function there is no model of the wall at all): snappyHexMesh 6, cfMesh 5."""
+    return max(1, int(math.ceil(float(cap_rel) / (WALL_FUNCTION_BL_SHARE * 0.5) - 1e-9)))
 
 
 @guarded(lambda ask, wake, **_k: wake)
@@ -2732,6 +2796,11 @@ def report(workspace, quality: Mapping, engine: str) -> dict | None:
                 yr := _y_plus_row(workspace, req, q, p)) is not None:
             # CFDREQ-19: a wall-function y+ is judged by the y+ the built mesh's wall cells give
             got = yr
+        elif field == "layers:y_plus" and status == "applied" and p.get("fallback") == "cells" and (
+                fl := _first_layer_row(workspace, req, q, p)) is not None:
+            # CFDREQ-25: accepted wall functions that did not fit the passage's cells: the resolved wall the proposal
+            # promised, judged on its own first layer, told with why
+            got = {**fl, "delivered": f"{built}; {fl['delivered']}"}
         elif field in ("layers:y_plus", "layers:first_height") and status == "applied" and (
                 fl := _first_layer_row(workspace, req, q, p)) is not None:
             got = fl
@@ -2872,6 +2941,12 @@ def _y_plus_row(workspace, req: Mapping, q: Mapping, p: Mapping) -> dict | None:
     if got is None:
         return None
     fl, cover = got
+    # CFDREQ-24: the y+ holds where the first cell is at the planned height with no jump to the cell above - the
+    # layer's shape (taller than its wall faces are wide) is no reason to say it is not there
+    share = _num_or_none(fl.get("area_first_at_plan_pct"))
+    if share is not None:
+        cover = share
+    under = _num_or_none(fl.get("area_under_jump_pct")) or 0.0
     cell = _num_or_none(fl.get("first_cell_m"))
     if cell:
         said = f"on the built mesh the wall's first cell is {_mm(cell)} (median)"
@@ -2889,8 +2964,16 @@ def _y_plus_row(workspace, req: Mapping, q: Mapping, p: Mapping) -> dict | None:
         hi = min(WALL_FUNCTION_RANGE[1], Y_PLUS_ASKED_BAND[1] * asked)
         said += f", not {MR._g(asked)} (y+ {MR._g(lo)} to {MR._g(hi)} meets it"
         said += (", and under 30 wall functions do not model the wall)" if y < WALL_FUNCTION_RANGE[0] else ")")
-    said += f"; layers of that height stand on {MR._g(cover)}% of the wall"
-    if not wide:
+    if share is None:
+        said += f"; layers of that height stand on {MR._g(cover)}% of the wall"
+    else:
+        said += f"; a first cell of that height stands on {MR._g(cover)}% of the wall"
+    if under > 0.0:
+        ratio = _num_or_none(fl.get("next_over_first"))
+        jump = f" (the cell above about {MR._g(round(1.0 / ratio, 1))} times thinner)" if ratio else ""
+        said += (f"; on {MR._g(under)}% it sits under much thinner cells{jump} - a jump in cell height going away "
+                 "from the wall, which the wall function's first cell should not have")
+    if not wide and under < 100.0 - cover - 1e-9:
         said += " - elsewhere the first cell is a different height, so y+ there is not the one said"
     if not ok_y and p.get("status") == "nearest" and p.get("built"):
         said += f"; {p['built']}"
@@ -2953,6 +3036,10 @@ def _first_layer_facts(workspace, req: Mapping, q: Mapping, p: Mapping) -> tuple
     out = {"applied": True, "met": bool(as_asked and grown), "measured": float(f"{written:.4g}"), "delivered": said}
     if measured_height:
         out["first_cell_m"] = float(first_cell)
+        # CFDREQ-24: the wall share at the planned height with no jump above it, the share under a jump, the ratio
+        for k in _AT_HEIGHT_KEYS:
+            if (v := _num_or_none(tall.get(k))) is not None:
+                out[k.removeprefix("layer_")] = v
     return out, float(cover)
 
 
@@ -2963,6 +3050,11 @@ def _num_or_none(v) -> float | None:
     return float(v)
 
 
+#: CFDREQ-24: the census's reading of the first cell at the planned height and the cell above it (height_quality)
+_AT_HEIGHT_KEYS = ("layer_area_first_at_plan_pct", "layer_area_under_jump_pct", "layer_next_over_first")
+_PLAN_KEYS = ("layer_area_at_plan_pct", "layer_first_cell_m", "layer_first_vs_plan")
+
+
 def built_first_cells(workspace, q: Mapping, planned_m: float) -> dict:
     """CFDREQ-14 on every engine: the wall's first cell against the planned first layer - the quality record's
     figures when its census measured them at that height (cfMesh), else measured here on the delivered polyMesh
@@ -2970,7 +3062,8 @@ def built_first_cells(workspace, q: Mapping, planned_m: float) -> dict:
     if q.get("layer_coverage_basis") == "height" and q.get("layer_first_planned_m"):
         try:
             if abs(float(q["layer_first_planned_m"]) - float(planned_m)) <= 0.01 * float(planned_m):
-                return {k: q.get(k) for k in ("layer_area_at_plan_pct", "layer_first_cell_m", "layer_first_vs_plan")}
+                return {k: q.get(k) for k in ("layer_area_at_plan_pct", "layer_first_cell_m", "layer_first_vs_plan",
+                                              *_AT_HEIGHT_KEYS) if k in q or k in _PLAN_KEYS}
         except (TypeError, ValueError):
             pass
     from meshpipeline.engines import layer_census as LC

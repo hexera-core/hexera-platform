@@ -146,7 +146,8 @@ def finalize(workspace_dir: str, intake_patches: list, engine: str, domain: str 
                        "layer_area_any_pct", "layers_requested", "layers_stated",
                        "layers_in_meshdict", "layer_coverage_shape_pct", "layer_coverage_basis",
                        "layer_first_planned_m", "layer_area_at_plan_pct", "layer_coverage_at_plan_pct",
-                       "layer_first_cell_m", "layer_first_vs_plan"):
+                       "layer_first_cell_m", "layer_first_vs_plan", "layer_area_first_at_plan_pct",
+                       "layer_area_under_jump_pct", "layer_next_over_first"):
                 q.pop(_k, None)
             q.update(census_quality(ws, intake_patches))
     except Exception:

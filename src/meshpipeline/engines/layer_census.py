@@ -168,6 +168,27 @@ def _quantile(values: np.ndarray, weights: np.ndarray, q: float) -> float | None
     return float(values[order][min(len(values) - 1, int(np.searchsorted(c, q * c[-1])))])
 
 
+def _far_face(owner, cstart, cf_face, geo, cells, centres, n0):
+    """One step out from the wall: for each cell (entered through the face centred at `centres`, the wall's outward
+    normal `n0`), its face farthest in from that face - (face, height, how parallel it is to the wall, its centre)."""
+    cnt = cstart[cells + 1] - cstart[cells]
+    kmax = int(cnt.max())
+    slot = cstart[cells][:, None] + np.arange(kmax)[None, :]
+    valid = np.arange(kmax)[None, :] < cnt[:, None]
+    faces = cf_face[np.minimum(slot, len(cf_face) - 1)]
+    uniq, inv = np.unique(faces, return_inverse=True)
+    inv = inv.reshape(faces.shape)
+    ufc, ufa = geo.of(uniq)
+    d = np.einsum("ijk,ik->ij", ufc[inv] - centres[:, None, :], -n0)
+    d = np.where(valid, d, -np.inf)
+    j = np.argmax(d, axis=1)
+    rows = np.arange(len(cells))
+    nj = ufa[inv[rows, j]]
+    nj = nj / np.maximum(np.linalg.norm(nj, axis=1), 1e-300)[:, None]
+    par = np.abs((nj * n0).sum(axis=1))
+    return faces[rows, j], d[rows, j], par, ufc[inv[rows, j]]
+
+
 def census(polymesh, n_layers: int, patches, planned_first_m: float | None = None) -> tuple[dict, str]:
     """(per-patch figures, "") - or ({}, why) when the mesh cannot be measured. Figures per named
     wall patch: faces, area_m2, area_with_any_layer, area_with_full_layers, mean_layers (each face
@@ -209,31 +230,18 @@ def census(polymesh, n_layers: int, patches, planned_first_m: float | None = Non
         cur_c = wc.copy()                                     # centre of the face entered through
         prev_h = np.full(nf, np.inf)
         alive = np.ones(nf, dtype=bool)
+        first_far = np.full(nf, -1, dtype=np.int64)          # the first cell's far face (CFDREQ-24)
+        first_far_c = np.zeros((nf, 3))
         for step in range(depth):
             if not alive.any():
                 break
             idx = np.flatnonzero(alive)
-            cells = cur_cell[idx]
-            cnt = cstart[cells + 1] - cstart[cells]
-            kmax = int(cnt.max())
-            slot = cstart[cells][:, None] + np.arange(kmax)[None, :]
-            valid = np.arange(kmax)[None, :] < cnt[:, None]
-            faces = cf_face[np.minimum(slot, len(cf_face) - 1)]
-            uniq, inv = np.unique(faces, return_inverse=True)
-            inv = inv.reshape(faces.shape)
-            ufc, ufa = geo.of(uniq)
-            d = np.einsum("ijk,ik->ij", ufc[inv] - cur_c[idx][:, None, :], -n0[idx])
-            d = np.where(valid, d, -np.inf)
-            j = np.argmax(d, axis=1)
+            best_f, h, par, far_c = _far_face(owner, cstart, cf_face, geo, cur_cell[idx], cur_c[idx], n0[idx])
             rows = np.arange(len(idx))
-            best_f, h = faces[rows, j], d[rows, j]
             if step == 0:
                 first_cell[idx] = np.maximum(h, 0.0)
-            nj = ufa[inv[rows, j]]
-            nj = nj / np.maximum(np.linalg.norm(nj, axis=1), 1e-300)[:, None]
-            par = np.abs((nj * n0[idx]).sum(axis=1))
-            if step == 0:
                 first_par[idx] = par
+                first_far[idx], first_far_c[idx] = best_f, far_c
             layer = ((h > 0) & (h < FLAT_RATIO * width[idx]) & (par > PARALLEL_COS)
                      & (h <= GROWTH_MAX * prev_h[idx]))
             hit = idx[layer]
@@ -246,7 +254,7 @@ def census(polymesh, n_layers: int, patches, planned_first_m: float | None = Non
             bf = best_f[go]
             o, nb = owner[bf], neigh[bf]
             cur_cell[nxt] = np.where(o == cur_cell[nxt], nb, o)
-            cur_c[nxt] = ufc[inv[rows[go], j[go]]]
+            cur_c[nxt] = far_c[rows[go]]
         capped = np.minimum(count, n_layers)
         total = float(A.sum())
         with_any = count >= 1
@@ -279,11 +287,35 @@ def census(polymesh, n_layers: int, patches, planned_first_m: float | None = Non
             at_plan = (with_any | one) & tall_ok
             capped_p = np.minimum(np.where(one & (count == 0), 1, count), n_layers)
             med = _median(first_cell, A)
+            # CFDREQ-24: A FIRST CELL AT THE PLANNED HEIGHT, AND THE CELL ABOVE IT. A wall-function layer as tall as
+            # its wall faces are wide fails both shape tests, so a 1.92 mm layer built exactly at plan read "layers
+            # on 0% of the wall" (yplab_e11_7821cb5b, three snappyHexMesh parts) - and hid what was wrong there: the
+            # cells above it were 0.35 mm, a jump of five times going away from the wall. With a plan, every face
+            # whose first cell is at the planned height (within PLAN_FIRST_TOL either way, its far face parallel) is
+            # read with the cell next out: under a cell more than GROWTH_MAX times thinner it stands under a jump
+            at_height = ((first_cell > 0) & (first_par > PARALLEL_COS) & tall_ok
+                         & (first_cell >= float(planned_first_m) / PLAN_FIRST_TOL))
+            ratio = np.full(nf, np.nan)
+            look = np.flatnonzero((at_height | at_plan) & (first_far >= 0) & (first_far < nI))
+            if len(look):
+                bf = first_far[look]
+                o, nb = owner[bf], neigh[bf]
+                beyond = np.where(o == owner[wall][look], nb, o)
+                _f, h2, _p, _c = _far_face(owner, cstart, cf_face, geo, beyond, first_far_c[look], n0[look])
+                ratio[look] = np.maximum(h2, 0.0) / np.maximum(first_cell[look], 1e-300)
+            jump = (at_height | at_plan) & np.isfinite(ratio) & (ratio < 1.0 / GROWTH_MAX)
+            # the share: CFDREQ-21's layers at plan, and a first cell at the planned height taller than its faces are
+            # wide where no jump sits above it (the jump is said, never counted as the layer asked)
+            y_share = at_plan | (at_height & ~jump)
+            seen = np.isfinite(ratio) & (at_height | at_plan)
             res[name].update({
                 "planned_first_m": float(planned_first_m),
                 "area_at_plan": round(float(A[at_plan].sum() / total), 4),
                 "coverage_at_plan_pct": round(float(100.0 * capped_p[at_plan].sum() / (n_layers * nf)), 2),
                 "first_vs_plan": (round(float(med) / float(planned_first_m), 2) if med is not None else None),
+                "area_first_at_plan": round(float(A[y_share].sum() / total), 4),
+                "area_under_jump": round(float(A[jump].sum() / total), 4),
+                "next_over_first": (round(float(_median(ratio[seen], A[seen])), 3) if seen.any() else None),
             })
     return res, ""
 
@@ -431,6 +463,9 @@ def height_quality(per: dict) -> dict:
     if s.get("first_cell_m") is not None:
         out["layer_first_cell_m"] = s["first_cell_m"]
         out["layer_first_vs_plan"] = s.get("first_vs_plan")
+    for k in ("area_first_at_plan_pct", "area_under_jump_pct", "next_over_first"):
+        if s.get(k) is not None:
+            out[f"layer_{k}"] = s[k]
     return out
 
 
@@ -463,6 +498,15 @@ def wall_summary(per: dict) -> dict:
                                                 for v in planned) / faces, 2)
         if out.get("first_cell_m") is not None:
             out["first_vs_plan"] = round(out["first_cell_m"] / p, 2)
+        # CFDREQ-24: the wall share at the planned height with no jump to the cell above, the share under one, and
+        # the cell above over the first cell (the largest patch's median)
+        if all("area_first_at_plan" in v for v in planned):
+            for k in ("area_first_at_plan", "area_under_jump"):
+                out[f"{k}_pct"] = round(100.0 * sum(float(v.get(k) or 0.0) * float(v["area_m2"])
+                                                    for v in planned) / area, 2)
+            ratios = [v for v in planned if v.get("next_over_first") is not None]
+            if ratios:
+                out["next_over_first"] = float(max(ratios, key=lambda v: float(v["area_m2"]))["next_over_first"])
     return out
 
 
