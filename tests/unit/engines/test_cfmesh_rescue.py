@@ -502,3 +502,76 @@ def test_a_candidate_with_both_is_said_plainly(tmp_path):
                     layers=lambda w: 100.0)
     assert out["rescue"]["kept"] == "optimised"
     assert "could not be built" not in out["rescue"]["note"]
+
+
+# --- INS-30: a rescue keeps every opening; a re-mesh carries the further passages (abc 99768) -------------------
+
+def _bnd(ws: Path, counts: dict) -> None:
+    body = "".join(f"    {n}\n    {{\n        type patch;\n        nFaces {c};\n        startFace 0;\n    }}\n"
+                   for n, c in counts.items())
+    (ws / "constant" / "polyMesh" / "boundary").write_text(
+        f"FoamFile\n{{\n    format ascii;\n    class polyBoundaryMesh;\n}}\n{len(counts)}\n(\n{body})\n")
+
+
+_ALL = {"inlet": 40, "outlet_1": 20, "outlet_3": 12, "fixedWalls": 900}
+_FIRST_ONLY = {"inlet": 40, "outlet_1": 20, "fixedWalls": 800}
+_SQUARE = {"cells": 201_037, "max_non_ortho": 73.5, "fatal": []}
+
+
+def _first_passage_remesher(calls: list):
+    inner = _runner(calls)
+
+    def run(argv, **kw):
+        out = inner(argv, **kw)
+        if "cartesianMesh" in argv[-1]:
+            _bnd(Path(kw["cwd"]), _FIRST_ONLY)   # the case's own surface: the first passage only
+        return out
+    return run
+
+
+def _rescue_two(ws, table, calls, passages=None):
+    _bnd(ws, _ALL)
+    return RS.rescue(ws, dict(_BROKEN), bashrc="/dev/null", deadline=time.monotonic() + 3600.0,
+                     mesher_seconds=30.0, measure=_measure(table), runner=_first_passage_remesher(calls),
+                     env={}, passages=passages)
+
+
+def test_a_re_mesh_of_a_case_of_several_passages_has_them_merged_in_again(tmp_path):
+    from meshpipeline.cad.fluid_passages import PASSAGES_FILE
+    ws = _ws(tmp_path)
+    (ws / PASSAGES_FILE).write_text("{}")
+    merged: list = []
+
+    def passages(w, *, bashrc, timeout):
+        merged.append(timeout)
+        (Path(w) / "constant" / "polyMesh" / "owner").write_text("merged")
+        _bnd(Path(w), _ALL)
+        return 0, False, ""
+
+    calls: list = []
+    out = _rescue_two(ws, {"optimised(as built)": _NOT_FIXED["optimised(as built)"], "merged": _SQUARE},
+                      calls, passages)
+    assert len(merged) == 1 and out["rescue"]["kept"] == RS.REMESHED
+    assert RS.faced_patches(ws / "constant" / "polyMesh") >= {"outlet_3"}
+
+
+def test_a_re_mesh_whose_passages_do_not_merge_is_no_candidate(tmp_path):
+    from meshpipeline.cad.fluid_passages import PASSAGES_FILE
+    ws = _ws(tmp_path)
+    (ws / PASSAGES_FILE).write_text("{}")
+    calls: list = []
+    out = _rescue_two(ws, {"optimised(as built)": _NOT_FIXED["optimised(as built)"], "remeshed": _SQUARE},
+                      calls, lambda w, **kw: (1, False, "[CFMESH] passage 2 did not mesh"))
+    assert out["rescue"]["kept"] != RS.REMESHED
+    step = [t for t in out["rescue"]["tried"] if t["step"] == RS.REMESHED][0]
+    assert "passage 2" in step["passages"] and step["openings_rule"] == RS.RESCUE_PORTS_RULE
+    assert "outlet_3" in RS.faced_patches(ws / "constant" / "polyMesh"), "the delivered mesh keeps outlet_3"
+
+
+def test_a_re_mesh_that_lost_an_opening_is_not_kept_however_square(tmp_path):
+    ws = _ws(tmp_path)                    # one passage, yet the re-mesh dropped the region holding outlet_3
+    calls: list = []
+    out = _rescue_two(ws, {"optimised(as built)": _NOT_FIXED["optimised(as built)"], "remeshed": _SQUARE}, calls)
+    assert out["rescue"]["kept"] != RS.REMESHED
+    assert any(t.get("lost_openings") == ["outlet_3"] for t in out["rescue"]["tried"])
+    assert "outlet_3" in RS.faced_patches(ws / "constant" / "polyMesh")

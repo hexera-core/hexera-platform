@@ -135,6 +135,17 @@ SCRATCH = "_rescue"
 _POLYMESH = Path("constant") / "polyMesh"
 #: The name the protective re-mesh is recorded and kept under.
 REMESHED = "re-meshed protecting the layers"
+#: INS-30: a rescued mesh keeps every opening the mesh as built held, and a re-mesh carries the further passages
+RESCUE_PORTS_RULE = "INS-30"
+
+
+def faced_patches(polymesh: Path) -> set[str] | None:
+    """INS-30: the patches a mesh holds faces of, or None when its boundary cannot be read (nothing judged)."""
+    from meshpipeline.engines.layer_census import NotMeasurable, _boundary
+    try:
+        return {name for name, (_, n) in _boundary(polymesh / "boundary").items() if int(n) > 0}
+    except (OSError, NotMeasurable):
+        return None
 
 
 def untangle_stalled(log_text: str) -> str:
@@ -311,7 +322,8 @@ def rescue(workspace, q: dict, *, bashrc: str, deadline: float, mesher_seconds: 
            measure: Callable[..., dict] | None = None,
            runner: Callable[..., Any] | None = None, env: dict | None = None,
            is_2d: bool = False, limit: float | None = None,
-           layers: Callable[..., float | None] | None = None) -> dict:
+           layers: Callable[..., float | None] | None = None,
+           passages: Callable[..., tuple[int, bool, str]] | None = None) -> dict:
     """The quality record of the mesh left in `workspace` after the rescue: `q` itself when the
     mesh is not near its edge (or it is past a rescue's cell limit), else the best measured
     candidate's record, with `rescue` saying what was tried and kept. Each step runs its PLANNED
@@ -320,7 +332,10 @@ def rescue(workspace, q: dict, *, bashrc: str, deadline: float, mesher_seconds: 
     a skip: with a valid mesh in hand that mesh is kept (`guard_kept`, TIME-8), else the attempt
     is replayed (TIME-3). `mesher_seconds` is the first cartesianMesh's wall time, kept in the
     record only; `check_seconds` the first checkMesh's - the room a step leaves for the
-    measurement after it. Neither decides a step."""
+    measurement after it. Neither decides a step. INS-30: a candidate that lost an opening the mesh as built
+    held is no candidate, and a protective re-mesh of a case with further passages (PASSAGES_FILE) has them
+    meshed and merged again (`passages`, engines/cfmesh/native.mesh_passages) before it is measured - the re-mesh
+    reads the case's own surface, the first passage only (abc 99768: outlet_3 lost in every rescued mesh)."""
     why = near_edge(q, limit)
     if not why:
         return q
@@ -334,6 +349,13 @@ def rescue(workspace, q: dict, *, bashrc: str, deadline: float, mesher_seconds: 
             f"{int(cells):,} cells is over the {RESCUE_MAX_CELLS:,} a rescue may copy")})
     if not (ws / _POLYMESH / "owner").exists():
         return q
+    held = faced_patches(ws / _POLYMESH) or set()
+
+    def _lost() -> list[str]:
+        now = faced_patches(ws / _POLYMESH)
+        return sorted(held - now) if now is not None else []
+
+    from meshpipeline.cad.fluid_passages import PASSAGES_FILE
     from meshpipeline.engines.cfmesh.foam_exec import _foam_env, check_mesh
     from meshpipeline.sandbox.safe_exec import run_guarded
     check: Callable[..., dict] = measure if measure is not None else check_mesh
@@ -403,8 +425,11 @@ def rescue(workspace, q: dict, *, bashrc: str, deadline: float, mesher_seconds: 
     def _consider(name: str, cand_q: dict | None, step: dict) -> None:
         nonlocal best_q, best_dir, best_name, kept_dict
         step.update(_brief(cand_q) if cand_q else {"measured": False})
+        lost = _lost() if cand_q else []
+        if lost:
+            step.update(lost_openings=lost, openings_rule=RESCUE_PORTS_RULE)
         record["tried"].append(step)
-        if cand_q and better(cand_q, best_q):
+        if cand_q and not lost and better(cand_q, best_q):
             new_dir = scratch / name.replace(" ", "_")
             shutil.rmtree(new_dir, ignore_errors=True)
             (ws / _POLYMESH).rename(new_dir)
@@ -486,13 +511,30 @@ def rescue(workspace, q: dict, *, bashrc: str, deadline: float, mesher_seconds: 
                           budget)
                 step = {"step": "re-meshed protecting the layers", "rc": rc,
                         "seconds": round(time.monotonic() - t, 1)}
+                if rc == 0 and (ws / _POLYMESH / "owner").exists() and (ws / PASSAGES_FILE).exists():
+                    # INS-30: the re-mesh is of the first passage; the others are meshed and merged into it again
+                    from meshpipeline.engines.cfmesh.native import mesh_passages
+                    merge: Callable[..., tuple[int, bool, str]] = passages if passages is not None else mesh_passages
+                    t_p = time.monotonic()
+                    p_rc, _, p_why = merge(ws, bashrc=bashrc, timeout=_left())
+                    step["passages_s"] = round(time.monotonic() - t_p, 1)
+                    if p_rc != 0:
+                        rc, step["rc"] = p_rc if p_rc != -1 else 1, p_rc
+                        step.update(passages=p_why or "the further passages did not mesh",
+                                    openings_rule=RESCUE_PORTS_RULE)
                 if rc == -1:
                     shutil.rmtree(ws / _POLYMESH, ignore_errors=True)
                     _trip(REMESHED, budget, work)
                 elif rc == 0 and (ws / _POLYMESH / "owner").exists():
                     remesh_q = _measure("re-meshed")
                     remesh_dir = scratch / "remeshed_raw"
-                    if remesh_q and near_edge(remesh_q, limit):
+                    lost = _lost() if remesh_q else []
+                    if lost:
+                        # INS-30: a re-mesh that lost an opening is no candidate, however square its cells
+                        record["tried"].append({**step, **_brief(remesh_q), "lost_openings": lost,
+                                                "openings_rule": RESCUE_PORTS_RULE})
+                        shutil.rmtree(ws / _POLYMESH, ignore_errors=True)
+                    elif remesh_q and near_edge(remesh_q, limit):
                         # keep the raw re-mesh aside, optimise it too, and let all three compete
                         (ws / _POLYMESH).rename(remesh_dir)
                         record["tried"].append({**step, **_brief(remesh_q)})
@@ -506,7 +548,8 @@ def rescue(workspace, q: dict, *, bashrc: str, deadline: float, mesher_seconds: 
                     else:
                         _consider("re-meshed protecting the layers", remesh_q, step)
                 else:
-                    step["error"] = _tail(ws / "cartesianMesh_rescue.log")
+                    if "passages" not in step:
+                        step["error"] = _tail(ws / "cartesianMesh_rescue.log")
                     record["tried"].append(step)
                     shutil.rmtree(ws / _POLYMESH, ignore_errors=True)
     except Exception:  # noqa: BLE001 - a lever must never lose the mesh already built
