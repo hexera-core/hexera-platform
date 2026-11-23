@@ -24,9 +24,12 @@ Idempotent: a staged file whose bytes hash to the manifest is left alone, and an
 members is missing is never fetched. Resumable: every file lands via a `.partial` sibling and an atomic
 rename, so a killed run never leaves a truncated file at a final path; archives are fetched into
 `<scratch>/*.part` (ranged continuation) and finished archives are skipped on the next run because
-their members are already staged. A hash mismatch - archive, direct file, or a file already on disk -
-is a StageError, never a warning, and a file on disk that is wrong is not overwritten behind the
-owner's back.
+their members are already staged. A hash mismatch on a download (archive or direct file) is a
+StageError, never a warning; every archive is still tried and ALL problems are reported at the end.
+A file already on disk that no longer hashes to the manifest (bit rot, a reclaim) is renamed
+`*.corrupt` and re-staged from a verified source: what lands is always checked against the manifest,
+so a bad file can neither wedge the run nor be trusted. `--check` runs the preflight (bsdtar, scratch
+space, per-source counts) with no download.
 
 The Fusion 360 Gallery licence is not cleared (non-commercial research, no redistribution). The
 allow-list `ALLOWED_SOURCES` is enforced by `stage()` itself: it takes no parameter to widen it, an
@@ -187,11 +190,20 @@ def default_walk(archive: Path, work: Path) -> Iterator[tuple[str, Callable[[], 
         magic = handle.read(len(_SEVENZ_MAGIC))
     if magic != _SEVENZ_MAGIC:
         raise StageError(f"{archive.name}: not a zip, tar or 7z archive")
+    if shutil.which("bsdtar") is None:
+        raise StageError("bsdtar is not on PATH; cannot extract a 7z archive")
+    probe = work.parent
+    if shutil.disk_usage(probe).free < 2 * archive.stat().st_size:
+        raise StageError(f"scratch {probe} has less than 2x the archive's size free; "
+                         f"not extracting {archive.name}")
     into = work / "extract"
     shutil.rmtree(into, ignore_errors=True)
     into.mkdir(parents=True)
     try:
-        subprocess.run(["bsdtar", "-xf", str(archive), "-C", str(into)], check=True)
+        try:
+            subprocess.run(["bsdtar", "-xf", str(archive), "-C", str(into)], check=True)
+        except subprocess.CalledProcessError as exc:
+            raise StageError(f"bsdtar failed on {archive.name}: exit {exc.returncode}") from exc
         for path in sorted(p for p in into.rglob("*") if p.is_file()):
             yield str(path.relative_to(into)), (lambda path=path: path.open("rb"))  # type: ignore[misc]
     finally:
@@ -200,10 +212,16 @@ def default_walk(archive: Path, work: Path) -> Iterator[tuple[str, Callable[[], 
 
 # --------------------------------------------------------------------------- staging
 
+#: Free scratch required before a run that has a 7z archive to fetch (archive + full extraction + the
+#: member tee, with the largest ABC chunk in mind). Overridable: `--min-free-gb`.
+DEFAULT_MIN_FREE_BYTES = 8 << 30
+
+
 @dataclass
 class StageReport:
     staged: int = 0
     already_staged: int = 0
+    quarantined: int = 0
     archives_fetched: int = 0
     files_fetched: int = 0
 
@@ -212,21 +230,56 @@ def _final(inputs: Path, e: Any) -> Path:
     return inputs / e.sha256 / Path(e.name).name
 
 
+def _fsync(path: Path) -> None:
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
 def _place(src: Path, final: Path, want_sha: str) -> None:
-    """Copy `src` next to `final`, verify the copy, and rename it into place atomically."""
+    """Copy `src` next to `final`, fsync and verify the COPY (not the bytes that were read), then
+    rename it into place atomically. A reclaim at any point leaves either nothing or a whole file."""
     final.parent.mkdir(parents=True, exist_ok=True)
     partial = final.with_name(final.name + ".partial")
     shutil.copyfile(src, partial)
+    _fsync(partial)
     got = sha256_file(partial)
     if got != want_sha:
         partial.unlink()
         raise StageError(f"{final.name}: sha256 {got} != manifest {want_sha}")
     os.replace(partial, final)
+    try:
+        _fsync(final.parent)
+    except OSError:  # directory fsync is best effort (not every filesystem allows it)
+        pass
 
 
-def _clean_scratch(scratch: Path) -> None:
-    for stale in scratch.glob("*.partial"):
+def _clean_scratch(scratch: Path, inputs: Path) -> None:
+    for stale in list(scratch.glob("*.partial")) + list(inputs.glob("*/*.partial")):
         stale.unlink()
+
+
+def preflight(archive_urls: list[str], scratch: Path, *, min_free_bytes: int = DEFAULT_MIN_FREE_BYTES,
+              which: Callable[[str], str | None] = shutil.which,
+              free: Callable[[Path], int] | None = None) -> list[str]:
+    """Everything that can be known before the first download. Returns the problems (empty = fine)."""
+    problems: list[str] = []
+    sevenz = [u for u in archive_urls if u.lower().split("?")[0].endswith(".7z")]
+    if sevenz:
+        if which("bsdtar") is None:
+            problems.append(f"bsdtar is not on PATH but {len(sevenz)} pending archive(s) are 7z "
+                            f"(Linux: apt-get install libarchive-tools); it would fail only after a "
+                            f"multi-GB download")
+        probe = scratch
+        while not probe.exists() and probe != probe.parent:
+            probe = probe.parent
+        have = free(probe) if free is not None else shutil.disk_usage(probe).free
+        if have < min_free_bytes:
+            problems.append(f"scratch {scratch} has {have >> 20} MiB free, need {min_free_bytes >> 20} "
+                            f"MiB for a 7z archive plus its extraction (--scratch, --min-free-gb)")
+    return problems
 
 
 def _stage_direct(e: Any, inputs: Path, scratch: Path, download: Download, key: str) -> None:
@@ -241,15 +294,27 @@ def _stage_direct(e: Any, inputs: Path, scratch: Path, download: Download, key: 
     part.unlink()
 
 
+def _fetch_verified_archive(url: str, archive_sha: str, part: Path, download: Download) -> None:
+    """Download into `part` (continuing a partial one) and check the archive hash. A mismatch after a
+    CONTINUED download may just be a hybrid of two upstream versions (Range has no If-Range), so the
+    partial is discarded and fetched fresh exactly once before the mismatch is declared."""
+    resumed = part.exists() and part.stat().st_size > 0
+    for attempt in (0, 1):
+        download(url, part)
+        got = sha256_file(part)
+        if got == archive_sha:
+            return
+        part.unlink()
+        if not (resumed and attempt == 0):
+            raise StageError(f"archive {url}: sha256 {got} != manifest archive_sha256 {archive_sha}; "
+                             f"nothing staged from it")
+        resumed = False
+
+
 def _stage_archive(url: str, archive_sha: str, wanted: list[Any], inputs: Path, scratch: Path,
                    download: Download, walk: Walk, key: str) -> None:
     part = scratch / f"{key}.part"
-    download(url, part)
-    got = sha256_file(part)
-    if got != archive_sha:
-        part.unlink()
-        raise StageError(f"archive {url}: sha256 {got} != manifest archive_sha256 {archive_sha}; "
-                         f"nothing staged from it")
+    _fetch_verified_archive(url, archive_sha, part, download)
     by_sha: dict[str, list[Any]] = {}
     for e in wanted:
         by_sha.setdefault(e.sha256, []).append(e)
@@ -279,15 +344,25 @@ def _stage_archive(url: str, archive_sha: str, wanted: list[Any], inputs: Path, 
 
 def stage(entries: Any, inputs: Path, *, download: Download = resumable_download,
           walk: Walk = default_walk, scratch: Path | None = None,
+          min_free_bytes: int = DEFAULT_MIN_FREE_BYTES, check_only: bool = False,
+          which: Callable[[str], str | None] = shutil.which,
           log: Callable[[str], None] = lambda msg: None) -> StageReport:
-    """Stage every entry under `inputs`. Raises HeldSourceError before any I/O if any entry is not
-    on the allow-list, StageError on any hash mismatch or missing member."""
+    """Stage every entry under `inputs`.
+
+    Raises HeldSourceError before any I/O if any entry is not on the allow-list; StageError before
+    any download if the preflight fails; and, AFTER trying every archive and file, one StageError
+    listing every hash mismatch / missing member. A staged file that no longer hashes to the manifest
+    is renamed `*.corrupt` and re-staged from a verified source (never trusted, never a wedge)."""
     entries = list(entries)
     refuse_unallowed(entries)
     scratch = scratch if scratch is not None else inputs / ".stage-work"
+    bad = [e.name for e in entries if e.archive_sha256 is None and not (e.url or "").strip()]
+    if bad:
+        raise StageError(f"{len(bad)} entr{'y' if len(bad) == 1 else 'ies'} with no URL and no archive "
+                         f"hash cannot be fetched (e.g. {bad[0]}); inject entries need a source")
     inputs.mkdir(parents=True, exist_ok=True)
     scratch.mkdir(parents=True, exist_ok=True)
-    _clean_scratch(scratch)
+    _clean_scratch(scratch, inputs)
     fetch = _guarded(download)
     report = StageReport()
 
@@ -297,25 +372,48 @@ def stage(entries: Any, inputs: Path, *, download: Download = resumable_download
         final = _final(inputs, e)
         if final.exists():
             got = sha256_file(final)
-            if got != e.sha256:
-                raise StageError(f"{final}: staged file has sha256 {got}, manifest says {e.sha256}; "
-                                 f"corrupt, NOT overwritten - delete it to re-stage")
-            report.already_staged += 1
-        elif e.archive_sha256 is None:
+            if got == e.sha256:
+                report.already_staged += 1
+                continue
+            quarantine = final.with_name(final.name + ".corrupt")
+            os.replace(final, quarantine)
+            report.quarantined += 1
+            log(f"QUARANTINED {final} (sha256 {got}, manifest {e.sha256}) -> {quarantine.name}; re-staging")
+        if e.archive_sha256 is None:
             direct.append(e)
         else:
             archives.setdefault((e.url, e.archive_sha256), []).append(e)
 
+    problems = preflight([u for u, _ in archives], scratch, min_free_bytes=min_free_bytes, which=which)
+    if problems:
+        raise StageError("preflight failed, nothing was downloaded:\n  " + "\n  ".join(problems))
+    if check_only:
+        return report
+
+    errors: list[str] = []
     for e in direct:
-        _stage_direct(e, inputs, scratch, fetch, hashlib.sha256(e.url.encode()).hexdigest()[:16])
-        report.files_fetched += 1
-        report.staged += 1
+        try:
+            _stage_direct(e, inputs, scratch, fetch, hashlib.sha256(e.url.encode()).hexdigest()[:16])
+            report.files_fetched += 1
+            report.staged += 1
+        except HeldSourceError:
+            raise
+        except StageError as exc:
+            errors.append(str(exc))
     for i, ((url, archive_sha), wanted) in enumerate(archives.items(), 1):
         log(f"archive {i}/{len(archives)}: {url} ({len(wanted)} member(s))")
-        _stage_archive(url, archive_sha, wanted, inputs, scratch, fetch, walk,
-                       hashlib.sha256(url.encode()).hexdigest()[:16])
-        report.archives_fetched += 1
-        report.staged += len(wanted)
+        try:
+            _stage_archive(url, archive_sha, wanted, inputs, scratch, fetch, walk,
+                           hashlib.sha256(url.encode()).hexdigest()[:16])
+            report.archives_fetched += 1
+            report.staged += len(wanted)
+        except HeldSourceError:
+            raise
+        except StageError as exc:
+            errors.append(str(exc))
+    if errors:
+        raise StageError(f"{len(errors)} problem(s); everything else was staged and verified:\n  "
+                         + "\n  ".join(errors))
     if not any(scratch.iterdir()):
         scratch.rmdir()
     return report
@@ -329,7 +427,14 @@ def main(argv: list[str] | None = None, *, download: Download = resumable_downlo
     parser.add_argument("--pool", default=str(pool.OUT))
     parser.add_argument("--inputs", required=True, help="the directory run_arm's --inputs points at")
     parser.add_argument("--scratch", default=None,
-                        help="where archives are downloaded/extracted (default <inputs>/.stage-work)")
+                        help="where archives are downloaded/extracted (default <inputs>/.stage-work; put "
+                             "it OUTSIDE a directory that is later synced to a bucket)")
+    parser.add_argument("--check", action="store_true",
+                        help="preflight only: allow-list, per-source counts, bsdtar, scratch space; "
+                             "downloads nothing")
+    parser.add_argument("--min-free-gb", type=float, default=DEFAULT_MIN_FREE_BYTES / (1 << 30))
+    parser.add_argument("--strict-sources", action="store_true",
+                        help="exit 3 if any allowed source has no entries in the manifest")
     args = parser.parse_args(argv)
     try:
         entries = pool.read_pool(Path(args.pool))
@@ -337,16 +442,33 @@ def main(argv: list[str] | None = None, *, download: Download = resumable_downlo
         for source, rows in sorted(held.items()):
             print(f"HELD {source}: {len(rows)} manifest entr{'y' if len(rows) == 1 else 'ies'} NOT staged "
                   f"- {HELD_SOURCES[source]}", file=sys.stderr)
+        counts = dict.fromkeys(sorted(ALLOWED_SOURCES), 0)
+        for e in allowed:
+            counts[e.source] += 1
+        print("manifest entries per allowed source: " + ", ".join(f"{s} {n}" for s, n in counts.items()),
+              flush=True)
+        empty = [s for s, n in counts.items() if n == 0]
+        if empty:
+            print(f"WARNING: allowed source(s) with ZERO manifest entries: {', '.join(empty)} - the "
+                  f"staged benchmark will be missing that whole class of inputs", file=sys.stderr)
         report = stage(allowed, Path(args.inputs), download=download,
                        scratch=Path(args.scratch) if args.scratch else None,
+                       min_free_bytes=int(args.min_free_gb * (1 << 30)), check_only=args.check,
                        log=lambda m: print(m, flush=True))
     except StageError as exc:
         print(f"STAGE FAILED: {exc}", file=sys.stderr)
         return 2
-    print(f"staged {report.staged} new, {report.already_staged} already staged and verified, "
-          f"{report.archives_fetched} archive(s) and {report.files_fetched} direct file(s) fetched; "
-          f"{sum(len(v) for v in held.values())} held")
-    return 0
+    except (OSError, subprocess.CalledProcessError) as exc:
+        print(f"STAGE FAILED (interrupted, rerun to resume): {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 2
+    if args.check:
+        print("preflight OK; nothing downloaded")
+    else:
+        print(f"staged {report.staged} new, {report.already_staged} already staged and verified, "
+              f"{report.quarantined} corrupt quarantined and re-staged, {report.archives_fetched} "
+              f"archive(s) and {report.files_fetched} direct file(s) fetched; "
+              f"{sum(len(v) for v in held.values())} held")
+    return 3 if (empty and args.strict_sources) else 0
 
 
 if __name__ == "__main__":

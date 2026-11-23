@@ -6,6 +6,8 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import io
+import shutil
+import subprocess
 import sys
 import tarfile
 import zipfile
@@ -195,15 +197,104 @@ def test_crash_mid_member_never_leaves_a_truncated_final_file(tmp_path: Path) ->
     assert (tmp_path / "in" / sha(b"BBBB") / "b.stp").read_bytes() == b"BBBB"
 
 
-def test_stale_partial_download_is_not_mistaken_for_an_archive(tmp_path: Path) -> None:
+def _key(url: str) -> str:
+    return hashlib.sha256(url.encode()).hexdigest()[:16]
+
+
+class AppendingNet(FakeNet):
+    """Behaves like resumable_download: it CONTINUES whatever is already in dest."""
+
+    def __call__(self, url: str, dest: Path) -> None:
+        self.calls.append(url)
+        have = dest.stat().st_size if dest.exists() else 0
+        with dest.open("ab") as out:
+            out.write(self.blobs[url][have:])
+
+
+def test_stale_partial_of_a_different_upstream_version_is_refetched_fresh_once(tmp_path: Path) -> None:
+    z = zip_bytes({"a.stp": b"A" * 100})
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    (scratch / f"{_key('u')}.part").write_bytes(b"hybrid-from-an-older-upstream")  # the REAL key
+    net = AppendingNet({"u": z})
+    run([entry("a.stp", b"A" * 100, "u", z)], tmp_path / "in", net)
+    assert net.calls == ["u", "u"]  # resumed attempt mismatched, one fresh refetch succeeded
+    assert (tmp_path / "in" / sha(b"A" * 100) / "a.stp").exists()
+
+
+def test_a_genuinely_wrong_archive_still_fails_after_the_single_retry(tmp_path: Path) -> None:
     z = zip_bytes({"a.stp": b"A"})
     scratch = tmp_path / "scratch"
     scratch.mkdir()
-    for p in ("junk.part", "junk.partial"):
-        (scratch / p).write_bytes(b"truncated")
+    (scratch / f"{_key('u')}.part").write_bytes(b"x")
+    net = AppendingNet({"u": zip_bytes({"a.stp": b"B"})})
+    with pytest.raises(stage.StageError, match="archive"):
+        run([entry("a.stp", b"A", "u", z)], tmp_path / "in", net)
+    assert net.calls == ["u", "u"]  # not an unbounded retry loop
+
+
+def test_stale_member_partials_are_swept(tmp_path: Path) -> None:
+    z = zip_bytes({"a.stp": b"A"})
+    d = tmp_path / "in" / sha(b"A")
+    d.mkdir(parents=True)
+    (d / "a.stp.partial").write_bytes(b"half")
+    run([entry("a.stp", b"A", "u", z)], tmp_path / "in", FakeNet({"u": z}))
+    assert not list((tmp_path / "in").rglob("*.partial"))
+
+
+def test_crash_inside_the_copy_leaves_no_truncated_final_file(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    z = zip_bytes({"a.stp": b"AAAA", "b.stp": b"BBBB"})
     net = FakeNet({"u": z})
-    run([entry("a.stp", b"A", "u", z)], tmp_path / "in", net)
-    assert (tmp_path / "in" / sha(b"A") / "a.stp").read_bytes() == b"A"
+    entries = [entry("a.stp", b"AAAA", "u", z), entry("b.stp", b"BBBB", "u", z)]
+    real = stage.shutil.copyfile
+    n = {"i": 0}
+
+    def dying(src, dst, *a, **k):
+        n["i"] += 1
+        if n["i"] == 2:  # the second PLACE: write half, then the VM goes away
+            Path(dst).write_bytes(Path(src).read_bytes()[:2])
+            raise RuntimeError("vm reclaimed")
+        return real(src, dst, *a, **k)
+
+    monkeypatch.setattr(stage.shutil, "copyfile", dying)
+    with pytest.raises(RuntimeError, match="reclaimed"):
+        run(entries, tmp_path / "in", net)
+    for p in (tmp_path / "in").rglob("*"):
+        if p.is_file() and p.suffix != ".partial":
+            assert sha(p.read_bytes()) == p.parent.name
+    monkeypatch.setattr(stage.shutil, "copyfile", real)
+    run(entries, tmp_path / "in", net)
+    assert (tmp_path / "in" / sha(b"BBBB") / "b.stp").read_bytes() == b"BBBB"
+    assert not list((tmp_path / "in").rglob("*.partial"))
+
+
+def test_all_problems_are_reported_together_and_the_rest_is_still_staged(tmp_path: Path) -> None:
+    z1, z2, z3 = zip_bytes({"a.stp": b"A"}), zip_bytes({"b.stp": b"B"}), zip_bytes({"c.stp": b"C"})
+    net = FakeNet({"u1": zip_bytes({"a.stp": b"X"}), "u2": z2, "u3": z3})
+    entries = [entry("a.stp", b"A", "u1", z1), entry("b.stp", b"B", "u2", z2),
+               entry("c.stp", b"C", "u3", z3),
+               pool.PoolEntry("m.stp", "nist", sha(b"M"), "u2", sha(z2), "lic", None)]  # not in u2
+    with pytest.raises(stage.StageError) as err:
+        run(entries, tmp_path / "in", net)
+    msg = str(err.value)
+    assert "2 problem" in msg and "u1" in msg and "u2" in msg
+    assert (tmp_path / "in" / sha(b"C") / "c.stp").exists()  # u3 was still staged after u1/u2 failed
+
+
+def test_fsync_runs_before_the_rename(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    order: list[str] = []
+    monkeypatch.setattr(stage.os, "fsync", lambda fd: order.append("fsync"))
+    real_replace = stage.os.replace
+
+    def replace(a, b):
+        order.append("replace")
+        real_replace(a, b)
+
+    monkeypatch.setattr(stage.os, "replace", replace)
+    z = zip_bytes({"a.stp": b"A"})
+    run([entry("a.stp", b"A", "u", z)], tmp_path / "in", FakeNet({"u": z}))
+    assert order.index("fsync") < order.index("replace")
 
 
 # ------------------------------------------------------------------ sha256 verification REJECTS
@@ -237,18 +328,28 @@ def test_member_whose_bytes_differ_from_the_manifest_is_never_staged(tmp_path: P
     assert not (tmp_path / "in" / sha(b"tampered")).exists()
 
 
-def test_corrupted_already_staged_file_is_a_hard_failure_not_silently_accepted(tmp_path: Path) -> None:
+def test_corrupted_already_staged_file_is_quarantined_and_restaged_from_a_verified_source(
+        tmp_path: Path) -> None:
     z = zip_bytes({"a.stp": b"A"})
     net = FakeNet({"u": z})
     entries = [entry("a.stp", b"A", "u", z)]
     run(entries, tmp_path / "in", net)
     target = tmp_path / "in" / sha(b"A") / "a.stp"
     target.write_bytes(b"A-but-bitrotted")
-    net.calls.clear()
-    with pytest.raises(stage.StageError, match="sha256"):
-        run(entries, tmp_path / "in", net)
-    assert target.read_bytes() == b"A-but-bitrotted"  # not overwritten behind the owner's back
-    assert net.calls == []
+    report = run(entries, tmp_path / "in", net)
+    assert report.quarantined == 1 and net.calls == ["u", "u"]
+    assert target.read_bytes() == b"A"  # replaced by bytes verified against the manifest
+    assert (target.parent / "a.stp.corrupt").read_bytes() == b"A-but-bitrotted"  # kept as evidence
+
+
+def test_a_restage_that_is_itself_corrupt_is_still_a_hard_failure(tmp_path: Path) -> None:
+    z = zip_bytes({"a.stp": b"A"})
+    entries = [entry("a.stp", b"A", "u", z)]
+    run(entries, tmp_path / "in", FakeNet({"u": z}))
+    (tmp_path / "in" / sha(b"A") / "a.stp").write_bytes(b"rot")
+    with pytest.raises(stage.StageError, match="archive"):
+        run(entries, tmp_path / "in", FakeNet({"u": zip_bytes({"a.stp": b"other"})}))
+    assert not (tmp_path / "in" / sha(b"A") / "a.stp").exists()  # the bad bytes were NOT put back
 
 
 def test_good_file_passes_the_same_verification(tmp_path: Path) -> None:
@@ -381,6 +482,7 @@ def test_7z_archives_go_through_bsdtar_and_are_staged_by_content(
         (into / "00500350" / "other.step").write_bytes(b"other")
 
     monkeypatch.setattr(stage.subprocess, "run", fake_bsdtar)
+    monkeypatch.setattr(stage.shutil, "which", lambda n: "/bin/bsdtar")
     net = FakeNet({"u": archive})
     run([entry("abc/0050_x_step_000.step", data, "u", archive, "abc_fail")], tmp_path / "in", net)
     assert calls and calls[0][0] == "bsdtar" and calls[0][1] == "-xf"
@@ -392,3 +494,84 @@ def test_a_file_that_is_no_known_archive_is_a_hard_failure(tmp_path: Path) -> No
     junk = b"this is not an archive"
     with pytest.raises(stage.StageError, match="not a zip"):
         run([entry("a.stp", b"A", "u", junk)], tmp_path / "in", FakeNet({"u": junk}))
+
+
+# ------------------------------------------------------------------ preflight, loud empties, real 7z
+
+def test_preflight_names_a_missing_bsdtar_before_any_download(tmp_path: Path) -> None:
+    net = FakeNet({"https://x/c.7z": b"7z"})
+    e = entry("abc/0050_a.step", b"A", "https://x/c.7z", b"7z", "abc_fail")
+    with pytest.raises(stage.StageError, match="bsdtar"):
+        stage.stage([e], tmp_path / "in", download=net, scratch=tmp_path / "s", which=lambda n: None,
+                    min_free_bytes=0)
+    assert net.calls == []
+
+
+def test_preflight_refuses_when_scratch_is_too_small_before_any_download(tmp_path: Path) -> None:
+    probs = stage.preflight(["https://x/c.7z"], tmp_path, which=lambda n: "/bin/bsdtar",
+                            min_free_bytes=1 << 62)
+    assert len(probs) == 1 and "free" in probs[0]
+    assert stage.preflight(["https://x/c.zip"], tmp_path, which=lambda n: None) == []  # zip needs neither
+
+
+def test_bsdtar_failure_is_a_stage_error_not_a_traceback(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import subprocess
+    archive = b"7z\xbc\xaf\x27\x1c" + b"x"
+
+    def boom(argv, check):
+        raise subprocess.CalledProcessError(2, argv)
+
+    monkeypatch.setattr(stage.subprocess, "run", boom)
+    monkeypatch.setattr(stage.shutil, "which", lambda n: "/bin/bsdtar")
+    with pytest.raises(stage.StageError, match="bsdtar failed"):
+        run([entry("a.step", b"A", "u", archive)], tmp_path / "in", FakeNet({"u": archive}))
+
+
+def test_check_mode_downloads_nothing(tmp_path: Path) -> None:
+    e = entry("abc/0050_a.step", b"A", "u", None, "abc_fail")
+    manifest = tmp_path / "pool.json"
+    pool.write_pool([e], manifest, sources_included=["abc"])
+    net = FakeNet({"u": b"A"})
+    assert stage.main(["--pool", str(manifest), "--inputs", str(tmp_path / "in"), "--check"],
+                      download=net) == 0
+    assert net.calls == []
+
+
+def test_cli_makes_an_empty_allowed_source_loud(
+        tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    e = entry("abc/0050_a.step", b"A", "u", None, "abc_fail")
+    manifest = tmp_path / "pool.json"
+    pool.write_pool([e], manifest, sources_included=["abc"])
+    args = ["--pool", str(manifest), "--inputs", str(tmp_path / "in")]
+    assert stage.main(args, download=FakeNet({"u": b"A"})) == 0
+    err = capsys.readouterr()
+    assert "inject 0" in err.out and "ZERO manifest entries" in err.err and "inject" in err.err
+    assert stage.main([*args, "--strict-sources"], download=FakeNet({"u": b"A"})) == 3
+
+
+def test_entry_with_no_url_and_no_archive_hash_is_a_clear_error_not_a_crash(tmp_path: Path) -> None:
+    e = pool.PoolEntry("inj.step", "inject", sha(b"I"), "", None, "lic", None)
+    net = FakeNet({})
+    with pytest.raises(stage.StageError, match="no URL"):
+        run([e], tmp_path / "in", net)
+    assert net.calls == []
+
+
+@pytest.mark.skipif(shutil.which("bsdtar") is None, reason="bsdtar not installed in this environment")
+def test_real_7z_archive_is_staged_through_real_bsdtar(tmp_path: Path) -> None:
+    src = tmp_path / "src" / "00500350"
+    src.mkdir(parents=True)
+    data = b"ISO-10303-21; real 7z member"
+    (src / "x_step_000.step").write_bytes(data)
+    (src / "decoy.step").write_bytes(b"decoy")
+    archive = tmp_path / "chunk.7z"
+    subprocess.run(["bsdtar", "--format", "7zip", "-cf", str(archive), "-C", str(tmp_path / "src"),
+                    "00500350"], check=True)
+    blob = archive.read_bytes()
+    assert blob[:6] == b"7z\xbc\xaf\x27\x1c"
+    net = FakeNet({"https://x/abc_0050.7z": blob})
+    e = entry("abc/0050_x_step_000.step", data, "https://x/abc_0050.7z", blob, "abc_fail")
+    stage.stage([e], tmp_path / "in", download=net, scratch=tmp_path / "scratch", min_free_bytes=0)
+    assert (tmp_path / "in" / sha(data) / "0050_x_step_000.step").read_bytes() == data
+    assert not list((tmp_path / "scratch").rglob("*.step"))
