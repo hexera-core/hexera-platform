@@ -157,6 +157,19 @@ def _tet_qualities(gmsh) -> list[float]:
     return [float(q) for q in gmsh.model.mesh.getElementQualities([int(i) for i in ids], "minSICN")]
 
 
+def _message(kind: str | None, qualities: Sequence[float]) -> str:
+    """The words for `judge`'s kind. Built only for the kind that happened: a table of every kind's text
+    evaluates `min(qualities)` on a mesh with no tetrahedra, raises, and the pool reports infrastructure
+    for what is the file (the mesher produced no volume), which drops it from the scoreboard."""
+    if kind is None:
+        return ""
+    if kind == "no_volume":
+        return "gmsh produced no tetrahedra"
+    if kind == "inverted_elements":
+        return f"{sum(1 for q in qualities if not q >= 0.0)} inverted element(s)"
+    return f"minimum SICN {min(qualities):.4g} is below {MIN_SICN}"
+
+
 def _located(failure, boxes: dict[int, tuple], scale: float, quantum: float) -> list[dict]:
     from meshpipeline.cad.repair.identity import fingerprint_of
     from meshpipeline.cad.repair.mesh_probe import locating_surfaces
@@ -235,12 +248,7 @@ def run_in_process(payload: dict) -> dict:
         qualities = _tet_qualities(gmsh)
         status, kind = judge(qualities)
         finite = [q for q in qualities if math.isfinite(q)]
-        message = {
-            None: "",
-            "no_volume": "gmsh produced no tetrahedra",
-            "inverted_elements": f"{sum(1 for q in qualities if not q >= 0.0)} inverted element(s)",
-            "low_quality": f"minimum SICN {min(qualities):.4g} is below {MIN_SICN}",
-        }[kind]
+        message = _message(kind, qualities)
         return _answer(
             status, kind, message, None, min(finite) if finite else None, len(qualities), _read_algorithms(gmsh)
         )
