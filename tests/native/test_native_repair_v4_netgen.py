@@ -133,3 +133,61 @@ def test_unreadable_step_is_a_fail_not_an_exception(pool: WorkerPool, tmp_path: 
     assert result.status == "fail", result
     assert result.error_kind == "step_unreadable"
     assert result.message
+
+
+# --- the quality floor must be able to FAIL a mesh -------------------------------------------------
+_GOOD_TET = ((0, 0, 0), (1, 0, 0), (0, 1, 0), (0, 0, 1))
+
+
+def _write_tet_msh(path: Path, order: tuple[int, int, int, int]) -> str:
+    nodes = "".join(f"{i + 1} {x} {y} {z}\n" for i, (x, y, z) in enumerate(_GOOD_TET))
+    conn = " ".join(str(i + 1) for i in order)
+    path.write_text(
+        f"$MeshFormat\n2.2 0 8\n$EndMeshFormat\n$Nodes\n4\n{nodes}$EndNodes\n"
+        f"$Elements\n1\n1 4 2 1 1 {conn}\n$EndElements\n"
+    )
+    return str(path)
+
+
+def test_floor_passes_a_good_tet_and_fails_a_mirrored_one(tmp_path: Path) -> None:
+    """The floor's only evidence of being able to fail: one tet with two vertices swapped (mirrored)
+    must read minSICN < 0 and come out `fail`; the same tet, correctly ordered, must pass. Needs no
+    Netgen: it is the gmsh measurement and the verdict mapping the member uses."""
+    from meshpipeline.cad.repair_v4.verdict.netgen_member import _measure, member_result
+
+    def verdict(order: tuple[int, int, int, int]):
+        measured = _measure(_write_tet_msh(tmp_path / f"t{order}.msh", order))
+        return measured, member_result("netgen_occ", {"ok": True, "solids": 1, **measured}, 0.0)
+
+    good_m, good = verdict((0, 1, 2, 3))
+    bad_m, bad = verdict((0, 1, 3, 2))  # vertices 2 and 3 swapped: the mirror image
+    assert good_m["min_sicn"] is not None and good_m["min_sicn"] > 0, good_m
+    assert good.status == "pass", good
+    assert bad_m["min_sicn"] is not None and bad_m["min_sicn"] < 0, bad_m
+    assert bad.status == "fail" and bad.error_kind == "low_quality", bad
+
+
+def test_the_orientation_conversion_does_not_hide_a_mirrored_tet(tmp_path: Path) -> None:
+    """The script swaps vertices 2,3 of EVERY tet (netgen -> gmsh convention). Prove it is a
+    bijection, not a mask: a tet inverted in Netgen's convention is still negative after it."""
+    from meshpipeline.cad.repair_v4.verdict.netgen_member import _measure
+
+    # Netgen's valid tets are gmsh-inverted; after the uniform swap they are valid. Feed the
+    # swapped form of a Netgen-INVERTED tet (= the gmsh-good order, swapped twice-over is identity):
+    netgen_valid = (0, 1, 3, 2)  # what Netgen writes for a good tet -> script swaps -> (0, 1, 2, 3)
+    netgen_inverted = (0, 1, 2, 3)  # what Netgen writes for a bad tet -> script swaps -> (0, 1, 3, 2)
+    def after_swap(order: tuple[int, int, int, int]) -> float:
+        a, b, c, d = order
+        return _measure(_write_tet_msh(tmp_path / f"s{order}.msh", (a, b, d, c)))["min_sicn"]
+
+    assert after_swap(netgen_valid) > 0
+    assert after_swap(netgen_inverted) < 0
+
+
+def test_netgen_segfault_is_a_vote_against_the_file_not_infrastructure() -> None:
+    from meshpipeline.cad.repair_v4.verdict.netgen_member import INFRASTRUCTURE, member_result
+
+    segv = member_result("netgen_occ", {"ok": False, "stage": "crash", "returncode": -11, "error": "died"}, 0.0)
+    assert (segv.status, segv.error_kind) == ("crashed", "netgen_crash")
+    absent = member_result("netgen_occ", {"ok": False, "stage": "unavailable", "error": "none"}, 0.0)
+    assert absent.error_kind == INFRASTRUCTURE

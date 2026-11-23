@@ -37,6 +37,8 @@ _POOL_MARGIN_S = 30.0
 _TET = 4  # gmsh element type
 
 Status = Literal["pass", "fail", "timeout", "crashed"]
+#: error_kind for a result that says nothing about the file (pool died, toolchain absent)
+INFRASTRUCTURE = "infrastructure"
 
 
 def netgen_python() -> str | None:
@@ -65,14 +67,24 @@ def _run_netgen(step: str, out_msh: str, timeout_s: float) -> dict:
         return {
             "ok": False,
             "stage": "crash",
-            "error": f"Netgen interpreter exited {proc.returncode} without a result: {tail}",
+            "returncode": proc.returncode,  # negative = killed by that signal (a segfault is -11)
+            "error": f"Netgen exited {proc.returncode} without a result: {tail}",
         }
-    parsed: dict = json.loads(lines[-1][len(RESULT_PREFIX):])
+    try:
+        parsed: dict = json.loads(lines[-1][len(RESULT_PREFIX) :])
+    except ValueError as exc:  # a truncated line means Netgen died mid-write: the mesher's crash
+        return {"ok": False, "stage": "crash", "returncode": proc.returncode, "error": f"unparseable Netgen result: {exc}"}
     return parsed
 
 
 def _measure(msh: str) -> dict:
-    """Re-read the Netgen volume mesh into gmsh: tet count, minSICN, free (boundary) faces."""
+    """Re-read the Netgen volume mesh into gmsh: tet count, minSICN, free (boundary) faces.
+
+    `free_faces` is DIAGNOSTIC ONLY and is not in the pass criterion: a tet face used once is
+    boundary in a conformal mesh and in a non-conformal one alike, so the count alone cannot tell
+    them apart (the native test checks WHERE they lie, which needs the geometry). Conformity is
+    delivered by Glue in the script and held by that test.
+    """
     import gmsh
 
     gmsh.initialize()
@@ -100,7 +112,7 @@ def _measure(msh: str) -> dict:
 
 @register("mesh_netgen")
 def _mesh_netgen(payload: dict) -> dict:
-    """payload: step, timeout_s, optional out_dir (keeps the .msh there). Returns a record, never raises."""
+    """payload: step, timeout_s, optional out_dir (keeps the .msh there). Returns a record; failures are in it. The only way out is the worker dying."""
     out_dir = payload.get("out_dir")
     work = Path(out_dir) if out_dir else Path(tempfile.mkdtemp(prefix="netgen_"))
     work.mkdir(parents=True, exist_ok=True)
@@ -142,40 +154,61 @@ class NetgenOCC:
         inner = max(1.0, timeout_s - _POOL_MARGIN_S) if timeout_s > 2 * _POOL_MARGIN_S else timeout_s * 0.8
         call = pool.call("mesh_netgen", {"step": str(step_path), "timeout_s": inner}, timeout_s=timeout_s)
 
-        def result(
-            status: Status, kind: str | None, message: str, *, sicn: float | None = None, elements: int = 0
-        ) -> MemberResult:
+        def result(status: Status, kind: str | None, message: str) -> MemberResult:
             return MemberResult(
                 name=self.name, status=status, error_kind=kind, message=message, located=[],
-                min_sicn=sicn, elements=elements, seconds=time.monotonic() - start,
+                min_sicn=None, elements=0, seconds=time.monotonic() - start,
             )
 
         if call.status == "timeout":
             return result("timeout", "netgen_timeout", call.error or "worker timed out")
+        # The POOL failing under the mesher is not a verdict on the file (Task 5 keys on
+        # error_kind == "infrastructure"); a Netgen crash on the geometry is, see member_result.
         if call.status == "crashed":
-            return result("crashed", "worker_crashed", call.error or "worker crashed")
+            return result("crashed", INFRASTRUCTURE, call.error or "worker crashed")
         if not call.ok or call.value is None:
-            return result("crashed", "kernel_error", call.error or "kernel call failed")
-        rec = call.value
-        if not rec.get("ok"):
-            stage = rec.get("stage", "")
-            message = str(rec.get("error", "Netgen failed"))
-            if stage == "timeout":
-                return result("timeout", "netgen_timeout", message)
-            if stage in ("unavailable", "import", "crash"):  # the toolchain's fault, not the file's
-                return result("crashed", f"netgen_{stage}", message)
-            return result("fail", _FAIL_KINDS.get(stage, "netgen_failed"), message)
-        tets, sicn = int(rec["tets"]), rec.get("min_sicn")
-        if tets == 0 or sicn is None:
-            return result("fail", "no_tets", "Netgen mesh has no tetrahedra")
-        if sicn < MIN_SICN_PASS:
-            return result(
-                "fail", "low_quality",
-                f"minSICN {sicn:.4g} is below {MIN_SICN_PASS} ({tets} tets)",
-                sicn=float(sicn), elements=tets,
-            )
-        note = f"{tets} tets, {rec['solids']} solid(s){', glued' if rec.get('glued') else ''}"
-        return result("pass", None, note, sicn=float(sicn), elements=tets)
+            return result("crashed", INFRASTRUCTURE, call.error or "kernel call failed")
+        return member_result(self.name, call.value, time.monotonic() - start)
 
 
-__all__ = ["MIN_SICN_PASS", "NetgenOCC", "netgen_python"]
+def member_result(name: str, rec: dict, seconds: float) -> MemberResult:
+    """Turn a `mesh_netgen` record into the member's verdict.
+
+    Vocabulary: `fail` = Netgen ran and the file does not mesh or meshes badly; `crashed` with
+    `netgen_crash` = Netgen itself died on this geometry (a vote against the file, like a gmsh
+    abort); `crashed` with `infrastructure` = the toolchain was absent or broken, which says
+    nothing about the file.
+    """
+
+    def result(
+        status: Status, kind: str | None, message: str, *, sicn: float | None = None, elements: int = 0
+    ) -> MemberResult:
+        return MemberResult(
+            name=name, status=status, error_kind=kind, message=message, located=[],
+            min_sicn=sicn, elements=elements, seconds=seconds,
+        )
+
+    if not rec.get("ok"):
+        stage = rec.get("stage", "")
+        message = str(rec.get("error", "Netgen failed"))
+        if stage == "timeout":
+            return result("timeout", "netgen_timeout", message)
+        if stage == "crash":
+            return result("crashed", "netgen_crash", message)
+        if stage in ("unavailable", "import"):
+            return result("crashed", INFRASTRUCTURE, message)
+        return result("fail", _FAIL_KINDS.get(stage, "netgen_failed"), message)
+    tets, sicn = int(rec["tets"]), rec.get("min_sicn")
+    if tets == 0 or sicn is None:
+        return result("fail", "no_tets", "Netgen mesh has no tetrahedra")
+    if sicn < MIN_SICN_PASS:
+        return result(
+            "fail", "low_quality",
+            f"minSICN {sicn:.4g} is below {MIN_SICN_PASS} ({tets} tets)",
+            sicn=float(sicn), elements=tets,
+        )
+    note = f"{tets} tets, {rec['solids']} solid(s){', glued' if rec.get('glued') else ''}"
+    return result("pass", None, note, sicn=float(sicn), elements=tets)
+
+
+__all__ = ["INFRASTRUCTURE", "MIN_SICN_PASS", "NetgenOCC", "member_result", "netgen_python"]
