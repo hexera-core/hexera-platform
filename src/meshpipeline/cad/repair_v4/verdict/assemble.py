@@ -90,6 +90,16 @@ class Verdict:
     def counts_for_scoreboard(self) -> bool:
         return not self.inconclusive
 
+    @property
+    def out_of_scope(self) -> bool:
+        """The input has infinite extent (layer 1 `unbounded_geometry`): MEASURED, and not a failure.
+
+        Not clean (nothing certified it), not inconclusive (the checker measured it, so `counts_for_scoreboard` is
+        True and the unmeasured rate does not move), and not a repair failure (no mesh was attempted and no repair
+        could ever apply). The scoreboard reads this as its own stratum: such a file is kept out of the failing set
+        and out of every arm's denominator, the way `no_solids` is, and is counted separately."""
+        return bool(self.valid.unbounded)
+
 
 def _panel_module() -> Any:
     return importlib.import_module("meshpipeline.cad.repair_v4.verdict.panel")
@@ -134,6 +144,8 @@ def _assemble(
     original_units: str | None,
 ) -> Verdict:
     valid = check_valid(pool, step, original_units=original_units)
+    if valid.unbounded:  # outside the definition, decided before anything meshes it: no panel, no layer 3, no cache
+        return Verdict(valid, [], None, False, tier, False)
 
     chosen = list(members) if members is not None else default_members(tier)
     runner = run_panel or _panel_module().run_panel
