@@ -317,6 +317,9 @@ class SearchResult:
     ai_stop_reason: str | None = None
     #: `AIProposer.result()` of each proposer in the search (spend, turns, reason)
     ai: list[dict] = field(default_factory=list)
+    #: the winning path, one entry per op from the start to `best`: `{"via": the candidate, "sites": the PARENT
+    #: state's sites}` - what `recipes.recipe_from_path` turns into a recipe when the file ends clean
+    path_steps: list[dict] = field(default_factory=list)
     #: why the search stopped: "clean", "patience", "exhausted", a budget reason, or "no_verdict" (nothing was
     #: measured: see `infrastructure_failed`)
     reason: str | None = None
@@ -396,8 +399,14 @@ class DetGenerator:
         unfixable: UnfixableRegistry | None = None,
         *,
         diagonal: Callable[[Workspace], float] | None = None,
+        recipes: Any = None,
+        recipe_k: int = 3,
     ) -> None:
         self.unfixable = unfixable
+        #: a `recipes.RecipeBook` (CAD_REPAIR_V4_RECIPES): steps that took similar dev sites to clean, replayed
+        #: on this site's own entities BEFORE the fixed sweep. None: no recipe memory.
+        self.recipes = recipes
+        self.recipe_k = recipe_k
         #: workspace -> bounding-box diagonal in mm. `search()` binds the kernel's `ws_diagonal` (`bind_pool`) when
         #: this is None. Without one no size can be made: the ops that take a size (`sew`, `remove_small`) are
         #: not proposed, and `notes` says so.
@@ -460,8 +469,11 @@ class DetGenerator:
                 self._note(f"no diagonal for the sized sweeps: {type(exc).__name__}: {exc}")
                 return None
 
+        if self.recipes is not None and len(self.recipes) and diag is None:
+            diag = sized()                    # a replayed step's millimetres are fractions of THIS part's diagonal
         for site in sites:
-            for op, targets, params, why in [*self._sweep(site, diag), *self._coverage(site, sized)]:
+            for op, targets, params, why in [*self._recipe_rows(site, diag), *self._sweep(site, diag),
+                                             *self._coverage(site, sized)]:
                 if op not in REGISTRY:
                     continue
                 key = json.dumps([op, list(targets), params], sort_keys=True, default=str)
@@ -495,6 +507,24 @@ class DetGenerator:
                 return ("make_volume_without_a_closable_shell: no subset of the faces uses every edge twice, "
                         "so MakerVolume finds no closed volume")
         return None
+
+    def _recipe_rows(self, site: Site, diag: float | None) -> list[tuple[str, list[StableId], dict, str]]:
+        """The steps the recipe book says worked on sites like `site`, replayed on `site`'s own entities."""
+        if self.recipes is None or not len(self.recipes):
+            return []
+        from meshpipeline.cad.repair_v4.recipes import MAX_SIMILARITY, replay
+
+        rows: list[tuple[str, list[StableId], dict, str]] = []
+        for hit in self.recipes.lookup(site, self.recipe_k):
+            made = replay(hit.step, site, diagonal_mm=float(site.graph.get("diagonal_mm") or diag or 0.0) or None)
+            if made is None:
+                self.skipped["recipe_not_replayable_here"] += 1
+                continue
+            targets, params = made
+            rows.append((hit.step.op, targets, params,
+                         f"recipe {hit.recipe_id} step {hit.step_index}: worked on {hit.support} similar clean dev "
+                         f"file(s), similarity {hit.score / MAX_SIMILARITY:.2f}"))
+        return rows
 
     def _fill_rows(self, site: Site, diag: float | None) -> list[tuple[str, list[StableId], dict, str]]:
         """One `fill_loop` per free loop the site carries (`graph["free_loops"]`, smallest first) that the fill cap
@@ -879,14 +909,16 @@ def _will_look(generator: Any) -> bool:
 ARMS = ("search_det", "search_ai")
 
 
-def arm_generators(arm: str, **ai_kwargs: Any) -> tuple[list[Any], AIProposer | None]:
+def arm_generators(arm: str, *, recipes: Any = None, **ai_kwargs: Any) -> tuple[list[Any], AIProposer | None]:
     """The generators of an eval/engine arm: `search_det` -> the deterministic sweep only (no proposer is built,
     so no model can be reached); `search_ai` -> `ai_generators(**ai_kwargs)`. An unknown arm is a ValueError.
-    The entry points that select an arm (`repair_v4._run_search`, Task 20; the eval arms, Task 21) call this."""
+    The entry points that select an arm (`repair_v4._run_search`, Task 20; the eval arms, Task 21) call this.
+    `recipes` (a `recipes.RecipeBook`, CAD_REPAIR_V4_RECIPES) seeds both arms' DetGenerator and the AI's observation;
+    None leaves both arms exactly as they were."""
     if arm == "search_det":
-        return [DetGenerator()], None
+        return [DetGenerator(recipes=recipes)], None
     if arm == "search_ai":
-        return ai_generators(**ai_kwargs)
+        return ai_generators(recipes=recipes, **ai_kwargs)
     raise ValueError(f"unknown search arm {arm!r}; the arms are {ARMS}")
 
 
@@ -901,6 +933,7 @@ def ai_generators(
     user_id: str = "",
     call: Any = None,
     prices: tuple[float, float, float] | None = None,
+    recipes: Any = None,
     **kwargs: Any,
 ) -> tuple[list[Any], AIProposer]:
     """The generators of an `search_ai` run: the deterministic sweeps and the AI proposer, built around ONE
@@ -911,9 +944,9 @@ def ai_generators(
     proposer = AIProposer(
         route, max_turns=max_turns, usd_ceiling=usd_ceiling, ledger=ledger, call=call, file_id=file_id,
         job_id=job_id, user_id=user_id, stage_names=[s.name for s in STAGES], unfixable=shared, prices=prices,
-        **kwargs,
+        recipes=recipes, **kwargs,
     )
-    return [DetGenerator(unfixable=shared), proposer], proposer
+    return [DetGenerator(unfixable=shared, recipes=recipes), proposer], proposer
 
 
 #: the least patience the search ever has, however few holes the part presents
@@ -972,6 +1005,7 @@ def search(
     tie = itertools.count()
     spent = {"ops": 0}
     lineages: dict[str, tuple[str, ...]] = {}
+    by_id: dict[str, SearchState] = {}
 
     def usage() -> tuple[int, float]:
         calls, usd = 0, 0.0
@@ -1005,7 +1039,7 @@ def search(
     ) -> SearchState:
         sid = f"S{next(state_ids)}"
         lineages[sid] = (lineages.get(parent, ()) if parent is not None else ()) + (sid,)
-        return SearchState(
+        by_id[sid] = SearchState(
             id=sid,
             ws=ws,
             verdict=verdict,
@@ -1018,6 +1052,7 @@ def search(
             site_registry=registry,
             lineage=lineages[sid],
         )
+        return by_id[sid]
 
     def judge_cheap(ws: Workspace) -> tuple[Any, Score]:
         """The cheap verdict and its score. An inconclusive verdict (the pool failed, not the part) is retried;
@@ -1348,6 +1383,7 @@ def search(
         ai_capped=ai_capped,
         ai_stop_reason=ai_stop_reason,
         ai=ai_results,
+        path_steps=_path_steps(by_id, best),
         reason=reason,
         inconclusive_candidates=n_inconclusive,
         verdict_candidates=n_verdicts,
@@ -1398,6 +1434,17 @@ def _reject(
 ) -> None:
     rejections.setdefault(gi, []).append(Rejection(c, stage, errors, state.id))  # type: ignore[arg-type]
     _record_candidate(trace, state, c, "rejected", stage=stage, errors=errors)
+
+
+def _path_steps(by_id: dict[str, SearchState], best: SearchState) -> list[dict]:
+    """The ops from the start to `best`, each with the sites of the state it was applied to (oldest first)."""
+    steps: list[dict] = []
+    node: SearchState | None = best
+    while node is not None and node.parent is not None and node.via is not None:
+        parent = by_id.get(node.parent)
+        steps.append({"via": dict(node.via), "sites": list(parent.sites) if parent is not None else []})
+        node = parent
+    return steps[::-1]
 
 
 def _path(trace: Trace, best: SearchState) -> list[str]:

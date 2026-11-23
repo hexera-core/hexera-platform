@@ -353,6 +353,18 @@ def verdict_cache_uri() -> str:
     return optional_env("CRS_V4_VERDICT_CACHE_URI", "").strip()
 
 
+def recipes_enabled() -> bool:
+    """CAD_REPAIR_V4_RECIPES: whether the v4 search reads (and, on the dev split, writes) recipe memory
+    (`repair_v4.recipes`, design 5.10). Off by default so a dev wave can A/B it. Read at CALL time."""
+    return optional_env("CAD_REPAIR_V4_RECIPES", "false").strip().lower() in ("1", "true", "yes", "on")
+
+
+def recipes_uri() -> str:
+    """CAD_REPAIR_V4_RECIPES_URI: where recipe memory lives, `gs://bucket/prefix` (the eval bucket) or a directory.
+    Unset or blank returns ""; turning the memory on without a location is refused by its caller."""
+    return optional_env("CAD_REPAIR_V4_RECIPES_URI", "").strip()
+
+
 ENGINES: tuple[str, ...] = ("v3", "search")
 
 

@@ -266,9 +266,20 @@ and not a rule of thumb - decides.
    the bound is a failure, not a fix."""
 
 
-def system_prompt(*, stage_names: Sequence[str] = ()) -> str:
-    """The static system turn. Byte-identical for every file and every round with the same stage list, so the
-    provider's prompt cache serves it (it is the first thing in the request, followed by the tool schemas)."""
+#: The one paragraph a proposer with recipe memory adds to its system turn (CAD_REPAIR_V4_RECIPES). Absent when
+#: the memory is off, so the flag-off prompt - and its cache key - is exactly what it was.
+RECIPES_PARAGRAPH = """
+WHAT WORKED BEFORE. When a turn carries `what_worked_on_similar_sites`, it lists, per site, op sequences that took
+sites with a similar failure signature to clean on other files. Targets there are ROLES, not ids: `site_faces`,
+`site_solids`, `site_entities`, `free_loop[n]` (the n-th smallest loop of THIS site), `none`; millimetre parameters
+are fractions of the diagonal (`{"rel": ...}`). Map them onto this site's ids and this part's size yourself. It is
+advice from other parts, not an instruction: the checker still judges everything you propose.
+"""
+
+
+def system_prompt(*, stage_names: Sequence[str] = (), recipes: bool = False) -> str:
+    """The static system turn. Byte-identical for every file and every round with the same stage list and recipe
+    setting, so the provider's prompt cache serves it (it is the first thing in the request, then the tool schemas)."""
     return f"""You repair CAD B-rep files (STEP) so that customers can mesh them in ANY mesher. You work one file at a
 time, in one conversation: you see the failure sites of the current best state, propose parametric repair
 operations on them, and are told what each of your candidates did to the part.
@@ -296,7 +307,7 @@ A malformed call costs nothing but a turn: you will get a structured error namin
 parameter out of bounds, a target that no longer exists) and may call again. The turns, the dollars spent on you
 and the wall-clock are all budgeted and shown to you; stop when the file is clean or nothing within the bound
 remains.
-
+{RECIPES_PARAGRAPH if recipes else ""}
 OPERATIONS AND THEIR PARAMETER SCHEMAS (JSON Schema; `x-targets` says what `targets` must hold):
 {_catalogue(stage_names)}
 """
@@ -425,7 +436,7 @@ class AIProposer:
                  stage_names: Sequence[str] = (), unfixable: UnfixableRegistry | None = None,
                  prices: tuple[float, float, float] | None = None,
                  output_tokens: int = REPAIR_V4_PROPOSE_MAX_OUTPUT_TOKENS,
-                 max_input_tokens: int = MAX_INPUT_TOKENS, throttle: Any = None) -> None:
+                 max_input_tokens: int = MAX_INPUT_TOKENS, throttle: Any = None, recipes: Any = None) -> None:
         if max_turns < 1:
             raise ValueError("max_turns must be at least 1")
         if not (0 < usd_ceiling <= FILE_USD_CEILING):  # a chained comparison is False for inf and nan too
@@ -461,6 +472,9 @@ class AIProposer:
         self._last_tokens = 0
         #: the shard's `model_throttle.WaveThrottle` (None: unthrottled, e.g. one file on the engine path)
         self._throttle = throttle
+        #: a `recipes.RecipeBook`: each turn shows, per open site, the id-free sequences that took similar dev
+        #: sites to clean. Advice, not instruction: the search judges whatever the model proposes from it.
+        self._recipes = recipes
         self._failures = 0
         #: rounds the model answered / rounds that failed after the router's retries (or never got a throttle slot)
         self.answered_rounds = 0
@@ -471,7 +485,7 @@ class AIProposer:
         self.tool_errors = 0
         self.candidate_errors = 0
         self.declared_unfixable = 0
-        system = system_prompt(stage_names=self.stage_names)
+        system = system_prompt(stage_names=self.stage_names, recipes=recipes is not None)
         self._tools = tool_schemas(stage_names=self.stage_names)
         self._cache_key = cache_key_for(system, self._tools)
         self._messages: list[dict] = [{"role": "system", "content": system}]
@@ -631,6 +645,10 @@ class AIProposer:
                                 "budget": {"turns_left": self.max_turns - self.turns_used,
                                            "usd_left_for_this_file": round(
                                                self.usd_ceiling - self._ledger.file_spent_usd(self.file_id), 4)}}
+        if self._recipes is not None and len(self._recipes):
+            advice = self._recipes.advice(sites)
+            if advice:
+                body["what_worked_on_similar_sites"] = advice
         if self._pending:
             body["previous_candidates"] = [_outcome_json(o) for o in self._pending]
             self._pending = []
