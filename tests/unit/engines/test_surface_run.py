@@ -638,6 +638,35 @@ def test_a_sheet_with_a_small_closed_pocket_is_the_sheet_not_the_pocket(tmp_path
     assert FD.solids_from_shells(whole, seen) == 1 and seen == {"closed": 1}
 
 
+def test_a_surface_staged_in_metres_is_cleaned_and_meshed_in_millimetres(tmp_path, monkeypatch):
+    """SURF-15: the website stages a surface file in metres and runs it "staged"; the lab hands the same file over in
+    millimetres. Read in metres, the clean-up chose other mends (a stamped dome: a hole filled with a new face where the
+    lab moved an edge) and the mesher left the dome's main face bare (80% covered against 99.7%). The staged surface is
+    now put in millimetres (its faces in the same order) before the clean-up and the mesher see it: the same shell as
+    the file read in millimetres, its files in metres as before."""
+    seen: list = []
+    real = surface_run.run
+
+    def spy(ws, step, *, mm_per_unit, **more):
+        seen.append((Path(step).name, mm_per_unit))
+        return real(ws, step, mm_per_unit=mm_per_unit, **more)
+
+    monkeypatch.setattr(surface_run, "run", spy)
+    ws = _stage(sx.plate_with_hole(), tmp_path / "ws")
+    assert FD.staged_mm_per_unit(ws / "geometry.step") == 1000.0
+    more = {"thickness_mm": 1.2, "said_shell": True}
+    assert surface_run.main([str(ws), str(ws / "geometry.step"), "staged", json.dumps(more)]) == 0
+    assert seen == [(shell_run.MM_COPY, 1.0)]
+    rec = shell_run.read(ws)
+    assert rec["made"] and rec["mm_per_unit"] == 1.0 and rec["coverage"]["share"] > 0.99
+    lo, hi = rec["bounds_m"][:3], rec["bounds_m"][3:]
+    assert 0.01 < max(h - lo_ for lo_, h in zip(lo, hi)) < 1.0          # metres, as before
+    lab = tmp_path / "lab"
+    lab.mkdir()
+    rec_lab = real(lab, ws / "upload.step", mm_per_unit=1.0, thickness_mm=1.2, said_shell=True)
+    assert rec["elements"] == rec_lab["elements"]
+
+
 def _shell_result(ws: Path, staged: str, more: dict) -> tuple[dict, dict]:
     from meshpipeline.engines import shell_delivery as SD
 
@@ -668,7 +697,10 @@ def test_a_shell_that_covers_a_fraction_of_the_part_is_never_a_pass(tmp_path, mo
     assert FD.solids_from_shells(new, seen) == 0 and seen.get("open") is True
     rec, res = _shell_result(new, "geometry.step", {"thickness_mm": 1.2, "said_shell": True})
     assert rec["coverage"]["kept_share"] == 1.0 and 0.95 < rec["coverage"]["share"] <= 1.01
-    assert res["check"]["outcome"] == "pass" and "covers only" not in res["check"]["words"]
+    # SURF-15: meshed in millimetres (as the lab meshes the file) one quad corner is 138 degrees, a figure past its
+    # limit that is told but not gating; the cover is whole and says so either way
+    assert res["check"]["outcome"] in ("pass", "concerns") and "covers only" not in res["check"]["words"]
+    assert not [r for r in res["check"]["rows"] if r["key"] == "part_covered" and r.get("ok") is False]
     assert any(w.startswith("The elements cover ") for w in res["plan_words"])
 
 
