@@ -501,7 +501,7 @@ def test_a_file_that_is_no_known_archive_is_a_hard_failure(tmp_path: Path) -> No
 def test_preflight_names_a_missing_bsdtar_before_any_download(tmp_path: Path) -> None:
     net = FakeNet({"https://x/c.7z": b"7z"})
     e = entry("abc/0050_a.step", b"A", "https://x/c.7z", b"7z", "abc_fail")
-    with pytest.raises(stage.StageError, match="bsdtar"):
+    with pytest.raises(stage.StageError, match="apt-get install libarchive-tools"):
         stage.stage([e], tmp_path / "in", download=net, scratch=tmp_path / "s", which=lambda n: None,
                     min_free_bytes=0)
     assert net.calls == []
@@ -575,3 +575,18 @@ def test_real_7z_archive_is_staged_through_real_bsdtar(tmp_path: Path) -> None:
     stage.stage([e], tmp_path / "in", download=net, scratch=tmp_path / "scratch", min_free_bytes=0)
     assert (tmp_path / "in" / sha(data) / "0050_x_step_000.step").read_bytes() == data
     assert not list((tmp_path / "scratch").rglob("*.step"))
+
+
+def test_staged_tree_is_byte_identical_whichever_extractor_or_member_order_produced_it(
+        tmp_path: Path) -> None:
+    """Members are identified by content hash and written as <sha>/<basename>, so the extractor
+    (stdlib zip, tar, bsdtar on any host) and the archive's member order cannot change the output."""
+    m = {"d1/a.stp": b"AAA", "d2/b.stp": b"BBB", "d3/c.stp": b"CCC"}
+    zipped, tarred = zip_bytes(m), tar_xz_bytes(dict(reversed(list(m.items()))))
+    trees = []
+    for i, blob in enumerate((zipped, tarred)):
+        entries = [entry(n, d, "u", blob) for n, d in m.items()]
+        root = tmp_path / f"in{i}"
+        run(entries, root, FakeNet({"u": blob}))
+        trees.append({str(p.relative_to(root)): p.read_bytes() for p in root.rglob("*") if p.is_file()})
+    assert trees[0] == trees[1] and len(trees[0]) == 3

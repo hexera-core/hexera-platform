@@ -191,7 +191,8 @@ def default_walk(archive: Path, work: Path) -> Iterator[tuple[str, Callable[[], 
     if magic != _SEVENZ_MAGIC:
         raise StageError(f"{archive.name}: not a zip, tar or 7z archive")
     if shutil.which("bsdtar") is None:
-        raise StageError("bsdtar is not on PATH; cannot extract a 7z archive")
+        raise StageError("bsdtar is not on PATH; cannot extract a 7z archive (Linux: "
+                         "`apt-get install libarchive-tools`, bsdtar >= 3.6)")
     probe = work.parent
     if shutil.disk_usage(probe).free < 2 * archive.stat().st_size:
         raise StageError(f"scratch {probe} has less than 2x the archive's size free; "
@@ -270,8 +271,9 @@ def preflight(archive_urls: list[str], scratch: Path, *, min_free_bytes: int = D
     if sevenz:
         if which("bsdtar") is None:
             problems.append(f"bsdtar is not on PATH but {len(sevenz)} pending archive(s) are 7z "
-                            f"(Linux: apt-get install libarchive-tools); it would fail only after a "
-                            f"multi-GB download")
+                            f"(Linux: `apt-get install libarchive-tools`, bsdtar >= 3.6; macOS: /usr/bin/bsdtar "
+                            f"ships with the OS, or `brew install libarchive`); without it the run "
+                            f"would fail only after a multi-GB download")
         probe = scratch
         while not probe.exists() and probe != probe.parent:
             probe = probe.parent
