@@ -249,3 +249,67 @@ def test_the_laminar_row_is_judged_by_the_cells_across_its_layer(monkeypatch, tm
     monkeypatch.setattr(CR, "built_bl_cells", lambda ws, d: {})
     assert CR._bl_cells_row(tmp_path, p) is None                               # not counted: judged as before
     assert CR._bl_cells_row(tmp_path, {"fallback": "laminar"}) is None
+
+
+def test_the_laminar_band_is_used_when_the_mesh_can_afford_it_and_priced_when_not():
+    # CFDREQ-23: wall cells half the layer's thickness - a band two levels finer lets at most 6 layers reach 10 across
+    floor = 0.002 / CR.stack_height(1.0, 1.2, CR.BL_CELLS)
+    b = CR.laminar_band(0.002, 0.001, 1.2, faces=1000, room=1e9, n_now=10)
+    assert b["used"] and b["levels"] == 2 and b["cell_m"] == pytest.approx(0.00025)
+    assert b["layers"] <= CR.LAMINAR_BAND_LAYERS and b["across"] >= CR.BL_CELLS - 1e-9
+    assert b["first_m"] >= floor * (1 - 1e-9)                       # never thinner than the plan without the band
+    assert b["cells"] > 0
+    # the same band over the room the wall may add: not used, its cost said
+    poor = CR.laminar_band(0.002, 0.001, 1.2, faces=1000, room=b["cells"] - 1, n_now=10)
+    assert not poor["used"] and poor["cells"] == b["cells"]
+    # wall cells fifteen times the layer: no band within LAMINAR_BAND_LEVELS reaches it
+    far = CR.laminar_band(0.002, 0.03, 1.2, faces=1000, room=1e12, n_now=10)
+    assert not far["used"] and far["cells"] is None
+    assert not CR.laminar_band(0.002, 0.0, 1.2, faces=1000, room=1e9, n_now=10)["used"]
+
+
+def test_the_band_goes_into_the_wall_surfaces_distance_region():
+    shm = ("refinementSurfaces { body { level (5 5); } } resolveFeatureAngle 30;\n"
+           "refinementRegions { body { mode distance; levels ((0.01 6) (0.08 4)); } wake0 { mode inside; "
+           "levels ((1e15 3)); } }\n")
+    out = CR.band_regions(shm, 0.002, 2)
+    assert "levels ((0.002 7) (0.01 6) (0.08 4));" in out and "wake0 { mode inside; levels ((1e15 3)); }" in out
+    # a band deeper than the near band: the bands it covers are dropped, the order kept
+    assert "levels ((0.05 7) (0.08 4));" in CR.band_regions(shm, 0.05, 2)
+    assert CR.band_regions("refinementRegions { }", 0.002, 2) is None
+
+
+SHM_EXT = ("castellatedMeshControls { maxLocalCells 1000000; maxGlobalCells 1000000;\n"
+           "  refinementSurfaces { body { level (5 5); } }\n"
+           "  refinementRegions { body { mode distance; levels ((0.01 6) (0.08 4)); } } }\n"
+           + SHM.replace("nGrow 0;", "nGrow 0;\n    nBufferCellsNoExtrude 0;"))
+
+
+def test_a_laminar_snappy_stack_keeps_its_layers_and_gets_the_band_it_can_afford():
+    delta = float(_ask_lam().fallback["bl_delta_m"])
+    # the stack ends in one step where it stops, so its layers are not stepped down round every stopped point
+    ask = _ask_lam()
+    out = CR.snappy_dict(ask, SHM_EXT, wall_cell_m=delta * 2)
+    assert "nBufferCellsNoExtrude -1;" in out and "levels ((0.01 6) (0.08 4));" in out
+    # wall cells half the layer: the band two levels finer, a short stack, the castellation ceiling raised for it
+    ask = _ask_lam()
+    out = CR.snappy_dict(ask, SHM_EXT, wall_cell_m=delta / 2, bridge={"faces": 1000.0, "room": 1e9}, band=True)
+    band = ask.fallback["band"]
+    assert band["levels"] == 2 and f"levels (({delta:.6g} 7)" in out
+    assert _num(out, "nSurfaceLayers") <= CR.LAMINAR_BAND_LAYERS and ask.fallback["cells_across"] >= CR.BL_CELLS
+    assert _num(out, "maxGlobalCells") == 1000000 + band["cells"]
+    # over the room: no band, the stack on the wall cells, and the row says why if it is not kept
+    ask = _ask_lam()
+    out = CR.snappy_dict(ask, SHM_EXT, wall_cell_m=delta / 2, bridge={"faces": 1000.0, "room": 20000.0}, band=True)
+    assert "band" not in ask.fallback and "levels ((0.01 6) (0.08 4));" in out
+    assert "more than the" in ask.fallback["band_note"] and _y_row(ask)["band_note"] == ask.fallback["band_note"]
+    # not the external body's case: no band
+    ask = _ask_lam()
+    CR.snappy_dict(ask, SHM_EXT, wall_cell_m=delta / 2, bridge={"faces": 1000.0, "room": 1e9})
+    assert "band" not in ask.fallback
+
+
+def test_the_missed_laminar_row_says_why_no_band(monkeypatch, tmp_path):
+    p = {"bl_delta_m": 0.0007, "fallback": "laminar", "band_note": "cells 4 times finer near the wall would"}
+    monkeypatch.setattr(CR, "built_bl_cells", lambda ws, d: {"bl_area_met_pct": 52.0, "bl_cells_median": 6.1})
+    assert CR._bl_cells_row(tmp_path, p)["delivered"].endswith("cells 4 times finer near the wall would")

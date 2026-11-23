@@ -1270,7 +1270,15 @@ mergeTolerance 1e-6; debug 0;
                                                         _body_cell, max_cells,
                                                         narrowest_gap_m=(_gap.record().get("narrowest_m")
                                                                          if _gap is not None and _gap.spots
-                                                                         else None)))
+                                                                         else None)),
+                              band=True)
+        _band = (getattr(_ask, "fallback", None) or {}).get("band")
+        if _band and _band.get("cells"):
+            # CFDREQ-23: the laminar wall's near-wall band is cells the plan asks for on purpose - the brake
+            # measures the run against the plan with them
+            _plan_rec = {**_plan_rec, "plan_cells": int(_plan_rec["plan_cells"]) + int(_band["cells"]),
+                         "laminar_band_cells": int(_band["cells"])}
+            (ws / PLAN_CELLS_FILE).write_text(json.dumps(_plan_rec))
         _ask.write(ws)
     (ws / "system" / "snappyHexMeshDict").write_text(_shm)
     # SYNTHETIC CLASS REGIONS ARE A MESHING DEVICE, NOT A DELIVERABLE. The layer policy splits

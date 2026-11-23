@@ -685,7 +685,7 @@ def stack_height(first_m: float, growth: float, n: int) -> float:
 
 def laminar_stack(delta_m: float, wall_cell_m: float, growth: float, *, n_min: int = 1,
                   n_max: int = BL_CELLS, n_fixed: int | None = None,
-                  stack_max_m: float | None = None) -> tuple[int, float, float]:
+                  stack_max_m: float | None = None, floor_n: int | None = None) -> tuple[int, float, float]:
     """CFDREQ-22: THE LAMINAR RESOLVED WALL'S STACK, FROM ITS BOUNDARY LAYER: (layers, first layer m, cells across
     `delta_m`). The fewest layers from `n_min` (a count of the user's: `n_fixed`) that, with the thickest first layer
     that still does it, put BL_CELLS across the layer - the layers under its edge and the core cells (`wall_cell_m`)
@@ -706,8 +706,9 @@ def laminar_stack(delta_m: float, wall_cell_m: float, growth: float, *, n_min: i
         return min(hi, FIRST_CAP_REL * wc / g ** max(0, n - 1))
 
     # never a first layer thinner than the one a full stack (n_max layers filling the layer) starts from: a thinner
-    # one is harder to build and resolves nothing more
-    floor = delta / stack_height(1.0, g, max(int(n_max), int(n_fixed or 0), 1))
+    # one is harder to build and resolves nothing more (`floor_n`: that full stack's count when it is not n_max - the
+    # near-wall band's shorter stack keeps the floor of the plan without it)
+    floor = delta / stack_height(1.0, g, max(int(floor_n or n_max), int(n_fixed or 0), 1))
     if stack_max_m and not n_fixed:
         # A TIGHT WALL'S CAP CUTS LAYERS, NEVER THE FIRST LAYER: n layers whose stack from the floor passes the cap are
         # not built (the cloud sample, extlam_ef6c20fc: a cap thinned abc 00067838's first layer to 1e-8 m, and
@@ -741,6 +742,66 @@ def laminar_stack(delta_m: float, wall_cell_m: float, growth: float, *, n_min: i
             best = got
     assert best is not None
     return best
+
+
+#: CFDREQ-23: A LAMINAR WALL'S NEAR-WALL BAND. Where the wall cells are as thick as the boundary layer (abc 00000039:
+#: 3.3 mm cells, 2.2 mm layer) only layers make the cells across it, and snappyHexMesh kept a 10-layer stack on 61-79%
+#: of the wall (the cloud sample, extlam_ef6c20fc). A distance band of finer cells as deep as the layer lets core cells
+#: count inside it, so a stack of at most LAMINAR_BAND_LAYERS layers reaches BL_CELLS. The band is at most this many
+#: levels finer than the wall cells ...
+LAMINAR_BAND_LEVELS = 2
+#: ... its stack at most this many layers ...
+LAMINAR_BAND_LAYERS = 6
+#: ... and its cells are priced like the plan's own distance bands (snappy_runner.CAST_BAND_GRADING: about this many
+#: times the cells of the band's own volume, the grading out of it included)
+LAMINAR_BAND_GRADING = 2.0
+
+
+def laminar_band(delta_m: float, wall_cell_m: float, growth: float, *, faces: float, room: float,
+                 n_now: int, stack_max_m: float | None = None) -> dict:
+    """CFDREQ-23: the near-wall band a laminar resolved wall can afford. For 1..LAMINAR_BAND_LEVELS levels finer than
+    the wall cells (`wall_cell_m`, `faces` of them on the wall): the stack laminar_stack plans on the band's cells,
+    at most LAMINAR_BAND_LAYERS layers, and what the band costs - its cells over the layer's depth (`delta_m`) less
+    the cells there now, plus its stack's layer cells less the `n_now` layers' now. The coarsest band that puts
+    BL_CELLS across is used when it costs no more than `room` (the cells the plan lets a resolved wall's layers add):
+    {"used": True, "levels", "cell_m", "layers", "first_m", "across", "cells"}. Else {"used": False, "cells": what
+    the coarsest band that reaches BL_CELLS would cost (None when none within LAMINAR_BAND_LEVELS does),
+    "levels"} - the stack is then planned on the wall cells as before."""
+    wc, delta, f = float(wall_cell_m), float(delta_m), float(faces)
+    if not (wc > 0 and delta > 0 and f > 0):
+        return {"used": False, "cells": None, "levels": 0}
+    now = f * max(1.0, math.ceil(delta / wc)) + int(n_now) * f
+    for k in range(1, LAMINAR_BAND_LEVELS + 1):
+        h = wc / 2 ** k
+        n, first, across = laminar_stack(delta, h, growth, n_max=LAMINAR_BAND_LAYERS, stack_max_m=stack_max_m,
+                                         floor_n=BL_CELLS)
+        if across < BL_CELLS - 1e-9:
+            continue
+        fk = f * 4 ** k
+        cost = max(0.0, LAMINAR_BAND_GRADING * fk * math.ceil(delta / h) + n * fk - now)
+        if cost <= float(room):
+            return {"used": True, "levels": k, "cell_m": h, "layers": int(n), "first_m": float(first),
+                    "across": float(across), "cells": int(cost)}
+        return {"used": False, "cells": int(cost), "levels": k}
+    return {"used": False, "cells": None, "levels": LAMINAR_BAND_LEVELS}
+
+
+def band_regions(text: str, delta_m: float, levels: int) -> str | None:
+    """CFDREQ-23: the snappyHexMeshDict with the near-wall band in the wall surface's own distance region: `levels`
+    past the surface's finest level out to `delta_m`, the plan's bands kept past it (each coarser and further out,
+    as snappyHexMesh reads them). None when the dict has no such region (the band is not added)."""
+    ms = re.search(r"refinementSurfaces\s*\{\s*(\w+)\s*\{\s*level\s*\(\s*\d+\s+(\d+)\s*\)", text)
+    if not ms:
+        return None
+    name, top = ms.group(1), int(ms.group(2)) + int(levels)
+    mr = re.search(rf"(refinementRegions\s*\{{\s*{re.escape(name)}\s*\{{\s*mode\s+distance\s*;\s*levels\s*\()"
+                   rf"((?:\s*\(\s*[-+0-9.eE]+\s+\d+\s*\))+)(\s*\)\s*;)", text)
+    if not mr:
+        return None
+    old = [(float(d), int(lv)) for d, lv in re.findall(r"\(\s*([-+0-9.eE]+)\s+(\d+)\s*\)", mr.group(2))]
+    keep = [(d, lv) for d, lv in old if d > float(delta_m) and lv < top]
+    new = "".join(f"({d:.6g} {lv}) " for d, lv in [(float(delta_m), top), *keep]).strip()
+    return text[:mr.start(2)] + new + text[mr.end(2):]
 
 
 def boundary_layer_m(how: Mapping) -> float | None:
@@ -2092,12 +2153,12 @@ def _num(text: str, key: str) -> float | None:
 
 @guarded(lambda ask, text, **_k: text)
 def snappy_dict(ask: Ask | None, text: str, *, wall_cell_m: float | None = None,
-                bridge: Mapping | None = None) -> str:
+                bridge: Mapping | None = None, band: bool = False) -> str:
     """The snappyHexMeshDict text with the user's growth, layer sizes and quality limits applied (CFDREQ-2, 4, 5).
     The count of layers, the sizes and the budget are the plan's (the drivers set them before the dict is
     written). Unchanged with nothing asked. `bridge`: {"faces": wall faces, "room": cells the layers may add} on a
     case whose first layer may be far thinner than its wall cells (layer_bridge, CFDREQ-9); None leaves the count
-    the plan's."""
+    the plan's. `band`: a laminar resolved body wall may get its near-wall band (CFDREQ-23; the external body case)."""
     if ask is None:
         return text
     out = text
@@ -2107,7 +2168,7 @@ def snappy_dict(ask: Ask | None, text: str, *, wall_cell_m: float | None = None,
         ask.done("growth", f"{n} cells between refinement levels, so sizes grow about {MR._g(2 ** (1 / n))} from one "
                            "cell to the next", cells_between_levels=n)
     if "addLayersControls" in out and (ask.first_m or ask.total_m or ask.layer_growth or ask.y_plus):
-        out = _snappy_layers(ask, out, wall_cell_m, bridge)
+        out = _snappy_layers(ask, out, wall_cell_m, bridge, band=band)
     for lim in ask.limits:
         key = SNAPPY_QUALITY.get(lim["measure"])
         if key is None:
@@ -2225,7 +2286,8 @@ def capped_stack(first_m: float, wall_cell_m: float, stack_m: float, cap_m: floa
     return best
 
 
-def _snappy_layers(ask: Ask, text: str, wall_cell_m: float | None, bridge: Mapping | None = None) -> str:
+def _snappy_layers(ask: Ask, text: str, wall_cell_m: float | None, bridge: Mapping | None = None, *,
+                   band: bool = False) -> str:
     """The layer thicknesses in absolute sizes when the user gave one (first height, stack, or a y+ turned into a
     first height); the growth alone keeps our relative sizes. With `bridge` (CFDREQ-9), a first layer far thinner
     than the wall cells gets the layers that fill our own stack from it (layer_bridge), said on its row."""
@@ -2311,9 +2373,49 @@ def _snappy_layers(ask: Ask, text: str, wall_cell_m: float | None, bridge: Mappi
             float(ask.fallback["bl_delta_m"]), float(wall_cell_m or 0.0), g, n_min=1,
             n_max=min(BL_CELLS, room) if room else BL_CELLS, n_fixed=n if ask.n_layers is not None else None,
             stack_max_m=float(cap) if cap else None)
+        bl_delta = float(ask.fallback["bl_delta_m"])
+        if (band and ask.n_layers is None and wall_cell_m and n_lam > LAMINAR_BAND_LAYERS and bridge is not None
+                and bridge.get("faces") and bridge.get("room") is not None):
+            # CFDREQ-23: finer cells across the layer when the wall cells are about as thick as it, if the mesh can
+            # afford them; else the stack above stands and the cost is said where the row is judged
+            bd = laminar_band(bl_delta, float(wall_cell_m), g, faces=float(bridge["faces"]),
+                              room=float(bridge["room"]), n_now=n_lam, stack_max_m=float(cap) if cap else None)
+            banded = band_regions(out, bl_delta, int(bd["levels"])) if bd["used"] else None
+            if banded is not None:
+                out = banded
+                for key in ("maxLocalCells", "maxGlobalCells"):
+                    was = _num(out, key)
+                    if was is not None:
+                        out = _sub(out, key, str(int(was + bd["cells"])), count=1)
+                n_lam, first, across = int(bd["layers"]), float(bd["first_m"]), float(bd["across"])
+                wall_cell_m = float(bd["cell_m"])
+                ask.fallback["band"] = {"levels": int(bd["levels"]), "cell_m": float(bd["cell_m"]),
+                                        "cells": int(bd["cells"])}
+            elif bd["used"]:
+                pass
+            elif bd.get("cells") is not None and across >= BL_CELLS - 1e-9:
+                # the band would have let a shorter stack do it: what it costs, said if the stack is not kept
+                ask.fallback["band_note"] = (
+                    f"cells {2 ** int(bd['levels'])} times finer near the wall would let fewer layers do it, but "
+                    f"they would add about {MR._g(round(bd['cells'] / 1e6, 1))} M cells, more than the "
+                    f"{MR._g(round(float(bridge['room']) / 1e6, 1))} M this mesh may add for its wall")
+            elif across < BL_CELLS - 1e-9:
+                ask.fallback["band_note"] = (
+                    "even cells four times finer near the wall would not put enough cells across it within what "
+                    "this mesh may add for its wall" if bd.get("cells") is None else
+                    f"cells {2 ** int(bd['levels'])} times finer near the wall would, but they would add about "
+                    f"{MR._g(round(bd['cells'] / 1e6, 1))} M cells, more than the "
+                    f"{MR._g(round(float(bridge['room']) / 1e6, 1))} M this mesh may add for its wall")
         if n_lam != n:
             out = re.sub(r"\bnSurfaceLayers\s+[1-9][0-9]*\s*;", f"nSurfaceLayers {n_lam};", out)
             n = n_lam
+        # CFDREQ-23: THE STACK ENDS IN ONE STEP WHERE IT STOPS. snappyHexMesh's default (nBufferCellsNoExtrude 0)
+        # steps the layer count down one layer per ring of faces round every point it does not extrude (a feature
+        # edge, a rejected face): a 10-layer stack lost layers on a band ten faces wide round each, and the wall
+        # with 10 cells across its layer fell to 61-79% though layers grew on 97-99% of the faces (the cloud
+        # sample: abc 00032926 extruded 97.6% of its faces and added 73.6% of the layer cells). -1 keeps the
+        # whole stack up to where it stops
+        out = re.sub(r"\bnBufferCellsNoExtrude\s+-?[0-9]+\s*;", "nBufferCellsNoExtrude -1;", out, count=1)
         ask.fallback.update(layers=int(n), cells_across=round(across, 1), first_m=float(first))
     elif ask.fallback is not None and first is not None and wall_cell_m and n > 0:
         # CFDREQ-17: THE RESOLVED BODY WALL RESOLVES ITS BOUNDARY LAYER - BL_CELLS across it, the layers counted up
@@ -2395,6 +2497,8 @@ def _snappy_layers(ask: Ask, text: str, wall_cell_m: float | None, bridge: Mappi
                 built["cells_across_bl"] = round(across, 1)
             if ask.fallback.get("bl_delta_m"):
                 built["bl_delta_m"] = float(f"{float(ask.fallback['bl_delta_m']):.4g}")
+            if ask.fallback.get("band_note"):
+                built["band_note"] = ask.fallback["band_note"]
         _say_wall(ask, built, n, g)
     # CFDREQ-15: decided on the dict's final layer count, after the bridge, the cap and the thick side
     resolved = (wf["treatment"] == "resolved") if wf is not None else (
@@ -2489,7 +2593,7 @@ def _say_wall(ask: Ask, fit: Mapping, n: int, g: float, *, engine_words: str = "
     row = {"first_m": float(f"{float(fit['first_m']):.4g}"), "layers": int(n), "treatment": fit["treatment"],
            "y_plus_expected": float(f"{float(fit['y_plus']):.3g}"), **{k: v for k, v in (ask.how or {}).items()
                                                                        if k in ("reynolds", "cf", "friction")}}
-    for k in ("fallback", "cells_across_bl", "bl_delta_m"):
+    for k in ("fallback", "cells_across_bl", "bl_delta_m", "band_note"):
         if fit.get(k) is not None:
             row[k] = fit[k]
     if ask.wall_level_note and fit["treatment"] == "functions":
@@ -2807,6 +2911,9 @@ def _bl_cells_row(workspace, p: Mapping) -> dict | None:
     if not ok:
         said += (f" - under the {MR._g(BL_WALL_SHARE)}% needed: elsewhere the layers were not built, so the boundary "
                  "layer there has fewer cells across it than it needs")
+        if p.get("band_note"):
+            # CFDREQ-23: why no finer cells at the wall made up for it
+            said += f"; {p['band_note']}"
     return {"applied": True, "met": bool(ok), "measured": float(f"{med:.3g}"), "delivered": said,
             "bl_cells_median": med, "bl_area_met_pct": share, "bl_cells_p10": got.get("bl_cells_p10"),
             "bl_delta_m": float(f"{delta:.4g}")}
