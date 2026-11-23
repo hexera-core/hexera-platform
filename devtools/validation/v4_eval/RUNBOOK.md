@@ -59,25 +59,54 @@ regression.
 
 ## The cost model is measured, not guessed
 
-`evalspec.FULL_MIN_PER_FILE` is **98 s/file**: Task 43's x86 mean (n=73, 8 shards in parallel on one
-c2d-standard-8, workers=1) for cheap + full; the full tier alone measured 82.4 s, so 98 s carries ~19%
-headroom. Median is 22 s; ~7% of files hit a 300 s / 900 s wall and carry ~60% of the time, so the tail
-is the cost. The sample over-weights large parts. On the allowed pool (10,887 files):
+Measured by lane D on 2026-11-23 at the tip that includes Lane A's 2.6x speed-up (`measure_reprobe.py`, data in
+`corpora/v4/measure_lane_d_20261123/`): 59 diagonal-stratified files, 8 shards pinned to 4 cores' hyperthread pairs
+(a c2d-standard-8's shape), `--cpus=1`, cold cache.
 
-| plan | VMs | slowest-shard wall (skew x1.5) | projected VM-h | worst case (VMs x cap 12 h) |
+| | value |
+|---|---|
+| per file (sample) | median 25.5 s, mean 136 s, p90 620 s, max 904 s |
+| file-wall timeouts (900 s) | 3 / 59 = 5.1% (pool-weighted 4.7%) |
+| excluded in total (timeouts + `check_valid` 300 s) | 6 / 59 (pool-weighted ~8.7%, wide interval) |
+| one vCPU per file | holds: cgroup CPU/wall 1.00 median and max, 1.2 s throttled in 8,023 s |
+| peak memory per shard | 2.8 GB (8 shards fit a 32 GB c2d-standard-8) |
+| pool-wide work (re-weighted to file sizes) | 336 vCPU-h = 111 s/file (`evalspec.FULL_MIN_PER_FILE`) |
+
+Simulated wave (`project_reprobe.py`, 400 reps, +0.25 h boot/stage per VM, $0.377/VM-h = c2d-standard-8 $0.3632 +
+100 GB pd-balanced, both from the GCP billing catalog):
+
+| plan | VMs | wall median (p90) | VM-hours median (p90) | $ median (p90) |
 |---|---|---|---|---|
-| 96 shards | 12 | 4.6 h | 56 | 144 |
-| 80 shards | 10 | 5.6 h | 56 | 120 |
+| 96 shards, cost-balanced | 12 | 5.2 h (5.6) | 54.8 (56.5) | $20.7 ($21.3) |
+| 96 shards, hash | 12 | 5.5 h (5.9) | 56.6 (58.8) | $21.3 ($22.2) |
+| 80 shards, cost-balanced | 10 | 6.0 h (6.5) | 53.4 (55.1) | $20.1 ($20.8) |
 
-Perfect balance would be 296 vCPU-h / 8 = 37 VM-h; the gate bills the skewed 56. At 2x the measured
-mean the 96-shard wall is ~9.3 h, still inside a 12 h cap, which is why the cap is 12 and not 8. A
-measured first shard is now optional: run `reprobe:pool:1/96` alone (step 4) only if the image or the
-verdict code changed materially since Task 43.
+The launcher's own gate is more conservative (x1.5 skew): 63 projected / 144 worst case at 96 shards, cap 12 h.
+Size predicts cost weakly (R^2 0.21), so balancing by predicted cost buys ~3%, not more.
+
+**The exclusion rate is the risk, not the cost.** ~9% excluded is far over collect's 2% limit: as measured, the wave
+ends at collect exit 2 and needs either the owner's agreement to `--allow-excluded` (the bias is toward easy
+defects) or longer per-file walls (`--file-timeout-s`, and `check_valid`'s 300 s) before the launch. Decide before
+launching, not after.
 
 **C2D quota is 100 vCPU per region, and every other C2D VM counts.** The gate VM
 `dev-crsv4-gate-2` (c2d-standard-16) holds 16, leaving 84: a 96-shard wave is REFUSED by the launcher's
 live quota check while it exists. Either delete the gate VM first (its owner's call) or launch 80 shards
 on 10 VMs. `--shards-total` must then be 80 on every launch and every `collect.py` call of the wave.
+
+## One command: wave.py
+
+`wave.py` chains every step below: preflight (its own refusals, then `preflight.py` and the launcher's gate) -> stage
+(code.tgz, split, a cost-balanced shard plan) -> launch -> watch (relaunch only FAILED or VM-less shards, nothing after
+launch + `--max-run-hours`) -> collect -> triage -> report, recording each step in `<wave-dir>/steps.jsonl`, mirrored to
+`$B/eval/waves/<wave-id>/`. `--dry-run` runs everything up to and including the launcher's `--dry-run`.
+
+```bash
+$PY $V/wave.py --kind reprobe --commit $COMMIT --image "$IMAGE" --image-commit $IMAGE_COMMIT \
+    --wave-id reprobe-full-1 --shards 96 --max-run-hours 12 --dry-run
+```
+
+The numbered steps remain the manual path and the explanation of what each step checks.
 
 ## 0. Order of operations
 
