@@ -277,6 +277,19 @@ def test_for_test_refuses_to_run_outside_pytest(monkeypatch):
         WaveLedger.for_test(10.0)
 
 
+def test_for_test_also_refuses_a_blank_pytest_marker(monkeypatch):
+    # fail closed: a blank marker is "not under pytest", so the test-only door stays shut
+    monkeypatch.setenv("PYTEST_CURRENT_TEST", "  ")
+    with pytest.raises(RuntimeError, match="for_shard"):
+        WaveLedger.for_test(10.0)
+
+
+def test_for_test_is_open_under_pytest_and_still_refuses_a_non_finite_cap():
+    assert WaveLedger.for_test(10.0).provenance == "test"          # the marker pytest set is honoured
+    with pytest.raises(ValueError, match="finite"):
+        WaveLedger.for_test(float("inf"))
+
+
 def test_a_truncated_log_with_a_surviving_marker_is_refused(tmp_path):
     first = shard(tmp_path, 1, n=4)
     a = first.admit("f", 1.0, file_ceiling_usd=100.0)

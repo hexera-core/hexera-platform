@@ -501,9 +501,8 @@ def test_run_arm_checks_the_whole_pool_before_sharding(tmp_path) -> None:
     entries = [pool_mod.PoolEntry("p.loose_reapprox.1.step", "occt", _sha(1), "u", None, "lic")]
     pool_mod.write_pool(entries, pool_json, sources_included=["occt"])
     with pytest.raises(rp.QuarantinedKind):
-        run_arm.run_reprobe(run_arm.argparse.Namespace(pool=str(pool_json), shard="1/1", cache_uri="",
-                                                       workers=1, inputs="/i", file_timeout_s=5.0),
-                            tmp_path, {})
+        run_arm.run_reprobe(
+            run_arm.build_parser().parse_args(["--pool", str(pool_json), "--inputs", "/i"]), tmp_path, {})
 
 
 def test_collect_refuses_short_splits_and_big_exclusions(tmp_path, capsys) -> None:
@@ -556,13 +555,15 @@ def test_build_splits_refuses_an_f360_row() -> None:
         rp.build_splits(rows, dev=3, heldout=2, clean=0)
 
 
-def test_run_arm_drops_f360_from_the_manifest_visibly(tmp_path, monkeypatch) -> None:
+def _run_arm_drop_f360(tmp_path, monkeypatch, extra_args=()):
+    """Run run_reprobe over a pool of one ABC and one F360 entry, with the probe stubbed to record what it was
+    handed and stop. The args come from the real parser, so every flag run_reprobe reads is present."""
     pool_mod = run_arm.pool_mod
     entries = [pool_mod.PoolEntry("a.step", "abc_fail", _sha(1), "u", None, "lic"),
                pool_mod.PoolEntry("f.step", "f360", _sha(2), "u", None, "lic")]
     pool_json = tmp_path / "pool.json"
     pool_mod.write_pool(entries, pool_json, sources_included=["abc_fail", "f360"])
-    seen = {}
+    seen: dict = {}
 
     def fake_probe(entries, **kw):
         seen["entries"] = list(entries)
@@ -571,11 +572,40 @@ def test_run_arm_drops_f360_from_the_manifest_visibly(tmp_path, monkeypatch) -> 
     monkeypatch.setattr(rp, "probe_pool", fake_probe)
     monkeypatch.setattr("meshpipeline.cad.repair_v4.worker_pool.WorkerPool", lambda n: type("P", (), {"close": lambda s: None})())
     prov: dict = {}
+    args = run_arm.build_parser().parse_args(["--pool", str(pool_json), "--inputs", "/i", *extra_args])
     with pytest.raises(RuntimeError, match="stop"):
-        run_arm.run_reprobe(run_arm.argparse.Namespace(pool=str(pool_json), shard="1/1", cache_uri="", workers=1,
-                                                       inputs="/i", file_timeout_s=5.0), tmp_path, prov)
-    assert [e.source for e in seen["entries"]] == ["abc_fail"]
-    assert prov["pool_dropped_by_source"] == {"f360": 1} and prov["pool_listed"] == 2
+        run_arm.run_reprobe(args, tmp_path, prov)
+    assert "entries" in seen, "the probe was never reached: the run raised before the drop path finished"
+    return seen["entries"], prov
+
+
+def test_run_arm_drops_f360_from_the_manifest_visibly(tmp_path, monkeypatch, capsys) -> None:
+    entries, prov = _run_arm_drop_f360(tmp_path, monkeypatch)
+    assert [e.source for e in entries] == ["abc_fail"]                      # the F360 entry never reaches the probe
+    assert prov["pool_dropped_by_source"] == {"f360": 1} and prov["pool_listed"] == 2   # recorded in PROVENANCE
+    assert "dropped {'f360': 1}" in capsys.readouterr().err                 # and printed, not silent
+
+
+def test_run_arm_refuses_f360_even_when_the_operator_names_it(tmp_path, monkeypatch) -> None:
+    # --sources f360 must not re-admit it: select_sources refuses the uncleared label before the probe runs
+    probed: list = []
+    monkeypatch.setattr(rp, "probe_pool", lambda entries, **kw: probed.append(list(entries)))
+    pool_mod = run_arm.pool_mod
+    pool_json = tmp_path / "pool.json"
+    pool_mod.write_pool([pool_mod.PoolEntry("f.step", "f360", _sha(2), "u", None, "lic")], pool_json,
+                        sources_included=["f360"])
+    args = run_arm.build_parser().parse_args(["--pool", str(pool_json), "--sources", "f360"])
+    with pytest.raises(ValueError, match="not cleared"):
+        run_arm.run_reprobe(args, tmp_path, {})
+    assert probed == []
+
+
+def test_run_arm_parser_carries_every_flag_run_reprobe_reads() -> None:
+    import re
+    src = Path(run_arm.__file__).read_text()
+    read = set(re.findall(r"\bargs\.([a-z_]+)", src))
+    have = set(vars(run_arm.build_parser().parse_args([])))
+    assert read <= have, f"run_arm reads args that the parser does not define: {sorted(read - have)}"
 
 
 def test_launcher_counts_only_allowed_sources(tmp_path, capsys) -> None:

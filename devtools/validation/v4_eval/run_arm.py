@@ -129,7 +129,9 @@ def run_harness(args: argparse.Namespace, out: Path, prov: dict) -> int:
     return int(rc.main() or 0)
 
 
-def main(argv: list[str] | None = None) -> int:
+def build_parser() -> argparse.ArgumentParser:
+    """The one argument contract. Tests build their `args` from it, never from a hand-written Namespace,
+    so a flag added here cannot leave a test calling run_reprobe with an attribute missing."""
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--mode", choices=("reprobe", "harness"), default="reprobe")
     parser.add_argument("--shard", default="1/1")
@@ -146,6 +148,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--commit", default="")
     parser.add_argument("--image", default="")
     parser.add_argument("--machine-type", default="")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
     args = parser.parse_args(argv)
     if args.file_timeout_s <= 0:
         parser.error("--file-timeout-s must be positive: a shard without the wall kill can hang")
