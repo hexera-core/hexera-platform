@@ -2297,7 +2297,7 @@ def _snappy_layers(ask: Ask, text: str, wall_cell_m: float | None, bridge: Mappi
         if bridge is not None and bridge.get("faces") and bridge.get("room") is not None:
             room = n + int(max(0.0, float(bridge["room"])) // max(1.0, float(bridge["faces"])))
         n_lam, first, across = laminar_stack(
-            float(ask.fallback["bl_delta_m"]), float(wall_cell_m), g, n_min=1,
+            float(ask.fallback["bl_delta_m"]), float(wall_cell_m or 0.0), g, n_min=1,
             n_max=min(BL_CELLS, room) if room else BL_CELLS, n_fixed=n if ask.n_layers is not None else None,
             stack_max_m=float(cap) if cap else None)
         if n_lam != n:
