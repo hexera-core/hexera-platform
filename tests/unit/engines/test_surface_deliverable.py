@@ -89,6 +89,29 @@ def test_only_the_latest_time_directory_is_converted(tmp_path):
     assert groups == {"airfoil": 3}, groups
 
 
+def test_a_stopped_pass_left_beside_the_mesh_is_never_read_for_it(tmp_path):
+    # RM3 (c2_rm3g): two passes the size brake stopped left VTK/cr_ws_rm21egpm_0 and cr_ws__1s7fvww_0 (far
+    # field only) beside the delivered cr_ws_9vz6v0eq_0; by name the stopped one came last, and the CAD check
+    # read no body off a 6 M-cell production-grade mesh. The case written last is the mesh on disk.
+    import os
+
+    from meshpipeline.engines.surface_deliverable import _patch_files
+    stamps = {"cr_ws_rm21egpm_0": 1_000.0, "cr_ws__1s7fvww_0": 2_000.0, "cr_ws_9vz6v0eq_0": 3_000.0}
+    for case, t in stamps.items():
+        d = tmp_path / "VTK" / case / "boundary"
+        d.mkdir(parents=True, exist_ok=True)
+        _quad_patch(d / "farfield.vtp", 2)
+        if case == "cr_ws_9vz6v0eq_0":
+            _quad_patch(d / "body.vtp", 6)
+        for f in d.glob("*.vtp"):
+            os.utime(f, (t, t))
+    files = _patch_files(tmp_path)
+    assert {f.parent.parent.name for f in files} == {"cr_ws_9vz6v0eq_0"}
+    assert sorted(f.stem for f in files) == ["body", "farfield"]
+    assert build_surface_msh(tmp_path) == SURFACE_MSH
+    assert _read_groups(tmp_path / SURFACE_MSH) == {"body": 6, "farfield": 2}
+
+
 def test_no_vtk_boundary_yields_no_file_rather_than_an_empty_one(tmp_path):
     # Non-fatal: the bundle still carries the solver mesh. An empty .msh offered as a download
     # would be worse than offering none.

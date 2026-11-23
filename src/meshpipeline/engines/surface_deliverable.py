@@ -8,6 +8,8 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 SURFACE_MSH = "surface_mesh.msh"
+#: The rule that reads the mesh on disk from the case written last (docs/RULES.md).
+VER_NEWEST_CASE = "VER-8"
 
 
 def _patch_files(ws: Path) -> list[Path]:
@@ -18,10 +20,29 @@ def _patch_files(ws: Path) -> list[Path]:
     same patch would then be added twice under one physical name - a delivered surface with the
     boundary duplicated on top of itself. Only the newest time directory describes the mesh as
     delivered, so take that one and nothing else.
+
+    THE NEWEST CASE FIRST, THEN ITS LATEST TIME (VER-8). A pass the size brake stopped leaves its own
+    VTK/<case>_0 beside the delivered one (snappy's runs are cr_ws_<random>), and every one is time 0: ordered
+    by name, RM3's cr_ws_rm21egpm_0 (a stopped pass, far field only) sorted after the delivered cr_ws_9vz6v0eq_0
+    and the CAD check read "the body was not read" off a 6 M-cell production-grade mesh (RM5: "100% of your CAD
+    not reached"). The case whose files were written last is the mesh on disk.
     """
-    dirs = sorted({f.parent for f in ws.glob("VTK/**/boundary/*.vtp")},
-                  key=lambda d: (_time_index(d.parent.name), d.parent.name))
-    return sorted(dirs[-1].glob("*.vtp")) if dirs else []
+    dirs = {f.parent for f in ws.glob("VTK/**/boundary/*.vtp")}
+    if not dirs:
+        return []
+
+    def _case(d: Path) -> str:
+        return d.parent.name.rpartition("_")[0] or d.parent.name
+
+    def _written(d: Path) -> float:
+        return max((f.stat().st_mtime for f in d.glob("*.vtp")), default=0.0)
+
+    newest: dict[str, float] = {}
+    for d in dirs:
+        newest[_case(d)] = max(newest.get(_case(d), 0.0), _written(d))
+    case = max(newest, key=lambda c: (newest[c], c))
+    mine = sorted((d for d in dirs if _case(d) == case), key=lambda d: (_time_index(d.parent.name), d.parent.name))
+    return sorted(mine[-1].glob("*.vtp"))
 
 
 def _time_index(case_dir_name: str) -> int:
