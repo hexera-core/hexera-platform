@@ -395,3 +395,18 @@ def test_a_dry_run_of_a_second_heldout_wave_is_refused_without_claiming(live, tm
     # ONE slot ledger: the launcher's own count reads the very key plan_wave and the report read, so it refuses first
     seen = capsys.readouterr()
     assert "held-out wave was already launched as 'ho-one'" in seen.out + seen.err
+
+
+def test_there_is_one_slot_ledger_the_launcher_and_plan_wave_name_the_same_keys() -> None:
+    """The launcher's wave count (wave_limits) and plan_wave's claim (the keys the report reads) were two key spaces;
+    a held-out split could be spent once in each. They must be the same markers."""
+    wl = ra.wave_limits
+    assert [wl.HELD_OUT_KEY] == ev.slot_keys("held_out")
+    assert [wl.checkpoint_key(n) for n in range(1, wl.CHECKPOINT_LIMIT + 1)] == ev.slot_keys("checkpoint")
+
+
+def test_a_slot_the_launcher_claimed_is_the_slot_plan_wave_returns(tmp_path) -> None:
+    markers = ml.FileMarkerStore(tmp_path / "m")
+    assert ra.wave_limits.check_wave_count(markers, "held_out", "ho-1", claim=True) is None
+    assert ev.plan_wave(ev.WAVES["heldout"], wave_id="ho-1", n_shards=1, markers=markers).slot == "slot/held_out/1"
+    assert ra.wave_limits.check_wave_count(markers, "held_out", "ho-2", claim=True) is not None
