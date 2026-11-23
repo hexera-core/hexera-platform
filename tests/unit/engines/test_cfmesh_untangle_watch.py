@@ -42,6 +42,23 @@ def test_no_stop_before_two_passes_have_failed_or_under_the_face_floor():
     assert N.untangle_not_converging(clean + _pass(_stuck()) + _pass(_stuck()) + _pass([900] * 30, finished=False)) == ""
 
 
+def test_the_rate_is_read_inside_the_loop_running_now_not_across_a_restart():
+    # static_mixer_004's last untangling: one loop rose 109 -> 64,438, the next restarted at 53,362 and
+    # fell about 10% an iteration; 109 (ten counts back, in the earlier loop) is not this loop's start.
+    rising = [109, 3609, 12021, 26343, 42574, 56559, 64438]
+    falling = [int(53_362 * 0.9 ** i) for i in range(4)]
+    log = _pass(_stuck()) + _pass(_stuck()) + "Starting untangling the mesh\n" + "".join(
+        f"Iteration {i}. Number of bad faces is {c}\n" for i, c in enumerate(rising)) + "".join(
+        f"Iteration {i}. Number of bad faces is {c}\n" for i, c in enumerate(falling))
+    assert N.untangle_not_converging(log) == ""
+    # the same loop, still slow after more than the window, is judged on its own counts
+    slow = [int(53_362 * 0.97 ** i) for i in range(15)]
+    log2 = log.rsplit("Iteration 0. Number of bad faces is 53362", 1)[0] + "".join(
+        f"Iteration {i}. Number of bad faces is {c}\n" for i, c in enumerate(slow))
+    why = N.untangle_not_converging(log2)
+    assert "after 15 iterations" in why and "had 35 left" in why
+
+
 def test_the_watch_reads_the_growing_log_and_trips_once(tmp_path):
     log = tmp_path / "cartesianMesh.log"
     log.write_text(_pass(_stuck()))

@@ -145,15 +145,23 @@ def untangle_not_converging(log_text: str) -> str:
     may be). The same log gives the same answer on any machine."""
     failed = 0
     cur: list[int] | None = None
+    last_it = -1
     for line in str(log_text or "").splitlines():
         if _UNTANGLE_START in line:
-            cur = []
+            cur, last_it = [], -1
         elif _UNTANGLE_END in line:
             failed += 1 if cur and cur[-1] > 0 else 0
             cur = None
         elif cur is not None:
             m = _ITERATION_BAD.search(line)
             if m:
+                # One untangling holds several loops, each counting its iterations from 0 or 1 again:
+                # the rate is read inside the loop running now, never across a loop's restart
+                # (static_mixer_004: 109 at one loop's start against 39,402 three iterations into the next).
+                it = int(m.group(1))
+                if it <= last_it:
+                    cur = []
+                last_it = it
                 cur.append(int(m.group(2)))
     if cur is None or len(cur) <= UNTANGLE_RATE_WINDOW or failed < UNTANGLE_FAILED_PASSES:
         return ""
