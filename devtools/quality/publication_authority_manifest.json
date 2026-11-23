@@ -3409,6 +3409,19 @@
   "roots": []
  },
  {
+  "context": "cad/cad_tessellate.py::_tessellate_internal._mouth_caps::error#2|NotAPublisher|not-a-publisher|",
+  "path": "cad/cad_tessellate.py",
+  "qualname": "_tessellate_internal._mouth_caps",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 2,
+  "receiver": "logger",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "cad/face_names.py::read_named_faces::search#1|NotAPublisher|not-a-publisher|",
   "path": "cad/face_names.py",
   "qualname": "read_named_faces",
@@ -4376,6 +4389,32 @@
   "roots": []
  },
  {
+  "context": "engines/cfd_requirements.py::_layer_twist::search#1|NotAPublisher|not-a-publisher|",
+  "path": "engines/cfd_requirements.py",
+  "qualname": "_layer_twist",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "re",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "engines/cfd_requirements.py::_layer_twist::search#2|NotAPublisher|not-a-publisher|",
+  "path": "engines/cfd_requirements.py",
+  "qualname": "_layer_twist",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 2,
+  "receiver": "re",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "engines/cfd_requirements.py::_level_row::search#1|NotAPublisher|not-a-publisher|",
   "path": "engines/cfd_requirements.py",
   "qualname": "_level_row",
@@ -4623,6 +4662,19 @@
   "roots": []
  },
  {
+  "context": "engines/checkmesh_validity.py::fatal_defects::search#1|NotAPublisher|not-a-publisher|",
+  "path": "engines/checkmesh_validity.py",
+  "qualname": "fatal_defects",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "pattern",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "engines/control_appliers.py::shell_place_sizes::plan#1|NotAPublisher|not-a-publisher|",
   "path": "engines/control_appliers.py",
   "qualname": "shell_place_sizes",
@@ -4795,6 +4847,32 @@
   "context": "engines/layer_census.py::_boundary::search#2|NotAPublisher|not-a-publisher|",
   "path": "engines/layer_census.py",
   "qualname": "_boundary",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 2,
+  "receiver": "re",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "engines/layer_census.py::planned_first_of::search#1|NotAPublisher|not-a-publisher|",
+  "path": "engines/layer_census.py",
+  "qualname": "planned_first_of",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "re",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "engines/layer_census.py::planned_first_of::search#2|NotAPublisher|not-a-publisher|",
+  "path": "engines/layer_census.py",
+  "qualname": "planned_first_of",
   "semantic": "search",
   "method": "search",
   "ordinal": 2,
@@ -5321,6 +5399,19 @@
   "method": "search",
   "ordinal": 3,
   "receiver": "re",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "engines/size_brake.py::SizeBrake.__call__::search#1|NotAPublisher|not-a-publisher|",
+  "path": "engines/size_brake.py",
+  "qualname": "SizeBrake.__call__",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "_CAST_END",
   "authority": "NotAPublisher",
   "lifecycle": "not-a-publisher",
   "gated_required": false,
@@ -6089,6 +6180,19 @@
   "roots": []
  },
  {
+  "context": "engines/snappy/wall_price.py::included_angle_of::search#1|NotAPublisher|not-a-publisher|",
+  "path": "engines/snappy/wall_price.py",
+  "qualname": "included_angle_of",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "_INCLUDED",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "engines/snappy_multiregion/foam_exec.py::check_mesh::search#1|NotAPublisher|not-a-publisher|",
   "path": "engines/snappy_multiregion/foam_exec.py",
   "qualname": "check_mesh",
@@ -6291,6 +6395,19 @@
   "method": "search",
   "ordinal": 1,
   "receiver": "re",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "engines/vmtk/lumen_staging.py::stage_lumen::check#1|NotAPublisher|not-a-publisher|",
+  "path": "engines/vmtk/lumen_staging.py",
+  "qualname": "stage_lumen",
+  "semantic": "check",
+  "method": "check",
+  "ordinal": 1,
+  "receiver": "staging_work",
   "authority": "NotAPublisher",
   "lifecycle": "not-a-publisher",
   "gated_required": false,
