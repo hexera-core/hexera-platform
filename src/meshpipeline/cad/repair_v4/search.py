@@ -457,6 +457,10 @@ class DetGenerator:
                 for order in (1, 2):
                     rows.append(("split_continuity", faces, {"order": order}, f"split faces at C{order} breaks"))
             rows.append(("orient_and_close", solids, {}, "fix shell orientation"))
+            if "no_solids" in (site.graph.get("hard_codes") or ()):
+                # Loose faces and no solid at all: a shell that is closed (a fill just closed it) still has to be
+                # made a solid. make_volume declines when the faces enclose nothing.
+                rows.append(("make_volume", faces, {}, "no solid exists: build one from the closed shell"))
         if kind == "sliver":
             if diag is None:
                 self._note(f"site {site.id}: remove_small not proposed: the part's diagonal is unknown")

@@ -309,6 +309,7 @@ def find_sites(pool: WorkerPool, ws: Workspace, verdict: Any, *, h_mm: float,
     nodes: dict[StableId, _Node] = {}
     points: list[_Node] = []
     whole_part: dict[SiteKind, set[str]] = defaultdict(set)
+    whole_codes: dict[SiteKind, set[str]] = defaultdict(set)  # which layer-1 codes put a site on the whole part
 
     def implicate(entity: StableId | None, xyz: tuple | None, kind: SiteKind, source: str,
                   note: dict) -> None:
@@ -352,12 +353,13 @@ def find_sites(pool: WorkerPool, ws: Workspace, verdict: Any, *, h_mm: float,
             # "unlocated" threw the kind away, and `DetGenerator` sweeps nothing for "unlocated", so
             # the canonical open shell produced no candidate at all. Keep the kind, drop only the place.
             whole_part[_HARD_KINDS[finding.code]].add("valid")
+            whole_codes[_HARD_KINDS[finding.code]].add(finding.code)
 
     sites: list[Site] = []
     if nodes or points:
         sites.extend(_geometric_sites(pool, ws, valid, nodes, points, reverse, h_mm))
     for kind, names in whole_part.items():
-        sites.append(Site("", kind, [], [], sorted(names), None, {}, None))
+        sites.append(Site("", kind, [], [], sorted(names), None, {"hard_codes": sorted(whole_codes.get(kind, ()))}, None))
 
     def order(site: Site) -> tuple:
         return (_PRIORITY.index(site.kind), -len(site.meshers_failing),
@@ -713,7 +715,7 @@ def _attach_graphs(pool: WorkerPool, ws: Workspace, sites: list[Site], reverse: 
     for site in sites:
         soft, box = site.graph.get("soft", []), site.graph.get("box")
         graph: dict = {"k": GRAPH_HOPS, "h_mm": h_mm}
-        for key in ("failures", "points", "clashes", "failure_entities", "unmeasured_pairs"):
+        for key in ("failures", "points", "clashes", "failure_entities", "unmeasured_pairs", "hard_codes"):
             # `unmeasured_pairs` is a COUNT (line 562 writes an int); every other key is a list. A site that was
             # never clustered (an `unlocated` one) has neither, and a `[]` there crashed `observation`'s int().
             graph[key] = site.graph.get(key, 0 if key == "unmeasured_pairs" else [])
@@ -793,6 +795,8 @@ def _site_entry(ws: Workspace, site: Site, level: tuple) -> dict:
     if len(site.entities) > n_ent:
         entry["entities_omitted"] = len(site.entities) - n_ent
     sub: dict = {k: graph[k] for k in ("k", "error", "note", "truncated") if k in graph}
+    if graph.get("hard_codes"):
+        sub["hard_codes"] = list(graph["hard_codes"])  # why a whole-part site exists: e.g. no_solids
     if graph.get("free_loops"):
         sub["free_loops"] = _round(graph["free_loops"])  # the edges fill_loop takes, smallest loop first
         sub["diagonal_mm"] = _round(graph.get("diagonal_mm"))
