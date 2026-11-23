@@ -274,7 +274,9 @@ def run(workspace: Path | str, step: Path | str, *, mm_per_unit: float, source: 
                 shutil.copyfile(out / name, ws / (name if name != ms.RECORD_FILE else "shell.json"))
     except Exception as exc:  # noqa: BLE001 - the solid mesh is still delivered; the reason is kept
         logger.warning("shell run: no shell mesh (%s: %s)", type(exc).__name__, str(exc)[:300])
-        rec.update(made=False, why=f"the shell mesh could not be made ({type(exc).__name__})")
+        from meshpipeline.engines.gmsh.shell_adapter import said_words
+
+        rec.update(made=False, why=said_words(exc) or f"the shell mesh could not be made ({type(exc).__name__})")
     rec["seconds"] = round(time.time() - started, 1)
     rec["words"] = words(rec)
     (ws / RECORD).write_text(json.dumps(rec, indent=1, sort_keys=True, default=float))

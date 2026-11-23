@@ -610,6 +610,19 @@ def test_a_face_written_twice_is_no_solid(tmp_path):
     assert "1 face was in the file twice: the second copy of it is left out." in rec["words"]
 
 
+def test_a_size_larger_than_the_whole_part_is_said_in_plain_words(tmp_path):
+    """SHMESH-12b: a 2 mm sheet asked for 20 mm elements has no face the size can mesh. The run says so with the way
+    on - the part's size, the size that fits, the file's unit to check - never "max() arg is an empty sequence"."""
+    src = _file(sx.plate(2.0, 0.5), tmp_path / "in")
+    (tmp_path / "a").mkdir()
+    rec = surface_run.run(tmp_path / "a", src, mm_per_unit=1.0, requirements={"sizes": {"global_mm": 20.0}})
+    assert not rec["made"]
+    why = str(rec["why"])
+    assert "max()" not in why and "Error" not in why
+    assert why.startswith("the part is only 2 mm across") and "20 mm element" in why and "under about 0.2 mm" in why
+    assert "check the unit" in why
+
+
 def test_a_sheet_with_a_small_closed_pocket_is_the_sheet_not_the_pocket(tmp_path):
     """MESH-1b: a sheet whose faces include a small closed skin (a bead's pocket on a stamped panel) is read as the
     surface it is. Before, the pocket was read as THE solid and the sheet dropped without a word (s33: 8 of 73

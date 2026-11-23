@@ -616,7 +616,10 @@ def run(workspace: Path | str, step: Path | str, *, mm_per_unit: float, thicknes
                     shutil.copyfile(out / name, ws / name)
     except Exception as exc:  # noqa: BLE001 - said in the record; the driver tells the user
         logger.warning("surface run: no shell mesh (%s: %s)", type(exc).__name__, str(exc)[:300])
-        rec.update(made=False, why=f"the shell mesh could not be made ({type(exc).__name__}: {str(exc)[:200]})")
+        from meshpipeline.engines.gmsh.shell_adapter import said_words
+
+        rec.update(made=False, why=said_words(exc)
+                   or f"the shell mesh could not be made ({type(exc).__name__}: {str(exc)[:200]})")
     rec["seconds"] = round(time.time() - started, 1)
     if (rec.get("surface") or {}).get("kind") == "surface":
         rec["words"] = words(rec)

@@ -2434,6 +2434,27 @@ BEST_SO_FAR = True
 _SO_FAR: dict[str, Any] = {"dir": None, "mine": None, "file": None, "label": "the first path", "t0": 0.0}
 
 
+#: SHMESH-12b: a failure's words written for the user (the runs' records say them as they stand, with no
+#: exception name): what follows this mark, through every re-raise and the forked child's "Type: message"
+SAID = "[said] "
+
+
+def said_words(exc: BaseException | str) -> str | None:
+    """SHMESH-12b: the user's words a failure carries (after SAID), else None."""
+    text = str(exc)
+    return text.split(SAID, 1)[1].strip() if SAID in text else None
+
+
+def too_small_words(box: tuple | list, mm: float, size_mm: float) -> str:
+    """SHMESH-12b: a part smaller than the size it is meshed at, said with the way on. `box`: gmsh's bounding box
+    in model units; `mm`: mm per unit; `size_mm`: the size every face was measured against."""
+    span = max(float(box[3]) - float(box[0]), float(box[4]) - float(box[1]), float(box[5]) - float(box[2])) * mm
+    fits = max(span / 10.0, 1e-6)
+    return (f"the part is only {span:.3g} mm across and every face of it is smaller than one {size_mm:.3g} mm "
+            f"element: ask for an element size under about {fits:.2g} mm (a tenth of the part), or, if the part "
+            "should be larger, check the unit the file was read in")
+
+
 class _PastLimit(ValueError):
     """SHMESH-21: the forked shell mesh ran past its deadline and was stopped (the words as before)."""
 
@@ -4765,6 +4786,12 @@ def _mesh_once_core(brep: Path, record: dict, owners: list[str], mm: float, log:
             raise ValueError(f"gmsh could not mesh {len(left_out)} face(s) - {which} - more than "
                              f"{100 * FACE_OUT_GIVE_UP:.0f}% of the part; the shell mesh is given up. Those faces of the "
                              "CAD are the ones to look at (SHMESH-72)")
+        if tag_of and len(tiny) == len(tag_of):
+            # SHMESH-12b: EVERY face is under the smallest face the asked size meshes - the size is larger than the
+            # part (a 2 mm part asked 20 mm elements): said in plain words with the way on, never "max() arg is an
+            # empty sequence" from the sizing below
+            raise ValueError(SAID + too_small_words(gmsh.model.getBoundingBox(-1, -1), mm,
+                                                    max(float(rows[k]["wall_mm"]) for k in tag_of.values())))
         if tiny or left_out:
             gmsh.model.occ.remove([(2, t) for t in tiny + left_out])
             gmsh.model.occ.synchronize()
