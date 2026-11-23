@@ -412,3 +412,23 @@ def test_an_export_that_reports_ok_but_wrote_nothing_is_checker_unavailable(tmp_
 
     with pytest.raises(CheckerUnavailable):
         stages.step_for(Liar(), make_ws(tmp_path, "liar").brep_path)
+
+
+@pytest.mark.parametrize("raw", [None, "", "   "])
+def test_a_missing_or_blank_cache_uri_is_a_per_process_memory_cache_and_says_so(
+        raw: str | None, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+    """Unset, empty and whitespace all mean the same: in-memory, per process. Never a directory named "" or
+    "   " (which would silently write a cache into the cwd), and never silent: a cache that is quietly
+    process-local looks exactly like a shared one."""
+    if raw is None:
+        monkeypatch.delenv(cache_mod.CACHE_URI_ENV, raising=False)
+    else:
+        monkeypatch.setenv(cache_mod.CACHE_URI_ENV, raw)
+    cache_mod.reset_default_verdict_cache()
+    with caplog.at_level("WARNING", logger=cache_mod.logger.name):
+        cache = cache_mod.default_verdict_cache()
+        assert cache_mod.default_verdict_cache() is cache
+    assert isinstance(cache.store, cache_mod.MemoryStore)
+    assert [r.getMessage() for r in caplog.records].count(caplog.records[0].getMessage()) == 1  # once, not per call
+    assert cache_mod.CACHE_URI_ENV in caplog.records[0].getMessage()
+    cache_mod.reset_default_verdict_cache()
