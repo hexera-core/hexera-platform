@@ -43,7 +43,7 @@ from meshpipeline.cad.repair.caps import Measure
 from meshpipeline.cad.repair.catalogue_words import catalogue_text
 from meshpipeline.cad.repair.package import TargetPackage
 from meshpipeline.cad.repair.regions import Region
-from meshpipeline.cad.repair.session import PackageVerdict
+from meshpipeline.cad.repair.session import MESHES_AFTER_TARGET_REMAINS, PackageVerdict
 
 logger = logging.getLogger(__name__)
 
@@ -1314,6 +1314,14 @@ def _tried_on(scratch) -> int:
     return len(getattr(scratch, "edits", ()) or ()) if scratch is not None else 0
 
 
+def _cured_on(scratch) -> bool:
+    """True when a KEPT edit on the clone made the part mesh while its aimed defect remained
+    (`session.MESHES_AFTER_TARGET_REMAINS`); False with no clone. The clone's own record, read
+    rather than re-derived."""
+    return any(edit.kept and edit.reason == MESHES_AFTER_TARGET_REMAINS
+               for edit in (getattr(scratch, "edits", ()) or ()))
+
+
 #: Refused when a region ends over a located kernel defect NOTHING WAS EVER AIMED AT. Names the
 #: defect and the operation that answers it, because the whole failure was the model not knowing
 #: there was something left to try.
@@ -1546,7 +1554,8 @@ def _conclude(args: object, inv: _Investigation, *, ctx, scratch, region: Region
         # THE SESSION'S CURRENT SOLIDS, not the clone's: the package will run on the session.
         solids_of=lambda: ma._current_solids(state["shape"]))
     package, proposal = ma.validate_package(claim, ctx, guards, label=LABEL,
-                                            model_calls=int(inv.model_calls))
+                                            model_calls=int(inv.model_calls),
+                                            cured_on_clone=_cured_on(scratch))
     inv.conclusion = {"form": "package", "outcome": "package", "reason": "",
                       "proposal": proposal}
     # VALIDATED, RECORDED, DISCARDED. The claim was measured against the SESSION'S defects and
