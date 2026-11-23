@@ -124,7 +124,9 @@ def test_snappy_resolves_a_wall_too_tight_for_wall_functions_and_says_so():
     out = CR.snappy_dict(ask, SHM, wall_cell_m=0.5 * h)
     assert _num(out, "firstLayerThickness") == pytest.approx(h / 100.0, rel=1e-4)
     row = _y_row(ask)
-    assert row["status"] == "nearest" and row["treatment"] == "resolved" and row["y_plus_expected"] == 0.5
+    # CFDREQ-25: the accepted proposal promised a resolved wall where wall functions do not fit: applied, said with why
+    assert row["status"] == "applied" and row["treatment"] == "resolved" and row["y_plus_expected"] == 0.5
+    assert row["fallback"] == "cells" and "do not suit this wall" in row["built"]
     assert row["built"].startswith("a resolved wall") and "wall functions do not suit" in row["built"]
 
 
@@ -188,7 +190,7 @@ def test_cfmesh_counts_its_layers_so_the_split_stack_starts_at_the_height():
     s = CR.cfmesh_strategy(ask, {"n_layers": 2}, length_m=1.0)
     out = CR.cfmesh_layer_fit(ask, s, 0.5 * s["first_layer_thickness"])
     assert out["first_layer_thickness"] == pytest.approx(s["first_layer_thickness"] / 100.0, rel=1e-6)
-    assert _y_row(ask)["status"] == "nearest" and _y_row(ask)["treatment"] == "resolved"
+    assert _y_row(ask)["status"] == "applied" and _y_row(ask)["treatment"] == "resolved"     # CFDREQ-25: accepted
     # nothing of the wall treatment: unchanged
     req, _d, _ = _read("8 prism layers", layers=[{"what": "count", "value": 8, "unit": "none", "quote": "8 prism layers"}])
     plain = CR.Ask(req, "cfmesh")

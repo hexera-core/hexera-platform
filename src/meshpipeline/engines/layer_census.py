@@ -315,7 +315,7 @@ def census(polymesh, n_layers: int, patches, planned_first_m: float | None = Non
                 "first_vs_plan": (round(float(med) / float(planned_first_m), 2) if med is not None else None),
                 "area_first_at_plan": round(float(A[y_share].sum() / total), 4),
                 "area_under_jump": round(float(A[jump].sum() / total), 4),
-                "next_over_first": (round(float(_median(ratio[seen], A[seen])), 3) if seen.any() else None),
+                "next_over_first": (round(nof, 3) if (nof := _median(ratio[seen], A[seen])) is not None else None),
             })
     return res, ""
 

@@ -2699,9 +2699,8 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
                     budget_cells=max(50_000, int(strategy.get("thin_budget")
                                                  or 0.5 * _planned_budget)),
                     keep_cell_m=_keep)
-                if getattr(_thin_regions, "layer_note", ""):
-                    logger.info("internal pass %d: %s - job_id=%s", attempt,
-                                _thin_regions.layer_note, job_id)
+                if _layer_note := str(getattr(_thin_regions, "layer_note", "") or ""):
+                    logger.info("internal pass %d: %s - job_id=%s", attempt, _layer_note, job_id)
         except Exception:  # noqa: BLE001 - a measurement is an optimisation, never fatal
             logger.exception("internal build: thin-feature probe failed - continuing without "
                              "local thin refinement - job_id=%s", job_id)
@@ -2721,7 +2720,7 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
                    else "refining locally so it is captured" if not _thin_note
                    else "refining locally as far as the cell budget allows")
                 + (f" ({_thin_note})" if _thin_note else "")
-                + (f"; {_thin_regions.layer_note}" if getattr(_thin_regions, "layer_note", "") else ""),
+                + (f"; {_ln}" if (_ln := str(getattr(_thin_regions, "layer_note", "") or "")) else ""),
                 op_id=f"internal:thin-feature:{attempt}")
         # NARROW PASSAGES, against the cell at the wall too (the gap plan above): what is refined
         # where, and what the budget became - or, over the limit, how far the limit lets them be
