@@ -190,3 +190,20 @@ def test_a_dry_run_runs_every_gate_and_creates_nothing(tmp_path: Path) -> None:
     with pytest.raises(wave.WaveRefused, match="not staged"):  # only 5 of 10,887 staged: refused before any launch
         w.run()
     assert backend.launches == []
+
+
+def test_labels_reach_the_launcher_and_the_watch_filters_on_the_purpose() -> None:
+    w = _args(labels=("deployment-id=dev-crsv4", "purpose=v4-reprobe-800", "owner=lead-2"))
+    argv = wave.launcher_argv(w, dry_run=True)
+    given = [argv[i + 1] for i, a in enumerate(argv) if a == "--label"]
+    assert given == ["deployment-id=dev-crsv4", "purpose=v4-reprobe-800", "owner=lead-2"]
+    assert w.purpose == "v4-reprobe-800" and _args().purpose == "v4-eval"
+    assert "--label" not in wave.launcher_argv(_args(), dry_run=True)
+
+
+def test_preflight_checks_the_wave_s_own_prefix() -> None:
+    sub = _args(prefix=f"{wave.wave_spec.BUCKET}/eval/v4-reprobe-800")
+    argv = wave.preflight_argv(sub)
+    assert argv[argv.index("--name") + 1] == "v4-reprobe-800"
+    with pytest.raises(wave.WaveRefused):
+        wave.preflight_argv(_args(prefix=f"{wave.wave_spec.BUCKET}/eval/a/b"))

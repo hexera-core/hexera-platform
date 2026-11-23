@@ -450,3 +450,34 @@ def test_a_dry_run_reaches_the_cache_refusal_and_creates_nothing(monkeypatch, ca
     monkeypatch.setattr(lf.wave_spec, "verdict_cache_uri", lambda prefix: "")
     assert _main("--profile", "v4", "--dry-run") == 1
     assert "REFUSE  verdict cache" in capsys.readouterr().err
+
+
+# ----------------------------------------------------------------- identity label overrides (reprobe-800)
+
+def test_a_label_override_renames_the_vms_relabels_them_and_keeps_the_reaper(tmp_path):
+    r = _v4("--dry-run", "--shards-total", "16", "--files", "800", "--max-run-hours", "4", "--label", "deployment-id=dev-crsv4",
+            "--label", "purpose=v4-reprobe-800", "--label", "owner=lead-2", tmp_path=tmp_path)
+    assert r.returncode == 0, r.stdout + r.stderr
+    creates = _creates(r.stdout)
+    assert len(creates) == 2
+    for line in creates:
+        assert " dev-crsv4-v4e-" in line and "dev-crsv3-v4e-" not in line
+        labels = line.split("--labels=")[1].split()[0]
+        assert "deployment-id=dev-crsv4" in labels and "purpose=v4-reprobe-800" in labels
+        assert "owner=lead-2" in labels and "purpose=v4-eval" not in labels
+        assert f"commit={HEAD[:12]}" in labels and "managed-by=v4-eval" in labels
+        # the server-side reaper is on every VM, whatever the labels say
+        assert "--instance-termination-action=DELETE" in line and "--max-run-duration=4h" in line
+
+
+def test_a_derived_label_cannot_be_overridden(tmp_path):
+    r = _v4("--dry-run", "--label", "commit=deadbeef", tmp_path=tmp_path)
+    assert r.returncode == 2 and "derived" in r.stderr and not _creates(r.stdout)
+    r = _v4("--dry-run", "--label", "Owner=Lead", tmp_path=tmp_path)
+    assert r.returncode == 2 and "KEY=VALUE" in r.stderr
+
+
+def test_label_overrides_are_v4_only(tmp_path):
+    r = _launch("--image", IMAGE, "--commit", HEAD, "--image-commit", HEAD, "--skip-preflight", "--dry-run",
+                "--label", "owner=x", tmp_path=tmp_path)
+    assert r.returncode == 2 and "--label" in r.stderr

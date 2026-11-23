@@ -380,6 +380,10 @@ WAVES: dict[str, WaveDef] = {w.name: w for w in (
     # under `dev_search`, because a wave must have a row for every (file, arm).
     WaveDef("t2_smoke_dev", "normal", "dev", ("input_only", "staged", "search_det")),
     WaveDef("t2_smoke_clean", "normal", "clean", ("input_only", "staged", "search_det")),
+    # reprobe-800: the provisional v2 splits (corpora/v4/provisional_v2/PROVISIONAL_{dev,clean}_v2.json, passed with
+    # --split-file). NORMAL waves, not checkpoint: checkpoint slots are limited to three.
+    WaveDef("snap_v2_dev", "normal", "dev", _ALL[:4]),
+    WaveDef("snap_v2_clean", "normal", "clean", _ALL[:4]),
 )}
 
 
