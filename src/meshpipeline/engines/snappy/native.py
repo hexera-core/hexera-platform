@@ -260,12 +260,13 @@ def _run_snappy_local(workspace, *, bashrc: str = _DEFAULT_BASHRC,
     def _brake_for(logname: str):
         if not logname.startswith("snappyHexMesh"):
             return None
-        from meshpipeline.engines.size_brake import SizeBrake, case_budget
+        from meshpipeline.engines.size_brake import SizeBrake, case_budget, layer_counts_of
         from meshpipeline.engines.workspace_facts import read_flow_topology
         budget = case_budget(ws)
         if not budget or read_flow_topology(ws) == "internal":
             return None
-        return SizeBrake(ws / logname, budget)
+        # RUN-10: judged again at castellation's end, on the castellated wall's own faces
+        return SizeBrake(ws / logname, budget, case_dir=ws, layers=layer_counts_of(ws))
 
     def _sh(cmd: str, logname: str, *, name: str = "", authoritative: bool = True,
             expected: tuple[str, ...] = ()) -> ps.StageResult:

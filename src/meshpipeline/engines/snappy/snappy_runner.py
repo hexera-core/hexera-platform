@@ -744,6 +744,11 @@ def final_estimate(*, castellated: float | None, budget: int, area: float | None
     return built * (1.0 + max(0, int(n_layers)) * wall_share)
 
 
+#: snappyHexMesh's buffer of cells of each level between two levels (the dicts' nCellsBetweenLevels): the width
+#: of the feature band the wall's faces are priced with (engines/snappy/wall_price, RUN-10).
+NCELLS_BETWEEN_LEVELS = 3
+
+
 #: The castellation budget is never cut under this share of the plan's: snappyHexMesh stops refining
 #: at maxGlobalCells, and a budget cut far enough stops it before the surface reaches the level that
 #: seals the body (lab, 25 Oct: A1/A2 cut to ~0.1M castellated cells came back with no body faces).
@@ -1136,8 +1141,18 @@ def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analy
         area=analysis.get("surface_area"), divisions=div, base_cell=base_actual,
         surface_level=smax, near=(b0d, near_band_level), far=(b1d, max(1, smin - 1)))
     _n_lay_est = max([n_layers, *layer_counts.values()]) if _any_layers else 0
-    # the wall's faces as a stopped pass of this case measured them (RUN-8, size_brake.learned_face_factor)
-    _face_k = max(1.0, float(strategy.get("_wall_face_factor") or 1.0))
+    # the wall's faces as a stopped pass of this case measured them (RUN-8, size_brake.learned_face_factor) - and,
+    # before any pass has, as the case will refine them (RUN-10): the area at the surface level plus the feature
+    # edges' band at the feature level (engines/snappy/wall_price). The learned count, when there is one, decides
+    _face_learned = max(1.0, float(strategy.get("_wall_face_factor") or 1.0))
+    _face_priced, _feat_len = 1.0, 0.0
+    if _face_learned <= 1.0 and _n_lay_est > 0:
+        from meshpipeline.engines.snappy import wall_price as _wp
+        _face_priced, _feat_len = _wp.priced_face_factor(
+            ws / "constant" / "triSurface" / f"{surface_name}.stl", area=analysis.get("surface_area"),
+            wall_cell=base_actual / (2 ** smax), surface_level=smax, feature_level=flevel,
+            included_angle=_wp.included_angle_of(ws), n_between=NCELLS_BETWEEN_LEVELS)
+    _face_k = max(_face_learned, _face_priced)
     _final = final_estimate(
         castellated=_cast_est,
         budget=max_cells, area=analysis.get("surface_area"), wall_cell=base_actual / (2 ** smax),
@@ -1209,7 +1224,9 @@ def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analy
         _wf = 0.0
     if _wf > 0 and _n_lay_est > 0:
         _plan_rec = {**_plan_rec, "wall_faces_est": int(_wf), "layers_est": int(_n_lay_est),
-                     **({"wall_face_factor": round(_face_k, 3)} if _face_k > 1.0 else {})}
+                     **({"wall_face_factor": round(_face_k, 3)} if _face_k > 1.0 else {}),
+                     **({"wall_faces_priced": int(_wf * _face_priced), "feature_length_m": round(_feat_len, 3)}
+                        if _face_priced > 1.0 else {})}
     (ws / PLAN_CELLS_FILE).write_text(json.dumps(_plan_rec))
     if cast_cells != max_cells and _final:
         logger.info("render_snappy_case: the finished mesh is estimated at %.3g cells with its layers, "
@@ -1221,7 +1238,7 @@ def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analy
 castellatedMesh true; snap true; addLayers {'true' if _any_layers else 'false'};
 geometry {{ {surface_name}.stl {{ type triSurfaceMesh; name {surface_name};{_geo_regions} }}{_wake_geom}{_near_geom}{_gap_geom}{_part_geom} }}
 castellatedMeshControls {{ maxLocalCells {cast_cells}; maxGlobalCells {cast_cells}; minRefinementCells 10;
-  maxLoadUnbalance 0.10; nCellsBetweenLevels 3; features ( {{ file "{feature_file}"; level {flevel}; }}{_contact_feature} );
+  maxLoadUnbalance 0.10; nCellsBetweenLevels {NCELLS_BETWEEN_LEVELS}; features ( {{ file "{feature_file}"; level {flevel}; }}{_contact_feature} );
   refinementSurfaces {{ {surface_name} {{ level ({smin} {smax});{_ref_regions} }} }} resolveFeatureAngle {ang:.0f};
   refinementRegions {{ {surface_name} {{ mode distance; levels (({b0d:.6g} {near_band_level}) ({b1d:.6g} {max(1, smin - 1)})); }}{_wake_refine}{_near_refine}{_gap_refine}{_part_refine} }}
   locationInMesh {vf(loc)}; allowFreeStandingZoneFaces true;{_outside} }}
