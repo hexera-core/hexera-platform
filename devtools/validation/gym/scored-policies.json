@@ -1,0 +1,24 @@
+{
+  "README": [
+    "Every v3 policy that has been SCORED on a stratified sample of the 9,956-file corpus.",
+    "A record is {policy, evidence, sample_sha256, summary} and holds no CAD: hashes and numbers",
+    "only, never a corpus file name or path. Appended by `devtools/validation/gym.py record` -",
+    "never by hand, because a fingerprint nobody ran is worse than no record at all.",
+    "tests/unit/dev/test_policy_is_gym_scored.py gates on it: once `records` is non-empty, a",
+    "policy fingerprint missing from it fails the host gate until `make gym` scores the change."
+  ],
+  "records": [],
+  "unscored_at_bootstrap": {
+    "policy": "dc0d646735e7621b77105c2f044360166b637d1f82d813f46e6f057a6a4ed52c",
+    "why": [
+      "The gate shipped with an EMPTY record. The first score needs a corpus pass, and corpus",
+      "passes are serialised by the controller - no lane may start one on its own, so no lane",
+      "could honestly seed this file. While `records` is empty the live gate SKIPS with this",
+      "fingerprint in its message; the skip is conditional on emptiness alone, so the first",
+      "recorded score turns the gate hard (proven by",
+      "test_the_bootstrap_skip_cannot_outlive_the_first_record).",
+      "Seed it with the first `make gym` arm-vs-baseline run on Task 15's sample.json."
+    ],
+    "note": "NOT a record. `scored_fingerprints()` reads `records` only; this key is documentation."
+  }
+}

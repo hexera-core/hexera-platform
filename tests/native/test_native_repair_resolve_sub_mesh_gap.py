@@ -1,0 +1,276 @@
+# Responsibility: Verify on the REAL kernel and the REAL gmsh probe that resolve_sub_mesh_gap turns
+#                 a thin-walled tube the default probe refuses (its outer cylinder's triangles pass
+#                 through the inner one, 0.02 mm away) into a STEP the default probe meshes, with
+#                 one valid solid, unchanged surface, declarations the caps accept, and that it
+#                 declines a part with no sub-mesh gap and a gap between flat faces.
+# Boundaries: the native tier. The claim, the consent flag and the rules baseline are unit-tested
+#             hermetically (tests/unit/cad/test_repair_resolve_sub_mesh_gap.py).
+from __future__ import annotations
+
+import pytest
+
+pytest.importorskip("OCP.BRepPrimAPI", reason="the CAD kernel is a native-tier dependency")
+pytest.importorskip("gmsh", reason="the mesh probe is a native-tier dependency")
+
+import meshpipeline.settings.cad_repair as rcfg  # noqa: E402
+from meshpipeline.cad.repair import caps, mesh_probe  # noqa: E402
+from meshpipeline.cad.repair.gap_split import ResolveSubMeshGap  # noqa: E402
+from meshpipeline.cad.repair.identity import EntityRef, fingerprint_of, quantum_for  # noqa: E402
+from meshpipeline.cad.repair.localize import _diagonal  # noqa: E402
+from meshpipeline.cad.repair.operations import (  # noqa: E402
+    AREA_DELTA,
+    VOLUME_DELTA,
+    box_of,
+    sub_shape,
+)
+
+#: A 50 mm tube, 20 mm tall, with a 0.02 mm wall. The probe's mesh size is diagonal / 40 = 3.57 mm,
+#: whose chord sags 3.57^2 / (8 * 50) = 0.032 mm inside the outer cylinder - wider than the wall.
+RADIUS_MM, WALL_MM, HEIGHT_MM = 50.0, 0.02, 20.0
+
+
+@pytest.fixture
+def gap_on(monkeypatch):
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_RESOLVE_SUB_MESH_GAP", True)
+
+
+def _tube(wall_mm: float = WALL_MM):
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeCylinder
+
+    return BRepAlgoAPI_Cut(BRepPrimAPI_MakeCylinder(RADIUS_MM, HEIGHT_MM).Shape(),
+                           BRepPrimAPI_MakeCylinder(RADIUS_MM - wall_mm, HEIGHT_MM).Shape()).Shape()
+
+
+def _ref(shape, index: int) -> EntityRef:
+    quantum = quantum_for(_diagonal(shape))
+    return EntityRef(entity_type="face", entity_index=index,
+                     fingerprint=fingerprint_of("face", box_of(sub_shape(shape, "face", index)),
+                                                quantum=quantum))
+
+
+def _meshes(shape, tmp_path, diagonal: float) -> tuple[bool, str]:
+    from OCP.STEPControl import STEPControl_AsIs, STEPControl_Writer
+
+    path = tmp_path / "part.step"
+    writer = STEPControl_Writer()
+    writer.Transfer(shape, STEPControl_AsIs)
+    writer.Write(str(path))
+    result = mesh_probe.probe_file(path, diagonal_mm=diagonal, budget_s=120)
+    return bool(result.meshed), str(getattr(result.failure, "kind", "") or "")
+
+
+def test_the_thin_tube_is_refused_as_a_gap_and_meshes_after_the_split(gap_on, tmp_path):
+    tube = _tube()
+    diagonal = _diagonal(tube)
+    assert _meshes(tube, tmp_path, diagonal) == (False, mesh_probe.EDGE_THROUGH_FACE)
+    defects = mesh_probe.mesh_defects(tube, diagonal_mm=diagonal, budget_s=120)
+    located = [d for d in defects if d.measurements.get("located_by") == mesh_probe.LOCATED_BY_CLASH]
+    assert located, defects
+    assert located[0].measurements["clash_gap_mm"] == pytest.approx(WALL_MM, rel=1e-6)
+
+    outcome = ResolveSubMeshGap().apply(tube, (_ref(tube, located[0].entity_index),),
+                                        tolerance_mm=1e-4)
+    evidence = outcome.evidence
+    assert "declined" not in evidence, evidence
+    assert evidence["gap_mm"] == pytest.approx(WALL_MM, rel=1e-6)
+    assert evidence["faces_split"] == 2 and evidence["faces_added"] > 0
+    before, after = caps.measure(tube), caps.measure(outcome.shape)
+    assert after.valid and after.solids == before.solids == 1
+    assert after.faces == before.faces + evidence["faces_added"]
+    # THE SURFACE DID NOT MOVE: what moved is integration noise, and it is declared.
+    assert abs(after.surface_area_mm2 - before.surface_area_mm2) < 1e-6 * before.surface_area_mm2
+    assert abs(after.volume_mm3 - before.volume_mm3) < 1e-6 * before.volume_mm3
+    assert caps.cumulative_refusal(before, after, declared_area_mm2=evidence[AREA_DELTA],
+                                   declared_volume_mm3=evidence[VOLUME_DELTA]) == ""
+    assert caps.sanity_refusal(before, after) == ""
+    assert outcome.added and outcome.rebuilt
+    # THE OUTCOME THAT COUNTS: the delivered STEP meshes at the probe's default size.
+    assert _meshes(outcome.shape, tmp_path, diagonal) == (True, "")
+
+
+def test_a_part_with_no_sub_mesh_gap_is_declined(gap_on):
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
+
+    box = BRepPrimAPI_MakeBox(10.0, 10.0, 10.0).Shape()
+    outcome = ResolveSubMeshGap().apply(box, (_ref(box, 1),), tolerance_mm=1e-4)
+    assert outcome.evidence["declined"].startswith("no_sub_mesh_gap")
+    assert outcome.shape is box
+
+
+def test_a_gap_between_flat_faces_is_declined_flat(gap_on):
+    """A 0.01 mm slot in a block: its two walls are a sub-mesh gap, but a plane does not sag, so a
+    split would add faces and resolve nothing."""
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
+    from OCP.gp import gp_Pnt
+
+    block = BRepPrimAPI_MakeBox(40.0, 40.0, 10.0).Shape()
+    slot = BRepPrimAPI_MakeBox(gp_Pnt(20.0, -1.0, 2.0), gp_Pnt(20.01, 41.0, 11.0)).Shape()
+    part = BRepAlgoAPI_Cut(block, slot).Shape()
+    from OCP.TopAbs import TopAbs_FACE
+
+    from meshpipeline.cad.repair.localize import _indexed
+
+    faces = _indexed(part, TopAbs_FACE)
+    wall = next(i for i in range(1, faces.Extent() + 1)
+                if abs(box_of(faces.FindKey(i))["bbox_min"][0] - 20.0) < 1e-6
+                and abs(box_of(faces.FindKey(i))["bbox_max"][0] - 20.0) < 1e-6)
+    outcome = ResolveSubMeshGap().apply(part, (_ref(part, wall),), tolerance_mm=1e-4)
+    assert outcome.evidence["declined"].startswith("flat"), outcome.evidence
+    assert outcome.evidence["gap_mm"] == pytest.approx(0.01, rel=1e-6)
+
+
+def test_the_flag_off_declines_without_touching_the_part(monkeypatch):
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_RESOLVE_SUB_MESH_GAP", False)
+    tube = _tube()
+    outcome = ResolveSubMeshGap().apply(tube, (_ref(tube, 1),), tolerance_mm=1e-4)
+    assert outcome.evidence["declined"].startswith("resolving_disabled")
+    assert outcome.shape is tube
+
+
+# THE KERNEL HALF IS BOUNDED (wave 6: BRepExtrema held the GIL in the parent for an hour on
+# 0054_00540003). It runs in a fresh interpreter, never a fork, and an expiry is a DECLINE.
+
+def _no_fork(*_args, **_kwargs):
+    raise AssertionError("gap_split must never fork the parent")
+
+
+def test_a_hanging_kernel_child_is_killed_and_the_op_declines(gap_on, monkeypatch):
+    import os
+    import sys
+    import time
+
+    import meshpipeline.cad.repair.gap_split as gap_split
+
+    monkeypatch.setattr(os, "fork", _no_fork)
+    monkeypatch.setattr(gap_split, "_CHILD_CMD",
+                        [sys.executable, "-c", "import time; time.sleep(120)"])
+    monkeypatch.setattr(gap_split, "KERNEL_BUDGET_S", 1.0)
+    tube = _tube()
+    started = time.monotonic()
+    outcome = ResolveSubMeshGap().apply(tube, (_ref(tube, 1),), tolerance_mm=1e-4)
+    elapsed = time.monotonic() - started
+    assert outcome.evidence["declined"].startswith("kernel_timeout"), outcome.evidence
+    assert outcome.shape is tube
+    # NEVER A PARTNER FROM AN UNMEASURED DISTANCE, never a declared delta on a decline.
+    assert "gap_mm" not in outcome.evidence and AREA_DELTA not in outcome.evidence
+    assert elapsed < 10.0, elapsed
+
+
+def test_a_child_that_dies_without_an_answer_is_a_decline(gap_on, monkeypatch):
+    import sys
+
+    import meshpipeline.cad.repair.gap_split as gap_split
+
+    monkeypatch.setattr(gap_split, "_CHILD_CMD", [sys.executable, "-c", "raise SystemExit(139)"])
+    tube = _tube()
+    outcome = ResolveSubMeshGap().apply(tube, (_ref(tube, 1),), tolerance_mm=1e-4)
+    assert outcome.evidence["declined"].startswith("split_failed"), outcome.evidence
+    assert outcome.shape is tube
+
+
+def test_the_real_child_runs_in_a_fresh_interpreter_without_forking(gap_on, monkeypatch, tmp_path):
+    import os
+
+    monkeypatch.setattr(os, "fork", _no_fork)
+    tube = _tube()
+    diagonal = _diagonal(tube)
+    outcome = ResolveSubMeshGap().apply(tube, (_ref(tube, 1),), tolerance_mm=1e-4)
+    assert "declined" not in outcome.evidence, outcome.evidence
+    assert _meshes(outcome.shape, tmp_path, diagonal) == (True, "")
+
+
+# SHARING ACROSS THE PROCESS BOUNDARY (lane A's fragment_bodies lesson): the split solid comes back
+# from a child and is spliced in, so the delivered part must still be watertight - one closed
+# shell, no free edge, every split-boundary edge held by exactly two faces (a seam by one face
+# twice) - on an ASYMMETRIC wall, where only one side is curved and split.
+
+def _watertight(solid) -> tuple[int, int, list[int]]:
+    """(shells, free edges, face counts of every non-seam edge)."""
+    from OCP.BRep import BRep_Tool
+    from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_SHELL
+    from OCP.TopExp import TopExp
+    from OCP.TopoDS import TopoDS
+    from OCP.TopTools import TopTools_IndexedDataMapOfShapeListOfShape
+
+    from meshpipeline.cad.repair.localize import _indexed
+
+    owners = TopTools_IndexedDataMapOfShapeListOfShape()
+    TopExp.MapShapesAndAncestors_s(solid, TopAbs_EDGE, TopAbs_FACE, owners)
+    counts, free = [], 0
+    for index in range(1, owners.Extent() + 1):
+        edge = TopoDS.Edge_s(owners.FindKey(index))
+        faces: list = []
+        for face in owners.FindFromIndex(index):
+            if not any(face.IsSame(f) for f in faces):
+                faces.append(face)
+        if len(faces) == 1 and BRep_Tool.IsClosed_s(edge, TopoDS.Face_s(faces[0])):
+            continue                                   # a seam: one face, twice
+        if len(faces) == 1:
+            free += 1
+        counts.append(len(faces))
+    return _indexed(solid, TopAbs_SHELL).Extent(), free, counts
+
+
+def _first_cylinder(faces) -> int:
+    from OCP.BRepAdaptor import BRepAdaptor_Surface
+    from OCP.GeomAbs import GeomAbs_Cylinder
+    from OCP.TopoDS import TopoDS
+
+    return next(i for i in range(1, faces.Extent() + 1)
+                if BRepAdaptor_Surface(TopoDS.Face_s(faces.FindKey(i))).GetType()
+                == GeomAbs_Cylinder)
+
+
+def _plate_with_bore():
+    """A 120 x 120 x 20 block with a R 59.98 bore: a 0.02 mm wall between a CYLINDER and two
+    PLANES - unequal faces, only the cylinder curved."""
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox, BRepPrimAPI_MakeCylinder
+    from OCP.gp import gp_Ax2, gp_Dir, gp_Pnt
+
+    block = BRepPrimAPI_MakeBox(gp_Pnt(-60.0, -60.0, 0.0), 120.0, 120.0, 20.0).Shape()
+    bore = BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(0, 0, -1), gp_Dir(0, 0, 1)), 59.98, 22.0).Shape()
+    return BRepAlgoAPI_Cut(block, bore).Shape()
+
+
+@pytest.mark.parametrize("build", [_tube, _plate_with_bore], ids=["tube", "plate_with_bore"])
+def test_the_delivered_solid_is_watertight_after_the_hand_off(gap_on, build, tmp_path):
+    from OCP.TopAbs import TopAbs_FACE
+
+    from meshpipeline.cad.repair.localize import _indexed
+
+    part = build()
+    faces = _indexed(part, TopAbs_FACE)
+    curved = _first_cylinder(faces)
+    outcome = ResolveSubMeshGap().apply(part, (_ref(part, curved),), tolerance_mm=1e-4)
+    assert "declined" not in outcome.evidence, outcome.evidence
+    shells, free, counts = _watertight(outcome.shape)
+    assert shells == 1 and free == 0, (shells, free)
+    assert counts and all(c == 2 for c in counts), sorted(set(counts))
+    assert caps.measure(outcome.shape).valid
+
+
+def test_a_solid_sharing_edges_with_another_is_declined(gap_on):
+    """Two solids glued by the general fuse share their contact: the owner's split could not keep
+    that sharing across the hand-off, so it is not attempted."""
+    from OCP.BOPAlgo import BOPAlgo_Builder
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
+    from OCP.gp import gp_Pnt
+
+    tube = _tube()
+    lid = BRepPrimAPI_MakeBox(gp_Pnt(-60.0, -60.0, HEIGHT_MM), 120.0, 120.0, 5.0).Shape()
+    builder = BOPAlgo_Builder()
+    builder.AddArgument(tube)
+    builder.AddArgument(lid)
+    builder.Perform()
+    glued = builder.Shape()
+    from OCP.TopAbs import TopAbs_FACE
+
+    from meshpipeline.cad.repair.localize import _indexed
+
+    faces = _indexed(glued, TopAbs_FACE)
+    curved = _first_cylinder(faces)
+    outcome = ResolveSubMeshGap().apply(glued, (_ref(glued, curved),), tolerance_mm=1e-4)
+    assert outcome.evidence["declined"].startswith("shares_topology"), outcome.evidence

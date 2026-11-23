@@ -85,8 +85,10 @@ def test_both_routes_tell_the_mesher_the_same_answer(monkeypatch, _trigger, enab
     meta = _vm_meta()
     assert meta["mesh-snapshots"] == expected == env["MESH_PROGRESSIVE_SNAPSHOT_ENABLED"]
     # and the startup script must actually hand it to the container, or the attribute is decoration
-    assert "MESH_PROGRESSIVE_SNAPSHOT_ENABLED" in meta["startup-script"]
-    assert "instance/attributes/mesh-snapshots" in meta["startup-script"]
+    # (each run's values reach the VM in one attribute, `mesh-run`, so a held VM takes them per run - RUN-4)
+    assert meta["mesh-run"].split("|")[6] == expected
+    assert '-e MESH_PROGRESSIVE_SNAPSHOT_ENABLED="$SNAP"' in meta["startup-script"]
+    assert "read -r ID IN OUT ENG T CON SNAP RANKS IMG" in meta["startup-script"]
 
 
 def test_the_vm_route_reads_the_setting_and_not_its_sibling_adapter():
@@ -164,8 +166,9 @@ def test_the_big_vm_route_carries_the_same_rank_pin(monkeypatch, pin):
     meta = {i["key"]: i["value"] for i in body["metadata"]["items"]}
     assert meta["mesh-snappy-ranks"] == pin
     # and the startup script must hand it to the container, or the attribute is decoration
-    assert "MESH_SNAPPY_RANKS" in meta["startup-script"]
-    assert "instance/attributes/mesh-snappy-ranks" in meta["startup-script"]
+    assert meta["mesh-run"].split("|")[7] == pin
+    assert '-e MESH_SNAPPY_RANKS="$RANKS"' in meta["startup-script"]
+    assert "read -r ID IN OUT ENG T CON SNAP RANKS IMG" in meta["startup-script"]
 
 
 def test_an_unreadable_rank_setting_does_not_stop_a_dispatch(monkeypatch, _trigger):

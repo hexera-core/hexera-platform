@@ -31,6 +31,7 @@ from meshpipeline.contracts.mesh_execution import (
     RUN_UNCOLLECTED_TAG,
     SubmissionIndeterminate,
     abandonment_reason,
+    vm_holder,
 )
 from meshpipeline.settings.env import ConfigurationError
 
@@ -55,6 +56,20 @@ class CloudRunMeshExecutor:
         owner deciding whether to adopt it): "result" - its result is written; "running" - its
         beacon was written within the stall window (WAIT_STALL_S); None - neither."""
         return remote_state(operation_key)
+
+    def renew_job(self, job_id: str) -> None:
+        """The job's meshing run still holds its VMs (RUN-4, gce_vm.renew_job_hold)."""
+        if not (provcfg.GCP_PROJECT_ID and provcfg.GCP_MESH_BUCKET):
+            return
+        from meshpipeline.adapters.mesh_execution.gce_vm import renew_job_hold
+        renew_job_hold(job_id)
+
+    def release_job(self, job_id: str) -> None:
+        """The job has ended: delete the VMs held for it (RUN-4, gce_vm.release_job_vms)."""
+        if not (provcfg.GCP_PROJECT_ID and provcfg.GCP_MESH_BUCKET):
+            return
+        from meshpipeline.adapters.mesh_execution.gce_vm import release_job_vms
+        release_job_vms(job_id)
 
     def collect(self, workspace, *, engine: str, timeout: int, operation_key: str) -> dict:
         # A PREVIOUS worker's submission was durably accepted. Its exchange objects live under
@@ -695,7 +710,8 @@ def _start(on_vm: bool, bucket_name: str, in_key: str, out_key: str, *, engine: 
         from meshpipeline.adapters.mesh_execution.gce_vm import trigger_vm
         return trigger_vm(
             input_uri=f"gs://{bucket_name}/{in_key}", output_uri=f"gs://{bucket_name}/{out_key}",
-            engine=engine, timeout=timeout, operation_key=operation_key, decision=machine or {})
+            engine=engine, timeout=timeout, operation_key=operation_key, decision=machine or {},
+            holder=vm_holder())
     return _trigger_job(input_uri=f"gs://{bucket_name}/{in_key}",
                         output_uri=f"gs://{bucket_name}/{out_key}", engine=engine, timeout=timeout)
 
@@ -919,7 +935,13 @@ def _exchange(workspace, *, engine: str, timeout: int, operation_key: str,
             return {**_uncollected(engine, result, exc), "ran_on": ran_on}
         return _fail(engine, f"{type(exc).__name__}: {exc}")
     finally:
-        if on_vm and (collection_complete or isinstance(result, dict)):
+        if on_vm and vm_holder() and (collection_complete or isinstance(result, dict)):
+            # HELD FOR ITS JOB (RUN-4): the VM's run is done, the VM is not - it waits for the job's next
+            # run (a remesh takes it at once, no boot, no image pull), and the job's end releases it
+            # (release_job); one whose hold goes stale (gce_vm.HOLD_STALE_S) ends itself, and the sweep deletes it.
+            logger.info("mesh VM for %s kept for its job's next run (%s)", engine,
+                        "its result was collected" if collection_complete else "its result was written")
+        elif on_vm and (collection_complete or isinstance(result, dict)):
             # THE VM IS DONE once its result document is written - collected here or not (job 6cb2d606, 28 Oct:
             # a 107M-cell result too big to bring back was "not collected", and its 16-core VM was left billing
             # for hours): the result and its output stay in the exchange, the machine has nothing left to do.

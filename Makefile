@@ -53,7 +53,7 @@ PRODUCT_VERSION := $(shell sed -n 's/^__version__[[:space:]]*=[[:space:]]*"\(.*\
         test-ui test-all smoke wheel dependencies deps lint typecheck wait-postgres \
         gcloud-flags \
         test-fast-shard test-container-integration-shard \
-        check-fast release-validate release-publish mesh-preflight validate \
+        check-fast gym release-validate release-publish mesh-preflight validate \
         mesh-image mesh-toolchain \
         destroy-env seed-secrets \
         clean-workspaces
@@ -185,14 +185,30 @@ dev-uninstall: ## Destructive: everything dev-reset removes, PLUS this project's
 # promotes the mesh image. Only the MESH image is deployed remotely - the API, the pipeline and
 # every data store run locally.
 
-check-fast: ##! GATE A - seconds: lint + import sweep + graph wiring + configuration certification. No services, no containers.
+check-fast: ##! GATE A - seconds: lint + import sweep + graph wiring + configuration certification + the gym gate. No services, no containers.
 	$(RUFF) check $(LINT_PATHS)
 	@# BLOCKING: no supported configuration may exist outside the settings catalogue - no
 	@# undeclared read, no direct bypass, and no environment name built from data.
 	$(PY) devtools/quality/config_inventory.py --full
+	@# BLOCKING: a v3 repair POLICY or PROMPT change is unshippable until it has been scored on a
+	@# stratified sample of the corpus. Hermetic and millisecond-fast: the fingerprint is read out
+	@# of the source with `ast`, so this gate imports no repair code and never touches a mesher,
+	@# a corpus or the network. `make gym` is what scores a change; it is NOT part of this gate.
 	$(PY) -m pytest -q -p no:cacheprovider tests/unit/pipeline/test_graph_real.py \
 		tests/unit/infra/test_import_sweep.py \
-		tests/unit/hygiene/test_publication_authority_manifest.py
+		tests/unit/hygiene/test_publication_authority_manifest.py \
+		tests/unit/dev/test_policy_is_gym_scored.py
+
+# THE CORPUS GYM. Deliberately NOT a dependency of check-fast or check: it runs CAD and a mesher
+# over hundreds of files and takes hours. check-fast only asks whether the gym was RUN.
+gym: ## score a v3 policy change: compare ARM against BASELINE on one stratified sample
+	@test -n "$(ARM)" -a -n "$(BASELINE)" || { \
+	  echo "usage: make gym ARM=<bundle-dir> BASELINE=<bundle-dir> [RECORD=1]"; \
+	  echo "both bundles must have been run on the SAME sample.json, or the gym refuses."; \
+	  $(PY) devtools/validation/gym.py policy; exit 2; }
+	$(PY) devtools/validation/gym.py score --arm "$(ARM)" --baseline "$(BASELINE)"
+	@test -z "$(RECORD)" || $(PY) devtools/validation/gym.py record \
+		--evidence "$(ARM)" --baseline "$(BASELINE)"
 
 check: lint typecheck dependencies ## GATE B - may this commit produce a release? (ruff + mypy + deps + the full hermetic suite + UI)
 	$(PY) -m pytest -q tests/unit -m "not external_fixture"

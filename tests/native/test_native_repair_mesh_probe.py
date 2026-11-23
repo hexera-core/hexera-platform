@@ -342,6 +342,31 @@ def test_nearest_face_search_measures_few_faces(monkeypatch):
     assert len(measured) < faces.Extent() == 12
 
 
+def test_a_failure_point_is_located_with_nothing_measured_in_the_parent(monkeypatch):
+    """THROUGH THE REAL KERNEL AND THE REAL CHILD. gmsh's failure point on the top of one box of a
+    far-apart pair is placed on that one face, and the parent constructs no DistShapeShape: a count
+    of zero is the only observation that proves the measurement left this process."""
+    from OCP.BRepExtrema import BRepExtrema_DistShapeShape
+
+    measured = []
+
+    class Counting(BRepExtrema_DistShapeShape):
+        def __init__(self, *args):
+            measured.append(1)
+            super().__init__(*args)
+
+    import OCP.BRepExtrema
+    monkeypatch.setattr(OCP.BRepExtrema, "BRepExtrema_DistShapeShape", Counting)
+    shape = _compound(_box(), _box(x=100.0))
+    _fake_probe(monkeypatch, mesh_probe.MeshFailure(
+        EDGE_THROUGH_FACE, (), (5.0, 5.0, 10.0), "PLC Error"))
+
+    (defect,) = mesh_probe.mesh_defects(shape, diagonal_mm=173.0, budget_s=60.0)
+
+    assert defect.entity_type == "face" and defect.entity_index >= 1
+    assert measured == [], "the kernel call must run in the child, never in this process"
+
+
 def test_scoped_defect_outside_the_region_is_dropped_not_unlocated(monkeypatch):
     from meshpipeline.cad.repair.localize import _diagonal
     from meshpipeline.cad.repair.regions import Region
@@ -392,7 +417,7 @@ def test_apart_boxes_and_single_solid_have_no_contact_pair():
 _TOUCH_ONLY = "abc/00506275_541a2ce632275fed8964367a_step_000.step"
 
 
-def test_corpus_plc_without_coordinates_is_located_by_contact():
+def test_corpus_plc_without_coordinates_is_located_by_inference():
     from meshpipeline.cad.repair.brep import _read_shape
     from meshpipeline.cad.repair.contracts import DefectCode
     from meshpipeline.cad.repair.localize import (
@@ -407,7 +432,15 @@ def test_corpus_plc_without_coordinates_is_located_by_contact():
     found = mesh_probe.mesh_defects(shape, diagonal_mm=diagonal, budget_s=300.0)
     assert found and all(d.code is DefectCode.mesh_edge_through_face for d in found), found
     assert all(d.entity_type == "face" and d.entity_index >= 1 for d in found)
-    assert all(d.measurements["located_by"] == "contact-pair" for d in found)
+    # EITHER LOCATED ROUTE, AND A ROUTE EITHER WAY. gmsh's PLC error on this file names no
+    # coordinates, so the defect has to be placed by inference - and since the clash search
+    # landed, the crossing SURFACE PAIR places it before the contact fallback is reached. Both
+    # are inferences we make rather than gmsh's own word, both carry `located_by` saying so, and
+    # which one wins is a question of which evidence this file happens to offer. What this test
+    # exists to prove is that a coordinate-less failure is still placed on a named face at all,
+    # so it requires a located, fingerprinted defect and accepts either route.
+    located = {"contact-pair", "surface-mesh-clash"}
+    assert all(d.measurements["located_by"] in located for d in found), found
     faces = _faces(shape)
     for defect in found:
         (reference,) = _stamped((EntityDefect(

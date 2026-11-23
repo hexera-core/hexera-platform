@@ -8,8 +8,11 @@
 #                    cad/repair/session.py (which carries the table forward across an operation).
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import hashlib
 import math
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 
 # WHY AN ENTITY NEEDS A NAME AT ALL.
@@ -33,12 +36,17 @@ from dataclasses import dataclass, field
 #: THIS IS A BEST-EFFORT NAME, NOT AN IDENTITY. Rounding to a grid cannot promise that a small move
 #: keeps the name: two boxes a distance d apart share their cells only when no cell edge falls
 #: between them, which happens with probability about d/q per coordinate. So a sub-quantum nudge
-#: USUALLY keeps the name and occasionally renames the entity. That is still enough, for two
-#: reasons. First, identity across a repair is carried by the operation's kernel mapping
-#: (`EntityMapping`), not by this name. Second, a real repair tolerance is hundreds of quanta on an
-#: ordinary part, so the name changes anyway and the mapping is what answers "what became of this
-#: entity". A consumer must therefore treat a fingerprint that simply vanished, with no `gone`
-#: entry explaining it, as UNKNOWN rather than as FIXED.
+#: USUALLY keeps the name and occasionally renames the entity. That is still enough because
+#: identity across a repair is also carried by the operation's kernel mapping (`EntityMapping`),
+#: and a consumer must therefore treat a fingerprint that simply vanished, with no `gone` entry
+#: explaining it, as UNKNOWN rather than as FIXED.
+#:
+#: THE SECOND HALF OF THIS NOTE USED TO READ "a real repair tolerance is hundreds of quanta on an
+#: ordinary part, so the name changes anyway", and that was the cover under which a real bug sat
+#: for a whole corpus run: the grid itself was scaled off the part's CURRENT diagonal, so an
+#: entity nobody touched was renamed whenever the part's extent moved at all, and the progress
+#: rule read that as the defect being gone. A name that changes "anyway" is not a name. See
+#: `quantum_for`, which now snaps the diagonal to an octave so an untouched entity keeps its name.
 QUANTUM_FRACTION = 1e-6
 
 #: The finest grid used when the part has no measurable extent. An empty compound and a
@@ -49,11 +57,60 @@ MIN_QUANTUM_MM = 1e-7
 GONE = "gone"
 
 
+#: The RUN's naming diagonal, when a repair session is naming (`run_grid`). None outside a run.
+_RUN_DIAGONAL: contextvars.ContextVar[float | None] = contextvars.ContextVar(
+    "repair_run_diagonal", default=None)
+
+
+@contextlib.contextmanager
+def run_grid(diagonal_mm: float | None) -> Iterator[None]:
+    """Name EVERY entity inside this block on the grid of `diagonal_mm` - the upload's.
+
+    The session already hands the upload's diagonal to every scan (`quantum_diagonal_mm`), but the
+    operations name what they create at `_diagonal_of(their input shape)`, which after a kept
+    repair is the CURRENT shape's. Across a power of two those are two grids, so an operation's
+    `added`/`rebuilt` names and the next scan's names for the same faces diverge and an allowed
+    warning on a fresh patch reads as `new_defect`. Pinning the grid here, where every name is
+    rounded, puts operations, scans and the session's own bookkeeping on ONE grid without
+    threading a number through every operation. `None` leaves naming exactly as it was.
+    """
+    token = _RUN_DIAGONAL.set(diagonal_mm if diagonal_mm else None)
+    try:
+        yield
+    finally:
+        _RUN_DIAGONAL.reset(token)
+
+
 def quantum_for(diagonal_mm: float) -> float:
-    """The grid an entity's box is rounded onto, scaled to the part."""
+    """The grid an entity's box is rounded onto, scaled to the part.
+
+    SCALED TO THE PART'S OCTAVE, NOT TO ITS DIAGONAL, and that is the difference between a name
+    and a coincidence. The grid used to be the diagonal times `QUANTUM_FRACTION`, so ANY change
+    in the part's extent moved every cell boundary on the part - and a repair changes the extent
+    by construction. Measured on 0059_00592781_58be5d61afe56e0fcdda08e3_step_000.step: one
+    `fix_small_edges` call left all four zero-length edges at bounding boxes identical to the
+    micrometre and grew the diagonal from 1822.8447 mm to 1822.9358 mm. That is 5e-5 relative,
+    which at z = -877.5 mm is twenty-four cells, so all four fingerprints changed, the progress
+    rule could not find the defect it had just named, and an operation that repaired NOTHING was
+    kept. The bug ran the wrong way round from the one anybody feared: it never rolled a real
+    repair back, it credited a non-repair.
+
+    So the diagonal is first snapped UP to a power of two (`math.frexp` reads the exponent
+    exactly, with no log and no rounding), and the grid is a fraction of that. Two scans of one
+    part agree unless a repair changed its size by nearly a factor of two, which no cap permits.
+    The cost is up to one octave of resolution - the grid is between 0.5 and 1 parts per million
+    of the part either way - and the honest residual limit is a part whose diagonal straddles a
+    power of two, where the grid still moves.
+    """
+    pinned = _RUN_DIAGONAL.get()
+    if pinned is not None:
+        # INSIDE A RUN THE GRID IS THE RUN'S (`run_grid`), whatever shape is being named.
+        diagonal_mm = pinned
     if not diagonal_mm or not math.isfinite(diagonal_mm) or diagonal_mm <= 0:
         return MIN_QUANTUM_MM
-    return max(float(diagonal_mm) * QUANTUM_FRACTION, MIN_QUANTUM_MM)
+    _mantissa, exponent = math.frexp(float(diagonal_mm))
+    octave = math.ldexp(1.0, exponent)
+    return max(octave * QUANTUM_FRACTION, MIN_QUANTUM_MM)
 
 
 def fingerprint_of(entity_type: str, box: dict, *, quantum: float) -> str:

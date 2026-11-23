@@ -155,6 +155,7 @@ def test_the_served_routes_are_exactly_the_supported_set():
         # console's Activity and Customers sections.
         ("GET", "/api/v1/admin/ops/activity"),
         ("GET", "/api/v1/admin/ops/jobs/{job_id}/why"),
+        ("GET", "/api/v1/admin/ops/jobs/{job_id}/repair-trace"),  # dev diagnostics (lane D)
         ("GET", "/api/v1/admin/ops/organizations"),
         ("GET", "/api/v1/admin/ops/organizations/{organization_id}"),
         ("POST", "/api/v1/admin/ops/organizations/{organization_id}/credit-grants"),
@@ -167,6 +168,12 @@ def test_the_served_routes_are_exactly_the_supported_set():
         ("GET", "/api/v1/admin/repair/jobs/{job_id}"),
         ("POST", "/api/v1/admin/repair/jobs/{job_id}/assign"),
         ("POST", "/api/v1/admin/repair/jobs/{job_id}/decide"),
+        # THE STANDALONE REPAIR JOB (CRS v3 Task 27): re-dispatch an existing job as a repair job.
+        # Admin-only by design - no product endpoint builds a dispatch payload, so there is no
+        # customer field to carry a goal. Its consumer is the operator, by hand, with the admin
+        # credential; it has NO console or api-client caller yet. 409 unless
+        # CAD_REPAIR_STANDALONE_JOBS is `live`.
+        ("POST", "/api/v1/admin/repair/jobs/{job_id}/standalone"),
         # THE PROVIDER'S OWN CALLER. Not a capability a person invokes: it is authenticated by
         # signature rather than by any credential of ours, which is why it is listed apart.
         ("POST", "/api/v1/webhooks/stripe"),

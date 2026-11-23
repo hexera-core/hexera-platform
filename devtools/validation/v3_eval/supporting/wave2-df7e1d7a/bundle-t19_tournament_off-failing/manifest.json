@@ -1,0 +1,17 @@
+{
+  "benchmark": "cad-repair",
+  "corpus_name": "crs-v3-verdict failing",
+  "corpus_provenance": "devtools/validation/v3_eval, t19_tournament_off, 29 GCE shard(s)",
+  "created_at": "2026-11-20T11:29:13.843534+00:00",
+  "engine_commit": "df7e1d7afd0eea770137eecd549d2b61e67e5cce",
+  "hardware_class": "gce-c2-standard-8",
+  "image_digest": null,
+  "input_hashes": {},
+  "random_seed": 20261120,
+  "redistribution_status": "internal",
+  "release_artifact": null,
+  "schema_version": 1,
+  "settings_digest": "0a30a4ccf5bfc3252f0063b13996506291a2e56fd6da10f75c62882db42279c4",
+  "timeout_seconds": null,
+  "track": "mesh-failure-real"
+}

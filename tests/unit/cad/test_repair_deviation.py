@@ -201,3 +201,172 @@ def test_a_later_package_is_measured_against_the_upload_not_its_own_start(monkey
     second = session.try_package(pkg._package(session, unchanged={pkg._FACE}))
     assert second.committed, second.reason
     assert calls == ["original", "original"]
+
+
+# A FACE-REMOVING PACKAGE IS MEASURED (lane A's 0053_00531146 objection run: fix_small_faces
+# removes faces and declares none added or rebuilt, so the deviation selected nothing, read
+# "not measured: no faces", and the reviewer rejected on a field no author could ever satisfy).
+
+
+def _box(x=10.0, y=10.0, z=10.0, at=(0.0, 0.0, 0.0)):
+    pytest.importorskip("OCP")
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
+    from OCP.gp import gp_Pnt
+
+    return BRepPrimAPI_MakeBox(gp_Pnt(*at), x, y, z).Shape()
+
+
+def _top_fingerprint(shape):
+    from meshpipeline.cad.repair.identity import quantum_for
+    from meshpipeline.cad.repair.operations import _diagonal_of, box_of
+
+    named = deviation._named_faces(shape, quantum=quantum_for(_diagonal_of(shape)))
+    for name, face in named:
+        box = box_of(face)
+        if box["bbox_min"][2] > 9.0:
+            return name
+    raise AssertionError("no top face")
+
+
+def test_a_removal_is_measured_on_the_faces_that_took_over_its_region():
+    before = after = _box()
+    result = deviation.measure_deviation(before, after,
+                                         removed=((before, (_top_fingerprint(before),)),))
+    assert result.basis == deviation.BASIS_ADJACENT
+    assert result.mm is not None and result.mm == pytest.approx(0.0, abs=1e-6)
+    assert result.samples > 0 and result.faces >= 4
+
+
+def test_a_removal_with_no_neighbour_left_falls_back_to_a_whole_part_sample():
+    after = _box()
+    elsewhere = _box(at=(100.0, 100.0, 100.0))
+    result = deviation.measure_deviation(after, after,
+                                         removed=((elsewhere, (_top_fingerprint(elsewhere),)),))
+    assert result.basis == deviation.BASIS_WHOLE
+    assert result.mm is not None and result.faces == 6 and result.samples > 0
+
+
+def test_no_removal_and_no_changed_face_still_reads_no_faces():
+    # Missing still reads missing: only a REMOVAL reaches the fallbacks.
+    shape = _box()
+    result = deviation.measure_deviation(shape, shape)
+    assert result.mm is None and result.faces == 0
+    assert result.basis == deviation.BASIS_CHANGED
+
+
+def test_a_kept_removal_is_handed_to_the_measurement_and_its_basis_reported(monkeypatch,
+                                                                         _no_probe_scan):
+    def removing(self, shape, targets, *, tolerance_mm):
+        self._clock.now += pkg._APPLY_S
+        return pkg.OpOutcome(shape="repaired",
+                             evidence={"area_delta_mm2": 0.0, "faces_removed": 1,
+                                       "removed_fingerprints": ["face:sliver"]})
+
+    monkeypatch.setattr(pkg._Op, "apply", removing)
+    result = deviation.DeviationResult(0.004, 32, 3, 0, 0.2, deviation.BASIS_ADJACENT)
+    verdict, calls = _commit(monkeypatch, probe="live", result=result)
+    assert calls[0][3]["removed"] == (("original", ("face:sliver",)),)
+    shown = verdict.to_dict()
+    assert shown["deviation_mm"] == 0.004
+    assert shown["deviation_basis"] == deviation.BASIS_ADJACENT
+
+
+def test_the_reviewer_is_shown_the_basis_and_a_measured_status():
+    from meshpipeline.cad.repair import package_review
+
+    evidence = package_review.evidence_of(
+        None, {"verdicts": [], "before": {}, "after": {}},
+        {"deviation_mm": 0.004, "deviation_samples": 32, "deviation_faces": 3,
+         "deviation_faces_skipped": 0, "deviation_basis": deviation.BASIS_ADJACENT,
+         "deviation_status": package_review.DEVIATION_MEASURED}, {}, {})
+    assert evidence["deviation_status"] == package_review.DEVIATION_MEASURED
+    assert evidence["deviation_basis"] == deviation.BASIS_ADJACENT
+    assert evidence["deviation_mm"] == 0.004
+
+
+# --- the samples are measured in a bounded child (audit row 3) --------------------------------
+
+
+def _vertices(monkeypatch):
+    """The one kernel call deviation still makes in the parent is making a vertex; stub it."""
+    monkeypatch.setattr(deviation, "_vertex", lambda point: f"vertex{point}")
+
+
+def _batch(monkeypatch, answers):
+    seen: dict = {}
+
+    def _distances(shapes, pairs, *, budget_s, bounds=None, tol=0.0):
+        seen.setdefault("calls", 0)
+        seen["calls"] += 1
+        seen.update(shapes=shapes, pairs=pairs, budget_s=budget_s)
+        return answers
+
+    monkeypatch.setattr(deviation.occ_distance, "distances", _distances)
+    return seen
+
+
+def _ok(value):
+    return {"min_distance_mm": value, "point_a": None, "point_b": None,
+            "distance_status": "measured"}
+
+
+def test_every_sample_is_measured_in_one_child(monkeypatch):
+    """THE K-FOLD COST IS WHY IT IS ONE CHILD. The deviation runs inside every tournament
+    rehearsal and measures up to `samples` points; a child per point would pay interpreter
+    start-up per sample. One child measures all of them against the before shape."""
+    _vertices(monkeypatch)
+    seen = _batch(monkeypatch, [_ok(0.5), _ok(2.5), _ok(1.0)])
+
+    got = deviation.measure_deviation("before", "after", sampler=lambda *a: (_POINTS, 2, 0),
+                                      budget_s=9.0)
+
+    assert seen["calls"] == 1
+    assert seen["shapes"][0] == "before", "every sample is measured against the BEFORE shape"
+    assert seen["pairs"] == [(0, 1), (0, 2), (0, 3)]
+    assert got.mm == 2.5 and got.samples == 3
+
+
+def test_a_sample_the_child_never_answered_is_not_a_deviation(monkeypatch):
+    """A MAXIMUM OVER PART OF THE SAMPLES IS A LOWER BOUND, NOT THE DEVIATION. Elsewhere a
+    partial batch is worth keeping; here it is not, because the answer is the WORST point and the
+    unmeasured one may be it. So an incomplete batch reads exactly as the spent budget did: not
+    measured, and the reviewer sees no number rather than a flattering one."""
+    from meshpipeline.cad.repair import occ_distance
+
+    _vertices(monkeypatch)
+    _batch(monkeypatch, [_ok(0.5),
+                         {**occ_distance.UNMEASURED, "distance_status": "unmeasured: "
+                          "budget_spent"},
+                         _ok(1.0)])
+
+    got = deviation.measure_deviation("before", "after", sampler=lambda *a: (_POINTS, 2, 0),
+                                      budget_s=9.0)
+
+    assert got.mm is None and got.faces is None
+
+
+def test_a_kernel_refusal_is_not_a_deviation_either(monkeypatch):
+    """`_distance_to` raised when the kernel did not finish, and the caller turned that into "not
+    measured". A refused pair keeps that meaning - it is not a measurement of zero."""
+    from meshpipeline.cad.repair import occ_distance
+
+    _vertices(monkeypatch)
+    _batch(monkeypatch, [_ok(0.5),
+                         {**occ_distance.UNMEASURED,
+                          "distance_status": "unmeasured: the kernel gave no distance"},
+                         _ok(1.0)])
+
+    assert deviation.measure_deviation("before", "after", sampler=lambda *a: (_POINTS, 2, 0),
+                                       budget_s=9.0).mm is None
+
+
+def test_the_batch_gets_what_is_left_of_the_budget_not_the_whole_of_it(monkeypatch):
+    """The budget covers the sampling too, so the child may only have what the selection left."""
+    _vertices(monkeypatch)
+    seen = _batch(monkeypatch, [_ok(1.0)] * 3)
+    ticks = iter([100.0, 104.0, 104.0, 104.0])
+
+    deviation.measure_deviation("before", "after", sampler=lambda *a: (_POINTS, 2, 0),
+                                budget_s=10.0, clock=lambda: next(ticks))
+
+    assert seen["budget_s"] == pytest.approx(6.0)

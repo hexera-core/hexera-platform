@@ -1622,6 +1622,13 @@ def decided_asks(sec: Mapping | None, *, skip: tuple[str, ...] = ()) -> list[str
            if isinstance(r, Mapping) and r.get("asked") and not str(r.get("field") or "").startswith(skip)]
     out += [str(d) for d in sec.get("dropped") or [] if str(d).strip()]
     out += [f'"{_short(str(q))}" (no setting of ours matches it)' for q in sec.get("not_applied") or [] if str(q).strip()]
+    # NOTE-15: an ask the product acted on outside the reading (the engine the notes name) is decided too
+    out += [f'"{_short(str(q))}" ({str(e["line"]).removeprefix("From your notes: ").rstrip(".")})'
+            for e in sec.get("acted") or [] if isinstance(e, Mapping) and e.get("line")
+            for q in (e.get("quotes") or [])[:1] if str(q).strip()]
+    # NOTE-14: how strict the limits are is the rules' too - held on the limits it names, told with them
+    out += [f'"{_short(str(e["quote"]))}" (how strict the limits are: the rules hold the limits it names to it)'
+            for e in req.get("strictness") or [] if isinstance(e, Mapping) and str(e.get("quote") or "").strip()]
     return out[:40]
 
 
@@ -1681,7 +1688,10 @@ def write(workspace, sec: Mapping | None) -> bool:
     path = Path(workspace) / FILE
     try:
         # (a pick on the stage, STD-4, is kept too: the result says which elements were made and why)
-        if requirements_of(sec) is None and not told_words(sec) and not (sec or {}).get("stage"):
+        # (and a strictness: every step reads it as the rules', so no AI step's remark speaks for it, NOTE-14)
+        if (requirements_of(sec) is None and not told_words(sec) and not (sec or {}).get("stage")
+                and not (sec or {}).get("acted")
+                and not ((sec or {}).get("requirements") or {}).get("strictness")):
             path.unlink(missing_ok=True)
             return False
         path.write_text(json.dumps(sec, indent=1, sort_keys=True), encoding="utf-8")
@@ -1709,11 +1719,14 @@ def words(sec: Mapping | None) -> list[str]:
     if isinstance(sec.get("lines"), list):
         # merged with the team's meshing standard (engines/meshing_standard): said by where each came from
         return [str(w) for w in sec["lines"]]
+    # NOTE-15: what the product acted on outside the reading (the engine the notes name, ...), one line each
+    acted = [str(e["line"]) for e in sec.get("acted") or [] if isinstance(e, Mapping) and e.get("line")]
     if sec.get("status") != "used":
-        return [str(sec.get("note") or UNREAD_WORDS)]
+        return [str(sec.get("note") or UNREAD_WORDS), *acted]
     out = [f"From your notes: {r['asked']}." for r in (sec.get("requirements") or {}).get("rows") or []]
     if sec.get("source") == "saved" and sec.get("note"):
         out.append(str(sec["note"]))
+    out += acted
     out += [f"Not applied: {d}." for d in sec.get("dropped") or []]
     out += [f'Not applied: "{_short(q)}" - no mesh setting of ours matches it yet.' for q in sec.get("not_applied") or []]
     out += not_mesh_words((sec.get("requirements") or {}).get("not_mesh"))
@@ -1861,16 +1874,44 @@ def report_words(rep: Mapping | None) -> list[str]:
     return [line(r) for r in (rep or {}).get("rows") or []]
 
 
-def asked_rows(quality: Mapping | None, *, source: str = "your notes") -> list[dict]:
+def told_status(r: Mapping) -> tuple[str, str, str]:
+    """(how a row that is told, not judged, stands; its status in plain words; its measured figure in words) for a
+    requirement row with no met / not met: an edge-length target with its share outside, the nearest there is, a
+    setting applied, or not applied."""
+    if r.get("target"):
+        share = float(r.get("outside_pct") or 0.0)
+        side = "under" if r.get("field") == "min_edge" else "over"
+        return ("target", "Target, not met" if r.get("outside") else "Met",
+                f"{share:g}% of elements {side}" if r.get("outside") else "0 outside")
+    if r.get("nearest"):
+        return "nearest", "Nearest there is", ""
+    if r.get("applied") is False:
+        return "not_applied", "Not applied", ""
+    return "setting", "Applied (a setting)", ""
+
+
+def asked_rows(quality: Mapping | None, *, source: str = "your notes", told: bool = False) -> list[dict]:
     """THE USER'S OWN REQUIREMENTS as rows of the result's and the verdict's one list of limits (quality.json's
     "requirements", written by the route that measured them): each measured as the elements outside what was
     asked (0 when met), with the plain line that says asked against delivered (`said`). One not reached is a
-    note - the mesh is delivered - never a failure; one with nothing to measure it against (applied as a setting,
-    or not applied) is no row: it is told in the plan's words."""
+    note - the mesh is delivered - never a failure. `told` (the report's own list): EVERY typed ask has its row, met
+    or not - one with nothing to judge it by (an edge-length target past its share, the nearest there is, a setting,
+    not applied) too, with its status and figure in plain words (`told`, `status`, `shown`), never judged (measured 0)
+    and never a verdict's limit (m485w round 15: the table showed only the asks that passed)."""
     rep = (quality or {}).get("requirements")
     out = []
     for r in (rep.get("rows") if isinstance(rep, Mapping) else None) or []:
-        if not isinstance(r, Mapping) or r.get("met") not in (True, False):
+        if not isinstance(r, Mapping):
+            continue
+        if r.get("met") not in (True, False):
+            if not told:
+                continue
+            kind, status, shown = told_status(r)
+            came = str(r.get("from") or "")
+            label = (f"Chosen on the stage: {r.get('asked')}" if came == "stage"
+                     else f"Your {came} ask: {r.get('asked')}" if came else f"You asked: {r.get('asked')}")
+            out.append({"key": f"asked_{r.get('id')}", "label": label, "op": "==", "limit": 0, "measured": 0,
+                        "said": line(r), "source": source, "told": kind, "status": status, "shown": shown})
             continue
         came = str(r.get("from") or "")
         label = (f"Chosen on the stage: {r.get('asked')}" if came == "stage"

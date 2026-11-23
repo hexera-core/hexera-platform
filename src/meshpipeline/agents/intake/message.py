@@ -1018,10 +1018,14 @@ _REQUIREMENT_WRITES: tuple[tuple[str, str], ...] = (
 _EVENT_KEYS = ("_intake_training_event", "_intake_agent_run_event")
 
 
-async def offer_again_after_failed_start(session_id, owner_id: str, *, session_repo, db_factory) -> str:
+async def offer_again_after_failed_start(session_id, owner_id: str, *, session_repo, db_factory=None) -> str:
     """A RUN REFUSED AT DISPATCH is told at that moment, in our words, and its plan offered again - never an HTTP
     error the console shows as "Could not send that: ..." (a fingerprint mismatch, m483 round 10). Returns the line;
-    the plan stands again, so the user's next Proceed starts it."""
+    the plan stands again, so the user's next Proceed starts it. Its transaction is opened here, as the approval
+    authority opens its own - never by the route, which stays transport only."""
+    if db_factory is None:
+        from meshpipeline.persistence.session import get_db
+        db_factory = get_db
     reply = DID_NOT_START_REPLY.format(why=DID_NOT_START_WHY)
     async with db_factory() as db:
         locked = await session_repo.get_for_update(db, session_id)

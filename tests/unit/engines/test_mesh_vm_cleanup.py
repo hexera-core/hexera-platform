@@ -29,20 +29,37 @@ BASH = shutil.which("bash")
 
 
 def _shims(tmp: Path, *, delete_code: str, container_runs_s: int, timeout: int = 100,
-           margin: int = G.CONTAINER_MARGIN_S) -> tuple[dict, Path]:
-    """Every command the startup script calls, as a script that records what it was asked."""
+           margin: int = G.CONTAINER_MARGIN_S, held_until: int | None = None, released_at: int | None = None,
+           next_run_at: int | None = None, next_image: str = "img") -> tuple[dict, Path]:
+    """Every command the startup script calls, as a script that records what it was asked. `held_until`: the
+    clock until which the VM's job renews its hold (None: no holder); `released_at`, when the job releases it;
+    `next_run_at`, when the job's next run is handed to it (clock seconds)."""
     bin_ = tmp / "bin"
     bin_.mkdir()
     log = tmp / "calls.log"
     clock = tmp / "clock"
     clock.write_text("1000")
+    (tmp / "run").write_text(f"r1|gs://b/in1|gs://b/out1|cfmesh|{timeout}|1|false||img")
+    if next_run_at is not None:
+        (tmp / "next").write_text(f"r2|gs://b/in2|gs://b/out2|cfmesh|{timeout}|1|false||{next_image}")
+    hand_over = (f"[ -f {tmp}/next ] && [ \"$(cat {clock})\" -ge {next_run_at} ] && mv {tmp}/next {tmp}/run\n"
+                 if next_run_at is not None else "")
+    lease = tmp / "lease"
+    if held_until is not None:
+        lease.write_text("1000|1000")
+        hand_over += f"[ \"$(cat {clock})\" -lt {held_until} ] && [ -f {lease} ] && echo \"$(cat {clock})|1000\" > {lease}\n"
+    if released_at is not None:
+        hand_over += f"[ \"$(cat {clock})\" -ge {released_at} ] && rm -f {lease}\n"
+    lease_url = "https://storage.googleapis.com/storage/v1/b/b/o/vm-holds%2Fjob-1?alt=media" if held_until else ""
     scripts = {
         # the metadata server and the Compute Engine API: curl answers by URL
         "curl": f"""#!/bin/bash
 echo "curl $*" >> {log}
 case "$*" in
   *-X\\ DELETE*) echo -n "{delete_code}" ;;
-  *instance/attributes/timeout*) echo -n "{timeout}" ;;
+  *instance/attributes/mesh-run*) cat {tmp}/run ;;
+  *instance/attributes/hold-lease*) echo -n "{lease_url}" ;;
+  *storage.googleapis.com*) if [ -f {lease} ]; then echo -n "$(cat {lease})|200"; else echo -n "|404"; fi ;;
   *instance/service-accounts/default/token*) echo -n '{{"access_token":"tok"}}' ;;
   *instance/name*) echo -n mesh-big-x ;;
   *instance/zone*) echo -n projects/p/zones/z ;;
@@ -60,12 +77,13 @@ esac
 """,
         # time: `date +%s` reads the clock, and `sleep N` moves it on
         "date": f"#!/bin/bash\ncat {clock}\n",
-        "sleep": f"#!/bin/bash\necho $(( $(cat {clock}) + $1 )) > {clock}\n",
+        "sleep": f"#!/bin/bash\necho $(( $(cat {clock}) + $1 )) > {clock}\n{hand_over}",
         "shutdown": f"#!/bin/bash\necho \"shutdown $*\" >> {log}\n",
         "poweroff": f"#!/bin/bash\necho \"poweroff $*\" >> {log}\n",
         "logger": f"#!/bin/bash\necho \"logger $*\" >> {log}\n",
         "docker-credential-gcr": "#!/bin/bash\nexit 0\n",
         "mkdir": "#!/bin/bash\nexit 0\n",
+        "find": "#!/bin/bash\nexit 0\n",
     }
     for name, text in scripts.items():
         p = bin_ / name
@@ -322,3 +340,312 @@ def test_the_sweep_names_the_vm_as_its_claim_does(ours):
     vm = _vm("mesh-big-0f7d1de0e8279462ddbc")
     assert S.reference_of(vm) == G.VmReference(
         "projects/p/zones/us-central1-a/instances/mesh-big-0f7d1de0e8279462ddbc").operation_name
+
+
+# --------------------------------------------------------------- held for its job (RUN-4) ----
+# A job keeps its big-machine VM across its remeshes: the VM takes the job's next run as soon as it is handed
+# over (no boot, no image pull), the worker does not delete it once a run's result is in, and it goes when the
+# job ends - released by the job, ended by itself once idle past its hold, or swept.
+
+
+def _run_held(tmp: Path, **kw) -> list[str]:
+    env, log = _shims(tmp, **kw)
+    script = tmp / "startup.sh"
+    script.write_text(G.STARTUP_SCRIPT)
+    subprocess.run([BASH, str(script)], env=env, timeout=60, check=False, capture_output=True)
+    return log.read_text().splitlines() if log.exists() else []
+
+
+def test_a_held_vm_takes_its_jobs_next_run_without_booting_or_pulling_again(tmp_path):
+    calls = _run_held(tmp_path, delete_code="200", container_runs_s=60, held_until=10**6, released_at=1600,
+                      next_run_at=1400)
+    runs = [c for c in calls if c.startswith("docker run")]
+    assert len(runs) == 2
+    assert "INPUT_URI=gs://b/in1" in runs[0] and "INPUT_URI=gs://b/in2" in runs[1]
+    assert len([c for c in calls if c.startswith("docker pull")]) == 1      # the image was pulled once
+    assert len([c for c in calls if "-X DELETE" in c]) == 1                 # and it ended once released
+    assert any("its job has released it" in c for c in calls if c.startswith("logger"))
+
+
+def test_a_new_image_is_pulled_before_the_next_run(tmp_path):
+    calls = _run_held(tmp_path, delete_code="200", container_runs_s=60, held_until=10**6, released_at=1600,
+                      next_run_at=1400, next_image="img2")
+    assert [c for c in calls if c.startswith("docker pull")] == ["docker pull img", "docker pull img2"]
+
+
+def test_a_held_vm_waits_as_long_as_its_job_holds_it(tmp_path):
+    # the builder takes an hour over the next run: no idle clock, the job's hold keeps the VM
+    calls = _run_held(tmp_path, delete_code="200", container_runs_s=60, held_until=10**6, released_at=1000 + 7200,
+                      next_run_at=1000 + 3600)
+    assert len([c for c in calls if c.startswith("docker run")]) == 2
+    assert len([c for c in calls if "-X DELETE" in c]) == 1
+
+
+def test_a_held_vm_whose_job_stopped_renewing_ends_itself(tmp_path):
+    # the worker died: the hold is not renewed after 1300, so the VM ends HOLD_STALE_S after it
+    calls = _run_held(tmp_path, delete_code="403", container_runs_s=60, held_until=1300)
+    assert len([c for c in calls if c.startswith("docker run")]) == 1
+    assert any(c.startswith("shutdown") for c in calls)
+    assert any(f"has not renewed its hold in {G.HOLD_STALE_S} s" in c for c in calls if c.startswith("logger"))
+
+
+def test_a_vm_with_no_holder_runs_once_and_ends_as_before(tmp_path):
+    calls = _run_held(tmp_path, delete_code="200", container_runs_s=60, next_run_at=1400)
+    assert len([c for c in calls if c.startswith("docker run")]) == 1
+
+
+def test_a_held_vm_is_named_by_its_job_and_machine_and_carries_its_hold():
+    a = G.instance_name("op-1", "n2-highmem-16", "job-1")
+    assert a == G.instance_name("op-2", "n2-highmem-16", "job-1")           # every run of the job: one VM
+    assert a != G.instance_name("op-1", "n2-highmem-32", "job-1")           # a step up is another machine
+    assert G.instance_name("op-1", "n2-highmem-16") != G.instance_name("op-2", "n2-highmem-16")
+    body = G.instance_body(name=a, zone="z", machine="n2-highmem-16", image="i", account="a",
+                           input_uri="gs://b/in", output_uri="gs://b/out", engine="cfmesh", timeout=1000,
+                           disk_gb=200, holder="JOB-1")
+    meta = {i["key"]: i["value"] for i in body["metadata"]["items"]}
+    assert body["labels"]["job"] == "job-1"
+    assert meta["hold-lease"].endswith("/o/vm-holds%2Fjob-1?alt=media")
+    assert meta["mesh-run"].split("|")[1:5] == ["gs://b/in", "gs://b/out", "cfmesh", "1000"]
+    assert int(body["scheduling"]["maxRunDuration"]["seconds"]) == G.HOLD_LIFETIME_S
+
+
+def test_a_held_vm_is_reused_only_while_up_with_room_for_the_run():
+    from datetime import UTC, datetime
+    created = datetime.fromtimestamp(NOW - 3600, tz=UTC).isoformat()
+    vm = {"status": "RUNNING", "creationTimestamp": created,
+          "scheduling": {"maxRunDuration": {"seconds": str(G.HOLD_LIFETIME_S)}}}
+    left = G.HOLD_LIFETIME_S - 3600
+    assert G.reusable(vm, timeout=left - G.CONTAINER_MARGIN_S - 600, now=NOW)
+    assert not G.reusable(vm, timeout=left, now=NOW)                        # would outlive its limit
+    assert not G.reusable({**vm, "status": "TERMINATED"}, timeout=10, now=NOW)
+
+
+@pytest.fixture
+def gce(monkeypatch):
+    """Compute Engine stood in for: the VMs there, and what was asked of it."""
+    state: dict = {"vms": [], "posted": [], "handed": [], "deleted": []}
+    monkeypatch.setattr(G, "_job_container", lambda: ("img", "acct"))
+    monkeypatch.setattr(G, "list_vms", lambda session=None: list(state["vms"]))
+    monkeypatch.setattr(G, "describe_vm", lambda name, session=None: next(
+        (v for v in state["vms"] if v["name"] == name), None))
+    monkeypatch.setattr(G, "_hand_over", lambda vm, meta, session=None: state["handed"].append(
+        (vm["name"], meta["mesh-run"])) or True)
+    monkeypatch.setattr(G, "_wait_gone", lambda name, limit_s=0: True)
+    state["runs"] = {}                     # name -> (its run's result is written, seconds since its beacon)
+    monkeypatch.setattr(G, "_last_run", lambda vm: state["runs"].get(vm["name"], (True, 60.0)))
+    state["since"] = 0.0                   # since when the job's hold has been unbroken (None: lapsed)
+    monkeypatch.setattr(G, "hold_since", lambda holder, now=None: state["since"])
+    state["renewed"] = []
+    monkeypatch.setattr(G, "renew_job_hold", lambda holder, now=None, force=False: state["renewed"].append(holder))
+    state["conflict"] = set()              # names Compute Engine answers 409 for
+
+    def delete(ref, why):
+        name = ref.instance_name.rsplit("/", 1)[-1]
+        state["deleted"].append((name, why))
+        state["vms"] = [v for v in state["vms"] if v["name"] != name]
+        return True
+
+    monkeypatch.setattr(G, "delete_vm", delete)
+    monkeypatch.setattr(C, "_access_token", lambda: "tok")
+    import requests
+
+    def post(url, json, headers, timeout):
+        state["posted"].append(json)
+        code = 409 if json["name"] in state["conflict"] else 200
+        return type("R", (), {"status_code": code, "text": ""})()
+
+    monkeypatch.setattr(requests, "post", post)
+    monkeypatch.setattr(G.provcfg, "GCP_PROJECT_ID", "p", raising=False)
+    monkeypatch.setattr(G.provcfg, "GCP_REGION", "us-central1", raising=False)
+    return state
+
+
+def _held(name, *, status="RUNNING", job="job-1"):
+    from datetime import UTC, datetime
+    return {"name": name, "zone": "us-central1-a", "status": status, "labels": {"purpose": G.LABEL, "job": job},
+            "creationTimestamp": datetime.now(tz=UTC).isoformat(),
+            "scheduling": {"maxRunDuration": {"seconds": str(G.HOLD_LIFETIME_S)}}}
+
+
+def _trigger(holder="job-1", machine="n2-highmem-16", key="op-2"):
+    return G.trigger_vm(input_uri="gs://b/in", output_uri=f"gs://b/{key}/out", engine="cfmesh", timeout=1000,
+                        operation_key=key, decision={"machine": machine}, holder=holder)
+
+
+def test_a_remesh_is_handed_to_the_vm_its_job_holds(gce):
+    name = G.instance_name("op-1", "n2-highmem-16", "job-1")
+    gce["vms"] = [_held(name)]
+    ref = _trigger()
+    assert ref.instance_name.endswith(name)
+    assert gce["handed"] and gce["handed"][0][0] == name and not gce["posted"] and not gce["deleted"]
+
+
+def test_a_step_up_releases_the_jobs_smaller_vm_and_starts_one_held_for_the_job(gce):
+    small = G.instance_name("op-1", "n2-highmem-16", "job-1")
+    other_job = G.instance_name("op-1", "n2-highmem-16", "job-2")
+    gce["vms"] = [_held(small), _held(other_job, job="job-2")]
+    _trigger(machine="n2-highmem-32")
+    assert [n for n, _ in gce["deleted"]] == [small]                         # never another job's
+    assert gce["posted"] and gce["posted"][0]["labels"]["job"] == "job-1"
+
+
+def test_a_held_vm_that_cannot_take_the_run_is_replaced(gce):
+    name = G.instance_name("op-1", "n2-highmem-16", "job-1")
+    gce["vms"] = [_held(name, status="TERMINATED")]
+    _trigger()
+    assert gce["deleted"] and gce["deleted"][0][0] == name and not gce["handed"]
+    assert gce["posted"] and gce["posted"][0]["name"] == name
+
+
+def test_a_job_taken_over_never_kills_or_queues_behind_a_pass_still_meshing(gce):
+    # hand_back: the next owner replays from pass one while a later pass is left to finish on the job's VMs
+    held = G.instance_name("op-1", "n2-highmem-16", "job-1")
+    bigger = G.instance_name("op-1", "n2-highmem-32", "job-1")
+    gce["vms"] = [_held(held), _held(bigger)]
+    gce["runs"] = {held: (False, 30.0), bigger: (False, 30.0)}
+    _trigger(key="op-2")
+    assert not gce["deleted"] and not gce["handed"]
+    assert gce["posted"][0]["name"] == G.instance_name("op-2", "n2-highmem-16")      # a VM of its own
+    assert "job" not in gce["posted"][0]["labels"]
+
+
+def test_a_held_vm_whose_hold_lapsed_since_its_run_is_not_handed_a_run_it_may_never_read(gce):
+    import time
+    name = G.instance_name("op-1", "n2-highmem-16", "job-1")
+    gce["vms"] = [_held(name)]
+    gce["since"] = time.time() - 10          # unbroken only since after its last run ended (60 s ago)
+    _trigger()
+    assert gce["renewed"] == ["job-1"]
+    assert not gce["handed"] and gce["deleted"][0][0] == name
+    assert gce["posted"][0]["name"] == name and gce["posted"][0]["labels"]["job"] == "job-1"
+
+
+def test_a_held_name_still_taken_gives_the_run_a_vm_of_its_own(gce):
+    name = G.instance_name("op-1", "n2-highmem-16", "job-1")
+    gce["conflict"] = {name}
+    ref = _trigger(key="op-2")
+    assert [p["name"] for p in gce["posted"]] == [name, G.instance_name("op-2", "n2-highmem-16")]
+    assert ref.instance_name.endswith(G.instance_name("op-2", "n2-highmem-16"))
+
+
+def test_the_jobs_end_releases_only_its_own_vms(gce):
+    gce["vms"] = [_held("mesh-big-a"), _held("mesh-big-b"), _held("mesh-big-c", job="job-2")]
+    assert G.release_job_vms("job-1") == 2
+    assert sorted(n for n, _ in gce["deleted"]) == ["mesh-big-a", "mesh-big-b"]
+
+
+def test_the_worker_keeps_a_held_vm_once_its_result_is_in(tmp_path, remote):
+    from meshpipeline.contracts.mesh_execution import vm_hold
+    key = hashlib.sha256(b"held").hexdigest()
+    with vm_hold("job-1"):
+        C.run_mesh_remote(_ws(tmp_path), engine="cfmesh", timeout=1000, operation_key=key)
+    assert remote["vm"][0]["holder"] == "job-1"
+    assert remote["deleted"] == []                                           # waits for the job's next run
+
+
+def test_a_held_vm_still_goes_when_its_run_is_given_up(tmp_path, remote, monkeypatch):
+    from meshpipeline.contracts.mesh_execution import CANCELLED_BY_OWNER, abandonment_watch, vm_hold
+    monkeypatch.setattr(G, "trigger_vm", lambda **kw: remote["vm"].append(kw)
+                        or G.VmReference("projects/p/zones/z/instances/mesh-big-x"))
+    monkeypatch.setattr(C, "_poll_gcs_json", lambda *a, **k: (_ for _ in ()).throw(C._Abandoned(CANCELLED_BY_OWNER)))
+    with vm_hold("job-1"), abandonment_watch(lambda: None):
+        C.run_mesh_remote(_ws(tmp_path), engine="cfmesh", timeout=1000,
+                          operation_key=hashlib.sha256(b"cancelled").hexdigest())
+    assert remote["deleted"] and remote["deleted"][0][1] == CANCELLED_BY_OWNER
+
+
+def _held_sweep(vm, *, results=(), beacons=None, live=True, held=60.0):
+    deleted: list = []
+    S.sweep(vms=[vm], now=NOW, result_written=lambda b, k: k in results,
+            owner=lambda ref: pytest.fail("a held VM is judged by its job, not by a claim"),
+            delete=lambda ref, why: deleted.append(why) or True,
+            beacon_age=lambda b, k: (beacons or {}).get(k), job_live=lambda job: live,
+            hold_age=lambda job: held, drop_hold=lambda job: deleted.append(f"hold of {job}"))
+    return deleted
+
+
+def test_the_sweep_keeps_a_held_vm_between_its_jobs_runs(ours):
+    vm = {**_vm("mesh-big-h"), "labels": {"purpose": G.LABEL, "job": "job-1"}}
+    from meshpipeline.artifact_keys import progress_key_beside, result_key_beside
+    result, beacon = result_key_beside("jobs/k1/output.tar.gz"), progress_key_beside("jobs/k1/output.tar.gz")
+    idle = S.WORKING_S + 60.0                                                # its run over, waiting for the next
+    assert _held_sweep(vm, results={result}, beacons={beacon: idle}) == []
+    assert _held_sweep(vm, results={result}, beacons={beacon: idle}, live=False) == [
+        "swept: the job that holds it has ended", "hold of job-1"]
+    assert _held_sweep(vm, beacons={beacon: 4 * 3600.0}) == []              # waiting hours, still held
+    assert _held_sweep(vm, held=S.HELD_STALE_S + 60) == [
+        f"swept: its job has not renewed its hold for {int(S.HELD_STALE_S + 60) // 60} minutes", "hold of job-1"]
+    assert _held_sweep(vm, held=None) == ["swept: its job no longer holds it", "hold of job-1"]
+    assert _held_sweep({**vm, "status": "TERMINATED"}) and _held_sweep(vm, live=None)
+
+
+def test_a_collected_run_reads_as_over_and_a_meshing_one_does_not(monkeypatch):
+    # collection releases the exchange (input, output, result) and leaves the beacon: the run is over
+    store = {"jobs/k/input.tar.gz": b"x"}
+    bucket = type("B", (), {"blob": lambda self, k: type("O", (), {"exists": lambda o: k in store})(),
+                            "get_blob": lambda self, k: None})()
+    from meshpipeline.adapters.mesh_execution import gcs_exchange
+    monkeypatch.setattr(gcs_exchange, "storage_client", lambda: type("S", (), {"bucket": lambda self, n: bucket})())
+    vm = {"name": "mesh-big-h", "metadata": {"items": [{"key": "input-uri", "value": "gs://b/jobs/k/input.tar.gz"},
+                                                       {"key": "output-uri", "value": "gs://b/jobs/k/output.tar.gz"}]}}
+    assert G._last_run(vm) == (False, None)                                  # meshing: input there, no result
+    store.clear()
+    assert G._last_run(vm)[0] is True                                        # collected
+
+
+class _HoldBlob:
+    def __init__(self, store, key):
+        self.store, self.key = store, key
+
+    def download_as_bytes(self, timeout=None):
+        from google.api_core.exceptions import NotFound
+        if self.key not in self.store:
+            raise NotFound(self.key)
+        return self.store[self.key].encode()
+
+    def upload_from_string(self, text, content_type=None):
+        self.store[self.key] = text
+
+    def delete(self):
+        self.store.pop(self.key)
+
+
+def test_a_hold_stays_unbroken_while_renewed_and_restarts_after_a_gap(monkeypatch):
+    store: dict = {}
+    bucket = type("B", (), {"blob": lambda self, k: _HoldBlob(store, k)})()
+    from meshpipeline.adapters.mesh_execution import gcs_exchange
+    monkeypatch.setattr(gcs_exchange, "storage_client", lambda: type("S", (), {"bucket": lambda self, n: bucket})())
+    monkeypatch.setattr(G.provcfg, "GCP_MESH_BUCKET", "b", raising=False)
+    G.renew_job_hold("job-9", now=1000)                                      # took no VM: writes nothing
+    assert store == {}
+    G.renew_job_hold("job-9", now=1000, force=True)
+    G.renew_job_hold("job-9", now=1060)
+    assert store["vm-holds/job-9"] == "1060|1000" and G.hold_since("job-9", now=1100) == 1000
+    assert G.hold_since("job-9", now=1060 + G.HOLD_UNBROKEN_S + 1) is None   # lapsed
+    G.renew_job_hold("job-9", now=1060 + G.HOLD_UNBROKEN_S + 1)
+    assert G.hold_since("job-9", now=1400) == 1060 + G.HOLD_UNBROKEN_S + 1   # broken: unbroken only from now
+    monkeypatch.setattr(G, "list_vms", lambda session=None: [])
+    G.release_job_vms("job-9")
+    assert store == {} and "job-9" not in G._HELD
+
+    store["vm-holds/job-8"] = "1000|900"                                     # adopted from another worker
+    G.renew_job_hold("job-8", now=1060)
+    assert store["vm-holds/job-8"] == "1060|900" and "job-8" in G._HELD
+    G._HELD.discard("job-8")
+
+
+def test_an_unreadable_hold_is_not_a_released_one(monkeypatch):
+    def boom():
+        raise ConnectionError("gcs is down")
+    from meshpipeline.adapters.mesh_execution import gcs_exchange
+    monkeypatch.setattr(gcs_exchange, "storage_client", boom)
+    monkeypatch.setattr(G.provcfg, "GCP_MESH_BUCKET", "b", raising=False)
+    assert S._hold_age("job-1") == 0.0                                       # kept: judged again next time
+
+
+def test_a_held_vm_too_small_for_the_next_pass_workspace_is_replaced(gce):
+    name = G.instance_name("op-1", "n2-highmem-16", "job-1")
+    gce["vms"] = [{**_held(name), "disks": [{"diskSizeGb": str(G.MIN_DISK_GB)}]}]
+    G.trigger_vm(input_uri="gs://b/in", output_uri="gs://b/op-2/out", engine="cfmesh", timeout=1000,
+                 operation_key="op-2", decision={"machine": "n2-highmem-16", "workspace_gib": 400}, holder="job-1")
+    assert not gce["handed"] and gce["deleted"][0][0] == name and gce["posted"][0]["name"] == name

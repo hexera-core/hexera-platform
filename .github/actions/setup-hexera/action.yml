@@ -26,12 +26,21 @@ runs:
     # pytest.importorskip does not catch the resulting OSError - without these the gmsh engine
     # tests do not skip, they ERROR at collection. Same list the pipeline image ships;
     # libgl1/libegl1 additionally back the pyvista render stack.
+    # Retried: Ubuntu's mirrors 503 for minutes at a time, and one blip used to fail every lane.
     - shell: bash
       run: |
-        sudo apt-get update
-        sudo apt-get install -y --no-install-recommends \
-          libgl1 libglu1-mesa libegl1 libxrender1 libxext6 libxt6 \
-          libxft2 libxcursor1 libxinerama1 libxrandr2 libxi6
+        apt=(sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30)
+        for attempt in 1 2 3 4; do
+          if "${apt[@]}" update && "${apt[@]}" install -y --no-install-recommends \
+            libgl1 libglu1-mesa libegl1 libxrender1 libxext6 libxt6 \
+            libxft2 libxcursor1 libxinerama1 libxrandr2 libxi6; then
+            exit 0
+          fi
+          [ "${attempt}" -lt 4 ] || break
+          echo "::warning::apt-get attempt ${attempt} failed; retrying in $((attempt * 30))s"
+          sleep $((attempt * 30))
+        done
+        exit 1
 
     - shell: bash
       run: pip install -c requirements/constraints.txt -r requirements/runtime.txt -r requirements/dev.txt

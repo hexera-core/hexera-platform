@@ -68,7 +68,10 @@ PAYLOAD = (*P.STAGED_SOLIDS, "cad_face_names.json", P.PLAN_FILE, "gmsh_spec.json
            # The mesh job's adapter reads them to measure each asked-for limit and to aim the MMG pass; without
            # this file in the payload neither happened on the cloud mesher (dev-areen 11 Nov, job a8cc1718:
            # no limit rows, MMG with no targets), though both did in a run on one machine
-           "mesh_requirements.json")
+           "mesh_requirements.json",
+           # a returned STEP's mesh-size hints, staged for these exact bytes (engines/gmsh/staged_hints.HINTS_FILE);
+           # absent on every run without them, so the payload is what it was
+           "mesh_hints.json")
 #: LAD-fea-11's files (engines/gmsh/fea_adapter.KEEP_MSH / KEEP_JSON)
 KEPT_FILES = ("fea_kept_parts.msh", "fea_kept_parts.json")
 #: Where each pass's deliverables are kept until the best one is chosen.
@@ -475,6 +478,10 @@ async def read_requirements(ws: Path, state, *, job_id: str, run=None, publish=N
     # STD-4: a shell's elements picked on the stage (Quads | Triangles) are the last word on that one field; no
     # pick (the control left where it started, or a solid run): the section as read, the same object
     sec = MS.stage(read, (state or {}).get(MS.STAGE_KEY)) if mesh_as_of(state) != "solid" else read
+    # NOTE-15: what the notes say that the product acted on outside the reading (the engine they name, the kind of
+    # mesh, the unit) is never told or counted as not applied
+    from meshpipeline.engines import notes_acted as NA
+    sec = NA.apply(sec, MR.notes_text(state or {}), NA.facts_of(state))
     MR.write(ws, sec)
     if sec.get("status") == "none":
         return sec

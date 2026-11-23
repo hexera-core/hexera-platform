@@ -1,6 +1,8 @@
 # Responsibility: Verify the localiser's judgement - its status vocabulary, its thresholds and its summary - without a CAD kernel.
 from __future__ import annotations
 
+from pathlib import Path
+
 from meshpipeline.cad.repair.contracts import DefectCode, DefectSeverity
 from meshpipeline.cad.repair.localize import (
     _STATUS_TO_CODE,
@@ -303,3 +305,81 @@ def test_the_survivor_lands_where_the_first_record_did():
 
     assert [d.kernel_status for d in kept] == ["", "FreeBounds"]
     assert kept[1].measurements["boundary_edges"] == [3, 4]
+
+
+# --- a degenerate apex seam is not a short edge -------------------------------------------------
+
+def _cone_and_its_apex_edge():
+    """A cone: its apex seam is an edge of NO MEANINGFUL LENGTH, flagged `Degenerated`, and
+    entirely correct. OpenCASCADE represents the apex that way for every cone and sphere.
+
+    "No meaningful length" rather than "zero": this one measures 1.8e-14 mm, and across 26
+    wave-9 files the apex edges run from exactly 0.0 to about 1e-14. Which it is depends on the
+    surface's parameterisation, so the flag is the fact and the length is not.
+    """
+    from OCP.BRep import BRep_Tool
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeCone
+    from OCP.TopAbs import TopAbs_EDGE
+    from OCP.TopoDS import TopoDS
+
+    from meshpipeline.cad.repair.localize import _edge_length, _indexed
+
+    shape = BRepPrimAPI_MakeCone(20.0, 0.0, 40.0).Shape()
+    edges = _indexed(shape, TopAbs_EDGE)
+    apex = [i for i in range(1, edges.Extent() + 1)
+            if BRep_Tool.Degenerated_s(TopoDS.Edge_s(edges.FindKey(i)))]
+    lengths = [_edge_length(edges.FindKey(i)) for i in apex]
+    return shape, apex, lengths
+
+
+def test_a_cone_really_has_a_zero_length_degenerate_edge():
+    """THE FIXTURE'S OWN PREMISE, measured rather than assumed: if the kernel stopped
+    representing the apex this way the test below would pass for the wrong reason."""
+    _shape, apex, lengths = _cone_and_its_apex_edge()
+
+    assert apex, "a cone must carry a degenerate apex edge"
+    # Under a picometre: far below any tolerance, any mesh size, and the locator's own threshold.
+    assert lengths and max(lengths) < 1e-9, lengths
+
+
+def test_a_degenerate_apex_edge_is_not_reported_as_a_small_edge():
+    """IT IS ZERO BY CONSTRUCTION, NOT BY DAMAGE. The locator reported every edge under
+    `SMALL_EDGE_LENGTH_FRACTION` of the diagonal, which is every apex seam on every cone and
+    sphere - 883 of them across 26 wave-9 files, all flagged, none a defect. Reported as
+    `small_edge` they inflate the count the wave reads, and they reach operations and size hints
+    as TARGETS: an op aimed at one can only decline, and a hint sized for one asks the mesher to
+    resolve a point.
+    """
+    from meshpipeline.cad.repair.contracts import DefectCode
+    from meshpipeline.cad.repair.localize import localize_scan
+
+    shape, apex, _lengths = _cone_and_its_apex_edge()
+
+    found, _complete = localize_scan(shape)
+    small = [d for d in found if d.code is DefectCode.small_edge]
+
+    assert [d.entity_index for d in small if d.entity_index in apex] == [], (
+        f"the apex edge(s) {apex} are reported as small_edge defects: {small}")
+
+
+def test_a_short_edge_still_carries_its_length_and_its_degeneracy():
+    """The length stays, and `degenerated` joins it - so no reader has to infer a degeneracy from
+    a length rounded to nine places, which is what read 0.0 for every apex seam."""
+    import tempfile
+
+    from tests.cad_fixtures import write_small_edge_step
+
+    from meshpipeline.cad.repair.contracts import DefectCode
+    from meshpipeline.cad.repair.localize import localize_scan
+
+    with tempfile.TemporaryDirectory() as tmp:
+        from meshpipeline.cad.repair.brep import _read_shape
+
+        shape = _read_shape(write_small_edge_step(Path(tmp) / "sliver.step"))
+    found, _complete = localize_scan(shape)
+    small = [d for d in found if d.code is DefectCode.small_edge]
+
+    assert small, "the sliver fixture must still report a short edge"
+    for defect in small:
+        assert "length" in defect.measurements
+        assert defect.measurements["degenerated"] is False

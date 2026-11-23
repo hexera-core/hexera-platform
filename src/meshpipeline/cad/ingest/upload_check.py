@@ -23,7 +23,7 @@ STEP_HEADER_REFUSAL = "File does not appear to be a valid STEP file (missing ISO
 #: (STL, OBJ, IGES, Abaqus and Nastran are marked weakly or not at all: their names are trusted
 #: and the reader has the last word.)
 _STRONGLY_MARKED = frozenset({"step", "brep", "vtp", "vtu", "vtk", "ply", "off", "3mf", "glb",
-                              "gltf", "msh", "medit", "su2", "3dm", "ecxml", "dae"})
+                              "gltf", "msh", "medit", "su2", "3dm", "ecxml", "dae", "dxf"})
 #: An ECXML file is read (XML only - no geometry is built) at upload below this size, so a file the
 #: schema rules out is told why at once; a larger one is told the same thing by the geometry check.
 _ECXML_CHECK_MAX_BYTES = 32 * 1024 * 1024

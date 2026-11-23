@@ -771,7 +771,7 @@ def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
         fit_run = fit_run and _fit
         _ask_local, _ask_boxes, wall_cell = CR.cfmesh_local(
             _ask, patches, wall_patch, max_cell=max_cell, wall_cell=wall_cell, floor=_floor,
-            body_bbox=body_bbox, domain=(domain_min, domain_max), budget=cell_budget)
+            body_bbox=body_bbox, domain=(domain_min, domain_max), budget=cell_budget, roles=CR.port_roles(ws))
     _thick = (f" refinementThickness {_caps['refinement_thickness']:.6g};" if _caps else "")
 
     # THE RUN, TIMED BEFORE IT RUNS (CELLS_PER_SECOND): the cap it gets, and - for a wall the

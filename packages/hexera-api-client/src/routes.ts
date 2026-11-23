@@ -23,6 +23,9 @@ export const hexeraApiRoutes = {
   // One run's "why" record: every decision it made on its own and the rule behind it.
   adminOpsJobWhy: (jobId: PathSegment): ApiPath =>
     `${HEXERA_API_PREFIX}/admin/ops/jobs/${segment(jobId)}/why`,
+  // One run's repair investigation trace (dev diagnostics): per region, why no package.
+  adminOpsJobRepairTrace: (jobId: PathSegment): ApiPath =>
+    `${HEXERA_API_PREFIX}/admin/ops/jobs/${segment(jobId)}/repair-trace`,
   adminOpsOrganization: (organizationId: PathSegment): ApiPath =>
     `${HEXERA_API_PREFIX}/admin/ops/organizations/${segment(organizationId)}`,
   adminOpsOrganizationCreditGrants: (organizationId: PathSegment): ApiPath =>

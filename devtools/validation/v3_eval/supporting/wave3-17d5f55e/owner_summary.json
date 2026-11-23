@@ -1,0 +1,112 @@
+{
+ "t29_deterministic": {
+  "failing": {
+   "files": 120,
+   "files_fixed": 1,
+   "fixed": [
+    "0060_00608290_03bd4ca010ce5f1747b235cb_step_000.step"
+   ],
+   "newly_broken": 0,
+   "broken": [],
+   "crashed": [
+    "0059_00597937_2e928f752b8806de5a85c14b_step_000.step"
+   ],
+   "tolerant_mesher_meshable_tier2b_probe_estimate_only": 67,
+   "tolerant_route": {
+    "no_answer": 22,
+    "tolerant_rung_eats_it": 67,
+    "not_asked": 27,
+    "null": 3,
+    "tolerant_rung_refuses": 1
+   }
+  },
+  "clean": {
+   "files": 100,
+   "still_meshes_and_no_new_defects": 100,
+   "failures": [],
+   "info_parts_changed_kept_ops": 4,
+   "changed": [
+    [
+     "00591591_fea9cf6e8da1b878be43a67f_step_000.step",
+     [
+      "sew_faces"
+     ]
+    ],
+    [
+     "00514684_7f0805030eb57e4abb36a15f_step_000.step",
+     [
+      "fix_small_faces"
+     ]
+    ],
+    [
+     "00552206_58acbbeb0c5c6a0f76db00bb_step_018.step",
+     [
+      "fix_small_faces"
+     ]
+    ],
+    [
+     "00576720_c89f6e67fe4a73823a34cf49_step_003.step",
+     [
+      "fix_small_faces"
+     ]
+    ]
+   ]
+  }
+ },
+ "v3_full": {
+  "failing": {
+   "files": 120,
+   "files_fixed": 1,
+   "fixed": [
+    "0060_00608290_03bd4ca010ce5f1747b235cb_step_000.step"
+   ],
+   "newly_broken": 0,
+   "broken": [],
+   "crashed": [
+    "0059_00597937_2e928f752b8806de5a85c14b_step_000.step"
+   ],
+   "tolerant_mesher_meshable_tier2b_probe_estimate_only": 65,
+   "tolerant_route": {
+    "no_answer": 28,
+    "tolerant_rung_eats_it": 66,
+    "not_asked": 22,
+    "null": 3,
+    "tolerant_rung_refuses": 1
+   }
+  },
+  "clean": {
+   "files": 100,
+   "still_meshes_and_no_new_defects": 100,
+   "failures": [],
+   "info_parts_changed_kept_ops": 1,
+   "changed": [
+    [
+     "00552206_58acbbeb0c5c6a0f76db00bb_step_018.step",
+     [
+      "fix_small_faces"
+     ]
+    ]
+   ]
+  }
+ },
+ "t19_tournament_off": {
+  "failing": {
+   "files": 120,
+   "files_fixed": 0,
+   "fixed": [],
+   "newly_broken": 0,
+   "broken": [],
+   "crashed": [
+    "0059_00597937_2e928f752b8806de5a85c14b_step_000.step"
+   ],
+   "tolerant_mesher_meshable_tier2b_probe_estimate_only": 68,
+   "tolerant_route": {
+    "no_answer": 26,
+    "not_asked": 22,
+    "tolerant_rung_eats_it": 68,
+    "tolerant_rung_refuses": 1,
+    "null": 3
+   }
+  }
+ }
+}

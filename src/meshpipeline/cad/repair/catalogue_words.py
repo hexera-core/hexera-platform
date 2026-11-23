@@ -14,10 +14,16 @@ SPLIT_CLOSED = "split_closed_faces"
 FRAGMENT = "fragment_bodies"
 #: The operation that answers an overlapping-facets mesh failure (CAD_REPAIR_REBUILD_FACE).
 REBUILD = "rebuild_face"
+#: The operation that closes a face's open wire, moving vertices (CAD_REPAIR_CLOSE_WIRE_GAPS).
+CLOSE_GAPS = "close_wire_gaps"
+#: The operation that refines the faces of a sub-mesh-size gap (CAD_REPAIR_RESOLVE_SUB_MESH_GAP).
+RESOLVE_GAP = "resolve_sub_mesh_gap"
 
 _BASE = (
     "- fix_small_edges: merge edges too short to keep",
-    "- fix_small_faces: sweep away sliver faces too small to keep, if the deployment allows it",
+    "- fix_small_faces: sweep away sliver faces too small to keep "
+    "(it reports the removed faces' own area; rebuilding their neighbours can move the surface "
+    "much further, so claim the MEASURED delta)",
     "- fix_face_boundary: repair a face whose boundary is broken or open",
     "- sew_faces: stitch faces that should share an edge",
     "- fill_planar_hole: cap a flat hole",
@@ -29,7 +35,9 @@ _BASE = (
 
 def catalogue_text(*, split_closed_faces: bool | None = None,
                    fragment_bodies: bool | None = None,
-                   rebuild_face: bool | None = None) -> str:
+                   rebuild_face: bool | None = None,
+                   close_wire_gaps: bool | None = None,
+                   resolve_sub_mesh_gap: bool | None = None) -> str:
     """One line per catalogued operation, for the given consent (the deployment's flags when not
     told)."""
     import meshpipeline.settings.cad_repair as rcfg
@@ -40,14 +48,34 @@ def catalogue_text(*, split_closed_faces: bool | None = None,
         fragment_bodies = bool(rcfg.CAD_REPAIR_FRAGMENT_BODIES)
     if rebuild_face is None:
         rebuild_face = bool(rcfg.CAD_REPAIR_REBUILD_FACE)
+    if close_wire_gaps is None:
+        close_wire_gaps = bool(rcfg.CAD_REPAIR_CLOSE_WIRE_GAPS)
+    if resolve_sub_mesh_gap is None:
+        resolve_sub_mesh_gap = bool(getattr(rcfg, "CAD_REPAIR_RESOLVE_SUB_MESH_GAP", False))
     lines = list(_BASE)
     if split_closed_faces:
         lines.append(f"- {SPLIT_CLOSED}: split a closed (periodic) face - a full cylinder, cone, "
-                     "sphere or torus with one seam - in two so the mesher can wrap it")
+                     "sphere or torus with one seam - in two so the mesher can wrap it; only for a "
+                     "2D-stage periodic-surface failure on a located face")
     if fragment_bodies:
         lines.append(f"- {FRAGMENT}: make two touching bodies share their contact faces so the "
-                     "volume mesh is conformal there; declined when the bodies overlap")
+                     "volume mesh is conformal there; declined when the bodies overlap; only for a 3D-stage "
+                     "edge-through-face failure on a located face, in a part with more than one "
+                     "solid")
     if rebuild_face:
         lines.append(f"- {REBUILD}: re-trim one face from its own boundary on the same surface, "
-                     "when the surface mesher reports overlapping facets on it")
+                     "when the surface mesher reports overlapping facets on it; only for a 2D-stage "
+                     "overlapping-facets failure on a located face")
+    if close_wire_gaps:
+        lines.append(f"- {CLOSE_GAPS}: close the gaps in one face's open boundary wire by merging "
+                     "its loose vertices, moving each by at most the run's tolerance; only for a "
+                     "2D-stage open-loop failure or a wire gap on a located face")
+    if resolve_sub_mesh_gap:
+        lines.append(f"- {RESOLVE_GAP}: when two faces of one solid do NOT touch but sit closer "
+                     "than the mesh size (a clash whose clash_kind is \"gap\", i.e. measured "
+                     "apart beyond the touching margin; usually a thin wall), split them along "
+                     "their own iso-curves so the default mesh follows the curvature; moves no "
+                     "surface and never closes the gap; for an edge-through-face or "
+                     "overlapping-facets failure on a located face, not for a clash whose faces "
+                     "touch or cross (that is a real intersection)")
     return "\n".join(lines)

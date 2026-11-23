@@ -44,10 +44,27 @@ def repair_report_key(job: str, digest: str = "") -> str:
         f"{_PREFIX}/{job}/repair_report.json"
 
 
+def investigation_trace_key(job: str, digest: str) -> str:
+    """Where a repair's investigation trace (JSONL, dev diagnostics) lives. Content-addressed."""
+    return f"{_PREFIX}/{job}/investigation-trace-{digest[:16]}.jsonl"
+
+
 def repaired_cad_key(job: str, digest: str, suffix: str = ".step") -> str:
     """Where repaired geometry's bytes live. Content-addressed, for the same reason."""
     safe = suffix if suffix.startswith(".") else f".{suffix}"
     return f"{_PREFIX}/{job}/repaired-{digest[:16]}{safe}"
+
+
+def returned_cad_key(job: str, digest: str, suffix: str = ".step") -> str:
+    """Where the customer's STEP handed back UNCHANGED (a repair passthrough) lives.
+    Content-addressed, and never under a `repaired-` name: these bytes were not repaired."""
+    safe = suffix if suffix.startswith(".") else f".{suffix}"
+    return f"{_PREFIX}/{job}/returned-{digest[:16]}{safe}"
+
+
+def mesh_hints_key(job: str, digest: str) -> str:
+    """Where a returned STEP's mesh-size hints sidecar lives. Content-addressed."""
+    return f"{_PREFIX}/{job}/mesh-hints-{digest[:16]}.json"
 
 
 def result_key_beside(output_object_key: str) -> str:

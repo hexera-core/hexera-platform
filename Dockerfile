@@ -543,6 +543,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     # Xvfb - defensive fallback X server (DISPLAY is NOT exported; EGL is used); see worker_entrypoint.sh
     xvfb \
     && rm -rf /var/lib/apt/lists/*
+# fTetWild FOR THE REPAIR LADDER'S TIER 2b (cad/repair/tolerant_probe.py): the tolerant quick-probe runs
+# ON THIS WORKER (ladder._tolerant -> tolerant_probe -> engines/fea_tetwild.binary()), not on the mesh
+# job, so the worker needs the binary too - without it tier 2b answers "not installed" and the overlap
+# family is never routed. The SAME artefact and the SAME install as `mesh-toolchain` (the binary built
+# once in `ftetwild-build`, its licence and VERSION, GMP and libgomp), on PATH as `fTetWild` and at
+# /opt/ftetwild/bin/fTetWild - the two places binary() looks. Keep the two blocks in step. Not in `api`:
+# the API never runs the ladder.
+COPY --from=ftetwild-build /opt/ftetwild /opt/ftetwild
+RUN apt-get update && apt-get install -y --no-install-recommends libgmp10 libgomp1 \
+    && rm -rf /var/lib/apt/lists/* \
+    && ln -s /opt/ftetwild/bin/fTetWild /usr/local/bin/fTetWild \
+    && fTetWild --help >/dev/null
 # REPEATABLE PLANS: Python salts its string hash per process, so code that walks a set of names
 # can write patches or regions in another order on the next run. The worker plans meshes; it
 # serves no untrusted request parsing (the api stage keeps hash randomisation).

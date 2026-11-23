@@ -247,6 +247,30 @@ def _stage_surface(geometry, workspace: Path, engine: str) -> None:
                 prepared.consumed.current_unit.value, prepared.origin.value)
 
 
+def _stage_mesh_hints(workspace: Path, geometry, state) -> None:
+    """A RETURNED STEP'S MESH-SIZE HINTS for the mesher (engines/gmsh/staged_hints.py): staged into the
+    workspace, in the staged solid's unit, only when the repair attempt's sidecar names the exact bytes this
+    run meshes (pipeline/repair_return.py). No sidecar or other bytes: no file, and the mesh is what it was.
+    Never raises - hints are an addition to a mesh, never a reason to lose one."""
+    from meshpipeline.pipeline.repair_return import hints_path
+    try:
+        sidecar = hints_path(state)
+        if not sidecar and not (workspace / "mesh_hints.json").exists():
+            return
+        from meshpipeline.cad.staging import staged_surface
+        from meshpipeline.engines.gmsh import staged_hints
+        to_metres = 1.0
+        if sidecar and geometry is not None:
+            to_metres = float(staged_surface(geometry, workspace / "input.stl").consumed.to_metres)
+        said = staged_hints.stage(workspace, geometry_path=geometry.path if geometry else "",
+                                  hints_path=sidecar, to_metres=to_metres)
+        logger.info("Builder: mesh hints %s (%s, %d face(s))",
+                    "staged" if said["staged"] else "not staged", said["why"] or "sha256 matches",
+                    said["faces"])
+    except Exception as exc:  # noqa: BLE001 - see above
+        logger.warning("Builder: mesh hints not staged (%s)", type(exc).__name__)
+
+
 def _stage_wrap(workspace: Path, state, engine: str) -> None:
     """ON THE CFD WRAP RUNG (pipeline/cfd_wrap, LAD-cfd-5): the request beside the run's surface,
     which every internal staging route reads, and - for flow round a body - the body wrapped now
@@ -473,6 +497,7 @@ def prepare(state, *, job_id: str, mode: str) -> BuilderAttempt:
     if mode in ("initial", "rebuild"):
         if source_path and Path(source_path).exists():
             _stage_surface(geometry, workspace, engine)
+            _stage_mesh_hints(workspace, geometry, state)
             # the leak size the user confirmed (INS-8), beside the surface before any staging reads it
             from meshpipeline.agents.builder.workspace import write_leak_closing
             write_leak_closing(workspace, state.get("leak_closing") or None)
@@ -498,6 +523,7 @@ def prepare(state, *, job_id: str, mode: str) -> BuilderAttempt:
         if prev.is_dir() and not _same_dir(prev, workspace):
             _carry_forward(prev, workspace, engine, job_id)
         _ensure_surface(workspace, geometry, source_path, engine, job_id)
+        _stage_mesh_hints(workspace, geometry, state)
         if source_path and Path(source_path).exists():
             _stage_wrap(workspace, state, engine)
             _stage_declared(workspace, geometry, state, engine)

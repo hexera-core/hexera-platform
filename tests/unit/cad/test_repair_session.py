@@ -50,6 +50,21 @@ class _Op:
         return self._outcome or OpOutcome(shape="fixed")
 
 
+#: The two diagonals one real part measured either side of one `fix_small_edges` call, and the
+#: box of a zero-length edge it left exactly where it found it.
+_DIAGONAL_BEFORE = 1822.8446848590597
+_DIAGONAL_AFTER = 1822.9358082694791
+_SLIVER_BOX = {"unit": "mm", "centroid": [-75.0, 0.0, -877.5],
+               "bbox_min": [-75.0, -0.0, -877.5], "bbox_max": [-75.0, 0.0, -877.5]}
+
+
+def _named(box, *, diagonal_mm, index):
+    """The fingerprint a scan of a part this size gives that entity (`localize._stamped`)."""
+    from meshpipeline.cad.repair.identity import refs_for
+
+    return refs_for([("edge", index, box)], diagonal_mm=diagonal_mm)[0].fingerprint
+
+
 def _session(*, scans, measures=None, shape="original"):
     """A session whose scanner and measurer hand back a scripted sequence."""
     scan_queue = list(scans)
@@ -154,6 +169,45 @@ def test_an_operation_whose_defect_survived_is_rolled_back():
 
     assert verdict.status == ROLLED_BACK and verdict.reason == "target_remains"
     assert session.shape == "original", "the rollback did not restore the shape"
+
+
+def test_an_operation_that_only_widened_the_part_is_rolled_back_not_renamed_into_success():
+    # EVERY OTHER TEST HERE HANDS THE SESSION HAND-WRITTEN FINGERPRINTS, which is right for
+    # testing order and cannot catch a naming bug: the two scans either side of an operation are
+    # named by `identity.refs_for` at the PART's own diagonal, and a repair moves that diagonal.
+    # Measured on 0059_00592781_58be5d61afe56e0fcdda08e3_step_000.step (see
+    # docs/superpowers/specs/2026-11-19-target-remains-diagnosis.md), `fix_small_edges` left four
+    # zero-length edges at boxes identical to the micrometre, widened the part by 0.0911 mm, and
+    # was KEPT - because the grid had moved and nothing it had named could be found again. The
+    # names here are computed the way the scan computes them, so the rule is judged on real input.
+    before_name = _named(_SLIVER_BOX, diagonal_mm=_DIAGONAL_BEFORE, index=2)
+    after_name = _named(_SLIVER_BOX, diagonal_mm=_DIAGONAL_AFTER, index=7)
+    op = _Op(outcome=OpOutcome(shape="fixed"))
+    session = _session(scans=[((_defect(fingerprint=before_name, location=_SLIVER_BOX),), True),
+                              ((_defect(fingerprint=after_name, index=7,
+                                        location=_SLIVER_BOX),), True)])
+    defect = session.defects()[0]
+
+    verdict = session.try_op(op, op.targets_for(defect), defect.code, tolerance_mm=0.01)
+
+    assert verdict.status == ROLLED_BACK and verdict.reason == "target_remains", (
+        "the edge is in the same place and still a sliver; only the grid moved")
+    assert session.shape == "original"
+
+
+def test_an_operation_that_really_removed_the_sliver_is_still_kept():
+    # THE OTHER SIDE OF THE SAME RULE, and the one that stops the test above being satisfied by a
+    # session that refuses everything: the entity is genuinely absent from the second scan, and
+    # the verdict must still be KEPT.
+    before_name = _named(_SLIVER_BOX, diagonal_mm=_DIAGONAL_BEFORE, index=2)
+    op = _Op(outcome=OpOutcome(shape="fixed"))
+    session = _session(scans=[((_defect(fingerprint=before_name, location=_SLIVER_BOX),), True),
+                              ((), True)])
+    defect = session.defects()[0]
+
+    verdict = session.try_op(op, op.targets_for(defect), defect.code, tolerance_mm=0.01)
+
+    assert verdict.kept, f"rolled back because {verdict.reason}"
 
 
 def test_a_declined_operation_is_recorded_as_a_decline_not_as_a_failed_attempt():
@@ -558,3 +612,75 @@ def test_a_persisting_warning_whose_box_moved_by_kernel_rounding_is_not_a_new_de
     verdict = session.try_op(op, op.targets_for(target), target.code, tolerance_mm=0.01)
 
     assert verdict.status == KEPT, verdict.reason
+
+
+# --- the caps police a DELIVERY, not a rehearsal (CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS) --------
+# A scratch session cannot commit at all (`try_package` refuses it before the predicate is read),
+# so a cap that rolls one of its edits back is not protecting a customer's part - it is arguing
+# the investigation out of trying something on a copy. 55 clone edits died this way on wave 1:
+# 33 on the tolerance cap, 17 on valid->invalid, 5 on the bbox move. ALL THREE FAMILIES ARE PINNED
+# HERE, in both directions, because "the caps still run at delivery" is the whole safety claim.
+
+def _damaged(**over) -> Measure:
+    return Measure(**{**_SOUND.to_dict(), **over})
+
+
+#: (name, the `after` measurement, the words the refusal must carry). One per cap family.
+_CAP_CASES = (
+    ("solid lost", _damaged(solids=0), "solid"),
+    ("valid to invalid", _damaged(valid=False), "invalid"),
+    ("tolerance", _damaged(max_tolerance_mm=9.0), "tolerance"),
+    ("bbox moved", _damaged(diagonal_mm=_SOUND.diagonal_mm * 2.0), "diagonal"),
+    ("area moved", _damaged(surface_area_mm2=_SOUND.surface_area_mm2 * 3.0), "surface area"),
+)
+
+
+def _session_for(after: Measure, *, is_scratch: bool):
+    """A session whose edit lands on `after`. A scratch session is HANDED its original, so it does
+    not measure one at construction and its script is one entry shorter."""
+    def scanner(_shape, valid=None):
+        return (_defect(),), True
+
+    measures = [_SOUND, after] if is_scratch else [_SOUND, _SOUND, after]
+
+    def measurer(_shape):
+        return measures.pop(0) if len(measures) > 1 else measures[0]
+
+    if is_scratch:
+        return RepairSession.scratch("original", measurer=measurer, scanner=scanner,
+                                     original=_SOUND, defects=(_defect(),))
+    return RepairSession("original", measurer=measurer, scanner=scanner)
+
+
+def _tried(session):
+    defect = session.defects()[0]
+    op = _Op(outcome=OpOutcome(shape="fixed"))
+    return session.try_op(op, op.targets_for(defect), defect.code, tolerance_mm=0.01)
+
+
+@pytest.mark.parametrize("name, after, words", _CAP_CASES, ids=[c[0] for c in _CAP_CASES])
+@pytest.mark.parametrize("posture", ["off", "live"])
+def test_a_real_session_is_still_capped_whatever_the_posture(monkeypatch, name, after, words,
+                                                             posture):
+    """THE GATE THAT MATTERS, and it is the one a customer's geometry passes through."""
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS", posture, raising=False)
+
+    verdict = _tried(_session_for(after, is_scratch=False))
+
+    assert verdict.status == ROLLED_BACK, (name, posture)
+    assert verdict.reason.startswith("cap:"), (name, posture, verdict.reason)
+    assert words in verdict.reason, (name, posture, verdict.reason)
+    assert "caps_not_applied" not in verdict.delta
+
+
+@pytest.mark.parametrize("name, after, words", _CAP_CASES, ids=[c[0] for c in _CAP_CASES])
+def test_a_scratch_edit_is_capped_only_while_the_posture_is_off(monkeypatch, name, after, words):
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS", "off", raising=False)
+    off = _tried(_session_for(after, is_scratch=True))
+    assert off.reason.startswith("cap:") and words in off.reason, (name, off.reason)
+
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS", "live", raising=False)
+    live = _tried(_session_for(after, is_scratch=True))
+    assert not live.reason.startswith("cap:"), (name, live.reason)
+    # SAID OUT LOUD on the verdict, so a transcript never implies the caps passed.
+    assert live.delta.get("caps_not_applied") == "scratch", name

@@ -200,17 +200,22 @@ def results(workspace) -> dict | None:
          "limit": 0, "measured": q.get("fea_inverted")},
     ]
     rows = []
-    for r in gating + fea_limits(q):
-        met = limit_met(r.get("measured"), str(r.get("op")), r.get("limit"))
+    # EVERY TYPED ASK HAS ITS ROW (m485w round 15): the asks with nothing to judge them by - an edge-length target past
+    # its share, a setting, the nearest there is, not applied - told with their status, never judged
+    from meshpipeline.engines.mesh_requirements import asked_rows as _asked
+    told = [r for r in _asked(q, source="your notes (engines/fea_requirements.py)", told=True) if r.get("told")]
+    for r in gating + fea_limits(q) + told:
+        met = None if r.get("told") else limit_met(r.get("measured"), str(r.get("op")), r.get("limit"))
         # A VALID MESH IS THE ONLY BLOCKER: inverted elements fail; the floor and the walls are notes
         held = r in gating and r["key"] == "fea_inverted"
         rows.append({**{k: r.get(k) for k in ("key", "label", "op", "limit", "measured")}, "ok": met,
+                     **({k: r[k] for k in ("told", "status", "shown") if k in r} if r.get("told") else {}),
                      "gating": held, "words": words(r)})
     if any(r["ok"] is False and r["gating"] for r in rows) or q.get("fatal"):
         outcome, said = "fail", "The mesh fails a check no solver can work around."
     elif any(r["ok"] is False for r in rows):
         outcome, said = "concerns", "Passed, with notes: the mesh is valid; some figures are past a limit (listed)."
-    elif any(r["ok"] is None for r in rows):
+    elif any(r["ok"] is None and not r.get("told") for r in rows):
         # NOT MEASURED IS NOT MET: a figure missing (an older runner, a measurement that failed) is
         # never said to pass
         outcome, said = "unmeasured", ("Not fully checked: some figures were not measured on this mesh "

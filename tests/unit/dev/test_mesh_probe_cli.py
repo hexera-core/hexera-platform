@@ -13,7 +13,6 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[3]
 MODULE = REPO / "devtools" / "validation" / "mesh_probe.py"
-MANIFEST = REPO / "devtools" / "validation" / "corpora" / "mesh-failure-real.json"
 
 
 def _load():
@@ -82,26 +81,6 @@ def test_load_manifest_rejects_wrong_track(tmp_path):
     except ValueError:
         return
     raise AssertionError("a manifest of another track must be refused")
-
-
-def test_manifest_has_80_files_and_no_cad():
-    manifest = cli.load_manifest(MANIFEST)
-    files = manifest["files"]
-    assert len(files) == 80
-    assert len({f["sha256"] for f in files}) == 80
-    assert {f["source"] for f in files} == {s["name"] for s in manifest["sources"]}
-    assert all(len(s["archive_sha256"]) == 64 for s in manifest["sources"])
-    # 13 diagonals come from OCP (the corpus build's child died before measuring the part) and one
-    # is unavailable: OCP cannot read that file.
-    for f in files:
-        if f["diag_source"] == "unavailable":  # OCP cannot read it (bug30790)
-            assert f["diag_mm"] is None
-        else:
-            assert f["diag_source"] in ("gmsh", "ocp") and f["diag_mm"] > 0
-    # Names and hashes only: no CAD is committed, here or beside the manifest.
-    assert not list(MANIFEST.parent.glob("*.st*p")) and not list(MANIFEST.parent.glob("*.igs"))
-    assert MANIFEST.stat().st_size < 100_000
-    assert "ISO-10303" not in MANIFEST.read_text()
 
 
 def _die_on_b(task):

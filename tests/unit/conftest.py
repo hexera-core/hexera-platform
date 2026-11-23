@@ -551,3 +551,39 @@ def capture_authority(monkeypatch):
     auth = InMemoryAuthority().install(monkeypatch)
     with _scope.capture_scope(CAPTURE_OWNER, ""):
         yield auth
+
+
+# --------------------------------------------------------------------------- cad: delivered-file check
+#
+# HERE, NOT IN tests/unit/cad/conftest.py: six test modules do `from conftest import ...` and expect
+# THIS file under the module name `conftest`; a second conftest.py in a subdirectory without an
+# __init__.py is imported under the same name and shadows it for whichever loads later, so those
+# modules fail to collect (seen as 5 of 6 unit shards interrupted at collection).
+
+_CAD_TIER = ("tests", "unit", "cad")
+
+
+@_pytest.fixture
+def real_export_check():
+    """Request this fixture to run `delivery_check.export_check` for real in a cad unit test."""
+    return True
+
+
+@_pytest.fixture(autouse=True)
+def _stub_export_check(request):
+    """`session.try_package` re-reads every delivered file (delivery_check.export_check). On the
+    stub shapes the cad tier uses that read can never succeed, and an unmeasured answer is - by
+    design - a refusal, so every package would revert. Stubbed to "passes" for tests under
+    tests/unit/cad/ unless a test asks for `real_export_check`; every other test is untouched."""
+    parts = Path(str(request.node.path)).parts
+    in_cad = any(parts[i:i + 3] == _CAD_TIER for i in range(len(parts) - 2))
+    if not in_cad or "real_export_check" in request.fixturenames:
+        return
+    from meshpipeline.cad.repair import delivery_check
+
+    # `monkeypatch` is fetched HERE, only for cad tests - never requested in the signature. An
+    # autouse fixture that requests it for EVERY test instantiates monkeypatch first, so it tears
+    # down LAST: a module's own reload-on-teardown fixture (tests/unit/agents/builder/
+    # test_builder_settings.py) then re-imported its settings with the bad env still set.
+    monkeypatch = request.getfixturevalue("monkeypatch")
+    monkeypatch.setattr(delivery_check, "export_check", lambda *args, **kwargs: "")

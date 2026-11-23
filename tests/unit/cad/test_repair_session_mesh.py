@@ -98,7 +98,7 @@ def test_off_never_calls_probe(monkeypatch):
     session._rescan(face_scan=False, within=_REGION)
     session._region_scan(_REGION)
     # The whole-shape call is still exactly the call it always was.
-    assert calls[0] == {"face_scan_s": 0.0}
+    assert calls[0] == {"face_scan_s": 0.0, "quantum_diagonal_mm": MEASURE.diagonal_mm}
 
 
 @pytest.mark.parametrize("raw,expected", [
@@ -144,7 +144,7 @@ def test_live_appends_after_localize(monkeypatch):
     session = RepairSession("shape", measurer=lambda s: MEASURE, remaining_s=lambda: 300.0)
     assert session.defects() == (_OPENING, _OVERLAP)
     # localize is called exactly as it always was: mesh defects are never passed INTO it.
-    assert calls == [{"face_scan_s": 0.0}]
+    assert calls == [{"face_scan_s": 0.0, "quantum_diagonal_mm": MEASURE.diagonal_mm}]
     assert probes == [{"diagonal_mm": 200.0, "budget_s": 120.0, "within": None}]
 
 
@@ -233,7 +233,9 @@ def test_a_final_scan_with_no_time_left_keeps_the_mesh_error(monkeypatch):
     session = RepairSession("shape", measurer=lambda s: MEASURE, remaining_s=lambda: next(left))
     assert session.defects() == (_OVERLAP, _NOVOL)
     after = session._rescan(face_scan=True)
-    assert after == (_OVERLAP, _NOVOL) and session.defects() == after
+    # Kept, and marked as no answer: the skip is not a fresh verdict either way.
+    assert after[:2] == (_OVERLAP, _NOVOL) and session.defects() == after
+    assert [d.code for d in after[2:]] == [DefectCode.mesh_timeout]
     assert region_loop._terminal(session, after, escalated=[], packages=(),
                                  fallback="time_budget") != region_loop.RESOLVED
 
@@ -266,7 +268,8 @@ def test_scoped_scan_passes_region(monkeypatch):
 
     found, complete = session._region_scan(_REGION)
     assert found == (_OPENING, _OVERLAP) and complete
-    assert calls[-1] == {"face_scan_s": 0.0, "within": _REGION, "scope_diagonal_mm": 200.0}
+    assert calls[-1] == {"face_scan_s": 0.0, "within": _REGION, "scope_diagonal_mm": 200.0,
+                         "quantum_diagonal_mm": 200.0}
     assert probes[-1] == {"diagonal_mm": 200.0, "budget_s": 120.0, "within": _REGION}
 
     found = session._rescan(face_scan=False, within=_REGION)
@@ -566,12 +569,16 @@ def test_a_scoped_operation_aimed_at_a_volume_stage_mesh_defect_is_not_kept(monk
                                                                             volume_defect):
     monkeypatch.setattr(rcfg, "CAD_REPAIR_MESH_PROBE", "live")
     _scan(monkeypatch, ((), True))
-    _probe(monkeypatch, (volume_defect,), ())
+    # The scoped (2D-only) probe sees nothing; the WHOLE-shape probe the mesh cure pays for still
+    # sees the volume failure, so nothing has proved it gone (ruling R11a).
+    monkeypatch.setattr(session_mod, "_as_delivered", lambda shape: shape)
+    probes = _probe(monkeypatch, (volume_defect,), (), (volume_defect,))
     session = RepairSession("shape", measurer=lambda s: MEASURE)
     target = session.defects()[0]
     verdict = session.try_op(_Remesh(), _Remesh().targets_for(target), target.code,
                              tolerance_mm=0.01, within=_REGION)
     assert not verdict.kept and verdict.reason == "target_remains"
+    assert len(probes) == 3 and probes[2].get("within") is None
 
 
 # REVEALED, NOT DAMAGE (P2 Task 3 fix round 1; applies to EVERY mesh operation). gmsh reports only
@@ -920,3 +927,189 @@ def test_the_author_is_shown_the_current_shape_after_a_commit(monkeypatch):
     run = region_loop.run_regions("upload", author=author, tolerance_mm=0.01, session=session)
     assert [p.status for p in run.packages] == [session_mod.COMMITTED]
     assert shown == ["upload", "sewn"]
+
+
+
+# --- wave 4 (abc 0060_00608290): a clash defect never displaces the kernel's own finding ----------
+
+_SMALL_FACE = EntityDefect(code=DefectCode.small_face, severity=DefectSeverity.warning,
+                           entity_type="face", entity_index=4, message="small",
+                           fingerprint="face:f4", location=dict(_BOX),
+                           measurements={"area": 0.19, "area_fraction": 6e-7})
+_CLASH_MEASURED = {"mesh_kind": "edge_through_face", "stage": "3d",
+                   "located_by": mesh_probe.LOCATED_BY_CLASH, "clash_pair": [4, 7],
+                   "clash_gap_mm": 1.46, "clash_kind": "gap", "clash_mesh_kind": "crossing"}
+
+
+def _clash(**measured) -> EntityDefect:
+    return EntityDefect(code=DefectCode.mesh_edge_through_face, severity=DefectSeverity.error,
+                        entity_type="face", entity_index=4,
+                        message="a segment and a facet intersect", fingerprint="face:f4",
+                        location=dict(_BOX), measurements={**_CLASH_MEASURED, **measured})
+
+
+def test_a_clash_on_a_face_is_added_to_its_kernel_defect_never_instead(monkeypatch):
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_MESH_PROBE", "live")
+    clash = _clash()
+    _scan(monkeypatch, ((_SMALL_FACE,), True))
+    _probe(monkeypatch, (clash,))
+    session = RepairSession("shape", measurer=lambda s: MEASURE, remaining_s=lambda: 300.0)
+
+    # Whole shape, the first scan and a rescan: both findings on the one face, kernel first.
+    assert session.defects() == (_SMALL_FACE, clash)
+    assert session._rescan(face_scan=False) == (_SMALL_FACE, clash)
+    # Scoped (a package's proof): the same face, the same two findings.
+    found, _ = session._region_scan(_REGION)
+    assert _SMALL_FACE in found and clash in found
+
+
+def test_the_rules_author_keeps_the_kernel_cure_beside_a_sub_element_gap(monkeypatch):
+    # The deterministic arm of wave 4 aimed fragment_bodies at the clash instead of
+    # fix_small_faces at the small face. A clash whose faces are measured APART is the mesher's
+    # chord: it does not jump a kernel warning's cure.
+    import meshpipeline.cad.repair.rules_author as rules_author_module
+    from meshpipeline.cad.repair.operations import catalogue
+    from meshpipeline.cad.repair.rules_author import mesh_ops, rules_author
+
+    monkeypatch.setattr(rules_author_module, "MESH_OPS", mesh_ops(fragment_bodies=True))
+    monkeypatch.setattr(rules_author_module, "_OPS_BY_NAME",
+                        {op.name: op for op in catalogue(fragment_bodies=True)})
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_FIX_SMALL_FACES", True)
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_FRAGMENT_BODIES", True)
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_MESH_PROBE", "live")
+    gap = _clash()
+    _scan(monkeypatch, ((_SMALL_FACE,), True))
+    _probe(monkeypatch, (gap,))
+    session = RepairSession("shape", measurer=lambda s: MEASURE, remaining_s=lambda: 300.0)
+    region = Region(index=0, fingerprints=frozenset({"face:f4"}),
+                    bbox_min=(0.0, 0.0, 0.0), bbox_max=(10.0, 10.0, 10.0),
+                    face_indices=frozenset({4}))
+
+    package = rules_author(None, original=MEASURE)(region, session.defects(), ())
+    assert package is not None
+    assert package.plan[0]["op"].name == "fix_small_faces"
+    assert package.plan[0]["defect_code"] is DefectCode.small_face
+
+    # A clash whose faces really MEET still goes first, as P2-R8 says.
+    meeting = _clash(clash_gap_mm=0.0, clash_kind="crossing")
+    package = rules_author(None, original=MEASURE)(region, (_SMALL_FACE, meeting), ())
+    assert package is not None and package.plan[0]["op"].name == "fragment_bodies"
+
+    # And with no kernel cure at all, the gap is still aimed at, exactly as before.
+    package = rules_author(None, original=MEASURE)(region, (gap,), ())
+    assert package is not None and package.plan[0]["op"].name == "fragment_bodies"
+
+
+def test_a_skipped_final_probe_is_never_read_as_a_definitive_mesh_failure(monkeypatch):
+    # Greptile P1 (#505/#520): a session that probed before and has no budget at the final scan
+    # carries its old mesh findings forward. Without a no-answer marker on that list, a stale
+    # refusal beside a remaining geometry error read as a fresh one and turned `repaired` into
+    # `unmeshable`. The skip is no answer: the carried finding stays, and so does the marker.
+    from meshpipeline.cad.repair.loop import definitive_mesh_failure
+
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_MESH_PROBE", "live")
+    _scan(monkeypatch, ((_OPENING,), True))
+    _probe(monkeypatch, (_OVERLAP,))
+    left = iter([300.0, 0.0])
+    session = RepairSession("shape", measurer=lambda s: MEASURE, remaining_s=lambda: next(left))
+    assert definitive_mesh_failure(session.defects()) is True      # a real answer: it refused
+    after = session._rescan(face_scan=True, final=True)
+    assert _OPENING in after and _OVERLAP in after                 # nothing erased
+    assert [d.code for d in after].count(DefectCode.mesh_timeout) == 1
+    assert definitive_mesh_failure(after) is False
+
+
+# --- review and the keep rule read ONE measurement of ONE artefact ----------------------------
+def test_the_keep_rule_is_the_delivered_probe_read_as_a_boolean(monkeypatch):
+    """`_meshes_now` and the reviewer's `mesh_after` must never judge different objects: the keep
+    rule is now the same `_delivered_defects` call read as a yes/no. A delivered probe that could
+    not be taken is False, because a cure may not rest on a reading nobody took."""
+    session = RepairSession("shape", measurer=lambda s: MEASURE,
+                            remaining_s=lambda: 300.0)
+    calls: list = []
+
+    def answer(found):
+        def _delivered(*, cap_s=None):
+            calls.append(cap_s)
+            return found
+        return _delivered
+
+    monkeypatch.setattr(session, "_delivered_defects", answer(()))
+    assert session._meshes_now() is True
+
+    monkeypatch.setattr(session, "_delivered_defects", answer((object(),)))
+    assert session._meshes_now() is False
+
+    monkeypatch.setattr(session, "_delivered_defects", answer(None))
+    assert session._meshes_now() is False, "an unmeasured delivered probe is not a pass"
+    assert len(calls) == 3
+
+
+def _review_with_slow_delivered_probe(monkeypatch, *, tier, delivered=(), region=None,
+                                      seen=None):
+    """`_review` with a run of 40 s left and a delivered probe that spends 18 s of it. Returns
+    the session's `_review` output and the deadline handed to the reviewer call."""
+    from types import SimpleNamespace
+
+    from meshpipeline.cad.repair import package_review, review_tier
+
+    now = [0.0]
+    session = RepairSession("shape", measurer=lambda s: MEASURE, clock=lambda: now[0],
+                            remaining_s=lambda: 40.0 - now[0])
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_MESH_PROBE", "live")
+
+    def _slow_delivered(*, cap_s=None):
+        now[0] += 18.0
+        return delivered
+
+    monkeypatch.setattr(session, "_delivered_defects", _slow_delivered)
+    seen = {} if seen is None else seen
+    monkeypatch.setattr(package_review, "evidence_of",
+                        lambda *a, **k: seen.setdefault("evidence_kw", k) and {})
+    monkeypatch.setattr(package_review, "probe_of",
+                        lambda found, *, mesh_probed: {"found": tuple(found)})
+    monkeypatch.setattr(package_review, "clip_evidence", lambda e: e)
+
+    def _objection(evidence, *, timeout_s, deadline_s, clock):
+        seen["deadline_s"] = deadline_s
+        return package_review.ACCEPT, "ok", None
+
+    monkeypatch.setattr(package_review, "review_package_objection", _objection)
+    side = SimpleNamespace(to_dict=lambda: {})
+    out = session._review(
+        SimpleNamespace(region=region or SimpleNamespace(index=0)), [], (), (),
+        whole=region is None,
+        before=side, after=side,
+        declared=SimpleNamespace(declared_area_mm2=0.0, declared_volume_mm3=0.0),
+        deviation={}, tier=getattr(review_tier, tier))
+    return out, seen.get("deadline_s")
+
+
+def test_the_delivered_probe_is_not_charged_twice_against_the_review_deadline(monkeypatch):
+    """The run's deadline is absolute: 40 s left at the start is t=40, less the margin, however
+    long the delivered probe took. Re-reading `remaining_s` after the probe and adding it to the
+    pre-probe clock would charge the probe's 18 s twice (deadline 17 instead of 35)."""
+    from meshpipeline.cad.repair import package_review
+
+    _, deadline = _review_with_slow_delivered_probe(monkeypatch, tier="REVIEWER")
+    assert deadline == pytest.approx(40.0 - package_review.DEADLINE_MARGIN_S)
+
+
+def test_an_auto_accept_records_the_seconds_its_delivered_probe_spent(monkeypatch):
+    out, _ = _review_with_slow_delivered_probe(monkeypatch, tier="AUTO")
+    assert out["reviewed"] == "accept"
+    assert out["review_s"] == pytest.approx(18.0)
+
+
+def test_a_scoped_review_reads_the_delivered_probe_in_the_regions_scope(monkeypatch):
+    """`mesh_before` is the region's reading, so `mesh_after` must be too. Another region's
+    standing failure in the WHOLE-PART delivered probe would otherwise reach the reviewer as if
+    this package had caused it, and a valid repair would be undone for a defect it never touched."""
+    elsewhere = EntityDefect(
+        code=DefectCode.mesh_edge_through_face, severity=DefectSeverity.error,
+        entity_type="face", entity_index=17, message="far away", fingerprint="face:f17",
+        location={"centroid": [150.0] * 3, "bbox_min": [149.0] * 3, "bbox_max": [151.0] * 3})
+    seen: dict = {}
+    _review_with_slow_delivered_probe(monkeypatch, tier="REVIEWER", region=_REGION,
+                                      delivered=(_OVERLAP, elsewhere), seen=seen)
+    assert seen["evidence_kw"]["delivered"] == {"found": (_OVERLAP,)}

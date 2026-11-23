@@ -1,0 +1,197 @@
+{
+  "cad_simplicity": {
+    "edge_delta": {
+      "count": 4,
+      "max": -8.0,
+      "mean": -21.0,
+      "median": -17.0,
+      "min": -42.0
+    },
+    "face_delta": {
+      "count": 4,
+      "max": -2.0,
+      "mean": -4.25,
+      "median": -3.0,
+      "min": -9.0
+    },
+    "files_measured": 4,
+    "files_with_fewer_faces": 4,
+    "files_with_more_faces": 0,
+    "operations_kept": {
+      "count": 4,
+      "max": 3.0,
+      "mean": 1.75,
+      "median": 1.5,
+      "min": 1.0
+    },
+    "solid_count_changed": 0,
+    "vertex_delta": {
+      "count": 4,
+      "max": -16.0,
+      "mean": -42.0,
+      "median": -34.0,
+      "min": -84.0
+    }
+  },
+  "catalogue": {
+    "never_exercised": [
+      "rebuild_face"
+    ],
+    "only_declined": [],
+    "tally": {
+      "close_wire_gaps": {
+        "declined": 0,
+        "failed": 0,
+        "kept": 0,
+        "rolled_back": 2
+      },
+      "fill_nonplanar_hole": {
+        "declined": 0,
+        "failed": 0,
+        "kept": 0,
+        "rolled_back": 3
+      },
+      "fill_planar_hole": {
+        "declined": 0,
+        "failed": 0,
+        "kept": 0,
+        "rolled_back": 5
+      },
+      "fix_face_boundary": {
+        "declined": 0,
+        "failed": 0,
+        "kept": 0,
+        "rolled_back": 1
+      },
+      "fix_shape_global": {
+        "declined": 0,
+        "failed": 0,
+        "kept": 0,
+        "rolled_back": 7
+      },
+      "fix_small_edges": {
+        "declined": 0,
+        "failed": 0,
+        "kept": 3,
+        "rolled_back": 94
+      },
+      "fix_small_faces": {
+        "declined": 0,
+        "failed": 0,
+        "kept": 4,
+        "rolled_back": 360
+      },
+      "fragment_bodies": {
+        "declined": 0,
+        "failed": 0,
+        "kept": 0,
+        "rolled_back": 18
+      },
+      "heal_self_intersections": {
+        "declined": 0,
+        "failed": 0,
+        "kept": 0,
+        "rolled_back": 179
+      },
+      "sew_faces": {
+        "declined": 0,
+        "failed": 0,
+        "kept": 0,
+        "rolled_back": 21
+      },
+      "split_closed_faces": {
+        "declined": 0,
+        "failed": 0,
+        "kept": 0,
+        "rolled_back": 2
+      }
+    }
+  },
+  "endings": {
+    "attempted_none_held": 16,
+    "crashed": 1,
+    "escalated": 5,
+    "nothing_to_repair": 3,
+    "refused": 16,
+    "scan_incomplete": 7,
+    "unmeshable": 72
+  },
+  "goal": {
+    "files": 119,
+    "grind_by_tier": {
+      "cheap": 13,
+      "heavy": 23,
+      "standard": 80,
+      "unknown": 1
+    },
+    "kernel_clean": 60,
+    "not_run": 2,
+    "profile": "benchmark",
+    "score_mean": 0.0275,
+    "tier2_meshes": 3,
+    "tier2_no_answer": 8,
+    "tier2_refuses": 106,
+    "tolerant_routing": {
+      "no_answer": 22,
+      "not_asked": 27,
+      "tolerant_rung_eats_it": 67,
+      "tolerant_rung_refuses": 1
+    }
+  },
+  "heals": {
+    "corroborated": 0,
+    "kept": 0,
+    "uncorroborated_files": [],
+    "unknown": 0,
+    "unknown_files": []
+  },
+  "meshing": {
+    "crashed": 1,
+    "delivered_via_tolerant_mesher": 67,
+    "files": 120,
+    "forced_repairs": 42,
+    "meshed_after": 3,
+    "meshed_before": 2,
+    "newly_broken": 0,
+    "newly_meshed": 1,
+    "still_failing_by_kind": {
+      "edge_through_face": 28,
+      "no_volume": 3,
+      "open_loop": 3,
+      "other": 4,
+      "overlapping_facets": 68,
+      "periodic_surface": 5,
+      "timeout": 6
+    },
+    "tolerant_delivery_attempted": 67
+  },
+  "outcomes": {
+    "crashed": 1,
+    "nothing_to_repair": 2,
+    "refused": 113,
+    "repaired": 4
+  },
+  "refusals_by_reason": {
+    "no_operation_claims_it": 4,
+    "review: rejected by review twice": 1,
+    "review: rejected by review, and the one attempt allowed after it is spent": 2
+  },
+  "repaired_by_code": {
+    "small_edge": 10,
+    "small_face": 88
+  },
+  "routes": {
+    "conservative_repair": 75,
+    "manual_cleanup": 11,
+    "mesh_as_is": 33
+  },
+  "row_count": 120,
+  "stopped_because": {
+    "escalated": 5,
+    "regions_exhausted": 10,
+    "resolved": 2,
+    "scan_incomplete": 7,
+    "time_budget": 8,
+    "unmeshable": 85
+  }
+}
