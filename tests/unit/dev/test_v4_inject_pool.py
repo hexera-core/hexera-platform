@@ -579,3 +579,18 @@ def test_pool_build_survives_inject_entries_with_no_inject_note(clean, tmp_path,
     back = pool.read_pool(manifest)
     assert {e.sha256 for e in back if e.source == "inject"} == {e.sha256 for e in res.entries}
     assert all(e.licence for e in back)
+
+
+def test_the_declined_stratum_is_opt_in_by_name_never_a_default_draw() -> None:
+    defaults = tuple(k for k in KINDS if STATUS[k] == "structural")
+
+    class Stratum(FakeBackend):
+        KINDS = (*KINDS, "face_delete_large")
+        KIND_STATUS = {**STATUS, "face_delete_large": "declined_stratum"}
+        DEFAULT_KINDS = defaults
+        ADMITTED_KINDS = (*defaults, "face_delete_large")
+
+    assert "face_delete_large" not in gen.resolve_kinds(None, Stratum())
+    assert gen.resolve_kinds(["face_delete_large"], Stratum()) == ["face_delete_large"]
+    with pytest.raises(gen.RefusedKind):            # a quarantined kind is still refused beside it
+        gen.resolve_kinds(["face_delete_large", "seam_variant"], Stratum())

@@ -782,3 +782,41 @@ def test_launcher_counts_only_allowed_sources(tmp_path, capsys) -> None:
     pool_mod.write_pool(entries, pool_json, sources_included=["abc_fail", "f360"])
     assert launch.main(["--pool", str(pool_json), "--shards", "8", "--max-run-hours", "5"]) == 0
     assert capsys.readouterr().out.startswith("3 files")
+
+
+# ---- Task 39: the declined stratum is ADMITTED by the gate, as itself, and only as itself -----------------------------
+
+def _inject_entry(name: str, kind: str | None, status: str | None):
+    pool_mod = run_arm.pool_mod
+    return pool_mod.PoolEntry(name, "inject", _sha(7), "u", None, "lic", "inject-abc", kind=kind, kind_status=status)
+
+
+def test_the_declined_stratum_passes_the_gate_when_it_declares_itself() -> None:
+    rp.check_not_quarantined([_inject_entry("p.face_delete_large.1.step", "face_delete_large", "declined_stratum")])
+    # ... and the quarantine still bites, in the same call, so the stratum did not widen the gate to everything
+    with pytest.raises(rp.QuarantinedKind):
+        rp.check_not_quarantined([_inject_entry("p.seam_variant.1.step", "seam_variant", "quarantined")])
+
+
+@pytest.mark.parametrize("kind,status", [
+    ("face_delete_large", "structural"),      # the stratum relabelled as a plain failing file
+    ("face_delete", "declined_stratum"),     # a plain failing file relabelled as the stratum, to hide it from the rate
+    ("face_delete_large", None), (None, "declined_stratum"),
+])
+def test_a_stratum_label_that_is_not_the_injectors_own_is_refused(kind, status) -> None:
+    with pytest.raises(rp.QuarantinedKind):
+        rp.check_not_quarantined([_inject_entry("p.face_delete_large.1.step", kind, status)])
+
+
+def test_a_status_the_injector_never_assigned_is_still_refused() -> None:
+    with pytest.raises(rp.QuarantinedKind):
+        rp.check_not_quarantined([_inject_entry("p.face_delete.1.step", "face_delete", "declined")])
+
+
+def test_face_delete_large_is_not_a_default_draw_but_is_an_admitted_kind() -> None:
+    inject = rp.load_inject()
+    assert "face_delete_large" not in inject.DEFAULT_KINDS and "face_delete_large" in inject.ADMITTED_KINDS
+    assert inject.KIND_STATUS["face_delete_large"] == "declined_stratum"
+    assert inject.EXPECTED_OUTCOME == {"face_delete_large": "correctly_declined"}
+    assert "face_delete_large" not in rp.not_default_kinds()
+    assert rp.injected_kind("part.face_delete_large.3.step") == "face_delete_large"   # not mistaken for face_delete
