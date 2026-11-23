@@ -205,3 +205,31 @@ def test_finer_mesh_dict_halves_every_cell_size_and_nothing_else():
     text = "maxCellSize 0.004;\nlocalRefinement { wall { cellSize 0.001; refinementThickness 0.003; } }\n"
     out = N.finer_mesh_dict(text)
     assert "maxCellSize 0.002;" in out and "cellSize 0.0005;" in out and "refinementThickness 0.003;" in out
+
+
+def test_a_dropped_opening_is_no_reason_to_run_the_same_plan_again(tmp_path, monkeypatch):
+    """abc 63401 / 99768: attempts 2 and 3 repeated the plan whose outlet_3 had no faces. The builder ends its
+    turn on it, and the ladder reads the refusal as one no attempt changes."""
+    from meshpipeline.agents.builder.tool_context import BuilderToolContext
+    from meshpipeline.agents.builder.tools import meshing as M
+    from meshpipeline.contracts import native_time as NT
+    from meshpipeline.engines import runtime
+    from meshpipeline.engines.preflight import read_refusal
+    from meshpipeline.pipeline.engine_fallback import NEVER, classify
+
+    why = f"[CFMESH] passage 2: {N.PORT_REGION_DROPPED} (outlet_3 has no faces after 2 finer re-mesh(es))"
+
+    class _Engine:
+        name = "cfmesh"
+
+        def run_cartesian_mesh(self, workspace, *, timeout, context=None):
+            return {"rc": 1, "timed_out": False, "log_tail": f"cartesianMesh ok\n{why}"}
+
+    monkeypatch.setattr(runtime, "get_engine", lambda name: _Engine())
+    ctx = BuilderToolContext(workspace=tmp_path, geometry=object(), job_id="j", engine="cfmesh")
+    out = M._run_and_judge(ctx, M.PreparedMeshRun(engine="cfmesh", cap=NT.CLOUD_RUN_WALL_S))
+    assert out["success"] is False and "outlet_3" in out["guidance"] and "end your turn" in out["guidance"]
+    ref = read_refusal(tmp_path)
+    state = {"engine": "cfmesh", "executor_success": False, "executor_failed_gate": "finalize",
+             "executor_failure_cause": ref.cause, "executor_failure_facts": dict(ref.facts)}
+    assert classify(state).kind == NEVER

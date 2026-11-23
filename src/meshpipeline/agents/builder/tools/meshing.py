@@ -649,6 +649,23 @@ def _run_and_judge(ctx: BuilderToolContext, prepared: PreparedMeshRun) -> dict:
                              "end your turn now; the run moves on to the next engine, which builds the "
                              "layers the plan asks for."),
                 "log_tail": res.get("log_tail", "")}
+    from meshpipeline.engines.cfmesh.native import PORT_REGION_DROPPED
+    if not res.get("timed_out") and PORT_REGION_DROPPED in str(res.get("log_tail") or ""):
+        # INS-29: AN OPENING LANDED IN A REGION THE MESHER DROPPED, after the passage was meshed finer: the same
+        # plan drops it again (abc 63401 and 99768 ran it three times), so no attempt repeats it
+        from meshpipeline.contracts.failure_cause import FailureCause
+        from meshpipeline.engines.preflight import PreflightRefusal
+        _line = next((ln for ln in str(res.get("log_tail") or "").splitlines() if PORT_REGION_DROPPED in ln), "")
+        logger.warning("run_mesh: %s", _line)
+        PreflightRefusal(
+            gate="finalize", cause=FailureCause.PATCH_NOT_CAPTURED.value,
+            builder_text=f"[PORT_REGION_DROPPED] {_line}",
+            facts={"port_region_dropped": True, "deterministic": True, "ladder_exhausted": True,
+                   "meshers_started": 1}).write(workspace)
+        return {"success": False, HANDS_OFF: True,
+                "guidance": (f"Not meshed: {_line}. Do NOT run_mesh again and do NOT reconfigure - end your "
+                             "turn now."),
+                "log_tail": res.get("log_tail", "")}
     if res["timed_out"] or _attempt_tripped(workspace):
         # THE RUN'S GUARD CLOCK TRIPPED - the run itself, or a step inside it (its stamp says
         # which). An infrastructure stop (TIME-3): the attempt ends and is replayed as it was.
