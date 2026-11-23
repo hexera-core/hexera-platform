@@ -1,7 +1,7 @@
 # Responsibility: The ONE definition of where a CRS v4 wave lives in GCS and who it runs as - the
 #                 project, bucket, service account, digest grammar, verdict-cache prefix and results
 #                 root - so the fleet launcher and the preflight cannot drift apart.
-# Owns: PROJECT, PROJECT_NUMBER, BUCKET, SERVICE_ACCOUNT, DIGEST_RE, V4_PREFIX, `verdict_cache_uri`,
+# Owns: PROJECT, PROJECT_NUMBER, BUCKET, SERVICE_ACCOUNT, DIGEST_RE, V4_PREFIX, `verdict_cache_uri`, `shared_cache_problem`,
 #       `results_root`.
 # Boundaries: pure constants and string functions; no I/O, no gcloud, no imports from the repo.
 """Shared wave constants. Imported by v3_eval/launch_fleet.py (the authority on what a wave writes)
@@ -32,6 +32,22 @@ V4_ARM = "reprobe"
 def verdict_cache_uri(prefix: str) -> str:
     """The `--cache-uri` a v4 shard receives (launch_fleet's `v4-cache-uri` metadata)."""
     return f"{prefix}/verdict-cache"
+
+
+def shared_cache_problem(uri: str) -> str | None:
+    """Why `uri` cannot be a wave's verdict cache, or None. A wave's shards run on separate VMs, so the cache must
+    live in object storage (`gs://<bucket>/<prefix>`): blank means every judge falls back to a per-process
+    in-memory cache, and a directory is per-VM. Either looks exactly like a working cache and is a cost control
+    silently off. The library keeps its in-memory fallback; only the wave boundary refuses."""
+    uri = (uri or "").strip()
+    if not uri:
+        return "the verdict cache URI is blank: judges would fall back to a per-process in-memory cache"
+    rest = uri[len("gs://"):] if uri.startswith("gs://") else ""
+    bucket, _, path = rest.partition("/")
+    if not bucket or not path.strip("/"):
+        return (f"the verdict cache URI {uri!r} is not a shared gs://<bucket>/<prefix> location: a directory or "
+                "memory cache is per-VM, so verdicts would not be shared across the wave")
+    return None
 
 
 def results_root(arm: str, commit: str, bucket: str = BUCKET) -> str:

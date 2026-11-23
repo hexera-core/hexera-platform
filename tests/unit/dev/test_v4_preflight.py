@@ -311,7 +311,7 @@ def test_a_timeout_or_crash_in_the_runner_is_a_refusal():
         raise TimeoutError("gcloud hung")
 
     report = pf.run_preflight(runner=boom, image=IMAGE, commit=COMMIT, service_account=SA)
-    assert not report.ok and _failed(report) == set(pf.CHECKS) - {"locations", "image_pinned"}
+    assert not report.ok and _failed(report) == set(pf.CHECKS) - {"locations", "image_pinned", "cache_shared"}  # cache_shared is local
 
 
 def test_fusion360_in_the_staged_inputs_is_refused():
@@ -602,3 +602,19 @@ def test_a_sha_directory_that_happens_to_contain_f360_is_not_a_licence_hit():
     # ...while the same text in a NAME still refuses
     assert "inputs_sources" in _failed(_run(FakeGcloud(listing=[f"{pf.INPUTS}/{lucky}/f360_part.step"]
                                                        + _inputs(SHA_B)), expected=exp))
+
+
+# ------------------------------------------------------------------ a wave refuses without a SHARED cache
+
+@pytest.mark.parametrize("cache", ["", "   ", "/tmp/cache", "memory://", "gs://", "gs://dev-crsv3-x", "gs://dev-crsv3-x/"],
+                         ids=["blank", "spaces", "directory", "memory", "bare-scheme", "bucket-only", "bucket-slash"])
+def test_a_wave_without_a_shared_cache_uri_is_refused(cache):
+    base = pf.wave_locations(commit=COMMIT)
+    loc = pf.WaveLocations(bucket=base.bucket, inputs=base.inputs, cache=cache, results=base.results)
+    assert "cache_shared" in _failed(_run(FakeGcloud(), locations=loc))
+
+
+def test_the_derived_cache_location_passes_cache_shared_and_the_check_is_always_run():
+    report = _run(FakeGcloud())
+    assert "cache_shared" not in _failed(report)
+    assert "cache_shared" in {c.name for c in report.checks} and "cache_shared" in pf.CHECKS

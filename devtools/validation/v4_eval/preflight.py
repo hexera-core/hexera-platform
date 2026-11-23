@@ -38,6 +38,7 @@ and a failure found after launch leaves nothing to diagnose:
                      on the input bucket, and the prefix lists non-empty
     inputs_sources   the staged corpus is COMPLETE (every cleared pool entry's sha256 directory is
                      present), holds nothing outside the cleared pool, and no Fusion 360 data
+    cache_shared     the cache URI is a shared gs://<bucket>/<prefix>, never blank, a directory or memory
     cache_write      the roles supply get + list + create + delete on the cache prefix
     results_write    the roles supply get + list + create + delete on the results prefix
 
@@ -138,7 +139,7 @@ REGISTRY_READ_ROLES = frozenset({
     "roles/artifactregistry.admin", "roles/editor", "roles/owner",
 })
 
-CHECKS = ("locations", "identity", "image_pinned", "image_exists", "image_pullable",
+CHECKS = ("locations", "cache_shared", "identity", "image_pinned", "image_exists", "image_pullable",
           "inputs_read", "inputs_sources", "cache_write", "results_write")
 
 
@@ -374,6 +375,13 @@ def _check_locations(loc: WaveLocations) -> str:
     return f"inputs={loc.inputs} cache={loc.cache} results={loc.results}"
 
 
+def _check_cache_shared(loc: WaveLocations) -> str:
+    problem = wave_spec.shared_cache_problem(loc.cache)
+    if problem:
+        raise ValueError(problem)
+    return f"cache={loc.cache} is a shared object-store location"
+
+
 def _check_identity(p: _Preflight, expected: str) -> str:
     if p.sa != expected:
         raise ValueError(f"service account {p.sa!r} is not the expected {expected!r}")
@@ -505,6 +513,7 @@ def run_preflight(*, image: str, commit: str, service_account: str = SERVICE_ACC
         report.checks.append(Check("image_pinned", True, image, CAVEATS["image_pinned"]))
 
     step("locations", lambda: _check_locations(loc))
+    step("cache_shared", lambda: _check_cache_shared(loc))
     step("identity", lambda: _check_identity(p, SERVICE_ACCOUNT))
     if pinned_ok:
         step("image_exists", lambda: _check_image_exists(p, image))

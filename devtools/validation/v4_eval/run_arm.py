@@ -67,6 +67,7 @@ pool_mod = _load("v4_pool_manifest", HERE / "pool.py")
 wave_limits = _load("v4_wave_limits", HERE / "wave_limits.py")
 marker_probe = _load("v4_marker_probe", HERE / "marker_probe.py")
 arms_mod = _load("v4_arms", HERE / "arms.py")
+wave_spec_mod = _load("v4_wave_spec", HERE / "wave_spec.py")
 
 #: The arms this runner can dispatch. v3_meshability_pass_ai is run by v3_eval's own run_arm (it is v3 as it ships).
 DISPATCHABLE_ARMS = evalspec.DISPATCHABLE_ARMS
@@ -106,9 +107,31 @@ def input_path(inputs: Path, entry: Any) -> str:
 
 
 def make_cache(uri: str) -> Any:
-    from meshpipeline.cad.repair_v4.verdict.cache import DirStore, GcsStore, VerdictCache
+    """THE wave's one verdict cache. `--cache-uri` is exported as the engine's own setting, so the search and
+    staged-healer judges (`default_judge`, `stages`, which read `default_verdict_cache()` and take no flag) share
+    the cache the re-probe uses: one cache per wave, one source of truth. Called once from `main`."""
+    import os
 
-    return VerdictCache(GcsStore(uri) if uri.startswith("gs://") else DirStore(uri))
+    from meshpipeline.cad.repair_v4.verdict.cache import CACHE_URI_ENV, default_verdict_cache
+
+    _PRIOR_ENV.setdefault(CACHE_URI_ENV, os.environ.get(CACHE_URI_ENV))
+    os.environ[CACHE_URI_ENV] = uri
+    return default_verdict_cache()
+
+
+_PRIOR_ENV: dict[str, str | None] = {}
+
+
+def restore_cache_env() -> None:
+    """Undo `make_cache`'s export (a shard process just exits; an in-process caller, a test, must not leak it)."""
+    import os
+
+    while _PRIOR_ENV:
+        name, prior = _PRIOR_ENV.popitem()
+        if prior is None:
+            os.environ.pop(name, None)
+        else:
+            os.environ[name] = prior
 
 
 def run_reprobe(args: argparse.Namespace, out: Path, prov: dict) -> int:
@@ -122,7 +145,7 @@ def run_reprobe(args: argparse.Namespace, out: Path, prov: dict) -> int:
     entries = shard_entries(select_sources(whole_pool, args.sources), args.shard)
     prov["shard_files"] = len(entries)
     prov["sources"] = args.sources or "cleared"
-    cache = make_cache(args.cache_uri) if args.cache_uri else None
+    cache = make_cache(args.cache_uri)
     prov["cache_uri"] = args.cache_uri or None
     pool = WorkerPool(args.workers)
     rows_path = out / "rows.jsonl"
@@ -580,6 +603,17 @@ def main(argv: list[str] | None = None) -> int:
             if wrong:
                 raise PlanProvenanceMismatch("; ".join(wrong))
             prov.update(plan)  # wave, wave_id, wave_type, split, arms, n_shards, wave_cap_usd, shard_cap_usd, slot
+        if args.mode in ("arms", "reprobe", "harness"):
+            # The WAVE boundary: a shard with no SHARED cache refuses (exit 7). The library keeps its
+            # in-memory fallback for unit tests, single-file runs and the healer-to-search reuse; a wave
+            # must not reach it. make_cache also exports CRS_V4_VERDICT_CACHE_URI, which is what the
+            # engine's judges read - without it the reprobe path had a cache and the judges silently did
+            # not, and a blank uri gave reprobe no cache at all.
+            problem = wave_spec_mod.shared_cache_problem(args.cache_uri)
+            if problem:
+                prov["error"] = f"--cache-uri: {problem}"
+                return 7
+            make_cache(args.cache_uri)  # before any judge exists
         if args.mode == "reprobe":
             code = run_reprobe(args, out, prov)
         elif args.mode == "harness":
@@ -597,6 +631,7 @@ def main(argv: list[str] | None = None) -> int:
         code = 4
         return code
     finally:
+        restore_cache_env()
         prov.update(ended_at=_now(), wall_seconds=round(time.monotonic() - t0, 1), exit_code=code)
         (out / "PROVENANCE.json").write_text(json.dumps(prov, indent=1, sort_keys=True, default=str) + "\n")
 
