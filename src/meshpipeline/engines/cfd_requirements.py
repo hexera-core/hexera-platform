@@ -667,6 +667,9 @@ LAMINAR_GROWTH = 1.2
 #: the wall
 BL_CELLS_MET = BL_CELLS - 0.5
 BL_WALL_SHARE = 80.0
+#: CFDREQ-22: under a tight wall's cap a laminar stack's first layer may be this share of its floor (the first layer of
+#: BL_CELLS layers filling the layer), no thinner (abc 00021335 held 10 cells across on all its wall from 0.48 of it)
+LAMINAR_CAP_THIN = 0.25
 
 
 def laminar_bl_m(how: Mapping) -> float | None:
@@ -710,10 +713,13 @@ def laminar_stack(delta_m: float, wall_cell_m: float, growth: float, *, n_min: i
     # near-wall band's shorter stack keeps the floor of the plan without it)
     floor = delta / stack_height(1.0, g, max(int(floor_n or n_max), int(n_fixed or 0), 1))
     if stack_max_m and not n_fixed:
-        # A TIGHT WALL'S CAP CUTS LAYERS, NEVER THE FIRST LAYER: n layers whose stack from the floor passes the cap are
-        # not built (the cloud sample, extlam_ef6c20fc: a cap thinned abc 00067838's first layer to 1e-8 m, and
-        # snappyHexMesh grew no layer at all); at least one layer stays
-        fits = [n for n in counts if stack_height(floor, g, n) <= float(stack_max_m) * (1 + 1e-9)]
+        # A TIGHT WALL'S CAP THINS THE FIRST LAYER DOWN TO LAMINAR_CAP_THIN OF THE FLOOR, THEN CUTS LAYERS: n layers
+        # whose stack from that passes the cap are not built (the cloud sample, extlam_ef6c20fc: a cap thinned abc
+        # 00067838's first layer to 1e-8 m and snappyHexMesh grew no layer at all; but cutting layers at the floor
+        # itself, extlam2_r3c_6b8a01ca, left abc 00021335 6 layers and 10 cells across on 7% of its wall, where 9
+        # layers from 0.48 of the floor had held 10 or more on all of it); at least one layer stays
+        fits = [n for n in counts
+                if stack_height(LAMINAR_CAP_THIN * floor, g, n) <= float(stack_max_m) * (1 + 1e-9)]
         if fits:
             counts = fits
         else:

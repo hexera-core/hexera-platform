@@ -216,11 +216,15 @@ def test_the_laminar_stack_is_sized_on_its_boundary_layer():
     # a count of the user's stands; the cells it reaches are what it reaches
     n, h, across = CR.laminar_stack(0.002, 0.003, 1.2, n_fixed=4)
     assert n == 4 and across < CR.BL_CELLS
-    # a tight wall's cap cuts layers, never the first layer: fewer cells across, said
+    # a tight wall's cap thins the first layer, down to LAMINAR_CAP_THIN of the floor, and the stack still reaches it
     floor = 0.002 / CR.stack_height(1.0, 1.2, CR.BL_CELLS)
     n, h, across = CR.laminar_stack(0.002, 0.003, 1.2, stack_max_m=0.001)
-    assert CR.stack_height(h, 1.2, n) <= 0.001 * (1 + 1e-9) and n < CR.BL_CELLS and across < CR.BL_CELLS
-    assert h >= floor * (1 - 1e-9)
+    assert CR.stack_height(h, 1.2, n) <= 0.001 * (1 + 1e-6) and n == CR.BL_CELLS and across >= CR.BL_CELLS - 1e-6
+    assert floor * CR.LAMINAR_CAP_THIN <= h < floor
+    # ... and past that it cuts layers, never the first layer: fewer cells across, said
+    n, h, across = CR.laminar_stack(0.002, 0.003, 1.2, stack_max_m=0.0002)
+    assert CR.stack_height(h, 1.2, n) <= 0.0002 * (1 + 1e-6) and n < CR.BL_CELLS and across < CR.BL_CELLS
+    assert h >= floor * CR.LAMINAR_CAP_THIN * (1 - 1e-9)
     # a cap under even one such layer (a sliver's reading, abc 00067838: 3e-7 m) is set aside: no 1e-8 m layers
     n, h, across = CR.laminar_stack(0.002, 0.003, 1.2, stack_max_m=3e-7)
     assert n == CR.BL_CELLS and h == pytest.approx(floor) and across >= CR.BL_CELLS - 1e-6
