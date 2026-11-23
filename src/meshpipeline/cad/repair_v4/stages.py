@@ -45,6 +45,7 @@ Stage defaults (override per stage through `params[<stage>]`):
 from __future__ import annotations
 
 import atexit
+import math
 import os
 import re
 import shutil
@@ -55,6 +56,7 @@ from typing import Any
 
 from meshpipeline.cad.repair_v4 import ops
 from meshpipeline.cad.repair_v4.ops import OpDeclined, OpFailed
+from meshpipeline.cad.repair_v4.ops.shells import scaled_sew_ladder, scaled_sliver_widths
 from meshpipeline.cad.repair_v4.types import StableId
 from meshpipeline.cad.repair_v4.verdict.assemble import (
     Declared,
@@ -79,8 +81,10 @@ DEFAULTS: dict[str, dict[str, Any]] = {
     "normalise": {"target_rel": 1e-5},
     "edges": {"targets": [], "poles": True},
     "faces": {"tol_mm": 0.01, "rebuild": [], "continuity": "G0"},
-    "shells": {"tol_ladder": [0.001, 0.01, 0.05], "fill_edges": [], "small": [],
-               "small_width_mm": 0.05, "continuity": "G0"},
+    # tol_ladder / small_width_mm None = derive from the part: fractions of the kernel's bound
+    # min(0.1 mm, 0.001 x diagonal) (`ops.shells.scaled_sew_ladder` / `scaled_sliver_widths`), never absolute mm
+    "shells": {"tol_ladder": None, "fill_edges": [], "small": [],
+               "small_width_mm": None, "continuity": "G0"},
     "solids": {},
     "bodies": {"fuzzy_mm": 0.0},
     "simplify": {"scope": "all"},
@@ -101,6 +105,14 @@ class _Steps:
         self.pool, self.ws, self.timeout_s = pool, ws, timeout_s
         self.diffs: list[Diff] = []
         self.notes: list[str] = []
+
+    def diagonal(self) -> float | None:
+        """This part's diagonal (mm), or None when the kernel cannot measure it (noted, never invented)."""
+        try:
+            return diagonal_mm(self.pool, self.ws)
+        except CheckerUnavailable as why:
+            self.notes.append(f"no diagonal: {why}")
+            return None
 
     def ids(self, prefix: str) -> list[StableId]:
         return sorted((s for s in self.ws.ids if s[0] == prefix), key=lambda s: int(s[1:]))
@@ -134,6 +146,19 @@ class _Steps:
         return False
 
 
+def diagonal_mm(pool: WorkerPool, ws: Workspace) -> float:
+    """The part's bounding-box diagonal in MILLIMETRES (the kernel's `ws_diagonal`, which every workspace answers
+    in). The one place a size is measured against the part: `search.h_mm_for` and the scale-relative ladders both
+    read it. A part the kernel cannot measure, or one with no extent, is `CheckerUnavailable`: no size is invented."""
+    result = pool.call("ws_diagonal", {"brep_path": ws.brep_path}, timeout_s=60.0)
+    if not result.ok or result.value is None:
+        raise CheckerUnavailable(f"ws_diagonal: {result.status}: {result.error}")
+    diag = float(result.value["diag_mm"])
+    if not math.isfinite(diag) or diag <= 0.0:
+        raise CheckerUnavailable(f"cannot size from the part: its diagonal is {diag!r} mm")
+    return diag
+
+
 Body = Callable[[_Steps, dict], None]
 
 
@@ -165,14 +190,28 @@ def _volume_or_orient(s: _Steps) -> None:
 
 def _shells(s: _Steps, p: dict) -> None:
     if p["small"]:
-        s.apply("remove_small", list(p["small"]), {"max_width_mm": p["small_width_mm"]})
+        width = p["small_width_mm"]
+        if width is None:
+            widths = scaled_sliver_widths(s.diagonal()) if s.diagonal() is not None else ()
+            width = widths[-1] if widths else None
+        if width is None:
+            s.notes.append("remove_small: declined: the part's diagonal is unknown, so no width can be sized")
+        else:
+            s.apply("remove_small", list(p["small"]), {"max_width_mm": width})
     if p["fill_edges"]:
         s.apply("fill_loop", list(p["fill_edges"]), {"continuity": p["continuity"]})
     if s.ids("B"):
         s.apply("orient_and_close", s.ids("B"), {})
         return
     # No solid: sew the loose faces, then rebuild the solid sew is known to destroy. One unit.
-    if s.apply("sew", [], {"tol_ladder": list(p["tol_ladder"])}):
+    ladder = p["tol_ladder"]
+    if ladder is None:
+        diag = s.diagonal()
+        ladder = scaled_sew_ladder(diag) if diag is not None else []
+        if not ladder:
+            s.notes.append("sew: declined: no rung fits the kernel window on this part (or its diagonal is unknown)")
+            return
+    if s.apply("sew", [], {"tol_ladder": list(ladder)}):
         s.apply("make_volume", [], {}, required=True)
 
 
