@@ -119,6 +119,26 @@ def test_schema_error_returned_as_tool_result():
     assert p.stop_reason is None and not p.ai_capped
 
 
+def test_tool_errors_and_rejected_candidates_are_counted_for_the_triage_report():
+    """A tool call answered `ok: false` is a tool error; each candidate it refused is a candidate error. Both reach
+    `result()`, which the eval row's triage block reads (lane C2)."""
+    bad = {"candidates": [cand(targets=("F7",)), cand(op="melt_everything")]}
+    fake = Fake([reply(call_of("propose", bad)), reply(call_of("propose", "{not json", "c2")),
+                 reply(call_of("propose", {"candidates": [cand(targets=("F1",))]}, "c3"))])
+    p = make(fake)
+    p.propose(state([site("S1", "proximity")]), k=3)
+    r = p.result()
+    assert (r["tool_errors"], r["candidate_errors"], r["declared_unfixable"]) == (2, 2, 0)
+
+
+def test_a_declaration_is_counted_only_when_accepted():
+    fake = Fake([reply(call_of("declare_unfixable", {"site_id": "S1", "reason": "needs 0.4 mm > bound"}),
+                       call_of("declare_unfixable", {"site_id": "S404", "reason": "x"}, "c2")), reply()])
+    p = make(fake)
+    p.propose(state([site("S1", "proximity")]), k=3)
+    assert p.result()["declared_unfixable"] == 1 and p.result()["tool_errors"] == 1
+
+
 def test_a_replaced_target_names_its_successors():
     fake = Fake([reply(call_of("propose", {"candidates": [cand(targets=("F2",))]})), reply()])
     make(fake).propose(state([site("S1", "proximity")]), k=3)
@@ -685,4 +705,5 @@ def test_the_stop_is_written_to_the_ledger_and_to_the_result(tmp_path):
     assert p.propose(state([site("S1", "proximity")]), k=3) == []
     assert ledger.file_statuses()["fileZ"] == {"stop_reason": "wave_cap", "ai_capped": True}
     assert p.result() == {"file_id": "fileZ", "ai_capped": True, "stop_reason": "wave_cap", "turns": 0,
-                          "truncated_rounds": 0, "spent_usd": 0.0}
+                          "truncated_rounds": 0, "spent_usd": 0.0, "tool_errors": 0, "candidate_errors": 0,
+                          "declared_unfixable": 0}
