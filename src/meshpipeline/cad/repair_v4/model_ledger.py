@@ -296,6 +296,12 @@ class WaveLedger:
         self._spend_key = ""
         self.provenance: str = "unset"
 
+    @property
+    def markers(self) -> MarkerStore | None:
+        """The wave bucket's marker store this shard's ledger was built on (None for a test ledger). Read-only: the
+        wave-level 429 guard shares it; nothing here prices or caps."""
+        return self._markers
+
     @classmethod
     def for_test(cls, cap_usd: float, path: str | Path | None = None, *,
                  store: LedgerStore | None = None) -> WaveLedger:

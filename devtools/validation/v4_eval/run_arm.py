@@ -245,7 +245,7 @@ def run_arms(args: argparse.Namespace, out: Path, prov: dict, ledger: Any | None
     recipes = build_recipes(args, prov, plan) if any(a in SEARCH_ARMS for a in names) else None
     if model_arms and runner is None:  # an injected runner (a test, the infra check) replaces the dispatch AND its route
         route = _prepare_model_route(args, prov)
-        throttle = build_throttle(args, route, prov)
+        throttle = build_throttle(args, route, prov, ledger=ledger)
     engine = engine if engine is not None else arms_mod.RealEngine()
     # `arms` / `split` / `wave` are the PLAN's when there is one (copied before this runs) and the report compares
     # them with the wave definition, so they are not overwritten; what this shard ran is `arms_run`
@@ -293,6 +293,9 @@ def run_arms(args: argparse.Namespace, out: Path, prov: dict, ledger: Any | None
                                          "arm": name, "reason": outcome.excluded})
     finally:
         pool.close()
+        if throttle is not None and getattr(throttle, "guard", None) is not None:
+            prov["wave_backoff"] = throttle.guard.describe()   # what this shard held for, and the trips it saw
+            prov["model_throttle"]["rate_limited_calls"] = throttle.rate_limited
         if recipes is not None:
             prov["recipes"] = recipes.describe()   # with what this shard learned, for the A/B
     try:
@@ -342,18 +345,26 @@ def build_recipes(args: argparse.Namespace, prov: dict, plan: dict | None) -> An
     return memory
 
 
-def build_throttle(args: argparse.Namespace, route: str, prov: dict) -> Any:
+def build_throttle(args: argparse.Namespace, route: str, prov: dict, ledger: Any | None = None) -> Any:
     """This shard's slice of the wave's model-call allowance on `route` (`model_throttle.WaveThrottle.for_shard`):
     1/N of the wave's in-flight ceiling (`--model-max-in-flight`, default derived from the route's measured limits),
     requests and tokens per minute. A wave with more shards than in-flight calls is refused here, before any file."""
-    from meshpipeline.cad.repair_v4.model_throttle import WaveThrottle
+    from meshpipeline.cad.repair_v4.model_throttle import WaveBackoffGuard, WaveThrottle
 
     n_shards = getattr(args, "n_shards", None) or evalspec.parse_shard(args.shard)[1]
+    # the wave-level 429 guard shares the ledger's wave-bucket marker store; without a wave id and markers (a test,
+    # a single-file run) the shard has only its own cool-down, and the provenance says so
+    markers = getattr(ledger, "markers", None)
+    wave_id = getattr(args, "wave_id", None)
+    guard = (WaveBackoffGuard(markers, wave_id=str(wave_id), shard_id=str(args.shard))
+             if markers is not None and wave_id else None)
     throttle = WaveThrottle.for_shard(route, n_shards=n_shards,
-                                      max_in_flight=getattr(args, "model_max_in_flight", None))
+                                      max_in_flight=getattr(args, "model_max_in_flight", None), guard=guard)
     s = throttle.slice
     prov["model_throttle"] = {"n_shards": n_shards, "max_in_flight": s.max_in_flight, "rpm": round(s.rpm, 2),
-                              "tpm": round(s.tpm)}
+                              "tpm": round(s.tpm), "in_flight_floored": s.floored}
+    if guard is None:
+        prov["wave_backoff"] = {"guard": "absent", "reason": "no wave id or marker store on this shard"}
     return throttle
 
 

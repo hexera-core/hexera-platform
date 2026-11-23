@@ -270,11 +270,41 @@ class WaveResult:
     declined: frozenset[str] = frozenset()  # sha256 of the declined-stratum files (expected outcome: declined)
     slot: str | None = None  # the once-only slot the shards carry (held-out / checkpoint waves)
     slot_verified: bool = False  # ... and whether the marker store confirmed this wave_id holds it
+    #: the merged `wave_backoff` provenance of every shard (see `backoff_summary`); a wave that was throttled must not
+    #: pass for a free-running one, or its wall-clock would be read as the engine's
+    backoff: Mapping[str, Any] | None = None
     _key: object = None
 
     def __post_init__(self) -> None:
         if self._key is not _TOKEN:
             raise TypeError("a WaveResult is built by load_wave, which applies every refusal collect.py makes")
+
+
+def backoff_summary(shards: Iterable[Mapping[str, Any]], *, has_model_arm: bool) -> dict[str, Any]:
+    """Merge each shard's `wave_backoff` provenance into one verdict on whether the wave was throttled.
+    status: "not_applicable" (no model arm), "throttled" (a wave-level trip, or shards held calls for one),
+    "free" (every shard ran the guard and none tripped or held), "unrecorded" (a shard carries no account, or ran
+    without the guard, or its marker store failed: absence of a back-off is NOT claimed)."""
+    shards = list(shards)
+    if not has_model_arm:
+        return {"status": "not_applicable"}
+    accounts = [s["prov"].get("wave_backoff") for s in shards]
+    unguarded = sum(1 for a in accounts if not isinstance(a, Mapping) or a.get("guard") != "wave_backoff")
+    live = [a for a in accounts if isinstance(a, Mapping) and a.get("guard") == "wave_backoff"]
+    trips: dict[tuple, dict] = {}
+    for a in live:
+        for t in a.get("trips_seen", []):
+            trips[(t.get("bucket"), t.get("by_shard"))] = t
+    held = sum(float(a.get("held_s") or 0.0) for a in live)
+    store_errors = sum(int(a.get("store_errors") or 0) for a in live)
+    out: dict[str, Any] = {
+        "trips": sorted(trips.values(), key=lambda t: t.get("at", 0.0)), "shards": len(shards),
+        "shards_without_guard": unguarded, "shards_held": sum(1 for a in live if a.get("holds")),
+        "held_s_total": round(held, 1), "held_s_max_shard": round(max((float(a.get("held_s") or 0.0) for a in live),
+                                                                     default=0.0), 1),
+        "rate_limited_calls_reported": sum(int(a.get("reported_429") or 0) for a in live), "store_errors": store_errors}
+    out["status"] = ("throttled" if trips or held > 0 else "unrecorded" if unguarded or store_errors else "free")
+    return out
 
 
 def defect_kind(split_row: Any) -> str:
@@ -425,7 +455,8 @@ def load_wave(root: Path, wave: Any, split_rows: Iterable[Any], *, n_shards: int
         wave, next(iter(ids)), str(first["commit"]), str(first["image"]), tuple(rows.values()),
         {sha: defect_kind(r) for sha, r in by_sha.items()}, len(split),
         tuple(float(s["prov"].get("wall_seconds") or 0.0) for s in shards), bool(frozen_commit),
-        declined=declined, slot=slot, slot_verified=slot_verified, _key=_TOKEN)
+        declined=declined, slot=slot, slot_verified=slot_verified,
+        backoff=backoff_summary(shards, has_model_arm=bool(wave.has_model_arm)), _key=_TOKEN)
 
 
 # ---------------------------------------------------------------------------------------------- the report
@@ -648,6 +679,7 @@ def build_report(result: WaveResult) -> dict[str, Any]:
                   "cap_usd": wave.cap_usd},
         "wall": {"shards": len(shard_wall), "slowest_shard_s": max(shard_wall, default=0.0),
                  "shard_seconds_total": sum(shard_wall)},
+        "throttle": dict(result.backoff or {"status": "unrecorded"}),
         "cheap_full_agreement": _cheap_full_block(result.rows, wave.arms),
         "warnings": warnings,
         "status": "OK" if not warnings else "UNRELIABLE",
@@ -728,6 +760,18 @@ def render_text(rep: dict[str, Any]) -> str:
         for k, v in b["by_defect_kind"].items():
             clean = "withheld" if v["clean"] is None else f"{v['clean']}/{v['conclusive']}"
             out.append(f"| {k} | {v['files']} | {v['inconclusive']} | {v['inconclusive'] / v['files']:.1%} | {clean} | {_pct(v['clean_rate'])} |")
+    th = rep["throttle"]
+    if th["status"] == "throttled":
+        out += ["", f"!! THROTTLED WAVE: {len(th['trips'])} wave-level 429 back-off trip(s); shards spent "
+                    f"{th['held_s_total']:.0f} s held (worst shard {th['held_s_max_shard']:.0f} s) across "
+                    f"{th['shards_held']} shard(s). The wall-clock above includes that waiting: it is NOT the "
+                    "engine's wall."]
+    elif th["status"] == "unrecorded":
+        out += ["", f"?? back-off NOT RECORDED ({th.get('shards_without_guard', '?')} shard(s) without the guard, "
+                    f"{th.get('store_errors', 0)} marker-store error(s)): this wave may have been throttled; do not "
+                    "treat its wall-clock as free-running."]
+    elif th["status"] == "free":
+        out += ["", "wave back-off: none (every shard ran the guard; no trip, no held call)"]
     unmetered = rep["spend"]["unmetered_arms"]
     out += ["", f"model spend ${rep['spend']['model_usd_total']:.2f} of the ${rep['spend']['cap_usd']:g} wave cap"
             + (f" (EXCLUDES {', '.join(unmetered)}: calls a model, spend not metered by this ledger)" if unmetered else "")
