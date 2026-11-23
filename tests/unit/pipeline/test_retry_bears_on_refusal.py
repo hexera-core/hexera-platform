@@ -164,7 +164,8 @@ def test_plain_skew_inside_the_solver_limit_is_deliverable_and_nothing_else_is()
     q = {"max_non_ortho": 72.0, "skew_fraction": 0.002}
     c = lad.deliverable_refusal("quality_floor", q, skew)
     assert c is not None and "72 degrees" in c["words"] and "correctors" in c["way_on"]
-    assert lad.deliverable_refusal("quality_floor", {**q, "max_non_ortho": 88.0}, skew) is None
+    # LAD-cfd-11: past the solver's hard bar a valid mesh is still the last resort (pinned below)
+    assert lad.deliverable_refusal("quality_floor", {**q, "max_non_ortho": None}, skew) is None
     for key in ("wall_faces", "rc", "timed_out", "layer_coverage_pct"):
         assert lad.deliverable_refusal("quality_floor", q, {"checks": [{"key": key}]}) is None
     # hard validity: broken cells are refused as today
@@ -419,3 +420,89 @@ def test_an_opening_the_mesh_lost_reaches_the_next_plan(tmp_path):
     assert missed_ports(tmp_path) == {"outlet_3"}
     write_gate_facts(tmp_path, "manifest_valid", {"missing": ["car wall"], "renamed": {"car wall": "car_wall"}})
     assert missed_ports(tmp_path) == set(), "a renamed patch is the contract's, not an opening the mesher lost"
+
+
+# LAD-cfd-11: a checkMesh-valid mesh past the solver's hard non-orthogonality is the last resort, never nothing
+
+def _past(n: float) -> dict:
+    return {"checks": [{"key": "max_non_ortho", "measured": n, "op": "<=", "threshold": 85.0}]}
+
+
+def test_a_valid_mesh_past_the_hard_bar_is_kept_with_its_number_and_the_way_on():
+    c = lad.deliverable_refusal("quality_floor", {"max_non_ortho": 86.56}, _past(86.56))
+    assert c is not None and c["kind"] == lad.GATE_CONCERN and c["past_hard_non_ortho"] == 86.56
+    assert "86.6 degrees" in c["words"] and "85 degrees" in c["words"] and "correctors" in c["way_on"]
+    # broken cells stay refused, past the bar or not
+    assert lad.deliverable_refusal("quality_floor", {"max_non_ortho": 86.5}, {**_past(86.5), "fatal": ["x"]}) is None
+    assert lad.deliverable_refusal("quality_floor", {"max_non_ortho": 86.5, "fatal": ["x"]}, _past(86.5)) is None
+
+
+def test_past_the_hard_bar_only_an_engine_with_a_lever_retries():
+    assert not lad.lever_bears("quality_floor", "vmtk", _past(86.5))
+    assert not lad.lever_bears("quality_floor", "gmsh", _past(86.5))
+    assert lad.lever_bears("quality_floor", "snappy", _past(86.5))
+    assert lad.lever_bears("quality_floor", "cfmesh", _past(86.5))
+    # inside the bar the table speaks as before
+    assert lad.lever_bears("quality_floor", "vmtk", _past(80.0)) and lad.lever_bears("quality_floor", "vmtk")
+
+
+def _internal_vmtk(**kw) -> dict:
+    base = {"engine": "vmtk", "purpose": "internal_cfd", "input_kind": "fluid-domain",
+            "engine_params": {"wall_layers": "on"}, "executor_failed_gate": "quality_floor",
+            "executor_failure_cause": "mesh_quality", "executor_failure_facts": _past(86.56),
+            "intake_patches": [{"name": "inlet", "type": "inlet"}, {"name": "outlet", "type": "outlet"},
+                               {"name": "wall", "type": "wall"}],
+            "request_txt": "Internal flow through a pipe at 1 m/s."}
+    return _external(**{**base, **kw})
+
+
+def test_vmtk_past_the_hard_bar_moves_the_run_to_the_next_engine_at_once():
+    s = _internal_vmtk()
+    f = lad.classify(s)
+    assert f is not None and f.kind == lad.ENGINE
+    assert lad.refusal_without_lever(s)
+    d = lad.decide(s, record={})
+    assert d.switch_to and d.switch_to != "vmtk"
+    assert route_after_executor(s) == "node_classifier"
+
+
+def test_a_mesh_past_the_hard_bar_ranks_under_every_mesh_inside_it(tmp_path):
+    # nearer its own bar and better layered, but past 85: the one inside 85 is delivered, in either order
+    past = _refused(tmp_path, "attempt_1", 1, "vmtk", ratio=0.59, coverage=99.0, non_ortho=86.5)
+    inside = _refused(tmp_path, "attempt_2", 2, "cfmesh", ratio=0.2, coverage=40.0, non_ortho=79.0)
+    assert rp.deliverable_sound({"sound_attempts": [past, inside]})["workspace"] == inside["workspace"]
+    assert rp.deliverable_sound({"sound_attempts": [inside, past]})["workspace"] == inside["workspace"]
+    # ...and another gate's refusal inside 85 beats it too
+    fid = {"attempt": 3, "workspace": _sound_ws(tmp_path, "attempt_3", {"max_non_ortho": 70.0}), "engine": "snappy",
+           "requirement_caveats": [], "refused": "cad_fidelity", "refused_distance": 0.3}
+    past_q = {**past, "refused": "quality_floor", "refused_distance": 86.5}
+    assert rp.deliverable_sound({"sound_attempts": [fid, past_q]})["workspace"] == fid["workspace"]
+    # alone, it is delivered: never nothing
+    assert rp.deliverable_sound({"sound_attempts": [past_q]})["workspace"] == past["workspace"]
+
+
+def test_vmtks_gate_refuses_past_the_hard_bar_and_names_the_number(tmp_path):
+    from meshpipeline.engines.gates import GateCtx, facts_of
+    from meshpipeline.engines.vmtk import criteria
+    from meshpipeline.engines.vmtk.gates import _gate_tet_quality_floor
+    assert criteria.HARD_NON_ORTHO == lad.SOLVER_HARD_NON_ORTHO
+    for n, ok in ((86.56, False), (84.9, True), (None, True)):
+        (tmp_path / "mesh_manifest.json").write_text(json.dumps(
+            {"quality": {"min_quality": 0.2, "fatal": [], **({} if n is None else {"max_non_ortho": n})}}))
+        got, why = _gate_tet_quality_floor(GateCtx(workspace=tmp_path, engine="vmtk", domain="", intake_patches=[],
+                                                   engine_params={}))
+        assert got is ok
+        if not ok:
+            assert "86.6 degrees" in str(why) and lad.past_hard_non_ortho(facts_of(why)) == 86.56
+
+
+def test_when_no_later_engine_does_better_the_kept_mesh_is_delivered(tmp_path):
+    kept = {"attempt": 1, "workspace": _sound_ws(tmp_path, "attempt_1", {"max_non_ortho": 86.56}), "engine": "vmtk",
+            "requirement_caveats": [lad.deliverable_refusal("quality_floor", {"max_non_ortho": 86.56},
+                                                            _past(86.56))],
+            "refused": "quality_floor", "refused_distance": 86.56}
+    # cfMesh took over and stopped before it finished; nothing is left to try
+    s = _internal_vmtk(engine="cfmesh", executor_failed_gate="", executor_failure_cause="engine_crashed",
+                       executor_failure_facts={}, retry_count=bcfg.MAX_BUILDER_RETRIES + 1, sound_attempts=[kept])
+    assert route_after_executor(s) == "node_deliver_sound"
+    assert rp.deliverable_sound(s)["workspace"] == kept["workspace"]

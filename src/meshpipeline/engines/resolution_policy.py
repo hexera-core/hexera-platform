@@ -508,7 +508,11 @@ def _beats(a: Mapping, b: Mapping) -> bool:
 
 
 def _refused_order(a: Mapping, b: Mapping):
-    """+1 where `a` is the better refused mesh on that count, -1 where `b` is, 0 where they tie."""
+    """+1 where `a` is the better refused mesh on that count, -1 where `b` is, 0 where they tie. A mesh past
+    the solver's hard non-orthogonality ranks under every mesh inside it, before anything else (LAD-cfd-11):
+    it is kept only as the last resort."""
+    pa, pb = _past_hard(a), _past_hard(b)
+    yield 0 if pa == pb else (-1 if pa else 1)
     da, db = _num(a.get("refused_distance")), _num(b.get("refused_distance"))
     if (str(a.get("refused")) == str(b.get("refused")) and da is not None and db is not None
             and abs(da - db) > GATE_DISTANCE_TIE):
@@ -524,6 +528,12 @@ def _refused_order(a: Mapping, b: Mapping):
         yield 1 if ca > cb else -1
     if na is not None and nb is not None and na != nb:
         yield 1 if na < nb else -1
+
+
+def _past_hard(entry: Mapping) -> bool:
+    """The sound mesh's worst non-orthogonality is measured past the solver's hard bar (LAD-cfd-11)."""
+    n = _quality_num(entry, "max_non_ortho")
+    return n is not None and n > _HARD_NON_ORTHO
 
 
 def _quality_num(entry: Mapping, key: str) -> float | None:

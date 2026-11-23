@@ -11,7 +11,7 @@ from meshpipeline.contracts.failure_cause import FailureCause
 from meshpipeline.engines.gates import GateCtx, GateSpec, refuse
 from meshpipeline.engines.region_check import gate_port_areas
 from meshpipeline.engines.resolution_policy import CELL_LIMIT_PROVES, gate_cell_limit
-from meshpipeline.engines.vmtk.criteria import QUALITY_FLOOR
+from meshpipeline.engines.vmtk.criteria import HARD_NON_ORTHO, QUALITY_FLOOR
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +65,16 @@ def _gate_tet_quality_floor(ctx: GateCtx) -> tuple[bool, str]:
             FailureCause.MESH_QUALITY, checks=[{
                 "key": "min_quality", "label": "tetrahedron quality", "measured": float(mq),
                 "op": ">=", "threshold": QUALITY_FLOOR}])
+    nonortho = q.get("max_non_ortho")
+    if isinstance(nonortho, (int, float)) and not isinstance(nonortho, bool) and float(nonortho) > HARD_NON_ORTHO:
+        # LAD-cfd-11: past the solver's hard bar - the run moves to the next engine at once (no VMTK retry changes
+        # it), and this valid mesh is kept as the last resort, delivered with its number if no engine does better
+        return False, refuse(
+            f"[QUALITY] worst face non-orthogonality {float(nonortho):.1f} degrees is past the {HARD_NON_ORTHO:.0f} "
+            "a CFD solver can correct - another engine meshes the part; this mesh is kept as the last resort.",
+            FailureCause.MESH_QUALITY, checks=[{
+                "key": "max_non_ortho", "label": "face non-orthogonality (degrees)", "measured": float(nonortho),
+                "op": "<=", "threshold": HARD_NON_ORTHO}])
     return True, ""
 
 

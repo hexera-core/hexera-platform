@@ -306,9 +306,36 @@ SOLVER_HARD_NON_ORTHO = 85.0
 SHAPE_CHECKS = frozenset({"skew_fraction", "max_skewness", "max_non_ortho"})
 
 
-def lever_bears(gate: str, engine: str) -> bool:
+#: THE RULE for a valid mesh past the solver's hard non-orthogonality (docs/RULES.md): kept as the run's last
+#: resort, delivered with concerns and its number, ranked under every mesh inside the bar.
+LAD_PAST_HARD = "LAD-cfd-11"
+#: The engines whose next attempt changes a mesh past SOLVER_HARD_NON_ORTHO: snappy repairs its layer folds where
+#: they were found or turns the plan strict; cfMesh's rescue optimises the cells. Any other engine - VMTK's tet fill
+#: (abc 00096107 at 86.6, 00160152 at 86.5: cfMesh meshed the same part at 40.5), gmsh, Netgen - rebuilds the same
+#: shape, so the run moves to the next engine at once (LAD-cfd-11).
+HARD_NON_ORTHO_LEVERS: dict[str, str] = {
+    "snappy": "the layer folds repaired where they were found, or a stricter plan",
+    "cfmesh": "cfMesh's own rescue and optimiser"}
+
+
+def past_hard_non_ortho(facts: Mapping | None) -> float | None:
+    """The worst non-orthogonality a quality refusal measured past SOLVER_HARD_NON_ORTHO (its `checks` row
+    max_non_ortho), None when the refusal was not that."""
+    f = facts if isinstance(facts, Mapping) else {}
+    for c in f.get("checks") or ():
+        if isinstance(c, Mapping) and c.get("key") == "max_non_ortho":
+            n = _num_of(c.get("measured"))
+            if n is not None and n > SOLVER_HARD_NON_ORTHO:
+                return n
+    return None
+
+
+def lever_bears(gate: str, engine: str, facts: Mapping | None = None) -> bool:
     """Whether the next attempt on `engine` changes anything that bears on what `gate` refused
-    (GATE_LEVERS). True for a gate or an engine the table does not speak for."""
+    (GATE_LEVERS). True for a gate or an engine the table does not speak for - except a quality refusal
+    past the solver's hard non-orthogonality (LAD-cfd-11), which only HARD_NON_ORTHO_LEVERS' engines change."""
+    if str(gate or "") == "quality_floor" and past_hard_non_ortho(facts) is not None:
+        return str(engine or "") in HARD_NON_ORTHO_LEVERS
     row = GATE_LEVERS.get(str(gate or ""))
     if row is None or str(engine or "") not in RULES_PLANNED:
         return True
@@ -336,7 +363,9 @@ def refusal_without_lever(state: Mapping) -> bool:
     if state.get("executor_success"):
         return False
     gate = str(state.get("executor_failed_gate") or "")
-    return bool(gate) and not lever_bears(gate, str(state.get("engine") or ""))
+    facts = state.get("executor_failure_facts")
+    return bool(gate) and not lever_bears(gate, str(state.get("engine") or ""),
+                                          facts if isinstance(facts, Mapping) else None)
 
 
 def deliverable_refusal(gate: str, quality: Mapping | None, facts: Mapping | None) -> dict | None:
@@ -391,8 +420,19 @@ def deliverable_refusal(gate: str, quality: Mapping | None, facts: Mapping | Non
         if not failed or not failed <= SHAPE_CHECKS or f.get("unmeasured"):
             return None
         nonortho = _num_of(q.get("max_non_ortho"))
-        if nonortho is None or nonortho > SOLVER_HARD_NON_ORTHO:
+        if nonortho is None:
             return None
+        if nonortho > SOLVER_HARD_NON_ORTHO:
+            # LAD-cfd-11: A VALID MESH PAST THE SOLVER'S HARD BAR IS THE LAST RESORT, NEVER NOTHING. checkMesh calls
+            # it valid (no fatal defect), so it is kept - ranked under every mesh inside the bar
+            # (resolution_policy._refused_order) - and delivered with its number only when no engine built one
+            # inside it
+            return {"kind": GATE_CONCERN, "gate": gate, "past_hard_non_ortho": round(nonortho, 2),
+                    "words": (f"The worst cell face is {nonortho:.1f} degrees off orthogonal, past the "
+                              f"{SOLVER_HARD_NON_ORTHO:.0f} degrees a CFD solver can usually correct; no engine built "
+                              "this part inside that, so this valid mesh is delivered as the best there was"),
+                    "way_on": "run the solver with non-orthogonal correctors (3 or more) and limited (corrected 0.33) "
+                              "laplacian and gradient schemes, or ask for finer cells at the walls in your notes"}
         skew = _num_of(q.get("skew_fraction")) or 0.0
         return {"kind": GATE_CONCERN, "gate": gate,
                 "words": (f"Some cells are more skewed than we deliver as a clean mesh: worst "
@@ -921,7 +961,7 @@ def classify(state: Mapping) -> Failure | None:
         # the same wrong region (the siphoned box: four hours of it). The run stops with the reason and the way on
         return Failure(NEVER, cause.value, "its mesh filled the part's metal or the space outside it, not the "
                        "fluid - every engine meshes the same staged region", stopped)
-    if kind == FIXABLE and gate and not lever_bears(gate, str(state.get("engine") or "")):
+    if kind == FIXABLE and gate and not lever_bears(gate, str(state.get("engine") or ""), facts):
         # NOTHING THIS ENGINE CHANGES BEARS ON THE REFUSAL (LAD-cfd-8): its next attempt would rebuild
         # the same case, so the run moves to the next engine at once - or, with none, the sound mesh
         # is delivered with the refusal said (route_after_executor)
@@ -1183,9 +1223,13 @@ def decide(state: Mapping, *, record: Mapping, now: float | None = None) -> Deci
     open_rungs = [r for r in ladder({**state, "engine_ladder": record})
                   if r.same_contract and r.engine not in tried
                   and not _measures_its_input(r.engine)]
-    if not open_rungs and refusal_without_lever(state):
+    _facts = state.get("executor_failure_facts")
+    _past_hard = past_hard_non_ortho(_facts if isinstance(_facts, Mapping) else None) is not None
+    if not open_rungs and refusal_without_lever(state) and not _past_hard:
         # LAD-cfd-8: a sound mesh the gate refused is better than another KIND of mesh; with no
-        # same-contract engine left, the route delivers it with the refusal said
+        # same-contract engine left, the route delivers it with the refusal said. Not past the solver's hard
+        # non-orthogonality (LAD-cfd-11): that mesh is only the last resort, so the next ranked engine is tried
+        # first even with another kind of mesh (SW-16, below), and the kept mesh is delivered if none does better
         return Decision(why="no untried engine delivers the approved mesh, and nothing this engine "
                             "changes bears on the refusal", failure=failure)
     if not open_rungs and (failure.kind == ENGINE or failure.cause in _NO_MESH_CAUSES):

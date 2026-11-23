@@ -21,6 +21,10 @@ _VMTK_GUIDE = "https://www.vmtk.org/tutorials/MeshGeneration.html"
 # data point, not a distribution: treat 0.01 as "below any mesh we have actually seen pass",
 # and re-derive it if real runs show clean meshes sitting lower.
 QUALITY_FLOOR = 0.01
+#: THE SOLVER'S HARD NON-ORTHOGONALITY on the tet fill (LAD-cfd-11; the same bar as pipeline/engine_fallback.
+#: SOLVER_HARD_NON_ORTHO): measured as checkMesh measures it (vmtk_runner.check_mesh, VER-2). Past it the mesh is a
+#: quality refusal - the run moves to the next engine, and the valid mesh is kept as the last resort.
+HARD_NON_ORTHO = 85.0
 
 #: Fewest cells across the local passage diameter a delivered CFD mesh may have. Industry RANS
 #: practice on internal flow is 20-40; the engine's default edge factor (0.15) puts about 13;
