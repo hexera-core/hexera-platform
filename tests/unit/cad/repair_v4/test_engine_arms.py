@@ -128,3 +128,37 @@ def test_the_rule_is_applied_not_restated() -> None:
                        ).file_unmeasured is False
     assert v4.V4Result(trace_path=None, verdict_summary={"search": {**bad, "reason": "no_verdict"}}
                        ).file_unmeasured is True
+
+
+#: captured at import, before the `world` fixture replaces it with a fake: the test below needs the REAL middle
+_REAL_FIND_BEST = v4._find_best
+
+
+@pytest.mark.xfail(strict=True, reason=(
+    "ENGINE BUG found by the lane-C wiring audit, handed to the lead (src is not lane C's to edit): `_find_best` "
+    "starts the search from the staged healer's output, `search` reports changed=False when nothing beat THAT start, "
+    "and `deliverable` then ships the raw INPUT - so a search arm discards every gain the staged healer made, even a "
+    "file the healer made clean. Fix: judge `changed` against the input workspace (e.g. `changed or staged.ws is not "
+    "start` in `_find_best`), then remove this xfail."))
+@pytest.mark.parametrize("arm", ["search_det", "search_ai"])
+def test_a_search_arm_delivers_the_staged_healers_gain_when_the_search_adds_nothing(
+        world: World, files: tuple[str, str], staged: list[Any], monkeypatch: pytest.MonkeyPatch, arm: str) -> None:
+    monkeypatch.setattr(v4, "ARM", arm)
+    monkeypatch.setattr(v4, "_find_best", _REAL_FIND_BEST)
+    monkeypatch.setattr(v4, "_ai_kwargs", lambda source, budget: {})
+    monkeypatch.setattr(search_mod, "arm_generators", lambda name, **kw: ([], None))
+    healed = FakeVerdict(q=3, clean=True)
+    monkeypatch.setattr(v4, "_make_judge", lambda pool, ws: SimpleNamespace(
+        full=lambda p, w, o: healed if w.brep_path == "/w/staged.brep" else FakeVerdict(q=1)))
+    monkeypatch.setattr(search_mod, "score", lambda v: (1, v.q, 0.0, 0.0, 0))
+
+    def search(pool: Any, start: Any, original: str, generators: Any, budget: Any, **kw: Any) -> Any:
+        assert start.brep_path == "/w/staged.brep"  # the search starts from the healer's output (contract 04)
+        return search_mod.SearchResult(best=start, best_verdict=healed, clean=True, trace=None, changed=False,
+                                       reason="clean")  # already clean: nothing beat the start
+
+    monkeypatch.setattr(search_mod, "search", search)
+    result = _run(files)
+    assert result.delivered is True, "the staged healer made the file clean and the search arm shipped the input"
+    (_, payload) = [c for c in FakePool.instances[0].calls if c[0] == "write_step_xcaf"][0]
+    assert payload["brep"] == "/w/staged.brep"

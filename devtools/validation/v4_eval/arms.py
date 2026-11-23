@@ -18,6 +18,7 @@ checks against the engine's own rule (`repair_v4.measurement.file_unmeasured`).
 """
 from __future__ import annotations
 
+import dataclasses
 import os
 import time
 import traceback
@@ -133,15 +134,19 @@ def run_file(arm_name: str, entry: Any, source: str, *, pool: Any, engine: Engin
         bad = _usable(v_in, "the input")
         if bad:
             return excluded(bad)
-        out_v, extra, usd = v_in, {}, 0.0
+        out_v, usd = v_in, 0.0
+        extra: dict[str, Any] = {}
         if arm_name == "input_only":
             pass
         elif arm_name == "staged":
             staged = engine.run_staged(pool, ws)
             out_v = full(pool, staged.ws, source)
         elif arm_name in ("search_det", "search_ai"):
-            out_v, extra, usd = _search_arm(arm_name, pool=pool, ws=ws, source=source, judge=judge, v_in=v_in,
-                                            ledger=ledger, arm=arm, budget=budget, h_mm=h_mm, route=route,
+            # the seam contract's call order (spec 04; `repair_v4._find_best`): the search starts from the staged
+            # healer's output, never the raw input, or the arm would measure a pipeline the engine does not ship
+            start = engine.run_staged(pool, ws).ws
+            out_v, extra, usd = _search_arm(arm_name, pool=pool, ws=ws, start=start, source=source, judge=judge,
+                                            v_in=v_in, ledger=ledger, arm=arm, budget=budget, h_mm=h_mm, route=route,
                                             max_turns=max_turns, job_id=job_id, entry=entry, workers=workers,
                                             clock=clock, full=full)
         else:
@@ -160,8 +165,8 @@ def run_file(arm_name: str, entry: Any, source: str, *, pool: Any, engine: Engin
                            **_verdict_fields(v_in, out_v), **extra})
 
 
-def _search_arm(arm_name: str, *, pool: Any, ws: Any, source: str, judge: Any, v_in: Any, ledger: Any, arm: Any,
-                budget: Any, h_mm: float | None, route: str | None, max_turns: int, job_id: str, entry: Any,
+def _search_arm(arm_name: str, *, pool: Any, ws: Any, start: Any, source: str, judge: Any, v_in: Any, ledger: Any,
+                arm: Any, budget: Any, h_mm: float | None, route: str | None, max_turns: int, job_id: str, entry: Any,
                 workers: int, clock: Any, full: Any) -> tuple[Any, dict, float]:
     """(output verdict, the SearchResult's own measured-ness fields, model USD) for a search arm."""
     from meshpipeline.cad.repair_v4 import search as S
@@ -175,14 +180,39 @@ def _search_arm(arm_name: str, *, pool: Any, ws: Any, source: str, judge: Any, v
     generators, proposer = S.arm_generators(arm_name, **ai_kwargs)
     sbudget = S.Budget(wall_s=budget.wall_s, ops=budget.ops, model_calls=max_turns if proposer else 0,
                        model_usd=budget.model_usd)
-    result = S.search(pool, ws, source, generators, sbudget, workers=workers, judge=judge, h_mm=h_mm, clock=clock)
+    result = S.search(pool, start, source, generators, sbudget, workers=workers, judge=judge, h_mm=h_mm, clock=clock)
     usd = float(proposer.result()["spent_usd"]) if proposer is not None else 0.0
     fields = {"reason": result.reason, "verdict_candidates": result.verdict_candidates,
               "inconclusive_candidates": result.inconclusive_candidates,
-              "infrastructure_failed": result.infrastructure_failed, "_unmeasured": result.unmeasured}
-    delivered = S.deliverable(result, v_in)
+              "infrastructure_failed": result.infrastructure_failed, "_unmeasured": result.unmeasured,
+              "cheap_full": cheap_full_cells(result.trace.of_kind("confirm"))}
+    # `result.changed` says whether anything beat the search's START, which is the staged output, not the input: a
+    # file the healer improved and the search could not improve further must still ship the healer's state. The
+    # engine has this bug today (`_find_best`; strict xfail in test_engine_arms.py); the eval applies the rule as the
+    # delivery gate states it - against the INPUT - rather than measuring the bug.
+    delivered = S.deliverable(dataclasses.replace(result, changed=result.changed or start.brep_path != ws.brep_path), v_in)
     out_v = v_in if delivered is None else full(pool, delivered, source)
     return out_v, fields, usd
+
+
+#: The four cells of the cheap-vs-full table, named as the re-probe's `reprobe.agreement` names them.
+CHEAP_FULL_CELLS = ("cheap_pass_full_pass", "cheap_pass_full_fail", "cheap_fail_full_pass", "cheap_fail_full_fail")
+
+
+def cheap_full_cells(confirms: list[dict]) -> dict[str, int]:
+    """Cheap tier vs full panel over the states this search CONFIRMED (the search's `confirm` trace events carry the
+    state's cheap score and the full verdict's `clean`). Since the re-probe runs the full verdict only (plan amendment
+    2026-11-23 19:15), this is where the cheap tier's agreement is measured: the tier now exists only to rank search
+    states. A cheap PASS is `score[0] == 1` (valid AND faithful) and `score[1] >= 1` (the cheap panel is GmshDefault
+    alone, `verdict.assemble.cheap_verdict`); a full pass is `clean`."""
+    cells = dict.fromkeys(CHEAP_FULL_CELLS, 0)
+    for e in confirms:
+        cheap = e.get("cheap_score")
+        if not cheap or len(cheap) < 2 or e.get("clean") is None:
+            continue
+        cheap_pass = int(cheap[0]) == 1 and int(cheap[1]) >= 1
+        cells[f"cheap_{'pass' if cheap_pass else 'fail'}_full_{'pass' if e['clean'] else 'fail'}"] += 1
+    return cells
 
 
 def failure_reason(exc: BaseException) -> str:

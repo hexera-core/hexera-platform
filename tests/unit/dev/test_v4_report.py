@@ -530,6 +530,7 @@ def test_paired_column_equalises_denominators_when_dropouts_differ(tmp_path) -> 
     det, ai = rep["arms"]["search_det"], rep["arms"]["search_ai"]
     shared = [i for i in range(40) if i not in (1, 2, 4, 6, 10, 12)]
     assert rep["paired_set"] == {"arms": ["search_det", "search_ai"], "n_files": 34, "of": 40,
+                              "fraction": 34 / 40, "min_fraction": report.MIN_PAIRED_FRACTION,
                               "excluded_not_measured": []}
     assert det["conclusive"] == ai["conclusive"] == 37 and det["paired"]["n"] == ai["paired"]["n"] == 34
     # own denominators are 37 for both, but the files behind them differ; the paired column uses the same 34
