@@ -14,11 +14,12 @@ from __future__ import annotations
 from meshpipeline.cad.repair_v4.verdict.mesh_kernel import profile_config
 from meshpipeline.cad.repair_v4.verdict.panel import (
     INFRASTRUCTURE_KIND,
-    MESHER_CRASH_KIND,
     Located,
     MemberResult,
     call_with_timeout_retry,
     inner_timeout_s,
+    sigkill_verdict,
+    timeout_cause,
     timeout_kind,
 )
 from meshpipeline.cad.repair_v4.verdict.valid import CheckerUnavailable
@@ -35,12 +36,6 @@ def killed(call: CallResult) -> bool:
     return call.ok and call.value is not None and call.value.get("cause") == "sigkill"
 
 
-def _timeout_cause(timeouts: int, skipped: bool) -> str:
-    if timeouts >= 2:
-        return "timeout_after_hang" if skipped else "timeout_twice"
-    return "timeout_retry_spent" if skipped else "timeout_once"
-
-
 def result_from_call(name: str, call: CallResult, timeouts: int = 0, kills: int = 0, skipped: bool = False) -> MemberResult:
     """A worker's answer as the member's result; `timeouts` / `kills` are how many of the attempts timed
     out / were SIGKILLed, `skipped` that a retry was due and the file's budget had none left.
@@ -53,7 +48,7 @@ def result_from_call(name: str, call: CallResult, timeouts: int = 0, kills: int 
     if call.status == "timeout":
         return MemberResult(
             name, "timeout", timeout_kind(timeouts), call.error or "", [], None, 0, call.seconds,
-            _timeout_cause(timeouts, skipped),
+            timeout_cause(timeouts, skipped),
         )
     if call.status == "crashed":
         return MemberResult(
@@ -65,16 +60,13 @@ def result_from_call(name: str, call: CallResult, timeouts: int = 0, kills: int 
     if value["status"] == "timeout":
         return MemberResult(
             name, "timeout", timeout_kind(timeouts), value["message"], [], None, 0, call.seconds,
-            _timeout_cause(timeouts, skipped),
+            timeout_cause(timeouts, skipped),
         )
     if value["status"] == "crashed":
         if value.get("cause") == "sigkill":
             # the OOM killer is not evidence on one sight; the same death twice is the file. The cause
             # keeps the tally auditable either way.
-            kind = MESHER_CRASH_KIND if kills >= 2 else INFRASTRUCTURE_KIND
-            cause = ("sigkill_after_doom" if skipped else "sigkill_twice") if kills >= 2 else (
-                "sigkill_retry_spent" if skipped else "sigkill"
-            )
+            kind, cause = sigkill_verdict(kills, skipped)
             return MemberResult(name, "crashed", kind, value["message"], [], None, 0, call.seconds, cause)
         return MemberResult(
             name, "crashed", value["error_kind"], value["message"], [], None, 0, call.seconds, value.get("cause")

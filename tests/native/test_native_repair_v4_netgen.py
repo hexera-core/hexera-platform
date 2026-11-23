@@ -18,11 +18,9 @@ from OCP.IFSelect import IFSelect_RetDone
 from OCP.STEPControl import STEPControl_AsIs, STEPControl_Writer
 from OCP.TopoDS import TopoDS_Compound
 
-from meshpipeline.cad.repair_v4.verdict.netgen_member import (
-    MIN_SICN_PASS,
-    NetgenOCC,
-    netgen_python,
-)
+from meshpipeline.cad.repair_v4.verdict.mesh_child import MIN_SICN
+from meshpipeline.cad.repair_v4.verdict.netgen_member import NetgenOCC, netgen_python
+from meshpipeline.cad.repair_v4.verdict.panel import INFRASTRUCTURE_KIND
 from meshpipeline.cad.repair_v4.worker_pool import WorkerPool
 
 TIMEOUT_S = 600  # emulated amd64 on arm64 is slow; a slow run is not a hang
@@ -76,7 +74,7 @@ def test_box_passes(pool: WorkerPool, tmp_path: Path) -> None:
     assert result.status == "pass", result
     assert result.error_kind is None
     assert result.elements > 0
-    assert result.min_sicn is not None and result.min_sicn >= MIN_SICN_PASS
+    assert result.min_sicn is not None and result.min_sicn >= MIN_SICN
 
 
 def test_face_sharing_boxes_mesh_as_one_conformal_mesh(pool: WorkerPool, tmp_path: Path) -> None:
@@ -185,9 +183,9 @@ def test_the_orientation_conversion_does_not_hide_a_mirrored_tet(tmp_path: Path)
 
 
 def test_netgen_segfault_is_a_vote_against_the_file_not_infrastructure() -> None:
-    from meshpipeline.cad.repair_v4.verdict.netgen_member import INFRASTRUCTURE, member_result
+    from meshpipeline.cad.repair_v4.verdict.netgen_member import member_result
 
     segv = member_result("netgen_occ", {"ok": False, "stage": "crash", "returncode": -11, "error": "died"}, 0.0)
     assert (segv.status, segv.error_kind) == ("crashed", "netgen_crash")
     absent = member_result("netgen_occ", {"ok": False, "stage": "unavailable", "error": "none"}, 0.0)
-    assert absent.error_kind == INFRASTRUCTURE
+    assert absent.error_kind == INFRASTRUCTURE_KIND and absent.cause == "toolchain_absent"

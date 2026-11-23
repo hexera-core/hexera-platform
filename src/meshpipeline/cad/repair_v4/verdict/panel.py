@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 
 #: `MemberResult.error_kind` of a `timeout`/`crashed` result that says nothing about the file: the pool
 #: died, a worker could not be had, the process was SIGKILLed, a single timeout. The ONE definition:
-#: `assemble.INFRASTRUCTURE_KIND` and `netgen_member.INFRASTRUCTURE` must be this object, imported, not a
+#: `assemble`, `gmsh_members`, `netgen_member` all import this one, and must not retype it, not a
 #: retyped literal (`test_panel`: a scan for the literal outside this file, and a run that patches this
 #: value before importing every verdict module and finds none that kept the old string).
 INFRASTRUCTURE_KIND = "infrastructure"
@@ -53,6 +53,21 @@ POOL_MARGIN_S = 30.0
 def inner_timeout_s(timeout_s: float) -> float:
     """The clock a member's mesher subprocess gets under a pool budget of `timeout_s`."""
     return max(1.0, timeout_s - POOL_MARGIN_S) if timeout_s > 2 * POOL_MARGIN_S else timeout_s * 0.8
+
+
+def timeout_cause(timeouts: int, skipped: bool) -> str:
+    """`MemberResult.cause` of a timeout after `timeouts` of them; `skipped` = a retry was due and the
+    file's budget had none left. Shared by every member that retries."""
+    if timeouts >= 2:
+        return "timeout_after_hang" if skipped else "timeout_twice"
+    return "timeout_retry_spent" if skipped else "timeout_once"
+
+
+def sigkill_verdict(kills: int, skipped: bool) -> tuple[str, str]:
+    """`(error_kind, cause)` of a SIGKILLed mesher after `kills` of them: one blames nobody, a repeat is the file's."""
+    if kills >= 2:
+        return MESHER_CRASH_KIND, "sigkill_after_doom" if skipped else "sigkill_twice"
+    return INFRASTRUCTURE_KIND, "sigkill_retry_spent" if skipped else "sigkill"
 
 
 def signal_verdict(signum: int) -> tuple[str, str]:
