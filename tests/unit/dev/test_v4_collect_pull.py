@@ -185,6 +185,16 @@ def test_pull_refuses_a_shard_with_a_FAILED_marker_and_downloads_nothing(tmp_pat
     assert t.fetched == [] and not (tmp_path / "out").exists()
 
 
+def test_pull_refuses_a_shard_holding_both_FAILED_and_DONE(tmp_path, capsys) -> None:
+    bucket, _ = _wave()
+    bucket[f"{URI}/shard-2-of-3/FAILED"] = b""  # DONE stays: a rerun that failed after an earlier success
+    assert f"{URI}/shard-2-of-3/DONE" in bucket
+    rc, t = _run(tmp_path, bucket)
+    err = capsys.readouterr().err
+    assert rc == 1 and "shard-2-of-3" in err and "FAILED" in err
+    assert t.fetched == [] and not (tmp_path / "out").exists()
+
+
 def test_pull_refuses_a_shard_without_DONE_even_if_its_files_are_there(tmp_path, capsys) -> None:
     bucket, _ = _wave()
     del bucket[f"{URI}/shard-1-of-3/DONE"]  # still uploading: rows.json may be partial
@@ -221,6 +231,25 @@ def test_pull_refuses_mixed_images(tmp_path, capsys) -> None:
     _put_shard(sub, 1, N, [r for r in rows if evalspec.shard_of(r.sha256, 1, N)], image="img@sha256:2")
     rc, _t = _run(tmp_path, sub)
     assert rc == 1 and "image" in capsys.readouterr().err and not (tmp_path / "out").exists()
+
+
+def _f360_wave():
+    rows = _population() + [_row(500, "panel", "plc_intersection", source="f360")]
+    bucket, _ = _wave(rows=rows)
+    return bucket, rows
+
+
+def test_pull_refuses_an_f360_row_even_when_the_pool_manifest_lists_it(tmp_path, capsys) -> None:
+    bucket, rows = _f360_wave()
+    rc, _t = _run(tmp_path, bucket, rows=rows)  # pool.json still LISTS F360; the allowed pool does not
+    assert rc == 1 and "not in the pool" in capsys.readouterr().err and not (tmp_path / "out").exists()
+
+
+def test_f360_row_is_refused_as_a_licence_hold_even_with_the_pool_check_off(tmp_path, capsys) -> None:
+    bucket, rows = _f360_wave()
+    rc, _t = _run(tmp_path, bucket, "--no-pool-check", rows=rows)
+    err = capsys.readouterr().err
+    assert rc == 2 and "f360" in err and "licence hold" in err and not (tmp_path / "out").exists()
 
 
 def test_pull_refuses_when_the_planned_shard_count_differs(tmp_path, capsys) -> None:
@@ -324,6 +353,29 @@ def test_measure_still_refuses_a_failed_shard(tmp_path, capsys) -> None:
     rc = collect.main(["--pull", URI, "--to", str(tmp_path / "wave"), "--measure", "--wave-shards", "96",
                        "--pool", str(_pool(tmp_path, _population()))], transport=FakeTransport(one))
     assert rc == 1 and "exit_code" in capsys.readouterr().err
+
+
+def _measure_two(tmp_path, bucket) -> tuple[int, FakeTransport]:
+    t = FakeTransport(bucket)
+    rc = collect.main(["--pull", URI, "--to", str(tmp_path / "wave"), "--measure", "--wave-shards", "96",
+                       "--pool", str(_pool(tmp_path, _population()))], transport=t)
+    return rc, t
+
+
+def test_measure_still_refuses_mixed_commits(tmp_path, capsys) -> None:
+    bucket, rows = _wave()
+    sub = {k: v for k, v in bucket.items() if "shard-3-of-3" not in k and "shard-1-of-3" not in k}
+    _put_shard(sub, 1, N, [r for r in rows if evalspec.shard_of(r.sha256, 1, N)], commit="d" * 40)
+    rc, _t = _measure_two(tmp_path, sub)
+    assert rc == 1 and "commit" in capsys.readouterr().err
+
+
+def test_measure_still_refuses_mixed_images(tmp_path, capsys) -> None:
+    bucket, rows = _wave()
+    sub = {k: v for k, v in bucket.items() if "shard-3-of-3" not in k and "shard-1-of-3" not in k}
+    _put_shard(sub, 1, N, [r for r in rows if evalspec.shard_of(r.sha256, 1, N)], image="img@sha256:2")
+    rc, _t = _measure_two(tmp_path, sub)
+    assert rc == 1 and "image" in capsys.readouterr().err
 
 
 def test_measure_scales_the_estimates_by_what_the_shard_took() -> None:
