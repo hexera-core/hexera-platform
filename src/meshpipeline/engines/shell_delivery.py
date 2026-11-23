@@ -145,19 +145,11 @@ def asked_rows(quality: Mapping) -> list[dict]:
     """SHMESH-26: THE USER'S OWN REQUIREMENTS (read from their notes) as rows of the same list
     (engines/mesh_requirements.asked_rows): measured as the elements outside what was asked, never a blocker."""
     from meshpipeline.engines.mesh_requirements import asked_rows as rows
-    from meshpipeline.engines.mesh_requirements import line
 
-    out = rows(quality, source="your notes (engines/shell_requirements.py)")
-    # EVERY ASK READ HAS ITS ROW (round 4 G): one applied with no measure to judge it by - the nearest there is (a
-    # size asked on a piece of a part that is no face of its own, SHMESH-52) - is listed too, with its own words,
-    # never dropped from the report (the L plate's "1.5 mm on the vertical leg" had no row at all, m483 round 9)
-    rep = _map(quality.get("requirements"))
-    for r in rep.get("rows") or []:
-        if isinstance(r, Mapping) and r.get("met") is None and r.get("nearest") and r.get("applied") is not False:
-            out.append({"key": f"asked_{r.get('id')}", "label": f"You asked: {r.get('asked')}", "op": "==",
-                        "limit": 0, "measured": 0, "said": line(r),
-                        "source": "your notes (engines/shell_places.py, the nearest there is)"})
-    return out
+    # EVERY ASK READ HAS ITS ROW (round 4 G, m485w round 15): one with no measure to judge it by - the nearest there is
+    # (SHMESH-52), an edge-length target past its share, a setting, not applied - is listed too, told with its status
+    # (the L plate's "1.5 mm on the vertical leg" had no row at all, m483 round 9; a 1.5-3 mm range none, m485w R8)
+    return rows(quality, source="your notes (engines/shell_requirements.py)", told=True)
 
 
 def user_line(row: Mapping) -> str:
@@ -288,7 +280,10 @@ def results(workspace, q: Mapping, plan: Mapping) -> dict:
     rows = []
     for r in gating + limits(q):
         met = limit_met(r.get("measured"), str(r.get("op")), r.get("limit"))
-        rows.append({**{k: r.get(k) for k in ("key", "label", "op", "limit", "measured")}, "ok": met,
+        rows.append({**{k: r.get(k) for k in ("key", "label", "op", "limit", "measured")},
+                     # (a row told, not judged - the nearest there is - is never shown as met)
+                     "ok": None if r.get("told") else met,
+                     **({k: r[k] for k in ("told", "status", "shown") if k in r} if r.get("told") else {}),
                      "gating": r in gating, "words": words(r)})
     # SHMESH-26: the header's worst-quality figure is the user's Jacobian line when they set one (in place of its row,
     # so it is listed once)

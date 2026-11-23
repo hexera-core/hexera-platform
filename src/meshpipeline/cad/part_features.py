@@ -14,6 +14,12 @@ from collections.abc import Mapping
 import numpy as np
 
 RULE = "NOTE-6"
+#: What the areas mean, for a check that kept them (application/geometry_reuse keys on it: a check of the same bytes
+#: answered from an earlier one reuses its areas only when they were read by these rules). Bumped whenever the
+#: areas change: 4 (round 12) - walls that lie apart are areas apart (round 9), a part that is one plate offers no
+#: flat face of itself (round 11), an area that is the whole of its part says so (round 12). m483 round 13: 6b and
+#: 6c were answered from checks of earlier sessions whose areas predate them.
+VERSION = 4
 #: the most features listed (the largest kept)
 MAX_FEATURES = 40
 #: alike: the same radius within this share
@@ -175,12 +181,17 @@ def features(record: Mapping, surface) -> tuple[list[dict], dict[str, list[str]]
         for flat in flats:
             take("flat face", f"a large flat face, {float(faces[flat].get('area_mm2') or 0):,.0f} mm²", 1, [flat])
     found = found[:MAX_FEATURES]
+    # NOTE-6: AN AREA THAT IS THE WHOLE PART - every face of its part outside it is an opening (a hole, a bore, a
+    # notch) or an edge (a face too small to be any area of its own): words that name it name the whole part
+    openings = {f for kind, _n, _c, fs in found if kind in OPENING_KINDS for f in fs}
     rows: list[dict] = []
     faces_of: dict[str, list[str]] = {}
     for k, (kind, name, count, fs) in enumerate(found, start=1):
         fid = f"Feature_{k}"
         row: dict = {"id": fid, "feature": True, "kind": kind, "name": name.strip(), "count": count,
                      "in_part": _part_of(fs[0]), "faces": len(fs)}
+        if kind not in OPENING_KINDS and whole_of_part(fs, per_part.get(_part_of(fs[0]), []), faces, openings):
+            row["whole_part"] = True
         labs = [index[f] for f in fs if f in index]
         if labs and len(tris):
             sel = tris[np.isin(label, labs)]
@@ -203,22 +214,38 @@ def features(record: Mapping, surface) -> tuple[list[dict], dict[str, list[str]]
 
 #: NOTE-6: a part is one plate when its two largest flat faces are parallel and together this share of its area
 ONE_PLATE_SHARE = 0.7
+#: the areas that are openings of a part, not a place of it
+OPENING_KINDS = ("hole", "hole group", "bore", "notch")
+
+
+def whole_of_part(fs: list[str], part_faces: list[str], faces: Mapping, openings: set[str]) -> bool:
+    """NOTE-6: whether faces `fs` are the whole of their part as a place - every other face of the part is an opening
+    (`openings`) or an edge: a face under FLAT_SHARE of the part's area, too small to be an area of its own."""
+    area = sum(float(faces[n].get("area_mm2") or 0.0) for n in part_faces if n in faces)
+    if area <= 0 or not fs:
+        return False
+    mine = set(fs)
+    return all(n in mine or n in openings or float(faces[n].get("area_mm2") or 0.0) < FLAT_SHARE * area
+               for n in part_faces if n in faces)
 
 
 def _one_plate(flats: list[str], faces: Mapping, area: float, normal_of) -> bool:
     """NOTE-6: whether the part is one plate - exactly two large flat faces, parallel and a wall apart (each other's
     other side: their centroids lie their measured thickness apart along the normal), that together are most of its
     area: neither is a piece of the part, each is the part's own side."""
-    if len(flats) != 2:
+    if len(flats) != 2 or any(faces[f].get("kind") != "plane" for f in flats):
         return False
     a, b = (normal_of(f) for f in flats)
-    if a is None or b is None or abs(float(np.dot(a, b))) < 0.99:
+    if a is not None and b is not None and abs(float(np.dot(a, b))) < 0.99:
         return False
     c1, c2 = (faces[f].get("centroid_mm") for f in flats)
     t = float(faces[flats[0]].get("thickness_median_mm") or 0.0)
     if not (isinstance(c1, (list, tuple)) and isinstance(c2, (list, tuple)) and len(c1) == len(c2) == 3 and t > 0):
         return False
-    apart = abs(float(np.dot(np.asarray(c1, dtype=float) - np.asarray(c2, dtype=float), a)))
+    d = np.asarray(c1, dtype=float) - np.asarray(c2, dtype=float)
+    # (along the normal; with no surface to read it from - the stage's checklist reads the record alone, and the L
+    # plate's two sides were offered there in round 10 - the centroids of two sides of one outline lie a wall apart)
+    apart = abs(float(np.dot(d, a))) if a is not None and b is not None else float(np.linalg.norm(d))
     if abs(apart - t) > 0.25 * t:
         return False
     return sum(float(faces[f].get("area_mm2") or 0.0) for f in flats) >= ONE_PLATE_SHARE * float(area)

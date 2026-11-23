@@ -148,6 +148,12 @@ def _fea_limits(fea: Mapping) -> str:
     for r in (_m(x) for x in _l(_m(fea.get("check")).get("rows"))):
         if isinstance(r.get("measured"), list):
             continue                       # a list of places: its own section below
+        if r.get("told"):
+            # an ask told, not judged (mesh_requirements.told_status): its own figure and status in plain words
+            status = str(r.get("status") or ("Nearest there is" if r.get("told") == "nearest" else ""))
+            rows.append([_e(r.get("label") or r.get("key")), _e(str(r.get("shown") or "")), "as asked",
+                         _ok(True) if status == "Met" else f'<span class="na">{_e(status)}</span>'])
+            continue
         rows.append([_e(r.get("label") or r.get("key")), _e(_num(r.get("measured"))),
                      _e(_limit(r.get("op"), r.get("limit"))), _ok(r.get("ok"))])
     note = _m(fea.get("check")).get("solvers")
@@ -165,13 +171,21 @@ def _asked_rows(payload: Mapping) -> list[list[str]]:
         asked = str(r.get("asked") or "")
         came = f" (from your {r.get('from')})" if r.get("from") and r.get("from") != "stage" else ""
         met = r.get("met")
-        result = (_ok(met) if met in (True, False) else
-                  '<span class="na">Not applied</span>' if r.get("applied") is False else
-                  '<span class="na">Flexible: told</span>' if r.get("flexible") else
-                  '<span class="na">Told: prism layers</span>' if r.get("layer_cells") else
-                  '<span class="na">Finer: told</span>' if r.get("finer_than_asked") else
-                  '<span class="na">Nearest there is</span>' if r.get("nearest") else
-                  '<span class="na">Set as asked</span>')
+        if met in (True, False):
+            result = _ok(met)
+        elif r.get("applied") is not False and (r.get("flexible") or r.get("layer_cells")
+                                                or r.get("finer_than_asked")):
+            # NOTE-14: a flexible limit, a layer count told as prism layers, a size finer than asked - told
+            result = ('<span class="na">Flexible: told</span>' if r.get("flexible") else
+                      '<span class="na">Told: prism layers</span>' if r.get("layer_cells") else
+                      '<span class="na">Finer: told</span>')
+        else:
+            # told, not judged, in the same words as the FEA tables (mesh_requirements.told_status)
+            from meshpipeline.engines.mesh_requirements import told_status
+            status = told_status(r)[1]
+            result = _ok(True) if status == "Met" else (
+                '<span class="na">Set as asked</span>' if status.startswith("Applied")
+                else f'<span class="na">{_e(status)}</span>')
         out.append([_e(f"You asked: {asked[:1].upper() + asked[1:]}{came}"), _e(r.get("delivered") or ""),
                     _e("as asked"), result])
     return out

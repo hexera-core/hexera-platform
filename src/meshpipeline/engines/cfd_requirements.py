@@ -115,7 +115,7 @@ def flow_run(workspace, state=None) -> bool:
 
 
 async def read_for_attempt(workspace, state, *, job_id: str = "", publish=None, run=None,
-                           wait_s: float | None = None) -> dict:
+                           wait_s: float | None = None, engine: str = "") -> dict:
     """NOTE-10 / CFDREQ-1: the notes read once for this attempt on the flow route, kept in the workspace for every
     engine (and every process) that builds it, cited, and told before any mesh is made - one short line each, and
     what was not applied. No words: nothing asked, nothing written, nothing said. Never raises (but a fenced
@@ -141,6 +141,11 @@ async def read_for_attempt(workspace, state, *, job_id: str = "", publish=None, 
     off = str(sec.get("standard_not_applied") or "") if sec.get("status") == "none" else ""
     # CFDREQ-8: the flow conditions the user confirmed size the first layer, as a y+ in their notes would
     sec = with_conditions(sec, state)
+    # NOTE-15: what the notes say that the product acted on outside the reading - the engine they name (this
+    # attempt's engine says whether it was used), the flow conditions confirmed, the kind of mesh, the unit - is
+    # never told or counted as not applied, whatever the reading made of it
+    from meshpipeline.engines import notes_acted as NA
+    sec = NA.apply(sec, MR.notes_text(state or {}), NA.facts_of(state, engine))
     MR.write(ws, sec)
     (ws / PLAN_FILE).unlink(missing_ok=True)          # a carried plan never speaks for this attempt
     if off:
@@ -740,39 +745,107 @@ def snappy_wake(ask: Ask, wake, *, wall_cell: float):
     return wake
 
 
+#: the roles an opening is confirmed with at intake that make it an opening (port_declaration.json's "type")
+OPENING_ROLES = ("inlet", "outlet", "opening", "farfield", "symmetry")
+
+
+def port_roles(workspace) -> dict[str, str]:
+    """CFDREQ-12: each declared opening's confirmed role by its name ({"p_1": "inlet", "p_2": "outlet"}), from the
+    intake's port declaration (engines/workspace_facts.port_declaration); {} when none was confirmed."""
+    from meshpipeline.engines.workspace_facts import port_declaration
+    out: dict[str, str] = {}
+    for p in port_declaration(workspace) if workspace else []:
+        if isinstance(p, Mapping) and str(p.get("type") or "").lower() in OPENING_ROLES and p.get("name"):
+            out[str(p["name"])] = str(p["type"]).lower()
+    return out
+
+
+def _role_of(name: str, roles: Mapping[str, str]) -> str:
+    """An opening's confirmed role, by its name as declared or as the mesher spells it (p-1 / p_1)."""
+    if name in roles:
+        return roles[name]
+    flat = {re.sub(r"[^A-Za-z0-9]+", "_", k).strip("_").lower(): v for k, v in roles.items()}
+    return flat.get(re.sub(r"[^A-Za-z0-9]+", "_", name).strip("_").lower(), "")
+
+
+def openings_named(where: str, openings: list[str], roles: Mapping[str, str]) -> tuple[list[str], str]:
+    """CFDREQ-12: the openings a place's words name, and how ("" by name). A ROLE the user confirmed at intake comes
+    first ("the outlet": the opening confirmed as the outlet, whatever the CAD called it; "outlet 2": the second
+    of them; "the outlets", or one role several openings share with no number: all of them, said), then the name.
+    The role wins over a name that is another opening's (said which was used). ([], "") when neither matches."""
+    words = re.findall(r"[a-z0-9]+", str(where).casefold())
+    have = {o: _role_of(o, roles) for o in openings}
+    for role in dict.fromkeys(r for r in have.values() if r):
+        if role not in words and f"{role}s" not in words:
+            continue
+        mine = [o for o in openings if have[o] == role]
+        at = words.index(role) if role in words else words.index(f"{role}s")
+        n = words[at + 1] if at + 1 < len(words) and words[at + 1].isdigit() else ""
+        by_name = _region_of(where, openings)
+        if n and 1 <= int(n) <= len(mine):
+            mine = [mine[int(n) - 1]]
+        how = f"the {role} you confirmed"
+        if len(mine) > 1:
+            how = f"all {len(mine)} openings you confirmed as {role}s"
+        if by_name is not None and by_name not in mine:
+            how += f"; the opening named '{by_name}' is your {have[by_name] or 'other opening'}, so it was not used"
+        return mine, how
+    hit = _region_of(where, openings)
+    return ([hit], "") if hit is not None else ([], "")
+
+
+def _openings_words(openings: list[str], roles: Mapping[str, str]) -> str:
+    return ", ".join(f"{o} ({_role_of(o, roles)})" if _role_of(o, roles) else o for o in sorted(openings)) or "none"
+
+
 @guarded(lambda ask, port_lvls, *a, **_k: dict(port_lvls))
 def snappy_port_levels(ask: Ask, port_lvls: dict, names: Mapping, wall_key: str, *, base_m: float,
-                       hard_max: int = 10) -> dict:
-    """An internal flow's sizes in named places: a port the user named gets their size (or one level finer or
-    coarser) on its own surface; the walls by name take the wall's own size; anything else is told."""
+                       hard_max: int = 10, roles: Mapping[str, str] | None = None) -> dict:
+    """An internal flow's sizes in named places: a port the user named - by the role they confirmed for it, or by
+    its name (CFDREQ-12) - gets their size (or one level finer or coarser) on its own surface; the walls by name
+    take the wall's own size; anything else is told, with every opening and its role."""
     out = dict(port_lvls)
     ports = {str(names[p]): p for p in names if p != wall_key}
+    roles = dict(roles or {})
     for e in ask.local:
         where = str(e.get("where") or "")
         if "wake" in where.casefold():
             ask.not_here(e["id"], "an internal flow has no wake behind a body")
             continue
-        hit = _region_of(where, list(ports))
-        if hit is None:
+        hits, how = openings_named(where, list(ports), roles)
+        if not hits:
             if re.search(r"\b(wall|walls|surface|pipe|duct|passage|inside)\b", where, re.I):
                 ask.not_here(e["id"], "the walls take the size at the walls; give it as a wall cell size")
             else:
                 ask.not_here(e["id"], f"no opening named '{where}' in this model (its openings: "
-                                      f"{', '.join(sorted(ports)) or 'none'})")
+                                      f"{_openings_words(list(ports), roles)})")
             continue
-        p = ports[hit]
-        now = int(out.get(p, 1))
-        if e["what"] == "size":
-            lv = level_for(base_m, float(e["mm"]) * 1e-3, lo=1, hi=hard_max)
-        else:
-            lv = min(hard_max, now + 1) if e["what"] == "finer" else max(1, now - 1)
-        if lv < now:
-            # an opening is held at the level that keeps it open (coarser, castellation can close it)
-            ask.nearest(e["id"], f"cells of {_mm(base_m / 2 ** now)} on {hit}: larger cells could close the opening",
-                        built_m=base_m / 2 ** now)
+        made, held = [], []
+        for hit in hits:
+            p = ports[hit]
+            now = int(out.get(p, 1))
+            if e["what"] == "size":
+                lv = level_for(base_m, float(e["mm"]) * 1e-3, lo=1, hi=hard_max)
+            else:
+                lv = min(hard_max, now + 1) if e["what"] == "finer" else max(1, now - 1)
+            if lv < now:
+                # an opening is held at the level that keeps it open (coarser, castellation can close it)
+                held.append((hit, now))
+                continue
+            out[p] = lv
+            made.append((hit, lv))
+        tail = f" ({how})" if how else ""
+        if not made:
+            hit, now = held[0]
+            ask.nearest(e["id"], f"cells of {_mm(base_m / 2 ** now)} on {' and '.join(h for h, _n in held)}: larger "
+                                 f"cells could close the opening{tail}", built_m=base_m / 2 ** now)
             continue
-        out[p] = lv
-        ask.done(e["id"], f"cells of {_mm(base_m / 2 ** lv)} on {hit}", built_m=base_m / 2 ** lv)
+        lv = made[0][1]
+        said = f"cells of {_mm(base_m / 2 ** lv)} on {' and '.join(h for h, _n in made)}{tail}"
+        if held:
+            said += (f"; {' and '.join(h for h, _n in held)} kept at cells of {_mm(base_m / 2 ** held[0][1])}: larger "
+                     "cells could close the opening")
+        ask.done(e["id"], said, built_m=base_m / 2 ** lv)
     return out
 
 
@@ -974,12 +1047,16 @@ def cfmesh_fit_count(ask: Ask, *, volume: float, max_cell: float, wall_cell: flo
 
 @guarded(lambda ask, patches, wall_patch, **k: ('', [], k['wall_cell']))
 def cfmesh_local(ask: Ask, patches, wall_patch: str, *, max_cell: float, wall_cell: float, floor: float,
-                 body_bbox=None, domain=None, budget: int | None = None) -> tuple[str, list[dict], float]:
+                 body_bbox=None, domain=None, budget: int | None = None,
+                 roles: Mapping[str, str] | None = None) -> tuple[str, list[dict], float]:
     """(localRefinement entries for the patches the user named, objectRefinements for a wake box). A coarser cell
     than the wall's on a named wall is not a refinement cfMesh makes: said."""
     from meshpipeline.engines.cfmesh.cfmesh_runner import octree_cell
 
     names = [str(p.get("name")) for p in (patches or []) if p.get("name")]
+    # CFDREQ-12: the roles confirmed at intake - the patches' own types, over the port declaration's
+    roles = {**dict(roles or {}), **{str(p["name"]): str(p.get("type") or "").lower() for p in (patches or [])
+                                     if p.get("name") and str(p.get("type") or "").lower() in OPENING_ROLES}}
     entries, boxes = "", []
     for e in ask.local:
         where = str(e.get("where") or "")
@@ -1018,12 +1095,25 @@ def cfmesh_local(ask: Ask, patches, wall_patch: str, *, max_cell: float, wall_ce
             else:
                 ask.done(e["id"], said, built_m=octree_cell(max_cell, cell))
             continue
-        hit = _region_of(where, names)
+        # CFDREQ-12: an opening by the role the user confirmed for it first ("the outlet"), then by its name
+        hits, how = openings_named(where, [n for n in names if n != wall_patch], roles)
+        if len(hits) > 1 or (hits and how):
+            if size is None:
+                ask.not_here(e["id"], "this mesher refines a surface; a coarser cell than the wall's is not a "
+                                      "refinement it makes")
+                continue
+            size = max(size, floor)
+            entries += "".join(f"    {h} {{ cellSize {size:.6g}; }}\n" for h in hits)
+            ask.done(e["id"], f"cells of {_mm(octree_cell(max_cell, size))} on {' and '.join(hits)}"
+                              + (f" ({how})" if how else ""), built_m=octree_cell(max_cell, size))
+            continue
+        hit = hits[0] if hits else _region_of(where, names)
         if hit is None:
             if len([n for n in names if n == wall_patch]) and len(names) <= 3 and e["what"] != "coarser":
                 hit = wall_patch          # one body: "around the wing" is its wall
             else:
-                ask.not_here(e["id"], f"no part named '{where}' in this model (its parts: {', '.join(names)})")
+                ask.not_here(e["id"], f"no part named '{where}' in this model (its parts: "
+                                      f"{_openings_words(names, roles)})")
                 continue
         if size is None:
             ask.not_here(e["id"], "this mesher refines a surface; a coarser cell than the wall's is not a refinement it "
@@ -1836,7 +1926,10 @@ def report(workspace, quality: Mapping, engine: str) -> dict | None:
     sec = MR.read(workspace) if workspace else {}
     req = requirements_for(workspace) or {}
     aside = [str(d) for d in (sec.get("dropped") or [])] if sec.get("status") == "used" else []
-    if not req.get("rows") and not aside:
+    # NOTE-15: the engine the notes chose is an ask too, met when it built this mesh
+    from meshpipeline.engines import notes_acted as NA
+    engine_row = NA.report_row(sec, engine)
+    if not req.get("rows") and not aside and engine_row is None:
         return None
     plan = (_plan(workspace).get("rows") or {})
     q = dict(quality or {})
@@ -1889,6 +1982,8 @@ def report(workspace, quality: Mapping, engine: str) -> dict | None:
         why = why.removesuffix(": not applied").removesuffix(" not applied").strip() or "it could not be read"
         rows.append({"id": f"x{i}", "field": "set_aside", "asked": asked.strip().strip('"'), "applied": False,
                      "met": None, "delivered": f"not applied - {why}"})
+    if engine_row is not None:
+        rows.insert(0, engine_row)
     return MR.finish_report(rows, n_meas or n, DEFINITIONS)
 
 

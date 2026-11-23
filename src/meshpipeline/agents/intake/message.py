@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import enum
+import time
 import uuid
 from dataclasses import dataclass, field
 from typing import Any
@@ -56,6 +57,9 @@ class MessageStatus(str, enum.Enum):
     #: a yes before the notes were finalized: they are read first, and the same yes then starts the
     #: run (NOTE-5)
     reading_first = "reading_first"
+    #: a bare yes with no plan awaiting it: never the model's - our fixed line with the true state, and the plan
+    #: offered again when there is one (a run that did not start, a plan that expired)
+    yes_nothing_pending = "yes_nothing_pending"
     #: the session does not exist for this owner
     not_found = "not_found"
 
@@ -137,7 +141,7 @@ class MessageOutcome:
         return self.status in (MessageStatus.approval_deferred, MessageStatus.unit_question,
                                MessageStatus.already_dispatched, MessageStatus.geometry_hold,
                                MessageStatus.unit_changed, MessageStatus.purpose_question,
-                               MessageStatus.reading_first)
+                               MessageStatus.reading_first, MessageStatus.yes_nothing_pending)
 
     @property
     def continues_to_intake(self) -> bool:
@@ -168,6 +172,8 @@ class _LastRun:
     outcome: str
     engine: str = ""
     purpose: str = ""
+    #: whether it ever started (a run refused at dispatch ends failed without starting)
+    started: bool = True
 
     @property
     def live(self) -> bool:
@@ -222,7 +228,8 @@ async def _last_run(db, *, locked, gate: dict, job_repo) -> _LastRun | None:
     status = str(getattr(raw_status, "value", raw_status) or "")
     from meshpipeline.application.run_facts import of_final_result
     made = of_final_result(getattr(job, "final_result", None) if job is not None else None)
-    return _LastRun(job_id=job_id, status=status, outcome=_outcome_of(job), **made)
+    return _LastRun(job_id=job_id, status=status, outcome=_outcome_of(job), **made,
+                    started=job is None or getattr(job, "started_at", None) is not None)
 
 
 async def accept(inbound: InboundMessage, *, session_repo, db_factory, logger,
@@ -267,6 +274,21 @@ async def accept(inbound: InboundMessage, *, session_repo, db_factory, logger,
                 logger.info("intake message: run %s has ended (%s) - session %s moves on to "
                             "another run", run.job_id, run.status or "record gone",
                             inbound.session_id)
+
+        nothing = yes_with_nothing_pending(inbound.content, gate, run, messages)
+        if nothing is not None:
+            # A BARE YES WITH NO PLAN AWAITING IT never reaches the model: after a run refused at dispatch it wrote
+            # "The run is submitted. The application handles mesh generation..." and no run was (m483 round 10)
+            reply, gate_after = nothing
+            if gate_after is not None:
+                await session_repo.set_intake_gate(db, inbound.session_id, gate_after)
+            await session_repo.append_message(db, inbound.session_id, "assistant", reply)
+            await db.commit()
+            logger.info("intake message: a yes with nothing pending - %s - session=%s",
+                        "the plan offered again" if gate_after is not None else "no plan yet", inbound.session_id)
+            return MessageOutcome(status=MessageStatus.yes_nothing_pending, reply=reply,
+                                  awaiting_confirmation=gate_after is not None,
+                                  transition=GateTransition(revision=revision), previous_run=previous)
 
         outcome = await _settle(inbound, db, gate=gate, locked=locked, messages=messages,
                                 revision=revision, session_repo=session_repo, logger=logger)
@@ -480,6 +502,41 @@ def _unit_left_unmeasured(inbound: InboundMessage, gate: dict) -> bool:
     from meshpipeline.application import geometry_hold as gh
 
     return gh.measured_size_mm(str(inbound.session_id)) is None
+
+
+#: A BARE YES WITH NOTHING PENDING (yes_with_nothing_pending): our words for the true state
+DID_NOT_START_REPLY = "That run did not start: {why}. Press Proceed to try again."
+#: the plain reason a run refused at dispatch is told by (its own error is the application's, not the user's)
+DID_NOT_START_WHY = "the plan could not be handed to the mesher"
+NO_PLAN_REPLY = "There is no plan to start yet. Tell me what you are meshing, and I'll show the plan."
+#: how many words a reply may have and still be a bare yes ("Proceed", "yes", "go", "ok please")
+_BARE_YES_WORDS = 3
+
+
+def yes_with_nothing_pending(content: str, gate: dict, run, messages: list) -> tuple[str, dict | None] | None:
+    """A bare yes ("Proceed", "yes", "go", "ok") arriving when no plan awaits it: (our reply, the gate with the plan
+    offered again - None when there is no plan), or None when this is no such message. A run that did not start (it
+    was refused at dispatch) is said so and its plan offered again; any other last plan is offered again as it
+    stands; no plan at all is said plainly. A running run never gets here (already_dispatched answers it)."""
+    text = str(content or "").strip()
+    approval = (gate or {}).get("approval")
+    if ap.is_live(approval) or not text or len(text.split()) > _BARE_YES_WORDS or ap.classify(text) != ap.APPROVE_INTENT:
+        return None
+    if not approval:
+        # no plan was ever made: a yes here answers the questions before it (the conditions' OK, the unit's ok) - the
+        # questionnaire's, never ours to stop. Only a yes with the last word ours, the plan line, is said to be early
+        last = next((str(m.get("content") or "") for m in reversed(messages or ())
+                     if isinstance(m, dict) and m.get("role") == "assistant"), "")
+        return (NO_PLAN_REPLY, None) if last.strip().endswith(ap.PROCEED_ASK) else None
+    expired = approval.get("status") == ap.AWAITING and time.time() > float(approval.get("expires_at", 0) or 0)
+    if not approval.get("payload") or not (approval.get("status") == ap.DISPATCHED or expired):
+        # (a plan withdrawn by a correction is the turn's to remake, with the questions it asks)
+        return None
+    users = sum(1 for m in messages or () if isinstance(m, dict) and m.get("role") == "user")
+    again = {**gate, "approval": ap.rearm(approval, user_msg_count=users)}
+    if run is not None and run.status == "failed" and not run.started:
+        return DID_NOT_START_REPLY.format(why=DID_NOT_START_WHY), again
+    return ap.PROCEED_ASK, again
 
 
 #: said while a yes waits for the notes to be read (the run starts the moment they are)
@@ -959,6 +1016,33 @@ _REQUIREMENT_WRITES: tuple[tuple[str, str], ...] = (
 
 #: Event channels the turn can produce, in the order they must be appended.
 _EVENT_KEYS = ("_intake_training_event", "_intake_agent_run_event")
+
+
+async def offer_again_after_failed_start(session_id, owner_id: str, *, session_repo, db_factory=None) -> str:
+    """A RUN REFUSED AT DISPATCH is told at that moment, in our words, and its plan offered again - never an HTTP
+    error the console shows as "Could not send that: ..." (a fingerprint mismatch, m483 round 10). Returns the line;
+    the plan stands again, so the user's next Proceed starts it. Its transaction is opened here, as the approval
+    authority opens its own - never by the route, which stays transport only."""
+    if db_factory is None:
+        from meshpipeline.persistence.session import get_db
+        db_factory = get_db
+    reply = DID_NOT_START_REPLY.format(why=DID_NOT_START_WHY)
+    async with db_factory() as db:
+        locked = await session_repo.get_for_update(db, session_id)
+        if locked is None or locked.owner_id != owner_id:
+            return reply
+        gate = dict(getattr(locked, "intake_gate", None) or {})
+        approval = gate.get("approval")
+        if approval and approval.get("payload"):
+            users = sum(1 for m in getattr(locked, "messages", None) or [] if isinstance(m, dict)
+                        and m.get("role") == "user")
+            gate["approval"] = ap.rearm(approval, user_msg_count=users)
+            await session_repo.set_intake_gate(db, session_id, gate)
+        if getattr(locked, "job_id", None):
+            await session_repo.release_job(db, session_id)
+        await session_repo.append_message(db, session_id, "assistant", reply)
+        await db.commit()
+    return reply
 
 
 async def persist_turn(inbound: InboundMessage, result: dict, *, session_repo,

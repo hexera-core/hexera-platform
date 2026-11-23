@@ -184,10 +184,23 @@ def test_an_extra_producer_key_fails_before_anything_is_launched():
     def _build_with_rogue_key(**fields):
         return real_build(**fields, rogue_field="x")
 
-    with patch.object(dc, "build", _build_with_rogue_key):
-        with pytest.raises(Exception) as exc:      # surfaced to the caller, not swallowed
-            _run_real_confirmation(session)
-    assert "does not accept" in str(exc.value) or "500" in str(exc.value)
+    # (m483 round 10: a run refused at dispatch is told in our words, with the plan offered again so Proceed
+    # works - never a 500 the console shows as "Could not send that: ..."; the refusal itself is still logged and
+    # nothing is launched)
+    from meshpipeline.agents.intake import message as msg
+
+    @asynccontextmanager
+    async def _db():
+        yield AsyncMock()
+
+    with patch.object(dc, "build", _build_with_rogue_key), patch.object(chat_mod, "get_db", _db), \
+            patch.object(msg, "offer_again_after_failed_start",
+                         AsyncMock(return_value=msg.DID_NOT_START_REPLY.format(why=msg.DID_NOT_START_WHY))) as told:
+        resp, captured, _made = _run_real_confirmation(session)
+    assert "payload" not in captured                      # nothing launched
+    assert "persisted" not in captured                    # ... and nothing persisted for it
+    assert told.await_count == 1 and resp.awaiting_confirmation is True
+    assert resp.reply == msg.DID_NOT_START_REPLY.format(why=msg.DID_NOT_START_WHY)
 
 
 def test_a_missing_required_consumer_field_fails():
