@@ -28,9 +28,11 @@ def _cube_in(tmp_path, unit: str):
     from OCP.Interface import Interface_Static
     from OCP.STEPControl import STEPControl_AsIs, STEPControl_Writer
 
+    # the writer first: OCC registers "write.step.unit" when the first STEP writer of the process is made, and a unit
+    # set before that is dropped (the file then says millimetres: this test failed whenever it ran first)
+    w = STEPControl_Writer()
     Interface_Static.SetCVal_s("write.step.unit", unit)
     try:
-        w = STEPControl_Writer()
         # a cube 1 file unit along each side: OCC writes its millimetres in the file's unit
         side_mm = {"FT": 304.8, "MM": 1.0}[unit]
         w.Transfer(BRepPrimAPI_MakeBox(side_mm, side_mm, side_mm).Shape(), STEPControl_AsIs)
