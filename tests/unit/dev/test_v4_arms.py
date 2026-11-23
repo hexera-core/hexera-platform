@@ -206,11 +206,40 @@ def test_input_only_staged_and_search_det_write_rows_the_report_accepts(shard: A
     assert excluded == [] and [r["arm"] for r in rows] == ["input_only", "staged", "search_det"]
     by = {r["arm"]: r for r in rows}
     assert by["input_only"]["out_panel_passes"] == by["input_only"]["in_panel_passes"] == 0
-    assert by["staged"]["out_panel_passes"] == 1 and engine.staged_calls == 1
+    assert by["staged"]["out_panel_passes"] == 1 and engine.staged_calls == 2  # the staged arm, and search_det's start
     assert by["search_det"]["reason"] == "exhausted" and by["search_det"]["verdict_candidates"] == 0
     assert all(r["model_usd"] == 0.0 for r in rows)
     for r in rows:                                  # the report's own loader: the rows are a real ArmRow contract
         assert report._row_from_dict(r).inconclusive is False
+
+
+def test_a_search_arm_starts_from_the_staged_healers_output_as_the_engine_does(shard: Any) -> None:
+    """Spec 5.7 and the seam contract (04, call order): the search's start state is `run_staged`'s output. An eval arm
+    that searched the raw input would measure a pipeline the engine never ships."""
+    engine = FakeEngine()
+    [row], excluded = go(shard, "search_det", None, engine)
+    assert excluded == [] and engine.staged_calls == 1
+    # DetGenerator has no sweep for this world's site kind, so the result IS the start: the staged state (q=1)
+    assert row["in_panel_passes"] == 0 and row["out_panel_passes"] == 1
+
+
+def test_a_search_row_carries_the_cheap_full_table_of_the_states_it_confirmed(shard: Any, wire: Wire) -> None:  # noqa: F811
+    wire.candidate = CLEAN_CANDIDATE
+    [row], _ = go(shard, "search_ai", ledgered())
+    cf = row["cheap_full"]
+    assert set(cf) == set(report.CHEAP_FULL_CELLS) and cf["cheap_pass_full_pass"] >= 1
+    assert report._row_from_dict(row).cheap_full == cf
+    [det], _ = go(shard, "search_det", None)
+    assert det["cheap_full"] == dict.fromkeys(report.CHEAP_FULL_CELLS, 0)  # nothing confirmed: zeros, not absent
+
+
+def test_cheap_full_cells_reads_the_confirm_events() -> None:
+    cells = run_arm.arms_mod.cheap_full_cells([
+        {"cheap_score": [1, 1, 0.3, 0.0, 0], "clean": True}, {"cheap_score": [1, 1, 0.3, 0.0, 0], "clean": False},
+        {"cheap_score": [0, 1, 0.3, 0.0, 0], "clean": True}, {"cheap_score": [1, 0, 0.0, 0.0, 0], "clean": False},
+        {"cheap_score": None, "clean": True}])
+    assert cells == {"cheap_pass_full_pass": 1, "cheap_pass_full_fail": 1, "cheap_fail_full_pass": 1,
+                     "cheap_fail_full_fail": 1}
 
 
 def test_search_det_builds_no_proposer_and_so_never_reaches_a_model(shard: Any, wire: Wire) -> None:  # noqa: F811

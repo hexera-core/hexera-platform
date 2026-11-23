@@ -89,6 +89,9 @@ SPEND_EPS_USD = 1e-6
 #: The injector's status for a defect no op may repair by design (inject.KIND_STATUS); the one string the report
 #: reads, and `load_wave` checks it against the injector's own declined kinds.
 DECLINED_STATUS = "declined_stratum"
+#: The cells of a search row's `cheap_full` table; the same names `arms.CHEAP_FULL_CELLS` writes and
+#: `reprobe.agreement` reports (not imported from arms.py, which would pull the arm dispatch into the report).
+CHEAP_FULL_CELLS = ("cheap_pass_full_pass", "cheap_pass_full_fail", "cheap_fail_full_pass", "cheap_fail_full_fail")
 _SHA40 = re.compile(r"^[0-9a-f]{40}$")
 
 
@@ -124,6 +127,10 @@ class ArmRow:
     verdict_candidates: int | None = None
     inconclusive_candidates: int | None = None
     infrastructure_failed: bool | None = None
+    #: search arms only: cheap tier vs full panel over the states the search CONFIRMED (`arms.cheap_full_cells`),
+    #: the four cells named as `reprobe.agreement` names them. Optional: a row without it is counted as missing data
+    #: in `cheap_full_agreement`, never as agreement.
+    cheap_full: dict | None = None
 
     @property
     def clean(self) -> bool:
@@ -175,6 +182,13 @@ def _row_from_dict(d: Mapping[str, Any]) -> ArmRow:
         raise ReportRefused(f"{where}: reason={row.reason!r} is not a string")
     if row.infrastructure_failed is not None and not isinstance(row.infrastructure_failed, bool):
         raise ReportRefused(f"{where}: infrastructure_failed={row.infrastructure_failed!r} is not a boolean")
+    if row.cheap_full is not None:
+        if row.arm not in SEARCH_ARMS:
+            raise ReportRefused(f"{where}: cheap_full is a search measurement; arm {row.arm!r} runs no search")
+        if not isinstance(row.cheap_full, dict) or set(row.cheap_full) != set(CHEAP_FULL_CELLS) or any(
+                not isinstance(v, int) or isinstance(v, bool) or v < 0 for v in row.cheap_full.values()):
+            raise ReportRefused(f"{where}: cheap_full={row.cheap_full!r} must map exactly {list(CHEAP_FULL_CELLS)} "
+                                "to non-negative integers")
     if row.infrastructure_failed is False and row.reason == "no_verdict":
         raise ReportRefused(f"{where}: reason='no_verdict' but infrastructure_failed=False: contradictory")
     if row.derived_inconclusive and not row.inconclusive:
@@ -501,7 +515,48 @@ def _paired_columns(by_sha: Mapping[str, dict[str, ArmRow]], blocks: dict[str, d
         else:
             b["paired"] = {"n": len(shared), "clean": None, "clean_rate": None, "clean_in": None, "clean_gain": None}
     return {"arms": arms, "n_files": len(shared), "of": n_files,
+            # plan amendment 2026-11-23 (3): the threshold is REPORTED beside the actual fraction, every time, so a
+            # reader sees the number it is judging and not only a warning when it is crossed
+            "fraction": len(shared) / n_files if n_files else None, "min_fraction": MIN_PAIRED_FRACTION,
             "excluded_not_measured": [a for a in blocks if a not in arms]}
+
+
+def _agreement(cells: Mapping[str, int]) -> dict[str, Any]:
+    """`reprobe.agreement`'s shape, over a cheap/full table."""
+    pp, pf = cells["cheap_pass_full_pass"], cells["cheap_pass_full_fail"]
+    fp, ff = cells["cheap_fail_full_pass"], cells["cheap_fail_full_fail"]
+    both = pp + pf + fp + ff
+    return {"compared": both, **dict(cells), "agree": (pp + ff) / both if both else None,
+            "cheap_miss_rate_among_cheap_passes": pf / (pp + pf) if pp + pf else None,
+            "cheap_false_alarm_rate_among_cheap_fails": fp / (fp + ff) if fp + ff else None}
+
+
+def _cheap_full_block(rows: Iterable[ArmRow], arms: Sequence[str]) -> dict[str, Any]:
+    """Cheap/full agreement of the search's ranking tier, per search arm and pooled, over the states each search
+    confirmed. Every row counts, whatever the file's category: it measures the TIER, not the file. A search row with
+    no table is counted in `rows_without_data`, so missing data cannot read as perfect agreement."""
+    search = [a for a in arms if a in SEARCH_ARMS]
+    if not search:
+        return {"measured": False, "reason": "no search arm in this wave: the cheap tier only ranks search states"}
+    per: dict[str, dict[str, Any]] = {}
+    pooled = dict.fromkeys(CHEAP_FULL_CELLS, 0)
+    for a in search:
+        cells = dict.fromkeys(CHEAP_FULL_CELLS, 0)
+        missing = 0
+        for r in rows:
+            if r.arm != a:
+                continue
+            if r.cheap_full is None:
+                missing += not r.inconclusive  # an unmeasured search confirmed nothing; a conclusive one must say so
+                continue
+            for k in CHEAP_FULL_CELLS:
+                cells[k] += r.cheap_full[k]
+                pooled[k] += r.cheap_full[k]
+        per[a] = {**_agreement(cells), "rows_without_data": missing}
+    total = _agreement(pooled)
+    return {"measured": total["compared"] > 0, "unit": "states confirmed by the full panel", "arms": per,
+            "pooled": total, "rows_without_data": sum(p["rows_without_data"] for p in per.values()),
+            "source": "search confirm events (the re-probe's own agreement is in collect.py report['agreement'])"}
 
 
 def _paired(rows: Mapping[str, dict[str, ArmRow]], a: str, b: str, blocks: Mapping[str, Any]) -> dict[str, Any]:
@@ -584,11 +639,12 @@ def build_report(result: WaveResult) -> dict[str, Any]:
                   "cap_usd": wave.cap_usd},
         "wall": {"shards": len(shard_wall), "slowest_shard_s": max(shard_wall, default=0.0),
                  "shard_seconds_total": sum(shard_wall)},
+        "cheap_full_agreement": _cheap_full_block(result.rows, wave.arms),
         "warnings": warnings,
         "status": "OK" if not warnings else "UNRELIABLE",
         #: a script reading the JSON must not have to parse the banner to learn the numbers are not to be used
         "numbers_valid": not warnings,
-        "not_reported_here": ["cheap/full agreement (measured by the re-probe: collect.py report['agreement'])",
+        "not_reported_here": ["the re-probe's own cheap/full agreement (collect.py report['agreement'])",
                               "per-op or per-layer pass counts below the four in `layers`"],
     }
 
@@ -628,14 +684,28 @@ def render_text(rep: dict[str, Any]) -> str:
                    f"| {b['inconclusive_rate']:.1%} | {_pct(b['clean_rate'])} | {gain} | "
                    f"{_pct(b['paired']['clean_rate'])} (n={b['paired']['n']}) | {pg} | {regs} | "
                    f"{usd} | {b['wall_s']['per_file_mean']:.1f} |")
+    frac = "n/a" if ps["fraction"] is None else f"{ps['fraction']:.1%}"
     out += ["", f"PAIRED columns cover the {ps['n_files']} of {ps['of']} files judged conclusively by ALL of these "
                 f"{len(ps['arms'])} measured arm(s): {', '.join(ps['arms']) or 'none'}"
             + (f"; left out because NOT MEASURED: {', '.join(ps['excluded_not_measured'])}"
-               if ps["excluded_not_measured"] else "") + "."]
+               if ps["excluded_not_measured"] else "") + ".",
+            f"paired fraction {frac} (minimum {ps['min_fraction']:.0%})"]
     out += ["", "## Marginals (paired, files both arms judged)"]
     for name, m in rep["marginals"].items():
         out.append(f"- {name}: " + (f"{m['value']:+.1%} ({m['files_gained']:+d} files over {m['n_paired']})"
                                     if m["value"] is not None else f"withheld - {m['reason']}"))
+    cf = rep["cheap_full_agreement"]
+    out += ["", "## Cheap/full agreement (search ranking tier vs full panel, over confirmed states)"]
+    if "arms" not in cf:
+        out.append(f"- not measured: {cf['reason']}")
+    else:
+        for name, g in [*cf["arms"].items(), ("pooled", cf["pooled"])]:
+            out.append(f"- {name}: " + ("no confirmed state" if not g["compared"] else
+                       f"{g['agree']:.1%} agree over {g['compared']} states; cheap pass but full fail "
+                       f"{g['cheap_pass_full_fail']} (miss rate {_pct(g['cheap_miss_rate_among_cheap_passes'])}), "
+                       f"cheap fail but full pass {g['cheap_fail_full_pass']}")
+                       + (f"; {g['rows_without_data']} conclusive row(s) carried NO table"
+                          if g.get("rows_without_data") else ""))
     ds = rep["declined_stratum"]
     if ds["files"]:
         out += ["", f"## Declined stratum ({ds['files']} files; expected outcome: {ds['expected_outcome']}). NOT a "
