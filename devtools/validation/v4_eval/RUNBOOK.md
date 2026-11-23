@@ -1,0 +1,259 @@
+# CRS v4 benchmark re-probe: runbook
+
+Follows `v3_eval/RUNBOOK.md`: same bucket, same fleet shape, same habit of reading `--dry-run` first.
+What differs: the v4 wave is ONE unit type (`reprobe:pool:I/N`, a hash shard of the pool), the checker
+calls no model, and the output is the benchmark's dev / held-out / clean splits, not an arm comparison.
+
+**Status of the commands.** Every `collect.py` command and the `launch_reprobe.py` gate are real and
+tested in this tree. Commands for the launcher (8b), stager (8c) and preflight/cache (8d) were written
+from those tasks' working trees and specs; each is tagged **[pending 8b]**, **[pending 8c]** or
+**[pending 8d]** and must be re-read against `--help` once that task is merged. Nothing here has been run
+against GCS.
+
+```bash
+PY="env PYTHONPATH=$PWD/src .venv/bin/python"
+V=devtools/validation/v4_eval
+B=gs://dev-crsv3-transfer-224734058693
+COMMIT=<40-hex sha of the code to run>      # src/ + devtools/validation go to the VMs
+IMAGE=<pipeline image, ...@sha256:...>      # digest-pinned; a floating tag is refused
+C12=${COMMIT:0:12}
+RESULTS=$B/eval/reprobe-$C12/pool           # the directory that directly holds shard-I-of-N/  [pending 8b: confirm]
+```
+
+`RESULTS` is the one path three tasks must agree on. 8b's launcher writes
+`eval/<arm>-<c12>/<kind>/shard-I-of-N/` (so `.../reprobe-<c12>/pool/`); 8d's preflight documents
+`eval/<name>/results/<c12>/`. Use whichever the launcher prints at launch, and give `collect.py` the
+directory whose children are `shard-I-of-N`.
+
+## Hard limits (read before anything is created)
+
+| | limit |
+|---|---|
+| VM | ~**600 c2d VM-hours** for the whole sprint (`evalspec.MAX_VM_HOURS`), at most 100 vCPU (12 x c2d-standard-8 = 96) |
+| Model, normal wave | **$50** |
+| Model, checkpoint wave | **$300**, at most **3** checkpoint waves |
+| Model, held-out | **$250, once** |
+| `--model-usd-cap` | **mandatory** on every wave that calls a model |
+
+The re-probe itself (this runbook's wave) calls no model: its cost is VM-hours. The USD caps bind the
+repair waves that run on the splits this wave produces. **No code in `v4_eval/` enforces
+`--model-usd-cap` today** (grep finds nothing); the repair-wave launcher must refuse to start without it.
+Until it does, an operator who launches a model wave without the flag has no guard but this page.
+
+**Fusion 360 is NOT cleared.** Its licence (Autodesk: non-commercial research use, no redistribution)
+has not been ruled on by the owner. The eval covers **ABC + OCCT + NIST + the five structural injector
+kinds** only. `reprobe.ALLOWED_SOURCES` (Task 8) refuses an F360 entry or row before any mesh and
+`build_splits` refuses an F360 row; the stager (8c) and launcher (8b) apply the same list. The committed
+`pool.json` still LISTS F360; the allowed pool is **10,887 files**, not 53,799. Clearing F360 is an
+**owner decision** and a reviewed one-word edit to the allow-lists. Never pass `--f360` to `pool.py
+build` for this wave, and never widen the list to get a bigger sample.
+
+**Held-out is never used for tuning or recipe memory.** Not for choosing thresholds, not for the
+cheap/full split, not as retrieval material for recipe memory. It runs ONCE, at a frozen commit, in the
+single $250 wave. If held-out has been looked at, it is spent. dev is for tuning; clean is for
+regression.
+
+## Why the first shard is measured, and alone
+
+Every per-file minute in the cost model is a guess: **0.5 min/file cheap, 2.5 min/file full**
+(`evalspec.CHEAP_MIN_PER_FILE`, `FULL_MIN_PER_FILE`), on 10,887 files with 5,989 reaching the full panel.
+At those guesses `launch_reprobe.py` projects **64 c2d VM-hours, 96 worst case**, against a ~600
+ceiling. That is a long way under, which is exactly why it is not safe to trust. Re-running the same
+gate (`evalspec.project`, 10,887 files, 96 shards) with the minutes scaled:
+
+| per-file minutes | projected VM-hours | slowest-shard wall | outcome at `--max-run-hours 8` |
+|---|---|---|---|
+| 1x (the guesses) | 64 | 5.3 h | passes; worst case 96 |
+| 2x | 128 | 10.6 h | **gate refuses on wall**: VMs would be deleted mid-shard; needs `--max-run-hours` ~12, worst case ~144 |
+| 5x | 319 | 26.6 h | refuses on wall; needs ~28 h cap, worst case ~336, over half the sprint |
+
+So a 2x error already changes the plan (the cap, the worst case, how long money burns), and a 5x error
+spends half the sprint ceiling on one wave. One shard is ~113 files: cheap
+and fast to measure, and it replaces the guesses before the other 95 shards spend anything.
+
+## 0. Order of operations
+
+pool manifest -> stage inputs -> preflight -> **one measured shard** -> re-project -> full wave ->
+collect -> report -> destroy and verify. Do not skip ahead; each step's output is the next one's input.
+
+### 1. Pool manifest
+
+```bash
+$PY $V/pool.py build --nist            # ABC + OCCT from committed manifests, NIST fetched. NO --f360.
+git diff --stat devtools/validation/corpora/v4/pool.json
+```
+
+The committed `pool.json` is already built; rebuild only on purpose. Check:
+`$PY $V/launch_reprobe.py --shards 96 --max-run-hours 8` prints `10887 files (5989 on the full panel)`.
+A different count means the allow-list or the pool changed: stop and find out why.
+
+### 2. Stage inputs **[pending 8c]**
+
+```bash
+$PY $V/stage.py --inputs /data/v4-inputs --scratch /big/disk   # <sha256>/<basename>; every file hash-checked
+# upload (not part of stage.py): inputs -> $B/eval/v4-reprobe/inputs/ ; pool.json -> $B/eval/v4-reprobe/pool.json
+```
+
+Resumable: rerun after any failure. A hash mismatch is an error, never a warning. If the stager's
+output lists an F360 file, stop: that is a licence breach, not a bug to route around.
+
+### 3. Preflight
+
+```bash
+$PY $V/launch_reprobe.py --shards 96 --max-run-hours 8                 # the cost gate. exit 1 = REFUSE
+$PY $V/preflight.py --image "$IMAGE" --commit $COMMIT                  # [pending 8d] read-only IAM/image/cache proof
+```
+
+Both must pass. The gate refuses over 600 VM-hours (projected or worst case), over 100 vCPU, or a wall
+beyond `--max-run-hours` (the VMs would be deleted mid-shard). `--allow-over-budget` waives the VM-hour
+ceiling only; do not use it on the guessed numbers.
+
+### 4. One measured shard
+
+```bash
+$PY devtools/validation/v3_eval/launch_fleet.py --profile v4 --image "$IMAGE" --commit $COMMIT \
+    --image-commit <sha the image was built from> --only 'reprobe:pool:1/96' --dry-run     # [pending 8b]
+# read it, then the same command without --dry-run
+$PY $V/collect.py --status $RESULTS --shards 96          # shard-1-of-96 DONE once finished
+$PY $V/collect.py --pull $RESULTS --to /tmp/v4-measure --measure --wave-shards 96 --max-run-hours 8
+```
+
+`--measure` is the only mode that accepts fewer shards than planned; it still refuses a failed shard
+or mixed commits, and writes no splits. It prints measured min/file, the factor against the estimate,
+and a **re-projection of the whole wave** through the same gate. Decide from that:
+
+- projected and worst case comfortably under 600 and wall under `--max-run-hours`: proceed;
+- wall over `--max-run-hours`: raise it (VM cap) or add shards, then re-run the gate; the plan changes,
+  so say so;
+- near or over 600: stop and tell the owner. Do not pass `--allow-over-budget` to make it fit.
+
+One shard is one sample. The gate multiplies by `SKEW` 1.5 for the slow tail; if shard 1 happened to be
+light, the real tail is worse. When in doubt measure a second shard (`reprobe:pool:2/96`) and
+`--measure` both from one `--to`.
+
+Shard 1 is **not** thrown away: the full-wave launch skips shards that already have DONE.
+
+### 5. Full wave **[pending 8b]**
+
+```bash
+$PY devtools/validation/v3_eval/launch_fleet.py --profile v4 --image "$IMAGE" --commit $COMMIT \
+    --image-commit <sha> --dry-run
+$PY devtools/validation/v3_eval/launch_fleet.py --profile v4 --image "$IMAGE" --commit $COMMIT --image-commit <sha>
+```
+
+Keep `--shards-total` (96) identical on every launch of this wave: a different total is a different
+partition and collect refuses it. VMs self-delete when their shards finish; `--max-run-duration` deletes
+them regardless. Watch with `collect.py --status` (below). Zone stockouts are common in
+`us-central1-a/c/f`: relaunch with `--zone us-central1-b` or `--machine-type c2-standard-8`.
+
+### 6. Collect
+
+```bash
+$PY $V/collect.py --status $RESULTS --shards 96          # DONE / FAILED / running / NOT STARTED per shard; exit 0 only when all DONE
+$PY $V/collect.py --pull $RESULTS --to /tmp/v4-wave --shards 96 --dry-run    # list + check; fetches nothing
+$PY $V/collect.py --pull $RESULTS --to /tmp/v4-wave --shards 96 --report-only # pull + verify + numbers, no splits
+$PY $V/collect.py --pull $RESULTS --to /tmp/v4-wave --shards 96               # the same, then writes corpora/v4/{dev,heldout,clean}.json
+```
+
+`--pull` fetches only PROVENANCE.json, rows.json, cheap.jsonl, EXCLUDED.json and DONE per shard (logs
+stay in the bucket), writes each via a `.partial` rename, then runs the checks below and merges. It is
+read-only against the bucket (`gcloud storage ls` / `cp` down only). Use an **empty** `--to`; a
+directory holding shards the bucket does not have is refused as stale. `--pool` defaults to the
+committed pool.
+
+**Collect REFUSES (exit 1, nothing written) when:**
+
+| refusal | meaning |
+|---|---|
+| partial wave: `missing shard(s)` | fewer shards than `--shards`; merging would mis-size every stratum |
+| shard has `FAILED`, no `DONE`, or a required file missing | unfinished or failed; nothing is downloaded |
+| `exit_code` not 0 | the shard ran and crashed |
+| `do not share one commit` / `image` | the wave mixed code or toolchain; not comparable |
+| the plan has N shards but the shards say M | a different partition |
+| `partition mismatch` | a file in the wrong shard or in two shards |
+| `pool file(s) were never probed` | the wave is incomplete against the pool |
+| `row(s) are not in the pool` | shards ran against another pool or an extra source |
+| any F360 row | licence hold (`DisallowedSource`) |
+
+**Collect exits 2 (and writes no split) when** the splits are short (`shortfall`), a split cannot be cut,
+or more than 2% of the pool was EXCLUDED. `collect-report.json` is still written to `--to`, with
+`"accepted": false` and the reasons.
+
+### 7. Report
+
+`<--to>/collect-report.json` holds commit, image, shard count, total wall, and the report (conclusive /
+excluded counts, failing by layer / source / stratum, cheap-vs-full agreement). The splits are
+`corpora/v4/{dev,heldout,clean,meta}.json`: commit them. No v4 renderer for papers/PR exists yet (the
+v3 `results_to_tex.py` / `render_pr_section.py` read v3 results). Record the measured min/file and
+the actual VM-hours (sum of per-shard `wall_seconds` in `collect-report.json` / 3600) beside the
+projection; the next wave's gate should use them.
+
+## When things go wrong
+
+### A shard failed
+`--status` shows `FAILED`, or `--pull` refuses `exit_code 4`. Read the shard's `run.log` and its
+PROVENANCE `error` in the bucket. Infrastructure (OOM, stockout, preempt): relaunch just that shard
+(step "Resume"). A code bug: stop, fix, and note that the wave is then at **two commits**, which collect
+refuses: relaunch EVERY shard at the new commit. Do not edit a shard's PROVENANCE to make it pass.
+
+### Collect refuses
+Believe it. Each refusal above is a real reason; read the message and fix the cause: relaunch the
+missing/failed shards, or restart at one commit. Never copy shard directories by hand to make the count
+add up, and never delete a shard from `--to` so the check cannot see it.
+
+### Shortfall (exit 2, "splits are short")
+The wave is complete but the failing or clean set is smaller than the 300/200/150 asked for.
+- **Legitimate `--allow-shortfall`:** the owner has accepted smaller splits in writing (say the actual
+  numbers), the shortfall is a property of the real pool (the pool simply has fewer failing parts) and
+  the wave is otherwise clean (no exclusions beyond the limit, every refusal above passing). Record the
+  shortfall in the commit message.
+- **A mistake:** using it to get past a wave with failed/unfinished shards, because an unprobed stratum
+  looks like a small stratum; or before checking `by_source`, since a missing source (staging dropped
+  NIST) shows up as exactly this; or to reach a held-out split that is too small to mean anything.
+
+### More than 2% excluded (exit 2)
+A timeout excludes the most pathological files, so a large exclusion biases the failing set toward
+easy defects. Look at `excluded_by_reason` / `excluded_by_source` first.
+- **Legitimate `--allow-excluded`:** the exclusions are understood and are not the checker silently
+  losing a whole kind (e.g. a handful of known >900 s parts, all `file_timeout`), and the owner has
+  agreed the bias is acceptable; say so in the commit.
+- **A mistake:** `checker_unavailable` or `inconclusive` dominating (the pool, not the files, was the
+  problem: rerun those shards), or one source or family excluded wholesale.
+
+### Resume, don't restart
+The fleet is detached; nothing local carries it. After a lost session or laptop restart:
+```bash
+gcloud compute instances list --project hexera-dev --filter='labels.purpose=v4-eval' \
+  --format='table(name,zone.basename(),status,creationTimestamp)'
+$PY $V/collect.py --status $RESULTS --shards 96
+# relaunch ONLY what is missing; the launcher skips DONE shards and shards a live VM still claims  [pending 8b]
+$PY devtools/validation/v3_eval/launch_fleet.py --profile v4 --image "$IMAGE" --commit $COMMIT --image-commit <sha> --dry-run
+$PY devtools/validation/v3_eval/launch_fleet.py ... --only 'reprobe:pool:7/96,reprobe:pool:31/96'
+```
+Same `--commit`, `--image`, `--shards-total` as the original launch. The verdict cache means a rerun
+shard repays only the files it had not finished. `running` in `--status` with no VM listed means the VM
+died without its shutdown script: relaunch that shard.
+
+## Destroy, and verify nothing is left
+
+Collect and commit the splits FIRST. Then:
+```bash
+# 1. VMs: expect 0 items. Each deletes itself when its shards finish; --max-run-duration is the backstop.
+gcloud compute instances list --project hexera-dev --filter='labels.purpose=v4-eval'
+# 2. disks: expect 0 items (boot disks auto-delete)
+gcloud compute disks list --project hexera-dev --filter='name~^dev-crsv4-v4e-'
+# 3. anything still running: delete named VMs only (operator action; mutating)
+gcloud compute instances delete <name> --project hexera-dev --zone <zone> --quiet
+# 4. re-run 1 and 2 until both say 0 items
+```
+`purpose=v4-eval` and the `dev-crsv4-v4e-` prefix are 8b's labels **[pending 8b: confirm]**. If 1 and 2
+are not both empty you are still being billed; do not stop at "the launcher finished". The transfer
+bucket `dev-crsv3-transfer-*` is shared with v3 and is deleted by `make destroy-env SLUG=crsv3`, which
+takes your results with it: collect first. Keep the verdict cache prefix until the benchmark is final.
+
+## Estimates (replace with the measured numbers after step 4)
+
+See the table under "Why the first shard is measured": 64 projected / 96 worst case at the guesses,
+128 projected at 2x, 319 at 5x, against the ~600 ceiling. Record what the shard measured next to them.
+
+Quota: C2D_CPUS limit 100 (this wave takes 96); `PREEMPTIBLE_CPUS` is 0, hence STANDARD VMs.

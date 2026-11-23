@@ -509,19 +509,19 @@ def test_run_arm_checks_the_whole_pool_before_sharding(tmp_path) -> None:
 def test_collect_refuses_short_splits_and_big_exclusions(tmp_path, capsys) -> None:
     src, out = tmp_path / "w", tmp_path / "out"
     _shard(src, 1, 1, [_row(i, "panel", "other") for i in range(1, 30)])
-    args = ["--from", str(src), "--out-dir", str(out), "--dev", "5", "--heldout", "5", "--clean", "10"]
+    args = ["--from", str(src), "--no-pool-check", "--out-dir", str(out), "--dev", "5", "--heldout", "5", "--clean", "10"]
     assert collect.main(args) == 2  # no clean files at all: the clean split is short
     assert "splits are short" in capsys.readouterr().err and not out.exists()
     assert collect.main([*args, "--allow-shortfall"]) == 0 and (out / "clean.json").is_file()
-    assert collect.main(["--from", str(src), "--dev", "500"]) == 2  # failing set smaller than asked
+    assert collect.main(["--from", str(src), "--no-pool-check", "--dev", "500"]) == 2  # failing set smaller than asked
     # 3 of 32 = 9% excluded
     big = tmp_path / "x"
     ex = [rp.Excluded(f"e{i}", _sha(900 + i), "abc_fail", "file_timeout: 900s") for i in range(3)]
     _shard(big, 1, 1, [_row(i, "panel", "other") for i in range(1, 30)], excluded=ex)
-    assert collect.main(["--from", str(big), "--out-dir", str(tmp_path / "o2"), "--dev", "5", "--heldout", "5",
+    assert collect.main(["--from", str(big), "--no-pool-check", "--out-dir", str(tmp_path / "o2"), "--dev", "5", "--heldout", "5",
                          "--clean", "0"]) == 2
     assert "excluded" in capsys.readouterr().err
-    assert collect.main(["--from", str(big), "--out-dir", str(tmp_path / "o2"), "--dev", "5", "--heldout", "5",
+    assert collect.main(["--from", str(big), "--no-pool-check", "--out-dir", str(tmp_path / "o2"), "--dev", "5", "--heldout", "5",
                          "--clean", "0", "--allow-excluded"]) == 0
 
 
