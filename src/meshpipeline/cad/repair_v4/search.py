@@ -353,6 +353,32 @@ _PROXIMITY_RATIOS = (0.25, 0.125, 0.06)  # gap_split's rungs
 _SPLIT_ANGLES = (90, 60, 45)
 _MAX_PAIRS = 16  # split_by_proximity's maxItems
 
+# The ops below used to be reachable ONLY from the AI proposer, so `search_ai - search_det` credited the model with
+# access to them rather than judgement about them (lane C, round-2 wiring audit). Each now has a small, evidence-gated
+# deterministic sweep. "Unknown means propose" (Task 47) holds for what the KERNEL discovers; what the site's own
+# facts already rule out (no free-form surface to reapproximate, a cluster the op's documented limits refuse) is not
+# proposed, and the reason is in `notes`.
+DET_COVERED_OPS = ("rebuild_face", "rebuild_edge_as_intersection", "reapproximate", "refit_cluster")
+#: an edge is a rebuild candidate when its tolerance or its measured face-to-face gap exceeds this x diagonal: the
+#: normalise stage's own target (`stages.DEFAULTS["normalise"]["target_rel"]`), i.e. an edge the healer could not
+#: bring to the tolerance it aims for
+_EDGE_REL = 1e-5
+_EDGE_KINDS = ("invalid", "self_overlap", "overlap", "intersection", "proximity")  # = ops.edges._SIDE_KINDS
+_MAX_EDGE_REBUILDS = 2  # one candidate per edge (one bad edge must not sink the others), worst first
+_REBUILD_FACE_CODES = frozenset({"self_intersection", "brep_invalid"})
+_MAX_FACE_REBUILDS = 2  # the op takes exactly one face
+#: surfaces ShapeCustom_BSplineRestriction can usefully re-approximate; an analytic face would only be converted
+_FREEFORM = frozenset({"bsplinesurface", "beziersurface", "offsetsurface", "surfaceofrevolution",
+                       "surfaceofextrusion", "othersurface"})
+_REAPPROX_KINDS = ("self_overlap", "pole", "periodic", "proximity")
+#: (share of the fidelity bound, max degree), mildest first: a quarter of the bound at full degree, then half the
+#: bound at a lower degree. Never the whole bound: the op is deviation-gated and other ops must still fit after it.
+_REAPPROX_SWEEP = ((0.25, 9), (0.5, 6))
+_MAX_REAPPROX_FACES = 8
+_REFIT_KINDS = ("sliver", "overlap", "self_overlap")
+_REFIT_SHARES = (0.5, 1.0)  # of the fidelity bound; the op declines above its own tol_mm
+_REFIT_MAX_FACES = 6
+
 
 def _of_kind(entities: list[StableId], prefix: str) -> list[StableId]:
     return [e for e in entities if e[:1] == prefix]
@@ -424,8 +450,18 @@ class DetGenerator:
         volume = next((v for s in sites if s.kind == "open" and isinstance(v := s.graph.get("volume"), dict)), None)
         has_solid = any(sid[:1] == "B" for sid in state.ws.ids)
         seen: set[str] = set()
+
+        def sized() -> float | None:
+            """The diagonal for the ops that need a size, asked only when one of them is about to be swept, so a
+            state with no such site costs no extra kernel call. A failure to measure is a note, never a crash."""
+            try:
+                return self._diag_of(state.ws)
+            except Exception as exc:  # noqa: BLE001 - no size means no sized op, on the record
+                self._note(f"no diagonal for the sized sweeps: {type(exc).__name__}: {exc}")
+                return None
+
         for site in sites:
-            for op, targets, params, why in self._sweep(site, diag):
+            for op, targets, params, why in [*self._sweep(site, diag), *self._coverage(site, sized)]:
                 if op not in REGISTRY:
                     continue
                 key = json.dumps([op, list(targets), params], sort_keys=True, default=str)
@@ -481,6 +517,87 @@ class DetGenerator:
             rows.append(("fill_loop", list(loop["edges"]), {"continuity": "G0"},
                          f"close the free loop of {len(loop['edges'])} edges ({span:.3g} mm) with one face"))
         return rows
+
+    def _coverage(self, site: Site, sized: Callable[[], float | None]) -> list[tuple[str, list[StableId], dict, str]]:
+        """Rows for `DET_COVERED_OPS`, appended after the kind's own sweep (so `k` cuts them first)."""
+        from meshpipeline.cad.repair_v4.ops.faces import fidelity_bound
+
+        faces = _of_kind(site.entities, "F")
+        graph = site.graph or {}
+        rows: list[tuple[str, list[StableId], dict, str]] = []
+        kind = site.kind
+        if faces and (kind == "self_overlap" or (kind == "invalid" and _REBUILD_FACE_CODES & set(
+                graph.get("hard_codes") or ()))):
+            for face in faces[:_MAX_FACE_REBUILDS]:
+                rows.append(("rebuild_face", [face], {"continuity": "G0"},
+                             "re-fill the face after fixing its self-intersecting wires (G0)"))
+        wants_edges = kind in _EDGE_KINDS and any(not e.get("kind") for e in graph.get("edges") or [])
+        wants_reapprox = kind in _REAPPROX_KINDS and faces
+        wants_refit = kind in _REFIT_KINDS and len(faces) >= 2
+        if not (wants_edges or wants_reapprox or wants_refit):
+            return rows
+        diag = sized()
+        if diag is None or diag > UNBOUNDED_DIAGONAL_MM:
+            for op, wanted in (("rebuild_edge_as_intersection", wants_edges), ("reapproximate", wants_reapprox),
+                               ("refit_cluster", wants_refit)):
+                if wanted:
+                    self._note(f"site {site.id}: {op} not proposed: {self._why_no_size(diag)}")
+            return rows
+        bound = fidelity_bound(diag)
+        if wants_edges:
+            limit = _EDGE_REL * diag
+            bad = sorted(((max(float(e.get("tolerance") or 0.0), float(e.get("gap") or 0.0)), e["edge"])
+                          for e in graph["edges"] if not e.get("kind") and len(e.get("faces") or []) == 2),
+                         reverse=True)
+            bad = [(worst, eid) for worst, eid in bad if worst > limit]
+            if not bad:
+                self._note(f"site {site.id}: rebuild_edge_as_intersection not proposed: no edge exceeds "
+                           f"{_EDGE_REL:g} x diagonal")
+            for worst, eid in bad[:_MAX_EDGE_REBUILDS]:
+                rows.append(("rebuild_edge_as_intersection", [eid], {},
+                             f"rebuild edge {eid} from its faces' intersection ({worst:.3g} mm off)"))
+        surface = {n.get("id"): n.get("surface") for n in graph.get("nodes") or []}
+        if wants_reapprox:
+            freeform = [f for f in faces if surface.get(f) in _FREEFORM][:_MAX_REAPPROX_FACES]
+            if not freeform:
+                self._note(f"site {site.id}: reapproximate not proposed: no free-form face is known on the site")
+            for share, degree in _REAPPROX_SWEEP if freeform else ():
+                rows.append(("reapproximate", freeform, {"tol_mm": share * bound, "max_degree": degree},
+                             f"re-approximate the free-form faces within {share:g} of the bound, degree <= {degree}"))
+        if wants_refit:
+            why = self._refit_refused(faces, graph)
+            if why:
+                self._note(f"site {site.id}: refit_cluster not proposed: {why}")
+            else:
+                for share in _REFIT_SHARES:
+                    rows.append(("refit_cluster", list(faces), {"tol_mm": share * bound},
+                                 f"refit the {len(faces)} faces as one within {share:g} of the bound"))
+        return rows
+
+    @staticmethod
+    def _refit_refused(faces: list[StableId], graph: dict) -> str | None:
+        """Why the op's documented limits would refuse this cluster, from the site's own facts (None: propose)."""
+        if len(faces) > _REFIT_MAX_FACES:
+            return f"{len(faces)} faces is more than the {_REFIT_MAX_FACES} a sweep refits at once"
+        nodes = {n.get("id"): n for n in graph.get("nodes") or []}
+        if not all(f in nodes for f in faces):
+            return "the faces' neighbourhood was not measured, so the cluster's shape is unknown"
+        if any((nodes[f].get("angular_span_deg") or 0.0) >= 359.0 for f in faces):
+            return "a face spans a full turn (a seam face), which the op refuses"
+        links: dict[str, set[str]] = {f: set() for f in faces}
+        for e in graph.get("edges") or []:
+            a = [f for f in e.get("faces") or [] if f in links]
+            if len(a) == 2:
+                links[a[0]].add(a[1])
+                links[a[1]].add(a[0])
+        reached, todo = {faces[0]}, [faces[0]]
+        while todo:
+            for nxt in links[todo.pop()] - reached:
+                reached.add(nxt)
+                todo.append(nxt)
+        if len(reached) != len(faces):
+            return "the faces are not one connected patch, so they have no single outline"
+        return None
 
     def _sweep(self, site: Site, diag: float | None) -> list[tuple[str, list[StableId], dict, str]]:
         faces = _of_kind(site.entities, "F")
