@@ -310,8 +310,21 @@ The gate invocation that is verified sound:
 ```bash
 git clone --no-hardlinks --quiet --branch <branch> . /tmp/gate    # a path with no "v4-"
 docker run --rm -v /tmp/gate:/w -w /w meshpipeline-validation:local \
-  bash -lc 'git config --global --add safe.directory /w; PYTHONPATH=src python -m pytest <paths> -q'
+  bash -lc 'git config --global --add safe.directory /w;
+            PYTHONPATH=/w/src python -m pytest <paths> -q'
 ```
+
+**`PYTHONPATH` must be ABSOLUTE.** A relative `PYTHONPATH=src` works for the test process and then
+silently fails for any test that spawns a subprocess with a different cwd - `src` resolves to
+nothing there, so Python falls back to the image's INSTALLED `meshpipeline`, which predates the
+branch. That produced 16 real-looking launcher failures (`cannot import name ... from
+'meshpipeline.cad.repair_v4' (/usr/local/lib/python3.11/site-packages/...)`) which vanished entirely
+under `PYTHONPATH=/w/src`: 16 failed -> 143 passed, exit 0. Every one of those tests spawns
+`launch_fleet.py` as a subprocess.
+
+This is the third defect found in this gate's own plumbing, and all three shared one shape: a
+confident number from an environment that was not the one being measured. The other two were the
+`git archive` checkout with no `.git`, and `tail -6` applied to a log before grepping it.
 
 **Never build a gate checkout with `git archive`.** It produces a tree with no `.git`, and every test
 that shells out to git then fails before reaching the code — which silently hid ~35 tests for most of
