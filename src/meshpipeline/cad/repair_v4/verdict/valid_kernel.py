@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from meshpipeline.cad.repair_v4.kernel_calls import register
 from meshpipeline.cad.repair_v4.units import UNBOUNDED_DIAGONAL_MM
+from meshpipeline.cad.repair_v4.verdict.shape_digest import WorkerMemo, digest
 
 OVERLAP_FRACTION = 1e-9  # Common volume above this fraction of the smaller body is overlap
 OVERLAP_THICKNESS_FRACTION = 1e-6  # of the bounding-box diagonal; thinner is contact
@@ -126,6 +127,16 @@ def _self_intersects(solid) -> bool:
     analyzer.SelfInterMode = True
     analyzer.Perform()
     return bool(analyzer.HasFaulty())
+
+
+#: Self-intersection of a solid, by the solid's exact digest. `_self_intersects` reads nothing but the solid, so a
+#: solid seen before in this worker (an untouched body of a search candidate, a state reached twice) is not
+#: re-analysed. It is most of layer 1's time (Lane A profile: 68% of layers 1+3).
+SELF_INTERSECTS = WorkerMemo(4096)
+
+
+def _self_intersects_once(solid) -> bool:
+    return bool(SELF_INTERSECTS.get_or_compute(digest(solid), lambda: _self_intersects(solid)))
 
 
 def _common(a, b, fuzzy: float):
@@ -299,7 +310,7 @@ def check_shape(brep_path: str) -> dict:
         if volume <= 0:
             hard.append(_finding("non_positive_volume", [f"S{i}"], volume=volume))
     for i, solid in enumerate(solids, start=1):
-        if _self_intersects(solid):
+        if _self_intersects_once(solid):
             hard.append(_finding("self_intersection", [f"S{i}"]))
     hard.extend(_overlapping_pairs(solids, volumes))
 

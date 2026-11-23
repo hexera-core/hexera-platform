@@ -20,6 +20,7 @@ import time
 
 from meshpipeline.cad.repair_v4.kernel_calls import register
 from meshpipeline.cad.repair_v4.limits import MAX_FILL_SPAN_RATIO, fill_span_allowed
+from meshpipeline.cad.repair_v4.verdict.shape_digest import WorkerMemo, file_digest
 
 BOUND_ABS_MM = 0.1
 BOUND_DIAG_FRACTION = 0.001
@@ -270,11 +271,14 @@ def _twinned(keys: list, other_keys: list, tol: float) -> set[int]:
     return found
 
 
-def _require_genuinely_new(declared: list, ids: list[str], others: list, tol: float, claim: str) -> None:
+def _require_genuinely_new(declared: list, ids: list[str], other_keys: list, tol: float, claim: str) -> None:
     """Ids are indices into a re-read BREP; an in-range index can name the wrong face. A face that
     has an identical twin on the other side was not added (or removed) at all, so the claim and
-    the id disagree: refuse, because honouring it would exempt the wrong face from measurement."""
-    twinned = _twinned(_keys(declared), _keys(others), tol)
+    the id disagree: refuse, because honouring it would exempt the wrong face from measurement.
+    `other_keys` are `_keys` of the other side's faces. Nothing declared, nothing to refuse."""
+    if not ids:
+        return
+    twinned = _twinned(_keys(declared), other_keys, tol)
     for index, raw in enumerate(ids):
         if index in twinned:
             raise DeclaredIdMismatch(f"declared {claim} face {raw!r} has an identical face on the other side")
@@ -316,17 +320,46 @@ def _is_in(face, group: list) -> bool:
     return any(face.IsSame(other) for other in group)
 
 
+class _Facts:
+    """What `faithful_check` measures on ONE side alone: a pure function of that BREP's bytes, so it is computed
+    once per worker (`_FACTS`, keyed by the file's sha256) and shared by every candidate judged against the same
+    original. Each value is computed on first use, exactly where the plain code computed it. The shape and its
+    faces are always the caller's own fresh read: only numbers are shared, never OCCT objects."""
+
+    def __init__(self) -> None:
+        self._values: dict[str, object] = {}
+
+    def get(self, name: str, compute):  # noqa: ANN001, ANN201
+        if name not in self._values:
+            self._values[name] = compute()
+        return self._values[name]
+
+
+_FACTS = WorkerMemo(16)
+
+
+def _facts_of(path: str) -> _Facts:
+    return _FACTS.get_or_compute(file_digest(path), _Facts)
+
+
 @register("faithful_check")
 def _faithful_check(payload: dict) -> dict:
     original = _read(payload["original_brep"])
     repaired = _read(payload["repaired_brep"])
+    o_facts, r_facts = _facts_of(payload["original_brep"]), _facts_of(payload["repaired_brep"])
     added_ids = list(payload.get("declared_added", []))
     removed_ids = list(payload.get("declared_removed", []))
     o_faces, r_faces = _faces(original), _faces(repaired)
     added = _declared(added_ids, r_faces, "repaired")
     removed = _declared(removed_ids, o_faces, "original")
 
-    o_box, r_box = _box(original), _box(repaired)
+    def o_keys_of() -> list:
+        return o_facts.get("keys", lambda: _keys(o_faces))
+
+    def r_keys_of() -> list:
+        return r_facts.get("keys", lambda: _keys(r_faces))
+
+    o_box, r_box = o_facts.get("box", lambda: _box(original)), r_facts.get("box", lambda: _box(repaired))
     diag = _diag(o_box)
     bound = min(BOUND_ABS_MM, BOUND_DIAG_FRACTION * diag)
     reasons: list[str] = []
@@ -337,8 +370,10 @@ def _faithful_check(payload: dict) -> dict:
 
     if r_box is not None:
         tol = max(bound, 1e-9)
-        _require_genuinely_new(added, added_ids, o_faces, tol, "added")
-        _require_genuinely_new(removed, removed_ids, r_faces, tol, "removed")
+        if added_ids:
+            _require_genuinely_new(added, added_ids, o_keys_of(), tol, "added")
+        if removed_ids:
+            _require_genuinely_new(removed, removed_ids, r_keys_of(), tol, "removed")
 
     deadline = time.monotonic() + BUDGET_S
     max_dev = math.inf
@@ -348,7 +383,7 @@ def _faithful_check(payload: dict) -> dict:
         # is not sampled; the search's states differ from the original in a few faces only, and this
         # is what keeps layer 3 affordable. The twin test is far tighter than the bound.
         twin_tol = max(0.01 * bound, 1e-9)
-        o_keys, r_keys = _keys(o_faces), _keys(r_faces)
+        o_keys, r_keys = o_keys_of(), r_keys_of()
         r_twin = _twinned(r_keys, o_keys, twin_tol)
         o_twin = _twinned(o_keys, r_keys, twin_tol)
         r_kept = [f for i, f in enumerate(r_faces) if i not in r_twin and not _is_in(f, added)]
@@ -365,8 +400,9 @@ def _faithful_check(payload: dict) -> dict:
     if not fill_span_allowed(fill_span, diag):
         reasons.append("fill_too_large")
 
-    area_before, area_after = _area(original), _area(repaired)
-    volume_before, volume_after = _volume(original), _volume(repaired)
+    area_before, area_after = o_facts.get("area", lambda: _area(original)), r_facts.get("area", lambda: _area(repaired))
+    volume_before = o_facts.get("volume", lambda: _volume(original))
+    volume_after = r_facts.get("volume", lambda: _volume(repaired))
     area_ratio = _ratio(area_after, area_before)
     volume_ratio = _ratio(volume_after, volume_before)
     if _changed(area_after, area_before):
@@ -374,11 +410,13 @@ def _faithful_check(payload: dict) -> dict:
     # A solid-less original (loose faces or a shell) has no volume and no body to preserve, so a
     # correct heal that makes it a solid must not be failed for gaining one. Everything else
     # still applies to it: deviation, area, fill span, and (layer 1) validity of the result.
-    solidless = not _solids(original)
+    o_solids = o_facts.get("solids", lambda: len(_solids(original)))
+    r_solids = r_facts.get("solids", lambda: len(_solids(repaired)))
+    solidless = not o_solids
     if not solidless and _changed(volume_after, volume_before):
         reasons.append("volume_changed")
-    before = len(_solids(original)) + _free_shell_count(original)
-    after = len(_solids(repaired)) + _free_shell_count(repaired)
+    before = o_solids + o_facts.get("shells", lambda: _free_shell_count(original))
+    after = r_solids + r_facts.get("shells", lambda: _free_shell_count(repaired))
     if not solidless and before != after:
         reasons.append("body_count_changed")
 
