@@ -49,6 +49,9 @@ if os.environ.get("HEXERA_TEST_KERNEL_FNS") == "1":
 # Kernel functions that need OCCT register themselves on import. They import OCP lazily, so these
 # imports are safe on a host without it. At the foot so that `register` and `REGISTRY` exist
 # before the modules that use them are imported.
+# The op library: each op module registers its kernel function(s) here and its `Op` in
+# `ops.REGISTRY`. One import covers every op module (see ops/__init__.py, which auto-discovers).
+from meshpipeline.cad.repair_v4 import ops  # noqa: E402,F401
 from meshpipeline.cad.repair_v4 import ws_kernel  # noqa: E402,F401
 from meshpipeline.cad.repair_v4 import xcaf_io as _xcaf_io  # noqa: E402,F401
 from meshpipeline.cad.repair_v4.verdict import valid_kernel as _valid_kernel  # noqa: E402,F401
