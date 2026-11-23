@@ -55,14 +55,21 @@ def _passed_markers(tmp_path: Path, backend: str = BACKEND, *, age_s: float = 0.
 # ============================================================ the probe
 
 def _probe(spec: str, tmp_path: Path, rounds: int = 50):
-    return mp.run_local(spec, rounds=rounds, interval_s=0.02, lead_s=1.5, run_id="t")
+    return mp.run_local(spec, rounds=rounds, interval_s=0.05, lead_s=1.5, run_id="t")
+
+
+#: A local create takes ~0.35 ms but two processes' clocks and scheduling differ by milliseconds, so on a bare
+#: `localdir` the writers' calls essentially never overlap (1 of 50 measured). 15 ms inside every create is well
+#: above that jitter, so the writers genuinely race and MIN_OVERLAPPING_ROUNDS is met because they did.
+SLOW = "localdir@15"
 
 
 def test_probe_passes_on_a_backend_that_honours_the_precondition(tmp_path):
-    report = _probe(f"localdir:{tmp_path / 'b'}", tmp_path)
+    report = _probe(f"{SLOW}:{tmp_path / 'b'}", tmp_path)
     assert report.failures == [] and report.passed
     assert report.rounds == 50 and report.sequential_ok
-    markers, backend = mp.open_markers(f"localdir:{tmp_path / 'b'}")
+    assert report.overlapping_rounds >= mp.MIN_OVERLAPPING_ROUNDS     # real races, not a relaxed floor
+    markers, backend = mp.open_markers(f"{SLOW}:{tmp_path / 'b'}")
     assert mp.probe_problem(markers, expected_backend=backend) is None   # the record the launcher reads
 
 
@@ -100,9 +107,9 @@ def test_probe_fails_when_nobody_wins(tmp_path):
 def test_probe_cli_exit_codes(tmp_path):
     def run(spec: str) -> int:
         return subprocess.run([sys.executable, str(V4 / "marker_probe.py"), "--store", spec, "--rounds", "50",
-                               "--interval-s", "0.02", "--lead-s", "1.5"], capture_output=True,
+                               "--interval-s", "0.05", "--lead-s", "1.5"], capture_output=True,
                               text=True, timeout=120).returncode
-    assert run(f"localdir:{tmp_path / 'ok'}") == 0
+    assert run(f"{SLOW}:{tmp_path / 'ok'}") == 0
     assert run(f"localdir-ignores-precondition:{tmp_path / 'bad'}") == 1
 
 
@@ -127,8 +134,34 @@ def test_a_probe_where_the_writers_never_overlapped_does_not_pass(tmp_path):
     report = mp.conclude(markers, "gcs/b", "r", 20)
     assert not report.passed and report.overlapping_rounds == 0
     assert any("overlapping" in f for f in report.failures)
+    assert json.loads(markers.get(mp.PROBE_KEY))["passed"] is False     # no pass record, a revoking one
     assert "0 with overlapping" in report.describe()                       # the count is printed
     assert mp.probe_problem(markers, expected_backend="gcs/b") is not None  # and a failure record revokes
+
+
+def test_the_latency_suffix_makes_every_create_take_that_long(tmp_path):
+    """The slow store's whole point: each create lasts at least the stated latency (deterministic, unlike the
+    overlap it buys, which a fast native host can reach without it)."""
+    markers, _ = mp.open_markers(f"localdir@40:{tmp_path / 'b'}")
+    t0 = time.perf_counter()
+    markers.create("k", "v")
+    assert time.perf_counter() - t0 >= 0.04
+    fast, _ = mp.open_markers(f"localdir:{tmp_path / 'c'}")
+    t0 = time.perf_counter()
+    fast.create("k", "v")
+    assert time.perf_counter() - t0 < 0.04
+
+
+def test_a_real_run_that_cannot_meet_the_floor_is_refused_and_revokes_the_record(tmp_path):
+    """End to end over a slow store that really races: demand more overlapping rounds than exist and the verdict
+    is a refusal, with a passed:false record (not merely a missing one)."""
+    spec = f"{SLOW}:{tmp_path / 'b'}"
+    assert _probe(spec, tmp_path, rounds=20).passed
+    markers, backend = mp.open_markers(spec)
+    report = mp.conclude(markers, backend, "t", 20, min_overlap=21)
+    assert not report.passed and any("fewer than the 21 required" in f for f in report.failures)
+    assert json.loads(markers.get(mp.PROBE_KEY))["passed"] is False
+    assert mp.probe_problem(markers, expected_backend=backend) is not None
 
 
 def test_a_probe_with_enough_overlap_passes_and_one_below_the_minimum_does_not(tmp_path):
@@ -173,7 +206,8 @@ def test_a_writer_that_exits_nonzero_leaves_no_pass_record(tmp_path, monkeypatch
     monkeypatch.setattr(mp, "record_pass", spy)
     report = _probe(spec, tmp_path)
     assert not report.passed and any("exited 7" in f for f in report.failures)
-    assert seen == [False]       # a pass record was never written, even transiently
+    assert seen and True not in seen     # a pass record was never written, even transiently (the count of
+                                         # False rewrites differs between host and container)
 
 
 def test_probe_gate_refuses_every_way_the_record_can_be_wrong(tmp_path):

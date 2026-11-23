@@ -603,9 +603,9 @@ def create_wave(cmds: list[list[str]], projection, *, allow_over_budget: bool = 
         subprocess.run(cmd, check=True)
 
 
-def main(argv: list[str] | None = None, *, gates=None) -> int:
-    """`gates` is (marker store, backend id) for the v4 wave controls; None means the wave bucket's own
-    (default_gates). Tests inject a directory store; a v3 launch never reads it."""
+def build_parser() -> argparse.ArgumentParser:
+    """The launcher's command line. One definition: `main` parses with it and tests build their args from it,
+    so a hand-listed namespace cannot drift from the flags the launcher reads."""
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--profile", choices=sorted(PROFILES), default="v3",
@@ -645,6 +645,13 @@ def main(argv: list[str] | None = None, *, gates=None) -> int:
                         help="v4 only, REQUIRED: this wave's id (lowercase letters, digits, dashes); reuse it to "
                              "resume the same wave, never for a different one")
     parser.add_argument("--dry-run", action="store_true")
+    return parser
+
+
+def main(argv: list[str] | None = None, *, gates=None) -> int:
+    """`gates` is (marker store, backend id) for the v4 wave controls; None means the wave bucket's own
+    (default_gates). Tests inject a directory store; a v3 launch never reads it."""
+    parser = build_parser()
     args = parser.parse_args(argv)
     profile = profile_of(args)
     if args.prefix is None:

@@ -272,3 +272,30 @@ See the table under "Why the first shard is measured": 64 projected / 96 worst c
 128 projected at 2x, 319 at 5x, against the ~600 ceiling. Record what the shard measured next to them.
 
 Quota: C2D_CPUS limit 100 (this wave takes 96); `PREEMPTIBLE_CPUS` is 0, hence STANDARD VMs.
+
+## If a gate's own plumbing fails instead of the code
+
+Two failure modes have cost real time in this sprint. Both are the harness, not the change.
+
+- **A bind-mounted checkout can make `git cat-file` report commits as missing**, which surfaces as
+  3-4 spurious REFUSE failures in `tests/unit/dev/test_v4_fleet_launcher.py`. The cause is unknown:
+  `safe.directory` and object-file permissions were both ruled out, and a
+  `git clone --no-hardlinks` bind-mounted the same way gives 22 passed, exit 0. Treat a REFUSE under
+  a mount as a fault in the setup before debugging the launcher. Workaround: `cp -r` the checkout
+  into the container, or clone inside it. It fails closed, so it costs time and cannot turn a
+  failing gate into a passing one.
+- **A checkout path containing `v4-` used to fail a v3 test** by substring (the assertion scanned the
+  whole command, and this repo's directory is `crs-v4-search-repair`). Fixed in task 26 — it now
+  parses `--metadata` keys — but it is the reason to prefer a scratch clone path with no `v4-` in it.
+
+The gate invocation that is verified sound:
+
+```bash
+git clone --no-hardlinks --quiet --branch <branch> . /tmp/gate    # a path with no "v4-"
+docker run --rm -v /tmp/gate:/w -w /w meshpipeline-validation:local \
+  bash -lc 'git config --global --add safe.directory /w; PYTHONPATH=src python -m pytest <paths> -q'
+```
+
+**Never build a gate checkout with `git archive`.** It produces a tree with no `.git`, and every test
+that shells out to git then fails before reaching the code — which silently hid ~35 tests for most of
+this sprint, including every budget refusal and the Fusion 360 exclusion.
