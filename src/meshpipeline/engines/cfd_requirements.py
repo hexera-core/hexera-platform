@@ -708,6 +708,17 @@ def laminar_stack(delta_m: float, wall_cell_m: float, growth: float, *, n_min: i
     # never a first layer thinner than the one a full stack (n_max layers filling the layer) starts from: a thinner
     # one is harder to build and resolves nothing more
     floor = delta / stack_height(1.0, g, max(int(n_max), int(n_fixed or 0), 1))
+    if stack_max_m and not n_fixed:
+        # A TIGHT WALL'S CAP CUTS LAYERS, NEVER THE FIRST LAYER: n layers whose stack from the floor passes the cap are
+        # not built (the cloud sample, extlam_ef6c20fc: a cap thinned abc 00067838's first layer to 1e-8 m, and
+        # snappyHexMesh grew no layer at all); at least one layer stays
+        fits = [n for n in counts if stack_height(floor, g, n) <= float(stack_max_m) * (1 + 1e-9)]
+        if fits:
+            counts = fits
+        else:
+            # a cap under even one such layer (abc 00067838: about 3e-7 m) is not a stack any wall can hold; it is set
+            # aside, as CFDREQ-9's cap only ever shortened a bridged stack before
+            stack_max_m = None
     best = None
     for n in counts:
         hi = top(n)

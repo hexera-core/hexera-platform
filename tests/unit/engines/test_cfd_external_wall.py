@@ -216,9 +216,14 @@ def test_the_laminar_stack_is_sized_on_its_boundary_layer():
     # a count of the user's stands; the cells it reaches are what it reaches
     n, h, across = CR.laminar_stack(0.002, 0.003, 1.2, n_fixed=4)
     assert n == 4 and across < CR.BL_CELLS
-    # a tight wall's cap shortens the stack (thinner layers), never a stack past the cap
+    # a tight wall's cap cuts layers, never the first layer: fewer cells across, said
+    floor = 0.002 / CR.stack_height(1.0, 1.2, CR.BL_CELLS)
     n, h, across = CR.laminar_stack(0.002, 0.003, 1.2, stack_max_m=0.001)
-    assert CR.stack_height(h, 1.2, n) <= 0.001 * (1 + 1e-9) and across >= CR.BL_CELLS
+    assert CR.stack_height(h, 1.2, n) <= 0.001 * (1 + 1e-9) and n < CR.BL_CELLS and across < CR.BL_CELLS
+    assert h >= floor * (1 - 1e-9)
+    # a cap under even one such layer (a sliver's reading, abc 00067838: 3e-7 m) is set aside: no 1e-8 m layers
+    n, h, across = CR.laminar_stack(0.002, 0.003, 1.2, stack_max_m=3e-7)
+    assert n == CR.BL_CELLS and h == pytest.approx(floor) and across >= CR.BL_CELLS - 1e-6
     n, h, across = CR.laminar_stack(0.002, 0.003, 1.2, n_fixed=4)
     words = CR.fallback_words(_ask_lam(), h, n, across)
     assert "not the 10 a resolved layer needs" in words
