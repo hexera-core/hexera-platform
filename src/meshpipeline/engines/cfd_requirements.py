@@ -434,9 +434,6 @@ class Ask:
         self.fallback: dict | None = None
         #: CFDREQ-17: the wall cells coarsened so a wall-function first layer fits under them, said ("" when not)
         self.wall_level_note = ""
-        #: CFDREQ-26: the wall planned with no layer, its own cells the wall-function cell (wall_function_cell_plan's
-        #: record); None when the wall keeps its layer
-        self.wall_cell_first: dict | None = None
 
     @classmethod
     def of(cls, workspace, engine: str) -> Ask | None:
@@ -1201,76 +1198,6 @@ def wall_function_keep_cell(ask: Ask | None, *, bore_D: float, wall_cell_m: floa
     if y_plus_of(built, how, float(ask.y_plus)) < WALL_FUNCTIONS_BAND[0] * (1 - 1e-9):
         return None
     return built / WALL_FUNCTION_JUMP
-
-
-#: CFDREQ-26: the smallest cell, as a multiple of the layer's height, a wall-function first layer grows into without
-#: crushing the cell above it. snappyHexMesh pushes the mesh back from the wall by the layer's height: a 1.92 mm layer
-#: grown into 1.71 mm cells left the cell above it 0.24-0.30 of the layer on 71-80% of three walls (yplab_wf_0e83ed87);
-#: into 3.42 mm cells (1.8x) the cell above stayed 0.78 of it
-WALL_FUNCTION_CRUSH = 1.7
-
-
-def wall_function_cell_plan(ask: Ask | None, *, bore_D: float, wall_cell_m: float, tris, boxes,
-                            cap_rel: float = FIRST_CAP_REL) -> dict | None:
-    """CFDREQ-26, A WALL CELL THAT ALREADY SITS AT THE Y+ ASKED IS THE WALL-FUNCTION CELL: where the local refinement
-    (`boxes`: thin spots, narrow passages - "min", "max", "level_bump" over `wall_cell_m`) puts cells at the wall under
-    WALL_FUNCTION_CRUSH times the wall-function first layer, the layer crushes the cell above it. Wall functions need
-    only the first cell's centre at the y+ asked, and there a wall cell may already be that cell. Per wall triangle of
-    `tris` (the staged wall, metres) the cell at the wall is read; with the layer, the wall it suits is the wall whose
-    cells are thick enough for it; without, the wall whose own cells give a y+ the row meets (y_plus_met). The plan
-    with the larger share wins (snappyHexMesh's layers are per patch, so the choice is the whole wall's). None when
-    there is no wall-function layer to plan (wall_function_keep_cell) or no wall; else {"no_layer", "layer_m",
-    "with_layer_pct", "no_layer_pct", "under_pct" (cells under the band: a thin feature's cells, kept so it is
-    captured), "crushed_pct", "y_lo", "y_hi", "words"}."""
-    import numpy as np
-    keep = wall_function_keep_cell(ask, bore_D=bore_D, wall_cell_m=wall_cell_m, cap_rel=cap_rel)
-    if keep is None or ask is None or ask.y_plus is None:
-        return None
-    T = np.asarray(tris, dtype=float)
-    if T.ndim != 3 or not len(T):
-        return None
-    _h, _miss, how = y_plus_height(float(ask.y_plus), ask.req.get("physics"), length_m=float(bore_D),
-                                   length_from="the bore")
-    layer = keep * WALL_FUNCTION_JUMP
-    c = T.mean(axis=1)
-    A = 0.5 * np.linalg.norm(np.cross(T[:, 1] - T[:, 0], T[:, 2] - T[:, 0]), axis=1)
-    total = float(A.sum())
-    if not total > 0.0:
-        return None
-    cell = np.full(len(T), float(wall_cell_m))
-    for b in boxes or []:
-        try:
-            lo, hi, bump = np.asarray(b["min"], float), np.asarray(b["max"], float), int(b.get("level_bump", 1))
-        except (KeyError, TypeError, ValueError):
-            continue
-        inside = np.all((c >= lo) & (c <= hi), axis=1)
-        cell[inside] = np.minimum(cell[inside], float(wall_cell_m) / 2 ** max(bump, 0))
-    asked = float(ask.y_plus)
-    y_lo = max(WALL_FUNCTION_RANGE[0], Y_PLUS_ASKED_BAND[0] * asked)
-    y_hi = min(WALL_FUNCTION_RANGE[1], Y_PLUS_ASKED_BAND[1] * asked)
-    yp = np.array([y_plus_of(float(v), how, asked) for v in cell])
-
-    def pct(mask) -> float:
-        return round(100.0 * float(A[mask].sum()) / total, 1)
-
-    crushed = cell < WALL_FUNCTION_CRUSH * layer * (1 - 1e-9)
-    with_layer, no_layer = pct(~crushed), pct((yp >= y_lo) & (yp <= y_hi))
-    under, crushed_pct = pct(yp < y_lo), pct(crushed)
-    choose = bool(crushed.any() and no_layer > with_layer)
-    out = {"no_layer": choose, "layer_m": float(f"{layer:.4g}"),
-           "with_layer_pct": with_layer, "no_layer_pct": no_layer, "under_pct": under, "crushed_pct": crushed_pct,
-           "y_lo": y_lo, "y_hi": y_hi, "words": ""}
-    if choose:
-        fine = float(cell[crushed].min())
-        words = (f"no wall layer: the wall's own cells already sit at y+ {MR._g(y_lo)} to {MR._g(y_hi)} on "
-                 f"{MR._g(no_layer)}% of the wall, so the wall cell is the wall-function cell; a {_mm(layer)} layer "
-                 f"would crush the cells above it on {MR._g(crushed_pct)}% of the wall, where a thin spot or a "
-                 f"narrow passage is refined to {_mm(fine)} cells")
-        if under > 0.0:
-            words += (f"; on {MR._g(under)}% of the wall the cells sit under y+ {MR._g(y_lo)}: they are the cells a "
-                      "thin feature or a narrow passage needs to be captured")
-        out["words"] = words
-    return out
 
 
 def wall_functions_typed(ask: Ask | None) -> bool:
@@ -2245,11 +2172,6 @@ def snappy_dict(ask: Ask | None, text: str, *, wall_cell_m: float | None = None,
                            "cell to the next", cells_between_levels=n)
     if "addLayersControls" in out and (ask.first_m or ask.total_m or ask.layer_growth or ask.y_plus):
         out = _snappy_layers(ask, out, wall_cell_m, bridge)
-        wcf, yrow = ask.wall_cell_first, ask.rows.get(ask.rid("layers:y_plus") or "")
-        if wcf and yrow is not None and yrow.get("status") == "applied" and not yrow.get("fallback"):
-            # CFDREQ-26: the wall planned with no layer is judged by its own first cells in the y+ band
-            yrow.update(wall_cell_first=True, y_band=[wcf["y_lo"], wcf["y_hi"]],
-                        built=f"{yrow.get('built') or ''}; {wcf['words']}".lstrip("; "))
     for lim in ask.limits:
         key = SNAPPY_QUALITY.get(lim["measure"])
         if key is None:
@@ -3015,8 +2937,6 @@ def _y_plus_row(workspace, req: Mapping, q: Mapping, p: Mapping) -> dict | None:
     first, expected = _num_or_none(p.get("first_m")), _num_or_none(p.get("y_plus_expected"))
     if not asked or asked < WALL_FUNCTION_RANGE[0] or not first or not expected:
         return None
-    if p.get("wall_cell_first"):
-        return _wall_cell_y_row(workspace, q, p, asked, first, expected)
     got = _first_layer_facts(workspace, req, q, p)
     if got is None:
         return None
@@ -3058,44 +2978,6 @@ def _y_plus_row(workspace, req: Mapping, q: Mapping, p: Mapping) -> dict | None:
     if not ok_y and p.get("status") == "nearest" and p.get("built"):
         said += f"; {p['built']}"
     return {**fl, "met": bool(ok_y and wide), "y_plus_measured": float(f"{y:.4g}"), "delivered": said}
-
-
-def wall_cell_first_words(workspace) -> str:
-    """CFDREQ-26: the words of a wall planned with no layer (its own cells the wall-function cell), from the case's
-    plan record - "" when the wall kept its layer."""
-    for p in (_plan(workspace).get("rows") or {}).values():
-        if isinstance(p, Mapping) and p.get("wall_cell_first"):
-            return str(p.get("built") or "no wall layer: the wall's own cells are the wall-function cell")
-    return ""
-
-
-def _wall_cell_y_row(workspace, q: Mapping, p: Mapping, asked: float, first: float, expected: float) -> dict | None:
-    """CFDREQ-26: A WALL PLANNED WITH NO LAYER IS JUDGED BY ITS OWN FIRST CELLS. On the built mesh, the share of the
-    wall whose first cell gives a y+ the row meets (y_plus_met's band, turned into heights by the plan's own estimate)
-    with no jump to a much thinner cell above it: met on Y_PLUS_WALL_SHARE of the wall with the median in the band.
-    None when the mesh cannot be measured (the row is judged as before)."""
-    lo = max(WALL_FUNCTION_RANGE[0], Y_PLUS_ASKED_BAND[0] * asked)
-    hi = min(WALL_FUNCTION_RANGE[1], Y_PLUS_ASKED_BAND[1] * asked)
-    tall = built_first_cells(workspace, q, first, band_m=(first * lo / expected, first * hi / expected))
-    share, cell = _num_or_none(tall.get("layer_area_first_at_plan_pct")), _num_or_none(tall.get("layer_first_cell_m"))
-    if share is None or not cell:
-        return None
-    under = _num_or_none(tall.get("layer_area_under_jump_pct")) or 0.0
-    y = expected * cell / first
-    ok_y, wide = y_plus_met(asked, y), share >= Y_PLUS_WALL_SHARE
-    said = (f"{p.get('built') or 'no wall layer'}; on the built mesh the wall's first cell is {_mm(cell)} (median), its "
-            f"centre at y+ about {MR._g(round(y))}; a first cell giving y+ {MR._g(lo)} to {MR._g(hi)} with no jump above "
-            f"it stands on {MR._g(share)}% of the wall")
-    if under > 0.0:
-        said += f"; on {MR._g(under)}% the first cell sits under much thinner cells (a jump in cell height)"
-    if not wide:
-        said += " - elsewhere the wall's first cell gives a y+ outside that band"
-    out = {"applied": True, "met": bool(ok_y and wide), "measured": float(f"{cell:.4g}"), "first_cell_m": cell,
-           "y_plus_measured": float(f"{y:.4g}"), "delivered": said}
-    for k in _AT_HEIGHT_KEYS:
-        if (v := _num_or_none(tall.get(k))) is not None:
-            out[k.removeprefix("layer_")] = v
-    return out
 
 
 def _first_layer_facts(workspace, req: Mapping, q: Mapping, p: Mapping) -> tuple[dict, float] | None:
@@ -3173,12 +3055,11 @@ _AT_HEIGHT_KEYS = ("layer_area_first_at_plan_pct", "layer_area_under_jump_pct", 
 _PLAN_KEYS = ("layer_area_at_plan_pct", "layer_first_cell_m", "layer_first_vs_plan")
 
 
-def built_first_cells(workspace, q: Mapping, planned_m: float, *, band_m: tuple[float, float] | None = None) -> dict:
+def built_first_cells(workspace, q: Mapping, planned_m: float) -> dict:
     """CFDREQ-14 on every engine: the wall's first cell against the planned first layer - the quality record's
     figures when its census measured them at that height (cfMesh), else measured here on the delivered polyMesh
-    (engines/layer_census: any ascii OpenFOAM mesh up to its cell limit). {} when it cannot be measured. With
-    `band_m` (CFDREQ-26) the first cell is judged in that band of heights, always on the polyMesh."""
-    if band_m is None and q.get("layer_coverage_basis") == "height" and q.get("layer_first_planned_m"):
+    (engines/layer_census: any ascii OpenFOAM mesh up to its cell limit). {} when it cannot be measured."""
+    if q.get("layer_coverage_basis") == "height" and q.get("layer_first_planned_m"):
         try:
             if abs(float(q["layer_first_planned_m"]) - float(planned_m)) <= 0.01 * float(planned_m):
                 return {k: q.get(k) for k in ("layer_area_at_plan_pct", "layer_first_cell_m", "layer_first_vs_plan",
@@ -3196,7 +3077,7 @@ def built_first_cells(workspace, q: Mapping, planned_m: float, *, band_m: tuple[
     if not walls or not (ws / "constant" / "polyMesh" / "owner").exists():
         return {}
     try:
-        per, _why = LC.census(ws / "constant" / "polyMesh", 1, walls, planned_first_m=float(planned_m), band_m=band_m)
+        per, _why = LC.census(ws / "constant" / "polyMesh", 1, walls, planned_first_m=float(planned_m))
     except Exception:  # noqa: BLE001 - evidence, not a verdict
         logger.warning("first-cell census failed; the row reads the setting", exc_info=True)
         return {}

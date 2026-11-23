@@ -189,8 +189,7 @@ def _far_face(owner, cstart, cf_face, geo, cells, centres, n0):
     return faces[rows, j], d[rows, j], par, ufc[inv[rows, j]]
 
 
-def census(polymesh, n_layers: int, patches, planned_first_m: float | None = None,
-           band_m: tuple[float, float] | None = None) -> tuple[dict, str]:
+def census(polymesh, n_layers: int, patches, planned_first_m: float | None = None) -> tuple[dict, str]:
     """(per-patch figures, "") - or ({}, why) when the mesh cannot be measured. Figures per named
     wall patch: faces, area_m2, area_with_any_layer, area_with_full_layers, mean_layers (each face
     capped at `n_layers`), mean_layers_found (uncapped), coverage_pct, layers_by_area {count: area
@@ -203,11 +202,7 @@ def census(polymesh, n_layers: int, patches, planned_first_m: float | None = Non
     with such a layer), coverage_at_plan_pct (the layer cells asked that stand on such a first layer) and
     first_vs_plan (the median first cell over the plan). Counted by shape alone, a cfMesh mesh asked a
     0.021 mm first layer under 5.9 mm cells read "layers on 54% of the wall" where its first cell was
-    3.2 mm (static_mixer_004, resolved wall): a stack 150 times the height asked is not the layer asked.
-
-    BY BAND (CFDREQ-26): with `band_m` (the lowest and highest first cell, metres) the first cell is judged in that
-    band instead of at the planned height - a wall planned with NO layer, whose own cells are the wall-function cell:
-    area_first_at_plan is then the wall whose first cell is in the band with no jump above it."""
+    3.2 mm (static_mixer_004, resolved wall): a stack 150 times the height asked is not the layer asked."""
     if n_layers <= 0:
         return {}, "no layers were asked for"
     mesh, why = _read_mesh(polymesh)
@@ -298,13 +293,8 @@ def census(polymesh, n_layers: int, patches, planned_first_m: float | None = Non
             # cells above it were 0.35 mm, a jump of five times going away from the wall. With a plan, every face
             # whose first cell is at the planned height (within PLAN_FIRST_TOL either way, its far face parallel) is
             # read with the cell next out: under a cell more than GROWTH_MAX times thinner it stands under a jump
-            if band_m is not None:
-                # CFDREQ-26: no layer was planned - the wall's own first cell, anywhere in the y+ band
-                at_height = ((first_cell > 0) & (first_par > PARALLEL_COS) & (first_cell >= float(band_m[0]))
-                             & (first_cell <= float(band_m[1])))
-            else:
-                at_height = ((first_cell > 0) & (first_par > PARALLEL_COS) & tall_ok
-                             & (first_cell >= float(planned_first_m) / PLAN_FIRST_TOL))
+            at_height = ((first_cell > 0) & (first_par > PARALLEL_COS) & tall_ok
+                         & (first_cell >= float(planned_first_m) / PLAN_FIRST_TOL))
             ratio = np.full(nf, np.nan)
             look = np.flatnonzero((at_height | at_plan) & (first_far >= 0) & (first_far < nI))
             if len(look):
@@ -317,9 +307,8 @@ def census(polymesh, n_layers: int, patches, planned_first_m: float | None = Non
             # the share: CFDREQ-21's layers at plan, and a first cell at the planned height taller than its faces are
             # wide - each only where no jump sits above it. CFDREQ-24: a layer at plan under a cell more than
             # GROWTH_MAX times thinner is not the wall-function cell, whatever its shape (yplab_wf_0e83ed87: a part
-            # read the y+ met with 71% of its wall under a 3.3x jump); the jump is said, never counted as the layer.
-            # CFDREQ-26: with a band, the first cells in the band alone
-            y_share = ((at_height | at_plan) if band_m is None else at_height) & ~jump
+            # read the y+ met with 71% of its wall under a 3.3x jump); the jump is said, never counted as the layer
+            y_share = (at_height | at_plan) & ~jump
             seen = np.isfinite(ratio) & (at_height | at_plan)
             res[name].update({
                 "planned_first_m": float(planned_first_m),

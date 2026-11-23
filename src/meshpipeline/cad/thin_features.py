@@ -378,8 +378,7 @@ def thin_refinement_boxes(tris, *, cell_m: float, cells_across: int = 2,
                           pad_frac: float = 0.6, max_level_bump: int = 4,
                           budget_cells: int | None = None,
                           zero_rel: float = ZERO_THICKNESS_REL,
-                          keep_cell_m: float | None = None, passage=None,
-                          passage_cells: float = 12.0) -> ThinRegions:
+                          keep_cell_m: float | None = None) -> ThinRegions:
     """Boxes enclosing surface regions too THIN for the planned cell, and the extra
     refinement level each needs.
 
@@ -420,12 +419,6 @@ def thin_refinement_boxes(tris, *, cell_m: float, cells_across: int = 2,
     a 2.2 mm wall under a 1.92 mm first layer was refined to 0.86 mm cells (+2 over a 3.4 mm wall cell) and the
     layer stood under 0.35 mm cells over the whole part (yplab_e11_7821cb5b); +1 gives 1.71 mm cells, the wall still
     captured. A feature thinner than that keeps the cells it needs, and layer_note says what the layer meets there.
-
-    passage (CFDREQ-26): (points, local passage radius per point) of the fluid passage (engines/passage's field). The
-    probe reads two opposing faces and cannot tell a thin solid plate from a narrow fluid gap, so a box held back
-    keeps the levels it would have had wherever the passage inside it (its 5th-percentile width) would otherwise fall
-    under `passage_cells` across: a fluid gap is never coarsened for the wall-function layer (a held +1 left a passage
-    6.8 cells across against the 12 the gate asks, yplab_wf_0e83ed87).
     """
     import math as _math
 
@@ -486,7 +479,6 @@ def thin_refinement_boxes(tris, *, cell_m: float, cells_across: int = 2,
         return ThinRegions()
     needed = max(1, int(_math.ceil(_math.log2(max(cell_m / target, 1.0) + 1e-12))))
     layer_note = ""
-    unheld = needed
     if keep_cell_m and float(keep_cell_m) > 0.0 and cell_m / 2 ** needed < float(keep_cell_m) * (1 - 1e-9):
         one = max(1, int(_math.ceil(_math.log2(max(cell_m / thinnest, 1.0)) - 1e-9)))
         keep = int(_math.floor(_math.log2(max(cell_m / float(keep_cell_m), 1.0)) + 1e-9))
@@ -555,31 +547,9 @@ def thin_refinement_boxes(tris, *, cell_m: float, cells_across: int = 2,
         _short = (f"{bump} extra level(s) instead of the {needed} the thinnest needs, to keep the "
                   "cell count sane, so it may stay under-resolved")
         note = f"{note}; {_short}" if note else _short
-    full = max(1, min(int(max_level_bump), unheld))
-    if passage is not None and boxes and unheld > needed and bump < full:
-        # CFDREQ-26: a held box keeps its levels where the fluid passage in it would fall under passage_cells across
-        P = np.asarray(passage[0], dtype=float).reshape(-1, 3)
-        R = np.asarray(passage[1], dtype=float).reshape(-1)
-        kept_for = []
-        for b in boxes:
-            inside = (np.all((P >= np.asarray(b["min"])) & (P <= np.asarray(b["max"])), axis=1)
-                      & np.isfinite(R) & (R > 0.0)) if len(P) == len(R) else np.zeros(0, dtype=bool)
-            if not inside.any():
-                continue
-            width = 2.0 * float(np.percentile(R[inside], 5))
-            if width / (cell_m / 2 ** bump) >= float(passage_cells):
-                continue
-            want = int(_math.ceil(_math.log2(float(passage_cells) * cell_m / width) - 1e-9))
-            b["_bump"] = max(bump, min(full, want))
-            kept_for.append(width)
-        if kept_for:
-            tail = (f"{len(kept_for)} thin spot(s) keep finer cells: a fluid passage there "
-                    f"({_mm_s(min(kept_for))} across) would otherwise have fewer than {float(passage_cells):g} cells "
-                    "across")
-            layer_note = f"{layer_note}; {tail}" if layer_note else tail
     for b in boxes:
-        b["level_bump"] = int(b.pop("_bump", bump))
-        b["est_cells"] = int(_cost(b["volume_m3"], b["level_bump"]))
+        b["level_bump"] = bump
+        b["est_cells"] = int(_cost(b["volume_m3"], bump))
     logger.info("thin_refinement_boxes: thinnest feature %.4g m vs cell %.4g m -> +%d level(s) "
                 "over %d triangle(s) in %d of %d box(es), ~%.0f cells%s", thinnest, cell_m, bump,
                 int(too_thin.sum()), len(boxes), n_found, _est(bump),
