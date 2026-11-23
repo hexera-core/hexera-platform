@@ -30,6 +30,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import logging
 import re
 import urllib.parse
 import urllib.request
@@ -40,6 +41,8 @@ from html.parser import HTMLParser
 from io import BytesIO
 from pathlib import Path
 from typing import Literal, Protocol
+
+log = logging.getLogger(__name__)
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[2]
@@ -63,6 +66,11 @@ NIST_PAGE = ("https://www.nist.gov/el/systems-integration-division-73400/"
 # UNVERIFIED: the documented segmentation-extended STEP archive; confirm the URL on first real build.
 F360_ARCHIVE = ("https://fusion-360-gallery-dataset.s3.us-west-2.amazonaws.com/"
                 "segmentation/s2.0.0/s2.0.0_extended_step.zip")
+
+# A fetch that finds fewer files than this is a wrong guess about the remote layout, not a small
+# dataset: NIST publishes dozens of models, the F360 extended set thousands.
+NIST_MIN_ENTRIES = 20
+F360_MIN_ENTRIES = 100
 
 _STEP_SUFFIXES = (".stp", ".step")
 
@@ -153,11 +161,15 @@ def nist_group(filename: str) -> str | None:
 
 class NistSource:
     """NIST MBE PMI models. Reads the download page's links to STEP files (NOT verified against the
-    live page: assumes direct .stp/.step hrefs), downloads each, hashes the bytes."""
+    live page: assumes direct .stp/.step hrefs), downloads each, hashes the bytes. Raises when the
+    page yields fewer than `min_entries` files or a file whose part id cannot be read, so a wrong
+    guess about the page fails loudly instead of producing a short or ungrouped pool."""
 
-    def __init__(self, page_url: str = NIST_PAGE, transport: Transport = urllib_transport) -> None:
+    def __init__(self, page_url: str = NIST_PAGE, transport: Transport = urllib_transport,
+                 min_entries: int = NIST_MIN_ENTRIES) -> None:
         self.page_url = page_url
         self.transport = transport
+        self.min_entries = min_entries
 
     def entries(self) -> list[PoolEntry]:
         links = _Links()
@@ -168,17 +180,26 @@ class NistSource:
                 continue
             url = urllib.parse.urljoin(self.page_url, href)
             name = url.split("?")[0].rsplit("/", 1)[-1]
+            group = nist_group(name)
+            if group is None:
+                raise ValueError(f"NIST file {name!r}: no CTC/FTC/STC part id in the name, cannot group it")
             out.append(PoolEntry(name, "nist", sha256_hex(self.transport(url)), url, None,
-                                 LICENCE["nist"], nist_group(name)))
+                                 LICENCE["nist"], group))
+        if len(out) < self.min_entries:
+            raise ValueError(f"NIST page {self.page_url} yielded {len(out)} STEP files, expected at least "
+                             f"{self.min_entries}: the page layout differs from the assumed direct links "
+                             "(zipped packages are not handled)")
         return out
 
 
 class F360Source:
     """Fusion 360 Gallery segmentation-extended STEP set: one zip, every STEP member an entry."""
 
-    def __init__(self, archive_url: str = F360_ARCHIVE, transport: Transport = urllib_transport) -> None:
+    def __init__(self, archive_url: str = F360_ARCHIVE, transport: Transport = urllib_transport,
+                 min_entries: int = F360_MIN_ENTRIES) -> None:
         self.archive_url = archive_url
         self.transport = transport
+        self.min_entries = min_entries
 
     def entries(self) -> list[PoolEntry]:
         data = self.transport(self.archive_url)
@@ -190,26 +211,59 @@ class F360Source:
                     continue
                 out.append(PoolEntry(info.filename, "f360", sha256_hex(z.read(info)),
                                      self.archive_url, archive_sha, LICENCE["f360"]))
+        if len(out) < self.min_entries:
+            raise ValueError(f"Fusion 360 archive {self.archive_url} yielded {len(out)} STEP files, expected "
+                             f"at least {self.min_entries}: nested archive or a different layout/suffix")
         return out
 
 
 # --------------------------------------------------------------------------- build
 
-def build_pool(sources: Iterable[PoolSource]) -> list[PoolEntry]:
-    """Merge sources; a missing licence is an error; one entry per sha256 (first source wins)."""
+def merge_pool(sources: Iterable[PoolSource]) -> tuple[list[PoolEntry], list[tuple[PoolEntry, PoolEntry]]]:
+    """Merge sources; a missing licence is an error; one entry per sha256 (first source wins).
+
+    Returns the entries and the `(kept, dropped)` pairs the dedupe collapsed."""
     seen: dict[str, PoolEntry] = {}
+    dropped: list[tuple[PoolEntry, PoolEntry]] = []
     for source in sources:
         for entry in source.entries():
             if not entry.licence.strip():
                 raise ValueError(f"{entry.name}: licence is required on every pool entry")
-            seen.setdefault(entry.sha256, entry)
-    return list(seen.values())
+            if entry.sha256 in seen:
+                dropped.append((seen[entry.sha256], entry))
+            else:
+                seen[entry.sha256] = entry
+    return list(seen.values()), dropped
 
 
-def write_pool(entries: list[PoolEntry], out: Path = OUT) -> None:
+def _log_dedupe(dropped: list[tuple[PoolEntry, PoolEntry]]) -> None:
+    """Say what the dedupe dropped. A drop that collapses two members of one group means a
+    'translator variant' was byte-identical to another - not a variant at all - which is itself a
+    finding, so it is logged by name."""
+    for kept, gone in dropped:
+        if kept.group is not None and kept.group == gone.group:
+            log.warning("group %s: %s is byte-identical to %s (sha256 %s); collapsed to one entry",
+                        kept.group, gone.name, kept.name, kept.sha256)
+    if dropped:
+        log.warning("dedupe by sha256 dropped %d duplicate entr%s", len(dropped),
+                    "y" if len(dropped) == 1 else "ies")
+
+
+def build_pool(sources: Iterable[PoolSource]) -> list[PoolEntry]:
+    """`merge_pool`, logging what the dedupe dropped."""
+    entries, dropped = merge_pool(sources)
+    _log_dedupe(dropped)
+    return entries
+
+
+def write_pool(entries: list[PoolEntry], out: Path = OUT, *, sources_included: list[str],
+               deduped: int = 0) -> None:
+    """`sources_included` records which flag set built this file, so a partial pool is never
+    mistaken for the full one."""
     out.parent.mkdir(parents=True, exist_ok=True)
     rows = sorted((asdict(e) for e in entries), key=lambda r: (r["source"], r["name"]))
-    out.write_text(json.dumps({"version": 1, "files": rows}, indent=1, sort_keys=True) + "\n")
+    manifest = {"version": 1, "sources_included": sources_included, "deduped": deduped, "files": rows}
+    out.write_text(json.dumps(manifest, indent=1, sort_keys=True) + "\n")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -220,17 +274,26 @@ def main(argv: list[str] | None = None) -> int:
     build.add_argument("--f360", action="store_true", help="fetch the Fusion 360 extended STEP archive")
     build.add_argument("--out", default=str(OUT))
     args = parser.parse_args(argv)
+    logging.basicConfig(level=logging.INFO)
     sources: list[PoolSource] = [AbcSource(json.loads(TRACK.read_text()), json.loads(CLEAN.read_text()))]
+    included = ["abc"]
     if args.nist:
         sources.append(NistSource())
+        included.append("nist")
     if args.f360:
         sources.append(F360Source())
-    entries = build_pool(sources)
-    write_pool(entries, Path(args.out))
+        included.append("f360")
+    entries, dropped = merge_pool(sources)
     counts: dict[str, int] = {}
     for e in entries:
         counts[e.source] = counts.get(e.source, 0) + 1
-    print(f"wrote {args.out}: {len(entries)} entries {counts}")
+    for wanted in included[1:]:
+        if not counts.get(wanted):
+            raise SystemExit(f"requested source {wanted} contributed no entries; not writing {args.out}")
+    _log_dedupe(dropped)
+    write_pool(entries, Path(args.out), sources_included=included, deduped=len(dropped))
+    print(f"wrote {args.out}: {len(entries)} entries {counts}; sources {included}; "
+          f"{len(dropped)} duplicate(s) dropped by sha256")
     return 0
 
 

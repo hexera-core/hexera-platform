@@ -1,4 +1,5 @@
 {
+ "deduped": 0,
  "files": [
   {
    "archive_sha256": "1855b6fa5f2c074558d61127bebc2f359a6b6380288c1b2d1ab72f4120515536",
@@ -97587,6 +97588,9 @@
    "source": "occt",
    "url": "https://github.com/Open-Cascade-SAS/OCCT/releases/download/V7_8_0/opencascade-dataset-7.8.0.tar.xz"
   }
+ ],
+ "sources_included": [
+  "abc"
  ],
  "version": 1
 }
