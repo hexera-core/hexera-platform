@@ -45,6 +45,7 @@ PASS_SAMPLE_FRACTION = 0.10
 Layer = Literal["valid", "panel", "faithful"]
 Tier = Literal["cheap", "full"]
 NO_SOLIDS = "no_solids"
+UNBOUNDED = "unbounded_geometry"  # layer 1: infinite extent, measured and outside the definition (not a failure)
 
 
 # --------------------------------------------------------------------------- source allow-list
@@ -261,6 +262,12 @@ def is_no_solids(row: ProbeRow) -> bool:
     return row.family == NO_SOLIDS or NO_SOLIDS in row.verdict_summary.get("hard", [])
 
 
+def is_unbounded(row: ProbeRow) -> bool:
+    """An input of infinite extent: a COUNTED row (it was measured), kept out of the failing set and out of every
+    split, and tallied on its own (`Splits.excluded_unbounded`). Like `no_solids`, no repair is a candidate for it."""
+    return row.family == UNBOUNDED or UNBOUNDED in row.verdict_summary.get("hard", [])
+
+
 def is_counted(row: ProbeRow) -> bool:
     """Only rows a conclusive verdict produced exist, but the summary says so explicitly: a row written
     from an inconclusive verdict must never count."""
@@ -272,6 +279,7 @@ def summarise(v: Any) -> dict:
         "tier": v.tier,
         "clean": bool(v.clean),
         "counts_for_scoreboard": bool(v.counts_for_scoreboard),
+        "out_of_scope": bool(v.out_of_scope),
         "valid": bool(v.valid.ok),
         "hard": [f.code for f in v.valid.hard],
         "soft": [f.code for f in v.valid.soft],
@@ -387,7 +395,7 @@ def reprobe(
         if not v.counts_for_scoreboard:
             skip(entry, "inconclusive: a panel member failed for pool reasons")
             continue
-        if not v.panel:
+        if not v.panel and not v.out_of_scope:  # an unbounded input is never meshed: its empty panel is the verdict
             skip(entry, "empty_panel: no member produced a result")
             continue
         layer = first_failing_layer(v)
@@ -428,7 +436,7 @@ def full_tier_entries(entries: Sequence[Any], cheap_rows: Sequence[ProbeRow], *,
     chosen = []
     for e in entries:
         row = verdict_of.get(e.sha256)
-        if row is None or (row.first_failing_layer is not None and is_no_solids(row)):
+        if row is None or (row.first_failing_layer is not None and (is_no_solids(row) or is_unbounded(row))):
             continue
         if row.first_failing_layer is not None or in_pass_sample(e.sha256, seed=seed):
             chosen.append(e)
@@ -476,6 +484,7 @@ class Splits:
     seed: int
     excluded_no_solids: int = 0
     excluded_uncounted: int = 0
+    excluded_unbounded: int = 0
     shortfall: dict[str, int] = field(default_factory=dict)
     strata: dict[str, dict[str, int]] = field(default_factory=dict)
 
@@ -522,6 +531,7 @@ def build_splits(
     """Stratified dev / held-out / clean splits.
 
     Failing set: rows with a first failing layer, minus `no_solids` (not a repairable defect), minus
+    `unbounded_geometry` (measured, outside the definition: counted in `excluded_unbounded`, never a failure), minus
     anything a conclusive verdict did not produce. Dev and held-out are drawn from it stratified by
     (first_failing_layer, family, source): each stratum contributes in proportion to its size
     (largest remainder), and within a stratum a seeded shuffle of sha256-sorted rows gives dev first and
@@ -541,7 +551,8 @@ def build_splits(
     uncounted = [r for r in rows if not is_counted(r)]
     rows = [r for r in rows if is_counted(r)]
     no_solids = [r for r in rows if r.first_failing_layer is not None and is_no_solids(r)]
-    failing = [r for r in rows if r.first_failing_layer is not None and not is_no_solids(r)]
+    unbounded = [r for r in rows if r.first_failing_layer is not None and is_unbounded(r)]
+    failing = [r for r in rows if r.first_failing_layer is not None and not is_no_solids(r) and not is_unbounded(r)]
     certified = [r for r in rows if r.first_failing_layer is None and r.verdict_summary.get("clean")
                  and r.verdict_summary.get("tier") == "full"]
 
@@ -588,7 +599,7 @@ def build_splits(
         shortfall["clean"] = clean - len(clean_rows)
 
     result = Splits(
-        dev_rows, held_rows, clean_rows, seed, len(no_solids), len(uncounted), shortfall,
+        dev_rows, held_rows, clean_rows, seed, len(no_solids), len(uncounted), len(unbounded), shortfall,
         {"failing_population": {"/".join(k): n for k, n in sorted(sizes.items())},
          "dev": dict(Counter("/".join(_stratum(r)) for r in dev_rows)),
          "heldout": dict(Counter("/".join(_stratum(r)) for r in held_rows)),
@@ -617,7 +628,8 @@ def write_splits(splits: Splits, out_dir: Path | str = SPLITS_DIR) -> None:
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     meta = {"seed": splits.seed, "strata": splits.strata, "shortfall": splits.shortfall,
-            "excluded_no_solids": splits.excluded_no_solids, "excluded_uncounted": splits.excluded_uncounted}
+            "excluded_no_solids": splits.excluded_no_solids, "excluded_uncounted": splits.excluded_uncounted,
+            "excluded_unbounded": splits.excluded_unbounded}
     for name in ("dev", "heldout", "clean"):
         body = {"split": name, **meta, "files": [asdict(r) for r in getattr(splits, name)]}
         (out / f"{name}.json").write_text(json.dumps(body, indent=1, sort_keys=True) + "\n")

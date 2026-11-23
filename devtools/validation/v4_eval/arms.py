@@ -103,6 +103,8 @@ def _usable(v: Any, what: str) -> str | None:
     """None if `v` can be a row's verdict, else why it cannot (it says nothing about the file)."""
     if not v.counts_for_scoreboard:
         return f"inconclusive: {what} had a panel member fail for pool reasons"
+    if v.out_of_scope:  # measured and outside the definition: the splits keep these out, so a wave never reaches here
+        return f"out_of_scope: {what} is unbounded (layer 1 unbounded_geometry); it is not a failure and not unmeasured"
     if not v.panel:
         return f"empty_panel: {what} produced no member result"
     return None
