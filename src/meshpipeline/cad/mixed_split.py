@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -649,7 +650,7 @@ def split_body(body, kept: list[tuple[object, float, float]], thick_faces: list,
 #: MIXED-25: the step a watcher may bound (engines/shell_run._guarded): STEP, when set, is called with GROW_STEP as a
 #: core starts growing (OCC's offset, which cannot be stopped from inside) and with None once it has grown
 GROW_STEP = "grow"
-STEP = None
+STEP: Callable[[str | None], None] | None = None
 
 
 def _step(name: str | None) -> None:
