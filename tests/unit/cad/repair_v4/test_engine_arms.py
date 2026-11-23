@@ -1,3 +1,4 @@
+# ruff: noqa: F811 - fixtures imported from a sibling module are redefined as test arguments, by design
 # Responsibility: Pin what the four arms do at the engine seam (`repair_v4()` with `ARM` set): `input_only` does nothing,
 #                 `staged` runs the healers and nothing else, the search arms reach `_find_best`; the judge is sized from
 #                 the part; `verdict_summary["search"]` carries every input of the shared `file_unmeasured` rule.

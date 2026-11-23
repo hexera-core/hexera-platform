@@ -1,3 +1,4 @@
+# ruff: noqa: F811 - fixtures imported from a sibling module are redefined as test arguments, by design
 # Responsibility: Prove the `search_ai` arm of the production entry point `repair_v4()` puts requests on the wire of the
 #                 REAL model router (fake provider client beneath it), that the route is chosen by the engine, and that
 #                 every request is admitted by the ledger exactly once. Task 31's own admit/wire assertion sits behind
