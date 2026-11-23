@@ -206,7 +206,8 @@ def test_a_writer_that_exits_nonzero_leaves_no_pass_record(tmp_path, monkeypatch
     monkeypatch.setattr(mp, "record_pass", spy)
     report = _probe(spec, tmp_path)
     assert not report.passed and any("exited 7" in f for f in report.failures)
-    assert seen == [False]       # a pass record was never written, even transiently
+    assert seen and True not in seen     # a pass record was never written, even transiently (the count of
+                                         # False rewrites differs between host and container)
 
 
 def test_probe_gate_refuses_every_way_the_record_can_be_wrong(tmp_path):

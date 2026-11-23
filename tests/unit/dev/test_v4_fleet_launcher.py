@@ -124,7 +124,14 @@ def test_v3_dry_run_still_refuses_and_plans_as_before(tmp_path):
     assert r.returncode == 0, r.stdout + r.stderr
     creates = _creates(r.stdout)
     assert len(creates) == 12
-    assert all("purpose=v3-eval" in c and "v3-units=" in c and "v4-" not in c for c in creates)
+    assert all("purpose=v3-eval" in c and "v3-units=" in c for c in creates)
+    # v3 carries no v4 metadata KEY. Judged on the keys, not the command string, whose text includes the
+    # checkout path (a directory named `...v4-...` once decided this test).
+    import shlex
+    for c in creates:
+        meta = next(a for a in shlex.split(c) if a.startswith("--metadata=^|^"))
+        keys = [kv.split("=", 1)[0] for kv in meta[len("--metadata=^|^"):].split("|")]
+        assert keys and not [k for k in keys if k.startswith("v4-")], keys
     assert all("dev-crsv3-v3e-" in c for c in creates)
 
 

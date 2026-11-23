@@ -257,7 +257,7 @@ def conclude(markers: Any, backend: str, run_id: str, rounds: int, *,
     if overlapping < min_overlap:
         fails.append(f"only {overlapping} of {rounds} rounds had overlapping create calls, fewer than the "
                      f"{min_overlap} required: the writers did not provably race, so an atomic create is "
-                     "unproven (rerun with more rounds or a tighter --lead-s)")
+                     "unproven (rerun with more rounds or better clock sync)")
     report = Report(passed=not seq and not fails, rounds=rounds, sequential_ok=not seq,
                     overlapping_rounds=overlapping, backend=backend, run_id=run_id, failures=[*seq, *fails])
     if write_pass or not report.passed:
