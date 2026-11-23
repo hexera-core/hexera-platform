@@ -4,25 +4,33 @@
 # Owns: `PoolEntry`, the per-source adapters (ABC, NIST, Fusion 360 Gallery, injected defects),
 #       `build_pool` (merge, check licence, dedupe by sha256) and `write_pool`.
 # Boundaries: the committed pool.json carries names, hashes, URLs and licences - never CAD. Fetching
-#             (NIST, F360) goes through an injected `Transport`, so everything here is testable
-#             offline; only `urllib_transport` touches the network. Evaluating CAD (the split into
+#             (NIST, F360) goes through an injected `Download`, so everything here is testable
+#             offline; only `urllib_download` touches the network. Evaluating CAD (the split into
 #             dev / held-out / clean-control) is a later stage and does not live here.
 """Build the candidate pool.
 
     pool.py build                      # ABC + OCCT from the committed manifests only (no network)
-    pool.py build --nist --f360        # also fetch the NIST page and the Fusion 360 archive
+    pool.py build --nist --f360        # also fetch the NIST zips and the Fusion 360 archive
 
 Sources, in precedence order (the first source to supply a sha256 keeps it):
   abc_fail / occt  corpora/mesh-failure-real.json (the harvest's real mesh failures)
   abc_pass         evidence/2026-11-19-corpus-harvest/clean-samples.json (the harvest's passing sample)
-  nist             NIST MBE PMI CTC/FTC/STC models. Every translator variant is kept; variants of one
-                   part share a `group` (e.g. nist-ctc-01), since the same part exported through
-                   several translators is what reproduces real cross-kernel defects.
-  f360             Fusion 360 Gallery, segmentation extended STEP set - a non-Onshape origin
-                   (ABC and DeepCAD are both Onshape-derived).
+  nist             NIST MBE PMI CTC/FTC/STC models, from two zips reached through nist.gov
+                   `/document/<slug>` redirects (the page itself links only to drawing PDFs). Every
+                   export variant is kept; variants of one part share a `group` (e.g. nist-ctc-01),
+                   so the variants of a part can be kept together. CAVEAT: these are NOT distinct vendor
+                   translations of one native part. They are 3-4 AP203/AP242 and PMI-level STEP
+                   exports per part from NIST's own reference pipeline (the 5 STC parts have a
+                   single STEP each), so cross-kernel diversity must be measured from checker
+                   results, not assumed from the group. The STC zip holds native CAD only (CATPart/prt/ipt), no
+                   STEP, so the STC STEP files come from the PMI STEP zip.
+  f360             Fusion 360 Gallery segmentation extended STEP set (s2.0.1) - a non-Onshape origin
+                   (ABC and DeepCAD are both Onshape-derived). Its STEP files are scaled x10.
   inject           reserved for the injected-defect variants; no fetcher lives here.
 
-Every hash for a file this module downloads is computed here from the bytes. Hashes carried by the
+Archives are streamed to a temp file and hashed in chunks; members are read from the zip one at a
+time, never extracted to disk. Every hash for a file this module downloads is computed here from the
+bytes. Hashes carried by the
 committed ABC/OCCT manifests were computed by the harvest and are recorded as-is.
 """
 from __future__ import annotations
@@ -32,13 +40,12 @@ import hashlib
 import json
 import logging
 import re
-import urllib.parse
+import shutil
+import tempfile
 import urllib.request
 import zipfile
 from collections.abc import Callable, Iterable
 from dataclasses import asdict, dataclass
-from html.parser import HTMLParser
-from io import BytesIO
 from pathlib import Path
 from typing import Literal, Protocol
 
@@ -51,26 +58,51 @@ CLEAN = REPO / "devtools/validation/evidence/2026-11-19-corpus-harvest/clean-sam
 OUT = REPO / "devtools/validation/corpora/v4/pool.json"
 
 Source = Literal["abc_fail", "abc_pass", "occt", "nist", "f360", "inject"]
-Transport = Callable[[str], bytes]
+#: Download `url` (following redirects) into the given path.
+Download = Callable[[str, Path], None]
 
-# UNVERIFIED against the datasets' own terms text - confirm before the benchmark is published.
 LICENCE = {
-    "abc": "ABC dataset terms (non-commercial research use): https://deep-geometry.github.io/abc-dataset/",
-    "occt": "Open CASCADE Technology 7.8.0 sample dataset: https://dev.opencascade.org/resources/licensing",
-    "nist": "NIST MBE PMI models: US Government work, public domain (see NIST download page terms)",
-    "f360": "Fusion 360 Gallery Dataset License: https://github.com/AutodeskAILab/Fusion360GalleryDataset",
+    "abc": ("ABC dataset: copyright of the CAD models is owned by their creators; for licensing details "
+            "see Onshape Terms of Use 1.g.ii (https://deep-geometry.github.io/abc-dataset/); "
+            "authors give no warranties"),
+    # The OCCT string carries its UNVERIFIED marker into the manifest; confirm before publication.
+    "occt": ("UNVERIFIED - Open CASCADE Technology 7.8.0 sample dataset (opencascade-dataset-7.8.0, "
+             "https://github.com/Open-Cascade-SAS/OCCT/releases/tag/V7_8_0); the release notes give "
+             "LGPL 2.1 with exception for OCCT itself, and dataset-specific terms were not confirmed"),
+    "nist": ("NIST Disclaimer on the download page: \"The test cases, CAD models, and STEP files can be "
+             "used without any restrictions\" (https://www.nist.gov/el/systems-integration-division-73400/"
+             "mbe-pmi-validation-and-conformance-testing/download-free-cad)"),
+    "f360": ("Fusion 360 Gallery Dataset License (Autodesk; non-commercial research use, no "
+             "redistribution of the Dataset in its entirety): "
+             "https://github.com/AutodeskAILab/Fusion360GalleryDataset/blob/master/LICENSE.md"),
 }
 
-NIST_PAGE = ("https://www.nist.gov/el/systems-integration-division-73400/"
-             "mbe-pmi-validation-and-conformance-testing/download-free-cad")
-# UNVERIFIED: the documented segmentation-extended STEP archive; confirm the URL on first real build.
+# Each is a nist.gov redirect to a zip (verified 2026-11); the final system/files/... URL carries a
+# dated path and is deliberately not hardcoded.
+# The STC zip (https://www.nist.gov/document/nist-stc-pmi-v4) is deliberately absent: it holds only
+# CATPart/prt/ipt/pdf, no STEP; the STC STEP files are in nist-pmi-step-files.
+NIST_ARCHIVES = (
+    "https://www.nist.gov/document/nist-pmi-step-files",
+    "https://www.nist.gov/document/nist-ftc-ctc-pmi-cad-models",
+)
 F360_ARCHIVE = ("https://fusion-360-gallery-dataset.s3.us-west-2.amazonaws.com/"
-                "segmentation/s2.0.0/s2.0.0_extended_step.zip")
+                "segmentation/s2.0.1/s2.0.1_extended_step.zip")
 
-# A fetch that finds fewer files than this is a wrong guess about the remote layout, not a small
-# dataset: NIST publishes dozens of models, the F360 extended set thousands.
-NIST_MIN_ENTRIES = 20
-F360_MIN_ENTRIES = 100
+# What a source must yield: a fetch below this is a wrong guess about the remote layout, not a small
+# dataset. The F360 count is the documented size of the s2.0.1 extended STEP set. NIST: the PMI STEP
+# zip alone holds 33 STEP files.
+NIST_MIN_ENTRIES = 30
+F360_MIN_ENTRIES = 42_912
+
+#: Facts a consumer of the pool must not discover by surprise, written to the manifest per source.
+SOURCE_NOTES = {
+    "nist": ("Per part, 3-4 AP203/AP242 and PMI-level STEP exports from NIST's own reference pipeline "
+             "(CTC 01-05 and FTC 06-11); NOT distinct vendor translations of one native part. The 5 STC "
+             "parts carry a single STEP each (the STC zip holds native CAD only)."),
+    "f360": ("STEP files are scaled by a factor of 10 by the dataset's data-exchange process (bounding "
+             "box longest side in [-10, 10]); NOT rescaled here. Absolute-length fidelity bounds such "
+             "as min(0.1 mm, 0.001 x diagonal) mean something different on these parts."),
+}
 
 _STEP_SUFFIXES = (".stp", ".step")
 
@@ -94,9 +126,37 @@ def sha256_hex(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def urllib_transport(url: str) -> bytes:
-    with urllib.request.urlopen(url, timeout=120) as response:  # noqa: S310 - https dataset hosts
-        return bytes(response.read())
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def urllib_download(url: str, dest: Path) -> None:
+    # nist.gov answers 403 to urllib's default User-Agent; a plain client name is enough.
+    request = urllib.request.Request(url, headers={"User-Agent": "v4-eval-pool-builder/1"})  # noqa: S310
+    with urllib.request.urlopen(request, timeout=120) as response, dest.open("wb") as out:  # noqa: S310
+        shutil.copyfileobj(response, out, 1 << 20)
+
+
+def _zip_step_entries(archive: Path, url: str, source: Source, licence: str,
+                      group_of: Callable[[str], str | None] = lambda name: None) -> list[PoolEntry]:
+    """Every STEP member of a zip as an entry; each member is hashed from its bytes, one at a time."""
+    archive_sha = sha256_file(archive)
+    out: list[PoolEntry] = []
+    with zipfile.ZipFile(archive) as z:
+        for info in sorted(z.infolist(), key=lambda i: i.filename):
+            if info.is_dir() or not info.filename.lower().endswith(_STEP_SUFFIXES):
+                continue
+            digest = hashlib.sha256()
+            with z.open(info) as member:
+                for chunk in iter(lambda: member.read(1 << 20), b""):
+                    digest.update(chunk)
+            out.append(PoolEntry(info.filename, source, digest.hexdigest(), url, archive_sha, licence,
+                                 group_of(info.filename)))
+    return out
 
 
 # --------------------------------------------------------------------------- sources
@@ -138,79 +198,67 @@ class AbcSource:
         return out
 
 
-class _Links(HTMLParser):
-    def __init__(self) -> None:
-        super().__init__()
-        self.hrefs: list[str] = []
-
-    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        if tag == "a":
-            self.hrefs.extend(v for k, v in attrs if k == "href" and v)
-
-
 _NIST_PART = re.compile(r"(ctc|ftc|stc)[-_ ]?0*(\d+)", re.IGNORECASE)
 
 
 def nist_group(filename: str) -> str | None:
-    """`nist_ctc_01_asme1_ap203.stp` -> `nist-ctc-01`: the part id, whichever translator wrote it."""
+    """`nist_ctc_01_asme1_ap203.stp` or `CTC 01` -> `nist-ctc-01`: the part id, whichever translator wrote it."""
     match = _NIST_PART.search(filename)
     if match is None:
         return None
     return f"nist-{match.group(1).lower()}-{int(match.group(2)):02d}"
 
 
-class NistSource:
-    """NIST MBE PMI models. Reads the download page's links to STEP files (NOT verified against the
-    live page: assumes direct .stp/.step hrefs), downloads each, hashes the bytes. Raises when the
-    page yields fewer than `min_entries` files or a file whose part id cannot be read, so a wrong
-    guess about the page fails loudly instead of producing a short or ungrouped pool."""
+def _nist_group_required(member: str) -> str:
+    group = nist_group(member.rsplit("/", 1)[-1])
+    if group is None:
+        raise ValueError(f"NIST file {member!r}: no CTC/FTC/STC part id in the name, cannot group it")
+    return group
 
-    def __init__(self, page_url: str = NIST_PAGE, transport: Transport = urllib_transport,
+
+class NistSource:
+    """NIST MBE PMI models: each `/document/<slug>` URL is followed (redirect) to a zip, which is
+    downloaded, hashed, and walked for STEP members. Raises when an archive holds no STEP file, when
+    the total is below `min_entries`, or when a member's part id cannot be read."""
+
+    def __init__(self, archives: Iterable[str] = NIST_ARCHIVES, download: Download = urllib_download,
                  min_entries: int = NIST_MIN_ENTRIES) -> None:
-        self.page_url = page_url
-        self.transport = transport
+        self.archives = list(archives)
+        self.download = download
         self.min_entries = min_entries
 
     def entries(self) -> list[PoolEntry]:
-        links = _Links()
-        links.feed(self.transport(self.page_url).decode("utf-8", errors="replace"))
         out: list[PoolEntry] = []
-        for href in sorted(set(links.hrefs)):
-            if not href.lower().split("?")[0].endswith(_STEP_SUFFIXES):
-                continue
-            url = urllib.parse.urljoin(self.page_url, href)
-            name = url.split("?")[0].rsplit("/", 1)[-1]
-            group = nist_group(name)
-            if group is None:
-                raise ValueError(f"NIST file {name!r}: no CTC/FTC/STC part id in the name, cannot group it")
-            out.append(PoolEntry(name, "nist", sha256_hex(self.transport(url)), url, None,
-                                 LICENCE["nist"], group))
+        with tempfile.TemporaryDirectory(prefix="v4pool-nist-") as tmp:
+            for url in self.archives:
+                dest = Path(tmp) / "archive.zip"
+                self.download(url, dest)
+                found = _zip_step_entries(dest, url, "nist", LICENCE["nist"], _nist_group_required)
+                if not found:
+                    raise ValueError(f"NIST archive {url} holds no STEP files")
+                out.extend(found)
+                dest.unlink()
         if len(out) < self.min_entries:
-            raise ValueError(f"NIST page {self.page_url} yielded {len(out)} STEP files, expected at least "
-                             f"{self.min_entries}: the page layout differs from the assumed direct links "
-                             "(zipped packages are not handled)")
+            raise ValueError(f"NIST archives yielded {len(out)} STEP files, expected at least "
+                             f"{self.min_entries}")
         return out
 
 
 class F360Source:
-    """Fusion 360 Gallery segmentation-extended STEP set: one zip, every STEP member an entry."""
+    """Fusion 360 Gallery segmentation extended STEP set (s2.0.1): one zip streamed to a temp file
+    and walked member by member; STEP files live under `breps/step`. Not rescaled (see SOURCE_NOTES)."""
 
-    def __init__(self, archive_url: str = F360_ARCHIVE, transport: Transport = urllib_transport,
+    def __init__(self, archive_url: str = F360_ARCHIVE, download: Download = urllib_download,
                  min_entries: int = F360_MIN_ENTRIES) -> None:
         self.archive_url = archive_url
-        self.transport = transport
+        self.download = download
         self.min_entries = min_entries
 
     def entries(self) -> list[PoolEntry]:
-        data = self.transport(self.archive_url)
-        archive_sha = sha256_hex(data)
-        out: list[PoolEntry] = []
-        with zipfile.ZipFile(BytesIO(data)) as z:
-            for info in sorted(z.infolist(), key=lambda i: i.filename):
-                if info.is_dir() or not info.filename.lower().endswith(_STEP_SUFFIXES):
-                    continue
-                out.append(PoolEntry(info.filename, "f360", sha256_hex(z.read(info)),
-                                     self.archive_url, archive_sha, LICENCE["f360"]))
+        with tempfile.TemporaryDirectory(prefix="v4pool-f360-") as tmp:
+            dest = Path(tmp) / "archive.zip"
+            self.download(self.archive_url, dest)
+            out = _zip_step_entries(dest, self.archive_url, "f360", LICENCE["f360"])
         if len(out) < self.min_entries:
             raise ValueError(f"Fusion 360 archive {self.archive_url} yielded {len(out)} STEP files, expected "
                              f"at least {self.min_entries}: nested archive or a different layout/suffix")
@@ -256,21 +304,62 @@ def build_pool(sources: Iterable[PoolSource]) -> list[PoolEntry]:
     return entries
 
 
+def _licence_id(text: str) -> str:
+    return hashlib.sha256(text.encode()).hexdigest()[:12]
+
+
+def _archive_id(url: str, archive_sha256: str | None) -> str:
+    return hashlib.sha256(f"{url}\n{archive_sha256}".encode()).hexdigest()[:12]
+
+
 def write_pool(entries: list[PoolEntry], out: Path = OUT, *, sources_included: list[str],
-               deduped: int = 0) -> None:
-    """`sources_included` records which flag set built this file, so a partial pool is never
-    mistaken for the full one."""
+               deduped: int = 0, notes: dict[str, str] | None = None) -> None:
+    """Compact JSON with repeated values interned. Two tables, each entry pointing into them:
+    `licences` (id -> text, via `licence_id`) and `archives` (id -> {url, archive_sha256}, via
+    `archive_id`; one archive URL/hash serves every member it holds). Every entry still carries a
+    non-empty licence and url - this is storage only, and an entry lacking either is refused.
+
+    `sources_included` records which flag set built this file, so a partial pool is never mistaken
+    for the full one."""
+    licences: dict[str, str] = {}
+    archives: dict[str, dict[str, str | None]] = {}
+    rows = []
+    for e in sorted(entries, key=lambda e: (e.source, e.name)):
+        if not e.licence.strip():
+            raise ValueError(f"{e.name}: licence is required on every pool entry")
+        if not e.url.strip():
+            raise ValueError(f"{e.name}: url is required on every pool entry")
+        row = asdict(e)
+        row["licence_id"] = _licence_id(row.pop("licence"))
+        licences[row["licence_id"]] = e.licence
+        row["archive_id"] = _archive_id(e.url, e.archive_sha256)
+        archives[row["archive_id"]] = {"url": row.pop("url"), "archive_sha256": row.pop("archive_sha256")}
+        rows.append(row)
     out.parent.mkdir(parents=True, exist_ok=True)
-    rows = sorted((asdict(e) for e in entries), key=lambda r: (r["source"], r["name"]))
-    manifest = {"version": 1, "sources_included": sources_included, "deduped": deduped, "files": rows}
-    out.write_text(json.dumps(manifest, indent=1, sort_keys=True) + "\n")
+    manifest = {"version": 3, "sources_included": sources_included, "deduped": deduped,
+                "source_notes": notes or {}, "licences": licences, "archives": archives, "files": rows}
+    out.write_text(json.dumps(manifest, separators=(",", ":"), sort_keys=True) + "\n")
+
+
+def read_pool(path: Path = OUT) -> list[PoolEntry]:
+    """Inverse of `write_pool`: rehydrates each entry's licence, url and archive_sha256."""
+    manifest = json.loads(path.read_text())
+    if manifest.get("version") != 3:
+        raise ValueError(f"{path}: pool manifest version {manifest.get('version')}, expected 3")
+    out = []
+    for row in manifest["files"]:
+        licence = manifest["licences"][row.pop("licence_id")]
+        archive = manifest["archives"][row.pop("archive_id")]
+        out.append(PoolEntry(**row, licence=licence, url=archive["url"],
+                             archive_sha256=archive["archive_sha256"]))
+    return out
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="pool.py")
     sub = parser.add_subparsers(dest="cmd", required=True)
     build = sub.add_parser("build")
-    build.add_argument("--nist", action="store_true", help="fetch the NIST page and its STEP files")
+    build.add_argument("--nist", action="store_true", help="fetch the NIST STEP zips")
     build.add_argument("--f360", action="store_true", help="fetch the Fusion 360 extended STEP archive")
     build.add_argument("--out", default=str(OUT))
     args = parser.parse_args(argv)
@@ -291,7 +380,8 @@ def main(argv: list[str] | None = None) -> int:
         if not counts.get(wanted):
             raise SystemExit(f"requested source {wanted} contributed no entries; not writing {args.out}")
     _log_dedupe(dropped)
-    write_pool(entries, Path(args.out), sources_included=included, deduped=len(dropped))
+    write_pool(entries, Path(args.out), sources_included=included, deduped=len(dropped),
+               notes={k: v for k, v in SOURCE_NOTES.items() if k in included})
     print(f"wrote {args.out}: {len(entries)} entries {counts}; sources {included}; "
           f"{len(dropped)} duplicate(s) dropped by sha256")
     return 0

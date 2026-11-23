@@ -65,72 +65,114 @@ def test_pool_records_licence():
         pool.build_pool([pool.StaticSource([_entry(licence="")])])
 
 
-def test_nist_variants_grouped():
-    page = ('<a href="/files/nist_ctc_01_asme1_ap203.stp">a</a>'
-            '<a href="/files/NIST_CTC_01_ASME1_AP242.stp">b</a>'
-            '<a href="/files/nist_ftc_06_asme1_ap242.stp">c</a>'
-            '<a href="/about">not a model</a>')
-    blobs = {"https://nist.test/files/nist_ctc_01_asme1_ap203.stp": b"one",
-             "https://nist.test/files/NIST_CTC_01_ASME1_AP242.stp": b"two",
-             "https://nist.test/files/nist_ftc_06_asme1_ap242.stp": b"three"}
-    entries = pool.build_pool([pool.NistSource("https://nist.test/page", lambda u: page.encode()
-                                               if u.endswith("page") else blobs[u], min_entries=3)])
-    groups = {e.name: e.group for e in entries}
-    assert len(entries) == 3
-    assert groups["nist_ctc_01_asme1_ap203.stp"] == groups["NIST_CTC_01_ASME1_AP242.stp"] == "nist-ctc-01"
-    assert groups["nist_ftc_06_asme1_ap242.stp"] == "nist-ftc-06"
-    # the hash is computed from the downloaded bytes, never taken from the page
-    assert {e.sha256 for e in entries} == {hashlib.sha256(b).hexdigest() for b in blobs.values()}
-
-
-def test_f360_hashes_members_and_archive():
+def _zip_bytes(members: dict[str, bytes]) -> bytes:
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as z:
-        z.writestr("a/123.step", b"alpha")
-        z.writestr("a/readme.txt", b"skip")
-    data = buf.getvalue()
-    entries = pool.build_pool([pool.F360Source("https://f360.test/ext.zip", lambda u: data, min_entries=1)])
-    assert [e.name for e in entries] == ["a/123.step"]
-    assert entries[0].sha256 == hashlib.sha256(b"alpha").hexdigest()
-    assert entries[0].archive_sha256 == hashlib.sha256(data).hexdigest()
-    assert entries[0].source == "f360"
+        for name, data in members.items():
+            z.writestr(name, data)
+    return buf.getvalue()
 
 
-def test_empty_nist_page_raises():
-    page = b'<a href="/files/models.zip">zipped package</a>'
-    with pytest.raises(ValueError, match="yielded 0 STEP files"):
-        pool.build_pool([pool.NistSource("https://nist.test/page", lambda u: page, min_entries=1)])
+def _fake_download(archives: dict[str, bytes]):
+    def download(url: str, dest: Path) -> None:
+        dest.write_bytes(archives[url])
+    return download
+
+
+NIST_URL = "https://nist.test/document/step-files"
+NIST_URL_2 = "https://nist.test/document/ftc-ctc"
+
+
+def _nist(members: dict[str, bytes], **kw):
+    return pool.NistSource([NIST_URL], _fake_download({NIST_URL: _zip_bytes(members)}),
+                           **({"min_entries": 1} | kw))
+
+
+def test_nist_variants_grouped():
+    members = {"Z/AP203 geometry only/nist_ctc_01_asme1_rd.stp": b"one",
+               "Z/AP203 with PMI/nist_ctc_01_asme1_ap203.stp": b"two",
+               "Z/nist_ctc_01_asme1_ap242-e1.stp": b"three",
+               "Z/nist_ftc_06_asme1_ap242-e2.stp": b"four",
+               "Z/PDF/nist_ctc_01_asme1_rd.pdf": b"not cad",
+               "Z/README.txt": b"skip"}
+    entries = pool.build_pool([_nist(members, min_entries=4)])
+    by_name = {e.name.rsplit("/", 1)[-1]: e for e in entries}
+    assert len(entries) == 4
+    assert {by_name[n].group for n in ("nist_ctc_01_asme1_rd.stp", "nist_ctc_01_asme1_ap203.stp",
+                                       "nist_ctc_01_asme1_ap242-e1.stp")} == {"nist-ctc-01"}
+    assert by_name["nist_ftc_06_asme1_ap242-e2.stp"].group == "nist-ftc-06"
+    # hashes come from the member bytes and the archive file, never from the remote
+    assert {e.sha256 for e in entries} == {hashlib.sha256(b).hexdigest()
+                                           for b in (b"one", b"two", b"three", b"four")}
+    assert {e.archive_sha256 for e in entries} == {hashlib.sha256(_zip_bytes(members)).hexdigest()}
+    assert all(e.url == NIST_URL and e.source == "nist" for e in entries)
+
+
+def test_nist_group_spellings():
+    assert pool.nist_group("CTC 01") == pool.nist_group("nist_ctc_01_x.stp") == "nist-ctc-01"
+    assert pool.nist_group("NIST_STC_10_asme1_ap242-e2.stp") == "nist-stc-10"
+
+
+def test_nist_archive_without_step_raises():
+    native_only = {"S/CATIA/nist_stc_06.CATPart": b"x", "S/STC_06.pdf": b"y"}
+    with pytest.raises(ValueError, match="holds no STEP files"):
+        pool.build_pool([_nist(native_only)])
 
 
 def test_nist_below_minimum_raises():
-    page = b'<a href="/f/nist_ctc_01_a.stp">a</a>'
-    with pytest.raises(ValueError, match="expected at least 20"):
-        pool.build_pool([pool.NistSource("https://nist.test/page", lambda u: page if u.endswith("page") else b"x")])
+    with pytest.raises(ValueError, match="expected at least 30"):
+        pool.build_pool([pool.NistSource([NIST_URL], _fake_download(
+            {NIST_URL: _zip_bytes({"Z/nist_ctc_01_a.stp": b"x"})}))])
 
 
 def test_nist_file_without_part_id_raises():
-    page = b'<a href="/f/mystery_model.stp">a</a>'
     with pytest.raises(ValueError, match="cannot group"):
-        pool.build_pool([pool.NistSource("https://nist.test/page", lambda u: page if u.endswith("page") else b"x",
-                                         min_entries=1)])
+        pool.build_pool([_nist({"Z/mystery_model.stp": b"x"})])
+
+
+def test_identical_nist_variants_collapse_across_archives_and_are_reported(caplog):
+    first = _zip_bytes({"A/nist_ctc_02_asme1_rc.stp": b"same-bytes"})
+    second = _zip_bytes({"B/nist_ctc_02_asme1_rc.stp": b"same-bytes"})
+    source = pool.NistSource([NIST_URL, NIST_URL_2],
+                             _fake_download({NIST_URL: first, NIST_URL_2: second}), min_entries=2)
+    with caplog.at_level("WARNING"):
+        entries = pool.build_pool([source])
+    assert len(entries) == 1  # byte-identical exports are one file
+    assert "group nist-ctc-02" in caplog.text and "dropped 1 duplicate" in caplog.text
+
+
+F360_NAME = "s2.0.1/breps/step/{}.step"
+
+
+def test_f360_hashes_members_and_archive():
+    data = _zip_bytes({F360_NAME.format("123"): b"alpha", "s2.0.1/breps/seg/123.seg": b"skip",
+                       "s2.0.1/readme.txt": b"skip"})
+    entries = pool.build_pool([pool.F360Source("https://f360.test/ext.zip",
+                                               _fake_download({"https://f360.test/ext.zip": data}),
+                                               min_entries=1)])
+    assert [e.name for e in entries] == [F360_NAME.format("123")]
+    assert entries[0].sha256 == hashlib.sha256(b"alpha").hexdigest()
+    assert entries[0].archive_sha256 == hashlib.sha256(data).hexdigest()
+    assert entries[0].source == "f360" and "Autodesk" in entries[0].licence
 
 
 def test_empty_f360_archive_raises():
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w") as z:
-        z.writestr("nested.zip", b"not a step")
+    data = _zip_bytes({"nested.zip": b"not a step"})
     with pytest.raises(ValueError, match="yielded 0 STEP files"):
-        pool.build_pool([pool.F360Source("https://f360.test/ext.zip", lambda u: buf.getvalue(), min_entries=1)])
+        pool.build_pool([pool.F360Source("https://f360.test/ext.zip",
+                                         _fake_download({"https://f360.test/ext.zip": data}), min_entries=1)])
 
 
-def test_identical_nist_variants_collapse_and_are_reported(caplog):
-    page = (b'<a href="/f/nist_ctc_02_asme1_ap203.stp">a</a><a href="/f/nist_ctc_02_asme1_ap242.stp">b</a>')
-    with caplog.at_level("WARNING"):
-        entries = pool.build_pool([pool.NistSource(
-            "https://nist.test/page", lambda u: page if u.endswith("page") else b"same-bytes", min_entries=1)])
-    assert len(entries) == 1  # byte-identical exports are one file
-    text = caplog.text
-    assert "group nist-ctc-02" in text and "byte-identical" in text and "dropped 1 duplicate" in text
+def test_f360_minimum_is_the_documented_count():
+    assert pool.F360_MIN_ENTRIES == 42_912
+
+
+def test_f360_scale_note_is_written_to_the_manifest(tmp_path):
+    out = tmp_path / "pool.json"
+    pool.write_pool([_entry(source="f360")], out, sources_included=["abc", "f360"],
+                    notes=pool.SOURCE_NOTES)
+    import json
+    assert "scaled by a factor of 10" in json.loads(out.read_text())["source_notes"]["f360"]
 
 
 def test_write_pool_records_sources_included(tmp_path):
@@ -139,3 +181,50 @@ def test_write_pool_records_sources_included(tmp_path):
     import json
     manifest = json.loads(out.read_text())
     assert manifest["sources_included"] == ["abc"] and manifest["deduped"] == 2
+
+
+def test_nist_note_says_variants_are_not_vendor_translations(tmp_path):
+    out = tmp_path / "pool.json"
+    pool.write_pool([_entry(source="nist")], out, sources_included=["abc", "nist"], notes=pool.SOURCE_NOTES)
+    import json
+    note = json.loads(out.read_text())["source_notes"]["nist"]
+    assert "NOT distinct vendor translations" in note and "single STEP each" in note
+
+
+def test_licences_are_interned_and_round_trip(tmp_path):
+    out = tmp_path / "pool.json"
+    entries = [_entry(name="a", sha256="1" * 64), _entry(name="b", sha256="2" * 64),
+               _entry(name="c", sha256="3" * 64, licence="OTHER")]
+    pool.write_pool(entries, out, sources_included=["abc"])
+    import json
+    manifest = json.loads(out.read_text())
+    assert len(manifest["licences"]) == 2 and all("licence" not in r for r in manifest["files"])
+    assert all(r["licence_id"] in manifest["licences"] for r in manifest["files"])
+    assert sorted(pool.read_pool(out), key=lambda e: e.name) == entries
+
+
+def test_write_pool_refuses_an_empty_licence(tmp_path):
+    with pytest.raises(ValueError, match="licence"):
+        pool.write_pool([_entry(licence=" ")], tmp_path / "pool.json", sources_included=["abc"])
+
+
+def test_occt_licence_carries_unverified_marker():
+    assert pool.LICENCE["occt"].startswith("UNVERIFIED")
+
+
+def test_archives_are_interned_and_round_trip(tmp_path):
+    out = tmp_path / "pool.json"
+    shared = {"url": "https://x/a.zip", "archive_sha256": "9" * 64}
+    entries = [_entry(name=f"m{i}", sha256=f"{i:064x}", **shared) for i in range(3)]
+    entries.append(_entry(name="solo", sha256="f" * 64, url="https://x/b.zip", archive_sha256=None))
+    pool.write_pool(entries, out, sources_included=["abc"])
+    import json
+    manifest = json.loads(out.read_text())
+    assert manifest["version"] == 3 and len(manifest["archives"]) == 2
+    assert all({"url", "archive_sha256"}.isdisjoint(r) for r in manifest["files"])
+    assert sorted(pool.read_pool(out), key=lambda e: e.name) == sorted(entries, key=lambda e: e.name)
+
+
+def test_write_pool_refuses_an_empty_url(tmp_path):
+    with pytest.raises(ValueError, match="url is required"):
+        pool.write_pool([_entry(url=" ")], tmp_path / "pool.json", sources_included=["abc"])
