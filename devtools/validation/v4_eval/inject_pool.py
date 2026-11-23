@@ -208,12 +208,14 @@ class GenerateResult:
 # --------------------------------------------------------------------------- guards
 
 def check_kind(kind: str, backend: Any) -> None:
-    """Raise RefusedKind unless `kind` is one of the injector's DEFAULT_KINDS."""
+    """Raise RefusedKind unless `kind` is one of the injector's DEFAULT_KINDS, or its labelled declined stratum
+    (ADMITTED_KINDS: opt-in by name, never part of a default draw)."""
     status = backend.KIND_STATUS.get(kind)
+    admitted = getattr(backend, "ADMITTED_KINDS", backend.DEFAULT_KINDS)
     if status is None:
         raise RefusedKind(f"unknown injector kind {kind!r}; the structural kinds are "
                           f"{', '.join(backend.DEFAULT_KINDS)}")
-    if kind not in backend.DEFAULT_KINDS:
+    if kind not in admitted:
         why = ("its damage is unproven: it reads back as a valid solid with only a raised tolerance, i.e. clean "
                "by our own metric" if status == "quarantined" else "no damage survives the STEP reader")
         raise RefusedKind(f"{kind} is {status}, not structural: {why}; only {', '.join(backend.DEFAULT_KINDS)} "

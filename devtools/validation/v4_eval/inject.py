@@ -16,6 +16,12 @@
 #                GATED ON LAYER-2 EVIDENCE (a gmsh probe that actually fails on the injected file). Until then,
 #                `DEFAULT_KINDS` excludes them and Task 8 must too.
 #   infeasible   pcurve_corrupt: no damage survives the STEP reader (pinned by a canary test); inject() raises.
+#   declined_stratum  face_delete_large: a face whose boundary loop spans MORE than the fill cap (limits.py) was
+#                deleted. The damage is real and structural, but no op in the library may repair it BY DESIGN (the
+#                faithful layer exists to stop `fill_loop` inventing most of a part), so the expected outcome is
+#                "correctly_declined" (label["expected_outcome"]). It is generatable and may enter a pool, but the
+#                report keeps it on its own line, never in clean gain, regressions or any clean rate.
+#                `face_delete` (the default kind) only deletes faces the op COULD put back: loop span <= the cap.
 from __future__ import annotations
 
 import json
@@ -52,9 +58,12 @@ from OCP.TopLoc import TopLoc_Location
 from OCP.TopoDS import TopoDS, TopoDS_Compound, TopoDS_Shape
 from OCP.TopTools import TopTools_IndexedMapOfShape
 
+from meshpipeline.cad.repair_v4.limits import MAX_FILL_SPAN_RATIO, fill_span_allowed  # the op's own 5%
+
 KINDS: tuple[str, ...] = (
     "loose_reapprox", "unsew_perturb", "tolerance_inflate", "pcurve_corrupt", "seam_variant",
     "small_entities", "face_delete", "assembly_overlap", "precision_truncate", "iges_roundtrip",
+    "face_delete_large",
 )
 
 
@@ -62,11 +71,16 @@ KIND_STATUS: dict[str, str] = {
     "loose_reapprox": "quarantined", "unsew_perturb": "structural", "tolerance_inflate": "quarantined",
     "pcurve_corrupt": "infeasible", "seam_variant": "quarantined", "small_entities": "structural",
     "face_delete": "structural", "assembly_overlap": "structural", "precision_truncate": "quarantined",
-    "iges_roundtrip": "structural",
+    "iges_roundtrip": "structural", "face_delete_large": "declined_stratum",
 }
+#: The kinds whose correct outcome is a decline, and what the label says that outcome is.
+DECLINED_STRATUM_KINDS: tuple[str, ...] = tuple(k for k in KINDS if KIND_STATUS[k] == "declined_stratum")
+EXPECTED_OUTCOME: dict[str, str] = {k: "correctly_declined" for k in DECLINED_STRATUM_KINDS}
 QUARANTINED_KINDS: tuple[str, ...] = tuple(k for k in KINDS if KIND_STATUS[k] == "quarantined")
 #: What a benchmark build should draw from by default: kinds whose damage is shown, not merely claimed.
 DEFAULT_KINDS: tuple[str, ...] = tuple(k for k in KINDS if KIND_STATUS[k] == "structural")
+#: What a pool may CONTAIN: the default kinds plus the labelled declined stratum (opt-in, never a default draw).
+ADMITTED_KINDS: tuple[str, ...] = DEFAULT_KINDS + DECLINED_STRATUM_KINDS
 
 
 class InjectionNotApplicable(ValueError):
@@ -364,15 +378,50 @@ def _small_entities(shape, rng, work):
                  "at": [round(p.X(), 6), round(p.Y(), 6), round(p.Z(), 6)]}
 
 
-def _face_delete(shape, rng, work):
+def _loop_span(part: TopoDS_Shape, face: TopoDS_Shape) -> tuple[float, float]:
+    """(loop span, part diagonal) of `face`'s boundary loop. The deleted face's boundary loop as a fraction of the part diagonal, measured the way `fill_loop` measures
+    it (ops/faces.py `_fill_loop`): the bounding box of the loop's edges, against the bounding-box diagonal of the
+    part the op is GIVEN (so pass the damaged part when re-checking)."""
+    box = Bnd_Box()
+    for edge in _entities(face, TopAbs_EDGE):
+        BRepBndLib.Add_s(edge, box)
+    x0, y0, z0, x1, y1, z1 = box.Get()
+    return math.dist((x0, y0, z0), (x1, y1, z1)), _diag(part)
+
+
+def _delete_face(shape, rng, large: bool):
+    """Delete one face. `large=False`: only faces whose loop the op may fill (limits.fill_span_allowed): small faces
+    lost in translation. `large=True`: only faces it may NOT (the declined stratum). Same predicate, one 5%."""
     faces = _entities(shape, TopAbs_FACE)
-    i = rng.randrange(len(faces))
+    chosen = [i for i, f in enumerate(faces)
+              if fill_span_allowed(*_loop_span(shape, f)) is not large]
+    name = "face_delete_large" if large else "face_delete"
+    if not chosen:
+        raise InjectionNotApplicable(
+            f"{name}: no face has a boundary loop {'above' if large else 'within'} "
+            f"{100 * MAX_FILL_SPAN_RATIO:g}% of the part diagonal")
+    i = rng.choice(chosen)
     reshape = BRepTools_ReShape()
     reshape.Remove(faces[i])
     out = reshape.Apply(shape)
     if len(_entities(out, TopAbs_FACE)) != len(faces) - 1:
-        raise InjectionNotApplicable("face_delete: the face could not be removed from this shape")
-    return out, {"entities": [_face_ref(shape, faces, i)]}
+        raise InjectionNotApplicable(f"{name}: the face could not be removed from this shape")
+    span, diagonal = _loop_span(out, faces[i])  # re-measured against the damaged part, as the op will see it
+    ratio = span / diagonal
+    if fill_span_allowed(span, diagonal) is large:
+        raise InjectionNotApplicable(
+            f"{name}: deleting the face moved the part diagonal across the {100 * MAX_FILL_SPAN_RATIO:g}% line "
+            f"(loop span {100 * ratio:.2f}% of the damaged part's diagonal)")
+    return out, {"entities": [_face_ref(shape, faces, i)], "loop_span_ratio": round(ratio, 6),
+                 "fill_cap_ratio": MAX_FILL_SPAN_RATIO}
+
+
+def _face_delete(shape, rng, work):
+    return _delete_face(shape, rng, large=False)
+
+
+def _face_delete_large(shape, rng, work):
+    return _delete_face(shape, rng, large=True)
 
 
 def _assembly_overlap(shape, rng, work):
@@ -454,6 +503,7 @@ _INJECTORS: dict[str, Injector] = {
     "seam_variant": _seam_variant,
     "small_entities": _small_entities,
     "face_delete": _face_delete,
+    "face_delete_large": _face_delete_large,
     "assembly_overlap": _assembly_overlap,
     "precision_truncate": _precision_truncate,
     "iges_roundtrip": _iges_roundtrip,
@@ -483,6 +533,7 @@ def inject(src_step: Path | str, kind: str, seed: int, out_dir: Path | None = No
     label = {
         "kind": kind, "seed": seed, "status": KIND_STATUS[kind], "clean_source": str(src),
         "fidelity_reference": "damaged_input",     # design 7.2: the clean source only labels the defect
+        **({"expected_outcome": EXPECTED_OUTCOME[kind]} if kind in EXPECTED_OUTCOME else {}),
         **fields,
     }
     return InjectedCase(path=out, kind=kind, label=label)
@@ -526,6 +577,9 @@ def target_histogram(corpus: Path | str) -> dict[str, float]:
 
 
 def _case_family(case: InjectedCase) -> str:
+    if case.kind in DECLINED_STRATUM_KINDS:
+        raise ValueError(f"{case.kind} is the declined stratum (expected outcome {EXPECTED_OUTCOME[case.kind]!r}): it is "
+                         "reported on its own line and never weighted into the failure-family calibration")
     observed = case.label.get("observed_family")
     if observed:
         return str(observed)

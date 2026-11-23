@@ -150,9 +150,10 @@ def injected_kind(name: str) -> str | None:
 
 
 def not_default_kinds() -> list[str]:
-    """Every injector kind that is NOT in DEFAULT_KINDS (quarantined or infeasible)."""
+    """Every injector kind a pool may NOT contain: neither in DEFAULT_KINDS nor the labelled declined stratum
+    (so: quarantined or infeasible)."""
     inject = load_inject()
-    return [k for k in inject.KINDS if k not in set(inject.DEFAULT_KINDS)]
+    return [k for k in inject.KINDS if k not in set(inject.ADMITTED_KINDS)]
 
 
 def banned_kind_in(text: str) -> str | None:
@@ -190,8 +191,9 @@ def check_not_quarantined(items: Iterable[Any]) -> None:
        inferred from the name.
     `inject()` does not enforce the quarantine; this is where it is enforced."""
     inject = load_inject()
-    allowed = set(inject.DEFAULT_KINDS)
+    allowed = set(inject.ADMITTED_KINDS)  # structural kinds + the labelled declined stratum
     status_of: dict[str, str] = inject.KIND_STATUS
+    allowed_status = {status_of[k] for k in allowed}
     for item in items:
         for kind in declared_kinds(item):
             status = status_of.get(kind)
@@ -203,10 +205,10 @@ def check_not_quarantined(items: Iterable[Any]) -> None:
         label = getattr(item, "label", None)
         own = [getattr(item, "kind_status", None), label.get("status") if isinstance(label, dict) else None]
         for declared_status in own:
-            if declared_status is not None and declared_status != "structural":
+            if declared_status is not None and declared_status not in allowed_status:
                 raise QuarantinedKind(
                     f"{item.name} ({item.source}): the entry's own kind status is {declared_status!r}, not "
-                    "'structural'; quarantined kinds stay out of the benchmark until layer-2 evidence exists")
+                    "'structural' or 'declined_stratum'; quarantined kinds stay out of the benchmark until layer-2 evidence exists")
         for text in (item.name, getattr(item, "group", None) or ""):
             banned = banned_kind_in(text)
             if banned is not None:

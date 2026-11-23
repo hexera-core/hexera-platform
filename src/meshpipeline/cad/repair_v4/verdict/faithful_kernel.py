@@ -19,10 +19,11 @@ import re
 import time
 
 from meshpipeline.cad.repair_v4.kernel_calls import register
+from meshpipeline.cad.repair_v4.limits import MAX_FILL_SPAN_RATIO, fill_span_allowed
 
 BOUND_ABS_MM = 0.1
 BOUND_DIAG_FRACTION = 0.001
-FILL_SPAN_FRACTION = 0.05
+FILL_SPAN_FRACTION = MAX_FILL_SPAN_RATIO  # the op's cap, from limits.py; never a second typed 5%
 RATIO_TOLERANCE = 0.02
 SAMPLES = 600
 BUDGET_S = 240.0
@@ -361,7 +362,7 @@ def _faithful_check(payload: dict) -> dict:
         reasons.append("deviation_exceeds_bound")
 
     fill_span = max((_diag(_box(_compound(group))) for group in _groups(added)), default=0.0)
-    if fill_span > FILL_SPAN_FRACTION * diag:
+    if not fill_span_allowed(fill_span, diag):
         reasons.append("fill_too_large")
 
     area_before, area_after = _area(original), _area(repaired)
