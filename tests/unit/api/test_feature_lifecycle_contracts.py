@@ -211,6 +211,7 @@ def test_the_served_routes_are_exactly_the_supported_set():
         ("GET", "/api/v1/geometry/{session_id}/check/parts/{name}.png"),  # the checklist card's pictures
         ("GET", "/api/v1/geometry/{session_id}/check/parts/model"),  # the checklist's model, turned in 3D
         ("POST", "/api/v1/geometry/{session_id}/check/parts/finalize"),  # Finalize notes: read the parts they name
+        ("POST", "/api/v1/geometry/{session_id}/check/faces/at"),  # NOTE-17: the face under a click on the stage
         ("GET", "/api/v1/geometry/{session_id}/check/shell-surface"),  # SHSTAGE-4: the mid-surface over the part
         ("POST", "/api/v1/geometry/{session_id}/check/retry"),    # run the scout or the naming again
         ("POST", "/api/v1/ws/ticket"),

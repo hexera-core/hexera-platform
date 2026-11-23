@@ -701,6 +701,36 @@ async def pick_check_parts(session_id: uuid.UUID, body: PartPickIn, owner_id: st
     return got
 
 
+class FaceAtIn(BaseModel):
+    #: where the viewer's ray met the part's skin (metres, the skin's own coordinates), and the skin's normal there
+    point_m: list[float] = Field(min_length=3, max_length=3)
+    normal: list[float] | None = Field(default=None, min_length=3, max_length=3)
+
+    @field_validator("point_m", "normal")
+    @classmethod
+    def _finite(cls, v):
+        import math
+        if v is not None and not all(math.isfinite(x) for x in v):
+            raise ValueError("must be finite numbers")
+        return v
+
+
+@router.post("/{session_id}/check/faces/at")
+async def check_face_at(session_id: uuid.UUID, body: FaceAtIn, owner_id: str = Depends(owner_dep),
+                        organization_id: str = Depends(org_dep)) -> dict:
+    """NOTE-17: the face under a click on the settled stage - its engine name (Face_k, Part_k_Face_j, Region_k), the
+    chip's plain words ("Face 12 · round Ø20 mm"), its signature and its triangles to highlight; {"id": null} when the
+    click is on no face. 404 when the check kept no face map; 409 once the run started."""
+    session = await _owned_session(session_id, owner_id, organization_id)
+    if session.job_id is not None:
+        raise HTTPException(409, "The run has already started, so faces cannot be picked for it.")
+    from meshpipeline.application import face_pick
+    got = await asyncio.to_thread(face_pick.face_at, str(session_id), body.point_m, body.normal)
+    if got is None:
+        raise HTTPException(404, "Faces cannot be picked on this part.")
+    return got
+
+
 @router.get("/{session_id}/check/shell-surface")
 async def get_check_shell_surface(session_id: uuid.UUID, owner_id: str = Depends(owner_dep),
                                   organization_id: str = Depends(org_dep)) -> Response:
