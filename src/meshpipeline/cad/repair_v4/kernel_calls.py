@@ -57,4 +57,5 @@ from meshpipeline.cad.repair_v4 import (
     ws_kernel,  # noqa: E402,F401
 )
 from meshpipeline.cad.repair_v4 import xcaf_io as _xcaf_io  # noqa: E402,F401
+from meshpipeline.cad.repair_v4.verdict import faithful_kernel as _faithful_kernel  # noqa: E402,F401
 from meshpipeline.cad.repair_v4.verdict import valid_kernel as _valid_kernel  # noqa: E402,F401
