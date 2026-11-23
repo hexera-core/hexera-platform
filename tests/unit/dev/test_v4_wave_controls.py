@@ -1,0 +1,458 @@
+# Responsibility: Prove the v4 launcher supplies what the model-spend ledger needs (wave type, N, unique shard
+#                 indexes, a durable log, a marker store) and that each new gate REFUSES: the wave-count limits,
+#                 the conditional-create probe gate, and the fail-closed disk-headroom check.
+# Boundaries: hermetic. Markers live in a temp directory; the probe's two "hosts" are two local processes over a
+#             directory store; gcloud, docker and curl are stubs. Nothing reaches a network or a bucket.
+from __future__ import annotations
+
+import importlib.util
+import json
+import subprocess
+import sys
+import threading
+import time
+from pathlib import Path
+
+import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "src"))
+from meshpipeline.cad.repair_v4 import model_ledger as ml  # noqa: E402
+
+_spec = importlib.util.spec_from_file_location("fleet_launcher_tests_helpers",
+                                               Path(__file__).with_name("test_v4_fleet_launcher.py"))
+assert _spec is not None and _spec.loader is not None
+base = importlib.util.module_from_spec(_spec)
+sys.modules["fleet_launcher_tests_helpers"] = base
+_spec.loader.exec_module(base)
+
+V4 = base.V4
+lf = base.lf
+mp = base._load("marker_probe_under_test", V4 / "marker_probe.py")
+wl = base._load("wave_limits_under_test", V4 / "wave_limits.py")
+ra = base._load("v4_run_arm_wave_under_test", V4 / "run_arm.py")
+
+BACKEND = "storage.googleapis.com/dev-crsv3-transfer-224734058693"
+
+
+@pytest.fixture
+def live(monkeypatch):
+    """subprocess.run replaced by a recorder and the live read-only checks stubbed: nothing is created."""
+    rec = base._Recorder()
+    monkeypatch.setattr(lf.subprocess, "run", rec)
+    monkeypatch.setattr(lf, "live_checks", lambda *a, **k: ([], []))
+    monkeypatch.setattr(lf, "done_units", lambda *a: set())
+    monkeypatch.setattr(lf, "running_units", lambda *a: (set(), []))
+    return rec
+
+
+def _passed_markers(tmp_path: Path, backend: str = BACKEND, *, age_s: float = 0.0):
+    markers = ml.FileMarkerStore(tmp_path / "markers")
+    mp.record_pass(markers, backend=backend, run_id="r1", rounds=50, at=time.time() - age_s)
+    return markers
+
+
+# ============================================================ the probe
+
+def _probe(spec: str, tmp_path: Path, rounds: int = 50):
+    return mp.run_local(spec, rounds=rounds, interval_s=0.02, lead_s=1.5, run_id="t")
+
+
+def test_probe_passes_on_a_backend_that_honours_the_precondition(tmp_path):
+    report = _probe(f"localdir:{tmp_path / 'b'}", tmp_path)
+    assert report.failures == [] and report.passed
+    assert report.rounds == 50 and report.sequential_ok
+    markers, backend = mp.open_markers(f"localdir:{tmp_path / 'b'}")
+    assert mp.probe_problem(markers, expected_backend=backend) is None   # the record the launcher reads
+
+
+def test_probe_goes_through_ObjectMarkerStore_not_a_raw_put(tmp_path):
+    markers, _ = mp.open_markers(f"localdir:{tmp_path / 'b'}")
+    assert isinstance(markers, ml.ObjectMarkerStore)
+
+
+def test_probe_fails_when_the_backend_ignores_the_precondition(tmp_path):
+    """The dangerous mode: both writers get True, no error. The probe must catch it and record no pass."""
+    spec = f"localdir-ignores-precondition:{tmp_path / 'b'}"
+    report = _probe(spec, tmp_path, rounds=10)
+    assert not report.passed
+    assert any("sequential" in f for f in report.failures)      # second create returned True
+    assert any("2 writers got True" in f or "both" in f for f in report.failures)
+    markers, backend = mp.open_markers(spec)
+    assert mp.probe_problem(markers, expected_backend=backend) is not None
+
+
+def test_probe_fails_when_the_loser_is_told_False_but_silently_overwrites(tmp_path):
+    """Returns the right booleans, but the stored value is the LAST writer's: only the read-back sees it."""
+    spec = f"localdir-overwrites-silently:{tmp_path / 'b'}"
+    report = _probe(spec, tmp_path, rounds=10)
+    assert not report.passed
+    assert any("holds" in f or "overwr" in f for f in report.failures)
+    markers, backend = mp.open_markers(spec)
+    assert mp.probe_problem(markers, expected_backend=backend) is not None
+
+
+def test_probe_fails_when_nobody_wins(tmp_path):
+    report = _probe(f"localdir-never-creates:{tmp_path / 'b'}", tmp_path, rounds=5)
+    assert not report.passed and any("0 writers got True" in f or "no writer" in f for f in report.failures)
+
+
+def test_probe_cli_exit_codes(tmp_path):
+    def run(spec: str) -> int:
+        return subprocess.run([sys.executable, str(V4 / "marker_probe.py"), "--store", spec, "--rounds", "6",
+                               "--interval-s", "0.02", "--lead-s", "1.5"], capture_output=True,
+                              text=True, timeout=120).returncode
+    assert run(f"localdir:{tmp_path / 'ok'}") == 0
+    assert run(f"localdir-ignores-precondition:{tmp_path / 'bad'}") == 1
+
+
+def test_probe_gate_refuses_every_way_the_record_can_be_wrong(tmp_path):
+    empty = ml.FileMarkerStore(tmp_path / "empty")
+    assert "no probe record" in (mp.probe_problem(empty, expected_backend=BACKEND) or "")
+    assert mp.probe_problem(_passed_markers(tmp_path), expected_backend=BACKEND) is None
+    other = _passed_markers(tmp_path / "o", backend="localhost:9000/mesh-artifacts")
+    assert "different backend" in (mp.probe_problem(other, expected_backend=BACKEND) or "")
+    old = _passed_markers(tmp_path / "old", age_s=mp.PROBE_MAX_AGE_S + 60)
+    assert "older than" in (mp.probe_problem(old, expected_backend=BACKEND) or "")
+    failed = ml.FileMarkerStore(tmp_path / "failed")
+    failed.put(mp.PROBE_KEY, json.dumps({"passed": False, "backend": BACKEND, "version": mp.PROBE_VERSION,
+                                         "at": time.time()}))
+    assert "did not pass" in (mp.probe_problem(failed, expected_backend=BACKEND) or "")
+    stale = ml.FileMarkerStore(tmp_path / "stale")
+    stale.put(mp.PROBE_KEY, json.dumps({"passed": True, "backend": BACKEND, "version": mp.PROBE_VERSION + 1,
+                                        "at": time.time()}))
+    assert "version" in (mp.probe_problem(stale, expected_backend=BACKEND) or "")
+    junk = ml.FileMarkerStore(tmp_path / "junk")
+    junk.put(mp.PROBE_KEY, "not json")
+    assert mp.probe_problem(junk, expected_backend=BACKEND) is not None
+
+
+# ============================================================ wave-count limits
+
+def test_a_fourth_checkpoint_wave_is_refused_and_a_resume_is_not(tmp_path):
+    m = ml.FileMarkerStore(tmp_path)
+    for n in range(3):
+        assert wl.check_wave_count(m, "checkpoint", f"cp-{n}", claim=True) is None
+    refusal = wl.check_wave_count(m, "checkpoint", "cp-3", claim=True)
+    assert refusal and "at most 3 checkpoint" in refusal
+    assert wl.check_wave_count(m, "checkpoint", "cp-1", claim=True) is None     # relaunch of wave 2
+    assert wl.check_wave_count(m, "checkpoint", "cp-3", claim=False) is not None
+
+
+def test_a_second_held_out_wave_is_refused_and_a_resume_is_not(tmp_path):
+    m = ml.FileMarkerStore(tmp_path)
+    assert wl.check_wave_count(m, "held_out", "ho-1", claim=True) is None
+    assert "exactly one held-out" in (wl.check_wave_count(m, "held_out", "ho-2", claim=True) or "")
+    assert wl.check_wave_count(m, "held_out", "ho-1", claim=True) is None
+
+
+def test_a_dry_check_consumes_nothing(tmp_path):
+    m = ml.FileMarkerStore(tmp_path)
+    for n in range(10):
+        assert wl.check_wave_count(m, "held_out", f"ho-{n}", claim=False) is None
+        assert wl.check_wave_count(m, "checkpoint", f"cp-{n}", claim=False) is None
+    assert wl.check_wave_count(m, "held_out", "ho-x", claim=True) is None
+
+
+def test_normal_waves_are_unlimited_and_unknown_types_refused(tmp_path):
+    m = ml.FileMarkerStore(tmp_path)
+    for n in range(8):
+        assert wl.check_wave_count(m, "normal", f"n-{n}", claim=True) is None
+    assert wl.check_wave_count(m, "bogus", "x", claim=True) is not None
+
+
+@pytest.mark.parametrize("wave,slots", [("checkpoint", 3), ("held_out", 1)])
+def test_concurrent_launchers_cannot_over_claim(tmp_path, wave, slots):
+    m = ml.FileMarkerStore(tmp_path)
+    got: list[str | None] = []
+    gate = threading.Barrier(8)
+
+    def go(i: int) -> None:
+        gate.wait()
+        got.append(wl.check_wave_count(m, wave, f"w-{i}", claim=True))
+    threads = [threading.Thread(target=go, args=(i,)) for i in range(8)]
+    [t.start() for t in threads]
+    [t.join() for t in threads]
+    assert sum(r is None for r in got) == slots
+
+
+def test_shard_indexes_are_unique_in_range_and_agree_on_N():
+    assert wl.shard_assignments([f"reprobe:pool:{i}/4" for i in (1, 2, 3, 4)], 4) == [0, 1, 2, 3]
+    with pytest.raises(wl.WaveRefused, match="twice"):
+        wl.shard_assignments(["reprobe:pool:1/4", "reprobe:pool:1/4"], 4)
+    with pytest.raises(wl.WaveRefused, match="outside"):
+        wl.shard_assignments(["reprobe:pool:5/4"], 4)
+    with pytest.raises(wl.WaveRefused, match="shards-total"):
+        wl.shard_assignments(["reprobe:pool:1/3"], 4)
+    with pytest.raises(wl.WaveRefused):
+        wl.shard_assignments(["garbage"], 4)
+
+
+def test_the_cap_comes_from_the_ledger_table_not_a_typed_number():
+    assert wl.WAVE_CAPS_USD is ml.WAVE_CAPS_USD or wl.WAVE_CAPS_USD == ml.WAVE_CAPS_USD
+    assert wl.cap_per_shard("checkpoint", 96) == pytest.approx(300.0 / 96)
+
+
+# ============================================================ the launcher
+
+WAVE = ("--wave-type", "checkpoint", "--wave-id", "cp-one")
+
+
+class _Boom:
+    """A gates stand-in that fails the test if anything touches it."""
+    def __getattr__(self, name):
+        raise AssertionError(f"the marker store was touched ({name})")
+
+
+def _gates(tmp_path: Path, **kw):
+    return (_passed_markers(tmp_path, **kw), BACKEND)
+
+
+def _live(live, tmp_path, *argv, gates=None, wave=WAVE):
+    return lf.main(["--image", base.IMAGE, "--commit", base.HEAD, "--image-commit", base.HEAD,
+                    "--skip-preflight", "--profile", "v4", *wave, *argv],
+                   gates=gates if gates is not None else _gates(tmp_path))
+
+
+def test_a_v4_wave_without_a_wave_type_does_not_launch(tmp_path, capsys):
+    r = base._launch("--profile", "v4", "--image", base.IMAGE, "--commit", base.HEAD, "--image-commit",
+                     base.HEAD, "--skip-preflight", "--dry-run", "--wave-id", "w-1", tmp_path=tmp_path)
+    assert r.returncode == 2 and "--wave-type" in r.stderr and not base._creates(r.stdout)
+    r = base._launch("--profile", "v4", "--image", base.IMAGE, "--commit", base.HEAD, "--image-commit",
+                     base.HEAD, "--skip-preflight", "--dry-run", "--wave-type", "normal", tmp_path=tmp_path)
+    assert r.returncode == 2 and "--wave-id" in r.stderr
+
+
+def test_an_unnamed_wave_type_is_refused(tmp_path):
+    r = base._v4("--dry-run", "--wave-type", "huge", "--wave-id", "w-1", tmp_path=tmp_path)
+    assert r.returncode == 2 and "huge" in r.stderr
+
+
+def test_v3_refuses_the_wave_flags(tmp_path):
+    r = base._launch("--image", base.IMAGE, "--commit", base.HEAD, "--image-commit", base.HEAD, "--dry-run",
+                     "--skip-preflight", "--wave-type", "normal", tmp_path=tmp_path)
+    assert r.returncode == 2 and "v4 only" in r.stderr
+
+
+def test_the_wave_reaches_every_vm_as_metadata_and_the_cap_comes_from_the_table(tmp_path):
+    r = base._v4("--dry-run", "--wave-type", "checkpoint", "--wave-id", "cp-one", tmp_path=tmp_path)
+    assert r.returncode == 0, r.stderr
+    creates = base._creates(r.stdout)
+    assert len(creates) == 12
+    for line in creates:
+        for want in ("v4-wave-id=cp-one", "v4-wave-type=checkpoint", "v4-n-shards=96",
+                     "v4-marker-secret="):
+            assert want in line, want
+    assert "$300.00" in r.stdout and "96" in r.stdout          # the table's cap, split over N
+
+
+def test_dry_run_never_touches_the_marker_store(live, tmp_path):
+    rc = lf.main(["--image", base.IMAGE, "--commit", base.HEAD, "--image-commit", base.HEAD,
+                  "--skip-preflight", "--profile", "v4", *WAVE, "--dry-run"], gates=_Boom())
+    assert rc == 0 and live.creates() == []
+
+
+def test_a_live_v4_wave_with_a_passed_probe_launches(live, tmp_path):
+    assert _live(live, tmp_path, "--max-run-hours", "8") == 0
+    creates = live.creates()
+    assert len(creates) == 12
+    assert all("v4-wave-type=checkpoint" in "|".join(c) for c in creates)
+
+
+def test_a_live_v4_wave_without_a_probe_creates_no_vm(live, tmp_path, capsys):
+    empty = (ml.FileMarkerStore(tmp_path / "none"), BACKEND)
+    assert _live(live, tmp_path, gates=empty) == 1
+    assert live.creates() == [] and "no probe record" in capsys.readouterr().err
+
+
+def test_a_probe_for_another_backend_does_not_unlock_this_bucket(live, tmp_path, capsys):
+    gates = (_passed_markers(tmp_path, backend="localdir:/tmp/x"), BACKEND)
+    assert _live(live, tmp_path, gates=gates) == 1 and live.creates() == []
+    assert "different backend" in capsys.readouterr().err
+
+
+def test_a_failed_probe_record_blocks_the_launch(live, tmp_path):
+    markers = ml.FileMarkerStore(tmp_path / "m")
+    markers.put(mp.PROBE_KEY, json.dumps({"passed": False, "backend": BACKEND, "version": mp.PROBE_VERSION,
+                                          "at": time.time()}))
+    assert _live(live, tmp_path, gates=(markers, BACKEND)) == 1 and live.creates() == []
+
+
+def test_an_unreachable_marker_store_blocks_the_launch(live, tmp_path, monkeypatch, capsys):
+    def boom():
+        raise RuntimeError("no MINIO_ENDPOINT")
+    monkeypatch.setattr(lf, "default_gates", boom)
+    rc = lf.main(["--image", base.IMAGE, "--commit", base.HEAD, "--image-commit", base.HEAD,
+                  "--skip-preflight", "--profile", "v4", *WAVE])
+    assert rc == 1 and live.creates() == [] and "marker store" in capsys.readouterr().err
+
+
+def test_a_fourth_checkpoint_wave_does_not_launch(live, tmp_path, capsys):
+    gates = _gates(tmp_path)
+    for n in range(3):
+        assert wl.check_wave_count(gates[0], "checkpoint", f"earlier-{n}", claim=True) is None
+    assert _live(live, tmp_path, gates=gates) == 1
+    assert live.creates() == [] and "at most 3 checkpoint" in capsys.readouterr().err
+
+
+def test_a_second_held_out_wave_does_not_launch(live, tmp_path, capsys):
+    gates = _gates(tmp_path)
+    assert _live(live, tmp_path, gates=gates, wave=("--wave-type", "held_out", "--wave-id", "ho-1")) == 0
+    live.calls.clear()
+    assert _live(live, tmp_path, gates=gates, wave=("--wave-type", "held_out", "--wave-id", "ho-2")) == 1
+    assert live.creates() == [] and "exactly one held-out" in capsys.readouterr().err
+    # ... while a relaunch of the SAME held-out wave (a resume) is not a second wave
+    assert _live(live, tmp_path, gates=gates, wave=("--wave-type", "held_out", "--wave-id", "ho-1")) == 0
+
+
+def test_a_refused_launch_does_not_burn_a_checkpoint_slot(live, tmp_path):
+    gates = (ml.FileMarkerStore(tmp_path / "none"), BACKEND)            # no probe: refused
+    assert _live(live, tmp_path, gates=gates) == 1
+    assert wl.check_wave_count(gates[0], "checkpoint", "other", claim=False) is None
+    assert gates[0].get("_waves/checkpoint-1") is None
+
+
+def test_create_wave_itself_refuses_when_the_gate_refuses(live):
+    ev = lf.budget_spec
+    ok = ev.Projection(files=1, full_files=0, shards=1, vms=1, vcpus_per_vm=8, cpu_hours=1.0, wall_hours=1.0,
+                       vm_hours=1.0, max_run_hours=3, worst_vm_hours=3.0)
+
+    def refuse():
+        raise wl.WaveRefused("no probe")
+    with pytest.raises(wl.WaveRefused):
+        lf.create_wave([["gcloud", "compute", "instances", "create", "x"]], ok, gate=refuse)
+    assert live.creates() == []
+
+
+def test_v3_never_touches_the_gates(live, tmp_path):
+    rc = lf.main(["--image", base.IMAGE, "--commit", base.HEAD, "--image-commit", base.HEAD,
+                  "--skip-preflight"], gates=_Boom())
+    assert rc == 0 and len(live.creates()) == 12
+
+
+# ============================================================ run_arm builds the ledger
+
+def _ra_args(tmp_path: Path) -> list[str]:
+    return ["--shard", "1/2", "--wave-type", "checkpoint", "--wave-id", "cp-one", "--n-shards", "2",
+            "--ledger-path", str(tmp_path / "ledger" / "log.jsonl"), "--out", str(tmp_path / "out")]
+
+
+def test_run_arm_builds_this_shards_slice_with_its_index_and_cap(tmp_path):
+    markers = ml.FileMarkerStore(tmp_path / "m")
+    args = ra.parse_args(_ra_args(tmp_path))
+    ledger = ra.build_ledger(args, markers)
+    assert ledger.provenance == "shard" and ledger.cap_usd == pytest.approx(300.0 / 2)
+    assert markers.get("cp-one/shard-0") is not None          # shard 1/2 is index 0
+    ledger2 = ra.build_ledger(ra.parse_args(_ra_args(tmp_path)), markers)   # a restart of the same shard
+    assert ledger2.spent_usd() == 0.0
+
+
+def test_run_arm_refuses_a_shard_whose_log_vanished(tmp_path):
+    markers = ml.FileMarkerStore(tmp_path / "m")
+    args = ra.parse_args(_ra_args(tmp_path))
+    ra.build_ledger(args, markers)
+    Path(args.ledger_path).unlink()
+    with pytest.raises(ml.LostShardLog):
+        ra.build_ledger(args, markers)
+
+
+def test_run_arm_refuses_the_same_index_on_a_second_host(tmp_path):
+    markers = ml.FileMarkerStore(tmp_path / "m")
+    ra.build_ledger(ra.parse_args(_ra_args(tmp_path)), markers)
+    other = ra.parse_args(_ra_args(tmp_path)[:-4] + ["--ledger-path", str(tmp_path / "host2" / "log.jsonl"),
+                                                     "--out", str(tmp_path / "out2")])
+    with pytest.raises((ml.LostShardLog, ml.ShardArithmeticError)):
+        ra.build_ledger(other, markers)
+
+
+def test_run_arm_rejects_an_N_that_disagrees_with_its_shard(tmp_path):
+    argv = _ra_args(tmp_path)
+    argv[argv.index("--n-shards") + 1] = "3"
+    with pytest.raises(SystemExit):
+        ra.parse_args(argv)
+
+
+def test_run_arm_rejects_a_half_specified_wave(tmp_path):
+    with pytest.raises(SystemExit):
+        ra.parse_args(["--shard", "1/2", "--wave-type", "normal"])
+
+
+def test_a_lost_log_stops_the_shard_and_says_why(tmp_path, monkeypatch):
+    markers = ml.FileMarkerStore(tmp_path / "m")
+    monkeypatch.setattr(ra, "make_marker_store", lambda: markers)
+    monkeypatch.setattr(ra, "run_reprobe", lambda *a, **k: 0)
+    argv = _ra_args(tmp_path)
+    assert ra.main(argv) == 0
+    Path(argv[argv.index("--ledger-path") + 1]).unlink()
+    assert ra.main(argv) == 5
+    prov = json.loads((tmp_path / "out" / "PROVENANCE.json").read_text())
+    assert "LostShardLog" in prov["error"]
+
+
+# ============================================================ vm_startup.sh
+
+V4_META = {"v4-image": "IMG@sha256:x", "v4-commit": "c" * 40, "v4-image-commit": "abc1234",
+           "v4-units": "reprobe:pool:1/2", "v4-bucket": "gs://B", "v4-prefix": "gs://B/eval/v4-reprobe",
+           "v4-code": "gs://B/eval/v4-reprobe/code-cccccccccccc/code.tgz",
+           "v4-machine-type": "c2d-standard-8", "v4-run-arm": "devtools/validation/v4_eval/run_arm.py",
+           "v4-pool": "gs://B/eval/v4-reprobe/pool.json", "v4-cache-uri": "gs://B/eval/v4-reprobe/verdict-cache",
+           "v4-sources": "abc_fail", "v4-wave-id": "cp-one", "v4-wave-type": "checkpoint",
+           "v4-n-shards": "2", "v4-marker-secret": "ledger-marker-env"}
+
+
+def _runs(log: list[str]) -> list[str]:
+    return [ln for ln in log if ln.startswith("docker run")]
+
+
+def test_startup_threads_the_ledger_inputs_into_run_arm(tmp_path):
+    log = base._startup(tmp_path, V4_META)
+    (run,) = _runs(log)
+    assert "--wave-type checkpoint --wave-id cp-one --n-shards 2" in run
+    assert "--ledger-path /eval/ledger/log.jsonl" in run
+    assert "-v ROOT/ledger/reprobe_pool_1_2:/eval/ledger" in run     # the boot disk, not the container's
+    assert "--env-file ROOT/marker.env" in run
+    assert any("secrets versions access latest --secret=ledger-marker-env" in ln for ln in log)
+
+
+@pytest.mark.parametrize("missing", ["v4-wave-id", "v4-wave-type", "v4-n-shards", "v4-marker-secret"])
+def test_startup_refuses_a_v4_wave_without_its_ledger_inputs(tmp_path, missing):
+    meta = {k: v for k, v in V4_META.items() if k != missing}
+    log = base._startup(tmp_path, meta, expect_rc=1)
+    assert _runs(log) == [] and any("FAILED" in ln for ln in log)
+
+
+def test_the_shard_log_is_mirrored_to_the_bucket_after_the_run(tmp_path):
+    log = base._startup(tmp_path, V4_META)
+    assert any(ln.startswith("storage cp ROOT/ledger/reprobe_pool_1_2/log.jsonl "
+                             "gs://B/eval/reprobe-cccccccccccc/pool/shard-1-of-2/ledger/log.jsonl") for ln in log)
+
+
+def test_a_replacement_vm_restores_the_mirrored_log_before_starting(tmp_path):
+    log = base._startup(tmp_path, V4_META, extra_env={"LS_OK": "/ledger/log.jsonl"})
+    assert any(ln == "storage cp gs://B/eval/reprobe-cccccccccccc/pool/shard-1-of-2/ledger/log.jsonl "
+                     "ROOT/ledger/reprobe_pool_1_2/log.jsonl" for ln in log)
+
+
+# ---- the disk-headroom check fails CLOSED
+
+def test_disk_check_passes_with_realistic_du_output_and_room(tmp_path):
+    log = base._startup(tmp_path, V4_META,
+                        extra_env={"DU_OUT": "5000000000 gs://B/eval/v4-reprobe/inputs\n",
+                                   "DF_OUT": "Avail\n100000000000"})
+    assert len(_runs(log)) == 1
+
+
+@pytest.mark.parametrize("env,why", [
+    ({"DU_OUT": ""}, "du printed nothing"),
+    ({"DU_OUT": "ERROR: (gcloud.storage.du) not found\n"}, "du printed an error"),
+    ({"DU_OUT": "", "DU_RC": "1"}, "du failed"),
+    ({"DU_OUT": "12.5GiB gs://B/inputs\n"}, "du non-numeric"),
+    ({"DF_OUT": "Avail\n"}, "df printed no value"),
+    ({"DF_OUT": ""}, "df printed nothing"),
+    ({"DF_OUT": "Avail\nlots"}, "df non-numeric"),
+    ({"DU_OUT": "90000000000 gs://B/inputs\n", "DF_OUT": "Avail\n100000000000"}, "does not fit in 80%"),
+])
+def test_disk_check_refuses_instead_of_skipping(tmp_path, env, why):
+    log = base._startup(tmp_path, V4_META, expect_rc=1, extra_env=env)
+    assert _runs(log) == [], why
+    assert not any("pool inputs" in ln or "inputs/*" in ln for ln in log), f"copied inputs despite: {why}"
+    assert any("FAILED" in ln for ln in log), why

@@ -4,6 +4,8 @@
 #                 say exactly what ran in PROVENANCE.json.
 # Owns: shard selection from the pool manifest, input resolution, the pool/cache wiring, rows.jsonl,
 #       EXCLUDED.json and PROVENANCE.json.
+#       The shard's model-spend LEDGER (`WaveLedger.for_shard`) when the launcher names a wave: wave type, wave id,
+#       N, a durable log path and the wave bucket's marker store.
 # Boundaries: it measures nothing itself. `reprobe` runs the checker (through the verdict cache);
 #             repair_corpus runs the files in harness mode. Excluded files (infrastructure failures)
 #             are written to their own file and never into rows.jsonl.
@@ -126,7 +128,27 @@ def run_harness(args: argparse.Namespace, out: Path, prov: dict) -> int:
     return int(rc.main() or 0)
 
 
-def main(argv: list[str] | None = None) -> int:
+def make_marker_store() -> Any:
+    """The wave bucket's marker store (ObjectMarkerStore over MinioStore, credentials from the MINIO_* env the VM
+    gets from its marker secret). Tests replace this; nothing else in this file reaches a network."""
+    from meshpipeline.adapters.object_storage.minio import MinioStore
+    from meshpipeline.cad.repair_v4.model_ledger import ObjectMarkerStore
+
+    return ObjectMarkerStore(MinioStore())
+
+
+def build_ledger(args: argparse.Namespace, markers: Any) -> Any:
+    """This shard's ledger: the cap is WAVE_CAPS_USD[wave type] / N, the index is this shard's `I-1` (unique per
+    wave because the plan's units are), the log is the durable path the launcher mounted. Raises LostShardLog /
+    ShardArithmeticError when the shard cannot be started at a known spend."""
+    from meshpipeline.cad.repair_v4.model_ledger import WaveLedger
+
+    i, n = evalspec.parse_shard(args.shard)
+    return WaveLedger.for_shard(args.wave_type, wave_id=args.wave_id, n_shards=n, shard_index=i - 1,
+                                path=args.ledger_path, markers=markers)
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--mode", choices=("reprobe", "harness"), default="reprobe")
     parser.add_argument("--shard", default="1/1")
@@ -143,11 +165,30 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--commit", default="")
     parser.add_argument("--image", default="")
     parser.add_argument("--machine-type", default="")
+    parser.add_argument("--wave-type", default=None, choices=("normal", "checkpoint", "held_out"),
+                        help="the wave's type: the model-spend cap comes from the ledger's table")
+    parser.add_argument("--wave-id", default=None)
+    parser.add_argument("--n-shards", type=int, default=None, help="the wave's N; must equal the N in --shard")
+    parser.add_argument("--ledger-path", default=None, help="the shard's durable ledger log")
     args = parser.parse_args(argv)
     if args.file_timeout_s <= 0:
         parser.error("--file-timeout-s must be positive: a shard without the wall kill can hang")
-    evalspec.parse_shard(args.shard)
+    i, n = evalspec.parse_shard(args.shard)
+    wave = {"--wave-type": args.wave_type, "--wave-id": args.wave_id, "--n-shards": args.n_shards,
+            "--ledger-path": args.ledger_path}
+    if any(v is not None for v in wave.values()):
+        missing = [k for k, v in wave.items() if v is None]
+        if missing:
+            parser.error(f"a ledgered shard needs all of --wave-type --wave-id --n-shards --ledger-path "
+                         f"(missing {', '.join(missing)})")
+        if args.n_shards != n:
+            parser.error(f"--n-shards {args.n_shards} disagrees with --shard {args.shard}: every shard of a "
+                         "wave must share the launcher's N")
+    return args
 
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     prov: dict = {"label": f"{args.mode}/{args.shard}", "mode": args.mode, "shard": args.shard,
@@ -156,6 +197,19 @@ def main(argv: list[str] | None = None) -> int:
                   "file_timeout_s": args.file_timeout_s, "started_at": _now()}
     t0, code = time.monotonic(), 3
     try:
+        if args.wave_type is not None:
+            from meshpipeline.cad.repair_v4.model_ledger import LostShardLog, ShardArithmeticError
+
+            try:
+                ledger = build_ledger(args, make_marker_store())
+            except (LostShardLog, ShardArithmeticError):
+                # the shard refuses rather than start at an unknown spend; the reason is in PROVENANCE
+                prov["error"] = traceback.format_exc()[-4000:]
+                code = 5
+                return code
+            prov["ledger"] = {"wave_type": args.wave_type, "wave_id": args.wave_id, "n_shards": args.n_shards,
+                              "cap_usd": ledger.cap_usd, "path": args.ledger_path,
+                              "provenance": ledger.provenance}
         code = run_reprobe(args, out, prov) if args.mode == "reprobe" else run_harness(args, out, prov)
         return code
     except Exception:  # noqa: BLE001 - the provenance must still be written
