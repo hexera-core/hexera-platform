@@ -418,6 +418,26 @@ def test_the_system_prompt_states_the_contract():
     assert "split_angle" in text                                   # the op catalogue is part of the prefix
 
 
+def test_every_registered_op_is_explained_in_the_catalogue_not_just_named():
+    """A schema gives parameter names and bounds, not the action: the model must be told what each op DOES.
+    A new op without a summary fails here instead of reaching the model as a bare name."""
+    from meshpipeline.cad.repair_v4.ops import REGISTRY
+
+    assert set(P.OP_SUMMARIES) == set(REGISTRY), (
+        f"missing: {sorted(set(REGISTRY) - set(P.OP_SUMMARIES))}; stale: {sorted(set(P.OP_SUMMARIES) - set(REGISTRY))}")
+    text = P.system_prompt(stage_names=())
+    assert "(no summary)" not in text
+    for name, summary in P.OP_SUMMARIES.items():
+        assert f"- {name}: {summary}" in text, name
+    # the checker's SOFT codes must not be presented to the model as failing "valid"
+    from meshpipeline.cad.repair_v4.verdict.valid import SOFT_CODES
+    valid_para = text.split("1. Valid:")[1].split("2. Meshable:")[0].lower()
+    assert "do not fail" in valid_para and {"small_edge", "small_face", "large_tolerance"} == set(SOFT_CODES)
+    assert "small-edge or small-face errors" not in valid_para
+    # the open-loop repair is two ops in sequence; the catalogue must say so
+    assert "make_volume" in P.OP_SUMMARIES["fill_loop"]
+
+
 def test_the_job_id_route_and_tools_reach_the_model_call():
     fake = Fake([reply()])
     make(fake, job_id="job-123").propose(state([site("S1", "proximity")]), k=3)
