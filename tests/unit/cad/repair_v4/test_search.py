@@ -19,10 +19,12 @@ from meshpipeline.cad.repair_v4.search import (
     DetGenerator,
     Judge,
     Rejection,
+    SearchResult,
     SearchState,
     deliverable,
     search,
 )
+from meshpipeline.cad.repair_v4.trace import Trace
 from meshpipeline.cad.repair_v4.types import Site
 from meshpipeline.cad.repair_v4.workspace import Diff, Workspace
 
@@ -36,12 +38,14 @@ class FakeVerdict:
     tier: str
 
 
-def _ws(q: int, *, ids: tuple[str, ...] = ("F1", "F2"), history: list[Diff] | None = None) -> Workspace:
+def _ws(
+    q: int, c: int | None = None, *, ids: tuple[str, ...] = ("F1", "F2"), history: list[Diff] | None = None
+) -> Workspace:
     n = next(_counter)
     return Workspace(
         brep_path=f"/fake/{n}.brep",
         ids={i: f"fp{n}{i}" for i in ids},
-        labels={"_q": {"q": q}},
+        labels={"_q": {"q": q, "c": q if c is None else c}},
         history=history or [],
         original="/fake/orig.brep",
     )
@@ -51,13 +55,22 @@ def _q(ws: Workspace) -> int:
     return int(ws.labels["_q"]["q"])
 
 
+def _c(ws: Workspace) -> int:
+    """What the CHEAP tier reports (a subset panel); equals q unless a test makes them differ."""
+    return int(ws.labels["_q"]["c"])
+
+
 class SetOp:
     """Fake op: a new workspace whose quality is params['q']; params['drop'] removes F1."""
 
     name = "t18_set"
     params_schema = {
         "type": "object",
-        "properties": {"q": {"type": "integer", "minimum": 0, "maximum": 100}, "drop": {"type": "boolean"}},
+        "properties": {
+            "q": {"type": "integer", "minimum": 0, "maximum": 100},
+            "c": {"type": "integer"},
+            "drop": {"type": "boolean"},
+        },
         "required": ["q"],
         "additionalProperties": False,
         "x-targets": {"kind": "face", "min": 0},
@@ -86,7 +99,7 @@ class SetOp:
             declared_removed=[],
             seconds=0.0,
         )
-        new = _ws(params["q"], ids=ids, history=[*ws.history, diff])
+        new = _ws(params["q"], params.get("c"), ids=ids, history=[*ws.history, diff])
         return new, diff
 
 
@@ -109,8 +122,8 @@ class FakeJudge:
         return Judge(cheap=self._cheap, full=self._full, score=self._score, sites=self._sites)
 
     def _cheap(self, pool: Any, ws: Workspace, original: str) -> FakeVerdict:
-        self.cheap_calls.append(_q(ws))
-        return FakeVerdict(_q(ws), _q(ws) >= self.target, "cheap")
+        self.cheap_calls.append(_c(ws))
+        return FakeVerdict(_c(ws), _q(ws) >= self.target, "cheap")
 
     def _full(self, pool: Any, ws: Workspace, original: str) -> FakeVerdict:
         self.full_calls.append(_q(ws))
@@ -145,8 +158,6 @@ class Scripted:
         self.states: list[SearchState] = []
         self.rejections: list[Rejection] = []
         self.calls = 0
-        self.model_calls = 0
-        self.model_usd = 0.0
 
     def propose(self, state: SearchState, k: int) -> list[Candidate]:
         self.calls += 1
@@ -155,6 +166,15 @@ class Scripted:
 
     def on_rejected(self, rejections: list[Rejection]) -> None:
         self.rejections.extend(rejections)
+
+
+class ScriptedAI(Scripted):
+    """A model-backed generator: it reports cumulative usage, so the driver can cap it."""
+
+    def __init__(self, script: Any) -> None:
+        super().__init__(script, source="ai")
+        self.model_calls = 0
+        self.model_usd = 0.0
 
     def model_usage(self) -> tuple[int, float]:
         return self.model_calls, self.model_usd
@@ -226,20 +246,34 @@ def test_respects_wall_and_op_budget() -> None:
     assert gen2.calls < 10
 
 
-def test_model_call_and_usd_budgets_each_stop_the_search() -> None:
+def test_model_budget_drops_the_ai_but_keeps_searching_and_marks_ai_capped() -> None:
     def ai(s: SearchState) -> list[Candidate]:
         gen.model_calls += 1
         gen.model_usd += 0.5
         return [cand(s.depth + 1)]
 
-    for budget, reason, calls in (
-        (Budget(wall_s=1000, ops=1000, model_calls=2, model_usd=100), "model_calls", 2),
-        (Budget(wall_s=1000, ops=1000, model_calls=100, model_usd=1.0), "model_usd", 2),
+    for budget in (
+        Budget(wall_s=1000, ops=1000, model_calls=2, model_usd=100),
+        Budget(wall_s=1000, ops=1000, model_calls=100, model_usd=1.0),
     ):
-        gen = Scripted(ai, source="ai")
-        result, _ = run([gen], FakeJudge(), budget)
-        assert stop_reason(result) == reason
-        assert gen.calls == calls
+        gen = ScriptedAI(ai)
+        det = Scripted(lambda s: [cand(50 + s.depth)])
+        result, _ = run([gen, det], FakeJudge(), budget, patience=6)
+        assert result.ai_capped
+        assert gen.calls == 2  # never asked again once the cap was reached
+        assert det.calls > 2  # the deterministic generator carried on
+        capped = result.trace.of_kind("ai_capped")
+        assert len(capped) == 1 and result.trace.of_kind("stop")[0]["ai_capped"] is True
+
+
+def test_zero_model_budget_means_no_ai_not_stop() -> None:
+    zero = Budget(wall_s=1000, ops=1000, model_calls=0, model_usd=0.0)
+    det = Scripted(lambda s: [cand(1)] if s.depth == 0 else [])
+    result, _ = run([det], FakeJudge(), zero)  # deterministic-only: the search_det arm
+    assert det.calls >= 1 and _q(result.best) == 1 and not result.ai_capped
+    ai = ScriptedAI(lambda s: [cand(9)])
+    result2, _ = run([ai, Scripted(lambda s: [cand(2)] if s.depth == 0 else [])], FakeJudge(), zero)
+    assert ai.calls == 0 and result2.ai_capped and _q(result2.best) == 2
 
 
 def test_confirms_top_k_with_full_panel() -> None:
@@ -248,7 +282,7 @@ def test_confirms_top_k_with_full_panel() -> None:
     result, start = run([gen], fj, k_confirm=2)
     # the full panel saw the start and exactly the two best cheap scorers, nothing else
     assert sorted(fj.full_calls) == [0, 7, 9]
-    assert sorted(fj.cheap_calls) == [2, 4, 5, 7, 9]
+    assert sorted(fj.cheap_calls) == [0, 2, 4, 5, 7, 9]  # 0 is the start, for calibration
     assert [e["tier"] for e in result.trace.of_kind("confirm")] == ["full", "full"]
     assert _q(result.best) == 9 and result.best_verdict.tier == "full"
 
@@ -331,7 +365,7 @@ def test_duplicate_state_is_not_expanded_twice() -> None:
         def apply(self, pool, ws, targets, params, *, timeout_s):
             new = ws.fork()
             new.brep_path = f"/fake/same{next(_counter)}.brep"
-            new.labels = {"_q": {"q": 1}}
+            new.labels = {"_q": {"q": 1, "c": 1}}
             return new, Diff(
                 op=self.name,
                 params=params,
@@ -441,3 +475,185 @@ def test_det_generator_sweeps_parameters_per_site_kind() -> None:
     st = _state([_site("proximity", ["F1", "F2"])])
     for c in gen.propose(st, 50):
         assert validate_call(c.op, c.targets, c.params, st.ws) == [], c
+
+
+# --- robustness: one failing call never loses the best state ------------------------------------
+
+
+class Boom(Exception):
+    pass
+
+
+def test_proposer_exception_is_recorded_and_search_continues() -> None:
+    def flaky(s: SearchState) -> list[Candidate]:
+        if flaky.calls == 0:  # type: ignore[attr-defined]
+            flaky.calls += 1  # type: ignore[attr-defined]
+            raise Boom("model hiccup")
+        return [cand(4)]
+
+    flaky.calls = 0  # type: ignore[attr-defined]
+    good = Scripted(lambda s: [cand(1)] if s.depth == 0 else [])
+    result, _ = run([Scripted(flaky), good], FakeJudge())
+    errors = result.trace.of_kind("generator_error")
+    assert errors and errors[0]["where"] == "propose" and "Boom: model hiccup" in errors[0]["error"]
+    assert _q(result.best) >= 1
+
+
+def test_on_rejected_exception_is_recorded() -> None:
+    class Bad(Scripted):
+        def on_rejected(self, rejections: list[Rejection]) -> None:
+            raise Boom("cannot take feedback")
+
+    gen = Bad(lambda s: [Candidate("nope", [], {}, "det"), cand(2)] if s.depth == 0 else [])
+    result, _ = run([gen], FakeJudge())
+    assert _q(result.best) == 2
+    assert result.trace.of_kind("generator_error")[0]["where"] == "on_rejected"
+
+
+def test_sites_and_confirm_failures_keep_the_best_so_far() -> None:
+    fj = FakeJudge()
+    judge = fj.judge()
+    full_calls = {"n": 0}
+
+    def sites(pool: Any, ws: Workspace, verdict: Any) -> list[Site]:
+        if verdict.q == 3:
+            raise Boom("site finder died")
+        return fj._sites(pool, ws, verdict)
+
+    def full(pool: Any, ws: Workspace, original: str) -> FakeVerdict:
+        full_calls["n"] += 1
+        if _q(ws) == 7:
+            raise Boom("kernel crashed in confirm")
+        return fj._full(pool, ws, original)
+
+    judge = Judge(cheap=judge.cheap, full=full, score=judge.score, sites=sites)
+    gen = Scripted(lambda s: [cand(3), cand(7)] if s.depth == 0 else [cand(1)], source="det")
+    start = _ws(0)
+    result = search(None, start, start.original, [gen], BIG, workers=2, judge=judge, patience=5)
+    assert _q(result.best) == 3  # q=7 could not be confirmed so it is never delivered; 3 was kept
+    assert result.trace.of_kind("confirm_error")[0]["error"].startswith("Boom")
+    assert any(e["where"] == "sites" for e in result.trace.of_kind("judge_error"))
+    assert result.trace.of_kind("stop")
+
+
+# --- frontier order when cheap and full disagree -------------------------------------------------
+
+
+def test_frontier_ranks_unconfirmed_children_against_confirmed_states_by_calibration() -> None:
+    """Cheap and full DISAGREE in both directions. P is better than its cheap score says (full 4,
+    cheap 1); its children C1/C2 look equal to P under cheap (1) but are really worse (full 1) once
+    confirmed - the full tier demotes them. C3 is not confirmed (k_confirm=2): its cheap score alone
+    (1) would rank it below sibling S (full 2) and starve it; calibrated against P (4 + (1 - 1)) it
+    is expanded before S."""
+
+    def script(s: SearchState) -> list[Candidate]:
+        if s.depth == 0:
+            return [cand(4, c=1), cand(2, c=1)]  # P, S
+        if s.id == "S1":  # expanding P
+            return [cand(1, c=1), cand(1, c=1), cand(1, c=1)]  # C1, C2, C3
+        return []
+
+    fj = FakeJudge()
+    gen = Scripted(script)
+    start = _ws(0, 0)
+    result = search(None, start, start.original, [gen], BIG, workers=1, judge=fj.judge(), k_confirm=2, patience=10)
+    order = [e["state"] for e in result.trace.of_kind("expand")]
+    assert order[:4] == ["S0", "S1", "S5", "S2"], order
+    confirms = {e["state"]: e for e in result.trace.of_kind("confirm")}
+    assert confirms["S1"]["score"][1] > confirms["S1"]["cheap_score"][1]  # full above cheap
+    assert confirms["S3"]["score"][1] == confirms["S3"]["cheap_score"][1]  # tie under cheap...
+    assert confirms["S3"]["score"][1] < confirms["S1"]["score"][1]  # ...but below its parent in full
+    assert _q(result.best) == 4
+
+
+# --- default_judge against stubbed Task 5 / Task 17 modules --------------------------------------
+
+
+@pytest.fixture
+def stub_modules(monkeypatch: pytest.MonkeyPatch) -> dict:
+    """Stubs whose signatures are the ones Tasks 5 and 17 are specified to have; a mismatch in
+    default_judge's calls fails here instead of at integration."""
+    import sys
+    import types
+
+    seen: dict = {}
+
+    @dataclass
+    class Declared:
+        added: list[str]
+        removed: list[str]
+
+    def cheap_verdict(pool: Any, step: str, original: str, *, declared: Declared) -> Any:
+        seen["cheap"] = (pool, step, original, declared)
+        return FakeVerdict(1, False, "cheap")
+
+    def verdict(pool: Any, step: str, original: str, *, declared: Declared) -> Any:
+        seen["full"] = (pool, step, original, declared)
+        return FakeVerdict(3, False, "full")
+
+    def score(v: FakeVerdict) -> tuple:
+        return (1, v.q, 0.0, 0.0, 0)
+
+    def find_sites(pool: Any, ws: Workspace, v: Any, *, h_mm: float) -> list[Site]:
+        seen["sites"] = (pool, ws, v, h_mm)
+        return []
+
+    vmod = types.ModuleType("meshpipeline.cad.repair_v4.verdict")
+    vmod.Declared = Declared  # type: ignore[attr-defined]
+    vmod.cheap_verdict = cheap_verdict  # type: ignore[attr-defined]
+    vmod.verdict = verdict  # type: ignore[attr-defined]
+    vmod.score = score  # type: ignore[attr-defined]
+    smod = types.ModuleType("meshpipeline.cad.repair_v4.sites")
+    smod.find_sites = find_sites  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "meshpipeline.cad.repair_v4.verdict", vmod)
+    monkeypatch.setitem(sys.modules, "meshpipeline.cad.repair_v4.sites", smod)
+    return seen
+
+
+def test_default_judge_calls_match_the_task_5_and_17_signatures(stub_modules: dict) -> None:
+    from meshpipeline.cad.repair_v4.search import default_judge
+
+    diff = Diff(
+        op="x",
+        params={},
+        modified={},
+        generated={},
+        removed=[],
+        declared_added=["F9"],
+        declared_removed=["F2"],
+        seconds=0.0,
+    )
+    ws = _ws(0, history=[diff, diff])
+    j = default_judge(h_mm=2.5)
+    j.cheap("POOL", ws, "orig.step")
+    pool, step, original, declared = stub_modules["cheap"]
+    assert (pool, step, original) == ("POOL", ws.brep_path, "orig.step")
+    assert declared.added == ["F9", "F9"] and declared.removed == ["F2", "F2"]  # whole lineage
+    j.full("POOL", ws, "orig.step")
+    assert stub_modules["full"][1] == ws.brep_path
+    j.sites("POOL", ws, "V")
+    assert stub_modules["sites"][3] == 2.5
+    assert j.score(FakeVerdict(3, False, "full")) == (1, 3, 0.0, 0.0, 0)
+
+
+def test_search_requires_h_mm_when_no_judge_is_given() -> None:
+    start = _ws(0)
+    with pytest.raises(ValueError, match="h_mm"):
+        search(None, start, start.original, [], BIG, workers=1)
+    with pytest.raises(TypeError):
+        from meshpipeline.cad.repair_v4.search import default_judge
+
+        default_judge()
+
+
+def test_deliverable_fallback_uses_the_real_score_and_names_the_panel_field(stub_modules: dict) -> None:
+    from meshpipeline.cad.repair_v4.search import SCORE_PANEL_PASSES, panel_passes
+
+    assert SCORE_PANEL_PASSES == 1
+    result = SearchResult(
+        best=_ws(3), best_verdict=FakeVerdict(3, False, "full"), clean=False, trace=Trace(), changed=True
+    )
+    assert deliverable(result, FakeVerdict(5, False, "full")) is None  # stub score, no score_fn
+    assert deliverable(result, FakeVerdict(2, False, "full")) is result.best
+    with pytest.raises(AssertionError, match="changed shape"):
+        panel_passes((1, 2, 3.0))

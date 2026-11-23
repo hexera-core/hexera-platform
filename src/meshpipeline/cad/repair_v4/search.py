@@ -16,14 +16,20 @@ wrong - an unknown op, an out-of-bounds parameter, a target a previous op remove
 declines or fails - is never a crash and never silently dropped: it becomes a `Rejection` handed
 back to the generator that made it (`on_rejected`, if it has one) and an event in the `Trace`.
 
-Ranking uses the CHEAP score of an unconfirmed state and the FULL score of a confirmed one. The
-cheap panel is a subset, so the two are not strictly comparable; that is why only fully confirmed
-states can become `best` (and so be delivered), while cheap scores merely order the frontier.
+The frontier is ordered by `rank`. A confirmed state ranks by its FULL score. An unconfirmed state
+cannot be compared by its cheap score (the cheap panel is a subset), so its rank is its parent's
+rank moved by the cheap-score difference between child and parent: "this child is as much better
+than its parent as the cheap tier says". Only fully confirmed states can become `best` (and so be
+delivered). A generator or judge call that raises is recorded in the trace and skipped; it never
+discards the best state found so far.
 
 Budget. `ops` counts op applications (one per validated candidate that is run); `wall_s` is
 elapsed time; `model_calls` / `model_usd` are read from generators that expose
-`model_usage() -> (calls, usd)` (cumulative). Each limit stops the search independently, checked
-before every expansion; `ops` also truncates a batch so it is never overrun. Patience is the
+`model_usage() -> (calls, usd)` (cumulative). `wall_s` and `ops` stop the search, checked before
+every expansion; `ops` also truncates a batch so it is never overrun. Reaching `model_calls` or
+`model_usd` does NOT stop it: the generators that expose `model_usage` are dropped, the search goes
+on deterministic-only, and the result is marked `ai_capped`. A cap of 0 therefore means "no AI",
+which is how the deterministic-only arm runs. Patience is the
 number of consecutive expansions that did not improve the best confirmed score.
 """
 
@@ -88,6 +94,9 @@ class SearchState:
     via: dict | None
     tier: str = "full"
     expanded: bool = False
+    #: score from the cheap tier (None when unknown); with `rank`, see the module docstring
+    cheap_score: Score | None = None
+    rank: Score | None = None
 
 
 class Generator(Protocol):
@@ -109,9 +118,10 @@ class Judge:
     sites: Callable[[Any, Workspace, Any], list[Site]]
 
 
-def default_judge(h_mm: float = 1.0) -> Judge:
+def default_judge(*, h_mm: float) -> Judge:
     """The real verdict (Task 5) and sites (Task 17), imported late so this module loads without
-    them. `declared` is the union over the workspace's whole lineage, since faithfulness compares
+    them. `h_mm` (the mesh size) is required: it sets site clustering and the proximity threshold, so
+    a silent default would aim every candidate at the wrong sites. `declared` is the union over the workspace's whole lineage, since faithfulness compares
     against the ORIGINAL."""
     vmod = importlib.import_module("meshpipeline.cad.repair_v4.verdict")
     smod = importlib.import_module("meshpipeline.cad.repair_v4.sites")
@@ -125,9 +135,25 @@ def default_judge(h_mm: float = 1.0) -> Judge:
     return Judge(
         cheap=lambda pool, ws, original: vmod.cheap_verdict(pool, ws.brep_path, original, declared=declared(ws)),
         full=lambda pool, ws, original: vmod.verdict(pool, ws.brep_path, original, declared=declared(ws)),
-        score=vmod.score,
+        score=_real_score(),
         sites=lambda pool, ws, verdict: smod.find_sites(pool, ws, verdict, h_mm=h_mm),
     )
+
+
+def _real_score() -> Callable[[Any], Score]:
+    score: Callable[[Any], Score] = importlib.import_module("meshpipeline.cad.repair_v4.verdict").score
+    return score
+
+
+#: Position of the panel-pass count in a `Score` (valid, panel passes, min SICN, -max_dev, -churn).
+#: The delivery gate reads it by this name; `panel_passes` fails loudly if the tuple's shape changes.
+SCORE_PANEL_PASSES = 1
+_SCORE_LEN = 5
+
+
+def panel_passes(score: Score) -> int:
+    assert len(score) == _SCORE_LEN, f"score() changed shape: expected {_SCORE_LEN} fields, got {score!r}"
+    return int(score[SCORE_PANEL_PASSES])
 
 
 @dataclass
@@ -138,6 +164,8 @@ class SearchResult:
     trace: Trace
     #: False when nothing beat the start (best is the start workspace)
     changed: bool = False
+    #: the model budget was reached and the search finished deterministic-only
+    ai_capped: bool = False
 
 
 # --- the deterministic generator ----------------------------------------------------------------
@@ -244,6 +272,20 @@ def _neg(score: Score) -> tuple:
     return tuple(-x for x in score)
 
 
+def _rank(state: SearchState) -> Score:
+    return state.rank if state.rank is not None else state.score
+
+
+def _estimate(parent: SearchState, child_cheap: Score) -> Score:
+    """A child's frontier rank: its parent's rank shifted by the child-minus-parent CHEAP difference.
+    Without a known cheap score for the parent there is nothing to calibrate against, so the child
+    keeps its raw cheap score."""
+    if parent.cheap_score is None:
+        return child_cheap
+    base = _rank(parent)
+    return tuple(b + (c - p) for b, c, p in zip(base, child_cheap, parent.cheap_score, strict=True))  # type: ignore[return-value]
+
+
 def _fingerprint(ws: Workspace) -> tuple:
     """Two workspaces with the same entity fingerprints are the same geometry, however reached."""
     return tuple(sorted(ws.ids.values()))
@@ -271,9 +313,13 @@ def search(
     patience: int = 3,
     k_propose: int = 12,
     judge: Judge | None = None,
+    h_mm: float | None = None,
     clock: Callable[[], float] = time.monotonic,
 ) -> SearchResult:
-    judge = judge or default_judge()
+    if judge is None:
+        if h_mm is None:
+            raise ValueError("search needs either a judge or h_mm for the real one; there is no default")
+        judge = default_judge(h_mm=h_mm)
     trace = Trace(clock)
     t0 = clock()
     state_ids = itertools.count()
@@ -299,10 +345,6 @@ def search(
             return "wall"
         if s["ops"] >= budget.ops:
             return "ops"
-        if s["model_calls"] >= budget.model_calls:
-            return "model_calls"
-        if s["model_usd"] >= budget.model_usd:
-            return "model_usd"
         return None
 
     def new_state(
@@ -320,8 +362,16 @@ def search(
             tier=tier,
         )
 
+    model_gens = {gi for gi, g in enumerate(generators) if hasattr(g, "model_usage")}
+    active = list(range(len(generators)))
+    ai_capped = False
+
     start_verdict = judge.full(pool, start, original)
     s0 = new_state(start, start_verdict, "full", 0, None, None)
+    try:
+        s0.cheap_score = judge.score(judge.cheap(pool, start, original))
+    except Exception as exc:  # children of an uncalibrated start are ranked by their cheap score
+        trace.record("judge_error", where="start_cheap", error=f"{type(exc).__name__}: {exc}")
     trace.record(
         "start",
         state=s0.id,
@@ -343,10 +393,16 @@ def search(
             reason = over_budget()
             if reason:
                 break
+            if model_gens and not ai_capped:
+                calls, usd = usage()
+                if calls >= budget.model_calls or usd >= budget.model_usd:
+                    ai_capped = True
+                    active = [gi for gi in active if gi not in model_gens]
+                    trace.record("ai_capped", spent=spent_now(), budget=budget.__dict__)
             state = None
             while heap:
                 _, _, pushed_score, cand_state = heapq.heappop(heap)
-                if not cand_state.expanded and pushed_score == cand_state.score:
+                if not cand_state.expanded and pushed_score == _rank(cand_state):
                     state = cand_state
                     break
             if state is None:
@@ -354,7 +410,11 @@ def search(
                 break
             state.expanded = True
 
-            state.sites = judge.sites(pool, state.ws, state.verdict)
+            try:
+                state.sites = judge.sites(pool, state.ws, state.verdict)
+            except Exception as exc:  # expand blind rather than lose the search
+                state.sites = []
+                trace.record("judge_error", where="sites", state=state.id, error=f"{type(exc).__name__}: {exc}")
             trace.record(
                 "expand",
                 state=state.id,
@@ -372,8 +432,17 @@ def search(
 
             # gather and validate
             proposals: list[tuple[int, Candidate]] = []
-            for gi, gen in enumerate(generators):
-                proposals += [(gi, c) for c in gen.propose(state, k_propose)]
+            for gi in active:
+                try:
+                    proposals += [(gi, c) for c in generators[gi].propose(state, k_propose)]
+                except Exception as exc:  # a flaky proposer costs its proposals, not the search
+                    trace.record(
+                        "generator_error",
+                        generator=gi,
+                        where="propose",
+                        state=state.id,
+                        error=f"{type(exc).__name__}: {exc}",
+                    )
             rejections: dict[int, list[Rejection]] = {}
             valid: list[tuple[int, Candidate]] = []
             for gi, c in proposals:
@@ -421,6 +490,8 @@ def search(
                     continue
                 seen.add(fp)
                 child = new_state(out.ws, out.verdict, "cheap", state.depth + 1, state.id, _via(out.candidate))
+                child.cheap_score = child.score
+                child.rank = _estimate(state, child.score)
                 _record_candidate(
                     trace,
                     state,
@@ -429,22 +500,38 @@ def search(
                     child=child.id,
                     score=child.score,
                     parent_score=state.score,
+                    rank=child.rank,
                 )
                 children.append(child)
-                heapq.heappush(heap, (_neg(child.score), next(tie), child.score, child))
+                heapq.heappush(heap, (_neg(_rank(child)), next(tie), _rank(child), child))
 
             for gi, items in rejections.items():
                 told = getattr(generators[gi], "on_rejected", None)
                 if told is not None:
-                    told(items)
+                    try:
+                        told(items)
+                    except Exception as exc:
+                        trace.record(
+                            "generator_error",
+                            generator=gi,
+                            where="on_rejected",
+                            state=state.id,
+                            error=f"{type(exc).__name__}: {exc}",
+                        )
 
             # confirm the best new states with the full panel
             improved = False
             top = sorted(children, key=lambda s: s.score, reverse=True)[:k_confirm]
-            fulls = [f.result() for f in [executor.submit(judge.full, pool, c.ws, original) for c in top]]
-            for child, full in zip(top, fulls, strict=True):
+            futures = [executor.submit(judge.full, pool, c.ws, original) for c in top]
+            for child, future in zip(top, futures, strict=True):
+                try:
+                    full = future.result()
+                    full_score = judge.score(full)
+                except Exception as exc:  # the child stays unconfirmed (cheap-ranked) and unshippable
+                    trace.record("confirm_error", state=child.id, error=f"{type(exc).__name__}: {exc}")
+                    continue
                 cheap_score = child.score
-                child.verdict, child.tier, child.score = full, "full", judge.score(full)
+                child.verdict, child.tier, child.score, child.rank = full, "full", full_score, full_score
                 trace.record(
                     "confirm",
                     state=child.id,
@@ -473,9 +560,15 @@ def search(
         best_path=_path(trace, best),
         spent=spent_now(),
         budget=budget.__dict__,
+        ai_capped=ai_capped,
     )
     return SearchResult(
-        best=best.ws, best_verdict=best.verdict, clean=bool(best.verdict.clean), trace=trace, changed=best.id != s0.id
+        best=best.ws,
+        best_verdict=best.verdict,
+        clean=bool(best.verdict.clean),
+        trace=trace,
+        changed=best.id != s0.id,
+        ai_capped=ai_capped,
     )
 
 
@@ -525,8 +618,8 @@ def deliverable(
     """
     if not result.changed or input_verdict.clean:
         return None
-    score = score_fn or default_judge().score
-    if score(result.best_verdict)[1] < score(input_verdict)[1]:
+    score = score_fn or _real_score()
+    if panel_passes(score(result.best_verdict)) < panel_passes(score(input_verdict)):
         return None
     return result.best
 
@@ -539,8 +632,10 @@ __all__ = [
     "Judge",
     "Rejection",
     "SearchResult",
+    "SCORE_PANEL_PASSES",
     "SearchState",
     "default_judge",
     "deliverable",
+    "panel_passes",
     "search",
 ]
