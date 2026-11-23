@@ -124,8 +124,11 @@ class ArmRow:
     def derived_inconclusive(self) -> bool:
         """What the search's own fields say about whether this file was measured at all (18b's rule:
         `infrastructure_failed` = some candidate inconclusive, none with a verdict, start not clean)."""
-        return bool(self.reason == "no_verdict" or self.infrastructure_failed
-                    or (bool(self.inconclusive_candidates) and self.verdict_candidates == 0 and not self.out_clean))
+        from meshpipeline.cad.repair_v4.measurement import file_unmeasured  # the engine's own rule, not a copy
+
+        return file_unmeasured(reason=self.reason, infrastructure_failed=self.infrastructure_failed,
+                               inconclusive_candidates=self.inconclusive_candidates,
+                               verdict_candidates=self.verdict_candidates, out_clean=self.out_clean)
 
 
 def _row_from_dict(d: Mapping[str, Any]) -> ArmRow:

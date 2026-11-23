@@ -148,7 +148,8 @@ def test_the_shard_ledger_carries_the_wave_types_cap(tmp_path) -> None:
     assert led.cap_usd == 250.0 / 5 == plan.shard_cap_usd
     assert led.provenance == "shard"
     assert plan.provenance()["wave_cap_usd"] == 250.0
-    assert "--wave-type" in plan.shard_argv(1) and "held_out" in plan.shard_argv(1)
+    argv = plan.shard_argv(1, ledger_path="/l/log.jsonl", marker_bucket="b")
+    assert "--wave-type" in argv and "held_out" in argv
 
 
 def test_a_shard_started_with_another_wave_type_is_refused(tmp_path) -> None:
