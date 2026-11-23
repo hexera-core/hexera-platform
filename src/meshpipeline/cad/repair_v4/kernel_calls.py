@@ -54,6 +54,7 @@ if os.environ.get("HEXERA_TEST_KERNEL_FNS") == "1":
 from meshpipeline.cad.repair_v4 import (
     body_kernel,  # noqa: E402,F401
     ops,  # noqa: E402,F401
+    sites_kernel,  # noqa: E402,F401
     ws_kernel,  # noqa: E402,F401
 )
 from meshpipeline.cad.repair_v4 import xcaf_io as _xcaf_io  # noqa: E402,F401
