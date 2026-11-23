@@ -1160,3 +1160,24 @@ def test_one_expansion_draws_at_most_the_cap_and_the_rest_wait_for_a_descendant(
     drawn = [p["entities"][0]["id"] for fn, p in pool.calls if fn == "render_view"]
     assert search.MAX_VIEWS_PER_EXPANSION == 4
     assert drawn == ["F1", "F2", "F3", "F4"]                 # best-first, and no more
+
+
+def test_search_gives_the_deterministic_sweep_the_parts_diagonal() -> None:
+    """`search()` binds its pool's `ws_diagonal` to every DetGenerator, so the sweep sizes sew against the part."""
+    calls: list[str] = []
+
+    class Pool:
+        def call(self, fn: str, payload: dict, timeout_s: float = 0.0) -> Any:
+            calls.append(fn)
+
+            class R:
+                ok, status, error = True, "ok", None
+                value = {"diag_mm": 173.0}
+
+            return R()
+
+    gen = DetGenerator()
+    run([gen], World(sites_fn=lambda pool, ws, verdict: [site("S1", "open", [])]), pool=Pool(), budget=Budget(
+        wall_s=30.0, ops=2, model_calls=0, model_usd=0.0))
+    assert "ws_diagonal" in calls
+    assert gen.notes == [], gen.notes  # a diagonal was found: nothing was withheld
