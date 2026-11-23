@@ -858,6 +858,8 @@ def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
     # it comes on top of - is checked against the cell budget BEFORE cfMesh runs. The boxes used
     # to be held to half the budget and the rest dropped, to be refused at the floor after the run.
     _narrow: list = []
+    _necks: list = []                    # INS-32: the narrow spots an opening depends on
+    _neck_stop = ""
     _narrow_note = ""
     _gap = None
     _base: float | None = None           # the internal fill without the boxes, when costed
@@ -914,11 +916,28 @@ def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
         if _gap.status == GS.OVER_LIMIT:
             # not even the fewest cells across fit beside the rest of the mesh (the plain mesh
             # nearly fills the limit): meshed as before gap sizing - the boxes held to half the
-            # budget - and never stopped before meshing; the gate measures the mesh
-            _narrow = list(narrow_passage_regions(
+            # budget - and never stopped before meshing; the gate measures the mesh.
+            # INS-32: but first the spots an opening (or a passage piece) reaches the rest of its
+            # passage only through get cells across them - at half the base, abc 63401's 0.25 mm
+            # slit got 0.425 mm cells, cfMesh kept the larger region and two outlets came back with
+            # no faces. What is left of the limit goes to the other spots, as before.
+            _left = 0.5 * float(cell_budget or _limit)
+            _spots = list(_regions_at(CFMESH_CELLS_ACROSS * _rung))
+            if _spots:
+                _necks, _neck_stop = neck_plan(
+                    passage_surfaces(ws, surface_file), wall_patch, _spots, wall_cell=wall_cell,
+                    base=float(_base or 0.0), limit=_limit)
+            if _necks:
+                _left = min(_left, float(_limit) - float(_base or 0.0)
+                            - GS.box_cost(_necks, wall_cell, whole_box=True))
+                logger.warning("cfMesh internal plan (INS-32): %d narrow spot(s) an opening depends on, "
+                               "sized first: %s%s", len(_necks),
+                               ", ".join(f"{1e3 * b['width_m']:.3g} mm" for b in _necks),
+                               f" - STOP: {_neck_stop}" if _neck_stop else "")
+            _narrow = list(_necks) + (list(narrow_passage_regions(
                 passage_field[0], passage_field[1], cell_m=wall_cell, areas=_areas,
                 target=CFMESH_CELLS_ACROSS * _rung, detect=_detect,
-                budget_cells=0.5 * float(cell_budget or _limit), whole_box=True) or [])
+                budget_cells=_left, whole_box=True) or []) if _left > 0.0 else [])
         _narrow_note = (_gap.words(wall_cell) + (". Options: " + " ".join(
             f"({i}) {o}" for i, o in enumerate(_gap.options(), 1))
             if _gap.status in (GS.LIMITED, GS.OVER_LIMIT) else "")
@@ -1116,7 +1135,93 @@ def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
             **({"budget_note": _budget_note} if _budget_note else {}),
             **({"port_cells": {k: round(v, 6) for k, v in _port_cells.items()}}
                if _port_cells else {}),
-            **({"gap_plan": _gap.record()} if _gap is not None and _gap.spots else {})}
+            **({"gap_plan": _gap.record()} if _gap is not None and _gap.spots else {}),
+            **({"neck_spots": [{"width_mm": round(1e3 * float(b["width_m"]), 4),
+                                "cell_size": round(b["cell_needed_m"], 7),
+                                "openings": [n or "passage piece" for n in b["neck_of"]],
+                                "rule": NECK_RULE} for b in _necks]}
+               if _necks else {}),
+            **({"neck_stop": _neck_stop} if _neck_stop else {})}
+
+
+#: INS-32: cells across a narrow spot an opening (or a passage piece) reaches the rest of its passage
+#: only through - its own width / 3: enough for cfMesh to keep the two sides one region
+NECK_CELLS_ACROSS = 3.0
+NECK_RULE = "INS-32"
+
+
+def passage_surfaces(ws: Path, surface_file: str) -> list[dict]:
+    """Each passage's closed surface, {patch: triangles}: the case's own STL and every further passage's
+    (`_passages/p<k>/geom.stl`, listed in PASSAGES_FILE). A surface that does not read is left out."""
+    from meshpipeline.cad.fluid_passages import PASSAGES_FILE
+    first = Path(ws) / surface_file
+    # a surface cartesianMesh reads as .fms was staged as geom.stl first (_to_fms)
+    paths = [first if first.suffix.lower() == ".stl" else Path(ws) / "geom.stl"]
+    try:
+        paths += [Path(ws) / str(r) / "geom.stl"
+                  for r in json.loads((Path(ws) / PASSAGES_FILE).read_text()).get("runs") or []]
+    except (OSError, ValueError, AttributeError):
+        pass
+    out = []
+    for p in paths:
+        if p.suffix.lower() != ".stl" or not p.is_file():
+            continue
+        try:
+            out.append(read_stl_solids(p))
+        except Exception:  # noqa: BLE001 - a sizing aid, never a failure
+            logger.warning("cfMesh internal: passage surface %s not read for INS-32", p, exc_info=True)
+    return out
+
+
+def neck_plan(surfaces: list, wall_patch: str, spots: list, *, wall_cell: float, base: float,
+              limit: float) -> tuple[list, str]:
+    """INS-32: THE NARROW SPOTS AN OPENING CANNOT LOSE, sized first. Of the measured narrow spots
+    `spots` (gap sizing's boxes at the full count), the ones an opening - or a sizeable piece of its
+    passage - reaches the rest of its passage only through (cad/inside_space.opening_necks, on each
+    passage's surface in `surfaces`), each boxed at its own width / NECK_CELLS_ACROSS, the box padded
+    by two of its own cells on every side so a cell lies across the gap.
+
+    Returns (those boxes, "") when they fit the cell `limit` on top of the `base` fill, or (them, the
+    plain sentence that stops the plan) when not even they do: the opening, the gap's width, the
+    cells it needs, and what the user can change. ([], "") when no opening depends on a spot."""
+    from meshpipeline.cad.inside_space import opening_necks
+    from meshpipeline.engines.gap_sizing import box_cost
+    need = NECK_CELLS_ACROSS * float(wall_cell)
+    found: dict[int, dict] = {}
+    for solids in surfaces or ():
+        try:
+            recs = opening_necks(solids, wall_patch, spots, need_m=need)
+        except Exception:  # noqa: BLE001 - a sizing aid: the plan stands as before
+            logger.warning("cfMesh internal: INS-32 neck reading failed", exc_info=True)
+            continue
+        for r in recs:
+            got = found.setdefault(int(r["box"]), {**r, "openings": []})
+            got["openings"] += [n for n in r["openings"] if n not in got["openings"]]
+    boxes = []
+    for i, r in sorted(found.items()):
+        w = float(r["width_m"])
+        # never held to the passage floor (40 across the measured narrowest passage, not 3 across
+        # this gap), as no narrow-passage box is
+        c = w / NECK_CELLS_ACROSS
+        if not 0.0 < c < float(wall_cell):
+            continue
+        s = spots[i]
+        boxes.append({"min": [float(s["min"][k]) - 2.0 * c for k in range(3)],
+                      "max": [float(s["max"][k]) + 2.0 * c for k in range(3)],
+                      "radius_m": float(s["radius_m"]), "cell_m": c, "cell_needed_m": c, "level_bump": 0,
+                      "width_m": w, "neck_of": list(r["openings"]), "layer_cells": s.get("layer_cells")})
+    if not boxes:
+        return [], ""
+    total = float(base or 0.0) + box_cost(boxes, wall_cell, whole_box=True)
+    tight = min(boxes, key=lambda b: b["width_m"])
+    if total <= float(limit):
+        return boxes, ""
+    named = [n for n in tight["neck_of"] if n]
+    who = (" and ".join(named) if named else "A piece of the passage")
+    return boxes, (f"{who} {'reach' if len(named) > 1 else 'reaches'} the rest of its passage only through "
+                   f"a gap about {tight['width_m'] * 1e3:.2g} mm wide; meshing across it needs about "
+                   f"{total / 1e6:.3g} M cells, over the {float(limit) / 1e6:.3g} M limit. Widen or close "
+                   "that gap in the CAD, allow more cells, or drop that opening.")
 
 
 def _bind_intake_shared(t: dict, declaration: list, *, bore: bool = True):
@@ -1405,6 +1510,21 @@ def _configure_internal(workspace, *, strategy: dict, wall_patch: str,
         passage_radius=passage_radius, passage_field=_field,
         accept_fewer=accepted_fewer(read_engine_params(workspace)),
         port_widths=_port_widths, internal_wall_area=_wall_area_of(_staged["sizing"], _wall_key))
+    if summary.get("neck_stop"):
+        # INS-32: an opening reaches its passage only through a gap whose cells do not fit the limit -
+        # said at plan time, with what the user can change, never found as a zero-face patch after an
+        # hour; recorded as the dropped-opening refusal, so no wrap rung follows (LAD-cfd-12)
+        from meshpipeline.contracts.failure_cause import FailureCause
+        from meshpipeline.engines.preflight import PreflightRefusal
+        _why = str(summary["neck_stop"])
+        PreflightRefusal(
+            gate="finalize", cause=FailureCause.PATCH_NOT_CAPTURED.value,
+            builder_text=f"[PORT_REGION_DROPPED] {_why}",
+            facts={"port_region_dropped": True, "deterministic": True, "ladder_exhausted": True,
+                   "before_meshing": True, "meshers_started": 0}).write(workspace)
+        return {"success": False, "error": _why, **summary,
+                "next": "Do NOT run_mesh and do NOT reconfigure: no setting of this plan fits that gap. Relay "
+                        "this to the user verbatim and end your turn."}
     _sizes = list((t.get("binding") or {}).get("size_notes") or [])
     _budget = summary.get("budget_note")
     return {"success": True, "wrote": ["system/meshDict"], "topology": "internal",

@@ -766,6 +766,16 @@ def _bottleneck(cubes: np.ndarray, nb: np.ndarray, flat_lab: np.ndarray, dist: n
     space beyond - the largest clearance from the drawn wall (`dist`) that every cube of some path
     of its cubes keeps (the cubes are let in from the clearest down until the passage and the space
     beyond first join). Returns that clearance and the cube where they joined (its middle)."""
+    got = _widest_join(cubes, nb, flat_lab, dist, shape, passage)
+    if got is not None:
+        return got
+    dc = dist[cubes]
+    return float(dc.min()), int(cubes[int(np.argmin(dc))])
+
+
+def _widest_join(cubes: np.ndarray, nb: np.ndarray, flat_lab: np.ndarray, dist: np.ndarray, shape,
+                 passage: set) -> tuple[float, int] | None:
+    """_bottleneck's widest way, or None when no path of `cubes` joins the two sides at all."""
     from scipy import ndimage
     sy, sz = int(shape[1]), int(shape[2])
     nb = np.unique(nb)
@@ -784,7 +794,8 @@ def _bottleneck(cubes: np.ndarray, nb: np.ndarray, flat_lab: np.ndarray, dist: n
     ls, ld, lc = local(src), local(dst), local(cubes)
     dc = dist[cubes]
     st = ndimage.generate_binary_structure(3, 1)
-    for level in sorted(set(np.round(dc, 6).tolist()), reverse=True):
+
+    def join(level: float):
         m = np.zeros(int(np.prod(box)), dtype=bool)
         m[ls] = True
         m[ld] = True
@@ -794,11 +805,135 @@ def _bottleneck(cubes: np.ndarray, nb: np.ndarray, flat_lab: np.ndarray, dist: n
         lab = lab.ravel()
         joined = set(np.unique(lab[ls]).tolist()) & set(np.unique(lab[ld]).tolist())
         joined.discard(0)
-        if joined:
-            on = inn & np.isin(lab[lc], list(joined)) & (np.abs(dc - level) <= 1e-9)
-            at = int(cubes[np.flatnonzero(on)[0]]) if on.any() else int(cubes[int(np.argmax(dc))])
-            return float(level), at
-    return float(dc.min()), int(cubes[int(np.argmin(dc))])
+        return inn, lab, joined
+
+    # the cubes let in only grow as the level falls, so two sides once joined stay joined: the
+    # highest level that joins them is found by halving the list of levels (a whole passage holds
+    # hundreds of levels, and INS-32 reads one per opening)
+    levels = sorted(set(np.round(dc, 6).tolist()), reverse=True)
+    lo_i, hi_i, best = 0, len(levels) - 1, -1
+    while lo_i <= hi_i:
+        mid = (lo_i + hi_i) // 2
+        if join(levels[mid])[2]:
+            best, hi_i = mid, mid - 1
+        else:
+            lo_i = mid + 1
+    if best < 0:
+        return None
+    level = levels[best]
+    inn, lab, joined = join(level)
+    on = inn & np.isin(lab[lc], list(joined)) & (np.abs(dc - level) <= 1e-9)
+    at = int(cubes[np.flatnonzero(on)[0]]) if on.any() else int(cubes[int(np.argmax(dc))])
+    return float(level), at
+
+
+#: INS-32: a piece of a passage this share of its largest piece's size (or more) is a passage piece the
+#: mesh must keep, even with no opening on it
+NECK_PIECE_SHARE = 0.05
+#: INS-32: the most narrow spots read in a row on the way from one opening to the rest of its passage
+NECK_MAX_STEPS = 8
+
+
+def opening_necks(solids, wall_key: str, boxes, *, need_m: float, cells: int = GRID_CELLS) -> list[dict]:
+    """INS-32: THE NARROW SPOTS AN OPENING NEEDS. Of the measured narrow spots `boxes` (each with
+    `min`, `max` and its gap's half width `radius_m`), the ones that some opening of this passage - or a
+    piece of it at least NECK_PIECE_SHARE the size of its largest - reaches the rest of the passage
+    only through, at a mesh that puts no cells across a gap narrower than `need_m`.
+
+    `solids`: the passage's closed surface, {patch name: triangles (n, 3, 3)}, the wall `wall_key` and
+    every opening's lid. The inside is flooded on a grid of cubes (no coarser than need_m / 4 where
+    the grid allows); each cube keeps its clearance from the wall, and a cube in a narrow spot's box
+    the gap's own measured half width (a slit thinner than a cube is drawn shut, yet the flow passes
+    it). The LARGEST piece of the inside clear by need_m / 2 is the passage the mesher keeps (cfMesh
+    keeps the largest region). For each opening not in it, the widest way to it (_bottleneck's widest
+    path) is read; the narrow spot holding that way back is needed, and the way is read again with
+    that spot meshed across, until the opening joins at need_m or the narrowest step is no measured
+    spot. Returns one record per needed spot, narrowest first: {"box": its index in `boxes`,
+    "width_m": the gap's width, "openings": the names that depend on it (None for a passage piece),
+    "point": where the way is narrowest}. [] when nothing depends on a spot."""
+    from scipy import ndimage
+    tris = {str(n): np.asarray(t, dtype=float).reshape(-1, 3, 3) for n, t in (solids or {}).items()
+            if t is not None and len(t)}
+    if not tris or not boxes or not need_m > 0.0:
+        return []
+    T = np.concatenate(list(tris.values()))
+    lo, hi = T.reshape(-1, 3).min(axis=0), T.reshape(-1, 3).max(axis=0)
+    grid = Grid.around(lo, hi, cells=cells)
+    if grid.h < 0.25 * need_m:             # no finer than the gap the mesh must pass needs
+        grid = Grid.around(lo, hi, cells=max(4096, int(cells * (grid.h / (0.25 * need_m)) ** 3)),
+                           h_max=0.25 * need_m)
+    shape, sh, h = grid.shape, np.asarray(grid.shape), grid.h
+    drawn = np.zeros(grid.n, dtype=bool)
+    drawn[raster(T, grid)] = True
+    lab, _n = _label(~drawn.reshape(shape))
+    outside = _border_labels(lab)
+    lab = lab.ravel()
+    inside = (lab > 0) & ~np.isin(lab, list(outside))
+    clear = ndimage.distance_transform_edt(~drawn.reshape(shape)).ravel()   # in cubes
+    clear[~inside] = 0.0
+    passable = inside.copy()
+    owner = np.full(grid.n, -1, dtype=np.int64)
+    # the widest spot first, so where two boxes overlap the narrower one owns the cube
+    for i in sorted(range(len(boxes)), key=lambda j: -float(boxes[j].get("radius_m") or 0.0)):
+        b = boxes[i]
+        r = float(b.get("radius_m") or 0.0)
+        if r <= 0.0 or b.get("min") is None or b.get("max") is None:
+            continue
+        a = np.clip(np.floor((np.asarray(b["min"], dtype=float) - grid.origin) / h).astype(int), 0, sh - 1)
+        z = np.clip(np.floor((np.asarray(b["max"], dtype=float) - grid.origin) / h).astype(int), 0, sh - 1)
+        ii, jj, kk = np.meshgrid(*[np.arange(a[d], z[d] + 1) for d in range(3)], indexing="ij")
+        c = ((ii * shape[1] + jj) * shape[2] + kk).ravel()
+        c = c[inside[c] | drawn[c]]
+        owner[c] = i
+        clear[c] = np.maximum(clear[c], r / h)
+        passable[c] = True
+    half = 0.5 * need_m / h
+    slab, ns = _label((passable & (clear >= half - 1e-9)).reshape(shape))
+    slab = slab.ravel()
+    if ns == 0:
+        return []
+    counts = np.bincount(slab, minlength=ns + 1)
+    counts[0] = 0
+    main = int(np.argmax(counts))
+    main_cubes = np.flatnonzero(slab == main)
+    targets: list[tuple[str | None, np.ndarray]] = []
+    touched: set[int] = set()
+    for name in sorted(tris):
+        if name == wall_key:
+            continue
+        seeds = np.unique(_neighbours(raster(tris[name], grid), shape))
+        seeds = seeds[passable[seeds]]
+        if not len(seeds) or (slab[seeds] == main).any():
+            continue
+        touched.update(int(g) for g in np.unique(slab[seeds]) if g)
+        targets.append((name, seeds))
+    for g in np.flatnonzero(counts >= NECK_PIECE_SHARE * counts[main]):
+        if int(g) not in (main, 0) and int(g) not in touched:
+            targets.append((None, np.flatnonzero(slab == g)))
+    found: dict[int, dict] = {}
+    # one clearance for every target: a spot already needed is meshed across for the next one, so a
+    # piece the openings' spots already join is no further target
+    cl = clear.copy()
+    for who, seeds in targets:
+        marks = np.zeros(grid.n, dtype=np.int32)
+        marks[main_cubes] = 2
+        marks[seeds] = 1
+        nb = np.r_[seeds, main_cubes]
+        cubes = np.flatnonzero(passable & (marks == 0))
+        for _ in range(NECK_MAX_STEPS):
+            got = _widest_join(cubes, nb, marks, cl, shape, {1})
+            if got is None or got[0] >= half - 1e-9:
+                break
+            i = int(owner[got[1]])
+            if i < 0:
+                break                       # the narrowest step is no measured narrow spot
+            rec = found.setdefault(i, {"box": i, "width_m": 2.0 * float(boxes[i]["radius_m"]),
+                                       "openings": [],
+                                       "point": grid.centre(np.unravel_index(got[1], shape)).tolist()})
+            if who not in rec["openings"]:
+                rec["openings"].append(who)
+            cl[owner == i] = half           # meshed across, it holds the way back no more
+    return sorted(found.values(), key=lambda d: (d["width_m"], d["box"]))
 
 
 def _surface_distance(points: np.ndarray, T: np.ndarray, tree, k: int = 32) -> np.ndarray:
@@ -1606,4 +1741,5 @@ def leak_test(V: np.ndarray, F: np.ndarray, seed, *, cells: int = GRID_CELLS) ->
 
 
 __all__ = ["GRID_CELLS", "MAP_MAX_TRIANGLES", "MIN_ACROSS", "PASSAGE_SHARE", "Grid", "InsideMap", "Leak", "PartialMap",
-           "Mouth", "Pocket", "leak_test", "raster", "read_inside", "read_inside_or_none"]
+           "Mouth", "NECK_MAX_STEPS", "NECK_PIECE_SHARE", "Pocket", "leak_test", "opening_necks", "raster",
+           "read_inside", "read_inside_or_none"]

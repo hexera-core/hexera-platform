@@ -1,0 +1,169 @@
+# Responsibility: Verify INS-32 - when gap sizing cannot afford every narrow spot, the spots an opening reaches the rest of
+# its passage only through are sized first, at their own width / 3, and a plan that cannot fit even those stops before
+# meshing with the opening, the gap's width and what the user can change. abc 63401: a 0.25 mm slit got 0.425 mm cells
+# (the half-budget fallback), cfMesh kept the larger region and two outlets came back with no faces.
+from __future__ import annotations
+
+import json
+
+import numpy as np
+
+import meshpipeline.engines.gap_sizing as G
+from meshpipeline.cad.inside_space import opening_necks
+
+MM = 1e-3
+# a chamber (x 0-10 mm) joined to a pocket (x 12-20 mm) only by a slit 0.3 mm high (x 10-12, y 4.85-5.15 mm);
+# the inlet is the chamber's x = 0 face, the outlet the pocket's x = 20 face
+XS = [0.0, 10.0, 12.0, 20.0]
+YS = [0.0, 4.85, 5.15, 10.0]
+ZS = [0.0, 10.0]
+
+
+def _filled(i: int, j: int, k: int) -> bool:
+    return i != 1 or j == 1
+
+
+def _surface() -> dict:
+    """{patch: triangles (n, 3, 3) in metres}: the boundary of the filled lattice cells."""
+    out: dict = {"wall": [], "inlet": [], "outlet": []}
+    nx, ny, nz = len(XS) - 1, len(YS) - 1, len(ZS) - 1
+    axes = (XS, YS, ZS)
+    for i in range(nx):
+        for j in range(ny):
+            for k in range(nz):
+                if not _filled(i, j, k):
+                    continue
+                for d in range(3):
+                    for side in (0, 1):
+                        q = [i, j, k]
+                        q[d] += 1 if side else -1
+                        inside = (0 <= q[0] < nx and 0 <= q[1] < ny and 0 <= q[2] < nz and _filled(*q))
+                        if inside:
+                            continue
+                        lo = [XS[i], YS[j], ZS[k]]
+                        hi = [XS[i + 1], YS[j + 1], ZS[k + 1]]
+                        plane = (hi if side else lo)[d]
+                        a, b = [e for e in range(3) if e != d]
+                        corners = []
+                        for ua, ub in ((0, 0), (1, 0), (1, 1), (0, 1)):
+                            p = [0.0, 0.0, 0.0]
+                            p[d] = plane
+                            p[a] = (hi if ua else lo)[a]
+                            p[b] = (hi if ub else lo)[b]
+                            corners.append(p)
+                        name = ("inlet" if d == 0 and plane == XS[0] else
+                                "outlet" if d == 0 and plane == XS[-1] else "wall")
+                        c = np.asarray(corners) * MM
+                        out[name] += [c[[0, 1, 2]], c[[0, 2, 3]]]
+    return {n: np.asarray(v) for n, v in out.items()}
+
+
+def _write_stl(path, solids: dict) -> None:
+    with open(path, "w") as fh:
+        for name, tris in solids.items():
+            fh.write(f"solid {name}\n")
+            for t in tris:
+                fh.write("facet normal 0 0 0\nouter loop\n")
+                for p in t:
+                    fh.write(f"vertex {p[0]:.9g} {p[1]:.9g} {p[2]:.9g}\n")
+                fh.write("endloop\nendfacet\n")
+            fh.write(f"endsolid {name}\n")
+
+
+SLIT_BOX = {"min": [10.0 * MM, 4.7 * MM, 0.0], "max": [12.0 * MM, 5.3 * MM, 10.0 * MM], "radius_m": 0.15 * MM}
+
+
+def _hairlines(n: int = 12) -> list[dict]:
+    """Hairline spots along the chamber's floor corner: narrow, but no opening depends on them."""
+    out = []
+    for z in np.linspace(1.0, 9.0, n):
+        out.append({"min": [1.0 * MM, 0.0, (z - 0.2) * MM], "max": [9.0 * MM, 0.05 * MM, (z + 0.2) * MM],
+                    "radius_m": 0.007 * MM})
+    return out
+
+
+def test_the_opening_behind_a_slit_needs_the_slit_and_not_the_hairlines():
+    spots = [*_hairlines(), dict(SLIT_BOX)]
+    got = opening_necks(_surface(), "wall", spots, need_m=3.0 * 1.0 * MM)
+    assert [r["box"] for r in got] == [len(spots) - 1]
+    assert got[0]["openings"] == ["outlet"]
+    assert abs(got[0]["width_m"] - 0.3 * MM) < 1e-9
+
+
+def test_an_opening_joined_wide_needs_no_spot():
+    spots = [*_hairlines(), dict(SLIT_BOX)]
+    solids = {n: t for n, t in _surface().items() if n != "outlet"}
+    solids["outlet"] = solids.pop("inlet")          # the only opening sits on the chamber
+    assert opening_necks(solids, "wall", spots, need_m=3.0 * MM) == []
+
+
+def _field():
+    """(points, radius, area per point) of the wall: wide everywhere, the slit's two walls 0.15 mm from their middle,
+    and hairline spots along the chamber's floor corner that cost far more than any limit."""
+    pts, r = [], []
+    for x in np.linspace(0.5, 19.5, 20):
+        for z in np.linspace(0.5, 9.5, 10):
+            if not 10.0 < x < 12.0:
+                pts += [[x, 0.0, z], [x, 10.0, z]]
+                r += [2.5, 2.5]
+    for x in np.linspace(10.1, 11.9, 8):
+        for z in np.linspace(0.2, 9.8, 25):
+            pts += [[x, 4.85, z], [x, 5.15, z]]
+            r += [0.15, 0.15]
+    for x in np.linspace(1.0, 9.0, 20):
+        for z in np.linspace(1.0, 9.0, 20):
+            for y in (0.02, 1.0, 2.0, 3.0, 4.0):
+                pts.append([x, y, z])
+                r.append(0.007)
+    p = np.asarray(pts) * MM
+    return p, np.asarray(r) * MM, np.full(len(p), 0.25 * MM * MM)
+
+
+def _render(ws, budget: int):
+    from meshpipeline.engines.cfmesh.cfmesh_runner import render_cfmesh_case
+    _write_stl(ws / "geom.stl", _surface())
+    return render_cfmesh_case(
+        ws, surface_file="geom.stl", wall_patch="wall", patches=[], body_bbox=((0, 0, 0), (0.02, 0.01, 0.01)),
+        L=0.02, domain_min=(0, 0, 0), domain_max=(0.02, 0.01, 0.01), strategy={"n_layers": 0},
+        cell_budget=budget, passage_radius={"p05": 0.0025, "median": 0.0025, "band": 0.0025},
+        passage_field=_field())
+
+
+def _slit_block(ws) -> float | None:
+    """The cell size of the meshDict's refinement box that lies across the slit's middle, or None."""
+    text = (ws / "system" / "meshDict").read_text()
+    best = None
+    for blk in text.split("narrowPassage")[1:]:
+        def num(key):
+            return float(blk.split(key)[1].split(";")[0].replace("(", " ").split()[0])
+        c = [float(v) for v in blk.split("centre")[1].split("(")[1].split(")")[0].split()]
+        half = [0.5 * num("lengthX"), 0.5 * num("lengthY"), 0.5 * num("lengthZ")]
+        mid = (11.0 * MM, 5.0 * MM, 5.0 * MM)
+        if all(abs(mid[k] - c[k]) <= half[k] for k in range(3)) and half[1] >= 0.15 * MM:
+            size = num("cellSize")
+            best = size if best is None else min(best, size)
+    return best
+
+
+def test_the_slit_gets_its_cells_the_hairlines_do_not_and_the_plan_stays_under_the_limit(tmp_path):
+    ws = tmp_path / "case"
+    ws.mkdir()
+    out = _render(ws, 100_000)
+    assert json.loads((ws / G.GAP_RECORD).read_text())["status"] == G.OVER_LIMIT
+    assert "neck_stop" not in out
+    size = _slit_block(ws)
+    assert size is not None and size <= 0.3 * MM / 3.0 + 1e-12     # three cells across the 0.3 mm slit
+    # the slit is measured as several boxes along it: each one the outlet needs, none of the hairlines
+    assert out["neck_spots"] and all(s["openings"] == ["outlet"] and s["width_mm"] == 0.3
+                                     for s in out["neck_spots"])
+    assert all(r["cell_size"] > 0.007 * MM for r in out["narrow_regions"])   # no hairline at its own count
+    assert 0 < out["planned_cells"] <= 100_000
+
+
+def test_when_not_even_the_slit_fits_the_plan_stops_naming_the_opening_and_the_gap(tmp_path):
+    ws = tmp_path / "case"
+    ws.mkdir()
+    out = _render(ws, 8_000)
+    stop = out.get("neck_stop") or ""
+    assert stop.startswith("outlet reaches the rest of its passage only through a gap about 0.3 mm wide")
+    assert "Widen or close that gap in the CAD, allow more cells, or drop that opening." in stop
