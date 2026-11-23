@@ -324,7 +324,7 @@ def test_searchresult_and_a_row_agree_on_unmeasured() -> None:
 
 def _main_argv(shard: Any, arms: str) -> list[str]:
     return [*shard.argv, "--arms", arms, "--wave-type", "normal", "--wave-id", "w1", "--n-shards", "1",
-            "--ledger-path", "/x/log", "--marker-bucket", "b"]
+            "--ledger-path", "/x/log", "--marker-bucket", "b", "--cache-uri", "gs://b/eval/w/verdict-cache"]
 
 
 def test_main_hands_the_ledger_it_builds_to_the_arms(shard: Any, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -368,7 +368,7 @@ def test_reprobe_mode_is_unchanged_and_attaches_no_ledger(shard: Any, monkeypatc
 def test_a_shard_without_a_shared_cache_refuses_before_any_work(shard, monkeypatch, reprobe, cache) -> None:
     monkeypatch.setattr(run_arm, "run_arms", lambda *a, **k: pytest.fail("ran without a shared cache"))
     monkeypatch.setattr(run_arm, "run_reprobe", lambda *a, **k: pytest.fail("ran without a shared cache"))
-    argv = ["--mode", "reprobe", "--out", str(shard.out), *cache] if reprobe else [*shard.argv, *cache]
+    argv = ["--mode", "reprobe", "--out", str(shard.out), *cache] if reprobe else [*shard.argv, "--arms", "input_only", *cache]
     assert run_arm.main(argv) == 7
     assert "--cache-uri" in json.loads((shard.out / "PROVENANCE.json").read_text())["error"]
 
@@ -389,7 +389,7 @@ def test_the_wave_cache_reaches_the_engines_own_judges_and_is_restored(shard, mo
 
     monkeypatch.setattr(run_arm, "run_arms", fake_run_arms)
     uri = "gs://dev-crsv3-x/eval/w/verdict-cache"
-    assert run_arm.main([*shard.argv, "--cache-uri", uri]) == 0
+    assert run_arm.main([*shard.argv, "--arms", "input_only", "--cache-uri", uri]) == 0
     assert seen["judge_cache"] is seen["reprobe_cache"]
     assert isinstance(seen["judge_cache"].store, cache_mod.GcsStore)
     assert cache_mod.CACHE_URI_ENV not in __import__("os").environ  # restored: no leak into the next caller

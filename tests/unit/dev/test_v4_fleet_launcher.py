@@ -440,6 +440,8 @@ def test_v4_cache_problems_accepts_what_the_launcher_actually_emits():
     args = lf.build_parser().parse_args(["--profile", "v4", "--image", IMAGE, "--commit", HEAD,
                                          "--image-commit", HEAD, "--wave-type", "normal", "--wave-id", "w"])
     args.sources = ["abc_fail"]
+    args.prefix = lf.PREFIX
+    args.shards_total = 96
     assert lf.v4_cache_problems(lf.V4.extra_metadata(args)) == []
 
 

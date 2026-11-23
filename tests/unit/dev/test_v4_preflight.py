@@ -311,7 +311,7 @@ def test_a_timeout_or_crash_in_the_runner_is_a_refusal():
         raise TimeoutError("gcloud hung")
 
     report = pf.run_preflight(runner=boom, image=IMAGE, commit=COMMIT, service_account=SA)
-    assert not report.ok and _failed(report) == set(pf.CHECKS) - {"locations", "image_pinned"}
+    assert not report.ok and _failed(report) == set(pf.CHECKS) - {"locations", "image_pinned", "cache_shared"}  # cache_shared is local
 
 
 def test_fusion360_in_the_staged_inputs_is_refused():
