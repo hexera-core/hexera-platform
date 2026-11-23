@@ -1032,7 +1032,8 @@ def _repair_via_v4(source: Path, destination: Path, *, deadline_s: float) -> Rep
     import meshpipeline.cad.repair_v4 as v4
 
     now = _clock()
-    budget = v4.Budget(wall_s=max(0.0, deadline_s - now), ops=int(rcfg.CAD_REPAIR_MAX_OPS))
+    budget = v4.Budget(wall_s=max(0.0, deadline_s - now), ops=int(rcfg.CAD_REPAIR_MAX_OPS),
+                      model_calls=0, model_usd=0.0)
     try:
         result = v4.repair_v4(str(source), str(destination), budget=budget, deadline_s=deadline_s)
     except v4.SearchUnavailable as exc:
