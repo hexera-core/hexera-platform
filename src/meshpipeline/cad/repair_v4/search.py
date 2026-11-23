@@ -2,9 +2,9 @@
 #                 score, the deterministic sweep that proposes ops, the budget, and the delivery rule.
 # Owns: `Candidate`, `Generator`, `DetGenerator`, `Budget`, `Judge`, `SearchState`, `Rejection`,
 #       `SearchResult`, `search`, `deliverable`.
-# Boundaries: the verdict (Task 5), site finding (Task 17) and the AI proposer (Task 19) are NOT
-#             here: the first two arrive through `Judge`, the proposer is just another `Generator`.
-#             Ops come from `ops.REGISTRY` and are checked by `validate_call` before they run.
+# Boundaries: the verdict (Task 5), site finding (Task 17), the stages (Task 16) and the AI proposer (Task 19)
+#             are NOT reimplemented here; this module WIRES them (see "Wiring" below). Ops come from
+#             `ops.REGISTRY` and are checked by `validate_call` before they run.
 """Best-first search over Workspace states. The reward IS the metric.
 
     expand the best state -> every generator proposes `Candidate`s -> `validate_call` each ->
@@ -31,23 +31,62 @@ every expansion; `ops` also truncates a batch so it is never overrun. Reaching `
 on deterministic-only, and the result is marked `ai_capped`. A cap of 0 therefore means "no AI",
 which is how the deterministic-only arm runs. Patience is the
 number of consecutive expansions that did not improve the best confirmed score.
+
+Wiring (Task 18b).
+  * FEEDBACK. A generator with `feedback(list[proposer.Outcome])` (the AI proposer) is told, after each
+    round, what became of ITS OWN candidates: the Diff, and the verdict delta (cheap tier against the parent's
+    cheap score, or full against full once confirmed) for the ones that became states, the reason for the rest.
+  * ONE `UnfixableRegistry` is shared by the AI proposer and every `DetGenerator` (`ai_generators` builds
+    them so; `search` refuses a mismatch), so a site the model declared unfixable is not swept either.
+  * SITE IDS. Site ids are carried across rounds by a `SiteRegistry`, which follows ONE LINEAR LINEAGE and
+    raises on a fork. A best-first search forks constantly, so the registry is per STATE, not per search: a
+    state inherits (by reference) the registry as its parent left it, and on expansion works on a DEEP COPY of
+    it, applies the state's own sites to the copy, and hands that copy to the children it makes. Every
+    registry therefore only ever sees one root-to-state path, however the frontier jumps between branches.
+  * STAGES. `Candidate(op="run_stage", targets=[], params={"stage": name, "params": {...}})` is routed to
+    `stages.run_stage`; it is one candidate (one op of budget) and one state.
+  * VIEWS. For a model generator, sites of the kinds the proposer shows pictures for are drawn once with
+    `render.view(pool, ws, site)`.
+  * STOP REASON. `SearchResult.ai_stop_reason` is the proposer's own reason (`file_ceiling`, `input_too_large`,
+    `model_failure`, ...) or `model_budget` when this driver capped it; `ai_capped` is true for a spending
+    limit only, so `input_too_large` and `model_failure` are NOT `ai_capped`.
+  * An INCONCLUSIVE verdict (`InconclusiveVerdict` from `score`) is retried once, then the candidate is a
+    "failed" outcome; it never ends a branch and is never ranked.
 """
 
 from __future__ import annotations
 
+import copy
 import heapq
-import importlib
 import itertools
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Literal, Protocol
 
+from meshpipeline.cad.repair_v4 import render
 from meshpipeline.cad.repair_v4.ops import REGISTRY, OpDeclined, OpFailed, validate_call
+from meshpipeline.cad.repair_v4.proposer import IMAGE_KINDS, AIProposer, Outcome, ProposedCandidate, UnfixableRegistry
+from meshpipeline.cad.repair_v4.sites import SiteRegistry, find_sites
+from meshpipeline.cad.repair_v4.stages import (
+    DEFAULTS,
+    STAGES,
+    _original_facts,
+    _step_for,
+    declared_edits,
+    run_stage,
+)
 from meshpipeline.cad.repair_v4.trace import Trace
 from meshpipeline.cad.repair_v4.types import Site, StableId
-from meshpipeline.cad.repair_v4.workspace import UnknownTarget, Workspace
+from meshpipeline.cad.repair_v4.verdict.assemble import InconclusiveVerdict, Verdict, cheap_verdict, score, verdict
+from meshpipeline.cad.repair_v4.verdict.faithful import DeclaredIdError, FaithfulReport, check_faithful
+from meshpipeline.cad.repair_v4.workspace import Diff, UnknownTarget, Workspace
+
+#: the op name of the macro action: `params={"stage": name, "params": {...}}`, no targets
+RUN_STAGE = "run_stage"
+#: how many times a judgement that came back inconclusive is attempted before the candidate is given up on
+JUDGE_ATTEMPTS = 2
 
 Score = tuple[int, int, float, float, int]
 
@@ -94,6 +133,11 @@ class SearchState:
     via: dict | None
     tier: str = "full"
     expanded: bool = False
+    #: what the proposer's observation reads as `budget`: {"spent": {...}, "limits": {...}}, set on expansion
+    budget: Any = None
+    #: the `SiteRegistry` of this state's lineage. Before expansion: the PARENT's, as the parent left it (never
+    #: mutated again). On expansion it is replaced by this state's own deep copy with its sites applied.
+    site_registry: Any = None
     #: score from the cheap tier (None when unknown); with `rank`, see the module docstring
     cheap_score: Score | None = None
     rank: Score | None = None
@@ -118,31 +162,53 @@ class Judge:
     sites: Callable[[Any, Workspace, Any], list[Site]]
 
 
-def default_judge(*, h_mm: float) -> Judge:
-    """The real verdict (Task 5) and sites (Task 17), imported late so this module loads without
-    them. `h_mm` (the mesh size) is required: it sets site clustering and the proximity threshold, so
-    a silent default would aim every candidate at the wrong sites. `declared` is the union over the workspace's whole lineage, since faithfulness compares
-    against the ORIGINAL."""
-    vmod = importlib.import_module("meshpipeline.cad.repair_v4.verdict")
-    smod = importlib.import_module("meshpipeline.cad.repair_v4.sites")
-
-    def declared(ws: Workspace) -> Any:
-        return vmod.Declared(
-            added=[i for d in ws.history for i in d.declared_added],
-            removed=[i for d in ws.history for i in d.declared_removed],
-        )
-
-    return Judge(
-        cheap=lambda pool, ws, original: vmod.cheap_verdict(pool, ws.brep_path, original, declared=declared(ws)),
-        full=lambda pool, ws, original: vmod.verdict(pool, ws.brep_path, original, declared=declared(ws)),
-        score=_real_score(),
-        sites=lambda pool, ws, verdict: smod.find_sites(pool, ws, verdict, h_mm=h_mm),
+def _clean_with(v: Verdict, faithful: FaithfulReport | None) -> bool:
+    """`Verdict.clean` as `assemble._assemble` computes it, for a verdict whose layer 3 was replaced. A test pins
+    this against the real assembly, so a change to the rule there fails here instead of silently disagreeing."""
+    return (
+        v.tier == "full"
+        and not v.inconclusive
+        and v.valid.ok
+        and bool(v.panel)
+        and all(r.status == "pass" for r in v.panel)
+        and faithful is not None
+        and faithful.ok
     )
 
 
-def _real_score() -> Callable[[Any], Score]:
-    score: Callable[[Any], Score] = importlib.import_module("meshpipeline.cad.repair_v4.verdict").score
-    return score
+def _judged(fn: Callable[..., Verdict], pool: Any, ws: Workspace, original: str) -> Verdict:
+    """`fn` (`cheap_verdict` / `verdict`) on workspace `ws`, judged as Task 16's `stages._judge` judges it.
+
+    The checker reads STEP files, a workspace is a BREP, so the BREP is exported first (`_step_for`). Declared
+    edits are `F<k>` indices of the BREP the checker reads, NOT stable ids (`declared_edits` translates them),
+    and a STEP round trip may renumber faces, so layer 3 is re-run on the two BREPs, where the indices are exact,
+    whenever the lineage declared anything; `clean` is recomputed from that report. A declared id the shapes do not
+    match is judged undeclared rather than crashing the run (as `stages._judge` does)."""
+    faces, _solids = _original_facts(pool, ws.original)
+    v: Verdict = fn(pool, _step_for(pool, ws.brep_path), original)
+    declared = declared_edits(ws, faces)
+    if v.valid.ok and (declared.added or declared.removed):
+        try:
+            report = check_faithful(
+                pool, ws.original, ws.brep_path, declared_added=declared.added, declared_removed=declared.removed
+            )
+        except DeclaredIdError:
+            return v
+        v = replace(v, faithful=report, clean=_clean_with(v, report))
+    return v
+
+
+def default_judge(*, h_mm: float) -> Judge:
+    """The real verdict (Task 5) and sites (Task 17). `h_mm` (the mesh size) is required: it sets site
+    clustering and the proximity threshold, so a silent default would aim every candidate at the wrong sites.
+    `original` is the STEP the product was handed; faithfulness compares against it (and, for declared edits,
+    against the lineage's original BREP)."""
+    return Judge(
+        cheap=lambda pool, ws, original: _judged(cheap_verdict, pool, ws, original),
+        full=lambda pool, ws, original: _judged(verdict, pool, ws, original),
+        score=score,
+        sites=lambda pool, ws, v: find_sites(pool, ws, v, h_mm=h_mm),
+    )
 
 
 #: Position of the panel-pass count in a `Score` (valid, panel passes, min SICN, -max_dev, -churn).
@@ -164,8 +230,14 @@ class SearchResult:
     trace: Trace
     #: False when nothing beat the start (best is the start workspace)
     changed: bool = False
-    #: the model budget was reached and the search finished deterministic-only
+    #: a SPENDING limit ended the AI's part (the wave cap, the file's own ceiling, or this search's model budget)
+    #: and the search finished deterministic-only. `input_too_large` and `model_failure` are NOT this.
     ai_capped: bool = False
+    #: why the AI stopped, when it did: the proposer's own `stop_reason` (`wave_cap`, `file_ceiling`, `max_turns`,
+    #: `model_failure`, `input_too_large`) or `model_budget` when this driver capped it; None when it never stopped
+    ai_stop_reason: str | None = None
+    #: `AIProposer.result()` of each proposer in the search (spend, turns, reason)
+    ai: list[dict] = field(default_factory=list)
 
 
 # --- the deterministic generator ----------------------------------------------------------------
@@ -183,11 +255,18 @@ def _of_kind(entities: list[StableId], prefix: str) -> list[StableId]:
 
 class DetGenerator:
     """Per site kind, a fixed parameter sweep over the ops that apply to it. Only ops present in
-    `REGISTRY` are proposed. Sweeps are ordered mildest first; `k` truncates."""
+    `REGISTRY` are proposed. Sweeps are ordered mildest first; `k` truncates.
+
+    `unfixable` is the registry shared with the AI proposer: a site the model declared unfixable within the
+    fidelity budget is not swept (`ai_generators` builds the pair; `search` refuses a mismatch)."""
+
+    def __init__(self, unfixable: UnfixableRegistry | None = None) -> None:
+        self.unfixable = unfixable
 
     def propose(self, state: SearchState, k: int) -> list[Candidate]:
         out: list[Candidate] = []
-        for site in state.sites:
+        sites = self.unfixable.filter(state.sites) if self.unfixable is not None else state.sites
+        for site in sites:
             for op, targets, params, why in self._sweep(site):
                 if op in REGISTRY:
                     out.append(Candidate(op, targets, params, "det", f"{why} (site {site.id}, {site.kind})"))
@@ -299,6 +378,161 @@ class _Outcome:
     errors: list[str] = field(default_factory=list)
     ws: Workspace | None = None
     verdict: Any = None
+    #: the cheap-tier score of `verdict` (computed where the verdict is, so a raising `score` stays in the branch)
+    score: Score | None = None
+    diffs: list[Diff] = field(default_factory=list)
+
+
+def _validate(c: Candidate, ws: Workspace) -> list[str]:
+    if c.op != RUN_STAGE:
+        return validate_call(c.op, c.targets, c.params, ws)
+    errors: list[str] = []
+    if c.targets:
+        errors.append(f"targets: {RUN_STAGE} takes none (name faces in the stage's own params), got {c.targets}")
+    extra = sorted(set(c.params) - {"stage", "params"})
+    if extra:
+        errors.append(f"params: unknown key(s) {extra}; {RUN_STAGE} takes 'stage' and 'params'")
+    name, inner = c.params.get("stage"), c.params.get("params", {})
+    if name not in DEFAULTS:
+        errors.append(f"unknown stage {name!r}; known stages: {[s.name for s in STAGES]}")
+    elif not isinstance(inner, dict):
+        errors.append("params.params: expected an object")
+    else:
+        unknown = sorted(set(inner) - set(DEFAULTS[name]) - {"timeout_s"})
+        if unknown:
+            errors.append(f"params.params: unknown key(s) {unknown} for stage {name!r}; it takes {sorted(DEFAULTS[name])}")
+    return errors
+
+
+def _stage_outcome(pool: Any, ws: Workspace, c: Candidate, gi: int, timeout_s: float) -> _Outcome:
+    """Run one stage as a transaction (`stages.run_stage`). Only a stage that was KEPT and changed the workspace
+    is an "ok" outcome; every other ending is told to the proposer, in the stage's own words."""
+    name = c.params["stage"]
+    base = ws.fork()
+    result = run_stage(pool, base, name, {"timeout_s": timeout_s, **c.params.get("params", {})})
+    if name in result.inconclusive:
+        return _Outcome(c, gi, "failed", [f"inconclusive: stage {name!r} could not be judged (checker unavailable)"])
+    if name in result.rolled_back:
+        return _Outcome(c, gi, "declined", [f"stage {name!r} was rolled back: it lowered the cheap score"])
+    if name in result.skipped:
+        return _Outcome(c, gi, "declined", [f"stage {name!r} changed nothing: {result.skipped[name]}"])
+    diffs = result.ws.history[len(base.history) :]
+    if result.ws is base or not diffs:
+        return _Outcome(c, gi, "declined", [f"stage {name!r} changed nothing"])
+    return _Outcome(c, gi, "ok", ws=result.ws, diffs=list(diffs))
+
+
+def _one_diff(c: Candidate, diffs: list[Diff]) -> Diff | None:
+    """The proposer's feedback takes ONE Diff; a stage is several ops, folded into one."""
+    if not diffs:
+        return None
+    if c.op != RUN_STAGE:
+        return diffs[0]
+    folded = Diff(
+        op=RUN_STAGE,
+        params={"stage": c.params.get("stage"), "ops": [d.op for d in diffs]},
+        modified={}, generated={}, removed=[], declared_added=[], declared_removed=[],
+        seconds=sum(d.seconds for d in diffs),
+    )
+    for d in diffs:
+        for k, v in d.modified.items():
+            folded.modified.setdefault(k, []).extend(v)
+        for k, v in d.generated.items():
+            folded.generated.setdefault(k, []).extend(v)
+        folded.removed.extend(d.removed)
+        folded.declared_added.extend(d.declared_added)
+        folded.declared_removed.extend(d.declared_removed)
+    return folded
+
+
+def _delta(before: Score, after: Score) -> dict:
+    """metric -> [before, after] for the proposer. `Score` stores -max_dev and -churn; they are shown as the
+    positive quantities."""
+    return {
+        "valid": [before[0], after[0]],
+        "panel_passes": [before[1], after[1]],
+        "min_sicn": [before[2], after[2]],
+        "max_dev_mm": [-before[3], -after[3]],
+        "churn": [-before[4], -after[4]],
+    }
+
+
+_STATUS: dict[str, Literal["applied", "declined", "failed", "invalid"]] = {
+    "ok": "applied", "validate": "invalid", "declined": "declined", "failed": "failed", "error": "failed",
+}
+
+
+def _feedback_for(out: _Outcome, parent: SearchState, child: SearchState | None, duplicate: bool) -> Outcome:
+    c = out.candidate
+    proposed = ProposedCandidate(c.op, list(c.targets), dict(c.params), c.source, c.rationale)
+    if out.kind != "ok":
+        return Outcome(proposed, _STATUS[out.kind], message="; ".join(out.errors))
+    assert out.score is not None
+    before = parent.cheap_score if parent.cheap_score is not None else parent.score
+    delta, how = _delta(before, out.score), "cheap tier (one mesher) against the parent's cheap score"
+    if child is not None and child.tier == "full" and parent.tier == "full":
+        delta, how = _delta(parent.score, child.score), "full panel against the parent's full score"
+    if duplicate:
+        message = f"duplicate: this geometry was already reached; {how}"
+    elif child is None:
+        message = f"scored on the {how}"
+    else:
+        message = f"became state {child.id}, scored on the {how}"
+    return Outcome(proposed, "applied", _one_diff(c, out.diffs), delta, message)
+
+
+def _shared_unfixable(generators: Sequence[Any]) -> UnfixableRegistry | None:
+    """The one `UnfixableRegistry` of the search, or ValueError when the generators do not share it: a
+    deterministic sweep with its own registry would keep proposing against a site the model already gave up on."""
+    mine = {id(g.unfixable): g.unfixable for g in generators if getattr(g, "unfixable", None) is not None}
+    if len(mine) > 1:
+        raise ValueError("generators hold different UnfixableRegistry objects; construct ONE and pass it to all")
+    registry = next(iter(mine.values()), None)
+    if registry is not None:
+        for g in generators:
+            if isinstance(g, DetGenerator) and g.unfixable is not registry:
+                raise ValueError(
+                    "a DetGenerator must share the AI proposer's UnfixableRegistry: build both with "
+                    "ai_generators(), or pass the same registry to each"
+                )
+    return registry
+
+
+def _model_usage(g: Any) -> tuple[int, float] | None:
+    """(calls, usd) of a model-backed generator, or None for a deterministic one. The AI proposer reports turns
+    and ledger spend rather than a `model_usage()` method."""
+    fn = getattr(g, "model_usage", None)
+    if fn is not None:
+        usage: tuple[int, float] = fn()
+        return usage
+    if isinstance(g, AIProposer):
+        return g.turns_used, float(g.result()["spent_usd"])
+    return None
+
+
+def ai_generators(
+    route: str,
+    *,
+    ledger: Any,
+    max_turns: int,
+    usd_ceiling: float,
+    file_id: str,
+    job_id: str,
+    user_id: str = "",
+    call: Any = None,
+    prices: tuple[float, float, float] | None = None,
+    **kwargs: Any,
+) -> tuple[list[Any], AIProposer]:
+    """The generators of an `search_ai` run: the deterministic sweeps and the AI proposer, built around ONE
+    `UnfixableRegistry`, with the proposer told every stage name (so it may propose `run_stage`). `ledger` must be
+    a `WaveLedger.for_shard` one (the proposer refuses any other). Returns (generators, proposer)."""
+    shared = UnfixableRegistry()
+    proposer = AIProposer(
+        route, max_turns=max_turns, usd_ceiling=usd_ceiling, ledger=ledger, call=call, file_id=file_id,
+        job_id=job_id, user_id=user_id, stage_names=[s.name for s in STAGES], unfixable=shared, prices=prices,
+        **kwargs,
+    )
+    return [DetGenerator(unfixable=shared), proposer], proposer
 
 
 def search(
@@ -320,6 +554,8 @@ def search(
         if h_mm is None:
             raise ValueError("search needs either a judge or h_mm for the real one; there is no default")
         judge = default_judge(h_mm=h_mm)
+    unfixable = _shared_unfixable(generators)
+    any_gens: list[Any] = list(generators)  # generators may also carry feedback()/result(), outside the protocol
     trace = Trace(clock)
     t0 = clock()
     state_ids = itertools.count()
@@ -329,10 +565,9 @@ def search(
     def usage() -> tuple[int, float]:
         calls, usd = 0, 0.0
         for g in generators:
-            fn = getattr(g, "model_usage", None)
-            if fn is not None:
-                c, u = fn()
-                calls, usd = calls + c, usd + u
+            u = _model_usage(g)
+            if u is not None:
+                calls, usd = calls + u[0], usd + u[1]
         return calls, usd
 
     def spent_now() -> dict:
@@ -348,26 +583,49 @@ def search(
         return None
 
     def new_state(
-        ws: Workspace, verdict: Any, tier: str, depth: int, parent: str | None, via: dict | None
+        ws: Workspace,
+        verdict: Any,
+        sc: Score,
+        tier: str,
+        depth: int,
+        parent: str | None,
+        via: dict | None,
+        registry: SiteRegistry | None = None,
     ) -> SearchState:
         return SearchState(
             id=f"S{next(state_ids)}",
             ws=ws,
             verdict=verdict,
-            score=judge.score(verdict),
+            score=sc,
             sites=[],
             depth=depth,
             parent=parent,
             via=via,
             tier=tier,
+            site_registry=registry,
         )
 
-    model_gens = {gi for gi, g in enumerate(generators) if hasattr(g, "model_usage")}
+    def judge_cheap(ws: Workspace) -> tuple[Any, Score]:
+        """The cheap verdict and its score. An inconclusive verdict (the pool failed, not the part) is retried;
+        what stays inconclusive raises `InconclusiveVerdict` to the caller, which owns the branch."""
+        last: InconclusiveVerdict | None = None
+        for _ in range(JUDGE_ATTEMPTS):
+            v = judge.cheap(pool, ws, original)
+            try:
+                return v, judge.score(v)
+            except InconclusiveVerdict as exc:
+                last = exc
+        assert last is not None
+        raise last
+
+    model_gens = {gi for gi, g in enumerate(generators) if _model_usage(g) is not None}
     active = list(range(len(generators)))
     ai_capped = False
+    ai_stopped: dict[int, str] = {}
+    viewed: set[str] = set()
 
     start_verdict = judge.full(pool, start, original)
-    s0 = new_state(start, start_verdict, "full", 0, None, None)
+    s0 = new_state(start, start_verdict, judge.score(start_verdict), "full", 0, None, None, SiteRegistry())
     try:
         s0.cheap_score = judge.score(judge.cheap(pool, start, original))
     except Exception as exc:  # children of an uncalibrated start are ranked by their cheap score
@@ -415,6 +673,19 @@ def search(
             except Exception as exc:  # expand blind rather than lose the search
                 state.sites = []
                 trace.record("judge_error", where="sites", state=state.id, error=f"{type(exc).__name__}: {exc}")
+            else:
+                state.site_registry = _carry_site_ids(state, trace)
+            state.budget = {"spent": spent_now(), "limits": budget.__dict__}
+            declared_unfixable = [s.id for s in state.sites if unfixable is not None and s.id in unfixable]
+            if model_gens.intersection(active):
+                for s in state.sites:
+                    if s.kind in IMAGE_KINDS and s.id not in viewed and s.id not in declared_unfixable:
+                        viewed.add(s.id)  # the proposer shows a site's picture once, so the driver draws it once
+                        try:
+                            render.view(pool, state.ws, s)
+                        except Exception as exc:  # a picture is optional evidence
+                            trace.record("judge_error", where="render", state=state.id,
+                                         error=f"{type(exc).__name__}: {exc}")
             trace.record(
                 "expand",
                 state=state.id,
@@ -428,6 +699,7 @@ def search(
                     {"id": s.id, "kind": s.kind, "entities": s.entities, "meshers_failing": s.meshers_failing}
                     for s in state.sites
                 ],
+                unfixable=declared_unfixable,
             )
 
             # gather and validate
@@ -443,17 +715,27 @@ def search(
                         state=state.id,
                         error=f"{type(exc).__name__}: {exc}",
                     )
+            for gi in model_gens:
+                why = getattr(generators[gi], "stop_reason", None)
+                if why is not None and gi not in ai_stopped:
+                    ai_stopped[gi] = str(why)
+                    trace.record("ai_stopped", generator=gi, reason=str(why),
+                                 ai_capped=bool(getattr(generators[gi], "ai_capped", False)))
             rejections: dict[int, list[Rejection]] = {}
+            #: every candidate's fate, in proposal order: (generator, outcome, the state it became or None, duplicate)
+            fates: list[tuple[int, _Outcome, SearchState | None, bool]] = []
             valid: list[tuple[int, Candidate]] = []
             for gi, c in proposals:
-                errors = validate_call(c.op, c.targets, c.params, state.ws)
+                errors = _validate(c, state.ws)
                 if errors:
                     _reject(trace, rejections, state, gi, c, "validate", errors)
+                    fates.append((gi, _Outcome(c, gi, "validate", errors), None, False))
                 else:
                     valid.append((gi, c))
             room = max(0, budget.ops - spent["ops"])
-            for _gi, c in valid[room:]:
+            for gi, c in valid[room:]:
                 _record_candidate(trace, state, c, "skipped_budget")
+                fates.append((gi, _Outcome(c, gi, "declined", ["not run: the op budget was exhausted"]), None, False))
             to_run = valid[:room]
             spent["ops"] += len(to_run)
 
@@ -465,14 +747,25 @@ def search(
             ) -> _Outcome:
                 gi, c = item
                 try:
-                    new, _diff = REGISTRY[c.op].apply(
-                        pool, state.ws.fork(), list(c.targets), dict(c.params), timeout_s=timeout_s
-                    )
-                    return _Outcome(c, gi, "ok", ws=new, verdict=judge.cheap(pool, new, original))
+                    if c.op == RUN_STAGE:
+                        out = _stage_outcome(pool, state.ws, c, gi, timeout_s)
+                        if out.kind != "ok":
+                            return out
+                        new, diffs = out.ws, out.diffs
+                    else:
+                        new, diff = REGISTRY[c.op].apply(
+                            pool, state.ws.fork(), list(c.targets), dict(c.params), timeout_s=timeout_s
+                        )
+                        diffs = [diff]
+                    assert new is not None
+                    v, sc = judge_cheap(new)
+                    return _Outcome(c, gi, "ok", ws=new, verdict=v, score=sc, diffs=diffs)
                 except OpDeclined as exc:
                     return _Outcome(c, gi, "declined", [exc.reason])
                 except OpFailed as exc:
                     return _Outcome(c, gi, "failed", [f"{exc.status}: {exc.message}"])
+                except InconclusiveVerdict as exc:
+                    return _Outcome(c, gi, "failed", [f"inconclusive: the checker could not judge this state ({exc})"])
                 except (UnknownTarget, ValueError) as exc:
                     return _Outcome(c, gi, "validate", [str(exc)])
                 except Exception as exc:  # one broken branch must not end the search
@@ -482,14 +775,19 @@ def search(
             for out in [f.result() for f in [executor.submit(evaluate, i) for i in to_run]]:
                 if out.kind != "ok":
                     _reject(trace, rejections, state, out.gen, out.candidate, out.kind, out.errors)
+                    fates.append((out.gen, out, None, False))
                     continue
-                assert out.ws is not None
+                assert out.ws is not None and out.score is not None
                 fp = _fingerprint(out.ws)
                 if fp in seen:
-                    _record_candidate(trace, state, out.candidate, "duplicate", score=judge.score(out.verdict))
+                    _record_candidate(trace, state, out.candidate, "duplicate", score=out.score)
+                    fates.append((out.gen, out, None, True))
                     continue
                 seen.add(fp)
-                child = new_state(out.ws, out.verdict, "cheap", state.depth + 1, state.id, _via(out.candidate))
+                child = new_state(
+                    out.ws, out.verdict, out.score, "cheap", state.depth + 1, state.id, _via(out.candidate),
+                    state.site_registry,
+                )
                 child.cheap_score = child.score
                 child.rank = _estimate(state, child.score)
                 _record_candidate(
@@ -503,6 +801,7 @@ def search(
                     rank=child.rank,
                 )
                 children.append(child)
+                fates.append((out.gen, out, child, False))
                 heapq.heappush(heap, (_neg(_rank(child)), next(tie), _rank(child), child))
 
             for gi, items in rejections.items():
@@ -544,6 +843,24 @@ def search(
                 if child.score > best.score:
                     trace.record("best", state=child.id, score=child.score, previous=best.id, previous_score=best.score)
                     best, improved = child, True
+
+            # tell each generator that listens what became of ITS candidates (after confirmation, so a confirmed
+            # child's delta is the full-panel one)
+            told_outcomes: dict[int, list[Outcome]] = {}
+            for gi, out, became, duplicate in fates:
+                if hasattr(generators[gi], "feedback"):
+                    told_outcomes.setdefault(gi, []).append(_feedback_for(out, state, became, duplicate))
+            for gi, outcomes in told_outcomes.items():
+                try:
+                    any_gens[gi].feedback(outcomes)
+                except Exception as exc:
+                    trace.record(
+                        "generator_error",
+                        generator=gi,
+                        where="feedback",
+                        state=state.id,
+                        error=f"{type(exc).__name__}: {exc}",
+                    )
             if best.verdict.clean:
                 reason = "clean"
                 break
@@ -551,6 +868,9 @@ def search(
             if flat >= patience:
                 reason = "patience"
 
+    ai_capped = ai_capped or any(bool(getattr(generators[gi], "ai_capped", False)) for gi in model_gens)
+    ai_stop_reason = next(iter(ai_stopped.values()), "model_budget" if ai_capped else None)
+    ai_results = [g.result() for g in any_gens if isinstance(g, AIProposer)]
     trace.record(
         "stop",
         reason=reason,
@@ -561,6 +881,8 @@ def search(
         spent=spent_now(),
         budget=budget.__dict__,
         ai_capped=ai_capped,
+        ai_stop_reason=ai_stop_reason,
+        ai=ai_results,
     )
     return SearchResult(
         best=best.ws,
@@ -569,7 +891,33 @@ def search(
         trace=trace,
         changed=best.id != s0.id,
         ai_capped=ai_capped,
+        ai_stop_reason=ai_stop_reason,
+        ai=ai_results,
     )
+
+
+def _carry_site_ids(state: SearchState, trace: Trace) -> SiteRegistry:
+    """Carry the site ids of `state.sites` forward from the lineage this state descends from, and return the
+    registry the state's CHILDREN inherit.
+
+    One `SiteRegistry` follows one linear lineage; the search forks, so the state works on a DEEP COPY of the
+    registry its parent left (`state.site_registry`) and the original is never touched again. Siblings therefore
+    never see each other's history. If the registry still refuses (it should not), the state falls back to a
+    fresh registry over its own history - its ids are then the fresh anchor ids - and the error is recorded."""
+    inherited = state.site_registry if state.site_registry is not None else SiteRegistry()
+    own = copy.deepcopy(inherited)
+    try:
+        own.apply(state.ws, state.sites)
+        return own
+    except Exception as exc:  # LineageMismatch, or a site the registry cannot read: never end the search
+        trace.record("judge_error", where="site_registry", state=state.id, error=f"{type(exc).__name__}: {exc}")
+    fresh = SiteRegistry()
+    try:
+        fresh.apply(state.ws, state.sites)
+    except Exception as exc:
+        trace.record("judge_error", where="site_registry_fresh", state=state.id,
+                     error=f"{type(exc).__name__}: {exc}")
+    return fresh
 
 
 def _via(c: Candidate) -> dict:
@@ -618,8 +966,8 @@ def deliverable(
     """
     if not result.changed or input_verdict.clean:
         return None
-    score = score_fn or _real_score()
-    if panel_passes(score(result.best_verdict)) < panel_passes(score(input_verdict)):
+    score_of = score_fn or score
+    if panel_passes(score_of(result.best_verdict)) < panel_passes(score_of(input_verdict)):
         return None
     return result.best
 
@@ -630,10 +978,12 @@ __all__ = [
     "DetGenerator",
     "Generator",
     "Judge",
+    "RUN_STAGE",
     "Rejection",
     "SearchResult",
     "SCORE_PANEL_PASSES",
     "SearchState",
+    "ai_generators",
     "default_judge",
     "deliverable",
     "panel_passes",

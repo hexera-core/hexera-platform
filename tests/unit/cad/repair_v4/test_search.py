@@ -566,74 +566,7 @@ def test_frontier_ranks_unconfirmed_children_against_confirmed_states_by_calibra
     assert _q(result.best) == 4
 
 
-# --- default_judge against stubbed Task 5 / Task 17 modules --------------------------------------
-
-
-@pytest.fixture
-def stub_modules(monkeypatch: pytest.MonkeyPatch) -> dict:
-    """Stubs whose signatures are the ones Tasks 5 and 17 are specified to have; a mismatch in
-    default_judge's calls fails here instead of at integration."""
-    import sys
-    import types
-
-    seen: dict = {}
-
-    @dataclass
-    class Declared:
-        added: list[str]
-        removed: list[str]
-
-    def cheap_verdict(pool: Any, step: str, original: str, *, declared: Declared) -> Any:
-        seen["cheap"] = (pool, step, original, declared)
-        return FakeVerdict(1, False, "cheap")
-
-    def verdict(pool: Any, step: str, original: str, *, declared: Declared) -> Any:
-        seen["full"] = (pool, step, original, declared)
-        return FakeVerdict(3, False, "full")
-
-    def score(v: FakeVerdict) -> tuple:
-        return (1, v.q, 0.0, 0.0, 0)
-
-    def find_sites(pool: Any, ws: Workspace, v: Any, *, h_mm: float) -> list[Site]:
-        seen["sites"] = (pool, ws, v, h_mm)
-        return []
-
-    vmod = types.ModuleType("meshpipeline.cad.repair_v4.verdict")
-    vmod.Declared = Declared  # type: ignore[attr-defined]
-    vmod.cheap_verdict = cheap_verdict  # type: ignore[attr-defined]
-    vmod.verdict = verdict  # type: ignore[attr-defined]
-    vmod.score = score  # type: ignore[attr-defined]
-    smod = types.ModuleType("meshpipeline.cad.repair_v4.sites")
-    smod.find_sites = find_sites  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, "meshpipeline.cad.repair_v4.verdict", vmod)
-    monkeypatch.setitem(sys.modules, "meshpipeline.cad.repair_v4.sites", smod)
-    return seen
-
-
-def test_default_judge_calls_match_the_task_5_and_17_signatures(stub_modules: dict) -> None:
-    from meshpipeline.cad.repair_v4.search import default_judge
-
-    diff = Diff(
-        op="x",
-        params={},
-        modified={},
-        generated={},
-        removed=[],
-        declared_added=["F9"],
-        declared_removed=["F2"],
-        seconds=0.0,
-    )
-    ws = _ws(0, history=[diff, diff])
-    j = default_judge(h_mm=2.5)
-    j.cheap("POOL", ws, "orig.step")
-    pool, step, original, declared = stub_modules["cheap"]
-    assert (pool, step, original) == ("POOL", ws.brep_path, "orig.step")
-    assert declared.added == ["F9", "F9"] and declared.removed == ["F2", "F2"]  # whole lineage
-    j.full("POOL", ws, "orig.step")
-    assert stub_modules["full"][1] == ws.brep_path
-    j.sites("POOL", ws, "V")
-    assert stub_modules["sites"][3] == 2.5
-    assert j.score(FakeVerdict(3, False, "full")) == (1, 3, 0.0, 0.0, 0)
+# --- default_judge: its calls into the REAL Task 5 / 17 / 16 modules are pinned in test_search_wiring.py ------
 
 
 def test_search_requires_h_mm_when_no_judge_is_given() -> None:
@@ -646,14 +579,30 @@ def test_search_requires_h_mm_when_no_judge_is_given() -> None:
         default_judge()
 
 
-def test_deliverable_fallback_uses_the_real_score_and_names_the_panel_field(stub_modules: dict) -> None:
+def test_deliverable_fallback_uses_the_real_score_and_names_the_panel_field() -> None:
     from meshpipeline.cad.repair_v4.search import SCORE_PANEL_PASSES, panel_passes
+    from meshpipeline.cad.repair_v4.verdict.assemble import Verdict
+    from meshpipeline.cad.repair_v4.verdict.faithful import FaithfulReport
+    from meshpipeline.cad.repair_v4.verdict.valid import ValidReport
+
+    @dataclass(frozen=True)
+    class Member:
+        name: str
+        status: str = "pass"
+        min_sicn: float | None = 0.3
+
+    def real(passes: int) -> Verdict:
+        return Verdict(
+            ValidReport(True, [], [], "mm", 1, True),
+            [Member(f"m{i}") for i in range(passes)],
+            FaithfulReport(True, 0.0, 0.1, 1.0, 1.0, 1, 1),
+            False,
+            "full",
+        )
 
     assert SCORE_PANEL_PASSES == 1
-    result = SearchResult(
-        best=_ws(3), best_verdict=FakeVerdict(3, False, "full"), clean=False, trace=Trace(), changed=True
-    )
-    assert deliverable(result, FakeVerdict(5, False, "full")) is None  # stub score, no score_fn
-    assert deliverable(result, FakeVerdict(2, False, "full")) is result.best
+    result = SearchResult(best=_ws(3), best_verdict=real(3), clean=False, trace=Trace(), changed=True)
+    assert deliverable(result, real(5)) is None  # the real score, no score_fn
+    assert deliverable(result, real(2)) is result.best
     with pytest.raises(AssertionError, match="changed shape"):
         panel_passes((1, 2, 3.0))
