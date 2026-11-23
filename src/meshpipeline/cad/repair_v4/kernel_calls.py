@@ -50,7 +50,8 @@ if os.environ.get("HEXERA_TEST_KERNEL_FNS") == "1":
 # imports are safe on a host without it. At the foot so that `register` and `REGISTRY` exist
 # before the modules that use them are imported.
 # The op library: each op module registers its kernel function(s) here and its `Op` in
-# `ops.REGISTRY`. One import covers every op module (see ops/__init__.py, which auto-discovers).
+# `ops.REGISTRY`. One import covers every op module (see ops/__init__.py, which auto-discovers),
+# so a per-op-module import here would be redundant.
 from meshpipeline.cad.repair_v4 import (
     body_kernel,  # noqa: E402,F401
     ops,  # noqa: E402,F401
