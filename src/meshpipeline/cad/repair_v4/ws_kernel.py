@@ -83,6 +83,44 @@ def entities_of(shape: Any, quantum: float) -> list[dict]:
     return out
 
 
+def shape_signature(shape: Any) -> list:
+    """The state an op can change that no entity fingerprint sees, as a short JSON-safe list.
+
+    Entity fingerprints are centroid-and-box of each face, edge and solid, so they are blind to
+    ORIENTATION (a solid and its inside-out twin have identical boxes), to the SHELL/COMPOUND layout
+    above the entities, and to whether a shell is closed. The search dedupes on them, and
+    `orient_and_close` changes exactly those things. Contents, in order:
+
+    * the top shape's TopAbs type;
+    * the counts of compounds, compsolids, solids and shells, and how many shells are closed;
+    * per SHELL (those inside solids and bare ones alike), its SIGNED volume to six significant figures,
+      sorted. Reversing a solid or shell negates it and reversing one face of it changes it by twice that
+      face's contribution, so both are seen; the same geometry reached by two routes agrees to ~1e-12,
+      far inside the rounding.
+    """
+    from OCP.BRep import BRep_Tool
+    from OCP.BRepGProp import BRepGProp
+    from OCP.GProp import GProp_GProps
+    from OCP.TopAbs import TopAbs_COMPOUND, TopAbs_COMPSOLID, TopAbs_SHELL, TopAbs_SOLID
+    from OCP.TopExp import TopExp
+    from OCP.TopTools import TopTools_IndexedMapOfShape
+
+    def indexed(kind: Any) -> Any:
+        m = TopTools_IndexedMapOfShape()
+        TopExp.MapShapes_s(shape, kind, m)
+        return m
+
+    solids, shells = indexed(TopAbs_SOLID), indexed(TopAbs_SHELL)
+    closed = sum(1 for i in range(1, shells.Extent() + 1) if BRep_Tool.IsClosed_s(shells.FindKey(i)))
+    volumes: list[str] = []
+    for i in range(1, shells.Extent() + 1):
+        props = GProp_GProps()
+        BRepGProp.VolumeProperties_s(shells.FindKey(i), props)
+        volumes.append(f"{props.Mass():.6g}")
+    return [int(shape.ShapeType()), indexed(TopAbs_COMPOUND).Extent(), indexed(TopAbs_COMPSOLID).Extent(),
+            solids.Extent(), shells.Extent(), closed, *sorted(volumes)]
+
+
 def _kind_of(sub: Any) -> str | None:
     for kind, value in _topabs().items():
         if sub.ShapeType() == value:
@@ -162,7 +200,7 @@ def history_record(old: Any, new: Any, history: Any, *, op: str, params: dict, o
         "brep_path": new_path, "seconds": seconds,
         "declared_added": list(declared_added or []),
         "declared_removed": list(declared_removed or []),
-        "entities": entities, "history": rows,
+        "entities": entities, "history": rows, "signature": shape_signature(new),
     }
 
 
@@ -173,7 +211,7 @@ def _ws_index(payload: dict) -> dict:
 
     shape = read_brep(payload["brep_path"])
     quantum = float(payload.get("quantum") or quantum_for(diagonal_of(shape)))
-    return {"quantum": quantum, "entities": entities_of(shape, quantum)}
+    return {"quantum": quantum, "entities": entities_of(shape, quantum), "signature": shape_signature(shape)}
 
 
 @register("ws_diagonal")
