@@ -706,3 +706,8 @@ def test_a_shard_that_cannot_read_the_probe_record_refuses(tmp_path, monkeypatch
 def test_run_arm_reads_the_wave_types_from_the_table_not_a_literal():
     src = (V4 / "run_arm.py").read_text()
     assert "WAVE_CAPS_USD" in src and '"held_out")' not in src.split("--wave-type")[1].split("help=")[0]
+
+
+def test_store_unreachable_errors_narrows_instead_of_raising_when_google_libs_are_missing(monkeypatch) -> None:
+    monkeypatch.setitem(sys.modules, "google.api_core.exceptions", None)  # an import of it now raises ImportError
+    assert lf.store_unreachable_errors() == (OSError,)

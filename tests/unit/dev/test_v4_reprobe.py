@@ -193,7 +193,16 @@ pool_mod = run_arm.pool_mod
 
 
 @pytest.fixture(scope="module")
+def clean_source() -> object:
+    """The clean pool entry the injected variants derive from; its licence is what they must carry."""
+    return pool_mod.PoolEntry("clean_part.step", "abc_pass", "c" * 64, "https://x/abc.7z", "d" * 64,
+                              pool_mod.LICENCE["abc"])
+
+
+@pytest.fixture(scope="module")
 def clean_step(tmp_path_factory) -> Path:
+    # Both gating tiers (meshpipeline-validation:local, meshpipeline-mesh:native) are known to carry OCP, so this runs
+    # where merges are gated. Anywhere without OCP this skip would silently hide ALL the quarantine coverage below.
     pytest.importorskip("OCP.BRepCheck", reason="the CAD kernel is a native-tier dependency")
     from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
     from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
@@ -215,7 +224,7 @@ def clean_step(tmp_path_factory) -> Path:
 
 
 @pytest.fixture(scope="module")
-def real_entries(clean_step, tmp_path_factory) -> dict:
+def real_entries(clean_step, clean_source, tmp_path_factory) -> dict:
     """kind -> a real PoolEntry built from real inject() output, for every kind that applies to the fixture."""
     inject = rp.load_inject()
     out_dir = tmp_path_factory.mktemp("injected")
@@ -225,7 +234,7 @@ def real_entries(clean_step, tmp_path_factory) -> dict:
             case = inject.inject(clean_step, kind, 1, out_dir)
         except (inject.InjectionNotApplicable, inject.InjectionInfeasible):
             continue
-        entries[kind] = pool_mod.inject_entry(case, url="gs://bucket/inj.tar", licence="test licence")
+        entries[kind] = pool_mod.inject_entry_from_case(clean_source, case, url="gs://bucket/inj.tar")
     return entries
 
 

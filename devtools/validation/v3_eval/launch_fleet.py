@@ -513,10 +513,18 @@ def preflight_settings(arm: str) -> list[str]:
 
 
 def store_unreachable_errors() -> tuple[type[BaseException], ...]:
-    """The exceptions that mean "the wave bucket could not be reached from this host" and nothing else."""
-    from google.api_core.exceptions import GoogleAPICallError
-    from google.auth.exceptions import DefaultCredentialsError
+    """The exceptions that mean "the wave bucket could not be reached from this host" and nothing else.
 
+    Deliberately NOT included: `google.auth.exceptions.RefreshError` (an expired or revoked ADC). It is not a
+    `DefaultCredentialsError`, so on a dry run it is a refusal, not the UNCHECKED warning; that is the safe
+    direction (the operator re-authenticates before spending). If the google libraries are not importable the
+    tuple narrows to OSError: the ImportError raised by the gate code itself is then a refusal (exit 1), never
+    a traceback out of the `except` clause that calls this."""
+    try:
+        from google.api_core.exceptions import GoogleAPICallError
+        from google.auth.exceptions import DefaultCredentialsError
+    except ImportError:
+        return (OSError,)
     return (OSError, GoogleAPICallError, DefaultCredentialsError)
 
 
