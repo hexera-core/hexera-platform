@@ -71,6 +71,12 @@ def _measure(table: dict):
     return m
 
 
+@pytest.fixture
+def optimiser_first(monkeypatch):
+    """The order planned work picks when the optimiser is the cheaper lever (TIME-11): optimiser, then re-mesh."""
+    monkeypatch.setattr(RS, "remesh_first", lambda cells: False)
+
+
 _BROKEN = {"cells": 979_224, "max_non_ortho": 84.3, "fatal": ["incorrectly oriented faces"],
            "skew_faces": 66}
 
@@ -106,7 +112,9 @@ def test_no_fatal_defect_beats_any_angle_then_the_lowest_angle_wins():
         "noise is no gain"
 
 
-def test_the_optimiser_fixes_a_broken_mesh_and_its_mesh_is_kept(tmp_path):
+def test_the_cheaper_re_mesh_runs_first_and_the_best_candidate_is_optimised(tmp_path):
+    # TIME-11: the re-mesh (one cfMesh run of the cells) is planned cheaper than the optimiser (its loops over them),
+    # so it runs first; the mesh as built, which the re-mesh beats, is not optimised
     ws = _ws(tmp_path)
     calls: list = []
     table = {"optimised(as built)": {"cells": 979_224, "max_non_ortho": 79.1, "fatal": []},
@@ -115,8 +123,10 @@ def test_the_optimiser_fixes_a_broken_mesh_and_its_mesh_is_kept(tmp_path):
     out = _rescue(ws, dict(_BROKEN), table, calls)
     assert out["fatal"] == [] and out["max_non_ortho"] == 77.0
     assert out["rescue"]["kept"] == "re-meshed protecting the layers, then optimised"
-    assert [c["cmd"].split("&& ")[-1].split()[0] for c in calls] == [
-        "improveMeshQuality", "cartesianMesh", "improveMeshQuality"]
+    assert [c["cmd"].split("&& ")[-1].split()[0] for c in calls] == ["cartesianMesh", "improveMeshQuality"]
+    skipped = [t for t in out["rescue"]["tried"] if t.get("skipped")]
+    assert [(t["step"], t["rule"]) for t in skipped] == [("optimised", "TIME-11")]
+    assert out["rescue"]["order"] == ["re-mesh", "optimise"]
     assert (ws / "constant" / "polyMesh" / "owner").read_text() == "optimised(remeshed)"
     # the meshDict beside the mesh is the one that built it
     assert "featureSizeFactor 0.15" in (ws / "system" / "meshDict").read_text()
@@ -126,7 +136,43 @@ def test_the_optimiser_fixes_a_broken_mesh_and_its_mesh_is_kept(tmp_path):
     assert "validity edge" in rec["note"] and "Kept" in rec["note"]
 
 
-def test_a_fixed_mesh_is_not_re_meshed(tmp_path):
+def test_a_re_mesh_off_the_edge_is_not_optimised(tmp_path):
+    # TIME-11: the re-mesh ran first and came out off the edge with its layers: no optimiser runs at all
+    ws = _ws(tmp_path)
+    calls: list = []
+    table = {"remeshed": {"cells": 980_000, "max_non_ortho": 70.2, "fatal": []}}
+    out = _rescue(ws, dict(_BROKEN), table, calls)
+    assert out["rescue"]["kept"] == RS.REMESHED
+    assert [c["cmd"].split("&& ")[-1].split()[0] for c in calls] == ["cartesianMesh"]
+    assert "featureSizeFactor 0.15" in (ws / "system" / "meshDict").read_text(), "the dict that built it"
+
+
+def test_a_candidate_the_best_so_far_beats_is_not_optimised(tmp_path):
+    # abc 99768 (c2e8_p30a): the re-mesh with passage 2 merged in read 171 degrees and negative volumes, and the
+    # optimiser on it ran 2,729 s into its guard beside an optimised mesh of 87 degrees with no fatal defect
+    ws = _ws(tmp_path)
+    calls: list = []
+    as_built = {"cells": 227_444, "max_non_ortho": 93.6, "fatal": ["incorrectly oriented faces"]}
+    table = {"remeshed": {"cells": 227_444, "max_non_ortho": 171.0,
+                          "fatal": ["incorrectly oriented faces", "negative-volume cells"]},
+             "optimised(as built)": {"cells": 227_444, "max_non_ortho": 87.0, "fatal": []},
+             "optimised(remeshed)": {"cells": 227_444, "max_non_ortho": 86.0, "fatal": []}}
+    out = _rescue(ws, as_built, table, calls)
+    assert [c["cmd"].split("&& ")[-1].split()[0] for c in calls] == ["cartesianMesh", "improveMeshQuality"]
+    assert out["rescue"]["kept"] == "optimised" and out["max_non_ortho"] == 87.0
+    skip = out["rescue"]["tried"][-1]
+    assert skip["step"] == RS.REMESHED + ", then optimised" and skip["rule"] == "TIME-11"
+    assert "worse than the best so far (optimised)" in skip["skipped"]
+    assert (ws / "system" / "meshDict").read_text() == _BASE_DICT, "the dict that built the kept mesh"
+    assert not (ws / RS.SCRATCH).exists()
+
+
+def test_the_cheaper_lever_is_chosen_from_planned_work_never_the_clock():
+    assert RS.remesh_first(227_444) and RS.remesh_first(979_224) and RS.remesh_first(3_900_000)
+    assert not RS.remesh_first(None), "with no plan the optimiser goes first, as before"
+
+
+def test_a_fixed_mesh_is_not_re_meshed(tmp_path, optimiser_first):
     ws = _ws(tmp_path)
     calls: list = []
     table = {"optimised(as built)": {"cells": 979_224, "max_non_ortho": 70.2, "fatal": []}}
@@ -149,7 +195,7 @@ def test_when_nothing_measures_better_the_mesh_as_built_is_kept(tmp_path):
     assert "none measured better" in out["rescue"]["note"]
 
 
-def test_a_missing_optimiser_binary_costs_nothing(tmp_path):
+def test_a_missing_optimiser_binary_costs_nothing(tmp_path, optimiser_first):
     ws = _ws(tmp_path)
     calls: list = []
     table = {"remeshed": {"cells": 980_000, "max_non_ortho": 71.0, "fatal": []}}
@@ -172,14 +218,13 @@ def test_the_same_mesh_gets_the_same_rescue_whatever_the_time_left(tmp_path, lef
     ws = _ws(tmp_path)
     calls: list = []
     out = _rescue(ws, dict(_BROKEN), dict(_NOT_FIXED), calls, left=left, mesher=mesher)
-    assert [c["cmd"].split("&& ")[-1].split()[0] for c in calls] == [
-        "improveMeshQuality", "cartesianMesh", "improveMeshQuality"]
+    assert [c["cmd"].split("&& ")[-1].split()[0] for c in calls] == ["cartesianMesh", "improveMeshQuality"]
     assert out["rescue"]["kept"] == "re-meshed protecting the layers, then optimised"
     assert out["max_non_ortho"] == 77.0 and "guard_tripped" not in out["rescue"]
     assert all(c["timeout"] <= left for c in calls), "the time left is each step's guard"
 
 
-def test_a_step_its_guard_stops_is_a_guard_trip_and_the_rescue_stops(tmp_path):
+def test_a_step_its_guard_stops_is_a_guard_trip_and_the_rescue_stops(tmp_path, optimiser_first):
     from meshpipeline.engines import determinism as det
     ws = _ws(tmp_path)
     calls: list = []
@@ -209,7 +254,7 @@ def test_the_optimiser_loops_are_planned_from_the_cells():
     assert f"-nLoops {RS.optimise_loops(4_000_000)} " in RS.optimise_args(4_000_000)
 
 
-def test_each_step_runs_under_its_own_planned_guard(tmp_path):
+def test_each_step_runs_under_its_own_planned_guard(tmp_path, optimiser_first):
     # the run's whole guard is no step's clock: on the full benchmark the optimiser ran 2.5 hours
     # into a 4-hour guard on a tangled 3.5 M cell mesh. Each step's subprocess timeout is its own
     # guard - 3 x its planned work at the slow rate - within what is left of the run's
@@ -226,7 +271,7 @@ def test_each_step_runs_under_its_own_planned_guard(tmp_path):
     assert short.guard_seconds <= 120
 
 
-def test_a_trip_with_a_valid_mesh_in_hand_keeps_it(tmp_path):
+def test_a_trip_with_a_valid_mesh_in_hand_keeps_it(tmp_path, optimiser_first):
     # TIME-8: the mesh as built is valid (no fatal defect, only past 75 degrees). Its optimiser
     # running past its guard no longer throws it away for a replay and "ran out of time": the run
     # goes on to its checks with it, with a note, and the trip does not end the attempt
@@ -247,7 +292,7 @@ def test_a_trip_with_a_valid_mesh_in_hand_keeps_it(tmp_path):
     assert "is kept" in out["rescue"]["note"] and "run again" not in out["rescue"]["note"]
 
 
-def test_a_trip_in_the_re_mesh_keeps_the_optimised_mesh(tmp_path):
+def test_a_trip_in_the_re_mesh_keeps_the_optimised_mesh(tmp_path, optimiser_first):
     # the optimiser cleared the fatal defect but left the mesh past 75 degrees, so the re-mesh ran,
     # and its guard stopped it: the optimised mesh, measured valid before it, is the one kept
     from meshpipeline.contracts.work_limits import TIME_KEEP_VALID
@@ -312,7 +357,7 @@ def test_the_optimiser_is_not_untangling_only_on_its_own_count():
     assert not RS.untangle_stalled("")
 
 
-def test_an_optimiser_that_is_not_untangling_is_stopped_and_the_rescue_goes_on(tmp_path):
+def test_an_optimiser_that_is_not_untangling_is_stopped_and_the_rescue_goes_on(tmp_path, optimiser_first):
     # stopped on its own count (TIME-7): not a guard trip, nothing it left is kept, and the
     # protective re-mesh still runs - the same steps on any machine
     from meshpipeline.engines import determinism as det
@@ -423,7 +468,7 @@ def test_the_native_run_rescues_only_a_near_edge_3d_mesh(tmp_path, monkeypatch, 
                       timeout=1, is_2d=False) == {"max_non_ortho": 50.0}
 
 
-def test_a_candidate_that_loses_the_planned_layers_ranks_under_one_that_keeps_them(tmp_path):
+def test_a_candidate_that_loses_the_planned_layers_ranks_under_one_that_keeps_them(tmp_path, optimiser_first):
     """CFDREQ-14: cfMesh's optimiser smoothed the rectangular duct reduction's 0.020 mm first layer into a 1.72 mm
     first cell (non-orthogonality 85.2 -> 52.6): a valid mesh with the layers asked is kept over it."""
     ws = _ws(tmp_path)

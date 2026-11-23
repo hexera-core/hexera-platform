@@ -23,6 +23,11 @@ its cell limit allows; the clock never skips one, docs/RULES.md TIME-1 and TIME-
      trailing edge no longer meet), then step 1 on that mesh if it is still near the edge. Same
      cell sizes, same layer count; only how the layers are fitted changes.
 
+THE CHEAPER LEVER GOES FIRST (TIME-11), from the planned work of each (remesh_first): the re-mesh is one
+cfMesh run of the cells, the optimiser its planned loops over them, so on any mesh today the re-mesh runs
+first and the optimiser only when the best so far is still near the edge. The optimiser then takes the
+candidates best first, and never one the best so far already beats.
+
 Every candidate is measured with checkMesh and the BEST MEASURED mesh is kept: one with no fatal
 defect beats any with one, then the lowest worst non-orthogonality wins. The mesh as built is a
 candidate too, so a lever can only ever improve what is delivered. What was tried and what was
@@ -137,6 +142,8 @@ _POLYMESH = Path("constant") / "polyMesh"
 REMESHED = "re-meshed protecting the layers"
 #: INS-30: a rescued mesh keeps every opening the mesh as built held, and a re-mesh carries the further passages
 RESCUE_PORTS_RULE = "INS-30"
+#: TIME-11: the cheaper lever first (planned work), and no optimiser on a candidate the best so far already beats
+RESCUE_ORDER_RULE = "TIME-11"
 
 
 def faced_patches(polymesh: Path) -> set[str] | None:
@@ -197,6 +204,16 @@ def remesh_work(cells: float | None, *, ceiling_s: float) -> PlannedWork:
                      ceiling_s=max(floor, float(ceiling_s)))
     return PlannedWork(where="cfmesh.rescue.remesh", unit=work.unit, amount=work.amount,
                        rate=work.rate, floor_s=work.floor_s, ceiling_s=work.ceiling_s)
+
+
+def remesh_first(cells: float | None) -> bool:
+    """Whether the protective re-mesh runs before the optimiser (TIME-11): the lever with less PLANNED work at its
+    slow rate goes first - one cfMesh run of the cells (contracts/work_limits FILL_RATES) against the optimiser's
+    planned loops over them (OPTIMISE_RATE). The same cells give the same order on any machine; the clock never
+    decides it. abc 99768 (227,444 cells): the optimiser ran 2,063 s, the protective re-mesh 33 s."""
+    r = remesh_work(cells, ceiling_s=1e9).planned_seconds
+    o = optimise_work(cells, ceiling_s=1e9).planned_seconds
+    return r is not None and o is not None and r < o
 
 
 def near_edge(q: dict | None, limit: float | None = None) -> str:
@@ -422,7 +439,7 @@ def rescue(workspace, q: dict, *, bashrc: str, deadline: float, mesher_seconds: 
                    "layers_lost": now is None or now < base_layers - LAYER_LOSS_PTS}
         return got
 
-    def _consider(name: str, cand_q: dict | None, step: dict) -> None:
+    def _consider(name: str, cand_q: dict | None, step: dict, built_by: str) -> None:
         nonlocal best_q, best_dir, best_name, kept_dict
         step.update(_brief(cand_q) if cand_q else {"measured": False})
         lost = _lost() if cand_q else []
@@ -435,11 +452,11 @@ def rescue(workspace, q: dict, *, bashrc: str, deadline: float, mesher_seconds: 
             (ws / _POLYMESH).rename(new_dir)
             shutil.rmtree(best_dir, ignore_errors=True)
             best_q, best_dir, best_name = cand_q, new_dir, name
-            kept_dict = meshdict.read_text() if meshdict.exists() else kept_dict
+            kept_dict = built_by
         else:
             shutil.rmtree(ws / _POLYMESH, ignore_errors=True)
 
-    def _optimise(src_dir: Path, name: str) -> None:
+    def _optimise(src_dir: Path, name: str, built_by: str) -> None:
         if record.get("guard_tripped"):
             return
         # PLANNED WORK (TIME-7): loops planned from the cells, run to the end; the guard only
@@ -482,76 +499,114 @@ def rescue(workspace, q: dict, *, bashrc: str, deadline: float, mesher_seconds: 
             record["tried"].append(step)
             shutil.rmtree(ws / _POLYMESH, ignore_errors=True)
             return
-        _consider(name, _measure(name), step)
+        _consider(name, _measure(name), step, built_by)
+
+    def _remesh(protective: str) -> tuple[Path, dict] | None:
+        """THE PROTECTIVE RE-MESH: cartesianMesh again on the protective dict (INS-30: a case of several passages has
+        them meshed and merged in again). A re-mesh off the edge is considered at once; one still near it is kept
+        aside and returned, a candidate for the optimiser. The dict as asked is back in place after it."""
+        nonlocal best_q, best_dir, best_name, kept_dict
+        meshdict.write_text(protective)
+        try:
+            t = time.monotonic()
+            work = remesh_work(cells, ceiling_s=_left())
+            budget = _guard(work)
+            rc = _run(run, ws, bashrc, env, "cartesianMesh", "cartesianMesh_rescue.log", budget)
+            step = {"step": REMESHED, "rc": rc, "seconds": round(time.monotonic() - t, 1)}
+            if rc == 0 and (ws / _POLYMESH / "owner").exists() and (ws / PASSAGES_FILE).exists():
+                # INS-30: the re-mesh is of the first passage; the others are meshed and merged into it again
+                from meshpipeline.engines.cfmesh.native import mesh_passages
+                merge: Callable[..., tuple[int, bool, str]] = passages if passages is not None else mesh_passages
+                t_p = time.monotonic()
+                p_rc, _, p_why = merge(ws, bashrc=bashrc, timeout=_left())
+                step["passages_s"] = round(time.monotonic() - t_p, 1)
+                if p_rc != 0:
+                    rc, step["rc"] = p_rc if p_rc != -1 else 1, p_rc
+                    step.update(passages=p_why or "the further passages did not mesh",
+                                openings_rule=RESCUE_PORTS_RULE)
+            if rc == -1:
+                shutil.rmtree(ws / _POLYMESH, ignore_errors=True)
+                _trip(REMESHED, budget, work)
+                return None
+            if rc != 0 or not (ws / _POLYMESH / "owner").exists():
+                if "passages" not in step:
+                    step["error"] = _tail(ws / "cartesianMesh_rescue.log")
+                record["tried"].append(step)
+                shutil.rmtree(ws / _POLYMESH, ignore_errors=True)
+                return None
+            remesh_q = _measure("re-meshed")
+            lost = _lost() if remesh_q else []
+            if lost:
+                # INS-30: a re-mesh that lost an opening is no candidate, however square its cells
+                record["tried"].append({**step, **_brief(remesh_q), "lost_openings": lost,
+                                        "openings_rule": RESCUE_PORTS_RULE})
+                shutil.rmtree(ws / _POLYMESH, ignore_errors=True)
+                return None
+            if remesh_q and near_edge(remesh_q, limit):
+                # kept aside: the optimiser may take it next, and every candidate competes
+                remesh_dir = scratch / "remeshed_raw"
+                shutil.rmtree(remesh_dir, ignore_errors=True)
+                (ws / _POLYMESH).rename(remesh_dir)
+                record["tried"].append({**step, **_brief(remesh_q)})
+                if better(remesh_q, best_q):
+                    if best_dir != scratch / "as_built":     # the mesh as built stays for the optimiser's record
+                        shutil.rmtree(best_dir, ignore_errors=True)
+                    best_q, best_dir, best_name = remesh_q, remesh_dir, REMESHED
+                    kept_dict = protective
+                return remesh_dir, remesh_q
+            _consider(REMESHED, remesh_q, step, protective)
+            return None
+        finally:
+            meshdict.write_text(asked_dict)
+
+    def _wants_more() -> bool:
+        """Whether the best so far still wants a lever: near the edge, or it bought its angle with the wall's planned
+        layers (CFDREQ-14) - the re-mesh that protects them may have both."""
+        return bool((near_edge(best_q, limit) or best_q.get("layers_lost")) and not record.get("guard_tripped"))
 
     moved = False
     try:
         # the mesh as built is the first candidate, kept aside while the others are made
-        (ws / _POLYMESH).rename(best_dir)
+        as_built_dir = best_dir
+        (ws / _POLYMESH).rename(as_built_dir)
         moved = True
-        # 1. the engine's optimiser on the mesh as built
-        _optimise(best_dir, "optimised")
-        # 2. a protective re-mesh, when the best is still near the edge (its cell limit decides,
-        #    never the time left)
         protective = protective_meshdict(asked_dict) if asked_dict else None
-        # ... or when the best so far bought its angle with the wall's planned layers (CFDREQ-14): the re-mesh
-        # that protects them may have both
-        if ((near_edge(best_q, limit) or best_q.get("layers_lost")) and protective is not None
-                and not record.get("guard_tripped")):
-            if cells > REMESH_MAX_CELLS:
+        can_remesh = protective is not None and cells <= REMESH_MAX_CELLS
+        # TIME-11: the cheaper lever runs first, decided from the planned work of each (one cfMesh run of the cells,
+        # or the optimiser's planned loops over them), never the clock
+        first = can_remesh and remesh_first(cells)
+        record["order"] = ["re-mesh", "optimise"] if first else ["optimise", "re-mesh"]
+        if not first:
+            # 1. the engine's optimiser on the mesh as built
+            _optimise(as_built_dir, "optimised", asked_dict)
+        raw: tuple[Path, dict] | None = None
+        # 2. a protective re-mesh, when the best is still near the edge (its cell limit decides, never the time left)
+        if protective is not None and _wants_more():
+            if not can_remesh:
                 record["tried"].append({"step": REMESHED, "skipped": (
                     f"{int(cells):,} cells is over the {REMESH_MAX_CELLS:,} a second run may "
                     "hold beside the first")})
             else:
-                meshdict.write_text(protective)
-                t = time.monotonic()
-                work = remesh_work(cells, ceiling_s=_left())
-                budget = _guard(work)
-                rc = _run(run, ws, bashrc, env, "cartesianMesh", "cartesianMesh_rescue.log",
-                          budget)
-                step = {"step": "re-meshed protecting the layers", "rc": rc,
-                        "seconds": round(time.monotonic() - t, 1)}
-                if rc == 0 and (ws / _POLYMESH / "owner").exists() and (ws / PASSAGES_FILE).exists():
-                    # INS-30: the re-mesh is of the first passage; the others are meshed and merged into it again
-                    from meshpipeline.engines.cfmesh.native import mesh_passages
-                    merge: Callable[..., tuple[int, bool, str]] = passages if passages is not None else mesh_passages
-                    t_p = time.monotonic()
-                    p_rc, _, p_why = merge(ws, bashrc=bashrc, timeout=_left())
-                    step["passages_s"] = round(time.monotonic() - t_p, 1)
-                    if p_rc != 0:
-                        rc, step["rc"] = p_rc if p_rc != -1 else 1, p_rc
-                        step.update(passages=p_why or "the further passages did not mesh",
-                                    openings_rule=RESCUE_PORTS_RULE)
-                if rc == -1:
-                    shutil.rmtree(ws / _POLYMESH, ignore_errors=True)
-                    _trip(REMESHED, budget, work)
-                elif rc == 0 and (ws / _POLYMESH / "owner").exists():
-                    remesh_q = _measure("re-meshed")
-                    remesh_dir = scratch / "remeshed_raw"
-                    lost = _lost() if remesh_q else []
-                    if lost:
-                        # INS-30: a re-mesh that lost an opening is no candidate, however square its cells
-                        record["tried"].append({**step, **_brief(remesh_q), "lost_openings": lost,
-                                                "openings_rule": RESCUE_PORTS_RULE})
-                        shutil.rmtree(ws / _POLYMESH, ignore_errors=True)
-                    elif remesh_q and near_edge(remesh_q, limit):
-                        # keep the raw re-mesh aside, optimise it too, and let all three compete
-                        (ws / _POLYMESH).rename(remesh_dir)
-                        record["tried"].append({**step, **_brief(remesh_q)})
-                        if better(remesh_q, best_q):
-                            shutil.rmtree(best_dir, ignore_errors=True)
-                            best_q, best_dir, best_name = remesh_q, remesh_dir, REMESHED
-                            kept_dict = protective
-                        _optimise(remesh_dir, "re-meshed protecting the layers, then optimised")
-                        if best_dir != remesh_dir:
-                            shutil.rmtree(remesh_dir, ignore_errors=True)
-                    else:
-                        _consider("re-meshed protecting the layers", remesh_q, step)
-                else:
-                    if "passages" not in step:
-                        step["error"] = _tail(ws / "cartesianMesh_rescue.log")
-                    record["tried"].append(step)
-                    shutil.rmtree(ws / _POLYMESH, ignore_errors=True)
+                raw = _remesh(protective)
+        # 3. the optimiser on the candidates still near the edge, the best first. TIME-11: a candidate the best so far
+        #    already beats is not optimised - abc 99768's re-mesh (171 degrees, negative volumes) ran the optimiser
+        #    2,729 s into its guard beside an optimised mesh of 87 degrees with no fatal defect
+        pool: list[tuple[Path, dict, str, str]] = []
+        if first and as_built_dir.exists():
+            pool.append((as_built_dir, q, "optimised", asked_dict))
+        if raw is not None and raw[0].exists():
+            pool.append((raw[0], raw[1], REMESHED + ", then optimised", protective or asked_dict))
+        pool.sort(key=lambda c: rank(c[1]))
+        for src, src_q, name, built_by in pool:
+            if not _wants_more():
+                break
+            if src != best_dir and better(best_q, src_q):
+                record["tried"].append({"step": name, "rule": RESCUE_ORDER_RULE, "skipped": (
+                    f"the mesh it starts from measures worse than the best so far ({best_name})")})
+                continue
+            _optimise(src, name, built_by)
+        if raw is not None and best_dir != raw[0]:
+            shutil.rmtree(raw[0], ignore_errors=True)
     except Exception:  # noqa: BLE001 - a lever must never lose the mesh already built
         logger.warning("cfMesh rescue failed part-way - keeping the best mesh so far",
                        exc_info=True)
