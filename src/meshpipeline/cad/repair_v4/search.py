@@ -449,10 +449,10 @@ class DetGenerator:
                     rows.append(("split_continuity", faces, {"order": order}, f"split faces at C{order} breaks"))
             rows.append(("orient_and_close", solids, {}, "fix shell orientation"))
         if kind == "sliver":
-            unsized = diag is None or diag > UNBOUNDED_DIAGONAL_MM
-            if unsized:
+            sized = diag is not None and diag <= UNBOUNDED_DIAGONAL_MM
+            if not sized:
                 self._note(f"site {site.id}: remove_small not proposed: {self._why_no_size(diag)}")
-            for width in scaled_sliver_widths(diag) if not unsized else ():
+            for width in scaled_sliver_widths(diag) if diag is not None and sized else ():
                 rows.append(
                     (
                         "remove_small",
