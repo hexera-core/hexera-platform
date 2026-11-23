@@ -35,6 +35,17 @@ class XcafDoc:
     assembly_ids: list[str] = field(default_factory=list)
 
 
+def _set_static(name: str, value: int | str) -> None:
+    """Set a STEP parameter and prove it took: OCCT ignores a parameter set before a reader or writer exists."""
+    from OCP.Interface import Interface_Static
+
+    took = (
+        Interface_Static.SetIVal_s(name, value) if isinstance(value, int) else Interface_Static.SetCVal_s(name, value)
+    )
+    if not took:
+        raise RuntimeError(f"could not set STEP parameter {name} to {value!r}")
+
+
 def _new_document():
     from OCP.TCollection import TCollection_ExtendedString
     from OCP.TDocStd import TDocStd_Document
@@ -146,12 +157,19 @@ def read(path: str, brep_out: str | None = None) -> XcafDoc:
     from OCP.BRep import BRep_Builder
     from OCP.BRepTools import BRepTools
     from OCP.IFSelect import IFSelect_RetDone
+    from OCP.Interface import Interface_Static
     from OCP.STEPCAFControl import STEPCAFControl_Reader
     from OCP.TDF import TDF_LabelSequence
     from OCP.TopoDS import TopoDS_Compound
     from OCP.XCAFDoc import XCAFDoc_DocumentTool
 
     reader = STEPCAFControl_Reader()
+    # STEP parameters are registered, and reset to their defaults, by constructing the reader, so
+    # they are set AFTER it exists and their return value is checked: set earlier they are ignored.
+    _set_static("read.stepcaf.subshapes.name", 1)  # default 0 drops face names
+    _set_static("xstep.cascade.unit", "MM")  # the BREP is millimetres whatever unit the file has
+    if Interface_Static.CVal_s("xstep.cascade.unit") != "MM":
+        raise RuntimeError("STEP reader is not converting to millimetres")
     for setter in (
         reader.SetNameMode,
         reader.SetColorMode,
@@ -260,8 +278,8 @@ def write(doc: XcafDoc, path: str) -> None:
     # `write.step.unit` before that is a silent no-op that writes the file in millimetres.
     writer = STEPCAFControl_Writer()
     previous = Interface_Static.CVal_s("write.step.unit")
-    if not Interface_Static.SetCVal_s("write.step.unit", WRITER_CODES[doc.units]):
-        raise RuntimeError(f"could not set write.step.unit to {WRITER_CODES[doc.units]}")
+    _set_static("write.step.unit", WRITER_CODES[doc.units])
+    _set_static("write.stepcaf.subshapes.name", 1)  # default 0 writes ADVANCED_FACE('') for every face
     try:
         for setter in (
             writer.SetNameMode,

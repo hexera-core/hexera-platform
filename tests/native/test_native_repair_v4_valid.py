@@ -5,6 +5,8 @@
 #             WorkerPool process; this module touches OCP only to author fixtures.
 from __future__ import annotations
 
+import subprocess
+import sys
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -316,6 +318,8 @@ def _write_one_product(
     writer = STEPCAFControl_Writer()
     writer.SetNameMode(True)
     writer.SetColorMode(True)
+    # After the writer exists (constructing it resets the parameters); the default 0 drops face names.
+    assert Interface_Static.SetIVal_s("write.stepcaf.subshapes.name", 1)
     assert writer.Transfer(doc, STEPControl_AsIs)
     assert writer.Write(str(path)) == IFSelect_RetDone
     return str(path)
@@ -383,13 +387,6 @@ def test_face_colours_survive_by_id_and_by_geometry(pool: WorkerPool, tmp_path: 
             assert _near(_centroid(TopoDS.Face_s(faces.FindKey(index))), centroid, 1e-4), (rgb, coloured)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="OCCT 7.9.3 STEPCAFControl does not write or read face names (ADVANCED_FACE is written with an "
-    "empty name; the write/read.stepcaf.subshapes.name switches do not exist in this build). "
-    "Design 7.5 wants face names carried: this flips to XPASS when that becomes possible.",
-)
 def test_face_names_survive_by_id_and_by_geometry(pool: WorkerPool, tmp_path: Path) -> None:
     for label_map, brep in _round_trip_faces(pool, tmp_path, WANTED_FACES):
         faces = _first_child_faces(brep)
@@ -508,28 +505,47 @@ def test_micrometre_file_round_trips(pool: WorkerPool, tmp_path: Path) -> None:
     assert report.ok is True
 
 
-def test_occt_7_9_3_writer_emits_empty_advanced_face_names(tmp_path: Path) -> None:
-    """Evidence for design 7.5: a face named in XCAF is written to STEP with an EMPTY name.
-
-    This pins the WRITER side of the loss. If it starts failing, face names can be written and the
-    xfail on test_face_names_survive_by_id_and_by_geometry should be re-checked.
-    """
-    step = Path(_write_one_product(tmp_path / "named.step", _box(), faces=WANTED_FACES))
-    text = step.read_text()
-    assert "'top'" not in text and "'inlet'" not in text
-    advanced_faces = [line for line in text.splitlines() if "ADVANCED_FACE(" in line]
-    assert len(advanced_faces) == 6
-    assert all("ADVANCED_FACE(''," in line for line in advanced_faces)
+def test_face_names_are_written_to_step_when_the_switch_is_set(tmp_path: Path) -> None:
+    """The writer puts the XCAF face name into ADVANCED_FACE once write.stepcaf.subshapes.name is set after construction."""
+    text = Path(_write_one_product(tmp_path / "named.step", _box(), faces=WANTED_FACES)).read_text()
+    assert "ADVANCED_FACE('top'," in text and "ADVANCED_FACE('inlet'," in text
 
 
-def test_occt_7_9_3_reader_drops_advanced_face_names(pool: WorkerPool, tmp_path: Path) -> None:
-    """READER side of the loss: a STEP whose ADVANCED_FACE is hand-edited to carry a name does not keep it."""
-    step = Path(_write_one_product(tmp_path / "plain.step", _box(), faces=WANTED_FACES))
-    edited = tmp_path / "edited.step"
-    edited.write_text(step.read_text().replace("ADVANCED_FACE('',", "ADVANCED_FACE('named_face',", 1))
-    labels = _read(pool, str(edited), tmp_path / "e.brep")["labels"]
-    names = {entry["name"] for key, entry in labels.items() if "/F" in key}
-    assert "named_face" not in names, names
+def test_the_subshape_name_switch_only_takes_after_the_writer_exists(tmp_path: Path) -> None:
+    """Why xcaf_io sets parameters after constructing the reader/writer: set earlier, in a fresh process, they are ignored."""
+    code = (
+        "from OCP.Interface import Interface_Static\n"
+        "from OCP.STEPCAFControl import STEPCAFControl_Writer\n"
+        "before = Interface_Static.SetIVal_s('write.stepcaf.subshapes.name', 1)\n"
+        "STEPCAFControl_Writer()\n"
+        "after = Interface_Static.SetIVal_s('write.stepcaf.subshapes.name', 1)\n"
+        "print(before, after)\n"
+    )
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True).stdout.split()
+    assert out[-2:] == ["False", "True"]
+
+
+def test_a_non_mm_write_as_the_first_call_in_a_fresh_worker_keeps_its_unit(tmp_path: Path) -> None:
+    """Regression: write.step.unit was ignored until a writer existed, so a first-call inch write came out in mm."""
+    brep = tmp_path / "box.brep"
+    assert BRepTools.Write_s(_compound(_box()), str(brep))
+    fresh = WorkerPool(1, start_timeout_s=120)
+    try:
+        written = fresh.call(
+            "write_step_xcaf",
+            {
+                "brep": str(brep),
+                "labels": {"0": {"name": "p", "color": None, "parent": None}},
+                "assembly_ids": [],
+                "units": "inch",
+                "path": str(tmp_path / "first.step"),
+            },
+            timeout_s=CALL_TIMEOUT_S,
+        )
+    finally:
+        fresh.close()
+    assert written.ok, written.error
+    assert "CONVERSION_BASED_UNIT('INCH'" in (tmp_path / "first.step").read_text()
 
 
 def test_yard_file_is_not_a_round_trip_failure(pool: WorkerPool, tmp_path: Path) -> None:
