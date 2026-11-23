@@ -568,6 +568,43 @@ class RealishPool:
         raise AssertionError(f"unexpected kernel call {fn}")
 
 
+def fake_panel_module(run_panel: Any) -> SimpleNamespace:
+    """A stand-in for `verdict.panel` built FROM the real module: every public non-callable name (the
+    contract constants, e.g. `INFRASTRUCTURE_KIND`) is copied with its real value, so a constant added to
+    `panel` is on the fake without anyone remembering to. Callables are never copied (a real `run_panel`
+    would mesh); the one the test supplies is the only behaviour. Completeness against what `assemble`
+    reads is pinned by `test_the_fake_panel_module_covers_everything_assemble_reads`."""
+    from meshpipeline.cad.repair_v4.verdict import panel as real_panel
+
+    constants = {n: v for n, v in vars(real_panel).items()
+                 if not n.startswith("_") and not callable(v) and not inspect.ismodule(v)}
+    return SimpleNamespace(**constants, run_panel=run_panel)
+
+
+def _panel_attributes_read_by_assemble() -> set[str]:
+    """Every `X` in `_panel_module().X` in assemble.py, also through a local alias (`p = _panel_module()`)."""
+    import ast
+
+    tree = ast.parse(inspect.getsource(assemble))
+
+    def is_call(n: ast.AST) -> bool:
+        return isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == "_panel_module"
+
+    aliases = {t.id for a in ast.walk(tree) if isinstance(a, ast.Assign) and is_call(a.value)
+               for t in a.targets if isinstance(t, ast.Name)}
+    return {n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)
+            and (is_call(n.value) or (isinstance(n.value, ast.Name) and n.value.id in aliases))}
+
+
+def test_the_fake_panel_module_covers_everything_assemble_reads() -> None:
+    read = _panel_attributes_read_by_assemble()
+    assert {"INFRASTRUCTURE_KIND", "run_panel"} <= read, f"the scan found too little: {sorted(read)}"
+    fake = fake_panel_module(lambda *a, **k: [])
+    missing = sorted(a for a in read if not hasattr(fake, a))
+    assert not missing, (f"fake_panel_module lacks {missing}, which assemble.py reads off the panel module; "
+                         "add them to the helper (constants are copied from the real module automatically)")
+
+
 @pytest.fixture
 def real_checker(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> SimpleNamespace:
     """The real `cheap_verdict`/`verdict`/`score`; only layer 1 and the panel (which need a kernel and a mesher)
@@ -589,7 +626,7 @@ def real_checker(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> SimpleNamesp
     monkeypatch.setattr(assemble, "check_valid", check_valid)
     monkeypatch.setattr(assemble, "check_faithful_steps", check_faithful_steps)
     monkeypatch.setattr(assemble, "default_members", lambda tier: [SimpleNamespace(name="m0")])
-    monkeypatch.setattr(assemble, "_panel_module", lambda: SimpleNamespace(run_panel=run_panel))
+    monkeypatch.setattr(assemble, "_panel_module", lambda: fake_panel_module(run_panel))
     for name in ("orig.brep", "w.brep"):
         (tmp_path / name).write_bytes(name.encode())
     seen.orig = str(tmp_path / "orig.brep")
@@ -647,8 +684,8 @@ def test_the_clean_rule_default_judge_recomputes_agrees_with_the_real_assembly(
     monkeypatch.setattr(assemble, "check_faithful_steps", lambda pool, o, s, *, declared_added, declared_removed:
                         FaithfulReport(bool(knobs["faithful"]), 0.0, 0.1, 1.0, 1.0, 1, 1))
     monkeypatch.setattr(assemble, "default_members", lambda tier: [SimpleNamespace(name="m0")])
-    monkeypatch.setattr(assemble, "_panel_module", lambda: SimpleNamespace(
-        run_panel=lambda pool, step, members, *, timeout_s: [Member("m0", str(knobs["panel"]))]
+    monkeypatch.setattr(assemble, "_panel_module", lambda: fake_panel_module(
+        lambda pool, step, members, *, timeout_s: [Member("m0", str(knobs["panel"]))]
         + ([Member("pool", "timeout", None, "infrastructure")] if knobs["inconclusive"] else [])))
     for panel, valid_ok, faithful_ok, inc in itertools.product(("pass", "fail"), (True, False), (True, False),
                                                                 (False, True)):
