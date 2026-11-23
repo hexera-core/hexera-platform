@@ -503,6 +503,124 @@ def test_registry_carries_an_id_across_an_op_that_replaces_its_anchor() -> None:
     assert plain.id == "S@F6"
 
 
+def _round(registry, ws, failing: dict[str, list[str]], boxes=None):
+    """One search round: `failing` maps a site anchor to the entities failing together (near each other)."""
+    boxes = dict(boxes or _boxes(ws))
+    located = []
+    for n, entities in enumerate(failing.values()):
+        for k, e in enumerate(entities):
+            boxes[e] = [10.0 * (n + 1) * 7, 2.0 * k, 0.0, 10.0 * (n + 1) * 7 + 1, 2.0 * k + 1, 1.0]
+            located.append(Located(e, None, "t"))
+    pool = ScriptedPool(ws, boxes)
+    return {tuple(s.entities): s for s in find_sites(
+        pool, ws, _verdict(_fail("gmsh", "other", *located)), h_mm=H, registry=registry)}
+
+
+def test_registry_merge_keeps_one_id_and_reports_the_other() -> None:
+    from meshpipeline.cad.repair_v4.sites import SiteRegistry
+
+    registry, ws = SiteRegistry(), _ws(30)
+    first = _round(registry, ws, {"x": ["F9", "F10"], "y": ["F20", "F21"]})
+    assert {s.id for s in first.values()} == {"S@F9", "S@F20"}
+    # an op's effect: the two failures are now one site (all four faces within 2h of each other)
+    boxes = _boxes(ws)
+    for k, e in enumerate(["F9", "F10", "F20", "F21"]):
+        boxes[e] = [0.0, 1.5 * k, 0.0, 1.0, 1.5 * k + 1.0, 1.0]
+    pool = ScriptedPool(ws, boxes)
+    located = [Located(e, None, "t") for e in ("F9", "F10", "F20", "F21")]
+    (merged,) = find_sites(pool, ws, _verdict(_fail("gmsh", "other", *located)), h_mm=H, registry=registry)
+    assert merged.id == "S@F9"  # tie broken by natural id order, never by string order (S@F10 < S@F9)
+    assert merged.graph["was"] == ["S@F20"]  # the other predecessor is named, not dropped
+    assert observation(ws, _verdict(), [merged], {})["sites"][0]["was"] == ["S@F20"]
+
+
+def test_registry_split_gives_the_splinter_a_fresh_id_that_names_its_origin() -> None:
+    from meshpipeline.cad.repair_v4.sites import SiteRegistry
+
+    registry, ws = SiteRegistry(), _ws(30)
+    boxes = _boxes(ws)
+    for k, e in enumerate(["F4", "F5", "F6", "F7"]):
+        boxes[e] = [0.0, 1.5 * k, 0.0, 1.0, 1.5 * k + 1.0, 1.0]
+    located = [Located(e, None, "t") for e in ("F4", "F5", "F6", "F7")]
+    pool = ScriptedPool(ws, boxes)
+    (whole,) = find_sites(pool, ws, _verdict(_fail("gmsh", "other", *located)), h_mm=H, registry=registry)
+    assert whole.id == "S@F4"
+    after = _round(registry, ws, {"a": ["F4", "F5", "F6"], "b": ["F7"]})
+    big, splinter = after[("F4", "F5", "F6")], after[("F7",)]
+    assert big.id == "S@F4" and "was" not in big.graph
+    assert splinter.id == "S@F7" and splinter.graph["was"] == ["S@F4"]  # visible, not silent
+
+
+def test_registry_partial_overlap_on_a_shared_big_face_is_a_new_site() -> None:
+    from meshpipeline.cad.repair_v4.sites import SiteRegistry
+
+    registry, ws = SiteRegistry(), _ws(30)
+    boxes = _boxes(ws)
+    for k, e in enumerate(["F3", "F11"]):
+        boxes[e] = [0.0, 1.5 * k, 0.0, 1.0, 1.5 * k + 1.0, 1.0]
+    pool = ScriptedPool(ws, boxes)
+    (old,) = find_sites(pool, ws, _verdict(_fail("gmsh", "other", Located("F3", None, "a"),
+                                                 Located("F11", None, "a"))), h_mm=H, registry=registry)
+    assert old.id == "S@F3"
+    # a DIFFERENT defect now touches the same big face F3 (one shared entity of four): not the old site
+    boxes2 = _boxes(ws)
+    for k, e in enumerate(["F3", "F14", "F15", "F16"]):
+        boxes2[e] = [0.0, 1.5 * k, 0.0, 1.0, 1.5 * k + 1.0, 1.0]
+    pool2 = ScriptedPool(ws, boxes2)
+    located = [Located(e, None, "b") for e in ("F3", "F14", "F15", "F16")]
+    (new,) = find_sites(pool2, ws, _verdict(_fail("gmsh", "other", *located)), h_mm=H, registry=registry)
+    assert new.graph.get("was") == ["S@F3"] and not new.graph.get("id_carried")
+    assert new.id == "S@F3-2"  # the old id is NOT handed to a new defect: it is retired
+    assert registry.retired == ["S@F3"]
+
+
+def test_registry_refuses_a_workspace_from_another_lineage() -> None:
+    import pytest
+
+    from meshpipeline.cad.repair_v4.sites import LineageMismatch, SiteRegistry
+    from meshpipeline.cad.repair_v4.workspace import Diff
+
+    registry, ws = SiteRegistry(), _ws()
+    _round(registry, ws, {"x": ["F5"]})
+    sibling = _ws()
+    sibling.history = [Diff("split", {}, {"F1": ["F2"]}, {}, [], [], [], 0.0)]
+    _round(registry, sibling, {"x": ["F5"]})  # a continuation of the empty history: fine
+    other = _ws()
+    other.history = [Diff("sew", {}, {}, {}, [], [], [], 0.0)]  # a different branch from the same start
+    with pytest.raises(LineageMismatch):
+        _round(registry, other, {"x": ["F5"]})
+    rolled_back = _ws()  # shorter history than the registry has seen
+    with pytest.raises(LineageMismatch):
+        _round(registry, rolled_back, {"x": ["F5"]})
+    alien = _ws()
+    alien.original = "elsewhere.brep"
+    with pytest.raises(LineageMismatch):
+        _round(SiteRegistry(), ws, {"x": ["F5"]})
+        _round(registry, alien, {"x": ["F5"]})
+
+
+def test_a_point_never_chains_entities_through_a_large_faces_box() -> None:
+    ws = _ws()
+    boxes = _all_overlapping(ws)  # every face box is huge and contains the point
+    pool = ScriptedPool(ws, boxes, distance=lambda a, b: 40.0)
+    point = (50.0, 50.0, 50.0)
+    verdict = _verdict(_fail("gmsh", "other", Located("F1", None, "a"), Located("F2", None, "b"),
+                             Located(None, point, "plc")))
+    sites = find_sites(pool, ws, verdict, h_mm=H)
+    assert sorted(len(s.entities) for s in sites) == [0, 1, 1]  # the point is its own site
+    assert all(s.graph["unmeasured_pairs"] > 0 for s in sites)
+    assert observation(ws, verdict, sites, {})["unmeasured_pairs"] > 0
+
+
+def test_two_mesher_points_close_together_are_one_site() -> None:
+    ws = _ws()
+    pool = ScriptedPool(ws, _boxes(ws))
+    verdict = _verdict(_fail("gmsh", "other", Located(None, (500.0, 0.0, 0.0), "a"),
+                             Located(None, (501.0, 0.0, 0.0), "b")))
+    (site,) = find_sites(pool, ws, verdict, h_mm=H)
+    assert len(site.xyz) == 2
+
+
 def test_registry_does_not_hand_a_carried_id_to_an_unrelated_new_site() -> None:
     from meshpipeline.cad.repair_v4.sites import SiteRegistry
 

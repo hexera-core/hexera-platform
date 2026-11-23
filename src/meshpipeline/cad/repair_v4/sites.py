@@ -165,6 +165,19 @@ def _kernel_entities(ws: Workspace, names: list[str], reverse: dict) -> list[Sta
     return out
 
 
+class LineageMismatch(ValueError):
+    """A `SiteRegistry` was handed a workspace that is not the continuation of the one it follows."""
+
+
+#: A new site inherits an old id only if the entities they share are at least this fraction of BOTH.
+#: One shared big plane is not an identity: a different defect on the same face is a new site.
+MIN_OVERLAP_FRACTION = 0.5
+
+
+def _natural(site_id: str) -> tuple:
+    return tuple(int(t) if t.isdigit() else t for t in re.split(r"(\d+)", site_id))
+
+
 class SiteRegistry:
     """Carries site ids across rounds of one search, so a proposer that discussed "S@F12" still
     finds that geometry under that name after an op has rebuilt it.
@@ -172,17 +185,42 @@ class SiteRegistry:
     An id anchored on an entity is only stable while the entity lives, and ops retire entities
     exactly when they make progress (sew re-mints edges, a split replaces a face). So the registry
     remembers each site's failing entities, carries them forward through the workspace's own op
-    history (`Diff.modified` old -> successors; `removed` dropped), and gives a new site the id of the
-    previous site it overlaps most. A carried id that differs from the fresh anchor id is flagged
-    `id_carried` in the observation. Pass the same registry to every `find_sites` of one lineage.
+    history (`Diff.modified` old -> successors; `removed` dropped), and matches new sites to old ones.
+
+    MATCHING. A new site inherits an old id only when the shared entities are >=
+    `MIN_OVERLAP_FRACTION` of both sets (greedy, largest overlap first, ties by natural id order, one
+    to one). A rename is never silent: each site's graph carries `was` - the old ids it descends
+    from but does not carry. On a MERGE the winner keeps the larger predecessor's id and `was` lists
+    the others; on a SPLIT the larger part keeps the id and the splinter, which gets a fresh id,
+    has `was` naming the original; a new defect that merely shares a face with an old site gets a
+    fresh id with `was` naming it, so it is never read as "still unfixed". `id_carried` is set when
+    the carried id differs from the fresh anchor id. Old ids that match nothing are retired: they
+    are listed in `retired` after `apply` and their ids are never issued again (a fresh site that
+    would have taken one gets `-2`, `-3`).
+
+    LINEAGE. One registry follows ONE linear lineage. `apply` refuses (LineageMismatch) a workspace
+    whose history does not begin with the diffs this registry has already seen, or whose original
+    differs: a fork, a sibling branch or a rollback would otherwise forward entities through the wrong ops.
     """
 
     def __init__(self) -> None:
         self._previous: dict[str, set[StableId]] = {}
-        self._seen = 0
+        self._diffs: list[Any] = []
+        self._original: str | None = None
+        self.retired: list[str] = []
+        self._issued: set[str] = set()  # every id ever shown: a retired id is never reused
 
-    def _forward(self, ws: Workspace) -> dict[str, set[StableId]]:
-        history = ws.history[self._seen:] if len(ws.history) >= self._seen else []
+    def _check_lineage(self, ws: Workspace) -> list[Any]:
+        if self._original is not None and ws.original != self._original:
+            raise LineageMismatch(f"registry follows {self._original!r}, workspace is {ws.original!r}")
+        seen = len(self._diffs)
+        if ws.history[:seen] != self._diffs:
+            raise LineageMismatch(
+                "the workspace history does not continue the one this registry has followed "
+                "(a fork, a sibling branch or a rollback): use one registry per linear lineage")
+        return list(ws.history[seen:])
+
+    def _forward(self, history: list[Any]) -> dict[str, set[StableId]]:
         moved: dict[str, set[StableId]] = {}
         for site_id, entities in self._previous.items():
             now = set(entities)
@@ -198,37 +236,50 @@ class SiteRegistry:
         return moved
 
     def apply(self, ws: Workspace, sites: list[Site]) -> None:
-        carried = self._forward(ws)
+        carried = self._forward(self._check_lineage(ws))
+        mine = {id(site): set(site.graph.get("failure_entities") or site.entities) for site in sites}
         scored = []
+        predecessors: dict[int, list[str]] = defaultdict(list)
         for site in sites:
-            mine = set(site.graph.get("failure_entities") or site.entities)
             for old_id, old in carried.items():
-                if mine & old:
-                    scored.append((-len(mine & old), old_id, site.id, id(site)))
+                shared = len(mine[id(site)] & old)
+                if shared:
+                    predecessors[id(site)].append(old_id)
+                    if (shared / len(mine[id(site)]) >= MIN_OVERLAP_FRACTION
+                            and shared / len(old) >= MIN_OVERLAP_FRACTION):
+                        scored.append((-shared, _natural(old_id), old_id, id(site)))
         scored.sort()
-        by_object = {id(site): site for site in sites}
-        done_sites: set[int] = set()
+        done: dict[int, str] = {}
         taken: set[str] = set()
-        for _, old_id, _, key in scored:
-            if key in done_sites or old_id in taken:
+        for _, _, old_id, key in scored:
+            if key in done or old_id in taken:
                 continue
-            site = by_object[key]
-            done_sites.add(key)
+            done[key] = old_id
             taken.add(old_id)
-            if site.id != old_id:
-                site.graph["id_carried"] = True
-            site.id = old_id
-        for site in sites:  # an unmatched site must not take a carried id
-            if id(site) in done_sites:
+        for site in sites:
+            key = id(site)
+            inherited = done.get(key)
+            fresh = site.id
+            if inherited is not None:
+                if fresh != inherited:
+                    site.graph["id_carried"] = True
+                site.id = inherited
+            predecessors_of = sorted((p for p in predecessors[key] if p != inherited), key=_natural)
+            if predecessors_of:
+                site.graph["was"] = predecessors_of
+        for site in sites:  # a site that carried nothing must not take a carried id
+            if id(site) in done:
                 continue
             base, n = site.id, 1
-            while site.id in taken:
+            while site.id in taken or site.id in self._issued:
                 n += 1
                 site.id = f"{base}-{n}"
             taken.add(site.id)
-        self._previous = {site.id: set(site.graph.get("failure_entities") or site.entities)
-                          for site in sites if site.entities}
-        self._seen = len(ws.history)
+        self.retired = sorted((o for o in carried if o not in taken), key=_natural)
+        self._previous = {site.id: mine[id(site)] for site in sites if site.entities}
+        self._issued |= {site.id for site in sites}
+        self._diffs = list(ws.history)
+        self._original = ws.original
 
 
 def find_sites(pool: WorkerPool, ws: Workspace, verdict: Any, *, h_mm: float,
@@ -432,14 +483,25 @@ def _geometric_sites(pool: WorkerPool, ws: Workspace, valid: Any, nodes: dict[St
             if item.get("dist") is not None:
                 measured[pair] = float(item["dist"])
     entity_set = set(entity_pairs)
-    unmeasured_nodes: dict[int, int] = defaultdict(int)
+    unresolved: list[tuple[int, int]] = []
     for i, j in candidates:
-        is_entity_pair = (i, j) in entity_set
-        if is_entity_pair and (i, j) not in measured:
-            unmeasured_nodes[i] += 1
-            unmeasured_nodes[j] += 1
-        elif not is_entity_pair or measured[(i, j)] <= reach:
-            parent[find(i)] = find(j)  # a point against anything: the box gap (exact for a point)
+        if (i, j) in entity_set:
+            if (i, j) not in measured:
+                unresolved.append((i, j))
+            elif measured[(i, j)] <= reach:
+                parent[find(i)] = find(j)
+        elif everyone[i].entity is None and everyone[j].entity is None:
+            # two mesher points: their distance IS the box gap (a box of zero size)
+            parent[find(i)] = find(j)
+        else:
+            # A point against a face: the point had no face within h, and its distance to a big
+            # face's box proves nothing about the face. Not merged; counted.
+            unresolved.append((i, j))
+    unmeasured_nodes: dict[int, int] = defaultdict(int)
+    for i, j in unresolved:
+        if find(i) != find(j):  # a pair merged by another path is no longer in doubt
+            unmeasured_nodes[find(i)] += 1
+            unmeasured_nodes[find(j)] += 1
     groups: dict[int, list[_Node]] = defaultdict(list)
     for i, node in enumerate(everyone):
         groups[find(i)].append(node)
@@ -448,7 +510,7 @@ def _geometric_sites(pool: WorkerPool, ws: Workspace, valid: Any, nodes: dict[St
     clashes: list[list[dict]] = [[] for _ in components]
     unmeasured = [0] * len(components)
     for k, root in enumerate(roots):
-        unmeasured[k] = sum(count for i, count in unmeasured_nodes.items() if find(i) == root)
+        unmeasured[k] = unmeasured_nodes.get(root, 0)
 
     owner = {n.entity: k for k, c in enumerate(components) for n in c if n.entity is not None}
     context: dict[StableId, _Node] = {}
@@ -695,6 +757,8 @@ def _site_entry(ws: Workspace, site: Site, level: tuple) -> dict:
         sub["unmeasured_pairs"] = graph["unmeasured_pairs"]  # near pairs left UNmerged: may be one part
     if graph.get("id_carried"):
         entry["id_carried"] = True
+    if graph.get("was"):
+        entry["was"] = graph["was"]  # old ids this site descends from but does not carry
     if n_nodes:
         sub["nodes"] = _round(list(graph.get("nodes", []))[:n_nodes])
         sub["edges"] = _round(list(graph.get("edges", []))[:n_edges])
@@ -746,6 +810,9 @@ def observation(ws: Workspace, verdict: Any, sites: list[Site], budget: Any, *,
         "budget": _cap(_plain(budget) if isinstance(budget, dict) or dataclasses.is_dataclass(budget)
                        else {"value": budget}),
         "stale_sites": stale,
+        # near face pairs the clustering could not measure and so left unmerged (per site: the
+        # same count, summed): a high total means sites may be pieces of one larger failure
+        "unmeasured_pairs": sum(int(s.graph.get("unmeasured_pairs", 0)) for s in live),
     }
 
     def build(level: tuple) -> dict:
