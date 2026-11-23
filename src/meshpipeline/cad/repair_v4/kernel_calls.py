@@ -51,6 +51,7 @@ if os.environ.get("HEXERA_TEST_KERNEL_FNS") == "1":
 # before the modules that use them are imported.
 # The op library: each op module registers its kernel function(s) here and its `Op` in
 # `ops.REGISTRY`. One import covers every op module (see ops/__init__.py, which auto-discovers).
+from meshpipeline.cad.repair_v4 import body_kernel  # noqa: E402,F401
 from meshpipeline.cad.repair_v4 import ops  # noqa: E402,F401
 from meshpipeline.cad.repair_v4 import ws_kernel  # noqa: E402,F401
 from meshpipeline.cad.repair_v4 import xcaf_io as _xcaf_io  # noqa: E402,F401

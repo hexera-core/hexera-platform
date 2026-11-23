@@ -570,7 +570,7 @@ tests/unit/cad/repair_v4/...   tests/native/test_native_repair_v4_*.py
   - `test_images_attached_when_site_has_view`.
   - `test_unfixable_site_excluded_from_det_sweeps`.
 - [ ] **Step 2:** Run. Expected: FAIL.
-- [ ] **Step 3:** Implement. Route defaults to the strongest Claude model configured for the repair route. The system prompt states:
+- [ ] **Step 3:** Implement. Route defaults to the strongest **OpenAI** model configured for the repair route (owner decision, 2026-11-23: OpenAI on the existing `openai-api-key` route, not Claude). An Anthropic Messages adapter was built as Task 19a and is **deferred — parked unmerged on `sdd/task-19a-anthropic`** should the owner revisit the vendor. The system prompt states:
   - the clean definition;
   - the fidelity bound;
   - that the AI owns overlap intent, hole vs missing face, fix choice under budget, ordering and stopping;

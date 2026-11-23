@@ -159,7 +159,7 @@ v3's 13 ops are mapped into this interface where they overlap; for example, `fix
   - remaining budgets.
 - **It returns** 1–n typed candidates, `{op | run_stage, targets (stable IDs), params, rationale}`. It may also declare a site unfixable within the fidelity budget, with a reason.
 - **Judgement it owns:** overlap intent (duplicate vs fit vs subtract), hole vs missing face, choice between alternative fixes under the deviation budget, ordering and recovery when stages interact, mapping a mesher error to its causal entity, and when to stop. These are the areas the research identifies as genuinely needing judgement.
-- **Model:** the strongest available model on the repair route, replacing `gpt-5.6-luna`, with tool use and images. Vendor and per-file cost ceiling are owner decisions (§7).
+- **Model:** the strongest available model on the repair route, replacing `gpt-5.6-luna`, with tool use and images. Vendor and per-file cost ceiling are owner decisions (§7). **Settled 2026-11-23: the strongest OpenAI model on the existing `openai-api-key` route, not Claude; the Anthropic adapter built for this is parked unmerged.**
 - **Malformed calls** are rejected by schema with a structured error, not counted as a refusal streak. v3's runaway and filler-key failures came from loose transport.
 
 ### 5.9 Delivery gate
@@ -206,7 +206,7 @@ v3's 13 ops are mapped into this interface where they overlap; for example, `fix
    - Soft findings are reported but don't fail clean: small edges/faces, large tolerances. Real damage from those shows up in layer 2.
    - The failing set therefore never fills with cosmetic-only files.
 4. **Model and cost.**
-   - Default: Claude (strongest available) on the repair route, with images.
+   - Default: Claude (strongest available) on the repair route, with images. **Decided 2026-11-23: OpenAI instead — the strongest model on the existing `openai-api-key` route, with tool use and image input; no Anthropic key or adapter is introduced, and the ledger must price the chosen model correctly.**
    - Per-file ceiling: $1.00 for `search_ai` in the eval, with model spend and wall time reported per file.
    - Compute: up to ~600 c2d VM-hours for the re-probe plus waves this sprint.
    - The re-probe runs the cheap tier on the full pool first; the full panel then runs only on cheap-tier failures and a 10% sample of passes (to measure agreement).
