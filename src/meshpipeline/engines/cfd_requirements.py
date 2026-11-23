@@ -1011,6 +1011,39 @@ def wall_function_level(ask: Ask | None, base: float, *, level: int, floor: int)
     return lv
 
 
+#: CFDREQ-18: the fewest cells a passage keeps across its bore however coarse a wall-function first layer would want
+#: the wall cells (engines/passage's resolution target, the CFD board's passage_cells_across limit)
+WALL_FUNCTION_MIN_CELLS_ACROSS = 13
+
+
+def wall_function_bore_cells(ask: Ask | None, *, bore_D: float, cells_across: int,
+                             cap_rel: float | None = None) -> int:
+    """CFDREQ-18, AN INTERNAL FLOW'S WALL CELLS AND ITS WALL-FUNCTION FIRST LAYER CHOSEN TOGETHER: the cells across the
+    bore (`bore_D`, the wall cell is bore / cells across), lowered from the plan's `cells_across` only as far as the
+    wall-function first layer the conditions' y+ gives needs to fit under the wall cell (FIRST_CAP_REL) - never under
+    WALL_FUNCTION_MIN_CELLS_ACROSS. Before, the passage plan's fine wall cells (0.5-0.7 mm across a 44 mm venturi)
+    left no room for a y+ 50 layer (1.9 mm in water at 1 m/s): wall_fit fell to a resolved wall, y+ 0.5 against the
+    50 asked, on 92 of 96 internal parts (the CFD board, batch 6). Narrow passages keep their own refinement (the gap
+    plan). `cap_rel`: the engine's thickest first layer as a share of the wall cell (cfMesh: CFMESH_STACK_REL).
+    `cells_across` unchanged with no wall-function y+, a height, stack, wall or smallest size of the user's,
+    a laminar flow, or a first layer that fits already; one too thick for the bore's log layer (past
+    WALL_FUNCTION_BL_SHARE of its radius) is left to wall_fit, which says why."""
+    if (ask is None or ask.treatment != "functions" or ask.y_plus is None or ask.first_m is not None
+            or ask.total_m is not None or ask.wall_m is not None or ask.min_m is not None or not bore_D
+            or (ask.req.get("physics") or {}).get("flow") != "internal"):
+        return int(cells_across)
+    h, missing, how = y_plus_height(float(ask.y_plus), ask.req.get("physics"), length_m=float(bore_D),
+                                    length_from="the bore")
+    if h is None or missing or how.get("laminar") or h > WALL_FUNCTION_BL_SHARE * 0.5 * float(bore_D):
+        return int(cells_across)
+    want = int(math.floor(float(cap_rel or FIRST_CAP_REL) * float(bore_D) / float(h)))
+    n = max(min(int(cells_across), want), min(int(cells_across), WALL_FUNCTION_MIN_CELLS_ACROSS))
+    if n < int(cells_across):
+        ask.wall_level_note = (f"the wall cells are {_mm(float(bore_D) / n)} ({n} across the bore, not "
+                               f"{int(cells_across)}) so the wall-function first layer ({_mm(h)}) fits under them")
+    return n
+
+
 @guarded(lambda ask, wake, **_k: wake)
 def snappy_wake(ask: Ask, wake, *, wall_cell: float):
     """The wake request with the user's wake size or refinement (levels under the wall's), or unchanged."""
@@ -2555,6 +2588,10 @@ def report(workspace, quality: Mapping, engine: str) -> dict | None:
             got = _layers_row(req, q, built)
             if p.get("note") and got.get("met") is False:
                 got["delivered"] += f"; {p['note']}"
+        elif field == "layers:y_plus" and status in ("applied", "nearest") and not p.get("fallback") and (
+                yr := _y_plus_row(workspace, req, q, p)) is not None:
+            # CFDREQ-19: a wall-function y+ is judged by the y+ the built mesh's wall cells give
+            got = yr
         elif field in ("layers:y_plus", "layers:first_height") and status == "applied" and (
                 fl := _first_layer_row(workspace, req, q, p)) is not None:
             got = fl
@@ -2612,6 +2649,70 @@ _FIRST_LAYER_IN = (("system/snappyHexMeshDict", "firstLayerThickness"), ("system
 
 
 def _first_layer_row(workspace, req: Mapping, q: Mapping, p: Mapping) -> dict | None:
+    """CFDREQ-6: the first layer height row (_first_layer_facts), without the wall share it was judged on."""
+    got = _first_layer_facts(workspace, req, q, p)
+    return got[0] if got is not None else None
+
+
+#: CFDREQ-19: the y+ range wall functions model (the log layer: y+ 30 to about 300; Pope, Turbulent Flows; the solvers'
+#: guides), and how near the asked y+ the built one must be to meet it (0.6 to 2 times: 30 to 100 for the usual 50 -
+#: the band wall_fit already builds in)
+WALL_FUNCTION_RANGE = (30.0, 300.0)
+Y_PLUS_ASKED_BAND = (0.6, 2.0)
+#: CFDREQ-19: the share of the wall that must carry the first cell judged (the layer count's 80%, CFDREQ-6)
+Y_PLUS_WALL_SHARE = 80.0
+
+
+def y_plus_met(asked: float, built: float) -> bool:
+    """CFDREQ-19: a wall-function y+ about `asked` is met by a built first-cell centre at `built`: inside the
+    wall-function range and within Y_PLUS_ASKED_BAND of the ask."""
+    lo, hi = WALL_FUNCTION_RANGE
+    return (max(lo, Y_PLUS_ASKED_BAND[0] * float(asked)) <= float(built)
+            <= min(hi, Y_PLUS_ASKED_BAND[1] * float(asked)))
+
+
+def _y_plus_row(workspace, req: Mapping, q: Mapping, p: Mapping) -> dict | None:
+    """CFDREQ-19: AN ASKED WALL-FUNCTION Y+ IS JUDGED ON THE BUILT MESH. The wall's first cell (median, the census
+    CFDREQ-14 already takes) turned into the y+ of its centre by the same estimate the plan used (the plan's first
+    layer and the y+ it expected): met when that y+ is in the wall-function range and near the ask (y_plus_met) on
+    at least Y_PLUS_WALL_SHARE of the wall; else missed with the y+ reached and why. Before, a first layer capped by
+    its wall cell (the thickest that fits, y+ 47 against 50) was told "not possible as asked" whatever was built, and
+    a first cell half the plan (y+ 25, the buffer layer) counted as at the height asked. None when the ask is not a
+    wall-function y+ or the plan has no first layer to scale by (the row is judged as before)."""
+    asked = _num_or_none((req.get("layers") or {}).get("y_plus"))
+    first, expected = _num_or_none(p.get("first_m")), _num_or_none(p.get("y_plus_expected"))
+    if not asked or asked < WALL_FUNCTION_RANGE[0] or not first or not expected:
+        return None
+    got = _first_layer_facts(workspace, req, q, p)
+    if got is None:
+        return None
+    fl, cover = got
+    cell = _num_or_none(fl.get("first_cell_m"))
+    if cell:
+        said = f"on the built mesh the wall's first cell is {_mm(cell)} (median)"
+    else:
+        cell = float(fl["measured"])
+        said = f"the first layer is set {_mm(cell)} high (its cells on the built mesh were not measured)"
+    y = expected * cell / first
+    y_s = MR._g(round(y) if y >= 2 else round(y, 2))
+    ok_y, wide = y_plus_met(asked, y), cover >= Y_PLUS_WALL_SHARE
+    said += f", so its centre sits at y+ about {y_s}"
+    if ok_y:
+        said += f", in the wall-function range and near the {MR._g(asked)} asked"
+    else:
+        lo = max(WALL_FUNCTION_RANGE[0], Y_PLUS_ASKED_BAND[0] * asked)
+        hi = min(WALL_FUNCTION_RANGE[1], Y_PLUS_ASKED_BAND[1] * asked)
+        said += f", not {MR._g(asked)} (y+ {MR._g(lo)} to {MR._g(hi)} meets it"
+        said += (", and under 30 wall functions do not model the wall)" if y < WALL_FUNCTION_RANGE[0] else ")")
+    said += f"; layers of that height stand on {MR._g(cover)}% of the wall"
+    if not wide:
+        said += " - elsewhere the first cell is a different height, so y+ there is not the one said"
+    if not ok_y and p.get("status") == "nearest" and p.get("built"):
+        said += f"; {p['built']}"
+    return {**fl, "met": bool(ok_y and wide), "y_plus_measured": float(f"{y:.4g}"), "delivered": said}
+
+
+def _first_layer_facts(workspace, req: Mapping, q: Mapping, p: Mapping) -> tuple[dict, float] | None:
     """CFDREQ-6: a first layer height asked (or a y+ turned into one) against the built mesh - the height the
     mesher's dictionary was given, and the layers it really grew (the wall's coverage, the layer count's 80%): met,
     or not met with the numbers. None when either was not measured (the row stays "applied as a setting"). The
@@ -2667,7 +2768,7 @@ def _first_layer_row(workspace, req: Mapping, q: Mapping, p: Mapping) -> dict | 
     out = {"applied": True, "met": bool(as_asked and grown), "measured": float(f"{written:.4g}"), "delivered": said}
     if measured_height:
         out["first_cell_m"] = float(first_cell)
-    return out
+    return out, float(cover)
 
 
 def _num_or_none(v) -> float | None:
