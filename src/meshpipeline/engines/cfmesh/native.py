@@ -60,6 +60,7 @@ PASSAGE_REFINE_CELLS = 2_000_000
 #: INS-29: the words a run whose opening landed in a dropped region fails with: the same plan run again
 #: drops it again, so the ladder does not repeat it (pipeline/engine_fallback)
 PORT_REGION_DROPPED = "an opening landed in a piece of its passage the mesher dropped"
+PASSAGE_PORTS_RULE = "INS-29"
 _CELL_SIZES = re.compile(r"\b(maxCellSize|cellSize|boundaryCellSize)(\s+)([0-9.eE+-]+)(\s*;)")
 _N_CELLS = re.compile(rb"nCells:\s*(\d+)")
 

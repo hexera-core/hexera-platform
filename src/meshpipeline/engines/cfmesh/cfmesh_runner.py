@@ -565,6 +565,7 @@ CFMESH_CELLS_ACROSS = 15.0
 #: the reading's own scatter along a plain pipe (14.98 here, 15.02 there) boxed whole walls one
 #: level finer - 16 to 31 times the cells on five dev bends, reducers and transitions, offline.
 CFMESH_MIN_CELLS_ACROSS = CFMESH_CELLS_ACROSS - 0.5
+COARSER_PLAN_RULE = "PLAN-cfd-8"
 #: PLAN-cfd-8: a level coarser at the wall is taken only when it cuts the plan's estimate by at least this share.
 #: Where the wall carries the count a level cuts it four to eight times; abc 00063401's 210 M cells were 209.3 M
 #: of narrow-gap boxes priced at their own cells, and eight levels (0.85 mm to 218 mm) cut 0.3% of it.
