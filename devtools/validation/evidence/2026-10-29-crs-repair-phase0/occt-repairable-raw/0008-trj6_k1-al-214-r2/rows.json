@@ -1,0 +1,128 @@
+[
+  {
+    "file": "trj6_k1-al-214.stp",
+    "size_bytes": 509700,
+    "valid_before": true,
+    "counts_before": {
+      "solids": 1,
+      "shells": 1,
+      "faces": 39,
+      "edges": 278,
+      "vertices": 556
+    },
+    "defects_before": [
+      "small_edge"
+    ],
+    "located_before": {
+      "small_edge": 8
+    },
+    "regions_before": {
+      "unknown": 8
+    },
+    "status": "clean",
+    "route": "conservative_repair",
+    "confidence": 0.7,
+    "targets": [
+      {
+        "entity": "edge:82",
+        "code": "small_edge",
+        "region": "unknown"
+      },
+      {
+        "entity": "edge:84",
+        "code": "small_edge",
+        "region": "unknown"
+      },
+      {
+        "entity": "edge:94",
+        "code": "small_edge",
+        "region": "unknown"
+      },
+      {
+        "entity": "edge:96",
+        "code": "small_edge",
+        "region": "unknown"
+      },
+      {
+        "entity": "edge:100",
+        "code": "small_edge",
+        "region": "unknown"
+      },
+      {
+        "entity": "edge:102",
+        "code": "small_edge",
+        "region": "unknown"
+      },
+      {
+        "entity": "edge:138",
+        "code": "small_edge",
+        "region": "unknown"
+      },
+      {
+        "entity": "edge:139",
+        "code": "small_edge",
+        "region": "unknown"
+      }
+    ],
+    "abstain_reason": "",
+    "operations": [
+      {
+        "op": "fix_small_edges",
+        "status": "kept",
+        "reason": "",
+        "basis": "kernel",
+        "defect_code": "small_edge",
+        "targets": [
+          "edge:120294f9c6ec2c95"
+        ]
+      },
+      {
+        "op": "fix_small_edges",
+        "status": "rolled_back",
+        "reason": "target_remains",
+        "basis": "geometric",
+        "defect_code": "small_edge",
+        "targets": [
+          "edge:75949d5d71cb7f9f"
+        ]
+      },
+      {
+        "op": "fix_shape_global",
+        "status": "rolled_back",
+        "reason": "target_remains",
+        "basis": "geometric",
+        "defect_code": "small_edge",
+        "targets": [
+          "edge:75949d5d71cb7f9f"
+        ]
+      }
+    ],
+    "operations_attempted": 3,
+    "operations_kept": 1,
+    "stopped_because": "stalled",
+    "resolved": false,
+    "complete_scan": true,
+    "planner": "repair-v1",
+    "refusals": [],
+    "declared_area_mm2": 0.0,
+    "valid_after": true,
+    "counts_after": {
+      "solids": 1,
+      "shells": 1,
+      "faces": 39,
+      "edges": 270,
+      "vertices": 540
+    },
+    "defects_after": [
+      "small_edge"
+    ],
+    "located_after": {
+      "small_edge": 4
+    },
+    "repaired_defects": {
+      "small_edge": 8
+    },
+    "outcome": "repaired",
+    "seconds": 19.98
+  }
+]

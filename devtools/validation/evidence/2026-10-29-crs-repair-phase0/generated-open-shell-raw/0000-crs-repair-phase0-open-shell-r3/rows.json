@@ -1,0 +1,60 @@
+[
+  {
+    "file": "crs-repair-phase0-open-shell.step",
+    "size_bytes": 13631,
+    "valid_before": true,
+    "counts_before": {
+      "solids": 0,
+      "shells": 1,
+      "faces": 5,
+      "edges": 20,
+      "vertices": 40
+    },
+    "defects_before": [
+      "open_shell"
+    ],
+    "located_before": {
+      "open_shell": 1
+    },
+    "regions_before": {
+      "unknown": 1
+    },
+    "status": "repairable",
+    "route": "conservative_repair",
+    "confidence": 0.7,
+    "targets": [
+      {
+        "entity": "edge:10",
+        "code": "open_shell",
+        "region": "unknown"
+      }
+    ],
+    "abstain_reason": "",
+    "outcome": "refused",
+    "error": "nothing was kept (2 operation(s) attempted, stopped because no_candidate), so there is nothing to promote - re-exporting the upload would change its topology without repairing it",
+    "operations": [
+      {
+        "op": "sew_faces",
+        "status": "rolled_back",
+        "reason": "target_remains",
+        "basis": "geometric",
+        "defect_code": "open_shell",
+        "targets": [
+          "edge:a7f9dc1388d75d25"
+        ]
+      },
+      {
+        "op": "fill_planar_hole",
+        "status": "rolled_back",
+        "reason": "declined:filling_disabled (CAD_REPAIR_FILL_PLANAR_HOLES)",
+        "basis": "",
+        "defect_code": "open_shell",
+        "targets": [
+          "edge:a7f9dc1388d75d25"
+        ]
+      }
+    ],
+    "result_discarded": false,
+    "seconds": 0.75
+  }
+]

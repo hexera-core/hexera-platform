@@ -1,0 +1,211 @@
+{
+  "rows": [
+    {
+      "row": {
+        "file": "/tmp/crs-repair-phase0-open-shell.step",
+        "size_bytes": 13631,
+        "valid_before": true,
+        "counts_before": {
+          "solids": 0,
+          "shells": 1,
+          "faces": 5,
+          "edges": 20,
+          "vertices": 40
+        },
+        "defects_before": [
+          "open_shell"
+        ],
+        "located_before": {
+          "open_shell": 1
+        },
+        "regions_before": {
+          "unknown": 1
+        },
+        "status": "repairable",
+        "route": "conservative_repair",
+        "confidence": 0.7,
+        "targets": [
+          {
+            "entity": "edge:10",
+            "code": "open_shell",
+            "region": "unknown"
+          }
+        ],
+        "abstain_reason": "",
+        "outcome": "refused",
+        "error": "nothing was kept (2 operation(s) attempted, stopped because no_candidate), so there is nothing to promote - re-exporting the upload would change its topology without repairing it",
+        "operations": [
+          {
+            "op": "sew_faces",
+            "status": "rolled_back",
+            "reason": "target_remains",
+            "basis": "geometric",
+            "defect_code": "open_shell",
+            "targets": [
+              "edge:a7f9dc1388d75d25"
+            ]
+          },
+          {
+            "op": "fill_planar_hole",
+            "status": "rolled_back",
+            "reason": "declined:too_large (span ratio 0.8165)",
+            "basis": "",
+            "defect_code": "open_shell",
+            "targets": [
+              "edge:a7f9dc1388d75d25"
+            ]
+          }
+        ],
+        "result_discarded": false,
+        "seconds": 0.84
+      },
+      "cpu_seconds": 0.9988339999999999,
+      "max_rss_kb": 307120,
+      "raw_rows_path": "devtools/validation/evidence/2026-10-29-crs-repair-phase0/generated-open-shell-fill-enabled-raw/0000-crs-repair-phase0-open-shell-r1/rows.json",
+      "wall_seconds": 1.140051709000545
+    },
+    {
+      "row": {
+        "file": "/tmp/crs-repair-phase0-open-shell.step",
+        "size_bytes": 13631,
+        "valid_before": true,
+        "counts_before": {
+          "solids": 0,
+          "shells": 1,
+          "faces": 5,
+          "edges": 20,
+          "vertices": 40
+        },
+        "defects_before": [
+          "open_shell"
+        ],
+        "located_before": {
+          "open_shell": 1
+        },
+        "regions_before": {
+          "unknown": 1
+        },
+        "status": "repairable",
+        "route": "conservative_repair",
+        "confidence": 0.7,
+        "targets": [
+          {
+            "entity": "edge:10",
+            "code": "open_shell",
+            "region": "unknown"
+          }
+        ],
+        "abstain_reason": "",
+        "outcome": "refused",
+        "error": "nothing was kept (2 operation(s) attempted, stopped because no_candidate), so there is nothing to promote - re-exporting the upload would change its topology without repairing it",
+        "operations": [
+          {
+            "op": "sew_faces",
+            "status": "rolled_back",
+            "reason": "target_remains",
+            "basis": "geometric",
+            "defect_code": "open_shell",
+            "targets": [
+              "edge:a7f9dc1388d75d25"
+            ]
+          },
+          {
+            "op": "fill_planar_hole",
+            "status": "rolled_back",
+            "reason": "declined:too_large (span ratio 0.8165)",
+            "basis": "",
+            "defect_code": "open_shell",
+            "targets": [
+              "edge:a7f9dc1388d75d25"
+            ]
+          }
+        ],
+        "result_discarded": false,
+        "seconds": 0.84
+      },
+      "cpu_seconds": 1.070341,
+      "max_rss_kb": 307248,
+      "raw_rows_path": "devtools/validation/evidence/2026-10-29-crs-repair-phase0/generated-open-shell-fill-enabled-raw/0000-crs-repair-phase0-open-shell-r2/rows.json",
+      "wall_seconds": 1.1496378329975414
+    },
+    {
+      "row": {
+        "file": "/tmp/crs-repair-phase0-open-shell.step",
+        "size_bytes": 13631,
+        "valid_before": true,
+        "counts_before": {
+          "solids": 0,
+          "shells": 1,
+          "faces": 5,
+          "edges": 20,
+          "vertices": 40
+        },
+        "defects_before": [
+          "open_shell"
+        ],
+        "located_before": {
+          "open_shell": 1
+        },
+        "regions_before": {
+          "unknown": 1
+        },
+        "status": "repairable",
+        "route": "conservative_repair",
+        "confidence": 0.7,
+        "targets": [
+          {
+            "entity": "edge:10",
+            "code": "open_shell",
+            "region": "unknown"
+          }
+        ],
+        "abstain_reason": "",
+        "outcome": "refused",
+        "error": "nothing was kept (2 operation(s) attempted, stopped because no_candidate), so there is nothing to promote - re-exporting the upload would change its topology without repairing it",
+        "operations": [
+          {
+            "op": "sew_faces",
+            "status": "rolled_back",
+            "reason": "target_remains",
+            "basis": "geometric",
+            "defect_code": "open_shell",
+            "targets": [
+              "edge:a7f9dc1388d75d25"
+            ]
+          },
+          {
+            "op": "fill_planar_hole",
+            "status": "rolled_back",
+            "reason": "declined:too_large (span ratio 0.8165)",
+            "basis": "",
+            "defect_code": "open_shell",
+            "targets": [
+              "edge:a7f9dc1388d75d25"
+            ]
+          }
+        ],
+        "result_discarded": false,
+        "seconds": 0.95
+      },
+      "cpu_seconds": 1.1748509999999999,
+      "max_rss_kb": 307440,
+      "raw_rows_path": "devtools/validation/evidence/2026-10-29-crs-repair-phase0/generated-open-shell-fill-enabled-raw/0000-crs-repair-phase0-open-shell-r3/rows.json",
+      "wall_seconds": 1.2420685420001973
+    }
+  ],
+  "wall_seconds": {
+    "min": 1.140051709000545,
+    "median": 1.1496378329975414,
+    "max": 1.2420685420001973
+  },
+  "cpu_seconds": {
+    "min": 0.9988339999999999,
+    "median": 1.070341,
+    "max": 1.1748509999999999
+  },
+  "max_rss_kb": 307440,
+  "determinism": {
+    "deterministic": true,
+    "mismatches": []
+  }
+}
