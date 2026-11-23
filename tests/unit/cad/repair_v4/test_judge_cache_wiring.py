@@ -401,3 +401,14 @@ def test_default_judge_for_hands_the_derived_size_to_the_sites(checker: Checker,
     j = search.default_judge_for(pool, ws)
     j.sites(pool, ws, None)
     assert seen == [pytest.approx(200.0)]
+
+
+def test_an_export_that_reports_ok_but_wrote_nothing_is_checker_unavailable(tmp_path: Path) -> None:
+    class Liar(Pool):
+        def call(self, fn: str, payload: dict, *, timeout_s: float) -> CallResult:
+            if fn == "write_step_xcaf":
+                return CallResult(True, {}, None, "ok", 0.0)
+            return super().call(fn, payload, timeout_s=timeout_s)
+
+    with pytest.raises(CheckerUnavailable):
+        stages.step_for(Liar(), make_ws(tmp_path, "liar").brep_path)
