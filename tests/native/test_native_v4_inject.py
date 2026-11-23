@@ -382,9 +382,10 @@ SEEDS = range(1, 13)
 
 def _op_verdict(path: Path, tmp_path: Path) -> tuple[bool, str]:
     """Run the real `fill_loop` kernel function on the FILE, with the free edges as the search would target them."""
+    import meshpipeline.cad.repair_v4.ops  # noqa: F401  (registers the ops; ws_kernel imported alone is circular)
     from meshpipeline.cad.repair.identity import quantum_for
-    from meshpipeline.cad.repair_v4.ops import faces as face_ops  # first: importing ws_kernel alone is circular
     from meshpipeline.cad.repair_v4 import ws_kernel
+    from meshpipeline.cad.repair_v4.ops import faces as face_ops
 
     read = STEPControl_Reader()
     assert read.ReadFile(str(path)) == IFSelect_RetDone

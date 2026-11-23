@@ -375,8 +375,8 @@ def sites_free_loops(payload: dict) -> dict:
     stable id). The edges are the shape's own, so the indices are the workspace's. A free chain that does not close
     cannot be filled and is only counted."""
     from OCP.Bnd import Bnd_Box
-    from OCP.BRepBndLib import BRepBndLib
     from OCP.BRep import BRep_Tool
+    from OCP.BRepBndLib import BRepBndLib
     from OCP.ShapeAnalysis import ShapeAnalysis_FreeBounds
     from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE
     from OCP.TopExp import TopExp, TopExp_Explorer

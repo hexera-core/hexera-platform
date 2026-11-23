@@ -405,9 +405,10 @@ def _fill_restores(damaged: TopoDS_Shape) -> tuple[bool, str, dict]:
     bound (0.1 mm), and the label records the measured number so such a case is visible."""
     from OCP.TopTools import TopTools_IndexedDataMapOfShapeListOfShape
 
+    import meshpipeline.cad.repair_v4.ops  # noqa: F401  (registers the ops; ws_kernel imported alone is circular)
     from meshpipeline.cad.repair.identity import quantum_for
-    from meshpipeline.cad.repair_v4.ops import faces as face_ops  # first: importing ws_kernel alone is circular
     from meshpipeline.cad.repair_v4 import ws_kernel
+    from meshpipeline.cad.repair_v4.ops import faces as face_ops
 
     with tempfile.TemporaryDirectory(prefix="fill_probe_") as td:
         before, after = str(Path(td) / "damaged.brep"), str(Path(td) / "filled.brep")

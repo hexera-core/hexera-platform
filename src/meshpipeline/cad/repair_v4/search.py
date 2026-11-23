@@ -91,10 +91,10 @@ from dataclasses import dataclass, field, replace
 from typing import Any, Literal, Protocol
 
 from meshpipeline.cad.repair_v4 import render
+from meshpipeline.cad.repair_v4.limits import fill_span_allowed
 from meshpipeline.cad.repair_v4.measurement import NO_VERDICT, file_unmeasured, no_verdict_failure
 from meshpipeline.cad.repair_v4.ops import REGISTRY, OpDeclined, OpFailed, validate_call
 from meshpipeline.cad.repair_v4.ops.shells import scaled_sew_ladder, scaled_sliver_widths
-from meshpipeline.cad.repair_v4.limits import fill_span_allowed
 from meshpipeline.cad.repair_v4.proposer import (
     IMAGE_KINDS,
     AIProposer,
