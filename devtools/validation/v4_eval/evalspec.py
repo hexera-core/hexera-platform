@@ -41,19 +41,43 @@ SEED = 20261122
 MAX_VM_HOURS = 600.0
 DEFAULT_MACHINE = "c2d-standard-8"
 MAX_TOTAL_VCPU = 100
-#: Per-file wall-clock kill, seconds. One file's checker calls are individually bounded (300 s each);
-#: this bounds their sum. A file that hits it is EXCLUDED from the counts (reprobe.Excluded).
-DEFAULT_FILE_TIMEOUT_S = 900.0
+#: Per-file wall-clock kill, seconds. One file's checker calls are individually bounded (900 s each, the ONE
+#: definition is `meshpipeline.cad.repair_v4.limits.CHECKER_CALL_TIMEOUT_S`); this bounds their SUM, so it must
+#: stay larger than that. A file that hits it is EXCLUDED from the counts (reprobe.Excluded), is never a failure,
+#: and is reported as its own stratum by collect.py (`report()["excluded_stratum"]`).
+#:
+#: 900.0 until 2026-11-23 (task 55). RAISED to 1800.0 from the measured distribution, because at 900 s the file
+#: wall plus the 300 s call wall excluded ~8.7% of the pool (pool-weighted by file size) against collect.py's 2%
+#: limit, so the wave would have ended at exit 2 with no split. Where 1800 comes from:
+#:   - MEASURED (Lane D, 59 diagonal-stratified files, corpora/v4/measure_lane_d_20261123/files.jsonl): the
+#:     slowest file that FINISHED took 643 s; 3 of 59 (4.7% pool-weighted) were killed at 900 s.
+#:   - PROJECTED over the 10,887-file pool with project_reprobe.py's size model (log wall = -1.263 + 0.360 log
+#:     bytes, R^2 0.21, residuals resampled): p90 309 s, p95 604 s, p98 1602 s, so 1800 s is the p98.2 and
+#:     excludes a projected 1.8% of the pool (vs 3.4% at 900 s).
+#:   - BOUNDED ABOVE by the VM's run duration, not by taste: re-running project_reprobe.py at each candidate cap
+#:     over 96 cost-balanced shards gives a simulated wall of 5.2 h (p90 5.6) at 900 s, 6.7 h (p90 7.4) at
+#:     1800 s, 7.6 h (p90 8.4) at 2400 s and 9.0 h (p90 10.2) at 3600 s. 8.0 h is the --max-run-hours
+#:     `check_budget` is asked about by default (collect.py --measure, launch_reprobe.py), and a wave whose wall
+#:     passes it has its VMs deleted mid-shard. 1800 s is the largest candidate whose simulated p90 still fits
+#:     that 8 h; 2400 s is the first that does not. (A launch run with --max-run-hours 12, as the RUNBOOK's
+#:     command does, has more room - the 8 h default is the number used here, stated so it can be argued with.)
+#:   - THE COST OF THE RAISE: 335 -> 400 vCPU-h, 54.8 -> 68.5 VM-h, $20.7 -> $25.8 (96 shards, LPT, $0.377/VM-h).
+#:     Per shard the worst case a single pathological file can burn doubles, from 900 s to 1800 s - about 7.4% of
+#:     a 6.7 h shard instead of 4.8% of a 5.2 h one. That is what the wall is for and the price of widening it.
+DEFAULT_FILE_TIMEOUT_S = 1800.0
 
 #: Minutes of one vCPU per file for the FULL verdict (layer 1 + the panel + layer 3). The re-probe runs it on
 #: every file (plan amendment 2026-11-23 19:15: the cheap-first pass is dropped). MEASURED by lane D on 2026-11-23 at
 #: commit 5eefb130 (Lane A's 2.6x layer 1/3 speed-up included): 59 diagonal-stratified files, 8 shards pinned to
 #: 4 cores' hyperthread pairs (a c2d-standard-8's shape), --cpus=1, cold cache. Sample median 25.5 s, mean 136 s,
-#: p90 620 s; 5.1% hit the 900 s file wall. Re-weighted to the pool's file sizes (project_reprobe.py): 336 vCPU-h
-#: for 10,887 files = 111 s/file. One file used exactly one vCPU (cgroup CPU/wall 1.00, 1.2 s throttled in 8,023 s).
-FULL_MIN_PER_FILE = 111.0 / 60
+#: p90 620 s; 5.1% hit the then-900 s file wall. One file used exactly one vCPU (cgroup CPU/wall 1.00, 1.2 s
+#: throttled in 8,023 s). Re-weighted to the pool's file sizes (project_reprobe.py over the 10,887 staged input
+#: sizes) this was 336 vCPU-h = 111 s/file AT THE 900 s WALL. The figure is a function of the wall, so task 55's
+#: raise to DEFAULT_FILE_TIMEOUT_S = 1800 s re-derives it from the same sample and the same model at the new cap:
+#: 400 vCPU-h for 10,887 files = 132.4 s/file (96 shards, LPT; 400.2-401.2 vCPU-h across the four shard plans).
+FULL_MIN_PER_FILE = 132.4 / 60
 #: Slowest-shard / mean-shard wall. Hash-partitioned shards are balanced in file COUNT, not in time:
-#: 900 s timeouts and heavy parts make a long tail, and the slowest shard sets the billed time.
+#: file-wall timeouts and heavy parts make a long tail, and the slowest shard sets the billed time.
 SKEW = 1.5
 
 #: THE SOURCE LIST, as data. Every pool source label (pool.Source) a wave may name, and the subset the
@@ -116,7 +140,7 @@ def shard_of(sha256: str, i: int, n: int) -> bool:
 
 # --------------------------------------------------------------------------- cost-balanced shards
 #
-# The hash partition (shard_of) balances file COUNT, not time: a few 900 s files decide the slowest shard. A SHARD PLAN
+# The hash partition (shard_of) balances file COUNT, not time: a few wall-killed files decide the slowest shard. A SHARD PLAN
 # assigns files largest-first by PREDICTED cost to the currently lightest shard (LPT). The predictor is file size, the
 # one feature known for every pool file before any CAD is read. A plan is a file; run_arm cuts from it, collect and
 # report check against it, and every shard records its digest so a check against another plan (or none) refuses.

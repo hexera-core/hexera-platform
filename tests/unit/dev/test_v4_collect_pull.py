@@ -455,3 +455,70 @@ def test_gcloud_transport_raises_when_the_command_fails() -> None:
 def test_the_guard_bites_an_unfaked_run_fails_loudly() -> None:
     with pytest.raises(AssertionError):
         collect.GcloudTransport().ls(URI)  # default run is subprocess.run: the autouse guard blocks it
+
+
+# ------------------------------------------------------------------ the excluded stratum (task 55)
+
+def test_the_excluded_stratum_names_every_file_and_counts_it_as_nothing() -> None:
+    """A wall-killed file is reported as its OWN category: counted, NAMED, with the walls that produced it,
+    and in no failing, clean or unclean count."""
+    rows = _population()
+    exs = [rp.Excluded("slow.step", _sha(901), "abc_fail", "file_timeout: file wall clock 1800s exceeded"),
+           rp.Excluded("checker.step", _sha(902), "occt",
+                       "checker_unavailable: check_valid: timeout: check_valid exceeded 900.0s; worker killed")]
+    merged = {"rows": rows, "excluded": [asdict(x) for x in exs], "cheap": [], "full": [],
+              "cheap_failed": set()}
+    rep = collect.report(merged, None)
+    block = rep["excluded_stratum"]
+
+    assert block["files"] == 2
+    assert [n["name"] for n in block["names"]] == ["checker.step", "slow.step"]  # named, sorted by reason
+    assert {n["reason"].split(":")[0] for n in block["names"]} == {"file_timeout", "checker_unavailable"}
+    assert block["by_reason"] == {"file_timeout": 1, "checker_unavailable": 1}
+    assert block["by_source"] == {"abc_fail": 1, "occt": 1}
+    assert "not a failure" in block["counted_as"] and "not clean" in block["counted_as"]
+    # not a failure and not a pass: the counts the splits are cut from do not see it at all
+    failing = len([r for r in rows if r.first_failing_layer is not None])
+    assert rep["failing"] + rep["no_solids_not_repairable"] == failing
+    assert rep["probed_conclusive"] == len(rows)
+    assert sum(rep["by_layer"].values()) == len(rows)
+    assert sum(rep["failing_by_stratum"].values()) == rep["failing"]
+
+
+def test_the_stratum_reports_the_walls_it_read_and_never_retypes_them() -> None:
+    from meshpipeline.cad.repair_v4.limits import CHECKER_CALL_TIMEOUT_S
+
+    walls = collect.wall_values()
+    assert walls == {"file_timeout_s": evalspec.DEFAULT_FILE_TIMEOUT_S,
+                     "check_valid_timeout_s": CHECKER_CALL_TIMEOUT_S}
+    # the per-file wall bounds the SUM of a file's calls, so it has to be the larger of the two
+    assert walls["file_timeout_s"] > walls["check_valid_timeout_s"]
+
+
+def test_the_stratum_line_is_printed_on_every_run_including_when_it_is_empty(tmp_path, capsys) -> None:
+    rc, _t = _run(tmp_path, _wave()[0])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "EXCLUDED STRATUM 0 file(s), 0.00% of the pool (limit 2%: under)" in out
+    assert f"file_timeout_s {evalspec.DEFAULT_FILE_TIMEOUT_S:g}s" in out
+
+
+def test_over_the_limit_the_refusal_names_the_walls_and_points_at_the_stratum(tmp_path, capsys) -> None:
+    rows = _population()
+    exs: list = []
+    i = 700
+    while len(exs) < 6:  # over the 2% limit, all in shard 1
+        i += 1
+        if evalspec.shard_of(_sha(i), 1, N):
+            exs.append(rp.Excluded(f"e{i}", _sha(i), "abc_fail", "file_timeout: 1800s"))
+    bucket, _ = _wave(rows=rows)
+    _put_shard(bucket, 1, N, [r for r in rows if evalspec.shard_of(r.sha256, 1, N)], excluded=exs)
+    rc, _t = _run(tmp_path, bucket, extra_pool=tuple(int(x.sha256, 16) for x in exs))
+    cap = capsys.readouterr()
+    assert rc == 2 and not (tmp_path / "out").exists()
+    assert "excluded_stratum.names" in cap.err and "walls" in cap.err
+    # the refusal stands on its own; --allow-excluded is not what the stratum is for
+    report = json.loads((tmp_path / "wave/collect-report.json").read_text())
+    stratum = report["report"]["excluded_stratum"]
+    assert report["accepted"] is False and stratum["over_limit"] is True and stratum["files"] == 6
+    assert len(stratum["names"]) == 6

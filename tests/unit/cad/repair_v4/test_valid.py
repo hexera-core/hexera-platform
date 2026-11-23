@@ -178,3 +178,43 @@ def test_an_unbounded_finding_stops_layer_1_before_the_round_trip() -> None:
 def test_only_the_unbounded_code_makes_a_report_unbounded() -> None:
     assert not check_valid(ScriptedPool(hard=["open_shell"]), "a.step", original_units=None).unbounded
     assert not check_valid(ScriptedPool(), "a.step", original_units=None).unbounded
+
+
+# ------------------------------------------------------------------ the checker's one-call wall (task 55)
+
+def test_the_one_call_wall_has_exactly_one_definition_and_every_reader_reads_it() -> None:
+    """`limits.CHECKER_CALL_TIMEOUT_S` is the wall. valid.py publishes it as CALL_TIMEOUT_S (faithful.py reads
+    it from there) and memo.py as READ_TIMEOUT_S; none of them may hold a number of its own, because a wall
+    that is retyped drifts and then the raise of one half is silently undone by the other."""
+    import inspect
+    import re
+
+    from meshpipeline.cad.repair_v4 import limits
+    from meshpipeline.cad.repair_v4.verdict import faithful, memo, valid
+
+    wall = limits.CHECKER_CALL_TIMEOUT_S
+    assert wall > 0
+    assert valid.CALL_TIMEOUT_S is wall
+    assert memo.READ_TIMEOUT_S is wall
+    assert faithful.CALL_TIMEOUT_S is wall
+
+    # no module but limits.py may ASSIGN the number; a comment that quotes a measurement may mention it
+    for mod in (valid, memo, faithful):
+        for line in inspect.getsource(mod).splitlines():
+            code = line.split("#")[0]
+            assert not re.search(rf"^\s*\w*TIMEOUT\w*\s*=\s*{wall:g}", code), f"{mod.__name__}: {line!r}"
+
+
+def test_the_per_file_wall_is_larger_than_one_call_may_take() -> None:
+    """The per-file wall (evalspec.DEFAULT_FILE_TIMEOUT_S) bounds the SUM of a file's calls, so a per-file wall
+    at or below the per-call wall could only ever kill a file mid-call and would make the call wall unreachable."""
+    import sys
+    from pathlib import Path
+
+    from meshpipeline.cad.repair_v4 import limits
+
+    v4 = Path(__file__).resolve().parents[4] / "devtools/validation/v4_eval"
+    sys.path.insert(0, str(v4))
+    import evalspec  # noqa: PLC0415
+
+    assert evalspec.DEFAULT_FILE_TIMEOUT_S > limits.CHECKER_CALL_TIMEOUT_S

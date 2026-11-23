@@ -173,6 +173,20 @@ class GcsObjectStore:
             return False
         return True
 
+    def delete_object(self, *, object_key: str, missing_ok: bool = True) -> bool:
+        """True if this call deleted the object. NOT part of `MarkerStore`, deliberately: the ledger must never
+        be able to delete a marker it relies on (that is what `LostShardLog` exists to catch). It is here for
+        devtools/validation/v4_eval/marker_probe.py, which creates throwaway `_probe/` keys against the real wave
+        bucket and has to take them away again."""
+        from google.api_core.exceptions import NotFound
+        try:
+            self._b().blob(object_key).delete()
+        except NotFound:
+            if missing_ok:
+                return False
+            raise
+        return True
+
 
 class ObjectMarkerStore:
     """Markers as objects in the wave bucket. `create` is a server-side PRECONDITION write
@@ -187,6 +201,17 @@ class ObjectMarkerStore:
 
     def _key(self, key: str) -> str:
         return f"{self._prefix}/{key}"
+
+    @property
+    def store(self) -> Any:
+        """The object store underneath. Exposed for the marker probe, which has to clean up the throwaway keys
+        it writes to the real wave bucket; `MarkerStore` itself has no delete, on purpose."""
+        return self._store
+
+    def object_key(self, key: str) -> str:
+        """The object key a marker `key` is stored under, so a caller that must address the object (the probe's
+        cleanup) does not have to rebuild the prefix."""
+        return self._key(key)
 
     def get(self, key: str) -> str | None:
         if not self._store.exists(object_key=self._key(key)):

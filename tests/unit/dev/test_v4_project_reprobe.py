@@ -44,3 +44,26 @@ def test_lpt_balances_better_than_any_shard_holding_two_giants() -> None:
     assign = pr.lpt(costs, 2)
     loads = [sum(c for h, c in costs.items() if assign[h] == s) for s in (0, 1)]
     assert assign[_sha(0)] != assign[_sha(1)] and max(loads) == 140
+
+
+def test_the_simulated_cap_is_the_waves_own_wall_not_a_second_copy(tmp_path, capsys) -> None:
+    """The projection prices the wave, so the wall it caps simulated files at must BE the wall the wave runs
+    (evalspec.DEFAULT_FILE_TIMEOUT_S). A retyped default would price the old wall after the next raise."""
+    import json
+
+    rows = [{"size": 10_000 * (i + 1), "wall_s": 5.0 * (i + 1), "cpu_s": 5.0 * (i + 1),
+             "throttled_s": 0.0, "mem_peak": 1 << 20, "excluded": None} for i in range(12)]
+    measured = tmp_path / "files.jsonl"
+    measured.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    sizes = tmp_path / "sizes.json"
+    sizes.write_text(json.dumps({_sha(i): 100_000 for i in range(50)}))
+
+    seen: list[float] = []
+    real = pr.simulate
+    pr.simulate = lambda *a, **k: (seen.append(a[5]), real(*a, **k))[1]
+    try:
+        assert pr.main(["--measured", str(measured), "--sizes", str(sizes), "--shards", "4", "--reps", "2"]) == 0
+    finally:
+        pr.simulate = real
+    capsys.readouterr()
+    assert seen and set(seen) == {float(ev.DEFAULT_FILE_TIMEOUT_S)}

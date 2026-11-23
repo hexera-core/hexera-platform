@@ -28,10 +28,14 @@ from collections import OrderedDict
 from collections.abc import Callable, Hashable
 from typing import Any
 
+from meshpipeline.cad.repair_v4.limits import CHECKER_CALL_TIMEOUT_S
 from meshpipeline.cad.repair_v4.verdict.cache import file_sha256
 from meshpipeline.cad.repair_v4.worker_pool import CallResult
 
-READ_TIMEOUT_S = 300.0  # the layer's one call limit (valid.CALL_TIMEOUT_S); repeated here to avoid a cycle
+#: The layer's one-call limit, the same number valid.py publishes as `CALL_TIMEOUT_S`. It comes from
+#: `repair_v4.limits` and not from valid.py because valid.py imports THIS module (importing it back would be a
+#: cycle); limits.py is the one place it is written.
+READ_TIMEOUT_S = CHECKER_CALL_TIMEOUT_S
 MAX_READS = 32  # BREP files kept per pool; the oldest is deleted
 MAX_REPORTS = 2048  # layer 1 and layer 3 reports kept per pool (small objects)
 

@@ -3,8 +3,9 @@
 #                 shard, mixed commits or images), merge their rows, report cheap/full agreement and
 #                 counts, and cut the splits.
 # Owns: shard discovery, the comparability gate, the merge, `report`, and the corpora/v4 write.
-# Boundaries: no CAD, no mesher. Rows come from `reprobe`; an EXCLUDED entry (infrastructure failure)
-#             is reported as such and is never added to the failing, unclean or clean counts.
+# Boundaries: no CAD, no mesher. Rows come from `reprobe`; an EXCLUDED entry (a wall kill or an
+#             infrastructure failure) is reported as its OWN STRATUM - counted, named, with the walls that
+#             produced it - and is never added to the failing, unclean or clean counts.
 """Collect the re-probe.
 
     collect.py --status gs://bucket/eval/reprobe-<c12>/pool [--shards N]     # per shard: DONE / FAILED / running
@@ -19,6 +20,15 @@ exit_code 0; a FAILED shard, a mixed commit or image, a file filed under the wro
 shards, a pool file nobody probed and a row the pool does not list are all REFUSED (exit 1). A short
 split or a large exclusion exits 2 and writes no split. `--measure` is the one mode that takes fewer
 shards than planned, and it writes nothing but a measurement.
+
+THE EXCLUDED STRATUM. A file the probe reached no verdict on - killed by the per-file wall or by the
+checker's one-call wall, or lost to a pool death or an unreadable input - says nothing about the CAD, so
+it is neither a failure nor a pass. `report()["excluded_stratum"]` carries it as its OWN category, the
+way report.py carries the declined stratum: counted, NAMED file by file, with the two wall values that
+produced it, and printed on its own line on every run (including when it is empty). It enters no failing
+count, no clean count and no per-stratum rate. Above MAX_EXCLUDED_FRACTION of the pool collect still
+refuses and writes no split; the answer to that is a higher wall and another probe, not
+`--allow-excluded`, which is for an owner who has read the named stratum and ruled.
 """
 from __future__ import annotations
 
@@ -101,6 +111,50 @@ def merge(shards: list[dict]) -> dict[str, Any]:
             "cheap_failed": cheap_failed}
 
 
+def wall_values() -> dict[str, float]:
+    """The two walls whose kills land in the excluded stratum, as the wave will actually run them, READ from their
+    own definitions and not retyped here: `check_valid_timeout_s` is the checker's one-call wall
+    (`repair_v4.limits.CHECKER_CALL_TIMEOUT_S`) and `file_timeout_s` bounds the SUM of a file's calls
+    (`evalspec.DEFAULT_FILE_TIMEOUT_S`). They are reported with the stratum so a reader sees which numbers
+    produced the exclusions."""
+    from meshpipeline.cad.repair_v4.limits import CHECKER_CALL_TIMEOUT_S
+
+    return {"file_timeout_s": float(evalspec.DEFAULT_FILE_TIMEOUT_S),
+            "check_valid_timeout_s": float(CHECKER_CALL_TIMEOUT_S)}
+
+
+def excluded_stratum(merged: dict[str, Any]) -> dict[str, Any]:
+    """THE EXCLUDED STRATUM: the files the probe reached no verdict on - a wall kill (the per-file wall or the
+    checker's one-call wall), a pool death, an unreadable input. A THIRD category, exactly like report.py's
+    declined stratum: never a failure, never clean, in no failing count, no clean count and no per-stratum rate,
+    and NAMED here so it cannot be silently dropped. `over_limit` is the honest refusal: when it is true collect
+    writes no split, and raising the walls is the fix, never `--allow-excluded`."""
+    xs = sorted(merged["excluded"], key=lambda x: (str(x.get("reason", "")), str(x.get("name", ""))))
+    frac = excluded_fraction(merged)
+    return {
+        "counted_as": "none: not a failure, not clean, in no failing count and no stratum rate",
+        "files": len(xs),
+        "fraction_of_pool": frac,
+        "limit": MAX_EXCLUDED_FRACTION,
+        "over_limit": frac > MAX_EXCLUDED_FRACTION,
+        "walls": wall_values(),
+        "by_reason": dict(Counter(str(x.get("reason", "")).split(":")[0] for x in xs)),
+        "by_source": dict(Counter(str(x.get("source", "")) for x in xs)),
+        "names": [{"name": x.get("name"), "sha256": x.get("sha256"), "source": x.get("source"),
+                   "reason": x.get("reason")} for x in xs],
+    }
+
+
+def describe_excluded_stratum(block: dict[str, Any]) -> str:
+    """The stratum's own line, for the humans reading collect's stdout."""
+    walls = ", ".join(f"{k} {v:g}s" for k, v in sorted(block["walls"].items()))
+    reasons = ", ".join(f"{k} {n}" for k, n in sorted(block["by_reason"].items())) or "none"
+    return (f"EXCLUDED STRATUM {block['files']} file(s), {block['fraction_of_pool']:.2%} of the pool "
+            f"(limit {block['limit']:.0%}: {'OVER' if block['over_limit'] else 'under'}) at walls {walls}; "
+            f"by reason: {reasons}. {block['counted_as'].upper()}; every file is named under "
+            "report.excluded_stratum.names in collect-report.json.")
+
+
 def report(merged: dict[str, Any], splits: Any | None) -> dict:
     rows = merged["rows"]
     failing = [r for r in rows if r.first_failing_layer is not None]
@@ -111,6 +165,7 @@ def report(merged: dict[str, Any], splits: Any | None) -> dict:
         "excluded_fraction": excluded_fraction(merged),
         "excluded_by_source": dict(Counter(x["source"] for x in merged["excluded"])),
         "excluded_by_reason": dict(Counter(x["reason"].split(":")[0] for x in merged["excluded"])),
+        "excluded_stratum": excluded_stratum(merged),
         "failing": len(failing) - len(no_solids),
         "no_solids_not_repairable": len(no_solids),
         "by_layer": dict(Counter(str(r.first_failing_layer) for r in rows)),
@@ -329,7 +384,9 @@ def main(argv: list[str] | None = None, *, transport: Transport | None = None) -
     parser.add_argument("--clean", type=int, default=150)
     parser.add_argument("--allow-shortfall", action="store_true", help="write splits that are short")
     parser.add_argument("--allow-excluded", action="store_true",
-                        help=f"proceed although more than {MAX_EXCLUDED_FRACTION:.0%} of the pool was excluded")
+                        help=f"proceed although more than {MAX_EXCLUDED_FRACTION:.0%} of the pool was excluded. "
+                             "NEVER pass this blindly: read the named excluded stratum first (it is printed and "
+                             "stored in collect-report.json) and say why the bias it describes is acceptable")
     parser.add_argument("--report-only", action="store_true")
     parser.add_argument("--out-dir", default=str(rp.SPLITS_DIR))
     parser.add_argument("--pull", default="", help="gs://bucket/eval/reprobe-<c12>: fetch, then collect")
@@ -375,10 +432,14 @@ def main(argv: list[str] | None = None, *, transport: Transport | None = None) -
         print(f"REFUSED {exc}", file=sys.stderr)
         return 1
     frac = excluded_fraction(merged)
+    stratum = excluded_stratum(merged)
     problems: list[str] = []
     if frac > MAX_EXCLUDED_FRACTION and not args.allow_excluded:
-        problems.append(f"{frac:.1%} of the pool was excluded (limit {MAX_EXCLUDED_FRACTION:.0%}): the failing "
-                        "set is biased toward files the checker could finish; rerun the excluded shards")
+        walls = ", ".join(f"{k} {v:g}s" for k, v in sorted(stratum["walls"].items()))
+        problems.append(f"{frac:.1%} of the pool was excluded (limit {MAX_EXCLUDED_FRACTION:.0%}) at walls "
+                        f"{walls}: the failing set is biased toward files the checker could finish; rerun the "
+                        "excluded shards, or raise the walls and re-probe - the stratum names every file "
+                        "(report.excluded_stratum.names)")
     splits = None
     if not args.report_only:
         try:
@@ -391,6 +452,8 @@ def main(argv: list[str] | None = None, *, transport: Transport | None = None) -
         problems.append(f"splits are short: {splits.shortfall}")
     rep = report(merged, splits)
     print(json.dumps(rep, indent=1, sort_keys=True))
+    # The stratum gets its own line, always - at 0 files too, so a reader never has to infer that nothing was lost.
+    print(describe_excluded_stratum(rep["excluded_stratum"]))
     write_report(Path(args.src), shards, rep, source=args.pull or str(args.src), accepted=not problems,
                  problems=problems)
     if problems:

@@ -1078,3 +1078,61 @@ def test_a_split_of_only_declined_files_has_nothing_to_report_a_rate_on(tmp_path
     build(tmp_path, WAVE, split, rows_for=lambda b, i, a: _stratum_rows(b, i, a))
     with pytest.raises(report.ReportRefused, match="every file in the split is declined-stratum"):
         report.build_report(load(tmp_path, split))
+
+
+# ------------------------------------------------------------------ the excluded stratum (task 55)
+
+def _wall_excluded(base, wall: str = "file_timeout: file wall clock 1800s exceeded") -> dict:
+    return {"name": base.name, "sha256": base.sha256, "source": base.source, "reason": wall}
+
+
+def test_the_excluded_stratum_appears_in_the_report_named_with_the_walls_that_made_it(tmp_path) -> None:
+    from meshpipeline.cad.repair_v4.limits import CHECKER_CALL_TIMEOUT_S
+
+    split = split_rows()
+    xs = [_wall_excluded(split[5]),
+          _wall_excluded(split[9], "checker_unavailable: check_valid: timeout: check_valid exceeded 900.0s")]
+    build(tmp_path, WAVE, split, excluded=xs)
+    rep = report.build_report(load(tmp_path, split))
+    block = rep["excluded_stratum"]
+
+    assert block["files"] == 2
+    assert sorted(n["name"] for n in block["names"]) == sorted(x["name"] for x in xs)
+    assert block["by_reason"] == {"file_timeout": 1, "checker_unavailable": 1}
+    assert block["fraction_of_split"] == pytest.approx(2 / 40)
+    assert block["walls"] == {"file_timeout_s": ev.DEFAULT_FILE_TIMEOUT_S,
+                              "check_valid_timeout_s": CHECKER_CALL_TIMEOUT_S}
+    # collect's pool limit is about the re-probe pool, not a split: it is not quoted here
+    assert "limit" not in block and "over_limit" not in block
+    text = report.render_text(rep)
+    assert "## Excluded stratum (2 files, 5.0% of the split" in text
+    assert "file_timeout 1" in text and "checker_unavailable 1" in text
+
+
+def test_a_wall_excluded_file_is_neither_a_failure_nor_a_regression(tmp_path) -> None:
+    """The point of the stratum: the file is reported, and it moves no rate. Same wave twice - once with two
+    files killed by a wall, once without - and every count the comparison rests on is the same over the
+    files that WERE judged."""
+    split = split_rows()
+    victims = [split[5], split[9]]
+    build(tmp_path / "with", WAVE, split, excluded=[_wall_excluded(b) for b in victims])
+    # the shorter split renumbers the files, so pin each row to its ORIGINAL index: the two waves must
+    # repair the same files, else the comparison below proves nothing
+    build(tmp_path / "without", WAVE, [b for b in split if b not in victims],
+          rows_for=lambda b, _i, a: arm_row(b, int(b.name.removeprefix("f").removesuffix(".step")), a))
+    killed = report.build_report(load(tmp_path / "with", split))
+    kept = report.build_report(load(tmp_path / "without", [b for b in split if b not in victims]))
+
+    judged = [i for i, b in enumerate(split) if b not in victims]
+    for arm, block in killed["arms"].items():
+        other = kept["arms"][arm]
+        # not a failure: the clean counts and rates are those of the files that were judged
+        assert block["clean_out"] == other["clean_out"] == expected_clean(arm, judged)
+        assert block["clean_rate"] == pytest.approx(other["clean_rate"])
+        assert block["clean_gain"] == other["clean_gain"]
+        # not a regression either: a file with no verdict cannot have lost one
+        assert block["regressions"] == other["regressions"]
+        assert block["regressions"]["either"] == 0
+        assert block["conclusive"] == other["conclusive"] == len(judged)
+        assert block["inconclusive"] == 2  # counted as unmeasured, which is what it is
+    assert killed["excluded_stratum"]["files"] == 2 and kept["excluded_stratum"]["files"] == 0

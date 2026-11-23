@@ -23,7 +23,11 @@ import json
 import math
 import random
 import statistics
+import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import evalspec as _evalspec  # noqa: E402  (same directory; pure constants, no CAD and no gcloud)
 
 SEED = 20261123
 EVAL_SEED = 20261122  # evalspec.SEED: the launcher's hash partition
@@ -92,7 +96,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--sizes", required=True)
     ap.add_argument("--shards", type=int, nargs="+", default=[96, 80])
     ap.add_argument("--reps", type=int, default=400)
-    ap.add_argument("--file-timeout-s", type=float, default=900.0)
+    # The wall is NOT retyped here: the projection must cap simulated files at the same wall the wave will run.
+    ap.add_argument("--file-timeout-s", type=float, default=_evalspec.DEFAULT_FILE_TIMEOUT_S,
+                    help="the per-file wall simulated files are capped at (default: evalspec.DEFAULT_FILE_TIMEOUT_S, "
+                         f"{_evalspec.DEFAULT_FILE_TIMEOUT_S:g} s); pass another value to price a candidate wall")
     ap.add_argument("--overhead-h", type=float, default=0.25)
     ap.add_argument("--usd-per-vm-hour", type=float, default=0.377)
     ap.add_argument("--out", default=None)

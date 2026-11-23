@@ -41,6 +41,13 @@ entry); `load_wave` refuses a row of a declined kind that does not carry that st
 every arm's files, conclusive and inconclusive counts, clean rate, clean gain, regressions, layers, per-kind rates,
 the paired set and the marginals, and appear ONLY under `declined_stratum`, on their own line.
 
+THE EXCLUDED STRATUM is the other third category, and for the opposite reason: a file the harness reached NO
+verdict on, because the per-file wall or the checker's one-call wall killed it, or a worker died, or the input
+could not be read. Those files are inconclusive for every arm, so they are already outside every clean rate,
+gain and regression - but counting them only in `inconclusive` left them nameless. `excluded_stratum` counts
+them, NAMES them, and prints the two wall values that produced them, on its own line, every run. It is built by
+collect.py's `excluded_stratum`, the same code the re-probe's own report uses: one mechanism, two waves.
+
 NOT MEASURED WITHHOLDS EVERYTHING a rate can be recovered from (counts, layers, regressions, per-kind rates),
 and the JSON says `numbers_valid: false` whenever the status is UNRELIABLE. PER-ARM rates use each arm's own
 dropouts and are NOT comparable across arms; the PAIRED columns (files every measured arm judged) are.
@@ -268,6 +275,9 @@ class WaveResult:
     shard_wall_seconds: tuple[float, ...]
     frozen: bool
     declined: frozenset[str] = frozenset()  # sha256 of the declined-stratum files (expected outcome: declined)
+    #: the shards' EXCLUDED entries as the harness wrote them: a wall kill or a pool death, carried here so the
+    #: report can NAME them (`excluded_stratum`) instead of only counting them as inconclusive
+    excluded: tuple[Mapping[str, Any], ...] = ()
     slot: str | None = None  # the once-only slot the shards carry (held-out / checkpoint waves)
     slot_verified: bool = False  # ... and whether the marker store confirmed this wave_id holds it
     _key: object = None
@@ -425,7 +435,8 @@ def load_wave(root: Path, wave: Any, split_rows: Iterable[Any], *, n_shards: int
         wave, next(iter(ids)), str(first["commit"]), str(first["image"]), tuple(rows.values()),
         {sha: defect_kind(r) for sha, r in by_sha.items()}, len(split),
         tuple(float(s["prov"].get("wall_seconds") or 0.0) for s in shards), bool(frozen_commit),
-        declined=declined, slot=slot, slot_verified=slot_verified, _key=_TOKEN)
+        declined=declined, slot=slot, slot_verified=slot_verified,
+        excluded=tuple(dict(x) for s in shards for x in s["excluded"]), _key=_TOKEN)
 
 
 # ---------------------------------------------------------------------------------------------- the report
@@ -505,6 +516,21 @@ def _declined_block(stratum: Mapping[str, list[ArmRow]], n: int) -> dict[str, An
                    "declined": sum(not r.clean for r in con), "unexpectedly_clean": sum(r.clean for r in con)}
     return {"expected_outcome": "correctly_declined", "files": n, "counted_as": "none: not a failure, not a gain",
             "arms": arms}
+
+
+def _excluded_block(excluded: Sequence[Mapping[str, Any]], n_files: int) -> dict[str, Any]:
+    """THE EXCLUDED STRATUM, built by the same code collect.py uses for the re-probe so there is ONE mechanism:
+    files the harness reached no verdict on (a per-file or one-call wall kill, a pool death, an unreadable
+    input), counted and NAMED. They are inconclusive for every arm, so they are already outside every clean
+    rate, gain and regression above; this block is what keeps them from being invisible there. `fraction_of_pool`
+    is over the split, not the re-probe pool, so collect's 2% limit does not apply to it and is not quoted."""
+    block = _collect.excluded_stratum({"rows": [None] * max(n_files - len(excluded), 0), "excluded": list(excluded)})
+    for key in ("limit", "over_limit"):
+        block.pop(key, None)
+    block["counted_as"] = ("inconclusive for every arm: not a failure, not a gain, in no clean rate and no "
+                           "regression")
+    block["fraction_of_split"] = block.pop("fraction_of_pool")
+    return block
 
 
 def _paired_columns(by_sha: Mapping[str, dict[str, ArmRow]], blocks: dict[str, dict[str, Any]],
@@ -638,6 +664,7 @@ def build_report(result: WaveResult) -> dict[str, Any]:
         "heldout_split": wave.split == ev.HELDOUT,
         "files": result.n_files, "files_measured_strata": n_main, "arms": blocks, "paired_set": paired_set,
         "declined_stratum": _declined_block(stratum, len(result.declined)),
+        "excluded_stratum": _excluded_block(result.excluded, result.n_files),
         "marginals": {"ai_marginal (search_ai - search_det)": _paired(by_sha, "search_ai", "search_det", blocks),
                       "deterministic_marginal (staged - input_only)": _paired(by_sha, "staged", "input_only", blocks)},
         "budgets": {a: {"wall_s": ev.ARMS[a].budget.wall_s, "ops": ev.ARMS[a].budget.ops,
@@ -722,6 +749,12 @@ def render_text(rep: dict[str, Any]) -> str:
                 "| arm | files | declined (expected) | unexpectedly clean | inconclusive |", "|---|---|---|---|---|"]
         out += [f"| {a} | {v['files']} | {v['declined']} | {v['unexpectedly_clean']} | {v['inconclusive']} |"
                 for a, v in ds["arms"].items()]
+    xs = rep["excluded_stratum"]
+    walls = ", ".join(f"{k} {v:g}s" for k, v in sorted(xs["walls"].items()))
+    reasons = ", ".join(f"{k} {n}" for k, n in sorted(xs["by_reason"].items())) or "none"
+    out += ["", f"## Excluded stratum ({xs['files']} files, {xs['fraction_of_split']:.1%} of the split; walls "
+                f"{walls}; by reason: {reasons}). {xs['counted_as']}. Named under excluded_stratum.names in the "
+                "JSON."]
     for a, b in rep["arms"].items():
         out += ["", f"## {a}: by defect kind (per-arm, own files)",
                 "| kind | files | inconclusive | inconclusive rate | clean | clean rate |", "|---|---|---|---|---|---|"]
