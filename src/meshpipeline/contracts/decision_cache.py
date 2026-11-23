@@ -414,6 +414,12 @@ class CachingModelRouter:
         return await inner(messages=messages, tools=tools, route=route, job_id=job_id, user_id=user_id,
                            tool_choice=tool_choice, cache_key=cache_key)
 
+    def repair_v4_prices(self, route):
+        inner = getattr(self._inner, "repair_v4_prices", None)
+        if inner is None:
+            raise ToolsUnsupported("the wrapped router cannot price a repair_v4_propose route")
+        return inner(route)
+
     async def call_summarizer_model(self, messages, job_id=""):
         # web search results are the world's, not ours: a summary of them is never replayed
         return await self._inner.call_summarizer_model(messages=messages, job_id=job_id)

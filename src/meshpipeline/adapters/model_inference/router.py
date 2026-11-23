@@ -323,3 +323,11 @@ async def call_repair_v4_propose(
                          output_tokens=result.output_tokens,
                          cached_input_tokens=result.cached_input_tokens)
     return ProposeReply(result, cost, target.provider, target.model)
+
+
+def repair_v4_prices(route: str) -> tuple[float, float, float]:
+    from meshpipeline.adapters.inference_telemetry.pricing import require_price
+    provider, sep, model = route.partition(":")
+    if not (provider and sep and model):
+        raise ValueError(f"repair_v4_propose route {route!r} is not 'provider:model'")
+    return require_price(provider, model)

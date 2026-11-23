@@ -7,7 +7,14 @@ import threading
 
 import pytest
 
-from meshpipeline.cad.repair_v4.model_ledger import WaveLedger
+from meshpipeline.cad.repair_v4.model_ledger import (
+    WAVE_CAPS_USD,
+    FileMarkerStore,
+    LostShardLog,
+    ObjectMarkerStore,
+    ShardArithmeticError,
+    WaveLedger,
+)
 
 
 def _settle(ledger: WaveLedger, res: str, file_id: str, usd: float) -> None:
@@ -106,11 +113,17 @@ def test_a_ledger_refuses_a_cap_that_is_not_a_cap(cap):
         WaveLedger(cap_usd=cap)
 
 
+def shard(tmp_path, i, *, n=12, wave="normal", wave_id="w1", markers=None, path=None):
+    return WaveLedger.for_shard(wave, wave_id=wave_id, n_shards=n, shard_index=i,
+                                path=path or tmp_path / f"shard{i}.jsonl",
+                                markers=markers or FileMarkerStore(tmp_path / "bucket"))
+
+
 def test_shard_slices_bound_the_wave_with_no_shared_state(tmp_path):
-    # 12 shards, each on its own "host" (its own log file, no common lock), $60 wave
-    n, wave = 12, 60.0
-    shards = [WaveLedger.for_shard(wave, n, i, tmp_path / f"shard{i}.jsonl") for i in range(n)]
-    assert all(s.cap_usd == pytest.approx(5.0) for s in shards)
+    # 12 shards, each on its own "host" (its own log file, no common lock), the $50 normal wave
+    n = 12
+    shards = [shard(tmp_path, i, n=n) for i in range(n)]
+    assert all(s.cap_usd == pytest.approx(50.0 / 12) for s in shards)
     total = 0.0
     for ledger in shards:
         for _ in range(1000):
@@ -120,24 +133,86 @@ def test_shard_slices_bound_the_wave_with_no_shared_state(tmp_path):
                 break
             _settle(ledger, a.reservation, "f", 0.37)
             total += 0.37
-    assert total <= wave                                   # the wave bound, whatever the placement
-    assert total > wave - n * 0.37                         # and the slices are actually used
+    assert total <= 50.0                                   # the wave bound, whatever the placement
+    assert total > 50.0 - n * 0.37                         # and the slices are actually used
+
+
+def test_the_wave_caps_are_the_owners_named_limits():
+    assert WAVE_CAPS_USD == {"normal": 50.0, "checkpoint": 300.0, "held_out": 250.0}
+
+
+def test_a_typed_number_above_the_largest_wave_is_refused():
+    with pytest.raises(ValueError, match="largest wave"):
+        WaveLedger(cap_usd=1e6)
+    WaveLedger(cap_usd=300.0)
+
+
+def test_an_unknown_wave_type_is_refused(tmp_path):
+    with pytest.raises(ValueError, match="wave type"):
+        shard(tmp_path, 0, wave="huge")
 
 
 def test_a_restarted_shard_resumes_its_spend_rather_than_resetting_it(tmp_path):
-    path = tmp_path / "s.jsonl"
-    first = WaveLedger.for_shard(10.0, 2, 0, path)
+    first = shard(tmp_path, 0, n=2)
     a = first.admit("f", 1.0, file_ceiling_usd=100.0)
-    _settle(first, a.reservation, "f", 4.5)
-    again = WaveLedger.for_shard(10.0, 2, 0, path)         # the process restarted
-    assert again.spent_usd() == pytest.approx(4.5)
+    _settle(first, a.reservation, "f", 24.5)
+    again = shard(tmp_path, 0, n=2)                        # the process restarted; marker and log both exist
+    assert again.spent_usd() == pytest.approx(24.5)
     assert not again.admit("g", 1.0, file_ceiling_usd=100.0).ok
+
+
+def test_a_shard_whose_log_was_lost_refuses_to_start_at_zero(tmp_path):
+    first = shard(tmp_path, 3, n=4)
+    a = first.admit("f", 1.0, file_ceiling_usd=100.0)
+    _settle(first, a.reservation, "f", 5.0)
+    (tmp_path / "shard3.jsonl").unlink()                   # the VM was replaced; the bucket marker remains
+    with pytest.raises(LostShardLog, match="shard 3"):
+        shard(tmp_path, 3, n=4)
+
+
+def test_a_fresh_shard_and_a_retried_shard_with_its_log_both_start(tmp_path):
+    shard(tmp_path, 0, n=4)
+    shard(tmp_path, 0, n=4)                                # same index, log present: a resume
+    shard(tmp_path, 1, n=4)                                # a different index: fresh
+
+
+def test_a_shard_with_a_different_n_than_the_wave_is_refused(tmp_path):
+    shard(tmp_path, 0, n=4)
+    with pytest.raises(ShardArithmeticError, match="launcher's N"):
+        shard(tmp_path, 1, n=5)                            # a real count above the configured N
+    with pytest.raises(ShardArithmeticError):
+        shard(tmp_path, 1, n=4, wave="checkpoint")
+
+
+def test_two_shards_cannot_share_a_log_under_different_indexes(tmp_path):
+    shard(tmp_path, 0, n=4, path=tmp_path / "same.jsonl")
+    with pytest.raises(ShardArithmeticError, match="belongs to"):
+        shard(tmp_path, 1, n=4, path=tmp_path / "same.jsonl")
+
+
+def test_the_marker_store_creates_once(tmp_path):
+    m = FileMarkerStore(tmp_path / "b")
+    assert m.get("a/b") is None and m.create("a/b", "1") and not m.create("a/b", "2") and m.get("a/b") == "1"
+
+
+def test_the_object_marker_store_writes_through_an_object_store(tmp_path):
+    blobs = {}
+
+    class Fake:
+        def exists(self, *, object_key): return object_key in blobs
+        def get_bytes(self, *, object_key): return blobs[object_key]
+        def upload_file(self, *, local_path, object_key, content_type=None, metadata=None):
+            blobs[object_key] = local_path.read_bytes()
+
+    m = ObjectMarkerStore(Fake(), "ledger")
+    assert m.get("w/x") is None and m.create("w/x", "v") and not m.create("w/x", "v2")
+    assert m.get("w/x") == "v" and "ledger/w/x" in blobs
 
 
 @pytest.mark.parametrize("n, i", [(0, 0), (3, 3), (3, -1)])
 def test_an_invalid_shard_is_refused(tmp_path, n, i):
     with pytest.raises(ValueError):
-        WaveLedger.for_shard(10.0, n, i, tmp_path / "x.jsonl")
+        shard(tmp_path, i, n=n)
 
 
 def test_the_stop_reason_is_recorded_in_the_ledger(tmp_path):

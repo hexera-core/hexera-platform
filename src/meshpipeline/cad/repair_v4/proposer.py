@@ -61,9 +61,6 @@ IMAGE_KINDS = frozenset({"overlap", "open"})
 PROPOSE = "propose"
 DECLARE_UNFIXABLE = "declare_unfixable"
 
-#: USD per 1M tokens (fresh input, output, cached input) the estimator assumes: the dearest tier on the chain
-#: (gpt-6-astra), so a cheaper fallback is over-reserved, never under-reserved.
-DEFAULT_PRICES = (10.0, 50.0, 1.0)
 #: A conservative characters-per-token (real text runs nearer 4) and what one image is assumed to cost in tokens.
 _CHARS_PER_TOKEN = 3.0
 IMAGE_TOKENS = 2000
@@ -287,19 +284,17 @@ def _message_tokens(messages: Sequence[dict]) -> int:
 
 
 def estimate_call_usd(messages: Sequence[dict], tools: Sequence[dict], *, prices: tuple[float, float, float],
-                      output_tokens: int, cached_prefix_tokens: int = 0) -> tuple[float, int]:
+                      output_tokens: int) -> tuple[float, int]:
     """(an UPPER BOUND on what sending `messages` will cost, the estimated input tokens).
 
-    Input is chars/3 per token plus a flat allowance per image (history is re-sent whole, images included, so
-    they are counted every call); at most `cached_prefix_tokens` of it - what the previous call reported as its
-    input - is priced at the cached rate, the rest fresh. Output is reserved at the full `output_tokens` the
-    router will allow, reasoning included. Real usage cannot exceed this unless the tokenizer is far worse than
-    3 chars/token."""
-    p_in, p_out, p_cached = prices
+    Input is chars/3 per token plus a flat allowance per image (history is re-sent whole, images included, so they
+    are counted every call), plus the tool schemas, ALL priced at the UNCACHED rate: a cap that assumes a cache hit
+    leaks one call's miss, so the cached rate is never used here. Output is reserved in full at the `output_tokens`
+    the router will allow, reasoning included. Real usage cannot exceed this unless the tokenizer is far worse than
+    3 chars/token. `prices` are the ROUTE'S OWN (fresh input, output, cached) per 1M tokens."""
+    p_in, p_out, _cached = prices
     tokens = _message_tokens(messages) + int(len(json.dumps(tools)) / _CHARS_PER_TOKEN)
-    cached = min(cached_prefix_tokens, tokens)
-    usd = ((tokens - cached) * p_in + cached * p_cached + output_tokens * p_out) / 1e6
-    return usd, tokens
+    return (tokens * p_in + output_tokens * p_out) / 1e6, tokens
 
 
 # --- the proposer ----------------------------------------------------------------------------------------------------
@@ -319,7 +314,7 @@ class AIProposer:
                  call: ModelCall | None = None, file_id: str = "", job_id: str = "", user_id: str = "",
                  observe: Callable[[Any, list[Site]], dict] | None = None,
                  stage_names: Sequence[str] = (), unfixable: UnfixableRegistry | None = None,
-                 prices: tuple[float, float, float] = DEFAULT_PRICES,
+                 prices: tuple[float, float, float] | None = None,
                  output_tokens: int = REPAIR_V4_PROPOSE_MAX_OUTPUT_TOKENS,
                  max_input_tokens: int = MAX_INPUT_TOKENS) -> None:
         if max_turns < 1:
@@ -341,11 +336,14 @@ class AIProposer:
         self._call = call
         self._ledger = ledger
         self._observe = observe or _default_observe
+        # the route's OWN prices (raises UnpricedModel here, at construction, when it has none)
+        if prices is None:
+            from meshpipeline.contracts.model_inference import repair_v4_route_prices
+            prices = repair_v4_route_prices(route)
         self._prices = prices
         self._output_tokens = output_tokens
         self._max_input_tokens = max_input_tokens
         self._last_cost: float | None = None
-        self._last_input_tokens = 0
         self._failures = 0
         system = system_prompt(stage_names=self.stage_names)
         self._tools = tool_schemas(stage_names=self.stage_names)
@@ -412,7 +410,6 @@ class AIProposer:
                     self._stop("model_failure")
                 break
             self._failures = 0
-            self._last_input_tokens = reply.input_tokens
             self._ledger.settle(admission.reservation, file_id=self.file_id, job_id=self.job_id,
                                 provider=priced.provider, model=priced.model,
                                 input_tokens=reply.input_tokens, cached_input_tokens=reply.cached_input_tokens,
@@ -436,8 +433,7 @@ class AIProposer:
     def _admit(self) -> Admission | None:
         """Reserve this call's estimated cost, or None (and a stop) when the call is too large to make."""
         usd, tokens = estimate_call_usd(self._messages, self._tools, prices=self._prices,
-                                        output_tokens=self._output_tokens,
-                                        cached_prefix_tokens=self._last_input_tokens)
+                                        output_tokens=self._output_tokens)
         if tokens > self._max_input_tokens:
             self._stop("input_too_large")
             return None
@@ -633,6 +629,6 @@ async def select_route(routes: Sequence[str], *, call: ModelCall | None = None) 
     raise NoUsableRoute("no repair_v4_propose route passed the probe: " + "; ".join(failures))
 
 
-__all__ = ["AIProposer", "DECLARE_UNFIXABLE", "DEFAULT_PRICES", "IMAGE_KINDS", "MAX_CONSECUTIVE_FAILURES", "NoUsableRoute",
+__all__ = ["AIProposer", "DECLARE_UNFIXABLE", "IMAGE_KINDS", "MAX_CONSECUTIVE_FAILURES", "NoUsableRoute",
            "Outcome", "PROPOSE", "ProbeResult", "ProposedCandidate", "UnfixableRegistry", "cache_key_for",
            "estimate_call_usd", "probe_route", "select_route", "system_prompt", "tool_schemas"]

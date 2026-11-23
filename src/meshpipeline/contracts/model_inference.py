@@ -340,3 +340,14 @@ async def call_repair_v4_propose(
     reply: ProposeReply = await call(messages=messages, tools=list(tools), route=route, job_id=job_id,
                                      user_id=user_id, tool_choice=tool_choice, cache_key=cache_key)
     return reply
+
+
+def repair_v4_route_prices(route: str) -> tuple[float, float, float]:
+    """(fresh input, output, cached input) USD per 1M tokens for a `provider:model` repair_v4 route, from the
+    price table. Raises UnpricedModel (naming MODEL_PRICE_OVERRIDES) when none is declared. The proposer sizes
+    its reservations from THIS, so a cheaper model is not reserved at a dearer one's price."""
+    prices = getattr(_r(), "repair_v4_prices", None)
+    if prices is None:
+        raise ToolsUnsupported("the installed router cannot price a repair_v4_propose route")
+    result: tuple[float, float, float] = prices(route)
+    return result

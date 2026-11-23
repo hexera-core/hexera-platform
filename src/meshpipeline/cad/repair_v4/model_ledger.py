@@ -13,9 +13,20 @@ budget in a shard that finishes early. Within a shard, all files share the slice
 (`flock` is correct between the processes of ONE host, which is all a shard is).
 
 The slice only holds if the shard's log survives a restart of its process: pass a `path` on durable local disk,
-never rely on the in-memory form for a real wave (it exists for tests and single-process runs). A requeue of a
-FILE onto another shard starts that file at $0 on the new shard, so the per-file ceiling is best-effort across
-shards; the wave bound is not affected.
+never rely on the in-memory form for a real wave (it exists for tests and single-process runs). That assumption is
+CHECKED, not hoped for: the first start of a shard writes a marker to a shared `MarkerStore` (the wave bucket);
+a shard that finds its marker but no local log raises `LostShardLog` instead of starting again at $0 (a lost log
+would otherwise let a wave with R retries per shard cost (1+R) x its cap). The wave's own marker records the wave
+type and shard count N; a shard configured with a different N, wave type or a duplicate/foreign log identity
+raises `ShardArithmeticError`. The launcher's N is the single source of truth: shard_index is part of the log's
+identity (an `init` row), so two shards cannot share a log or an index silently.
+
+Caps are named, not typed: `WAVE_CAPS_USD` holds the owner's limits and `for_shard` takes the wave TYPE.
+`WaveLedger(cap)` itself refuses anything above `MAX_WAVE_CAP_USD`. (How MANY checkpoint waves may run - at most
+3 - or that the held-out wave runs once is not enforceable here and belongs to the launcher.)
+
+A requeue of a FILE onto another shard starts that file at $0 on the new shard, so the per-file ceiling is
+best-effort across shards; the wave bound is not affected.
 
 A shared store (Cloud SQL: one transaction per `admit` under `pg_advisory_xact_lock(hash(wave_id))`, summing open
 reservations plus settled spend) would replace the slices and make both caps exact. It plugs in as a `LedgerStore`
@@ -47,6 +58,82 @@ from pathlib import Path
 from typing import Any, Literal, Protocol
 
 _MICRO = 1_000_000
+
+WaveType = Literal["normal", "checkpoint", "held_out"]
+#: The owner's wave limits in USD: $50 a normal wave, $300 a checkpoint wave (at most 3), $250 the held-out wave (once).
+WAVE_CAPS_USD: dict[str, float] = {"normal": 50.0, "checkpoint": 300.0, "held_out": 250.0}
+MAX_WAVE_CAP_USD = max(WAVE_CAPS_USD.values())
+
+
+class LostShardLog(RuntimeError):
+    """This shard has started before (its marker exists) but its local log is gone, so its spend is unknown.
+    Refusing is the point: starting again at $0 would let the wave overspend its cap."""
+
+
+class ShardArithmeticError(RuntimeError):
+    """The shard's identity (wave id, wave type, N, index) disagrees with the wave marker or with its own log."""
+
+
+class MarkerStore(Protocol):
+    """A small shared key-value store (the wave bucket). `create` is create-if-absent: True if this call wrote it."""
+
+    def get(self, key: str) -> str | None: ...
+
+    def create(self, key: str, value: str) -> bool: ...
+
+
+class FileMarkerStore:
+    """Markers as files under a directory on a shared filesystem (and in tests); `create` is O_EXCL-atomic."""
+
+    def __init__(self, root: str | Path) -> None:
+        self._root = Path(root)
+
+    def _path(self, key: str) -> Path:
+        return self._root / key.replace("/", "__")
+
+    def get(self, key: str) -> str | None:
+        try:
+            return self._path(key).read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return None
+
+    def create(self, key: str, value: str) -> bool:
+        self._root.mkdir(parents=True, exist_ok=True)
+        try:
+            fd = os.open(self._path(key), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+        except FileExistsError:
+            return False
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(value)
+        return True
+
+
+class ObjectMarkerStore:
+    """Markers as objects in the wave bucket (contracts.object_storage.ObjectStore). Existence is checked and then
+    written, which is not atomic: two shards starting the SAME index in the same instant could both pass. The
+    realistic failure this guards - a retry arriving after a shard's log was lost - is minutes later, not simultaneous."""
+
+    def __init__(self, store: Any, prefix: str = "model-ledger") -> None:
+        self._store, self._prefix = store, prefix.strip("/")
+
+    def _key(self, key: str) -> str:
+        return f"{self._prefix}/{key}"
+
+    def get(self, key: str) -> str | None:
+        if not self._store.exists(object_key=self._key(key)):
+            return None
+        return self._store.get_bytes(object_key=self._key(key)).decode("utf-8")
+
+    def create(self, key: str, value: str) -> bool:
+        import tempfile
+        if self._store.exists(object_key=self._key(key)):
+            return False
+        with tempfile.TemporaryDirectory() as tmp:
+            local = Path(tmp) / "marker"
+            local.write_text(value, encoding="utf-8")
+            self._store.upload_file(local_path=local, object_key=self._key(key),
+                                    content_type="application/json")
+        return True
 
 
 def _micro(usd: float) -> int:
@@ -120,17 +207,51 @@ class WaveLedger:
                  store: LedgerStore | None = None) -> None:
         if not math.isfinite(cap_usd) or cap_usd <= 0:
             raise ValueError(f"a wave cap must be a finite, positive number of dollars, got {cap_usd!r}")
+        if cap_usd > MAX_WAVE_CAP_USD:
+            raise ValueError(f"a wave cap of ${cap_usd:,.2f} exceeds the largest wave limit "
+                             f"(${MAX_WAVE_CAP_USD:,.0f}); use for_shard with a named wave type")
         self._cap = _micro(cap_usd)
         self._store: LedgerStore = store if store is not None else (
             FileStore(path) if path is not None else MemoryStore())
 
     @classmethod
-    def for_shard(cls, wave_cap_usd: float, n_shards: int, shard_index: int,
-                  path: str | Path) -> WaveLedger:
-        """This shard's slice of the wave: `wave_cap / n_shards`, in a log at `path` (durable local disk)."""
+    def for_shard(cls, wave: WaveType, *, wave_id: str, n_shards: int, shard_index: int,
+                  path: str | Path, markers: MarkerStore) -> WaveLedger:
+        """This shard's slice of a wave: `WAVE_CAPS_USD[wave] / n_shards`, in a log at `path` (durable local
+        disk). Refuses (LostShardLog / ShardArithmeticError) rather than start at an unknown or inconsistent
+        spend; see the module docstring."""
+        if wave not in WAVE_CAPS_USD:
+            raise ValueError(f"unknown wave type {wave!r}; the wave types are {sorted(WAVE_CAPS_USD)}")
         if n_shards < 1 or not 0 <= shard_index < n_shards:
             raise ValueError(f"shard {shard_index} of {n_shards} is not a valid shard")
-        return cls(wave_cap_usd / n_shards, path)
+        identity = {"wave_id": wave_id, "wave": wave, "n_shards": n_shards}
+        wave_marker = json.dumps(identity, sort_keys=True)
+        if not markers.create(f"{wave_id}/wave", wave_marker):
+            existing = markers.get(f"{wave_id}/wave")
+            if existing != wave_marker:
+                raise ShardArithmeticError(
+                    f"wave {wave_id!r} was started as {existing} but this shard says {wave_marker}: the "
+                    "launcher's N and wave type must be the same for every shard")
+        path = Path(path)
+        had_log = path.exists()
+        shard_key = f"{wave_id}/shard-{shard_index}"
+        if markers.get(shard_key) is not None and not had_log:
+            raise LostShardLog(
+                f"shard {shard_index} of wave {wave_id!r} has started before (marker {shard_key}) but its "
+                f"local log {path} is missing, so what it already spent is unknown. Refusing to start it at "
+                "$0; restore the log, or abandon this shard's slice and launch a replacement wave.")
+        ledger = cls(WAVE_CAPS_USD[wave] / n_shards, path)
+        me = {**identity, "shard_index": shard_index}
+
+        def check(rows, append):
+            inits = [r for r in rows if r["t"] == "init"]
+            if not inits:
+                append({"t": "init", **me, "at": time.time()})
+            elif {k: inits[0].get(k) for k in me} != me:
+                raise ShardArithmeticError(f"the log {path} belongs to {inits[0]}, not to {me}")
+        ledger._transact(check)
+        markers.create(shard_key, json.dumps(me, sort_keys=True))
+        return ledger
 
     @property
     def cap_usd(self) -> float:

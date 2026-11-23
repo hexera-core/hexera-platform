@@ -25,6 +25,8 @@ from meshpipeline.contracts.model_inference import (
 
 ROUTE = "openai:gpt-6-astra"
 PNG = b"\x89PNG\r\n\x1a\nfake"
+ASTRA = (10.0, 50.0, 1.0)
+TERRA = (2.0, 12.0, 0.2)
 
 
 def make_ws() -> Workspace:
@@ -87,6 +89,7 @@ class Fake:
 
 
 def make(fake: Fake, *, ceiling=1.0, max_turns=6, ledger=None, **kw) -> P.AIProposer:
+    kw.setdefault("prices", ASTRA)
     kw.setdefault("output_tokens", 1000)       # reserve for a short answer so small test ceilings stay usable
     return P.AIProposer(ROUTE, max_turns=max_turns, usd_ceiling=ceiling, call=fake, observe=fake_observe,
                         ledger=ledger or WaveLedger(cap_usd=100.0), file_id=kw.pop("file_id", "f1"),
@@ -486,9 +489,9 @@ def test_select_route_refuses_when_nothing_passes_rather_than_guessing():
 
 def test_a_ledger_is_required_and_the_cap_cannot_be_forgotten():
     with pytest.raises(TypeError):
-        P.AIProposer(ROUTE, max_turns=3, usd_ceiling=1.0, call=Fake([]), observe=fake_observe)   # type: ignore[call-arg]
+        P.AIProposer(ROUTE, max_turns=3, usd_ceiling=1.0, call=Fake([]), observe=fake_observe, prices=ASTRA)   # type: ignore[call-arg]
     with pytest.raises(TypeError):
-        P.AIProposer(ROUTE, max_turns=3, usd_ceiling=1.0, ledger=None, call=Fake([]))            # type: ignore[arg-type]
+        P.AIProposer(ROUTE, max_turns=3, usd_ceiling=1.0, ledger=None, call=Fake([]), prices=ASTRA)  # type: ignore[arg-type]
 
 
 def test_the_estimate_grows_with_the_prompt_and_counts_every_image_every_call():
@@ -502,17 +505,59 @@ def test_the_estimate_grows_with_the_prompt_and_counts_every_image_every_call():
     e_img, t_img = P.estimate_call_usd(with_image, [], **kw)
     assert t_small == 1000 and t_big == 100_000 and e_big == pytest.approx(1.0)
     assert t_img - t_small == P.IMAGE_TOKENS and e_img > e_small
-    # output is reserved in full, and a cached prefix is priced at the cached rate
+    # output is reserved in full
     assert P.estimate_call_usd(small, [], prices=prices, output_tokens=8192)[0] == pytest.approx(e_small + 0.4096)
-    assert P.estimate_call_usd(small, [], prices=prices, output_tokens=0, cached_prefix_tokens=1000)[0] == \
-        pytest.approx(0.001)
+
+
+def test_the_estimate_never_assumes_a_cache_hit():
+    msgs = [{"role": "user", "content": "x" * 3000}]
+    cheap_cache = P.estimate_call_usd(msgs, [], prices=(10.0, 50.0, 0.0), output_tokens=0)
+    dear_cache = P.estimate_call_usd(msgs, [], prices=(10.0, 50.0, 10.0), output_tokens=0)
+    assert cheap_cache == dear_cache and cheap_cache[0] == pytest.approx(0.01)   # 1000 tokens at $10/Mtok
+
+
+def test_the_proposer_sizes_reservations_from_its_routes_own_prices(monkeypatch):
+    from meshpipeline.adapters.model_inference import router
+    from meshpipeline.contracts import model_inference as mi
+    mi.set_model_router(router)
+    astra = P.AIProposer("openai:gpt-6-astra", max_turns=3, usd_ceiling=1.0, call=Fake([]),
+                         ledger=WaveLedger(cap_usd=10.0))
+    terra = P.AIProposer("openai:gpt-5.6-terra", max_turns=3, usd_ceiling=1.0, call=Fake([]),
+                         ledger=WaveLedger(cap_usd=10.0))
+    assert astra._prices == (10.0, 50.0, 1.0) and terra._prices == (2.0, 12.0, 0.2)
+    with pytest.raises(UnpricedModel, match="MODEL_PRICE_OVERRIDES"):
+        P.AIProposer("openai:gpt-9-mystery", max_turns=3, usd_ceiling=1.0, call=Fake([]),
+                     ledger=WaveLedger(cap_usd=10.0))
+
+
+def test_first_call_reservation_on_both_models_with_the_real_prefix():
+    """The numbers the per-file ceiling decision rests on: a first call carrying the real system prompt, the real
+    tool schemas and a 20 kB observation, reserved at each route's own prices."""
+    out = {}
+    for name, prices in (("astra", ASTRA), ("terra", TERRA)):
+        p = make(Fake([]), prices=prices, output_tokens=8192)
+        p._messages.append({"role": "user", "content": "x" * 20_000})
+        usd, tokens = P.estimate_call_usd(p.messages, p._tools, prices=prices, output_tokens=8192)
+        out[name] = usd
+        assert 3000 < tokens < 12_000                       # prefix + observation, in estimated tokens
+    assert 0.45 < out["astra"] < 0.55 and 0.10 < out["terra"] < 0.14
+    assert out["astra"] / out["terra"] > 3.5
+
+
+def test_a_first_call_above_59k_input_tokens_cannot_fit_a_one_dollar_astra_ceiling():
+    usd, tokens = P.estimate_call_usd([{"role": "user", "content": "x" * 3 * 60_000}], [],
+                                      prices=ASTRA, output_tokens=8192)
+    assert tokens == 60_000 and usd > 1.0
+    usd, tokens = P.estimate_call_usd([{"role": "user", "content": "x" * 3 * 58_000}], [],
+                                      prices=ASTRA, output_tokens=8192)
+    assert usd < 1.0
 
 
 def test_a_call_whose_estimate_exceeds_the_file_ceiling_is_refused_before_it_is_made():
     fake = Fake([reply()])
     big_observe = lambda st, sites: {"blob": "x" * 150_000}          # noqa: E731  ~ 50k tokens ~ $0.5 at astra
     p = P.AIProposer(ROUTE, max_turns=3, usd_ceiling=0.2, call=fake, observe=big_observe,
-                     ledger=WaveLedger(cap_usd=100.0), file_id="f1")
+                     ledger=WaveLedger(cap_usd=100.0), file_id="f1", prices=ASTRA)
     assert p.propose(state([site("S1", "proximity")]), k=3) == []
     assert fake.calls == [] and p.stop_reason == "file_ceiling" and p.ai_capped
 
@@ -521,7 +566,7 @@ def test_an_oversize_input_is_refused_at_admit_even_with_budget_to_spare():
     fake = Fake([reply()])
     huge = lambda st, sites: {"blob": "x" * 700_000}                 # noqa: E731  ~ 233k tokens
     p = P.AIProposer(ROUTE, max_turns=3, usd_ceiling=1e6, call=fake, observe=huge,
-                     ledger=WaveLedger(cap_usd=1e6), file_id="f1")
+                     ledger=WaveLedger(cap_usd=300.0), file_id="f1", prices=ASTRA)
     assert p.propose(state([site("S1", "proximity")]), k=3) == []
     assert fake.calls == [] and p.stop_reason == "input_too_large" and not p.ai_capped
 
