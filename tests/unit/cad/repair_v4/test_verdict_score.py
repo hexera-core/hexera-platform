@@ -331,3 +331,17 @@ def test_mesher_versions_pool_failure_is_checker_unavailable() -> None:
 
     with pytest.raises(CheckerUnavailable):
         mesher_versions(Pool())
+
+
+def test_a_zero_baseline_still_flags_any_growth_and_is_json_safe() -> None:
+    """The ratio check must not go silent when the original has no area or volume: a zero-volume
+    SOLID original (no solid-less exemption applies) with a real volume afterwards, and a zero-area
+    original with area afterwards, are changes. Zero to zero is not."""
+    from meshpipeline.cad.repair_v4.verdict.faithful_kernel import _changed, _ratio
+
+    assert _changed(100.0, 0.0) is True
+    assert _changed(1e-9, 0.0) is True
+    assert _changed(0.0, 0.0) is False
+    assert _changed(102.5, 100.0) is True and _changed(101.9, 100.0) is False
+    assert _ratio(100.0, 0.0) is None and _ratio(0.0, 0.0) is None  # None, not 1.0 and not inf
+    assert _ratio(100.0, 100.0) == 1.0  # a genuine no-change stays distinguishable

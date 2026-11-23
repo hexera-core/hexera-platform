@@ -431,6 +431,7 @@ def test_a_correct_heal_of_a_solidless_input_reads_clean_and_a_damaging_one_does
     loose = _loose_box_faces()
     original = _write_step(loose, tmp_path / "loose.step")
     good = _write_step(_sewn_solid(_faces(loose)), tmp_path / "sewn.step")
+    # The box is 100 mm on a side (diagonal 173 mm), so the bound is 0.1 mm and 0.5 mm is 5x over it.
     moved = _write_step(_sewn_solid(_faces(loose), dz=0.5), tmp_path / "moved.step")
     open_shell = _write_step(_shell_of_faces(_faces(loose)[:5]), tmp_path / "open.step")
 
@@ -445,4 +446,28 @@ def test_a_correct_heal_of_a_solidless_input_reads_clean_and_a_damaging_one_does
     assert shifted.faithful.reason == "deviation_exceeds_bound" and shifted.clean is False
 
     broken = verdict(pool, open_shell, original, members=[_Member()], run_panel=_run_panel)
-    assert broken.valid.ok is False and broken.clean is False  # a dropped face: invalid, and area shrinks
+    assert broken.valid.ok is False and broken.clean is False  # a dropped face: layer 1 says invalid
+    # ...and independently of layer 1, layer 3 still holds the area line on a solid-less original
+    # (5 of 6 faces = -16.7%), while volume/body count stay exempt there.
+    faithful = check_faithful_steps(pool, original, open_shell, declared_added=[], declared_removed=[])
+    assert faithful.ok is False and "area_changed" in faithful.reasons
+    assert "volume_changed" not in faithful.reasons and "body_count_changed" not in faithful.reasons
+    assert faithful.area_ratio == pytest.approx(5 / 6, rel=1e-3)
+
+
+def test_a_zero_area_original_still_flags_area_changed(pool, tmp_path) -> None:
+    """The original is one 100 mm edge (extent, but no area); the result has a 100 x 100 face. The
+    area rule must fire from a zero baseline, and the report carries None, not a fake 1.0."""
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge
+
+    edge = BRepBuilderAPI_MakeEdge(gp_Pnt(0, 0, 0), gp_Pnt(100, 0, 0)).Edge()
+    face = _faces(_box())[0]
+    report = check_faithful(
+        pool,
+        _write_brep(edge, tmp_path / "o.brep"),
+        _write_brep(face, tmp_path / "r.brep"),
+        declared_added=[],
+        declared_removed=[],
+    )
+    assert report.ok is False and "area_changed" in report.reasons
+    assert report.area_ratio is None
