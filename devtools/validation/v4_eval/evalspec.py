@@ -328,6 +328,10 @@ WAVES: dict[str, WaveDef] = {w.name: w for w in (
     WaveDef("dev_checkpoint", "checkpoint", "dev", _ALL[:4]),
     WaveDef("heldout", HELDOUT_WAVE_TYPE, HELDOUT, _ALL),
     WaveDef("clean_control", "normal", "clean", _ALL),
+    # Task 49 (T2 smoke): the three arms that call no model, over a split; search_ai is run separately on a subset
+    # under `dev_search`, because a wave must have a row for every (file, arm).
+    WaveDef("t2_smoke_dev", "normal", "dev", ("input_only", "staged", "search_det")),
+    WaveDef("t2_smoke_clean", "normal", "clean", ("input_only", "staged", "search_det")),
 )}
 
 

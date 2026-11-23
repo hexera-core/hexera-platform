@@ -376,6 +376,17 @@ class WaveLedger:
     def cap_usd(self) -> float:
         return self._cap / _MICRO
 
+    def cap_to(self, usd: float) -> None:
+        """LOWER this ledger's cap to `usd` (an operator's tighter limit for one run, e.g. a $5 smoke inside a $50
+        normal wave). It never raises: a cap that a flag could lift is not the owner's cap. In-process only; the
+        shard's slice (`for_shard`) stays the hard ceiling and a restart must pass the same flag again."""
+        micro = _micro(usd)
+        if micro <= 0:
+            raise ValueError(f"a cap must be positive, got {usd!r}")
+        if micro > self._cap:
+            raise ValueError(f"cap_to can only lower the cap: ${usd:,.2f} is above ${self.cap_usd:,.2f}")
+        self._cap = micro
+
     def _transact(self, fn):
         return self._store.transact(fn)
 

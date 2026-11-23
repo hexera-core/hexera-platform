@@ -394,3 +394,27 @@ def test_the_wave_cache_reaches_the_engines_own_judges_and_is_restored(shard, mo
     assert isinstance(seen["judge_cache"].store, cache_mod.GcsStore)
     assert cache_mod.CACHE_URI_ENV not in __import__("os").environ  # restored: no leak into the next caller
     cache_mod.reset_default_verdict_cache()
+
+
+# ------------------------------------------------------------------ Task 49: the operator's tighter limits
+
+def test_ops_and_usd_flags_lower_the_arm_budget_and_never_raise_it() -> None:
+    base = ["--arms", "search_ai", "--split", "dev", "--h-mm", "auto", "--wave-type", "normal", "--wave-id", "w1",
+            "--n-shards", "1", "--ledger-path", "/x", "--marker-bucket", "b"]
+    args = run_arm.parse_args([*base, "--ops", "24", "--file-usd-cap", "0.5", "--model-usd-cap", "5"])
+    ai = run_arm.effective_arm(ev.ARMS["search_ai"], args)
+    det = run_arm.effective_arm(ev.ARMS["search_det"], args)
+    assert (ai.budget.ops, ai.budget.model_usd) == (24, 0.5)
+    assert (det.budget.ops, det.budget.model_usd) == (24, 0.0)          # a non-model arm never gains a ceiling
+    assert args.h_mm == run_arm.arms_mod.H_MM_AUTO
+    higher = run_arm.parse_args([*base, "--file-usd-cap", "5"])
+    assert run_arm.effective_arm(ev.ARMS["search_ai"], higher).budget.model_usd == 1.0   # min(), never raises
+    plain = run_arm.parse_args(base)
+    assert run_arm.effective_arm(ev.ARMS["search_ai"], plain) is ev.ARMS["search_ai"]
+
+
+@pytest.mark.parametrize("flag,value", [("--ops", "0"), ("--model-usd-cap", "0"), ("--model-usd-cap", "nan"),
+                                        ("--file-usd-cap", "-1"), ("--file-usd-cap", "inf")])
+def test_a_nonsense_limit_is_refused_at_the_command_line(flag: str, value: str) -> None:
+    with pytest.raises(SystemExit):
+        run_arm.parse_args(["--arms", "input_only", "--split", "dev", flag, value])
