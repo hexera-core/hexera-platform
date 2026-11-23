@@ -72,7 +72,9 @@ def _cost_of(target: RouteTarget, usage: Usage) -> float:
     return estimate_cost(target.provider, target.model,
                          input_tokens=usage.input_tokens,
                          output_tokens=usage.output_tokens,
-                         cached_input_tokens=usage.cached_input_tokens)
+                         cached_input_tokens=usage.cached_input_tokens,
+                         cache_write_tokens=usage.cache_write_tokens,
+                         cache_write_30m_tokens=usage.cache_write_30m_tokens)
 
 
 def _unexpected_category(exc: BaseException) -> FailureCategory:
@@ -321,7 +323,9 @@ async def call_repair_v4_propose(
                             0.0, provider, model)
     cost = estimate_cost(target.provider, target.model, input_tokens=result.input_tokens,
                          output_tokens=result.output_tokens,
-                         cached_input_tokens=result.cached_input_tokens)
+                         cached_input_tokens=result.cached_input_tokens,
+                         cache_write_tokens=result.cache_write_tokens,
+                         cache_write_30m_tokens=result.cache_write_30m_tokens)
     return ProposeReply(result, cost, target.provider, target.model)
 
 
@@ -330,4 +334,10 @@ def repair_v4_prices(route: str) -> tuple[float, float, float]:
     provider, sep, model = route.partition(":")
     if not (provider and sep and model):
         raise ValueError(f"repair_v4_propose route {route!r} is not 'provider:model'")
-    return require_price(provider, model)
+    p_in, p_out, p_cached = require_price(provider, model)
+    # The reservation prices ALL input at the dearest rate input can be billed at. A cache WRITE costs more
+    # than fresh input (astra 30m: $12.50/M vs $10/M), so pricing input at p_in alone would make the
+    # "upper bound" a lower bound for exactly the tokens the provider writes to cache.
+    from meshpipeline.adapters.inference_telemetry.pricing import cache_write_prices
+    writes = cache_write_prices(provider, model)
+    return (max(p_in, writes[0]) if writes else p_in, p_out, p_cached)

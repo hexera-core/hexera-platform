@@ -317,3 +317,13 @@ def test_the_spend_marker_tracks_every_settle(tmp_path):
     a = ledger.admit("f", 1.0, file_ceiling_usd=100.0)
     _settle(ledger, a.reservation, "f", 2.5)
     assert markers.get("w1/shard-0-spent-micro") == "2500000"
+
+
+def test_a_settled_row_records_the_cache_write_tokens_it_was_priced_on():
+    ledger = WaveLedger.for_test(cap_usd=1.0)
+    a = ledger.admit("f1", 0.1, file_ceiling_usd=1.0)
+    ledger.settle(a.reservation, file_id="f1", job_id="j", provider="openai", model="gpt-6-astra",
+                  input_tokens=100, cached_input_tokens=0, output_tokens=10, cost_usd=0.01,
+                  cache_write_tokens=60, cache_write_30m_tokens=50)
+    [row] = ledger.entries()
+    assert (row["cache_write_tokens"], row["cache_write_30m_tokens"]) == (60, 50)

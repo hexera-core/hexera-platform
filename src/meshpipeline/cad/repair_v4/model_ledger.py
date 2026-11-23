@@ -408,7 +408,8 @@ class WaveLedger:
 
     def settle(self, reservation: str, *, file_id: str, job_id: str, provider: str, model: str,
                input_tokens: int, cached_input_tokens: int, output_tokens: int, cost_usd: float,
-               kind: str = "repair_v4_propose") -> None:
+               kind: str = "repair_v4_propose", cache_write_tokens: int = 0,
+               cache_write_30m_tokens: int = 0) -> None:
         cost = _micro(cost_usd)
 
         def go(rows, append):
@@ -418,7 +419,8 @@ class WaveLedger:
                 raise KeyError(f"reservation {reservation!r} is already closed")
             append({"t": "settle", "id": reservation, "file": file_id, "job": job_id, "provider": provider,
                     "model": model, "in": int(input_tokens), "cached": int(cached_input_tokens),
-                    "out": int(output_tokens), "u": cost, "kind": kind, "at": time.time()})
+                    "out": int(output_tokens), "cw": int(cache_write_tokens),
+                    "cw30": int(cache_write_30m_tokens), "u": cost, "kind": kind, "at": time.time()})
         self._transact(go)
         if self._markers is not None:
             # the spend marker lets a restart notice a log that now shows LESS than was spent
@@ -463,6 +465,7 @@ class WaveLedger:
         def go(rows, _a):
             return [{"file_id": r["file"], "job_id": r["job"], "provider": r["provider"],
                      "model": r["model"], "input_tokens": r["in"], "cached_input_tokens": r["cached"],
-                     "output_tokens": r["out"], "usd": r["u"] / _MICRO, "kind": r["kind"], "at": r["at"]}
+                     "output_tokens": r["out"],
+                     "cache_write_tokens": r.get("cw", 0), "cache_write_30m_tokens": r.get("cw30", 0), "usd": r["u"] / _MICRO, "kind": r["kind"], "at": r["at"]}
                     for r in rows if r["t"] == "settle"]
         return self._transact(go)

@@ -33,6 +33,20 @@ _PRICES: dict[str, tuple[float, float, float]] = {
     "openai:gpt-5.6-luna":                             (0.20,   1.20, 0.02),
 }
 
+# (30-minute write, 12-hour write) USD per 1M tokens: what the provider bills for tokens it WRITES to its
+# prompt cache, above the fresh-input rate. Read 2026-11-23 from the standard-tier table of
+# developers.openai.com/api/docs/pricing (columns "30m write" / "12h write"): gpt-6-astra $12.50 / $25.00
+# against $10.00 input, i.e. 1.25x and 2.5x. A model that reports cache writes but has no row here is
+# UNPRICED FOR WRITES (see `cache_write_unpriced`): the current page no longer lists gpt-5.6-sol/terra/luna
+# at all, so their write rates are not discoverable and are deliberately NOT inferred from the astra ratio.
+_CACHE_WRITE_PRICES: dict[str, tuple[float, float]] = {
+    "openai:gpt-6-astra": (12.50, 25.00),
+}
+#: Models whose provider reports cache-write tokens but whose write rate is not confirmed. Their writes are
+#: billed at the input rate (the pre-fix behaviour, an under-count) and flagged, never at an invented rate.
+_CACHE_WRITE_UNPRICED: frozenset[str] = frozenset({
+    "openai:gpt-5.6-sol", "openai:gpt-5.6-terra", "openai:gpt-5.6-luna"})
+
 _warned: set[str] = set()
 
 
@@ -94,8 +108,35 @@ def price_for(provider: str, model: str) -> tuple[float, float, float]:
     return (0.0, 0.0, 0.0)
 
 
+def cache_write_prices(provider: str, model: str) -> tuple[float, float] | None:
+    """(30-minute, 12-hour) cache-write USD per 1M tokens, or None when none is confirmed."""
+    return _CACHE_WRITE_PRICES.get(f"{provider}:{model}")
+
+
+def cache_write_unpriced() -> list[str]:
+    """Models that report cache writes and have no confirmed write rate: their spend is under-counted."""
+    return sorted(_CACHE_WRITE_UNPRICED - set(_CACHE_WRITE_PRICES))
+
+
 def estimate_cost(provider: str, model: str, *, input_tokens: int, output_tokens: int,
-                  cached_input_tokens: int = 0) -> float:
+                  cached_input_tokens: int = 0, cache_write_tokens: int = 0,
+                  cache_write_30m_tokens: int = 0) -> float:
+    # input_tokens INCLUDES both the cached and the cache-write tokens (the provider reports them as
+    # details of it), so fresh input is what is left after both. Write tokens bill at their own rate.
     p_in, p_out, p_cached = price_for(provider, model)
-    fresh_input = max(0, input_tokens - cached_input_tokens)
-    return (fresh_input * p_in + cached_input_tokens * p_cached + output_tokens * p_out) / 1e6
+    key = f"{provider}:{model}"
+    writes = _CACHE_WRITE_PRICES.get(key)
+    if cache_write_tokens and writes is None:
+        if key in _CACHE_WRITE_UNPRICED and ("cw:" + key) not in _warned:
+            _warned.add("cw:" + key)
+            logger.warning(
+                "%s reported %d cache-write tokens and has no confirmed cache-write price: billing them "
+                "at the input rate, which UNDER-counts spend. Add its write rate to _CACHE_WRITE_PRICES.",
+                key, cache_write_tokens)
+        writes = (p_in, p_in)
+    w30 = min(cache_write_30m_tokens, cache_write_tokens)
+    w_other = cache_write_tokens - w30          # unattributed TTL is billed at the dearer 12h rate
+    p30, p12 = writes if writes else (p_in, p_in)
+    fresh_input = max(0, input_tokens - cached_input_tokens - cache_write_tokens)
+    return (fresh_input * p_in + cached_input_tokens * p_cached + w30 * p30 + w_other * p12
+            + output_tokens * p_out) / 1e6

@@ -526,7 +526,9 @@ class AIProposer:
             self._ledger.settle(admission.reservation, file_id=self.file_id, job_id=self.job_id,
                                 provider=priced.provider, model=priced.model,
                                 input_tokens=reply.input_tokens, cached_input_tokens=reply.cached_input_tokens,
-                                output_tokens=reply.output_tokens, cost_usd=priced.cost_usd)
+                                output_tokens=reply.output_tokens, cost_usd=priced.cost_usd,
+                                cache_write_tokens=reply.cache_write_tokens,
+                                cache_write_30m_tokens=reply.cache_write_30m_tokens)
             self._last_cost = priced.cost_usd
             self._messages.append(assistant_turn(reply))
             if not reply.tool_calls:

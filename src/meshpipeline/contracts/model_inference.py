@@ -108,6 +108,11 @@ class ModelRoundResult:
     input_tokens: int = 0
     cached_input_tokens: int = 0
     output_tokens: int = 0
+    cache_write_tokens: int = 0
+    """Input tokens the provider wrote to its prompt cache (a subset of input_tokens, billed above the
+    fresh-input rate). Zero for providers that report none."""
+    cache_write_30m_tokens: int = 0
+    """Of cache_write_tokens, those written at the 30-minute TTL; the remainder is priced at the 12-hour rate."""
     provider: ProviderAttemptInfo = ProviderAttemptInfo()
     failure_marker: str = ""
 
