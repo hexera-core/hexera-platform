@@ -208,13 +208,18 @@ def test_the_one_call_wall_has_exactly_one_definition_and_every_reader_reads_it(
 def test_the_per_file_wall_is_larger_than_one_call_may_take() -> None:
     """The per-file wall (evalspec.DEFAULT_FILE_TIMEOUT_S) bounds the SUM of a file's calls, so a per-file wall
     at or below the per-call wall could only ever kill a file mid-call and would make the call wall unreachable."""
+    import importlib.util
     import sys
     from pathlib import Path
 
     from meshpipeline.cad.repair_v4 import limits
 
-    v4 = Path(__file__).resolve().parents[4] / "devtools/validation/v4_eval"
-    sys.path.insert(0, str(v4))
-    import evalspec  # noqa: PLC0415
+    # By PATH, under a unique name: v3_eval's modules claim the bare name `evalspec` in sys.modules.
+    path = Path(__file__).resolve().parents[4] / "devtools/validation/v4_eval/evalspec.py"
+    spec = importlib.util.spec_from_file_location("v4_evalspec_for_wall_check", path)
+    assert spec is not None and spec.loader is not None
+    evalspec = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = evalspec  # before exec: @dataclass resolves its module through sys.modules
+    spec.loader.exec_module(evalspec)
 
     assert evalspec.DEFAULT_FILE_TIMEOUT_S > limits.CHECKER_CALL_TIMEOUT_S

@@ -580,7 +580,10 @@ def test_shards_partition_the_pool_exactly() -> None:
 # ------------------------------------------------------------------ the cost gate
 
 def test_the_real_pool_at_the_ceiling_is_refused_and_a_sane_wave_is_not() -> None:
-    real = evalspec.project(53_799, shards=96, max_run_hours=30)
+    # 36 h, not 30: task 55 raised the per-file wall to 1800 s, which re-derived FULL_MIN_PER_FILE from 111 to
+    # 132.4 s/file, and the whole 53,799-file pool on 96 shards now projects a 30.9 h wall. The test is about
+    # the GATE (a sane wave passes, an unaffordable one is refused), so the sane wave's cap moves with the cost.
+    real = evalspec.project(53_799, shards=96, max_run_hours=36)
     assert evalspec.check_budget(real) == []
     huge = evalspec.project(53_799, shards=96, max_run_hours=1000, full_min=40.0)
     reasons = evalspec.check_budget(huge)
@@ -620,9 +623,12 @@ def test_projection_formula() -> None:
     assert p.vm_hours == pytest.approx(2 * 30.0 / 8) and p.worst_vm_hours == 10
 
 
-def test_the_default_minutes_are_task_43s_measured_mean() -> None:
-    """111 s/file: lane D's measurement on the current tip, re-weighted to the pool's file sizes."""
-    assert evalspec.FULL_MIN_PER_FILE == pytest.approx(111.0 / 60)
+def test_the_default_minutes_are_lane_ds_measurement_at_the_current_file_wall() -> None:
+    """132.4 s/file: lane D's measurement re-weighted to the pool's file sizes AT THE 1800 s per-file wall.
+    The figure is a function of the wall (a higher wall lets the slow tail run longer), so it was re-derived
+    from the same sample and the same size model when task 55 raised the wall; at the old 900 s wall it was
+    111 s/file. If DEFAULT_FILE_TIMEOUT_S moves again, this has to be re-projected, not nudged."""
+    assert evalspec.FULL_MIN_PER_FILE == pytest.approx(132.4 / 60)
     assert not hasattr(evalspec, "CHEAP_MIN_PER_FILE") and not hasattr(evalspec, "PASS_SAMPLE_FRACTION")
 
 
@@ -632,19 +638,19 @@ def test_launch_is_gated_and_never_reaches_the_creator_over_budget() -> None:
     with pytest.raises(evalspec.BudgetRefused):
         launch.launch(over, lambda: created.append(1))
     assert created == []
-    ok = evalspec.project(53_799, shards=96, max_run_hours=30)
+    ok = evalspec.project(53_799, shards=96, max_run_hours=36)
     launch.launch(ok, lambda: created.append(1))
     assert created == [1]
 
 
 def test_create_flag_refuses_and_points_at_the_fleet_launcher(capsys) -> None:
     with pytest.raises(SystemExit, match="only preflights"):
-        launch.main(["--files", "53799", "--shards", "96", "--max-run-hours", "30", "--create"])
+        launch.main(["--files", "53799", "--shards", "96", "--max-run-hours", "36", "--create"])
     assert launch.main(["--files", "5000000", "--shards", "96", "--max-run-hours", "30", "--create"]) == 1
 
 
 def test_launcher_preflight_prints_and_refuses(capsys) -> None:
-    assert launch.main(["--files", "53799", "--shards", "96", "--max-run-hours", "30"]) == 0
+    assert launch.main(["--files", "53799", "--shards", "96", "--max-run-hours", "36"]) == 0
     assert "PROJECTED" in capsys.readouterr().out
     assert launch.main(["--files", "5000000", "--shards", "96", "--max-run-hours", "30"]) == 1
     err = capsys.readouterr().err

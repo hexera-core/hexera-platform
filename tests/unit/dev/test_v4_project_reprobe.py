@@ -67,3 +67,22 @@ def test_the_simulated_cap_is_the_waves_own_wall_not_a_second_copy(tmp_path, cap
         pr.simulate = real
     capsys.readouterr()
     assert seen and set(seen) == {float(ev.DEFAULT_FILE_TIMEOUT_S)}
+
+
+def test_the_projector_loads_v4s_evalspec_even_when_v3_owns_the_bare_name() -> None:
+    """v3_eval's modules register THEIR evalspec in sys.modules under the bare name `evalspec`, so
+    `import evalspec` here would pick up whichever reached sys.modules first. The projector loads v4's by
+    path; this is the regression test for the order-dependent failure that caused."""
+    import importlib.util
+    import sys
+
+    v3_evalspec = _load("evalspec", V4.parent / "v3_eval", "evalspec")  # exactly what v3_eval/run_arm.py does
+    assert sys.modules["evalspec"] is v3_evalspec
+    assert not hasattr(v3_evalspec, "DEFAULT_FILE_TIMEOUT_S")
+
+    spec = importlib.util.spec_from_file_location("project_reprobe_reloaded", V4 / "project_reprobe.py")
+    assert spec is not None and spec.loader is not None
+    fresh = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = fresh
+    spec.loader.exec_module(fresh)
+    assert fresh._evalspec.DEFAULT_FILE_TIMEOUT_S == ev.DEFAULT_FILE_TIMEOUT_S
