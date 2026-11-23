@@ -751,6 +751,30 @@ def ai_generators(
     return [DetGenerator(unfixable=shared), proposer], proposer
 
 
+#: the least patience the search ever has, however few holes the part presents
+PATIENCE_FLOOR = 3
+#: rounds of slack beyond one round per hole: one for the op that is not a fill (`make_volume`), one spare
+PATIENCE_SLACK = 2
+
+
+def open_site_count(sites: list[Site]) -> int:
+    """How many holes the part presents, as the search sees them: the closed free loops layer 1's open finding
+    carries (`graph["free_loops_total"]`, the uncapped count; every open site carries the same part-wide list),
+    or at least one per `open` site when the loops could not be read. This is the number of `fill_loop`s the
+    deterministic sweep can make, so it is the number of non-improving rounds a repair may need before its volume."""
+    open_sites = [s for s in sites if s.kind == "open"]
+    loops = max((int(s.graph.get("free_loops_total") or len(s.graph.get("free_loops") or ())) for s in open_sites),
+                default=0)
+    return max(loops, len(open_sites))
+
+
+def scaled_patience(open_sites: int) -> int:
+    """`max(3, open_sites + 2)`: patience grows with the work the part presents. Always bounded by the wall clock
+    and the op budget, and in fact by the latter alone: a round spends at least one op to add a state, so no more
+    than `ops + 1` rounds can run."""
+    return max(PATIENCE_FLOOR, open_sites + PATIENCE_SLACK)
+
+
 def search(
     pool: Any,
     start: Workspace,
@@ -760,7 +784,7 @@ def search(
     *,
     workers: int,
     k_confirm: int = 3,
-    patience: int = 3,
+    patience: int | None = None,
     k_propose: int = 12,
     judge: Judge | None = None,
     h_mm: float | None = None,
@@ -867,6 +891,10 @@ def search(
         k_confirm=k_confirm,
         patience=patience,
     )
+    #: None asks for the scaled rule (`scaled_patience`), settled from the start state's own sites at its first
+    #: expansion; an int is a fixed patience, as before
+    fixed_patience = patience
+    patience_now = PATIENCE_FLOOR if patience is None else patience
     best = s0
     seen = {_fingerprint(start)}
     heap: list[tuple] = [(_neg(s0.score), next(tie), s0.score, s0)]
@@ -905,6 +933,10 @@ def search(
             else:
                 state.site_registry = _carry_site_ids(state, trace)
             state.budget = {"spent": spent_now(), "limits": budget.__dict__}
+            if fixed_patience is None and state is s0:
+                holes = open_site_count(state.sites)
+                patience_now = scaled_patience(holes)
+                trace.record("patience", open_sites=holes, patience=patience_now, floor=PATIENCE_FLOOR)
             declared_unfixable = [
                 s.id for s in state.sites if unfixable is not None and unfixable.is_declared(s.id, state.lineage)
             ]
@@ -1064,6 +1096,7 @@ def search(
 
             # confirm the best new states with the full panel
             improved = False
+            progressed = False
             top = sorted(children, key=lambda s: s.score, reverse=True)[:k_confirm]
             futures = [executor.submit(judge.full, pool, c.ws, original) for c in top]
             for child, future in zip(top, futures, strict=True):
@@ -1087,6 +1120,8 @@ def search(
                 if child.score > best.score:
                     trace.record("best", state=child.id, score=child.score, previous=best.id, previous_score=best.score)
                     best, improved = child, True
+                if child.score >= state.score:
+                    progressed = True  # a new state that is no worse than its parent: a step of a multi-op repair
 
             # tell each generator that listens what became of ITS candidates (after confirmation, so a confirmed
             # child's delta is the full-panel one)
@@ -1108,8 +1143,8 @@ def search(
             if best.verdict.clean:
                 reason = "clean"
                 break
-            flat = 0 if improved else flat + 1
-            if flat >= patience:
+            flat = 0 if (improved or progressed) else flat + 1
+            if flat >= patience_now:
                 reason = "patience"
 
     ended_by = reason
