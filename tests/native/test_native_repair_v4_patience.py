@@ -18,7 +18,6 @@ from tests.native._v4_flush_patch_part import write_flush_patch_box, write_three
 
 import meshpipeline.cad.repair_v4 as v4  # noqa: E402
 
-
 #: ops the three-hole repair needs under the search's breadth-first order of tied states (measured: clean at 70 ops,
 #: not at 40). This is NOT a widened engine budget: it is what the test grants so that patience is the only thing
 #: standing between the part and its repair. See the Task 46 report.

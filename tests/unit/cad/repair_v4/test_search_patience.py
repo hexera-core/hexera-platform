@@ -7,11 +7,6 @@ from __future__ import annotations
 
 from typing import Any
 
-import pytest
-
-from meshpipeline.cad.repair_v4 import search
-from meshpipeline.cad.repair_v4.search import Budget, open_site_count, scaled_patience
-from meshpipeline.cad.repair_v4.types import Site
 from tests.unit.cad.repair_v4.test_search_wiring import (  # noqa: F401  (world is an autouse fixture)
     BIG,
     Scripted,
@@ -22,6 +17,9 @@ from tests.unit.cad.repair_v4.test_search_wiring import (  # noqa: F401  (world 
     run,
     world,
 )
+
+from meshpipeline.cad.repair_v4.search import Budget, open_site_count, scaled_patience
+from meshpipeline.cad.repair_v4.types import Site
 
 CLEAN_Q = 50
 

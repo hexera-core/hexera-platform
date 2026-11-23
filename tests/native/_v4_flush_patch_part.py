@@ -95,8 +95,8 @@ def three_hole_box():
     loops (each ~3.4% of the diagonal, each a plane closes with zero deviation). The repair needs three `fill_loop`s
     and then one `make_volume`."""
     from OCP.BRepGProp import BRepGProp
-    from OCP.GProp import GProp_GProps
     from OCP.BRepTools import BRepTools_ReShape
+    from OCP.GProp import GProp_GProps
     from OCP.TopAbs import TopAbs_FACE
     from OCP.TopExp import TopExp_Explorer
     from OCP.TopoDS import TopoDS
