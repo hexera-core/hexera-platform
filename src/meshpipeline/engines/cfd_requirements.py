@@ -1255,15 +1255,16 @@ def wall_function_cell_plan(ask: Ask | None, *, bore_D: float, wall_cell_m: floa
 
     crushed = cell < WALL_FUNCTION_CRUSH * layer * (1 - 1e-9)
     with_layer, no_layer = pct(~crushed), pct((yp >= y_lo) & (yp <= y_hi))
-    under = pct(yp < y_lo)
-    out = {"no_layer": bool(crushed.any() and no_layer > with_layer), "layer_m": float(f"{layer:.4g}"),
-           "with_layer_pct": with_layer, "no_layer_pct": no_layer, "under_pct": under, "crushed_pct": pct(crushed),
+    under, crushed_pct = pct(yp < y_lo), pct(crushed)
+    choose = bool(crushed.any() and no_layer > with_layer)
+    out = {"no_layer": choose, "layer_m": float(f"{layer:.4g}"),
+           "with_layer_pct": with_layer, "no_layer_pct": no_layer, "under_pct": under, "crushed_pct": crushed_pct,
            "y_lo": y_lo, "y_hi": y_hi, "words": ""}
-    if out["no_layer"]:
+    if choose:
         fine = float(cell[crushed].min())
         words = (f"no wall layer: the wall's own cells already sit at y+ {MR._g(y_lo)} to {MR._g(y_hi)} on "
                  f"{MR._g(no_layer)}% of the wall, so the wall cell is the wall-function cell; a {_mm(layer)} layer "
-                 f"would crush the cells above it on {MR._g(out['crushed_pct'])}% of the wall, where a thin spot or a "
+                 f"would crush the cells above it on {MR._g(crushed_pct)}% of the wall, where a thin spot or a "
                  f"narrow passage is refined to {_mm(fine)} cells")
         if under > 0.0:
             words += (f"; on {MR._g(under)}% of the wall the cells sit under y+ {MR._g(y_lo)}: they are the cells a "
