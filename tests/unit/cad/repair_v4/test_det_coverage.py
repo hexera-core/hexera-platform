@@ -1,9 +1,12 @@
 # Responsibility: The deterministic sweep covers every op the AI proposer can reach, so `search_ai - search_det`
 #                 measures the model's JUDGEMENT, not its exclusive access to an op. Pins, per op that used to be
-#                 AI-only (`rebuild_face`, `rebuild_edge_as_intersection`, `reapproximate`, `refit_cluster`): the site
+#                 AI-only (`rebuild_face`, `rebuild_edge_as_intersection`, `reapproximate`, `refit_cluster`, and
+#                 `fix_poles` / `to_canonical`, which ran only in the pre-search staged healer): the site
 #                 kinds and evidence that make DetGenerator propose it, the fixed sweep, that every proposal is inside
 #                 the op's own schema, that nothing is proposed without the evidence, and that the op is reached
-#                 through `search()` on the search_det arm.
+#                 through `search()` on the search_det arm. Pins the WHOLE registry too: every op the AI can request
+#                 is either swept or listed in `DET_UNREACHABLE_OPS` with its reason, so a new op cannot silently
+#                 become an AI-only advantage.
 # Boundaries: hermetic: fake sites and workspaces; the kernel side is the native tier
 #             (tests/native/test_native_repair_v4_det_coverage.py).
 from __future__ import annotations
@@ -14,10 +17,14 @@ import pytest
 from tests.unit.cad.repair_v4.test_search_wiring import World, make_ws, run, world  # noqa: F401  (world: autouse)
 
 from meshpipeline.cad.repair_v4 import search
-from meshpipeline.cad.repair_v4.ops import validate_call
+from meshpipeline.cad.repair_v4.ops import REGISTRY, validate_call
 from meshpipeline.cad.repair_v4.search import DetGenerator, SearchState
 from meshpipeline.cad.repair_v4.types import Site
 from meshpipeline.cad.repair_v4.workspace import Workspace
+
+#: The registry as the real op modules file it, snapshotted at IMPORT time: the autouse `world` fixture adds a fake
+#: op to `REGISTRY` for every test in this module, and the coverage claim is about the real ops.
+REAL_OPS = frozenset(REGISTRY)
 
 DIAG = 120.0          # mm: bound = min(0.1, 0.001 x 120) = 0.1 mm
 BOUND = 0.1
@@ -30,14 +37,15 @@ def _site(kind: str, entities: list[str], **graph: Any) -> Site:
                 graph=dict(graph), view_png=None)  # type: ignore[arg-type]
 
 
-def _ws() -> Workspace:
-    ids = {**{f: f"fp{f}" for f in FACES}, **{e: f"fp{e}" for e in EDGES}, "B1": "fpB1"}
+def _ws(*, solids: tuple[str, ...] = ("B1",)) -> Workspace:
+    ids = {**{f: f"fp{f}" for f in FACES}, **{e: f"fp{e}" for e in EDGES}, **{b: f"fp{b}" for b in solids}}
     return Workspace(brep_path="/fake/a.brep", ids=ids, labels={}, history=[], original="/fake/o.brep",
                      indices={sid: i for i, sid in enumerate(ids, start=1)})
 
 
-def _propose(sites: list[Site], *, diag: float | None = DIAG) -> tuple[list, DetGenerator]:
-    state = SearchState(id="S0", ws=_ws(), verdict=None, score=(0, 0, 0.0, 0.0, 0), sites=sites, depth=0,
+def _propose(sites: list[Site], *, diag: float | None = DIAG,
+             ws: Workspace | None = None) -> tuple[list, DetGenerator]:
+    state = SearchState(id="S0", ws=ws or _ws(), verdict=None, score=(0, 0, 0.0, 0.0, 0), sites=sites, depth=0,
                         parent=None, via=None)
     gen = DetGenerator(diagonal=(lambda w: diag) if diag is not None else None)
     return gen.propose(state, 50), gen
@@ -137,12 +145,85 @@ def test_refit_cluster_is_not_offered_where_the_op_would_decline(why: str, site:
     assert _of(got, "refit_cluster") == [], why
 
 
+# --- fix_poles ----------------------------------------------------------------------------------------------------
+
+def test_a_pole_site_gets_fix_poles_one_face_at_a_time() -> None:
+    got, _ = _propose([_site("pole", ["F1", "F2", "F3"])])
+    assert _of(got, "fix_poles") == [(["F1"], {}), (["F2"], {})]
+
+
+def test_fix_poles_needs_a_face_and_an_observed_pole() -> None:
+    no_face, gen = _propose([_site("pole", ["E1"])])
+    assert _of(no_face, "fix_poles") == []
+    assert any("fix_poles not proposed" in n for n in gen.notes)
+    # `ops.edges.FixPoles.applies_to` also allows periodic and invalid, but ShapeFix_Face RAISES when it changes
+    # nothing, so the sweep stays on the kind a mesher actually reported a pole for.
+    for kind in ("periodic", "invalid", "self_overlap"):
+        other, _ = _propose([_site(kind, ["F1"])])
+        assert _of(other, "fix_poles") == [], kind
+
+
+# --- to_canonical -------------------------------------------------------------------------------------------------
+
+def test_to_canonical_snaps_one_free_form_face_per_candidate_at_half_the_bound() -> None:
+    nodes = [node("F1", "bsplinesurface"), node("F2", "plane"), node("F3", "othersurface"),
+             node("F4", "surfaceofrevolution")]
+    got, _ = _propose([_site("sliver", ["F1", "F2", "F3", "F4"], nodes=nodes)])
+    assert _of(got, "to_canonical") == [(["F1"], {"tol_mm": 0.5 * BOUND}), (["F3"], {"tol_mm": 0.5 * BOUND})]
+
+
+def test_to_canonical_is_not_offered_for_analytic_faces_or_without_a_diagonal() -> None:
+    analytic, gen = _propose([_site("invalid", ["F1", "F2"],
+                                    nodes=[node("F1", "plane"), node("F2", "cylinder")])])
+    assert _of(analytic, "to_canonical") == []
+    assert any("to_canonical not proposed" in n for n in gen.notes)
+    nodiag, no_size = _propose([_site("sliver", ["F1"], nodes=[node("F1", "bsplinesurface")])], diag=None)
+    assert _of(nodiag, "to_canonical") == []
+    assert any("to_canonical not proposed" in n for n in no_size.notes)
+    wrong_kind, _ = _propose([_site("periodic", ["F1"], nodes=[node("F1", "bsplinesurface")])])
+    assert _of(wrong_kind, "to_canonical") == []   # not one of ToCanonical.site_kinds
+
+
+# --- the whole registry: swept, or AI-only ON THE RECORD ----------------------------------------------------------
+
+def _one_site_per_kind() -> list[Site]:
+    """A site of every kind the sweep knows, each carrying the facts its rows are gated on."""
+    free = [node(f, "bsplinesurface") for f in ("F1", "F2")]
+    bad_edge = [edge("E1", ["F1", "F2"], tol=0.01)]
+    return [
+        _site("open", ["F1", "F2"], free_loops=[{"edges": ["E1", "E2"], "span_mm": 1.0}]),
+        _site("sliver", ["F1", "F2"], **_cluster("F1", "F2")),
+        _site("sliver", ["F1", "F2"], nodes=free),
+        _site("invalid", ["F1", "F2", "B1"], hard_codes=["self_intersection", "no_solids"], nodes=free,
+              edges=bad_edge),
+        _site("proximity", ["F1", "F2"], nodes=free, edges=bad_edge),
+        _site("periodic", ["F1", "F2"], nodes=free),
+        _site("pole", ["F1", "F2"], nodes=free),
+        _site("self_overlap", ["F1", "F2"], nodes=free, edges=bad_edge),
+        _site("overlap", ["F1", "F2", "B1", "B2"], nodes=free, edges=bad_edge),
+        _site("intersection", ["F1", "F2", "B1", "B2"], edges=bad_edge),
+    ]
+
+
+def test_the_det_sweep_reaches_every_registry_op_except_the_ones_it_explains() -> None:
+    swept: set[str] = set()
+    for site in _one_site_per_kind():          # one site at a time: a row dropped for another site's facts
+        got, _ = _propose([site], ws=_ws(solids=()))   # no solid, so `sew` is not predicted to decline
+        swept |= {c.op for c in got}
+    assert "t18_set" not in REAL_OPS                # the snapshot is the real registry, not the fixture's fake
+    assert REAL_OPS - swept == set(search.DET_UNREACHABLE_OPS) - {search.RUN_STAGE}
+    for op, why in search.DET_UNREACHABLE_OPS.items():
+        assert op not in swept and len(why) > 40, op   # listed means NOT swept, with a reason worth reading
+
+
 # --- every proposal is a valid call, and each op is reached through search() ---------------------------------------
 
 def _every_site() -> list[Site]:
     nodes = [node("F1", "bsplinesurface"), node("F2", "plane")]
     return [_site("self_overlap", ["F1", "F2"], nodes=nodes, edges=[edge("E1", ["F1", "F2"], tol=0.01)]),
-            _site("sliver", ["F3", "F4"], **_cluster("F3", "F4"))]
+            _site("sliver", ["F3", "F4"], **_cluster("F3", "F4")),
+            _site("pole", ["F3"]),
+            _site("invalid", ["F4"], nodes=[node("F4", "bsplinesurface")])]
 
 
 def test_every_new_proposal_is_inside_its_ops_own_schema() -> None:
@@ -153,14 +234,27 @@ def test_every_new_proposal_is_inside_its_ops_own_schema() -> None:
         assert validate_call(c.op, list(c.targets), dict(c.params), _ws()) == [], (c.op, c.params)
 
 
-def test_each_op_is_reached_from_the_search_det_arm() -> None:
-    sites = _every_site()
+#: the smallest site that earns each covered op its row, so the op has to be reached at the PRODUCTION
+#: `k_propose` (12 per expansion) rather than at a cap raised for the test
+_REACH_CASES = {
+    "rebuild_face": _site("self_overlap", ["F1"]),
+    "rebuild_edge_as_intersection": _site("proximity", ["F1"], edges=[edge("E1", ["F1", "F2"], tol=0.01)]),
+    "reapproximate": _site("periodic", ["F1"], nodes=[node("F1", "bsplinesurface")]),
+    "refit_cluster": _site("sliver", ["F1", "F2"], **_cluster("F1", "F2")),
+    "fix_poles": _site("pole", ["F1"]),
+    "to_canonical": _site("invalid", ["F1"], nodes=[node("F1", "bsplinesurface")]),
+}
+
+
+@pytest.mark.parametrize("op", search.DET_COVERED_OPS)
+def test_each_covered_op_is_reached_from_the_search_det_arm(op: str) -> None:
     gens, proposer = search.arm_generators("search_det")
     assert proposer is None
     for g in gens:
         if isinstance(g, DetGenerator):
             g.diagonal = lambda w: DIAG
-    r = run(gens, World(target=3, sites_fn=lambda pool, ws, v: sites), start=make_ws(0, ids=("F1", "F2", "F3", "F4", "E1")),
+    r = run(gens, World(target=3, sites_fn=lambda pool, ws, v: [_REACH_CASES[op]]),
+            start=make_ws(0, ids=("F1", "F2", "E1")),
             budget=search.Budget(wall_s=60, ops=60, model_calls=0, model_usd=0.0))
     reached = {e["op"] for e in r.trace.of_kind("candidate") if e.get("source") == "det"}
-    assert set(search.DET_COVERED_OPS) <= reached, set(search.DET_COVERED_OPS) - reached
+    assert op in reached, reached
