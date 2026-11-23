@@ -160,6 +160,34 @@ def run_cartesian_mesh(workspace, *, context=None, bashrc: str = _DEFAULT_BASHRC
     return run_mesh(workspace, engine="cfmesh", timeout=timeout)
 
 
+#: INS-31: each further passage's own mesh is checked, and rescued at its validity edge, before it is merged
+PASSAGE_RESCUE_RULE = "INS-31"
+
+
+def rescue_passage(sub: Path, *, bashrc: str, deadline: float) -> dict | None:
+    """A further passage's own mesh in `sub`, measured with checkMesh and, when it is at its validity edge, given the
+    cfMesh rescue (engines/cfmesh/rescue: the best measured candidate is left in `sub`, every opening kept, INS-30)
+    before mergeMeshes takes it. Returns the quality record kept (None when it could not be measured: the passage is
+    merged as built, as before). `deadline`: the monotonic end of the passages' own guard."""
+    from meshpipeline.engines.cfmesh.foam_exec import check_mesh
+    from meshpipeline.engines.cfmesh.rescue import near_edge, rescue
+    try:
+        q = check_mesh(sub, bashrc=bashrc) or None
+    except Exception:  # noqa: BLE001 - an unmeasured passage is merged as built
+        logger.warning("cfMesh: %s - the passage mesh in %s could not be measured", PASSAGE_RESCUE_RULE, sub,
+                       exc_info=True)
+        return None
+    if not q or not near_edge(q):
+        return q
+    logger.warning("cfMesh: %s - the passage mesh in %s is at its validity edge (%s): rescued before the merge",
+                   PASSAGE_RESCUE_RULE, sub.name, near_edge(q))
+    try:
+        return rescue(sub, q, bashrc=bashrc, deadline=deadline, mesher_seconds=0.0)
+    except Exception:  # noqa: BLE001 - the rescue keeps the best mesh so far in place; the passage is merged with it
+        logger.warning("cfMesh: %s - the passage rescue in %s failed", PASSAGE_RESCUE_RULE, sub.name, exc_info=True)
+        return q
+
+
 #: how mesh_passages says a passage was STUCK (no sign of life for the stall window), not slow
 PASSAGE_STALLED = "made no progress for the stall window"
 
@@ -233,6 +261,10 @@ def mesh_passages(ws: Path, *, bashrc: str = _DEFAULT_BASHRC, timeout: float = 1
                             "cell size", k, ", ".join(lost), cells)
                 md.write_text(finer_mesh_dict(md.read_text()))
                 shutil.rmtree(sub / "constant" / "polyMesh", ignore_errors=True)
+            # INS-31: the passage's own mesh is measured and, at its validity edge, given the engine's own second
+            # chances BEFORE it is merged - merged, its bad cells are the whole mesh's (abc 99768: passage 2 carried
+            # the 171-degree, negative-volume cells the merged mesh's rescue then could not clear)
+            rescue_passage(sub, bashrc=bashrc, deadline=deadline)
             if _run(f"mergeMeshes -overwrite . {shlex.quote(str(rel))}", ws, f"mergeMeshes_p{k}.log") != 0:
                 tail = "\n".join((ws / f"mergeMeshes_p{k}.log").read_text(errors="replace").splitlines()[-LOG_TAIL_LINES:])
                 return 1, False, f"[CFMESH] passage {k} could not be merged into the mesh:\n{tail}"

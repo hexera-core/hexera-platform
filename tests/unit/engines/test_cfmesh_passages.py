@@ -18,6 +18,15 @@ from meshpipeline.engines.cfmesh.cfmesh_runner import _stage_passages
 from meshpipeline.engines.cfmesh.solvability import _passage_pins
 
 
+_RESCUE_PASSAGE = N.rescue_passage
+
+
+@pytest.fixture(autouse=True)
+def _no_passage_check(monkeypatch):
+    """No checkMesh here: a further passage's own check (INS-31) is its own test."""
+    monkeypatch.setattr(N, "rescue_passage", lambda sub, **kw: None)
+
+
 def _tube(ws: Path, lo, hi, port: str) -> tuple[list, list]:
     tris = _box_triangles(lo, hi)
     return tris[:-2], tris[-2:]
@@ -257,3 +266,45 @@ def test_a_dropped_opening_is_no_reason_to_run_the_same_plan_again(tmp_path, mon
     state = {"engine": "cfmesh", "executor_success": False, "executor_failed_gate": "finalize",
              "executor_failure_cause": ref.cause, "executor_failure_facts": dict(ref.facts)}
     assert classify(state).kind == NEVER
+
+
+def test_a_further_passage_at_its_edge_is_rescued_before_it_is_merged(tmp_path, monkeypatch):
+    # INS-31: abc 99768's passage 2 carried 171-degree, negative-volume cells into the merged mesh
+    import meshpipeline.engines.cfmesh.foam_exec as FE
+    import meshpipeline.engines.cfmesh.rescue as RS
+    seen: list = []
+    monkeypatch.setattr(FE, "check_mesh", lambda ws, **kw: {"cells": 26_000, "max_non_ortho": 171.0,
+                                                           "fatal": ["negative-volume cells"]})
+    monkeypatch.setattr(RS, "rescue", lambda ws, q, **kw: seen.append((Path(ws), q["max_non_ortho"])) or
+                        {**q, "max_non_ortho": 70.0, "fatal": []})
+    out = _RESCUE_PASSAGE(tmp_path, bashrc="/dev/null", deadline=0.0)
+    assert seen == [(tmp_path, 171.0)] and out["max_non_ortho"] == 70.0
+    # a passage mesh inside the edge is merged as built
+    monkeypatch.setattr(FE, "check_mesh", lambda ws, **kw: {"cells": 26_000, "max_non_ortho": 60.0, "fatal": []})
+    assert _RESCUE_PASSAGE(tmp_path, bashrc="/dev/null", deadline=0.0)["max_non_ortho"] == 60.0 and len(seen) == 1
+
+
+def test_the_passage_check_runs_between_its_mesh_and_the_merge(tmp_path, monkeypatch):
+    ws = tmp_path
+    (ws / "system").mkdir()
+    (ws / "system" / "meshDict").write_text('surfaceFile "geom.fms";\nmaxCellSize 0.1;\n')
+    sub = ws / "_passages" / "p1"
+    sub.mkdir(parents=True)
+    (sub / "geom.stl").write_text("solid wall\nendsolid wall\n")
+    (ws / PASSAGES_FILE).write_text(json.dumps({"runs": ["_passages/p1"], "ports": [["inlet"], ["outlet_1"]]}))
+    order: list = []
+
+    def _fake(argv, **kw):
+        cmd, cwd = argv[-1], Path(kw["cwd"])
+        order.append(cmd.split("&& ")[-1].split()[0])
+        if "cartesianMesh" in cmd:
+            (cwd / "constant" / "polyMesh").mkdir(parents=True, exist_ok=True)
+            (cwd / "constant" / "polyMesh" / "owner").write_text("x")
+        return _Proc(0)
+
+    monkeypatch.setattr(N, "run_guarded", _fake)
+    monkeypatch.setattr(N, "ports_without_faces", lambda pm, ports: [])
+    monkeypatch.setattr(N, "rescue_passage", lambda s, **kw: order.append(("check", Path(s))))
+    assert N.mesh_passages(ws)[0] == 0
+    i = order.index(("check", sub.resolve()))
+    assert order[i - 1] == "cartesianMesh" and order[i + 1] == "mergeMeshes"
