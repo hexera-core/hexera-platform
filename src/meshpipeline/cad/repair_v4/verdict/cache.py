@@ -22,6 +22,8 @@ import dataclasses
 import hashlib
 import json
 import logging
+import os
+import threading
 import weakref
 from collections.abc import Callable, Sequence
 from pathlib import Path
@@ -95,6 +97,23 @@ class DirStore:
         tmp = path.with_suffix(".tmp")
         tmp.write_text(text)
         tmp.replace(path)
+
+
+class MemoryStore:
+    """An in-process store: what the engine's default cache is when no durable one is configured. Thread-safe
+    (the search confirms candidates on a thread pool)."""
+
+    def __init__(self) -> None:
+        self._data: dict[str, str] = {}
+        self._lock = threading.Lock()
+
+    def get(self, key: str) -> str | None:
+        with self._lock:
+            return self._data.get(key)
+
+    def put(self, key: str, text: str) -> None:
+        with self._lock:
+            self._data[key] = text
 
 
 class GcsStore:
@@ -173,3 +192,29 @@ class VerdictCache:
         }
         self.store.put(self.key(step_sha, config_hash, version), json.dumps(body))
         return True
+
+
+#: where the engine's verdict cache lives when it must outlive the process: `gs://bucket/prefix` or a directory.
+#: Unset: one in-memory cache per process, which is enough for the staged healer and the search of ONE file to
+#: share their meshing.
+CACHE_URI_ENV = "CRS_V4_VERDICT_CACHE_URI"
+_DEFAULT: dict[str, VerdictCache] = {}
+_DEFAULT_LOCK = threading.Lock()
+
+
+def default_verdict_cache() -> VerdictCache:
+    """The cache the engine's judges use (`search.default_judge`, `stages`), one per (process, `CACHE_URI_ENV`).
+    Both judges MUST get the same one: the staged healer's final state is the search's start state, and the second
+    judgement of it must not mesh again."""
+    uri = os.environ.get(CACHE_URI_ENV, "")
+    with _DEFAULT_LOCK:
+        if uri not in _DEFAULT:
+            store: CacheStore = (GcsStore(uri) if uri.startswith("gs://") else DirStore(uri)) if uri else MemoryStore()
+            _DEFAULT[uri] = VerdictCache(store)
+        return _DEFAULT[uri]
+
+
+def reset_default_verdict_cache() -> None:
+    """Forget the process-wide caches (tests; a long-lived worker that wants a cold start)."""
+    with _DEFAULT_LOCK:
+        _DEFAULT.clear()

@@ -61,6 +61,7 @@ from meshpipeline.cad.repair_v4.verdict.assemble import (
     cheap_verdict,
     score,
 )
+from meshpipeline.cad.repair_v4.verdict.cache import default_verdict_cache
 from meshpipeline.cad.repair_v4.verdict.faithful import DeclaredIdError, FaithfulReport, check_faithful
 from meshpipeline.cad.repair_v4.verdict.valid import CheckerUnavailable
 from meshpipeline.cad.repair_v4.worker_pool import WorkerPool
@@ -341,7 +342,10 @@ def _judge(pool: WorkerPool, ws: Workspace) -> Score:
         and `valid.ok` lives only in score key 0, so key 0 is replaced by a local gate: valid AND
         every layer-3 reason is one of those two (area and deviation reasons are not)."""
     faces, solids = original_facts(pool, ws.original)
-    v = cheap_verdict(pool, step_for(pool, ws.brep_path), step_for(pool, ws.original))
+    # the cache is the process-wide one `search.default_judge` also uses: the final staged state is the search's
+    # start state, and its cheap verdict must not be meshed twice
+    v = cheap_verdict(pool, step_for(pool, ws.brep_path), step_for(pool, ws.original),
+                      cache=default_verdict_cache())
     declared = declared_edits(ws, faces)
     if v.valid.ok and (declared.added or declared.removed):
         report: FaithfulReport | None
@@ -421,6 +425,28 @@ def run_staged(pool: WorkerPool, ws: Workspace, *, params: dict[str, dict] | Non
     return result
 
 
+@dataclass
+class StagedStart:
+    """What the engine hands the search as its starting point. `measured` False means the checker could not
+    judge even the unchanged workspace (a dead pool, a missing mesher): `ws` is then the INPUT, `result` is None,
+    and nothing was learned about the file. That is inconclusive, never a failure of the healer or of the part."""
+
+    ws: Workspace
+    result: StagedResult | None
+    measured: bool
+    reason: str | None = None
+
+
+def staged_start(pool: WorkerPool, ws: Workspace, *, params: dict[str, dict] | None = None) -> StagedStart:
+    """`run_staged` as the engine calls it before the search: infrastructure failure becomes `measured=False`
+    (the caller passes the upload through as inconclusive); every other exception is a bug and propagates."""
+    try:
+        result = run_staged(pool, ws, params=params)
+    except CheckerUnavailable as why:
+        return StagedStart(ws=ws, result=None, measured=False, reason=str(why))
+    return StagedStart(ws=result.ws, result=result, measured=True)
+
+
 def run_stage(pool: WorkerPool, ws: Workspace, name: str, params: dict | None = None) -> StagedResult:
     """One stage as a transaction: the search's macro action. `params` are THAT stage's."""
     if name not in _BY_NAME:
@@ -430,4 +456,4 @@ def run_stage(pool: WorkerPool, ws: Workspace, name: str, params: dict | None = 
     return result
 
 
-__all__ = ["DEFAULTS", "STAGES", "Stage", "StagedResult", "run_stage", "run_staged"]
+__all__ = ["DEFAULTS", "STAGES", "Stage", "StagedResult", "StagedStart", "run_stage", "run_staged", "staged_start"]
