@@ -337,6 +337,14 @@ def kernel_test_fns_enabled() -> bool:
     return bool_env("HEXERA_TEST_KERNEL_FNS", "false")
 
 
+def running_under_pytest() -> bool:
+    """Whether this process is inside a pytest test. pytest sets PYTEST_CURRENT_TEST itself for the
+    duration of each test; nothing a deployment sets. It gates the test-only constructors (the v4
+    model ledger's `for_test`), so the read is fail-closed: unset OR blank is "not under pytest" and
+    the test door stays shut. Read at CALL time, so a test that clears it is honoured."""
+    return optional_env("PYTEST_CURRENT_TEST", "").strip() != ""
+
+
 ENGINES: tuple[str, ...] = ("v3", "search")
 
 

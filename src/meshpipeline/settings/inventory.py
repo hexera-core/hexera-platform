@@ -415,6 +415,8 @@ INVENTORY: list[Group] = [
                help="which repair engine repair_step_file runs: v3 (the conservative region-loop repair) or search (CRS v4, cad/repair_v4); strict - any other value refuses startup; production never sets it, so it stays v3 until v4 beats v3 on the benchmark"),
         EnvVar("HEXERA_TEST_KERNEL_FNS", "false", kind="bool", exposure="internal",
                help="developer/test only: register the v4 kernel-worker test functions (echo, sleep-forever, abort, op_test_write_then_hang) so the worker-pool tests can exercise timeouts and crashes; never set in production"),
+        EnvVar("PYTEST_CURRENT_TEST", "", exposure="external", consumer="app",
+               help="set by pytest itself for the duration of a test, never by a deployment; the v4 model ledger's for_test constructor refuses to run unless it is non-blank, so the test-only ledger door is shut in production"),
         EnvVar("CAD_REPAIR_RESOLVE_SUB_MESH_GAP", "false", kind="bool", exposure="internal",
                help="split the two faces of a sub-mesh-size gap (faces that do not touch but sit closer than the default mesh's chord sag) along their own iso-curves so gmsh's default surface mesh resolves the wall; moves no surface, declares the measured area/volume noise; never auto-accepted"),
         EnvVar("CAD_REPAIR_FIX_SMALL_FACES", "false", kind="bool", exposure="internal",

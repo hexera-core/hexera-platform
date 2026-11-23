@@ -64,6 +64,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, Protocol
 
+from meshpipeline.settings.cad_repair import running_under_pytest
+
 _MICRO = 1_000_000
 _FACTORY = object()      # the private key to the constructor; only for_shard and for_test hold it
 
@@ -252,7 +254,7 @@ class WaveLedger:
                  store: LedgerStore | None = None) -> WaveLedger:
         """A ledger of any cap up to the largest wave limit, for tests. REFUSES to run outside pytest, so it is
         not a second production door."""
-        if "PYTEST_CURRENT_TEST" not in os.environ:
+        if not running_under_pytest():
             raise RuntimeError("WaveLedger.for_test is for tests; production builds ledgers with for_shard")
         ledger = cls(cap_usd, path, store=store, _factory=_FACTORY)
         ledger.provenance = "test"
