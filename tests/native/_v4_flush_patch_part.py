@@ -88,3 +88,34 @@ def write_step(shape, path: Path) -> Path:
 
 def write_flush_patch_box(path: Path) -> Path:
     return write_step(flush_patch_box(), path)
+
+
+def three_hole_box():
+    """The flush-patch box with ALL THREE small squares deleted: one solid's worth of faces, three separate free
+    loops (each ~3.4% of the diagonal, each a plane closes with zero deviation). The repair needs three `fill_loop`s
+    and then one `make_volume`."""
+    from OCP.BRepGProp import BRepGProp
+    from OCP.BRepTools import BRepTools_ReShape
+    from OCP.GProp import GProp_GProps
+    from OCP.TopAbs import TopAbs_FACE
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS
+
+    shape = flush_patch_box()
+    reshape = BRepTools_ReShape()
+    removed = 0
+    explorer = TopExp_Explorer(shape, TopAbs_FACE)
+    while explorer.More():
+        face = TopoDS.Face_s(explorer.Current())
+        props = GProp_GProps()
+        BRepGProp.SurfaceProperties_s(face, props)
+        if abs(props.Mass() - (2 * HALF) ** 2) < 1e-6:
+            reshape.Remove(face)
+            removed += 1
+        explorer.Next()
+    assert removed == 3, f"expected to delete the three flush squares, found {removed}"
+    return reshape.Apply(shape)
+
+
+def write_three_hole_box(path: Path) -> Path:
+    return write_step(three_hole_box(), path)
