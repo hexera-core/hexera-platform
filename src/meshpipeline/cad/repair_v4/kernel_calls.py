@@ -49,3 +49,6 @@ if os.environ.get("HEXERA_TEST_KERNEL_FNS") == "1":
 # Registered for their side effect on REGISTRY; the workspace's kernel half. At the foot so that
 # `register` and `REGISTRY` exist before the module that uses them is imported.
 from meshpipeline.cad.repair_v4 import ws_kernel  # noqa: E402,F401
+
+# The face rebuild ops' kernel functions (Task 14); same pattern as ws_kernel above.
+from meshpipeline.cad.repair_v4.ops import faces as _ops_faces  # noqa: E402,F401
