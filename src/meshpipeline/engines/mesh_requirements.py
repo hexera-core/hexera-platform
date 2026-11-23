@@ -86,8 +86,9 @@ FILE = "mesh_requirements.json"
 #: how long the one reading may take before nothing is applied (the same as the other FEA decision)
 TIMEOUT_S = 180.0
 MIN_WAIT_S = 20.0
-#: the most of the user's words one reading is shown (a pasted criteria sheet fits many times over)
-MAX_CHARS = 8000
+#: the most of the user's words one reading is shown (a pasted criteria sheet fits many times over; an attached
+#: spec's text is part of them, NOTE-16 - past this the notes are cut with a told line)
+MAX_CHARS = 24000
 
 #: millimetres per unit the user may state
 UNITS_MM = {"mm": 1.0, "cm": 10.0, "m": 1000.0, "in": 25.4, "um": 1e-3}

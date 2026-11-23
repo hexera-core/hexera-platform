@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import logging
 import re
 import secrets
 import time
@@ -24,6 +25,8 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 KIND_IMAGE = "image"
 KIND_TEXT = "text"
@@ -277,6 +280,25 @@ def resolve(session: Any, ids: Iterable[Any]) -> list[dict]:
         if aid in index and aid not in seen and _ID.match(aid):
             seen.add(aid)
             out.append(public(aid, index[aid]))
+    return out
+
+
+def with_text(session: Any, rows: Iterable[Mapping]) -> list[dict]:
+    """The rows with each text file's read text on it (capped at MAX_CHARS): what the notes readers see as the
+    user's own words. A text the store cannot give now is left off - the row is kept. Blocking (the store)."""
+    index, out = index_of(session), []
+    for row in rows or ():
+        row = dict(row)
+        entry = index.get(str(row.get("id") or ""))
+        if row.get("kind") == KIND_TEXT and isinstance(entry, Mapping) and entry.get("text_key"):
+            try:
+                text = get_bytes(str(entry["text_key"])).decode("utf-8", "replace")[:MAX_CHARS]
+            except Exception:  # noqa: BLE001 - the words still go; the file's text is read again on the next note
+                logger.warning("chat attachment: text of %s could not be read", row.get("id"))
+                text = ""
+            if text.strip():
+                row["text"] = text
+        out.append(row)
     return out
 
 

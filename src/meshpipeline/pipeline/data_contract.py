@@ -83,6 +83,14 @@ CONTRACT: tuple[ContractVar, ...] = (
         corpus="training+qa: what the user actually asked for, and what became of each request",
     ),
     ContractVar(
+        concept="attached files index",
+        purpose="the pictures and text files the user attached in the chat box or the notes box: one entry per "
+                "file (its kind, name, size and the object keys of its stored bytes and read text), so a message "
+                "or note can name only the session's own files, the readers can read them, and erasure finds "
+                "every key (application/chat_attachments, NOTE-16). Never the bytes themselves",
+        session_column="attachments",
+    ),
+    ContractVar(
         concept="team meshing standard",
         purpose="the organisation's standing mesh requirements from the console's Meshing settings - the "
                 "text as typed and the reading kept when it was saved - snapshotted at approval so the run "

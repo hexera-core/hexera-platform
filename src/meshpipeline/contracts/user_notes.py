@@ -200,12 +200,23 @@ def is_skip(text: Any) -> bool:
 #: WHAT A NOTE MAY CARRY BESIDE ITS WORDS: the files the user attached and the faces they picked on the model. Each
 #: is a list of plain rows, kept only with the keys below (never a picture's bytes or a data URL: those are built
 #: from the stored file when a model is called), and only when the note has one - a note without them is as before.
-ATTACHMENT_KEYS = ("id", "kind", "name", "mime", "bytes", "pages", "chars", "cut", "width", "height")
+#: An attached text file (PDF, .txt, .md, .csv) also keeps its read TEXT on the row, so every reader sees it as the
+#: user's own words and a number written only in the file passes the quote rule (NOTE-7, NOTE-16). That text never
+#: goes back to the browser: shown() takes it off.
+ATTACHMENT_KEYS = ("id", "kind", "name", "mime", "bytes", "pages", "chars", "cut", "width", "height", "text")
 FACE_KEYS = ("id", "label", "sig")
+#: the most of one file's text a row keeps (application/chat_attachments.MAX_CHARS, held equal by a test)
+ATTACHED_TEXT_MAX = 40_000
 
 
 def _rows(raw: Any, keys: Sequence[str]) -> list[dict]:
-    return [{k: r[k] for k in keys if k in r} for r in raw or () if isinstance(r, Mapping) and str(r.get("id") or "")]
+    rows = [{k: r[k] for k in keys if k in r} for r in raw or () if isinstance(r, Mapping) and str(r.get("id") or "")]
+    for r in rows:
+        if "text" in r:
+            r["text"] = str(r["text"] or "")[:ATTACHED_TEXT_MAX]
+            if not r["text"]:
+                del r["text"]
+    return rows
 
 
 def carried(note: Any) -> dict:
@@ -218,6 +229,23 @@ def carried(note: Any) -> dict:
         if rows:
             out[key] = rows
     return out
+
+
+def shown(note: Any) -> dict:
+    """What a note or message carries, as the BROWSER may see it: carried() without an attached file's read text
+    (the file itself opens from its own route)."""
+    out = carried(note)
+    if out.get("attachments"):
+        out["attachments"] = [{k: v for k, v in a.items() if k != "text"} for a in out["attachments"]]
+    return out
+
+
+def for_browser(message: Any) -> Any:
+    """One stored chat message as the browser receives it: an attachment row loses its read text, the rest is
+    as stored."""
+    if not isinstance(message, Mapping) or not message.get("attachments"):
+        return message
+    return {**message, **shown(message)}
 
 
 def make(text: str, *, source: str, turn: int | None = None, at: str = "",
@@ -343,7 +371,9 @@ def own_notes(notes: Any) -> list[dict]:
 
 def _carried_lines(note: Mapping) -> str:
     """Under a note's words: the files attached with it and the faces picked with it, by the names the user sees."""
-    lines = [f"[attached: {a.get('name') or a['id']}]" for a in note.get("attachments") or ()]
+    lines = [f"[attached: {a.get('name') or a['id']}]" + (
+        f"\n(the file's text - the user's own words)\n<<<\n{a['text']}\n>>>" if a.get("text") else "")
+        for a in note.get("attachments") or ()]
     faces = [f"{f['id']} ({f['label']})" if f.get("label") else str(f["id"]) for f in note.get("faces") or ()]
     if faces:
         lines.append("[picked on the model: " + ", ".join(faces) + "]")
@@ -527,7 +557,7 @@ def result_lines(remarks: Sequence[Any], *, consumer: str = "delivery") -> list[
             for r in remarks or () if str(r).strip()]
 
 
-__all__ = ["ATTACHMENT_KEYS", "FACE_KEYS", "carried", "COMMON_CONSUMERS", "CONSUMERS", "ENGINE_CONSUMERS", "GUIDANCE", "NOTES_FILE",
+__all__ = ["ATTACHED_TEXT_MAX", "ATTACHMENT_KEYS", "FACE_KEYS", "carried", "for_browser", "shown", "COMMON_CONSUMERS", "CONSUMERS", "ENGINE_CONSUMERS", "GUIDANCE", "NOTES_FILE",
            "QUESTION", "REMARKS_FILE", "REMARK_DESCRIPTION", "ROUTE_CONSUMERS", "RULE_EVERY_ROUTE",
            "RULE_NEVER_FAILS", "RULE_VERBATIM", "SOURCE_CHAT", "SOURCE_CONSOLE", "SOURCE_SETTINGS", "answer",
            "answers_now", "asked", "capture", "chat_block", "clean", "clicked", "context_block", "drop_remark", "is_skip", "make",

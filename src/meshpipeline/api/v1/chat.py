@@ -87,12 +87,13 @@ async def get_chat_history(session_id: uuid.UUID, owner_id: str = Depends(owner_
         if not session:
             raise HTTPException(404, "Session not found")
     from meshpipeline.agents.intake.measured_choice import choice_payload
-    from meshpipeline.contracts.user_notes import system_written
+    from meshpipeline.contracts.user_notes import for_browser, system_written
     return {
         "session_id": str(session_id),
         # a turn the APPLICATION sent in the user's name (the stage's Proceed handing back to the
-        # intake) is never shown as the user's words: the "Confirmed" card already says it
-        "messages": [m for m in session.messages or []
+        # intake) is never shown as the user's words: the "Confirmed" card already says it. An attached
+        # file's read text stays on the server (the file opens from its own route).
+        "messages": [for_browser(m) for m in session.messages or []
                      if not (isinstance(m, dict) and m.get("role") == "user"
                              and system_written(m.get("content")))],
         # the open engine question's choice, so a reload draws it again
@@ -244,9 +245,9 @@ async def chat_notes(body: ChatNoteIn, owner_id: str = Depends(owner_dep),
                                  "Add it before you approve the next run.")
     # THE NOTES AS STORED, always: the brief exists only once requirements are submitted, so a note
     # added before that answered with no brief - and no notes - though it was kept (dry run, 2 Nov)
-    from meshpipeline.contracts.user_notes import carried as _carried
     from meshpipeline.contracts.user_notes import clean as _clean_notes
-    notes = [{"id": n["id"], "text": n["text"], "source": n["source"], **_carried(n)}
+    from meshpipeline.contracts.user_notes import shown as _shown
+    notes = [{"id": n["id"], "text": n["text"], "source": n["source"], **_shown(n)}
              for n in _clean_notes(getattr(session, "user_notes", None))]
     out = {"session_id": str(body.session_id), "brief": await _brief(session, owner_id), "user_notes": notes}
     # "use cfMesh" IN THE NOTES chooses the engine as it does in the chat: the console says it in the

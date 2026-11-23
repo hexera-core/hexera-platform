@@ -256,7 +256,7 @@ async def accept(inbound: InboundMessage, *, session_repo, db_factory, logger,
         # that matches no conversation that ever existed.
         messages = list(getattr(locked, "messages", None) or [])
         # only the files THIS session holds are carried, as their kept rows (application/chat_attachments)
-        extra = _carried_here(locked, inbound.attachments, inbound.faces)
+        extra = await _with_text(locked, _carried_here(locked, inbound.attachments, inbound.faces))
         if extra:
             await session_repo.append_message(db, inbound.session_id, "user", inbound.content, extra=extra)
         else:
@@ -1128,7 +1128,7 @@ async def add_console_note(session_id: uuid.UUID, owner_id: str, text: str, *, s
             return NoteStatus.not_found, None
         if getattr(session, "job_id", None):
             return NoteStatus.running, session
-        extra = _carried_here(session, attachments, faces)
+        extra = await _with_text(session, _carried_here(session, attachments, faces))
         if not str(text or "").strip() and not extra:
             return NoteStatus.empty, None
         await session_repo.set_user_notes(db, session_id, [make(text, source=SOURCE_CONSOLE, **extra)])
@@ -1145,6 +1145,17 @@ def _carried_here(session: Any, attachments: Sequence[Any], faces: Sequence[Any]
     from meshpipeline.contracts.user_notes import carried
     rows = resolve(session, attachments) if attachments else []
     return carried({"attachments": rows, "faces": list(faces or ())})
+
+
+async def _with_text(session: Any, extra: dict) -> dict:
+    """An attached text file's read text on its row (NOTE-16): the readers take it as the user's own words. Read
+    from the store in a thread; a file whose text cannot be read now keeps its row without it."""
+    if not extra.get("attachments"):
+        return extra
+    import asyncio
+
+    from meshpipeline.application.chat_attachments import with_text
+    return {**extra, "attachments": await asyncio.to_thread(with_text, session, extra["attachments"])}
 
 
 def _reply_of(result: dict) -> str:
