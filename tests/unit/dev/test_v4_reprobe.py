@@ -46,6 +46,17 @@ class Entry:
 
 
 @dataclass(frozen=True)
+class KindedEntry:
+    """An entry that DECLARES a kind/status but whose name and group contain no kind string."""
+    name: str
+    sha256: str
+    source: str = "abc_fail"
+    group: str | None = None
+    kind: str | None = None
+    kind_status: str | None = None
+
+
+@dataclass(frozen=True)
 class FakeResult:
     name: str
     status: str
@@ -202,6 +213,29 @@ def test_quarantined_and_infeasible_kinds_are_refused_before_any_mesh(layers, ki
     assert member.runs == 0
     with pytest.raises(rp.QuarantinedKind):
         rp.build_splits([_row(1, "panel", "other", source="inject", name=f"part.{kind}.7.step")], dev=1, heldout=0, clean=0)
+
+
+@pytest.mark.parametrize("source", ["abc_fail", "abc_pass", "occt", "nist", "f360", "inject"])
+@pytest.mark.parametrize("kind", ["loose_reapprox", "tolerance_inflate", "seam_variant", "precision_truncate"])
+def test_an_entry_quarantined_by_status_is_refused_though_its_name_never_says_so(source, kind) -> None:
+    """The leak: a quarantined entry whose name and group carry no kind string, under any source label."""
+    assert rp.banned_kind_in("clean_looking_part.step") is None
+    for entry in (KindedEntry("clean_looking_part.step", _sha(1), source, kind=kind),
+                  KindedEntry("clean_looking_part.step", _sha(1), source, kind_status="quarantined"),
+                  KindedEntry("clean_looking_part.step", _sha(1), source, kind_status="infeasible")):
+        with pytest.raises(rp.QuarantinedKind):
+            rp.check_not_quarantined([entry])
+
+
+def test_an_entry_with_a_structural_kind_or_no_kind_is_still_accepted() -> None:
+    rp.check_not_quarantined([KindedEntry("part.step", _sha(1), "abc_fail", kind="unsew_perturb",
+                                          kind_status="structural"),
+                              KindedEntry("part2.step", _sha(2), "nist")])
+
+
+def test_an_unknown_declared_kind_is_refused() -> None:
+    with pytest.raises(rp.QuarantinedKind):
+        rp.check_not_quarantined([KindedEntry("part.step", _sha(1), "abc_fail", kind="not_a_kind")])
 
 
 def test_an_injected_entry_with_no_readable_kind_is_refused() -> None:

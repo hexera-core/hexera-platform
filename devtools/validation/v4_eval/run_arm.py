@@ -52,6 +52,8 @@ def _load(name: str, path: Path) -> Any:
 evalspec = _load("v4_evalspec", HERE / "evalspec.py")
 reprobe_mod = _load("v4_reprobe", HERE / "reprobe.py")
 pool_mod = _load("v4_pool_manifest", HERE / "pool.py")
+wave_limits = _load("v4_wave_limits", HERE / "wave_limits.py")
+marker_probe = _load("v4_marker_probe", HERE / "marker_probe.py")
 
 
 def _now() -> str:
@@ -128,13 +130,25 @@ def run_harness(args: argparse.Namespace, out: Path, prov: dict) -> int:
     return int(rc.main() or 0)
 
 
-def make_marker_store() -> Any:
-    """The wave bucket's marker store (ObjectMarkerStore over MinioStore, credentials from the MINIO_* env the VM
-    gets from its marker secret). Tests replace this; nothing else in this file reaches a network."""
-    from meshpipeline.adapters.object_storage.minio import MinioStore
-    from meshpipeline.cad.repair_v4.model_ledger import ObjectMarkerStore
+class MarkerBackendMismatch(RuntimeError):
+    """The shard's marker store is not the backend the probe proved: it refuses rather than spend."""
 
-    return ObjectMarkerStore(MinioStore())
+
+def make_marker_store(bucket: str) -> tuple[Any, str]:
+    """(marker store, backend id) for the wave bucket, over the native GCS client and this VM's service-account
+    ADC. The backend id is `gcs/<bucket>`, the id the launcher's probe record is keyed by. Tests replace this;
+    nothing else in this file reaches a network."""
+    return marker_probe.open_markers(f"gcs:{bucket}")
+
+
+def check_marker_binding(markers: Any, backend: str, expected_bucket: str) -> str | None:
+    """None only if this shard's marker store is the bucket the launcher named AND that bucket carries a fresh,
+    passing probe record. The shard reads the record through its own store, so a store pointing anywhere else
+    finds no record for its backend and refuses (a different backend is as good as unproven)."""
+    expected = f"gcs/{expected_bucket}"
+    if backend != expected:
+        return f"this shard's marker store is {backend!r}, not the wave bucket {expected!r}"
+    return marker_probe.probe_problem(markers, expected_backend=expected)
 
 
 def build_ledger(args: argparse.Namespace, markers: Any) -> Any:
@@ -165,21 +179,23 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--commit", default="")
     parser.add_argument("--image", default="")
     parser.add_argument("--machine-type", default="")
-    parser.add_argument("--wave-type", default=None, choices=("normal", "checkpoint", "held_out"),
+    parser.add_argument("--wave-type", default=None, choices=sorted(wave_limits.WAVE_CAPS_USD),
                         help="the wave's type: the model-spend cap comes from the ledger's table")
     parser.add_argument("--wave-id", default=None)
     parser.add_argument("--n-shards", type=int, default=None, help="the wave's N; must equal the N in --shard")
     parser.add_argument("--ledger-path", default=None, help="the shard's durable ledger log")
+    parser.add_argument("--marker-bucket", default=None,
+                        help="the wave bucket holding the ledger's markers (native GCS, VM service account)")
     args = parser.parse_args(argv)
     if args.file_timeout_s <= 0:
         parser.error("--file-timeout-s must be positive: a shard without the wall kill can hang")
     i, n = evalspec.parse_shard(args.shard)
     wave = {"--wave-type": args.wave_type, "--wave-id": args.wave_id, "--n-shards": args.n_shards,
-            "--ledger-path": args.ledger_path}
+            "--ledger-path": args.ledger_path, "--marker-bucket": args.marker_bucket}
     if any(v is not None for v in wave.values()):
         missing = [k for k, v in wave.items() if v is None]
         if missing:
-            parser.error(f"a ledgered shard needs all of --wave-type --wave-id --n-shards --ledger-path "
+            parser.error(f"a ledgered shard needs all of --wave-type --wave-id --n-shards --ledger-path --marker-bucket "
                          f"(missing {', '.join(missing)})")
         if args.n_shards != n:
             parser.error(f"--n-shards {args.n_shards} disagrees with --shard {args.shard}: every shard of a "
@@ -201,8 +217,13 @@ def main(argv: list[str] | None = None) -> int:
             from meshpipeline.cad.repair_v4.model_ledger import LostShardLog, ShardArithmeticError
 
             try:
-                ledger = build_ledger(args, make_marker_store())
-            except (LostShardLog, ShardArithmeticError):
+                markers, backend = make_marker_store(args.marker_bucket)
+                prov["marker_backend"] = backend
+                unbound = check_marker_binding(markers, backend, args.marker_bucket)
+                if unbound:
+                    raise MarkerBackendMismatch(unbound)
+                ledger = build_ledger(args, markers)
+            except (LostShardLog, ShardArithmeticError, MarkerBackendMismatch):
                 # the shard refuses rather than start at an unknown spend; the reason is in PROVENANCE
                 prov["error"] = traceback.format_exc()[-4000:]
                 code = 5

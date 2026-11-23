@@ -70,11 +70,11 @@ CODE="$(attr ${P}-code)"; MACHINE="$(attr ${P}-machine-type)"; SECRET="$(attr ${
 RUN_ARM="$(attr ${P}-run-arm)"; POOL="$(attr ${P}-pool)"; CACHE="$(attr ${P}-cache-uri)"
 SOURCES="$(attr ${P}-sources)"
 # v4 only: the model ledger's inputs (wave id and type, the wave's N, and the secret holding the shards'
-# marker-store credentials), written by launch_fleet.py. Read only on a v4 VM; a v3 VM never asks for them.
-WAVE_ID=""; WAVE_TYPE=""; NSHARDS=""; MARKER_SECRET=""
+# marker bucket), written by launch_fleet.py. Read only on a v4 VM; a v3 VM never asks for them.
+WAVE_ID=""; WAVE_TYPE=""; NSHARDS=""; MARKER_BUCKET=""
 if [ "${P}" = "v4" ]; then
   WAVE_ID="$(attr v4-wave-id)"; WAVE_TYPE="$(attr v4-wave-type)"; NSHARDS="$(attr v4-n-shards)"
-  MARKER_SECRET="$(attr v4-marker-secret)"
+  MARKER_BUCKET="$(attr v4-marker-bucket)"
 fi
 W="${V3EVAL_WORKDIR:-/var/lib/v3eval}"   # vm_shutdown.sh reads the same directory; tests override it
 
@@ -145,8 +145,8 @@ else
   [ -n "${SOURCES}" ] || fail_all "no v4-sources metadata: refusing to probe an unspecified pool"
   # FAIL CLOSED: the ledger cannot start without its inputs, and a shard whose wave type, N or marker-store
   # credentials are unknown would spend without the cap the launcher meant.
-  [ -n "${WAVE_ID}" ] && [ -n "${WAVE_TYPE}" ] && [ -n "${NSHARDS}" ] && [ -n "${MARKER_SECRET}" ] \
-    || fail_all "no v4-wave-id/-wave-type/-n-shards/-marker-secret metadata: refusing to run a shard without its model-spend ledger inputs"
+  [ -n "${WAVE_ID}" ] && [ -n "${WAVE_TYPE}" ] && [ -n "${NSHARDS}" ] && [ -n "${MARKER_BUCKET}" ] \
+    || fail_all "no v4-wave-id/-wave-type/-n-shards/-marker-bucket metadata: refusing to run a shard without its model-spend ledger inputs"
   # Disk headroom: the whole input set is copied to every VM; refuse if it would not fit. FAIL CLOSED: a
   # `du` that errors or prints nothing, or a `df` that does, is NOT a pass - an unmeasured copy can fill the
   # disk and take every shard on this VM with it. Both numbers must be plain integers.
@@ -158,10 +158,9 @@ else
   if [ "${NEED}" -gt $((HAVE * 8 / 10)) ]; then
     fail_all "inputs (${NEED} bytes) exceed 80% of free disk (${HAVE} bytes)"
   fi
-  # the shards' marker-store credentials, 0600, dropped with the model key once every container has started
-  ( umask 077
-    gcloud secrets versions access latest --secret="${MARKER_SECRET}" --project="${PROJECT}" > "${W}/marker.env" ) \
-    || fail_all "cannot read secret ${MARKER_SECRET}"
+  # No marker credentials: the shards write markers with the native GCS conditional create over this VM's
+  # service account (ADC through the metadata server), and run_arm.py refuses unless the bucket named in
+  # ${MARKER_BUCKET} carries the probe's passing record.
   gcloud storage cp "${POOL}" "${W}/pool.json" || fail_all "no staged pool.json at ${POOL}"
   mkdir -p "${W}/inputs/pool"
   gcloud storage cp -r "${PREFIX}/inputs/*" "${W}/inputs/pool/" || fail_all "no staged pool inputs"
@@ -231,7 +230,7 @@ run_unit() {
   # v4: the key file is mounted only when the launcher named a secret
   local keyenv=(); [ -f "${W}/secret.env" ] && keyenv=(--env-file "${W}/secret.env")
   docker run --rm --name "v4eval-${k}" --cpus=1 -e PYTHONPATH=/eval/code/src \
-    --env-file "${dir}.env" --env-file "${W}/marker.env" ${keyenv[@]+"${keyenv[@]}"} \
+    --env-file "${dir}.env" ${keyenv[@]+"${keyenv[@]}"} \
     -v "${W}/code:/eval/code:ro" -v "${W}/inputs/${kind}:/eval/inputs:ro" -v "${dir}:/eval/out" \
     -v "${ldir}:/eval/ledger" \
     -v "${W}/pool.json:/eval/pool.json:ro" \
@@ -240,7 +239,7 @@ run_unit() {
     --pool /eval/pool.json --cache-uri "${CACHE}" --sources "${SOURCES}" --commit "${COMMIT}" \
     --image "${IMAGE}" --machine-type "${MACHINE}" \
     --wave-type "${WAVE_TYPE}" --wave-id "${WAVE_ID}" --n-shards "${NSHARDS}" \
-    --ledger-path /eval/ledger/log.jsonl \
+    --ledger-path /eval/ledger/log.jsonl --marker-bucket "${MARKER_BUCKET}" \
     > "${dir}.log" 2>&1
   rc=$?
   fi
@@ -269,7 +268,6 @@ for _ in $(seq 1 60); do
   sleep 5
 done
 rm -f "${W}/secret.env"
-[ "${P}" = "v4" ] && rm -f "${W}/marker.env"
 for pid in "${PIDS[@]}"; do wait "${pid}"; done
 log "all ${#TODO[@]} shard(s) finished"
 self_delete

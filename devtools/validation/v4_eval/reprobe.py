@@ -127,29 +127,57 @@ def banned_kind_in(text: str) -> str | None:
     return None
 
 
+def declared_kinds(item: Any) -> list[str]:
+    """Every injector kind an entry declares, by ANY route: a `kind` attribute, a `label` mapping's kind, and the
+    kind in an `inject()` output name. None of them need the kind string to be in the name."""
+    kinds: list[str] = []
+    label = getattr(item, "label", None)
+    for declared in (getattr(item, "kind", None), label.get("kind") if isinstance(label, dict) else None,
+                     injected_kind(item.name)):
+        if isinstance(declared, str) and declared not in kinds:
+            kinds.append(declared)
+    return kinds
+
+
 def check_not_quarantined(items: Iterable[Any]) -> None:
     """Refuse the pool/rows if a quarantined kind can get through, whatever the source label.
 
-    1. POOL-LEVEL: no entry of ANY source (name or group) may carry a non-default injector kind. A
-       quarantined file relabelled, or renamed by a pool adapter, is caught here: those kinds are not
-       proven damage under the clean-STEP definition and would pad the failing set with clean files.
-    2. An `inject` entry must additionally name a kind in `inject.DEFAULT_KINDS`; an unreadable kind is
-       refused too (unknown damage is not proven damage).
+    1. STATUS, for EVERY entry: each kind the entry declares (see `declared_kinds`) must be in `KIND_STATUS` with
+       the allowed status (`structural`, i.e. `DEFAULT_KINDS`), and an entry carrying a `status` of its own
+       (an attribute, or a label's `status`) must carry that one too. A quarantined entry whose name happens
+       not to contain the kind string is caught here: those kinds read back as valid solids with a raised
+       tolerance, so leaking them pads the failing set with files that are not broken.
+    2. NAME/GROUP: no entry of ANY source may carry a non-default kind string in its name or group (a file
+       renamed by a pool adapter).
+    3. An `inject` entry must additionally name a readable kind: unknown damage is not proven damage.
     `inject()` does not enforce the quarantine; this is where it is enforced."""
-    allowed = set(load_inject().DEFAULT_KINDS)
+    inject = load_inject()
+    allowed = set(inject.DEFAULT_KINDS)
+    status_of: dict[str, str] = inject.KIND_STATUS
     for item in items:
+        for kind in declared_kinds(item):
+            status = status_of.get(kind)
+            if status is None or kind not in allowed:
+                raise QuarantinedKind(
+                    f"{item.name} ({item.source}): injector kind {kind!r} has status {status!r}, not "
+                    f"'structural' (allowed: {sorted(allowed)}); quarantined kinds stay out of the benchmark "
+                    "until layer-2 evidence exists")
+        label = getattr(item, "label", None)
+        own = [getattr(item, "kind_status", None), label.get("status") if isinstance(label, dict) else None]
+        for declared_status in own:
+            if declared_status is not None and declared_status != "structural":
+                raise QuarantinedKind(
+                    f"{item.name} ({item.source}): the entry's own kind status is {declared_status!r}, not "
+                    "'structural'; quarantined kinds stay out of the benchmark until layer-2 evidence exists")
         for text in (item.name, getattr(item, "group", None) or ""):
             banned = banned_kind_in(text)
             if banned is not None:
                 raise QuarantinedKind(
                     f"{item.name} ({item.source}): carries non-default injector kind {banned!r}; "
                     "quarantined kinds stay out of the benchmark until layer-2 evidence exists")
-        if item.source != "inject":
-            continue
-        kind = injected_kind(item.name)
-        if kind is None or kind not in allowed:
+        if item.source == "inject" and not declared_kinds(item):
             raise QuarantinedKind(
-                f"{item.name}: injector kind {kind!r} is not in DEFAULT_KINDS {sorted(allowed)}; "
+                f"{item.name}: no readable injector kind; unknown damage is not proven damage, and "
                 "quarantined kinds stay out of the benchmark until layer-2 evidence exists")
 
 

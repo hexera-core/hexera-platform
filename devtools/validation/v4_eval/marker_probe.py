@@ -11,7 +11,7 @@
 
 WHY. Every cross-host guarantee of the model ledger (no two shards share an index, a held-out wave runs once, at
 most 3 checkpoint waves) rests on a conditional PUT (`If-None-Match: *` plus `x-goog-if-generation-match: 0`) sent
-through a private minio-py method. A backend that IGNORES those headers answers 200 to both writers: both get True,
+through a private minio-py method (`gcs:` uses the native `if_generation_match=0` write instead). A backend that IGNORES those headers answers 200 to both writers: both get True,
 the original race is back, and nothing errors. MinIO honours `If-None-Match` on PUT only in recent releases and nobody
 has established which backend the wave bucket is. This probe establishes it, end to end, through `ObjectMarkerStore`
 (not a raw PUT), so what it proves is what the ledger will do.
@@ -22,15 +22,17 @@ WHAT IT DOES.
   2. race: two real processes (`--role writer`, A and B) are released together by a wall-clock barrier and, for each
      of ROUNDS fresh keys, both call create with DIFFERENT payloads. Exactly one may get True and one False, and the
      object read back must hold the winner's payload (this is what catches a silent overwrite).
-  3. on success it writes the pass record the launcher reads (PROBE_KEY: backend, version, time, rounds).
+  3. on success - and only if at least MIN_OVERLAPPING_ROUNDS rounds had the two calls overlap in time, so the
+     writers provably raced - it writes the pass record the launcher reads (PROBE_KEY: backend, version, time,
+     rounds). The overlap count is printed.
 A failure writes a `passed: false` record, so a regression revokes an earlier pass.
 
-RUN IT (controller, once per bucket; MINIO_* in the environment point at the wave bucket's S3 endpoint):
-    python devtools/validation/v4_eval/marker_probe.py --store minio --rounds 50
+RUN IT (controller, once per bucket; the host's Application Default Credentials need object write on it):
+    python devtools/validation/v4_eval/marker_probe.py --store gcs:<wave bucket name> --rounds 50
 Two hosts (the strongest form): on host 1 and host 2, at the same instant T (epoch seconds, a minute ahead):
-    python marker_probe.py --store minio --role writer --writer A --run-id R --start-at T   # host 1
-    python marker_probe.py --store minio --role writer --writer B --run-id R --start-at T   # host 2
-    python marker_probe.py --store minio --role verify --run-id R                           # anywhere, after
+    python marker_probe.py --store gcs:<bucket> --role writer --writer A --run-id R --start-at T   # host 1
+    python marker_probe.py --store gcs:<bucket> --role writer --writer B --run-id R --start-at T   # host 2
+    python marker_probe.py --store gcs:<bucket> --role verify --run-id R                           # anywhere, after
 Exit 0 only when the probe passed and the record was written.
 """
 from __future__ import annotations
@@ -53,6 +55,10 @@ if str(REPO / "src") not in sys.path:
 PROBE_KEY = "_probe/conditional-create"
 PROBE_VERSION = 1
 PROBE_ROUNDS = 50
+#: A pass needs at least this many rounds in which the two create calls OVERLAPPED in time. A non-atomic
+#: check-then-write passes if the writers never raced; 10 of the default 50 rounds is a fifth of them, far
+#: above what a backend that really serialises needs and far below what two barrier-released writers manage.
+MIN_OVERLAPPING_ROUNDS = 10
 PROBE_MAX_AGE_S = 14 * 86400      # a backend can be reconfigured: the pass expires
 WRITERS = ("A", "B")
 
@@ -111,9 +117,13 @@ class LocalDirStore:
 
 
 def open_markers(spec: str) -> tuple[Any, str]:
-    """(ObjectMarkerStore, backend id) for a store spec: `minio` (the wave bucket, from MINIO_* env) or
-    `localdir[-<mode>]:<dir>` (a directory, for the probe's own tests)."""
-    from meshpipeline.cad.repair_v4.model_ledger import ObjectMarkerStore
+    """(ObjectMarkerStore, backend id) for a store spec: `gcs:<bucket>` (the native GCS conditional write over
+    this host's ADC - what the shards use; backend id `gcs/<bucket>`), `minio` (MINIO_* env, kept for
+    non-GCS deployments) or `localdir[-<mode>]:<dir>` (a directory, for the probe's own tests)."""
+    from meshpipeline.cad.repair_v4.model_ledger import GcsObjectStore, ObjectMarkerStore
+    if spec.startswith("gcs:") and len(spec) > 4:
+        store = GcsObjectStore(spec[4:])
+        return ObjectMarkerStore(store), store.backend_id
     if spec == "minio":
         import meshpipeline.settings.providers as provcfg
         from meshpipeline.adapters.object_storage.minio import MinioStore
@@ -122,7 +132,7 @@ def open_markers(spec: str) -> tuple[Any, str]:
     if head.startswith("localdir") and root:
         mode = head[len("localdir-"):] if head.startswith("localdir-") else "honour"
         return ObjectMarkerStore(LocalDirStore(root, mode)), f"localdir:{Path(root).resolve()}"
-    raise ValueError(f"unknown store spec {spec!r}: use `minio` or `localdir[-mode]:<dir>`")
+    raise ValueError(f"unknown store spec {spec!r}: use `gcs:<bucket>`, `minio` or `localdir[-mode]:<dir>`")
 
 
 # --- the checks -----------------------------------------------------------------------------------------
@@ -221,12 +231,20 @@ def record_pass(markers: Any, *, backend: str, run_id: str, rounds: int, at: flo
                                        "at": time.time() if at is None else at}, sort_keys=True))
 
 
-def conclude(markers: Any, backend: str, run_id: str, rounds: int) -> Report:
+def conclude(markers: Any, backend: str, run_id: str, rounds: int, *,
+             min_overlap: int = MIN_OVERLAPPING_ROUNDS, write_pass: bool = True) -> Report:
+    """Judge a run. A FAILURE record is written at once (it revokes an earlier pass); a PASS record only when
+    `write_pass` - `run_local` defers it until the writers' exit codes are checked too."""
     seq = sequential_check(markers, run_id)
     fails, overlapping = verify(markers, run_id, rounds)
+    if overlapping < min_overlap:
+        fails.append(f"only {overlapping} of {rounds} rounds had overlapping create calls, fewer than the "
+                     f"{min_overlap} required: the writers did not provably race, so an atomic create is "
+                     "unproven (rerun with more rounds or a tighter --lead-s)")
     report = Report(passed=not seq and not fails, rounds=rounds, sequential_ok=not seq,
                     overlapping_rounds=overlapping, backend=backend, run_id=run_id, failures=[*seq, *fails])
-    record_pass(markers, backend=backend, run_id=run_id, rounds=rounds, passed=report.passed)
+    if write_pass or not report.passed:
+        record_pass(markers, backend=backend, run_id=run_id, rounds=rounds, passed=report.passed)
     return report
 
 
@@ -242,13 +260,12 @@ def run_local(spec: str, *, rounds: int = PROBE_ROUNDS, interval_s: float = 0.2,
         for w in WRITERS]
     outputs = [p.communicate(timeout=lead_s + rounds * interval_s + 300)[0] for p in procs]
     markers, backend = open_markers(spec)
-    report = conclude(markers, backend, run_id, rounds)
+    report = conclude(markers, backend, run_id, rounds, write_pass=False)
     for w, p, text in zip(WRITERS, procs, outputs, strict=True):
         if p.returncode != 0:
             report.passed = False
             report.failures.insert(0, f"writer {w} exited {p.returncode}: {text.strip()[-300:]}")
-    if not report.passed:
-        record_pass(markers, backend=backend, run_id=run_id, rounds=rounds, passed=False)
+    record_pass(markers, backend=backend, run_id=run_id, rounds=rounds, passed=report.passed)
     return report
 
 
@@ -281,7 +298,7 @@ def probe_problem(markers: Any, *, expected_backend: str, now: float | None = No
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--store", required=True, help="`minio` (the wave bucket, MINIO_* env) or localdir:<dir>")
+    parser.add_argument("--store", required=True, help="`gcs:<bucket>` (the wave bucket, ADC), `minio` (MINIO_* env) or localdir:<dir>")
     parser.add_argument("--role", choices=("local", "writer", "verify"), default="local")
     parser.add_argument("--rounds", type=int, default=PROBE_ROUNDS)
     parser.add_argument("--run-id", default=None)

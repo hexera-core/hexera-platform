@@ -210,7 +210,7 @@ def test_v4_startup_runs_the_v4_run_arm_with_the_v4_arguments(tmp_path):
             "v4-pool": "gs://B/eval/v4-reprobe/pool.json",
             "v4-cache-uri": "gs://B/eval/v4-reprobe/verdict-cache", "v4-sources": "abc_fail,abc_pass",
             "v4-wave-id": "w-test", "v4-wave-type": "normal", "v4-n-shards": "2",
-            "v4-marker-secret": "ledger-marker-env"}
+            "v4-marker-bucket": "B"}
     log = _startup(tmp_path, meta)
     runs = [ln for ln in log if ln.startswith("docker run")]
     assert len(runs) == 2
@@ -222,8 +222,8 @@ def test_v4_startup_runs_the_v4_run_arm_with_the_v4_arguments(tmp_path):
         assert "--sources abc_fail,abc_pass" in run
         assert "sample.json" not in run and "secret.env" not in run   # no model key for the checker
     assert any(ln.startswith("storage cp gs://B/eval/v4-reprobe/pool.json") for ln in log)
-    # the checker needs no MODEL key; the only secret read is the ledger's marker-store credentials
-    assert not any("secrets versions access" in ln and "ledger-marker-env" not in ln for ln in log)
+    # the checker needs no MODEL key and the markers use the VM's own identity: NO secret is read at all
+    assert not any("secrets" in ln for ln in log)
     assert any("gs://B/eval/reprobe-cccccccccccc/pool/shard-1-of-2/DONE" in ln for ln in log)
 
 
@@ -268,7 +268,7 @@ def test_v4_startup_refuses_without_the_source_list(tmp_path):
             "v4-units": "reprobe:pool:1/2", "v4-bucket": "gs://B", "v4-prefix": "gs://B/p",
             "v4-code": "gs://B/p/code-cccccccccccc/code.tgz", "v4-machine-type": "c2d-standard-8",
             "v4-run-arm": "devtools/validation/v4_eval/run_arm.py", "v4-wave-id": "w-test",
-            "v4-wave-type": "normal", "v4-n-shards": "2", "v4-marker-secret": "ledger-marker-env"}
+            "v4-wave-type": "normal", "v4-n-shards": "2", "v4-marker-bucket": "B"}
     log = _startup(tmp_path, meta, expect_rc=1)
     assert not any(ln.startswith("docker run") for ln in log)
     assert any(ln.endswith("/FAILED") or "FAILED" in ln for ln in log)
@@ -379,7 +379,7 @@ def _main(*argv: str) -> int:
     ml = _load("model_ledger_under_test",
                REPO / "src" / "meshpipeline" / "cad" / "repair_v4" / "model_ledger.py")
     mp = _load("marker_probe_under_test_main", V4 / "marker_probe.py")
-    backend = "storage.googleapis.com/dev-crsv3-transfer-224734058693"
+    backend = "gcs/dev-crsv3-transfer-224734058693"
     markers = ml.FileMarkerStore(tempfile.mkdtemp())
     mp.record_pass(markers, backend=backend, run_id="t", rounds=50)
     return lf.main(["--image", IMAGE, "--commit", HEAD, "--image-commit", HEAD, "--skip-preflight",
@@ -409,7 +409,7 @@ def test_create_wave_is_gated_even_when_called_directly(live):
     over = ev.Projection(files=1, full_files=0, shards=96, vms=12, vcpus_per_vm=8, cpu_hours=1.0,
                          wall_hours=1.0, vm_hours=700.0, max_run_hours=3, worst_vm_hours=700.0)
     with pytest.raises(ev.BudgetRefused):
-        lf.create_wave([["gcloud", "compute", "instances", "create", "x"]], over)
+        lf.create_wave([["gcloud", "compute", "instances", "create", "x"]], over, profile=lf.V3)
     assert live.calls == []
 
 
