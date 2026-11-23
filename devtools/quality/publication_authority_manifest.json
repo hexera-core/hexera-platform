@@ -4692,6 +4692,19 @@
   "roots": []
  },
  {
+  "context": "engines/cfmesh/native.py::cells_of::search#2|NotAPublisher|not-a-publisher|",
+  "path": "engines/cfmesh/native.py",
+  "qualname": "cells_of",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 2,
+  "receiver": "_N_LISTED",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "engines/cfmesh/polymesh_surface.py::_data_start::search#1|NotAPublisher|not-a-publisher|",
   "path": "engines/cfmesh/polymesh_surface.py",
   "qualname": "_data_start",

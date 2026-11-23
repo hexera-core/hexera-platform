@@ -207,6 +207,30 @@ def test_finer_mesh_dict_halves_every_cell_size_and_nothing_else():
     assert "maxCellSize 0.002;" in out and "cellSize 0.0005;" in out and "refinementThickness 0.003;" in out
 
 
+def test_a_cfmesh_owner_file_without_a_cell_note_is_counted_from_its_faces(tmp_path):
+    (tmp_path / "owner").write_bytes(b"FoamFile\n{\n    format ascii;\n    class labelList;\n}\n\n13050\n(\n0\n1\n")
+    assert N.cells_of(tmp_path) == 4350          # abc 63401's passage: no note, so it was never refined
+
+
+def test_a_passage_whose_opening_is_not_in_the_merged_mesh_fails_before_the_rescue(tmp_path, monkeypatch):
+    """abc 99768: the passage was "meshed and merged", yet outlet_3 was no patch of the case's mesh."""
+    _two_passage_case(tmp_path)
+    case = tmp_path / "constant" / "polyMesh"
+    sizes: list[str] = []
+    inner = _fake_mesher([12], sizes)
+
+    def _fake(argv, **kw):
+        if "mergeMeshes" in argv[-1]:
+            case.mkdir(parents=True, exist_ok=True)
+            (case / "boundary").write_text(_boundary_text({"wall": 900, "inlet": 9, "outlet_2": 40}))
+            return _Proc(0)
+        return inner(argv, **kw)
+
+    monkeypatch.setattr(N, "run_guarded", _fake)
+    rc, _t, why = N.mesh_passages(tmp_path)
+    assert rc == 1 and "could not be merged" in why and "outlet_3" in why
+
+
 def test_a_dropped_opening_is_no_reason_to_run_the_same_plan_again(tmp_path, monkeypatch):
     """abc 63401 / 99768: attempts 2 and 3 repeated the plan whose outlet_3 had no faces. The builder ends its
     turn on it, and the ladder reads the refusal as one no attempt changes."""
