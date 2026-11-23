@@ -411,6 +411,8 @@ INVENTORY: list[Group] = [
                help="close the gaps in one face's wires (ShapeFix_Wire FixConnected at the run's tolerance + FixGaps3d) when gmsh reports an open 1D loop or the kernel a wire gap; MOVES VERTICES, bounded by the tolerance and measured; NOT to be set live on customer jobs until CAD_REPAIR_PACKAGE_REVIEW is live"),
         EnvVar("CAD_REPAIR_MESHABILITY_PASS", "off", exposure="internal",
                help="live: before any author, offer every registered meshability operation (cad/repair/meshability.py) to the mesh findings it claims, through the ordinary try_package; and always return a STEP - the upload's bytes unchanged, labelled passthrough, when nothing is kept. Fails closed: anything but live is off"),
+        EnvVar("CAD_REPAIR_ENGINE", "v3", exposure="internal",
+               help="which repair engine repair_step_file runs: v3 (the conservative region-loop repair) or search (CRS v4, cad/repair_v4); strict - any other value refuses startup; production never sets it, so it stays v3 until v4 beats v3 on the benchmark"),
         EnvVar("CAD_REPAIR_RESOLVE_SUB_MESH_GAP", "false", kind="bool", exposure="internal",
                help="split the two faces of a sub-mesh-size gap (faces that do not touch but sit closer than the default mesh's chord sag) along their own iso-curves so gmsh's default surface mesh resolves the wall; moves no surface, declares the measured area/volume noise; never auto-accepted"),
         EnvVar("CAD_REPAIR_FIX_SMALL_FACES", "false", kind="bool", exposure="internal",

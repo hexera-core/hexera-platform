@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import logging
 
-from meshpipeline.settings.env import bool_env, optional_env
+from meshpipeline.settings.env import ConfigurationError, bool_env, optional_env
 
 logger = logging.getLogger(__name__)
 
@@ -327,6 +327,33 @@ def _meshability_pass_posture() -> str:
 #: original, job-level escalation) is unchanged. "off" is byte-for-byte today: no pass, no file
 #: written on a refusal, no new measurement keys.
 CAD_REPAIR_MESHABILITY_PASS: str = _meshability_pass_posture()
+
+ENGINES: tuple[str, ...] = ("v3", "search")
+
+
+def _engine_posture_of(raw: str) -> str:
+    """The repair engine named by `raw`, STRICTLY: blank is "not configured" (v3); anything that
+    is not exactly a known engine, after trimming and case-folding, is refused - never coerced.
+
+    Strict because this switch decides WHICH ENGINE REWRITES A CUSTOMER'S GEOMETRY: a typo that
+    quietly fell back to v3 would hide that the operator's intent was not honoured, and one that
+    quietly selected `search` would run an engine nobody asked for."""
+    value = raw.strip().lower()
+    if not value:
+        return "v3"
+    if value in ENGINES:
+        return value
+    raise ConfigurationError(
+        f"Environment variable 'CAD_REPAIR_ENGINE' must be one of {', '.join(ENGINES)} - got {raw!r}.")
+
+
+#: WHICH ENGINE `repair_step_file` RUNS: `v3` (the conservative region-loop repair) or `search`
+#: (CRS v4, cad/repair_v4, which searches over kernel operations and is scored by one checker).
+#: DEFAULT `v3`, and production never sets it: v4 lives beside v3 until it beats it on the new
+#: benchmark, and only then does a separate change remove v3. The default is pinned by
+#: tests/unit/cad/repair_v4/test_engine_dispatch.py, which also parses the production block of
+#: the deploy workflow to prove it states no value.
+CAD_REPAIR_ENGINE: str = _engine_posture_of(optional_env("CAD_REPAIR_ENGINE", "v3"))
 
 #: The confidence below which the model's plan is not acted on and the rule planner's choice stands.
 CAD_REPAIR_LLM_PLANNER_MIN_CONFIDENCE: float = float(
