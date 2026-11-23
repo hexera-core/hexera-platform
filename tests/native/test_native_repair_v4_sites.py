@@ -186,6 +186,7 @@ def test_render_view_is_a_512px_png(pool: WorkerPool, tmp_path: Path) -> None:
     site = Site("S1", "proximity", ["F1"], [(10.0, 5.0, 5.0)], ["gmsh"], None, {}, None)
     png = render.view(pool, ws, site)
     assert png is not None and site.view_png == png
+    assert png.startswith(b"\x89PNG\r\n\x1a\n") and len(png) > 0
     from io import BytesIO
 
     from PIL import Image

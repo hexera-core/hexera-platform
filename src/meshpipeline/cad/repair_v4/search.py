@@ -72,9 +72,10 @@ Wiring (Task 18b).
     ceiling is the proposer's `usd_ceiling`, enforced per call by `ledger.admit` against a deliberately
     pessimistic estimate (uncached input rate, full output reservation, growth floor). (2b) The proposer's
     `_pending` outcomes are flushed by the NEXT `propose` call, not by the branch that produced them.
-    (3) `render.view` runs synchronously on the expansion thread, and keeps being asked for pictures after the
-    proposer stopped for a reason of its own (`model_gens.intersection(active)` stays true): it is not paid
-    for, but it is time.
+    (3) `render.view` runs synchronously on the expansion thread. It is asked only while a model generator can
+    still look (`_will_look`: not stopped, turns left), and for at most
+    `MAX_VIEWS_PER_EXPANSION` sites per expansion. A render that raises is traced as `view_unavailable`
+    (infrastructure; never `judge_error`, never a candidate outcome, never scored).
 """
 
 from __future__ import annotations
@@ -573,6 +574,20 @@ def _model_usage(g: Any) -> tuple[int, float] | None:
     return None
 
 
+#: the most pictures drawn for one expansion; sites are best-first, and the rest are drawn by a descendant if
+#: they survive. Each draw is a kernel render on the expansion thread.
+MAX_VIEWS_PER_EXPANSION = 4
+
+
+def _will_look(generator: Any) -> bool:
+    """True when this model generator can still ask for a picture: it has not stopped (budget, ceiling, input
+    size, failures) and has turns left. A picture nobody will look at is time spent for nothing."""
+    if getattr(generator, "stop_reason", None) is not None:
+        return False
+    turns, cap = getattr(generator, "turns_used", None), getattr(generator, "max_turns", None)
+    return not (isinstance(turns, int) and isinstance(cap, int) and turns >= cap)
+
+
 ARMS = ("search_det", "search_ai")
 
 
@@ -768,14 +783,18 @@ def search(
                 s.id for s in state.sites if unfixable is not None and unfixable.is_declared(s.id, state.lineage)
             ]
             viewed = set(viewed_in.get(state.parent, frozenset())) if state.parent is not None else set()
-            if model_gens.intersection(active):
+            if any(_will_look(generators[gi]) for gi in model_gens.intersection(active)):
+                drawn = 0
                 for s in state.sites:
                     if s.kind in IMAGE_KINDS and s.id not in viewed and s.id not in declared_unfixable:
+                        if drawn >= MAX_VIEWS_PER_EXPANSION:
+                            break  # not marked viewed: a descendant may still draw it
                         viewed.add(s.id)  # the proposer shows a site's picture once, so the driver draws it once
+                        drawn += 1
                         try:
-                            render.view(pool, state.ws, s)
-                        except Exception as exc:  # a picture is optional evidence
-                            trace.record("judge_error", where="render", state=state.id,
+                            render.view(pool, state.ws, s)  # None is a legitimate answer: no picture, still proposable
+                        except Exception as exc:  # a picture is optional evidence, never a verdict
+                            trace.record("view_unavailable", state=state.id, site=s.id,
                                          error=f"{type(exc).__name__}: {exc}")
             viewed_in[state.id] = frozenset(viewed)
             trace.record(
