@@ -167,3 +167,58 @@ def test_when_not_even_the_slit_fits_the_plan_stops_naming_the_opening_and_the_g
     stop = out.get("neck_stop") or ""
     assert stop.startswith("outlet reaches the rest of its passage only through a gap about 0.3 mm wide")
     assert "Widen or close that gap in the CAD, allow more cells, or drop that opening." in stop
+
+
+# --- INS-32 (E11): the needed spot is priced tight round the gap, and coarsened to 2 across before a stop ---
+# gap sizing groups spots in boxes much larger than the gap (abc 63401: 8 boxes at y 156-169 mm round a slit,
+# 15.9 M cells at 0.033 mm against 8 M). This box holds the slit and a wide share of both chambers.
+GROUPED_BOX = {"min": [6.0 * MM, 2.0 * MM, 0.0], "max": [16.0 * MM, 8.0 * MM, 10.0 * MM], "radius_m": 0.15 * MM}
+
+
+def _volume(b: dict) -> float:
+    return float(np.prod([b["max"][k] - b["min"][k] for k in range(3)]))
+
+
+def test_a_needed_spot_reads_the_gap_s_own_extent_not_its_grouped_box():
+    got = opening_necks(_surface(), "wall", [dict(GROUPED_BOX)], need_m=3.0 * MM)
+    assert [r["box"] for r in got] == [0]
+    lo, hi = got[0]["gap_min"], got[0]["gap_max"]
+    # the slit runs x 10-12, y 4.85-5.15 mm, the whole z depth: its extent, within three grid cubes (0.75 mm here)
+    assert 8.5 * MM <= lo[0] and hi[0] <= 13.5 * MM
+    assert 2.9 * MM <= lo[1] and hi[1] <= 7.1 * MM
+    assert lo[2] <= 1.0 * MM and hi[2] >= 9.0 * MM
+
+
+def test_the_needed_spot_is_boxed_tight_round_the_gap_and_fits_where_its_grouped_box_did_not():
+    from meshpipeline.engines.cfmesh.cfmesh_runner import neck_plan
+    from meshpipeline.engines.gap_sizing import box_cost
+    grouped_cost = _volume(GROUPED_BOX) / (0.1 * MM) ** 3       # the whole grouped box at width / 3: 600 k
+    boxes, stop = neck_plan([_surface()], "wall", [dict(GROUPED_BOX)], wall_cell=1.0 * MM, base=0.0,
+                            limit=200_000)
+    assert stop == "" and len(boxes) == 1
+    b = boxes[0]
+    assert b["tight"] and b["cells_across"] == 3.0 and abs(b["cell_m"] - 0.1 * MM) < 1e-12
+    cost = box_cost(boxes, 1.0 * MM, whole_box=True)
+    assert cost <= 200_000 < grouped_cost
+    # the box still covers the slit, padded by two of its cells
+    assert b["min"][0] <= 10.0 * MM - 0.2 * MM and b["max"][0] >= 12.0 * MM + 0.2 * MM
+    assert b["min"][1] <= 4.85 * MM - 0.2 * MM and b["max"][1] >= 5.15 * MM + 0.2 * MM
+
+
+def test_needed_spots_that_do_not_fit_are_coarsened_towards_two_across_before_the_plan_stops():
+    from meshpipeline.engines.cfmesh.cfmesh_runner import neck_plan
+    from meshpipeline.engines.gap_sizing import box_cost
+    at3, _ = neck_plan([_surface()], "wall", [dict(GROUPED_BOX)], wall_cell=1.0 * MM, base=0.0, limit=1e12)
+    c3 = box_cost(at3, 1.0 * MM, whole_box=True)
+    boxes, stop = neck_plan([_surface()], "wall", [dict(GROUPED_BOX)], wall_cell=1.0 * MM, base=0.0,
+                            limit=0.6 * c3)
+    assert stop == ""
+    across = boxes[0]["cells_across"]
+    assert 2.0 <= across < 3.0 and abs(boxes[0]["cell_m"] - 0.3 * MM / across) < 1e-12
+    assert box_cost(boxes, 1.0 * MM, whole_box=True) <= 0.6 * c3
+    # not even 2 across fits: the plan stops, saying so, and never goes under 2 across
+    boxes, stop = neck_plan([_surface()], "wall", [dict(GROUPED_BOX)], wall_cell=1.0 * MM, base=0.0,
+                            limit=0.05 * c3)
+    assert boxes[0]["cells_across"] == 2.0
+    assert stop.startswith("outlet reaches the rest of its passage only through a gap about 0.3 mm wide")
+    assert "even at 2 cells across the gap" in stop

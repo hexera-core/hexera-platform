@@ -1175,6 +1175,11 @@ def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
 #: INS-32: cells across a narrow spot an opening (or a passage piece) reaches the rest of its passage
 #: only through - its own width / 3: enough for cfMesh to keep the two sides one region
 NECK_CELLS_ACROSS = 3.0
+#: INS-33: when the needed spots do not fit the limit at NECK_CELLS_ACROSS, they are coarsened in
+#: steps of NECK_COARSEN_STEP cells across, never to fewer than NECK_CELLS_ACROSS_MIN across the gap
+NECK_CELLS_ACROSS_MIN = 2.0
+NECK_COARSEN_STEP = 0.25
+NECK_TIGHT_RULE = "INS-33"
 NECK_RULE = "INS-32"
 
 
@@ -1209,9 +1214,12 @@ def neck_plan(surfaces: list, wall_patch: str, spots: list, *, wall_cell: float,
     passage's surface in `surfaces`), each boxed at its own width / NECK_CELLS_ACROSS, the box padded
     by two of its own cells on every side so a cell lies across the gap.
 
-    Returns (those boxes, "") when they fit the cell `limit` on top of the `base` fill, or (them, the
-    plain sentence that stops the plan) when not even they do: the opening, the gap's width, the
-    cells it needs, and what the user can change. ([], "") when no opening depends on a spot."""
+    Each box is held tight round the gap itself (_neck_boxes). When they do not fit the cell `limit`
+    on top of the `base` fill they are coarsened NECK_COARSEN_STEP cells across at a time, never to
+    fewer than NECK_CELLS_ACROSS_MIN across. Returns (those boxes, "") when they fit, or (them at the
+    fewest cells across, the plain sentence that stops the plan) when not even they do: the opening,
+    the gap's width, the cells it needs, and what the user can change. ([], "") when no opening
+    depends on a spot."""
     from meshpipeline.cad.inside_space import opening_necks
     from meshpipeline.engines.gap_sizing import box_cost
     need = NECK_CELLS_ACROSS * float(wall_cell)
@@ -1225,31 +1233,57 @@ def neck_plan(surfaces: list, wall_patch: str, spots: list, *, wall_cell: float,
         for r in recs:
             got = found.setdefault(int(r["box"]), {**r, "openings": []})
             got["openings"] += [n for n in r["openings"] if n not in got["openings"]]
+    if not found:
+        return [], ""
+    across = NECK_CELLS_ACROSS
+    while True:
+        boxes = _neck_boxes(found, spots, wall_cell, across)
+        if not boxes:
+            return [], ""
+        total = float(base or 0.0) + box_cost(boxes, wall_cell, whole_box=True)
+        if total <= float(limit):
+            return boxes, ""
+        if across - NECK_COARSEN_STEP < NECK_CELLS_ACROSS_MIN - 1e-9:
+            break
+        across -= NECK_COARSEN_STEP
+    tight = min(boxes, key=lambda b: b["width_m"])
+    named = [n for n in tight["neck_of"] if n]
+    who = (" and ".join(named) if named else "A piece of the passage")
+    return boxes, (f"{who} {'reach' if len(named) > 1 else 'reaches'} the rest of its passage only through "
+                   f"a gap about {tight['width_m'] * 1e3:.2g} mm wide; meshing across it needs about "
+                   f"{total / 1e6:.3g} M cells even at {across:g} cells across the gap, over the "
+                   f"{float(limit) / 1e6:.3g} M limit. Widen or close that gap in the CAD, allow more "
+                   "cells, or drop that opening.")
+
+
+def _neck_boxes(found: dict, spots: list, wall_cell: float, across: float) -> list[dict]:
+    """INS-33: INS-32's boxes at `across` cells across each needed gap: held tight round the gap itself (its
+    own extent along the way through it, `gap_min` / `gap_max` from opening_necks, inside the spot's
+    box) - not the whole box gap sizing grouped it in - padded by two of its own cells on every side
+    so a cell lies across the gap. A gap whose extent did not read keeps its spot's box."""
     boxes = []
     for i, r in sorted(found.items()):
         w = float(r["width_m"])
         # never held to the passage floor (40 across the measured narrowest passage, not 3 across
         # this gap), as no narrow-passage box is
-        c = w / NECK_CELLS_ACROSS
+        c = w / across
         if not 0.0 < c < float(wall_cell):
             continue
         s = spots[i]
-        boxes.append({"min": [float(s["min"][k]) - 2.0 * c for k in range(3)],
-                      "max": [float(s["max"][k]) + 2.0 * c for k in range(3)],
+        lo = [float(s["min"][k]) for k in range(3)]
+        hi = [float(s["max"][k]) for k in range(3)]
+        tight = False
+        if r.get("gap_min") is not None and r.get("gap_max") is not None:
+            g_lo = [max(lo[k], float(r["gap_min"][k])) for k in range(3)]
+            g_hi = [min(hi[k], float(r["gap_max"][k])) for k in range(3)]
+            if all(g_lo[k] < g_hi[k] for k in range(3)):
+                lo, hi, tight = g_lo, g_hi, True
+        boxes.append({"min": [lo[k] - 2.0 * c for k in range(3)],
+                      "max": [hi[k] + 2.0 * c for k in range(3)],
                       "radius_m": float(s["radius_m"]), "cell_m": c, "cell_needed_m": c, "level_bump": 0,
-                      "width_m": w, "neck_of": list(r["openings"]), "layer_cells": s.get("layer_cells")})
-    if not boxes:
-        return [], ""
-    total = float(base or 0.0) + box_cost(boxes, wall_cell, whole_box=True)
-    tight = min(boxes, key=lambda b: b["width_m"])
-    if total <= float(limit):
-        return boxes, ""
-    named = [n for n in tight["neck_of"] if n]
-    who = (" and ".join(named) if named else "A piece of the passage")
-    return boxes, (f"{who} {'reach' if len(named) > 1 else 'reaches'} the rest of its passage only through "
-                   f"a gap about {tight['width_m'] * 1e3:.2g} mm wide; meshing across it needs about "
-                   f"{total / 1e6:.3g} M cells, over the {float(limit) / 1e6:.3g} M limit. Widen or close "
-                   "that gap in the CAD, allow more cells, or drop that opening.")
+                      "width_m": w, "cells_across": across, "tight": tight, "rule": NECK_TIGHT_RULE,
+                      "neck_of": list(r["openings"]), "layer_cells": s.get("layer_cells")})
+    return boxes
 
 
 def _bind_intake_shared(t: dict, declaration: list, *, bore: bool = True):

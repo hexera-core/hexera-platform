@@ -834,6 +834,71 @@ NECK_PIECE_SHARE = 0.05
 NECK_MAX_STEPS = 8
 
 
+#: INS-33: how far (in cubes) round a needed spot's box the gap's own extent is read
+NECK_EXTENT_MARGIN = 3
+#: INS-33: the cubes of a gap kept as its own: those whose way from one side to the other through the
+#: narrow cubes is at most this many cubes longer than the shortest such way
+NECK_EXTENT_SLACK = 2
+
+
+def _gap_clear_cap(r_cubes: float) -> float:
+    """INS-33: the most clearance (in cubes) a cube of a gap of half width `r_cubes` has: a gap thinner
+    than a cube is drawn shut and its cubes pass it at its own width, so those cubes only; a wider
+    one is read open, its middle at its half width and one cube more for the grid."""
+    return r_cubes if r_cubes < 1.0 else r_cubes + 1.0
+
+
+def _gap_extent(own: np.ndarray, narrow: np.ndarray, wide: np.ndarray, side_a: np.ndarray,
+                side_b: np.ndarray, grid: Grid, clear: np.ndarray,
+                at_most: float) -> tuple[list, list] | None:
+    """INS-33: THE GAP ITSELF, not the whole narrow-spot box round it. `own`: the spot box's cubes
+    (flat mask); `narrow`: the passable cubes a mesh at the needed size puts no cell across; `wide`:
+    the passable cubes it does; `side_a` / `side_b`: flat cube indices of the two sides the gap joins.
+    Near the box, the shortest way through narrow cubes from each side is counted (in cubes); the
+    box's cubes on a way from one side to the other at most NECK_EXTENT_SLACK cubes longer than the
+    shortest are the gap (a slit's own cubes - not the near-wall cubes of the chambers either side,
+    whose ways run round to the slit), and of those only the cubes whose clearance `clear` is at most
+    `at_most` cubes (_gap_clear_cap: the gap's own cubes, not the approach either side). Returns its extent (min, max) in metres, or None when no way
+    through the box's narrow cubes joins the two sides near it."""
+    from scipy import ndimage
+    shape = tuple(int(v) for v in grid.shape)
+    at = np.flatnonzero(own)
+    if not len(at):
+        return None
+    ijk = np.stack(np.unravel_index(at, shape), axis=1)
+    lo = np.maximum(ijk.min(axis=0) - NECK_EXTENT_MARGIN, 0)
+    hi = np.minimum(ijk.max(axis=0) + NECK_EXTENT_MARGIN + 1, np.asarray(shape))
+    win = tuple(slice(int(a), int(b)) for a, b in zip(lo, hi, strict=True))
+
+    def local(flat_idx: np.ndarray) -> np.ndarray:
+        m = np.zeros(int(np.prod(shape)), dtype=bool)
+        m[flat_idx] = True
+        return m.reshape(shape)[win]
+
+    nar = narrow.reshape(shape)[win]
+    wid = wide.reshape(shape)[win]
+    st = ndimage.generate_binary_structure(3, 1)
+    step = []
+    for side in (side_a, side_b):
+        front = ndimage.binary_dilation(local(side) & wid, structure=st) & nar
+        d = np.full(nar.shape, np.inf)
+        k = 1
+        while front.any():
+            d[front] = k
+            k += 1
+            front = ndimage.binary_dilation(front, structure=st) & nar & ~np.isfinite(d)
+        step.append(d)
+    tot = step[0] + step[1]
+    tot[~own.reshape(shape)[win]] = np.inf
+    tot[clear.reshape(shape)[win] > at_most + 1e-9] = np.inf
+    if not np.isfinite(tot).any():
+        return None
+    gap = np.argwhere(tot <= tot.min() + NECK_EXTENT_SLACK) + lo
+    g_lo = grid.origin + gap.min(axis=0) * grid.h
+    g_hi = grid.origin + (gap.max(axis=0) + 1) * grid.h
+    return [float(v) for v in g_lo], [float(v) for v in g_hi]
+
+
 def opening_necks(solids, wall_key: str, boxes, *, need_m: float, cells: int = GRID_CELLS) -> list[dict]:
     """INS-32: THE NARROW SPOTS AN OPENING NEEDS. Of the measured narrow spots `boxes` (each with
     `min`, `max` and its gap's half width `radius_m`), the ones that some opening of this passage - or a
@@ -850,7 +915,8 @@ def opening_necks(solids, wall_key: str, boxes, *, need_m: float, cells: int = G
     that spot meshed across, until the opening joins at need_m or the narrowest step is no measured
     spot. Returns one record per needed spot, narrowest first: {"box": its index in `boxes`,
     "width_m": the gap's width, "openings": the names that depend on it (None for a passage piece),
-    "point": where the way is narrowest}. [] when nothing depends on a spot."""
+    "point": where the way is narrowest, "gap_min" / "gap_max": the gap's own extent in metres
+    (_gap_extent; absent when it does not read)}. [] when nothing depends on a spot."""
     from scipy import ndimage
     tris = {str(n): np.asarray(t, dtype=float).reshape(-1, 3, 3) for n, t in (solids or {}).items()
             if t is not None and len(t)}
@@ -932,9 +998,23 @@ def opening_necks(solids, wall_key: str, boxes, *, need_m: float, cells: int = G
             i = int(owner[got[1]])
             if i < 0:
                 break                       # the narrowest step is no measured narrow spot
-            rec = found.setdefault(i, {"box": i, "width_m": 2.0 * float(boxes[i]["radius_m"]),
-                                       "openings": [],
-                                       "point": grid.centre(np.unravel_index(got[1], shape)).tolist()})
+            if i not in found:
+                # the gap's own extent, between the two sides it joins at the needed size
+                wide = passable & (cl >= half - 1e-9)
+                wl, _nw = _label((wide | (marks > 0)).reshape(shape))
+                wl = wl.ravel()
+                la = set(np.unique(wl[seeds]).tolist()) - {0}
+                lb = set(np.unique(wl[main_cubes]).tolist()) - {0}
+                ext = None
+                if la and lb and not la & lb:
+                    ext = _gap_extent(owner == i, passable & ~wide, wide,
+                                      np.flatnonzero(np.isin(wl, list(la))),
+                                      np.flatnonzero(np.isin(wl, list(lb))), grid, cl,
+                                      _gap_clear_cap(float(boxes[i]["radius_m"]) / h))
+                found[i] = {"box": i, "width_m": 2.0 * float(boxes[i]["radius_m"]), "openings": [],
+                            "point": grid.centre(np.unravel_index(got[1], shape)).tolist(),
+                            **({"gap_min": ext[0], "gap_max": ext[1]} if ext else {})}
+            rec = found[i]
             if who not in rec["openings"]:
                 rec["openings"].append(who)
             cl[owner == i] = half           # meshed across, it holds the way back no more
