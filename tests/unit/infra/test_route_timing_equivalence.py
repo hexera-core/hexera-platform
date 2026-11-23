@@ -239,3 +239,26 @@ async def _noop(_s, *a, **k):
 def _replace_timeout(route, timeout_s):
     import dataclasses
     return dataclasses.replace(route, timeout_s=timeout_s)
+
+
+# the attempt counter the ledger and the report read
+async def test_a_budget_already_gone_reports_zero_attempts_not_a_fabricated_one(monkeypatch):
+    """A round whose total budget is spent before the first attempt made NO attempt, and the
+    count that reaches ProviderAttemptInfo (and from there the wave ledger and the report) must
+    say so. Reporting 1 would attribute work no provider ever saw - the same class of fiction as
+    an unreached-model row written as conclusive."""
+    import dataclasses
+
+    route = dataclasses.replace(all_routes()["summarizer"], total_deadline_s=0.0)
+    calls: list[int] = []
+
+    async def _invoke(_t):
+        calls.append(1)
+        raise AssertionError("no attempt may be made with the budget already gone")
+
+    monkeypatch.setattr(asyncio, "sleep", _noop)
+    with pytest.raises(RouteExhausted) as ei:
+        await execute(route, _invoke, lambda e: FC.CONNECTION, job_id="j")
+    assert calls == []
+    assert ei.value.category is FC.TIMEOUT
+    assert ei.value.attempts == 0, f"{ei.value.attempts} attempts reported for 0 invocations"
