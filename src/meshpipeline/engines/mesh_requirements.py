@@ -2141,6 +2141,10 @@ def told_status(r: Mapping) -> tuple[str, str, str]:
         side = "under" if f == "min_edge" else "outside" if f.startswith("limit:") else "over"
         status = ("Flexible" if r.get("flexible") else "Target, not met") if r.get("outside") else "Met"
         return "target", status, f"{share:g}% of elements {side}" if r.get("outside") else "0 outside"
+    if r.get("finer_than_asked"):
+        # NOTE-14: a size the part's shape built far finer than asked (finer_global), with the size built
+        built = r.get("measured")
+        return "finer", "Finer than asked", f"about {_g(float(built))} mm" if isinstance(built, (int, float)) else ""
     if r.get("nearest"):
         return "nearest", "Nearest there is", ""
     if r.get("applied") is False:
@@ -2161,9 +2165,9 @@ def asked_rows(quality: Mapping | None, *, source: str = "your notes", told: boo
     for r in (rep.get("rows") if isinstance(rep, Mapping) else None) or []:
         if not isinstance(r, Mapping):
             continue
-        # NOTE-14: a limit the user said is flexible, outside in places, is told like any target - information, never
-        # a verdict's limit (it read "0 | exactly 0 | Met" with every element under it, case F1)
-        if r.get("met") not in (True, False) and not r.get("finer_than_asked"):
+        # NOTE-14: a limit the user said is flexible, outside in places, and a size built far finer than asked are
+        # told like any target - information, never a verdict's limit (both read "0 | exactly 0 | Met", case F1)
+        if r.get("met") not in (True, False):
             if not told:
                 continue
             kind, status, shown = told_status(r)

@@ -173,13 +173,12 @@ def _asked_rows(payload: Mapping) -> list[list[str]]:
         met = r.get("met")
         if met in (True, False):
             result = _ok(met)
-        elif r.get("applied") is not False and (r.get("layer_cells") or r.get("finer_than_asked")):
-            # a layer count told as prism layers, a size finer than asked (NOTE-14) - told
-            result = ('<span class="na">Told: prism layers</span>' if r.get("layer_cells") else
-                      '<span class="na">Finer: told</span>')
+        elif r.get("applied") is not False and r.get("layer_cells"):
+            # a layer count told as prism layers - told
+            result = '<span class="na">Told: prism layers</span>'
         else:
             # told, not judged, in the same words as the FEA tables (mesh_requirements.told_status) - a flexible
-            # limit (NOTE-14) too
+            # limit and a size built finer than asked (NOTE-14) too
             from meshpipeline.engines.mesh_requirements import told_status
             status = told_status(r)[1]
             result = _ok(True) if status == "Met" else (

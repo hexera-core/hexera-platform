@@ -98,6 +98,34 @@ def test_nothing_said_is_as_before():
     assert MR.summary(q["requirements"]).startswith("Of the 1 thing you asked for: 0 met, 1 not fully met")
 
 
+def _finer(**extra) -> dict:
+    """A size for the whole mesh the part's shape built far finer than asked, as the solid FEA route measures it."""
+    row = {"id": "r1", "field": "global", "asked": "global element size 10 mm", **extra}
+    got = {"applied": True, "measured": 0.95, "met": False, "delivered": "elements are about 0.95 mm"}
+    got.update(MR.finer_global(row, 10.0, 0.95, 13.0))
+    return {**row, **got}
+
+
+def test_a_size_built_far_finer_than_asked_is_told_never_a_met_limit(tmp_path):
+    q = _q(_finer())
+    assert MR.asked_rows(q) == [] and not [r for r in VL.fea_limits(q) if r["key"].startswith("asked_")]
+    told = [(r["told"], r["status"], r["shown"]) for r in MR.asked_rows(q, told=True)]
+    assert told == [("finer", "Finer than asked", "about 0.95 mm")]
+    assert [(r["ok"], r["status"], r["shown"]) for r in _table(q, tmp_path)] == [
+        (None, "Finer than asked", "about 0.95 mm")]
+    assert [r["status"] for r in SD.asked_rows(q)] == ["Finer than asked"]
+    assert "Finer than asked" in RP._asked_rows({"asked": q["requirements"]})[0][3]
+    assert MR.summary(q["requirements"]).startswith("Of the 1 thing you asked for: 0 met; global element size 10 mm: "
+                                                    "elements are about 0.95 mm, finer than the 10 mm asked")
+
+
+def test_a_hard_size_built_far_finer_than_asked_is_judged_not_met():
+    q = _q(_finer(strictness="hard"))
+    assert [(r["measured"], r["limit"], "told" in r) for r in MR.asked_rows(q)] == [(1, 0, False)]
+    assert MR.asked_rows(q, told=True) == MR.asked_rows(q)
+    assert MR.summary(q["requirements"]).startswith("Of the 1 thing you asked for: 0 met, 1 not fully met")
+
+
 def test_a_shortest_edge_alone_is_said_as_asked_never_as_a_range():
     sizes = FR.whole_sizes({}, {"sizes": {"min_edge_mm": 3.0}, "rows": []}, ["Part_1"], base_m=0.0202)
     said = P.user_words({"user_sizes": sizes, "zones": [{"id": "P1", "kind": "part", "user": "Part_1",
