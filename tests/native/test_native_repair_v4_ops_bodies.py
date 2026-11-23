@@ -25,6 +25,7 @@ from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox  # noqa: E402
 from OCP.BRepTools import BRepTools  # noqa: E402
 from OCP.gp import gp_Pnt  # noqa: E402
 from OCP.GProp import GProp_GProps  # noqa: E402
+from OCP.Interface import Interface_Static  # noqa: E402
 from OCP.STEPCAFControl import STEPCAFControl_Reader, STEPCAFControl_Writer  # noqa: E402
 from OCP.STEPControl import STEPControl_AsIs, STEPControl_Reader, STEPControl_Writer  # noqa: E402
 from OCP.TCollection import TCollection_ExtendedString  # noqa: E402
@@ -82,8 +83,18 @@ def _read(path: str) -> Any:
     return shape
 
 
-def _step_round_trip(shape: Any, path: Path) -> Any:
+def _set_statics(statics: dict[str, Any]) -> None:
+    """Interface_Static switches only exist once a reader/writer is constructed: a set before that
+    silently returns False. Callers construct first; every return value is asserted here."""
+    for name, value in statics.items():
+        ok = (Interface_Static.SetIVal_s(name, value) if isinstance(value, int)
+              else Interface_Static.SetCVal_s(name, value))
+        assert ok, f"Interface_Static {name}={value!r} was not accepted"
+
+
+def _step_round_trip(shape: Any, path: Path, statics: dict[str, Any] | None = None) -> Any:
     writer = STEPControl_Writer()
+    _set_statics(statics or {})
     writer.Transfer(shape, STEPControl_AsIs)
     writer.Write(str(path))
     reader = STEPControl_Reader()
@@ -92,12 +103,13 @@ def _step_round_trip(shape: Any, path: Path) -> Any:
     return reader.OneShape()
 
 
-def _xcaf_round_trip(shape: Any, path: Path) -> Any:
+def _xcaf_round_trip(shape: Any, path: Path, statics: dict[str, Any] | None = None) -> Any:
     app = XCAFApp_Application.GetApplication_s()
     doc = TDocStd_Document(TCollection_ExtendedString("MDTV-XCAF"))
     app.InitDocument(doc)
     XCAFDoc_DocumentTool.ShapeTool_s(doc.Main()).AddShape(shape, False)
     writer = STEPCAFControl_Writer()
+    _set_statics(statics or {})
     writer.Transfer(doc)
     writer.Write(str(path))
     back = TDocStd_Document(TCollection_ExtendedString("MDTV-XCAF"))
@@ -231,6 +243,14 @@ def test_step_does_not_keep_a_shared_face_so_conformalise_must_be_reapplied(
     xcaf = _xcaf_round_trip(conformal, tmp_path / "xcaf.step")
     assert _shared_faces(plain) == 0 and _count(plain, TopAbs_FACE) == 12
     assert _shared_faces(xcaf) == 0 and _count(xcaf, TopAbs_FACE) == 12
+
+    # not an unset switch: every assembly mode and schema, statics set AFTER construction and checked
+    for asm in (0, 1, 2):
+        for schema in ("AP214CD", "AP242DIS"):
+            st = {"write.step.assembly": asm, "write.step.schema": schema, "write.surfacecurve.mode": 1}
+            for rt in (_step_round_trip(conformal, tmp_path / "s.step", st),
+                       _xcaf_round_trip(conformal, tmp_path / "x.step", st)):
+                assert _shared_faces(rt) == 0 and _count(rt, TopAbs_FACE) == 12
 
     again = Workspace.from_brep(pool, _write(xcaf, tmp_path / "xcaf.brep"))
     final, _ = Conformalise().apply(pool, again, _bodies(again), {"mode": "fragment"}, timeout_s=TIMEOUT)
