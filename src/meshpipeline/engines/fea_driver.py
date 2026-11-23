@@ -284,6 +284,19 @@ def _solidified(shape, diag: float) -> tuple[Any, int, int] | None:
         return None
 
 
+#: MESH-1b: the share of the file's face area the solids read from its shells must hold to stand for the file (the
+#: rest is an allowance for faces a solid reading re-makes - an IGES cylinder's two halves made one)
+SOLIDS_HOLD_SHARE = 0.98
+
+
+def _held_share(shape, comp) -> float:
+    """MESH-1b: the share of `shape`'s face area that the solids `comp` hold (1.0 for a file of no area)."""
+    from meshpipeline.cad.midsurface import _area
+
+    whole = float(_area(shape))
+    return 1.0 if whole <= 0 else min(1.0, float(_area(comp)) / whole)
+
+
 def solids_from_shells(ws: Path, seen: dict | None = None) -> int:
     """MESH-1: A FILE OF FACES THAT CLOSE is read as the solid it bounds: a STEP or IGES written as closed
     shells with no solid entity (aircraft and keel surfaces, 24 Oct gate) - the shells are made solids,
@@ -293,7 +306,9 @@ def solids_from_shells(ws: Path, seen: dict | None = None) -> int:
     solids - so an IGES copy's staged solid is its STEP's, for the solid mesh and the shell alike. Writes
     geometry.brep and returns how many solids it made (0: nothing to do, or no shell closes - the part is then
     meshed, or refused, as it stands). `seen` (when given) is told "open": True for a file with no solid none of
-    whose shells closes - a surface for engines/surface_run to read (SURF-1)."""
+    whose shells closes - a surface for engines/surface_run to read (SURF-1). MESH-1b: solids that hold less than
+    SOLIDS_HOLD_SHARE of the file's face area are no reading of the file - it is the surface it is ("open", and
+    "partial" says what closed)."""
     from OCP.BRepTools import BRepTools
     from OCP.TopAbs import TopAbs_SOLID
     from OCP.TopExp import TopExp_Explorer
@@ -315,6 +330,14 @@ def solids_from_shells(ws: Path, seen: dict | None = None) -> int:
     read_as = _solidified(shape, diag)
     if read_as is not None and read_as[2] >= held:
         comp, made, held = read_as
+    if made and (share := _held_share(shape, comp)) < SOLIDS_HOLD_SHARE:
+        # MESH-1b: the solids stand for the FILE only when they hold its faces. A sheet with a few faces that happen
+        # to close (two beads' pockets on a stamped panel: 8 of its 73 faces) is the surface it is - reading the
+        # pockets as the part dropped the rest of it without a word, and a fragment was delivered as "passed"
+        if seen is not None:
+            seen["partial"] = {"solids": made, "faces_held": held, "faces": _faces_in(shape),
+                               "area_share": round(share, 4)}
+        made = 0
     if made:
         BRepTools.Write_s(comp, str(ws / "geometry.brep"))
         if seen is not None:

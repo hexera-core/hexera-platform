@@ -610,6 +610,21 @@ def test_a_face_written_twice_is_no_solid(tmp_path):
     assert "1 face was in the file twice: the second copy of it is left out." in rec["words"]
 
 
+def test_a_sheet_with_a_small_closed_pocket_is_the_sheet_not_the_pocket(tmp_path):
+    """MESH-1b: a sheet whose faces include a small closed skin (a bead's pocket on a stamped panel) is read as the
+    surface it is. Before, the pocket was read as THE solid and the sheet dropped without a word (s33: 8 of 73
+    faces delivered, 28 x 93 mm of a 90 x 160 mm part); a skin that is the whole file still reads as its solid."""
+    pocket = sx.moved(sx.closed_skin(10.0, 10.0, 5.0), (20.0, 20.0, 1.0))
+    ws = _stage(sx.compound([sx.plate_with_hole(), pocket]), tmp_path / "ws")
+    seen: dict = {}
+    assert FD.solids_from_shells(ws, seen) == 0 and seen.get("open") is True
+    assert seen["partial"]["solids"] == 1 and seen["partial"]["faces_held"] == 6 and seen["partial"]["faces"] == 7
+    assert seen["partial"]["area_share"] < 0.05 and not (ws / "geometry.brep").exists()
+    whole = _stage(sx.closed_skin(), tmp_path / "ws2")
+    seen = {}
+    assert FD.solids_from_shells(whole, seen) == 1 and seen == {"closed": 1}
+
+
 def _volumes(shape) -> list[float]:
     from OCP.TopAbs import TopAbs_SOLID
 
