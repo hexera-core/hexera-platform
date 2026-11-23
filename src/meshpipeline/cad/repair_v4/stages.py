@@ -45,11 +45,13 @@ Stage defaults (override per stage through `params[<stage>]`):
 from __future__ import annotations
 
 import atexit
+import itertools
 import math
 import os
 import re
 import shutil
 import tempfile
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from typing import Any
@@ -308,6 +310,10 @@ class StagedResult:
 
 _STEPS_DIR: list[str] = []
 _STEP_FOR: dict[tuple[str, float], str] = {}
+#: guards `_STEPS_DIR`, `_STEP_FOR` and the export counter. `step_for` is called from the search's evaluation
+#: threads; a name chosen from `len(_STEP_FOR)` before the write and registered after it was chosen twice (Task 44).
+_STEP_LOCK = threading.Lock()
+_STEP_SEQ = itertools.count()
 
 
 #: the STEP writer stamps FILE_NAME with the wall-clock second; nothing about the geometry changes with it
@@ -331,12 +337,14 @@ def step_for(pool: WorkerPool, brep: str) -> str:
     """The workspace's BREP as a STEP file (mm), written once per BREP path, for the checker. The bytes depend
     only on the geometry (`_deterministic`), so equal geometry means an equal verdict-cache key."""
     key = (brep, os.stat(brep).st_mtime)
-    if key in _STEP_FOR and os.path.exists(_STEP_FOR[key]):
-        return _STEP_FOR[key]
-    if not _STEPS_DIR:
-        _STEPS_DIR.append(tempfile.mkdtemp(prefix="stages_step_"))
-        atexit.register(shutil.rmtree, _STEPS_DIR[0], True)  # the exports are scratch: gone when the process is
-    out = os.path.join(_STEPS_DIR[0], f"state_{len(_STEP_FOR)}.step")
+    with _STEP_LOCK:
+        if key in _STEP_FOR and os.path.exists(_STEP_FOR[key]):
+            return _STEP_FOR[key]
+        if not _STEPS_DIR:
+            _STEPS_DIR.append(tempfile.mkdtemp(prefix="stages_step_"))
+            atexit.register(shutil.rmtree, _STEPS_DIR[0], True)  # the exports are scratch: gone when the process is
+        # a name no other caller can be given, chosen under the lock; the write itself runs outside it
+        out = os.path.join(_STEPS_DIR[0], f"state_{next(_STEP_SEQ)}.step")
     result = pool.call("write_step_xcaf", {"brep": brep, "labels": {}, "units": "mm", "path": out},
                        timeout_s=120)
     if not result.ok:
@@ -345,7 +353,8 @@ def step_for(pool: WorkerPool, brep: str) -> str:
         _deterministic(out)
     except OSError as exc:
         raise CheckerUnavailable(f"cannot read back the STEP written for {brep!r}: {exc}") from exc
-    _STEP_FOR[key] = out
+    with _STEP_LOCK:
+        _STEP_FOR[key] = out
     return out
 
 
