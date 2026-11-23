@@ -25,7 +25,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
-
 #: `--h-mm auto`: derive the element size from each part (`search.h_mm_for`) instead of one size for every file.
 H_MM_AUTO = float("inf")
 
