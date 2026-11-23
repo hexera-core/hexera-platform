@@ -150,10 +150,52 @@ class ProbeResult:
 # --- the static prefix: system prompt and tools ----------------------------------------------------------------
 
 
+#: What each op DOES, one line each, shown beside its schema. A schema alone gives the model parameter names and
+#: bounds but not the action: without these, `make_volume` or `conformalise` is a name to guess at. Every op in the
+#: registry must have one (tests/unit/cad/repair_v4/test_proposer_prompt.py), so a new op cannot ship unexplained.
+OP_SUMMARIES: dict[str, str] = {
+    "conformalise": "make touching/overlapping bodies share faces exactly: `fragment` splits them at each other, "
+                    "`cut_by:B<n>` subtracts body B<n> (only when the overlap is within the fidelity bound); never "
+                    "fuses. For overlap sites.",
+    "fill_loop": "close ONE free (open) loop with one new declared face; targets are the loop's edges. Leaves faces "
+                 "loose: follow with make_volume to rebuild the solid. For open sites; loops over 5% of the "
+                 "diagonal are declined.",
+    "fix_poles": "ShapeFix_Face wire repair (degenerate edges at a pole, missing seam) on the target faces. For "
+                 "pole/periodic/invalid sites.",
+    "make_volume": "build solid(s) from the target faces, or from every face not already in a solid when none are "
+                   "given. The usual step after fill_loop/sew closes the last opening.",
+    "orient_and_close": "fix shell face orientation so every solid has positive volume. For invalid/open sites.",
+    "reapproximate": "re-fit the target faces' surfaces as B-splines of at most max_degree within tol_mm.",
+    "rebuild_edge_as_intersection": "replace each target edge's 3D curve by the intersection of its two faces "
+                                    "(edge drifted off its faces).",
+    "rebuild_face": "rebuild ONE face, fixing self-intersecting wires; declined if the loop exceeds the fidelity "
+                    "bound.",
+    "refit_cluster": "replace 2+ adjacent faces of one shell (one closed outline) by one B-spline face within "
+                     "tol_mm.",
+    "remove_duplicate_faces": "delete the second face of each coincident pair (declared removal).",
+    "remove_small": "remove faces or edges narrower than max_width_mm, declaring each removal. For sliver sites.",
+    "sew": "sew loose faces together at the tightest tolerance in tol_ladder that closes them. For open sites "
+           "where faces are present but not connected.",
+    "split_angle": "split the target faces so no face spans more than max_deg of angle. Moves no geometry.",
+    "split_by_proximity": "split each face of each face_pair along iso-curves so a chord across a patch sags less "
+                          "than target_ratio of the gap between the pair. Moves no geometry. For proximity sites.",
+    "split_closed": "split closed (periodic) faces - full cylinders, cones, spheres, tori - into open patches. "
+                    "Moves no geometry.",
+    "split_continuity": "split the target faces at their internal C1 (order 1) or C2 (order 2) breaks. Moves no "
+                        "geometry.",
+    "tighten_tolerances": "lower inflated edge/vertex/face tolerances to what the geometry is measured to satisfy "
+                          "(target tolerance = target_rel x part diagonal); never below the measured deviation.",
+    "to_canonical": "snap the target faces' surfaces to exact planes/cylinders/cones/spheres/tori within tol_mm.",
+    "unify_same_domain": "merge coplanar/co-surface faces and collinear edges (scope all, or only the targets), "
+                         "keeping the `keep` edges. The inverse of a split.",
+}
+
+
 def _catalogue(stage_names: Sequence[str]) -> str:
     lines = []
     for name in sorted(REGISTRY):
-        lines.append(f"- {name}: {json.dumps(REGISTRY[name].params_schema, sort_keys=True, separators=(',', ':'))}")
+        schema = json.dumps(REGISTRY[name].params_schema, sort_keys=True, separators=(',', ':'))
+        lines.append(f"- {name}: {OP_SUMMARIES.get(name, '(no summary)')}\n  params: {schema}")
     if stage_names:
         lines.append("- run_stage: a whole deterministic healing stage, one of "
                      + ", ".join(sorted(stage_names)) + "; give {\"run_stage\": <name>, \"params\": {...}}")
@@ -171,8 +213,9 @@ WHAT CLEAN MEANS. A file is clean only when it passes all three layers of the ch
 and not a rule of thumb - decides.
 1. Valid: it re-reads after a STEP write/read round trip and BRepCheck reports every solid valid; every body is a
    closed, manifold, consistently oriented solid with positive volume; no free edges, no self-intersecting faces
-   or wires, no small-edge or small-face errors; bodies do not overlap except where they share faces exactly
-   (conformal contact); units are unchanged.
+   or wires; bodies do not overlap except where they share faces exactly (conformal contact); units are
+   unchanged. Small edges, small faces and large tolerances are reported but do NOT fail this layer: fix them
+   only where a mesher fails because of them.
 2. Meshable: it meshes in every mesher on a fixed panel, within the time limit, with no tolerant fallback and no
    hints sidecar, and the worst element quality (min SICN) is above 0.01.
 3. Faithful: the maximum sampled surface distance from the original is at most min(0.1 mm, 0.1% of the part
