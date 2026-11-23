@@ -35,6 +35,11 @@ def _register_test_fns() -> None:
     def _echo(payload: dict) -> dict:
         return {"echo": payload, "pid": os.getpid()}
 
+    @register("slow_echo")
+    def _slow_echo(payload: dict) -> dict:
+        time.sleep(float(payload.get("sleep_s", 0)))
+        return {"echo": payload, "pid": os.getpid()}
+
     @register("sleep_forever")
     def _sleep_forever(payload: dict) -> dict:
         while True:
