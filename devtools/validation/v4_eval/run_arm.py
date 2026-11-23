@@ -97,9 +97,15 @@ def input_path(inputs: Path, entry: Any) -> str:
 
 
 def make_cache(uri: str) -> Any:
-    from meshpipeline.cad.repair_v4.verdict.cache import DirStore, GcsStore, VerdictCache
+    """THE wave's one verdict cache. `--cache-uri` is exported as the engine's own setting, so the search and
+    staged-healer judges (`default_judge`, `stages`, which read `default_verdict_cache()` and take no flag) share
+    the cache the re-probe uses: one cache per wave, one source of truth. Called once from `main`."""
+    import os
 
-    return VerdictCache(GcsStore(uri) if uri.startswith("gs://") else DirStore(uri))
+    from meshpipeline.cad.repair_v4.verdict.cache import CACHE_URI_ENV, default_verdict_cache
+
+    os.environ[CACHE_URI_ENV] = uri
+    return default_verdict_cache()
 
 
 def run_reprobe(args: argparse.Namespace, out: Path, prov: dict) -> int:
@@ -113,7 +119,7 @@ def run_reprobe(args: argparse.Namespace, out: Path, prov: dict) -> int:
     entries = shard_entries(select_sources(whole_pool, args.sources), args.shard)
     prov["shard_files"] = len(entries)
     prov["sources"] = args.sources or "cleared"
-    cache = make_cache(args.cache_uri) if args.cache_uri else None
+    cache = make_cache(args.cache_uri)
     prov["cache_uri"] = args.cache_uri or None
     pool = WorkerPool(args.workers)
     rows_path = out / "rows.jsonl"
@@ -402,6 +408,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         if args.n_shards != n:
             parser.error(f"--n-shards {args.n_shards} disagrees with --shard {args.shard}: every shard of a "
                          "wave must share the launcher's N")
+    if args.mode in ("arms", "reprobe") and wave_spec_mod.shared_cache_problem(args.cache_uri):
+        parser.error(f"--cache-uri: {wave_spec_mod.shared_cache_problem(args.cache_uri)}")
     return args
 
 
@@ -434,6 +442,8 @@ def main(argv: list[str] | None = None) -> int:
             prov["ledger"] = {"wave_type": args.wave_type, "wave_id": args.wave_id, "n_shards": args.n_shards,
                               "cap_usd": ledger.cap_usd, "path": args.ledger_path,
                               "provenance": ledger.provenance}
+        if args.mode in ("arms", "reprobe"):
+            make_cache(args.cache_uri)  # before any judge exists; parse_args refused a blank one
         if args.mode == "arms":
             code = run_arms(args, out, prov, ledger)
         else:  # reprobe and harness make no metered model call, so there is nothing for a ledger to gate

@@ -453,6 +453,16 @@ def sa_write_problem(bucket_policy: dict, project_policy: dict,
             f"{bucket} --member={member} --role=roles/storage.objectAdmin")
 
 
+def v4_cache_problems(metadata: list[str]) -> list[str]:
+    """A wave with no shared verdict cache is a cost control silently off. Checked on the `v4-cache-uri` item the
+    VMs are actually handed (not re-derived), so a launcher that stops emitting it is refused too."""
+    uris = [m.split("=", 1)[1] for m in metadata if m.startswith("v4-cache-uri=")]
+    if len(uris) != 1:
+        return [f"the wave hands its shards {len(uris)} v4-cache-uri items, not exactly one"]
+    problem = wave_spec.shared_cache_problem(uris[0])
+    return [f"verdict cache: {problem}"] if problem else []
+
+
 def live_checks(args, vcpus: int) -> tuple[list[str], list[str]]:
     """Read-only state checks before anything is created. Returns (problems, warnings)."""
     problems, warnings = [], []
@@ -799,6 +809,9 @@ def main(argv: list[str] | None = None, *, gates=None) -> int:
             else:
                 problems.append(f"cannot open or read the marker store, or the gate code failed: "
                                 f"{type(exc).__name__}: {exc}")
+
+    if profile is V4 and units:  # local, so a dry run reaches it: what the shards are HANDED, not what we derive
+        problems += v4_cache_problems(profile.extra_metadata(args))
 
     # THE BUDGET GATE, in the report: the same check create_wave enforces before any VM exists.
     projection = profile.projection(args, units, len(vms), slots) if units else None
