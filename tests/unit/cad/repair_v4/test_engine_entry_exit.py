@@ -6,7 +6,7 @@
 #             `Workspace.from_brep` and the real `deliverable` run. The real kernel is native-tier.
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -31,8 +31,8 @@ class FakeVerdict:
     clean: bool = False
     tier: str = "full"
     inconclusive: bool = False
-    valid: Any = SimpleNamespace(ok=True)
-    panel: tuple = (SimpleNamespace(name="gmsh", status="pass"),)
+    valid: Any = field(default_factory=lambda: SimpleNamespace(ok=True))
+    panel: tuple = field(default_factory=lambda: (SimpleNamespace(name="gmsh", status="pass"),))
     faithful: Any = None
 
 
