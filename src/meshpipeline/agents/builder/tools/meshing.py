@@ -674,11 +674,19 @@ def _run_and_judge(ctx: BuilderToolContext, prepared: PreparedMeshRun) -> dict:
         from meshpipeline.engines.preflight import PreflightRefusal
         _line = next((ln for ln in str(res.get("log_tail") or "").splitlines() if PORT_REGION_DROPPED in ln), "")
         logger.warning("run_mesh: %s", _line)
-        PreflightRefusal(
-            gate="finalize", cause=FailureCause.PATCH_NOT_CAPTURED.value,
-            builder_text=f"[PORT_REGION_DROPPED] {_line}",
-            facts={"port_region_dropped": True, "deterministic": True, "ladder_exhausted": True,
-                   "meshers_started": 1}).write(workspace)
+        # INS-36: a mesh WAS built - refused in the plan-time stop's own words (the opening, the narrowest gap on its
+        # way, what was built, the ways out), and that refusal stands over the mesh (never a manifest error)
+        from meshpipeline.engines.cfmesh.cfmesh_runner import after_build_refusal
+        _after = after_build_refusal(workspace)
+        if _after is not None:
+            _after.write(workspace)
+            _line = _after.builder_text.removeprefix("[PORT_REGION_DROPPED] ")
+        else:
+            PreflightRefusal(
+                gate="finalize", cause=FailureCause.PATCH_NOT_CAPTURED.value,
+                builder_text=f"[PORT_REGION_DROPPED] {_line}",
+                facts={"port_region_dropped": True, "deterministic": True, "ladder_exhausted": True,
+                       "meshers_started": 1}).write(workspace)
         return {"success": False, HANDS_OFF: True,
                 "guidance": (f"Not meshed: {_line}. Do NOT run_mesh again and do NOT reconfigure - end your "
                              "turn now."),

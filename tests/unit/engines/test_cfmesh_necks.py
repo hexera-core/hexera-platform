@@ -297,3 +297,71 @@ def test_an_opening_behind_nine_slits_in_a_row_needs_all_nine(monkeypatch):
     got = opening_necks(_surface(), "wall", spots, need_m=3.0 * MM)
     assert sorted(r["box"] for r in got) == list(range(n))           # 8 on the old fixed cap of 8 steps
     assert all(r["openings"] == ["outlet"] for r in got)
+
+
+def _built_without(ws, counts: dict, spots: list) -> None:
+    """A case built with every passage's openings, `counts` its boundary faces, `spots` the plan's needed spots."""
+    from meshpipeline.cad.fluid_passages import PASSAGES_FILE
+    from meshpipeline.engines.cfmesh.cfmesh_runner import NECK_SPOTS_FILE
+    pm = ws / "constant" / "polyMesh"
+    pm.mkdir(parents=True)
+    body = "".join(f"    {n}\n    {{\n        type patch;\n        nFaces {c};\n        startFace 0;\n    }}\n"
+                   for n, c in counts.items())
+    (pm / "boundary").write_text(f"FoamFile\n{{\n    format ascii;\n    class polyBoundaryMesh;\n}}\n"
+                                 f"{len(counts)}\n(\n{body})\n")
+    (ws / "system").mkdir()
+    (ws / PASSAGES_FILE).write_text(json.dumps({"runs": ["_passages/p1"],
+                                                "ports": [["inlet", "outlet_1"], ["outlet_2", "outlet_3"]]}))
+    (ws / NECK_SPOTS_FILE).write_text(json.dumps(spots))
+
+
+def test_a_built_mesh_that_lost_an_opening_ends_in_the_plan_stop_s_words_not_a_manifest_error(tmp_path):
+    """INS-36 (abc 63401, c2e13_p34c): the mesh was built (8.19 M cells), outlet_3 had zero faces, and the run ended
+    "[MANIFEST_VALIDATION_FAILED] ... zero faces: ['outlet_3']" - no gap, no ways out. Now: the plan-time stop's words
+    (the opening, the narrowest gap on its way and where, what WAS built, the three ways out)."""
+    from meshpipeline.application.final_result import _cause_account
+    from meshpipeline.engines.cfmesh.cfmesh_runner import NECK_WAYS_OUT, after_build_refusal, neck_words
+    from meshpipeline.engines.gates import cause_of, facts_of
+    from meshpipeline.engines.preflight import read_refusal
+    ws = tmp_path / "case"
+    ws.mkdir()
+    _built_without(ws, {"inlet": 18932, "outlet_1": 11548, "outlet_2": 6392, "outlet_3": 0, "wall": 9000},
+                   [{"width_m": 1.6e-3, "where_m": [0.0, 0.01, 0.0], "openings": ["inlet"]},
+                    {"width_m": 1.0e-4, "where_m": [-0.00998, 0.15628, -0.00802], "openings": ["outlet_3"]},
+                    {"width_m": 1.63e-3, "where_m": [-0.0088, 0.1521, -0.0123], "openings": ["outlet_3"]}])
+    ref = after_build_refusal(ws)
+    assert ref is not None
+    ref.write(ws)
+    fb = read_refusal(ws).as_feedback()
+    facts = facts_of(fb)
+    assert facts["port_region_dropped"] and facts["after_build"] and not facts["before_meshing"]
+    cause, what, next_step = _cause_account("finalize", cause_of(fb), facts, "cfmesh")
+    assert cause == "patch_not_captured"
+    head = neck_words(["outlet_3"], 1.0e-4, [-0.00998, 0.15628, -0.00802])
+    assert what.startswith("The mesh was not delivered: " + head)
+    assert "0.1 mm wide (near x -10.0, y 156.3, z -8.0 mm)" in what
+    assert "In the mesh with its faces: inlet, outlet_1, outlet_2" in what
+    assert "manifest" not in what.lower() and next_step == NECK_WAYS_OUT
+    # every opening with faces: nothing to refuse
+    ws2 = tmp_path / "all"
+    ws2.mkdir()
+    _built_without(ws2, {"inlet": 1, "outlet_1": 1, "outlet_2": 1, "outlet_3": 1}, [])
+    assert after_build_refusal(ws2) is None
+
+
+def test_the_plan_time_stop_and_the_after_build_refusal_share_one_sentence():
+    from meshpipeline.engines.cfmesh.cfmesh_runner import neck_stop_refusal, neck_words
+    words = neck_words(["outlet_3"], 1e-4)
+    assert words == "outlet_3 reaches the rest of its passage only through a gap about 0.1 mm wide"
+    plan, built = neck_stop_refusal(words + "."), neck_stop_refusal(words + ".", after_build=True)
+    assert plan.facts["plan_stop"] == built.facts["plan_stop"] and plan.facts["ways_out"] == built.facts["ways_out"]
+    assert plan.facts["before_meshing"] and not built.facts["before_meshing"]
+
+
+def test_the_after_build_refusal_stands_over_the_mesh_on_disk_and_a_plan_stop_still_does_not():
+    """INS-36: judged again, the mesh that lost outlet_3 ended as a manifest error; the refusal is the verdict."""
+    from meshpipeline.engines.cfmesh.cfmesh_runner import neck_stop_refusal
+    from meshpipeline.pipeline.executor import refusal_stands_over_mesh
+    assert refusal_stands_over_mesh(neck_stop_refusal("x reaches ...", after_build=True))
+    assert not refusal_stands_over_mesh(neck_stop_refusal("x reaches ..."))
+    assert not refusal_stands_over_mesh(None)

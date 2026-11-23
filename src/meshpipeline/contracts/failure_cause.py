@@ -529,7 +529,9 @@ def _describe(cause: object, facts: Mapping | None = None, *,
         if stop:
             # INS-32: the plan stopped before meshing - an opening reaches its passage only through
             # a gap whose cells do not fit the limit: said in the plan's own words, with its ways out
-            return (f"The plan stopped before meshing: {stop}.",
+            # INS-36: the same words for a mesh that was built and still lost the opening
+            lead = "The mesh was not delivered" if f.get("after_build") else "The plan stopped before meshing"
+            return (f"{lead}: {stop}.",
                     str(f.get("ways_out") or "") or "Widen or close that gap in the CAD, allow more "
                     "cells, or drop that opening.")
         patches = [str(p) for p in (f.get("patches") or [])]

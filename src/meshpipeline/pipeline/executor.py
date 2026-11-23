@@ -164,6 +164,13 @@ def _broken_mesh(workspace, before: tuple[int, int] | None) -> list[str]:
     return [str(x) for x in fatal if str(x).strip()] if isinstance(fatal, list) else []
 
 
+def refusal_stands_over_mesh(refusal) -> bool:
+    """INS-36: a refusal written AFTER a mesh was built about that mesh (an opening it lost, in the plan-time stop's
+    words) is the attempt's verdict - the mesh on disk is not judged over it again into a manifest error."""
+    facts = getattr(refusal, "facts", None) or {}
+    return bool(facts.get("after_build") and facts.get("port_region_dropped"))
+
+
 def _attempt_ending(trips) -> list[dict]:
     """The guard trips that end an attempt (TIME-3, TIME-5). A wait's guard (TIME-4: the engine
     order, the intake recommendation, the geometry naming) is that step failing, not the
@@ -344,7 +351,10 @@ async def node_executor(state: PipelineState) -> dict:
     # judged as usual, and the verdict's facts travel with the failure - the retry policy reads
     # that another attempt builds the same mesh, and the user's sentence is the driver's own
     _driver_verdict = None
-    if _refusal is not None and _mesh_on_disk(state.get("engine", ""), workspace):
+    # INS-36: a mesh built that lost an opening is refused in the plan-time stop's own words; that refusal stands
+    # over the mesh on disk - judged, the same mesh ends as a manifest error ("zero faces") with no way out said
+    if (_refusal is not None and not refusal_stands_over_mesh(_refusal)
+            and _mesh_on_disk(state.get("engine", ""), workspace)):
         if (_refusal.facts or {}).get("ladder_exhausted"):
             _driver_verdict = _refusal
         _refusal = None
