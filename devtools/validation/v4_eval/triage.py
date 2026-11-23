@@ -58,10 +58,11 @@ class _Ops:
 
     def add(self, ops: Mapping[str, Mapping[str, Any]]) -> None:
         for op, d in ops.items():
-            a = self.ops.setdefault(op, {"files": 0, "det": 0, "ai": 0, **dict.fromkeys(FATES, 0),
+            a = self.ops.setdefault(op, {"files": 0, "det": 0, "ai": 0, "ops_applied": 0,
+                                         **dict.fromkeys(FATES, 0),
                                          **{k: Counter() for k in REASONED}})
             a["files"] += 1
-            for k in ("det", "ai", *FATES):
+            for k in ("det", "ai", "ops_applied", *FATES):
                 a[k] += int(d.get(k) or 0)
             for k in REASONED:
                 a[k].update(d.get(k) or {})
@@ -69,7 +70,7 @@ class _Ops:
     def result(self) -> dict[str, dict[str, Any]]:
         out = {}
         for op, a in sorted(self.ops.items(), key=lambda kv: -(kv[1]["det"] + kv[1]["ai"])):
-            out[op] = {**{k: a[k] for k in ("files", "det", "ai", *FATES)},
+            out[op] = {**{k: a[k] for k in ("files", "det", "ai", "ops_applied", *FATES)},
                        **{k: sum(a[k].values()) for k in REASONED},
                        **{f"{k}_reasons": _top(a[k]) for k in REASONED}}
         return out
@@ -236,11 +237,12 @@ def render_markdown(t: Mapping[str, Any]) -> str:
                     f"open site kinds at stop (files): {_cell(b['open_sites']['files_with_kind'], 8)}; "
                     f"{b['open_sites']['total_sites']} sites open in all"]
         if b["ops"]:
-            out += ["", "| op | files | proposed det | proposed ai | evaluated | declined | failed | invalid | duplicate "
-                        "| skipped (budget) | top declined | top failed | top invalid |",
-                    "|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
+            out += ["", "| op | files | proposed det | proposed ai | ops charged | evaluated | declined | failed "
+                        "| invalid | duplicate | skipped (budget) | top declined | top failed | top invalid |",
+                    "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
             for op, o in b["ops"].items():
-                out.append(f"| {op} | {o['files']} | {o['det']} | {o['ai']} | {o['evaluated']} | {o['declined']} "
+                out.append(f"| {op} | {o['files']} | {o['det']} | {o['ai']} | {o['ops_applied']} "
+                           f"| {o['evaluated']} | {o['declined']} "
                            f"| {o['failed']} | {o['invalid']} | {o['duplicate']} | {o['skipped_budget']} "
                            f"| {_cell(o['declined_reasons'], 1)} | {_cell(o['failed_reasons'], 1)} "
                            f"| {_cell(o['invalid_reasons'], 1)} |")

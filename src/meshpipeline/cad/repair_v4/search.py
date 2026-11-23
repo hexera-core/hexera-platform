@@ -23,10 +23,17 @@ than its parent as the cheap tier says". Only fully confirmed states can become 
 delivered). A generator or judge call that raises is recorded in the trace and skipped; it never
 discards the best state found so far.
 
-Budget. `ops` counts op applications (one per validated candidate that is run); `wall_s` is
-elapsed time; `model_calls` / `model_usd` are read from generators that expose
-`model_usage() -> (calls, usd)` (cumulative). `wall_s` and `ops` stop the search, checked before
-every expansion; `ops` also truncates a batch so it is never overrun. Reaching `model_calls` or
+Budget. `ops` counts APPLIED OPS, not candidates (Task 53): a candidate is charged what the op
+library actually applied for it - one for a plain op, and for a `run_stage` macro the length of the
+chain its body ran (`shells` without a solid is sew + make_volume, so two). A candidate that is run
+but applies nothing (it declined or failed) still costs the attempt, one. The same rule holds for
+every generator, deterministic and AI alike, so `search_ai - search_det` measures judgement and not
+which arm happened to route through a multi-op stage. `wall_s` is elapsed time; `model_calls` /
+`model_usd` are read from generators that expose `model_usage() -> (calls, usd)` (cumulative).
+`wall_s` and `ops` stop the search, checked before every expansion; `ops` also truncates a batch to
+the ops still unspent, which bounds but no longer strictly caps the total: a chain's real length is
+known only after its body ran, so one expansion may finish a few ops over `budget.ops`. The overrun
+is reported as spent and the next expansion stops the search. Reaching `model_calls` or
 `model_usd` does NOT stop it: the generators that expose `model_usage` are dropped, the search goes
 on deterministic-only, and the result is marked `ai_capped`. A cap of 0 therefore means "no AI",
 which is how the deterministic-only arm runs. Patience is the
@@ -48,7 +55,9 @@ Wiring (Task 18b).
     it, applies the state's own sites to the copy, and hands that copy to the children it makes. Every
     registry therefore only ever sees one root-to-state path, however the frontier jumps between branches.
   * STAGES. `Candidate(op="run_stage", targets=[], params={"stage": name, "params": {...}})` is routed to
-    `stages.run_stage`; it is one candidate (one op of budget) and one state.
+    `stages.run_stage`; it is one candidate and one state, but costs the op budget every op its body
+    applied (`StagedResult.applied_ops`), including the ops of a stage that was rolled back or whose chain
+    broke halfway: that kernel work was really done.
   * VIEWS. For a model generator, sites of the kinds the proposer shows pictures for are drawn once with
     `render.view(pool, ws, site)`.
   * STOP REASON. `SearchResult.ai_stop_reason` is the proposer's own reason (`file_ceiling`, `input_too_large`,
@@ -193,6 +202,9 @@ class SearchState:
     #: score from the cheap tier (None when unknown); with `rank`, see the module docstring
     cheap_score: Score | None = None
     rank: Score | None = None
+    #: how many ops `via` actually applied to reach this state: 1 for a plain op, the chain's length for a
+    #: `run_stage` macro. What the op budget was charged for this step (`SearchResult.path_steps` reports it).
+    ops_applied: int = 1
 
 
 class Generator(Protocol):
@@ -317,8 +329,9 @@ class SearchResult:
     ai_stop_reason: str | None = None
     #: `AIProposer.result()` of each proposer in the search (spend, turns, reason)
     ai: list[dict] = field(default_factory=list)
-    #: the winning path, one entry per op from the start to `best`: `{"via": the candidate, "sites": the PARENT
-    #: state's sites}` - what `recipes.recipe_from_path` turns into a recipe when the file ends clean
+    #: the winning path, one entry per candidate from the start to `best`: `{"via": the candidate, "sites": the
+    #: PARENT state's sites, "ops": the ops that candidate applied (1 unless it was a multi-op `run_stage`)}` -
+    #: what `recipes.recipe_from_path` turns into a recipe when the file ends clean
     path_steps: list[dict] = field(default_factory=list)
     #: why the search stopped: "clean", "patience", "exhausted", a budget reason, or "no_verdict" (nothing was
     #: measured: see `infrastructure_failed`)
@@ -763,6 +776,11 @@ class _Outcome:
     #: the cheap-tier score of `verdict` (computed where the verdict is, so a raising `score` stays in the branch)
     score: Score | None = None
     diffs: list[Diff] = field(default_factory=list)
+    #: how many ops the op library ACTUALLY applied for this candidate: 1 for a plain op, and for a
+    #: `run_stage` macro whatever its body applied (`StagedResult.applied_ops`), which is 2 or more for a
+    #: chain. This is what the op budget is charged (`max(1, applied)`); it is never derived from the op or
+    #: stage NAME, so a stage body that changes cannot leave a stale cost behind.
+    applied: int = 0
 
 
 def _validate(c: Candidate, ws: Workspace) -> list[str]:
@@ -792,16 +810,23 @@ def _stage_outcome(pool: Any, ws: Workspace, c: Candidate, gi: int, timeout_s: f
     name = c.params["stage"]
     base = ws.fork()
     result = run_stage(pool, base, name, {"timeout_s": timeout_s, **c.params.get("params", {})})
+    # the ops the stage body really applied, however it ended: a rolled-back or half-applied chain did
+    # that kernel work too, and the budget is charged for work, not for outcome
+    applied = int(result.applied_ops.get(name, 0))
     if name in result.inconclusive:
-        return _Outcome(c, gi, "inconclusive", [f"inconclusive: stage {name!r} could not be judged (checker unavailable)"])
+        return _Outcome(c, gi, "inconclusive",
+                        [f"inconclusive: stage {name!r} could not be judged (checker unavailable)"],
+                        applied=applied)
     if name in result.rolled_back:
-        return _Outcome(c, gi, "declined", [f"stage {name!r} was rolled back: it lowered the cheap score"])
+        return _Outcome(c, gi, "declined", [f"stage {name!r} was rolled back: it lowered the cheap score"],
+                        applied=applied)
     if name in result.skipped:
-        return _Outcome(c, gi, "declined", [f"stage {name!r} changed nothing: {result.skipped[name]}"])
+        return _Outcome(c, gi, "declined", [f"stage {name!r} changed nothing: {result.skipped[name]}"],
+                        applied=applied)
     diffs = result.ws.history[len(base.history) :]
     if result.ws is base or not diffs:
-        return _Outcome(c, gi, "declined", [f"stage {name!r} changed nothing"])
-    return _Outcome(c, gi, "ok", ws=result.ws, diffs=list(diffs))
+        return _Outcome(c, gi, "declined", [f"stage {name!r} changed nothing"], applied=applied)
+    return _Outcome(c, gi, "ok", ws=result.ws, diffs=list(diffs), applied=applied)
 
 
 def _one_diff(c: Candidate, diffs: list[Diff]) -> Diff | None:
@@ -1206,6 +1231,9 @@ def search(
                 _record_candidate(trace, state, c, "skipped_budget")
                 fates.append((gi, _Outcome(c, gi, "declined", ["not run: the op budget was exhausted"]), None, False))
             to_run = valid[:room]
+            # ONE op reserved per candidate that is about to run: the attempt is charged even when the op
+            # declines or fails (its kernel work was still done). What a candidate applied BEYOND that one op
+            # is charged below, once the outcomes are known.
             spent["ops"] += len(to_run)
 
             # apply on forks and take the cheap verdict, in parallel
@@ -1216,11 +1244,12 @@ def search(
             ) -> _Outcome:
                 gi, c = item
                 try:
+                    applied = 1  # a plain op applies exactly one op; a stage says how many it applied
                     if c.op == RUN_STAGE:
                         out = _stage_outcome(pool, state.ws, c, gi, timeout_s)
                         if out.kind != "ok":
                             return out
-                        new, diffs = out.ws, out.diffs
+                        new, diffs, applied = out.ws, out.diffs, out.applied
                     else:
                         new, diff = REGISTRY[c.op].apply(
                             pool, state.ws.fork(), list(c.targets), dict(c.params), timeout_s=timeout_s
@@ -1228,7 +1257,7 @@ def search(
                         diffs = [diff]
                     assert new is not None
                     v, sc = judge_cheap(new)
-                    return _Outcome(c, gi, "ok", ws=new, verdict=v, score=sc, diffs=diffs)
+                    return _Outcome(c, gi, "ok", ws=new, verdict=v, score=sc, diffs=diffs, applied=applied)
                 except OpDeclined as exc:
                     return _Outcome(c, gi, "declined", [exc.reason])
                 except OpFailed as exc:
@@ -1242,21 +1271,32 @@ def search(
                     return _Outcome(c, gi, "error", [f"{type(exc).__name__}: {exc}"])
 
             children: list[SearchState] = []
-            for out in [f.result() for f in [executor.submit(evaluate, i) for i in to_run]]:
+            evaluated = [f.result() for f in [executor.submit(evaluate, i) for i in to_run]]
+            # THE BUDGET IS CHARGED PER APPLIED OP (Task 53). A candidate that applied k ops costs k, for
+            # every generator: a `run_stage` macro whose body is a chain (shells = sew + make_volume) must not
+            # buy k ops of geometry for the price of one, or `search_ai - search_det` measures routing rather
+            # than judgement. One op was reserved per candidate above, so only the excess is added here. k is
+            # only known after the body ran, so the total may finish just over `budget.ops`; the overrun is at
+            # most one chain, it is reported as spent, and the next expansion stops the search.
+            spent["ops"] += sum(max(0, o.applied - 1) for o in evaluated)
+            for out in evaluated:
                 if out.kind == "ok":
                     n_verdicts += 1
                 if out.kind == "inconclusive":
                     n_inconclusive += 1
-                    _record_candidate(trace, state, out.candidate, "inconclusive", errors=out.errors)
+                    _record_candidate(trace, state, out.candidate, "inconclusive", errors=out.errors,
+                                      ops_applied=out.applied)
                     continue  # not a rejection and no fate: the generator is not told its candidate failed
                 if out.kind != "ok":
-                    _reject(trace, rejections, state, out.gen, out.candidate, out.kind, out.errors)
+                    _reject(trace, rejections, state, out.gen, out.candidate, out.kind, out.errors,
+                            ops_applied=out.applied)
                     fates.append((out.gen, out, None, False))
                     continue
                 assert out.ws is not None and out.score is not None
                 fp = _fingerprint(out.ws)
                 if fp in seen:
-                    _record_candidate(trace, state, out.candidate, "duplicate", score=out.score)
+                    _record_candidate(trace, state, out.candidate, "duplicate", score=out.score,
+                                      ops_applied=out.applied)
                     fates.append((out.gen, out, None, True))
                     continue
                 seen.add(fp)
@@ -1266,6 +1306,7 @@ def search(
                 )
                 child.cheap_score = child.score
                 child.rank = _estimate(state, child.score)
+                child.ops_applied = out.applied
                 _record_candidate(
                     trace,
                     state,
@@ -1275,6 +1316,7 @@ def search(
                     score=child.score,
                     parent_score=state.score,
                     rank=child.rank,
+                    ops_applied=out.applied,
                 )
                 children.append(child)
                 fates.append((out.gen, out, child, False))
@@ -1431,9 +1473,10 @@ def _reject(
     c: Candidate,
     stage: str,
     errors: list[str],
+    ops_applied: int = 0,
 ) -> None:
     rejections.setdefault(gi, []).append(Rejection(c, stage, errors, state.id))  # type: ignore[arg-type]
-    _record_candidate(trace, state, c, "rejected", stage=stage, errors=errors)
+    _record_candidate(trace, state, c, "rejected", stage=stage, errors=errors, ops_applied=ops_applied)
 
 
 def _path_steps(by_id: dict[str, SearchState], best: SearchState) -> list[dict]:
@@ -1442,7 +1485,8 @@ def _path_steps(by_id: dict[str, SearchState], best: SearchState) -> list[dict]:
     node: SearchState | None = best
     while node is not None and node.parent is not None and node.via is not None:
         parent = by_id.get(node.parent)
-        steps.append({"via": dict(node.via), "sites": list(parent.sites) if parent is not None else []})
+        steps.append({"via": dict(node.via), "sites": list(parent.sites) if parent is not None else [],
+                      "ops": node.ops_applied})
         node = parent
     return steps[::-1]
 

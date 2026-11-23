@@ -272,11 +272,12 @@ def test_search_triage_counts_each_fate_and_keeps_the_top_reasons() -> None:
 
     t = Trace()
     t.record("expand", state="s0", sites=[{"kind": "open"}, {"kind": "open"}, {"kind": "proximity"}])
-    for outcome, extra in (("evaluated", {}), ("duplicate", {}), ("rejected", {"stage": "declined", "errors": ["fill_too_large: span 9 mm"]}),
+    for outcome, extra in (("evaluated", {"ops_applied": 1}), ("duplicate", {}), ("rejected", {"stage": "declined", "errors": ["fill_too_large: span 9 mm"]}),
                            ("rejected", {"stage": "failed", "errors": ["timeout: worker killed"]}),
                            ("rejected", {"stage": "validate", "errors": ["F9 removed"]}), ("skipped_budget", {})):
         t.record("candidate", state="s0", outcome=outcome, op="fill_loop", source="det", params={}, **extra)
-    t.record("candidate", state="s0", outcome="evaluated", op="run_stage", source="ai", params={"stage": "shells"})
+    t.record("candidate", state="s0", outcome="evaluated", op="run_stage", source="ai", params={"stage": "shells"},
+             ops_applied=2)
     t.record("stop", reason="ops", ended_by="ops", best="s0", spent={"ops": 6})
     gen = SimpleNamespace(skipped={"no_solid": 2})
     res = SimpleNamespace(trace=t, ai=[], ai_capped=False, ai_stop_reason=None)
@@ -288,6 +289,8 @@ def test_search_triage_counts_each_fate_and_keeps_the_top_reasons() -> None:
     assert f["declined"] == {"fill_too_large: span 9 mm": 1} and f["failed"] == {"timeout: worker killed": 1}
     assert f["invalid"] == {"F9 removed": 1}
     assert s["ops"]["run_stage:shells"]["ai"] == 1
+    # one candidate, but the chain it ran cost two ops of budget (Task 53); a plain op costs one each
+    assert s["ops"]["run_stage:shells"]["ops_applied"] == 2 and f["ops_applied"] == 1
     assert s["not_proposed"] == {"no_solid": 2} and s["ai"] is None
 
 

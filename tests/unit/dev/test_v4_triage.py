@@ -53,13 +53,15 @@ def search_part(reason: str, sites: dict, ops: dict, *, ai: dict | None = None, 
                        "open_sites_at": "best", "ops": ops, "not_proposed": not_proposed or {}, "ai": ai}}
 
 
-def op(det=0, ai=0, evaluated=0, declined=None, failed=None, invalid=None, **kw) -> dict:
-    return {"det": det, "ai": ai, "evaluated": evaluated, "duplicate": 0, "inconclusive": 0, "skipped_budget": 0,
+def op(det=0, ai=0, evaluated=0, declined=None, failed=None, invalid=None, ops_applied=0, **kw) -> dict:
+    return {"det": det, "ai": ai, "evaluated": evaluated, "ops_applied": ops_applied, "duplicate": 0,
+            "inconclusive": 0, "skipped_budget": 0,
             "declined": declined or {}, "failed": failed or {}, "invalid": invalid or {}, **kw}
 
 
 def test_triage_aggregates_why_outputs_are_not_clean() -> None:
-    fill = op(det=2, evaluated=1, declined={"fill_too_large: span 9 mm": 1})
+    # ops_applied is the BUDGET cost (applied ops), not the candidate count: a run_stage chain charges more
+    fill = op(det=2, evaluated=1, ops_applied=1, declined={"fill_too_large: span 9 mm": 1})
     rows = [
         row(1, "search_ai", t={**verdict_part([("netgen", "overlapping_facets"), ("gmsh_alt", "plc")], 0.4),
                                 **search_part("patience", {"open": 2, "proximity": 1}, {"fill_loop": fill},
@@ -107,7 +109,9 @@ def test_triage_aggregates_why_outputs_are_not_clean() -> None:
     assert leads[("search_ai", "panel member still failing")]["key"] == "netgen: overlapping_facets"
     assert leads[("search_ai", "op declined")]["key"] == "fill_loop: fill_too_large: span 9 mm"
     md = triage.render_markdown(t)
-    for needle in ("## Leads", "## search_ai", "| fill_loop | 2 | 4 | 0 | 2 | 2 |", "netgen", "1 not-clean row(s) carry NO",
+    assert ai["ops"]["fill_loop"]["ops_applied"] == 2  # one applied op per file, summed over the two files
+    for needle in ("## Leads", "## search_ai", "| fill_loop | 2 | 4 | 0 | 2 | 2 | 2 |", "ops charged",
+                   "netgen", "1 not-clean row(s) carry NO",
                    "AI on 2 not-clean files: 6 turns, 1 tool errors", "stages kept"):
         assert needle in md, needle
 

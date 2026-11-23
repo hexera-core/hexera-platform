@@ -277,7 +277,11 @@ MAX_CHECKPOINT_WAVES = 3
 class Budget:
     """What ONE file may cost one arm. wall and ops are shared by every arm so that an arm's win is not a
     bigger budget; `model_usd` is the model arm's extra, reported separately (AI marginal at equal wall
-    and ops)."""
+    and ops).
+
+    `ops` counts APPLIED OPS, not candidates: a `run_stage` candidate is charged every op its stage body
+    applied (`search.Budget`, Task 53), so neither arm can buy a chain of geometry work for one budget
+    unit by routing through a multi-op stage."""
 
     wall_s: float = 600.0
     ops: int = 60

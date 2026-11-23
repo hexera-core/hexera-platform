@@ -539,7 +539,8 @@ def build_parser() -> argparse.ArgumentParser:
                              "`auto` derives it per part (search.h_mm_for: a tenth of the diagonal, the production "
                              "base size): one fixed size is wrong on a panel spanning 10 mm to 10 m")
     parser.add_argument("--ops", type=int, default=None,
-                        help="op budget per file for every arm (default: the arm's own, evalspec.Budget.ops)")
+                        help="budget of APPLIED ops per file for every arm; a run_stage candidate costs every op "
+                             "its stage applied (default: the arm's own, evalspec.Budget.ops)")
     parser.add_argument("--model-usd-cap", type=float, default=None,
                         help="LOWER this shard's ledger cap to this many dollars (never raises it)")
     parser.add_argument("--file-usd-cap", type=float, default=None,

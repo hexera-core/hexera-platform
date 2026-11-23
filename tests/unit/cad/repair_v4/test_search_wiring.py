@@ -1027,10 +1027,11 @@ def test_a_mixed_search_reports_both_counts_and_is_not_infrastructure_failed() -
 
 def test_a_stage_the_checker_could_not_judge_is_inconclusive_not_failed(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(search, "run_stage", lambda pool, ws, name, params: SimpleNamespace(
-        inconclusive=[name], rolled_back={}, skipped={}, ws=ws))
+        inconclusive=[name], rolled_back={}, skipped={}, ws=ws, applied_ops={name: 2}))
     c = Candidate(op=search.RUN_STAGE, targets=[], params={"stage": "finalise"}, source="det")
     out = search._stage_outcome(None, make_ws(0), c, 0, 1.0)
     assert out.kind == "inconclusive"
+    assert out.applied == 2  # an unjudged stage still ran its ops; they are still charged
 
 
 # --- Task 22d: pictures reach the proposer, cost nothing when nobody looks, and are never a verdict ----------------
@@ -1184,3 +1185,66 @@ def test_search_gives_the_deterministic_sweep_the_parts_diagonal() -> None:
         wall_s=30.0, ops=2, model_calls=0, model_usd=0.0))
     assert "ws_diagonal" in calls
     assert gen.notes == [], gen.notes  # a diagonal was found: nothing was withheld
+
+
+# --- Task 53: the op budget is charged per APPLIED op, for every arm --------------------------------------------
+
+
+class ChainStep:
+    """One op of a stage body: appends its own diff and makes the state one step better."""
+
+    params_schema: dict = {"type": "object", "x-targets": {"kind": "face", "min": 0}}
+
+    def __init__(self, name: str, applied: list[str]) -> None:
+        self.name, self.applied = name, applied
+
+    def applies_to(self, site: Site) -> bool:
+        return True
+
+    def apply(self, pool: Any, ws: Workspace, targets: list[str], params: dict, *, timeout_s: float):
+        self.applied.append(self.name)
+        diff = Diff(op=self.name, params=params, modified={}, generated={}, removed=[], declared_added=[],
+                    declared_removed=[], seconds=0.0)
+        return make_ws(_q(ws) + 1, ids=tuple(ws.ids), history=[*ws.history, diff]), diff
+
+
+@pytest.fixture
+def sewing_ops(monkeypatch: pytest.MonkeyPatch, stage_world: list[Any]) -> list[str]:
+    """`shells` on a part with no solid: sew THEN make_volume, two ops for one candidate."""
+    applied: list[str] = []
+    for name in ("sew", "make_volume"):
+        monkeypatch.setitem(REGISTRY, name, ChainStep(name, applied))  # type: ignore[arg-type]
+    return applied
+
+
+def _shells_candidate() -> Candidate:
+    # an explicit ladder so the stage never needs the kernel's diagonal
+    return Candidate("run_stage", [], {"stage": "shells", "params": {"tol_ladder": [0.01]}}, "det")
+
+
+def test_a_multi_op_stage_costs_its_real_applied_op_count(sewing_ops: list[str]) -> None:
+    g = Scripted(lambda s: [_shells_candidate()] if s.depth == 0 else [])
+    r = run([g], World(), start=make_ws(0, ids=("F1", "F2")))
+    assert sewing_ops == ["sew", "make_volume"]
+    assert r.trace.of_kind("stop")[0]["spent"]["ops"] == 2
+    [ev] = [e for e in r.trace.of_kind("candidate") if e["outcome"] == "evaluated"]
+    assert ev["ops_applied"] == 2
+    assert r.path_steps[-1]["ops"] == 2
+
+
+def test_a_single_op_candidate_still_costs_one(stage_world: list[Any]) -> None:
+    g = Scripted(lambda s: [cand(1)] if s.depth == 0 else [])
+    r = run([g], World(), start=make_ws(0))
+    assert r.trace.of_kind("stop")[0]["spent"]["ops"] == 1
+    [ev] = [e for e in r.trace.of_kind("candidate") if e["outcome"] == "evaluated"]
+    assert ev["ops_applied"] == 1
+
+
+def test_the_op_budget_counts_the_chain_and_stops_the_search(sewing_ops: list[str]) -> None:
+    """Two chain candidates are four ops, not two: a budget of three ends the search, and what it
+    reports as spent is the op count, in the same units the budget is written in."""
+    g = Scripted(lambda s: [_shells_candidate(), _shells_candidate()] if s.depth == 0 else [])
+    r = run([g], World(), start=make_ws(0, ids=("F1", "F2")),
+            budget=Budget(wall_s=1000, ops=3, model_calls=0, model_usd=0))
+    stop = r.trace.of_kind("stop")[0]
+    assert stop["reason"] == "ops" and stop["spent"]["ops"] == 4

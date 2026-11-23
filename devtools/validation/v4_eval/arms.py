@@ -315,9 +315,12 @@ def search_triage(result: Any, generators: Any) -> dict[str, Any]:
         op = str(e.get("op"))
         if op == "run_stage":
             op = f"run_stage:{(e.get('params') or {}).get('stage')}"
-        d = ops.setdefault(op, {"det": 0, "ai": 0, **dict.fromkeys(_COUNTED, 0),
+        d = ops.setdefault(op, {"det": 0, "ai": 0, "ops_applied": 0, **dict.fromkeys(_COUNTED, 0),
                                 "declined": Counter(), "failed": Counter(), "invalid": Counter()})
         d[e.get("source") if e.get("source") in ("det", "ai") else "det"] += 1
+        # what this op cost the op budget, not how many candidates named it: a `run_stage` macro applies a
+        # CHAIN, and since Task 53 the budget is charged per applied op (search records `ops_applied`).
+        d["ops_applied"] += int(e.get("ops_applied") or 0)
         outcome = e.get("outcome")
         if outcome in _COUNTED:
             d[outcome] += 1
