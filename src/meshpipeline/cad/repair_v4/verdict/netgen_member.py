@@ -241,7 +241,7 @@ def member_result(
             code = rec.get("returncode")
             if code == -int(signal.SIGKILL):
                 kind, cause = panel.sigkill_verdict(kills, skipped)
-                return result("crashed", kind, message, cause=cause)
+                return result("crashed", kind if kind == INFRASTRUCTURE_KIND else "netgen_crash", message, cause=cause)
             if isinstance(code, int) and code < 0:
                 kind, cause = panel.signal_verdict(-code)
                 return result("crashed", kind if kind == INFRASTRUCTURE_KIND else "netgen_crash", message, cause=cause)

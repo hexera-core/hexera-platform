@@ -94,11 +94,14 @@ def _panel_module() -> Any:
 
 
 def default_members(tier: Literal["cheap", "full"]) -> list[Any]:
-    """Cheap: GmshDefault only. Full: every member the panel defines (Task 4 adds Netgen here)."""
+    """Cheap: GmshDefault only, deliberately. Full: the four-mesher panel the clean-STEP definition
+    names - gmsh prod FEA, gmsh defaults, gmsh alt and Netgen-via-OCC. Netgen is the only non-gmsh
+    member, so it is what makes a full verdict mesher-agnostic."""
     members = importlib.import_module("meshpipeline.cad.repair_v4.verdict.gmsh_members")
     if tier == "cheap":
         return [members.GmshDefault()]
-    return [members.GmshProd(), members.GmshDefault(), members.GmshAlt()]
+    netgen = importlib.import_module("meshpipeline.cad.repair_v4.verdict.netgen_member")
+    return [members.GmshProd(), members.GmshDefault(), members.GmshAlt(), netgen.NetgenOCC()]
 
 
 def _assemble(

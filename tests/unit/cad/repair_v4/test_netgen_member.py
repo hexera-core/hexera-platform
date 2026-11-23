@@ -50,6 +50,60 @@ def _run(*answers: CallResult | dict, timeout_s: float = 100.0):
     return NetgenOCC().run(pool, "/x.step", timeout_s=timeout_s), pool  # type: ignore[arg-type]
 
 
+# ---- the full tier holds a non-gmsh mesher ---------------------------------------------------------
+
+
+def test_the_full_tier_contains_a_non_gmsh_member_and_the_cheap_tier_does_not() -> None:
+    from meshpipeline.cad.repair_v4.verdict import assemble
+
+    # By module, not by count: a fourth gmsh profile must not be able to stand in for Netgen.
+    full = assemble.default_members("full")
+    non_gmsh = [m for m in full if "gmsh" not in type(m).__module__.rsplit(".", 1)[-1]]
+    assert [type(m) for m in non_gmsh] == [NetgenOCC]
+    assert {type(m).__module__ for m in full} >= {
+        "meshpipeline.cad.repair_v4.verdict.gmsh_members",
+        "meshpipeline.cad.repair_v4.verdict.netgen_member",
+    }
+    assert [type(m) for m in full] == [GmshProd, GmshDefault, GmshAlt, NetgenOCC]
+    assert [type(m) for m in assemble.default_members("cheap")] == [GmshDefault]
+    # every member carries a config, so the cache can key the whole panel
+    hash_a = panel_config_hash(full, 300.0, {"gmsh": "1"})
+    assert len({json.dumps(m.config, sort_keys=True) for m in full}) == len(full) == 4
+    assert hash_a == panel_config_hash(assemble.default_members("full"), 300.0, {"gmsh": "1"})
+
+
+# ---- the argv reaches Netgen --------------------------------------------------------------------------
+
+
+def _capture_argv(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
+    from meshpipeline.cad.repair_v4.verdict import netgen_member as nm
+
+    seen: list[list[str]] = []
+
+    def fake_run(argv, **kwargs):  # noqa: ANN001, ANN003
+        seen.append(list(argv))
+        return subprocess.CompletedProcess(argv, 0, stdout='NETGEN_RESULT {"ok": true}\n', stderr="")
+
+    monkeypatch.setattr(nm, "netgen_python", lambda: "/fake/python")
+    monkeypatch.setattr(nm.subprocess, "run", fake_run)
+    nm._run_netgen("/x.step", "/out.msh", 5.0)
+    return seen
+
+
+def test_the_size_divisor_and_glue_are_passed_to_netgen_not_merely_declared(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen = _capture_argv(monkeypatch)
+    assert seen[0][-2:] == ["10.0", "glue"]
+    assert seen[0][2:4] == ["/x.step", "/out.msh"]
+
+
+def test_turning_glue_off_and_resizing_reach_netgen_too(monkeypatch: pytest.MonkeyPatch) -> None:
+    from meshpipeline.cad.repair_v4.verdict import netgen_member as nm
+
+    monkeypatch.setattr(nm, "GLUE_TOUCHING_SOLIDS", False)
+    monkeypatch.setattr(nm, "MAXH_DIVISOR", 25.0)
+    assert _capture_argv(monkeypatch)[0][-2:] == ["25.0", "noglue"]
+
+
 # ---- config ------------------------------------------------------------------------------------------
 
 
@@ -135,10 +189,26 @@ def test_netgens_own_subprocess_timeout_follows_the_same_ruling() -> None:
     assert len(pool.calls) == 1
 
 
+def test_a_single_pool_timeout_with_the_retry_spent_is_infrastructure_on_the_run_branch() -> None:
+    # `run`'s own timeout branch (a pool-level timeout), not `member_result`: with no retry left, ONE
+    # timeout is not the file's. A constant "netgen_timeout" there would be the fail-open.
+    with panel.retry_budget(0):
+        spent, pool = _run(POOL_TIMEOUT)
+    assert (spent.status, spent.error_kind, spent.cause) == ("timeout", INFRASTRUCTURE_KIND, "timeout_retry_spent")
+    assert len(pool.calls) == 1
+    assert INFRASTRUCTURE_KIND == "infrastructure"
+
+
+def test_a_sigterm_is_infrastructure() -> None:
+    result, _ = _run({"ok": False, "stage": "crash", "returncode": -15, "error": "terminated"})
+    assert (result.status, result.error_kind, result.cause) == ("crashed", "infrastructure", "signal_15")
+
+
 def test_a_sigkill_once_is_infrastructure_twice_is_the_files() -> None:
     assert _run(SIGKILLED, PASS)[0].status == "pass"
     twice, pool = _run(SIGKILLED, SIGKILLED)
-    assert (twice.status, twice.error_kind, twice.cause) == ("crashed", panel.MESHER_CRASH_KIND, "sigkill_twice")
+    # the literal, not the constant the implementation reads: this is Netgen, so it is NOT `gmsh_crash`
+    assert (twice.status, twice.error_kind, twice.cause) == ("crashed", "netgen_crash", "sigkill_twice")
     assert [c[2] for c in pool.calls] == [100.0, 100.0]  # a kill is re-run at the same budget
     with panel.retry_budget(0):
         spent, _ = _run(SIGKILLED)
