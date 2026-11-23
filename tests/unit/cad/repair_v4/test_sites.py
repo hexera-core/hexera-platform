@@ -1,16 +1,16 @@
 # Responsibility: Verify failure-site detection and the proposer's observation, hermetically: how
 #                 located failures cluster into sites, which warnings attach, what the model is told.
 # Boundaries: hermetic - a scripted pool stands in for the kernel workers (boxes are a table);
-#             MemberResult and Located are the real panel classes, the Verdict a local stand-in.
+#             MemberResult and Located are the real panel classes, the Verdict the real one.
 #             The geometry itself is proved in tests/native/test_native_repair_v4_sites.py.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
 from typing import Any
 
 from meshpipeline.cad.repair_v4.sites import OBSERVATION_MAX_BYTES, find_sites, observation
 from meshpipeline.cad.repair_v4.types import Site
+from meshpipeline.cad.repair_v4.verdict.assemble import Verdict
 from meshpipeline.cad.repair_v4.verdict.panel import Located, MemberResult
 from meshpipeline.cad.repair_v4.verdict.valid import Finding, ValidReport
 from meshpipeline.cad.repair_v4.worker_pool import CallResult
@@ -19,13 +19,10 @@ from meshpipeline.cad.repair_v4.workspace import Workspace
 H = 1.0
 
 
-@dataclass(frozen=True)
-class Verdict:
-    valid: ValidReport
-    panel: list[MemberResult]
-    faithful: Any = None
-    clean: bool = False
-    tier: str = "fail"
+def _real_verdict(valid: ValidReport, panel: list[MemberResult], faithful: Any = None) -> Verdict:
+    """The real Verdict; the production class has no defaults on purpose (a defaulted `clean` would let
+    forgetting it read as unclean), so the test says them."""
+    return Verdict(valid, panel, faithful, False, "cheap")
 
 
 def _ok(value: dict) -> CallResult:
@@ -96,7 +93,7 @@ def _valid(*, hard=(), soft=()) -> ValidReport:
 
 
 def _verdict(*members: MemberResult, hard=(), soft=()) -> Verdict:
-    return Verdict(_valid(hard=hard, soft=soft), list(members))
+    return _real_verdict(_valid(hard=hard, soft=soft), list(members))
 
 
 def _fail(name: str, kind: str, *located: Located) -> MemberResult:
@@ -374,13 +371,13 @@ def test_oversize_base_is_flagged_and_caller_fields_are_bounded() -> None:
     ws = _ws()
     huge = {"blob": "x" * 500_000}
     members = [MemberResult(f"m{i}", "fail", "other", "m" * 400, []) for i in range(900)]
-    verdict = Verdict(_valid(), members, faithful=huge)
+    verdict = _real_verdict(_valid(), members, huge)
     obs = observation(ws, verdict, [], {"note": "y" * 500_000})
     assert obs["oversize"] is True and obs["trimmed"] is True
     assert len(json.dumps(obs).encode()) < 60_000
     small = observation(ws, _verdict(MemberResult("gmsh", "pass")), [], {"usd": 1})
     assert "oversize" not in small and small["trimmed"] is False
-    assert "truncated" in observation(ws, Verdict(_valid(), [], faithful=huge), [], {})["faithful"]
+    assert "truncated" in observation(ws, _real_verdict(_valid(), [], huge), [], {})["faithful"]
 
 
 def test_unknown_error_kind_is_pinned_to_invalid() -> None:

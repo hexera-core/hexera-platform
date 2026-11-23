@@ -3,6 +3,7 @@
 #             WorkerPool process and reaches Netgen through its isolated interpreter.
 from __future__ import annotations
 
+import ast
 import subprocess
 from collections.abc import Iterator
 from pathlib import Path
@@ -19,7 +20,7 @@ from OCP.STEPControl import STEPControl_AsIs, STEPControl_Writer
 from OCP.TopoDS import TopoDS_Compound
 
 from meshpipeline.cad.repair_v4.verdict.mesh_child import MIN_SICN
-from meshpipeline.cad.repair_v4.verdict.netgen_member import NetgenOCC, netgen_python
+from meshpipeline.cad.repair_v4.verdict.netgen_member import NETGEN_PIN, NetgenOCC, netgen_python
 from meshpipeline.cad.repair_v4.verdict.panel import INFRASTRUCTURE_KIND
 from meshpipeline.cad.repair_v4.worker_pool import WorkerPool
 
@@ -59,12 +60,14 @@ def _box(x: float) -> object:
 def test_netgen_occ_interface_is_in_the_mesh_image() -> None:
     python = netgen_python()
     assert python is not None, "no netgen interpreter in this image"
-    done = subprocess.run(
-        [python, "-c", "import netgen.occ, netgen.config as c; print(c.version)"],
-        capture_output=True, text=True, timeout=120, check=False,
+    code = (
+        "import netgen.occ, importlib.metadata as m;"
+        "print({d: m.version(d) for d in ('netgen-mesher', 'netgen-occt')})"
     )
+    done = subprocess.run([python, "-c", code], capture_output=True, text=True, timeout=120, check=False)
     assert done.returncode == 0, done.stderr
-    assert "6.2.2608" in done.stdout.strip().splitlines()[-1]
+    # BOTH wheels, against the pin the cache key carries, not a literal that can drift from it
+    assert ast.literal_eval(done.stdout.strip().splitlines()[-1]) == NETGEN_PIN
 
 
 def test_box_passes(pool: WorkerPool, tmp_path: Path) -> None:
