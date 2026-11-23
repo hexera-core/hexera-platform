@@ -800,3 +800,16 @@ def test_unbounded_rows_do_not_get_the_full_panel() -> None:
     row = _row(1, "valid", "unbounded_geometry")
     ent = SimpleNamespace(name=row.name, sha256=row.sha256, source=row.source)
     assert rp.full_tier_entries([ent], [row]) == []
+
+
+def test_an_unbounded_input_is_a_counted_row_with_its_own_family_not_an_exclusion(layers) -> None:
+    """Neither `excluded` (that is for what was NOT measured and would trip the excluded-fraction limit) nor a
+    panel failure: a row whose family says what it is, and which no mesher ran for."""
+    layers["valid"] = ValidReport(False, [Finding("unbounded_geometry")], [], "mm", 1, False)
+    member = FakeMember("gmsh_default")
+    rows, excluded = _probe([Entry("a", _sha(1))], members=[member])
+    assert excluded == [] and member.runs == 0
+    (row,) = rows
+    assert (row.first_failing_layer, row.family) == ("valid", "unbounded_geometry")
+    assert row.verdict_summary["counts_for_scoreboard"] is True and row.verdict_summary["out_of_scope"] is True
+    assert row.verdict_summary["clean"] is False and rp.is_unbounded(row) and rp.is_counted(row)
