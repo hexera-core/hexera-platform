@@ -22,14 +22,14 @@ launch() { # name wave split splitfile wave_id n shard [docker-env...] -- [run_a
   ( sudo docker run --rm --name t49-$name -v $T/t49clone:/w:ro -v $T/inputs:/eval/inputs:ro -v $out:/eval/out \
       -v $T/ledger:/eval/ledger -w /w -e PYTHONPATH=/w/src "${denv[@]}" $IMG python devtools/validation/v4_eval/run_arm.py \
       --mode arms --h-mm auto --ops 24 --workers 1 --cache-uri $CACHE --commit $COMMIT --image $IMAGE_ID \
-      --machine-type c2d-standard-16 --wave $wave --wave-id $wid --split $split --split-file /w/$sfile \
+      --machine-type c2d-standard-16 --wave $wave --split $split --split-file /w/$sfile \
       --shard ${shard}/${n} --inputs /eval/inputs --out /eval/out --plan-provenance "$P" "$@" \
       > $T/out/$name.log 2>&1; echo $? > $T/out/$name.rc ) &
 }
 NOMODEL=(--)
 # the model wave first (so spend starts under observation); one shard, ledger + caps
-launch ai10 dev_search dev $SPL/PROVISIONAL_dev_ai10.json t49-ai10 1 1 --env-file $T/secret.env -- \
-  --wave-type normal --n-shards 1 --ledger-path /eval/ledger/ai10.jsonl --marker-bucket $B \
+launch ai10 dev_search dev $SPL/PROVISIONAL_dev_ai10.json t49-ai10b 1 1 --env-file $T/secret.env -- \
+  --wave-id t49-ai10b --wave-type normal --n-shards 1 --ledger-path /eval/ledger/ai10b.jsonl --marker-bucket $B \
   --model-usd-cap 5 --file-usd-cap 0.5
 for i in 1 2 3 4 5; do
   launch dev$i t2_smoke_dev dev $SPL/PROVISIONAL_dev.json t49-dev 5 $i --
