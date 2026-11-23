@@ -4,6 +4,7 @@
 // Owns: the held intake viewer, the divider and its stored width, the host the parts model is mounted in.
 // Boundaries: it draws nothing in 3D itself - the geometry stage and the parts view do - and it decides nothing
 // about the check or the notes. It only says where they are drawn and when the viewer goes.
+import { resetFacePick } from "./face_pick.js";
 
 /* THE WORKBENCH TAKEOVER, the same move the mesh viewer makes: with a workbench on the page the box fills it and
    the conversation becomes the drawer; without one it opens inline. Releasing gives the page back exactly as it
@@ -177,5 +178,6 @@ export function endIntake() {
   const h = held;
   held = null; partsEl = null;
   if (h) { try { h.release(); } catch (e) { console.warn("intake viewer: release failed", e); } }
+  resetFacePick();                // the faces picked on this part (and their chips) go with it
   splitOff();
 }

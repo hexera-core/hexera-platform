@@ -28,6 +28,7 @@ import { bindFeaPanel, bindMeasure, effectiveMeshAs, feaPanelHtml, followAssembl
   lightSpotRow, shellLegendHtml, shellMarks, showsShell, wallColour } from "../render/fea_form.js";
 import { bindThermalPanel, partDetails, thermalPanelHtml, watts } from "../render/thermal_form.js";
 import { circleThrough, clickIndex, firstHit, snapAt } from "./open_ends.js";
+import { attachView, bindStage, hitOn, isClick, pickAt, ready as facePickReady } from "./face_pick.js";
 import { b64f32, b64u32, loadVtk } from "./scene/vtk_load.js";
 import { mountCanvas } from "./scene/canvas.js";
 import { makeOverlay } from "./scene/overlay.js";
@@ -880,6 +881,17 @@ function initScene(sessionId, box, surf, p) {
     if (measuring) measureAt(e.clientX, e.clientY);
     else addAt(rayAt(e.clientX, e.clientY));
   }, true);
+  /* THE FACE PICK (viewer/face_pick.js): once the stage is settled, a plain click on the part names the face there
+     and lights it; adding an opening and measuring keep the click while they are on */
+  bindStage(sessionId, box);
+  const detachPick = attachView({ ren, rw });
+  let toolAtDown = false;              // read at the press: the click that ends adding an opening is not a pick
+  host.addEventListener("pointerdown", () => { toolAtDown = addMode || measuring; }, true);
+  host.addEventListener("pointerup", (e) => {
+    if (toolAtDown || addMode || measuring || !facePickReady() || e.button > 0 || !isClick(downXY, [e.clientX, e.clientY])) return;
+    if (e.target && e.target.closest && e.target.closest(".vm,.vm-group,.vt,.v-ov")) return;
+    pickAt(hitOn(clicksNow(), rayAt(e.clientX, e.clientY)));
+  }, true);
 
   /* MEASURING: two clicks on the part draw a thin line between them, a dot at each end and the
      distance beside it, in the unit the sizes are shown in. A click within a few pixels of a
@@ -1120,7 +1132,7 @@ function initScene(sessionId, box, surf, p) {
     background: () => ren.getBackground().slice(),
   };
   return {
-    stop: () => { watch.disconnect(); marks.stop(); overlay.stop(); canvas.ro.disconnect(); clearDecor(); clearMeasure(); document.removeEventListener("keydown", onKey); delete window._vdbg["gstage:" + sessionId]; },
+    stop: () => { detachPick(); watch.disconnect(); marks.stop(); overlay.stop(); canvas.ro.disconnect(); clearDecor(); clearMeasure(); document.removeEventListener("keydown", onKey); delete window._vdbg["gstage:" + sessionId]; },
     rebind, refresh: refreshExternal, setSpots, setShell, showShell,
   };
 }
