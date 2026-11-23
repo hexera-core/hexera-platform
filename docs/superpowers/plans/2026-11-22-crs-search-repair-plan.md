@@ -787,3 +787,45 @@ Both 3 and 4 were pinned with a test rather than guessed, which is why accepting
 4. The T2 smoke proceeds once Tasks 47 and 48 land.
 
 Recorded because the first three change what the benchmark measures, not merely how fast it runs.
+
+## Amendment settled 2026-11-23, 21:37 UTC - WAVE_SHARE and the wave-level 429 guard
+
+Lane B3's header probe found that gpt-6-astra's limit on our key, 15,000 RPM /
+40M TPM, is **shared with gpt-5.6-sol and gpt-5.6-terra - i.e. with production**.
+No project-scoped headers were present, so a paid wave competes with live traffic.
+Lane B3 set WAVE_SHARE = 0.5 and said plainly it was a guess at production's
+headroom.
+
+**Settled: WAVE_SHARE = 0.05** - about 750 RPM / 2M TPM. The reasoning is that
+it protects production and the owner can raise it: a 96-shard wave needs at most
+~200 RPM (a shard runs one file at a time, so at most 96 calls are in flight),
+so 0.05 fits with ~3.7x headroom while leaving 95% of the limit to production.
+Conservative wins because the downside is asymmetric - a throttled wave is slow,
+a starved production is an incident.
+
+**Also required: a WAVE-LEVEL 429 guard.** If 429s exceed a small threshold in
+any 5-minute window the wave backs off GLOBALLY, not per shard, and the report
+records it. Per-shard cool-down is not enough: 96 shards each backing off
+independently still presents 96 shards' worth of pressure to a limit that is
+already shared.
+
+### The four mechanisms that would have distorted the AI's marginal value
+
+To be carried into the final report's method section, because each one credited
+or debited the model for work it did not do, and all four were found only by
+measuring:
+
+1. **Undescribed ops** - OP_SUMMARIES gave no description for 13 of 19 ops, so
+   the model chose among ops it had not been told about (Lane B).
+2. **A wrong definition of clean** - the prompt's prose was wrong in three
+   places until it was generated from the checker's own constants (Lane B2).
+3. **The dedupe discarding the repair** - the orientation-blind fingerprint
+   could drop orient_and_close's own output as a duplicate (Task 45).
+4. **Unreached-model rows charged to the AI** - a search_ai file whose model was
+   never reached wrote a CONCLUSIVE row, so its det-only outcome was recorded as
+   an AI result (Lane B3).
+
+Standing separately: across three live runs and one fake-model run, the winning
+candidates have always been DETERMINISTIC, with the AI's identical proposals
+arriving as duplicates. The ~$0.07 AI-only ablation is the outstanding
+experiment.
