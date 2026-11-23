@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import cast
 
+from meshpipeline.cad.repair_v4.limits import CHECKER_CALL_TIMEOUT_S
 from meshpipeline.cad.repair_v4.units import WRITER_CODES, canonical_unit
 from meshpipeline.cad.repair_v4.verdict import memo
 from meshpipeline.cad.repair_v4.worker_pool import CallResult, WorkerPool
@@ -41,7 +42,10 @@ HARD_CODES = (
 UNBOUNDED = "unbounded_geometry"
 SOFT_CODES = ("small_edge", "small_face", "large_tolerance")
 
-CALL_TIMEOUT_S = 300.0
+#: The limit on ONE of this layer's kernel calls. Defined once in `repair_v4.limits` (the per-file wall that
+#: bounds their SUM is evalspec.DEFAULT_FILE_TIMEOUT_S); re-exported under this name because faithful.py and
+#: every call site below already read it from here.
+CALL_TIMEOUT_S = CHECKER_CALL_TIMEOUT_S
 
 
 class CheckerUnavailable(RuntimeError):

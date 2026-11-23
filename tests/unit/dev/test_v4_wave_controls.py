@@ -231,6 +231,63 @@ def test_probe_gate_refuses_every_way_the_record_can_be_wrong(tmp_path):
     assert mp.probe_problem(junk, expected_backend=BACKEND) is not None
 
 
+# --------------------------------------------- what a create costs, and the probe's own litter (task 55)
+
+def test_the_probe_measures_create_latency_and_never_lets_it_decide_the_verdict(tmp_path):
+    """Latency is a RESULT the wave needs (every shard pays two creates before it may spend) but not a pass
+    criterion: a store made 40 ms slow per create still passes, and says so in milliseconds."""
+    spec = f"localdir@40:{tmp_path / 'b'}"
+    report = mp.run_local(spec, rounds=20, interval_s=0.05, lead_s=1.5, run_id="t", latency_samples=5)
+    assert report.passed
+    lat = report.latency["uncontended"]
+    assert lat["n"] == 5 and lat["median_ms"] >= 40.0 and lat["max_ms"] >= lat["median_ms"] >= lat["min_ms"]
+    assert report.latency["racing"]["n"] == 40      # 20 rounds x 2 writers, timed by the writers themselves
+    assert "create latency (uncontended, n=5): median" in report.describe()
+    fast = mp.run_local(f"localdir:{tmp_path / 'c'}", rounds=20, interval_s=0.05, lead_s=1.5, run_id="t2",
+                        latency_samples=5)
+    assert fast.latency["uncontended"]["median_ms"] < lat["median_ms"]   # measured, not asserted
+
+
+def test_latency_samples_zero_skips_the_measurement_without_failing(tmp_path):
+    report = mp.run_local(f"localdir@40:{tmp_path / 'b'}", rounds=20, interval_s=0.05, lead_s=1.5, run_id="t",
+                          latency_samples=0)
+    assert report.passed and report.latency["uncontended"] == {"n": 0}
+    assert "create latency (uncontended" not in report.describe()
+
+
+def test_cleanup_removes_this_runs_probe_keys_and_never_the_pass_record(tmp_path):
+    """The probe writes throwaway keys to the REAL wave bucket, so it has to take them away - but the pass
+    record is the whole point of the run and must survive."""
+    root = tmp_path / "b"
+    report = mp.run_local(f"localdir@40:{root}", rounds=20, interval_s=0.05, lead_s=1.5, run_id="t",
+                          latency_samples=4, clean=True)
+    assert report.passed and report.cleaned["problem"] is None
+    assert report.cleaned["deleted"] == report.cleaned["attempted"] == 20 + 1 + 2 + 4
+    assert not report.cleaned["failed"]
+    left = sorted(p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file())
+    assert left == [f"model-ledger/{mp.PROBE_KEY}"]
+    markers, backend = mp.open_markers(f"localdir@40:{root}")
+    assert mp.probe_problem(markers, expected_backend=backend) is None   # still proven after the sweep
+
+
+def test_cleanup_reports_a_store_that_cannot_delete_instead_of_failing(tmp_path):
+    class NoDelete(mp.LocalDirStore):
+        delete_object = None
+
+    markers = ml.ObjectMarkerStore(NoDelete(tmp_path / "b"))
+    markers.create("_probe/t/seq", "v")
+    out = mp.cleanup(markers, "t", 2, 0)
+    assert out["deleted"] == 0 and "no delete_object" in out["problem"]
+    assert markers.get("_probe/t/seq") == "v"
+
+
+def test_the_marker_store_exposes_its_object_store_and_keys_for_the_probe(tmp_path):
+    markers = ml.ObjectMarkerStore(mp.LocalDirStore(tmp_path), prefix="model-ledger")
+    assert markers.object_key("_probe/x") == "model-ledger/_probe/x"
+    assert isinstance(markers.store, mp.LocalDirStore)
+    # the ledger's own interface still has no delete: a marker it depends on must not be removable through it
+    assert not hasattr(ml.MarkerStore, "delete")
+
 # ============================================================ wave-count limits
 
 def test_a_fourth_checkpoint_wave_is_refused_and_a_resume_is_not(tmp_path):

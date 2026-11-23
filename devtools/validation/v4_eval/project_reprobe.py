@@ -19,11 +19,30 @@ from __future__ import annotations
 import argparse
 import hashlib
 import heapq
+import importlib.util
 import json
 import math
 import random
 import statistics
+import sys
 from pathlib import Path
+
+
+def _load_evalspec():
+    """v4's evalspec, by PATH under a unique module name. Not `import evalspec`: v3_eval's modules register
+    their own evalspec under exactly that bare name (v3_eval/run_arm.py and friends), so a plain import picks up
+    whichever evalspec reached sys.modules first - and in a test session that is sometimes v3's."""
+    spec = importlib.util.spec_from_file_location("v4_evalspec_for_projection",
+                                                  Path(__file__).resolve().parent / "evalspec.py")
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    # Registered BEFORE exec: `@dataclass` looks its own module up in sys.modules by __module__.
+    sys.modules[spec.name] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+_evalspec = _load_evalspec()  # pure constants; no CAD, no gcloud
 
 SEED = 20261123
 EVAL_SEED = 20261122  # evalspec.SEED: the launcher's hash partition
@@ -92,7 +111,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--sizes", required=True)
     ap.add_argument("--shards", type=int, nargs="+", default=[96, 80])
     ap.add_argument("--reps", type=int, default=400)
-    ap.add_argument("--file-timeout-s", type=float, default=900.0)
+    # The wall is NOT retyped here: the projection must cap simulated files at the same wall the wave will run.
+    ap.add_argument("--file-timeout-s", type=float, default=_evalspec.DEFAULT_FILE_TIMEOUT_S,
+                    help="the per-file wall simulated files are capped at (default: evalspec.DEFAULT_FILE_TIMEOUT_S, "
+                         f"{_evalspec.DEFAULT_FILE_TIMEOUT_S:g} s); pass another value to price a candidate wall")
     ap.add_argument("--overhead-h", type=float, default=0.25)
     ap.add_argument("--usd-per-vm-hour", type=float, default=0.377)
     ap.add_argument("--out", default=None)

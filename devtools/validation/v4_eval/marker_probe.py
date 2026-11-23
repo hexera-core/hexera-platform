@@ -22,13 +22,20 @@ WHAT IT DOES.
   2. race: two real processes (`--role writer`, A and B) are released together by a wall-clock barrier and, for each
      of ROUNDS fresh keys, both call create with DIFFERENT payloads. Exactly one may get True and one False, and the
      object read back must hold the winner's payload (this is what catches a silent overwrite).
-  3. on success - and only if at least MIN_OVERLAPPING_ROUNDS rounds had the two calls overlap in time, so the
+  3. latency: LATENCY_SAMPLES uncontended creates of fresh keys, timed. Measured and printed, never a pass
+     criterion - a slow backend is still a correct one. It is reported because every shard pays two creates
+     before it may spend a cent (the wave marker and its own shard marker, `model_ledger.for_shard`) and one
+     `put` per settled model call after that, so a create measured in seconds would be the wave's problem.
+     The racing rounds' own durations are summarised beside it.
+  4. on success - and only if at least MIN_OVERLAPPING_ROUNDS rounds had the two calls overlap in time, so the
      writers provably raced - it writes the pass record the launcher reads (PROBE_KEY: backend, version, time,
      rounds). The overlap count is printed.
 A failure writes a `passed: false` record, so a regression revokes an earlier pass.
+`--cleanup` then deletes every `_probe/<run-id>/` key this run wrote - and only those, never PROBE_KEY, which
+is the whole point of the run.
 
 RUN IT (controller, once per bucket; the host's Application Default Credentials need object write on it):
-    python devtools/validation/v4_eval/marker_probe.py --store gcs:<wave bucket name> --rounds 50
+    python devtools/validation/v4_eval/marker_probe.py --store gcs:<wave bucket name> --rounds 50 --cleanup
 Two hosts (the strongest form): on host 1 and host 2, at the same instant T (epoch seconds, a minute ahead):
     python marker_probe.py --store gcs:<bucket> --role writer --writer A --run-id R --start-at T   # host 1
     python marker_probe.py --store gcs:<bucket> --role writer --writer B --run-id R --start-at T   # host 2
@@ -72,6 +79,9 @@ PROBE_ROUNDS = 50
 #: documented `ifGenerationMatch` semantics plus the sequential and read-back checks. Consequence: `--rounds`
 #: below this value can never pass.
 MIN_OVERLAPPING_ROUNDS = 10
+#: How many uncontended `create` calls `latency_check` times. 30 is enough for a median and a p90 that are not
+#: one sample each, and cheap: 30 x a few hundred ms. Not a pass criterion.
+LATENCY_SAMPLES = 30
 PROBE_MAX_AGE_S = 14 * 86400      # a backend can be reconfigured: the pass expires
 WRITERS = ("A", "B")
 
@@ -105,6 +115,16 @@ class LocalDirStore:
         tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex}")
         tmp.write_bytes(Path(local_path).read_bytes())
         tmp.replace(path)
+
+    def delete_object(self, *, object_key: str, missing_ok: bool = True) -> bool:
+        """GcsObjectStore.delete_object's shape, so `--cleanup` works against a directory store too."""
+        path = self._path(object_key)
+        if not path.is_file():
+            if missing_ok:
+                return False
+            raise FileNotFoundError(str(path))
+        path.unlink()
+        return True
 
     def create_object_if_absent(self, *, local_path: Path, object_key: str, content_type: str | None = None) -> bool:
         import os
@@ -170,6 +190,55 @@ def sequential_check(markers: Any, run_id: str) -> list[str]:
     return fails
 
 
+def _stats(samples: list[float]) -> dict[str, float | int]:
+    """Latency summary in MILLISECONDS. A plain order-statistic percentile (no interpolation), so a reader can
+    point at the sample it came from."""
+    xs = sorted(samples)
+    if not xs:
+        return {"n": 0}
+
+    def q(p: float) -> float:
+        return xs[min(len(xs) - 1, int(p * len(xs)))]
+
+    return {"n": len(xs), "min_ms": round(xs[0] * 1000, 3), "median_ms": round(q(0.5) * 1000, 3),
+            "p90_ms": round(q(0.9) * 1000, 3), "p95_ms": round(q(0.95) * 1000, 3),
+            "max_ms": round(xs[-1] * 1000, 3), "mean_ms": round(sum(xs) / len(xs) * 1000, 3)}
+
+
+def latency_check(markers: Any, run_id: str, n: int) -> dict[str, Any]:
+    """How long ONE `create` of a fresh key takes on this backend, measured `n` times, uncontended.
+
+    WHY IT IS A RESULT AND NOT A DETAIL: every shard pays two of these at start (the wave marker and its own
+    shard marker, model_ledger.for_shard) before it may spend a cent, and one `put` per settled model call after
+    that. A backend whose conditional create took seconds would turn the ledger's bookkeeping into the wave's
+    wall-clock. The keys are created under `_probe/<run_id>/lat-*` so `--cleanup` can take them away."""
+    samples: list[float] = []
+    for i in range(n):
+        t0 = time.perf_counter()
+        markers.create(f"_probe/{run_id}/lat-{i}", f"latency|{run_id}|{i}")
+        samples.append(time.perf_counter() - t0)
+    return {"create_fresh_key": _stats(samples), "keys": [f"_probe/{run_id}/lat-{i}" for i in range(n)]}
+
+
+def cleanup(markers: Any, run_id: str, rounds: int, latency_keys: int) -> dict[str, Any]:
+    """Delete every key THIS run wrote under `_probe/<run_id>/` (never PROBE_KEY: the pass record is the point).
+    Returns what it removed and what it could not; a store with no `delete_object` is reported, not failed."""
+    keys = [f"_probe/{run_id}/seq", *(f"_probe/{run_id}/race-{r}" for r in range(rounds)),
+            *(f"_probe/{run_id}/result-{w}" for w in WRITERS),
+            *(f"_probe/{run_id}/lat-{i}" for i in range(latency_keys))]
+    store = markers.store
+    if not callable(getattr(store, "delete_object", None)):
+        return {"deleted": 0, "attempted": len(keys), "problem": f"{type(store).__name__} has no delete_object: "
+                                                                 "the probe keys are still there"}
+    deleted, failed = 0, []
+    for key in keys:
+        try:
+            deleted += bool(store.delete_object(object_key=markers.object_key(key)))
+        except Exception as exc:  # noqa: BLE001 - a key left behind is reported, never raised over a pass
+            failed.append(f"{key}: {type(exc).__name__}: {exc}")
+    return {"deleted": deleted, "attempted": len(keys), "failed": failed, "problem": None}
+
+
 def write_rounds(markers: Any, run_id: str, writer: str, rounds: int, start_at: float, interval_s: float) -> dict:
     """One racing writer: for each round wait for its slot on the wall clock, then create the round's key with
     this writer's payload. The record of what it saw goes to the store for `verify`."""
@@ -190,9 +259,11 @@ def write_rounds(markers: Any, run_id: str, writer: str, rounds: int, start_at: 
     return {"writer": writer, "rounds": out}
 
 
-def verify(markers: Any, run_id: str, rounds: int) -> tuple[list[str], int]:
-    """(failures, rounds whose two create calls overlapped in time) from the writers' records and the objects."""
+def verify(markers: Any, run_id: str, rounds: int) -> tuple[list[str], int, list[float]]:
+    """(failures, rounds whose two create calls overlapped in time, every racing create's duration in seconds)
+    from the writers' records and the objects."""
     fails: list[str] = []
+    durations: list[float] = []
     results: dict[str, dict[int, dict]] = {}
     for w in WRITERS:
         raw = markers.get(f"_probe/{run_id}/result-{w}")
@@ -203,6 +274,7 @@ def verify(markers: Any, run_id: str, rounds: int) -> tuple[list[str], int]:
     overlapping = 0
     for r in range(rounds):
         entries = [e for w in WRITERS if w in results and (e := results[w].get(r)) is not None]
+        durations += [e["t1"] - e["t0"] for e in entries if e["t1"] >= e["t0"]]
         if len(entries) < len(WRITERS):
             fails.append(f"round {r}: a writer has no result for it")
             continue
@@ -221,7 +293,7 @@ def verify(markers: Any, run_id: str, rounds: int) -> tuple[list[str], int]:
                          "(a silent overwrite)")
         if max(e["t0"] for e in entries) < min(e["t1"] for e in entries):
             overlapping += 1
-    return fails, overlapping
+    return fails, overlapping, durations
 
 
 @dataclass
@@ -233,12 +305,29 @@ class Report:
     backend: str
     run_id: str
     failures: list[str] = field(default_factory=list)
+    #: `create` latency on this backend: `uncontended` from latency_check (fresh keys, one at a time) and
+    #: `racing` from the two writers' own timings. Measured, not a pass criterion: a slow backend is still
+    #: correct, and every shard pays two creates at start.
+    latency: dict[str, Any] = field(default_factory=dict)
+    #: what `--cleanup` removed, or why it could not
+    cleaned: dict[str, Any] | None = None
 
     def describe(self) -> str:
         head = (f"PROBE {'PASSED' if self.passed else 'FAILED'} on {self.backend}: {self.rounds} race rounds "
                 f"({self.overlapping_rounds} with overlapping calls), sequential "
                 f"{'ok' if self.sequential_ok else 'FAILED'}")
-        return "\n".join([head, *[f"  - {f}" for f in self.failures[:20]]])
+        lines = [head]
+        for name, s in sorted(self.latency.items()):
+            if s.get("n"):
+                lines.append(f"  create latency ({name}, n={s['n']}): median {s['median_ms']:.1f} ms, p90 "
+                             f"{s['p90_ms']:.1f}, p95 {s['p95_ms']:.1f}, max {s['max_ms']:.1f}, mean "
+                             f"{s['mean_ms']:.1f}")
+        if self.cleaned is not None:
+            lines.append(f"  cleanup: deleted {self.cleaned['deleted']} of {self.cleaned['attempted']} probe "
+                         f"key(s)" + (f" - {self.cleaned['problem']}" if self.cleaned.get("problem") else "")
+                         + (f"; {len(self.cleaned['failed'])} could not be deleted"
+                            if self.cleaned.get("failed") else ""))
+        return "\n".join([*lines, *[f"  - {f}" for f in self.failures[:20]]])
 
 
 def record_pass(markers: Any, *, backend: str, run_id: str, rounds: int, at: float | None = None,
@@ -249,24 +338,29 @@ def record_pass(markers: Any, *, backend: str, run_id: str, rounds: int, at: flo
 
 
 def conclude(markers: Any, backend: str, run_id: str, rounds: int, *,
-             min_overlap: int = MIN_OVERLAPPING_ROUNDS, write_pass: bool = True) -> Report:
-    """Judge a run. A FAILURE record is written at once (it revokes an earlier pass); a PASS record only when
-    `write_pass` - `run_local` defers it until the writers' exit codes are checked too."""
+             min_overlap: int = MIN_OVERLAPPING_ROUNDS, write_pass: bool = True,
+             latency_samples: int = LATENCY_SAMPLES) -> Report:
+    """Judge a run, and measure what a `create` costs. A FAILURE record is written at once (it revokes an
+    earlier pass); a PASS record only when `write_pass` - `run_local` defers it until the writers' exit codes
+    are checked too. The latency measurement never decides the verdict."""
     seq = sequential_check(markers, run_id)
-    fails, overlapping = verify(markers, run_id, rounds)
+    lat = latency_check(markers, run_id, latency_samples) if latency_samples > 0 else {"create_fresh_key": {"n": 0}}
+    fails, overlapping, racing = verify(markers, run_id, rounds)
     if overlapping < min_overlap:
         fails.append(f"only {overlapping} of {rounds} rounds had overlapping create calls, fewer than the "
                      f"{min_overlap} required: the writers did not provably race, so an atomic create is "
                      "unproven (rerun with more rounds or better clock sync)")
     report = Report(passed=not seq and not fails, rounds=rounds, sequential_ok=not seq,
-                    overlapping_rounds=overlapping, backend=backend, run_id=run_id, failures=[*seq, *fails])
+                    overlapping_rounds=overlapping, backend=backend, run_id=run_id, failures=[*seq, *fails],
+                    latency={"uncontended": lat["create_fresh_key"], "racing": _stats(racing)})
     if write_pass or not report.passed:
         record_pass(markers, backend=backend, run_id=run_id, rounds=rounds, passed=report.passed)
     return report
 
 
 def run_local(spec: str, *, rounds: int = PROBE_ROUNDS, interval_s: float = 0.2, lead_s: float = 5.0,
-              run_id: str | None = None) -> Report:
+              run_id: str | None = None, latency_samples: int = LATENCY_SAMPLES,
+              clean: bool = False) -> Report:
     """Both writers as real processes on this host, released by one wall-clock barrier."""
     run_id = run_id or f"p{int(time.time())}-{uuid.uuid4().hex[:6]}"
     start_at = time.time() + lead_s
@@ -277,12 +371,15 @@ def run_local(spec: str, *, rounds: int = PROBE_ROUNDS, interval_s: float = 0.2,
         for w in WRITERS]
     outputs = [p.communicate(timeout=lead_s + rounds * interval_s + 300)[0] for p in procs]
     markers, backend = open_markers(spec)
-    report = conclude(markers, backend, run_id, rounds, write_pass=False)
+    report = conclude(markers, backend, run_id, rounds, write_pass=False, latency_samples=latency_samples)
     for w, p, text in zip(WRITERS, procs, outputs, strict=True):
         if p.returncode != 0:
             report.passed = False
             report.failures.insert(0, f"writer {w} exited {p.returncode}: {text.strip()[-300:]}")
     record_pass(markers, backend=backend, run_id=run_id, rounds=rounds, passed=report.passed)
+    # After the record, never before: the pass record is what the launcher reads and `cleanup` never touches it.
+    if clean:
+        report.cleaned = cleanup(markers, run_id, rounds, latency_samples)
     return report
 
 
@@ -323,9 +420,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--start-at", type=float, default=None, help="epoch seconds the first round starts")
     parser.add_argument("--interval-s", type=float, default=0.2)
     parser.add_argument("--lead-s", type=float, default=5.0)
+    parser.add_argument("--latency-samples", type=int, default=LATENCY_SAMPLES,
+                        help="uncontended `create` calls to time (0 = skip); every shard pays two at start")
+    parser.add_argument("--cleanup", action="store_true",
+                        help="delete this run's _probe/<run-id>/ keys afterwards (never the pass record)")
     args = parser.parse_args(argv)
     if args.rounds < 1:
         parser.error("--rounds must be at least 1")
+    if args.latency_samples < 0:
+        parser.error("--latency-samples cannot be negative")
     markers, backend = open_markers(args.store)
     if args.role == "writer":
         if not args.writer or not args.run_id or args.start_at is None:
@@ -335,10 +438,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.role == "verify":
         if not args.run_id:
             parser.error("--role verify needs --run-id")
-        report = conclude(markers, backend, args.run_id, args.rounds)
+        report = conclude(markers, backend, args.run_id, args.rounds, latency_samples=args.latency_samples)
+        if args.cleanup:
+            report.cleaned = cleanup(markers, args.run_id, args.rounds, args.latency_samples)
     else:
         report = run_local(args.store, rounds=args.rounds, interval_s=args.interval_s, lead_s=args.lead_s,
-                           run_id=args.run_id)
+                           run_id=args.run_id, latency_samples=args.latency_samples, clean=args.cleanup)
     print(report.describe())
     return 0 if report.passed else 1
 
