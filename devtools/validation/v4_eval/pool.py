@@ -26,7 +26,8 @@ Sources, in precedence order (the first source to supply a sha256 keeps it):
                    STEP, so the STC STEP files come from the PMI STEP zip.
   f360             Fusion 360 Gallery segmentation extended STEP set (s2.0.1) - a non-Onshape origin
                    (ABC and DeepCAD are both Onshape-derived). Its STEP files are scaled x10.
-  inject           reserved for the injected-defect variants; no fetcher lives here.
+  inject           injected-defect variants, made by inject_pool.py (recipes in injected.json); `build`
+                   carries the existing ones forward. They are direct files, not archive members.
 
 Archives are streamed to a temp file and hashed in chunks; members are read from the zip one at a
 time, never extracted to disk. Every hash for a file this module downloads is computed here from the
@@ -304,6 +305,14 @@ def build_pool(sources: Iterable[PoolSource]) -> list[PoolEntry]:
     return entries
 
 
+def carry_forward_inject(path: Path) -> list[PoolEntry]:
+    """The inject entries already in the manifest at `path` ([] if there is none). `build` rewrites the manifest
+    from scratch, and no source here fetches injected files, so without this a rebuild would delete them."""
+    if not path.exists():
+        return []
+    return [e for e in read_pool(path) if e.source == "inject"]
+
+
 def _licence_id(text: str) -> str:
     return hashlib.sha256(text.encode()).hexdigest()[:12]
 
@@ -372,6 +381,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.f360:
         sources.append(F360Source())
         included.append("f360")
+    out_path = Path(args.out)
+    carried = carry_forward_inject(out_path)
+    if carried:
+        sources.append(StaticSource(carried))
+        included.append("inject")
+        print(f"keeping {len(carried)} inject entries already in {out_path} (see inject_pool.py)")
     entries, dropped = merge_pool(sources)
     counts: dict[str, int] = {}
     for e in entries:
@@ -381,7 +396,9 @@ def main(argv: list[str] | None = None) -> int:
             raise SystemExit(f"requested source {wanted} contributed no entries; not writing {args.out}")
     _log_dedupe(dropped)
     write_pool(entries, Path(args.out), sources_included=included, deduped=len(dropped),
-               notes={k: v for k, v in SOURCE_NOTES.items() if k in included})
+               notes={**{k: v for k, v in SOURCE_NOTES.items() if k in included},
+                      **({"inject": json.loads(out_path.read_text())["source_notes"]["inject"]}
+                         if carried else {})})
     print(f"wrote {args.out}: {len(entries)} entries {counts}; sources {included}; "
           f"{len(dropped)} duplicate(s) dropped by sha256")
     return 0
