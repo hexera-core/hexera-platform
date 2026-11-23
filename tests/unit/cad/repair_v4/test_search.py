@@ -457,7 +457,7 @@ def _state(sites: list[Site]) -> SearchState:
 
 
 def test_det_generator_sweeps_parameters_per_site_kind() -> None:
-    gen = DetGenerator()
+    gen = DetGenerator(diagonal=lambda ws: 100.0)  # a 100 mm part: bound 0.1 mm
     prox = gen.propose(_state([_site("proximity", ["F1", "F2"])]), 50)
     ratios = sorted(c.params["target_ratio"] for c in prox if c.op == "split_by_proximity")
     assert ratios == [0.06, 0.125, 0.25]
@@ -465,7 +465,7 @@ def test_det_generator_sweeps_parameters_per_site_kind() -> None:
     assert {c.op for c in prox} >= {"split_by_proximity", "split_angle"}
 
     sliver = gen.propose(_state([_site("sliver", ["F1"])]), 50)
-    assert {c.params.get("max_width_mm") for c in sliver if c.op == "remove_small"} == {0.001, 0.01, 0.05}
+    assert sorted(c.params["max_width_mm"] for c in sliver if c.op == "remove_small") == pytest.approx([0.001, 0.01, 0.05])
 
     assert gen.propose(_state([_site("unlocated", ["F1"])]), 50) == []
     assert len(gen.propose(_state([_site("proximity", ["F1", "F2"])]), 2)) == 2
@@ -614,7 +614,7 @@ def test_det_generator_proposes_for_a_whole_part_open_site() -> None:
     from meshpipeline.cad.repair_v4.ops import validate_call
 
     state = _state([_site("open", [])])
-    got = DetGenerator().propose(state, 50)
+    got = DetGenerator(diagonal=lambda ws: 100.0).propose(state, 50)
     assert {c.op for c in got} == {"sew", "make_volume", "orient_and_close"}
     for c in got:
         assert validate_call(c.op, c.targets, c.params, state.ws) == []
