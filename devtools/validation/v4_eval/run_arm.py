@@ -603,8 +603,10 @@ def main(argv: list[str] | None = None) -> int:
             if wrong:
                 raise PlanProvenanceMismatch("; ".join(wrong))
             prov.update(plan)  # wave, wave_id, wave_type, split, arms, n_shards, wave_cap_usd, shard_cap_usd, slot
-        if args.mode in ("arms", "reprobe", "harness"):
-            # The WAVE boundary: a shard with no SHARED cache refuses (exit 7). The library keeps its
+        if args.mode in ("arms", "reprobe"):
+            # The WAVE boundary: a shard with no SHARED cache refuses (exit 7). NOT harness mode - I added
+            # that on my own initiative resolving a conflict and it broke 12 tests: a harness shard legitimately
+            # runs without a shared cache (single-file runs, injected runners). The library keeps its
             # in-memory fallback for unit tests, single-file runs and the healer-to-search reuse; a wave
             # must not reach it. make_cache also exports CRS_V4_VERDICT_CACHE_URI, which is what the
             # engine's judges read - without it the reprobe path had a cache and the judges silently did
