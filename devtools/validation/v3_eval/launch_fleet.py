@@ -266,7 +266,9 @@ class V4Profile(Profile):
         return sum(1 for e in pool.read_pool(Path(args.pool)) if e.source in wanted)
 
     def plan_lines(self, args) -> list[str]:
-        return [f"plan ({args.shards_total} hash shards of the pool, one per vCPU, "
+        cut = (f"cost-balanced shards from {args.shard_plan_uri}" if getattr(args, "shard_plan_uri", None)
+               else "hash shards of the pool")
+        return [f"plan ({args.shards_total} {cut}, one per vCPU, "
                 f"{evalspec.vcpus_of(args.machine_type)} per {args.machine_type}):",
                 f"  {'reprobe' if not getattr(args, 'arms_list', None) else ','.join(args.arms_list):<20} pool     "
                 f"{args.shards_total:>3} shard(s)  {args.files_counted} files from sources {','.join(args.sources)}"
