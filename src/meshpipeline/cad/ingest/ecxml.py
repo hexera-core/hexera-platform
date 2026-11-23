@@ -91,10 +91,15 @@ SCHEMA_TAGS = frozenset({
     "r11", "r12", "r13", "r21", "r22", "r23", "r31", "r32", "r33", "fileName",
     *OBJECT_FIELDS})
 _CANONICAL_TAG = {t.lower(): t for t in SCHEMA_TAGS}
-#: Objects whose size may be zero on an axis (schema type sizeAllowZero): the 2D ones.
-ZERO_SIZE_ALLOWED = frozenset({"solid2dBlock", "source2dBlock", "rectangular2dFan"})
 #: Objects the schema describes as two-dimensional (a plate, a face): their plane is the object.
 TWO_D = frozenset({"solid2dBlock", "source2dBlock", "grille", "rectangular2dFan"})
+#: Objects whose size may be zero on an axis (schema type sizeAllowZero). It is exactly the 2D set
+#: and is written as that set, not as a second list: a grille was left out of the second list when
+#: both were first written, so Flotherm's own grille - a face on a wall, with no thickness at all -
+#: was refused by the reader although ecxml_place handles it through the very same branch as the 2D
+#: fan beside it (_face_object). A thing whose plane IS the object may be flat; there is no
+#: separate rule to keep.
+ZERO_SIZE_ALLOWED = TWO_D
 
 
 class EcxmlError(ValueError):

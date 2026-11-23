@@ -70,3 +70,6 @@ devtools/semiconductor/cad/
 
 # handover bundle: a build output of devtools/handover.sh, never a second source of truth
 /handover/
+
+# the ECXML conformance lab writes its models, cases and meshes here (devtools/certification/ecxml)
+.ecxml_lab/

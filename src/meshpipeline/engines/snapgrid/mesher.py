@@ -276,12 +276,24 @@ def mesh_ecxml(src, case, plan: G.GridPlan | None = None, *, binary: bool | None
             "No air: the solids fill the whole solution domain the file sets. The model is "
             "conduction only (no air region).")
 
+    if not live:
+        notes.append("the file declares no solid to mesh: the domain is air throughout")
+        build_report.append(
+            "No solids: nothing in the file asks for a solid region - the geometry is openings, "
+            "faces and planes, or the file is empty - so the whole domain is meshed as air, with "
+            "every 2D object standing in it as a boundary patch or a baffle. The mesh is a flow "
+            "mesh.")
+
     # one cellZone per region: the air spaces first (largest first), then the parts in file order
     zone_names = list(air_names) + [part_region[k] for k in live]
     part_zone = np.full(P, -1, dtype=np.int32)
     for z, k in enumerate(live):
         part_zone[k] = n_air + z
-    cell_zone = np.where(zone >= 0, part_zone[np.maximum(zone, 0)], airs).astype(np.int32)
+    # np.where evaluates BOTH branches, so the indexing has to be skipped and not merely unselected
+    # when there is no part to index: with no solids `zone` is G.AIR throughout and every cell is
+    # air, but `part_zone[...]` on an empty array raises before the `where` is ever reached.
+    cell_zone = (np.where(zone >= 0, part_zone[np.maximum(zone, 0)], airs) if P
+                 else airs).astype(np.int32)
     if (cell_zone < 0).any():
         raise FidelityError("internal: a cell belongs to no region")
     build_report += _where_sources_land(placement, layout, cell_zone, zone_names, vols,
