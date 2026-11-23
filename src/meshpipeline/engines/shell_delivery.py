@@ -146,7 +146,10 @@ def asked_rows(quality: Mapping) -> list[dict]:
     (engines/mesh_requirements.asked_rows): measured as the elements outside what was asked, never a blocker."""
     from meshpipeline.engines.mesh_requirements import asked_rows as rows
 
-    return rows(quality, source="your notes (engines/shell_requirements.py)")
+    # EVERY ASK READ HAS ITS ROW (round 4 G, m485w round 15): one with no measure to judge it by - the nearest there is
+    # (SHMESH-52), an edge-length target past its share, a setting, not applied - is listed too, told with its status
+    # (the L plate's "1.5 mm on the vertical leg" had no row at all, m483 round 9; a 1.5-3 mm range none, m485w R8)
+    return rows(quality, source="your notes (engines/shell_requirements.py)", told=True)
 
 
 def user_line(row: Mapping) -> str:
@@ -238,9 +241,9 @@ def deliver(workspace, rec: Mapping, *, target: Mapping | None = None) -> bool:
         plan["words"] = [*list(plan["words"] or []), *asked_words(rec["requirements"])]
     from meshpipeline.engines import mesh_requirements as MR
 
-    told = MR.not_applied_words(MR.read(ws))
+    told = MR.told_words(MR.read(ws))
     if told:
-        # NOTE-8: what the notes say about the mesh that was not applied stays with the result
+        # NOTE-8 / NOTE-12: what the notes asked that was not applied, or is no mesh setting, stays with the result
         plan["not_applied"] = told
         plan["words"] = [*list(plan["words"] or []), *told]
     (ws / "fea_plan.json").write_text(json.dumps(plan, indent=1, sort_keys=True, default=float))
@@ -277,7 +280,10 @@ def results(workspace, q: Mapping, plan: Mapping) -> dict:
     rows = []
     for r in gating + limits(q):
         met = limit_met(r.get("measured"), str(r.get("op")), r.get("limit"))
-        rows.append({**{k: r.get(k) for k in ("key", "label", "op", "limit", "measured")}, "ok": met,
+        rows.append({**{k: r.get(k) for k in ("key", "label", "op", "limit", "measured")},
+                     # (a row told, not judged - the nearest there is - is never shown as met)
+                     "ok": None if r.get("told") else met,
+                     **({k: r[k] for k in ("told", "status", "shown") if k in r} if r.get("told") else {}),
                      "gating": r in gating, "words": words(r)})
     # SHMESH-26: the header's worst-quality figure is the user's Jacobian line when they set one (in place of its row,
     # so it is listed once)

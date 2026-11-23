@@ -645,6 +645,64 @@ def confirmed_opening_names(session_id) -> tuple[str, ...]:
                  if isinstance(o, dict) and o.get("name") and o.get("role") != "not_an_opening")
 
 
+def confirmed_port_locations(session_id) -> list[dict]:
+    """The openings the user confirmed on the geometry stage with where the check measured each: [{"name", "type",
+    "near_mm"}] (the stored confirmation's openings, their centroids in the file's millimetres - the near_mm
+    patches_from declares). [] when nothing was confirmed or the store cannot be read."""
+    import json
+
+    from meshpipeline.application.geometry_check import check_object_key
+    from meshpipeline.contracts.object_storage import get_object_store
+
+    if not session_id:
+        return []
+    try:
+        record = json.loads(get_object_store().get_bytes(
+            object_key=check_object_key(str(session_id), "confirmed.json")))
+    except Exception:  # noqa: BLE001 - unknown: nothing filled, the question as before
+        return []
+    out = []
+    for o in record.get("openings") or []:
+        c = o.get("centroid_mm") if isinstance(o, dict) else None
+        if (o.get("role") in ("inlet", "outlet") and o.get("name") and isinstance(c, (list, tuple)) and len(c) == 3
+                and all(isinstance(v, (int, float)) and math.isfinite(float(v)) for v in c)):
+            # to a thousandth of a millimetre, and never a negative zero: the approved intent is fingerprinted on these
+            # numbers and stored as JSON in the database, which keeps no -0.0 - a centroid at (657, 660, -0) read
+            # back as 0 and the run was refused at dispatch ("the run's approved intent does not match its
+            # fingerprint", s_duct_004 and bend_elbow_004 after an engine switch, m483 round 10)
+            out.append({"name": str(o["name"]), "type": str(o["role"]), "near_mm": [round(float(v), 3) + 0.0 for v in c]})
+    return out
+
+
+#: An opening the stage measured is never asked for again (docs/RULES.md)
+LOCATIONS_RULE = "INS-10"
+
+
+def with_locations(patches: list, located: list[dict]) -> list:
+    """INS-10: each inlet / outlet sent with no near_mm takes the measured location of the confirmed opening it is -
+    the one of its name, else the only confirmed opening of its role when it is the only port of that role. A port
+    with a location of its own keeps it; nothing else changes (the same list back when nothing is filled)."""
+    if not located or not isinstance(patches, list):
+        return patches
+    from meshpipeline.contracts.patch_names import same_patch_name
+
+    ports = [p for p in patches if isinstance(p, dict) and str(p.get("type") or "").strip() in ("inlet", "outlet")]
+    out, changed = [], False
+    for p in patches:
+        if p in ports and p.get("near_mm") is None:
+            role = str(p.get("type") or "").strip()
+            hit = next((o for o in located if same_patch_name(str(p.get("name") or ""), o["name"])), None)
+            if hit is None:
+                same_role = [o for o in located if o["type"] == role]
+                if len(same_role) == 1 and sum(1 for q in ports if str(q.get("type") or "").strip() == role) == 1:
+                    hit = same_role[0]
+            if hit is not None and hit["type"] == role:
+                p = {**p, "near_mm": list(hit["near_mm"])}
+                changed = True
+        out.append(p)
+    return out if changed else patches
+
+
 #: The one wall an internal flow's confirmation declares for every surface that is not an opening.
 BUILT_IN_WALL = "wall"
 

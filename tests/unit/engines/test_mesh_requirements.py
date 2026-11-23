@@ -236,8 +236,11 @@ def test_what_fits_no_field_is_kept_as_not_applied():
     assert not_applied == ["3 elements through the thickness.", "Chordal deviation < 0.1 mm."]
     sec = MR.section("used", requirements=req, dropped=dropped, not_applied=not_applied)
     said = MR.words(sec)
+    # NOTE-12: the load is no mesh setting - told with what to do instead, never silently dropped
     assert said == ['Not applied: "3 elements through the thickness." - no mesh setting of ours matches it yet.',
-                    'Not applied: "Chordal deviation < 0.1 mm." - no mesh setting of ours matches it yet.']
+                    'Not applied: "Chordal deviation < 0.1 mm." - no mesh setting of ours matches it yet.',
+                    'Not a mesh setting: "Load 900 daN on the lug." - it is a setting of your solver, not of the mesh: '
+                    'set it there (every face is a named group in the files).']
     assert MR.requirements_of(sec) is None        # nothing a route applies: the run is the rules' own
 
 
@@ -379,7 +382,9 @@ def test_notes_with_no_mesh_requirement_give_an_empty_set(router):
     router(_Router(_answer({"stated_unit": "none", "sizes": [], "element_kind": [], "limits": [],
                             "other": [{"quote": "Load 900 daN on the lug.", "kind": "not_mesh"}]})))
     sec = _decide(_notes("Load 900 daN on the lug."))
-    assert sec["status"] == "used" and MR.requirements_of(sec) is None and MR.words(sec) == []
+    # nothing the mesh applies; the load is told as a solver setting (NOTE-12)
+    assert sec["status"] == "used" and MR.requirements_of(sec) is None
+    assert [w.split(":")[0] for w in MR.words(sec)] == [MR.NOT_MESH_LEAD]
 
 
 @pytest.mark.parametrize("make", [lambda: _Router(exc=TimeoutError()), lambda: _Router(ModelRoundResult()),

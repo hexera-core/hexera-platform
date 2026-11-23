@@ -1,0 +1,17 @@
+{
+ "about": "NOTE-4 extent cases for the parts reader (cad/part_words): for each sentence, the model as the reader sees it (its parts and the areas it offers) and the extent the phrase must get - 'whole' (whole parts, or a listed area) or 'portion' (a piece of one part no row is, told as the nearest there is). The name a user gives a part, in any word or language, is the whole part; geometry decides first where the words resolve to an area (cad/part_features whole_part). m483 round 12, 6c: 'the base plate' of a one-plate NEMA17 mount was read as a piece of it.",
+ "sentences": [
+  {"id": "x01", "model": "one flat motor-mount plate with 4 holes (one plate: no flat face offered)", "sentence": "2 mm elements on the base plate", "expect": {"parts": ["Part_1"], "extent": "whole", "extent_words": "the base plate"}, "reason": "the plate is the whole part (6c)"},
+  {"id": "x02", "model": "one L-shaped flat plate (one flat face, no bend)", "sentence": "1.5 mm elements on the vertical leg", "expect": {"parts": ["Part_1"], "extent": "portion", "extent_words": "the vertical leg"}, "reason": "a piece of the one face (6b)"},
+  {"id": "x03", "model": "one bent sheet-metal bracket", "sentence": "3 mm on the bracket", "expect": {"parts": ["Part_1"], "extent": "whole", "extent_words": "the bracket"}, "reason": "the part's own name"},
+  {"id": "x04", "model": "one bent sheet-metal bracket", "sentence": "use 3 mm elements for the mount", "expect": {"parts": ["Part_1"], "extent": "whole", "extent_words": "the mount"}, "reason": "the part's role is its name"},
+  {"id": "x05", "model": "one cast pump housing", "sentence": "4 mm on the part", "expect": {"parts": ["Part_1"], "extent": "whole", "extent_words": "the part"}, "reason": "'the part' on a one-part model"},
+  {"id": "x06", "model": "one cast pump housing", "sentence": "finer on the upper half of the housing", "expect": {"parts": ["Part_1"], "extent": "portion", "extent_words": "the upper half of the housing"}, "reason": "half of a part is a portion"},
+  {"id": "x07", "model": "a flat plate bolted to a square-tube frame (two bodies)", "sentence": "2 mm on the plate", "expect": {"parts": ["Part_1"], "extent": "whole", "extent_words": "the plate"}, "reason": "the plate is one body, all of it"},
+  {"id": "x08", "model": "a square-tube frame rail (one body)", "sentence": "1 mm at the left end of the rail", "expect": {"parts": ["Part_1"], "extent": "portion", "extent_words": "the left end of the rail"}, "reason": "an end of a part is a portion"},
+  {"id": "x09", "model": "one I-beam", "sentence": "2 mm elements on the web", "expect": {"parts": ["Part_1"], "extent": "portion", "extent_words": "the web"}, "reason": "the web is a piece of the beam when no area is offered for it"},
+  {"id": "x10", "model": "one bent sheet-metal bracket", "sentence": "3 mm sur le support", "expect": {"parts": ["Part_1"], "extent": "whole", "extent_words": "le support"}, "reason": "another language: the part's name is still the whole part"},
+  {"id": "x11", "model": "one turbine blade", "sentence": "finer near the tip of the blade", "expect": {"parts": ["Part_1"], "extent": "portion", "extent_words": "near the tip of the blade"}, "reason": "near the tip is a portion"},
+  {"id": "x12", "model": "bolted joint: two plates and 4 bolts", "sentence": "1 mm on the bolts", "expect": {"parts": ["Part_3", "Part_4", "Part_5", "Part_6"], "extent": "whole", "extent_words": "the bolts"}, "reason": "every bolt, all of each"}
+ ]
+}

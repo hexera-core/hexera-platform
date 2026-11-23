@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import shutil
 import subprocess
 from pathlib import Path
@@ -650,6 +651,18 @@ def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
         if _asked is None or float(_asked) >= _caps["wall_cell"]:
             _band_r = float(passage_radius.get("band") or passage_radius["p05"])
         wall_cell = min(wall_cell, _caps["wall_cell"])
+    # NOTE-13: THE CONTROLS the user's words set - cells across the passage is the wall band's cell (its typical
+    # width / N), the one seam (control_appliers.cfmesh_cells_across); what the octree builds is said below
+    _passage_d = 2.0 * float((passage_radius or {}).get("median") or 0.0)
+    _asked_across = None
+    if _ask is not None:
+        # a flow through a passage: the case measured its passage, or it has openings of its own
+        _knobs = _ask.controls({"internal": bool(passage_radius) or bool(port_widths), "passage_d": _passage_d,
+                                "wall_cell": wall_cell})
+        if float(_knobs["wall_cell"]) != wall_cell:
+            wall_cell, _band_r = float(_knobs["wall_cell"]), 0.0
+            _asked_across = (_ask.req.get("controls") or {}).get("cells_across")
+            max_halvings = max(int(max_halvings), math.ceil(math.log2(max(max_cell / wall_cell, 1.0))))
     wall_cell = max(wall_cell, max_cell / float(2 ** max(1, int(max_halvings))))
     if snap_wall:
         # a wall size the engine chose from the budget: the octree level at or above it
@@ -668,7 +681,7 @@ def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
         fit_run = fit_run and _fit
         _ask_local, _ask_boxes, wall_cell = CR.cfmesh_local(
             _ask, patches, wall_patch, max_cell=max_cell, wall_cell=wall_cell, floor=_floor,
-            body_bbox=body_bbox, domain=(domain_min, domain_max), budget=cell_budget)
+            body_bbox=body_bbox, domain=(domain_min, domain_max), budget=cell_budget, roles=CR.port_roles(ws))
     _thick = (f" refinementThickness {_caps['refinement_thickness']:.6g};" if _caps else "")
 
     # THE RUN, TIMED BEFORE IT RUNS (CELLS_PER_SECOND): the cap it gets, and - for a wall the
@@ -682,6 +695,10 @@ def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
     if _ask is not None:
         wall_cell = CR.cfmesh_fit_count(_ask, volume=vol, max_cell=max_cell, wall_cell=wall_cell,
                                         wall_area=wall_area, n_layers=max(0, int(strategy.get("n_layers", 0))))
+        if _asked_across:
+            # the cells across the passage the octree really builds (cfMesh lands on max / 2^n), against the ask
+            CR.cfmesh_cells_built(_ask, _asked_across, passage_d=_passage_d,
+                                  wall_cell=octree_cell(max_cell, wall_cell))
 
     # EVERY OPENING, ITS OWN CELLS ACROSS (PLAN-cfd-2): a port narrower than PORT_CELLS_ACROSS wall
     # cells gets its own finer cell, on the port's surface only - an outlet smaller than a cell came

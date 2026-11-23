@@ -68,7 +68,7 @@ _PREAMBLE = {"geometry_file", "wall_patch", "strategy", "wall_layers"}
 _KNOWN = _STRATEGY | _PREAMBLE
 # knobs from the OpenFOAM engines a confused model might send - name them so the redirect helps
 _FOAM_ONLY = {"surface_level", "feature_level", "domain_margin", "n_layers", "max_cell_factor",
-              "first_layer_rel", "wall_cell", "quality", "regions"}
+              "last_layer_rel", "wall_cell", "quality", "regions"}
 
 
 def _num(v) -> bool:

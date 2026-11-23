@@ -36,6 +36,8 @@ logger = logging.getLogger(__name__)
 RULE = "NOTE-4"
 TOOL = "part_words"
 ASKS = ("size", "refine", "coarsen", "name")
+#: NOTE-4: what a phrase's words name - whole parts (or a listed area), a portion of one part no row is, or unsure
+EXTENTS = ("whole", "portion", "unsure")
 #: where the pictures are kept in the workspace, and the record beside them
 PICTURES_DIR = "part_pictures"
 #: how long the model may take before nothing is applied (the same as the other FEA decision)
@@ -193,13 +195,29 @@ only which part is which ("the long tube is the inlet duct"): "name". For each:
   single number is min = max. Never convert, never invent, never round. Any other ask: 0 and 0.
 - quote: the user's own words for this phrase, copied exactly from the notes (the numbers in it).
 - why: one short plain sentence - which parts you took and what told you ("Part_9 is the only long hollow beam").
-- confidence: 0 to 1. Below 0.6 when you cannot tell which parts are meant - say so in why; never guess.
+- confidence: 0 to 1. Below 0.6 when you cannot tell which parts are meant - say so in why; never guess. It is
+  about WHICH parts or areas only: whether the words mean all of a part or a piece of it is extent, never a reason
+  for a lower confidence (on a model of one part, the part is never in doubt).
 Some rows are AREAS INSIDE A PART (feature: true): a hole or a group of alike holes, a bore, a notch, fillets,
 bosses or shafts, thin walls (ribs, flanges), a large flat face - each with a plain name, how many, its size and the
 part it is in (in_part); in the pictures each area has its own colour and an F number (F3 is Feature_3), the rest of
 the part grey. Words about such an area ("1 mm at the mounting holes", "fine on the fillets", "coarser on the big
 flat face") take the area's id; words about a whole part take the part's id; "elsewhere" or "everything else" means
 the rest of the parts (everything_else true), never the areas.
+A large flat face says how it lies in the pictures (z is up there): "upright", or "level" at the top or bottom of
+its part. Words that name a piece of a part take the area that is that piece when one is listed ("the vertical
+leg" of a bent bracket: its upright flat face; "the top face": the level one at the top).
+- extent: what the words name, judged from the part itself as the table and the pictures show it - never from the
+  word alone:
+  "whole": whole parts, or a listed area. The name the user gives a part is the whole part, whatever word they use
+  for it: on a model that is one flat motor-mount plate, "the base plate" is that part; on a model that is one
+  bracket, "the bracket", "the mount", "the body" or "the part" is that part; on a model of a plate bolted to a
+  frame, "the plate" is the plate's part, all of it; "the bolts" is every bolt, all of each.
+  "portion": only a piece of one part that no row of the table is: "the vertical leg" of an L-shaped plate that is
+  one flat face, "the left end" of a rail, "one side" of a plate, "near the tip" of a blade, "the upper half" of a
+  housing. Give that part's id - the whole part is then the nearest there is, and the user is told so.
+  "unsure": you cannot tell whether the words mean the whole part or a piece of it (told as the nearest there is).
+- extent_words: the words of the quote that name the place, copied exactly ("the base plate", "the vertical leg").
 NOT sizes: an element COUNT ("500k elements"), loads, pressures, bolt sizes alone (M8), part dimensions,
 elements through a wall. If the notes say nothing about particular parts, phrases is an empty list.
 words: one or two short plain sentences for the user on how you read their words. No ids-only answers: name the
@@ -216,7 +234,7 @@ def size_tool() -> dict:
                 "phrases": {"type": "array", "items": {
                     "type": "object", "additionalProperties": False,
                     "required": ["parts", "everything_else", "ask", "min", "max", "unit", "quote", "why",
-                                 "confidence"],
+                                 "confidence", "extent", "extent_words"],
                     "properties": {
                         "parts": {"type": "array", "items": {"type": "string"}},
                         "everything_else": {"type": "boolean"},
@@ -224,7 +242,9 @@ def size_tool() -> dict:
                         "min": {"type": "number"}, "max": {"type": "number"},
                         "unit": {"type": "string", "enum": list(UNITS_MM)},
                         "quote": {"type": "string"}, "why": {"type": "string"},
-                        "confidence": {"type": "number"}}}},
+                        "confidence": {"type": "number"},
+                        "extent": {"type": "string", "enum": list(EXTENTS)},
+                        "extent_words": {"type": "string"}}}},
                 "words": {"type": "array", "items": {"type": "string"}}}}}}
 
 
@@ -340,6 +360,24 @@ def _check(arguments: str, table: list[dict], notes: str,
         if unit not in UNITS_MM:
             dropped.append(f"{tag}: the unit {unit!r} is not a length unit, so nothing was applied for it")
             continue
+        holes = _holes_named(quote, rows)
+        if holes and (conf is None or conf < MIN_CONFIDENCE
+                      or not any(str(p) in rows for p in e.get("parts") or [])):
+            # NOTE-6: words about the holes are tied by our own hole finding, the same every run: every area of the
+            # hole kinds (holes, hole groups, bores). A reader unsure whether "the holes" meant the one bore it saw
+            # left a place that exists on the part "could not be applied" (fea0184, m483 round 10)
+            e = {**e, "parts": holes, "everything_else": False}
+            conf = max(float(conf or 0.0), MIN_CONFIDENCE)
+            why = (f"{why} - " if why else "") + "tied to the part's holes as our own hole finding found them"
+        bodies = [str(i) for i, r in rows.items() if not r.get("feature")]
+        if ((conf is None or conf < MIN_CONFIDENCE) and len(bodies) == 1
+                and [str(p) for p in e.get("parts") or []] == bodies and not e.get("everything_else")):
+            # NOTE-4: ON A MODEL OF ONE BODY, WHICH PART IS MEANT IS NOT IN DOUBT. A reader unsure only whether the
+            # words mean all of it or a piece no area is ("the vertical leg" of an L plate that is one face: 0.45) is
+            # unsure of the extent - a portion, told as the nearest there is - never "not clear which parts you
+            # meant", which dropped the place from the shell (m483 round 13, 6b)
+            e = {**e, "extent": "whole" if _names_whole(e, quote) else "portion"}
+            conf = MIN_CONFIDENCE
         if conf is None or conf < MIN_CONFIDENCE:
             if unsure is not None:
                 unsure.append({"phrase": i, "quote": quote, "ask": ask, "why": why,
@@ -363,6 +401,11 @@ def _check(arguments: str, table: list[dict], notes: str,
         entry: dict[str, Any] = {"phrase": i, "parts": [], "everything_else": rest, "ask": ask, "quote": quote, "why": why,
                  "confidence": round(float(conf), 2),
                  **({"min_mm": _g(lo_mm), "max_mm": _g(hi_mm), "unit": unit, "asked": [lo, hi]} if ask == "size" else {})}
+        ids, whole = _by_geometry(ids, rows)
+        if any(not rows[p].get("feature") for p in ids) and not (whole or _names_whole(e, quote)):
+            # the words mean a piece of a part no row is, or the reader could not say: the whole part is the nearest
+            # there is (told so)
+            entry["piece"] = True
         if ask != "size":
             entry["parts"] = ids
             if entry["parts"] or rest:
@@ -410,6 +453,43 @@ def _check(arguments: str, table: list[dict], notes: str,
 
 def _mm(v: float) -> str:
     return f"{float(v):.3g} mm"
+
+
+#: NOTE-6: the areas our own code finds as holes (cad/part_features), and the words the user's quote names them by
+HOLE_KINDS = ("hole", "hole group", "bore")
+_HOLE_WORDS = re.compile(r"\b(?:holes?|bores?|bolt ?holes?|through ?holes?)\b", re.I)
+
+
+def _holes_named(quote: str, rows: Mapping[str, Mapping]) -> list[str]:
+    """The ids of every hole area of the table when the user's words name holes ("on the holes", "around the bolt
+    holes") - our hole finding's, not a reading's guess; [] when the words name none or the part has none."""
+    if not _HOLE_WORDS.search(str(quote or "")):
+        return []
+    return [str(i) for i, r in rows.items() if r.get("feature") and str(r.get("kind") or "") in HOLE_KINDS]
+
+
+def _by_geometry(ids: list[str], rows: Mapping[str, Mapping]) -> tuple[list[str], bool]:
+    """NOTE-4, GEOMETRY FIRST: (the ids the words name, whether the geometry says they name whole parts). An area the
+    words resolve to that is the whole of its part (cad/part_features: every other face is an opening or an edge) IS
+    that part - its row is judged on the whole part's mesh and can be met; the ids are then the parts. Anything else
+    stands as the reader tied it, and the geometry says nothing (False)."""
+    if ids and all(rows[p].get("feature") and rows[p].get("whole_part") for p in ids):
+        parts = list(dict.fromkeys(str(rows[p].get("in_part") or "") for p in ids))
+        if all(p in rows and not rows[p].get("feature") for p in parts):
+            return parts, True
+    return ids, False
+
+
+def _names_whole(e: Mapping, quote: str) -> bool:
+    """NOTE-4, WHERE THE GEOMETRY CANNOT TELL (the words were tied to a part, and a part's id is both the part and
+    every piece of it): the reader's `extent` - "whole" only with its extent_words found in the quote; "portion",
+    "unsure", missing or words not the user's are a portion, told as the nearest there is. (A saved reading of the
+    tool before `extent`: its `piece` flag.)"""
+    extent = str(e.get("extent") or "").strip().lower()
+    if not extent and isinstance(e.get("piece"), bool):
+        return e["piece"] is False
+    words = squash(str(e.get("extent_words") or ""))
+    return extent == "whole" and bool(words) and words in squash(quote)
 
 
 def per_part(entries: list[dict], faces_of: Mapping[str, list[str]] | None = None) -> dict[str, dict]:

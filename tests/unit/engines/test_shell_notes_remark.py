@@ -1,4 +1,4 @@
-# Responsibility: Verify what the result's "From your notes" lines say when a SHELL is the delivered mesh and the notes' mesh requirements were read: the shell's own asked-against-delivered line, and not the solid plan's AI remark (it tells of a solid mesh that was never made); with no requirement read, the lines are the ones kept before.
+# Responsibility: Verify what the result's "From your notes" lines say when a SHELL is the delivered mesh and the notes' mesh requirements were read: the shell's own asked-against-delivered line, and not the solid plan's AI remark (it tells of a solid mesh that was never made); with no requirement read, the solid plan's remark is still no line of a shell's result.
 # Boundaries: the real FEA driver and shell run on a small T-joint (a few seconds), the two readings of the notes stubbed (no model), no solid mesher.
 from __future__ import annotations
 
@@ -87,11 +87,14 @@ def test_a_delivered_shell_tells_its_own_line_not_the_solid_plans(tmp_path, monk
     assert "you asked for" in rows[0]["text"] and "solid" not in rows[0]["text"]
 
 
-def test_with_no_requirement_read_the_remarks_are_as_before(tmp_path, monkeypatch):
+def test_with_no_requirement_read_the_solid_plans_remark_is_still_no_line_of_a_shell(tmp_path, monkeypatch):
+    """The solid AI's remark speaks of the solid plan, which a delivered shell never makes: it is dropped with no
+    requirement read too (round 4, L1: a shell run with nothing typed was told "the requested shell element
+    formulation is outside these solid-mesh controls")."""
     ws = _stage(sf.t_joint(), tmp_path / "ws")
     assert _drive(ws, monkeypatch, MR.section("none")) is True
     assert shell_run.read(ws)["made"] is True
-    assert user_notes.read_remarks(ws, raw=True) == [{"by": "fea_ai", "text": SOLID_REMARK}]
+    assert user_notes.read_remarks(ws, raw=True) == []
 
 
 def test_dropping_a_remark_leaves_the_others_and_never_fails(tmp_path):
