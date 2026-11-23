@@ -292,8 +292,7 @@ def test_every_outcome_status_reaches_only_the_generator_that_proposed_it() -> N
 class SpyDet(DetGenerator):
     seen: list[list[str]] = []
 
-    @staticmethod
-    def _sweep(site: Site) -> list:
+    def _sweep(self, site: Site, diag: float | None) -> list:
         SpyDet.seen[-1].append(site.id)
         return []
 

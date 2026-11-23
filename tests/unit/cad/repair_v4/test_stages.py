@@ -50,6 +50,7 @@ class FakeOp:
 @pytest.fixture
 def world(monkeypatch):
     monkeypatch.setattr(ops, "validate_call", lambda *a, **k: [])
+    monkeypatch.setattr(stages, "diagonal_mm", lambda pool, ws: 100.0)  # the default sew ladder is sized per part
     monkeypatch.setattr(ops, "REGISTRY", dict(ops.REGISTRY))
     judged: list[str] = []
 
