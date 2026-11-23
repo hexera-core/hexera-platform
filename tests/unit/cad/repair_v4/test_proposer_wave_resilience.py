@@ -24,9 +24,9 @@ from meshpipeline.cad.repair_v4 import model_route
 from meshpipeline.cad.repair_v4.model_ledger import WaveLedger
 from meshpipeline.cad.repair_v4.model_throttle import (
     COOLDOWN_S,
+    WAVE_SHARE,
     Slice,
     ThrottleConfigError,
-    WAVE_SHARE,
     WaveBackoffGuard,
     WaveThrottle,
     wave_max_in_flight,
@@ -373,6 +373,7 @@ def test_429s_across_shards_past_the_threshold_trip_the_whole_wave(tmp_path: Any
     assert results == [False] * 5 + [True]                           # the sixth claims the last slot and trips
     for g in shards:                                                 # every shard - including ones that never 429ed
         assert g.hold_for() > 0
+    assert guard_for(store, "7/6", clock, threshold=5).report_429() is False     # only ONE shard writes the trip
     clock.t += 301
     assert all(g.hold_for() == 0 for g in shards)                    # and the back-off ends
 
