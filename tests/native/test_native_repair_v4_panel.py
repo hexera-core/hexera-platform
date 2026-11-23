@@ -94,22 +94,51 @@ def test_installed_gmsh_defaults_are_the_ones_the_panel_assumes() -> None:
 
 
 @pytest.mark.parametrize("profile", ["prod", "default", "alt"])
-def test_each_profile_really_meshes_with_its_algorithm_pair(profile: str) -> None:
-    """Set a profile's options in real gmsh, read the two algorithm options back: they are `algorithms()`."""
-    import gmsh
-
+def test_the_child_reports_the_algorithms_gmsh_really_used(profile: str, box_step: str) -> None:
+    """`run_in_process` (the child's own entry point, no re-implemented loop) answers with the
+    `(Mesh.Algorithm, Mesh.Algorithm3D)` it read back from gmsh after meshing."""
     from meshpipeline.cad.repair_v4.verdict import mesh_child
 
-    gmsh.initialize()
-    try:
-        _scale, options = mesh_child._profile(profile, 1.0)
-        for key, value in options.items():
-            mesh_child._set(gmsh, key, value)
-        assert (int(gmsh.option.getNumber("Mesh.Algorithm")), int(gmsh.option.getNumber("Mesh.Algorithm3D"))) == (
-            mesh_child.algorithms(profile)
-        )
-    finally:
-        gmsh.finalize()
+    answer = mesh_child.run_in_process({"step": box_step, "profile": profile})
+    assert answer["status"] == "pass", answer
+    assert tuple(answer["algorithms"]) == mesh_child.algorithms(profile)
+
+
+def test_a_real_panel_run_reports_three_different_algorithm_triples(pool: WorkerPool, box_step: str) -> None:
+    """The panel's three-opinions property, read from what gmsh did in a real `run_panel` (a child process
+    per member), not from the profile table: skipping the algorithm keys in the child fails this."""
+    results = run_panel(pool, box_step, [GmshProd(), GmshDefault(), GmshAlt()], timeout_s=TIMEOUT_S)
+    assert {r.name: r.algorithms for r in results} == {
+        "gmsh_prod": (6, 10),
+        "gmsh_default": (6, 1),
+        "gmsh_alt": (1, 4),
+    }
+    assert len({r.algorithms for r in results}) == 3
+    assert len({r.algorithms[1] for r in results if r.algorithms}) == 3  # and three different 3D algorithms
+
+
+@pytest.fixture(scope="module")
+def plate_500_step(tmp_path_factory: pytest.TempPathFactory) -> str:
+    path = tmp_path_factory.mktemp("panel") / "plate_500.step"
+    writer = STEPControl_Writer()
+    writer.Transfer(BRepPrimAPI_MakeBox(gp_Pnt(0, 0, 0), 500.0, 500.0, 1.0).Shape(), STEPControl_AsIs)
+    assert writer.Write(str(path)) == IFSelect_RetDone
+    return str(path)
+
+
+def test_the_members_can_disagree_on_a_real_file(pool: WorkerPool, plate_500_step: str) -> None:
+    """What this fixture shows, and no more: on a 500 x 500 x 1 mm plate gmsh_alt fails the floor outright
+    (SICN about 0.0016) while gmsh_prod (about 0.024) and gmsh_default (about 0.020) pass with margin, so
+    the panel is not three copies of one opinion. It does NOT say which difference causes it: alt differs from
+    the others in 2D and 3D algorithm AND element size (a twentieth of the diagonal), prod from default in
+    OCC scale, size and 3D algorithm. Repeated runs of the 1000 x 1000 x 1 plate, whose prod and default
+    SICNs straddle the floor by 0.002, were identical to the last digit (this gmsh, one thread), so these
+    verdicts are not seed noise here; that is not a guarantee for HXT on other hosts."""
+    prod, default, alt = run_panel(pool, plate_500_step, [GmshProd(), GmshDefault(), GmshAlt()], timeout_s=TIMEOUT_S)
+    assert (prod.status, default.status, alt.status) == ("pass", "pass", "fail")
+    assert alt.error_kind == "low_quality" and alt.min_sicn is not None and alt.min_sicn < 0.005
+    assert prod.min_sicn is not None and prod.min_sicn > 0.015
+    assert default.min_sicn is not None and default.min_sicn > 0.015
 
 
 def test_members_apply_their_own_sizes(pool: WorkerPool, box_step: str) -> None:

@@ -6,11 +6,14 @@
 #             Real gmsh behaviour is the native tier (tests/native/test_native_repair_v4_panel.py).
 from __future__ import annotations
 
+import ast
 import os
 import signal
+import subprocess
 import sys
 import types
 from collections.abc import Iterator
+from pathlib import Path
 
 import pytest
 
@@ -194,12 +197,6 @@ def test_the_three_members_run_three_different_algorithm_pairs() -> None:
     assert len({t[1] for t in triples.values()}) == 3
 
 
-def test_a_member_that_leaves_the_algorithm_unset_gets_gmsh_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
-    assert (mesh_child.GMSH_DEFAULT_ALGORITHM_2D, mesh_child.GMSH_DEFAULT_ALGORITHM_3D) == (6, 1)
-    monkeypatch.setattr(mesh_child, "ALT_OPTIONS", {"Mesh.Algorithm": 6, "Mesh.Algorithm3D": 1})
-    assert mesh_child.algorithms("alt") == mesh_child.algorithms("default")  # the old GmshAlt, caught
-
-
 def test_algorithms_are_part_of_the_cache_key() -> None:
     assert GmshAlt().config["algorithms"] == [1, 4]
 
@@ -265,6 +262,52 @@ def test_a_timeout_then_a_pool_crash_is_still_infrastructure() -> None:
     assert result.status == "crashed" and result.error_kind == INFRASTRUCTURE_KIND
 
 
+_TIMED_OUT = _call(None, status="timeout", error="slow")
+
+
+def test_one_retry_per_file_caps_the_panel_at_members_plus_two_budgets() -> None:
+    """Three members that all hang: only the first retries (T, 2T), the others run once (T each), and a
+    later member's single timeout is already the file's. 5T, not 9T."""
+    pool = _ScriptedPool(*[_TIMED_OUT] * 4)
+    results = run_panel(pool, "/x.step", [GmshProd(), GmshDefault(), GmshAlt()], timeout_s=100)  # type: ignore[arg-type]
+    assert pool.budgets == [100, 200, 100, 100]
+    assert sum(pool.budgets) == (3 + 2) * 100
+    assert [(r.status, r.error_kind) for r in results] == [("timeout", "timeout")] * 3
+    assert [r.cause for r in results] == ["timeout_twice", "timeout_after_hang", "timeout_after_hang"]
+    assert not any(panel.is_inconclusive(r) for r in results)  # a hung file is not excluded as 'unknown'
+
+
+def test_a_spent_retry_that_passed_leaves_a_later_single_timeout_inconclusive() -> None:
+    """The first member was merely slow (timeout, then pass): that is not evidence against the file, so a
+    later member's single timeout is not promoted, and has no retry left."""
+    pool = _ScriptedPool(_TIMED_OUT, _call(_PASS), _TIMED_OUT, _call(_PASS))
+    results = run_panel(pool, "/x.step", [GmshProd(), GmshDefault(), GmshAlt()], timeout_s=100)  # type: ignore[arg-type]
+    assert pool.budgets == [100, 200, 100, 100]
+    assert [r.status for r in results] == ["pass", "timeout", "pass"]
+    assert results[1].error_kind == INFRASTRUCTURE_KIND and results[1].cause == "timeout_retry_spent"
+
+
+def test_a_sigkill_shares_the_same_one_retry() -> None:
+    pool = _ScriptedPool(_call(_SIGKILLED), _call(_SIGKILLED), _call(_SIGKILLED), _call(_SIGKILLED))
+    results = run_panel(pool, "/x.step", [GmshProd(), GmshDefault(), GmshAlt()], timeout_s=100)  # type: ignore[arg-type]
+    assert pool.budgets == [100, 100, 100, 100]
+    assert [r.cause for r in results] == ["sigkill_twice", "sigkill_after_doom", "sigkill_after_doom"]
+    assert all(r.error_kind == panel.MESHER_CRASH_KIND for r in results)
+
+
+def test_the_budget_is_per_file_not_per_process() -> None:
+    pool = _ScriptedPool(*[_TIMED_OUT] * 4, *[_TIMED_OUT] * 4)
+    for _ in range(2):  # a second file gets its own retry
+        run_panel(pool, "/x.step", [GmshProd(), GmshDefault(), GmshAlt()], timeout_s=100)  # type: ignore[arg-type]
+    assert pool.budgets == [100, 200, 100, 100] * 2
+
+
+def test_outside_run_panel_a_member_still_retries() -> None:
+    pool = _ScriptedPool(_TIMED_OUT, _TIMED_OUT)
+    GmshProd().run(pool, "/x.step", timeout_s=100)  # type: ignore[arg-type]
+    assert pool.budgets == [100, 200]
+
+
 # ---- Critical 3: gmsh runs as a child process, so its crash is the file's vote -----------------------
 
 
@@ -276,21 +319,64 @@ def _mesh(timeout_s: float = 30) -> dict:
     return mesh_kernel.mesh_gmsh({"step": "/x.step", "profile": "default", "timeout_s": timeout_s})
 
 
-@pytest.mark.parametrize("sig", [signal.SIGSEGV, signal.SIGABRT, signal.SIGFPE])
-def test_a_gmsh_crash_is_a_vote_against_the_file(monkeypatch: pytest.MonkeyPatch, sig: signal.Signals) -> None:
-    _child_that(monkeypatch, f"import os,signal; os.kill(os.getpid(), signal.{sig.name})")
+_CRASH_NAMES = ("SIGILL", "SIGABRT", "SIGBUS", "SIGFPE", "SIGSEGV")
+
+
+def test_the_crash_signal_set_is_exactly_the_five_by_name() -> None:
+    assert panel.CRASH_SIGNALS == {int(getattr(signal, n)) for n in _CRASH_NAMES}  # SIGBUS is 7 on Linux, 10 on macOS
+
+
+@pytest.mark.parametrize("name", _CRASH_NAMES)
+def test_a_gmsh_crash_is_a_vote_against_the_file(monkeypatch: pytest.MonkeyPatch, name: str) -> None:
+    _child_that(monkeypatch, f"import os,signal; os.kill(os.getpid(), signal.{name})")
     value = _mesh()
     assert value["status"] == "crashed" and value["error_kind"] == panel.MESHER_CRASH_KIND
+    assert value["cause"] == f"signal_{int(getattr(signal, name))}"
     result = result_from_call("gmsh_default", _call(value))
     assert result.status == "crashed" and result.error_kind == panel.MESHER_CRASH_KIND
     assert not panel.is_inconclusive(result)
 
 
-def test_sigkill_is_inconclusive_and_counted(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_non_crash_signal_is_infrastructure_with_its_number() -> None:
+    assert panel.signal_verdict(int(signal.SIGTERM)) == (INFRASTRUCTURE_KIND, f"signal_{int(signal.SIGTERM)}")
+    assert panel.signal_verdict(int(signal.SIGKILL)) == (INFRASTRUCTURE_KIND, "sigkill")
+
+
+def test_sigkill_once_is_inconclusive_and_counted(monkeypatch: pytest.MonkeyPatch) -> None:
     _child_that(monkeypatch, "import os,signal; os.kill(os.getpid(), signal.SIGKILL)")
-    result = result_from_call("gmsh_prod", _call(_mesh()))
+    result = result_from_call("gmsh_prod", _call(_mesh()), kills=1)
     assert result.status == "crashed" and result.error_kind == INFRASTRUCTURE_KIND and result.cause == "sigkill"
     assert panel.inconclusive_tally([result, MemberResult("ok", "pass")]) == {"gmsh_prod:sigkill": 1}
+
+
+_SIGKILLED = {"status": "crashed", "error_kind": INFRASTRUCTURE_KIND, "cause": "sigkill",
+              "message": "gmsh process killed by signal 9", "located": [], "min_sicn": None, "elements": 0}
+
+
+def test_sigkill_is_retried_once_at_the_same_budget() -> None:
+    pool = _ScriptedPool(_call(_SIGKILLED), _call(_PASS))
+    result = GmshProd().run(pool, "/x.step", timeout_s=100)  # type: ignore[arg-type]
+    assert pool.budgets == [100, 100]
+    assert result.status == "pass" and "re-run after a SIGKILL" in result.message and result.seconds == 5.0
+
+
+def test_sigkill_twice_is_a_vote_against_the_file_and_stays_auditable() -> None:
+    pool = _ScriptedPool(_call(_SIGKILLED), _call(_SIGKILLED))
+    result = GmshProd().run(pool, "/x.step", timeout_s=100)  # type: ignore[arg-type]
+    assert pool.budgets == [100, 100]
+    assert (result.status, result.error_kind, result.cause) == ("crashed", panel.MESHER_CRASH_KIND, "sigkill_twice")
+    assert not panel.is_inconclusive(result)
+
+
+def test_a_kill_then_a_timeout_blames_nobody_and_the_tally_says_why() -> None:
+    pool = _ScriptedPool(_call(_SIGKILLED), _call(None, status="timeout", error="slow"))
+    result = GmshProd().run(pool, "/x.step", timeout_s=100)  # type: ignore[arg-type]
+    assert panel.is_inconclusive(result) and result.cause == "timeout_once"
+
+
+def test_mesh_gmsh_refuses_a_call_with_no_clock() -> None:
+    with pytest.raises(ValueError, match="timeout_s"):
+        mesh_kernel.mesh_gmsh({"step": "/x.step", "profile": "default"})
 
 
 def test_a_python_error_in_the_child_is_infrastructure_not_the_file(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -332,7 +418,7 @@ def _fake_gmsh(import_error: BaseException) -> types.ModuleType:
     mod.initialize = lambda **_k: None  # type: ignore[attr-defined]
     mod.finalize = lambda: None  # type: ignore[attr-defined]
     mod.option = types.SimpleNamespace(  # type: ignore[attr-defined]
-        setNumber=lambda k, v: values.__setitem__(k, v), getNumber=lambda k: values[k]
+        setNumber=lambda k, v: values.__setitem__(k, v), getNumber=lambda k: values.get(k, 0.0)
     )
     mod.logger = types.SimpleNamespace(start=lambda: None, get=lambda: [])  # type: ignore[attr-defined]
     mod.model = types.SimpleNamespace(occ=types.SimpleNamespace(importShapes=raise_it, synchronize=lambda: None))  # type: ignore[attr-defined]
@@ -349,6 +435,7 @@ def test_a_gmsh_error_inside_the_meshing_block_is_the_files_answer(monkeypatch: 
     monkeypatch.setitem(sys.modules, "gmsh", _fake_gmsh(Exception("Could not open file")))
     answer = mesh_child.run_in_process({"step": "/x.step", "profile": "default"})
     assert answer["status"] == "fail"
+    assert answer["algorithms"] == [0, 0]  # read back from gmsh, whatever it holds, not recomputed
 
 
 # ---- Important 6: the marker is enforced where the panel runs ----------------------------------------
@@ -371,21 +458,58 @@ def test_run_panel_refuses_a_failure_with_no_kind(pool: WorkerPool, status: str)
         run_panel(pool, "/x.step", [_Unmarked(status)], timeout_s=5)
 
 
-def test_one_infrastructure_constant() -> None:
-    """The marker is one object: the other modules that name it must import it, not retype it."""
+_VERDICT_DIR = Path(panel.__file__).parent
+
+
+def _literal_sites(text: str, literal: str) -> list[int]:
+    return [n.lineno for n in ast.walk(ast.parse(text)) if isinstance(n, ast.Constant) and n.value == literal]
+
+
+def test_no_verdict_module_but_panel_spells_the_infrastructure_literal() -> None:
+    """The marker is defined once. This reads the SOURCE, because comparing two modules' constants with `is`
+    proves nothing: CPython interns identifier-like string constants, so a retyped copy is the same object."""
     assert INFRASTRUCTURE_KIND == "infrastructure"
-    for module_name, attr in (
-        ("meshpipeline.cad.repair_v4.verdict.assemble", "INFRASTRUCTURE_KIND"),
-        ("meshpipeline.cad.repair_v4.verdict.netgen_member", "INFRASTRUCTURE"),
-    ):
-        module = pytest.importorskip(module_name, reason="lands with Task 4's branch")
-        assert getattr(module, attr) is INFRASTRUCTURE_KIND, f"{module_name}.{attr} is a copy"
+    assert _literal_sites((_VERDICT_DIR / "panel.py").read_text(), "infrastructure"), "panel.py defines it"
+    copies = {
+        path.name: sites
+        for path in sorted(_VERDICT_DIR.glob("*.py"))
+        if path.name != "panel.py" and (sites := _literal_sites(path.read_text(), "infrastructure"))
+    }
+    assert not copies, f"retyped literal (import panel.INFRASTRUCTURE_KIND): {copies}"
 
 
-def test_gmsh_members_use_the_one_constant() -> None:
-    import meshpipeline.cad.repair_v4.verdict.gmsh_members as gm
+_FOLLOW = """
+import importlib, pkgutil, sys
+from meshpipeline.cad.repair_v4.verdict import panel
+fresh = "".join(["not-", "the-marker-", "any-more"])
+panel.INFRASTRUCTURE_KIND = fresh            # BEFORE anything that imports it by name
+pkg = importlib.import_module("meshpipeline.cad.repair_v4.verdict")
+imported, copies = [], []
+for info in pkgutil.iter_modules(pkg.__path__):
+    if info.name == "panel":
+        continue
+    try:
+        mod = importlib.import_module(f"{pkg.__name__}.{info.name}")
+    except ImportError:
+        continue
+    imported.append(info.name)
+    copies += [f"{info.name}.{k}" for k, v in vars(mod).items() if isinstance(v, str) and v == "infrastructure"]
+from meshpipeline.cad.repair_v4.verdict.gmsh_members import result_from_call
+from meshpipeline.cad.repair_v4.worker_pool import CallResult
+r = result_from_call("m", CallResult(ok=False, value=None, error="x", status="crashed", seconds=0.0))
+print(repr((sorted(imported), copies, r.error_kind == fresh)))
+"""
 
-    assert gm.INFRASTRUCTURE_KIND is INFRASTRUCTURE_KIND
+
+def test_every_verdict_module_reads_the_constant_it_does_not_copy_it() -> None:
+    """Patch `panel.INFRASTRUCTURE_KIND` to a string no literal can equal, THEN import every verdict module
+    (so each `from panel import ...` binds the patched one): no module may still hold the old string, and the
+    gmsh members must produce the patched value. A retyped literal fails by value, interning or not."""
+    done = subprocess.run([sys.executable, "-c", _FOLLOW], capture_output=True, text=True, check=False)
+    assert done.returncode == 0, done.stderr
+    imported, copies, followed = ast.literal_eval(done.stdout.strip().splitlines()[-1])
+    assert {"gmsh_members", "mesh_kernel"} <= set(imported), imported
+    assert copies == [] and followed is True, (copies, followed)
 
 
 def test_run_panel_logs_every_inconclusive_member(pool: WorkerPool, caplog: pytest.LogCaptureFixture) -> None:
@@ -404,6 +528,7 @@ def test_member_result_defaults() -> None:
     )
     assert MemberResult("a", "fail", "k", "m").located is not MemberResult("b", "fail", "k", "m").located
     assert MemberResult("n", "crashed", "crash", "boom").located == []
+    assert bare.cause is None and bare.algorithms is None
 
 
 # ---- Important 4 (cache key): prod's size rule is sampled widely ------------------------------------

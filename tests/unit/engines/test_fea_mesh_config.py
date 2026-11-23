@@ -127,3 +127,29 @@ def test_plans_base_size_is_the_configs_base_size() -> None:
     for diag in (0.05, 0.2236, 1.0, 3.3):
         plan = P.finish(record, [], hist, diag_m=diag, limit=P.ELEMENT_LIMIT)
         assert plan["base_size_m"] == pytest.approx(fea_mesh_config.options(diag)["Mesh.MeshSizeMax"], rel=1e-5)
+
+
+def test_the_adapter_build_calls_the_setter_and_spells_no_literal() -> None:
+    """`test_adapter_switch_comes_from_the_config` calls `apply_surface_switch` directly, so it cannot see
+    the call site. Read the source: some function other than the setter calls it, and `Mesh.AlgorithmSwitchOnFailure`
+    is named nowhere else in the adapter (a literal at the call site would bypass the config)."""
+    import ast
+    import inspect
+
+    tree = ast.parse(inspect.getsource(fea_adapter))
+    callers = {
+        fn.name
+        for fn in ast.walk(tree)
+        if isinstance(fn, ast.FunctionDef) and fn.name != "apply_surface_switch"
+        for call in ast.walk(fn)
+        if isinstance(call, ast.Call) and getattr(call.func, "id", None) == "apply_surface_switch"
+    }
+    assert "_build" in callers, callers
+    spellers = {
+        fn.name
+        for fn in ast.walk(tree)
+        if isinstance(fn, ast.FunctionDef)
+        for node in ast.walk(fn)
+        if isinstance(node, ast.Constant) and node.value == "Mesh.AlgorithmSwitchOnFailure"
+    }
+    assert spellers == {"apply_surface_switch"}, spellers

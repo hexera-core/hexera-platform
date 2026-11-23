@@ -5,7 +5,8 @@
 #             kernel function `mesh_gmsh` (`mesh_kernel`), where the profiles are defined.
 """gmsh as three different meshers: Hexera's production FEA settings, gmsh with nothing set, and gmsh
 with a 2D/3D algorithm pair neither of those uses, at its own element size. A file that meshes on one
-and not the others is the failure the panel exists to find; `mesh_child.algorithms` is the pair each runs.
+and not the others is the failure the panel exists to find; `mesh_child.algorithms` is the pair each is
+configured to run and `MemberResult.algorithms` the pair gmsh reported after a real run.
 Each runs in a child process (`mesh_kernel`), so a gmsh crash is a vote against the file."""
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ from __future__ import annotations
 from meshpipeline.cad.repair_v4.verdict.mesh_kernel import profile_config
 from meshpipeline.cad.repair_v4.verdict.panel import (
     INFRASTRUCTURE_KIND,
+    MESHER_CRASH_KIND,
     Located,
     MemberResult,
     call_with_timeout_retry,
@@ -28,18 +30,30 @@ def timed_out(call: CallResult) -> bool:
     return call.status == "timeout" or (call.ok and call.value is not None and call.value.get("status") == "timeout")
 
 
-def result_from_call(name: str, call: CallResult, timeouts: int = 0) -> MemberResult:
-    """A worker's answer as the member's result; `timeouts` is how many of the attempts timed out.
+def killed(call: CallResult) -> bool:
+    """The gmsh child was SIGKILLed (the kernel function reports it inside an `ok` call)."""
+    return call.ok and call.value is not None and call.value.get("cause") == "sigkill"
 
-    A timeout blames the file only when it repeated at twice the budget (`panel.timeout_kind`); one
-    is infrastructure. A pool-level crash (worker died, none to spawn) is infrastructure too; gmsh dying
+
+def _timeout_cause(timeouts: int, skipped: bool) -> str:
+    if timeouts >= 2:
+        return "timeout_after_hang" if skipped else "timeout_twice"
+    return "timeout_retry_spent" if skipped else "timeout_once"
+
+
+def result_from_call(name: str, call: CallResult, timeouts: int = 0, kills: int = 0, skipped: bool = False) -> MemberResult:
+    """A worker's answer as the member's result; `timeouts` / `kills` are how many of the attempts timed
+    out / were SIGKILLed, `skipped` that a retry was due and the file's budget had none left.
+
+    A timeout or a SIGKILL blames the file only when it repeated (`panel.timeout_kind`); one is
+    infrastructure. A pool-level crash (worker died, none to spawn) is infrastructure too; gmsh dying
     is not that - it is a child process whose exit the kernel function classified (`mesh_kernel`) and
     arrives here as an `ok` call whose value says `crashed`. Any other kernel failure raises
     `CheckerUnavailable`."""
     if call.status == "timeout":
         return MemberResult(
             name, "timeout", timeout_kind(timeouts), call.error or "", [], None, 0, call.seconds,
-            "timeout_once" if timeouts < 2 else "timeout_twice",
+            _timeout_cause(timeouts, skipped),
         )
     if call.status == "crashed":
         return MemberResult(
@@ -51,9 +65,17 @@ def result_from_call(name: str, call: CallResult, timeouts: int = 0) -> MemberRe
     if value["status"] == "timeout":
         return MemberResult(
             name, "timeout", timeout_kind(timeouts), value["message"], [], None, 0, call.seconds,
-            "timeout_once" if timeouts < 2 else "timeout_twice",
+            _timeout_cause(timeouts, skipped),
         )
     if value["status"] == "crashed":
+        if value.get("cause") == "sigkill":
+            # the OOM killer is not evidence on one sight; the same death twice is the file. The cause
+            # keeps the tally auditable either way.
+            kind = MESHER_CRASH_KIND if kills >= 2 else INFRASTRUCTURE_KIND
+            cause = ("sigkill_after_doom" if skipped else "sigkill_twice") if kills >= 2 else (
+                "sigkill_retry_spent" if skipped else "sigkill"
+            )
+            return MemberResult(name, "crashed", kind, value["message"], [], None, 0, call.seconds, cause)
         return MemberResult(
             name, "crashed", value["error_kind"], value["message"], [], None, 0, call.seconds, value.get("cause")
         )
@@ -61,15 +83,21 @@ def result_from_call(name: str, call: CallResult, timeouts: int = 0) -> MemberRe
         Located(item["entity"], None if item["xyz"] is None else tuple(item["xyz"]), item["mesher_tag"])
         for item in value["located"]
     ]
+    retried = ("re-run at twice the budget after a timeout. " if timeouts == 1 else "") + (
+        "re-run after a SIGKILL. " if kills == 1 else ""
+    )
+    algorithms = value.get("algorithms")
     return MemberResult(
         name,
         value["status"],
         value["error_kind"],
-        ("re-run at twice the budget after a timeout. " if timeouts == 1 else "") + value["message"],
+        retried + value["message"],
         located,
         value["min_sicn"],
         int(value["elements"]),
         call.seconds,
+        None,
+        None if algorithms is None else (int(algorithms[0]), int(algorithms[1])),
     )
 
 
@@ -86,8 +114,10 @@ class GmshMember:
         def payload(budget_s: float) -> dict:
             return {"step": str(step_path), "profile": self.profile, "timeout_s": inner_timeout_s(budget_s)}
 
-        retried = call_with_timeout_retry(pool, self.fn_name, payload, timeout_s=timeout_s, timed_out=timed_out)
-        return result_from_call(self.name, retried.call, retried.timeouts)
+        retried = call_with_timeout_retry(
+            pool, self.fn_name, payload, timeout_s=timeout_s, timed_out=timed_out, killed=killed
+        )
+        return result_from_call(self.name, retried.call, retried.timeouts, retried.kills, retried.skipped)
 
 
 class GmshProd(GmshMember):

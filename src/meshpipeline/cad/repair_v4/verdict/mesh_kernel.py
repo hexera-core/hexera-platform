@@ -9,7 +9,10 @@ made of. Inside the pool worker such an abort and a dead worker are the same EOF
 gmsh read as 'the infrastructure died' and left the scoreboard. As a child, the exit status says which:
 
   killed by SIGSEGV / SIGABRT / SIGFPE / SIGILL / SIGBUS   -> `crashed`, `gmsh_crash`: a vote against the file
-  killed by SIGKILL (OOM killer, an operator) or another   -> `crashed`, `infrastructure`: inconclusive
+  killed by SIGKILL (OOM killer, an operator) or another   -> `crashed`, `infrastructure`: inconclusive on
+                                                               one sight; the member re-runs a SIGKILL once and
+                                                               a repeat is `gmsh_crash` (a memory-hungry file
+                                                               dies twice; a flaky host rarely does)
   exits non-zero with a Python traceback                   -> raises: a bug or a MemoryError, not the file
   exits non-zero without one (gmsh called exit)            -> `crashed`, `gmsh_crash`
   outlives `timeout_s`                                     -> `timeout`: the member retries it at twice the time
@@ -62,6 +65,8 @@ def _stopped(status: str, kind: str | None, message: str, cause: str | None = No
 def mesh_gmsh(payload: dict) -> dict:
     """Mesh `payload["step"]` under `payload["profile"]` in a child process, within `payload["timeout_s"]`."""
     mesh_child._profile(str(payload["profile"]), 1.0)  # validates the profile name before a process starts
+    if payload.get("timeout_s") is None:
+        raise ValueError("mesh_gmsh needs payload['timeout_s']: a child process with no clock can hang the worker")
     timeout_s = float(payload["timeout_s"])
     with tempfile.TemporaryDirectory(prefix="mesh_gmsh_") as tmp:
         payload_path, answer_path = str(Path(tmp, "payload.json")), str(Path(tmp, "answer.json"))

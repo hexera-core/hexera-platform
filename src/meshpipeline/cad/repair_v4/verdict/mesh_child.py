@@ -18,7 +18,10 @@ propagates, the child exits non-zero with a traceback, and the parent reports in
 
 The three profiles are three different meshers, not one mesher at three sizes. The 2D/3D algorithm pair
 each effectively runs (gmsh's own defaults filled in, verified against gmsh 4.15.2: `Mesh.Algorithm` 6
-Frontal-Delaunay, `Mesh.Algorithm3D` 1 Delaunay) is `algorithms(name)`; `test_panel` fails if two coincide.
+Frontal-Delaunay, `Mesh.Algorithm3D` 1 Delaunay) is `algorithms(name)`; `test_panel` fails if two coincide,
+and the answer carries `algorithms` as gmsh read them back after meshing. The members CAN disagree on a real
+file (native `test_the_members_can_disagree_on_a_real_file`); the fixtures do not show which of the
+differences (OCC scale, element size, 2D or 3D algorithm) drives a disagreement, and no claim is made.
 
   prod     (2D 6 Frontal-Delaunay, 3D 10 HXT)      the DEFAULT production plan only: no zones, hints,
                                                     Delaunay fallback pass or thread counts (see
@@ -138,6 +141,11 @@ def _set(gmsh, key: str, value: float) -> None:
         raise RuntimeError(f"gmsh option {key} did not take: set {value}, reads {got}")
 
 
+def _read_algorithms(gmsh) -> list[int]:
+    """`[Mesh.Algorithm, Mesh.Algorithm3D]` as gmsh holds them now: what it actually meshed with."""
+    return [int(gmsh.option.getNumber("Mesh.Algorithm")), int(gmsh.option.getNumber("Mesh.Algorithm3D"))]
+
+
 def _tet_qualities(gmsh) -> list[float]:
     import numpy as np
 
@@ -173,8 +181,10 @@ def _answer(
     located: list[dict] | None = None,
     min_sicn: float | None = None,
     elements: int = 0,
+    algorithms: list[int] | None = None,
 ) -> dict:
     return {
+        "algorithms": algorithms,
         "status": status,
         "error_kind": kind,
         "message": message,
@@ -221,7 +231,7 @@ def run_in_process(payload: dict) -> dict:
             failure = classify(str(exc), gmsh.logger.get(), stage=stage)
             failed_kind = "import_failed" if stage == STAGE_IMPORT else failure.kind
             located = _located(failure, boxes, scale, quantum_for(_diagonal(boxes) / scale))
-            return _answer("fail", failed_kind, failure.message, located)
+            return _answer("fail", failed_kind, failure.message, located, algorithms=_read_algorithms(gmsh))
         qualities = _tet_qualities(gmsh)
         status, kind = judge(qualities)
         finite = [q for q in qualities if math.isfinite(q)]
@@ -231,7 +241,9 @@ def run_in_process(payload: dict) -> dict:
             "inverted_elements": f"{sum(1 for q in qualities if not q >= 0.0)} inverted element(s)",
             "low_quality": f"minimum SICN {min(qualities):.4g} is below {MIN_SICN}",
         }[kind]
-        return _answer(status, kind, message, None, min(finite) if finite else None, len(qualities))
+        return _answer(
+            status, kind, message, None, min(finite) if finite else None, len(qualities), _read_algorithms(gmsh)
+        )
     finally:
         try:
             gmsh.finalize()
