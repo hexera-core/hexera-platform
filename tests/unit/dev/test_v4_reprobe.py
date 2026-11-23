@@ -916,3 +916,25 @@ def test_task43_panel_failures_no_longer_collapse_into_one_stratum():
     families = [rp.panel_family([("fail", k, "") for k in kinds]) for kinds in shapes]
     assert families.count("other") == 1
     assert len(set(families)) >= 5
+
+
+def _panel_row(i, family, statuses, source="abc_fail"):
+    panel = [{"name": f"m{j}", "status": s, "error_kind": None, "min_sicn": None} for j, s in enumerate(statuses)]
+    return rp.ProbeRow(f"p{i}.step", _sha(i), source, {"tier": "full", "clean": False, "counts_for_scoreboard": True,
+                                                       "hard": [], "panel": panel}, "panel", family)
+
+
+def test_stratum_separates_a_file_failing_one_member_from_one_failing_four():
+    one = _panel_row(1, "low_quality", ["fail", "pass", "pass", "pass"])
+    four = _panel_row(2, "low_quality", ["fail", "fail", "fail", "fail"])
+    assert rp.failing_members(one) == 1 and rp.failing_members(four) == 4
+    assert rp._stratum(one) != rp._stratum(four)
+    assert rp._stratum(one) == ("panel", "1", "quality", "abc_fail")
+
+
+def test_stratum_keeps_source_and_buckets_kinds_coarsely():
+    assert rp._stratum(_panel_row(1, "overlapping_facets", ["fail"], "occt")) == ("panel", "1", "geometry", "occt")
+    assert rp._stratum(_panel_row(2, "hxt_3d_failed", ["fail"]))[2] == "mesher"
+    valid = _row(3, "valid", "round_trip_invalid")
+    assert rp._stratum(valid) == ("valid", "-", "valid_other", "abc_fail")
+    assert rp._stratum(_row(4, "valid", "body_overlap"))[2] == "body_overlap"

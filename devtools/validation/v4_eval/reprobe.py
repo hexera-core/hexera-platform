@@ -532,8 +532,38 @@ class Splits:
     strata: dict[str, dict[str, int]] = field(default_factory=dict)
 
 
-def _stratum(row: ProbeRow) -> tuple[str, str, str]:
-    return (str(row.first_failing_layer), row.family, row.source)
+#: Coarse panel kinds. Three buckets, every one occupied in Task 43's 33 measured panel failures: the mesher
+#: named a defect of the geometry; the mesher built a mesh but not a good enough one; the mesher failed or
+#: gave no reason. The fine `family` stays on the row for a human; it is NOT the stratification key because the
+#: panel disagrees with itself on 51 of 73 files, which makes the family of "the" failing member unstable.
+_GEOMETRY_FAMILIES = frozenset({"periodic_surface", "overlapping_facets", "edge_through_face", "no_volume",
+                                "plc_intersection", "open_loop", "boundary_recovery"})
+#: Coarse valid-layer kinds that Task 43 measured in number (15 / 7 / 7); the other four (brep_invalid 2,
+#: round_trip_invalid 2) share one bucket rather than each being a stratum of two files.
+_VALID_KINDS = frozenset({"body_overlap", "open_shell", "self_intersection"})
+
+
+def failing_members(row: ProbeRow) -> int:
+    """How many panel members did not pass. A stable property of the file (Task 43: 9 files pass all four, 13
+    fail all four, 51 are mixed), unlike which member fails first."""
+    return sum(1 for m in row.verdict_summary.get("panel", []) if m.get("status") != "pass")
+
+
+def coarse_kind(row: ProbeRow) -> str:
+    if row.first_failing_layer == "panel":
+        if row.family in _GEOMETRY_FAMILIES:
+            return "geometry"
+        return "quality" if row.family == "low_quality" else "mesher"
+    if row.first_failing_layer == "valid":
+        return row.family if row.family in _VALID_KINDS else "valid_other"
+    return "faithful"
+
+
+def _stratum(row: ProbeRow) -> tuple[str, str, str, str]:
+    """(first_failing_layer, panel members failing, coarse kind, source). The member count is only a stratum
+    axis for the panel layer: a layer-1 failure stopped before the panel was a verdict on the file."""
+    members = str(failing_members(row)) if row.first_failing_layer == "panel" else "-"
+    return (str(row.first_failing_layer), members, coarse_kind(row), row.source)
 
 
 def _apportion(sizes: dict[Any, int], total: int) -> dict[Any, int]:
@@ -576,7 +606,7 @@ def build_splits(
     Failing set: rows with a first failing layer, minus `no_solids` (not a repairable defect), minus
     `unbounded_geometry` (measured, outside the definition: counted in `excluded_unbounded`, never a failure), minus
     anything a conclusive verdict did not produce. Dev and held-out are drawn from it stratified by
-    (first_failing_layer, family, source): each stratum contributes in proportion to its size
+    (first_failing_layer, failing panel members, coarse kind, source): each stratum contributes in proportion to its size
     (largest remainder), and within a stratum a seeded shuffle of sha256-sorted rows gives dev first and
     held-out from what is left, so the two are disjoint by construction. Variants of one part (a shared
     `group`) never straddle dev and held-out: held-out skips any group dev already holds.
@@ -599,7 +629,7 @@ def build_splits(
     certified = [r for r in rows if r.first_failing_layer is None and r.verdict_summary.get("clean")
                  and r.verdict_summary.get("tier") == "full"]
 
-    by_stratum: dict[tuple[str, str, str], list[ProbeRow]] = defaultdict(list)
+    by_stratum: dict[tuple[str, str, str, str], list[ProbeRow]] = defaultdict(list)
     for r in failing:
         by_stratum[_stratum(r)].append(r)
     sizes = {k: len(v) for k, v in by_stratum.items()}
