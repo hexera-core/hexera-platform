@@ -124,3 +124,12 @@ def verify(session_id: str, faces: list) -> tuple[list[dict], list[str]]:
         k = fm.names.index(fid)
         kept.append({"id": fid, "label": FM.label(fm, k), "sig": FM.signature(fm, k, scale=scale)})
     return kept, dropped
+
+
+def refused(dropped: list[str]) -> str:
+    """The one plain line a message or note is refused with when a face picked with it is not on the model."""
+    names = [str(d) for d in dropped if str(d)] or ["A picked face"]
+    shown = ", ".join(names[:3]) + (f" and {len(names) - 3} more" if len(names) > 3 else "")
+    if len(names) == 1:
+        return f"{shown} is not on the model. Click the face on the model again, then send."
+    return f"{shown} are not on the model. Click the faces on the model again, then send."

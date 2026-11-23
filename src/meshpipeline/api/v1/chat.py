@@ -120,6 +120,26 @@ def _last_choices(messages) -> list[dict]:
     return choices_for(str(last[0].get("content") or ""))
 
 
+async def _picked_faces(session_id, faces, owner_id: str, organization_id) -> list[dict]:
+    """NOTE-17: the faces picked with a message or note, re-read against the session's face map (application/
+    face_pick.verify) - the map's own label and signature are what is kept. A face not on the map refuses the send
+    in one plain line; it is never guessed. Only the owner's session is read."""
+    if not faces:
+        return []
+    import asyncio
+
+    from meshpipeline.application import face_pick
+    from meshpipeline.persistence.repositories.session_repository import SessionRepository
+    async with get_db() as db:
+        owned = await SessionRepository().get_for_owner(db, session_id, owner_id, organization_id=organization_id)
+    if owned is None:
+        raise HTTPException(404, "Session not found")
+    kept, dropped = await asyncio.to_thread(face_pick.verify, str(session_id), [f.model_dump() for f in faces])
+    if dropped:
+        raise HTTPException(422, face_pick.refused(dropped))
+    return kept
+
+
 def _require_session(session, session_id):
     if session is None:
         raise HTTPException(
@@ -142,10 +162,11 @@ async def chat_message(body: ChatMessageIn, owner_id: str = Depends(owner_dep),
 
     session_repo = SessionRepository()
     session_id = body.session_id
+    faces = await _picked_faces(session_id, getattr(body, "faces", None), owner_id, organization_id)
     inbound = msg.InboundMessage(session_id=session_id, owner_id=owner_id,
                                  content=body.content, organization_id=organization_id,
                                  attachments=tuple({"id": a} for a in getattr(body, "attachments", None) or ()),
-                                 faces=tuple(f.model_dump() for f in getattr(body, "faces", None) or ()))
+                                 faces=tuple(faces))
     outcome = await msg.accept(inbound, session_repo=session_repo, db_factory=get_db,
                                logger=logger)
 
@@ -231,10 +252,11 @@ async def chat_notes(body: ChatNoteIn, owner_id: str = Depends(owner_dep),
                      organization_id: str = Depends(org_dep)) -> dict:
     from meshpipeline.persistence.repositories.session_repository import SessionRepository
 
+    faces = await _picked_faces(body.session_id, body.faces, owner_id, organization_id)
     status, session = await msg.add_console_note(
         body.session_id, owner_id, body.text, session_repo=SessionRepository(),
         db_factory=get_db, organization_id=organization_id,
-        attachments=[{"id": a} for a in body.attachments], faces=[f.model_dump() for f in body.faces])
+        attachments=[{"id": a} for a in body.attachments], faces=faces)
     if status is msg.NoteStatus.not_found:
         raise HTTPException(404, "Session not found")
     if status is msg.NoteStatus.empty:
