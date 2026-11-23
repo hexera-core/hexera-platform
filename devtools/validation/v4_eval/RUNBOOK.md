@@ -287,8 +287,29 @@ Exit 0 = report OK, 2 = report written but UNRELIABLE (read the warnings first),
 mixed commit or image, uncleared source, missing frozen commit, a row the checker's own definition
 contradicts). An arm with more than 10% inconclusive files is NOT MEASURED and its clean rate is withheld.
 The held-out split is for this report only: never for tuning, prompt selection, thresholds or memory
-(`evalspec.refuse_heldout_for_tuning`). The harness-side writer of arm rows (`run_arm --mode harness`
-emitting `ArmRow`s with the wave provenance) is not built yet; it waits on the search arms (Tasks 17-19).
+(`evalspec.refuse_heldout_for_tuning`).
+
+**The harness side (Task 24).** `launch_fleet.py --profile v4 --wave <name> --wave-id <id>` claims the wave through
+`evalspec.plan_wave` (the wave's type, hence its cap, comes from the definition; `--wave-type` may be omitted and a
+contradiction is refused) and hands every VM `v4-wave` and `v4-plan-provenance` metadata; `vm_startup.sh` then runs
+`run_arm.py --mode harness --plan-provenance <json>`. Each shard copies that provenance (wave, slot, cap, arms) into its
+`PROVENANCE.json`, which is what lets a held-out report tell the once-only slot was claimed; a shard whose own flags
+disagree with the plan refuses. Every row is checked against `report.parse_arm_rows` BEFORE it is written, so a row the
+report would refuse (a search that measured nothing written as `inconclusive: false`) fails on the shard. A file the
+checker could not judge is an excluded file or an `inconclusive: true` row, never a conclusive failure. The
+"was this file measured" rule is `repair_v4/measurement.py`, imported by the search driver and the report alike.
+`--mode harness` without a plan is still repair_corpus's own run and writes no `ArmRow`s.
+
+The per-file arm dispatch is `run_arm.ARM_RUNNER` (Task 22c's `arms.run_file`, adapted); with none, `--mode harness`
+refuses. The end-to-end proof that infrastructure is not a verdict needs the kernel, gmsh and Netgen, so it runs in the
+mesh image (it spends nothing and calls no model):
+
+    docker run --rm -v $PWD:/w -w /w meshpipeline-mesh:native bash -lc \
+        'PYTHONPATH=/w/src python devtools/validation/v4_eval/check_infra_not_verdict.py --work /tmp/infra-check'
+
+It judges real files with gmsh present (the split's own verdict), runs one shard with gmsh unimportable, and asserts the
+dead file reads `inconclusive: true`, is left out of the clean rate, and that `input_only`'s `in_clean` equals the split's
+verdict. After 22c lands, pass `--runner pkg.module:factory` to run it against the real dispatch.
 
 ## If a gate's own plumbing fails instead of the code
 

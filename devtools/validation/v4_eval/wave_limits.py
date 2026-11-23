@@ -1,14 +1,14 @@
 # Responsibility: The launch-time rules the ledger cannot enforce for itself: how many checkpoint waves and
 #                 held-out waves may exist, that every shard of a wave has a unique index, and the per-shard cap.
-# Owns: the wave registry (markers `_waves/...` in the wave bucket, created with create-if-absent) and the shard
+# Owns: the wave registry (markers `slot/...` in the wave bucket (the SAME keys evalspec.claim_wave_slot takes and the report reads), created with create-if-absent) and the shard
 #       index check.
 # Boundaries: no network of its own. It talks to a `MarkerStore` (model_ledger) handed to it, so tests use a
 #             directory and production uses the wave bucket. The caps are READ from model_ledger.WAVE_CAPS_USD.
 """Wave-count limits and shard-index arithmetic for the v4 launcher.
 
 THE LIMITS. The plan allows at most 3 checkpoint waves and exactly one held-out wave. A wave is identified by its
-`wave_id`; its first launch claims a slot with an atomic create-if-absent of `_waves/held_out` or
-`_waves/checkpoint-<1..3>` (value: the wave id). A relaunch of the SAME wave id (a resume) finds its own slot and
+`wave_id`; its first launch claims a slot with an atomic create-if-absent of `slot/held_out/1` or
+`slot/checkpoint/<1..3>` (value: the wave id). A relaunch of the SAME wave id (a resume) finds its own slot and
 passes; a new id with no free slot is REFUSED. Two launchers racing for the last slot cannot both win, because the
 claim is the marker store's atomic create. Normal waves are not limited.
 
@@ -52,11 +52,15 @@ def _ledger() -> Any:
 
 
 WAVE_CAPS_USD: dict[str, float] = _ledger().WAVE_CAPS_USD
-HELD_OUT_KEY = "_waves/held_out"
+# ONE slot ledger. These were `_waves/held_out` and `_waves/checkpoint-N` while evalspec.plan_wave claimed
+# `slot/held_out/1` / `slot/checkpoint/N` for the same waves: two sources of truth for "has this slot been spent", so
+# the launcher's count and the report's slot could disagree and a held-out split could be spent twice. They are one key
+# space now; `check_wave_count` and `plan_wave` take the same marker, and a wave_id that holds it holds it for both.
+HELD_OUT_KEY = "slot/held_out/1"
 
 
 def checkpoint_key(n: int) -> str:
-    return f"_waves/checkpoint-{n}"
+    return f"slot/checkpoint/{n}"
 
 
 def cap_per_shard(wave_type: str, n_shards: int) -> float:

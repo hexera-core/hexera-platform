@@ -71,10 +71,13 @@ RUN_ARM="$(attr ${P}-run-arm)"; POOL="$(attr ${P}-pool)"; CACHE="$(attr ${P}-cac
 SOURCES="$(attr ${P}-sources)"
 # v4 only: the model ledger's inputs (wave id and type, the wave's N, and the secret holding the shards'
 # marker bucket), written by launch_fleet.py. Read only on a v4 VM; a v3 VM never asks for them.
-WAVE_ID=""; WAVE_TYPE=""; NSHARDS=""; MARKER_BUCKET=""
+WAVE_ID=""; WAVE_TYPE=""; NSHARDS=""; MARKER_BUCKET=""; PLAN_PROV=""
 if [ "${P}" = "v4" ]; then
   WAVE_ID="$(attr v4-wave-id)"; WAVE_TYPE="$(attr v4-wave-type)"; NSHARDS="$(attr v4-n-shards)"
   MARKER_BUCKET="$(attr v4-marker-bucket)"
+  # an ARM wave (launch_fleet --wave): the plan_wave provenance the launcher claimed, copied by every shard into its
+  # PROVENANCE.json. Empty for the re-probe wave, which runs --mode reprobe exactly as before.
+  PLAN_PROV="$(attr v4-plan-provenance)"
 fi
 # v4 ARMS wave only (empty for the re-probe): the WAVES entry, the arms, the split and where its json is staged,
 # and the element size the search arms need.
@@ -172,6 +175,12 @@ else
   # an arms wave runs over a split: without its json the shard could not say which files it was meant to run
   if [ -n "${ARMS}" ]; then
     gcloud storage cp "${SPLIT_URI}" "${W}/split.json" || fail_all "no staged split json at ${SPLIT_URI}"
+    # FAIL CLOSED: an arms wave without the plan the launcher claimed has no slot the report can check (and a
+    # dry-run placeholder is not a plan)
+    case "${PLAN_PROV}" in
+      "{"*) ;;
+      *) fail_all "no v4-plan-provenance metadata (got '${PLAN_PROV}'): refusing an arms wave whose slot was not claimed";;
+    esac
   fi
   mkdir -p "${W}/inputs/pool"
   gcloud storage cp -r "${PREFIX}/inputs/*" "${W}/inputs/pool/" || fail_all "no staged pool inputs"
@@ -240,11 +249,14 @@ run_unit() {
   else
   # v4: the key file is mounted only when the launcher named a secret
   local keyenv=(); [ -f "${W}/secret.env" ] && keyenv=(--env-file "${W}/secret.env")
-  # an ARMS wave: the mode, the arms and the split are the shard's own; the re-probe passes none of them
-  local mode=(--mode reprobe) splitmount=()
+  # an ARMS wave: the mode, the arms, the split and the element size are the shard's own; the re-probe passes none of
+  # them. The plan the launcher claimed (plan_wave's provenance) rides along on every shard of an arms wave and is
+  # checked by run_arm against the flags below before it is stamped into PROVENANCE.json.
+  local mode=(--mode reprobe) splitmount=() planarg=()
   if [ -n "${ARMS}" ]; then
     mode=(--mode arms --wave "${WAVE}" --arms "${ARMS}" --split "${SPLIT}" --split-file /eval/split.json --h-mm "${HMM}")
     splitmount=(-v "${W}/split.json:/eval/split.json:ro")
+    planarg=(--plan-provenance "${PLAN_PROV}")
   fi
   docker run --rm --name "v4eval-${k}" --cpus=1 -e PYTHONPATH=/eval/code/src \
     --env-file "${dir}.env" ${keyenv[@]+"${keyenv[@]}"} \
@@ -252,7 +264,7 @@ run_unit() {
     -v "${ldir}:/eval/ledger" \
     -v "${W}/pool.json:/eval/pool.json:ro" ${splitmount[@]+"${splitmount[@]}"} \
     --entrypoint python "${IMAGE}" "/eval/code/${RUN_ARM}" \
-    "${mode[@]}" --shard "${shard}" --inputs /eval/inputs --out /eval/out \
+    "${mode[@]}" ${planarg[@]+"${planarg[@]}"} --shard "${shard}" --inputs /eval/inputs --out /eval/out \
     --pool /eval/pool.json --cache-uri "${CACHE}" --sources "${SOURCES}" --commit "${COMMIT}" \
     --image "${IMAGE}" --machine-type "${MACHINE}" \
     --wave-type "${WAVE_TYPE}" --wave-id "${WAVE_ID}" --n-shards "${NSHARDS}" \

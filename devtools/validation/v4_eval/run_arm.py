@@ -6,6 +6,9 @@
 #       EXCLUDED.json and PROVENANCE.json.
 #       The shard's model-spend LEDGER (`WaveLedger.for_shard`) when the launcher names a wave: wave type, wave id,
 #       N, a durable log path and the wave bucket's marker store.
+#       The harness's ROW WRITER (`write_arm_rows`): every row is checked against the report's own row contract
+#       before it is written, and the plan's provenance (`plan_wave(...).provenance()`, incl. the claimed slot) is
+#       copied into PROVENANCE.json so the report can tell the once-only slot was claimed.
 # Boundaries: it measures nothing itself. `reprobe` runs the checker (through the verdict cache);
 #             repair_corpus runs the files in harness mode. Excluded files (infrastructure failures)
 #             are written to their own file and never into rows.jsonl.
@@ -39,6 +42,7 @@ import socket
 import sys
 import time
 import traceback
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -67,6 +71,11 @@ arms_mod = _load("v4_arms", HERE / "arms.py")
 #: The arms this runner can dispatch. v3_meshability_pass_ai is run by v3_eval's own run_arm (it is v3 as it ships).
 DISPATCHABLE_ARMS = evalspec.DISPATCHABLE_ARMS
 SEARCH_ARMS = ("search_det", "search_ai")
+
+
+#: A per-file runner that replaces `arms.run_file` in `run_arms`. None in production (the real dispatch runs); tests
+#: and the infrastructure check set it to run the same dispatch, row contract and provenance over a fake or a probe.
+ARM_RUNNER: ArmRunner | None = None
 
 
 def _now() -> str:
@@ -151,12 +160,18 @@ def split_entries(whole_pool: list[Any], split: str, split_file: str | None) -> 
 
 
 def run_arms(args: argparse.Namespace, out: Path, prov: dict, ledger: Any | None = None, *,
-             engine: Any = None) -> int:
-    """Every arm in `args.arms` on every file of this shard's slice of the split.
+             engine: Any = None, plan: dict | None = None, runner: ArmRunner | None = None) -> int:
+    """Every arm in `args.arms_resolved` on every file of this shard's slice of the split: THE one dispatch, whether
+    it was reached by `--mode arms` or by `--mode harness` with a plan.
 
     `ledger` is the shard's WaveLedger and is handed to every model arm; a model arm with no ledger is refused here
     (before a pool is started) rather than built without a cap. Nothing in this function prices or caps by itself:
-    the cap is the ledger's `admit`, which the proposer calls before every model request."""
+    the cap is the ledger's `admit`, which the proposer calls before every model request.
+
+    Rows are written ONLY through `write_arm_rows`, after the report's own row contract has accepted every one: a row
+    the report would refuse fails the shard (exit 4) and leaves no rows file. A file that could not be run is
+    EXCLUDED and gets no row. `runner`, when given, replaces `arms.run_file` (tests and the infrastructure check);
+    `plan` is the launcher's claimed plan, whose `arms`/`split`/`wave` stay as the report's comparison values."""
     from meshpipeline.cad.repair_v4.worker_pool import WorkerPool
 
     names = list(args.arms_resolved)
@@ -164,36 +179,53 @@ def run_arms(args: argparse.Namespace, out: Path, prov: dict, ledger: Any | None
     if model_arms and ledger is None:
         raise arms_mod.ModelArmWithoutLedger(
             f"{model_arms} make model calls and this shard has no WaveLedger (pass --wave-type ... --marker-bucket)")
-    route = None
-    if model_arms:
-        route = _prepare_model_route(args, prov)
-    engine = engine if engine is not None else arms_mod.RealEngine()
+    split_file = getattr(args, "split_file", None)
+    # held-out files are reported, never tuned on: a tuning purpose is refused for the held-out split here
+    if getattr(args, "purpose", "report") == "tuning":
+        evalspec.refuse_heldout_for_tuning(args.split, *([split_file] if split_file else []))
+    if any(a in SEARCH_ARMS for a in names) and not (args.h_mm and args.h_mm > 0):
+        raise ValueError("the search arms need --h-mm > 0: there is no default element size")
     listed = pool_mod.read_pool(Path(args.pool))
     whole_pool, dropped = reprobe_mod.split_allowed(listed)  # licence hold: F360 never reaches a shard
     prov["pool_listed"], prov["pool_dropped_by_source"] = len(listed), dropped
     reprobe_mod.check_not_quarantined(whole_pool)
-    in_split = {e.sha256 for e in split_entries(whole_pool, args.split, args.split_file)}
+    # every refusal about WHICH files run (Fusion 360 in the split, a file the pool lacks) comes before the model
+    # route is probed, so a bad split costs nothing
+    in_split = {e.sha256 for e in split_entries(whole_pool, args.split, split_file)}
     entries = shard_entries([e for e in select_sources(whole_pool, args.sources) if e.sha256 in in_split],
                             args.shard)
-    prov.update(shard_files=len(entries), arms=names, split=args.split, wave=args.wave, route=route,
-                h_mm=args.h_mm, max_turns=args.max_turns, sources=args.sources or "cleared",
-                ledger_attached=ledger is not None)
+    route = None
+    if model_arms:
+        route = _prepare_model_route(args, prov)
+    engine = engine if engine is not None else arms_mod.RealEngine()
+    # `arms` / `split` / `wave` are the PLAN's when there is one (copied before this runs) and the report compares
+    # them with the wave definition, so they are not overwritten; what this shard ran is `arms_run`
+    prov.update(shard_files=len(entries), arms_run=names, h_mm=args.h_mm, route=route, max_turns=args.max_turns,
+                sources=args.sources or "cleared", ledger_attached=ledger is not None)
+    if plan is None:
+        prov.update(arms=names, split=args.split, wave=args.wave)
     rows: list[dict] = []
     excluded: list[dict] = []
+    partial = out / "rows.partial.jsonl"  # streamed per file so a killed VM loses little; not the rows file
     pool = WorkerPool(args.workers)
     try:
-        with (out / "rows.jsonl").open("w", encoding="utf-8") as handle:
+        with partial.open("w", encoding="utf-8") as handle:
             for entry in entries:
                 for name in names:
                     spec = evalspec.ARMS[name]
                     try:
                         source = input_path(Path(args.inputs), entry)
                         with reprobe_mod._WallClock(args.file_timeout_s):
-                            outcome = arms_mod.run_file(
-                                name, entry, source, pool=pool, engine=engine, ledger=ledger, arm=spec,
-                                budget=spec.budget, h_mm=args.h_mm, route=route, max_turns=args.max_turns,
-                                job_id=f"{args.wave_id or 'wave'}:{entry.sha256[:12]}:{name}",
-                                workdir=str(out / "work" / entry.sha256[:12] / name), workers=args.workers)
+                            if runner is not None:
+                                row, why = runner(entry, name, source)
+                                outcome = arms_mod.ArmOutcome(row=row, excluded=None if row is not None
+                                                              else (why or "no row and no reason"))
+                            else:
+                                outcome = arms_mod.run_file(
+                                    name, entry, source, pool=pool, engine=engine, ledger=ledger, arm=spec,
+                                    budget=spec.budget, h_mm=args.h_mm, route=route, max_turns=args.max_turns,
+                                    job_id=f"{args.wave_id or 'wave'}:{entry.sha256[:12]}:{name}",
+                                    workdir=str(out / "work" / entry.sha256[:12] / name), workers=args.workers)
                     except FileNotFoundError as exc:
                         outcome = arms_mod.ArmOutcome(excluded=f"input_missing: {exc}")
                     except reprobe_mod.FileTimeout as exc:
@@ -211,11 +243,13 @@ def run_arms(args: argparse.Namespace, out: Path, prov: dict, ledger: Any | None
                                          "arm": name, "reason": outcome.excluded})
     finally:
         pool.close()
-    (out / "rows.json").write_text(json.dumps(rows, sort_keys=True))
-    (out / "EXCLUDED.json").write_text(json.dumps(excluded, indent=1))
+    try:
+        write_arm_rows(out, rows, excluded)
+    finally:
+        partial.unlink(missing_ok=True)  # written (or refused): the rows file is the record now, or there is none
     prov.update(rows=len(rows), excluded=len(excluded),
-                unmeasured_rows=sum(1 for r in rows if r["inconclusive"]),
-                model_usd=round(sum(r["model_usd"] for r in rows), 6))
+                unmeasured_rows=sum(1 for r in rows if r.get("inconclusive")),
+                model_usd=round(sum(float(r.get("model_usd") or 0.0) for r in rows), 6))
     return 0
 
 
@@ -234,13 +268,108 @@ def _prepare_model_route(args: argparse.Namespace, prov: dict) -> str:
     return route
 
 
-def run_harness(args: argparse.Namespace, out: Path, prov: dict) -> int:
+def run_repair_corpus(args: argparse.Namespace, out: Path, prov: dict) -> int:
+    """`--mode harness` with NO plan: repair_corpus's own harness run (its rows are not ArmRows and no report reads
+    them). A wave never takes this path: the launcher always hands its shards --plan-provenance."""
     rc = _load("repair_corpus", REPO / "devtools/validation/repair_corpus.py")
     argv = evalspec.harness_argv(inputs=args.inputs, out=str(out), shard=args.shard,
                                  file_timeout_s=args.file_timeout_s)
     prov["repair_corpus_argv"] = argv
     sys.argv = ["repair_corpus.py", *argv]
     return int(rc.main() or 0)
+
+
+class PlanProvenanceMismatch(RuntimeError):
+    """The `--plan-provenance` the launcher handed this shard disagrees with the flags the shard was started with."""
+
+
+#: One file through one arm, as a test or check supplies it in place of `arms.run_file`: `(entry, arm, source path) -> (row dict | None, why it was excluded | None)`. Exactly
+#: one is set. A file the checker could not judge is EXCLUDED or a row with `inconclusive: true`, never a row that
+#: says `inconclusive: false` (a never-measured file must not read as a conclusive failure).
+ArmRunner = Callable[[Any, str, str], tuple["dict | None", "str | None"]]
+
+
+def _report() -> Any:
+    """The report module, loaded on first use (never at import: report -> collect -> this file)."""
+    return _load("v4_report", HERE / "report.py")
+
+
+def plan_provenance_problems(args: argparse.Namespace, plan: dict) -> list[str]:
+    """Why a plan's provenance is not THIS shard's wave, empty if it is. Compares only what the shard was told on its
+    own command line, so a launcher that claimed the slot for one wave cannot stamp it on another's shards."""
+    problems: list[str] = []
+    wave_id, n_shards = getattr(args, "wave_id", None), getattr(args, "n_shards", None)
+    for label, mine, theirs in (("wave_id", wave_id, plan.get("wave_id")),
+                                ("wave_type", getattr(args, "wave_type", None), plan.get("wave_type")),
+                                ("n_shards", n_shards, plan.get("n_shards")),
+                                ("wave", getattr(args, "wave", None), plan.get("wave")),
+                                ("split", getattr(args, "split", None), plan.get("split"))):
+        if mine is not None and mine != theirs:
+            problems.append(f"{label}: this shard was started with {mine!r}, the plan says {theirs!r}")
+    if getattr(args, "shard", None) and plan.get("n_shards") is not None:
+        if evalspec.parse_shard(args.shard)[1] != plan["n_shards"]:
+            problems.append(f"shard {args.shard} is not one of the plan's {plan['n_shards']} shards")
+    ran = [a for a in getattr(args, "arms_resolved", ()) if a not in (plan.get("arms") or ())]
+    if ran:
+        problems.append(f"arms: this shard was started with {ran}, which are not arms of the plan {plan.get('arms')}")
+    try:
+        expected = evalspec.wave_cap_usd(str(plan.get("wave_type")))
+    except ValueError as exc:
+        problems.append(str(exc))
+    else:
+        if plan.get("wave_cap_usd") != expected:
+            problems.append(f"wave_cap_usd: the plan says {plan.get('wave_cap_usd')!r}, the ledger's table says "
+                            f"{expected!r} for {plan.get('wave_type')!r}")
+    if plan.get("slot") not in (evalspec.slot_keys(str(plan.get("wave_type"))) or [None]):
+        problems.append(f"slot {plan.get('slot')!r} is not one of the {plan.get('wave_type')!r} wave type's slots")
+    return problems
+
+
+def load_plan_provenance(raw: str | None) -> dict | None:
+    if raw is None:
+        return None
+    try:
+        plan = json.loads(raw)
+    except ValueError as exc:
+        raise PlanProvenanceMismatch(f"--plan-provenance is not JSON: {exc}") from exc
+    need = {"wave", "wave_id", "wave_type", "split", "arms", "n_shards", "wave_cap_usd", "slot"}
+    if not isinstance(plan, dict) or need - set(plan):
+        raise PlanProvenanceMismatch(f"--plan-provenance must be plan_wave(...).provenance(); it lacks "
+                                     f"{sorted(need - set(plan if isinstance(plan, dict) else {}))}")
+    return plan
+
+
+def write_arm_rows(out: Path, rows: list[dict], excluded: list[dict]) -> list[Any]:
+    """Write rows.jsonl / rows.json / EXCLUDED.json, after the report's own row contract has accepted EVERY row.
+    A row the report would refuse (a missing verdict, `inconclusive: false` beside a search that measured nothing,
+    a stored clean the parts do not support) fails HERE, on the shard, where the fault is, not at report time on the
+    collected wave. Returns the parsed rows."""
+    parsed = _report().parse_arm_rows(rows)
+    (out / "rows.jsonl").write_text("".join(json.dumps(r, sort_keys=True) + "\n" for r in rows), encoding="utf-8")
+    (out / "rows.json").write_text(json.dumps(rows, sort_keys=True))
+    (out / "EXCLUDED.json").write_text(json.dumps(excluded, indent=1))
+    return parsed
+
+
+def adopt_plan(args: argparse.Namespace, plan: dict) -> None:
+    """`--mode harness` with a plan: the wave is the PLAN's (its dispatchable arms, split and wave), never inferred from
+    flags. The arms the plan lists that this runner cannot dispatch (v3_meshability_pass_ai) are left to v3_eval's own
+    run_arm; the report needs a row for them from there (see the merge step in the task-32 report)."""
+    args.arms_resolved = tuple(a for a in plan["arms"] if a in DISPATCHABLE_ARMS)
+    if not args.arms_resolved:
+        raise PlanProvenanceMismatch(f"the plan's arms {plan['arms']} include none this runner can dispatch")
+    args.split = args.split or plan["split"]
+    args.wave = args.wave or plan["wave"]
+
+
+def run_harness(args: argparse.Namespace, out: Path, prov: dict, ledger: Any | None = None, *,
+                plan: dict | None = None, runner: ArmRunner | None = None) -> int:
+    """`--mode harness`. With NO plan: repair_corpus's own run (its rows are not ArmRows and no report reads them).
+    With a plan: the SAME dispatch as `--mode arms` (`run_arms`), after `adopt_plan` has taken the arms and split from
+    the plan; there is no second implementation of the arms. `runner` replaces `arms.run_file` per file."""
+    if plan is None:
+        return run_repair_corpus(args, out, prov)
+    return run_arms(args, out, prov, ledger, plan=plan, runner=runner)
 
 
 class MarkerBackendMismatch(RuntimeError):
@@ -314,6 +443,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--wave-type", default=None, choices=sorted(wave_limits.WAVE_CAPS_USD),
                         help="the wave's type: the model-spend cap comes from the ledger's table")
     parser.add_argument("--wave-id", default=None)
+    parser.add_argument("--plan-provenance", default=None,
+                        help="plan_wave(...).provenance() as JSON, from the launcher that claimed the wave's slot; "
+                             "copied into PROVENANCE.json (a held-out report refuses a shard without it)")
+    parser.add_argument("--purpose", default="report", choices=("report", "tuning"),
+                        help="what this run is FOR; `tuning` is refused for the held-out split")
     parser.add_argument("--n-shards", type=int, default=None, help="the wave's N; must equal the N in --shard")
     parser.add_argument("--ledger-path", default=None, help="the shard's durable ledger log")
     parser.add_argument("--marker-bucket", default=None,
@@ -431,13 +565,25 @@ def main(argv: list[str] | None = None) -> int:
                 prov["error"] = traceback.format_exc()[-4000:]
                 code = 5
                 return code
-            prov["ledger"] = {"wave_type": args.wave_type, "wave_id": args.wave_id, "n_shards": args.n_shards,
-                              "cap_usd": ledger.cap_usd, "path": args.ledger_path,
-                              "provenance": ledger.provenance}
-        if args.mode == "arms":
-            code = run_arms(args, out, prov, ledger)
-        else:  # reprobe and harness make no metered model call, so there is nothing for a ledger to gate
-            code = run_reprobe(args, out, prov) if args.mode == "reprobe" else run_harness(args, out, prov)
+            # `ledger` is the string the report reads ("shard"); the detail is its own key. A dict here was refused
+            # by every report ("ran without a shard ledger") whatever the shard did.
+            prov["ledger"] = ledger.provenance
+            prov["ledger_detail"] = {"wave_type": args.wave_type, "wave_id": args.wave_id,
+                                     "n_shards": args.n_shards, "cap_usd": ledger.cap_usd, "path": args.ledger_path}
+        plan = load_plan_provenance(args.plan_provenance)
+        if plan is not None:
+            if args.mode == "harness":
+                adopt_plan(args, plan)  # a harness run runs the PLAN's wave; arms mode already has its own flags
+            wrong = plan_provenance_problems(args, plan)
+            if wrong:
+                raise PlanProvenanceMismatch("; ".join(wrong))
+            prov.update(plan)  # wave, wave_id, wave_type, split, arms, n_shards, wave_cap_usd, shard_cap_usd, slot
+        if args.mode == "reprobe":
+            code = run_reprobe(args, out, prov)
+        elif args.mode == "harness":
+            code = run_harness(args, out, prov, ledger, plan=plan, runner=ARM_RUNNER)
+        else:
+            code = run_arms(args, out, prov, ledger, plan=plan, runner=ARM_RUNNER)
         return code
     except _model_refusals() as exc:
         # the shard refuses rather than run a model arm without a key, a route or a ledger; the reason is in PROVENANCE
