@@ -23,7 +23,6 @@ from meshpipeline.cad.repair_v4.verdict.valid import ValidReport, check_valid
 from meshpipeline.cad.repair_v4.worker_pool import WorkerPool
 
 MEMBER_TIMEOUT_S = 300.0
-SICN_FLOOR = 0.01
 UNMEASURED_SICN = -1.0  # a mesher that produced no mesh has no SICN; it ranks below any real one
 
 
@@ -44,15 +43,18 @@ class PanelMemberLike(Protocol):
     def run(self, pool: WorkerPool, step_path: str, *, timeout_s: float) -> MemberResultLike: ...
 
 
-INFRASTRUCTURE_KIND = "infrastructure"  # MemberResult.error_kind for a pool failure, not a mesher one
-
 
 def is_infrastructure_failure(result: Any) -> bool:
     """A timeout/crash the POOL caused (worker replaced, OOM, infrastructure kill), as the panel
     marks it with `error_kind == "infrastructure"`. A mesher that overran its limit or segfaulted
     on the geometry is the file failing the definition ("meshes within the normal time limit"), not
-    this."""
-    return result.status in ("timeout", "crashed") and getattr(result, "error_kind", None) == INFRASTRUCTURE_KIND
+    this.
+
+    The marker is `panel.INFRASTRUCTURE_KIND`, read at call time: importing this module is what
+    `verdict/__init__` does first, so a name bound here at import would be bound before anything can
+    follow a change to the constant (`test_panel`'s patch-then-import guard)."""
+    kind = _panel_module().INFRASTRUCTURE_KIND
+    return result.status in ("timeout", "crashed") and getattr(result, "error_kind", None) == kind
 
 
 class InconclusiveVerdict(RuntimeError):

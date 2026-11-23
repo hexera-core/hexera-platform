@@ -18,27 +18,31 @@ from __future__ import annotations
 
 import json
 import shutil
+import signal
 import subprocess
 import tempfile
-import time
 from pathlib import Path
 from typing import Literal
 
 from meshpipeline.cad.repair_v4.kernel_calls import register
-from meshpipeline.cad.repair_v4.verdict.panel import MemberResult, WorkerPool
+from meshpipeline.cad.repair_v4.verdict import panel
+from meshpipeline.cad.repair_v4.verdict.mesh_child import MIN_SICN
+from meshpipeline.cad.repair_v4.verdict.panel import INFRASTRUCTURE_KIND, MemberResult
+from meshpipeline.cad.repair_v4.worker_pool import CallResult, WorkerPool
 
 NETGEN_PYTHON = "/opt/netgen-env/bin/python"
 SCRIPT = Path(__file__).with_name("netgen_occ_script.py")
 RESULT_PREFIX = "NETGEN_RESULT "
-#: the same pass floor every panel member holds a tet mesh to
-MIN_SICN_PASS = 0.01
-#: seconds the kernel function leaves the pool for gmsh and teardown after Netgen is stopped
-_POOL_MARGIN_S = 30.0
+#: Netgen's element size is the bounding-box diagonal over this (the script's `maxh`), and touching
+#: solids are Glued before meshing; both are handed to the script so `NetgenOCC.config` cannot drift from them.
+MAXH_DIVISOR = 10.0
+GLUE_TOUCHING_SOLIDS = True
+#: The wheels in /opt/netgen-env (requirements/netgen.txt, which a test holds this equal to). The app
+#: interpreter has no netgen, so `mesher_versions` cannot see this one: the pin is its version key.
+NETGEN_PIN = {"netgen-mesher": "6.2.2608", "netgen-occt": "7.8.1"}
 _TET = 4  # gmsh element type
 
 Status = Literal["pass", "fail", "timeout", "crashed"]
-#: error_kind for a result that says nothing about the file (pool died, toolchain absent)
-INFRASTRUCTURE = "infrastructure"
 
 
 def netgen_python() -> str | None:
@@ -48,12 +52,13 @@ def netgen_python() -> str | None:
 
 
 def _run_netgen(step: str, out_msh: str, timeout_s: float) -> dict:
+    glue = "glue" if GLUE_TOUCHING_SOLIDS else "noglue"
     python = netgen_python()
     if python is None:
         return {"ok": False, "stage": "unavailable", "error": "no netgen interpreter (mesh image only)"}
     try:
         proc = subprocess.run(
-            [python, str(SCRIPT), step, out_msh],
+            [python, str(SCRIPT), step, out_msh, repr(MAXH_DIVISOR), glue],
             capture_output=True,
             text=True,
             timeout=timeout_s,
@@ -142,73 +147,119 @@ _FAIL_KINDS = {
 }
 
 
+def timed_out(call: CallResult) -> bool:
+    """The pool's clock fired, or Netgen's own (the kernel function reports that one inside an `ok` call)."""
+    return call.status == "timeout" or (
+        call.ok and call.value is not None and call.value.get("stage") == "timeout" and not call.value.get("ok")
+    )
+
+
+def killed(call: CallResult) -> bool:
+    """The Netgen subprocess was SIGKILLed (reported inside an `ok` call as a crash with returncode -9)."""
+    return bool(
+        call.ok and call.value is not None and call.value.get("stage") == "crash"
+        and call.value.get("returncode") == -int(signal.SIGKILL)
+    )
+
+
 class NetgenOCC:
     """The panel's non-gmsh member: Netgen meshing the B-rep through its OCC interface."""
 
     name = "netgen_occ"
 
-    def run(self, pool: WorkerPool, step_path: str, *, timeout_s: float) -> MemberResult:
-        start = time.monotonic()
-        # Netgen gets the time the pool's own clock would otherwise spend killing the worker; the
-        # subprocess is stopped first so its mesh stage is never orphaned by a worker SIGKILL.
-        inner = max(1.0, timeout_s - _POOL_MARGIN_S) if timeout_s > 2 * _POOL_MARGIN_S else timeout_s * 0.8
-        call = pool.call("mesh_netgen", {"step": str(step_path), "timeout_s": inner}, timeout_s=timeout_s)
+    @property
+    def config(self) -> dict:
+        """Everything that decides Netgen's answer, JSON-able, the same shape as the gmsh members'
+        (`mesh_child.profile_config`: `profile`, `min_sicn`, then the mesher's own settings). Constants
+        only: no paths, ids or clocks, and nothing ordered by a dict's history (the cache hash sorts keys)."""
+        return {
+            "profile": "netgen_occ",
+            "min_sicn": MIN_SICN,
+            "versions": dict(sorted(NETGEN_PIN.items())),
+            "glue": GLUE_TOUCHING_SOLIDS,
+            "sizing": {"maxh_divisor": MAXH_DIVISOR, "maxh": "diagonal / maxh_divisor"},
+        }
 
-        def result(status: Status, kind: str | None, message: str) -> MemberResult:
+    def run(self, pool: WorkerPool, step_path: str, *, timeout_s: float) -> MemberResult:
+        def payload(budget_s: float) -> dict:
+            return {"step": str(step_path), "timeout_s": panel.inner_timeout_s(budget_s)}
+
+        retried = panel.call_with_timeout_retry(
+            pool, "mesh_netgen", payload, timeout_s=timeout_s, timed_out=timed_out, killed=killed
+        )
+        call = retried.call
+
+        def failed(status: Status, kind: str, cause: str) -> MemberResult:
             return MemberResult(
-                name=self.name, status=status, error_kind=kind, message=message, located=[],
-                min_sicn=None, elements=0, seconds=time.monotonic() - start,
+                name=self.name, status=status, error_kind=kind, message=call.error or "", seconds=call.seconds, cause=cause
             )
 
         if call.status == "timeout":
-            return result("timeout", "netgen_timeout", call.error or "worker timed out")
-        # The POOL failing under the mesher is not a verdict on the file (Task 5 keys on
-        # error_kind == "infrastructure"); a Netgen crash on the geometry is, see member_result.
+            return failed(
+                "timeout", panel.timeout_kind(retried.timeouts, "netgen_timeout"),
+                panel.timeout_cause(retried.timeouts, retried.skipped),
+            )
+        # The POOL failing under the mesher is not a verdict on the file; a Netgen crash on the
+        # geometry is, see member_result.
         if call.status == "crashed":
-            return result("crashed", INFRASTRUCTURE, call.error or "worker crashed")
+            return failed("crashed", INFRASTRUCTURE_KIND, "pool_worker")
         if not call.ok or call.value is None:
-            return result("crashed", INFRASTRUCTURE, call.error or "kernel call failed")
-        return member_result(self.name, call.value, time.monotonic() - start)
+            return failed("crashed", INFRASTRUCTURE_KIND, "kernel_call")
+        return member_result(self.name, call.value, call.seconds, retried.timeouts, retried.kills, retried.skipped)
 
 
-def member_result(name: str, rec: dict, seconds: float) -> MemberResult:
+def member_result(
+    name: str, rec: dict, seconds: float, timeouts: int = 0, kills: int = 0, skipped: bool = False
+) -> MemberResult:
     """Turn a `mesh_netgen` record into the member's verdict.
 
     Vocabulary: `fail` = Netgen ran and the file does not mesh or meshes badly; `crashed` with
     `netgen_crash` = Netgen itself died on this geometry (a vote against the file, like a gmsh
     abort); `crashed` with `infrastructure` = the toolchain was absent or broken, which says
-    nothing about the file.
+    nothing about the file. `timeouts` / `kills` / `skipped` are as in `panel.RetriedCall`: one timeout
+    or SIGKILL is infrastructure and only a repeat is the file's.
     """
 
     def result(
-        status: Status, kind: str | None, message: str, *, sicn: float | None = None, elements: int = 0
+        status: Status, kind: str | None, message: str, *, sicn: float | None = None, elements: int = 0,
+        cause: str | None = None,
     ) -> MemberResult:
         return MemberResult(
             name=name, status=status, error_kind=kind, message=message, located=[],
-            min_sicn=sicn, elements=elements, seconds=seconds,
+            min_sicn=sicn, elements=elements, seconds=seconds, cause=cause,
         )
 
     if not rec.get("ok"):
         stage = rec.get("stage", "")
         message = str(rec.get("error", "Netgen failed"))
         if stage == "timeout":
-            return result("timeout", "netgen_timeout", message)
+            return result(
+                "timeout", panel.timeout_kind(timeouts, "netgen_timeout"), message,
+                cause=panel.timeout_cause(timeouts, skipped),
+            )
         if stage == "crash":
-            return result("crashed", "netgen_crash", message)
+            code = rec.get("returncode")
+            if code == -int(signal.SIGKILL):
+                kind, cause = panel.sigkill_verdict(kills, skipped)
+                return result("crashed", kind, message, cause=cause)
+            if isinstance(code, int) and code < 0:
+                kind, cause = panel.signal_verdict(-code)
+                return result("crashed", kind if kind == INFRASTRUCTURE_KIND else "netgen_crash", message, cause=cause)
+            return result("crashed", "netgen_crash", message, cause=f"exit_{code}")
         if stage in ("unavailable", "import"):
-            return result("crashed", INFRASTRUCTURE, message)
+            return result("crashed", INFRASTRUCTURE_KIND, message, cause="toolchain_absent")
         return result("fail", _FAIL_KINDS.get(stage, "netgen_failed"), message)
     tets, sicn = int(rec["tets"]), rec.get("min_sicn")
     if tets == 0 or sicn is None:
         return result("fail", "no_tets", "Netgen mesh has no tetrahedra")
-    if sicn < MIN_SICN_PASS:
+    if sicn < MIN_SICN:
         return result(
             "fail", "low_quality",
-            f"minSICN {sicn:.4g} is below {MIN_SICN_PASS} ({tets} tets)",
+            f"minSICN {sicn:.4g} is below {MIN_SICN} ({tets} tets)",
             sicn=float(sicn), elements=tets,
         )
     note = f"{tets} tets, {rec['solids']} solid(s){', glued' if rec.get('glued') else ''}"
     return result("pass", None, note, sicn=float(sicn), elements=tets)
 
 
-__all__ = ["INFRASTRUCTURE", "MIN_SICN_PASS", "NetgenOCC", "member_result", "netgen_python"]
+__all__ = ["GLUE_TOUCHING_SOLIDS", "MAXH_DIVISOR", "NETGEN_PIN", "NetgenOCC", "killed", "member_result", "netgen_python", "timed_out"]

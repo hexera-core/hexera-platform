@@ -1,40 +1,22 @@
 # Responsibility: Verify failure-site detection and the proposer's observation, hermetically: how
 #                 located failures cluster into sites, which warnings attach, what the model is told.
-# Boundaries: hermetic - a scripted pool stands in for the kernel workers (boxes are a table), and
-#             Verdict/MemberResult/Located are local stand-ins with the contract's field names.
+# Boundaries: hermetic - a scripted pool stands in for the kernel workers (boxes are a table);
+#             MemberResult and Located are the real panel classes, the Verdict a local stand-in.
 #             The geometry itself is proved in tests/native/test_native_repair_v4_sites.py.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 from meshpipeline.cad.repair_v4.sites import OBSERVATION_MAX_BYTES, find_sites, observation
 from meshpipeline.cad.repair_v4.types import Site
+from meshpipeline.cad.repair_v4.verdict.panel import Located, MemberResult
 from meshpipeline.cad.repair_v4.verdict.valid import Finding, ValidReport
 from meshpipeline.cad.repair_v4.worker_pool import CallResult
 from meshpipeline.cad.repair_v4.workspace import Workspace
 
 H = 1.0
-
-
-@dataclass(frozen=True)
-class Located:
-    entity: str | None
-    xyz: tuple[float, float, float] | None
-    mesher_tag: str
-
-
-@dataclass(frozen=True)
-class MemberResult:
-    name: str
-    status: str
-    error_kind: str | None = None
-    message: str = ""
-    located: list[Located] = field(default_factory=list)
-    min_sicn: float | None = None
-    elements: int | None = None
-    seconds: float = 0.0
 
 
 @dataclass(frozen=True)

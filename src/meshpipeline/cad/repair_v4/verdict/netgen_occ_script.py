@@ -2,7 +2,7 @@
 # Owns: the netgen-side half of the NetgenOCC panel member; it prints exactly one JSON line.
 # Boundaries: runs under /opt/netgen-env/bin/python, which has netgen and NOT meshpipeline, gmsh or OCP -
 #             import nothing from the app here. Quality is measured by the caller, in gmsh.
-"""usage: netgen_occ_script.py STEP OUT_MSH   (stdout: one JSON object)"""
+"""usage: netgen_occ_script.py STEP OUT_MSH [MAXH_DIVISOR [glue|noglue]]   (stdout: one JSON object)"""
 
 import json
 import sys
@@ -33,7 +33,7 @@ def _write_msh2(mesh, out_msh: str) -> None:
         fh.write("$EndElements\n")
 
 
-def main(step: str, out_msh: str) -> None:
+def main(step: str, out_msh: str, maxh_divisor: float = 10.0, glue: bool = True) -> None:
     try:
         from netgen.occ import Glue, OCCGeometry
     except Exception as exc:  # the interpreter has no netgen: not a finding about the file
@@ -54,10 +54,10 @@ def main(step: str, out_msh: str) -> None:
     if not diag > 0.0:
         _emit(ok=False, stage="read", error=f"degenerate bounding box (diagonal {diag})", solids=len(solids))
         return
-    maxh = diag / 10.0
+    maxh = diag / maxh_divisor
     glued = False
     try:
-        if len(solids) > 1:
+        if glue and len(solids) > 1:
             # Touching solids share faces only if the faces are identified; Glue does that, so the
             # result is one conformal mesh instead of N meshes that happen to sit side by side.
             geo = OCCGeometry(Glue(solids))
@@ -80,4 +80,4 @@ def main(step: str, out_msh: str) -> None:
 
 
 if __name__ == "__main__":
-    main(sys.argv[1], sys.argv[2])
+    main(sys.argv[1], sys.argv[2], float(sys.argv[3]) if len(sys.argv) > 3 else 10.0, sys.argv[4] != "noglue" if len(sys.argv) > 4 else True)
