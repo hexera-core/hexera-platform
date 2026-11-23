@@ -84,13 +84,22 @@ class _Db:
         pass
 
 
-async def test_add_console_note_keeps_a_picture_only_note():
-    repo = _Repo(SimpleNamespace(job_id=None))
+AID = "0123456789abcdef"
+INDEX = {AID: {"kind": "image", "name": "bore.png", "mime": "image/png", "bytes": 10,
+               "object_key": f"sessions/{SID}/attachments/{AID}/file", "sha256": "x"}}
+
+
+async def test_add_console_note_keeps_a_picture_only_note_as_its_kept_row():
+    repo = _Repo(SimpleNamespace(job_id=None, attachments=INDEX))
     status, _ = await msg.add_console_note(SID, "o", "", session_repo=repo, db_factory=_Db,
-                                           attachments=[{"id": "a1", "name": "bore.png"}])
+                                           attachments=[{"id": AID}])
     assert status is msg.NoteStatus.added
     (note,) = repo.notes
-    assert note["text"] == "" and note["attachments"] == [{"id": "a1", "name": "bore.png"}]
+    assert note["text"] == ""
+    assert note["attachments"] == [{"id": AID, "kind": "image", "name": "bore.png", "mime": "image/png", "bytes": 10}]
+    status, _ = await msg.add_console_note(SID, "o", "", session_repo=repo, db_factory=_Db,
+                                           attachments=[{"id": "fedcba9876543210"}])
+    assert status is msg.NoteStatus.empty, "an id this session does not hold is no attachment"
     status, _ = await msg.add_console_note(SID, "o", " ", session_repo=repo, db_factory=_Db)
     assert status is msg.NoteStatus.empty
 

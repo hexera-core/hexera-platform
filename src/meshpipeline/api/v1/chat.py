@@ -5,14 +5,14 @@ from __future__ import annotations
 import logging
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile
 
 from meshpipeline.agents.intake import approval as ap
 from meshpipeline.agents.intake import message as msg
 from meshpipeline.agents.intake.agent import _extract_reply
 from meshpipeline.api import pagination
 from meshpipeline.api.schemas import listing
-from meshpipeline.api.schemas.chat import ChatMessageIn, ChatNoteIn, ChatResponse
+from meshpipeline.api.schemas.chat import AttachmentOut, ChatMessageIn, ChatNoteIn, ChatResponse
 from meshpipeline.api.security import org_dep, owner_dep
 from meshpipeline.application.intake_brief import build_brief
 from meshpipeline.application.job_service import JobService
@@ -258,6 +258,42 @@ async def chat_notes(body: ChatNoteIn, owner_id: str = Depends(owner_dep),
     if say:
         out["say"] = say
     return out
+
+
+@router.post("/attachments", response_model=AttachmentOut,
+             description="Keep one picture or text file the user attached in the chat or notes box (checked by its "
+                         "bytes; pictures re-encoded, a PDF's text read); answers with the row a message or note "
+                         "then carries by its id.")
+async def chat_attachment(session_id: uuid.UUID = Form(...), file: UploadFile = File(...),
+                          owner_id: str = Depends(owner_dep), organization_id: str = Depends(org_dep)):
+    from meshpipeline.application import chat_attachments as ca
+    from meshpipeline.persistence.repositories.session_repository import SessionRepository
+
+    data = await file.read(ca.TEXT_MAX_BYTES + 1)
+    try:
+        return await ca.accept(session_id, owner_id, name=file.filename, data=data,
+                               session_repo=SessionRepository(), db_factory=get_db,
+                               organization_id=organization_id)
+    except LookupError:
+        raise HTTPException(404, "Session not found") from None
+    except ca.Refused as refused:
+        raise HTTPException(refused.status, refused.line) from None
+
+
+@router.get("/attachments/{session_id}/{attachment_id}",
+            description="One attached file as kept (a picture's re-encoding, a text file or PDF as sent), for its "
+                        "owner only; never run, never sniffed.")
+async def chat_attachment_file(session_id: uuid.UUID, attachment_id: str, owner_id: str = Depends(owner_dep),
+                               organization_id: str = Depends(org_dep)) -> Response:
+    from meshpipeline.application import chat_attachments as ca
+    from meshpipeline.persistence.repositories.session_repository import SessionRepository
+
+    got = await ca.open_for_owner(session_id, attachment_id, owner_id, session_repo=SessionRepository(),
+                                  db_factory=get_db, organization_id=organization_id)
+    if got is None:
+        raise HTTPException(404, "Attachment not found")
+    data, entry = got
+    return Response(content=data, media_type=ca.served_type(entry), headers=ca.served_headers(entry))
 
 
 

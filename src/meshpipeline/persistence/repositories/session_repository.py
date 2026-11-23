@@ -155,6 +155,22 @@ class SessionRepository:
         if s:
             s.domain = domain
 
+    async def add_attachment(self, db: AsyncSession, session_id: uuid.UUID, owner_id: str, attachment_id: str,
+                             entry: dict, *, most: int) -> str:
+        """One attached file's entry added to the session's index (application/chat_attachments), under the
+        session row lock: "added", or why not - "not_found" (no such session of this owner), "running" (a run is
+        linked), "full" (the index already holds `most`)."""
+        s = await self.get_for_update(db, session_id)
+        if s is None or s.owner_id != owner_id:
+            return "not_found"
+        if s.job_id:
+            return "running"
+        index = dict(s.attachments or {})
+        if len(index) >= most:
+            return "full"
+        s.attachments = {**index, attachment_id: dict(entry)}
+        return "added"
+
     async def set_user_notes(self, db: AsyncSession, session_id: uuid.UUID,
                              notes: list) -> None:
         """Add the user's notes to the session's: MERGED, never replaced, so a submission's

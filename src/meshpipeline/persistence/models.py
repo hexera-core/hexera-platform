@@ -312,6 +312,10 @@ class ChatSession(Base):
     # notes question, the messages the intake quoted as requirements, and the console's notes box -
     # never a model's rewrite. [{text, source, turn, at}]; NULL until there is one.
     user_notes:        Mapped[list | None]    = mapped_column(JSONB, nullable=True)
+    # THE FILES THE USER ATTACHED in the chat box or the notes box (application/chat_attachments, NOTE-16):
+    # {id: {kind, name, mime, bytes, object_key, text_key?, sha256, at, ...}} - never the bytes. The index erasure
+    # reads, since the object store cannot list a session's keys. NULL until there is one.
+    attachments:       Mapped[dict | None]    = mapped_column(JSONB, nullable=True)
     llm_metadata:      Mapped[list]           = mapped_column(JSONB, nullable=False, default=list)
     intake_submitted:  Mapped[bool]           = mapped_column(Boolean, default=False)
     job_id:            Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("simulation_jobs.id", ondelete="SET NULL"), nullable=True)

@@ -54,6 +54,20 @@ class ChatNoteIn(_Carried):
         return self
 
 
+class AttachmentOut(BaseModel):
+    """One kept attachment, as a message or note carries it by `id` (application/chat_attachments.public)."""
+    id: str
+    kind: str                       # "image" | "text"
+    name: str
+    mime: str
+    bytes: int
+    pages: int | None = None        # a PDF's pages
+    chars: int | None = None        # the text read from a text file or PDF
+    cut: bool | None = None         # only the first part was read
+    width: int | None = None        # a picture as kept
+    height: int | None = None
+
+
 class ChatResponse(BaseModel):
     session_id: uuid.UUID
     reply: str

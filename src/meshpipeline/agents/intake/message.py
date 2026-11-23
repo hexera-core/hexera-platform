@@ -255,7 +255,8 @@ async def accept(inbound: InboundMessage, *, session_repo, db_factory, logger,
         # afterwards and appending again would count this message twice and produce a revision
         # that matches no conversation that ever existed.
         messages = list(getattr(locked, "messages", None) or [])
-        extra = inbound.carried()
+        # only the files THIS session holds are carried, as their kept rows (application/chat_attachments)
+        extra = _carried_here(locked, inbound.attachments, inbound.faces)
         if extra:
             await session_repo.append_message(db, inbound.session_id, "user", inbound.content, extra=extra)
         else:
@@ -1117,9 +1118,8 @@ async def add_console_note(session_id: uuid.UUID, owner_id: str, text: str, *, s
     typed beside the session's other notes, with the files they attached and the faces they picked (a note of a
     picture alone has no words). Returns (status, the session as it now stands). Not
     while a run is linked - the note could no longer reach it."""
-    from meshpipeline.contracts.user_notes import SOURCE_CONSOLE, carried, make
-    extra = carried({"attachments": list(attachments or ()), "faces": list(faces or ())})
-    if not str(text or "").strip() and not extra:
+    from meshpipeline.contracts.user_notes import SOURCE_CONSOLE, make
+    if not str(text or "").strip() and not attachments and not faces:
         return NoteStatus.empty, None
     async with db_factory() as db:
         session = await session_repo.get_for_owner(db, session_id, owner_id,
@@ -1128,11 +1128,23 @@ async def add_console_note(session_id: uuid.UUID, owner_id: str, text: str, *, s
             return NoteStatus.not_found, None
         if getattr(session, "job_id", None):
             return NoteStatus.running, session
+        extra = _carried_here(session, attachments, faces)
+        if not str(text or "").strip() and not extra:
+            return NoteStatus.empty, None
         await session_repo.set_user_notes(db, session_id, [make(text, source=SOURCE_CONSOLE, **extra)])
         await db.commit()
         fresh = await session_repo.get_for_owner(db, session_id, owner_id,
                                                  organization_id=organization_id)
     return NoteStatus.added, fresh
+
+
+def _carried_here(session: Any, attachments: Sequence[Any], faces: Sequence[Any]) -> dict:
+    """What a message or note carries, kept: the attachment ids the session holds, as their public rows (an id it
+    does not hold is dropped), and the faces as sent (contracts/user_notes.carried)."""
+    from meshpipeline.application.chat_attachments import resolve
+    from meshpipeline.contracts.user_notes import carried
+    rows = resolve(session, attachments) if attachments else []
+    return carried({"attachments": rows, "faces": list(faces or ())})
 
 
 def _reply_of(result: dict) -> str:

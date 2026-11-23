@@ -1900,6 +1900,19 @@
   "roots": []
  },
  {
+  "context": "application/chat_attachments.py::sniff::search#1|NotAPublisher|not-a-publisher|",
+  "path": "application/chat_attachments.py",
+  "qualname": "sniff",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "_CONTROL",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "application/dispute_operation.py::dispatch_or_record_failure::error#1|NotAPublisher|not-a-publisher|",
   "path": "application/dispute_operation.py",
   "qualname": "dispatch_or_record_failure",
