@@ -1,0 +1,135 @@
+# Responsibility: Prove the Netgen panel member against the real Netgen, OCCT and gmsh in the mesh image.
+# Boundaries: the native tier. Fixtures are authored here with OCP; the member under test runs in a
+#             WorkerPool process and reaches Netgen through its isolated interpreter.
+from __future__ import annotations
+
+import subprocess
+from collections.abc import Iterator
+from pathlib import Path
+
+import pytest
+
+pytest.importorskip("OCP.STEPControl", reason="the CAD kernel is a native-tier dependency")
+
+from OCP.BRep import BRep_Builder
+from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
+from OCP.gp import gp_Pnt
+from OCP.IFSelect import IFSelect_RetDone
+from OCP.STEPControl import STEPControl_AsIs, STEPControl_Writer
+from OCP.TopoDS import TopoDS_Compound
+
+from meshpipeline.cad.repair_v4.verdict.netgen_member import (
+    MIN_SICN_PASS,
+    NetgenOCC,
+    netgen_python,
+)
+from meshpipeline.cad.repair_v4.worker_pool import WorkerPool
+
+TIMEOUT_S = 600  # emulated amd64 on arm64 is slow; a slow run is not a hang
+FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "geometry"
+#: ABC 00500400, from devtools/validation/corpora/mesh-failure-real.json: gmsh says
+#: "Invalid boundary mesh (overlapping facets)"; 1 solid, 8 faces.
+OVERLAPPING_FACETS = FIXTURES / "abc_overlapping_facets_00500400.step"
+
+
+@pytest.fixture(scope="module")
+def pool() -> Iterator[WorkerPool]:
+    p = WorkerPool(1, start_timeout_s=120)
+    try:
+        yield p
+    finally:
+        p.close()
+
+
+def _write(shapes: list, path: Path) -> str:
+    comp = TopoDS_Compound()
+    builder = BRep_Builder()
+    builder.MakeCompound(comp)
+    for shape in shapes:
+        builder.Add(comp, shape)
+    writer = STEPControl_Writer()
+    writer.Transfer(comp, STEPControl_AsIs)
+    assert writer.Write(str(path)) == IFSelect_RetDone
+    return str(path)
+
+
+def _box(x: float) -> object:
+    return BRepPrimAPI_MakeBox(gp_Pnt(x, 0, 0), 10.0, 10.0, 10.0).Shape()
+
+
+@pytest.mark.native_smoke
+def test_netgen_occ_interface_is_in_the_mesh_image() -> None:
+    python = netgen_python()
+    assert python is not None, "no netgen interpreter in this image"
+    done = subprocess.run(
+        [python, "-c", "import netgen.occ, netgen.config as c; print(c.version)"],
+        capture_output=True, text=True, timeout=120, check=False,
+    )
+    assert done.returncode == 0, done.stderr
+    assert "6.2.2608" in done.stdout.strip().splitlines()[-1]
+
+
+def test_box_passes(pool: WorkerPool, tmp_path: Path) -> None:
+    step = _write([_box(0)], tmp_path / "box.step")
+    result = NetgenOCC().run(pool, step, timeout_s=TIMEOUT_S)
+    assert result.name == "netgen_occ"
+    assert result.status == "pass", result
+    assert result.error_kind is None
+    assert result.elements > 0
+    assert result.min_sicn is not None and result.min_sicn >= MIN_SICN_PASS
+
+
+def test_face_sharing_boxes_mesh_as_one_conformal_mesh(pool: WorkerPool, tmp_path: Path) -> None:
+    """Two solids sharing the x=10 face must come out as ONE mesh whose interface is interior.
+
+    The measure is mesher-independent: a tet face used by exactly one tet is on the boundary. In a
+    conformal mesh none of those lie on the x=10 interface plane; two meshes that merely sit side
+    by side leave a full set of free faces there.
+    """
+    import gmsh
+
+    step = _write([_box(0), _box(10)], tmp_path / "two.step")
+    out = tmp_path / "kept"
+    call = pool.call("mesh_netgen", {"step": step, "timeout_s": TIMEOUT_S, "out_dir": str(out)}, timeout_s=TIMEOUT_S + 30)
+    assert call.ok and call.value is not None, call
+    assert call.value["ok"], call.value
+    assert call.value["solids"] == 2 and call.value["glued"] is True
+
+    gmsh.initialize()
+    try:
+        gmsh.option.setNumber("General.Terminal", 0)
+        gmsh.open(call.value["msh"])
+        faces = gmsh.model.mesh.getElementFaceNodes(4, 3)
+        node_ids, coords, _ = gmsh.model.mesh.getNodes()
+        xyz = {int(n): coords[3 * i : 3 * i + 3] for i, n in enumerate(node_ids)}
+        counts: dict[tuple[int, ...], int] = {}
+        for i in range(0, len(faces), 3):
+            key = tuple(sorted(int(n) for n in faces[i : i + 3]))
+            counts[key] = counts.get(key, 0) + 1
+        free = [k for k, c in counts.items() if c == 1]
+        on_interface = [k for k in free if all(abs(xyz[n][0] - 10.0) < 1e-6 for n in k)]
+    finally:
+        gmsh.finalize()
+    assert free, "a closed solid mesh has boundary faces"
+    assert on_interface == [], f"{len(on_interface)} free faces on the shared face: not one conformal mesh"
+
+    result = NetgenOCC().run(pool, step, timeout_s=TIMEOUT_S)
+    assert result.status == "pass", result
+
+
+def test_overlapping_facets_file_reports_without_raising(pool: WorkerPool) -> None:
+    assert OVERLAPPING_FACETS.is_file()
+    result = NetgenOCC().run(pool, str(OVERLAPPING_FACETS), timeout_s=TIMEOUT_S)
+    assert result.status in ("pass", "fail"), result
+    assert result.message, "the outcome must carry a recorded message"
+    if result.status == "fail":
+        assert result.error_kind
+
+
+def test_unreadable_step_is_a_fail_not_an_exception(pool: WorkerPool, tmp_path: Path) -> None:
+    junk = tmp_path / "junk.step"
+    junk.write_text("this is not a STEP file")
+    result = NetgenOCC().run(pool, str(junk), timeout_s=TIMEOUT_S)
+    assert result.status == "fail", result
+    assert result.error_kind == "step_unreadable"
+    assert result.message
