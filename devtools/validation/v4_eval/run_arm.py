@@ -63,6 +63,7 @@ pool_mod = _load("v4_pool_manifest", HERE / "pool.py")
 wave_limits = _load("v4_wave_limits", HERE / "wave_limits.py")
 marker_probe = _load("v4_marker_probe", HERE / "marker_probe.py")
 arms_mod = _load("v4_arms", HERE / "arms.py")
+wave_spec_mod = _load("v4_wave_spec", HERE / "wave_spec.py")
 
 #: The arms this runner can dispatch. v3_meshability_pass_ai is run by v3_eval's own run_arm (it is v3 as it ships).
 DISPATCHABLE_ARMS = evalspec.DISPATCHABLE_ARMS
