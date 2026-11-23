@@ -289,38 +289,28 @@ def check_against_pool(shards: list[dict], pool_path: Path) -> int:
 
 
 def measure(shards: list[dict]) -> dict[str, Any]:
-    """What the shard(s) actually cost, against the sizing estimates. One shard is one vCPU
-    (`docker --cpus=1`), so wall minutes are vCPU-minutes. Cheap and full minutes are not separable from
-    one wall time, so both estimates are scaled by one factor: the full:cheap ratio stays at the
-    estimate's. The re-projection that uses it is only as good as the shard sampled."""
-    files = full = 0
+    """What the shard(s) actually cost, against the sizing estimate. One shard is one vCPU
+    (`docker --cpus=1`), so wall minutes are vCPU-minutes. The re-probe runs the full verdict on every file
+    (no cheap pass), so the measured figure is full-verdict minutes per file. The re-projection that uses it
+    is only as good as the shard sampled."""
+    files = 0
     wall_min = 0.0
-    failing = cheap_n = 0
     for s in shards:
         p = s["prov"]
         files += int(p.get("shard_files") or 0)
-        full += int(p.get("full_rows") or 0)
         wall_min += float(p.get("wall_seconds") or 0.0) / 60.0
-        for r in s.get("cheap") or []:
-            cheap_n += 1
-            failing += r.first_failing_layer is not None
-    est = files * evalspec.CHEAP_MIN_PER_FILE + full * evalspec.FULL_MIN_PER_FILE
+    est = files * evalspec.FULL_MIN_PER_FILE
     if files <= 0 or est <= 0 or wall_min <= 0:
         raise CollectRefused("the shard(s) carry no file count or wall time: nothing to measure")
     scale = wall_min / est
-    return {"shards": len(shards), "files": files, "full_files": full, "wall_minutes": round(wall_min, 2),
+    return {"shards": len(shards), "files": files, "wall_minutes": round(wall_min, 2),
             "wall_min_per_file": wall_min / files, "scale_vs_estimate": scale,
-            "cheap_min_per_file": evalspec.CHEAP_MIN_PER_FILE * scale,
-            "full_min_per_file": evalspec.FULL_MIN_PER_FILE * scale,
-            "cheap_fail_fraction": failing / cheap_n if cheap_n else None}
+            "full_min_per_file": evalspec.FULL_MIN_PER_FILE * scale}
 
 
 def reproject(m: dict[str, Any], *, files: int, shards: int, machine_type: str, max_run_hours: float) -> Any:
-    kw: dict[str, Any] = {}
-    if m["cheap_fail_fraction"] is not None:
-        kw["cheap_fail_fraction"] = m["cheap_fail_fraction"]
     return evalspec.project(files, shards=shards, machine_type=machine_type, max_run_hours=max_run_hours,
-                            cheap_min=m["cheap_min_per_file"], full_min=m["full_min_per_file"], **kw)
+                            full_min=m["full_min_per_file"])
 
 
 def main(argv: list[str] | None = None, *, transport: Transport | None = None) -> int:
@@ -423,9 +413,8 @@ def run_measure(args: argparse.Namespace) -> int:
     p = reproject(m, files=len(allowed), shards=args.wave_shards, machine_type=machine,
                   max_run_hours=args.max_run_hours)
     print(json.dumps(m, indent=1, sort_keys=True))
-    print(f"measured {m['wall_min_per_file']:.2f} vCPU min/file overall: cheap {m['cheap_min_per_file']:.2f}, "
-          f"full {m['full_min_per_file']:.2f} min/file ({m['scale_vs_estimate']:.2f}x the estimate of "
-          f"{evalspec.CHEAP_MIN_PER_FILE:g}/{evalspec.FULL_MIN_PER_FILE:g})")
+    print(f"measured {m['full_min_per_file']:.2f} vCPU min/file for the full verdict "
+          f"({m['scale_vs_estimate']:.2f}x the estimate of {evalspec.FULL_MIN_PER_FILE:.2f})")
     print(p.describe())
     reasons = evalspec.check_budget(p)
     for r in reasons:

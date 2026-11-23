@@ -18,10 +18,10 @@ THE COST CONTROL. ~600 c2d VM-hours is the owner's ceiling for the sprint. `proj
     wall_hours = SKEW x cpu_hours / shards    # shards run one per vCPU; the SLOWEST shard bills
     vm_hours = VMs x wall_hours               # expected
     worst_vm_hours = VMs x max_run_hours      # what the VMs can bill before --max-run-duration deletes them
-    cpu_hours = (files x cheap_min + full_files x full_min) / 60
+    cpu_hours = files x full_min / 60          # the full verdict on EVERY file: there is no cheap pass
 
-The per-file minutes are SIZING ESTIMATES, not measurements (the first wave measures them): refresh
-them from PROVENANCE after it runs.
+The per-file minutes are Task 43's x86 measurement (n=73, a tail-heavy sample): refresh them from the
+wave's PROVENANCE after it runs (collect.py --measure).
 """
 from __future__ import annotations
 
@@ -43,14 +43,12 @@ MAX_TOTAL_VCPU = 100
 #: this bounds their sum. A file that hits it is EXCLUDED from the counts (reprobe.Excluded).
 DEFAULT_FILE_TIMEOUT_S = 900.0
 
-#: Sizing estimates, minutes of one vCPU per file. Cheap: layer 1 + one gmsh member. Full: layer 1 +
-#: three members + layer 3. UNMEASURED.
-CHEAP_MIN_PER_FILE = 0.5
-FULL_MIN_PER_FILE = 2.5
-#: Fraction of the pool assumed to fail the cheap tier (sizes the full-tier share). Pessimistic on
-#: purpose: the old benchmark's failing share, not the measured one.
-ASSUMED_CHEAP_FAIL_FRACTION = 0.5
-PASS_SAMPLE_FRACTION = 0.10
+#: Minutes of one vCPU per file for the FULL verdict (layer 1 + the panel + layer 3). The re-probe runs it on
+#: every file (plan amendment 2026-11-23 19:15: the cheap-first pass is dropped). MEASURED, Task 43, x86
+#: c2d-standard-8, 8 shards in parallel, workers=1: 98 s/file is the cheap+full mean (n=73); the full tier
+#: alone measured 82.4 s, so 98 s carries ~19% headroom. The sample over-weights large parts, and its mean
+#: is dominated by the ~7% of files that hit a 300 s / 900 s wall: the tail, not the median (22 s), is the cost.
+FULL_MIN_PER_FILE = 98.0 / 60
 #: Slowest-shard / mean-shard wall. Hash-partitioned shards are balanced in file COUNT, not in time:
 #: 900 s timeouts and heavy parts make a long tail, and the slowest shard sets the billed time.
 SKEW = 1.5
@@ -143,15 +141,12 @@ class Projection:
 
 
 def project(files: int, *, shards: int, machine_type: str = DEFAULT_MACHINE, max_run_hours: float = 3.0,
-            cheap_fail_fraction: float = ASSUMED_CHEAP_FAIL_FRACTION,
-            cheap_min: float = CHEAP_MIN_PER_FILE, full_min: float = FULL_MIN_PER_FILE,
-            skew: float = SKEW) -> Projection:
+            full_min: float = FULL_MIN_PER_FILE, skew: float = SKEW) -> Projection:
     if files < 0 or shards < 1:
         raise ValueError("files must be >= 0 and shards >= 1")
     vcpus = vcpus_of(machine_type)
-    failing = math.ceil(files * cheap_fail_fraction)
-    full_files = failing + math.ceil((files - failing) * PASS_SAMPLE_FRACTION)
-    cpu_hours = (files * cheap_min + full_files * full_min) / 60.0
+    full_files = files  # every file gets the full verdict
+    cpu_hours = files * full_min / 60.0
     vms = math.ceil(shards / vcpus)
     wall = skew * cpu_hours / shards
     return Projection(files, full_files, shards, vms, vcpus, cpu_hours, wall, vms * wall, max_run_hours,

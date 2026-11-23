@@ -2,8 +2,8 @@
 # Responsibility: Re-measure the benchmark pool with the v4 checker and cut the dev / held-out / clean
 #                 splits from the result. The old benchmark's metric (gmsh diag/40 yields tets) is not
 #                 the definition any more: a file is failing when `verdict` says it is not clean.
-# Owns: `ProbeRow`, `reprobe` (one tier over entries), `probe_pool` (cheap on all, full on cheap
-#       failures plus a sample of passes), `agreement`, `build_splits` and the row/split JSON.
+# Owns: `ProbeRow`, `reprobe` (one tier over entries), `probe_pool` (the full verdict on every file),
+#       `agreement`, `build_splits` and the row/split JSON.
 # Boundaries: every mesh goes through `verdict` / `cheap_verdict` and so through the verdict cache; this
 #             module never meshes. An INCONCLUSIVE verdict (pool failure) or `CheckerUnavailable` is NOT a
 #             finding about the file: it lands in `excluded`, never in a row, so it can be counted as
@@ -11,17 +11,18 @@
 """The re-probe and the splits.
 
     reprobe(entries, tier="cheap", pool=..., resolve=...)     # one tier
-    probe_pool(entries, pool=..., resolve=...)                # the whole plan: cheap on all, then full
+    probe_pool(entries, pool=..., resolve=...)                # the whole plan: the full verdict on every file
     build_splits(rows)                                        # stratified dev / held-out / clean
 
-Order (design): the cheap tier (layer 1 + GmshDefault) runs on the whole pool; the full panel then runs
-on the cheap-tier failures plus a deterministic 10% sample of the cheap passes, which measures how often
-the cheap tier misses a failure (`agreement`). A cheap pass that was not sampled is "not known failing"
-and is also not "known clean": only a full-tier pass enters the clean split.
+Order (plan amendment 2026-11-23 19:15): the FULL verdict runs on every file, once. The cheap-first pass
+(cheap on all, full on cheap failures plus a 10% sample of passes) is dropped: in Task 43 the cheap tier
+passed 14 files and 6 of those failed the full panel, so a sampled cheap pass would mislabel a large share
+of the corpus; and the cheap pass cost ~15.5 s per file on top of a full verdict that mostly duplicated it.
+The cheap tier survives for search ranking only; `agreement` still compares the two where both exist.
+Only a full-tier pass enters the clean split.
 """
 from __future__ import annotations
 
-import hashlib
 import importlib.abc
 import importlib.machinery
 import importlib.util
@@ -41,7 +42,6 @@ HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[2]
 SPLITS_DIR = REPO / "devtools/validation/corpora/v4"
 SEED = 20261122
-PASS_SAMPLE_FRACTION = 0.10
 Layer = Literal["valid", "panel", "faithful"]
 Tier = Literal["cheap", "full"]
 NO_SOLIDS = "no_solids"
@@ -453,12 +453,6 @@ def reprobe(
 
 # --------------------------------------------------------------------------- the whole plan
 
-def in_pass_sample(sha256: str, *, seed: int = SEED, fraction: float = PASS_SAMPLE_FRACTION) -> bool:
-    """A stable 10% of the cheap passes, chosen by hash so a rerun or a different shard picks the same."""
-    digest = hashlib.sha256(f"{seed}:{sha256}".encode()).digest()
-    return int.from_bytes(digest[:8], "big") / 2**64 < fraction
-
-
 @dataclass
 class ProbeResult:
     cheap: list[ProbeRow]
@@ -472,25 +466,13 @@ class ProbeResult:
         return list(by_sha.values())
 
 
-def full_tier_entries(entries: Sequence[Any], cheap_rows: Sequence[ProbeRow], *, seed: int = SEED) -> list[Any]:
-    """Entries the full panel runs on: cheap-tier failures (no_solids is not repairable, so it is not
-    paid for twice) plus the hash-sampled 10% of cheap passes."""
-    verdict_of = {r.sha256: r for r in cheap_rows}
-    chosen = []
-    for e in entries:
-        row = verdict_of.get(e.sha256)
-        if row is None or (row.first_failing_layer is not None and (is_no_solids(row) or is_unbounded(row))):
-            continue
-        if row.first_failing_layer is not None or in_pass_sample(e.sha256, seed=seed):
-            chosen.append(e)
-    return chosen
-
-
 def probe_pool(entries: Sequence[Any], *, seed: int = SEED, **kw: Any) -> ProbeResult:
+    """The re-probe: the full verdict on every entry, once. `cheap` stays empty (no cheap pass runs); `seed` is
+    accepted for the caller's provenance and draws nothing here."""
+    del seed
     excluded: list[Excluded] = []
-    cheap = reprobe(entries, tier="cheap", excluded=excluded, **kw)
-    full = reprobe(full_tier_entries(entries, cheap, seed=seed), tier="full", excluded=excluded, **kw)
-    return ProbeResult(cheap, full, excluded)
+    full = reprobe(entries, tier="full", excluded=excluded, **kw)
+    return ProbeResult([], full, excluded)
 
 
 def agreement(cheap: Sequence[ProbeRow], full: Sequence[ProbeRow]) -> dict:

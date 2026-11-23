@@ -377,22 +377,22 @@ def test_an_injected_entry_with_no_declaration_is_refused() -> None:
 
 # ------------------------------------------------------------------ the plan
 
-def test_full_tier_runs_on_cheap_failures_plus_a_sample_of_passes_and_never_no_solids() -> None:
-    entries = [Entry(f"f{i}", _sha(i)) for i in range(1, 2001)]
-    fails = {e.sha256 for e in entries[:100]}
-    no_solids = entries[0]
-    cheap = [
-        _row(i, "valid", "no_solids") if e is no_solids
-        else _row(i, "panel", "other") if e.sha256 in fails else _row(i, None, "")
-        for i, e in enumerate(entries, start=1)
-    ]
-    chosen = rp.full_tier_entries(entries, cheap)
-    shas = {e.sha256 for e in chosen}
-    assert no_solids.sha256 not in shas
-    assert fails - {no_solids.sha256} <= shas
-    sampled = shas - fails
-    assert 100 < len(sampled) < 300  # ~10% of 1900
-    assert rp.full_tier_entries(entries, cheap) == chosen  # deterministic
+def test_probe_pool_runs_the_full_verdict_on_every_file_and_never_the_cheap_tier(monkeypatch) -> None:
+    """Amendment 2026-11-23 19:15: the cheap-first re-probe is dropped. The cheap tier passed 14 files of which 6
+    failed the full panel, so a cheap pass cannot stand in for a verdict. Every file, pass or fail, no_solids or
+    unbounded, gets the full verdict, once."""
+    entries = [Entry(f"f{i}", _sha(i)) for i in range(1, 51)]
+    calls: list[tuple[str, list[str]]] = []
+
+    def fake_reprobe(ents, *, tier, excluded=None, **kw):  # noqa: ANN001, ANN202
+        calls.append((tier, [e.sha256 for e in ents]))
+        return [_row(i, None, "") for i, _ in enumerate(ents, start=1)]
+
+    monkeypatch.setattr(rp, "reprobe", fake_reprobe)
+    result = rp.probe_pool(entries, pool=None, resolve=str)
+    assert calls == [("full", [e.sha256 for e in entries])]
+    assert result.cheap == [] and len(result.full) == len(entries)
+    assert result.final_rows() == result.full
 
 
 def test_agreement_counts_the_cheap_tiers_misses() -> None:
@@ -582,7 +582,7 @@ def test_shards_partition_the_pool_exactly() -> None:
 def test_the_real_pool_at_the_ceiling_is_refused_and_a_sane_wave_is_not() -> None:
     real = evalspec.project(53_799, shards=96, max_run_hours=30)
     assert evalspec.check_budget(real) == []
-    huge = evalspec.project(53_799, shards=96, max_run_hours=400, full_min=40.0)
+    huge = evalspec.project(53_799, shards=96, max_run_hours=1000, full_min=40.0)
     reasons = evalspec.check_budget(huge)
     assert huge.vm_hours > evalspec.MAX_VM_HOURS and any("VM-hour ceiling" in r for r in reasons)
     with pytest.raises(evalspec.BudgetRefused):
@@ -613,12 +613,17 @@ def test_override_does_not_waive_the_run_duration_or_vcpu_limits() -> None:
 
 
 def test_projection_formula() -> None:
-    p = evalspec.project(600, shards=8, machine_type="c2d-standard-8", cheap_fail_fraction=0.5,
-                         cheap_min=1.0, full_min=3.0, skew=2.0, max_run_hours=10)
-    # 300 failing + ceil(300 * 0.1) = 330 full files; (600*1 + 330*3)/60 = 26.5 vCPU-h
-    assert (p.full_files, p.vms) == (330, 1)
-    assert p.cpu_hours == pytest.approx(26.5) and p.wall_hours == pytest.approx(2 * 26.5 / 8)
-    assert p.vm_hours == pytest.approx(2 * 26.5 / 8) and p.worst_vm_hours == 10
+    p = evalspec.project(600, shards=8, machine_type="c2d-standard-8", full_min=3.0, skew=2.0, max_run_hours=10)
+    # full verdict on every file (no cheap tier): 600 * 3 / 60 = 30 vCPU-h
+    assert (p.full_files, p.vms) == (600, 1)
+    assert p.cpu_hours == pytest.approx(30.0) and p.wall_hours == pytest.approx(2 * 30.0 / 8)
+    assert p.vm_hours == pytest.approx(2 * 30.0 / 8) and p.worst_vm_hours == 10
+
+
+def test_the_default_minutes_are_task_43s_measured_mean() -> None:
+    """98 s/file: Task 43's x86 mean (n=73, 8 shards in parallel on one c2d-standard-8, workers=1)."""
+    assert evalspec.FULL_MIN_PER_FILE == pytest.approx(98.0 / 60)
+    assert not hasattr(evalspec, "CHEAP_MIN_PER_FILE") and not hasattr(evalspec, "PASS_SAMPLE_FRACTION")
 
 
 def test_launch_is_gated_and_never_reaches_the_creator_over_budget() -> None:
@@ -848,12 +853,6 @@ def test_unbounded_inputs_are_counted_but_never_a_failure_and_are_tallied_alone(
     assert splits.excluded_unbounded == 7 and splits.excluded_uncounted == 0 and splits.excluded_no_solids == 0
     assert all(rp.is_unbounded(r) for r in unbounded) and not any(rp.is_unbounded(r) for r in rows)
     assert "unbounded_geometry" not in splits.strata["failing_population"]
-
-
-def test_unbounded_rows_do_not_get_the_full_panel() -> None:
-    row = _row(1, "valid", "unbounded_geometry")
-    ent = SimpleNamespace(name=row.name, sha256=row.sha256, source=row.source)
-    assert rp.full_tier_entries([ent], [row]) == []
 
 
 def test_an_unbounded_input_is_a_counted_row_with_its_own_family_not_an_exclusion(layers) -> None:
