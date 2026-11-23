@@ -48,4 +48,9 @@ if os.environ.get("HEXERA_TEST_KERNEL_FNS") == "1":
 
 # Registered for their side effect on REGISTRY; the workspace's kernel half. At the foot so that
 # `register` and `REGISTRY` exist before the module that uses them is imported.
-from meshpipeline.cad.repair_v4 import ws_kernel  # noqa: E402,F401
+# The op library: each op module registers its kernel function(s) here and its `Op` in
+# `ops.REGISTRY`. One import covers every op module (see ops/__init__.py).
+from meshpipeline.cad.repair_v4 import (
+    ops,  # noqa: E402,F401
+    ws_kernel,  # noqa: E402,F401
+)
