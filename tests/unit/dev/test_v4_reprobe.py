@@ -462,8 +462,10 @@ def test_splits_disjoint_and_stratified(tmp_path) -> None:
         got = splits.strata["dev"].get(key, 0) + splits.strata["heldout"].get(key, 0)
         assert abs(got - 160 * n / total) <= 1.0, key
     # every populous stratum is represented in both splits
-    assert splits.strata["dev"]["panel/plc_intersection/abc_fail"] > 0
-    assert splits.strata["heldout"]["panel/overlapping_facets/abc_fail"] > 0
+    # (the population's panel rows carry no member list, so they sit at 0 failing members; key = layer/members/kind/source)
+    assert splits.strata["dev"]["panel/0/geometry/abc_fail"] > 0
+    assert splits.strata["heldout"]["panel/0/geometry/abc_fail"] > 0
+    assert splits.strata["heldout"]["valid/-/open_shell/abc_fail"] > 0
     # clean: full-tier passes only, never the cheap passes
     assert all(r.verdict_summary["tier"] == "full" and r.first_failing_layer is None for r in splits.clean)
     for name in ("dev", "heldout", "clean"):
@@ -865,3 +867,76 @@ def test_an_unbounded_input_is_a_counted_row_with_its_own_family_not_an_exclusio
     assert (row.first_failing_layer, row.family) == ("valid", "unbounded_geometry")
     assert row.verdict_summary["counts_for_scoreboard"] is True and row.verdict_summary["out_of_scope"] is True
     assert row.verdict_summary["clean"] is False and rp.is_unbounded(row) and rp.is_counted(row)
+
+
+# ------------------------------------------------------------------ panel family (Task 48)
+# Task 43 measured 33 panel failures, 31 labelled `other`: gmsh_prod's "HXT 3D mesh failed" was unknown
+# to `failure_family` and the label was the FIRST failing member's, almost always gmsh_prod.
+
+def _m(name, status, kind, message=""):
+    return SimpleNamespace(name=name, status=status, error_kind=kind, message=message)
+
+
+def _panel_verdict(*members):
+    return SimpleNamespace(valid=SimpleNamespace(ok=True, hard=[]), panel=list(members), faithful=None)
+
+
+def test_hxt_failure_text_is_a_family_not_other():
+    v = _panel_verdict(_m("gmsh_prod", "fail", "other", "HXT 3D mesh failed (code 2)"), _m("gmsh_default", "pass", None))
+    assert rp.family_of(v, "panel") == "hxt_3d_failed"
+
+
+def test_the_label_does_not_depend_on_which_member_failed_first():
+    prod = _m("gmsh_prod", "fail", "low_quality", "minimum SICN 0.003 is below 0.01")
+    dflt = _m("gmsh_default", "fail", "overlapping_facets", "Invalid boundary mesh (overlapping facets)")
+    assert rp.family_of(_panel_verdict(prod, dflt), "panel") == "overlapping_facets"
+    assert rp.family_of(_panel_verdict(dflt, prod), "panel") == "overlapping_facets"
+
+
+def test_a_named_geometric_cause_outranks_a_quality_threshold_and_an_unexplained_failure():
+    members = [("fail", "other", ""), ("fail", "low_quality", ""), ("fail", "edge_through_face", "")]
+    assert rp.panel_family(members) == "edge_through_face"
+    assert rp.panel_family(members[:2]) == "low_quality"
+
+
+def test_other_is_the_label_only_when_no_failing_member_said_anything_more():
+    assert rp.panel_family([("fail", "other", "something odd"), ("pass", None, "")]) == "other"
+    assert rp.panel_family([("fail", "other", ""), ("fail", "low_quality", "")]) == "low_quality"
+
+
+def test_a_timeout_or_crash_is_timeout_crash_unless_a_better_cause_is_named():
+    assert rp.panel_family([("crashed", "netgen_crash", "")]) == "timeout_crash"
+    assert rp.panel_family([("crashed", "netgen_crash", ""), ("fail", "periodic_surface", "")]) == "periodic_surface"
+
+
+def test_task43_panel_failures_no_longer_collapse_into_one_stratum():
+    """The 33 measured panel failures, as (member error_kinds): at most 1 stays `other`."""
+    shapes = ([("low_quality",)] * 9 + [("low_quality", "other", "overlapping_facets")] * 5
+              + [("edge_through_face", "netgen_meshing_failed", "no_volume", "other")] * 3
+              + [("low_quality", "other")] * 3 + [("low_quality", "netgen_meshing_failed")] * 2
+              + [("no_volume", "periodic_surface")] + [("other",)])
+    families = [rp.panel_family([("fail", k, "") for k in kinds]) for kinds in shapes]
+    assert families.count("other") == 1
+    assert len(set(families)) >= 5
+
+
+def _panel_row(i, family, statuses, source="abc_fail"):
+    panel = [{"name": f"m{j}", "status": s, "error_kind": None, "min_sicn": None} for j, s in enumerate(statuses)]
+    return rp.ProbeRow(f"p{i}.step", _sha(i), source, {"tier": "full", "clean": False, "counts_for_scoreboard": True,
+                                                       "hard": [], "panel": panel}, "panel", family)
+
+
+def test_stratum_separates_a_file_failing_one_member_from_one_failing_four():
+    one = _panel_row(1, "low_quality", ["fail", "pass", "pass", "pass"])
+    four = _panel_row(2, "low_quality", ["fail", "fail", "fail", "fail"])
+    assert rp.failing_members(one) == 1 and rp.failing_members(four) == 4
+    assert rp._stratum(one) != rp._stratum(four)
+    assert rp._stratum(one) == ("panel", "1", "quality", "abc_fail")
+
+
+def test_stratum_keeps_source_and_buckets_kinds_coarsely():
+    assert rp._stratum(_panel_row(1, "overlapping_facets", ["fail"], "occt")) == ("panel", "1", "geometry", "occt")
+    assert rp._stratum(_panel_row(2, "hxt_3d_failed", ["fail"]))[2] == "mesher"
+    valid = _row(3, "valid", "round_trip_invalid")
+    assert rp._stratum(valid) == ("valid", "-", "valid_other", "abc_fail")
+    assert rp._stratum(_row(4, "valid", "body_overlap"))[2] == "body_overlap"

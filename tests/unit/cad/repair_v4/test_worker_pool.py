@@ -131,3 +131,59 @@ def test_close_during_inflight_call_does_not_leak(monkeypatch: pytest.MonkeyPatc
     assert not t.is_alive()
     assert getattr(results[0], "status") == "crashed"
     assert multiprocessing.active_children() == []
+
+
+# --- an abandoned call must not leave a reply behind for the next call ------------------------------
+# Task 43: a caller's SIGALRM file deadline fired inside `pool.call`; the worker went on, finished and
+# wrote a reply nobody read, and the NEXT call read it as its own (KeyError 'units' / 'hard' - or, with
+# the right keys, a quietly wrong answer). These use the real pool and the real pipe.
+
+
+class _Deadline(Exception):
+    pass
+
+
+def _call_interrupted_by_alarm(pool: WorkerPool, payload: dict, alarm_s: float) -> None:
+    import signal
+
+    def fire(signum: int, frame: object) -> None:
+        raise _Deadline
+
+    old = signal.signal(signal.SIGALRM, fire)
+    signal.setitimer(signal.ITIMER_REAL, alarm_s)
+    try:
+        with pytest.raises(_Deadline):
+            pool.call("slow_echo", payload, timeout_s=60)
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, old)
+
+
+def test_a_call_abandoned_by_a_caller_deadline_does_not_poison_the_next(pool: WorkerPool) -> None:
+    before = pool.call("echo", {}, timeout_s=20)
+    assert before.value is not None
+    # The worker would finish after 1.5 s and write its reply; the caller's alarm lands at 0.3 s.
+    _call_interrupted_by_alarm(pool, {"sleep_s": 1.5, "who": "abandoned"}, 0.3)
+    time.sleep(2.0)  # long enough for the abandoned work to have replied, were it still alive
+    after = pool.call("echo", {"who": "next"}, timeout_s=20)
+    assert after.status == "ok"
+    assert after.value is not None
+    assert after.value["echo"] == {"who": "next"}, "the next call was handed the abandoned call's reply"
+    assert after.value["pid"] != before.value["pid"], "the abandoned worker was reused"
+    assert _wait_gone(before.value["pid"]), "the abandoned worker was not killed"
+
+
+def test_a_reply_for_another_request_is_never_returned_as_a_result(pool: WorkerPool) -> None:
+    """The second line of defence: even if an unread reply were in the channel, it is not accepted."""
+    first = pool.call("echo", {}, timeout_s=20)
+    assert first.value is not None
+    worker = pool._all[0]
+    worker.conn.send((999, "echo", {"who": "planted"}))  # a reply the pool did not ask for will come back
+    time.sleep(0.5)
+    result = pool.call("echo", {"who": "mine"}, timeout_s=20)
+    assert result.status == "crashed"
+    assert result.ok is False and result.value is None
+    assert "expected" in (result.error or "")
+    again = pool.call("echo", {"who": "after"}, timeout_s=20)
+    assert again.status == "ok" and again.value is not None
+    assert again.value["echo"] == {"who": "after"}

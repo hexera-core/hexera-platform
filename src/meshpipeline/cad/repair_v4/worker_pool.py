@@ -8,6 +8,14 @@ OCCT can hang or segfault in ways a Python-level timeout cannot interrupt, so th
 holds is a process boundary: a call that overruns its limit gets its worker SIGKILLed and replaced.
 Workers are spawned because forking a process that has threads (or has loaded OCCT) is unsafe.
 
+The channel is kept self-synchronising two ways. (1) A call that does not run to a reply - the pool's
+own timeout, a worker death, or ANY exception escaping the call (a caller's SIGALRM file deadline, a
+KeyboardInterrupt) - retires its worker, so a reply that was never read cannot be left in a channel
+that will be reused. (2) Every request carries an id the reply must echo; a reply for any other id is
+never returned as a result (it is a desynchronised channel: the call reports `crashed` and the worker
+is replaced). (1) is why it does not happen; (2) is why, if it ever did, it would be loud rather than a
+wrong verdict.
+
 OCP is imported once per worker at start so calls are warm. The import is guarded: on a host
 without OCP (the hermetic unit tier) the worker still starts and runs the non-OCCT functions.
 """
@@ -56,21 +64,22 @@ def _worker_main(conn: Connection) -> None:
             return
         if msg is None:
             return
-        fn_name, payload = msg
+        req_id, fn_name, payload = msg
         fn = kernel_calls.REGISTRY.get(fn_name)
         if fn is None:
-            conn.send(("error", f"unknown kernel function {fn_name!r}"))
+            conn.send(("error", req_id, f"unknown kernel function {fn_name!r}"))
             continue
         try:
-            conn.send(("ok", fn(payload)))
+            conn.send(("ok", req_id, fn(payload)))
         except Exception as exc:  # a raising kernel call is a result, not a dead worker
-            conn.send(("error", f"{type(exc).__name__}: {exc}"))
+            conn.send(("error", req_id, f"{type(exc).__name__}: {exc}"))
 
 
 class _Worker:
     def __init__(self, process: BaseProcess, conn: Connection) -> None:
         self.process = process
         self.conn = conn
+        self.next_id = 0  # request ids; a reply must echo the id of the request it answers
         self.busy = False  # checked out by a call; that call, not close(), owns the connection
 
     def kill(self, *, close_conn: bool = True) -> None:
@@ -172,25 +181,42 @@ class WorkerPool:
                     status, error = "crashed", f"no worker for {fn_name}: {exc}"
                     return self._done(fn_name, status, value, error, start)
             worker = slot
+            clean = False  # True only once this call's own reply (or a recorded death) has been dealt with
             try:
-                worker.conn.send((fn_name, payload))
+                worker.next_id += 1
+                req_id = worker.next_id
+                worker.conn.send((req_id, fn_name, payload))
                 if not worker.conn.poll(timeout_s):
                     status, error = "timeout", f"{fn_name} exceeded {timeout_s}s; worker killed"
                     slot = self._replace(worker)
+                    clean = True
                 else:
                     try:
-                        kind, body = worker.conn.recv()
+                        kind, got_id, body = worker.conn.recv()
                     except (EOFError, OSError):
                         status, error = "crashed", f"worker died during {fn_name}"
                         slot = self._replace(worker)
+                        clean = True
                     else:
-                        if kind == "ok":
+                        if got_id != req_id:
+                            # Never a result: a reply to some other request must not be taken as this one's.
+                            status = "crashed"
+                            error = f"{fn_name}: reply for request {got_id!r}, expected {req_id}; worker replaced"
+                            slot = self._replace(worker)
+                        elif kind == "ok":
                             status, value = "ok", body
                         else:
                             status, error = "error", body
+                        clean = True
             except (BrokenPipeError, OSError):
                 status, error = "crashed", f"worker died before {fn_name}"
                 slot = self._replace(worker)
+                clean = True
+            finally:
+                if not clean:
+                    # An exception is leaving the call mid-flight (a caller's deadline signal, Ctrl-C): the
+                    # worker may still be computing and WILL write a reply nobody reads. Retire it.
+                    slot = self._replace(worker)
         finally:
             if slot is not None:
                 slot.busy = False
