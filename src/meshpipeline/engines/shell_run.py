@@ -256,6 +256,16 @@ def keeps_thick(record: dict) -> bool:
 KEPT_BUDGET_S = 300.0
 KEPT_RESERVE_S = 240.0
 KEPT_SLOW = "it took longer than the {s:.0f} s allowed"
+#: MIXED-16, A JOIN THAT CANNOT FIT ITS TIME IS NOT STARTED: the attempt redoes the extraction's kind of work on the
+#: same body (Booleans and offsets of every wall's slab against the body, then of each grown thick region) and more,
+#: so it costs at least KEPT_PER_EXTRACT times what the extraction cost: on the 14 development parts it kept solid it
+#: took 2.05 to 15 times the extraction (3.4 to 23 s after 1.4 to 4.4 s). When that already passes the guard's
+#: budget the attempt is not started and the shell is made as before, said. A round-tube truss (26 saddle joints
+#: read thick, 53 tube walls, extraction 368 to 552 s) spent its 300 s in the split's first Boolean - the body less
+#: every wall's slab: 47 s with 1 slab, 67 s with 8, 139 s with 16, past 12 min with all 53 - and came out as before.
+KEPT_PER_EXTRACT = 2.0
+KEPT_AHEAD = ("reading its walls took {e:.0f} s, and keeping thick regions solid takes at least {k:g} times as long, "
+              "more than the {s:.0f} s allowed")
 
 
 def _kept_budget_s() -> float:
@@ -269,6 +279,14 @@ def _kept_budget_s() -> float:
     if end == end:
         budget = min(budget, end - time.time() - KEPT_RESERVE_S)
     return budget
+
+
+def kept_ahead(extract_s: float, budget_s: float) -> str:
+    """MIXED-16: why the shell-and-solid attempt is not started (it cannot finish inside `budget_s` when the
+    extraction it builds on took `extract_s`), or "" when it is worth starting."""
+    if KEPT_PER_EXTRACT * float(extract_s) > budget_s:
+        return KEPT_AHEAD.format(e=float(extract_s), k=KEPT_PER_EXTRACT, s=max(0.0, budget_s))
+    return ""
 
 
 def _build_kept(step, out: Path, mm_per_unit: float, requirements: dict | None, record: dict, target: dict | None):
@@ -341,8 +359,16 @@ def _thick_kept(ws: Path, out: Path, step, record: dict, rec: dict, *, mm_per_un
     t1 = time.time()
     sub: dict = {}
     try:
-        joined, sub = _guarded(lambda: _build_kept(step, out, mm_per_unit, requirements, record, target),
-                               _kept_budget_s(), ws)
+        budget = _kept_budget_s()
+        ahead = kept_ahead(float(rec.get("extract_s") or 0.0), budget) if budget > 0 else ""
+        if ahead:
+            # MIXED-16: it cannot finish in its time, so it is not started (a TIME-3 guard, recorded as the trip is)
+            from meshpipeline.engines.determinism import note_guard_trip
+
+            note_guard_trip("shell_thick_kept", workspace=ws, rule="MIXED-16", budget_s=float(budget),
+                            extract_s=float(rec.get("extract_s") or 0.0))
+            raise mr._Stop(ahead)
+        joined, sub = _guarded(lambda: _build_kept(step, out, mm_per_unit, requirements, record, target), budget, ws)
         sq = sub.get("solid_quality") or {}
         if sq.get("valid") is False or sq.get("fatal"):
             raise mr._Stop("the solid mesh of the thick regions is not valid")

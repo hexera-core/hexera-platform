@@ -76,11 +76,43 @@ def test_a_join_past_its_time_leaves_the_shell_as_before_and_says_so(tmp_path, m
 
     monkeypatch.setattr(mixed_run, "build", slow)
     monkeypatch.setattr(shell_run, "KEPT_BUDGET_S", 2.0)
+    monkeypatch.setattr(shell_run, "KEPT_PER_EXTRACT", 0.0)    # past MIXED-16: the attempt is started
     started = time.time()
     ws, rec = _run(tmp_path)
     assert time.time() - started < 28
     assert rec["made"] is True and "kept_solid" not in rec and rec["left_out"]["thick"] == 1
     assert "(it took longer than the 2 s allowed), so they are left out." in rec["words"]
+
+
+def test_a_join_is_not_started_when_its_extraction_already_says_it_cannot_fit_its_time():
+    # MIXED-16: the attempt costs at least KEPT_PER_EXTRACT x the extraction (2.05-15 x on the 14 development parts it
+    # kept solid); a round-tube truss whose extraction took 368 s spent its whole 300 s in the split's first Boolean
+    assert shell_run.KEPT_PER_EXTRACT == 2.0
+    assert shell_run.kept_ahead(4.4, 300.0) == ""               # the slowest kept part's extraction: started
+    assert shell_run.kept_ahead(150.0, 300.0) == ""             # exactly fits: started
+    why = shell_run.kept_ahead(368.0, 300.0)
+    assert why == ("reading its walls took 368 s, and keeping thick regions solid takes at least 2 times as long, "
+                   "more than the 300 s allowed")
+    assert shell_run.kept_ahead(151.0, 300.0)                   # past the budget: not started
+    assert shell_run.kept_ahead(40.0, 60.0)                     # the budget left before the run's stop counts
+
+
+def test_a_join_that_cannot_fit_its_time_is_not_started_and_the_shell_says_so(tmp_path, monkeypatch):
+    # MIXED-16 on a real run: no fork, no mixed route; the shell as before, the reason said, the trip recorded
+    import json
+
+    def never(*a, **k):
+        raise AssertionError("the attempt was started")
+
+    monkeypatch.setattr(mixed_run, "build", never)
+    monkeypatch.setattr(shell_run, "KEPT_PER_EXTRACT", 1e9)    # any extraction time is too long
+    ws, rec = _run(tmp_path)
+    assert rec["made"] is True and "kept_solid" not in rec and rec["left_out"]["thick"] == 1
+    assert "could not be kept as solid and joined to the shell (reading its walls took" in rec["words"]
+    assert "more than the 300 s allowed), so they are left out." in rec["words"]
+    assert "CTETRA" not in (ws / "shell.bdf").read_text()
+    trips = json.loads((ws / "guard_trips.json").read_text())
+    assert any(t.get("rule") == "MIXED-16" and t.get("where") == "shell_thick_kept" for t in trips)
 
 
 def test_a_join_that_cannot_be_made_leaves_the_shell_as_before_and_says_why(tmp_path, monkeypatch):
