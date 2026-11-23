@@ -366,6 +366,67 @@ def sites_graph(payload: dict) -> dict:
     return {"graphs": out}
 
 
+def volume_possibility(shape: Any) -> dict:
+    """What can be said, from topology alone, about whether `make_volume` could ever find a closed volume in `shape`.
+
+    A closed shell uses every non-degenerate edge at least twice (a seam counts twice in its own face). So take a
+    face set and repeatedly drop any face with an edge used by fewer than two of the faces that remain: if nothing is
+    left, NO subset of the set encloses a volume, and `make_volume` over it must decline. If something is left the
+    answer is "possible", which is NOT a promise: it is only that this test cannot rule it out.
+
+    `loose` is that test over the faces outside every solid (what `make_volume` builds from when given no targets);
+    `any` is over every face (a superset of any explicit target list, since a subset of a set with no closed subset
+    has none either). Also `free_edges`: edges bordering exactly one face (a seam is used twice by its own face,
+    so it is not free); 0 here means `sew` has nothing to join."""
+    from OCP.BRep import BRep_Tool
+    from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_SOLID
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS
+    from OCP.TopTools import TopTools_IndexedMapOfShape
+
+    in_solid = TopTools_IndexedMapOfShape()
+    solids = TopExp_Explorer(shape, TopAbs_SOLID)
+    while solids.More():
+        inner = TopExp_Explorer(solids.Current(), TopAbs_FACE)
+        while inner.More():
+            in_solid.Add(inner.Current())
+            inner.Next()
+        solids.Next()
+    faces = _maps(shape)["face"]
+    edges = TopTools_IndexedMapOfShape()
+    uses: list[list[int]] = []  # per face: edge index per use, degenerate edges left out
+    for i in range(1, faces.Extent() + 1):
+        mine: list[int] = []
+        explorer = TopExp_Explorer(faces.FindKey(i), TopAbs_EDGE)
+        while explorer.More():
+            edge = TopoDS.Edge_s(explorer.Current())
+            if not BRep_Tool.Degenerated_s(edge):
+                mine.append(edges.Add(edge))
+            explorer.Next()
+        uses.append(mine)
+    loose = [i - 1 for i in range(1, faces.Extent() + 1) if not in_solid.Contains(faces.FindKey(i))]
+
+    def closable(members: list[int]) -> bool:
+        alive = set(members)
+        while True:
+            count: dict[int, int] = {}
+            for f in alive:
+                for e in uses[f]:
+                    count[e] = count.get(e, 0) + 1
+            drop = {f for f in alive if any(count[e] < 2 for e in uses[f])}
+            if not drop:
+                return bool(alive)
+            alive -= drop
+
+    every = list(range(faces.Extent()))
+    per_edge: dict[int, int] = {}
+    for mine in uses:
+        for e in mine:
+            per_edge[e] = per_edge.get(e, 0) + 1
+    return {"loose": closable(loose), "any": closable(every),
+            "free_edges": sum(1 for n in per_edge.values() if n == 1)}
+
+
 @register("sites_free_loops")
 def sites_free_loops(payload: dict) -> dict:
     """The closed loops of free edges (edges bordering exactly one face), each as its kernel edge indices and
@@ -417,7 +478,8 @@ def sites_free_loops(payload: dict) -> dict:
         loops.append({"edges": sorted(indices), "span": math.dist((x0, y0, z0), (x1, y1, z1))})
     whole = _box(shape)
     return {"loops": loops, "open_wires": open_wires,
-            "diagonal": 0.0 if whole is None else math.dist(whole[:3], whole[3:])}
+            "diagonal": 0.0 if whole is None else math.dist(whole[:3], whole[3:]),
+            "volume": volume_possibility(shape)}
 
 
 @register("render_view")

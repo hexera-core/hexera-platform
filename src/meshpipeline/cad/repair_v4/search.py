@@ -80,9 +80,11 @@ Wiring (Task 18b).
 
 from __future__ import annotations
 
+import collections
 import copy
 import heapq
 import itertools
+import json
 import math
 import time
 from collections.abc import Callable, Sequence
@@ -376,6 +378,8 @@ class DetGenerator:
         self.diagonal = diagonal
         #: why a sweep row was not made (no diagonal, empty window): the absence is on the record, not silent
         self.notes: list[str] = []
+        #: ops not proposed, by the class of decline predicted (a count, so the saving is measurable)
+        self.skipped: collections.Counter[str] = collections.Counter()
         self._diag_cache: dict[str, float] = {}
 
     def _note(self, text: str) -> None:
@@ -417,11 +421,44 @@ class DetGenerator:
         out: list[Candidate] = []
         sites = self.unfixable.filter(state.sites, state.lineage) if self.unfixable is not None else state.sites
         diag = self._diag_of(state.ws) if any(s.kind in ("sliver", "open") for s in sites) else None
+        volume = next((v for s in sites if s.kind == "open" and isinstance(v := s.graph.get("volume"), dict)), None)
+        has_solid = any(sid[:1] == "B" for sid in state.ws.ids)
+        seen: set[str] = set()
         for site in sites:
             for op, targets, params, why in self._sweep(site, diag):
-                if op in REGISTRY:
-                    out.append(Candidate(op, targets, params, "det", f"{why} (site {site.id}, {site.kind})"))
+                if op not in REGISTRY:
+                    continue
+                key = json.dumps([op, list(targets), params], sort_keys=True, default=str)
+                if key in seen:  # the same call twice (two sites both ask for it): the second is the first again
+                    self.skipped["identical_to_an_earlier_candidate"] += 1
+                    continue
+                seen.add(key)
+                reason = self._declines_in_advance(op, targets, volume, has_solid)
+                if reason is not None:
+                    self.skipped[reason.split(":")[0]] += 1
+                    self._note(f"site {site.id}: {op} not proposed: {reason}")
+                    continue
+                out.append(Candidate(op, targets, params, "det", f"{why} (site {site.id}, {site.kind})"))
         return out[:k]
+
+    @staticmethod
+    def _declines_in_advance(op: str, targets: list[StableId], volume: dict | None, has_solid: bool) -> str | None:
+        """Why `op` on `targets` would decline, when that is KNOWN from the state before the op is spent; else None.
+
+        Only what the kernel's own code makes certain. Everything the kernel has to DISCOVER is left to it: that
+        `sew` finds no partner for a free edge, that a fill deviates, that a shell the topology cannot rule out
+        still has no volume. A guess here loses a repair silently, so the rule is: unknown means propose."""
+        if op == "sew":
+            if has_solid:
+                return "sew_on_a_solid: the state carries a solid and sew returns shells, so it declines"
+            if volume is not None and volume.get("free_edges") == 0:
+                return "sew_without_free_edges: the state has no free edge, so sew has nothing to join"
+        if op == "make_volume" and volume is not None:
+            reachable = volume.get("loose") if not targets else volume.get("any")
+            if reachable is False:
+                return ("make_volume_without_a_closable_shell: no subset of the faces uses every edge twice, "
+                        "so MakerVolume finds no closed volume")
+        return None
 
     def _fill_rows(self, site: Site, diag: float | None) -> list[tuple[str, list[StableId], dict, str]]:
         """One `fill_loop` per free loop the site carries (`graph["free_loops"]`, smallest first) that the fill cap
@@ -533,6 +570,17 @@ class DetGenerator:
 
 def _neg(score: Score) -> tuple:
     return tuple(-x for x in score)
+
+
+def _entry(state: SearchState, rank: Score, order: int) -> tuple:
+    """A frontier entry; `heapq` pops the smallest, so every key is negated or ascending.
+
+    `(-rank, -depth, order, rank, state)`: the better score first; of EQUAL scores the DEEPER state first; of equal
+    score and equal depth the one pushed first (`order` is the search's own monotonic counter, taken in the driver
+    thread in proposal order, so it never depends on which worker finished first). A multi-op repair is a chain of ops
+    that each keep the score (a `fill_loop` that closes one hole of three improves nothing yet), so ties are exactly
+    where the search has to go DEEP; with FIFO alone it went breadth-first over every subset of fills."""
+    return (_neg(rank), -state.depth, order, rank, state)
 
 
 def _rank(state: SearchState) -> Score:
@@ -897,7 +945,7 @@ def search(
     patience_now = PATIENCE_FLOOR if patience is None else patience
     best = s0
     seen = {_fingerprint(start)}
-    heap: list[tuple] = [(_neg(s0.score), next(tie), s0.score, s0)]
+    heap: list[tuple] = [_entry(s0, s0.score, next(tie))]
     reason: str | None = "clean" if start_verdict.clean else None
     flat = 0
     n_inconclusive = 0
@@ -916,7 +964,7 @@ def search(
                     trace.record("ai_capped", spent=spent_now(), budget=budget.__dict__)
             state = None
             while heap:
-                _, _, pushed_score, cand_state = heapq.heappop(heap)
+                *_, pushed_score, cand_state = heapq.heappop(heap)
                 if not cand_state.expanded and pushed_score == _rank(cand_state):
                     state = cand_state
                     break
@@ -1078,7 +1126,7 @@ def search(
                 )
                 children.append(child)
                 fates.append((out.gen, out, child, False))
-                heapq.heappush(heap, (_neg(_rank(child)), next(tie), _rank(child), child))
+                heapq.heappush(heap, _entry(child, _rank(child), next(tie)))
 
             for gi, items in rejections.items():
                 told = getattr(generators[gi], "on_rejected", None)
@@ -1116,7 +1164,7 @@ def search(
                     score=child.score,
                     clean=bool(full.clean),
                 )
-                heapq.heappush(heap, (_neg(child.score), next(tie), child.score, child))
+                heapq.heappush(heap, _entry(child, child.score, next(tie)))
                 if child.score > best.score:
                     trace.record("best", state=child.id, score=child.score, previous=best.id, previous_score=best.score)
                     best, improved = child, True
