@@ -22,12 +22,13 @@ import dataclasses
 import hashlib
 import json
 import logging
-import os
 import threading
 import weakref
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any, Protocol
+
+from meshpipeline.settings.cad_repair import verdict_cache_uri
 
 VERDICT_CODE_VERSION = "crs-v4.verdict.1"
 logger = logging.getLogger(__name__)
@@ -206,9 +207,12 @@ def default_verdict_cache() -> VerdictCache:
     """The cache the engine's judges use (`search.default_judge`, `stages`), one per (process, `CACHE_URI_ENV`).
     Both judges MUST get the same one: the staged healer's final state is the search's start state, and the second
     judgement of it must not mesh again."""
-    uri = os.environ.get(CACHE_URI_ENV, "")
+    uri = verdict_cache_uri()
     with _DEFAULT_LOCK:
         if uri not in _DEFAULT:
+            if not uri:  # a process-local cache looks exactly like a working one: say so, once per process
+                logger.warning("%s is unset or blank: the verdict cache is in-memory and per-process, so "
+                               "verdicts will NOT be shared across files, workers or runs", CACHE_URI_ENV)
             store: CacheStore = (GcsStore(uri) if uri.startswith("gs://") else DirStore(uri)) if uri else MemoryStore()
             _DEFAULT[uri] = VerdictCache(store)
         return _DEFAULT[uri]

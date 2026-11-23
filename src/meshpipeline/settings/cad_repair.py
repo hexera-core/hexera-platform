@@ -345,6 +345,14 @@ def running_under_pytest() -> bool:
     return optional_env("PYTEST_CURRENT_TEST", "").strip() != ""
 
 
+def verdict_cache_uri() -> str:
+    """Where the v4 verdict cache lives when it must outlive the process: `gs://bucket/prefix` or a
+    directory, from CRS_V4_VERDICT_CACHE_URI. Unset OR blank (whitespace included) returns "", which
+    the caller reads as "no durable cache: one in-memory cache per process". The caller says so
+    loudly, because a process-local cache looks exactly like a working one. Read at CALL time."""
+    return optional_env("CRS_V4_VERDICT_CACHE_URI", "").strip()
+
+
 ENGINES: tuple[str, ...] = ("v3", "search")
 
 
