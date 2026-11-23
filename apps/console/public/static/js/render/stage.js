@@ -15,6 +15,7 @@
  * stage <-> viewer cycle.
  */
 import { esc, fmtDur, mdBlock } from "../core/format.js";
+import * as chips from "../shell/chips.js";
 import { prettyText } from "../core/engineering_text.js";
 import { attemptsLabel, reasoningHeader } from "../core/events.js";
 // the run box's four rows and which backend stage feeds which: the one table, for every route
@@ -234,13 +235,17 @@ export const Stage = {
     if(add&&inp){
       const msg=this._briefEl.querySelector('.rc-notes-msg');
       // the box is one line until it holds more: it grows with what is typed or pasted
+      // Add takes words, or a file attached / a face picked with none (the chip row under the box, shell/chips.js)
+      const carries=()=>{const p=chips.payload('notes');return p.attachments.length+p.faces.length>0;};
       const fit=()=>{inp.style.height='';if(inp.value)inp.style.height=Math.min(inp.scrollHeight+2,240)+'px';
-        add.disabled=!inp.value.trim();};
+        add.disabled=!(inp.value.trim()||carries());};
       inp.addEventListener('input',fit);
+      chips.mount('notes',this._briefEl.querySelector('.rc-notes-row'),{input:inp,onChange:fit});
       const send=async()=>{
-        const text=inp.value;if(!text.trim()||add.dataset.busy)return;
+        const text=inp.value;if(!(text.trim()||carries())||chips.busy('notes')||add.dataset.busy)return;
         add.dataset.busy='1';add.disabled=true;msg.textContent='';
-        try{this._briefSig='';await addNote(text);}
+        const extra=chips.payload('notes');
+        try{this._briefSig='';await addNote(text,extra);chips.clear('notes');}
         catch(e){delete add.dataset.busy;add.disabled=false;msg.textContent=(e&&e.message)||'The note was not saved.';}};
       add.onclick=send;
       inp.addEventListener('keydown',(e)=>{if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing){e.preventDefault();send();}});}

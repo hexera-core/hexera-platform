@@ -6,6 +6,7 @@ from __future__ import annotations
 import enum
 import time
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -26,6 +27,14 @@ class InboundMessage:
     #: the same tenant as the message itself. Empty for a principal that names no organisation,
     #: which stamps owner_id alone; see persistence/repositories/tenant_scope.
     organization_id: str = ""
+    #: WHAT THE MESSAGE CARRIES BESIDE ITS WORDS (contracts/user_notes.carried): the files the user attached, as
+    #: their stored rows, and the faces they picked on the model. Kept on the user's turn; empty for most messages.
+    attachments: tuple[dict, ...] = ()
+    faces: tuple[dict, ...] = ()
+
+    def carried(self) -> dict:
+        from meshpipeline.contracts.user_notes import carried
+        return carried({"attachments": list(self.attachments), "faces": list(self.faces)})
 
 
 class MessageStatus(str, enum.Enum):
@@ -246,8 +255,12 @@ async def accept(inbound: InboundMessage, *, session_repo, db_factory, logger,
         # afterwards and appending again would count this message twice and produce a revision
         # that matches no conversation that ever existed.
         messages = list(getattr(locked, "messages", None) or [])
-        await session_repo.append_message(db, inbound.session_id, "user", inbound.content)
-        messages.append({"role": "user", "content": inbound.content})
+        extra = inbound.carried()
+        if extra:
+            await session_repo.append_message(db, inbound.session_id, "user", inbound.content, extra=extra)
+        else:
+            await session_repo.append_message(db, inbound.session_id, "user", inbound.content)
+        messages.append({"role": "user", "content": inbound.content, **extra})
         revision = _revision(messages)
 
         gate = dict(getattr(locked, "intake_gate", None) or {})
@@ -1098,12 +1111,15 @@ class NoteStatus(str, enum.Enum):
 
 
 async def add_console_note(session_id: uuid.UUID, owner_id: str, text: str, *, session_repo,
-                           db_factory, organization_id: str = "") -> tuple[NoteStatus, Any]:
+                           db_factory, organization_id: str = "", attachments: Sequence[dict] = (),
+                           faces: Sequence[dict] = ()) -> tuple[NoteStatus, Any]:
     """THE CONSOLE'S NOTES BOX (contracts/user_notes, NOTE-1): the user's text kept exactly as
-    typed beside the session's other notes. Returns (status, the session as it now stands). Not
+    typed beside the session's other notes, with the files they attached and the faces they picked (a note of a
+    picture alone has no words). Returns (status, the session as it now stands). Not
     while a run is linked - the note could no longer reach it."""
-    from meshpipeline.contracts.user_notes import SOURCE_CONSOLE, make
-    if not str(text or "").strip():
+    from meshpipeline.contracts.user_notes import SOURCE_CONSOLE, carried, make
+    extra = carried({"attachments": list(attachments or ()), "faces": list(faces or ())})
+    if not str(text or "").strip() and not extra:
         return NoteStatus.empty, None
     async with db_factory() as db:
         session = await session_repo.get_for_owner(db, session_id, owner_id,
@@ -1112,7 +1128,7 @@ async def add_console_note(session_id: uuid.UUID, owner_id: str, text: str, *, s
             return NoteStatus.not_found, None
         if getattr(session, "job_id", None):
             return NoteStatus.running, session
-        await session_repo.set_user_notes(db, session_id, [make(text, source=SOURCE_CONSOLE)])
+        await session_repo.set_user_notes(db, session_id, [make(text, source=SOURCE_CONSOLE, **extra)])
         await db.commit()
         fresh = await session_repo.get_for_owner(db, session_id, owner_id,
                                                  organization_id=organization_id)

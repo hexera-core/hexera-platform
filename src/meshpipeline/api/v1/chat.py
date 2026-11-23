@@ -143,7 +143,9 @@ async def chat_message(body: ChatMessageIn, owner_id: str = Depends(owner_dep),
     session_repo = SessionRepository()
     session_id = body.session_id
     inbound = msg.InboundMessage(session_id=session_id, owner_id=owner_id,
-                                 content=body.content, organization_id=organization_id)
+                                 content=body.content, organization_id=organization_id,
+                                 attachments=tuple({"id": a} for a in getattr(body, "attachments", None) or ()),
+                                 faces=tuple(f.model_dump() for f in getattr(body, "faces", None) or ()))
     outcome = await msg.accept(inbound, session_repo=session_repo, db_factory=get_db,
                                logger=logger)
 
@@ -231,7 +233,8 @@ async def chat_notes(body: ChatNoteIn, owner_id: str = Depends(owner_dep),
 
     status, session = await msg.add_console_note(
         body.session_id, owner_id, body.text, session_repo=SessionRepository(),
-        db_factory=get_db, organization_id=organization_id)
+        db_factory=get_db, organization_id=organization_id,
+        attachments=[{"id": a} for a in body.attachments], faces=[f.model_dump() for f in body.faces])
     if status is msg.NoteStatus.not_found:
         raise HTTPException(404, "Session not found")
     if status is msg.NoteStatus.empty:
@@ -241,8 +244,9 @@ async def chat_notes(body: ChatNoteIn, owner_id: str = Depends(owner_dep),
                                  "Add it before you approve the next run.")
     # THE NOTES AS STORED, always: the brief exists only once requirements are submitted, so a note
     # added before that answered with no brief - and no notes - though it was kept (dry run, 2 Nov)
+    from meshpipeline.contracts.user_notes import carried as _carried
     from meshpipeline.contracts.user_notes import clean as _clean_notes
-    notes = [{"id": n["id"], "text": n["text"], "source": n["source"]}
+    notes = [{"id": n["id"], "text": n["text"], "source": n["source"], **_carried(n)}
              for n in _clean_notes(getattr(session, "user_notes", None))]
     out = {"session_id": str(body.session_id), "brief": await _brief(session, owner_id), "user_notes": notes}
     # "use cfMesh" IN THE NOTES chooses the engine as it does in the chat: the console says it in the
@@ -254,6 +258,7 @@ async def chat_notes(body: ChatNoteIn, owner_id: str = Depends(owner_dep),
     if say:
         out["say"] = say
     return out
+
 
 
 #: Typed approval outcome -> HTTP status. The route owns this table and nothing else about
