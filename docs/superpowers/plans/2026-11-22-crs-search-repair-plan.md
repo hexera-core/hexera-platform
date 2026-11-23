@@ -678,3 +678,34 @@ posture is untouched: `CAD_REPAIR_ENGINE` defaults to v3 and prod never sets it.
 
 **Blocked on** the panel merging (Task 3), since the real `cheap_verdict` raises `ImportError`
 without it.
+
+## Task 24 (added 2026-11-22 by the controller) — the eval harness side
+
+**Why it exists.** Task 21 built the arms, the waves and the report; it deliberately deferred the
+harness that produces the rows the report consumes, because the search arms had not landed. So
+nothing yet proves a real run emits rows the report can read, and two concrete refusals are waiting
+on it.
+
+**Scope.**
+
+1. **`run_arm --mode harness`** writing the arm rows, with the per-row fields Task 21's `ArmRow`
+   requires — including Task 18b's `reason`, `verdict_candidates`, `inconclusive_candidates` and
+   `infrastructure_failed`. Those must be a real **import** from the search driver, not a mirrored
+   copy: two definitions of "was this file measured" that drift apart put the report and the driver
+   in disagreement, which is the precise failure those fields exist to prevent.
+2. **The launcher must call `plan_wave`**, so a wave's cap and its once/three-times slot are claimed
+   rather than assumed.
+3. **Copy `plan.provenance()` into the shard provenance.** `run_arm` does not today, so a held-out
+   report *refuses* — correctly, since the report cannot otherwise tell that the held-out slot was
+   claimed. Fail-closed, but it must be wired before the held-out wave.
+
+**The check that closes it** (Task 21's reviewer named it, and it is the one worth running first):
+a small real dev wave with a forced `CheckerUnavailable` — no gmsh — asserting that the arm row reads
+`inconclusive: true`, that it is excluded from the clean rate, and that `input_only`'s `in_clean`
+matches the split's own verdict. That exercises the infrastructure-is-not-a-verdict rule end to end,
+which no unit test can.
+
+**Blocked on** Task 22 (`_run_search` wired, so the search arms are reachable) and Task 3's panel.
+
+**Open owner item carried here:** `clean_control`'s wave type is assumed "normal" because the plan
+gives it no cap of its own. Task 21 pinned it with a test and flagged it.
