@@ -328,6 +328,15 @@ def _meshability_pass_posture() -> str:
 #: written on a refusal, no new measurement keys.
 CAD_REPAIR_MESHABILITY_PASS: str = _meshability_pass_posture()
 
+def kernel_test_fns_enabled() -> bool:
+    """Whether the v4 kernel-worker TEST functions (echo, sleep-forever, abort, the split-op test
+    ops) may register. Developer/test only, never set in production. Read at CALL time, not
+    import time: spawned workers import the package from scratch and must see the environment the
+    parent handed them, and a test that sets it after the settings module is imported must still
+    be honoured."""
+    return bool_env("HEXERA_TEST_KERNEL_FNS", "false")
+
+
 ENGINES: tuple[str, ...] = ("v3", "search")
 
 

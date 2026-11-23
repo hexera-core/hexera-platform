@@ -32,6 +32,7 @@ from meshpipeline.cad.repair_v4.ops import check_call, register, run_kernel_op
 from meshpipeline.cad.repair_v4.types import Site, StableId
 from meshpipeline.cad.repair_v4.worker_pool import WorkerPool
 from meshpipeline.cad.repair_v4.workspace import Diff, Workspace
+from meshpipeline.settings.cad_repair import kernel_test_fns_enabled
 
 _FACE_ID = {"type": "string", "x-entity": "face"}
 _EDGE_ID = {"type": "string", "x-entity": "edge"}
@@ -402,7 +403,7 @@ class UnifySameDomain:
             timeout_s=timeout_s)
 
 
-if os.environ.get("HEXERA_TEST_KERNEL_FNS") == "1":
+if kernel_test_fns_enabled():
 
     @register_kernel_fn("op_test_write_then_hang")
     def _write_then_hang(payload: dict) -> dict:
