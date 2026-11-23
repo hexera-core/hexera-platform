@@ -1026,3 +1026,132 @@ def test_a_stage_the_checker_could_not_judge_is_inconclusive_not_failed(monkeypa
     c = Candidate(op=search.RUN_STAGE, targets=[], params={"stage": "finalise"}, source="det")
     out = search._stage_outcome(None, make_ws(0), c, 0, 1.0)
     assert out.kind == "inconclusive"
+
+
+# --- Task 22d: pictures reach the proposer, cost nothing when nobody looks, and are never a verdict ----------------
+
+
+class NoPngPool:
+    """A kernel that cannot draw: every render comes back not-ok (the shape of a timeout)."""
+
+    def __init__(self, status: str = "timeout") -> None:
+        self.calls: list[tuple[str, dict]] = []
+        self.status = status
+
+    def call(self, fn: str, payload: dict, *, timeout_s: float) -> CallResult:
+        self.calls.append((fn, payload))
+        return CallResult(False, None, "render failed", self.status, 0.0)  # type: ignore[arg-type]
+
+
+class RaisingPool:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict]] = []
+
+    def call(self, fn: str, payload: dict, *, timeout_s: float) -> CallResult:
+        self.calls.append((fn, payload))
+        raise RuntimeError("pool is closed")
+
+
+def _open_by_depth_id(pool: Any, ws: Workspace, verdict: Any) -> list[Site]:
+    e = f"F{len(ws.history) % 2 + 1}"           # alternate entities: the registry must not carry one id across
+    return [site(f"S@{e}", "open", [e])]
+
+
+def _two_round_model() -> FakeModel:
+    return FakeModel([reply(call_of("propose", {"candidates": [ai_cand(1)]})), reply(),
+                      reply(call_of("propose", {"candidates": [ai_cand(2)]})), reply()])
+
+
+def test_the_picture_reaches_the_proposers_message_payload_as_the_rendered_bytes() -> None:
+    model = FakeModel([reply(call_of("propose", {"candidates": [ai_cand(1)]})), reply()])
+    run([proposer(model)], World(sites_fn=_open_site), pool=PngPool(), patience=50)
+    first_user = model.calls[0][1]["content"]
+    images = [p for p in first_user if p["type"] == "image_url"]
+    assert len(images) == 1
+    assert images[0]["image_url"]["url"] == "data:image/png;base64," + base64.b64encode(PNG).decode()
+
+
+def _expanded_ids(r: SearchResult) -> list[list[str]]:
+    return [[s["id"] for s in e["sites"]] for e in r.trace.of_kind("expand")]
+
+
+def test_attaching_an_image_changes_no_site_id_in_any_round() -> None:
+    with_png, without = PngPool(), NoPngPool()
+    seen_a: list[Site] = []
+    seen_b: list[Site] = []
+    a = run([proposer(_two_round_model()), Scripted(lambda s: seen_a.extend(s.sites) or [])],
+            World(sites_fn=_open_by_depth), pool=with_png, patience=50)
+    b = run([proposer(_two_round_model()), Scripted(lambda s: seen_b.extend(s.sites) or [])],
+            World(sites_fn=_open_by_depth), pool=without, patience=50)
+    assert any(s.view_png == PNG for s in seen_a) and all(s.view_png is None for s in seen_b)
+    assert _expanded_ids(a) == _expanded_ids(b) and len(_expanded_ids(a)) >= 2
+    assert [s.id for s in seen_a] == [s.id for s in seen_b]
+
+
+def test_view_png_is_not_part_of_the_registrys_identity() -> None:
+    ws = make_ws(0)
+    bare, imaged = site("S@F1", "open", ["F1"]), site("S@F1", "open", ["F1"])
+    imaged.view_png = PNG
+    ra, rb = SiteRegistry(), SiteRegistry()
+    ra.apply(ws, [bare])
+    rb.apply(ws, [imaged])
+    child = Workspace(brep_path="/fake/c.brep", ids=ws.ids, labels=ws.labels, indices=ws.indices,
+                      original=ws.original, history=[Diff(op="t18_set", params={}, modified={}, generated={}, removed=[], declared_added=[],
+                                    declared_removed=[], seconds=0.0)])
+    nxt_a, nxt_b = site("S@F1", "open", ["F1"]), site("S@F1", "open", ["F1"])
+    nxt_b.view_png = PNG
+    ra.apply(child, [nxt_a])
+    rb.apply(child, [nxt_b])
+    assert (bare.id, nxt_a.id) == (imaged.id, nxt_b.id) == ("S@F1", "S@F1")
+    assert ra.retired == rb.retired and nxt_a.graph == nxt_b.graph
+
+
+@pytest.mark.parametrize("pool_factory", [NoPngPool, lambda: NoPngPool("crashed"), RaisingPool])
+def test_a_site_with_no_picture_is_still_proposed_and_nothing_reads_as_a_failure(pool_factory: Any) -> None:
+    pool = pool_factory()
+    model = FakeModel([reply(call_of("propose", {"candidates": [ai_cand(1)]})), reply()])
+    r = run([proposer(model)], World(sites_fn=_open_site), pool=pool, patience=50)
+    assert [fn for fn, _ in pool.calls] == ["render_view"]
+    assert "image_url" not in json.dumps(model.calls[0])           # no picture, and the proposer was still asked
+    assert [e["outcome"] for e in r.trace.of_kind("candidate")] != [] and _q(r.best) == 1
+    assert not r.trace.of_kind("judge_error")
+    assert r.inconclusive_candidates == 0 and not r.infrastructure_failed
+
+
+def test_a_render_that_raises_is_traced_as_view_unavailable_not_as_a_judge_error() -> None:
+    model = FakeModel([reply(call_of("propose", {"candidates": [ai_cand(1)]})), reply()])
+    r = run([proposer(model)], World(sites_fn=_open_site), pool=RaisingPool(), patience=50)
+    assert [e["site"] for e in r.trace.of_kind("view_unavailable")] == ["S@F1"]
+    assert not r.trace.of_kind("judge_error")
+
+
+def test_the_search_det_arm_renders_nothing_whatever_the_sites() -> None:
+    gens, ai = search.arm_generators("search_det")
+    assert ai is None
+    pool = PngPool()
+    run(gens, World(sites_fn=_open_site), pool=pool, patience=50)
+    assert [fn for fn, _ in pool.calls if fn == "render_view"] == []
+
+
+def test_a_proposer_that_has_stopped_is_not_shown_pictures_nobody_will_look_at() -> None:
+    pool = PngPool()
+    model = FakeModel([reply(call_of("propose", {"candidates": [ai_cand(1)]})), reply(), reply(), reply()])
+    ai = proposer(model, max_turns=1)          # spends its only turn on the first state
+    r = run([ai], World(sites_fn=_open_by_depth_id), pool=pool, patience=50)
+    assert ai.turns_used == 1
+    assert len(r.trace.of_kind("expand")) >= 2          # the search went on, deterministic-only
+    assert len([1 for fn, _ in pool.calls if fn == "render_view"]) == 1
+
+
+def _many_open(pool: Any, ws: Workspace, verdict: Any) -> list[Site]:
+    return [site(f"S@F{n}", "open", [f"F{n}"]) for n in range(1, 8)]
+
+
+def test_one_expansion_draws_at_most_the_cap_and_the_rest_wait_for_a_descendant() -> None:
+    pool = PngPool()
+    ids = tuple(f"F{n}" for n in range(1, 8))
+    ai = proposer(FakeModel([reply()]))                      # proposes nothing: exactly one expansion
+    run([ai], World(sites_fn=_many_open), start=make_ws(0, ids=ids), pool=pool, patience=50)
+    drawn = [p["entities"][0]["id"] for fn, p in pool.calls if fn == "render_view"]
+    assert search.MAX_VIEWS_PER_EXPANSION == 4
+    assert drawn == ["F1", "F2", "F3", "F4"]                 # best-first, and no more
