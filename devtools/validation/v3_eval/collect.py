@@ -206,8 +206,8 @@ def new_defects(row: dict) -> dict[str, int]:
 def clean_good(row: dict) -> bool:
     """THE CLEAN-CONTROL RULE, per part: it meshed before, it still meshes after repair (a part
     repair did not rewrite keeps its before verdict, as repair_corpus.meshing_summary reads it),
-    and repair introduced no new defect. A crashed part is never good: nothing was delivered."""
-    if row.get("outcome") == "crashed" or row.get("meshes_before") is not True:
+    and repair introduced no new defect. A crashed or timed-out part is never good: nothing was delivered."""
+    if row.get("outcome") in ("crashed", "timeout") or row.get("meshes_before") is not True:
         return False
     after = row.get("meshes_after")
     still = row["meshes_before"] if after is None else after
@@ -220,11 +220,12 @@ def clean_report(rows: list[dict], summary: dict) -> dict:
     kept = sorted(r["file"] for r in rows
                   if any(op.get("status") == "kept" for op in r.get("operations") or []))
     crashed = sorted(r["file"] for r in rows if r.get("outcome") == "crashed")
+    timed_out = sorted(r["file"] for r in rows if r.get("outcome") == "timeout")
     introduced = {r["file"]: new_defects(r) for r in rows if new_defects(r)}
     return {"still_meshes_no_new_defects": sum(1 for r in rows if clean_good(r)),
             "not_good": sorted(r["file"] for r in rows if not clean_good(r)),
             "files_with_new_defects": sorted(introduced), "new_defects": introduced,
-            "changed": len(set(kept) | set(crashed)), "files_with_kept_ops": kept,
+            "changed": len(set(kept) | set(crashed) | set(timed_out)), "files_with_kept_ops": kept,
             "crashed_files": crashed,
             "newly_broken": int((summary.get("meshing") or {}).get("newly_broken") or 0)}
 
