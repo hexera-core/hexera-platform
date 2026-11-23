@@ -289,6 +289,7 @@ def _same(shards: list[dict], key: str, want: Any, what: str) -> None:
 
 
 def load_wave(root: Path, wave: Any, split_rows: Iterable[Any], *, n_shards: int, frozen_commit: str | None = None,
+              shard_plan: dict | None = None,
               purpose: str = "report", markers: Any = None) -> WaveResult:
     """Every gate, then the rows. `split_rows` are the split file's ProbeRows (rp.read_split).
 
@@ -322,7 +323,7 @@ def load_wave(root: Path, wave: Any, split_rows: Iterable[Any], *, n_shards: int
         raise ReportRefused("the split lists a file twice")
 
     shards = _collect.load_shards(root, n_shards, parse_rows=parse_arm_rows)
-    _collect.check_partition(shards)
+    _collect.check_partition(shards, shard_plan)
     if frozen_commit and {str(s["prov"].get("commit")) for s in shards} != {frozen_commit}:
         raise ReportRefused(f"the shards ran commit {sorted({str(s['prov'].get('commit')) for s in shards})}, "
                             f"not the frozen {frozen_commit}")
@@ -749,6 +750,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--shards", type=int, required=True)
     p.add_argument("--split", required=True, help="the split file (corpora/v4/<split>.json)")
     p.add_argument("--frozen-commit", default="")
+    p.add_argument("--shard-plan", default="", help="the cost-balanced shard plan the wave was cut by (default: hash)")
     p.add_argument("--purpose", default="report", choices=("report", "tuning"))
     p.add_argument("--json", default="")
     p.add_argument("--markers-dir", default="",
@@ -763,6 +765,7 @@ def main(argv: list[str] | None = None) -> int:
         ev.refuse_heldout_for_tuning(*([args.split] if args.purpose == "tuning" else []))
         result = load_wave(Path(args.src), w, rp.read_split(args.split), n_shards=args.shards,
                            frozen_commit=args.frozen_commit or None, purpose=args.purpose,
+                           shard_plan=ev.load_shard_plan(args.shard_plan) if args.shard_plan else None,
                            markers=_markers(args.markers_dir))
     except (ReportRefused, _collect.CollectRefused, ev.HeldOutInTuning, rp.DisallowedSource, ValueError) as exc:
         print(f"REFUSED {exc}", file=sys.stderr)

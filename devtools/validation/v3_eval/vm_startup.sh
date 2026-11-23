@@ -71,10 +71,12 @@ RUN_ARM="$(attr ${P}-run-arm)"; POOL="$(attr ${P}-pool)"; CACHE="$(attr ${P}-cac
 SOURCES="$(attr ${P}-sources)"
 # v4 only: the model ledger's inputs (wave id and type, the wave's N, and the secret holding the shards'
 # marker bucket), written by launch_fleet.py. Read only on a v4 VM; a v3 VM never asks for them.
-WAVE_ID=""; WAVE_TYPE=""; NSHARDS=""; MARKER_BUCKET=""; PLAN_PROV=""
+WAVE_ID=""; WAVE_TYPE=""; NSHARDS=""; MARKER_BUCKET=""; PLAN_PROV=""; SHARD_PLAN_URI=""
 if [ "${P}" = "v4" ]; then
   WAVE_ID="$(attr v4-wave-id)"; WAVE_TYPE="$(attr v4-wave-type)"; NSHARDS="$(attr v4-n-shards)"
   MARKER_BUCKET="$(attr v4-marker-bucket)"
+  # a cost-balanced shard plan (wave.py): every shard is cut from it instead of the hash. Empty = the hash partition.
+  SHARD_PLAN_URI="$(attr v4-shard-plan)"
   # an ARM wave (launch_fleet --wave): the plan_wave provenance the launcher claimed, copied by every shard into its
   # PROVENANCE.json. Empty for the re-probe wave, which runs --mode reprobe exactly as before.
   PLAN_PROV="$(attr v4-plan-provenance)"
@@ -182,6 +184,9 @@ else
       *) fail_all "no v4-plan-provenance metadata (got '${PLAN_PROV}'): refusing an arms wave whose slot was not claimed";;
     esac
   fi
+  if [ -n "${SHARD_PLAN_URI}" ]; then
+    gcloud storage cp "${SHARD_PLAN_URI}" "${W}/shard-plan.json" || fail_all "no staged shard plan at ${SHARD_PLAN_URI}"
+  fi
   mkdir -p "${W}/inputs/pool"
   gcloud storage cp -r "${PREFIX}/inputs/*" "${W}/inputs/pool/" || fail_all "no staged pool inputs"
 fi
@@ -252,7 +257,10 @@ run_unit() {
   # an ARMS wave: the mode, the arms, the split and the element size are the shard's own; the re-probe passes none of
   # them. The plan the launcher claimed (plan_wave's provenance) rides along on every shard of an arms wave and is
   # checked by run_arm against the flags below before it is stamped into PROVENANCE.json.
-  local mode=(--mode reprobe) splitmount=() planarg=()
+  local mode=(--mode reprobe) splitmount=() planarg=() planmount=() planflag=()
+  if [ -n "${SHARD_PLAN_URI}" ]; then
+    planmount=(-v "${W}/shard-plan.json:/eval/shard-plan.json:ro"); planflag=(--shard-plan /eval/shard-plan.json)
+  fi
   if [ -n "${ARMS}" ]; then
     mode=(--mode arms --wave "${WAVE}" --arms "${ARMS}" --split "${SPLIT}" --split-file /eval/split.json --h-mm "${HMM}")
     splitmount=(-v "${W}/split.json:/eval/split.json:ro")
@@ -262,9 +270,9 @@ run_unit() {
     --env-file "${dir}.env" ${keyenv[@]+"${keyenv[@]}"} \
     -v "${W}/code:/eval/code:ro" -v "${W}/inputs/${kind}:/eval/inputs:ro" -v "${dir}:/eval/out" \
     -v "${ldir}:/eval/ledger" \
-    -v "${W}/pool.json:/eval/pool.json:ro" ${splitmount[@]+"${splitmount[@]}"} \
+    -v "${W}/pool.json:/eval/pool.json:ro" ${splitmount[@]+"${splitmount[@]}"} ${planmount[@]+"${planmount[@]}"} \
     --entrypoint python "${IMAGE}" "/eval/code/${RUN_ARM}" \
-    "${mode[@]}" ${planarg[@]+"${planarg[@]}"} --shard "${shard}" --inputs /eval/inputs --out /eval/out \
+    "${mode[@]}" ${planarg[@]+"${planarg[@]}"} ${planflag[@]+"${planflag[@]}"} --shard "${shard}" --inputs /eval/inputs --out /eval/out \
     --pool /eval/pool.json --cache-uri "${CACHE}" --sources "${SOURCES}" --commit "${COMMIT}" \
     --image "${IMAGE}" --machine-type "${MACHINE}" \
     --wave-type "${WAVE_TYPE}" --wave-id "${WAVE_ID}" --n-shards "${NSHARDS}" \

@@ -99,7 +99,8 @@ _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 #: Sources the benchmark may measure: stage.py's allow-list, imported so the two cannot diverge.
 #: Fusion 360 ("f360") is on licence hold and is absent from both until the owner rules.
 ALLOWED_SOURCES: frozenset[str] = _stage.ALLOWED_SOURCES
-_HELD_OUT_PATH = re.compile(r"f360|fusion[\s_-]*360", re.IGNORECASE)
+#: `f360` standing alone, not inside a hex run (ABC ids are hex: abc/0059_00593670_f36073a8... is cleared ABC)
+_HELD_OUT_PATH = re.compile(r"(?<![0-9a-f])f360(?![0-9a-f])|fusion[\s_-]*360", re.IGNORECASE)
 _SHA_DIR = re.compile(r"^[0-9a-f]{64}/")
 
 GET, LIST = "storage.objects.get", "storage.objects.list"
@@ -422,7 +423,9 @@ def _check_image_pullable(p: _Preflight, image: str) -> str:
 
 def _check_inputs_read(p: _Preflight, loc: WaveLocations) -> tuple[str, list[str]]:
     role = p.storage_permissions(loc.inputs, READ_PERMISSIONS)
-    done = p.run(["gcloud", "storage", "ls", "--recursive", loc.inputs + "/"])
+    # the flat object glob, not --recursive: recursive walks sub-prefix by sub-prefix and took >600 s on the
+    # staged 10,887 <sha256>/ directories (runner limit 120 s); the glob listed them in 4.2 s
+    done = p.run(["gcloud", "storage", "ls", loc.inputs + "/**"])
     if done.rc != 0:
         raise RuntimeError(f"cannot list {loc.inputs}: {done.err.strip()[:200]}")
     names = [line.strip() for line in done.out.splitlines() if line.strip()]

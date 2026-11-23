@@ -379,14 +379,17 @@ def test_measure_still_refuses_mixed_images(tmp_path, capsys) -> None:
 
 
 def test_measure_scales_the_estimates_by_what_the_shard_took() -> None:
-    prov: dict = {"shard_files": 100, "cheap_rows": 100, "full_rows": 40, "wall_seconds": 0.0}
+    prov: dict = {"shard_files": 100, "cheap_rows": 0, "full_rows": 100, "wall_seconds": 0.0}
     shard: dict = {"prov": prov, "dir": Path("shard-1-of-96")}
-    est_min = 100 * evalspec.CHEAP_MIN_PER_FILE + 40 * evalspec.FULL_MIN_PER_FILE
+    est_min = 100 * evalspec.FULL_MIN_PER_FILE  # the full verdict on every file: there is no cheap pass
     shard["prov"]["wall_seconds"] = 2 * est_min * 60
     m = collect.measure([shard])
     assert m["scale_vs_estimate"] == pytest.approx(2.0)
-    assert m["cheap_min_per_file"] == pytest.approx(2 * evalspec.CHEAP_MIN_PER_FILE)
     assert m["full_min_per_file"] == pytest.approx(2 * evalspec.FULL_MIN_PER_FILE)
+    assert "cheap_min_per_file" not in m
+    p = collect.reproject(m, files=10_887, shards=96, machine_type="c2d-standard-8", max_run_hours=12)
+    assert p.full_files == 10_887
+    assert p.cpu_hours == pytest.approx(10_887 * 2 * evalspec.FULL_MIN_PER_FILE / 60)
 
 
 def test_measure_refuses_a_shard_with_no_files_to_measure() -> None:

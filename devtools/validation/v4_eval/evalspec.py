@@ -18,18 +18,20 @@ THE COST CONTROL. ~600 c2d VM-hours is the owner's ceiling for the sprint. `proj
     wall_hours = SKEW x cpu_hours / shards    # shards run one per vCPU; the SLOWEST shard bills
     vm_hours = VMs x wall_hours               # expected
     worst_vm_hours = VMs x max_run_hours      # what the VMs can bill before --max-run-duration deletes them
-    cpu_hours = (files x cheap_min + full_files x full_min) / 60
+    cpu_hours = files x full_min / 60          # the full verdict on EVERY file: there is no cheap pass
 
-The per-file minutes are SIZING ESTIMATES, not measurements (the first wave measures them): refresh
-them from PROVENANCE after it runs.
+The per-file minutes are Task 43's x86 measurement (n=73, a tail-heavy sample): refresh them from the
+wave's PROVENANCE after it runs (collect.py --measure).
 """
 from __future__ import annotations
 
 import hashlib
+import heapq
 import json
 import math
 import re
 import sys
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -43,14 +45,13 @@ MAX_TOTAL_VCPU = 100
 #: this bounds their sum. A file that hits it is EXCLUDED from the counts (reprobe.Excluded).
 DEFAULT_FILE_TIMEOUT_S = 900.0
 
-#: Sizing estimates, minutes of one vCPU per file. Cheap: layer 1 + one gmsh member. Full: layer 1 +
-#: three members + layer 3. UNMEASURED.
-CHEAP_MIN_PER_FILE = 0.5
-FULL_MIN_PER_FILE = 2.5
-#: Fraction of the pool assumed to fail the cheap tier (sizes the full-tier share). Pessimistic on
-#: purpose: the old benchmark's failing share, not the measured one.
-ASSUMED_CHEAP_FAIL_FRACTION = 0.5
-PASS_SAMPLE_FRACTION = 0.10
+#: Minutes of one vCPU per file for the FULL verdict (layer 1 + the panel + layer 3). The re-probe runs it on
+#: every file (plan amendment 2026-11-23 19:15: the cheap-first pass is dropped). MEASURED by lane D on 2026-11-23 at
+#: commit 5eefb130 (Lane A's 2.6x layer 1/3 speed-up included): 59 diagonal-stratified files, 8 shards pinned to
+#: 4 cores' hyperthread pairs (a c2d-standard-8's shape), --cpus=1, cold cache. Sample median 25.5 s, mean 136 s,
+#: p90 620 s; 5.1% hit the 900 s file wall. Re-weighted to the pool's file sizes (project_reprobe.py): 336 vCPU-h
+#: for 10,887 files = 111 s/file. One file used exactly one vCPU (cgroup CPU/wall 1.00, 1.2 s throttled in 8,023 s).
+FULL_MIN_PER_FILE = 111.0 / 60
 #: Slowest-shard / mean-shard wall. Hash-partitioned shards are balanced in file COUNT, not in time:
 #: 900 s timeouts and heavy parts make a long tail, and the slowest shard sets the billed time.
 SKEW = 1.5
@@ -113,6 +114,52 @@ def shard_of(sha256: str, i: int, n: int) -> bool:
     return int(hashlib.sha256(f"{SEED}:{sha256}".encode()).hexdigest()[:12], 16) % n == i - 1
 
 
+# --------------------------------------------------------------------------- cost-balanced shards
+#
+# The hash partition (shard_of) balances file COUNT, not time: a few 900 s files decide the slowest shard. A SHARD PLAN
+# assigns files largest-first by PREDICTED cost to the currently lightest shard (LPT). The predictor is file size, the
+# one feature known for every pool file before any CAD is read. A plan is a file; run_arm cuts from it, collect and
+# report check against it, and every shard records its digest so a check against another plan (or none) refuses.
+
+SHARD_PLAN_VERSION = 1
+#: log(wall_s) = a + b * log(bytes), fitted by project_reprobe.py on measure_reprobe.py's sample. Only the ORDER of
+#: predicted costs matters to LPT; the absolute scale is for the printed projection.
+COST_MODEL: tuple[float, float] = (-1.263, 0.360)  # lane D, 59 files, R^2 0.21 (timeouts are not size-predictable)
+
+
+def predicted_cost_s(size_bytes: int, model: tuple[float, float] = COST_MODEL) -> float:
+    a, b = model
+    return math.exp(a + b * math.log(max(int(size_bytes), 1)))
+
+
+def build_shard_plan(costs: Mapping[str, float], n: int, *, model: tuple[float, float] = COST_MODEL) -> dict:
+    """Largest-first: each file, by descending predicted cost (ties by sha256), onto the lightest shard (ties by
+    index). Deterministic, so a relaunch or a second host rebuilds the same plan from the same costs."""
+    if n < 1:
+        raise ValueError("a shard plan needs n >= 1")
+    heap = [(0.0, i) for i in range(1, n + 1)]
+    assign: dict[str, int] = {}
+    for sha, cost in sorted(costs.items(), key=lambda kv: (-float(kv[1]), kv[0])):
+        load, i = heapq.heappop(heap)
+        assign[sha] = i
+        heapq.heappush(heap, (load + float(cost), i))
+    return {"version": SHARD_PLAN_VERSION, "n": n, "model": list(model), "assign": dict(sorted(assign.items()))}
+
+
+def plan_digest(plan: Mapping[str, Any]) -> str:
+    return hashlib.sha256(json.dumps(plan, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def load_shard_plan(path: str | Path) -> dict:
+    plan = json.loads(Path(path).read_text())
+    if plan.get("version") != SHARD_PLAN_VERSION or not isinstance(plan.get("assign"), dict):
+        raise ValueError(f"{path} is not a v{SHARD_PLAN_VERSION} shard plan")
+    n = int(plan["n"])
+    if any(not 1 <= int(i) <= n for i in plan["assign"].values()):
+        raise ValueError(f"{path}: a shard index outside 1..{n}")
+    return plan
+
+
 def vcpus_of(machine_type: str) -> int:
     try:
         return int(machine_type.rsplit("-", 1)[1])
@@ -143,15 +190,12 @@ class Projection:
 
 
 def project(files: int, *, shards: int, machine_type: str = DEFAULT_MACHINE, max_run_hours: float = 3.0,
-            cheap_fail_fraction: float = ASSUMED_CHEAP_FAIL_FRACTION,
-            cheap_min: float = CHEAP_MIN_PER_FILE, full_min: float = FULL_MIN_PER_FILE,
-            skew: float = SKEW) -> Projection:
+            full_min: float = FULL_MIN_PER_FILE, skew: float = SKEW) -> Projection:
     if files < 0 or shards < 1:
         raise ValueError("files must be >= 0 and shards >= 1")
     vcpus = vcpus_of(machine_type)
-    failing = math.ceil(files * cheap_fail_fraction)
-    full_files = failing + math.ceil((files - failing) * PASS_SAMPLE_FRACTION)
-    cpu_hours = (files * cheap_min + full_files * full_min) / 60.0
+    full_files = files  # every file gets the full verdict
+    cpu_hours = files * full_min / 60.0
     vms = math.ceil(shards / vcpus)
     wall = skew * cpu_hours / shards
     return Projection(files, full_files, shards, vms, vcpus, cpu_hours, wall, vms * wall, max_run_hours,

@@ -4,18 +4,19 @@ Follows `v3_eval/RUNBOOK.md`: same bucket, same fleet shape, same habit of readi
 What differs: the v4 wave is ONE unit type (`reprobe:pool:I/N`, a hash shard of the pool), the checker
 calls no model, and the output is the benchmark's dev / held-out / clean splits, not an arm comparison.
 
-**Status of the commands.** Every `collect.py` command, the `launch_reprobe.py` gate, the launcher
-(`v3_eval/launch_fleet.py --profile v4`, Task 8b) and the stager (`stage.py`, Task 8c) are merged; the
-launcher flags used below (`--profile v4`, `--only`, `--image-commit`, `--shards-total`, `--zone`) were
-checked against its argparse. The one command still unmerged is `preflight.py` (Task 8d), tagged
-**[pending 8d]**: re-read it against `--help` when it lands. Nothing here has been run against GCS.
+**Status of the commands.** Every command below is merged and was run (lane D, 2026-11-23) up to, and
+not including, the VM creates: `launch_reprobe.py`, `stage.py`, `preflight.py`, and `launch_fleet.py
+--profile v4 ... --dry-run`. **The re-probe is the FULL verdict on every file** (plan amendment
+2026-11-23 19:15): there is no cheap pass, so `cheap.jsonl` is written empty and the collect report's
+cheap/full `agreement` compares 0 files.
 
 ```bash
 PY="env PYTHONPATH=$PWD/src .venv/bin/python"
 V=devtools/validation/v4_eval
 B=gs://dev-crsv3-transfer-224734058693
 COMMIT=<40-hex sha of the code to run>      # src/ + devtools/validation go to the VMs
-IMAGE=<pipeline image, ...@sha256:...>      # digest-pinned; a floating tag is refused
+IMAGE=us-central1-docker.pkg.dev/hexera-dev/mesh/crsv4-mesh@sha256:633e1c3bfd8e2c0fb97b166fa28ff834d0433b84ca8e77c24eb4b00c83ece361
+IMAGE_COMMIT=78880908155a   # crsv4-mesh:native, built 2026-11-23T02:21Z; toolchain paths unchanged since 28391a23
 C12=${COMMIT:0:12}
 RESULTS=$B/eval/reprobe-$C12/pool           # the directory that directly holds shard-I-of-N/
 ```
@@ -56,25 +57,56 @@ cheap/full split, not as retrieval material for recipe memory. It runs ONCE, at 
 single $250 wave. If held-out has been looked at, it is spent. dev is for tuning; clean is for
 regression.
 
-## Why the first shard is measured, and alone
+## The cost model is measured, not guessed
 
-Every per-file minute in the cost model is a guess: **0.5 min/file cheap, 2.5 min/file full**
-(`evalspec.CHEAP_MIN_PER_FILE`, `FULL_MIN_PER_FILE`), on 10,887 files with 5,989 reaching the full panel.
-At those guesses `launch_reprobe.py` projects **64 c2d VM-hours, 96 worst case**, against a ~600
-ceiling. (The gate's own check is on the projected figure and on VMs x `--max-run-hours`, which it
-prints as the worst case; the "worst case" figures in the table below are that product, 12 VMs x the cap,
-not a rescaled estimate, so the number the gate prints is the one to read.) That is a long way under, which is exactly why it is not safe to trust. Re-running the same
-gate (`evalspec.project`, 10,887 files, 96 shards) with the minutes scaled:
+Measured by lane D on 2026-11-23 at the tip that includes Lane A's 2.6x speed-up (`measure_reprobe.py`, data in
+`corpora/v4/measure_lane_d_20261123/`): 59 diagonal-stratified files, 8 shards pinned to 4 cores' hyperthread pairs
+(a c2d-standard-8's shape), `--cpus=1`, cold cache.
 
-| per-file minutes | projected VM-hours | slowest-shard wall | outcome at `--max-run-hours 8` |
-|---|---|---|---|
-| 1x (the guesses) | 64 | 5.3 h | passes; worst case 96 |
-| 2x | 128 | 10.6 h | **gate refuses on wall**: VMs would be deleted mid-shard; needs `--max-run-hours` ~12, worst case ~144 |
-| 5x | 319 | 26.6 h | refuses on wall; needs ~28 h cap, worst case ~336, over half the sprint |
+| | value |
+|---|---|
+| per file (sample) | median 25.5 s, mean 136 s, p90 620 s, max 904 s |
+| file-wall timeouts (900 s) | 3 / 59 = 5.1% (pool-weighted 4.7%) |
+| excluded in total (timeouts + `check_valid` 300 s) | 6 / 59 (pool-weighted ~8.7%, wide interval) |
+| one vCPU per file | holds: cgroup CPU/wall 1.00 median and max, 1.2 s throttled in 8,023 s |
+| peak memory per shard | 2.8 GB (8 shards fit a 32 GB c2d-standard-8) |
+| pool-wide work (re-weighted to file sizes) | 336 vCPU-h = 111 s/file (`evalspec.FULL_MIN_PER_FILE`) |
 
-So a 2x error already changes the plan (the cap, the worst case, how long money burns), and a 5x error
-spends half the sprint ceiling on one wave. One shard is ~113 files: cheap
-and fast to measure, and it replaces the guesses before the other 95 shards spend anything.
+Simulated wave (`project_reprobe.py`, 400 reps, +0.25 h boot/stage per VM, $0.377/VM-h = c2d-standard-8 $0.3632 +
+100 GB pd-balanced, both from the GCP billing catalog):
+
+| plan | VMs | wall median (p90) | VM-hours median (p90) | $ median (p90) |
+|---|---|---|---|---|
+| 96 shards, cost-balanced | 12 | 5.2 h (5.6) | 54.8 (56.5) | $20.7 ($21.3) |
+| 96 shards, hash | 12 | 5.5 h (5.9) | 56.6 (58.8) | $21.3 ($22.2) |
+| 80 shards, cost-balanced | 10 | 6.0 h (6.5) | 53.4 (55.1) | $20.1 ($20.8) |
+
+The launcher's own gate is more conservative (x1.5 skew): 63 projected / 144 worst case at 96 shards, cap 12 h.
+Size predicts cost weakly (R^2 0.21), so balancing by predicted cost buys ~3%, not more.
+
+**The exclusion rate is the risk, not the cost.** ~9% excluded is far over collect's 2% limit: as measured, the wave
+ends at collect exit 2 and needs either the owner's agreement to `--allow-excluded` (the bias is toward easy
+defects) or longer per-file walls (`--file-timeout-s`, and `check_valid`'s 300 s) before the launch. Decide before
+launching, not after.
+
+**C2D quota is 100 vCPU per region, and every other C2D VM counts.** The gate VM
+`dev-crsv4-gate-2` (c2d-standard-16) holds 16, leaving 84: a 96-shard wave is REFUSED by the launcher's
+live quota check while it exists. Either delete the gate VM first (its owner's call) or launch 80 shards
+on 10 VMs. `--shards-total` must then be 80 on every launch and every `collect.py` call of the wave.
+
+## One command: wave.py
+
+`wave.py` chains every step below: preflight (its own refusals, then `preflight.py` and the launcher's gate) -> stage
+(code.tgz, split, a cost-balanced shard plan) -> launch -> watch (relaunch only FAILED or VM-less shards, nothing after
+launch + `--max-run-hours`) -> collect -> triage -> report, recording each step in `<wave-dir>/steps.jsonl`, mirrored to
+`$B/eval/waves/<wave-id>/`. `--dry-run` runs everything up to and including the launcher's `--dry-run`.
+
+```bash
+$PY $V/wave.py --kind reprobe --commit $COMMIT --image "$IMAGE" --image-commit $IMAGE_COMMIT \
+    --wave-id reprobe-full-1 --shards 96 --max-run-hours 12 --dry-run
+```
+
+The numbered steps remain the manual path and the explanation of what each step checks.
 
 ## 0. Order of operations
 
@@ -89,15 +121,28 @@ git diff --stat devtools/validation/corpora/v4/pool.json
 ```
 
 The committed `pool.json` is already built; rebuild only on purpose. Check:
-`$PY $V/launch_reprobe.py --shards 96 --max-run-hours 8` prints `10887 files (5989 on the full panel)`.
+`$PY $V/launch_reprobe.py --shards 96 --max-run-hours 12` prints `10887 files (10887 on the full panel)`.
 A different count means the allow-list or the pool changed: stop and find out why.
 
 ### 2. Stage inputs
 
 ```bash
+# macOS python: the system CA bundle lacks SSL.com's 2022 root that archive.nyu.edu chains to
+# (CERTIFICATE_VERIFY_FAILED). Point Python at certifi's bundle; verification stays ON.
+export SSL_CERT_FILE="$($PY -c 'import certifi; print(certifi.where())')"
 $PY $V/stage.py --inputs /data/v4-inputs --scratch /big/disk   # <sha256>/<basename>; every file hash-checked
-# upload (not part of stage.py): inputs -> $B/eval/v4-reprobe/inputs/ ; pool.json -> $B/eval/v4-reprobe/pool.json
+# upload (not part of stage.py). rsync is idempotent; never upload a .partial or a .corrupt
+gcloud storage rsync -r -x '.*\.(partial|corrupt)$' /data/v4-inputs $B/eval/v4-reprobe/inputs
+gcloud storage cp devtools/validation/corpora/v4/pool.json $B/eval/v4-reprobe/pool.json
+# the code the VMs run, ONE per --commit (no v4 tool writes it; v3's stage.py writes the v3 prefix only)
+git archive --format=tar.gz -o /tmp/code.tgz $COMMIT src devtools/validation
+gcloud storage cp /tmp/code.tgz $B/eval/v4-reprobe/code-$C12/code.tgz
 ```
+
+The allowed inputs are ~57 GB (abc_fail alone is 56 GB, 9,923 files). A local copy may be used to seed
+`<inputs>/<sha256>/<basename>` (e.g. APFS `cp -c`): the stager re-hashes every file already present and
+quarantines any mismatch as `*.corrupt`, so a seed is checked, never trusted. Each VM copies the whole
+`inputs/` prefix onto its 100 GB boot disk (~57 GB + the ~6 GB image): fine at this pool size.
 
 Resumable: rerun after any failure. A hash mismatch is an error, never a warning. If the stager's
 output lists an F360 file, stop: that is a licence breach, not a bug to route around.
@@ -105,9 +150,14 @@ output lists an F360 file, stop: that is a licence breach, not a bug to route ar
 ### 3. Preflight
 
 ```bash
-$PY $V/launch_reprobe.py --shards 96 --max-run-hours 8                 # the cost gate. exit 1 = REFUSE
-$PY $V/preflight.py --image "$IMAGE" --commit $COMMIT                  # [pending 8d: preflight.py is not merged] read-only IAM/image/cache proof
+$PY $V/launch_reprobe.py --shards 96 --max-run-hours 12                # the cost gate. exit 1 = REFUSE
+$PY $V/preflight.py --image "$IMAGE" --commit $COMMIT                  # read-only IAM/image/inputs/cache proof
+# once per bucket, before the first live launch (writes only _probe/ objects and the probe record):
+$PY $V/marker_probe.py --store gcs:dev-crsv3-transfer-224734058693 --rounds 50
 ```
+
+Without the marker probe record the launcher refuses every v4 wave (`no probe record for gcs/...`),
+dry run included.
 
 Both must pass. The gate refuses over 600 VM-hours (projected or worst case), over 100 vCPU, or a wall
 beyond `--max-run-hours` (the VMs would be deleted mid-shard). `--allow-over-budget` waives the VM-hour
@@ -117,10 +167,11 @@ ceiling only; do not use it on the guessed numbers.
 
 ```bash
 $PY devtools/validation/v3_eval/launch_fleet.py --profile v4 --image "$IMAGE" --commit $COMMIT \
-    --image-commit <sha the image was built from> --only 'reprobe:pool:1/96' --dry-run
+    --image-commit $IMAGE_COMMIT --shards-total 96 --max-run-hours 12 --zone us-central1-b \
+    --wave-type normal --wave-id reprobe-full-1 --only 'reprobe:pool:1/96' --dry-run
 # read it, then the same command without --dry-run
 $PY $V/collect.py --status $RESULTS --shards 96          # shard-1-of-96 DONE once finished
-$PY $V/collect.py --pull $RESULTS --to /tmp/v4-measure --measure --wave-shards 96 --max-run-hours 8
+$PY $V/collect.py --pull $RESULTS --to /tmp/v4-measure --measure --wave-shards 96 --max-run-hours 12
 ```
 
 `--measure` is the only mode that accepts fewer shards than planned; it still refuses a failed shard
@@ -146,8 +197,11 @@ Shard 1 is **not** thrown away: the full-wave launch skips shards that already h
 
 ```bash
 $PY devtools/validation/v3_eval/launch_fleet.py --profile v4 --image "$IMAGE" --commit $COMMIT \
-    --image-commit <sha> --dry-run
-$PY devtools/validation/v3_eval/launch_fleet.py --profile v4 --image "$IMAGE" --commit $COMMIT --image-commit <sha>
+    --image-commit $IMAGE_COMMIT --shards-total 96 --max-run-hours 12 --zone us-central1-b \
+    --wave-type normal --wave-id reprobe-full-1 --dry-run
+$PY devtools/validation/v3_eval/launch_fleet.py --profile v4 --image "$IMAGE" --commit $COMMIT \
+    --image-commit $IMAGE_COMMIT --shards-total 96 --max-run-hours 12 --zone us-central1-b \
+    --wave-type normal --wave-id reprobe-full-1
 ```
 
 Keep `--shards-total` (96) identical on every launch of this wave: a different total is a different
@@ -238,7 +292,9 @@ gcloud compute instances list --project hexera-dev --filter='labels.purpose=v4-e
   --format='table(name,zone.basename(),status,creationTimestamp)'
 $PY $V/collect.py --status $RESULTS --shards 96
 # relaunch ONLY what is missing; the launcher skips DONE shards and shards a live VM still claims
-$PY devtools/validation/v3_eval/launch_fleet.py --profile v4 --image "$IMAGE" --commit $COMMIT --image-commit <sha> --dry-run
+$PY devtools/validation/v3_eval/launch_fleet.py --profile v4 --image "$IMAGE" --commit $COMMIT \
+    --image-commit $IMAGE_COMMIT --shards-total 96 --max-run-hours 12 --zone us-central1-b \
+    --wave-type normal --wave-id reprobe-full-1 --dry-run
 $PY devtools/validation/v3_eval/launch_fleet.py ... --only 'reprobe:pool:7/96,reprobe:pool:31/96'
 ```
 Same `--commit`, `--image`, `--shards-total` as the original launch. The verdict cache means a rerun
@@ -268,10 +324,13 @@ sufficient to remove them, but it takes your results with it: collect first. Kee
 
 ## Estimates (replace with the measured numbers after step 4)
 
-See the table under "Why the first shard is measured": 64 projected / 96 worst case at the guesses,
-128 projected at 2x, 319 at 5x, against the ~600 ceiling. Record what the shard measured next to them.
+See "The cost model is measured, not guessed": 56 projected / 144 worst case (96 shards, cap 12 h)
+against the ~600 ceiling. Record what the wave measured (`collect.py --measure`) next to them.
 
-Quota: C2D_CPUS limit 100 (this wave takes 96); `PREEMPTIBLE_CPUS` is 0, hence STANDARD VMs.
+Quota: C2D_CPUS limit 100, shared with every other C2D VM in us-central1 (see above);
+`PREEMPTIBLE_CPUS` is 0, hence STANDARD VMs. All c2d VMs of one launch go to ONE `--zone`; c2d-standard-8
+is offered in us-central1-a/b/c/f. us-central1-b is the zone a c2d VM is known to have started in today
+(the gate VM); stockouts are only discovered by trying.
 
 ## Arm waves and the report (Task 21)
 

@@ -84,9 +84,29 @@ def _now() -> str:
     return dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def shard_entries(entries: list[Any], shard: str) -> list[Any]:
+def shard_entries(entries: list[Any], shard: str, plan: dict | None = None) -> list[Any]:
+    """This shard's entries: by the hash, or, given a cost-balanced shard plan, by the plan. An entry the plan does not
+    assign is refused, never dropped: a silently smaller shard would make the wave a different set."""
     i, n = evalspec.parse_shard(shard)
-    return [e for e in entries if evalspec.shard_of(e.sha256, i, n)]
+    if plan is None:
+        return [e for e in entries if evalspec.shard_of(e.sha256, i, n)]
+    if int(plan["n"]) != n:
+        raise ValueError(f"the shard plan has {plan['n']} shards, this shard is {shard}")
+    missing = [e.sha256 for e in entries if e.sha256 not in plan["assign"]]
+    if missing:
+        raise ValueError(f"{len(missing)} file(s) are not in the shard plan (e.g. {missing[0][:12]})")
+    return [e for e in entries if int(plan["assign"][e.sha256]) == i]
+
+
+def _shard_plan(args: argparse.Namespace, prov: dict) -> dict | None:
+    """The cost-balanced shard plan named by --shard-plan, its digest stamped into PROVENANCE (collect and report check
+    the partition against the plan with that digest, and refuse any other)."""
+    path = getattr(args, "shard_plan", None)
+    if not path:
+        return None
+    plan = evalspec.load_shard_plan(path)
+    prov["shard_plan"] = evalspec.plan_digest(plan)
+    return plan
 
 
 def select_sources(entries: list[Any], sources: str) -> list[Any]:
@@ -143,7 +163,7 @@ def run_reprobe(args: argparse.Namespace, out: Path, prov: dict) -> int:
     prov["pool_listed"], prov["pool_dropped_by_source"] = len(listed), dropped
     print(f"pool: {len(listed)} listed, {len(whole_pool)} allowed, dropped {dropped}", file=sys.stderr)
     reprobe_mod.check_not_quarantined(whole_pool)  # pool-level: any source, before any shard work
-    entries = shard_entries(select_sources(whole_pool, args.sources), args.shard)
+    entries = shard_entries(select_sources(whole_pool, args.sources), args.shard, _shard_plan(args, prov))
     prov["shard_files"] = len(entries)
     prov["sources"] = args.sources or "cleared"
     cache = make_cache(args.cache_uri)
@@ -219,7 +239,7 @@ def run_arms(args: argparse.Namespace, out: Path, prov: dict, ledger: Any | None
     # route is probed, so a bad split costs nothing
     in_split = {e.sha256 for e in split_entries(whole_pool, args.split, split_file)}
     entries = shard_entries([e for e in select_sources(whole_pool, args.sources) if e.sha256 in in_split],
-                            args.shard)
+                            args.shard, _shard_plan(args, prov))
     route = None
     throttle = None
     if model_arms and runner is None:  # an injected runner (a test, the infra check) replaces the dispatch AND its route
@@ -503,6 +523,8 @@ def build_parser() -> argparse.ArgumentParser:
                         "of REPAIR_V4_PROPOSE_ROUTES that passes the probe)")
     parser.add_argument("--max-turns", type=int, default=12, help="the AI proposer's model rounds per file")
     parser.add_argument("--shard", default="1/1")
+    parser.add_argument("--shard-plan", default=None,
+                        help="a cost-balanced shard plan (evalspec.build_shard_plan); default: the hash partition")
     parser.add_argument("--inputs", default="/eval/inputs")
     parser.add_argument("--out", default="/eval/out")
     parser.add_argument("--pool", default=str(pool_mod.OUT))

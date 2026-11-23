@@ -618,3 +618,26 @@ def test_the_derived_cache_location_passes_cache_shared_and_the_check_is_always_
     report = _run(FakeGcloud())
     assert "cache_shared" not in _failed(report)
     assert "cache_shared" in {c.name for c in report.checks} and "cache_shared" in pf.CHECKS
+
+
+def test_the_inputs_are_listed_flat_not_recursively():
+    """`gcloud storage ls --recursive` walks the prefix one sub-prefix at a time: over the staged 10,887
+    <sha256>/ directories it ran past 600 s (the runner's limit is 120 s), so a fully staged corpus FAILED
+    inputs_read. The flat object glob listed the same 10,887 objects in 4.2 s (lane D, 2026-11-23)."""
+    fake = FakeGcloud()
+    _run(fake)
+    listings = [c for c in fake.calls if c[1:3] == ["storage", "ls"]]
+    assert listings == [["gcloud", "storage", "ls", f"{pf.INPUTS}/**"]]
+
+
+def test_an_abc_name_whose_hex_id_contains_f360_is_not_a_licence_hit():
+    """The real cleared pool holds abc/0059_00593670_f36073a853d1bbbdb978a01e_step_000.step: `f360` inside ABC's
+    hex object id. A bare substring match refused the fully staged corpus. Only `f360` standing alone (not inside
+    a hex run) is a name hit; a real F360 file is caught by its sha256 against the manifest in any case."""
+    name = "0059_00593670_f36073a853d1bbbdb978a01e_step_000.step"
+    exp = ({SHA_A, SHA_B}, {SHA_F360})
+    report = _run(FakeGcloud(listing=[f"{pf.INPUTS}/{SHA_A}/{name}"] + _inputs(SHA_B)), expected=exp)
+    assert "inputs_sources" not in _failed(report)
+    for bad in ("f360_part.step", "x.f360.step", "parts-F360/a.step", "fusion360.step"):
+        rep = _run(FakeGcloud(listing=[f"{pf.INPUTS}/{SHA_A}/{bad}"] + _inputs(SHA_B)), expected=exp)
+        assert "inputs_sources" in _failed(rep), bad
