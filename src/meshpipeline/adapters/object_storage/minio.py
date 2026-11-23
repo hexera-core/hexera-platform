@@ -94,6 +94,29 @@ class MinioStore:
         except Exception as exc:  # noqa: BLE001
             raise StorageError(f"minio upload failed for {key}: {exc}") from exc
 
+    def create_object_if_absent(self, *, local_path: Path, object_key: str,
+                                content_type: str | None = None) -> bool:
+        """Write the file as `object_key` only if nothing is there; True if this call wrote it, False if it
+        already existed. A PRECONDITION write, atomic on the server: `If-None-Match: *` (S3 and MinIO) and
+        `x-goog-if-generation-match: 0` (Google Cloud Storage's own header on its S3-interoperability endpoint)
+        are both sent, each backend honouring the one it knows. The low-level request is used because
+        fput_object offers no way to add a precondition. NOT verified against a live bucket here; the first
+        wave must be preceded by a two-writer probe (see the model ledger's MarkerStore)."""
+        key = normalize_key(object_key)
+        try:
+            client = self._client()
+            self._ensure_bucket(client)
+            client._execute(
+                "PUT", self._bucket, key, body=Path(local_path).read_bytes(),
+                headers={"Content-Type": content_type or "application/octet-stream",
+                         "If-None-Match": "*", "x-goog-if-generation-match": "0"})
+            return True
+        except Exception as exc:  # noqa: BLE001
+            if getattr(exc, "code", "") in ("PreconditionFailed", "ConditionalRequestConflict") \
+                    or getattr(exc, "status", None) in (409, 412):
+                return False
+            raise StorageError(f"minio conditional create failed for {key}: {exc}") from exc
+
     #: The part a streamed upload is sent in: the memory one stream holds, and at the store's limit
     #: of 10,000 parts a ceiling of 640 GB on one object.
     STREAM_PART_BYTES = 64 * 1024 * 1024
