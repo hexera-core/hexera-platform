@@ -131,6 +131,9 @@ class ArmRow:
     #: the four cells named as `reprobe.agreement` names them. Optional: a row without it is counted as missing data
     #: in `cheap_full_agreement`, never as agreement.
     cheap_full: dict | None = None
+    #: WHY the output is what it is (`arms.verdict_triage` / `search_triage` / `stages_triage`), read by triage.py and
+    #: by nothing that computes a rate. Optional: rows written before it existed carry none.
+    triage: dict | None = None
 
     @property
     def clean(self) -> bool:
@@ -182,6 +185,8 @@ def _row_from_dict(d: Mapping[str, Any]) -> ArmRow:
         raise ReportRefused(f"{where}: reason={row.reason!r} is not a string")
     if row.infrastructure_failed is not None and not isinstance(row.infrastructure_failed, bool):
         raise ReportRefused(f"{where}: infrastructure_failed={row.infrastructure_failed!r} is not a boolean")
+    if row.triage is not None and not isinstance(row.triage, dict):
+        raise ReportRefused(f"{where}: triage={row.triage!r} is not an object")
     if row.cheap_full is not None:
         if row.arm not in SEARCH_ARMS:
             raise ReportRefused(f"{where}: cheap_full is a search measurement; arm {row.arm!r} runs no search")

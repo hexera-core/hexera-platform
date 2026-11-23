@@ -454,6 +454,11 @@ class AIProposer:
         self._last_cost: float | None = None
         self._failures = 0
         self.truncated_rounds = 0
+        #: for the eval's failure triage: tool calls answered `ok: false`, the candidates they refused, and the
+        #: `declare_unfixable` calls accepted from THIS proposer (the registry may be shared)
+        self.tool_errors = 0
+        self.candidate_errors = 0
+        self.declared_unfixable = 0
         system = system_prompt(stage_names=self.stage_names)
         self._tools = tool_schemas(stage_names=self.stage_names)
         self._cache_key = cache_key_for(system, self._tools)
@@ -536,6 +541,9 @@ class AIProposer:
             room = k - len(collected)
             for call in reply.tool_calls:
                 accepted, _over, result = self._handle(call, state, room)
+                if result.get("ok") is False:
+                    self.tool_errors += 1
+                    self.candidate_errors += sum(1 for e in result.get("errors", []) if e.get("index") is not None)
                 collected.extend(accepted)
                 room -= len(accepted)
                 self._messages.append(tool_result_turn(call, _json(result)))
@@ -566,7 +574,9 @@ class AIProposer:
     def result(self) -> dict:
         """What the driver records for this file: the AI's spend and why it stopped."""
         return {"file_id": self.file_id, "ai_capped": self.ai_capped, "stop_reason": self.stop_reason,
-                "turns": self.turns_used, "truncated_rounds": self.truncated_rounds, "spent_usd": self._ledger.file_spent_usd(self.file_id)}
+                "turns": self.turns_used, "truncated_rounds": self.truncated_rounds, "spent_usd": self._ledger.file_spent_usd(self.file_id),
+                "tool_errors": self.tool_errors, "candidate_errors": self.candidate_errors,
+                "declared_unfixable": self.declared_unfixable}
 
     async def _ask(self, reservation: str) -> ProposeReply:
         call = self._call
@@ -684,6 +694,7 @@ class AIProposer:
         if site_id not in known:
             return _failure(f"unknown site {site_id!r}; the sites are {sorted(known)}")
         self.unfixable.declare(site_id, reason.strip(), lineage_of(state))
+        self.declared_unfixable += 1
         return {"ok": True, "site_id": site_id,
                 "message": "recorded; the site will not be shown again or swept by the deterministic generators"}
 

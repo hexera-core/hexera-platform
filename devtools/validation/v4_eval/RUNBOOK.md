@@ -311,6 +311,30 @@ It judges real files with gmsh present (the split's own verdict), runs one shard
 dead file reads `inconclusive: true`, is left out of the clean rate, and that `input_only`'s `in_clean` equals the split's
 verdict. After 22c lands, pass `--runner pkg.module:factory` to run it against the real dispatch.
 
+## Failure triage: what to fix next
+
+`report.py` says how many files are clean and whether the numbers may be read. `triage.py` says WHY the rest are
+not, per arm, from the rows' own `triage` blocks. It covers:
+
+- how each search stopped;
+- which site kinds were still open;
+- each op's fate: proposed by det or AI, evaluated, declined, failed or invalid, with the top reasons;
+- what the deterministic sweep declined to propose;
+- which panel members still fail, with their error kinds;
+- the deviation budget used;
+- the stages kept and rolled back;
+- the AI's turns, tool errors and dollars.
+
+It also ranks the largest buckets as "leads". It reads a partial wave and labels it as partial.
+
+```bash
+python devtools/validation/v4_eval/triage.py --from <dir with shard-I-of-N/> [--shards N] \
+    [--split corpora/v4/<split>.json] --json triage.json --md triage.md
+```
+
+Rows written before the triage block existed are counted as "carry NO triage block", and only their stop reason
+(the row's `reason`) is used. Re-run the wave on a commit that records triage to get the rest.
+
 ## If a gate's own plumbing fails instead of the code
 
 Two failure modes have cost real time in this sprint. Both are the harness, not the change.
