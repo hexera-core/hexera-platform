@@ -13,6 +13,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.native._v4_flush_patch_part import imprint_squares
+
 pytest.importorskip("OCP.BRepCheck", reason="the CAD kernel is a native-tier dependency")
 
 from OCP.BRep import BRep_Tool  # noqa: E402
@@ -56,6 +58,9 @@ def _clean_part():
             fillet.Add(3.0, edge)
     hole = BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(20.0, 15.0, -1.0), gp_Dir(0, 0, 1)), 4.0, 22.0).Shape()
     part = BRepAlgoAPI_Cut(fillet.Shape(), hole).Shape()
+    # a 1.4 mm square imprinted flush in the top face: the one small face `face_delete` may take (loop ~3.7% of the
+    # diagonal, within the fill cap); every other face of this part spans over 5% and is refused by design
+    part = imprint_squares(part, [(10.0, 7.5, 20.0, "z", 0.7)])
     turn = gp_Trsf()
     turn.SetRotation(gp_Ax1(gp_Pnt(3.3, 1.7, 0.9), gp_Dir(1, 2, 3)), 0.37)
     return BRepBuilderAPI_Transform(part, turn, True).Shape()

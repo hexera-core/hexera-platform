@@ -409,10 +409,10 @@ def test_iges_roundtrip(cases, base):
 
 # ---- the interface contract ---------------------------------------------------------------------------------------
 
-def test_every_label_names_its_kind_seed_and_clean_source_and_keeps_fidelity_on_the_damaged_input(cases, src):
+def test_every_label_names_its_kind_seed_and_clean_source_and_keeps_fidelity_on_the_damaged_input(cases, src, fixable_src):
     for kind, case in cases.items():
         assert case.kind == kind and case.label["kind"] == kind and case.label["seed"] == SEED
-        assert case.label["clean_source"] == str(src)
+        assert case.label["clean_source"] == str(fixable_src if kind == "face_delete" else src)
         assert case.label["fidelity_reference"] == "damaged_input"
         assert case.fidelity_reference == case.path != src               # fidelity is measured on the damaged file
         assert case.label["entities"], f"{kind} names no damaged entity"

@@ -20,29 +20,35 @@ SIZE = (100.0, 60.0, 40.0)
 HALF = 1.5
 
 
-def _square(cx: float, cy: float, cz: float, normal: str):
+def _square(cx: float, cy: float, cz: float, normal: str, half: float = HALF):
     def point(u: float, v: float) -> gp_Pnt:
         return {"z": gp_Pnt(cx + u, cy + v, cz), "x": gp_Pnt(cx, cy + u, cz + v)}[normal]
 
     polygon = BRepBuilderAPI_MakePolygon()
-    for u, v in ((-HALF, -HALF), (HALF, -HALF), (HALF, HALF), (-HALF, HALF)):
+    for u, v in ((-half, -half), (half, -half), (half, half), (-half, half)):
         polygon.Add(point(u, v))
     polygon.Close()
     return BRepBuilderAPI_MakeFace(polygon.Wire()).Face()
 
 
-def flush_patch_box():
-    box = BRepPrimAPI_MakeBox(*SIZE).Shape()
+def imprint_squares(shape, squares):
+    """Split `shape` by flush squares, each `(cx, cy, cz, normal, half)`: the part stays one solid and gains one
+    small face per square, coplanar with the face it was cut from."""
     splitter = BRepAlgoAPI_Splitter()
     arguments, tools = TopTools_ListOfShape(), TopTools_ListOfShape()
-    arguments.Append(box)
-    for tool in (_square(30, 20, 40, "z"), _square(70, 40, 0, "z"), _square(0, 30, 20, "x")):
-        tools.Append(tool)
+    arguments.Append(shape)
+    for cx, cy, cz, normal, half in squares:
+        tools.Append(_square(cx, cy, cz, normal, half))
     splitter.SetArguments(arguments)
     splitter.SetTools(tools)
     splitter.Build()
     assert splitter.IsDone(), "the flush squares could not be imprinted"
     return splitter.Shape()
+
+
+def flush_patch_box():
+    return imprint_squares(BRepPrimAPI_MakeBox(*SIZE).Shape(),
+                           [(30, 20, 40, "z", HALF), (70, 40, 0, "z", HALF), (0, 30, 20, "x", HALF)])
 
 
 def write_step(shape, path: Path) -> Path:
