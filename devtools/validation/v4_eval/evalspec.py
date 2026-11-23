@@ -276,6 +276,9 @@ ARMS: dict[str, Arm] = {a.name: a for a in (
     Arm("v3_meshability_pass_ai", "v3 as it ships (meshability pass + AI), run once for comparison",
         SHARED_BUDGET, False, spend_metered=False),  # calls a model; its spend is v3's, not this ledger's
 )}
+#: v3 as it ships runs under v3_eval's own run_arm; every other arm is dispatched by v4_eval/run_arm.py.
+V3_ARM = "v3_meshability_pass_ai"
+DISPATCHABLE_ARMS: tuple[str, ...] = tuple(n for n in ARMS if n != V3_ARM)
 #: The plan/spec names above are CANONICAL. These aliases exist only for the brief's wording; do not "tidy"
 #: by deleting the real names (input_only is the do-nothing control every other arm is measured against).
 ARM_ALIASES: dict[str, str] = {"baseline": "v3_meshability_pass_ai", "heal_det": "staged"}
@@ -402,11 +405,30 @@ class WavePlan:
             self.wave.wave_type, wave_id=self.wave_id, n_shards=self.n_shards, shard_index=shard_index,
             path=path, markers=markers)
 
-    def shard_argv(self, shard_index: int) -> list[str]:
-        """The wave's identity as run_arm flags (the arms come from ARMS by name)."""
-        return ["--wave", self.wave.name, "--wave-id", self.wave_id, "--wave-type", self.wave.wave_type,
-                "--split", self.wave.split, "--arms", ",".join(self.wave.arms),
+    def shard_argv(self, shard_index: int, *, ledger_path: str | None = None,
+                   marker_bucket: str | None = None, split_file: str | None = None,
+                   h_mm: float | None = None) -> list[str]:
+        """The wave's identity as flags `run_arm.build_parser()` accepts (a test parses this through that parser).
+        A ledgered shard needs every one of --wave-type --wave-id --n-shards --ledger-path --marker-bucket, so a
+        plan with a model arm refuses to emit argv without `ledger_path` and `marker_bucket`: a model arm shard
+        launched without its cap is not expressible."""
+        if self.wave.has_model_arm and not (ledger_path and marker_bucket):
+            raise ValueError(f"wave {self.wave.name!r} runs a model arm: its shards need ledger_path and "
+                             "marker_bucket, or no cap would stand between them and the model")
+        argv = ["--mode", "arms", "--wave", self.wave.name, "--wave-id", self.wave_id,
+                "--wave-type", self.wave.wave_type, "--n-shards", str(self.n_shards),
+                "--split", self.wave.split,
+                "--arms", ",".join(a for a in self.wave.arms if a in DISPATCHABLE_ARMS),
                 "--shard", f"{shard_index}/{self.n_shards}"]
+        if ledger_path:
+            argv += ["--ledger-path", ledger_path]
+        if marker_bucket:
+            argv += ["--marker-bucket", marker_bucket]
+        if split_file:
+            argv += ["--split-file", split_file]
+        if h_mm is not None:
+            argv += ["--h-mm", str(h_mm)]
+        return argv
 
     def provenance(self) -> dict[str, Any]:
         return {"wave": self.wave.name, "wave_id": self.wave_id, "wave_type": self.wave.wave_type,

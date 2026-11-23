@@ -225,8 +225,8 @@ class V4Profile(Profile):
             raise ValueError("--shards-total must be at least 1")
         return total
 
-    def units(self, total: int) -> list[str]:
-        return [f"reprobe:pool:{i}/{total}" for i in range(1, total + 1)]
+    def units(self, total: int, arm: str = "reprobe") -> list[str]:
+        return [f"{arm}:pool:{i}/{total}" for i in range(1, total + 1)]
 
     def extra_metadata(self, args) -> list[str]:
         # the model ledger's inputs: the wave type (the cap comes from its table), its id, N (the same N for
@@ -235,7 +235,13 @@ class V4Profile(Profile):
                 f"v4-cache-uri={wave_spec.verdict_cache_uri(args.prefix)}",
                 f"v4-sources={','.join(args.sources)}",
                 f"v4-wave-id={args.wave_id}", f"v4-wave-type={args.wave_type}",
-                f"v4-n-shards={args.shards_total}", f"v4-marker-bucket={MARKER_BUCKET}"]
+                f"v4-n-shards={args.shards_total}", f"v4-marker-bucket={MARKER_BUCKET}",
+                # an ARMS wave (below) only; empty for the re-probe, whose startup command is unchanged
+                *([f"v4-wave={args.wave}", f"v4-arms={','.join(args.arms_list)}", f"v4-split={args.split}",
+                   f"v4-split-uri={args.split_uri}", f"v4-h-mm={args.h_mm if args.h_mm is not None else ''}"]
+                  if getattr(args, "arms_list", None) else []),
+                # a model arm's key: ONLY a secret the operator named (--model-secret); there is no default
+                *([f"v4-model-secret={args.model_secret}"] if getattr(args, "model_secret", None) else [])]
 
     def pool_files(self, args) -> int:
         """Files the wave will probe: --files, else the pool manifest's entries in the named sources."""
@@ -248,8 +254,10 @@ class V4Profile(Profile):
     def plan_lines(self, args) -> list[str]:
         return [f"plan ({args.shards_total} hash shards of the pool, one per vCPU, "
                 f"{evalspec.vcpus_of(args.machine_type)} per {args.machine_type}):",
-                f"  reprobe              pool     {args.shards_total:>3} shard(s)  {args.files_counted} files "
-                f"from sources {','.join(args.sources)}"]
+                f"  {'reprobe' if not getattr(args, 'arms_list', None) else ','.join(args.arms_list):<20} pool     "
+                f"{args.shards_total:>3} shard(s)  {args.files_counted} files from sources {','.join(args.sources)}"
+                + (f"; split {args.split} ({args.split_uri}), unit {args.unit_arm}"
+                   if getattr(args, "arms_list", None) else "")]
 
     def wave_preflight(self, args) -> tuple[list[str], list[str]]:
         """Run v4_eval/preflight.py against THIS launch's image, commit, prefix, pool and sources. Every
@@ -264,12 +272,15 @@ class V4Profile(Profile):
 
     def launch_tail(self, args) -> str:
         cap = wave_limits.WAVE_CAPS_USD[args.wave_type]
-        return (f"sources {','.join(args.sources)}; the checker needs no model key; {args.wave_type} wave "
+        key = (f"model key from secret {args.model_secret}" if getattr(args, "model_secret", None)
+               else "the checker needs no model key")
+        return (f"sources {','.join(args.sources)}; {key}; {args.wave_type} wave "
                 f"{args.wave_id}: model cap ${cap:,.2f} over {args.shards_total} shards = "
                 f"${cap / args.shards_total:,.4f} each")
 
     def required_objects(self, args) -> list[str]:
-        return [code_uri(args.commit, args.prefix), f"{args.prefix}/pool.json"]
+        return [code_uri(args.commit, args.prefix), f"{args.prefix}/pool.json",
+                *([args.split_uri] if getattr(args, "arms_list", None) else [])]
 
     def required_dirs(self, args) -> list[str]:
         return [f"{args.prefix}/inputs/"]
@@ -489,11 +500,11 @@ def live_checks(args, vcpus: int) -> tuple[list[str], list[str]]:
     return problems, warnings
 
 
-def done_units(commit: str, profile: Profile = V3) -> set[str]:
+def done_units(commit: str, profile: Profile = V3, arms: tuple[str, ...] | None = None) -> set[str]:
     """Unit ids whose shard wrote DONE, from one recursive listing per arm."""
     done = set()
     kinds = "|".join(profile.kinds)
-    for arm in profile.arms:
+    for arm in (arms if arms is not None else profile.arms):
         out = subprocess.run(["gcloud", "storage", "ls", "-r", results_root(arm, commit)],
                              capture_output=True, text=True)
         for line in out.stdout.splitlines():
@@ -644,8 +655,56 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--wave-id", default=None,
                         help="v4 only, REQUIRED: this wave's id (lowercase letters, digits, dashes); reuse it to "
                              "resume the same wave, never for a different one")
+    parser.add_argument("--arms", default=None,
+                        help="v4 only: run these ARMS (comma list of input_only, staged, search_det, search_ai) over "
+                             "a split instead of the re-probe; the shard runs them all under ONE ledger. Needs "
+                             "--wave --split-uri --h-mm")
+    parser.add_argument("--wave", default=None, help="v4 --arms only: the evalspec.WAVES entry (its split, type and arms)")
+    parser.add_argument("--split-uri", default=None, help="v4 --arms only: gs:// URI of the split json to stage")
+    parser.add_argument("--h-mm", type=float, default=None, help="v4 --arms only: element size for the search arms")
+    parser.add_argument("--model-secret", default=None,
+                        help="v4 --arms only: the Secret Manager secret holding OPENAI_API_KEY, REQUIRED when an arm "
+                             "calls a model. There is no default: the v4 VM carries no model key of its own")
     parser.add_argument("--dry-run", action="store_true")
+    # derived in main (_resolve_v4_arms); declared so the parser names every attribute the launcher reads
+    parser.set_defaults(arms_list=None, unit_arm="reprobe", split=None)
     return parser
+
+
+def _resolve_v4_arms(parser: argparse.ArgumentParser, args) -> None:
+    """Settle the v4 ARMS wave flags (or their absence: the re-probe). A model arm launches only with a named secret
+    and the wave's own ledger inputs; the unit's arm label is unique to the wave so two waves of one commit cannot
+    share a results directory."""
+    args.arms_list, args.unit_arm, args.split = None, "reprobe", None
+    given = [f for f, v in (("--arms", args.arms), ("--wave", args.wave), ("--split-uri", args.split_uri),
+                            ("--h-mm", args.h_mm), ("--model-secret", args.model_secret)) if v is not None]
+    if args.arms is None:
+        if given:
+            parser.error(f"{', '.join(given)} need --arms (the re-probe takes none of them)")
+        return
+    missing = [f for f, v in (("--wave", args.wave), ("--split-uri", args.split_uri)) if v is None]
+    if missing:
+        parser.error(f"--arms needs {', '.join(missing)}")
+    try:
+        wave = budget_spec.wave(args.wave)
+        names = [budget_spec.arm(a.strip()).name for a in args.arms.split(",") if a.strip()]
+    except ValueError as exc:
+        parser.error(str(exc))
+    bad = [a for a in names if a not in budget_spec.DISPATCHABLE_ARMS or a not in wave.arms]
+    if not names or bad:
+        parser.error(f"--arms {bad or 'is empty'}: must be dispatchable arms of wave {wave.name!r} "
+                     f"({[a for a in wave.arms if a in budget_spec.DISPATCHABLE_ARMS]})")
+    if wave.wave_type != args.wave_type:
+        parser.error(f"--wave-type {args.wave_type} disagrees with wave {wave.name!r} ({wave.wave_type})")
+    if not args.split_uri.startswith("gs://"):
+        parser.error("--split-uri must be a gs:// object")
+    if any(a in ("search_det", "search_ai") for a in names) and not (args.h_mm and args.h_mm > 0):
+        parser.error("the search arms need --h-mm > 0: there is no default element size")
+    if any(budget_spec.ARMS[a].uses_model for a in names) and not args.model_secret:
+        parser.error("search_ai calls a model and the v4 VM carries no model key: name the Secret Manager secret "
+                     "holding OPENAI_API_KEY with --model-secret (and make sure the VM service account may read it)")
+    args.arms_list, args.split = names, wave.split
+    args.unit_arm = "arms_" + re.sub(r"[^a-z0-9]", "_", args.wave_id)
 
 
 def main(argv: list[str] | None = None, *, gates=None) -> int:
@@ -680,10 +739,11 @@ def main(argv: list[str] | None = None, *, gates=None) -> int:
         if args.files is None and not Path(args.pool).is_file():
             parser.error(f"cannot count the files: no pool manifest at {args.pool} (--pool or --files)")
         args.files_counted = V4.pool_files(args)
+        _resolve_v4_arms(parser, args)
     validate(parser, args)
     args.prefix = args.prefix.rstrip("/")
     slots = evalspec.vcpus_of(args.machine_type)
-    units = profile.units(args.shards_total)
+    units = (profile.units(args.shards_total, args.unit_arm) if profile is V4 else profile.units(args.shards_total))
     if args.only:
         wanted = [u.strip() for u in args.only.split(",") if u.strip()]
         unknown = [u for u in wanted if u not in units]
@@ -702,7 +762,7 @@ def main(argv: list[str] | None = None, *, gates=None) -> int:
     skipped: list[str] = []
     if not args.dry_run:
         try:
-            done = done_units(args.commit, profile)
+            done = done_units(args.commit, profile, (args.unit_arm,) if profile is V4 else None)
             claimed, live_vms = running_units(args.commit, profile)
         except RuntimeError as exc:
             problems.append(str(exc))
