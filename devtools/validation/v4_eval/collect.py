@@ -47,9 +47,13 @@ class CollectRefused(RuntimeError):
     pass
 
 
-def load_shards(root: Path, expected: int | None = None, *, partial_ok: bool = False) -> list[dict]:
+def load_shards(root: Path, expected: int | None = None, *, partial_ok: bool = False,
+                parse_rows: Callable[[list[dict]], list] | None = None) -> list[dict]:
     """Every shard under `root`, with its provenance and rows. Refuses missing, failed or mixed shards.
-    `partial_ok` waives ONLY the missing-shard check (the measured-shard mode); nothing else."""
+    `partial_ok` waives ONLY the missing-shard check (the measured-shard mode); nothing else.
+    `parse_rows` is the arm-wave seam (report.py): it turns a shard's rows.json into its own row type,
+    and the shard then has no cheap.jsonl; every gate below (exit code, shard count, one commit, one
+    image, missing shards) is the same code for both kinds of wave."""
     shards: list[dict] = []
     for d in sorted(p for p in root.iterdir() if p.is_dir() and SHARD_RE.match(p.name)):
         i, n = (int(x) for x in SHARD_RE.match(d.name).groups())  # type: ignore[union-attr]
@@ -59,9 +63,10 @@ def load_shards(root: Path, expected: int | None = None, *, partial_ok: bool = F
         prov = json.loads(prov_path.read_text())
         if prov.get("exit_code") != 0:
             raise CollectRefused(f"{d.name}: exit_code {prov.get('exit_code')!r}: {str(prov.get('error', ''))[-200:]}")
+        raw = json.loads((d / "rows.json").read_text())
         shards.append({"i": i, "n": n, "prov": prov, "dir": d,
-                       "rows": [rp.ProbeRow(**r) for r in json.loads((d / "rows.json").read_text())],
-                       "cheap": rp.read_rows(d / "cheap.jsonl"),
+                       "rows": parse_rows(raw) if parse_rows is not None else [rp.ProbeRow(**r) for r in raw],
+                       "cheap": [] if parse_rows is not None else rp.read_rows(d / "cheap.jsonl"),
                        "excluded": json.loads((d / "EXCLUDED.json").read_text())})
     if not shards:
         raise CollectRefused(f"no shard-I-of-N directories under {root}")

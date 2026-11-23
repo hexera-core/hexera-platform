@@ -26,8 +26,13 @@ them from PROVENANCE after it runs.
 from __future__ import annotations
 
 import hashlib
+import json
 import math
+import re
+import sys
 from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
 
 SEED = 20261122
 #: The owner's compute ceiling for the sprint, in c2d VM-hours.
@@ -180,3 +185,280 @@ def enforce_budget(p: Projection, *, allow_over_budget: bool = False, ceiling: f
     reasons = check_budget(p, allow_over_budget=allow_over_budget, ceiling=ceiling)
     if reasons:
         raise BudgetRefused("; ".join(reasons))
+
+
+
+# ======================================================================================== arms and waves
+#
+# An ARM is a named way of treating each input; a WAVE is a named run of arms over ONE split, of one wave
+# TYPE, and the type is what binds the spend cap. Both are data, here, once: run_arm, the launcher and
+# report.py take names from this file and spell nothing out.
+
+_REPO = Path(__file__).resolve().parents[3]
+
+
+def _model_ledger() -> Any:
+    """The wave-ledger module, imported lazily so this file stays loadable on a host with no `src` on the
+    path (the launcher). The caps live THERE (`WAVE_CAPS_USD`); nothing in this file restates one."""
+    try:
+        from meshpipeline.cad.repair_v4 import model_ledger
+    except ImportError:
+        sys.path.insert(0, str(_REPO / "src"))
+        from meshpipeline.cad.repair_v4 import model_ledger
+    return model_ledger
+
+
+def wave_cap_usd(wave_type: str) -> float:
+    """The owner's cap for a wave TYPE. A type the ledger does not price is an error, never "no cap"."""
+    caps = _model_ledger().WAVE_CAPS_USD
+    if wave_type not in caps:
+        raise ValueError(f"unknown wave type {wave_type!r}: it would get no spending cap; the wave types "
+                         f"are {sorted(caps)}")
+    cap = float(caps[wave_type])
+    if not math.isfinite(cap) or cap <= 0:
+        raise ValueError(f"wave type {wave_type!r} has cap {cap!r}: a cap must be finite and positive")
+    return cap
+
+
+#: The splits. `heldout` is reported once and NEVER used to tune, pick a prompt, fit a threshold or build a
+#: memory; `clean` is the control (every input is already clean; the arms must not break one).
+SPLITS: tuple[str, ...] = ("dev", "heldout", "clean")
+HELDOUT = "heldout"
+HELDOUT_WAVE_TYPE = "held_out"  # the ledger's name for the once-only $250 wave
+#: How many checkpoint waves the owner allows. Enforced by `claim_wave_slot`; the ledger cannot.
+MAX_CHECKPOINT_WAVES = 3
+
+
+@dataclass(frozen=True)
+class Budget:
+    """What ONE file may cost one arm. wall and ops are shared by every arm so that an arm's win is not a
+    bigger budget; `model_usd` is the model arm's extra, reported separately (AI marginal at equal wall
+    and ops)."""
+
+    wall_s: float = 600.0
+    ops: int = 60
+    model_usd: float = 0.0
+
+    def __post_init__(self) -> None:
+        if not math.isfinite(self.wall_s) or self.wall_s <= 0:
+            raise ValueError(f"Budget.wall_s must be finite and positive, got {self.wall_s!r}")
+        if self.ops < 1:
+            raise ValueError(f"Budget.ops must be >= 1, got {self.ops!r}")
+        if not math.isfinite(self.model_usd) or self.model_usd < 0:
+            raise ValueError(f"Budget.model_usd must be finite and >= 0 (inf is refused), got {self.model_usd!r}")
+
+
+@dataclass(frozen=True)
+class Arm:
+    name: str
+    describes: str
+    budget: Budget
+    uses_model: bool  # makes paid model calls: needs the ledger, and its spend is reported
+    #: whether THIS ledger sees the arm's spend. v3 calls a model but its spend is v3's own: its row says $0 and
+    #: that is "not metered", never "free"; the report renders it as such.
+    spend_metered: bool = True
+
+    def __post_init__(self) -> None:
+        if self.uses_model != (self.budget.model_usd > 0):
+            raise ValueError(f"arm {self.name!r}: uses_model={self.uses_model} but model_usd="
+                             f"{self.budget.model_usd}: a model arm needs a per-file model ceiling and "
+                             "no other arm may have one")
+
+
+SHARED_BUDGET = Budget()
+#: Adding an arm is one line here.
+ARMS: dict[str, Arm] = {a.name: a for a in (
+    Arm("input_only", "the input passed through unchanged (the floor)", SHARED_BUDGET, False),
+    Arm("staged", "the deterministic staged healer alone", SHARED_BUDGET, False),
+    Arm("search_det", "best-first search, deterministic proposers only", SHARED_BUDGET, False),
+    Arm("search_ai", "best-first search with the AI proposer",
+        Budget(SHARED_BUDGET.wall_s, SHARED_BUDGET.ops, model_usd=1.00), True),
+    Arm("v3_meshability_pass_ai", "v3 as it ships (meshability pass + AI), run once for comparison",
+        SHARED_BUDGET, False, spend_metered=False),  # calls a model; its spend is v3's, not this ledger's
+)}
+#: The plan/spec names above are CANONICAL. These aliases exist only for the brief's wording; do not "tidy"
+#: by deleting the real names (input_only is the do-nothing control every other arm is measured against).
+ARM_ALIASES: dict[str, str] = {"baseline": "v3_meshability_pass_ai", "heal_det": "staged"}
+
+
+def arm(name: str) -> Arm:
+    key = ARM_ALIASES.get(name, name)
+    if key not in ARMS:
+        raise ValueError(f"unknown arm {name!r}; the arms are {sorted(ARMS)} (aliases {sorted(ARM_ALIASES)})")
+    return ARMS[key]
+
+
+@dataclass(frozen=True)
+class WaveDef:
+    """A named run of arms over one split. The wave TYPE is required and checked against the ledger's
+    caps at construction, so a wave that would get no cap cannot be written down."""
+
+    name: str
+    wave_type: str
+    split: str
+    arms: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        wave_cap_usd(self.wave_type)
+        if self.split not in SPLITS:
+            raise ValueError(f"wave {self.name!r}: unknown split {self.split!r}; the splits are {SPLITS}")
+        if not self.arms or len(set(self.arms)) != len(self.arms):
+            raise ValueError(f"wave {self.name!r}: arms must be non-empty and unique, got {self.arms!r}")
+        object.__setattr__(self, "arms", tuple(arm(a).name for a in self.arms))
+        if (self.split == HELDOUT) != (self.wave_type == HELDOUT_WAVE_TYPE):
+            raise ValueError(f"wave {self.name!r}: the held-out split runs in the held_out wave type and "
+                             f"nothing else does (split {self.split!r}, type {self.wave_type!r})")
+
+    @property
+    def cap_usd(self) -> float:
+        return wave_cap_usd(self.wave_type)
+
+    @property
+    def has_model_arm(self) -> bool:
+        return any(ARMS[a].uses_model for a in self.arms)
+
+
+_ALL = ("input_only", "staged", "search_det", "search_ai", "v3_meshability_pass_ai")
+WAVES: dict[str, WaveDef] = {w.name: w for w in (
+    WaveDef("dev_deterministic", "normal", "dev", ("input_only", "staged")),
+    WaveDef("dev_search", "normal", "dev", ("search_det", "search_ai")),
+    WaveDef("dev_checkpoint", "checkpoint", "dev", _ALL[:4]),
+    WaveDef("heldout", HELDOUT_WAVE_TYPE, HELDOUT, _ALL),
+    WaveDef("clean_control", "normal", "clean", _ALL),
+)}
+
+
+def wave(name: str) -> WaveDef:
+    if name not in WAVES:
+        raise ValueError(f"unknown wave {name!r}; the waves are {sorted(WAVES)}")
+    return WAVES[name]
+
+
+class WaveSlotSpent(RuntimeError):
+    pass
+
+
+def slot_keys(wave_type: str) -> list[str]:
+    """The marker keys a wave TYPE may occupy; empty for a type with no count limit."""
+    if wave_type == HELDOUT_WAVE_TYPE:
+        return ["slot/held_out/1"]
+    if wave_type == "checkpoint":
+        return [f"slot/checkpoint/{i}" for i in range(1, MAX_CHECKPOINT_WAVES + 1)]
+    return []
+
+
+def claim_wave_slot(w: WaveDef, wave_id: str, markers: Any) -> str | None:
+    """The owner's wave COUNTS, which the ledger says it cannot enforce: the held-out wave runs once, a
+    checkpoint wave at most MAX_CHECKPOINT_WAVES times. Atomic create-if-absent on the shared marker
+    store. Resuming the SAME wave_id is allowed (a failed shard is rerun); a different wave_id on a spent
+    slot is refused. Returns the slot key, or None for a type with no count limit.
+
+    CALLER OBLIGATIONS (not enforceable here): `markers` must be DURABLE and SHARED (the wave bucket); a fresh or
+    in-memory store defeats the count, as the tests' dict would. Resuming a wave_id that already COMPLETED is
+    allowed by this function, because it cannot know the wave finished: the launcher must not re-launch a
+    completed held-out wave_id (the held-out report refuses shards whose slot it cannot match)."""
+    keys = slot_keys(w.wave_type)
+    if not keys:
+        return None
+    for key in keys:
+        if markers.get(key) == wave_id:
+            return key
+    for key in keys:
+        # `create` False can mean "taken by ANOTHER wave" or "taken a moment ago by a concurrent start of THIS
+        # wave_id" (the get above raced it): re-read, or the second start would burn a second checkpoint slot.
+        if markers.create(key, wave_id) or markers.get(key) == wave_id:
+            return key
+    raise WaveSlotSpent(f"every {w.wave_type} slot is taken ({[markers.get(k) for k in keys]}); wave "
+                        f"{wave_id!r} cannot run: the held-out files are spent after one run, and "
+                        f"checkpoint waves are limited to {MAX_CHECKPOINT_WAVES}")
+
+
+_TOKEN = object()
+
+
+@dataclass(frozen=True)
+class WavePlan:
+    """A wave that may launch: its slot is claimed and its cap is the ledger's. Built only by
+    `plan_wave`; `open_ledger` is the way a shard gets its spending slice, and there is no other."""
+
+    wave: WaveDef
+    wave_id: str
+    n_shards: int
+    cap_usd: float
+    slot: str | None
+    _key: object = None
+
+    def __post_init__(self) -> None:
+        if self._key is not _TOKEN:
+            raise TypeError("a WavePlan is built with plan_wave, which claims the slot and binds the cap")
+
+    @property
+    def shard_cap_usd(self) -> float:
+        return self.cap_usd / self.n_shards
+
+    def open_ledger(self, shard_index: int, path: Any, markers: Any) -> Any:
+        """This shard's WaveLedger (WaveLedger.for_shard: cap = WAVE_CAPS_USD[type] / n_shards)."""
+        return _model_ledger().WaveLedger.for_shard(
+            self.wave.wave_type, wave_id=self.wave_id, n_shards=self.n_shards, shard_index=shard_index,
+            path=path, markers=markers)
+
+    def shard_argv(self, shard_index: int) -> list[str]:
+        """The wave's identity as run_arm flags (the arms come from ARMS by name)."""
+        return ["--wave", self.wave.name, "--wave-id", self.wave_id, "--wave-type", self.wave.wave_type,
+                "--split", self.wave.split, "--arms", ",".join(self.wave.arms),
+                "--shard", f"{shard_index}/{self.n_shards}"]
+
+    def provenance(self) -> dict[str, Any]:
+        return {"wave": self.wave.name, "wave_id": self.wave_id, "wave_type": self.wave.wave_type,
+                "split": self.wave.split, "arms": list(self.wave.arms), "n_shards": self.n_shards,
+                "wave_cap_usd": self.cap_usd, "shard_cap_usd": self.shard_cap_usd, "slot": self.slot}
+
+
+def plan_wave(w: WaveDef, *, wave_id: str, n_shards: int, markers: Any) -> WavePlan:
+    if not wave_id.strip():
+        raise ValueError("a wave needs a wave_id")
+    if n_shards < 1:
+        raise ValueError(f"n_shards must be >= 1, got {n_shards}")
+    cap = w.cap_usd  # raises for a type the ledger does not price
+    slot = claim_wave_slot(w, wave_id, markers)
+    return WavePlan(w, wave_id, n_shards, cap, slot, _TOKEN)
+
+
+# ------------------------------------------------------------------ the held-out firewall
+
+class HeldOutInTuning(RuntimeError):
+    """The held-out split was reached from a tuning path."""
+
+
+_HELDOUT_COMPACT = "heldout"
+
+
+def _compact(text: str) -> str:
+    """lower-case with every separator removed: 'held-out', 'Held Out', 'held_out.v2' all become 'heldout'."""
+    return re.sub(r"[\s_\-.]+", "", text.lower())
+
+
+def _names_heldout(item: str) -> bool:
+    if _HELDOUT_COMPACT in _compact(item):  # the name, any directory above it, or any spelling of either
+        return True
+    path = Path(item)
+    try:
+        if path.is_file() and path.suffix == ".json":  # a file named anything: believe what it says it is
+            doc = json.loads(path.read_text())
+            return isinstance(doc, dict) and _compact(str(doc.get("split", ""))) == _HELDOUT_COMPACT
+    except (OSError, ValueError):
+        return False
+    return False
+
+
+def refuse_heldout_for_tuning(*what: str) -> None:
+    """Call at the top of any code that tunes (prompt selection, threshold fitting, memory building) with
+    the split names or file paths it is about to read. The held-out split is reported, never tuned on.
+
+    Matches 'heldout' under any separator or case ('held-out', 'held out', 'Held_Out') in the name or any
+    parent directory, AND a JSON file of any name whose own `split` field says held-out. It is still a NAME
+    check plus one content check: a caller that never calls it is not stopped (see report.py's note)."""
+    for item in what:
+        if _names_heldout(str(item)):
+            raise HeldOutInTuning(f"{item!r} is the held-out split: it is used once, for the report, and "
+                                  "never for tuning, prompt selection, threshold fitting or memory")

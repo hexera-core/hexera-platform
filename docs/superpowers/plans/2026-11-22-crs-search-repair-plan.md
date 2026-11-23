@@ -709,3 +709,35 @@ which no unit test can.
 
 **Open owner item carried here:** `clean_control`'s wave type is assumed "normal" because the plan
 gives it no cap of its own. Task 21 pinned it with a test and flagged it.
+
+### Task 24 carry-ins from Task 21's review (they can only bite once the harness exists)
+
+Task 21 merged approved, with six soft items. None can bite before Task 24 wires the harness,
+because a held-out report cannot be produced at all until `plan.provenance()` reaches the shard
+provenance. They land with Task 24:
+
+1. **`primary_artifact` must require `slot_verified`.** Today a self-declared `slot` string earns the
+   "[PRIMARY ARTIFACT, frozen commit verified]" banner even with no marker store consulted (the slot
+   line does say "marker store NOT consulted"). The held-out split is spent in one use, so the
+   banner on an unverified slot is the one label that must not be available cheaply.
+2. **Exclude NOT MEASURED arms from the indistinguishable warning.** It can print "X and Y are
+   indistinguishable on all N files they share" for an arm whose numbers are withheld, which leaks
+   that arm's outcomes on those files.
+3. **Per-kind cells on a MEASURED arm** still print `clean/conclusive` beside "withheld" when that
+   kind is over 10% inconclusive - the original withholding defect in a different cell, untested.
+4. **Assert `clean_gain` and paired `clean_in`/`clean_gain` numerically on a clean split.** The dev
+   fixtures all have `in_clean=False`, so `clean_gain == clean_out` and the new paired gain code is
+   entirely unasserted: `clean_out + clean_in`, or a dropped `cin`, would pass today.
+5. **Add one row with `verdict_candidates=0`, `inconclusive_candidates>0`, `out_clean=True`**, so the
+   `not out_clean` clause is exercised; dropping it currently survives.
+6. **Replace the mirrored 18b fields with the shared definition** (see Task 24's scope), and check two
+   copied details: the third clause uses `out_clean` as a stand-in for "start not clean", equivalent
+   only while `verdict_candidates == 0` implies the output is the start; and `SEARCH_ARMS` is a
+   second hard-coded list of search arms.
+
+Also noted, not blocking: paired rates are conditioned on files no measured arm dropped, so absolute
+rates are flattered relative to all files, and with four measured arms each dropping ~10% on
+different files the paired n can fall to ~60% of the split. There is no warning when paired n is much
+smaller than the file count, and the pairwise marginals use their own pairwise intersection rather
+than the table's paired set - so subtracting two paired-column rates does not reproduce the printed
+marginal. Worth a minimum-paired-n warning when the harness makes real numbers available.
