@@ -62,6 +62,7 @@ from meshpipeline.cad.repair_v4 import (
 )
 from meshpipeline.cad.repair_v4 import xcaf_io as _xcaf_io  # noqa: E402,F401
 from meshpipeline.cad.repair_v4.verdict import faithful_kernel as _faithful_kernel  # noqa: E402,F401
+from meshpipeline.cad.repair_v4.verdict import mesh_kernel as _mesh_kernel  # noqa: E402,F401
 from meshpipeline.cad.repair_v4.verdict import netgen_member as _netgen_member  # noqa: E402,F401
 from meshpipeline.cad.repair_v4.verdict import valid_kernel as _valid_kernel  # noqa: E402,F401
 from meshpipeline.cad.repair_v4.verdict import versions_kernel as _versions_kernel  # noqa: E402,F401
