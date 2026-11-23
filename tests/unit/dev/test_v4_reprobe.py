@@ -250,7 +250,7 @@ def _population():
     rows, i = [], 0
     for layer, family, source, n in [
         ("panel", "plc_intersection", "abc_fail", 400), ("panel", "overlapping_facets", "abc_fail", 200),
-        ("panel", "open_loop", "f360", 150), ("valid", "open_shell", "abc_fail", 100),
+        ("panel", "open_loop", "occt", 150), ("valid", "open_shell", "abc_fail", 100),
         ("valid", "open_shell", "nist", 6), ("panel", "no_volume", "occt", 10),
     ]:
         for _ in range(n):
@@ -261,10 +261,10 @@ def _population():
         rows.append(_row(i, None, "", "abc_pass", tier="full", clean=True))
     for _ in range(50):
         i += 1
-        rows.append(_row(i, None, "", "f360", tier="cheap"))  # a cheap pass: not certified clean
+        rows.append(_row(i, None, "", "occt", tier="cheap"))  # a cheap pass: not certified clean
     for _ in range(40):
         i += 1
-        rows.append(_row(i, "valid", "no_solids", "f360"))
+        rows.append(_row(i, "valid", "no_solids", "occt"))
     return rows
 
 
@@ -498,8 +498,8 @@ def test_a_quarantined_kind_is_refused_under_any_source_label(source) -> None:
 def test_run_arm_checks_the_whole_pool_before_sharding(tmp_path) -> None:
     pool_json = tmp_path / "pool.json"
     pool_mod = run_arm.pool_mod
-    entries = [pool_mod.PoolEntry("p.loose_reapprox.1.step", "f360", _sha(1), "u", None, "lic")]
-    pool_mod.write_pool(entries, pool_json, sources_included=["f360"])
+    entries = [pool_mod.PoolEntry("p.loose_reapprox.1.step", "occt", _sha(1), "u", None, "lic")]
+    pool_mod.write_pool(entries, pool_json, sources_included=["occt"])
     with pytest.raises(rp.QuarantinedKind):
         run_arm.run_reprobe(run_arm.argparse.Namespace(pool=str(pool_json), shard="1/1", cache_uri="",
                                                        workers=1, inputs="/i", file_timeout_s=5.0),
@@ -534,3 +534,55 @@ def test_clean_split_prefers_genuine_cheap_passes_and_reports_the_marginal_top_u
     assert {r.sha256 for r in s.clean} <= {r.sha256 for r in genuine} and s.strata["clean_from_cheap_fail"]["count"] == 0
     s = rp.build_splits(genuine + marginal + failing, dev=5, heldout=5, clean=15, cheap_failed=cf)
     assert len(s.clean) == 15 and s.strata["clean_from_cheap_fail"]["count"] == 5
+
+
+# ------------------------------------------------------------------ source allow-list (Fusion 360 licence hold)
+
+def test_f360_is_not_allowed_and_the_list_is_pluggable() -> None:
+    assert "f360" not in rp.ALLOWED_SOURCES
+    rp.check_sources([Entry("a", _sha(1), "f360")], allowed=rp.ALLOWED_SOURCES | {"f360"})  # opt-in later
+
+
+def test_reprobe_refuses_an_f360_entry_before_any_mesh(layers) -> None:
+    member = FakeMember("gmsh_default")
+    with pytest.raises(rp.DisallowedSource):
+        _probe([Entry("a", _sha(1), "abc_fail"), Entry("b", _sha(2), "f360")], members=[member])
+    assert member.runs == 0
+
+
+def test_build_splits_refuses_an_f360_row() -> None:
+    rows = [_row(i, "panel", "other") for i in range(1, 12)] + [_row(99, "panel", "other", source="f360")]
+    with pytest.raises(rp.DisallowedSource):
+        rp.build_splits(rows, dev=3, heldout=2, clean=0)
+
+
+def test_run_arm_drops_f360_from_the_manifest_visibly(tmp_path, monkeypatch) -> None:
+    pool_mod = run_arm.pool_mod
+    entries = [pool_mod.PoolEntry("a.step", "abc_fail", _sha(1), "u", None, "lic"),
+               pool_mod.PoolEntry("f.step", "f360", _sha(2), "u", None, "lic")]
+    pool_json = tmp_path / "pool.json"
+    pool_mod.write_pool(entries, pool_json, sources_included=["abc_fail", "f360"])
+    seen = {}
+
+    def fake_probe(entries, **kw):
+        seen["entries"] = list(entries)
+        raise RuntimeError("stop")
+
+    monkeypatch.setattr(rp, "probe_pool", fake_probe)
+    monkeypatch.setattr("meshpipeline.cad.repair_v4.worker_pool.WorkerPool", lambda n: type("P", (), {"close": lambda s: None})())
+    prov: dict = {}
+    with pytest.raises(RuntimeError, match="stop"):
+        run_arm.run_reprobe(run_arm.argparse.Namespace(pool=str(pool_json), shard="1/1", cache_uri="", workers=1,
+                                                       inputs="/i", file_timeout_s=5.0), tmp_path, prov)
+    assert [e.source for e in seen["entries"]] == ["abc_fail"]
+    assert prov["pool_dropped_by_source"] == {"f360": 1} and prov["pool_listed"] == 2
+
+
+def test_launcher_counts_only_allowed_sources(tmp_path, capsys) -> None:
+    pool_mod = run_arm.pool_mod
+    entries = [pool_mod.PoolEntry(f"a{i}.step", "abc_fail", _sha(i), "u", None, "lic") for i in range(1, 4)]
+    entries += [pool_mod.PoolEntry(f"f{i}.step", "f360", _sha(100 + i), "u", None, "lic") for i in range(1, 8)]
+    pool_json = tmp_path / "pool.json"
+    pool_mod.write_pool(entries, pool_json, sources_included=["abc_fail", "f360"])
+    assert launch.main(["--pool", str(pool_json), "--shards", "8", "--max-run-hours", "5"]) == 0
+    assert capsys.readouterr().out.startswith("3 files")
