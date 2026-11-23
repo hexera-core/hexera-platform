@@ -62,3 +62,31 @@ def test_only_a_kept_edit_with_the_cure_reason_counts_as_a_clone_cure():
     assert not investigator._cured_on(scratch(NS(kept=True, reason="")))
     assert not investigator._cured_on(scratch(NS(kept=False, reason=MESHES_AFTER_TARGET_REMAINS)))
     assert not investigator._cured_on(None)
+
+
+@pytest.mark.parametrize("reason,expected", [("meshes_after_target_remains", True), ("", False)])
+def test_conclude_hands_the_clone_cure_to_validate_package(monkeypatch, reason, expected):
+    """The wiring: `_conclude` reads the clone's record and passes it as `cured_on_clone`."""
+    from types import SimpleNamespace as NS
+
+    from meshpipeline.cad.repair import investigator
+
+    seen: dict = {}
+
+    def spy(claim, ctx, guards, **kwargs):
+        seen.update(kwargs)
+        return "package", {"plan": claim["plan"]}
+
+    monkeypatch.setattr(ma, "validate_package", spy)
+    scratch = NS(edits=[NS(kept=True, reason=reason)],
+                 kept=lambda: ({"op": "split_closed_faces", "fingerprint": "fp1",
+                                "defect_code": "mesh_overlapping_facets"},))
+    inv = NS(attempted=1, model_calls=1, conclusion=None)
+    package, done = investigator._conclude(
+        {"package": {"intent": "x", "cleared": ["fp1"], "unchanged": [],
+                     "max_area_delta_mm2": 1.0, "max_volume_delta_mm3": 1.0}},
+        inv, ctx=ma.RegionContext(REGION, (DEFECT,)), scratch=scratch, region=REGION,
+        defects=(DEFECT,), state={"shape": None, "part_rims": frozenset()}, refusals=[],
+        verdicts=[], escalations=[], held_codes=frozenset(), original=ORIGINAL)
+    assert done and package == "package"
+    assert seen["cured_on_clone"] is expected
