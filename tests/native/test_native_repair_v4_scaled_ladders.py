@@ -31,25 +31,43 @@ def pool() -> Iterator[WorkerPool]:
         p.close()
 
 
-def _loose_box(edge_mm: float, path: Path) -> str:
-    """A box of this edge as 6 exactly-coincident loose faces: an open shell a sew closes at any rung in the window."""
+def _loose_box(edge_mm: float, gap_mm: float, path: Path) -> str:
+    """A box of this edge as 6 loose faces, each pushed `gap_mm` out from the centre: an open shell that a sew rung
+    at least that wide closes."""
     from OCP.BRep import BRep_Builder
-    from OCP.BRepBuilderAPI import BRepBuilderAPI_Copy
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
+    from OCP.BRepGProp import BRepGProp
     from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
     from OCP.BRepTools import BRepTools
+    from OCP.gp import gp_Pnt, gp_Trsf, gp_Vec
+    from OCP.GProp import GProp_GProps
     from OCP.TopAbs import TopAbs_FACE
     from OCP.TopExp import TopExp_Explorer
-    from OCP.TopoDS import TopoDS_Compound
+    from OCP.TopoDS import TopoDS, TopoDS_Compound
 
     compound = TopoDS_Compound()
     builder = BRep_Builder()
     builder.MakeCompound(compound)
+    centre = gp_Pnt(edge_mm / 2, edge_mm / 2, edge_mm / 2)
     explorer = TopExp_Explorer(BRepPrimAPI_MakeBox(edge_mm, edge_mm, edge_mm).Shape(), TopAbs_FACE)
     while explorer.More():
-        builder.Add(compound, BRepBuilderAPI_Copy(explorer.Current(), True).Shape())
+        face = TopoDS.Face_s(explorer.Current())
+        props = GProp_GProps()
+        BRepGProp.SurfaceProperties_s(face, props)
+        away = gp_Vec(centre, props.CentreOfMass())
+        away.Normalize()
+        away.Multiply(gap_mm / 2)
+        move = gp_Trsf()
+        move.SetTranslation(away)
+        builder.Add(compound, BRepBuilderAPI_Transform(face, move, True).Shape())
         explorer.Next()
     assert BRepTools.Write_s(compound, str(path))
     return str(path)
+
+
+def _bound(edge_mm: float) -> float:
+    """The contract's min(0.1 mm, 0.001 x diagonal), spelled out here rather than imported."""
+    return min(0.1, 0.001 * edge_mm * 3 ** 0.5)
 
 
 def _state(ws: Workspace) -> SearchState:
@@ -69,7 +87,7 @@ def _free_edges(path: str) -> int:
 #: 1 mm (diag 1.73 mm, bound 1.7e-3) and 1 m (diag 1732 mm, bound 0.1, floor 1.7e-3): three decades apart
 @pytest.mark.parametrize("edge_mm", [1.0, 1000.0])
 def test_a_sew_candidate_is_generated_and_accepted_at_each_scale(pool: WorkerPool, tmp_path: Path, edge_mm: float) -> None:
-    ws = Workspace.from_brep(pool, _loose_box(edge_mm, tmp_path / "loose.brep"))
+    ws = Workspace.from_brep(pool, _loose_box(edge_mm, 0.5 * _bound(edge_mm), tmp_path / "loose.brep"))
     before = _free_edges(ws.brep_path)
     assert before > 0
 
@@ -85,13 +103,13 @@ def test_a_sew_candidate_is_generated_and_accepted_at_each_scale(pool: WorkerPoo
 
 @pytest.mark.parametrize("edge_mm", [1.0, 1000.0])
 def test_the_old_absolute_ladder_is_declined_not_failed_at_both_scales(pool: WorkerPool, tmp_path: Path, edge_mm: float) -> None:
-    ws = Workspace.from_brep(pool, _loose_box(edge_mm, tmp_path / "loose.brep"))
+    ws = Workspace.from_brep(pool, _loose_box(edge_mm, 0.5 * _bound(edge_mm), tmp_path / "loose.brep"))
     with pytest.raises(OpDeclined, match="must lie in"):  # OpFailed would not match: it is not a subclass
         REGISTRY["sew"].apply(pool, ws.fork(), [], {"tol_ladder": OLD_LADDER}, timeout_s=TIMEOUT)
 
 
 def test_a_part_whose_window_is_empty_gets_no_sew_and_the_sweep_says_so(pool: WorkerPool, tmp_path: Path) -> None:
-    ws = Workspace.from_brep(pool, _loose_box(200_000.0, tmp_path / "huge.brep"))  # a 200 m box: floor > 0.1 mm cap
+    ws = Workspace.from_brep(pool, _loose_box(200_000.0, 0.05, tmp_path / "huge.brep"))  # a 200 m box: floor > 0.1 mm cap
     gen = DetGenerator()
     gen.bind_pool(pool)
     got = gen.propose(_state(ws), 50)
