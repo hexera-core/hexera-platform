@@ -9,7 +9,7 @@ import pytest
 
 from meshpipeline.cad.repair_v4.ops.shells import scaled_sew_ladder, scaled_sliver_widths
 from meshpipeline.cad.repair_v4.search import DetGenerator, SearchState
-from meshpipeline.cad.repair_v4.stages import _Steps, _shells
+from meshpipeline.cad.repair_v4.stages import _shells, _Steps
 from meshpipeline.cad.repair_v4.types import Site
 from meshpipeline.cad.repair_v4.workspace import Workspace
 

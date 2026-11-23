@@ -192,7 +192,8 @@ def _shells(s: _Steps, p: dict) -> None:
     if p["small"]:
         width = p["small_width_mm"]
         if width is None:
-            widths = scaled_sliver_widths(s.diagonal()) if s.diagonal() is not None else ()
+            diag = s.diagonal()
+            widths = scaled_sliver_widths(diag) if diag is not None else ()
             width = widths[-1] if widths else None
         if width is None:
             s.notes.append("remove_small: declined: the part's diagonal is unknown, so no width can be sized")
