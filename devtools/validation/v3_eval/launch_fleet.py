@@ -666,6 +666,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="v4 --arms only: the Secret Manager secret holding OPENAI_API_KEY, REQUIRED when an arm "
                              "calls a model. There is no default: the v4 VM carries no model key of its own")
     parser.add_argument("--dry-run", action="store_true")
+    # derived in main (_resolve_v4_arms); declared so the parser names every attribute the launcher reads
+    parser.set_defaults(arms_list=None, unit_arm="reprobe", split=None)
     return parser
 
 

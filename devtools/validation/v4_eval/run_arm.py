@@ -318,6 +318,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--ledger-path", default=None, help="the shard's durable ledger log")
     parser.add_argument("--marker-bucket", default=None,
                         help="the wave bucket holding the ledger's markers (native GCS, VM service account)")
+    # derived by parse_args (_resolve_arms); declared so the one argument contract names every attribute read
+    parser.set_defaults(arms_resolved=())
     return parser
 
 

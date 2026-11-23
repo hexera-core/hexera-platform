@@ -14,16 +14,16 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from tests.unit.cad.repair_v4 import test_search_wiring as W
+from tests.unit.cad.repair_v4.test_model_route import Wire, wire  # noqa: F401  (wire is a fixture)
 
 from meshpipeline.cad.repair_v4 import measurement
 from meshpipeline.cad.repair_v4.model_ledger import WaveLedger
 from meshpipeline.cad.repair_v4.ops import REGISTRY
-from meshpipeline.cad.repair_v4.verdict.assemble import Verdict, score
+from meshpipeline.cad.repair_v4.verdict.assemble import Verdict
 from meshpipeline.cad.repair_v4.verdict.faithful import FaithfulReport
 from meshpipeline.cad.repair_v4.verdict.valid import CheckerUnavailable, ValidReport
 from meshpipeline.cad.repair_v4.worker_pool import CallResult
-from tests.unit.cad.repair_v4 import test_search_wiring as W
-from tests.unit.cad.repair_v4.test_model_route import Wire, wire  # noqa: F401  (wire is a fixture)
 
 V4 = Path(__file__).resolve().parents[3] / "devtools/validation/v4_eval"
 sys.path.insert(0, str(V4))
