@@ -33,6 +33,14 @@ checkpoint wave whose shards do not carry the `slot` plan_wave claimed (checked 
 one is given); a search row that says "conclusive" while its own reason / candidate counts say nothing was
 measured; a per-file model spend over the arm's ceiling; an input_only row that changed any layer.
 
+THE DECLINED STRATUM is a THIRD category, neither measured-and-failed nor unmeasured: files whose injected defect
+no op may repair by design (`face_delete_large`: the deleted face's loop spans more than the fill cap, and the
+faithful layer exists to stop a fill inventing most of a part). Their expected outcome is "correctly declined". A
+split row declares it through its own `kind_status == "declined_stratum"` (the injector's label, carried by the pool
+entry); `load_wave` refuses a row of a declined kind that does not carry that status. Those files are REMOVED from
+every arm's files, conclusive and inconclusive counts, clean rate, clean gain, regressions, layers, per-kind rates,
+the paired set and the marginals, and appear ONLY under `declined_stratum`, on their own line.
+
 NOT MEASURED WITHHOLDS EVERYTHING a rate can be recovered from (counts, layers, regressions, per-kind rates),
 and the JSON says `numbers_valid: false` whenever the status is UNRELIABLE. PER-ARM rates use each arm's own
 dropouts and are NOT comparable across arms; the PAIRED columns (files every measured arm judged) are.
@@ -45,7 +53,7 @@ import math
 import re
 import sys
 from collections import defaultdict
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
@@ -78,6 +86,9 @@ FALSE_POSITIVE_NOTE = ("this is ALSO what a real result looks like when two dete
                        "shared file, or when an arm is perfect on the clean-control split: check that the harness "
                        "varies the arm before discarding the numbers")
 SPEND_EPS_USD = 1e-6
+#: The injector's status for a defect no op may repair by design (inject.KIND_STATUS); the one string the report
+#: reads, and `load_wave` checks it against the injector's own declined kinds.
+DECLINED_STATUS = "declined_stratum"
 _SHA40 = re.compile(r"^[0-9a-f]{40}$")
 
 
@@ -234,6 +245,7 @@ class WaveResult:
     n_files: int
     shard_wall_seconds: tuple[float, ...]
     frozen: bool
+    declined: frozenset[str] = frozenset()  # sha256 of the declined-stratum files (expected outcome: declined)
     slot: str | None = None  # the once-only slot the shards carry (held-out / checkpoint waves)
     slot_verified: bool = False  # ... and whether the marker store confirmed this wave_id holds it
     _key: object = None
@@ -273,6 +285,15 @@ def load_wave(root: Path, wave: Any, split_rows: Iterable[Any], *, n_shards: int
                                 "before the one held-out run")
     split = list(split_rows)
     rp.check_sources(split)  # Fusion 360 raises DisallowedSource: reuse, not a second list
+    declined_kinds = set(rp.load_inject().DECLINED_STRATUM_KINDS)
+    for r in split:
+        if r.kind in declined_kinds and r.kind_status != DECLINED_STATUS:
+            raise ReportRefused(f"{r.name}: injector kind {r.kind!r} is the declined stratum but the split row's "
+                                f"status is {r.kind_status!r}, not {DECLINED_STATUS!r}: it would be counted as a "
+                                "failing file")
+        if r.kind_status == DECLINED_STATUS and r.kind not in declined_kinds:
+            raise ReportRefused(f"{r.name}: status {DECLINED_STATUS!r} on kind {r.kind!r}, which is not a declined kind")
+    declined = frozenset(r.sha256 for r in split if r.kind_status == DECLINED_STATUS)
     if not split:
         raise ReportRefused("the split is empty")
     if len({r.sha256 for r in split}) != len(split):
@@ -381,7 +402,7 @@ def load_wave(root: Path, wave: Any, split_rows: Iterable[Any], *, n_shards: int
         wave, next(iter(ids)), str(first["commit"]), str(first["image"]), tuple(rows.values()),
         {sha: defect_kind(r) for sha, r in by_sha.items()}, len(split),
         tuple(float(s["prov"].get("wall_seconds") or 0.0) for s in shards), bool(frozen_commit),
-        slot=slot, slot_verified=slot_verified, _key=_TOKEN)
+        declined=declined, slot=slot, slot_verified=slot_verified, _key=_TOKEN)
 
 
 # ---------------------------------------------------------------------------------------------- the report
@@ -390,7 +411,8 @@ def _rate(n: int, d: int) -> float | None:
     return n / d if d else None
 
 
-def _arm_block(arm: str, rows: list[ArmRow], kinds: Mapping[str, str], n_files: int) -> dict[str, Any]:
+def _arm_block(arm: str, rows: list[ArmRow], kinds: Mapping[str, str], n_files: int,
+               stratum_rows: Sequence[ArmRow] = ()) -> dict[str, Any]:
     """One arm's numbers over ITS OWN conclusive files. When the arm is NOT MEASURED, withhold means withhold:
     every figure from which a clean rate is recoverable (counts, layers, regressions, per-kind rates) is None,
     not only the headline."""
@@ -421,7 +443,10 @@ def _arm_block(arm: str, rows: list[ArmRow], kinds: Mapping[str, str], n_files: 
                          "clean_rate": _rate(sum(r.clean for r in con), len(con)) if ok else None,
                          "measured": ok}
     metered = ev.ARMS[arm].spend_metered
-    spend = sum(r.model_usd for r in rows)
+    # Money and wall-clock are REAL whatever the file's category: the declined stratum is out of every RATE, not out
+    # of the bill, so the spend the cap is checked against still includes it.
+    billed = [*rows, *stratum_rows]
+    spend = sum(r.model_usd for r in billed)
     return {
         "files": n_files, "conclusive": len(conclusive), "inconclusive": inc, "inconclusive_rate": inc_rate,
         "measured": measured,
@@ -438,11 +463,25 @@ def _arm_block(arm: str, rows: list[ArmRow], kinds: Mapping[str, str], n_files: 
                    else {"valid": None, "faithful_ok": None, "panel_all_pass": None, "clean": None}),
         "by_defect_kind": by_kind,
         "spend_metered": metered,
-        "model_usd": ({"total": spend, "per_file_mean": spend / n_files} if metered
+        "model_usd": ({"total": spend, "per_file_mean": spend / len(billed)} if metered
                       else {"total": None, "per_file_mean": None}),
-        "wall_s": {"total": sum(r.wall_s for r in rows), "per_file_mean": sum(r.wall_s for r in rows) / n_files,
-                   "max": max(r.wall_s for r in rows)},
+        "wall_s": {"total": sum(r.wall_s for r in billed), "per_file_mean": sum(r.wall_s for r in billed) / len(billed),
+                   "max": max(r.wall_s for r in billed)},
     }
+
+
+def _declined_block(stratum: Mapping[str, list[ArmRow]], n: int) -> dict[str, Any]:
+    """The declined stratum, per arm. NEVER a failure and in no clean rate or gain. `declined` = conclusive and no
+    clean output (the expected outcome); `unexpectedly_clean` = conclusive and clean (a finding about the fill cap
+    or the judge, shown, not credited as gain); `inconclusive` = not measured. The row cannot tell an op's
+    OpDeclined from a search that found nothing, and does not pretend to."""
+    arms: dict[str, dict[str, Any]] = {}
+    for a, rs in stratum.items():
+        con = [r for r in rs if r.counts]
+        arms[a] = {"files": len(rs), "inconclusive": len(rs) - len(con),
+                   "declined": sum(not r.clean for r in con), "unexpectedly_clean": sum(r.clean for r in con)}
+    return {"expected_outcome": "correctly_declined", "files": n, "counted_as": "none: not a failure, not a gain",
+            "arms": arms}
 
 
 def _paired_columns(by_sha: Mapping[str, dict[str, ArmRow]], blocks: dict[str, dict[str, Any]],
@@ -486,11 +525,18 @@ def build_report(result: WaveResult) -> dict[str, Any]:
     wave = result.wave
     per_arm: dict[str, list[ArmRow]] = {a: [] for a in wave.arms}
     by_sha: dict[str, dict[str, ArmRow]] = defaultdict(dict)
+    stratum: dict[str, list[ArmRow]] = {a: [] for a in wave.arms}
     for r in result.rows:
+        if r.sha256 in result.declined:  # the third category: kept out of EVERY figure below, reported on its own
+            stratum[r.arm].append(r)
+            continue
         per_arm[r.arm].append(r)
         by_sha[r.sha256][r.arm] = r
-    blocks = {a: _arm_block(a, rs, result.kinds, result.n_files) for a, rs in per_arm.items()}
-    paired_set = _paired_columns(by_sha, blocks, result.n_files)
+    n_main = result.n_files - len(result.declined)
+    if n_main < 1:
+        raise ReportRefused("every file in the split is declined-stratum: there is nothing to measure a clean rate on")
+    blocks = {a: _arm_block(a, rs, result.kinds, n_main, stratum[a]) for a, rs in per_arm.items()}
+    paired_set = _paired_columns(by_sha, blocks, n_main)
     warnings: list[str] = []
     for a, b in blocks.items():
         if not b["measured"]:
@@ -511,10 +557,10 @@ def build_report(result: WaveResult) -> dict[str, Any]:
                     for s in both):
                 warnings.append(f"{a} and {b} are indistinguishable on all {len(both)} files they share: "
                                 "check that the harness varies the arm; " + FALSE_POSITIVE_NOTE)
-    if paired_set["arms"] and paired_set["n_files"] < MIN_PAIRED_FRACTION * result.n_files:
+    if paired_set["arms"] and paired_set["n_files"] < MIN_PAIRED_FRACTION * n_main:
         warnings.append(
-            f"the PAIRED columns cover only {paired_set['n_files']} of {result.n_files} files "
-            f"({paired_set['n_files'] / result.n_files:.0%}; minimum {MIN_PAIRED_FRACTION:.0%}): each measured arm "
+            f"the PAIRED columns cover only {paired_set['n_files']} of {n_main} files "
+            f"({paired_set['n_files'] / n_main:.0%}; minimum {MIN_PAIRED_FRACTION:.0%}): each measured arm "
             "drops different files, so the shared set is no longer the split and the paired rates are about a "
             "subset the arms agreed to judge, not the corpus")
     shard_wall = list(result.shard_wall_seconds)
@@ -526,7 +572,8 @@ def build_report(result: WaveResult) -> dict[str, Any]:
         #: this wave_id holds the once-only slot. A slot named in the shards' own provenance proves nothing.
         "primary_artifact": wave.split == ev.HELDOUT and result.slot_verified,
         "heldout_split": wave.split == ev.HELDOUT,
-        "files": result.n_files, "arms": blocks, "paired_set": paired_set,
+        "files": result.n_files, "files_measured_strata": n_main, "arms": blocks, "paired_set": paired_set,
+        "declined_stratum": _declined_block(stratum, len(result.declined)),
         "marginals": {"ai_marginal (search_ai - search_det)": _paired(by_sha, "search_ai", "search_det", blocks),
                       "deterministic_marginal (staged - input_only)": _paired(by_sha, "staged", "input_only", blocks)},
         "budgets": {a: {"wall_s": ev.ARMS[a].budget.wall_s, "ops": ev.ARMS[a].budget.ops,
@@ -589,6 +636,13 @@ def render_text(rep: dict[str, Any]) -> str:
     for name, m in rep["marginals"].items():
         out.append(f"- {name}: " + (f"{m['value']:+.1%} ({m['files_gained']:+d} files over {m['n_paired']})"
                                     if m["value"] is not None else f"withheld - {m['reason']}"))
+    ds = rep["declined_stratum"]
+    if ds["files"]:
+        out += ["", f"## Declined stratum ({ds['files']} files; expected outcome: {ds['expected_outcome']}). NOT a "
+                    "failure and in NO clean rate, gain or regression above.",
+                "| arm | files | declined (expected) | unexpectedly clean | inconclusive |", "|---|---|---|---|---|"]
+        out += [f"| {a} | {v['files']} | {v['declined']} | {v['unexpectedly_clean']} | {v['inconclusive']} |"
+                for a, v in ds["arms"].items()]
     for a, b in rep["arms"].items():
         out += ["", f"## {a}: by defect kind (per-arm, own files)",
                 "| kind | files | inconclusive | inconclusive rate | clean | clean rate |", "|---|---|---|---|---|---|"]
