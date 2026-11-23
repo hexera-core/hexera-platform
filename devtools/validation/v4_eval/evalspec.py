@@ -50,6 +50,34 @@ PASS_SAMPLE_FRACTION = 0.10
 #: 900 s timeouts and heavy parts make a long tail, and the slowest shard sets the billed time.
 SKEW = 1.5
 
+#: THE SOURCE LIST, as data. Every pool source label (pool.Source) a wave may name, and the subset the
+#: owner has cleared for use. Fusion 360 Gallery is registered but NOT cleared: its licence is
+#: non-commercial research only with redistribution barred, and the owner has not ruled. Clearing it
+#: later is one edit to CLEARED_SOURCES; the launcher, the VM startup script and run_arm take the list
+#: as an argument and need no change.
+POOL_SOURCES: tuple[str, ...] = ("abc_fail", "abc_pass", "occt", "nist", "f360", "inject")
+CLEARED_SOURCES: tuple[str, ...] = ("abc_fail", "abc_pass", "occt", "nist", "inject")
+
+
+def resolve_sources(names: list[str] | tuple[str, ...],
+                    cleared: tuple[str, ...] | None = None) -> tuple[str, ...]:
+    """The pool sources a wave may run over, de-duplicated in the order given. An unknown label, an
+    empty list, or a source that is not cleared is a ValueError: a wave never quietly pulls in a
+    dataset the owner has not signed off."""
+    allowed = CLEARED_SOURCES if cleared is None else cleared
+    wanted = tuple(dict.fromkeys(n.strip() for n in names if n.strip()))
+    if not wanted:
+        raise ValueError("no pool sources named")
+    unknown = [n for n in wanted if n not in POOL_SOURCES]
+    if unknown:
+        raise ValueError(f"unknown pool source(s) {unknown}; the sources are {', '.join(POOL_SOURCES)}")
+    blocked = [n for n in wanted if n not in allowed]
+    if blocked:
+        raise ValueError(f"pool source(s) {blocked} not cleared for use (licence not ruled on by the "
+                         f"owner); cleared: {', '.join(allowed)}")
+    return wanted
+
+
 HARNESS_FLAGS: tuple[str, ...] = ("--mesh-probe", "--force-repair", "--goal", "benchmark",
                                   "--isolate-files", "--meshability")
 

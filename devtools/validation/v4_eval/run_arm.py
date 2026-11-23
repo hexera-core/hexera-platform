@@ -61,6 +61,17 @@ def shard_entries(entries: list[Any], shard: str) -> list[Any]:
     return [e for e in entries if evalspec.shard_of(e.sha256, i, n)]
 
 
+def select_sources(entries: list[Any], sources: str) -> list[Any]:
+    """The pool entries whose source the wave may run (a comma list of pool source labels). An empty
+    list means every source in the pool; the fleet launcher always passes the cleared list, so a pool
+    that carries Fusion 360 entries is never probed for them. A label that is not cleared is refused
+    here as well as at launch."""
+    if not sources:
+        return entries
+    wanted = set(evalspec.resolve_sources(sources.split(",")))
+    return [e for e in entries if e.source in wanted]
+
+
 def input_path(inputs: Path, entry: Any) -> str:
     """Where a staged input lives; a missing file raises FileNotFoundError (the entry is EXCLUDED)."""
     path = inputs / entry.sha256 / Path(entry.name).name
@@ -80,8 +91,9 @@ def run_reprobe(args: argparse.Namespace, out: Path, prov: dict) -> int:
 
     whole_pool = pool_mod.read_pool(Path(args.pool))
     reprobe_mod.check_not_quarantined(whole_pool)  # pool-level: any source, before any shard work
-    entries = shard_entries(whole_pool, args.shard)
+    entries = shard_entries(select_sources(whole_pool, args.sources), args.shard)
     prov["shard_files"] = len(entries)
+    prov["sources"] = args.sources or "all"
     cache = make_cache(args.cache_uri) if args.cache_uri else None
     prov["cache_uri"] = args.cache_uri or None
     pool = WorkerPool(args.workers)
@@ -122,6 +134,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--inputs", default="/eval/inputs")
     parser.add_argument("--out", default="/eval/out")
     parser.add_argument("--pool", default=str(pool_mod.OUT))
+    parser.add_argument("--sources", default="",
+                        help="comma list of pool source labels to run (default: the whole pool); "
+                             "uncleared sources are refused")
     parser.add_argument("--cache-uri", default="", help="gs://... or a directory: the verdict cache")
     parser.add_argument("--workers", type=int, default=1)
     parser.add_argument("--file-timeout-s", type=float, default=evalspec.DEFAULT_FILE_TIMEOUT_S,

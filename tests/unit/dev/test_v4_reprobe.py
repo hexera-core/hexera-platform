@@ -463,8 +463,8 @@ def test_launch_is_gated_and_never_reaches_the_creator_over_budget() -> None:
     assert created == [1]
 
 
-def test_create_flag_refuses_because_no_v4_launcher_exists(capsys) -> None:
-    with pytest.raises(SystemExit, match="no v4 fleet launcher"):
+def test_create_flag_refuses_and_points_at_the_fleet_launcher(capsys) -> None:
+    with pytest.raises(SystemExit, match="only preflights"):
         launch.main(["--files", "53799", "--shards", "96", "--max-run-hours", "30", "--create"])
     assert launch.main(["--files", "5000000", "--shards", "96", "--max-run-hours", "30", "--create"]) == 1
 

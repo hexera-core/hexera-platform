@@ -8,7 +8,9 @@
 
     launch_reprobe.py --files 53799 --shards 96 --machine-type c2d-standard-8 --max-run-hours 24
 
-`launch(projection, create_vms)` is the gated entry any VM creation must go through.
+`launch(projection, create_vms)` is a gated entry; the fleet launcher itself (launch_fleet.py --profile v4,
+the v3 launcher parametrised) gates every VM creation through its own `create_wave` on the same
+`evalspec.enforce_budget`.
 
 Exit 0 and a printed projection when the wave is within ~600 c2d VM-hours, inside the 100-vCPU ceiling
 and short enough for the VMs' --max-run-duration; exit 1 and the reasons otherwise.
@@ -42,7 +44,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--machine-type", default=evalspec.DEFAULT_MACHINE)
     parser.add_argument("--max-run-hours", type=float, default=3.0)
     parser.add_argument("--create", action="store_true",
-                        help="create the VMs. There is no v4 fleet launcher yet, so this refuses after the gate")
+                        help="refuses after the gate: the v4 launcher is launch_fleet.py --profile v4")
     parser.add_argument("--allow-over-budget", action="store_true",
                         help="waive the VM-hour ceiling (not the vCPU or run-duration limits)")
     args = parser.parse_args(argv)
@@ -59,8 +61,9 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     if args.create:
         def no_launcher():
-            raise SystemExit("REFUSE  no v4 fleet launcher exists: wire its VM creation through "
-                             "launch_reprobe.launch(projection, create_vms)")
+            raise SystemExit("REFUSE  this script only preflights: launch the wave with "
+                             "devtools/validation/v3_eval/launch_fleet.py --profile v4, whose "
+                             "create_wave runs the same enforce_budget gate before any VM")
 
         try:
             launch(projection, no_launcher, allow_over_budget=args.allow_over_budget)
