@@ -407,3 +407,109 @@ def test_unknown_error_kind_is_pinned_to_invalid() -> None:
     verdict = _verdict(_fail("netgen", "some_new_kind", Located("F1", None, "a")))
     (site,) = find_sites(pool, ws, verdict, h_mm=H)
     assert site.kind == "invalid"
+
+
+def _all_overlapping(ws: Workspace) -> dict[str, list[float]]:
+    return {sid: [0.0, 0.0, 0.0, 100.0, 100.0, 100.0] for sid in ws.ids}
+
+
+def test_dense_region_does_not_form_a_mega_site() -> None:
+    """300 failing faces whose boxes all overlap (big planes) but whose faces are 40 mm apart: the
+    box gap alone would chain them into one 300-entity site, the v3 314-fingerprint region."""
+    from meshpipeline.cad.repair_v4 import sites as sites_module
+
+    ws = _ws(300)
+    pool = ScriptedPool(ws, _all_overlapping(ws), distance=lambda a, b: 40.0)
+    verdict = _verdict(_fail("gmsh", "overlapping_facets",
+                             *[Located(f"F{i}", None, f"s{i}") for i in range(1, 301)]))
+    found = find_sites(pool, ws, verdict, h_mm=H)
+    assert len(found) == 300 and max(len(s.entities) for s in found) == 1
+    # 44,850 candidate pairs, far past the cap: the rest were left UNmerged, and the sites say so
+    assert sum(1 for s in found if s.graph["unmeasured_pairs"] > 0) > 250
+    measured = pool.calls.count("sites_distance")
+    assert 1 < measured <= sites_module.MAX_CLUSTER_PAIRS // sites_module.CLUSTER_CHUNK + 1
+
+
+def test_unmeasured_pairs_are_not_merged_when_the_kernel_does_not_answer() -> None:
+    ws = _ws()
+    boxes = _boxes(ws)
+    boxes["F2"] = [10.0, 1.5, 0.0, 11.0, 2.5, 1.0]  # within 2h by box
+    verdict = _verdict(_fail("gmsh", "overlapping_facets", Located("F1", None, "a"), Located("F2", None, "b")))
+    down = ScriptedPool(ws, boxes, fail=("sites_distance",))
+    sites = find_sites(down, ws, verdict, h_mm=H)
+    assert sorted(tuple(s.entities) for s in sites) == [("F1",), ("F2",)]
+    assert [s.graph["unmeasured_pairs"] for s in sites] == [1, 1]
+    # a distance the kernel could not compute (None) is also not a licence to merge
+    blank = ScriptedPool(ws, boxes, distance=lambda a, b: None)
+    assert len(find_sites(blank, ws, verdict, h_mm=H)) == 2
+    obs = observation(ws, verdict, sites, {})
+    assert obs["sites"][0]["graph"]["unmeasured_pairs"] == 1
+
+
+def test_nearest_pairs_are_measured_first_when_the_cap_bites(monkeypatch) -> None:
+    from meshpipeline.cad.repair_v4 import sites as sites_module
+
+    monkeypatch.setattr(sites_module, "MAX_CLUSTER_PAIRS", 5)
+    monkeypatch.setattr(sites_module, "CLUSTER_CHUNK", 5)
+    ws = _ws()
+    boxes = {f"F{i}": [0.0, 0.0, 0.0, 100.0 + 10 * i, 100.0, 100.0] for i in range(1, 7)}
+    boxes["F7"] = [48.0, 48.0, 48.0, 49.0, 49.0, 49.0]
+    boxes["F8"] = [49.5, 48.0, 48.0, 50.0, 49.0, 49.0]
+    boxes.update({k: [500.0, 0, 0, 501.0, 1, 1] for k in ("B1", "F9", "F10", "F11", "F12")})
+    pool = ScriptedPool(ws, boxes, distance=lambda a, b: 0.5 if {a, b} == {"F7", "F8"} else 40.0)
+    verdict = _verdict(_fail("gmsh", "other", *[Located(f"F{i}", None, "t") for i in range(1, 9)]))
+    merged = [tuple(s.entities) for s in find_sites(pool, ws, verdict, h_mm=H) if len(s.entities) > 1]
+    assert merged == [("F7", "F8")]  # the true neighbours were among the 5 measured of 28 candidates
+
+
+def test_site_id_ignores_proximity_context_faces() -> None:
+    ws = _ws()
+    boxes = _boxes(ws)
+    pool = ScriptedPool(ws, boxes, prox=[(2, 5, 0.3)])  # F2 is lower than the failing F5
+    verdict = _verdict(_fail("gmsh", "other", Located("F5", None, "a")))
+    (site,) = find_sites(pool, ws, verdict, h_mm=H)
+    assert "F2" in site.entities and site.id == "S@F5"
+
+
+def test_registry_carries_an_id_across_an_op_that_replaces_its_anchor() -> None:
+    from meshpipeline.cad.repair_v4.sites import SiteRegistry
+    from meshpipeline.cad.repair_v4.workspace import Diff
+
+    registry = SiteRegistry()
+    ws1 = _ws()
+    near = _boxes(ws1)
+    near["F6"] = [50.0, 1.5, 0.0, 51.0, 2.5, 1.0]  # 0.5 from F5: one site
+    pool = ScriptedPool(ws1, near)
+    first = find_sites(pool, ws1, _verdict(_fail("gmsh", "other", Located("F5", None, "a"),
+                                                 Located("F6", None, "b"))), h_mm=H, registry=registry)
+    (site1,) = first
+    assert site1.id == "S@F5" and not site1.graph.get("id_carried")
+
+    # an op replaced F5 by F20 (progress); the failure is still there, now on F20 and F6
+    ws2 = _ws(24)
+    ws2.history = [Diff("split", {}, {"F5": ["F20"]}, {}, [], [], [], 0.0)]
+    boxes2 = _boxes(ws2)
+    boxes2["F20"] = near["F5"]
+    boxes2["F6"] = near["F6"]
+    pool2 = ScriptedPool(ws2, boxes2)
+    second = find_sites(pool2, ws2, _verdict(_fail("gmsh", "other", Located("F20", None, "a"),
+                                                   Located("F6", None, "b"))), h_mm=H, registry=registry)
+    (site2,) = second
+    assert site2.id == "S@F5" and site2.graph["id_carried"] is True  # a fresh anchor would be S@F6
+    assert observation(ws2, _verdict(), second, {})["sites"][0]["id_carried"] is True
+    # without the registry the same round is renamed: that is the hole it closes
+    (plain,) = find_sites(pool2, ws2, _verdict(_fail("gmsh", "other", Located("F20", None, "a"),
+                                                     Located("F6", None, "b"))), h_mm=H)
+    assert plain.id == "S@F6"
+
+
+def test_registry_does_not_hand_a_carried_id_to_an_unrelated_new_site() -> None:
+    from meshpipeline.cad.repair_v4.sites import SiteRegistry
+
+    registry = SiteRegistry()
+    ws = _ws()
+    pool = ScriptedPool(ws, _boxes(ws))
+    find_sites(pool, ws, _verdict(_fail("gmsh", "other", Located("F5", None, "a"))), h_mm=H, registry=registry)
+    again = find_sites(pool, ws, _verdict(_fail("gmsh", "other", Located("F5", None, "a"),
+                                                Located("F9", None, "b"))), h_mm=H, registry=registry)
+    assert sorted(s.id for s in again) == ["S@F5", "S@F9"]

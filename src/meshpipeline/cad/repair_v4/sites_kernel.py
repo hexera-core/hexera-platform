@@ -340,14 +340,12 @@ def _neighbourhood(shape: Any, seeds: list[Any], faces: Any, edges: Any, hops: i
                 continue
             if len(pair) != 2 or len(inside) != 2:
                 continue  # a seam, or an edge leaving the neighbourhood
+            if len(out_edges) >= MAX_GRAPH_EDGES:
+                truncated = True  # regular edges are full, but keep scanning: free edges on LATER
+                continue          # faces are the defect and must still be found
             facts = _edge_facts(TopoDS.Edge_s(edge), TopoDS.Face_s(faces.FindKey(pair[0])),
                                 TopoDS.Face_s(faces.FindKey(pair[1])))
             out_edges.append({"edge": f"E{e}", "faces": [f"F{p}" for p in pair], **facts})
-            if len(out_edges) >= MAX_GRAPH_EDGES:
-                truncated = True
-                break
-        if len(out_edges) >= MAX_GRAPH_EDGES:
-            break
     return {"nodes": nodes, "edges": [*defects[:MAX_GRAPH_EDGES], *out_edges][:MAX_GRAPH_EDGES],
             "truncated": truncated or len(defects) + len(out_edges) > MAX_GRAPH_EDGES}
 

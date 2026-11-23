@@ -27,6 +27,7 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import json
+import math
 import re
 from collections import defaultdict
 from typing import Any, cast
@@ -42,12 +43,14 @@ PROXIMITY_FACTOR = 1.0
 #: A warning is "inside" a site when its box centre is within the site's box grown by this x h.
 SOFT_MARGIN_FACTOR = 1.0
 MAX_NODES = 1500
-MAX_CLUSTER_PAIRS = 1500
+MAX_CLUSTER_PAIRS = 6000
+CLUSTER_CHUNK = 500
 MESSAGE_CHARS = 200
 MAX_NOTES = 6
 MAX_CLASH_PAIRS = 6
 MAX_SOFT_ENTITIES = 3000
-MAX_PROXIMITY_PAIRS = 8
+MAX_PROXIMITY_PAIRS = 8  # standalone proximity sites, when nothing else was located
+PROXIMITY_FETCH = 200  # pairs asked of the kernel; attachment, not this, limits what a site keeps
 MAX_DISTANCE_FACES = 4
 MAX_GRAPH_SEEDS = 12
 GRAPH_HOPS = 2
@@ -162,8 +165,78 @@ def _kernel_entities(ws: Workspace, names: list[str], reverse: dict) -> list[Sta
     return out
 
 
-def find_sites(pool: WorkerPool, ws: Workspace, verdict: Any, *, h_mm: float) -> list[Site]:
+class SiteRegistry:
+    """Carries site ids across rounds of one search, so a proposer that discussed "S@F12" still
+    finds that geometry under that name after an op has rebuilt it.
+
+    An id anchored on an entity is only stable while the entity lives, and ops retire entities
+    exactly when they make progress (sew re-mints edges, a split replaces a face). So the registry
+    remembers each site's failing entities, carries them forward through the workspace's own op
+    history (`Diff.modified` old -> successors; `removed` dropped), and gives a new site the id of the
+    previous site it overlaps most. A carried id that differs from the fresh anchor id is flagged
+    `id_carried` in the observation. Pass the same registry to every `find_sites` of one lineage.
+    """
+
+    def __init__(self) -> None:
+        self._previous: dict[str, set[StableId]] = {}
+        self._seen = 0
+
+    def _forward(self, ws: Workspace) -> dict[str, set[StableId]]:
+        history = ws.history[self._seen:] if len(ws.history) >= self._seen else []
+        moved: dict[str, set[StableId]] = {}
+        for site_id, entities in self._previous.items():
+            now = set(entities)
+            for diff in history:
+                step: set[StableId] = set()
+                for e in now:
+                    if e in diff.modified:
+                        step.update(diff.modified[e])
+                    elif e not in diff.removed:
+                        step.add(e)
+                now = step
+            moved[site_id] = now
+        return moved
+
+    def apply(self, ws: Workspace, sites: list[Site]) -> None:
+        carried = self._forward(ws)
+        scored = []
+        for site in sites:
+            mine = set(site.graph.get("failure_entities") or site.entities)
+            for old_id, old in carried.items():
+                if mine & old:
+                    scored.append((-len(mine & old), old_id, site.id, id(site)))
+        scored.sort()
+        by_object = {id(site): site for site in sites}
+        done_sites: set[int] = set()
+        taken: set[str] = set()
+        for _, old_id, _, key in scored:
+            if key in done_sites or old_id in taken:
+                continue
+            site = by_object[key]
+            done_sites.add(key)
+            taken.add(old_id)
+            if site.id != old_id:
+                site.graph["id_carried"] = True
+            site.id = old_id
+        for site in sites:  # an unmatched site must not take a carried id
+            if id(site) in done_sites:
+                continue
+            base, n = site.id, 1
+            while site.id in taken:
+                n += 1
+                site.id = f"{base}-{n}"
+            taken.add(site.id)
+        self._previous = {site.id: set(site.graph.get("failure_entities") or site.entities)
+                          for site in sites if site.entities}
+        self._seen = len(ws.history)
+
+
+def find_sites(pool: WorkerPool, ws: Workspace, verdict: Any, *, h_mm: float,
+               registry: SiteRegistry | None = None) -> list[Site]:
     """The failure sites of `verdict`, best first. `h_mm` is the target element size.
+
+    With a `registry`, ids are carried across rounds (see `SiteRegistry`); without one they are
+    anchored on the lowest failing entity, which is stable only while that entity lives.
 
     No failing member and no hard finding means no sites (and no kernel call). Soft findings never
     create a site; they attach only inside one.
@@ -232,6 +305,8 @@ def find_sites(pool: WorkerPool, ws: Workspace, verdict: Any, *, h_mm: float) ->
     sites.sort(key=order)
     _assign_ids(sites)
     _attach_graphs(pool, ws, sites, reverse, h_mm)
+    if registry is not None:
+        registry.apply(ws, sites)
     return sites
 
 
@@ -242,8 +317,9 @@ def _assign_ids(sites: list[Site]) -> None:
     site by a hash of its first point. Collisions get -2, -3 in sort order."""
     taken: dict[str, int] = {}
     for site in sites:
-        if site.entities:
-            anchor = min(site.entities, key=lambda e: (e[0], _number(e)))
+        failing = site.graph.get("failure_entities") or site.entities
+        if failing:
+            anchor = min(failing, key=lambda e: (e[0], _number(e)))
         elif site.xyz:
             anchor = "p" + hashlib.sha1(repr([round(c, 3) for c in site.xyz[0]]).encode()).hexdigest()[:6]
         else:
@@ -283,7 +359,7 @@ def _geometric_sites(pool: WorkerPool, ws: Workspace, valid: Any, nodes: dict[St
     # failure nodes have been clustered, and cannot chain two failures into one site.
     prox = _call(pool, "sites_proximity", {
         "brep_path": ws.brep_path, "max_dist": PROXIMITY_FACTOR * h_mm,
-        "max_pairs": MAX_PROXIMITY_PAIRS})
+        "max_pairs": PROXIMITY_FETCH})
     prox_pairs = []
     for pair in (prox or {}).get("pairs", []):
         a, b = reverse.get(("F", int(pair["a"]))), reverse.get(("F", int(pair["b"])))
@@ -325,47 +401,81 @@ def _geometric_sites(pool: WorkerPool, ws: Workspace, valid: Any, nodes: dict[St
             b = everyone[j]
             if b.box is not None and _gap(a.box, b.box) <= reach:
                 candidates.append((i, j))
-    exact = [(i, j) for i, j in candidates
-             if everyone[i].entity is not None and everyone[j].entity is not None
-             and everyone[i].entity != everyone[j].entity][:MAX_CLUSTER_PAIRS]
+    # Nearest first, so a cap or a deadline loses the FAR pairs, not whichever have low indices.
+    def centre(node: _Node) -> tuple[float, float, float]:
+        box = cast(Box, node.box)
+        return ((box[0] + box[3]) / 2, (box[1] + box[4]) / 2, (box[2] + box[5]) / 2)
+
+    def rank(pair: tuple[int, int]) -> float:
+        # Centre distance: small features close together come first, and a huge plane's box (the
+        # thing that makes box gap a poor guide) puts its centre far from most of its neighbours.
+        i, j = pair
+        return math.dist(centre(everyone[i]), centre(everyone[j]))
+
+    candidates.sort(key=lambda pair: (rank(pair), pair))
+    # FAIL CLOSED. An entity pair merges only if the kernel MEASURED it within reach. A pair beyond
+    # the cap, in a chunk that failed or timed out, or whose distance came back None is NOT merged:
+    # under-merging costs a few extra small sites, one wrong merge in a dense region rebuilds v3's
+    # 314-fingerprint region. Such pairs are counted per site as `unmeasured_pairs`.
     measured: dict[tuple[int, int], float] = {}
-    if exact:
+    entity_pairs = [(i, j) for i, j in candidates
+                    if everyone[i].entity is not None and everyone[j].entity is not None
+                    and everyone[i].entity != everyone[j].entity]
+    for start in range(0, min(len(entity_pairs), MAX_CLUSTER_PAIRS), CLUSTER_CHUNK):
+        chunk = entity_pairs[start:min(start + CLUSTER_CHUNK, MAX_CLUSTER_PAIRS)]
         answer = _call(pool, "sites_distance", {"brep_path": ws.brep_path, "pairs": [
             {"a": _ref(ws, cast(str, everyone[i].entity)), "b": _ref(ws, cast(str, everyone[j].entity))}
-            for i, j in exact]})
-        for (i, j), item in zip(exact, (answer or {}).get("distances", []), strict=False):
+            for i, j in chunk]})
+        if answer is None:
+            break  # the kernel is not answering: do not keep asking
+        for pair, item in zip(chunk, answer.get("distances", []), strict=False):
             if item.get("dist") is not None:
-                measured[(i, j)] = float(item["dist"])
+                measured[pair] = float(item["dist"])
+    entity_set = set(entity_pairs)
+    unmeasured_nodes: dict[int, int] = defaultdict(int)
     for i, j in candidates:
-        if measured.get((i, j), 0.0) <= reach:  # unmeasured: the box gap stands
-            parent[find(i)] = find(j)
+        is_entity_pair = (i, j) in entity_set
+        if is_entity_pair and (i, j) not in measured:
+            unmeasured_nodes[i] += 1
+            unmeasured_nodes[j] += 1
+        elif not is_entity_pair or measured[(i, j)] <= reach:
+            parent[find(i)] = find(j)  # a point against anything: the box gap (exact for a point)
     groups: dict[int, list[_Node]] = defaultdict(list)
     for i, node in enumerate(everyone):
         groups[find(i)].append(node)
-    components = list(groups.values())
+    roots = list(groups)
+    components = [groups[r] for r in roots]
     clashes: list[list[dict]] = [[] for _ in components]
+    unmeasured = [0] * len(components)
+    for k, root in enumerate(roots):
+        unmeasured[k] = sum(count for i, count in unmeasured_nodes.items() if find(i) == root)
 
     owner = {n.entity: k for k, c in enumerate(components) for n in c if n.entity is not None}
+    context: dict[StableId, _Node] = {}
     standalone: list[list[_Node]] = []
     for a, b, pair in prox_pairs:
         entry = {"a": a, "b": b, "dist_mm": round(float(pair["dist"]), 4),
                  "point_a": pair.get("point_a"), "point_b": pair.get("point_b")}
         home = owner.get(a, owner.get(b))
         if home is not None:
+            if len(clashes[home]) >= MAX_CLASH_PAIRS:
+                continue  # the site already holds its nearest pairs (the kernel list is nearest first)
             for x in (a, b):
-                node = nodes.get(x) or _Node(x, None)
-                if x not in owner:
-                    node.kinds.add("proximity")
-                    node.sources.add("proximity")
-                    node.notes.append({"mesher": "proximity", "error_kind": "proximity", "message": "",
-                                       "tag": "", "entity": x, "xyz": None})
-                    boxed(node)
-                    components[home].append(node)
-                    owner[x] = home
+                if x in owner and x not in context:
+                    node = nodes[x]  # a failing face: the pair is context for it
+                else:
+                    node = context.setdefault(x, _Node(x, None))
+                    if x not in owner:
+                        node.kinds.add("proximity")
+                        node.sources.add("proximity")
+                        boxed(node)
+                        components[home].append(node)
+                        owner[x] = home
                 node.proximity_dist = (entry["dist_mm"] if node.proximity_dist is None
                                        else min(node.proximity_dist, entry["dist_mm"]))
             clashes[home].append(entry)
-        elif not everyone:  # nothing was located anywhere: close faces are the best lead there is
+        elif not everyone and len(standalone) < MAX_PROXIMITY_PAIRS:
+            # nothing was located anywhere: close faces are the best lead there is
             pair_nodes = []
             for x in (a, b):
                 node = _Node(x, None)
@@ -376,9 +486,12 @@ def _geometric_sites(pool: WorkerPool, ws: Workspace, valid: Any, nodes: dict[St
                 pair_nodes.append(node)
             standalone.append(pair_nodes)
             clashes.append([entry])
+            unmeasured.append(0)
     components.extend(standalone)
 
     sites = [_site_of(c, boxes) for c in components]
+    for site, count in zip(sites, unmeasured, strict=True):
+        site.graph["unmeasured_pairs"] = count
     _attach_soft(pool, ws, valid, sites, reverse, h_mm)
     _attach_distances(pool, ws, sites, components, clashes, h_mm)
     return sites
@@ -415,6 +528,11 @@ def _site_of(component: list[_Node], boxes: dict) -> Site:
             if note["xyz"] is not None and len(located) < MAX_NOTES:
                 located.append({"xyz": [round(c, 3) for c in note["xyz"]], "entity": note["entity"],
                                 "mesher": note["mesher"], "tag": note["tag"]})
+    # The failure-implicated entities only: proximity context faces come and go with h and must
+    # not move a site's identity.
+    site.graph["failure_entities"] = sorted(
+        (n.entity for n in component if n.entity is not None and n.sources != {"proximity"}),
+        key=lambda e: (e[0], _number(e)))
     site.graph["failures"] = failures
     site.graph["points"] = located
     site_box = _union_box([n.box for n in component if n.box is not None])
@@ -495,7 +613,7 @@ def _attach_graphs(pool: WorkerPool, ws: Workspace, sites: list[Site], reverse: 
     for site in sites:
         soft, box = site.graph.get("soft", []), site.graph.get("box")
         graph: dict = {"k": GRAPH_HOPS, "h_mm": h_mm}
-        for key in ("failures", "points", "clashes"):
+        for key in ("failures", "points", "clashes", "failure_entities", "unmeasured_pairs"):
             graph[key] = site.graph.get(key, [])
         raw = graphs.get(site.id)
         if raw is not None:
@@ -573,6 +691,10 @@ def _site_entry(ws: Workspace, site: Site, level: tuple) -> dict:
     if len(site.entities) > n_ent:
         entry["entities_omitted"] = len(site.entities) - n_ent
     sub: dict = {k: graph[k] for k in ("k", "error", "note", "truncated") if k in graph}
+    if graph.get("unmeasured_pairs"):
+        sub["unmeasured_pairs"] = graph["unmeasured_pairs"]  # near pairs left UNmerged: may be one part
+    if graph.get("id_carried"):
+        entry["id_carried"] = True
     if n_nodes:
         sub["nodes"] = _round(list(graph.get("nodes", []))[:n_nodes])
         sub["edges"] = _round(list(graph.get("edges", []))[:n_edges])
