@@ -16,7 +16,8 @@ import pytest
 from meshpipeline.cad.repair_v4 import search, stages
 from meshpipeline.cad.repair_v4.search import Budget, default_judge
 from meshpipeline.cad.repair_v4.stages import staged_start
-from meshpipeline.cad.repair_v4.verdict import assemble, cache as cache_mod
+from meshpipeline.cad.repair_v4.verdict import assemble
+from meshpipeline.cad.repair_v4.verdict import cache as cache_mod
 from meshpipeline.cad.repair_v4.verdict.assemble import InconclusiveVerdict, default_members, score
 from meshpipeline.cad.repair_v4.verdict.cache import (
     DirStore,
