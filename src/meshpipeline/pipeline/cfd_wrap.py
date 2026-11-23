@@ -37,6 +37,8 @@ STATE_KEY = "cfd_wrap"
 RULE_RUNG = "LAD-cfd-5"
 RULE_DISTANCE = "LAD-cfd-6"
 RULE_REPORT = "LAD-cfd-7"
+#: LAD-cfd-12: no wrap after an opening was lost to a narrow gap (the wrap closes small gaps, so it closes that one)
+RULE_NO_WRAP_PORT_GAP = "LAD-cfd-12"
 #: The engines that mesh a wrapped surface, in the rung's own order: the two flow engines that build
 #: body-fitted hex-dominant meshes with layers from any closed surface, then gmsh's tetrahedra
 #: filled straight against the skin's own triangles (no remesh, no layers: the DEGRADED step that
@@ -95,6 +97,12 @@ def why_not(state: Mapping, *, now: float | None = None) -> str:
     if state.get("geometry_unsuitable_reason") and set(facts.get("phases") or ()) - {"measured"}:
         return "the request asks for something these engines cannot build: a wrap changes nothing about that"
     from meshpipeline.pipeline import engine_fallback as lad
+    if facts.get("port_region_dropped"):
+        # LAD-cfd-12: an opening reaches the rest of its passage only through a gap narrower than the mesher's cells
+        # (abc 63401's outlet_3: a 0.25-0.5 mm slit). The wrap bridges small gaps by design, so it closes that
+        # one and the opening is cut off on the wrapped surface too (c2e8_p30a: attempts 2 and 3, both failed)
+        return ("an opening was lost to a narrow gap in its passage, and a wrap closes small gaps, so it would "
+                "close that one too")
     if lad.refused_by_design(state):
         return "the engines refuse this kind of file by design: a wrap changes nothing about that"
     if not rung_steps(state):

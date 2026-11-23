@@ -60,6 +60,10 @@ PASSAGE_REFINE_CELLS = 2_000_000
 #: INS-29: the words a run whose opening landed in a dropped region fails with: the same plan run again
 #: drops it again, so the ladder does not repeat it (pipeline/engine_fallback)
 PORT_REGION_DROPPED = "an opening landed in a piece of its passage the mesher dropped"
+#: what the user can change when it happens (product bar: no refusal without a way out)
+PORT_REGION_WAY_OUT = ("That opening most likely reaches the rest of its passage only through a gap narrower than "
+                       "the cells there: widen or close that gap in the CAD, or ask for a smaller cell size near "
+                       "that opening in the notes.")
 PASSAGE_PORTS_RULE = "INS-29"
 _CELL_SIZES = re.compile(r"\b(maxCellSize|cellSize|boundaryCellSize)(\s+)([0-9.eE+-]+)(\s*;)")
 _N_CELLS = re.compile(rb"nCells:\s*(\d+)")
@@ -179,7 +183,7 @@ def mesh_passages(ws: Path, *, bashrc: str = _DEFAULT_BASHRC, timeout: float = 1
     lost = ports_without_faces(ws / "constant" / "polyMesh", port_lists[0]) if port_lists else None
     if lost:
         return 1, False, (f"[CFMESH] passage 1: {PORT_REGION_DROPPED} ({', '.join(lost)} has no faces) - the "
-                          "same plan drops it again")
+                          "same plan drops it again. " + PORT_REGION_WAY_OUT)
     for k, rel in enumerate(spec.get("runs") or [], start=2):
         sub = (ws / str(rel)).resolve()
         if ws.resolve() not in sub.parents or not (sub / "geom.stl").exists():
@@ -224,7 +228,7 @@ def mesh_passages(ws: Path, *, bashrc: str = _DEFAULT_BASHRC, timeout: float = 1
                 if refined == PASSAGE_REFINES or cells is None or 8 * cells > PASSAGE_REFINE_CELLS:
                     return 1, False, (f"[CFMESH] passage {k}: {PORT_REGION_DROPPED} ({', '.join(lost)} has no "
                                       f"faces after {refined} finer re-mesh(es), {cells or 0:,} cells) - the same "
-                                      "plan drops it again")
+                                      "plan drops it again. " + PORT_REGION_WAY_OUT)
                 logger.info("cfMesh: INS-29 - passage %d: %s has no faces (%s cells): meshed again at half the "
                             "cell size", k, ", ".join(lost), cells)
                 md.write_text(finer_mesh_dict(md.read_text()))

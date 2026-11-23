@@ -40,6 +40,16 @@ def test_a_run_that_would_end_with_no_mesh_goes_to_the_wrap():
     assert route_after_executor(_failed()) == "node_cfd_wrap"
 
 
+def test_an_opening_lost_to_a_narrow_gap_gets_no_wrap():
+    # LAD-cfd-12: abc 63401 (c2e8_p30a) - outlet_3 reaches its passage only through a 0.25-0.5 mm slit; the wrap
+    # rung's two attempts closed it and failed too
+    st = _failed(executor_failure_cause="patch_not_captured",
+                 executor_failure_facts={"port_region_dropped": True, "deterministic": True, "meshers_started": 1})
+    assert "narrow gap" in cw.why_not(st)
+    assert route_after_executor(st) != "node_cfd_wrap"
+    assert route_after_executor(_failed(executor_failure_cause="patch_not_captured")) == "node_cfd_wrap"
+
+
 def test_a_run_that_delivers_never_reaches_it():
     st = _failed(executor_success=True, requirement_caveats=[])
     assert route_after_executor(st) == "node_reviewer"
