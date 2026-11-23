@@ -123,16 +123,23 @@ def _after_guard_trip(state: PipelineState) -> str:
     """TIME-3, decided from counts alone: replay the attempt, or end the run as ran out of time.
     The decision is cited in the run's why record."""
     from meshpipeline.contracts import decision_record as dr
-    from meshpipeline.contracts.work_limits import GUARD_REPLAYS, after_trip, trip_words
+    from meshpipeline.contracts.work_limits import (
+        GUARD_REPLAYS,
+        TIME_SAME_ON_REPLAY,
+        after_trip,
+        trip_words,
+    )
     trip = guard_trip_of(state)
     inputs = {"replays": int(state.get("guard_replay_count", 0) or 0), "allowed": GUARD_REPLAYS,
-              "where": str(trip.get("where") or "")}
+              "where": str(trip.get("where") or ""), "same_on_replay": trip.get("same_on_replay") is True}
     outcome, rule = after_trip(inputs)
     dr.cite(str(state.get("job_id") or ""), stage=dr.STAGE_GUARD, decided="after_trip",
             value=outcome, rule=rule, inputs=inputs, source=dr.SOURCE_GUARD_CLOCK,
             words=(f"{trip_words(trip)}: "
                    + ("the attempt is run again as it was (an infrastructure stop)."
                       if outcome == "replay" else
+                      "that step does the same planned work on the same mesh when run again, so it is not "
+                      "run again and the run ends as ran out of time." if rule == TIME_SAME_ON_REPLAY else
                       "it already had its replay, so the run ends as ran out of time.")))
     return outcome
 

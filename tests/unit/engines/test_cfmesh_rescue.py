@@ -620,3 +620,13 @@ def test_a_re_mesh_that_lost_an_opening_is_not_kept_however_square(tmp_path):
     assert out["rescue"]["kept"] != RS.REMESHED
     assert any(t.get("lost_openings") == ["outlet_3"] for t in out["rescue"]["tried"])
     assert "outlet_3" in RS.faced_patches(ws / "constant" / "polyMesh")
+
+
+def test_a_step_its_own_guard_stops_says_a_replay_would_do_the_same_work(tmp_path, optimiser_first):
+    """TIME-13 (abc 99768): the optimiser's own guard stopped it; run again, the same mesh gets the same planned
+    loops and the same guard, so the trip says so and the run does not replay the attempt."""
+    from meshpipeline.engines import determinism as det
+    ws = _ws(tmp_path)
+    with det.recording() as rec:
+        _rescue(ws, dict(_BROKEN), dict(_NOT_FIXED), [], optimise_rc=-1)
+    assert [t.get("same_on_replay") for t in rec.guard_trips] == [True]

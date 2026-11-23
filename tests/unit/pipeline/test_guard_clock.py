@@ -214,3 +214,17 @@ def test_a_wait_that_trips_is_recorded_as_a_guard_trip_not_a_time_limited_decisi
     assert det.drain_process_notes() == []
     trips = det.drain_process_guard_trips()
     assert [(t["where"], t["rule"]) for t in trips] == [("intake.recommendation", "TIME-4")]
+
+
+# TIME-13: a step its own guard stopped does the same planned work on the same mesh when run again
+
+def test_a_trip_that_would_repeat_on_a_replay_is_not_replayed():
+    """abc 99768: the passage optimiser tripped its own 316 s guard, was run again unchanged and tripped at 316 s
+    again (~12 minutes spent on a replay that could not end otherwise)."""
+    assert W.after_trip({"replays": 0, "same_on_replay": True}) == (W.RAN_OUT_OF_TIME, "TIME-13")
+    assert W.after_trip({"replays": 0, "same_on_replay": False}) == (W.REPLAY, "TIME-3")
+    same = _tripped(executor_failure_facts={"engine": "cfmesh", "guard": {
+        "where": "cfmesh.rescue", "step": "optimised", "guard_s": 316.0, "planned_s": 105.6, "same_on_replay": True}})
+    assert G.route_after_executor(same) == G.END
+    # a trip that says nothing of the kind (an infrastructure stop as before) is replayed once, as before
+    assert G.route_after_executor(_tripped()) == "node_guard_replay"

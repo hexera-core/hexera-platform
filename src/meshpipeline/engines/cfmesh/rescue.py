@@ -422,9 +422,14 @@ def rescue(workspace, q: dict, *, bashrc: str, deadline: float, mesher_seconds: 
         planned = work.planned_seconds
         record["tried"].append({"step": name, "guard_tripped": True, "guard_s": round(budget, 1),
                                 "planned_s": (round(planned, 1) if planned else None)})
+        # TIME-13: stopped by ITS OWN guard (not by what was left of the run's), the step does the same planned
+        # work on the same mesh when the attempt is run again - abc 99768's passage optimiser tripped at 316 s,
+        # was run again unchanged and tripped at 316 s again - so the trip says so and no replay follows
+        own = work.guard_seconds is not None and float(budget) >= float(work.guard_seconds) - 1.0
         note_guard_trip("cfmesh.rescue", rule=(TIME_KEEP_VALID if keep else TIME_TRIP), step=name,
                         guard_s=float(budget), unit=work.unit, amount=work.amount,
-                        planned_s=planned, kept=(best_name if keep else None))
+                        planned_s=planned, kept=(best_name if keep else None),
+                        same_on_replay=(True if own else None))
 
     def _measure(name: str) -> dict | None:
         (ws / "mesh_quality.json").unlink(missing_ok=True)     # never a cached figure
