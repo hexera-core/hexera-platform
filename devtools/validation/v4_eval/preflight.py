@@ -422,7 +422,9 @@ def _check_image_pullable(p: _Preflight, image: str) -> str:
 
 def _check_inputs_read(p: _Preflight, loc: WaveLocations) -> tuple[str, list[str]]:
     role = p.storage_permissions(loc.inputs, READ_PERMISSIONS)
-    done = p.run(["gcloud", "storage", "ls", "--recursive", loc.inputs + "/"])
+    # the flat object glob, not --recursive: recursive walks sub-prefix by sub-prefix and took >600 s on the
+    # staged 10,887 <sha256>/ directories (runner limit 120 s); the glob listed them in 4.2 s
+    done = p.run(["gcloud", "storage", "ls", loc.inputs + "/**"])
     if done.rc != 0:
         raise RuntimeError(f"cannot list {loc.inputs}: {done.err.strip()[:200]}")
     names = [line.strip() for line in done.out.splitlines() if line.strip()]

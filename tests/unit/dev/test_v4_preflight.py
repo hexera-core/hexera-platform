@@ -618,3 +618,13 @@ def test_the_derived_cache_location_passes_cache_shared_and_the_check_is_always_
     report = _run(FakeGcloud())
     assert "cache_shared" not in _failed(report)
     assert "cache_shared" in {c.name for c in report.checks} and "cache_shared" in pf.CHECKS
+
+
+def test_the_inputs_are_listed_flat_not_recursively():
+    """`gcloud storage ls --recursive` walks the prefix one sub-prefix at a time: over the staged 10,887
+    <sha256>/ directories it ran past 600 s (the runner's limit is 120 s), so a fully staged corpus FAILED
+    inputs_read. The flat object glob listed the same 10,887 objects in 4.2 s (lane D, 2026-11-23)."""
+    fake = FakeGcloud()
+    _run(fake)
+    listings = [c for c in fake.calls if c[1:3] == ["storage", "ls"]]
+    assert listings == [["gcloud", "storage", "ls", f"{pf.INPUTS}/**"]]
