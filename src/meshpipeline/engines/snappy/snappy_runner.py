@@ -1227,7 +1227,6 @@ def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analy
                      **({"wall_face_factor": round(_face_k, 3)} if _face_k > 1.0 else {}),
                      **({"wall_faces_priced": int(_wf * _face_priced), "feature_length_m": round(_feat_len, 3)}
                         if _face_priced > 1.0 else {})}
-    (ws / PLAN_CELLS_FILE).write_text(json.dumps(_plan_rec))
     if cast_cells != max_cells and _final:
         logger.info("render_snappy_case: the finished mesh is estimated at %.3g cells with its layers, "
                     "%.1f times the %d budget - castellation budget %d", _final, _final / max_cells,
@@ -1278,8 +1277,9 @@ mergeTolerance 1e-6; debug 0;
             # measures the run against the plan with them
             _plan_rec = {**_plan_rec, "plan_cells": int(_plan_rec["plan_cells"]) + int(_band["cells"]),
                          "laminar_band_cells": int(_band["cells"])}
-            (ws / PLAN_CELLS_FILE).write_text(json.dumps(_plan_rec))
         _ask.write(ws)
+    # written once the requirements have priced their own cells (CFDREQ-23's band) into it
+    (ws / PLAN_CELLS_FILE).write_text(json.dumps(_plan_rec))
     (ws / "system" / "snappyHexMeshDict").write_text(_shm)
     # SYNTHETIC CLASS REGIONS ARE A MESHING DEVICE, NOT A DELIVERABLE. The layer policy splits
     # a monolithic wall into <wall>_thin / <wall>_razor so each class can carry its own layer
