@@ -358,24 +358,19 @@ def test_main_refuses_a_model_arm_with_no_key_and_spends_nothing(shard: Any, mon
 def test_reprobe_mode_is_unchanged_and_attaches_no_ledger(shard: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     seen: dict = {}
     monkeypatch.setattr(run_arm, "run_reprobe", lambda args, out, prov: seen.setdefault("mode", args.mode) and 0)
-    assert run_arm.main(["--out", str(shard.out)]) == 0 and seen["mode"] == "reprobe"
+    assert run_arm.main(["--out", str(shard.out), "--cache-uri", "gs://b/p"]) == 0 and seen["mode"] == "reprobe"
 
 
 # ------------------------------------------------------------------ one shared cache per wave, reaching the engine's judges
 
-@pytest.mark.parametrize("mode_argv", [[], ["--mode", "reprobe"]], ids=["arms", "reprobe"])
+@pytest.mark.parametrize("reprobe", [False, True], ids=["arms", "reprobe"])
 @pytest.mark.parametrize("cache", [[], ["--cache-uri", ""], ["--cache-uri", "/tmp/per-vm"]], ids=["none", "blank", "dir"])
-def test_a_shard_without_a_shared_cache_refuses_before_any_work(shard, monkeypatch, mode_argv, cache) -> None:
+def test_a_shard_without_a_shared_cache_refuses_before_any_work(shard, monkeypatch, reprobe, cache) -> None:
     monkeypatch.setattr(run_arm, "run_arms", lambda *a, **k: pytest.fail("ran without a shared cache"))
     monkeypatch.setattr(run_arm, "run_reprobe", lambda *a, **k: pytest.fail("ran without a shared cache"))
-    argv = [*shard.argv, *cache]
-    if mode_argv:
-        argv = [a for a in argv if a not in ("--split", "dev", "--split-file", "--h-mm", "0.5")]  # reprobe has none
-        argv = ["--mode", "reprobe", *[a for a in argv if a not in ("arms", "--mode")]]
-        argv = [a for a in argv if a != str(shard.out.parent / "dev.json")]
+    argv = ["--mode", "reprobe", "--out", str(shard.out), *cache] if reprobe else [*shard.argv, *cache]
     assert run_arm.main(argv) == 7
-    assert "shared" in json.loads((shard.out / "PROVENANCE.json").read_text())["error"] or \
-        "blank" in json.loads((shard.out / "PROVENANCE.json").read_text())["error"]
+    assert "--cache-uri" in json.loads((shard.out / "PROVENANCE.json").read_text())["error"]
 
 
 def test_the_wave_cache_reaches_the_engines_own_judges_and_is_restored(shard, monkeypatch) -> None:
