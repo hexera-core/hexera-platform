@@ -1177,7 +1177,10 @@ def test_search_gives_the_deterministic_sweep_the_parts_diagonal() -> None:
             return R()
 
     gen = DetGenerator()
-    run([gen], World(sites_fn=lambda pool, ws, verdict: [site("S1", "open", [])]), pool=Pool(), budget=Budget(
+    # the open site carries its free loop (4 mm of a 173 mm part, inside the cap), so nothing is withheld
+    held = site("S1", "open", [])
+    held.graph = {"free_loops": [{"edges": ["E1", "E2", "E3"], "span_mm": 4.0}], "diagonal_mm": 173.0}
+    run([gen], World(sites_fn=lambda pool, ws, verdict: [held]), pool=Pool(), budget=Budget(
         wall_s=30.0, ops=2, model_calls=0, model_usd=0.0))
     assert "ws_diagonal" in calls
     assert gen.notes == [], gen.notes  # a diagonal was found: nothing was withheld
