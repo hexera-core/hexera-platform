@@ -91,6 +91,7 @@ from dataclasses import dataclass, field, replace
 from typing import Any, Literal, Protocol
 
 from meshpipeline.cad.repair_v4 import render
+from meshpipeline.cad.repair_v4.limits import fill_span_allowed
 from meshpipeline.cad.repair_v4.measurement import NO_VERDICT, file_unmeasured, no_verdict_failure
 from meshpipeline.cad.repair_v4.ops import REGISTRY, OpDeclined, OpFailed, validate_call
 from meshpipeline.cad.repair_v4.ops.shells import scaled_sew_ladder, scaled_sliver_widths
@@ -422,6 +423,28 @@ class DetGenerator:
                     out.append(Candidate(op, targets, params, "det", f"{why} (site {site.id}, {site.kind})"))
         return out[:k]
 
+    def _fill_rows(self, site: Site, diag: float | None) -> list[tuple[str, list[StableId], dict, str]]:
+        """One `fill_loop` per free loop the site carries (`graph["free_loops"]`, smallest first) that the fill cap
+        allows. The cap is `limits.fill_span_allowed`, the same call the op and the judge make; a loop over it is
+        noted and not proposed (the op would only decline it). G0 only: a planar fill ignores G1 and the op reports
+        what it achieved."""
+        loops = site.graph.get("free_loops") or []
+        part = float(site.graph.get("diagonal_mm") or diag or 0.0)
+        rows: list[tuple[str, list[StableId], dict, str]] = []
+        if part > UNBOUNDED_DIAGONAL_MM:
+            self._note(f"site {site.id}: fill_loop not proposed: {self._why_no_size(part)}")
+            return rows
+        if not loops:
+            self._note(f"site {site.id}: fill_loop not proposed: the site carries no free loop")
+        for loop in loops:
+            span = float(loop["span_mm"])
+            if part <= 0 or not fill_span_allowed(span, part):
+                self._note(f"site {site.id}: fill_loop not proposed for a loop of {span:.4g} mm: beyond the fill cap")
+                continue
+            rows.append(("fill_loop", list(loop["edges"]), {"continuity": "G0"},
+                         f"close the free loop of {len(loop['edges'])} edges ({span:.3g} mm) with one face"))
+        return rows
+
     def _sweep(self, site: Site, diag: float | None) -> list[tuple[str, list[StableId], dict, str]]:
         faces = _of_kind(site.entities, "F")
         solids = _of_kind(site.entities, "B")
@@ -448,6 +471,10 @@ class DetGenerator:
                 for order in (1, 2):
                     rows.append(("split_continuity", faces, {"order": order}, f"split faces at C{order} breaks"))
             rows.append(("orient_and_close", solids, {}, "fix shell orientation"))
+            if "no_solids" in (site.graph.get("hard_codes") or ()):
+                # Loose faces and no solid at all: a shell that is closed (a fill just closed it) still has to be
+                # made a solid. make_volume declines when the faces enclose nothing.
+                rows.append(("make_volume", faces, {}, "no solid exists: build one from the closed shell"))
         if kind == "sliver":
             sized = diag is not None and diag <= UNBOUNDED_DIAGONAL_MM
             if not sized:
@@ -475,6 +502,7 @@ class DetGenerator:
                 )
             else:
                 self._note(f"site {site.id}: sew not proposed: {self._why_no_size(diag)}")
+            rows.extend(self._fill_rows(site, diag))
             rows.append(("make_volume", faces, {}, "build a solid from the loose faces"))
             rows.append(("orient_and_close", solids, {}, "orient and close the shell"))
         if kind in ("overlap", "intersection"):

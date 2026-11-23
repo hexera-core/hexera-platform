@@ -986,3 +986,94 @@ def test_a_real_search_result_and_the_report_row_agree_on_whether_a_file_was_mea
                                             reason=reason, inconclusive_candidates=inc, verdict_candidates=ver,
                                             infrastructure_failed=failed)
                         assert res.unmeasured == row.derived_inconclusive, (reason, inc, ver, failed, clean)
+
+
+# ---- Task 39: the declined stratum is a third category: not a failure, not unmeasured, in no rate ----------------------
+
+N_MAIN, N_DECL = 40, 8
+
+
+def _stratum_split(declined_status="declined_stratum", n_decl=N_DECL):
+    main = split_rows(N_MAIN)
+    decl = [rp.ProbeRow(f"d{i}.step", _sha(1000 + i), "inject", {"tier": "full", "clean": False,
+                                                                 "counts_for_scoreboard": True},
+                        "panel", "", None, "face_delete_large", declined_status) for i in range(n_decl)]
+    return main + decl
+
+
+def _stratum_rows(base, i, arm, *, how="poison"):
+    """Declined files are built to CHANGE every figure if they leak into it: input unclean at 2 panel passes, output
+    at 0 (a fewer-panel-passes 'regression' if counted), and one file the search_det arm repairs (a 'gain' if counted)."""
+    if not base.name.startswith("d"):
+        return arm_row(base, i, arm)
+    if how == "inconclusive":
+        return arm_row(base, i, arm, inconclusive=True)
+    repaired = arm == "search_det" and base.name == "d0.step"
+    row = arm_row(base, i, arm, in_panel_passes=2, out_panel_passes=PANEL if repaired else 0,
+                  out_clean=repaired, out_valid=repaired, out_faithful_ok=repaired,
+                  model=0.2 if arm == "search_ai" else 0.0)
+    if arm == "input_only":
+        row.update(out_panel_passes=2, out_clean=False, out_valid=True, out_faithful_ok=True)
+    if arm in report.SEARCH_ARMS:
+        row.update(reason="clean" if repaired else "patience")
+    return row
+
+
+def _stratum_report(tmp_path, **kw):
+    split = _stratum_split()
+    build(tmp_path, WAVE, split, rows_for=lambda b, i, a: _stratum_rows(b, i, a, **kw))
+    return report.build_report(load(tmp_path, split))
+
+
+def test_the_declined_stratum_is_in_no_rate_gain_or_regression(tmp_path) -> None:
+    rep = _stratum_report(tmp_path)
+    for arm in ("input_only", "staged", "search_det", "search_ai"):
+        b = rep["arms"][arm]
+        assert b["files"] == N_MAIN and b["conclusive"] == N_MAIN, arm
+        assert b["clean_out"] == expected_clean(arm, range(N_MAIN)), arm     # the independent count over the 40 only
+        assert b["clean_rate"] == pytest.approx(expected_clean(arm, range(N_MAIN)) / N_MAIN), arm
+        assert b["regressions"] == {"clean_to_unclean": 0, "fewer_panel_passes": 0, "either": 0}, arm
+        assert b["layers"]["valid"] == N_MAIN and b["paired"]["n"] == N_MAIN, arm
+        assert "face_delete_large" not in b["by_defect_kind"] and "" not in b["by_defect_kind"], arm
+    assert rep["status"] == "OK" and rep["files"] == N_MAIN + N_DECL and rep["files_measured_strata"] == N_MAIN
+    assert rep["marginals"]["ai_marginal (search_ai - search_det)"]["n_paired"] == N_MAIN
+
+
+def test_the_declined_stratum_is_reported_on_its_own_line_and_is_not_a_failure(tmp_path) -> None:
+    rep = _stratum_report(tmp_path)
+    ds = rep["declined_stratum"]
+    assert ds["expected_outcome"] == "correctly_declined" and ds["files"] == N_DECL
+    assert ds["arms"]["staged"] == {"files": N_DECL, "inconclusive": 0, "declined": N_DECL, "unexpectedly_clean": 0}
+    # the one file search_det repaired is SHOWN as unexpected, not credited as gain and not hidden
+    assert ds["arms"]["search_det"] == {"files": N_DECL, "inconclusive": 0, "declined": N_DECL - 1,
+                                        "unexpectedly_clean": 1}
+    text = report.render_text(rep)
+    assert "Declined stratum (8 files; expected outcome: correctly_declined)" in text
+    assert "NOT a failure" in text
+
+
+def test_inconclusive_declined_files_do_not_push_an_arm_over_the_inconclusive_limit(tmp_path) -> None:
+    # 8 of 48 = 16.7% > 10%: folded in, every arm would read NOT MEASURED. Kept out, all 40 real files are measured.
+    rep = _stratum_report(tmp_path, how="inconclusive")
+    assert all(b["measured"] and b["inconclusive"] == 0 for b in rep["arms"].values())
+    assert rep["declined_stratum"]["arms"]["staged"]["inconclusive"] == N_DECL
+    assert rep["status"] == "OK"
+
+
+def test_declined_stratum_spend_is_still_in_the_bill(tmp_path) -> None:
+    rep = _stratum_report(tmp_path)
+    assert rep["arms"]["search_ai"]["model_usd"]["total"] == pytest.approx(0.4 * N_MAIN + 0.2 * N_DECL)
+
+
+def test_a_declined_kind_whose_status_was_dropped_is_refused_not_counted_as_a_failure(tmp_path) -> None:
+    split = _stratum_split(declined_status=None)
+    build(tmp_path, WAVE, split, rows_for=lambda b, i, a: _stratum_rows(b, i, a))
+    with pytest.raises(report.ReportRefused, match="declined stratum.*would be counted as a failing file"):
+        load(tmp_path, split)
+
+
+def test_a_split_of_only_declined_files_has_nothing_to_report_a_rate_on(tmp_path) -> None:
+    split = [r for r in _stratum_split() if r.name.startswith("d")]
+    build(tmp_path, WAVE, split, rows_for=lambda b, i, a: _stratum_rows(b, i, a))
+    with pytest.raises(report.ReportRefused, match="every file in the split is declined-stratum"):
+        report.build_report(load(tmp_path, split))

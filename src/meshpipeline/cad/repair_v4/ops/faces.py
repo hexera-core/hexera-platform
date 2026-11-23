@@ -38,6 +38,7 @@ import time
 from typing import Any
 
 from meshpipeline.cad.repair_v4.kernel_calls import register as register_kernel_fn
+from meshpipeline.cad.repair_v4.limits import MAX_FILL_SPAN_RATIO, fill_span_allowed  # the one 5%: limits.py
 from meshpipeline.cad.repair_v4.ops import OpDeclined, OpFailed, run_kernel_op, validate_call
 from meshpipeline.cad.repair_v4.types import Site, StableId
 from meshpipeline.cad.repair_v4.worker_pool import WorkerPool
@@ -65,8 +66,6 @@ def _declines(fn: Any) -> Any:
 BOUND_MAX_MM = 0.1
 #: Relative ceiling: the bound is at most this fraction of the part's bounding-box diagonal.
 BOUND_DIAGONAL_RATIO = 0.001
-#: `fill_loop` refuses a loop whose bounding box diagonal exceeds this fraction of the part's.
-MAX_FILL_SPAN_RATIO = 0.05
 #: Sampling density of the deviation measurement (UV grid is N x N per face).
 SAMPLES_PER_AXIS = 12
 #: refit_cluster fits a GRID_NODES x GRID_NODES grid of points.
@@ -732,7 +731,7 @@ def _fill_loop(payload: dict) -> dict:
         sequence.Append(edge)
     x0, y0, z0, x1, y1, z1 = box.Get()
     span = math.sqrt((x1 - x0) ** 2 + (y1 - y0) ** 2 + (z1 - z0) ** 2)
-    if span > MAX_FILL_SPAN_RATIO * diagonal:
+    if not fill_span_allowed(span, diagonal):
         return _decline(payload, (
             f"too_large: the loop spans {span:.4g} mm, {100 * span / diagonal:.1f}% of the part's "
             f"diagonal ({diagonal:.4g} mm); fill_loop refuses beyond {100 * MAX_FILL_SPAN_RATIO:g}%"))

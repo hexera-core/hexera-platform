@@ -785,6 +785,58 @@ def test_launcher_counts_only_allowed_sources(tmp_path, capsys) -> None:
     assert capsys.readouterr().out.startswith("3 files")
 
 
+# ---- Task 39: the declined stratum is ADMITTED by the gate, as itself, and only as itself -----------------------------
+
+def _inject_entry(name: str, kind: str | None, status: str | None):
+    pool_mod = run_arm.pool_mod
+    return pool_mod.PoolEntry(name, "inject", _sha(7), "u", None, "lic", "inject-abc", kind=kind, kind_status=status)
+
+
+def test_the_declined_stratum_passes_the_gate_when_it_declares_itself() -> None:
+    rp.check_not_quarantined([_inject_entry("p.face_delete_large.1.step", "face_delete_large", "declined_stratum")])
+    # ... and the quarantine still bites, in the same call, so the stratum did not widen the gate to everything
+    with pytest.raises(rp.QuarantinedKind):
+        rp.check_not_quarantined([_inject_entry("p.seam_variant.1.step", "seam_variant", "quarantined")])
+
+
+@pytest.mark.parametrize("kind,status", [
+    ("face_delete_large", "structural"),      # the stratum relabelled as a plain failing file
+    ("face_delete", "declined_stratum"),     # a plain failing file relabelled as the stratum, to hide it from the rate
+    ("face_delete_large", None), (None, "declined_stratum"),
+])
+def test_a_stratum_label_that_is_not_the_injectors_own_is_refused(kind, status) -> None:
+    with pytest.raises(rp.QuarantinedKind):
+        rp.check_not_quarantined([_inject_entry("p.face_delete_large.1.step", kind, status)])
+
+
+def test_a_status_the_injector_never_assigned_is_still_refused() -> None:
+    with pytest.raises(rp.QuarantinedKind):
+        rp.check_not_quarantined([_inject_entry("p.face_delete.1.step", "face_delete", "declined")])
+
+
+def test_face_delete_large_is_not_a_default_draw_but_is_an_admitted_kind() -> None:
+    inject = rp.load_inject()
+    assert "face_delete_large" not in inject.DEFAULT_KINDS and "face_delete_large" in inject.ADMITTED_KINDS
+    assert inject.KIND_STATUS["face_delete_large"] == "declined_stratum"
+    assert inject.EXPECTED_OUTCOME == {"face_delete_large": "correctly_declined",
+                                       "face_delete_inclined": "correctly_declined"}
+    assert "face_delete_large" not in rp.not_default_kinds()
+    assert rp.injected_kind("part.face_delete_large.3.step") == "face_delete_large"   # not mistaken for face_delete
+
+
+@pytest.mark.parametrize("status", ["quarantined", "declined", "infeasible"])
+def test_an_entry_of_any_source_carrying_a_status_the_gate_does_not_admit_is_refused(status) -> None:
+    """The own-status branch, reached with NO kind to catch it first: a status that is neither `structural` nor
+    `declined_stratum` is refused whatever the entry's source or name."""
+    from types import SimpleNamespace
+
+    item = SimpleNamespace(name="plain.step", source="abc_pass", group=None, label={"status": status})
+    with pytest.raises(rp.QuarantinedKind, match="own kind status"):
+        rp.check_not_quarantined([item])
+    rp.check_not_quarantined([SimpleNamespace(name="plain.step", source="abc_pass", group=None,
+                                              label={"status": "declined_stratum"})])
+
+
 def test_unbounded_inputs_are_counted_but_never_a_failure_and_are_tallied_alone() -> None:
     rows = [_row(i, "panel", "other") for i in range(2, 12)]
     unbounded = [_row(100 + i, "valid", "unbounded_geometry", extra={"out_of_scope": True}) for i in range(7)]

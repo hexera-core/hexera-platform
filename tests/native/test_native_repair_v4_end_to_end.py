@@ -26,9 +26,7 @@ import pytest
 
 pytest.importorskip("OCP.STEPControl", reason="the CAD kernel is a native-tier dependency")
 
-from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox  # noqa: E402
-from OCP.IFSelect import IFSelect_RetDone  # noqa: E402
-from OCP.STEPControl import STEPControl_AsIs, STEPControl_Writer  # noqa: E402
+from tests.native._v4_flush_patch_part import write_flush_patch_box  # noqa: E402
 
 import meshpipeline.cad.repair_v4 as v4  # noqa: E402
 from meshpipeline.cad.repair_v4 import search as search_mod  # noqa: E402
@@ -59,20 +57,17 @@ def _devtools(name: str) -> Any:
 # --- the defective part: a real box with a real injected defect -------------------------------------------------------
 
 
-def _write_box(path: Path) -> Path:
-    writer = STEPControl_Writer()
-    writer.Transfer(BRepPrimAPI_MakeBox(10.0, 10.0, 10.0).Shape(), STEPControl_AsIs)
-    assert writer.Write(str(path)) == IFSelect_RetDone
-    return path
-
-
 @pytest.fixture(scope="module")
 def defect_step(tmp_path_factory: pytest.TempPathFactory) -> str:
+    """A FIXABLE defect: a 3 x 3 mm face deleted from a 100 x 60 x 40 mm box (loop ~3.4% of the diagonal, within the
+    fill cap). It is NOT a deleted face of a bare box: every such face spans 57-87% of the diagonal, no op may repair it
+    by design, and `face_delete` now refuses to produce one (that is the declined stratum, `face_delete_large`)."""
     inj = _devtools("inject")
     root = tmp_path_factory.mktemp("t31_defect")
-    clean = _write_box(root / "box.step")
-    case = inj.inject(clean, "face_delete", 1, root)  # an open shell: one face of the box is gone
-    assert case.label["kind"] == "face_delete"
+    clean = write_flush_patch_box(root / "flush_patch_box.step")
+    case = inj.inject(clean, "face_delete", 3, root)  # an open shell: one small face of the part is gone
+    assert case.label["kind"] == "face_delete" and case.label["status"] == "structural"
+    assert case.label["loop_span_ratio"] <= case.label["fill_cap_ratio"]
     return str(case.path)
 
 
@@ -318,6 +313,29 @@ def test_run_file_produces_a_measured_report_row(arm_name: str, defect_step: str
         assert row["model_usd"] > 0.0, "ARM 'search_ai': requests were made but no spend was recorded"
     else:
         assert not wire.requests, f"ARM {arm_name!r} must not reach a model; {len(wire.requests)} requests on the wire"
+
+
+# --- B2. the precondition of the T2 smoke: a FIXABLE defect is REPAIRED, not merely given a verdict -------------------------
+
+
+@pytest.mark.parametrize("arm", ("search_det", "search_ai"))
+def test_a_fixable_injected_case_ends_clean(
+        arm: str, defect_step: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, wire: Wire) -> None:
+    """The assertion the 'reaches a verdict' tests above cannot make: they pass on a CORRECT decline. This defect is
+    repairable (tests/native/test_native_repair_v4_fill_cap.py proves `fill_loop` + `make_volume` take it to a clean
+    verdict on the real judge), so an arm that does not end with `clean` has not found a repair that exists. If this
+    is red, the T2 smoke would measure 'the search never proposed the fix' and call it a result."""
+    run = _drive_repair_v4(arm, defect_step, tmp_path, monkeypatch)
+    assert run.error is None, f"ARM {arm!r} PRODUCED NOTHING: {run.error}"
+    result = run.result
+    trace = json.loads(Path(result.trace_path).read_text()) if result.trace_path else {"events": []}
+    proposed = sorted({e["op"] for e in trace["events"] if e.get("kind") == "candidate"})
+    stop = next((e for e in trace["events"] if e.get("kind") == "stop"), {})
+    assert result.verdict_summary["search"]["clean"] is True and result.delivered, (
+        f"ARM {arm!r}: a repairable defect (loop within the fill cap) did NOT end clean. search reason "
+        f"{stop.get('reason')!r}; the search proposed only {proposed}; fill_loop proposed: {'fill_loop' in proposed}. "
+        f"verdict_summary={result.verdict_summary!r}")
+    assert Path(run.dest).read_bytes().startswith(b"ISO-10303-21")
 
 
 # --- C. the spawn exposure: can a caller reach repair_v4() from a module with NO `__main__` guard? ----------------------
