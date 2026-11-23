@@ -119,20 +119,46 @@ def test_unwired_search_is_unavailable_not_a_verdict(monkeypatch, tmp_path):
         conservative.repair_step_file(tmp_path / "a", tmp_path / "b")
 
 
-def _prod_block() -> str:
-    """The text of the `v*` release branch of the target picker - what a production run exports."""
+def _prod_arm() -> str:
+    """The `{ ... } >> "$GITHUB_OUTPUT"` group of the target picker that states production's target:
+    anchored on the group containing `echo "environment=prod"`, from its opening brace to its
+    redirect. Nothing of the dev arm or of later steps is in it."""
     text = WF.read_text()
-    start = text.index('echo "environment=prod"')
-    # walk back to the start of the branch, forward to the end of the picker's prod arm
-    head = text.rfind("\n", 0, text.rfind("if ", 0, start))
-    end_candidates = [m.start() for m in re.finditer(r"\n\s+fi\n", text[start:])]
-    assert end_candidates, "could not find the end of the prod branch"
-    return text[head:start + end_candidates[0]]
+    marker = text.index('echo "environment=prod"')
+    start = text.rindex("{\n", 0, marker)
+    end = text.index('>> "$GITHUB_OUTPUT"', marker)
+    return text[start:end]
+
+
+def _code_lines_naming_engine() -> list[tuple[int, str]]:
+    """Every non-comment workflow line that names the flag, in either spelling."""
+    out = []
+    for number, line in enumerate(WF.read_text().splitlines(), start=1):
+        if line.lstrip().startswith("#"):
+            continue
+        if "CAD_REPAIR_ENGINE" in line or "cad-repair-engine" in line or "cad_repair_engine" in line:
+            out.append((number, line))
+    return out
+
+
+def test_prod_arm_is_the_production_target_and_nothing_wider():
+    arm = _prod_arm()
+    assert 'echo "deployment_id=prod"' in arm and 'echo "project=hexera-prod"' in arm
+    # tight: it must not run on into the dev arm or another step
+    assert 'echo "environment=dev"' not in arm and 'echo "deployment_id=dev"' not in arm
+    assert arm.count("\n") < 250  # the real arm is ~160 lines; the old slice ran well past 1000
 
 
 def test_prod_posture_does_not_set_engine():
-    block = _prod_block()
-    assert 'deployment_id=prod' in block and 'project=hexera-prod' in block, \
-        "parsed the wrong block: not the production arm"
-    assert "CAD_REPAIR_ENGINE" not in block
-    assert "cad-repair-engine" not in block
+    """Production never states CAD_REPAIR_ENGINE, on EITHER path a setting reaches a deployment:
+    the target picker's prod arm, and the step `env:` blocks (where `CAD_REPAIR_ENABLED: ${{
+    deployment_id == 'prod' ... }}` lives). Anywhere it does appear it must be keyed to a
+    dev-only or dispatch-input expression and never to prod."""
+    arm = _prod_arm()
+    for spelling in ("CAD_REPAIR_ENGINE", "cad-repair-engine", "cad_repair_engine"):
+        assert spelling not in arm
+    for number, line in _code_lines_naming_engine():
+        assert "'prod'" not in line and '"prod"' not in line, f"deploy.yml:{number} ties it to prod"
+        assert "deployment_id == 'dev'" in line or "inputs." in line or "crs_v3" in line, (
+            f"deploy.yml:{number} states CAD_REPAIR_ENGINE unconditionally - it would reach "
+            f"production: {line.strip()}")

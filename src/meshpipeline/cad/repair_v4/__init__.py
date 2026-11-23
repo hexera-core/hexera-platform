@@ -51,7 +51,12 @@ class SearchUnavailable(RuntimeError):
 def _run_search(source: str, dest: str, *, budget: Budget, deadline_s: float) -> V4Result:
     # SEAM FOR TASK 18 (search) + TASK 5 (verdict): replace this body with the search driver; it
     # must write `dest` (repaired STEP, or the upload's bytes on a passthrough) and return the
-    # result. Until then the engine reports itself unavailable rather than pretend to have run.
+    # result. WIRING TASK 18 ALSO MEANS deleting the placeholder `Budget` above and importing its
+    # own. NOT PLUMBED YET (a later task): CAD_REPAIR_ENGINE is not carried through deploy.yml,
+    # create-api-service.sh, create-worker-fleet.sh or worker/startup.sh the way
+    # CAD_REPAIR_MESHABILITY_PASS is, so a personal slug cannot select `search` yet. A delivered
+    # report's `defects`/`operations` are empty (conservative._repair_via_v4): Task 18 must fill them.
+    # Until then the engine reports itself unavailable rather than pretend to have run.
     raise SearchUnavailable("CRS v4 search is not wired in this build (Tasks 5 and 18 pending)")
 
 
