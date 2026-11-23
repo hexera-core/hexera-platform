@@ -462,8 +462,10 @@ def test_splits_disjoint_and_stratified(tmp_path) -> None:
         got = splits.strata["dev"].get(key, 0) + splits.strata["heldout"].get(key, 0)
         assert abs(got - 160 * n / total) <= 1.0, key
     # every populous stratum is represented in both splits
-    assert splits.strata["dev"]["panel/plc_intersection/abc_fail"] > 0
-    assert splits.strata["heldout"]["panel/overlapping_facets/abc_fail"] > 0
+    # (the population's panel rows carry no member list, so they sit at 0 failing members; key = layer/members/kind/source)
+    assert splits.strata["dev"]["panel/0/geometry/abc_fail"] > 0
+    assert splits.strata["heldout"]["panel/0/geometry/abc_fail"] > 0
+    assert splits.strata["heldout"]["valid/-/open_shell/abc_fail"] > 0
     # clean: full-tier passes only, never the cheap passes
     assert all(r.verdict_summary["tier"] == "full" and r.first_failing_layer is None for r in splits.clean)
     for name in ("dev", "heldout", "clean"):
