@@ -141,6 +141,28 @@ def _ran_a_mesher(attempt: BuilderAttempt) -> bool:
     return False
 
 
+#: AIG-4: an attempt whose engine handed the run on is not built again by the rules plan
+HANDED_ON_RULE = "AIG-4"
+
+
+def _handed_on(attempt: BuilderAttempt) -> str:
+    """AIG-4: the guidance of the run_mesh that handed the run on (tools/meshing.HANDS_OFF: no mesh, and none this
+    engine makes of this case with this plan - abc 63401's dropped opening), or '' when none did."""
+    import json
+
+    from meshpipeline.agents.builder.tool_context import HANDS_OFF
+    for c in attempt.tool_calls or ():
+        if not isinstance(c, dict) or str(c.get("tool") or c.get("name") or "") != "run_mesh":
+            continue
+        try:
+            out = json.loads(str(c.get("raw_output") or ""))
+        except ValueError:
+            continue
+        if isinstance(out, dict) and out.get(HANDS_OFF):
+            return str(out.get("guidance") or "the engine handed the run on")
+    return ""
+
+
 async def _run_rules_plan(attempt: BuilderAttempt, state, *, job_id: str,
                           publish: ExecutionEventPublisher, timeout_s: int, why: str) -> TurnOutcome:
     """AIG-1: this attempt is built by the rules plan (engines/rules_plan) - the same
@@ -254,6 +276,13 @@ async def run_attempt(attempt: BuilderAttempt, state, *, job_id: str,
         except Exception as exc:  # noqa: BLE001 - an AI error falls back to the rules
             logger.exception("Builder unexpected error - job_id=%s", job_id)
             why = f"the AI builder raised {type(exc).__name__}"
+        handed = "" if why or final_text else _handed_on(attempt)
+        if handed:
+            # AIG-4: the engine handed the run on - the rules plan would run the same plan into the same
+            # failure (abc 63401: 4.5 more minutes for the same zero-face outlet_3); the ladder decides next
+            logger.warning("Builder: the engine handed the run on; the rules plan does not repeat it (%s, %s) - "
+                           "job_id=%s", HANDED_ON_RULE, handed[:200], job_id)
+            return TurnOutcome(spec_authored=True, final_text=final_text, messages_out=messages_out)
         if not why and not final_text:
             why = ("the AI builder ended its rounds without submitting a mesh"
                    if _ran_a_mesher(attempt) else "the AI builder ended its rounds without running a mesher")
