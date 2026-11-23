@@ -212,8 +212,9 @@ REVIEWER_TOOLS = [
                             "be judged on - ask for it by name. Each frame is returned with what was "
                             "MEASURED in the picture, including how many cells were actually resolved in "
                             "it; a frame measured to contain no cells cannot support a cell count no "
-                            "matter how fine its stated scale is. A live-sliced mesh has no frames and "
-                            "refuses this."
+                            "matter how fine its stated scale is. ALL OF THAT IS ABOUT A PREPARED "
+                            "CUT. A live-sliced mesh has no frames at all: there the scope is ignored, "
+                            "the one plane you are handed IS the inspection, and the reply says so."
                         ),
                     },
                 },

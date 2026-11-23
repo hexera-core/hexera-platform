@@ -291,12 +291,27 @@ class ReviewerRenderRuntime:
         # name this mesh does not have must come back as a correction the reviewer can act on,
         # not as a refusal it has to guess at.
         prepared = [c for c in await self.prepared_cuts() if c.region_id == region_name]
-        if scope and not prepared:
-            return (
-                f"Region '{region_name}' is cut live from this mesh's own volume, so it has no "
-                f"prepared frames to choose between. Call inspect_region('{region_name}') "
-                "without a scope.")
-        if scope and scope not in {c.scope for c in prepared}:
+        # A SCOPE ON A LIVE CUT IS NOTED, NOT REFUSED, and this is the line that cost every
+        # verdict on 2026-11-23. The refusal that was here told the reviewer to "call
+        # inspect_region without a scope" - which the scope parameter's own description tells it
+        # not to do, in stronger words: 'zoom' is "the only frame an inspection can be judged on
+        # - ask for it by name". Faced with the two, the model names the scope, every time. Jobs
+        # 74bc3e2e and 41fb5cb3 are what that costs: nine inspect_region calls on
+        # 'model_midplane', nine identical refusals, the interior never inspected, the
+        # eligibility gate never satisfied, and reviewer_stalled on a mesh that had passed every
+        # gate. The refusal bought nothing either: the command below is built with
+        # `if scope and prepared`, so a live cut IGNORES the scope already and the picture taken
+        # after falling through is byte-identical to the one the reviewer was being sent away to
+        # ask for. What the reviewer must not do is believe it chose a frame, so the live text
+        # says the scope was not applied and why - the honesty this guard was for, without the
+        # dead end.
+        scope_not_applicable = bool(scope) and not prepared
+        # `and prepared`: with no prepared frames the set below is EMPTY, so without this the
+        # frame-name guard refuses every scope on a live cut just as the one above used to -
+        # and in worse words, offering frames it then lists as nothing at all ("Its frames are:
+        # . Call inspect_region with one of those"). This guard is about choosing between frames
+        # that exist; where none do, there is nothing to choose and nothing to correct.
+        if scope and prepared and scope not in {c.scope for c in prepared}:
             return (
                 f"Region '{region_name}' has no '{scope}' frame. Its frames are: "
                 f"{', '.join(repr(c.scope) for c in prepared)}. Call inspect_region with one of "
@@ -361,7 +376,11 @@ class ReviewerRenderRuntime:
                    else "This frame does NOT count as an inspection of the region.")
                 + nxt))
         return await self._parts(ev, (
-            f"Internal slice through the VOLUME mesh at region '{region_name}'. "
+            (f"The scope '{scope}' does not apply here and was not used: this mesh's interior "
+             "is present, so the cut below was taken live and there are no prepared frames to "
+             "choose between. It is the region's own plane, and it IS your inspection of it. "
+             if scope_not_applicable else "")
+            + f"Internal slice through the VOLUME mesh at region '{region_name}'. "
             "The cut was taken only because it passed through cells, so what is drawn IS the "
             "interior - inspect the near-wall band and internal sizing yourself. The mesh "
             "script holds the exact numbers (layer count, sizes); use the slice to confirm "

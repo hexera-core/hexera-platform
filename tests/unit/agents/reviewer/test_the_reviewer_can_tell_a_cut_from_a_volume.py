@@ -199,14 +199,22 @@ async def test_a_frame_the_mesh_does_not_have_is_a_correction_not_a_refusal(
 
 async def test_a_live_volume_job_says_there_are_no_frames_to_choose_between(
         tmp_path, conjugate_backend, scene_facts):
+    """CHANGED. A scope named on a live cut used to be REFUSED here, and the refusal is what
+    stalled every review on 2026-11-23: jobs 74bc3e2e and 41fb5cb3 named one nine times and
+    never got the interior evidence their own gate required. The thing this test is for - that
+    the reviewer can tell a live cut from a chosen frame - is unchanged, and is now carried by
+    the words of the reply rather than by withholding the picture."""
     man = _manifest(tmp_path, volume=True, cuts=_frames(tmp_path))
     async with _runtime(tmp_path, man) as rt:
-        out = await rt.execute_viewer_tool(
+        scoped = await rt.execute_viewer_tool(
             "inspect_region", {"region_name": "across_the_flow", "scope": "zoom"})
-        assert isinstance(out, str) and "cut live" in out
         # and the ordinary call still slices the volume, worded as it always was
         text = _text(await rt.execute_viewer_tool("inspect_region",
                                                   {"region_name": "across_the_flow"}))
+    scoped_text = _text(scoped)
+    assert _images(scoped) == 1, "the scope must not cost the reviewer its interior evidence"
+    assert "does not apply here and was not used" in scoped_text
+    assert "no prepared frames to choose between" in scoped_text
     assert "Internal slice through the VOLUME mesh" in text
 
 
