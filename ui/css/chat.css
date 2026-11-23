@@ -133,3 +133,28 @@
   animation:box-chip-go 1.1s linear infinite}
 @keyframes box-chip-go{from{transform:translateX(-100%)}to{transform:translateX(250%)}}
 @media (prefers-reduced-motion:reduce){.box-chip.is-pending::after{animation:none;width:100%;opacity:.5}}
+
+/* THE PAPER-CLIP in each box (js/shell/attach.js): a quiet icon before the words, the box's one extra element */
+.attach-clip{flex:none;display:inline-flex;align-items:center;justify-content:center;width:32px;height:42px;padding:0;
+  border:0;border-radius:8px;background:none;color:var(--text-faint);cursor:pointer;transition:color .12s,background .12s}
+.attach-clip:hover:not(:disabled){color:var(--text);background:var(--surface-2)}
+.attach-clip:disabled{opacity:.4;cursor:default}
+.rc-notes-row .attach-clip{width:28px;height:34px;border-radius:var(--r-md)}
+.attach-over{box-shadow:inset 0 0 0 1px var(--focus-edge);border-radius:var(--r-md)}
+/* the chat box's chips and its one plain line sit under the box, as wide as it */
+#input-bar>.box-chips,#input-bar>.box-msg{max-width:1060px;margin-left:auto;margin-right:auto}
+#input-bar>.box-chips,#input-bar>.box-msg{padding-left:40px}
+#app.wb #input-bar>.box-chips,#app.wb #input-bar>.box-msg{max-width:none}
+/* the clip narrows the notes box: its one-line placeholder never shows a sideways scrollbar */
+.req-card .rc-notes-row .rc-notes-in:placeholder-shown{overflow:hidden}
+.box-msg{margin-top:4px;color:var(--danger);font-size:var(--fs-sm)}
+.box-msg:empty{display:none}
+/* what a message or a note carried: a small thumbnail per picture, a chip per file; each opens the stored file */
+.att-list{display:flex;flex-wrap:wrap;gap:6px;margin:2px 0 6px}
+.im.user .att-list{justify-content:flex-end;max-width:78%}
+.rc-note .att-list{margin:4px 0 2px}
+.att-img{display:block;line-height:0;border:1px solid var(--border);border-radius:var(--r-md);overflow:hidden}
+.att-img img{display:block;width:72px;height:54px;object-fit:cover;background:var(--surface-2)}
+.att-file{text-decoration:none;cursor:pointer;padding:0 10px}
+.att-img:hover,.att-file:hover{border-color:var(--border-strong)}
+.att-gone{opacity:.5;pointer-events:none}

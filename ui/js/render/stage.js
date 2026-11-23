@@ -87,6 +87,17 @@ export function plainReasoning(text){
   if(!text||looksLikeJson(text))return '';
   return String(text).replace(/\*\*([^*]+)\*\*/g,'$1').trim();}
 
+/** WHAT A MESSAGE OR A NOTE CARRIES, as the user sees it: a small thumbnail per picture and a chip per file, each
+ *  opening the stored file (shell/attach.js fills the thumbnail and opens it), then a chip per face picked. `sid` is
+ *  the conversation the files belong to (a run's page shows its own session's). '' with none. */
+export function attHtml(rows,faces,sid){
+  const sidA=sid?` data-sid="${esc(sid)}"`:'';
+  const a=(rows||[]).filter(r=>r&&r.id).map(r=>r.kind==='image'
+    ?`<a class="att att-img" href="#" data-att="${esc(r.id)}"${sidA} title="${esc(r.name||'')}"><img alt="${esc(r.name||'picture')}"></a>`
+    :`<a class="box-chip att att-file" href="#" data-att="${esc(r.id)}"${sidA}><span class="box-chip-label">${esc(r.name||'file')}</span></a>`);
+  const f=(faces||[]).filter(x=>x&&(x.label||x.id)).map(x=>`<span class="box-chip att-face"><span class="box-chip-label">${esc(x.label||x.id)}</span></span>`);
+  return a.length+f.length?`<div class="att-list">${a.join('')}${f.join('')}</div>`:'';}
+
 export const Stage = {
   // The empty state names no formats. It used to say "(STL or STEP)" while the server accepted
   // four, so a user holding a .vtp or .iges read that their file was unsupported and never tried
@@ -156,10 +167,12 @@ export const Stage = {
   // Assistant text is shown as an engineer prints it (prettyText): y⁺ = 30–300 rather than the
   // \(y^+=30\text{–}300\) an older stored reply may carry, and 40 m/s never split across a line.
   // The user's own words are shown exactly as they typed them.
-  chat(role,text,who){this.clearEmpty();const g=document.createElement('div');g.className='im '+(role==='user'?'user':'assistant');
-    if(role==='user')g.innerHTML=`<div class="who">${esc(who||'You')}</div><div class="bub">${mdBlock(text)}</div>`;
+  // `extra`: what a user's message carried ({attachments, faces, sid}) - drawn above their words, or alone
+  chat(role,text,who,extra){this.clearEmpty();const g=document.createElement('div');g.className='im '+(role==='user'?'user':'assistant');
+    if(role==='user'){const att=extra?attHtml(extra.attachments,extra.faces,extra.sid):'';
+      g.innerHTML=`<div class="who">${esc(who||'You')}</div>${att}${String(text||'').trim()||!att?`<div class="bub">${mdBlock(text)}</div>`:''}`;}
     else g.innerHTML=`<div class="who">${esc(who||'Hexera')}</div><div class="txt">${mdBlock(prettyText(displayText(text)))}</div>`;
-    this.col().appendChild(g);this.scrollBottom(role==='user');},
+    this.col().appendChild(g);this.scrollBottom(role==='user');return g;},
   // THE CLOSING ACCOUNT of a finished run, in the same voice as every other turn (render/outcome.js)
   outcome(text,opts){this.clearEmpty();const g=document.createElement('div');g.className='im assistant';
     g.innerHTML=`<div class="who">Hexera</div><div class="txt">${outcomeHtml(displayText(text),opts)}</div>`;
@@ -205,7 +218,8 @@ export const Stage = {
     // THE USER'S OWN NOTES, exactly as typed (a pasted spec keeps its lines), and the box that adds
     // one. Guidance for the mesh, never a check: the plan above is what is approved.
     // A short list, then one quiet line that grows as it is used: Enter adds, Shift+Enter starts a line.
-    const items=(b.user_notes||[]).map(n=>`<li class="rc-note">${esc(n.text)}</li>`).join('');
+    // a note's attached pictures and files under its words (shell/attach.js opens them)
+    const items=(b.user_notes||[]).map(n=>`<li class="rc-note">${esc(n.text)}${attHtml(n.attachments,null,'')}</li>`).join('');
     const notes=items?`<ul class="rc-notes-list">${items}</ul>`:'';
     const box=addNote?`<div class="rc-notes-box"><div class="rc-notes-row"><textarea class="rc-notes-in" rows="1" maxlength="20000"
         aria-label="Add a note" placeholder="Add a note, or paste a spec…"></textarea>

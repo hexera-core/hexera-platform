@@ -10,11 +10,14 @@
  *   payload(box) -> {attachments: [id...], faces: [{id, label}...]}  (what the send carries)
  *   busy(box) -> a chip is still uploading (the send waits)
  *   active() / setActive(box): the box the user used last - a picked face goes under it (the chat box by default)
+ *   listen(fn) -> unlisten: fn(box, items) hears EVERY change of any row - add, update, remove and clear (a clear is
+ *                silent only to the chips' own onRemove) - so a picked face can be un-lit when its chip goes
  */
 
 const _boxes = new Map();
 let _seq = 0;
 let _active = "chat";
+const _listeners = new Set();
 
 function box(name) {
   if (!_boxes.has(name)) _boxes.set(name, { items: [], host: null, onChange: null });
@@ -52,7 +55,10 @@ function draw(name) {
     }
   }
   if (b.onChange) b.onChange(items(name));
+  for (const fn of _listeners) { try { fn(name, items(name)); } catch (e) { console.warn("chips listener", e); } }
 }
+
+export function listen(fn) { _listeners.add(fn); return () => _listeners.delete(fn); }
 
 /** Put the row right after `anchor` (the box's row) - again after a redraw, with the chips it holds. `input` is the
  *  box's textarea: using it makes this the active box. `onChange(items)` hears every change (one listener per box,

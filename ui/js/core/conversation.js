@@ -8,16 +8,30 @@
  * with the run's id (`job_id`), and the box goes right there. A conversation stored before runs were marked has
  * no mark: its box goes after everything said, which is where it was when the run started. */
 
-/** The messages a person reads: theirs and Hexera's - never the application's own nudge, nor a turn with no words. */
+/** The messages a person reads: theirs and Hexera's - never the application's own nudge, nor a turn with nothing in
+ *  it (a user's turn may be a picture alone, or a face picked). */
 export function readable(m) {
   return !!m && typeof m === "object" && (m.role === "user" || m.role === "assistant")
-    && !m._synthetic && String(m.content ?? "").trim() !== "";
+    && !m._synthetic && (String(m.content ?? "").trim() !== "" || !!carried(m));
+}
+
+/** What a user's turn carried beside its words ({attachments, faces}), or null. Pure. */
+export function carried(m) {
+  if (!m || m.role !== "user") return null;
+  const attachments = Array.isArray(m.attachments) ? m.attachments : [];
+  const faces = Array.isArray(m.faces) ? m.faces : [];
+  return attachments.length || faces.length ? { attachments, faces } : null;
+}
+
+function item(m) {
+  const c = carried(m);
+  return c ? { role: m.role, text: String(m.content ?? ""), extra: c } : { role: m.role, text: String(m.content) };
 }
 
 /** What a page reopened on an unfinished conversation draws, in order: {role, text} for each message a person
  *  reads - the same messages, in the same order, as a run's page draws before its box. Pure. */
 export function intakeOrder(messages) {
-  return (messages || []).filter(readable).map((m) => ({ role: m.role, text: String(m.content) }));
+  return (messages || []).filter(readable).map(item);
 }
 
 /** What a page opened on run `jobId` draws, in order: {role, text} for a message, {run} for an earlier run of the
@@ -29,7 +43,7 @@ export function runOrder(messages, jobId) {
   for (const m of messages || []) {
     const tag = m && typeof m === "object" && m.job_id ? String(m.job_id) : "";
     if (placed && tag && tag !== id) break;
-    if (readable(m)) out.push({ role: m.role, text: String(m.content) });
+    if (readable(m)) out.push(item(m));
     if (tag && tag === id && !placed) { out.push({ run: id, current: true }); placed = true; }
     else if (tag && tag !== id) out.push({ run: tag });
   }

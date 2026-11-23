@@ -1,0 +1,215 @@
+# Responsibility: Verify a user can attach pictures and files to the chat box and the notes box - the paper-clip,
+#   Ctrl+V of a screenshot, a drop on the box - see each as a chip, take one off, hear the limits in one plain line,
+#   send a picture alone, and see what they sent in the conversation and the notes.
+# Boundaries: the console's own modules in the page; the server's routes are stubbed in-page. It reads the DOM.
+from __future__ import annotations
+
+import pytest
+from conftest import assert_clean
+
+pytestmark = pytest.mark.ui
+
+# THE PAGE'S SERVER, STUBBED: every attachment upload, message and stored file is answered here and recorded.
+SETUP = """
+  const S = await import('/static/js/core/state.js');
+  const C = await import('/static/js/shell/composer.js');
+  const A = await import('/static/js/shell/attach.js');
+  const chips = await import('/static/js/shell/chips.js');
+  const { Stage } = await import('/static/js/render/stage.js');
+  const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+  const png = await new Promise(r => { const c = document.createElement('canvas'); c.width = 8; c.height = 6;
+    c.getContext('2d').fillRect(0, 0, 4, 3); c.toBlob(r, 'image/png'); });
+  const pic = (name) => new File([png], name || 'image.png', {type: 'image/png'});
+  window.__calls = [];
+  let n = 0;
+  const real = window.fetch;
+  window.fetch = async (url, opts = {}) => {
+    const u = String(url);
+    if (u.startsWith('/api/v1/chat/attachments/')) { window.__calls.push(['get', u]);
+      return new Response(png, {status: 200, headers: {'Content-Type': 'image/png'}}); }
+    if (u === '/api/v1/chat/attachments') {
+      const f = opts.body.get('file'); n += 1; window.__calls.push(['upload', f.name]);
+      await sleep(80);
+      const kind = f.type.startsWith('image/') ? 'image' : 'text';
+      return new Response(JSON.stringify({id: ('a' + n).padEnd(16, '0'), kind, name: f.name, mime: f.type,
+        bytes: f.size, pages: kind === 'text' ? 3 : null}), {status: 200, headers: {'Content-Type': 'application/json'}});
+    }
+    if (u === '/api/v1/chat/message') { window.__calls.push(['message', JSON.parse(opts.body)]);
+      return new Response(JSON.stringify({reply: 'Noted.', choices: []}),
+        {status: 200, headers: {'Content-Type': 'application/json'}}); }
+    if (u.startsWith('/api/')) { window.__calls.push(['other', u]);
+      return new Response('{}', {status: 200, headers: {'Content-Type': 'application/json'}}); }
+    return real(url, opts);
+  };
+  Stage.mount();
+  S.set.sessionId('s-attach');
+  C.enableInput();
+  const paste = (el, files, text) => { const dt = new DataTransfer(); files.forEach(f => dt.items.add(f));
+    if (text) dt.setData('text/plain', text);
+    const e = new ClipboardEvent('paste', {clipboardData: dt, bubbles: true, cancelable: true});
+    el.dispatchEvent(e); return e.defaultPrevented; };
+  const drop = (el, files) => { const dt = new DataTransfer(); files.forEach(f => dt.items.add(f));
+    el.dispatchEvent(new DragEvent('dragover', {dataTransfer: dt, bubbles: true, cancelable: true}));
+    el.dispatchEvent(new DragEvent('drop', {dataTransfer: dt, bubbles: true, cancelable: true})); };
+  const row = (box) => [...document.querySelectorAll(`.box-chips[data-box="${box}"] .box-chip`)].map(c => ({
+    cls: c.className, label: (c.querySelector('.box-chip-label') || {}).textContent || '',
+    thumb: !!c.querySelector('img.box-chip-thumb')}));
+  const line = () => document.querySelector('#input-bar > .box-msg').textContent;
+"""
+
+
+def test_the_chat_box_takes_a_pasted_picture_a_dropped_file_and_says_its_limits(live):
+    out = live.evaluate("(async () => {" + SETUP + """
+      const inp = document.getElementById('chat-input');
+      const clip = document.querySelector('#input-inner > .attach-clip');
+      const before = {clip: !!clip, tip: clip && clip.title, chips: row('chat'),
+                      first: clip.nextElementSibling.id};
+      // words on the clipboard are pasted as words
+      const textPaste = paste(inp, [], 'mesh it at 2 mm');
+      // a screenshot pasted: a chip with its thumbnail, uploading, then held
+      const took = paste(inp, [pic('image.png')]);
+      const going = row('chat'); const busy = chips.busy('chat');
+      await A.idle('chat');
+      const held = row('chat');
+      // a file dropped on the box is attached, never taken as the CAD upload
+      drop(document.getElementById('input-bar'), [new File(['bore 20 mm'], 'spec.txt', {type: 'text/plain'})]);
+      await A.idle('chat');
+      const withFile = row('chat');
+      // remove the picture
+      document.querySelector('.box-chips[data-box="chat"] .box-chip-image .box-chip-x').click();
+      const afterRemove = row('chat');
+      // a kind that cannot be attached; a picture too large; then more than five
+      drop(document.getElementById('input-bar'), [new File(['MZ'], 'tool.exe', {type: 'application/x-msdownload'})]);
+      const kindLine = line();
+      inp.dispatchEvent(new Event('input'));
+      const cleared = line();
+      paste(inp, [new File([new Uint8Array(11 * 1024 * 1024)], 'huge.png', {type: 'image/png'})]);
+      const bigLine = line();
+      paste(inp, [1, 2, 3, 4, 5].map(i => pic('p' + i + '.png')));
+      await A.idle('chat');
+      return {before, textPaste, took, going, busy, held, withFile, afterRemove, kindLine, cleared, bigLine,
+              limitLine: line(), count: row('chat').length, calls: window.__calls};
+    })()""")
+    assert out["before"]["clip"] and out["before"]["tip"] == "Attach a picture or a file. It is sent to the AI with your words.", out
+    assert out["before"]["first"] == "chat-input" and out["before"]["chips"] == [], out
+    assert out["textPaste"] is False, "words on the clipboard were taken as a file"
+    assert out["took"] is True and out["busy"] is True, out
+    assert len(out["going"]) == 1 and "is-pending" in out["going"][0]["cls"] and out["going"][0]["thumb"], out
+    assert "is-pending" not in out["held"][0]["cls"] and out["held"][0]["thumb"], out
+    assert [c["label"] for c in out["withFile"]] == ["", "spec.txt · 3 pages"], out
+    assert [c["label"] for c in out["afterRemove"]] == ["spec.txt · 3 pages"], out
+    assert out["kindLine"] == "That kind of file cannot be attached. Pictures, PDF and text files can.", out
+    assert out["cleared"] == "", "the line stays after the user typed"
+    assert out["bigLine"] == "That picture is too large: 10 MB is the most.", out
+    assert out["limitLine"] == "Only 5 files per message." and out["count"] == 5, out
+    uploads = [c[1] for c in out["calls"] if c[0] == "upload"]
+    assert uploads == ["image.png", "spec.txt", "p1.png", "p2.png", "p3.png", "p4.png"], uploads
+    assert not [c for c in out["calls"] if c[0] == "other"], "a drop on the box reached the CAD upload"
+    assert_clean(live, "attaching in the chat box")
+
+
+def test_a_picture_alone_is_sent_and_shows_in_the_users_bubble(live):
+    out = live.evaluate("(async () => {" + SETUP + """
+      const inp = document.getElementById('chat-input');
+      paste(inp, [pic('bore.png')]);
+      // Send pressed while the picture is still uploading: the send waits for it
+      document.getElementById('send-btn').click();
+      for (let i = 0; i < 50 && !window.__calls.some(c => c[0] === 'message'); i++) await sleep(40);
+      await sleep(120);
+      const bubble = document.querySelector('#cc .im.user');
+      return {sent: window.__calls.filter(c => c[0] === 'message').map(c => c[1]), chips: row('chat'),
+              thumb: bubble && bubble.querySelector('.att-img img') && bubble.querySelector('.att-img img').src,
+              words: bubble && !!bubble.querySelector('.bub')};
+    })()""")
+    assert len(out["sent"]) == 1, out
+    msg = out["sent"][0]
+    assert msg["content"] == "" and msg["attachments"] == ["a100000000000000"] and msg["session_id"] == "s-attach", msg
+    assert out["chips"] == [], "the chip stayed after the send"
+    assert out["thumb"] and out["thumb"].startswith("blob:"), out
+    assert out["words"] is False, "an empty bubble was drawn under the picture"
+    assert_clean(live, "sending a picture alone")
+
+
+def test_a_refused_send_keeps_the_chips_and_the_words_and_says_why_under_the_box(live):
+    out = live.evaluate("(async () => {" + SETUP + """
+      const stubbed = window.fetch;
+      window.fetch = async (url, opts = {}) => String(url) === '/api/v1/chat/message'
+        ? new Response(JSON.stringify({detail: 'That picture is no longer here. Attach it again, then send.'}),
+                       {status: 422, headers: {'Content-Type': 'application/json'}})
+        : stubbed(url, opts);
+      const inp = document.getElementById('chat-input');
+      paste(inp, [pic('bore.png')]);
+      await A.idle('chat');
+      inp.value = '2 mm on this bore';
+      document.getElementById('send-btn').click();
+      await sleep(200);
+      return {chips: row('chat').length, words: inp.value, line: line(), open: !inp.disabled,
+              bubbles: document.querySelectorAll('#cc .im.user').length};
+    })()""")
+    assert out["chips"] == 1 and out["words"] == "2 mm on this bore", out
+    assert out["line"] == "That picture is no longer here. Attach it again, then send.", out
+    assert out["open"] and out["bubbles"] == 0, out
+
+
+def test_chips_tell_a_listener_of_every_change_a_silent_clear_too(live):
+    out = live.evaluate("""(async () => {
+      const chips = await import('/static/js/shell/chips.js');
+      const heard = [];
+      const off = chips.listen((box, items) => heard.push([box, items.length]));
+      const k = chips.add('lx', {kind: 'face', label: 'Face 12', value: {id: 'Face_12', label: 'Face 12'}});
+      chips.add('lx', {kind: 'face', label: 'Face 3', value: {id: 'Face_3', label: 'Face 3'}});
+      chips.remove('lx', k);
+      chips.clear('lx');
+      off();
+      chips.add('lx', {kind: 'face', label: 'Face 9'});
+      return heard;
+    })()""")
+    assert out == [["lx", 1], ["lx", 2], ["lx", 1], ["lx", 0]], out
+
+
+def test_the_notes_box_takes_a_picture_and_the_notes_show_what_was_attached(live):
+    out = live.evaluate("(async () => {" + SETUP + """
+      const sent = [];
+      const add = async (t, extra) => { sent.push([t, extra]);
+        Stage.brief({purpose: 'structural', engine: 'gmsh', user_notes: [{text: t, attachments: [
+          {id: 'a100000000000000', kind: 'image', name: 'bore.png'}, {id: 'b200000000000000', kind: 'text', name: 'spec.pdf'}]}]}, add); };
+      Stage.brief({purpose: 'structural', engine: 'gmsh', user_notes: []}, add);
+      await sleep(0);
+      const box = document.querySelector('.rc-notes-in'), addBtn = document.querySelector('.rc-notes-add');
+      const clip = document.querySelector('.rc-notes-row > .attach-clip');
+      paste(box, [pic('bore.png')]);
+      await A.idle('notes');
+      const chipsNow = row('notes'), enabled = !addBtn.disabled;
+      addBtn.click();
+      await sleep(50); await sleep(150);
+      const note = document.querySelector('.rc-notes-list li.rc-note');
+      return {clip: !!clip, chipsNow, enabled, sent, after: row('notes'),
+              thumb: note && note.querySelector('.att-img img') && note.querySelector('.att-img img').src,
+              file: note && note.querySelector('.att-file') && note.querySelector('.att-file').textContent,
+              clipAgain: !!document.querySelector('.rc-notes-row > .attach-clip')};
+    })()""")
+    assert out["clip"] and len(out["chipsNow"]) == 1 and out["chipsNow"][0]["thumb"], out
+    assert out["enabled"], "Add stayed off with only a picture"
+    assert out["sent"] == [["", {"attachments": ["a100000000000000"], "faces": []}]], out
+    assert out["after"] == [], out
+    assert out["thumb"] and out["thumb"].startswith("blob:") and out["file"] == "spec.pdf", out
+    assert out["clipAgain"], "the redrawn notes box lost its paper-clip"
+    assert_clean(live, "attaching in the notes box")
+
+
+def test_a_reloaded_conversation_shows_a_picture_sent_alone(live):
+    out = live.evaluate("(async () => {" + SETUP + """
+      const { intakeOrder } = await import('/static/js/core/conversation.js');
+      const items = intakeOrder([{role: 'assistant', content: 'What do you want?'},
+        {role: 'user', content: '', attachments: [{id: 'a100000000000000', kind: 'image', name: 'bore.png'}]},
+        {role: 'user', content: ''}]);
+      for (const it of items) Stage.chat(it.role, it.text, undefined, it.extra ? {...it.extra, sid: 's-old'} : null);
+      await sleep(150);
+      const u = document.querySelector('#cc .im.user .att-img');
+      return {n: items.length, sid: u && u.dataset.sid, src: u && u.querySelector('img').src,
+              got: window.__calls.filter(c => c[0] === 'get').map(c => c[1])};
+    })()""")
+    assert out["n"] == 2, "a picture-only turn was dropped, or an empty one drawn"
+    assert out["sid"] == "s-old" and out["src"].startswith("blob:"), out
+    assert out["got"] == ["/api/v1/chat/attachments/s-old/a100000000000000"], out
+    assert_clean(live, "a reloaded picture")

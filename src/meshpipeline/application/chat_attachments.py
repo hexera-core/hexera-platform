@@ -47,9 +47,10 @@ MAX_PER_SESSION = 30
 
 IMAGE_MIMES = {"PNG": "image/png", "JPEG": "image/jpeg", "WEBP": "image/webp"}
 
-TOO_BIG_IMAGE = "That picture is too big (max 10 MB)."
-TOO_BIG_FILE = "That file is too big (max 20 MB)."
-NOT_ACCEPTED = "Only pictures (PNG, JPG, WebP) and text files (PDF, TXT, MD, CSV) can be attached."
+# the same lines the browser says before it sends (ui/js/shell/attach.js)
+TOO_BIG_IMAGE = "That picture is too large: 10 MB is the most."
+TOO_BIG_FILE = "That file is too large: 20 MB is the most."
+NOT_ACCEPTED = "That kind of file cannot be attached. Pictures, PDF and text files can."
 EMPTY = "That file is empty."
 TOO_MANY_PIXELS = "That picture is too large to read. Attach a smaller screenshot."
 BAD_IMAGE = "That picture could not be read. Attach it again as a PNG or JPG."

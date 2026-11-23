@@ -254,7 +254,8 @@ function rememberSession(id) {
 configureComposer({
   sessionStarted: (id) => rememberSession(id),
   notice: Notice,
-  chat: (role, text) => Stage.chat(role, text),
+  // the user's bubble is handed back: a refused send that carried files takes it away again
+  chat: (role, text, extra) => Stage.chat(role, text, undefined, extra),
   brief: (b) => Stage.brief(b, addBriefNote, briefParts, proceedPlan),
   // a yes before Finalize notes: wait (a minute at most) for the reading the server started
   notesRead: async () => {
@@ -352,9 +353,12 @@ async function openSession(sessionId) {
     return;
   }
   if (history.job_id) { openRun(history.job_id); return; }
-  for (const item of intakeOrder(history.messages)) Stage.chat(item.role, item.text);
+  for (const item of intakeOrder(history.messages)) Stage.chat(item.role, item.text, undefined, withSid(item, sessionId));
   resumeSession(sessionId, history);
 }
+
+/* what a stored turn carried, with the conversation its files belong to (their thumbnails are fetched from it) */
+function withSid(item, sid) { return item.extra ? { ...item.extra, sid } : null; }
 
 /* A RUN OPENED BY LINK - a reload, or the run re-opened from the sidebar. It draws what the page showed live, in
    the same order: the conversation the run came from, up to the message that started it (an earlier run of the
@@ -378,7 +382,7 @@ async function openRun(runId) {
   for (const item of runOrder(history?.messages, runId)) {
     if (item.current) await showRun(runId, job);
     else if (item.run) await showPastRun(item.run);
-    else Stage.chat(item.role, item.text);
+    else Stage.chat(item.role, item.text, undefined, withSid(item, job.session_id));
   }
 }
 

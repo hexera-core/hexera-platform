@@ -16,6 +16,7 @@ import { acceptAttribute, isOfferable, loadIntakeFormats, refusalCopy, shortSupp
   from "./intake_formats.js";
 import { get as getState, set as setState } from "../core/state.js";
 import * as chips from "./chips.js";
+import { idle, mountAttach, say as sayUnder, sentRows } from "./attach.js";
 
 
 const MAX_INPUT_HEIGHT = 140;
@@ -448,7 +449,7 @@ function startsRun(d) { return !!(d && d.done && d.job_id); }
 async function send() {
   const inp = $("chat-input");
   // a file still uploading: the send waits for it (its chip shows it going)
-  if (chips.busy("chat")) return;
+  if (chips.busy("chat")) await idle("chat");
   await sendText(inp.value.trim(), { extra: chips.payload("chat") });
 }
 
@@ -461,11 +462,14 @@ async function sendText(txt, { again = false, extra = null } = {}) {
   if ((!txt && !carries) || !sessionId) return;
   clearNewRunOffer();
   inp.value = ""; autoResize(inp);
-  if (carries) chips.clear("chat");
-  if (!again) deps.chat("user", txt);
+  // the user's bubble shows what they attached, as the conversation will show it after a reload
+  const shown = carries ? { attachments: sentRows("chat"), faces: extra.faces, sid: sessionId } : null;
+  const bubble = again ? null : deps.chat("user", txt, shown);
   disableInput();
   try {
     const d = await sendMessage(sessionId, txt, extra || {});
+    // the chips go only once the message is in: a refused send keeps the pictures, files and faces
+    if (carries) { chips.clear("chat"); sayUnder("chat", ""); }
     if (!startsRun(d)) deps.chat("assistant", d.reply);
     deps.choices(d.choices || [], sendText);
     deps.brief(d.brief);
@@ -487,7 +491,13 @@ async function sendText(txt, { again = false, extra = null } = {}) {
     else if (_stageOpen || String(d.reply || "").startsWith(DRAWING_PREFIX)) holdForDrawing();
     else enableInput();
   } catch (e) {
-    if (e.status !== 401) {
+    if (carries) {
+      // A SEND THAT CARRIED SOMETHING, REFUSED: the words go back in the box, the chips stay, the server's one line
+      // under the box - the user fixes it and sends again (no bubble left for a message that was not taken)
+      if (bubble && bubble.remove) bubble.remove();
+      inp.value = txt; autoResize(inp);
+      if (e.status !== 401) sayUnder("chat", (e && e.message) || "That was not sent. Try again.");
+    } else if (e.status !== 401) {
       deps.chat("assistant", "Could not send that: " + e.message + ". Try again.");
     }
     if (_stageOpen) holdForDrawing(); else enableInput();
@@ -544,6 +554,8 @@ export function mountComposer() {
   $("send-btn").addEventListener("click", send);
   // THE CHIP ROW under the chat box: files attached and faces picked, empty and hidden until there is one
   chips.mount("chat", $("input-inner"), { input: $("chat-input") });
+  // the paper-clip, Ctrl+V of a picture and a drop on the box (shell/attach.js), for the chat box and the notes box
+  mountAttach();
   $("chat-input").addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
   });
