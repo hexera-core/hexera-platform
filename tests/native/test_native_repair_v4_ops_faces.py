@@ -37,7 +37,7 @@ from OCP.BRepTools import BRepTools  # noqa: E402
 from OCP.Geom import Geom_BSplineSurface, Geom_Plane  # noqa: E402
 from OCP.Geom2dAPI import Geom2dAPI_Interpolate  # noqa: E402
 from OCP.GeomAbs import GeomAbs_C2, GeomAbs_Plane  # noqa: E402
-from OCP.GeomAPI import GeomAPI_PointsToBSplineSurface, GeomAPI_ProjectPointOnSurf  # noqa: E402
+from OCP.GeomAPI import GeomAPI_PointsToBSplineSurface  # noqa: E402
 from OCP.gp import gp_Ax2, gp_Circ, gp_Dir, gp_Pln, gp_Pnt, gp_Pnt2d  # noqa: E402
 from OCP.GProp import GProp_GProps  # noqa: E402
 from OCP.ShapeBuild import ShapeBuild_ReShape  # noqa: E402
@@ -296,35 +296,88 @@ def _free_loop_ids(ws: Workspace, near: tuple[float, float, float], radius: floa
 # --- rebuild_face -------------------------------------------------------------------------------
 
 
-def test_rebuild_face_repairs_a_self_intersecting_bspline_face_within_bound(
+def _surface_kind_of(face: Any) -> str:
+    return str(BRepAdaptor_Surface(face, True).GetType()).rsplit("_", 1)[-1]
+
+
+def _self_intersects(face: Any) -> bool:
+    """ShapeAnalysis_Wire's verdict on the outer wire (BRepCheck cannot see a loop this small)."""
+    from OCP.ShapeAnalysis import ShapeAnalysis_Wire
+
+    return bool(ShapeAnalysis_Wire(BRepTools.OuterWire_s(face), face, 1e-6).CheckSelfIntersection())
+
+
+def _with_distant_neighbour(face: Any) -> Any:
+    """`face` and a small unrelated plane 300 mm away, in one compound: a larger PART, so the
+    fidelity bound is its 0.1 mm cap. (A loop the wire analysis can detect is ~0.07 mm tall on a
+    40 mm patch, which would exceed that patch's own 0.057 mm bound.)"""
+    from OCP.TopoDS import TopoDS_Compound
+
+    far = BRepBuilderAPI_MakeFace(gp_Pln(gp_Pnt(300, 0, 0), gp_Dir(0, 0, 1)), 0, 10, 0, 10).Face()
+    compound = TopoDS_Compound()
+    builder = BRep_Builder()
+    builder.MakeCompound(compound)
+    builder.Add(compound, face)
+    builder.Add(compound, far)
+    return compound
+
+
+def test_rebuild_face_repairs_a_small_self_intersecting_loop_and_stays_within_bound(
     pool: WorkerPool, tmp_path: Path,
 ) -> None:
     surface = _bspline(lambda x, y: 0.4 * math.sin(x / 9) * math.cos(y / 11), size=40.0)
-    face = _looped_face(surface, 40.0, loop=0.3)
-    assert not _valid(face), "the fixture must be a genuinely self-intersecting face"
+    face = _looped_face(surface, 40.0, loop=0.05)  # a loop ~0.07 mm tall
+    part = _with_distant_neighbour(face)
+    assert _self_intersects(face), "the fixture must be a genuinely self-intersecting face"
     assert isinstance(BRep_Tool.Surface_s(face), Geom_BSplineSurface)
-    ws = Workspace.from_brep(pool, _write(face, tmp_path / "looped.brep"))
-    (face_id,) = [s for s in ws.ids if s.startswith("F")]
+    bound = _bound(part)
+    assert 0.07 < bound <= 0.1, "the loop is under the bound only because the part is large"
+    ws = Workspace.from_brep(pool, _write(part, tmp_path / "looped.brep"))
+    (face_id,) = [s for s, i in _ids_at(ws, "F").items()
+                  if _surface_kind_of(_faces(part)[i - 1]) == "BSplineSurface"]
 
     after, diff = _op("rebuild_face").apply(pool, ws, [face_id], {"continuity": "G0"},
                                             timeout_s=TIMEOUT)
 
     rebuilt = _read(after.brep_path)
-    (new_face,) = _faces(rebuilt)
-    bound = _bound(face)
-    assert _valid(rebuilt), "BRepCheck_Analyzer must accept the rebuilt face"
+    (new_face,) = [f for f in _faces(rebuilt) if _surface_kind_of(f) == "BSplineSurface"]
+    assert _valid(rebuilt) and not _self_intersects(new_face)
     assert diff.params["measured"]["wire_fixed"] is True
-    # Sampled distance of the new face to the ORIGINAL carrier, taken here rather than read back.
-    carrier = BRep_Tool.Surface_s(face)
-    worst = max(GeomAPI_ProjectPointOnSurf(p, carrier).LowerDistance()
-                for p in _surface_points(new_face))
-    assert worst <= bound, (worst, bound)
-    assert abs(_area(new_face) - _area(face)) / _area(face) < 0.01
+    # The TRIM is what moved: the old boundary (loop included) must sit within the bound of the
+    # new face, measured here on the old face's own edge points.
+    from OCP.BRepAdaptor import BRepAdaptor_Curve
+
+    old_edge_points = []
+    explorer = TopExp_Explorer(face, TopAbs_EDGE)
+    while explorer.More():
+        curve = BRepAdaptor_Curve(TopoDS.Edge_s(explorer.Current()))
+        a, b = curve.FirstParameter(), curve.LastParameter()
+        old_edge_points += [curve.Value(a + (b - a) * k / 40) for k in range(41)]
+        explorer.Next()
+    assert _dist(old_edge_points, new_face) <= bound
+    assert diff.params["measured"]["boundary_shift"] <= bound
+    assert abs(_area(new_face) - _area(face)) / _area(face) < 0.02
     # Identity: a rebuilt face is the same face (Modified 1:1), and nothing is declared.
     assert face_id in after.ids and diff.modified[face_id] == [face_id]
-    # Only the looped EDGE is gone (its geometry was rebuilt); the face and the other edges stay.
-    assert len(diff.removed) == 1 and diff.removed[0].startswith("E")
+    assert len([f for f in after.ids if f.startswith("F")]) == 2  # the neighbour untouched
+    assert len(diff.removed) <= 1 and all(r.startswith("E") for r in diff.removed)
     assert diff.declared_added == [] and diff.declared_removed == []
+
+
+def test_rebuild_face_declines_a_loop_larger_than_the_bound_instead_of_cutting_it_off(
+    pool: WorkerPool, tmp_path: Path,
+) -> None:
+    surface = _bspline(lambda x, y: 0.4 * math.sin(x / 9) * math.cos(y / 11), size=40.0)
+    face = _looped_face(surface, 40.0, loop=0.3)  # a loop ~0.4 mm tall against a 0.057 mm bound
+    assert _self_intersects(face)
+    ws = Workspace.from_brep(pool, _write(face, tmp_path / "bigloop.brep"))
+    (face_id,) = [s for s in ws.ids if s.startswith("F")]
+
+    with pytest.raises(OpDeclined) as declined:
+        _op("rebuild_face").apply(pool, ws, [face_id], {"continuity": "G0"}, timeout_s=TIMEOUT)
+
+    assert "over_bound" in declined.value.reason and "boundary_shift" in declined.value.reason
+    assert ws.history == [] and sorted(p.name for p in tmp_path.iterdir()) == ["bigloop.brep"]
 
 
 def test_rebuild_face_declines_what_it_cannot_fix_and_changes_nothing(
@@ -483,29 +536,30 @@ def test_reapproximate_lowers_the_degree_within_tolerance(pool: WorkerPool, tmp_
 # --- refit_cluster ------------------------------------------------------------------------------
 
 
-def _split_patch_shell(tmp_path: Path) -> tuple[str, Any]:
-    """One B-spline patch split by its two mid iso-curves into four faces in a shell."""
+def _split_patch_shell(tmp_path: Path, surface: Any = None, *, ways: int = 4) -> tuple[str, Any]:
+    """One B-spline patch split by its mid iso-curve(s) into `ways` (2 or 4) faces in a shell."""
     from OCP.BRepAlgoAPI import BRepAlgoAPI_Splitter
     from OCP.TopTools import TopTools_ListOfShape
 
-    surface = _bspline(lambda x, y: 0.4 * math.sin(x / 9) * math.cos(y / 11), size=40.0)
+    surface = surface or _bspline(lambda x, y: 0.4 * math.sin(x / 9) * math.cos(y / 11), size=40.0)
     patch = BRepBuilderAPI_MakeFace(surface, 1e-7).Face()
     arguments, tools = TopTools_ListOfShape(), TopTools_ListOfShape()
     arguments.Append(patch)
-    tools.Append(BRepBuilderAPI_MakeEdge(surface.UIso(20.0)).Edge())
-    tools.Append(BRepBuilderAPI_MakeEdge(surface.VIso(20.0)).Edge())
+    tools.Append(BRepBuilderAPI_MakeEdge(surface.UIso(sum(surface.Bounds()[:2]) / 2)).Edge())
+    if ways == 4:
+        tools.Append(BRepBuilderAPI_MakeEdge(surface.VIso(sum(surface.Bounds()[2:]) / 2)).Edge())
     splitter = BRepAlgoAPI_Splitter()
     splitter.SetArguments(arguments)
     splitter.SetTools(tools)
     splitter.Build()
     parts = _faces(splitter.Shape())
-    assert len(parts) == 4
+    assert len(parts) == ways
     builder = BRep_Builder()
     shell = TopoDS_Shell()
     builder.MakeShell(shell)
     for part in parts:
         builder.Add(shell, part)
-    return _write(shell, tmp_path / "split.brep"), patch
+    return _write(shell, tmp_path / f"split{ways}.brep"), patch
 
 
 def test_refit_cluster_replaces_four_fragments_with_one_declared_face(
@@ -581,3 +635,31 @@ def test_fill_loop_fills_a_curved_hole_with_a_non_planar_face_close_to_the_surfa
                 for p in _surface_points(fill))
     assert worst <= _bound(holed), (worst, _bound(holed))
     assert diff.removed == [] and diff.declared_removed == []
+
+
+@pytest.mark.parametrize("op_name", ["to_canonical", "reapproximate"])
+def test_replacing_two_adjacent_faces_keeps_their_shared_edge_shared(
+    pool: WorkerPool, tmp_path: Path, op_name: str,
+) -> None:
+    """Two faces of one patch share an edge; replacing both must not crack the seam between them."""
+    if op_name == "to_canonical":
+        surface = _bspline(lambda x, y: 5.0 + 2e-5 * math.sin(x / 3) * math.cos(y / 4), size=20.0)
+        params: dict = {"tol_mm": 1e-4}
+        ways = 4
+    else:
+        surface = _bspline(lambda x, y: 0.4 * math.sin(x / 9) * math.cos(y / 11), size=40.0, n=14,
+                           deg=(8, 8))
+        params = {"tol_mm": 0.02, "max_degree": 5}
+        ways = 4
+    path, _ = _split_patch_shell(tmp_path, surface, ways=ways)
+    ws = Workspace.from_brep(pool, path)
+    faces = sorted(s for s in ws.ids if s.startswith("F"))
+    assert len(faces) == ways
+    before = _free_edges(_read(path))
+
+    after, diff = _op(op_name).apply(pool, ws, faces, params, timeout_s=TIMEOUT)
+
+    result = _read(after.brep_path)
+    assert _valid(result)
+    assert _free_edges(result) == before, "the seam between the two faces must still be shared"
+    assert set(faces) <= set(after.ids) and all(diff.modified[f] == [f] for f in faces)

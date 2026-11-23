@@ -35,32 +35,30 @@ from __future__ import annotations
 import math
 import os
 import time
-import uuid
-from pathlib import Path
 from typing import Any
 
 from meshpipeline.cad.repair_v4.kernel_calls import register as register_kernel_fn
+from meshpipeline.cad.repair_v4.ops import OpDeclined, OpFailed, run_kernel_op, validate_call
 from meshpipeline.cad.repair_v4.types import Site, StableId
 from meshpipeline.cad.repair_v4.worker_pool import WorkerPool
-from meshpipeline.cad.repair_v4.workspace import Diff, Workspace, apply_history
+from meshpipeline.cad.repair_v4.workspace import Diff, Workspace
 
-try:  # Task 11's contract types; until it is merged the same two names are defined here.
-    from meshpipeline.cad.repair_v4.ops import OpDeclined, OpFailed  # type: ignore[attr-defined]
-except ImportError:
-    class OpDeclined(Exception):  # type: ignore[no-redef]
-        """The op ran and declined: nothing was changed. `reason` is for the proposer."""
 
-        def __init__(self, reason: str) -> None:
-            super().__init__(reason)
-            self.reason = reason
+class _Declined(Exception):
+    """Raised inside a kernel function for an OCCT step that did not complete; the function's
+    wrapper turns it into `{"declined": reason}` and removes any half-written output."""
 
-    class OpFailed(Exception):  # type: ignore[no-redef]
-        """The worker did not answer: `status` is the pool's ("error", "timeout" or "crashed")."""
 
-        def __init__(self, status: str, message: str) -> None:
-            super().__init__(f"{status}: {message}")
-            self.status = status
-            self.message = message
+def _declines(fn: Any) -> Any:
+    import functools
+
+    @functools.wraps(fn)
+    def wrapper(payload: dict) -> dict:
+        try:
+            return fn(payload)
+        except _Declined as why:
+            return _decline(payload, str(why))
+    return wrapper
 
 
 #: Absolute ceiling of the fidelity bound, mm.
@@ -73,6 +71,9 @@ MAX_FILL_SPAN_RATIO = 0.05
 SAMPLES_PER_AXIS = 12
 #: refit_cluster fits a GRID_NODES x GRID_NODES grid of points.
 GRID_NODES = 24
+#: A replacing op declines if the face area moves by more than this fraction (legacy
+#: CAD_REPAIR_MAX_AREA_CHANGE_RATIO).
+MAX_AREA_CHANGE_RATIO = 0.02
 
 
 def fidelity_bound(diagonal: float) -> float:
@@ -173,18 +174,31 @@ def _area(shape: Any) -> float:
 
 
 def _invalid_faces(shape: Any) -> int:
-    """How many faces of `shape` BRepCheck_Analyzer rejects (a valid shape has none)."""
+    """How many faces of `shape` are invalid IN CONTEXT: one analyzer over the whole shape, asked
+    about each face, so orientation against neighbours and shell/solid membership count (an
+    analyzer built on a face alone cannot see them)."""
     from OCP.BRepCheck import BRepCheck_Analyzer
     from OCP.TopAbs import TopAbs_FACE
     from OCP.TopExp import TopExp_Explorer
 
+    analyzer = BRepCheck_Analyzer(shape)
     bad = 0
     explorer = TopExp_Explorer(shape, TopAbs_FACE)
     while explorer.More():
-        if not BRepCheck_Analyzer(explorer.Current()).IsValid():
+        if not analyzer.IsValid(explorer.Current()):
             bad += 1
         explorer.Next()
     return bad
+
+
+def _free_edge_count(shape: Any) -> int:
+    from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE
+    from OCP.TopExp import TopExp
+    from OCP.TopTools import TopTools_IndexedDataMapOfShapeListOfShape
+
+    index = TopTools_IndexedDataMapOfShapeListOfShape()
+    TopExp.MapShapesAndAncestors_s(shape, TopAbs_EDGE, TopAbs_FACE, index)
+    return sum(1 for i in range(1, index.Extent() + 1) if index.FindFromIndex(i).Size() == 1)
 
 
 def _is_valid(shape: Any) -> bool:
@@ -312,7 +326,7 @@ def _face_on_surface(wires: list[Any], surface: Any) -> Any:
     for wire in wires:
         builder.Add(candidate, wire)
     fixer = ShapeFix_Face(candidate)
-    fixer.Perform()
+    fixer.Perform()  # True only when it CHANGED something; the face's validity is checked by the caller
     return TopoDS.Face_s(fixer.Face())
 
 
@@ -349,15 +363,47 @@ def _apply_replacement(old: Any, replace: list[tuple[Any, Any]]) -> tuple[Any, A
     return new, history
 
 
-def _first_valid(old: Any, build: Any) -> Any:
-    """`build(flipped)` for flipped False then True, the first whose part is no worse than `old`
-    (a replacement face can come out inside-out against its neighbours); None if neither is."""
-    baseline = _invalid_faces(old)
+def _guard(old: Any, new: Any, *, geometry_fixed: bool) -> str | None:
+    """Why `new` may not replace `old`, or None. Checked on the WHOLE part, in context: the solid
+    count is kept, no new free edge appears, a valid part stays valid and an invalid one gets no
+    more invalid faces. When `geometry_fixed` (the op swaps a carrier within a tolerance, so area
+    and volume must stand still) Task 11's `split.guard` is run as well, for its area and volume
+    noise bounds; ops that legitimately add or remove area (fill, refit, rebuild) are gated by their
+    own measured numbers instead."""
+    from OCP.BRepCheck import BRepCheck_Analyzer
+
+    from meshpipeline.cad.repair_v4.ops import split
+
+    if geometry_fixed:
+        reason = split.guard(old, new)
+        if reason is not None:
+            return reason
+    if split._solid_count(old) != split._solid_count(new):
+        return "solid_count: the op changed the number of solids"
+    if _free_edge_count(new) > _free_edge_count(old):
+        return "cracked: the result has more free edges than the part it replaces"
+    if BRepCheck_Analyzer(old).IsValid():
+        if not BRepCheck_Analyzer(new).IsValid():
+            return "invalidated: the result is not BRepCheck-valid"
+    elif _invalid_faces(new) > _invalid_faces(old):
+        return "invalidated: the result has more invalid faces than the part it replaces"
+    return None
+
+
+def _first_valid(old: Any, build: Any, *, geometry_fixed: bool = False) -> tuple[Any, str]:
+    """`build(flipped)` for flipped False then True; the first result `_guard` accepts, and `""`,
+    else `None` and the last reason. A replacement face can come out inside-out against its
+    neighbours, which only the whole-part check sees."""
+    reason = "no candidate"
     for flipped in (False, True):
         result = build(flipped)
-        if result is not None and _invalid_faces(result[0]) <= baseline:
-            return result
-    return None
+        if result is None:
+            continue
+        refusal = _guard(old, result[0], geometry_fixed=geometry_fixed)
+        if refusal is None:
+            return result, ""
+        reason = refusal
+    return None, reason
 
 
 def _finish(old: Any, new: Any, history: Any, payload: dict, *, op: str, params: dict, start: float,
@@ -365,17 +411,22 @@ def _finish(old: Any, new: Any, history: Any, payload: dict, *, op: str, params:
     """Write `new`, then the history record (always via `ws_kernel.history_record`)."""
     from meshpipeline.cad.repair_v4 import ws_kernel
 
-    ws_kernel.write_brep(new, payload["out_path"])
-    record = ws_kernel.history_record(
-        old, new, history, op=op, params=params, old_path=payload["brep_path"],
-        new_path=payload["out_path"], quantum=payload["quantum"],
-        seconds=time.perf_counter() - start)
-    # The new faces' kernel indices in `new`; history_record has just proved the written file reads
-    # back with the same order, so they are the indices the workspace will see.
+    # The new faces' kernel indices in `new`; history_record proves the written file reads back
+    # with the same order, so they are the indices the workspace will see. They ride in `params`
+    # (which apply_history carries to the Diff) so `run_kernel_op` can be used as it is.
     in_new = ws_kernel._maps(new)["face"]
-    record["added_face_indices"] = [int(in_new.FindIndex(f)) for f in (added_faces or [])]
-    record["measured"] = measured
-    return record
+    params = {**params, "measured": measured,
+              "added_face_indices": [int(in_new.FindIndex(f)) for f in (added_faces or [])]}
+    out = payload["out_path"]
+    try:
+        ws_kernel.write_brep(new, out)
+        return ws_kernel.history_record(
+            old, new, history, op=op, params=params, old_path=payload["brep_path"], new_path=out,
+            quantum=payload["quantum"], seconds=time.perf_counter() - start)
+    except BaseException:
+        if os.path.exists(out):
+            os.unlink(out)
+        raise
 
 
 def _decline(payload: dict, reason: str) -> dict:
@@ -384,12 +435,22 @@ def _decline(payload: dict, reason: str) -> dict:
     return {"declined": reason}
 
 
+#: The measured numbers that are distances in mm and are held to the bound.
+_GATED = ("old_to_new", "new_to_old", "to_carrier", "boundary_shift", "fill_to_surroundings")
+
+
 def _over_bound(measured: dict, bound: float, label: str = "deviation") -> str | None:
-    keys = [k for k in ("old_to_new", "new_to_old", "to_carrier") if k in measured]
+    """Decline text if any distance in `measured` exceeds `bound`, or the area moved too much."""
+    ratio = measured.get("area_change_ratio")
+    if ratio is not None and ratio > MAX_AREA_CHANGE_RATIO:
+        return (f"over_bound: the face area moved by {100 * ratio:.2f}% (limit "
+                f"{100 * MAX_AREA_CHANGE_RATIO:g}%); nothing was changed")
+    keys = [k for k in _GATED if k in measured]
     worst_key = max(keys, key=lambda k: measured[k], default=None)
     if worst_key is not None and measured[worst_key] > bound:
         return (f"over_bound: {label} {measured[worst_key]:.6g} mm ({worst_key}) exceeds the "
-                f"fidelity bound {bound:.6g} mm; nothing was changed")
+                f"fidelity bound {bound:.6g} mm - the defect is larger than the op may change; "
+                "nothing was changed")
     return None
 
 
@@ -405,7 +466,7 @@ def _pcurve_print(pcurve: Any, first: float, last: float) -> tuple:
     return tuple(marks)
 
 
-def _fix_wires_in_uv(face: Any, precision: float) -> tuple[list[Any], bool]:
+def _fix_wires_in_uv(face: Any, precision_mm: float) -> tuple[list[Any], bool]:
     """ShapeFix_Wire.FixSelfIntersection on each wire of `face`; (the wires, whether any changed).
 
     The self-intersection is a property of the wire in the face's UV domain, and ShapeFix_Wire acts
@@ -413,8 +474,13 @@ def _fix_wires_in_uv(face: Any, precision: float) -> tuple[list[Any], bool]:
     tilted and curved B-spline faces with the loop clearly detected by ShapeAnalysis_Wire). So the
     wires' pcurves are put on a UV-identity plane, fixed there, and the changed edges are rebuilt
     on the real carrier from the fixed pcurves; an edge the tool left alone is reused as the very
-    same TShape, so neighbours keep sharing it."""
+    same TShape, so neighbours keep sharing it.
+
+    UNITS. The proxy lives in UV, so the tool's precision is in UV units. `precision_mm` is turned
+    into UV units with the carrier's local scale (mm per unit of u or v, the larger of the two, so
+    the 3D meaning of the precision is never looser than asked)."""
     from OCP.BRep import BRep_Tool
+    from OCP.BRepAdaptor import BRepAdaptor_Surface
     from OCP.BRepBuilderAPI import (
         BRepBuilderAPI_MakeEdge,
         BRepBuilderAPI_MakeFace,
@@ -429,6 +495,14 @@ def _fix_wires_in_uv(face: Any, precision: float) -> tuple[list[Any], bool]:
     from OCP.TopoDS import TopoDS
 
     surface = BRep_Tool.Surface_s(face)
+    adaptor = BRepAdaptor_Surface(face, True)
+    u0, u1, v0, v1 = (adaptor.FirstUParameter(), adaptor.LastUParameter(),
+                      adaptor.FirstVParameter(), adaptor.LastVParameter())
+    um, vm = (u0 + u1) / 2, (v0 + v1) / 2
+    du, dv = (u1 - u0) * 1e-3, (v1 - v0) * 1e-3
+    mm_per_u = adaptor.Value(um + du, vm).Distance(adaptor.Value(um, vm)) / du
+    mm_per_v = adaptor.Value(um, vm + dv).Distance(adaptor.Value(um, vm)) / dv
+    precision = precision_mm / max(mm_per_u, mm_per_v, 1e-12)
     proxy_plane = Geom_Plane(gp_Pln())
     changed = False
     new_wires: list[Any] = []
@@ -446,8 +520,12 @@ def _fix_wires_in_uv(face: Any, precision: float) -> tuple[list[Any], bool]:
             if pcurve is None:
                 return _wires_of(face), False
             first, last = BRep_Tool.Range_s(edge, face)
-            proxy = BRepBuilderAPI_MakeEdge(pcurve, proxy_plane, first, last).Edge()
-            BRepLib.BuildCurves3d_s(proxy)
+            made = BRepBuilderAPI_MakeEdge(pcurve, proxy_plane, first, last)
+            if not made.IsDone():
+                raise _Declined("proxy_failed: a pcurve could not be made into an edge")
+            proxy = made.Edge()
+            if not BRepLib.BuildCurves3d_s(proxy):
+                raise _Declined("proxy_failed: no 3D curve for a proxy edge")
             if edge.Orientation() != proxy.Orientation():
                 proxy = TopoDS.Edge_s(proxy.Oriented(edge.Orientation()))
             proxy_of.append((edge, _pcurve_print(pcurve, first, last)))
@@ -477,10 +555,13 @@ def _fix_wires_in_uv(face: Any, precision: float) -> tuple[list[Any], bool]:
                 continue
             pcurve = BRep_Tool.CurveOnSurface_s(fixed, proxy_face, 0.0, 1.0)
             first, last = BRep_Tool.Range_s(fixed, proxy_face)
-            edge = BRepBuilderAPI_MakeEdge(pcurve, surface, first, last).Edge()
-            BRepLib.BuildCurves3d_s(edge)
-            rebuilt.Add(edge)
-        new_wires.append(rebuilt.Wire() if rebuilt.IsDone() else wire)
+            made = BRepBuilderAPI_MakeEdge(pcurve, surface, first, last)
+            if not made.IsDone() or not BRepLib.BuildCurves3d_s(made.Edge()):
+                raise _Declined("rebuild_failed: a fixed edge could not be rebuilt on the carrier")
+            rebuilt.Add(made.Edge())
+        if not rebuilt.IsDone():
+            raise _Declined("rebuild_failed: the fixed edges do not form a wire")
+        new_wires.append(rebuilt.Wire())
     return new_wires, changed
 
 
@@ -569,11 +650,16 @@ def _outer_edges(face: Any) -> list[Any]:
 
 
 def _fill_face(wire_edges: list[Any], part: Any, continuity: str, tol: float,
-               reference: list[Any] | None = None) -> Any | None:
-    """A face bounded by `wire_edges` (the very edges given; pass copies, see `_isolate`). `reference`
-    is the same list as it is in `part`, where the neighbouring faces are looked up. Planar when the loop lies within `tol` of a
-    plane (BRepLib_FindSurface); otherwise BRepOffsetAPI_MakeFilling, constrained G1 to the face on
-    the other side of each edge when `continuity` is "G1" and such a face exists."""
+               reference: list[Any] | None = None) -> tuple[Any | None, str]:
+    """`(face, achieved)`: a face bounded by `wire_edges` (the very edges given; pass copies, see
+    `_isolate`) and what was actually achieved. `reference` is the same list as it is in `part`,
+    where the neighbouring faces are looked up.
+
+    Planar when the loop lies within `tol` of a plane (BRepLib_FindSurface; `achieved` says
+    "planar", and a G1 request is NOT honoured there: nothing constrains the tangent); otherwise
+    BRepOffsetAPI_MakeFilling, constrained G1 to the face across each edge where `continuity` is
+    "G1" and such a face exists (`achieved` says on how many edges). Achieved continuity is
+    reported, not measured: no tangent-angle sampling is done."""
     from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakeWire
     from OCP.BRepLib import BRepLib_FindSurface
     from OCP.BRepOffsetAPI import BRepOffsetAPI_MakeFilling
@@ -588,30 +674,38 @@ def _fill_face(wire_edges: list[Any], part: Any, continuity: str, tol: float,
     for edge in wire_edges:
         wire_maker.Add(edge)
     if not wire_maker.IsDone():
-        return None
+        return None, "none"
     wire = wire_maker.Wire()
     finder = BRepLib_FindSurface(wire, tol, True)
     if finder.Found():
-        face = BRepBuilderAPI_MakeFace(finder.Surface(), wire).Face()
-        fixer = ShapeFix_Face(face)
-        fixer.Perform()
-        return TopoDS.Face_s(fixer.Face())
+        made = BRepBuilderAPI_MakeFace(finder.Surface(), wire)
+        if not made.IsDone():
+            return None, "none"
+        fixer = ShapeFix_Face(made.Face())
+        fixer.Perform()  # True only when it changed something; validity is checked by the caller
+        return TopoDS.Face_s(fixer.Face()), "planar (tangency not constrained)"
     filler = BRepOffsetAPI_MakeFilling()
     neighbours = TopTools_IndexedDataMapOfShapeListOfShape()
     TopExp.MapShapesAndAncestors_s(part, TopAbs_EDGE, TopAbs_FACE, neighbours)
+    tangent = 0
     for edge, original in zip(wire_edges, reference or wire_edges, strict=True):
         across = None
         if continuity == "G1" and neighbours.Contains(original):
             across = next((TopoDS.Face_s(f) for f in neighbours.FindFromKey(original)), None)
         if across is not None:
             filler.Add(edge, across, GeomAbs_G1, True)
+            tangent += 1
         else:
             filler.Add(edge, GeomAbs_C0, True)
     filler.Build()
-    return TopoDS.Face_s(filler.Shape()) if filler.IsDone() else None
+    if not filler.IsDone():
+        return None, "none"
+    achieved = f"G1 on {tangent} of {len(wire_edges)} edges" if continuity == "G1" else "G0"
+    return TopoDS.Face_s(filler.Shape()), achieved
 
 
 @register_kernel_fn("op_fill_loop")
+@_declines
 def _fill_loop(payload: dict) -> dict:
     """Close a free loop of edges with one new face and add it to the shell that has the hole."""
     from OCP.Bnd import Bnd_Box
@@ -666,6 +760,8 @@ def _fill_loop(payload: dict) -> dict:
     loop_wire = BRepBuilderAPI_MakeWire()
     for edge in ordered:
         loop_wire.Add(edge)
+    if not loop_wire.IsDone():
+        return _decline(payload, "not_a_loop: the edges could not be joined into a wire")
     (copied,) = _isolate([loop_wire.Wire()], old)
     copies = [TopoDS.Edge_s(e) for e in _edges_in_order(copied)]
     originals = [TopoDS.Edge_s(e) for e in _edges_in_order(loop_wire.Wire())]
@@ -673,25 +769,29 @@ def _fill_loop(payload: dict) -> dict:
 
     def build(flipped: bool) -> Any:
         wire_edges = [TopoDS.Edge_s(e.Reversed()) for e in copies] if flipped else copies
-        face = _fill_face(wire_edges, old, payload["continuity"], bound, originals)
+        face, achieved = _fill_face(wire_edges, old, payload["continuity"], bound, originals)
         if face is None or not _is_valid(face):
             return None
-        chosen["face"] = face
+        chosen["face"], chosen["achieved"] = face, achieved
         return _swap_in_shell(old, shell, [], face, _match_pairs([loop_wire.Wire()], face))
 
-    built = _first_valid(old, build)
+    built, reason = _first_valid(old, build)
     if built is None:
-        return _decline(payload, "no_valid_fill: no fill of this loop keeps the part valid")
+        return _decline(payload, f"no_valid_fill: {reason}")
     new, history = built
     fill = chosen["face"]
-    # The added face is not measured against anything (nothing was there); what must hold is that
-    # no ORIGINAL face moved, which is the one-sided original -> repaired distance.
-    n_faces = ws_kernel._maps(old)["face"].Extent()
-    measured = {"old_to_new": max(_max_distance(_face_points(f), new)
-                                  for f in _faces_of(old, list(range(1, n_faces + 1)))),
-                "span_mm": span, "span_ratio": span / diagonal, "bound_mm": bound,
-                "fill_area_mm2": _area(fill), "fill_surface": _surface_kind(fill)}
-    problem = _over_bound(measured, bound)
+    # The fill is bounded against the surface it plugs: its sampled points must lie within the
+    # bound of the carrier of one of the faces around the loop, so a MakeFilling bulge is refused.
+    # (Original faces are untouched by construction and are not re-measured.)
+    from OCP.BRep import BRep_Tool
+
+    carriers = [BRep_Tool.Surface_s(TopoDS.Face_s(f)) for e in edges for f in ancestors.FindFromKey(e)]
+    worst = max(min(_distance_to_surface([p], c) for c in carriers) for p in _face_points(fill))
+    measured = {"fill_to_surroundings": worst, "span_mm": span, "span_ratio": span / diagonal,
+                "bound_mm": bound, "fill_area_mm2": _area(fill), "fill_surface": _surface_kind(fill),
+                "continuity_requested": payload["continuity"],
+                "continuity_achieved": chosen["achieved"]}
+    problem = _over_bound(measured, bound, "fill deviates from its surroundings by")
     if problem:
         return _decline(payload, problem)
     return _finish(old, new, history, payload, op="fill_loop",
@@ -700,6 +800,7 @@ def _fill_loop(payload: dict) -> dict:
 
 
 @register_kernel_fn("op_rebuild_face")
+@_declines
 def _rebuild_face(payload: dict) -> dict:
     """Remove self-intersections from a face's wires (ShapeFix_Wire.FixSelfIntersection), then, for
     G1 or when the face is still invalid, re-surface it by filling its outer boundary."""
@@ -715,13 +816,13 @@ def _rebuild_face(payload: dict) -> dict:
 
     wires, changed = _fix_wires_in_uv(face, min(bound, 1e-3))
     candidate = _face_on_surface(_isolate(wires, old), BRep_Tool.Surface_s(face))
-    refilled = False
+    refilled, achieved = False, "carrier kept (G0 boundary, surface untouched)"
     if payload["continuity"] == "G1" or not _is_valid(candidate):
-        filled = _fill_face(_outer_edges(candidate), old, payload["continuity"], bound,
-                            _outer_edges(face) if len(_outer_edges(candidate)) == len(_outer_edges(face))
-                            else None)
+        same_edges = len(_outer_edges(candidate)) == len(_outer_edges(face))
+        filled, how = _fill_face(_outer_edges(candidate), old, payload["continuity"], bound,
+                                 _outer_edges(face) if same_edges else None)
         if filled is not None and _is_valid(filled):
-            candidate, refilled = filled, True
+            candidate, refilled, achieved = filled, True, how
     if not changed and not refilled and was_valid:
         return _decline(payload, "no_change: the face is valid and has no self-intersection")
     if not _is_valid(candidate):
@@ -733,20 +834,25 @@ def _rebuild_face(payload: dict) -> dict:
             old, [(face, candidate.Reversed() if flipped else candidate),
                   *_match_pairs(_wires_of(face), candidate)])
 
-    built = _first_valid(old, build)
+    built, reason = _first_valid(old, build)
     if built is None:
-        return _decline(payload, "no_valid_rebuild: the rebuilt face leaves the part invalid")
+        return _decline(payload, f"no_valid_rebuild: {reason}")
     new, history = built
-    points = _face_points(candidate)
+    area_old, area_new = _area(face), _area(candidate)
     measured: dict = {"bound_mm": bound, "wire_fixed": changed, "refilled": refilled,
-                      "area_old_mm2": _area(face), "area_new_mm2": _area(candidate)}
+                      "area_old_mm2": area_old, "area_new_mm2": area_new,
+                      "area_change_ratio": abs(area_new - area_old) / max(area_old, 1e-12),
+                      "continuity_requested": payload["continuity"],
+                      "continuity_achieved": achieved}
+    # GATED. The trim is what a rebuild moves: how far the OLD boundary sat from the new face. (The
+    # distance of the new face to the carrier it was built on is ~0 by construction and is only
+    # reported.) A loop bigger than the bound is therefore declined, not silently cut off.
+    measured["boundary_shift"] = _max_distance(_edge_points(face), candidate)
     if refilled:
         measured.update(_two_way([face], [candidate]))
-    else:  # same carrier: positions can only differ along the (unchanged) surface
-        measured["to_carrier"] = _distance_to_surface(points, BRep_Tool.Surface_s(face))
-        # Not gated (removing a loop does move the trim by the loop's size); reported so the caller
-        # can see how far the old boundary sat from the new face.
-        measured["boundary_shift"] = _max_distance(_edge_points(face), candidate)
+    else:
+        measured["carrier_distance_reported"] = _distance_to_surface(
+            _face_points(candidate), BRep_Tool.Surface_s(face))
     problem = _over_bound(measured, bound)
     if problem:
         return _decline(payload, problem)
@@ -757,8 +863,17 @@ def _rebuild_face(payload: dict) -> dict:
 def _replace_surfaces(payload: dict, *, op: str, params: dict, start: float, old: Any, bound: float,
                       surfaces: list[Any], faces: list[Any], extra: dict) -> dict:
     """Swap each of `faces` for the same boundary on its new carrier, measure, and write."""
-    candidates = [_face_on_surface(_isolate(_wires_of(f), old), s) for f, s in zip(faces, surfaces, strict=True)]
-    pairs = [p for f, c in zip(faces, candidates, strict=True) for p in _match_pairs(_wires_of(f), c)]
+    # ONE isolation for all the faces: adjacent faces share edges, and two independent copies of a
+    # shared edge would crack the seam between them.
+    wires_by_face = [_wires_of(f) for f in faces]
+    flat = _isolate([w for ws in wires_by_face for w in ws], old)
+    candidates, taken = [], 0
+    for ws, surface in zip(wires_by_face, surfaces, strict=True):
+        candidates.append(_face_on_surface(flat[taken:taken + len(ws)], surface))
+        taken += len(ws)
+    pairs: list[tuple[Any, Any]] = []
+    for f, c in zip(faces, candidates, strict=True):
+        pairs.extend(p for p in _match_pairs(_wires_of(f), c) if not any(p[0].IsSame(q[0]) for q in pairs))
     if not all(_is_valid(c) for c in candidates):
         return _decline(payload, f"no_valid_face: the new carrier does not give a valid face ({op})")
 
@@ -767,11 +882,13 @@ def _replace_surfaces(payload: dict, *, op: str, params: dict, start: float, old
             old, [*((f, c.Reversed() if flipped else c) for f, c in zip(faces, candidates, strict=True)),
                   *pairs])
 
-    built = _first_valid(old, build)
+    built, reason = _first_valid(old, build, geometry_fixed=True)
     if built is None:
-        return _decline(payload, f"no_valid_replacement: {op} leaves the part invalid")
+        return _decline(payload, f"no_valid_replacement: {reason}")
     new, history = built
-    measured = {"bound_mm": bound, **extra, **_two_way(faces, candidates)}
+    area_old, area_new = sum(_area(f) for f in faces), sum(_area(c) for c in candidates)
+    measured = {"bound_mm": bound, **extra, **_two_way(faces, candidates),
+                "area_change_ratio": abs(area_new - area_old) / max(area_old, 1e-12)}
     problem = _over_bound(measured, min(bound, payload["tol_mm"]), "deviation vs tol_mm")
     if problem:
         return _decline(payload, problem)
@@ -786,6 +903,7 @@ def _tolerance_gate(payload: dict, bound: float) -> str | None:
 
 
 @register_kernel_fn("op_reapproximate")
+@_declines
 def _reapproximate(payload: dict) -> dict:
     """Re-approximate the faces' surfaces within `tol_mm` at degree <= `max_degree`
     (ShapeCustom_BSplineRestriction). Only the carrier is taken from the restricted copy; the
@@ -828,6 +946,7 @@ def _reapproximate(payload: dict) -> dict:
 
 
 @register_kernel_fn("op_to_canonical")
+@_declines
 def _to_canonical(payload: dict) -> dict:
     """Replace each face's carrier by the plane, cylinder, cone or sphere it lies within `tol_mm` of
     (ShapeAnalysis_CanonicalRecognition); a face that is none of them declines the whole call."""
@@ -916,9 +1035,16 @@ def _fit_cluster_surface(faces: list[Any], tol: float) -> Any | None:
 
 
 @register_kernel_fn("op_refit_cluster")
+@_declines
 def _refit_cluster(payload: dict) -> dict:
     """Replace a cluster of adjacent faces by ONE face on a fitted B-spline surface, bounded by the
-    cluster's outline. The new face is declared added and the cluster declared removed."""
+    cluster's outline. The new face is declared added and the cluster declared removed.
+
+    LIMITS (all decline, none guess): the cluster must be at least two faces in ONE shell with ONE
+    closed outline (no holes, no pinch points); seam/closed faces are not supported; the grid fit
+    is laid on the cluster's best-fit plane and is not boundary-constrained, so a cluster that is
+    not a graph over a plane, or a ragged outline, shows up as a two-way deviation over `tol_mm`
+    and is declined. The cluster's labels are NOT inherited: the new face is a fresh id."""
     from OCP.BRep import BRep_Builder
     from OCP.ShapeAnalysis import ShapeAnalysis_FreeBounds
     from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE
@@ -974,12 +1100,14 @@ def _refit_cluster(payload: dict) -> dict:
         chosen["face"] = face
         return _swap_in_shell(old, shell, faces, face, pairs)
 
-    built = _first_valid(old, build)
+    built, reason = _first_valid(old, build)
     if built is None:
-        return _decline(payload, "no_valid_replacement: refit leaves the part invalid")
+        return _decline(payload, f"no_valid_replacement: {reason}")
     new, history = built
     added = chosen["face"]
+    area_old, area_new = sum(_area(f) for f in faces), _area(added)
     measured = {"bound_mm": bound, **_two_way(faces, [added]),
+                "area_change_ratio": abs(area_new - area_old) / max(area_old, 1e-12),
                 "cluster_faces": len(faces), "fit_surface": _surface_kind(added)}
     problem = _over_bound(measured, min(bound, payload["tol_mm"]), "deviation vs tol_mm")
     if problem:
@@ -993,40 +1121,6 @@ def _refit_cluster(payload: dict) -> dict:
 
 _CONTINUITY = {"type": "string", "enum": ["G0", "G1"]}
 _TOL = {"type": "number", "minimum": 1e-6, "maximum": BOUND_MAX_MM}
-
-
-def _check(schema: dict, ws: Workspace, targets: list[StableId], params: dict, name: str) -> None:
-    """Refuse (ValueError) a call the schema rejects. A small stand-in for Task 11's `check_call`,
-    which covers the same ground; it goes when the registry does."""
-    from meshpipeline.cad.repair_v4.workspace import UnknownTarget
-
-    spec = schema["x-targets"]
-    prefix = {"face": "F", "edge": "E"}[spec["kind"]]
-    try:
-        ws.resolve(list(targets))
-    except UnknownTarget as gone:
-        raise ValueError(f"invalid call to {name}: {gone}") from gone
-    problems = [f"{t} is not a {spec['kind']}" for t in targets if not t.startswith(prefix)]
-    if len(targets) < spec["min"]:
-        problems.append(f"needs at least {spec['min']} {spec['kind']} target(s), got {len(targets)}")
-    if spec.get("max") is not None and len(targets) > spec["max"]:
-        problems.append(f"takes at most {spec['max']} target(s), got {len(targets)}")
-    for key in schema["required"]:
-        if key not in params:
-            problems.append(f"missing parameter {key!r}")
-    for key, value in params.items():
-        rule = schema["properties"].get(key)
-        if rule is None:
-            problems.append(f"unknown parameter {key!r}")
-        elif "enum" in rule and value not in rule["enum"]:
-            problems.append(f"{key}={value!r} is not one of {rule['enum']}")
-        elif rule["type"] in ("number", "integer"):
-            if isinstance(value, bool) or not isinstance(value, (int, float)):
-                problems.append(f"{key} must be a number")
-            elif value < rule["minimum"] or value > rule["maximum"]:
-                problems.append(f"{key}={value} is outside [{rule['minimum']}, {rule['maximum']}]")
-    if problems:
-        raise ValueError(f"invalid call to {name}: " + "; ".join(problems))
 
 
 class _FaceOp:
@@ -1047,24 +1141,21 @@ class _FaceOp:
 
     def apply(self, pool: WorkerPool, ws: Workspace, targets: list[StableId], params: dict, *,
               timeout_s: float) -> tuple[Workspace, Diff]:
-        _check(self.params_schema, ws, targets, params, self.name)
-        out_path = str(Path(ws.brep_path).parent / f"{self.name}-{uuid.uuid4().hex[:12]}.brep")
-        payload = {**params, self.payload_key: [ws.indices[t] for t in targets],
-                   "brep_path": ws.brep_path, "out_path": out_path, "quantum": ws.quantum}
-        result = pool.call(self.kernel_fn, payload, timeout_s=timeout_s)
-        if not result.ok or result.value is None:
-            raise OpFailed(result.status, result.error or "no answer")
-        if "declined" in result.value:
-            raise OpDeclined(str(result.value["declined"]))
-        record = result.value
-        new = apply_history(ws, record)
-        diff = new.history[-1]
-        face_at = {index: sid for sid, index in new.indices.items() if sid.startswith("F")}
-        if self.declares_added:
-            diff.declared_added = [face_at[i] for i in record["added_face_indices"]]
-        if self.declares_removed:
-            diff.declared_removed = list(targets)
-        diff.params["measured"] = record["measured"]
+        errors = validate_call(self.name, targets, params, ws)
+        if errors:  # an op raises only OpDeclined / OpFailed
+            raise OpDeclined(f"invalid call to {self.name}: " + "; ".join(errors))
+        new, diff = run_kernel_op(
+            pool, ws, kernel_fn=self.kernel_fn, op=self.name, timeout_s=timeout_s,
+            payload={**params, self.payload_key: [ws.indices[t] for t in targets]})
+        try:
+            added = diff.params.pop("added_face_indices", [])
+            face_at = {index: sid for sid, index in new.indices.items() if sid.startswith("F")}
+            if self.declares_added:
+                diff.declared_added = [face_at[i] for i in added]
+            if self.declares_removed:
+                diff.declared_removed = list(targets)
+        except KeyError as exc:
+            raise OpFailed("error", f"the kernel's added face {exc} is not in the new workspace") from exc
         return new, diff
 
 
@@ -1077,7 +1168,11 @@ def _schema(kind: str, minimum: int, maximum: int | None, properties: dict) -> d
 class RebuildFace(_FaceOp):
     name = "rebuild_face"
     kernel_fn = "op_rebuild_face"
-    params_schema = _schema("face", 1, 1, {"continuity": _CONTINUITY})
+    params_schema = {**_schema("face", 1, 1, {"continuity": _CONTINUITY}),
+                     "description": "Fix self-intersections of the face's wires; a loop larger than "
+                                    "the fidelity bound is declined. G1 is honoured only where a "
+                                    "neighbouring face constrains the re-fill; see "
+                                    "Diff.params['measured']['continuity_achieved']."}
     site_kinds = frozenset({"invalid", "self_overlap", "intersection", "periodic", "pole"})
     entity_prefix = "F"
 
@@ -1087,7 +1182,10 @@ class FillLoop(_FaceOp):
 
     name = "fill_loop"
     kernel_fn = "op_fill_loop"
-    params_schema = _schema("edge", 1, None, {"continuity": _CONTINUITY})
+    params_schema = {**_schema("edge", 1, None, {"continuity": _CONTINUITY}),
+                     "description": "Close one free loop with one declared face. Declined beyond "
+                                    "5% of the diagonal. A planar fill ignores G1; achieved "
+                                    "continuity is in Diff.params['measured']."}
     site_kinds = frozenset({"open"})
     entity_prefix = "E"
     payload_key = "edges"
@@ -1112,11 +1210,15 @@ class ToCanonical(_FaceOp):
 
 
 class RefitCluster(_FaceOp):
-    """Declares the one face it adds and the cluster it removes."""
+    """Declares the one face it adds and the cluster it removes. Limits: one shell, one closed
+    outline, no seam faces, labels of the cluster not inherited (see `_refit_cluster`)."""
 
     name = "refit_cluster"
     kernel_fn = "op_refit_cluster"
-    params_schema = _schema("face", 2, None, {"tol_mm": _TOL})
+    params_schema = {**_schema("face", 2, None, {"tol_mm": _TOL}),
+                     "description": "Refit 2+ adjacent faces of ONE shell with one closed outline "
+                                    "into one B-spline face. No seam faces; cluster labels are not "
+                                    "inherited; declined if the two-way deviation exceeds tol_mm."}
     site_kinds = frozenset({"sliver", "overlap", "self_overlap"})
     entity_prefix = "F"
     declares_added = True
