@@ -196,6 +196,17 @@ def finalize(workspace_dir: str, intake_patches: list, engine: str, domain: str 
                             "coverage_pct": v.get("coverage_pct")} for n, v in _walls.items()}
             except Exception:
                 logger.exception("finalize: layer-coverage parse failed (non-fatal)")
+    # CFDREQ-26: a wall planned with NO layer (its own cells are the wall-function cell) has no
+    # layer coverage to measure: said, and the y+ row judges its first cells instead
+    try:
+        from meshpipeline.engines.cfd_requirements import wall_cell_first_words
+        _wcf = wall_cell_first_words(ws)
+    except Exception:  # noqa: BLE001 - the record reads as before
+        _wcf = ""
+    if _wcf:
+        for _k in ("layer_coverage_pct", "layer_coverage_source", "per_patch_layers"):
+            q.pop(_k, None)
+        q["layers_left_out"] = _wcf
     # THE HONEST LAYER-POLICY RECORD (engines/snappy/layer_policy.py). When the thin-feature
     # classifier locally reduced or dropped prism layers, the delivered quality data must SAY so
     # - per class: the layer count and the wall-area fraction it covers - so the reviewer and the

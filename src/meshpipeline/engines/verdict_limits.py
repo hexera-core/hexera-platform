@@ -322,6 +322,10 @@ def inputs_for(*, engine: str, topology: str, manifest: Mapping | None, valid: b
                "measured": _plain(measured), "source": lim.source}
         if lim.key == "layer_coverage_pct":
             said = coverage_words(quality, measured, limit)
+            if measured is None and quality.get("layers_left_out"):
+                # CFDREQ-26: no layer was planned, so none is measured; the y+ row judges the wall's own cells
+                said = (f"No wall layer was planned ({quality['layers_left_out']}); the y+ row judges the wall's "
+                        "own first cells")
             if said:
                 row["said"] = said
         limits.append(row)

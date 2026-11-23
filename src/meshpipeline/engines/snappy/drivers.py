@@ -2684,27 +2684,53 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
         _mem = await _op_begin(publish, "author_configuration", run, attempt)
         _write_plan_memory(workspace, strategy)
         _thin_regions: list = []
+        _wall_tris = None
         try:
             from meshpipeline.cad.stl_io import read_stl_triangles as _read_tris
             from meshpipeline.cad.thin_features import thin_refinement_boxes as _thin_boxes
             if _wall_stl.exists():
                 # CFDREQ-24: in wall-function mode the thin spots' cells are held where the first
-                # layer stands on them without a jump, as far as capturing the feature allows
+                # layer stands on them without a jump, as far as capturing the feature allows -
+                # never where a fluid passage there would fall under its cells across (CFDREQ-26)
                 from meshpipeline.engines import cfd_requirements as _CRt
+                from meshpipeline.engines.passage import PASSAGE_FLOOR_CELLS as _PASSAGE_FLOOR
                 _keep = _CRt.wall_function_keep_cell(_ask, bore_D=float(bore_D), wall_cell_m=_wall_cell)
+                _wall_tris = _read_tris(_wall_stl)
                 # the extra levels may spend at most half the run's cell budget: a thin feature
                 # is captured locally, never by re-meshing the whole part at the finest level
                 _thin_regions = _thin_boxes(
-                    _read_tris(_wall_stl), cell_m=_wall_cell,
+                    _wall_tris, cell_m=_wall_cell,
                     budget_cells=max(50_000, int(strategy.get("thin_budget")
                                                  or 0.5 * _planned_budget)),
-                    keep_cell_m=_keep)
+                    keep_cell_m=_keep,
+                    passage=((_passage_field[0], _passage_field[2])
+                             if _keep is not None and _passage_field is not None else None),
+                    passage_cells=float(_PASSAGE_FLOOR))
                 if _layer_note := str(getattr(_thin_regions, "layer_note", "") or ""):
                     logger.info("internal pass %d: %s - job_id=%s", attempt, _layer_note, job_id)
         except Exception:  # noqa: BLE001 - a measurement is an optimisation, never fatal
             logger.exception("internal build: thin-feature probe failed - continuing without "
                              "local thin refinement - job_id=%s", job_id)
             _thin_regions = []
+        # CFDREQ-26: where the local refinement would put a wall-function layer over cells it
+        # crushes, and the wall's own cells already give the y+ asked, the wall has no layer
+        if _ask is not None:
+            _ask.wall_cell_first = None
+        if _ask is not None and _wall_tris is not None and n_layers > 0:
+            try:
+                from meshpipeline.engines import cfd_requirements as _CRw
+                _wcf = _CRw.wall_function_cell_plan(
+                    _ask, bore_D=float(bore_D), wall_cell_m=_wall_cell, tris=_wall_tris,
+                    boxes=[*_thin_regions, *_narrow_regions, *(strategy.get("local_boxes") or [])])
+                if _wcf is not None:
+                    logger.info("internal pass %d: wall-function cell plan %s - job_id=%s", attempt,
+                                {k: v for k, v in _wcf.items() if k != "words"}, job_id)
+                if _wcf is not None and _wcf["no_layer"]:
+                    _ask.wall_cell_first = _wcf
+                    n_layers = 0
+            except Exception:  # noqa: BLE001 - the plan keeps its layer when this cannot be read
+                logger.exception("internal build: wall-function cell plan failed - the wall keeps "
+                                 "its layer - job_id=%s", job_id)
         # what the probe left out to keep the budget (cad/thin_features.ThinRegions); a plain
         # list carries none
         _thin_note = str(getattr(_thin_regions, "note", "") or "")

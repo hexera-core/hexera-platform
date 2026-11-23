@@ -139,7 +139,11 @@ def _measure(state: Mapping, *, attempt: int, engine: str, workspace: str, manif
     unmet: list[str] = []
     coverage = _num(quality.get("layer_coverage_pct"))
     for req in plan_requirements(state):
-        if req == REQ_PRISM_LAYERS and coverage is None:
+        if req == REQ_PRISM_LAYERS and quality.get("layers_left_out"):
+            # CFDREQ-26: the wall-function plan built no layer on purpose (the wall's own cells sit at the y+
+            # asked); the y+ row judges those cells, so "no layers" is no unmet promise here
+            pass
+        elif req == REQ_PRISM_LAYERS and coverage is None:
             unmet.append(_UNMET_WORDS["layers_unmeasured"])
         elif req == REQ_PRISM_LAYERS and coverage is not None and coverage <= _LAYERS_PRESENT_PCT:
             unmet.append(_UNMET_WORDS[req])
