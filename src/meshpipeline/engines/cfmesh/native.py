@@ -63,6 +63,7 @@ PORT_REGION_DROPPED = "an opening landed in a piece of its passage the mesher dr
 PASSAGE_PORTS_RULE = "INS-29"
 _CELL_SIZES = re.compile(r"\b(maxCellSize|cellSize|boundaryCellSize)(\s+)([0-9.eE+-]+)(\s*;)")
 _N_CELLS = re.compile(rb"nCells:\s*(\d+)")
+_N_LISTED = re.compile(rb"^\s*(\d+)\s*\(", re.M)
 
 
 def ports_without_faces(polymesh: Path, ports: list[str]) -> list[str] | None:
@@ -77,13 +78,18 @@ def ports_without_faces(polymesh: Path, ports: list[str]) -> list[str] | None:
 
 
 def cells_of(polymesh: Path) -> int | None:
-    """The cell count an OpenFOAM owner file's header notes, or None."""
+    """The cell count an OpenFOAM owner file's header notes - else about a third of the faces it lists (a hex
+    mesh has about three faces per cell; cfMesh writes no note: abc 63401's passage failed unrefined) - or None."""
     try:
         with (polymesh / "owner").open("rb") as fh:
-            m = _N_CELLS.search(fh.read(4096))
+            head = fh.read(4096)
     except OSError:
         return None
-    return int(m.group(1)) if m else None
+    m = _N_CELLS.search(head)
+    if m:
+        return int(m.group(1))
+    n = _N_LISTED.search(head.split(b"}", 1)[-1])
+    return max(1, int(n.group(1)) // 3) if n else None
 
 
 def finer_mesh_dict(text: str, factor: float = 0.5) -> str:
@@ -226,6 +232,12 @@ def mesh_passages(ws: Path, *, bashrc: str = _DEFAULT_BASHRC, timeout: float = 1
             if _run(f"mergeMeshes -overwrite . {shlex.quote(str(rel))}", ws, f"mergeMeshes_p{k}.log") != 0:
                 tail = "\n".join((ws / f"mergeMeshes_p{k}.log").read_text(errors="replace").splitlines()[-LOG_TAIL_LINES:])
                 return 1, False, f"[CFMESH] passage {k} could not be merged into the mesh:\n{tail}"
+            # INS-29: the merged mesh holds the passage's openings too (abc 99768: merged, yet outlet_3 was no patch
+            # of the mesh the rescue then spent 22 minutes on)
+            gone = ports_without_faces(ws / "constant" / "polyMesh", mine)
+            if gone:
+                return 1, False, (f"[CFMESH] passage {k} could not be merged into the mesh: {', '.join(gone)} has "
+                                  "no faces in the merged mesh")
         except subprocess.TimeoutExpired as exc:
             if getattr(exc, "stalled", False):
                 return -1, True, f"[CFMESH] passage {k} {PASSAGE_STALLED}"
