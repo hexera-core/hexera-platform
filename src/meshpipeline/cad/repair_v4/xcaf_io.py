@@ -24,15 +24,7 @@ import tempfile
 from dataclasses import dataclass, field
 
 from meshpipeline.cad.repair_v4.kernel_calls import register
-
-_UNIT_FROM_STEP = {
-    "millimetre": "mm",
-    "centimetre": "cm",
-    "metre": "m",
-    "inch": "inch",
-    "foot": "ft",
-}
-_UNIT_TO_WRITER = {"mm": "MM", "cm": "CM", "m": "M", "inch": "INCH", "ft": "FT"}
+from meshpipeline.cad.repair_v4.units import WRITER_CODES, canonical_unit
 
 
 @dataclass
@@ -56,6 +48,9 @@ def _new_document():
 def _name_of(label) -> str | None:
     from OCP.TDataStd import TDataStd_Name
 
+    # FindAttribute on a label that has no name segfaults the 7.9 binding, so ask first.
+    if not label.IsAttribute(TDataStd_Name.GetID_s()):
+        return None
     attr = TDataStd_Name()
     if label.FindAttribute(TDataStd_Name.GetID_s(), attr):
         return attr.Get().ToExtString() or None
@@ -143,8 +138,7 @@ def _file_units(reader) -> str:
     reader.Reader().FileUnits(lengths, TColStd_SequenceOfAsciiString(), TColStd_SequenceOfAsciiString())
     if lengths.Length() == 0:
         return "mm"  # a file with no unit context is read as millimetres by OCCT
-    raw = lengths.Value(1).ToCString().lower()
-    return _UNIT_FROM_STEP.get(raw, raw)
+    return canonical_unit(lengths.Value(1).ToCString())
 
 
 def read(path: str, brep_out: str | None = None) -> XcafDoc:
@@ -244,8 +238,8 @@ def write(doc: XcafDoc, path: str) -> None:
     from OCP.TopoDS import TopoDS_Iterator, TopoDS_Shape
     from OCP.XCAFDoc import XCAFDoc_DocumentTool
 
-    if doc.units not in _UNIT_TO_WRITER:
-        raise ValueError(f"cannot write unit {doc.units!r}; known: {sorted(_UNIT_TO_WRITER)}")
+    if doc.units not in WRITER_CODES:
+        raise ValueError(f"cannot write unit {doc.units!r}; known: {sorted(WRITER_CODES)}")
     root = TopoDS_Shape()
     if not BRepTools.Read_s(root, doc.shape_brep, BRep_Builder()):
         raise ValueError(f"could not read BREP {doc.shape_brep}")
@@ -263,7 +257,7 @@ def write(doc: XcafDoc, path: str) -> None:
         index += 1
 
     previous = Interface_Static.CVal_s("write.step.unit")
-    Interface_Static.SetCVal_s("write.step.unit", _UNIT_TO_WRITER[doc.units])
+    Interface_Static.SetCVal_s("write.step.unit", WRITER_CODES[doc.units])
     try:
         writer = STEPCAFControl_Writer()
         for setter in (

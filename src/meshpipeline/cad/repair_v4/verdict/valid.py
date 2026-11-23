@@ -17,6 +17,7 @@ import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from meshpipeline.cad.repair_v4.units import canonical_unit
 from meshpipeline.cad.repair_v4.worker_pool import CallResult, WorkerPool
 
 HARD_CODES = (
@@ -33,6 +34,13 @@ HARD_CODES = (
 SOFT_CODES = ("small_edge", "small_face", "large_tolerance")
 
 CALL_TIMEOUT_S = 300.0
+
+
+class CheckerUnavailable(RuntimeError):
+    """The checker could not reach a verdict: a worker timed out or crashed, or a kernel call failed
+    for a reason that is not the file's. It is NOT a finding about the file, so callers must not
+    score it as invalid; retry, or treat it as an infrastructure failure.
+    """
 
 
 @dataclass(frozen=True)
@@ -56,8 +64,13 @@ def _findings(raw: list[dict]) -> list[Finding]:
     return [Finding(item["code"], list(item["entities"]), dict(item["detail"])) for item in raw]
 
 
-def _failed(call: str, result: CallResult) -> Finding:
-    return Finding("brep_invalid", [], {"call": call, "status": result.status, "error": result.error})
+def _unavailable(call: str, result: CallResult) -> CheckerUnavailable:
+    return CheckerUnavailable(f"{call}: {result.status}: {result.error}")
+
+
+def _is_file_error(result: CallResult) -> bool:
+    """A kernel call that raised ValueError is reporting about the file (unreadable STEP/BREP)."""
+    return result.status == "error" and (result.error or "").startswith("ValueError:")
 
 
 def _check_shape(pool: WorkerPool, brep: str) -> CallResult:
@@ -81,6 +94,8 @@ def _round_trip(pool: WorkerPool, doc: dict, work: Path, solids: int, known: set
         },
         timeout_s=CALL_TIMEOUT_S,
     )
+    if not written.ok and not _is_file_error(written):
+        raise _unavailable("write_step_xcaf", written)
     if not written.ok:
         return False, None, {"stage": "write", "error": written.error}
     reread = pool.call(
@@ -88,18 +103,20 @@ def _round_trip(pool: WorkerPool, doc: dict, work: Path, solids: int, known: set
         {"path": str(work / "round_trip.step"), "brep_out": str(work / "round_trip.brep")},
         timeout_s=CALL_TIMEOUT_S,
     )
+    if not reread.ok and not _is_file_error(reread):
+        raise _unavailable("read_step_xcaf", reread)
     if not reread.ok or reread.value is None:
         return False, None, {"stage": "read", "error": reread.error}
     again = reread.value
     problems: dict = {}
     names_before = {key: entry["name"] for key, entry in doc["labels"].items()}
     names_after = {key: entry["name"] for key, entry in again["labels"].items()}
-    if names_before != names_after:
-        lost = sorted(key for key in names_before if names_before[key] != names_after.get(key))
+    lost = sorted(key for key in names_before if names_before[key] != names_after.get(key))
+    if lost:  # extra keys after the re-read are not a loss
         problems["labels_changed"] = lost
     checked = _check_shape(pool, again["brep"])
     if not checked.ok or checked.value is None:
-        problems["recheck"] = checked.error
+        raise _unavailable("check_valid", checked)
     else:
         if checked.value["solids"] != solids:
             problems["solids"] = {"before": solids, "after": checked.value["solids"]}
@@ -110,7 +127,11 @@ def _round_trip(pool: WorkerPool, doc: dict, work: Path, solids: int, known: set
 
 
 def check_valid(pool: WorkerPool, step_path: str, *, original_units: str | None) -> ValidReport:
-    """Judge `step_path`. `original_units` is the unit of the file it was repaired from, if known."""
+    """Judge `step_path`. `original_units` is the unit of the file it was repaired from, if known.
+
+    Raises `CheckerUnavailable` when no verdict can be reached (worker timeout or crash, or a kernel
+    failure that is not about the file); that is never reported as a finding against the file.
+    """
     work = Path(tempfile.mkdtemp(prefix="valid_"))
     try:
         read = pool.call(
@@ -118,19 +139,22 @@ def check_valid(pool: WorkerPool, step_path: str, *, original_units: str | None)
             {"path": str(step_path), "brep_out": str(work / "shape.brep")},
             timeout_s=CALL_TIMEOUT_S,
         )
+        if not read.ok and _is_file_error(read):  # the file cannot be read as STEP: it is invalid
+            finding = Finding("brep_invalid", [], {"call": "read_step_xcaf", "error": read.error})
+            return ValidReport(False, [finding], [], "unknown", 0, False)
         if not read.ok or read.value is None:
-            return ValidReport(False, [_failed("read_step_xcaf", read)], [], "unknown", 0, False)
+            raise _unavailable("read_step_xcaf", read)
         doc = read.value
         units = doc["units"]
 
         checked = _check_shape(pool, doc["brep"])
         if not checked.ok or checked.value is None:
-            return ValidReport(False, [_failed("check_valid", checked)], [], units, 0, False)
+            raise _unavailable("check_valid", checked)
         hard = _findings(checked.value["hard"])
         soft = _findings(checked.value["soft"])
         solids = int(checked.value["solids"])
 
-        if original_units is not None and units != original_units.lower():
+        if original_units is not None and units != canonical_unit(original_units):
             hard.append(Finding("units_changed", [], {"original": original_units, "file": units}))
 
         round_trip_ok, units_after, why = _round_trip(pool, doc, work, solids, {f.code for f in hard})

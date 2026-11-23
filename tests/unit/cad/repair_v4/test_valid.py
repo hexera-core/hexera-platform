@@ -3,7 +3,9 @@
 # Boundaries: hermetic - a scripted pool stands in for the kernel workers; no OCCT.
 from __future__ import annotations
 
-from meshpipeline.cad.repair_v4.verdict.valid import HARD_CODES, SOFT_CODES, check_valid
+import pytest
+
+from meshpipeline.cad.repair_v4.verdict.valid import HARD_CODES, SOFT_CODES, CheckerUnavailable, check_valid
 from meshpipeline.cad.repair_v4.worker_pool import CallResult
 
 
@@ -12,13 +14,29 @@ def _ok(value: dict) -> CallResult:
 
 
 class ScriptedPool:
-    def __init__(self, *, units="mm", hard=(), soft=(), rt_units=None, rt_hard=(), write_ok=True) -> None:
+    def __init__(
+        self,
+        *,
+        units="mm",
+        hard=(),
+        soft=(),
+        rt_units=None,
+        rt_hard=(),
+        write_ok=True,
+        fail=None,
+        extra_rt_labels=False,
+    ) -> None:
+        self.fail, self.extra_rt_labels = fail, extra_rt_labels
         self.units, self.hard, self.soft = units, list(hard), list(soft)
         self.rt_units, self.rt_hard, self.write_ok = rt_units or units, list(rt_hard), write_ok
         self.checks = 0
 
     def call(self, fn: str, payload: dict, *, timeout_s: float) -> CallResult:
+        if self.fail and self.fail[0] == fn:
+            return self.fail[1]
         labels = {"0": {"name": "a", "color": None, "parent": None}}
+        if self.extra_rt_labels and "round_trip" in str(payload.get("path")):
+            labels["1"] = {"name": "extra", "color": None, "parent": None}
         if fn == "read_step_xcaf":
             rt = "round_trip" in payload["path"]
             return _ok(
@@ -99,3 +117,39 @@ def test_defect_already_present_is_not_blamed_on_the_round_trip() -> None:
 def test_failed_write_is_round_trip_invalid() -> None:
     report = check_valid(ScriptedPool(write_ok=False), "a.step", original_units=None)
     assert [f.code for f in report.hard] == ["round_trip_invalid"]
+
+
+def _fail(status: str, error: str) -> CallResult:
+    return CallResult(False, None, error, status, 0.0)
+
+
+@pytest.mark.parametrize("fn", ["read_step_xcaf", "check_valid", "write_step_xcaf"])
+@pytest.mark.parametrize("status", ["timeout", "crashed"])
+def test_timeout_or_crash_is_checker_unavailable_not_a_finding(fn: str, status: str) -> None:
+    pool = ScriptedPool(fail=(fn, _fail(status, "worker gone")))
+    with pytest.raises(CheckerUnavailable):
+        check_valid(pool, "a.step", original_units=None)
+
+
+def test_kernel_defect_in_check_valid_is_checker_unavailable() -> None:
+    pool = ScriptedPool(fail=("check_valid", _fail("error", "AttributeError: bug")))
+    with pytest.raises(CheckerUnavailable):
+        check_valid(pool, "a.step", original_units=None)
+
+
+def test_unreadable_step_is_brep_invalid() -> None:
+    pool = ScriptedPool(fail=("read_step_xcaf", _fail("error", "ValueError: STEP file could not be read")))
+    report = check_valid(pool, "a.step", original_units=None)
+    assert [f.code for f in report.hard] == ["brep_invalid"]
+    assert report.ok is False
+
+
+def test_extra_labels_after_round_trip_are_not_a_failure() -> None:
+    report = check_valid(ScriptedPool(extra_rt_labels=True), "a.step", original_units=None)
+    assert report.ok is True and report.round_trip_ok is True
+
+
+@pytest.mark.parametrize("spelling", ["in", "inches", "Inch", "INCH"])
+def test_unit_spellings_of_the_original_are_normalised(spelling: str) -> None:
+    report = check_valid(ScriptedPool(units="inch"), "a.step", original_units=spelling)
+    assert report.ok is True

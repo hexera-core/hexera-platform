@@ -13,15 +13,18 @@ import pytest
 pytest.importorskip("OCP.XCAFDoc", reason="the CAD kernel is a native-tier dependency")
 
 from OCP.BRep import BRep_Builder
+from OCP.BRepAlgoAPI import BRepAlgoAPI_Common, BRepAlgoAPI_Cut
 from OCP.BRepBuilderAPI import (
     BRepBuilderAPI_MakeFace,
     BRepBuilderAPI_MakePolygon,
     BRepBuilderAPI_MakeSolid,
     BRepBuilderAPI_Sewing,
 )
-from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
+from OCP.BRepGProp import BRepGProp
+from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox, BRepPrimAPI_MakeCylinder, BRepPrimAPI_MakeSphere
 from OCP.BRepTools import BRepTools
-from OCP.gp import gp_Pln, gp_Pnt
+from OCP.gp import gp_Ax2, gp_Dir, gp_Pln, gp_Pnt
+from OCP.GProp import GProp_GProps
 from OCP.IFSelect import IFSelect_RetDone
 from OCP.Interface import Interface_Static
 from OCP.Quantity import Quantity_Color, Quantity_TOC_RGB
@@ -33,8 +36,9 @@ from OCP.TDataStd import TDataStd_Name
 from OCP.TDF import TDF_Label, TDF_LabelSequence
 from OCP.TDocStd import TDocStd_Document
 from OCP.TopAbs import TopAbs_FACE
-from OCP.TopExp import TopExp_Explorer
-from OCP.TopoDS import TopoDS, TopoDS_Compound, TopoDS_Shell
+from OCP.TopExp import TopExp, TopExp_Explorer
+from OCP.TopoDS import TopoDS, TopoDS_Compound, TopoDS_Iterator, TopoDS_Shape, TopoDS_Shell
+from OCP.TopTools import TopTools_IndexedMapOfShape
 from OCP.XCAFApp import XCAFApp_Application
 from OCP.XCAFDoc import XCAFDoc_ColorSurf, XCAFDoc_DocumentTool
 
@@ -255,7 +259,9 @@ def test_crossing_faces_are_self_intersection(pool: WorkerPool, tmp_path: Path) 
     for face in _faces(_box(0)) + _faces(_box(5)):
         builder.Add(shell, face)
     found = _kernel_check(pool, BRepBuilderAPI_MakeSolid(shell).Solid(), tmp_path)
-    assert "self_intersection" in {f["code"] for f in found["hard"]}
+    codes = {f["code"] for f in found["hard"]}
+    assert "self_intersection" in codes
+    assert "brep_invalid" in codes  # BRepCheck_Analyzer rejects the crossing shell too
 
 
 def test_three_faces_on_an_edge_are_non_manifold(pool: WorkerPool, tmp_path: Path) -> None:
@@ -285,3 +291,217 @@ def test_soft_findings_are_reported_but_never_fail(pool: WorkerPool, tmp_path: P
     report = check_valid(pool, _write_plain(tiny, tmp_path / "tiny.step"), original_units=None)
     assert report.ok is True
     assert {"small_edge", "small_face"} <= _codes(report.soft)
+
+
+def _write_one_product(
+    path: Path, shape, *, faces: dict[str, tuple[tuple[float, float, float], tuple]] | None = None
+) -> str:
+    """One XCAF product (not an assembly), optionally with named, coloured faces.
+
+    `faces` maps a face name to (centroid, rgb); the face is found by its centroid.
+    """
+    app = XCAFApp_Application.GetApplication_s()
+    doc = TDocStd_Document(TCollection_ExtendedString("MDTV-XCAF"))
+    app.InitDocument(doc)
+    shape_tool = XCAFDoc_DocumentTool.ShapeTool_s(doc.Main())
+    color_tool = XCAFDoc_DocumentTool.ColorTool_s(doc.Main())
+    top = shape_tool.AddShape(shape, False)
+    _set_name(top, "part")
+    for name, (centroid, rgb) in (faces or {}).items():
+        match = [f for f in _faces(shape) if _near(_centroid(f), centroid)]
+        assert len(match) == 1, (name, centroid)
+        sub = shape_tool.AddSubShape(top, match[0])
+        _set_name(sub, name)
+        color_tool.SetColor(sub, Quantity_Color(*rgb, Quantity_TOC_RGB), XCAFDoc_ColorSurf)
+    writer = STEPCAFControl_Writer()
+    writer.SetNameMode(True)
+    writer.SetColorMode(True)
+    assert writer.Transfer(doc, STEPControl_AsIs)
+    assert writer.Write(str(path)) == IFSelect_RetDone
+    return str(path)
+
+
+def _centroid(face) -> tuple[float, float, float]:
+    props = GProp_GProps()
+    BRepGProp.SurfaceProperties_s(face, props)
+    c = props.CentreOfMass()
+    return (c.X(), c.Y(), c.Z())
+
+
+def _near(a, b, tol: float = 1e-6) -> bool:
+    return all(abs(x - y) < tol for x, y in zip(a, b, strict=True))
+
+
+def _first_child_faces(brep: str) -> TopTools_IndexedMapOfShape:
+    """The face map of the first free shape in a BREP the kernel wrote: what the ids' F<k> index into."""
+    root = TopoDS_Shape()
+    assert BRepTools.Read_s(root, brep, BRep_Builder())
+    child = TopoDS_Iterator(root).Value()
+    faces = TopTools_IndexedMapOfShape()
+    TopExp.MapShapes_s(child, TopAbs_FACE, faces)
+    return faces
+
+
+def _read(pool: WorkerPool, path: str, brep: Path) -> dict:
+    result = pool.call("read_step_xcaf", {"path": path, "brep_out": str(brep)}, timeout_s=CALL_TIMEOUT_S)
+    assert result.ok, result.error
+    assert result.value is not None
+    return result.value
+
+
+def _round_trip_faces(pool: WorkerPool, tmp_path: Path, wanted: dict) -> list[tuple[dict, str]]:
+    """(label map, brep) of the original read and of the write -> STEP -> read."""
+    step = _write_one_product(tmp_path / "faces.step", _box(), faces=wanted)
+    first = _read(pool, step, tmp_path / "a.brep")
+    written = pool.call(
+        "write_step_xcaf",
+        {
+            "brep": first["brep"],
+            "labels": first["labels"],
+            "assembly_ids": first["assembly_ids"],
+            "units": first["units"],
+            "path": str(tmp_path / "out.step"),
+        },
+        timeout_s=CALL_TIMEOUT_S,
+    )
+    assert written.ok, written.error
+    second = _read(pool, str(tmp_path / "out.step"), tmp_path / "b.brep")
+    return [(first["labels"], first["brep"]), (second["labels"], second["brep"])]
+
+
+WANTED_FACES = {"top": ((5.0, 5.0, 10.0), (1.0, 0.0, 0.0)), "inlet": ((0.0, 5.0, 5.0), (0.0, 0.0, 1.0))}
+
+
+def test_face_colours_survive_by_id_and_by_geometry(pool: WorkerPool, tmp_path: Path) -> None:
+    """A face colour must stay on the same GEOMETRIC face across write -> STEP -> read, not just on an id."""
+    for label_map, brep in _round_trip_faces(pool, tmp_path, WANTED_FACES):
+        faces = _first_child_faces(brep)
+        coloured = {tuple(entry["color"]): key for key, entry in label_map.items() if "/F" in key and entry["color"]}
+        assert len(coloured) == 2, label_map
+        for centroid, rgb in WANTED_FACES.values():
+            index = int(coloured[rgb].rsplit("/F", 1)[1])
+            assert _near(_centroid(TopoDS.Face_s(faces.FindKey(index))), centroid, 1e-4), (rgb, coloured)
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="OCCT 7.9.3 STEPCAFControl does not write or read face names (ADVANCED_FACE is written with an "
+    "empty name; the write/read.stepcaf.subshapes.name switches do not exist in this build). "
+    "Design 7.5 wants face names carried: this flips to XPASS when that becomes possible.",
+)
+def test_face_names_survive_by_id_and_by_geometry(pool: WorkerPool, tmp_path: Path) -> None:
+    for label_map, brep in _round_trip_faces(pool, tmp_path, WANTED_FACES):
+        faces = _first_child_faces(brep)
+        named = {entry["name"]: key for key, entry in label_map.items() if "/F" in key and entry["name"]}
+        assert set(named) == {"top", "inlet"}, label_map
+        for name, (centroid, _rgb) in WANTED_FACES.items():
+            index = int(named[name].rsplit("/F", 1)[1])
+            assert _near(_centroid(TopoDS.Face_s(faces.FindKey(index))), centroid, 1e-4), name
+
+
+def test_a_face_without_a_name_does_not_crash_the_reader(pool: WorkerPool, tmp_path: Path) -> None:
+    """Regression: FindAttribute on a name-less sub-shape label segfaulted the worker."""
+    first = _read(pool, _write_one_product(tmp_path / "c.step", _box(), faces=WANTED_FACES), tmp_path / "c.brep")
+    assert any("/F" in key for key in first["labels"])
+
+
+def test_touching_compound_in_one_product_is_ok(pool: WorkerPool, tmp_path: Path) -> None:
+    """The common multi-body shape: ONE product holding two touching solids, which STEP may duplicate faces for."""
+    step = _write_one_product(tmp_path / "one.step", _compound(_box(0), _box(10)))
+    report = check_valid(pool, step, original_units=None)
+    assert report.hard == [], [(f.code, f.detail) for f in report.hard]
+    assert report.solids == 2
+    assert report.round_trip_ok is True
+
+
+def test_curved_contact_is_ok(pool: WorkerPool, tmp_path: Path) -> None:
+    """A plug in a bored block shares a cylindrical face: conformal curved contact is valid."""
+    axis = gp_Ax2(gp_Pnt(5, 5, -1), gp_Dir(0, 0, 1))
+    block = BRepAlgoAPI_Cut(_box(0), BRepPrimAPI_MakeCylinder(axis, 3.3, 12).Shape()).Shape()
+    plug = BRepAlgoAPI_Common(BRepPrimAPI_MakeCylinder(axis, 3.3, 12).Shape(), _box(0)).Shape()
+    step = _write_named_assembly(tmp_path / "curved.step", [block, plug], ["block", "plug"])
+    report = check_valid(pool, step, original_units=None)
+    assert report.hard == [], [(f.code, f.detail) for f in report.hard]
+    assert report.solids == 2
+    assert report.round_trip_ok is True
+
+
+def test_tangent_curved_contact_is_ok(pool: WorkerPool, tmp_path: Path) -> None:
+    """Sphere on a plane and cylinder on a plane touch at a point and a line: where Common is least robust."""
+    sphere = BRepPrimAPI_MakeSphere(gp_Pnt(5, 5, 15), 5.0).Shape()
+    lying = BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(0, 5, 15), gp_Dir(1, 0, 0)), 5.0, 10.0).Shape()
+    for name, curved in (("sphere", sphere), ("cylinder", lying)):
+        step = _write_named_assembly(tmp_path / f"{name}.step", [_box(0), curved], ["base", name])
+        report = check_valid(pool, step, original_units=None)
+        assert report.hard == [], (name, [(f.code, f.detail) for f in report.hard])
+        assert report.solids == 2
+
+
+def test_interpenetration_below_the_tolerance_is_contact(pool: WorkerPool, tmp_path: Path) -> None:
+    """1e-8 to 1e-7 of interpenetration survives a STEP round trip as noise; 1e-3 is a real overlap."""
+    for depth in (1e-8, 1e-7):
+        step = _write_named_assembly(tmp_path / f"d{depth}.step", [_box(0), _box(10 - depth)], ["a", "b"])
+        report = check_valid(pool, step, original_units=None)
+        assert report.hard == [], (depth, [(f.code, f.detail) for f in report.hard])
+    step = _write_named_assembly(tmp_path / "deep.step", [_box(0), _box(10 - 1e-3)], ["a", "b"])
+    assert "body_overlap" in _codes(check_valid(pool, step, original_units=None).hard)
+
+
+def test_a_boolean_that_does_not_complete_is_reported_with_boolean_failed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The fail-closed branch, driven in-process: the Boolean is the one thing replaced."""
+    from meshpipeline.cad.repair_v4.verdict import valid_kernel
+
+    monkeypatch.setattr(valid_kernel, "_common", lambda a, b, fuzzy: None)
+    found = valid_kernel._overlapping_pairs([_box(0), _box(5)], [1000.0, 1000.0])
+    assert [f["code"] for f in found] == ["body_overlap"]
+    assert found[0]["detail"] == {"boolean_failed": True}
+
+
+def test_the_fuzzy_retry_completes_a_boolean(monkeypatch: pytest.MonkeyPatch) -> None:
+    """When the plain Common does not complete, the fuzzy one decides instead of failing the file."""
+    from OCP import BRepAlgoAPI
+
+    from meshpipeline.cad.repair_v4.verdict import valid_kernel
+
+    real = BRepAlgoAPI.BRepAlgoAPI_Common
+
+    class _NotDone:
+        def IsDone(self) -> bool:
+            return False
+
+    calls = []
+
+    class Wrapper:
+        def __new__(cls, *args):
+            if args:
+                calls.append("plain")
+                return _NotDone()
+            calls.append("fuzzy")
+            return real()
+
+    monkeypatch.setattr(BRepAlgoAPI, "BRepAlgoAPI_Common", Wrapper)
+    result = valid_kernel._common(_box(0), _box(5), 1e-5)
+    assert calls == ["plain", "fuzzy"]
+    assert result is not None
+    assert valid_kernel._volume(result.Shape()) == pytest.approx(500.0)
+
+
+def test_unreadable_step_is_brep_invalid(pool: WorkerPool, tmp_path: Path) -> None:
+    junk = tmp_path / "junk.step"
+    junk.write_text("this is not a STEP file")
+    report = check_valid(pool, str(junk), original_units=None)
+    assert _codes(report.hard) == {"brep_invalid"}
+    assert report.ok is False
+
+
+def test_unit_spellings_are_normalised(pool: WorkerPool, tmp_path: Path) -> None:
+    step = _write_plain(_box(), tmp_path / "in.step", unit="INCH")
+    for spelling in ("in", "inches", "inch"):
+        assert check_valid(pool, step, original_units=spelling).ok is True
+
+
+def test_micrometre_file_round_trips(pool: WorkerPool, tmp_path: Path) -> None:
+    step = _write_plain(_box(), tmp_path / "um.step", unit="UM")
+    report = check_valid(pool, step, original_units=None)
+    assert report.units == "um"
+    assert report.ok is True

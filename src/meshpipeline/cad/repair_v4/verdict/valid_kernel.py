@@ -14,6 +14,8 @@ from __future__ import annotations
 from meshpipeline.cad.repair_v4.kernel_calls import register
 
 OVERLAP_FRACTION = 1e-9  # Common volume above this fraction of the smaller body is overlap
+OVERLAP_THICKNESS_FRACTION = 1e-6  # of the bounding-box diagonal; thinner is contact
+MAX_OVERLAP_PAIRS = 2000  # bbox-overlapping body pairs one call will test
 SMALL_EDGE_FRACTION = 1e-4  # of the bounding-box diagonal
 SMALL_FACE_FRACTION = 1e-8  # of the bounding-box diagonal squared
 LARGE_TOLERANCE_FRACTION = 1e-3  # of the bounding-box diagonal
@@ -125,29 +127,70 @@ def _self_intersects(solid) -> bool:
     return bool(analyzer.HasFaulty())
 
 
-def _overlapping_pairs(solids: list, volumes: list[float]) -> list[dict]:
-    from OCP.Bnd import Bnd_Box
+def _common(a, b, fuzzy: float):
+    """BRepAlgoAPI_Common of two solids, or None if the Boolean did not complete."""
     from OCP.BRepAlgoAPI import BRepAlgoAPI_Common
+
+    common = BRepAlgoAPI_Common(a, b)
+    if common.IsDone():
+        return common
+    if fuzzy > 0:  # tangent curved contact is where a plain Common most often fails to complete
+        common = BRepAlgoAPI_Common()
+        from OCP.TopTools import TopTools_ListOfShape
+
+        for setter, shape in ((common.SetArguments, a), (common.SetTools, b)):
+            shapes = TopTools_ListOfShape()
+            shapes.Append(shape)
+            setter(shapes)
+        common.SetFuzzyValue(fuzzy)
+        common.Build()
+        if common.IsDone():
+            return common
+    return None
+
+
+def _overlapping_pairs(solids: list, volumes: list[float]) -> list[dict]:
+    """Pairs of bodies that really share volume.
+
+    Conformal contact has Common volume ~0, so it never counts; no face-sharing exemption exists
+    because one would let identical duplicate bodies pass. Interpenetration thinner than the
+    modelling tolerance (1e-6 of the diagonal) is contact, not overlap.
+    """
+    from OCP.Bnd import Bnd_Box
     from OCP.BRepBndLib import BRepBndLib
+    from OCP.BRepGProp import BRepGProp
+    from OCP.GProp import GProp_GProps
 
     boxes = []
+    whole = Bnd_Box()
     for solid in solids:
         box = Bnd_Box()
         BRepBndLib.Add_s(solid, box)
+        whole.Add(box)
         boxes.append(box)
+    if whole.IsVoid():
+        return []
+    xmin, ymin, zmin, xmax, ymax, zmax = whole.Get()
+    diag = ((xmax - xmin) ** 2 + (ymax - ymin) ** 2 + (zmax - zmin) ** 2) ** 0.5
+    thin = OVERLAP_THICKNESS_FRACTION * diag
+    candidates = [(i, j) for i in range(len(solids)) for j in range(i + 1, len(solids)) if not boxes[i].IsOut(boxes[j])]
+    if len(candidates) > MAX_OVERLAP_PAIRS:
+        raise ValueError(f"{len(candidates)} body pairs to test exceeds the cap of {MAX_OVERLAP_PAIRS}")
     found = []
-    for i in range(len(solids)):
-        for j in range(i + 1, len(solids)):
-            if boxes[i].IsOut(boxes[j]):
-                continue
-            common = BRepAlgoAPI_Common(solids[i], solids[j])
-            if not common.IsDone():
-                found.append(_finding("body_overlap", [f"S{i + 1}", f"S{j + 1}"], boolean_failed=True))
-                continue
-            overlap = _volume(common.Shape())
-            smaller = min(abs(volumes[i]), abs(volumes[j]))
-            if overlap > OVERLAP_FRACTION * smaller:
-                found.append(_finding("body_overlap", [f"S{i + 1}", f"S{j + 1}"], volume=overlap))
+    for i, j in candidates:
+        common = _common(solids[i], solids[j], thin)
+        if common is None:
+            found.append(_finding("body_overlap", [f"S{i + 1}", f"S{j + 1}"], boolean_failed=True))
+            continue
+        overlap = _volume(common.Shape())
+        smaller = min(abs(volumes[i]), abs(volumes[j]))
+        if overlap <= OVERLAP_FRACTION * smaller:
+            continue
+        surface = GProp_GProps()
+        BRepGProp.SurfaceProperties_s(common.Shape(), surface)
+        thickness = 2 * overlap / surface.Mass() if surface.Mass() > 0 else 0.0
+        if thickness > thin:
+            found.append(_finding("body_overlap", [f"S{i + 1}", f"S{j + 1}"], volume=overlap, thickness=thickness))
     return found
 
 
