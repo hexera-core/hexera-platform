@@ -560,7 +560,13 @@ class RealishPool:
             ents = [{"type": "face", "index": k, "fp": f"f{k}"} for k in range(1, 4)]
             return CallResult(True, {"entities": ents, "quantum": 1e-6}, None, "ok", 0.0)
         if fn == "write_step_xcaf":
+            # the real export writes the file, and the verdict cache keys on its bytes: a fake that writes nothing
+            # is a pool that lies about its own contract
+            with open(payload["path"], "wb") as handle:
+                handle.write(b"STEP of " + payload["brep"].encode())
             return CallResult(True, {}, None, "ok", 0.0)
+        if fn == "mesher_versions":
+            return CallResult(True, {"gmsh": "4.15.2", "netgen": "6.2", "ocp": "7.8"}, None, "ok", 0.0)
         if fn == "faithful_check":
             v = {"ok": True, "max_dev_mm": 0.0, "bound_mm": 0.1, "area_ratio": 1.0, "volume_ratio": 1.0,
                  "bodies_before": 1, "bodies_after": 1, "reasons": []}
@@ -625,7 +631,7 @@ def real_checker(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> SimpleNamesp
 
     monkeypatch.setattr(assemble, "check_valid", check_valid)
     monkeypatch.setattr(assemble, "check_faithful_steps", check_faithful_steps)
-    monkeypatch.setattr(assemble, "default_members", lambda tier: [SimpleNamespace(name="m0")])
+    monkeypatch.setattr(assemble, "default_members", lambda tier: [SimpleNamespace(name="m0", config={})])
     monkeypatch.setattr(assemble, "_panel_module", lambda: fake_panel_module(run_panel))
     for name in ("orig.brep", "w.brep"):
         (tmp_path / name).write_bytes(name.encode())

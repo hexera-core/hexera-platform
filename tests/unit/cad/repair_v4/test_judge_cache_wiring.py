@@ -104,9 +104,7 @@ def _members() -> dict[str, list[CountingMember]]:
 
 @pytest.fixture
 def checker(monkeypatch: pytest.MonkeyPatch) -> Checker:
-    cache_mod.reset_default_verdict_cache()
-    yield Checker(monkeypatch, _members())  # type: ignore[misc]
-    cache_mod.reset_default_verdict_cache()
+    return Checker(monkeypatch, _members())
 
 
 def make_ws(tmp_path: Path, name: str = "w", body: bytes | None = None) -> Workspace:
