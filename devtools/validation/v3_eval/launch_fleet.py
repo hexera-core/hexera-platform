@@ -60,37 +60,39 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[2]
-PROJECT = "hexera-dev"
-PROJECT_NUMBER = "224734058693"
-REGION = "us-central1"
-BUCKET = f"gs://dev-crsv3-transfer-{PROJECT_NUMBER}"
-#: Inputs and code (staged once by stage.py / clean_control.py fetch).
-PREFIX = f"{BUCKET}/eval/v3-verdict"
-#: The label every crsv3 resource carries (`make destroy-env SLUG=crsv3` uses DEPLOYMENT_ID=dev-crsv3).
-DEPLOYMENT_ID = "dev-crsv3"
-SERVICE_ACCOUNT = f"{PROJECT_NUMBER}-compute@developer.gserviceaccount.com"
-DIGEST_RE = re.compile(r"^[a-z0-9.-]+-docker\.pkg\.dev/[^@\s]+@sha256:[0-9a-f]{64}$")
-#: The quota metric that bounds each allowed family in us-central1.
-QUOTA_METRIC = {"c2d": "C2D_CPUS", "c3": "C3_CPUS", "c3d": "C3D_CPUS", "c2": "C2_CPUS"}
-#: Paths whose change between the image's commit and the code commit the image cannot absorb.
-TOOLCHAIN_PATHS = ("requirements/", "pyproject.toml", "Dockerfile", "deploy/docker/")
 
 
 def _load(name: str, path: Path):
     if name in sys.modules:
         return sys.modules[name]
     spec = importlib.util.spec_from_file_location(name, path)
+    assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     sys.modules[name] = module
     spec.loader.exec_module(module)
     return module
 
 
+#: THE ONE DEFINITION of the project, bucket, service account, digest grammar, cache prefix and results
+#: root. v4_eval/preflight.py imports the same module, so what it validates is what this launcher writes.
+wave_spec = _load("v4_wave_spec", REPO / "devtools" / "validation" / "v4_eval" / "wave_spec.py")
+PROJECT, PROJECT_NUMBER, BUCKET = wave_spec.PROJECT, wave_spec.PROJECT_NUMBER, wave_spec.BUCKET
+SERVICE_ACCOUNT, DIGEST_RE, V4_PREFIX = wave_spec.SERVICE_ACCOUNT, wave_spec.DIGEST_RE, wave_spec.V4_PREFIX
+REGION = "us-central1"
+#: Inputs and code (staged once by stage.py / clean_control.py fetch).
+PREFIX = f"{BUCKET}/eval/v3-verdict"
+#: The label every crsv3 resource carries (`make destroy-env SLUG=crsv3` uses DEPLOYMENT_ID=dev-crsv3).
+DEPLOYMENT_ID = "dev-crsv3"
+#: The quota metric that bounds each allowed family in us-central1.
+QUOTA_METRIC = {"c2d": "C2D_CPUS", "c3": "C3_CPUS", "c3d": "C3D_CPUS", "c2": "C2_CPUS"}
+#: Paths whose change between the image's commit and the code commit the image cannot absorb.
+TOOLCHAIN_PATHS = ("requirements/", "pyproject.toml", "Dockerfile", "deploy/docker/")
+
+
 evalspec = _load("evalspec", HERE / "evalspec.py")
 #: The v4 spec holds the cost control (Projection, check_budget, enforce_budget, BudgetRefused) for
 #: BOTH profiles, and the cleared-source list. It is loaded under the name run_arm.py uses for it.
 budget_spec = _load("v4_evalspec", REPO / "devtools" / "validation" / "v4_eval" / "evalspec.py")
-V4_PREFIX = f"{BUCKET}/eval/v4-reprobe"
 
 
 @dataclass(frozen=True)
@@ -137,6 +139,11 @@ class Profile:
 
     def required_dirs(self, args) -> list[str]:
         raise NotImplementedError
+
+    def wave_preflight(self, args) -> tuple[list[str], list[str]]:
+        """(problems, notes) from the profile's own proof that the fleet can use what it is launched
+        against. v3 has none; v4 runs v4_eval/preflight.py."""
+        return [], []
 
     def preflight_arms(self) -> tuple[str, ...]:
         return ()
@@ -213,7 +220,7 @@ class V4Profile(Profile):
 
     def extra_metadata(self, args) -> list[str]:
         return [f"v4-run-arm={self.run_arm}", f"v4-pool={args.prefix}/pool.json",
-                f"v4-cache-uri={args.prefix}/verdict-cache", f"v4-sources={','.join(args.sources)}"]
+                f"v4-cache-uri={wave_spec.verdict_cache_uri(args.prefix)}", f"v4-sources={','.join(args.sources)}"]
 
     def pool_files(self, args) -> int:
         """Files the wave will probe: --files, else the pool manifest's entries in the named sources."""
@@ -228,6 +235,17 @@ class V4Profile(Profile):
                 f"{evalspec.vcpus_of(args.machine_type)} per {args.machine_type}):",
                 f"  reprobe              pool     {args.shards_total:>3} shard(s)  {args.files_counted} files "
                 f"from sources {','.join(args.sources)}"]
+
+    def wave_preflight(self, args) -> tuple[list[str], list[str]]:
+        """Run v4_eval/preflight.py against THIS launch's image, commit, prefix, pool and sources. Every
+        failed check is a problem (nothing launches); a passing check's caveat is returned as a note."""
+        pf = _load("v4_preflight", REPO / "devtools" / "validation" / "v4_eval" / "preflight.py")
+        report = pf.run_preflight(
+            image=args.image, commit=args.commit, runner=pf.gcloud_runner(),
+            locations=pf.locations_for_prefix(args.prefix, args.commit),
+            staged_sources=args.sources, pool_path=Path(args.pool))
+        return ([f"preflight {c.name}: {c.detail}" for c in report.checks if not c.ok],
+                [f"preflight {c.name}: {c.caveat}" for c in report.checks if c.ok and c.caveat])
 
     def launch_tail(self, args) -> str:
         return f"sources {','.join(args.sources)}; the checker needs no model key"
@@ -268,7 +286,7 @@ def profile_of(args) -> Profile:
 def results_root(arm: str, commit: str, bucket: str = BUCKET) -> str:
     """THE DETACHED RESULTS ROOT: every shard of one arm at one engine commit writes under
     <bucket>/eval/<arm>-<commit12>/<kind>/shard-I-of-N/, so collect.py needs GCS and nothing else."""
-    return f"{bucket}/eval/{arm}-{commit[:12]}"
+    return wave_spec.results_root(arm, commit, bucket)
 
 
 def out_uri(arm: str, commit: str, kind: str, i: int, n: int, bucket: str = BUCKET) -> str:
@@ -417,7 +435,11 @@ def live_checks(args, vcpus: int) -> tuple[list[str], list[str]]:
             # A WARNING, not a refusal: the code runs from the archive, the image is the toolchain.
             warnings.append(f"the image carries tags {tags}, not {args.image_commit[:12]}")
     except RuntimeError as exc:
-        warnings.append(f"cannot describe the image: {exc}")
+        # FAIL CLOSED: an image the registry will not describe is one the VMs may not be able to pull.
+        problems.append(f"cannot describe the image: {exc}")
+    more, notes = profile.wave_preflight(args)
+    problems += more
+    warnings += notes
     for obj in profile.required_objects(args):
         if subprocess.run(["gcloud", "storage", "ls", obj], capture_output=True).returncode:
             problems.append(f"{obj} is not staged ({profile.stage_hint})")

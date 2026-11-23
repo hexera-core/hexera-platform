@@ -109,6 +109,8 @@ class GcsStore:
         return storage_client().bucket(self._bucket).blob(f"{self._prefix.rstrip('/')}/{key}")
 
     def get(self, key: str) -> str | None:
+        # NB: blob.exists() then download_as_text() with no error handling - a 403 (no get/list grant)
+        # RAISES here rather than reading as a miss; never exercised live (owner decision, task 8d).
         blob = self._blob(key)
         return blob.download_as_text() if blob.exists() else None
 

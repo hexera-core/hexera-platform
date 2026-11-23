@@ -22,6 +22,9 @@ _SPEC.loader.exec_module(pf)
 DIGEST = "sha256:" + "c" * 64
 IMAGE = f"us-central1-docker.pkg.dev/hexera-dev/mesh/mesh-fleet@{DIGEST}"
 COMMIT = "d" * 40
+SHA_A, SHA_B, SHA_F360 = "a" * 64, "b" * 64, "f" * 64
+#: (wanted sha256s, barred sha256s): two cleared entries and one Fusion 360 entry
+EXPECTED = ({SHA_A, SHA_B}, {SHA_F360})
 SA = pf.SERVICE_ACCOUNT
 MEMBER = f"serviceAccount:{SA}"
 
@@ -41,7 +44,8 @@ class FakeGcloud:
                  bucket_policy_rc=0, repo_policy_rc=0, project_policy_rc=0, bucket_policies=None):
         self.bucket_roles, self.project_roles, self.repo_roles = bucket_roles, project_roles, repo_roles
         self.image_digest, self.image_rc = image_digest, image_rc
-        self.listing = [f"{pf.INPUTS}/abc/a.step", f"{pf.INPUTS}/nist/b.step"] if listing is None else listing
+        self.listing = ([f"{pf.INPUTS}/{SHA_A}/a.step", f"{pf.INPUTS}/{SHA_B}/b.step"]
+                        if listing is None else listing)
         self.listing_rc, self.sa_rc, self.sa_email, self.sa_disabled = listing_rc, sa_rc, sa_email, sa_disabled
         self.bucket_policy_rc, self.repo_policy_rc, self.project_policy_rc = (
             bucket_policy_rc, repo_policy_rc, project_policy_rc)
@@ -72,7 +76,7 @@ class FakeGcloud:
 
 
 def _run(fake: FakeGcloud, **kw):
-    args = {"image": IMAGE, "commit": COMMIT, "service_account": SA}
+    args = {"image": IMAGE, "commit": COMMIT, "service_account": SA, "expected": EXPECTED}
     args.update(kw)
     return pf.run_preflight(runner=fake, **args)
 
@@ -83,19 +87,20 @@ def _failed(report) -> set[str]:
 
 # ------------------------------------------------------------------ convention
 
-def test_locations_follow_the_v3_bucket_and_are_parameterised():
+def test_locations_follow_the_launcher_and_are_parameterised():
     assert pf.BUCKET == "gs://dev-crsv3-transfer-224734058693"
-    loc = pf.wave_locations()
+    loc = pf.wave_locations(commit=COMMIT)
     assert loc.inputs == "gs://dev-crsv3-transfer-224734058693/eval/v4-reprobe/inputs"
-    assert loc.cache == "gs://dev-crsv3-transfer-224734058693/eval/v4-reprobe/cache"
-    assert loc.results_root(COMMIT) == "gs://dev-crsv3-transfer-224734058693/eval/v4-reprobe/results/" + "d" * 12
-    other = pf.wave_locations(bucket="gs://dev-crsv3-x", name="v4-trial")
-    assert other.cache == "gs://dev-crsv3-x/eval/v4-trial/cache"
+    assert loc.cache == "gs://dev-crsv3-transfer-224734058693/eval/v4-reprobe/verdict-cache"
+    assert loc.results == "gs://dev-crsv3-transfer-224734058693/eval/reprobe-" + "d" * 12
+    other = pf.wave_locations(bucket="gs://dev-crsv3-x", name="v4-trial", commit=COMMIT)
+    assert other.cache == "gs://dev-crsv3-x/eval/v4-trial/verdict-cache"
 
 
 def test_cache_prefix_is_independent_of_the_commit():
     # verdict cache keys already carry the code version, so one prefix is shared across waves
-    assert pf.wave_locations().cache == pf.wave_locations().cache and "d" * 12 not in pf.wave_locations().cache
+    assert pf.wave_locations(commit="1" * 40).cache == pf.wave_locations(commit="2" * 40).cache
+    assert pf.wave_locations(commit="1" * 40).results != pf.wave_locations(commit="2" * 40).results
 
 
 @pytest.mark.parametrize("bucket", ["gs://some-other-bucket", "dev-crsv3-x", "gs://dev-crsv3-x/sub"])
@@ -311,13 +316,14 @@ def test_a_timeout_or_crash_in_the_runner_is_a_refusal():
 
 def test_fusion360_in_the_staged_inputs_is_refused():
     for bad in ("f360/part.step", "fusion360/part.step", "Fusion-360/x.step", "inputs/F360_gallery/s.step"):
-        report = _run(FakeGcloud(listing=[f"{pf.INPUTS}/abc/a.step", f"{pf.INPUTS}/{bad}"]))
+        report = _run(FakeGcloud(listing=[f"{pf.INPUTS}/{SHA_A}/a.step", f"{pf.INPUTS}/{bad}"]))
         assert "inputs_sources" in _failed(report), bad
 
 
 def test_declared_sources_outside_the_allow_list_are_refused():
     assert "f360" not in pf.ALLOWED_SOURCES
     assert "inputs_sources" in _failed(_run(FakeGcloud(), staged_sources=["abc_fail", "f360"]))
+    assert pf.ALLOWED_SOURCES == frozenset({"abc_fail", "abc_pass", "occt", "nist", "inject"})
     assert "inputs_sources" not in _failed(_run(FakeGcloud(), staged_sources=["abc_fail", "inject"]))
 
 
@@ -331,5 +337,253 @@ def test_main_exits_nonzero_on_refusal_and_zero_when_healthy(monkeypatch, capsys
     monkeypatch.setattr(pf, "gcloud_runner", lambda: FakeGcloud(bucket_roles=("roles/storage.objectViewer",)))
     assert pf.main(["--image", IMAGE, "--commit", COMMIT]) == 1
     assert "REFUSED" in capsys.readouterr().out
-    monkeypatch.setattr(pf, "gcloud_runner", lambda: FakeGcloud())
+    # the default path reads the committed pool: a listing of exactly its cleared entries passes
+    shas = sorted(pf.expected_inputs(pf.DEFAULT_POOL, None)[0])
+    monkeypatch.setattr(pf, "gcloud_runner", lambda: FakeGcloud(
+        listing=[f"{pf.INPUTS}/{h}/x.step" for h in shas]))
     assert pf.main(["--image", IMAGE, "--commit", COMMIT]) == 0
+    out = capsys.readouterr().out
+    assert out.count("note:") == 6 and "LAUNCHER" in out and "deny policies" in out
+
+
+# ------------------------------------------------------------------ permissions, not role names
+
+def _roles(*roles: str) -> FakeGcloud:
+    return FakeGcloud(bucket_roles=roles)
+
+
+@pytest.mark.parametrize("role", ["roles/storage.legacyBucketOwner",     # list, no get
+                                  "roles/storage.legacyObjectReader",    # get, no list
+                                  "roles/storage.legacyObjectOwner",     # get, no list
+                                  "roles/storage.legacyBucketReader"])   # list, no get
+def test_a_role_with_only_half_of_get_and_list_cannot_read(role):
+    report = _run(_roles(role))
+    assert "inputs_read" in _failed(report) and not report.ok
+    detail = next(c.detail for c in report.checks if c.name == "inputs_read")
+    assert "storage.objects" in detail          # names the missing permission, not just "no role"
+
+
+@pytest.mark.parametrize("role", ["roles/storage.legacyBucketWriter",    # list+create+delete, no get
+                                  "roles/storage.legacyBucketOwner",     # list+create+delete, no get
+                                  "roles/storage.objectCreator",         # create only
+                                  "roles/storage.legacyObjectOwner"])    # get, no create/delete
+def test_a_role_that_does_not_supply_all_write_permissions_cannot_write(role):
+    report = _run(_roles(role))
+    assert {"cache_write", "results_write"} <= _failed(report)
+
+
+def test_the_union_of_roles_can_satisfy_what_no_single_role_does():
+    # list (legacyBucketOwner) + get (legacyObjectReader) together can read; neither alone can
+    assert "inputs_read" not in _failed(_run(_roles("roles/storage.legacyBucketOwner",
+                                                    "roles/storage.legacyObjectReader")))
+    full = _run(_roles("roles/storage.legacyBucketOwner", "roles/storage.legacyObjectReader"))
+    assert not _failed(full)                    # get+list+create+delete all supplied by the union
+
+
+def test_an_unknown_or_custom_role_supplies_nothing():
+    assert {"inputs_read", "cache_write", "results_write"} <= _failed(
+        _run(_roles("projects/hexera-dev/roles/customCorpusReader")))
+
+
+def test_the_decision_really_comes_from_the_permission_table(monkeypatch):
+    """Disable-the-check proof: give legacyBucketOwner the missing `get` and the same grant passes."""
+    assert "inputs_read" in _failed(_run(_roles("roles/storage.legacyBucketOwner")))
+    table = dict(pf.ROLE_PERMISSIONS)
+    table["roles/storage.legacyBucketOwner"] = table["roles/storage.legacyBucketOwner"] | {pf.GET}
+    monkeypatch.setattr(pf, "ROLE_PERMISSIONS", table)
+    assert not _failed(_run(_roles("roles/storage.legacyBucketOwner")))
+
+
+# ------------------------------------------------------------------ drift pins
+
+def _launcher():
+    spec = importlib.util.spec_from_file_location(
+        "fleet_launcher_for_preflight", Path(__file__).resolve().parents[3] / "devtools/validation/v3_eval/launch_fleet.py")
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules["fleet_launcher_for_preflight"] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _v4_args(lf):
+    import types
+    return types.SimpleNamespace(profile="v4", prefix=lf.V4_PREFIX, sources=sorted(pf.ALLOWED_SOURCES), commit=COMMIT,
+                                 image=IMAGE, image_commit=COMMIT[:12], run_arm=None, pool=str(pf.DEFAULT_POOL))
+
+
+def test_the_preflight_checks_exactly_the_locations_the_launcher_writes():
+    lf = _launcher()
+    args = _v4_args(lf)
+    meta = dict(m.split("=", 1) for m in lf.V4.extra_metadata(args))
+    loc = pf.locations_for_prefix(args.prefix, COMMIT)
+    assert meta["v4-cache-uri"] == loc.cache == pf.wave_locations(commit=COMMIT).cache
+    assert lf.V4.required_dirs(args)[0].rstrip("/") == loc.inputs
+    assert lf.results_root("reprobe", COMMIT) == loc.results == pf.wave_locations(commit=COMMIT).results
+    assert lf.out_uri("reprobe", COMMIT, "pool", 3, 96).startswith(loc.results + "/pool/shard-")
+    # and the literal shapes, so a drift of BOTH sides together still shows in review
+    assert loc.cache.endswith("/eval/v4-reprobe/verdict-cache") and loc.results.endswith("/eval/reprobe-" + "d" * 12)
+
+
+def test_constants_are_one_definition_not_three():
+    lf = _launcher()
+    assert lf.DIGEST_RE is pf.DIGEST_RE is pf.wave_spec.DIGEST_RE
+    assert lf.SERVICE_ACCOUNT == pf.SERVICE_ACCOUNT and lf.PROJECT_NUMBER == pf.PROJECT_NUMBER
+    assert lf.BUCKET == pf.BUCKET and lf.PROJECT == pf.PROJECT
+
+
+def test_the_source_allow_list_is_the_stagers_and_holds_no_fusion_360():
+    stage = sys.modules["v4_stage"]
+    assert pf.ALLOWED_SOURCES == stage.ALLOWED_SOURCES
+    assert "f360" not in pf.ALLOWED_SOURCES and "f360" not in stage.ALLOWED_SOURCES
+
+
+# ------------------------------------------------------------------ the staged corpus is complete
+
+def _inputs(*shas: str) -> list[str]:
+    return [f"{pf.INPUTS}/{h}/x.step" for h in shas]
+
+
+def test_a_half_staged_corpus_is_refused():
+    assert "inputs_sources" in _failed(_run(FakeGcloud(listing=_inputs(SHA_A))))
+    assert "inputs_sources" not in _failed(_run(FakeGcloud(listing=_inputs(SHA_A, SHA_B))))
+
+
+def test_a_staged_dir_with_no_files_does_not_count_as_staged():
+    listing = [f"{pf.INPUTS}/{SHA_A}/x.step", f"{pf.INPUTS}/{SHA_B}/:"]
+    assert "inputs_sources" in _failed(_run(FakeGcloud(listing=listing)))
+
+
+def test_a_held_out_entry_staged_under_a_neutral_name_is_refused_by_its_sha():
+    listing = _inputs(SHA_A, SHA_B, SHA_F360)           # no "f360" anywhere in the path
+    report = _run(FakeGcloud(listing=listing))
+    assert "inputs_sources" in _failed(report)
+    assert "neutral name" in next(c.detail for c in report.checks if c.name == "inputs_sources")
+
+
+def test_an_object_outside_the_cleared_pool_is_refused():
+    assert "inputs_sources" in _failed(_run(FakeGcloud(listing=_inputs(SHA_A, SHA_B, "9" * 64))))
+
+
+def test_the_default_path_compares_against_the_committed_pool():
+    """No `expected` override and no --staged-source: the pool manifest decides (the default `main` path)."""
+    wanted, barred = pf.expected_inputs(pf.DEFAULT_POOL, None)
+    assert len(wanted) == 10887 and barred          # the F360-excluded pool; F360 is in the manifest
+    full = _inputs(*sorted(wanted))
+    ok = pf.run_preflight(runner=FakeGcloud(listing=full), image=IMAGE, commit=COMMIT, service_account=SA)
+    assert "inputs_sources" not in _failed(ok), [c for c in ok.checks if not c.ok]
+    short = pf.run_preflight(runner=FakeGcloud(listing=full[:-1]), image=IMAGE, commit=COMMIT, service_account=SA)
+    assert "inputs_sources" in _failed(short)
+    leaked = pf.run_preflight(runner=FakeGcloud(listing=full + _inputs(sorted(barred)[0])), image=IMAGE,
+                              commit=COMMIT, service_account=SA)
+    assert "inputs_sources" in _failed(leaked)
+
+
+def test_an_unreadable_pool_manifest_is_a_refusal(tmp_path):
+    report = pf.run_preflight(runner=FakeGcloud(), image=IMAGE, commit=COMMIT, service_account=SA,
+                              pool_path=tmp_path / "missing.json")
+    assert "inputs_sources" in _failed(report)
+
+
+# ------------------------------------------------------------------ a green run says what it did not prove
+
+def test_every_iam_only_pass_carries_its_caveat():
+    report = _run(FakeGcloud())
+    by = {c.name: c for c in report.checks}
+    for name in ("inputs_read", "cache_write", "results_write", "image_pullable"):
+        assert "deny policies" in by[name].caveat and "retention" in by[name].caveat, name
+    assert "LAUNCHER" in by["inputs_read"].caveat
+    assert "path-name regex" in by["inputs_sources"].caveat
+    assert "built from --commit" in by["image_pinned"].caveat
+    assert all(not c.caveat for c in report.checks if not c.ok)
+
+
+def test_the_provenance_stamp_says_the_image_commit_link_is_unverified():
+    stamp = pf.provenance_stamp(commit=COMMIT, image=IMAGE)
+    assert stamp["image_commit_link"].startswith("unverified")
+
+
+# ------------------------------------------------------------------ the launcher cannot proceed without it
+
+class _Failing:
+    def __init__(self, ok: bool = False):
+        self.ok = ok
+        self.kw: dict = {}
+
+    def __call__(self, **kw):
+        self.kw = kw
+        return pf.Report([pf.Check("inputs_read", self.ok, "boom" if not self.ok else "fine",
+                                   "IAM only" if self.ok else "")])
+
+
+@pytest.fixture
+def launcher_env(monkeypatch):
+    import subprocess
+    lf = _launcher()
+    monkeypatch.setattr(lf.subprocess, "run", lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, "", ""))
+    monkeypatch.setattr(lf, "_gcloud_json", lambda cmd: {"image_summary": {"tags": [COMMIT[:12]]}, "bindings": [
+        {"role": "roles/storage.objectAdmin", "members": [f"serviceAccount:{lf.SERVICE_ACCOUNT}"]}],
+        "quotas": []})
+    return lf
+
+
+def test_live_checks_runs_the_preflight_with_the_launchers_own_arguments(launcher_env, monkeypatch):
+    lf = launcher_env
+    fake = _Failing(ok=True)
+    monkeypatch.setattr(pf, "run_preflight", fake)
+    args = _v4_args(lf)
+    args.machine_type = "c2d-standard-8"
+    problems, warnings = lf.live_checks(args, 8)
+    assert not problems and any("IAM only" in w for w in warnings)
+    assert fake.kw["image"] == IMAGE and fake.kw["commit"] == COMMIT
+    assert fake.kw["locations"] == pf.locations_for_prefix(args.prefix, COMMIT)
+    assert fake.kw["pool_path"] == Path(args.pool) and fake.kw["staged_sources"] == args.sources
+
+
+def test_a_failing_preflight_is_a_launch_problem(launcher_env, monkeypatch):
+    lf = launcher_env
+    monkeypatch.setattr(pf, "run_preflight", _Failing(ok=False))
+    args = _v4_args(lf)
+    args.machine_type = "c2d-standard-8"
+    problems, _ = lf.live_checks(args, 8)
+    assert any("preflight inputs_read: boom" in p for p in problems)
+
+
+def test_the_v3_profile_does_not_run_the_v4_preflight(launcher_env, monkeypatch):
+    lf = launcher_env
+    fake = _Failing(ok=False)
+    monkeypatch.setattr(pf, "run_preflight", fake)
+    args = _v4_args(lf)
+    args.profile, args.machine_type = "v3", "c2d-standard-8"
+    args.prefix = lf.PREFIX
+    lf.live_checks(args, 8)
+    assert fake.kw == {}
+
+
+def test_an_image_the_registry_will_not_describe_is_a_refusal_not_a_warning(launcher_env, monkeypatch):
+    lf = launcher_env
+    monkeypatch.setattr(pf, "run_preflight", _Failing(ok=True))
+    real = lf._gcloud_json
+
+    def describe_fails(cmd):
+        if "images" in cmd:
+            raise RuntimeError("PERMISSION_DENIED")
+        return real(cmd)
+
+    monkeypatch.setattr(lf, "_gcloud_json", describe_fails)
+    args = _v4_args(lf)
+    args.machine_type = "c2d-standard-8"
+    problems, warnings = lf.live_checks(args, 8)
+    assert any("cannot describe the image" in p for p in problems)
+    assert not any("cannot describe the image" in w for w in warnings)
+
+
+def test_a_sha_directory_that_happens_to_contain_f360_is_not_a_licence_hit():
+    lucky = "0" * 10 + "f360" + "a" * 50
+    assert len(lucky) == 64
+    exp = ({lucky, SHA_B}, {SHA_F360})
+    report = _run(FakeGcloud(listing=_inputs(lucky, SHA_B)), expected=exp)
+    assert "inputs_sources" not in _failed(report)
+    # ...while the same text in a NAME still refuses
+    assert "inputs_sources" in _failed(_run(FakeGcloud(listing=[f"{pf.INPUTS}/{lucky}/f360_part.step"]
+                                                       + _inputs(SHA_B)), expected=exp))

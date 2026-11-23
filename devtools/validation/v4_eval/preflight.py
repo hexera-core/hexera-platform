@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 # Responsibility: Where a CRS v4 wave lives in GCS, which image it runs, and the proof - from the
 #                 launching host, before anything is created - that the fleet can actually use both.
-# Owns: the bucket/prefix convention (`wave_locations`), the digest pin (`require_pinned_image`,
+# Owns: the permission model (role -> storage permission table), the bucket/prefix convention
+#       (`wave_locations`, derived from wave_spec), the digest pin (`require_pinned_image`,
 #       `resolve_to_digest`, `provenance_stamp`, `metadata_items`) and the permissions preflight
 #       (`run_preflight`, CLI `main`).
 # Boundaries: READ-ONLY. It issues gcloud `get-iam-policy`, `describe` and `ls` only - never a write,
@@ -13,16 +14,16 @@
     preflight.py --image <ref@sha256:...> --commit <40-hex> [--staged-source abc_fail ...]
     preflight.py pin <ref:tag>        # print the digest-pinned reference for a tag
 
-Locations (same bucket as the v3 eval, so the service account's existing grants apply):
+Locations are NOT restated here: they come from wave_spec.py, which v3_eval/launch_fleet.py (the
+authority on what a wave writes) also imports:
 
     gs://dev-crsv3-transfer-<project-number>/eval/<name>/inputs/            staged corpus (8c)
-    gs://dev-crsv3-transfer-<project-number>/eval/<name>/cache/             verdict cache  (--cache-uri)
-    gs://dev-crsv3-transfer-<project-number>/eval/<name>/results/<c12>/     per-wave results
+    gs://dev-crsv3-transfer-<project-number>/eval/<name>/verdict-cache/     verdict cache  (--cache-uri)
+    gs://dev-crsv3-transfer-<project-number>/eval/reprobe-<c12>/            per-commit results root
 
 `<name>` defaults to v4-reprobe. The cache prefix does NOT carry the commit: the verdict cache key
 already holds the STEP sha256, the panel config hash and the verdict code version, so one prefix is
-shared by every wave and a hit is valid exactly when those three agree. Results do carry the commit,
-as v3's `eval/<arm>-<commit12>` does.
+shared by every wave. Results carry the commit, as v3's `eval/<arm>-<commit12>` does.
 
 The preflight proves each of these and REFUSES (exit 1) when any one cannot be proven; an
 unverifiable permission is a refusal, never a warning, because a wave runs on self-deleting spot VMs
@@ -33,57 +34,105 @@ and a failure found after launch leaves nothing to diagnose:
     image_pinned     the image is `...@sha256:<64 hex>`, not a floating tag
     image_exists     the registry holds that exact digest
     image_pullable   the service account holds a registry read role on the repository
-    inputs_read      readable (and non-empty) input prefix
-    inputs_sources   no Fusion 360 data staged (licence hold) and no source outside the allow-list
-    cache_write      the service account can read AND write the cache prefix
-    results_write    the service account can write the results prefix
+    inputs_read      the union of the service account's roles supplies storage.objects.get AND .list
+                     on the input bucket, and the prefix lists non-empty
+    inputs_sources   the staged corpus is COMPLETE (every cleared pool entry's sha256 directory is
+                     present), holds nothing outside the cleared pool, and no Fusion 360 data
+    cache_write      the roles supply get + list + create + delete on the cache prefix
+    results_write    the roles supply get + list + create + delete on the results prefix
 
-Permissions are proven from the IAM policies, as v3's launch_fleet does: the launching host cannot
-act as the service account, and a probe upload would be a mutation. Limits (state them to the
-operator): only unconditional direct grants count (conditions and group membership are not
-resolved, so they refuse), and IAM deny policies are not evaluated.
+Permissions are modelled, not guessed from role names: a role is only a bundle of permissions, and a
+role that holds `list` but not `get` (legacyBucketOwner) or `get` but not `list`
+(legacyObjectReader/Owner) cannot read a corpus. The union over the account's unconditional grants
+must cover the permissions the wave needs.
+
+What a green run does NOT prove (each passing check prints it): it proves IAM GRANTS. IAM deny
+policies, org policy, VPC-SC, uniform bucket-level access, retention and object lock are not
+evaluated; the `storage ls` in inputs_read runs as the LAUNCHER, not as the service account; nothing is
+written. Only unconditional direct grants count (conditions and group membership are not resolved, so
+they refuse). The image digest is pinned but not verified to have been built from --commit.
 """
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import re
 import subprocess
 import sys
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
 
-PROJECT = "hexera-dev"
-PROJECT_NUMBER = "224734058693"
-#: The v3 eval's transfer bucket; the compute service account already has objectAdmin on it.
-BUCKET = f"gs://dev-crsv3-transfer-{PROJECT_NUMBER}"
-#: The identity the fleet's VMs run as (v3_eval/launch_fleet.py SERVICE_ACCOUNT).
-SERVICE_ACCOUNT = f"{PROJECT_NUMBER}-compute@developer.gserviceaccount.com"
+HERE = Path(__file__).resolve().parent
+
+
+def _load(name: str, path: Path) -> Any:
+    if name in sys.modules:
+        return sys.modules[name]
+    spec = importlib.util.spec_from_file_location(name, path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+#: One definition each, shared with the launcher (wave_spec) and the stager (stage.ALLOWED_SOURCES).
+wave_spec: Any = _load("v4_wave_spec", HERE / "wave_spec.py")
+_stage: Any = _load("v4_stage", HERE / "stage.py")
+_pool: Any = _load("v4_pool_manifest", HERE / "pool.py")
+
+PROJECT: str = wave_spec.PROJECT
+PROJECT_NUMBER: str = wave_spec.PROJECT_NUMBER
+BUCKET: str = wave_spec.BUCKET
+SERVICE_ACCOUNT: str = wave_spec.SERVICE_ACCOUNT
+DIGEST_RE: re.Pattern[str] = wave_spec.DIGEST_RE
 WAVE_NAME = "v4-reprobe"
 BUCKET_PREFIX = "gs://dev-crsv3-"
-DIGEST_RE = re.compile(r"^[a-z0-9.-]+-docker\.pkg\.dev/[^@\s]+@(sha256:[0-9a-f]{64})$")
+DEFAULT_POOL = HERE.parent / "corpora" / "v4" / "pool.json"
 COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
-#: Sources the benchmark may measure. Mirrors task 8's reprobe.ALLOWED_SOURCES (not on this branch
-#: yet): Fusion 360 ("f360") is on licence hold - non-commercial, redistribution barred - and must
-#: not reach the eval bucket. Keep the two in step; add "f360" in neither until the owner rules.
-ALLOWED_SOURCES: frozenset[str] = frozenset({"abc_fail", "abc_pass", "occt", "nist", "inject"})
+#: Sources the benchmark may measure: stage.py's allow-list, imported so the two cannot diverge.
+#: Fusion 360 ("f360") is on licence hold and is absent from both until the owner rules.
+ALLOWED_SOURCES: frozenset[str] = _stage.ALLOWED_SOURCES
 _HELD_OUT_PATH = re.compile(r"f360|fusion[\s_-]*360", re.IGNORECASE)
+_SHA_DIR = re.compile(r"^[0-9a-f]{64}/")
 
-#: Roles that read objects (storage.objects.get + list). legacyBucketWriter is deliberately absent:
-#: it creates and deletes but cannot get.
-READ_ROLES = frozenset({
-    "roles/storage.objectViewer", "roles/storage.objectUser", "roles/storage.objectAdmin",
-    "roles/storage.admin", "roles/storage.legacyBucketOwner", "roles/storage.legacyObjectReader",
-    "roles/storage.legacyObjectOwner", "roles/editor", "roles/owner", "roles/viewer",
-})
-#: Roles that create AND replace/delete objects (publish re-copies files over rsync'd ones).
-#: objectCreator (create-only) is deliberately absent.
-WRITE_ROLES = frozenset({
-    "roles/storage.objectAdmin", "roles/storage.objectUser", "roles/storage.admin",
-    "roles/storage.legacyBucketWriter", "roles/storage.legacyBucketOwner", "roles/editor", "roles/owner",
-})
+GET, LIST = "storage.objects.get", "storage.objects.list"
+CREATE, DELETE = "storage.objects.create", "storage.objects.delete"
+#: What the wave needs of the bucket. Reading the corpus and hitting the cache need get AND list.
+#: Writing needs create AND delete (publish re-copies over rsync'd files; a rerun removes a FAILED
+#: marker) and, because the cache is read back and rsync lists its destination, get + list as well.
+READ_PERMISSIONS = frozenset({GET, LIST})
+WRITE_PERMISSIONS = frozenset({GET, LIST, CREATE, DELETE})
+
+_ALL = frozenset({GET, LIST, CREATE, DELETE, "storage.objects.update"})
+#: Role -> the object permissions it carries (only the four this wave cares about, plus update).
+#: Source: `gcloud iam roles describe <role>` for the three legacy roles (as run by the reviewer of
+#: task 8d: legacyBucketOwner has objects.list but NOT objects.get; legacyObjectReader and
+#: legacyObjectOwner have objects.get but NOT objects.list), and Google's published predefined-role
+#: reference for the rest. NOT re-run in this change (no network allowed): re-verify with
+#: `gcloud iam roles describe roles/storage.<role> --format='value(includedPermissions)'`.
+#: A role missing from this table contributes NOTHING (custom roles are not resolved: refusal).
+#: legacyBucketWriter has list+create+delete but not get; objectCreator is create-only.
+ROLE_PERMISSIONS: dict[str, frozenset[str]] = {
+    "roles/storage.objectViewer": frozenset({GET, LIST}),
+    "roles/storage.objectCreator": frozenset({CREATE}),
+    "roles/storage.objectUser": frozenset({GET, LIST, CREATE, DELETE, "storage.objects.update"}),
+    "roles/storage.objectAdmin": _ALL,
+    "roles/storage.admin": _ALL,
+    "roles/storage.legacyBucketReader": frozenset({LIST}),
+    "roles/storage.legacyBucketWriter": frozenset({LIST, CREATE, DELETE}),
+    "roles/storage.legacyBucketOwner": frozenset({LIST, CREATE, DELETE, "storage.objects.update"}),
+    "roles/storage.legacyObjectReader": frozenset({GET}),
+    "roles/storage.legacyObjectOwner": frozenset({GET, "storage.objects.update"}),
+    "roles/viewer": frozenset({GET, LIST}),
+    "roles/editor": _ALL,
+    "roles/owner": _ALL,
+}
 REGISTRY_READ_ROLES = frozenset({
     "roles/artifactregistry.reader", "roles/artifactregistry.writer", "roles/artifactregistry.repoAdmin",
     "roles/artifactregistry.admin", "roles/editor", "roles/owner",
@@ -122,26 +171,33 @@ def gcloud_runner() -> Runner:
 
 @dataclass(frozen=True)
 class WaveLocations:
+    """The three prefixes a wave touches. `cache` and `results` are what the launcher passes the VMs."""
     bucket: str
     inputs: str
     cache: str
-    results: str
-
-    def results_root(self, commit: str) -> str:
-        return f"{self.results}/{commit[:12]}"
+    results: str            # the per-commit results ROOT, <bucket>/eval/reprobe-<c12>
 
 
-def wave_locations(bucket: str = BUCKET, name: str = WAVE_NAME) -> WaveLocations:
+_PLACEHOLDER_COMMIT = "0" * 40
+
+
+def locations_for_prefix(prefix: str, commit: str, bucket: str = BUCKET) -> WaveLocations:
+    """The launcher's locations for `--prefix`: inputs under it, the cache from wave_spec, results at
+    wave_spec.results_root. Nothing is restated here; drift fails tests/unit/dev/test_v4_preflight.py."""
+    return WaveLocations(bucket=bucket, inputs=f"{prefix}/inputs", cache=wave_spec.verdict_cache_uri(prefix),
+                         results=wave_spec.results_root(wave_spec.V4_ARM, commit, bucket))
+
+
+def wave_locations(bucket: str = BUCKET, name: str = WAVE_NAME, commit: str = _PLACEHOLDER_COMMIT) -> WaveLocations:
     if not bucket.startswith(BUCKET_PREFIX) or "/" in bucket[len("gs://"):] or bucket != bucket.strip():
         raise ValueError(f"bucket must be a crsv3-owned bucket, gs://dev-crsv3-<name> with no path: {bucket!r}")
     if not _NAME_RE.match(name) or name in (".", ".."):
         raise ValueError(f"wave name must be a single path segment of [A-Za-z0-9._-]: {name!r}")
-    root = f"{bucket}/eval/{name}"
-    return WaveLocations(bucket=bucket, inputs=f"{root}/inputs", cache=f"{root}/cache", results=f"{root}/results")
+    return locations_for_prefix(f"{bucket}/eval/{name}", commit, bucket)
 
 
 _DEFAULT = wave_locations()
-INPUTS, CACHE_URI, RESULTS = _DEFAULT.inputs, _DEFAULT.cache, _DEFAULT.results
+INPUTS, CACHE_URI = _DEFAULT.inputs, _DEFAULT.cache
 
 
 def _bucket_of(uri: str) -> str:
@@ -181,6 +237,12 @@ def resolve_to_digest(ref: str, runner: Runner) -> str:
     return require_pinned_image(f"{repo}@{digest}")
 
 
+#: Nothing in the registry describe output ties a digest to a commit, so the stamp says so rather than
+#: implying "reproducible in code AND image": `commit` is the code archive the VMs run; `image` is the
+#: toolchain, pinned by digest, and NOT verified to have been built from `commit` or to be the mesh image.
+IMAGE_LINK_UNVERIFIED = "unverified: the digest is pinned, not checked against an image label for this commit"
+
+
 def provenance_stamp(*, commit: str, image: str) -> dict[str, str]:
     """The `commit`/`image` pair every shard's PROVENANCE must carry. `image` is the digest-pinned
     reference, so the comparability gate (which compares `image`) and collect's blank refusal are
@@ -190,16 +252,17 @@ def provenance_stamp(*, commit: str, image: str) -> dict[str, str]:
         raise ValueError(f"commit must be a full 40-hex sha, not {commit!r}")
     match = DIGEST_RE.match(require_pinned_image(image))
     assert match is not None
-    return {"commit": commit, "image": image, "image_digest": match.group(1)}
+    return {"commit": commit, "image": image, "image_digest": match.group(1),
+            "image_commit_link": IMAGE_LINK_UNVERIFIED}
 
 
 def metadata_items(*, commit: str, image: str, locations: WaveLocations | None = None) -> list[str]:
     """`key=value` instance-metadata items for the fleet launcher: the pin and the cache location."""
     stamp = provenance_stamp(commit=commit, image=image)
-    loc = locations or _DEFAULT
+    loc = locations or wave_locations(commit=commit)
     return [f"v4-commit={stamp['commit']}", f"v4-image={stamp['image']}",
             f"v4-image-digest={stamp['image_digest']}", f"v4-cache-uri={loc.cache}",
-            f"v4-inputs-uri={loc.inputs}", f"v4-results-uri={loc.results_root(commit)}"]
+            f"v4-inputs-uri={loc.inputs}", f"v4-results-uri={loc.results}"]
 
 
 # --------------------------------------------------------------------------- preflight
@@ -209,6 +272,7 @@ class Check:
     name: str
     ok: bool
     detail: str
+    caveat: str = ""   # printed under a PASSING check: what the pass does not prove
 
 
 @dataclass
@@ -228,6 +292,36 @@ def _json(done: Result, what: str) -> dict:
     except json.JSONDecodeError as exc:
         raise RuntimeError(f"unreadable {what}: {exc}") from exc
     return data if isinstance(data, dict) else {}
+
+
+IAM_ONLY = ("IAM grants only: deny policies, org policy, VPC-SC, uniform bucket-level access, "
+            "retention and object lock are not evaluated")
+CAVEATS = {
+    "image_pinned": "the digest is not verified to have been built from --commit, or to be the mesh image",
+    "image_pullable": IAM_ONLY + "; registry reachability from the VM is not tested",
+    "inputs_read": IAM_ONLY + "; the `storage ls` ran as the LAUNCHER, not as the service account",
+    "inputs_sources": ("completeness and licence checks run on object paths and pool-manifest sha256 "
+                       "directories, not on file content; Fusion 360 is spotted by a path-name regex "
+                       "and by sha, so F360 bytes staged under a manifest sha are not seen"),
+    "cache_write": IAM_ONLY + "; nothing was written or read as the service account",
+    "results_write": IAM_ONLY + "; nothing was written as the service account",
+}
+
+
+def _supplied(policies: Iterable[dict], member: str, needed: frozenset[str]) -> tuple[list[str], frozenset[str]]:
+    """(unconditional roles granted to `member` that carry any needed permission, permissions still
+    missing after the UNION of every role the member holds). A role absent from ROLE_PERMISSIONS
+    supplies nothing."""
+    have: set[str] = set()
+    roles: list[str] = []
+    for policy in policies:
+        for b in policy.get("bindings", []):
+            perms = ROLE_PERMISSIONS.get(b.get("role", ""), frozenset())
+            if member in b.get("members", []) and not b.get("condition") and perms & needed:
+                if b["role"] not in roles:
+                    roles.append(str(b["role"]))
+                have |= perms
+    return roles, needed - have
 
 
 def _holds(policies: Iterable[dict], member: str, roles: frozenset[str]) -> str | None:
@@ -256,8 +350,15 @@ class _Preflight:
     def project_policy(self) -> dict:
         return self.policy("project", PROJECT, ["gcloud", "projects", "get-iam-policy", PROJECT])
 
-    def storage_role(self, uri: str, roles: frozenset[str]) -> str | None:
-        return _holds([self.bucket_policy(_bucket_of(uri)), self.project_policy()], self.member, roles)
+    def storage_permissions(self, uri: str, needed: frozenset[str]) -> str:
+        """The roles that together supply every permission in `needed` on `uri`'s bucket; ValueError
+        names the missing permissions otherwise."""
+        roles, missing = _supplied([self.bucket_policy(_bucket_of(uri)), self.project_policy()],
+                                   self.member, needed)
+        if missing:
+            raise ValueError(f"{self.sa} lacks {sorted(missing)} on {_bucket_of(uri)} (unconditional roles "
+                             f"held that count: {roles or 'none'}); a role name is not a permission")
+        return ", ".join(roles)
 
 
 def _check_locations(loc: WaveLocations) -> str:
@@ -312,9 +413,7 @@ def _check_image_pullable(p: _Preflight, image: str) -> str:
 
 
 def _check_inputs_read(p: _Preflight, loc: WaveLocations) -> tuple[str, list[str]]:
-    role = p.storage_role(loc.inputs, READ_ROLES)
-    if not role:
-        raise ValueError(f"{p.sa} has no unconditional read role on {_bucket_of(loc.inputs)} or the project")
+    role = p.storage_permissions(loc.inputs, READ_PERMISSIONS)
     done = p.run(["gcloud", "storage", "ls", "--recursive", loc.inputs + "/"])
     if done.rc != 0:
         raise RuntimeError(f"cannot list {loc.inputs}: {done.err.strip()[:200]}")
@@ -324,43 +423,76 @@ def _check_inputs_read(p: _Preflight, loc: WaveLocations) -> tuple[str, list[str
     return f"{role}; {len(names)} listed", names
 
 
-def _check_sources(names: list[str], staged: Iterable[str] | None, loc: WaveLocations) -> str:
-    held = [n for n in names if _HELD_OUT_PATH.search(n[len(loc.inputs):] if n.startswith(loc.inputs) else n)]
+def expected_inputs(pool_path: Path, sources: Iterable[str] | None) -> tuple[set[str], set[str]]:
+    """(sha256 of every pool entry the wave stages, sha256 of every entry it must NOT stage)."""
+    wanted = set(sources) & ALLOWED_SOURCES if sources else set(ALLOWED_SOURCES)
+    entries = _pool.read_pool(pool_path)
+    keep = {e.sha256 for e in entries if e.source in wanted}
+    return keep, {e.sha256 for e in entries} - keep
+
+
+def _check_sources(names: list[str], staged: Iterable[str] | None, loc: WaveLocations,
+                   expected: tuple[set[str], set[str]]) -> str:
+    keep, refused = expected
+    if not keep:
+        raise ValueError("the pool manifest has no entry in the allowed sources: nothing to compare against")
+    rel = [n[len(loc.inputs):].lstrip("/") if n.startswith(loc.inputs) else n for n in names]
+    # The sha256 directory is hex, and 64 random hex digits contain "f360" often enough to matter (it
+    # does, in the real pool); only what follows a sha directory is a NAME. The sha itself is checked
+    # against the manifest below.
+    held = [n for n in rel if _HELD_OUT_PATH.search(_SHA_DIR.sub("", n, count=1))]
     if held:
         raise ValueError(f"Fusion 360 data staged under {loc.inputs} (licence hold): {held[:3]}")
     bad = sorted(set(staged or ()) - ALLOWED_SOURCES)
     if bad:
         raise ValueError(f"sources {bad} are not in the allow-list {sorted(ALLOWED_SOURCES)}")
-    return f"{len(names)} objects, no held-out source"
+    objects = [r for r in rel if r and not r.endswith(("/", ":")) and "/" in r]
+    got = {r.split("/", 1)[0] for r in objects}
+    barred = sorted(got & refused)
+    if barred:
+        raise ValueError(f"{len(barred)} staged sha256 dir(s) belong to pool entries outside the allowed "
+                         f"sources (e.g. {barred[:2]}): a held-out source staged under a neutral name")
+    unexpected = sorted(got - keep)
+    if unexpected:
+        raise ValueError(f"{len(unexpected)} staged top-level entr(ies) are not in the cleared pool "
+                         f"(e.g. {unexpected[:3]})")
+    missing = sorted(keep - got)
+    if missing:
+        raise ValueError(f"the staged corpus is incomplete: {len(got)} of {len(keep)} expected sha256 "
+                         f"directories present, {len(missing)} missing (e.g. {missing[:2]})")
+    return f"{len(keep)} of {len(keep)} expected files staged ({len(objects)} objects), no held-out source"
 
 
-def _check_write(p: _Preflight, uri: str, *, read_back: bool) -> str:
-    wrote = p.storage_role(uri, WRITE_ROLES)
-    if not wrote:
-        raise ValueError(f"{p.sa} has no unconditional create+delete role on {_bucket_of(uri)} or the project")
-    if read_back and not p.storage_role(uri, READ_ROLES):
-        raise ValueError(f"{p.sa} can write {uri} but has no read role to read it back")
-    return f"{wrote} on {_bucket_of(uri)}"
+def _check_write(p: _Preflight, uri: str) -> str:
+    return p.storage_permissions(uri, WRITE_PERMISSIONS) + f" on {_bucket_of(uri)}"
 
 
 def run_preflight(*, image: str, commit: str, service_account: str = SERVICE_ACCOUNT,
                   runner: Runner | None = None, locations: WaveLocations | None = None,
-                  staged_sources: Iterable[str] | None = None) -> Report:
-    """Run every check. A check that raises (including a runner timeout) FAILS; none is skipped."""
+                  staged_sources: Iterable[str] | None = None, pool_path: Path | None = None,
+                  expected: tuple[set[str], set[str]] | None = None) -> Report:
+    """Run every check. A check that raises (including a runner timeout) FAILS; none is skipped.
+
+    `pool_path` (default: the committed v4 pool) says what the staged corpus must hold; `expected`
+    overrides it with (wanted sha256s, barred sha256s) for tests."""
     p = _Preflight(runner or gcloud_runner(), service_account)
-    loc = locations or _DEFAULT
+    loc = locations or wave_locations(commit=commit)
     report = Report()
     state: dict[str, list[str]] = {}
 
     def step(name: str, fn: Callable[[], str]) -> None:
         try:
-            report.checks.append(Check(name, True, fn()))
+            report.checks.append(Check(name, True, fn(), CAVEATS.get(name, "")))
         except Exception as exc:  # noqa: BLE001 - fail closed: anything unprovable is a refusal
             report.checks.append(Check(name, False, f"{type(exc).__name__}: {exc}"))
 
     def inputs_read() -> str:
         detail, state["names"] = _check_inputs_read(p, loc)
         return detail
+
+    def inputs_sources() -> str:
+        exp = expected if expected is not None else expected_inputs(pool_path or DEFAULT_POOL, staged_sources)
+        return _check_sources(state["names"], staged_sources, loc, exp)
 
     pinned_ok = True
     try:
@@ -370,7 +502,7 @@ def run_preflight(*, image: str, commit: str, service_account: str = SERVICE_ACC
         pinned_ok = False
         report.checks.append(Check("image_pinned", False, str(exc)))
     if pinned_ok:
-        report.checks.append(Check("image_pinned", True, image))
+        report.checks.append(Check("image_pinned", True, image, CAVEATS["image_pinned"]))
 
     step("locations", lambda: _check_locations(loc))
     step("identity", lambda: _check_identity(p, SERVICE_ACCOUNT))
@@ -382,11 +514,11 @@ def run_preflight(*, image: str, commit: str, service_account: str = SERVICE_ACC
             report.checks.append(Check(name, False, "skipped: the image is not pinned by digest"))
     step("inputs_read", inputs_read)
     if "names" in state:
-        step("inputs_sources", lambda: _check_sources(state["names"], staged_sources, loc))
+        step("inputs_sources", inputs_sources)
     else:
         report.checks.append(Check("inputs_sources", False, "skipped: the inputs could not be listed"))
-    step("cache_write", lambda: _check_write(p, loc.cache, read_back=True))
-    step("results_write", lambda: _check_write(p, loc.results, read_back=False))
+    step("cache_write", lambda: _check_write(p, loc.cache))
+    step("results_write", lambda: _check_write(p, loc.results))
     report.checks.sort(key=lambda c: CHECKS.index(c.name))
     return report
 
@@ -394,7 +526,10 @@ def run_preflight(*, image: str, commit: str, service_account: str = SERVICE_ACC
 def _print(report: Report) -> None:
     for c in report.checks:
         print(f"  [{'ok' if c.ok else 'FAIL'}] {c.name}: {c.detail}")
-    print("preflight passed" if report.ok else "REFUSED: preflight failed; launch nothing")
+        if c.ok and c.caveat:
+            print(f"         note: {c.caveat}")
+    print("preflight passed (see the notes: it proves IAM grants and staged names, not runtime access)"
+          if report.ok else "REFUSED: preflight failed; launch nothing")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -416,15 +551,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--name", default=WAVE_NAME)
     parser.add_argument("--service-account", default=SERVICE_ACCOUNT)
     parser.add_argument("--staged-source", action="append", default=[], dest="staged_sources")
+    parser.add_argument("--pool", default=str(DEFAULT_POOL), help="the pool manifest the staged corpus is compared to")
     args = parser.parse_args(argv)
     try:
-        loc = wave_locations(args.bucket, args.name)
+        loc = wave_locations(args.bucket, args.name, args.commit)
     except ValueError as exc:
         print(f"REFUSED: {exc}")
         return 1
     report = run_preflight(image=args.image, commit=args.commit, service_account=args.service_account,
                            runner=gcloud_runner(), locations=loc,
-                           staged_sources=args.staged_sources or None)
+                           staged_sources=args.staged_sources or None, pool_path=Path(args.pool))
     _print(report)
     return 0 if report.ok else 1
 
