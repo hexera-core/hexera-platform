@@ -14,10 +14,13 @@ from __future__ import annotations
 
 import shutil
 import tempfile
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import cast
 
 from meshpipeline.cad.repair_v4.units import WRITER_CODES, canonical_unit
+from meshpipeline.cad.repair_v4.verdict import memo
 from meshpipeline.cad.repair_v4.worker_pool import CallResult, WorkerPool
 
 HARD_CODES = (
@@ -87,19 +90,19 @@ def _check_shape(pool: WorkerPool, brep: str) -> CallResult:
     return pool.call("check_valid", {"brep": brep}, timeout_s=CALL_TIMEOUT_S)
 
 
-def _round_trip(
-    pool: WorkerPool, doc: dict, work: Path, solids: int, known: set[str]
-) -> tuple[bool, str | None, dict, str]:
-    """Write `doc` as STEP, read it back, re-check it. Returns (ok, units after, why-not, units written).
+@dataclass(frozen=True)
+class _RoundTripCalls:
+    """The kernel calls of one round trip, made without judging them. A later call is None when an
+    earlier one failed, exactly where the judging stops."""
 
-    `known` are the hard codes the original already has: a defect that survives the round trip is
-    not the round trip's fault, only a NEW hard code is.
+    written: CallResult
+    reread: CallResult | None = None
+    checked: CallResult | None = None
 
-    A unit OCCT cannot write (a yard file, say) is a legitimate file, not a broken one: the BREP is
-    always millimetres, so it is written back in mm and the caller compares against that. The unit
-    the file really has is still what the report carries.
-    """
-    written_units = doc["units"] if doc["units"] in WRITER_CODES else "mm"
+
+def _round_trip_calls(pool: WorkerPool, doc: dict, work: Path, written_units: str) -> _RoundTripCalls:
+    """Write `doc` as STEP in `written_units`, read it back and check the re-read shape. Nothing here
+    needs the input's own check, so it can run while that check does (`check_valid`)."""
     written = pool.call(
         "write_step_xcaf",
         {
@@ -111,19 +114,43 @@ def _round_trip(
         },
         timeout_s=CALL_TIMEOUT_S,
     )
-    if not written.ok and not _is_file_error(written):
-        raise _unavailable("write_step_xcaf", written)
     if not written.ok:
-        return False, None, {"stage": "write", "error": written.error}, written_units
+        return _RoundTripCalls(written)
     reread = pool.call(
         "read_step_xcaf",
         {"path": str(work / "round_trip.step"), "brep_out": str(work / "round_trip.brep")},
         timeout_s=CALL_TIMEOUT_S,
     )
+    if not reread.ok or reread.value is None:
+        return _RoundTripCalls(written, reread)
+    return _RoundTripCalls(written, reread, _check_shape(pool, reread.value["brep"]))
+
+
+def _written_units(doc: dict) -> str:
+    """A unit OCCT cannot write (a yard file, say) is a legitimate file, not a broken one: the BREP is
+    always millimetres, so it is written back in mm and the caller compares against that. The unit
+    the file really has is still what the report carries."""
+    return doc["units"] if doc["units"] in WRITER_CODES else "mm"
+
+
+def _judge_round_trip(calls: _RoundTripCalls, doc: dict, solids: int, known: set[str]) -> tuple[bool, str | None, dict]:
+    """Returns (ok, units after, why-not). Raises `CheckerUnavailable` where a call failed for a reason
+    that is not the file's.
+
+    `known` are the hard codes the original already has: a defect that survives the round trip is
+    not the round trip's fault, only a NEW hard code is.
+    """
+    written = calls.written
+    if not written.ok and not _is_file_error(written):
+        raise _unavailable("write_step_xcaf", written)
+    if not written.ok:
+        return False, None, {"stage": "write", "error": written.error}
+    reread = calls.reread
+    assert reread is not None  # a successful write is always followed by the re-read
     if not reread.ok and not _is_file_error(reread):
         raise _unavailable("read_step_xcaf", reread)
     if not reread.ok or reread.value is None:
-        return False, None, {"stage": "read", "error": reread.error}, written_units
+        return False, None, {"stage": "read", "error": reread.error}
     again = reread.value
     problems: dict = {}
     names_before = {key: entry["name"] for key, entry in doc["labels"].items()}
@@ -131,16 +158,23 @@ def _round_trip(
     lost = sorted(key for key in names_before if names_before[key] != names_after.get(key))
     if lost:  # extra keys after the re-read are not a loss
         problems["labels_changed"] = lost
-    checked = _check_shape(pool, again["brep"])
+    checked = calls.checked
+    assert checked is not None  # a successful re-read is always checked
     if not checked.ok or checked.value is None:
         raise _unavailable("check_valid", checked)
-    else:
-        if checked.value["solids"] != solids:
-            problems["solids"] = {"before": solids, "after": checked.value["solids"]}
-        broken = sorted({item["code"] for item in checked.value["hard"]} - known)
-        if broken:
-            problems["hard"] = broken
-    return not problems, again["units"], problems, written_units
+    if checked.value["solids"] != solids:
+        problems["solids"] = {"before": solids, "after": checked.value["solids"]}
+    broken = sorted({item["code"] for item in checked.value["hard"]} - known)
+    if broken:
+        problems["hard"] = broken
+    return not problems, again["units"], problems
+
+
+def _bounded(pool: WorkerPool, doc: dict) -> bool:
+    """True only when the kernel says the shape is bounded. Anything else (unbounded, or a call that failed)
+    is False, and `check_valid` then keeps the plain order: check first, round trip only if it may."""
+    extent = pool.call("valid_extent", {"brep": doc["brep"]}, timeout_s=CALL_TIMEOUT_S)
+    return bool(extent.ok and extent.value is not None and extent.value.get("unbounded") is False)
 
 
 def check_valid(pool: WorkerPool, step_path: str, *, original_units: str | None) -> ValidReport:
@@ -148,14 +182,32 @@ def check_valid(pool: WorkerPool, step_path: str, *, original_units: str | None)
 
     Raises `CheckerUnavailable` when no verdict can be reached (worker timeout or crash, or a kernel
     failure that is not about the file); that is never reported as a finding against the file.
+
+    The report is memoised per (pool, path, bytes, original unit): the cheap and the full tier, and the
+    search's repeated states, ask the same question of the same file. A raise is never memoised.
     """
+    key = memo.content_key(step_path)
+    if key is not None:
+        hit = memo.recall(pool, ("valid", key, original_units))
+        if hit is not None:
+            return cast(ValidReport, hit)
+    report = _check_valid(pool, step_path, key, original_units)
+    if key is not None:
+        memo.remember(pool, ("valid", key, original_units), report)
+    return report
+
+
+def _check_valid(
+    pool: WorkerPool, step_path: str, key: tuple[str, str] | None, original_units: str | None
+) -> ValidReport:
+    """The measurement. Every decision is taken in the order of the original sequential code, on the
+    same call results; only WHEN the round trip's calls run changed (alongside the input's check, on a
+    second worker, once the shape is known to be bounded)."""
     work = Path(tempfile.mkdtemp(prefix="valid_"))
+    speculative: Future[_RoundTripCalls] | None = None
+    executor: ThreadPoolExecutor | None = None
     try:
-        read = pool.call(
-            "read_step_xcaf",
-            {"path": str(step_path), "brep_out": str(work / "shape.brep")},
-            timeout_s=CALL_TIMEOUT_S,
-        )
+        read = memo.read_step(pool, step_path, key, str(work / "shape.brep"))
         if not read.ok and _is_file_error(read):  # the file cannot be read as STEP: it is invalid
             finding = Finding("brep_invalid", [], {"call": "read_step_xcaf", "error": read.error})
             return ValidReport(False, [finding], [], "unknown", 0, False)
@@ -163,6 +215,11 @@ def check_valid(pool: WorkerPool, step_path: str, *, original_units: str | None)
             raise _unavailable("read_step_xcaf", read)
         doc = read.value
         units = doc["units"]
+        written_units = _written_units(doc)
+
+        if _bounded(pool, doc):
+            executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="valid_round_trip")
+            speculative = executor.submit(_round_trip_calls, pool, doc, work, written_units)
 
         checked = _check_shape(pool, doc["brep"])
         if not checked.ok or checked.value is None:
@@ -176,7 +233,8 @@ def check_valid(pool: WorkerPool, step_path: str, *, original_units: str | None)
         if original_units is not None and units != canonical_unit(original_units):
             hard.append(Finding("units_changed", [], {"original": original_units, "file": units}))
 
-        round_trip_ok, units_after, why, written_units = _round_trip(pool, doc, work, solids, {f.code for f in hard})
+        calls = speculative.result() if speculative is not None else _round_trip_calls(pool, doc, work, written_units)
+        round_trip_ok, units_after, why = _judge_round_trip(calls, doc, solids, {f.code for f in hard})
         if units_after is not None and units_after != written_units:
             hard.append(Finding("units_changed", [], {"file": units, "after_round_trip": units_after}))
             round_trip_ok = False
@@ -185,4 +243,9 @@ def check_valid(pool: WorkerPool, step_path: str, *, original_units: str | None)
 
         return ValidReport(not hard, hard, soft, units, solids, round_trip_ok)
     finally:
-        shutil.rmtree(work, ignore_errors=True)
+        if speculative is None or executor is None:
+            shutil.rmtree(work, ignore_errors=True)
+        else:  # its calls write into `work`, so `work` goes when they are done. Never wait for them here: a
+            # raise (a file wall-clock, an unavailable check) must not be held up by up to three more calls.
+            speculative.add_done_callback(lambda _done: shutil.rmtree(work, ignore_errors=True))
+            executor.shutdown(wait=False)

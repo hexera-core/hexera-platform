@@ -39,15 +39,18 @@ class ScriptedPool:
             labels["1"] = {"name": "extra", "color": None, "parent": None}
         if fn == "read_step_xcaf":
             rt = "round_trip" in payload["path"]
+            brep = "round_trip.brep" if rt else "x.brep"
             return _ok(
-                {"brep": "x.brep", "labels": labels, "assembly_ids": [], "units": self.rt_units if rt else self.units}
+                {"brep": brep, "labels": labels, "assembly_ids": [], "units": self.rt_units if rt else self.units}
             )
+        if fn == "valid_extent":
+            return _ok({"unbounded": "unbounded_geometry" in self.hard})
         if fn == "write_step_xcaf":
             if not self.write_ok:
                 return CallResult(False, None, "ValueError: boom", "error", 0.0)
             return _ok({"path": payload["path"]})
-        self.checks += 1
-        hard = self.hard if self.checks == 1 else self.rt_hard
+        self.checks += 1  # the input and its round trip are checked concurrently: tell them apart by BREP
+        hard = self.rt_hard if "round_trip" in payload["brep"] else self.hard
         return _ok(
             {
                 "solids": 1,

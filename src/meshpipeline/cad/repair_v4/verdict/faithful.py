@@ -17,13 +17,13 @@ the original and is exempt in the original -> repaired direction.
 
 from __future__ import annotations
 
-import atexit
-import os
 import shutil
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import cast
 
+from meshpipeline.cad.repair_v4.verdict import memo
 from meshpipeline.cad.repair_v4.verdict.valid import CALL_TIMEOUT_S, CheckerUnavailable
 from meshpipeline.cad.repair_v4.worker_pool import CallResult, WorkerPool
 
@@ -97,32 +97,14 @@ def check_faithful(
     )
 
 
-def _to_brep(pool: WorkerPool, step: str, out: Path) -> str:
-    read = pool.call("read_step_xcaf", {"path": str(step), "brep_out": str(out)}, timeout_s=CALL_TIMEOUT_S)
+def _to_brep(pool: WorkerPool, step: str, key: tuple[str, str] | None, out: Path) -> str:
+    """The BREP of `step`, read once per (pool, path, bytes) and shared with layer 1 (`memo.read_step`):
+    the search judges thousands of states against ONE original, and layer 1 has just read the repaired
+    file. `out` is used only when nothing can be memoised."""
+    read = memo.read_step(pool, step, key, str(out))
     if not read.ok or read.value is None:
         raise _unavailable("read_step_xcaf", read)
     return str(read.value["brep"])
-
-
-_ORIGINALS: dict[tuple[str, int, int], str] = {}
-_ORIGINALS_DIR: list[Path] = []
-
-
-def _original_brep(pool: WorkerPool, step: str) -> str:
-    """The original's BREP, read once per (path, mtime, size) and kept for the process: the search
-    judges thousands of states against ONE original, and re-reading it each time is pure waste."""
-    stat = os.stat(step)
-    key = (os.path.abspath(step), stat.st_mtime_ns, stat.st_size)
-    cached = _ORIGINALS.get(key)
-    if cached is not None and os.path.exists(cached):
-        return cached
-    if not _ORIGINALS_DIR:
-        root = Path(tempfile.mkdtemp(prefix="faithful_originals_"))
-        atexit.register(shutil.rmtree, root, ignore_errors=True)
-        _ORIGINALS_DIR.append(root)
-    out = _ORIGINALS_DIR[0] / f"original_{len(_ORIGINALS)}.brep"
-    _ORIGINALS[key] = _to_brep(pool, step, out)
-    return _ORIGINALS[key]
 
 
 def check_faithful_steps(
@@ -133,16 +115,26 @@ def check_faithful_steps(
     declared_added: list[str],
     declared_removed: list[str],
 ) -> FaithfulReport:
-    """`check_faithful` on two STEP files (read to BREP, in mm, in a worker). The original's BREP is
-    memoised across calls."""
+    """`check_faithful` on two STEP files (read to BREP, in mm, in a worker). Both reads, and the report
+    itself, are memoised per (pool, both files' path and bytes, declared edits); a raise is never memoised."""
+    original_key, repaired_key = memo.content_key(original_step), memo.content_key(repaired_step)
+    report_key = None
+    if original_key is not None and repaired_key is not None:
+        report_key = ("faithful", original_key, repaired_key, tuple(declared_added), tuple(declared_removed))
+        hit = memo.recall(pool, report_key)
+        if hit is not None:
+            return cast(FaithfulReport, hit)
     work = Path(tempfile.mkdtemp(prefix="faithful_"))
     try:
-        return check_faithful(
+        report = check_faithful(
             pool,
-            _original_brep(pool, original_step),
-            _to_brep(pool, repaired_step, work / "repaired.brep"),
+            _to_brep(pool, original_step, original_key, work / "original.brep"),
+            _to_brep(pool, repaired_step, repaired_key, work / "repaired.brep"),
             declared_added=declared_added,
             declared_removed=declared_removed,
         )
     finally:
         shutil.rmtree(work, ignore_errors=True)
+    if report_key is not None:
+        memo.remember(pool, report_key, report)
+    return report
