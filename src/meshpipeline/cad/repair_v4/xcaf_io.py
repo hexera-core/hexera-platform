@@ -256,10 +256,13 @@ def write(doc: XcafDoc, path: str) -> None:
         children.Next()
         index += 1
 
+    # The writer must exist first: STEP parameters are registered by constructing one, and setting
+    # `write.step.unit` before that is a silent no-op that writes the file in millimetres.
+    writer = STEPCAFControl_Writer()
     previous = Interface_Static.CVal_s("write.step.unit")
-    Interface_Static.SetCVal_s("write.step.unit", WRITER_CODES[doc.units])
+    if not Interface_Static.SetCVal_s("write.step.unit", WRITER_CODES[doc.units]):
+        raise RuntimeError(f"could not set write.step.unit to {WRITER_CODES[doc.units]}")
     try:
-        writer = STEPCAFControl_Writer()
         for setter in (
             writer.SetNameMode,
             writer.SetColorMode,

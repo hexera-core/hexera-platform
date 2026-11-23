@@ -17,7 +17,7 @@ import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from meshpipeline.cad.repair_v4.units import canonical_unit
+from meshpipeline.cad.repair_v4.units import WRITER_CODES, canonical_unit
 from meshpipeline.cad.repair_v4.worker_pool import CallResult, WorkerPool
 
 HARD_CODES = (
@@ -77,19 +77,26 @@ def _check_shape(pool: WorkerPool, brep: str) -> CallResult:
     return pool.call("check_valid", {"brep": brep}, timeout_s=CALL_TIMEOUT_S)
 
 
-def _round_trip(pool: WorkerPool, doc: dict, work: Path, solids: int, known: set[str]) -> tuple[bool, str | None, dict]:
-    """Write `doc` as STEP, read it back, re-check it. Returns (ok, units after, why-not).
+def _round_trip(
+    pool: WorkerPool, doc: dict, work: Path, solids: int, known: set[str]
+) -> tuple[bool, str | None, dict, str]:
+    """Write `doc` as STEP, read it back, re-check it. Returns (ok, units after, why-not, units written).
 
     `known` are the hard codes the original already has: a defect that survives the round trip is
     not the round trip's fault, only a NEW hard code is.
+
+    A unit OCCT cannot write (a yard file, say) is a legitimate file, not a broken one: the BREP is
+    always millimetres, so it is written back in mm and the caller compares against that. The unit
+    the file really has is still what the report carries.
     """
+    written_units = doc["units"] if doc["units"] in WRITER_CODES else "mm"
     written = pool.call(
         "write_step_xcaf",
         {
             "brep": doc["brep"],
             "labels": doc["labels"],
             "assembly_ids": doc["assembly_ids"],
-            "units": doc["units"],
+            "units": written_units,
             "path": str(work / "round_trip.step"),
         },
         timeout_s=CALL_TIMEOUT_S,
@@ -97,7 +104,7 @@ def _round_trip(pool: WorkerPool, doc: dict, work: Path, solids: int, known: set
     if not written.ok and not _is_file_error(written):
         raise _unavailable("write_step_xcaf", written)
     if not written.ok:
-        return False, None, {"stage": "write", "error": written.error}
+        return False, None, {"stage": "write", "error": written.error}, written_units
     reread = pool.call(
         "read_step_xcaf",
         {"path": str(work / "round_trip.step"), "brep_out": str(work / "round_trip.brep")},
@@ -106,7 +113,7 @@ def _round_trip(pool: WorkerPool, doc: dict, work: Path, solids: int, known: set
     if not reread.ok and not _is_file_error(reread):
         raise _unavailable("read_step_xcaf", reread)
     if not reread.ok or reread.value is None:
-        return False, None, {"stage": "read", "error": reread.error}
+        return False, None, {"stage": "read", "error": reread.error}, written_units
     again = reread.value
     problems: dict = {}
     names_before = {key: entry["name"] for key, entry in doc["labels"].items()}
@@ -123,7 +130,7 @@ def _round_trip(pool: WorkerPool, doc: dict, work: Path, solids: int, known: set
         broken = sorted({item["code"] for item in checked.value["hard"]} - known)
         if broken:
             problems["hard"] = broken
-    return not problems, again["units"], problems
+    return not problems, again["units"], problems, written_units
 
 
 def check_valid(pool: WorkerPool, step_path: str, *, original_units: str | None) -> ValidReport:
@@ -157,8 +164,8 @@ def check_valid(pool: WorkerPool, step_path: str, *, original_units: str | None)
         if original_units is not None and units != canonical_unit(original_units):
             hard.append(Finding("units_changed", [], {"original": original_units, "file": units}))
 
-        round_trip_ok, units_after, why = _round_trip(pool, doc, work, solids, {f.code for f in hard})
-        if units_after is not None and units_after != units:
+        round_trip_ok, units_after, why, written_units = _round_trip(pool, doc, work, solids, {f.code for f in hard})
+        if units_after is not None and units_after != written_units:
             hard.append(Finding("units_changed", [], {"file": units, "after_round_trip": units_after}))
             round_trip_ok = False
         if not round_trip_ok and not any(finding.code != "units_changed" for finding in hard):

@@ -71,9 +71,9 @@ def _compound(*shapes):
 
 
 def _write_plain(shape, path: Path, unit: str = "MM") -> str:
-    Interface_Static.SetCVal_s("write.step.unit", unit)
+    writer = STEPControl_Writer()  # first: the unit parameter only exists once a writer does
+    assert Interface_Static.SetCVal_s("write.step.unit", unit)
     try:
-        writer = STEPControl_Writer()
         writer.Transfer(shape, STEPControl_AsIs)
         assert writer.Write(str(path)) == IFSelect_RetDone
     finally:
@@ -385,6 +385,7 @@ def test_face_colours_survive_by_id_and_by_geometry(pool: WorkerPool, tmp_path: 
 
 @pytest.mark.xfail(
     strict=True,
+    raises=AssertionError,
     reason="OCCT 7.9.3 STEPCAFControl does not write or read face names (ADVANCED_FACE is written with an "
     "empty name; the write/read.stepcaf.subshapes.name switches do not exist in this build). "
     "Design 7.5 wants face names carried: this flips to XPASS when that becomes possible.",
@@ -505,3 +506,41 @@ def test_micrometre_file_round_trips(pool: WorkerPool, tmp_path: Path) -> None:
     report = check_valid(pool, step, original_units=None)
     assert report.units == "um"
     assert report.ok is True
+
+
+def test_occt_7_9_3_writer_emits_empty_advanced_face_names(tmp_path: Path) -> None:
+    """Evidence for design 7.5: a face named in XCAF is written to STEP with an EMPTY name.
+
+    This pins the WRITER side of the loss. If it starts failing, face names can be written and the
+    xfail on test_face_names_survive_by_id_and_by_geometry should be re-checked.
+    """
+    step = Path(_write_one_product(tmp_path / "named.step", _box(), faces=WANTED_FACES))
+    text = step.read_text()
+    assert "'top'" not in text and "'inlet'" not in text
+    advanced_faces = [line for line in text.splitlines() if "ADVANCED_FACE(" in line]
+    assert len(advanced_faces) == 6
+    assert all("ADVANCED_FACE(''," in line for line in advanced_faces)
+
+
+def test_occt_7_9_3_reader_drops_advanced_face_names(pool: WorkerPool, tmp_path: Path) -> None:
+    """READER side of the loss: a STEP whose ADVANCED_FACE is hand-edited to carry a name does not keep it."""
+    step = Path(_write_one_product(tmp_path / "plain.step", _box(), faces=WANTED_FACES))
+    edited = tmp_path / "edited.step"
+    edited.write_text(step.read_text().replace("ADVANCED_FACE('',", "ADVANCED_FACE('named_face',", 1))
+    labels = _read(pool, str(edited), tmp_path / "e.brep")["labels"]
+    names = {entry["name"] for key, entry in labels.items() if "/F" in key}
+    assert "named_face" not in names, names
+
+
+def test_yard_file_is_not_a_round_trip_failure(pool: WorkerPool, tmp_path: Path) -> None:
+    """A unit OCCT cannot write is a legitimate file: it is reported in its own unit and passes."""
+    text = Path(_write_plain(_box(), tmp_path / "inch.step", unit="INCH")).read_text()
+    assert "CONVERSION_BASED_UNIT('INCH'" in text and "LENGTH_MEASURE_WITH_UNIT(25.4," in text
+    yard = tmp_path / "yard.step"
+    yard.write_text(
+        text.replace("'INCH'", "'YARD'").replace("LENGTH_MEASURE_WITH_UNIT(25.4,", "LENGTH_MEASURE_WITH_UNIT(914.4,")
+    )
+    report = check_valid(pool, str(yard), original_units="yard")
+    assert report.units == "yard"
+    assert report.hard == [], [(f.code, f.detail) for f in report.hard]
+    assert report.round_trip_ok is True

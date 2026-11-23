@@ -153,3 +153,11 @@ def test_extra_labels_after_round_trip_are_not_a_failure() -> None:
 def test_unit_spellings_of_the_original_are_normalised(spelling: str) -> None:
     report = check_valid(ScriptedPool(units="inch"), "a.step", original_units=spelling)
     assert report.ok is True
+
+
+def test_unwritable_unit_round_trips_in_mm_and_is_not_a_failure() -> None:
+    """A yard file: the round trip is written (and expected back) in mm; the report keeps 'yard'."""
+    pool = ScriptedPool(units="yard", rt_units="mm")
+    report = check_valid(pool, "a.step", original_units="yard")
+    assert report.ok is True and report.round_trip_ok is True
+    assert report.units == "yard"
