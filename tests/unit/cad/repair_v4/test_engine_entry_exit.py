@@ -90,7 +90,7 @@ class World:
         return SimpleNamespace(full=full)
 
     def find_best(self, pool: Any, ws: Workspace, source: str, *, budget: Any, deadline_s: float,
-                  judge: Any) -> Any:
+                  judge: Any, input_verdict: Any = None) -> Any:
         self.middle_args = {"ws": ws, "source": source, "budget": budget, "deadline_s": deadline_s}
         if self.middle_raises:
             raise self.middle_raises

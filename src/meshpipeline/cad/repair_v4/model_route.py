@@ -66,9 +66,60 @@ class _NoRecords:
         return None
 
 
-def probe_route_chain(routes: Sequence[str]) -> str:
-    """The first route that passes the tool-and-image probe (`proposer.select_route`), or NoUsableRoute. Costs cents
-    per shard, ahead of any file; it is not metered against the ledger."""
+#: the ledger file id every route-probe call is settled under (kind `route_probe`), so a shard's probe spend is on
+#: the same books as its files' and inside the same wave cap
+ROUTE_PROBE_FILE_ID = "_route_probe"
+#: the most a shard's probes may spend between them (each call reserves its full output allowance up front)
+ROUTE_PROBE_USD_CEILING = 1.00
+
+
+def probe_route_chain(routes: Sequence[str], *, ledger: Any) -> str:
+    """The first route that passes the tool-and-image probe (`proposer.select_route`), or NoUsableRoute.
+
+    METERED: every probe call is admitted against the shard's `ledger` before it is sent and settled with the
+    router's priced reply after (file id `ROUTE_PROBE_FILE_ID`, kind `route_probe`); a call that failed unbilled is
+    released. The ledger is REQUIRED - Task 49 found these startup calls were the one paid call outside the books.
+    A probe the ledger has no room for is not sent, and counts as that route failing its probe."""
     from meshpipeline.cad.repair_v4.proposer import select_route
 
-    return asyncio.run(select_route(list(routes)))
+    return asyncio.run(select_route(list(routes), call=metered_call(ledger, ROUTE_PROBE_FILE_ID,
+                                                                    ROUTE_PROBE_USD_CEILING, kind="route_probe")))
+
+
+class LedgerRefused(RuntimeError):
+    """The ledger had no room for a call; it was not sent."""
+
+
+def metered_call(ledger: Any, file_id: str, ceiling_usd: float, *, kind: str) -> Any:
+    """A `call_repair_v4_propose` that is admitted by `ledger` before it is sent and settled (or released) after,
+    for model calls that do not go through an `AIProposer` (the route probe)."""
+    from meshpipeline.cad.repair_v4.proposer import estimate_call_usd
+    from meshpipeline.contracts.model_inference import (
+        REPAIR_V4_PROPOSE_MAX_OUTPUT_TOKENS,
+        call_repair_v4_propose,
+        repair_v4_route_prices,
+    )
+
+    async def call(messages: list, tools: list, *, route: str, **kw: Any) -> Any:
+        est, _tokens = estimate_call_usd(messages, tools, prices=repair_v4_route_prices(route),
+                                         output_tokens=REPAIR_V4_PROPOSE_MAX_OUTPUT_TOKENS)
+        admission = ledger.admit(file_id, est, file_ceiling_usd=ceiling_usd)
+        if not admission.ok:
+            raise LedgerRefused(f"the ledger refused the {kind} call ({admission.reason}); it was not sent")
+        try:
+            priced = await call_repair_v4_propose(messages, tools, route=route, **kw)
+        except BaseException:
+            ledger.release(admission.reservation)
+            raise
+        reply = priced.reply
+        if reply.failure_marker:
+            ledger.release(admission.reservation)      # a failed round was not billed
+        else:
+            ledger.settle(admission.reservation, file_id=file_id, job_id=kw.get("job_id", ""),
+                          provider=priced.provider, model=priced.model, input_tokens=reply.input_tokens,
+                          cached_input_tokens=reply.cached_input_tokens, output_tokens=reply.output_tokens,
+                          cost_usd=priced.cost_usd, kind=kind, cache_write_tokens=reply.cache_write_tokens,
+                          cache_write_30m_tokens=reply.cache_write_30m_tokens)
+        return priced
+
+    return call

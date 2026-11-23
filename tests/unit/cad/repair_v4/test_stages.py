@@ -439,3 +439,85 @@ def test_a_stage_that_applied_nothing_reports_zero(world):
     world.ops["to_canonical"] = FakeOp("to_canonical", raises=OpDeclined("no_change"))
     res = stages.run_stage(None, _ws(), "faces")
     assert res.applied_ops == {"faces": 0}
+
+
+# --- the FULL-panel confirmation of the staged result (Task 49: `condition` broke gmsh_prod on a clean file) ------
+
+
+def _full(passes: int, of: int = 4, *, valid: bool = True, clean: bool | None = None) -> Any:
+    panel = [SimpleNamespace(name=f"m{i}", status="pass" if i < passes else "fail") for i in range(of)]
+    return SimpleNamespace(panel=panel, valid=SimpleNamespace(ok=valid), inconclusive=False,
+                           clean=(passes == of and valid) if clean is None else clean)
+
+
+class StepOp(FakeOp):
+    """Moves `frm` -> `to` and refuses (an op error: noted, the stage carries on) from any other state, so one op
+    name can be used by several stages and act in only the one the test means."""
+
+    def __init__(self, name: str, frm: str, to: str) -> None:
+        super().__init__(name, to=to)
+        self.frm = frm
+
+    def apply(self, pool, ws, targets, params, *, timeout_s):
+        if ws.brep_path != self.frm:
+            raise RuntimeError("not this state")
+        return super().apply(pool, ws, targets, params, timeout_s=timeout_s)
+
+
+def test_a_stage_that_breaks_a_panel_member_the_cheap_tier_cannot_see_is_dropped(world):
+    """The smoke's regression, in miniature: a clean input; `condition` passes the cheap tier (gmsh_default) and
+    `finalise` stands on it, but the FULL panel loses a member. The confirmation falls back stage by stage to the
+    last state that passes as many members as the input - dropping `condition` and everything after it."""
+    world.ops["tighten_tolerances"] = StepOp("tighten_tolerances", "s0", "n1")
+    world.ops["split_angle"] = StepOp("split_angle", "n1", "c1")
+    world.ops["orient_and_close"] = StepOp("orient_and_close", "c1", "f1")
+    SCORES.update({"n1": (1, 1, 0.3, 0.0, 0), "c1": (1, 1, 0.6, 0.0, 0), "f1": (1, 1, 0.6, 0.0, 0)})
+    full = {"s0": _full(4), "n1": _full(4), "c1": _full(3), "f1": _full(3)}
+    res = stages.run_staged(None, _ws())
+    assert res.ws.brep_path == "f1" and "condition" in res.kept and "finalise" in res.kept  # the cheap tier kept it
+    conf = stages.confirm_staged(None, _ws(), res, full=lambda ws: full[ws.brep_path], input_verdict=full["s0"])
+    assert res.ws.brep_path == "n1" and conf.fell_back_to == "normalise"
+    assert conf.dropped == ["condition", "finalise"] and conf.verdict is full["n1"]
+    assert res.confirmation is conf
+
+
+def test_when_every_staged_state_regresses_the_input_stands(world):
+    world.ops["tighten_tolerances"] = FakeOp("tighten_tolerances", to="n1")
+    SCORES["n1"] = (1, 1, 0.3, 0.0, 0)
+    full = {"s0": _full(4), "n1": _full(2)}
+    start = _ws()
+    res = stages.run_staged(None, start)
+    conf = stages.confirm_staged(None, start, res, full=lambda ws: full[ws.brep_path], input_verdict=full["s0"])
+    assert res.ws is start and conf.fell_back_to == "input" and "normalise" in conf.dropped
+
+
+def test_a_confirmed_staged_result_is_left_alone_and_judged_once(world):
+    world.ops["tighten_tolerances"] = FakeOp("tighten_tolerances", to="n1")
+    SCORES["n1"] = (1, 1, 0.3, 0.0, 0)
+    calls: list[str] = []
+
+    def full(ws: Workspace) -> Any:
+        calls.append(ws.brep_path)
+        return _full(4)
+
+    res = stages.run_staged(None, _ws())
+    conf = stages.confirm_staged(None, _ws(), res, full=full, input_verdict=_full(3, clean=False))
+    assert res.ws.brep_path == "n1" and conf.fell_back_to is None and conf.dropped == [] and calls == ["n1"]
+
+
+def test_validity_and_cleanliness_count_as_well_as_panel_passes(world):
+    world.ops["tighten_tolerances"] = FakeOp("tighten_tolerances", to="n1")
+    SCORES["n1"] = (1, 1, 0.3, 0.0, 0)
+    res = stages.run_staged(None, _ws())
+    invalid = _full(4, valid=False, clean=False)                    # same passes, but no longer valid
+    conf = stages.confirm_staged(None, _ws(), res, full=lambda ws: invalid if ws.brep_path == "n1" else _full(4),
+                                 input_verdict=_full(4))
+    assert conf.fell_back_to == "input"
+
+
+def test_an_unchanged_staged_result_needs_no_confirmation(world):
+    start = _ws()
+    res = stages.StagedResult(ws=start)
+    conf = stages.confirm_staged(None, start, res, full=lambda ws: pytest.fail("nothing changed: nothing to mesh"),
+                                 input_verdict=_full(4))
+    assert conf.fell_back_to is None and conf.verdict is None

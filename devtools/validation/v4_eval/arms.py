@@ -114,6 +114,12 @@ def _usable(v: Any, what: str) -> str | None:
     return None
 
 
+def confirm_staged(pool: Any, ws: Any, staged: Any, *, full: Any, input_verdict: Any) -> Any:
+    from meshpipeline.cad.repair_v4.stages import confirm_staged as _confirm
+
+    return _confirm(pool, ws, staged, full=full, input_verdict=input_verdict)
+
+
 def run_file(arm_name: str, entry: Any, source: str, *, pool: Any, engine: Engine, ledger: Any | None,
              arm: Any, budget: Any, h_mm: float | None, route: str | None, max_turns: int, job_id: str,
              workdir: str, workers: int = 1, clock: Any = time.monotonic, throttle: Any = None,
@@ -151,12 +157,14 @@ def run_file(arm_name: str, entry: Any, source: str, *, pool: Any, engine: Engin
             pass
         elif arm_name == "staged":
             staged = engine.run_staged(pool, ws)
-            out_v = full(pool, staged.ws, source)
+            out_v = _confirmed_or_input(pool, ws, staged, source, full=full, v_in=v_in)
             extra["_triage"] = {"stages": stages_triage(staged)}
         elif arm_name in ("search_det", "search_ai"):
             # the seam contract's call order (spec 04; `repair_v4._find_best`): the search starts from the staged
             # healer's output, never the raw input, or the arm would measure a pipeline the engine does not ship
-            start = engine.run_staged(pool, ws).ws
+            staged = engine.run_staged(pool, ws)
+            confirm_staged(pool, ws, staged, full=lambda w: full(pool, w, source), input_verdict=v_in)
+            start = staged.ws
             out_v, extra, usd = _search_arm(arm_name, pool=pool, ws=ws, start=start, source=source, judge=judge,
                                             v_in=v_in, ledger=ledger, arm=arm, budget=budget, h_mm=h_mm, route=route,
                                             max_turns=max_turns, job_id=job_id, entry=entry, workers=workers,
@@ -295,9 +303,28 @@ def verdict_triage(v: Any) -> dict[str, Any]:
 
 def stages_triage(staged: Any) -> dict[str, Any] | None:
     kept, rolled = getattr(staged, "kept", None), getattr(staged, "rolled_back", None)
-    if kept is None and rolled is None:
+    conf = getattr(staged, "confirmation", None)
+    if kept is None and rolled is None and conf is None:
         return None
-    return {"kept": list(kept or []), "rolled_back": list(rolled or [])}
+    out: dict[str, Any] = {"kept": list(kept or []), "rolled_back": list(rolled or [])}
+    if conf is not None:      # what the FULL panel undid of what the cheap tier kept
+        out["full_panel"] = {"fell_back_to": conf.fell_back_to, "dropped": list(conf.dropped)}
+    return out
+
+
+def _confirmed_or_input(pool: Any, ws: Any, staged: Any, source: str, *, full: Any, v_in: Any) -> Any:
+    """The staged arm's output verdict, measured as the ENGINE ships it (`repair_v4._verdict_only` + `deliverable`):
+    the healer's result confirmed by the full panel, falling back stage by stage (`stages.confirm_staged`), and then
+    the delivery gate - a clean input is never replaced, and nothing that passes fewer members is delivered."""
+    from types import SimpleNamespace
+
+    from meshpipeline.cad.repair_v4.search import deliverable
+
+    conf = confirm_staged(pool, ws, staged, full=lambda w: full(pool, w, source), input_verdict=v_in)
+    out_v = conf.verdict if conf.verdict is not None else v_in
+    shipped = deliverable(SimpleNamespace(changed=staged.ws.brep_path != ws.brep_path, best=staged.ws,
+                                          best_verdict=out_v), v_in)
+    return v_in if shipped is None else out_v
 
 
 def search_triage(result: Any, generators: Any) -> dict[str, Any]:

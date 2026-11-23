@@ -176,7 +176,8 @@ def test_the_per_file_ceiling_holds_through_the_router(wire):
 def test_the_route_probe_goes_through_the_real_router_and_falls_back(wire):
     model_route.install_router()
     wire.fail_models = {"gpt-6-astra"}                 # astra's transport fails: the probe must pass over it
-    assert model_route.probe_route_chain(mi.REPAIR_V4_PROPOSE_ROUTES) == TERRA
+    ledger = WaveLedger.for_test(cap_usd=5.0)
+    assert model_route.probe_route_chain(mi.REPAIR_V4_PROPOSE_ROUTES, ledger=ledger) == TERRA
     assert [r["model"] for r in wire.requests] == ["gpt-6-astra", "gpt-5.6-terra"]
 
 
@@ -184,7 +185,34 @@ def test_no_route_passing_the_probe_is_a_refusal_not_a_guess(wire):
     model_route.install_router()
     wire.fail_models = {"gpt-6-astra", "gpt-5.6-terra"}
     with pytest.raises(NoUsableRoute):
-        model_route.probe_route_chain(mi.REPAIR_V4_PROPOSE_ROUTES)
+        model_route.probe_route_chain(mi.REPAIR_V4_PROPOSE_ROUTES, ledger=WaveLedger.for_test(cap_usd=5.0))
+
+
+def test_every_route_probe_call_is_metered_into_the_shard_ledger(wire):
+    """The sixth ledger gap (Task 49): the tool-and-image probe each shard makes at startup was a paid call that
+    never reached the ledger. Every probe that was answered is now settled there, under its own file id and kind;
+    one that failed unbilled is released."""
+    model_route.install_router()
+    wire.fail_models = {"gpt-6-astra"}                 # astra fails unbilled (the router's marker), terra answers
+    ledger = WaveLedger.for_test(cap_usd=5.0)
+    assert model_route.probe_route_chain(mi.REPAIR_V4_PROPOSE_ROUTES, ledger=ledger) == TERRA
+    [entry] = ledger.entries()
+    assert entry["file_id"] == model_route.ROUTE_PROBE_FILE_ID and entry["kind"] == "route_probe"
+    assert entry["model"] == "gpt-5.6-terra" and entry["input_tokens"] == 1000 and entry["usd"] > 0
+    assert ledger.reserved_usd() == 0.0 and ledger.spent_usd() == pytest.approx(entry["usd"])
+
+
+def test_a_probe_the_ledger_has_no_room_for_is_never_sent(wire):
+    model_route.install_router()
+    ledger = WaveLedger.for_test(cap_usd=0.001)
+    with pytest.raises(NoUsableRoute, match="ledger"):
+        model_route.probe_route_chain(mi.REPAIR_V4_PROPOSE_ROUTES, ledger=ledger)
+    assert wire.requests == [] and ledger.spent_usd() == 0.0
+
+
+def test_the_probe_cannot_be_called_without_a_ledger(wire):
+    with pytest.raises(TypeError):
+        model_route.probe_route_chain(mi.REPAIR_V4_PROPOSE_ROUTES)  # type: ignore[call-arg]
 
 
 def test_a_missing_key_is_refused_by_name():

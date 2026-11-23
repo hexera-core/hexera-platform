@@ -244,7 +244,7 @@ def run_arms(args: argparse.Namespace, out: Path, prov: dict, ledger: Any | None
     throttle = None
     recipes = build_recipes(args, prov, plan) if any(a in SEARCH_ARMS for a in names) else None
     if model_arms and runner is None:  # an injected runner (a test, the infra check) replaces the dispatch AND its route
-        route = _prepare_model_route(args, prov)
+        route = _prepare_model_route(args, prov, ledger)
         throttle = build_throttle(args, route, prov)
     engine = engine if engine is not None else arms_mod.RealEngine()
     # `arms` / `split` / `wave` are the PLAN's when there is one (copied before this runs) and the report compares
@@ -305,7 +305,7 @@ def run_arms(args: argparse.Namespace, out: Path, prov: dict, ledger: Any | None
     return 0
 
 
-def _prepare_model_route(args: argparse.Namespace, prov: dict) -> str:
+def _prepare_model_route(args: argparse.Namespace, prov: dict, ledger: Any) -> str:
     """Before any file: this process must hold a model key, the real router must be installed under the proposer,
     and a route must pass the tool-and-image probe. Each failure refuses the shard (NoModelKey / NoUsableRoute)
     instead of letting a model arm run as a deterministic one."""
@@ -315,7 +315,8 @@ def _prepare_model_route(args: argparse.Namespace, prov: dict) -> str:
     model_route.require_model_key()
     model_route.install_router()
     routes = (args.route,) if args.route else REPAIR_V4_PROPOSE_ROUTES
-    route = model_route.probe_route_chain(routes)
+    # the probe calls are paid: they are admitted and settled in THIS shard's ledger (Task 49's sixth gap)
+    route = model_route.probe_route_chain(routes, ledger=ledger)
     prov["route_probe"] = {"candidates": list(routes), "chosen": route}
     return route
 
