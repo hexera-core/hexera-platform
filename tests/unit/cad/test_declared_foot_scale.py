@@ -62,3 +62,25 @@ def test_a_file_in_feet_stages_at_its_declared_size(tmp_path):
 
 def test_a_file_in_millimetres_is_read_as_before(tmp_path):
     assert _staged_side_m(_cube_in(tmp_path, "MM")) == pytest.approx(0.001, rel=1e-6)
+
+
+def _iges_cube_in(tmp_path, unit: str):
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
+    from OCP.IGESControl import IGESControl_Writer
+
+    side_mm = {"FT": 304.8, "MM": 1.0, "IN": 25.4}[unit]
+    w = IGESControl_Writer(unit, 1)
+    w.AddShape(BRepPrimAPI_MakeBox(side_mm, side_mm, side_mm).Shape())
+    w.ComputeModel()
+    path = tmp_path / f"cube_{unit}.igs"
+    assert w.Write(str(path))
+    return path
+
+
+@pytest.mark.parametrize("unit,side_m", [("FT", 0.3048), ("MM", 0.001), ("IN", 0.0254)])
+def test_an_iges_file_stages_at_its_declared_size(tmp_path, unit, side_m):
+    """UNIT-IGES-1: an IGES file in feet (unit flag 4, "FT": a Maxsurf hull export) is read at the size its own
+    flag gives. Before, the unit was "unsupported", millimetres were assumed and OCC's conversion was undone as if
+    it were metres: the 2 m hull staged at 2 mm."""
+    path = _iges_cube_in(tmp_path, unit)
+    assert _staged_side_m(path) == pytest.approx(side_m, rel=1e-6)
