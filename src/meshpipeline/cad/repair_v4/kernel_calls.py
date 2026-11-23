@@ -11,6 +11,8 @@ import os
 import time
 from collections.abc import Callable
 
+from meshpipeline.settings.cad_repair import kernel_test_fns_enabled
+
 KernelFn = Callable[[dict], dict]
 
 REGISTRY: dict[str, KernelFn] = {}
@@ -43,7 +45,7 @@ def _register_test_fns() -> None:
         os.abort()
 
 
-if os.environ.get("HEXERA_TEST_KERNEL_FNS") == "1":
+if kernel_test_fns_enabled():
     _register_test_fns()
 
 # Kernel functions that need OCCT register themselves on import. They import OCP lazily, so these

@@ -7,10 +7,10 @@
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 from meshpipeline.cad.repair_v4.kernel_calls import register
+from meshpipeline.settings.cad_repair import kernel_test_fns_enabled
 
 KINDS = ("face", "edge", "solid")
 
@@ -276,5 +276,5 @@ def _register_test_fns() -> None:
                               quantum=payload["quantum"], seconds=0.0)
 
 
-if os.environ.get("HEXERA_TEST_KERNEL_FNS") == "1":
+if kernel_test_fns_enabled():
     _register_test_fns()
