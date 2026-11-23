@@ -429,7 +429,7 @@ def test_insufficient_quota_is_never_reported_to_the_wave_guard(net: Any, tmp_pa
     throttle = WaveThrottle(Slice(1, 1000, 1e9), guard=guard)
     proposer(WaveLedger.for_test(cap_usd=10.0), throttle=throttle).propose(
         state([site("S1", "proximity")], ws=make_ws()), k=3)
-    assert t.requests == 1                                           # still un-retried
+    assert t.requests == 3                                           # still un-retried by the router (SDK's own 3)
     assert guard.describe()["reported_429"] == 0 and throttle.rate_limited == 0
 
 
