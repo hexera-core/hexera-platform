@@ -104,30 +104,65 @@ def _children(shapes: Any, new_maps: dict[str, Any]) -> list[dict]:
     return out
 
 
-def history_record(old: Any, new: Any, history: Any, *, op: str, params: dict, new_path: str,
-                   quantum: float, seconds: float, declared_added: list[str] | None = None,
+#: Bumped whenever the record's shape changes; `apply_history` refuses any other version.
+RECORD_VERSION = 1
+
+
+class IndexInstabilityError(RuntimeError):
+    """The BREP written for the new shape reads back with a different indexed-map order or content,
+    so indices recorded from the in-memory shape would bind ids to the wrong geometry."""
+
+
+def _verify_round_trip(new: Any, new_path: str, quantum: float) -> list[dict]:
+    """Re-read `new_path` and require the same entity at every (kind, index) as in memory.
+
+    Identity is carried by kernel index, and the NEXT op reads this file, so the order of the
+    re-read shape's indexed maps must equal the in-memory one. Fingerprints, which identity does
+    not rest on, are exactly the cheap per-index check of that assumption."""
+    in_memory = entities_of(new, quantum)
+    reread = entities_of(read_brep(new_path), quantum)
+    if in_memory != reread:
+        raise IndexInstabilityError(
+            f"{new_path!r} does not read back with the in-memory entity order "
+            f"({len(in_memory)} entities in memory, {len(reread)} on disk); refusing to hand out "
+            "indices that would bind ids to the wrong geometry")
+    return in_memory
+
+
+def history_record(old: Any, new: Any, history: Any, *, op: str, params: dict, old_path: str,
+                   new_path: str, quantum: float, seconds: float, declared_added: list[str] | None = None,
                    declared_removed: list[str] | None = None) -> dict:
-    """The record `workspace.apply_history` consumes. Entities are matched by KERNEL INDEX, not by
-    fingerprint: for each OLD entity, `now` is its own index in the new shape (0 if absent),
+    """The record `workspace.apply_history` consumes (version RECORD_VERSION). `old_path` MUST be the
+    BREP `old` was read from (the workspace's `brep_path`) and `new_path` must already hold `new`;
+    it is re-read and checked entity-for-entity (IndexInstabilityError otherwise).
+
+    CONTRACT FOR OPS: `now` and the child indices come from `FindIndex` of the OLD sub-shape in the
+    NEW shape, which needs them to be the SAME TShape (IsSame). An op that copies or relocates
+    untouched geometry (BRepBuilderAPI_Transform, a deep copy) makes every entity look vanished and
+    `apply_history` retires all ids; such an op must report its own mapping through `history`.
+
+    Entities are matched by KERNEL INDEX, not by fingerprint: for each OLD entity, `now` is its own index in the new shape (0 if absent),
     `removed` is history.IsRemoved, and `modified`/`generated` are child indices in the new shape.
     `declared_added`/`declared_removed` are caller-supplied claims, passed through unchecked."""
+    entities = _verify_round_trip(new, new_path, quantum)
     new_maps = _maps(new)
     rows: list[dict] = []
     for kind, indexed in _maps(old).items():
         for i in range(1, indexed.Extent() + 1):
             sub = indexed.FindKey(i)
             rows.append({
-                "type": kind, "index": i,
+                "type": kind, "index": i, "fp": fingerprint(kind, sub, quantum, i),
                 "now": int(new_maps[kind].FindIndex(sub)),
                 "removed": bool(history.IsRemoved(sub)),
                 "modified": _children(history.Modified(sub), new_maps),
                 "generated": _children(history.Generated(sub), new_maps),
             })
     return {
-        "op": op, "params": params, "brep_path": new_path, "seconds": seconds,
+        "version": RECORD_VERSION, "op": op, "params": params, "old_path": old_path,
+        "brep_path": new_path, "seconds": seconds,
         "declared_added": list(declared_added or []),
         "declared_removed": list(declared_removed or []),
-        "entities": entities_of(new, quantum), "history": rows,
+        "entities": entities, "history": rows,
     }
 
 
@@ -189,7 +224,7 @@ def _register_test_fns() -> None:
         new = splitter.Shape()
         write_brep(new, payload["out_path"])
         return history_record(old, new, splitter.History(), op="split_face_by_edge",
-                              params={"p1": payload["p1"], "p2": payload["p2"]},
+                              old_path=payload["brep_path"], params={"p1": payload["p1"], "p2": payload["p2"]},
                               new_path=payload["out_path"], quantum=payload["quantum"],
                               seconds=time.perf_counter() - start)
 
@@ -220,9 +255,25 @@ def _register_test_fns() -> None:
         new = cut.Shape()
         write_brep(new, payload["out_path"])
         return history_record(old, new, cut.History(), op="cut_box",
-                              params={"corner": payload["corner"], "size": payload["size"]},
+                              old_path=payload["brep_path"], params={"corner": payload["corner"], "size": payload["size"]},
                               new_path=payload["out_path"], quantum=payload["quantum"],
                               seconds=time.perf_counter() - start)
+
+    @register("ws_record_for_wrong_file")
+    def _wrong_file(payload: dict) -> dict:
+        """Test op: build a record for `new` but leave a DIFFERENT shape at new_path, to prove the
+        round-trip guard refuses it."""
+        from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
+        from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
+        from OCP.BRepTools import BRepTools_History
+        from OCP.gp import gp_Pnt
+
+        old = read_brep(payload["brep_path"])
+        new = BRepAlgoAPI_Cut(old, BRepPrimAPI_MakeBox(gp_Pnt(-1, -1, 5), 4, 12, 6).Shape()).Shape()
+        write_brep(old, payload["out_path"])  # not `new`
+        return history_record(old, new, BRepTools_History(), op="x", params={},
+                              old_path=payload["brep_path"], new_path=payload["out_path"],
+                              quantum=payload["quantum"], seconds=0.0)
 
 
 if os.environ.get("HEXERA_TEST_KERNEL_FNS") == "1":

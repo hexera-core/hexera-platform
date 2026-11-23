@@ -5,8 +5,7 @@
 #             record `apply_history` reads is produced by `ws_kernel.history_record` in a worker.
 """Workspace, stable ids and diffs.
 
-An entity's stable id ("F41") is minted once, from its fingerprint (`identity.fingerprint_of`), and
-then CARRIED across ops by the BRepTools_History the op's kernel function returns, so the proposer
+An entity's stable id ("F41") is minted once, when the entity is first seen, and then CARRIED across ops by the BRepTools_History the op's kernel function returns, so the proposer
 can keep talking about geometry after an op has rebuilt it. Ids are never reused within a lineage:
 a removed or replaced id stays dead, and `resolve` says which and why.
 
@@ -14,9 +13,11 @@ The history record (JSON, from `ws_kernel.history_record`). Entities are matched
 (1-based, per kind, in the indexed map of the shape), never by fingerprint, because fingerprints
 can collide (duplicate or coincident entities) and a collision must not mis-bind an id:
 
-    {"op", "params", "brep_path", "seconds", "declared_added", "declared_removed",
+    {"version", "op", "params", "seconds", "declared_added", "declared_removed",
+     "old_path",                                     # the BREP the op read: must be ws.brep_path
+     "brep_path",                                    # the BREP the op wrote
      "entities": [{"type", "index", "fp"}, ...],     # every face/edge/solid of the NEW shape
-     "history":  [{"type", "index",                  # one row per OLD entity
+     "history":  [{"type", "index", "fp",            # one row per OLD entity (fp checked vs ws)
                    "now",                            # its own index in the new shape, 0 if gone
                    "removed",
                    "modified":  [{"type", "index"}...],     # child indices in the NEW shape
@@ -27,6 +28,13 @@ modifies into (1:1) KEEPS its id - a trimmed or healed face stays "face 41" - wi
 refreshed, its label carried and `Diff.modified[id] == [id]`. 1:N (a split) and N:M (a merge) retire
 the parents and mint fresh ids for the children, which inherit the parents' labels.
 `declared_added` / `declared_removed` are caller-supplied claims, passed through unchecked.
+
+`apply_history` fails loudly (ValueError) on a wrong `version`, missing keys, an `old_path` that is
+not `ws.brep_path`, or an old side that does not match the workspace (an id with no row, or a row
+whose fingerprint differs). The kernel side also proves the written BREP reads back with the same
+entity at every index (`ws_kernel.IndexInstabilityError`). Matching needs the op's untouched
+geometry to be the SAME TShape in the new shape (`now`/child indices come from `FindIndex`); an op
+that copies or relocates geometry makes every entity look vanished, so all ids are retired.
 """
 
 from __future__ import annotations
@@ -146,6 +154,32 @@ class Workspace:
         return "unknown id: it never existed in this workspace"
 
 
+RECORD_VERSION = 1  # keep equal to ws_kernel.RECORD_VERSION (the kernel module cannot be imported here)
+_REQUIRED = ("version", "op", "params", "old_path", "brep_path", "seconds", "entities", "history")
+
+
+def _check_record(ws: Workspace, rec: dict) -> None:
+    """Refuse a record that is old-format, malformed, or not about THIS workspace's shape."""
+    if not isinstance(rec, dict) or rec.get("version") != RECORD_VERSION:
+        got = rec.get("version") if isinstance(rec, dict) else type(rec).__name__
+        raise ValueError(f"history record version {got!r} is not {RECORD_VERSION}; the op must "
+                         "emit ws_kernel.history_record's current format")
+    absent = [k for k in _REQUIRED if k not in rec]
+    if absent:
+        raise ValueError(f"history record is missing {absent}")
+    if rec["old_path"] != ws.brep_path:
+        raise ValueError(f"history record was computed from {rec['old_path']!r} but the workspace "
+                         f"is at {ws.brep_path!r}: stale workspace or an op that read another file")
+    rows = {(r["type"], int(r["index"])): r for r in rec["history"]}
+    for sid, fp in ws.ids.items():
+        row = rows.get((_KIND[sid[0]], ws.indices[sid]))
+        if row is None:
+            raise ValueError(f"history record has no row for {sid} (index {ws.indices[sid]})")
+        if row.get("fp") != fp:
+            raise ValueError(f"history row for {sid} has fingerprint {row.get('fp')!r} but the "
+                             f"workspace holds {fp!r}: the record is for a different shape")
+
+
 def apply_history(ws: Workspace, history_json: dict) -> Workspace:
     """A NEW workspace after the op `history_json` describes; `ws` is not modified.
 
@@ -155,6 +189,7 @@ def apply_history(ws: Workspace, history_json: dict) -> Workspace:
     missing = [sid for sid in ws.ids if sid not in ws.indices]
     if missing:
         raise ValueError(f"workspace has no kernel index for {missing}; build it with from_brep")
+    _check_record(ws, history_json)
     new = ws.fork()
     by_old: dict[tuple[str, int], dict] = {
         (r["type"], int(r["index"])): r for r in history_json["history"]}

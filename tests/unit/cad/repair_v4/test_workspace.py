@@ -26,9 +26,14 @@ def _ent(kind: str, index: int, fp: str) -> dict:
     return {"type": kind, "index": index, "fp": fp}
 
 
-def _row(kind: str, index: int, *, now: int | None = None, removed: bool = False,
-         modified: list | None = None, generated: list | None = None) -> dict:
-    return {"type": kind, "index": index, "now": index if now is None else now,
+_FP = {("face", 1): "face:aa", ("face", 2): "face:bb", ("edge", 1): "edge:cc",
+       ("solid", 1): "solid:dd"}
+
+
+def _row(kind: str, index: int, *, fp: str | None = None, now: int | None = None,
+         removed: bool = False, modified: list | None = None,
+         generated: list | None = None) -> dict:
+    return {"type": kind, "index": index, "fp": fp or _FP[(kind, index)], "now": index if now is None else now,
             "removed": removed, "modified": modified or [], "generated": generated or []}
 
 
@@ -36,8 +41,9 @@ def _kid(kind: str, index: int) -> dict:
     return {"type": kind, "index": index}
 
 
-def _record(op: str, entities: list, history: list, path: str = "/tmp/b.brep", **extra) -> dict:
-    return {"op": op, "params": {}, "brep_path": path, "seconds": 0.0,
+def _record(op: str, entities: list, history: list, path: str = "/tmp/b.brep",
+            old_path: str = "/tmp/a.brep", **extra) -> dict:
+    return {"version": 1, "op": op, "params": {}, "old_path": old_path, "brep_path": path, "seconds": 0.0,
             "declared_added": [], "declared_removed": [], "entities": entities,
             "history": history, **extra}
 
@@ -136,7 +142,8 @@ def test_identical_fingerprints_do_not_misbind_ids() -> None:
                    labels={"F1": {"name": "one"}, "F2": {"name": "two"}}, history=[],
                    original="/tmp/a.brep", indices={"F1": 1, "F2": 2})
     rec = _record("cut", [_ent("face", 1, "face:dup")],
-                  [_row("face", 1), _row("face", 2, now=0, removed=True)])
+                  [_row("face", 1, fp="face:dup"),
+                   _row("face", 2, fp="face:dup", now=0, removed=True)])
     child = apply_history(ws, rec)
     assert child.history[-1].removed == ["F2"]
     assert child.ids == {"F1": "face:dup"} and child.labels == {"F1": {"name": "one"}}
@@ -149,6 +156,42 @@ def test_apply_history_refuses_a_workspace_without_kernel_indices() -> None:
                    original="/tmp/a.brep")
     with pytest.raises(ValueError, match="kernel index"):
         apply_history(ws, _record("noop", [], []))
+
+
+def test_old_format_record_fails_loudly() -> None:
+    rec = _split_f1()
+    del rec["version"]
+    with pytest.raises(ValueError, match="version"):
+        apply_history(_ws(), rec)
+    rec = _split_f1()
+    rec["version"] = 0
+    with pytest.raises(ValueError, match="version"):
+        apply_history(_ws(), rec)
+
+
+def test_record_missing_keys_fails_loudly() -> None:
+    rec = _split_f1()
+    del rec["old_path"]
+    with pytest.raises(ValueError, match="missing"):
+        apply_history(_ws(), rec)
+
+
+def test_record_computed_from_another_file_is_refused() -> None:
+    rec = _split_f1()
+    rec["old_path"] = "/tmp/other.brep"
+    with pytest.raises(ValueError, match="stale workspace"):
+        apply_history(_ws(), rec)
+
+
+def test_record_for_a_different_shape_is_refused() -> None:
+    rec = _split_f1()
+    rec["history"][1]["fp"] = "face:not-bb"
+    with pytest.raises(ValueError, match="different shape"):
+        apply_history(_ws(), rec)
+    rec = _split_f1()
+    rec["history"] = [r for r in rec["history"] if r["type"] != "edge"]
+    with pytest.raises(ValueError, match="no row for E1"):
+        apply_history(_ws(), rec)
 
 
 def test_labels_propagate_to_children_and_drop_with_removed() -> None:
@@ -183,9 +226,10 @@ def test_ids_are_monotonic_across_ops_and_never_reused() -> None:
         [_ent("face", 1, "face:a1x"), _ent("face", 2, "face:bb"), _ent("face", 3, "face:a2"),
          _ent("face", 4, "face:a1y"), _ent("edge", 1, "edge:cc"), _ent("edge", 2, "edge:new"),
          _ent("solid", 1, "solid:dd")],
-        [_row("face", 1, now=0, modified=[_kid("face", 1), _kid("face", 4)]),
-         _row("face", 2), _row("face", 3), _row("edge", 1), _row("edge", 2), _row("solid", 1)],
-        path="/tmp/c.brep")
+        [_row("face", 1, fp="face:a1", now=0, modified=[_kid("face", 1), _kid("face", 4)]),
+         _row("face", 2), _row("face", 3, fp="face:a2"), _row("edge", 1),
+         _row("edge", 2, fp="edge:new"), _row("solid", 1)],
+        path="/tmp/c.brep", old_path="/tmp/b.brep")
     second = apply_history(first, rec)
     # first.indices: F3->1, F2->2, F4->3 (kernel order); F3 splits into two new children
     assert second.history[-1].modified == {"F3": ["F5", "F6"]}
