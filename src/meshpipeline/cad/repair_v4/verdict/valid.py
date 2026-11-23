@@ -30,7 +30,12 @@ HARD_CODES = (
     "units_changed",
     "round_trip_invalid",
     "no_solids",
+    "unbounded_geometry",
 )
+#: The one hard code that is not a defect: the input has infinite extent, so it is outside what the definition can
+#: judge. `check_valid` stops at it (no round trip), `verdict` does not mesh it, and the scoreboard reports it as its own
+#: stratum rather than a failure (`Verdict.out_of_scope`).
+UNBOUNDED = "unbounded_geometry"
 SOFT_CODES = ("small_edge", "small_face", "large_tolerance")
 
 CALL_TIMEOUT_S = 300.0
@@ -57,7 +62,12 @@ class ValidReport:
     soft: list[Finding]
     units: str
     solids: int
-    round_trip_ok: bool
+    round_trip_ok: bool  # False, and not attempted, when the input is unbounded
+
+    @property
+    def unbounded(self) -> bool:
+        """True when the input has infinite extent (`unbounded_geometry`): not a defect, outside the definition."""
+        return any(f.code == UNBOUNDED for f in self.hard)
 
 
 def _findings(raw: list[dict]) -> list[Finding]:
@@ -160,6 +170,8 @@ def check_valid(pool: WorkerPool, step_path: str, *, original_units: str | None)
         hard = _findings(checked.value["hard"])
         soft = _findings(checked.value["soft"])
         solids = int(checked.value["solids"])
+        if any(f.code == UNBOUNDED for f in hard):  # nothing else about an infinite part is measured, or written back
+            return ValidReport(False, hard, soft, units, solids, False)
 
         if original_units is not None and units != canonical_unit(original_units):
             hard.append(Finding("units_changed", [], {"original": original_units, "file": units}))
