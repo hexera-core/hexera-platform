@@ -818,7 +818,8 @@ def test_face_delete_large_is_not_a_default_draw_but_is_an_admitted_kind() -> No
     inject = rp.load_inject()
     assert "face_delete_large" not in inject.DEFAULT_KINDS and "face_delete_large" in inject.ADMITTED_KINDS
     assert inject.KIND_STATUS["face_delete_large"] == "declined_stratum"
-    assert inject.EXPECTED_OUTCOME == {"face_delete_large": "correctly_declined"}
+    assert inject.EXPECTED_OUTCOME == {"face_delete_large": "correctly_declined",
+                                       "face_delete_inclined": "correctly_declined"}
     assert "face_delete_large" not in rp.not_default_kinds()
     assert rp.injected_kind("part.face_delete_large.3.step") == "face_delete_large"   # not mistaken for face_delete
 
