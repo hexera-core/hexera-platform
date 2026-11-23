@@ -1592,3 +1592,18 @@ def test_a_narrow_long_wedge_is_fitted_once_it_is_two_walls_wide(monkeypatch):
     monkeypatch.setattr(ms, "FIT_PLATE_WIDTH", False)
     old, _ = ms.extract(sf.wedge_plate(4.0, 8.0, 200.0, 25.0), mm_per_unit=1.0)
     assert [b["verdict"] for b in old["bodies"]] == ["solid"]
+
+
+def test_a_closed_tube_frame_is_not_a_wall_across_its_depth():
+    # SHELL-64: a mitred frame of 30 x 3 mm square tube. Rays down its side walls run 30 mm in metal from its top face
+    # to its bottom face; before, that pair was a 30 mm "wall" and its mid-plane ran through the middle of the tube
+    # (the shell held 6.4 times the metal). Now only the 3 mm walls are shell, sewn shut, and the shell holds the metal
+    rec, surface = ms.extract(sf.mitred_frame(30.0, 3.0), mm_per_unit=1.0)
+    assert [b["verdict"] for b in rec["bodies"]] == ["shell"]
+    assert {round(p["thickness_mm"], 3) for p in _shell_pairs(rec)} == {3.0}
+    across = [p for p in rec["pairs"] if p["thickness_mm"] == pytest.approx(30.0)]
+    assert across and all(not p["shell"] and p["why"] == ms.HOLLOW_WHY for p in across)
+    sewn = _sewn(rec)
+    assert sewn["open_edges"] == 0 and sewn["boundary_edges"] == 0
+    assert rec["bodies"][0]["mid_volume_ratio"] == pytest.approx(1.0, abs=0.02)
+    _all_checks(rec)
