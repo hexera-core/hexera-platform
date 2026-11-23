@@ -69,6 +69,9 @@ MAX_INPUT_TOKENS = 120_000
 _GROWTH = 1.25
 _T = TypeVar("_T")
 
+#: the hard per-file model spend ceiling (spec 5.9); no proposer may be built above it
+FILE_USD_CEILING = 1.00
+
 StopReason = Literal["wave_cap", "file_ceiling", "max_turns", "model_failure", "input_too_large"]
 #: Consecutive failed model rounds (the router has already retried each) before the AI is given up on for a file.
 MAX_CONSECUTIVE_FAILURES = 3
@@ -105,21 +108,32 @@ class Outcome:
     message: str = ""
 
 
+def lineage_of(state: Any) -> tuple[str, ...]:
+    """The state ids from the search start down to `state` (its own last); () for a state that carries none."""
+    return tuple(getattr(state, "lineage", ()) or ())
+
+
 class UnfixableRegistry:
     """Sites the AI has declared unfixable within the fidelity bound. Shared with the deterministic generators
-    (construct one and pass it to both) so a declared site is not swept again for nothing."""
+    (construct one and pass it to both) so a declared site is not swept again for nothing.
+
+    A declaration belongs to the LINEAGE it was made in, not to the site id alone: stable ids are minted per
+    lineage, so two siblings forked from one parent mint the same id for different new geometry, and a verdict on
+    one must not remove the other's site. It is keyed `(state id of the declaring state, site id)` and seen by that
+    state and its descendants only (`lineage` is the tuple of state ids from the start to the asking state). A
+    caller with no lineage (`()`) declares and reads in one global scope, `""`."""
 
     def __init__(self) -> None:
-        self.reasons: dict[str, str] = {}
+        self.reasons: dict[tuple[str, str], str] = {}
 
-    def declare(self, site_id: str, reason: str) -> None:
-        self.reasons[site_id] = reason
+    def declare(self, site_id: str, reason: str, lineage: Sequence[str] = ()) -> None:
+        self.reasons[(lineage[-1] if lineage else "", site_id)] = reason
 
-    def __contains__(self, site_id: object) -> bool:
-        return site_id in self.reasons
+    def is_declared(self, site_id: str, lineage: Sequence[str] = ()) -> bool:
+        return any((scope, site_id) in self.reasons for scope in ("", *lineage))
 
-    def filter(self, sites: Sequence[Site]) -> list[Site]:
-        return [s for s in sites if s.id not in self.reasons]
+    def filter(self, sites: Sequence[Site], lineage: Sequence[str] = ()) -> list[Site]:
+        return [s for s in sites if not self.is_declared(s.id, lineage)]
 
 
 class NoUsableRoute(RuntimeError):
@@ -319,8 +333,10 @@ class AIProposer:
                  max_input_tokens: int = MAX_INPUT_TOKENS) -> None:
         if max_turns < 1:
             raise ValueError("max_turns must be at least 1")
-        if not usd_ceiling > 0:
-            raise ValueError("usd_ceiling must be positive")
+        if not (0 < usd_ceiling <= FILE_USD_CEILING):  # a chained comparison is False for inf and nan too
+            raise ValueError(
+                f"usd_ceiling must be finite and in (0, {FILE_USD_CEILING}] dollars per file, got {usd_ceiling!r}"
+            )
         if not isinstance(ledger, WaveLedger):
             raise TypeError("a WaveLedger is required: the cap is not optional")
         if ledger.provenance not in ("shard", "test"):
@@ -353,7 +369,9 @@ class AIProposer:
         self._cache_key = cache_key_for(system, self._tools)
         self._messages: list[dict] = [{"role": "system", "content": system}]
         self._pending: list[Outcome] = []
-        self._imaged: set[str] = set()
+        #: (state id where the picture was shown, site id): a site id names different geometry on different
+        #: branches, so "already shown" is per lineage, like the unfixable declarations
+        self._imaged: set[tuple[str, str]] = set()
 
     # --- what the driver reads -----------------------------------------------------------------------------------
 
@@ -382,7 +400,7 @@ class AIProposer:
         if self.turns_used >= self.max_turns:
             self._stop("max_turns")
             return []
-        sites = self.unfixable.filter(state.sites)
+        sites = self.unfixable.filter(state.sites, lineage_of(state))
         self._messages.append(self._user_turn(state, sites))
         collected: list[ProposedCandidate] = []
         while len(collected) < k:
@@ -477,9 +495,11 @@ class AIProposer:
         head = ("Round update. Your previous candidates and the current state follow as one JSON document.\n"
                 if "previous_candidates" in body else "Current state follows as one JSON document.\n")
         parts: list[dict] = [{"type": "text", "text": head + _json(body)}]
+        lineage = lineage_of(state)
         for s in sites:
-            if s.kind in IMAGE_KINDS and s.view_png and s.id not in self._imaged:
-                self._imaged.add(s.id)
+            if (s.kind in IMAGE_KINDS and s.view_png
+                    and not any((scope, s.id) in self._imaged for scope in ("", *lineage))):
+                self._imaged.add((lineage[-1] if lineage else "", s.id))
                 parts.append({"type": "text", "text": f"View of site {s.id} ({s.kind}):"})
                 parts.append({"type": "image_url", "image_url": {"url": _png_data_url(s.view_png)}})
         return {"role": "user", "content": parts if len(parts) > 1 else parts[0]["text"]}
@@ -564,7 +584,7 @@ class AIProposer:
         known = {s.id for s in state.sites}
         if site_id not in known:
             return _failure(f"unknown site {site_id!r}; the sites are {sorted(known)}")
-        self.unfixable.declare(site_id, reason.strip())
+        self.unfixable.declare(site_id, reason.strip(), lineage_of(state))
         return {"ok": True, "site_id": site_id,
                 "message": "recorded; the site will not be shown again or swept by the deterministic generators"}
 
@@ -636,4 +656,4 @@ async def select_route(routes: Sequence[str], *, call: ModelCall | None = None) 
 
 __all__ = ["AIProposer", "DECLARE_UNFIXABLE", "IMAGE_KINDS", "MAX_CONSECUTIVE_FAILURES", "NoUsableRoute",
            "Outcome", "PROPOSE", "ProbeResult", "ProposedCandidate", "UnfixableRegistry", "cache_key_for",
-           "estimate_call_usd", "probe_route", "select_route", "system_prompt", "tool_schemas"]
+           "estimate_call_usd", "lineage_of", "probe_route", "select_route", "system_prompt", "tool_schemas"]

@@ -241,8 +241,8 @@ def test_unknown_stage_and_param_names_are_refused(world):
 
 def test_judge_hands_an_inconclusive_verdict_to_score(monkeypatch):
     """The real `_judge` leaves the refusal to `score`; `_judged` then reports None, not a number."""
-    monkeypatch.setattr(stages, "_step_for", lambda pool, brep: brep)
-    monkeypatch.setattr(stages, "_original_facts", lambda pool, brep: (6, 1))
+    monkeypatch.setattr(stages, "step_for", lambda pool, brep: brep)
+    monkeypatch.setattr(stages, "original_facts", lambda pool, brep: (6, 1))
     monkeypatch.setattr(stages, "cheap_verdict", lambda *a, **k: _inconclusive())
     with pytest.raises(InconclusiveVerdict):
         stages._judge(None, _ws())
@@ -341,8 +341,8 @@ def test_judge_threads_declared_edits_into_layer_three(monkeypatch):
         from meshpipeline.cad.repair_v4.verdict.faithful import FaithfulReport
         return FaithfulReport(True, 0.0, 0.05, 1.0, 1.0, 1, 1, declared_added, declared_removed)
 
-    monkeypatch.setattr(stages, "_step_for", lambda pool, brep: brep)
-    monkeypatch.setattr(stages, "_original_facts", lambda pool, brep: (6, 1))
+    monkeypatch.setattr(stages, "step_for", lambda pool, brep: brep)
+    monkeypatch.setattr(stages, "original_facts", lambda pool, brep: (6, 1))
     monkeypatch.setattr(stages, "cheap_verdict", lambda *a, **k: _verdict(True, ["deviation_exceeds_bound"]))
     monkeypatch.setattr(stages, "check_faithful", fake_faithful)
     ws = Workspace(brep_path="n", ids={"F9": "a"}, labels={}, history=[], original="o", indices={"F9": 7})
@@ -356,8 +356,8 @@ def test_judge_threads_declared_edits_into_layer_three(monkeypatch):
 
 
 def test_solidless_original_gates_on_validity_and_the_two_expected_reasons(monkeypatch):
-    monkeypatch.setattr(stages, "_step_for", lambda pool, brep: brep)
-    monkeypatch.setattr(stages, "_original_facts", lambda pool, brep: (6, 0))
+    monkeypatch.setattr(stages, "step_for", lambda pool, brep: brep)
+    monkeypatch.setattr(stages, "original_facts", lambda pool, brep: (6, 0))
     ws = Workspace(brep_path="n", ids={}, labels={}, history=[], original="o")
     expected = ["volume_changed", "body_count_changed"]
     cases = [(True, expected, 1),                       # a correct heal of loose faces
@@ -372,3 +372,23 @@ def test_solidless_original_gates_on_validity_and_the_two_expected_reasons(monke
 def _inconclusive():
     from dataclasses import replace
     return replace(_verdict(True, []), inconclusive=True)
+
+
+def test_original_facts_are_re_read_when_a_reused_path_holds_a_different_file(tmp_path):
+    brep = tmp_path / "orig.brep"
+    brep.write_bytes(b"one")
+    n = {"calls": 0}
+
+    class Pool:
+        def call(self, fn, payload, *, timeout_s):
+            n["calls"] += 1
+            faces = 3 if n["calls"] == 1 else 5
+            ents = [{"type": "face", "index": k} for k in range(1, faces + 1)]
+            return SimpleNamespace(ok=True, value={"entities": ents}, status="ok", error=None)
+
+    assert stages.original_facts(Pool(), str(brep)) == (3, 0)
+    assert stages.original_facts(Pool(), str(brep)) == (3, 0) and n["calls"] == 1   # cached while unchanged
+    brep.write_bytes(b"two!")
+    import os
+    os.utime(brep, (1_000_000_000, 1_000_000_000))                                   # the path is reused, the file is not
+    assert stages.original_facts(Pool(), str(brep)) == (5, 0) and n["calls"] == 2
