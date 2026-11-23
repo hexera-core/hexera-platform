@@ -76,6 +76,13 @@ if [ "${P}" = "v4" ]; then
   WAVE_ID="$(attr v4-wave-id)"; WAVE_TYPE="$(attr v4-wave-type)"; NSHARDS="$(attr v4-n-shards)"
   MARKER_BUCKET="$(attr v4-marker-bucket)"
 fi
+# v4 ARMS wave only (empty for the re-probe): the WAVES entry, the arms, the split and where its json is staged,
+# and the element size the search arms need.
+WAVE=""; ARMS=""; SPLIT=""; SPLIT_URI=""; HMM=""
+if [ "${P}" = "v4" ]; then
+  WAVE="$(attr v4-wave)"; ARMS="$(attr v4-arms)"; SPLIT="$(attr v4-split)"; SPLIT_URI="$(attr v4-split-uri)"
+  HMM="$(attr v4-h-mm)"
+fi
 W="${V3EVAL_WORKDIR:-/var/lib/v3eval}"   # vm_shutdown.sh reads the same directory; tests override it
 
 self_delete() {
@@ -162,6 +169,10 @@ else
   # service account (ADC through the metadata server), and run_arm.py refuses unless the bucket named in
   # ${MARKER_BUCKET} carries the probe's passing record.
   gcloud storage cp "${POOL}" "${W}/pool.json" || fail_all "no staged pool.json at ${POOL}"
+  # an arms wave runs over a split: without its json the shard could not say which files it was meant to run
+  if [ -n "${ARMS}" ]; then
+    gcloud storage cp "${SPLIT_URI}" "${W}/split.json" || fail_all "no staged split json at ${SPLIT_URI}"
+  fi
   mkdir -p "${W}/inputs/pool"
   gcloud storage cp -r "${PREFIX}/inputs/*" "${W}/inputs/pool/" || fail_all "no staged pool inputs"
 fi
@@ -229,13 +240,19 @@ run_unit() {
   else
   # v4: the key file is mounted only when the launcher named a secret
   local keyenv=(); [ -f "${W}/secret.env" ] && keyenv=(--env-file "${W}/secret.env")
+  # an ARMS wave: the mode, the arms and the split are the shard's own; the re-probe passes none of them
+  local mode=(--mode reprobe) splitmount=()
+  if [ -n "${ARMS}" ]; then
+    mode=(--mode arms --wave "${WAVE}" --arms "${ARMS}" --split "${SPLIT}" --split-file /eval/split.json --h-mm "${HMM}")
+    splitmount=(-v "${W}/split.json:/eval/split.json:ro")
+  fi
   docker run --rm --name "v4eval-${k}" --cpus=1 -e PYTHONPATH=/eval/code/src \
     --env-file "${dir}.env" ${keyenv[@]+"${keyenv[@]}"} \
     -v "${W}/code:/eval/code:ro" -v "${W}/inputs/${kind}:/eval/inputs:ro" -v "${dir}:/eval/out" \
     -v "${ldir}:/eval/ledger" \
-    -v "${W}/pool.json:/eval/pool.json:ro" \
+    -v "${W}/pool.json:/eval/pool.json:ro" ${splitmount[@]+"${splitmount[@]}"} \
     --entrypoint python "${IMAGE}" "/eval/code/${RUN_ARM}" \
-    --mode reprobe --shard "${shard}" --inputs /eval/inputs --out /eval/out \
+    "${mode[@]}" --shard "${shard}" --inputs /eval/inputs --out /eval/out \
     --pool /eval/pool.json --cache-uri "${CACHE}" --sources "${SOURCES}" --commit "${COMMIT}" \
     --image "${IMAGE}" --machine-type "${MACHINE}" \
     --wave-type "${WAVE_TYPE}" --wave-id "${WAVE_ID}" --n-shards "${NSHARDS}" \
