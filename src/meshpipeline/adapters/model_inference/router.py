@@ -11,7 +11,7 @@ import logging
 import meshpipeline.agents.builder.settings as bcfg
 import meshpipeline.agents.intake.settings as icfg
 import meshpipeline.agents.reviewer.settings as rcfg
-from meshpipeline.adapters.model_inference.call_kwargs import spec_for
+from meshpipeline.adapters.model_inference.call_kwargs import SamplingSpec, spec_for
 from meshpipeline.adapters.model_inference.failure_markers import marker_for
 from meshpipeline.adapters.model_inference.protocols import (
     _EmptyResponse,
@@ -31,13 +31,21 @@ from meshpipeline.contracts.model_inference import (
     Conversation,
     ModelRoundResult,
     ParallelToolCalls,
+    ProposeReply,
     ProviderAttemptInfo,
     ReasoningSink,
     ToolChoice,
     ToolDefinition,
     ToolsUnsupported,
+    UnpricedModel,
 )
-from meshpipeline.contracts.model_routing import Capability, FailureCategory, ModelRoute, RouteTarget
+from meshpipeline.contracts.model_routing import (
+    Capability,
+    FailureCategory,
+    ModelRoute,
+    RetryPolicy,
+    RouteTarget,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -247,3 +255,70 @@ async def call_summarizer_model(messages: Conversation, job_id: str = "") -> Mod
     response, target, attempts = await execute(scfg.SUMMARIZER_ROUTE, _invoke, _classify,
                                                job_id=job_id, cost_of=_cost_of)
     return protocol_for(target.provider).normalize(response, target, attempts)
+
+
+# v4 repair proposer (non-streaming, tools, images). Its model is chosen per CALL as a `provider:model`
+# key (contracts.model_inference.REPAIR_V4_PROPOSE_ROUTES) rather than read from a ROUTE_MATRIX row, so it
+# adds no per-role setting, sampling branch or marker vocabulary. What it does NOT skip is pricing: the
+# per-file and per-wave caps are only as good as the meter, so an unpriced key is refused before dialling.
+_PROPOSE_ROLE = "repair_v4_propose"
+_PROPOSE_SPEC = SamplingSpec(max_tokens=8192, thinking_off=True)
+
+
+def _propose_route(provider: str, model: str) -> ModelRoute:
+    return ModelRoute(
+        role=_PROPOSE_ROLE,
+        primary=RouteTarget(provider=provider, model=model, circuit_group=f"{_PROPOSE_ROLE}:{model}"),
+        required_capabilities=frozenset({Capability.TOOLS, Capability.MULTIMODAL}),
+        timeout_s=300.0, retry=RetryPolicy(max_attempts=2, backoff_base_s=5.0, backoff_max_s=30.0),
+        concurrency_budget=4, queue_deadline_s=60.0, require_price=True)
+
+
+async def call_repair_v4_propose(
+    messages: Conversation, tools: list[ToolDefinition], *, route: str, job_id: str = "",
+    user_id: str = "", tool_choice: ToolChoice = "auto", cache_key: str = "") -> ProposeReply:
+    from dataclasses import replace
+
+    from meshpipeline.adapters.inference_telemetry.pricing import estimate_cost, require_price
+    from meshpipeline.adapters.model_inference.tracing import langfuse_kwargs
+
+    provider, sep, model = route.partition(":")
+    if not (provider and sep and model):
+        raise ValueError(f"repair_v4_propose route {route!r} is not 'provider:model'")
+    require_price(provider, model)          # before anything else: no price, no call
+    spec = replace(_PROPOSE_SPEC, cache_key=cache_key)
+
+    async def _invoke(target: RouteTarget):
+        return await protocol_for(target.provider).invoke(
+            target, messages, tools=tools, tool_choice=tool_choice, spec=spec,
+            parallel_tool_calls=None, on_reasoning=None, label=f"{_PROPOSE_ROLE}:{job_id[:8]}",
+            trace=langfuse_kwargs(session_id=job_id, user_id=user_id, name=_PROPOSE_ROLE))
+
+    route_obj = _propose_route(provider, model)
+    try:
+        response, target, attempts = await execute(route_obj, _invoke, _classify, job_id=job_id,
+                                                   cost_of=_cost_of)
+        result = protocol_for(target.provider).normalize(response, target, attempts)
+    except UnpricedModel:
+        raise
+    except _NEVER_SWALLOWED:
+        raise
+    except RouteExhausted as exc:
+        logger.error("Router: %s exhausted its route - category=%s provider=%s model=%s attempts=%d "
+                     "job_id=%s detail=%s", _PROPOSE_ROLE, exc.category.value, exc.provider, exc.model,
+                     exc.attempts, job_id, exc.detail)
+        return ProposeReply(
+            ModelRoundResult(failure_marker=f"{_PROPOSE_ROLE}:{exc.category.value}",
+                             provider=ProviderAttemptInfo(attempts=exc.attempts, provider=exc.provider,
+                                                          model=exc.model)),
+            0.0, provider, model)
+    except Exception as exc:  # noqa: BLE001 - a marker, never a raw exception, as every other route
+        category = _unexpected_category(exc)
+        logger.error("Router: %s raised instead of answering - category=%s job_id=%s detail=%s",
+                     _PROPOSE_ROLE, category.value, job_id, describe_failure(exc), exc_info=True)
+        return ProposeReply(ModelRoundResult(failure_marker=f"{_PROPOSE_ROLE}:{category.value}"),
+                            0.0, provider, model)
+    cost = estimate_cost(target.provider, target.model, input_tokens=result.input_tokens,
+                         output_tokens=result.output_tokens,
+                         cached_input_tokens=result.cached_input_tokens)
+    return ProposeReply(result, cost, target.provider, target.model)

@@ -8,6 +8,7 @@ import meshpipeline.settings.env as env
 import meshpipeline.settings.policy as _policy
 import meshpipeline.settings.policy as polmod
 import meshpipeline.settings.runtime as rtmod
+from meshpipeline.adapters.model_inference import routes as _routes
 from meshpipeline.adapters.model_inference.routes import missing_provider_credentials
 from meshpipeline.agents.builder.settings import (
     BUILDER_LOOP_TIMEOUT,
@@ -42,6 +43,26 @@ from meshpipeline.settings.runtime import (
     OPENFOAM_COMMAND_TIMEOUT,
     WORKSPACE_BASE,
 )
+
+
+def check_models_priced(*, hardened: bool) -> None:
+    """Refuse (hardened) or warn (otherwise) when a callable model has no declared price.
+
+    An unpriced model meters at $0.00, so a spending cap on it can never trip. routing.execute
+    refuses the call itself; this is the same check at boot, so a bad MODEL override fails the
+    deploy rather than the first job."""
+    import warnings as _warnings
+
+    unpriced = _routes.unpriced_models()
+    if not unpriced:
+        return
+    message = ("No price is declared for: " + ", ".join(unpriced) + ". Their spend would meter at "
+               "$0.00 and no cost cap could trip, so calls to them are refused. Add "
+               "'<provider>:<model>=<in>,<out>,<cached>' (USD per 1M tokens) to MODEL_PRICE_OVERRIDES, "
+               "or point the route at a priced model.")
+    if hardened:
+        raise ConfigurationError(f"{message} - refusing to start.")
+    _warnings.warn(message, RuntimeWarning, stacklevel=3)
 
 
 def validate() -> None:
@@ -84,6 +105,7 @@ def validate() -> None:
                 f"ENV={ENV!r} is a hosted environment and requires a database: set DATABASE_URL "
                 "(a managed-Postgres connection string, e.g. Neon - carries its own credentials) "
                 "OR POSTGRES_PASSWORD for the POSTGRES_* parts.")
+        check_models_priced(hardened=True)
         _missing = missing_provider_credentials()
         if _missing:
             raise ConfigurationError(
@@ -114,6 +136,7 @@ def validate() -> None:
                 "MESH_API_KEY is empty - authentication is DISABLED on every route. "
                 "Set ENV=production to enforce auth at startup.",
                 RuntimeWarning, stacklevel=2)
+        check_models_priced(hardened=False)
         _missing = missing_provider_credentials()
         if _missing:
             _warnings.warn(

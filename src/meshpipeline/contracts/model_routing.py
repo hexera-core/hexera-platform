@@ -133,6 +133,12 @@ class ModelRoute:
     # caller that must not be kept waiting (the summarizer degrades a search; it must never hold
     # a builder round hostage). None = no total cap; only the per-attempt timeout applies.
     total_deadline_s: float | None = None
+    # FAIL CLOSED ON PRICE. A route that sets this is never dialled for a target with no declared price
+    # (routing.execute raises UnpricedModel first). Cost telemetry degrades an unpriced model to $0.00,
+    # which a dashboard can live with and a spending cap cannot: a call that meters at nothing never
+    # trips it. Opt-in, because only a route whose caller ENFORCES a cap needs the refusal at call time;
+    # every configured role is held to the same standard at startup (routes.unpriced_models).
+    require_price: bool = False
 
     def __post_init__(self) -> None:
         widened = self.allowed_failover - FAILOVER_ELIGIBLE

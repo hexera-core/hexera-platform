@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import logging
 
+from meshpipeline.contracts.model_inference import UnpricedModel
+
 logger = logging.getLogger(__name__)
 
 # (input, output, cached_input) USD per 1M tokens. DeepInfra and DeepSeek verified 2026-07-16
@@ -51,15 +53,31 @@ def _declared_price(provider: str, model: str) -> tuple[float, float, float] | N
     return _PRICES.get(key)
 
 
-def unpriced_route_models() -> list[str]:
+def require_price(provider: str, model: str) -> tuple[float, float, float]:
+    # THE FAIL-CLOSED FORM of price_for. Where a spending cap depends on the meter, an unpriced model
+    # must not be dialled at all: price_for would return (0.0, 0.0, 0.0), every call would cost
+    # "nothing", and the cap could never trip. A declared (0.0, 0.0, 0.0) - a free model - is a real
+    # price and passes.
+    declared = _declared_price(provider, model)
+    if declared is None:
+        raise UnpricedModel(
+            f"no price is declared for {provider}:{model}, so its spend cannot be metered or capped; "
+            f"refusing to call it. Add '{provider}:{model}=<in>,<out>,<cached>' (USD per 1M tokens) to "
+            f"{_OVERRIDE_SETTING} once the provider's price is confirmed.")
+    return declared
+
+
+def unpriced_route_models(extra: tuple[str, ...] = ()) -> list[str]:
     # THE machine-detectable form of the gap. An unpriced model does not fail: it meters at $0.00,
     # so the deployment under-bills silently and the telemetry looks healthy. Pricing is measured
     # resource cost, so a caller - an operator, a release gate, a test - has to be able to ask
     # which configured models are metering at zero before that number reaches an invoice.
     from meshpipeline.settings.routes import configured_route_targets
-    return sorted({f"{provider}:{model}"
-                   for _, _, provider, model in configured_route_targets()
-                   if _declared_price(provider, model) is None})
+    # `extra` is `provider:model` keys that are callable without being a role route (the repair_v4
+    # proposer's chain), so they are held to the same standard.
+    keys = {f"{provider}:{model}" for _, _, provider, model in configured_route_targets()}
+    keys.update(extra)
+    return sorted(k for k in keys if _declared_price(*k.split(":", 1)) is None)
 
 
 def price_for(provider: str, model: str) -> tuple[float, float, float]:
