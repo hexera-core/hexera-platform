@@ -181,3 +181,32 @@ def test_write_pool_records_sources_included(tmp_path):
     import json
     manifest = json.loads(out.read_text())
     assert manifest["sources_included"] == ["abc"] and manifest["deduped"] == 2
+
+
+def test_nist_note_says_variants_are_not_vendor_translations(tmp_path):
+    out = tmp_path / "pool.json"
+    pool.write_pool([_entry(source="nist")], out, sources_included=["abc", "nist"], notes=pool.SOURCE_NOTES)
+    import json
+    note = json.loads(out.read_text())["source_notes"]["nist"]
+    assert "NOT distinct vendor translations" in note and "single STEP each" in note
+
+
+def test_licences_are_interned_and_round_trip(tmp_path):
+    out = tmp_path / "pool.json"
+    entries = [_entry(name="a", sha256="1" * 64), _entry(name="b", sha256="2" * 64),
+               _entry(name="c", sha256="3" * 64, licence="OTHER")]
+    pool.write_pool(entries, out, sources_included=["abc"])
+    import json
+    manifest = json.loads(out.read_text())
+    assert len(manifest["licences"]) == 2 and all("licence" not in r for r in manifest["files"])
+    assert all(r["licence_id"] in manifest["licences"] for r in manifest["files"])
+    assert sorted(pool.read_pool(out), key=lambda e: e.name) == entries
+
+
+def test_write_pool_refuses_an_empty_licence(tmp_path):
+    with pytest.raises(ValueError, match="licence"):
+        pool.write_pool([_entry(licence=" ")], tmp_path / "pool.json", sources_included=["abc"])
+
+
+def test_occt_licence_carries_unverified_marker():
+    assert pool.LICENCE["occt"].startswith("UNVERIFIED")

@@ -18,8 +18,11 @@ Sources, in precedence order (the first source to supply a sha256 keeps it):
   nist             NIST MBE PMI CTC/FTC/STC models, from two zips reached through nist.gov
                    `/document/<slug>` redirects (the page itself links only to drawing PDFs). Every
                    export variant is kept; variants of one part share a `group` (e.g. nist-ctc-01),
-                   since the same part exported through several translators is what reproduces real
-                   cross-kernel defects. The STC zip holds native CAD only (CATPart/prt/ipt), no
+                   so the variants of a part can be kept together. CAVEAT: these are NOT distinct vendor
+                   translations of one native part. They are 3-4 AP203/AP242 and PMI-level STEP
+                   exports per part from NIST's own reference pipeline (the 5 STC parts have a
+                   single STEP each), so cross-kernel diversity must be measured from checker
+                   results, not assumed from the group. The STC zip holds native CAD only (CATPart/prt/ipt), no
                    STEP, so the STC STEP files come from the PMI STEP zip.
   f360             Fusion 360 Gallery segmentation extended STEP set (s2.0.1) - a non-Onshape origin
                    (ABC and DeepCAD are both Onshape-derived). Its STEP files are scaled x10.
@@ -62,11 +65,10 @@ LICENCE = {
     "abc": ("ABC dataset: copyright of the CAD models is owned by their creators; for licensing details "
             "see Onshape Terms of Use 1.g.ii (https://deep-geometry.github.io/abc-dataset/); "
             "authors give no warranties"),
-    # UNVERIFIED: the OCCT release notes state LGPL 2.1 + exception for OCCT itself, not separate
-    # terms for opencascade-dataset-7.8.0. Confirm before publication.
-    "occt": ("Open CASCADE Technology 7.8.0 sample dataset (opencascade-dataset-7.8.0, "
-             "https://github.com/Open-Cascade-SAS/OCCT/releases/tag/V7_8_0); OCCT is LGPL 2.1 with "
-             "exception - dataset-specific terms not separately stated"),
+    # The OCCT string carries its UNVERIFIED marker into the manifest; confirm before publication.
+    "occt": ("UNVERIFIED - Open CASCADE Technology 7.8.0 sample dataset (opencascade-dataset-7.8.0, "
+             "https://github.com/Open-Cascade-SAS/OCCT/releases/tag/V7_8_0); the release notes give "
+             "LGPL 2.1 with exception for OCCT itself, and dataset-specific terms were not confirmed"),
     "nist": ("NIST Disclaimer on the download page: \"The test cases, CAD models, and STEP files can be "
              "used without any restrictions\" (https://www.nist.gov/el/systems-integration-division-73400/"
              "mbe-pmi-validation-and-conformance-testing/download-free-cad)"),
@@ -77,12 +79,12 @@ LICENCE = {
 
 # Each is a nist.gov redirect to a zip (verified 2026-11); the final system/files/... URL carries a
 # dated path and is deliberately not hardcoded.
+# The STC zip (https://www.nist.gov/document/nist-stc-pmi-v4) is deliberately absent: it holds only
+# CATPart/prt/ipt/pdf, no STEP; the STC STEP files are in nist-pmi-step-files.
 NIST_ARCHIVES = (
     "https://www.nist.gov/document/nist-pmi-step-files",
     "https://www.nist.gov/document/nist-ftc-ctc-pmi-cad-models",
 )
-# Verified: the STC zip (https://www.nist.gov/document/nist-stc-pmi-v4) holds only CATPart/prt/ipt/pdf, so
-# it is not a STEP source; the STC STEP files are in nist-pmi-step-files.
 F360_ARCHIVE = ("https://fusion-360-gallery-dataset.s3.us-west-2.amazonaws.com/"
                 "segmentation/s2.0.1/s2.0.1_extended_step.zip")
 
@@ -94,6 +96,9 @@ F360_MIN_ENTRIES = 42_912
 
 #: Facts a consumer of the pool must not discover by surprise, written to the manifest per source.
 SOURCE_NOTES = {
+    "nist": ("Per part, 3-4 AP203/AP242 and PMI-level STEP exports from NIST's own reference pipeline "
+             "(CTC 01-05 and FTC 06-11); NOT distinct vendor translations of one native part. The 5 STC "
+             "parts carry a single STEP each (the STC zip holds native CAD only)."),
     "f360": ("STEP files are scaled by a factor of 10 by the dataset's data-exchange process (bounding "
              "box longest side in [-10, 10]); NOT rescaled here. Absolute-length fidelity bounds such "
              "as min(0.1 mm, 0.001 x diagonal) mean something different on these parts."),
@@ -299,15 +304,41 @@ def build_pool(sources: Iterable[PoolSource]) -> list[PoolEntry]:
     return entries
 
 
+def _licence_id(text: str) -> str:
+    return hashlib.sha256(text.encode()).hexdigest()[:12]
+
+
 def write_pool(entries: list[PoolEntry], out: Path = OUT, *, sources_included: list[str],
                deduped: int = 0, notes: dict[str, str] | None = None) -> None:
-    """`sources_included` records which flag set built this file, so a partial pool is never
-    mistaken for the full one."""
+    """Compact JSON with licences interned: a top-level `licences` table (id -> text) and a
+    `licence_id` on every entry. Every entry still carries a non-empty licence; this is storage only.
+
+    `sources_included` records which flag set built this file, so a partial pool is never mistaken
+    for the full one."""
+    licences: dict[str, str] = {}
+    rows = []
+    for e in sorted(entries, key=lambda e: (e.source, e.name)):
+        if not e.licence.strip():
+            raise ValueError(f"{e.name}: licence is required on every pool entry")
+        row = asdict(e)
+        row["licence_id"] = _licence_id(row.pop("licence"))
+        licences[row["licence_id"]] = e.licence
+        rows.append(row)
     out.parent.mkdir(parents=True, exist_ok=True)
-    rows = sorted((asdict(e) for e in entries), key=lambda r: (r["source"], r["name"]))
-    manifest = {"version": 1, "sources_included": sources_included, "deduped": deduped,
-                "source_notes": notes or {}, "files": rows}
-    out.write_text(json.dumps(manifest, indent=1, sort_keys=True) + "\n")
+    manifest = {"version": 2, "sources_included": sources_included, "deduped": deduped,
+                "source_notes": notes or {}, "licences": licences, "files": rows}
+    out.write_text(json.dumps(manifest, separators=(",", ":"), sort_keys=True) + "\n")
+
+
+def read_pool(path: Path = OUT) -> list[PoolEntry]:
+    """Inverse of `write_pool`: rehydrates each entry's licence from the table."""
+    manifest = json.loads(path.read_text())
+    licences = manifest["licences"]
+    out = []
+    for row in manifest["files"]:
+        licence = licences[row.pop("licence_id")]
+        out.append(PoolEntry(**row, licence=licence))
+    return out
 
 
 def main(argv: list[str] | None = None) -> int:
