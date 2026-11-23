@@ -32,7 +32,6 @@ import asyncio
 import base64
 import hashlib
 import json
-import math
 import struct
 import zlib
 from collections.abc import Awaitable, Callable, Coroutine, Sequence
@@ -69,6 +68,9 @@ IMAGE_TOKENS = 2000
 MAX_INPUT_TOKENS = 120_000
 _GROWTH = 1.25
 _T = TypeVar("_T")
+
+#: the hard per-file model spend ceiling (spec 5.9); no proposer may be built above it
+FILE_USD_CEILING = 1.00
 
 StopReason = Literal["wave_cap", "file_ceiling", "max_turns", "model_failure", "input_too_large"]
 #: Consecutive failed model rounds (the router has already retried each) before the AI is given up on for a file.
@@ -331,8 +333,10 @@ class AIProposer:
                  max_input_tokens: int = MAX_INPUT_TOKENS) -> None:
         if max_turns < 1:
             raise ValueError("max_turns must be at least 1")
-        if not (math.isfinite(usd_ceiling) and 0 < usd_ceiling):
-            raise ValueError("usd_ceiling must be a positive, finite number of dollars")
+        if not (0 < usd_ceiling <= FILE_USD_CEILING):  # a chained comparison is False for inf and nan too
+            raise ValueError(
+                f"usd_ceiling must be finite and in (0, {FILE_USD_CEILING}] dollars per file, got {usd_ceiling!r}"
+            )
         if not isinstance(ledger, WaveLedger):
             raise TypeError("a WaveLedger is required: the cap is not optional")
         if ledger.provenance not in ("shard", "test"):

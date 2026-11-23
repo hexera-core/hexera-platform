@@ -592,7 +592,7 @@ def test_a_call_whose_estimate_exceeds_the_file_ceiling_is_refused_before_it_is_
 def test_an_oversize_input_is_refused_at_admit_even_with_budget_to_spare():
     fake = Fake([reply()])
     huge = lambda st, sites: {"blob": "x" * 700_000}                 # noqa: E731  ~ 233k tokens
-    p = P.AIProposer(ROUTE, max_turns=3, usd_ceiling=1e6, call=fake, observe=huge,
+    p = P.AIProposer(ROUTE, max_turns=3, usd_ceiling=1.0, call=fake, observe=huge,
                      ledger=WaveLedger.for_test(cap_usd=300.0), file_id="f1", prices=ASTRA)
     assert p.propose(state([site("S1", "proximity")]), k=3) == []
     assert fake.calls == [] and p.stop_reason == "input_too_large" and not p.ai_capped

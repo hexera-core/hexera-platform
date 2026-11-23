@@ -61,11 +61,17 @@ Wiring (Task 18b).
     (`OpFailed`, a verdict that scores badly) is still a failure and is still fed back. `judge.full(start)` is
     NOT guarded: a checker that cannot judge the START propagates out of `search`, because there is nothing to
     search from; callers must treat that as "no result", not as "not clean".
+  * NO VERDICT. A search in which no candidate got a usable verdict and at least one was inconclusive ends with
+    `reason="no_verdict"`, `infrastructure_failed=True`; `inconclusive_candidates` / `verdict_candidates` /
+    `inconclusive_rate` let a mixed run be weighed. It is never "patience".
   * KNOWN PROPERTIES, not defects of this task. (1) One `AIProposer` keeps ONE message list for the whole
     search, so the model's conversation is not per lineage: after the search jumps between branches it has been
     shown states from several, and its memory of "what I tried" mixes them (the feedback it is sent names the
-    state each candidate became). (2) The model cap is checked once per EXPANSION, so one `propose` may make
-    up to `max_turns` calls, bounded by the ledger and the proposer's own `usd_ceiling`, not by `model_usd`.
+    state each candidate became). (2) `Budget.model_usd` is an ADVISORY TRIGGER, not a limit: it is checked once per
+    EXPANSION, so one `propose` may make up to `max_turns` calls before it is looked at again. The hard per-file
+    ceiling is the proposer's `usd_ceiling`, enforced per call by `ledger.admit` against a deliberately
+    pessimistic estimate (uncached input rate, full output reservation, growth floor). (2b) The proposer's
+    `_pending` outcomes are flushed by the NEXT `propose` call, not by the branch that produced them.
     (3) `render.view` runs synchronously on the expansion thread, and keeps being asked for pictures after the
     proposer stopped for a reason of its own (`model_gens.intersection(active)` stays true): it is not paid
     for, but it is time.
@@ -149,6 +155,8 @@ class Budget:
     wall_s: float
     ops: int
     model_calls: int
+    #: an ADVISORY trigger (checked once per expansion; one propose can make up to max_turns calls first), not a
+    #: limit: the hard per-file ceiling is the proposer's `usd_ceiling`, enforced per call by the ledger
     model_usd: float
 
 
@@ -273,6 +281,26 @@ class SearchResult:
     ai_stop_reason: str | None = None
     #: `AIProposer.result()` of each proposer in the search (spend, turns, reason)
     ai: list[dict] = field(default_factory=list)
+    #: why the search stopped: "clean", "patience", "exhausted", a budget reason, or "no_verdict" (nothing was
+    #: measured: see `infrastructure_failed`)
+    reason: str | None = None
+    #: candidates that came back INCONCLUSIVE (the checker, mesher or pool failed, not the part): never ranked,
+    #: never a verdict. Together with `verdict_candidates` this is how a consumer decides whether the file was
+    #: measured at all (Task 21 withholds an arm's clean rate above a 10% inconclusive rate).
+    inconclusive_candidates: int = 0
+    #: candidates that reached the checker and got a usable verdict (scored, kept or not); declined/invalid ops
+    #: and op failures never reach the checker and are not counted here
+    verdict_candidates: int = 0
+    #: True when the search produced NO usable verdict and at least one candidate was inconclusive: the outcome
+    #: says nothing about whether the file is repairable, so it must not be read as "search failed". `reason` is
+    #: then "no_verdict" (the stop that would otherwise have been reported is kept in the trace as `ended_by`).
+    infrastructure_failed: bool = False
+
+    @property
+    def inconclusive_rate(self) -> float:
+        """inconclusive / (inconclusive + verdict) candidates; 0.0 when no candidate was judged at all."""
+        total = self.inconclusive_candidates + self.verdict_candidates
+        return self.inconclusive_candidates / total if total else 0.0
 
 
 # --- the deterministic generator ----------------------------------------------------------------
@@ -446,7 +474,7 @@ def _stage_outcome(pool: Any, ws: Workspace, c: Candidate, gi: int, timeout_s: f
     base = ws.fork()
     result = run_stage(pool, base, name, {"timeout_s": timeout_s, **c.params.get("params", {})})
     if name in result.inconclusive:
-        return _Outcome(c, gi, "failed", [f"inconclusive: stage {name!r} could not be judged (checker unavailable)"])
+        return _Outcome(c, gi, "inconclusive", [f"inconclusive: stage {name!r} could not be judged (checker unavailable)"])
     if name in result.rolled_back:
         return _Outcome(c, gi, "declined", [f"stage {name!r} was rolled back: it lowered the cheap score"])
     if name in result.skipped:
@@ -545,8 +573,6 @@ def _model_usage(g: Any) -> tuple[int, float] | None:
     return None
 
 
-#: the per-file model spend ceiling of a `search_ai` run (spec 5.9): enforced where the proposer is built
-FILE_USD_CEILING = 1.00
 ARMS = ("search_det", "search_ai")
 
 
@@ -577,10 +603,7 @@ def ai_generators(
     """The generators of an `search_ai` run: the deterministic sweeps and the AI proposer, built around ONE
     `UnfixableRegistry`, with the proposer told every stage name (so it may propose `run_stage`). `ledger` must be
     a `WaveLedger.for_shard` one (the proposer refuses any other). Returns (generators, proposer)."""
-    if not (0 < usd_ceiling <= FILE_USD_CEILING):  # a chained comparison is False for inf and nan too
-        raise ValueError(
-            f"usd_ceiling must be finite and in (0, {FILE_USD_CEILING}] dollars per file, got {usd_ceiling!r}"
-        )
+    # the (0, FILE_USD_CEILING] guard lives in AIProposer itself, where it cannot be walked around
     shared = UnfixableRegistry()
     proposer = AIProposer(
         route, max_turns=max_turns, usd_ceiling=usd_ceiling, ledger=ledger, call=call, file_id=file_id,
@@ -708,6 +731,8 @@ def search(
     heap: list[tuple] = [(_neg(s0.score), next(tie), s0.score, s0)]
     reason: str | None = "clean" if start_verdict.clean else None
     flat = 0
+    n_inconclusive = 0
+    n_verdicts = 0
 
     with ThreadPoolExecutor(max_workers=max(1, workers)) as executor:
         while reason is None:
@@ -841,7 +866,10 @@ def search(
 
             children: list[SearchState] = []
             for out in [f.result() for f in [executor.submit(evaluate, i) for i in to_run]]:
+                if out.kind == "ok":
+                    n_verdicts += 1
                 if out.kind == "inconclusive":
+                    n_inconclusive += 1
                     _record_candidate(trace, state, out.candidate, "inconclusive", errors=out.errors)
                     continue  # not a rejection and no fate: the generator is not told its candidate failed
                 if out.kind != "ok":
@@ -939,12 +967,19 @@ def search(
             if flat >= patience:
                 reason = "patience"
 
+    ended_by = reason
+    infrastructure_failed = bool(n_inconclusive and not n_verdicts and not best.verdict.clean)
+    if infrastructure_failed:
+        reason = "no_verdict"  # never a patience/exhausted exit: nothing was measured
     ai_capped = ai_capped or any(bool(getattr(generators[gi], "ai_capped", False)) for gi in model_gens)
     ai_stop_reason = next(iter(ai_stopped.values()), "model_budget" if ai_capped else None)
     ai_results = [g.result() for g in any_gens if isinstance(g, AIProposer)]
     trace.record(
         "stop",
         reason=reason,
+        ended_by=ended_by,
+        inconclusive_candidates=n_inconclusive,
+        verdict_candidates=n_verdicts,
         best=best.id,
         best_score=best.score,
         clean=bool(best.verdict.clean),
@@ -964,6 +999,10 @@ def search(
         ai_capped=ai_capped,
         ai_stop_reason=ai_stop_reason,
         ai=ai_results,
+        reason=reason,
+        inconclusive_candidates=n_inconclusive,
+        verdict_candidates=n_verdicts,
+        infrastructure_failed=infrastructure_failed,
     )
 
 

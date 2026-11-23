@@ -728,7 +728,8 @@ def test_an_unfixable_declaration_on_one_sibling_does_not_suppress_the_other_sib
     siblings = [sid for sid, ids in det.visible.items() if sid != "S0" and sid != declaring]
     assert siblings, "the sibling was never expanded: the test proves nothing"
     assert all(det.visible[sid] == ["S@F1"] for sid in siblings)         # its own same-id site was swept
-    assert "S@F1" in user_turns(model.calls[-1])[-1]                      # ...and shown to the model
+    # ...and shown to the model: some call after the declaring one was made on the sibling, which names S@F1
+    assert any("S@F1" in user_turns(c)[-1] for c in model.calls[3:])
     assert det.visible[declaring] == ["S@F1"]                             # swept before the model declared, this round
 
 
@@ -892,7 +893,10 @@ def test_the_usd_cap_binds_on_its_own() -> None:
     assert r.ai_capped is True and r.ai_stop_reason == "model_budget"
     assert r.trace.of_kind("ai_capped")
     spent = ai.result()["spent_usd"]
-    assert 0.01 <= spent < 0.1             # stopped after the expansion that crossed 0.011, not run to a ceiling
+    # model_usd is an advisory trigger checked once per expansion: the first expansion's propose may make up to
+    # max_turns calls before it is looked at. Pin the exact count, so eight calls (the unbounded case) cannot pass.
+    assert len(model.calls) == ai.result()["turns"] == 2
+    assert spent == pytest.approx(0.01 * len(model.calls), rel=0.5) and spent < 0.05
 
 
 def test_without_the_usd_cap_the_same_run_is_not_capped() -> None:
@@ -915,8 +919,8 @@ def test_a_usd_ceiling_over_the_per_file_dollar_or_not_finite_is_refused_at_cons
                              file_id="f", job_id="j", call=FakeModel([]), prices=ASTRA)
 
 
-@pytest.mark.parametrize("bad", [float("inf"), float("nan")])
-def test_the_proposer_itself_refuses_a_non_finite_ceiling(bad: float) -> None:
+@pytest.mark.parametrize("bad", [float("inf"), float("nan"), 0.0, -1.0, 1.01, 50.0])
+def test_the_proposer_itself_refuses_a_non_finite_or_over_one_dollar_ceiling(bad: float) -> None:
     with pytest.raises(ValueError, match="usd_ceiling"):
         proposer(FakeModel([]), usd_ceiling=bad)
 
@@ -948,3 +952,40 @@ def test_the_search_ai_arm_reaches_the_ai_proposer_and_the_search_det_arm_cannot
 def test_an_unknown_arm_is_refused() -> None:
     with pytest.raises(ValueError, match="unknown search arm"):
         search.arm_generators("search_x")
+
+
+# --- a search that measured nothing is not a negative result -------------------------------------------------------
+
+
+def test_an_all_inconclusive_search_is_not_a_patience_exit() -> None:
+    g = Scripted(lambda s: [cand(1, inc=99), cand(2, inc=99)] if s.depth == 0 else [])
+    r = run([g], World(), patience=2)
+    assert r.reason == "no_verdict" and r.infrastructure_failed is True
+    assert (r.inconclusive_candidates, r.verdict_candidates) == (2, 0)
+    assert r.inconclusive_rate == 1.0 and not r.changed and not r.clean
+    stop = r.trace.of_kind("stop")[-1]
+    assert stop["reason"] == "no_verdict" and stop["ended_by"] in ("patience", "exhausted")
+
+
+def test_a_genuine_negative_search_still_reads_as_patience() -> None:
+    """The same shape with real verdicts (judged, none better than the start): an ordinary failure, not infrastructure."""
+    g = Scripted(lambda s: [cand(0, to="Z1"), cand(0, to="Z2")] if s.depth == 0 else [])
+    r = run([g], World(), start=make_ws(1), patience=2)
+    assert r.reason in ("patience", "exhausted") and r.infrastructure_failed is False
+    assert r.verdict_candidates >= 1 and r.inconclusive_candidates == 0 and r.inconclusive_rate == 0.0
+
+
+def test_a_mixed_search_reports_both_counts_and_is_not_infrastructure_failed() -> None:
+    g = Scripted(lambda s: [cand(1), cand(2, inc=99), cand(3, inc=99)] if s.depth == 0 else [])
+    r = run([g], World(), patience=50)
+    assert r.inconclusive_candidates == 2 and r.verdict_candidates == 1
+    assert r.infrastructure_failed is False and r.reason != "no_verdict"
+    assert r.inconclusive_rate == pytest.approx(2 / 3) and r.changed
+
+
+def test_a_stage_the_checker_could_not_judge_is_inconclusive_not_failed(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(search, "run_stage", lambda pool, ws, name, params: SimpleNamespace(
+        inconclusive=[name], rolled_back={}, skipped={}, ws=ws))
+    c = Candidate(op=search.RUN_STAGE, targets=[], params={"stage": "finalise"}, source="det")
+    out = search._stage_outcome(None, make_ws(0), c, 0, 1.0)
+    assert out.kind == "inconclusive"
