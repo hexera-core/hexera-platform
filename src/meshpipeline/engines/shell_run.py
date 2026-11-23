@@ -215,6 +215,89 @@ def keeps_thick(record: dict) -> bool:
             and not any(int(r.get("open_edges") or 0) for r in record.get("sewn") or []))
 
 
+#: MIXED-12's guard: the shell-and-solid attempt gets at most KEPT_BUDGET_S, and never the time the shell itself needs
+#: before the run's outer stop (HEXERA_SHELL_RUN_END less KEPT_RESERVE_S). On the 9 development parts it makes it took
+#: 13 to 89 s; on a round-tube truss whose saddle joints read thick (extraction 431 s) it ran the scorer's 900 s out
+#: and the shell it had made before was lost. Past the guard the attempt is stopped (it runs in a forked child) and the
+#: shell is made as before, said, and the trip recorded (TIME-3 guard).
+KEPT_BUDGET_S = 300.0
+KEPT_RESERVE_S = 240.0
+KEPT_SLOW = "it took longer than the {s:.0f} s allowed"
+
+
+def _kept_budget_s() -> float:
+    from meshpipeline.settings.env import optional_env
+
+    budget = float(KEPT_BUDGET_S)
+    try:
+        end = float(optional_env("HEXERA_SHELL_RUN_END", "") or "nan")
+    except ValueError:
+        end = float("nan")
+    if end == end:
+        budget = min(budget, end - time.time() - KEPT_RESERVE_S)
+    return budget
+
+
+def _build_kept(step, out: Path, mm_per_unit: float, requirements: dict | None, record: dict, target: dict | None):
+    from meshpipeline.engines import mixed_run as mr
+
+    sub: dict = {}
+    joined = mr.build(step, out, mm_per_unit=mm_per_unit, rec=sub, requirements=requirements, record=record,
+                      target=target)
+    return joined, sub
+
+
+def _guarded(fn, budget_s: float, ws: Path):
+    """fn() in a forked child, stopped past `budget_s`: its result, or its exception raised here (a _Stop with
+    KEPT_SLOW when the guard trips)."""
+    import multiprocessing as mp
+
+    from meshpipeline.engines import mixed_run as mr
+
+    if budget_s <= 0:
+        raise mr._Stop(KEPT_SLOW.format(s=0.0))
+    ctx = mp.get_context("fork")
+    rx, tx = ctx.Pipe(duplex=False)
+
+    def child() -> None:
+        import os
+
+        os.setsid()            # its own group: a stop takes the solid mesher's workers with it
+        try:
+            tx.send(("ok", fn()))
+        except BaseException as exc:  # noqa: BLE001 - handed to the parent
+            tx.send(("err", exc if isinstance(exc, mr._Stop) else RuntimeError(f"{type(exc).__name__}: {exc}"[:300])))
+
+    p = ctx.Process(target=child)       # not a daemon: the solid mesher starts processes of its own
+    p.start()
+    tx.close()
+    got = rx.recv() if rx.poll(budget_s) else None
+    p.join(5.0)
+    if p.is_alive():
+        import os
+        import signal
+
+        try:
+            if not p.pid:
+                raise OSError("no child")
+            os.killpg(p.pid, signal.SIGKILL)       # its own group (setsid), never ours
+        except OSError:
+            p.kill()
+        p.join()
+    if got is None:
+        from meshpipeline.engines.determinism import note_guard_trip
+
+        try:
+            note_guard_trip("shell_thick_kept", workspace=ws, rule="MIXED-12", budget_s=float(budget_s))
+        except Exception:  # noqa: BLE001 - the record says it all the same
+            pass
+        raise mr._Stop(KEPT_SLOW.format(s=max(0.0, budget_s)))
+    kind, value = got
+    if kind == "err":
+        raise value
+    return value
+
+
 def _thick_kept(ws: Path, out: Path, step, record: dict, rec: dict, *, mm_per_unit: float, source: str,
                 target: dict | None, requirements: dict | None) -> bool:
     """MIXED-12: the shell with its thick regions kept as solid, joined, written under the shell's names. True when
@@ -225,8 +308,8 @@ def _thick_kept(ws: Path, out: Path, step, record: dict, rec: dict, *, mm_per_un
     t1 = time.time()
     sub: dict = {}
     try:
-        joined = mr.build(step, out, mm_per_unit=mm_per_unit, rec=sub, requirements=requirements, record=record,
-                          target=target)
+        joined, sub = _guarded(lambda: _build_kept(step, out, mm_per_unit, requirements, record, target),
+                               _kept_budget_s(), ws)
         sq = sub.get("solid_quality") or {}
         if sq.get("valid") is False or sq.get("fatal"):
             raise mr._Stop("the solid mesh of the thick regions is not valid")

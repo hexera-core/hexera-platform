@@ -64,6 +64,22 @@ def test_the_junction_has_no_free_shell_edge_left_untied(tmp_path):
     assert loose == []
 
 
+def test_a_join_past_its_time_leaves_the_shell_as_before_and_says_so(tmp_path, monkeypatch):
+    # MIXED-12's guard: a round-tube truss whose joints read thick lost its shell to the scorer's stop
+    import time
+
+    def slow(*a, **k):
+        time.sleep(30)
+
+    monkeypatch.setattr(mixed_run, "build", slow)
+    monkeypatch.setattr(shell_run, "KEPT_BUDGET_S", 2.0)
+    started = time.time()
+    ws, rec = _run(tmp_path)
+    assert time.time() - started < 28
+    assert rec["made"] is True and "kept_solid" not in rec and rec["left_out"]["thick"] == 1
+    assert "(it took longer than the 2 s allowed), so they are left out." in rec["words"]
+
+
 def test_a_join_that_cannot_be_made_leaves_the_shell_as_before_and_says_why(tmp_path, monkeypatch):
     def no(*a, **k):
         raise mixed_run._Stop("the thin walls and the thick regions could not be cut apart")
