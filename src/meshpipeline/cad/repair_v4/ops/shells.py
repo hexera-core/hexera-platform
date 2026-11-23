@@ -26,14 +26,14 @@ from typing import Any
 from uuid import uuid4
 
 from meshpipeline.cad.repair_v4.kernel_calls import register as register_kernel_fn
-from meshpipeline.cad.repair_v4.types import Site, StableId
-from meshpipeline.cad.repair_v4.worker_pool import WorkerPool
-from meshpipeline.cad.repair_v4.workspace import Diff, Workspace, apply_history
 
 # Task 11's ops/__init__ owns these. This was a try/except shim while the two tasks ran in
 # parallel; a swallowed ImportError would have silently installed DIFFERENT exception classes, so
 # `except ops.OpDeclined` elsewhere would miss them while these tests still passed. Hard import.
 from meshpipeline.cad.repair_v4.ops import OpDeclined, OpFailed
+from meshpipeline.cad.repair_v4.types import Site, StableId
+from meshpipeline.cad.repair_v4.worker_pool import WorkerPool
+from meshpipeline.cad.repair_v4.workspace import Diff, Workspace, apply_history
 
 #: The fidelity bound is min(0.1 mm, 0.001 x diagonal). Duplicated from the contract, not imported,
 #: because the checker (Tasks 2-5) is not a dependency of an op.
