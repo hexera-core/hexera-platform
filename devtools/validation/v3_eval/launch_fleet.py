@@ -5,6 +5,10 @@
 # Owns: argument validation (machine family, the 100-vCPU ceiling, pinned image, full commits, the
 #       toolchain-drift rule), the shard plan and its packing onto VMs, VM names/labels/metadata, and
 #       the resume rule (skip shards that are DONE or already running).
+#       The v3 bindings (metadata keys, purpose label, bucket prefix, arms, run_arm path, names) are
+#       a PROFILE; `--profile v4` drives the same launcher over the v4 re-probe wave.
+#       THE BUDGET GATE: no wave, v3 or v4, creates a VM except through `create_wave`, which runs
+#       `enforce_budget` first. `--allow-over-budget` waives the VM-hour ceiling only.
 # Boundaries: --dry-run prints every gcloud command and runs NONE (only local `git` reads). A live
 #             run reads state (image tags, staged objects, quota, running VMs, DONE markers) before
 #             it creates anything, and creates only VMs.
@@ -30,6 +34,12 @@ stream per file into bundle/rows.jsonl, synced every 4 min), so the fleet is det
 local needs to survive. Each VM deletes itself after its shards; --max-run-duration with
 --instance-termination-action=DELETE is the backstop.
 
+THE V4 PROFILE. `--profile v4` launches the re-probe wave: units are `reprobe:pool:I/N` (hash shards
+of the pool, evalspec.shard_of), metadata keys are v4-*, VMs are labelled purpose=v4-eval and run
+v4_eval/run_arm.py. `--sources` names the pool sources (default: the cleared ones; Fusion 360 is not
+cleared and is refused) and reaches run_arm as --sources, so an uncleared source is never probed even if
+the pool file carries it. The default (v3) profile is byte-identical to the launcher before profiles.
+
 RESUME. Re-running the same command launches only the shards that have no DONE marker and are not
 claimed by a running VM (read off each eval VM's v3-units metadata). --only narrows it further.
 """
@@ -38,12 +48,14 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import math
 import os
 import re
 import shlex
 import subprocess
 import sys
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -75,6 +87,182 @@ def _load(name: str, path: Path):
 
 
 evalspec = _load("evalspec", HERE / "evalspec.py")
+#: The v4 spec holds the cost control (Projection, check_budget, enforce_budget, BudgetRefused) for
+#: BOTH profiles, and the cleared-source list. It is loaded under the name run_arm.py uses for it.
+budget_spec = _load("v4_evalspec", REPO / "devtools" / "validation" / "v4_eval" / "evalspec.py")
+V4_PREFIX = f"{BUCKET}/eval/v4-reprobe"
+
+
+@dataclass(frozen=True)
+class Profile:
+    """Everything the launcher binds to one evaluation: the VM metadata key prefix, the purpose and
+    managed-by labels, the deployment id, the VM name tag, the bucket the code/inputs live under, the
+    arms (what DONE markers and running VMs are matched against) and the run_arm.py the VM invokes."""
+    name: str
+    meta: str                 # VM metadata key prefix: f"{meta}-units", f"{meta}-commit", ...
+    purpose: str              # the purpose label, also the filter that finds this wave's live VMs
+    managed_by: str
+    deployment_id: str
+    vm_tag: str               # VM name: {deployment_id}-{vm_tag}-{launch}-{j}of{m}
+    prefix_required: str      # --prefix must start with this
+    prefix_owner: str
+    default_prefix: str
+    default_max_run_hours: int
+    arms: tuple[str, ...]     # arm names as they appear in unit ids and results roots
+    kinds: tuple[str, ...]    # kind names as they appear in unit ids and results paths
+    run_arm: str | None       # repo-relative run_arm.py; None = the startup script's default (v3's)
+    model_secret: str | None
+    stage_hint: str
+
+    def arm_short(self, arm: str) -> str:
+        raise NotImplementedError
+
+    def shard_count(self, total: int) -> int:
+        raise NotImplementedError
+
+    def units(self, total: int) -> list[str]:
+        raise NotImplementedError
+
+    def extra_metadata(self, args) -> list[str]:
+        return []
+
+    def plan_lines(self, args) -> list[str]:
+        raise NotImplementedError
+
+    def launch_tail(self, args) -> str:
+        raise NotImplementedError
+
+    def required_objects(self, args) -> list[str]:
+        raise NotImplementedError
+
+    def required_dirs(self, args) -> list[str]:
+        raise NotImplementedError
+
+    def preflight_arms(self) -> tuple[str, ...]:
+        return ()
+
+    def projection(self, args, units: list[str], vms: int, slots: int):
+        raise NotImplementedError
+
+
+class V3Profile(Profile):
+    """The v3 verdict wave: evalspec.ARMS x KINDS, units `arm:kind:I/N`, the v3-* metadata."""
+
+    def arm_short(self, arm: str) -> str:
+        return evalspec.arm(arm)["short"]
+
+    def shard_count(self, total: int) -> int:
+        return sum(evalspec.shard_plan(total).values())
+
+    def units(self, total: int) -> list[str]:
+        return evalspec.work_units(evalspec.shard_plan(total))
+
+    def plan_lines(self, args) -> list[str]:
+        plan = evalspec.shard_plan(args.shards_total)
+        minutes = evalspec.plan_minutes(plan)
+        slots = evalspec.vcpus_of(args.machine_type)
+        lines = [f"plan ({args.shards_total} shards, one per vCPU, {slots} per {args.machine_type}):"]
+        for (arm, kind), n in plan.items():
+            lines.append(f"  {arm:<20} {kind:<8} {n:>3} shard(s) x <= "
+                         f"{-(-evalspec.files_of(kind) // n)} file(s)  ~{minutes[(arm, kind)]:.0f} min"
+                         f"  [{evalspec.arm(arm)['model_role']}]")
+        return lines
+
+    def launch_tail(self, args) -> str:
+        return (f"model key from secret {evalspec.MODEL_SECRET}; "
+                f"known no-ops: {evalspec.KNOWN_NOOPS}")
+
+    def required_objects(self, args) -> list[str]:
+        return [code_uri(args.commit, args.prefix), f"{args.prefix}/sample.json",
+                f"{args.prefix}/clean-control-100.json"]
+
+    def required_dirs(self, args) -> list[str]:
+        return [f"{args.prefix}/inputs/{kind}/" for kind in evalspec.KINDS]
+
+    def preflight_arms(self) -> tuple[str, ...]:
+        return tuple(evalspec.ARMS)
+
+    def projection(self, args, units: list[str], vms: int, slots: int):
+        """The wave's cost from the shard plan's own estimates: the slowest shard sets the wall every
+        VM bills; the worst case is every VM running to its --max-run-duration."""
+        minutes: list[float] = []
+        for unit in units:
+            arm, kind, _, n = evalspec.parse_unit(unit)
+            minutes.append(-(-evalspec.files_of(kind) // n) * evalspec.MINUTES_PER_FILE[(arm, kind)])
+        wall = max(minutes) / 60.0
+        return budget_spec.Projection(
+            files=0, full_files=0, shards=len(units), vms=vms, vcpus_per_vm=slots,
+            cpu_hours=sum(minutes) / 60.0, wall_hours=wall, vm_hours=vms * wall,
+            max_run_hours=args.max_run_hours, worst_vm_hours=vms * args.max_run_hours, skew=1.0)
+
+
+class V4Profile(Profile):
+    """The v4 re-probe wave: one `reprobe` arm over the whole pool, hash-sharded, units
+    `reprobe:pool:I/N`, the v4-* metadata, v4_eval/run_arm.py in the container."""
+
+    def arm_short(self, arm: str) -> str:
+        return arm
+
+    def shard_count(self, total: int) -> int:
+        if total < 1:
+            raise ValueError("--shards-total must be at least 1")
+        return total
+
+    def units(self, total: int) -> list[str]:
+        return [f"reprobe:pool:{i}/{total}" for i in range(1, total + 1)]
+
+    def extra_metadata(self, args) -> list[str]:
+        return [f"v4-run-arm={self.run_arm}", f"v4-pool={args.prefix}/pool.json",
+                f"v4-cache-uri={args.prefix}/verdict-cache", f"v4-sources={','.join(args.sources)}"]
+
+    def pool_files(self, args) -> int:
+        """Files the wave will probe: --files, else the pool manifest's entries in the named sources."""
+        if args.files is not None:
+            return args.files
+        pool = _load("v4_pool_manifest", REPO / "devtools" / "validation" / "v4_eval" / "pool.py")
+        wanted = set(args.sources)
+        return sum(1 for e in pool.read_pool(Path(args.pool)) if e.source in wanted)
+
+    def plan_lines(self, args) -> list[str]:
+        return [f"plan ({args.shards_total} hash shards of the pool, one per vCPU, "
+                f"{evalspec.vcpus_of(args.machine_type)} per {args.machine_type}):",
+                f"  reprobe              pool     {args.shards_total:>3} shard(s)  {args.files_counted} files "
+                f"from sources {','.join(args.sources)}"]
+
+    def launch_tail(self, args) -> str:
+        return f"sources {','.join(args.sources)}; the checker needs no model key"
+
+    def required_objects(self, args) -> list[str]:
+        return [code_uri(args.commit, args.prefix), f"{args.prefix}/pool.json"]
+
+    def required_dirs(self, args) -> list[str]:
+        return [f"{args.prefix}/inputs/"]
+
+    def projection(self, args, units: list[str], vms: int, slots: int):
+        """evalspec.project over the files these units carry (a resume costs only what is left)."""
+        share = len(units) / args.shards_total
+        return budget_spec.project(math.ceil(args.files_counted * share), shards=len(units),
+                                   machine_type=args.machine_type, max_run_hours=args.max_run_hours)
+
+
+V3 = V3Profile(
+    name="v3", meta="v3", purpose="v3-eval", managed_by="v3-eval", deployment_id=DEPLOYMENT_ID,
+    vm_tag="v3e", prefix_required="gs://dev-crsv3-", prefix_owner="a crsv3-owned bucket",
+    default_prefix=PREFIX, default_max_run_hours=3, arms=tuple(evalspec.ARMS),
+    kinds=evalspec.KINDS, run_arm=None, model_secret=evalspec.MODEL_SECRET,
+    stage_hint="run stage.py")
+V4 = V4Profile(
+    name="v4", meta="v4", purpose="v4-eval", managed_by="v4-eval", deployment_id=DEPLOYMENT_ID,
+    vm_tag="v4e", prefix_required="gs://dev-crsv3-", prefix_owner="an existing eval bucket",
+    default_prefix=V4_PREFIX, default_max_run_hours=8, arms=("reprobe",), kinds=("pool",),
+    run_arm="devtools/validation/v4_eval/run_arm.py", model_secret=None,
+    stage_hint="stage it first (Task 8c)")
+PROFILES = {p.name: p for p in (V3, V4)}
+
+
+def profile_of(args) -> Profile:
+    """The profile an args namespace selects; one without a `profile` is v3 (the pre-profile shape)."""
+    return PROFILES[getattr(args, "profile", "v3")]
 
 
 def results_root(arm: str, commit: str, bucket: str = BUCKET) -> str:
@@ -91,31 +279,35 @@ def code_uri(commit: str, prefix: str = PREFIX) -> str:
     return f"{prefix}/code-{commit[:12]}/code.tgz"
 
 
-def vm_name(launch_id: str, j: int, m: int) -> str:
-    name = f"{DEPLOYMENT_ID}-v3e-{launch_id}-{j}of{m}"
+def vm_name(launch_id: str, j: int, m: int, profile: Profile = V3) -> str:
+    name = f"{profile.deployment_id}-{profile.vm_tag}-{launch_id}-{j}of{m}"
     if len(name) > 63:
         raise ValueError(f"{name} is longer than 63 characters")
     return name
 
 
-def labels(commit: str, launch_id: str, units: list[str]) -> str:
-    arms = sorted({evalspec.arm(u.split(":")[0])["short"] for u in units})
-    return ",".join([f"deployment-id={DEPLOYMENT_ID}", "purpose=v3-eval",
+def labels(commit: str, launch_id: str, units: list[str], profile: Profile = V3) -> str:
+    arms = sorted({profile.arm_short(u.split(":")[0]) for u in units})
+    return ",".join([f"deployment-id={profile.deployment_id}", f"purpose={profile.purpose}",
                      f"commit={commit[:12]}", f"launch={launch_id}", f"shards={len(units)}",
                      f"arms={'-'.join(arms)}",
-                     "app=hexera", "managed-by=v3-eval"])
+                     "app=hexera", f"managed-by={profile.managed_by}"])
 
 
 def create_command(args, launch_id: str, j: int, m: int, units: list[str]) -> list[str]:
+    profile = profile_of(args)
+    k = profile.meta
     metadata = "|".join([
-        f"v3-image={args.image}", f"v3-commit={args.commit}",
-        f"v3-image-commit={args.image_commit}", f"v3-units={','.join(units)}",
-        f"v3-bucket={BUCKET}", f"v3-prefix={args.prefix}",
-        f"v3-code={code_uri(args.commit, args.prefix)}",
-        f"v3-machine-type={args.machine_type}", f"v3-model-secret={evalspec.MODEL_SECRET}",
+        f"{k}-image={args.image}", f"{k}-commit={args.commit}",
+        f"{k}-image-commit={args.image_commit}", f"{k}-units={','.join(units)}",
+        f"{k}-bucket={BUCKET}", f"{k}-prefix={args.prefix}",
+        f"{k}-code={code_uri(args.commit, args.prefix)}",
+        f"{k}-machine-type={args.machine_type}",
+        *([f"{k}-model-secret={profile.model_secret}"] if profile.model_secret else []),
+        *profile.extra_metadata(args),
     ])
     return [
-        "gcloud", "compute", "instances", "create", vm_name(launch_id, j, m),
+        "gcloud", "compute", "instances", "create", vm_name(launch_id, j, m, profile),
         f"--project={PROJECT}", f"--zone={args.zone}", f"--machine-type={args.machine_type}",
         "--provisioning-model=STANDARD", "--instance-termination-action=DELETE",
         f"--max-run-duration={args.max_run_hours}h",
@@ -123,7 +315,7 @@ def create_command(args, launch_id: str, j: int, m: int, units: list[str]) -> li
         "--boot-disk-size=100GB", "--boot-disk-type=pd-balanced",
         "--network=default", f"--subnet=projects/{PROJECT}/regions/{REGION}/subnetworks/default",
         "--no-address", f"--service-account={SERVICE_ACCOUNT}", "--scopes=cloud-platform",
-        f"--labels={labels(args.commit, launch_id, units)}",
+        f"--labels={labels(args.commit, launch_id, units, profile)}",
         "--metadata-from-file=" + ",".join([
             f"startup-script={HERE / 'vm_startup.sh'}",
             f"shutdown-script={HERE / 'vm_shutdown.sh'}"]),
@@ -132,6 +324,7 @@ def create_command(args, launch_id: str, j: int, m: int, units: list[str]) -> li
 
 
 def validate(parser: argparse.ArgumentParser, args) -> None:
+    profile = profile_of(args)
     try:
         args.machine_type = evalspec.validate_machine_type(args.machine_type)
     except ValueError as exc:
@@ -145,16 +338,16 @@ def validate(parser: argparse.ArgumentParser, args) -> None:
         parser.error("--image-commit must be the (abbreviated) sha the image was built from")
     if not args.zone.startswith(f"{REGION}-"):
         parser.error(f"--zone must be in {REGION}")
-    if not args.prefix.startswith("gs://dev-crsv3-"):
-        parser.error("--prefix must be a crsv3-owned bucket (gs://dev-crsv3-...)")
+    if not args.prefix.startswith(profile.prefix_required):
+        parser.error(f"--prefix must be {profile.prefix_owner} ({profile.prefix_required}...)")
     slots = evalspec.vcpus_of(args.machine_type)
     try:
-        plan = evalspec.shard_plan(args.shards_total)
+        shards = profile.shard_count(args.shards_total)
     except ValueError as exc:
         parser.error(str(exc))
-    vms = -(-sum(plan.values()) // slots)
+    vms = -(-shards // slots)
     if vms * slots > evalspec.MAX_TOTAL_VCPU:
-        parser.error(f"{sum(plan.values())} shards on {args.machine_type} need {vms} VMs = "
+        parser.error(f"{shards} shards on {args.machine_type} need {vms} VMs = "
                      f"{vms * slots} vCPU, over the {evalspec.MAX_TOTAL_VCPU}-vCPU ceiling")
 
 
@@ -216,6 +409,7 @@ def sa_write_problem(bucket_policy: dict, project_policy: dict,
 def live_checks(args, vcpus: int) -> tuple[list[str], list[str]]:
     """Read-only state checks before anything is created. Returns (problems, warnings)."""
     problems, warnings = [], []
+    profile = profile_of(args)
     try:
         desc = _gcloud_json(["gcloud", "artifacts", "docker", "images", "describe", args.image])
         tags = (desc.get("image_summary") or {}).get("tags") or []
@@ -224,15 +418,13 @@ def live_checks(args, vcpus: int) -> tuple[list[str], list[str]]:
             warnings.append(f"the image carries tags {tags}, not {args.image_commit[:12]}")
     except RuntimeError as exc:
         warnings.append(f"cannot describe the image: {exc}")
-    for obj in (code_uri(args.commit, args.prefix), f"{args.prefix}/sample.json",
-                f"{args.prefix}/clean-control-100.json"):
+    for obj in profile.required_objects(args):
         if subprocess.run(["gcloud", "storage", "ls", obj], capture_output=True).returncode:
-            problems.append(f"{obj} is not staged (run stage.py)")
-    for kind in evalspec.KINDS:
-        if subprocess.run(["gcloud", "storage", "ls", f"{args.prefix}/inputs/{kind}/"],
-                          capture_output=True).returncode:
-            problems.append(f"no {kind} inputs staged under {args.prefix}/inputs/{kind}/")
-    # Workers upload results to BUCKET (create_command's v3-bucket), whatever --prefix the inputs
+            problems.append(f"{obj} is not staged ({profile.stage_hint})")
+    for kind, path in zip(profile.kinds, profile.required_dirs(args), strict=True):
+        if subprocess.run(["gcloud", "storage", "ls", path], capture_output=True).returncode:
+            problems.append(f"no {kind} inputs staged under {path}")
+    # Workers upload results to BUCKET (create_command's <profile>-bucket), whatever --prefix the inputs
     # are read from, so that is the bucket whose write access decides whether a launch can land.
     bucket = BUCKET
     try:
@@ -257,33 +449,34 @@ def live_checks(args, vcpus: int) -> tuple[list[str], list[str]]:
     return problems, warnings
 
 
-def done_units(commit: str) -> set[str]:
+def done_units(commit: str, profile: Profile = V3) -> set[str]:
     """Unit ids whose shard wrote DONE, from one recursive listing per arm."""
     done = set()
-    for arm in evalspec.ARMS:
+    kinds = "|".join(profile.kinds)
+    for arm in profile.arms:
         out = subprocess.run(["gcloud", "storage", "ls", "-r", results_root(arm, commit)],
                              capture_output=True, text=True)
         for line in out.stdout.splitlines():
-            m = re.search(r"/(failing|clean)/shard-(\d+)-of-(\d+)/DONE$", line.strip())
+            m = re.search(rf"/({kinds})/shard-(\d+)-of-(\d+)/DONE$", line.strip())
             if m:
                 done.add(f"{arm}:{m.group(1)}:{m.group(2)}/{m.group(3)}")
     return done
 
 
-def running_units(commit: str) -> tuple[set[str], list[str]]:
+def running_units(commit: str, profile: Profile = V3) -> tuple[set[str], list[str]]:
     """Unit ids claimed by eval VMs that still exist AND run `commit`, read off their v3-units and
-    v3-commit metadata. Unit ids (arm:kind:I/N) carry no commit, so a VM still running an older
+    v3-commit metadata (v4-* for the v4 profile). Unit ids (arm:kind:I/N) carry no commit, so a VM still running an older
     commit's shards must not mark this commit's same-named shards as claimed. Every live eval VM
     is still returned by name, for the operator."""
     vms = _gcloud_json(["gcloud", "compute", "instances", "list", f"--project={PROJECT}",
-                        "--filter=labels.purpose=v3-eval"]) or []
+                        f"--filter=labels.purpose={profile.purpose}"]) or []
     claimed: set[str] = set()
     for vm in vms:
         meta = {item.get("key"): item.get("value", "")
                 for item in (vm.get("metadata") or {}).get("items") or []}
-        if meta.get("v3-commit") != commit:
+        if meta.get(f"{profile.meta}-commit") != commit:
             continue
-        claimed.update(u for u in (meta.get("v3-units") or "").split(",") if u)
+        claimed.update(u for u in (meta.get(f"{profile.meta}-units") or "").split(",") if u)
     return claimed, [vm["name"] for vm in vms]
 
 
@@ -303,9 +496,25 @@ def preflight_settings(arm: str) -> list[str]:
                      [f"{arm}: preflight did not run: {out.stderr.strip()[-400:]}"])
 
 
+def create_wave(cmds: list[list[str]], projection, *, allow_over_budget: bool = False,
+                notes: list[str] | None = None) -> None:
+    """THE ONLY PLACE A VM IS CREATED, for both profiles. `enforce_budget` runs first and raises
+    BudgetRefused, so a wave that fails the gate reaches no `gcloud compute instances create`.
+    `allow_over_budget` waives the VM-hour ceiling only (the vCPU and run-duration limits stand)."""
+    if projection is None:
+        raise budget_spec.BudgetRefused("no cost projection: a wave is not created without one")
+    budget_spec.enforce_budget(projection, allow_over_budget=allow_over_budget)
+    for n, cmd in enumerate(cmds):
+        print(f"create   {cmd[4]}  {(notes or [''] * len(cmds))[n]}".rstrip(), flush=True)
+        subprocess.run(cmd, check=True)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--profile", choices=sorted(PROFILES), default="v3",
+                        help="which evaluation to launch: v3 (the verdict wave, the default) or v4 "
+                             "(the re-probe wave)")
     parser.add_argument("--image", required=True)
     parser.add_argument("--commit", required=True,
                         help="the code that runs: its src/ and devtools/validation (code.tgz)")
@@ -315,19 +524,51 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--machine-type", default=evalspec.DEFAULT_MACHINE)
     parser.add_argument("--shards-total", type=int, default=96)
     parser.add_argument("--zone", default=f"{REGION}-a")
-    parser.add_argument("--max-run-hours", type=int, default=3)
-    parser.add_argument("--prefix", default=PREFIX)
+    parser.add_argument("--max-run-hours", type=int, default=None,
+                        help="the VMs' --max-run-duration (default: 3 for v3, 8 for v4)")
+    parser.add_argument("--prefix", default=None,
+                        help="where the code and inputs are staged (default: the profile's)")
     parser.add_argument("--only", default="",
                         help="resume: launch only these unit ids (arm:kind:I/N, comma-separated)")
     parser.add_argument("--skip-preflight", action="store_true",
                         help="skip the host settings preflight (the container still runs it)")
+    parser.add_argument("--allow-over-budget", action="store_true",
+                        help="waive the ~600 c2d VM-hour ceiling for a deliberate wave (the vCPU "
+                             "ceiling and the run-duration limit still apply)")
+    parser.add_argument("--sources", default=None,
+                        help="v4 only: comma list of pool sources to run (default: the cleared "
+                             "ones; an uncleared source is refused)")
+    parser.add_argument("--pool", default=None,
+                        help="v4 only: the pool manifest the file count is read from")
+    parser.add_argument("--files", type=int, default=None,
+                        help="v4 only: the file count to cost the wave at (default: the pool's)")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
+    profile = profile_of(args)
+    if args.prefix is None:
+        args.prefix = profile.default_prefix
+    if args.max_run_hours is None:
+        args.max_run_hours = profile.default_max_run_hours
+    if profile is V3:
+        stray = [f for f, v in (("--sources", args.sources), ("--pool", args.pool),
+                                ("--files", args.files)) if v is not None]
+        if stray:
+            parser.error(f"{', '.join(stray)} apply to --profile v4 only")
+    else:
+        try:
+            args.sources = budget_spec.resolve_sources(
+                sorted(budget_spec.CLEARED_SOURCES) if args.sources is None
+                else args.sources.split(","))
+        except ValueError as exc:
+            parser.error(str(exc))
+        args.pool = args.pool or str(REPO / "devtools" / "validation" / "corpora" / "v4" / "pool.json")
+        if args.files is None and not Path(args.pool).is_file():
+            parser.error(f"cannot count the files: no pool manifest at {args.pool} (--pool or --files)")
+        args.files_counted = V4.pool_files(args)
     validate(parser, args)
     args.prefix = args.prefix.rstrip("/")
     slots = evalspec.vcpus_of(args.machine_type)
-    plan = evalspec.shard_plan(args.shards_total)
-    units = evalspec.work_units(plan)
+    units = profile.units(args.shards_total)
     if args.only:
         wanted = [u.strip() for u in args.only.split(",") if u.strip()]
         unknown = [u for u in wanted if u not in units]
@@ -341,13 +582,13 @@ def main(argv: list[str] | None = None) -> int:
         warnings += problems
         problems = []
     if not args.skip_preflight:
-        for arm in evalspec.ARMS:
+        for arm in profile.preflight_arms():
             problems += preflight_settings(arm)
     skipped: list[str] = []
     if not args.dry_run:
         try:
-            done = done_units(args.commit)
-            claimed, live_vms = running_units(args.commit)
+            done = done_units(args.commit, profile)
+            claimed, live_vms = running_units(args.commit, profile)
         except RuntimeError as exc:
             problems.append(str(exc))
             done, claimed, live_vms = set(), set(), []
@@ -361,37 +602,45 @@ def main(argv: list[str] | None = None) -> int:
         problems += more
         warnings += warned
 
-    minutes = evalspec.plan_minutes(plan)
-    print(f"plan ({args.shards_total} shards, one per vCPU, {slots} per {args.machine_type}):")
-    for (arm, kind), n in plan.items():
-        print(f"  {arm:<20} {kind:<8} {n:>3} shard(s) x <= {-(-evalspec.files_of(kind) // n)} "
-              f"file(s)  ~{minutes[(arm, kind)]:.0f} min  [{evalspec.arm(arm)['model_role']}]")
+    # THE BUDGET GATE, in the report: the same check create_wave enforces before any VM exists.
+    projection = profile.projection(args, units, len(vms), slots) if units else None
+    if projection is not None:
+        reasons = budget_spec.check_budget(projection, allow_over_budget=args.allow_over_budget)
+        if args.allow_over_budget and max(projection.vm_hours, projection.worst_vm_hours) \
+                > budget_spec.MAX_VM_HOURS:
+            warnings.append(f"over the {budget_spec.MAX_VM_HOURS:g} VM-hour ceiling: overridden "
+                            f"(--allow-over-budget)")
+        problems += reasons
+
+    print("\n".join(profile.plan_lines(args)))
     print(f"launch: {len(units)} shard(s) on {len(vms)} VM(s) = {len(vms) * slots} vCPU "
           f"(ceiling {evalspec.MAX_TOTAL_VCPU}); skipped {len(skipped)} done/running; code "
           f"{args.commit[:12]} (src/ from the archive), image built from "
-          f"{args.image_commit[:12]} (toolchain); model key from secret "
-          f"{evalspec.MODEL_SECRET}; known no-ops: {evalspec.KNOWN_NOOPS}")
+          f"{args.image_commit[:12]} (toolchain); {profile.launch_tail(args)}")
+    if projection is not None:
+        print(f"cost: {projection.describe()}")
     for w in warnings:
         print(f"WARN    {w}", file=sys.stderr)
     for p in problems:
         print(f"REFUSE  {p}", file=sys.stderr)
 
     launch_id = time.strftime("%m%d%H%M", time.gmtime())
-    for j, vm_units in enumerate(vms, start=1):
-        cmd = create_command(args, launch_id, j, len(vms), vm_units)
-        line = " ".join(shlex.quote(c) for c in cmd)
-        if args.dry_run or problems:
+    cmds = [create_command(args, launch_id, j, len(vms), vm_units)
+            for j, vm_units in enumerate(vms, start=1)]
+    if args.dry_run or problems:
+        for cmd in cmds:
+            line = " ".join(shlex.quote(c) for c in cmd)
             print(f"{'DRY-RUN  ' if args.dry_run else 'WOULD    '}{line}")
-            continue
-        print(f"create   {cmd[4]}  ({len(vm_units)} shards)", flush=True)
-        subprocess.run(cmd, check=True)
+    else:
+        create_wave(cmds, projection, allow_over_budget=args.allow_over_budget,
+                    notes=[f"({len(u)} shards)" for u in vms])
     if problems:
         print(f"\n{len(problems)} problem(s): "
               f"{'nothing would launch' if args.dry_run else 'nothing launched'}", file=sys.stderr)
         return 1
     if not args.dry_run:
         print(f"\nlaunched {len(vms)} VM(s). Watch: gcloud compute instances list "
-              f"--project={PROJECT} --filter=labels.purpose=v3-eval ; status: collect.py "
+              f"--project={PROJECT} --filter=labels.purpose={profile.purpose} ; status: collect.py "
               f"--commit {args.commit} --status")
     return 0
 
