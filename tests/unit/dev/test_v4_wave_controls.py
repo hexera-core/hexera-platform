@@ -503,7 +503,7 @@ def test_v3_never_touches_the_gates(live, tmp_path):
 def _ra_args(tmp_path: Path) -> list[str]:
     return ["--shard", "1/2", "--wave-type", "checkpoint", "--wave-id", "cp-one", "--n-shards", "2",
             "--ledger-path", str(tmp_path / "ledger" / "log.jsonl"), "--out", str(tmp_path / "out"),
-            "--marker-bucket", BUCKET_NAME]
+            "--marker-bucket", BUCKET_NAME, "--cache-uri", "gs://B/eval/v4-reprobe/verdict-cache"]
 
 
 def test_run_arm_builds_this_shards_slice_with_its_index_and_cap(tmp_path):

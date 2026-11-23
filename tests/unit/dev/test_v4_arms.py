@@ -359,3 +359,43 @@ def test_reprobe_mode_is_unchanged_and_attaches_no_ledger(shard: Any, monkeypatc
     seen: dict = {}
     monkeypatch.setattr(run_arm, "run_reprobe", lambda args, out, prov: seen.setdefault("mode", args.mode) and 0)
     assert run_arm.main(["--out", str(shard.out)]) == 0 and seen["mode"] == "reprobe"
+
+
+# ------------------------------------------------------------------ one shared cache per wave, reaching the engine's judges
+
+@pytest.mark.parametrize("mode_argv", [[], ["--mode", "reprobe"]], ids=["arms", "reprobe"])
+@pytest.mark.parametrize("cache", [[], ["--cache-uri", ""], ["--cache-uri", "/tmp/per-vm"]], ids=["none", "blank", "dir"])
+def test_a_shard_without_a_shared_cache_refuses_before_any_work(shard, monkeypatch, mode_argv, cache) -> None:
+    monkeypatch.setattr(run_arm, "run_arms", lambda *a, **k: pytest.fail("ran without a shared cache"))
+    monkeypatch.setattr(run_arm, "run_reprobe", lambda *a, **k: pytest.fail("ran without a shared cache"))
+    argv = [*shard.argv, *cache]
+    if mode_argv:
+        argv = [a for a in argv if a not in ("--split", "dev", "--split-file", "--h-mm", "0.5")]  # reprobe has none
+        argv = ["--mode", "reprobe", *[a for a in argv if a not in ("arms", "--mode")]]
+        argv = [a for a in argv if a != str(shard.out.parent / "dev.json")]
+    assert run_arm.main(argv) == 7
+    assert "shared" in json.loads((shard.out / "PROVENANCE.json").read_text())["error"] or \
+        "blank" in json.loads((shard.out / "PROVENANCE.json").read_text())["error"]
+
+
+def test_the_wave_cache_reaches_the_engines_own_judges_and_is_restored(shard, monkeypatch) -> None:
+    """`default_judge` and `stages` take no cache flag: they read `default_verdict_cache()`. Whatever
+    `--cache-uri` the shard got must be that cache, and the SAME object the re-probe path holds."""
+    from meshpipeline.cad.repair_v4.verdict import cache as cache_mod
+
+    cache_mod.reset_default_verdict_cache()
+    monkeypatch.delenv(cache_mod.CACHE_URI_ENV, raising=False)
+    seen: dict = {}
+
+    def fake_run_arms(args, out, prov, ledger=None, **k):
+        seen["judge_cache"] = cache_mod.default_verdict_cache()
+        seen["reprobe_cache"] = run_arm.make_cache(args.cache_uri)
+        return 0
+
+    monkeypatch.setattr(run_arm, "run_arms", fake_run_arms)
+    uri = "gs://dev-crsv3-x/eval/w/verdict-cache"
+    assert run_arm.main([*shard.argv, "--cache-uri", uri]) == 0
+    assert seen["judge_cache"] is seen["reprobe_cache"]
+    assert isinstance(seen["judge_cache"].store, cache_mod.GcsStore)
+    assert cache_mod.CACHE_URI_ENV not in __import__("os").environ  # restored: no leak into the next caller
+    cache_mod.reset_default_verdict_cache()

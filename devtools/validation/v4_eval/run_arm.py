@@ -105,8 +105,24 @@ def make_cache(uri: str) -> Any:
 
     from meshpipeline.cad.repair_v4.verdict.cache import CACHE_URI_ENV, default_verdict_cache
 
+    _PRIOR_ENV.setdefault(CACHE_URI_ENV, os.environ.get(CACHE_URI_ENV))
     os.environ[CACHE_URI_ENV] = uri
     return default_verdict_cache()
+
+
+_PRIOR_ENV: dict[str, str | None] = {}
+
+
+def restore_cache_env() -> None:
+    """Undo `make_cache`'s export (a shard process just exits; an in-process caller, a test, must not leak it)."""
+    import os
+
+    while _PRIOR_ENV:
+        name, prior = _PRIOR_ENV.popitem()
+        if prior is None:
+            os.environ.pop(name, None)
+        else:
+            os.environ[name] = prior
 
 
 def run_reprobe(args: argparse.Namespace, out: Path, prov: dict) -> int:
@@ -409,8 +425,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         if args.n_shards != n:
             parser.error(f"--n-shards {args.n_shards} disagrees with --shard {args.shard}: every shard of a "
                          "wave must share the launcher's N")
-    if args.mode in ("arms", "reprobe") and wave_spec_mod.shared_cache_problem(args.cache_uri):
-        parser.error(f"--cache-uri: {wave_spec_mod.shared_cache_problem(args.cache_uri)}")
     return args
 
 
@@ -444,7 +458,13 @@ def main(argv: list[str] | None = None) -> int:
                               "cap_usd": ledger.cap_usd, "path": args.ledger_path,
                               "provenance": ledger.provenance}
         if args.mode in ("arms", "reprobe"):
-            make_cache(args.cache_uri)  # before any judge exists; parse_args refused a blank one
+            # the wave boundary: a shard with no shared cache refuses (the library keeps its in-memory fallback)
+            problem = wave_spec_mod.shared_cache_problem(args.cache_uri)
+            if problem:
+                prov["error"] = f"--cache-uri: {problem}"
+                code = 7
+                return code
+            make_cache(args.cache_uri)  # before any judge exists
         if args.mode == "arms":
             code = run_arms(args, out, prov, ledger)
         else:  # reprobe and harness make no metered model call, so there is nothing for a ledger to gate
@@ -460,6 +480,7 @@ def main(argv: list[str] | None = None) -> int:
         code = 4
         return code
     finally:
+        restore_cache_env()
         prov.update(ended_at=_now(), wall_seconds=round(time.monotonic() - t0, 1), exit_code=code)
         (out / "PROVENANCE.json").write_text(json.dumps(prov, indent=1, sort_keys=True, default=str) + "\n")
 

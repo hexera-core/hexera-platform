@@ -425,3 +425,26 @@ def test_no_code_path_creates_a_vm_outside_create_wave():
     assert src.count("check=True") == 1 and "def create_wave" in src
     body = src.split("def create_wave")[1].split("\ndef ")[0]
     assert "check=True" in body and "enforce_budget" in body
+
+
+# ----------------------------------------------------------------- a wave refuses without a shared verdict cache
+
+@pytest.mark.parametrize("meta", [[], ["v4-cache-uri="], ["v4-cache-uri=/var/cache"],
+                                  ["v4-cache-uri=gs://b/p", "v4-cache-uri=gs://b/q"]],
+                         ids=["absent", "blank", "directory", "twice"])
+def test_v4_cache_problems_refuses_what_the_shards_would_not_share(meta):
+    assert lf.v4_cache_problems(meta)
+
+
+def test_v4_cache_problems_accepts_what_the_launcher_actually_emits():
+    args = lf.build_parser().parse_args(["--profile", "v4", "--image", IMAGE, "--commit", HEAD,
+                                         "--image-commit", HEAD, "--wave-type", "normal", "--wave-id", "w"])
+    args.sources = ["abc_fail"]
+    assert lf.v4_cache_problems(lf.V4.extra_metadata(args)) == []
+
+
+def test_a_dry_run_reaches_the_cache_refusal_and_creates_nothing(monkeypatch, capsys):
+    # --dry-run runs no gcloud and live_checks is skipped; the cache refusal must not live only there
+    monkeypatch.setattr(lf.wave_spec, "verdict_cache_uri", lambda prefix: "")
+    assert _main("--profile", "v4", "--dry-run") == 1
+    assert "REFUSE  verdict cache" in capsys.readouterr().err
