@@ -4,8 +4,6 @@
 #             tests/unit/cad/repair_v4/test_zero_tet_verdict.py.
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
 pytest.importorskip("gmsh", reason="gmsh is a native-tier dependency")
