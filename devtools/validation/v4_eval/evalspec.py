@@ -26,7 +26,9 @@ them from PROVENANCE after it runs.
 from __future__ import annotations
 
 import hashlib
+import json
 import math
+import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -252,6 +254,9 @@ class Arm:
     describes: str
     budget: Budget
     uses_model: bool  # makes paid model calls: needs the ledger, and its spend is reported
+    #: whether THIS ledger sees the arm's spend. v3 calls a model but its spend is v3's own: its row says $0 and
+    #: that is "not metered", never "free"; the report renders it as such.
+    spend_metered: bool = True
 
     def __post_init__(self) -> None:
         if self.uses_model != (self.budget.model_usd > 0):
@@ -269,7 +274,7 @@ ARMS: dict[str, Arm] = {a.name: a for a in (
     Arm("search_ai", "best-first search with the AI proposer",
         Budget(SHARED_BUDGET.wall_s, SHARED_BUDGET.ops, model_usd=1.00), True),
     Arm("v3_meshability_pass_ai", "v3 as it ships (meshability pass + AI), run once for comparison",
-        SHARED_BUDGET, False),  # its own model spend is v3's and is not metered by this ledger
+        SHARED_BUDGET, False, spend_metered=False),  # calls a model; its spend is v3's, not this ledger's
 )}
 #: The plan/spec names above are CANONICAL. These aliases exist only for the brief's wording; do not "tidy"
 #: by deleting the real names (input_only is the do-nothing control every other arm is measured against).
@@ -333,22 +338,35 @@ class WaveSlotSpent(RuntimeError):
     pass
 
 
+def slot_keys(wave_type: str) -> list[str]:
+    """The marker keys a wave TYPE may occupy; empty for a type with no count limit."""
+    if wave_type == HELDOUT_WAVE_TYPE:
+        return ["slot/held_out/1"]
+    if wave_type == "checkpoint":
+        return [f"slot/checkpoint/{i}" for i in range(1, MAX_CHECKPOINT_WAVES + 1)]
+    return []
+
+
 def claim_wave_slot(w: WaveDef, wave_id: str, markers: Any) -> str | None:
     """The owner's wave COUNTS, which the ledger says it cannot enforce: the held-out wave runs once, a
     checkpoint wave at most MAX_CHECKPOINT_WAVES times. Atomic create-if-absent on the shared marker
     store. Resuming the SAME wave_id is allowed (a failed shard is rerun); a different wave_id on a spent
-    slot is refused. Returns the slot key, or None for a type with no count limit."""
-    if w.wave_type == HELDOUT_WAVE_TYPE:
-        keys = ["slot/held_out/1"]
-    elif w.wave_type == "checkpoint":
-        keys = [f"slot/checkpoint/{i}" for i in range(1, MAX_CHECKPOINT_WAVES + 1)]
-    else:
+    slot is refused. Returns the slot key, or None for a type with no count limit.
+
+    CALLER OBLIGATIONS (not enforceable here): `markers` must be DURABLE and SHARED (the wave bucket); a fresh or
+    in-memory store defeats the count, as the tests' dict would. Resuming a wave_id that already COMPLETED is
+    allowed by this function, because it cannot know the wave finished: the launcher must not re-launch a
+    completed held-out wave_id (the held-out report refuses shards whose slot it cannot match)."""
+    keys = slot_keys(w.wave_type)
+    if not keys:
         return None
     for key in keys:
         if markers.get(key) == wave_id:
             return key
     for key in keys:
-        if markers.create(key, wave_id):
+        # `create` False can mean "taken by ANOTHER wave" or "taken a moment ago by a concurrent start of THIS
+        # wave_id" (the get above raced it): re-read, or the second start would burn a second checkpoint slot.
+        if markers.create(key, wave_id) or markers.get(key) == wave_id:
             return key
     raise WaveSlotSpent(f"every {w.wave_type} slot is taken ({[markers.get(k) for k in keys]}); wave "
                         f"{wave_id!r} cannot run: the held-out files are spent after one run, and "
@@ -393,7 +411,7 @@ class WavePlan:
     def provenance(self) -> dict[str, Any]:
         return {"wave": self.wave.name, "wave_id": self.wave_id, "wave_type": self.wave.wave_type,
                 "split": self.wave.split, "arms": list(self.wave.arms), "n_shards": self.n_shards,
-                "wave_cap_usd": self.cap_usd, "shard_cap_usd": self.shard_cap_usd}
+                "wave_cap_usd": self.cap_usd, "shard_cap_usd": self.shard_cap_usd, "slot": self.slot}
 
 
 def plan_wave(w: WaveDef, *, wave_id: str, n_shards: int, markers: Any) -> WavePlan:
@@ -412,12 +430,35 @@ class HeldOutInTuning(RuntimeError):
     """The held-out split was reached from a tuning path."""
 
 
+_HELDOUT_COMPACT = "heldout"
+
+
+def _compact(text: str) -> str:
+    """lower-case with every separator removed: 'held-out', 'Held Out', 'held_out.v2' all become 'heldout'."""
+    return re.sub(r"[\s_\-.]+", "", text.lower())
+
+
+def _names_heldout(item: str) -> bool:
+    if _HELDOUT_COMPACT in _compact(item):  # the name, any directory above it, or any spelling of either
+        return True
+    path = Path(item)
+    try:
+        if path.is_file() and path.suffix == ".json":  # a file named anything: believe what it says it is
+            doc = json.loads(path.read_text())
+            return isinstance(doc, dict) and _compact(str(doc.get("split", ""))) == _HELDOUT_COMPACT
+    except (OSError, ValueError):
+        return False
+    return False
+
+
 def refuse_heldout_for_tuning(*what: str) -> None:
     """Call at the top of any code that tunes (prompt selection, threshold fitting, memory building) with
-    the split names or file paths it is about to read. The held-out split is reported, never tuned on."""
+    the split names or file paths it is about to read. The held-out split is reported, never tuned on.
+
+    Matches 'heldout' under any separator or case ('held-out', 'held out', 'Held_Out') in the name or any
+    parent directory, AND a JSON file of any name whose own `split` field says held-out. It is still a NAME
+    check plus one content check: a caller that never calls it is not stopped (see report.py's note)."""
     for item in what:
-        text = str(item).lower()
-        name = Path(text).name
-        if text == HELDOUT or "heldout" in name or "held_out" in name or HELDOUT in Path(text).parts:
+        if _names_heldout(str(item)):
             raise HeldOutInTuning(f"{item!r} is the held-out split: it is used once, for the report, and "
                                   "never for tuning, prompt selection, threshold fitting or memory")

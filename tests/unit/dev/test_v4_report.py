@@ -45,16 +45,23 @@ def split_rows(n: int = 40, split: str = "dev", source: str = "abc_fail") -> lis
 
 
 def _fixed(i: int, arm: str) -> bool:
-    """Which fake files each arm repairs. Distinct by construction: nested, not equal."""
-    return {"input_only": False, "staged": i % 4 == 0, "search_det": i % 4 == 0 or i % 4 == 1,
-            "search_ai": i % 2 == 0 or i % 4 == 1, "v3_meshability_pass_ai": i % 8 == 0}[arm]
+    """Which fake files each arm repairs. The sets OVERLAP BUT ARE NOT NESTED, so a report that mixed up two arms'
+    files, or took a union or an intersection where it should not, cannot land on the right count by accident.
+    Tests compare the report with `expected_clean`, an independent count over this function, never with
+    a number typed in beside it."""
+    return {"input_only": False, "staged": i % 4 == 0, "search_det": i % 3 == 0,
+            "search_ai": i % 2 == 0 or i % 7 == 1, "v3_meshability_pass_ai": i % 8 == 0}[arm]
+
+
+def expected_clean(arm: str, idx) -> int:
+    return sum(_fixed(i, arm) for i in idx)
 
 
 def arm_row(base, i, arm, *, inconclusive=False, model=None, wall=10.0, **over):
     spend = (0.4 if arm == "search_ai" else 0.0) if model is None else model
     if inconclusive:
         return {"name": base.name, "sha256": base.sha256, "source": base.source, "arm": arm,
-                "inconclusive": True, "model_usd": spend, "wall_s": wall}
+                "inconclusive": True, "model_usd": spend, "wall_s": wall, **over}
     in_clean = bool(base.verdict_summary["clean"])
     in_pass = PANEL if in_clean else 1
     fixed = in_clean or _fixed(i, arm)
@@ -62,7 +69,11 @@ def arm_row(base, i, arm, *, inconclusive=False, model=None, wall=10.0, **over):
     row = {"name": base.name, "sha256": base.sha256, "source": base.source, "arm": arm,
            "inconclusive": False, "model_usd": spend, "wall_s": wall, "in_clean": in_clean,
            "in_panel_passes": in_pass, "out_valid": True, "out_faithful_ok": True,
-           "out_panel_passes": out_pass, "panel_size": PANEL, "out_tier": "full", "out_clean": fixed}
+           "out_panel_passes": out_pass, "panel_size": PANEL, "out_tier": "full", "out_clean": fixed,
+           "in_valid": True, "in_faithful_ok": True}
+    if arm in report.SEARCH_ARMS:  # SearchResult's own words (Task 18b): a search that was measured
+        row.update(reason="clean" if fixed else "patience", verdict_candidates=0 if in_clean else 5,
+                   inconclusive_candidates=0)
     row.update(over)
     return row
 
@@ -80,7 +91,8 @@ def build(root: Path, wave, split, *, n_shards=2, rows_for=None, prov=None, excl
         rows = [rows_for(b, i, a) for i, b in mine if b.sha256 not in gone for a in wave.arms]
         p = {"commit": COMMIT, "image": IMAGE, "exit_code": 1 if s in fail else 0, "wall_seconds": 100.0 * s,
              "wave": wave.name, "wave_id": "wv1", "wave_type": wave.wave_type, "split": wave.split,
-             "arms": list(wave.arms), "wave_cap_usd": wave.cap_usd, "ledger": "shard"}
+             "arms": list(wave.arms), "wave_cap_usd": wave.cap_usd, "ledger": "shard",
+             "slot": (ev.slot_keys(wave.wave_type) or [None])[0]}
         p.update(prov or {})
         (d / "PROVENANCE.json").write_text(json.dumps(p))
         (d / "rows.json").write_text(json.dumps(rows))
@@ -106,13 +118,18 @@ def test_the_good_wave_loads_and_the_arms_differ(good) -> None:
     root, split = good
     rep = report.build_report(load(root, split))
     a = rep["arms"]
-    assert rep["status"] == "OK" and rep["warnings"] == []
-    assert a["input_only"]["clean_out"] == 0
-    # 40 files, nested repair sets: staged 10, search_det 20, search_ai 30
-    assert (a["staged"]["clean_out"], a["search_det"]["clean_out"], a["search_ai"]["clean_out"]) == (10, 20, 30)
-    assert a["search_ai"]["clean_rate"] == 0.75 and a["search_ai"]["clean_gain"] == 30
-    assert rep["marginals"]["ai_marginal (search_ai - search_det)"]["value"] == pytest.approx(0.25)
-    assert rep["marginals"]["deterministic_marginal (staged - input_only)"]["files_gained"] == 10
+    allf = range(40)
+    assert rep["status"] == "OK" and rep["warnings"] == [] and rep["numbers_valid"] is True
+    # every count is checked against an independent count over the fixture, and the sets are not nested
+    for arm in ("input_only", "staged", "search_det", "search_ai"):
+        assert a[arm]["clean_out"] == expected_clean(arm, allf)
+        assert a[arm]["clean_rate"] == pytest.approx(expected_clean(arm, allf) / 40)
+        assert a[arm]["paired"]["clean"] == expected_clean(arm, allf) and a[arm]["paired"]["n"] == 40
+    assert len({a[x]["clean_out"] for x in ("staged", "search_det", "search_ai")}) == 3  # (10, 14, 23)
+    ai_det = rep["marginals"]["ai_marginal (search_ai - search_det)"]
+    assert ai_det["files_gained"] == expected_clean("search_ai", allf) - expected_clean("search_det", allf)
+    assert ai_det["value"] == pytest.approx(ai_det["files_gained"] / 40)
+    assert rep["marginals"]["deterministic_marginal (staged - input_only)"]["files_gained"] == expected_clean("staged", allf)
     assert a["search_ai"]["model_usd"]["total"] == pytest.approx(16.0)
     assert a["staged"]["model_usd"]["total"] == 0
     assert a["staged"]["wall_s"]["per_file_mean"] == 10.0
@@ -326,11 +343,12 @@ def test_a_model_arm_without_a_shard_ledger_is_refused(tmp_path) -> None:
 
 
 def test_spend_over_the_shard_slice_is_refused(tmp_path) -> None:
-    split = split_rows()
-    build(tmp_path, WAVE, split, rows_for=lambda b, i, a: arm_row(b, i, a, model=8.0 if a == "search_ai" else None))
-    # 40 files x $8 = $320 > the $300 checkpoint cap; each 2-shard slice is $150
+    """Each row is at the $1.00 per-file ceiling (so the per-file check passes); 100 files make ~$50 per shard
+    against a $25 slice of the $50 normal-wave cap."""
+    wave, split = ev.WAVES["dev_search"], split_rows(100)
+    build(tmp_path, wave, split, rows_for=lambda b, i, a: arm_row(b, i, a, model=1.0 if a == "search_ai" else None))
     with pytest.raises(report.ReportRefused, match="did not bind"):
-        load(tmp_path, split)
+        load(tmp_path, split, wave)
 
 
 def test_a_wave_run_under_another_wave_type_is_refused(tmp_path) -> None:
@@ -394,6 +412,7 @@ def test_a_fake_that_gives_every_arm_the_same_result_is_flagged(tmp_path) -> Non
     rep = report.build_report(load(tmp_path, split))
     assert rep["status"] == "UNRELIABLE"
     assert any("indistinguishable" in w for w in rep["warnings"])
+    assert all("deterministic arms truly agree" in w for w in rep["warnings"] if "indistinguishable" in w)
     assert "DO NOT READ" in report.render_text(rep)
 
 
@@ -417,7 +436,8 @@ def test_cli_writes_json_and_exit_codes(tmp_path, capsys) -> None:
     out = tmp_path / "r.json"
     args = ["--from", str(tmp_path / "w"), "--wave", "dev_checkpoint", "--shards", "2", "--split", str(sp), "--json", str(out)]
     assert report.main(args) == 0
-    assert json.loads(out.read_text())["arms"]["search_ai"]["clean_out"] == 30
+    doc = json.loads(out.read_text())
+    assert doc["arms"]["search_ai"]["clean_out"] == expected_clean("search_ai", range(40)) and doc["numbers_valid"] is True
     assert report.main([*args[:-2], "--shards", "3"]) == 1  # refused: exit 1, not a report
     assert "REFUSED" in capsys.readouterr().err
 
@@ -451,3 +471,332 @@ def test_cli_refuses_the_heldout_split_for_a_tuning_purpose(tmp_path, capsys) ->
     assert rc == 1 and "held-out" in capsys.readouterr().err
     assert report.main(["--from", str(tmp_path / "w"), "--wave", "heldout", "--shards", "2", "--split", str(sp),
                         "--frozen-commit", COMMIT]) == 0
+
+
+# ================================================================== fix round: the six Importants
+
+def _kind_section(text: str, arm: str) -> list[list[str]]:
+    lines = text.splitlines()
+    start = next(i for i, ln in enumerate(lines) if ln.startswith(f"## {arm}: by defect kind"))
+    rows = []
+    for ln in lines[start + 3:]:
+        if not ln.startswith("|"):
+            break
+        rows.append([c.strip() for c in ln.strip("|").split("|")])
+    return rows
+
+
+# ---- 1. NOT MEASURED withholds everything a rate is recoverable from
+
+def test_not_measured_withholds_every_figure_a_rate_can_be_recovered_from(tmp_path) -> None:
+    split = split_rows()
+    # 12 inconclusive search_ai files, all in kinds 1-3: kind 0 (plc_intersection) has NONE, so the per-kind 10%
+    # test alone would still print its rate beside the NOT MEASURED warning
+    inc = {b.sha256 for i, b in enumerate(split) if i % 4 != 0 and i < 16}
+    assert len(inc) == 12
+    build(tmp_path, WAVE, split, rows_for=lambda b, i, a: arm_row(b, i, a, inconclusive=(a == "search_ai" and b.sha256 in inc)))
+    rep = report.build_report(load(tmp_path, split))
+    ai = rep["arms"]["search_ai"]
+    assert not ai["measured"] and rep["numbers_valid"] is False and rep["status"] == "UNRELIABLE"
+    assert ai["clean_in"] is None and ai["clean_out"] is None and ai["clean_rate"] is None
+    assert ai["clean_gain"] is None and ai["clean_gain_rate"] is None
+    assert set(ai["layers"].values()) == {None} and set(ai["regressions"].values()) == {None}
+    assert ai["paired"]["clean_rate"] is None and ai["paired"]["clean"] is None
+    assert all(k["clean"] is None and k["clean_rate"] is None for k in ai["by_defect_kind"].values())
+    assert ai["by_defect_kind"]["plc_intersection"]["inconclusive"] == 0  # the kind that WOULD have passed its own test
+    text = report.render_text(rep)
+    assert {r[-1] for r in _kind_section(text, "search_ai")} == {"withheld"} and {r[-2] for r in _kind_section(text, "search_ai")} == {"withheld"}
+    # the sibling: an arm that WAS measured keeps its figures, and the document is valid
+    assert rep["arms"]["staged"]["clean_out"] == expected_clean("staged", range(40))
+    assert all(r[-1] != "withheld" for r in _kind_section(text, "staged"))
+
+
+def test_numbers_valid_is_true_only_when_there_are_no_warnings(good) -> None:
+    root, split = good
+    assert report.build_report(load(root, split))["numbers_valid"] is True
+
+
+# ---- 2. the paired marginal equalises the denominator
+
+def test_paired_column_equalises_denominators_when_dropouts_differ(tmp_path) -> None:
+    wave, split = ev.WAVES["dev_search"], split_rows()
+    det_drop = {split[i].sha256 for i in (1, 2, 4)}   # search_det loses files it would NOT have fixed (flattered)
+    ai_drop = {split[i].sha256 for i in (6, 10, 12)}  # search_ai loses files it WOULD have fixed (depressed)
+    build(tmp_path, wave, split, rows_for=lambda b, i, a: arm_row(
+        b, i, a, inconclusive=(a == "search_det" and b.sha256 in det_drop) or (a == "search_ai" and b.sha256 in ai_drop)))
+    rep = report.build_report(load(tmp_path, split, wave))
+    det, ai = rep["arms"]["search_det"], rep["arms"]["search_ai"]
+    shared = [i for i in range(40) if i not in (1, 2, 4, 6, 10, 12)]
+    assert rep["paired_set"] == {"arms": ["search_det", "search_ai"], "n_files": 34, "of": 40,
+                              "excluded_not_measured": []}
+    assert det["conclusive"] == ai["conclusive"] == 37 and det["paired"]["n"] == ai["paired"]["n"] == 34
+    # own denominators are 37 for both, but the files behind them differ; the paired column uses the same 34
+    assert det["paired"]["clean"] == expected_clean("search_det", shared)
+    assert ai["paired"]["clean"] == expected_clean("search_ai", shared)
+    assert det["paired"]["clean_rate"] == pytest.approx(expected_clean("search_det", shared) / 34)
+    assert ai["paired"]["clean_rate"] == pytest.approx(expected_clean("search_ai", shared) / 34)
+    assert det["clean_rate"] != pytest.approx(det["paired"]["clean_rate"])  # flattered
+    assert ai["clean_rate"] != pytest.approx(ai["paired"]["clean_rate"])    # depressed
+    text = report.render_text(rep)
+    assert "Only the PAIRED columns" in text and "NOT comparable" in text and "PAIRED clean rate" in text
+    assert "PER-ARM clean rate" in text and "(n=34)" in text
+
+
+def test_a_not_measured_arm_does_not_shrink_the_paired_set(tmp_path) -> None:
+    split = split_rows()
+    inc = {b.sha256 for b in split[:12]}
+    build(tmp_path, WAVE, split, rows_for=lambda b, i, a: arm_row(b, i, a, inconclusive=(a == "search_ai" and b.sha256 in inc)))
+    rep = report.build_report(load(tmp_path, split))
+    assert rep["paired_set"]["n_files"] == 40 and "search_ai" not in rep["paired_set"]["arms"]
+
+
+# ---- 3. an arm that calls a model but is not metered is not "$0.00"
+
+def test_v3_baseline_spend_is_not_metered_never_zero(tmp_path) -> None:
+    wave, split = ev.WAVES["clean_control"], split_rows(20, "clean", "occt")
+    build(tmp_path, wave, split)
+    rep = report.build_report(load(tmp_path, split, wave))
+    v3 = rep["arms"]["v3_meshability_pass_ai"]
+    assert v3["spend_metered"] is False and v3["model_usd"]["total"] is None
+    assert rep["spend"]["unmetered_arms"] == ["v3_meshability_pass_ai"]
+    text = report.render_text(rep)
+    line = next(ln for ln in text.splitlines() if ln.startswith("| v3_meshability_pass_ai"))
+    assert "not metered" in line and "0.00" not in line
+    assert "EXCLUDES v3_meshability_pass_ai" in text
+    staged = next(ln for ln in text.splitlines() if ln.startswith("| staged"))
+    assert "0.00" in staged  # the sibling: a deterministic arm really is $0
+
+
+# ---- 4. the once-only slot is read back at report time
+
+def _heldout(tmp_path, **prov):
+    wave, split = ev.WAVES["heldout"], split_rows(40, "heldout")
+    build(tmp_path, wave, split, prov=prov)
+    return wave, split
+
+
+class _Store:
+    def __init__(self, d):
+        self.d = d
+
+    def get(self, k):
+        return self.d.get(k)
+
+
+def test_a_heldout_report_requires_the_slot_plan_wave_claimed(tmp_path) -> None:
+    wave, split = _heldout(tmp_path)
+    ok = report.load_wave(tmp_path, wave, split, n_shards=2, frozen_commit=COMMIT)
+    assert ok.slot == "slot/held_out/1" and not ok.slot_verified  # present, store not consulted: said so
+    assert "marker store NOT consulted" in report.render_text(report.build_report(ok))
+
+
+@pytest.mark.parametrize("slot", [None, "", "slot/held_out/2", "slot/checkpoint/1"])
+def test_a_heldout_wave_launched_around_plan_wave_is_refused(tmp_path, slot) -> None:
+    wave, split = _heldout(tmp_path, slot=slot)
+    with pytest.raises(report.ReportRefused, match="plan_wave"):
+        report.load_wave(tmp_path, wave, split, n_shards=2, frozen_commit=COMMIT)
+
+
+def test_a_checkpoint_wave_needs_its_slot_too(tmp_path) -> None:
+    split = split_rows()
+    build(tmp_path, WAVE, split, prov={"slot": None})
+    with pytest.raises(report.ReportRefused, match="plan_wave"):
+        load(tmp_path, split)
+
+
+def test_shards_that_disagree_on_the_slot_are_refused(tmp_path) -> None:
+    wave, split = _heldout(tmp_path)
+    p = tmp_path / "shard-2-of-2/PROVENANCE.json"
+    p.write_text(json.dumps({**json.loads(p.read_text()), "slot": "slot/held_out/9"}))
+    with pytest.raises(report.ReportRefused):
+        report.load_wave(tmp_path, wave, split, n_shards=2, frozen_commit=COMMIT)
+
+
+def test_the_slot_is_verified_against_the_marker_store_when_given(tmp_path) -> None:
+    wave, split = _heldout(tmp_path)
+    mine = report.load_wave(tmp_path, wave, split, n_shards=2, frozen_commit=COMMIT,
+                            markers=_Store({"slot/held_out/1": "wv1"}))
+    assert mine.slot_verified and "held by this wave_id in the marker store" in report.render_text(report.build_report(mine))
+    with pytest.raises(report.ReportRefused, match="held by"):  # someone else holds it: this is a second run
+        report.load_wave(tmp_path, wave, split, n_shards=2, frozen_commit=COMMIT, markers=_Store({"slot/held_out/1": "other"}))
+    with pytest.raises(report.ReportRefused, match="held by"):  # nobody claimed it at all
+        report.load_wave(tmp_path, wave, split, n_shards=2, frozen_commit=COMMIT, markers=_Store({}))
+
+
+def test_a_real_plan_wave_provenance_loads_end_to_end(tmp_path) -> None:
+    store: dict[str, str] = {}
+
+    class Markers:
+        def get(self, k):
+            return store.get(k)
+
+        def create(self, k, v):
+            if k in store:
+                return False
+            store[k] = v
+            return True
+
+    plan = ev.plan_wave(ev.WAVES["heldout"], wave_id="wv1", n_shards=2, markers=Markers())
+    assert plan.provenance()["slot"] == "slot/held_out/1"
+    wave, split = ev.WAVES["heldout"], split_rows(40, "heldout")
+    build(tmp_path, wave, split, prov=plan.provenance())
+    res = report.load_wave(tmp_path, wave, split, n_shards=2, frozen_commit=COMMIT, markers=Markers())
+    assert res.slot_verified
+
+
+def test_cli_verifies_the_slot_against_a_directory_marker_store(tmp_path) -> None:
+    wave, split = ev.WAVES["heldout"], split_rows(40, "heldout")
+    build(tmp_path / "w", wave, split)
+    sp = tmp_path / "heldout.json"
+    sp.write_text(json.dumps({"split": "heldout", "files": [asdict(r) for r in split]}))
+    mk = tmp_path / "markers"
+    args = ["--from", str(tmp_path / "w"), "--wave", "heldout", "--shards", "2", "--split", str(sp), "--frozen-commit", COMMIT,
+            "--markers-dir", str(mk)]
+    assert report.main(args) == 1  # an empty store: the slot was never claimed
+    from meshpipeline.cad.repair_v4.model_ledger import FileMarkerStore
+
+    assert FileMarkerStore(mk).create("slot/held_out/1", "wv1")
+    assert report.main(args) == 0
+
+
+
+# ---- 5. the row carries 18b's fields; "never measured" cannot be written down as "measured and failed"
+
+def _search_rows(tmp_path, **over):
+    split = split_rows()
+    wave = ev.WAVES["dev_search"]
+    build(tmp_path, wave, split, rows_for=lambda b, i, a: arm_row(b, i, a, **over)
+          if (a, i) == ("search_ai", 6) else arm_row(b, i, a))
+    return split, wave
+
+
+@pytest.mark.parametrize("over", [
+    # the exact path the brief calls worse than a pass: no verdict, start returned unchanged, written as a failure
+    {"reason": "no_verdict", "out_clean": False, "out_panel_passes": 1, "verdict_candidates": 0, "inconclusive_candidates": 4},
+    {"reason": "no_verdict", "inconclusive": False},
+    {"reason": "patience", "verdict_candidates": 0, "inconclusive_candidates": 3, "out_clean": False, "out_panel_passes": 1},
+    {"reason": "patience", "infrastructure_failed": True, "out_clean": False, "out_panel_passes": 1},
+    {"reason": "no_verdict", "infrastructure_failed": False, "out_clean": False, "out_panel_passes": 1},
+])
+def test_a_search_that_measured_nothing_cannot_be_a_conclusive_failure(tmp_path, over) -> None:
+    split, wave = _search_rows(tmp_path, **over)
+    with pytest.raises(report.ReportRefused, match="nothing was measured|contradictory"):
+        load(tmp_path, split, wave)
+
+
+def test_the_same_search_marked_inconclusive_is_excluded_not_counted(tmp_path) -> None:
+    split = split_rows()
+    wave = ev.WAVES["dev_search"]
+    build(tmp_path, wave, split, rows_for=lambda b, i, a: arm_row(
+        b, i, a, inconclusive=True, reason="no_verdict", verdict_candidates=0, inconclusive_candidates=4,
+        infrastructure_failed=True) if (a, i) == ("search_ai", 6) else arm_row(b, i, a))
+    ai = report.build_report(load(tmp_path, split, wave))["arms"]["search_ai"]
+    assert ai["inconclusive"] == 1 and ai["conclusive"] == 39
+    assert ai["clean_out"] == expected_clean("search_ai", [i for i in range(40) if i != 6])  # not folded in as a failure
+
+
+def test_a_real_search_failure_with_verdicts_is_still_counted_as_a_failure(tmp_path) -> None:
+    """The sibling: patience with 5 usable verdicts and some inconclusive candidates IS a measured failure."""
+    split, wave = _search_rows(tmp_path, reason="patience", verdict_candidates=5, inconclusive_candidates=2,
+                               out_clean=False, out_panel_passes=1)
+    rep = report.build_report(load(tmp_path, split, wave))
+    assert rep["arms"]["search_ai"]["inconclusive"] == 0  # i=6 was fixed by the fixture; now a failure
+    assert rep["arms"]["search_ai"]["clean_out"] == expected_clean("search_ai", range(40)) - 1
+
+
+def test_a_conclusive_search_row_without_the_search_fields_is_refused(tmp_path) -> None:
+    for drop in ("reason", "verdict_candidates", "inconclusive_candidates"):
+        split, wave = _search_rows(tmp_path / drop, **{drop: None})
+        with pytest.raises(report.ReportRefused, match="must carry"):
+            load(tmp_path / drop, split, wave)
+
+
+@pytest.mark.parametrize("over", [{"verdict_candidates": -1}, {"verdict_candidates": True}, {"inconclusive_candidates": 1.5},
+                                  {"reason": 3}, {"infrastructure_failed": "no"}])
+def test_malformed_search_fields_are_refused(tmp_path, over) -> None:
+    split, wave = _search_rows(tmp_path, **over)
+    with pytest.raises(report.ReportRefused):
+        load(tmp_path, split, wave)
+
+
+# ---- the minors
+
+def test_a_files_model_spend_over_the_arms_ceiling_is_refused(tmp_path) -> None:
+    wave, split = ev.WAVES["dev_search"], split_rows()
+    build(tmp_path / "bad", wave, split, rows_for=lambda b, i, a: arm_row(b, i, a, model=1.5) if (a, i) == ("search_ai", 3) else arm_row(b, i, a))
+    with pytest.raises(report.ReportRefused, match="per-file ceiling"):
+        load(tmp_path / "bad", split, wave)
+    build(tmp_path / "ok", wave, split, rows_for=lambda b, i, a: arm_row(b, i, a, model=1.0) if (a, i) == ("search_ai", 3) else arm_row(b, i, a))
+    load(tmp_path / "ok", split, wave)  # exactly at the ceiling is allowed
+
+
+def test_input_only_that_changed_validity_or_faithfulness_is_refused(tmp_path) -> None:
+    split = split_rows()
+    for field in ("out_valid", "out_faithful_ok"):
+        d = tmp_path / field
+        build(d, WAVE, split, rows_for=lambda b, i, a: arm_row(b, i, a, out_clean=False, **{field: False})
+              if (a, i) == ("input_only", 2) else arm_row(b, i, a))
+        with pytest.raises(report.ReportRefused, match="did not pass the input through"):
+            load(d, split)
+
+
+def test_input_only_must_carry_the_input_layers(tmp_path) -> None:
+    split = split_rows()
+    build(tmp_path, WAVE, split, rows_for=lambda b, i, a: arm_row(b, i, a, in_valid=None) if (a, i) == ("input_only", 2) else arm_row(b, i, a))
+    with pytest.raises(report.ReportRefused, match="in_valid"):
+        load(tmp_path, split)
+
+
+def test_arms_that_saw_different_input_layers_are_refused(tmp_path) -> None:
+    split = split_rows()
+    build(tmp_path, WAVE, split, rows_for=lambda b, i, a: arm_row(b, i, a, in_valid=False) if (a, i) == ("staged", 2) else arm_row(b, i, a))
+    with pytest.raises(report.ReportRefused, match="input layers"):
+        load(tmp_path, split)
+
+
+def test_the_detector_banner_says_what_a_false_positive_looks_like(tmp_path) -> None:
+    split = split_rows()
+    build(tmp_path, WAVE, split, rows_for=lambda b, i, a: arm_row(b, i, a, out_clean=False, out_panel_passes=1)
+          if a == "search_ai" else arm_row(b, i, a))
+    text = report.render_text(report.build_report(load(tmp_path, split)))
+    assert "deterministic arms truly agree" in text and "clean-control split" in text
+
+
+def test_the_clean_control_wave_is_a_normal_wave_with_no_slot() -> None:
+    """Confirmed against the plan: T4 (held-out + clean control) says only the held-out half is the $250 once-only
+    run; the clean control carries no count limit of its own, so it is a normal $50 wave. If the owner means
+    otherwise, WAVES['clean_control'] is the one line to change and this test names the assumption."""
+    w = ev.WAVES["clean_control"]
+    assert w.wave_type == "normal" and ev.slot_keys(w.wave_type) == []
+
+
+def test_an_inconclusive_row_that_contradicts_its_own_infrastructure_flag_is_refused(tmp_path) -> None:
+    split = split_rows()
+    wave = ev.WAVES["dev_search"]
+    build(tmp_path, wave, split, rows_for=lambda b, i, a: arm_row(
+        b, i, a, inconclusive=True, reason="no_verdict", infrastructure_failed=False)
+        if (a, i) == ("search_ai", 6) else arm_row(b, i, a))
+    with pytest.raises(report.ReportRefused, match="contradictory"):
+        load(tmp_path, split, wave)
+
+
+def test_the_paired_footnote_names_exactly_the_arms_that_were_included(tmp_path) -> None:
+    split = split_rows()
+    inc = {b.sha256 for b in split[:12]}  # search_ai NOT MEASURED, so it must be named as left out
+    build(tmp_path, WAVE, split, rows_for=lambda b, i, a: arm_row(b, i, a, inconclusive=(a == "search_ai" and b.sha256 in inc)))
+    rep = report.build_report(load(tmp_path, split))
+    text = report.render_text(rep)
+    foot = next(ln for ln in text.splitlines() if ln.startswith("PAIRED columns cover"))
+    listed = foot.split("arm(s): ")[1].split(";")[0].rstrip(".").split(", ")
+    measured = [a for a, b in rep["arms"].items() if b["measured"]]
+    assert listed == measured == rep["paired_set"]["arms"] and "search_ai" not in listed
+    assert "left out because NOT MEASURED: search_ai" in foot and "40 of 40" in foot
+    assert f"{len(measured)} measured" in foot
+    # every included arm's paired n is that stated population; the left-out arm has none
+    assert all(rep["arms"][a]["paired"]["n"] == 40 for a in measured) and rep["arms"]["search_ai"]["paired"]["clean_rate"] is None
+
+
+def test_the_refusal_for_a_missing_slot_says_what_to_wire(tmp_path) -> None:
+    wave, split = _heldout(tmp_path, slot=None)
+    with pytest.raises(report.ReportRefused, match=r"copy\s+plan_wave\(\.\.\.\)\.provenance\(\)"):
+        report.load_wave(tmp_path, wave, split, n_shards=2, frozen_commit=COMMIT)

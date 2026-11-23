@@ -175,3 +175,58 @@ def test_the_firewall_hook_refuses_when_called_and_passes_dev_and_clean() -> Non
     with pytest.raises(ev.HeldOutInTuning):
         ev.refuse_heldout_for_tuning("devtools/validation/corpora/v4/heldout.json")
     assert ev.refuse_heldout_for_tuning("dev", "clean", "corpora/v4/dev.json") is None
+
+
+def test_plan_provenance_carries_the_slot_so_a_report_can_read_it_back() -> None:
+    m = Markers()
+    held = ev.plan_wave(ev.WAVES["heldout"], wave_id="h1", n_shards=4, markers=m)
+    assert held.provenance()["slot"] == "slot/held_out/1"
+    assert ev.plan_wave(ev.WAVES["dev_search"], wave_id="n", n_shards=4, markers=m).provenance()["slot"] is None
+
+
+class _RacingMarkers(Markers):
+    """A concurrent start of a wave: our `get` saw nothing, then the rival's `create` won the first key."""
+
+    def __init__(self, rival_id):
+        super().__init__()
+        self.rival_id, self.armed = rival_id, True
+
+    def create(self, k, v):
+        if self.armed:
+            self.armed = False
+            self.d[k] = self.rival_id  # the rival lands between our get and our create
+        return super().create(k, v)
+
+
+def test_a_concurrent_start_of_the_same_wave_does_not_burn_a_second_slot() -> None:
+    m = _RacingMarkers("c1")  # the rival IS the same wave_id
+    plan = ev.plan_wave(ev.WAVES["dev_checkpoint"], wave_id="c1", n_shards=4, markers=m)
+    assert plan.slot == "slot/checkpoint/1" and set(m.d) == {"slot/checkpoint/1"}
+    # the sibling: a DIFFERENT wave that loses the race correctly takes the next slot
+    m2 = _RacingMarkers("rival")
+    assert ev.plan_wave(ev.WAVES["dev_checkpoint"], wave_id="c1", n_shards=4, markers=m2).slot == "slot/checkpoint/2"
+
+
+@pytest.mark.parametrize("name", ["held-out", "held out", "Held_Out", "HELD-OUT.json", "heldOut", "held.out"])
+def test_the_firewall_catches_every_spelling_of_held_out(name) -> None:
+    for item in (name, f"devtools/validation/corpora/v4/{name}", f"/data/{name}/dev.json"):
+        with pytest.raises(ev.HeldOutInTuning):
+            ev.refuse_heldout_for_tuning(item)
+
+
+def test_the_firewall_reads_a_differently_named_file_by_what_it_says_it_is(tmp_path) -> None:
+    import json
+
+    secret = tmp_path / "split_b.json"
+    secret.write_text(json.dumps({"split": "heldout", "files": []}))
+    with pytest.raises(ev.HeldOutInTuning):
+        ev.refuse_heldout_for_tuning(str(secret))
+    dev = tmp_path / "split_a.json"
+    dev.write_text(json.dumps({"split": "dev", "files": []}))
+    junk = tmp_path / "junk.json"
+    junk.write_text("not json")
+    ev.refuse_heldout_for_tuning(str(dev), str(junk), "clean", "dev", str(tmp_path / "absent.json"))  # no false positive
+
+
+def test_v3_is_the_one_arm_whose_spend_is_not_metered() -> None:
+    assert [a for a, x in ev.ARMS.items() if not x.spend_metered] == ["v3_meshability_pass_ai"]
