@@ -762,3 +762,28 @@ marginal. Worth a minimum-paired-n warning when the harness makes real numbers a
    it none of its own and it calls no model). Reported the same way.
 
 Both 3 and 4 were pinned with a test rather than guessed, which is why accepting them costs nothing.
+
+## Amendments settled 2026-11-23, 19:15 UTC (from Task 43's measurements)
+
+1. **The cheap-tier-first re-probe is DROPPED. The re-probe is a full verdict on every file.** The
+   cheap tier passed 14 files and **6 of those failed the full panel**, so sampling 10% of cheap
+   passes would have mislabelled a large share of the corpus. It is also cheaper this way, because
+   the cheap pass was an extra ~15.5 s per file on top of a full verdict that mostly duplicated it:
+   recomputed from the measured means, **full-tier-only is 249 vCPU-hours (31 c2d-8 VM-hours)
+   against 296 (37) for cheap+full** - about 5% of the 600 VM-hour cap. Two caveats travel with
+   that number: the mean is from n=73 and the tail dominates it (median 21.9 s vs mean 82.4 s, ~7%
+   of files hitting a 300 s or 900 s wall), so a tail 50% worse gives 47 VM-hours and twice as bad
+   gives 62; and the 1-vCPU-per-file assumption is unverified, since most of a file's time is layers
+   1 and 3 whose threading has not been measured. The conclusion is robust to both.
+   The cheap tier survives **only for search ranking**, with its agreement rate reported.
+2. **The clean control comes from the full re-probe's measured-clean set, never from a source tag.**
+   `abc_pass` is half-unclean - 10 of 20 fail the panel - so it is not a known-clean source. Nothing
+   in the splits path may infer "clean" from `source`.
+3. **Stratify on `(number of panel members failing, layer)` plus a coarse failure kind, not on a
+   single member's family string.** The panel disagrees with itself on **51 of 73 files**, so "the
+   family of the first member to fail" labels an unstable quantity; the count of failing members is
+   a real property of the file and is the axis that matters for a benchmark premised on
+   mesher-agnostic cleanliness. Routed into Task 48, replacing its original family-recognition item.
+4. The T2 smoke proceeds once Tasks 47 and 48 land.
+
+Recorded because the first three change what the benchmark measures, not merely how fast it runs.
