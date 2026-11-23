@@ -606,3 +606,15 @@ def test_deliverable_fallback_uses_the_real_score_and_names_the_panel_field() ->
     assert deliverable(result, real(2)) is result.best
     with pytest.raises(AssertionError, match="changed shape"):
         panel_passes((1, 2, 3.0))
+
+
+def test_det_generator_proposes_for_a_whole_part_open_site() -> None:
+    """The site an open shell yields has no entities; the sweep must still offer sew / make_volume /
+    orient_and_close, and every call must be well formed against the registry."""
+    from meshpipeline.cad.repair_v4.ops import validate_call
+
+    state = _state([_site("open", [])])
+    got = DetGenerator().propose(state, 50)
+    assert {c.op for c in got} == {"sew", "make_volume", "orient_and_close"}
+    for c in got:
+        assert validate_call(c.op, c.targets, c.params, state.ws) == []
