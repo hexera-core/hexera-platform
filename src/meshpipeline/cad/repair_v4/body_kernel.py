@@ -7,7 +7,12 @@
 """Body-level healing: share faces between touching bodies without changing the body count.
 
 Constraints (Global Constraints of the v4 plan): no `fuse`; `cut_by` only when the overlap is within
-the fidelity bound `min(0.1 mm, 0.001 * diagonal)`, otherwise the call DECLINES (it never clamps);
+the fidelity bound `min(0.1 mm, 0.001 * diagonal)`, otherwise the call DECLINES (it never clamps).
+"Within the bound" is read as overlap DEPTH (a length, like the bound; a volume would be
+dimensionally meaningless), estimated as max(2V/A, thinnest bbox extent of the common part). A
+second guard stops a thin-but-vast cut passing on depth alone: the removed volume may not exceed
+2% of the body it is cut from (`volume_change`). `conformalise` also declines
+`no_shared_interface` if, afterwards, no face is shared by two bodies;
 the number of solids is unchanged. A decline is a normal result: `{"declined": <reason>, ...}`.
 
 Identity: BOPAlgo's non-destructive Builder leaves an argument's untouched faces the same TShape, but
@@ -34,6 +39,8 @@ from meshpipeline.cad.repair_v4.ws_kernel import (
 #: Largest fuzzy value / overlap the ops accept, whatever the part size (mm).
 ABS_BOUND_MM = 0.1
 REL_BOUND = 0.001
+#: Largest share of a body the cut may remove (the clean definition caps volume change at 2%).
+MAX_VOLUME_CHANGE = 0.02
 _KINDS = ("face", "edge", "solid")
 
 
@@ -249,7 +256,7 @@ def _ids(payload: dict, kind: str, indices: list[int]) -> list[str]:
 
 def _finish(payload: dict, old: Any, stages: list[tuple[Any, Any]], targets: list[Any], new_solids: list[Any],
             *, op: str, params: dict, start: float, must_merge: list[tuple[int, int]] | None = None,
-            ) -> dict:
+            require_shared: bool = False) -> dict:
     """Assemble the new compound, check it, write it, and build the workspace record."""
     from OCP.TopTools import TopTools_IndexedMapOfShape
 
@@ -261,6 +268,10 @@ def _finish(payload: dict, old: Any, stages: list[tuple[Any, Any]], targets: lis
         return _declined("changes_body_count", before=_solid_count(old), after=_solid_count(new))
     if not _is_valid(new):
         return _declined("invalid_result")
+    if require_shared and _shared_face_count(new) == 0:
+        # Success that shared nothing would record progress that did not happen (e.g. a gap wider
+        # than the fuzzy value after STEP rounding): refuse, and say why.
+        return _declined("no_shared_interface", detail="no face is shared by two bodies afterwards")
     hist, merged = _composed_history(old, new, stages, targets)
     gone = set(merged["face"])
     for a_i, b_i in must_merge or []:
@@ -273,6 +284,17 @@ def _finish(payload: dict, old: Any, stages: list[tuple[Any, Any]], targets: lis
         new_path=payload["out_path"], quantum=payload["quantum"],
         seconds=time.perf_counter() - start, declared_removed=removed)
     return {"record": record, "merged_faces": merged["face"], "merged_edges": merged["edge"]}
+
+
+def _shared_face_count(shape: Any) -> int:
+    """Faces owned by two solids at once (one TShape): the conformal interface."""
+    from OCP.TopAbs import TopAbs_FACE, TopAbs_SOLID
+    from OCP.TopExp import TopExp
+    from OCP.TopTools import TopTools_IndexedDataMapOfShapeListOfShape
+
+    owners = TopTools_IndexedDataMapOfShapeListOfShape()
+    TopExp.MapShapesAndAncestors_s(shape, TopAbs_FACE, TopAbs_SOLID, owners)
+    return sum(1 for i in range(1, owners.Extent() + 1) if owners.FindFromIndex(i).Size() >= 2)
 
 
 def _targets(old: Any, indices: list[int]) -> list[Any]:
@@ -308,7 +330,12 @@ def _conformalise(payload: dict) -> dict:
             if depth > bound:
                 return _declined("exceeds_fidelity", what="overlap_depth", value=depth,
                                  bound=bound, volume=volume)
-            cuts.append(b if a.IsSame(keeper) else a)
+            victim = b if a.IsSame(keeper) else a
+            fraction = volume / max(_volume(victim), 1e-12)
+            if fraction > MAX_VOLUME_CHANGE:
+                return _declined("exceeds_fidelity", what="volume_change", value=fraction,
+                                 bound=MAX_VOLUME_CHANGE, volume=volume)
+            cuts.append(victim)
 
     from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
 
@@ -318,6 +345,7 @@ def _conformalise(payload: dict) -> dict:
         cut = BRepAlgoAPI_Cut()
         cut.SetArguments(_list([victim]))
         cut.SetTools(_list([keeper]))
+        cut.SetNonDestructive(True)
         cut.SetFuzzyValue(fuzzy)
         cut.SetToFillHistory(True)
         cut.Build()
@@ -334,7 +362,7 @@ def _conformalise(payload: dict) -> dict:
         return _declined("changes_body_count", before=len(targets), after=len(new_solids))
     params = {"bodies": payload.get("body_ids", []), "fuzzy_mm": fuzzy, "mode": mode}
     return _finish(payload, old, stages, targets, new_solids, op="conformalise", params=params,
-                   start=start)
+                   start=start, require_shared=True)
 
 
 def _faces_coincide(a: Any, b: Any, tol: float) -> bool:

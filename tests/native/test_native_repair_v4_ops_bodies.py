@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -27,7 +28,7 @@ from OCP.gp import gp_Pnt  # noqa: E402
 from OCP.GProp import GProp_GProps  # noqa: E402
 from OCP.Interface import Interface_Static  # noqa: E402
 from OCP.STEPCAFControl import STEPCAFControl_Reader, STEPCAFControl_Writer  # noqa: E402
-from OCP.STEPControl import STEPControl_AsIs, STEPControl_Reader, STEPControl_Writer  # noqa: E402
+from OCP.STEPControl import STEPControl_AsIs, STEPControl_Reader, STEPControl_ShellBasedSurfaceModel, STEPControl_Writer  # noqa: E402
 from OCP.TCollection import TCollection_ExtendedString  # noqa: E402
 from OCP.TDF import TDF_LabelSequence  # noqa: E402
 from OCP.TDocStd import TDocStd_Document  # noqa: E402
@@ -83,35 +84,59 @@ def _read(path: str) -> Any:
     return shape
 
 
-def _set_statics(statics: dict[str, Any]) -> None:
-    """Interface_Static switches only exist once a reader/writer is constructed: a set before that
-    silently returns False. Callers construct first; every return value is asserted here."""
-    for name, value in statics.items():
-        ok = (Interface_Static.SetIVal_s(name, value) if isinstance(value, int)
-              else Interface_Static.SetCVal_s(name, value))
-        assert ok, f"Interface_Static {name}={value!r} was not accepted"
+def _get_static(name: str) -> Any:
+    return Interface_Static.IVal_s(name) if Interface_Static.IsSet_s(name) and \
+        Interface_Static.CVal_s(name).lstrip("-").isdigit() else Interface_Static.CVal_s(name)
 
 
-def _step_round_trip(shape: Any, path: Path, statics: dict[str, Any] | None = None) -> Any:
+@contextmanager
+def _statics(statics: dict[str, Any]) -> Iterator[None]:
+    """Set Interface_Static switches for the duration of a write and RESTORE them afterwards, so no
+    value leaks into other tests (they are process-wide). They exist only once a reader/writer has
+    been constructed - a set before that silently returns False - so callers construct first, and
+    every return value is asserted here."""
+    previous = {name: _get_static(name) for name in statics}
+    try:
+        for name, value in statics.items():
+            ok = (Interface_Static.SetIVal_s(name, value) if isinstance(value, int)
+                  else Interface_Static.SetCVal_s(name, value))
+            assert ok, f"Interface_Static {name}={value!r} was not accepted"
+        yield
+    finally:
+        for name, value in previous.items():
+            if isinstance(value, int):
+                Interface_Static.SetIVal_s(name, value)
+            else:
+                Interface_Static.SetCVal_s(name, value)
+
+
+def _adv_faces(path: Path) -> int:
+    """ADVANCED_FACE entities in the written STEP FILE: what the writer emitted, before any reader."""
+    return int(path.read_text().count("ADVANCED_FACE("))
+
+
+def _step_round_trip(shape: Any, path: Path, statics: dict[str, Any] | None = None,
+                     mode: Any = STEPControl_AsIs) -> Any:
     writer = STEPControl_Writer()
-    _set_statics(statics or {})
-    writer.Transfer(shape, STEPControl_AsIs)
-    writer.Write(str(path))
+    with _statics(statics or {}):
+        writer.Transfer(shape, mode)
+        writer.Write(str(path))
     reader = STEPControl_Reader()
     reader.ReadFile(str(path))
     reader.TransferRoots()
     return reader.OneShape()
 
 
-def _xcaf_round_trip(shape: Any, path: Path, statics: dict[str, Any] | None = None) -> Any:
+def _xcaf_round_trip(shape: Any, path: Path, statics: dict[str, Any] | None = None,
+                     make_assembly: bool = False) -> Any:
     app = XCAFApp_Application.GetApplication_s()
     doc = TDocStd_Document(TCollection_ExtendedString("MDTV-XCAF"))
     app.InitDocument(doc)
-    XCAFDoc_DocumentTool.ShapeTool_s(doc.Main()).AddShape(shape, False)
+    XCAFDoc_DocumentTool.ShapeTool_s(doc.Main()).AddShape(shape, make_assembly)
     writer = STEPCAFControl_Writer()
-    _set_statics(statics or {})
-    writer.Transfer(doc)
-    writer.Write(str(path))
+    with _statics(statics or {}):
+        writer.Transfer(doc)
+        writer.Write(str(path))
     back = TDocStd_Document(TCollection_ExtendedString("MDTV-XCAF"))
     app.InitDocument(back)
     reader = STEPCAFControl_Reader()
@@ -244,13 +269,29 @@ def test_step_does_not_keep_a_shared_face_so_conformalise_must_be_reapplied(
     assert _shared_faces(plain) == 0 and _count(plain, TopAbs_FACE) == 12
     assert _shared_faces(xcaf) == 0 and _count(xcaf, TopAbs_FACE) == 12
 
-    # not an unset switch: every assembly mode and schema, statics set AFTER construction and checked
+    # The loss is the WRITER's: the file itself holds 12 ADVANCED_FACE entities for a shape with
+    # 11 distinct faces, so no reader setting could matter. Every cell sets its statics AFTER
+    # constructing the writer and asserts they were accepted.
+    assert _count(conformal, TopAbs_FACE) == 11
+    assert _adv_faces(tmp_path / "plain.step") == 12 and _adv_faces(tmp_path / "xcaf.step") == 12
     for asm in (0, 1, 2):
         for schema in ("AP214CD", "AP242DIS"):
-            st = {"write.step.assembly": asm, "write.step.schema": schema, "write.surfacecurve.mode": 1}
-            for rt in (_step_round_trip(conformal, tmp_path / "s.step", st),
-                       _xcaf_round_trip(conformal, tmp_path / "x.step", st)):
-                assert _shared_faces(rt) == 0 and _count(rt, TopAbs_FACE) == 12
+            for surface_curve in (0, 1):
+                st = {"write.step.assembly": asm, "write.step.schema": schema,
+                      "write.surfacecurve.mode": surface_curve}
+                plain_path, xcaf_path = tmp_path / "s.step", tmp_path / "x.step"
+                for rt, written in ((_step_round_trip(conformal, plain_path, st), plain_path),
+                                    (_xcaf_round_trip(conformal, xcaf_path, st), xcaf_path)):
+                    assert _adv_faces(written) == 12, (st, written.name)
+                    assert _shared_faces(rt) == 0 and _count(rt, TopAbs_FACE) == 12, st
+    asm_path = tmp_path / "asm.step"
+    asm_shape = _xcaf_round_trip(conformal, asm_path, {"write.step.assembly": 0}, make_assembly=True)
+    assert _adv_faces(asm_path) == 12 and _shared_faces(asm_shape) == 0
+    sb_path = tmp_path / "sb.step"
+    sb_shape = _step_round_trip(conformal, sb_path, mode=STEPControl_ShellBasedSurfaceModel)
+    assert _adv_faces(sb_path) == 12 and _shared_faces(sb_shape) == 0
+    # and the switches did not leak out of the context: a plain write is back to the defaults
+    assert _adv_faces(tmp_path / "plain.step") == 12
 
     again = Workspace.from_brep(pool, _write(xcaf, tmp_path / "xcaf.brep"))
     final, _ = Conformalise().apply(pool, again, _bodies(again), {"mode": "fragment"}, timeout_s=TIMEOUT)
@@ -396,3 +437,37 @@ def test_non_coincident_faces_are_declined(pool: WorkerPool, tmp_path: Path) -> 
         pool, ws, [dup_a, outer], {"pairs": [[dup_a, outer]]}, timeout_s=TIMEOUT)
     assert diff.params["declined"] == "not_coincident"
     assert new is ws and diff.declared_removed == []
+
+
+def test_conformalise_that_would_share_nothing_declines(pool: WorkerPool, tmp_path: Path) -> None:
+    """Boxes 1e-4 mm apart at fuzzy 0 (STEP rounding): fragmenting leaves them separate. That must
+    not be reported as success - the search would record progress that did not happen."""
+    ws = Workspace.from_brep(pool, _write(
+        _compound(_box(0, 0, 0, 10, 10, 10), _box(10.0001, 0, 0, 10, 10, 10)), tmp_path / "gap.brep"))
+    new, diff = Conformalise().apply(pool, ws, _bodies(ws), {"mode": "fragment"}, timeout_s=TIMEOUT)
+    assert diff.params["declined"] == "no_shared_interface"
+    assert new is ws and diff.modified == {} and diff.declared_removed == []
+
+
+def test_fuzzy_within_the_bound_closes_a_rounding_gap(pool: WorkerPool, tmp_path: Path) -> None:
+    """The same 1e-4 mm gap with fuzzy 1e-3 mm (bound for this part is 0.0087 mm) is shared."""
+    ws = Workspace.from_brep(pool, _write(
+        _compound(_box(0, 0, 0, 10, 10, 10), _box(10.0001, 0, 0, 10, 10, 10)), tmp_path / "gap.brep"))
+    new, diff = Conformalise().apply(pool, ws, _bodies(ws),
+                                     {"mode": "fragment", "fuzzy_mm": 1e-3}, timeout_s=TIMEOUT)
+    assert "declined" not in diff.params
+    out = _read(new.brep_path)
+    assert _shared_faces(out) == 1 and _count(out, TopAbs_SOLID) == 2
+    assert BRepCheck_Analyzer(out).IsValid()
+
+
+def test_thin_but_vast_cut_is_declined_on_volume_change(pool: WorkerPool, tmp_path: Path) -> None:
+    """Depth 0.05 mm passes the length bound, but it removes 5% of a 1 mm plate: over the 2% cap."""
+    shape = _compound(_box(0, 0, 0, 100, 100, 100), _box(99.95, 0, 0, 1, 100, 100))
+    ws = Workspace.from_brep(pool, _write(shape, tmp_path / "plate.brep"))
+    keeper, plate = _bodies(ws)
+    new, diff = Conformalise().apply(pool, ws, [keeper, plate],
+                                     {"mode": f"cut_by:{keeper}"}, timeout_s=TIMEOUT)
+    assert diff.params["declined"] == "exceeds_fidelity"
+    assert diff.params["detail"]["what"] == "volume_change"
+    assert new is ws
