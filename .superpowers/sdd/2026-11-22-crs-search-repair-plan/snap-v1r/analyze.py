@@ -166,7 +166,7 @@ def excluded_group(rows: list[dict], exc: list[dict], wall: float) -> str:
     lines = [f"**{len(by)} file(s), {len(exc)} excluded (file, arm) rows** ({', '.join(f'{k} {v}' for k, v in reasons.items())}). "
              f"File wall {wall:.0f} s.", "",
              "| file | excluded arms (reason) | measured arms |", "|---|---|---|"]
-    for s, g in sorted(by.items(), key=lambda kv: kv[1]["name"]):
+    for _s, g in sorted(by.items(), key=lambda kv: kv[1]["name"]):
         ex = "; ".join(f"{a}: {why[:90]}" for a, why in sorted(g["excluded"].items()))
         me = "; ".join(f"{a}: {v}" for a, v in sorted(g["measured"].items())) or "-"
         lines.append(f"| `{short(g['name'])}` | {ex} | {me} |")
