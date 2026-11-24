@@ -349,7 +349,7 @@ def main() -> int:
 | VM | `{vm.get('name', '?')}`, {env['MACHINE']}, {vm.get('zone', '?')}, reaper max-run {vm.get('max_run', '?')} → DELETE; created {vm.get('created', '?')}, deleted {vm.get('deleted', '?')} |
 | Splits | dev `{man['splits']['dev']['path']}` (sha256 `{man['splits']['dev']['sha256'][:16]}…`, {man['splits']['dev']['files']} files); clean `{man['splits']['clean']['path']}` (sha256 `{man['splits']['clean']['sha256'][:16]}…`, {man['splits']['clean']['files']} files) |
 | Waves | `{wd['dev']['wave']}` ({wd['dev']['n_shards']} shards, files {wd['dev']['files_per_shard']}), `{wd['clean']['wave']}` ({wd['clean']['n_shards']} shards, files {wd['clean']['files_per_shard']}); cost-balanced plans (digests `{wd['dev']['plan_digest'][:12]}`, `{wd['clean']['plan_digest'][:12]}`) |
-| Flags | `--ops {env['OPS']}` (APPLIED ops), `--file-usd-cap {env['FILE_USD_CAP']}`, `--route {env['ROUTE']}`, `--h-mm auto`, `--workers 1`, file wall {wall:.0f} s (the commit's default), verdict cache `{env['CACHE']}` (fresh) |
+| Flags | `--ops {env['OPS']}` (APPLIED ops; from {env.get('OPS_SOURCE', '?')}), `--file-usd-cap {env['FILE_USD_CAP']}`, `--route {env['ROUTE']}`, `--h-mm auto`, `--workers 1`, file wall {wall:.0f} s (the commit's default), verdict cache `{env['CACHE']}` (fresh) |
 | Model caps | dev {wd['dev']['caps_usd']}, clean {wd['clean']['caps_usd']}: total **${man['total_caps_usd']}** |
 | Shard exits | {', '.join(f'{k}={v}' for k, v in rcs.items())}{'; retried once after a probe refusal: ' + ', '.join(retried) if retried else ''} |
 

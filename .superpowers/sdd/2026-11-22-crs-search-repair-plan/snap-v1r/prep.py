@@ -88,6 +88,9 @@ def main() -> int:
     p.add_argument("--total-usd", type=float, required=True)
     p.add_argument("--file-usd-cap", type=float, default=0.5)
     p.add_argument("--vm-usd-per-h", type=float, required=True)
+    p.add_argument("--ops", type=int, default=None, help="the op budget this wave runs with (applied ops)")
+    p.add_argument("--prior-ops", type=int, default=24, help="the op budget the prior rows were measured at")
+    p.add_argument("--max-run", default="6h", help="the VM's server-side reaper, e.g. 5h")
     p.add_argument("--usd-per-dev-file", type=float, default=0.04,
                    help="expected model $ per dev file (snapshot v1: $1.00 over 26 called files of 28)")
     a = p.parse_args()
@@ -151,6 +154,7 @@ def main() -> int:
     caps: dict[str, list[float]] = {}
     proj: dict[str, list[float]] = {}
     counts: dict[str, list[int]] = {}
+    costs_all: dict[str, dict[str, float]] = {}
     for k in ("dev", "clean"):
         costs, source = {}, {"prior": 0, "size_model": 0}
         for f in files[k]:
@@ -162,6 +166,7 @@ def main() -> int:
                 costs[s] = (k_dev * ev.predicted_cost_s(staged[s][0])) if k == "dev" else clean_default
                 source["size_model" if k == "dev" else "clean_default"] = source.get(
                     "size_model" if k == "dev" else "clean_default", 0) + 1
+        costs_all[k] = costs
         n = min(shards[k], len(files[k]))
         shards[k] = n
         slice_cap[k] = ev.wave_cap_usd("normal") / n
@@ -211,11 +216,29 @@ def main() -> int:
         print("REFUSED: a shard cap rounded to $0: fewer shards or a larger total")
         return 1
     crit = max(max(proj["dev"]), max(proj["clean"]))
+    # THE OP BUDGET. More ops lengthen a search only where the search stopped on `ops`; a search that EXHAUSTED its
+    # candidates is unchanged. Either way each search arm is bounded by its own Budget.wall_s (the search's wall),
+    # so the upper bound puts BOTH search arms at that wall on every dev file. The lower bound is the plan above.
+    sb_wall = float(ev.SHARED_BUDGET.wall_s)
+    ops = a.ops if a.ops is not None else int(ev.SHARED_BUDGET.ops)
+    upper_file = {f["sha256"]: min(4 * wall, (costs_all["dev"][f["sha256"]] if f["sha256"] in costs_all["dev"] else 0.0)
+                                   + 2 * sb_wall) for f in files["dev"]}
+    up_load = defaultdict(float)
+    plan_dev = json.loads((out / "plan_dev.json").read_text())
+    for s_, i in plan_dev["assign"].items():
+        up_load[i] += upper_file[s_]
+    crit_up = max(max(up_load.values()), max(proj["clean"]))
+    reaper_s = float(a.max_run.rstrip("h")) * 3600 if a.max_run.endswith("h") else float(a.max_run)
+    setup_s = 0.35 * 3600
     model_usd = a.usd_per_dev_file * len(files["dev"]) + 0.02 * (shards["dev"] + shards["clean"])
     vm_h = crit / 3600 + 0.35  # + create, image pull, staging, collect, delete
     manifest.update(total_caps_usd=total_caps, inputs={f["sha256"]: staged[f["sha256"]][1]
                                                         for k in files for f in files[k]},
                     projection={"critical_shard_min": round(crit / 60, 1),
+                                "ops": ops, "prior_ops": a.prior_ops, "search_wall_s": sb_wall,
+                                "critical_shard_min_upper": round(crit_up / 60, 1),
+                                "fits_reaper_lower": crit + setup_s < reaper_s,
+                                "fits_reaper_upper": crit_up + setup_s < reaper_s,
                                 "worst_single_file_min": round(max(4 * wall, 0) / 60, 1),
                                 "expected_model_usd": round(model_usd, 2), "vm_hours": round(vm_h, 2),
                                 "vm_usd": round(vm_h * a.vm_usd_per_h, 2)})
@@ -233,6 +256,11 @@ def main() -> int:
     print(f"   projection: wave ~{crit / 60:.0f} min (critical shard), VM ~{vm_h:.2f} h ~${vm_h * a.vm_usd_per_h:.2f}, "
           f"model ~${model_usd:.2f} expected (cap ${total_caps}); a file that walls in all 4 arms costs "
           f"{4 * wall / 60:.0f} min on its shard")
+    print(f"   op budget {ops} (prior rows at {a.prior_ops}): critical shard {crit / 60:.0f} min if searches end by "
+          f"exhaustion (ops do not bind), up to {crit_up / 60:.0f} min if both search arms run to their "
+          f"{sb_wall:.0f} s search wall on every dev file; reaper {reaper_s / 3600:.1f} h -> "
+          f"{'fits' if crit + setup_s < reaper_s else 'DOES NOT FIT'} (lower), "
+          f"{'fits' if crit_up + setup_s < reaper_s else 'DOES NOT FIT'} (upper)")
     return 0
 
 

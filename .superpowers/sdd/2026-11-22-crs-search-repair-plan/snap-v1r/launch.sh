@@ -14,7 +14,7 @@ set -u -o pipefail
 HERE=$(cd "$(dirname "$0")" && pwd); REPO=$(git -C "$HERE" rev-parse --show-toplevel)
 COMMIT_ARG=${1:?usage: launch.sh <commit> [profile] [--dry-run]}; PROFILE=v1r; DRY=0
 for x in "${@:2}"; do case $x in --dry-run) DRY=1;; *) PROFILE=$x;; esac; done
-KEYS="MACHINE VM_USD_PER_H DEV_SHARDS CLEAN_SHARDS TOTAL_USD MAX_RUN IMAGE IMAGE_COMMIT"   # the environment overrides the profile
+KEYS="MACHINE VM_USD_PER_H DEV_SHARDS CLEAN_SHARDS TOTAL_USD MAX_RUN IMAGE IMAGE_COMMIT OPS"   # the environment overrides the profile
 for k in $KEYS; do eval "OVR_$k=\${$k:-}"; done
 source "$HERE/profiles/$PROFILE.env"
 for k in $KEYS; do eval "v=\$OVR_$k"; [ -n "$v" ] && eval "$k=\$v"; done
@@ -42,12 +42,19 @@ DEV_SRC=$(resolve_split "$DEV_SPLIT_SPEC" "${DEV_SPLIT:-}" "$RUN/splits/dev.json
 CLEAN_SRC=$(resolve_split "$CLEAN_SPLIT_SPEC" "${CLEAN_SPLIT:-}" "$RUN/splits/clean.json") || exit 1
 log "dev split $DEV_SRC; clean split $CLEAN_SRC"
 
+# ---------------------------------------------------------------- 2b. the op budget: the profile's OPS, else the commit's own
+DEFAULT_OPS=$(cd "$RUN/code/devtools/validation/v4_eval" && python3 -I -c "import sys; sys.path.insert(0,'.'); import evalspec; print(evalspec.SHARED_BUDGET.ops)") \
+  || die "cannot read evalspec.SHARED_BUDGET.ops from $COMMIT"
+if [ -n "${OPS:-}" ]; then OPS_SOURCE="profile/env (the commit's default is $DEFAULT_OPS)"; else OPS=$DEFAULT_OPS; OPS_SOURCE="the commit's evalspec.SHARED_BUDGET.ops"; fi
+[ "$OPS" -le "$DEFAULT_OPS" ] || die "--ops $OPS is above the commit's Budget.ops $DEFAULT_OPS: run_arm only LOWERS the budget"
+log "op budget: --ops $OPS applied ops ($OPS_SOURCE)"
 # ---------------------------------------------------------------- 3. inputs present, plans, caps (prep.py)
 gcloud storage ls -l "gs://$BUCKET/eval/v4-reprobe/inputs/**" > "$RUN/inputs_ls.txt" 2>"$RUN/inputs_ls.err" || die "cannot list inputs"
 python3 -I "$HERE/prep.py" --code "$RUN/code" --profile "$PROFILE" --dev-split "$RUN/splits/dev.json" \
   --clean-split "$RUN/splits/clean.json" --dev-wave "$DEV_WAVE" --clean-wave "$CLEAN_WAVE" --dev-shards "$DEV_SHARDS" \
   --clean-shards "$CLEAN_SHARDS" --total-usd "$TOTAL_USD" --file-usd-cap "$FILE_USD_CAP" --inputs-ls "$RUN/inputs_ls.txt" \
-  --prior-rows "$REPO/$PRIOR_ROWS" --vm-usd-per-h "$VM_USD_PER_H" --out "$RUN/splits" | tee -a "$RUN/launch.log"
+  --prior-rows "$REPO/$PRIOR_ROWS" --vm-usd-per-h "$VM_USD_PER_H" --ops "$OPS" --prior-ops "${PRIOR_OPS:-24}" \
+  --max-run "$MAX_RUN" --out "$RUN/splits" | tee -a "$RUN/launch.log"
 [ "${PIPESTATUS[0]}" = 0 ] || die "prep refused"
 cp "$RUN/splits/launch_manifest.json" "$RUN/"
 DEV_N=$(python3 -I -c "import json;print(json.load(open('$RUN/splits/launch_manifest.json'))['waves']['dev']['n_shards'])")
@@ -77,6 +84,7 @@ IMAGE_REF=$IMAGE_REF
 IMAGE_COMMIT=$IMAGE_COMMIT
 MACHINE=$MACHINE
 OPS=$OPS
+OPS_SOURCE="$OPS_SOURCE"
 FILE_USD_CAP=$FILE_USD_CAP
 ROUTE=$ROUTE
 BUCKET=$BUCKET
@@ -153,6 +161,30 @@ gcloud compute scp $VM:/tmp/collect.tgz "$RUN/collect.tgz" --zone $ZONE --projec
 tar xzf "$RUN/collect.tgz" -C "$RUN" || die "collect archive unreadable"
 gcloud compute scp $VM:/tmp/traces.tgz "$RUN/traces.tgz" --zone $ZONE --project $PROJECT >> "$RUN/launch.log" 2>&1 \
   && log "search traces: $(tar tzf "$RUN/traces.tgz" | wc -l | tr -d ' ') file(s) in $RUN/traces.tgz" || log "no search traces collected"
+# Lane B's layout: traces/snap-<label>-<split>/<arm>/<sha12>.json (the arm and the input's sha256[:12] in the path)
+if [ -s "$RUN/traces.tgz" ]; then
+  mkdir -p "$RUN/traces-raw" && tar xzf "$RUN/traces.tgz" -C "$RUN/traces-raw"
+  NT=$(python3 -I - "$RUN" "$LABEL" "$WAVE_ID_DEV" "$WAVE_ID_CLEAN" <<'PY'
+import shutil, sys
+from pathlib import Path
+run, label, wid_dev, wid_clean = Path(sys.argv[1]), sys.argv[2], sys.argv[3], sys.argv[4]
+split_of = {wid_dev: "dev", wid_clean: "clean"}
+n = 0
+for t in (run / "traces-raw").rglob("search-trace.json"):
+    arm, sha12 = t.parent.name, t.parent.parent.name          # .../<wave_id>/shard-I-of-N/work/<sha12>/<arm>/
+    wid = next((p for p in t.parts if p in split_of), None)
+    if arm not in ("search_det", "search_ai") or wid is None or len(sha12) != 12:
+        continue
+    dst = run / "traces" / f"snap-{label}-{split_of[wid]}" / arm / f"{sha12}.json"
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy(t, dst)
+    n += 1
+print(n)
+PY
+)
+  gcloud storage cp -r -q "$RUN/traces/"* "gs://$BUCKET/eval/snap-$LABEL-$TS/traces/" >> "$RUN/launch.log" 2>&1
+  log "traces: $NT renamed to $RUN/traces/snap-$LABEL-<split>/<arm>/<sha12>.json, uploaded to gs://$BUCKET/eval/snap-$LABEL-$TS/traces/"
+fi
 HOURS=$(python3 -I -c "from datetime import datetime as d,timezone as z;print(round((d.now(z.utc)-d.fromisoformat('$CREATED'.replace('Z','+00:00'))).total_seconds()/3600,2))")
 echo "{\"name\":\"$VM\",\"zone\":\"$ZONE\",\"max_run\":\"$MAX_RUN\",\"created\":\"$CREATED\",\"deleted\":\"(see vm_deleted.json)\",\"hours\":$HOURS,\"usd\":$(python3 -c "print(round($HOURS*$VM_USD_PER_H,2))")}" > "$RUN/vm.json"
 # delete now; clearing CREATED disarms the trap's delete (it stays armed until this line)
