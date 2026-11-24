@@ -258,16 +258,23 @@ delete_vms() {
   done
   wait
 }
+# THIS RUN's surviving VMs, never another run's. `labels.snapshot` is the PROFILE ("fast"), shared by every fast
+# run, so a second concurrent run reported the first's live VMs as LEAKED and exited 1 on a wave that was fine
+# (19:34Z 2026-11-24). delete_vms only ever deletes this run's own vms.txt, so nothing was destroyed - but the
+# report has to be about this run too. Intersect the label query with the names this run created.
+surviving() {
+  [ -s "$RUN/vms.txt" ] || return 0
+  gcloud compute instances list --project $PROJECT --filter="labels.snapshot=$LABEL" \
+    --format='value(name,zone,status)' </dev/null 2>&1 | grep -F -f "$RUN/vms.txt" || true
+}
 cleanup() {
   local rc=$?
   delete_vms
-  gcloud compute instances list --project $PROJECT --filter="labels.snapshot=$LABEL" \
-    --format='value(name,zone,status)' </dev/null > "$RUN/vm_surviving.txt" 2>&1
+  surviving > "$RUN/vm_surviving.txt" 2>&1
   if [ -s "$RUN/vm_surviving.txt" ] && [ "${KEEP_VM:-0}" != 1 ]; then
     log "VMs STILL PRESENT after the first delete: $(tr '\n' ' ' < "$RUN/vm_surviving.txt"); retrying"
     delete_vms
-    gcloud compute instances list --project $PROJECT --filter="labels.snapshot=$LABEL" \
-      --format='value(name,zone,status)' </dev/null > "$RUN/vm_surviving.txt" 2>&1
+    surviving > "$RUN/vm_surviving.txt" 2>&1
     if [ -s "$RUN/vm_surviving.txt" ]; then
       log "LEAKED VM(S), DELETE THEM BY HAND NOW: $(tr '\n' ' ' < "$RUN/vm_surviving.txt")"
       [ "$rc" = 0 ] && rc=1
