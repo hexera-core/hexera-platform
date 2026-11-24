@@ -256,11 +256,15 @@ def _one_site_per_kind() -> list[Site]:
         _site("sliver", ["F1", "F2"], nodes=free),
         _site("invalid", ["F1", "F2", "B1"], hard_codes=["self_intersection", "no_solids"], nodes=free,
               edges=bad_edge),
-        _site("proximity", ["F1", "F2"], nodes=free, edges=bad_edge),
+        # B20(3): a proximity site carries the pair the kernel MEASURED; the sweep no longer guesses combinations
+        _site("proximity", ["F1", "F2"], nodes=free, edges=bad_edge,
+              clashes=[{"a": "F1", "b": "F2", "touching": False, "gap_mm": 0.2}]),
         _site("periodic", ["F1", "F2"], nodes=free),
         _site("pole", ["F1", "F2"], nodes=free),
         _site("self_overlap", ["F1", "F2"], nodes=free, edges=bad_edge),
-        _site("overlap", ["F1", "F2", "B1", "B2"], nodes=free, edges=bad_edge),
+        # a duplicate face pair is a measured CONTACT (gap 0), which is what `remove_duplicate_faces` is aimed at
+        _site("overlap", ["F1", "F2", "B1", "B2"], nodes=free, edges=bad_edge,
+              clashes=[{"a": "F1", "b": "F2", "touching": True}]),
         _site("intersection", ["F1", "F2", "B1", "B2"], edges=bad_edge),
         _site("unbounded", []),
     ]
