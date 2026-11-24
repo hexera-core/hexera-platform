@@ -166,11 +166,23 @@ def one(entry: dict, inputs: str, out: str, *, op_timeout: float = OP_TIMEOUT_S,
             root_cheap = judge.score(cheap_fn(pool, root, src))
             gen = S.DetGenerator(diagonal=lambda ws: d0, whole_part_defeature=True)
             gen.bind_pool(pool)
-            try:
-                import oracle_grid  # type: ignore[import-not-found,unused-ignore]  # lane C's; absent = none
-                extra = oracle_grid.extra_rows
-            except ImportError:
-                extra = None
+            import importlib
+            import inspect
+
+            # grid extensions: lane C's body ops (oracle_grid) and, for pass 2, lane A's face ops (oracle_grid_faces);
+            # ORACLE_GRIDS overrides the list. A module that is absent adds nothing.
+            grids = []
+            annotate = None
+            for name in os.environ.get("ORACLE_GRIDS", "oracle_grid,oracle_grid_faces").split(","):
+                try:
+                    mod = importlib.import_module(name.strip())
+                except ImportError:
+                    continue
+                fn = getattr(mod, "extra_rows", None)
+                if fn is not None:
+                    grids.append((name, fn, len(inspect.signature(fn).parameters) >= 2))
+                annotate = annotate or getattr(mod, "annotate", None)
+            row["grids"] = [g[0] for g in grids]
             seen = {S._fingerprint(root)}
 
             def candidates(ws: Any, verdict: Any, depth: int) -> list:
@@ -180,8 +192,11 @@ def one(entry: dict, inputs: str, out: str, *, op_timeout: float = OP_TIMEOUT_S,
                 cands = list(gen.propose(st, 10**6))
                 cands += [S.Candidate(S.RUN_STAGE, [], {"stage": s.name}, "oracle", f"run stage {s.name}")
                           for s in STAGES]
-                if extra is not None:   # lane C: extra_rows(state, d0_mm) -> list[search.Candidate]
-                    cands += list(extra(st, d0))
+                for name, extra, takes_d0 in grids:   # extra_rows(state[, d0_mm]) -> list[search.Candidate]
+                    try:
+                        cands += list(extra(st, d0) if takes_d0 else extra(st))
+                    except Exception as exc:  # noqa: BLE001 - a grid extension never loses the file
+                        row.setdefault("grid_errors", []).append(f"{name}: {type(exc).__name__}: {exc}"[:200])
                 return cands
 
             def evaluate(ws: Any, c: Any, depth: int, path: list, base_cheap: tuple, base_valid: bool) -> dict:
@@ -228,6 +243,11 @@ def one(entry: dict, inputs: str, out: str, *, op_timeout: float = OP_TIMEOUT_S,
                         if rec["beats_parent"]:
                             vf = judge.full(pool, new, src)
                             rec["full"] = summary(vf)
+                            if annotate is not None:   # lane C: NEW / OLD / UNPLACED faces of the improvement
+                                try:
+                                    rec["faces"] = annotate(ws, new, vf)
+                                except Exception as exc:  # noqa: BLE001
+                                    rec["faces"] = {"error": f"{type(exc).__name__}: {exc}"[:200]}
                             if vf.clean:
                                 rec["gaming"] = gamed(rec["own"])
                         rec["_ws"] = new
