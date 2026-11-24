@@ -783,7 +783,7 @@ def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
             # and the background is moved so the halvings land on it (a layer planned at 0.37 of a 5.87 mm background
             # cell came out 1.37 x the plan, 00134075; a 3.65 mm plan held to a 3.16 mm background, 00184523)
             _one = CR.cfmesh_one_layer_cells(
-                _ask, bore_D=_bore, max_cell=max_cell,
+                _ask, bore_D=_bore, max_cell=max_cell, wall_cell=wall_cell,
                 min_background=((vol / (0.4 * cell_budget)) ** (1.0 / 3.0) if cell_budget else 0.0))
             if _one is not None:
                 wall_cell, max_cell, _band_r = _one[0], _one[1], 0.0

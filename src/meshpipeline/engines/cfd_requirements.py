@@ -1301,7 +1301,7 @@ def wall_function_hard_cells(cap_rel: float) -> int:
 CFMESH_ONE_LAYER_SHARE = 0.5
 
 
-def cfmesh_one_layer_cells(ask: Ask | None, *, bore_D: float, max_cell: float,
+def cfmesh_one_layer_cells(ask: Ask | None, *, bore_D: float, max_cell: float, wall_cell: float = 0.0,
                            min_background: float = 0.0) -> tuple[float, float] | None:
     """CFDREQ-31, cfMesh's ONE WALL-FUNCTION LAYER PLANNED TO WHAT IT BUILDS: (wall cell, background cell) for an
     internal flow's wall-function wall on cfMesh, or None (unchanged: the cases wall_function_bore_cells leaves alone).
@@ -1310,8 +1310,8 @@ def cfmesh_one_layer_cells(ask: Ask | None, *, bore_D: float, max_cell: float,
     a 2.16 mm layer planned on 5.87 mm cells came out 2.96 mm, 1.37 x the plan), coarser when it is thicker (CFDREQ-18
     only ever coarsened the wall, and the passage caps' background then held it finer: 00184523 planned 3.65 mm, built
     3.16 mm, y+ 50 -> 41). Never coarser than CFDREQ-18 / CFDREQ-25's fewest cells across the bore, or the plan's own
-    background where that is coarser already (the minimum never refines the wall): there the y+ is the nearest that
-    cell allows, said. The background becomes the wall cell times the
+    wall cell (`wall_cell`) where that is coarser already (the minimum never refines the wall): there the y+ is the
+    nearest that cell allows, said. The background becomes the wall cell times the
     whole power of two nearest it (never finer than `min_background`, the budget's), so cfMesh's halvings land on the
     wall cell itself."""
     typed = wall_functions_typed(ask)
@@ -1334,7 +1334,7 @@ def cfmesh_one_layer_cells(ask: Ask | None, *, bore_D: float, max_cell: float,
     # coarser already - the minimum never refines a wall the plan had coarser (the first cut did: 00185618 went from
     # 102k to 503k cells and its layer was capped thinner)
     want = float(h) / share
-    wall = min(want, max(float(bore_D) / least, float(max_cell)))
+    wall = min(want, max(float(bore_D) / least, float(wall_cell or 0.0)))
     n = float(bore_D) / wall
     k = max(0, int(round(math.log2(float(max_cell) / wall))))
     while wall * 2 ** k < float(min_background) * (1 - 1e-9):

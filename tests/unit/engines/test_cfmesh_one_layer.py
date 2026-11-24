@@ -49,12 +49,16 @@ def test_a_bore_too_narrow_for_the_cell_builds_the_nearest_y_plus_and_says_why()
     assert "y+ 50 wall-function layer" in note
 
 
-def test_our_minimum_across_never_refines_a_background_the_plan_had_coarser():
-    # 1.43 mm at 13 across, but the plan's background is 2 mm already: the wall stays 2 mm, not refined to 1.43
-    # (the first cut refined 00185618 from 102k to 503k cells and capped its layer thinner)
+def test_our_minimum_across_never_refines_a_wall_the_plan_had_coarser():
+    # 1.43 mm at 13 across, but the plan's wall (its background) is 2 mm already: the wall stays 2 mm, not refined to
+    # 1.43 (the first cut refined 00185618 from 102k to 503k cells and capped its layer thinner)
     D, ask = 0.0186, _ask(typed=False, engine="cfmesh")
-    wall, background = CR.cfmesh_one_layer_cells(ask, bore_D=D, max_cell=0.002)
+    wall, background = CR.cfmesh_one_layer_cells(ask, bore_D=D, max_cell=0.002, wall_cell=0.002)
     assert abs(wall - 0.002) < 1e-9 and abs(background - 0.002) < 1e-9
+    # a builder's fine wall cell under a coarse background is no floor: our 13 across is
+    ask = _ask(typed=False, engine="cfmesh")
+    wall, bg = CR.cfmesh_one_layer_cells(ask, bore_D=D, max_cell=0.0075, wall_cell=0.0007)
+    assert abs(octree_cell(bg, wall) - D / CR.WALL_FUNCTION_MIN_CELLS_ACROSS) < 1e-9
 
 
 def test_not_for_a_users_own_sizes_or_layer_count():
