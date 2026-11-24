@@ -707,7 +707,8 @@ def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
                        wall_ceiling: float | None = None,
                        accept_fewer: bool = False,
                        port_widths: dict | None = None,
-                       internal_wall_area: float | None = None) -> dict:
+                       internal_wall_area: float | None = None,
+                       wake: Any = None) -> dict:
     ws = Path(workspace)
     strategy = strategy or {}
     ext = [float(domain_max[i] - domain_min[i]) for i in range(3)]
@@ -980,6 +981,34 @@ def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
                      "centre": [0.5 * (b["min"][k] + b["max"][k]) for k in range(3)],
                      "lengthX": b["max"][0] - b["min"][0], "lengthY": b["max"][1] - b["min"][1],
                      "lengthZ": b["max"][2] - b["min"][2]} for i, b in enumerate(_narrow)]))
+    _wake_boxes: list[dict] = []
+    _wake_rec = None
+    if wake is not None and max_cell > wall_cell > 0:
+        # CFDREQ-28 x PLAN-cfd-7: AN EXTERNAL CASE REFINES ITS WAKE, as snappyHexMesh's does - the shared wake plan
+        # (engines/wake_region) on cfMesh's own background cell and wall level, its boxes as objectRefinements and
+        # costed with the case. Before, cfMesh's external case had none, so it was never the same mesh as an external
+        # snappyHexMesh plan and the ladder could not move a lost layer stack to it
+        import meshpipeline.settings.policy as _polw
+        from meshpipeline.engines.ground_plane import ground_patch_name
+        from meshpipeline.engines.wake_region import plan_wake
+        _body_est = estimate_cells(volume=vol, max_cell=max_cell, wall_cell=octree_cell(max_cell, wall_cell),
+                                   wall_area=wall_area, n_layers=max(0, int(strategy.get("n_layers", 0)))) \
+            if wall_area else None
+        _wp = plan_wake(body_min=body_bbox[0], body_max=body_bbox[1], domain_min=domain_min, domain_max=domain_max,
+                        flow_axis=wake.flow_axis, base_cell=max_cell,
+                        surface_level=int(round(math.log2(max_cell / wall_cell))),
+                        budget_cells=float(cell_budget or _polw.CELL_HARD_LIMIT), knobs=wake.knobs,
+                        ruler_m=wake.ruler_m, grounded=bool(ground_patch_name(patches or [])),
+                        body_cells=float(_body_est) if _body_est else None)
+        _wake_rec = _wp.record()
+        # the same record snappyHexMesh's case leaves (its finalize reads it into the quality record)
+        (ws / "wake_refinement.json").write_text(json.dumps(_wake_rec, indent=2))
+        _wake_boxes = [{"name": f"wake{i}", "type": "box", "cellSize": t.cell_m,
+                        "centre": [0.5 * (t.box_min[k] + t.box_max[k]) for k in range(3)],
+                        "lengthX": t.box_max[0] - t.box_min[0], "lengthY": t.box_max[1] - t.box_min[1],
+                        "lengthZ": t.box_max[2] - t.box_min[2]} for i, t in enumerate(_wp.tiers)]
+        _blocks += _object_refinement_blocks(_wake_boxes)
+        logger.warning("cfMesh external wake (PLAN-cfd-7): %s", _wp.summary())
     if _blocks:
         dict_parts.append("objectRefinements\n{\n" + "\n".join(_blocks) + "\n}\n")
 
@@ -994,7 +1023,7 @@ def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
                                        n_layers=max(0, int(strategy.get("n_layers", 0))))
     _planned = _planned_total(
         base=_planned_base, narrow=_narrow, wall_cell=wall_cell, max_cell=max_cell,
-        features=[*(strategy.get("features") or []), *(_ask_boxes if _ask else [])], cell_floor=_floor)
+        features=[*(strategy.get("features") or []), *(_ask_boxes if _ask else []), *_wake_boxes], cell_floor=_floor)
     if _ask is not None and _planned:
         # CFDREQ-3: the user's count over the case's own estimate - the wall a level coarser at a time to fit it
         _w2 = CR.cfmesh_fit_planned(_ask, wall_cell=wall_cell, max_cell=max_cell, planned=_planned)
@@ -1156,6 +1185,7 @@ def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
     return {"max_cell_size": round(max_cell, 6), "wall_cell_size": round(wall_cell, 6),
             "n_layers": n_layers, "features": len(strategy.get("features") or []),
             "est_background_cells": est_bg,
+            **({"wake_refinement": _wake_rec} if _wake_rec is not None else {}),
             **({"planned_cells": int(_planned)} if _planned else {}),
             **({"run_plan": {k: v for k, v in plan.items() if k != "wall_cell"}} if plan else {}),
             "passage_caps": {k: round(v, 6) for k, v in _caps.items()} or None,
@@ -1919,6 +1949,16 @@ def with_requested_layers(workspace, strategy: dict | None) -> tuple[dict, dict]
     return strategy, {"layers_requested": stated}
 
 
+def _external_wake_request(workspace, strategy: dict):
+    """CFDREQ-28 x PLAN-cfd-7: the wake this external case refines - the plan's wake knobs, the declared flow axis and
+    reference length, as snappyHexMesh's case reads them (engines/wake_region.WakeRequest)."""
+    from meshpipeline.engines.wake_region import WakeRequest
+    from meshpipeline.engines.workspace_facts import read_far_field_request
+    req = read_far_field_request(workspace) or {}
+    return WakeRequest(knobs=(strategy or {}).get("wake"), flow_axis=req.get("flow_axis"),
+                       ruler_m=(strategy or {}).get("reference_length_m") or req.get("reference_length_m"))
+
+
 def _configure_external_3d(workspace, *, geometry_file: str, strategy: dict, wall_patch: str,
                            contract_patches: list, args: dict, cell_budget: int,
                            surface=None) -> dict:
@@ -1978,7 +2018,8 @@ def _configure_external_3d(workspace, *, geometry_file: str, strategy: dict, wal
         patches=_patches, body_bbox=prep["body_bbox"], L=analysis["L"],
         domain_min=dmin, domain_max=dmax, strategy=strategy, cell_budget=cell_budget,
         max_halvings=EXTERNAL_MAX_HALVINGS, snap_wall=_sized_here,
-        wall_area=float(analysis.get("surface_area") or 0.0) or None, fit_run=_sized_here)
+        wall_area=float(analysis.get("surface_area") or 0.0) or None, fit_run=_sized_here,
+        wake=_external_wake_request(workspace, strategy))
     plan = summary.get("run_plan") or {}
     if plan and not plan.get("fits"):
         # A RUN THAT WOULD CLEARLY NOT FINISH is not started: it is refused here, in seconds, with

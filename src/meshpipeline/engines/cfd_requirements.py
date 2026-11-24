@@ -3228,6 +3228,35 @@ def wall_function_jump(workspace, quality: Mapping | None) -> dict | None:
             "first_m": first}
 
 
+#: CFDREQ-28: the share of the wall the planned stack must stand on - the layer row's own bar (_layers_row)
+STACK_KEPT_PCT = 80.0
+
+
+def stack_lost(workspace, quality: Mapping | None) -> dict | None:
+    """CFDREQ-28: the planned layer stack (the y+ row's, any wall treatment) kept on less of the wall than the layer
+    row needs (STACK_KEPT_PCT), on an external flow's body: {"coverage_pct", "layers", "treatment", "first_m"}. None
+    for internal flow (CFDREQ-27 and cfMesh's own home there answer it), when the plan has no stack, when the
+    coverage was not measured, or when it is kept on enough of the wall.
+
+    snappyHexMeshDict's layer stage drops a stack wherever a layer would fold a cell past its quality bars; on real
+    bodies a resolved 8-16 layer stack, or a laminar one sized on its boundary layer (CFDREQ-22), is lost on 20-50%
+    of the wall (CFD board batch 7, external: 45 of 110 laminar bodies kept it on under 80%), and its levers - the
+    band, the cap, the buffer cells - did not lift that. cfMesh splits its wall cell into the layers, so the next
+    engine builds the stack."""
+    from meshpipeline.engines.workspace_facts import read_flow_topology
+    if read_flow_topology(workspace) != "external":
+        return None
+    rows = _plan(workspace).get("rows")
+    stack = next((r for r in (rows.values() if isinstance(rows, Mapping) else ())
+                  if isinstance(r, Mapping) and (_num_or_none(r.get("layers")) or 0) >= 1
+                  and _num_or_none(r.get("first_m"))), None)
+    cover = _num_or_none((quality or {}).get("layer_coverage_pct")) if isinstance(quality, Mapping) else None
+    if stack is None or cover is None or cover >= STACK_KEPT_PCT:
+        return None
+    return {"coverage_pct": round(cover, 1), "layers": int(stack["layers"]),
+            "treatment": str(stack.get("treatment") or ""), "first_m": float(stack["first_m"])}
+
+
 _WALL_LEVEL = re.compile(r"refinementSurfaces\s*\{\s*[\w.]+\s*\{\s*level\s*\(\s*(\d+)\s+(\d+)\s*\)")
 _BLOCKS = re.compile(r"hex\s*\([^)]*\)\s*\(\s*(\d+)\s+(\d+)\s+(\d+)\s*\)")
 

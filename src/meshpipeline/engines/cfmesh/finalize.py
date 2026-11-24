@@ -2,6 +2,7 @@
 # Boundaries: delivery means every required member of the declared bundle is present.
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 
@@ -208,6 +209,13 @@ def finalize(workspace_dir: str, intake_patches: list, engine: str, domain: str 
         build_surface_msh(ws)
     except Exception:
         logger.exception("Executor: surface deliverable export failed (non-fatal)")
+    # CFDREQ-28: THE WAKE REFINEMENT an external case authored (engines/wake_region.py), read as snappyHexMesh's is
+    try:
+        _w = json.loads((ws / "wake_refinement.json").read_text())
+        if isinstance(_w, dict):
+            q["wake_refinement"] = _w
+    except (OSError, ValueError):
+        pass
     # each boundary's AREA, off the same VTK boundary: the shared port-area gate holds every
     # inlet/outlet to the opening the user declared (engines/region_check.py)
     try:

@@ -184,6 +184,24 @@ def _gate_wall_function_layer(ctx: GateCtx) -> tuple[bool, str]:
         FailureCause.MESH_QUALITY.value, **got)
 
 
+def _gate_layer_stack(ctx: GateCtx) -> tuple[bool, str]:
+    """CFDREQ-28: a planned layer stack snappyHexMesh kept on less of the wall than the layer row needs is refused
+    here, with no lever on this engine (engine_fallback.GATE_LEVERS): the ladder moves the run to an engine that
+    splits its wall cell into the layers, and this sound mesh is kept as the fallback (DELIVERABLE_GATES), chosen
+    over the other engine's mesh when its wall is the nearer the bar (gate_distance). A plan with no stack, or a
+    wall that was not measured, is not judged."""
+    from meshpipeline.engines.cfd_requirements import STACK_KEPT_PCT, stack_lost
+    got = stack_lost(ctx.workspace, ctx.manifest_or_load().get("quality") or {})
+    if not got:
+        return True, ""
+    return False, refuse(
+        f"The {got['layers']}-layer stack was kept on {got['coverage_pct']:.1f}% of the wall, under the "
+        f"{STACK_KEPT_PCT:.0f}% the layer row needs: snappyHexMesh drops layers wherever one would fold a cell, and "
+        "no setting of its layer stage kept this stack; an engine that splits the wall cell into the layers builds it "
+        "instead.",
+        FailureCause.MESH_QUALITY.value, **got)
+
+
 def _gate_quality_floor(ctx: GateCtx) -> tuple[bool, str]:
     # This engine's OWN declared gating criteria, enforced before the reviewer can see the mesh.
     # The bars and thresholds are the engine's (engines/snappy/criteria.py); this gate adds none.
@@ -227,6 +245,11 @@ FLOW_GATES: tuple[GateSpec, ...] = (
     # on this engine, so the ladder's next engine builds it and this mesh is the fallback
     GateSpec(key="wall_function_layer", check=_gate_wall_function_layer, section="MESH",
              proves="The wall-function first layer sits on cells that suit it - no cell more than twice thinner above it over the wall the y+ row counts",
+             cause=FailureCause.MESH_QUALITY),
+    # CFDREQ-28: the planned stack kept on under the layer row's share of the wall - no lever on this engine, so the
+    # ladder's next engine builds it and this mesh is the fallback
+    GateSpec(key="layer_stack", check=_gate_layer_stack, section="MESH",
+             proves="The planned boundary-layer stack stands on the share of the wall the layer row needs (80%)",
              cause=FailureCause.MESH_QUALITY),
     # SHARED with every flow engine (engines/cad_fidelity.py), and LAST: a sound, correctly named mesh
     # is held to the CAD it was built from - its boundary on the surface, none of the surface
