@@ -61,7 +61,8 @@ run_unit() { # group shard n split wave arms cap
     --split-file /eval/splits/$split.json --shard-plan /eval/splits/plan_$group.json --shard ${shard}/${n} \
     --inputs /eval/inputs --out /eval/out --plan-provenance "$P" --route $ROUTE --wave-id $wid \
     --wave-type normal --n-shards $n --ledger-path /eval/ledger/$wid-s$shard.jsonl --marker-bucket $BUCKET \
-    --model-usd-cap $cap --file-usd-cap $FILE_USD_CAP > $T/out/$name.log 2>&1
+    --model-usd-cap $cap --file-usd-cap $FILE_USD_CAP ${FILE_TIMEOUT_S:+--file-timeout-s $FILE_TIMEOUT_S} \
+    ${SEARCH_WALL_S:+--search-wall-s $SEARCH_WALL_S} > $T/out/$name.log 2>&1
   echo $? > $T/out/$name.rc; date -u +%FT%TZ > $T/out/$name.end
 }
 
