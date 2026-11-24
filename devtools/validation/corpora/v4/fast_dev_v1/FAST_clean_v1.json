@@ -1,0 +1,247 @@
+{
+ "PROVISIONAL": "FAST-DEV v1: a FROZEN 20-file subset of the v2 splits for the fast loop. NEVER edit: a changed list is FAST-DEV v2 with a new name.",
+ "duplicate_part": "dev_v2 holds one part twice (4c1fc7d5579d == e63710eae340, Lane A A11); only 4c1fc7d5579d is here",
+ "files": [
+  {
+   "family": "",
+   "fast_why": "clean control (lowest sha256 of its source)",
+   "first_failing_layer": null,
+   "group": null,
+   "kind": null,
+   "kind_status": null,
+   "name": "00560521/00560521_58b005a0ffd12b0ffcc8c80c_step_000.step",
+   "sha256": "07088e489198481d8c78bd6ec09960502afe6bd344248a7c437d85b5da767393",
+   "source": "abc_pass",
+   "verdict_summary": {
+    "clean": true,
+    "counts_for_scoreboard": true,
+    "faithful": true,
+    "hard": [],
+    "out_of_scope": false,
+    "panel": [
+     {
+      "error_kind": null,
+      "min_sicn": 0.45786003811600984,
+      "name": "gmsh_prod",
+      "status": "pass"
+     },
+     {
+      "error_kind": null,
+      "min_sicn": 0.3442532870319726,
+      "name": "gmsh_default",
+      "status": "pass"
+     },
+     {
+      "error_kind": null,
+      "min_sicn": 0.29923462433705117,
+      "name": "gmsh_alt",
+      "status": "pass"
+     },
+     {
+      "error_kind": null,
+      "min_sicn": 0.013776207226513064,
+      "name": "netgen_occ",
+      "status": "pass"
+     }
+    ],
+    "soft": [],
+    "tier": "full",
+    "valid": true
+   }
+  },
+  {
+   "family": "",
+   "fast_why": "clean control (lowest sha256 of its source)",
+   "first_failing_layer": null,
+   "group": null,
+   "kind": null,
+   "kind_status": null,
+   "name": "00531333/00531333_0e19ae56e9012a817ddde919_step_000.step",
+   "sha256": "0b20e9cd191daeef5d776fa65ddd419207eef092c6e15550a0f660c2e7b15e3e",
+   "source": "abc_pass",
+   "verdict_summary": {
+    "clean": true,
+    "counts_for_scoreboard": true,
+    "faithful": true,
+    "hard": [],
+    "out_of_scope": false,
+    "panel": [
+     {
+      "error_kind": null,
+      "min_sicn": 0.39986265107717617,
+      "name": "gmsh_prod",
+      "status": "pass"
+     },
+     {
+      "error_kind": null,
+      "min_sicn": 0.39986265107718116,
+      "name": "gmsh_default",
+      "status": "pass"
+     },
+     {
+      "error_kind": null,
+      "min_sicn": 0.22592436144889685,
+      "name": "gmsh_alt",
+      "status": "pass"
+     },
+     {
+      "error_kind": null,
+      "min_sicn": 0.5582019821017107,
+      "name": "netgen_occ",
+      "status": "pass"
+     }
+    ],
+    "soft": [],
+    "tier": "full",
+    "valid": true
+   }
+  },
+  {
+   "family": "",
+   "fast_why": "clean control (lowest sha256 of its source)",
+   "first_failing_layer": null,
+   "group": null,
+   "kind": null,
+   "kind_status": null,
+   "name": "00533633/00533633_5adbdd147a695984d76da473_step_005.step",
+   "sha256": "1352537ef98eea825447bad9c83224bf49438879e5ccf1c3820f7fadc4514a17",
+   "source": "abc_pass",
+   "verdict_summary": {
+    "clean": true,
+    "counts_for_scoreboard": true,
+    "faithful": true,
+    "hard": [],
+    "out_of_scope": false,
+    "panel": [
+     {
+      "error_kind": null,
+      "min_sicn": 0.3933835456493611,
+      "name": "gmsh_prod",
+      "status": "pass"
+     },
+     {
+      "error_kind": null,
+      "min_sicn": 0.28153092496349613,
+      "name": "gmsh_default",
+      "status": "pass"
+     },
+     {
+      "error_kind": null,
+      "min_sicn": 0.2390457543933387,
+      "name": "gmsh_alt",
+      "status": "pass"
+     },
+     {
+      "error_kind": null,
+      "min_sicn": 0.5061293920648957,
+      "name": "netgen_occ",
+      "status": "pass"
+     }
+    ],
+    "soft": [],
+    "tier": "full",
+    "valid": true
+   }
+  },
+  {
+   "family": "",
+   "fast_why": "clean control (lowest sha256 of its source)",
+   "first_failing_layer": null,
+   "group": "nist-ftc-11",
+   "kind": null,
+   "kind_status": null,
+   "name": "NIST-FTC-CTC-PMI-CAD-models/FTC Definitions/nist_ftc_11_asme1_rb.stp",
+   "sha256": "d94ee0bed48f06e94621a03b6b088e16fac1bf70607f0d31dfbe87a17bb2ec7e",
+   "source": "nist",
+   "verdict_summary": {
+    "clean": true,
+    "counts_for_scoreboard": true,
+    "faithful": true,
+    "hard": [],
+    "out_of_scope": false,
+    "panel": [
+     {
+      "error_kind": null,
+      "min_sicn": 0.15938716337419392,
+      "name": "gmsh_prod",
+      "status": "pass"
+     },
+     {
+      "error_kind": null,
+      "min_sicn": 0.1338166988939251,
+      "name": "gmsh_default",
+      "status": "pass"
+     },
+     {
+      "error_kind": null,
+      "min_sicn": 0.2528651931099109,
+      "name": "gmsh_alt",
+      "status": "pass"
+     },
+     {
+      "error_kind": null,
+      "min_sicn": 0.31343752826742544,
+      "name": "netgen_occ",
+      "status": "pass"
+     }
+    ],
+    "soft": [],
+    "tier": "full",
+    "valid": true
+   }
+  },
+  {
+   "family": "",
+   "fast_why": "clean control (lowest sha256 of its source)",
+   "first_failing_layer": null,
+   "group": null,
+   "kind": null,
+   "kind_status": null,
+   "name": "abc/0052_00525018_7f22ad51345b0064a51a8387_step_009.step",
+   "sha256": "e26f6abcb88aec0f1881e38c7e936820ee89148b3afb7087f3bc6c5edd535b56",
+   "source": "abc_fail",
+   "verdict_summary": {
+    "clean": true,
+    "counts_for_scoreboard": true,
+    "faithful": true,
+    "hard": [],
+    "out_of_scope": false,
+    "panel": [
+     {
+      "error_kind": null,
+      "min_sicn": 0.037938514986706334,
+      "name": "gmsh_prod",
+      "status": "pass"
+     },
+     {
+      "error_kind": null,
+      "min_sicn": 0.035719864361535514,
+      "name": "gmsh_default",
+      "status": "pass"
+     },
+     {
+      "error_kind": null,
+      "min_sicn": 0.03271833148823242,
+      "name": "gmsh_alt",
+      "status": "pass"
+     },
+     {
+      "error_kind": null,
+      "min_sicn": 0.23193324922293046,
+      "name": "netgen_occ",
+      "status": "pass"
+     }
+    ],
+    "soft": [],
+    "tier": "full",
+    "valid": true
+   }
+  }
+ ],
+ "frozen": "2026-11-24",
+ "split": "clean",
+ "subset_of": {
+  "clean": "PROVISIONAL_clean_v2.json",
+  "dev": "PROVISIONAL_dev_v2.json"
+ }
+}

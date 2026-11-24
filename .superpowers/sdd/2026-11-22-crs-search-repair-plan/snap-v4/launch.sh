@@ -20,7 +20,7 @@ set -u -o pipefail
 HERE=$(cd "$(dirname "$0")" && pwd); REPO=$(git -C "$HERE" rev-parse --show-toplevel)
 COMMIT_ARG=${1:?usage: launch.sh <commit> [profile] [--dry-run]}; PROFILE=v4; DRY=0
 for x in "${@:2}"; do case $x in --dry-run) DRY=1;; *) PROFILE=$x;; esac; done
-KEYS="REGIONS TARGET_MIN TOTAL_USD MAX_RUN IMAGE IMAGE_COMMIT OPS"
+KEYS="REGIONS TARGET_MIN TOTAL_USD MAX_RUN IMAGE IMAGE_COMMIT OPS ARM_GROUPS FILE_TIMEOUT_S SEARCH_WALL_S"
 for k in $KEYS; do eval "OVR_$k=\${$k:-}"; done
 source "$HERE/profiles/$PROFILE.env"
 for k in $KEYS; do eval "v=\$OVR_$k"; [ -n "$v" ] && eval "$k=\$v"; done
@@ -54,6 +54,7 @@ fi
 # ---------------------------------------------------------------- 3. splits
 resolve_split() { # spec override out
   local spec=$1 override=$2 out=$3
+  case $spec in COMMIT:*) spec="$COMMIT:${spec#COMMIT:}";; esac   # a split frozen IN the run commit
   if [ -n "$override" ]; then [ -f "$override" ] || die "split file $override not found"; cp "$override" "$out"; echo "file:$override"; return; fi
   if git -C "$REPO" cat-file -e "$spec" 2>/dev/null; then git -C "$REPO" show "$spec" > "$out"; echo "git:$spec@$(git -C "$REPO" rev-parse "${spec%%:*}")"; return; fi
   die "split $spec is not written yet (pass DEV_SPLIT=/path or CLEAN_SPLIT=/path)"
@@ -71,7 +72,9 @@ python3 -I "$HERE/prep.py" --code "$RUN/code" --profile "$PROFILE" --dev-split "
   --clean-split "$RUN/splits/clean.json" --dev-wave "$DEV_WAVE" --clean-wave "$CLEAN_WAVE" \
   --total-usd "$TOTAL_USD" --file-usd-cap "$FILE_USD_CAP" --inputs-ls "$RUN/inputs_ls.txt" \
   --prior-rows "$PRIOR" --regions $REGIONS --target-min "$TARGET_MIN" --route "$ROUTE" \
-  --label "$LABEL" --ts "$TS" ${OPS:+--ops "$OPS"} --out "$RUN/splits" | tee -a "$RUN/launch.log"
+  --label "$LABEL" --ts "$TS" ${OPS:+--ops "$OPS"} ${ARM_GROUPS:+--groups "$ARM_GROUPS"} \
+  ${FILE_TIMEOUT_S:+--file-timeout-s "$FILE_TIMEOUT_S"} ${SEARCH_WALL_S:+--search-wall-s "$SEARCH_WALL_S"} \
+  --out "$RUN/splits" | tee -a "$RUN/launch.log"
 [ "${PIPESTATUS[0]}" = 0 ] || die "prep refused"
 cp "$RUN/splits/launch_manifest.json" "$RUN/splits/vm_plan.json" "$RUN/"
 
@@ -126,6 +129,8 @@ ROUTE=$ROUTE
 BUCKET=$BUCKET
 CACHE=gs://$BUCKET/eval/snap-$LABEL-$TS/verdict-cache
 SYNC=$SYNC
+FILE_TIMEOUT_S=${FILE_TIMEOUT_S:-}
+SEARCH_WALL_S=${SEARCH_WALL_S:-}
 EOF
 cp "$HERE/vm_run.sh" "$HERE/post.py" "$HERE/regroup.py" "$RUN/tools/"
 python3 -I -c "
