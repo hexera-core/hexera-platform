@@ -264,16 +264,21 @@ def with_brep_orientation(pool: Any, brep_path: str, v: Verdict) -> Verdict:
     """`v` made INVALID when the BREP it judged holds a solid of negative signed volume (lane C15). Layer 1 judges the
     STEP re-export, whose round trip re-orients an inside-out solid (dev 0051_00510567: -13.46 mm3 read back as
     +13.46), so the finding has to be made on the BREP, before the export hides it. Same code as layer 1's own:
-    `non_positive_volume`, with `seen_on: brep`. A pool failure says nothing and changes nothing."""
+    `non_positive_volume`, with `seen_on: brep`, and layer 1's own threshold (<= 0). A check that could not run (pool
+    failure, the 120 s timeout) leaves validity as it was but is NOT silent: soft `orientation_unchecked` with why."""
     from meshpipeline.cad.repair_v4.verdict.valid import Finding
+
+    def unchecked(why: str) -> Verdict:
+        return replace(v, valid=replace(v.valid, soft=[*v.valid.soft, Finding("orientation_unchecked", [],
+                                                                              {"reason": why[:200]})]))
 
     try:
         got = pool.call("valid_signed_volumes", {"brep_path": brep_path}, timeout_s=120.0)
-    except Exception:  # noqa: BLE001 - a pool that cannot answer says nothing about the part
-        return v
+    except Exception as exc:  # noqa: BLE001 - a pool that cannot answer says nothing about the part
+        return unchecked(f"{type(exc).__name__}: {exc}")
     if not got.ok or got.value is None:
-        return v
-    neg = [(i, float(x)) for i, x in enumerate(got.value.get("volumes") or [], start=1) if float(x) < 0.0]
+        return unchecked(f"{got.status}: {got.error}")
+    neg = [(i, float(x)) for i, x in enumerate(got.value.get("volumes") or [], start=1) if float(x) <= 0.0]
     if not neg:
         return v
     found = [Finding("non_positive_volume", [f"S{i}"], {"volume": x, "seen_on": "brep (before the STEP export)"})
