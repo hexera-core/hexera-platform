@@ -212,6 +212,9 @@ def test_a_face_and_a_file_go_together_a_refused_send_keeps_both_and_the_face_lo
                    part_matches: {status: 'done', unsure: [], rows: [{phrase: 0, quote: '2 mm here', words: '2 mm here',
                    size: '2 mm', parts: [], picked: true, faces: [{id: 'Face_12', label: 'Face 12 · round Ø15 mm'}]}]}}, null);
       await sleep(0);
+      // the list lives in the plan bar above the chat box: opened, as the user opens it
+      const list = document.querySelector('#plan-bar .pb-list');
+      if (list && list.hidden) document.querySelector('#plan-bar .pb-count').click();
       const note = document.querySelector('.rc-pm-item.face');
       return {before, refused, sent, done, turn, onNote: note ? look(note) : []};
     })()""".replace("__S__", sid), timeout=60)
@@ -277,6 +280,10 @@ def test_the_checklist_shows_a_picked_face_and_a_click_in_the_parts_view_with_no
     assert live.evaluate("document.querySelectorAll('.rc-pm-item.active').length") == 0, "a face row is never re-tied"
     # NO ROW OPEN: a click on the parts view picks the face there (not a part for a row)
     assert live.evaluate("window._vdbg.facepick.ready()"), "the stage under the parts is settled"
+    # THE ID PICTURE IS RE-TAKEN after every move of the view (a resize as the page settles is one): until it is, the
+    # parts view answers "nothing here" everywhere - so the probe waits for it, as the sibling test does after its
+    # row click. Probed while it was being re-taken, the test failed now and then on a model that was drawn.
+    live.wait_for("window.__view.debug.ready()", timeout=10, what="the parts' id picture to be taken again")
     xy = live.evaluate(SEEN_AT.replace("__SLOT__", "2"))
     assert xy, "part 2 is seen on the model"
     live.click(xy[0], xy[1])

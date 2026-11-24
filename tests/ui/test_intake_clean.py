@@ -102,7 +102,8 @@ def test_an_engine_named_at_the_plan_step_is_typed_in_the_chat_as_said(live):
       await c.say('external aero of this car');
     })()""".replace("__JSON__", _json_fetch()).replace("__BRIEF__", json.dumps({**_brief(), "proceed_ask": "x"}))
        .replace("__S__", session), timeout=60)
-    live.wait_for("document.querySelector('.req-card .rc-go')", timeout=30, what="the plan card")
+    live.wait_for("document.querySelector('.req-card') && document.querySelector('#plan-bar .rc-go')", timeout=30,
+                  what="the plan card and its Proceed")
     assert live.evaluate("document.querySelectorAll('.req-card .rc-notes-in, .req-card textarea').length") == 0
     live.evaluate("""(() => {
       const inp = document.getElementById('chat-input');

@@ -304,6 +304,12 @@ def _norm(text: str) -> str:
     return " ".join(_DASHES.sub("-", str(text or "")).casefold().split())
 
 
+def quoted_in(quote: str, text: str) -> bool:
+    """The reader's own word-for-word test (`check`): whether a phrase's quote stands in a text."""
+    q = _norm(quote)
+    return bool(q) and q in _norm(text)
+
+
 def _numbers(text: str) -> list[float]:
     return [float(m.replace(",", ".")) for m in _NUM.findall(_DASHES.sub("-", str(text or "")))]
 

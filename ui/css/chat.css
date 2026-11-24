@@ -143,14 +143,12 @@
   border:0;border-radius:8px;background:none;color:var(--text-faint);cursor:pointer;transition:color .12s,background .12s}
 .attach-clip:hover:not(:disabled){color:var(--text);background:var(--surface-2)}
 .attach-clip:disabled{opacity:.4;cursor:default}
-.rc-notes-row .attach-clip{width:28px;height:34px;border-radius:var(--r-md)}
 .attach-over{box-shadow:inset 0 0 0 1px var(--focus-edge);border-radius:var(--r-md)}
 /* the chat box's chips and its one plain line sit under the box, as wide as it */
 #input-bar>.box-chips,#input-bar>.box-msg{max-width:1060px;margin-left:auto;margin-right:auto}
 #input-bar>.box-chips,#input-bar>.box-msg{padding-left:40px}
 #app.wb #input-bar>.box-chips,#app.wb #input-bar>.box-msg{max-width:none}
 /* the clip narrows the notes box: its one-line placeholder never shows a sideways scrollbar */
-.req-card .rc-notes-row .rc-notes-in:placeholder-shown{overflow:hidden}
 .box-msg{margin-top:4px;color:var(--danger);font-size:var(--fs-sm)}
 .box-msg:empty{display:none}
 /* what a message or a note carried: the picture itself, large enough to read (at most 240 x 180, by its own shape,

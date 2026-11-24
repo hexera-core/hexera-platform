@@ -135,7 +135,7 @@ def test_a_picture_alone_is_sent_and_shows_in_the_users_bubble(live):
 
 
 # A SENT PICTURE IS SEEN, NOT GUESSED AT: at most 240 px wide and 180 px high by its own shape, never stretched
-# past its own size, the same in the bubble and in the notes, and a click opens it whole.
+# past its own size, in the user's bubble, and a click opens it whole.
 SIZES = {"a1": (1600, 1200, 240, 180), "a2": (2000, 400, 240, 48), "a3": (300, 900, 60, 180), "a4": (100, 60, 100, 60)}
 
 
@@ -149,23 +149,23 @@ def test_a_sent_picture_is_shown_large_enough_to_read_and_opens_on_a_click(live)
       window.fetch = async (url, opts) => { const id = String(url).split('/').pop();
         return blobs[id] ? new Response(blobs[id], {status: 200, headers: {'Content-Type': 'image/png'}}) : stubbed(url, opts); };
       const rows = Object.keys(SIZES).map(k => ({id: k.padEnd(16, '0'), kind: 'image', name: k + '.png'}));
-      Stage.brief({purpose: 'structural', engine: 'gmsh', user_notes: [{text: 'see the pictures', attachments: rows}]}, () => {});
       Stage.chat('user', 'see the pictures', undefined, {attachments: rows, sid: 's-attach'});
       const imgs = () => [...document.querySelectorAll('.att-img img')];
-      for (let i = 0; i < 100 && !(imgs().length === 8 && imgs().every(m => m.complete && m.naturalWidth)); i++) await sleep(30);
+      for (let i = 0; i < 100 && !(imgs().length === 4 && imgs().every(m => m.complete && m.naturalWidth)); i++) await sleep(30);
       await sleep(50);
       const look = (root) => [...root.querySelectorAll('.att-img')].map(a => { const m = a.querySelector('img'),
         r = m.getBoundingClientRect(), box = root.getBoundingClientRect(), f = a.getBoundingClientRect();
         return {w: Math.round(r.width), h: Math.round(r.height), nat: m.naturalWidth,
                 hugs: f.width - r.width <= 2.5 && f.height - r.height <= 2.5,
                 round: parseFloat(getComputedStyle(a).borderTopLeftRadius) > 0, inside: r.right <= box.right + 0.5}; });
-      const note = document.querySelector('.rc-notes-list li.rc-note'), bubble = document.querySelector('#cc .im.user');
-      const wide = {note: look(note), bubble: look(bubble)};
+      // the plan step has no notes box any more (NOTE-18): the bubble is where a sent picture is seen
+      const note = document.querySelector('#cc .im.user');
+      const wide = {bubble: look(note)};
       const nr = note.getBoundingClientRect();
       window.__noteRect = {x: nr.left, y: nr.top, width: nr.width, height: nr.height, scale: 1};
-      // A NARROW PANEL: the pictures stay inside the note
-      const host = document.getElementById('stage'), was = host.style.width;
-      host.style.width = '260px'; await sleep(50);
+      // A NARROW PANEL: the pictures stay inside the bubble
+      const host = document.getElementById('cc'), was = host.style.width;
+      host.style.width = '200px'; await sleep(50);
       const narrow = look(note);
       host.style.width = was;
       // A CLICK opens the stored picture whole, in a new tab
@@ -181,7 +181,7 @@ def test_a_sent_picture_is_shown_large_enough_to_read_and_opens_on_a_click(live)
         with open(os.path.join(os.environ["THUMB_SHOTS"], "note_pictures.png"), "wb") as fh:
             fh.write(base64.b64decode(shot["data"]))
     want = [{"w": w, "h": h} for _, _, w, h in SIZES.values()]
-    for where in ("note", "bubble"):
+    for where in ("bubble",):
         got = out["wide"][where]
         assert [{"w": g["w"], "h": g["h"]} for g in got] == want, (where, got)
         # the rounded frame hugs the picture: no empty band beside or under it

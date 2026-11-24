@@ -254,6 +254,8 @@ def test_the_picture_tints_a_rows_parts_and_a_click_on_it_picks_a_part(live):
                      picture: async (n) => (n === 'card_a' ? shaded : ids)};
       Stage.brief({purpose: 'structural', engine: 'gmsh', user_notes: [{text: 'the rail'}], part_matches: done},
                   async () => {}, parts);
+      // the list lives in the plan bar above the chat box (NOTE-18): opened, as the user opens it
+      document.querySelector('#plan-bar .pb-count').click();
       await new Promise(r => setTimeout(r, 400));
       const px = (x) => { const c = document.querySelector('.rc-pm-pic');
         return [...c.getContext('2d').getImageData(x, 5, 1, 1).data].slice(0, 3); };

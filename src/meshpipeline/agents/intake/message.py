@@ -361,9 +361,15 @@ async def _settle(inbound: InboundMessage, db, *, gate: dict, locked, messages: 
         from meshpipeline.agents.intake import plan_talk as PT
         talk = PT.INTAKE if _ours(inbound.content, messages) else PT.reading(
             inbound.content, carries=bool(inbound.attachments or inbound.faces), asked=PT.asked_last(messages[:-1]),
-            consent=_consent.reading(inbound.content, named=(engine,) if engine else ()))
+            consent=_consent.reading(inbound.content, named=(engine,) if engine else ()), engine=engine)
         if talk == PT.GO:
             intent = ap.APPROVE_INTENT
+        if talk == PT.BOTH:
+            # "use cfMesh at 2 mm": the size is kept as the user's requirement now, and the turn goes on to the
+            # intake, which switches the plan as it always did (the note is not kept twice: capture keys it alike)
+            await _keep_requirement(inbound, db, locked=locked, messages=messages, session_repo=session_repo)
+            logger.info("intake message: a requirement with a plan change - kept, and the plan changes (%s) - "
+                        "session=%s", PT.RULE, inbound.session_id)
         if uc.needs_confirmation(locked):
             # THE UNIT BEFORE THE RUN. A run cannot start on a file whose scale nobody has named
             # (application/dispatch_contract refuses the pair), so an approval given while the
@@ -387,14 +393,16 @@ async def _settle(inbound: InboundMessage, db, *, gate: dict, locked, messages: 
                     status=MessageStatus.approval_deferred, reply=reply, awaiting_confirmation=True,
                     transition=GateTransition(change=GateChange.approval_deferred, revision=revision,
                                               approval_status=ap.AWAITING))
-        if talk in (PT.NOTE, PT.ASK):
+        if talk in (PT.NOTE, PT.ASK, PT.HOLD):
             # the plan stands, one turn further on, and stays fresh while the user talks it through
             gate["approval"] = {**(ap.defer(approval) or {}), "expires_at": time.time() + ap.APPROVAL_TTL_S}
-            if talk == PT.ASK:
+            if talk in (PT.ASK, PT.HOLD):
+                # asked once whether to start; or "wait": nothing starts, nothing is kept, and we say so
+                line = PT.ASK_LINE if talk == PT.ASK else PT.HOLD_LINE
                 await session_repo.set_intake_gate(db, inbound.session_id, gate)
-                await session_repo.append_message(db, inbound.session_id, "assistant", PT.ASK_LINE)
+                await session_repo.append_message(db, inbound.session_id, "assistant", line)
                 return MessageOutcome(
-                    status=MessageStatus.approval_deferred, reply=PT.ASK_LINE, awaiting_confirmation=True,
+                    status=MessageStatus.approval_deferred, reply=line, awaiting_confirmation=True,
                     transition=GateTransition(change=GateChange.approval_deferred, revision=revision,
                                               approval_status=ap.AWAITING))
             note = await _keep_requirement(inbound, db, locked=locked, messages=messages, session_repo=session_repo)
@@ -1194,13 +1202,6 @@ async def _keep_requirement(inbound: InboundMessage, db, *, locked, messages: li
                 faces=list(last.get("faces") or ()))
     await session_repo.set_user_notes(db, inbound.session_id, [note])
     return note
-
-
-async def say_reply(session_id: uuid.UUID, reply: str, *, session_repo, db_factory) -> None:
-    """Our answer to a requirement at the plan step (NOTE-18), kept in the conversation so a reload shows it."""
-    async with db_factory() as db:
-        await session_repo.append_message(db, session_id, "assistant", reply)
-        await db.commit()
 
 
 def _carried_here(session: Any, attachments: Sequence[Any], faces: Sequence[Any]) -> dict:

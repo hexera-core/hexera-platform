@@ -28,6 +28,8 @@ let deps = {
   chat() {},
   // a quiet "Reading…" where the reply will be, while a message is answered (returns what to remove)
   pending() { return null; },
+  // NOTE-19: the reply comes later, with the card's poll of the reading - "Reading…" is handed over until then
+  replyLater(el) { if (el && el.remove) el.remove(); },
   brief() {},
   onJobStarted() {},
   // advisory: the empty state's format line, filled from the server's capability description
@@ -472,12 +474,17 @@ async function sendText(txt, { again = false, extra = null } = {}) {
   // "Reading…" stands where the reply will be, and goes whatever comes back
   const waiting = again ? null : deps.pending();
   try {
-    const d = await sendMessage(sessionId, txt, extra || {}).finally(() => { if (waiting && waiting.remove) waiting.remove(); });
+    // NOTE-19: a reading that takes longer than the send waits: the send answers at once, "Reading…" stays, and
+    // the reply comes with the card's poll of the reading (no request is held open for it)
+    const d = await sendMessage(sessionId, txt, extra || {}).then(
+      (r) => { if (waiting && waiting.remove && !(r && r.reply_later)) waiting.remove(); return r; },
+      (err) => { if (waiting && waiting.remove) waiting.remove(); throw err; });
     // the chips go only once the message is in: a refused send keeps the pictures, files and faces
     if (carries) { chips.clear("chat"); sayUnder("chat", ""); }
-    if (!startsRun(d)) deps.chat("assistant", d.reply);
+    if (!startsRun(d) && !d.reply_later) deps.chat("assistant", d.reply);
     deps.choices(d.choices || [], sendText);
     deps.brief(d.brief);
+    if (d.reply_later) deps.replyLater(waiting);
     // THE FLOW THE USER SAID (the flow-kind question's buttons): the open stage's form takes it before Proceed
     if (d.stage_flow && _stage && _stage.preset) _stage.preset(d.stage_flow);
     if (d.yes_after_reading && !again) {

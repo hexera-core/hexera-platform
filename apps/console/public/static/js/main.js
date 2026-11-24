@@ -249,6 +249,7 @@ configureComposer({
   // the user's bubble is handed back: a refused send that carried files takes it away again
   chat: (role, text, extra) => Stage.chat(role, text, undefined, extra),
   pending: () => Stage.pending(),
+  replyLater: (el) => Stage.replyLater(el),
   brief: (b) => Stage.brief(b, null, briefParts, proceedPlan),
   // a yes before Finalize notes: wait (a minute at most) for the reading the server started
   notesRead: async () => {

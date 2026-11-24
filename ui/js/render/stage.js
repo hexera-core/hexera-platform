@@ -113,6 +113,7 @@ export const Stage = {
     seatUploadButton();
     this._followScroll();
     clearInterval(this._tick);this.proc=null;this._briefEl=null;this._briefSig='';
+    const bar=document.getElementById('plan-bar');if(bar)bar.remove();
     this._reset();},
   /* A RUN STARTS IN THE CONVERSATION. Nothing said so far is cleared: the last run's box (if any) stays where it
      is, finished, and gives up the live ids; the plan card stays as approved, without the notes box the run can
@@ -123,16 +124,16 @@ export const Stage = {
     const p=this.proc;
     if(p){p.querySelectorAll('[id]').forEach(e=>e.removeAttribute('id'));
       const cb=p.querySelector('.proc-cancel');if(cb){cb.hidden=true;cb.onclick=null;}}
-    const b=this._briefEl;
-    if(b){b.querySelectorAll('.rc-notes-box,.rc-fin-btn,.rc-go').forEach(e=>e.remove());
-      const pm=b.querySelector('.rc-pm');if(pm)pm.onclick=pm.onkeydown=pm.onmouseover=pm.onmouseleave=null;}
+    // the plan bar (the list and Proceed) belongs to the plan step: the run's own account says what was applied
+    const bar=document.getElementById('plan-bar');if(bar)bar.remove();
     this.proc=null;this._briefEl=null;this._briefSig='';
     this._reset();},
   // what belongs to one run, cleared for the next
   _reset(){
     this.nodes={};this.rows=null;this._activeKey=null;this._building=false;this._ev=null;this._unit='';this.proc=null;this.tl=null;
     // the run started (or a new conversation): the card's model gives its GL context back
-    clearTimeout(this._pmTimer);if(this._pmDrop)this._pmDrop();this._pm=null;this._pmOpen=null;this._pmHover=null;this._pmHoverPart=null;this._pm3dFailed=false;
+    clearTimeout(this._pmTimer);if(this._pmDrop)this._pmDrop();this._pm=null;
+    if(this._pmWaiting&&this._pmWaiting.remove)this._pmWaiting.remove();this._pmWaiting=null;this._pmOpen=null;this._pmHover=null;this._pmHoverPart=null;this._pm3dFailed=false;
     if(this._pmSaves){this._pmSaves.forEach(t=>clearTimeout(t));this._pmSaves.clear();}
     // A NEW RUN STARTS CLEAN. The attempt the last run ended on, the attempts that built and a
     // mesh bar a run left open when it ended mid-mesh all belonged to that run: kept, the next
@@ -223,26 +224,67 @@ export const Stage = {
     // the card keeps ONE live list of what will be applied (the checklist, `.rc-pm`) - the user's own words are
     // already in the conversation, so they are not listed again here
     const live=!!(b.proceed_ask||(b.user_notes||[]).length);
-    // THE PLAN STEP'S ONE BUTTON, alone at the card's foot, right-aligned on its content edge: a press says
-    // "Proceed" in the chat, as a typed "go" would
-    const goRow=b.proceed_ask&&go?'<div class="rc-go-row"><button type="button" class="gc-proceed rc-go">Proceed</button></div>':'';
     const html=`<div class="who">Hexera · your request, as understood</div>
       <div class="req-card${(b.checks||[]).every(c=>c.status==='pass')?' ok':''}">
         ${thermal?`<div class="rc-h">Job sheet</div><p class="rc-sheet">${esc(b.job_sheet)}</p>`
           :'<div class="rc-h">Mesh plan</div>'}${rows}
         ${ck?`<div class="rc-h rc-h2">Checked</div>${ck}`:''}
-        ${live?'<div class="rc-pm"></div>':''}
-        ${goRow}
       </div>`;
     if(this._briefEl){this._briefEl.innerHTML=html;}
     else{this.clearEmpty();
       const g=document.createElement('div');g.className='im assistant';g.innerHTML=html;
       this.col().appendChild(g);this._briefEl=g;}
-    // the plan's Proceed is the card's own button now: the line is never said again under the card
+    // WHAT WILL BE APPLIED, AND PROCEED, STAY IN REACH: one slim bar pinned just above the chat box at this step
+    // (`_planBar`) holds the live list and the plan's one Proceed - not the card, which scrolls away
+    this._planBar(live,b.proceed_ask&&go?go:null);
     this._partMatches(b.part_matches,parts,'');
-    const goBtn=this._briefEl.querySelector('.rc-go');
-    if(goBtn)goBtn.onclick=()=>{if(goBtn.disabled)return;goBtn.disabled=true;go();};
     this.scrollBottom();},
+
+  /* THE PLAN BAR (NOTE-18): "3 requirements ▾ ........ Proceed", pinned above the chat box while the plan stands. The
+     count opens the list in place (each row: the words, the size, its face or part chips with their x); with no
+     requirement yet it is a quiet hint and the Proceed button. `go`: Proceed's press, or null (no Proceed). */
+  _planBar(live,go){
+    let bar=document.getElementById('plan-bar');
+    if(!live){if(bar)bar.remove();return;}
+    if(!bar){
+      bar=document.createElement('div');bar.id='plan-bar';
+      bar.innerHTML='<div class="pb-list" hidden><div class="rc-pm"></div></div>'
+        +'<div class="pb-line"><button type="button" class="pb-count" aria-expanded="false"></button>'
+        +'<span class="pb-hint"></span><button type="button" class="gc-proceed rc-go">Proceed</button></div>';
+      const host=document.getElementById('input-bar');
+      if(host)host.insertBefore(bar,host.firstChild);else document.body.appendChild(bar);
+      const count=bar.querySelector('.pb-count'),list=bar.querySelector('.pb-list');
+      count.onclick=()=>{const open=list.hidden;list.hidden=!open;count.setAttribute('aria-expanded',String(open));};}
+    const goBtn=bar.querySelector('.rc-go');
+    goBtn.hidden=!go;goBtn.disabled=false;
+    goBtn.onclick=()=>{if(goBtn.disabled||!go)return;goBtn.disabled=true;go();};
+    this._pbLine();},
+
+  // the bar's line: how many requirements will be applied (the list's rows), or the quiet hint
+  _pbLine(){
+    const bar=document.getElementById('plan-bar');if(!bar)return;
+    const m=this._pm,n=m?(m.rows||[]).length+(m.unsure||[]).length||(m.lines||[]).length:0;
+    const count=bar.querySelector('.pb-count'),hint=bar.querySelector('.pb-hint'),list=bar.querySelector('.pb-list');
+    const reading=!!(m&&m.status==='reading');
+    count.hidden=!n;
+    if(n)count.innerHTML=`<span>${n} requirement${n===1?'':'s'}</span><span class="pb-chev" aria-hidden="true"></span>`;
+    if(!n){list.hidden=true;count.setAttribute('aria-expanded','false');}
+    hint.textContent=reading?'Reading…':(n?'':'Type any mesh requirement below, or press Proceed.');},
+
+  // the plan bar's list element (the checklist lives there at the plan step)
+  _pmEl(){const bar=document.getElementById('plan-bar');return bar&&bar.querySelector('.rc-pm');},
+
+  /* A REPLY THAT COMES LATER (NOTE-19): the send answered before the reading landed; "Reading…" stays where the
+     reply will be, and the card's poll of the reading brings the reply, which takes its place */
+  replyLater(el){
+    if(this._pmWaiting&&this._pmWaiting!==el&&this._pmWaiting.remove)this._pmWaiting.remove();
+    this._pmWaiting=el||null;
+    if(this._pmPoll)this._pmPoll();},
+  _pmSay(text){
+    const w=this._pmWaiting;this._pmWaiting=null;
+    if(!text){if(w&&w.remove)w.remove();return;}
+    const g=this.chat('assistant',text);
+    if(w&&w.parentNode){w.parentNode.insertBefore(g,w);w.remove();}},
 
   /* THE PARTS YOUR NOTES MEAN, under the notes, before the yes: a row per size request ("frame rail · 3–4 mm")
      in its colour with its parts as small chips ("Part 7 · Bracket ✕"), and a row per phrase that could not be
@@ -254,26 +296,32 @@ export const Stage = {
      `parts`: {get(), pick(phrase, ids), picture(name), model(), mount(host, model, opts), host(), drop(host)}. */
   _partMatches(m,parts,ask){
     clearTimeout(this._pmTimer);
-    const el=this._briefEl&&this._briefEl.querySelector('.rc-pm');
+    const el=this._pmEl();
     if(!el)return;
     this._pm=m||null;this._pmParts=parts||null;this._pmAskLine=ask||'';
-    const draw=()=>{this._pmDrawIn(el);this._pmPaint(el);};
+    const draw=()=>{this._pmDrawIn(el);this._pmPaint(el);this._pbLine();};
     this._pmDraw=draw;
     draw();
-    // WHILE THE NOTES ARE READ the card follows the reading; once it lands after Finalize notes, the approval
-    // question is said again under the card (the user answers it in the chat, as always)
+    // WHILE THE NOTES ARE READ the list follows the reading; a reply still owed to the user's last requirement
+    // (NOTE-19) comes with the poll once the reading lands, and takes the place of "Reading…"
     this._pmPoll=()=>{
       clearTimeout(this._pmTimer);
+      if(!parts)return;
       const t0=Date.now();
+      let tries=0;
       const poll=async()=>{
         let got=null;try{got=await parts.get();}catch{/* try again */}
         if(got)this._pm=got.status==='none'?null:got;
+        if(got&&got.reply)this._pmSay(got.reply);
         draw();
         const busy=this._pm&&(this._pm.status==='reading'||this._pm.status==='waiting');
-        if((busy||!got)&&Date.now()-t0<8*60e3){this._pmTimer=setTimeout(poll,3000);return;}
+        // the reading landed but its reply is not in yet: asked a few more times, then "Reading…" goes
+        const owed=!busy&&got&&this._pmWaiting&&++tries<4;
+        if((busy||!got||owed)&&Date.now()-t0<8*60e3){this._pmTimer=setTimeout(poll,busy?3000:1500);return;}
+        if(this._pmWaiting)this._pmSay('');
         this._pmAsked();};
       this._pmTimer=setTimeout(poll,2500);};
-    if(m&&(m.status==='reading'||m.status==='waiting')&&parts)this._pmPoll();
+    if(((m&&(m.status==='reading'||m.status==='waiting'))||this._pmWaiting)&&parts)this._pmPoll();
     const rowOf=(i)=>{const m=this._pm;return m&&[...(m.rows||[]),...(m.unsure||[])].find(x=>x.phrase===i);};
     // a part put in or taken out of a row: the chip follows at once, the pick is kept at once (one save per row),
     // and the card is redrawn from the server's checked answer once every row's save is in

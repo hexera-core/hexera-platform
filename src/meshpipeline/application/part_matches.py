@@ -269,8 +269,11 @@ def _view(session: Any, *, owner_id: str, start: bool) -> dict | None:
             stored, current = _read(sid, MATCHES), True
     if current and stored is not None and stored.get("status") == "done":
         own = getattr(session, "user_notes", None)
-        got = with_faces(rows_of(with_picks(sid, stored, seen["table"], notes), seen, sid), own) or {
+        got = with_notes(with_faces(rows_of(with_picks(sid, stored, seen["table"], notes), seen, sid), own), own) or {
             "status": "done", "rows": [], "unsure": []}
+        if str((stored.get("section") or {}).get("status") or "") == "failed":
+            # the model step did not answer: said so plainly (the run reads the notes again)
+            got = {**got, "failed": True}
         lines = notes_lines(stored, notes=notes, facts=_acted_facts(session))
         return {**got, "lines": lines} if lines else got
     # NOT READ FOR THESE WORDS (yet): the last reading's rows stay on the card until the new one lands
@@ -278,8 +281,8 @@ def _view(session: Any, *, owner_id: str, start: bool) -> dict | None:
     out: dict[str, Any] = {"status": status}
     last = stored if stored is not None and stored.get("status") == "done" else (stored or {}).get("previous")
     if isinstance(last, dict) and last.get("status") == "done":
-        old = with_faces(rows_of(with_picks(sid, last, seen["table"], notes), seen, sid),
-                         getattr(session, "user_notes", None))
+        old = with_notes(with_faces(rows_of(with_picks(sid, last, seen["table"], notes), seen, sid),
+                                    getattr(session, "user_notes", None)), getattr(session, "user_notes", None))
         if old:
             out = {**old, "status": status, "stale": True}
     return out
@@ -380,6 +383,37 @@ def with_faces(got: dict | None, user_notes) -> dict | None:
         else:
             unsure.append(u)
     return {**got, "rows": rows, "unsure": unsure}
+
+
+def with_notes(got: dict | None, user_notes) -> dict | None:
+    """NOTE-19: each row and each phrase not placed carries `note`, the id of the user's note it was read from (the
+    newest note its quote stands in, by the reader's own word-for-word test, cad/part_words.quoted_in - the test that
+    let the row onto the card), so a reply finds the rows of its own message by id, not by matching words again.
+    Pure; a row no note holds is left without one."""
+    from meshpipeline.cad import part_words as PW
+    from meshpipeline.contracts.user_notes import own_notes
+    if not got or not (got.get("rows") or got.get("unsure")):
+        return got
+    notes = [(str(n.get("id") or ""), str(n.get("text") or "")) for n in own_notes(user_notes)]
+
+    def stamp(r: Mapping) -> dict:
+        quote = str(r.get("quote") or "")
+        hit = next((i for i, text in reversed(notes) if PW.quoted_in(quote, text)), "")
+        return {**r, "note": hit} if hit else dict(r)
+    return {**got, "rows": [stamp(r) for r in got.get("rows") or []],
+            "unsure": [stamp(u) for u in got.get("unsure") or []]}
+
+
+def note_id(user_notes, note: Mapping) -> str:
+    """The id among the user's own notes of one kept note (a chat note by its source and turn, else by its text)."""
+    from meshpipeline.contracts.user_notes import own_notes
+    for n in reversed(own_notes(user_notes)):
+        if note.get("turn") is not None and n.get("source") == note.get("source") and n.get("turn") == note.get("turn"):
+            return str(n.get("id") or "")
+    for n in reversed(own_notes(user_notes)):
+        if str(n.get("text") or "") == str(note.get("text") or "") and n.get("source") == note.get("source"):
+            return str(n.get("id") or "")
+    return ""
 
 
 def _num(pid: str) -> str:
