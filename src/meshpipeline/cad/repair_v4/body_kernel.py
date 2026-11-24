@@ -31,8 +31,10 @@ from meshpipeline.cad.repair_v4.kernel_calls import register
 from meshpipeline.cad.repair_v4.ws_kernel import (
     _maps,
     diagonal_of,
+    entities_of,
     history_record,
     read_brep,
+    shape_signature,
     write_brep,
 )
 
@@ -329,6 +331,11 @@ def _finish(payload: dict, old: Any, stages: list[tuple[Any, Any]], targets: lis
         return _declined("changes_body_count", before=_solid_count(old), after=_solid_count(new), expected=want)
     if not _is_valid(new):
         return _declined("invalid_result")
+    if _same_state(old, new, float(payload["quantum"])):
+        # Lane C10: a fragment of bodies that already share faces (or do not touch) rebuilds the SAME shape and, until
+        # this, returned it as a success: the search found the state already seen, recorded a duplicate, and spent an
+        # op (11 ops on one dev file in v2, 4 by search_det and 7 by search_ai, which nothing told it was a no-op).
+        return _declined("no_change", detail="the result is the input: same entities, same shape signature")
     if require_shared and _shared_face_count(new) == 0:
         # Success that shared nothing would record progress that did not happen (e.g. a gap wider
         # than the fuzzy value after STEP rounding): refuse, and say why.
@@ -345,6 +352,16 @@ def _finish(payload: dict, old: Any, stages: list[tuple[Any, Any]], targets: lis
         new_path=payload["out_path"], quantum=payload["quantum"],
         seconds=time.perf_counter() - start, declared_removed=removed)
     return {"record": record, "merged_faces": merged["face"], "merged_edges": merged["edge"]}
+
+
+def _same_state(old: Any, new: Any, quantum: float) -> bool:
+    """True when `new` is the state `old` already is, by the very test the search dedupes on (`search._fingerprint`:
+    the sorted entity fingerprints and the shape signature), so an op never reports as applied what the search would
+    only discard as a duplicate."""
+    def key(shape: Any) -> tuple:
+        return sorted(f"{e['type']}:{e['fp']}" for e in entities_of(shape, quantum)), shape_signature(shape)
+
+    return key(old) == key(new)
 
 
 def _shared_face_count(shape: Any) -> int:

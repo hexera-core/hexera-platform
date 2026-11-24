@@ -172,7 +172,9 @@ class ProbeResult:
 OP_SUMMARIES: dict[str, str] = {
     "conformalise": "make touching/overlapping bodies share faces exactly: `fragment` splits them at each other, "
                     "`cut_by:B<n>` keeps body B<n> and cuts the overlap out of the other (at any depth; the depth is "
-                    "measured and reported in the Diff). YOU choose which body yields. For overlap sites.",
+                    "measured and reported in the Diff). YOU choose which body yields. Needs 2+ bodies that TOUCH or "
+                    "OVERLAP: on bodies already sharing faces, or apart, it changes nothing and declines no_change. "
+                    "For overlap sites.",
     "fuse": "merge 2+ bodies into ONE solid (BRepAlgoAPI_Fuse): for a body inside another, two copies of one body, or "
             "halves meant to be one. Changes the body count (reported, not refused). For overlap sites.",
     "fill_loop": "close ONE free (open) loop with one new declared face, of any size; targets are the loop's edges. "
