@@ -1,6 +1,6 @@
-# Responsibility: lane C16 - the FULL panel's doomed cap: once a member does not pass the file cannot be clean, so the
+# Responsibility: lane C16 - the doomed cap (both tiers): once a member does not pass the file cannot be clean, so the
 #                 rest run cheapest-first at the cap with no retry; a capped timeout is a fail of its own kind, never
-#                 inconclusive; an all-pass panel never sees the cap; the cheap tier's cache key is unchanged.
+#                 inconclusive; an all-pass panel never sees the cap; a capped key differs from an uncapped one.
 # Boundaries: hermetic; fake members return MemberResults and record the budget they were given.
 from __future__ import annotations
 

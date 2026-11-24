@@ -16,7 +16,6 @@ that is not the file's - is not a mesher finding and raises `CheckerUnavailable`
 from __future__ import annotations
 
 import dataclasses
-
 import logging
 import signal
 from collections import Counter
@@ -296,7 +295,7 @@ def run_panel(
     retry in all (`RetryBudget`), so its worst case is `(len(members) + 2) * timeout_s` of pool time.
     Every result is checked (`check_result`), and each inconclusive one is logged with its cause.
 
-    `doomed_cap_s` (lane C16; the full tier): once a member does not PASS the panel cannot be clean, so every later
+    `doomed_cap_s` (lane C16; both tiers): once a member does not PASS the panel cannot be clean, so every later
     member runs with that budget and NO retry, and one that does not finish (or dies for pool reasons) is a fail of
     kind CAPPED_KIND. An all-pass panel is never doomed, so no clean verdict can change; measured on v4's cache it cut
     full-panel member time 34% before hangs (a doomed hang costs the cap, not 300 s + a 600 s retry), losing 2% of
