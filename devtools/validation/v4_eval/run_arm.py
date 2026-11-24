@@ -781,6 +781,14 @@ def main(argv: list[str] | None = None) -> int:
         code = 4
         return code
     finally:
+        # lane B15: what the wave's ONE cache answered. Without it, a wave whose arms each re-meshed the same input
+        # looks exactly like a wave whose files never repeated, and the next wave cannot be sized honestly.
+        try:
+            from meshpipeline.cad.repair_v4.verdict.cache import default_verdict_cache
+
+            prov["verdict_cache"] = default_verdict_cache().stats()
+        except Exception as exc:  # noqa: BLE001 - provenance is never worth failing a shard for
+            prov["verdict_cache"] = {"error": f"{type(exc).__name__}: {exc}"}
         restore_cache_env()
         prov.update(ended_at=_now(), wall_seconds=round(time.monotonic() - t0, 1), exit_code=code)
         (out / "PROVENANCE.json").write_text(json.dumps(prov, indent=1, sort_keys=True, default=str) + "\n")
