@@ -530,3 +530,32 @@ def test_a_removal_limit_LARGER_THAN_THE_PART_is_refused_as_a_derivation_bug() -
 def test_low_quality_now_leads_with_the_repair_that_actually_applied() -> None:
     """`reapproximate` declined no_valid_face on all 10 real attempts; `split_by_proximity` made every fix."""
     assert seq.RULE_TABLE["low_quality"][0] == ("split_by_proximity",)
+
+
+# --- a repair that cannot be applied is a skipped DEFECT, never a lost file -----------------------------------
+
+def test_the_workspaces_own_history_check_is_a_SKIP_not_an_excluded_file() -> None:
+    """Wave 202611242110 excluded 0051_00518960 in BOTH seq arms on a ValueError from `workspace._check_record`
+    - after the arm had already repaired two pairs of that cluster. The whole file was thrown away over the
+    third defect: the expensive work done and the result discarded by a cheap step at the end."""
+    def apply(pool: Any, ws: Any, repair: Any, defect: Any, *, timeout_s: float, pair: Any = None,
+              run_stage: Any = None) -> Any:
+        raise ValueError("history row for E583 has fingerprint 'edge:8e9a' but the workspace holds "
+                         "'edge:e181': the record is for a different shape")
+
+    with _patched(apply):
+        _judge, out = _run(verify=lambda *a, **k: _local())
+    assert out.counters.skipped_why["record_mismatch"] == 3          # one per alternative, then on to the next
+    assert out.counters.skipped["edge_through_face"] == 1
+    assert "not applied: record_mismatch" in out.rounds[0].steps[0]
+
+
+def test_the_arms_OWN_refusal_is_still_told_apart_from_the_workspaces() -> None:
+    """`NoParameters` is this arm refusing to invent a number; `record_mismatch` is the workspace saying its own
+    ids no longer describe its BREP. Opposite meanings about whose fault it is, so they stay distinct keys."""
+    assert seq.apply_failure_reason(seq.NoParameters("no measured width")) == "NoParameters"
+    assert seq.apply_failure_reason(ValueError("history row for E1 ... the record is for a different shape")) \
+        == "record_mismatch"
+    assert seq.apply_failure_reason(ValueError("history record is missing ['entities']")) == "record_malformed"
+    from meshpipeline.cad.repair_v4.ops import OpDeclined
+    assert seq.apply_failure_reason(OpDeclined("no_change")) == "OpDeclined"

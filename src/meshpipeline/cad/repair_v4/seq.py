@@ -674,6 +674,30 @@ class _Applied:
     params: list[dict]
 
 
+#: Every way ONE repair can fail to apply. A ValueError from the workspace's own history check
+#: (`workspace._check_record`) belongs here too: wave 202611242110 excluded 0051_00518960 in BOTH seq arms
+#: because that one escaped - the arm had already repaired two pairs of a cluster, and the whole FILE was
+#: thrown away over the third defect. Same shape as the ArmRow crashes: the expensive work done, the result
+#: discarded by a cheap step at the end. A repair that cannot be applied is a SKIPPED DEFECT, never a lost file.
+APPLY_FAILED: tuple[type[BaseException], ...] = (NoParameters, OpDeclined, OpFailed, UnknownTarget, ValueError)
+
+
+def apply_failure_reason(exc: BaseException) -> str:
+    """The `skipped_why` key for a repair that did not apply, keeping the interesting cases apart.
+
+    `record_mismatch` is the workspace saying its own ids no longer describe its BREP (a history row's
+    fingerprint against `ws.ids`). It is kept distinct from `NoParameters` - which is this arm REFUSING to
+    invent a number - because the two mean opposite things about whose fault it is.
+    """
+    if isinstance(exc, NoParameters):
+        return "NoParameters"
+    if isinstance(exc, ValueError) and "the record is for a different shape" in str(exc):
+        return "record_mismatch"
+    if isinstance(exc, ValueError) and "history record" in str(exc):
+        return "record_malformed"
+    return type(exc).__name__
+
+
 def apply_repair(pool: Any, ws: Workspace, repair: Repair, defect: Defect, *, timeout_s: float,
                  pair: tuple[StableId, StableId] | None = None,
                  run_stage: Callable[[Any, Workspace, str, dict, float], _Applied] | None = None) -> _Applied:
@@ -938,9 +962,10 @@ def _repair_one(pool: Any, ws: Workspace, defect: Defect, *, counters: SeqCounte
     for repair in _alternatives(pick):
         try:
             applied = apply_repair(pool, ws, repair, defect, timeout_s=op_timeout_s, run_stage=run_stage)
-        except (NoParameters, OpDeclined, OpFailed, UnknownTarget) as why:
-            counters.skipped_why[type(why).__name__] += 1
-            step(f"{defect_line(defect)} -> {repair_line(repair, [], pick)} -> not applied: {why}")
+        except APPLY_FAILED as why:
+            counters.skipped_why[apply_failure_reason(why)] += 1
+            step(f"{defect_line(defect)} -> {repair_line(repair, [], pick)} -> not applied: "
+                 f"{apply_failure_reason(why)}: {why}")
             continue
         try:
             local = verify(pool, ws, applied.ws, defect, list(applied.touched), timeout_s=local_timeout_s)
@@ -986,9 +1011,10 @@ def _repair_cluster(pool: Any, ws: Workspace, defect: Defect, *, counters: SeqCo
             try:
                 applied = apply_repair(pool, current, repair, defect, timeout_s=op_timeout_s, pair=pair,
                                        run_stage=run_stage)
-            except (NoParameters, OpDeclined, OpFailed, UnknownTarget) as why:
-                counters.skipped_why[type(why).__name__] += 1
-                step(f"{defect_line(defect, pair=pair)} -> {repair_line(repair, [], pick)} -> not applied: {why}")
+            except APPLY_FAILED as why:
+                counters.skipped_why[apply_failure_reason(why)] += 1
+                step(f"{defect_line(defect, pair=pair)} -> {repair_line(repair, [], pick)} -> not applied: "
+                     f"{apply_failure_reason(why)}: {why}")
                 continue
             try:
                 local = verify(pool, current, applied.ws, defect, list(applied.touched), pair=pair,
