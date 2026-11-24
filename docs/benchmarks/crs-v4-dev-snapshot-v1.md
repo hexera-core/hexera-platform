@@ -190,12 +190,24 @@ patience 2). So this snapshot still cannot tell whether 24 is too low.
    900 s file wall and 600 s arm budget wall.
 6. **The route probe is unmetered**, so the ledger $ is a lower bound (see Money). It is also flaky: one of 8
    probes failed its image check (`'salmon', not red`), which refused a whole shard until it was rerun.
-7. **The 900 s file wall did not fire once.** `occt/bug32314_corrupted.stp` under search_det ran **1262 s** and
-   was recorded as a conclusive, failed row instead of an excluded `file_timeout`. Its search stopped on its own
-   600 s budget wall (`stop.reason: wall`, 676 s, 7 ops), but the row's total wall, healer plus search, passed
-   900 s without the file alarm excluding it. In Task 49 the same file/arm was excluded at 900 s. Either the
-   alarm cannot interrupt the native call it was in, or the file wall does not cover the whole arm. Look at this
-   before the full wave. Task 49 already noted that a search which hits its wall counts as a measured failure.
+7. **Over-wall rows: one row ran past the 900 s file wall and was counted.** Every (file, arm) row of the snapshot
+   with `wall_s` > 900, from `results/*/shard-*/rows.jsonl`:
+
+   | wave | file | arm | wall_s | stop reason | recorded as | outcome |
+   |---|---|---|---|---|---|---|
+   | dev | `occt/bug32314_corrupted.stp` | search_det | 1262.1 | `wall` (its own 600 s budget) | conclusive | not clean, not valid, panel 1/4 (input 1/4) |
+   | dev29 | the same row | search_det | 1262.1 | `wall` | conclusive | the same (dev29 shards 1-5 are byte-identical copies of dev's) |
+
+   No other row passes 900 s; the six `file_timeout` exclusions above (two files x staged/search_det/search_ai)
+   are excluded correctly. **Cause, found after the run** (Lane A, fixed in `288755c2`): `FileTimeout` was an
+   `Exception`, and the search loop's and staged healer's broad `except Exception` handlers ("one broken branch must
+   not end the search") swallowed the alarm, spending the one-shot timer; the run then went on to the search's own
+   wall and the output verdict. It is now a `BaseException`, and a row that finishes past its wall is excluded
+   regardless. On the current tip this row would read as excluded (`file_timeout`); under Lane D4's rule a
+   wall stop that did not end clean is unmeasured anyway. Either way it must not be read as a measured failure:
+   **search_det's 28 conclusive rows above are 27 measured + this one unmeasured** (its clean count and repairs do
+   not change; the row was not clean). The `fewer panel passes` 1 -> 0 on bug32314 is **staged**'s row (612 s,
+   inside the wall), not this one.
 8. **search_det has changed since Task 49.** It is now 2 clean / 1 repaired, against 1 / 0 then. The new repair
    is `00614908_..._step_000`, the file Task 49 named as the whole footprint of the Lane C "search discards the
    healer's gain" bug (fixed in Task 51). So this change is that fix, not a new capability.
