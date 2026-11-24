@@ -78,3 +78,9 @@ Files are NOT split between owners: one launch, one manifest, one collector, so 
   nor .6 (grid) covers a mm member on an unmodified input. Possibly the same cause as 1c9153fac8 (0 placed for every
   member under both fixes). Next look: compare gmsh's surface 785 box with every workspace face box (multi-body STEP:
   gmsh may split/merge a periodic face across bodies, or number surfaces of a 58-body compound differently).
+- v4 input rows (Lane C validation): OLD 54 / NEW 8 (13% impurity, was 1/29 on v3c). 5 of 8 are netgen_occ "netgen
+  face N" locations (v4 is the first wave where netgen locates), 3 gmsh_alt (incl. the periodic case above). Since .6
+  Netgen's Located already carries its face box and find_sites names it on ws.quantum, so the remaining miss is in
+  the BOX Netgen reports (`geo.shape.faces[n].bounding_box`: likely padded or triangulation-based, not the kernel's
+  tight-ish BRepBndLib box), or in face numbering of the .8 all-roots compound. Next job after the oracle table:
+  location only, field-by-field on a dozen files, cache bump.

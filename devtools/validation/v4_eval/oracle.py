@@ -133,7 +133,11 @@ def one(entry: dict, inputs: str, out: str, *, op_timeout: float = OP_TIMEOUT_S,
         progress.write_text(json.dumps({"stage": stage, "planned": row["planned"], "recorded": row["recorded"],
                                         "t": time.time()}))
 
-    pool = WorkerPool(1)
+    workers = max(1, int(os.environ.get("ORACLE_WORKERS", "1")))       # D24: candidates evaluated at once per file
+    max_depth = max(1, int(os.environ.get("ORACLE_DEPTH", "2")))        # D24: how many ops deep
+    panel = max(1, int(os.environ.get("CRS_V4_PANEL_THREADS", "1")))
+    row["workers"], row["max_depth"] = workers, max_depth
+    pool = WorkerPool(workers * panel)
     engine = arms.RealEngine()
     try:
         note("open")
@@ -195,8 +199,9 @@ def one(entry: dict, inputs: str, out: str, *, op_timeout: float = OP_TIMEOUT_S,
                 except Exception as exc:  # noqa: BLE001 - as the search does: expand blind rather than lose the file
                     sites = []
                     row.setdefault("sites_errors", []).append(f"d{depth}: {type(exc).__name__}: {exc}"[:200])
-                st = S.SearchState.__new__(S.SearchState)
-                st.ws, st.sites, st.lineage, st.depth = ws, sites, (), depth
+                # a real SearchState (the sweep now reads more of it than ws/sites/depth, e.g. its score)
+                st = S.SearchState(id=f"O{depth}", ws=ws, verdict=verdict, score=judge.score(verdict), sites=sites,
+                                   depth=depth, parent=None, via=None)
                 # what the sites WERE: lanes A13/C found the det sweep gated out where a mesher failure and a layer-1
                 # finding merged into one site that takes the mesher's kind; the table needs that to tell 'not allowed'
                 # from 'no op'
@@ -261,9 +266,7 @@ def one(entry: dict, inputs: str, out: str, *, op_timeout: float = OP_TIMEOUT_S,
                         rec["lost_layer1"] = base_valid and not v.valid.ok
                         rec["own"] = against(measure(new.brep_path), orig)
                         rec["beats_parent"] = tuple(sc) > tuple(base_cheap)
-                        fp = S._fingerprint(new)
-                        rec["duplicate"] = fp in seen
-                        seen.add(fp)
+                        rec["_fp"] = S._fingerprint(new)   # duplicates are decided in submission order, below
                         if rec["beats_parent"]:
                             vf = judge.full(pool, new, src)
                             rec["full"] = summary(vf)
@@ -284,26 +287,44 @@ def one(entry: dict, inputs: str, out: str, *, op_timeout: float = OP_TIMEOUT_S,
                 note(f"depth{depth}_generate")
                 cands = candidates(ws, verdict, depth)
                 row["planned"] += len(cands)
-                done = []
-                for i, c in enumerate(cands):
-                    note(f"depth{depth} {i + 1}/{len(cands)} {c.op}")
-                    rec = evaluate(ws, c, depth, path, base_cheap, base_valid)
-                    jsonl.write(json.dumps({k: v for k, v in rec.items() if k != "_ws"}, default=str) + "\n")
-                    row["recorded"] += 1
-                    done.append(rec)
+                note(f"depth{depth} {len(cands)} candidates x{workers}")
+                # evaluated `workers` at a time, REDUCED IN SUBMISSION ORDER (as the search does, D22): which child
+                # is a duplicate, and the JSONL order, are exactly the serial run's
+                with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
+                    futures = [ex.submit(evaluate, ws, c, depth, path, base_cheap, base_valid) for c in cands]
+                    done = []
+                    for f in futures:
+                        rec = f.result()
+                        fp = rec.pop("_fp", None)
+                        if fp is not None:
+                            rec["duplicate"] = fp in seen
+                            seen.add(fp)
+                        jsonl.write(json.dumps({k: v for k, v in rec.items() if k != "_ws"}, default=str) + "\n")
+                        row["recorded"] += 1
+                        done.append(rec)
                 return done
 
-            level1 = run_level(root, v_root, 1, [], root_cheap, bool(v_root.valid.ok))
-            # depth-2 parents: changed shapes that kept layer 1 (or gained it), best cheap score first; neutral moves
-            # are in, because a multi-op repair (fill, then sew) is neutral after its first step
-            pool_ok = [r for r in level1 if r.get("_ws") is not None and not r.get("duplicate")
-                       and r.get("valid_after", False) >= bool(v_root.valid.ok) and "cheap" in r]
-            pool_ok.sort(key=lambda r: tuple(r["cheap"]), reverse=True)
-            for r in pool_ok[:parents]:
-                ws1 = r["_ws"]
-                v1 = judge.full(pool, ws1, src)
-                run_level(ws1, v1, 2, [{"op": r["op"], "params": r["params"], "targets": r["targets"]}],
-                          tuple(r["cheap"]), bool(v1.valid.ok))
+            # level by level to max_depth; the next level's parents are this level's `parents` best changed states
+            # that kept layer 1 (or gained it). Neutral moves are in: a multi-op repair (fill, then sew) is neutral
+            # after its first step
+            frontier: list[tuple] = [(root, v_root, [], root_cheap, bool(v_root.valid.ok))]
+            for depth in range(1, max_depth + 1):
+                children = []
+                for ws_p, v_p, path_p, cheap_p, valid_p in frontier:
+                    for r in run_level(ws_p, v_p, depth, path_p, cheap_p, valid_p):
+                        if (r.get("_ws") is not None and not r.get("duplicate") and "cheap" in r
+                                and r.get("valid_after", False) >= valid_p):
+                            children.append(r)
+                if depth == max_depth:
+                    break
+                children.sort(key=lambda r: tuple(r["cheap"]), reverse=True)
+                frontier = []
+                for r in children[:parents]:
+                    v1 = judge.full(pool, r["_ws"], src)
+                    frontier.append((r["_ws"], v1, [*r["path"], {"op": r["op"], "params": r["params"],
+                                                                 "targets": r["targets"]}],
+                                     tuple(r["cheap"]), bool(v1.valid.ok)))
+                row["reached_depth"] = depth + 1
         row["status"] = "complete" if row["planned"] == row["recorded"] else "incomplete"
         return row
     except Exception as exc:  # noqa: BLE001
@@ -376,6 +397,9 @@ def run_file(entry: dict, inputs: str, out: str, wall_s: float, *, _cmd: list[st
             row["stopped_at"] = json.loads((odir / "progress.json").read_text())
     row["wall_s"] = round(time.monotonic() - t0, 1)
     row["commit"] = os.environ.get("ORACLE_COMMIT")   # set by the launcher: rows from a relaunch say which code ran
+    row["file_wall_s"] = wall_s
+    row.setdefault("workers", int(os.environ.get("ORACLE_WORKERS", "1")))      # also on a killed/errored row
+    row.setdefault("max_depth", int(os.environ.get("ORACLE_DEPTH", "2")))
     row = summarise(row, odir / "candidates.jsonl")
     row_path.write_text(json.dumps(row, default=str))
     return row
