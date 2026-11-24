@@ -358,8 +358,8 @@ class NoParameters(ValueError):
     arm cannot derive is a ladder with one rung, and the design says parameters come from the measurement."""
 
 
-def params_for(op: str, defect: Defect, *, pair: tuple[StableId, StableId] | None = None
-               ) -> tuple[list[StableId], dict[str, Any]]:
+def params_for(op: str, defect: Defect, *, pair: tuple[StableId, StableId] | None = None,
+               live: set[StableId] | None = None) -> tuple[list[StableId], dict[str, Any]]:
     """(targets, params) for `op` on `defect`, derived from the defect's own measurement. Raises `NoParameters`
     when the measurement does not carry what the op needs.
 
@@ -367,8 +367,16 @@ def params_for(op: str, defect: Defect, *, pair: tuple[StableId, StableId] | Non
     is THAT pair's measured clash - not the cluster's worst, which would over-cut the mild pairs."""
     m = defect.measurement
     entities = list(pair) if pair else list(defect.entities)
+    # ONLY IDS THAT ARE STILL LIVE. An earlier repair in this round renames faces; lane C's `relocate` carries
+    # the defect, but a measurement this module took on the old state still names the old ids, and an op refuses
+    # them ("replaced by op 'remove_small' (now: F16); use the new ids"). Derived parameters are therefore
+    # filtered to the ids the workspace still has, and a defect with nothing live left is not guessed at.
+    if live is not None:
+        entities = [e for e in entities if e in live]
     faces = [e for e in entities if str(e)[:1] == "F"]
     solids = [e for e in entities if str(e)[:1] in ("S", "B")]   # lane C names bodies B..; layer 1 names them S..
+    if not entities and (defect.entities or pair):
+        raise NoParameters("none of the defect's entities are live any more")
 
     if op.startswith("run_stage:"):
         return [], {"stage": op.split(":", 1)[1], "params": {}}
@@ -394,8 +402,10 @@ def params_for(op: str, defect: Defect, *, pair: tuple[StableId, StableId] | Non
     if op == "split_by_proximity":
         # a WHOLE-PART op (it takes no targets): the pairs and the ratio are the site's own measured clashes
         pairs = [list(k.split("|")) for k in (m.get("clash_by_pair") or {})]
+        if live is not None:
+            pairs = [p for p in pairs if all(e in live for e in p)]
         if not pairs:
-            raise NoParameters("split_by_proximity needs measured face pairs, and the site records none")
+            raise NoParameters("split_by_proximity needs measured face pairs that are still live, and has none")
         diag, worst = m.get("diagonal_mm"), max((m.get("clash_by_pair") or {}).values(), default=None)
         if not diag or worst is None:
             raise NoParameters("split_by_proximity needs a measured gap and the part's diagonal")
@@ -403,8 +413,10 @@ def params_for(op: str, defect: Defect, *, pair: tuple[StableId, StableId] | Non
                     "target_ratio": min(0.25, max(0.06, float(worst) / float(diag)))}
     if op in ("defeature", "unify_same_domain", "rebuild_face", "reapproximate", "split_angle",
               "split_continuity", "fill_loop"):
-        if not faces and op in ("defeature", "split_angle", "split_continuity", "unify_same_domain"):
-            raise NoParameters(f"{op} needs the faces the defect is on, and none were located")
+        if not faces:
+            # a mesher defect that re-located onto a BODY (its faces are gone) has no face to aim a face op at
+            where = "re-located onto " + "+".join(solids) if solids else "none were located"
+            raise NoParameters(f"{op} needs the faces the defect is on, and {where}")
         if op == "unify_same_domain":
             return faces, {"scope": "targets", "keep": []}
         if op == "defeature":
@@ -489,6 +501,9 @@ class SeqCounters:
     pairs_skipped: int = 0
     #: how many repairs this round kept (reset by the loop at the end of each round)
     kept_in_round: int = 0
+    #: defects that could no longer be located after an earlier repair in the same round, and were gone when
+    #: re-checked: not a failure and not a repair of their own (seq-arm-design.md, "entity tracking")
+    resolved_by_earlier_repair: int = 0
     #: full verdicts that came back INCONCLUSIVE (a panel member failed for pool reasons). They say nothing about
     #: the file, so they can neither rank a state nor end a round's work: the arm stops and the row says why.
     inconclusive_verdicts: int = 0
@@ -507,6 +522,7 @@ class SeqCounters:
                 "defects_skipped": dict(self.skipped), "skipped_why": dict(self.skipped_why),
                 "overlap_pairs_fixed": self.pairs_fixed, "overlap_pairs_skipped": self.pairs_skipped,
                 "inconclusive_verdicts": self.inconclusive_verdicts,
+                "resolved_by_earlier_repair": self.resolved_by_earlier_repair,
                 "local_s": round(self.local_s, 1), "full_s": round(self.full_s, 1)}
 
 
@@ -583,7 +599,7 @@ def apply_repair(pool: Any, ws: Workspace, repair: Repair, defect: Defect, *, ti
             if moved is None:
                 raise NoParameters(f"the defect could not be carried to {op!r}: nothing of it is left to aim at")
             here = moved
-        targets, params = params_for(op, here, pair=pair)
+        targets, params = params_for(op, here, pair=pair, live=set(current.ids))
         used.append(params)
         if op.startswith("run_stage:"):
             if run_stage is None:
@@ -693,12 +709,26 @@ def repair_sequentially(
         for d in defects:
             counters.found[d.code] += 1
         current = best
-        for defect in defects:
+        diagnosed_on = best      # every defect in this list was diagnosed on THIS state
+        for listed in defects:
             if out_of_wall():
-                counters.skipped[defect.code] += 1
+                counters.skipped[listed.code] += 1
                 counters.skipped_why["wall"] += 1
-                into(this)(f"{defect_line(defect)} -> not attempted [the file's wall]")
+                into(this)(f"{defect_line(listed)} -> not attempted [the file's wall]")
                 continue
+            # RE-LOCATE BEFORE REPAIRING (seq-arm-design.md). An earlier repair in this round renamed faces, so
+            # the ids this defect was diagnosed with can be stale: the first end-to-end run had `remove_small`
+            # replace F3 with F16 and the NEXT defect was refused for naming F3. Lane C's `relocate` carries it.
+            defect = listed
+            if current is not diagnosed_on:
+                moved = relocate(pool, diagnosed_on, current, listed)
+                if moved is None:
+                    # nothing of it is left to aim at. The design's reading: an earlier repair took it with it.
+                    counters.resolved_by_earlier_repair += 1
+                    into(this)(f"{defect_line(listed)} -> resolved_by_earlier_repair "
+                               f"[nothing of it is left to locate]")
+                    continue
+                defect = moved
             if defect.code == "body_overlap" and defect.pairs:
                 current = _repair_cluster(pool, current, defect, counters=counters, table=table, ai_pick=ai_pick,
                                           verify=verify, run_stage=run_stage, op_timeout_s=op_timeout_s,
