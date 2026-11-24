@@ -23,6 +23,9 @@ if [ -n "${FROZEN_COMMIT:-}" ]; then
   gcloud storage cp -q "$HELDOUT_SLOT" markers/slot__held_out__1; say "pull_slot rc=$?"
   HO_ARGS="--frozen-commit $FROZEN_COMMIT --markers-dir /eval/markers"
 fi
+# the container runs as its own uid: regroup writes plan_merged_*.json into splits/, which the VM user owns -> EACCES
+# (fast 14:14Z and v4 both died here). Make it writable to the container, whatever uid it runs as.
+sudo chmod -R a+rwX "$T/splits" "$T/out"; say "chmod_splits rc=$?"
 sudo docker run --rm -v "$T/code:/w:ro" -v "$T/tools:/tools:ro" -v "$T/splits:/eval/splits" \
   -v "$T/out:/eval/out" -v "$T/markers:/eval/markers:ro" -w /w -e PYTHONPATH=/w/src meshpipeline-mesh:native \
   python /tools/post.py --out /eval/out --splits /eval/splits --manifest /eval/splits/launch_manifest.json $HO_ARGS \
