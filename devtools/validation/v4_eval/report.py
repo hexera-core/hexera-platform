@@ -190,6 +190,8 @@ class ArmRow:
     #: see it beside `full_checks`. `seq.py` has always emitted it - its absence here crashed all 7 search_seq units
     #: of fast-202611241829 with "unexpected keyword argument" AFTER they had done the repair work.
     inconclusive_verdicts: int | None = None
+    #: defects an EARLIER repair resolved: re-checked and gone, so neither a repair of their own nor a skip.
+    resolved_by_earlier_repair: int | None = None
 
     @property
     def clean(self) -> bool:
