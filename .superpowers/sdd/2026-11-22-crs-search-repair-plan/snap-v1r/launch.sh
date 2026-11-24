@@ -209,6 +209,7 @@ if [ -f "$RUN/out/ABORTED" ]; then die "the run ABORTED on the VM: $(cat "$RUN/o
 # ---------------------------------------------------------------- 8. the doc and the artifacts
 python3 -I "$HERE/analyze.py" --run "$RUN" --doc "$DOC" ${NOTES_MD:+--notes "$NOTES_MD"} ${MOVED:+--moved "$MOVED"} \
   ${BASELINE_RUN:+--baseline-run "$BASELINE_RUN" --baseline-label "${BASELINE_LABEL:-baseline}"} | tee -a "$RUN/launch.log"
+[ "${PIPESTATUS[0]}" = 0 ] && [ -s "$DOC" ] || die "analyze.py FAILED: no doc at $DOC (the collected run is intact in $RUN; rerun analyze by hand)"
 [ -n "${NOTES_MD:-}" ] && cp "$NOTES_MD" "$RUN/notes.md"
 mkdir -p "$ART"
 ( cd "$RUN" && find out -path '*/shard-*' \( -name rows.json -o -name EXCLUDED.json -o -name PROVENANCE.json \) -print0 \
