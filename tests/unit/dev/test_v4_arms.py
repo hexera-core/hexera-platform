@@ -338,9 +338,12 @@ def test_search_ai_reaches_the_real_router_with_the_ledger_attached_and_fixes_th
     [row] = rows
     proposals = [r for r in wire.requests if "propose" in [t["name"] for t in r.get("tools", [])]]
     assert excluded == [] and row["out_clean"] is True and row["reason"] == "clean"
-    assert len(proposals) >= 1 and len(admitted) == len(proposals), "every model request was admitted by THE ledger"
+    # EVERY request on the wire - the shard's route probe included (Task 49's sixth gap) - was admitted by THE ledger
+    assert len(proposals) >= 1 and len(admitted) == len(wire.requests), "every model request was admitted by THE ledger"
     assert row["model_usd"] > 0 and row["model_usd"] == pytest.approx(ledger.file_spent_usd(SHA))
-    assert row["model_usd"] == pytest.approx(ledger.spent_usd())
+    from meshpipeline.cad.repair_v4.model_route import ROUTE_PROBE_FILE_ID
+    probe = ledger.file_spent_usd(ROUTE_PROBE_FILE_ID)
+    assert probe > 0 and ledger.spent_usd() == pytest.approx(row["model_usd"] + probe)
     assert report._row_from_dict(row).clean
 
 
@@ -361,12 +364,26 @@ def test_run_file_itself_refuses_a_model_arm_without_a_ledger() -> None:
 
 
 def test_an_exhausted_ledger_stops_the_model_before_the_wire_and_the_file_still_gets_a_row(shard: Any, wire: Wire) -> None:  # noqa: F811
+    """Room for the shard's route probe and not for a proposer round: the probe is paid and settled, no round is
+    sent, and the file still gets its row."""
     wire.candidate = CLEAN_CANDIDATE
-    ledger = ledgered(cap=0.001)
+    ledger = ledgered(cap=0.235)                  # the probe reserves ~$0.225 and settles $0.015; a round needs ~$0.23
     rows, _ = go(shard, "search_ai", ledger)
     proposals = [r for r in wire.requests if "propose" in [t["name"] for t in r.get("tools", [])]]
     assert proposals == [], "the ledger had no room, yet a proposer round reached the provider"
-    assert ledger.spent_usd() == 0.0 and rows[0]["model_usd"] == 0.0 and rows[0]["out_clean"] is False
+    assert rows[0]["model_usd"] == 0.0 and rows[0]["out_clean"] is False
+    assert [e["kind"] for e in ledger.entries()] == ["route_probe"]
+
+
+def test_a_ledger_with_no_room_for_the_route_probe_refuses_the_shard_before_anything_is_sent(
+        shard: Any, wire: Wire) -> None:  # noqa: F811
+    from meshpipeline.cad.repair_v4.proposer import NoUsableRoute
+
+    args = run_arm.parse_args([*shard.argv, "--arms", "search_ai", "--wave-type", "normal", "--wave-id", "w1",
+                               "--n-shards", "1", "--ledger-path", "/x", "--marker-bucket", "b"])
+    with pytest.raises(NoUsableRoute, match="ledger"):
+        run_arm.run_arms(args, shard.out, {}, ledgered(cap=0.001), engine=FakeEngine())
+    assert wire.requests == []
 
 
 def test_search_ai_routes_through_the_probed_route_and_records_it(shard: Any, wire: Wire) -> None:  # noqa: F811
@@ -511,7 +528,8 @@ def test_a_search_ai_file_whose_model_is_unreachable_is_inconclusive_not_a_faile
     [row] = rows
     assert excluded == []
     assert row["inconclusive"] is True and row["ai_stop_reason"] == "model_unavailable", (row, len(wire.requests))
-    assert row["model_usd"] == 0.0 and ledger.entries() == [] and ledger.reserved_usd() == 0.0
+    assert row["model_usd"] == 0.0 and ledger.reserved_usd() == 0.0
+    assert [e for e in ledger.entries() if e["file_id"] == SHA] == []        # only the shard's route probe was paid
     parsed = report._row_from_dict(row)
     assert parsed.inconclusive and not parsed.counts and parsed.ai_stop_reason == "model_unavailable"
 
@@ -628,3 +646,113 @@ def test_recipes_on_without_a_location_is_refused(shard: Any, monkeypatch: pytes
     args = run_arm.parse_args([*shard.argv, "--arms", "search_det"])
     with pytest.raises(ValueError, match="CAD_REPAIR_V4_RECIPES_URI"):
         run_arm.run_arms(args, shard.out, {}, None, engine=FakeEngine())
+
+
+# ------------------------------------------------------------------ the staged regression (Task 49's clean control)
+
+class BreakingEngine(FakeEngine):
+    """A CLEAN input (all 3 members pass) whose staged healer breaks one member - the cheap tier never sees it."""
+
+    def __init__(self, staged_q: int = 2) -> None:
+        super().__init__()
+        self.staged_q = staged_q
+        self.search_start: list[int] = []
+
+    def open_workspace(self, pool: Any, source: str, workdir: str) -> Any:
+        return W.make_ws(3)
+
+    def run_staged(self, pool: Any, ws: Any) -> Any:
+        self.staged_calls += 1
+        return SimpleNamespace(ws=W.make_ws(self.staged_q))
+
+
+def test_a_staged_result_that_loses_a_panel_member_is_not_what_the_staged_arm_ships(shard: Any) -> None:
+    engine = BreakingEngine(staged_q=2)
+    rows, excluded = go(shard, "staged", None, engine)
+    [row] = rows
+    assert excluded == [] and row["in_panel_passes"] == 3
+    assert row["out_panel_passes"] == 3 and row["out_clean"] is True, "the regression was shipped"
+    assert row["triage"]["stages"]["full_panel"]["fell_back_to"] == "input"
+
+
+def test_a_clean_input_is_never_replaced_by_the_staged_arm_even_when_the_result_is_as_good(shard: Any) -> None:
+    """The engine's delivery gate (`deliverable`) passes a clean input through; the staged arm must measure that."""
+    engine = BreakingEngine(staged_q=3)
+    [row], _ = go(shard, "staged", None, engine)
+    assert row["out_clean"] is True and row["out_panel_passes"] == 3
+    assert row["triage"]["stages"]["full_panel"]["fell_back_to"] is None
+
+
+def test_the_search_arms_start_from_the_confirmed_staged_state_not_the_damaged_one(shard: Any,
+                                                                                   monkeypatch: pytest.MonkeyPatch) -> None:
+    from meshpipeline.cad.repair_v4 import search as S
+
+    starts: list[int] = []
+    real = S.search
+
+    def spy(pool: Any, start: Any, *a: Any, **k: Any) -> Any:
+        starts.append(W._q(start))
+        return real(pool, start, *a, **k)
+
+    monkeypatch.setattr(S, "search", spy)
+    go(shard, "search_det", None, BreakingEngine(staged_q=2))
+    assert starts == [3], "the search started from the state the healer damaged"
+
+
+@pytest.mark.parametrize("arm", ["search_det", "search_ai"])
+def test_a_clean_input_the_healer_damages_costs_no_model_call_and_comes_out_clean(shard: Any, wire: Wire,  # noqa: F811
+                                                                                  arm: str) -> None:
+    """LEAD-2's snapshot-v1 data point (00614313_..._003 on 5dc953ea): search_ai spent $0.044 on a CLEAN input,
+    because the search started from the healer's damaged state. With the full-panel confirmation the search starts
+    from the clean state, the proposer stops at once (it never calls a model on a clean start), and the row is
+    clean. The delivery gate kept the OUTPUT clean even before the fix; what the fix removes is the wasted spend
+    and the search working on a damaged part."""
+    wire.candidate = CLEAN_CANDIDATE
+    ledger = ledgered() if arm == "search_ai" else None
+    [row], _ = go(shard, arm, ledger, BreakingEngine(staged_q=2))
+    proposals = [r for r in wire.requests if "propose" in [t["name"] for t in r.get("tools", [])]]
+    assert row["out_clean"] is True and row["out_panel_passes"] == 3
+    assert proposals == [], f"{arm} called the model {len(proposals)} time(s) on a clean input"
+    if ledger is not None:
+        assert ledger.file_spent_usd(SHA) == 0.0
+
+# ------------------------------------------------------------------ a wall stop is not a verdict on the file
+
+def test_a_search_that_stopped_on_its_wall_was_not_measured() -> None:
+    """Task 49's smoke: search_det on 0052... stopped on its own wall at 900.9 s with 0 verdict candidates and was
+    written as a CONCLUSIVE failure. Time is the machine's (the smoke ran at load 18 on 16 vCPU), not the file's: a
+    wall stop that did not end clean is inconclusive, with or without candidates. Count stops (ops, exhausted,
+    patience) stay conclusive: they are the same on any machine."""
+    smoke = {"reason": "wall", "infrastructure_failed": False, "inconclusive_candidates": 0, "verdict_candidates": 0,
+                 "out_clean": False}
+    assert measurement.file_unmeasured(**smoke) is True
+    assert measurement.file_unmeasured(**{**smoke, "verdict_candidates": 7}) is True
+    assert measurement.file_unmeasured(**{**smoke, "out_clean": True}) is False      # clean is clean, however late
+    for counted in ("ops", "exhausted", "patience"):
+        assert measurement.file_unmeasured(**{**smoke, "reason": counted, "verdict_candidates": 3}) is False
+
+
+def test_a_wall_stop_written_as_a_conclusive_failure_is_refused_by_the_report() -> None:
+    row = {"name": "0052_00528484_step_003.step", "sha256": SHA, "source": "abc_fail", "arm": "search_det",
+           "inconclusive": False, "model_usd": 0.0, "wall_s": 900.9, "reason": "wall", "verdict_candidates": 0,
+           "inconclusive_candidates": 0, "infrastructure_failed": False, "in_clean": False, "in_panel_passes": 3,
+           "in_valid": True, "in_faithful_ok": True, "out_valid": True, "out_faithful_ok": True,
+           "out_panel_passes": 3, "panel_size": 4, "out_tier": "full", "out_clean": False}
+    with pytest.raises(report.ReportRefused, match="NOT a conclusive failure"):
+        report._row_from_dict(row)
+    assert report._row_from_dict({**row, "inconclusive": True}).counts is False
+
+
+def test_a_wall_stop_through_the_real_arm_path_is_an_inconclusive_row(shard: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The same stop through run_arms -> arms.run_file -> search: a search whose wall is already spent stops on `wall`;
+    its row must say inconclusive, and the report must accept it as such (not count it as a failure)."""
+    import dataclasses
+
+    det = ev.ARMS["search_det"]
+    monkeypatch.setitem(ev.ARMS, "search_det", dataclasses.replace(det, budget=dataclasses.replace(det.budget, wall_s=1e-9)))
+    rows, excluded = go(shard, "search_det", None)
+    [row] = rows
+    assert excluded == [] and row["reason"] == "wall"
+    assert row["inconclusive"] is True
+    loaded = report._row_from_dict(row)
+    assert loaded.derived_inconclusive and not loaded.counts

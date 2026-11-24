@@ -41,6 +41,13 @@ entry); `load_wave` refuses a row of a declined kind that does not carry that st
 every arm's files, conclusive and inconclusive counts, clean rate, clean gain, regressions, layers, per-kind rates,
 the paired set and the marginals, and appear ONLY under `declined_stratum`, on their own line.
 
+THE EXCLUDED STRATUM is the other third category, and for the opposite reason: a file the harness reached NO
+verdict on, because the per-file wall or the checker's one-call wall killed it, or a worker died, or the input
+could not be read. Those files are inconclusive for every arm, so they are already outside every clean rate,
+gain and regression - but counting them only in `inconclusive` left them nameless. `excluded_stratum` counts
+them, NAMES them, and prints the two wall values that produced them, on its own line, every run. It is built by
+collect.py's `excluded_stratum`, the same code the re-probe's own report uses: one mechanism, two waves.
+
 NOT MEASURED WITHHOLDS EVERYTHING a rate can be recovered from (counts, layers, regressions, per-kind rates),
 and the JSON says `numbers_valid: false` whenever the status is UNRELIABLE. PER-ARM rates use each arm's own
 dropouts and are NOT comparable across arms; the PAIRED columns (files every measured arm judged) are.
@@ -268,13 +275,46 @@ class WaveResult:
     shard_wall_seconds: tuple[float, ...]
     frozen: bool
     declined: frozenset[str] = frozenset()  # sha256 of the declined-stratum files (expected outcome: declined)
+    #: the shards' EXCLUDED entries as the harness wrote them: a wall kill or a pool death, carried here so the
+    #: report can NAME them (`excluded_stratum`) instead of only counting them as inconclusive
+    excluded: tuple[Mapping[str, Any], ...] = ()
     slot: str | None = None  # the once-only slot the shards carry (held-out / checkpoint waves)
     slot_verified: bool = False  # ... and whether the marker store confirmed this wave_id holds it
+    #: the merged `wave_backoff` provenance of every shard (see `backoff_summary`); a wave that was throttled must not
+    #: pass for a free-running one, or its wall-clock would be read as the engine's
+    backoff: Mapping[str, Any] | None = None
     _key: object = None
 
     def __post_init__(self) -> None:
         if self._key is not _TOKEN:
             raise TypeError("a WaveResult is built by load_wave, which applies every refusal collect.py makes")
+
+
+def backoff_summary(shards: Iterable[Mapping[str, Any]], *, has_model_arm: bool) -> dict[str, Any]:
+    """Merge each shard's `wave_backoff` provenance into one verdict on whether the wave was throttled.
+    status: "not_applicable" (no model arm), "throttled" (a wave-level trip, or shards held calls for one),
+    "free" (every shard ran the guard and none tripped or held), "unrecorded" (a shard carries no account, or ran
+    without the guard, or its marker store failed: absence of a back-off is NOT claimed)."""
+    shards = list(shards)
+    if not has_model_arm:
+        return {"status": "not_applicable"}
+    accounts = [s["prov"].get("wave_backoff") for s in shards]
+    unguarded = sum(1 for a in accounts if not isinstance(a, Mapping) or a.get("guard") != "wave_backoff")
+    live = [a for a in accounts if isinstance(a, Mapping) and a.get("guard") == "wave_backoff"]
+    trips: dict[tuple, dict] = {}
+    for a in live:
+        for t in a.get("trips_seen", []):
+            trips[(t.get("bucket"), t.get("by_shard"))] = t
+    held = sum(float(a.get("held_s") or 0.0) for a in live)
+    store_errors = sum(int(a.get("store_errors") or 0) for a in live)
+    out: dict[str, Any] = {
+        "trips": sorted(trips.values(), key=lambda t: t.get("at", 0.0)), "shards": len(shards),
+        "shards_without_guard": unguarded, "shards_held": sum(1 for a in live if a.get("holds")),
+        "held_s_total": round(held, 1), "held_s_max_shard": round(max((float(a.get("held_s") or 0.0) for a in live),
+                                                                     default=0.0), 1),
+        "rate_limited_calls_reported": sum(int(a.get("reported_429") or 0) for a in live), "store_errors": store_errors}
+    out["status"] = ("throttled" if trips or held > 0 else "unrecorded" if unguarded or store_errors else "free")
+    return out
 
 
 def defect_kind(split_row: Any) -> str:
@@ -425,7 +465,9 @@ def load_wave(root: Path, wave: Any, split_rows: Iterable[Any], *, n_shards: int
         wave, next(iter(ids)), str(first["commit"]), str(first["image"]), tuple(rows.values()),
         {sha: defect_kind(r) for sha, r in by_sha.items()}, len(split),
         tuple(float(s["prov"].get("wall_seconds") or 0.0) for s in shards), bool(frozen_commit),
-        declined=declined, slot=slot, slot_verified=slot_verified, _key=_TOKEN)
+        declined=declined, slot=slot, slot_verified=slot_verified,
+        backoff=backoff_summary(shards, has_model_arm=bool(wave.has_model_arm)),
+        excluded=tuple(dict(x) for s in shards for x in s["excluded"]), _key=_TOKEN)
 
 
 # ---------------------------------------------------------------------------------------------- the report
@@ -505,6 +547,21 @@ def _declined_block(stratum: Mapping[str, list[ArmRow]], n: int) -> dict[str, An
                    "declined": sum(not r.clean for r in con), "unexpectedly_clean": sum(r.clean for r in con)}
     return {"expected_outcome": "correctly_declined", "files": n, "counted_as": "none: not a failure, not a gain",
             "arms": arms}
+
+
+def _excluded_block(excluded: Sequence[Mapping[str, Any]], n_files: int) -> dict[str, Any]:
+    """THE EXCLUDED STRATUM, built by the same code collect.py uses for the re-probe so there is ONE mechanism:
+    files the harness reached no verdict on (a per-file or one-call wall kill, a pool death, an unreadable
+    input), counted and NAMED. They are inconclusive for every arm, so they are already outside every clean
+    rate, gain and regression above; this block is what keeps them from being invisible there. `fraction_of_pool`
+    is over the split, not the re-probe pool, so collect's 2% limit does not apply to it and is not quoted."""
+    block = _collect.excluded_stratum({"rows": [None] * max(n_files - len(excluded), 0), "excluded": list(excluded)})
+    for key in ("limit", "over_limit"):
+        block.pop(key, None)
+    block["counted_as"] = ("inconclusive for every arm: not a failure, not a gain, in no clean rate and no "
+                           "regression")
+    block["fraction_of_split"] = block.pop("fraction_of_pool")
+    return block
 
 
 def _paired_columns(by_sha: Mapping[str, dict[str, ArmRow]], blocks: dict[str, dict[str, Any]],
@@ -638,6 +695,7 @@ def build_report(result: WaveResult) -> dict[str, Any]:
         "heldout_split": wave.split == ev.HELDOUT,
         "files": result.n_files, "files_measured_strata": n_main, "arms": blocks, "paired_set": paired_set,
         "declined_stratum": _declined_block(stratum, len(result.declined)),
+        "excluded_stratum": _excluded_block(result.excluded, result.n_files),
         "marginals": {"ai_marginal (search_ai - search_det)": _paired(by_sha, "search_ai", "search_det", blocks),
                       "deterministic_marginal (staged - input_only)": _paired(by_sha, "staged", "input_only", blocks)},
         "budgets": {a: {"wall_s": ev.ARMS[a].budget.wall_s, "ops": ev.ARMS[a].budget.ops,
@@ -648,6 +706,7 @@ def build_report(result: WaveResult) -> dict[str, Any]:
                   "cap_usd": wave.cap_usd},
         "wall": {"shards": len(shard_wall), "slowest_shard_s": max(shard_wall, default=0.0),
                  "shard_seconds_total": sum(shard_wall)},
+        "throttle": dict(result.backoff or {"status": "unrecorded"}),
         "cheap_full_agreement": _cheap_full_block(result.rows, wave.arms),
         "warnings": warnings,
         "status": "OK" if not warnings else "UNRELIABLE",
@@ -722,12 +781,30 @@ def render_text(rep: dict[str, Any]) -> str:
                 "| arm | files | declined (expected) | unexpectedly clean | inconclusive |", "|---|---|---|---|---|"]
         out += [f"| {a} | {v['files']} | {v['declined']} | {v['unexpectedly_clean']} | {v['inconclusive']} |"
                 for a, v in ds["arms"].items()]
+    xs = rep["excluded_stratum"]
+    walls = ", ".join(f"{k} {v:g}s" for k, v in sorted(xs["walls"].items()))
+    reasons = ", ".join(f"{k} {n}" for k, n in sorted(xs["by_reason"].items())) or "none"
+    out += ["", f"## Excluded stratum ({xs['files']} files, {xs['fraction_of_split']:.1%} of the split; walls "
+                f"{walls}; by reason: {reasons}). {xs['counted_as']}. Named under excluded_stratum.names in the "
+                "JSON."]
     for a, b in rep["arms"].items():
         out += ["", f"## {a}: by defect kind (per-arm, own files)",
                 "| kind | files | inconclusive | inconclusive rate | clean | clean rate |", "|---|---|---|---|---|---|"]
         for k, v in b["by_defect_kind"].items():
             clean = "withheld" if v["clean"] is None else f"{v['clean']}/{v['conclusive']}"
             out.append(f"| {k} | {v['files']} | {v['inconclusive']} | {v['inconclusive'] / v['files']:.1%} | {clean} | {_pct(v['clean_rate'])} |")
+    th = rep["throttle"]
+    if th["status"] == "throttled":
+        out += ["", f"!! THROTTLED WAVE: {len(th['trips'])} wave-level 429 back-off trip(s); shards spent "
+                    f"{th['held_s_total']:.0f} s held (worst shard {th['held_s_max_shard']:.0f} s) across "
+                    f"{th['shards_held']} shard(s). The wall-clock above includes that waiting: it is NOT the "
+                    "engine's wall."]
+    elif th["status"] == "unrecorded":
+        out += ["", f"?? back-off NOT RECORDED ({th.get('shards_without_guard', '?')} shard(s) without the guard, "
+                    f"{th.get('store_errors', 0)} marker-store error(s)): this wave may have been throttled; do not "
+                    "treat its wall-clock as free-running."]
+    elif th["status"] == "free":
+        out += ["", "wave back-off: none (every shard ran the guard; no trip, no held call)"]
     unmetered = rep["spend"]["unmetered_arms"]
     out += ["", f"model spend ${rep['spend']['model_usd_total']:.2f} of the ${rep['spend']['cap_usd']:g} wave cap"
             + (f" (EXCLUDES {', '.join(unmetered)}: calls a model, spend not metered by this ledger)" if unmetered else "")

@@ -66,28 +66,49 @@ Measured by lane D on 2026-11-23 at the tip that includes Lane A's 2.6x speed-up
 | | value |
 |---|---|
 | per file (sample) | median 25.5 s, mean 136 s, p90 620 s, max 904 s |
-| file-wall timeouts (900 s) | 3 / 59 = 5.1% (pool-weighted 4.7%) |
-| excluded in total (timeouts + `check_valid` 300 s) | 6 / 59 (pool-weighted ~8.7%, wide interval) |
+| file-wall timeouts (at the then-900 s wall) | 3 / 59 = 5.1% (pool-weighted 4.7%) |
+| excluded in total (timeouts + the then-300 s `check_valid` wall + one body-pair cap) | 6 / 59 (pool-weighted 8.7%, wide interval) |
 | one vCPU per file | holds: cgroup CPU/wall 1.00 median and max, 1.2 s throttled in 8,023 s |
 | peak memory per shard | 2.8 GB (8 shards fit a 32 GB c2d-standard-8) |
-| pool-wide work (re-weighted to file sizes) | 336 vCPU-h = 111 s/file (`evalspec.FULL_MIN_PER_FILE`) |
+| pool-wide work (re-weighted to file sizes) | 400 vCPU-h = 132.4 s/file at the 1800 s wall (`evalspec.FULL_MIN_PER_FILE`); it was 336 vCPU-h = 111 s/file at the old 900 s wall |
+
+The table above is the measurement AT THE WALLS IT WAS TAKEN AT (900 s per file, 300 s per `check_valid` call).
+Task 55 raised those to **1800 s per file** (`evalspec.DEFAULT_FILE_TIMEOUT_S`) and **900 s per call**
+(`meshpipeline.cad.repair_v4.limits.CHECKER_CALL_TIMEOUT_S`) because the old pair excluded ~8.7% of the pool
+against collect's 2% limit. Every cost below is re-simulated at the new wall.
 
 Simulated wave (`project_reprobe.py`, 400 reps, +0.25 h boot/stage per VM, $0.377/VM-h = c2d-standard-8 $0.3632 +
-100 GB pd-balanced, both from the GCP billing catalog):
+100 GB pd-balanced, both from the GCP billing catalog), at the 1800 s wall and (in brackets) at the old 900 s one:
 
 | plan | VMs | wall median (p90) | VM-hours median (p90) | $ median (p90) |
 |---|---|---|---|---|
-| 96 shards, cost-balanced | 12 | 5.2 h (5.6) | 54.8 (56.5) | $20.7 ($21.3) |
-| 96 shards, hash | 12 | 5.5 h (5.9) | 56.6 (58.8) | $21.3 ($22.2) |
-| 80 shards, cost-balanced | 10 | 6.0 h (6.5) | 53.4 (55.1) | $20.1 ($20.8) |
+| 96 shards, cost-balanced | 12 | 6.7 h (7.4) | 68.5 (71.6) | $25.8 ($27.0) |
+| 96 shards, hash | 12 | 7.1 h (7.8) | 70.6 (73.5) | $26.6 ($27.7) |
+| 80 shards, cost-balanced | 10 | 7.7 h (8.5) | 66.5 (69.5) | $25.1 ($26.2) |
+| *(at the old 900 s wall: 96 cost-balanced)* | 12 | *5.2 h (5.6)* | *54.8 (56.5)* | *$20.7 ($21.3)* |
 
-The launcher's own gate is more conservative (x1.5 skew): 63 projected / 144 worst case at 96 shards, cap 12 h.
-Size predicts cost weakly (R^2 0.21), so balancing by predicted cost buys ~3%, not more.
+**96 shards are now the safe plan, not merely the cheaper one.** At the 1800 s wall the 80-shard simulation puts
+the wall at 7.7 h median and 8.5 h p90, past the 8 h `--max-run-hours` default; the 96-shard plan is 6.7 h / 7.4 h.
+(`evalspec.check_budget`'s own coarser x1.5-skew model is kinder - 7.5 h for 80 shards, 6.3 h for 96 - and refuses
+neither at 8 h, so the simulation is the stricter of the two and is what this note follows.) That makes the C2D
+quota note below a launch blocker rather than a preference.
 
-**The exclusion rate is the risk, not the cost.** ~9% excluded is far over collect's 2% limit: as measured, the wave
-ends at collect exit 2 and needs either the owner's agreement to `--allow-excluded` (the bias is toward easy
-defects) or longer per-file walls (`--file-timeout-s`, and `check_valid`'s 300 s) before the launch. Decide before
-launching, not after.
+The launcher's own gate uses a coarser x1.5-skew model, not the simulation: at the 1800 s wall and 96 shards it
+says 400 vCPU-h, ~6.3 h wall, 75 projected / 144 worst-case VM-hours against the 600 ceiling, cap 12 h - it passes
+(it said 63 projected at the old wall). Size predicts cost weakly (R^2 0.21), so balancing by predicted cost buys
+~3%, not more.
+
+**The exclusion rate is the risk, not the cost.** At the measured walls (900 s per file, 300 s per `check_valid`)
+~8.7% of the pool was excluded, far over collect's 2% limit, so the wave would have ended at collect exit 2 with no
+split. Task 55 raised both walls (1800 s / 900 s; the numbers and their derivation are in the constants' own
+comments) which brings the PROJECTED exclusion to between 1.3% (every wall victim was merely slow) and ~4.8% (the
+size model's lognormal tail). That may still be over 2%, and if it is, **collect refuses and that refusal is
+correct**: `--allow-excluded` is not the answer to it. The remaining known exclusion the walls cannot touch is
+`valid_kernel.MAX_OVERLAP_PAIRS` (2000 bbox-overlapping body pairs per call, 1 of 59 sample files, ~1.3%
+pool-weighted) - a WORK cap, not a clock, and raising it without measuring the per-pair cost would only convert a
+fast exclusion into a slow one. Whatever is left is reported, named, as its own stratum
+(`collect.py report()["excluded_stratum"]`, printed on its own line every run), so a reader sees exactly which
+files the failing set does not contain.
 
 **C2D quota is 100 vCPU per region, and every other C2D VM counts.** The gate VM
 `dev-crsv4-gate-2` (c2d-standard-16) holds 16, leaving 84: a 96-shard wave is REFUSED by the launcher's
@@ -153,11 +174,16 @@ output lists an F360 file, stop: that is a licence breach, not a bug to route ar
 $PY $V/launch_reprobe.py --shards 96 --max-run-hours 12                # the cost gate. exit 1 = REFUSE
 $PY $V/preflight.py --image "$IMAGE" --commit $COMMIT                  # read-only IAM/image/inputs/cache proof
 # once per bucket, before the first live launch (writes only _probe/ objects and the probe record):
-$PY $V/marker_probe.py --store gcs:dev-crsv3-transfer-224734058693 --rounds 50
+$PY $V/marker_probe.py --store gcs:dev-crsv3-transfer-224734058693 --rounds 50 --cleanup
 ```
 
 Without the marker probe record the launcher refuses every v4 wave (`no probe record for gcs/...`),
-dry run included.
+dry run included. `--cleanup` removes the run's throwaway `_probe/<run-id>/` keys and keeps the record.
+**Run on the real wave bucket 2026-11-23 (task 55): PASSED.** 50 race rounds, 22 with provably overlapping
+calls, sequential create/read-back ok. `create` latency on that bucket, 30 uncontended fresh keys: median
+138.7 ms, p90 158.0, p95 167.3, max 189.9 (racing median 141.2 ms, one 5.9 s outlier in 100 calls). A shard
+pays two creates at start (the wave marker and its own shard marker) before it may spend, so ~0.3 s per shard
+start, ~28 s across 96 shards - not a cost driver.
 
 Both must pass. The gate refuses over 600 VM-hours (projected or worst case), over 100 vCPU, or a wall
 beyond `--max-run-hours` (the VMs would be deleted mid-shard). `--allow-over-budget` waives the VM-hour
@@ -278,9 +304,13 @@ The wave is complete but the failing or clean set is smaller than the 300/200/15
 
 ### More than 2% excluded (exit 2)
 A timeout excludes the most pathological files, so a large exclusion biases the failing set toward
-easy defects. Look at `excluded_by_reason` / `excluded_by_source` first.
+easy defects. Read the EXCLUDED STRATUM first: `report.excluded_stratum` in `collect-report.json` names every
+excluded file with its reason and the two wall values that produced it, and collect prints its one-line summary on
+every run (`excluded_by_reason` / `excluded_by_source` are the same tallies, kept for older readers). The stratum
+is counted as neither a failure nor a pass, so it is never hiding in the failing set - but the files it lists are
+the ones the failing set does not contain, which is exactly the bias to judge.
 - **Legitimate `--allow-excluded`:** the exclusions are understood and are not the checker silently
-  losing a whole kind (e.g. a handful of known >900 s parts, all `file_timeout`), and the owner has
+  losing a whole kind (e.g. a handful of known parts past the file wall, all `file_timeout`), and the owner has
   agreed the bias is acceptable; say so in the commit.
 - **A mistake:** `checker_unavailable` or `inconclusive` dominating (the pool, not the files, was the
   problem: rerun those shards), or one source or family excluded wholesale.

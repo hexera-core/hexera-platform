@@ -319,6 +319,24 @@ class StagedResult:
     #: abandoned halfway report what ran before they were undone, because the kernel did that work. This is
     #: what `search` charges to the op budget, so one candidate never buys several ops for the price of one.
     applied_ops: dict[str, int] = field(default_factory=dict)
+    #: (stage, the workspace it left standing), for every kept stage that CHANGED the part, oldest first: the
+    #: states `confirm_staged` can fall back to
+    standing: list[tuple[str, Workspace]] = field(default_factory=list)
+    #: what the FULL panel said about the result (`confirm_staged`); None until it is asked
+    confirmation: Confirmation | None = None
+
+
+@dataclass
+class Confirmation:
+    """The full-panel check of a staged result. `fell_back_to` is None when the result stood, else the stage whose
+    state now stands, or "input"; `dropped` are the kept stages it undid (newest last); `verdict` is the full
+    verdict of the state that now stands (None when the healer changed nothing, so nothing was meshed)."""
+
+    verdict: Any = None
+    fell_back_to: str | None = None
+    dropped: list[str] = field(default_factory=list)
+    #: the states it meshed, in order
+    checked: list[str] = field(default_factory=list)
 
 
 # --- judging ------------------------------------------------------------------------------------
@@ -500,6 +518,7 @@ def _transact(pool: WorkerPool, ws: Workspace, stage: Stage, params: dict, befor
     out.verdicts[name] = after
     if after >= before:
         out.kept.append(name)
+        out.standing.append((name, steps.ws))
         return steps.ws, after
     out.rolled_back.append(name)
     return ws, before
@@ -545,6 +564,53 @@ def staged_start(pool: WorkerPool, ws: Workspace, *, params: dict[str, dict] | N
     return StagedStart(ws=result.ws, result=result, measured=True)
 
 
+def _passes(v: Any) -> int:
+    return sum(1 for m in getattr(v, "panel", ()) or () if str(getattr(m, "status", "")) == "pass")
+
+
+def regressed(v: Any, input_verdict: Any) -> bool:
+    """Whether full verdict `v` is WORSE than the input's: fewer panel members pass, or the input was valid / clean
+    and `v` is not. The rule the delivery gate (`search.deliverable`) applies, checked per state here."""
+    return (_passes(v) < _passes(input_verdict)
+            or (bool(input_verdict.valid.ok) and not bool(v.valid.ok))
+            or (bool(input_verdict.clean) and not bool(v.clean)))
+
+
+def confirm_staged(pool: WorkerPool, input_ws: Workspace, result: StagedResult, *, full: Callable[[Workspace], Any],
+                   input_verdict: Any) -> Confirmation:
+    """Confirm `result` with the FULL panel and fall back, stage by stage, until it is no worse than the input.
+
+    WHY. Each stage is a transaction judged by `cheap_verdict`: layer 1 and gmsh_default only. A stage can therefore
+    break gmsh_prod, gmsh_alt or Netgen without the transaction seeing it - Task 49's smoke caught `condition`
+    (split_angle 90 / split_closed / split_continuity) taking a CLEAN file from 4 panel passes to 3, while
+    gmsh_default's quality went up. So the staged result is meshed by the whole panel once; if it `regressed`
+    against the input, the newest kept stage is dropped and the state before it is meshed, and so on back to the
+    input. `result.ws` is set to whatever stands and `result.confirmation` records it. An inconclusive full verdict
+    raises `InconclusiveVerdict` (infrastructure is never a verdict on the part)."""
+    conf = Confirmation()
+    result.confirmation = conf
+    if result.ws.brep_path == input_ws.brep_path:
+        return conf                      # the healer changed nothing: nothing to confirm, nothing meshed
+    states = list(getattr(result, "standing", ()) or ()) or [("staged", result.ws)]
+    if states[-1][1].brep_path != result.ws.brep_path:
+        states.append(("staged", result.ws))
+    for i in range(len(states) - 1, -1, -1):
+        name, ws = states[i]
+        v = full(ws)
+        conf.checked.append(name)
+        if getattr(v, "inconclusive", False):
+            raise InconclusiveVerdict(f"the full panel could not judge the staged state after {name!r}")
+        if not regressed(v, input_verdict):
+            result.ws, conf.verdict = ws, v
+            conf.dropped = [n for n, _ in states[i + 1:]]
+            conf.fell_back_to = None if i == len(states) - 1 else name
+            return conf
+    result.ws, conf.verdict = input_ws, input_verdict
+    conf.dropped = [n for n, _ in states]
+    conf.fell_back_to = "input"
+    return conf
+
+
 def run_stage(pool: WorkerPool, ws: Workspace, name: str, params: dict | None = None) -> StagedResult:
     """One stage as a transaction: the search's macro action. `params` are THAT stage's.
 
@@ -558,4 +624,5 @@ def run_stage(pool: WorkerPool, ws: Workspace, name: str, params: dict | None = 
     return result
 
 
-__all__ = ["DEFAULTS", "STAGES", "Stage", "StagedResult", "StagedStart", "run_stage", "run_staged", "staged_start"]
+__all__ = ["DEFAULTS", "STAGES", "Confirmation", "Stage", "StagedResult", "StagedStart", "confirm_staged",
+           "regressed", "run_stage", "run_staged", "staged_start"]

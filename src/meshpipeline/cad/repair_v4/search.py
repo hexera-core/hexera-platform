@@ -95,6 +95,7 @@ import heapq
 import itertools
 import json
 import math
+import os
 import time
 from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
@@ -265,6 +266,32 @@ def _judged(fn: Callable[..., Verdict], pool: Any, ws: Workspace, original: str,
     return v
 
 
+#: Where `engine_form` keeps the BREPs it reads (one per process, removed at exit with step_for's exports).
+_ENGINE_FORM_DIR: list[str] = []
+
+
+def engine_form(pool: Any, step_path: str, *, timeout_s: float = 300) -> str:
+    """The STEP the engine actually judges for an input file: read through XCAF into a BREP (what
+    `repair_v4.repair_v4` and the eval's `RealEngine.open_workspace` do) and exported back by `step_for`, which is
+    what `_judged` meshes for every workspace. The two forms are NOT the same geometry to a mesher: lane D measured
+    4 of 11 near-threshold files changing a panel member's pass/fail between the original STEP and this one (gmsh_alt
+    0.00417 fail -> 0.0494 pass on Task 49's flipped file), while each form was bit-identical run to run. Anything
+    that labels an input - the re-probe that cuts the splits - must judge this form, or its label and the arms'
+    input verdict measure different files. A file the reader cannot read raises `CheckerUnavailable`."""
+    import atexit
+    import shutil
+    import tempfile
+
+    if not _ENGINE_FORM_DIR:
+        _ENGINE_FORM_DIR.append(tempfile.mkdtemp(prefix="engine_form_"))
+        atexit.register(shutil.rmtree, _ENGINE_FORM_DIR[0], True)
+    brep = os.path.join(tempfile.mkdtemp(dir=_ENGINE_FORM_DIR[0]), "input.brep")
+    read = pool.call("read_step_xcaf", {"path": str(step_path), "brep_out": brep}, timeout_s=timeout_s)
+    if not read.ok or read.value is None:
+        raise CheckerUnavailable(f"read_step_xcaf could not read {step_path!r}: {read.status}: {read.error}")
+    return step_for(pool, read.value["brep"])
+
+
 def h_mm_for(pool: Any, ws: Workspace) -> float:
     """The target element size, in MILLIMETRES, for the part in `ws`: the production FEA mesh's base size
     (`fea_plan.base_size`, a tenth of the part diagonal, the same function `GmshProd` meshes with), so failure
@@ -369,12 +396,34 @@ _PROXIMITY_RATIOS = (0.25, 0.125, 0.06)  # gap_split's rungs
 _SPLIT_ANGLES = (90, 60, 45)
 _MAX_PAIRS = 16  # split_by_proximity's maxItems
 
-# The ops below used to be reachable ONLY from the AI proposer, so `search_ai - search_det` credited the model with
+# The ops below used to be reachable ONLY from the AI proposer during the search - the last two only after the
+# pre-search staged healer had had its single go at them (`stages._edges` / `stages._faces`; lane C3's smaller
+# finding, Task 54) - so `search_ai - search_det` credited the model with
 # access to them rather than judgement about them (lane C, round-2 wiring audit). Each now has a small, evidence-gated
 # deterministic sweep. "Unknown means propose" (Task 47) holds for what the KERNEL discovers; what the site's own
 # facts already rule out (no free-form surface to reapproximate, a cluster the op's documented limits refuse) is not
 # proposed, and the reason is in `notes`.
-DET_COVERED_OPS = ("rebuild_face", "rebuild_edge_as_intersection", "reapproximate", "refit_cluster")
+DET_COVERED_OPS = ("rebuild_face", "rebuild_edge_as_intersection", "reapproximate", "refit_cluster",
+                   "fix_poles", "to_canonical")
+#: The actions the AI can request that the deterministic sweep does NOT make, each with the reason. Not a to-do list:
+#: a name here is a DECISION that a det candidate would cost budget for nothing, and the completeness test
+#: (tests/unit/cad/repair_v4/test_det_coverage.py) accepts an op as AI-only only if it is listed, so an op added to
+#: `REGISTRY` must be swept or explained here and cannot quietly become an AI-only advantage again.
+DET_UNREACHABLE_OPS: dict[str, str] = {
+    "tighten_tolerances": (
+        "it changes tolerances and nothing else (its kernel half returns the shape it read, with no history), and "
+        "neither half of `_fingerprint` can see a tolerance: the entity fingerprints are centroid-and-box and "
+        "`ws_kernel.shape_signature` is type, counts, closedness and shell volumes. Its child is therefore ALWAYS "
+        "the parent's fingerprint, so the driver discards it as a duplicate before the verdict is used - for the AI "
+        "proposer exactly as much as for a det candidate, so leaving it out favours neither arm, while proposing it "
+        "would spend one op per expansion on a state that is thrown away. Reaching it needs a tolerance term in the "
+        "shape signature (Task 45 did the same for orientation), which is a kernel change with a native gate."),
+    RUN_STAGE: (
+        "a macro, not an op: each stage body is a fixed chain of ops the sweep already proposes one by one, and the "
+        "search starts from `run_staged` at the defaults. It also costs ONE op of budget while applying several, so "
+        "giving det the macro would not level the comparison but move the unfairness (lane C3's finding for the "
+        "owner: charge the macro by the ops it applied, or give both arms the macro)."),
+}
 #: an edge is a rebuild candidate when its tolerance or its measured face-to-face gap exceeds this x diagonal: the
 #: normalise stage's own target (`stages.DEFAULTS["normalise"]["target_rel"]`), i.e. an edge the healer could not
 #: bring to the tolerance it aims for
@@ -394,6 +443,18 @@ _MAX_REAPPROX_FACES = 8
 _REFIT_KINDS = ("sliver", "overlap", "self_overlap")
 _REFIT_SHARES = (0.5, 1.0)  # of the fidelity bound; the op declines above its own tol_mm
 _REFIT_MAX_FACES = 6
+#: `fix_poles` is ShapeFix_Face, and its kernel half RAISES when a targeted face does not change, so it is swept
+#: only where a pole was OBSERVED - a mesher's own `pole` error (`sites._MESHER_KINDS`) - and not on the other kinds
+#: `ops.edges.FixPoles.applies_to` allows (`periodic`, `invalid`), where nothing says a wire is broken.
+_POLE_KINDS = ("pole",)
+_MAX_POLE_FIXES = 2  # one face per candidate: one unchanged face would fail the whole call
+#: `to_canonical` declines the whole call on the FIRST target that is already analytic or is not a plane, cylinder,
+#: cone or sphere within the tolerance, so it is swept one free-form face at a time. One rung, at half the fidelity
+#: bound: the recogniser needs slack to see a near-plane, and the staged healer has already tried every face at
+#: once at `stages.DEFAULTS["faces"]["tol_mm"]`, which one unrecognisable face is enough to decline.
+_CANONICAL_KINDS = ("proximity", "sliver", "invalid")  # = ops.faces.ToCanonical.site_kinds
+_CANONICAL_SHARE = 0.5
+_MAX_CANONICAL_FACES = 2
 
 
 def _of_kind(entities: list[StableId], prefix: str) -> list[StableId]:
@@ -574,15 +635,24 @@ class DetGenerator:
             for face in faces[:_MAX_FACE_REBUILDS]:
                 rows.append(("rebuild_face", [face], {"continuity": "G0"},
                              "re-fill the face after fixing its self-intersecting wires (G0)"))
+        if kind in _POLE_KINDS:
+            # The staged healer ran fix_poles over every face before the search; an op applied since may have left a
+            # new broken wire, and only this row lets the det arm try again on the face the mesher is still failing on.
+            if not faces:
+                self._note(f"site {site.id}: fix_poles not proposed: the site names no face")
+            for face in faces[:_MAX_POLE_FIXES]:
+                rows.append(("fix_poles", [face], {},
+                             "repair the face's wires (degenerate edge at the pole, missing seam)"))
         wants_edges = kind in _EDGE_KINDS and any(not e.get("kind") for e in graph.get("edges") or [])
         wants_reapprox = kind in _REAPPROX_KINDS and faces
         wants_refit = kind in _REFIT_KINDS and len(faces) >= 2
-        if not (wants_edges or wants_reapprox or wants_refit):
+        wants_canonical = kind in _CANONICAL_KINDS and bool(faces)
+        if not (wants_edges or wants_reapprox or wants_refit or wants_canonical):
             return rows
         diag = sized()
         if diag is None or diag > UNBOUNDED_DIAGONAL_MM:
             for op, wanted in (("rebuild_edge_as_intersection", wants_edges), ("reapproximate", wants_reapprox),
-                               ("refit_cluster", wants_refit)):
+                               ("refit_cluster", wants_refit), ("to_canonical", wants_canonical)):
                 if wanted:
                     self._note(f"site {site.id}: {op} not proposed: {self._why_no_size(diag)}")
             return rows
@@ -607,6 +677,17 @@ class DetGenerator:
             for share, degree in _REAPPROX_SWEEP if freeform else ():
                 rows.append(("reapproximate", freeform, {"tol_mm": share * bound, "max_degree": degree},
                              f"re-approximate the free-form faces within {share:g} of the bound, degree <= {degree}"))
+        if wants_canonical:
+            # An analytic face declines the call outright ("no_change"), so only a MEASURED free-form carrier is a
+            # candidate; a free-form face that is not within the tolerance of a canonical surface is left to the
+            # kernel to discover (unknown means propose).
+            nearly = [f for f in faces if surface.get(f) in _FREEFORM][:_MAX_CANONICAL_FACES]
+            if not nearly:
+                self._note(f"site {site.id}: to_canonical not proposed: no free-form face is known on the site")
+            for face in nearly:
+                rows.append(("to_canonical", [face], {"tol_mm": _CANONICAL_SHARE * bound},
+                             f"snap face {face} onto the exact plane/cylinder/cone/sphere it matches within "
+                             f"{_CANONICAL_SHARE * bound:.3g} mm ({_CANONICAL_SHARE:g} of the bound)"))
         if wants_refit:
             why = self._refit_refused(faces, graph)
             if why:
@@ -1536,6 +1617,7 @@ __all__ = [
     "ai_generators",
     "default_judge",
     "default_judge_for",
+    "engine_form",
     "h_mm_for",
     "deliverable",
     "panel_passes",

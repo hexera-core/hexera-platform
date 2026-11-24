@@ -544,3 +544,18 @@ def test_prod_config_samples_the_size_rule_across_decades(monkeypatch: pytest.Mo
         fea_mesh_config, "options", lambda d: {**real(d), "Mesh.MeshSizeMax": min(real(d)["Mesh.MeshSizeMax"], 5.0)}
     )
     assert GmshProd().config != before
+
+
+def test_every_gmsh_member_meshes_single_threaded_with_a_fixed_seed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Reproducibility is pinned, not inherited. Lane D measured each panel form bit-identical across 5 fresh runs,
+    but only because gmsh 4.15.2 defaults to one thread and seed 1; gmsh_prod's HXT 3D fill is multi-threaded and
+    order-dependent once threads are on, so a later 'speed-up' that raised General.NumThreads would make a
+    near-threshold verdict flip run to run. The child sets the values before it meshes and checks they took."""
+    fake = _fake_gmsh(Exception("Could not open file"))
+    seen: dict[str, float] = {}
+    set_number = fake.option.setNumber
+    fake.option.setNumber = lambda k, v: (seen.__setitem__(k, v), set_number(k, v))  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "gmsh", fake)
+    mesh_child.run_in_process({"step": "/x.step", "profile": "prod"})
+    assert {k: seen.get(k) for k in mesh_child.REPRODUCIBLE} == mesh_child.REPRODUCIBLE
+    assert mesh_child.REPRODUCIBLE["General.NumThreads"] == 1 and mesh_child.REPRODUCIBLE["Mesh.MaxNumThreads3D"] == 1
