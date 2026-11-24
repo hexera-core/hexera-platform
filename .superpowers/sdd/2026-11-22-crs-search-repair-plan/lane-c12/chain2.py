@@ -36,7 +36,7 @@ def judge(pool, ws, step, h, parent=None):
         "faithful": None if v.faithful is None else {"ok": v.faithful.ok, "max_dev_mm": v.faithful.max_dev_mm},
         "sites": [{"id": s.id, "kind": s.kind, "entities": s.entities[:12], "n": len(s.entities),
                    "meshers": s.meshers_failing,
-                   "clashes": [{k: c.get(k) for k in ("a", "b", "dist", "touching", "area_a", "area_b")}
+                   "clashes": [{k: c.get(k) for k in ("a", "b", "dist_mm", "touching", "area_a_mm2", "area_b_mm2")}
                                for c in (s.graph or {}).get("clashes") or []][:8]} for s in sites],
     }
     return summary, v, sites
@@ -76,7 +76,11 @@ def main(step: str, out: str, plan: list) -> None:
         rec["sweep_notes"] = list(gen.notes)[:20]
         rec["sweep_skipped"] = dict(gen.skipped)
         rec["branches"] = []
-        for c in props[:N_BRANCHES]:
+        # CONTACT_ONLY: apply only the contact family (A12's `_contact_rows`, rationale names a contact)
+        chosen = ([c for c in props if "contact" in c.rationale][:4] if os.environ.get("CONTACT_ONLY")
+                  else props[:N_BRANCHES])
+        rec["contact_rows"] = sum("contact" in c.rationale for c in props)
+        for c in chosen:
             b: dict = {"op": c.op, "targets": c.targets[:10], "params": c.params}
             try:
                 nb, d = REGISTRY[c.op].apply(pool, ws, c.targets, c.params, timeout_s=T)
