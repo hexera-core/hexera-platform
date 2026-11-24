@@ -207,6 +207,7 @@ def _assemble(
     cache: VerdictCache | None,
     run_panel: PanelRunner | None,
     original_units: str | None,
+    panel_threads: int | None = None,
 ) -> Verdict:
     t = time.monotonic()
     valid = check_valid(pool, step, original_units=original_units)
@@ -227,8 +228,11 @@ def _assemble(
     # D23.2: P (parallel panel members) is PER CALL: a full verdict (input, confirm, output) meshes its members at
     # once, up to CRS_V4_PANEL_THREADS; a cheap verdict (the search's inner loop, where candidates already run in
     # parallel) stays serial. P changes only WHEN members run, so it is NOT part of the cache key (`cap` is).
-    threads = {"panel_threads": full_panel_threads()} if (
-        tier == "full" and "panel_threads" in inspect.signature(runner).parameters) else {}
+    # D25: a CHEAP call may ask for P too (the staged healer: no candidate workers to protect); the search's cheap
+    # calls do not ask, so they stay serial
+    want = full_panel_threads() if tier == "full" else (panel_threads or 1)
+    threads = {"panel_threads": want} if (
+        want > 1 and "panel_threads" in inspect.signature(runner).parameters) else {}
     # A16: WHAT MAY THIS PANEL ASK FOR? `run_panel`'s worst case is (members + 2) x timeout_s, and a call longer
     # than the wall's remainder cannot be stopped by a check that happens after it (measured: one 929.95 s panel
     # against a 900 s search wall). So the per-member timeout comes from what is LEFT, and a panel with no useful
@@ -379,10 +383,13 @@ def cheap_verdict(
     cache: VerdictCache | None = None,
     run_panel: PanelRunner | None = None,
     original_units: str | None = None,
+    panel_threads: int | None = None,
 ) -> Verdict:
     """Layer 1, the cheap members (`GmshDefault`, `GmshProd`; `default_members("cheap")`) and layer 3. For the
-    search's inner loop and the staged healer's transactions; never `clean`."""
-    return _assemble(pool, step, original, declared or Declared(), "cheap", members, cache, run_panel, original_units)
+    search's inner loop and the staged healer's transactions; never `clean`. `panel_threads` (D25): members meshed at
+    once; None = 1 (the search, whose candidates already run in parallel)."""
+    return _assemble(pool, step, original, declared or Declared(), "cheap", members, cache, run_panel, original_units,
+                     panel_threads=panel_threads)
 
 
 def with_brep_orientation(pool: Any, brep_path: str, v: Verdict) -> Verdict:

@@ -413,3 +413,26 @@ def test_both_tiers_hand_the_runner_the_doomed_cap(layers, monkeypatch, tier: st
     judge = cheap_verdict if tier == "cheap" else verdict
     judge(None, "s.step", "o.step", run_panel=capped_runner)  # type: ignore[operator]
     assert seen == [assemble.DOOMED_CAP_S]
+
+
+def test_a_cheap_verdict_meshes_in_parallel_only_when_asked_and_the_key_does_not_change(layers, step, tmp_path,
+                                                                                         monkeypatch) -> None:
+    """D25: the staged healer's cheap panels take P (panel_threads); the search's do not ask, so they stay serial.
+    P changes only WHEN members run, so it is not in the cache key: the parallel panel is a hit for the serial one."""
+    from meshpipeline.cad.repair_v4.verdict import assemble as A
+
+    seen: list[dict] = []
+
+    def runner(pool, step_path, members, *, timeout_s, doomed_cap_s=None, panel_threads=1):
+        seen.append({"panel_threads": panel_threads})
+        return [m.run(pool, step_path, timeout_s=timeout_s) for m in members]
+
+    members = [FakeMember("a"), FakeMember("b")]
+    cache = _cache(tmp_path)
+    A.cheap_verdict(None, step, "o.step", members=members, run_panel=runner, panel_threads=4)   # type: ignore[arg-type]
+    A.cheap_verdict(None, step, "o.step", members=members, run_panel=runner)                    # type: ignore[arg-type]
+    assert seen == [{"panel_threads": 4}, {"panel_threads": 1}]
+    A.cheap_verdict(None, step, "o.step", members=members, run_panel=runner, panel_threads=4,  # type: ignore[arg-type]
+                    cache=cache)
+    A.cheap_verdict(None, step, "o.step", members=members, run_panel=runner, cache=cache)  # type: ignore[arg-type]
+    assert len(seen) == 3                     # the serial call was a cache HIT for the parallel one: same key
