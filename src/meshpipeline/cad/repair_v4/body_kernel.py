@@ -213,6 +213,17 @@ def _builder(args: list[Any], fuzzy: float) -> Any:
     return alg
 
 
+def _is_empty(compound: Any) -> bool:
+    """True when `compound` has no children. A rebuilt sub-compound whose every solid an op dropped is EMPTY, and it must
+    not be written: netgen_occ cannot read a STEP holding one ('Bnd_Box is void', reported `step_unreadable`). Lane C11
+    on two overlapping boxes: cut_by / fuse output passed 3 of 4 members with the empty compound, 4 of 4 and CLEAN
+    without it, same TShapes and ids. XCAF reads nest every solid one compound down, so on real files this was the
+    common case, and no body op could end clean."""
+    from OCP.TopoDS import TopoDS_Iterator
+
+    return not TopoDS_Iterator(compound).More()
+
+
 def _rebuild(shape: Any, drop: Any, replacements: list[Any]) -> Any:
     """`shape` with the solids in `drop` (an indexed map) removed and `replacements` added. Anything
     else is re-added as the SAME TShape, which is what keeps untouched ids alive."""
@@ -230,7 +241,9 @@ def _rebuild(shape: Any, drop: Any, replacements: list[Any]) -> Any:
             if child.ShapeType() == TopAbs_SOLID and drop.Contains(child):
                 pass
             elif child.ShapeType() == TopAbs_COMPOUND:
-                builder.Add(comp, walk(TopoDS.Compound_s(child), False))
+                sub = walk(TopoDS.Compound_s(child), False)
+                if not _is_empty(sub):  # lane C11: see `_is_empty`
+                    builder.Add(comp, sub)
             else:
                 builder.Add(comp, child)
             it.Next()
@@ -656,7 +669,9 @@ def _trim_unbounded(payload: dict) -> dict:
             child = it.Value()
             it.Next()
             if child.ShapeType() == TopAbs_COMPOUND:
-                builder.Add(comp, walk(TopoDS.Compound_s(child)))
+                sub = walk(TopoDS.Compound_s(child))
+                if not _is_empty(sub):  # lane C11: see `_is_empty`
+                    builder.Add(comp, sub)
                 continue
             _, unbounded, _ = _bounded_extent(child)
             if not unbounded:
