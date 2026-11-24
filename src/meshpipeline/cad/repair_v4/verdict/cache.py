@@ -54,7 +54,9 @@ from meshpipeline.settings.cad_repair import verdict_cache_uri
 #: shell ahead of the bodies) netgen_occ failed "STEP file holds no solids" on a readable part. The member now reads
 #: every root on that one failure, so a cached .6 step_unreadable for such a file is wrong. Files Netgen already
 #: read are meshed exactly as before.
-VERDICT_CODE_VERSION = "crs-v4.verdict.7"
+#: .8 (lane D20, owner ruling): netgen_occ meshes EVERY root of a multi-root STEP, not only on a no-solids read; a
+#: cached .7 netgen result for a multi-root file judged its first body only.
+VERDICT_CODE_VERSION = "crs-v4.verdict.8"
 logger = logging.getLogger(__name__)
 CACHEABLE_STATUSES = ("pass", "fail")
 

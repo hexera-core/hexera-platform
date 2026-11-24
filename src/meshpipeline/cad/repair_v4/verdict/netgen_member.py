@@ -121,6 +121,18 @@ def _read_no_solids(record: dict) -> bool:
     return (not record.get("ok") and record.get("stage") == "read" and record.get("solids") == 0)
 
 
+def _root_count(step: str) -> int:
+    """How many transferable roots the STEP file has (0 when it cannot be read this way)."""
+    try:
+        from OCP.IFSelect import IFSelect_RetDone
+        from OCP.STEPControl import STEPControl_Reader
+
+        reader = STEPControl_Reader()
+        return int(reader.NbRootsForTransfer()) if reader.ReadFile(step) == IFSelect_RetDone else 0
+    except Exception:  # noqa: BLE001
+        return 0
+
+
 def _all_roots_brep(step: str, work: Path) -> str | None:
     """Every root of `step`, as STEPControl transfers them (one compound when there are several), written as a BREP
     Netgen reads whole. None when the file cannot be read this way either (the original verdict then stands)."""
@@ -151,8 +163,15 @@ def _mesh_netgen(payload: dict) -> dict:
     msh = str(work / "netgen_volume.msh")
     try:
         started = time.monotonic()
-        record = _run_netgen(str(payload["step"]), msh, float(payload["timeout_s"]))
-        if _read_no_solids(record):
+        step = str(payload["step"])
+        # Netgen's STEP reader keeps only the FIRST root (D19/D20, measured on 92 multi-root files: it meshed one body
+        # of up to 50). Every multi-root file is handed over as ONE BREP compound of all its roots, so Netgen judges
+        # the whole part; a single-root file goes in exactly as before.
+        whole = _all_roots_brep(step, work) if _root_count(step) > 1 else None
+        record = _run_netgen(whole or step, msh, float(payload["timeout_s"]))
+        if whole is not None:
+            record = {**record, "read_via": "all_roots_brep"}
+        elif _read_no_solids(record):
             # Netgen's STEP reader keeps only the FIRST root of the file (lane C12, measured on 0053_00530659: roots
             # [SHELL, SOLID, SOLID, SOLID] -> Netgen sees one SHELL, 0 solids, while STEPControl and read_step_xcaf
             # see all four). Read every root here, write them as one BREP compound, and give Netgen that. Only on
@@ -278,7 +297,7 @@ def member_result(
         cause: str | None = None, located: list | None = None,
     ) -> MemberResult:
         if rec.get("read_via") == "all_roots_brep":
-            message += " [read from every STEP root: Netgen's STEP reader keeps only the first]"
+            message += " [read from every STEP root]"
         return MemberResult(
             name=name, status=status, error_kind=kind, message=message, located=located or [],
             min_sicn=sicn, elements=elements, seconds=seconds, cause=cause,

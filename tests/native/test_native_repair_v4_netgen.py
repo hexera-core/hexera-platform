@@ -236,3 +236,11 @@ def test_a_file_with_no_solid_in_any_root_still_reads_as_no_solids(pool: WorkerP
     step = _write_roots([_loose_shell(0.0)], tmp_path / "shell_only.step")
     result = NetgenOCC().run(pool, step, timeout_s=TIMEOUT_S)
     assert result.status == "fail" and result.error_kind == "step_unreadable" and "no solids" in result.message
+
+
+def test_every_root_of_a_multi_root_file_is_meshed_not_only_the_first(pool: WorkerPool, tmp_path: Path) -> None:
+    """D20, owner ruling: roots [SOLID, SOLID] - Netgen alone meshed the first body; the member now meshes both."""
+    step = _write_roots([_box(0), _box(30)], tmp_path / "two_roots.step")
+    result = NetgenOCC().run(pool, step, timeout_s=TIMEOUT_S)
+    assert result.status == "pass", result
+    assert "2 solid(s)" in result.message and "every STEP root" in result.message
