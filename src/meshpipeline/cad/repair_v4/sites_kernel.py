@@ -143,7 +143,11 @@ def sites_locate_points(payload: dict) -> dict:
 
 #: A gap at or under this (mm) is a CONTACT, not a near miss: below it the two faces touch as far as any mesher
 #: can tell, and the proximity split has no gap to size a plan from.
-_CONTACT_MM = 1e-7
+#: at or under this gap (mm) two faces TOUCH, so the ops a near miss allows do not apply (`search._clash_pairs`).
+#: Public because `sites` must label a pair it measured with `sites_distance` by the SAME rule: the parent side had
+#: its own copy of nothing, and a pair whose `touching` is missing reads as a near miss and gets the wrong ops.
+CONTACT_MM = 1e-7
+_CONTACT_MM = CONTACT_MM
 
 
 def _shares_edge(a: Any, b: Any) -> bool:
