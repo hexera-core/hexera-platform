@@ -293,11 +293,11 @@ def _read_shape(path: Path):
         if not BRepTools.Read_s(shape, str(path), BRep_Builder()):
             raise UnreadableCad(f"the file could not be read as CAD ({path.name})")
         return shape
-    if path.suffix.lower() in (".igs", ".iges"):
-        from OCP.IGESControl import IGESControl_Reader as Reader
-    else:
-        from OCP.STEPControl import STEPControl_Reader as Reader
-    reader = Reader()
+    from OCP.STEPControl import STEPControl_Reader
+
+    # the product's one IGES reader (cad/iges_read): B-splines kept whole
+    from meshpipeline.cad.iges_read import iges_reader, is_iges
+    reader = iges_reader() if is_iges(path) else STEPControl_Reader()
     if reader.ReadFile(str(path)) != IFSelect_RetDone:
         raise UnreadableCad(f"the file could not be read as CAD ({path.name})")
     reader.TransferRoots()

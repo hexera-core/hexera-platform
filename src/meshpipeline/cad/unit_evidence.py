@@ -129,9 +129,10 @@ _IGES_FLAGS = 11
 
 def _iges_evidence(path: Path) -> UnitEvidence:
     from OCP.IFSelect import IFSelect_RetDone
-    from OCP.IGESControl import IGESControl_Reader
 
-    reader = IGESControl_Reader()
+    from meshpipeline.cad.iges_read import iges_reader
+
+    reader = iges_reader()
     if reader.ReadFile(str(path)) != IFSelect_RetDone:
         return UnitEvidence.unresolved("the IGES file could not be read")
     try:

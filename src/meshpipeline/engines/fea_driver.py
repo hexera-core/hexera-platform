@@ -247,12 +247,13 @@ def _plain_solids(shape, tol: float, diag: float) -> tuple[Any, int, int]:
     return comp, made, _faces_in(comp) if made else 0
 
 
-def _solidified(shape, diag: float) -> tuple[Any, int, int] | None:
+def _solidified(shape, diag: float, seen: dict | None = None) -> tuple[Any, int, int] | None:
     """SHELL-15j: the file's loose faces read as the solids they bound THE WAY THE MID-SURFACE EXTRACTION READS THEM
     (cad/midsurface.solidify, SHELL-15): a surface written in another form (an IGES file's surface of revolution or
     B-spline) re-made as the plane, cylinder, cone, sphere or torus it is, the sewing tolerance measured from the
     faces' own gaps, bodies that touch kept apart, a sealed cavity put into its body, every solid checked valid.
-    Returns (the compound of those solids, how many, how many faces they hold); None when it makes none or fails."""
+    Returns (the compound of those solids, how many, how many faces they hold); None when it makes none or fails.
+    TIME-10: its volume maker stops at SOLIDIFY_LIMIT_S (`seen` is then told "solidify_unfinished": None)."""
     from OCP.BRep import BRep_Builder
     from OCP.BRepCheck import BRepCheck_Analyzer
     from OCP.TopAbs import TopAbs_SOLID
@@ -262,7 +263,7 @@ def _solidified(shape, diag: float) -> tuple[Any, int, int] | None:
     from meshpipeline.cad import midsurface as ms
 
     try:
-        read_as, _notes = ms.solidify(shape, 1.0)
+        read_as, _notes = ms.solidify(shape, 1.0, volumes_limit_s=SOLIDIFY_LIMIT_S)
         comp = TopoDS_Compound()
         b = BRep_Builder()
         b.MakeCompound(comp)
@@ -278,10 +279,31 @@ def _solidified(shape, diag: float) -> tuple[Any, int, int] | None:
             b.Add(comp, solid)
             made += 1
         return (comp, made, _faces_in(comp)) if made else None
+    except ms.VolumesStopped:
+        # TIME-10: the volume maker ran past its limit - the plain sewing stands, and the run says so
+        logger.warning("fea driver: the loose faces' volume maker ran past %.0f s and was stopped", SOLIDIFY_LIMIT_S)
+        if seen is not None:
+            seen["solidify_unfinished"] = SOLIDIFY_LIMIT_S
+        return None
     except Exception as exc:  # noqa: BLE001 - the plain sewing stands
         logger.warning("fea driver: the loose faces were not read as the extraction reads them (%s)",
                        type(exc).__name__)
         return None
+
+
+#: TIME-10 (rulebook 77): THE VOLUME MAKER OF THE SECOND READING OF A FILE'S LOOSE FACES (_solidified, through
+#: cad/midsurface._volumes_of) RUNS IN A PROCESS OF ITS OWN AND STOPS AT THIS MANY SECONDS; the plain stitch's reading
+#: then stands, and the run says so. Unbounded it ran 930 s on a public 1,423-face IGES assembly and then failed, while
+#: the plain stitch had already closed every face into 2 solids in 1.5 s. 3 times the slowest second reading measured
+#: that made a solid (104 s, a public impeller)
+SOLIDIFY_LIMIT_S = 300.0
+SOLIDIFY_RULE = "TIME-10"
+
+
+def solidify_unfinished_words(limit_s: float = SOLIDIFY_LIMIT_S) -> str:
+    """TIME-10's one line for the user."""
+    return (f"Joining your file's faces the slower, finer way did not finish in {limit_s / 60:g} minutes, so they "
+            "were joined by plain stitching alone. The mesh goes ahead.")
 
 
 #: MESH-1b: the share of the file's face area the solids read from its shells must hold to stand for the file (the
@@ -327,7 +349,7 @@ def solids_from_shells(ws: Path, seen: dict | None = None) -> int:
         return 0
     diag = float(math.dist(tuple(lo), tuple(hi)))
     comp, made, held = _plain_solids(shape, SEW_TOLERANCE * diag, diag)
-    read_as = _solidified(shape, diag)
+    read_as = _solidified(shape, diag, seen)
     if read_as is not None and read_as[2] >= held:
         comp, made, held = read_as
     if made and (share := _held_share(shape, comp)) < SOLIDS_HOLD_SHARE:
@@ -2590,6 +2612,10 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
     seen: dict = {}
     try:
         made = await asyncio.to_thread(solids_from_shells, ws, seen)
+        if seen.get("solidify_unfinished"):
+            _cite(job_id, [{"stage": "fea_plan", "decided": "faces joined by plain stitching", "rule": SOLIDIFY_RULE,
+                            "value": seen["solidify_unfinished"], "inputs": {"limit_s": SOLIDIFY_LIMIT_S},
+                            "words": solidify_unfinished_words()}])
         if made:
             _cite(job_id, [{"stage": "fea_plan", "decided": "closed shells read as solids", "value": made,
                             "rule": "MESH-1", "inputs": {"solids": made},
@@ -2621,7 +2647,13 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
         # shell could stand for: the surfaces are the part's skin, meshed as a surface part. Else as before.
         from meshpipeline.engines import surface_run as SR
 
-        if SR.said_shell(state) and await asyncio.to_thread(SR.closed_skin_check, ws):
+        skin_told: dict = {}
+        skin = SR.said_shell(state) and await asyncio.to_thread(SR.closed_skin_check, ws, skin_told)
+        if skin_told.get("unfinished"):
+            _cite(job_id, [{"stage": SR.GATE, "decided": "closed skin not checked", "rule": SOLIDIFY_RULE,
+                            "value": skin_told["unfinished"], "inputs": {"limit_s": SR.CLOSED_SKIN_LIMIT_S},
+                            "words": SR.CLOSED_SKIN_UNFINISHED}])
+        if skin:
             target, asked = await surface_asks(ws, state, job_id=job_id, run=run, publish=publish)
             surfaced = await SR.surface_pass(ws, state, job_id=job_id, run=run, cite=_cite,
                                              left_s=attempt_left_s(run), target=target, closed_skin=True)
@@ -3327,4 +3359,5 @@ def driver_for(state):
 
 __all__ = ["FEA_USUAL_FILL_RATES", "kept_plans", "memory_measured", "size_choice", "MIXED_GATE", "SHELL_RUN_LIMIT_S", "mesh_as_of", "shell_pass", "connection_of", "element_target", "target_plan", "prepare_assembly", "restage_tied", "BYTES_PER_ELEMENT", "MESH_JOB_MEMORY_GIB", "limit_facts", "memory_elements", "FILL_RATES", "FLOOR_STEPS", "WORKSPACE_BYTES_PER_ELEMENT", "memory_need", "MESH_JOB_LIMIT_S", "VM_CEILING_S", "attempt_left_s", "ceiling_for", "planned_seconds", "choose_plan",
            "complexity", "element_limit", "fill_rate", "watchdog_words", "BUILD_FAILED", "GUARD_TRIP", "NO_SOURCE", "QUALITY_GATE", "applies", "drive",
-           "driver_for", "NOT_RUN", "NOT_RUN_GATE", "not_run", "not_run_words", "ladder_facts", "ladder_words", "make_plan", "measure_staged", "planned_work", "write_plan"]
+           "driver_for", "SOLIDIFY_LIMIT_S", "SOLIDIFY_RULE", "solidify_unfinished_words",
+           "NOT_RUN", "NOT_RUN_GATE", "not_run", "not_run_words", "ladder_facts", "ladder_words", "make_plan", "measure_staged", "planned_work", "write_plan"]

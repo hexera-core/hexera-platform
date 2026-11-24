@@ -5626,10 +5626,57 @@ def _solids_by_angle(loose: list, tol: float, probe: float) -> list | None:
     return made
 
 
-def solidify(shape, mm: float) -> tuple[object, list[str]]:
+class VolumesStopped(RuntimeError):
+    """TIME-10: the volume maker of solidify ran past its limit and was stopped."""
+
+
+#: TIME-10: what the volume maker's bounded child runs
+VOLUMES_ENTRY = "meshpipeline.cad.midsurface:volumes_file"
+
+
+def volumes_file(path: str, tol: float, out: str) -> int:
+    """TIME-10: _volumes_of on the faces of the compound at `path`, in their order (the bounded child's work): the
+    volumes written to `out` as one compound, how many returned."""
+    from OCP.BRep import BRep_Builder
+    from OCP.BRepTools import BRepTools
+    from OCP.TopoDS import TopoDS_Shape
+
+    comp = TopoDS_Shape()
+    BRepTools.Read_s(comp, path, BRep_Builder())
+    vols = _volumes_of(_faces(comp), float(tol))
+    BRepTools.Write_s(_compound(vols), out)
+    return len(vols)
+
+
+def _volumes_bounded(loose: list, tol: float, limit_s: float) -> list:
+    """TIME-10: _volumes_of in a process of its own, stopped at `limit_s` (VolumesStopped). The faces go to it as one
+    compound, in order and with the edges they share, and the volumes come back the same way."""
+    import tempfile
+
+    from OCP.BRep import BRep_Builder
+    from OCP.BRepTools import BRepTools
+    from OCP.TopAbs import TopAbs_SOLID
+    from OCP.TopoDS import TopoDS, TopoDS_Shape
+
+    with tempfile.TemporaryDirectory(prefix="volumes_") as tmp:
+        src, out = str(Path(tmp) / "faces.brep"), str(Path(tmp) / "volumes.brep")
+        BRepTools.Write_s(_compound(loose), src)
+        status, got = run_bounded(VOLUMES_ENTRY, {"path": src, "tol": tol, "out": out}, limit_s)
+        if status == "timeout":
+            raise VolumesStopped(f"the volume maker ran past {limit_s:.0f} s and was stopped")
+        if status != "ok":
+            raise RuntimeError(f"the volume maker stopped with no answer ({got})")
+        comp = TopoDS_Shape()
+        BRepTools.Read_s(comp, out, BRep_Builder())
+        sm = _map(comp, TopAbs_SOLID)
+        return [TopoDS.Solid_s(sm.FindKey(i)) for i in range(1, sm.Extent() + 1)]
+
+
+def solidify(shape, mm: float, *, volumes_limit_s: float | None = None) -> tuple[object, list[str]]:
     """SHELL-15: the shape with its loose faces (no solid holds them) sewn and every closed shell made a solid, and
     notes saying so; the shape itself when it has no loose face. An IGES copy of a STEP part then reads as the
-    STEP does. Deterministic: faces in file order, tolerances from the faces' own gaps."""
+    STEP does. Deterministic: faces in file order, tolerances from the faces' own gaps. `volumes_limit_s` (TIME-10):
+    the volume maker runs in a process of its own and stops there (VolumesStopped); None: here, unbounded."""
     from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeSolid
     from OCP.BRepLib import BRepLib
     from OCP.TopAbs import TopAbs_FACE, TopAbs_SHELL
@@ -5714,7 +5761,7 @@ def solidify(shape, mm: float) -> tuple[object, list[str]]:
     if bad or left:
         # SHELL-15b: a sewn shell that is no valid solid, or faces left in no body, joined touching bodies (a duct and
         # its insulation, a frame's tubes end to end): the volumes the faces bound instead, when they hold more faces
-        vols = _volumes_of(loose, tol)
+        vols = _volumes_of(loose, tol) if volumes_limit_s is None else _volumes_bounded(loose, tol, volumes_limit_s)
         n_in = sum(_map(v, TopAbs_FACE).Extent() for v in vols)
         n_made = sum(_map(v, TopAbs_FACE).Extent() for v in made)
         if vols and n_in > n_made and all(BRepCheck_Analyzer(v).IsValid() for v in vols):

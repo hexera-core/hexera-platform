@@ -740,8 +740,9 @@ def classify(sheets: list[dict], *, said_shell: bool = False, closed_skin: bool 
         return "surface", f"it holds no solid and its faces do not close: the open edges span {pct} of the surface", \
             _r(share)
     if said_shell:
-        return ("surface", f"its faces do not close (the open edges span {pct} of the surface), and a shell was "
-                           "asked for", _r(share))
+        # said plainly: a part drawn as a solid whose faces nearly close is told it has gaps, not only "a surface"
+        return ("surface", f"its faces nearly close but have gaps between them (the open edges span {pct} of the "
+                           "surface), so they are no solid, and a shell was asked for", _r(share))
     return ("gap", f"its faces nearly close: the open edges span {pct} of the surface - a gap in a closed skin "
                    "rather than the edge of a sheet", _r(share))
 
