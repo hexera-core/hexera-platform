@@ -112,6 +112,50 @@ def baseline_section(base: Path, label: str, run: Path, env: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
+def anytime_section(by: dict) -> str:
+    """The anytime fix (Lane B, B18): a search that hits its wall DELIVERS and VERDICTS its best state, so its row is
+    CONCLUSIVE and carries `stopped_on_wall`. Per arm: how many conclusive rows stopped on the wall, how many of those
+    are clean, and the clean rate WITHOUT them. Absent on commits before B18 (no field in the rows)."""
+    if not any("stopped_on_wall" in r for a in by for r in by[a].values()):
+        return ""
+    lines = ["| arm | conclusive | stopped on wall | clean among wall-stopped | clean rate (all conclusive) | "
+             "clean rate WITHOUT wall-stopped |", "|---|---|---|---|---|---|"]
+    for a in ARMS:
+        c = [r for r in by[a].values() if not r.get("inconclusive")]
+        if not c:
+            continue
+        w = [r for r in c if r.get("stopped_on_wall")]
+        rest = [r for r in c if not r.get("stopped_on_wall")]
+        rate = lambda rs: f"{sum(bool(r.get('out_clean')) for r in rs)}/{len(rs)}" if rs else "-"  # noqa: E731
+        lines.append(f"| {a} | {len(c)} | {len(w)} | {sum(bool(r.get('out_clean')) for r in w)} | {rate(c)} | {rate(rest)} |")
+    return "\n".join(lines)
+
+
+def cores_section(out: Path, vms: list[dict]) -> str:
+    """Cores USED vs AVAILABLE (owner directive): per VM, from vm_run's 15 s samples (load per core, containers,
+    memory) and the kernel OOM / exit-137 counts. Absent when the run carried no sampler."""
+    rows = []
+    for v in vms:
+        f = out / f"{v['name']}.sysmon.tsv"
+        if not f.exists():
+            continue
+        data = [ln.split("\t") for ln in f.read_text().splitlines()[1:] if ln.strip()]
+        busy = [x for x in data if int(x[6]) > 0]
+        if not busy:
+            continue
+        load = [float(x[2]) for x in busy]
+        mem = [int(x[4]) for x in busy]
+        cont = [int(x[6]) for x in busy]
+        pk = (out / f"{v['name']}.pack_summary").read_text().strip() if (out / f"{v['name']}.pack_summary").exists() else "?"
+        rows.append(f"| `{v['name']}` | {v.get('machine')} | {v.get('vcpu')} | {max(cont)} | "
+                    f"{statistics.mean(load):.1f} ({statistics.mean(load) / max(1, int(v.get('vcpu') or 1)):.0%}) | "
+                    f"{max(load):.1f} | {max(mem) / 1024:.1f} GB | {pk} |")
+    if not rows:
+        return ""
+    return "\n".join(["| VM | machine | vCPU available | containers (peak) | load mean (of vCPU) | load peak | "
+                      "memory used peak | OOM / exit 137 |", "|---|---|---|---|---|---|---|---|"] + rows)
+
+
 def short(name: str) -> str:
     return name.split("/")[-1]
 
@@ -534,6 +578,8 @@ Clean control:
 
 Full tables: `reports/triage_dev.md`, `reports/triage_clean.md`.
 
+{('## Anytime: wall-stopped searches are CONCLUSIVE here (B18)' + chr(10) + chr(10) + anytime_section(H['by']) + chr(10)) if anytime_section(H['by']) else ''}
+{('## Cores used vs available (owner directive)' + chr(10) + chr(10) + cores_section(out, vm.get('vms', [])) + chr(10)) if cores_section(out, vm.get('vms', [])) else ''}
 ## Money and time
 
 - **Ledger ${led_total:.4f}** (route probes are metered in the shard ledgers on this code). {led_text}
