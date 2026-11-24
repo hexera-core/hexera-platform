@@ -37,6 +37,17 @@ mkdir -p "$RUN/splits" "$RUN/tools"
 # ---------------------------------------------------------------- 1. commit
 COMMIT=$(git -C "$REPO" rev-parse --verify "$COMMIT_ARG^{commit}") || die "cannot resolve $COMMIT_ARG"
 log "profile=$PROFILE commit=$COMMIT regions=$REGIONS run dir $RUN"
+HELDOUT=${HELDOUT:-0}
+if [ "$HELDOUT" = 1 ]; then
+  # THE FREEZE GUARD (lane C14), before ANYTHING else - dry run included: the held-out wave runs once, on the commit a
+  # freeze tag names, and that commit must carry every REQUIRE_COMMITS entry (B18's anytime rule). A refusal, not a
+  # warning: the held-out files are spent the moment they run.
+  REQ_ARGS=""; for r in ${REQUIRE_COMMITS:-}; do REQ_ARGS="$REQ_ARGS --require $r"; done
+  FROZEN=$(python3 -I "$HERE/freeze_guard.py" --repo "$REPO" --commit "$COMMIT" \
+    --pattern "${FREEZE_PATTERN:?a held-out profile sets FREEZE_PATTERN}" $REQ_ARGS 2>"$RUN/freeze_guard.err") \
+    || die "$(cat "$RUN/freeze_guard.err")"
+  log "freeze guard: $FROZEN"
+fi
 git -C "$REPO" archive --format=tar "$COMMIT" > "$RUN/code.tar" || die "git archive failed"
 mkdir -p "$RUN/code" && tar xf "$RUN/code.tar" -C "$RUN/code" devtools src || die "extract failed"
 # IMPORT PRE-FLIGHT, before any VM: byte-compile the engine and the eval code of THIS commit. A SyntaxError (the
@@ -70,7 +81,35 @@ CLEAN_SRC=$(resolve_split "$CLEAN_SPLIT_SPEC" "${CLEAN_SPLIT:-}" "$RUN/splits/cl
 log "dev split $DEV_SRC; clean split $CLEAN_SRC"
 
 # ---------------------------------------------------------------- 4. inputs, groups, VM plan, caps (prep.py)
-gcloud storage ls -l "gs://$BUCKET/eval/v4-reprobe/inputs/**" > "$RUN/inputs_ls.txt" 2>"$RUN/inputs_ls.err" || die "cannot list inputs"
+if [ "$HELDOUT" = 1 ]; then
+  # NO WILDCARD over the inputs prefix: it would list every held-out object name. Each URL is built from a split's
+  # own sha256 + basename. The calibration split (dev, NOT held-out) and the clean control are listed explicitly; the
+  # HELD-OUT objects are listed only on a REAL run (sizes for staging and packing). A dry run touches no held-out
+  # object at all and plans them at a nominal size, so its shard counts are indicative, not final.
+  CALIB_SRC=$(resolve_split "${CALIB_SPLIT_SPEC:?a held-out profile sets CALIB_SPLIT_SPEC}" "" "$RUN/splits/calib.json") || exit 1
+  python3 -I -c "
+import json,sys
+from pathlib import PurePosixPath as P
+b=sys.argv[1]
+def urls(f):
+    return [f'gs://{b}/eval/v4-reprobe/inputs/{x[\"sha256\"]}/{P(x[\"name\"]).name}' for x in json.load(open(f))['files']]
+open(sys.argv[2],'w').write('\n'.join(urls(sys.argv[3])+urls(sys.argv[4]))+'\n')
+open(sys.argv[5],'w').write('\n'.join(urls(sys.argv[6]))+'\n')
+" "$BUCKET" "$RUN/ls_open.txt" "$RUN/splits/calib.json" "$RUN/splits/clean.json" "$RUN/ls_sealed.txt" "$RUN/splits/dev.json" \
+    || die "cannot build the input URLs from the splits"
+  : > "$RUN/inputs_ls.txt"
+  tr '\n' '\0' < "$RUN/ls_open.txt" | xargs -0 -n 50 gcloud storage ls -l >> "$RUN/inputs_ls.txt" 2>"$RUN/inputs_ls.err" \
+    || die "cannot list the calibration/clean inputs (see $RUN/inputs_ls.err)"
+  if [ "$DRY" = 1 ]; then
+    sed 's|^|1000000  1970-01-01T00:00:00Z  |' "$RUN/ls_sealed.txt" >> "$RUN/inputs_ls.txt"
+    log "held-out inputs: $(wc -l < "$RUN/ls_sealed.txt" | tr -d ' ') objects NOT touched (dry run: nominal 1 MB each)"
+  else
+    tr '\n' '\0' < "$RUN/ls_sealed.txt" | xargs -0 -n 50 gcloud storage ls -l >> "$RUN/inputs_ls.txt" 2>>"$RUN/inputs_ls.err" \
+      || die "cannot list the held-out inputs by name"
+  fi
+else
+  gcloud storage ls -l "gs://$BUCKET/eval/v4-reprobe/inputs/**" > "$RUN/inputs_ls.txt" 2>"$RUN/inputs_ls.err" || die "cannot list inputs"
+fi
 [ -s "$RUN/inputs_ls.txt" ] || die "the inputs listing is empty"
 PRIOR="$REPO/$PRIOR_ROWS"
 [ -d "$PRIOR" ] || die "PRIOR_ROWS $PRIOR does not exist: the shard plan is sized on a prior wave's MEASURED walls"
@@ -80,7 +119,7 @@ python3 -I "$HERE/prep.py" --code "$RUN/code" --profile "$PROFILE" --dev-split "
   --prior-rows "$PRIOR" --regions $REGIONS --target-min "$TARGET_MIN" --route "$ROUTE" \
   --label "$LABEL" --ts "$TS" ${OPS:+--ops "$OPS"} ${ARM_GROUPS:+--groups "$ARM_GROUPS"} \
   ${FILE_TIMEOUT_S:+--file-timeout-s "$FILE_TIMEOUT_S"} ${SEARCH_WALL_S:+--search-wall-s "$SEARCH_WALL_S"} \
-  ${VCPU_PER_SHARD:+--vcpu-per-shard "$VCPU_PER_SHARD"} \
+  ${VCPU_PER_SHARD:+--vcpu-per-shard "$VCPU_PER_SHARD"} ${DEV_SPLIT_NAME:+--dev-split-name "$DEV_SPLIT_NAME"} \
   --out "$RUN/splits" | tee -a "$RUN/launch.log"
 [ "${PIPESTATUS[0]}" = 0 ] || die "prep refused"
 cp "$RUN/splits/launch_manifest.json" "$RUN/splits/vm_plan.json" "$RUN/"
@@ -129,6 +168,7 @@ LABEL=$LABEL
 TS=$TS
 COMMIT=$COMMIT
 IMAGE_REF=$IMAGE_REF
+IMAGE_COMMIT=$IMAGE_COMMIT
 MACHINE=multi
 OPS=$OPS
 FILE_USD_CAP=$FILE_USD_CAP
@@ -138,6 +178,8 @@ CACHE=gs://$BUCKET/eval/snap-$LABEL-$TS/verdict-cache
 SYNC=$SYNC
 FILE_TIMEOUT_S=${FILE_TIMEOUT_S:-}
 SEARCH_WALL_S=${SEARCH_WALL_S:-}
+FROZEN_COMMIT=$( [ "$HELDOUT" = 1 ] && echo "$COMMIT" )
+HELDOUT_SLOT=$( [ "$HELDOUT" = 1 ] && echo "gs://$BUCKET/model-ledger/slot/held_out/1" )
 EOF
 cp "$HERE/vm_run.sh" "$HERE/post.py" "$HERE/regroup.py" "$HERE/collect.sh" "$RUN/tools/"
 python3 -I -c "
@@ -145,6 +187,23 @@ import json,sys
 print('\n'.join(v['name'] for v in json.load(open(sys.argv[1]))['vms']))
 " "$RUN/vm_plan.json" > "$RUN/vms.txt" || die "cannot list the plan's VMs"
 log "VMs: $(tr '\n' ' ' < "$RUN/vms.txt")"
+if [ "$HELDOUT" = 1 ]; then
+  # THE ONCE-ONLY SLOT (evalspec.claim_wave_slot's key, value = the held-out group's wave_id, model_ledger's
+  # ObjectMarkerStore layout). The dry run READS it and refuses if another wave holds it; a real run CLAIMS it here,
+  # with the bucket's create-if-absent (--if-generation-match=0), before any VM exists. vm_run.sh's own plan_wave runs
+  # on a fresh local store and only shapes the provenance; this object is the claim the report verifies.
+  HO_WID=$(python3 -I -c "
+import json,sys
+g=[v for v in json.load(open(sys.argv[1]))['groups'].values() if v['split']=='dev']
+assert len(g)==1, g
+print(g[0]['wave_id'])" "$RUN/launch_manifest.json") || die "the held-out run must be ONE group with one wave id"
+  SLOT="gs://$BUCKET/model-ledger/slot/held_out/1"
+  HOLDER=$(gcloud storage cat "$SLOT" 2>/dev/null || true)
+  if [ -n "$HOLDER" ] && [ "$HOLDER" != "$HO_WID" ]; then
+    die "the held_out slot is SPENT: $SLOT holds wave '$HOLDER'. The held-out files run once (evalspec.claim_wave_slot); releasing the slot is a deliberate human act, not a launcher option."
+  fi
+  log "held_out slot $SLOT: ${HOLDER:-free}; this run's wave id $HO_WID"
+fi
 if [ "$DRY" = 1 ]; then
   log "DRY RUN complete: no VM created, no model called; the key was length-checked through a pipe, never stored."
   cat "$RUN/run.env" | tee -a "$RUN/launch.log"
@@ -188,6 +247,13 @@ cleanup() {
   exit $rc
 }
 trap cleanup EXIT INT TERM
+if [ "$HELDOUT" = 1 ] && [ -z "$HOLDER" ]; then
+  printf '%s' "$HO_WID" > "$RUN/slot.value"
+  gcloud storage cp --if-generation-match=0 "$RUN/slot.value" "$SLOT" >> "$RUN/launch.log" 2>&1 \
+    || die "could not CLAIM the held_out slot $SLOT (another launcher may have taken it a moment ago): nothing was run"
+  [ "$(gcloud storage cat "$SLOT")" = "$HO_WID" ] || die "the held_out slot read back something other than $HO_WID"
+  log "CLAIMED the held_out slot for $HO_WID"
+fi
 
 cat > "$RUN/startup.sh" <<EOF
 #!/bin/bash

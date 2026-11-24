@@ -15,9 +15,17 @@ mkdir -p ledger
 gcloud storage rsync -r -q "$SYNC/ledger" ledger; say "pull_ledger rc=$?"    # a wave with no model arm has none
 ls out | wc -l | xargs -I{} echo "COLLECT out_entries={}"
 
+# the held-out run (lane C14): the report needs the frozen commit, and verifies the once-only slot against the
+# bucket's own marker, copied into a FileMarkerStore layout (key slot/held_out/1 -> file slot__held_out__1)
+HO_ARGS=""
+mkdir -p markers
+if [ -n "${FROZEN_COMMIT:-}" ]; then
+  gcloud storage cp -q "$HELDOUT_SLOT" markers/slot__held_out__1; say "pull_slot rc=$?"
+  HO_ARGS="--frozen-commit $FROZEN_COMMIT --markers-dir /eval/markers"
+fi
 sudo docker run --rm -v "$T/code:/w:ro" -v "$T/tools:/tools:ro" -v "$T/splits:/eval/splits:ro" \
-  -v "$T/out:/eval/out" -w /w -e PYTHONPATH=/w/src meshpipeline-mesh:native \
-  python /tools/post.py --out /eval/out --splits /eval/splits --manifest /eval/splits/launch_manifest.json \
+  -v "$T/out:/eval/out" -v "$T/markers:/eval/markers:ro" -w /w -e PYTHONPATH=/w/src meshpipeline-mesh:native \
+  python /tools/post.py --out /eval/out --splits /eval/splits --manifest /eval/splits/launch_manifest.json $HO_ARGS \
   > out/post.log 2>&1
 rc=$?
 echo "$rc" > out/post.rc

@@ -248,6 +248,9 @@ def main() -> int:  # noqa: PLR0915 - one linear script: read, plan, refuse, wri
     p.add_argument("--search-wall-s", type=float, default=None, help="passed through to run_arm (lower only)")
     p.add_argument("--vcpu-per-shard", type=float, default=0.0, help="vCPU per container (default VCPU_PER_SHARD=2); "
                    "1 = one container per core (the owner's packing directive), below 1 oversubscribes")
+    p.add_argument("--dev-split-name", default="dev", choices=("dev", "heldout"),
+                   help="the split the 'dev' role carries: 'heldout' for the sealed held-out run (lane C14), whose wave "
+                        "is the held_out type with its own cap and once-only slot")
     p.add_argument("--vm-usd-per-vcpu-h", type=float, default=0.047,
                    help="c2d-standard-56 at the v1r profile's own VM_USD_PER_H=2.63 (lane B14; NOT $0.38)")
     a = p.parse_args()
@@ -272,12 +275,23 @@ def main() -> int:  # noqa: PLR0915 - one linear script: read, plan, refuse, wri
         GROUPS = tuple(parsed)
     waves = {"dev": ev.wave(a.dev_wave), "clean": ev.wave(a.clean_wave)}
     splits = {"dev": Path(a.dev_split), "clean": Path(a.clean_split)}
-    files = {k: load_split(splits[k], k) for k in splits}
+    # the split NAME each role carries: the 'dev' role is the held-out split in the sealed run (lane C14)
+    split_name = {"dev": a.dev_split_name, "clean": "clean"}
+    files = {k: load_split(splits[k], split_name[k]) for k in splits}
     for k, w in waves.items():
         ran = [arm for g, arms, sp in GROUPS if sp == k for arm in arms]
-        if w.split != k or w.wave_type != "normal" or sorted(ran) != sorted(w.arms) or len(set(ran)) != len(ran):
+        # the held_out type is allowed for the held-out split and nothing else (evalspec's own rule), normal elsewhere
+        want_type = ev.HELDOUT_WAVE_TYPE if split_name[k] == ev.HELDOUT else "normal"
+        if w.split != split_name[k] or w.wave_type != want_type or sorted(ran) != sorted(w.arms) \
+                or len(set(ran)) != len(ran):
             raise SystemExit(f"REFUSED: wave {w.name!r} ({w.wave_type}, {w.split}, {w.arms}) is not exactly what the "
-                             f"{k} groups run ({ran}): every arm of the wave once, normal type")
+                             f"{k} groups run ({ran}): every arm of the wave once, {want_type} type, split "
+                             f"{split_name[k]!r}")
+        if w.wave_type == ev.HELDOUT_WAVE_TYPE and len([g for g, _, sp in GROUPS if sp == k]) != 1:
+            # ONE held_out slot (`slot/held_out/1`) and the held-out report refuses shards with different wave ids:
+            # per-arm groups would be one wave id each, and the second could never claim the slot
+            raise SystemExit("REFUSED: the held-out split must run as ONE group (all its arms, one wave id): the "
+                             "held_out type has a single slot and its report needs one wave_id across every shard")
     if {f["sha256"] for f in files["dev"]} & {f["sha256"] for f in files["clean"]}:
         raise SystemExit("REFUSED: dev and clean share a file")
     staged = parse_ls(Path(a.inputs_ls))
@@ -397,12 +411,14 @@ def main() -> int:  # noqa: PLR0915 - one linear script: read, plan, refuse, wri
         manifest["groups"][group]["cost_source"] = dict(source)
         for i in range(1, n + 1):
             units.append({"group": group, "shard": i, "n": n, "split": k, "wave": waves[k].name,
+                          "wave_type": waves[k].wave_type, "split_name": split_name[k],
                           "arms": list(arms), "predicted_s": load[i], "uses_model": model_group})
 
     # THE MODEL CAP. Only a group with a model arm can spend, so only those groups take from --total-usd; the rest
     # carry a nominal cap they cannot spend (their arms make no calls) and it is excluded from the total.
     model_units = [u for u in units if u["uses_model"]]
-    slice_cap = {u["group"]: ev.wave_cap_usd("normal") / u["n"] for u in model_units}
+    # each group's slice of ITS wave type's cap: held_out is $250, normal $50 (model_ledger.WAVE_CAPS_USD)
+    slice_cap = {u["group"]: ev.wave_cap_usd(waves[u["split"]].wave_type) / u["n"] for u in model_units}
     demand = {}
     for u in model_units:
         files_here = manifest["groups"][u["group"]]["files_per_shard"][u["shard"] - 1]
@@ -461,6 +477,8 @@ def main() -> int:  # noqa: PLR0915 - one linear script: read, plan, refuse, wri
     wall_min = max(g["predicted_wall_min"] for g in manifest["groups"].values())
     boot_min = 9.0 if len({v["region"] for v in vms}) > 1 else 5.0   # a cross-region image pull is the long pole
     vm_h = (wall_min + boot_min + 6.0) / 60.0
+    manifest["split_names"] = split_name
+    manifest["wave_types"] = {k: w.wave_type for k, w in waves.items()}
     manifest["splits"] = {k: {"path": str(splits[k]), "sha256": sha_of(splits[k]), "files": len(files[k]),
                               "input_bytes": sum(staged[f["sha256"]][0] for f in files[k])} for k in splits}
     manifest["inputs"] = {f["sha256"]: staged[f["sha256"]][1] for k in files for f in files[k]}
@@ -484,8 +502,9 @@ def main() -> int:  # noqa: PLR0915 - one linear script: read, plan, refuse, wri
         for g in manifest["groups"]))
     print(f"   {pr['shard_slots']} shard slots on {pr['vms']} VMs / {pr['vcpu']} vCPU in {pr['regions']}; "
           f"run {pr['run_wall_min']} min + boot {pr['boot_and_pull_min']} min -> {pr['total_wall_min']} min total")
+    ai = {g: v["n_shards"] for g, v in manifest["groups"].items() if v["uses_model"]}
     print(f"   {pr['vcpu_hours']} vCPU-h ~ ${pr['vm_usd']}; model caps ${total_caps} of ${a.total_usd}; "
-          f"ai shards {manifest['groups']['dev_ai']['n_shards']} (ceiling {ceiling})")
+          f"model-group shards {ai} (ceiling {ceiling})")
     return 0
 
 

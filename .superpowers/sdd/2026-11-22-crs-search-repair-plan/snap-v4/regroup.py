@@ -167,6 +167,13 @@ def merge_split(out: Path, splits: Path, split: str, groups: dict, prefix: str,
     # ids legitimately differ. Built from the groups' own ids (snap-<label>-<group>-<ts>), so it is derived, not
     # invented, and every group must agree on the label and the stamp.
     merged_wave_id = merged_id(split, {g: groups[g]["wave_id"] for g in sorted(loaded)})
+    if agreed.get("wave_type") == "held_out":
+        # lane C14: a held_out wave is ONE group (prep refuses otherwise), and its once-only slot in the bucket holds
+        # THAT group's wave id. A renamed id here would make the report find the slot "held by another wave" and
+        # refuse the one measurement that cannot be re-run, so the group's own id is kept.
+        if len(loaded) != 1:
+            raise RegroupRefused(f"{split}: a held_out wave must be ONE group, found {sorted(loaded)}")
+        merged_wave_id = groups[next(iter(loaded))]["wave_id"]
 
     rows_by_sha: dict[str, list[dict]] = defaultdict(list)
     exc_by_sha: dict[str, list[dict]] = defaultdict(list)
