@@ -80,6 +80,22 @@ def _box(shape) -> tuple[float, float, float, float, float, float] | None:
     return tuple(float(v) for v in box.Get())  # type: ignore[return-value]
 
 
+def _optimal_box(shape) -> tuple[float, float, float, float, float, float] | None:
+    """The shape's TRUE extent (`BRepBndLib.AddOptimal`, geometry only: no triangulation, no tolerance padding).
+    Lane C13: `_box` (plain `Add`) bounds a B-spline face by its CONTROL NET, and a located defeature on dev
+    263d5e2d5bab made B-spline faces whose poles sit far outside them - plain diagonal 441 -> 1237 mm, optimal 441 ->
+    446.5 mm, the same volume - so `bbox_ratio` reported 2.8x growth that was not there. Used for the REPORTED extent
+    (`diag_after_mm`, `bbox_ratio`) only; the deviation bound keeps `_box`, so no faithfulness reason moves."""
+    from OCP.Bnd import Bnd_Box
+    from OCP.BRepBndLib import BRepBndLib
+
+    box = Bnd_Box()
+    BRepBndLib.AddOptimal_s(shape, box, False, False)
+    if box.IsVoid():
+        return None
+    return tuple(float(v) for v in box.Get())  # type: ignore[return-value]
+
+
 def _diag(box) -> float:
     if box is None:
         return 0.0
@@ -425,6 +441,9 @@ def _faithful_check(payload: dict) -> dict:
     if not solidless and before != after:
         reasons.append("body_count_changed")
 
+    # the reported extent, optimal against optimal (lane C13): once per confirmed state, memoised per file like `box`
+    o_opt_diag = _diag(o_facts.get("box_optimal", lambda: _optimal_box(original)))
+    r_opt = None if r_box is None else r_facts.get("box_optimal", lambda: _optimal_box(repaired))
     return {
         "ok": not reasons,
         "reasons": reasons,
@@ -433,8 +452,8 @@ def _faithful_check(payload: dict) -> dict:
         "diag_mm": diag,
         # the repaired shape's own extent, and how much of the original's it keeps: a "repair" that deleted most
         # of the part has a small ratio. None when the result has no extent at all.
-        "diag_after_mm": None if r_box is None else _diag(r_box),
-        "bbox_ratio": None if r_box is None or diag <= 0.0 else _diag(r_box) / diag,
+        "diag_after_mm": None if r_box is None else _diag(r_opt),
+        "bbox_ratio": None if r_box is None or o_opt_diag <= 0.0 else _diag(r_opt) / o_opt_diag,
         "fill_span_mm": fill_span,
         "area_ratio": area_ratio,
         "volume_ratio": volume_ratio,

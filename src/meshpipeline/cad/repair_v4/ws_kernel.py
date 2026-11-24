@@ -51,6 +51,28 @@ def diagonal_of(shape: Any) -> float:
     return float(((x1 - x0) ** 2 + (y1 - y0) ** 2 + (z1 - z0) ** 2) ** 0.5)
 
 
+def part_diagonal(payload: dict, shape: Any) -> float:
+    """The size an op's RELATIVE thresholds are made against: the lineage's ORIGINAL diagonal (`part_diag_mm`, which
+    every op payload carries from `Workspace.part_diag_mm`), and `diagonal_of(shape)` only when a caller sent none.
+
+    Lane C13, measured on dev 263d5e2d5bab: `diagonal_of` is plain `BRepBndLib.Add`, which bounds a B-spline face by
+    its CONTROL NET. A located defeature made 7 B-spline faces whose poles sit far outside them: the state's plain
+    diagonal went 441 -> 1237 mm while its optimal box is 446.5 mm, its volume unchanged and the shape valid (Lane A
+    saw 34.66 m, 78x). Every threshold sized from the CURRENT shape inherited that: the zero-volume eps (1e-9 x
+    diag^3) would have been ~41,600 mm3 at 34.66 m - enough to drop a real solid - and the fidelity bounds and the
+    touching test with it. A threshold belongs to the part as it arrived, measured once (where plain and optimal
+    agree within 0-3% on 40 of 42 dev overlap inputs), not re-measured on every state an op produced."""
+    from meshpipeline.cad.repair_v4.units import UNBOUNDED_DIAGONAL_MM
+
+    given = payload.get("part_diag_mm")
+    # An UNBOUNDED input's diagonal (~3.5e100 mm, `trim_unbounded`'s case) sizes nothing: every threshold relative to
+    # it is infinite, and the zero-volume eps would drop every solid of the trimmed part. Such a lineage is sized from
+    # the shape in hand, which the trim has bounded.
+    if given is not None and 0.0 < float(given) < UNBOUNDED_DIAGONAL_MM:
+        return float(given)
+    return diagonal_of(shape)
+
+
 def fingerprint(kind: str, sub: Any, quantum: float, index: int) -> str:
     """`identity.fingerprint_of` over the localiser's own box. INFORMATIONAL: identity is carried by
     kernel index (see `history_record`), never by this name, because fingerprints can collide. An
@@ -210,8 +232,10 @@ def _ws_index(payload: dict) -> dict:
     from meshpipeline.cad.repair.identity import quantum_for
 
     shape = read_brep(payload["brep_path"])
-    quantum = float(payload.get("quantum") or quantum_for(diagonal_of(shape)))
-    return {"quantum": quantum, "entities": entities_of(shape, quantum), "signature": shape_signature(shape)}
+    diag = diagonal_of(shape)
+    quantum = float(payload.get("quantum") or quantum_for(diag))
+    return {"quantum": quantum, "entities": entities_of(shape, quantum), "signature": shape_signature(shape),
+            "diag_mm": diag}
 
 
 @register("ws_diagonal")

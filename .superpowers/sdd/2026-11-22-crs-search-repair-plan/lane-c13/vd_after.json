@@ -1,0 +1,233 @@
+{
+ "/c/vdin/263d5e2d5babc9a2fd344835eed8107d7fbbf34f8b3c17798ecfd3774f4d8a83/0053_00532482_58a41a786e328e0f6f32065d_step_009.step": {
+  "valid": true,
+  "clean": false,
+  "panel": [
+   [
+    "gmsh_prod",
+    "fail",
+    "other",
+    null
+   ],
+   [
+    "gmsh_default",
+    "fail",
+    "low_quality",
+    0.001185395876172654
+   ],
+   [
+    "gmsh_alt",
+    "fail",
+    "low_quality",
+    0.002150040208412587
+   ],
+   [
+    "netgen_occ",
+    "pass",
+    null,
+    0.10805144544629894
+   ]
+  ],
+  "faithful": {
+   "ok": true,
+   "reasons": [],
+   "bbox_ratio": 1.0,
+   "diag_after_mm": 441.03854737895597,
+   "max_dev_mm": 0.0,
+   "bound_mm": 0.1
+  }
+ },
+ "/c/vdin/263d5e2d5babc9a2fd344835eed8107d7fbbf34f8b3c17798ecfd3774f4d8a83/0053_00532482_58a41a786e328e0f6f32065d_step_009.step::/c/out/inflated_26_defeature.brep": {
+  "valid": false,
+  "clean": false,
+  "panel": [
+   [
+    "gmsh_prod",
+    "fail",
+    "open_loop",
+    null
+   ],
+   [
+    "gmsh_default",
+    "fail",
+    "low_quality",
+    0.00044065316997762426
+   ],
+   [
+    "gmsh_alt",
+    "fail",
+    "low_quality",
+    0.0012701438762974626
+   ],
+   [
+    "netgen_occ",
+    "pass",
+    null,
+    0.07495731048780567
+   ]
+  ],
+  "faithful": {
+   "ok": false,
+   "reasons": [
+    "deviation_exceeds_bound",
+    "volume_changed"
+   ],
+   "bbox_ratio": 1.0124687777096508,
+   "diag_after_mm": 446.5377589876114,
+   "max_dev_mm": 8.929266800185266,
+   "bound_mm": 0.1
+  }
+ },
+ "/c/vdin/7917f3122caed0142b8bc396cf320ed89e8e2301d4c71f63498c990efc161704/0057_00574915_30a8ce52329868badc4fd335_step_014.step": {
+  "valid": false,
+  "clean": false,
+  "panel": [
+   [
+    "gmsh_prod",
+    "pass",
+    null,
+    0.011636495818214666
+   ],
+   [
+    "gmsh_default",
+    "fail",
+    "overlapping_facets",
+    null
+   ],
+   [
+    "gmsh_alt",
+    "fail",
+    "low_quality",
+    0.0006219128109318359
+   ],
+   [
+    "netgen_occ",
+    "pass",
+    null,
+    0.0759756929332785
+   ]
+  ],
+  "faithful": {
+   "ok": true,
+   "reasons": [],
+   "bbox_ratio": 1.0,
+   "diag_after_mm": 1592.6295865643108,
+   "max_dev_mm": 0.0,
+   "bound_mm": 0.1
+  }
+ },
+ "/c/vdin/8c6a3f2186e7101508d2348cc96aa4cb8b00deb139cc280fe3c7f3d047522d79/0051_00518960_bb93f0d63e97fc3782a0c6dd_step_051.step": {
+  "valid": false,
+  "clean": false,
+  "panel": [
+   [
+    "gmsh_prod",
+    "fail",
+    "other",
+    null
+   ],
+   [
+    "gmsh_default",
+    "fail",
+    "overlapping_facets",
+    null
+   ],
+   [
+    "gmsh_alt",
+    "fail",
+    "low_quality",
+    0.0031674934649615558
+   ],
+   [
+    "netgen_occ",
+    "pass",
+    null,
+    0.023009011255817946
+   ]
+  ],
+  "faithful": {
+   "ok": true,
+   "reasons": [],
+   "bbox_ratio": 1.0,
+   "diag_after_mm": 49.98249700645217,
+   "max_dev_mm": 0.0,
+   "bound_mm": 0.04998609758053297
+  }
+ },
+ "/c/vdin/de9ad40118a4beb0b640c494f7866280c1f07aeea6dab2c671e077846e1b9825/0056_00567964_2dc8697785b603ebd064db60_step_000.step": {
+  "valid": true,
+  "clean": false,
+  "panel": [
+   [
+    "gmsh_prod",
+    "fail",
+    "low_quality",
+    0.00048660509005024936
+   ],
+   [
+    "gmsh_default",
+    "fail",
+    "overlapping_facets",
+    null
+   ],
+   [
+    "gmsh_alt",
+    "fail",
+    "low_quality",
+    0.0008121210208307946
+   ],
+   [
+    "netgen_occ",
+    "pass",
+    null,
+    0.3808513877117539
+   ]
+  ],
+  "faithful": {
+   "ok": true,
+   "reasons": [],
+   "bbox_ratio": 1.0,
+   "diag_after_mm": 144.93446797846264,
+   "max_dev_mm": 0.0,
+   "bound_mm": 0.1
+  }
+ },
+ "/c/vdin/b102922dbd8ea9071c59532c89253c4e7b9c87f0d7e254dc531df288ff26a387/0054_00544196_58a93fda716d73109155df3d_step_090.step": {
+  "valid": false,
+  "clean": false,
+  "panel": [
+   [
+    "gmsh_prod",
+    "fail",
+    "other",
+    null
+   ],
+   [
+    "gmsh_default",
+    "fail",
+    "edge_through_face",
+    null
+   ],
+   [
+    "gmsh_alt",
+    "pass",
+    null,
+    0.02181636438564557
+   ],
+   [
+    "netgen_occ",
+    "pass",
+    null,
+    0.14661399287282623
+   ]
+  ],
+  "faithful": {
+   "ok": true,
+   "reasons": [],
+   "bbox_ratio": 1.0,
+   "diag_after_mm": 301.06098414447536,
+   "max_dev_mm": 0.0,
+   "bound_mm": 0.1
+  }
+ }
+}
