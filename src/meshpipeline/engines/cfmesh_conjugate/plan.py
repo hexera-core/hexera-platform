@@ -101,6 +101,14 @@ class ConjugatePlan:
     #: face, which is the shape a cold plate fed and drained through its lid actually has - and
     #: the first customer's, whose fittings both point +x.
     port_patches: tuple[dict, ...] = ()
+    #: What the part's own outside is called in the delivered mesh. "" means the engine's own
+    #: `conjugate.OUTER_PATCH`; a name here is the user's word for it, carried from intake.
+    #:
+    #: RECORDED RATHER THAN RE-DERIVED, for the same reason block_lo/block_hi are: it is settled
+    #: before the surface is written, and every later stage has to agree with cfMesh about it.
+    #: `port_patches[].face` is cut out of THIS patch, so the two move together or createPatch
+    #: selects zero faces and silently removes every mouth.
+    outer_patch: str = ""
     #: How many processes mesh the block. 1 for every part that fits in one, which is every part
     #: in the corpus. Above `conjugate.OCTREE_BOXES_PER_PROCESS` cells one process runs out of
     #: 32-bit label space inside cfMesh's octree addressing and the build dies with "Negative size

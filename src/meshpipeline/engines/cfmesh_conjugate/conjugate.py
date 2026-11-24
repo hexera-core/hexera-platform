@@ -189,9 +189,14 @@ def use_shell_domain(surface: dict | None) -> bool:
     return 0.0 < float(share) < BOX_WORTH_KEEPING
 
 
-def is_domain_face(face: str) -> bool:
-    """Whether `face` names a surface a port may be cut out of: a block face, or the shell."""
-    return face in BLOCK_FACES or face == OUTER_PATCH
+def is_domain_face(face: str, outer: str = "") -> bool:
+    """Whether `face` names a surface a port may be cut out of: a block face, or the shell.
+
+    `outer` is what THIS RUN calls the shell, because on the shell path that name can be the
+    user's own (driver._outer_patch_name) rather than OUTER_PATCH. Defaulted, so every caller
+    with no run in hand keeps asking the question it always asked.
+    """
+    return face in BLOCK_FACES or face == (outer or OUTER_PATCH)
 
 #: Which axis a face is normal to, and which end of that axis it sits at.
 _FACE_AXIS: dict[str, tuple[int, int]] = {
@@ -515,7 +520,7 @@ PORT_BOX_DIAMETERS = 0.75
 PORT_TOPOSET = "topoSetDict.ports"
 
 
-def render_port_patch_dicts(ports: list) -> tuple[str, str]:
+def render_port_patch_dicts(ports: list, outer: str = "") -> tuple[str, str]:
     """(topoSetDict, createPatchDict) that cut one named patch per mouth out of a block face.
 
     WHY A PATCH AND NOT A RENAMED FACE. `renameBoundary` gives a whole block face the user's name,
@@ -556,10 +561,10 @@ def render_port_patch_dicts(ports: list) -> tuple[str, str]:
     for p in ports:
         name = str(p.get("name") or "").strip()
         face = str(p.get("face") or "").strip()
-        if not name or not is_domain_face(face):
+        if not name or not is_domain_face(face, outer):
             raise ConjugateError(
                 f"a port patch needs a name and one of the block faces {BLOCK_FACES} "
-                f"or {OUTER_PATCH!r}, "
+                f"or {(outer or OUTER_PATCH)!r}, "
                 f"got name={name!r} face={face!r}")
         if name in seen:
             raise ConjugateError(f"two ports are both called {name!r}")
@@ -1913,7 +1918,8 @@ def build(workspace, *, block_stl: str = "constant/triSurface/block.stl",
           ports: PortPlan | None = None, narrowest_m: float | None = None,
           patch_names: dict | None = None, fine_zones: list | None = None,
           fine_surfaces: list | None = None, stretch_zones: list | None = None,
-          port_patches: list | None = None, ranks: int = 1, layers: int = 0,
+          port_patches: list | None = None, outer_patch: str = "", ranks: int = 1,
+          layers: int = 0,
           merge: bool = True,
           bashrc: str = _DEFAULT_BASHRC, timeout: int = 3600) -> ConjugateReport:
     """Mesh the block, split it in two, and report what was actually produced."""
@@ -2077,7 +2083,12 @@ def build(workspace, *, block_stl: str = "constant/triSurface/block.stl",
     # last two serial commands of the run.
     port_stages: list[tuple[str, str]] = []
     if port_patches:
-        topo_ports, create_ports = render_port_patch_dicts(list(port_patches))
+        # THE RUN'S OWN NAME FOR THE SHELL, not the module constant. Every row's `face` was
+        # set from it (mouths.shell_stubs), and this dict selects faces with `patchToFace; patch
+        # <face>`: a mismatch here selects nothing, and createPatch REMOVES a zero-sized patch
+        # rather than leaving it empty, so every mouth would vanish from a mesh that went on to
+        # report success.
+        topo_ports, create_ports = render_port_patch_dicts(list(port_patches), outer_patch)
         # UNDER THE REGION'S OWN system/, AND UNDER THE DEFAULT NAME, so neither command needs
         # `-dict` at all. `-dict` with `-region` does not mean what it looks like: the path is
         # resolved as <case>/<region>/<path>, so `system/fluid/topoSetDict.ports` asks for

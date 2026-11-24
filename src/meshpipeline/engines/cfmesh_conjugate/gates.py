@@ -299,7 +299,28 @@ def _gate_patch_contract(ctx: GateCtx) -> tuple[bool, str]:
     manifest = ctx.manifest_or_load()
     delivered = manifest.get("patch_types", {}) if isinstance(manifest, dict) else {}
     delivered = {k: v for k, v in delivered.items() if isinstance(k, str) and isinstance(v, str)}
-    delivered = {k: v for k, v in delivered.items() if k not in set(BLOCK_FACES)}
+    declared = {str(p.get("name") or "").strip() for p in (ctx.intake_patches or [])
+                if isinstance(p, dict) and p.get("name")}
+    # THE MOUTHS THIS ENGINE CUT ITSELF, engine-owned exactly as the block's six faces are. A
+    # mouth is a hole the geometry already has: the engine finds it, names it `mouth_N` by
+    # position, and delivers it as an unassigned opening (mouths.port_rows). The user cannot have
+    # approved one, because "opening" is not a role intake offers - and on the job this was
+    # measured on, the request said in so many words "Do not create inlet or outlet patches".
+    #
+    # READ OFF THE ENGINE'S OWN RECORD OF WHAT IT CUT, never off the delivered type. A cut mouth
+    # arrives in the manifest as the bare OpenFOAM type `patch`, indistinguishable from a
+    # declared inlet or outlet, so keying on the type would forgive a port the mesh LOST.
+    # `quality.port_patches_planned` is the plan's own list of names, so a patch nobody asked for
+    # and the engine never planned is still an extra and still refused.
+    #
+    # AND NEVER A NAME THE USER ASKED FOR. The exemption is delivered-side and subtractive, so a
+    # declared name could only ever be hidden BY it; keeping every declared name is what makes it
+    # unable to lengthen or shorten `missing`. It is also what lets the outer patch wear the
+    # user's own word for it (driver._outer_patch_name) without this filter eating it.
+    planned = {str(n).strip() for n in (_q(ctx).get("port_patches_planned") or ())
+               if str(n).strip()}
+    engine_own = set(BLOCK_FACES) | planned
+    delivered = {k: v for k, v in delivered.items() if k in declared or k not in engine_own}
     ok, diag = check_contract(intake_patches=ctx.intake_patches,
                               manifest_patches=list(delivered.keys()),
                               manifest_patch_types=delivered)

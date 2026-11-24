@@ -436,7 +436,7 @@ def declared_for(stubs: list, declared: list) -> tuple[list | None, str]:
                   + (f"; the other {spare} mouth(s) are cut as walls" if spare else ""))
 
 
-def shell_stubs(ports: list, rims: list | None = None) -> list:
+def shell_stubs(ports: list, rims: list | None = None, outer: str = "") -> list:
     """Every mouth as a port to cut on the part's own outside, with nothing to extend.
 
     A STUB EXISTS BECAUSE THE COOLANT HAS TO REACH A BLOCK FACE. On a shell domain it already
@@ -480,7 +480,11 @@ def shell_stubs(ports: list, rims: list | None = None) -> list:
         # 0.4998 mm from an 11.8 mm mouth. Wide enough for the rim of the mouth itself and far
         # too narrow to reach another one: that part's other mouths are 23 mm and 34 mm away.
         near = any(math.dist(centroid, c) <= 2.0 * radius for c in sealed_at)
-        out.append(Stub(port=k, passage=int(port.get("passage") or 0), face=C.OUTER_PATCH,
+        # `outer` IS WHAT THIS RUN CALLS THE PART'S OUTSIDE, which on the shell path may be
+        # the user's own word for it. The cut dict selects faces by this name, so it has to be
+        # the name the surface was written under, not the module default.
+        out.append(Stub(port=k, passage=int(port.get("passage") or 0),
+                        face=(outer or C.OUTER_PATCH),
                         centroid=centroid, normal=normal, radius=radius,
                         length=0.0, volume=0.0,
                         ahead_is_clear=True if ahead is None else bool(ahead),

@@ -317,6 +317,49 @@ def declared_port_names(workspace, plan: PL.ConjugatePlan) -> tuple[dict | None,
     return (names or None), said
 
 
+def _outer_patch_name(workspace, *, job_id: str = "") -> str:
+    """What to call the part's own outside in the delivered mesh.
+
+    The user's own word for it when they named it exactly once and it is a name this whole chain
+    can carry, and `conjugate.OUTER_PATCH` otherwise.
+
+    WHY EXACTLY ONE. On the shell path the mesher fills the part itself, so its exterior is ONE
+    surface and arrives as ONE patch - cfMesh names a patch after the STL solid it came from.
+    Two declared walls cannot both be that surface, and silently picking one of them would
+    deliver a mesh missing the other, which is the failure this exists to stop rather than a
+    softer form of it. Zero declared walls leaves the engine's own name, which is what every run
+    before this change did.
+
+    WHY THE NAME IS SCREENED. It becomes an OpenFOAM patch name in a boundary file, a key in the
+    manifest, a face selector in the port cut's topoSetDict and a token in the viewer's index. A
+    name OpenFOAM cannot spell, one of its reserved names, a region's own name, or anything
+    carrying finalize.INTERFACE_MARK would be dropped or redirected somewhere downstream and then
+    reported MISSING after the mesh - the same two hours lost, for a different reason.
+    """
+    from meshpipeline.contracts.patch_names import is_mesh_safe, is_reserved
+    from meshpipeline.engines.cfmesh_conjugate import conjugate as _CO
+    from meshpipeline.engines.cfmesh_conjugate.finalize import INTERFACE_MARK
+    from meshpipeline.engines.workspace_facts import port_declaration
+
+    walls = [str(d.get("name") or "").strip() for d in port_declaration(workspace)
+             if isinstance(d, dict) and str(d.get("type") or "").strip().lower() == "wall"]
+    walls = [w for w in walls if w]
+    if len(walls) != 1:
+        if len(walls) > 1:
+            logger.info("conjugate: %d walls declared (%s), so the part's outside keeps the "
+                        "engine's own name %r - job_id=%s",
+                        len(walls), ", ".join(sorted(walls)), _CO.OUTER_PATCH, job_id)
+        return _CO.OUTER_PATCH
+    name = walls[0]
+    if (not is_mesh_safe(name) or is_reserved(name) or INTERFACE_MARK in name
+            or name in (_CO.FLUID_REGION, _CO.SOLID_REGION)):
+        logger.warning("conjugate: the declared wall %r cannot be an OpenFOAM patch name on this "
+                       "chain, so the part's outside keeps %r - job_id=%s",
+                       name, _CO.OUTER_PATCH, job_id)
+        return _CO.OUTER_PATCH
+    return name
+
+
 async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublisher,
                 run: BuilderDriverRun, source_path: str = ""):
     from meshpipeline.agents.builder.driver_run import (
@@ -371,9 +414,21 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
     # Never fatal: no domain, or one not worth its faces, and the box stands exactly as before.
     from meshpipeline.engines.cfmesh_conjugate import conjugate as _C
 
+    # THE NAME THE PART'S OWN OUTSIDE WILL CARRY, decided here because here is the only place
+    # it can be. cfMesh takes a patch's name from the STL solid the surface came in as
+    # (cad/fluid_volume.write_domain writes ASCII with a named solid), so the outer patch is
+    # named BEFORE the mesher runs or not at all: renameBoundary is hard-filtered to the six
+    # block faces (render_meshdict), and the port cut runs after splitMeshRegions on the fluid
+    # region alone.
+    #
+    # WHAT IT COST TO LEAVE THIS A CONSTANT. Job 2b72862e meshed the first customer cold plate to
+    # 279,281,786 cells, rc 0, deterministic, 0 bad faces - and was then refused by this engine's
+    # OWN patch_contract gate: intake had approved exactly `wall -> type wall`, and the mesh
+    # delivered `wall_outer`. 91 minutes of meshing thrown away over a name.
+    outer_name = _outer_patch_name(ws, job_id=job_id)
     rec = await asyncio.to_thread(surface_bounded, src, fluid_stl, scale=cad_scale(src),
                                   kind="cad", domain_path=ws / PL.DOMAIN_STL,
-                                  domain_patch=_C.OUTER_PATCH)
+                                  domain_patch=outer_name)
     if rec:
         wrong = coolant_sits_inside(rec, bounds[0], bounds[1])
         if wrong:
@@ -756,7 +811,10 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
         # `open_rims` is the second signal `sealed_rows` needs. Without it every mouth reads
         # unsealed and no port can ever be refused for sitting on one, which is the safe
         # direction and the useless one.
-        stubs, mouth_said = ((MO.shell_stubs(rec["ports"], rec.get("open_rims")), [])
+        # `outer_name` because each shell stub is cut out of the part's outside, and the cut
+        # dict selects faces by that patch's name - the one the surface was written under.
+        stubs, mouth_said = ((MO.shell_stubs(rec["ports"], rec.get("open_rims"),
+                                             outer=outer_name), [])
                              if shell else MO.stubs_for(rec["ports"], lo, hi))
         for line in mouth_said:
             logger.info("conjugate: %s - job_id=%s", line, job_id)
@@ -803,6 +861,12 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
         plan = dataclasses.replace(plan, stretch_zones=(stretch_zone,))
     if port_patches:
         plan = dataclasses.replace(plan, port_patches=tuple(port_patches))
+    # ON THE PLAN, so the stage that meshes reads the same name this function wrote the surface
+    # under. ONLY ON THE SHELL PATH: the box's outside is six faces and one patch name cannot be
+    # put across them (render_meshdict emits one renameBoundary row per face), so the box keeps
+    # the engine's own name and `_outer_patch_name`'s answer never reaches a mesh there.
+    if shell and outer_name != _C.OUTER_PATCH:
+        plan = dataclasses.replace(plan, outer_patch=outer_name)
 
     # CAN A DROP OF COOLANT GET FROM ONE PORT TO THE OTHER? Read here, on the surface about to be
     # meshed and after the stubs have grown it, because this is the last moment it costs
