@@ -499,6 +499,12 @@ def _of_kind(entities: list[StableId], prefix: str) -> list[StableId]:
     return [e for e in entities if e[:1] == prefix]
 
 
+#: Site kinds where removing the site's faces (or the recognised features among them) is a plausible repair: small or
+#: thin faces, degenerate poles, faces too close or crossing, a mesher stuck on them. NOT `open` (faces are missing
+#: already), `overlap` (between bodies), `invalid` (topology) or an unknown kind.
+DEFEATURE_SITE_KINDS = frozenset({"sliver", "proximity", "pole", "self_overlap", "intersection", "timeout"})
+
+
 class DetGenerator:
     """Per site kind, a fixed parameter sweep over the ops that apply to it. Only ops present in
     `REGISTRY` are proposed. Sweeps are ordered mildest first; `k` truncates.
@@ -528,13 +534,25 @@ class DetGenerator:
         #: ops not proposed, by the class of decline predicted (a count, so the saving is measurable)
         self.skipped: collections.Counter[str] = collections.Counter()
         self._diag_cache: dict[str, float] = {}
+        #: workspace -> Raymond Lee's recognised holes/blends/slot ends (ops.defeature.recognised_features), bound by
+        #: `bind_pool`; None: the recogniser is not a candidate source. Asked only when a site wants it.
+        self.features: Callable[[Workspace], list[dict]] | None = None
+        self._feature_cache: dict[str, list[dict]] = {}
 
     def _note(self, text: str) -> None:
         if text not in self.notes:
             self.notes.append(text)
 
     def bind_pool(self, pool: Any) -> None:
-        """Measure diagonals with `pool`'s `ws_diagonal` (the call `h_mm_for` uses), unless one was given."""
+        """Measure diagonals with `pool`'s `ws_diagonal` (the call `h_mm_for` uses), and recognise features with the
+        pool's `v4_recognise_features`, unless either was given."""
+        if self.features is None:
+            from meshpipeline.cad.repair_v4.ops.defeature import recognised_features
+
+            def recognise(ws: Workspace) -> list[dict]:
+                return recognised_features(pool, ws)
+
+            self.features = recognise
         if self.diagonal is not None:
             return
 
@@ -542,6 +560,34 @@ class DetGenerator:
             return diagonal_mm(pool, ws)
 
         self.diagonal = measure
+
+    def _features_of(self, ws: Workspace) -> list[dict]:
+        """The recognised features of `ws`, once per state; [] (on the record) when the recogniser cannot run."""
+        if self.features is None:
+            return []
+        if ws.brep_path not in self._feature_cache:
+            try:
+                self._feature_cache[ws.brep_path] = list(self.features(ws))
+            except Exception as exc:  # noqa: BLE001 - a candidate source never stops the search
+                self._note(f"no recognised features: {type(exc).__name__}: {exc}")
+                self._feature_cache[ws.brep_path] = []
+        return self._feature_cache[ws.brep_path]
+
+    def _defeature_rows(self, site: Site, features: Callable[[], list[dict]]
+                        ) -> list[tuple[str, list[StableId], dict, str]]:
+        """D14: defeature at the sites it suits. The recognised holes and blends touching the site's faces, removed in
+        one call; and the site's own faces (a sliver, or small faces where a mesher fails), removed as they are. Never
+        at a coarse whole-part site: it names no place to remove."""
+        from meshpipeline.cad.repair_v4.ops.defeature import defeature_rows
+
+        faces = _of_kind(site.entities, "F")
+        if (not faces or (site.graph or {}).get("coarse") or site.kind not in DEFEATURE_SITE_KINDS
+                or not (site.kind == "sliver" or site.meshers_failing)):
+            return []
+        rows = defeature_rows(features(), faces)
+        rows.append(("defeature", faces, {"source": "site"},
+                     f"remove the site's {len(faces)} face(s) with BRepAlgoAPI_Defeaturing"))
+        return rows
 
     def _diag_of(self, ws: Workspace) -> float | None:
         if self.diagonal is None:
@@ -586,10 +632,25 @@ class DetGenerator:
         # part-wide rows only when NOTHING is placed: aim where there is evidence first (a placed site beside a coarse
         # one turned Task 47's one-hole repair from 5 ops into 11)
         only_coarse = all((s.graph or {}).get("coarse") for s in sites)
+        cached: list[list[dict]] = []
+
+        def features() -> list[dict]:
+            """The recogniser, asked at most once per state and only when a site wants a defeature row."""
+            if not cached:
+                cached.append(self._features_of(state.ws))
+            return cached[0]
+
+        part_rows: list[tuple[str, list[StableId], dict, str]] = []
+        if any(s.meshers_failing for s in sites):
+            # the whole recognised set, removed in ONE call (Raymond's attempt), proposed once per state
+            from meshpipeline.cad.repair_v4.ops.defeature import defeature_rows
+            part_rows = defeature_rows(features())
         for site in sites:
             coarse_rows = self._coarse_rows(site, state.ws, sized) if only_coarse else []
             for op, targets, params, why in [*self._recipe_rows(site, diag), *self._sweep(site, diag),
-                                             *self._coverage(site, sized), *coarse_rows]:
+                                             *self._coverage(site, sized), *coarse_rows,
+                                             *self._defeature_rows(site, features),
+                                             *(part_rows if site is sites[0] else [])]:
                 if op not in REGISTRY:
                     continue
                 key = json.dumps([op, list(targets), params], sort_keys=True, default=str)
