@@ -33,6 +33,22 @@ def _write_msh2(mesh, out_msh: str) -> None:
         fh.write("$EndElements\n")
 
 
+def _named_face(geo, message: str) -> dict:
+    """When Netgen's error names a face ("...could not be built for face 1"), that face's number and box in the shape
+    it was meshing, so the caller can find the face by its box. Best effort: any failure here adds nothing."""
+    import re
+
+    match = re.search(r"\bface\s+(\d+)", message)
+    if not match:
+        return {}
+    try:
+        number = int(match.group(1))
+        (x0, y0, z0), (x1, y1, z1) = geo.shape.faces[number - 1].bounding_box
+        return {"face": number, "face_box": [x0, y0, z0, x1, y1, z1]}
+    except Exception:
+        return {}
+
+
 def main(step: str, out_msh: str, maxh_divisor: float = 10.0, glue: bool = True) -> None:
     try:
         from netgen.occ import Glue, OCCGeometry
@@ -64,7 +80,8 @@ def main(step: str, out_msh: str, maxh_divisor: float = 10.0, glue: bool = True)
             glued = True
         mesh = geo.GenerateMesh(maxh=maxh)
     except Exception as exc:
-        _emit(ok=False, stage="mesh", error=f"{type(exc).__name__}: {exc}", solids=len(solids), maxh=maxh)
+        _emit(ok=False, stage="mesh", error=f"{type(exc).__name__}: {exc}", solids=len(solids), maxh=maxh, diag=diag,
+              **_named_face(geo, str(exc)))
         return
     tets = len(mesh.Elements3D())
     if tets == 0:

@@ -30,7 +30,10 @@ from typing import Any, Protocol
 
 from meshpipeline.settings.cad_repair import verdict_cache_uri
 
-VERDICT_CODE_VERSION = "crs-v4.verdict.1"
+#: .2 (lane C5): members now LOCATE failures they used to leave unlocated (gmsh's printed node triples, a low-quality
+#: mesh's worst tets, the face Netgen names). Pass/fail is unchanged, but `located` is part of the cached panel result,
+#: and a .1 entry would hand the search the old, unlocated answer.
+VERDICT_CODE_VERSION = "crs-v4.verdict.2"
 logger = logging.getLogger(__name__)
 CACHEABLE_STATUSES = ("pass", "fail")
 
