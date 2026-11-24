@@ -350,16 +350,30 @@ def wanted(state: Mapping) -> bool:
     return bool(notes_text(state).strip())
 
 
-def messages_for(state: Mapping, *, route: str = "") -> list[dict]:
-    """What the model is shown, as plain data in a fixed order (the decision cache keys the round by it)."""
+def sees_pictures() -> bool:
+    """Whether this step's model route declares vision (NOTE-16): only then is it shown the user's pictures."""
+    from meshpipeline.agents.builder.settings import BUILDER_ROUTE
+    from meshpipeline.contracts.model_routing import Capability
+    return Capability.MULTIMODAL in BUILDER_ROUTE.required_capabilities
+
+
+def messages_for(state: Mapping, *, route: str = "", vision: bool = False) -> list[dict]:
+    """What the model is shown, as plain data in a fixed order (the decision cache keys the round by it). With
+    `vision` (the route sees pictures), the user's own pictures follow the words, each after a line naming its
+    note (contracts/user_pictures; blocking - the store); without, the request is exactly as before."""
     from meshpipeline.contracts.user_notes import own_notes, prompt_block
 
     s = state or {}
+    notes = own_notes(s.get("user_notes") or [])
     shown = {"mesh_for": route,
-             "user_notes": prompt_block(own_notes(s.get("user_notes") or []), consumer="mesh_requirements",
-                                        limit=MAX_CHARS)}
+             "user_notes": prompt_block(notes, consumer="mesh_requirements", limit=MAX_CHARS)}
+    text = json.dumps(shown, sort_keys=True, separators=(",", ":"))
+    pictures: list[dict] = []
+    if vision:
+        from meshpipeline.contracts.user_pictures import content_parts
+        pictures = content_parts(notes, s.get("session_id"))
     return [{"role": "system", "content": SYSTEM},
-            {"role": "user", "content": json.dumps(shown, sort_keys=True, separators=(",", ":"))}]
+            {"role": "user", "content": [{"type": "text", "text": text}, *pictures] if pictures else text}]
 
 
 # #
@@ -2034,7 +2048,7 @@ async def decide(state: Mapping, *, route: str = "", job_id: str = "", run=None,
     "used", or why nothing was applied. Never raises (but a fenced worker's stale publish)."""
     if not enabled or not wanted(state):
         return section("none")
-    msgs = messages_for(state, route=route)
+    msgs = await asyncio.to_thread(messages_for, state, route=route, vision=sees_pictures())
     t = tool()
     key = _key(msgs, t)
     notes = notes_text(state)
