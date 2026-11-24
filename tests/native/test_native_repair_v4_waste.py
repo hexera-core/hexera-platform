@@ -186,9 +186,16 @@ def test_a_three_hole_part_costs_fourteen_ops_and_wastes_none_of_the_declines_th
     assert len(cands) / len(expansions) <= 3.5, (len(cands), len(expansions))
 
 
-def test_thirteen_ops_is_not_enough_for_the_three_hole_part(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Pins the figure from below too: if the op count were ever lower, the test above would not notice."""
+def test_twelve_ops_is_not_enough_for_the_three_hole_part(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pins the figure from below too: if the op count were ever lower, the test above would not notice.
+
+    Lane C5 moved the floor from 14 to 13 by ORDER alone: the members that fail without a place now make a coarse
+    `open` site, which sorts before layer 1's own, so the last expansion proposes `make_volume` before its
+    `orient_and_close`, and a 13-op budget cuts the batch after the repair instead of before it. The same 14
+    candidates run at a 14-op budget (the test above)."""
     source = write_three_hole_box(tmp_path / "three.step")
-    stop = _stop(_run(source, tmp_path, monkeypatch, ops=13))
-    assert stop["reason"] == "ops" and stop["spent"]["ops"] == 13, stop
+    stop = _stop(_run(source, tmp_path, monkeypatch, ops=12))
+    assert stop["reason"] == "ops" and stop["spent"]["ops"] == 12, stop
+    at_13 = _stop(_run(source, tmp_path, monkeypatch, ops=13))
+    assert at_13["reason"] == "clean" and at_13["spent"]["ops"] == 13, at_13
 

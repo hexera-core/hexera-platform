@@ -315,3 +315,47 @@ def test_cut_by_is_swept_on_at_most_three_body_pairs() -> None:
     got, _ = _propose([_overlap("B1", "B2", "B3", "B4")], ws=_ws(solids=("B1", "B2", "B3", "B4")))
     cuts = [p["mode"] for _, p in _of(got, "conformalise") if p["mode"].startswith("cut_by:")]
     assert len(cuts) == 6
+
+
+# --- lane C5: a coarse (whole-part) site gets part-wide conditioning, not nothing ---------------------------------
+
+
+def _coarse(kind: str = "invalid", soft: list | None = None) -> Site:
+    return _site(kind, ["B1"], coarse={"reason": "gmsh_prod failed without saying where", "members": ["gmsh_prod"]},
+                 soft=soft or [])
+
+
+def test_a_coarse_site_sweeps_part_wide_conditioning_stronger_than_the_staged_healer() -> None:
+    got, _ = _propose([_coarse()])
+    assert _of(got, "split_angle") == [(FACES, {"max_deg": 60}), (FACES, {"max_deg": 45})]
+    assert _of(got, "split_continuity") == [(FACES, {"order": 2})]
+
+
+def test_a_coarse_site_removes_exactly_the_small_entities_the_checker_found() -> None:
+    soft = [{"code": "small_face", "entity": "F4", "detail": {}}, {"code": "small_edge", "entity": "E2", "detail": {}},
+            {"code": "large_tolerance", "entity": "E3", "detail": {}}]
+    got, _ = _propose([_coarse(soft=soft)])
+    rows = _of(got, "remove_small")
+    assert rows and all(t == ["F4", "E2"] for t, _ in rows)  # never a wide entity: the op refuses those
+
+
+def test_a_located_site_gets_no_part_wide_rows() -> None:
+    got, _ = _propose([_site("invalid", ["F1"])])
+    assert _of(got, "split_angle") == [] and _of(got, "remove_small") == []
+
+
+def test_every_coarse_proposal_is_inside_its_ops_schema() -> None:
+    soft = [{"code": "small_face", "entity": "F4", "detail": {}}]
+    got, _ = _propose([_coarse(soft=soft)])
+    for c in got:
+        assert validate_call(c.op, list(c.targets), dict(c.params), _ws()) == [], (c.op, c.params)
+
+
+def test_part_wide_rows_wait_while_any_site_is_placed() -> None:
+    """Aim where there is evidence; go part-wide only when there is none. The coarse rows beside a placed open site
+    turned Task 47's one-hole repair from 5 ops into 11 (production allows 6)."""
+    placed = _site("open", [], free_loops=[{"edges": ["E1", "E2", "E3"], "span_mm": 2.0}], diagonal_mm=DIAG)
+    got, _ = _propose([placed, _coarse()])
+    assert _of(got, "split_angle") == [] and _of(got, "split_continuity") == []
+    alone, _ = _propose([_coarse()])
+    assert _of(alone, "split_angle")
