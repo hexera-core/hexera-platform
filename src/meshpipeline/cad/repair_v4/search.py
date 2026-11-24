@@ -105,7 +105,7 @@ from typing import Any, Literal, Protocol
 from meshpipeline.cad.repair_v4 import render
 from meshpipeline.cad.repair_v4.measurement import NO_VERDICT, file_unmeasured, no_verdict_failure
 from meshpipeline.cad.repair_v4.ops import REGISTRY, OpDeclined, OpFailed, validate_call
-from meshpipeline.cad.repair_v4.ops.shells import scaled_sew_ladder, scaled_sliver_widths
+from meshpipeline.cad.repair_v4.ops.shells import det_sliver_widths, scaled_sew_ladder
 from meshpipeline.cad.repair_v4.proposer import (
     IMAGE_KINDS,
     AIProposer,
@@ -995,7 +995,7 @@ class DetGenerator:
             if diag is None or diag > UNBOUNDED_DIAGONAL_MM:
                 self._note(f"site {site.id}: remove_small not proposed: {self._why_no_size(diag)}")
             else:
-                for width in scaled_sliver_widths(diag):
+                for width in det_sliver_widths(diag):
                     rows.append(("remove_small", list(dict.fromkeys(small)), {"max_width_mm": width},
                                  f"remove the {len(small)} small entities the checker found ({why})"))
         return rows
@@ -1130,7 +1130,7 @@ class DetGenerator:
             sized = diag is not None and diag <= UNBOUNDED_DIAGONAL_MM
             if not sized:
                 self._note(f"site {site.id}: remove_small not proposed: {self._why_no_size(diag)}")
-            for width in scaled_sliver_widths(diag) if diag is not None and sized else ():
+            for width in det_sliver_widths(diag) if diag is not None and sized else ():
                 rows.append(
                     (
                         "remove_small",
