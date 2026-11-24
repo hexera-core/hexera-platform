@@ -730,7 +730,7 @@ def laminar_stack(delta_m: float, wall_cell_m: float, growth: float, *, n_min: i
     thinned = False
     for n in counts:
         if n > LAMINAR_LAYERS_KEPT and not n_fixed and not thinned:
-            # CFDREQ-29: BEFORE A STACK GOES PAST THE COUNT SNAPPYHEXMESH KEEPS, ITS FIRST LAYER IS THINNED (to
+            # CFDREQ-32: BEFORE A STACK GOES PAST THE COUNT SNAPPYHEXMESH KEEPS, ITS FIRST LAYER IS THINNED (to
             # LAMINAR_CAP_THIN of the floor, as a tight wall's cap does) so the core cells inside the layer make up
             # BL_CELLS on LAMINAR_LAYERS_KEPT layers - the thickest such first layer
             thinned = True
@@ -761,7 +761,7 @@ def laminar_stack(delta_m: float, wall_cell_m: float, growth: float, *, n_min: i
 
 def _kept_thin(counts: list[int], top, floor: float, g: float, wc: float,
                delta: float) -> tuple[int, float, float] | None:
-    """CFDREQ-29: the stack of the most layers up to LAMINAR_LAYERS_KEPT whose first layer, between LAMINAR_CAP_THIN
+    """CFDREQ-32: the stack of the most layers up to LAMINAR_LAYERS_KEPT whose first layer, between LAMINAR_CAP_THIN
     of the floor and its top, puts BL_CELLS across `delta` - the thickest first layer that does (the smoothest step
     into the wall cells). None when even the thinnest does not: the stack then fills the layer, as before."""
     kept = [c for c in counts if c <= LAMINAR_LAYERS_KEPT]

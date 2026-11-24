@@ -1,4 +1,4 @@
-"""CFDREQ-29 (rulebook 98): before a laminar stack goes past the count snappyHexMesh keeps (LAMINAR_LAYERS_KEPT), its
+"""CFDREQ-32 (rulebook 98): before a laminar stack goes past the count snappyHexMesh keeps (LAMINAR_LAYERS_KEPT), its
 first layer is thinned (down to LAMINAR_CAP_THIN of the floor) so the wall cells inside the boundary layer make up the
 cells across it. Batch 7: the same dictionaries with 10 layers instead of 5-8 kept the stack on 58-77% of the wall
 where 5-8 had kept it on 85-90% (abc 00008237, 00008746, 00039457)."""
