@@ -3,6 +3,24 @@
 Date: 2026-11-22 · Owner: Hexera founder · Repo: hexera-core/hexera-platform-v2 (main at a3225988, prod v0.2.7)
 Inputs: `crs-v4/01-clean-step-definition.md`, `crs-v4/02-ai-diagnosis-summary.md`, `crs-v4/03-healing-research-summary.md`.
 
+> **AMENDED 2026-11-24 by owner decision. Read this first: it overrides parts of
+> what follows.** `clean` is now **layer 1 valid + layer 2 panel** only. The
+> faithful layer is still computed and reported on every row, but it no longer
+> gates `clean` and never refuses an edit, so **section 7 items 1-3 and every
+> fidelity cap below are superseded**: the deviation bound and per-op deviation
+> budget, the area/volume caps, the `fill_loop` 5%-of-diagonal limit, the
+> overlap bound on `cut_by`, the no-fuse rule, the `remove_small` width bound
+> and the op parameter bounds tied to the deviation budget are **removed, not
+> loosened**. Face removal (defeaturing) is allowed. Raymond's
+> `cad-simplification` work is ported in (`defeature`, `fuse`, any-depth
+> `cut_by`, `trim_unbounded`), attributed, without merging his branch. Gaming is
+> **reported**, not capped: a clean output whose volume changed more than 25% or
+> whose bbox shrank more than 10% is flagged per arm for the owner to read, and
+> still counts as clean. The spend caps, the worker kill and timeout safety and
+> the sealed held-out set are unchanged. The architecture below is unchanged -
+> staged healer, sites, best-first search, AI proposer, eval - only the goal is.
+> The reasoning is in the plan's amendment of 2026-11-24, 02:47 UTC.
+
 ## 1. Intent
 
 CRS must output more **clean STEP files**: files a customer can feed into whatever in-house mesher they use. The owner believes the AI part of CRS should help far more than it does, and that the architecture is what stops it.
