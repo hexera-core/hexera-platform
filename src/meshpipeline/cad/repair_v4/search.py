@@ -555,6 +555,13 @@ def _of_kind(entities: list[StableId], prefix: str) -> list[StableId]:
 #: Site kinds where removing the site's faces (or the recognised features among them) is a plausible repair: small or
 #: thin faces, degenerate poles, faces too close or crossing, a mesher stuck on them. NOT `open` (faces are missing
 #: already), `overlap` (between bodies), `invalid` (topology) or an unknown kind.
+#: D18: a face at a located failure is narrow at this aspect (area / min_width^2, long side over short) and a sliver
+#: at the second; lane A11's two classes (8-20:1 narrow, 20:1 or worse sliver)
+NARROW_ASPECT = 8.0
+SLIVER_ASPECT = 20.0
+#: faces per site the aimed unify/remove_small rows are made for, most elongated first
+MAX_AIMED_SMALL = 2
+
 #: D17, owner direction: the det sweep does NOT propose the whole recognised set (every hole and blend on the part,
 #: removed in one call) unless a DetGenerator is built with `whole_part_defeature=True`. Basis: lane D15 on dev_v1r,
 #: on the search's calibrated rank, that candidate was worse than its parent 18 of 22 times and made the part
@@ -655,6 +662,65 @@ class DetGenerator:
                 self._feature_cache[ws.brep_path] = []
         return self._feature_cache[ws.brep_path]
 
+    def _aimed_small_rows(self, site: Site, has_solid: bool) -> list[tuple[str, list[StableId], dict, str]]:
+        """D18: the sliver and narrow faces AT a mesher's located failure, merged into their neighbours
+        (`unify_same_domain` among them) or removed (`remove_small`), most elongated first. Never part-wide.
+
+        Anchored on D16's `located` source: only a site where a real mesher (not layer 1) named faces. The candidates
+        are the faces of the site's measured neighbourhood (`graph["nodes"]`, hop 0 = the site's faces, hop 1 = their
+        neighbours) whose aspect - area / min_width^2, the long side over the short of a strip - is at least
+        `NARROW_ASPECT`. Lane A11's caveat: a `low_quality` location is the worst ELEMENT, not necessarily the bad
+        geometry (on 263d5e2d5bab both members name face 5 while the 2995:1 sliver is face 9), so where every failure
+        at the site is low_quality the faces are ranked by aspect alone and a neighbour may be chosen; otherwise the
+        faces the mesher named come first."""
+        graph = site.graph or {}
+        named = [f for f in graph.get("mesher_faces") or [] if f[:1] == "F"]
+        meshers = [m for m in site.meshers_failing if m != "valid"]
+        if not named or not meshers or graph.get("coarse") or site.kind in ("open", "unbounded"):
+            return []
+        kinds = {f.get("error_kind") for f in graph.get("failures") or [] if f.get("mesher") != "valid"}
+        worst_element_only = bool(kinds) and kinds <= {"low_quality"}
+        faces: dict[StableId, dict] = {}
+        for node in graph.get("nodes") or []:
+            fid, area, width = node.get("id"), node.get("area"), node.get("min_width")
+            if not isinstance(fid, str) or fid[:1] != "F" or (node.get("hop") or 0) > 1:
+                continue
+            if not area or not width or width <= 0:
+                continue
+            aspect = float(area) / float(width) ** 2
+            if aspect >= NARROW_ASPECT:
+                faces[fid] = {"aspect": aspect, "width": float(width), "length": float(area) / float(width)}
+        if not faces:
+            self._note(f"site {site.id}: no aimed unify/remove_small: no face of aspect >= {NARROW_ASPECT:g} at the site")
+            return []
+        adjacent: dict[StableId, set[StableId]] = collections.defaultdict(set)
+        for edge in graph.get("edges") or []:
+            pair = [f for f in edge.get("faces") or [] if isinstance(f, str) and f[:1] == "F"]
+            if len(pair) == 2 and pair[0] != pair[1]:
+                adjacent[pair[0]].add(pair[1])
+                adjacent[pair[1]].add(pair[0])
+
+        def rank(fid: StableId) -> tuple:
+            first = 0 if (worst_element_only or fid in named) else 1
+            return (first, -faces[fid]["aspect"], fid)
+
+        rows: list[tuple[str, list[StableId], dict, str]] = []
+        for fid in sorted(faces, key=rank)[:MAX_AIMED_SMALL]:
+            f = faces[fid]
+            what = "sliver" if f["aspect"] >= SLIVER_ASPECT else "narrow face"
+            where = "named by the mesher" if fid in named else "beside the face the mesher named"
+            if adjacent.get(fid):
+                rows.append(("unify_same_domain", [fid, *sorted(adjacent[fid])], {"scope": "targets", "keep": []},
+                             f"merge the {f['aspect']:.0f}:1 {what} {fid} ({where}) into its same-domain neighbours"))
+            if has_solid:
+                # remove_small measures a face as the larger of its inertia width and its second bounding-box extent,
+                # which for a tilted strip is about its LENGTH; the limit is the strip's own length so the op's guard
+                # does not refuse the face it was aimed at. Proposed only with a solid: without one the op falls back
+                # to ShapeFix_FixSmallFace at this precision, which would reach far beyond the target.
+                rows.append(("remove_small", [fid], {"max_width_mm": 1.05 * (f["length"] + f["width"])},
+                             f"remove the {f['aspect']:.0f}:1 {what} {fid} ({where}), {f['width']:.3g} mm wide"))
+        return rows
+
     def _defeature_rows(self, site: Site, features: Callable[[], list[dict]]
                         ) -> list[tuple[str, list[StableId], dict, str]]:
         """Defeature at a site, most targeted first. Never at a coarse whole-part site: it names no place to remove.
@@ -746,7 +812,8 @@ class DetGenerator:
         # op; then the whole recognised set, last. `k` and the op budget cut from the end, so defeature never
         # pre-empts an op that suits the site. Snapshot v2 (lane B13): on the one body_overlap dev file seven
         # defeature applications came first and fuse/cut_by were `skipped_budget`.
-        own = [(site, [*self._recipe_rows(site, diag), *self._sweep(site, diag), *self._coverage(site, sized),
+        own = [(site, [*self._aimed_small_rows(site, has_solid), *self._recipe_rows(site, diag),
+                       *self._sweep(site, diag), *self._coverage(site, sized),
                        *(self._coarse_rows(site, state.ws, sized) if only_coarse else [])]) for site in sites]
         generic = [(site, self._defeature_rows(site, features)) for site in sites]
         whole = [(sites[0], part_rows)] if part_rows else []
