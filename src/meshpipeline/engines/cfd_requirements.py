@@ -434,6 +434,8 @@ class Ask:
         self.fallback: dict | None = None
         #: CFDREQ-17: the wall cells coarsened so a wall-function first layer fits under them, said ("" when not)
         self.wall_level_note = ""
+        #: CFDREQ-31: cfMesh's one wall-function layer's wall cell and y+ record, when that rule chose the wall cell
+        self.cfmesh_one_layer: dict | None = None
 
     @classmethod
     def of(cls, workspace, engine: str) -> Ask | None:
@@ -1288,6 +1290,95 @@ def wall_function_hard_cells(cap_rel: float) -> int:
     radius (WALL_FUNCTION_BL_SHARE; past it the outer flow, not the log law, sets the velocity at the first cell's
     centre, so a wall function there is no model of the wall at all): snappyHexMesh 6, cfMesh 5."""
     return max(1, int(math.ceil(float(cap_rel) / (WALL_FUNCTION_BL_SHARE * 0.5) - 1e-9)))
+
+
+#: CFDREQ-31: the share of the cell it stands on that cfMesh builds ONE wall-function layer at, with CFDREQ-30's
+#: optimiser block (relThicknessTol 0.02), whatever maxFirstLayerThickness asks. Measured (testlab-1, cartesianMesh on
+#: the kept cases, the product's layer census): 0.46-0.56 on eight batch-7 parts at their own cells, 0.48-0.50 on
+#: 00134075 / 00163330 at four wall cells each (a layer planned at 0.37 of the cell still came out at 0.50), 0.35-0.39
+#: on 00170318; the median 0.49. Under it the optimiser can collapse the layer towards a thin spot (00172106: 0.24 or
+#: 0.56 of the cell for a 0.01% change of the cell; 00184523: 0.24 under its narrow-passage boxes) - not a share.
+CFMESH_ONE_LAYER_SHARE = 0.5
+
+
+def cfmesh_one_layer_cells(ask: Ask | None, *, bore_D: float, max_cell: float,
+                           min_background: float = 0.0) -> tuple[float, float] | None:
+    """CFDREQ-31, cfMesh's ONE WALL-FUNCTION LAYER PLANNED TO WHAT IT BUILDS: (wall cell, background cell) for an
+    internal flow's wall-function wall on cfMesh, or None (unchanged: the cases wall_function_bore_cells leaves alone).
+    cfMesh builds one layer at CFMESH_ONE_LAYER_SHARE of the cell it stands on, so the wall cell is the first layer the
+    conditions' y+ gives on the bore over that share - finer than the background when the y+ layer is thinner (00134075:
+    a 2.16 mm layer planned on 5.87 mm cells came out 2.96 mm, 1.37 x the plan), coarser when it is thicker (CFDREQ-18
+    only ever coarsened the wall, and the passage caps' background then held it finer: 00184523 planned 3.65 mm, built
+    3.16 mm, y+ 50 -> 41). Never fewer cells across the bore than CFDREQ-18 / CFDREQ-25 keep: there the wall cell is
+    the bore over that count and the y+ the nearest it allows, said. The background becomes the wall cell times the
+    whole power of two nearest it (never finer than `min_background`, the budget's), so cfMesh's halvings land on the
+    wall cell itself."""
+    typed = wall_functions_typed(ask)
+    if (ask is None or (ask.treatment != "functions" and not typed) or ask.y_plus is None or ask.first_m is not None
+            or ask.total_m is not None or ask.wall_m is not None or ask.min_m is not None or ask.n_layers is not None
+            or not bore_D or not max_cell or (ask.req.get("physics") or {}).get("flow") != "internal"):
+        return None
+    h, missing, how = y_plus_height(float(ask.y_plus), ask.req.get("physics"), length_m=float(bore_D),
+                                    length_from="the bore")
+    if h is None or missing or how.get("laminar"):
+        return None
+    deepest = WALL_FUNCTION_BL_SHARE * 0.5 * float(bore_D)
+    if h > deepest:
+        if not typed or y_plus_of(deepest, how, float(ask.y_plus)) < WALL_FUNCTIONS_BAND[0] * (1 - 1e-9):
+            return None
+        h = deepest
+    share = CFMESH_ONE_LAYER_SHARE
+    want = max(1, int(math.floor(share * float(bore_D) / float(h) + 1e-9)))
+    least = wall_function_hard_cells(share) if typed else WALL_FUNCTION_MIN_CELLS_ACROSS
+    n = max(want, least)
+    wall = float(bore_D) / n
+    k = max(0, int(round(math.log2(float(max_cell) / wall))))
+    while wall * 2 ** k < float(min_background) * (1 - 1e-9):
+        k += 1
+    if n > want:
+        built = share * wall
+        ask.wall_level_note = (
+            f"a y+ {MR._g(float(ask.y_plus))} wall-function layer is {_mm(h)} high and this mesher builds one layer "
+            f"about {MR._g(share)} of the cell it stands on, so it needs {_mm(h / share)} cells at the wall; the "
+            f"passage keeps at least {least} cells across its {_mm(float(bore_D))} bore, so the wall cells are "
+            f"{_mm(wall)} and the first layer {_mm(built)}: y+ about {MR._g(round(y_plus_of(built, how), 1))}, "
+            "the nearest to the y+ asked that the passage allows")
+        if typed and n < WALL_FUNCTION_MIN_CELLS_ACROSS:
+            ask.wall_level_note += (f"; we would normally keep at least {WALL_FUNCTION_MIN_CELLS_ACROSS} across, but "
+                                    "you asked for wall functions, so the flow across the passage is coarser than we "
+                                    "would choose")
+    else:
+        ask.wall_level_note = (f"the wall cells are {_mm(wall)} ({n} across the bore): this mesher builds one layer "
+                               f"about {MR._g(share)} of the cell it stands on, so that is the {_mm(h)} the y+ asks")
+    ask.cfmesh_one_layer = {"wall_m": wall, "how": how}
+    return (wall * 1.001 if k > 0 else wall), wall * 2 ** k
+
+
+def cfmesh_thin_spot_layer(ask: Ask | None, box_cells) -> None:
+    """CFDREQ-31: narrow-passage boxes finer than the wall cell under cfMesh's one wall-function layer. The layer there
+    is about CFMESH_ONE_LAYER_SHARE of the box's cell, and cfMesh's optimiser evens the layer across the wall towards
+    it (00184523: 32 boxes at 1.27-1.72 mm under a 1.58 mm layer on 3.16 mm cells - built 0.75 mm, y+ 19). The
+    passages keep the cells across they need; the y+ row says what the layer will be and why (the nearest)."""
+    one = ask.cfmesh_one_layer if ask is not None else None
+    cells = [float(c) for c in box_cells or [] if c and float(c) > 0.0]
+    if not one or not cells or min(cells) >= float(one["wall_m"]) * (1 - 1e-3):
+        return
+    rid = ask.rid("layers:y_plus") if ask is not None else None
+    row = ask.rows.get(rid) if ask is not None and rid else None
+    if not row or row.get("treatment") != "functions":
+        return
+    finest = min(cells)
+    thin = CFMESH_ONE_LAYER_SHARE * finest
+    yp = y_plus_of(thin, one["how"])
+    words = (f"; {len(cells)} narrow passage{'s are' if len(cells) != 1 else ' is'} meshed with cells down to "
+             f"{_mm(finest)} (the cells across they need), and this mesher's one layer is about "
+             f"{MR._g(CFMESH_ONE_LAYER_SHARE)} of the cell it stands on and is evened across the wall towards its "
+             f"thinnest spot, so the first layer may come out near {_mm(thin)}: y+ about {MR._g(round(yp, 1))}")
+    if yp < WALL_FUNCTIONS_BAND[0]:
+        words += (f", under the {MR._g(WALL_FUNCTIONS_BAND[0])} wall functions need - these passages are too narrow "
+                  "for the y+ asked")
+    row["built"] = str(row.get("built") or "") + words
+    row["status"] = "nearest"
 
 
 @guarded(lambda ask, wake, **_k: wake)
