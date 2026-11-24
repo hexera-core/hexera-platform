@@ -727,7 +727,16 @@ def laminar_stack(delta_m: float, wall_cell_m: float, growth: float, *, n_min: i
             # aside, as CFDREQ-9's cap only ever shortened a bridged stack before
             stack_max_m = None
     best = None
+    thinned = False
     for n in counts:
+        if n > LAMINAR_LAYERS_KEPT and not n_fixed and not thinned:
+            # CFDREQ-29: BEFORE A STACK GOES PAST THE COUNT SNAPPYHEXMESH KEEPS, ITS FIRST LAYER IS THINNED (to
+            # LAMINAR_CAP_THIN of the floor, as a tight wall's cap does) so the core cells inside the layer make up
+            # BL_CELLS on LAMINAR_LAYERS_KEPT layers - the thickest such first layer
+            thinned = True
+            got = _kept_thin(counts, top, floor, g, wc, delta)
+            if got is not None:
+                return got
         hi = top(n)
         if cells_across(hi, g, n, wc, delta) >= BL_CELLS - 1e-9:
             # at its thickest the stack already gives them: keep the thickest
@@ -748,6 +757,25 @@ def laminar_stack(delta_m: float, wall_cell_m: float, growth: float, *, n_min: i
             best = got
     assert best is not None
     return best
+
+
+def _kept_thin(counts: list[int], top, floor: float, g: float, wc: float,
+               delta: float) -> tuple[int, float, float] | None:
+    """CFDREQ-29: the stack of the most layers up to LAMINAR_LAYERS_KEPT whose first layer, between LAMINAR_CAP_THIN
+    of the floor and its top, puts BL_CELLS across `delta` - the thickest first layer that does (the smoothest step
+    into the wall cells). None when even the thinnest does not: the stack then fills the layer, as before."""
+    kept = [c for c in counts if c <= LAMINAR_LAYERS_KEPT]
+    if not kept:
+        return None
+    n = max(kept)
+    hi = top(n)
+    lo = min(LAMINAR_CAP_THIN * floor, hi)
+    if cells_across(lo, g, n, wc, delta) < BL_CELLS:
+        return None
+    for _ in range(60):
+        mid = math.sqrt(lo * hi)
+        lo, hi = (mid, hi) if cells_across(mid, g, n, wc, delta) >= BL_CELLS else (lo, mid)
+    return n, lo, cells_across(lo, g, n, wc, delta)
 
 
 #: CFDREQ-23: A LAMINAR WALL'S NEAR-WALL BAND. Where the wall cells are as thick as the boundary layer (abc 00000039:
