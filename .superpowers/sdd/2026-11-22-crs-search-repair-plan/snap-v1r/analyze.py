@@ -197,6 +197,34 @@ def gaming_section(by: dict) -> str:
     return "\n".join(out)
 
 
+def _nums(r: dict) -> str:
+    def f(v, fmt):  # noqa: ANN001, ANN202
+        return "-" if v is None else format(float(v), fmt)
+    b0, b1 = r.get("out_bodies_before"), r.get("out_bodies_after")
+    return (f"volume x{f(r.get('out_volume_ratio'), '.3g')}, area x{f(r.get('out_area_ratio'), '.3g')}, "
+            f"bbox x{f(r.get('out_bbox_ratio'), '.3g')}, max dev {f(r.get('out_max_dev_mm'), '.3g')} mm, "
+            f"bodies {'-' if b0 is None else f'{b0}->{b1}'}")
+
+
+def valid_unclean_gaming_section(by: dict) -> str:
+    """Lane C12: VALID but NOT clean outputs of the repair arms that moved the part past the gaming limits, NAMED with
+    their numbers, in their OWN group: they are in no clean rate, so this is not clean-rate gaming. The gaming rule
+    used to read clean outputs only, so a delivered near-empty part was flagged nowhere."""
+    lines = ["Worked example: `0051_00510567` search_ai (v4): volume x0.00069, area x0.0036, bbox x0.281, max dev "
+             "40.0 mm, bodies 8->4 - VALID, delivered as improved, flagged nowhere before this group existed.", ""]
+    any_ = False
+    for a in ARMS:
+        if a == "input_only":
+            continue
+        rs = [r for r in by[a].values() if not r["inconclusive"] and not r["out_clean"] and r.get("out_valid")]
+        hit = [r for r in rs if gaming_why(r)]
+        if hit:
+            any_ = True
+            lines.append(f"- {a}: {len(hit)} of {len(rs)} valid-not-clean")
+            lines += [f"  - `{short(r['name'])}`: {_nums(r)}" for r in hit]
+    return "\n".join(lines + ([] if any_ else ["- none in this wave"]))
+
+
 def depth_of(rows: list[dict]) -> dict[str, tuple[float, float | None]]:
     """sha256 -> (largest overlap depth, its bound) seen in any row's triage (a body op's `exceeds_fidelity`
     decline). A file whose body op never ran has no entry: its depth was never measured."""
@@ -602,6 +630,16 @@ Clean control:
 Clean control:
 
 {fidelity_section(C['by'])}
+
+## Gaming flags on VALID-NOT-CLEAN delivered outputs (NOT clean, in NO clean rate; same limits)
+
+{L}:
+
+{valid_unclean_gaming_section(H['by'])}
+
+Clean control:
+
+{valid_unclean_gaming_section(C['by'])}
 
 ## AI marginal (search_ai − search_det, per file)
 

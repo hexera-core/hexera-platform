@@ -1342,3 +1342,47 @@ def test_an_unfaithful_row_that_claims_clean_is_accepted_now(tmp_path) -> None:
     rep = report.build_report(load(tmp_path, split))
     assert rep["arms"]["staged"]["clean_out"] == 40
     assert rep["gaming_flags"]["arms"]["staged"]["files"] == 0   # unfaithful, but inside both review limits
+
+
+# ------------------------------------------------------------------ C12: gaming flags on VALID-NOT-CLEAN outputs
+
+def test_a_valid_unclean_output_that_destroyed_the_part_is_flagged_with_its_numbers_in_its_own_group(tmp_path) -> None:
+    """Lane C12 on v4: search_ai DELIVERED a VALID state with 0.07% of the part left (0051_00510567). It was not clean,
+    so the clean-only gaming rule never saw it. Now it is named with its numbers, apart from clean-rate gaming."""
+    split = split_rows()
+
+    def rows(b, i, a):
+        if a == "input_only" or i != 0:
+            return arm_row(b, i, a)
+        return {**arm_row(b, i, a), "out_valid": True, "out_faithful_ok": False, "out_panel_passes": 1,
+                "out_clean": False, "out_volume_ratio": 0.00069, "out_area_ratio": 0.0036, "out_bbox_ratio": 0.281,
+                "out_max_dev_mm": 40.0, "out_bodies_before": 8, "out_bodies_after": 4}
+
+    build(tmp_path, WAVE, split, rows_for=rows)
+    rep = report.build_report(load(tmp_path, split))
+    assert all(rep["gaming_flags"]["arms"][a]["files"] == 0 for a in WAVE.arms)   # NOT clean-rate gaming
+    gv = rep["gaming_flags_valid_unclean"]
+    assert "input_only" not in gv["arms"]                                          # its output is its input
+    for arm in MOVER_ARMS:
+        (f,) = gv["arms"][arm]["names"]
+        assert f["sha256"] == split[0].sha256 and f["volume_ratio"] == 0.00069 and f["bodies"] == [8, 4]
+    text = report.render_text(rep)
+    assert "Gaming flags on VALID-NOT-CLEAN delivered outputs" in text and "0051_00510567" in text
+    assert "volume x0.00069, area x0.0036, bbox x0.281, max dev 40 mm, bodies 8->4" in text
+    base = tmp_path / "base"
+    base.mkdir()
+    build(base, WAVE, split, rows_for=lambda b, i, a: arm_row(b, i, a) if a == "input_only" or i != 0 else {
+        **arm_row(b, i, a), "out_valid": True, "out_panel_passes": 1, "out_clean": False})
+    baseline = report.build_report(load(base, split))
+    for arm in MOVER_ARMS:   # the flag moved NO count: same clean rate as the same row without the numbers
+        assert rep["arms"][arm]["clean_out"] == baseline["arms"][arm]["clean_out"]
+
+
+def test_a_valid_unclean_output_inside_the_limits_is_not_flagged(tmp_path) -> None:
+    split = split_rows()
+    build(tmp_path, WAVE, split, rows_for=lambda b, i, a: arm_row(b, i, a) if a == "input_only" else {
+        **arm_row(b, i, a), "out_valid": True, "out_panel_passes": 1, "out_clean": False,
+        "out_volume_ratio": 0.99, "out_bbox_ratio": 1.0})
+    gv = report.build_report(load(tmp_path, split))["gaming_flags_valid_unclean"]
+    assert all(b["files"] == 0 for b in gv["arms"].values())
+    assert "none in this wave" in report.render_text(report.build_report(load(tmp_path, split)))
