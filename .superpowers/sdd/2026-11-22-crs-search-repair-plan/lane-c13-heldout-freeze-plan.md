@@ -21,7 +21,7 @@ Step 2 must exit 0 before step 3. It touches no held-out object, creates no VM, 
 | what | pinned to | enforced by |
 |---|---|---|
 | code | the commit the freeze tag names | `freeze_guard.py`: refuses with no `crs-v4-freeze-*` tag, or if the run commit is not that tag's commit |
-| required fixes in that commit | B18 anytime `39f52d73`, C12a valid-not-clean gaming flags `2bd03537`, C13 per-original-shard spend `03764a28`, C14b label-drift stratum `6d96618a`, C14b resume `e92a6c75` | `freeze_guard.py --require` (REQUIRE_COMMITS): refuses if any is not an ancestor |
+| required fixes in that commit | B18 anytime `39f52d73`, C12a valid-not-clean gaming flags `2bd03537`, C13 per-original-shard spend `03764a28`, C14b label-drift stratum `6d96618a`, C14b resume `e92a6c75`, B22 catastrophic-loss rule `ff8da7b05` + proofs `537e25efa`, C15 degenerate Boolean `ec06ce89`, C15 inside-out on the BREP `b0866cf7` | `freeze_guard.py --require` (REQUIRE_COMMITS): refuses if any is not an ancestor |
 | the sealed manifest | read FROM the frozen commit, content sha256 `2ba86ba2…46a56` | `launch.sh`: refuses if the frozen commit's copy hashes differently |
 | the wave | `heldout_v4`: input_only, staged, search_det, search_ai; held_out type; heldout split | `evalspec`, `prep.py` (one group, held_out type only for the held-out split) |
 | the cap | $250 (`model_ledger.WAVE_CAPS_USD["held_out"]`), sliced $250 / n per shard | each shard's ledger; the report (per ORIGINAL shard) |
@@ -48,7 +48,8 @@ slots on 2 VMs / 32 vCPU, about 97 min wall, ~52 vCPU-h ≈ $2.44 VM, model caps
 
 ## DECISIONS FOR THE OWNER, before the freeze
 
-1. **The delivery rule (b).** Whether a delivery under some volume/area fraction of the input is refused, whatever
+1. **The delivery rule (b). DONE (owner ruling; Lane B's B22 `ff8da7b05`):** under 10% of the original part, or an original body lost, is never ranked best and never delivered. What follows is the original note.
+   **The delivery rule (b).** Whether a delivery under some volume/area fraction of the input is refused, whatever
    its validity. It changes what is delivered and therefore the held-out numbers: decide it BEFORE the freeze, or the
    one unrepeatable run measures the rule we then change. (v4 delivered `0051_00510567` VALID with 0.07% of the part.)
 2. **Label drift. DONE (C14b, `6d96618a`, LEAD-3's go):** a drifted file is now its own named stratum with this
