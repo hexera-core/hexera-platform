@@ -1137,9 +1137,14 @@ def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
         _entries = "".join(
             f"        {w}\n        {{ nLayers {n_layers}; thicknessRatio {ratio:g};"
             f"{first_line} allowedDiscontinuity 0; }}\n" for w in dict.fromkeys(_walls))
+        # CFDREQ-30: the layer optimiser's parameters in full - its relThicknessTol is what holds a layer to
+        # the height asked (one layer is otherwise ~0.63 of the wall cell, whatever maxFirstLayerThickness says)
+        from meshpipeline.engines.cfd_requirements import CFMESH_LAYER_OPTIMISATION
+        _opt = " ".join(f"{k} {v:g};" for k, v in CFMESH_LAYER_OPTIMISATION.items())
         dict_parts.append(
             "boundaryLayers\n{\n    patchBoundaryLayers\n    {\n" + _entries
-            + "    }\n    optimiseLayer 1;\n    untangleLayers 1;\n}\n")
+            + "    }\n    optimiseLayer 1;\n    optimisationParameters { " + _opt + " }\n"
+            + "    untangleLayers 1;\n}\n")
 
     # renameBoundary: every contract patch → its OpenFOAM type. The solids in
     # geom.fms are named for the contract (prepare_surface), so the mesh's final

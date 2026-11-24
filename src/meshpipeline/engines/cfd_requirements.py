@@ -1488,6 +1488,18 @@ def cfmesh_strategy(ask: Ask, strategy: Mapping, *, length_m: float | None = Non
 #: with 1.25 mm wall cells: 4 layers at 1.2 made 0.64 mm, the first 0.119 mm; the CFD board, tests/known_layers)
 CFMESH_STACK_REL = 0.5
 
+#: CFDREQ-30: cfMesh's layer optimiser, written out in full in every meshDict with layers. With one layer cfMesh
+#: builds it at about 0.63 of the wall cell whatever maxFirstLayerThickness says, and with no optimisationParameters
+#: block its own defaults are not the documented ones (the block below at relThicknessTol 0.1 already moved the
+#: built layer). It is relThicknessTol that holds the layer to the height asked: measured on batch 7's cfMesh parts
+#: (one wall-function layer, nothing else changed) 0.1 -> 0.005 took the first cell from 1.27 to 0.98 of the plan on
+#: 00180172 and 1.32 to 0.97 on 00188075, from 1.70 to 1.27 on 00134075 and 1.62 to 1.22 on 00163330 (planned well
+#: under half their cell), and the wall at plan with no thinner cell above it from 70 / 79 / 2 / 5% to 89 / 91 / 87
+#: / 82%; 0.001 is unstable (the first cell fell to 0.29 of the plan on 00180172). featureSizeFactor,
+#: maxNumIterations and nSmoothNormals moved nothing; with two layers or more the cap is obeyed already.
+CFMESH_LAYER_OPTIMISATION = {"nSmoothNormals": 3, "maxNumIterations": 5, "featureSizeFactor": 0.4,
+                             "reCalculateNormals": 1, "relThicknessTol": 0.005}
+
 
 @guarded(lambda ask, strategy, wall_cell_m, **_kw: dict(strategy))
 def cfmesh_layer_fit(ask: Ask | None, strategy: Mapping, wall_cell_m: float, *,

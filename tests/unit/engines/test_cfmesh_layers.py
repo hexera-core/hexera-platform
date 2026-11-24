@@ -33,6 +33,22 @@ def test_the_meshdict_names_every_wall_with_cfmeshs_own_keywords(tmp_path):
     assert block.count("nLayers 5;") == 2
 
 
+def test_the_layer_optimiser_is_written_in_full_so_one_layer_lands_at_its_planned_height(tmp_path):
+    # CFDREQ-30: with one layer cfMesh ignores maxFirstLayerThickness unless relThicknessTol is tight (measured: 0.1 ->
+    # 0.005 took the first cell from 1.27 to 0.98 of the plan); its built-in defaults are not the documented ones, so
+    # every parameter is written
+    text = _render(tmp_path, {"n_layers": 1, "thickness_ratio": 1.2, "first_layer_thickness": 0.0013642},
+                   [{"name": "body", "type": "wall"}])
+    layers = text[text.index("boundaryLayers"):]
+    assert ("optimisationParameters { nSmoothNormals 3; maxNumIterations 5; featureSizeFactor 0.4; "
+            "reCalculateNormals 1; relThicknessTol 0.005; }") in layers
+    assert "maxFirstLayerThickness 0.0013642;" in layers and layers.count("optimiseLayer 1;") == 1
+    # the rescue's protective re-mesh still swaps in its own parameters, once
+    from meshpipeline.engines.cfmesh import rescue as RS
+    again = RS.protective_meshdict(text)
+    assert again.count("optimisationParameters") == 1 and "relThicknessTol 0.05;" in again
+
+
 def test_no_layers_asked_renders_no_boundary_layers(tmp_path):
     assert "boundaryLayers" not in _render(tmp_path, {}, [{"name": "body", "type": "wall"}])
 
