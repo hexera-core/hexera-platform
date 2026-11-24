@@ -270,8 +270,9 @@ def _unbounded_finding(shape) -> dict | None:
     return _finding("unbounded_geometry", [], diagonal_mm=diag, limit_mm=UNBOUNDED_DIAGONAL_MM, open_sides=open_sides)
 
 
-def check_shape(brep_path: str) -> dict:
-    """Run every layer 1 rule that needs the kernel on the BREP at `brep_path`."""
+def check_shape(brep_path: str, *, booleans: bool = True) -> dict:
+    """Run every layer 1 rule that needs the kernel on the BREP at `brep_path`. `booleans=False` skips the two
+    Boolean rules (self_intersection, body_overlap); `valid` asks for that only where they cannot change a verdict."""
     from OCP.BRep import BRep_Builder
     from OCP.BRepTools import BRepTools
     from OCP.TopAbs import TopAbs_SOLID
@@ -309,17 +310,18 @@ def check_shape(brep_path: str) -> dict:
     for i, volume in enumerate(volumes, start=1):
         if volume <= 0:
             hard.append(_finding("non_positive_volume", [f"S{i}"], volume=volume))
-    for i, solid in enumerate(solids, start=1):
-        if _self_intersects_once(solid):
-            hard.append(_finding("self_intersection", [f"S{i}"]))
-    hard.extend(_overlapping_pairs(solids, volumes))
+    if booleans:
+        for i, solid in enumerate(solids, start=1):
+            if _self_intersects_once(solid):
+                hard.append(_finding("self_intersection", [f"S{i}"]))
+        hard.extend(_overlapping_pairs(solids, volumes))
 
     return {"solids": len(solids), "hard": hard, "soft": _soft_findings(shape)}
 
 
 @register("check_valid")
 def _check_valid(payload: dict) -> dict:
-    return check_shape(payload["brep"])
+    return check_shape(payload["brep"], booleans=bool(payload.get("booleans", True)))
 
 
 @register("valid_signed_volumes")

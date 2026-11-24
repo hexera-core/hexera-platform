@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import shutil
 import tempfile
+import threading
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -92,8 +93,27 @@ def _is_file_error(result: CallResult) -> bool:
     return result.status == "error" and (result.error or "").startswith("ValueError:")
 
 
-def _check_shape(pool: WorkerPool, brep: str) -> CallResult:
-    return pool.call("check_valid", {"brep": brep}, timeout_s=CALL_TIMEOUT_S)
+#: The hard codes found only by layer 1's two Boolean checks (per-solid self-intersection, pairwise overlap): about
+#: 98% of a check's kernel time (C16, measured).
+BOOLEAN_CODES = frozenset({"self_intersection", "body_overlap"})
+
+
+def _check_shape(pool: WorkerPool, brep: str, *, booleans: bool = True) -> CallResult:
+    return pool.call("check_valid", {"brep": brep, "booleans": booleans}, timeout_s=CALL_TIMEOUT_S)
+
+
+class _ReadInvalid:
+    """Set once the input's own check has a hard finding. The round trip READS it, never waits for it: a round-trip
+    check that starts first runs in full, so no overlap of the two checks is ever lost to this."""
+
+    def __init__(self) -> None:
+        self._event = threading.Event()
+
+    def set(self) -> None:
+        self._event.set()
+
+    def __bool__(self) -> bool:
+        return self._event.is_set()
 
 
 @dataclass(frozen=True)
@@ -106,9 +126,15 @@ class _RoundTripCalls:
     checked: CallResult | None = None
 
 
-def _round_trip_calls(pool: WorkerPool, doc: dict, work: Path, written_units: str) -> _RoundTripCalls:
+def _round_trip_calls(
+    pool: WorkerPool, doc: dict, work: Path, written_units: str, read_invalid: _ReadInvalid | None = None
+) -> _RoundTripCalls:
     """Write `doc` as STEP in `written_units`, read it back and check the re-read shape. Nothing here
-    needs the input's own check, so it can run while that check does (`check_valid`)."""
+    needs the input's own check, so it can run while that check does (`check_valid`).
+
+    The re-read's Booleans are skipped when the input's check already has a hard finding (`read_invalid`): the
+    verdict is then invalid whatever they find, and `_judge_round_trip` ignores Boolean codes in exactly that case,
+    so skipping them or not gives the same report (C16 lever b')."""
     written = pool.call(
         "write_step_xcaf",
         {
@@ -129,7 +155,8 @@ def _round_trip_calls(pool: WorkerPool, doc: dict, work: Path, written_units: st
     )
     if not reread.ok or reread.value is None:
         return _RoundTripCalls(written, reread)
-    return _RoundTripCalls(written, reread, _check_shape(pool, reread.value["brep"]))
+    booleans = not (read_invalid is not None and read_invalid)
+    return _RoundTripCalls(written, reread, _check_shape(pool, reread.value["brep"], booleans=booleans))
 
 
 def _written_units(doc: dict) -> str:
@@ -144,7 +171,10 @@ def _judge_round_trip(calls: _RoundTripCalls, doc: dict, solids: int, known: set
     that is not the file's.
 
     `known` are the hard codes the original already has: a defect that survives the round trip is
-    not the round trip's fault, only a NEW hard code is.
+    not the round trip's fault, only a NEW hard code is. When `known` is not empty the file is already invalid,
+    and a NEW Boolean code is not counted either: the round trip's Booleans may have been skipped then (lever b'),
+    and counting them only when they ran would make `round_trip_ok` depend on timing. Validity cannot change: a
+    round trip only adds `round_trip_invalid` to a file with no other hard code.
     """
     written = calls.written
     if not written.ok and not _is_file_error(written):
@@ -170,7 +200,10 @@ def _judge_round_trip(calls: _RoundTripCalls, doc: dict, solids: int, known: set
         raise _unavailable("check_valid", checked)
     if checked.value["solids"] != solids:
         problems["solids"] = {"before": solids, "after": checked.value["solids"]}
-    broken = sorted({item["code"] for item in checked.value["hard"]} - known)
+    found = {item["code"] for item in checked.value["hard"]}
+    if known:
+        found -= BOOLEAN_CODES
+    broken = sorted(found - known)
     if broken:
         problems["hard"] = broken
     return not problems, again["units"], problems
@@ -212,6 +245,7 @@ def _check_valid(
     work = Path(tempfile.mkdtemp(prefix="valid_"))
     speculative: Future[_RoundTripCalls] | None = None
     executor: ThreadPoolExecutor | None = None
+    read_invalid = _ReadInvalid()
     try:
         read = memo.read_step(pool, step_path, key, str(work / "shape.brep"))
         if not read.ok and _is_file_error(read):  # the file cannot be read as STEP: it is invalid
@@ -225,7 +259,7 @@ def _check_valid(
 
         if _bounded(pool, doc):
             executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="valid_round_trip")
-            speculative = executor.submit(_round_trip_calls, pool, doc, work, written_units)
+            speculative = executor.submit(_round_trip_calls, pool, doc, work, written_units, read_invalid)
 
         checked = _check_shape(pool, doc["brep"])
         if not checked.ok or checked.value is None:
@@ -239,7 +273,13 @@ def _check_valid(
         if original_units is not None and units != canonical_unit(original_units):
             hard.append(Finding("units_changed", [], {"original": original_units, "file": units}))
 
-        calls = speculative.result() if speculative is not None else _round_trip_calls(pool, doc, work, written_units)
+        if hard:
+            read_invalid.set()
+        calls = (
+            speculative.result()
+            if speculative is not None
+            else _round_trip_calls(pool, doc, work, written_units, read_invalid)
+        )
         round_trip_ok, units_after, why = _judge_round_trip(calls, doc, solids, {f.code for f in hard})
         if units_after is not None and units_after != written_units:
             hard.append(Finding("units_changed", [], {"file": units, "after_round_trip": units_after}))
