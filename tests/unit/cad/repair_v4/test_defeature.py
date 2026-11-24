@@ -56,9 +56,9 @@ def _state(sites: list[Site]) -> SearchState:
     return st
 
 
-def _gen(features: list[dict]) -> tuple[DetGenerator, list[int]]:
+def _gen(features: list[dict], *, whole: bool = False) -> tuple[DetGenerator, list[int]]:
     asked: list[int] = []
-    g = DetGenerator(diagonal=lambda ws: 100.0)
+    g = DetGenerator(diagonal=lambda ws: 100.0, whole_part_defeature=whole)
 
     def recognise(ws: Workspace) -> list[dict]:
         asked.append(1)
@@ -69,7 +69,7 @@ def _gen(features: list[dict]) -> tuple[DetGenerator, list[int]]:
 
 def test_the_det_sweep_proposes_the_recognised_set_once_and_site_rows_where_they_suit() -> None:
     assert "defeature" in REGISTRY
-    g, asked = _gen(FEATURES)
+    g, asked = _gen(FEATURES, whole=True)
     sites = [_site("S1", "sliver", ["F7", "F8"], ["gmsh_alt"]), _site("S2", "proximity", ["F3", "F5"], ["gmsh_prod"])]
     cands = [c for c in g.propose(_state(sites), 999) if c.op == "defeature"]
     assert len(asked) == 1, "the recogniser was asked more than once for one state"
@@ -102,7 +102,7 @@ def test_defeature_comes_after_every_sites_own_rows_so_k_cuts_it_first() -> None
     """D16 (lane B13, snapshot v2): on the one body_overlap dev file seven defeature applications ran first and the
     body ops were `skipped_budget`. Every site's own rows now come before any defeature row, the site-level removals
     before the whole recognised set, so the cap and the op budget cut defeature first."""
-    g, _ = _gen(FEATURES)
+    g, _ = _gen(FEATURES, whole=True)
     sites = [_site("S1", "sliver", ["F7", "F8"], ["gmsh_alt"]), _site("S2", "proximity", ["F3", "F5"], ["gmsh_prod"])]
     cands = g.propose(_state(sites), 999)
     ops = [c.op for c in cands]
@@ -112,7 +112,7 @@ def test_defeature_comes_after_every_sites_own_rows_so_k_cuts_it_first() -> None
     assert any("(site S2," in c.rationale for c in cands[:first])  # S2's own rows are not behind S1's defeature
     tail = [c.params.get("source") for c in cands[first:]]
     assert tail[-1] == "recognised" and "on the part" in cands[-1].rationale   # the whole set is last
-    g2, _ = _gen(FEATURES)
+    g2, _ = _gen(FEATURES, whole=True)
     assert all(c.op != "defeature" for c in g2.propose(_state(sites), first))   # k at the own rows: no defeature
 
 
@@ -133,7 +133,7 @@ def test_a_mesher_located_failure_gets_a_removal_of_exactly_the_faces_it_named_a
 
 
 def test_the_located_removal_comes_before_the_recognised_and_site_rows_and_the_whole_part() -> None:
-    g, _ = _gen(FEATURES)
+    g, _ = _gen(FEATURES, whole=True)
     cands = [c for c in g.propose(_state([_located("S1", "proximity", ["F3", "F5"], ["gmsh_prod"], ["F3"])]), 999)
              if c.op == "defeature"]
     assert [(c.params["source"], c.targets) for c in cands] == [
@@ -150,3 +150,17 @@ def test_no_located_removal_without_a_mesher_or_at_an_open_site() -> None:
     open_site = _located("S2", "open", ["F7"], ["gmsh_prod"], ["F7"])        # faces already missing
     cands = g.propose(_state([valid_only, open_site]), 999)
     assert not [c for c in cands if c.op == "defeature" and c.params.get("source") in ("located", "site")]
+
+
+def test_the_whole_recognised_set_is_off_by_default_and_the_aimed_rows_stay() -> None:
+    """D17, owner direction: D15 measured the whole-part candidate worse than its parent 18 of 22 times, 14 of them by
+    making the part invalid. Off unless asked for; the located, recognised-at-site and site rows are unchanged."""
+    from meshpipeline.cad.repair_v4.search import WHOLE_PART_DEFEATURE
+
+    assert WHOLE_PART_DEFEATURE is False and DetGenerator().whole_part_defeature is False
+    g, _ = _gen(FEATURES)
+    cands = [c for c in g.propose(_state([_located("S1", "proximity", ["F3", "F5"], ["gmsh_prod"], ["F3"])]), 999)
+             if c.op == "defeature"]
+    assert [(c.params["source"], c.targets) for c in cands] == [
+        ("located", ["F3"]), ("recognised", ["F3", "F4"]), ("site", ["F3", "F5"])]
+    assert all("on the part" not in c.rationale for c in cands)
