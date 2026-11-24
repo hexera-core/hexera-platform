@@ -699,7 +699,9 @@ def test_first_call_reservation_on_both_models_with_the_real_prefix():
         p._messages.append({"role": "user", "content": "x" * 20_000})
         usd, tokens = P.estimate_call_usd(p.messages, p._tools, prices=prices, output_tokens=LIMIT)
         out[name] = usd
-        assert 3000 < tokens < 12_000                       # prefix + observation, in estimated tokens
+        # C23 widened the top from 12,000 to 12,500: split_aligned's schema and one-line summary added ~120 tokens to
+        # the static prefix (12,115 measured). The dollar bands below are the ceiling this test guards.
+        assert 3000 < tokens < 12_500                       # prefix + observation, in estimated tokens
     # B21 widened the top of the astra band from 0.32 to 0.33: the chain hints added about 275 tokens to the
     # static prefix, which moved this reservation from $0.3218 to $0.3222 - a tenth of a percent, paid once per
     # file because the prefix is cached after the first call. The band still has to track the prefix, so if it

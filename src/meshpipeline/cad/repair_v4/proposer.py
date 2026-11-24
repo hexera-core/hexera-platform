@@ -201,6 +201,8 @@ OP_SUMMARIES: dict[str, str] = {
     "sew": "sew loose faces together at the tightest tolerance in tol_ladder that closes them. For open sites "
            "where faces are present but not connected.",
     "split_angle": "split the target faces so no face spans more than max_deg of angle. Moves no geometry.",
+    "split_aligned": "split cylinders/cones on common rays so nearby faces' meshes nest, not cross. scope all: no "
+                     "targets. Moves no geometry.",
     "split_by_proximity": "split each face of each face_pair along iso-curves so a chord across a patch sags less "
                           "than target_ratio of the gap between the pair. Moves no geometry. For proximity sites.",
     "trim_unbounded": "bound the part's infinite (untrimmed) surfaces to its real extent: the part intersected with "
