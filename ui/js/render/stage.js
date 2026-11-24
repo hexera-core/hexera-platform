@@ -95,7 +95,7 @@ export function attHtml(rows,faces,sid){
   const a=(rows||[]).filter(r=>r&&r.id).map(r=>r.kind==='image'
     ?`<a class="att att-img" href="#" data-att="${esc(r.id)}"${sidA} title="${esc(r.name||'')}"><img alt="${esc(r.name||'picture')}"></a>`
     :`<a class="box-chip att att-file" href="#" data-att="${esc(r.id)}"${sidA}><span class="box-chip-label">${esc(r.name||'file')}</span></a>`);
-  const f=(faces||[]).filter(x=>x&&(x.label||x.id)).map(x=>`<span class="box-chip att-face"><span class="box-chip-label">${esc(x.label||x.id)}</span></span>`);
+  const f=(faces||[]).filter(x=>x&&(x.label||x.id)).map(x=>`<span class="box-chip box-chip-face att-face" title="${esc(x.label||x.id)}"><span class="box-chip-label">${esc(x.label||x.id)}</span></span>`);
   return a.length+f.length?`<div class="att-list">${a.join('')}${f.join('')}</div>`:'';}
 
 export const Stage = {
@@ -219,7 +219,7 @@ export const Stage = {
     // one. Guidance for the mesh, never a check: the plan above is what is approved.
     // A short list, then one quiet line that grows as it is used: Enter adds, Shift+Enter starts a line.
     // a note's attached pictures and files under its words (shell/attach.js opens them)
-    const items=(b.user_notes||[]).map(n=>`<li class="rc-note">${esc(n.text)}${attHtml(n.attachments,null,'')}</li>`).join('');
+    const items=(b.user_notes||[]).map(n=>`<li class="rc-note">${esc(n.text)}${attHtml(n.attachments,n.faces,'')}</li>`).join('');
     const notes=items?`<ul class="rc-notes-list">${items}</ul>`:'';
     const box=addNote?`<div class="rc-notes-box"><div class="rc-notes-row"><textarea class="rc-notes-in" rows="1" maxlength="20000"
         aria-label="Add a note" placeholder="Add a note, or paste a spec…"></textarea>

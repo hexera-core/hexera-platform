@@ -5,6 +5,7 @@
 // row is shell/chips.js; when a click is a pick is the caller's (geometry_stage.js, parts_view.js). NOTE-17.
 
 import { faceAt } from "../api/endpoints.js";
+import { say } from "../shell/attach.js";
 import * as chips from "../shell/chips.js";
 import { firstHit } from "./open_ends.js";
 import { b64f32, b64u32 } from "./scene/vtk_load.js";
@@ -16,13 +17,14 @@ import { themeRgb } from "./toolbar.js";
  * them. Only once the stage is settled (after Proceed): before that a click on the part means what it always did. */
 
 export const MAX_FACES = 20;
+export const TOO_MANY_FACES = `${MAX_FACES} faces is the most.`;
 export const CLICK_PX = 6;                       // a press that moves further than this turned the model: no pick
 const ACCENT = [0.886, 0.173, 0.173];            // the stage's own selection colour, when the theme gives none
 
 let stage = null;                                // {sessionId, box}: the settled stage the faces are picked on
 const views = new Set();                         // {ren, rw}: where the picked faces are drawn
 const lit = new Map();                           // chip key -> {id, box, pd, actors: Map(view -> actor)}
-let asking = false, watch = null;
+let asking = false, unwatch = null;
 
 /** A press and its release are one click (not a turn of the model). */
 export function isClick(down, up) {
@@ -92,7 +94,7 @@ export async function pickAt(hit) {
   const had = chipOf(f.id);
   if (had) { chips.remove(had.box, had.key); return { dropped: f.id }; }
   const box = chips.active();
-  if (chips.items(box).filter((i) => i.kind === "face").length >= MAX_FACES) return { full: true };
+  if (chips.items(box).filter((i) => i.kind === "face").length >= MAX_FACES) { say(box, TOO_MANY_FACES); return { full: true }; }
   const label = String(f.label || f.id).slice(0, 80);
   const key = chips.add(box, { kind: "face", label, title: label, value: { id: f.id, label }, onRemove: (it) => unlight(it.key) });
   light(key, box, f);
@@ -131,15 +133,16 @@ function unlight(key) {
   if (!e) return;
   lit.delete(key);
   for (const [view, actor] of e.actors) { view.ren.removeActor(actor); view.rw.render(); }
-  if (!lit.size && watch) { clearInterval(watch); watch = null; }
+  if (!lit.size && unwatch) { unwatch(); unwatch = null; }
 }
 
-/* A send clears the chip row without a word to the chips (what was sent stays sent): the light follows the row. */
+/* A send clears the chip row without a word to the chips (what was sent stays sent): the light follows the row.
+ * A refused send keeps the row, so the face stays lit. */
 function keepWatch() {
-  if (watch) return;
-  watch = setInterval(() => {
-    for (const [key, e] of [...lit]) if (!chips.items(e.box).some((i) => i.key === key)) unlight(key);
-  }, 200);
+  if (unwatch) return;
+  unwatch = chips.listen((box, items) => {
+    for (const [key, e] of [...lit]) if (e.box === box && !items.some((i) => i.key === key)) unlight(key);
+  });
 }
 
 /** The faces picked now (ids), in the order picked. */

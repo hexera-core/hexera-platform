@@ -1,7 +1,9 @@
 # Responsibility: Verify face picking on the settled intake model in a real browser (NOTE-17): no pick while the stage
 # panel is open; after Proceed a plain click asks the server for the face there, lights it and puts one chip
 # "Face 12 · round Ø15 mm ✕" under the box used last; a second click on it or its ✕ drops it; a drag is not a click; a
-# click on no face does nothing; at most 20 faces; the send's chip clear takes the light with it.
+# click on no face does nothing; at most 20 faces, the 21st told in one line; the send's chip clear takes the light with
+# it; a face and a file go in one message, a refused send keeps both lit and typed; a face chip looks the same under
+# the box, in the user's bubble and on a saved note.
 # Boundaries: the skin is built through the worker's own code from a tube made here; the faces/at answer is stood in
 # for in the page (no network, no model).
 from __future__ import annotations
@@ -146,8 +148,83 @@ def test_the_notes_box_the_cap_and_the_send(live):
       return out; }})()""", timeout=60)
     assert sum(1 for g in got if g and g.get("picked")) == 20 and got[-1] == {"full": True}
     assert len(_state(live)["chat"]) == 20
+    # the 21st is told in one plain line under the box, never ignored silently
+    assert live.evaluate("document.querySelector('#input-bar > .box-msg').textContent") == "20 faces is the most."
     # THE RUN STARTS: the viewer goes, and every picked face and its chip with it
     live.evaluate(f"window.__stages['{sid}'].release()")
     s = _state(live)
     assert s["chat"] == [] and s["lit"] == 0 and s["picked"] == []
     assert_clean(live, "face picks under the notes box, the cap and the send")
+
+
+def test_a_face_and_a_file_go_together_a_refused_send_keeps_both_and_the_face_looks_the_same_everywhere(live):
+    sid = "facepick3"
+    _open(live, sid)
+    _proceed(live, sid)
+    live.wait_for(f"document.getElementById('gstage-{sid}').classList.contains('iv-plain')", timeout=10,
+                  what="the stage to settle")
+    _click(live, sid)
+    live.wait_for("window._vdbg.facepick.lit() === 1", timeout=10, what="the face lit")
+    out = live.evaluate("""(async () => {
+      const S = await import('/static/js/core/state.js');
+      const C = await import('/static/js/shell/composer.js');
+      const { Stage } = await import('/static/js/render/stage.js');
+      const { carried } = await import('/static/js/core/conversation.js');
+      const chips = window.__chips, sleep = (ms) => new Promise(r => setTimeout(r, ms));
+      const stubbed = window.fetch, sent = [];
+      let refuse = true;
+      window.fetch = async (u, o = {}) => {
+        if (String(u) !== '/api/v1/chat/message') return stubbed(u, o);
+        sent.push(JSON.parse(o.body));
+        return refuse
+          ? new Response(JSON.stringify({detail: 'Face 12 is not on the model. Click the face on the model again, then send.'}),
+                         {status: 422, headers: {'Content-Type': 'application/json'}})
+          : new Response(JSON.stringify({reply: 'Noted.', choices: []}), {status: 200, headers: {'Content-Type': 'application/json'}});
+      };
+      S.set.sessionId('__S__'); C.enableInput();
+      // a picture already uploaded (as shell/attach.js holds one)
+      chips.add('chat', {kind: 'image', label: '', value: 'a100000000000000',
+                         row: {id: 'a100000000000000', kind: 'image', name: 'bore.png'}});
+      const inp = document.getElementById('chat-input');
+      const look = (root) => [...root.querySelectorAll('.box-chip-face')].map(c => ({
+        label: c.querySelector('.box-chip-label').textContent, dot: getComputedStyle(c, '::before').width,
+        h: c.getBoundingClientRect().height}));
+      const under = () => look(document.querySelector('.box-chips[data-box="chat"]'));
+      const before = under();
+      inp.value = '2 mm here';
+      document.getElementById('send-btn').click();
+      await sleep(300);
+      const refused = {kinds: chips.items('chat').map(i => i.kind), words: inp.value, picked: window._vdbg.facepick.picked(),
+                       lit: window._vdbg.facepick.lit(), line: document.querySelector('#input-bar > .box-msg').textContent,
+                       bubbles: document.querySelectorAll('#cc .im.user').length};
+      refuse = false;
+      document.getElementById('send-btn').click();
+      await sleep(300);
+      const bubble = document.querySelector('#cc .im.user');
+      const done = {chips: chips.items('chat').length, lit: window._vdbg.facepick.lit(), picked: window._vdbg.facepick.picked(),
+                    inBubble: bubble ? look(bubble) : [], pic: !!(bubble && bubble.querySelector('.att-img'))};
+      // RELOADED: the stored turn carries both, and draws both
+      const turn = carried({role: 'user', content: '2 mm here', attachments: [{id: 'a100000000000000', kind: 'image', name: 'bore.png'}],
+                            faces: [{id: 'Face_12', label: 'Face 12 · round Ø15 mm'}]});
+      // A SAVED NOTE that carried a face shows the same chip in the notes list
+      Stage.brief({purpose: 'structural', engine: 'gmsh', user_notes: [{text: '2 mm here', attachments: [],
+                   faces: [{id: 'Face_12', label: 'Face 12 · round Ø15 mm'}]}]}, async () => {});
+      await sleep(0);
+      const note = document.querySelector('.rc-note');
+      return {before, refused, sent, done, turn, onNote: note ? look(note) : []};
+    })()""".replace("__S__", sid), timeout=60)
+    face = {"id": "Face_12", "label": "Face 12 · round Ø15 mm"}
+    # REFUSED: the face, the file and the words all stay; the face stays lit; the server's line under the box
+    r = out["refused"]
+    assert sorted(r["kinds"]) == ["face", "image"] and r["words"] == "2 mm here", out
+    assert r["picked"] == ["Face_12"] and r["lit"] == 1 and r["bubbles"] == 0, out
+    assert r["line"].startswith("Face 12 is not on the model."), out
+    # SENT: one message carries the file and the face; then the chips and the light go
+    assert out["sent"][-1]["attachments"] == ["a100000000000000"] and out["sent"][-1]["faces"] == [face], out
+    assert out["done"]["chips"] == 0 and out["done"]["lit"] == 0 and out["done"]["picked"] == [], out
+    assert out["done"]["pic"], out
+    assert out["turn"]["attachments"][0]["id"] == "a100000000000000" and out["turn"]["faces"] == [face], out
+    # ONE LOOK: the same chip, the same dot, the same height under the box, in the bubble and on a saved note
+    (u,), (b,), (n,) = out["before"], out["done"]["inBubble"], out["onNote"]
+    assert u["label"] == b["label"] == n["label"] == "Face 12 · round Ø15 mm", out
+    assert u["dot"] == b["dot"] == n["dot"] == "7px" and u["h"] == b["h"] == n["h"], out

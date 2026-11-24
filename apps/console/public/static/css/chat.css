@@ -129,6 +129,10 @@
 .box-chip-label{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .box-chip-x{border:0;background:none;color:var(--text-muted,inherit);cursor:pointer;padding:0 4px;font-size:11px;line-height:1}
 .box-chip-x:hover{color:var(--text-bright)}
+/* a picked face looks the same wherever it shows (under the box, in the user's bubble, on a saved note): the chip
+   with a small dot in the colour the face is lit in on the model */
+.box-chip-face::before{content:"";flex:none;width:7px;height:7px;border-radius:50%;background:var(--accent)}
+.box-chip.att-face{padding-right:8px}
 .box-chip.is-pending::after{content:"";position:absolute;left:0;bottom:0;height:2px;width:40%;background:var(--accent-text);
   animation:box-chip-go 1.1s linear infinite}
 @keyframes box-chip-go{from{transform:translateX(-100%)}to{transform:translateX(250%)}}
