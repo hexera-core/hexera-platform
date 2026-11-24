@@ -17,7 +17,9 @@ mismatch.
 from __future__ import annotations
 
 import argparse
+import subprocess
 import sys
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -25,6 +27,18 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import preflight as pf  # noqa: E402
 
 DEFAULT_REPO = "us-central1-docker.pkg.dev/hexera-dev/mesh/crsv4-mesh"
+#: A cold mesh-image build (OpenFOAM, ftetwild, mmg from source) takes hours; preflight's runner allows 120 s, which
+#: is right for a registry read and refused the first real build.
+BUILD_TIMEOUT_S = 4 * 3600.0
+
+
+def _long_runner(argv: Sequence[str]) -> pf.Result:
+    """The build and the push: same contract as preflight's runner, with the build's time limit."""
+    try:
+        done = subprocess.run(list(argv), capture_output=True, text=True, timeout=BUILD_TIMEOUT_S)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return pf.Result(124, "", f"{type(exc).__name__}: {exc}")
+    return pf.Result(done.returncode, done.stdout, done.stderr)
 
 
 class BuildRefused(RuntimeError):
@@ -39,7 +53,10 @@ class Built:
 
 
 def build_and_push(repo: str = DEFAULT_REPO, *, runner: pf.Runner | None = None) -> Built:
+    """`runner` (tests) replaces every command; by default reads use preflight's runner and the build and push use
+    `_long_runner`."""
     run = runner or pf.gcloud_runner()
+    heavy = runner or _long_runner
     if run(["git", "status", "--porcelain"]).out.strip():
         raise BuildRefused("the tree has uncommitted changes: commit them, an image built from them is from no commit")
     head = run(["git", "rev-parse", "HEAD"]).out.strip()
@@ -47,7 +64,7 @@ def build_and_push(repo: str = DEFAULT_REPO, *, runner: pf.Runner | None = None)
         raise BuildRefused(f"cannot read HEAD: {head!r}")
     tag = f"{repo}:{head[:12]}"
     for argv, what in ((["make", "mesh-image", f"MESH_IMAGE={tag}"], "build"), (["docker", "push", tag], "push")):
-        done = run(argv)
+        done = heavy(argv)
         if done.rc != 0:
             raise BuildRefused(f"{what} failed: {done.err.strip()[-300:]}")
     image = pf.resolve_to_digest(tag, run)
