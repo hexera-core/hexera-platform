@@ -1,0 +1,1 @@
+{"i": 112, "sha": "9c6e77a796", "v": "crs-v4.verdict.7", "status": "fail", "error_kind": "netgen_meshing_failed", "message": "NgException: Meshing failed! [read from every STEP root: Netgen's STEP reader keeps only the first]", "min_sicn": null, "elements": 0, "cause": null, "located": [], "s": 24.8}

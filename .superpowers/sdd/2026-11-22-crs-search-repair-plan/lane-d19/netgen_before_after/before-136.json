@@ -1,0 +1,1 @@
+{"i": 136, "sha": "782680a429", "v": "crs-v4.verdict.6", "status": "fail", "error_kind": "step_unreadable", "message": "STEP file holds no solids", "min_sicn": null, "elements": 0, "cause": null, "located": [], "s": 3.3}

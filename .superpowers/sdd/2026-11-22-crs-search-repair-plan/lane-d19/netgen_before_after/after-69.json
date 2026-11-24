@@ -1,0 +1,1 @@
+{"i": 69, "sha": "541e13051f", "v": "crs-v4.verdict.7", "status": "fail", "error_kind": "low_quality", "message": "minSICN 0.001255 is below 0.01 (1509 tets) [read from every STEP root: Netgen's STEP reader keeps only the first]", "min_sicn": 0.0012554709260183252, "elements": 1509, "cause": null, "located": [], "s": 0.7}

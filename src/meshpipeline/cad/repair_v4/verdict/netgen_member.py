@@ -21,6 +21,7 @@ import shutil
 import signal
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 from typing import Literal
 
@@ -115,6 +116,32 @@ def _measure(msh: str) -> dict:
         gmsh.finalize()
 
 
+def _read_no_solids(record: dict) -> bool:
+    """The script's own "no solids" read failure (`netgen_occ_script.main`), and nothing else."""
+    return (not record.get("ok") and record.get("stage") == "read" and record.get("solids") == 0)
+
+
+def _all_roots_brep(step: str, work: Path) -> str | None:
+    """Every root of `step`, as STEPControl transfers them (one compound when there are several), written as a BREP
+    Netgen reads whole. None when the file cannot be read this way either (the original verdict then stands)."""
+    try:
+        from OCP.BRepTools import BRepTools
+        from OCP.IFSelect import IFSelect_RetDone
+        from OCP.STEPControl import STEPControl_Reader
+
+        reader = STEPControl_Reader()
+        if reader.ReadFile(step) != IFSelect_RetDone:
+            return None
+        reader.TransferRoots()
+        shape = reader.OneShape()
+        if shape.IsNull():
+            return None
+        out = str(work / "all_roots.brep")
+        return out if BRepTools.Write_s(shape, out) else None
+    except Exception:  # noqa: BLE001 - the fallback is best effort; the first read's verdict stands
+        return None
+
+
 @register("mesh_netgen")
 def _mesh_netgen(payload: dict) -> dict:
     """payload: step, timeout_s, optional out_dir (keeps the .msh there). Returns a record; failures are in it. The only way out is the worker dying."""
@@ -123,7 +150,18 @@ def _mesh_netgen(payload: dict) -> dict:
     work.mkdir(parents=True, exist_ok=True)
     msh = str(work / "netgen_volume.msh")
     try:
+        started = time.monotonic()
         record = _run_netgen(str(payload["step"]), msh, float(payload["timeout_s"]))
+        if _read_no_solids(record):
+            # Netgen's STEP reader keeps only the FIRST root of the file (lane C12, measured on 0053_00530659: roots
+            # [SHELL, SOLID, SOLID, SOLID] -> Netgen sees one SHELL, 0 solids, while STEPControl and read_step_xcaf
+            # see all four). Read every root here, write them as one BREP compound, and give Netgen that. Only on
+            # this one failure, so every file Netgen already reads is meshed exactly as before.
+            brep = _all_roots_brep(str(payload["step"]), work)
+            remaining = float(payload["timeout_s"]) - (time.monotonic() - started)
+            if brep is not None and remaining > 1.0:
+                retry = _run_netgen(brep, msh, remaining)
+                record = {**retry, "read_via": "all_roots_brep", "first_root_read": record}
         if not record.get("ok"):
             return record
         if not Path(msh).is_file():
@@ -239,6 +277,8 @@ def member_result(
         status: Status, kind: str | None, message: str, *, sicn: float | None = None, elements: int = 0,
         cause: str | None = None, located: list | None = None,
     ) -> MemberResult:
+        if rec.get("read_via") == "all_roots_brep":
+            message += " [read from every STEP root: Netgen's STEP reader keeps only the first]"
         return MemberResult(
             name=name, status=status, error_kind=kind, message=message, located=located or [],
             min_sicn=sicn, elements=elements, seconds=seconds, cause=cause,
