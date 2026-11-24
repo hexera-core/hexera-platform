@@ -1250,3 +1250,28 @@ def test_the_op_budget_counts_the_chain_and_stops_the_search(sewing_ops: list[st
             budget=Budget(wall_s=1000, ops=3, model_calls=0, model_usd=0))
     stop = r.trace.of_kind("stop")[0]
     assert stop["reason"] == "ops" and stop["spent"]["ops"] == 4
+
+
+# --- D9: a declined round is answered with a re-prompt that carries the coded reason and the open sites ----------
+
+
+def test_after_a_declined_round_the_model_is_asked_again_with_the_coded_reason(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The real AIProposer, a scripted model: its only candidate is declined by the op, so the frontier empties.
+    Before D9 the search reported `exhausted` after that one turn; now the model is re-prompted on the best state,
+    and the turn carries A6's structured `reason` (status + code, not message text to parse) and the observation's
+    failing members and sites."""
+    from meshpipeline.cad.repair_v4.ops import OpDeclined
+
+    def declines(self: Any, pool: Any, ws: Workspace, targets: list[str], params: dict, *, timeout_s: float):
+        raise OpDeclined("no_change: nothing to change on this part")
+
+    monkeypatch.setattr(T18Op, "apply", declines)
+    model = FakeModel([reply(call_of("propose", {"candidates": [ai_cand(2)]})),
+                       reply(call_of("propose", {"candidates": [ai_cand(3)]}, "c2")), reply()])
+    result = run([proposer(model)], World())
+    assert len(model.calls) >= 2, "one model turn, then exhausted: the AI was not asked again"
+    assert result.trace.of_kind("reprompt")
+    body = json.loads(user_turns(model.calls[1])[-1].split("\n", 1)[1])
+    [prev] = body["previous_candidates"]
+    assert prev["status"] == "declined" and prev["reason"]["code"] == "no_change"
+    assert body["observation"]["sites"] and body["observation"]["sites"][0]["meshers_failing"] == ["gmsh"]
