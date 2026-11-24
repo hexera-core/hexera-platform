@@ -319,10 +319,19 @@ def _assemble(
 
     inconclusive = any(is_infrastructure_failure(r) for r in panel)
     if clipped:
-        # A clipped panel cannot certify: a member that did not finish in a clipped slot says nothing about the
-        # part, so the verdict is INCONCLUSIVE rather than a fail. `clean_of` already refuses an inconclusive
-        # verdict, and `score` raises on one, so nothing ranks or ships on the strength of a clock.
-        inconclusive = inconclusive or any(getattr(r, "status", "pass") != "pass" for r in panel)
+        # ONLY A MEMBER THE CLIPPED CLOCK ITSELF STOPPED is inconclusive. The first version of this made a clipped
+        # panel inconclusive on ANY non-pass member, which was both wrong and catastrophic:
+        #   * WRONG, against this module's own rule four functions up - "a mesher that overran its limit or
+        #     segfaulted on the geometry is the FILE failing the definition, not this" - so a member that FINISHED
+        #     inside its clipped slot and reported a geometric failure is a fail, not an absence of a verdict.
+        #   * CATASTROPHIC, because on the fast loop's own walls every input panel is clipped: 1200 s of file wall
+        #     against a (4 + 2) x 300 s = 1800 s worst case. The dev population is SELECTED for failing members,
+        #     so every dev file's input verdict became inconclusive, which raises InconclusiveVerdict, which
+        #     `_run_search` turns into SearchUnavailable - no verdict at all, on every file. Measured on two dev
+        #     parts that had run all day: 2 of 2 "the file was never measured".
+        # A timeout under a clipped limit is still not the part's fault, which is the original concern and all that
+        # survives of it: the clock I shortened is what stopped that member.
+        inconclusive = inconclusive or any(getattr(r, "status", "pass") == "timeout" for r in panel)
 
     clean = clean_of(tier=tier, inconclusive=inconclusive, valid=valid, panel=panel, faithful=faithful)
     return Verdict(valid, panel, faithful, clean, tier, inconclusive)

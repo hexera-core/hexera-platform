@@ -93,7 +93,7 @@ class _Cache:
         pass
 
 
-def _assemble_with(monkeypatch, *, left: float | None, statuses=("pass", "pass")):
+def _assemble_with(monkeypatch, *, left: float | None, statuses=("pass", "pass"), members: int = 2):
     from meshpipeline.cad.repair_v4.verdict import assemble
 
     seen: dict = {}
@@ -112,7 +112,8 @@ def _assemble_with(monkeypatch, *, left: float | None, statuses=("pass", "pass")
     monkeypatch.setattr(assemble, "lease_seconds", lambda n: 10.0)
     wall.set_file_deadline(None if left is None else time.monotonic() + left)
     cache = _Cache()
-    v = assemble.verdict(object(), "s.step", "o.step", members=[_member("a"), _member("b")],
+    panel_members = [_member(chr(ord("a") + i)) for i in range(members)]
+    v = assemble.verdict(object(), "s.step", "o.step", members=panel_members,
                          cache=cache, run_panel=runner)
     return v, cache, seen
 
@@ -133,11 +134,32 @@ def test_a_clipped_panel_is_never_handed_to_the_cache(monkeypatch) -> None:
     assert v.panel and len(v.panel) == 2
 
 
-def test_a_clipped_panel_with_a_failing_member_is_inconclusive_not_a_fail(monkeypatch) -> None:
-    """A member that ran out of a clipped slot says nothing about the part. `clean_of` refuses an inconclusive
-    verdict and `score` raises on one, so nothing ranks or ships on the strength of a clock."""
-    v, _cache, _seen = _assemble_with(monkeypatch, left=120.0, statuses=("pass", "fail"))
+def test_a_clipped_panel_whose_member_the_CLOCK_stopped_is_inconclusive(monkeypatch) -> None:
+    """A member the clipped clock itself stopped says nothing about the part: that is the surviving concern."""
+    v, _cache, _seen = _assemble_with(monkeypatch, left=120.0, statuses=("pass", "timeout"))
     assert v.inconclusive is True and v.clean is False
+
+
+def test_a_clipped_panel_whose_member_GENUINELY_FAILED_is_still_a_fail(monkeypatch) -> None:
+    """THE REGRESSION THIS FILE MISSED. The first version made a clipped panel inconclusive on ANY non-pass
+    member. That contradicts this module's own rule - a mesher that overran its limit or failed on the geometry is
+    the FILE failing the definition - and on the fast loop it meant NO file was ever measured."""
+    v, _cache, _seen = _assemble_with(monkeypatch, left=120.0, statuses=("pass", "fail"))
+    assert v.inconclusive is False, "a member that finished inside its clipped slot gave a real verdict"
+    assert v.clean is False        # still not clean: a member failed
+
+
+def test_the_fast_loop_s_OWN_WALLS_still_measure_a_failing_dev_file(monkeypatch) -> None:
+    """The arithmetic my earlier tests never used, and the reason this shipped. The fast loop gives 1200 s per
+    file; a 4-member panel's worst case is (4 + 2) x 300 = 1800 s, so EVERY input panel on that loop is clipped.
+    The dev population is selected for having failing members. If a clipped panel with a failing member is
+    inconclusive, every dev file's input verdict says nothing, `_run_search` raises SearchUnavailable, and the
+    wave spends its money for no rows - measured as 2 of 2 on real parts before this was narrowed."""
+    v, _cache, seen = _assemble_with(monkeypatch, left=1200.0,
+                                     statuses=("pass", "fail", "pass", "fail"),
+                                     members=4)
+    assert seen["timeout_s"] < 300.0, "1200 s of wall against an 1800 s worst case must clip"
+    assert v.inconclusive is False, "a clipped panel must still be able to MEASURE a failing dev file"
 
 
 def test_a_clipped_panel_that_all_passed_is_still_inconclusive_only_if_a_member_failed(monkeypatch) -> None:
