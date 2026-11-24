@@ -74,15 +74,19 @@ class PanelConfigError(ValueError):
     the key could change them and be served a stale verdict, with nothing to flag it."""
 
 
-def panel_config_hash(members: Sequence[Any], timeout_s: float, versions: dict[str, str]) -> str:
+def panel_config_hash(members: Sequence[Any], timeout_s: float, versions: dict[str, str],
+                      extra: dict | None = None) -> str:
     """Hash of every member's name and `config` (REQUIRED, JSON-able), the time limit and the mesher
-    library versions (`versions`, from `mesher_versions`). Order-independent over members."""
+    library versions (`versions`, from `mesher_versions`). Order-independent over members. `extra` (lane C16: the
+    full tier's doomed-panel cap) is hashed only when given, so a key without it is byte-identical to before."""
     entries = []
     for member in members:
         if getattr(member, "config", None) is None:  # missing, or None, which would key on nothing
             raise PanelConfigError(f"panel member {getattr(member, 'name', member)!r} has no `config`")
         entries.append(json.dumps([member.name, member.config], sort_keys=True))
-    payload = [sorted(entries), float(timeout_s), dict(sorted(versions.items()))]
+    payload: list[Any] = [sorted(entries), float(timeout_s), dict(sorted(versions.items()))]
+    if extra:
+        payload.append(dict(sorted(extra.items())))
     return hashlib.sha256(json.dumps(payload).encode()).hexdigest()[:16]
 
 

@@ -13,6 +13,7 @@ non-passes; they are never cached.
 from __future__ import annotations
 
 import importlib
+import inspect
 import logging
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
@@ -25,6 +26,10 @@ from meshpipeline.cad.repair_v4.worker_pool import WorkerPool
 
 logger = logging.getLogger(__name__)
 MEMBER_TIMEOUT_S = 300.0
+#: lane C16: the FULL panel's doomed cap (`panel.run_panel`). Once a member fails the file cannot be clean, so the rest
+#: get this budget and no retry. The slowest PASS on any of v4's 150 all-pass (clean) panels was 68.5 s (netgen), and
+#: an all-pass panel is never doomed, so this changes no clean verdict; it bounds what a doomed panel can spend.
+DOOMED_CAP_S = 60.0
 UNMEASURED_SICN = -1.0  # a mesher that produced no mesh has no SICN; it ranks below any real one
 
 
@@ -181,15 +186,19 @@ def _assemble(
     runner = run_panel or _panel_module().run_panel
     sha = config = None
     panel: list[Any] | None = None
+    # the full tier's doomed cap (lane C16), for a runner that takes it; a substituted runner (tests) runs as before
+    takes_cap = "doomed_cap_s" in inspect.signature(runner).parameters
+    cap = {"doomed_cap_s": DOOMED_CAP_S} if tier == "full" and takes_cap else {}
     if cache is not None:
         try:
             sha = file_sha256(step)
         except OSError as exc:  # a STEP that is not there is a broken export, not a file that failed
             raise CheckerUnavailable(f"cannot read {step!r} to key the verdict cache: {exc}") from exc
-        config = panel_config_hash(chosen, MEMBER_TIMEOUT_S, mesher_versions(pool))  # fails closed, loudly
+        config = panel_config_hash(chosen, MEMBER_TIMEOUT_S, mesher_versions(pool),  # fails closed, loudly
+                                   extra=cap or None)
         panel = _cache_get(cache, sha, config)
     if panel is None:
-        panel = list(runner(pool, step, chosen, timeout_s=MEMBER_TIMEOUT_S))
+        panel = list(runner(pool, step, chosen, timeout_s=MEMBER_TIMEOUT_S, **cap))
         if cache is not None and sha is not None and config is not None:
             _cache_put(cache, sha, config, panel)
 

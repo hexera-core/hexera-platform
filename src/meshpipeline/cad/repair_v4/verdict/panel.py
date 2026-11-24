@@ -15,6 +15,8 @@ that is not the file's - is not a mesher finding and raises `CheckerUnavailable`
 
 from __future__ import annotations
 
+import dataclasses
+
 import logging
 import signal
 from collections import Counter
@@ -265,15 +267,51 @@ def inconclusive_tally(results: Sequence[MemberResult]) -> dict[str, int]:
     return dict(Counter(f"{r.name}:{r.cause or 'unspecified'}" for r in results if is_inconclusive(r)))
 
 
+#: lane C16: `error_kind` of a member that ran AFTER the panel was already doomed (an earlier member did not pass, so
+#: the file cannot be clean) and did not finish inside the doomed cap. A fail, never inconclusive, and NOT a defect
+#: the mesher found: the triage reads it apart.
+CAPPED_KIND = "capped_after_doom"
+#: the order a DOOMED-CAPPED panel runs its members in: cheapest and most often failing first (v4's cache: gmsh_default
+#: 0.6 s median, fails 78%), so a doomed panel is known within about a second. Results keep the CALLER's order.
+DOOM_ORDER = ("gmsh_default", "gmsh_prod", "gmsh_alt", "netgen_occ")
+
+
 def run_panel(
-    pool: WorkerPool, step_path: str, members: Sequence[PanelMember], *, timeout_s: float
+    pool: WorkerPool, step_path: str, members: Sequence[PanelMember], *, timeout_s: float,
+    doomed_cap_s: float | None = None,
 ) -> list[MemberResult]:
-    """Run every member on `step_path`, in order, one result each. A member that times out or
+    """Run every member on `step_path`, one result each, in the caller's order. A member that times out or
     crashes is a result like any other; the next member runs on a replaced worker. The file gets ONE
     retry in all (`RetryBudget`), so its worst case is `(len(members) + 2) * timeout_s` of pool time.
-    Every result is checked (`check_result`), and each inconclusive one is logged with its cause."""
-    with retry_budget():
-        results = [check_result(member.run(pool, step_path, timeout_s=timeout_s)) for member in members]
+    Every result is checked (`check_result`), and each inconclusive one is logged with its cause.
+
+    `doomed_cap_s` (lane C16; the full tier): once a member does not PASS the panel cannot be clean, so every later
+    member runs with that budget and NO retry, and one that does not finish (or dies for pool reasons) is a fail of
+    kind CAPPED_KIND. An all-pass panel is never doomed, so no clean verdict can change; measured on v4's cache it cut
+    full-panel member time 34% before hangs (a doomed hang costs the cap, not 300 s + a 600 s retry), losing 2% of
+    passes, all on panels that were not clean."""
+    if doomed_cap_s is None:
+        with retry_budget():
+            results = [check_result(member.run(pool, step_path, timeout_s=timeout_s)) for member in members]
+    else:
+        rank = {n: i for i, n in enumerate(DOOM_ORDER)}
+        order = sorted(range(len(members)), key=lambda i: (rank.get(getattr(members[i], "name", ""), len(rank)), i))
+        got: dict[int, MemberResult] = {}
+        doomed = False
+        with retry_budget():
+            for i in order:
+                if not doomed:
+                    r = check_result(members[i].run(pool, step_path, timeout_s=timeout_s))
+                else:
+                    with retry_budget(0):
+                        r = check_result(members[i].run(pool, step_path, timeout_s=doomed_cap_s))
+                    if r.status in ("timeout", "crashed") and (is_inconclusive(r) or r.status == "timeout"):
+                        r = dataclasses.replace(r, status="fail", error_kind=CAPPED_KIND, cause=None,
+                                                message=f"the panel was already not clean; {r.status} inside the "
+                                                        f"{doomed_cap_s:g} s doomed cap ({r.message[:120]})")
+                got[i] = r
+                doomed = doomed or r.status != "pass"
+        results = [got[i] for i in range(len(members))]
     for r in results:
         if is_inconclusive(r):
             logger.warning(
