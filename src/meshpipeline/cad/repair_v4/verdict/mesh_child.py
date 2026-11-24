@@ -244,6 +244,44 @@ def box_mm(box: Sequence[float], scale: float) -> list[float]:
     return [lo for lo, _ in out] + [hi for _, hi in out]
 
 
+#: D28, measured on the 42 files gmsh_prod fails 'other' on: the 3D back-ends NAME where the surface mesh breaks, but
+#: only in their printed output and log, never in the exception ('HXT 3D mesh failed'). TetGen prints 'PLC Error: A
+#: segment and a facet intersect at point (x,y,z)' (18 occurrences on 22 files of the crossing-triangle kind) and gmsh
+#: logs 'N elements remain invalid in surface S' (14 files). Neither reached `located`, so the failure could not be
+#: aimed at (lane A11: edge_through_face 0 of 4 locatable).
+_TEXT_POINT = re.compile(r"intersect at point \(\s*([-+0-9.eE]+)\s*,\s*([-+0-9.eE]+)\s*,\s*([-+0-9.eE]+)\s*\)")
+_TEXT_SURFACE = re.compile(r"remain invalid in surface (\d+)")
+MAX_TEXT_LOCATIONS = 6
+
+
+def located_from_text(text: str, boxes: dict[int, tuple], scale: float, quantum: float) -> list[dict]:
+    """Locations gmsh's own words name: intersection POINTS (model units -> mm) and SURFACES whose 2D mesh is
+    invalid (their box, de-padded, and fingerprint, as `_located` names a surface). Each once, in order, capped."""
+    from meshpipeline.cad.repair.identity import fingerprint_of
+
+    found: list[dict] = []
+    for m in _TEXT_POINT.finditer(text or ""):
+        xyz = [float(m.group(i)) / scale for i in (1, 2, 3)]
+        item = {"entity": None, "xyz": xyz, "mesher_tag": "printed point"}
+        if item not in found:
+            found.append(item)
+        if len(found) >= MAX_TEXT_LOCATIONS:
+            break
+    for m in _TEXT_SURFACE.finditer(text or ""):
+        tag = int(m.group(1))
+        box = boxes.get(tag)
+        if box is None:
+            continue
+        mm = box_mm(box, scale)
+        entity = fingerprint_of("face", {"bbox_min": mm[:3], "bbox_max": mm[3:]}, quantum=quantum)
+        item = {"entity": entity or None, "xyz": None, "mesher_tag": f"surface {tag}", "box": mm}
+        if entity and all(x.get("mesher_tag") != item["mesher_tag"] for x in found):
+            found.append(item)
+        if len(found) >= 2 * MAX_TEXT_LOCATIONS:
+            break
+    return found
+
+
 def located_from_nodes(gmsh, groups: Sequence[Sequence[int]], boxes: dict[int, tuple], scale: float,
                        quantum: float, *, boundary_only: bool = False) -> list[dict]:
     """Locations from groups of mesh nodes (a failing triangle, a bad tet): the surfaces the nodes lie on, named by
@@ -403,6 +441,11 @@ def run_in_process(payload: dict) -> dict:
                 try:  # best effort, as for a low-quality mesh below
                     where += [x for x in located_from_nodes(gmsh, triangles_in(printed["text"]), boxes, scale,
                                                             quantum) if x not in where]
+                except Exception:  # noqa: BLE001
+                    pass
+                try:  # D28: the points and surfaces gmsh NAMES in its printed output and its log
+                    text = "\n".join([printed.get("text", ""), *gmsh.logger.get()])
+                    where += [x for x in located_from_text(text, boxes, scale, quantum) if x not in where]
                 except Exception:  # noqa: BLE001
                     pass
             return _answer("fail", failed_kind, failure.message, where, algorithms=_read_algorithms(gmsh))
