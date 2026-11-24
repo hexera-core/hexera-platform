@@ -169,6 +169,22 @@ class ArmRow:
     loss: dict | None = None
     #: search arms: states the search refused as best for the same reason, falling back to its next-best state
     refused_catastrophic: int | None = None
+    #: B24 (`search_seq`): the arm's own numbers. The HEADLINE is `full_checks` - full 4-mesher panels per file -
+    #: against `local_checks`; the arm's whole claim is that ratio. `defects_*` are by defect code, and
+    #: `skipped_why` separates "the local check could not be had" (infrastructure) from a measured failure.
+    #: None on every other arm's rows.
+    full_checks: int | None = None
+    local_checks: int | None = None
+    rounds: int | None = None
+    ai_picks: int | None = None
+    defects_found: dict | None = None
+    defects_fixed: dict | None = None
+    defects_skipped: dict | None = None
+    skipped_why: dict | None = None
+    overlap_pairs_fixed: int | None = None
+    overlap_pairs_skipped: int | None = None
+    local_s: float | None = None
+    full_s: float | None = None
 
     @property
     def clean(self) -> bool:
@@ -536,6 +552,37 @@ def _rate(n: int, d: int) -> float | None:
     return n / d if d else None
 
 
+def _seq_block(rows: list[ArmRow]) -> dict | None:
+    """`search_seq`'s own numbers (B24), summed over the arm's rows: the full panels it paid per file, the local
+    checks it paid instead, and what it did with the defects it found. None when no row carries them, which is
+    every other arm."""
+    seq = [r for r in rows if r.full_checks is not None]
+    if not seq:
+        return None
+    def total(field: str) -> dict[str, int]:
+        out: Counter = Counter()
+        for r in seq:
+            out.update(getattr(r, field) or {})
+        return dict(out)
+    full = sum(int(r.full_checks or 0) for r in seq)
+    local = sum(int(r.local_checks or 0) for r in seq)
+    return {
+        "rows": len(seq),
+        # THE HEADLINE (owner, 2026-11-24): full 4-mesher checks per file
+        "full_checks_per_file": round(full / len(seq), 2),
+        "full_checks": full, "local_checks": local,
+        "local_per_full": (round(local / full, 2) if full else None),
+        "rounds_per_file": round(sum(int(r.rounds or 0) for r in seq) / len(seq), 2),
+        "seconds": {"full": round(sum(float(r.full_s or 0.0) for r in seq), 1),
+                    "local": round(sum(float(r.local_s or 0.0) for r in seq), 1)},
+        "defects": {"found": total("defects_found"), "fixed": total("defects_fixed"),
+                    "skipped": total("defects_skipped"), "skipped_why": total("skipped_why")},
+        "overlap_pairs": {"fixed": sum(int(r.overlap_pairs_fixed or 0) for r in seq),
+                          "skipped": sum(int(r.overlap_pairs_skipped or 0) for r in seq)},
+        "ai_picks": sum(int(r.ai_picks or 0) for r in seq),
+    }
+
+
 def _arm_block(arm: str, rows: list[ArmRow], kinds: Mapping[str, str], n_files: int,
                stratum_rows: Sequence[ArmRow] = ()) -> dict[str, Any]:
     """One arm's numbers over ITS OWN conclusive files. When the arm is NOT MEASURED, withhold means withhold:
@@ -592,6 +639,8 @@ def _arm_block(arm: str, rows: list[ArmRow], kinds: Mapping[str, str], n_files: 
             "rows_with_a_measurement": len(loss_rows),
             "rows_not_measured": sum(1 for r in loss_rows if not r.loss.get("measured")),
         },
+        # B24: the sequential arm's headline, per FILE, beside what it cost. None for an arm that carries none.
+        "sequential": _seq_block(rows),
         "stopped_on_wall": {"conclusive_rows": len(walled), "clean": sum(r.clean for r in walled),
                             "share_of_conclusive": _rate(len(walled), len(conclusive)),
                             "clean_rate_without_them": only(_rate(sum(r.clean for r in conclusive
@@ -1031,6 +1080,14 @@ def render_text(rep: dict[str, Any]) -> str:
                             f"({w['clean']} clean; clean rate without them "
                             f"{_pct(w.get('clean_rate_without_them'))})"
                             for a, w in walled.items() if w.get("conclusive_rows"))]
+    seqs = {a: b.get("sequential") for a, b in rep["arms"].items() if b.get("sequential")}
+    if seqs:
+        out += ["", "SEQUENTIAL arm (B24: one defect, one repair, local checks, one full panel per round). The "
+                    "headline is FULL CHECKS PER FILE: "
+                + "; ".join(f"{a} {s['full_checks_per_file']} full/file over {s['rows']} rows "
+                            f"({s['local_checks']} local checks, {s['local_per_full']} per full panel; "
+                            f"{s['rounds_per_file']} rounds/file; {s['seconds']['full']:.0f} s full vs "
+                            f"{s['seconds']['local']:.0f} s local)" for a, s in seqs.items())]
     lost = {a: b.get("catastrophic_loss") or {} for a, b in rep["arms"].items()}
     if any(w.get("files_refused") or w.get("states_refused") for w in lost.values()):
         out += ["", "CATASTROPHIC LOSS refused (B22's rule, owner ruling 2026-11-24: an output keeping under 10% of "

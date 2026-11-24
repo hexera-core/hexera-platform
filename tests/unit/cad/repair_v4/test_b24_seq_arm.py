@@ -199,10 +199,12 @@ class _WS:
 
 
 @contextmanager
-def _patched(apply: Any) -> Any:
-    """`seq.apply_repair` replaced: the loop's rules are what these tests are about, not the op layer."""
+def _patched(apply: Any, relocate: Any = None) -> Any:
+    """`seq.apply_repair` replaced (the loop's rules are what these tests are about, not the op layer), and
+    `relocate` too: carrying ids across ops is lane C's, and these fakes have no real workspace to carry."""
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(seq, "apply_repair", apply)
+        mp.setattr(seq, "relocate", relocate or (lambda pool, before, after, defect: defect))
         yield mp
 
 
@@ -363,7 +365,7 @@ def test_every_step_is_one_readable_line_defect_then_repair_then_local_result() 
         _judge, out = _run(verify=lambda *a, **k: _local(seconds=1.2))
     [line] = out.rounds[0].steps
     assert line == ("edge_through_face on F1 (narrowest face F1 0.4 mm, member gmsh_default) -> "
-                    "defeature [table: the top rule for 'edge_through_face'] -> gone (1.2 s)")
+                    "defeature{source=located} [table: the top rule for 'edge_through_face'] -> gone (1.2 s)")
     assert out.lines()[0] == "round 1:"
     assert out.lines()[-1].startswith("  full check: clean, score (1, 4, 0.0, 0.0, 0), improved")
 
@@ -374,3 +376,66 @@ def test_the_line_says_WHICH_pair_of_a_cluster_and_its_own_measurement() -> None
     assert out.rounds[0].steps[0].startswith("body_overlap on B1+B2 (clash 0.4 mm) -> conformalise{")
     assert out.rounds[0].steps[1].startswith("body_overlap on B2+B3 (clash 0.1 mm) -> conformalise{")
     assert "fuzzy_mm=0.11" in out.rounds[0].steps[1]       # the pair's OWN clash, not the cluster's worst
+
+
+def test_an_INCONCLUSIVE_verdict_stops_the_arm_and_says_so_rather_than_crashing() -> None:
+    """Found by the first end-to-end run on a real part: this host has no netgen, so the panel came back
+    inconclusive and `judge.score` refused it (by design) - and the arm crashed. An inconclusive verdict says
+    nothing about the file, so it can neither rank a state nor end a round: the arm stops and the row counts it."""
+    class _Inconclusive(_Judge):
+        def score(self, v: Any) -> tuple:                      # type: ignore[override]
+            from meshpipeline.cad.repair_v4.verdict.assemble import InconclusiveVerdict
+            raise InconclusiveVerdict("a panel member failed for pool reasons")
+
+    judge = _Inconclusive()
+    start = _WS(0)
+    out = seq.repair_sequentially(None, start, "o.step", judge=judge,
+                                  sites_of=lambda pool, ws, v: [_mesher_site()],
+                                  start_verdict=judge.full(None, start, "o.step"))
+    assert out.best is start and out.rounds == []
+    assert out.counters.inconclusive_verdicts == 1
+    assert out.counters.skipped_why["start_verdict_inconclusive"] == 1
+
+
+def test_a_defect_an_earlier_repair_took_WITH_IT_is_resolved_not_skipped() -> None:
+    """Ops rename faces, so a defect diagnosed earlier in the round may no longer be locatable. The design's
+    reading: re-check it, and if nothing of it is left, it was resolved by the earlier repair - not a failure
+    and not a repair of its own. (The first end-to-end run hit the other half of this: the NEXT defect was
+    refused for naming an id `remove_small` had replaced.)"""
+    site = _site("S1", kind="invalid", entities=["F1"],
+                 failures=[{"mesher": "gmsh_default", "error_kind": "edge_through_face"},
+                           {"mesher": "gmsh_prod", "error_kind": "no_volume"}],
+                 graph={"nodes": [{"id": "F1", "area": 4.4, "min_width": 0.4}], "mesher_faces": ["F1"]})
+    judge = _Judge()
+    start = _WS(0)
+    with _patched(_bump(2), relocate=lambda pool, before, after, defect: None):
+        out = seq.repair_sequentially(None, start, "o.step", judge=judge, sites_of=lambda pool, ws, v: [site],
+                                      start_verdict=judge.full(None, start, "o.step"), max_rounds=1,
+                                      verify=lambda *a, **k: _local())
+    # the first defect was repaired; the second could not be located afterwards and is RESOLVED, not skipped
+    assert out.counters.fixed == {"edge_through_face": 1}
+    assert out.counters.resolved_by_earlier_repair == 1
+    assert out.counters.skipped == {}
+    assert "resolved_by_earlier_repair" in out.rounds[0].steps[-1]
+
+
+def test_a_parameter_is_never_derived_from_an_id_the_workspace_no_longer_has() -> None:
+    """The second end-to-end run's remaining bug: a measurement taken on the diagnosis state still named F11
+    after `remove_small` replaced it, and `split_by_proximity` was refused for naming it. Derived parameters are
+    filtered to the LIVE ids, and a defect with nothing live left is skipped rather than guessed at."""
+    defect = _defect("low_quality", entities=("F11", "F12"),
+                     measurement={"diagonal_mm": 250.0, "clash_by_pair": {"F11|F12": 0.4}})
+    # with both ids live the pairs are handed over as measured
+    _t, params = seq.params_for("split_by_proximity", defect, live={"F11", "F12"})
+    assert params["face_pairs"] == [["F11", "F12"]]
+    # with F11 replaced, the pair is dropped - and with nothing left there is no repair, not a guess
+    with pytest.raises(seq.NoParameters, match="still live"):
+        seq.params_for("split_by_proximity", defect, live={"F12", "F16"})
+    with pytest.raises(seq.NoParameters, match="live any more"):
+        seq.params_for("defeature", defect, live={"F16"})
+
+
+def test_a_face_op_on_a_defect_that_re_located_onto_a_BODY_says_so() -> None:
+    defect = _defect("low_quality", entities=("B1",))
+    with pytest.raises(seq.NoParameters, match="re-located onto B1"):
+        seq.params_for("reapproximate", defect, live={"B1"})

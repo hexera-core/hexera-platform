@@ -54,7 +54,10 @@ def test_arms_share_budget_except_model() -> None:
     assert shared == {(600.0, 60)}
     assert {n for n, a in ev.ARMS.items() if a.budget.model_usd} == {"search_ai"}
     assert ev.ARMS["search_ai"].budget.model_usd == 1.00
-    assert set(ev.ARMS) == {"input_only", "staged", "search_det", "search_ai", "v3_meshability_pass_ai"}
+    # B24 adds search_seq on the SHARED budget: the arms are compared on method, never on budget, and it is
+    # det-only for now (no model ceiling), so both assertions above still hold for it.
+    assert set(ev.ARMS) == {"input_only", "staged", "search_det", "search_ai", "search_seq",
+                            "v3_meshability_pass_ai"}
 
 
 def test_aliases_resolve_to_one_arm_not_a_second() -> None:

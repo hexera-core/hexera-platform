@@ -28,14 +28,16 @@ it is there.
 from __future__ import annotations
 
 import collections
+import dataclasses
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-from meshpipeline.cad.repair_v4.local_verify import Defect, LocalResult, verify_local
+from meshpipeline.cad.repair_v4.local_verify import Defect, LocalResult, relocate, verify_local
 from meshpipeline.cad.repair_v4.ops import REGISTRY, OpDeclined, OpFailed, validate_call
 from meshpipeline.cad.repair_v4.types import Site, StableId
+from meshpipeline.cad.repair_v4.verdict.assemble import InconclusiveVerdict
 from meshpipeline.cad.repair_v4.verdict.valid import CheckerUnavailable
 from meshpipeline.cad.repair_v4.workspace import Diff, UnknownTarget, Workspace
 
@@ -329,9 +331,26 @@ def rule_table_from_winners(rows: Sequence[dict], *, max_repairs: int = 5) -> di
 #: face it was aimed at. 1.05 is the margin the det sweep's aimed row already uses; this is that rule, applied to
 #: a measurement rather than to a ladder rung.
 REMOVE_SMALL_MARGIN = 1.05
+#: at most this many measured face pairs are handed to `split_by_proximity` (its own schema takes a list)
+MAX_PROXIMITY_PAIRS = 8
 #: a clash or gap is closed by a fuzzy value at least the measured distance; 1.1 covers the measurement's own
 #: rounding (the sites round `dist_mm` to 4 decimals) without turning it into a rung.
 FUZZY_MARGIN = 1.1
+
+
+#: THRESHOLDS NO MEASUREMENT GIVES. Three ops need a required parameter that is not a property of the defect:
+#: `split_angle`'s dihedral limit, `reapproximate`'s degree and tolerance, `split_continuity`'s order. The design
+#: says parameters come from the measurement and not from a ladder - so these are ONE value each, marked in the
+#: trace as a DEFAULT rather than passed off as measured, and taken from the most frequent value among lane D's
+#: oracle winners where that value is unambiguous (`max_deg` 60 and `order` 2 are; the oracle's `params` records
+#: do not align op-for-op with its `path`, so nothing finer is read out of them).
+DEFAULT_PARAMS: dict[str, dict[str, Any]] = {
+    "split_angle": {"max_deg": 60},
+    "split_continuity": {"order": 2},
+    "reapproximate": {"max_degree": 9, "tol_mm": 0.025},
+}
+#: the ops whose parameters are a default rather than a measurement, for the trace's own honesty
+DEFAULTED: frozenset[str] = frozenset(DEFAULT_PARAMS)
 
 
 class NoParameters(ValueError):
@@ -339,8 +358,8 @@ class NoParameters(ValueError):
     arm cannot derive is a ladder with one rung, and the design says parameters come from the measurement."""
 
 
-def params_for(op: str, defect: Defect, *, pair: tuple[StableId, StableId] | None = None
-               ) -> tuple[list[StableId], dict[str, Any]]:
+def params_for(op: str, defect: Defect, *, pair: tuple[StableId, StableId] | None = None,
+               live: set[StableId] | None = None) -> tuple[list[StableId], dict[str, Any]]:
     """(targets, params) for `op` on `defect`, derived from the defect's own measurement. Raises `NoParameters`
     when the measurement does not carry what the op needs.
 
@@ -348,8 +367,16 @@ def params_for(op: str, defect: Defect, *, pair: tuple[StableId, StableId] | Non
     is THAT pair's measured clash - not the cluster's worst, which would over-cut the mild pairs."""
     m = defect.measurement
     entities = list(pair) if pair else list(defect.entities)
+    # ONLY IDS THAT ARE STILL LIVE. An earlier repair in this round renames faces; lane C's `relocate` carries
+    # the defect, but a measurement this module took on the old state still names the old ids, and an op refuses
+    # them ("replaced by op 'remove_small' (now: F16); use the new ids"). Derived parameters are therefore
+    # filtered to the ids the workspace still has, and a defect with nothing live left is not guessed at.
+    if live is not None:
+        entities = [e for e in entities if e in live]
     faces = [e for e in entities if str(e)[:1] == "F"]
     solids = [e for e in entities if str(e)[:1] in ("S", "B")]   # lane C names bodies B..; layer 1 names them S..
+    if not entities and (defect.entities or pair):
+        raise NoParameters("none of the defect's entities are live any more")
 
     if op.startswith("run_stage:"):
         return [], {"stage": op.split(":", 1)[1], "params": {}}
@@ -372,13 +399,31 @@ def params_for(op: str, defect: Defect, *, pair: tuple[StableId, StableId] | Non
             return sorted(set(bodies)), {"fuzzy_mm": fuzzy}
         keep = sorted(set(bodies))[0]
         return sorted(set(bodies)), {"mode": f"cut_by:{keep}", "fuzzy_mm": fuzzy}
+    if op == "split_by_proximity":
+        # a WHOLE-PART op (it takes no targets): the pairs and the ratio are the site's own measured clashes
+        pairs = [list(k.split("|")) for k in (m.get("clash_by_pair") or {})]
+        if live is not None:
+            pairs = [p for p in pairs if all(e in live for e in p)]
+        if not pairs:
+            raise NoParameters("split_by_proximity needs measured face pairs that are still live, and has none")
+        diag, worst = m.get("diagonal_mm"), max((m.get("clash_by_pair") or {}).values(), default=None)
+        if not diag or worst is None:
+            raise NoParameters("split_by_proximity needs a measured gap and the part's diagonal")
+        return [], {"face_pairs": [p for p in pairs if len(p) == 2][:MAX_PROXIMITY_PAIRS],
+                    "target_ratio": min(0.25, max(0.06, float(worst) / float(diag)))}
     if op in ("defeature", "unify_same_domain", "rebuild_face", "reapproximate", "split_angle",
-              "split_by_proximity", "split_continuity", "fill_loop"):
+              "split_continuity", "fill_loop"):
         if not faces:
-            raise NoParameters(f"{op} needs the faces the defect is on, and none were located")
+            # a mesher defect that re-located onto a BODY (its faces are gone) has no face to aim a face op at
+            where = "re-located onto " + "+".join(solids) if solids else "none were located"
+            raise NoParameters(f"{op} needs the faces the defect is on, and {where}")
         if op == "unify_same_domain":
             return faces, {"scope": "targets", "keep": []}
-        return faces, {}
+        if op == "defeature":
+            # `source: located` is the oracle's own winning parameter for defeature, on 16 distinct files: remove
+            # the features at the faces the failure was LOCATED on, rather than whatever the op would find alone
+            return faces, {"source": "located"}
+        return faces, dict(DEFAULT_PARAMS.get(op, {}))
     raise NoParameters(f"no parameter rule for {op!r}")
 
 
@@ -456,6 +501,12 @@ class SeqCounters:
     pairs_skipped: int = 0
     #: how many repairs this round kept (reset by the loop at the end of each round)
     kept_in_round: int = 0
+    #: defects that could no longer be located after an earlier repair in the same round, and were gone when
+    #: re-checked: not a failure and not a repair of their own (seq-arm-design.md, "entity tracking")
+    resolved_by_earlier_repair: int = 0
+    #: full verdicts that came back INCONCLUSIVE (a panel member failed for pool reasons). They say nothing about
+    #: the file, so they can neither rank a state nor end a round's work: the arm stops and the row says why.
+    inconclusive_verdicts: int = 0
     found: collections.Counter[str] = field(default_factory=collections.Counter)
     fixed: collections.Counter[str] = field(default_factory=collections.Counter)
     skipped: collections.Counter[str] = field(default_factory=collections.Counter)
@@ -470,6 +521,8 @@ class SeqCounters:
                 "ai_picks": self.ai_picks, "defects_found": dict(self.found), "defects_fixed": dict(self.fixed),
                 "defects_skipped": dict(self.skipped), "skipped_why": dict(self.skipped_why),
                 "overlap_pairs_fixed": self.pairs_fixed, "overlap_pairs_skipped": self.pairs_skipped,
+                "inconclusive_verdicts": self.inconclusive_verdicts,
+                "resolved_by_earlier_repair": self.resolved_by_earlier_repair,
                 "local_s": round(self.local_s, 1), "full_s": round(self.full_s, 1)}
 
 
@@ -535,8 +588,18 @@ def apply_repair(pool: Any, ws: Workspace, repair: Repair, defect: Defect, *, ti
     between the steps would throw away exactly those. The pair is kept or reverted as a unit.
     """
     current, diffs, touched, used = ws, [], [], []
-    for op in repair:
-        targets, params = params_for(op, defect, pair=pair)
+    here = defect
+    for step_i, op in enumerate(repair):
+        if step_i:
+            # THE SECOND STEP'S TARGETS ARE NOT THE FIRST'S. Ops rename faces: the first end-to-end run had
+            # `remove_small` replace F3 with F16 and then `split_angle` refused F3 ("use the new ids"), which
+            # killed every two-step recipe on that file. Lane C's `relocate` carries the defect's entities (and
+            # pairs) through the ops' own history, which is exactly the question it exists to answer.
+            moved = relocate(pool, ws, current, here)
+            if moved is None:
+                raise NoParameters(f"the defect could not be carried to {op!r}: nothing of it is left to aim at")
+            here = moved
+        targets, params = params_for(op, here, pair=pair, live=set(current.ids))
         used.append(params)
         if op.startswith("run_stage:"):
             if run_stage is None:
@@ -605,8 +668,25 @@ def repair_sequentially(
     verdict = start_verdict if start_verdict is not None else judge.full(pool, start, original)
     if start_verdict is None:
         counters.full_checks += 1
-    best_score = judge.score(verdict)
     t0 = clock()
+
+    def scored(v: Any) -> Any | None:
+        """`judge.score(v)`, or None when the verdict is INCONCLUSIVE.
+
+        An inconclusive verdict is a panel member failing for POOL reasons: it says nothing about the file, so
+        `score` refuses it by design (assemble.score). Found by the first end-to-end run on a real part, where
+        this host has no netgen interpreter: the arm crashed instead of saying so. It cannot rank a state it
+        could not measure, so it stops and the row carries the count."""
+        try:
+            return judge.score(v)
+        except InconclusiveVerdict:
+            counters.inconclusive_verdicts += 1
+            return None
+
+    best_score = scored(verdict)
+    if best_score is None:
+        counters.skipped_why["start_verdict_inconclusive"] += 1
+        return SeqOutcome(best=best, verdict=verdict, counters=counters, rounds=rounds)
 
     def out_of_wall() -> bool:
         return wall_s is not None and (clock() - t0) >= wall_s
@@ -625,16 +705,30 @@ def repair_sequentially(
         this = SeqRound(index=index)
         rounds.append(this)
         counters.rounds = index
-        defects = defects_of(verdict, sites_of(pool, best, verdict))
+        defects = _with_diagonal(pool, best, defects_of(verdict, sites_of(pool, best, verdict)))
         for d in defects:
             counters.found[d.code] += 1
         current = best
-        for defect in defects:
+        diagnosed_on = best      # every defect in this list was diagnosed on THIS state
+        for listed in defects:
             if out_of_wall():
-                counters.skipped[defect.code] += 1
+                counters.skipped[listed.code] += 1
                 counters.skipped_why["wall"] += 1
-                into(this)(f"{defect_line(defect)} -> not attempted [the file's wall]")
+                into(this)(f"{defect_line(listed)} -> not attempted [the file's wall]")
                 continue
+            # RE-LOCATE BEFORE REPAIRING (seq-arm-design.md). An earlier repair in this round renamed faces, so
+            # the ids this defect was diagnosed with can be stale: the first end-to-end run had `remove_small`
+            # replace F3 with F16 and the NEXT defect was refused for naming F3. Lane C's `relocate` carries it.
+            defect = listed
+            if current is not diagnosed_on:
+                moved = relocate(pool, diagnosed_on, current, listed)
+                if moved is None:
+                    # nothing of it is left to aim at. The design's reading: an earlier repair took it with it.
+                    counters.resolved_by_earlier_repair += 1
+                    into(this)(f"{defect_line(listed)} -> resolved_by_earlier_repair "
+                               f"[nothing of it is left to locate]")
+                    continue
+                defect = moved
             if defect.code == "body_overlap" and defect.pairs:
                 current = _repair_cluster(pool, current, defect, counters=counters, table=table, ai_pick=ai_pick,
                                           verify=verify, run_stage=run_stage, op_timeout_s=op_timeout_s,
@@ -652,7 +746,11 @@ def repair_sequentially(
         new_verdict = judge.full(pool, current, original)
         counters.full_checks += 1
         counters.full_s += clock() - full_t
-        new_score = judge.score(new_verdict)
+        new_score = scored(new_verdict)
+        if new_score is None:
+            # the round's work cannot be judged: the better state stands and the row says the check was lost
+            this.full_check = "inconclusive: a panel member failed for pool reasons"
+            break
         improved = new_score > best_score
         this.full_check = (f"{'clean' if getattr(new_verdict, 'clean', False) else 'not clean'}, "
                            f"score {tuple(new_score)}, {'improved' if improved else 'no better'} "
@@ -681,6 +779,27 @@ class SeqOutcome:
             out.extend(f"  {line}" for line in r.steps)
             out.append(f"  full check: {r.full_check}")
         return out
+
+
+def _with_diagonal(pool: Any, ws: Workspace, defects: list[Defect]) -> list[Defect]:
+    """Every defect's measurement carries the PART's diagonal, measured once per round.
+
+    Only `open` sites carry `diagonal_mm` of their own (sites.py), so a mesher defect had none and
+    `split_by_proximity` - whose target ratio is the measured gap over the part - could not be parameterised at
+    all. The diagonal is a property of the part, not of the site, so it is measured here and shared. A part whose
+    diagonal cannot be measured leaves the defects exactly as they were: the op is then skipped, not guessed."""
+    if not defects or all((d.measurement or {}).get("diagonal_mm") for d in defects):
+        return defects
+    try:
+        from meshpipeline.cad.repair_v4.stages import diagonal_mm
+        diag = float(diagonal_mm(pool, ws))
+    except Exception:  # noqa: BLE001 - an unmeasurable diagonal is not a verdict and never ends the round
+        return defects
+    if not diag or diag <= 0.0:
+        return defects
+    return [d if (d.measurement or {}).get("diagonal_mm")
+            else dataclasses.replace(d, measurement={**(d.measurement or {}), "diagonal_mm": diag})
+            for d in defects]
 
 
 def _alternatives(pick: Pick) -> list[Repair]:
@@ -791,3 +910,38 @@ def _repair_cluster(pool: Any, ws: Workspace, defect: Defect, *, counters: SeqCo
         counters.skipped[defect.code] += 1
         step(f"{defect_line(defect)} -> cluster partly repaired: {gone} of {len(defect.pairs)} pairs")
     return current
+
+
+# --- the staged macro, as this arm reaches it -----------------------------------------------------------------
+
+
+def stage_runner() -> Callable[[Any, Workspace, str, dict, float], _Applied]:
+    """`run_stage:<stage>` for this arm: one stage of the staged healer, as a TRANSACTION, which is the same
+    `stages.run_stage` the search's macro uses (search._stage_outcome) - so the two arms reach the same code and
+    a chain the oracle won with is reachable here too.
+
+    A stage that was rolled back, skipped, or could not be judged is an `OpDeclined`: for this arm those are all
+    "the repair did not apply", and the next alternative is tried. The stage's own words are kept, because
+    arms.py and triage.py group on them.
+    """
+    from meshpipeline.cad.repair_v4.stages import run_stage as _run_stage
+
+    def run(pool: Any, ws: Workspace, stage: str, params: dict, timeout_s: float) -> _Applied:
+        base = ws.fork()
+        result = _run_stage(pool, base, stage, {"timeout_s": timeout_s, **(params or {})})
+        if stage in result.inconclusive:
+            raise CheckerUnavailable(f"stage {stage!r} could not be judged (checker unavailable)")
+        if stage in result.rolled_back:
+            raise OpDeclined(f"stage {stage!r} was rolled back: it lowered the cheap score")
+        if stage in result.skipped:
+            raise OpDeclined(f"stage {stage!r} changed nothing: {result.skipped[stage]}")
+        diffs = list(result.ws.history[len(base.history):])
+        if result.ws is base or not diffs:
+            raise OpDeclined(f"stage {stage!r} changed nothing")
+        touched: list[StableId] = []
+        for d in diffs:
+            touched.extend(d.generated or {})
+            touched.extend(d.modified or {})
+        return _Applied(result.ws, diffs, tuple(dict.fromkeys(touched)), [{"stage": stage}])
+
+    return run

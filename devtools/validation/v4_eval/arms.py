@@ -253,6 +253,15 @@ def run_file(arm_name: str, entry: Any, source: str, *, pool: Any, engine: Engin
                                             max_turns=max_turns, job_id=job_id, entry=entry, workers=workers,
                                             clock=clock, full=full, throttle=throttle, recipes=recipes,
                                             workdir=workdir, phases=ph)
+        elif arm_name == "search_seq":
+            # B24: the SAME start as the search arms (the staged healer's confirmed output), so the comparison is
+            # of method - frontier against one-defect-at-a-time - and not of where the two began. The phases are
+            # A14's, named as the other arms name them, so one table compares the arms phase by phase.
+            staged = ph.run("staged_healer", _run_staged, engine, pool, ws, v_in)
+            ph.run("confirm_staged", confirm_staged, pool, ws, staged, full=lambda w: full(pool, w, source),
+                   input_verdict=v_in)
+            out_v, extra = ph.run("search", _seq_arm, pool=pool, ws=ws, start=staged.ws, source=source,
+                                  judge=judge, v_in=v_in, budget=budget, clock=clock, full=full, workdir=workdir)
         else:
             raise ValueError(f"arm {arm_name!r} is not dispatchable here")
     except (CheckerUnavailable, InconclusiveVerdict, EngineUnavailable) as exc:
@@ -337,6 +346,49 @@ def _search_arm(arm_name: str, *, pool: Any, ws: Any, start: Any, source: str, j
     if recipes is not None and bool(getattr(out_v, "clean", False)) and not fields["_unmeasured"]:
         recipes.learn(result, file_sha256=entry.sha256, diagonal_mm=_diagonal_or_none(pool, start))
     return out_v, fields, usd
+
+
+def _seq_arm(*, pool: Any, ws: Any, start: Any, source: str, judge: Any, v_in: Any, budget: Any, clock: Any,
+             full: Any, workdir: str | None = None) -> tuple[Any, dict]:
+    """(output verdict, the row's own fields) for `search_seq` (B24).
+
+    The arm's claim is a RATIO - local checks against full panels - so the row carries both, and the headline
+    number is `full_checks`. The delivery gate is the one every arm meets, B22's catastrophic-loss refusal
+    included; a state that keeps under a tenth of the part is refused here exactly as it is in the search arms.
+    """
+    from types import SimpleNamespace
+
+    from meshpipeline.cad.repair_v4 import seq as Q
+    from meshpipeline.cad.repair_v4.loss import check_loss
+    from meshpipeline.cad.repair_v4.search import deliverable
+    from meshpipeline.cad.repair_v4.trace import Trace
+
+    trace = Trace()
+    trace.record("start", arm="search_seq")
+    outcome = Q.repair_sequentially(pool, start, source, judge=judge, sites_of=judge.sites,
+                                    run_stage=Q.stage_runner(), wall_s=budget.wall_s, clock=clock, trace=trace)
+    if workdir is not None:
+        write_trace(trace, workdir)
+    # the delivery gate, as the staged arm meets it: `changed` is measured against the INPUT, not against the
+    # arm's own start, so a healer-only gain is still delivered (the same rule `_search_arm` applies)
+    stand_in: Any = SimpleNamespace(changed=outcome.best.brep_path != ws.brep_path, best=outcome.best,
+                                    best_verdict=outcome.verdict)
+    loss = (check_loss(pool, ws.brep_path, outcome.best.brep_path)
+            if outcome.best.brep_path != ws.brep_path else None)
+    delivered = deliverable(stand_in, v_in, loss=loss)
+    out_v = v_in if delivered is None else full(pool, delivered, source)
+    if workdir is not None:
+        keep_delivered(ws.brep_path if delivered is None else delivered.brep_path, workdir,
+                       is_input=delivered is None)
+    fields: dict[str, Any] = {
+        **outcome.counters.row(),
+        "loss": (loss.row() if loss is not None else None),
+        # the owner's readable trace, one line per step and one per round, on the row as it is written
+        "_triage": {"seq": {"lines": outcome.rounds and outcome.lines() or [],
+                            "rounds": [{"index": r.index, "kept": r.kept, "full_check": r.full_check,
+                                        "steps": r.steps} for r in outcome.rounds]}},
+    }
+    return out_v, fields
 
 
 def _diagonal_or_none(pool: Any, ws: Any) -> float | None:
