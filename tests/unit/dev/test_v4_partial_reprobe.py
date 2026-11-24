@@ -100,3 +100,18 @@ def test_the_snap_v2_waves_are_normal_four_arm_waves() -> None:
         w = evalspec.wave(name)
         assert w.wave_type == "normal" and w.split == split
         assert w.arms == ("input_only", "staged", "search_det", "search_ai")
+
+
+def test_v1r_replaces_every_row_keeps_membership_and_lists_changes(tmp_path: Path) -> None:
+    old = [_row(1, "abc_pass", None), _row(2, "abc_fail", "valid"), _row(3, "abc_fail", "panel")]
+    v1 = tmp_path / "PROVISIONAL_clean.json"
+    v1.write_text(json.dumps({"PROVISIONAL": "x", "split": "clean", "seed": 1, "files": [rp.asdict(r) for r in old]}))
+    new = [_row(1, "abc_pass", "panel"), _row(2, "abc_fail", "valid")]          # 1 flipped, 3 excluded now
+    out = tmp_path / "o"
+    out.mkdir()
+    rep = pr.write_v1r(out, new, [{"sha256": old[2].sha256, "reason": "file_timeout: 1800 s"}], (v1,))
+    body = json.loads((out / "PROVISIONAL_clean_v1r.json").read_text())
+    assert body["split"] == "clean" and body["relabel_of"] == "PROVISIONAL_clean.json"
+    assert [f["first_failing_layer"] for f in body["files"]] == ["panel", "valid"]
+    assert rep["clean"]["label_changed"] == 1 and rep["clean"]["dropped"] == 1
+    assert body["dropped_no_engine_form_label"][0]["reason"].startswith("file_timeout")

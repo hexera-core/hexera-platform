@@ -225,6 +225,46 @@ def write_split(path: Path, name: str, rows: list[Any], meta: dict) -> None:
     path.write_text(json.dumps(body, indent=1, sort_keys=True) + "\n")
 
 
+def label_of(row: dict | Any) -> str:
+    """One comparable label for a row (dict or ProbeRow): clean, failing <layer>/<coarse kind>, or the outcome."""
+    r = row if not isinstance(row, dict) else reprobe_mod.ProbeRow(**row)
+    return kind_of(r)
+
+
+def write_v1r(out: Path, rows: list[Any], excluded: list[dict], v1_paths: tuple[Path, ...] = V1_FILES) -> dict:
+    """The v1 splits (Task 43) with every file's row REPLACED by this wave's engine-form row. Membership is v1's own
+    (the same files, so snapshot v1 reruns on the same set); a file whose label changed is listed in the header, and
+    a file this wave could not judge (excluded) is dropped and listed, never kept on its old original-form row."""
+    new = {r.sha256: r for r in rows}
+    gone = {x["sha256"]: x["reason"] for x in excluded}
+    report: dict[str, Any] = {}
+    for path in v1_paths:
+        body = json.loads(path.read_text())
+        changes, dropped, kept = [], [], []
+        for f in body["files"]:
+            sha = f["sha256"]
+            if sha not in new:
+                dropped.append({"sha256": sha, "name": f["name"], "reason": gone.get(sha, "not probed")})
+                continue
+            before, after = label_of(f), label_of(new[sha])
+            pb = [m.get("status") for m in f["verdict_summary"].get("panel", [])]
+            pa = [m.get("status") for m in new[sha].verdict_summary.get("panel", [])]
+            if before != after or pb != pa:
+                changes.append({"sha256": sha, "name": f["name"], "v1_label": before, "v1r_label": after,
+                                "v1_panel": pb, "v1r_panel": pa, "label_changed": before != after})
+            kept.append(new[sha])
+        name = body["split"]
+        target = out / path.name.replace(".json", "_v1r.json")
+        meta = {k: v for k, v in body.items() if k not in ("files", "PROVISIONAL", "split")}
+        meta.update({"relabel_of": path.name, "relabel_note": "engine-form rows (reprobe.engine_form) from this wave; "
+                     "membership is v1's", "label_changes": changes, "dropped_no_engine_form_label": dropped})
+        write_split(target, name, kept, meta)
+        report[name] = {"files": len(kept), "label_changed": sum(c["label_changed"] for c in changes),
+                        "panel_changed_only": sum(not c["label_changed"] for c in changes), "dropped": len(dropped),
+                        "changes": changes, "dropped_files": dropped}
+    return report
+
+
 def cmd_splits(a: argparse.Namespace) -> int:
     manifest = json.loads(Path(a.manifest).read_text())
     by_sha = {f["sha256"]: f for f in manifest["files"]}
@@ -296,6 +336,7 @@ def cmd_splits(a: argparse.Namespace) -> int:
         "commits": sorted({p.get("commit", "") for p in prov}), "images": sorted({p.get("image", "") for p in prov}),
         "shards": len(prov),
     }
+    summary["v1r"] = write_v1r(out, rows, excluded, tuple(Path(p) for p in a.v1_split)) if a.v1_split else None
     (out / "SUMMARY.json").write_text(json.dumps(summary, indent=1, sort_keys=True) + "\n")
     print(json.dumps({k: summary[k] for k in ("files", "rows", "excluded", "outcomes", "splits")}, indent=1))
     return 0
@@ -319,8 +360,13 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--clean", type=int, default=40)
     p.add_argument("--seed", type=int, default=reprobe_mod.SEED)
     p.add_argument("--wave-id", default="reprobe-800")
+    p.add_argument("--v1-split", action="append", default=None,
+                   help="a v1 split json to relabel with this wave's rows (-> <name>_v1r.json); default: Task 43's dev "
+                        "and clean")
     p.set_defaults(fn=cmd_splits)
     a = ap.parse_args(argv)
+    if a.cmd == "splits" and a.v1_split is None:
+        a.v1_split = [str(p) for p in V1_FILES]
     return int(a.fn(a))
 
 
