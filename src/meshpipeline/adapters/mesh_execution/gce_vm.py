@@ -175,6 +175,9 @@ set -u
 MD=http://metadata.google.internal/computeMetadata/v1
 get() { curl -sf -H Metadata-Flavor:Google "$MD/$1"; }
 IMG=$(get instance/attributes/mesh-image)
+# Where the container's own output is kept, so a run that fails can send it somewhere a person
+# can read. It goes on reaching the serial console too - `tee`, not a redirect.
+CONSOLE=/mnt/stateful_partition/mesh_console.log
 mkdir -p /mnt/stateful_partition/work /mnt/stateful_partition/dockercfg
 # THE CONTAINER RUNS AS uid 1000 AND THIS DIRECTORY IS ITS TMPDIR (see the docker run below).
 # startup-script runs as root, so without this the mount arrives root-owned 0755 and nothing in
@@ -200,8 +203,36 @@ docker run --rm --name mesh \
   -e HEXERA_MESH_CONTRACT="$(get instance/attributes/mesh-contract)" \
   -e HEXERA_RETURN_CELL_BUDGET="$(get instance/attributes/return-cell-budget)" \
   -e TMPDIR=/work -v /mnt/stateful_partition/work:/work \
-  "$IMG" python -m meshpipeline.runtime.mesh_runner
+  "$IMG" python -m meshpipeline.runtime.mesh_runner 2>&1 | tee "$CONSOLE"
+# ${PIPESTATUS[0]} AND NOT $?: $? is tee's, and tee succeeds whatever the mesher did.
+RC=${PIPESTATUS[0]}
 TOKEN=$(get instance/service-accounts/default/token | sed -E 's/.*"access_token":"([^"]+)".*/\1/')
+# WHAT THE RUN KNEW, SENT BEFORE THE BOX GOES. The delete below is unconditional - it has to be,
+# or a failure leaves 64 cores and 512 GiB idle - so for a run that did not finish, THIS is the
+# only place its own account can come from. Job 110daca9 meshed for 1 h 53 m, stopped, and was
+# deleted six seconds later: no exit code, no stage log, no console, nothing but the worker's
+# guess from silence. Only on a failure, so a run that worked pays nothing for it.
+if [ "$RC" -ne 0 ]; then
+  OUT=$(get instance/attributes/output-uri)
+  BKT=$(echo "$OUT" | sed -E 's#^gs://([^/]+)/.*#\1#')
+  KEY=$(echo "$OUT" | sed -E 's#^gs://[^/]+/(.*)/[^/]+$#\1#' | sed 's#/#%2F#g')
+  {
+    echo "the mesher exited $RC at $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    df -h /mnt/stateful_partition | tail -1
+    free -g | sed -n 2p
+    echo "--- the kernel, on memory ---"
+    dmesg 2>/dev/null | grep -iE "out of memory|oom-kill|killed process" | tail -10
+    echo "--- every stage log, last 120 lines ---"
+    for f in /mnt/stateful_partition/work/*/*.log; do
+      echo "----- $f -----"; tail -120 "$f"
+    done
+    echo "--- the container's own output, last 200000 bytes ---"
+    tail -c 200000 "$CONSOLE"
+  } > /mnt/stateful_partition/mesh_failure.txt 2>&1
+  curl -s -o /dev/null -X POST --data-binary @/mnt/stateful_partition/mesh_failure.txt \
+    -H "Authorization: Bearer $TOKEN" -H "Content-Type: text/plain" \
+    "https://storage.googleapis.com/upload/storage/v1/b/$BKT/o?uploadType=media&name=${KEY}%2Fmesh_failure.txt"
+fi
 # THE BOX REMOVES ITSELF, AND WHEN IT CANNOT IT HAS TO SAY SO. This was `curl -sf ... >/dev/null`:
 # -f makes curl exit non-zero on an HTTP error and >/dev/null threw the body away, so a refused
 # delete produced exactly one line anywhere - `Script "startup-script" failed with error: exit

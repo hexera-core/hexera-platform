@@ -95,6 +95,55 @@ def contract_refusal(contract: str) -> dict | None:
                          "so nothing was meshed")}
 
 
+#: How much of the traceback rides home in the result document. The worker stores `log_tail` and
+#: shows it; the exception and the frames that raised are the whole value, and they are at the end.
+DIED_TAIL_BYTES = 16 * 1024
+#: And how much of the exception's own MESSAGE, which is not bounded by anything - an OpenFOAM
+#: error or a subprocess failure carries its whole output in `str(exc)`. Capped on its own because
+#: a long message trimmed against DIED_TAIL_BYTES alone pushes every frame out of the document:
+#: measured, a 64 KiB message left a tail of nothing but the message.
+DIED_MESSAGE_BYTES = 2 * 1024
+
+
+def died(exc: BaseException) -> dict:
+    """The result document for a mesher that RAISED, rather than returning a verdict.
+
+    rc is the infrastructure code because nothing about the mesh was decided - the plan was never
+    held against a mesh. The exception and its traceback are the only account of the run that will
+    survive the machine, so they are what `log_tail` carries.
+    """
+    import traceback
+
+    from meshpipeline.contracts.mesh_execution import RC_INFRASTRUCTURE
+    said = f"{type(exc).__name__}: {exc}"[:DIED_MESSAGE_BYTES]
+    # format_tb AND NOT format_exception: format_exception ends with the exception line, which is
+    # the message again - so a long message trimmed against DIED_TAIL_BYTES takes every frame with
+    # it. The message is kept once, capped, at the front.
+    frames = "".join(traceback.format_tb(exc.__traceback__))
+    tail = (f"the mesher stopped with {said}\n\n"
+            f"Traceback (most recent call last):\n{frames}")[-DIED_TAIL_BYTES:]
+    return {"rc": RC_INFRASTRUCTURE, "timed_out": False, "log_tail": tail}
+
+
+def say_it_died(output_uri: str, exc: BaseException) -> None:
+    """Put `died(exc)` where the waiting worker already looks, and never raise doing it.
+
+    The workspace sent is an EMPTY directory, not the one that failed: the result document is the
+    whole point here and the workspace of a mesh at the cell budget is hundreds of gigabytes that
+    nothing would read. Measured against the worker's own extraction: the archive of an empty
+    directory is 51 bytes and `safe_extract_tar` takes it, leaving the staged workspace untouched -
+    which is what the contract refusal above has always relied on.
+    """
+    import tempfile
+
+    from meshpipeline.adapters.mesh_execution.gcs_exchange import upload_result
+    try:
+        with tempfile.TemporaryDirectory(prefix="mesh_died_") as empty:
+            upload_result(output_uri, empty, died(exc))
+    except Exception:  # noqa: BLE001 - this runs ON the failure path; it must not replace the cause
+        pass
+
+
 def run(input_uri: str, output_uri: str, engine: str, timeout: int, contract: str = "") -> dict:
     from meshpipeline.adapters.mesh_execution.gcs_exchange import download_workspace, upload_result
     from meshpipeline.engines.dispatch import run_engine_local
@@ -116,10 +165,24 @@ def run(input_uri: str, output_uri: str, engine: str, timeout: int, contract: st
     try:
         try:
             result = run_engine_local(ws, engine=engine, timeout=int(timeout))
-        finally:
-            # the mesher is done; the beacon goes on pulsing while the result is sent back, so the
-            # waiting worker never takes a long upload for a remote that is gone
-            returning.set()
+        except BaseException as exc:
+            # THE MESHER RAISED, AND THE MACHINE IS DELETED ON TOP OF IT: this is the only moment
+            # anything can still be said. Without this the run's whole account is the worker's own
+            # guess from silence - job 110daca9 meshed for 1 h 53 m, raised here, and was reported
+            # as "a n2-highmem-64 VM stopped answering part way through the mesh", twenty minutes
+            # later, with no exception, no stage and no exit code anywhere. Said the way the
+            # contract refusal above says its own answer, for the same reason: a result document
+            # the waiting worker reads at once.
+            say_it_died(output_uri, exc)
+            raise
+        # THE MESHER IS DONE and the beacon goes on pulsing while the result is sent back, so the
+        # waiting worker never takes a long upload for a remote that is gone.
+        #
+        # NOT in a `finally`. It was, and a mesher that raised flipped the live stage to "sending
+        # the mesh back" on its way out - the last word on job 110daca9, which sent nothing back -
+        # and `_beacon` counts handing back as the output MOVING, so progress_at went on advancing
+        # for a run that had already stopped.
+        returning.set()
         result.pop("workspace_tar", None)
         upload_result(output_uri, ws, result)
     finally:

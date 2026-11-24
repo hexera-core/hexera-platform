@@ -482,6 +482,30 @@ RETURN_BUDGET_STARTUP_LINE = (
     '  -e HEXERA_RETURN_CELL_BUDGET="$(get instance/attributes/return-cell-budget)" \\')
 RETURN_BUDGET_META_KEY = "return-cell-budget"
 
+#: ...AND WHAT THE FAILED-RUN DIAGNOSTICS ADDED, named here for the same reason the two above are.
+#: The box deletes itself pass or fail, so a run that did not finish had one chance to speak and
+#: took none of it: job 110daca9 meshed for 1 h 53 m on 2026-11-24, stopped, and was deleted six
+#: seconds later with its 2 TB disk, every stage log and its exit code. Three lines before the
+#: self-delete carry the fix - the container's output is kept, and its real exit code is read off
+#: the pipeline rather than off `tee` - and the block that sends them is inside the tail that is
+#: cut below. Subtracted exactly, and asserted present, so a body that moves again fails here.
+CONSOLE_LINES = (
+    "# Where the container's own output is kept, so a run that fails can send it somewhere a person",
+    "CONSOLE=/mnt/stateful_partition/mesh_console.log",
+)
+EXIT_CODE_LINES = (
+    "# ${PIPESTATUS[0]} AND NOT $?: $? is tee's, and tee succeeds whatever the mesher did.",
+    "RC=${PIPESTATUS[0]}",
+)
+#: Every span a later commit ADDED to the pinned script, each cut whole.
+LATER_STARTUP_SPANS = (LATER_STARTUP_LINES, CONSOLE_LINES, EXIT_CODE_LINES)
+
+#: ...and the one line the same change REWROTE rather than added: the mesher's output is teed on
+#: its way past, so it exists somewhere other than a serial console nobody is reading. Rewritten
+#: back to the pinned form instead of being cut, because the line itself has to stay.
+RUN_TAIL_NOW = '  "$IMG" python -m meshpipeline.runtime.mesh_runner 2>&1 | tee "$CONSOLE"'
+RUN_TAIL_WAS = '  "$IMG" python -m meshpipeline.runtime.mesh_runner'
+
 #: WHERE THE SELF-DELETE BEGINS. Everything from this line to the end of the script is the box
 #: removing itself, and this branch REWROTE it rather than adding to it: the pinned body issues a
 #: bare `curl -sf ... >/dev/null`, and a refused delete therefore said nothing anywhere but
@@ -521,16 +545,24 @@ def _without_later_startup_changes(body: dict, *, added: bool = True) -> dict:
         assert tail, "the startup script no longer removes the machine at all"
         lines = lines[:tail[0]]
         if added:
-            for marker in LATER_STARTUP_LINES:
-                assert marker in lines, f"startup script no longer carries {marker!r}"
-            start = lines.index(LATER_STARTUP_LINES[0])
-            end = lines.index(LATER_STARTUP_LINES[-1])
-            assert 0 <= start < end, (start, end)
-            lines = lines[:start] + lines[end + 1:]
+            for span in LATER_STARTUP_SPANS:
+                for marker in span:
+                    assert marker in lines, f"startup script no longer carries {marker!r}"
+                start = lines.index(span[0])
+                end = lines.index(span[-1])
+                assert 0 <= start < end, (start, end)
+                lines = lines[:start] + lines[end + 1:]
             assert RETURN_BUDGET_STARTUP_LINE in lines, (
                 "the container is no longer handed the carried budget - the metadata key would "
                 "then be written and never read")
             lines = [ln for ln in lines if ln != RETURN_BUDGET_STARTUP_LINE]
+            assert RUN_TAIL_NOW in lines, (
+                "the container's output is no longer kept, so a failed run on this route has "
+                "nothing to send and the box takes its only account with it")
+            lines = [RUN_TAIL_WAS if ln == RUN_TAIL_NOW else ln for ln in lines]
+        else:
+            assert RUN_TAIL_WAS in lines, (
+                "the pinned body's docker run is not the line being compared against")
         item["value"] = "\n".join(lines)
     return out
 
