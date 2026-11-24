@@ -394,16 +394,18 @@ def test_run_file_itself_refuses_a_model_arm_without_a_ledger() -> None:
                                   route="openai:gpt-6-astra", max_turns=3, job_id="j", workdir="/w")
 
 
-def test_an_exhausted_ledger_stops_the_model_before_the_wire_and_the_file_still_gets_a_row(shard: Any, wire: Wire) -> None:  # noqa: F811
-    """Room for the shard's route probe and not for a proposer round: the probe is paid and settled, no round is
-    sent, and the file still gets its row."""
+def test_room_left_after_the_route_probe_buys_a_reduced_round_within_the_cap(shard: Any, wire: Wire) -> None:  # noqa: F811
+    """Room for the shard's route probe and NOT for a full-allowance round (~$0.23): before D12 no round was sent and
+    the file got zero AI turns. The ~$0.22 left now buys one round with the output allowance it can pay for - sent
+    with that smaller max_output_tokens - and the shard still never spends past its cap. A slice too small for even
+    MIN_OUTPUT_TOKENS stops `no_affordable_turn` (tests/unit/cad/repair_v4/test_model_route.py)."""
     wire.candidate = CLEAN_CANDIDATE
-    ledger = ledgered(cap=0.235)                  # the probe reserves ~$0.225 and settles $0.015; a round needs ~$0.23
+    ledger = ledgered(cap=0.235)                  # the probe reserves ~$0.225 and settles $0.015; a full round ~$0.23
     rows, _ = go(shard, "search_ai", ledger)
     proposals = [r for r in wire.requests if "propose" in [t["name"] for t in r.get("tools", [])]]
-    assert proposals == [], "the ledger had no room, yet a proposer round reached the provider"
-    assert rows[0]["model_usd"] == 0.0 and rows[0]["out_clean"] is False
-    assert [e["kind"] for e in ledger.entries()] == ["route_probe"]
+    assert proposals and all(r["max_output_tokens"] < 4096 for r in proposals)
+    assert ledger.spent_usd() + ledger.reserved_usd() <= 0.235
+    assert rows and [e["kind"] for e in ledger.entries()][0] == "route_probe"
 
 
 def test_a_ledger_with_no_room_for_the_route_probe_refuses_the_shard_before_anything_is_sent(

@@ -499,6 +499,17 @@ class WaveLedger:
     def reserved_usd(self) -> float:
         return self._transact(lambda rows, _a: self._totals(rows)[1]) / _MICRO
 
+    def headroom_usd(self, file_id: str, *, file_ceiling_usd: float) -> float:
+        """What one more reservation for `file_id` may be: the smaller of the file's room under its ceiling and the
+        slice's room under its cap (settled + held counted on both). A read; `admit` stays the transaction."""
+        ceiling = _micro(file_ceiling_usd)
+
+        def go(rows, _a):
+            f_settled, f_held = self._totals(rows, file_id)
+            w_settled, w_held = self._totals(rows)
+            return min(ceiling - f_settled - f_held, self._cap - w_settled - w_held)
+        return max(0, self._transact(go)) / _MICRO
+
     def file_spent_usd(self, file_id: str) -> float:
         return self._transact(lambda rows, _a: self._totals(rows, file_id)[0]) / _MICRO
 

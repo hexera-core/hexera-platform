@@ -210,6 +210,7 @@ class ModelRouter(Protocol):
     async def call_repair_v4_propose(
         self, messages: Conversation, tools: list[ToolDefinition], *, route: str, job_id: str = "",
         user_id: str = "", tool_choice: ToolChoice = "auto", cache_key: str = "",
+        max_output_tokens: int | None = None,
     ) -> ProposeReply: ...
 
     # The search summarizer is respond-or-RAISE and calls no tools, but it returns the SAME
@@ -340,6 +341,7 @@ async def call_summarizer_model(messages: Conversation, job_id: str = "") -> Mod
 async def call_repair_v4_propose(
     messages: Conversation, tools: Sequence[ToolDefinition], *, route: str, job_id: str = "",
     user_id: str = "", tool_choice: ToolChoice = "auto", cache_key: str = "",
+    max_output_tokens: int | None = None,
 ) -> ProposeReply:
     """One round of the v4 AI proposer: `route` is a `provider:model` from REPAIR_V4_PROPOSE_ROUTES.
 
@@ -350,8 +352,11 @@ async def call_repair_v4_propose(
     call = getattr(_r(), "call_repair_v4_propose", None)
     if call is None:
         raise ToolsUnsupported("the installed router has no repair_v4_propose call kind")
+    # `max_output_tokens` LOWERS the round's output allowance below REPAIR_V4_PROPOSE_MAX_OUTPUT_TOKENS (the proposer
+    # reserved exactly that much); it is passed only when set, so a router without the keyword is still called as before
+    extra = {} if max_output_tokens is None else {"max_output_tokens": int(max_output_tokens)}
     reply: ProposeReply = await call(messages=messages, tools=list(tools), route=route, job_id=job_id,
-                                     user_id=user_id, tool_choice=tool_choice, cache_key=cache_key)
+                                     user_id=user_id, tool_choice=tool_choice, cache_key=cache_key, **extra)
     return reply
 
 

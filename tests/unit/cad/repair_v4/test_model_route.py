@@ -14,6 +14,7 @@ import pytest
 from meshpipeline.adapters._shared.resilience import reset_breakers
 from meshpipeline.adapters.model_inference import providers
 from meshpipeline.cad.repair_v4 import model_route
+from meshpipeline.cad.repair_v4 import proposer as proposer_mod
 from meshpipeline.cad.repair_v4.model_ledger import WaveLedger
 from meshpipeline.cad.repair_v4.proposer import AIProposer, NoUsableRoute
 from meshpipeline.contracts import inference_telemetry, model_capacity
@@ -157,7 +158,7 @@ def test_a_ledger_with_no_room_stops_the_call_before_the_wire(wire):
     p = _proposer(ledger)
     assert p.propose(_state(), k=3) == []
     assert wire.requests == [], "the ledger said no, yet a request reached the provider"
-    assert p.stop_reason in ("wave_cap", "file_ceiling") and p.ai_capped
+    assert p.stop_reason == "no_affordable_turn" and p.ai_capped
     assert ledger.spent_usd() == 0.0
 
 
@@ -170,7 +171,7 @@ def test_the_per_file_ceiling_holds_through_the_router(wire):
     for _ in range(10):
         p.propose(_state(), k=3)
     assert ledger.file_spent_usd("f1") <= 0.10 + 1e-9
-    assert p.ai_capped and p.stop_reason == "file_ceiling"
+    assert p.ai_capped and p.stop_reason == "no_affordable_turn"
 
 
 def test_the_route_probe_goes_through_the_real_router_and_falls_back(wire):
@@ -266,3 +267,39 @@ def test_the_installed_router_does_not_record_or_replay_a_proposer_round(wire):
     _proposer(ledger).propose(_state(), k=3)
     _proposer(ledger).propose(_state(), k=3)
     assert len(wire.requests) == 2
+
+
+# --- D12: a file always gets a turn when its slice can afford one; otherwise it says so ---------------------------
+
+
+def test_a_slice_too_small_for_the_full_reservation_still_buys_the_first_turn(wire):
+    """Lane D9's live sample: 0060_00606843 shared shard 6 with a file that had settled $0.293 of the $0.50 slice; its
+    first reservation (~$0.295, mostly the 4,096-token output allowance) did not fit the $0.207 left, so it got
+    `wave_cap` and ZERO turns. Real outputs are ~100-260 tokens. Now the turn is reserved - and requested - with the
+    output allowance the remaining room can pay for, so the file gets its turn."""
+    model_route.install_router()
+    full = 4096 * 50 / 1e6                         # the output allowance alone, at this route's $50/M
+    ledger = WaveLedger.for_test(cap_usd=full * 0.6)  # the slice cannot hold a full-allowance reservation
+    p = _proposer(ledger)
+    out = p.propose(_state(), k=3)
+    assert out and p.turns_used == 1 and p.stop_reason is None
+    [req] = wire.requests
+    assert proposer_mod.MIN_OUTPUT_TOKENS <= req["max_output_tokens"] < mi.REPAIR_V4_PROPOSE_MAX_OUTPUT_TOKENS
+    [res] = [r for r in ledger._transact(lambda rows, _a: list(rows)) if r["t"] == "reserve"]
+    assert res["u"] / 1e6 <= full * 0.6                 # the reservation fits the slice it was taken from
+
+
+def test_a_slice_that_cannot_afford_any_turn_records_a_distinct_stop_reason(wire):
+    model_route.install_router()
+    ledger = WaveLedger.for_test(cap_usd=proposer_mod.MIN_OUTPUT_TOKENS * 50 / 1e6 * 0.5)
+    p = _proposer(ledger)
+    assert p.propose(_state(), k=3) == []
+    assert p.turns_used == 0 and wire.requests == []
+    assert p.stop_reason == "no_affordable_turn" and p.ai_capped  # not a silent zero, and the file ran det-only
+
+
+def test_a_slice_with_room_reserves_and_requests_the_full_allowance_as_before(wire):
+    model_route.install_router()
+    p = _proposer(WaveLedger.for_test(cap_usd=100.0))
+    p.propose(_state(), k=3)
+    assert wire.requests[0]["max_output_tokens"] == mi.REPAIR_V4_PROPOSE_MAX_OUTPUT_TOKENS

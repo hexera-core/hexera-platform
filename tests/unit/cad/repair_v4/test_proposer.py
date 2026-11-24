@@ -292,7 +292,7 @@ def test_wave_cap_is_shared_across_shards_and_marks_the_rest_ai_capped(tmp_path)
     b = make(second, ledger=WaveLedger.for_test(cap_usd=0.5, path=path), file_id="fb")      # another shard, same wave
     assert b.propose(state([site("S1", "proximity")]), k=3) == []
     assert second.calls == []                          # the cap stopped the call, not the model
-    assert b.ai_capped and b.stop_reason == "wave_cap"
+    assert b.ai_capped and b.stop_reason == "no_affordable_turn"  # not one turn fit what the wave had left
 
 
 def test_every_call_is_written_to_the_ledger_with_its_job_and_model():
@@ -718,7 +718,7 @@ def test_a_call_whose_estimate_exceeds_the_file_ceiling_is_refused_before_it_is_
     p = P.AIProposer(ROUTE, max_turns=3, usd_ceiling=0.2, call=fake, observe=big_observe,
                      ledger=WaveLedger.for_test(cap_usd=100.0), file_id="f1", prices=ASTRA)
     assert p.propose(state([site("S1", "proximity")]), k=3) == []
-    assert fake.calls == [] and p.stop_reason == "file_ceiling" and p.ai_capped
+    assert fake.calls == [] and p.stop_reason == "no_affordable_turn" and p.ai_capped
 
 
 def test_an_oversize_input_is_refused_at_admit_even_with_budget_to_spare():
@@ -745,8 +745,8 @@ def test_the_stop_is_written_to_the_ledger_and_to_the_result(tmp_path):
     fake = Fake([reply()])
     p = make(fake, ledger=ledger, file_id="fileZ")
     assert p.propose(state([site("S1", "proximity")]), k=3) == []
-    assert ledger.file_statuses()["fileZ"] == {"stop_reason": "wave_cap", "ai_capped": True}
-    assert p.result() == {"file_id": "fileZ", "ai_capped": True, "stop_reason": "wave_cap", "turns": 0,
+    assert ledger.file_statuses()["fileZ"] == {"stop_reason": "no_affordable_turn", "ai_capped": True}
+    assert p.result() == {"file_id": "fileZ", "ai_capped": True, "stop_reason": "no_affordable_turn", "turns": 0,
                           "truncated_rounds": 0, "answered_rounds": 0, "failed_rounds": 0,
                           "model_unavailable": False, "spent_usd": 0.0, "tool_errors": 0, "candidate_errors": 0,
                           "declared_unfixable": 0}
