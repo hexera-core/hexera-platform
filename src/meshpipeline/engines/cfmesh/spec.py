@@ -321,7 +321,10 @@ SPEC = EngineSpec(
         # delivered inlet/outlet patch is 0.99-1.01 of the opening declared and every fluid volume
         # 0.99-1.002 of the CAD's - the boundary cells are projected onto the surface, not left as
         # a stair-stepped cut-cell skin, which would miss both.
-        delivered_mesh=DeliveredMesh(cells="hex-dominant", walls="body-fitted", prism_layers=True),
+        # CFDREQ-28: its external case refines the wake behind the body from the shared wake plan
+        # (engines/wake_region, PLAN-cfd-7), as snappyHexMesh's does
+        delivered_mesh=DeliveredMesh(cells="hex-dominant", walls="body-fitted", prism_layers=True,
+                                     wake_refinement=True),
         run_policy=RunPolicy(
             required_files=("system/meshDict",),
             # 20 MINUTES: at industry density (the passage caps put ~13 cells across every

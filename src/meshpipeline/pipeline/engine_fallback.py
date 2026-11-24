@@ -289,19 +289,25 @@ GATE_LEVERS: dict[str, dict[str, str]] = {
     # median, and no layer-stage setting lifts them (measured: 69-81% of the wall still under a jump) - the next
     # engine builds it
     "wall_function_layer": {},
+    # CFDREQ-28: snappyHexMesh drops a layer wherever it would fold a cell, and its layer-stage levers (the band, the
+    # cap, the buffer cells) did not keep a resolved or laminar stack on real bodies - the next engine builds it
+    # (cfMesh splits its wall cell into the layers). A rebuild on the same engine lays the same stack again
+    "layer_stack": {},
 }
 #: A gate whose refusal its cause's words would misname (cad_fidelity shares PATCH_NOT_CAPTURED).
 _REASON_BY_GATE: dict[str, str] = {
     "cad_fidelity": "its mesh did not follow your CAD closely enough",
     "port_areas": "an opening came out a different size from the one you confirmed",
     "wall_function_layer": "its wall-function first layer sat under much thinner cells over too much of the wall",
+    "layer_stack": "its boundary-layer stack was kept on too little of the wall",
 }
 #: The engines whose next attempt is planned by rules alone (GATE_LEVERS speaks for them).
 RULES_PLANNED = frozenset({"snappy", "cfmesh"})
 #: THE REFUSALS A SOUND MESH MAY STILL BE DELIVERED ON, as a concern, when no retry can change them:
 #: the mesh is valid and solves, and misses a bar of ours - how closely it follows the CAD, an
 #: opening's built area, its cells' shape inside the solver's hard limits, a short trial solve.
-DELIVERABLE_GATES = frozenset({"cad_fidelity", "port_areas", "quality_floor", "solvability", "wall_function_layer"})
+DELIVERABLE_GATES = frozenset({"cad_fidelity", "port_areas", "quality_floor", "solvability", "wall_function_layer",
+                               "layer_stack"})
 #: A mesh that misses more than this share of the wetted CAD - or whose wall lies off the CAD on
 #: more than it - is not the user's part any more: refused as it always was, never delivered.
 NOT_THE_PART_SHARE = 0.5
@@ -463,6 +469,16 @@ def deliverable_refusal(gate: str, quality: Mapping | None, facts: Mapping | Non
                 "words": (f"The wall-function first layer sits under a cell more than twice thinner on {jump:.0f}% "
                           "of the wall, so the y+ there is not the wall function's"),
                 "way_on": "ask for a resolved wall (y+ about 1) in your notes, or name cfMesh as the engine"}
+    if gate == "layer_stack":
+        # CFDREQ-28: the sound mesh kept when no other engine kept more of the stack - its share said
+        cover = _num_of(f.get("coverage_pct"))
+        if cover is None:
+            return None
+        n = _num_of(f.get("layers"))
+        return {"kind": GATE_CONCERN, "gate": gate,
+                "words": (f"The {int(n) if n else ''}{'-layer ' if n else ''}boundary-layer stack stands on {cover:.0f}% "
+                          "of the wall, so elsewhere the wall has fewer cells across its boundary layer than planned"),
+                "way_on": "ask for fewer layers or a thicker first layer in your notes, or name cfMesh as the engine"}
     return None
 
 
@@ -507,6 +523,11 @@ def gate_distance(gate: str, quality: Mapping | None, facts: Mapping | None) -> 
     if gate == "solvability":
         res = _num_of(f.get("residual"))
         return math.log10(res) if res is not None and res > 0 else None
+    if gate == "layer_stack":
+        # CFDREQ-28: percent of the wall short of the layer row's share
+        from meshpipeline.engines.cfd_requirements import STACK_KEPT_PCT
+        cover = _num_of(f.get("coverage_pct"))
+        return max(0.0, STACK_KEPT_PCT - cover) if cover is not None else None
     return None
 
 
