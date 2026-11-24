@@ -164,28 +164,27 @@ def _state_of(site: Site) -> SearchState:
                        via=None)
 
 
-def test_the_sweep_proposes_fill_loop_for_each_loop_inside_the_cap_and_none_beyond_it() -> None:
-    small, big = (["E1", "E2", "E3", "E4"], 4.24), (["E5", "E6"], 0.06 * 127.0)  # 3.3% and 6% of the diagonal
+def test_the_sweep_proposes_fill_loop_for_every_loop_whatever_its_size() -> None:
+    """B12: the 5%-of-diagonal fill cap is gone; a loop spanning 60% of the part is proposed like a small one."""
+    small, big = (["E1", "E2", "E3", "E4"], 4.24), (["E5", "E6"], 0.60 * 127.0)  # 3.3% and 60% of the diagonal
     gen = DetGenerator(diagonal=lambda ws: 127.0)
     got = [c for c in gen.propose(_state_of(_open_site_with([small, big])), 50) if c.op == "fill_loop"]
-    assert [c.targets for c in got] == [small[0]] and got[0].params == {"continuity": "G0"}
-    assert any("beyond the fill cap" in n for n in gen.notes)  # the loop it did not propose is on the record
+    assert [c.targets for c in got] == [small[0], big[0]] and got[0].params == {"continuity": "G0"}
+    assert not any("fill cap" in n for n in gen.notes)
     from meshpipeline.cad.repair_v4.ops import REGISTRY, validate_call
 
     assert "fill_loop" in REGISTRY
     assert validate_call("fill_loop", got[0].targets, got[0].params, _state_of(_open_site_with([small])).ws) == []
 
 
-def test_the_cap_is_read_from_the_one_home_not_restated() -> None:
-    from meshpipeline.cad.repair_v4 import limits
-
+def test_no_fill_size_refuses_a_loop_in_the_sweep() -> None:
+    """B12: what used to sit just over the cap (span / 0.05 x 0.99 of the diagonal) is proposed like the rest."""
     span = 4.0
     loop = (["E1", "E2", "E3"], span)
-    edge = span / limits.MAX_FILL_SPAN_RATIO  # the diagonal at which this loop sits exactly on the cap
-    gen = DetGenerator(diagonal=lambda ws: edge)
-    on = [c for c in gen.propose(_state_of(_open_site_with([loop], edge)), 50) if c.op == "fill_loop"]
-    just_over = [c for c in gen.propose(_state_of(_open_site_with([loop], edge * 0.99)), 50) if c.op == "fill_loop"]
-    assert len(on) == 1 and just_over == []
+    for diag in (span / 0.05, span / 0.05 * 0.99, span * 1.01):
+        gen = DetGenerator(diagonal=lambda ws, _d=diag: _d)
+        got = [c for c in gen.propose(_state_of(_open_site_with([loop], diag)), 50) if c.op == "fill_loop"]
+        assert len(got) == 1, diag
 
 
 def test_an_open_site_without_loops_says_so_and_still_proposes_the_others() -> None:

@@ -248,14 +248,13 @@ def cheap_verdict(
 
 
 def score(v: Verdict) -> tuple[int, int, float, float, int]:
-    """(valid AND faithful, panel passes, min SICN over members, -max deviation mm, -topology churn),
-    compared lexicographically.
+    """(valid, panel passes, min SICN over members, -max deviation mm, -topology churn), compared lexicographically.
 
-    THE FIRST KEY IS A GATE, NOT JUST LAYER 1: it is 1 only when the file is valid and layer 3 says
-    faithful. Without that, a valid state that meshes everywhere but moved the part (`area_changed`,
-    `fill_too_large`, a deviation over the bound) would out-rank a clean one, because deviation is
-    only the fourth key. A search ranking on this tuple therefore never prefers an unfaithful state
-    to a faithful one; a state that is valid but unfaithful ties with invalid ones on key 1.
+    THE GOAL IS VALID + MESHABLE (owner decision 2026-11-24). The first three keys are the goal: layer 1 VALID, how
+    many panel members mesh, and the worst element quality. Faithfulness is still MEASURED and reported, but it
+    gates nothing: deviation and topology churn are TIE-BREAKERS only, after the goal keys. A valid state that meshes
+    in more members therefore out-ranks one that meshes in fewer however far it moved the surface; between two
+    states equal on the goal keys, the one that moved the part less wins.
 
     Raises `InconclusiveVerdict` for an inconclusive verdict: it must be re-run or dropped, never
     ranked (and never ranked as bad). Check `Verdict.counts_for_scoreboard` first.
@@ -266,7 +265,7 @@ def score(v: Verdict) -> tuple[int, int, float, float, int]:
     dev = v.faithful.max_dev_mm if v.faithful is not None else 0.0
     churn = len(v.faithful.declared_added) + len(v.faithful.declared_removed) if v.faithful is not None else 0
     return (
-        int(v.valid.ok and v.faithful is not None and v.faithful.ok),
+        int(bool(v.valid.ok)),
         sum(1 for r in v.panel if r.status == "pass"),
         min(sicns) if sicns else UNMEASURED_SICN,
         -dev,

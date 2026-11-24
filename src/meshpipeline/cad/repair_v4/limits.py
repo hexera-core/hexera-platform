@@ -3,10 +3,11 @@
 # Boundaries: stdlib only. No kernel, no op, no OCP - importable from the hermetic tier and from devtools.
 from __future__ import annotations
 
-#: `fill_loop` refuses a loop whose bounding-box diagonal exceeds this fraction of the part's bounding-box
-#: diagonal (design §7 decision 2: fills only for loops <= 5% of the diagonal). Read by ops/faces.py (the op),
-#: verdict/faithful_kernel.py (the judge's `fill_too_large`) and devtools/validation/v4_eval/inject.py
-#: (`face_delete` only deletes faces the op could put back). Do not retype it anywhere.
+#: A REPORTING threshold, no longer a cap: `fill_loop` used to refuse a loop whose bounding-box diagonal exceeded this
+#: fraction of the part's diagonal; the owner decision of 2026-11-24 removed that gate (ops/faces.py fills any loop,
+#: the det sweep proposes any loop). It is still read by verdict/faithful_kernel.py, which REPORTS `fill_too_large` in
+#: layer 3 (layer 3 gates nothing), and by devtools/validation/v4_eval/inject.py, whose `face_delete` strata are
+#: benchmark design. Do not retype it anywhere.
 MAX_FILL_SPAN_RATIO = 0.05
 
 

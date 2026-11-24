@@ -53,7 +53,6 @@ from OCP.TopTools import (  # noqa: E402
     TopTools_IndexedMapOfShape,
 )
 
-from meshpipeline.cad.repair_v4.ops import faces as face_ops  # noqa: E402
 from meshpipeline.cad.repair_v4.ops.faces import OPS, OpDeclined  # noqa: E402
 from meshpipeline.cad.repair_v4.worker_pool import WorkerPool  # noqa: E402
 from meshpipeline.cad.repair_v4.workspace import Workspace  # noqa: E402
@@ -364,20 +363,22 @@ def test_rebuild_face_repairs_a_small_self_intersecting_loop_and_stays_within_bo
     assert diff.declared_added == [] and diff.declared_removed == []
 
 
-def test_rebuild_face_declines_a_loop_larger_than_the_bound_instead_of_cutting_it_off(
+def test_rebuild_face_never_refuses_a_loop_larger_than_the_bound(
     pool: WorkerPool, tmp_path: Path,
 ) -> None:
+    """B12: a loop ~0.4 mm tall against a 0.057 mm bound is no longer refused on the bound. The op may apply (the
+    boundary shift is then reported) or fail on the kernel, but never declines on fidelity."""
     surface = _bspline(lambda x, y: 0.4 * math.sin(x / 9) * math.cos(y / 11), size=40.0)
-    face = _looped_face(surface, 40.0, loop=0.3)  # a loop ~0.4 mm tall against a 0.057 mm bound
+    face = _looped_face(surface, 40.0, loop=0.3)
     assert _self_intersects(face)
     ws = Workspace.from_brep(pool, _write(face, tmp_path / "bigloop.brep"))
     (face_id,) = [s for s in ws.ids if s.startswith("F")]
-
-    with pytest.raises(OpDeclined) as declined:
-        _op("rebuild_face").apply(pool, ws, [face_id], {"continuity": "G0"}, timeout_s=TIMEOUT)
-
-    assert "over_bound" in declined.value.reason and "boundary_shift" in declined.value.reason
-    assert ws.history == [] and sorted(p.name for p in tmp_path.iterdir()) == ["bigloop.brep"]
+    try:
+        _, diff = _op("rebuild_face").apply(pool, ws, [face_id], {"continuity": "G0"}, timeout_s=TIMEOUT)
+    except OpDeclined as why:
+        assert "over_bound" not in why.reason, why.reason
+        return
+    assert "measured" in diff.params, diff.params
 
 
 def test_rebuild_face_declines_what_it_cannot_fix_and_changes_nothing(
@@ -428,39 +429,35 @@ def test_fill_loop_closes_a_2mm_hole_declares_the_added_face_and_moves_nothing(
     assert _area(shell) == pytest.approx(_area(shell_before) + _area(disc), rel=1e-9)
 
 
-def test_fill_loop_refuses_a_loop_spanning_20_percent_of_the_diagonal(
+def test_fill_loop_fills_a_loop_spanning_20_percent_of_the_diagonal(
     pool: WorkerPool, tmp_path: Path,
 ) -> None:
+    """B12: the 5% span cap is gone; a 20% loop is filled and its span reported."""
     size = 50.0
     side = 0.2 * math.sqrt(3) * size / math.sqrt(2)  # a square hole whose diagonal is 20% of the part's
     ws = Workspace.from_brep(pool, _box_with_hole(tmp_path, size=size, hole=side, round_hole=False))
     loop = _free_loop_ids(ws, (25.0, 25.0, 50.0), side)
     assert len(loop) == 4
 
-    with pytest.raises(OpDeclined) as declined:
-        _op("fill_loop").apply(pool, ws, loop, {"continuity": "G0"}, timeout_s=TIMEOUT)
+    _, diff = _op("fill_loop").apply(pool, ws, loop, {"continuity": "G0"}, timeout_s=TIMEOUT)
 
-    assert "too_large" in declined.value.reason and "20.0%" in declined.value.reason
-    assert ws.history == [] and sorted(p.name for p in tmp_path.iterdir()) == ["holed.brep"]
+    assert len(diff.declared_added) == 1
+    assert diff.params["measured"]["span_ratio"] == pytest.approx(0.2, rel=0.02)
 
 
-def test_fill_loop_accepts_a_loop_just_under_the_5_percent_span_and_refuses_just_over(
+def test_fill_loop_fills_loops_either_side_of_the_old_5_percent_cap(
     pool: WorkerPool, tmp_path: Path,
 ) -> None:
     size = 50.0
     diagonal = math.sqrt(3) * size
-    for ratio, accepted in ((0.045, True), (0.055, False)):
+    for ratio in (0.045, 0.055):
         folder = tmp_path / f"r{ratio}"
         folder.mkdir()
         side = ratio * diagonal / math.sqrt(2)
         ws = Workspace.from_brep(pool, _box_with_hole(folder, size=size, hole=side, round_hole=False))
         loop = _free_loop_ids(ws, (25.0, 25.0, 50.0), side)
-        if accepted:
-            _, diff = _op("fill_loop").apply(pool, ws, loop, {"continuity": "G0"}, timeout_s=TIMEOUT)
-            assert len(diff.declared_added) == 1
-        else:
-            with pytest.raises(OpDeclined, match="too_large"):
-                _op("fill_loop").apply(pool, ws, loop, {"continuity": "G0"}, timeout_s=TIMEOUT)
+        _, diff = _op("fill_loop").apply(pool, ws, loop, {"continuity": "G0"}, timeout_s=TIMEOUT)
+        assert len(diff.declared_added) == 1
 
 
 # --- to_canonical -------------------------------------------------------------------------------
@@ -495,7 +492,7 @@ def test_to_canonical_turns_a_near_plane_bspline_into_a_plane_within_1e_4(
     assert diff.declared_added == [] and diff.declared_removed == []
 
 
-def test_to_canonical_declines_a_tolerance_over_the_bound(pool: WorkerPool, tmp_path: Path) -> None:
+def test_to_canonical_accepts_a_tolerance_over_the_old_bound(pool: WorkerPool, tmp_path: Path) -> None:
     surface = _bspline(lambda x, y: 5.0 + 2e-5 * math.sin(x / 3), size=20.0)
     solid = _solid_with_top(surface, 20.0, 5.0)
     ws = Workspace.from_brep(pool, _write(solid, tmp_path / "nearplane.brep"))
@@ -504,9 +501,10 @@ def test_to_canonical_declines_a_tolerance_over_the_bound(pool: WorkerPool, tmp_
     (top_id,) = [s for s, i in _ids_at(ws, "F").items() if i == top_index]
     assert _bound(solid) < 0.05
 
-    with pytest.raises(OpDeclined, match="over_bound"):
+    try:
         _op("to_canonical").apply(pool, ws, [top_id], {"tol_mm": 0.05}, timeout_s=TIMEOUT)
-    assert ws.history == []
+    except OpDeclined as why:
+        assert "over_bound" not in why.reason, why.reason
 
 
 # --- reapproximate ------------------------------------------------------------------------------
@@ -589,7 +587,7 @@ def test_refit_cluster_replaces_four_fragments_with_one_declared_face(
     assert diff.params["measured"]["old_to_new"] <= 0.02
 
 
-def test_every_op_is_exposed_with_a_bounded_schema() -> None:
+def test_every_op_is_exposed_with_a_closed_schema_and_no_fidelity_maximum() -> None:
     assert [o.name for o in OPS] == ["rebuild_face", "fill_loop", "reapproximate", "to_canonical",
                                      "refit_cluster"]
     for op in OPS:
@@ -597,7 +595,7 @@ def test_every_op_is_exposed_with_a_bounded_schema() -> None:
         assert callable(op.applies_to) and callable(op.apply)
     assert _op("reapproximate").params_schema["properties"]["max_degree"] == {
         "type": "integer", "minimum": 3, "maximum": 9}
-    assert _op("to_canonical").params_schema["properties"]["tol_mm"]["maximum"] == face_ops.BOUND_MAX_MM
+    assert "maximum" not in _op("to_canonical").params_schema["properties"]["tol_mm"]       # B12: no bound cap
 
 
 @pytest.mark.parametrize("continuity", ["G0", "G1"])

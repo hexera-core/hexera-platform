@@ -395,9 +395,13 @@ def _loop_span(part: TopoDS_Shape, face: TopoDS_Shape) -> tuple[float, float]:
 
 
 def _fill_restores(damaged: TopoDS_Shape) -> tuple[bool, str, dict]:
-    """Would the op put the deleted face back? Runs `fill_loop` itself (the kernel function ops/faces.py registers,
-    continuity G0) on the damaged part, so the answer is the op's own: its span cap, its single-closed-loop rule and
-    its fill-to-surroundings deviation against the fidelity bound. Returns (accepted, reason, measured).
+    """Would the op put the deleted face back FAITHFULLY? Runs `fill_loop` itself (the kernel function ops/faces.py
+    registers, continuity G0) on the damaged part: its single-closed-loop rule decides whether it CAN fill, and the
+    fill-to-surroundings deviation it MEASURES, against the fidelity bound it reports beside it, decides whether the
+    fill is faithful. (Until the owner decision of 2026-11-24 the op declined an unfaithful fill itself; it now fills
+    and reports, so this function applies the bound to the op's own measurement to keep the strata's meaning: a
+    `face_delete_inclined` loop is one a planar fill cannot restore within the bound.) Returns (accepted, reason,
+    measured).
 
     NOT a geometric proxy, so there is no proxy error to bound. The one difference from the real run is that the
     part is measured from the in-memory shape written to BREP, not after the STEP round trip the search reads; STEP
@@ -426,7 +430,12 @@ def _fill_restores(damaged: TopoDS_Shape) -> tuple[bool, str, dict]:
     if "declined" in answer:
         return False, str(answer["declined"]), {}
     measured = dict(answer.get("params", {}).get("measured", {}))
-    return True, "accepted", {k: measured[k] for k in ("fill_to_surroundings", "bound_mm", "fill_surface") if k in measured}
+    kept = {k: measured[k] for k in ("fill_to_surroundings", "bound_mm", "fill_surface") if k in measured}
+    dev, bound = measured.get("fill_to_surroundings"), measured.get("bound_mm")
+    if dev is not None and bound is not None and float(dev) > float(bound):
+        return False, (f"over_bound (measured): the fill deviates {float(dev):.6g} mm from its surroundings, beyond "
+                       f"the fidelity bound {float(bound):.6g} mm"), kept
+    return True, "accepted", kept
 
 
 def _delete_face(shape, rng, mode: str):

@@ -1,6 +1,6 @@
 # Responsibility: Prove on the REAL kernel, pool and judge the two outcomes the injected `face_delete` kinds exist for:
-#                 a small deleted face is REPAIRED to a clean verdict, and a large one is DECLINED by the op (a real
-#                 negative, not a failure). Neither is read off a label: the loop span is measured on the file.
+#                 a small deleted face is REPAIRED to a clean verdict, and a large one is FILLED too (B12: no size cap; the
+#                 span is measured and reported). Neither is read off a label: the loop span is measured on the file.
 # Boundaries: the native tier (`meshpipeline-mesh:native`). No model, no search: the ops are applied by hand so that
 #             what is proved is the op, the faithful layer and the panel, not the search's choice of op (the
 #             end-to-end file asserts that separately). Nothing in the engine is faked.
@@ -101,27 +101,35 @@ def test_a_small_deleted_face_is_repaired_to_a_clean_verdict(clean_source: Path,
           f"fill_loop({loop}, G0) then make_volume({len(faces)} faces) -> clean={verdict.clean}; fill: {measured}")
 
 
-def test_a_large_deleted_face_is_declined_by_the_op_not_failed(clean_source: Path, pool: Any, tmp_path: Path) -> None:
+def test_a_large_deleted_face_is_now_filled_and_its_span_reported_not_refused(
+    clean_source: Path, pool: Any, tmp_path: Path,
+) -> None:
+    """B12 (owner decision 2026-11-24): the 5%-of-diagonal fill cap is REMOVED from the op. A loop well over the old
+    cap is filled; its span is still MEASURED and reported beside MAX_FILL_SPAN_RATIO, which is now a reporting
+    threshold only."""
     inj = _devtools("inject")
     case = inj.inject(clean_source, "face_delete_large", 1, tmp_path)
-    assert case.label["status"] == "declined_stratum" and case.label["expected_outcome"] == "correctly_declined"
     ws = _open(pool, case.path, tmp_path / "ws")
     loop = _free_edges(ws)
-    with pytest.raises(OpDeclined) as why:        # OpDeclined, not OpFailed: a legitimate negative
-        REGISTRY["fill_loop"].apply(pool, ws, loop, {"continuity": "G0"}, timeout_s=120)
-    assert "too_large" in why.value.reason
-    assert case.label["loop_span_ratio"] > limits.MAX_FILL_SPAN_RATIO
-    print(f"\nDECLINED: loop {case.label['loop_span_ratio']:.2%} of the diagonal > cap "
-          f"{limits.MAX_FILL_SPAN_RATIO:.0%}; fill_loop: {why.value.reason}")
+    filled, diff = REGISTRY["fill_loop"].apply(pool, ws, loop, {"continuity": "G0"}, timeout_s=120)
+    measured = diff.params["measured"]
+    assert "declined" not in diff.params
+    assert measured["span_ratio"] > limits.MAX_FILL_SPAN_RATIO
+    assert measured["span_ratio"] == pytest.approx(case.label["loop_span_ratio"], abs=1e-4)
+    assert {"fill_to_surroundings", "bound_mm", "span_mm"} <= set(measured)
+    assert any(i[0] == "F" for i in filled.ids)
+    print(f"\nFILLED (no cap): loop {measured['span_ratio']:.2%} of the diagonal, old cap "
+          f"{limits.MAX_FILL_SPAN_RATIO:.0%}; measured {measured}")
 
 
-def test_the_cap_is_the_op_s_not_a_copy(clean_source: Path, pool: Any, tmp_path: Path) -> None:
-    """A loop just over the cap is declined with the cap's own number in the reason: the message is built from
-    limits.MAX_FILL_SPAN_RATIO, so a second typed 5% in the op would show here as a different figure."""
+def test_no_fill_span_refuses_in_the_op(clean_source: Path, pool: Any, tmp_path: Path) -> None:
+    """The op never raises OpDeclined on size: whatever span the loop has, a fill is attempted and either applies
+    or fails on the kernel, never on a fidelity rule."""
     inj = _devtools("inject")
     case = inj.inject(clean_source, "face_delete_large", 1, tmp_path)
     ws = _open(pool, case.path, tmp_path / "ws")
-    with pytest.raises(OpDeclined) as why:
+    try:
         REGISTRY["fill_loop"].apply(pool, ws, _free_edges(ws), {"continuity": "G0"}, timeout_s=120)
-    assert f"refuses beyond {100 * limits.MAX_FILL_SPAN_RATIO:g}%" in why.value.reason
+    except OpDeclined as why:  # pragma: no cover - the failure being guarded against
+        pytest.fail(f"fill_loop declined on size: {why.reason}")
     assert math.isclose(limits.MAX_FILL_SPAN_RATIO, 0.05)

@@ -4,8 +4,8 @@
 # Owns: three Op classes (`OPS`), their kernel functions (registered into kernel_calls.REGISTRY)
 #       and the measurements (`edge_deviation`, `max_edge_tolerance`) that prove they worked.
 # Boundaries: the parent half imports no OCCT; every kernel function runs in a worker and reads
-#             and writes BREP paths. Registry wiring (ops/__init__) is not here. Geometry moves
-#             only within the fidelity bound min(0.1 mm, 0.001 x diagonal); a larger move aborts.
+#             and writes BREP paths. Registry wiring (ops/__init__) is not here. How far geometry moves is
+#             MEASURED and reported (`max_move`, beside the part's fidelity bound); it gates nothing (owner 2026-11-24).
 """Edge and tolerance ops: `rebuild_edge_as_intersection`, `tighten_tolerances`, `fix_poles`.
 
 Why they exist: an edge whose tolerance is far larger than its true pcurve/3D deviation lets the face
@@ -505,9 +505,6 @@ def _rebuild_edge_as_intersection(payload: dict) -> dict:
             raise KernelDeclined("no_intersection", f"no intersection curve of edge {index}'s faces spans its vertices")
         _, curve, u1, u2 = best
         move = max(GeomAPI_ProjectPointOnCurve(s, curve).LowerDistance() for s in samples)
-        if move > bound:
-            raise KernelDeclined("over_bound", f"edge {index}: the intersection curve is {move:.3g} from the existing "
-                             f"edge, beyond the fidelity bound {bound:.3g}")
         moves[index] = move
         builder = BRep_Builder()
         builder.SameParameter(edge, False)

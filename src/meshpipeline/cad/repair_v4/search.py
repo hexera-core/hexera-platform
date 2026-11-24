@@ -103,7 +103,6 @@ from dataclasses import dataclass, field, replace
 from typing import Any, Literal, Protocol
 
 from meshpipeline.cad.repair_v4 import render
-from meshpipeline.cad.repair_v4.limits import fill_span_allowed
 from meshpipeline.cad.repair_v4.measurement import NO_VERDICT, file_unmeasured, no_verdict_failure
 from meshpipeline.cad.repair_v4.ops import REGISTRY, OpDeclined, OpFailed, validate_call
 from meshpipeline.cad.repair_v4.ops.shells import scaled_sew_ladder, scaled_sliver_widths
@@ -244,12 +243,9 @@ def adaptive_cheap(judge: Judge, start_verdict: Any) -> Callable[[Any, Workspace
 def _clean_with(v: Verdict, faithful: FaithfulReport | None) -> bool:
     """`Verdict.clean` for a verdict whose layer 3 was replaced, by the ONE rule (`assemble.clean_of`).
 
-    OPEN OWNER DECISION, deliberately not changed here: when the ORIGINAL has no solid, layer 3 always reports
-    `volume_changed` / `body_count_changed`, so `faithful.ok` is False, `Judge.score` key 0 is permanently 0 and
-    `clean` permanently False. The search then never stops at "clean", `SearchResult.clean` cannot be True, and
-    ordering degrades to panel passes. Task 16's local gate (`stages._judge`, `_SOLIDLESS_OK_REASONS`) already
-    treats those reasons as acceptable, so stage keep/rollback and search ranking disagree for such files.
-    Resolving it changes what "clean" means; see the Task 18b report, item "escalated"."""
+    `Judge.score` key 0 is VALIDITY alone since lane B12 (owner decision 2026-11-24), so a state layer 3 calls
+    unfaithful still ranks on its meshing; deviation is a tie-breaker. What `clean` itself reads is `clean_of`'s rule
+    (not changed by B12)."""
     return clean_of(
         tier=v.tier, inconclusive=v.inconclusive, valid=v.valid, panel=v.panel, faithful=faithful
     )
@@ -429,7 +425,7 @@ _PROXIMITY_RATIOS = (0.25, 0.125, 0.06)  # gap_split's rungs
 _SPLIT_ANGLES = (90, 60, 45)
 _MAX_PAIRS = 16  # split_by_proximity's maxItems
 #: body pairs an overlap site sweeps `cut_by` over, each both ways (which body is kept is exactly what the sweep cannot
-#: know; the kernel refuses an overlap deeper than the fidelity bound or a volume change over its cap either way)
+#: know; the overlap's depth and volume are measured and reported, and refuse nothing)
 _MAX_CUT_PAIRS = 3
 #: trim_unbounded's padding, as a share of the part's finite diagonal: Raymond Lee's 1% (devtools/simplify), then 5%
 _TRIM_PADS = (0.01, 0.05)
@@ -706,10 +702,9 @@ class DetGenerator:
         return rows
 
     def _fill_rows(self, site: Site, diag: float | None) -> list[tuple[str, list[StableId], dict, str]]:
-        """One `fill_loop` per free loop the site carries (`graph["free_loops"]`, smallest first) that the fill cap
-        allows. The cap is `limits.fill_span_allowed`, the same call the op and the judge make; a loop over it is
-        noted and not proposed (the op would only decline it). G0 only: a planar fill ignores G1 and the op reports
-        what it achieved."""
+        """One `fill_loop` per free loop the site carries (`graph["free_loops"]`, smallest first), WHATEVER ITS SIZE:
+        the 5%-of-diagonal fill cap was removed with the other fidelity gates (owner decision 2026-11-24); the span
+        is reported, not limited. G0 only: a planar fill ignores G1 and the op reports what it achieved."""
         loops = site.graph.get("free_loops") or []
         part = float(site.graph.get("diagonal_mm") or diag or 0.0)
         rows: list[tuple[str, list[StableId], dict, str]] = []
@@ -720,9 +715,6 @@ class DetGenerator:
             self._note(f"site {site.id}: fill_loop not proposed: the site carries no free loop")
         for loop in loops:
             span = float(loop["span_mm"])
-            if part <= 0 or not fill_span_allowed(span, part):
-                self._note(f"site {site.id}: fill_loop not proposed for a loop of {span:.4g} mm: beyond the fill cap")
-                continue
             rows.append(("fill_loop", list(loop["edges"]), {"continuity": "G0"},
                          f"close the free loop of {len(loop['edges'])} edges ({span:.3g} mm) with one face"))
         return rows

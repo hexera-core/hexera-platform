@@ -244,13 +244,18 @@ def test_rebuild_edge_removes_a_real_pcurve_3d_mismatch_so_tightening_can_succee
     assert set(ws2.ids) == set(ws0.ids) and edge_id in d1.modified
 
 
-def test_rebuild_edge_refuses_to_move_geometry_beyond_the_fidelity_bound(
+def test_rebuild_edge_never_refuses_on_how_far_it_moves_geometry(
     pool: WorkerPool, tmp_path: Path,
 ) -> None:
+    """B12: moving an edge 0.5 mm (bound 0.173 mm) is no longer refused; the move is measured and reported."""
     path, eindex = _box_with_off_surface_edge(tmp_path, 0.5)         # bound is 0.001 x 173 = 0.173
     ws0 = Workspace.from_brep(pool, path)
-    with pytest.raises(OpDeclined, match="^over_bound: .*fidelity bound"):
-        RebuildEdgeAsIntersection().apply(pool, ws0, [_id_of(ws0, "E", eindex)], {}, timeout_s=300)
+    try:
+        _, diff = RebuildEdgeAsIntersection().apply(pool, ws0, [_id_of(ws0, "E", eindex)], {}, timeout_s=300)
+    except OpDeclined as why:
+        assert "over_bound" not in why.reason and "fidelity" not in why.reason, why.reason
+        return
+    assert "max_move" in str(diff.params) and "fidelity_bound" in str(diff.params), diff.params
 
 
 def test_target_rel_outside_its_bounds_is_refused(pool: WorkerPool, tmp_path: Path) -> None:

@@ -114,7 +114,7 @@ class RemoveSmall(_ShellOp):
         "properties": {
             # the real upper limit is min(0.1, 0.001 x diagonal), which needs the part; the kernel
             # enforces it and rejects anything above
-            "max_width_mm": {"type": "number", "minimum": 1e-6, "maximum": _BOUND_MM},
+            "max_width_mm": {"type": "number", "minimum": 1e-6},
         },
         "required": ["max_width_mm"],
         "additionalProperties": False,
@@ -134,9 +134,9 @@ class Sew(_ShellOp):
         "type": "object",
         "x-targets": {"kind": "any", "min": 0, "max": None},
         "properties": {
-            # each rung must lie in [1e-6 x diagonal, min(0.1, 0.001 x diagonal)]; the kernel checks
+            # each rung must be at least 1e-6 x diagonal (numerical noise below); no upper bound (B12). The kernel checks
             "tol_ladder": {"type": "array", "minItems": 1, "maxItems": 8,
-                           "items": {"type": "number", "minimum": 1e-9, "maximum": _BOUND_MM}},
+                           "items": {"type": "number", "minimum": 1e-9}},
         },
         "required": ["tol_ladder"],
         "additionalProperties": False,
@@ -310,11 +310,9 @@ def _remove_small(payload: dict) -> dict:
     old = ws_kernel.read_brep(payload["brep_path"])
     params = dict(payload["params"])
     max_width = float(params["max_width_mm"])
-    _, bound = _bound(old)
-    if not 0 < max_width <= bound:
-        # the op does not apply at this width on this part: a decline, not a failure. The bound is unchanged.
-        return {"declined": f"invalid_params: max_width_mm {max_width} is outside (0, {bound}] for this part: "
-                            "min(0.1 mm, 0.001 x diagonal)"}
+    if not max_width > 0:
+        return {"declined": f"invalid_params: max_width_mm {max_width} must be positive"}
+    # no upper bound (it was the fidelity bound, min(0.1 mm, 0.001 x diagonal)); removals are declared and reported
     by_kind = {"face": _entities(old, "face"), "edge": _entities(old, "edge")}
     wanted: dict[str, list[Any]] = {"face": [], "edge": []}
     for target in payload["targets"]:
@@ -402,11 +400,12 @@ def _sew(payload: dict) -> dict:
     diag, bound = _bound(old)
     floor = ladder_floor(diag)
     ladder = sorted({float(t) for t in params["tol_ladder"]})
-    off = [t for t in ladder if not floor <= t <= bound]
+    off = [t for t in ladder if t < floor]
     if not ladder or off:
-        # the ladder does not apply to this part: a decline, not a failure. The window is unchanged.
-        return {"declined": f"invalid_params: tol_ladder rungs {off or ladder} must lie in [{floor}, {bound}] "
-                            "(1e-6 x diagonal .. min(0.1 mm, 0.001 x diagonal))"}
+        # below the kernel's working floor (1e-6 x diagonal) a rung is numerical noise. There is NO upper bound any
+        # more (it was the fidelity bound): a wide rung may move geometry, which is measured and reported.
+        return {"declined": f"invalid_params: tol_ladder rungs {off or ladder} must be at least {floor} "
+                            "(1e-6 x diagonal)"}
     if _entities(old, "solid"):
         return {"declined": "not_applicable: input carries a solid; sewing returns shells and would destroy it "
                             "(undeclared). Sew only open shells or loose faces"}

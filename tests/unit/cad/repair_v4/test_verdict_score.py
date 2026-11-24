@@ -307,10 +307,23 @@ def test_an_inconclusive_panel_is_never_cached(layers, step, tmp_path) -> None:
     assert member.runs == 2
 
 
-def test_an_unfaithful_state_never_outranks_a_faithful_one() -> None:
-    clean = _v(True, _passes(1, 0.05), _faith(ok=True, dev=0.09))
-    unfaithful = _v(True, _passes(3, 0.9), _faith(ok=False, dev=0.0))  # e.g. area_changed or fill_too_large
-    assert score(clean) > score(unfaithful)
+def test_a_state_that_meshes_in_more_members_outranks_however_far_it_moved_the_part() -> None:
+    """Owner decision 2026-11-24 (B12): the goal is VALID + MESHABLE. A valid state that meshes in 3 members beats one
+    that meshes in 1, even if it moved the surface by 25 mm and layer 3 calls it unfaithful. (This test used to pin the
+    opposite: an unfaithful state never outranked a faithful one.)"""
+    faithful = _v(True, _passes(1, 0.05), _faith(ok=True, dev=0.09))
+    moved = _v(True, _passes(3, 0.9), _faith(ok=False, dev=25.0))      # e.g. area_changed or fill_too_large
+    assert score(moved) > score(faithful)
+    assert score(moved)[0] == score(faithful)[0] == 1                 # key 0 is validity alone
+
+
+def test_deviation_only_breaks_ties_on_the_goal_keys() -> None:
+    small = _v(True, _passes(2, 0.3), _faith(ok=True, dev=0.01))
+    large = _v(True, _passes(2, 0.3), _faith(ok=False, dev=5.0))
+    assert score(small) > score(large)                                # equal goal keys: the smaller move wins
+    better_mesh = _v(True, _passes(2, 0.31), _faith(ok=False, dev=5.0))
+    assert score(better_mesh) > score(small)                          # a better min SICN beats any deviation
+    assert score(_v(False, _passes(4, 0.9), _faith(ok=True, dev=0.0))) < score(large)   # invalid still loses
 
 
 def test_declared_default_is_not_shared_between_calls(layers) -> None:

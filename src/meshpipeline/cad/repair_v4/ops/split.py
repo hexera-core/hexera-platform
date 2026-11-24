@@ -52,27 +52,16 @@ def _solid_count(shape: Any) -> int:
 
 
 def guard(old: Any, new: Any) -> str | None:
-    """Why `new` may not replace `old`, or None. A split must keep the solid count, keep a valid
-    part valid, and move neither area nor volume beyond integration noise (adaptive integration,
-    gap_split's measured noise bounds). This is what makes "splits cause zero deviation" a runtime
-    guarantee instead of a property of the fixtures: ShapeDivideContinuity and UnifySameDomain can
-    reparametrise or re-segment surfaces, so the geometry is MEASURED, not assumed."""
+    """Why `new` may not replace `old`, or None: a split must keep the solid count and keep a valid part valid.
+    (It used to refuse an area or volume change beyond integration noise as well; area and volume are fidelity,
+    which is reported and gates nothing since the owner decision of 2026-11-24.)"""
     from OCP.BRepCheck import BRepCheck_Analyzer
-
-    from meshpipeline.cad.repair import gap_split
 
     before, after = _solid_count(old), _solid_count(new)
     if before != after:
         return f"split_failed: the op changed the solid count from {before} to {after}"
     if BRepCheck_Analyzer(old).IsValid() and not BRepCheck_Analyzer(new).IsValid():
         return "invalidated: the result is not BRepCheck-valid"
-    area0, volume0 = gap_split._precise(old)
-    area1, volume1 = gap_split._precise(new)
-    d_area, d_volume = area1 - area0, volume1 - volume0
-    moved_volume = before > 0 and abs(d_volume) > gap_split.MAX_VOLUME_NOISE_RATIO * max(volume0, 1e-12)
-    if abs(d_area) > gap_split.MAX_AREA_NOISE_RATIO * max(area0, 1e-12) or moved_volume:
-        return (f"geometry_moved: area {d_area:.6g} mm2, volume {d_volume:.6g} mm3 after an op "
-                "that should move neither")
     return None
 
 

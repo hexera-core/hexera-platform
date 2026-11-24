@@ -73,7 +73,7 @@ class Conformalise:
         "properties": {
             # 0.1 mm is the absolute cap; the per-part bound min(0.1, 0.001*diagonal) is enforced
             # (as a decline) in the kernel, where the diagonal is known.
-            "fuzzy_mm": {"type": "number", "minimum": 0, "maximum": 0.1},
+            "fuzzy_mm": {"type": "number", "minimum": 0},
             "mode": {"type": "string", "pattern": r"^(fragment|cut_by:[A-Z][0-9]+)$"},
         },
         "required": ["mode"],
@@ -136,7 +136,7 @@ class Fuse:
     name = "fuse"
     params_schema: dict = {
         "type": "object",
-        "properties": {"fuzzy_mm": {"type": "number", "minimum": 0, "maximum": 0.1}},
+        "properties": {"fuzzy_mm": {"type": "number", "minimum": 0}},
         "required": [],
         "additionalProperties": False,
         "x-targets": {"kind": "solid", "min": 2, "max": None},

@@ -4,13 +4,14 @@
 # Boundaries: kernel functions run in a worker (OCP imported lazily); the `Op` classes run in the
 #             parent and only move ids and paths. Choosing WHICH faces is the caller's (sites, Task
 #             17; search, Task 18). Registry wiring is integration's: this module only exposes `OPS`.
-"""Face rebuild ops - the most geometry-altering ops in the library, so every one of them measures
-what it did and refuses what it cannot keep inside the fidelity bound.
+"""Face rebuild ops - the most geometry-altering ops in the library, so every one of them MEASURES what it did.
 
-THE BOUND. `bound = min(0.1 mm, 0.001 x diagonal)` of the part the op reads. `tol_mm` parameters are
-capped by it (the op DECLINES a larger one rather than clamping it silently), and the kernel
-function measures the deviation it actually caused and declines if that is over the bound too.
-Declining returns `{"declined": reason}` and writes nothing.
+NO FIDELITY GATE (owner decision 2026-11-24: clean = valid + meshable). The deviation an op causes, the area it moves
+and the span of a filled loop are measured and returned in the record under `"measured"` (with the part's
+`bound_mm` = min(0.1 mm, 0.001 x diagonal) beside them for reference), but no op declines because of them, and
+`tol_mm` is not capped. An op still declines for what makes its OWN result unusable: an invalid result, a loop that
+is not a loop, a fill or fit the kernel could not build. Declining returns `{"declined": reason}` and writes
+nothing.
 
 DEVIATION IS MEASURED, NOT ASSUMED: sample points of one face (UV grid classified inside the
 trimmed face, plus points along its edges) are measured to the other face with
@@ -38,7 +39,6 @@ import time
 from typing import Any
 
 from meshpipeline.cad.repair_v4.kernel_calls import register as register_kernel_fn
-from meshpipeline.cad.repair_v4.limits import MAX_FILL_SPAN_RATIO, fill_span_allowed  # the one 5%: limits.py
 from meshpipeline.cad.repair_v4.ops import OpDeclined, OpFailed, run_kernel_op, validate_call
 from meshpipeline.cad.repair_v4.types import Site, StableId
 from meshpipeline.cad.repair_v4.worker_pool import WorkerPool
@@ -70,9 +70,6 @@ BOUND_DIAGONAL_RATIO = 0.001
 SAMPLES_PER_AXIS = 12
 #: refit_cluster fits a GRID_NODES x GRID_NODES grid of points.
 GRID_NODES = 24
-#: A replacing op declines if the face area moves by more than this fraction (legacy
-#: CAD_REPAIR_MAX_AREA_CHANGE_RATIO).
-MAX_AREA_CHANGE_RATIO = 0.02
 
 
 def fidelity_bound(diagonal: float) -> float:
@@ -366,9 +363,8 @@ def _guard(old: Any, new: Any, *, geometry_fixed: bool) -> str | None:
     """Why `new` may not replace `old`, or None. Checked on the WHOLE part, in context: the solid
     count is kept, no new free edge appears, a valid part stays valid and an invalid one gets no
     more invalid faces. When `geometry_fixed` (the op swaps a carrier within a tolerance, so area
-    and volume must stand still) Task 11's `split.guard` is run as well, for its area and volume
-    noise bounds; ops that legitimately add or remove area (fill, refit, rebuild) are gated by their
-    own measured numbers instead."""
+    and volume must stand still) Task 11's `split.guard` is run as well (solid count and validity; its area and
+    volume noise bounds were removed with the other fidelity gates)."""
     from OCP.BRepCheck import BRepCheck_Analyzer
 
     from meshpipeline.cad.repair_v4.ops import split
@@ -432,25 +428,6 @@ def _decline(payload: dict, reason: str) -> dict:
     if os.path.exists(payload["out_path"]):
         os.unlink(payload["out_path"])
     return {"declined": reason}
-
-
-#: The measured numbers that are distances in mm and are held to the bound.
-_GATED = ("old_to_new", "new_to_old", "to_carrier", "boundary_shift", "fill_to_surroundings")
-
-
-def _over_bound(measured: dict, bound: float, label: str = "deviation") -> str | None:
-    """Decline text if any distance in `measured` exceeds `bound`, or the area moved too much."""
-    ratio = measured.get("area_change_ratio")
-    if ratio is not None and ratio > MAX_AREA_CHANGE_RATIO:
-        return (f"over_bound: the face area moved by {100 * ratio:.2f}% (limit "
-                f"{100 * MAX_AREA_CHANGE_RATIO:g}%); nothing was changed")
-    keys = [k for k in _GATED if k in measured]
-    worst_key = max(keys, key=lambda k: measured[k], default=None)
-    if worst_key is not None and measured[worst_key] > bound:
-        return (f"over_bound: {label} {measured[worst_key]:.6g} mm ({worst_key}) exceeds the "
-                f"fidelity bound {bound:.6g} mm - the defect is larger than the op may change; "
-                "nothing was changed")
-    return None
 
 
 # --- kernel side: the ops -----------------------------------------------------------------------
@@ -733,10 +710,7 @@ def _fill_loop(payload: dict) -> dict:
         sequence.Append(edge)
     x0, y0, z0, x1, y1, z1 = box.Get()
     span = math.sqrt((x1 - x0) ** 2 + (y1 - y0) ** 2 + (z1 - z0) ** 2)
-    if not fill_span_allowed(span, diagonal):
-        return _decline(payload, (
-            f"too_large: the loop spans {span:.4g} mm, {100 * span / diagonal:.1f}% of the part's "
-            f"diagonal ({diagonal:.4g} mm); fill_loop refuses beyond {100 * MAX_FILL_SPAN_RATIO:g}%"))
+    # NO span limit (it was 5% of the diagonal): a big loop is filled and its span reported in `measured`
 
     ancestors = TopTools_IndexedDataMapOfShapeListOfShape()
     TopExp.MapShapesAndAncestors_s(old, TopAbs_EDGE, TopAbs_FACE, ancestors)
@@ -781,8 +755,7 @@ def _fill_loop(payload: dict) -> dict:
         return _decline(payload, f"no_valid_fill: {reason}")
     new, history = built
     fill = chosen["face"]
-    # The fill is bounded against the surface it plugs: its sampled points must lie within the
-    # bound of the carrier of one of the faces around the loop, so a MakeFilling bulge is refused.
+    # How far the fill strays from the surfaces around the loop is MEASURED and reported, not gated.
     # (Original faces are untouched by construction and are not re-measured.)
     from OCP.BRep import BRep_Tool
 
@@ -792,9 +765,6 @@ def _fill_loop(payload: dict) -> dict:
                 "bound_mm": bound, "fill_area_mm2": _area(fill), "fill_surface": _surface_kind(fill),
                 "continuity_requested": payload["continuity"],
                 "continuity_achieved": chosen["achieved"]}
-    problem = _over_bound(measured, bound, "fill deviates from its surroundings by")
-    if problem:
-        return _decline(payload, problem)
     return _finish(old, new, history, payload, op="fill_loop",
                    params={"continuity": payload["continuity"]}, start=start, measured=measured,
                    added_faces=[_find_in(new, fill)])
@@ -845,18 +815,14 @@ def _rebuild_face(payload: dict) -> dict:
                       "area_change_ratio": abs(area_new - area_old) / max(area_old, 1e-12),
                       "continuity_requested": payload["continuity"],
                       "continuity_achieved": achieved}
-    # GATED. The trim is what a rebuild moves: how far the OLD boundary sat from the new face. (The
-    # distance of the new face to the carrier it was built on is ~0 by construction and is only
-    # reported.) A loop bigger than the bound is therefore declined, not silently cut off.
+    # MEASURED, not gated: the trim is what a rebuild moves - how far the OLD boundary sat from the new face. (The
+    # distance of the new face to the carrier it was built on is ~0 by construction and is only reported.)
     measured["boundary_shift"] = _max_distance(_edge_points(face), candidate)
     if refilled:
         measured.update(_two_way([face], [candidate]))
     else:
         measured["carrier_distance_reported"] = _distance_to_surface(
             _face_points(candidate), BRep_Tool.Surface_s(face))
-    problem = _over_bound(measured, bound)
-    if problem:
-        return _decline(payload, problem)
     return _finish(old, new, history, payload, op="rebuild_face",
                    params={"continuity": payload["continuity"]}, start=start, measured=measured)
 
@@ -890,17 +856,7 @@ def _replace_surfaces(payload: dict, *, op: str, params: dict, start: float, old
     area_old, area_new = sum(_area(f) for f in faces), sum(_area(c) for c in candidates)
     measured = {"bound_mm": bound, **extra, **_two_way(faces, candidates),
                 "area_change_ratio": abs(area_new - area_old) / max(area_old, 1e-12)}
-    problem = _over_bound(measured, min(bound, payload["tol_mm"]), "deviation vs tol_mm")
-    if problem:
-        return _decline(payload, problem)
     return _finish(old, new, history, payload, op=op, params=params, start=start, measured=measured)
-
-
-def _tolerance_gate(payload: dict, bound: float) -> str | None:
-    if payload["tol_mm"] > bound:
-        return (f"over_bound: tol_mm {payload['tol_mm']:.6g} exceeds the fidelity bound "
-                f"{bound:.6g} mm (min(0.1, 0.001 x diagonal))")
-    return None
 
 
 @register_kernel_fn("op_reapproximate")
@@ -920,9 +876,6 @@ def _reapproximate(payload: dict) -> dict:
     start = time.perf_counter()
     old = ws_kernel.read_brep(payload["brep_path"])
     bound = fidelity_bound(ws_kernel.diagonal_of(old))
-    refusal = _tolerance_gate(payload, bound)
-    if refusal:
-        return _decline(payload, refusal)
     faces = _faces_of(old, payload["faces"])
     surfaces: list[Any] = []
     for face in faces:
@@ -960,9 +913,6 @@ def _to_canonical(payload: dict) -> dict:
     start = time.perf_counter()
     old = ws_kernel.read_brep(payload["brep_path"])
     bound = fidelity_bound(ws_kernel.diagonal_of(old))
-    refusal = _tolerance_gate(payload, bound)
-    if refusal:
-        return _decline(payload, refusal)
     faces = _faces_of(old, payload["faces"])
     tol = payload["tol_mm"]
     surfaces: list[Any] = []
@@ -1058,9 +1008,6 @@ def _refit_cluster(payload: dict) -> dict:
     start = time.perf_counter()
     old = ws_kernel.read_brep(payload["brep_path"])
     bound = fidelity_bound(ws_kernel.diagonal_of(old))
-    refusal = _tolerance_gate(payload, bound)
-    if refusal:
-        return _decline(payload, refusal)
     faces = _faces_of(old, payload["faces"])
     if len(faces) < 2:
         return _decline(payload, "not_a_cluster: refit_cluster needs at least two faces")
@@ -1110,9 +1057,6 @@ def _refit_cluster(payload: dict) -> dict:
     measured = {"bound_mm": bound, **_two_way(faces, [added]),
                 "area_change_ratio": abs(area_new - area_old) / max(area_old, 1e-12),
                 "cluster_faces": len(faces), "fit_surface": _surface_kind(added)}
-    problem = _over_bound(measured, min(bound, payload["tol_mm"]), "deviation vs tol_mm")
-    if problem:
-        return _decline(payload, problem)
     return _finish(old, new, history, payload, op="refit_cluster",
                    params={"tol_mm": payload["tol_mm"]}, start=start, measured=measured,
                    added_faces=[_find_in(new, added)])
@@ -1121,7 +1065,8 @@ def _refit_cluster(payload: dict) -> dict:
 # --- parent side --------------------------------------------------------------------------------
 
 _CONTINUITY = {"type": "string", "enum": ["G0", "G1"]}
-_TOL = {"type": "number", "minimum": 1e-6, "maximum": BOUND_MAX_MM}
+#: a fitting tolerance in mm; NOT capped by the fidelity bound any more (owner decision 2026-11-24)
+_TOL = {"type": "number", "minimum": 1e-6}
 
 
 class _FaceOp:
@@ -1170,8 +1115,8 @@ class RebuildFace(_FaceOp):
     name = "rebuild_face"
     kernel_fn = "op_rebuild_face"
     params_schema = {**_schema("face", 1, 1, {"continuity": _CONTINUITY}),
-                     "description": "Fix self-intersections of the face's wires; a loop larger than "
-                                    "the fidelity bound is declined. G1 is honoured only where a "
+                     "description": "Fix self-intersections of the face's wires; how far the boundary "
+                                    "moved is measured and reported. G1 is honoured only where a "
                                     "neighbouring face constrains the re-fill; see "
                                     "Diff.params['measured']['continuity_achieved']."}
     site_kinds = frozenset({"invalid", "self_overlap", "intersection", "periodic", "pole"})
@@ -1179,13 +1124,13 @@ class RebuildFace(_FaceOp):
 
 
 class FillLoop(_FaceOp):
-    """Declares the face it adds. Refuses a loop spanning more than 5% of the part's diagonal."""
+    """Declares the face it adds. Any loop size: the span is measured and reported, not limited."""
 
     name = "fill_loop"
     kernel_fn = "op_fill_loop"
     params_schema = {**_schema("edge", 1, None, {"continuity": _CONTINUITY}),
-                     "description": "Close one free loop with one declared face. Declined beyond "
-                                    "5% of the diagonal. A planar fill ignores G1; achieved "
+                     "description": "Close one free loop with one declared face, of any size (the span "
+                                    "is reported). A planar fill ignores G1; achieved "
                                     "continuity is in Diff.params['measured']."}
     site_kinds = frozenset({"open"})
     entity_prefix = "E"
@@ -1219,7 +1164,7 @@ class RefitCluster(_FaceOp):
     params_schema = {**_schema("face", 2, None, {"tol_mm": _TOL}),
                      "description": "Refit 2+ adjacent faces of ONE shell with one closed outline "
                                     "into one B-spline face. No seam faces; cluster labels are not "
-                                    "inherited; declined if the two-way deviation exceeds tol_mm."}
+                                    "inherited; the two-way deviation is measured and reported."}
     site_kinds = frozenset({"sliver", "overlap", "self_overlap"})
     entity_prefix = "F"
     declares_added = True

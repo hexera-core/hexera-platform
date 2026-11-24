@@ -680,7 +680,9 @@ def test_default_judge_full_verdict_is_clean_only_on_the_re_run_layer_3(real_che
             return super().call(fn, payload, timeout_s=timeout_s)
 
     v = j.full(Unfaithful(), ws, "orig.step")
-    assert v.clean is False and j.score(v)[0] == 0   # layer 3 on the exact indices decides `clean`, not the STEP pass
+    # layer 3 on the exact indices is what `clean` reads (that rule is not B12's); the SCORE's first key is validity
+    # alone since B12, so the unfaithful state is still valid and ranks on its meshing
+    assert v.clean is False and j.score(v)[0] == 1
 
 
 def test_the_clean_rule_default_judge_recomputes_agrees_with_the_real_assembly(
