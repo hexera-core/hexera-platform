@@ -2160,10 +2160,13 @@ def search(
             # on the SUBMISSION side: a candidate is not started once the wall has passed, the ones already
             # submitted are left to finish (their own timeouts bound them, now wall-derived), and the reduction is
             # still in submission order, so the frontier cannot change with timing.
+            # The check is the WALL ALONE, never over_budget(): this expansion's ops are RESERVED above
+            # (`spent["ops"] += len(to_run)`), so over_budget() reads "ops" here for every candidate of a batch
+            # that filled the budget, and skipped all of them - test_respects_wall_and_op_budget applied 0 of 3.
             futures = []
             nonlocal_wall_skips = 0
             for item in to_run:
-                if over_budget() is not None:
+                if spent_now()["wall_s"] >= propose_wall_s:
                     nonlocal_wall_skips += 1
                     continue
                 futures.append(executor.submit(evaluate, item))
