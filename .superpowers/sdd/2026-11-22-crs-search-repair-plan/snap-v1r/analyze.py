@@ -228,6 +228,8 @@ def main() -> int:
     p = argparse.ArgumentParser()
     p.add_argument("--run", required=True)
     p.add_argument("--doc", required=True)
+    p.add_argument("--notes", default="", help="a markdown file placed after the header (rulings, relabels)")
+    p.add_argument("--moved", default="", help="comma list of file names moved between splits: reported apart")
     a = p.parse_args()
     run = Path(a.run)
     man = json.loads((run / "launch_manifest.json").read_text())
@@ -276,6 +278,16 @@ def main() -> int:
             sens.append(f"| {split} minus {len(s['minus'])} refused file(s) ({', '.join(short(x) for x in s['minus'])}) "
                         f"(sensitivity, NOT a split) | {report_line(rep, s['stem'])} |")
     wd = man["waves"]
+    notes = Path(a.notes).read_text().strip() + "\n" if a.notes else ""
+    moved_md = ""
+    for name in [x for x in a.moved.split(",") if x]:
+        rs = sorted((r for r in dev_rows + cl_rows if r["name"] == name), key=lambda r: ARMS.index(r["arm"]))
+        ex = [e for e in dev_exc + cl_exc if e["name"] == name]
+        moved_md += (f"\n### Moved file `{short(name)}` (reported apart: not a repair)\n\n| arm | in clean | out clean | "
+                     "panel in→out | inconclusive | model $ |\n|---|---|---|---|---|---|\n" + "".join(
+                         f"| {r['arm']} | {r['in_clean']} | {r['out_clean']} | {r['in_panel_passes']}→{r['out_panel_passes']} | "
+                         f"{r['inconclusive']} | {float(r.get('model_usd') or 0):.4f} |\n" for r in rs)
+                     + "".join(f"| {e['arm']} | excluded: {e['reason'][:80]} | | | | |\n" for e in ex))
     doc = f"""# CRS v4 dev snapshot {env['LABEL']} (PROVISIONAL)
 
 **PROVISIONAL.** {len(inp)} dev + {len({r['sha256'] for r in cl_rows} | {e['sha256'] for e in cl_exc})} clean files. Written by `snap-v1r/analyze.py` from the collected run; every table is computed from the rows.
@@ -291,6 +303,7 @@ def main() -> int:
 | Model caps | dev {wd['dev']['caps_usd']}, clean {wd['clean']['caps_usd']}: total **${man['total_caps_usd']}** |
 | Shard exits | {', '.join(f'{k}={v}' for k, v in rcs.items())}{'; retried once after a probe refusal: ' + ', '.join(retried) if retried else ''} |
 
+{notes}
 ## Official reports
 
 | report | result |
@@ -320,6 +333,8 @@ Widest version, for reference: every body-overlap input left out ({len(overlap)}
 ## Clean control
 
 {clean_tab}
+
+{moved_md}
 
 ## Excluded files, each its own group (not in any rate; the ruling on the exclusion rate is pending)
 
