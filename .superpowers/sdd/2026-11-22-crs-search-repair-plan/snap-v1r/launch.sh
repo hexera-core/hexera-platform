@@ -76,7 +76,7 @@ LABEL_REV=$(python3 -I "$HERE/image_label.py" "$IMAGE_REF" --token "$(gcloud aut
   || die "image label check refused: $IMAGE_REF label '$LABEL_REV', expected $IMAGE_COMMIT"
 log "image $IMAGE_REF, label org.opencontainers.image.revision=$LABEL_REV (== IMAGE_COMMIT)"
 
-WAVE_ID_DEV=snap-$LABEL-dev-$TS; WAVE_ID_CLEAN=snap-$LABEL-clean-$TS
+WAVE_ID_DEV=snap-$LABEL${WAVE_TAG:+-$WAVE_TAG}-dev-$TS; WAVE_ID_CLEAN=snap-$LABEL${WAVE_TAG:+-$WAVE_TAG}-clean-$TS
 cat > "$RUN/run.env" <<EOF
 LABEL=$LABEL
 COMMIT=$COMMIT
@@ -200,7 +200,8 @@ fi
 # an ABORTED run (input staging failed) has evidence but no measurement: no doc, no commit
 if [ -f "$RUN/out/ABORTED" ]; then die "the run ABORTED on the VM: $(cat "$RUN/out/ABORTED"); evidence in $RUN/out (stage_errors.txt); VM deleted, no doc written"; fi
 # ---------------------------------------------------------------- 8. the doc and the artifacts
-python3 -I "$HERE/analyze.py" --run "$RUN" --doc "$DOC" ${NOTES_MD:+--notes "$NOTES_MD"} ${MOVED:+--moved "$MOVED"} | tee -a "$RUN/launch.log"
+python3 -I "$HERE/analyze.py" --run "$RUN" --doc "$DOC" ${NOTES_MD:+--notes "$NOTES_MD"} ${MOVED:+--moved "$MOVED"} \
+  ${BASELINE_RUN:+--baseline-run "$BASELINE_RUN" --baseline-label "${BASELINE_LABEL:-baseline}"} | tee -a "$RUN/launch.log"
 [ -n "${NOTES_MD:-}" ] && cp "$NOTES_MD" "$RUN/notes.md"
 mkdir -p "$ART"
 ( cd "$RUN" && find out -path '*/shard-*' \( -name rows.json -o -name EXCLUDED.json -o -name PROVENANCE.json \) -print0 \

@@ -70,6 +70,41 @@ def crash_section(exc: list[dict], label: str) -> str:
     return "\n".join(lines)
 
 
+def pair_counts(run: Path, env: dict) -> dict:
+    out = {}
+    for split in ("dev", "clean"):
+        rows, exc, _ = load_wave(run / "out" / env[f"WAVE_ID_{split.upper()}"])
+        keys = Counter(reason_key(e["reason"]) for e in exc)
+        out[split] = {"measured": len(rows), "harness crash": keys.get("harness crash", 0),
+                      "file_timeout": keys.get("file_timeout", 0), "deadline stop": keys.get("deadline stop", 0),
+                      "other excluded": len(exc) - keys.get("harness crash", 0) - keys.get("file_timeout", 0)
+                      - keys.get("deadline stop", 0)}
+    return out
+
+
+def baseline_section(base: Path, label: str, run: Path, env: dict) -> str:
+    """How much each wave MEASURED on the same splits, and why the rest was not. More measured (file, arm) pairs in
+    this wave than in the baseline is partly a HARNESS fix (fewer crashes, no deadline), not repair ability."""
+    benv = dict(x.split("=", 1) for x in (base / "run.env").read_text().split("\n") if "=" in x)
+    benv = {k: v.strip().strip('"') for k, v in benv.items()}
+    b, t = pair_counts(base, benv), pair_counts(run, env)
+    lines = [f"## Measured (file, arm) pairs: this wave vs {label} on the same splits", "",
+             f"{label}: commit `{benv.get('COMMIT', '?')}`, wave ids `{benv.get('WAVE_ID_DEV')}` / `{benv.get('WAVE_ID_CLEAN')}`. "
+             f"This wave: commit `{env['COMMIT']}`, wave ids `{env['WAVE_ID_DEV']}` / `{env['WAVE_ID_CLEAN']}`.", "",
+             f"| split | pairs | measured ({label} → this) | harness crash ({label} → this) | file_timeout | deadline stop | other excluded |",
+             "|---|---|---|---|---|---|---|"]
+    for s in ("dev", "clean"):
+        tot = sum(t[s].values())
+        lines.append(f"| {s} | {tot} | {b[s]['measured']} → {t[s]['measured']} | {b[s]['harness crash']} → {t[s]['harness crash']} | "
+                     f"{b[s]['file_timeout']} → {t[s]['file_timeout']} | {b[s]['deadline stop']} → {t[s]['deadline stop']} | "
+                     f"{b[s]['other excluded']} → {t[s]['other excluded']} |")
+    dc = b["dev"]["harness crash"] - t["dev"]["harness crash"]
+    lines += ["", f"**Read this before comparing clean counts:** {dc:+d} dev pairs measured here were lost to harness crashes in "
+              f"{label} (crash count {b['dev']['harness crash']} → {t['dev']['harness crash']}); a difference in deadline-stopped pairs is "
+              f"wall clock, not repair ability. Gains on pairs {label} never measured are partly the harness fix."]
+    return "\n".join(lines) + "\n"
+
+
 def short(name: str) -> str:
     return name.split("/")[-1]
 
@@ -309,6 +344,9 @@ def main() -> int:
     p.add_argument("--run", required=True)
     p.add_argument("--doc", required=True)
     p.add_argument("--notes", default="", help="a markdown file placed after the header (rulings, relabels)")
+    p.add_argument("--baseline-run", default="", help="an earlier collected run on the SAME splits, for the "
+                   "measured-pairs comparison (crash fixes change how much is measured)")
+    p.add_argument("--baseline-label", default="baseline")
     p.add_argument("--moved", default="", help="comma list of file names moved between splits: reported apart")
     a = p.parse_args()
     run = Path(a.run)
@@ -375,6 +413,9 @@ def main() -> int:
             sens.append(f"| {split} minus {len(s['minus'])} refused file(s) ({', '.join(short(x) for x in s['minus'])}) "
                         f"(sensitivity, NOT a split) | {report_line(rep, s['stem'])} |")
     wd = man["waves"]
+    base_md = ""
+    if a.baseline_run:
+        base_md = baseline_section(Path(a.baseline_run), a.baseline_label, run, env)
     notes = Path(a.notes).read_text().strip() + "\n" if a.notes else ""
     moved_md = ""
     for name in [x for x in a.moved.split(",") if x]:
@@ -402,6 +443,7 @@ def main() -> int:
 
 {notes}
 {deadline_section(out, led_total, float(man['total_caps_usd']))}
+{base_md}
 ## Official reports
 
 | report | result |
