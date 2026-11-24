@@ -1403,6 +1403,12 @@ def _mesh_once(brep: Path, record: dict, owners: list[str], mm: float, log: list
         places = _place_sizes(rows, owners, record, requirements, facts, mm)
     if places is not None and places.get("applied"):
         planned = places["planned"]
+        if (sizing is not None and sizing.get("low_mm") is not None and places.get("finest_mm")
+                and ((requirements or {}).get("sizes") or {}).get("min_edge_mm") is None):
+            # SHMESH-52: the low end of a global size's band (half of it) is no shortest edge the user typed: a place
+            # asked finer is meshed at what was asked, never held at the band's low end (a picked face asked 2 mm
+            # under a global 8 mm came out 4.08 mm, NOTE-17)
+            sizing["low_mm"] = min(float(sizing["low_mm"]), 0.5 * float(places["finest_mm"]))
     # SHMESH-27 (the user's sizes only): a face narrower than their size is sized to its own width
     bent = [f["bend"] is not None and 0 < f["bend"] < plan_rules.PANEL_WALLS * r["wall_mm"]
             for f, r in zip(facts, rows, strict=True)]
