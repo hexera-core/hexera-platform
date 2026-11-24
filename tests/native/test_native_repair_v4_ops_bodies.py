@@ -476,3 +476,82 @@ def test_thin_but_vast_cut_is_declined_on_volume_change(pool: WorkerPool, tmp_pa
     assert diff.params["declined"] == "exceeds_fidelity"
     assert diff.params["detail"]["what"] == "volume_change"
     assert new is ws
+
+
+# ---- the overlap DEPTH is how far a cut moves the victim's surface (lane B6/B7) -----------------
+
+
+def _rotated(shape: Any, *, about_z_deg: float, about_y_deg: float) -> Any:
+    import math
+
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
+    from OCP.gp import gp_Ax1, gp_Dir, gp_Trsf
+
+    t1, t2 = gp_Trsf(), gp_Trsf()
+    t1.SetRotation(gp_Ax1(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1)), math.radians(about_z_deg))
+    t2.SetRotation(gp_Ax1(gp_Pnt(0, 0, 0), gp_Dir(0, 1, 0)), math.radians(about_y_deg))
+    t2.Multiply(t1)
+    return BRepBuilderAPI_Transform(shape, t2, True).Shape()
+
+
+def _inclined_slab_ws(pool: WorkerPool, tmp_path: Path, thickness: float) -> Workspace:
+    """Two 10 mm cubes overlapping in a `thickness` slab, the whole part turned 30 deg about z and 20 about y, so
+    the slab is INCLINED: its axis-aligned bounding box is millimetres thick though the slab is not."""
+    shape = _compound(_box(0, 0, 0, 10, 10, 10), _box(10 - thickness, 0, 0, 10, 10, 10))
+    return Workspace.from_brep(pool, _write(_rotated(shape, about_z_deg=30, about_y_deg=20), tmp_path / "incl.brep"))
+
+
+def test_a_thin_inclined_overlap_under_the_bound_is_cut_not_declined(pool: WorkerPool, tmp_path: Path) -> None:
+    """The turned part's bound is min(0.1, 0.001 x its diagonal) = 0.035 mm; a 0.02 mm slab is UNDER it. The old
+    depth, max(2V/A, thinnest axis-aligned extent of the overlap), read 8.13 mm here and declined it."""
+    from meshpipeline.cad.repair_v4.body_kernel import _cut_depth, fidelity_bound
+    from meshpipeline.cad.repair_v4.ws_kernel import diagonal_of
+
+    ws = _inclined_slab_ws(pool, tmp_path, 0.02)
+    shape = _read(ws.brep_path)
+    a, b = _solids(shape)
+    bound = fidelity_bound(diagonal_of(shape))
+    _, depth, method = _cut_depth(b, a, 0.0)
+    assert method == "measured" and depth == pytest.approx(0.02, rel=0.05) and depth < bound
+    box = _bbox(BRepAlgoAPI_Common(a, b).Shape())
+    assert min(box[3] - box[0], box[4] - box[1], box[5] - box[2]) > 10 * bound      # what the old measure read
+
+    keeper, other = _bodies(ws)
+    new, diff = Conformalise().apply(pool, ws, [keeper, other], {"mode": f"cut_by:{keeper}"}, timeout_s=TIMEOUT)
+    assert "declined" not in diff.params, diff.params
+    out = _read(new.brep_path)
+    assert BRepCheck_Analyzer(out).IsValid() and _count(out, TopAbs_SOLID) == 2
+    s1, s2 = _solids(out)
+    assert _common_volume(s1, s2) < 1e-6 and _shared_faces(out) >= 1
+
+
+def test_a_thick_inclined_overlap_is_still_declined_on_its_real_depth(pool: WorkerPool, tmp_path: Path) -> None:
+    ws = _inclined_slab_ws(pool, tmp_path, 0.5)
+    keeper, other = _bodies(ws)
+    _, diff = Conformalise().apply(pool, ws, [keeper, other], {"mode": f"cut_by:{keeper}"}, timeout_s=TIMEOUT)
+    assert diff.params["declined"] == "exceeds_fidelity"
+    detail = diff.params["detail"]
+    assert detail["what"] == "overlap_depth" and detail["method"] == "measured"
+    assert detail["value"] == pytest.approx(0.5, rel=0.05)
+
+
+def test_the_depth_is_the_surface_movement_for_a_slab_and_a_corner_cube() -> None:
+    """A slab of thickness t: the victim's face moves t. A corner cube of side s: the victim's corner moves s - where
+    the mean thickness 2V/A would read s/3."""
+    from meshpipeline.cad.repair_v4.body_kernel import _cut_depth
+
+    keeper = _box(0, 0, 0, 10, 10, 10)
+    _, slab, m1 = _cut_depth(_box(9.7, 0, 0, 10, 10, 10), keeper, 0.0)
+    _, cube, m2 = _cut_depth(_box(9.7, 9.7, 9.7, 10, 10, 10), keeper, 0.0)
+    assert (m1, m2) == ("measured", "measured")
+    assert slab == pytest.approx(0.3, rel=0.02)
+    assert cube == pytest.approx(0.3, rel=0.05)                                     # not 0.1 (= 2V/A)
+
+
+def test_a_duplicate_or_contained_body_falls_back_to_the_mean_thickness() -> None:
+    """Two coincident copies: the overlap is the whole body and no victim surface lies inside the keeper alone, so
+    there is no movement to measure. The depth is then the mean thickness 2V/A of the overlap, never 0."""
+    from meshpipeline.cad.repair_v4.body_kernel import _cut_depth
+
+    _, depth, method = _cut_depth(_box(0, 0, 0, 10, 10, 10), _box(0, 0, 0, 10, 10, 10), 0.0)
+    assert method == "mean_thickness" and depth == pytest.approx(10 / 3, rel=1e-6)
