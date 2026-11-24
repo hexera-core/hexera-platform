@@ -131,3 +131,65 @@ def test_the_markdown_says_a_partial_table_is_provisional(tmp_path) -> None:
     assert "PROVISIONAL" in md and "still running" in md and "shard-1-of-6" in md
     done = rs.rescore(_write(tmp_path, [_row(1, "staged")], "done"))
     assert "still running" not in rs.render(done, title="t", source="s")
+
+
+# ------------------------------------------------------------------ files no arm comparison can use
+
+def _excluded(i: int, arm: str, reason: str = "file_timeout: file wall clock 1800s exceeded") -> dict:
+    return {"name": f"f{i}.step", "sha256": f"{i:064x}", "source": "abc_fail", "arm": arm, "reason": reason}
+
+
+def test_a_file_most_arms_were_excluded_on_is_named_as_unusable(tmp_path) -> None:
+    """LEAD-2's dev3 case: 3 of 4 arms hit the file wall, so the file contributes to no arm comparison."""
+    root = tmp_path / "w"
+    d = root / "shard-1-of-1"
+    d.mkdir(parents=True)
+    arms = ("input_only", "staged", "search_det", "search_ai")
+    # file 1: only input_only got a verdict. file 2: every arm did, so it stays usable
+    (d / "rows.jsonl").write_text(json.dumps(_row(1, "input_only")) + "\n"
+                                  + "".join(json.dumps(_row(2, a)) + "\n" for a in arms))
+    (d / "EXCLUDED.json").write_text(json.dumps([_excluded(1, a) for a in ("staged", "search_det", "search_ai")]))
+    out = rs.rescore(root, arms=arms)
+
+    assert out["arms"]["staged"]["excluded"] == 1 and out["arms"]["input_only"]["excluded"] == 0
+    (unusable,) = out["unpaired_files"]
+    assert unusable["sha256"] == f"{1:064x}"
+    assert unusable["measured_arms"] == ["input_only"]
+    assert unusable["excluded_arms"] == ["search_ai", "search_det", "staged"]
+    assert "file_timeout" in unusable["reasons"][0]
+    md = rs.render(out, title="t", source="s")
+    assert "contribute to no arm comparison" in md and "f1.step" in md
+
+
+def test_a_file_every_arm_measured_is_not_called_unpaired(tmp_path) -> None:
+    root = tmp_path / "ok"
+    d = root / "shard-1-of-1"
+    d.mkdir(parents=True)
+    (d / "rows.jsonl").write_text("".join(json.dumps(_row(1, a)) + "\n" for a in ("input_only", "staged")))
+    (d / "EXCLUDED.json").write_text("[]")
+    out = rs.rescore(root, arms=("input_only", "staged"))
+    assert out["unpaired_files"] == []
+    assert "contribute to no arm comparison" not in rs.render(out, title="t", source="s")
+
+
+def test_a_pending_arm_is_not_reported_as_an_exclusion(tmp_path) -> None:
+    """In a running wave an arm with no row may simply not have reached the file yet. Only an EXCLUDED entry is a
+    final "no verdict"; calling the rest unusable would overstate what the wave lost."""
+    root = tmp_path / "mix"
+    final, running = root / "shard-1-of-2", root / "shard-2-of-2"
+    final.mkdir(parents=True)
+    running.mkdir(parents=True)
+    (final / "rows.jsonl").write_text(json.dumps(_row(1, "input_only")) + "\n")
+    (final / "EXCLUDED.json").write_text(json.dumps([_excluded(1, "staged")]))
+    (running / "rows.partial.jsonl").write_text(json.dumps(_row(2, "input_only")) + "\n")
+    out = rs.rescore(root, arms=("input_only", "staged"))
+
+    killed = next(f for f in out["unpaired_files"] if f["sha256"] == f"{1:064x}")
+    pending = next(f for f in out["unpaired_files"] if f["sha256"] == f"{2:064x}")
+    assert killed["final"] is True and pending["final"] is False
+    md = rs.render(out, title="t", source="s")
+    assert "contribute to no arm comparison" in md and "f1.step" in md
+    assert "still running" in md and "f2.step" in md
+    # the pending file is NOT listed under the unusable heading
+    unusable = md.split("contribute to no arm comparison")[1].split("##")[0]
+    assert "f1.step" in unusable and "f2.step" not in unusable
