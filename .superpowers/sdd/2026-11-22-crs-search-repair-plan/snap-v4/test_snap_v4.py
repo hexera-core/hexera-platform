@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -80,18 +82,27 @@ def _fixture(tmp_path: Path, dev: int = 12, clean: int = 4) -> dict:
             prior.append({"sha256": f["sha256"], "arm": arm, "wall_s": base + 10 * i, "in_clean": False,
                           "name": f["name"]})
     (rows_dir / "rows.json").write_text(json.dumps(prior))
+    # two exclusions on ONE later file: a deadline-unmeasured pair (no cost measurement) and a file-wall pair (one)
+    victim = files["dev"][-1]["sha256"]
+    (rows_dir / "EXCLUDED.json").write_text(json.dumps([
+        {"sha256": victim, "arm": "search_det", "name": "x", "source": "abc_fail",
+         "reason": "unmeasured: stopped at the wave deadline (this pair never ran)"},
+        {"sha256": victim, "arm": "search_ai", "name": "x", "source": "abc_fail",
+         "reason": "file_timeout: file wall clock 1800s exceeded"}]))
     return {"files": files, "dev": tmp_path / "dev.json", "clean": tmp_path / "clean.json",
             "ls": tmp_path / "ls.txt", "prior": tmp_path / "prior"}
 
 
 def _run_prep(tmp_path: Path, fx: dict, *, extra: list[str] = (),
+              prior: str | None = None,
               regions: tuple[str, ...] = ("us-central1:88:us-central1-b", "us-east1:96:us-east1-b"),
               ) -> tuple[int, dict, dict, str]:
     out = tmp_path / "out"
     cmd = [sys.executable, "-I", str(HERE / "prep.py"), "--code", str(REPO), "--profile", "v4",
            "--dev-split", str(fx["dev"]), "--clean-split", str(fx["clean"]),
            "--dev-wave", "snap_v2_dev", "--clean-wave", "snap_v2_clean", "--total-usd", "49.95",
-           "--inputs-ls", str(fx["ls"]), "--prior-rows", str(fx["prior"]),
+           "--inputs-ls", str(fx["ls"]),
+           "--prior-rows", str(fx["prior"]) if prior is None else prior,
            "--regions", *regions, "--target-min", "48", "--out", str(out), *extra]
     got = subprocess.run(cmd, capture_output=True, text=True)
     manifest = json.loads((out / "launch_manifest.json").read_text()) if (out / "launch_manifest.json").exists() else {}
@@ -153,7 +164,7 @@ def test_the_vm_plan_places_every_shard_slot_in_a_named_zone_and_one_machine_fam
 # ---- regroup: the groups presented as one wave per split ------------------------------------------
 
 def _group_run(out: Path, wave_id: str, n: int, rows_per_shard: list[list[dict]], *, arms: list[str],
-               exit_code: int = 0, **prov_extra) -> None:
+               exit_code: int = 0, arms_run: list[str] | None = None, **prov_extra) -> None:
     for i in range(1, n + 1):
         d = out / wave_id / f"shard-{i}-of-{n}"
         d.mkdir(parents=True)
@@ -163,16 +174,18 @@ def _group_run(out: Path, wave_id: str, n: int, rows_per_shard: list[list[dict]]
         (d / "EXCLUDED.json").write_text("[]")
         (d / "PROVENANCE.json").write_text(json.dumps(
             {"commit": "c" * 40, "image": "sha256:img", "wave": "snap_v2_dev", "wave_type": "normal",
-             "split": "dev", "file_timeout_s": 900, "arms": arms, "n_shards": n, "shard": f"{i}/{n}",
-             "shard_plan": f"digest-{wave_id}", "exit_code": exit_code, **prov_extra}))
+             "split": "dev", "wave_id": wave_id, "file_timeout_s": 900, "check_valid_timeout_s": 900,
+             "arms": arms, "arms_run": arms_run if arms_run is not None else arms,
+             "n_shards": n, "shard": f"{i}/{n}", "shard_plan": f"digest-{wave_id}", "exit_code": exit_code,
+             "wall_seconds": 10.0, **prov_extra}))
 
 
-def _manifest(path: Path) -> Path:
-    body = {"waves": {"dev": "snap_v2_dev"},
-            "groups": {"dev_input": {"split": "dev", "wave_id": "w-input", "arms": ["input_only"]},
-                       "dev_staged": {"split": "dev", "wave_id": "w-staged", "arms": ["staged"]},
-                       "dev_det": {"split": "dev", "wave_id": "w-det", "arms": ["search_det"]},
-                       "dev_ai": {"split": "dev", "wave_id": "w-ai", "arms": ["search_ai"]}}}
+def _manifest(path: Path, n: dict | None = None) -> Path:
+    n = n or {"dev_input": 1, "dev_staged": 2, "dev_det": 2, "dev_ai": 1}
+    body = {"label": "x", "ts": "TS", "waves": {"dev": "snap_v2_dev"},
+            "groups": {g: {"split": "dev", "wave_id": f"snap-x-{g}-TS", "arms": [a], "n_shards": n[g]}
+                       for g, a in (("dev_input", "input_only"), ("dev_staged", "staged"),
+                                    ("dev_det", "search_det"), ("dev_ai", "search_ai"))}}
     path.write_text(json.dumps(body))
     return path
 
@@ -185,12 +198,14 @@ def test_the_groups_merge_into_one_wave_whose_shards_carry_all_four_arms(tmp_pat
     out, splits = tmp_path / "out", tmp_path / "splits"
     splits.mkdir()
     shas = [f"{i:064x}" for i in range(4)]
-    _group_run(out, "w-input", 1, [[_row(s, "input_only") for s in shas]], arms=["input_only"])
-    _group_run(out, "w-staged", 2, [[_row(shas[0], "staged"), _row(shas[1], "staged")],
-                                    [_row(shas[2], "staged"), _row(shas[3], "staged")]], arms=["staged"])
-    _group_run(out, "w-det", 2, [[_row(shas[0], "search_det"), _row(shas[1], "search_det")],
-                                 [_row(shas[2], "search_det"), _row(shas[3], "search_det")]], arms=["search_det"])
-    _group_run(out, "w-ai", 1, [[_row(s, "search_ai") for s in shas]], arms=["search_ai"])
+    _group_run(out, "snap-x-dev_input-TS", 1, [[_row(s, "input_only") for s in shas]], arms=["input_only"])
+    _group_run(out, "snap-x-dev_staged-TS", 2, [[_row(shas[0], "staged"), _row(shas[1], "staged")],
+                                                [_row(shas[2], "staged"), _row(shas[3], "staged")]], arms=["staged"])
+    _group_run(out, "snap-x-dev_det-TS", 2,
+               [[_row(shas[0], "search_det"), _row(shas[1], "search_det")],
+                [_row(shas[2], "search_det"), _row(shas[3], "search_det")]], arms=["search_det"])
+    _group_run(out, "snap-x-dev_ai-TS", 1, [[_row(s, "search_ai") for s in shas]], arms=["search_ai"],
+               ledger="shard")
 
     rc = subprocess.run([sys.executable, "-I", str(HERE / "regroup.py"), "--out", str(out), "--splits", str(splits),
                          "--manifest", str(_manifest(tmp_path / "m.json"))], capture_output=True, text=True)
@@ -218,11 +233,15 @@ def test_an_unfinished_or_failed_group_is_refused_not_reported_as_a_whole_wave(t
     out, splits = tmp_path / "out", tmp_path / "splits"
     splits.mkdir()
     shas = [f"{i:064x}" for i in range(2)]
-    for wid, arm in (("w-input", "input_only"), ("w-staged", "staged"), ("w-det", "search_det")):
+    for wid, arm in (("snap-x-dev_input-TS", "input_only"), ("snap-x-dev_staged-TS", "staged"),
+                     ("snap-x-dev_det-TS", "search_det")):
         _group_run(out, wid, 1, [[_row(s, arm) for s in shas]], arms=[arm])
-    _group_run(out, "w-ai", 1, [[_row(s, "search_ai") for s in shas]], arms=["search_ai"], exit_code=4)
+    _group_run(out, "snap-x-dev_ai-TS", 1, [[_row(s, "search_ai") for s in shas]], arms=["search_ai"],
+               exit_code=4, ledger="shard")
     got = subprocess.run([sys.executable, "-I", str(HERE / "regroup.py"), "--out", str(out), "--splits", str(splits),
-                          "--manifest", str(_manifest(tmp_path / "m.json"))], capture_output=True, text=True)
+                          "--manifest", str(_manifest(tmp_path / "m.json",
+                                                       {"dev_input": 1, "dev_staged": 1, "dev_det": 1, "dev_ai": 1}))],
+                         capture_output=True, text=True)
     assert got.returncode != 0
     assert json.loads((out / "regroup_summary.json").read_text())["dev"]["exit_code"] == 4
 
@@ -231,13 +250,269 @@ def test_groups_that_disagree_on_the_commit_or_the_arms_are_refused(tmp_path):
     out, splits = tmp_path / "out", tmp_path / "splits"
     splits.mkdir()
     shas = [f"{i:064x}" for i in range(2)]
-    for wid, arm in (("w-input", "input_only"), ("w-staged", "staged"), ("w-det", "search_det")):
+    for wid, arm in (("snap-x-dev_input-TS", "input_only"), ("snap-x-dev_staged-TS", "staged"),
+                     ("snap-x-dev_det-TS", "search_det")):
         _group_run(out, wid, 1, [[_row(s, arm) for s in shas]], arms=[arm])
-    _group_run(out, "w-ai", 1, [[_row(s, "search_ai") for s in shas]], arms=["search_ai"])
-    bad = out / "w-ai" / "shard-1-of-1" / "PROVENANCE.json"
+    _group_run(out, "snap-x-dev_ai-TS", 1, [[_row(s, "search_ai") for s in shas]], arms=["search_ai"],
+               ledger="shard")
+    bad = out / "snap-x-dev_ai-TS" / "shard-1-of-1" / "PROVENANCE.json"
     prov = json.loads(bad.read_text())
     prov["commit"] = "d" * 40
     bad.write_text(json.dumps(prov))
     got = subprocess.run([sys.executable, "-I", str(HERE / "regroup.py"), "--out", str(out), "--splits", str(splits),
-                          "--manifest", str(_manifest(tmp_path / "m.json"))], capture_output=True, text=True)
+                          "--manifest", str(_manifest(tmp_path / "m.json",
+                                                       {"dev_input": 1, "dev_staged": 1, "dev_det": 1, "dev_ai": 1}))],
+                         capture_output=True, text=True)
     assert got.returncode != 0 and "disagree on commit" in (got.stdout + got.stderr)
+
+
+# ---- B17 fixes: the plan must reproduce, and a refusal must be actionable ------------------------
+
+def test_a_missing_or_empty_prior_is_REFUSED_not_silently_uncalibrated(tmp_path):
+    """The bug: PRIOR_ROWS pointed at a directory that does not exist, prep fell through to k_dev = 1.0, planned
+    ONE shard per arm group - all 150 search_ai files in one shard - and printed a 40-minute projection for a job
+    of tens of hours."""
+    fx = _fixture(tmp_path)
+    rc, _m, _p, log = _run_prep(tmp_path, fx, prior=str(tmp_path / "not-there"))
+    assert rc == 1 and "does not exist" in log, log
+    empty = tmp_path / "empty"
+    (empty / "wave" / "shard-1-of-1").mkdir(parents=True)
+    rc2, _m2, _p2, log2 = _run_prep(tmp_path / "b", _fixture((tmp_path / "b").resolve() if (tmp_path / "b").mkdir()
+                                                             or True else tmp_path), prior=str(empty))
+    assert rc2 == 1 and "holds no" in log2, log2
+
+
+def test_a_deadline_unmeasured_exclusion_is_not_charged_at_the_file_wall(tmp_path):
+    """v2's EXCLUDED holds 393 deadline-unmeasured and 37 reason-lost pairs. Charging them 1800 s each is what
+    projected 549 min for a ~3 h job (the runner's af59c91f). The file-wall exclusion beside them IS a cost."""
+    fx = _fixture(tmp_path)
+    prior = _mod("prep").prior_costs_per_arm(Path(fx["prior"]), 1800.0)
+    victim = fx["files"]["dev"][-1]["sha256"]
+    assert "search_det" not in prior.get(victim, {}), "a deadline pair must not be costed"
+    assert prior[victim]["search_ai"] == 1800.0, "a file-wall exclusion is a real cost at the wall"
+
+
+def test_when_the_slots_do_not_fit_the_refusal_names_a_target_that_does(tmp_path):
+    fx = _fixture(tmp_path, dev=60)
+    rc, _m, _p, log = _run_prep(tmp_path, fx, extra=["--target-min", "1"],
+                                regions=("us-central1:32:us-central1-b",))
+    assert rc == 1 and "do not fit" in log
+    m = re.search(r"--target-min (\d+) fits \((\d+) slots\)", log)
+    assert m, log
+    # the named target really does fit
+    rc2, man2, plan2, log2 = _run_prep(tmp_path / "again", _fixture((tmp_path / "again").resolve()
+                                                                    if (tmp_path / "again").mkdir() or True
+                                                                    else tmp_path),
+                                       extra=["--target-min", m.group(1)],
+                                       regions=("us-central1:32:us-central1-b",))
+    assert rc2 == 0, log2
+    assert sum(g["n_shards"] for g in man2["groups"].values()) <= 16
+
+
+def test_the_manifest_carries_the_group_wave_ids_so_the_merge_can_derive_one(tmp_path):
+    rc, manifest, _p, log = _run_prep(tmp_path, _fixture(tmp_path), extra=["--ts", "202611240900"])
+    assert rc == 0, log
+    assert manifest["ts"] == "202611240900" and manifest["label"] == "v4"
+    for group, meta in manifest["groups"].items():
+        assert meta["wave_id"] == f"snap-v4-{group}-202611240900"
+
+
+# ---- B17 fixes: the merged provenance must pass report.py's gates --------------------------------
+
+def test_the_merged_shards_share_one_wave_id_and_carry_the_shard_ledger(tmp_path):
+    """report.load_wave refuses 'shards do not share one wave_id' and 'a model arm ran without a shard ledger'.
+    Both were REFUSALS on the first version of this tool, tested against v3c's real finished shards."""
+    out, splits = tmp_path / "out", tmp_path / "splits"
+    splits.mkdir()
+    shas = [f"{i:064x}" for i in range(2)]
+    for wid, arm, led in (("snap-v4-dev_input-TS", "input_only", None), ("snap-v4-dev_staged-TS", "staged", None),
+                          ("snap-v4-dev_det-TS", "search_det", None), ("snap-v4-dev_ai-TS", "search_ai", "shard")):
+        _group_run(out, wid, 1, [[_row(s, arm) for s in shas]], arms=[arm], arms_run=[arm],
+                   **({"ledger": led} if led else {}),
+                   wave_backoff={"guard": "wave_backoff", "holds": 2, "held_s": 3.5, "trips_seen": [],
+                                 "reported_429": 1, "store_errors": 0, "malformed_markers": 0,
+                                 "tripped_here": False, "threshold": 3, "window_s": 60})
+    man = tmp_path / "m.json"
+    man.write_text(json.dumps({"label": "v4", "ts": "TS", "waves": {"dev": "snap_v2_dev"}, "groups": {
+        g: {"split": "dev", "wave_id": f"snap-v4-{g}-TS", "arms": [a], "n_shards": 1}
+        for g, a in (("dev_input", "input_only"), ("dev_staged", "staged"),
+                     ("dev_det", "search_det"), ("dev_ai", "search_ai"))}}))
+    got = subprocess.run([sys.executable, "-I", str(HERE / "regroup.py"), "--out", str(out), "--splits", str(splits),
+                          "--manifest", str(man)], capture_output=True, text=True)
+    assert got.returncode == 0, got.stdout + got.stderr
+    summary = json.loads((out / "regroup_summary.json").read_text())["dev"]
+    assert summary["wave_id"] == "snap-v4-dev-TS" and summary["ledger"] == "shard"
+    ids, ledgers, guards = set(), set(), []
+    for d in (out / summary["merged_dir"]).iterdir():
+        prov = json.loads((d / "PROVENANCE.json").read_text())
+        ids.add(prov["wave_id"])
+        ledgers.add(prov.get("ledger"))
+        guards.append(prov.get("wave_backoff"))
+        assert prov["arms_run"] == list(regroup.ARMS4)
+    assert ids == {"snap-v4-dev-TS"} and ledgers == {"shard"}
+    # the model shard's real back-off account is carried, so the report is not marked UNRELIABLE for its absence
+    assert [g for g in guards if g] and guards[0]["holds"] == 2 and guards[0]["held_s"] == 3.5
+
+
+def test_a_model_group_without_a_shard_ledger_is_refused(tmp_path):
+    out, splits = tmp_path / "out", tmp_path / "splits"
+    splits.mkdir()
+    shas = [f"{i:064x}" for i in range(2)]
+    for wid, arm in (("snap-v4-dev_input-TS", "input_only"), ("snap-v4-dev_staged-TS", "staged"),
+                     ("snap-v4-dev_det-TS", "search_det"), ("snap-v4-dev_ai-TS", "search_ai")):
+        _group_run(out, wid, 1, [[_row(s, arm) for s in shas]], arms=[arm], arms_run=[arm])
+    man = tmp_path / "m.json"
+    man.write_text(json.dumps({"label": "v4", "ts": "TS", "waves": {"dev": "snap_v2_dev"}, "groups": {
+        g: {"split": "dev", "wave_id": f"snap-v4-{g}-TS", "arms": [a], "n_shards": 1}
+        for g, a in (("dev_input", "input_only"), ("dev_staged", "staged"),
+                     ("dev_det", "search_det"), ("dev_ai", "search_ai"))}}))
+    got = subprocess.run([sys.executable, "-I", str(HERE / "regroup.py"), "--out", str(out), "--splits", str(splits),
+                          "--manifest", str(man)], capture_output=True, text=True)
+    assert got.returncode != 0 and "without a shard ledger" in (got.stdout + got.stderr)
+
+
+def test_a_lost_shard_is_refused_rather_than_merged_at_exit_code_zero(tmp_path):
+    """Deleting one shard of one group used to merge happily at exit_code 0."""
+    out, splits = tmp_path / "out", tmp_path / "splits"
+    splits.mkdir()
+    shas = [f"{i:064x}" for i in range(4)]
+    for wid, arm in (("snap-v4-dev_input-TS", "input_only"), ("snap-v4-dev_staged-TS", "staged"),
+                     ("snap-v4-dev_det-TS", "search_det"), ("snap-v4-dev_ai-TS", "search_ai")):
+        _group_run(out, wid, 2, [[_row(shas[0], arm), _row(shas[1], arm)], [_row(shas[2], arm), _row(shas[3], arm)]],
+                   arms=[arm], arms_run=[arm], ledger="shard")
+    shutil.rmtree(out / "snap-v4-dev_det-TS" / "shard-2-of-2")
+    man = tmp_path / "m.json"
+    man.write_text(json.dumps({"label": "v4", "ts": "TS", "waves": {"dev": "snap_v2_dev"}, "groups": {
+        g: {"split": "dev", "wave_id": f"snap-v4-{g}-TS", "arms": [a], "n_shards": 2}
+        for g, a in (("dev_input", "input_only"), ("dev_staged", "staged"),
+                     ("dev_det", "search_det"), ("dev_ai", "search_ai"))}}))
+    got = subprocess.run([sys.executable, "-I", str(HERE / "regroup.py"), "--out", str(out), "--splits", str(splits),
+                          "--manifest", str(man)], capture_output=True, text=True)
+    assert got.returncode != 0
+    assert "shard directories, the plan says 2" in (got.stdout + got.stderr)
+
+
+def test_the_arms_gate_reads_arms_run_not_the_plans_arms(tmp_path):
+    """`arms` is the PLAN's and is always the wave's four even in a one-arm group, so a gate on it proves nothing.
+    Here every group's `arms` says four and the AI group never ran: the merge must still refuse."""
+    out, splits = tmp_path / "out", tmp_path / "splits"
+    splits.mkdir()
+    shas = [f"{i:064x}" for i in range(2)]
+    for wid, arm in (("snap-v4-dev_input-TS", "input_only"), ("snap-v4-dev_staged-TS", "staged"),
+                     ("snap-v4-dev_det-TS", "search_det")):
+        _group_run(out, wid, 1, [[_row(s, arm) for s in shas]], arms=list(regroup.ARMS4),
+                   arms_run=[arm])
+    man = tmp_path / "m.json"
+    man.write_text(json.dumps({"label": "v4", "ts": "TS", "waves": {"dev": "snap_v2_dev"}, "groups": {
+        g: {"split": "dev", "wave_id": f"snap-v4-{g}-TS", "arms": [a], "n_shards": 1}
+        for g, a in (("dev_input", "input_only"), ("dev_staged", "staged"), ("dev_det", "search_det"))}}))
+    got = subprocess.run([sys.executable, "-I", str(HERE / "regroup.py"), "--out", str(out), "--splits", str(splits),
+                          "--manifest", str(man)], capture_output=True, text=True)
+    assert got.returncode != 0 and "arms_run" in (got.stdout + got.stderr)
+
+
+# ---- the launcher must run on THIS machine -------------------------------------------------------
+
+def test_the_launcher_is_bash_3_2_clean():
+    """bash -n passes on bash 4 constructs' SYNTAX, so it never caught `mapfile` or `declare -A`: the dry run died
+    at line 106 on this Mac. Parse with the system bash AND grep for the constructs it lacks."""
+    for script in ("launch.sh", "vm_run.sh"):
+        body = (HERE / script).read_text()
+        for bad in ("mapfile", "readarray", "declare -A", "wait -n", "${!"):
+            for line in body.splitlines():
+                if bad in line and not line.lstrip().startswith("#"):
+                    raise AssertionError(f"{script}: bash 4 construct {bad!r} in: {line.strip()}")
+        got = subprocess.run(["/bin/bash", "-n", str(HERE / script)], capture_output=True, text=True)
+        assert got.returncode == 0, f"{script}: {got.stderr}"
+
+
+def test_the_launcher_reads_the_outcomes_and_labels_the_vms_for_the_sweep():
+    body = (HERE / "launch.sh").read_text()
+    assert "deployment-id=dev-crsv4" in body and "owner=lane-b17" in body    # the sweep keys on deployment-id
+    assert "gcloud secrets versions access" in body                          # not the local environment
+    assert 'OPENAI_API_KEY=.{20,}' in body                                   # the key's CONTENT, on the VM
+    assert "for i in $(seq 1 40)" in body                                    # the readiness wait is BOUNDED
+    assert "FAILURES=$((FAILURES + 1))" in body and "exit 1" in body         # a failure is an exit code
+    for marker in ("rc.$vm", "outcome.$vm", "post.rc", "ABORTED"):
+        assert marker in body, marker
+    assert "key.txt" not in body                                             # the key is never stored locally
+
+
+# ---- the decisive one: a REAL finished wave, regrouped, must report IDENTICALLY -------------------
+
+REAL_RUN = REPO / ".superpowers/sdd/2026-11-22-crs-search-repair-plan/snap-v1r/runs/v3b-202611240606"
+REAL_WAVE_ID = "snap-v3b-v2splits-clean-202611240606"
+VENV = Path("/Users/kitts/archductor/workspaces/Hexera/awk/.venv/bin/python")
+
+
+def test_a_real_wave_split_into_groups_and_regrouped_reports_the_same_numbers(tmp_path):
+    """The check the snapshot runner ran by hand, automated. Take v3b's FINISHED clean wave, cut it into one group
+    per arm the way a v4 run would write it, regroup, and run the commit's own report.py on both. The reports must
+    be identical apart from the wave id and the paths. This is what caught 'shards do not share one wave_id', 'a
+    model arm ran without a shard ledger', the missing back-off account and the missing check_valid_timeout_s."""
+    import pytest
+
+    if not (REAL_RUN / "out" / REAL_WAVE_ID).is_dir() or not VENV.exists():
+        pytest.skip("needs v3b's committed run and the project venv")
+    src = REAL_RUN / "out" / REAL_WAVE_ID
+    shards = sorted(src.glob("shard-*"), key=lambda p: int(p.name.split("-")[1]))
+    groups = {"clean_input": ("input_only",), "clean_staged": ("staged",),
+              "clean_det": ("search_det",), "clean_ai": ("search_ai",)}
+    out, splits = tmp_path / "out", tmp_path / "splits"
+    out.mkdir()
+    shutil.copytree(REAL_RUN / "splits", splits)
+    for group, arms in groups.items():
+        wid = f"snap-v3b-{group}-202611240606"
+        shutil.copy(splits / "plan_clean.json", splits / f"plan_{group}.json")
+        for d in shards:
+            i, n = d.name.split("-")[1], d.name.split("-")[3]
+            dest = out / wid / f"shard-{i}-of-{n}"
+            dest.mkdir(parents=True)
+            rows = [r for r in json.loads((d / "rows.json").read_text()) if r["arm"] in arms]
+            exc = [e for e in json.loads((d / "EXCLUDED.json").read_text()) if e["arm"] in arms]
+            (dest / "rows.json").write_text(json.dumps(rows))
+            (dest / "rows.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+            (dest / "EXCLUDED.json").write_text(json.dumps(exc))
+            prov = json.loads((d / "PROVENANCE.json").read_text())
+            prov.update(wave_id=wid, arms_run=list(arms), shard_plan=f"digest-{group}")
+            if "search_ai" not in arms:
+                prov.pop("ledger", None)          # a group with no model arm has no shard ledger
+            (dest / "PROVENANCE.json").write_text(json.dumps(prov, indent=1, sort_keys=True, default=str))
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"label": "v3b", "ts": "202611240606", "waves": {"clean": "snap_v2_clean"},
+                                    "groups": {g: {"split": "clean", "wave_id": f"snap-v3b-{g}-202611240606",
+                                                   "arms": list(a), "n_shards": len(shards)}
+                                               for g, a in groups.items()}}))
+
+    got = subprocess.run([sys.executable, "-I", str(HERE / "regroup.py"), "--out", str(out), "--splits", str(splits),
+                          "--manifest", str(manifest)], capture_output=True, text=True)
+    assert got.returncode == 0, got.stdout + got.stderr
+    summary = json.loads((out / "regroup_summary.json").read_text())["clean"]
+    assert summary["ledger"] == "shard" and summary["rows"] == 160 and summary["files"] == 40
+
+    def report(from_dir: Path, plan: Path, stem: str) -> tuple[int, str]:
+        cmd = [str(VENV), str(REPO / "devtools/validation/v4_eval/report.py"), "--from", str(from_dir),
+               "--wave", "snap_v2_clean", "--shards", str(len(shards)), "--split", str(splits / "clean.json"),
+               "--shard-plan", str(plan), "--json", str(tmp_path / f"{stem}.json")]
+        r = subprocess.run(cmd, capture_output=True, text=True,
+                           env={"PYTHONPATH": str(REPO / "src"), "PATH": "/usr/bin:/bin", "HOME": str(tmp_path)})
+        return r.returncode, r.stdout
+
+    rc_base, base = report(src, REAL_RUN / "splits" / "plan_clean.json", "baseline")
+    rc_merged, merged = report(out / summary["merged_dir"], splits / summary["plan"], "merged")
+
+    def normalise(text: str) -> list[str]:
+        out_lines = []
+        for line in text.splitlines():
+            line = re.sub(r"snap-v3b-[A-Za-z0-9_-]+", "WAVEID", line)
+            line = re.sub(r"[0-9a-f]{12,}", "HASH", line)
+            line = re.sub(r"\S*/(tmp|private|Users)/\S*", "PATH", line)
+            out_lines.append(line)
+        return out_lines
+
+    assert rc_base == rc_merged, f"baseline rc {rc_base}, merged rc {rc_merged}"
+    assert normalise(base) == normalise(merged), "\n".join(
+        d for d in __import__("difflib").unified_diff(normalise(base), normalise(merged), lineterm=""))[:3000]
+    both = [json.loads((tmp_path / f"{s}.json").read_text()) for s in ("baseline", "merged")]
+    assert both[0]["warnings"] == both[1]["warnings"]
+    assert both[0]["status"] == both[1]["status"]

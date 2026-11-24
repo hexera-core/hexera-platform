@@ -35,7 +35,7 @@ import math
 import re
 import statistics
 import sys
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 
 ARMS4 = ("input_only", "staged", "search_det", "search_ai")
@@ -85,12 +85,17 @@ def parse_ls(path: Path) -> dict[str, tuple[int, str]]:
     return out
 
 
-def prior_costs_per_arm(root: Path | None, wall: float) -> dict[str, dict[str, float]]:
+#: an exclusion with one of these reasons is NOT a cost measurement: the pair never ran (the wave was stopped at its
+#: deadline) or its reason was lost at the stop. v3's plan counted 393 of them at the 1800 s wall and projected
+#: 549 min against a real ~3 h (the snapshot runner's af59c91f; v2's own EXCLUDED has 393 + 37 of them).
+NOT_A_COST = ("unmeasured:", "excluded before the stop")
+
+
+def prior_costs_per_arm(root: Path, wall: float) -> dict[str, dict[str, float]]:
     """sha256 -> {arm: measured seconds} from an earlier snapshot, PER ARM and per arm INDEPENDENTLY: a file is
     useful for packing search_det even when its search_ai row is missing. `rows.partial.jsonl` is read too, so an
-    unfinished wave still informs the next one, and an excluded (file, arm) counts at THIS wall."""
-    if root is None or not root.exists():
-        return {}
+    unfinished wave still informs the next one, and an exclusion that RAN (a file wall, a crash) counts at THIS
+    wall - but a deadline-unmeasured or reason-lost pair is skipped, not charged."""
     per: dict[str, dict[str, float]] = defaultdict(dict)
     for f in root.glob("*/shard-*/rows.json"):
         for r in json.loads(f.read_text()):
@@ -102,14 +107,31 @@ def prior_costs_per_arm(root: Path | None, wall: float) -> dict[str, dict[str, f
                 per[r["sha256"]].setdefault(r["arm"], float(r["wall_s"]))
     for f in root.glob("*/shard-*/EXCLUDED.json"):
         for e in json.loads(f.read_text()):
+            if str(e.get("reason", "")).startswith(NOT_A_COST):
+                continue
             per[e["sha256"]].setdefault(e["arm"], wall)
     return dict(per)
 
 
-def prior_unclean(root: Path | None) -> set[str]:
-    if root is None or not root.exists():
-        return set()
-    out = set()
+def require_prior(spec: str) -> Path:
+    """The prior-rows tree, or REFUSE. A missing or empty prior used to fall through to k_dev = 1.0, which planned
+    one shard per arm group - all 150 search_ai files in ONE shard - and printed a 40-minute projection for a job
+    of tens of hours. A plan that cannot be reproduced from an artifact on disk is not a plan."""
+    if not spec:
+        raise SystemExit("REFUSED: --prior-rows is empty. The shard plan is sized on an earlier wave's MEASURED "
+                         "per-arm walls; without them every group would be planned on an uncalibrated size model.")
+    root = Path(spec)
+    if not root.exists():
+        raise SystemExit(f"REFUSED: --prior-rows {root} does not exist. Point it at a committed run's out/ "
+                         "directory (one that holds <wave_id>/shard-*/rows.json).")
+    found = list(root.glob("*/shard-*/rows.json")) + list(root.glob("*/shard-*/rows.partial.jsonl"))
+    if not found:
+        raise SystemExit(f"REFUSED: --prior-rows {root} holds no */shard-*/rows.json or rows.partial.jsonl")
+    return root
+
+
+def prior_unclean(root: Path) -> set[str]:
+    out: set[str] = set()
     for f in root.glob("*/shard-*/rows.json"):
         for r in json.loads(f.read_text()):
             if r["arm"] == "input_only" and not r["in_clean"]:
@@ -172,8 +194,14 @@ def pack(vms: list[dict], units: list[dict]) -> list[dict]:
     for u in sorted(units, key=lambda u: (-float(u["predicted_s"]), u["group"], u["shard"])):
         free = [v for v in vms if len(v["units"]) < v["slots"]]
         if not free:
-            raise SystemExit(f"REFUSED: {len(units)} shard slots do not fit {sum(v['slots'] for v in vms)} on "
-                             f"{len(vms)} VMs: raise --regions vCPU or --target-min")
+            capacity = sum(v["slots"] for v in vms)
+            work_s = sum(float(x["predicted_s"]) for x in units)
+            feasible = work_s / max(capacity, 1) / 60.0
+            raise SystemExit(
+                f"REFUSED: {len(units)} shard slots do not fit {capacity} on {len(vms)} VMs. The plan asks for "
+                f"{work_s / 3600:.1f} core-h; {capacity} slots can only deliver that in about {feasible:.0f} min. "
+                f"Either raise --regions vCPU, or pass --target-min {max(1, int(feasible) + 1)} and accept that "
+                "wall, or cut the split. I will not quietly pack more work into fewer shards.")
         home = min(free, key=lambda v: (load[v["name"]], v["name"]))
         home["units"].append(u)
         load[home["name"]] += float(u["predicted_s"])
@@ -194,6 +222,7 @@ def main() -> int:  # noqa: PLR0915 - one linear script: read, plan, refuse, wri
     p.add_argument("--target-min", type=float, default=50.0, help="the wall every group is sized to hit")
     p.add_argument("--route", default="openai:gpt-6-astra")
     p.add_argument("--label", default="v4")
+    p.add_argument("--ts", default="", help="the launcher's run stamp; the group wave ids are snap-<label>-<group>-<ts>")
     p.add_argument("--ops", type=int, default=None)
     p.add_argument("--vm-usd-per-vcpu-h", type=float, default=0.047,
                    help="c2d-standard-56 at the v1r profile's own VM_USD_PER_H=2.63 (lane B14; NOT $0.38)")
@@ -224,11 +253,16 @@ def main() -> int:  # noqa: PLR0915 - one linear script: read, plan, refuse, wri
         if missing:
             raise SystemExit(f"REFUSED: {k} files with no staged input: {missing[:5]}")
 
-    prior = prior_costs_per_arm(Path(a.prior_rows) if a.prior_rows else None, wall)
-    unclean = prior_unclean(Path(a.prior_rows) if a.prior_rows else None)
+    prior_root = require_prior(a.prior_rows)
+    prior = prior_costs_per_arm(prior_root, wall)
+    unclean = prior_unclean(prior_root)
     four = {s: sum(v.values()) for s, v in prior.items() if set(ARMS4) <= set(v)}
     ratios = [four[s] / ev.predicted_cost_s(staged[s][0]) for s in sorted(unclean) if s in four and s in staged]
-    k_dev = statistics.mean(ratios) if ratios else 1.0
+    if not ratios:
+        raise SystemExit(f"REFUSED: {prior_root} has no file with all four arms measured AND unclean at input, so "
+                         "the size model has no calibration. Use a prior wave that finished some dev files.")
+    k_dev = statistics.mean(ratios)
+    measured_arms = Counter(arm for v in prior.values() for arm in v)
     clean_prior = [sum(prior[f["sha256"]].values()) for f in files["clean"] if f["sha256"] in prior]
     clean_default = statistics.mean(clean_prior) if clean_prior else 60.0
 
@@ -237,14 +271,24 @@ def main() -> int:  # noqa: PLR0915 - one linear script: read, plan, refuse, wri
         raise SystemExit("REFUSED: cannot read model_throttle.wave_max_in_flight from the commit; a model group "
                          "sized past its in-flight ceiling is refused at run time (lane B11), not here")
 
-    manifest: dict = {"profile": a.profile, "file_timeout_s": wall, "target_min": a.target_min,
+    manifest: dict = {"profile": a.profile, "label": a.label, "ts": a.ts,
+                      "file_timeout_s": wall, "target_min": a.target_min,
                       "throttle_ceiling_shards": ceiling, "route": a.route,
                       "calibration": {"k_dev_four_arms_per_model_s": k_dev, "from_prior_files": len(ratios),
-                                      "clean_default_s": clean_default, "arm_share": ARM_SHARE},
+                                      "clean_default_s": clean_default, "arm_share": ARM_SHARE,
+                                      "prior_rows": str(prior_root),
+                                      "prior_measured_rows_per_arm": dict(sorted(measured_arms.items())),
+                                      "prior_exclusions_skipped": "deadline-unmeasured and reason-lost pairs"},
                       "groups": {}, "splits": {}, "waves": {k: w.name for k, w in waves.items()}}
     target_s = a.target_min * 60.0
     units: list[dict] = []
     caps_model: dict[str, list[float]] = {}
+
+    # PASS 1: the per-group cost vectors, so the shard counts can be checked against the VMs' capacity BEFORE a
+    # single plan is written. A refusal that cannot be acted on is no better than a silent overload, so when the
+    # slots do not fit, the smallest target that DOES fit is searched for and named.
+    cost_of: dict[str, dict[str, float]] = {}
+    source_of: dict[str, dict[str, int]] = {}
     for group, arms, k in GROUPS:
         if not set(arms) <= set(waves[k].arms):
             raise SystemExit(f"REFUSED: group {group} wants {arms}, wave {waves[k].name} runs {waves[k].arms}")
@@ -262,11 +306,39 @@ def main() -> int:  # noqa: PLR0915 - one linear script: read, plan, refuse, wri
             else:
                 costs[s] = k_dev * sum(ARM_SHARE.get(arm, 0.25) for arm in arms) * ev.predicted_cost_s(staged[s][0])
                 source["size_model"] += 1
+        cost_of[group], source_of[group] = costs, source
+
+    regions = parse_regions(a.regions)
+    capacity = sum(v["slots"] for v in vms_for(regions, a.label))
+
+    def slots_at(target_minutes: float) -> dict[str, int]:
+        """The shard count each group needs to finish inside `target_minutes`, with the model ceiling applied."""
+        got = {}
+        for group, arms, k in GROUPS:
+            n = max(1, min(len(files[k]), math.ceil(sum(cost_of[group].values()) / (target_minutes * 60.0))))
+            if any(ev.arm(arm).uses_model for arm in arms):
+                n = min(n, ceiling)
+            got[group] = n
+        return got
+
+    want = slots_at(a.target_min)
+    if sum(want.values()) > capacity:
+        work_h = sum(sum(c.values()) for c in cost_of.values()) / 3600.0
+        feasible = next((t for t in range(int(a.target_min), int(a.target_min) + 24 * 60)
+                         if sum(slots_at(t).values()) <= capacity), None)
+        raise SystemExit(
+            f"REFUSED: {sum(want.values())} shard slots ({want}) do not fit {capacity} on "
+            f"{len(vms_for(regions, a.label))} VMs. The plan asks for {work_h:.1f} core-h. "
+            + (f"--target-min {feasible} fits ({sum(slots_at(feasible).values())} slots) and is the smallest that "
+               f"does; " if feasible else "no target under 24 h fits, so the regions are too small for this split; ")
+            + "or raise --regions vCPU, or cut the split. I will not quietly pack more work into fewer shards.")
+
+    # PASS 2: the plans, the caps and the units
+    for group, arms, k in GROUPS:
+        costs, source = cost_of[group], source_of[group]
         total = sum(costs.values())
-        n = max(1, min(len(files[k]), math.ceil(total / target_s)))
         model_group = any(ev.arm(arm).uses_model for arm in arms)
-        if model_group and n > ceiling:
-            n = ceiling   # lane B11: one in-flight call per shard is the floor; more shards is refused at run time
+        n = want[group]
         plan = ev.build_shard_plan(costs, n)
         plan["cost_source"] = {"unit": f"predicted seconds, arms {list(arms)}", **source,
                                "calibration_k": k_dev, "file_timeout_s": wall}
@@ -281,10 +353,12 @@ def main() -> int:  # noqa: PLR0915 - one linear script: read, plan, refuse, wri
         per_shard = [round(load[i], 1) for i in range(1, n + 1)]
         manifest["groups"][group] = {
             "arms": list(arms), "split": k, "wave": waves[k].name, "n_shards": n,
+            "wave_id": f"snap-{a.label}-{group}-{a.ts}" if a.ts else None,
             "uses_model": model_group, "files_per_shard": [count[i] for i in range(1, n + 1)],
             "predicted_shard_s": per_shard, "predicted_total_s": round(total, 1),
             "predicted_wall_min": round(max(per_shard) / 60.0, 1), "plan_digest": ev.plan_digest(plan),
             "capped_by_throttle": bool(model_group and math.ceil(total / target_s) > ceiling)}
+        manifest["groups"][group]["cost_source"] = dict(source)
         for i in range(1, n + 1):
             units.append({"group": group, "shard": i, "n": n, "split": k, "wave": waves[k].name,
                           "arms": list(arms), "predicted_s": load[i], "uses_model": model_group})
@@ -318,7 +392,7 @@ def main() -> int:  # noqa: PLR0915 - one linear script: read, plan, refuse, wri
     if any(u["cap_usd"] <= 0 for u in units):
         raise SystemExit("REFUSED: a shard cap rounded to $0: fewer shards or a larger total")
 
-    vms = pack(vms_for(parse_regions(a.regions), a.label), units)
+    vms = pack(vms_for(regions, a.label), units)
     placed = sum(len(v["units"]) for v in vms)
     if placed != len(units):
         raise SystemExit(f"REFUSED: {placed} of {len(units)} shard slots placed")
