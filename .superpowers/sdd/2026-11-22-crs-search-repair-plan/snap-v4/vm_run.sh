@@ -87,6 +87,7 @@ date -u +%FT%TZ > $T/out/$VM_NAME.LAUNCHED
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date -u +%H:%M:%S)" "$np" "$l1" "$(awk -v a=$l1 -v b=$np 'BEGIN{printf "%.2f", a/b}')" "$1" "$2" "$(sudo docker ps -q | wc -l)"
     sleep 15
   done ) > $T/out/$VM_NAME.sysmon.tsv 2>/dev/null &
+SAMPLER=$!   # NOT waited on below: a bare `wait` on it deadlocked the VM (it stops on RUN_DONE, written after the wait)
 # the units for THIS VM, one line each: group shard n split wave arms cap
 python3 -I -c "
 import json,sys
@@ -98,8 +99,10 @@ for u in vm['units']:
 " > $T/units.txt || { echo "no units" > $T/out/$VM_NAME.ABORTED; date -u +%FT%TZ > $T/out/$VM_NAME.VMDONE; exit 1; }
 while read -r group shard n split wave arms cap; do
   unit_with_retry "$group" "$shard" "$n" "$split" "$wave" "$arms" "$cap" &
+  UNIT_PIDS="${UNIT_PIDS:-} $!"
 done < $T/units.txt
-wait
+wait $UNIT_PIDS          # the units only (the sampler is stopped right after)
+kill $SAMPLER 2>/dev/null
 date -u +%FT%TZ > $T/out/$VM_NAME.RUN_DONE
 sudo dmesg -T 2>/dev/null | grep -i -E 'out of memory|oom-kill|killed process' > $T/out/$VM_NAME.oom.txt
 grep -l '^137$' $T/out/$VM_NAME.*.rc 2>/dev/null > $T/out/$VM_NAME.rc137.txt
