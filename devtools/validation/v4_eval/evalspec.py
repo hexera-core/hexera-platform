@@ -410,6 +410,10 @@ WAVES: dict[str, WaveDef] = {w.name: w for w in (
     # Dev snapshot v1r: the same 30 + 8 files, relabelled on the engine's form (partial_reprobe _v1r splits).
     WaveDef("snap_v1r_dev", "normal", "dev", _ALL[:4]),
     WaveDef("snap_v1r_clean", "normal", "clean", _ALL[:4]),
+    # reprobe-800: the provisional v2 splits (corpora/v4/provisional_v2/PROVISIONAL_{dev,clean}_v2.json, passed with
+    # --split-file). NORMAL waves, not checkpoint: checkpoint slots are limited to three.
+    WaveDef("snap_v2_dev", "normal", "dev", _ALL[:4]),
+    WaveDef("snap_v2_clean", "normal", "clean", _ALL[:4]),
 )}
 
 

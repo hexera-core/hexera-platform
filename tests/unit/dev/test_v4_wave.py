@@ -27,7 +27,9 @@ import run_arm  # noqa: E402
 evalspec, rp, pool_mod = run_arm.evalspec, run_arm.reprobe_mod, run_arm.pool_mod
 HEAD = subprocess.run(["git", "-C", str(REPO), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
 IMAGE = "us-central1-docker.pkg.dev/hexera-dev/mesh/crsv4-mesh@sha256:" + "a" * 64
-PREFIX = "gs://dev-crsv3-fake/eval/v4-reprobe"
+# the real bucket's own prefix: `preflight_argv` refuses a prefix that is not `<BUCKET>/eval/<name>` (it has to
+# name the wave to preflight), and no test here reaches the bucket
+PREFIX = wave.wave_spec.V4_PREFIX
 
 
 def _args(**kw) -> wave.WaveArgs:
@@ -208,3 +210,19 @@ def test_the_waves_preflight_hands_preflight_the_image_commit_to_verify(monkeypa
     backend.preflight(_args(image_commit=HEAD))
     argv = seen[0]
     assert argv[argv.index("--image-commit") + 1] == HEAD
+
+def test_labels_reach_the_launcher_and_the_watch_filters_on_the_purpose() -> None:
+    w = _args(labels=("deployment-id=dev-crsv4", "purpose=v4-reprobe-800", "owner=lead-2"))
+    argv = wave.launcher_argv(w, dry_run=True)
+    given = [argv[i + 1] for i, a in enumerate(argv) if a == "--label"]
+    assert given == ["deployment-id=dev-crsv4", "purpose=v4-reprobe-800", "owner=lead-2"]
+    assert w.purpose == "v4-reprobe-800" and _args().purpose == "v4-eval"
+    assert "--label" not in wave.launcher_argv(_args(), dry_run=True)
+
+
+def test_preflight_checks_the_wave_s_own_prefix() -> None:
+    sub = _args(prefix=f"{wave.wave_spec.BUCKET}/eval/v4-reprobe-800")
+    argv = wave.preflight_argv(sub)
+    assert argv[argv.index("--name") + 1] == "v4-reprobe-800"
+    with pytest.raises(wave.WaveRefused):
+        wave.preflight_argv(_args(prefix=f"{wave.wave_spec.BUCKET}/eval/a/b"))

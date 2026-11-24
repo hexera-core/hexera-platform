@@ -349,19 +349,59 @@ def code_uri(commit: str, prefix: str = PREFIX) -> str:
     return f"{prefix}/code-{commit[:12]}/code.tgz"
 
 
-def vm_name(launch_id: str, j: int, m: int, profile: Profile = V3) -> str:
-    name = f"{profile.deployment_id}-{profile.vm_tag}-{launch_id}-{j}of{m}"
+#: Labels the launcher derives from the wave itself; `--label` may not replace them (collect, the watch and the
+#: resume logic read them back).
+DERIVED_LABELS = frozenset({"commit", "launch", "shards", "arms", "app", "managed-by"})
+_LABEL_KEY_RE = re.compile(r"^[a-z][a-z0-9_-]{0,62}$")
+_LABEL_VALUE_RE = re.compile(r"^[a-z0-9_-]{0,63}$")
+
+
+def parse_label_overrides(items: list[str] | None) -> dict[str, str]:
+    """`--label KEY=VALUE` (repeatable) as a dict. Only identity labels may be replaced (deployment-id, purpose) or
+    added (owner, ...); a derived label or a value GCE would reject is a ValueError."""
+    out: dict[str, str] = {}
+    for item in items or []:
+        key, sep, value = item.partition("=")
+        key, value = key.strip(), value.strip()
+        if not sep or not _LABEL_KEY_RE.match(key) or not _LABEL_VALUE_RE.match(value):
+            raise ValueError(f"--label wants KEY=VALUE in GCE label syntax (lowercase), not {item!r}")
+        if key in DERIVED_LABELS:
+            raise ValueError(f"--label {key} is derived from the wave and cannot be overridden")
+        out[key] = value
+    return out
+
+
+def label_overrides(args) -> dict[str, str]:
+    return dict(getattr(args, "label_overrides", None) or {})
+
+
+def purpose_of(args, profile: Profile) -> str:
+    """The purpose label this launch's VMs carry, and so the filter that finds them (live units, resume)."""
+    return label_overrides(args).get("purpose", profile.purpose)
+
+
+def deployment_id_of(args, profile: Profile) -> str:
+    return label_overrides(args).get("deployment-id", profile.deployment_id)
+
+
+def vm_name(launch_id: str, j: int, m: int, profile: Profile = V3, deployment_id: str | None = None) -> str:
+    name = f"{deployment_id or profile.deployment_id}-{profile.vm_tag}-{launch_id}-{j}of{m}"
     if len(name) > 63:
         raise ValueError(f"{name} is longer than 63 characters")
     return name
 
 
-def labels(commit: str, launch_id: str, units: list[str], profile: Profile = V3) -> str:
+def labels(commit: str, launch_id: str, units: list[str], profile: Profile = V3,
+           overrides: dict[str, str] | None = None) -> str:
     arms = sorted({profile.arm_short(u.split(":")[0]) for u in units})
-    return ",".join([f"deployment-id={profile.deployment_id}", f"purpose={profile.purpose}",
-                     f"commit={commit[:12]}", f"launch={launch_id}", f"shards={len(units)}",
-                     f"arms={'-'.join(arms)}",
-                     "app=hexera", f"managed-by={profile.managed_by}"])
+    out = {"deployment-id": profile.deployment_id, "purpose": profile.purpose, "commit": commit[:12],
+           "launch": launch_id, "shards": str(len(units)), "arms": "-".join(arms), "app": "hexera",
+           "managed-by": profile.managed_by}
+    for key, value in (overrides or {}).items():
+        if key in DERIVED_LABELS:
+            raise ValueError(f"label {key} is derived from the wave and cannot be overridden")
+        out[key] = value
+    return ",".join(f"{k}={v}" for k, v in out.items())
 
 
 def create_command(args, launch_id: str, j: int, m: int, units: list[str]) -> list[str]:
@@ -377,7 +417,7 @@ def create_command(args, launch_id: str, j: int, m: int, units: list[str]) -> li
         *profile.extra_metadata(args),
     ])
     return [
-        "gcloud", "compute", "instances", "create", vm_name(launch_id, j, m, profile),
+        "gcloud", "compute", "instances", "create", vm_name(launch_id, j, m, profile, deployment_id_of(args, profile)),
         f"--project={PROJECT}", f"--zone={args.zone}", f"--machine-type={args.machine_type}",
         "--provisioning-model=STANDARD", "--instance-termination-action=DELETE",
         f"--max-run-duration={args.max_run_hours}h",
@@ -385,7 +425,7 @@ def create_command(args, launch_id: str, j: int, m: int, units: list[str]) -> li
         "--boot-disk-size=100GB", "--boot-disk-type=pd-balanced",
         "--network=default", f"--subnet=projects/{PROJECT}/regions/{REGION}/subnetworks/default",
         "--no-address", f"--service-account={SERVICE_ACCOUNT}", "--scopes=cloud-platform",
-        f"--labels={labels(args.commit, launch_id, units, profile)}",
+        f"--labels={labels(args.commit, launch_id, units, profile, label_overrides(args))}",
         "--metadata-from-file=" + ",".join([
             f"startup-script={HERE / 'vm_startup.sh'}",
             f"shutdown-script={HERE / 'vm_shutdown.sh'}"]),
@@ -547,13 +587,13 @@ def done_units(commit: str, profile: Profile = V3, arms: tuple[str, ...] | None 
     return done
 
 
-def running_units(commit: str, profile: Profile = V3) -> tuple[set[str], list[str]]:
+def running_units(commit: str, profile: Profile = V3, purpose: str | None = None) -> tuple[set[str], list[str]]:
     """Unit ids claimed by eval VMs that still exist AND run `commit`, read off their v3-units and
     v3-commit metadata (v4-* for the v4 profile). Unit ids (arm:kind:I/N) carry no commit, so a VM still running an older
     commit's shards must not mark this commit's same-named shards as claimed. Every live eval VM
     is still returned by name, for the operator."""
     vms = _gcloud_json(["gcloud", "compute", "instances", "list", f"--project={PROJECT}",
-                        f"--filter=labels.purpose={profile.purpose}"]) or []
+                        f"--filter=labels.purpose={purpose or profile.purpose}"]) or []
     claimed: set[str] = set()
     for vm in vms:
         meta = {item.get("key"): item.get("value", "")
@@ -718,10 +758,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--model-secret", default=None,
                         help="v4 --arms only: the Secret Manager secret holding OPENAI_API_KEY, REQUIRED when an arm "
                              "calls a model. There is no default: the v4 VM carries no model key of its own")
+    parser.add_argument("--label", action="append", default=None, metavar="KEY=VALUE",
+                        help="v4 only, repeatable: replace an identity label (deployment-id, purpose; deployment-id "
+                             "also names the VMs) or add one (owner=...). Derived labels (commit, launch, shards, "
+                             "arms, app, managed-by) cannot be replaced")
     parser.add_argument("--dry-run", action="store_true")
     # derived in main (_resolve_v4_arms); declared so the parser names every attribute the launcher reads
     parser.set_defaults(arms_list=None, unit_arm="reprobe", split=None)
     parser.set_defaults(plan=None)  # the WavePlan plan_wave returns at the claim; never a flag
+    parser.set_defaults(label_overrides=None)  # parsed from --label in main
     return parser
 
 
@@ -774,7 +819,8 @@ def main(argv: list[str] | None = None, *, gates=None) -> int:
     if profile is V3:
         stray = [f for f, v in (("--wave", args.wave), ("--sources", args.sources), ("--pool", args.pool),
                                 ("--files", args.files), ("--wave-type", args.wave_type),
-                                ("--wave-id", args.wave_id), ("--shard-plan-uri", args.shard_plan_uri))
+                                ("--wave-id", args.wave_id), ("--shard-plan-uri", args.shard_plan_uri),
+                                ("--label", args.label))
                  if v is not None]
         if stray:
             parser.error(f"{', '.join(stray)} apply to --profile v4 only")
@@ -801,6 +847,10 @@ def main(argv: list[str] | None = None, *, gates=None) -> int:
             parser.error(f"cannot count the files: no pool manifest at {args.pool} (--pool or --files)")
         args.files_counted = V4.pool_files(args)
         _resolve_v4_arms(parser, args)
+        try:
+            args.label_overrides = parse_label_overrides(args.label)
+        except ValueError as exc:
+            parser.error(str(exc))
     validate(parser, args)
     args.prefix = args.prefix.rstrip("/")
     slots = evalspec.vcpus_of(args.machine_type)
@@ -824,7 +874,7 @@ def main(argv: list[str] | None = None, *, gates=None) -> int:
     if not args.dry_run:
         try:
             done = done_units(args.commit, profile, (args.unit_arm,) if profile is V4 else None)
-            claimed, live_vms = running_units(args.commit, profile)
+            claimed, live_vms = running_units(args.commit, profile, purpose_of(args, profile))
         except RuntimeError as exc:
             problems.append(str(exc))
             done, claimed, live_vms = set(), set(), []
@@ -919,7 +969,7 @@ def main(argv: list[str] | None = None, *, gates=None) -> int:
         return 1
     if not args.dry_run:
         print(f"\nlaunched {len(vms)} VM(s). Watch: gcloud compute instances list "
-              f"--project={PROJECT} --filter=labels.purpose={profile.purpose} ; status: collect.py "
+              f"--project={PROJECT} --filter=labels.purpose={purpose_of(args, profile)} ; status: collect.py "
               f"--commit {args.commit} --status")
     return 0
 

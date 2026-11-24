@@ -65,7 +65,10 @@ wave_limits = _ra.wave_limits
 LAUNCHER = REPO / "devtools/validation/v3_eval/launch_fleet.py"
 KIND_WAVE = {"dev": "dev_search", "checkpoint": "dev_checkpoint", "heldout": "heldout"}
 KINDS = ("reprobe", *KIND_WAVE)
-SHARD_FILES = ("PROVENANCE.json", "rows.json", "EXCLUDED.json", "DONE")
+#: `cheap.jsonl` is here because `collect.REQUIRED_FILES` lists it and collect's re-probe path reads it
+#: unconditionally: a wave that did not pull it crashed collect AFTER a successful watch (lane A9). An arm wave never
+#: writes it, and a missing object just leaves the file absent, so pulling it is safe for every kind.
+SHARD_FILES = ("PROVENANCE.json", "rows.json", "EXCLUDED.json", "cheap.jsonl", "DONE")
 #: A shard with no DONE and no live VM is dead only after this long: a VM spends minutes booting and copying inputs.
 BOOT_GRACE_S = 1800.0
 
@@ -108,7 +111,7 @@ class Backend:
     def shard_state(self, shard_uri: str) -> str:  # DONE / FAILED / running / missing
         raise NotImplementedError
 
-    def live_units(self, commit: str) -> set[str]:
+    def live_units(self, commit: str, purpose: str = "v4-eval") -> set[str]:
         raise NotImplementedError
 
     def pull(self, shard_uri: str, dest: Path) -> None:
@@ -153,9 +156,9 @@ class GcsBackend(Backend):
         names = {line.rstrip("/").rsplit("/", 1)[-1] for line in done.out.splitlines()}
         return "DONE" if "DONE" in names else "FAILED" if "FAILED" in names else "running" if names else "missing"
 
-    def live_units(self, commit: str) -> set[str]:
+    def live_units(self, commit: str, purpose: str = "v4-eval") -> set[str]:
         done = self.run(["gcloud", "compute", "instances", "list", f"--project={wave_spec.PROJECT}",
-                         f"--filter=labels.purpose=v4-eval AND labels.commit={commit[:12]}",
+                         f"--filter=labels.purpose={purpose} AND labels.commit={commit[:12]}",
                          "--format=json(name,metadata.items)"], timeout=120)
         units: set[str] = set()
         for vm in json.loads(done.out or "[]") if done.rc == 0 else []:
@@ -173,8 +176,7 @@ class GcsBackend(Backend):
         self.run(["gcloud", "storage", "rsync", "-r", "-x", r"shards/.*|collected/.*", str(local), uri], timeout=1800)
 
     def preflight(self, w: WaveArgs) -> Result:
-        return self.run([sys.executable, str(HERE / "preflight.py"), "--image", w.image, "--commit", w.commit,
-                         "--image-commit", w.image_commit, "--pool", str(w.pool)], timeout=1200)
+        return self.run(preflight_argv(w), timeout=1200)
 
     def launch(self, w: WaveArgs, *, dry_run: bool, only: Sequence[str] = ()) -> Result:
         return self.run(launcher_argv(w, dry_run=dry_run, only=only), timeout=3600)
@@ -214,7 +216,7 @@ class LocalBackend(Backend):
         return ("DONE" if (d / "DONE").exists() else "FAILED" if (d / "FAILED").exists()
                 else "running" if d.exists() else "missing")
 
-    def live_units(self, commit: str) -> set[str]:
+    def live_units(self, commit: str, purpose: str = "v4-eval") -> set[str]:
         return set()  # local shards run to completion inside launch()
 
     def pull(self, shard_uri: str, dest: Path) -> None:
@@ -276,6 +278,16 @@ class WaveArgs:
     h_mm: float | None = None
     frozen_commit: str | None = None
     machine_type: str = evalspec.DEFAULT_MACHINE
+    labels: tuple[str, ...] = ()  # launch_fleet --label KEY=VALUE overrides (deployment-id, purpose, owner)
+
+    @property
+    def purpose(self) -> str:
+        """The purpose label the wave's VMs carry: the watch finds live shards by it."""
+        for item in self.labels:
+            key, _, value = item.partition("=")
+            if key.strip() == "purpose":
+                return value.strip()
+        return "v4-eval"
 
     @property
     def unit_arm(self) -> str:
@@ -311,6 +323,19 @@ def shard_uri(w: WaveArgs, unit: str) -> str:
     return f"{w.results}/shard-{i}-of-{n}"
 
 
+def preflight_argv(w: WaveArgs) -> list[str]:
+    """preflight.py against THIS wave's prefix: a wave staged under `<bucket>/eval/<name>` is checked there (its own
+    inputs against its own pool), not under the default re-probe prefix."""
+    # `--image-commit` is REQUIRED: preflight's image_commit_label check refuses a launch without it, so a
+    # preflight_argv that drops it refuses every wave (lane A9 caught exactly that in this merge).
+    argv = [sys.executable, str(HERE / "preflight.py"), "--image", w.image, "--commit", w.commit,
+            "--image-commit", w.image_commit, "--pool", str(w.pool)]
+    root = f"{wave_spec.BUCKET}/eval/"
+    if not w.prefix.startswith(root) or "/" in w.prefix[len(root):]:
+        raise WaveRefused(f"--prefix {w.prefix} is not <bucket>/eval/<name>: preflight.py cannot check it")
+    return argv + ["--name", w.prefix[len(root):]]
+
+
 def launcher_argv(w: WaveArgs, *, dry_run: bool, only: Sequence[str] = ()) -> list[str]:
     argv = [sys.executable, str(LAUNCHER), "--profile", "v4", "--image", w.image, "--commit", w.commit,
             "--image-commit", w.image_commit, "--shards-total", str(w.shards), "--max-run-hours", f"{w.max_run_hours:g}",
@@ -326,6 +351,8 @@ def launcher_argv(w: WaveArgs, *, dry_run: bool, only: Sequence[str] = ()) -> li
             argv += ["--h-mm", f"{w.h_mm:g}"]
         if w.model_secret:
             argv += ["--model-secret", w.model_secret]
+    for item in w.labels:
+        argv += ["--label", item]
     if only:
         argv += ["--only", ",".join(only)]
     if dry_run:
@@ -483,7 +510,7 @@ class Wave:
             if all(s == "DONE" for s in states.values()):
                 self.record("watch", "ok", done=len(states), relaunched=relaunched)
                 return states
-            live = self.b.live_units(w.commit)
+            live = self.b.live_units(w.commit, w.purpose)
             booting = self.clock() - launched_at < BOOT_GRACE_S
             # dead: a FAILED marker, or (after the boot grace) no DONE and no live VM claiming the shard
             dead = [u for u, s in states.items()
@@ -579,13 +606,16 @@ def parse(argv: list[str] | None = None) -> tuple[WaveArgs, argparse.Namespace]:
     ap.add_argument("--wave-dir", default=None, help="local wave directory (default: ./waves/<wave-id>)")
     ap.add_argument("--poll-s", type=float, default=300.0)
     ap.add_argument("--max-relaunch", type=int, default=1)
+    ap.add_argument("--label", action="append", default=[], metavar="KEY=VALUE",
+                    help="passed to launch_fleet --label (deployment-id, purpose, owner); the watch filters on purpose")
     ap.add_argument("--dry-run", action="store_true")
     a = ap.parse_args(argv)
     w = WaveArgs(kind=a.kind, wave_id=a.wave_id, commit=a.commit, image=a.image, image_commit=a.image_commit,
                  shards=a.shards, max_run_hours=a.max_run_hours or (12.0 if a.kind == "reprobe" else 3.0),
                  zone=a.zone, prefix=a.prefix.rstrip("/"), pool=Path(a.pool), wave=a.wave,
                  arms=tuple(x for x in a.arms.split(",") if x), split=Path(a.split) if a.split else None,
-                 model_usd_cap=a.model_usd_cap, model_secret=a.model_secret, h_mm=a.h_mm, frozen_commit=a.frozen_commit)
+                 model_usd_cap=a.model_usd_cap, model_secret=a.model_secret, h_mm=a.h_mm, frozen_commit=a.frozen_commit,
+                 labels=tuple(a.label))
     return w, a
 
 
