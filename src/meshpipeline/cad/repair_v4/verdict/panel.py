@@ -23,7 +23,7 @@ from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import Literal, Protocol
+from typing import Any, Literal, Protocol
 
 from meshpipeline.cad.repair_v4.worker_pool import CallResult, WorkerPool
 
@@ -275,6 +275,27 @@ CAPPED_KIND = "capped_after_doom"
 DOOM_ORDER = ("gmsh_default", "gmsh_prod", "gmsh_alt", "netgen_occ")
 
 
+def evidence_order(input_verdict: Any) -> tuple[str, ...]:
+    """The order a doomed-capped panel runs its members in, from the INPUT's own panel (lane C22, measured: 0 later
+    passes lost on 15 files). The cap only starts once a member FAILS, so with a fixed order its value is luck -
+    whether a fast failure comes before a slow hang. Members that FAILED at the input go first, fastest first; then
+    those that passed, in DOOM_ORDER; then those that timed out, crashed or were capped there, last."""
+    panel = list(getattr(input_verdict, "panel", None) or [])
+    rank = {n: i for i, n in enumerate(DOOM_ORDER)}
+
+    def slow(r: Any) -> bool:
+        return r.status in ("timeout", "crashed") or getattr(r, "error_kind", None) == CAPPED_KIND
+
+    failed = sorted((r for r in panel if r.status == "fail" and not slow(r)),
+                    key=lambda r: (float(getattr(r, "seconds", 0.0) or 0.0), rank.get(r.name, len(rank))))
+    hung = sorted((r for r in panel if slow(r)), key=lambda r: rank.get(r.name, len(rank)))
+    # passed at the input, or never judged there (no evidence): DOOM_ORDER, ahead of anything that hung
+    seen = {r.name for r in (*failed, *hung)}
+    middle = sorted({r.name for r in panel if r.name not in seen} | {n for n in DOOM_ORDER if n not in seen},
+                    key=lambda n: (rank.get(n, len(rank)), n))
+    return tuple([r.name for r in failed] + middle + [r.name for r in hung])
+
+
 def doomed_result(result: MemberResult, cap_s: float) -> MemberResult:
     """THE one conversion for a member that ran under the doomed cap, shared by the serial path below and any parallel
     path (Lane A's A15): a timeout, or a pool death that would otherwise be inconclusive, is a FAIL of CAPPED_KIND.
@@ -330,7 +351,7 @@ def _run_parallel(pool: WorkerPool, step_path: str, members: Sequence[PanelMembe
 
 def run_panel(
     pool: WorkerPool, step_path: str, members: Sequence[PanelMember], *, timeout_s: float,
-    doomed_cap_s: float | None = None, panel_threads: int = 1,
+    doomed_cap_s: float | None = None, panel_threads: int = 1, order: Sequence[str] | None = None,
 ) -> list[MemberResult]:
     """Run every member on `step_path`, one result each, in the caller's order. A member that times out or
     crashes is a result like any other; the next member runs on a replaced worker. The file gets ONE
@@ -356,12 +377,13 @@ def run_panel(
         with retry_budget():
             results = [check_result(member.run(pool, step_path, timeout_s=timeout_s)) for member in members]
     else:
-        rank = {n: i for i, n in enumerate(DOOM_ORDER)}
-        order = sorted(range(len(members)), key=lambda i: (rank.get(getattr(members[i], "name", ""), len(rank)), i))
+        # the caller's order when it has one (`evidence_order`, from the input's own panel), else DOOM_ORDER
+        rank = {n: i for i, n in enumerate(order or DOOM_ORDER)}
+        seq = sorted(range(len(members)), key=lambda i: (rank.get(getattr(members[i], "name", ""), len(rank)), i))
         got: dict[int, MemberResult] = {}
         doomed = False
         with retry_budget():
-            for i in order:
+            for i in seq:
                 if not doomed:
                     r = check_result(members[i].run(pool, step_path, timeout_s=timeout_s))
                 else:
