@@ -397,3 +397,19 @@ def test_a_cached_located_face_keeps_its_box(step, tmp_path) -> None:
     cache.put("sha", "cfg", [r])
     [back] = cache.get("sha", "cfg")
     assert back.located[0].box == (1.0, 2.0, 3.0, 4.0, 5.0, 6.0) and back == r
+
+
+@pytest.mark.parametrize("tier", ["cheap", "full"])
+def test_both_tiers_hand_the_runner_the_doomed_cap(layers, monkeypatch, tier: str) -> None:
+    """C16: the staged healer and the search judge on the cheap tier with every member the start fails; without the
+    cap a hanging member cost 300 s + its 600 s retry on every stage of an already doomed panel."""
+    seen: list = []
+
+    def capped_runner(pool, step, members, *, timeout_s, doomed_cap_s=None):
+        seen.append(doomed_cap_s)
+        return run_panel(pool, step, members, timeout_s=timeout_s)
+
+    monkeypatch.setattr(assemble, "default_members", lambda t: [FakeMember("gmsh_default")])
+    judge = cheap_verdict if tier == "cheap" else verdict
+    judge(None, "s.step", "o.step", run_panel=capped_runner)  # type: ignore[operator]
+    assert seen == [assemble.DOOMED_CAP_S]

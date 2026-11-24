@@ -26,7 +26,7 @@ from meshpipeline.cad.repair_v4.worker_pool import WorkerPool
 
 logger = logging.getLogger(__name__)
 MEMBER_TIMEOUT_S = 300.0
-#: lane C16: the FULL panel's doomed cap (`panel.run_panel`). Once a member fails the file cannot be clean, so the rest
+#: lane C16: the doomed cap of BOTH tiers (`panel.run_panel`). Once a member fails the file cannot be clean, so the rest
 #: get this budget and no retry. The slowest PASS on any of v4's 150 all-pass (clean) panels was 68.5 s (netgen), and
 #: an all-pass panel is never doomed, so this changes no clean verdict; it bounds what a doomed panel can spend.
 DOOMED_CAP_S = 60.0
@@ -186,9 +186,12 @@ def _assemble(
     runner = run_panel or _panel_module().run_panel
     sha = config = None
     panel: list[Any] | None = None
-    # the full tier's doomed cap (lane C16), for a runner that takes it; a substituted runner (tests) runs as before
+    # the doomed cap (lane C16), BOTH tiers, for a runner that takes it; a substituted runner (tests) runs as before.
+    # The cheap tier too: the staged healer and the search judge with every member the start fails (adaptive), and
+    # without the cap one hanging member cost 300 s + its 600 s retry on EVERY stage of a panel already doomed in
+    # seconds (695d74ca7fa6: 2,575 of 2,636 staged s). On the stored cheap-only panels the cap loses 0 passes.
     takes_cap = "doomed_cap_s" in inspect.signature(runner).parameters
-    cap = {"doomed_cap_s": DOOMED_CAP_S} if tier == "full" and takes_cap else {}
+    cap = {"doomed_cap_s": DOOMED_CAP_S} if takes_cap else {}
     # D23.2: P (parallel panel members) is PER CALL: a full verdict (input, confirm, output) meshes its members at
     # once, up to CRS_V4_PANEL_THREADS; a cheap verdict (the search's inner loop, where candidates already run in
     # parallel) stays serial. P changes only WHEN members run, so it is NOT part of the cache key (`cap` is).
