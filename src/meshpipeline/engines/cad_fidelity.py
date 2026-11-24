@@ -278,13 +278,37 @@ def _restaged(ws: Path, intake_patches) -> Surface | None:
         shutil.rmtree(out, ignore_errors=True)
 
 
+#: VER-10: the rule a staged surface holding the wall's both sides is not taken as the fluid's own boundary
+BOTH_SIDES_RULE = "VER-10"
+
+
+def both_sides(s: Surface) -> bool:
+    """VER-10: whether a staged surface holds BOTH SIDES of the wall - the part's whole surface with
+    the openings' lids on - told by an edge three or more triangles share (at each lid's rim the bore,
+    the part's end face and the lid meet). The fluid's own boundary has none. Held to such a surface,
+    an internal mesh "misses" the outside of the wall it never meets: batch 7, cfMesh, abc 00188110 and
+    00189603 - "49% / 27% of your CAD surface is not reached" on meshes that miss 0.0% of the fluid's
+    boundary (199 cm2 of reference round 100 cm2 of fluid wall; 349 round 174). False when it cannot
+    be read (held to all of it, as before)."""
+    if not s.n:
+        return False
+    try:
+        surf = _polydata(s).clean(tolerance=1e-9, absolute=False)
+        edges = surf.extract_feature_edges(boundary_edges=False, non_manifold_edges=True,
+                                           feature_edges=False, manifold_edges=False)
+        return bool(edges.n_cells)
+    except Exception:  # noqa: BLE001 - what cannot be read keeps the whole surface held
+        return False
+
+
 def cad_reference(workspace, flow: str, intake_patches=None) -> tuple[Surface, str, bool]:
     """The CAD surface the mesh should follow, in metres, where it came from, and whether it is
     the FLUID'S OWN closed boundary (only then can the mesh be held to all of it and to its
     volume). Internal flow, in this order: the closed fluid boundary the staging wrote
     (fluid_boundary.stl; cfMesh's geom.stl), every further passage included; else the same staged
     afresh from the metre surface; else the staged parts (the wall and the lids), which hold the
-    mesh's wall to the CAD but also bound the metal. External flow: the body.
+    mesh's wall to the CAD but also bound the metal. A staged surface that holds the wall's both
+    sides (both_sides, VER-10) is not the fluid's own boundary. External flow: the body.
     (empty, "", False) when none is on disk."""
     ws = Path(workspace)
     if flow == "internal":
@@ -307,7 +331,16 @@ def cad_reference(workspace, flow: str, intake_patches=None) -> tuple[Surface, s
         whole = [q for q in (ws / "_internal_stls" / "fluid_boundary.stl",
                              ws / "fluid_boundary.stl", ws / "geom.stl") if q.exists()]
         if whole:
-            return read_stl(whole[0]), "staged fluid boundary", True
+            staged = read_stl(whole[0])
+            if not both_sides(staged):
+                return staged, "staged fluid boundary", True
+            # VER-10: the staged surface is the part's whole surface with the lids on (cfMesh's geom.stl
+            # on a pipe: the outside of the wall too) - held to the fluid's own boundary instead, the one
+            # the shared staging closes from the run's file and openings; else it bounds the metal too
+            fb = _restaged(ws, intake_patches)
+            if fb is not None:
+                return fb, "fluid boundary staged from your file", True
+            return staged, "staged part surface and lids", False
         fb = _restaged(ws, intake_patches)
         if fb is not None:
             return fb, "fluid boundary staged from your file", True
@@ -950,7 +983,7 @@ __all__ = ["CAD_MISSED_CONCERN", "CAD_MISSED_REBUILD", "CONCERN", "OPENING_BAND"
            "REBUILD", "RECORD_KEY", "UNMEASURED", "VOLUME_CONCERN_EXTERNAL",
            "VOLUME_CONCERN_INTERNAL", "VOLUME_REBUILD", "WALL_OFF_CONCERN", "WALL_OFF_REBUILD",
            "WRONG_REGION_MEDIAN_CELLS", "WRONG_REGION_OFF_SHARE", "wrong_region",
-           "Surface", "cad_reference", "concerns", "enclosed_volume", "gate_cad_fidelity", "join",
+           "BOTH_SIDES_RULE", "Surface", "both_sides", "cad_reference", "concerns", "enclosed_volume", "gate_cad_fidelity", "join",
            "outer_skin",
            "measure", "mesh_patches", "outward_volume", "read_stl", "record_into_manifest",
            "surface_distance"]
