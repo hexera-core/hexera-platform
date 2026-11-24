@@ -297,6 +297,9 @@ def run_arms(args: argparse.Namespace, out: Path, prov: dict, ledger: Any | None
                                          "arm": name, "reason": outcome.excluded})
     finally:
         pool.close()
+        if throttle is not None and "model_throttle" in prov:
+            # rounds that gave up waiting for a slot after wait_s (each a failed model round for the proposer)
+            prov["model_throttle"]["waits_timed_out"] = getattr(throttle, "waits_timed_out", 0)
         if throttle is not None and getattr(throttle, "guard", None) is not None:
             prov["wave_backoff"] = throttle.guard.describe()   # what this shard held for, and the trips it saw
             prov["model_throttle"]["rate_limited_calls"] = throttle.rate_limited
@@ -353,7 +356,9 @@ def build_recipes(args: argparse.Namespace, prov: dict, plan: dict | None) -> An
 def build_throttle(args: argparse.Namespace, route: str, prov: dict, ledger: Any | None = None) -> Any:
     """This shard's slice of the wave's model-call allowance on `route` (`model_throttle.WaveThrottle.for_shard`):
     1/N of the wave's in-flight ceiling (`--model-max-in-flight`, default derived from the route's measured limits),
-    requests and tokens per minute. A wave with more shards than in-flight calls is refused here, before any file."""
+    requests and tokens per minute. A wave with more shards than in-flight calls is REFUSED here, before any file,
+    unless the launch passes `--allow-in-flight-floor`: each slice is then floored to one call (so the wave may exceed
+    the ceiling) and `prov["model_throttle"]["in_flight_floor_override"]` records that the override was given."""
     from meshpipeline.cad.repair_v4.model_throttle import WaveBackoffGuard, WaveThrottle
 
     n_shards = getattr(args, "n_shards", None) or evalspec.parse_shard(args.shard)[1]
@@ -364,10 +369,12 @@ def build_throttle(args: argparse.Namespace, route: str, prov: dict, ledger: Any
     guard = (WaveBackoffGuard(markers, wave_id=str(wave_id), shard_id=str(args.shard))
              if markers is not None and wave_id else None)
     throttle = WaveThrottle.for_shard(route, n_shards=n_shards,
-                                      max_in_flight=getattr(args, "model_max_in_flight", None), guard=guard)
+                                      max_in_flight=getattr(args, "model_max_in_flight", None), guard=guard,
+                                      allow_floor=bool(getattr(args, "allow_in_flight_floor", False)))
     s = throttle.slice
     prov["model_throttle"] = {"n_shards": n_shards, "max_in_flight": s.max_in_flight, "rpm": round(s.rpm, 2),
-                              "tpm": round(s.tpm), "in_flight_floored": s.floored}
+                              "tpm": round(s.tpm), "in_flight_floored": s.floored,
+                              "in_flight_floor_override": bool(getattr(args, "allow_in_flight_floor", False))}
     if guard is None:
         prov["wave_backoff"] = {"guard": "absent", "reason": "no wave id or marker store on this shard"}
     return throttle
@@ -590,6 +597,10 @@ def build_parser() -> argparse.ArgumentParser:
                         help="what this run is FOR; `tuning` is refused for the held-out split")
     parser.add_argument("--n-shards", type=int, default=None, help="the wave's N; must equal the N in --shard")
     parser.add_argument("--ledger-path", default=None, help="the shard's durable ledger log")
+    parser.add_argument("--allow-in-flight-floor", action="store_true",
+                        help="allow a wave with more shards than in-flight model calls: each shard's slice is floored "
+                             "to one call, so the wave may exceed its in-flight ceiling (recorded in provenance); "
+                             "without it such a wave is refused")
     parser.add_argument("--model-max-in-flight", type=int, default=None,
                         help="the WAVE's ceiling on in-flight model calls, split 1/N per shard (default: derived from "
                              "the route's measured rate limit, model_throttle.wave_max_in_flight)")

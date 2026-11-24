@@ -43,9 +43,11 @@ def test_a_shard_with_a_ledger_gets_the_wave_guard_and_records_the_floor(tmp_pat
         markers = FileMarkerStore(tmp_path)
 
     prov: dict = {}
-    args = Namespace(n_shards=96, shard="3/96", wave_id="w1", model_max_in_flight=None)
+    # 96 shards > the 37 in-flight ceiling: the floor needs the launch's explicit override (B11), which is recorded
+    args = Namespace(n_shards=96, shard="3/96", wave_id="w1", model_max_in_flight=None, allow_in_flight_floor=True)
     t = ra.build_throttle(args, "openai:gpt-6-astra", prov, ledger=L())
     assert t.guard is not None and prov["model_throttle"]["in_flight_floored"] is True
+    assert prov["model_throttle"]["in_flight_floor_override"] is True
     assert prov["model_throttle"]["max_in_flight"] == 1
     prov2: dict = {}
     t2 = ra.build_throttle(args, "openai:gpt-6-astra", prov2, ledger=None)      # no markers: no guard, said so

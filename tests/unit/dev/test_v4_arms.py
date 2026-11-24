@@ -843,3 +843,17 @@ def test_a_failed_measurement_is_recorded_as_such_never_breaks_the_row() -> None
     o = run_arm.arms_mod.overlap_triage(_OverlapPool(fail=True), SimpleNamespace(brep_path="x"),
                                         _overlapping_input(("S1", "S2")))
     assert o["max_depth_mm"] is None and "error" in o
+
+def test_a_wave_with_more_shards_than_in_flight_calls_is_refused_without_the_override(shard: Any) -> None:
+    """B11 (3): 96 shards against an in-flight ceiling of 37 used to floor each slice to one call silently. Now the
+    launch is refused unless --allow-in-flight-floor is passed, and the override is recorded."""
+    from meshpipeline.cad.repair_v4.model_throttle import ThrottleConfigError
+
+    base = [*shard.argv, "--arms", "search_ai", "--wave-type", "normal", "--wave-id", "w1", "--n-shards", "96",
+            "--shard", "1/96", "--ledger-path", "/x", "--marker-bucket", "b"]
+    with pytest.raises(ThrottleConfigError, match="allow-in-flight-floor"):
+        run_arm.build_throttle(run_arm.parse_args(base), "openai:gpt-6-astra", {})
+    prov: dict = {}
+    t = run_arm.build_throttle(run_arm.parse_args([*base, "--allow-in-flight-floor"]), "openai:gpt-6-astra", prov)
+    assert t.slice.floored and prov["model_throttle"]["in_flight_floor_override"] is True
+    assert prov["model_throttle"]["in_flight_floored"] is True

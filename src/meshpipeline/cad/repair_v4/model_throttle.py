@@ -15,15 +15,17 @@ the wave total can never exceed the wave limit however shards are scheduled. The
 that is meshing rather than calling, which at the measured limits costs nothing (see ROUTE_LIMITS).
 
 WHAT IS LIMITED, per shard:
-  * in-flight calls (a bounded semaphore of `max_in_flight // N`, at least 1 - and a wave whose N exceeds its
-    in-flight ceiling is REFUSED, because a slice cannot be less than one call);
+  * in-flight calls (a bounded semaphore of `max_in_flight // N`). A wave whose N exceeds its in-flight ceiling is
+    REFUSED unless the launch passes an explicit override (`allow_floor`, run_arm `--allow-in-flight-floor`), which
+    floors each slice to one call and is recorded (`Slice.floored`, the shard's provenance);
   * requests and input tokens per rolling 60 s (`rpm / N`, `tpm / N`); a call is charged its ESTIMATED input
     tokens up front (the proposer's upper-bound estimate), so the bucket never under-counts;
   * a cool-down: after a call ends rate-limited, no new call starts on this shard until `retry_after` (or
     `COOLDOWN_S`) has passed. The router has already retried that call; the cool-down stops the NEXT call from
     walking straight into the same limit.
 
-`acquire` blocks up to `wait_s` and returns False rather than waiting forever: the proposer then treats the round as a
+`acquire` blocks up to `wait_s` of time - whatever holds it, the shard's own limits or the wave's 429 back-off - and
+returns False rather than waiting forever: the proposer then treats the round as a
 failed model round (never a crash), and three in a row stop the AI for the file as `model_unavailable`.
 """
 
@@ -104,18 +106,23 @@ class WaveThrottle:
         #: the most calls ever in flight at once on this shard (for tests and the shard's provenance)
         self.peak_in_flight = 0
         self.rate_limited = 0
+        #: acquires that gave up after wait_s (each one a failed model round for the proposer)
+        self.waits_timed_out = 0
 
     @classmethod
     def for_shard(cls, route: str, *, n_shards: int, max_in_flight: int | None = None,
-                  share: float = WAVE_SHARE, **kw) -> WaveThrottle:
-        """This shard's slice: `max(1, max_in_flight // n_shards)` calls, `share x rpm / n_shards` requests and
-        `share x tpm / n_shards` input tokens per minute."""
+                  share: float = WAVE_SHARE, allow_floor: bool = False, **kw) -> WaveThrottle:
+        """This shard's slice: `max_in_flight // n_shards` calls, `share x rpm / n_shards` requests and
+        `share x tpm / n_shards` input tokens per minute. When `max_in_flight // n_shards` is below one call the wave
+        would exceed its in-flight ceiling: that is REFUSED (`ThrottleConfigError`) unless `allow_floor` - the
+        launch's explicit, recorded override - floors the slice to one call."""
         if n_shards < 1:
             raise ThrottleConfigError(f"n_shards must be at least 1, got {n_shards}")
         if route not in ROUTE_LIMITS:
             raise ThrottleConfigError(f"no measured rate limit for {route!r}; add it to ROUTE_LIMITS from a header probe")
         wave_in_flight = max_in_flight if max_in_flight is not None else wave_max_in_flight(route, share=share)
-        # WHY A FLOOR OF ONE, EVEN WHEN IT EXCEEDS THE DERIVED CEILING. `wave_in_flight` is `share x rpm x latency / 60`:
+        # WHY A FLOOR OF ONE MAY BE ALLOWED, EVEN THOUGH IT EXCEEDS THE DERIVED CEILING - BUT ONLY WHEN THE LAUNCH SAYS
+        # SO (B11: the floor used to apply silently; it is now refused unless `allow_floor` is passed and recorded). `wave_in_flight` is `share x rpm x latency / 60`:
         # the in-flight count that share-of-RPM implies UNDER SATURATION (every slot re-calling the instant it frees).
         # At WAVE_SHARE 0.05 that is 37, below the 96 shards of a dev wave, so `37 // 96 == 0` and without a floor the
         # wave would be refused. A shard is not saturated, though: it runs one file at a time, a file is two model
@@ -123,11 +130,17 @@ class WaveThrottle:
         # Task 43), so 96 shards sustain about 118-361 RPM against the 750 the share allows. Concurrency can touch 96
         # for a moment; the provider meters the SUSTAINED rate. So the ceiling over-constrains by assuming a
         # saturation that does not occur, and the per-shard RPM and TPM slices below - not this count - are the
-        # binding protection of production's 95%. A floor of one violates the derived ceiling on purpose (the
-        # coordinator accepted 96 > 37). Do not "fix" it back to a refusal, and do not read `wave_in_flight` as a hard
-        # invariant: it is advisory, and `Slice.floored` records when the floor applied.
-        per_shard = max(1, wave_in_flight // n_shards)
+        # binding protection of production's 95%. A floor of one violates the derived ceiling (the coordinator
+        # accepted 96 > 37 for dev waves), so it is an explicit decision of the launch, recorded in `Slice.floored` and
+        # the shard's provenance - never a silent default.
         floored = wave_in_flight // n_shards < 1
+        if floored and not allow_floor:
+            raise ThrottleConfigError(
+                f"{n_shards} shards cannot share {wave_in_flight} in-flight model calls: each slice would be below one "
+                f"call, so the wave could have {n_shards} in flight against a ceiling of {wave_in_flight}. Launch with "
+                f"<= {wave_in_flight} shards, or pass --allow-in-flight-floor (allow_floor=True) to floor each slice "
+                "to one call; the override is recorded in the shard's provenance.")
+        per_shard = max(1, wave_in_flight // n_shards)
         rpm, tpm = ROUTE_LIMITS[route]
         return cls(Slice(per_shard, share * rpm / n_shards, share * tpm / n_shards, floored), **kw)
 
@@ -137,7 +150,7 @@ class WaveThrottle:
         """Block until a call charging `tokens` input tokens may start on this shard, or `wait_s` passes (False).
         A call larger than the whole per-minute token slice is admitted alone, into an empty window, rather than
         refused for ever."""
-        deadline = self._clock() + wait_s
+        deadline = self._clock() + wait_s                  # NEVER extended: wait_s of time is the bound (B11)
         while True:
             # the wave guard is consulted OUTSIDE the shard's lock: it may read the marker store
             wave_hold = self.guard.hold_for() if self.guard is not None else 0.0
@@ -152,14 +165,16 @@ class WaveThrottle:
                     return True
                 remaining = deadline - now
                 if remaining <= 0:
+                    self.waits_timed_out += 1
                     return False
                 wait = min(hold, remaining)
                 if wave_hold > 0 and wave_hold >= own_hold and self.guard is not None:
-                    # a wave-level back-off is not this call's failure: it does not spend the call's wait budget
-                    # (else every round would "fail" and a throttled wave would read as model_unavailable). It is
-                    # recorded instead, and the report says the wave was throttled.
+                    # a wave-level back-off is recorded (the report says the wave was throttled). It used to EXTEND the
+                    # deadline as well, so `remaining` never shrank and acquire() blocked past wait_s - unbounded while
+                    # trips kept re-firing, outside the router's own deadline. It no longer does: a call held longer
+                    # than wait_s is a failed round like any other; three in a row end the AI for the file as
+                    # model_unavailable, which the row records as inconclusive.
                     self.guard.note_held(wait)
-                    deadline += wait
                 self._wait(wait)
 
     def release(self, *, rate_limited: bool = False, retry_after_s: float | None = None) -> None:
@@ -261,6 +276,8 @@ class WaveBackoffGuard:
         self.held_s = 0.0
         self.holds = 0
         self.store_errors = 0
+        #: trip markers ignored because they were not JSON objects with a finite numeric `until`
+        self.malformed_markers = 0
 
     def _bucket(self, t: float) -> int:
         return int(t // self.window_s)
@@ -296,17 +313,29 @@ class WaveBackoffGuard:
             return False
 
     def _refresh(self, now: float) -> None:
+        """Read the current and previous buckets' trip markers. Only a JSON object with a finite numeric `until` is
+        kept; anything else is counted in `malformed_markers` and ignored, so `hold_for` can never raise on it."""
         bucket = self._bucket(now)
-        try:
-            for b in (bucket - 1, bucket):
-                key = self._key(b, "tripped")
-                if key in self._trips:
-                    continue
+        for b in (bucket - 1, bucket):
+            key = self._key(b, "tripped")
+            if key in self._trips:
+                continue
+            try:
                 raw = self._m.get(key)
-                if raw is not None:
-                    self._trips[key] = json.loads(raw)
-        except Exception:  # noqa: BLE001 - fail open, and say so
-            self.store_errors += 1
+            except Exception:  # noqa: BLE001 - fail open, and say so (once per refresh: the store is unreachable)
+                self.store_errors += 1
+                break
+            if raw is None:
+                continue
+            try:
+                record = json.loads(raw)
+            except ValueError:
+                record = None
+            until = record.get("until") if isinstance(record, dict) else None
+            if isinstance(until, bool) or not isinstance(until, (int, float)) or not math.isfinite(until):
+                self.malformed_markers += 1
+                continue
+            self._trips[key] = record
 
     def hold_for(self) -> float:
         """Seconds this shard must hold new calls for the wave's back-off (0: go). Reads the store at most every
@@ -330,7 +359,8 @@ class WaveBackoffGuard:
             return {"guard": "wave_backoff", "threshold": self.threshold, "window_s": self.window_s,
                     "reported_429": self.reported, "tripped_here": self.tripped_here,
                     "trips_seen": sorted(self._trips.values(), key=lambda t: t["at"]),
-                    "held_s": round(self.held_s, 3), "holds": self.holds, "store_errors": self.store_errors}
+                    "held_s": round(self.held_s, 3), "holds": self.holds, "store_errors": self.store_errors,
+                    "malformed_markers": self.malformed_markers}
 
 
 __all__ = ["COOLDOWN_S", "GUARD_THRESHOLD", "GUARD_WINDOW_S", "WaveBackoffGuard", "ROUTE_LIMITS", "Slice", "ThrottleConfigError", "WAVE_SHARE", "WaveThrottle",
