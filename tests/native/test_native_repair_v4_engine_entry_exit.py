@@ -42,7 +42,8 @@ def _verdict(q: int) -> Any:
 def seam(monkeypatch: pytest.MonkeyPatch) -> dict:
     state: dict = {"changed": True, "seen_ws": None}
 
-    def find_best(pool: Any, ws: Any, source: str, *, budget: Any, deadline_s: float, judge: Any) -> Any:
+    def find_best(pool: Any, ws: Any, source: str, *, budget: Any, deadline_s: float, judge: Any,
+                  input_verdict: Any = None) -> Any:
         state["seen_ws"] = ws
         trace = Trace()
         trace.record("start")

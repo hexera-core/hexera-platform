@@ -223,3 +223,34 @@ def test_nothing_changed_at_all_delivers_nothing(
     monkeypatch.setattr(search_mod, "search", lambda pool, start, *a, **k: search_mod.SearchResult(
         best=start, best_verdict=FakeVerdict(q=1), clean=False, trace=None, changed=False, reason="patience"))
     assert _run(files).delivered is False
+
+
+def _panel(passes: int, of: int = 4) -> tuple:
+    return tuple(SimpleNamespace(name=f"m{i}", status="pass" if i < passes else "fail") for i in range(of))
+
+
+@pytest.mark.parametrize("arm", ["search_det", "search_ai"])
+def test_a_search_arm_never_starts_from_a_staged_state_the_full_panel_says_is_worse(
+        world: World, files: tuple[str, str], staged: list[Any], monkeypatch: pytest.MonkeyPatch, arm: str) -> None:
+    """Task 49: the healer's `condition` stage took a CLEAN file from 4 panel passes to 3 and the cheap tier, which
+    meshes only gmsh_default, kept it. The engine's search now starts from the state the FULL panel confirmed - here
+    the input, because the staged state lost a member."""
+    clean_in = FakeVerdict(q=4, clean=True, panel=_panel(4))
+    damaged = FakeVerdict(q=3, clean=False, panel=_panel(3))
+    monkeypatch.setattr(v4, "ARM", arm)
+    monkeypatch.setattr(v4, "_find_best", _REAL_FIND_BEST)
+    monkeypatch.setattr(v4, "_ai_kwargs", lambda source, budget: {})
+    monkeypatch.setattr(search_mod, "arm_generators", lambda name, **kw: ([], None))
+    monkeypatch.setattr(v4, "_make_judge", lambda pool, ws: SimpleNamespace(
+        full=lambda p, w, o: damaged if w.brep_path == "/w/staged.brep" else clean_in))
+    starts: list[str] = []
+
+    def search(pool: Any, start: Any, original: str, generators: Any, budget: Any, **kw: Any) -> Any:
+        starts.append(start.brep_path)
+        return search_mod.SearchResult(best=start, best_verdict=clean_in, clean=True, trace=None, changed=False,
+                                       reason="clean")
+
+    monkeypatch.setattr(search_mod, "search", search)
+    result = _run(files)
+    assert starts == ["/w/in.brep"], "the search started from the state the healer damaged"
+    assert result.delivered is False                       # a clean input is passed through, never replaced

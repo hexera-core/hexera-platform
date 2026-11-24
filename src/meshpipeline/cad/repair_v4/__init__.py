@@ -139,7 +139,7 @@ def _verdict_only(pool: WorkerPool, ws: Workspace, source: str, *, input_verdict
     `input_only` changes nothing; `staged` runs the staged healers and is judged once more. No candidate goes
     through a search, so there are none to count."""
     from meshpipeline.cad.repair_v4.search import SearchResult
-    from meshpipeline.cad.repair_v4.stages import run_staged
+    from meshpipeline.cad.repair_v4.stages import confirm_staged, run_staged
     from meshpipeline.cad.repair_v4.trace import Trace
     from meshpipeline.cad.repair_v4.verdict.assemble import InconclusiveVerdict
 
@@ -149,22 +149,28 @@ def _verdict_only(pool: WorkerPool, ws: Workspace, source: str, *, input_verdict
         return SearchResult(best=ws, best_verdict=input_verdict, clean=bool(input_verdict.clean), trace=trace,
                             changed=False, reason="input_only")
     staged = run_staged(pool, ws)
-    verdict = judge.full(pool, staged.ws, source)
+    # the stages were judged by the CHEAP tier; the whole panel confirms the result, falling back stage by stage
+    conf = confirm_staged(pool, ws, staged, full=lambda w: judge.full(pool, w, source), input_verdict=input_verdict)
+    verdict = conf.verdict if conf.verdict is not None else judge.full(pool, staged.ws, source)
     if getattr(verdict, "inconclusive", False):
         raise InconclusiveVerdict("the staged output could not be measured")
+    trace.record("staged_confirmation", fell_back_to=conf.fell_back_to, dropped=conf.dropped, checked=conf.checked)
     return SearchResult(best=staged.ws, best_verdict=verdict, clean=bool(verdict.clean), trace=trace,
                         changed=staged.ws.brep_path != ws.brep_path, reason="staged")
 
 
 def _find_best(pool: WorkerPool, ws: Workspace, source: str, *, budget: Budget, deadline_s: float,
-               judge: Any) -> SearchResult:
+               judge: Any, input_verdict: Any = None) -> SearchResult:
     """The middle: staged healers, then the search. Other lanes own both; this only calls them in the
     frozen order (04-task-22-engine-seam-contract.md). Tests fake THIS function."""
     from meshpipeline.cad.repair_v4.search import Budget as SearchBudget
     from meshpipeline.cad.repair_v4.search import arm_generators, search
-    from meshpipeline.cad.repair_v4.stages import run_staged
+    from meshpipeline.cad.repair_v4.stages import confirm_staged, run_staged
 
     staged = run_staged(pool, ws)
+    # the search starts from the healer's output only once the FULL panel says it is no worse than the input
+    confirm_staged(pool, ws, staged, full=lambda w: judge.full(pool, w, source),
+                   input_verdict=input_verdict if input_verdict is not None else judge.full(pool, ws, source))
     ai = _ai_kwargs(source, budget) if ARM == "search_ai" else {}
     generators, _proposer = arm_generators(ARM, **ai)
     remaining = deadline_s - time.monotonic() - WRITE_RESERVE_S
@@ -239,7 +245,8 @@ def _run_search(source: str, dest: str, *, budget: Budget, deadline_s: float) ->
                 if ARM in VERDICT_ONLY_ARMS:
                     result = _verdict_only(pool, start, source, input_verdict=input_verdict, judge=judge)
                 else:
-                    result = _find_best(pool, start, source, budget=budget, deadline_s=deadline_s, judge=judge)
+                    result = _find_best(pool, start, source, budget=budget, deadline_s=deadline_s, judge=judge,
+                                        input_verdict=input_verdict)
                 if getattr(result, "infrastructure_failed", False):
                     raise InconclusiveVerdict("the search measured nothing (checker infrastructure)")
             except infra as exc:
