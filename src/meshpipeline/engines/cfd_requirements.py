@@ -2251,7 +2251,7 @@ def _num(text: str, key: str) -> float | None:
 
 @guarded(lambda ask, text, **_k: text)
 def snappy_dict(ask: Ask | None, text: str, *, wall_cell_m: float | None = None,
-                bridge: Mapping | None = None, band: bool = False) -> str:
+                bridge: Mapping | None = None, band: bool = False, relative_ok: bool = False) -> str:
     """The snappyHexMeshDict text with the user's growth, layer sizes and quality limits applied (CFDREQ-2, 4, 5).
     The count of layers, the sizes and the budget are the plan's (the drivers set them before the dict is
     written). Unchanged with nothing asked. `bridge`: {"faces": wall faces, "room": cells the layers may add} on a
@@ -2266,7 +2266,7 @@ def snappy_dict(ask: Ask | None, text: str, *, wall_cell_m: float | None = None,
         ask.done("growth", f"{n} cells between refinement levels, so sizes grow about {MR._g(2 ** (1 / n))} from one "
                            "cell to the next", cells_between_levels=n)
     if "addLayersControls" in out and (ask.first_m or ask.total_m or ask.layer_growth or ask.y_plus):
-        out = _snappy_layers(ask, out, wall_cell_m, bridge, band=band)
+        out = _snappy_layers(ask, out, wall_cell_m, bridge, band=band, relative_ok=relative_ok)
     for lim in ask.limits:
         key = SNAPPY_QUALITY.get(lim["measure"])
         if key is None:
@@ -2434,7 +2434,7 @@ def capped_stack(first_m: float, wall_cell_m: float, stack_m: float, cap_m: floa
 
 
 def _snappy_layers(ask: Ask, text: str, wall_cell_m: float | None, bridge: Mapping | None = None, *,
-                   band: bool = False) -> str:
+                   band: bool = False, relative_ok: bool = False) -> str:
     """The layer thicknesses in absolute sizes when the user gave one (first height, stack, or a y+ turned into a
     first height); the growth alone keeps our relative sizes. With `bridge` (CFDREQ-9), a first layer far thinner
     than the wall cells gets the layers that fill our own stack from it (layer_bridge), said on its row."""
@@ -2626,11 +2626,13 @@ def _snappy_layers(ask: Ask, text: str, wall_cell_m: float | None, bridge: Mappi
             ask.rows.get(ask.rid("layers:first_height") or ask.rid("layers:y_plus") or "", {}).update(note=thin)
             if not ask.layer_note:
                 ask.layer_note = thin
-    if (first is not None and wall_cell_m and wall_cell_m > 0 and _one_wall_level(out)
+    if (relative_ok and first is not None and wall_cell_m and wall_cell_m > 0 and _one_wall_level(out)
             and ((wf["treatment"] == "resolved") if wf is not None else
                  (bridged is not None or capped is not None or ask.treatment == "resolved"))):
         # CFDREQ-33: A RESOLVED WALL'S STACK FITS EACH WALL FACE - sized on the plain wall cell, relative, so a face
-        # finer than that cell gets the same stack in its own cells
+        # finer than that cell gets the same stack in its own cells. Only where the caller's wall cell is the wall's
+        # plain cell (relative_ok: the external body case); an internal case sizes on the near-wall band, finer than
+        # the surface, and a relative stack there would thicken the surface's own faces
         out = _relative_stack(ask, out, float(first), float(wall_cell_m), float(thinnest), total)
     if bridged is not None:
         _say_bridge(ask, bridged, g, float(wall_cell_m or 0.0))

@@ -44,6 +44,7 @@ def test_a_capped_stack_reaches_the_dictionary_and_its_row(tmp_path):
                          requirements=ask)
     text = (ws / "system" / "snappyHexMeshDict").read_text()
     first = float(re.search(r"firstLayerThickness\s+([-+0-9.eE]+)", text).group(1))
+    first *= float(re.search(r"plainWallCell\s+([-+0-9.eE]+)", text).group(1)) if "relativeSizes true" in text else 1.0  # CFDREQ-33: a relative stack, read as its height
     g = float(re.search(r"expansionRatio\s+([-+0-9.eE]+)", text).group(1))
     n = int(re.search(r"nSurfaceLayers\s+(\d+)", text).group(1))
     assert abs(first - 0.034e-3) < 1e-9, "the first height asked is never traded away"

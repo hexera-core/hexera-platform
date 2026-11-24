@@ -54,7 +54,8 @@ def test_a_resolved_first_layer_round_a_body_gets_the_layers_that_reach_its_wall
     # 0.034 mm under ~10 mm wall cells: far more than the plan's 5 layers carry it out to the cells
     assert _layers(ws) > 5
     text = (ws / "system" / "snappyHexMeshDict").read_text()
-    assert "firstLayerThickness" in text and "relativeSizes false" in text
+    # CFDREQ-33: a box at one wall level: the stack written relative to the plain wall cell it was planned on
+    assert "firstLayerThickness" in text and "relativeSizes true" in text and "plainWallCell" in text
 
 
 def test_a_first_layer_the_wall_cells_keep_is_left_at_the_plan_s_count(tmp_path):

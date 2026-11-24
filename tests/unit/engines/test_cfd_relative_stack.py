@@ -25,11 +25,11 @@ def _num(text: str, key: str) -> float | None:
 
 def test_a_resolved_wall_at_one_level_gets_its_stack_on_each_face(tmp_path):
     wc = 0.0016
-    absolute = CR.snappy_dict(_ask("10 m/s", 0.06), TWO_LEVELS + SHM, wall_cell_m=wc)
+    absolute = CR.snappy_dict(_ask("10 m/s", 0.06), TWO_LEVELS + SHM, wall_cell_m=wc, relative_ok=True)
     assert "relativeSizes false;" in absolute            # faces coarser than the wall cell: kept in metres
     first = _num(absolute, "firstLayerThickness")
     ask = _ask("10 m/s", 0.06)
-    out = CR.snappy_dict(ask, ONE_LEVEL + SHM, wall_cell_m=wc)
+    out = CR.snappy_dict(ask, ONE_LEVEL + SHM, wall_cell_m=wc, relative_ok=True)
     assert "relativeSizes true;" in out and f"{LC.PLAIN_CELL_KEY} {wc:g};" in out
     assert _num(out, "firstLayerThickness") == pytest.approx(first / wc, rel=1e-5)
     assert _num(out, "nSurfaceLayers") == _num(absolute, "nSurfaceLayers")

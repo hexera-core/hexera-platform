@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import math
+import re
 
 import pytest
 from tests.unit.engines.test_cfd_requirements import _read, _snappy, re_num
@@ -68,7 +69,8 @@ def test_snappy_sizes_the_first_layer_from_the_conditions(tmp_path):
     ask = CR.Ask(MR.requirements_of(sec), "snappy")
     ask.length_m, ask.length_from = 0.05, "the bore"
     text, _s = _snappy(tmp_path / "c", ask)
-    h = re_num(text, "firstLayerThickness")
+    # CFDREQ-33: a relative stack carries its plain wall cell; the height is the share times it
+    h = re_num(text, "firstLayerThickness") * (float(re.search(r"plainWallCell\s+([-+0-9.eE]+)", text).group(1)) if "relativeSizes true" in text else 1.0)
     expected, missing, _how = CR.y_plus_height(1.0, {"velocity_ms": 1.0, "fluid": "water", "flow": "internal"},
                                                length_m=0.05)
     assert missing == [] and math.isclose(h, expected, rel_tol=1e-4)
