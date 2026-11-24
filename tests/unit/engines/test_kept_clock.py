@@ -21,9 +21,16 @@ def test_the_clock_is_a_multiple_of_the_all_shell_mesh_with_a_floor():
     assert sr.kept_clock_s(1e9) > sr.KEPT_BUDGET_S                    # MIXED-12's guard still caps it in _wait
 
 
+def _burn(cpu_s: float) -> None:
+    """Work for `cpu_s` CPU seconds (MIXED-27: the clock counts work, not wall seconds)."""
+    stop = time.process_time() + cpu_s
+    while time.process_time() < stop:
+        pass
+
+
 def test_an_attempt_past_its_clock_is_stopped_and_the_user_is_told(tmp_path):
     def slow():
-        time.sleep(30)
+        _burn(30.0)
 
     started = time.time()
     with pytest.raises(mr._Stop) as got:
@@ -60,9 +67,10 @@ def test_a_run_whose_attempt_runs_past_the_clock_delivers_the_all_shell_mesh_and
     from tests import shell_fixtures as sf
 
     def slow(*a, **k):
-        time.sleep(60)
+        _burn(60.0)
 
     monkeypatch.setattr(mr, "build", slow)
+    monkeypatch.setattr(sr, "KEPT_START", "fork")         # the patched build reaches the child (MIXED-28)
     monkeypatch.setattr(sr, "KEPT_FLOOR_S", 1.0)
     monkeypatch.setattr(sr, "KEPT_PER_PLAIN", 1.0)
     step = sf.write_step(sf.plate_with_boss(), tmp_path / "boss.step")
@@ -76,5 +84,30 @@ def test_a_run_whose_attempt_runs_past_the_clock_delivers_the_all_shell_mesh_and
     assert "times what the all-shell mesh took), so they are left out." in rec["words"]
     clock = rec["kept_clock"]
     assert clock["kept"] is False and clock["attempt_s"] is None
-    assert clock["allowed_s"] == pytest.approx(max(1.0, clock["plain_s"]), abs=0.2)
+    plain = clock["plain_cpu_s"] if clock["by_cpu"] else clock["plain_s"]
+    assert clock["allowed_s"] == pytest.approx(max(1.0, plain), abs=0.2)
+    if clock["by_cpu"]:
+        assert clock["stopped_cpu_s"] >= clock["allowed_s"]          # MIXED-27: stopped on its own CPU seconds
     assert "CTETRA" not in (ws / "shell.bdf").read_text()
+
+
+def test_an_attempt_from_a_process_with_other_threads_starts_clean(tmp_path):
+    # MIXED-28: a fork copies only the forking thread, so a pool left by a library hangs the child; with another
+    # thread running, a picklable attempt is spawned (and still finishes and is read), a closure is forked as before
+    import functools
+    import os
+    import threading
+
+    stop = threading.Event()
+    t = threading.Thread(target=stop.wait, daemon=True)
+    t.start()
+    try:
+        assert sr._threads() >= 2
+        assert sr._start_kind(functools.partial(os.getpid)) == "spawn"
+        assert sr._start_kind(lambda: 1) == "fork"
+        h = sr._fork(functools.partial(os.getpid))
+        assert h["start"] == "spawn"
+        assert sr._wait(h, 120.0, tmp_path) != os.getpid()
+    finally:
+        stop.set()
+        t.join()

@@ -11,10 +11,12 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import shutil
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -360,32 +362,112 @@ def kept_clock_s(plain_s: float) -> float:
     return max(float(KEPT_FLOOR_S), float(KEPT_PER_PLAIN) * max(0.0, float(plain_s)))
 
 
-def _fork(fn) -> dict:
-    """fn() started in a forked child of its own process group; the handle _wait reads."""
-    import multiprocessing as mp
+#: MIXED-27, THE KEPT-SOLID CLOCKS COUNT WORK, NOT THE MACHINE'S LOAD: MIXED-26's clock (and its floor) and MIXED-25's
+#: growth bound are counted in CPU seconds - the all-shell mesh's own (the run's process and the children it reaped),
+#: the attempt's own (its forked child and every process of its group, read from /proc) - so a worker with one core,
+#: or one shared with other work, decides as a quiet one does: an attempt waiting for the core is not stopped for
+#: waiting. (The plate with a 30 mm boss, testlab-2: the attempt 15-16 s of wall on one core or six, its all-shell mesh
+#: 0.2-0.5 s, so MIXED-26's 60 s floor; the unit shard's failures were MIXED-28's hang, not this.) MIXED-12's 300 s
+#: guard stays in wall seconds, the last stop. Without /proc the clocks fall back to wall seconds, as before.
+KEPT_BY_CPU = True
+WAIT_POLL_S = 0.5               # how often the attempt's CPU seconds are read while it runs
 
+
+def _cpu_self() -> float:
+    """CPU seconds of this process (all its threads) and of the children it has reaped."""
+    t = os.times()
+    return float(t.user + t.system + t.children_user + t.children_system)
+
+
+def _cpu_group(pid: int) -> float | None:
+    """MIXED-27: CPU seconds of process `pid` and every live process under it (each with the children it reaped), or
+    None when /proc cannot tell."""
+    tick = float(os.sysconf("SC_CLK_TCK"))
+    total, todo, seen = 0, [int(pid)], set()
+    while todo:
+        p = todo.pop()
+        if p in seen:
+            continue
+        seen.add(p)
+        try:
+            with open(f"/proc/{p}/stat", "rb") as fh:
+                raw = fh.read()
+            f = raw[raw.rfind(b")") + 2:].split()
+            total += int(f[11]) + int(f[12]) + int(f[13]) + int(f[14])     # utime stime cutime cstime
+            for tid in os.listdir(f"/proc/{p}/task"):
+                with open(f"/proc/{p}/task/{tid}/children", "rb") as fh:
+                    todo.extend(int(c) for c in fh.read().split())
+        except (OSError, ValueError, IndexError):
+            if p == pid:
+                return None
+    return total / tick
+
+
+#: MIXED-28, THE KEPT-SOLID ATTEMPT STARTS IN A CLEAN PROCESS WHEN THE RUN'S PROCESS HOLDS OTHER THREADS: a fork copies
+#: only the forking thread, so a library's thread pool left in the run's process (OpenBLAS, VTK, OCC, OpenMP: 12 to 39
+#: threads seen) is a pool with no threads in the child, and the child waits on it for ever. Measured at 79ad5509
+#: (testlab-2, the unit shard that failed): the attempt forked from a process with 32 or 12 threads hung in its first
+#: gmsh OCC call (`gmsh.model.occ.synchronize`, fea_driver._metre_box) until MIXED-26's 60 s clock or the 600 s guard
+#: stopped it, and the thick region was left out; forked from a process with one thread it finished in 15 s. So when
+#: this process runs more than one thread (/proc/self/task), the attempt is started by "spawn" (a fresh interpreter,
+#: no inherited pools); with one thread it is forked as before. A callable that cannot be handed to a fresh
+#: interpreter (not picklable) is forked as before. KEPT_START "fork" / "spawn" forces one way.
+KEPT_START = "auto"
+
+
+def _threads() -> int:
+    """The threads this process runs (the OS's count, which sees native pools; Python's where /proc cannot tell)."""
+    try:
+        return len(os.listdir("/proc/self/task"))
+    except OSError:
+        import threading
+
+        return threading.active_count()
+
+
+def _start_kind(fn) -> str:
+    """MIXED-28: "fork" or "spawn" for the attempt `fn`."""
+    if KEPT_START in ("fork", "spawn"):
+        return KEPT_START
+    if _threads() <= 1:
+        return "fork"
+    import pickle
+
+    try:
+        pickle.dumps(fn)
+    except Exception:  # noqa: BLE001 - a closure: forked as before
+        return "fork"
+    return "spawn"
+
+
+def _child_main(tx, fn) -> None:
+    """The attempt's child: fn() run in its own process group, its steps and result sent through `tx`."""
     from meshpipeline.cad import mixed_split as mx
     from meshpipeline.engines import mixed_run as mr
 
-    ctx = mp.get_context("fork")
+    os.setsid()            # its own group: a stop takes the solid mesher's workers with it
+    mx.STEP = lambda name: tx.send(("step", name, time.time()))
+    try:
+        tx.send(("ok", fn(), time.time()))         # the time read before the result is handed over
+    except BaseException as exc:  # noqa: BLE001 - handed to the parent
+        tx.send(("err", exc if isinstance(exc, mr._Stop) else RuntimeError(f"{type(exc).__name__}: {exc}"[:300]),
+                 time.time()))
+
+
+def _fork(fn) -> dict:
+    """fn() started in a child of its own process group (forked, or spawned clean: MIXED-28); the handle _wait reads."""
+    import multiprocessing as mp
+
+    kind = _start_kind(fn)
+    ctx: Any = mp.get_context(kind)            # a ForkContext or a SpawnContext
     rx, tx = ctx.Pipe(duplex=False)
-
-    def child() -> None:
-        import os
-
-        os.setsid()            # its own group: a stop takes the solid mesher's workers with it
-        mx.STEP = lambda name: tx.send(("step", name, time.time()))
-        try:
-            tx.send(("ok", fn(), time.time()))         # the time read before the result is handed over
-        except BaseException as exc:  # noqa: BLE001 - handed to the parent
-            tx.send(("err", exc if isinstance(exc, mr._Stop) else RuntimeError(f"{type(exc).__name__}: {exc}"[:300]),
-                     time.time()))
-
     t0 = time.time()
-    p = ctx.Process(target=child)       # not a daemon: the solid mesher starts processes of its own
+    p = ctx.Process(target=_child_main, args=(tx, fn))     # not a daemon: the solid mesher starts processes of its own
     p.start()
     tx.close()
-    return {"p": p, "rx": rx, "t0": t0, "done_s": None}
+    # MIXED-27: its clocks count its CPU seconds where /proc can tell them, else wall seconds as before
+    by_cpu = bool(KEPT_BY_CPU and p.pid and _cpu_group(p.pid) is not None)
+    return {"p": p, "rx": rx, "t0": t0, "done_s": None, "done_cpu_s": None, "by_cpu": by_cpu, "start": kind}
 
 
 def _guarded(fn, budget_s: float, ws: Path, grow_s: float | None = None):
@@ -406,22 +488,35 @@ def _wait(h: dict, budget_s: float, ws: Path, grow_s: float | None = None, clock
     from meshpipeline.engines import mixed_run as mr
 
     p, rx = h["p"], h["rx"]
-    end = h["t0"] + budget_s
-    clocked = clock_s is not None and h["t0"] + clock_s < end
-    if clocked:
-        end = h["t0"] + float(clock_s or 0.0)
-    got, growing, slow = None, None, ""
+    end = h["t0"] + budget_s                        # MIXED-12: wall seconds, the last stop
+
+    def used() -> float:
+        # MIXED-27: the clocks count the attempt's own CPU seconds (wall seconds where /proc cannot tell)
+        cpu = _cpu_group(p.pid) if p.pid and h.get("by_cpu") else None
+        return time.time() - h["t0"] if cpu is None else cpu
+
+    got, growing, slow, spent = None, None, "", 0.0
     while got is None:
-        limit = end if growing is None or grow_s is None else min(end, growing + grow_s)
-        if not rx.poll(max(0.0, limit - time.time())):
-            slow = KEPT_GROW.format(s=grow_s) if limit < end else ""
+        spent = max(spent, used())
+        left = [end - time.time()]
+        if clock_s is not None:
+            left.append(float(clock_s) - spent)
+        if growing is not None and grow_s is not None:
+            left.append(growing + float(grow_s) - spent)
+        if min(left) <= 0.0:
+            slow = ("guard" if left[0] <= 0.0 else "grow" if growing is not None and grow_s is not None
+                    and growing + float(grow_s) - spent <= 0.0 else "clock")
             break
+        if not rx.poll(min(min(left), WAIT_POLL_S)):
+            continue
+        spent = max(spent, used())
         msg = rx.recv()
         if msg[0] == "step":
-            growing = float(msg[2]) if msg[1] == mx.GROW_STEP else None
+            growing = spent if msg[1] == mx.GROW_STEP else None
             continue
         got = msg
         h["done_s"] = round(float(msg[2]) - h["t0"], 1)
+        h["done_cpu_s"] = round(spent, 1) if h.get("by_cpu") else None
     p.join(5.0 if got is not None else 0.0)        # a stopped child is not waited for (it would cost 5 s more)
     if p.is_alive():
         import os
@@ -437,16 +532,20 @@ def _wait(h: dict, budget_s: float, ws: Path, grow_s: float | None = None, clock
     if got is None:
         from meshpipeline.engines.determinism import note_guard_trip
 
+        h["stopped_cpu_s"] = round(spent, 1) if h.get("by_cpu") else None
         try:
             note_guard_trip("shell_thick_kept", workspace=ws,
-                            rule="MIXED-25" if slow else "MIXED-26" if clocked else "MIXED-12",
-                            budget_s=float(grow_s if slow and grow_s is not None
-                                           else clock_s if clocked and clock_s is not None else budget_s))
+                            rule={"grow": "MIXED-25", "clock": "MIXED-26"}.get(slow, "MIXED-12"),
+                            budget_s=float(grow_s if slow == "grow" and grow_s is not None
+                                           else clock_s if slow == "clock" and clock_s is not None else budget_s),
+                            wall_s=round(time.time() - h["t0"], 1), cpu_s=h["stopped_cpu_s"])
         except Exception:  # noqa: BLE001 - the record says it all the same
             pass
-        if not slow and clocked:
-            slow = KEPT_CLOCK.format(s=float(clock_s or 0.0), k=float(KEPT_PER_PLAIN))
-        raise mr._Stop(slow or KEPT_SLOW.format(s=max(0.0, budget_s)))
+        if slow == "grow":
+            raise mr._Stop(KEPT_GROW.format(s=grow_s))
+        if slow == "clock":
+            raise mr._Stop(KEPT_CLOCK.format(s=float(clock_s or 0.0), k=float(KEPT_PER_PLAIN)))
+        raise mr._Stop(KEPT_SLOW.format(s=max(0.0, budget_s)))
     kind, value = got[0], got[1]
     if kind == "err":
         raise value
@@ -508,7 +607,10 @@ def _kept_start(ws: Path, out: Path, step, record: dict, rec: dict, *, mm_per_un
         for f in out.iterdir():
             if f.is_file():
                 shutil.copyfile(f, own / f.name)
-        h = _fork(lambda: _build_kept(step, own, mm_per_unit, requirements, record, target))
+        import functools
+
+        # a partial of a module function, so it can be handed to a clean process (MIXED-28)
+        h = _fork(functools.partial(_build_kept, step, own, mm_per_unit, requirements, record, target))
     except Exception as exc:  # noqa: BLE001 - the shell is still made, without its thick regions, said
         _kept_not(rec, exc)
         return None
@@ -525,15 +627,25 @@ def _kept_not(rec: dict, exc: BaseException) -> None:
 
 
 def _kept_finish(ws: Path, h: dict, record: dict, rec: dict, before: dict, *, plain_s: float | None, source: str,
-                 requirements: dict | None) -> bool:
+                 requirements: dict | None, plain_cpu_s: float | None = None) -> bool:
     """MIXED-26: the attempt `h` waited for - KEPT_PER_PLAIN x the all-shell mesh's `plain_s` (KEPT_FLOOR_S at least;
     None: the all-shell mesh was not made, MIXED-12's guard alone) - and, made, delivered over the all-shell mesh
     unless MIXED-23 keeps that one. True when the kept-solid mesh is delivered; False with rec["kept_solid_why"]."""
     from meshpipeline.engines import mixed_run as mr
 
-    clock = kept_clock_s(plain_s) if plain_s is not None else None
+    # MIXED-27: counted in CPU seconds - the all-shell mesh's and the attempt's own - where the attempt's can be read
+    plain = plain_cpu_s if h.get("by_cpu") and plain_cpu_s is not None else plain_s
+    clock = kept_clock_s(plain) if plain is not None else None
     timing = {"plain_s": None if plain_s is None else round(float(plain_s), 1),
-              "allowed_s": None if clock is None else round(min(clock, float(h["budget"])), 1)}
+              "plain_cpu_s": None if plain_cpu_s is None else round(float(plain_cpu_s), 1),
+              "by_cpu": bool(h.get("by_cpu")), "start": h.get("start"),
+              "allowed_s": None if clock is None else round(clock, 1),
+              "guard_s": round(float(h["budget"]), 1)}
+
+    def told(kept: bool) -> dict:
+        return {**timing, "attempt_s": h.get("done_s"), "attempt_cpu_s": h.get("done_cpu_s"),
+                "stopped_cpu_s": h.get("stopped_cpu_s"), "kept": kept}
+
     try:
         joined, sub = _wait(h, float(h["budget"]), ws, grow_s=GROW_S, clock_s=clock)
         sq = sub.get("solid_quality") or {}
@@ -541,16 +653,16 @@ def _kept_finish(ws: Path, h: dict, record: dict, rec: dict, before: dict, *, pl
             raise mr._Stop("the solid mesh of the thick regions is not valid")
     except Exception as exc:  # noqa: BLE001 - the all-shell mesh is delivered, said
         _kept_not(rec, exc)
-        rec["kept_clock"] = {**timing, "attempt_s": h.get("done_s"), "kept": False}
+        rec["kept_clock"] = told(False)
         return False
     past = (sub.get("shell_quality") or {}).get("within_nastran") is False
     if past and _plain_inside(rec):
         rec["kept_solid_why"] = KEPT_NOT.format(why=KEPT_PAST)       # MIXED-23: the all-shell mesh is delivered
-        rec["kept_clock"] = {**timing, "attempt_s": h.get("done_s"), "kept": False}
+        rec["kept_clock"] = told(False)
         return False
     _held_delivered(ws, {"joined": joined, "sub": sub, "t1": h["t0"]}, record, rec, before, source=source,
                     requirements=requirements, over=past)
-    rec["kept_clock"] = {**timing, "attempt_s": h.get("done_s"), "kept": True}
+    rec["kept_clock"] = told(True)
     return True
 
 
@@ -632,7 +744,7 @@ def run(workspace: Path | str, step: Path | str, *, mm_per_unit: float, source: 
             elif KEEP_THICK and _kept_shape(record) and kept_cannot_pay(record):
                 rec["kept_solid_why"] = KEPT_NOT.format(why=kept_cannot_pay(record))      # MIXED-18, said
             before.update(rec)      # as they were, should the kept-solid mesh be delivered
-            t1 = time.time()
+            t1, c1 = time.time(), _cpu_self()
             try:
                 mesh, applied = sa.mesh_run(out, mm_per_unit=mm_per_unit, target=target, requirements=requirements)
             except ValueError as exc:
@@ -703,7 +815,7 @@ def run(workspace: Path | str, step: Path | str, *, mm_per_unit: float, source: 
                 # MIXED-26: the all-shell mesh is in hand; the attempt gets a clock set from what it cost
                 h, pending = pending, None
                 _kept_finish(ws, h, kept_record, rec, before, plain_s=time.time() - t1, source=source,
-                             requirements=requirements)
+                             requirements=requirements, plain_cpu_s=_cpu_self() - c1)
         for name in (ms.RECORD_FILE, ms.SURFACE_FILE):
             if (out / name).exists():
                 shutil.copyfile(out / name, ws / (name if name != ms.RECORD_FILE else "shell.json"))

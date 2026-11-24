@@ -424,7 +424,8 @@ def thickness(piece, limit_s: float | None = None) -> float | None:
     from OCP.gp import gp_Pnt
     from OCP.TopAbs import TopAbs_IN
 
-    stop = time.monotonic() + (CORE_THICKNESS_S if limit_s is None else float(limit_s))
+    # MIXED-27: the bound counts this process's own CPU seconds, so a busy or one-core worker reads as a quiet one
+    stop = time.process_time() + (CORE_THICKNESS_S if limit_s is None else float(limit_s))
     lo, hi = ms._box(piece)
     ext = np.maximum(hi - lo, 1e-12)
     h = (float(np.prod(ext)) / CORE_THICKNESS_POINTS) ** (1.0 / 3.0)
@@ -438,7 +439,7 @@ def thickness(piece, limit_s: float | None = None) -> float | None:
         pass
 
     def depth(p) -> float:
-        if time.monotonic() > stop:
+        if time.process_time() > stop:
             raise _Late
         clf.Perform(gp_Pnt(*map(float, p)), 1e-7 * h)
         return ms._dist(ms._vertex(p), skin) if clf.State() == TopAbs_IN else -1.0

@@ -50,10 +50,13 @@ def test_the_junction_has_no_free_shell_edge_left_untied(tmp_path):
     out = tmp_path / "out"
     record = ms.extract_file(step, out, mm_per_unit=1.0)
     sub: dict = {}
-    # built in a forked child, as a shell run builds it: a build run in the test process left a later forked join
-    # (MIXED-12's guard) hanging to its 300 s stop (seen on b764aae5 too: this test, then a kept-solid test)
-    joined = shell_run._guarded(lambda: mixed_run.build(step, out, mm_per_unit=1.0, rec=sub, record=record), 600.0,
-                                tmp_path)
+    # built in a child, as a shell run builds it: a build run in the test process left a later forked join
+    # (MIXED-12's guard) hanging to its 300 s stop (seen on b764aae5 too: this test, then a kept-solid test); a
+    # partial, so a test process holding other threads starts it clean as a run does (MIXED-28)
+    import functools
+
+    joined = shell_run._guarded(functools.partial(mixed_run.build, step, out, mm_per_unit=1.0, rec=sub, record=record),
+                                600.0, tmp_path)
     tied = {t.node - 1 for t in joined.ties}
     xyz = joined.shell.xyz
     loose = []
@@ -75,6 +78,7 @@ def test_a_join_past_its_time_leaves_the_shell_as_before_and_says_so(tmp_path, m
         time.sleep(30)
 
     monkeypatch.setattr(mixed_run, "build", slow)
+    monkeypatch.setattr(shell_run, "KEPT_START", "fork")       # the patched build reaches the child (MIXED-28)
     monkeypatch.setattr(shell_run, "KEPT_BUDGET_S", 2.0)
     monkeypatch.setattr(shell_run, "KEPT_PER_EXTRACT", 0.0)    # past MIXED-16: the attempt is started
     started = time.time()
@@ -149,6 +153,7 @@ def test_a_join_that_cannot_be_made_leaves_the_shell_as_before_and_says_why(tmp_
         raise mixed_run._Stop("the thin walls and the thick regions could not be cut apart")
 
     monkeypatch.setattr(mixed_run, "build", no)
+    monkeypatch.setattr(shell_run, "KEPT_START", "fork")       # the patched build reaches the child (MIXED-28)
     ws, rec = _run(tmp_path)
     assert rec["made"] is True and "kept_solid" not in rec
     assert rec["left_out"]["thick"] == 1

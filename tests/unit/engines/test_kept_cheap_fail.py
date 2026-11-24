@@ -62,10 +62,17 @@ def test_a_wall_slab_occ_calls_invalid_stops_the_split_before_its_cut(monkeypatc
     assert got.why == mx.SLAB_INVALID.format(n=1, m=1)
 
 
+def _burn(cpu_s: float) -> None:
+    """Work for `cpu_s` CPU seconds (MIXED-27: the bounds count work, not wall seconds)."""
+    stop = time.process_time() + cpu_s
+    while time.process_time() < stop:
+        pass
+
+
 def test_a_growth_past_its_bound_stops_the_attempt_and_says_so(tmp_path):
     def slow():
         mx._step(mx.GROW_STEP)
-        time.sleep(5.0)
+        _burn(5.0)
         return 1
 
     t0 = time.time()
@@ -78,12 +85,29 @@ def test_a_growth_past_its_bound_stops_the_attempt_and_says_so(tmp_path):
 def test_a_growth_inside_its_bound_leaves_the_attempt_to_finish(tmp_path):
     def quick():
         mx._step(mx.GROW_STEP)
-        time.sleep(0.2)
+        _burn(0.2)
         mx._step(None)
-        time.sleep(0.8)               # past the growth's bound, but no growth runs now
+        _burn(0.8)                    # past the growth's bound, but no growth runs now
         return 7
 
     assert sr._guarded(quick, 30.0, tmp_path, grow_s=0.5) == 7
+
+
+def test_a_growth_waiting_for_the_core_is_not_counted_against_its_bound(tmp_path):
+    # MIXED-27: a growth that does no work (here: sleeps, as one waiting for a busy core does) is not stopped by
+    # MIXED-25's bound; only MIXED-12's wall guard stops it
+    import os
+
+    if sr._cpu_group(os.getpid()) is None:
+        pytest.skip("no /proc: the bounds count wall seconds here")
+
+    def waiting():
+        mx._step(mx.GROW_STEP)
+        time.sleep(2.0)
+        mx._step(None)
+        return 7
+
+    assert sr._guarded(waiting, 30.0, tmp_path, grow_s=0.5) == 7
 
 
 def _mixed():
