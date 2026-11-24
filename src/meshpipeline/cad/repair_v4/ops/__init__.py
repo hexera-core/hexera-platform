@@ -197,7 +197,7 @@ def _check_entity(sid: str, kind: str | None, path: str, ws: Workspace, errors: 
         return
     # "any" (remove_small, sew) means any live entity, not a kind named "any": read literally it refused every
     # target ("F2 is a face, not an any"), so remove_small could never run and sew never with targets
-    if kind not in (None, "any") and _KIND_OF_PREFIX.get(sid[:1]) != kind:
+    if kind is not None and kind != "any" and _KIND_OF_PREFIX.get(sid[:1]) != kind:
         errors.append(f"{path}: {sid} is {_a(_KIND_OF_PREFIX.get(sid[:1], 'unknown'))}, "
                       f"not {_a(kind)}")
 
