@@ -525,6 +525,8 @@ def outer_skin(cad: Surface, cell: float):
 WETTED_SIDE_SOURCE = "the fluid's side of the staged surface"
 #: VER-11: the rule that reads it
 WETTED_SIDE_RULE = "VER-11"
+#: VER-12: the rule a share not reached that could not be judged is a concern under, never met
+NOT_JUDGED_RULE = "VER-12"
 #: VER-11: how far off a lid, in voxels, the space it closes is looked for (the first free voxel either side)
 LID_PROBE_VOXELS = (1.5, 2.5, 3.5, 5.0)
 #: VER-11: the nearest faces searched for the one across a thin wall, and how square across the wall it must lie
@@ -624,10 +626,10 @@ def wetted_side(parts: Mapping[str, Surface], lids, cell: float) -> Surface | No
                 continue                                 # across the fluid (a narrow channel), not the metal
             away = -np.sign(cos[j]) * nrm[f]
             for k in LID_PROBE_VOXELS:
-                lab = int(label_at((cen[f] + k * h * away)[None, :])[0])
-                if lab == 0:
+                seen = int(label_at((cen[f] + k * h * away)[None, :])[0])
+                if seen == 0:
                     continue
-                keep[f] = lab != air
+                keep[f] = seen != air
                 break
     if not keep.any():
         return None
@@ -958,7 +960,7 @@ def measure(workspace, *, intake_patches, manifest: Mapping | None = None,
         # no lid that closes the fluid off, no re-staging): whether the mesh reaches all of it is not judged,
         # and a check not made is never read as met - batch 7 abc 00157702 passed with it unjudged
         verdicts["cad_to_mesh"] = CONCERN
-        dist["cad_to_mesh_not_judged"] = True
+        dist["cad_to_mesh_not_judged"] = NOT_JUDGED_RULE
 
     # 2. volume
     vol: dict = {}

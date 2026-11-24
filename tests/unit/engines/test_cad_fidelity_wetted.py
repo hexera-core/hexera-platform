@@ -74,7 +74,7 @@ def test_a_body_patch_not_read_is_not_measured_rather_than_all_missed(tmp_path, 
     body = _surface(pv.Box(bounds=(-1, 1, -1, 1, 0, 1), level=4))
     box.cell_size = np.full(box.n, 2.0)
     monkeypatch.setattr(F, "mesh_patches", lambda ws: {"farfield": box})
-    monkeypatch.setattr(F, "cad_reference", lambda ws, flow, ip: (body, "the uploaded geometry", True))
+    monkeypatch.setattr(F, "cad_reference", lambda ws, flow, ip, **kw: (body, "the uploaded geometry", True))
     rec = F.measure(tmp_path, intake_patches=[{"name": "body", "type": "wall"}],
                     manifest={"flow_topology": "external", "patch_types": {"body": "wall", "farfield": "farfield"},
                               "patch_face_counts": {"body": 285321, "farfield": 17178}})
@@ -98,7 +98,7 @@ def test_an_assembly_mesh_on_its_outer_skin_passes_and_one_missing_half_of_it_fa
     body = F.Surface(cad.points[used], remap[cad.tris[keep]])
     body.cell_size = np.full(body.n, 0.05)
     monkeypatch.setattr(F, "mesh_patches", lambda ws: {"farfield": box, "body": body})
-    monkeypatch.setattr(F, "cad_reference", lambda ws, flow, ip: (cad, "the uploaded geometry", True))
+    monkeypatch.setattr(F, "cad_reference", lambda ws, flow, ip, **kw: (cad, "the uploaded geometry", True))
     rec = F.measure(tmp_path, intake_patches=[{"name": "body", "type": "wall"}],
                     manifest={"flow_topology": "external", "patch_types": {"body": "wall", "farfield": "farfield"},
                               "patch_face_counts": {"body": body.n, "farfield": box.n}})

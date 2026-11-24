@@ -174,13 +174,15 @@ def test_every_flow_engine_runs_the_gate_last():
 
 def test_staged_parts_that_also_bound_the_metal_hold_only_the_wall_to_the_cad(tmp_path):
     # the CAD path stages the part surface and the lids, not the fluid boundary alone, and no
-    # metre surface is there to stage it from: the wall is held to the CAD, nothing more is claimed
+    # metre surface is there to stage it from: the wall is held to the CAD, and the share not reached is
+    # not judged - which reads as a concern, never as met (VER-12)
     ws = tmp_path / "ws"
     _write_cad(ws / "_internal_stls" / "wall.stl")
     _write_boundary(ws, _box_patches((0, 1, 0, 0.4, 0, 0.4)))
     rec = F.measure(ws, intake_patches=PATCHES, flow="internal")
     assert rec["cad_source"] == "staged part surface and lids"
-    assert rec["verdicts"] == {"mesh_to_cad": F.PASS}
+    assert rec["verdicts"] == {"mesh_to_cad": F.PASS, "cad_to_mesh": F.CONCERN}
+    assert rec["surface"]["cad_to_mesh_not_judged"] == "VER-12"
     assert "not the fluid" in rec["surface"]["cad_to_mesh_why"]
     assert "not the fluid" in rec["volume"]["why"]
 
