@@ -57,11 +57,20 @@ def main(dirs: list[str]) -> int:
         print(f"{arm:12} {len(rs):>4} {len(rs) - len(con):>4} {sum(clean(r) for r in con):>5} "
               f"{wall:>11.1f} {fpf:>9} {incv:>4} {lpf:>10}")
 
-    seq = by_arm.get("search_seq") or []
-    if not seq:
-        print("\nno search_seq rows")
+    # B25: there are TWO sequential arms now. Their blocks are printed apart, because the whole question is
+    # whether letting the model pick where the table cannot decide buys anything - and a merged block would
+    # hide it.
+    seq_arms = [a for a in sorted(by_arm) if any(r.get("full_checks") is not None for r in by_arm[a])]
+    if not seq_arms:
+        print("\nno sequential-arm rows")
         return 0
-    print(f"\n--- search_seq, {len(seq)} rows ---")
+    for arm in seq_arms:
+        _seq_block(arm, [r for r in by_arm[arm] if r.get("full_checks") is not None])
+    return 0
+
+
+def _seq_block(arm: str, seq: list[dict]) -> None:
+    print(f"\n--- {arm}, {len(seq)} rows ---")
     tot: collections.Counter = collections.Counter()
     defects: dict[str, collections.Counter] = {k: collections.Counter() for k in ("found", "fixed", "skipped")}
     why: collections.Counter = collections.Counter()
@@ -117,7 +126,20 @@ def main(dirs: list[str]) -> int:
               f"{sum(rollbacks.values())} of {sum(tried.values())} steps")
     else:
         print("\n  no stage rollbacks on the cheap score in these traces (nothing to demote)")
-    return 0
+    ai = [r for r in seq if (((r.get("triage") or {}).get("seq") or {}).get("ai"))]
+    if ai:
+        # B25: was the model ever REACHED on this table, and did its answers stand?
+        asked = sum(int(((r["triage"]["seq"]["ai"]) or {}).get("asked") or 0) for r in ai)
+        answered = sum(int(((r["triage"]["seq"]["ai"]) or {}).get("answered") or 0) for r in ai)
+        ignored = sum(int(((r["triage"]["seq"]["ai"]) or {}).get("ignored_not_offered") or 0) for r in ai)
+        failed = sum(int(((r["triage"]["seq"]["ai"]) or {}).get("failed") or 0) for r in ai)
+        spent = sum(float(r.get("model_usd") or 0.0) for r in seq)
+        stops = collections.Counter(str(((r["triage"]["seq"]["ai"]) or {}).get("stop_reason")) for r in ai)
+        print(f"  THE AI PICK: asked {asked} on {len(ai)} rows, answered {answered}, ignored-not-offered "
+              f"{ignored}, failed rounds {failed}, ${spent:.2f}; stops {dict(stops)}")
+        if asked == 0:
+            print("    THE MODEL WAS NEVER REACHED: on this table only a declared TIE asks it, so this arm and "
+                  "the det one ran the same repairs. Any difference between their rows is noise, not the AI.")
 
 
 if __name__ == "__main__":
