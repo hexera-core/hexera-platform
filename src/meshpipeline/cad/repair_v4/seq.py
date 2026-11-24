@@ -28,12 +28,13 @@ it is there.
 from __future__ import annotations
 
 import collections
+import dataclasses
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-from meshpipeline.cad.repair_v4.local_verify import Defect, LocalResult, verify_local
+from meshpipeline.cad.repair_v4.local_verify import Defect, LocalResult, relocate, verify_local
 from meshpipeline.cad.repair_v4.ops import REGISTRY, OpDeclined, OpFailed, validate_call
 from meshpipeline.cad.repair_v4.types import Site, StableId
 from meshpipeline.cad.repair_v4.verdict.assemble import InconclusiveVerdict
@@ -330,9 +331,26 @@ def rule_table_from_winners(rows: Sequence[dict], *, max_repairs: int = 5) -> di
 #: face it was aimed at. 1.05 is the margin the det sweep's aimed row already uses; this is that rule, applied to
 #: a measurement rather than to a ladder rung.
 REMOVE_SMALL_MARGIN = 1.05
+#: at most this many measured face pairs are handed to `split_by_proximity` (its own schema takes a list)
+MAX_PROXIMITY_PAIRS = 8
 #: a clash or gap is closed by a fuzzy value at least the measured distance; 1.1 covers the measurement's own
 #: rounding (the sites round `dist_mm` to 4 decimals) without turning it into a rung.
 FUZZY_MARGIN = 1.1
+
+
+#: THRESHOLDS NO MEASUREMENT GIVES. Three ops need a required parameter that is not a property of the defect:
+#: `split_angle`'s dihedral limit, `reapproximate`'s degree and tolerance, `split_continuity`'s order. The design
+#: says parameters come from the measurement and not from a ladder - so these are ONE value each, marked in the
+#: trace as a DEFAULT rather than passed off as measured, and taken from the most frequent value among lane D's
+#: oracle winners where that value is unambiguous (`max_deg` 60 and `order` 2 are; the oracle's `params` records
+#: do not align op-for-op with its `path`, so nothing finer is read out of them).
+DEFAULT_PARAMS: dict[str, dict[str, Any]] = {
+    "split_angle": {"max_deg": 60},
+    "split_continuity": {"order": 2},
+    "reapproximate": {"max_degree": 9, "tol_mm": 0.025},
+}
+#: the ops whose parameters are a default rather than a measurement, for the trace's own honesty
+DEFAULTED: frozenset[str] = frozenset(DEFAULT_PARAMS)
 
 
 class NoParameters(ValueError):
@@ -373,13 +391,27 @@ def params_for(op: str, defect: Defect, *, pair: tuple[StableId, StableId] | Non
             return sorted(set(bodies)), {"fuzzy_mm": fuzzy}
         keep = sorted(set(bodies))[0]
         return sorted(set(bodies)), {"mode": f"cut_by:{keep}", "fuzzy_mm": fuzzy}
+    if op == "split_by_proximity":
+        # a WHOLE-PART op (it takes no targets): the pairs and the ratio are the site's own measured clashes
+        pairs = [list(k.split("|")) for k in (m.get("clash_by_pair") or {})]
+        if not pairs:
+            raise NoParameters("split_by_proximity needs measured face pairs, and the site records none")
+        diag, worst = m.get("diagonal_mm"), max((m.get("clash_by_pair") or {}).values(), default=None)
+        if not diag or worst is None:
+            raise NoParameters("split_by_proximity needs a measured gap and the part's diagonal")
+        return [], {"face_pairs": [p for p in pairs if len(p) == 2][:MAX_PROXIMITY_PAIRS],
+                    "target_ratio": min(0.25, max(0.06, float(worst) / float(diag)))}
     if op in ("defeature", "unify_same_domain", "rebuild_face", "reapproximate", "split_angle",
-              "split_by_proximity", "split_continuity", "fill_loop"):
-        if not faces:
+              "split_continuity", "fill_loop"):
+        if not faces and op in ("defeature", "split_angle", "split_continuity", "unify_same_domain"):
             raise NoParameters(f"{op} needs the faces the defect is on, and none were located")
         if op == "unify_same_domain":
             return faces, {"scope": "targets", "keep": []}
-        return faces, {}
+        if op == "defeature":
+            # `source: located` is the oracle's own winning parameter for defeature, on 16 distinct files: remove
+            # the features at the faces the failure was LOCATED on, rather than whatever the op would find alone
+            return faces, {"source": "located"}
+        return faces, dict(DEFAULT_PARAMS.get(op, {}))
     raise NoParameters(f"no parameter rule for {op!r}")
 
 
@@ -540,8 +572,18 @@ def apply_repair(pool: Any, ws: Workspace, repair: Repair, defect: Defect, *, ti
     between the steps would throw away exactly those. The pair is kept or reverted as a unit.
     """
     current, diffs, touched, used = ws, [], [], []
-    for op in repair:
-        targets, params = params_for(op, defect, pair=pair)
+    here = defect
+    for step_i, op in enumerate(repair):
+        if step_i:
+            # THE SECOND STEP'S TARGETS ARE NOT THE FIRST'S. Ops rename faces: the first end-to-end run had
+            # `remove_small` replace F3 with F16 and then `split_angle` refused F3 ("use the new ids"), which
+            # killed every two-step recipe on that file. Lane C's `relocate` carries the defect's entities (and
+            # pairs) through the ops' own history, which is exactly the question it exists to answer.
+            moved = relocate(pool, ws, current, here)
+            if moved is None:
+                raise NoParameters(f"the defect could not be carried to {op!r}: nothing of it is left to aim at")
+            here = moved
+        targets, params = params_for(op, here, pair=pair)
         used.append(params)
         if op.startswith("run_stage:"):
             if run_stage is None:
@@ -647,7 +689,7 @@ def repair_sequentially(
         this = SeqRound(index=index)
         rounds.append(this)
         counters.rounds = index
-        defects = defects_of(verdict, sites_of(pool, best, verdict))
+        defects = _with_diagonal(pool, best, defects_of(verdict, sites_of(pool, best, verdict)))
         for d in defects:
             counters.found[d.code] += 1
         current = best
@@ -707,6 +749,27 @@ class SeqOutcome:
             out.extend(f"  {line}" for line in r.steps)
             out.append(f"  full check: {r.full_check}")
         return out
+
+
+def _with_diagonal(pool: Any, ws: Workspace, defects: list[Defect]) -> list[Defect]:
+    """Every defect's measurement carries the PART's diagonal, measured once per round.
+
+    Only `open` sites carry `diagonal_mm` of their own (sites.py), so a mesher defect had none and
+    `split_by_proximity` - whose target ratio is the measured gap over the part - could not be parameterised at
+    all. The diagonal is a property of the part, not of the site, so it is measured here and shared. A part whose
+    diagonal cannot be measured leaves the defects exactly as they were: the op is then skipped, not guessed."""
+    if not defects or all((d.measurement or {}).get("diagonal_mm") for d in defects):
+        return defects
+    try:
+        from meshpipeline.cad.repair_v4.stages import diagonal_mm
+        diag = float(diagonal_mm(pool, ws))
+    except Exception:  # noqa: BLE001 - an unmeasurable diagonal is not a verdict and never ends the round
+        return defects
+    if not diag or diag <= 0.0:
+        return defects
+    return [d if (d.measurement or {}).get("diagonal_mm")
+            else dataclasses.replace(d, measurement={**(d.measurement or {}), "diagonal_mm": diag})
+            for d in defects]
 
 
 def _alternatives(pick: Pick) -> list[Repair]:

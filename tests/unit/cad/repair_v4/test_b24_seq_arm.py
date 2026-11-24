@@ -363,7 +363,7 @@ def test_every_step_is_one_readable_line_defect_then_repair_then_local_result() 
         _judge, out = _run(verify=lambda *a, **k: _local(seconds=1.2))
     [line] = out.rounds[0].steps
     assert line == ("edge_through_face on F1 (narrowest face F1 0.4 mm, member gmsh_default) -> "
-                    "defeature [table: the top rule for 'edge_through_face'] -> gone (1.2 s)")
+                    "defeature{source=located} [table: the top rule for 'edge_through_face'] -> gone (1.2 s)")
     assert out.lines()[0] == "round 1:"
     assert out.lines()[-1].startswith("  full check: clean, score (1, 4, 0.0, 0.0, 0), improved")
 
