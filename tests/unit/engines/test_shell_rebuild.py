@@ -1,6 +1,7 @@
 # Responsibility: Hold the shell mesher's geometry healing (engines/gmsh/shell_adapter.py: the sewn surface with some
 # faces re-made, fused back) to parts of KNOWN geometry: only the re-made faces and the faces they can touch are fused
-# again (SHMESH-30), and the surface comes back as joined as the whole fuse makes it.
+# again (SHMESH-30), and the surface comes back as joined as the whole fuse makes it; a face re-made as a B-spline
+# keeps the surface's area, and a re-make that loses area is not used (SHMESH-11i).
 # Boundaries: OpenCASCADE only; no gmsh.
 from __future__ import annotations
 
@@ -84,3 +85,44 @@ def test_a_local_fuse_that_leaves_a_crack_is_not_used(tmp_path):
         return ms._faces(BRepBuilderAPI_Transform(f, tr, True).Shape())
 
     assert sa._rebuild_local(shape, before, owners, change, {k}, tmp_path / "local.brep") is None
+
+
+def _cut_tube(tmp_path):
+    """tube_on_plate's surface cut at its seams, and the largest face that is not flat (a half of the tube)."""
+    brep, owners = _surface(tmp_path, sf.tube_on_plate())
+    cut_owners = sa.split_closed(brep, owners, tmp_path / "cut.brep")
+    faces = ms._faces(_read(tmp_path / "cut.brep"))
+    curved = [k for k, f in enumerate(faces) if "Plane" not in str(sa._surface_type(f))]
+    assert curved
+    return tmp_path / "cut.brep", cut_owners, max(curved, key=lambda k: ms._area(faces[k]))
+
+
+def test_a_face_re_made_as_a_b_spline_keeps_the_surfaces_area(tmp_path):
+    # SHMESH-11i: the face re-made from its fixed wires, fused back: the same faces, the same area
+    cut, owners, k = _cut_tube(tmp_path)
+    fixed: list = []
+    got, made = sa.respline(cut, owners, k, tmp_path / "re.brep", fixed=fixed)
+    assert made == 1
+    assert set(fixed) <= {k}    # (counted only for the face re-made, and only where the fix changed it)
+    assert len(got) == len(owners)
+    # (a B-spline cylinder reads 1.6e-4 more than the circle's: well inside the guard's tolerance)
+    assert sa._surface_area(tmp_path / "re.brep") == pytest.approx(sa._surface_area(cut), rel=sa.REMAKE_AREA_TOL / 10)
+    kinds = [str(sa._surface_type(f)) for f in ms._faces(_read(tmp_path / "re.brep"))]
+    assert sum("BSpline" in s for s in kinds) == 1
+
+
+def test_a_re_make_that_loses_area_is_not_used(tmp_path, monkeypatch):
+    # SHMESH-11i: a fuse back that hands back the surface short of a face (s21's dome: both halves came back with
+    # broken trims, 41,470 of 69,794 mm2 gone, and gmsh meshed nothing there) raises, so the face is left out and said
+    from OCP.BRepTools import BRepTools
+
+    cut, owners, k = _cut_tube(tmp_path)
+
+    def short(brep, owners_, out, change):
+        faces = ms._faces(_read(brep))
+        BRepTools.Write_s(ms._compound([f for i, f in enumerate(faces) if i != k]), str(out))
+        return [o for i, o in enumerate(owners_) if i != k]
+
+    monkeypatch.setattr(sa, "_rebuild", short)
+    with pytest.raises(sa._NotRemade):
+        sa.respline(cut, owners, k, tmp_path / "re.brep")

@@ -1,7 +1,7 @@
 # Responsibility: Verify the few words the FEA stage's sleek panel shows in one line: the clean check ("Clean", a part
 # that may have self-crossing faces "- we'll still try", "Not a closed solid") with its full words kept for the
-# fold under it, the panel's title (an assembly is named after its file, never after its first body), and what
-# stays solid in a shell in a few words (the full sentence kept for the tooltip).
+# fold under it, the panel's title (an assembly is named after its file, never after its first body), and what a
+# shell leaves out in a few words (the full sentence kept for the tooltip).
 # Boundaries: pure over facts and summaries built here; nothing is stored, no CAD is read.
 from __future__ import annotations
 
@@ -60,9 +60,9 @@ def test_what_stays_solid_is_said_in_a_few_words():
                                  {"body": "Part_2", "whole": False, "faces": ["Face_3"], "n_faces": 3, "thick_mm": 30.0}],
                "open_edges": 1, "open_places": [{"at_mm": [0, 0, 0]}]}
     rows = SC.not_shelled(summary)
-    assert rows[0]["short"] == "Part_1 · too thick (4 mm wall, 9.7× span)"
-    assert rows[0]["words"].startswith("Part_1 stays solid")      # the full sentence is kept
-    assert rows[1]["short"] == "Part_2 · 30 mm+ thick, 3 faces"
+    assert rows[0]["short"] == "Part_1 · too thick (4 mm wall, 9.7× span) · not in the mesh"
+    assert rows[0]["words"].startswith("Part_1 is not in this shell mesh")      # the full sentence is kept
+    assert rows[1]["short"] == "Part_2 · 30 mm+ thick · not in the mesh"
     assert [r["short"] for r in rows[2:]] == ["Plates don't meet at 1 place (red)", "plates don't meet"]
     assert SC.solid_short("its most plate-like wall is 6 mm thick but only 12 mm wide, 2 times its thickness") \
         == "too narrow (6 mm wall, 2× width)"

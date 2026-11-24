@@ -367,6 +367,60 @@ def _near(shape, p: np.ndarray, tol: float) -> bool:
     return ms._dist(ms._vertex(p), shape) <= tol
 
 
+#: MIXED-11, A PIECE IS AS THICK AS ITS DEEPEST POINT: MIXED-1b reads a left-over piece's thickness as twice its volume
+#: over its area - a slab's own thickness, right for a 0.6 mm ring round a hole, but a compact lump reads far thinner
+#: than it is (a cube of side s reads s / 3). On the board, a bracket's two 10 x 10 x 2 mm pads on a 2.5 mm plate
+#: (cen_s0143) read 1.05 mm against the 1.25 mm floor, so the split found "no thick region" where the reading saw two.
+#: A piece MIXED-1b turns down is now measured: twice the largest distance from a point inside it to its skin, on a
+#: grid of about CORE_THICKNESS_POINTS points over its box; it is a core when that reaches the floor. A thin ring still
+#: is no core (its grid holds no point deeper than its half-thickness). A piece MIXED-1b takes is taken as before.
+CORE_THICKNESS = True
+CORE_THICKNESS_POINTS = 2000
+
+
+def thickness(piece) -> float:
+    """MIXED-11: twice the largest distance from a grid point inside `piece` to its skin (its own units); 0.0 when no
+    grid point falls inside it."""
+    from OCP.BRepClass3d import BRepClass3d_SolidClassifier
+    from OCP.gp import gp_Pnt
+    from OCP.TopAbs import TopAbs_IN
+
+    lo, hi = ms._box(piece)
+    ext = np.maximum(hi - lo, 1e-12)
+    h = (float(np.prod(ext)) / CORE_THICKNESS_POINTS) ** (1.0 / 3.0)
+    axes = [np.arange(a + 0.5 * h, b, h) for a, b in zip(lo, hi, strict=True)]
+    if not all(len(ax) for ax in axes):
+        return 0.0
+    skin = ms._compound(ms._faces(piece))
+    clf = BRepClass3d_SolidClassifier(piece)
+
+    def depth(p) -> float:
+        clf.Perform(gp_Pnt(*map(float, p)), 1e-7 * h)
+        return ms._dist(ms._vertex(p), skin) if clf.State() == TopAbs_IN else -1.0
+
+    best, at = 0.0, None
+    for p in np.stack(np.meshgrid(*axes, indexing="ij"), axis=-1).reshape(-1, 3):
+        d = depth(p)
+        if d > best:
+            best, at = d, p
+    if at is None:
+        return 0.0
+    # the deepest grid point lies within half a step of the deepest point: climb to it, the step halved 6 times
+    step = 0.5 * h
+    moves = [np.array(v, dtype=float) for v in np.ndindex(3, 3, 3) if v != (1, 1, 1)]
+    for _ in range(6):
+        climbed = True
+        while climbed:
+            climbed = False
+            for mv in moves:
+                q = at + (mv - 1.0) * step
+                d = depth(q)
+                if d > best + 1e-12:
+                    best, at, climbed = d, q, True
+        step *= 0.5
+    return 2.0 * best
+
+
 def _normal_at(edge, face):
     """The face's unit normal at the edge's middle, or None."""
     from OCP.BRepAdaptor import BRepAdaptor_Curve
@@ -559,7 +613,9 @@ def _split(body, kept, thick_faces, scale: float, out: Split) -> None:
         # MIXED-1b: a piece thinner than half the thinnest wall (twice its volume over its area: a slab's own
         # thickness) is no thick region but a rim the slabs left - the 0.6 mm ring round each hole of a 4 mm plate
         # whose bores were read thick; grown it crashed OCC's offset. It is left-over metal as a junction's is
-        if any(_near(piece, p, tol) for p in marks) and 2.0 * vol >= CORE_MIN_WALLS * t_min * ms._area(piece):
+        floor = CORE_MIN_WALLS * t_min
+        if any(_near(piece, p, tol) for p in marks) and (2.0 * vol >= floor * ms._area(piece)
+                                                        or (CORE_THICKNESS and thickness(piece) >= floor)):
             cores.append(piece)
         else:
             dropped += vol

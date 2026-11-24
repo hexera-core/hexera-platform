@@ -123,6 +123,10 @@ _UNIT_WORDS = {LengthUnit.metre: "metres", LengthUnit.millimetre: "millimetres",
                LengthUnit.centimetre: "centimetres", LengthUnit.inch: "inches"}
 
 
+#: UNIT-IGES-1: the IGES unit flags the standard defines (1 inch ... 11 microinch); 3 names the unit in the file
+_IGES_FLAGS = 11
+
+
 def _iges_evidence(path: Path) -> UnitEvidence:
     from OCP.IFSelect import IFSelect_RetDone
     from OCP.IGESControl import IGESControl_Reader
@@ -135,6 +139,7 @@ def _iges_evidence(path: Path) -> UnitEvidence:
         name = section.UnitName().ToCString().strip().lower()
         value = float(section.UnitValue())
         scale = float(section.Scale())
+        flag = int(section.UnitFlag())
     except Exception:  # noqa: BLE001
         return UnitEvidence.unresolved("the IGES global section could not be read")
 
@@ -146,6 +151,14 @@ def _iges_evidence(path: Path) -> UnitEvidence:
     by_value = {1.0: LengthUnit.millimetre, 10.0: LengthUnit.centimetre,
                 1000.0: LengthUnit.metre, 25.4: LengthUnit.inch}
     unit = by_value.get(round(value, 6)) or _NAME_TO_UNIT.get(name.rstrip("."))
+    if unit is None and value > 0 and 1 <= flag <= _IGES_FLAGS:
+        # UNIT-IGES-1: A WELL-FORMED IGES UNIT WE DO NOT CARRY (feet, miles, kilometres, mils, microns): OCC converts
+        # it by the file's own factor as it reads (UnitValue mm per unit), so its output is true millimetres - as for
+        # STEP. Called "unsupported", the transfer was undone as if OCC had applied metres: a 2 m hull in feet
+        # (lab_sh0084, flag 4 "FT") staged at 2 mm, and no shell could be made on it
+        return UnitEvidence(True, LengthUnit.millimetre,
+                            f"declared in the file as {name or 'unit flag ' + str(flag)} ({value:g} mm), "
+                            "converted to millimetres as it is read")
     if unit is None:
         return UnitEvidence.unresolved(f"unsupported IGES unit {name!r}")
     return UnitEvidence(True, unit, f"declared in the file as {name or unit.value}")

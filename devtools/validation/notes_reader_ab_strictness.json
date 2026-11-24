@@ -1,0 +1,456 @@
+{
+ "about": "NOTE-14 additions to notes_reader_ab_hard.json (same schema; category 'strictness'). Each strictness ask is expected as {'control': 'strictness', 'target': <a limit: global, min_edge, max_edge, near_wall, a quality measure, count; or a group: minimums, maximums, sizes, quality, angles, counts, all>, 'strictness': 'hard' | 'flexible'} beside the limits the same words set. The after-checks score them as mesh_requirements.check keeps them (the quote is the user's; a quote with a number names only the rows whose own words hold it). Look-alikes (a flexible hose, a hard anodised part) expect no strictness. r01-r03: size ranges for the whole mesh (min_edge and max_edge from one quote).",
+ "sentences": [
+  {
+   "id": "s01",
+   "category": "strictness",
+   "route": "fea",
+   "sentence": "Min element length 5 mm. We're flexible around the minimum of 5mm, doesn't need to be a hard min.",
+   "expect": [
+    {
+     "control": "size_min_edge",
+     "value": 5,
+     "unit": "mm"
+    },
+    {
+     "control": "strictness",
+     "target": "min_edge",
+     "strictness": "flexible"
+    }
+   ],
+   "reason": "the founder's own wording: the 5 mm minimum is a target"
+  },
+  {
+   "id": "s02",
+   "category": "strictness",
+   "route": "fea",
+   "sentence": "Min. Element Length > 5 mm. It's okay to go below this in some places.",
+   "expect": [
+    {
+     "control": "size_min_edge",
+     "value": 5,
+     "unit": "mm"
+    },
+    {
+     "control": "strictness",
+     "target": "min_edge",
+     "strictness": "flexible"
+    }
+   ]
+  },
+  {
+   "id": "s03",
+   "category": "strictness",
+   "route": "fea",
+   "sentence": "Shortest edge 2 mm, longest 8 mm, Jacobian above 0.6. The minimums are flexible.",
+   "expect": [
+    {
+     "control": "size_min_edge",
+     "value": 2,
+     "unit": "mm"
+    },
+    {
+     "control": "size_max_edge",
+     "value": 8,
+     "unit": "mm"
+    },
+    {
+     "control": "limit:jacobian",
+     "value": 0.6
+    },
+    {
+     "control": "strictness",
+     "target": "minimums",
+     "strictness": "flexible"
+    }
+   ],
+   "reason": "a group: the minimums are the shortest edge and the Jacobian floor, never the 8 mm maximum"
+  },
+  {
+   "id": "s04",
+   "category": "strictness",
+   "route": "fea",
+   "sentence": "Quad min angle 45, quad max angle 135, tria min angle 30. The angle limits are hard.",
+   "expect": [
+    {
+     "control": "limit:min_angle",
+     "value": 45
+    },
+    {
+     "control": "limit:max_angle",
+     "value": 135
+    },
+    {
+     "control": "limit:min_angle",
+     "value": 30
+    },
+    {
+     "control": "strictness",
+     "target": "angles",
+     "strictness": "hard"
+    }
+   ]
+  },
+  {
+   "id": "s05",
+   "category": "strictness",
+   "route": "fea",
+   "sentence": "Global size 10 mm, warpage under 15, aspect ratio under 4. These are guidelines, not hard rules.",
+   "expect": [
+    {
+     "control": "size_global",
+     "value": 10,
+     "unit": "mm"
+    },
+    {
+     "control": "limit:warpage",
+     "value": 15
+    },
+    {
+     "control": "limit:aspect_ratio",
+     "value": 4
+    },
+    {
+     "control": "strictness",
+     "target": "all",
+     "strictness": "flexible"
+    }
+   ]
+  },
+  {
+   "id": "s06",
+   "category": "strictness",
+   "route": "fea",
+   "sentence": "min 5 mm but flexible; max 15 mm is hard",
+   "expect": [
+    {
+     "control": "size_min_edge",
+     "value": 5,
+     "unit": "mm"
+    },
+    {
+     "control": "size_max_edge",
+     "value": 15,
+     "unit": "mm"
+    },
+    {
+     "control": "strictness",
+     "target": "min_edge",
+     "strictness": "flexible"
+    },
+    {
+     "control": "strictness",
+     "target": "max_edge",
+     "strictness": "hard"
+    }
+   ],
+   "reason": "a mixed note: each limit by its own clause"
+  },
+  {
+   "id": "s07",
+   "category": "strictness",
+   "route": "fea",
+   "sentence": "No element under 0.5 mm, ever. That one is a hard limit.",
+   "expect": [
+    {
+     "control": "size_min_edge",
+     "value": 0.5,
+     "unit": "mm"
+    },
+    {
+     "control": "strictness",
+     "target": "min_edge",
+     "strictness": "hard"
+    }
+   ]
+  },
+  {
+   "id": "s08",
+   "category": "strictness",
+   "route": "fea",
+   "sentence": "Jacobian must stay above 0.5 at all costs.",
+   "expect": [
+    {
+     "control": "limit:jacobian",
+     "value": 0.5
+    },
+    {
+     "control": "strictness",
+     "target": "jacobian",
+     "strictness": "hard"
+    }
+   ]
+  },
+  {
+   "id": "s09",
+   "category": "strictness",
+   "route": "fea",
+   "sentence": "Aim for roughly 3 mm elements where possible; the 1 mm minimum is strict.",
+   "expect": [
+    {
+     "control": "size_global",
+     "value": 3,
+     "unit": "mm"
+    },
+    {
+     "control": "size_min_edge",
+     "value": 1,
+     "unit": "mm"
+    },
+    {
+     "control": "strictness",
+     "target": "global",
+     "strictness": "flexible"
+    },
+    {
+     "control": "strictness",
+     "target": "min_edge",
+     "strictness": "hard"
+    }
+   ]
+  },
+  {
+   "id": "s10",
+   "category": "strictness",
+   "route": "fea",
+   "sentence": "We're flexable aroud the min of 5mm, dosent need to be a hard min",
+   "expect": [
+    {
+     "control": "size_min_edge",
+     "value": 5,
+     "unit": "mm",
+     "optional": true
+    },
+    {
+     "control": "strictness",
+     "target": "min_edge",
+     "strictness": "flexible"
+    }
+   ],
+   "reason": "typos: still flexible; the 5 mm minimum may be read as a size here or come from the saved standard"
+  },
+  {
+   "id": "s11",
+   "category": "strictness",
+   "route": "fea",
+   "sentence": "Rings round the bolt holes matter more than the 5 mm minimum - go below it where the washers need it.",
+   "expect": [
+    {
+     "control": "size_min_edge",
+     "value": 5,
+     "unit": "mm",
+     "optional": true
+    },
+    {
+     "control": "strictness",
+     "target": "min_edge",
+     "strictness": "flexible"
+    }
+   ]
+  },
+  {
+   "id": "s12",
+   "category": "strictness",
+   "route": "fea",
+   "sentence": "Warpage < 15 (1% between 15 and 30 is acceptable) - the 30 is a hard stop.",
+   "expect": [
+    {
+     "control": "limit:warpage",
+     "value": 15
+    },
+    {
+     "control": "strictness",
+     "target": "warpage",
+     "strictness": "hard"
+    }
+   ],
+   "reason": "the allowance is already the limit's flexibility; the words make its outer value hard"
+  },
+  {
+   "id": "s13",
+   "category": "strictness",
+   "route": "cfd",
+   "sentence": "Target about 4 million cells, max 6 million strictly.",
+   "expect": [
+    {
+     "control": "cells_target",
+     "value": 4000000
+    },
+    {
+     "control": "cells_ceiling",
+     "value": 6000000
+    },
+    {
+     "control": "strictness",
+     "target": "count",
+     "strictness": "hard"
+    }
+   ],
+   "reason": "the target is a target anyway; the ceiling is said strict"
+  },
+  {
+   "id": "s14",
+   "category": "strictness",
+   "route": "cfd",
+   "sentence": "Non-orthogonality under 65 if you can, but it isn't a hard limit.",
+   "expect": [
+    {
+     "control": "limit:non_orthogonality",
+     "value": 65
+    },
+    {
+     "control": "strictness",
+     "target": "non_orthogonality",
+     "strictness": "flexible"
+    }
+   ]
+  },
+  {
+   "id": "s15",
+   "category": "strictness",
+   "route": "fea",
+   "sentence": "The minimum element length is flexible. Actually no, keep it hard.",
+   "expect": [
+    {
+     "control": "strictness",
+     "target": "min_edge",
+     "strictness": "flexible"
+    },
+    {
+     "control": "strictness",
+     "target": "min_edge",
+     "strictness": "hard"
+    }
+   ],
+   "expect_final": [
+    {
+     "control": "strictness",
+     "target": "min_edge",
+     "strictness": "hard"
+    }
+   ],
+   "reason": "a later sentence refines the earlier one; no number, so it is the minimum of the saved standard or of other notes"
+  },
+  {
+   "id": "s16",
+   "category": "strictness look-alike",
+   "route": "fea",
+   "sentence": "This is a flexible hose clamp bracket, 2 mm elements please.",
+   "expect": [
+    {
+     "control": "size_global",
+     "value": 2,
+     "unit": "mm"
+    }
+   ],
+   "reason": "'flexible' describes the part, not a limit"
+  },
+  {
+   "id": "s17",
+   "category": "strictness look-alike",
+   "route": "fea",
+   "sentence": "Hard anodised aluminium housing, mesh at 3 mm.",
+   "expect": [
+    {
+     "control": "size_global",
+     "value": 3,
+     "unit": "mm"
+    }
+   ],
+   "reason": "'hard' describes the finish, not a limit"
+  },
+  {
+   "id": "s18",
+   "category": "strictness look-alike",
+   "route": "cfd",
+   "sentence": "Flexible duct, air at 5 m/s, prefer 8 prism layers.",
+   "expect": [
+    {
+     "control": "physics_air"
+    },
+    {
+     "control": "physics_velocity",
+     "value": 5,
+     "unit": "m/s"
+    },
+    {
+     "control": "layers_count",
+     "value": 8
+    }
+   ],
+   "reason": "the duct is flexible; 'prefer' is about a layer count, which has no strictness of its own"
+  },
+  {
+   "id": "r01",
+   "category": "size range",
+   "route": "fea",
+   "sentence": "element size 1-2 mm; 3 elements across every wall",
+   "expect": [
+    {
+     "control": "size_min_edge",
+     "value": 1,
+     "unit": "mm"
+    },
+    {
+     "control": "size_max_edge",
+     "value": 2,
+     "unit": "mm"
+    },
+    {
+     "control": "wall_elements",
+     "value": 3
+    }
+   ],
+   "reason": "a range is the shortest and the longest edge, never one global size (read as global 2 mm on the live model, m483 round 11, 8c)"
+  },
+  {
+   "id": "r02",
+   "category": "size range",
+   "route": "fea",
+   "sentence": "2 to 5 mm elements please",
+   "expect": [
+    {
+     "control": "size_min_edge",
+     "value": 2,
+     "unit": "mm"
+    },
+    {
+     "control": "size_max_edge",
+     "value": 5,
+     "unit": "mm"
+    }
+   ]
+  },
+  {
+   "id": "r03",
+   "category": "size range",
+   "route": "fea",
+   "sentence": "keep the elements between 1 and 3 mm",
+   "expect": [
+    {
+     "control": "size_min_edge",
+     "value": 1,
+     "unit": "mm"
+    },
+    {
+     "control": "size_max_edge",
+     "value": 3,
+     "unit": "mm"
+    }
+   ]
+  },
+  {
+   "id": "s19",
+   "category": "strictness",
+   "route": "cfd",
+   "sentence": "aim for y+ around 1 on the walls",
+   "expect": [
+    {
+     "control": "layers_y_plus",
+     "value": 1
+    }
+   ],
+   "reason": "soft words on a value: if a strictness entry comes back it must be on the y+ row itself (mesh_requirements.apply_strictness ties it by its quote), never an orphan told not applied"
+  }
+ ]
+}

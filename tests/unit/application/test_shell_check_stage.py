@@ -128,10 +128,13 @@ def test_a_mixed_part_asked_as_a_shell_is_a_shell_and_says_what_is_not_in_it(par
     rec, drawn, _ = parts["boss"]
     view = sc.shell_view(_ready(sc.summarise(rec, drawn)), CAD, SHELL)
     assert view["mesh_as"] == "shell"
-    (row,) = view["not_shelled"]
+    # SHSTAGE-9: first the totals and the way on, then the boss - not in the mesh, never "stays solid"
+    head, row = view["not_shelled"]
+    assert head["kind"] == "solid_head" and head["id"] == "" and head["words"] == view["reason"]
+    assert view["reason"].startswith("1 thick region (about 30 x 30 x 30 mm, 26% of the part's volume) is not in this shell mesh.")
     assert row["id"] == "S1" and row["kind"] == "solid"
-    assert row["words"] == ("A thick region of the part (5 faces) stays solid: it is 30 mm thick or more, too "
-                            "thick for a shell.")
+    assert row["words"] == ("A thick region of the part (5 faces, about 30 x 30 x 30 mm, 26% of the part's "
+                            "volume) is not in this shell mesh: it is 30 mm thick or more, too thick for a shell.")
     assert row["at_mm"] == pytest.approx([100.0, 50.0, 22.0], abs=0.5)
     assert sc.settle(view)["mesh_as"] == "shell"
 
@@ -189,7 +192,10 @@ def test_a_unit_corrected_after_the_check_rereads_its_lengths(parts):
     rec, drawn, _ = parts["boss"]
     view = sc.shell_view(_ready(sc.summarise(rec, drawn), scale=0.001), {**CAD, "scale_to_m": 0.0254}, SHELL)
     assert view["scale"] == pytest.approx(25.4)
-    assert view["t_min_mm"] == pytest.approx(4.0 * 25.4) and "762 mm thick or more" in view["not_shelled"][0]["words"]
+    assert view["t_min_mm"] == pytest.approx(4.0 * 25.4) and "762 mm thick or more" in view["not_shelled"][1]["words"]
+    # SHSTAGE-9: the sizes of what is left out are re-read too (the shares have no unit)
+    assert "about 762 x 762 x 762 mm" in view["not_shelled"][1]["words"]
+    assert view["reason"].startswith("1 thick region (about 762 x 762 x 762 mm, 26% of the part's volume)")
 
 
 def test_the_worker_runs_it_in_a_child_process_and_stores_it(parts, store, monkeypatch):

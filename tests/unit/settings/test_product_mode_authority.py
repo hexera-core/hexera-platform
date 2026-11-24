@@ -45,6 +45,12 @@ LIBRARY_CONTRACTS = {
     # checkout's package root on PYTHONPATH), so the child runs with exactly the settings the
     # parent was given. It forwards the environment; it obeys no setting from it.
     "cad/repair/bounded_child.py",
+    # The same forwarding for the mid-surface extraction's bounded child (SHELL-61): the parent's
+    # environment with BLAS / OpenMP pinned to one thread. It obeys no setting from it.
+    "cad/midsurface.py",
+    # Forwards the parent's environment to the shell mesh child, plus that run's own stop time
+    # (HEXERA_SHELL_RUN_END, SHMESH-31g) - a per-run argument, not a developer setting.
+    "engines/fea_driver.py",
 }
 
 

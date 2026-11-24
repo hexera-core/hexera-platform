@@ -136,6 +136,9 @@ async def read_for_attempt(workspace, state, *, job_id: str = "", publish=None, 
     except Exception as exc:  # noqa: BLE001 - the notes never fail a run
         logger.warning("cfd requirements: not read (%s) - job_id=%s", type(exc).__name__, job_id)
         sec = MR.section("failed", note=MR.UNREAD_WORDS)
+    # STD-5: a saved standard written for other kinds of mesh, applied in nothing here: told before meshing and with
+    # the result (the run is the run with no standard)
+    off = str(sec.get("standard_not_applied") or "") if sec.get("status") == "none" else ""
     # CFDREQ-8: the flow conditions the user confirmed size the first layer, as a y+ in their notes would
     sec = with_conditions(sec, state)
     # NOTE-15: what the notes say that the product acted on outside the reading - the engine they name (this
@@ -144,7 +147,15 @@ async def read_for_attempt(workspace, state, *, job_id: str = "", publish=None, 
     from meshpipeline.engines import notes_acted as NA
     sec = NA.apply(sec, MR.notes_text(state or {}), NA.facts_of(state, engine))
     MR.write(ws, sec)
+    if MR.strictness_unnamed(sec):
+        # NOTE-14: a note on how strict the limits are that names none the user set: one fixed plain line
+        from meshpipeline.contracts.user_notes import record_remark
+        record_remark(ws, MR.NO_LIMIT_WORDS, by=MR.STRICTNESS_REMARK)
     (ws / PLAN_FILE).unlink(missing_ok=True)          # a carried plan never speaks for this attempt
+    if off:
+        MS.told_not_applied(ws, off)
+        if publish is not None:
+            await _N.asay(publish, off, op_id="cfd:notes:standard")
     if sec.get("status") == "none":
         return sec
     try:
@@ -335,6 +346,9 @@ class Ask:
         s = self.req.get("sizes") or {}
         self.global_m = _m(s.get("global_mm"))
         self.min_m = _m(s.get("min_edge_mm"))
+        # NOTE-14: a smallest cell the user said is HARD is held even where the body's shape would want finer cells
+        self.min_hard = any(r.get("field") == "min_edge" and r.get("strictness") == "hard"
+                            for r in self.req.get("rows") or [] if isinstance(r, Mapping))
         self.max_m = _m(s.get("max_edge_mm"))
         self.wall_m = _m(s.get("near_wall_mm"))
         self.growth = s.get("growth")
@@ -697,8 +711,12 @@ def snappy_levels(ask: Ask, base: float, *, floor: int, level: int, flevel: int,
         most = int(math.floor(math.log2(base / ask.min_m) + 1e-9))
         if most < floor:
             cap = floor
+            # (NOTE-14: a HARD minimum too - the floor is the level that closes the body off from the flow, validity
+            # before any limit; said so)
             ask.nearest("min_edge", f"the finest cells are {_mm(base / 2 ** cap)}: larger ones would not hold the "
-                                    "body's shape", built_m=base / 2 ** cap)
+                                    "body's shape" + (" (your minimum is hard, but cells that large would let the flow "
+                                                      "leak into the body)" if ask.min_hard else ""),
+                        built_m=base / 2 ** cap)
         else:
             cap = min(hard_max, most)
             ask.done("min_edge", f"the finest cells are {_mm(base / 2 ** cap)} (boundary layer cells are thinner, "
@@ -1933,6 +1951,7 @@ def report(workspace, quality: Mapping, engine: str) -> dict | None:
         status, built = p.get("status"), str(p.get("built") or "")
         if field.startswith("limit:"):
             got = _limit_row(limits[row["id"]], q, figs, n_meas, p)
+            got = _layer_cells_said(limits[row["id"]], got, q, row)
         elif field.startswith("cells:"):
             # a count is measured on every mesh, a setting of this mesher or not
             got = _count_row(field, req, n, p)
@@ -1960,7 +1979,7 @@ def report(workspace, quality: Mapping, engine: str) -> dict | None:
                 got.update(measured=float(f"{big * 1e3:.4g}"), met=bool(big <= 1.05 * lim) and status != "nearest",
                            delivered=got["delivered"] + f"; the largest cell is {_mm(big)}")
         rows.append({"id": row["id"], "field": field, "asked": row["asked"], **got,
-                     **({"from": row["from"]} if row.get("from") else {})})
+                     **({"from": row["from"]} if row.get("from") else {}), **MR.carried(row)})
     for i, d in enumerate(aside, 1):
         # an ask the checks set aside: '"<the user's words>": <why>: not applied' (engines/mesh_requirements.check)
         asked, _sep, why = d.partition(": ")
@@ -2077,6 +2096,28 @@ def _layers_row(req: Mapping, q: Mapping, built: str) -> dict:
     return {"applied": True, "met": None, "delivered": said}
 
 
+#: a limit written for even cells is not judged on prism-layer cells (docs/RULES.md)
+LAYER_CELLS_RULE = "CFDREQ-11"
+#: CFDREQ-11: the shape limits written for even (isotropic) cells - judged on a mesh with prism layers, the layers'
+#: own thin cells count against them by design
+ISOTROPIC_MEASURES = ("aspect_ratio",)
+
+
+def _layer_cells_said(lim: Mapping, got: dict, q: Mapping, row: Mapping | None = None) -> dict:
+    """CFDREQ-11: an aspect-ratio limit (written for even cells - a structural criteria list's "aspect ratio under 4")
+    on a mesh with prism layers is not judged: the layer cells are thin by design, their aspect ratio set by the first
+    layer height, and this mesh's figures do not tell them apart from the rest - so the share past it is told as
+    information, never "not met" (a y+ 1 stack read "43.9% of cells over 4 - not met"). Met, or no layers: as it was."""
+    cover = q.get("layer_coverage_pct")
+    layered = isinstance(cover, (int, float)) and not isinstance(cover, bool) and float(cover) > 0.0
+    if (str(lim.get("measure")) not in ISOTROPIC_MEASURES or not layered or got.get("met") is not False
+            or (row or {}).get("strictness") == "hard"):
+        return got                      # (said hard: judged on every cell, as the user asked)
+    return {**got, "met": None, "layer_cells": True,
+            "delivered": f"{got.get('delivered')} - prism layer cells are thin by design (set by the first layer height) "
+                         "and are counted here; a limit for even cells is told, not judged, on a mesh with layers"}
+
+
 def _limit_row(lim: Mapping, q: Mapping, figs: dict | None, n: int, p: Mapping) -> dict:
     measure = str(lim["measure"])
     _d, _r, unit, name = MR.MEASURES[measure]
@@ -2102,6 +2143,12 @@ def _limit_row(lim: Mapping, q: Mapping, figs: dict | None, n: int, p: Mapping) 
         return got
     worst = q.get(key)
     if not isinstance(worst, (int, float)) or isinstance(worst, bool):
+        if not lever:
+            # neither set by this mesher nor measured on its cells: never "set as asked" (an aspect ratio from a saved
+            # criteria list on VMTK and cfMesh read "Set as asked" over "was not measured", m483 with a standard)
+            return {"applied": False, "met": None,
+                    "delivered": f"not applied - this mesher has no setting for {name}, and it was not measured on "
+                                 "this mesh"}
         return {"applied": True, "met": None, "delivered": f"{name} was not measured on this mesh{lever}"}
     worst = float(worst)
     target, outer, share = float(lim["target"]), lim.get("outer"), float(lim.get("share") or 0.0)

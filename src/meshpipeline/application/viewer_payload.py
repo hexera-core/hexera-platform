@@ -165,8 +165,9 @@ def build_viewer_payload(workspace: Path) -> dict[str, Any]:
     asked = mq.get("requirements") if isinstance(mq, dict) else None
     rows = [r for r in (asked.get("rows") or []) if isinstance(r, dict)] if isinstance(asked, dict) else []
     if rows:
-        payload["asked"] = {"rows": [{k: r.get(k) for k in ("asked", "delivered", "met", "applied", "from")}
-                                     for r in rows]}
+        # (NOTE-14: a limit the user said is flexible says so - present only then)
+        payload["asked"] = {"rows": [{**{k: r.get(k) for k in ("asked", "delivered", "met", "applied", "from")},
+                                      **{k: True for k in ("flexible", "layer_cells", "finer_than_asked") if r.get(k)}} for r in rows]}
     # a mesh built on the CFD wrap (LAD-cfd-7): how far the wrap lies from the CAD, and where it
     # bridged - for the mesh report; absent for every other mesh
     from meshpipeline.pipeline.cfd_wrap import read_report
