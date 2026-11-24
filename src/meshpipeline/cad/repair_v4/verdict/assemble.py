@@ -207,10 +207,15 @@ def _assemble(
     cache: VerdictCache | None,
     run_panel: PanelRunner | None,
     original_units: str | None,
+    valid_report: ValidReport | None = None,
 ) -> Verdict:
     t = time.monotonic()
-    valid = check_valid(pool, step, original_units=original_units)
-    _phase("valid", time.monotonic() - t)
+    if valid_report is not None:  # C18 P1: the caller PROVED layer 1's answer is the standing state's (`stages`)
+        valid = valid_report
+        _phase("valid_reused", time.monotonic() - t)
+    else:
+        valid = check_valid(pool, step, original_units=original_units)
+        _phase("valid", time.monotonic() - t)
     if valid.unbounded:  # outside the definition, decided before anything meshes it: no panel, no layer 3, no cache
         return Verdict(valid, [], None, False, tier, False)
 
@@ -379,10 +384,16 @@ def cheap_verdict(
     cache: VerdictCache | None = None,
     run_panel: PanelRunner | None = None,
     original_units: str | None = None,
+    valid_report: ValidReport | None = None,
 ) -> Verdict:
     """Layer 1, the cheap members (`GmshDefault`, `GmshProd`; `default_members("cheap")`) and layer 3. For the
-    search's inner loop and the staged healer's transactions; never `clean`."""
-    return _assemble(pool, step, original, declared or Declared(), "cheap", members, cache, run_panel, original_units)
+    search's inner loop and the staged healer's transactions; never `clean`.
+
+    `valid_report` (C18 P1): a layer-1 report the caller has PROVED is this file's - the staged healer's standing
+    state, when `layer1_gate` says no solid, face count or free shell changed. Layer 1 is then not re-run; the panel
+    and layer 3 still are, on THIS file. Only `stages._judge` passes it; the full tier never takes one."""
+    return _assemble(pool, step, original, declared or Declared(), "cheap", members, cache, run_panel, original_units,
+                     valid_report)
 
 
 def with_brep_orientation(pool: Any, brep_path: str, v: Verdict) -> Verdict:
