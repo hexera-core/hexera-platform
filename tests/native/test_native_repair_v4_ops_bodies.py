@@ -449,7 +449,9 @@ def test_conformalise_that_would_share_nothing_declines(pool: WorkerPool, tmp_pa
     ws = Workspace.from_brep(pool, _write(
         _compound(_box(0, 0, 0, 10, 10, 10), _box(10.0001, 0, 0, 10, 10, 10)), tmp_path / "gap.brep"))
     new, diff = Conformalise().apply(pool, ws, _bodies(ws), {"mode": "fragment"}, timeout_s=TIMEOUT)
-    assert diff.params["declined"] == "no_shared_interface"
+    # the fragment changed nothing at all, which lane C10's `no_change` says first and more precisely than the
+    # shared-interface check behind it; either way it is a decline, never a success
+    assert diff.params["declined"] in ("no_change", "no_shared_interface")
     assert new is ws and diff.modified == {} and diff.declared_removed == []
 
 

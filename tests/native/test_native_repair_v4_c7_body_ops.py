@@ -176,3 +176,40 @@ def test_trim_unbounded_declines_a_part_with_nothing_unbounded(pool: WorkerPool,
     ws = Workspace.from_brep(pool, _write([_box(0, 0, 0, 20, 10, 10)], tmp_path / "g.brep"))
     new, diff = REGISTRY["trim_unbounded"].apply(pool, ws, [], {"pad_fraction": 0.01}, timeout_s=TIMEOUT)
     assert diff.params["declined"] == "nothing_unbounded" and new is ws
+
+
+def _loose_square(z: float) -> Any:
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace
+    from OCP.gp import gp_Dir, gp_Pln, gp_Pnt
+
+    return BRepBuilderAPI_MakeFace(gp_Pln(gp_Pnt(0, 0, z), gp_Dir(0, 0, 1)), 0.0, 5.0, 0.0, 5.0).Face()
+
+
+def _faces(shape: Any) -> int:
+    from OCP.TopAbs import TopAbs_FACE
+    from OCP.TopExp import TopExp
+    from OCP.TopTools import TopTools_IndexedMapOfShape
+
+    m = TopTools_IndexedMapOfShape()
+    TopExp.MapShapes_s(shape, TopAbs_FACE, m)
+    return m.Extent()
+
+
+def test_trim_unbounded_touches_only_the_unbounded_piece(pool: WorkerPool, tmp_path: Path) -> None:
+    """Lane C8 on sha bfc8d0b5: ONE Common of the whole 30-solid part merged and split the overlapping solids (30 -> 25)
+    and dropped 21 of 23 loose faces, though only 2 faces were unbounded. Overlapping solids and loose faces beside the
+    infinite face must come out as the very same shapes: same ids, same faces."""
+    pieces = [_box(0, 0, 0, 20, 10, 10), _box(15, 0, 0, 20, 10, 10),            # two OVERLAPPING solids
+              _loose_square(-3.0), _loose_square(-6.0), _loose_square(-9.0),    # three loose bounded faces
+              _infinite_plane_face()]
+    ws = Workspace.from_brep(pool, _write(pieces, tmp_path / "mixed.brep"))
+    before = _read(ws.brep_path)
+    new, diff = REGISTRY["trim_unbounded"].apply(pool, ws, [], {"pad_fraction": 0.01}, timeout_s=TIMEOUT)
+    assert diff.params.get("declined") is None, diff.params
+    out = _read(new.brep_path)
+    assert _solids(out) == 2  # nothing merged, nothing split
+    finite_before = _faces(before) - 1
+    assert _faces(out) == finite_before + 1  # every finite face kept, the infinite one replaced by its bounded part
+    untouched = [sid for sid in ws.ids if sid in new.ids and new.ids[sid] == ws.ids[sid]]
+    assert len(untouched) >= len(ws.ids) - 4  # only the infinite face (and its edges/vertices) changed identity
+    assert diff.params["measured"]["pieces_trimmed"] == 1

@@ -589,14 +589,22 @@ def _bounded_extent(shape: Any) -> tuple[Any, int, int]:
 
 @register("v4_trim_unbounded")
 def _trim_unbounded(payload: dict) -> dict:
-    """Bound a part's infinite surfaces to its real extent: BRepAlgoAPI_Common of the part with its finite-face box
-    enlarged by `pad_fraction` of the diagonal on every side. The approach is Raymond Lee's (raymond/cad-simplification,
-    devtools/simplify: `Common(shape, MakeBox(lo - pad, hi + pad))`), copied, not merged. The faces the box
-    contributes are DECLARED added. Declines `nothing_unbounded` when every face already has a finite extent, and
-    `no_bounded_extent` when no face does (no real size to trim to)."""
+    """Bound a part's infinite surfaces to its real extent: each UNBOUNDED piece of the part (a solid, shell or face whose
+    own extent is infinite) is intersected (BRepAlgoAPI_Common) with the part's finite-face box enlarged by
+    `pad_fraction` of the diagonal; every other piece is left as the very same shape. The approach is Raymond Lee's
+    (raymond/cad-simplification, devtools/simplify: `Common(shape, MakeBox(lo - pad, hi + pad))`), copied, not merged.
+
+    PIECE BY PIECE, not the whole part at once (lane C8, sha bfc8d0b5): one Common of the whole 30-solid compound ran a
+    General Fuse over every piece, merged and split the overlapping solids (30 -> 25) and dropped 21 of 23 loose faces,
+    while only 2 faces were unbounded. The faces the box contributes are DECLARED added. Declines `nothing_unbounded`
+    when every face already has a finite extent, and `no_bounded_extent` when no face does."""
+    from OCP.BRep import BRep_Builder
     from OCP.BRepAlgoAPI import BRepAlgoAPI_Common
     from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
+    from OCP.BRepTools import BRepTools_History
     from OCP.gp import gp_Pnt
+    from OCP.TopAbs import TopAbs_COMPOUND
+    from OCP.TopoDS import TopoDS, TopoDS_Compound, TopoDS_Iterator
     from OCP.TopTools import TopTools_IndexedMapOfShape
 
     start = time.perf_counter()
@@ -610,33 +618,77 @@ def _trim_unbounded(payload: dict) -> dict:
     diag = ((x1 - x0) ** 2 + (y1 - y0) ** 2 + (z1 - z0) ** 2) ** 0.5
     pad = max(float(payload["pad_fraction"]) * diag, 1e-6)
     tool = BRepPrimAPI_MakeBox(gp_Pnt(x0 - pad, y0 - pad, z0 - pad), gp_Pnt(x1 + pad, y1 + pad, z1 + pad)).Shape()
-    op = BRepAlgoAPI_Common()
-    op.SetArguments(_list([old]))
-    op.SetTools(_list([tool]))
-    op.SetNonDestructive(True)
-    op.SetToFillHistory(True)
-    op.Build()
-    if not op.IsDone():
-        return _declined("trim_failed", detail="BRepAlgoAPI_Common did not complete")
-    new = op.Shape()
+
+    hist = BRepTools_History()
+    trimmed = 0
+
+    def trim(piece: Any) -> Any:
+        """The piece intersected with the box, its history folded into `hist`; None when nothing of it is inside."""
+        nonlocal trimmed
+        op = BRepAlgoAPI_Common()
+        op.SetArguments(_list([piece]))
+        op.SetTools(_list([tool]))
+        op.SetNonDestructive(True)
+        op.SetToFillHistory(True)
+        op.Build()
+        if not op.IsDone():
+            raise RuntimeError("BRepAlgoAPI_Common did not complete on an unbounded piece")
+        h = op.History()
+        maps = _maps(piece)
+        for kind in _KINDS:
+            for i in range(1, maps[kind].Extent() + 1):
+                sub = maps[kind].FindKey(i)
+                mods = list(h.Modified(sub))
+                if mods:
+                    for m in mods:
+                        hist.AddModified(sub, m)
+                elif h.IsRemoved(sub):
+                    hist.Remove(sub)
+        trimmed += 1
+        return op.Shape() if _maps(op.Shape())["face"].Extent() else None
+
+    def walk(node: Any) -> Any:
+        comp = TopoDS_Compound()
+        builder = BRep_Builder()
+        builder.MakeCompound(comp)
+        it = TopoDS_Iterator(node)
+        while it.More():
+            child = it.Value()
+            it.Next()
+            if child.ShapeType() == TopAbs_COMPOUND:
+                builder.Add(comp, walk(TopoDS.Compound_s(child)))
+                continue
+            _, unbounded, _ = _bounded_extent(child)
+            if not unbounded:
+                builder.Add(comp, child)  # the SAME shape: its ids survive and nothing of it is touched
+                continue
+            kept = trim(child)
+            if kept is not None:
+                builder.Add(comp, kept)
+        return comp
+
+    if old.ShapeType() != TopAbs_COMPOUND:
+        new = trim(old)
+        if new is None:
+            return _declined("trim_failed", detail="nothing of the part is inside its own box")
+    else:
+        new = walk(old)
     new_faces = _maps(new)["face"]
     if new_faces.Extent() == 0:
         return _declined("trim_failed", detail="nothing of the part is inside its own box")
     if diagonal_of(new) >= _UNBOUNDED_COORD:
         return _declined("trim_failed", detail="the result is still unbounded")
-    # a face of the result that is no image of an old face came from the box: it is the trim's own addition
     images = TopTools_IndexedMapOfShape()
     old_faces = _maps(old)["face"]
-    hist = op.History()
     for i in range(1, old_faces.Extent() + 1):
         f = old_faces.FindKey(i)
-        for m in [f, *list(hist.Modified(f)), *list(hist.Generated(f))]:
+        for m in [f, *list(hist.Modified(f))]:
             images.Add(m)
     added = [i for i in range(1, new_faces.Extent() + 1) if not images.Contains(new_faces.FindKey(i))]
     write_brep(new, payload["out_path"])
     params = {"pad_fraction": float(payload["pad_fraction"]), "added_face_indices": added,
               "measured": {"unbounded_faces": skipped, "faces_before": total, "faces_after": new_faces.Extent(),
-                           "bounded_diagonal_mm": diag, "pad_mm": pad}}
+                           "pieces_trimmed": trimmed, "bounded_diagonal_mm": diag, "pad_mm": pad}}
     record = history_record(old, new, hist, op="trim_unbounded", params=params, old_path=payload["brep_path"],
                             new_path=payload["out_path"], quantum=payload["quantum"],
                             seconds=time.perf_counter() - start)
