@@ -845,9 +845,18 @@ def main(argv: list[str] | None = None) -> int:
             return 0
     else:
         mm = float(args[2])
+    step = args[1]
+    if args[2] == "staged" and abs(mm - 1.0) > 1e-9:
+        # SURF-15: the staged surface (metres) is cleaned and meshed in millimetres, as SHELL-18m does for a solid
+        from meshpipeline.engines.shell_run import in_millimetres
+
+        try:
+            step, mm = str(in_millimetres(ws, Path(args[1]), mm)), 1.0
+        except Exception as exc:  # noqa: BLE001 - meshed in the staged unit, as before
+            logger.warning("surface run: the staged surface was not put in millimetres (%s)", type(exc).__name__)
     t = more.get("thickness_mm")
     sew_mm, holes_mm = more.get("sew_mm"), more.get("holes_mm")
-    run(ws, args[1], mm_per_unit=mm, thickness_mm=float(t) if t else None, source=Path(args[1]).name,
+    run(ws, step, mm_per_unit=mm, thickness_mm=float(t) if t else None, source=Path(args[1]).name,
         target=more.get("target") if isinstance(more.get("target"), dict) else None,
         said_shell=bool(more.get("said_shell")), others_mm=list(more.get("others_mm") or []),
         unread=str(more.get("unread") or ""), stitch=more.get("stitch") is not False,
