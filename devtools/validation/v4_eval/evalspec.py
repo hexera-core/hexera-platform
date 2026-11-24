@@ -407,6 +407,9 @@ WAVES: dict[str, WaveDef] = {w.name: w for w in (
     # Dev snapshot v1: all four v4 arms over a split in a NORMAL wave, so no checkpoint slot is spent.
     WaveDef("snap_v1_dev", "normal", "dev", _ALL[:4]),
     WaveDef("snap_v1_clean", "normal", "clean", _ALL[:4]),
+    # Dev snapshot v1r: the same 30 + 8 files, relabelled on the engine's form (partial_reprobe _v1r splits).
+    WaveDef("snap_v1r_dev", "normal", "dev", _ALL[:4]),
+    WaveDef("snap_v1r_clean", "normal", "clean", _ALL[:4]),
 )}
 
 
