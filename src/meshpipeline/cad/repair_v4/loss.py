@@ -15,6 +15,14 @@ losses is the way a part disappears):
 1. the part: the output may not keep under `KEEP_FRACTION` of the input's volume;
 2. a body: no input body may have under `KEEP_FRACTION` of ITS OWN volume left.
 
+ORIENTATION IS NOT GEOMETRY, and getting that wrong was this rule's one real hole (lane C20, B26): a solid
+whose faces point inward encloses the same points, `GProp` calls its volume negative, and OCCT's `Common`
+against it returns its COMPLEMENT - so everything OUTSIDE it counted as KEPT. On 0051_00510567 this rule read
+`part_kept` 0.697 for a delivery holding 0.07% of the part, and refused the file only because four other bodies
+happened to fall outside it; an inverted solid covering the rest would have made the rule DELIVER a destroyed
+fragment. Every Boolean now runs on positively oriented solids, and an output solid that cannot be oriented
+positive makes the whole report UNMEASURED rather than a measured complement.
+
 "KEPT" IS COMMON VOLUME, NOT A VOLUME RATIO. The measure is `volume(Common(input body, output))`, how much
 of that body the output still occupies, for two reasons. A plain ratio counts volume the output has
 anywhere, so a "repair" that deleted a wing and doubled a boss could pass; and the overlap repairs this
@@ -71,7 +79,7 @@ class LossReport:
     solidless: bool = False
     #: why it was not measured, when it was not (`error: ...`, `timeout`, `too_many_bodies`)
     unmeasured_why: str | None = None
-    #: per-body kept fractions, for the row and the trace
+    #: per-body kept fractions, for the row and the trace, and what had to be re-oriented (`inverted`)
     detail: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -130,6 +138,12 @@ def from_kernel(value: dict, *, keep_fraction: float = KEEP_FRACTION) -> LossRep
                           volume_ratio=value.get("volume_ratio"), detail={"bodies": {}})
     bodies: dict[str, Any] = dict(value.get("bodies") or {})
     kept = {k: float(v) for k, v in bodies.items() if v is not None}
+    if value.get("unmeasured_why") and value.get("part_kept") is None:
+        # the kernel measured nothing it would stand behind (an output solid it could not orient positive):
+        # the rule claims nothing, and layer 1 reports the negative solid on its own account
+        return LossReport(measured=False, unmeasured_why=str(value["unmeasured_why"]),
+                          volume_ratio=value.get("volume_ratio"), bodies_total=int(value.get("bodies_total") or 0),
+                          detail={"inverted": value.get("inverted") or {}})
     if not kept and value.get("part_kept") is None:
         # a payload that measured nothing claims nothing: `measured` True with no number in it would be a report
         # that refuses nothing while LOOKING like evidence, and the next rule written on top of it would be wrong
@@ -145,7 +159,8 @@ def from_kernel(value: dict, *, keep_fraction: float = KEEP_FRACTION) -> LossRep
         bodies_total=int(value.get("bodies_total") or 0),
         bodies_measured=len(kept),
         unmeasured_why=value.get("unmeasured_why"),
-        detail={"bodies": bodies, "unmeasured_bodies": [k for k, v in bodies.items() if v is None]},
+        detail={"bodies": bodies, "unmeasured_bodies": [k for k, v in bodies.items() if v is None],
+                "inverted": value.get("inverted") or {}},
     )
 
 

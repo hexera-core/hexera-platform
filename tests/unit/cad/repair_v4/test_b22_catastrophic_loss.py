@@ -128,3 +128,25 @@ def test_a_payload_that_measured_NOTHING_claims_nothing() -> None:
     report = from_kernel({"solidless": False, "bodies": {}, "bodies_total": 3, "part_kept": None})
     assert not report.measured and not report.catastrophic
     assert report.unmeasured_why == "nothing_measured"
+
+
+# --- B26: orientation is not geometry -----------------------------------------------------------
+
+def test_an_output_solid_that_cannot_be_oriented_positive_makes_the_whole_report_UNMEASURED() -> None:
+    """A `Common` against an inside-out solid returns its COMPLEMENT, so a measurement that still contains one
+    would report the part OUTSIDE it as kept. The kernel re-orients what it can; what it cannot, it refuses to
+    measure, and the rule then claims nothing (layer 1 reports the negative solid on its own account)."""
+    report = from_kernel({"solidless": False, "bodies": {}, "bodies_total": 8, "bodies_after": 4,
+                          "part_kept": None, "volume_ratio": 0.00069,
+                          "unmeasured_why": "1 output solid(s) could not be oriented positive",
+                          "inverted": {"input": 0, "output": 1, "unorientable_output": 1}})
+    assert not report.measured and not report.catastrophic
+    assert "could not be oriented positive" in str(report.unmeasured_why)
+    assert report.volume_ratio == 0.00069            # still REPORTED, so a reader sees what it looked like
+    assert report.detail["inverted"]["unorientable_output"] == 1
+
+
+def test_a_re_oriented_measurement_SAYS_it_was_re_oriented() -> None:
+    report = from_kernel(_kernel({"S1": 0.0004}, part_kept=0.0004) | {"inverted": {"input": 0, "output": 1}})
+    assert report.measured and report.catastrophic and report.reason == "part_volume_lost"
+    assert report.detail["inverted"]["output"] == 1
