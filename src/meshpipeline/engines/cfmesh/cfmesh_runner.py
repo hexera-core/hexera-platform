@@ -789,7 +789,7 @@ def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
             # 00134075); never coarsened (the gap plan refines a coarser wall back: 00185618 102k -> 503k cells)
             _one = CR.cfmesh_one_layer_cells(
                 _ask, bore_D=_bore, max_cell=max_cell, wall_cell=wall_cell,
-                min_background=((vol / (0.4 * cell_budget)) ** (1.0 / 3.0) if cell_budget else 0.0))
+                growth=float(strategy.get("thickness_ratio", 1.2)), min_background=((vol / (0.4 * cell_budget)) ** (1.0 / 3.0) if cell_budget else 0.0))
             if _one is not None:
                 wall_cell, max_cell, _band_r = _one[0], _one[1], 0.0
     wall_cell = max(wall_cell, max_cell / float(2 ** max(1, int(max_halvings))))

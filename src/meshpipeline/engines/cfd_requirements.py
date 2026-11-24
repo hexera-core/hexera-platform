@@ -1302,7 +1302,7 @@ CFMESH_ONE_LAYER_SHARE = 0.5
 
 
 def cfmesh_one_layer_cells(ask: Ask | None, *, bore_D: float, max_cell: float, wall_cell: float,
-                           min_background: float = 0.0) -> tuple[float, float] | None:
+                           growth: float = 1.2, min_background: float = 0.0) -> tuple[float, float] | None:
     """CFDREQ-31, cfMesh's ONE WALL-FUNCTION LAYER PLANNED TO WHAT IT BUILDS: (wall cell, background cell) for an
     internal flow's wall-function wall on cfMesh, or None (the plan's `wall_cell` - CFDREQ-18's, landed on the
     background - stands). cfMesh builds one layer at CFMESH_ONE_LAYER_SHARE of the cell it stands on, so where the y+
@@ -1332,6 +1332,12 @@ def cfmesh_one_layer_cells(ask: Ask | None, *, bore_D: float, max_cell: float, w
     share = CFMESH_ONE_LAYER_SHARE
     want = float(h) / share
     plan_wall = min(float(wall_cell), float(max_cell))          # cfMesh never builds a wall coarser than the background
+    g = max(1.0, float(growth or 1.0))
+    if float(h) * (1.0 + g) <= CFMESH_STACK_REL * plan_wall * (1 + 1e-9):
+        # two layers or more fit the plan's stack (cfmesh_layer_fit counts them): cfMesh obeys the cap from two up
+        # (CFDREQ-30), so the plan's cell stands - refining it here made 00152055's 3-layer plan one layer on
+        # 29 x the cells (25.6k -> 748k)
+        return None
     if want >= plan_wall * (1 - 1e-6):
         if float(h) > share * plan_wall * (1 + 1e-6):
             built = share * plan_wall

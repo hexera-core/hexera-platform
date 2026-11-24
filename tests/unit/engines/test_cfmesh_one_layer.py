@@ -50,6 +50,14 @@ def test_a_layer_that_fits_the_plans_cell_is_left_alone():
     assert ask.wall_level_note == ""
 
 
+def test_a_plan_with_room_for_two_layers_or_more_keeps_its_cell():
+    # cfMesh obeys the cap from two layers up; refining made 00152055's 3-layer plan one layer on 29 x the cells
+    D, ask = 0.1, _ask(typed=False, engine="cfmesh")
+    h = _h(ask, D)
+    assert CR.cfmesh_one_layer_cells(ask, bore_D=D, max_cell=8 * h, wall_cell=8 * h, growth=1.2) is None
+    assert ask.wall_level_note == ""
+
+
 def test_not_for_a_users_own_sizes_or_layer_count():
     ask = _ask(typed=False, engine="cfmesh")
     ask.n_layers = 3
