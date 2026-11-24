@@ -165,6 +165,25 @@ def _gate_resolution_floor(ctx: GateCtx) -> tuple[bool, str]:
         **facts)
 
 
+def _gate_wall_function_layer(ctx: GateCtx) -> tuple[bool, str]:
+    """CFDREQ-27: a planned wall-function layer that sits under a cell more than twice thinner on more of the wall
+    than the y+ row can leave out is refused here, with no lever on this engine (engine_fallback.GATE_LEVERS): the
+    ladder moves the run to the next engine, and this sound mesh is kept as the fallback (DELIVERABLE_GATES). A plan
+    with no wall-function layer, or a wall that cannot be measured, is not judged."""
+    from meshpipeline.engines.cfd_requirements import WALL_FUNCTION_JUMP_SWITCH_PCT, wall_function_jump
+    got = wall_function_jump(ctx.workspace, ctx.manifest_or_load().get("quality") or {})
+    if not got:
+        return True, ""
+    ratio = got.get("next_over_first")
+    above = f" (the cell above it is {ratio:.2f} of its height)" if isinstance(ratio, float) else ""
+    return False, refuse(
+        f"The wall-function first layer ({got['first_m'] * 1e3:.2f} mm) sits under a cell more than twice thinner "
+        f"on {got['under_jump_pct']:.1f}% of the wall{above}, more than the {WALL_FUNCTION_JUMP_SWITCH_PCT:.0f}% "
+        "the y+ row can leave out: snappyHexMesh lays the layer on its snapped wall cells and has no setting that "
+        "lifts them; an engine that splits the wall cell builds this layer instead.",
+        FailureCause.MESH_QUALITY.value, **got)
+
+
 def _gate_quality_floor(ctx: GateCtx) -> tuple[bool, str]:
     # This engine's OWN declared gating criteria, enforced before the reviewer can see the mesh.
     # The bars and thresholds are the engine's (engines/snappy/criteria.py); this gate adds none.
@@ -204,6 +223,11 @@ FLOW_GATES: tuple[GateSpec, ...] = (
     GateSpec(key="boundary_types", check=_gate_boundary_types, section="GROUPS",
              proves="Each boundary is typed as the solver needs it (wall / symmetry / empty)",
              cause=FailureCause.BOUNDARY_TYPE),
+    # CFDREQ-27: a wall-function layer under a jump on more of the wall than the y+ row can leave out - no lever
+    # on this engine, so the ladder's next engine builds it and this mesh is the fallback
+    GateSpec(key="wall_function_layer", check=_gate_wall_function_layer, section="MESH",
+             proves="The wall-function first layer sits on cells that suit it - no cell more than twice thinner above it over the wall the y+ row counts",
+             cause=FailureCause.MESH_QUALITY),
     # SHARED with every flow engine (engines/cad_fidelity.py), and LAST: a sound, correctly named mesh
     # is held to the CAD it was built from - its boundary on the surface, none of the surface
     # missing, the fluid volume the CAD's. The numbers are recorded either way; only a mesh that is

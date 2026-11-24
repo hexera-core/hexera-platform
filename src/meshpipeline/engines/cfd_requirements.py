@@ -3084,6 +3084,37 @@ def built_first_cells(workspace, q: Mapping, planned_m: float) -> dict:
     return LC.height_quality(per) if per else {}
 
 
+#: CFDREQ-27: the share of the wall under a jump past which a wall-function layer cannot meet the y+ row - the row
+#: needs Y_PLUS_WALL_SHARE of the wall with its first cell in the band and no jump (CFDREQ-26), so over the rest of
+#: the wall under a jump it is missed whatever else the layer does.
+WALL_FUNCTION_JUMP_SWITCH_PCT = 100.0 - Y_PLUS_WALL_SHARE
+
+
+def wall_function_jump(workspace, quality: Mapping | None) -> dict | None:
+    """CFDREQ-27: the planned wall-function layer measured under a jump on more of the wall than the y+ row can
+    leave out (WALL_FUNCTION_JUMP_SWITCH_PCT): {"under_jump_pct", "next_over_first", "first_m"}. None when the plan
+    has no wall-function layer, when the built wall cannot be measured, or when the share is within the row's.
+
+    snappyHexMesh lays its layer on the snapped wall cells and pushes them back by the layer's height; those cells
+    are cut by the surface, a third of the castellated cell at the median (00122027: 0.64 mm under a 1.92 mm layer
+    before any layer was added). Its layer-stage levers do not lift that (measured: nSmoothDisplacement 90, a
+    displacementLaplacian shrinker, castellatedBufferLayer: 69-81% of that wall still under a jump), so the mesh of
+    another engine - cfMesh splits its wall cell - is the one that can meet the row."""
+    rows = _plan(workspace).get("rows")
+    wf = next((r for r in (rows.values() if isinstance(rows, Mapping) else ())
+               if isinstance(r, Mapping) and r.get("treatment") == "functions" and _num_or_none(r.get("first_m"))),
+              None)
+    if wf is None:
+        return None
+    first = float(wf["first_m"])
+    got = built_first_cells(workspace, quality if isinstance(quality, Mapping) else {}, first)
+    jump = _num_or_none(got.get("layer_area_under_jump_pct"))
+    if jump is None or jump <= WALL_FUNCTION_JUMP_SWITCH_PCT:
+        return None
+    return {"under_jump_pct": round(jump, 1), "next_over_first": _num_or_none(got.get("layer_next_over_first")),
+            "first_m": first}
+
+
 _WALL_LEVEL = re.compile(r"refinementSurfaces\s*\{\s*[\w.]+\s*\{\s*level\s*\(\s*(\d+)\s+(\d+)\s*\)")
 _BLOCKS = re.compile(r"hex\s*\([^)]*\)\s*\(\s*(\d+)\s+(\d+)\s+(\d+)\s*\)")
 
