@@ -1,0 +1,1157 @@
+{
+ "arms": {
+  "input_only": {
+   "ai": null,
+   "clean": 1,
+   "conclusive": 30,
+   "deviation": {
+    "budget_used": {
+     "max": 8.708540317633249,
+     "median": 0.0,
+     "n": 15,
+     "p90": 8.297487951355875e-11
+    },
+    "faithful_failed": 1,
+    "over_bound": 1,
+    "reasons": {
+     "deviation_exceeds_bound": 1
+    }
+   },
+   "ended_by": {},
+   "excluded": 0,
+   "excluded_reasons": {},
+   "files": 30,
+   "inconclusive_rows": 0,
+   "not_clean": 29,
+   "not_clean_by_defect_kind": {
+    "body_overlap": 7,
+    "brep_invalid": 2,
+    "open_shell": 3,
+    "other": 13,
+    "periodic_surface": 1,
+    "self_intersection": 3
+   },
+   "not_clean_without_triage": 0,
+   "not_proposed": {},
+   "open_sites": {
+    "files_with_kind": {},
+    "total_sites": 0
+   },
+   "ops": {},
+   "panel": {
+    "by_member": {
+     "gmsh_alt": {
+      "error_kind": {
+       "gmsh_crash": 4,
+       "low_quality": 10,
+       "no_volume": 5,
+       "open_loop": 1
+      },
+      "files": 20,
+      "status": {
+       "crashed": 4,
+       "fail": 16
+      }
+     },
+     "gmsh_default": {
+      "error_kind": {
+       "edge_through_face": 9,
+       "low_quality": 5,
+       "no_volume": 2,
+       "open_loop": 1,
+       "other": 2,
+       "overlapping_facets": 6
+      },
+      "files": 25,
+      "status": {
+       "fail": 25
+      }
+     },
+     "gmsh_prod": {
+      "error_kind": {
+       "low_quality": 6,
+       "open_loop": 1,
+       "other": 19,
+       "periodic_surface": 1
+      },
+      "files": 27,
+      "status": {
+       "fail": 27
+      }
+     },
+     "netgen_occ": {
+      "error_kind": {
+       "low_quality": 2,
+       "netgen_crash": 1,
+       "netgen_meshing_failed": 6,
+       "netgen_timeout": 1
+      },
+      "files": 10,
+      "status": {
+       "crashed": 1,
+       "fail": 8,
+       "timeout": 1
+      }
+     }
+    },
+    "members_failing_per_file": {
+     "0": 1,
+     "1": 4,
+     "2": 1,
+     "3": 16,
+     "4": 7
+    }
+   },
+   "stages": null,
+   "stop_reasons": {},
+   "unmeasured_stop_reasons": {},
+   "valid_hard": {
+    "body_overlap": 74,
+    "brep_invalid": 3,
+    "open_shell": 7,
+    "self_intersection": 2
+   }
+  },
+  "search_ai": {
+   "ai": {
+    "ai_capped": 2,
+    "candidate_errors": 3,
+    "declared_unfixable": 0,
+    "files": 26,
+    "spent_usd": 0.999951,
+    "stop_reasons": {
+     "None": 24,
+     "file_ceiling": 2
+    },
+    "tool_errors": 2,
+    "truncated_rounds": 0,
+    "turns": 37
+   },
+   "clean": 2,
+   "conclusive": 28,
+   "deviation": {
+    "budget_used": {
+     "max": 8.708540317633249,
+     "median": 7.488110136192235e-12,
+     "n": 14,
+     "p90": 1.1036135697873016e-10
+    },
+    "faithful_failed": 1,
+    "over_bound": 1,
+    "reasons": {
+     "deviation_exceeds_bound": 1
+    }
+   },
+   "ended_by": {
+    "exhausted": 24,
+    "patience": 2
+   },
+   "excluded": 2,
+   "excluded_reasons": {
+    "file_timeout": 2
+   },
+   "files": 30,
+   "inconclusive_rows": 0,
+   "not_clean": 26,
+   "not_clean_by_defect_kind": {
+    "body_overlap": 7,
+    "brep_invalid": 2,
+    "open_shell": 1,
+    "other": 12,
+    "periodic_surface": 1,
+    "self_intersection": 3
+   },
+   "not_clean_without_triage": 0,
+   "not_proposed": {
+    "make_volume_without_a_closable_shell": 3,
+    "sew_on_a_solid": 3
+   },
+   "open_sites": {
+    "files_with_kind": {
+     "open": 2,
+     "overlap": 7,
+     "self_overlap": 2,
+     "sliver": 2,
+     "unlocated": 25
+    },
+    "total_sites": 38
+   },
+   "ops": {
+    "conformalise": {
+     "ai": 9,
+     "declined": 0,
+     "declined_reasons": {},
+     "det": 14,
+     "duplicate": 23,
+     "evaluated": 0,
+     "failed": 0,
+     "failed_reasons": {},
+     "files": 9,
+     "inconclusive": 0,
+     "invalid": 0,
+     "invalid_reasons": {},
+     "ops_applied": 23,
+     "skipped_budget": 0
+    },
+    "fill_loop": {
+     "ai": 0,
+     "declined": 3,
+     "declined_reasons": {
+      "over_bound: fill deviates from its surroundings by inf mm (fill_to_surroundings) exceeds the fidelity bound 0.1 mm - the": 3
+     },
+     "det": 3,
+     "duplicate": 0,
+     "evaluated": 0,
+     "failed": 0,
+     "failed_reasons": {},
+     "files": 1,
+     "inconclusive": 0,
+     "invalid": 0,
+     "invalid_reasons": {},
+     "ops_applied": 0,
+     "skipped_budget": 0
+    },
+    "fix_poles": {
+     "ai": 2,
+     "declined": 0,
+     "declined_reasons": {},
+     "det": 0,
+     "duplicate": 0,
+     "evaluated": 0,
+     "failed": 2,
+     "failed_reasons": {
+      "RuntimeError: v4_fix_poles failed: error: RuntimeError: ShapeFix_Face.Perform changed nothing on face(s) [2, 3]": 1,
+      "RuntimeError: v4_fix_poles failed: error: RuntimeError: ShapeFix_Face.Perform changed nothing on face(s) [203]": 1
+     },
+     "files": 2,
+     "inconclusive": 0,
+     "invalid": 0,
+     "invalid_reasons": {},
+     "ops_applied": 0,
+     "skipped_budget": 0
+    },
+    "orient_and_close": {
+     "ai": 0,
+     "declined": 0,
+     "declined_reasons": {},
+     "det": 3,
+     "duplicate": 3,
+     "evaluated": 0,
+     "failed": 0,
+     "failed_reasons": {},
+     "files": 2,
+     "inconclusive": 0,
+     "invalid": 0,
+     "invalid_reasons": {},
+     "ops_applied": 3,
+     "skipped_budget": 0
+    },
+    "rebuild_face": {
+     "ai": 1,
+     "declined": 0,
+     "declined_reasons": {},
+     "det": 0,
+     "duplicate": 0,
+     "evaluated": 0,
+     "failed": 1,
+     "failed_reasons": {
+      "error: ZeroDivisionError: float division by zero": 1
+     },
+     "files": 1,
+     "inconclusive": 0,
+     "invalid": 0,
+     "invalid_reasons": {},
+     "ops_applied": 0,
+     "skipped_budget": 0
+    },
+    "remove_small": {
+     "ai": 0,
+     "declined": 0,
+     "declined_reasons": {},
+     "det": 9,
+     "duplicate": 0,
+     "evaluated": 0,
+     "failed": 0,
+     "failed_reasons": {},
+     "files": 2,
+     "inconclusive": 0,
+     "invalid": 9,
+     "invalid_reasons": {
+      "targets[0]: F2 is a face, not an any": 3,
+      "targets[0]: F79 is a face, not an any": 6
+     },
+     "ops_applied": 0,
+     "skipped_budget": 0
+    },
+    "run_stage:bodies": {
+     "ai": 1,
+     "declined": 1,
+     "declined_reasons": {
+      "stage 'bodies' changed nothing: conformalise: declined: changes_body_count": 1
+     },
+     "det": 0,
+     "duplicate": 0,
+     "evaluated": 0,
+     "failed": 0,
+     "failed_reasons": {},
+     "files": 1,
+     "inconclusive": 0,
+     "invalid": 0,
+     "invalid_reasons": {},
+     "ops_applied": 0,
+     "skipped_budget": 0
+    },
+    "run_stage:condition": {
+     "ai": 23,
+     "declined": 17,
+     "declined_reasons": {
+      "stage 'condition' changed nothing: split_angle: declined: invalidated: the result is not BRepCheck-valid": 11,
+      "stage 'condition' was rolled back: it lowered the cheap score": 6
+     },
+     "det": 0,
+     "duplicate": 2,
+     "evaluated": 4,
+     "failed": 0,
+     "failed_reasons": {},
+     "files": 14,
+     "inconclusive": 0,
+     "invalid": 0,
+     "invalid_reasons": {},
+     "ops_applied": 12,
+     "skipped_budget": 0
+    },
+    "run_stage:edges": {
+     "ai": 3,
+     "declined": 3,
+     "declined_reasons": {
+      "stage 'edges' changed nothing: fix_poles: error: RuntimeError: v4_fix_poles failed: error: RuntimeError: ShapeFix_Face.P": 3
+     },
+     "det": 0,
+     "duplicate": 0,
+     "evaluated": 0,
+     "failed": 0,
+     "failed_reasons": {},
+     "files": 3,
+     "inconclusive": 0,
+     "invalid": 0,
+     "invalid_reasons": {},
+     "ops_applied": 0,
+     "skipped_budget": 0
+    },
+    "run_stage:faces": {
+     "ai": 4,
+     "declined": 4,
+     "declined_reasons": {
+      "stage 'faces' changed nothing: to_canonical: declined: no_change: a face is already a Cylinder": 1,
+      "stage 'faces' changed nothing: to_canonical: declined: no_change: a face is already a Plane": 2,
+      "stage 'faces' changed nothing: to_canonical: declined: not_canonical: a face is not a plane, cylinder, cone or sphere wi": 1
+     },
+     "det": 0,
+     "duplicate": 0,
+     "evaluated": 0,
+     "failed": 0,
+     "failed_reasons": {},
+     "files": 4,
+     "inconclusive": 0,
+     "invalid": 0,
+     "invalid_reasons": {},
+     "ops_applied": 0,
+     "skipped_budget": 0
+    },
+    "run_stage:normalise": {
+     "ai": 6,
+     "declined": 2,
+     "declined_reasons": {
+      "stage 'normalise' changed nothing: tighten_tolerances: error: RuntimeError: v4_tighten_tolerances failed: error: Runtime": 1,
+      "stage 'normalise' was rolled back: it lowered the cheap score": 1
+     },
+     "det": 0,
+     "duplicate": 2,
+     "evaluated": 2,
+     "failed": 0,
+     "failed_reasons": {},
+     "files": 6,
+     "inconclusive": 0,
+     "invalid": 0,
+     "invalid_reasons": {},
+     "ops_applied": 5,
+     "skipped_budget": 0
+    },
+    "run_stage:shells": {
+     "ai": 2,
+     "declined": 0,
+     "declined_reasons": {},
+     "det": 0,
+     "duplicate": 2,
+     "evaluated": 0,
+     "failed": 0,
+     "failed_reasons": {},
+     "files": 2,
+     "inconclusive": 0,
+     "invalid": 0,
+     "invalid_reasons": {},
+     "ops_applied": 2,
+     "skipped_budget": 0
+    },
+    "run_stage:simplify": {
+     "ai": 6,
+     "declined": 4,
+     "declined_reasons": {
+      "stage 'simplify' changed nothing: unify_same_domain: declined: no_change: unify_same_domain left the part as it was": 2,
+      "stage 'simplify' was rolled back: it lowered the cheap score": 2
+     },
+     "det": 0,
+     "duplicate": 0,
+     "evaluated": 2,
+     "failed": 0,
+     "failed_reasons": {},
+     "files": 6,
+     "inconclusive": 0,
+     "invalid": 0,
+     "invalid_reasons": {},
+     "ops_applied": 4,
+     "skipped_budget": 0
+    },
+    "sew": {
+     "ai": 2,
+     "declined": 2,
+     "declined_reasons": {
+      "tol_ladder rungs [1e-07, 1e-05, 0.001, 0.01] must lie in [0.02553517176289336, 0.1] (1e-6 x diagonal .. min(0.1 mm, 0.00": 1,
+      "tol_ladder rungs [1e-07, 1e-06, 1e-05, 0.0001, 0.001] must lie in [0.0011199956799125487, 0.1] (1e-6 x diagonal .. min(0": 1
+     },
+     "det": 0,
+     "duplicate": 0,
+     "evaluated": 0,
+     "failed": 0,
+     "failed_reasons": {},
+     "files": 2,
+     "inconclusive": 0,
+     "invalid": 0,
+     "invalid_reasons": {},
+     "ops_applied": 0,
+     "skipped_budget": 0
+    },
+    "split_angle": {
+     "ai": 3,
+     "declined": 0,
+     "declined_reasons": {},
+     "det": 0,
+     "duplicate": 0,
+     "evaluated": 3,
+     "failed": 0,
+     "failed_reasons": {},
+     "files": 2,
+     "inconclusive": 0,
+     "invalid": 0,
+     "invalid_reasons": {},
+     "ops_applied": 3,
+     "skipped_budget": 0
+    },
+    "tighten_tolerances": {
+     "ai": 1,
+     "declined": 0,
+     "declined_reasons": {},
+     "det": 0,
+     "duplicate": 0,
+     "evaluated": 1,
+     "failed": 0,
+     "failed_reasons": {},
+     "files": 1,
+     "inconclusive": 0,
+     "invalid": 0,
+     "invalid_reasons": {},
+     "ops_applied": 1,
+     "skipped_budget": 0
+    },
+    "unify_same_domain": {
+     "ai": 4,
+     "declined": 3,
+     "declined_reasons": {
+      "no_change: unify_same_domain left the part as it was": 3
+     },
+     "det": 3,
+     "duplicate": 1,
+     "evaluated": 3,
+     "failed": 0,
+     "failed_reasons": {},
+     "files": 6,
+     "inconclusive": 0,
+     "invalid": 0,
+     "invalid_reasons": {},
+     "ops_applied": 4,
+     "skipped_budget": 0
+    }
+   },
+   "panel": {
+    "by_member": {
+     "gmsh_alt": {
+      "error_kind": {
+       "gmsh_crash": 3,
+       "low_quality": 10,
+       "no_volume": 4,
+       "open_loop": 1
+      },
+      "files": 18,
+      "status": {
+       "crashed": 3,
+       "fail": 15
+      }
+     },
+     "gmsh_default": {
+      "error_kind": {
+       "edge_through_face": 7,
+       "low_quality": 6,
+       "no_volume": 1,
+       "open_loop": 1,
+       "other": 1,
+       "overlapping_facets": 4
+      },
+      "files": 20,
+      "status": {
+       "fail": 20
+      }
+     },
+     "gmsh_prod": {
+      "error_kind": {
+       "low_quality": 5,
+       "open_loop": 1,
+       "other": 18,
+       "periodic_surface": 1
+      },
+      "files": 25,
+      "status": {
+       "fail": 25
+      }
+     },
+     "netgen_occ": {
+      "error_kind": {
+       "low_quality": 2,
+       "netgen_crash": 1,
+       "netgen_meshing_failed": 6
+      },
+      "files": 9,
+      "status": {
+       "crashed": 1,
+       "fail": 8
+      }
+     }
+    },
+    "members_failing_per_file": {
+     "0": 1,
+     "1": 3,
+     "2": 1,
+     "3": 17,
+     "4": 4
+    }
+   },
+   "stages": null,
+   "stop_reasons": {
+    "exhausted": 24,
+    "patience": 2
+   },
+   "unmeasured_stop_reasons": {},
+   "valid_hard": {
+    "body_overlap": 38,
+    "brep_invalid": 2,
+    "open_shell": 3,
+    "self_intersection": 2
+   }
+  },
+  "search_det": {
+   "ai": null,
+   "clean": 2,
+   "conclusive": 28,
+   "deviation": {
+    "budget_used": {
+     "max": 8.708540317633249,
+     "median": 7.488110136192235e-12,
+     "n": 14,
+     "p90": 1.1036135697873016e-10
+    },
+    "faithful_failed": 1,
+    "over_bound": 1,
+    "reasons": {
+     "deviation_exceeds_bound": 1
+    }
+   },
+   "ended_by": {
+    "exhausted": 25,
+    "wall": 1
+   },
+   "excluded": 2,
+   "excluded_reasons": {
+    "file_timeout": 2
+   },
+   "files": 30,
+   "inconclusive_rows": 0,
+   "not_clean": 26,
+   "not_clean_by_defect_kind": {
+    "body_overlap": 7,
+    "brep_invalid": 2,
+    "open_shell": 1,
+    "other": 12,
+    "periodic_surface": 1,
+    "self_intersection": 3
+   },
+   "not_clean_without_triage": 0,
+   "not_proposed": {
+    "make_volume_without_a_closable_shell": 3,
+    "sew_on_a_solid": 3
+   },
+   "open_sites": {
+    "files_with_kind": {
+     "open": 2,
+     "overlap": 7,
+     "self_overlap": 2,
+     "sliver": 2,
+     "unlocated": 25
+    },
+    "total_sites": 38
+   },
+   "ops": {
+    "conformalise": {
+     "ai": 0,
+     "declined": 0,
+     "declined_reasons": {},
+     "det": 14,
+     "duplicate": 14,
+     "evaluated": 0,
+     "failed": 0,
+     "failed_reasons": {},
+     "files": 7,
+     "inconclusive": 0,
+     "invalid": 0,
+     "invalid_reasons": {},
+     "ops_applied": 14,
+     "skipped_budget": 0
+    },
+    "fill_loop": {
+     "ai": 0,
+     "declined": 3,
+     "declined_reasons": {
+      "over_bound: fill deviates from its surroundings by inf mm (fill_to_surroundings) exceeds the fidelity bound 0.1 mm - the": 3
+     },
+     "det": 3,
+     "duplicate": 0,
+     "evaluated": 0,
+     "failed": 0,
+     "failed_reasons": {},
+     "files": 1,
+     "inconclusive": 0,
+     "invalid": 0,
+     "invalid_reasons": {},
+     "ops_applied": 0,
+     "skipped_budget": 0
+    },
+    "orient_and_close": {
+     "ai": 0,
+     "declined": 0,
+     "declined_reasons": {},
+     "det": 3,
+     "duplicate": 3,
+     "evaluated": 0,
+     "failed": 0,
+     "failed_reasons": {},
+     "files": 2,
+     "inconclusive": 0,
+     "invalid": 0,
+     "invalid_reasons": {},
+     "ops_applied": 3,
+     "skipped_budget": 0
+    },
+    "remove_small": {
+     "ai": 0,
+     "declined": 0,
+     "declined_reasons": {},
+     "det": 9,
+     "duplicate": 0,
+     "evaluated": 0,
+     "failed": 0,
+     "failed_reasons": {},
+     "files": 2,
+     "inconclusive": 0,
+     "invalid": 9,
+     "invalid_reasons": {
+      "targets[0]: F2 is a face, not an any": 3,
+      "targets[0]: F79 is a face, not an any": 6
+     },
+     "ops_applied": 0,
+     "skipped_budget": 0
+    },
+    "unify_same_domain": {
+     "ai": 0,
+     "declined": 2,
+     "declined_reasons": {
+      "no_change: unify_same_domain left the part as it was": 2
+     },
+     "det": 3,
+     "duplicate": 0,
+     "evaluated": 1,
+     "failed": 0,
+     "failed_reasons": {},
+     "files": 2,
+     "inconclusive": 0,
+     "invalid": 0,
+     "invalid_reasons": {},
+     "ops_applied": 1,
+     "skipped_budget": 0
+    }
+   },
+   "panel": {
+    "by_member": {
+     "gmsh_alt": {
+      "error_kind": {
+       "gmsh_crash": 4,
+       "low_quality": 9,
+       "no_volume": 4,
+       "open_loop": 1
+      },
+      "files": 18,
+      "status": {
+       "crashed": 4,
+       "fail": 14
+      }
+     },
+     "gmsh_default": {
+      "error_kind": {
+       "edge_through_face": 6,
+       "low_quality": 6,
+       "no_volume": 1,
+       "open_loop": 1,
+       "other": 1,
+       "overlapping_facets": 5
+      },
+      "files": 20,
+      "status": {
+       "fail": 20
+      }
+     },
+     "gmsh_prod": {
+      "error_kind": {
+       "low_quality": 5,
+       "open_loop": 1,
+       "other": 18,
+       "periodic_surface": 1
+      },
+      "files": 25,
+      "status": {
+       "fail": 25
+      }
+     },
+     "netgen_occ": {
+      "error_kind": {
+       "low_quality": 2,
+       "netgen_crash": 2,
+       "netgen_meshing_failed": 5
+      },
+      "files": 9,
+      "status": {
+       "crashed": 2,
+       "fail": 7
+      }
+     }
+    },
+    "members_failing_per_file": {
+     "0": 1,
+     "1": 3,
+     "2": 1,
+     "3": 17,
+     "4": 4
+    }
+   },
+   "stages": null,
+   "stop_reasons": {
+    "exhausted": 25,
+    "wall": 1
+   },
+   "unmeasured_stop_reasons": {},
+   "valid_hard": {
+    "body_overlap": 38,
+    "brep_invalid": 2,
+    "open_shell": 3,
+    "self_intersection": 2
+   }
+  },
+  "staged": {
+   "ai": null,
+   "clean": 2,
+   "conclusive": 28,
+   "deviation": {
+    "budget_used": {
+     "max": 8.708540317633249,
+     "median": 7.488110136192235e-12,
+     "n": 14,
+     "p90": 1.1036135697873016e-10
+    },
+    "faithful_failed": 1,
+    "over_bound": 1,
+    "reasons": {
+     "deviation_exceeds_bound": 1
+    }
+   },
+   "ended_by": {},
+   "excluded": 2,
+   "excluded_reasons": {
+    "file_timeout": 2
+   },
+   "files": 30,
+   "inconclusive_rows": 0,
+   "not_clean": 26,
+   "not_clean_by_defect_kind": {
+    "body_overlap": 7,
+    "brep_invalid": 2,
+    "open_shell": 1,
+    "other": 12,
+    "periodic_surface": 1,
+    "self_intersection": 3
+   },
+   "not_clean_without_triage": 0,
+   "not_proposed": {},
+   "open_sites": {
+    "files_with_kind": {},
+    "total_sites": 0
+   },
+   "ops": {},
+   "panel": {
+    "by_member": {
+     "gmsh_alt": {
+      "error_kind": {
+       "gmsh_crash": 3,
+       "low_quality": 10,
+       "no_volume": 4,
+       "open_loop": 1
+      },
+      "files": 18,
+      "status": {
+       "crashed": 3,
+       "fail": 15
+      }
+     },
+     "gmsh_default": {
+      "error_kind": {
+       "edge_through_face": 6,
+       "low_quality": 7,
+       "no_volume": 1,
+       "open_loop": 1,
+       "other": 1,
+       "overlapping_facets": 4
+      },
+      "files": 20,
+      "status": {
+       "fail": 20
+      }
+     },
+     "gmsh_prod": {
+      "error_kind": {
+       "low_quality": 5,
+       "open_loop": 1,
+       "other": 18,
+       "periodic_surface": 1
+      },
+      "files": 25,
+      "status": {
+       "fail": 25
+      }
+     },
+     "netgen_occ": {
+      "error_kind": {
+       "low_quality": 3,
+       "netgen_crash": 2,
+       "netgen_meshing_failed": 5
+      },
+      "files": 10,
+      "status": {
+       "crashed": 2,
+       "fail": 8
+      }
+     }
+    },
+    "members_failing_per_file": {
+     "0": 1,
+     "1": 3,
+     "2": 1,
+     "3": 16,
+     "4": 5
+    }
+   },
+   "stages": {
+    "kept": {
+     "baseline": 26,
+     "condition": 9,
+     "finalise": 25,
+     "normalise": 23,
+     "shells": 25,
+     "simplify": 9,
+     "solids": 25
+    },
+    "rolled_back": {
+     "bodies": 2,
+     "condition": 6,
+     "normalise": 1,
+     "simplify": 3
+    }
+   },
+   "stop_reasons": {},
+   "unmeasured_stop_reasons": {},
+   "valid_hard": {
+    "body_overlap": 38,
+    "brep_invalid": 2,
+    "open_shell": 3,
+    "self_intersection": 2
+   }
+  }
+ },
+ "complete_wave": true,
+ "leads": [
+  {
+   "arm": "input_only",
+   "files": 74,
+   "key": "body_overlap",
+   "of_not_clean": 29,
+   "what": "layer-1 hard finding"
+  },
+  {
+   "arm": "search_ai",
+   "files": 38,
+   "key": "body_overlap",
+   "of_not_clean": 26,
+   "what": "layer-1 hard finding"
+  },
+  {
+   "arm": "search_det",
+   "files": 38,
+   "key": "body_overlap",
+   "of_not_clean": 26,
+   "what": "layer-1 hard finding"
+  },
+  {
+   "arm": "staged",
+   "files": 38,
+   "key": "body_overlap",
+   "of_not_clean": 26,
+   "what": "layer-1 hard finding"
+  },
+  {
+   "arm": "search_ai",
+   "files": 25,
+   "key": "unlocated",
+   "of_not_clean": 26,
+   "what": "open site kind"
+  },
+  {
+   "arm": "search_det",
+   "files": 25,
+   "key": "exhausted",
+   "of_not_clean": 26,
+   "what": "stop reason"
+  },
+  {
+   "arm": "search_det",
+   "files": 25,
+   "key": "unlocated",
+   "of_not_clean": 26,
+   "what": "open site kind"
+  },
+  {
+   "arm": "search_ai",
+   "files": 24,
+   "key": "exhausted",
+   "of_not_clean": 26,
+   "what": "stop reason"
+  },
+  {
+   "arm": "input_only",
+   "files": 19,
+   "key": "gmsh_prod: other",
+   "of_not_clean": 29,
+   "what": "panel member still failing"
+  },
+  {
+   "arm": "search_ai",
+   "files": 18,
+   "key": "gmsh_prod: other",
+   "of_not_clean": 26,
+   "what": "panel member still failing"
+  },
+  {
+   "arm": "search_det",
+   "files": 18,
+   "key": "gmsh_prod: other",
+   "of_not_clean": 26,
+   "what": "panel member still failing"
+  },
+  {
+   "arm": "staged",
+   "files": 18,
+   "key": "gmsh_prod: other",
+   "of_not_clean": 26,
+   "what": "panel member still failing"
+  },
+  {
+   "arm": "search_ai",
+   "candidates": 11,
+   "files": 14,
+   "key": "run_stage:condition: stage 'condition' changed nothing: split_angle: declined: invalidated: the result is not BRepCheck-valid",
+   "of_not_clean": 26,
+   "what": "op declined"
+  },
+  {
+   "arm": "search_ai",
+   "candidates": 3,
+   "files": 6,
+   "key": "unify_same_domain: no_change: unify_same_domain left the part as it was",
+   "of_not_clean": 26,
+   "what": "op declined"
+  },
+  {
+   "arm": "search_ai",
+   "candidates": 1,
+   "files": 6,
+   "key": "run_stage:normalise: stage 'normalise' changed nothing: tighten_tolerances: error: RuntimeError: v4_tighten_tolerances failed: error: Runtime",
+   "of_not_clean": 26,
+   "what": "op declined"
+  },
+  {
+   "arm": "search_ai",
+   "candidates": 2,
+   "files": 6,
+   "key": "run_stage:simplify: stage 'simplify' changed nothing: unify_same_domain: declined: no_change: unify_same_domain left the part as it was",
+   "of_not_clean": 26,
+   "what": "op declined"
+  },
+  {
+   "arm": "search_ai",
+   "candidates": 2,
+   "files": 4,
+   "key": "run_stage:faces: stage 'faces' changed nothing: to_canonical: declined: no_change: a face is already a Plane",
+   "of_not_clean": 26,
+   "what": "op declined"
+  },
+  {
+   "arm": "search_ai",
+   "candidates": 3,
+   "files": 3,
+   "key": "run_stage:edges: stage 'edges' changed nothing: fix_poles: error: RuntimeError: v4_fix_poles failed: error: RuntimeError: ShapeFix_Face.P",
+   "of_not_clean": 26,
+   "what": "op declined"
+  },
+  {
+   "arm": "search_ai",
+   "candidates": 6,
+   "files": 2,
+   "key": "remove_small: targets[0]: F79 is a face, not an any",
+   "of_not_clean": 26,
+   "what": "op invalid"
+  },
+  {
+   "arm": "search_ai",
+   "candidates": 1,
+   "files": 2,
+   "key": "fix_poles: RuntimeError: v4_fix_poles failed: error: RuntimeError: ShapeFix_Face.Perform changed nothing on face(s) [2, 3]",
+   "of_not_clean": 26,
+   "what": "op failed"
+  },
+  {
+   "arm": "search_ai",
+   "candidates": 1,
+   "files": 2,
+   "key": "sew: tol_ladder rungs [1e-07, 1e-05, 0.001, 0.01] must lie in [0.02553517176289336, 0.1] (1e-6 x diagonal .. min(0.1 mm, 0.00",
+   "of_not_clean": 26,
+   "what": "op declined"
+  },
+  {
+   "arm": "search_det",
+   "candidates": 6,
+   "files": 2,
+   "key": "remove_small: targets[0]: F79 is a face, not an any",
+   "of_not_clean": 26,
+   "what": "op invalid"
+  },
+  {
+   "arm": "search_det",
+   "candidates": 2,
+   "files": 2,
+   "key": "unify_same_domain: no_change: unify_same_domain left the part as it was",
+   "of_not_clean": 26,
+   "what": "op declined"
+  },
+  {
+   "arm": "input_only",
+   "files": 1,
+   "key": "deviation_exceeds_bound",
+   "of_not_clean": 29,
+   "what": "deviation reason"
+  },
+  {
+   "arm": "search_ai",
+   "files": 1,
+   "key": "deviation_exceeds_bound",
+   "of_not_clean": 26,
+   "what": "deviation reason"
+  },
+  {
+   "arm": "search_ai",
+   "candidates": 3,
+   "files": 1,
+   "key": "fill_loop: over_bound: fill deviates from its surroundings by inf mm (fill_to_surroundings) exceeds the fidelity bound 0.1 mm - the",
+   "of_not_clean": 26,
+   "what": "op declined"
+  },
+  {
+   "arm": "search_ai",
+   "candidates": 1,
+   "files": 1,
+   "key": "rebuild_face: error: ZeroDivisionError: float division by zero",
+   "of_not_clean": 26,
+   "what": "op failed"
+  },
+  {
+   "arm": "search_ai",
+   "candidates": 1,
+   "files": 1,
+   "key": "run_stage:bodies: stage 'bodies' changed nothing: conformalise: declined: changes_body_count",
+   "of_not_clean": 26,
+   "what": "op declined"
+  },
+  {
+   "arm": "search_det",
+   "files": 1,
+   "key": "deviation_exceeds_bound",
+   "of_not_clean": 26,
+   "what": "deviation reason"
+  },
+  {
+   "arm": "search_det",
+   "candidates": 3,
+   "files": 1,
+   "key": "fill_loop: over_bound: fill deviates from its surroundings by inf mm (fill_to_surroundings) exceeds the fidelity bound 0.1 mm - the",
+   "of_not_clean": 26,
+   "what": "op declined"
+  },
+  {
+   "arm": "staged",
+   "files": 1,
+   "key": "deviation_exceeds_bound",
+   "of_not_clean": 26,
+   "what": "deviation reason"
+  },
+  {
+   "arm": "search_ai",
+   "candidates": 3,
+   "files": null,
+   "key": "make_volume_without_a_closable_shell",
+   "of_not_clean": 26,
+   "what": "det sweep declined to propose"
+  },
+  {
+   "arm": "search_det",
+   "candidates": 3,
+   "files": null,
+   "key": "make_volume_without_a_closable_shell",
+   "of_not_clean": 26,
+   "what": "det sweep declined to propose"
+  }
+ ],
+ "source": "/Users/kitts/archductor/snap-v1-data/results/out/snap-v1-dev",
+ "unit": "files (one row per file and arm) unless 'candidates'"
+}

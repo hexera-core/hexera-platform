@@ -1,0 +1,46 @@
+# snap_v1_clean (clean, normal) - OK
+commit 79d7ba35993f9569e0ee3dfffe2752da9d38f2b4  image sha256:03844d4454ccb620c5e3dce134d5c1f318ba3f509178cb9e7f21b5b6031ec6f4  files 8
+
+HOW TO READ THE RATES: 'per-arm' columns use each arm's OWN conclusive files, and the dropouts differ by arm (and tend to be the hard files), so per-arm rates are NOT comparable with each other. Only the PAIRED columns (the 8 of 8 files every measured arm judged conclusively; arms: input_only, staged, search_det, search_ai) support arm-to-arm comparison.
+
+| arm | measured | inconclusive (n) | inconclusive rate | PER-ARM clean rate (own files; not for comparison) | PER-ARM gain | PAIRED clean rate (shared files) | PAIRED gain | regress (c->u / fewer panel) | $ total | wall/file s |
+|---|---|---|---|---|---|---|---|---|---|---|
+| input_only | yes | 0/8 | 0.0% | 100.0% | +0 | 100.0% (n=8) | +0 | 0 / 0 | 0.00 | 10.5 |
+| staged | yes | 0/8 | 0.0% | 87.5% | -1 | 87.5% (n=8) | -1 | 1 / 1 | 0.00 | 15.7 |
+| search_det | yes | 0/8 | 0.0% | 100.0% | +0 | 100.0% (n=8) | +0 | 0 / 0 | 0.00 | 4.9 |
+| search_ai | yes | 0/8 | 0.0% | 100.0% | +0 | 100.0% (n=8) | +0 | 0 / 0 | 0.04 | 6.8 |
+
+PAIRED columns cover the 8 of 8 files judged conclusively by ALL of these 4 measured arm(s): input_only, staged, search_det, search_ai.
+paired fraction 100.0% (minimum 80%)
+
+## Marginals (paired, files both arms judged)
+- ai_marginal (search_ai - search_det): +0.0% (+0 files over 8)
+- deterministic_marginal (staged - input_only): -12.5% (-1 files over 8)
+
+## Cheap/full agreement (search ranking tier vs full panel, over confirmed states)
+- search_det: no confirmed state
+- search_ai: 0.0% agree over 1 states; cheap pass but full fail 1 (miss rate 100.0%), cheap fail but full pass 0
+- pooled: 0.0% agree over 1 states; cheap pass but full fail 1 (miss rate 100.0%), cheap fail but full pass 0
+
+## input_only: by defect kind (per-arm, own files)
+| kind | files | inconclusive | inconclusive rate | clean | clean rate |
+|---|---|---|---|---|---|
+| clean_control | 8 | 0 | 0.0% | 8/8 | 100.0% |
+
+## staged: by defect kind (per-arm, own files)
+| kind | files | inconclusive | inconclusive rate | clean | clean rate |
+|---|---|---|---|---|---|
+| clean_control | 8 | 0 | 0.0% | 7/8 | 87.5% |
+
+## search_det: by defect kind (per-arm, own files)
+| kind | files | inconclusive | inconclusive rate | clean | clean rate |
+|---|---|---|---|---|---|
+| clean_control | 8 | 0 | 0.0% | 8/8 | 100.0% |
+
+## search_ai: by defect kind (per-arm, own files)
+| kind | files | inconclusive | inconclusive rate | clean | clean rate |
+|---|---|---|---|---|---|
+| clean_control | 8 | 0 | 0.0% | 8/8 | 100.0% |
+
+model spend $0.04 of the $50 wave cap; slowest shard 310 s
+

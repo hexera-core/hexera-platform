@@ -1,0 +1,45 @@
+# Failure triage: /Users/kitts/archductor/snap-v1-data/results/out/snap-v1-clean
+
+Counts are files (one row per file and arm) unless 'candidates'. Only conclusive, NOT clean outputs are explained; inconclusive and excluded files are counted apart, because nothing about the part made them so.
+
+## Leads (largest first)
+
+| arm | what | key | files | of not clean | candidates |
+|---|---|---|---|---|---|
+| staged | panel member still failing | gmsh_prod: other | 1 | 1 | - |
+
+## input_only
+
+files 8: clean 8, NOT clean 0, inconclusive rows 0, excluded 0 (-)
+
+layer-1 hard findings: -
+deviation: faithful failed on 0, over the bound on 0; budget used -; reasons -
+
+## search_ai
+
+files 8: clean 8, NOT clean 0, inconclusive rows 0, excluded 0 (-)
+
+layer-1 hard findings: -
+deviation: faithful failed on 0, over the bound on 0; budget used -; reasons -
+
+## search_det
+
+files 8: clean 8, NOT clean 0, inconclusive rows 0, excluded 0 (-)
+
+layer-1 hard findings: -
+deviation: faithful failed on 0, over the bound on 0; budget used -; reasons -
+
+## staged
+
+files 8: clean 7, NOT clean 1, inconclusive rows 0, excluded 0 (-)
+not clean by defect kind: clean_control (1)
+
+members failing per file: {'1': 1}
+
+| panel member | files failing | status | error kinds |
+|---|---|---|---|
+| gmsh_prod | 1 | fail (1) | other (1) |
+
+layer-1 hard findings: -
+deviation: faithful failed on 0, over the bound on 0; budget used median 0.00, p90 0.00, max 0.00 (1.0 = the bound); reasons -
+stages kept: baseline (1); condition (1); finalise (1); normalise (1); shells (1); solids (1); rolled back: -
