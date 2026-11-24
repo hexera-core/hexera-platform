@@ -420,6 +420,9 @@ def main() -> int:
             sens.append(f"| {split} minus {len(s['minus'])} refused file(s) ({', '.join(short(x) for x in s['minus'])}) "
                         f"(sensitivity, NOT a split) | {report_line(rep, s['stem'])} |")
     wd = man["waves"]
+    # a run-level caveat that belongs IN the arm tables (not only in a footnote): run/table_caveat.md, if present
+    tc = (run / "table_caveat.md").read_text().strip() if (run / "table_caveat.md").exists() else ""
+    tcv = f"> **CAVEAT FOR THIS TABLE:** {tc}\n\n" if tc else ""
     base_md = ""
     if a.baseline_run:
         base_md = baseline_section(Path(a.baseline_run), a.baseline_label, run, env)
@@ -461,7 +464,7 @@ def main() -> int:
 
 ## Per-arm, dev: body-overlap files counted as failures (headline)
 
-{headline}
+{tcv}{headline}
 
 ## Per-arm, dev: deep body-overlap files left out of the denominator (owner ruling)
 
@@ -471,11 +474,11 @@ Files whose INPUT has a body overlap ({len(overlap)}), from `triage.overlap` (me
 
 Left out as deep (within_bound false): **{len(deep)}**. Not decidable and kept in: **{len(unknown)}**{' (' + ', '.join(unknown) + ')' if unknown else ''}.
 
-{cut_ruled}
+{tcv}{cut_ruled}
 
 Widest version, for reference: every body-overlap input left out ({len(overlap)} files):
 
-{cut_widest}
+{tcv}{cut_widest}
 
 ## Clean control
 

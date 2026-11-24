@@ -1,0 +1,3 @@
+{"at": 1795499231.2201667, "n_shards": 26, "shard_index": 6, "t": "init", "wave": "normal", "wave_id": "snap-v3-v2splits-dev-202611240544"}
+{"at": 1795499232.6478372, "file": "_route_probe", "id": "de3984ba67c14a6e97741e292568764c", "t": "reserve", "u": 231362}
+{"at": 1795499234.8797894, "cached": 0, "cw": 0, "cw30": 0, "file": "_route_probe", "id": "de3984ba67c14a6e97741e292568764c", "in": 89, "job": "", "kind": "route_probe", "model": "gpt-6-astra", "out": 18, "provider": "openai", "t": "settle", "u": 1790}

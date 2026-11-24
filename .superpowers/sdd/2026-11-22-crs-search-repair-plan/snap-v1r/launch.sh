@@ -14,7 +14,7 @@ set -u -o pipefail
 HERE=$(cd "$(dirname "$0")" && pwd); REPO=$(git -C "$HERE" rev-parse --show-toplevel)
 COMMIT_ARG=${1:?usage: launch.sh <commit> [profile] [--dry-run]}; PROFILE=v1r; DRY=0
 for x in "${@:2}"; do case $x in --dry-run) DRY=1;; *) PROFILE=$x;; esac; done
-KEYS="MACHINE VM_USD_PER_H DEV_SHARDS CLEAN_SHARDS TOTAL_USD MAX_RUN IMAGE IMAGE_COMMIT"   # the environment overrides the profile
+KEYS="MACHINE VM_USD_PER_H DEV_SHARDS CLEAN_SHARDS TOTAL_USD MAX_RUN IMAGE IMAGE_COMMIT OPS"   # the environment overrides the profile
 for k in $KEYS; do eval "OVR_$k=\${$k:-}"; done
 source "$HERE/profiles/$PROFILE.env"
 for k in $KEYS; do eval "v=\$OVR_$k"; [ -n "$v" ] && eval "$k=\$v"; done
@@ -32,8 +32,9 @@ git -C "$REPO" archive --format=tar "$COMMIT" > "$RUN/code.tar" || die "git arch
 mkdir -p "$RUN/code" && tar xf "$RUN/code.tar" -C "$RUN/code" devtools src || die "extract failed"
 
 # ---------------------------------------------------------------- 2. splits (a git ref:path, or a file)
-resolve_split() { # spec override out
+resolve_split() { # spec override out   (a spec "COMMIT:<path>" is read from the run commit itself)
   local spec=$1 override=$2 out=$3
+  case $spec in COMMIT:*) spec="$COMMIT:${spec#COMMIT:}";; esac
   if [ -n "$override" ]; then [ -f "$override" ] || die "split file $override not found"; cp "$override" "$out"; echo "file:$override"; return; fi
   if git -C "$REPO" cat-file -e "$spec" 2>/dev/null; then git -C "$REPO" show "$spec" > "$out"; echo "git:$spec@$(git -C "$REPO" rev-parse "${spec%%:*}")"; return; fi
   die "split $spec is not written yet (pass DEV_SPLIT=/path or CLEAN_SPLIT=/path, or wait for the re-probe)"
@@ -42,12 +43,19 @@ DEV_SRC=$(resolve_split "$DEV_SPLIT_SPEC" "${DEV_SPLIT:-}" "$RUN/splits/dev.json
 CLEAN_SRC=$(resolve_split "$CLEAN_SPLIT_SPEC" "${CLEAN_SPLIT:-}" "$RUN/splits/clean.json") || exit 1
 log "dev split $DEV_SRC; clean split $CLEAN_SRC"
 
+# ---------------------------------------------------------------- 2b. the op budget: the profile's OPS, else the commit's own
+DEFAULT_OPS=$(cd "$RUN/code/devtools/validation/v4_eval" && python3 -I -c "import sys; sys.path.insert(0,'.'); import evalspec; print(evalspec.SHARED_BUDGET.ops)") \
+  || die "cannot read evalspec.SHARED_BUDGET.ops from $COMMIT"
+if [ -n "${OPS:-}" ]; then OPS_SOURCE="profile/env (the commit's default is $DEFAULT_OPS)"; else OPS=$DEFAULT_OPS; OPS_SOURCE="the commit's evalspec.SHARED_BUDGET.ops"; fi
+[ "$OPS" -le "$DEFAULT_OPS" ] || die "--ops $OPS is above the commit's Budget.ops $DEFAULT_OPS: run_arm only LOWERS the budget"
+log "op budget: --ops $OPS applied ops ($OPS_SOURCE)"
 # ---------------------------------------------------------------- 3. inputs present, plans, caps (prep.py)
 gcloud storage ls -l "gs://$BUCKET/eval/v4-reprobe/inputs/**" > "$RUN/inputs_ls.txt" 2>"$RUN/inputs_ls.err" || die "cannot list inputs"
 python3 -I "$HERE/prep.py" --code "$RUN/code" --profile "$PROFILE" --dev-split "$RUN/splits/dev.json" \
   --clean-split "$RUN/splits/clean.json" --dev-wave "$DEV_WAVE" --clean-wave "$CLEAN_WAVE" --dev-shards "$DEV_SHARDS" \
   --clean-shards "$CLEAN_SHARDS" --total-usd "$TOTAL_USD" --file-usd-cap "$FILE_USD_CAP" --inputs-ls "$RUN/inputs_ls.txt" \
-  --prior-rows "$REPO/$PRIOR_ROWS" --vm-usd-per-h "$VM_USD_PER_H" --out "$RUN/splits" | tee -a "$RUN/launch.log"
+  --prior-rows "$REPO/$PRIOR_ROWS" --vm-usd-per-h "$VM_USD_PER_H" --ops "$OPS" --prior-ops "${PRIOR_OPS:-24}" \
+  --max-run "$MAX_RUN" --out "$RUN/splits" | tee -a "$RUN/launch.log"
 [ "${PIPESTATUS[0]}" = 0 ] || die "prep refused"
 cp "$RUN/splits/launch_manifest.json" "$RUN/"
 DEV_N=$(python3 -I -c "import json;print(json.load(open('$RUN/splits/launch_manifest.json'))['waves']['dev']['n_shards'])")
@@ -57,9 +65,11 @@ CLEAN_N=$(python3 -I -c "import json;print(json.load(open('$RUN/splits/launch_ma
 VCPU=${MACHINE##*-}
 FREE=$(gcloud compute regions describe us-central1 --project $PROJECT --format=json | python3 -I -c "
 import json,sys; q={x['metric']:x for x in json.load(sys.stdin)['quotas']}['C2D_CPUS']; print(int(q['limit']-q['usage']))")
+case "$FREE" in ''|*[!0-9]*) die "cannot read the C2D quota (got '$FREE')";; esac
 log "C2D_CPUS free in us-central1: $FREE, need $VCPU"
 [ "$FREE" -ge "$VCPU" ] || die "C2D quota: $FREE free < $VCPU"
-gcloud compute instances list --project $PROJECT --filter="name=$VM" --format='value(name)' | grep -q . && die "a VM named $VM already exists (not mine to touch)"
+EXISTING=$(gcloud compute instances list --project $PROJECT --filter="name=$VM" --format='value(name)') || die "cannot list instances"
+[ -n "$EXISTING" ] && die "a VM named $VM already exists (not mine to touch)"
 # the image is pinned by digest and its org.opencontainers.image.revision label must equal IMAGE_COMMIT (the commit
 # its mesh build came from; the RUN commit is bind-mounted separately and may differ)
 IMAGE_REF=${IMAGE:?set IMAGE (profile or env) to a digest-pinned image}
@@ -68,7 +78,7 @@ LABEL_REV=$(python3 -I "$HERE/image_label.py" "$IMAGE_REF" --token "$(gcloud aut
   || die "image label check refused: $IMAGE_REF label '$LABEL_REV', expected $IMAGE_COMMIT"
 log "image $IMAGE_REF, label org.opencontainers.image.revision=$LABEL_REV (== IMAGE_COMMIT)"
 
-WAVE_ID_DEV=snap-$LABEL-dev-$TS; WAVE_ID_CLEAN=snap-$LABEL-clean-$TS
+WAVE_ID_DEV=snap-$LABEL${WAVE_TAG:+-$WAVE_TAG}-dev-$TS; WAVE_ID_CLEAN=snap-$LABEL${WAVE_TAG:+-$WAVE_TAG}-clean-$TS
 cat > "$RUN/run.env" <<EOF
 LABEL=$LABEL
 COMMIT=$COMMIT
@@ -77,6 +87,7 @@ IMAGE_REF=$IMAGE_REF
 IMAGE_COMMIT=$IMAGE_COMMIT
 MACHINE=$MACHINE
 OPS=$OPS
+OPS_SOURCE="$OPS_SOURCE"
 FILE_USD_CAP=$FILE_USD_CAP
 ROUTE=$ROUTE
 BUCKET=$BUCKET
@@ -136,7 +147,8 @@ tar cf "$RUN/payload.tar" -C "$RUN" code.tar splits tools run.env
 gcloud compute scp "$RUN/payload.tar" $VM:~/payload.tar --zone $ZONE --project $PROJECT >> "$RUN/launch.log" 2>&1 || die "scp failed"
 SSH 'set -e; mkdir -p ~/snap/code; cd ~/snap; tar xf ~/payload.tar; tar xf code.tar -C code; chmod -R a+rX code splits tools' || die "unpack failed"
 { printf 'OPENAI_API_KEY='; gcloud secrets versions access latest --secret openai-api-key --project $PROJECT; echo; } \
-  | SSH 'umask 077; cat > ~/snap/secret.env; test -s ~/snap/secret.env && echo key-ok' | grep -q key-ok || die "key not written"
+  | SSH 'umask 077; cat > ~/snap/secret.env; grep -qE "^OPENAI_API_KEY=.{20,}$" ~/snap/secret.env && echo key-ok' | grep -q key-ok \
+  || die "the model key was not written (an empty or failed secret read)"
 SSH 'cd ~/snap; nohup setsid bash tools/vm_run.sh > driver.log 2>&1 < /dev/null & echo started' | grep -q started || die "driver did not start"
 log "running; polling every 2 min for out/ALLDONE"
 while true; do
@@ -148,11 +160,44 @@ while true; do
 done
 
 # ---------------------------------------------------------------- 7. collect, delete
-SSH 'cd ~/snap; shred -u secret.env 2>/dev/null; ls secret.env 2>/dev/null; tar czf /tmp/collect.tgz --exclude="*/work" out ledger driver.log; find out -name search-trace.json > /tmp/traces.txt; tar czf /tmp/traces.tgz -T /tmp/traces.txt; date -u +%FT%TZ > out/COLLECTED' >> "$RUN/launch.log"
+COLLECT=$(SSH 'cd ~/snap; shred -u secret.env 2>/dev/null; ls secret.env 2>/dev/null; tar czf /tmp/collect.tgz --exclude="*/work" out ledger driver.log; echo COLLECT_RC=$?; find out \( -name search-trace.json -o -name delivered.json -o -name delivered.brep \) > /tmp/traces.txt; tar czf /tmp/traces.tgz -T /tmp/traces.txt; date -u +%FT%TZ > out/COLLECTED')
+echo "$COLLECT" >> "$RUN/launch.log"
+echo "$COLLECT" | grep -q '^COLLECT_RC=0$' || die "the collect archive failed on the VM ($(echo "$COLLECT" | grep COLLECT_RC)); VM left for the trap to delete"
 gcloud compute scp $VM:/tmp/collect.tgz "$RUN/collect.tgz" --zone $ZONE --project $PROJECT >> "$RUN/launch.log" 2>&1 || die "collect failed"
 tar xzf "$RUN/collect.tgz" -C "$RUN" || die "collect archive unreadable"
 gcloud compute scp $VM:/tmp/traces.tgz "$RUN/traces.tgz" --zone $ZONE --project $PROJECT >> "$RUN/launch.log" 2>&1 \
   && log "search traces: $(tar tzf "$RUN/traces.tgz" | wc -l | tr -d ' ') file(s) in $RUN/traces.tgz" || log "no search traces collected"
+# Lane B's layout: traces/snap-<label>-<split>/<arm>/<sha12>.json (the arm and the input's sha256[:12] in the path)
+if [ -s "$RUN/traces.tgz" ]; then
+  mkdir -p "$RUN/traces-raw" && tar xzf "$RUN/traces.tgz" -C "$RUN/traces-raw"
+  NT=$(python3 -I - "$RUN" "$LABEL" "$WAVE_ID_DEV" "$WAVE_ID_CLEAN" <<'PY'
+import shutil, sys
+from pathlib import Path
+run, label, wid_dev, wid_clean = Path(sys.argv[1]), sys.argv[2], sys.argv[3], sys.argv[4]
+split_of = {wid_dev: "dev", wid_clean: "clean"}
+n = 0
+ARMS = ("input_only", "staged", "search_det", "search_ai")
+for t in (run / "traces-raw").rglob("*"):
+    if t.name not in ("search-trace.json", "delivered.json", "delivered.brep"):
+        continue
+    arm, sha12 = t.parent.name, t.parent.parent.name          # .../<wave_id>/shard-I-of-N/work/<sha12>/<arm>/
+    wid = next((p for p in t.parts if p in split_of), None)
+    if arm not in ARMS or wid is None or len(sha12) != 12:
+        continue
+    if t.name == "search-trace.json":
+        dst = run / "traces" / f"snap-{label}-{split_of[wid]}" / arm / f"{sha12}.json"
+    else:  # the delivered state: states/snap-<label>-<split>/<arm>/<sha12>.{json,brep}
+        dst = run / "states" / f"snap-{label}-{split_of[wid]}" / arm / f"{sha12}{t.suffix}"
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy(t, dst)
+    n += 1
+print(n)
+PY
+)
+  [ -d "$RUN/traces" ] && gcloud storage cp -r -q "$RUN/traces/"* "gs://$BUCKET/eval/snap-$LABEL-$TS/traces/" >> "$RUN/launch.log" 2>&1
+  [ -d "$RUN/states" ] && gcloud storage cp -r -q "$RUN/states/"* "gs://$BUCKET/eval/snap-$LABEL-$TS/states/" >> "$RUN/launch.log" 2>&1
+  log "traces + delivered states: $NT files -> $RUN/{traces,states}/snap-$LABEL-<split>/<arm>/<sha12>.{json,brep}, uploaded to gs://$BUCKET/eval/snap-$LABEL-$TS/{traces,states}/ ($(du -sh "$RUN/states" 2>/dev/null | cut -f1) of states)"
+fi
 HOURS=$(python3 -I -c "from datetime import datetime as d,timezone as z;print(round((d.now(z.utc)-d.fromisoformat('$CREATED'.replace('Z','+00:00'))).total_seconds()/3600,2))")
 echo "{\"name\":\"$VM\",\"zone\":\"$ZONE\",\"max_run\":\"$MAX_RUN\",\"created\":\"$CREATED\",\"deleted\":\"(see vm_deleted.json)\",\"hours\":$HOURS,\"usd\":$(python3 -c "print(round($HOURS*$VM_USD_PER_H,2))")}" > "$RUN/vm.json"
 # delete now; clearing CREATED disarms the trap's delete (it stays armed until this line)
@@ -167,7 +212,9 @@ fi
 # an ABORTED run (input staging failed) has evidence but no measurement: no doc, no commit
 if [ -f "$RUN/out/ABORTED" ]; then die "the run ABORTED on the VM: $(cat "$RUN/out/ABORTED"); evidence in $RUN/out (stage_errors.txt); VM deleted, no doc written"; fi
 # ---------------------------------------------------------------- 8. the doc and the artifacts
-python3 -I "$HERE/analyze.py" --run "$RUN" --doc "$DOC" ${NOTES_MD:+--notes "$NOTES_MD"} ${MOVED:+--moved "$MOVED"} | tee -a "$RUN/launch.log"
+python3 -I "$HERE/analyze.py" --run "$RUN" --doc "$DOC" ${NOTES_MD:+--notes "$NOTES_MD"} ${MOVED:+--moved "$MOVED"} \
+  ${BASELINE_RUN:+--baseline-run "$BASELINE_RUN" --baseline-label "${BASELINE_LABEL:-baseline}"} | tee -a "$RUN/launch.log"
+[ "${PIPESTATUS[0]}" = 0 ] && [ -s "$DOC" ] || die "analyze.py FAILED: no doc at $DOC (the collected run is intact in $RUN; rerun analyze by hand)"
 [ -n "${NOTES_MD:-}" ] && cp "$NOTES_MD" "$RUN/notes.md"
 mkdir -p "$ART"
 ( cd "$RUN" && find out -path '*/shard-*' \( -name rows.json -o -name EXCLUDED.json -o -name PROVENANCE.json \) -print0 \
@@ -178,11 +225,14 @@ cp -r "$RUN/out/attempt1" "$ART/logs/" 2>/dev/null
 for f in "$RUN"/out/*.log; do { head -40 "$f"; echo "... [trimmed $(wc -l < "$f") lines; errors then tail] ..."; grep -n -E 'Traceback|ERROR|REFUSED|file_timeout' "$f" | head -40; tail -40 "$f"; } > "$ART/logs/$(basename "$f")"; done
 cp "$RUN"/{launch_manifest.json,run.env,vm.json,vm_deleted.json,launch.log,image_on_vm.txt,notes.md} "$ART/" 2>/dev/null
 cp "$RUN"/splits/{dev.json,clean.json,plan_dev.json,plan_clean.json} "$ART/splits/"
+NROWS=$(find "$ART/out" -name rows.json 2>/dev/null | wc -l | tr -d ' ')
+[ "$NROWS" -ge "$((DEV_N + CLEAN_N))" ] || die "only $NROWS rows.json copied into $ART (want $((DEV_N + CLEAN_N))): not committing"
 if grep -rlE 'sk-[A-Za-z0-9_-]{20,}' "$ART" "$DOC"; then die "a key-shaped string reached the artifacts: not committing"; fi
 BR=$(git -C "$REPO" branch --show-current)
 case $BR in sdd/*) git -C "$REPO" add "$DOC" && git -C "$REPO" add -f "$ART" && \
   git -C "$REPO" commit -q -m "docs(snap-$LABEL): CRS v4 dev snapshot $LABEL at ${COMMIT:0:8} (PROVISIONAL)
 
-Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>" && log "committed $(git -C "$REPO" rev-parse --short HEAD) on $BR";;
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>" && log "committed $(git -C "$REPO" rev-parse --short HEAD) on $BR" \
+  || die "the commit of $DOC and $ART FAILED (doc and artifacts are on disk)";;
   *) log "not on an sdd/* branch ($BR): doc and artifacts written, NOT committed";; esac
 log "DONE: $DOC"
