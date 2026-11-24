@@ -4,9 +4,9 @@ for 3.8 minutes and the same mesh delivered. The layer stack's own gate (CFDREQ-
 an internal run still moves on CFDREQ-27."""
 from __future__ import annotations
 
-from meshpipeline.pipeline import engine_fallback as lad
-
 from tests.unit.pipeline.test_engine_fallback_ladder import _external
+
+from meshpipeline.pipeline import engine_fallback as lad
 
 
 def _refused(gate: str, **kw) -> dict:
