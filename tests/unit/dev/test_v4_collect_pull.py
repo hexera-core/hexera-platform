@@ -90,6 +90,8 @@ def _put_shard(bucket: dict, i: int, n: int, rows, *, exit_code=0, commit="c" * 
             "exit_code": exit_code, "commit": commit, "image": image, "shard": f"{i}/{n}",
             "shard_files": len(rows) + len(excluded), "rows": len(rows), "cheap_rows": cheap.count("\n"),
             "full_rows": len(full), "excluded": len(excluded), "wall_seconds": wall,
+            # the walls the shard ran with, as run_arm records them
+            "file_timeout_s": 900.0, "check_valid_timeout_s": 300.0,
             "machine_type": "c2d-standard-8"}),
         "run.log": "noise",
     }
@@ -468,7 +470,7 @@ def test_the_excluded_stratum_names_every_file_and_counts_it_as_nothing() -> Non
                        "checker_unavailable: check_valid: timeout: check_valid exceeded 900.0s; worker killed")]
     merged = {"rows": rows, "excluded": [asdict(x) for x in exs], "cheap": [], "full": [],
               "cheap_failed": set()}
-    rep = collect.report(merged, None)
+    rep = collect.report(merged, None, collect.wall_values([_prov()]))
     block = rep["excluded_stratum"]
 
     assert block["files"] == 2
@@ -485,12 +487,14 @@ def test_the_excluded_stratum_names_every_file_and_counts_it_as_nothing() -> Non
     assert sum(rep["failing_by_stratum"].values()) == rep["failing"]
 
 
-def test_the_stratum_reports_the_walls_it_read_and_never_retypes_them() -> None:
+def test_a_shard_run_at_todays_constants_reports_them_because_it_ran_them() -> None:
     from meshpipeline.cad.repair_v4.limits import CHECKER_CALL_TIMEOUT_S
 
-    walls = collect.wall_values()
-    assert walls == {"file_timeout_s": evalspec.DEFAULT_FILE_TIMEOUT_S,
-                     "check_valid_timeout_s": CHECKER_CALL_TIMEOUT_S}
+    ran = {"prov": {"file_timeout_s": evalspec.DEFAULT_FILE_TIMEOUT_S,
+                    "check_valid_timeout_s": CHECKER_CALL_TIMEOUT_S}}
+    walls = collect.wall_values([ran])
+    assert walls["file_timeout_s"] == evalspec.DEFAULT_FILE_TIMEOUT_S
+    assert walls["check_valid_timeout_s"] == CHECKER_CALL_TIMEOUT_S
     # the per-file wall bounds the SUM of a file's calls, so it has to be the larger of the two
     assert walls["file_timeout_s"] > walls["check_valid_timeout_s"]
 
@@ -500,7 +504,8 @@ def test_the_stratum_line_is_printed_on_every_run_including_when_it_is_empty(tmp
     out = capsys.readouterr().out
     assert rc == 0
     assert "EXCLUDED STRATUM 0 file(s), 0.00% of the pool (limit 2%: under)" in out
-    assert f"file_timeout_s {evalspec.DEFAULT_FILE_TIMEOUT_S:g}s" in out
+    assert "file_timeout_s 900s, check_valid_timeout_s 300s" in out  # what the SHARDS ran, not today's constants
+    assert f"{evalspec.DEFAULT_FILE_TIMEOUT_S:g}s" not in out
 
 
 def test_over_the_limit_the_refusal_names_the_walls_and_points_at_the_stratum(tmp_path, capsys) -> None:
@@ -522,3 +527,67 @@ def test_over_the_limit_the_refusal_names_the_walls_and_points_at_the_stratum(tm
     stratum = report["report"]["excluded_stratum"]
     assert report["accepted"] is False and stratum["over_limit"] is True and stratum["files"] == 6
     assert len(stratum["names"]) == 6
+
+
+# ------------------------------------------------------------------ A7(a): the walls the SHARDS ran with
+
+def _prov(**kw) -> dict:
+    return {"prov": {"file_timeout_s": 900.0, "check_valid_timeout_s": 300.0, **kw}}
+
+
+def test_the_stratum_reports_the_walls_the_shards_ran_with_not_todays_constants() -> None:
+    """A wave run at 900/300 is still a wave run at 900/300 after the constants are raised: the stratum reads the
+    walls out of each shard's provenance, so it can never claim the exclusions happened at a wall nobody ran."""
+    walls = collect.wall_values([_prov(), _prov()])
+    assert walls["file_timeout_s"] == 900.0 and walls["check_valid_timeout_s"] == 300.0
+    assert walls["file_timeout_s"] != evalspec.DEFAULT_FILE_TIMEOUT_S  # today's constant is NOT what it reports
+    assert not walls["disagreed"] and not walls["unrecorded"]
+
+
+def test_shards_that_ran_different_walls_are_shown_disagreeing_not_collapsed() -> None:
+    walls = collect.wall_values([_prov(), _prov(file_timeout_s=1800.0)])
+    assert walls["file_timeout_s"] is None  # there is no single number to report, so none is invented
+    assert walls["disagreed"] == {"file_timeout_s": [900.0, 1800.0]}
+    assert walls["check_valid_timeout_s"] == 300.0
+    assert "disagree" in collect.describe_excluded_stratum(
+        collect.excluded_stratum({"rows": [], "excluded": []}, walls))
+
+
+def test_a_wall_no_shard_recorded_is_unrecorded_never_todays_constant() -> None:
+    walls = collect.wall_values([{"prov": {"file_timeout_s": 900.0}}])  # a shard from before the key existed
+    assert walls["check_valid_timeout_s"] is None and walls["unrecorded"] == ["check_valid_timeout_s"]
+    line = collect.describe_excluded_stratum(collect.excluded_stratum({"rows": [], "excluded": []}, walls))
+    assert "check_valid_timeout_s unrecorded" in line
+
+
+def test_the_pulled_wave_reports_its_own_shards_walls(tmp_path) -> None:
+    bucket, _ = _wave()
+    rc, _t = _run(tmp_path, bucket)
+    assert rc == 0
+    walls = json.loads((tmp_path / "wave/collect-report.json").read_text())["report"]["excluded_stratum"]["walls"]
+    assert walls["file_timeout_s"] == 900.0 and walls["check_valid_timeout_s"] == 300.0
+
+
+# ------------------------------------------------------------------ A7(b): one file is one file
+
+def test_a_file_excluded_for_several_arms_is_one_file_in_the_stratum() -> None:
+    """An arm wave writes one EXCLUDED entry per (file, arm). The stratum counts FILES, so four arms killed on one
+    file is one file with four entries, not four files."""
+    sha = _sha(901)
+    xs = [{"name": "slow.step", "sha256": sha, "source": "abc_fail", "arm": a,
+           "reason": "file_timeout: file wall clock 1800s exceeded"}
+          for a in ("input_only", "staged", "search_det", "search_ai")]
+    block = collect.excluded_stratum({"rows": [None] * 29, "excluded": xs}, collect.wall_values([_prov()]))
+    assert block["files"] == 1 and block["entries"] == 4
+    assert block["fraction_of_pool"] == pytest.approx(1 / 30)
+    assert [n["sha256"] for n in block["names"]] == [sha]
+    assert block["names"][0]["arms"] == ["input_only", "search_ai", "search_det", "staged"]
+    assert block["by_reason"] == {"file_timeout": 1} and block["by_source"] == {"abc_fail": 1}
+
+
+def test_the_reprobe_stratum_is_unchanged_one_entry_per_file() -> None:
+    xs = [{"name": "a.step", "sha256": _sha(901), "source": "abc_fail", "reason": "file_timeout: 1800s"},
+          {"name": "b.step", "sha256": _sha(902), "source": "occt", "reason": "checker_unavailable: x"}]
+    block = collect.excluded_stratum({"rows": [None] * 28, "excluded": xs}, collect.wall_values([_prov()]))
+    assert block["files"] == 2 and block["entries"] == 2
+    assert all("arms" not in n for n in block["names"])  # no arm key in a re-probe entry: nothing to list

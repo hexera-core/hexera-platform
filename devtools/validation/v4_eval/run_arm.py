@@ -667,6 +667,14 @@ def _model_refusals() -> tuple[type[BaseException], ...]:
     return (NoModelKey, NoUsableRoute, arms_mod.ModelArmWithoutLedger)
 
 
+def _checker_call_wall() -> float:
+    """The checker's one-call wall as THIS shard's code defines it (`repair_v4.limits.CHECKER_CALL_TIMEOUT_S`);
+    it is not a flag, so provenance is the only record of what a shard ran with."""
+    from meshpipeline.cad.repair_v4.limits import CHECKER_CALL_TIMEOUT_S
+
+    return float(CHECKER_CALL_TIMEOUT_S)
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -694,7 +702,10 @@ def main(argv: list[str] | None = None) -> int:
     prov: dict = {"label": f"{args.mode}/{args.shard}", "mode": args.mode, "shard": args.shard,
                   "commit": args.commit, "image": args.image, "machine_type": args.machine_type,
                   "host": socket.gethostname(), "hardware_class": f"{platform.system().lower()}-{platform.machine().lower()}",
-                  "file_timeout_s": args.file_timeout_s, "started_at": _now()}
+                  # the walls THIS shard ran with, so the excluded stratum can report the walls that produced it
+                  # instead of whatever the constants say when it is collected (collect.wall_values)
+                  "file_timeout_s": args.file_timeout_s,
+                  "check_valid_timeout_s": float(_checker_call_wall()), "started_at": _now()}
     t0, code = time.monotonic(), 3
     ledger = None
     try:
