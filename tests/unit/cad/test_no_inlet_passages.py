@@ -127,6 +127,21 @@ def test_openings_left_unmeshed_are_a_told_concern_never_silently_met():
     assert not [r for r in _verdict_inputs({"regions": 1})["limits"] if r["key"] == "openings_not_meshed"]
 
 
+def test_the_launch_check_holds_the_case_to_the_openings_it_was_staged_for(tmp_path, monkeypatch):
+    from meshpipeline.engines import case_contract, workspace_facts
+    from meshpipeline.engines.case_contract import CaseBoundary
+    monkeypatch.setattr(workspace_facts, "contract_patches", lambda ws: [
+        {"name": "wall", "type": "wall"}, {"name": "inlet", "type": "inlet"},
+        {"name": "outlet_1", "type": "outlet"}, {"name": "outlet_2", "type": "outlet"}])
+    monkeypatch.setattr(case_contract, "read_case_boundary", lambda ws, engine: CaseBoundary(
+        patches={"wall": "wall", "inlet": "inlet", "outlet_1": "outlet"}, authored_by="test", kind="roles"))
+    problems, _ = case_contract.check(tmp_path, "cfmesh")
+    assert any("'outlet_2'" in p for p in problems)            # not told: still a mismatch
+    (tmp_path / PASSAGES_READ_FILE).write_text(json.dumps(
+        {"read": True, "not_meshed": {"outlet_2": "outlet_2 sits in a separate cavity"}}))
+    assert case_contract.check(tmp_path, "cfmesh")[0] == []
+
+
 def test_the_manifest_drops_the_told_openings_and_records_them_and_the_passages(tmp_path):
     from meshpipeline.engines.manifest import write_manifest
     (tmp_path / PASSAGES_READ_FILE).write_text(json.dumps(
