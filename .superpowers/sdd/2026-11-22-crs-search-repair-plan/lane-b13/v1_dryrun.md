@@ -25,11 +25,16 @@ Rows read: 146. Failing rows (conclusive, not clean): 108. FILES still failing i
 Rows per split/arm: snap-v1-clean/input_only 8, snap-v1-clean/search_ai 8, snap-v1-clean/search_det 8, snap-v1-clean/staged 8, snap-v1-dev/input_only 30, snap-v1-dev/search_ai 28, snap-v1-dev/search_det 28, snap-v1-dev/staged 28
 Inconclusive per split/arm: -
 
+Failing search rows triaged from a TRACE: - (the rest from the row's op table: no mode split, deltas capped at 8, no best-path or full-confirm).
+Trace extras (defeature source / features per call / holes / blends; proposals per op/source): 
+
+**C4 check (body-op declines once recorded as duplicates):** conformalise `duplicate` 37, declined/failed/invalid 0 on failing search rows. On the tip (C4 fixed) duplicates here are a FINDING, not the old bug.
+
 ## By individual failure (a row counts under each of its codes/members)
 
-| failure | files | rows by arm | open sites at best | defeature | fuse | conformalise | trim_unbounded |
+| failure | files | rows by arm | open sites at best | defeature | fuse | trim_unbounded | conformalise |
 |---|---|---|---|---|---|---|---|
-| valid:body_overlap | 10 | input_only 10, staged 9, search_det 9, search_ai 9 | overlap 14, unlocated 16, self_overlap 4 | never proposed | never proposed | proposed in 16 rows; duplicate 37 | never proposed |
+| valid:body_overlap | 10 | input_only 10, staged 9, search_det 9, search_ai 9 | overlap 14, unlocated 16, self_overlap 4 | never proposed | never proposed | never proposed | proposed in 16 rows; duplicate 37 [not proposed: never_proposed 2] |
 | panel:gmsh_prod/other | 10 | input_only 8, staged 9, search_det 8, search_ai 8 | unlocated 16 | never proposed | never proposed | never proposed | never proposed |
 | panel:gmsh_alt/low_quality | 6 | input_only 5, staged 6, search_det 6, search_ai 6 | unlocated 12 | never proposed | never proposed | never proposed | never proposed |
 | panel:gmsh_prod/low_quality | 6 | input_only 5, staged 5, search_det 5, search_ai 5 | unlocated 10 | never proposed | never proposed | never proposed | never proposed |
@@ -38,7 +43,7 @@ Inconclusive per split/arm: -
 | valid:open_shell | 4 | input_only 4, staged 2, search_det 2, search_ai 2 | open 4, sliver 2, unlocated 4 | never proposed | never proposed | never proposed | never proposed |
 | valid:brep_invalid | 3 | input_only 3, staged 2, search_det 2, search_ai 2 | open 2, sliver 4, unlocated 4 | never proposed | never proposed | never proposed | never proposed |
 | panel:gmsh_default/edge_through_face | 4 | input_only 4, search_ai 2, staged 1, search_det 1 | unlocated 3 | never proposed | never proposed | never proposed | never proposed |
-| valid:self_intersection | 2 | input_only 2, staged 2, search_det 2, search_ai 2 | self_overlap 4, unlocated 4 | never proposed | never proposed | proposed in 2 rows; duplicate 2 | never proposed |
+| valid:self_intersection | 2 | input_only 2, staged 2, search_det 2, search_ai 2 | self_overlap 4, unlocated 4 | never proposed | never proposed | never proposed | proposed in 2 rows; duplicate 2 [not proposed: never_proposed 2] |
 | panel:netgen_occ/netgen_crash | 2 | input_only 1, staged 2, search_det 2, search_ai 1 | unlocated 3 | never proposed | never proposed | never proposed | never proposed |
 | panel:netgen_occ/netgen_meshing_failed | 2 | input_only 2, search_ai 2, staged 1, search_det 1 | unlocated 3 | never proposed | never proposed | never proposed | never proposed |
 | panel:gmsh_default/overlapping_facets | 2 | staged 2, search_det 2, input_only 1, search_ai 1 | unlocated 3 | never proposed | never proposed | never proposed | never proposed |
@@ -49,11 +54,11 @@ Inconclusive per split/arm: -
 
 ## By full failure kind
 
-| failure | files | rows by arm | open sites at best | defeature | fuse | conformalise | trim_unbounded |
+| failure | files | rows by arm | open sites at best | defeature | fuse | trim_unbounded | conformalise |
 |---|---|---|---|---|---|---|---|
-| invalid: body_overlap | 7 | input_only 7, staged 7, search_det 7, search_ai 7 | overlap 14, unlocated 12 | never proposed | never proposed | proposed in 14 rows; duplicate 35 | never proposed |
+| invalid: body_overlap | 7 | input_only 7, staged 7, search_det 7, search_ai 7 | overlap 14, unlocated 12 | never proposed | never proposed | never proposed | proposed in 14 rows; duplicate 35 |
 | panel: gmsh_prod/low_quality | 2 | input_only 2, staged 2, search_det 2, search_ai 2 | unlocated 4 | never proposed | never proposed | never proposed | never proposed |
-| invalid: body_overlap, self_intersection | 2 | input_only 2, staged 2, search_det 2, search_ai 2 | self_overlap 4, unlocated 4 | never proposed | never proposed | proposed in 2 rows; duplicate 2 | never proposed |
+| invalid: body_overlap, self_intersection | 2 | input_only 2, staged 2, search_det 2, search_ai 2 | self_overlap 4, unlocated 4 | never proposed | never proposed | never proposed | proposed in 2 rows; duplicate 2 [not proposed: never_proposed 2] |
 | panel: gmsh_alt/low_quality, gmsh_default/low_quality, gmsh_prod/other | 2 | staged 2, search_det 2, search_ai 2, input_only 1 | unlocated 4 | never proposed | never proposed | never proposed | never proposed |
 | invalid: open_shell | 2 | input_only 2, staged 1, search_det 1, search_ai 1 | open 2, unlocated 2 | never proposed | never proposed | never proposed | never proposed |
 | panel: gmsh_prod/other | 2 | input_only 1, staged 2, search_det 1, search_ai 1 | unlocated 2 | never proposed | never proposed | never proposed | never proposed |
