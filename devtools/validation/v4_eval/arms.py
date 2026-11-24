@@ -343,8 +343,10 @@ def _confirmed_or_input(pool: Any, ws: Any, staged: Any, source: str, *, full: A
 
     conf = confirm_staged(pool, ws, staged, full=lambda w: full(pool, w, source), input_verdict=v_in)
     out_v = conf.verdict if conf.verdict is not None else v_in
-    shipped = deliverable(SimpleNamespace(changed=staged.ws.brep_path != ws.brep_path, best=staged.ws,
-                                          best_verdict=out_v), v_in)
+    # `deliverable` reads only these three fields of a result; a SearchResult cannot be built here (there was no
+    # search), so the stand-in is deliberate
+    shipped = deliverable(SimpleNamespace(changed=staged.ws.brep_path != ws.brep_path,  # type: ignore[arg-type]
+                                          best=staged.ws, best_verdict=out_v), v_in)
     return v_in if shipped is None else out_v
 
 
