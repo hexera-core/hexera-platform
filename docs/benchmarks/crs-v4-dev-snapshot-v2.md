@@ -166,7 +166,7 @@ Widest version, for reference: every body-overlap input left out (21 files):
 
 ## Harness crashes (by name; a crash is not a repair failure)
 
-Dev: none.
+Dev: none RECORDED. **This is NOT "no crashes": 37 (file, arm) pair(s) were excluded before the wave was stopped and their reasons are not on disk (run_arm writes EXCLUDED.json only when a shard ends), so any of them may be a harness crash** (e.g. a TypeError in run_staged) **or a file-wall timeout; they cannot be told apart from this run.**
 
 Clean control: none.
 

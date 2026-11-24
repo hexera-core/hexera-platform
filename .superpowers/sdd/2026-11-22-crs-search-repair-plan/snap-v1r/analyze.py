@@ -63,13 +63,18 @@ def crash_section(exc: list[dict], label: str) -> str:
     """An arm that RAISED (reason `error: <Type>: ...`, e.g. a TypeError inside run_staged) is a HARNESS CRASH: the code
     under test fell over, nothing was measured. Named per (file, arm), never folded into repair failures."""
     crashes = [e for e in exc if e["reason"].startswith("error:")]
+    unknown = [e for e in exc if e["reason"].startswith("excluded before the stop")]
+    caveat = (f" **This is NOT \"no crashes\": {len(unknown)} (file, arm) pair(s) were excluded before the wave was stopped and "
+              "their reasons are not on disk (run_arm writes EXCLUDED.json only when a shard ends), so any of them may be a "
+              "harness crash** (e.g. a TypeError in run_staged) **or a file-wall timeout; they cannot be told apart from this "
+              "run.**" if unknown else "")
     if not crashes:
-        return f"{label}: none."
+        return f"{label}: none RECORDED.{caveat}" if unknown else f"{label}: none."
     by_type = Counter(e["reason"].split(":")[1].strip() for e in crashes)
     lines = [f"{label}: **{len(crashes)} (file, arm) crash(es)** ({', '.join(f'{k} {v}' for k, v in by_type.items())}); "
              "each is unmeasured, not a failed repair:", "", "| file | arm | error |", "|---|---|---|"]
     lines += [f"| `{short(e['name'])}` | {e['arm']} | `{e['reason'][7:180]}` |" for e in crashes]
-    return "\n".join(lines)
+    return "\n".join(lines) + (("\n\n" + caveat.strip()) if caveat else "")
 
 
 def pair_counts(run: Path, env: dict) -> dict:
