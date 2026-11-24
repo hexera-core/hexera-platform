@@ -798,7 +798,8 @@ def _scout(*, session_id: str, owner_id: str, source: dict, interpretation: dict
         facts["part_name"] = part_name(fetched, ref.original_filename)
         # the upload's own file name, for a stage that names a whole assembly (application/fea_check)
         facts["file_name"] = file_stem_name(ref.original_filename)
-        if facts["validity"].get("clean") is not True and facts["validity"].get("kind") != "unchecked":
+        if facts["validity"].get("clean") is not True and (facts["validity"].get("kind") != "unchecked"
+                                                          or facts["validity"].get("timed_out")):
             facts["notes"].append(facts["validity"]["summary"])
         # a thermal model's physics (ECXML: materials, powers, fans, vents...), kept whole beside
         # the session's check so a later solver step - or the user - has all of it
@@ -863,7 +864,7 @@ def _start_clean_verdict(uploaded: Path, canonical, work: Path):
         from meshpipeline.cad.validity import canonical_task
 
         handle = Beside("meshpipeline.cad.validity", canonical_task(uploaded, canonical), work / "clean_check",
-                        name="clean_check")
+                        name="clean_check", timeout_s=CLEAN_CHECK_LIMIT_S)
         return handle if handle.proc is not None else None
     except Exception as exc:  # noqa: BLE001 - judged in-process instead
         logger.info("geometry check: the clean check could not start beside the scout (%s)", type(exc).__name__)
@@ -897,6 +898,28 @@ def early_validity(session_id: str, sha256: str) -> dict | None:
     return got["validity"]
 
 
+#: TIME-9: THE CLEAN CHECK'S TIME LIMIT, seconds from its start. A 9.8 MB IGES of 231 spline faces kept two
+#: workers' cores busy for 13+ minutes in its stitching while the user waited on "Designing the mesh"; read
+#: as it is read now (cad/iges_read) the same file is checked in seconds. Past the limit the child is stopped,
+#: the upload goes on, and the verdict says the check did not finish: never "clean", never "not clean".
+CLEAN_CHECK_LIMIT_S = 120.0
+CLEAN_CHECK_RULE = "TIME-9"
+#: What the user is told then (the stage shows it as "Not checked: ...", fea_check.declared_clean).
+CLEAN_CHECK_UNFINISHED = ("The check of this file did not finish in {minutes}, so it is not known whether it "
+                          "is clean. The mesh goes ahead.")
+
+
+def unfinished_verdict(limit_s: float = CLEAN_CHECK_LIMIT_S) -> dict:
+    """The clean verdict of a check stopped at its time limit (TIME-9): not checked, said in plain words."""
+    from meshpipeline.cad.validity import unchecked
+
+    minutes = max(1, round(float(limit_s) / 60.0))
+    words = CLEAN_CHECK_UNFINISHED.format(minutes=f"{minutes} minute{'s' if minutes > 1 else ''}")
+    out = dict(unchecked(words, time.time()).as_dict())
+    out.update(clean=None, timed_out=True, seconds=round(float(limit_s), 2), rule=CLEAN_CHECK_RULE)
+    return out
+
+
 def clean_verdict(uploaded: Path, canonical, started=None) -> dict:
     """THE CLEAN CONTRACT on the upload (cad/validity): clean yes or no, and every reason with
     where on the part it is. A file this calls clean is one the product promises to mesh, so a
@@ -908,6 +931,11 @@ def clean_verdict(uploaded: Path, canonical, started=None) -> dict:
         answer = started.result()
         if isinstance(answer, dict) and "clean" in answer and "error" not in answer:
             return answer
+        if isinstance(answer, dict) and answer.get("timed_out"):
+            # TIME-9: stopped at its limit - said as not finished, and never run again here unbounded
+            logger.warning("geometry check: the clean check did not finish in %.0f s - said as not checked",
+                           float(getattr(started, "timeout_s", None) or CLEAN_CHECK_LIMIT_S))
+            return unfinished_verdict(float(getattr(started, "timeout_s", None) or CLEAN_CHECK_LIMIT_S))
     try:
         from meshpipeline.cad.validity import check_canonical
 

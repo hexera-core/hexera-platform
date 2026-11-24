@@ -65,14 +65,12 @@ def tessellate_to_stl(geom_path, out_stl, *, prepared=None, angular_deflection: 
         return out_stl
     from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
     from OCP.IFSelect import IFSelect_RetDone
+    from OCP.STEPControl import STEPControl_Reader
     from OCP.StlAPI import StlAPI_Writer
 
+    from meshpipeline.cad.iges_read import iges_reader
     from meshpipeline.cad.occ_box import mesh_to_size
-    if is_iges(geom_path):
-        from OCP.IGESControl import IGESControl_Reader as _Reader
-    else:
-        from OCP.STEPControl import STEPControl_Reader as _Reader
-    reader = _Reader()
+    reader = iges_reader() if is_iges(geom_path) else STEPControl_Reader()
     if reader.ReadFile(str(geom_path)) != IFSelect_RetDone:
         raise RuntimeError(f"OpenCASCADE could not read CAD file: {geom_path.name}")
     reader.TransferRoots()
@@ -764,11 +762,10 @@ def _tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflectio
     geom_path = Path(geom_path)
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    if is_iges(geom_path):
-        from OCP.IGESControl import IGESControl_Reader as _Reader
-    else:
-        from OCP.STEPControl import STEPControl_Reader as _Reader
-    reader = _Reader()
+    from OCP.STEPControl import STEPControl_Reader
+
+    from meshpipeline.cad.iges_read import iges_reader
+    reader = iges_reader() if is_iges(geom_path) else STEPControl_Reader()
     if reader.ReadFile(str(geom_path)) != IFSelect_RetDone:
         raise RuntimeError(f"OpenCASCADE could not read CAD file: {geom_path.name}")
     reader.TransferRoots()

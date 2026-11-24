@@ -377,11 +377,10 @@ def _read_cad_shape(geom_path):
         if not BRepTools.Read_s(shape, str(geom_path), BRep_Builder()):
             raise RuntimeError(f"OpenCASCADE could not read CAD file: {Path(geom_path).name}")
         return shape
-    if suffix in (".iges", ".igs"):
-        from OCP.IGESControl import IGESControl_Reader as _Reader
-    else:
-        from OCP.STEPControl import STEPControl_Reader as _Reader
-    reader = _Reader()
+    from OCP.STEPControl import STEPControl_Reader
+
+    from meshpipeline.cad.iges_read import iges_reader
+    reader = iges_reader() if suffix in (".iges", ".igs") else STEPControl_Reader()
     if reader.ReadFile(str(geom_path)) != IFSelect_RetDone:
         raise RuntimeError(f"OpenCASCADE could not read CAD file: {Path(geom_path).name}")
     reader.TransferRoots()
