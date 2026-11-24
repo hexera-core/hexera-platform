@@ -228,6 +228,12 @@ def _run_search(source: str, dest: str, *, budget: Budget, deadline_s: float) ->
             raise ValueError(f"unknown search arm {ARM!r}; the arms are {VERDICT_ONLY_ARMS + tuple(ARMS)}")
     if deadline_s - time.monotonic() <= 0:
         return passthrough({"status": "not_measured", "reason": "deadline_expired"})
+    # A16: ONE place sets the file's wall, and every panel and op reads it from there (`verdict.wall`). Without
+    # this the wall module is inert and every call keeps its fixed timeout, which is exactly the old behaviour -
+    # so a caller that does not set it loses nothing but the new ceiling.
+    from meshpipeline.cad.repair_v4.verdict import wall
+
+    wall.set_file_deadline(deadline_s)
     try:
         pool = WorkerPool(_workers())
     except Exception as exc:  # noqa: BLE001 - no pool is our failure, whatever its type
@@ -291,6 +297,7 @@ def _run_search(source: str, dest: str, *, budget: Budget, deadline_s: float) ->
             return V4Result(trace_path=trace_path, verdict_summary=summary, delivered=True)
     finally:
         pool.close()
+        wall.set_file_deadline(None)   # the next file in this process must not inherit this one's wall
 
 
 def repair_v4(source: str, dest: str, *, budget: Budget, deadline_s: float) -> V4Result:
