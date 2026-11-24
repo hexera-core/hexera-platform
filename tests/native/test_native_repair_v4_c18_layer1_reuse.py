@@ -24,7 +24,7 @@ CASES = {"7ab61ea7d641": True, "3e7c2a1197c3": True, "6aa493da5bbf": True, "6109
 #: where the gate says REUSE, the real layer-1 check on parent and child is compared here only on the transaction
 #: that takes seconds. The other two take 130 s and 370 s (the owner's under-a-minute rule for targeted tests): their
 #: equality was proven once with this same test un-trimmed (4/4 passed, 512 s, 2026-11-24) and by the C18 record of
-#: the STEP-read full check on every stored state (identical findings, entities included, on all 570 no-op pairs).
+#: the STEP-read full check on every stored state (identical findings, entities included, on all 613 no-op pairs).
 FULL_CHECK = {"7ab61ea7d641"}
 
 
