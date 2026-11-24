@@ -6,7 +6,9 @@
 # excluded BEFORE the stop keep their own group (reason inferred from timing, stated as such); no provenance is written.
 set -u
 T=$HOME/snap; source $T/run.env
-date -u +%FT%TZ > $T/out/DEADLINE_STOP
+# $1 = WHY it was stopped (default: the armed reaper-minus-30 guard); written beside the time, quoted in the doc
+REASON="${1:-reaper minus 30 min (deadline guard, coordinator-approved)}"
+echo "$(date -u +%FT%TZ); $REASON" > $T/out/DEADLINE_STOP
 pkill -f 'tools/vm_run.sh' ; sleep 1
 sudo docker ps --format '{{.Names}}' | grep '^snap-' | xargs -r sudo docker stop -t 20 > $T/out/deadline_stopped.txt
 python3 - "$T" <<'PY'
