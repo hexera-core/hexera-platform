@@ -40,7 +40,9 @@ HARD_CODES = (
 #: judge. `check_valid` stops at it (no round trip), `verdict` does not mesh it, and the scoreboard reports it as its own
 #: stratum rather than a failure (`Verdict.out_of_scope`).
 UNBOUNDED = "unbounded_geometry"
-SOFT_CODES = ("small_edge", "small_face", "large_tolerance")
+#: `orientation_unchecked` (lane C15 follow-up): the BREP's signed-volume check on an op-made state could not run (pool
+#: failure, timeout); reported so a skipped check shows in the row, never a failure
+SOFT_CODES = ("small_edge", "small_face", "large_tolerance", "orientation_unchecked")
 
 #: The limit on ONE of this layer's kernel calls. Defined once in `repair_v4.limits` (the per-file wall that
 #: bounds their SUM is evalspec.DEFAULT_FILE_TIMEOUT_S); re-exported under this name because faithful.py and
