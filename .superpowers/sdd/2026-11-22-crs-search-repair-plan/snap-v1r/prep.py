@@ -66,6 +66,11 @@ def prior_costs(root: Path | None, wall: float) -> dict[str, float]:
             per[r["sha256"]][r["arm"]] = float(r["wall_s"])
     for f in root.glob("*/shard-*/EXCLUDED.json"):
         for e in json.loads(f.read_text()):
+            # only an exclusion that RAN costs the wall: a pair a stopped wave never ran (deadline), or one whose
+            # reason was lost at the stop, is no measurement of cost and is skipped (v3's prior counted 393 of them
+            # at 1800 s and projected 549 min against a real ~3 h)
+            if str(e.get("reason", "")).startswith(("unmeasured:", "excluded before the stop")):
+                continue
             per[e["sha256"]][e["arm"]] = wall
     return {s: sum(a.values()) for s, a in per.items() if set(ARMS4) <= set(a)}
 
