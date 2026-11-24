@@ -90,9 +90,21 @@ class ArmOutcome:
 
 def _layers(v: Any, prefix: str) -> dict:
     faithful_ok = bool(v.faithful is not None and v.faithful.ok)
-    return {f"{prefix}_valid": bool(v.valid.ok), f"{prefix}_faithful_ok": faithful_ok,
-            f"{prefix}_panel_passes": sum(1 for r in v.panel if r.status == "pass"),
-            f"{prefix}_clean": bool(v.clean)}
+    f = v.faithful
+    fields: dict[str, Any] = {f"{prefix}_valid": bool(v.valid.ok), f"{prefix}_faithful_ok": faithful_ok,
+                              f"{prefix}_panel_passes": sum(1 for r in v.panel if r.status == "pass"),
+                              f"{prefix}_clean": bool(v.clean)}
+    if prefix == "out":
+        # layer 3 gates nothing since the owner's 2026-11-24 decision, so the ROW carries what it measured and
+        # report.py flags a clean output that moved the part (`gaming_flags`). None = not measured, never a 1.0.
+        fields.update({"out_volume_ratio": None if f is None else _opt_float(f.volume_ratio),
+                       "out_bbox_ratio": None if f is None else _opt_float(getattr(f, "bbox_ratio", None)),
+                       "out_max_dev_mm": None if f is None else _opt_float(f.max_dev_mm)})
+    return fields
+
+
+def _opt_float(x: Any) -> float | None:
+    return None if x is None else float(x)
 
 
 def _verdict_fields(v_in: Any, v_out: Any) -> dict:

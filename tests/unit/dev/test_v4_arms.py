@@ -859,3 +859,29 @@ def test_a_wave_with_more_shards_than_in_flight_calls_is_refused_without_the_ove
     t = run_arm.build_throttle(run_arm.parse_args([*base, "--allow-in-flight-floor"]), "openai:gpt-6-astra", prov)
     assert t.slice.floored and prov["model_throttle"]["in_flight_floor_override"] is True
     assert prov["model_throttle"]["in_flight_floored"] is True
+
+
+def test_the_row_carries_the_output_fidelity_numbers_the_report_flags_on() -> None:
+    """Layer 3 gates nothing, so the row must still CARRY it: report.py's gaming flag reads these."""
+    from types import SimpleNamespace
+
+    import arms as arms_mod
+
+    f = SimpleNamespace(ok=False, max_dev_mm=4.2, bound_mm=0.1, reasons=["volume_changed"], volume_ratio=3.0,
+                        area_ratio=1.1, bbox_ratio=0.4, diag_after_mm=40.0, bodies_before=1, bodies_after=1,
+                        declared_added=[], declared_removed=[])
+    v = SimpleNamespace(valid=SimpleNamespace(ok=True, hard=[]), panel=[], faithful=f, clean=True, tier="full")
+    fields = arms_mod._layers(v, "out")
+    assert fields["out_volume_ratio"] == 3.0 and fields["out_bbox_ratio"] == 0.4
+    assert fields["out_max_dev_mm"] == 4.2 and fields["out_faithful_ok"] is False
+
+
+def test_a_row_without_a_layer_three_measurement_carries_none_not_a_number() -> None:
+    from types import SimpleNamespace
+
+    import arms as arms_mod
+
+    v = SimpleNamespace(valid=SimpleNamespace(ok=True, hard=[]), panel=[], faithful=None, clean=True, tier="full")
+    fields = arms_mod._layers(v, "out")
+    assert fields["out_volume_ratio"] is None and fields["out_bbox_ratio"] is None
+    assert fields["out_max_dev_mm"] is None and fields["out_faithful_ok"] is False

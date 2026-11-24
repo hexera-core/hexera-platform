@@ -39,7 +39,7 @@ from meshpipeline.settings.cad_repair import verdict_cache_uri
 #: either one is unreadable by the other: the timeout-rule code never stored `located`, so a .2 entry from it
 #: would hand the search the old unlocated answer, which is the very thing the lane C5 note forbids. The rule at
 #: the top of this file is per result-altering change, so two of them merged is one further bump.
-VERDICT_CODE_VERSION = "crs-v4.verdict.3"
+VERDICT_CODE_VERSION = "crs-v4.verdict.4"  # .4: clean = valid + panel; layer 3 reports and no longer gates
 logger = logging.getLogger(__name__)
 CACHEABLE_STATUSES = ("pass", "fail")
 

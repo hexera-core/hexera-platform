@@ -325,7 +325,6 @@ def test_fusion_360_in_an_excluded_entry_is_refused(tmp_path) -> None:
 
 @pytest.mark.parametrize("over,match", [
     ({"out_clean": True, "out_panel_passes": 2}, "stored clean"),            # claims clean, panel says no
-    ({"out_clean": True, "out_faithful_ok": False, "out_panel_passes": 3}, "stored clean"),
     ({"out_clean": False, "out_panel_passes": 3}, "stored clean"),           # all parts pass, says unclean
     ({"out_tier": "cheap"}, "full panel"),
     ({"out_panel_passes": 4}, "impossible"),
@@ -1244,3 +1243,102 @@ def test_a_shard_that_recorded_no_walls_says_unrecorded_never_a_constant(tmp_pat
     assert block["walls"]["file_timeout_s"] is None
     assert sorted(block["walls"]["unrecorded"]) == ["check_valid_timeout_s", "file_timeout_s"]
     assert "file_timeout_s unrecorded" in report.render_text(report.build_report(load(tmp_path, split)))
+
+
+# ------------------------------------------------------------------ A10: clean = valid + panel, and the gaming flag
+
+def test_the_report_derives_clean_from_valid_and_panel_only(tmp_path) -> None:
+    """Owner decision 2026-11-24. A row that is valid, meshes everywhere and moved the part IS clean here."""
+    split = split_rows()
+    build(tmp_path, WAVE, split, rows_for=lambda b, i, a: _moved(b, i, a))
+    rep = report.build_report(load(tmp_path, split))
+    assert rep["arms"]["staged"]["clean_out"] == 40
+    assert rep["status"] in ("OK", "UNRELIABLE")   # not refused: the stored clean agrees with the new rule
+
+
+def test_a_row_claiming_clean_without_the_whole_panel_is_still_refused(tmp_path) -> None:
+    split = split_rows()
+    build(tmp_path, WAVE, split,
+          rows_for=lambda b, i, a: {**arm_row(b, i, a), "out_valid": True, "out_panel_passes": 1,
+                                    "out_clean": True} if a != "input_only" else arm_row(b, i, a))
+    with pytest.raises(report.ReportRefused):
+        load(tmp_path, split)
+
+
+#: arms that actually produce an output; input_only ships its input unchanged, so it can never be a "mover" and
+#: the report refuses a row where its output differs from its input
+MOVER_ARMS = tuple(a for a in WAVE.arms if a != "input_only")
+
+
+def _moved(base, i, arm, **over):
+    """A clean output that moved the part, for the repairing arms; input_only keeps the fixture's pass-through."""
+    if arm == "input_only":
+        return arm_row(base, i, arm)
+    row = {**arm_row(base, i, arm), "out_valid": True, "out_faithful_ok": False,
+           "out_panel_passes": PANEL, "out_clean": True}
+    row.update(over)
+    return row
+
+
+def test_a_clean_output_that_tripled_the_volume_is_flagged_and_still_clean(tmp_path) -> None:
+    split = split_rows()
+    build(tmp_path, WAVE, split,
+          rows_for=lambda b, i, a: _moved(b, i, a, out_volume_ratio=3.0 if i == 0 else 1.0,
+                                          out_bbox_ratio=1.0))
+    rep = report.build_report(load(tmp_path, split))
+    flags = rep["gaming_flags"]
+    assert flags["limits"] == {"volume_change": 0.25, "bbox_shrink": 0.10}
+    for arm in MOVER_ARMS:
+        block = flags["arms"][arm]
+        assert block["files"] == 1, arm
+        (f,) = block["names"]
+        assert f["sha256"] == split[0].sha256 and f["volume_ratio"] == 3.0 and "volume" in f["why"]
+    assert flags["arms"]["input_only"]["files"] == 0   # it never changes its input, so it can never move it
+    assert rep["arms"]["staged"]["clean_out"] == 40          # still counted clean
+    text = report.render_text(rep)
+    assert f"Gaming flags ({len(MOVER_ARMS)} flagged clean row(s) over 1 file(s)" in text
+    assert "volume x3" in text
+
+
+def test_a_clean_output_whose_bbox_shrank_is_flagged(tmp_path) -> None:
+    split = split_rows()
+    build(tmp_path, WAVE, split,
+          rows_for=lambda b, i, a: _moved(b, i, a, out_bbox_ratio=0.5 if i == 1 else 0.95))
+    flags = report.build_report(load(tmp_path, split))["gaming_flags"]
+    (f,) = flags["arms"]["staged"]["names"]
+    assert f["sha256"] == split[1].sha256 and f["bbox_ratio"] == 0.5 and "bbox" in f["why"]
+    # 0.95 is a 5% shrink: inside the 10% limit, not flagged
+    assert flags["arms"]["staged"]["files"] == 1
+
+
+@pytest.mark.parametrize("ratio,flagged", [(1.25, False), (1.26, True), (0.7, True), (0.75, False), (0.8, False)])
+def test_the_volume_limit_is_a_change_in_either_direction(tmp_path, ratio, flagged) -> None:
+    split = split_rows()
+    build(tmp_path, WAVE, split, rows_for=lambda b, i, a: _moved(b, i, a, out_volume_ratio=ratio if i == 0 else 1.0))
+    flags = report.build_report(load(tmp_path, split))["gaming_flags"]
+    assert flags["arms"]["staged"]["files"] == (1 if flagged else 0)
+
+
+def test_an_unclean_output_is_never_flagged_and_a_missing_measurement_is_counted(tmp_path) -> None:
+    split = split_rows()
+    def rows(b, i, a):
+        if a == "input_only":
+            return arm_row(b, i, a)
+        if i == 0:
+            return {**arm_row(b, i, a), "out_clean": False, "out_valid": False, "out_volume_ratio": 9.0}
+        return _moved(b, i, a, out_volume_ratio=None)
+
+    build(tmp_path, WAVE, split, rows_for=rows)
+    flags = report.build_report(load(tmp_path, split))["gaming_flags"]
+    assert flags["arms"]["staged"]["files"] == 0            # the mover was not clean: not the flag's business
+    assert flags["arms"]["staged"]["unmeasured"] == 39      # clean rows with no fidelity numbers, counted not hidden
+
+
+def test_an_unfaithful_row_that_claims_clean_is_accepted_now(tmp_path) -> None:
+    """The case that used to be a contradiction: valid + whole panel + faithful_ok False IS clean since the owner's
+    2026-11-24 decision, so the row is accepted and the file is flagged for review instead."""
+    split = split_rows()
+    build(tmp_path, WAVE, split, rows_for=lambda b, i, a: _moved(b, i, a, out_volume_ratio=1.0, out_bbox_ratio=1.0))
+    rep = report.build_report(load(tmp_path, split))
+    assert rep["arms"]["staged"]["clean_out"] == 40
+    assert rep["gaming_flags"]["arms"]["staged"]["files"] == 0   # unfaithful, but inside both review limits

@@ -662,7 +662,7 @@ def test_default_judge_calls_the_real_checker_with_steps_and_translated_face_ind
     assert v.faithful is not None and v.faithful.declared_added == ["F2"]
 
 
-def test_default_judge_full_verdict_is_clean_only_on_the_re_run_layer_3(real_checker: SimpleNamespace,
+def test_default_judge_full_verdict_reports_the_re_run_layer_3_and_is_clean_anyway(real_checker: SimpleNamespace,
                                                                          monkeypatch: pytest.MonkeyPatch) -> None:
     diff = Diff(op="fill_loop", params={}, modified={}, generated={}, removed=[], declared_added=["F1"],
                 declared_removed=[], seconds=0.0)
@@ -680,7 +680,9 @@ def test_default_judge_full_verdict_is_clean_only_on_the_re_run_layer_3(real_che
             return super().call(fn, payload, timeout_s=timeout_s)
 
     v = j.full(Unfaithful(), ws, "orig.step")
-    assert v.clean is False and j.score(v)[0] == 0   # layer 3 on the exact indices decides `clean`, not the STEP pass
+    # layer 3 is still re-run on the exact indices and still REPORTED; since 2026-11-24 it gates nothing
+    assert v.faithful is not None and v.faithful.ok is False
+    assert v.clean is True and j.score(v)[0] == 1
 
 
 def test_the_clean_rule_default_judge_recomputes_agrees_with_the_real_assembly(
@@ -705,16 +707,22 @@ def test_the_clean_rule_default_judge_recomputes_agrees_with_the_real_assembly(
         for report_ok in (True, False):
             report = FaithfulReport(report_ok, 0.0, 0.1, 1.0, 1.0, 1, 1)
             knobs["faithful"] = report_ok
+            # one rule for both, whatever layer 3 says (it is not a term of it any more)
             assert search._clean_with(real, report) is assemble.verdict(None, "s.step", "o.step").clean  # type: ignore[arg-type]
 
 
 def test_clean_of_pins_every_term_of_the_rule_including_inconclusive() -> None:
+    """Owner decision 2026-11-24: clean = valid + panel. Layer 3 is handed over and ignored."""
     ok = {"tier": "full", "inconclusive": False, "valid": ValidReport(True, [], [], "mm", 1, True),
           "panel": [Member("m0")], "faithful": FaithfulReport(True, 0.0, 0.1, 1.0, 1.0, 1, 1)}
     assert assemble.clean_of(**ok) is True                                              # type: ignore[arg-type]
-    for term, bad in (("tier", "cheap"), ("inconclusive", True), ("panel", []), ("faithful", None),
+    for term, bad in (("tier", "cheap"), ("inconclusive", True), ("panel", []),
                       ("panel", [Member("m0", "fail")]), ("valid", ValidReport(False, [], [], "mm", 1, True))):
         assert assemble.clean_of(**{**ok, term: bad}) is False, term                    # type: ignore[arg-type]
+    # layer 3 is NOT a term: neither a failing report nor a missing one changes the answer
+    assert assemble.clean_of(**{**ok, "faithful": None}) is True                        # type: ignore[arg-type]
+    unfaithful = FaithfulReport(False, 9.9, 0.1, 1.0, 4.0, 1, 1, reasons=["deviation_exceeds_bound"])
+    assert assemble.clean_of(**{**ok, "faithful": unfaithful}) is True                   # type: ignore[arg-type]
 
 
 def test_default_judge_sites_and_checker_signatures_are_the_real_ones() -> None:

@@ -22,6 +22,11 @@ from meshpipeline.cad.repair_v4.kernel_calls import register
 from meshpipeline.cad.repair_v4.limits import MAX_FILL_SPAN_RATIO, fill_span_allowed
 from meshpipeline.cad.repair_v4.verdict.shape_digest import WorkerMemo, file_digest
 
+#: Every quantity `faithful_check` reports. Layer 3 gates nothing (owner decision 2026-11-24); it MEASURES, and
+#: report.py flags a clean output that moved the part (`gaming_flags`) from these numbers.
+REPORTED = ("ok", "reasons", "max_dev_mm", "bound_mm", "diag_mm", "diag_after_mm", "bbox_ratio", "fill_span_mm",
+            "area_ratio", "volume_ratio", "bodies_before", "bodies_after")
+
 BOUND_ABS_MM = 0.1
 BOUND_DIAG_FRACTION = 0.001
 FILL_SPAN_FRACTION = MAX_FILL_SPAN_RATIO  # the op's cap, from limits.py; never a second typed 5%
@@ -426,6 +431,10 @@ def _faithful_check(payload: dict) -> dict:
         "max_dev_mm": max_dev,
         "bound_mm": bound,
         "diag_mm": diag,
+        # the repaired shape's own extent, and how much of the original's it keeps: a "repair" that deleted most
+        # of the part has a small ratio. None when the result has no extent at all.
+        "diag_after_mm": None if r_box is None else _diag(r_box),
+        "bbox_ratio": None if r_box is None or diag <= 0.0 else _diag(r_box) / diag,
         "fill_span_mm": fill_span,
         "area_ratio": area_ratio,
         "volume_ratio": volume_ratio,

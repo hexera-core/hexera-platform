@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol
 
 from meshpipeline.cad.repair_v4.verdict.cache import VerdictCache, file_sha256, mesher_versions, panel_config_hash
-from meshpipeline.cad.repair_v4.verdict.faithful import FaithfulReport, check_faithful_steps
+from meshpipeline.cad.repair_v4.verdict.faithful import DeclaredIdError, FaithfulReport, check_faithful_steps
 from meshpipeline.cad.repair_v4.verdict.valid import CheckerUnavailable, ValidReport, check_valid
 from meshpipeline.cad.repair_v4.worker_pool import WorkerPool
 
@@ -143,16 +143,22 @@ def adaptive_cheap_members(start: Any) -> list[Any]:
 def clean_of(
     *, tier: str, inconclusive: bool, valid: Any, panel: Sequence[Any], faithful: FaithfulReport | None
 ) -> bool:
-    """The ONE rule for `Verdict.clean`. A cheap verdict ran a partial panel, so it can never certify a file
-    clean; an inconclusive one is neither clean nor unclean; every panel member must pass and layer 3 must hold."""
+    """The ONE rule for `Verdict.clean`: layer 1 VALID and layer 2 PANEL, and nothing else.
+
+    OWNER DECISION 2026-11-24 (supersedes design section 7 items 1-3): clean = valid + panel. Layer 3 (faithful)
+    is still measured and reported on every row - deviation, area and volume ratios, bbox ratio, body counts - and
+    it NEVER gates clean and never refuses an edit. `faithful` stays in this signature so every caller keeps
+    handing it over and nothing silently stops reporting it; the rule ignores it.
+
+    A cheap verdict ran a partial panel, so it can never certify a file clean; an inconclusive one is neither
+    clean nor unclean. A clean output that moved the part a long way is flagged for the owner by report.py
+    (`gaming_flags`), not refused here."""
     return (
         tier == "full"
         and not inconclusive
         and bool(valid.ok)
         and bool(panel)
         and all(r.status == "pass" for r in panel)
-        and faithful is not None
-        and faithful.ok
     )
 
 
@@ -187,11 +193,16 @@ def _assemble(
         if cache is not None and sha is not None and config is not None:
             _cache_put(cache, sha, config, panel)
 
+    # Layer 3 is REPORTED, never a gate (`clean_of`), so it is measured on every row it can be measured on -
+    # including one that failed layer 1, where the fidelity numbers still say what the repair did to the part.
+    # It can also be unmeasurable (an unreadable or extent-less shape); that is not an error and not a verdict.
     faithful: FaithfulReport | None = None
-    if valid.ok:  # an unreadable or solid-less repaired file has nothing to compare
+    try:
         faithful = check_faithful_steps(
             pool, original, step, declared_added=declared.added, declared_removed=declared.removed
         )
+    except (CheckerUnavailable, DeclaredIdError, ValueError) as why:
+        logger.info("layer 3 not measured for %s (reported as unmeasured, it gates nothing): %s", step, why)
 
     inconclusive = any(is_infrastructure_failure(r) for r in panel)
 
@@ -248,14 +259,13 @@ def cheap_verdict(
 
 
 def score(v: Verdict) -> tuple[int, int, float, float, int]:
-    """(valid AND faithful, panel passes, min SICN over members, -max deviation mm, -topology churn),
-    compared lexicographically.
+    """(valid, panel passes, min SICN over members, -max deviation mm, -topology churn), compared
+    lexicographically.
 
-    THE FIRST KEY IS A GATE, NOT JUST LAYER 1: it is 1 only when the file is valid and layer 3 says
-    faithful. Without that, a valid state that meshes everywhere but moved the part (`area_changed`,
-    `fill_too_large`, a deviation over the bound) would out-rank a clean one, because deviation is
-    only the fourth key. A search ranking on this tuple therefore never prefers an unfaithful state
-    to a faithful one; a state that is valid but unfaithful ties with invalid ones on key 1.
+    KEY 0 IS LAYER 1 ALONE (owner decision 2026-11-24). It used to be "valid AND faithful", which made the
+    search refuse an edit that moved the part: an unfaithful state tied with an invalid one. Layer 3 now only
+    breaks ties - among states that are equally valid, equally meshable and equally good in SICN, the one that
+    moved the part least still wins (keys 4 and 5) - so fidelity is preferred, never required.
 
     Raises `InconclusiveVerdict` for an inconclusive verdict: it must be re-run or dropped, never
     ranked (and never ranked as bad). Check `Verdict.counts_for_scoreboard` first.
@@ -266,7 +276,7 @@ def score(v: Verdict) -> tuple[int, int, float, float, int]:
     dev = v.faithful.max_dev_mm if v.faithful is not None else 0.0
     churn = len(v.faithful.declared_added) + len(v.faithful.declared_removed) if v.faithful is not None else 0
     return (
-        int(v.valid.ok and v.faithful is not None and v.faithful.ok),
+        int(bool(v.valid.ok)),
         sum(1 for r in v.panel if r.status == "pass"),
         min(sicns) if sicns else UNMEASURED_SICN,
         -dev,
