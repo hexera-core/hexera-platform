@@ -141,10 +141,42 @@ def sites_locate_points(payload: dict) -> dict:
     return {"faces": answers}
 
 
+#: A gap at or under this (mm) is a CONTACT, not a near miss: below it the two faces touch as far as any mesher
+#: can tell, and the proximity split has no gap to size a plan from.
+_CONTACT_MM = 1e-7
+
+
+def _shares_edge(a: Any, b: Any) -> bool:
+    """Do the two faces share an EDGE? (`_touch` asks about a VERTEX, which a contact at a corner also shares.)"""
+    from OCP.TopAbs import TopAbs_EDGE
+    from OCP.TopExp import TopExp
+    from OCP.TopTools import TopTools_IndexedMapOfShape
+
+    ma, mb = TopTools_IndexedMapOfShape(), TopTools_IndexedMapOfShape()
+    TopExp.MapShapes_s(a, TopAbs_EDGE, ma)
+    TopExp.MapShapes_s(b, TopAbs_EDGE, mb)
+    return any(ma.Contains(mb.FindKey(k)) for k in range(1, mb.Extent() + 1))
+
+
+def _face_area(face: Any) -> float:
+    from OCP.BRepGProp import BRepGProp
+    from OCP.GProp import GProp_GProps
+
+    props = GProp_GProps()
+    BRepGProp.SurfaceProperties_s(face, props)
+    return float(props.Mass())
+
+
 @register("sites_proximity")
 def sites_proximity(payload: dict) -> dict:
-    """Pairs of faces closer than `max_dist` that do not touch (no shared vertex): the part is
-    nearly pinching itself there. Nearest first, at most `max_pairs`."""
+    """Pairs of faces closer than `max_dist` that do not share an EDGE: the part is pinching, or already
+    touching, itself there. Nearest first, at most `max_pairs`; each pair says whether it TOUCHES (gap 0).
+
+    A CONTACT - two faces at gap 0 that share no edge, usually meeting at a vertex - used to be dropped here
+    (the rule excluded any pair sharing a vertex). Lane A11 measured it as the commonest cause of a mesher
+    failure on a VALID part: 18 of 35 located failures sit on such a face. They are kept now, and because they
+    are at distance 0 they sort to the front of the capped list, ahead of the merely near pairs. Faces that
+    share an EDGE are still excluded: they are legitimate neighbours, not a defect."""
     deadline = time.monotonic() + CALL_BUDGET_S
     shape = read_brep(payload["brep_path"])
     faces = _maps(shape)["face"]
@@ -169,12 +201,16 @@ def sites_proximity(payload: dict) -> dict:
         if time.monotonic() > deadline:
             break
         a, b = faces.FindKey(i), faces.FindKey(j)
-        if _touch(a, b):
-            continue
+        if _shares_edge(a, b):
+            continue   # neighbours by construction: an op aimed here would split a sound join
         d = _extrema(a, b)
         if d["dist"] is not None and d["dist"] < limit:
             pairs.append({"a": i, "b": j, "dist": round(d["dist"], 6),
-                          "point_a": d["point_a"], "point_b": d["point_b"]})
+                          "point_a": d["point_a"], "point_b": d["point_b"],
+                          # a contact needs different ops from a near miss: the proximity split sizes its plan
+                          # from the gap, so a zero gap asks it for an infinitely fine split
+                          "touching": bool(d["dist"] <= _CONTACT_MM),
+                          "area_a_mm2": round(_face_area(a), 6), "area_b_mm2": round(_face_area(b), 6)})
     # Ties are common (coplanar sides); break them by WHERE the pair is, never by face order, which
     # changes whenever an op rebuilds the shape: the capped set must not depend on indices.
     pairs.sort(key=lambda p: (round(p["dist"], 4), [round(c, 3) for c in p["point_a"] or []],

@@ -532,6 +532,22 @@ _CANONICAL_SHARE = 0.5
 _MAX_CANONICAL_FACES = 2
 
 
+def _clash_pairs(site: Site) -> tuple[list[list[StableId]], list[dict]]:
+    """The site's MEASURED face pairs, split into near misses (for the proximity split) and CONTACTS (gap 0, which
+    that op cannot size a plan from). Nearest first, as the kernel ordered them."""
+    near: list[list[StableId]] = []
+    contacts: list[dict] = []
+    for c in site.graph.get("clashes") or []:
+        a, b = c.get("a"), c.get("b")
+        if not (isinstance(a, str) and isinstance(b, str)):
+            continue
+        if c.get("touching"):
+            contacts.append(dict(c))
+        elif [a, b] not in near:
+            near.append([a, b])
+    return near[:_MAX_PAIRS], contacts
+
+
 def _of_kind(entities: list[StableId], prefix: str) -> list[StableId]:
     return [e for e in entities if e[:1] == prefix]
 
@@ -921,14 +937,48 @@ class DetGenerator:
             return "the faces are not one connected patch, so they have no single outline"
         return None
 
+    @staticmethod
+    def _contact_rows(contacts: list[dict]) -> list[tuple[str, list[StableId], dict, str]]:
+        """What a CONTACT allows (lane A11: the commonest mesher cause on a valid part, 18 of 35 located failures).
+
+        Not `split_by_proximity`: it sizes its plan from the gap (`max(gap, 1e-9)`), so a zero gap asks for an
+        infinitely fine split. What fits is removing one side of the contact, or separating the two faces:
+        `remove_duplicate_faces` when the pair is two copies of one face, and `defeature` of the SMALLER face
+        (the one whose loss costs least), through D16's `located` source so the removal is aimed at the mesher's
+        own face and never part-wide. With no measured areas neither side is guessed at: both are offered."""
+        rows: list[tuple[str, list[StableId], dict, str]] = []
+        if not contacts:
+            return rows
+        rows.append(("remove_duplicate_faces", [], {},
+                     "the contact may be two copies of one face"))
+        offered: set[str] = set()
+        for c in contacts:
+            a, b = str(c.get("a")), str(c.get("b"))
+            area_a, area_b = c.get("area_a_mm2"), c.get("area_b_mm2")
+            if area_a is not None and area_b is not None:
+                smaller = [a if float(area_a) <= float(area_b) else b]
+            else:
+                smaller = [a, b]      # nothing measured says which side is small; offer each on its own
+            for face in smaller:
+                if face in offered:
+                    continue
+                offered.add(face)
+                rows.append(("defeature", [face], {"source": "located"},
+                             f"remove the smaller face of the contact {a}-{b}"))
+        return rows
+
     def _sweep(self, site: Site, diag: float | None) -> list[tuple[str, list[StableId], dict, str]]:
         faces = _of_kind(site.entities, "F")
         solids = _of_kind(site.entities, "B")
         rows: list[tuple[str, list[StableId], dict, str]] = []
         kind = site.kind
         if kind == "proximity" and len(faces) >= 2:
-            pairs = [list(p) for p in itertools.combinations(faces, 2)][:_MAX_PAIRS]
-            for ratio in _PROXIMITY_RATIOS:
+            # AIMED, lane A11: the pairs the kernel MEASURED (`graph["clashes"]`), nearest first, not every
+            # combination of the site's faces - a combinatorial list proposes work no mesher complained about and
+            # crowds the one pair it did out of the op budget. With no measured pair, fall back to the old sweep.
+            near, contacts = _clash_pairs(site)
+            pairs = near or ([list(p) for p in itertools.combinations(faces, 2)][:_MAX_PAIRS] if not contacts else [])
+            for ratio in _PROXIMITY_RATIOS if pairs else ():
                 rows.append(
                     (
                         "split_by_proximity",
@@ -937,6 +987,7 @@ class DetGenerator:
                         f"split the near faces so chords sag at most {ratio} of the gap",
                     )
                 )
+            rows += self._contact_rows(contacts)
         if kind in ("proximity", "self_overlap", "periodic") and faces:
             for deg in _SPLIT_ANGLES:
                 rows.append(("split_angle", faces, {"max_deg": deg}, f"split faces at {deg} deg"))

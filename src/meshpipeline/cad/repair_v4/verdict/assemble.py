@@ -265,7 +265,18 @@ def score(v: Verdict) -> tuple[int, int, float, float, int]:
     KEY 0 IS LAYER 1 ALONE (owner decision 2026-11-24). It used to be "valid AND faithful", which made the
     search refuse an edit that moved the part: an unfaithful state tied with an invalid one. Layer 3 now only
     breaks ties - among states that are equally valid, equally meshable and equally good in SICN, the one that
-    moved the part least still wins (keys 4 and 5) - so fidelity is preferred, never required.
+    moved the part least still wins (keys 3 and 4) - so fidelity is preferred, never required.
+
+    LAYER 3 RANKS ONLY VALID STATES (keys 3 and 4 are 0 while layer 1 fails). It is a TIE-BREAK, and an invalid
+    state has nothing to tie: on the cheap tier an unfinished repair scores (0, 0, UNMEASURED) whatever it did, so
+    deviation was the only key left and became the whole order - and because every op moves the part, it ranked
+    the state that repaired LESS above the state that repaired more. Measured: the three-hole part (14 ops to
+    clean, `test_native_repair_v4_waste`) stopped reaching clean at all, because filling the third hole deviates
+    1.5 mm against 1.42 mm for leaving it open, so the frontier never expanded the filled state and `make_volume`
+    was never proposed. Zeroing both keys while invalid restores the only honest order between unfinished states
+    (the order they were proposed in) and keeps fidelity deciding where it has meaning: among finished, valid,
+    equally meshable candidates. It also stops layer 3 refusing a staged edit through `stages` keep/rollback,
+    which compares the same tuple - the decision says fidelity never refuses an edit.
 
     Raises `InconclusiveVerdict` for an inconclusive verdict: it must be re-run or dropped, never
     ranked (and never ranked as bad). Check `Verdict.counts_for_scoreboard` first.
@@ -275,10 +286,11 @@ def score(v: Verdict) -> tuple[int, int, float, float, int]:
     sicns = [r.min_sicn if r.min_sicn is not None else UNMEASURED_SICN for r in v.panel]
     dev = v.faithful.max_dev_mm if v.faithful is not None else 0.0
     churn = len(v.faithful.declared_added) + len(v.faithful.declared_removed) if v.faithful is not None else 0
+    valid_ok = int(bool(v.valid.ok))
     return (
-        int(bool(v.valid.ok)),
+        valid_ok,
         sum(1 for r in v.panel if r.status == "pass"),
         min(sicns) if sicns else UNMEASURED_SICN,
-        -dev,
-        -churn,
+        -dev if valid_ok else 0.0,
+        -churn if valid_ok else 0,
     )

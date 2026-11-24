@@ -70,6 +70,24 @@ def test_the_score_gate_is_valid_alone_so_the_search_never_refuses_an_edit() -> 
     assert near > far and near[:3] == far[:3]
 
 
+def test_layer_three_does_not_rank_states_that_are_not_valid_yet() -> None:
+    """A tie-break needs a tie. On the cheap tier an unfinished repair scores (0, 0, UNMEASURED) whatever it did,
+    so deviation was the only key left and ordered the frontier by itself - and since every op moves the part, it
+    put the state that repaired LESS first. Measured on the three-hole part: it stopped reaching clean at all
+    (`tests/native/test_native_repair_v4_waste.py`). Invalid states therefore tie on keys 3 and 4."""
+    def v(valid: bool, dev: float, churn: int = 0, passes: int = 0):
+        f = _faith(True, max_dev_mm=dev, declared_added=["F1"] * churn)
+        return SimpleNamespace(valid=_valid(valid), panel=[_m() for _ in range(passes)], faithful=f,
+                               inconclusive=False)
+
+    moved_more, moved_less = score(v(False, 1.5)), score(v(False, 1.42))
+    assert moved_more == moved_less == (0, 0, assemble.UNMEASURED_SICN, 0.0, 0)
+    assert score(v(False, 1.5, churn=7)) == moved_less          # churn does not rank an invalid state either
+    # ... and among VALID states it still decides, both ways round
+    assert score(v(True, 0.01)) > score(v(True, 5.0))
+    assert score(v(True, 0.5)) > score(v(True, 0.5, churn=3))
+
+
 def test_a_file_with_no_faithful_measurement_can_still_be_clean() -> None:
     assert _rule(faithful=None) is True
 
