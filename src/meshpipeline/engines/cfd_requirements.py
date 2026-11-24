@@ -347,6 +347,10 @@ class Ask:
         self.layer_growth = lay.get("growth")
         self.y_plus = lay.get("y_plus")
         self.local = [dict(e) for e in self.req.get("local") or []]
+        #: NOTE-17: each size typed with picked faces, re-checked on the face map by the engine (snappy/part_levels
+        #: .picked_surfaces): entry id -> {"file", "where"} or {"gone"}; and the level each picked file is refined to
+        self.picked: dict[str, dict] = {}
+        self.picked_levels: dict[str, int] = {}
         self.limits = [dict(lim) for lim in self.req.get("limits") or []]
         #: the case's reference length for a y+ (the engine sets it: the user's ruler, else the body's length)
         self.length_m: float | None = None
@@ -649,6 +653,42 @@ def _region_of(where: str, regions) -> str | None:
     return None
 
 
+#: words that mean the whole body on a model of one body ("the body", "the walls", "the surface")
+_WHOLE_BODY = re.compile(r"^(?:(?:on|at|for|over|in)\s+)?(?:the\s+)?(?:(?:whole|entire|all(?:\s+the)?)\s+)?"
+                         r"(?:body|bodies|walls?|surfaces?|model|part|object|geometry|skin|hull|shape)$"
+                         r"|\beverywhere\b|\ball\s+over\b", re.I)
+
+
+def _picked_level(ask: Ask, e: Mapping, base: float, *, floor: int, level: int, hard_max: int) -> None:
+    """NOTE-17: a size typed with faces picked on the model, on snappyHexMesh: finer than the walls -> a distance
+    refinement on those faces' own triangles at its level (ask.picked_levels, written by the dict); coarser or no
+    finer than the walls, or the faces gone -> told, with the next best."""
+    got = ask.picked.get(str(e["id"])) or {}
+    where = str(e.get("where") or "the face you picked")
+    if not got:
+        ask.not_here(e["id"], f"{where} could not be re-checked on the part as meshed, so nothing was set there "
+                              "(no other face was guessed) - next best: a cell size at the walls")
+        return
+    if not got.get("file"):
+        ask.not_here(e["id"], f"{got.get('gone') or where} is no longer on the part as meshed, so nothing was set "
+                              "there (no other face was guessed)")
+        return
+    if e.get("what") == "coarser":
+        ask.not_here(e["id"], "coarser cells on one face need that face as its own surface; not available yet - next "
+                              "best: a larger cell size for the whole mesh")
+        return
+    lv = (level_for(base, float(e["mm"]) * 1e-3, lo=floor, hi=hard_max) if e.get("what") == "size"
+          else min(hard_max, int(level) + 1))
+    if lv <= int(level):
+        ask.not_here(e["id"], f"cells of {_mm(base / 2 ** lv)} on {where} is not finer than the cells the walls "
+                              f"already have ({_mm(base / 2 ** int(level))}); coarser cells on one face are not "
+                              "available yet - next best: a larger cell size for the whole mesh")
+        return
+    ask.picked_levels[str(got["file"])] = int(lv)
+    tail = f" ({got['gone']} is no longer on the part: not set there)" if got.get("gone") else ""
+    ask.done(e["id"], f"cells of {_mm(base / 2 ** lv)} on {where}{tail}", built_m=base / 2 ** lv, level=int(lv))
+
+
 @guarded(lambda ask, base, *, floor, level, flevel, regions, part_levels: (10, int(level), int(level), int(flevel)))
 def snappy_levels(ask: Ask, base: float, *, floor: int, level: int, flevel: int, regions, part_levels: bool
                   ) -> tuple[int, int, int, int]:
@@ -674,14 +714,19 @@ def snappy_levels(ask: Ask, base: float, *, floor: int, level: int, flevel: int,
             continue                                   # snappy_wake
         if e.get("faces"):
             # NOTE-17: a size typed with picked faces is for those faces only - never spread to a part or every wall
-            ask.not_here(e["id"], "a size on only the faces you picked is not available on this mesher yet")
+            _picked_level(ask, e, base, floor=floor, level=lv, hard_max=hard_max)
             continue
         if part_levels:
             ask.done(e["id"], "set part by part (see the lines about your parts)")
             continue
         r = _region_of(where, regions)
-        mine = r is not None or len(list(regions)) <= 1
-        if not mine:
+        if r is None and len(list(regions)) <= 1 and not _WHOLE_BODY.search(" ".join(where.split())):
+            # ON ONE BODY A PLACE THAT IS NOT THE BODY IS NOT LOCATED: "refine the leading edge" refined the whole
+            # body; it is told, with the next best, and nothing is spread over the walls
+            ask.not_here(e["id"], f"'{where}' was not found on this part, so nothing was set there - next best: "
+                                  "click that face on the part and type the size with it")
+            continue
+        if r is None and len(list(regions)) > 1:
             ask.not_here(e["id"], f"no part named '{where}' in this model (its parts: {', '.join(map(str, regions))})")
             continue
         if e["what"] == "size":
@@ -799,6 +844,8 @@ def snappy_port_levels(ask: Ask, port_lvls: dict, names: Mapping, wall_key: str,
     roles = dict(roles or {})
     for e in ask.local:
         where = str(e.get("where") or "")
+        if e.get("faces"):
+            continue                    # NOTE-17: sized on the picked faces' own surface (snappy_levels)
         if "wake" in where.casefold():
             ask.not_here(e["id"], "an internal flow has no wake behind a body")
             continue

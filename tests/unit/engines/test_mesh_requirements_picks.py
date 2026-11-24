@@ -84,7 +84,10 @@ def test_snappy_never_spreads_a_picked_size_to_the_whole_wall():
     ask = CR.Ask(req, "snappy")
     cap, lo, hi, _f = CR.snappy_levels(ask, 0.02, floor=3, level=3, flevel=4, regions=[], part_levels=False)
     rid = req["local"][0]["id"]
-    assert ask.rows[rid]["status"] == "not_applied" and "faces you picked" in ask.rows[rid]["built"]
+    # (no face map reached this Ask: the pick is told as not re-checked, never spread; the lever itself is in
+    # tests/unit/engines/test_snappy_picked_faces.py)
+    assert ask.rows[rid]["status"] == "not_applied" and "the face you picked" in ask.rows[rid]["built"]
+    assert "no other face was guessed" in ask.rows[rid]["built"]
     assert (lo, hi) == (3, 3)                                       # the walls are as they were
 
 
