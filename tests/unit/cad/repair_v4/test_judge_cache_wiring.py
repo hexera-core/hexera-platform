@@ -449,7 +449,7 @@ def test_the_cache_counts_hits_misses_stores_and_what_it_refused_to_store() -> N
     from meshpipeline.cad.repair_v4.verdict.cache import MemoryStore, VerdictCache
 
     cache = VerdictCache(MemoryStore())
-    assert cache.stats() == {"hits": 0, "misses": 0, "stored": 0, "unstable": 0, "errors": 0}
+    assert cache.stats() == {"hits": 0, "misses": 0, "stored": 0, "unstable": 0, "errors": 0, "leased": 0, "waited": 0}
 
     assert cache.get("sha1", "cfg") is None
     assert cache.put("sha1", "cfg", [_member()]) is True
@@ -459,7 +459,7 @@ def test_the_cache_counts_hits_misses_stores_and_what_it_refused_to_store() -> N
     assert cache.get("sha2", "cfg") is None
     cache.note_error()
 
-    assert cache.stats() == {"hits": 1, "misses": 2, "stored": 1, "unstable": 1, "errors": 1}
+    assert cache.stats() == {"hits": 1, "misses": 2, "stored": 1, "unstable": 1, "errors": 1, "leased": 0, "waited": 0}
 
 
 def test_a_store_that_raises_is_counted_as_an_error_not_a_verdict() -> None:

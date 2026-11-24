@@ -196,11 +196,18 @@ def _assemble(
             raise CheckerUnavailable(f"cannot read {step!r} to key the verdict cache: {exc}") from exc
         config = panel_config_hash(chosen, MEMBER_TIMEOUT_S, mesher_versions(pool),  # fails closed, loudly
                                    extra=cap or None)
-        panel = _cache_get(cache, sha, config)
+        # D23: ONE unit of a wave meshes a given STEP under a given panel; concurrent arms wait for its panel
+        # (VerdictCache.single_flight), bounded by the panel's own worst case
+        try:
+            panel = cache.single_flight(
+                sha, config, lambda: list(runner(pool, step, chosen, timeout_s=MEMBER_TIMEOUT_S, **cap)),
+                lease_s=lease_seconds(len(chosen)))
+        except Exception as exc:  # noqa: BLE001 - a store failure is a miss, never a verdict and never a crash
+            logger.warning("verdict cache unusable, meshing instead: %s: %s", type(exc).__name__, exc)
+            cache.note_error()
+            panel = None
     if panel is None:
         panel = list(runner(pool, step, chosen, timeout_s=MEMBER_TIMEOUT_S, **cap))
-        if cache is not None and sha is not None and config is not None:
-            _cache_put(cache, sha, config, panel)
 
     # Layer 3 is REPORTED, never a gate (`clean_of`), so it is measured on every row it can be measured on -
     # including one that failed layer 1, where the fidelity numbers still say what the repair did to the part.
@@ -217,6 +224,12 @@ def _assemble(
 
     clean = clean_of(tier=tier, inconclusive=inconclusive, valid=valid, panel=panel, faithful=faithful)
     return Verdict(valid, panel, faithful, clean, tier, inconclusive)
+
+
+def lease_seconds(n_members: int) -> float:
+    """How long a single-flight lease lives (D23): the panel's worst case run serially - every member to its
+    timeout and its one retry at twice the budget - plus slack. A claimer that dies frees the file after this."""
+    return n_members * MEMBER_TIMEOUT_S * 3 + 120.0
 
 
 def _cache_get(cache: VerdictCache, sha: str, config: str) -> list[Any] | None:
