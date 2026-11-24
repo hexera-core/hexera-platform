@@ -154,6 +154,11 @@ def test_the_cad_check_holds_the_mesh_to_the_passage_meshed_when_a_cavity_was_to
     _stage_passages(ws, srcs, "wall", _DECL)
     _, source, fluid = cad_reference(ws, "internal")
     assert source == "staged fluid boundary, the passage meshed" and fluid
+    # cfMesh reads p0 into its geom.stl and removes p0: geom.stl is then the passage meshed
+    import shutil
+    shutil.rmtree(ws / "_passages" / "p0")
+    write_stl_binary(ws / "geom.stl", list(_box_triangles((0, 0, 0), (1, 1, 4))))
+    assert cad_reference(ws, "internal")[1] == "staged fluid boundary, the passage meshed"
 
 
 def test_the_manifest_drops_the_told_openings_and_records_them_and_the_passages(tmp_path):
