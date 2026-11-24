@@ -219,11 +219,17 @@ def _assemble(
                                    extra=cap or None)
         # D23: ONE unit of a wave meshes a given STEP under a given panel; concurrent arms wait for its panel
         # (VerdictCache.single_flight), bounded by the panel's own worst case
+        meshed: list[bool] = []
+
+        def mesh() -> list[Any]:
+            meshed.append(True)
+            return list(runner(pool, step, chosen, timeout_s=member_timeout, **cap, **threads))
+
         try:
-            panel = cache.single_flight(
-                sha, config, lambda: list(runner(pool, step, chosen, timeout_s=member_timeout, **cap, **threads)),
-                lease_s=lease_seconds(len(chosen)))
-        except Exception as exc:  # noqa: BLE001 - a store failure is a miss, never a verdict and never a crash
+            panel = cache.single_flight(sha, config, mesh, lease_s=lease_seconds(len(chosen)))
+        except Exception as exc:  # noqa: BLE001 - a STORE failure is a miss, never a verdict and never a crash
+            if meshed:
+                raise  # the meshing itself failed: once, as without a cache - never meshed a second time
             logger.warning("verdict cache unusable, meshing instead: %s: %s", type(exc).__name__, exc)
             cache.note_error()
             panel = None
