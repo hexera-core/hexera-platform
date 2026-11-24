@@ -1,0 +1,1 @@
+{"i": 146, "sha": "6aa493da5b", "v": "crs-v4.verdict.7", "status": "fail", "error_kind": "netgen_meshing_failed", "message": "NgException: OCC-Triangulation could not be built for face 41 [read from every STEP root: Netgen's STEP reader keeps only the first]", "min_sicn": null, "elements": 0, "cause": null, "located": [["face:28ff8a8a57274c2c", "netgen face 41"]], "s": 102.0}

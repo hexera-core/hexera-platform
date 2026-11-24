@@ -1,0 +1,1 @@
+{"i": 74, "sha": "88130bbc32", "v": "crs-v4.verdict.7", "status": "fail", "error_kind": "low_quality", "message": "minSICN 0.006585 is below 0.01 (68938 tets)", "min_sicn": 0.006585223227839722, "elements": 68938, "cause": null, "located": [], "s": 15.6}
