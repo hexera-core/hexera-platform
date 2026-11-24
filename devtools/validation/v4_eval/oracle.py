@@ -180,8 +180,8 @@ def one(entry: dict, inputs: str, out: str, *, op_timeout: float = OP_TIMEOUT_S,
                 cands = list(gen.propose(st, 10**6))
                 cands += [S.Candidate(S.RUN_STAGE, [], {"stage": s.name}, "oracle", f"run stage {s.name}")
                           for s in STAGES]
-                if extra is not None:
-                    cands += list(extra(st))
+                if extra is not None:   # lane C: extra_rows(state, d0_mm) -> list[search.Candidate]
+                    cands += list(extra(st, d0))
                 return cands
 
             def evaluate(ws: Any, c: Any, depth: int, path: list, base_cheap: tuple, base_valid: bool) -> dict:

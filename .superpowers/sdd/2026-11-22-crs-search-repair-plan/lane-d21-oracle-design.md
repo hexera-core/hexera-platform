@@ -71,3 +71,10 @@ Files are NOT split between owners: one launch, one manifest, one collector, so 
 - Per-file wall: 2 h (proposed).
 - netgen: the sweep judges with whatever netgen_occ is at its commit; if the every-root fix (D20) is decided first,
   the sweep should run after it, or its clean column judges part of the part.
+
+## Logged, not yet worked (placement)
+- 68ef8f5e662d (58 bodies, input_only, no op applied): gmsh_alt periodic_surface names "surface 785"; its located
+  fingerprint matches no input face (Lane C v3c triage: OLD 28 / NEW 1 on the classifier). Neither .5 (prod padding)
+  nor .6 (grid) covers a mm member on an unmodified input. Possibly the same cause as 1c9153fac8 (0 placed for every
+  member under both fixes). Next look: compare gmsh's surface 785 box with every workspace face box (multi-body STEP:
+  gmsh may split/merge a periodic face across bodies, or number surfaces of a 58-body compound differently).
