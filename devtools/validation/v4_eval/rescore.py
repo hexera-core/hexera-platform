@@ -64,9 +64,21 @@ def read_rows(root: Path) -> tuple[list[dict], list[str]]:
     return rows, sorted(partial)
 
 
+def read_excluded(root: Path) -> list[dict]:
+    """Every shard's EXCLUDED entries: one per (file, arm) the harness reached no verdict on (a wall kill, a pool
+    death). A running shard has none yet, which is not an error."""
+    out: list[dict] = []
+    for shard in sorted(root.glob("shard-*")):
+        path = shard / "EXCLUDED.json"
+        if path.is_file():
+            out += json.loads(path.read_text())
+    return out
+
+
 def rescore(root: Path | str, *, arms: Sequence[str] | None = None) -> dict[str, Any]:
     """Both numbers per arm, and the files the decision moved."""
     rows, partial = read_rows(Path(root))
+    excluded = read_excluded(Path(root))
     for r in rows:
         missing = [k for k in REQUIRED if r.get(k) is None]
         if missing and not r.get("inconclusive"):
@@ -85,6 +97,7 @@ def rescore(root: Path | str, *, arms: Sequence[str] | None = None) -> dict[str,
         lost = [r for r in old if not _clean(r["out_valid"], r["out_panel_passes"], r["panel_size"])]
         out[a] = {
             "files": len(mine), "conclusive": len(con), "inconclusive": len(mine) - len(con),
+            "excluded": sum(1 for x in excluded if x.get("arm") == a),
             "clean_old": len(old), "clean_new": len(new),
             "clean_in_old": len(in_old), "clean_in_new": len(in_new),
             "clean_gain_old": len(old) - len(in_old), "clean_gain_new": len(new) - len(in_new),
@@ -94,7 +107,41 @@ def rescore(root: Path | str, *, arms: Sequence[str] | None = None) -> dict[str,
             "gaming": _gaming(new),
         }
     return {"definition": "clean = valid + panel (owner decision 2026-11-24)", "rows": len(rows), "arms": out,
-            "partial": bool(partial), "partial_shards": partial}
+            "partial": bool(partial), "partial_shards": partial,
+            "unpaired_files": _unpaired(rows, excluded, names)}
+
+
+def _unpaired(rows: Sequence[Mapping[str, Any]], excluded: Sequence[Mapping[str, Any]],
+              arms: Sequence[str]) -> list[dict[str, Any]]:
+    """Files at least one arm has no verdict for, so NO arm comparison can use them.
+
+    A paired comparison needs every arm to have judged the same file. When a file is excluded on some arms (the
+    1800 s file wall kills the slowest ones first) and measured on others, its per-arm numbers are not comparable
+    and the file silently shrinks the paired set. Naming it is the point: a wave can look complete per arm while no
+    arm pair shares the file."""
+    by_sha: dict[str, dict[str, Any]] = {}
+    for r in rows:
+        f = by_sha.setdefault(str(r["sha256"]), {"name": r.get("name"), "sha256": str(r["sha256"]),
+                                                 "source": r.get("source"), "measured": set(), "gone": {}})
+        f["measured"].add(str(r["arm"]))
+    for x in excluded:
+        f = by_sha.setdefault(str(x["sha256"]), {"name": x.get("name"), "sha256": str(x["sha256"]),
+                                                 "source": x.get("source"), "measured": set(), "gone": {}})
+        if x.get("arm"):
+            f["gone"][str(x["arm"])] = str(x.get("reason", ""))
+    out = []
+    for f in by_sha.values():
+        missing = [a for a in arms if a not in f["measured"]]
+        if not missing:
+            continue
+        out.append({"name": f["name"], "sha256": f["sha256"], "source": f["source"],
+                    "measured_arms": sorted(f["measured"]), "excluded_arms": sorted(f["gone"]),
+                    "unmeasured_arms": sorted(missing),
+                    # FINAL only when every missing arm has an EXCLUDED entry: in a running wave an arm with no row
+                    # may simply not have reached the file yet, which is not a loss
+                    "final": all(a in f["gone"] for a in missing),
+                    "reasons": sorted({r for r in f["gone"].values() if r})})
+    return sorted(out, key=lambda x: str(x["sha256"]))
 
 
 def _why(row: Mapping[str, Any]) -> str:
@@ -148,11 +195,12 @@ def render(out: Mapping[str, Any], *, title: str, source: str) -> str:
              "published under the previous rule (valid + panel + faithful); `new` is the same rows under the current "
              "one.",
              "",
-             "| arm | files | conclusive | clean old | clean new | clean in (new) | gain old | gain new |",
-             "|---|---|---|---|---|---|---|---|"]
+             "| arm | files | conclusive | excluded | clean old | clean new | clean in (new) | gain old | gain new |",
+             "|---|---|---|---|---|---|---|---|---|"]
     for a, b in out["arms"].items():
-        lines.append(f"| {a} | {b['files']} | {b['conclusive']} | {b['clean_old']} | **{b['clean_new']}** | "
-                     f"{b['clean_in_new']} | {b['clean_gain_old']} | **{b['clean_gain_new']}** |")
+        lines.append(f"| {a} | {b['files']} | {b['conclusive']} | {b.get('excluded', 0)} | {b['clean_old']} | "
+                     f"**{b['clean_new']}** | {b['clean_in_new']} | {b['clean_gain_old']} | "
+                     f"**{b['clean_gain_new']}** |")
     for a, b in out["arms"].items():
         if b["newly_clean"] or b["no_longer_clean"]:
             lines += ["", f"## {a}: files the decision moved"]
@@ -160,6 +208,23 @@ def render(out: Mapping[str, Any], *, title: str, source: str) -> str:
                 lines.append(f"- now clean: `{f['name']}` ({f['source']}) - {f['why']}")
             for f in b["no_longer_clean"]:
                 lines.append(f"- no longer clean: `{f['name']}` (its stored flag did not follow its own layers)")
+    unpaired = out.get("unpaired_files") or []
+    final = [f for f in unpaired if f.get("final")]
+    pending = [f for f in unpaired if not f.get("final")]
+    if final:
+        lines += ["", "## Files that contribute to no arm comparison", "",
+                  "Every arm missing below was EXCLUDED, so this is final: no arm pair shares these files and they "
+                  "cannot move a marginal either way.", ""]
+        for f in final:
+            lines.append(f"- `{f['name']}` ({f['source']}): measured on {', '.join(f['measured_arms']) or 'no arm'}; "
+                         f"excluded on {', '.join(f['excluded_arms'])}"
+                         + (f" ({'; '.join(f['reasons'])})" if f["reasons"] else ""))
+    if pending:
+        lines += ["", "## Files an arm has not reached yet (the wave is still running)", "",
+                  "These are NOT losses: the arm has no row because its shard has not finished the file.", ""]
+        for f in pending:
+            lines.append(f"- `{f['name']}`: measured on {', '.join(f['measured_arms']) or 'no arm'}; waiting on "
+                         f"{', '.join(a for a in f['unmeasured_arms'] if a not in f['excluded_arms'])}")
     g = next(iter(out["arms"].values()))["gaming"] if out["arms"] else {}
     if g:
         lines += ["", "## Gaming review (volume / bbox)", ""]
