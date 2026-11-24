@@ -403,7 +403,7 @@ class CachingModelRouter:
             trace=tools is not None)
 
     async def call_repair_v4_propose(self, messages, tools, *, route, job_id="", user_id="",
-                                     tool_choice="auto", cache_key=""):
+                                     tool_choice="auto", cache_key="", max_output_tokens=None):
         # FORWARDED, never recorded or replayed. The proposer's rounds are priced one by one into a
         # per-wave spending ledger; an answer replayed from a record would cost $0.00 against that
         # ledger and let a cap be sailed past on a rerun. Without this method the call kind would
@@ -411,8 +411,9 @@ class CachingModelRouter:
         inner = getattr(self._inner, "call_repair_v4_propose", None)
         if inner is None:
             raise ToolsUnsupported("the wrapped router has no repair_v4_propose call kind")
+        extra = {} if max_output_tokens is None else {"max_output_tokens": max_output_tokens}
         return await inner(messages=messages, tools=tools, route=route, job_id=job_id, user_id=user_id,
-                           tool_choice=tool_choice, cache_key=cache_key)
+                           tool_choice=tool_choice, cache_key=cache_key, **extra)
 
     def repair_v4_prices(self, route):
         inner = getattr(self._inner, "repair_v4_prices", None)

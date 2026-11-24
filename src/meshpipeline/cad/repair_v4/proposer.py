@@ -78,7 +78,12 @@ FILE_USD_CEILING = 1.00
 #: failed after the router's own retries (429, 5xx, timeouts, a throttle slot that never came). Infrastructure, not a
 #: verdict: an evaluation row whose AI stopped for this reason is INCONCLUSIVE, never a failed repair.
 MODEL_UNAVAILABLE: Literal["model_unavailable"] = "model_unavailable"
-StopReason = Literal["wave_cap", "file_ceiling", "max_turns", "model_unavailable", "input_too_large"]
+StopReason = Literal["wave_cap", "file_ceiling", "max_turns", "model_unavailable", "input_too_large",
+                     "no_affordable_turn"]
+#: The least output allowance a turn is reserved and requested with when the full REPAIR_V4_PROPOSE_MAX_OUTPUT_TOKENS
+#: does not fit the room left. Measured replies are 112 output tokens median and 263 max (lane D11, 47 turns), so
+#: 1,024 is ~4x the largest seen; below it a turn is not worth asking for and the file stops `no_affordable_turn`.
+MIN_OUTPUT_TOKENS = 1024
 #: Consecutive failed model rounds (the router has already retried each) before the AI is given up on for a file.
 MAX_CONSECUTIVE_FAILURES = 3
 #: The router's failure marker for a round whose final word was a rate limit (`router._PROPOSE_ROLE:<category>`).
@@ -516,6 +521,8 @@ class AIProposer:
         self._output_tokens = output_tokens
         self._max_input_tokens = max_input_tokens
         self._last_cost: float | None = None
+        #: the output allowance THIS turn was reserved with; below `output_tokens` it is also what the call requests
+        self._turn_output_tokens = output_tokens
         self._last_tokens = 0
         #: the shard's `model_throttle.WaveThrottle` (None: unthrottled, e.g. one file on the engine path)
         self._throttle = throttle
@@ -547,7 +554,7 @@ class AIProposer:
     def ai_capped(self) -> bool:
         """True when a spending limit - the shared wave cap or this file's own ceiling - ended the AI's part
         in this file. The file then runs deterministic-only and is marked `ai_capped`."""
-        return self.stop_reason in ("wave_cap", "file_ceiling")
+        return self.stop_reason in ("wave_cap", "file_ceiling", "no_affordable_turn")
 
     @property
     def model_unavailable(self) -> bool:
@@ -652,7 +659,30 @@ class AIProposer:
         if self._last_cost is not None:
             usd = max(usd, self._last_cost * _GROWTH)
         self._last_tokens = tokens
-        return self._ledger.admit(self.file_id, usd, file_ceiling_usd=self.usd_ceiling)
+        self._turn_output_tokens = self._output_tokens
+        admission = self._ledger.admit(self.file_id, usd, file_ceiling_usd=self.usd_ceiling)
+        if admission.ok:
+            return admission
+        # The full allowance does not fit. Most of a reservation is the OUTPUT allowance (4,096 tokens ~ $0.20 on
+        # astra) while replies are ~100-260 tokens: reserve - and request - what the room left can pay for, so a
+        # file gets its turn whenever any useful turn is affordable (lane D9: a file got ZERO turns behind a
+        # full-allowance reservation that did not fit its shard's remaining slice).
+        p_in, p_out, _cached = self._prices
+        room = self._ledger.headroom_usd(self.file_id, file_ceiling_usd=self.usd_ceiling)
+        out = min(self._output_tokens, int((room - tokens * p_in / 1e6) * 1e6 / p_out)) if p_out > 0 else 0
+        if out >= MIN_OUTPUT_TOKENS:
+            fitted = (tokens * p_in + out * p_out) / 1e6
+            if self._last_cost is not None:
+                fitted = max(fitted, self._last_cost * _GROWTH)
+            again = self._ledger.admit(self.file_id, fitted, file_ceiling_usd=self.usd_ceiling)
+            if again.ok:
+                self._turn_output_tokens = out
+                return again
+        if self.turns_used == 0:
+            # not one turn is affordable: say so, distinctly - never a silent zero behind wave_cap / file_ceiling
+            self._stop("no_affordable_turn")
+            return None
+        return admission
 
     def _failed_round(self) -> bool:
         """Count a failed model round; True (and the stop recorded) when it was the last one allowed."""
@@ -684,8 +714,9 @@ class AIProposer:
         if call is None:
             from meshpipeline.contracts.model_inference import call_repair_v4_propose
             call = call_repair_v4_propose
+        extra = {} if self._turn_output_tokens >= self._output_tokens else {"max_output_tokens": self._turn_output_tokens}
         return await call(self._messages, self._tools, route=self.route, job_id=self.job_id,
-                          user_id=self.user_id, tool_choice="auto", cache_key=self._cache_key)
+                          user_id=self.user_id, tool_choice="auto", cache_key=self._cache_key, **extra)
 
     def _user_turn(self, state: Any, sites: list[Site]) -> dict:
         body: dict[str, Any] = {"observation": self._observe(state, sites),

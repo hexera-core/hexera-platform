@@ -286,7 +286,8 @@ def _propose_route(provider: str, model: str) -> ModelRoute:
 
 async def call_repair_v4_propose(
     messages: Conversation, tools: list[ToolDefinition], *, route: str, job_id: str = "",
-    user_id: str = "", tool_choice: ToolChoice = "auto", cache_key: str = "") -> ProposeReply:
+    user_id: str = "", tool_choice: ToolChoice = "auto", cache_key: str = "",
+    max_output_tokens: int | None = None) -> ProposeReply:
     from dataclasses import replace
 
     from meshpipeline.adapters.inference_telemetry.pricing import estimate_cost, require_price
@@ -297,6 +298,8 @@ async def call_repair_v4_propose(
         raise ValueError(f"repair_v4_propose route {route!r} is not 'provider:model'")
     require_price(provider, model)          # before anything else: no price, no call
     spec = replace(_PROPOSE_SPEC, cache_key=cache_key)
+    if max_output_tokens is not None:  # only ever LOWER: the proposer reserved exactly this allowance
+        spec = replace(spec, max_tokens=max(1, min(int(max_output_tokens), _PROPOSE_SPEC.max_tokens)))
 
     async def _invoke(target: RouteTarget):
         return await protocol_for(target.provider).invoke(

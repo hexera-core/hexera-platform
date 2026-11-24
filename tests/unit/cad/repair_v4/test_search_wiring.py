@@ -349,7 +349,7 @@ def test_input_too_large_and_model_unavailable_are_recorded_and_are_not_ai_cappe
 def test_a_file_ceiling_is_ai_capped_and_names_its_reason() -> None:
     ai = proposer(FakeModel([]), usd_ceiling=0.0001)
     r = run([ai], World())
-    assert r.ai_stop_reason == "file_ceiling" and r.ai_capped is True
+    assert r.ai_stop_reason == "no_affordable_turn" and r.ai_capped is True
 
 
 def test_a_proposer_is_a_model_generator_to_the_budget() -> None:
