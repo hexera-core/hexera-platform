@@ -394,7 +394,7 @@ def test_a_constant_all_clean_verdict_cannot_pass_the_input_check(tmp_path) -> N
     split = split_rows()
     build(tmp_path, WAVE, split, rows_for=lambda b, i, a: arm_row(b, i, a, in_clean=True, in_panel_passes=3,
                                                                  out_clean=True, out_panel_passes=3))
-    with pytest.raises(report.ReportRefused, match="split says clean"):
+    with pytest.raises(report.ReportRefused, match="split says clean.*broken checker"):
         load(tmp_path, split)
 
 
@@ -1386,3 +1386,75 @@ def test_a_valid_unclean_output_inside_the_limits_is_not_flagged(tmp_path) -> No
     gv = report.build_report(load(tmp_path, split))["gaming_flags_valid_unclean"]
     assert all(b["files"] == 0 for b in gv["arms"].values())
     assert "none in this wave" in report.render_text(report.build_report(load(tmp_path, split)))
+
+
+# ------------------------------------------------------------------ C13 (LEAD-3): spend bound per ORIGINAL shard
+
+NORMAL4 = ev.WAVES["snap_v2_dev"]   # the four arms, a NORMAL wave: $50 cap, so a merged slice of $25 over 2 shards
+
+
+def _pooled_wave(tmp_path, groups):
+    """v4's merged-dev case: merged shard 1 pools $1 AI rows from ~40 files (about $40, over the merged slice $25 of
+    the $50 cap / 2), while the regroup's per-ORIGINAL-shard spends are in `groups`. Every file stays under the $1
+    per-file ceiling."""
+    split = split_rows(80)
+
+    def rows(b, i, a):
+        hot = a == "search_ai" and ev.shard_of(b.sha256, 1, 2)
+        return arm_row(b, i, a, model=1.0 if hot else 0.0)
+
+    build(tmp_path, NORMAL4, split, rows_for=rows, prov={"regrouped": True, "groups": groups})
+    return split
+
+
+def test_a_merged_shard_over_its_slice_passes_when_every_original_shard_stayed_under_its_own(tmp_path) -> None:
+    split = _pooled_wave(tmp_path, {"dev_ai": {"n_shards": 4, "shard_spend_usd": [10.0, 10.0, 10.0, 10.0]},
+                                    "dev_det": {"n_shards": 2, "shard_spend_usd": [0.0, 0.0]}})
+    rep = report.build_report(load(tmp_path, split, wave=NORMAL4))   # the per-merged-shard check refused this
+    assert rep["status"] in ("OK", "UNRELIABLE")
+
+
+def test_an_original_shard_over_its_own_slice_is_refused_by_name(tmp_path) -> None:
+    split = _pooled_wave(tmp_path, {"dev_ai": {"n_shards": 4, "shard_spend_usd": [15.0, 10.0, 10.0, 5.0]}})
+    with pytest.raises(report.ReportRefused, match=r"group dev_ai shard 1/4: spent \$15.0000, over its slice \$12.5000"):
+        load(tmp_path, split, wave=NORMAL4)
+
+
+def test_without_the_original_numbers_the_merged_shard_check_still_binds(tmp_path) -> None:
+    split = _pooled_wave(tmp_path, {"dev_ai": {"n_shards": 4}})   # an older regroup: no shard_spend_usd
+    with pytest.raises(report.ReportRefused, match="over its slice"):
+        load(tmp_path, split, wave=NORMAL4)
+
+
+# ------------------------------------------------------------------ C14b: label drift is a stratum, not a refusal
+
+def test_a_file_whose_input_judges_clean_against_a_stale_unclean_label_is_its_own_stratum(tmp_path) -> None:
+    """v4's dev report REFUSED on 4 files whose input judged clean on the run commit while the split (labelled on
+    older code) said unclean. Now: named, with this commit's input verdict, and in no rate."""
+    split = split_rows()
+
+    def rows(b, i, a):
+        r = arm_row(b, i, a)
+        if i == 0:   # this commit judges the input clean; the split says unclean
+            r.update(in_clean=True, in_panel_passes=PANEL)
+            if a == "input_only":
+                r.update(out_clean=True, out_panel_passes=PANEL)
+        return r
+
+    build(tmp_path, WAVE, split, rows_for=rows)
+    rep = report.build_report(load(tmp_path, split))
+    dr = rep["label_drift_stratum"]
+    assert dr["files"] == 1 and dr["names"][0]["name"] == split[0].name
+    assert dr["names"][0]["split_clean"] is False and dr["names"][0]["input_clean"] is True
+    assert rep["files_measured_strata"] == len(split) - 1           # out of every rate
+    assert all(b["files"] == len(split) - 1 for b in rep["arms"].values())
+    assert "## Label drift (1 file(s)" in report.render_text(rep)
+
+
+def test_arms_that_disagree_on_the_input_are_still_refused(tmp_path) -> None:
+    split = split_rows()
+    build(tmp_path, WAVE, split, rows_for=lambda b, i, a: {**arm_row(b, i, a), "in_clean": True,
+                                                           "in_panel_passes": PANEL} if (i == 0 and a == "staged")
+          else arm_row(b, i, a))
+    with pytest.raises(report.ReportRefused, match="one file has one input"):
+        load(tmp_path, split)

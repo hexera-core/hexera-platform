@@ -256,6 +256,33 @@ HARD_CODE_TEXT: dict[str, str] = {
 }
 
 
+#: B21c: the chains lane D's oracle pass 1 measured, keyed on the defect family the table itself records
+#: (`winners_by_defect.jsonl`'s `label_family`), counting only UNGAMED wins that no v4 arm reached - and counted in
+#: DISTINCT FILES, not winning paths, because a pattern that won 26 times on two files generalises worse than one
+#: that won 8 times on eight. The same counts order the det sweep's hoist (search.CHAIN_FOLLOWUPS). No file, no
+#: sha, no split name: the dev sample is tuning data and the held-out split has to stay a fair test.
+CHAIN_HINTS = """WHAT HAS WORKED, BY DEFECT, measured by running every op at every site on a dev sample and keeping
+only the sequences that reached clean where no single op did. The number is HOW MANY DIFFERENT FILES that sequence
+won on - two files is thin evidence, eight is strong.
+- overlapping_facets: split_angle THEN run_stage (8 files); remove_small THEN split_angle (7); remove_small THEN
+  defeature (7); remove_small THEN run_stage (7); defeature THEN run_stage (6).
+- body_overlap: fuse THEN conformalise (2 files, but 26 wins on them - the strongest pattern on one defect
+  anywhere, and the thinnest evidence); fuse THEN fuse (2); defeature THEN defeature (2).
+- edge_through_face: defeature THEN defeature (2 files); defeature THEN run_stage (2).
+- brep_invalid: defeature THEN run_stage (2 files).
+- open_shell: defeature THEN defeature (2 files); fill_loop THEN remove_small (1).
+- self_intersection: defeature THEN fuse (1 file); defeature THEN conformalise (1).
+- plc_intersection: remove_small THEN split_angle (1 file); defeature THEN split_by_proximity (1).
+- no_volume: split_by_proximity THEN remove_small (1 file).
+HOW TO USE IT. These are two-step sequences: the first op often does not clean the file and often does not even
+improve the verdict much, and the win comes from the FOLLOW-UP. So when a first step HOLDS - the verdict is no
+worse - prefer its measured follow-up over starting a new line of attack. Aim each step at what the checker
+measured: the faces a mesher located, the pairs in the observation's clashes, the bodies the site names. When you
+follow a removal with `run_stage`, `bodies`, `condition` and `shells` are the three that won.
+This is 29 files' worth of evidence and your file may not look like any of them. Nothing here is a rule, and a
+sequence the verdict rejects is still rejected."""
+
+
 def _clean_definition() -> str:
     """WHAT CLEAN MEANS, written from the checker's own constants so the model is told what the checker enforces and
     nothing else: the hard and soft codes of layer 1 and the SICN floor and member time limit of layer 2. Since the
@@ -321,6 +348,8 @@ A malformed call costs nothing but a turn: you will get a structured error namin
 parameter out of bounds, a target that no longer exists) and may call again. The turns, the dollars spent on you
 and the wall-clock are all budgeted and shown to you; stop when the file is clean or nothing more can be tried.
 {RECIPES_PARAGRAPH if recipes else ""}
+{CHAIN_HINTS}
+
 OPERATIONS AND THEIR PARAMETER SCHEMAS (JSON Schema; `x-targets` says what `targets` must hold):
 {_catalogue(stage_names)}
 """

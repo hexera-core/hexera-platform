@@ -1,0 +1,389 @@
+{
+ "PROVISIONAL": "PHASE PROBE v1 (2026-11-24): DIAGNOSTIC ONLY, never a measurement list. The 8 FAST-DEV v1 dev files that hit the 1200 s file wall, run to break each file wall down by phase (input verdict, staged healer, confirm_staged, search, output verdict). Rows copied byte-for-byte from FAST_dev_v1.json.",
+ "frozen": "2026-11-24",
+ "files": [
+  {
+   "family": "overlapping_facets",
+   "first_failing_layer": "panel",
+   "group": null,
+   "kind": null,
+   "kind_status": null,
+   "name": "abc/0053_00539073_58a66b7522115e0f6fe163e3_step_000.step",
+   "sha256": "4c1fc7d5579d76e36784adada096c94b265ea1a1403821c4140024987681050d",
+   "source": "abc_fail",
+   "verdict_summary": {
+    "clean": false,
+    "counts_for_scoreboard": true,
+    "faithful": true,
+    "hard": [],
+    "out_of_scope": false,
+    "panel": [
+     {
+      "error_kind": "other",
+      "min_sicn": null,
+      "name": "gmsh_prod",
+      "status": "fail"
+     },
+     {
+      "error_kind": "overlapping_facets",
+      "min_sicn": null,
+      "name": "gmsh_default",
+      "status": "fail"
+     },
+     {
+      "error_kind": "low_quality",
+      "min_sicn": 0.00012514823191292352,
+      "name": "gmsh_alt",
+      "status": "fail"
+     },
+     {
+      "error_kind": null,
+      "min_sicn": 0.28382621059951957,
+      "name": "netgen_occ",
+      "status": "pass"
+     }
+    ],
+    "soft": [
+     "small_edge"
+    ],
+    "tier": "full",
+    "valid": true
+   }
+  },
+  {
+   "family": "overlapping_facets",
+   "first_failing_layer": "panel",
+   "group": null,
+   "kind": null,
+   "kind_status": null,
+   "name": "abc/0053_00532577_58a4246ffb62730f86f554b7_step_003.step",
+   "sha256": "5accc12fa47d338aa8a3b7f81febcd5b1c0dc9c2ba57141ae632223c2006336d",
+   "source": "abc_fail",
+   "verdict_summary": {
+    "clean": false,
+    "counts_for_scoreboard": true,
+    "faithful": true,
+    "hard": [],
+    "out_of_scope": false,
+    "panel": [
+     {
+      "error_kind": "other",
+      "min_sicn": null,
+      "name": "gmsh_prod",
+      "status": "fail"
+     },
+     {
+      "error_kind": "overlapping_facets",
+      "min_sicn": null,
+      "name": "gmsh_default",
+      "status": "fail"
+     },
+     {
+      "error_kind": "timeout",
+      "min_sicn": null,
+      "name": "gmsh_alt",
+      "status": "timeout"
+     },
+     {
+      "error_kind": null,
+      "min_sicn": 0.33419092209180823,
+      "name": "netgen_occ",
+      "status": "pass"
+     }
+    ],
+    "soft": [],
+    "tier": "full",
+    "valid": true
+   }
+  },
+  {
+   "family": "overlapping_facets",
+   "first_failing_layer": "panel",
+   "group": null,
+   "kind": null,
+   "kind_status": null,
+   "name": "abc/0052_00527796_945276583aeb7d4221f130f8_step_006.step",
+   "sha256": "695d74ca7fa66509d84905c33bbb6747a1fd1c36ebe1252dfea990fb66e3b96b",
+   "source": "abc_fail",
+   "verdict_summary": {
+    "clean": false,
+    "counts_for_scoreboard": true,
+    "faithful": true,
+    "hard": [],
+    "out_of_scope": false,
+    "panel": [
+     {
+      "error_kind": "low_quality",
+      "min_sicn": 0.0024602356129433066,
+      "name": "gmsh_prod",
+      "status": "fail"
+     },
+     {
+      "error_kind": "overlapping_facets",
+      "min_sicn": null,
+      "name": "gmsh_default",
+      "status": "fail"
+     },
+     {
+      "error_kind": "low_quality",
+      "min_sicn": 0.008962574684086568,
+      "name": "gmsh_alt",
+      "status": "fail"
+     },
+     {
+      "error_kind": "netgen_timeout",
+      "min_sicn": null,
+      "name": "netgen_occ",
+      "status": "timeout"
+     }
+    ],
+    "soft": [
+     "small_edge"
+    ],
+    "tier": "full",
+    "valid": true
+   }
+  },
+  {
+   "family": "overlapping_facets",
+   "first_failing_layer": "panel",
+   "group": null,
+   "kind": null,
+   "kind_status": null,
+   "name": "abc/0053_00535069_bb0bc8e7914fdea894ad2ec6_step_012.step",
+   "sha256": "722c122c9b800e234fb9804ffd1d4c2c49c95f9d13c937b4af6c8053240ddf50",
+   "source": "abc_fail",
+   "verdict_summary": {
+    "clean": false,
+    "counts_for_scoreboard": true,
+    "faithful": true,
+    "hard": [],
+    "out_of_scope": false,
+    "panel": [
+     {
+      "error_kind": "low_quality",
+      "min_sicn": 0.003911452446770141,
+      "name": "gmsh_prod",
+      "status": "fail"
+     },
+     {
+      "error_kind": "overlapping_facets",
+      "min_sicn": null,
+      "name": "gmsh_default",
+      "status": "fail"
+     },
+     {
+      "error_kind": "low_quality",
+      "min_sicn": 0.001405070623707243,
+      "name": "gmsh_alt",
+      "status": "fail"
+     },
+     {
+      "error_kind": null,
+      "min_sicn": 0.04366716850544278,
+      "name": "netgen_occ",
+      "status": "pass"
+     }
+    ],
+    "soft": [],
+    "tier": "full",
+    "valid": true
+   }
+  },
+  {
+   "family": "overlapping_facets",
+   "first_failing_layer": "panel",
+   "group": null,
+   "kind": null,
+   "kind_status": null,
+   "name": "abc/0051_00518226_7aa4de49968de523e2091a87_step_001.step",
+   "sha256": "7e573047c1a6591e2ac6eb8a58124bd1f36e94623ed84e610e301b6dcc577922",
+   "source": "abc_fail",
+   "verdict_summary": {
+    "clean": false,
+    "counts_for_scoreboard": true,
+    "faithful": true,
+    "hard": [],
+    "out_of_scope": false,
+    "panel": [
+     {
+      "error_kind": "other",
+      "min_sicn": null,
+      "name": "gmsh_prod",
+      "status": "fail"
+     },
+     {
+      "error_kind": "overlapping_facets",
+      "min_sicn": null,
+      "name": "gmsh_default",
+      "status": "fail"
+     },
+     {
+      "error_kind": "timeout",
+      "min_sicn": null,
+      "name": "gmsh_alt",
+      "status": "timeout"
+     },
+     {
+      "error_kind": "netgen_timeout",
+      "min_sicn": null,
+      "name": "netgen_occ",
+      "status": "timeout"
+     }
+    ],
+    "soft": [],
+    "tier": "full",
+    "valid": true
+   }
+  },
+  {
+   "family": "overlapping_facets",
+   "first_failing_layer": "panel",
+   "group": null,
+   "kind": null,
+   "kind_status": null,
+   "name": "abc/0059_00592329_58be052560d0ea0f7c80053f_step_006.step",
+   "sha256": "bb0fe0d1c8e92d9085fe788f14c7c0bd1e84a4ed664e451a6584ce6fbf1aaf90",
+   "source": "abc_fail",
+   "verdict_summary": {
+    "clean": false,
+    "counts_for_scoreboard": true,
+    "faithful": true,
+    "hard": [],
+    "out_of_scope": false,
+    "panel": [
+     {
+      "error_kind": "other",
+      "min_sicn": null,
+      "name": "gmsh_prod",
+      "status": "fail"
+     },
+     {
+      "error_kind": "overlapping_facets",
+      "min_sicn": null,
+      "name": "gmsh_default",
+      "status": "fail"
+     },
+     {
+      "error_kind": "no_volume",
+      "min_sicn": null,
+      "name": "gmsh_alt",
+      "status": "fail"
+     },
+     {
+      "error_kind": "step_unreadable",
+      "min_sicn": null,
+      "name": "netgen_occ",
+      "status": "fail"
+     }
+    ],
+    "soft": [
+     "small_edge"
+    ],
+    "tier": "full",
+    "valid": true
+   }
+  },
+  {
+   "family": "brep_invalid",
+   "first_failing_layer": "valid",
+   "group": null,
+   "kind": null,
+   "kind_status": null,
+   "name": "abc/0054_00547994_58ab27a87442550f6daa230f_step_079.step",
+   "sha256": "32ca3e9a6e9a81c1bc5a95102b0de1dc8dbc3c8bc205028a00839ac7a43119e6",
+   "source": "abc_fail",
+   "verdict_summary": {
+    "clean": false,
+    "counts_for_scoreboard": true,
+    "faithful": null,
+    "hard": [
+     "brep_invalid",
+     "self_intersection",
+     "self_intersection"
+    ],
+    "out_of_scope": false,
+    "panel": [
+     {
+      "error_kind": "timeout",
+      "min_sicn": null,
+      "name": "gmsh_prod",
+      "status": "timeout"
+     },
+     {
+      "error_kind": "timeout",
+      "min_sicn": null,
+      "name": "gmsh_default",
+      "status": "timeout"
+     },
+     {
+      "error_kind": "timeout",
+      "min_sicn": null,
+      "name": "gmsh_alt",
+      "status": "timeout"
+     },
+     {
+      "error_kind": "netgen_meshing_failed",
+      "min_sicn": null,
+      "name": "netgen_occ",
+      "status": "fail"
+     }
+    ],
+    "soft": [
+     "small_edge",
+     "large_tolerance"
+    ],
+    "tier": "full",
+    "valid": false
+   }
+  },
+  {
+   "family": "open_shell",
+   "first_failing_layer": "valid",
+   "group": null,
+   "kind": null,
+   "kind_status": null,
+   "name": "abc/0051_00512819_0d20478fa07db557be91ad16_step_000.step",
+   "sha256": "a2807f9a2fef334a65bb5727266ed0c875c0340549fb53c12a853c6bd4055c06",
+   "source": "abc_fail",
+   "verdict_summary": {
+    "clean": false,
+    "counts_for_scoreboard": true,
+    "faithful": null,
+    "hard": [
+     "open_shell"
+    ],
+    "out_of_scope": false,
+    "panel": [
+     {
+      "error_kind": null,
+      "min_sicn": 0.013146985619790639,
+      "name": "gmsh_prod",
+      "status": "pass"
+     },
+     {
+      "error_kind": "overlapping_facets",
+      "min_sicn": null,
+      "name": "gmsh_default",
+      "status": "fail"
+     },
+     {
+      "error_kind": "low_quality",
+      "min_sicn": 0.008396896225921076,
+      "name": "gmsh_alt",
+      "status": "fail"
+     },
+     {
+      "error_kind": null,
+      "min_sicn": 0.08348168854221896,
+      "name": "netgen_occ",
+      "status": "pass"
+     }
+    ],
+    "soft": [],
+    "tier": "full",
+    "valid": false
+   }
+  }
+ ]
+}

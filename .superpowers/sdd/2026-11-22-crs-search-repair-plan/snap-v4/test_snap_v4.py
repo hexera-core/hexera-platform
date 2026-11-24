@@ -614,3 +614,26 @@ def test_regroup_keeps_the_heldout_groups_own_wave_id_and_its_slot(tmp_path):
     for d in (out / summary["merged_dir"]).iterdir():
         prov = json.loads((d / "PROVENANCE.json").read_text())
         assert prov["wave_id"] == wid and prov["slot"] == "slot/held_out/1"
+
+
+def test_regroup_records_each_original_shards_model_spend(tmp_path):
+    """LEAD-3 C13: a merged shard pools AI rows from several original shards, so report.py binds the spend per
+    ORIGINAL shard from these numbers."""
+    out, splits = tmp_path / "out", tmp_path / "splits"
+    splits.mkdir()
+    shas = [f"{i:064x}" for i in range(4)]
+    paid = lambda s, usd: {**_row(s, "search_ai"), "model_usd": usd}  # noqa: E731
+    _group_run(out, "snap-x-dev_input-TS", 1, [[_row(s, "input_only") for s in shas]], arms=["input_only"])
+    _group_run(out, "snap-x-dev_staged-TS", 1, [[_row(s, "staged") for s in shas]], arms=["staged"])
+    _group_run(out, "snap-x-dev_det-TS", 1, [[_row(s, "search_det") for s in shas]], arms=["search_det"])
+    _group_run(out, "snap-x-dev_ai-TS", 2, [[paid(shas[0], 0.5), paid(shas[1], 0.66)],
+                                            [paid(shas[2], 0.1), paid(shas[3], 0.0)]], arms=["search_ai"], ledger="shard")
+    rc = subprocess.run([sys.executable, "-I", str(HERE / "regroup.py"), "--out", str(out), "--splits", str(splits),
+                         "--manifest", str(_manifest(tmp_path / "m.json", {"dev_input": 1, "dev_staged": 1,
+                                                                            "dev_det": 1, "dev_ai": 2}))],
+                        capture_output=True, text=True)
+    assert rc.returncode == 0, rc.stdout + rc.stderr
+    merged = out / json.loads((out / "regroup_summary.json").read_text())["dev"]["merged_dir"]
+    for d in merged.iterdir():
+        g = json.loads((d / "PROVENANCE.json").read_text())["groups"]
+        assert g["dev_ai"]["shard_spend_usd"] == [1.16, 0.1] and g["dev_det"]["shard_spend_usd"] == [0.0]
