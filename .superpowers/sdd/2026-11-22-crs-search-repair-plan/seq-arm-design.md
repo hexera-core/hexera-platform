@@ -66,3 +66,13 @@ kind, AI calls and $. search_seq vs search_det vs search_ai on the same files.
   the touched-entity set, re-location across ops, the region mesh.
 - Interface first: Lane C publishes the `verify_local` signature + a stub within the hour so Lane B builds against
   it. Tiny targeted tests only.
+
+## Owner notes on approval (2026-11-24)
+
+1. body_overlap on multi-body parts: each CONNECTED overlap cluster is ONE defect, repaired PAIR BY PAIR inside it,
+   each pair locally checked, so one bad pair is skipped (and recorded) without blocking the rest of the cluster.
+2. Every file's row carries a READABLE trace for the owner: one line per step,
+   `defect (kind, where, measurement) -> repair (op, params, chosen by table|AI + rationale) -> local result
+   (gone / still there / new defect: ...; seconds)`, plus each round's full-check result.
+3. Run on the fast loop as soon as it runs end to end, against search_det and search_ai; the headline efficiency
+   number is FULL CHECKS PER FILE.
