@@ -1,0 +1,1872 @@
+[
+ {
+  "sha": "97314ccbe4e124ff3e6be66947e7c91c5821181d092b1c1159f50307b3d43a56",
+  "name": "abc/0060_00608682_58c401c28e887f101dd42c22_step_000.step",
+  "family": "L1 invalid: unbounded_geometry",
+  "best": "staged root",
+  "best_passes": 0,
+  "best_valid": false,
+  "status": "complete",
+  "depth": 2,
+  "candidates": 37,
+  "op_families": {
+   "run_stage": 6,
+   "trim_unbounded": 4,
+   "orient_and_close": 1
+  }
+ },
+ {
+  "sha": "9c6e77a79636c46b27b0a176b427649ba0406bb04cb3f50dbf0d1aa83c2348eb",
+  "name": "abc/0053_00530659_a7f966eb7895d0814869e759_step_000.step",
+  "family": "mesh: gmsh_default:overlapping_facets, gmsh_prod:other, netgen_occ:netgen_meshing_failed",
+  "best": "conformalise+fill_loop",
+  "best_passes": 1,
+  "best_valid": true,
+  "status": "killed",
+  "depth": 3,
+  "candidates": 748,
+  "op_families": {
+   "unify_same_domain": 70,
+   "conformalise": 47,
+   "run_stage": 43,
+   "fuse": 26,
+   "orient_and_close": 22,
+   "remove_small": 18
+  }
+ },
+ {
+  "sha": "782680a42964a4c7829083deb8ff34c5d94d0be0ac0c1021f2b5ac7c9d8fab12",
+  "name": "abc/0057_00570021_58b4c0978115250f775aa494_step_002.step",
+  "family": "L1 invalid: brep_invalid, open_shell, self_intersection",
+  "best": "input label (no state summarised before the kill)",
+  "best_passes": 0,
+  "best_valid": false,
+  "status": "killed",
+  "depth": 1,
+  "candidates": 87,
+  "op_families": {
+   "split_angle": 9,
+   "remove_small": 6,
+   "fill_loop": 6,
+   "split_continuity": 3,
+   "run_stage": 3,
+   "rebuild_face": 2
+  }
+ },
+ {
+  "sha": "7e626274654e48fb67e897e0fb8cf15aaceb62f7653d2c0a148bf52f19deaf74",
+  "name": "abc/0057_00578194_02db97dfc9db7d283d359af0_step_000.step",
+  "family": "mesh: gmsh_alt:low_quality, gmsh_default:low_quality, gmsh_prod:low_quality",
+  "best": "input label (no state summarised before the kill)",
+  "best_passes": 1,
+  "best_valid": true,
+  "status": "killed",
+  "depth": 1,
+  "candidates": 279,
+  "op_families": {
+   "reapproximate": 19,
+   "split_by_proximity": 13,
+   "rebuild_face": 10,
+   "run_stage": 5,
+   "orient_and_close": 2,
+   "to_canonical": 2
+  }
+ },
+ {
+  "sha": "f027b94e6e67b7e52c5d5576bb077d9c6c5f1bb50085f42da80a2e633647893f",
+  "name": "abc/0060_00608593_58c3f3be25887e0fdaba0489_step_001.step",
+  "family": "L1 invalid: body_overlap",
+  "best": "input label (no state summarised before the kill)",
+  "best_passes": 1,
+  "best_valid": false,
+  "status": "killed",
+  "depth": 2,
+  "candidates": 723,
+  "op_families": {
+   "conformalise": 54,
+   "split_angle": 28,
+   "fuse": 26,
+   "remove_small": 20,
+   "run_stage": 20,
+   "defeature": 12
+  }
+ },
+ {
+  "sha": "d0053d087084a86d15baf7616452354d44f9698196ae66943b19b941d930b4b0",
+  "name": "abc/0052_00521989_589ed79ccbc1f90fc89a1c02_step_000.step",
+  "family": "L1 invalid: body_overlap, brep_invalid",
+  "best": "input label (no state summarised before the kill)",
+  "best_passes": 1,
+  "best_valid": false,
+  "status": "killed",
+  "depth": 1,
+  "candidates": 42,
+  "op_families": {
+   "split_angle": 6
+  }
+ },
+ {
+  "sha": "1b6481c3ecd037b018fe6a6fcda8a84319248ee452eeff386a426b8a84cfb757",
+  "name": "abc/0061_00610091_0eac20cb919cf7202186d939_step_000.step",
+  "family": "L1 invalid: body_overlap",
+  "best": "defeature",
+  "best_passes": 1,
+  "best_valid": false,
+  "status": "killed",
+  "depth": 3,
+  "candidates": 1242,
+  "op_families": {
+   "run_stage": 32,
+   "split_angle": 24,
+   "orient_and_close": 13,
+   "fill_loop": 11,
+   "defeature": 7,
+   "rebuild_face": 6
+  }
+ },
+ {
+  "sha": "7918be4052b367b965e0f3a319def64a7ed795edc1cf9a25b098d14f3cb6e529",
+  "name": "abc/0051_00510314_5899e652a878da0f8226347a_step_000.step",
+  "family": "L1 invalid: body_overlap, self_intersection",
+  "best": "input label (no state summarised before the kill)",
+  "best_passes": 1,
+  "best_valid": false,
+  "status": "killed",
+  "depth": 3,
+  "candidates": 2232,
+  "op_families": {
+   "conformalise": 139,
+   "run_stage": 46,
+   "fuse": 36,
+   "rebuild_face": 34,
+   "orient_and_close": 22,
+   "split_by_proximity": 15
+  }
+ },
+ {
+  "sha": "9d0d49a626e9047c2a5c7639abe5138932a83682570557ca697866e25ee0e5c2",
+  "name": "abc/0052_00520702_589e0c6497e5700f6ce179d1_step_000.step",
+  "family": "mesh: gmsh_alt:low_quality, gmsh_default:overlapping_facets, gmsh_prod:other, netgen_occ:capped_after_doom",
+  "best": "fuse+fuse",
+  "best_passes": 0,
+  "best_valid": true,
+  "status": "killed",
+  "depth": 2,
+  "candidates": 900,
+  "op_families": {
+   "conformalise": 34,
+   "unify_same_domain": 30,
+   "run_stage": 26,
+   "fuse": 24,
+   "split_by_proximity": 9,
+   "orient_and_close": 9
+  }
+ },
+ {
+  "sha": "d9b92b79732359be86f345f4c565fe3fac819a27daaf70a3d5307fc97b0264f3",
+  "name": "abc/0051_00513828_86650477f66607316f890e2b_step_000.step",
+  "family": "mesh: gmsh_alt:no_volume, gmsh_default:edge_through_face, gmsh_prod:other, netgen_occ:capped_after_doom",
+  "best": "fill_loop+fill_loop",
+  "best_passes": 0,
+  "best_valid": true,
+  "status": "killed",
+  "depth": 2,
+  "candidates": 129,
+  "op_families": {
+   "run_stage": 11,
+   "rebuild_face": 7,
+   "remove_small": 6,
+   "orient_and_close": 4,
+   "fill_loop": 4,
+   "split_continuity": 2
+  }
+ },
+ {
+  "sha": "e533d000aa34aa262d2f6a7f00dee5eddb84906138f635d95bf7e56538aa8aed",
+  "name": "abc/0052_00521254_589e42d6c517b70fc5543cc9_step_000.step",
+  "family": "L1 invalid: body_overlap, brep_invalid, self_intersection",
+  "best": "staged root",
+  "best_passes": 0,
+  "best_valid": false,
+  "status": "complete",
+  "depth": 3,
+  "candidates": 3067,
+  "op_families": {
+   "split_angle": 27,
+   "run_stage": 26,
+   "orient_and_close": 22,
+   "split_continuity": 14,
+   "rebuild_edge_as_intersection": 13,
+   "reapproximate": 12
+  }
+ },
+ {
+  "sha": "9f6e3964cb9ba8b78093f7cf66ee6fdbadadf43204b876d0ce84b424c7a2cc69",
+  "name": "abc/0054_00548558_58ab54937442550f6daa7dcd_step_000.step",
+  "family": "mesh: gmsh_default:edge_through_face, gmsh_prod:other",
+  "best": "rebuild_face+rebuild_face",
+  "best_passes": 2,
+  "best_valid": true,
+  "status": "killed",
+  "depth": 3,
+  "candidates": 568,
+  "op_families": {
+   "run_stage": 48,
+   "rebuild_face": 28,
+   "reapproximate": 21,
+   "unify_same_domain": 12,
+   "orient_and_close": 9,
+   "split_angle": 8
+  }
+ },
+ {
+  "sha": "1e6f8d8e11c7e686077f81b25cbe6cbac97eb6109bb1f9bdc8f09e40fad28da3",
+  "name": "abc/0055_00558985_58af4fd6f1160b0f8d7beca0_step_001.step",
+  "family": "L1 invalid: body_overlap, open_shell",
+  "best": "staged root",
+  "best_passes": 0,
+  "best_valid": false,
+  "status": "complete",
+  "depth": 3,
+  "candidates": 3776,
+  "op_families": {
+   "fill_loop": 96,
+   "run_stage": 45,
+   "split_angle": 39,
+   "conformalise": 30,
+   "unify_same_domain": 26,
+   "remove_small": 26
+  }
+ },
+ {
+  "sha": "9ceb64b12b9cc72a641cb6a9f99f77632224b147688ecf0e9111614ec6354f10",
+  "name": "abc/0055_00557863_383d8ed7f079f44b9dfecc72_step_000.step",
+  "family": "L1 invalid: body_overlap, self_intersection",
+  "best": "fuse",
+  "best_passes": 2,
+  "best_valid": false,
+  "status": "killed",
+  "depth": 2,
+  "candidates": 1033,
+  "op_families": {
+   "conformalise": 94,
+   "fuse": 54,
+   "reapproximate": 32,
+   "run_stage": 28,
+   "orient_and_close": 12,
+   "split_by_proximity": 12
+  }
+ },
+ {
+  "sha": "e8ed99fcd877e9f6c7a8f127d770eb324813699e470dc5c5ba0849c5f9fa0f2b",
+  "name": "abc/0056_00566256_f7a9c09734b048d4f4637d6a_step_009.step",
+  "family": "L1 invalid: body_overlap, brep_invalid, self_intersection",
+  "best": "split_continuity",
+  "best_passes": 1,
+  "best_valid": false,
+  "status": "complete",
+  "depth": 3,
+  "candidates": 984,
+  "op_families": {
+   "run_stage": 26,
+   "rebuild_face": 22,
+   "unify_same_domain": 14,
+   "rebuild_edge_as_intersection": 12,
+   "split_continuity": 4,
+   "split_angle": 3
+  }
+ },
+ {
+  "sha": "68ef8f5e662d6a2d6e20db61781d92a6f52a28c217881d69d50f2432e2b05000",
+  "name": "abc/0053_00536143_58a5896bdeaa381032dc1afc_step_006.step",
+  "family": "L1 invalid: body_overlap, brep_invalid, open_shell",
+  "best": "input label (no state summarised before the kill)",
+  "best_passes": 1,
+  "best_valid": false,
+  "status": "killed",
+  "depth": 2,
+  "candidates": 1304,
+  "op_families": {
+   "conformalise": 206,
+   "fuse": 110,
+   "fill_loop": 42,
+   "run_stage": 35,
+   "remove_small": 34,
+   "orient_and_close": 20
+  }
+ },
+ {
+  "sha": "5f8ac4d73a44d44b39cbf8001d623bb566f65912db7ee8f699e248ac08fc453f",
+  "name": "abc/0053_00537355_58a5eaf03522310f74b5131f_step_000.step",
+  "family": "mesh: gmsh_alt:no_volume, gmsh_default:overlapping_facets, gmsh_prod:other, netgen_occ:netgen_meshing_failed",
+  "best": "trim_unbounded+fill_loop+make_volume",
+  "best_passes": 0,
+  "best_valid": true,
+  "status": "complete",
+  "depth": 3,
+  "candidates": 248,
+  "op_families": {
+   "run_stage": 45,
+   "fill_loop": 17,
+   "orient_and_close": 14,
+   "trim_unbounded": 12,
+   "split_angle": 12,
+   "make_volume": 4
+  }
+ },
+ {
+  "sha": "6aa493da5bbf480d9f00e1a7553d298dfaae55b523bb6f5788d7db22505a65fb",
+  "name": "abc/0054_00542145_9b4bfe3307eba3d302e360ed_step_004.step",
+  "family": "L1 invalid: body_overlap, brep_invalid, self_intersection",
+  "best": "remove_small",
+  "best_passes": 1,
+  "best_valid": false,
+  "status": "killed",
+  "depth": 1,
+  "candidates": 230,
+  "op_families": {
+   "rebuild_face": 9,
+   "split_angle": 9,
+   "remove_small": 9,
+   "fill_loop": 5,
+   "split_continuity": 5,
+   "fix_poles": 4
+  }
+ },
+ {
+  "sha": "f3878a48db8c99b92aed694f06c6b78e317374583b731a786c84ba79d966d372",
+  "name": "abc/0055_00556546_4c38c761bbc6e5ea418a4223_step_000.step",
+  "family": "L1 invalid: body_overlap",
+  "best": "input label (no state summarised before the kill)",
+  "best_passes": 1,
+  "best_valid": false,
+  "status": "killed",
+  "depth": 3,
+  "candidates": 2125,
+  "op_families": {
+   "conformalise": 90,
+   "unify_same_domain": 76,
+   "fuse": 56,
+   "run_stage": 45,
+   "split_angle": 31,
+   "defeature": 23
+  }
+ },
+ {
+  "sha": "3e7c2a1197c3ea8dd86412fc29ec99bdca15740fd8898aae1bc87d8595710051",
+  "name": "abc/0051_00510567_589a00b4d2bc860f82f79a88_step_004.step",
+  "family": "mesh: gmsh_default:overlapping_facets, gmsh_prod:low_quality, netgen_occ:netgen_meshing_failed",
+  "best": "fuse+split_continuity",
+  "best_passes": 1,
+  "best_valid": true,
+  "status": "killed",
+  "depth": 2,
+  "candidates": 1040,
+  "op_families": {
+   "orient_and_close": 24,
+   "split_angle": 20,
+   "reapproximate": 20,
+   "split_continuity": 19,
+   "run_stage": 18,
+   "remove_small": 16
+  }
+ },
+ {
+  "sha": "bff959ced3a0ad6483bc0063ed32c392d0387390b9707788a88baaeb7cb3af7b",
+  "name": "abc/0053_00538816_58a65e00deaa381032dde14e_step_015.step",
+  "family": "L1 invalid: body_overlap, brep_invalid, self_intersection",
+  "best": "remove_small",
+  "best_passes": 1,
+  "best_valid": false,
+  "status": "killed",
+  "depth": 2,
+  "candidates": 1008,
+  "op_families": {
+   "conformalise": 126,
+   "fuse": 76,
+   "split_angle": 36,
+   "run_stage": 32,
+   "rebuild_face": 18,
+   "remove_small": 16
+  }
+ },
+ {
+  "sha": "af9fc48e75819be88892f9b13257e87cbb4d25e66c1bd73331d83ee9563b27c7",
+  "name": "abc/0053_00538785_58a65b38deaa381032ddddec_step_009.step",
+  "family": "mesh: gmsh_alt:low_quality, gmsh_default:edge_through_face, gmsh_prod:other",
+  "best": "input label (no state summarised before the kill)",
+  "best_passes": 1,
+  "best_valid": true,
+  "status": "killed",
+  "depth": 3,
+  "candidates": 2018,
+  "op_families": {
+   "reapproximate": 52,
+   "run_stage": 37,
+   "rebuild_face": 30,
+   "orient_and_close": 19,
+   "defeature": 18,
+   "split_by_proximity": 16
+  }
+ },
+ {
+  "sha": "cb2862dd7ab352647f069e06aefe15516a16329ad26da975bbd5751c45bd8d85",
+  "name": "abc/0052_00523933_58a02828f0a1c50ff6ebd077_step_012.step",
+  "family": "mesh: gmsh_alt:gmsh_crash, gmsh_default:low_quality, gmsh_prod:other",
+  "best": "fuse",
+  "best_passes": 1,
+  "best_valid": true,
+  "status": "killed",
+  "depth": 2,
+  "candidates": 1157,
+  "op_families": {
+   "conformalise": 100,
+   "split_angle": 41,
+   "fuse": 37,
+   "run_stage": 35,
+   "orient_and_close": 13,
+   "defeature": 13
+  }
+ },
+ {
+  "sha": "00911ef0c1b12b0cae129383850c478c37278b72db1230a8c97696afd0be3d30",
+  "name": "abc/0055_00552482_58acdf0594d8a30ff44ef2f8_step_014.step",
+  "family": "L1 invalid: body_overlap, self_intersection",
+  "best": "input label (no state summarised before the kill)",
+  "best_passes": 1,
+  "best_valid": false,
+  "status": "killed",
+  "depth": 2,
+  "candidates": 721,
+  "op_families": {
+   "conformalise": 67,
+   "fuse": 33,
+   "run_stage": 21,
+   "defeature": 17,
+   "split_by_proximity": 12,
+   "orient_and_close": 10
+  }
+ },
+ {
+  "sha": "d45c510969028dd65a8211a468dc2518efdd6998a64b6dc1caa53b9334d91b84",
+  "name": "00612282/00612282_58c5f88703a00a0f86ffa3f9_step_083.step",
+  "family": "mesh: gmsh_alt:low_quality, gmsh_default:low_quality, gmsh_prod:low_quality",
+  "best": "remove_small+conformalise",
+  "best_passes": 1,
+  "best_valid": true,
+  "status": "killed",
+  "depth": 2,
+  "candidates": 1083,
+  "op_families": {
+   "remove_small": 50,
+   "unify_same_domain": 39,
+   "run_stage": 39,
+   "rebuild_face": 35,
+   "orient_and_close": 28,
+   "conformalise": 14
+  }
+ },
+ {
+  "sha": "0522f1987786e2dc4753f128ac41e2a93978ee1f9ce9bb47ebea503ec3a3f3eb",
+  "name": "abc/0052_00526588_ae911af3880ea83f28728e58_step_000.step",
+  "family": "mesh: gmsh_alt:timeout, gmsh_default:timeout, gmsh_prod:gmsh_crash, netgen_occ:netgen_timeout",
+  "best": "input label (no state summarised before the kill)",
+  "best_passes": 0,
+  "best_valid": true,
+  "status": "killed",
+  "depth": 0,
+  "candidates": 0,
+  "op_families": {}
+ },
+ {
+  "sha": "722c122c9b800e234fb9804ffd1d4c2c49c95f9d13c937b4af6c8053240ddf50",
+  "name": "abc/0053_00535069_bb0bc8e7914fdea894ad2ec6_step_012.step",
+  "family": "mesh: gmsh_alt:low_quality, gmsh_default:low_quality, gmsh_prod:low_quality",
+  "best": "staged root",
+  "best_passes": 1,
+  "best_valid": true,
+  "status": "complete",
+  "depth": 3,
+  "candidates": 1308,
+  "op_families": {
+   "split_angle": 151,
+   "run_stage": 75,
+   "remove_small": 59,
+   "defeature": 57,
+   "split_by_proximity": 54,
+   "rebuild_face": 50
+  }
+ },
+ {
+  "sha": "f8cbd0194ae38b6636a451e2b97ea8f6f5d1e2c42c4c50dc6a87be9a435012b3",
+  "name": "abc/0052_00521846_589eac5a2ec4e50f8780d04b_step_006.step",
+  "family": "L1 invalid: self_intersection",
+  "best": "remove_small",
+  "best_passes": 1,
+  "best_valid": false,
+  "status": "killed",
+  "depth": 3,
+  "candidates": 538,
+  "op_families": {
+   "unify_same_domain": 65,
+   "run_stage": 36,
+   "split_angle": 34,
+   "orient_and_close": 8,
+   "split_closed": 7,
+   "split_by_proximity": 6
+  }
+ },
+ {
+  "sha": "09f296a1e4e82910048fb23952bcb03d0a5346bcbfd9a85d81205dd7d6aba3b3",
+  "name": "abc/0055_00551882_58aca7813522310f74bdd3f8_step_006.step",
+  "family": "L1 invalid: self_intersection",
+  "best": "remove_small",
+  "best_passes": 1,
+  "best_valid": false,
+  "status": "killed",
+  "depth": 2,
+  "candidates": 252,
+  "op_families": {
+   "split_angle": 24,
+   "run_stage": 17,
+   "split_by_proximity": 6,
+   "unify_same_domain": 5,
+   "split_closed": 4,
+   "orient_and_close": 4
+  }
+ },
+ {
+  "sha": "b30914ae595a85941a1b34b48bdb373c32035de829a75399afa6616b441297a3",
+  "name": "abc/0060_00609763_39a057597f72d79c2801cfa6_step_000.step",
+  "family": "mesh: gmsh_alt:low_quality, gmsh_default:overlapping_facets, gmsh_prod:other",
+  "best": "fuse",
+  "best_passes": 1,
+  "best_valid": true,
+  "status": "killed",
+  "depth": 3,
+  "candidates": 1691,
+  "op_families": {
+   "conformalise": 403,
+   "fuse": 118,
+   "run_stage": 66,
+   "unify_same_domain": 56,
+   "rebuild_face": 28,
+   "split_by_proximity": 25
+  }
+ },
+ {
+  "sha": "733142fc27a90b34f1ab32fbf76a1f964377c9426fdd3ba6c2ecb781fa10ff81",
+  "name": "abc/0060_00608912_78e6b79236c0354d748969e2_step_000.step",
+  "family": "L1 invalid: body_overlap, open_shell",
+  "best": "input label (no state summarised before the kill)",
+  "best_passes": 1,
+  "best_valid": false,
+  "status": "killed",
+  "depth": 3,
+  "candidates": 1638,
+  "op_families": {
+   "conformalise": 303,
+   "fuse": 173,
+   "split_angle": 69,
+   "run_stage": 48,
+   "orient_and_close": 25,
+   "fill_loop": 23
+  }
+ },
+ {
+  "sha": "85ab4da1c72c768b7cf2075a20848d6f63b81a3d75b8d6d0e1b6b2497b1e30ee",
+  "name": "abc/0059_00599513_67e4a5106b69d7e77716f579_step_012.step",
+  "family": "mesh: gmsh_alt:low_quality, gmsh_default:overlapping_facets, gmsh_prod:low_quality",
+  "best": "input label (no state summarised before the kill)",
+  "best_passes": 1,
+  "best_valid": true,
+  "status": "killed",
+  "depth": 3,
+  "candidates": 739,
+  "op_families": {
+   "split_angle": 91,
+   "remove_small": 41,
+   "run_stage": 41,
+   "rebuild_face": 36,
+   "unify_same_domain": 31,
+   "split_by_proximity": 18
+  }
+ },
+ {
+  "sha": "117ecb94ab1decefe8d78516b1a0366aab05035e08b1df29c365a85f708ad670",
+  "name": "occt/trj7_b1-ec-214.stp",
+  "family": "L1 invalid: self_intersection",
+  "best": "staged root",
+  "best_passes": 0,
+  "best_valid": false,
+  "status": "complete",
+  "depth": 3,
+  "candidates": 752,
+  "op_families": {
+   "run_stage": 46,
+   "split_continuity": 21,
+   "rebuild_face": 20,
+   "split_angle": 15,
+   "to_canonical": 14,
+   "orient_and_close": 11
+  }
+ },
+ {
+  "sha": "6109dea12cc5eeef03145e06468178a73eb0112e87a30d9699f3bf263a003953",
+  "name": "abc/0053_00536914_31b33d2db5ef5bd00c1c2c55_step_004.step",
+  "family": "L1 invalid: body_overlap",
+  "best": "input label (no state summarised before the kill)",
+  "best_passes": 1,
+  "best_valid": false,
+  "status": "killed",
+  "depth": 3,
+  "candidates": 1963,
+  "op_families": {
+   "run_stage": 74,
+   "split_angle": 62,
+   "conformalise": 49,
+   "rebuild_face": 47,
+   "remove_small": 44,
+   "fuse": 27
+  }
+ },
+ {
+  "sha": "b26a079a5e88fe669e762469f47c3d9324899f683acb5be3dad0dfc52b9178bc",
+  "name": "00593998/00593998_58bedf240159270f85d925eb_step_018.step",
+  "family": "mesh: gmsh_default:low_quality, gmsh_prod:low_quality",
+  "best": "split_by_proximity+split_angle",
+  "best_passes": 2,
+  "best_valid": true,
+  "status": "complete",
+  "depth": 3,
+  "candidates": 1012,
+  "op_families": {
+   "unify_same_domain": 100,
+   "split_angle": 86,
+   "defeature": 54,
+   "split_by_proximity": 40,
+   "run_stage": 37,
+   "split_continuity": 21
+  }
+ },
+ {
+  "sha": "5accc12fa47d338aa8a3b7f81febcd5b1c0dc9c2ba57141ae632223c2006336d",
+  "name": "abc/0053_00532577_58a4246ffb62730f86f554b7_step_003.step",
+  "family": "mesh: gmsh_alt:timeout, gmsh_default:overlapping_facets, gmsh_prod:other",
+  "best": "input label (no state summarised before the kill)",
+  "best_passes": 1,
+  "best_valid": true,
+  "status": "killed",
+  "depth": 3,
+  "candidates": 1904,
+  "op_families": {
+   "conformalise": 149,
+   "remove_small": 61,
+   "split_angle": 57,
+   "run_stage": 53,
+   "fuse": 35,
+   "rebuild_face": 26
+  }
+ },
+ {
+  "sha": "3f2c637226465af13f36b3e2f04f8c105d9e7598d03f098142b2d78c38930a01",
+  "name": "abc/0061_00610541_78c1575a5d7590cb833fd693_step_000.step",
+  "family": "L1 invalid: self_intersection",
+  "best": "input label (no state summarised before the kill)",
+  "best_passes": 0,
+  "best_valid": false,
+  "status": "killed",
+  "depth": 1,
+  "candidates": 32,
+  "op_families": {
+   "split_angle": 3,
+   "split_by_proximity": 3,
+   "remove_small": 2,
+   "orient_and_close": 2,
+   "fix_poles": 1,
+   "defeature": 1
+  }
+ },
+ {
+  "sha": "f56dd3b77d61a5e8aa5ea8fd4c58a2e207893ea8e39578f1a251a697b9da6e0b",
+  "name": "abc/0061_00618192_58c83c0c03a00a0f8603bd1c_step_031.step",
+  "family": "mesh: gmsh_default:overlapping_facets, gmsh_prod:other",
+  "best": "remove_small+refit_cluster+split_angle",
+  "best_passes": 2,
+  "best_valid": true,
+  "status": "complete",
+  "depth": 3,
+  "candidates": 2011,
+  "op_families": {
+   "split_angle": 181,
+   "conformalise": 171,
+   "remove_small": 103,
+   "defeature": 79,
+   "run_stage": 75,
+   "rebuild_face": 66
+  }
+ },
+ {
+  "sha": "da386833c1f36ee1ed8f5767fa414dca06c9c2ba32321dfc3be45dd9260bbb59",
+  "name": "abc/0059_00593651_58bec7caafe56e0fcddaeff0_step_031.step",
+  "family": "mesh: gmsh_default:overlapping_facets, gmsh_prod:other",
+  "best": "remove_small+refit_cluster+split_angle",
+  "best_passes": 2,
+  "best_valid": true,
+  "status": "complete",
+  "depth": 3,
+  "candidates": 1926,
+  "op_families": {
+   "split_angle": 181,
+   "conformalise": 166,
+   "remove_small": 99,
+   "defeature": 71,
+   "run_stage": 67,
+   "rebuild_face": 66
+  }
+ },
+ {
+  "sha": "f1eef4cd072e1447ecf487e45754995c138231dbd9f9397fc000d2418c8e1d38",
+  "name": "00538723/00538723_2e9dcb57dfa7846a2f2c5fbc_step_010.step",
+  "family": "mesh: gmsh_alt:no_volume, gmsh_default:low_quality, gmsh_prod:low_quality, netgen_occ:low_quality",
+  "best": "staged root",
+  "best_passes": 0,
+  "best_valid": true,
+  "status": "complete",
+  "depth": 3,
+  "candidates": 1077,
+  "op_families": {
+   "split_angle": 71,
+   "rebuild_face": 64,
+   "split_by_proximity": 51,
+   "run_stage": 39,
+   "remove_small": 20,
+   "unify_same_domain": 12
+  }
+ },
+ {
+  "sha": "37b6afa4cf69c8168ee2831eabde75ef614ab215a5ced16ee4a0e77913c857a6",
+  "name": "abc/0055_00554260_58ada6478105ed0f83971f1e_step_000.step",
+  "family": "mesh: gmsh_alt:low_quality, gmsh_default:overlapping_facets, gmsh_prod:other",
+  "best": "staged root",
+  "best_passes": 1,
+  "best_valid": true,
+  "status": "complete",
+  "depth": 3,
+  "candidates": 2286,
+  "op_families": {
+   "conformalise": 160,
+   "split_angle": 143,
+   "rebuild_face": 86,
+   "run_stage": 83,
+   "fuse": 65,
+   "defeature": 60
+  }
+ },
+ {
+  "sha": "bbd860fa0f5aa207580575a032f96fb6b6c38158655d084f2b331913e6533e4a",
+  "name": "abc/0053_00539088_58a67037ebf14d0f8e1e4852_step_000.step",
+  "family": "mesh: gmsh_alt:low_quality, gmsh_default:overlapping_facets, gmsh_prod:other",
+  "best": "input label (no state summarised before the kill)",
+  "best_passes": 1,
+  "best_valid": true,
+  "status": "killed",
+  "depth": 3,
+  "candidates": 1908,
+  "op_families": {
+   "conformalise": 131,
+   "split_angle": 115,
+   "defeature": 79,
+   "run_stage": 71,
+   "rebuild_face": 56,
+   "fuse": 49
+  }
+ },
+ {
+  "sha": "985de5aaaaab1fe5e152785bfd364f5a98b15863fbe1f842e74a79bb0d38fdfc",
+  "name": "abc/0059_00594048_58bee1790505910f8018a531_step_000.step",
+  "family": "mesh: gmsh_alt:low_quality, gmsh_default:overlapping_facets, gmsh_prod:other",
+  "best": "input label (no state summarised before the kill)",
+  "best_passes": 1,
+  "best_valid": true,
+  "status": "killed",
+  "depth": 3,
+  "candidates": 1785,
+  "op_families": {
+   "conformalise": 123,
+   "split_angle": 109,
+   "defeature": 74,
+   "run_stage": 59,
+   "rebuild_face": 54,
+   "fuse": 46
+  }
+ },
+ {
+  "sha": "4c1fc7d5579d76e36784adada096c94b265ea1a1403821c4140024987681050d",
+  "name": "abc/0053_00539073_58a66b7522115e0f6fe163e3_step_000.step",
+  "family": "mesh: gmsh_alt:low_quality, gmsh_default:overlapping_facets, gmsh_prod:other",
+  "best": "staged root",
+  "best_passes": 1,
+  "best_valid": true,
+  "status": "complete",
+  "depth": 3,
+  "candidates": 2209,
+  "op_families": {
+   "conformalise": 152,
+   "split_angle": 132,
+   "run_stage": 84,
+   "rebuild_face": 81,
+   "defeature": 69,
+   "fuse": 59
+  }
+ },
+ {
+  "sha": "f9501251fb30161cdcde0e0ebc51396e1d438af032c6e5f1ea9f7e00c43b36f9",
+  "name": "abc/0055_00555512_58adf189df48ba0f834d4e71_step_000.step",
+  "family": "mesh: gmsh_alt:low_quality, gmsh_default:overlapping_facets, gmsh_prod:other",
+  "best": "staged root",
+  "best_passes": 1,
+  "best_valid": true,
+  "status": "complete",
+  "depth": 3,
+  "candidates": 2289,
+  "op_families": {
+   "conformalise": 160,
+   "split_angle": 143,
+   "rebuild_face": 86,
+   "run_stage": 83,
+   "fuse": 65,
+   "defeature": 63
+  }
+ },
+ {
+  "sha": "e63710eae3406a2382c3971466d4ac8cd2b660c4b4e1208e486ba23dbb99a575",
+  "name": "abc/0059_00595948_58bf7c0dacb579101e76c788_step_000.step",
+  "family": "mesh: gmsh_alt:low_quality, gmsh_default:overlapping_facets, gmsh_prod:other",
+  "best": "staged root",
+  "best_passes": 1,
+  "best_valid": true,
+  "status": "complete",
+  "depth": 3,
+  "candidates": 2166,
+  "op_families": {
+   "split_angle": 154,
+   "conformalise": 150,
+   "rebuild_face": 85,
+   "run_stage": 80,
+   "fuse": 63,
+   "defeature": 48
+  }
+ },
+ {
+  "sha": "ce546aef9bd085931851969f72dfb950829bf9b9a4dca48ee750c706aeb1077c",
+  "name": "abc/0057_00577202_58b74d5dd2d73c0f795fd3c7_step_000.step",
+  "family": "mesh: gmsh_alt:low_quality, gmsh_default:overlapping_facets, gmsh_prod:other",
+  "best": "input label (no state summarised before the kill)",
+  "best_passes": 1,
+  "best_valid": true,
+  "status": "killed",
+  "depth": 3,
+  "candidates": 1901,
+  "op_families": {
+   "conformalise": 128,
+   "split_angle": 115,
+   "run_stage": 76,
+   "rebuild_face": 69,
+   "defeature": 64,
+   "fuse": 49
+  }
+ },
+ {
+  "sha": "cbe8c3abc11cb28ee8b555fd81c3ea0ec3c28f51a2faaa97f00f8e0315493daf",
+  "name": "abc/0052_00524943_fa9a21c8b070173bfc87844b_step_002.step",
+  "family": "mesh: gmsh_alt:low_quality, gmsh_default:edge_through_face, gmsh_prod:other",
+  "best": "split_angle+defeature",
+  "best_passes": 1,
+  "best_valid": true,
+  "status": "complete",
+  "depth": 3,
+  "candidates": 1522,
+  "op_families": {
+   "conformalise": 129,
+   "run_stage": 106,
+   "defeature": 72,
+   "remove_small": 59,
+   "split_angle": 57,
+   "fuse": 57
+  }
+ },
+ {
+  "sha": "5e9f31e673fdfafd9e3f3328685312e9b46d630b461014ca084f379cb1598586",
+  "name": "abc/0051_00510565_589a00b4d2bc860f82f79a88_step_002.step",
+  "family": "L1 invalid: body_overlap, open_shell, self_intersection",
+  "best": "staged root",
+  "best_passes": 0,
+  "best_valid": false,
+  "status": "complete",
+  "depth": 3,
+  "candidates": 2773,
+  "op_families": {
+   "conformalise": 272,
+   "fuse": 155,
+   "run_stage": 73,
+   "fill_loop": 71,
+   "orient_and_close": 48,
+   "unify_same_domain": 6
+  }
+ },
+ {
+  "sha": "0e8e2236c74f2d5d9440561a5e6e05679d99e21cd9590e9145f77926826d06ef",
+  "name": "abc/0057_00571912_58b5a0e4b1ea23104135d522_step_004.step",
+  "family": "mesh: gmsh_alt:no_volume, gmsh_default:low_quality, gmsh_prod:other, netgen_occ:netgen_meshing_failed",
+  "best": "staged root",
+  "best_passes": 0,
+  "best_valid": true,
+  "status": "complete",
+  "depth": 3,
+  "candidates": 896,
+  "op_families": {
+   "remove_small": 91,
+   "run_stage": 68,
+   "split_angle": 45,
+   "rebuild_face": 40,
+   "defeature": 34,
+   "orient_and_close": 26
+  }
+ },
+ {
+  "sha": "fa37bbd5673be13ffc1bbc09bd6c7d67f2a06bd18fdc6ec214d04045a36d517c",
+  "name": "abc/0053_00539618_58a6d600ebf14d0f8e1e94e1_step_008.step",
+  "family": "mesh: gmsh_alt:no_volume, gmsh_default:edge_through_face, gmsh_prod:other",
+  "best": "fuse+unify_same_domain+split_by_proximity",
+  "best_passes": 1,
+  "best_valid": true,
+  "status": "complete",
+  "depth": 3,
+  "candidates": 1422,
+  "op_families": {
+   "conformalise": 138,
+   "run_stage": 102,
+   "fuse": 74,
+   "unify_same_domain": 64,
+   "split_angle": 48,
+   "defeature": 31
+  }
+ },
+ {
+  "sha": "7e81aa0fa1b5fff0a0ea5fdaf1ca681b8f0cdaba3b49c304d9d99fd81aa7e4dc",
+  "name": "00616555/00616555_58c7bfe463ebf60f9147b95a_step_064.step",
+  "family": "mesh: gmsh_alt:low_quality, gmsh_default:low_quality, gmsh_prod:low_quality",
+  "best": "staged root",
+  "best_passes": 1,
+  "best_valid": true,
+  "status": "complete",
+  "depth": 3,
+  "candidates": 983,
+  "op_families": {
+   "run_stage": 98,
+   "unify_same_domain": 94,
+   "split_angle": 51,
+   "rebuild_face": 32,
+   "defeature": 29,
+   "remove_small": 20
+  }
+ },
+ {
+  "sha": "6892359075ba058f3aa373e2ef879222872bba45b7bebff04269402c331a257c",
+  "name": "abc/0061_00619937_58c915a03045b20fe8b6b4a3_step_001.step",
+  "family": "mesh: gmsh_default:edge_through_face, gmsh_prod:other, netgen_occ:netgen_meshing_failed",
+  "best": "split_continuity",
+  "best_passes": 1,
+  "best_valid": true,
+  "status": "complete",
+  "depth": 3,
+  "candidates": 1192,
+  "op_families": {
+   "rebuild_face": 56,
+   "run_stage": 56,
+   "split_by_proximity": 37,
+   "split_continuity": 33,
+   "orient_and_close": 29,
+   "remove_small": 29
+  }
+ },
+ {
+  "sha": "eda22c2f6e7c467611ecc1bf5dea11560e7f5403b468a26953fecefe211773f3",
+  "name": "abc/0053_00531292_58a364a1d8d7800fd43939cf_step_000.step",
+  "family": "mesh: gmsh_alt:low_quality, gmsh_default:edge_through_face, gmsh_prod:other, netgen_occ:netgen_meshing_failed",
+  "best": "input label (no state summarised before the kill)",
+  "best_passes": 0,
+  "best_valid": true,
+  "status": "killed",
+  "depth": 2,
+  "candidates": 494,
+  "op_families": {
+   "split_continuity": 18,
+   "run_stage": 18,
+   "rebuild_face": 15,
+   "rebuild_edge_as_intersection": 14,
+   "orient_and_close": 11,
+   "unify_same_domain": 9
+  }
+ },
+ {
+  "sha": "80c009cb74568efaef2c8f36e58a6a2b087c47beb06f7ebf45b6a737e9f9c868",
+  "name": "abc/0055_00555903_19170ca5f7030848f6985b79_step_001.step",
+  "family": "mesh: gmsh_alt:low_quality, gmsh_default:edge_through_face, gmsh_prod:other",
+  "best": "conformalise",
+  "best_passes": 1,
+  "best_valid": true,
+  "status": "complete",
+  "depth": 3,
+  "candidates": 3043,
+  "op_families": {
+   "split_angle": 209,
+   "conformalise": 161,
+   "defeature": 87,
+   "run_stage": 87,
+   "rebuild_face": 77,
+   "remove_small": 77
+  }
+ },
+ {
+  "sha": "6d1c4eab6f1839a2b9ad5156aacc13d34f1cfca8e7faaba17be2c52ffd436b59",
+  "name": "abc/0055_00557558_58aeccc0d60cfd0fd56386d5_step_002.step",
+  "family": "mesh: gmsh_default:edge_through_face, gmsh_prod:other, netgen_occ:netgen_meshing_failed",
+  "best": "fuse+conformalise",
+  "best_passes": 1,
+  "best_valid": true,
+  "status": "complete",
+  "depth": 3,
+  "candidates": 3011,
+  "op_families": {
+   "conformalise": 275,
+   "fuse": 169,
+   "unify_same_domain": 133,
+   "run_stage": 120,
+   "defeature": 71,
+   "split_angle": 66
+  }
+ },
+ {
+  "sha": "a2807f9a2fef334a65bb5727266ed0c875c0340549fb53c12a853c6bd4055c06",
+  "name": "abc/0051_00512819_0d20478fa07db557be91ad16_step_000.step",
+  "family": "mesh: gmsh_default:overlapping_facets",
+  "best": "defeature+defeature+split_continuity",
+  "best_passes": 3,
+  "best_valid": true,
+  "status": "killed",
+  "depth": 3,
+  "candidates": 882,
+  "op_families": {
+   "run_stage": 51,
+   "defeature": 49,
+   "rebuild_face": 31,
+   "split_angle": 27,
+   "remove_small": 21,
+   "split_by_proximity": 15
+  }
+ },
+ {
+  "sha": "4edc147fba727364aadb94dff9c81430edc2d10ff2e57ca5fcf3d2bc199ec7e3",
+  "name": "abc/0051_00516238_a001174e1863a81de4ee0f48_step_000.step",
+  "family": "L1 invalid: body_overlap",
+  "best": "staged root",
+  "best_passes": 1,
+  "best_valid": false,
+  "status": "complete",
+  "depth": 3,
+  "candidates": 1500,
+  "op_families": {
+   "conformalise": 245,
+   "fuse": 167,
+   "run_stage": 81,
+   "split_angle": 53,
+   "remove_small": 45,
+   "orient_and_close": 45
+  }
+ },
+ {
+  "sha": "36399c623980403c8a3e5c2321d849fc3cd426287793486dfee1113851d557e2",
+  "name": "abc/0051_00513736_589b1e411529400fd28c70ee_step_034.step",
+  "family": "mesh: gmsh_alt:timeout, gmsh_default:timeout, gmsh_prod:other",
+  "best": "input label (no state summarised before the kill)",
+  "best_passes": 1,
+  "best_valid": true,
+  "status": "killed",
+  "depth": 1,
+  "candidates": 9,
+  "op_families": {
+   "orient_and_close": 2,
+   "unify_same_domain": 1,
+   "run_stage": 1
+  }
+ },
+ {
+  "sha": "448333aaadf65eb33acc078b7cb1a4bc5889f116b2a15d8f17a4a4b30a620a55",
+  "name": "abc/0056_00569919_58b4bffcdbdd800f7e6d3ddc_step_004.step",
+  "family": "L1 invalid: self_intersection",
+  "best": "input label (no state summarised before the kill)",
+  "best_passes": 1,
+  "best_valid": false,
+  "status": "killed",
+  "depth": 2,
+  "candidates": 489,
+  "op_families": {
+   "split_continuity": 35,
+   "run_stage": 20,
+   "orient_and_close": 17,
+   "rebuild_face": 10,
+   "split_angle": 5,
+   "split_closed": 3
+  }
+ },
+ {
+  "sha": "eb3bc130c64403e21d3170e86ce33569dfd6aca7cc6fd1d80b5a806790f0fc15",
+  "name": "abc/0056_00561073_9e2961fdc18d9e5b976c08d0_step_000.step",
+  "family": "L1 invalid: self_intersection",
+  "best": "staged root",
+  "best_passes": 0,
+  "best_valid": false,
+  "status": "complete",
+  "depth": 3,
+  "candidates": 856,
+  "op_families": {
+   "reapproximate": 69,
+   "run_stage": 69,
+   "rebuild_face": 25,
+   "unify_same_domain": 16,
+   "defeature": 13,
+   "orient_and_close": 12
+  }
+ },
+ {
+  "sha": "4be89ef716e4372f7daa8dc1e8ffbc4204a95841dc3ebec4bc76ad0fe0879088",
+  "name": "abc/0056_00569762_58b4bbec8115250f775a5752_step_009.step",
+  "family": "mesh: gmsh_alt:capped_after_doom, gmsh_default:overlapping_facets, gmsh_prod:capped_after_doom, netgen_occ:capped_after_doom",
+  "best": "reapproximate+fuse",
+  "best_passes": 0,
+  "best_valid": true,
+  "status": "killed",
+  "depth": 2,
+  "candidates": 355,
+  "op_families": {
+   "reapproximate": 31,
+   "run_stage": 20,
+   "conformalise": 16,
+   "fuse": 12,
+   "defeature": 9,
+   "orient_and_close": 7
+  }
+ },
+ {
+  "sha": "3eb61cabb3877784f45c47b260efac82d2f57537a1c5564f7e30f050c7b74565",
+  "name": "abc/0059_00594882_58bf0c02835d62101bddf8c8_step_069.step",
+  "family": "mesh: gmsh_alt:low_quality, gmsh_default:low_quality",
+  "best": "fuse+remove_small+run_stage",
+  "best_passes": 2,
+  "best_valid": true,
+  "status": "complete",
+  "depth": 3,
+  "candidates": 1789,
+  "op_families": {
+   "fuse": 102,
+   "conformalise": 100,
+   "run_stage": 81,
+   "split_angle": 78,
+   "unify_same_domain": 72,
+   "defeature": 34
+  }
+ },
+ {
+  "sha": "5abbaf0b550810d7e5cfd312569bf6e044a05bbd9c32b876783381ffa3bd0d01",
+  "name": "abc/0056_00566187_58b33579367d56104c5e8230_step_002.step",
+  "family": "mesh: gmsh_alt:no_volume, gmsh_default:no_volume, gmsh_prod:other, netgen_occ:netgen_meshing_failed",
+  "best": "staged root",
+  "best_passes": 0,
+  "best_valid": true,
+  "status": "complete",
+  "depth": 2,
+  "candidates": 69,
+  "op_families": {
+   "run_stage": 15,
+   "defeature": 6,
+   "orient_and_close": 5,
+   "split_by_proximity": 3,
+   "split_angle": 3
+  }
+ },
+ {
+  "sha": "f3819472cf820e488483e73ce6fa614e7be6db852f2e43d2ed7a8e73bb408278",
+  "name": "abc/0053_00531271_5063549c98bdbe89669a4f49_step_000.step",
+  "family": "mesh: gmsh_default:overlapping_facets",
+  "best": "staged root",
+  "best_passes": 3,
+  "best_valid": true,
+  "status": "complete",
+  "depth": 2,
+  "candidates": 139,
+  "op_families": {
+   "run_stage": 25,
+   "defeature": 22,
+   "split_angle": 15,
+   "remove_small": 6,
+   "reapproximate": 2
+  }
+ },
+ {
+  "sha": "01413e3ff0999ed57a0d8c20cfb3cf9900674075f13c6d22c50870e5aa9ffc6e",
+  "name": "00564723/00564723_d7644cf5268368d63c60876a_step_000.step",
+  "family": "L1 invalid: body_overlap",
+  "best": "conformalise+remove_small+defeature",
+  "best_passes": 1,
+  "best_valid": false,
+  "status": "complete",
+  "depth": 3,
+  "candidates": 3443,
+  "op_families": {
+   "conformalise": 884,
+   "fuse": 516,
+   "defeature": 115,
+   "run_stage": 77,
+   "rebuild_face": 40,
+   "orient_and_close": 26
+  }
+ },
+ {
+  "sha": "b102922dbd8ea9071c59532c89253c4e7b9c87f0d7e254dc531df288ff26a387",
+  "name": "abc/0054_00544196_58a93fda716d73109155df3d_step_090.step",
+  "family": "mesh: gmsh_default:overlapping_facets, gmsh_prod:other",
+  "best": "conformalise+defeature",
+  "best_passes": 2,
+  "best_valid": true,
+  "status": "complete",
+  "depth": 3,
+  "candidates": 1494,
+  "op_families": {
+   "conformalise": 131,
+   "fuse": 112,
+   "run_stage": 93,
+   "split_angle": 63,
+   "unify_same_domain": 38,
+   "defeature": 35
+  }
+ },
+ {
+  "sha": "7917f3122caed0142b8bc396cf320ed89e8e2301d4c71f63498c990efc161704",
+  "name": "abc/0057_00574915_30a8ce52329868badc4fd335_step_014.step",
+  "family": "mesh: gmsh_default:low_quality",
+  "best": "conformalise+defeature",
+  "best_passes": 3,
+  "best_valid": true,
+  "status": "complete",
+  "depth": 3,
+  "candidates": 1193,
+  "op_families": {
+   "defeature": 124,
+   "run_stage": 111,
+   "remove_small": 75,
+   "conformalise": 74,
+   "fuse": 45,
+   "unify_same_domain": 40
+  }
+ },
+ {
+  "sha": "615e4cde051893283533867db756cc38cb3fae28802b379116a16617fb915498",
+  "name": "abc/0051_00514513_589b5807a417220f72384061_step_000.step",
+  "family": "mesh: gmsh_default:edge_through_face, gmsh_prod:other",
+  "best": "staged root",
+  "best_passes": 2,
+  "best_valid": true,
+  "status": "complete",
+  "depth": 2,
+  "candidates": 232,
+  "op_families": {
+   "run_stage": 9,
+   "defeature": 5,
+   "remove_small": 2,
+   "orient_and_close": 2
+  }
+ },
+ {
+  "sha": "b13ba9c6a96e0b685b78822699bcee3b7bde63ac98d24f8f3b427271740ea309",
+  "name": "abc/0055_00552754_78fab44c55201efeb3082719_step_000.step",
+  "family": "mesh: gmsh_alt:no_volume, gmsh_default:overlapping_facets, gmsh_prod:gmsh_crash",
+  "best": "staged root",
+  "best_passes": 1,
+  "best_valid": true,
+  "status": "complete",
+  "depth": 2,
+  "candidates": 158,
+  "op_families": {
+   "defeature": 29,
+   "run_stage": 15,
+   "remove_small": 8,
+   "split_angle": 6,
+   "orient_and_close": 4,
+   "unify_same_domain": 2
+  }
+ },
+ {
+  "sha": "7e573047c1a6591e2ac6eb8a58124bd1f36e94623ed84e610e301b6dcc577922",
+  "name": "abc/0051_00518226_7aa4de49968de523e2091a87_step_001.step",
+  "family": "mesh: gmsh_alt:capped_after_doom, gmsh_default:overlapping_facets, gmsh_prod:other, netgen_occ:capped_after_doom",
+  "best": "staged root",
+  "best_passes": 0,
+  "best_valid": true,
+  "status": "complete",
+  "depth": 3,
+  "candidates": 836,
+  "op_families": {
+   "split_angle": 129,
+   "remove_small": 64,
+   "run_stage": 60,
+   "defeature": 34,
+   "split_by_proximity": 33,
+   "unify_same_domain": 33
+  }
+ },
+ {
+  "sha": "8c6a3f2186e7101508d2348cc96aa4cb8b00deb139cc280fe3c7f3d047522d79",
+  "name": "abc/0051_00518960_bb93f0d63e97fc3782a0c6dd_step_051.step",
+  "family": "mesh: gmsh_alt:low_quality, gmsh_default:overlapping_facets, gmsh_prod:periodic_surface",
+  "best": "defeature+conformalise",
+  "best_passes": 1,
+  "best_valid": true,
+  "status": "complete",
+  "depth": 3,
+  "candidates": 1666,
+  "op_families": {
+   "conformalise": 147,
+   "run_stage": 94,
+   "fuse": 89,
+   "unify_same_domain": 79,
+   "split_angle": 76,
+   "rebuild_face": 56
+  }
+ },
+ {
+  "sha": "3e727f1145e030073e02e759a2bd31851f007c5f4f0e836425bb92808780148c",
+  "name": "00534812/00534812_10837490d7714a7adceb88f4_step_000.step",
+  "family": "mesh: gmsh_default:edge_through_face, gmsh_prod:other",
+  "best": "remove_small",
+  "best_passes": 2,
+  "best_valid": true,
+  "status": "complete",
+  "depth": 3,
+  "candidates": 1092,
+  "op_families": {
+   "run_stage": 67,
+   "rebuild_face": 35,
+   "orient_and_close": 32,
+   "remove_small": 18,
+   "fill_loop": 17,
+   "rebuild_edge_as_intersection": 14
+  }
+ },
+ {
+  "sha": "a0bc551656780b26d7a0ee1beedbc07d43f41efa092f74f3c2d8383417f04481",
+  "name": "NIST-PMI-STEP-Files/AP203 geometry only/nist_ftc_07_asme1_rd.stp",
+  "family": "mesh: gmsh_prod:low_quality",
+  "best": "split_angle+defeature+orient_and_close",
+  "best_passes": 3,
+  "best_valid": true,
+  "status": "complete",
+  "depth": 3,
+  "candidates": 1128,
+  "op_families": {
+   "split_angle": 138,
+   "unify_same_domain": 99,
+   "run_stage": 65,
+   "rebuild_face": 59,
+   "defeature": 50,
+   "reapproximate": 40
+  }
+ },
+ {
+  "sha": "dc2db5e7868fabd3829bf9eb114f33701543b284e12336be57946a09e9dac8d5",
+  "name": "occt/trj3_s1-ct-214.stp",
+  "family": "L1 invalid: body_overlap, self_intersection",
+  "best": "defeature",
+  "best_passes": 2,
+  "best_valid": false,
+  "status": "complete",
+  "depth": 3,
+  "candidates": 3407,
+  "op_families": {
+   "conformalise": 209,
+   "fuse": 128,
+   "unify_same_domain": 94,
+   "run_stage": 81,
+   "defeature": 57,
+   "split_angle": 53
+  }
+ },
+ {
+  "sha": "532be4434c61458ff25bc84e0b58be6ba374ec1a5493df5311b6f1950be538e8",
+  "name": "00518460/00518460_595bacda86770fa5dda409b8_step_000.step",
+  "family": "L1 invalid: brep_invalid",
+  "best": "staged root",
+  "best_passes": 4,
+  "best_valid": false,
+  "status": "complete",
+  "depth": 1,
+  "candidates": 19,
+  "op_families": {
+   "run_stage": 2,
+   "orient_and_close": 1
+  }
+ },
+ {
+  "sha": "4ef8e443ffa2620c2e237637545a426bfeba01b51e100a52c4adbba1bd30fd02",
+  "name": "abc/0055_00556932_58ae6c5e9420f7103b1ccecd_step_029.step",
+  "family": "L1 invalid: body_overlap",
+  "best": "input label (no state summarised before the kill)",
+  "best_passes": 1,
+  "best_valid": false,
+  "status": "killed",
+  "depth": 2,
+  "candidates": 605,
+  "op_families": {
+   "conformalise": 132,
+   "fuse": 89,
+   "run_stage": 16,
+   "reapproximate": 8,
+   "remove_small": 8,
+   "defeature": 4
+  }
+ },
+ {
+  "sha": "75e9d59b46e2431da7c88a7b99535c009a081b279196c71dbbc78f54a7a27913",
+  "name": "00526522/00526522_2096e13f381fdeed3052900f_step_070.step",
+  "family": "mesh: gmsh_prod:other",
+  "best": "defeature",
+  "best_passes": 3,
+  "best_valid": true,
+  "status": "complete",
+  "depth": 3,
+  "candidates": 895,
+  "op_families": {
+   "split_angle": 78,
+   "run_stage": 66,
+   "split_continuity": 32,
+   "defeature": 27,
+   "orient_and_close": 25,
+   "rebuild_face": 19
+  }
+ },
+ {
+  "sha": "32ca3e9a6e9a81c1bc5a95102b0de1dc8dbc3c8bc205028a00839ac7a43119e6",
+  "name": "abc/0054_00547994_58ab27a87442550f6daa230f_step_079.step",
+  "family": "L1 invalid: brep_invalid, self_intersection",
+  "best": "input label (no state summarised before the kill)",
+  "best_passes": 0,
+  "best_valid": false,
+  "status": "killed",
+  "depth": 1,
+  "candidates": 45,
+  "op_families": {
+   "split_angle": 10,
+   "split_by_proximity": 2,
+   "remove_small": 1,
+   "unify_same_domain": 1,
+   "orient_and_close": 1,
+   "rebuild_face": 1
+  }
+ },
+ {
+  "sha": "07edbf934b8f06ce3eb7ef64e8774e5ddf9bd8df80187c45bdfc951af15d3caf",
+  "name": "abc/0051_00515810_589bdec38006660f7f91d8e2_step_014.step",
+  "family": "mesh: gmsh_alt:periodic_surface, gmsh_default:periodic_surface, gmsh_prod:periodic_surface, netgen_occ:capped_after_doom",
+  "best": "conformalise+conformalise",
+  "best_passes": 0,
+  "best_valid": true,
+  "status": "killed",
+  "depth": 3,
+  "candidates": 732,
+  "op_families": {
+   "conformalise": 75,
+   "split_angle": 48,
+   "fuse": 45,
+   "run_stage": 39,
+   "orient_and_close": 17,
+   "unify_same_domain": 15
+  }
+ },
+ {
+  "sha": "96c7bdaf4909536f814694a0ec6e243389fa661bfd1b8eeba164ad46b9a87b5f",
+  "name": "abc/0054_00547086_58aaf7c222115e0f6fe69154_step_014.step",
+  "family": "mesh: gmsh_alt:periodic_surface, gmsh_default:periodic_surface, gmsh_prod:periodic_surface, netgen_occ:capped_after_doom",
+  "best": "conformalise+conformalise",
+  "best_passes": 0,
+  "best_valid": true,
+  "status": "killed",
+  "depth": 3,
+  "candidates": 740,
+  "op_families": {
+   "conformalise": 75,
+   "fuse": 45,
+   "split_angle": 42,
+   "run_stage": 39,
+   "orient_and_close": 17,
+   "unify_same_domain": 15
+  }
+ },
+ {
+  "sha": "557c3c0563c1cd8b1cad46d9ef897a44fb53d48c5cd728ec6a9da110b1c8dec3",
+  "name": "abc/0059_00593298_58bea51a3badff0fc550e4d4_step_013.step",
+  "family": "mesh: gmsh_alt:capped_after_doom, gmsh_default:edge_through_face, gmsh_prod:other, netgen_occ:netgen_meshing_failed",
+  "best": "staged root",
+  "best_passes": 0,
+  "best_valid": true,
+  "status": "complete",
+  "depth": 3,
+  "candidates": 881,
+  "op_families": {
+   "split_angle": 135,
+   "run_stage": 59,
+   "defeature": 43,
+   "unify_same_domain": 35,
+   "orient_and_close": 26,
+   "rebuild_face": 26
+  }
+ },
+ {
+  "sha": "4f0996fa7641dd759af577b9bf0695849eeccc1a31f5f2be6096bc15e23ecf91",
+  "name": "occt/trj3_s1-tc-214.stp",
+  "family": "mesh: gmsh_default:edge_through_face, gmsh_prod:other",
+  "best": "fuse+defeature",
+  "best_passes": 2,
+  "best_valid": true,
+  "status": "complete",
+  "depth": 3,
+  "candidates": 2482,
+  "op_families": {
+   "conformalise": 316,
+   "fuse": 131,
+   "split_angle": 81,
+   "run_stage": 73,
+   "rebuild_face": 40,
+   "orient_and_close": 28
+  }
+ },
+ {
+  "sha": "bb0fe0d1c8e92d9085fe788f14c7c0bd1e84a4ed664e451a6584ce6fbf1aaf90",
+  "name": "abc/0059_00592329_58be052560d0ea0f7c80053f_step_006.step",
+  "family": "mesh: gmsh_alt:no_volume, gmsh_default:overlapping_facets, gmsh_prod:other, netgen_occ:step_unreadable",
+  "best": "input label (no state summarised before the kill)",
+  "best_passes": 0,
+  "best_valid": true,
+  "status": "error",
+  "depth": 0,
+  "candidates": 0,
+  "op_families": {}
+ },
+ {
+  "sha": "67a0c04ed27aa33dd007f5ec765dd1724c5a6b3b770febcc4e4f6cb3583dbc60",
+  "name": "abc/0056_00561477_ca18416aea564660ee2eea7a_step_006.step",
+  "family": "mesh: gmsh_default:overlapping_facets",
+  "best": "staged root",
+  "best_passes": 3,
+  "best_valid": true,
+  "status": "complete",
+  "depth": 2,
+  "candidates": 170,
+  "op_families": {
+   "defeature": 33,
+   "run_stage": 29,
+   "split_angle": 18,
+   "remove_small": 12,
+   "unify_same_domain": 6,
+   "rebuild_face": 1
+  }
+ },
+ {
+  "sha": "affa12991b76d4a9ca7115bee339dfe74d4aefca332587de8a2e5613bcd597e2",
+  "name": "abc/0055_00557708_58aee364d60cfd0fd563a8ac_step_000.step",
+  "family": "L1 invalid: body_overlap, brep_invalid, non_positive_volume, self_intersection",
+  "best": "staged root",
+  "best_passes": 0,
+  "best_valid": false,
+  "status": "complete",
+  "depth": 1,
+  "candidates": 20,
+  "op_families": {}
+ },
+ {
+  "sha": "de9ad40118a4beb0b640c494f7866280c1f07aeea6dab2c671e077846e1b9825",
+  "name": "abc/0056_00567964_2dc8697785b603ebd064db60_step_000.step",
+  "family": "mesh: gmsh_alt:low_quality, gmsh_default:overlapping_facets, gmsh_prod:low_quality",
+  "best": "staged root",
+  "best_passes": 1,
+  "best_valid": true,
+  "status": "complete",
+  "depth": 2,
+  "candidates": 227,
+  "op_families": {
+   "conformalise": 56,
+   "fuse": 22,
+   "run_stage": 14,
+   "defeature": 10,
+   "rebuild_face": 6,
+   "remove_small": 5
+  }
+ },
+ {
+  "sha": "263d5e2d5babc9a2fd344835eed8107d7fbbf34f8b3c17798ecfd3774f4d8a83",
+  "name": "abc/0053_00532482_58a41a786e328e0f6f32065d_step_009.step",
+  "family": "mesh: gmsh_alt:low_quality, gmsh_default:low_quality, gmsh_prod:other",
+  "best": "staged root",
+  "best_passes": 1,
+  "best_valid": true,
+  "status": "complete",
+  "depth": 2,
+  "candidates": 169,
+  "op_families": {
+   "run_stage": 39,
+   "defeature": 23,
+   "to_canonical": 11,
+   "orient_and_close": 7,
+   "split_by_proximity": 6,
+   "split_angle": 6
+  }
+ },
+ {
+  "sha": "7b13ec12fee5e7bfd4eb816f4b1c2167df556a34c4301d4ae8dc6508b04deac4",
+  "name": "occt/trj5_s1-in-214.stp",
+  "family": "L1 invalid: self_intersection",
+  "best": "staged root",
+  "best_passes": 1,
+  "best_valid": false,
+  "status": "complete",
+  "depth": 2,
+  "candidates": 991,
+  "op_families": {
+   "run_stage": 35,
+   "conformalise": 32,
+   "defeature": 28,
+   "fuse": 28,
+   "split_angle": 25,
+   "orient_and_close": 19
+  }
+ },
+ {
+  "sha": "7f07861fcd0f3f3476576657eebfac2def3ad441e8e911defcaecd8eb1e6e47c",
+  "name": "00597851/00597851_54911a92f479626781c654b3_step_000.step",
+  "family": "mesh: gmsh_default:low_quality, gmsh_prod:low_quality",
+  "best": "staged root",
+  "best_passes": 2,
+  "best_valid": true,
+  "status": "complete",
+  "depth": 2,
+  "candidates": 211,
+  "op_families": {
+   "defeature": 36,
+   "run_stage": 35,
+   "split_angle": 17,
+   "reapproximate": 14,
+   "remove_small": 8,
+   "to_canonical": 6
+  }
+ },
+ {
+  "sha": "695d74ca7fa66509d84905c33bbb6747a1fd1c36ebe1252dfea990fb66e3b96b",
+  "name": "abc/0052_00527796_945276583aeb7d4221f130f8_step_006.step",
+  "family": "mesh: gmsh_default:overlapping_facets, gmsh_prod:low_quality, netgen_occ:capped_after_doom",
+  "best": "defeature+defeature",
+  "best_passes": 1,
+  "best_valid": true,
+  "status": "complete",
+  "depth": 3,
+  "candidates": 844,
+  "op_families": {
+   "defeature": 86,
+   "run_stage": 65,
+   "split_angle": 43,
+   "rebuild_face": 30,
+   "orient_and_close": 26,
+   "unify_same_domain": 14
+  }
+ },
+ {
+  "sha": "cfe077313b04ba9527be5aa113df78cd36c1542dbafad1cdb5670a2b68b9e229",
+  "name": "occt/trj4_s1-ug-214.stp",
+  "family": "mesh: gmsh_default:edge_through_face, gmsh_prod:other, netgen_occ:netgen_meshing_failed",
+  "best": "staged root",
+  "best_passes": 1,
+  "best_valid": true,
+  "status": "complete",
+  "depth": 3,
+  "candidates": 2685,
+  "op_families": {
+   "conformalise": 184,
+   "fuse": 92,
+   "reapproximate": 76,
+   "split_angle": 70,
+   "run_stage": 69,
+   "orient_and_close": 36
+  }
+ },
+ {
+  "sha": "0df08227f52ac225763f7499c1b913673f913638f5bc23a6f48e23565e5e932e",
+  "name": "abc/0052_00526908_81cccc4a79fc27bf121c4ec9_step_000.step",
+  "family": "mesh: gmsh_default:edge_through_face, gmsh_prod:other",
+  "best": "defeature",
+  "best_passes": 2,
+  "best_valid": true,
+  "status": "complete",
+  "depth": 3,
+  "candidates": 796,
+  "op_families": {
+   "run_stage": 87,
+   "unify_same_domain": 52,
+   "defeature": 38,
+   "conformalise": 36,
+   "split_angle": 33,
+   "orient_and_close": 25
+  }
+ },
+ {
+  "sha": "e91b70f1e37cbcff5c581cad7e4fbeb953526837263148eb912bb0b378bcd0ed",
+  "name": "abc/0056_00567586_aaf14752252a80d40c9e1283_step_005.step",
+  "family": "mesh: gmsh_default:overlapping_facets, gmsh_prod:low_quality, netgen_occ:low_quality",
+  "best": "defeature+defeature",
+  "best_passes": 1,
+  "best_valid": true,
+  "status": "complete",
+  "depth": 3,
+  "candidates": 795,
+  "op_families": {
+   "run_stage": 55,
+   "rebuild_face": 52,
+   "orient_and_close": 18,
+   "defeature": 14,
+   "rebuild_edge_as_intersection": 9,
+   "make_volume": 8
+  }
+ },
+ {
+  "sha": "bc860ab1a1e188781ddeaa1f062e5c07293c8e18c3bdf8f9495539c985eca8c3",
+  "name": "abc/0052_00524677_ce40b542d96733a3ccc2e6c3_step_000.step",
+  "family": "mesh: gmsh_alt:no_volume, gmsh_default:overlapping_facets, gmsh_prod:other",
+  "best": "staged root",
+  "best_passes": 1,
+  "best_valid": true,
+  "status": "complete",
+  "depth": 1,
+  "candidates": 23,
+  "op_families": {
+   "run_stage": 4,
+   "rebuild_face": 1,
+   "orient_and_close": 1
+  }
+ },
+ {
+  "sha": "e357818b22f8fd2e41bde62a2ea7172194bd3d9d98de305d9797f9c837875c41",
+  "name": "abc/0054_00545731_58aa1a11baa7e90f79546cff_step_002.step",
+  "family": "mesh: gmsh_default:overlapping_facets, gmsh_prod:other",
+  "best": "input label (no state summarised before the kill)",
+  "best_passes": 2,
+  "best_valid": true,
+  "status": "killed",
+  "depth": 3,
+  "candidates": 1057,
+  "op_families": {
+   "conformalise": 152,
+   "split_angle": 90,
+   "fuse": 55,
+   "run_stage": 53,
+   "defeature": 40,
+   "orient_and_close": 24
+  }
+ },
+ {
+  "sha": "3ca940d41ed307401a2d4ba376f25def1507daece4c0339922c682a1ffda119d",
+  "name": "abc/0057_00579594_83b3892e48b2778f2d468928_step_000.step",
+  "family": "mesh: gmsh_default:overlapping_facets, gmsh_prod:other",
+  "best": "staged root",
+  "best_passes": 2,
+  "best_valid": true,
+  "status": "complete",
+  "depth": 2,
+  "candidates": 181,
+  "op_families": {
+   "run_stage": 32,
+   "defeature": 26,
+   "conformalise": 14,
+   "split_angle": 6,
+   "fuse": 5,
+   "rebuild_face": 4
+  }
+ },
+ {
+  "sha": "b25999e0f8be0dca3fbefd227c114873a3a8570ee3e25a442926fff6431d0059",
+  "name": "abc/0056_00562266_a20a56b200869b8723d9c310_step_018.step",
+  "family": "mesh: gmsh_default:edge_through_face",
+  "best": "defeature+split_angle+split_by_proximity",
+  "best_passes": 3,
+  "best_valid": true,
+  "status": "complete",
+  "depth": 3,
+  "candidates": 844,
+  "op_families": {
+   "run_stage": 67,
+   "split_angle": 49,
+   "reapproximate": 37,
+   "split_by_proximity": 30,
+   "unify_same_domain": 22,
+   "rebuild_face": 20
+  }
+ },
+ {
+  "sha": "575448ea0b6ffeda11907bd321761e9f1b166777f0964ea665de29d91b9a581b",
+  "name": "abc/0061_00611396_0b3be1f3a3fc526b378c1f14_step_000.step",
+  "family": "L1 invalid: body_overlap",
+  "best": "staged root",
+  "best_passes": 3,
+  "best_valid": false,
+  "status": "complete",
+  "depth": 2,
+  "candidates": 818,
+  "op_families": {
+   "conformalise": 91,
+   "fuse": 52,
+   "run_stage": 28,
+   "unify_same_domain": 14,
+   "defeature": 1,
+   "remove_small": 1
+  }
+ },
+ {
+  "sha": "f62ed385ec02a640a4441ba26d681164886d5e79ebea7fde32045c0508f02355",
+  "name": "00542809/00542809_58a894c022115e0f6fe41de9_step_008.step",
+  "family": "mesh: gmsh_default:overlapping_facets, gmsh_prod:other",
+  "best": "staged root",
+  "best_passes": 2,
+  "best_valid": true,
+  "status": "complete",
+  "depth": 2,
+  "candidates": 64,
+  "op_families": {
+   "run_stage": 13,
+   "reapproximate": 6
+  }
+ },
+ {
+  "sha": "6946c8aa04ffa04163d60fbfad7f7c43a03c960e49446f721e03336247d137a8",
+  "name": "abc/0060_00602875_5de7672422a977f86b14dcca_step_000.step",
+  "family": "mesh: netgen_occ:netgen_meshing_failed",
+  "best": "staged root",
+  "best_passes": 3,
+  "best_valid": true,
+  "status": "complete",
+  "depth": 2,
+  "candidates": 51,
+  "op_families": {
+   "run_stage": 14,
+   "split_angle": 5,
+   "orient_and_close": 3,
+   "split_continuity": 3
+  }
+ }
+]
