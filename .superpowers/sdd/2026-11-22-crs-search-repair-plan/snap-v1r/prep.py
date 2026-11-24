@@ -185,12 +185,24 @@ def main() -> int:
     # A shard's cap is its DEMAND (files x the per-file cap; a clean file weighs CLEAN_WEIGHT, it is clean at input and
     # the model is only asked when the healer damages it), scaled down so every cap sums to at most --total-usd,
     # never above the shard's ledger slice (cap_to only lowers), rounded DOWN to the cent.
+    # Two passes, so no shard's cap is below what ONE of its files may spend (a shard cap under the per-file ceiling
+    # would bind first and silently shorten that file's model turns): (1) every shard gets min(its demand, one file's
+    # ceiling); (2) what is left of the total goes out in proportion to the demand still unmet.
     demand = {k: [c * a.file_usd_cap * (1.0 if k == "dev" else CLEAN_WEIGHT) for c in counts[k]] for k in counts}
-    scale = min(1.0, a.total_usd / sum(sum(v) for v in demand.values()))
+    floor_ = {k: [min(d, a.file_usd_cap) for d in demand[k]] for k in demand}
+    left = a.total_usd - sum(sum(v) for v in floor_.values())
+    if left < 0:
+        print(f"REFUSED: {sum(len(v) for v in floor_.values())} shards x one file's ${a.file_usd_cap} exceeds "
+              f"${a.total_usd}: fewer shards or a larger total")
+        return 1
+    rest = sum(d - f for k in demand for d, f in zip(demand[k], floor_[k]))
+    scale = min(1.0, left / rest) if rest > 0 else 0.0
     for k in demand:
-        caps[k] = [min(slice_cap[k], math.floor(100 * d * scale) / 100) for d in demand[k]]
+        caps[k] = [min(slice_cap[k], math.floor(100 * (f + (d - f) * scale)) / 100)
+                   for d, f in zip(demand[k], floor_[k])]
         manifest["waves"][k]["caps_usd"] = caps[k]
-    manifest["cap_rule"] = {"clean_weight": CLEAN_WEIGHT, "scale": scale, "file_usd_cap": a.file_usd_cap}
+    manifest["cap_rule"] = {"clean_weight": CLEAN_WEIGHT, "file_usd_cap": a.file_usd_cap,
+                            "floor_per_shard": "min(demand, file_usd_cap)", "scale_of_the_rest": scale}
     total_caps = round(sum(caps["dev"]) + sum(caps["clean"]), 2)
     if total_caps > a.total_usd + 1e-9:
         print(f"REFUSED: shard caps sum to ${total_caps} > ${a.total_usd}")
