@@ -322,7 +322,7 @@ Full tables: `reports/triage_dev.md`, `reports/triage_clean.md`.
 ## Money and time
 
 - **Ledger ${led_total:.4f}** (route probes are metered in the shard ledgers on this code). {led_text}
-- **Wave wall {('%.1f' % wave_min) if wave_min is not None else '?'} min** (launch to last shard). Shard minutes: {', '.join(f'{k} {v}' for k, v in sorted(shard_min.items()))}.
+- **Wave wall {f'{wave_min:.1f}' if wave_min is not None else '?'} min** (launch to last shard). Shard minutes: {', '.join(f'{k} {v}' for k, v in sorted(shard_min.items()))}.
 - Per-file arm wall, dev (excluded at the {wall:.0f} s wall), median / mean / p90: {walls(H['by'], dev_exc, wall)}.
 - VM ~{vm.get('hours', '?')} h ≈ ${vm.get('usd', '?')}.
 
