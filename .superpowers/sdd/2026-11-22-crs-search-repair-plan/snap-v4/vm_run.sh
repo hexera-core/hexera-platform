@@ -6,6 +6,8 @@
 # group has its own wave id, its own --n-shards and its own shard plan; regroup.py presents them as one wave per
 # split afterwards, which is what report.py reads.
 #
+# OPS may be EMPTY, which means "the commit's own Budget.ops": --ops is then not passed at all. Passing an empty
+# `--ops ` made argparse exit 2 on every unit, and the pilot caught it.
 # Writes out/<wave_id>/shard-<i>-of-<n>/ per unit, out/<vm>.<unit>.rc per unit, and out/<vm>.VMDONE at the end.
 # Every VM writes into the SAME bucket prefix, so launch.sh collects one tree.
 set -u
@@ -54,7 +56,7 @@ run_unit() { # group shard n split wave arms cap
     -v $T/inputs:/eval/inputs:ro -v $out:/eval/out -v $T/ledger:/eval/ledger -w /w -e PYTHONPATH=/w/src \
     --env-file $T/secret.env $IMG \
     python devtools/validation/v4_eval/run_arm.py \
-    --mode arms --arms "$arms" --h-mm auto --ops $OPS --workers 1 --cache-uri $CACHE --commit $COMMIT \
+    --mode arms --arms "$arms" --h-mm auto ${OPS:+--ops $OPS} --workers 1 --cache-uri $CACHE --commit $COMMIT \
     --image $IMAGE_ID --machine-type $MACHINE --wave $wave --split $split \
     --split-file /eval/splits/$split.json --shard-plan /eval/splits/plan_$group.json --shard ${shard}/${n} \
     --inputs /eval/inputs --out /eval/out --plan-provenance "$P" --route $ROUTE --wave-id $wid \
