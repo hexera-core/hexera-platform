@@ -711,7 +711,9 @@ def _site_of(component: list[_Node], boxes: dict) -> Site:
             if c:
                 xyz.append(tuple(float(v) for v in c))
     kinds = {k for n in component for k in n.kinds}
-    kind = next(k for k in _PRIORITY if k in kinds)
+    # a component of proximity-only nodes carries no failure kind (lane D21: StopIteration killed find_sites on 5 of
+    # the oracle's first 24 dev files; the search caught it and expanded BLIND, losing every site of the state)
+    kind = next((k for k in _PRIORITY if k in kinds), "proximity")
     meshers = sorted({s for n in component for s in n.sources if s != "proximity"})
     site = Site("", kind, entities, xyz[:20], meshers, None, {}, None)
     seen_notes: set[tuple] = set()
