@@ -988,3 +988,13 @@ def test_the_row_carries_every_fidelity_quantity_the_decision_says_to_report() -
     assert out["out_bodies_before"] == 1 and out["out_bodies_after"] == 7
     # and the input side stays as it was: these are the OUTPUT's numbers
     assert "in_area_ratio" not in arms_mod._layers(v, "in")
+
+
+def test_search_wall_s_only_lowers_the_search_wall(shard: Any) -> None:
+    spec = run_arm.evalspec.ARMS["search_det"]
+    low = run_arm.effective_arm(spec, run_arm.parse_args([*shard.argv, "--arms", "search_det", "--search-wall-s", "240"]))
+    assert low.budget.wall_s == 240.0 and low.budget.ops == spec.budget.ops
+    high = run_arm.effective_arm(spec, run_arm.parse_args([*shard.argv, "--arms", "search_det", "--search-wall-s", "99999"]))
+    assert high.budget.wall_s == spec.budget.wall_s
+    with pytest.raises(SystemExit):
+        run_arm.parse_args([*shard.argv, "--arms", "search_det", "--search-wall-s", "0"])

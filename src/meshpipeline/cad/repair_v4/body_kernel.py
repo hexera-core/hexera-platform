@@ -33,6 +33,7 @@ from meshpipeline.cad.repair_v4.ws_kernel import (
     diagonal_of,
     entities_of,
     history_record,
+    part_diagonal,
     read_brep,
     shape_signature,
     write_brep,
@@ -464,7 +465,8 @@ def _conformalise(payload: dict) -> dict:
     old = read_brep(payload["brep_path"])
     fuzzy = float(payload.get("fuzzy_mm", 0.0))
     mode = payload["mode"]
-    bound = fidelity_bound(diagonal_of(old))
+    part = part_diagonal(payload, old)  # lane C13: the part as it arrived, not this shape's pole box
+    bound = fidelity_bound(part)
     # B12: no fuzzy cap. The bound is computed only to be REPORTED beside each measured overlap.
     targets = _targets(old, payload["bodies"])
     cut_by = payload.get("cut_by")
@@ -480,7 +482,7 @@ def _conformalise(payload: dict) -> dict:
     for i, a in enumerate(targets):
         for b in targets[i + 1:]:
             volume = _common_volume(a, b, fuzzy)
-            if volume <= zero_volume_mm3(diagonal_of(old)):
+            if volume <= zero_volume_mm3(part):
                 continue  # touching, not overlapping
             involves_keeper = keeper is not None and (a.IsSame(keeper) or b.IsSame(keeper))
             if not involves_keeper:
@@ -514,7 +516,7 @@ def _conformalise(payload: dict) -> dict:
     stages.append((frag.History(), None))
     result_solids = _maps(frag.Shape())["solid"]
     new_solids = [result_solids.FindKey(i) for i in range(1, result_solids.Extent() + 1)]
-    new_solids, dropped = _drop_zero_volume(new_solids, zero_volume_mm3(diagonal_of(old)))
+    new_solids, dropped = _drop_zero_volume(new_solids, zero_volume_mm3(part))
     if dropped["history"] is not None:
         stages.append((dropped["history"], None))
     params = {"bodies": payload.get("body_ids", []), "fuzzy_mm": fuzzy, "mode": mode,
@@ -548,7 +550,7 @@ def _remove_duplicate_faces(payload: dict) -> dict:
 
     start = time.perf_counter()
     old = read_brep(payload["brep_path"])
-    bound = fidelity_bound(diagonal_of(old))
+    bound = fidelity_bound(part_diagonal(payload, old))  # lane C13
     faces = _maps(old)["face"]
     from OCP.TopAbs import TopAbs_FACE, TopAbs_SOLID
 

@@ -61,6 +61,32 @@ def scaled_sliver_widths(diag_mm: float) -> tuple[float, ...]:
     return tuple(f * bound for f in _SLIVER_WIDTH_FRACTIONS)
 
 
+#: `remove_small` widths for THE DET SWEEP as fractions OF THE DIAGONAL, with no absolute ceiling (LEAD-2, A11
+#: step 2 priority 3, under the owner's 2026-11-24 removal of "op parameter bounds tied to the deviation budget").
+#: `scaled_sliver_widths` above keeps the old fidelity-bound ladder, because the STAGED healer uses it and the
+#: staged arm is the baseline every snapshot compares a search arm against: widening it would move the baseline
+#: and confound the comparison. This widens only the arm under test.
+#:
+#: Measured, over the 16 distinct faces a `low_quality` failure located on the dev parts: only 2 were narrower than
+#: the old ceiling, and 6 carry a tiny EDGE of 0.001 to 0.2 mm - 1 to 4 times that ceiling - on an otherwise
+#: ordinary face, so the op could not reach what the mesher was failing on. The widest of those needs 0.202 mm on a
+#: 46.9 mm part, i.e. 4.3e-3 of the diagonal; 1e-2 covers it with margin and treats a 1 m part and a 10 mm part
+#: alike. THREE rungs, as before, so this changes the widths and not how many candidates an expansion gets.
+_DET_SLIVER_WIDTH_RATIOS = (1e-4, 1e-3, 1e-2)
+
+
+def det_sliver_widths(diag_mm: float) -> tuple[float, ...]:
+    """`remove_small` widths (mm) the DET SWEEP proposes for a part of this diagonal: fractions of the diagonal
+    itself, with no absolute ceiling. A part with no usable diagonal has none.
+
+    What bounds the edit is the verdict, not the ladder: a removal that breaks layer 1 or loses a panel member
+    scores worse and is never delivered (`search.deliverable`), and one that keeps both while moving the part is
+    reported by the gaming flag. That is the owner's 2026-11-24 model - propose, then judge."""
+    if not math.isfinite(diag_mm) or diag_mm <= 0.0:
+        return ()
+    return tuple(r * diag_mm for r in _DET_SLIVER_WIDTH_RATIOS)
+
+
 def scaled_sew_ladder(diag_mm: float) -> list[float]:
     """A `sew` ladder (mm, tightest first) for a part of this diagonal: fractions of `fidelity_bound`, each kept
     only if it lies in the kernel's window [1e-6 x diagonal, bound]. The window is empty for a part over 100 m
@@ -81,6 +107,7 @@ def _run(pool: WorkerPool, ws: Workspace, op: str, kernel_fn: str, targets: list
     out_path = str(brep.with_name(f"{brep.stem}.{op}.{uuid4().hex[:8]}.brep"))
     payload = {
         "brep_path": ws.brep_path, "out_path": out_path, "quantum": ws.quantum, "params": params,
+        "part_diag_mm": ws.part_diag_mm,
         "targets": [{"id": t, "type": _KIND_OF_PREFIX[t[0]], "index": ws.indices[t]} for t in targets],
         # kernel index -> stable id, so the kernel can name what it removes in `declared_removed`
         "ids": {f"{_KIND_OF_PREFIX[sid[0]]}:{index}": sid for sid, index in ws.indices.items()},
@@ -209,11 +236,11 @@ def ladder_floor(diag_mm: float) -> float:
     return _LADDER_FLOOR_FRACTION * diag_mm
 
 
-def _bound(shape: Any) -> tuple[float, float]:
-    """(diagonal, fidelity bound) of `shape`."""
-    from meshpipeline.cad.repair_v4.ws_kernel import diagonal_of
+def _bound(shape: Any, payload: dict | None = None) -> tuple[float, float]:
+    """(diagonal, fidelity bound) of the PART (`ws_kernel.part_diagonal`: the lineage's original, lane C13)."""
+    from meshpipeline.cad.repair_v4.ws_kernel import part_diagonal
 
-    diag = diagonal_of(shape)
+    diag = part_diagonal(payload or {}, shape)
     return diag, fidelity_bound(diag)
 
 
@@ -397,7 +424,7 @@ def _sew(payload: dict) -> dict:
     start = time.perf_counter()
     old = ws_kernel.read_brep(payload["brep_path"])
     params = dict(payload["params"])
-    diag, bound = _bound(old)
+    diag, bound = _bound(old, payload)
     floor = ladder_floor(diag)
     ladder = sorted({float(t) for t in params["tol_ladder"]})
     off = [t for t in ladder if t < floor]

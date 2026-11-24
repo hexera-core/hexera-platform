@@ -20,7 +20,7 @@ set -u -o pipefail
 HERE=$(cd "$(dirname "$0")" && pwd); REPO=$(git -C "$HERE" rev-parse --show-toplevel)
 COMMIT_ARG=${1:?usage: launch.sh <commit> [profile] [--dry-run]}; PROFILE=v4; DRY=0
 for x in "${@:2}"; do case $x in --dry-run) DRY=1;; *) PROFILE=$x;; esac; done
-KEYS="REGIONS TARGET_MIN TOTAL_USD MAX_RUN IMAGE IMAGE_COMMIT OPS"
+KEYS="REGIONS TARGET_MIN TOTAL_USD MAX_RUN IMAGE IMAGE_COMMIT OPS ARM_GROUPS FILE_TIMEOUT_S SEARCH_WALL_S VCPU_PER_SHARD"
 for k in $KEYS; do eval "OVR_$k=\${$k:-}"; done
 source "$HERE/profiles/$PROFILE.env"
 for k in $KEYS; do eval "v=\$OVR_$k"; [ -n "$v" ] && eval "$k=\$v"; done
@@ -39,6 +39,12 @@ COMMIT=$(git -C "$REPO" rev-parse --verify "$COMMIT_ARG^{commit}") || die "canno
 log "profile=$PROFILE commit=$COMMIT regions=$REGIONS run dir $RUN"
 git -C "$REPO" archive --format=tar "$COMMIT" > "$RUN/code.tar" || die "git archive failed"
 mkdir -p "$RUN/code" && tar xf "$RUN/code.tar" -C "$RUN/code" devtools src || die "extract failed"
+# IMPORT PRE-FLIGHT, before any VM: byte-compile the engine and the eval code of THIS commit. A SyntaxError (the
+# ws_kernel docstring that broke 36261625..b53614732) fails here in a second instead of on every unit twenty
+# minutes into a wave. A full import needs OCP and the image; the compile catches what the image cannot fix.
+python3 -I -m compileall -q "$RUN/code/src/meshpipeline/cad/repair_v4" "$RUN/code/devtools/validation/v4_eval" \
+  > "$RUN/compile.log" 2>&1 || die "commit $COMMIT does NOT compile (see $RUN/compile.log): $(grep -m1 -E 'Error' "$RUN/compile.log")"
+log "pre-flight: repair_v4 and v4_eval compile at $COMMIT"
 
 # ---------------------------------------------------------------- 2. the op budget is the COMMIT's own
 DEFAULT_OPS=$(cd "$RUN/code" && PYTHONPATH="$RUN/code/src" python3 -c "
@@ -54,6 +60,7 @@ fi
 # ---------------------------------------------------------------- 3. splits
 resolve_split() { # spec override out
   local spec=$1 override=$2 out=$3
+  case $spec in COMMIT:*) spec="$COMMIT:${spec#COMMIT:}";; esac   # a split frozen IN the run commit
   if [ -n "$override" ]; then [ -f "$override" ] || die "split file $override not found"; cp "$override" "$out"; echo "file:$override"; return; fi
   if git -C "$REPO" cat-file -e "$spec" 2>/dev/null; then git -C "$REPO" show "$spec" > "$out"; echo "git:$spec@$(git -C "$REPO" rev-parse "${spec%%:*}")"; return; fi
   die "split $spec is not written yet (pass DEV_SPLIT=/path or CLEAN_SPLIT=/path)"
@@ -71,7 +78,10 @@ python3 -I "$HERE/prep.py" --code "$RUN/code" --profile "$PROFILE" --dev-split "
   --clean-split "$RUN/splits/clean.json" --dev-wave "$DEV_WAVE" --clean-wave "$CLEAN_WAVE" \
   --total-usd "$TOTAL_USD" --file-usd-cap "$FILE_USD_CAP" --inputs-ls "$RUN/inputs_ls.txt" \
   --prior-rows "$PRIOR" --regions $REGIONS --target-min "$TARGET_MIN" --route "$ROUTE" \
-  --label "$LABEL" --ts "$TS" ${OPS:+--ops "$OPS"} --out "$RUN/splits" | tee -a "$RUN/launch.log"
+  --label "$LABEL" --ts "$TS" ${OPS:+--ops "$OPS"} ${ARM_GROUPS:+--groups "$ARM_GROUPS"} \
+  ${FILE_TIMEOUT_S:+--file-timeout-s "$FILE_TIMEOUT_S"} ${SEARCH_WALL_S:+--search-wall-s "$SEARCH_WALL_S"} \
+  ${VCPU_PER_SHARD:+--vcpu-per-shard "$VCPU_PER_SHARD"} \
+  --out "$RUN/splits" | tee -a "$RUN/launch.log"
 [ "${PIPESTATUS[0]}" = 0 ] || die "prep refused"
 cp "$RUN/splits/launch_manifest.json" "$RUN/splits/vm_plan.json" "$RUN/"
 
@@ -126,6 +136,8 @@ ROUTE=$ROUTE
 BUCKET=$BUCKET
 CACHE=gs://$BUCKET/eval/snap-$LABEL-$TS/verdict-cache
 SYNC=$SYNC
+FILE_TIMEOUT_S=${FILE_TIMEOUT_S:-}
+SEARCH_WALL_S=${SEARCH_WALL_S:-}
 EOF
 cp "$HERE/vm_run.sh" "$HERE/post.py" "$HERE/regroup.py" "$HERE/collect.sh" "$RUN/tools/"
 python3 -I -c "
@@ -146,10 +158,14 @@ fi
 delete_vms() {
   for vm in $(cat "$RUN/vms.txt"); do
     [ "${KEEP_VM:-0}" = 1 ] && continue
-    [ -f "$RUN/zone.$vm" ] || continue
-    z=$(cat "$RUN/zone.$vm")
-    gcloud compute ssh "$vm" --zone "$z" --project $PROJECT --command 'shred -u ~/snap/secret.env 2>/dev/null; true' </dev/null >/dev/null 2>&1
-    gcloud compute instances delete "$vm" --zone "$z" --project $PROJECT --quiet </dev/null >> "$RUN/launch.log" 2>&1 &
+    # delete this NAME in EVERY zone it exists in, not only the recorded one: a leaked duplicate is never left
+    # behind (the fast-loop lane's fix; my pilot 1 leaked exactly that way, a second VM of the same name in
+    # another zone after a failed create). `< /dev/null` on every gcloud call because inside a loop reading a
+    # file ssh would EAT the rest of the VM list and only the first VM would be deleted.
+    for z in $(gcloud compute instances list --project $PROJECT --filter="name=$vm" --format='value(zone.basename())' </dev/null 2>/dev/null); do
+      gcloud compute ssh "$vm" --zone "$z" --project $PROJECT --command 'shred -u ~/snap/secret.env 2>/dev/null; true' </dev/null >/dev/null 2>&1
+      gcloud compute instances delete "$vm" --zone "$z" --project $PROJECT --quiet </dev/null >> "$RUN/launch.log" 2>&1 &
+    done
   done
   wait
 }
@@ -198,6 +214,15 @@ for vm in $(cat "$RUN/vms.txt"); do
         --image-family debian-12 --image-project debian-cloud --boot-disk-size 200GB --boot-disk-type pd-balanced \
         --scopes cloud-platform --metadata-from-file startup-script="$RUN/startup.sh" >> "$RUN/launch.log" 2>&1; then
       echo "$z" > "$RUN/zone.$vm"; created=$z; break
+    fi
+    # A create can exit non-zero AFTER the instance was inserted (an operation timeout, a post-insert error). Trying
+    # the next zone then makes a SECOND VM of the same name that nothing keyed on name can see (the B17 pilot leak).
+    # So before any other zone: does this name exist anywhere? If it does, ADOPT it and stop.
+    found=$(gcloud compute instances list --project $PROJECT --filter="name=$vm" --format='value(zone.basename())' 2>>"$RUN/launch.log")
+    if [ -n "$found" ]; then
+      [ "$(echo "$found" | wc -l | tr -d ' ')" = 1 ] || die "$vm exists in several zones ($found): refusing to continue"
+      log "create of $vm in $z reported failure but the VM exists in $found: adopting it, no other zone tried"
+      echo "$found" > "$RUN/zone.$vm"; created=$found; break
     fi
   done
   [ -n "$created" ] || die "no zone of '$zones' had $machine capacity for $vm"

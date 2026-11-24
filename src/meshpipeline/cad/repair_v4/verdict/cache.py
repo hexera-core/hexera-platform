@@ -50,7 +50,13 @@ from meshpipeline.settings.cad_repair import verdict_cache_uri
 #: 2x and every fingerprint misses, for every member, mm members included (measured: 2 of 12 dev files). `Located` now
 #: carries the face's kernel-equivalent box and `sites.find_sites` names it on the workspace's grid. .5 fixed gmsh's
 #: padding (gmsh_prod only); .6 fixes the grid (all members). Pass/fail unchanged; `located` gained a field.
-VERDICT_CODE_VERSION = "crs-v4.verdict.6"
+#: .7 (lane D19): Netgen's STEP reader keeps only the FIRST root of a file; when that root holds no solid (a loose
+#: shell ahead of the bodies) netgen_occ failed "STEP file holds no solids" on a readable part. The member now reads
+#: every root on that one failure, so a cached .6 step_unreadable for such a file is wrong. Files Netgen already
+#: read are meshed exactly as before.
+#: .8 (lane D20, owner ruling): netgen_occ meshes EVERY root of a multi-root STEP, not only on a no-solids read; a
+#: cached .7 netgen result for a multi-root file judged its first body only.
+VERDICT_CODE_VERSION = "crs-v4.verdict.8"
 logger = logging.getLogger(__name__)
 CACHEABLE_STATUSES = ("pass", "fail")
 

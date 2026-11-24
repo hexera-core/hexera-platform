@@ -186,7 +186,7 @@ def parse_regions(specs: list[str]) -> list[dict]:
     return out
 
 
-def vms_for(regions: list[dict], label: str) -> list[dict]:
+def vms_for(regions: list[dict], label: str, ts: str = "", vcpu_per_shard: float = 0.0) -> list[dict]:
     """A region's vCPU budget filled with c2d VMs, largest first. Every VM is c2d so one benchmark's walls stay
     comparable across regions; the size ladder only decides how the budget is cut up."""
     vms = []
@@ -196,9 +196,11 @@ def vms_for(regions: list[dict], label: str) -> list[dict]:
             size = next(s for s in C2D_LADDER if s <= left)
             n += 1
             left -= size
-            vms.append({"name": f"dev-crsv4-snap-{label}-{r['region']}-{n}", "region": r["region"],
+            # the run stamp is IN the name: a name is unique per run, so a retried create can never yield two VMs of one
+            # name in two zones that nothing keyed on name can tell apart (the B17 pilot's leaked VM)
+            vms.append({"name": f"dev-crsv4-snap-{label}-{r['region']}-{n}" + (f"-{ts}" if ts else ""), "region": r["region"],
                         "zones": r["zones"], "machine": f"c2d-standard-{size}", "vcpu": size,
-                        "slots": size // VCPU_PER_SHARD, "units": []})
+                        "slots": int(size / (vcpu_per_shard or VCPU_PER_SHARD)), "units": []})
     return vms
 
 
@@ -239,6 +241,13 @@ def main() -> int:  # noqa: PLR0915 - one linear script: read, plan, refuse, wri
     p.add_argument("--label", default="v4")
     p.add_argument("--ts", default="", help="the launcher's run stamp; the group wave ids are snap-<label>-<group>-<ts>")
     p.add_argument("--ops", type=int, default=None)
+    p.add_argument("--groups", default="", help="override GROUPS: 'name:arm,arm:split ...' (the fast loop runs the "
+                   "search arms only); default the four dev arm groups + clean")
+    p.add_argument("--file-timeout-s", type=float, default=None, help="the per-file wall the shards run with "
+                   "(default the commit's DEFAULT_FILE_TIMEOUT_S); every (file, arm) cost is capped at it")
+    p.add_argument("--search-wall-s", type=float, default=None, help="passed through to run_arm (lower only)")
+    p.add_argument("--vcpu-per-shard", type=float, default=0.0, help="vCPU per container (default VCPU_PER_SHARD=2); "
+                   "1 = one container per core (the owner's packing directive), below 1 oversubscribes")
     p.add_argument("--vm-usd-per-vcpu-h", type=float, default=0.047,
                    help="c2d-standard-56 at the v1r profile's own VM_USD_PER_H=2.63 (lane B14; NOT $0.38)")
     a = p.parse_args()
@@ -253,13 +262,22 @@ def main() -> int:  # noqa: PLR0915 - one linear script: read, plan, refuse, wri
 
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
-    wall = float(ev.DEFAULT_FILE_TIMEOUT_S)
+    wall = float(a.file_timeout_s) if a.file_timeout_s else float(ev.DEFAULT_FILE_TIMEOUT_S)
+    global GROUPS
+    if a.groups:
+        parsed = []
+        for spec in a.groups.split():
+            g, arms, sp = spec.split(":")
+            parsed.append((g, tuple(arms.split(",")), sp))
+        GROUPS = tuple(parsed)
     waves = {"dev": ev.wave(a.dev_wave), "clean": ev.wave(a.clean_wave)}
     splits = {"dev": Path(a.dev_split), "clean": Path(a.clean_split)}
     files = {k: load_split(splits[k], k) for k in splits}
     for k, w in waves.items():
-        if w.split != k or tuple(w.arms) != ARMS4 or w.wave_type != "normal":
-            raise SystemExit(f"REFUSED: wave {w.name!r} is not a normal four-arm {k} wave")
+        ran = [arm for g, arms, sp in GROUPS if sp == k for arm in arms]
+        if w.split != k or w.wave_type != "normal" or sorted(ran) != sorted(w.arms) or len(set(ran)) != len(ran):
+            raise SystemExit(f"REFUSED: wave {w.name!r} ({w.wave_type}, {w.split}, {w.arms}) is not exactly what the "
+                             f"{k} groups run ({ran}): every arm of the wave once, normal type")
     if {f["sha256"] for f in files["dev"]} & {f["sha256"] for f in files["clean"]}:
         raise SystemExit("REFUSED: dev and clean share a file")
     staged = parse_ls(Path(a.inputs_ls))
@@ -295,7 +313,8 @@ def main() -> int:  # noqa: PLR0915 - one linear script: read, plan, refuse, wri
                                       "prior_rows": str(prior_root),
                                       "prior_measured_rows_per_arm": dict(sorted(measured_arms.items())),
                                       "prior_exclusions_skipped": "deadline-unmeasured and reason-lost pairs"},
-                      "groups": {}, "splits": {}, "waves": {k: w.name for k, w in waves.items()}}
+                      "groups": {}, "splits": {}, "waves": {k: w.name for k, w in waves.items()},
+                      "wave_arms": {k: list(w.arms) for k, w in waves.items()}}
     target_s = a.target_min * 60.0
     units: list[dict] = []
     caps_model: dict[str, list[float]] = {}
@@ -312,7 +331,7 @@ def main() -> int:  # noqa: PLR0915 - one linear script: read, plan, refuse, wri
         source = {"prior": 0, "size_model": 0, "clean_default": 0}
         for f in files[k]:
             s = f["sha256"]
-            have = [prior[s][arm] for arm in arms if s in prior and arm in prior[s]]
+            have = [min(prior[s][arm], wall) for arm in arms if s in prior and arm in prior[s]]  # capped at THIS wall
             if len(have) == len(arms):
                 costs[s] = sum(have)
                 source["prior"] += 1
@@ -320,12 +339,13 @@ def main() -> int:  # noqa: PLR0915 - one linear script: read, plan, refuse, wri
                 costs[s] = clean_default * sum(ARM_SHARE.get(arm, 0.25) for arm in arms)
                 source["clean_default"] += 1
             else:
-                costs[s] = k_dev * sum(ARM_SHARE.get(arm, 0.25) for arm in arms) * ev.predicted_cost_s(staged[s][0])
+                costs[s] = min(len(arms) * wall,
+                               k_dev * sum(ARM_SHARE.get(arm, 0.25) for arm in arms) * ev.predicted_cost_s(staged[s][0]))
                 source["size_model"] += 1
         cost_of[group], source_of[group] = costs, source
 
     regions = parse_regions(a.regions)
-    capacity = sum(v["slots"] for v in vms_for(regions, a.label))
+    capacity = sum(v["slots"] for v in vms_for(regions, a.label, a.ts, a.vcpu_per_shard))
 
     def slots_at(target_minutes: float) -> dict[str, int]:
         """The shard count each group needs to finish inside `target_minutes`, with the model ceiling applied."""
@@ -344,7 +364,7 @@ def main() -> int:  # noqa: PLR0915 - one linear script: read, plan, refuse, wri
                          if sum(slots_at(t).values()) <= capacity), None)
         raise SystemExit(
             f"REFUSED: {sum(want.values())} shard slots ({want}) do not fit {capacity} on "
-            f"{len(vms_for(regions, a.label))} VMs. The plan asks for {work_h:.1f} core-h. "
+            f"{len(vms_for(regions, a.label, a.ts, a.vcpu_per_shard))} VMs. The plan asks for {work_h:.1f} core-h. "
             + (f"--target-min {feasible} fits ({sum(slots_at(feasible).values())} slots) and is the smallest that "
                f"does; " if feasible else "no target under 24 h fits, so the regions are too small for this split; ")
             + "or raise --regions vCPU, or cut the split. I will not quietly pack more work into fewer shards.")
@@ -427,7 +447,7 @@ def main() -> int:  # noqa: PLR0915 - one linear script: read, plan, refuse, wri
     if any(u["cap_usd"] <= 0 for u in units):
         raise SystemExit("REFUSED: a shard cap rounded to $0: fewer shards or a larger total")
 
-    vms = pack(vms_for(regions, a.label), units)
+    vms = pack(vms_for(regions, a.label, a.ts, a.vcpu_per_shard), units)
     placed = sum(len(v["units"]) for v in vms)
     if placed != len(units):
         raise SystemExit(f"REFUSED: {placed} of {len(units)} shard slots placed")

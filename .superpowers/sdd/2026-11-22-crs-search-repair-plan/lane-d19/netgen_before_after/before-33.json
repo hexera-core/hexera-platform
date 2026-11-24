@@ -1,0 +1,1 @@
+{"i": 33, "sha": "0df08227f5", "v": "crs-v4.verdict.6", "status": "fail", "error_kind": "netgen_meshing_failed", "message": "NgException: Meshing failed!", "min_sicn": null, "elements": 0, "cause": null, "located": [], "s": 0.8}

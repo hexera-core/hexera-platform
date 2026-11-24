@@ -192,3 +192,55 @@ def test_netgen_segfault_is_a_vote_against_the_file_not_infrastructure() -> None
     assert (segv.status, segv.error_kind) == ("crashed", "netgen_crash")
     absent = member_result("netgen_occ", {"ok": False, "stage": "unavailable", "error": "none"}, 0.0)
     assert absent.error_kind == INFRASTRUCTURE_KIND and absent.cause == "toolchain_absent"
+
+
+# --- D19: Netgen's STEP reader keeps only the FIRST root ------------------------------------------
+
+def _write_roots(shapes: list, path: Path) -> str:
+    """One STEP ROOT per shape, in order (not one compound): the layout of lane C12's 0053_00530659."""
+    writer = STEPControl_Writer()
+    for shape in shapes:
+        writer.Transfer(shape, STEPControl_AsIs)
+    assert writer.Write(str(path)) == IFSelect_RetDone
+    return str(path)
+
+
+def _loose_shell(x: float) -> object:
+    from OCP.TopAbs import TopAbs_SHELL
+    from OCP.TopExp import TopExp_Explorer
+
+    return TopExp_Explorer(_box(x), TopAbs_SHELL).Current()
+
+
+def test_a_shell_root_ahead_of_the_solids_no_longer_hides_them(pool: WorkerPool, tmp_path: Path) -> None:
+    """Roots [SHELL, SOLID, SOLID]: Netgen's own read sees the shell alone ("STEP file holds no solids"); the member
+    now reads every root and meshes the two solids."""
+    step = _write_roots([_loose_shell(100.0), _box(0), _box(30)], tmp_path / "shell_first.step")
+    ng = netgen_python()
+    assert ng is not None
+    probe = subprocess.run([ng, "-c", "import sys; from netgen.occ import OCCGeometry; s = OCCGeometry(sys.argv[1]).shape;"
+                            " print(len(list(s.solids)))", step], capture_output=True, text=True, timeout=300)
+    assert probe.stdout.strip().splitlines()[-1] == "0", probe   # the bug, reproduced: Netgen alone sees no solid
+    result = NetgenOCC().run(pool, step, timeout_s=TIMEOUT_S)
+    assert result.status == "pass", result
+    assert "2 solid(s)" in result.message and "every STEP root" in result.message
+
+
+def test_a_file_netgen_already_reads_is_meshed_exactly_as_before(pool: WorkerPool, tmp_path: Path) -> None:
+    step = _write([_box(0)], tmp_path / "box.step")
+    result = NetgenOCC().run(pool, step, timeout_s=TIMEOUT_S)
+    assert result.status == "pass" and "every STEP root" not in result.message
+
+
+def test_a_file_with_no_solid_in_any_root_still_reads_as_no_solids(pool: WorkerPool, tmp_path: Path) -> None:
+    step = _write_roots([_loose_shell(0.0)], tmp_path / "shell_only.step")
+    result = NetgenOCC().run(pool, step, timeout_s=TIMEOUT_S)
+    assert result.status == "fail" and result.error_kind == "step_unreadable" and "no solids" in result.message
+
+
+def test_every_root_of_a_multi_root_file_is_meshed_not_only_the_first(pool: WorkerPool, tmp_path: Path) -> None:
+    """D20, owner ruling: roots [SOLID, SOLID] - Netgen alone meshed the first body; the member now meshes both."""
+    step = _write_roots([_box(0), _box(30)], tmp_path / "two_roots.step")
+    result = NetgenOCC().run(pool, step, timeout_s=TIMEOUT_S)
+    assert result.status == "pass", result
+    assert "2 solid(s)" in result.message and "every STEP root" in result.message

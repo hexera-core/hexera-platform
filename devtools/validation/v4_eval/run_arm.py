@@ -527,20 +527,25 @@ def _h_mm(text: str) -> float:
 
 
 def effective_arm(spec: Any, args: argparse.Namespace) -> Any:
-    """`spec` with the command line's op budget and per-file model ceiling applied. Both can only LOWER what the
+    """`spec` with the command line's op budget, search wall and per-file model ceiling applied. The wall and the
+    ceiling can only LOWER what the
     arm declares (a ceiling flag that could raise the money would be a way round the owner's limit); a model arm
     keeps a positive ceiling, and a non-model arm never gains one."""
     import dataclasses
 
     budget = spec.budget
     ops = budget.ops if getattr(args, "ops", None) is None else args.ops
+    wall = budget.wall_s
+    sw = getattr(args, "search_wall_s", None)
+    if sw is not None:
+        wall = min(wall, sw)  # lower only: the fast loop stops a search inside its short file wall
     usd = budget.model_usd
     cap = getattr(args, "file_usd_cap", None)
     if cap is not None and spec.uses_model:
         usd = min(usd, cap)
-    if (ops, usd) == (budget.ops, budget.model_usd):
+    if (ops, usd, wall) == (budget.ops, budget.model_usd, budget.wall_s):
         return spec
-    return dataclasses.replace(spec, budget=evalspec.Budget(wall_s=budget.wall_s, ops=ops, model_usd=usd))
+    return dataclasses.replace(spec, budget=evalspec.Budget(wall_s=wall, ops=ops, model_usd=usd))
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -561,6 +566,9 @@ def build_parser() -> argparse.ArgumentParser:
                         help="target element size for site finding; NO default (required by the search arms). "
                              "`auto` derives it per part (search.h_mm_for: a tenth of the diagonal, the production "
                              "base size): one fixed size is wrong on a panel spanning 10 mm to 10 m")
+    parser.add_argument("--search-wall-s", type=float, default=None,
+                        help="LOWER every arm's search wall (Budget.wall_s) to this many seconds, never raises it: a "
+                             "search must stop itself inside a short --file-timeout-s, or the file is killed unmeasured")
     parser.add_argument("--ops", type=int, default=None,
                         help="budget of APPLIED ops per file for every arm; a run_stage candidate costs every op "
                              "its stage applied (default: the arm's own, evalspec.Budget.ops)")
@@ -665,9 +673,10 @@ def _resolve_arms(parser: argparse.ArgumentParser, args: argparse.Namespace) -> 
         parser.error("--max-turns must be at least 1")
     if args.ops is not None and args.ops < 1:
         parser.error("--ops must be at least 1")
-    for flag, value in (("--model-usd-cap", args.model_usd_cap), ("--file-usd-cap", args.file_usd_cap)):
+    for flag, value in (("--model-usd-cap", args.model_usd_cap), ("--file-usd-cap", args.file_usd_cap),
+                        ("--search-wall-s", args.search_wall_s)):
         if value is not None and not (math.isfinite(value) and value > 0):
-            parser.error(f"{flag} must be a finite positive number of dollars")
+            parser.error(f"{flag} must be a finite positive number")
     args.arms_resolved = tuple(names)
 
 

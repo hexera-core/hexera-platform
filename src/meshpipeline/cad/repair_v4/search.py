@@ -105,7 +105,7 @@ from typing import Any, Literal, Protocol
 from meshpipeline.cad.repair_v4 import render
 from meshpipeline.cad.repair_v4.measurement import NO_VERDICT, TIME_STOPS, file_unmeasured, no_verdict_failure
 from meshpipeline.cad.repair_v4.ops import REGISTRY, OpDeclined, OpFailed, validate_call
-from meshpipeline.cad.repair_v4.ops.shells import scaled_sew_ladder, scaled_sliver_widths
+from meshpipeline.cad.repair_v4.ops.shells import det_sliver_widths, scaled_sew_ladder
 from meshpipeline.cad.repair_v4.proposer import (
     IMAGE_KINDS,
     AIProposer,
@@ -1009,7 +1009,7 @@ class DetGenerator:
             if diag is None or diag > UNBOUNDED_DIAGONAL_MM:
                 self._note(f"site {site.id}: remove_small not proposed: {self._why_no_size(diag)}")
             else:
-                for width in scaled_sliver_widths(diag):
+                for width in det_sliver_widths(diag):
                     rows.append(("remove_small", list(dict.fromkeys(small)), {"max_width_mm": width},
                                  f"remove the {len(small)} small entities the checker found ({why})"))
         return rows
@@ -1105,11 +1105,17 @@ class DetGenerator:
         solids = _of_kind(site.entities, "B")
         rows: list[tuple[str, list[StableId], dict, str]] = []
         kind = site.kind
+        # A CONTACT IS GEOMETRY, NOT A SITE KIND (lane C12's second finding; this builder is mine). Two faces
+        # measured at gap 0 need the same ops wherever the clash was measured, so the contact rows are read for
+        # EVERY kind. Lane C found a post-cut `self_overlap` site carrying 4 touching clashes with both areas
+        # (F127-F123 at 768/620 mm2) while the sweep built 0 contact rows from 14 proposals, because this was
+        # reached only for `proximity`. The near-miss split stays proximity's own: its plan is sized from the gap,
+        # which only a near miss has.
+        near, contacts = _clash_pairs(site)
         if kind == "proximity" and len(faces) >= 2:
             # AIMED, lane A11: the pairs the kernel MEASURED (`graph["clashes"]`), nearest first, not every
             # combination of the site's faces - a combinatorial list proposes work no mesher complained about and
             # crowds the one pair it did out of the op budget. With no measured pair, fall back to the old sweep.
-            near, contacts = _clash_pairs(site)
             pairs = near or ([list(p) for p in itertools.combinations(faces, 2)][:_MAX_PAIRS] if not contacts else [])
             for ratio in _PROXIMITY_RATIOS if pairs else ():
                 rows.append(
@@ -1120,7 +1126,7 @@ class DetGenerator:
                         f"split the near faces so chords sag at most {ratio} of the gap",
                     )
                 )
-            rows += self._contact_rows(contacts)
+        rows += self._contact_rows(contacts)
         if kind == "self_overlap":
             rows += self._overlap_rows(site, faces)
         if kind in ("proximity", "self_overlap", "periodic") and faces:
@@ -1144,7 +1150,7 @@ class DetGenerator:
             sized = diag is not None and diag <= UNBOUNDED_DIAGONAL_MM
             if not sized:
                 self._note(f"site {site.id}: remove_small not proposed: {self._why_no_size(diag)}")
-            for width in scaled_sliver_widths(diag) if diag is not None and sized else ():
+            for width in det_sliver_widths(diag) if diag is not None and sized else ():
                 rows.append(
                     (
                         "remove_small",

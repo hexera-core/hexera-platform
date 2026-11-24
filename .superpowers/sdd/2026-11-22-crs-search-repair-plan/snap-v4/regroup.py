@@ -120,7 +120,8 @@ def read_group(out: Path, wave_id: str) -> list[dict]:
     return got
 
 
-def merge_split(out: Path, splits: Path, split: str, groups: dict, prefix: str) -> dict:
+def merge_split(out: Path, splits: Path, split: str, groups: dict, prefix: str,
+                wave_arms: tuple[str, ...] = ARMS4) -> dict:
     """One split's groups into one wave directory. The merged partition is the file's FIRST appearance, so a merged
     shard holds every arm of the files it owns and no file is in two merged shards."""
     loaded = {g: read_group(out, meta["wave_id"]) for g, meta in groups.items()}
@@ -143,9 +144,9 @@ def merge_split(out: Path, splits: Path, split: str, groups: dict, prefix: str) 
     # `arms` is the PLAN's (always the wave's four, even in a one-arm group), so a gate on it is vacuous. What a
     # shard actually ran is `arms_run`.
     arms_run = sorted({a for g in loaded for s in loaded[g] for a in (s["prov"].get("arms_run") or [])})
-    if arms_run != sorted(ARMS4):
+    if arms_run != sorted(wave_arms):
         raise RegroupRefused(f"{split}: the groups RAN arms {arms_run} (prov['arms_run']), not the wave's "
-                             f"{sorted(ARMS4)}: a merged shard would claim an arm that never ran")
+                             f"{sorted(wave_arms)}: a merged shard would claim an arm that never ran")
 
     # report.load_wave refuses a model-arm wave whose shards do not carry ledger: "shard". Carry it only when
     # every group that ran a model arm really did.
@@ -216,7 +217,7 @@ def merge_split(out: Path, splits: Path, split: str, groups: dict, prefix: str) 
         guard = combine_guards([sh["prov"].get("wave_backoff") for sh in buckets.get(i, [])])
         walls = [float(sh["prov"].get("wall_seconds") or 0.0) for g in loaded for sh in loaded[g]
                  if sh["dir"].name == f"shard-{i}-of-{len(loaded[g])}"]
-        prov = {**agreed, "arms": list(ARMS4), "arms_run": list(ARMS4), "wave_id": merged_wave_id,
+        prov = {**agreed, "arms": list(wave_arms), "arms_run": list(wave_arms), "wave_id": merged_wave_id,
                 "n_shards": n, "shard": f"{i}/{n}", "shard_plan": digest, "exit_code": worst, "regrouped": True,
                 **({"ledger": ledger_value} if ledger_value else {}),
                 **({"wave_backoff": guard} if guard else {}),
@@ -246,7 +247,8 @@ def main() -> int:
         by_split[meta["split"]][group] = meta
     summary = {}
     for split in sorted(by_split):
-        summary[split] = merge_split(out, splits, split, by_split[split], a.merged_prefix)
+        arms = tuple((manifest.get("wave_arms") or {}).get(split) or ARMS4)  # the WAVE's arms (fast loop: 2)
+        summary[split] = merge_split(out, splits, split, by_split[split], a.merged_prefix, arms)
         print(json.dumps(summary[split], sort_keys=True))
     (out / "regroup_summary.json").write_text(json.dumps(summary, indent=1, sort_keys=True) + "\n")
     return 0 if all(s["exit_code"] == 0 for s in summary.values()) else 1
