@@ -1031,3 +1031,41 @@ def test_search_wall_s_only_lowers_the_search_wall(shard: Any) -> None:
     assert high.budget.wall_s == spec.budget.wall_s
     with pytest.raises(SystemExit):
         run_arm.parse_args([*shard.argv, "--arms", "search_det", "--search-wall-s", "0"])
+
+
+def test_the_sequential_arms_headline_is_FULL_CHECKS_PER_FILE() -> None:
+    """B24: the arm's claim is the ratio of local checks to full 4-mesher panels, so the block reports both and
+    the headline is per FILE. Rows of every other arm carry none of it, and the block is then absent."""
+    base = {"source": "abc_fail", "arm": "search_seq", "inconclusive": False, "model_usd": 0.0, "wall_s": 10.0,
+            "reason": "exhausted", "verdict_candidates": 2, "inconclusive_candidates": 0,
+            "infrastructure_failed": False, "in_clean": False, "in_panel_passes": 1, "in_valid": True,
+            "in_faithful_ok": True, "out_valid": True, "out_faithful_ok": True, "panel_size": 4,
+            "out_tier": "full"}
+    rows = [
+        report._row_from_dict({**base, "name": "a.step", "sha256": "a" * 64, "out_panel_passes": 4,
+                               "out_clean": True, "full_checks": 2, "local_checks": 9, "rounds": 2,
+                               "local_s": 4.5, "full_s": 120.0, "overlap_pairs_fixed": 3,
+                               "defects_found": {"body_overlap": 1, "open_shell": 2},
+                               "defects_fixed": {"body_overlap": 1, "open_shell": 1},
+                               "defects_skipped": {"open_shell": 1},
+                               "skipped_why": {"local_check_unavailable": 1}}),
+        report._row_from_dict({**base, "name": "b.step", "sha256": "b" * 64, "out_panel_passes": 2,
+                               "out_clean": False, "full_checks": 1, "local_checks": 3, "rounds": 1,
+                               "local_s": 1.5, "full_s": 60.0,
+                               "defects_found": {"open_shell": 1}, "defects_skipped": {"open_shell": 1},
+                               "skipped_why": {"no_rule": 1}}),
+    ]
+    kinds = {"a" * 64: "face_delete", "b" * 64: "face_delete"}
+    block = report._arm_block("search_seq", rows, kinds, len(rows))["sequential"]
+    assert block["full_checks_per_file"] == 1.5           # 3 panels over 2 files: THE headline
+    assert block["local_checks"] == 12 and block["local_per_full"] == 4.0
+    assert block["rounds_per_file"] == 1.5
+    assert block["defects"]["found"] == {"body_overlap": 1, "open_shell": 3}
+    assert block["defects"]["fixed"] == {"body_overlap": 1, "open_shell": 1}
+    assert block["defects"]["skipped_why"] == {"local_check_unavailable": 1, "no_rule": 1}
+    assert block["overlap_pairs"] == {"fixed": 3, "skipped": 0}
+    assert block["seconds"] == {"full": 180.0, "local": 6.0}
+    # an arm that carries none of it has no block at all
+    plain = report._row_from_dict({**base, "arm": "search_det", "name": "c.step", "sha256": "c" * 64,
+                                   "out_panel_passes": 4, "out_clean": True})
+    assert report._arm_block("search_det", [plain], {"c" * 64: "face_delete"}, 1)["sequential"] is None

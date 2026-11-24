@@ -345,6 +345,12 @@ ARMS: dict[str, Arm] = {a.name: a for a in (
     Arm("search_det", "best-first search, deterministic proposers only", SHARED_BUDGET, False),
     Arm("search_ai", "best-first search with the AI proposer",
         Budget(SHARED_BUDGET.wall_s, SHARED_BUDGET.ops, model_usd=1.00), True),
+    # B24, owner direction 2026-11-24: one defect at a time, one repair each, LOCAL checks, one full panel per
+    # round. Same wall and op cap as the other arms, so the comparison is of method and not of budget. It is
+    # det-only for now (`uses_model` False): the AI pick decides only a table tie, and turning it on needs a
+    # per-file model ceiling on this line, which is the owner's call and not a default.
+    Arm("search_seq", "sequential defect repair: one defect, one repair, local checks, one panel per round",
+        SHARED_BUDGET, False),
     Arm("v3_meshability_pass_ai", "v3 as it ships (meshability pass + AI), run once for comparison",
         SHARED_BUDGET, False, spend_metered=False),  # calls a model; its spend is v3's, not this ledger's
 )}

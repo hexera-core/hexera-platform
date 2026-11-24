@@ -374,3 +374,22 @@ def test_the_line_says_WHICH_pair_of_a_cluster_and_its_own_measurement() -> None
     assert out.rounds[0].steps[0].startswith("body_overlap on B1+B2 (clash 0.4 mm) -> conformalise{")
     assert out.rounds[0].steps[1].startswith("body_overlap on B2+B3 (clash 0.1 mm) -> conformalise{")
     assert "fuzzy_mm=0.11" in out.rounds[0].steps[1]       # the pair's OWN clash, not the cluster's worst
+
+
+def test_an_INCONCLUSIVE_verdict_stops_the_arm_and_says_so_rather_than_crashing() -> None:
+    """Found by the first end-to-end run on a real part: this host has no netgen, so the panel came back
+    inconclusive and `judge.score` refused it (by design) - and the arm crashed. An inconclusive verdict says
+    nothing about the file, so it can neither rank a state nor end a round: the arm stops and the row counts it."""
+    class _Inconclusive(_Judge):
+        def score(self, v: Any) -> tuple:                      # type: ignore[override]
+            from meshpipeline.cad.repair_v4.verdict.assemble import InconclusiveVerdict
+            raise InconclusiveVerdict("a panel member failed for pool reasons")
+
+    judge = _Inconclusive()
+    start = _WS(0)
+    out = seq.repair_sequentially(None, start, "o.step", judge=judge,
+                                  sites_of=lambda pool, ws, v: [_mesher_site()],
+                                  start_verdict=judge.full(None, start, "o.step"))
+    assert out.best is start and out.rounds == []
+    assert out.counters.inconclusive_verdicts == 1
+    assert out.counters.skipped_why["start_verdict_inconclusive"] == 1

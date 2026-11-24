@@ -36,6 +36,7 @@ from typing import Any
 from meshpipeline.cad.repair_v4.local_verify import Defect, LocalResult, verify_local
 from meshpipeline.cad.repair_v4.ops import REGISTRY, OpDeclined, OpFailed, validate_call
 from meshpipeline.cad.repair_v4.types import Site, StableId
+from meshpipeline.cad.repair_v4.verdict.assemble import InconclusiveVerdict
 from meshpipeline.cad.repair_v4.verdict.valid import CheckerUnavailable
 from meshpipeline.cad.repair_v4.workspace import Diff, UnknownTarget, Workspace
 
@@ -456,6 +457,9 @@ class SeqCounters:
     pairs_skipped: int = 0
     #: how many repairs this round kept (reset by the loop at the end of each round)
     kept_in_round: int = 0
+    #: full verdicts that came back INCONCLUSIVE (a panel member failed for pool reasons). They say nothing about
+    #: the file, so they can neither rank a state nor end a round's work: the arm stops and the row says why.
+    inconclusive_verdicts: int = 0
     found: collections.Counter[str] = field(default_factory=collections.Counter)
     fixed: collections.Counter[str] = field(default_factory=collections.Counter)
     skipped: collections.Counter[str] = field(default_factory=collections.Counter)
@@ -470,6 +474,7 @@ class SeqCounters:
                 "ai_picks": self.ai_picks, "defects_found": dict(self.found), "defects_fixed": dict(self.fixed),
                 "defects_skipped": dict(self.skipped), "skipped_why": dict(self.skipped_why),
                 "overlap_pairs_fixed": self.pairs_fixed, "overlap_pairs_skipped": self.pairs_skipped,
+                "inconclusive_verdicts": self.inconclusive_verdicts,
                 "local_s": round(self.local_s, 1), "full_s": round(self.full_s, 1)}
 
 
@@ -605,8 +610,25 @@ def repair_sequentially(
     verdict = start_verdict if start_verdict is not None else judge.full(pool, start, original)
     if start_verdict is None:
         counters.full_checks += 1
-    best_score = judge.score(verdict)
     t0 = clock()
+
+    def scored(v: Any) -> Any | None:
+        """`judge.score(v)`, or None when the verdict is INCONCLUSIVE.
+
+        An inconclusive verdict is a panel member failing for POOL reasons: it says nothing about the file, so
+        `score` refuses it by design (assemble.score). Found by the first end-to-end run on a real part, where
+        this host has no netgen interpreter: the arm crashed instead of saying so. It cannot rank a state it
+        could not measure, so it stops and the row carries the count."""
+        try:
+            return judge.score(v)
+        except InconclusiveVerdict:
+            counters.inconclusive_verdicts += 1
+            return None
+
+    best_score = scored(verdict)
+    if best_score is None:
+        counters.skipped_why["start_verdict_inconclusive"] += 1
+        return SeqOutcome(best=best, verdict=verdict, counters=counters, rounds=rounds)
 
     def out_of_wall() -> bool:
         return wall_s is not None and (clock() - t0) >= wall_s
@@ -652,7 +674,11 @@ def repair_sequentially(
         new_verdict = judge.full(pool, current, original)
         counters.full_checks += 1
         counters.full_s += clock() - full_t
-        new_score = judge.score(new_verdict)
+        new_score = scored(new_verdict)
+        if new_score is None:
+            # the round's work cannot be judged: the better state stands and the row says the check was lost
+            this.full_check = "inconclusive: a panel member failed for pool reasons"
+            break
         improved = new_score > best_score
         this.full_check = (f"{'clean' if getattr(new_verdict, 'clean', False) else 'not clean'}, "
                            f"score {tuple(new_score)}, {'improved' if improved else 'no better'} "
@@ -791,3 +817,38 @@ def _repair_cluster(pool: Any, ws: Workspace, defect: Defect, *, counters: SeqCo
         counters.skipped[defect.code] += 1
         step(f"{defect_line(defect)} -> cluster partly repaired: {gone} of {len(defect.pairs)} pairs")
     return current
+
+
+# --- the staged macro, as this arm reaches it -----------------------------------------------------------------
+
+
+def stage_runner() -> Callable[[Any, Workspace, str, dict, float], _Applied]:
+    """`run_stage:<stage>` for this arm: one stage of the staged healer, as a TRANSACTION, which is the same
+    `stages.run_stage` the search's macro uses (search._stage_outcome) - so the two arms reach the same code and
+    a chain the oracle won with is reachable here too.
+
+    A stage that was rolled back, skipped, or could not be judged is an `OpDeclined`: for this arm those are all
+    "the repair did not apply", and the next alternative is tried. The stage's own words are kept, because
+    arms.py and triage.py group on them.
+    """
+    from meshpipeline.cad.repair_v4.stages import run_stage as _run_stage
+
+    def run(pool: Any, ws: Workspace, stage: str, params: dict, timeout_s: float) -> _Applied:
+        base = ws.fork()
+        result = _run_stage(pool, base, stage, {"timeout_s": timeout_s, **(params or {})})
+        if stage in result.inconclusive:
+            raise CheckerUnavailable(f"stage {stage!r} could not be judged (checker unavailable)")
+        if stage in result.rolled_back:
+            raise OpDeclined(f"stage {stage!r} was rolled back: it lowered the cheap score")
+        if stage in result.skipped:
+            raise OpDeclined(f"stage {stage!r} changed nothing: {result.skipped[stage]}")
+        diffs = list(result.ws.history[len(base.history):])
+        if result.ws is base or not diffs:
+            raise OpDeclined(f"stage {stage!r} changed nothing")
+        touched: list[StableId] = []
+        for d in diffs:
+            touched.extend(d.generated or {})
+            touched.extend(d.modified or {})
+        return _Applied(result.ws, diffs, tuple(dict.fromkeys(touched)), [{"stage": stage}])
+
+    return run
