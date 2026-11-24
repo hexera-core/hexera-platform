@@ -134,6 +134,10 @@ for ZONE in us-central1-b us-central1-a us-central1-c us-central1-f; do
     --image-family debian-12 --image-project debian-cloud --boot-disk-size 100GB --boot-disk-type pd-balanced \
     --scopes cloud-platform --metadata-from-file startup-script="$RUN/startup.sh" >> "$RUN/launch.log" 2>&1 \
     && { CREATED=$(date -u +%FT%TZ); break; }
+  # a create can exit non-zero AFTER the insert succeeded: never try another zone with the same name without first
+  # adopting a VM that already exists (the duplicate-name leak, fixed in snap-v4 as well)
+  found=$(gcloud compute instances list --project $PROJECT --filter="name=$VM" --format='value(zone.basename())' 2>>"$RUN/launch.log")
+  if [ -n "$found" ]; then ZONE=$found; CREATED=$(date -u +%FT%TZ); log "create of $VM reported failure but it exists in $ZONE: adopting it"; break; fi
 done
 [ -n "$CREATED" ] || { ZONE=""; die "no zone had $MACHINE capacity"; }
 log "VM $VM up in $ZONE at $CREATED (reaper: max-run $MAX_RUN, DELETE)"
