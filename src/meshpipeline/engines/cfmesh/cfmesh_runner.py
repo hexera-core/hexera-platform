@@ -1183,6 +1183,8 @@ NECK_CELLS_ACROSS_MIN = 2.0
 NECK_COARSEN_STEP = 0.25
 NECK_TIGHT_RULE = "INS-33"
 NECK_RULE = "INS-32"
+#: INS-38: two needed spots the walk read as touching get a box across the hole their boxes leave (_neck_bridges)
+NECK_RULE_WALKED = "INS-38"
 #: INS-32: the three ways out of a plan stopped at a gap it cannot afford (the user's result says them)
 NECK_WAYS_OUT = "Widen or close that gap in the CAD, allow more cells, or drop that opening."
 #: INS-36: a mesh built that still lost an opening is refused in the plan-time stop's own words (neck_words)
@@ -1331,6 +1333,9 @@ def neck_plan(surfaces: list, wall_patch: str, spots: list, *, wall_cell: float,
         for r in recs:
             got = found.setdefault(int(r["box"]), {**r, "openings": []})
             got["openings"] += [n for n in r["openings"] if n not in got["openings"]]
+            for key, pick in (("walk_min", min), ("walk_max", max)):   # INS-38: what each passage's walk meshed
+                if r.get(key) is not None and got.get(key) is not None:
+                    got[key] = [pick(float(a), float(b)) for a, b in zip(got[key], r[key], strict=True)]
     if not found:
         return [], ""
     across = NECK_CELLS_ACROSS
@@ -1369,11 +1374,67 @@ def neck_stop_refusal(why: str, *, after_build: bool = False, ways_out: str = NE
                "plan_stop": stop, "ways_out": ways_out})
 
 
+def wrap_opening_lost(ws: Path, t: dict, declaration: list) -> dict | None:
+    """LAD-cfd-14: THE WRAPPED SKIN CANNOT HOLD AN OPENING WHERE THE USER SAID IT IS. Of the openings the wrap
+    rung had to place on a wall (LAD-cfd-6, the staged record's facts["wrap"]), those placed farther than their
+    own size from where they are drawn (surface_wrap.moved_beyond_own_size) whose drawn place a declared
+    location lies within that size of: the declared ports could never bind there (port_binding's location
+    rule), so the attempt ends now - recorded once as its staging refusal, the opening named - never a
+    configure the builder repeats. None when every opening stands (a placement with no stated location is
+    delivered with LAD-cfd-6's concern, as before)."""
+    import numpy as np
+
+    from meshpipeline.cad.internal_surface import STAGING_GATE
+    from meshpipeline.cad.surface_wrap import RULE_OPENING_LOST, moved_beyond_own_size, opening_lost_words
+    from meshpipeline.contracts.failure_cause import FailureCause
+    from meshpipeline.engines.preflight import PreflightRefusal
+    if not t.get("wrapped"):
+        return None
+    words: list[str] = []
+    for q in moved_beyond_own_size((t.get("facts") or {}).get("wrap") or {}):
+        c = np.asarray(q["drawn_centre_m"], dtype=float)
+        named = [(float(np.linalg.norm(np.asarray(p["near_mm"], dtype=float) / 1e3 - c)), str(p.get("name") or ""))
+                 for p in declaration or [] if isinstance(p, dict) and p.get("near_mm") is not None]
+        near = [n for d, n in sorted(named) if d <= float(q["size_m"])]
+        if near:
+            words.append(opening_lost_words(q, near[0]))
+    if not words:
+        return None
+    reason = "The surface could not be wrapped: " + "; ".join(words) + "."
+    PreflightRefusal(
+        gate=STAGING_GATE, cause=FailureCause.NOT_BUILT.value,
+        builder_text=f"[STAGING_FAILED] cfmesh: {reason}",
+        facts={"engine": "cfMesh", "stage": "staging", "reason": reason, "deterministic": True, "ours": False,
+               "before_meshing": True, "rule": RULE_OPENING_LOST}).write(ws)
+    logger.warning("cfMesh internal (%s): %s", RULE_OPENING_LOST, reason)
+    return _opening_lost_reply(reason)
+
+
+def _opening_lost_reply(reason: str) -> dict:
+    return {"success": False, "error": reason,
+            "next": "Do NOT run_mesh and do NOT reconfigure: the wrapped surface cannot hold this opening. "
+                    "Relay this to the user verbatim and end your turn."}
+
+
+def opening_lost_said(ws: Path) -> dict | None:
+    """LAD-cfd-14: this attempt already recorded that the wrap cannot hold a declared opening: a configure
+    called again says it again without wrapping the same fluid a second time (abc 99768: 2.7 min each)."""
+    from meshpipeline.cad.internal_surface import STAGING_GATE
+    from meshpipeline.cad.surface_wrap import RULE_OPENING_LOST
+    from meshpipeline.engines.preflight import read_refusal
+    ref = read_refusal(ws)
+    if ref is None or ref.gate != STAGING_GATE or (ref.facts or {}).get("rule") != RULE_OPENING_LOST:
+        return None
+    return _opening_lost_reply(str((ref.facts or {}).get("reason") or ""))
+
+
 def _neck_boxes(found: dict, spots: list, wall_cell: float, across: float) -> list[dict]:
     """INS-33: INS-32's boxes at `across` cells across each needed gap: held tight round the gap itself (its
     own extent along the way through it, `gap_min` / `gap_max` from opening_necks, inside the spot's
     box) - not the whole box gap sizing grouped it in - padded by two of its own cells on every side
-    so a cell lies across the gap. A gap whose extent did not read keeps its spot's box."""
+    so a cell lies across the gap. A gap whose extent did not read keeps its spot's box. Two spots the
+    walk read as touching whose boxes do not meet get a box across the hole between them (INS-38,
+    _neck_bridges)."""
     boxes = []
     for i, r in sorted(found.items()):
         w = float(r["width_m"])
@@ -1395,8 +1456,41 @@ def _neck_boxes(found: dict, spots: list, wall_cell: float, across: float) -> li
                       "max": [hi[k] + 2.0 * c for k in range(3)],
                       "radius_m": float(s["radius_m"]), "cell_m": c, "cell_needed_m": c, "level_bump": 0,
                       "width_m": w, "cells_across": across, "tight": tight, "rule": NECK_TIGHT_RULE,
-                      "neck_of": list(r["openings"]), "layer_cells": s.get("layer_cells")})
-    return boxes
+                      "neck_of": list(r["openings"]), "layer_cells": s.get("layer_cells"),
+                      # the cubes it stands for: a tight box its gap's own cubes, else the spot's whole cubes
+                      "_walk": ((r.get("gap_min"), r.get("gap_max")) if tight else
+                                (r.get("walk_min"), r.get("walk_max")))})
+    return [{k: v for k, v in b.items() if k != "_walk"} for b in boxes + _neck_bridges(boxes)]
+
+
+def _touch(a_lo, a_hi, b_lo, b_hi) -> bool:
+    return all(float(a_lo[k]) <= float(b_hi[k]) + 1e-12 and float(b_lo[k]) <= float(a_hi[k]) + 1e-12
+               for k in range(3))
+
+
+def _neck_bridges(boxes: list) -> list[dict]:
+    """INS-38: A BOX ACROSS EACH HOLE THE WALK DID NOT SEE. opening_necks reads a spot as the whole cubes its
+    box touches (`_walk`: walk_min / walk_max), so two needed spots whose cubes touch read as one chain
+    even where their boxes stop short of each other inside a cube (a measured spot ends at its last
+    surface point, a point's spacing short of the next spot along the same gap). For each such pair
+    whose mesh boxes do not meet, the box between them (each side's overlap where they overlap, the
+    hole where they do not), padded by two of the finer cell into both, at the finer of the two."""
+    out = []
+    for i, a in enumerate(boxes):
+        for b in boxes[i + 1:]:
+            (wa_lo, wa_hi), (wb_lo, wb_hi) = a.get("_walk") or (None, None), b.get("_walk") or (None, None)
+            if None in (wa_lo, wa_hi, wb_lo, wb_hi) or not _touch(wa_lo, wa_hi, wb_lo, wb_hi):
+                continue
+            if _touch(a["min"], a["max"], b["min"], b["max"]):
+                continue
+            fine = a if a["cell_m"] <= b["cell_m"] else b
+            c = float(fine["cell_m"])
+            lo = [min(max(a["min"][k], b["min"][k]), min(a["max"][k], b["max"][k])) - 2.0 * c for k in range(3)]
+            hi = [max(max(a["min"][k], b["min"][k]), min(a["max"][k], b["max"][k])) + 2.0 * c for k in range(3)]
+            out.append({**{k: v for k, v in fine.items() if k != "_walk"}, "min": lo, "max": hi, "tight": False,
+                        "rule": NECK_RULE_WALKED, "bridge": True,
+                        "neck_of": list(dict.fromkeys([*a["neck_of"], *b["neck_of"]]))})
+    return out
 
 
 def _bind_intake_shared(t: dict, declaration: list, *, bore: bool = True):
@@ -1554,6 +1648,9 @@ def _configure_internal(workspace, *, strategy: dict, wall_patch: str,
         # openings the user confirmed on it - lids on open ends, the capped faces of a fluid body
         return stage_internal_surface(staged.path, ws / "_internal_stls", intake_patches=_decl)
 
+    _said = opening_lost_said(ws)
+    if _said is not None:
+        return _said
     if not solid.exists() and not Path(staged.path).exists():
         return {"success": False,
                 "error": f"the staged surface ({Path(staged.path).name}) is missing from the "
@@ -1595,6 +1692,9 @@ def _configure_internal(workspace, *, strategy: dict, wall_patch: str,
                 "next": "Relay this to the user verbatim - the declaration needs a size, "
                         "location or interchangeability answer only they can give. Do NOT "
                         "retry with invented values."}
+    _lost = wrap_opening_lost(ws, t, _decl)        # LAD-cfd-14: before the ports are bound to the wrap
+    if _lost is not None:
+        return _lost
     # the fluid is the solid itself only for a confirmed fluid domain; anything else is a body
     # whose fluid is the bore it closes (which measure of a ring port the flow crosses)
     from meshpipeline.engines.workspace_facts import read_input_kind

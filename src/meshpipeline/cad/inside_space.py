@@ -919,8 +919,10 @@ def opening_necks(solids, wall_key: str, boxes, *, need_m: float, cells: int = G
     that spot meshed across, until the opening joins at need_m or the narrowest step is no measured
     spot. Returns one record per needed spot, narrowest first: {"box": its index in `boxes`,
     "width_m": the gap's width, "openings": the names that depend on it (None for a passage piece),
-    "point": where the way is narrowest, "gap_min" / "gap_max": the gap's own extent in metres
-    (_gap_extent; absent when it does not read)}. [] when nothing depends on a spot."""
+    "point": where the way is narrowest, "walk_min" / "walk_max": the whole cubes of the spot the walk
+    meshed across (INS-38: the spot's box rounded out to the grid, so a mesh box over them leaves no
+    hole the walk did not see), "gap_min" / "gap_max": the gap's own extent in metres (_gap_extent;
+    absent when it does not read)}. [] when nothing depends on a spot."""
     from scipy import ndimage
     tris = {str(n): np.asarray(t, dtype=float).reshape(-1, 3, 3) for n, t in (solids or {}).items()
             if t is not None and len(t)}
@@ -943,6 +945,7 @@ def opening_necks(solids, wall_key: str, boxes, *, need_m: float, cells: int = G
     clear[~inside] = 0.0
     passable = inside.copy()
     owner = np.full(grid.n, -1, dtype=np.int64)
+    walked: dict[int, tuple[list, list]] = {}
     # the widest spot first, so where two boxes overlap the narrower one owns the cube
     for i in sorted(range(len(boxes)), key=lambda j: -float(boxes[j].get("radius_m") or 0.0)):
         b = boxes[i]
@@ -951,6 +954,10 @@ def opening_necks(solids, wall_key: str, boxes, *, need_m: float, cells: int = G
             continue
         a = np.clip(np.floor((np.asarray(b["min"], dtype=float) - grid.origin) / h).astype(int), 0, sh - 1)
         z = np.clip(np.floor((np.asarray(b["max"], dtype=float) - grid.origin) / h).astype(int), 0, sh - 1)
+        # INS-38: the whole cubes the walk meshes across for this spot, which reach past its box by up
+        # to a cube - the mesh must cover them too, or two spots the walk reads as touching leave a hole
+        walked[i] = ([float(v) for v in grid.origin + a * h],
+                     [float(v) for v in grid.origin + (z + 1) * h])
         ii, jj, kk = np.meshgrid(*[np.arange(a[d], z[d] + 1) for d in range(3)], indexing="ij")
         c = ((ii * shape[1] + jj) * shape[2] + kk).ravel()
         owner[c[inside[c]]] = i
@@ -1018,6 +1025,7 @@ def opening_necks(solids, wall_key: str, boxes, *, need_m: float, cells: int = G
                                       _gap_clear_cap(float(boxes[i]["radius_m"]) / h))
                 found[i] = {"box": i, "width_m": 2.0 * float(boxes[i]["radius_m"]), "openings": [],
                             "point": grid.centre(np.unravel_index(got[1], shape)).tolist(),
+                            "walk_min": walked[i][0], "walk_max": walked[i][1],
                             **({"gap_min": ext[0], "gap_max": ext[1]} if ext else {})}
             rec = found[i]
             if who not in rec["openings"]:

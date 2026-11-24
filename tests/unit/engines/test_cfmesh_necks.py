@@ -299,6 +299,29 @@ def test_an_opening_behind_nine_slits_in_a_row_needs_all_nine(monkeypatch):
     assert all(r["openings"] == ["outlet"] for r in got)
 
 
+def test_two_spots_the_walk_reads_as_touching_leave_no_hole_in_the_mesh_boxes():
+    # INS-38: the slit (x 10-12 mm) measured as two spots 0.5 mm apart, less than one of the walk's cubes (0.75 mm
+    # at need 3 mm). The walk reads them as one chain; the mesh boxes must chain too, or plain cells sit across the
+    # slit in the hole (abc 63401: 0.1 mm slit boxes 0.72 mm apart along y, outlet_3 came out with no faces).
+    from meshpipeline.engines.cfmesh.cfmesh_runner import neck_plan
+    spots = [{"min": [10.0 * MM, 4.7 * MM, 0.0], "max": [10.75 * MM, 5.3 * MM, 10.0 * MM], "radius_m": 0.15 * MM},
+             {"min": [11.25 * MM, 4.7 * MM, 0.0], "max": [12.0 * MM, 5.3 * MM, 10.0 * MM], "radius_m": 0.15 * MM}]
+    got = opening_necks(_surface(), "wall", spots, need_m=3.0 * MM)
+    assert sorted(r["box"] for r in got) == [0, 1]
+    boxes, stop = neck_plan([_surface()], "wall", spots, wall_cell=1.0 * MM, base=0.0, limit=1e12)
+    assert not stop
+    # along the slit (x 10-12 mm) the boxes leave no stretch of plain cells: was a 0.1 mm hole at x 10.95-11.05 mm
+    covered = 10.0 * MM
+    for bx in sorted(boxes, key=lambda q: q["min"][0]):
+        if bx["min"][0] <= covered + 1e-12 and bx["min"][1] <= 4.85 * MM and bx["max"][1] >= 5.15 * MM:
+            covered = max(covered, bx["max"][0])
+    assert covered >= 12.0 * MM
+    bridge = [bx for bx in boxes if bx.get("bridge")]
+    assert len(bridge) == 1 and bridge[0]["rule"] == "INS-38" and bridge[0]["neck_of"] == ["outlet"]
+    assert bridge[0]["max"][0] - bridge[0]["min"][0] < 1.0 * MM    # the hole and its padding, not the whole slit
+    assert abs(bridge[0]["cell_m"] - 0.1 * MM) < 1e-12               # at the gap's own cell (0.3 mm / 3)
+
+
 def _built_without(ws, counts: dict, spots: list) -> None:
     """A case built with every passage's openings, `counts` its boundary faces, `spots` the plan's needed spots."""
     from meshpipeline.cad.fluid_passages import PASSAGES_FILE

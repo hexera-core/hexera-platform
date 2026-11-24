@@ -764,6 +764,7 @@ def _place_moved(V, F, named, T, labels, lost) -> tuple[np.ndarray, list[dict]]:
         named[take] = q
         out.append({"opening": str(q), "moved_m": float(np.min(dist)),
                     "centre_m": [round(float(v), 6) for v in C[take].mean(axis=0)],
+                    "drawn_centre_m": [round(float(v), 6) for v in centre],
                     "area_m2": float(A[take].sum()), "drawn_area_m2": float(ta.sum())})
     return named, out
 
@@ -1128,6 +1129,36 @@ def wrap_body_if_asked(workspace: Path) -> dict | None:
     return res.report
 
 
+#: LAD-cfd-14: a stranded opening the wrap puts on a wall farther than its own size from where it is drawn
+RULE_OPENING_LOST = "LAD-cfd-14"
+
+
+def opening_lost_words(q: dict, name: str = "") -> str:
+    """LAD-cfd-14: why the wrapped surface cannot hold the opening `q` (moved_beyond_own_size), named `name`."""
+    c = [1e3 * float(v) for v in q["drawn_centre_m"]]
+    who = f"{name} (drawn at {c[0]:.1f}, {c[1]:.1f}, {c[2]:.1f} mm)" if name else \
+        f"the opening drawn at ({c[0]:.1f}, {c[1]:.1f}, {c[2]:.1f}) mm"
+    return (f"the wrapped surface cannot keep {who} open: no wrap distance tried kept a way to it (it narrows "
+            "below what the wrap can draw, or it lies in a passage with no other opening), and the nearest "
+            f"wrapped wall is {1e3 * float(q['moved_m']):.1f} mm from it, farther than the opening's own size "
+            f"({1e3 * float(q['size_m']):.1f} mm), so no boundary can stand where it is drawn")
+
+
+def moved_beyond_own_size(report: dict) -> list[dict]:
+    """LAD-cfd-14: the openings the wrap had to place (report["openings_moved"], LAD-cfd-6) farther than their
+    own size - the drawn opening's equivalent diameter - from where they are drawn: {"opening", "moved_m",
+    "size_m", "drawn_centre_m"} each. A placement within its own size is the same opening."""
+    out = []
+    for m in (report or {}).get("openings_moved") or []:
+        if not isinstance(m, dict) or m.get("drawn_centre_m") is None or not m.get("drawn_area_m2"):
+            continue
+        size = float(np.sqrt(4.0 * float(m["drawn_area_m2"]) / np.pi))
+        if float(m.get("moved_m") or 0.0) > size:
+            out.append({"opening": str(m.get("opening") or ""), "moved_m": float(m["moved_m"]), "size_m": size,
+                        "drawn_centre_m": [float(v) for v in m["drawn_centre_m"]]})
+    return out
+
+
 def wrap_staged_if_asked(record: dict, out_dir: Path) -> dict:
     """FLOW THROUGH A PART, ON THE WRAP RUNG: the staged fluid boundary (every patch's STL in the
     record the internal staging returns - cad/internal_surface, cad/cad_tessellate) is replaced by
@@ -1188,7 +1219,7 @@ def wrap_staged_if_asked(record: dict, out_dir: Path) -> dict:
                         names=[wall_name, *ports])
     facts = dict(rec.get("facts") or {})
     facts["wrap"] = {k: res.report.get(k) for k in ("rule", "distance_m", "cube_m", "max_m",
-                                                      "p95_m", "bridged_spots", "closed")}
+                                                      "p95_m", "bridged_spots", "closed", "openings_moved")}
     rec["facts"] = facts
     rec["wrapped"] = True
     (out_dir / "internal_surface.json").write_text(__import__("json").dumps(rec, indent=1, default=str))
@@ -1198,7 +1229,7 @@ def wrap_staged_if_asked(record: dict, out_dir: Path) -> dict:
     return rec
 
 
-__all__ = ["MAX_SPOTS", "RULE_DISTANCE", "RULE_REPORT", "RULE_RUNG", "UNWRAPPED_SUFFIX",
+__all__ = ["MAX_SPOTS", "RULE_DISTANCE", "RULE_OPENING_LOST", "RULE_REPORT", "RULE_RUNG", "UNWRAPPED_SUFFIX",
            "WRAP_REPORT_FILE", "WRAP_REQUEST_FILE", "SurfaceDistance", "WrapError", "WrapResult",
-           "edge_counts", "grid_for", "read_named_stl", "summary_words", "wrap_body_if_asked",
+           "edge_counts", "grid_for", "moved_beyond_own_size", "opening_lost_words", "read_named_stl", "summary_words", "wrap_body_if_asked",
            "wrap_distance", "wrap_staged_if_asked", "wrap_surface", "write_named_stl"]
