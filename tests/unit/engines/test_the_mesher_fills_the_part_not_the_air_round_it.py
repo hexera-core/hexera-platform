@@ -85,6 +85,23 @@ def test_the_skin_is_what_the_mesher_is_handed_when_it_is_used():
     assert "block_surface_stl" in src, "the box is still built when the skin is not used"
 
 
+def _rims_reach_shell_stubs(src: str) -> None:
+    """Shared with test_a_port_on_a_blind_mouth_is_refused_before_meshing, which owns the
+    explanation. Kept as its own copy rather than imported across test files."""
+    import ast
+
+    call = next((n for n in ast.walk(ast.parse(src))
+                 if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+                 and n.func.attr == "shell_stubs"), None)
+    assert call is not None, "the driver no longer calls MO.shell_stubs at all"
+    given = [ast.unparse(a) for a in call.args] + [ast.unparse(k.value) for k in call.keywords]
+    assert any("open_rims" in g for g in given), (
+        f"open_rims does not reach shell_stubs; it is called with {given}")
+    assert any(k.arg == "outer" for k in call.keywords), (
+        "the run's own outer patch name does not reach shell_stubs, so a stub would be cut out "
+        "of a patch the surface was not written under and createPatch would drop every mouth")
+
+
 def test_a_shell_cuts_its_ports_where_they_already_are():
     """On a box the mouths are inside it and have to be stubbed out to a face first. On a shell
     they are already ON the surface, so each is a patch cut where it is - which is exactly what
@@ -92,10 +109,11 @@ def test_a_shell_cuts_its_ports_where_they_already_are():
     from meshpipeline.engines.cfmesh_conjugate import mouths as MO
 
     src = inspect.getsource(D)
-    # The call gained the record's `open_rims` as a second argument: `clear_ahead` alone is one
-    # ray down the mouth's normal and reads False for a mouth that opens to air across a gap, so
-    # a sealed rim at the mouth is what makes it safe to refuse a run on. See mouths.sealed_rows.
-    assert "MO.shell_stubs(rec[\"ports\"], rec.get(\"open_rims\"))" in src
+    # The call carries the record's `open_rims`: `clear_ahead` alone is one ray down the mouth's
+    # normal and reads False for a mouth that opens to air across a gap, so a sealed rim at the
+    # mouth is what makes it safe to refuse a run on. See mouths.sealed_rows. Read off the
+    # ARGUMENTS and not the call's text - see _rims_reach_shell_stubs for why.
+    _rims_reach_shell_stubs(src)
     assert "MO.stubs_for(rec[\"ports\"], lo, hi)" in src, "the box path must still exist"
     stubs = MO.shell_stubs([{"centroid_m": (0.1, 0.05, 0.04), "normal": (0, 1, 0),
                              "diameter_m": 0.0114, "passage": 0}])

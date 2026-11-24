@@ -251,6 +251,39 @@ def test_the_check_runs_before_the_mesher_and_not_after_it():
     assert src.index("if sealed_said:") < staging
 
 
+def _shell_stubs_call(src: str):
+    """The driver's own call to `MO.shell_stubs`, as the AST sees it rather than as text.
+
+    A LITERAL STRANDS. This was `'MO.shell_stubs(rec["ports"], rec.get("open_rims"))' in src`, and
+    it broke the moment the call gained the run's outer patch name - while the thing it exists to
+    protect, that `open_rims` reaches `shell_stubs`, was still true. This branch already carries
+    one assertion stranded exactly that way (test_case_contract_preflight), so this one reads the
+    arguments.
+    """
+    import ast
+
+    for node in ast.walk(ast.parse(src)):
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "shell_stubs"):
+            return node
+    return None
+
+
+def _rims_reach_shell_stubs(src: str) -> None:
+    """`open_rims` is passed, positionally or by keyword, and the outer patch name with it."""
+    import ast
+
+    call = _shell_stubs_call(src)
+    assert call is not None, "the driver no longer calls MO.shell_stubs at all"
+    given = [ast.unparse(a) for a in call.args] + [
+        ast.unparse(k.value) for k in call.keywords]
+    assert any("open_rims" in g for g in given), (
+        f"open_rims does not reach shell_stubs; it is called with {given}")
+    assert any(k.arg == "outer" for k in call.keywords), (
+        "the run's own outer patch name does not reach shell_stubs, so a stub would be cut out "
+        "of a patch the surface was not written under and createPatch would drop every mouth")
+
+
 def test_the_driver_hands_the_rims_through():
     """Without `open_rims` every mouth reads unsealed and nothing can ever be refused - the safe
     direction, and the useless one."""
@@ -258,7 +291,7 @@ def test_the_driver_hands_the_rims_through():
 
     from meshpipeline.engines.cfmesh_conjugate import driver as DR
 
-    assert 'MO.shell_stubs(rec["ports"], rec.get("open_rims"))' in inspect.getsource(DR)
+    _rims_reach_shell_stubs(inspect.getsource(DR))
 
 
 def test_the_what_next_follows_the_refusal_and_not_the_other_one():
