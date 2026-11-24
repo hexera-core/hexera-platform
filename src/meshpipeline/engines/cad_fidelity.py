@@ -295,6 +295,12 @@ def cad_reference(workspace, flow: str, intake_patches=None) -> tuple[Surface, s
             # every passage, so it is never added to them
             return (join([read_stl(q) for q in [ws / "geom.stl", *further]]),
                     "staged fluid boundary, every passage", True)
+        from meshpipeline.cad.fluid_passages import openings_not_meshed
+        first = sorted((ws / "_passages" / "p0").glob("*.stl"))
+        if first and openings_not_meshed(ws):
+            # INS-40: a cavity no inlet opens into was left unmeshed and told: the mesh is held to the passage it
+            # was staged for (the staging's own surface of it), never to the whole staged boundary
+            return join([read_stl(q) for q in first]), "staged fluid boundary, the passage meshed", True
         whole = [q for q in (ws / "_internal_stls" / "fluid_boundary.stl",
                              ws / "fluid_boundary.stl", ws / "geom.stl") if q.exists()]
         if whole:

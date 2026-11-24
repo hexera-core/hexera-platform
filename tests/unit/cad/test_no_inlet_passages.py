@@ -142,6 +142,20 @@ def test_the_launch_check_holds_the_case_to_the_openings_it_was_staged_for(tmp_p
     assert case_contract.check(tmp_path, "cfmesh")[0] == []
 
 
+def test_the_cad_check_holds_the_mesh_to_the_passage_meshed_when_a_cavity_was_told(tmp_path):
+    from meshpipeline.engines.cad_fidelity import cad_reference
+    from meshpipeline.engines.cfmesh.cfmesh_runner import _stage_passages
+    srcs = _two_cavities(tmp_path)
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    write_stl_binary(ws / "fluid_boundary.stl", list(_box_triangles((0, 0, 0), (1, 1, 4)))
+                     + list(_box_triangles((3, 0, 0), (4, 1, 2))))
+    assert cad_reference(ws, "internal")[1] == "staged fluid boundary"      # nothing told: the whole boundary
+    _stage_passages(ws, srcs, "wall", _DECL)
+    _, source, fluid = cad_reference(ws, "internal")
+    assert source == "staged fluid boundary, the passage meshed" and fluid
+
+
 def test_the_manifest_drops_the_told_openings_and_records_them_and_the_passages(tmp_path):
     from meshpipeline.engines.manifest import write_manifest
     (tmp_path / PASSAGES_READ_FILE).write_text(json.dumps(
