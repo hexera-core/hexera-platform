@@ -174,7 +174,7 @@ class GcsBackend(Backend):
 
     def preflight(self, w: WaveArgs) -> Result:
         return self.run([sys.executable, str(HERE / "preflight.py"), "--image", w.image, "--commit", w.commit,
-                         "--pool", str(w.pool)], timeout=1200)
+                         "--image-commit", w.image_commit, "--pool", str(w.pool)], timeout=1200)
 
     def launch(self, w: WaveArgs, *, dry_run: bool, only: Sequence[str] = ()) -> Result:
         return self.run(launcher_argv(w, dry_run=dry_run, only=only), timeout=3600)
@@ -351,6 +351,9 @@ def own_refusals(w: WaveArgs, *, commit_exists: Callable[[str], bool]) -> list[s
     reasons: list[str] = []
     if not re.fullmatch(r"[0-9a-f]{40}", w.commit):
         reasons.append("--commit must be the full 40-hex sha")
+    if not re.fullmatch(r"[0-9a-f]{40}", w.image_commit or ""):
+        reasons.append("--image-commit must be the full 40-hex sha the image was built from (image_build.py prints "
+                       "it); preflight checks it against the image's org.opencontainers.image.revision label")
     if not wave_limits.WAVE_ID_RE.match(w.wave_id):
         reasons.append(f"--wave-id {w.wave_id!r} must be 3-40 lowercase letters, digits or dashes")
     if w.kind != "reprobe" and (w.split is None or not Path(w.split).is_file()):

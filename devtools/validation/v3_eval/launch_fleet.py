@@ -232,6 +232,9 @@ class V4Profile(Profile):
         # the model ledger's inputs: the wave type (the cap comes from its table), its id, N (the same N for
         # every shard) and the bucket whose markers they use (the one the probe proved; they re-check it)
         return [f"v4-run-arm={self.run_arm}", f"v4-pool={args.prefix}/pool.json",
+                # what the launcher proved about the toolchain image: its org.opencontainers.image.revision label
+                # equals --image-commit (preflight `image_commit_label`), or "unverified" when no check ran
+                f"v4-image-commit-link={getattr(args, 'image_commit_link', None) or 'unverified'}",
                 f"v4-cache-uri={wave_spec.verdict_cache_uri(args.prefix)}",
                 f"v4-sources={','.join(args.sources)}",
                 f"v4-wave-id={args.wave_id}", f"v4-wave-type={args.wave_type}",
@@ -280,9 +283,12 @@ class V4Profile(Profile):
         failed check is a problem (nothing launches); a passing check's caveat is returned as a note."""
         pf = _load("v4_preflight", REPO / "devtools" / "validation" / "v4_eval" / "preflight.py")
         report = pf.run_preflight(
-            image=args.image, commit=args.commit, runner=pf.gcloud_runner(),
+            image=args.image, commit=args.commit, image_commit=args.image_commit, runner=pf.gcloud_runner(),
             locations=pf.locations_for_prefix(args.prefix, args.commit),
             staged_sources=args.sources, pool_path=Path(args.pool))
+        # the image's own label, checked against --image-commit, is what every VM records (`extra_metadata`)
+        args.image_commit_link = next((c.detail for c in report.checks if c.name == "image_commit_label" and c.ok),
+                                      None)
         return ([f"preflight {c.name}: {c.detail}" for c in report.checks if not c.ok],
                 [f"preflight {c.name}: {c.caveat}" for c in report.checks if c.ok and c.caveat])
 

@@ -450,3 +450,57 @@ def test_a_dry_run_reaches_the_cache_refusal_and_creates_nothing(monkeypatch, ca
     monkeypatch.setattr(lf.wave_spec, "verdict_cache_uri", lambda prefix: "")
     assert _main("--profile", "v4", "--dry-run") == 1
     assert "REFUSE  verdict cache" in capsys.readouterr().err
+
+
+# ------------------------------------------------------------------ image provenance: verified by label, recorded
+
+def _v4_args():
+    args = lf.build_parser().parse_args(["--profile", "v4", "--image", IMAGE, "--commit", HEAD,
+                                         "--image-commit", HEAD, "--wave-type", "normal", "--wave-id", "w"])
+    args.sources, args.prefix, args.shards_total, args.pool = ["abc_fail"], lf.PREFIX, 96, "pool.json"
+    return args
+
+
+def test_the_launcher_has_preflight_check_the_image_label_and_records_what_it_verified(monkeypatch):
+    seen = {}
+
+    class FakePf:
+        @staticmethod
+        def gcloud_runner():
+            return None
+
+        @staticmethod
+        def locations_for_prefix(prefix, commit):
+            return None
+
+        @staticmethod
+        def run_preflight(**kw):
+            seen.update(kw)
+            check = type("C", (), {"name": "image_commit_label", "ok": True, "caveat": "",
+                                   "detail": f"verified: org.opencontainers.image.revision={HEAD}"})
+            return type("R", (), {"checks": [check]})
+
+    monkeypatch.setattr(lf, "_load", lambda name, path: FakePf)
+    args = _v4_args()
+    assert "v4-image-commit-link=unverified" in lf.V4.extra_metadata(args)  # nothing checked yet: says so
+    problems, _notes = lf.V4.wave_preflight(args)
+    assert problems == [] and seen["image_commit"] == HEAD
+    assert f"v4-image-commit-link=verified: org.opencontainers.image.revision={HEAD}" in lf.V4.extra_metadata(args)
+
+
+def test_a_failed_label_check_is_a_launch_problem_and_records_nothing_verified(monkeypatch):
+    class FakePf:
+        gcloud_runner = staticmethod(lambda: None)
+        locations_for_prefix = staticmethod(lambda prefix, commit: None)
+
+        @staticmethod
+        def run_preflight(**kw):
+            check = type("C", (), {"name": "image_commit_label", "ok": False, "caveat": "",
+                                   "detail": "the image has no org.opencontainers.image.revision label"})
+            return type("R", (), {"checks": [check]})
+
+    monkeypatch.setattr(lf, "_load", lambda name, path: FakePf)
+    args = _v4_args()
+    problems, _ = lf.V4.wave_preflight(args)
+    assert problems == ["preflight image_commit_label: the image has no org.opencontainers.image.revision label"]
+    assert "v4-image-commit-link=unverified" in lf.V4.extra_metadata(args)

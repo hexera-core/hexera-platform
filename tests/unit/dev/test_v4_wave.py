@@ -31,7 +31,7 @@ PREFIX = "gs://dev-crsv3-fake/eval/v4-reprobe"
 
 
 def _args(**kw) -> wave.WaveArgs:
-    base = {"kind": "reprobe", "wave_id": "reprobe-test-1", "commit": HEAD, "image": IMAGE, "image_commit": HEAD[:12], "shards": 96,
+    base = {"kind": "reprobe", "wave_id": "reprobe-test-1", "commit": HEAD, "image": IMAGE, "image_commit": HEAD, "shards": 96,
                 "max_run_hours": 12.0, "zone": "us-central1-b", "prefix": PREFIX, "pool": pool_mod.OUT}
     base.update(kw)
     return wave.WaveArgs(**base)
@@ -140,7 +140,7 @@ def test_the_whole_chain_runs_on_three_files_and_relaunches_a_failed_shard(tmp_p
     shim.write_text(SHIM)
     markers = tmp_path / "markers"
     w = wave.WaveArgs(kind="dev", wave="dev_deterministic", wave_id="dev-e2e-1", commit=HEAD, image=IMAGE,
-                      image_commit=HEAD[:12], shards=2, max_run_hours=3.0, zone="us-central1-b", prefix=PREFIX,
+                      image_commit=HEAD, shards=2, max_run_hours=3.0, zone="us-central1-b", prefix=PREFIX,
                       pool=pool, split=split)
     plan = evalspec.plan_wave(w.wave_def, wave_id=w.wave_id, n_shards=2, markers=FileMarkerStore(markers))
 
@@ -190,3 +190,21 @@ def test_a_dry_run_runs_every_gate_and_creates_nothing(tmp_path: Path) -> None:
     with pytest.raises(wave.WaveRefused, match="not staged"):  # only 5 of 10,887 staged: refused before any launch
         w.run()
     assert backend.launches == []
+
+
+# ------------------------------------------------------------------ image provenance (Lane A job 3)
+
+def test_the_wave_refuses_an_abbreviated_image_commit_before_any_cloud_call() -> None:
+    reasons = wave.own_refusals(_args(image_commit=HEAD[:12]), commit_exists=_ok)
+    assert any("--image-commit" in r and "40-hex" in r for r in reasons)
+    assert not any("--image-commit" in r for r in wave.own_refusals(_args(image_commit=HEAD), commit_exists=_ok))
+
+
+def test_the_waves_preflight_hands_preflight_the_image_commit_to_verify(monkeypatch) -> None:
+    seen: list = []
+    backend = wave.GcsBackend.__new__(wave.GcsBackend)
+    monkeypatch.setattr(backend, "run", lambda argv, timeout=None: seen.append(list(argv)) or wave.Result(0, "", ""),
+                        raising=False)
+    backend.preflight(_args(image_commit=HEAD))
+    argv = seen[0]
+    assert argv[argv.index("--image-commit") + 1] == HEAD

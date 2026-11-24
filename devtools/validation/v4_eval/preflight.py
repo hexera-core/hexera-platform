@@ -141,7 +141,7 @@ REGISTRY_READ_ROLES = frozenset({
 })
 
 CHECKS = ("locations", "cache_shared", "identity", "image_pinned", "image_exists", "image_pullable",
-          "inputs_read", "inputs_sources", "cache_write", "results_write")
+          "image_commit_label", "inputs_read", "inputs_sources", "cache_write", "results_write")
 
 
 # --------------------------------------------------------------------------- runner seam
@@ -239,23 +239,62 @@ def resolve_to_digest(ref: str, runner: Runner) -> str:
     return require_pinned_image(f"{repo}@{digest}")
 
 
-#: Nothing in the registry describe output ties a digest to a commit, so the stamp says so rather than
-#: implying "reproducible in code AND image": `commit` is the code archive the VMs run; `image` is the
-#: toolchain, pinned by digest, and NOT verified to have been built from `commit` or to be the mesh image.
+#: The stamp of an image whose label was not checked. `commit` is the code archive the VMs run; `image` is the
+#: toolchain, pinned by digest; without the label check nothing says which commit built it.
 IMAGE_LINK_UNVERIFIED = "unverified: the digest is pinned, not checked against an image label for this commit"
+#: The OCI label `make mesh-image` (and image_build.py) stamps with the 40-hex commit of a CLEAN tree ("dirty" else).
+#: The registry config of a pinned digest cannot change, so a label read from it is a fact about that digest.
+REVISION_LABEL = "org.opencontainers.image.revision"
 
 
-def provenance_stamp(*, commit: str, image: str) -> dict[str, str]:
+def image_revision(runner: Runner, image: str) -> str | None:
+    """The REVISION_LABEL of `image`'s config, read from the registry (no pull), or None when it has none. A config
+    the registry will not give raises: unknown is not 'unlabelled'. A multi-platform index is read per platform, and
+    its platforms must agree."""
+    done = runner(["docker", "buildx", "imagetools", "inspect", image, "--format", "{{json .Image}}"])
+    if done.rc != 0:
+        raise RuntimeError(f"cannot read the image config of {image}: {done.err.strip()[:200]}")
+    try:
+        body = json.loads(done.out or "{}")
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"unreadable image config for {image}: {exc}") from exc
+    configs = [body] if "config" in body else [v for v in body.values() if isinstance(v, dict)]
+    found = {((c.get("config") or {}).get("Labels") or {}).get(REVISION_LABEL) for c in configs}
+    if len(found) != 1:
+        raise ValueError(f"the platforms of {image} disagree on {REVISION_LABEL}: {sorted(map(str, found))}")
+    return found.pop()
+
+
+def check_image_commit(image_commit: str | None, revision: str | None) -> str:
+    """The launch's `--image-commit` against the label actually on the image. Full 40-hex on both sides: a prefix
+    would match more than one commit, and "built 2 minutes after" is not a link."""
+    if not image_commit or not COMMIT_RE.match(image_commit):
+        raise ValueError(f"--image-commit must be the full 40-hex commit the image was built from, not {image_commit!r}")
+    if revision is None:
+        raise ValueError(f"the image has no {REVISION_LABEL} label: rebuild it with image_build.py (or make "
+                         "mesh-image from a clean tree), which stamps the commit it was built from")
+    if revision != image_commit:
+        raise ValueError(f"the image was built from {revision!r} ({REVISION_LABEL}), not --image-commit {image_commit}")
+    return f"verified: {REVISION_LABEL}={revision}"
+
+
+def provenance_stamp(*, commit: str, image: str, image_commit: str | None = None,
+                     image_revision: str | None = None) -> dict[str, str]:
     """The `commit`/`image` pair every shard's PROVENANCE must carry. `image` is the digest-pinned
     reference, so the comparability gate (which compares `image`) and collect's blank refusal are
-    satisfied by a real pin rather than a tag."""
+    satisfied by a real pin rather than a tag. With `image_commit` and the `image_revision` label read from the
+    registry, the link is checked (`check_image_commit`, which raises on a mismatch) and the stamp says verified."""
     commit = (commit or "").strip()
     if not COMMIT_RE.match(commit):
         raise ValueError(f"commit must be a full 40-hex sha, not {commit!r}")
     match = DIGEST_RE.match(require_pinned_image(image))
     assert match is not None
-    return {"commit": commit, "image": image, "image_digest": match.group(1),
-            "image_commit_link": IMAGE_LINK_UNVERIFIED}
+    stamp = {"commit": commit, "image": image, "image_digest": match.group(1),
+             "image_commit_link": IMAGE_LINK_UNVERIFIED}
+    if image_commit is not None:
+        stamp["image_commit"] = image_commit
+        stamp["image_commit_link"] = check_image_commit(image_commit, image_revision)
+    return stamp
 
 
 def metadata_items(*, commit: str, image: str, locations: WaveLocations | None = None) -> list[str]:
@@ -478,7 +517,7 @@ def _check_write(p: _Preflight, uri: str) -> str:
     return p.storage_permissions(uri, WRITE_PERMISSIONS) + f" on {_bucket_of(uri)}"
 
 
-def run_preflight(*, image: str, commit: str, service_account: str = SERVICE_ACCOUNT,
+def run_preflight(*, image: str, commit: str, image_commit: str | None = None, service_account: str = SERVICE_ACCOUNT,
                   runner: Runner | None = None, locations: WaveLocations | None = None,
                   staged_sources: Iterable[str] | None = None, pool_path: Path | None = None,
                   expected: tuple[set[str], set[str]] | None = None) -> Report:
@@ -521,8 +560,9 @@ def run_preflight(*, image: str, commit: str, service_account: str = SERVICE_ACC
     if pinned_ok:
         step("image_exists", lambda: _check_image_exists(p, image))
         step("image_pullable", lambda: _check_image_pullable(p, image))
+        step("image_commit_label", lambda: check_image_commit(image_commit, image_revision(p.run, image)))
     else:
-        for name in ("image_exists", "image_pullable"):
+        for name in ("image_exists", "image_pullable", "image_commit_label"):
             report.checks.append(Check(name, False, "skipped: the image is not pinned by digest"))
     step("inputs_read", inputs_read)
     if "names" in state:
@@ -559,6 +599,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--image", required=True, help="<ref>@sha256:<64 hex>")
     parser.add_argument("--commit", required=True, help="the 40-hex code commit")
+    parser.add_argument("--image-commit", default=None,
+                        help="the 40-hex commit the image was built from; must equal its org.opencontainers.image.revision")
     parser.add_argument("--bucket", default=BUCKET)
     parser.add_argument("--name", default=WAVE_NAME)
     parser.add_argument("--service-account", default=SERVICE_ACCOUNT)
@@ -570,7 +612,8 @@ def main(argv: list[str] | None = None) -> int:
     except ValueError as exc:
         print(f"REFUSED: {exc}")
         return 1
-    report = run_preflight(image=args.image, commit=args.commit, service_account=args.service_account,
+    report = run_preflight(image=args.image, commit=args.commit, image_commit=args.image_commit,
+                           service_account=args.service_account,
                            runner=gcloud_runner(), locations=loc,
                            staged_sources=args.staged_sources or None, pool_path=Path(args.pool))
     _print(report)

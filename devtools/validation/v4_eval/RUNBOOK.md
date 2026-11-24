@@ -15,8 +15,13 @@ PY="env PYTHONPATH=$PWD/src .venv/bin/python"
 V=devtools/validation/v4_eval
 B=gs://dev-crsv3-transfer-224734058693
 COMMIT=<40-hex sha of the code to run>      # src/ + devtools/validation go to the VMs
-IMAGE=us-central1-docker.pkg.dev/hexera-dev/mesh/crsv4-mesh@sha256:633e1c3bfd8e2c0fb97b166fa28ff834d0433b84ca8e77c24eb4b00c83ece361
-IMAGE_COMMIT=78880908155a   # crsv4-mesh:native, built 2026-11-23T02:21Z; toolchain paths unchanged since 28391a23
+# IMAGE and IMAGE_COMMIT come from image_build.py (run on an x86 build VM, clean checkout):
+#   $PY $V/image_build.py   ->   IMAGE=<repo>@sha256:...   IMAGE_COMMIT=<40-hex>
+# The image carries IMAGE_COMMIT as its org.opencontainers.image.revision label; preflight and the launcher read it
+# back from the registry and REFUSE a mismatch. The old pin (sha256:633e1c3b..., "built 2026-11-23T02:21Z") has no
+# such label, so it is refused: rebuild before launching.
+IMAGE=<printed by image_build.py>
+IMAGE_COMMIT=<printed by image_build.py>    # full 40-hex; a prefix is refused
 C12=${COMMIT:0:12}
 RESULTS=$B/eval/reprobe-$C12/pool           # the directory that directly holds shard-I-of-N/
 ```
@@ -176,7 +181,7 @@ output lists an F360 file, stop: that is a licence breach, not a bug to route ar
 
 ```bash
 $PY $V/launch_reprobe.py --shards 96 --max-run-hours 12                # the cost gate. exit 1 = REFUSE
-$PY $V/preflight.py --image "$IMAGE" --commit $COMMIT                  # read-only IAM/image/inputs/cache proof
+$PY $V/preflight.py --image "$IMAGE" --commit $COMMIT --image-commit $IMAGE_COMMIT   # read-only IAM/image label/inputs/cache proof
 # once per bucket, before the first live launch (writes only _probe/ objects and the probe record):
 $PY $V/marker_probe.py --store gcs:dev-crsv3-transfer-224734058693 --rounds 50 --cleanup
 ```

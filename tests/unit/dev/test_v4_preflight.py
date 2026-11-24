@@ -22,6 +22,7 @@ _SPEC.loader.exec_module(pf)
 DIGEST = "sha256:" + "c" * 64
 IMAGE = f"us-central1-docker.pkg.dev/hexera-dev/mesh/mesh-fleet@{DIGEST}"
 COMMIT = "d" * 40
+IMAGE_COMMIT = "e" * 40  # the commit the toolchain image was built from (not the code commit)
 SHA_A, SHA_B, SHA_F360 = "a" * 64, "b" * 64, "f" * 64
 #: (wanted sha256s, barred sha256s): two cleared entries and one Fusion 360 entry
 EXPECTED = ({SHA_A, SHA_B}, {SHA_F360})
@@ -41,7 +42,9 @@ class FakeGcloud:
     def __init__(self, *, bucket_roles=("roles/storage.objectAdmin",), project_roles=(),
                  repo_roles=("roles/artifactregistry.reader",), image_digest=DIGEST, image_rc=0,
                  listing=None, listing_rc=0, sa_rc=0, sa_email=SA, sa_disabled=False,
-                 bucket_policy_rc=0, repo_policy_rc=0, project_policy_rc=0, bucket_policies=None):
+                 bucket_policy_rc=0, repo_policy_rc=0, project_policy_rc=0, bucket_policies=None,
+                 image_revision=IMAGE_COMMIT, inspect_rc=0):
+        self.image_revision, self.inspect_rc = image_revision, inspect_rc
         self.bucket_roles, self.project_roles, self.repo_roles = bucket_roles, project_roles, repo_roles
         self.image_digest, self.image_rc = image_digest, image_rc
         self.listing = ([f"{pf.INPUTS}/{SHA_A}/a.step", f"{pf.INPUTS}/{SHA_B}/b.step"]
@@ -56,6 +59,11 @@ class FakeGcloud:
         argv = list(argv)
         self.calls.append(argv)
         verb = " ".join(argv[1:4])
+        if argv[:4] == ["docker", "buildx", "imagetools", "inspect"]:
+            labels = {"org.opencontainers.image.title": "Hexera Platform"}
+            if self.image_revision is not None:
+                labels[pf.REVISION_LABEL] = self.image_revision
+            return pf.Result(self.inspect_rc, json.dumps({"config": {"Labels": labels}}), "unauthorized")
         if verb.startswith("storage buckets get-iam-policy"):
             bucket = argv[4]
             roles = self.bucket_policies.get(bucket, self.bucket_roles)
@@ -76,7 +84,7 @@ class FakeGcloud:
 
 
 def _run(fake: FakeGcloud, **kw):
-    args = {"image": IMAGE, "commit": COMMIT, "service_account": SA, "expected": EXPECTED}
+    args = {"image": IMAGE, "commit": COMMIT, "image_commit": IMAGE_COMMIT, "service_account": SA, "expected": EXPECTED}
     args.update(kw)
     return pf.run_preflight(runner=fake, **args)
 
@@ -192,7 +200,7 @@ def test_healthy_environment_passes_every_check():
 def test_preflight_issues_only_read_only_gcloud_verbs():
     fake = FakeGcloud()
     _run(fake)
-    allowed = ("get-iam-policy", "describe", "ls")
+    allowed = ("get-iam-policy", "describe", "ls", "inspect")
     for argv in fake.calls:
         assert any(v in argv for v in allowed), argv
         assert not any(v in argv for v in ("cp", "rsync", "create", "delete", "add-iam-policy-binding", "rm"))
@@ -341,7 +349,9 @@ def test_main_exits_nonzero_on_refusal_and_zero_when_healthy(monkeypatch, capsys
     shas = sorted(pf.expected_inputs(pf.DEFAULT_POOL, None)[0])
     monkeypatch.setattr(pf, "gcloud_runner", lambda: FakeGcloud(
         listing=[f"{pf.INPUTS}/{h}/x.step" for h in shas]))
-    assert pf.main(["--image", IMAGE, "--commit", COMMIT]) == 0
+    assert pf.main(["--image", IMAGE, "--commit", COMMIT]) == 1  # no --image-commit: nothing to verify the label against
+    capsys.readouterr()
+    assert pf.main(["--image", IMAGE, "--commit", COMMIT, "--image-commit", IMAGE_COMMIT]) == 0
     out = capsys.readouterr().out
     assert out.count("note:") == 6 and "LAUNCHER" in out and "deny policies" in out
 
@@ -423,7 +433,7 @@ def test_the_launcher_parser_defines_every_arg_the_launcher_reads():
     lf = _launcher()
     read = set(re.findall(r"\bargs\.([a-z_]+)", Path(lf.__file__).read_text()))
     have = set(vars(lf.build_parser().parse_args(["--image", "i", "--commit", "c", "--image-commit", "c"])))
-    derived = {"files_counted"}        # set by main after parsing, never a flag
+    derived = {"files_counted", "image_commit_link"}  # set after parsing (main; the v4 preflight), never a flag
     assert read - derived <= have, f"launch_fleet reads args the parser does not define: {sorted(read - derived - have)}"
 
 
@@ -641,3 +651,45 @@ def test_an_abc_name_whose_hex_id_contains_f360_is_not_a_licence_hit():
     for bad in ("f360_part.step", "x.f360.step", "parts-F360/a.step", "fusion360.step"):
         rep = _run(FakeGcloud(listing=[f"{pf.INPUTS}/{SHA_A}/{bad}"] + _inputs(SHA_B)), expected=exp)
         assert "inputs_sources" in _failed(rep), bad
+
+
+# ------------------------------------------------------------------ image provenance: the label, not the clock
+
+def test_the_image_must_carry_the_commit_it_was_built_from_as_a_label():
+    report = _run(FakeGcloud())
+    check = next(c for c in report.checks if c.name == "image_commit_label")
+    assert check.ok and IMAGE_COMMIT in check.detail
+
+
+@pytest.mark.parametrize("revision,why", [(None, "no org.opencontainers.image.revision label"),
+                                          ("f" * 40, "was built from"), ("dirty", "was built from")])
+def test_an_unlabelled_or_mislabelled_image_is_refused(revision, why):
+    report = _run(FakeGcloud(image_revision=revision))
+    assert "image_commit_label" in _failed(report) and not report.ok
+    assert why in next(c.detail for c in report.checks if c.name == "image_commit_label")
+
+
+def test_an_abbreviated_or_missing_image_commit_is_refused_not_prefix_matched():
+    assert "image_commit_label" in _failed(_run(FakeGcloud(), image_commit=IMAGE_COMMIT[:12]))
+    assert "image_commit_label" in _failed(_run(FakeGcloud(), image_commit=None))
+
+
+def test_an_unreadable_registry_config_is_a_refusal():
+    assert "image_commit_label" in _failed(_run(FakeGcloud(inspect_rc=1)))
+
+
+def test_the_stamp_says_verified_only_with_the_label_it_checked():
+    plain = pf.provenance_stamp(commit=COMMIT, image=IMAGE)
+    assert plain["image_commit_link"] == pf.IMAGE_LINK_UNVERIFIED
+    stamp = pf.provenance_stamp(commit=COMMIT, image=IMAGE, image_commit=IMAGE_COMMIT, image_revision=IMAGE_COMMIT)
+    assert stamp["image_commit"] == IMAGE_COMMIT and stamp["image_commit_link"].startswith("verified")
+    with pytest.raises(ValueError, match="built from"):
+        pf.provenance_stamp(commit=COMMIT, image=IMAGE, image_commit=IMAGE_COMMIT, image_revision="f" * 40)
+
+
+def test_image_revision_reads_the_config_label_of_a_multi_platform_index_too():
+    single = json.dumps({"config": {"Labels": {pf.REVISION_LABEL: IMAGE_COMMIT}}})
+    multi = json.dumps({"linux/amd64": {"config": {"Labels": {pf.REVISION_LABEL: IMAGE_COMMIT}}}})
+    for body in (single, multi):
+        assert pf.image_revision(lambda argv, b=body: pf.Result(0, b, ""), IMAGE) == IMAGE_COMMIT
+    assert pf.image_revision(lambda argv: pf.Result(0, json.dumps({"config": {}}), ""), IMAGE) is None
