@@ -191,6 +191,11 @@ OP_SUMMARIES: dict[str, str] = {
                     "bound.",
     "refit_cluster": "replace 2+ adjacent faces of one shell (one closed outline) by one B-spline face within "
                      "tol_mm.",
+    "defeature": "remove the target faces with OCCT's defeaturing (the neighbours are extended over the gap), "
+                 "declaring each removal; `groups` says which targets form one feature (a hole, a blend) - a "
+                 "feature counts as removed only when all its faces are gone. For small or thin faces where a "
+                 "mesher fails, and recognised holes/blends. Never a 180-degree concave round (slot end): OCCT "
+                 "cannot remove one.",
     "remove_duplicate_faces": "delete the second face of each coincident pair (declared removal).",
     "remove_small": "remove faces or edges narrower than max_width_mm, declaring each removal. For sliver sites.",
     "sew": "sew loose faces together at the tightest tolerance in tol_ladder that closes them. For open sites "
