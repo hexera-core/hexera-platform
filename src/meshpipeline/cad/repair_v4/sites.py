@@ -17,8 +17,10 @@ their bounding boxes are within `CLUSTER_FACTOR` x h of each other (chained), so
 seen by gmsh and by Netgen is one site, and two failures on opposite sides of a part are two.
 Entities and points are never merged by any other rule.
 
-STABLE IDS. `Located.entity` is already a stable id (the panel member maps its mesher's tags to
-faces). `Finding.entities` from layer 1 are KERNEL names ("F12" is kernel index 12 of the checked
+STABLE IDS. `Located.entity` from a REAL panel member is the face's FINGERPRINT (`mesh_child._located`:
+`identity.fingerprint_of` over the gmsh surface's box), not a stable id; it is translated through `ws.ids`
+(stable id -> fingerprint) to every live face that carries it, and a fingerprint no live face carries is no location.
+A stable id is also accepted as-is (tests and any member that already maps). `Finding.entities` from layer 1 are KERNEL names ("F12" is kernel index 12 of the checked
 shape), so they are translated through `ws.indices`; they are never read as stable ids.
 """
 
@@ -149,6 +151,45 @@ def _ref(ws: Workspace, stable_id: StableId) -> dict:
 
 def _reverse(ws: Workspace) -> dict[tuple[str, int], StableId]:
     return {(sid[0], idx): sid for sid, idx in ws.indices.items() if sid in ws.ids}
+
+
+#: a box coordinate within this share of a cell of a half-cell is rounded both ways when matching a fingerprint
+_HALF_CELL_SLACK = 0.01
+_MAX_AMBIGUOUS_COORDS = 6  # 2^6 variants per face at most
+
+
+def _near_fingerprints(pool: WorkerPool, ws: Workspace) -> dict[str, list[StableId]]:
+    """fingerprint -> live faces, including every fingerprint a face's box gives when a coordinate lying on a half-cell
+    boundary is rounded the other way. gmsh's surface box and the kernel's agree to ~1e-12 mm, but `round()` at x.5
+    cells goes either way on that noise (measured: 2 of 8 faces of a filleted box), so exact equality drops real
+    locations. Only boundary coordinates are varied: a fingerprint is never matched to a face whose box is a cell
+    or more away."""
+    import itertools
+
+    from meshpipeline.cad.repair.identity import MIN_QUANTUM_MM, fingerprint_of
+
+    faces = [sid for sid in ws.ids if sid[:1] == "F" and _live(ws, sid)]
+    answer = _call(pool, "sites_geometry", {"brep_path": ws.brep_path, "entities": [_ref(ws, f) for f in faces]})
+    geometry = (answer or {}).get("geometry", {})
+    q = ws.quantum if ws.quantum > 0 else MIN_QUANTUM_MM
+    out: dict[str, list[StableId]] = defaultdict(list)
+    for sid in faces:
+        box = (geometry.get(sid) or {}).get("box")
+        if not box or len(box) != 6:
+            continue
+        choices: list[list[float]] = []
+        for v in box:
+            frac = (float(v) / q) % 1.0
+            if abs(frac - 0.5) <= _HALF_CELL_SLACK and sum(len(c) > 1 for c in choices) < _MAX_AMBIGUOUS_COORDS:
+                cell = math.floor(float(v) / q)
+                choices.append([cell * q, (cell + 1) * q])  # values that round to each neighbouring cell
+            else:
+                choices.append([float(v)])
+        for combo in itertools.product(*choices):
+            fp = fingerprint_of("face", {"bbox_min": list(combo[:3]), "bbox_max": list(combo[3:])}, quantum=q)
+            if fp and sid not in out[fp]:
+                out[fp].append(sid)
+    return out
 
 
 def _kernel_entities(ws: Workspace, names: list[str], reverse: dict) -> list[StableId]:
@@ -324,6 +365,26 @@ def find_sites(pool: WorkerPool, ws: Workspace, verdict: Any, *, h_mm: float,
         node.sources.add(source)
         node.notes.append({**note, "entity": entity, "xyz": xyz})
 
+    by_fingerprint: dict[str, list[StableId]] = defaultdict(list)
+    for sid, fp in ws.ids.items():
+        if sid[:1] == "F" and _live(ws, sid):
+            by_fingerprint[fp].append(sid)
+    near: dict[str, list[StableId]] | None = None  # built on the first fingerprint that misses: one kernel call
+
+    def faces_named(entity: str | None) -> list[StableId]:
+        nonlocal near
+        if entity is None:
+            return []
+        if _live(ws, entity):
+            return [entity]
+        if entity in by_fingerprint:
+            return by_fingerprint[entity]
+        if not entity.startswith("face:"):
+            return []
+        if near is None:
+            near = _near_fingerprints(pool, ws)
+        return near.get(entity, [])
+
     for member in failing:
         kind = _member_kind(member)
         used = False
@@ -332,8 +393,10 @@ def find_sites(pool: WorkerPool, ws: Workspace, verdict: Any, *, h_mm: float,
             note = {"mesher": member.name, "error_kind": getattr(member, "error_kind", None),
                     "message": str(getattr(member, "message", "") or "")[:MESSAGE_CHARS],
                     "tag": str(getattr(loc, "mesher_tag", "") or "")}
-            if loc.entity is not None and _live(ws, loc.entity):
-                implicate(loc.entity, xyz, kind, member.name, note)
+            named = faces_named(loc.entity)
+            if named:
+                for sid in named:  # two faces sharing one box share its fingerprint: both are implicated
+                    implicate(sid, xyz, kind, member.name, note)
                 used = True
             elif xyz is not None:
                 # no entity, or one that is not live (a stale or foreign id): the point still
