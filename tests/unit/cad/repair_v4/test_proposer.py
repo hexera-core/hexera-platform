@@ -550,6 +550,48 @@ def test_probe_fails_when_the_tool_or_the_image_is_not_understood(kw):
     assert not asyncio.run(P.probe_route(ROUTE, call=_probe_model(**kw))).ok
 
 
+@pytest.mark.parametrize("colour", ["red", "Salmon", "crimson", "scarlet red", "coral", "bright red (#FF0000)"])
+def test_probe_accepts_any_name_in_the_red_hue_family(colour):
+    """Snapshot v1's dev6 shard was refused because astra called the solid-red swatch "salmon" - a colour NAME, not
+    a failure to see the image. Any red-family name passes."""
+    assert asyncio.run(P.probe_route(ROUTE, call=_probe_model(colour=colour))).ok
+
+
+@pytest.mark.parametrize("colour", ["green", "blue", "orange", "yellow", "", "I cannot see an image"])
+def test_probe_still_fails_an_answer_outside_the_red_family(colour):
+    res = asyncio.run(P.probe_route(ROUTE, call=_probe_model(colour=colour)))
+    assert not res.ok and "not red" in res.detail
+
+
+def test_one_wrong_colour_is_retried_once_and_a_second_right_answer_passes():
+    answers = iter(["blue", "red"])
+    calls: list = []
+
+    async def flaky(messages, tools, *, route, **kw):
+        calls.append(route)
+        return await _probe_model(colour=next(answers))(messages, tools, route=route, **kw)
+
+    res = asyncio.run(P.probe_route(ROUTE, call=flaky))
+    assert res.ok and len(calls) == 2
+
+
+def test_two_wrong_colours_fail_the_probe_after_exactly_two_calls():
+    calls: list = []
+
+    async def wrong(messages, tools, *, route, **kw):
+        calls.append(route)
+        return await _probe_model(colour="green")(messages, tools, route=route, **kw)
+
+    assert not asyncio.run(P.probe_route(ROUTE, call=wrong)).ok and len(calls) == P.PROBE_ATTEMPTS == 2
+
+
+def test_the_probe_image_is_large_enough_to_be_unambiguous():
+    import struct
+    png = P._solid_png((255, 0, 0), P.PROBE_IMAGE_PX)
+    width, height = struct.unpack(">II", png[16:24])
+    assert width == height == P.PROBE_IMAGE_PX >= 64
+
+
 def test_probe_reports_an_exception_as_a_failure_not_a_crash():
     async def boom(*a, **k):
         raise RuntimeError("model gpt-6-astra does not exist")
