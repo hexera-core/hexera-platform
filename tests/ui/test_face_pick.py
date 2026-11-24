@@ -228,3 +228,49 @@ def test_a_face_and_a_file_go_together_a_refused_send_keeps_both_and_the_face_lo
     (u,), (b,), (n,) = out["before"], out["done"]["inBubble"], out["onNote"]
     assert u["label"] == b["label"] == n["label"] == "Face 12 · round Ø15 mm", out
     assert u["dot"] == b["dot"] == n["dot"] == "7px" and u["h"] == b["h"] == n["h"], out
+
+
+def test_the_checklist_shows_a_picked_face_and_a_click_in_the_parts_view_with_no_row_open_picks_a_face(live):
+    from test_brief_part_matches import MODEL, SEEN_AT, _stage_under
+    _stage_under(live)
+    live.evaluate("""(async () => {
+      const { Stage } = await import('/static/js/render/stage.js');
+      const { mountPartsView } = await import('/static/js/viewer/parts_view.js');
+      const { partsHost, dropPartsHost } = await import('/static/js/viewer/intake_view.js');
+      window.__chips = await import('/static/js/shell/chips.js');
+      Stage.mount();
+      __MODEL__
+      done.rows.push({phrase: 1, words: '2 mm here', quote: '2 mm here', parts: [], size: '2 mm',
+                      parts_text: 'the face you picked (Face 12 · round Ø15 mm)',
+                      faces: [{id: 'Face_12', label: 'Face 12 · round Ø15 mm'}]});
+      const real = window.fetch;
+      window.__asked = 0;
+      window.fetch = (u, o) => String(u).includes('/check/faces/at')
+        ? (window.__asked++, Promise.resolve(new Response(JSON.stringify({id: 'Face_4', label: 'Face 4 · flat 1 × 1 mm'}),
+             {status: 200, headers: {'Content-Type': 'application/json'}})))
+        : real(u, o);
+      window.__picks = []; window.__view = null;
+      const parts = {get: async () => done, model: async () => model,
+                     pick: async (i, ids) => { window.__picks.push([i, ids]); return null; },
+                     mount: async (h, m, o) => (window.__view = await mountPartsView(h, m, o)),
+                     host: () => partsHost(), drop: (el) => dropPartsHost(el)};
+      Stage.brief({purpose: 'structural', engine: 'gmsh', user_notes: [{text: 'the rail'}, {text: '2 mm here',
+                   faces: [{id: 'Face_12', label: 'Face 12 · round Ø15 mm'}]}], part_matches: done}, async () => {}, parts);
+    })()""".replace("__MODEL__", MODEL), timeout=40)
+    live.wait_for("window.__view && window.__view.debug.ready()", timeout=40, what="the parts model to be drawn")
+    # THE CHECKLIST, BEFORE APPROVAL: the size typed with the pick shows the face's own chip, not a part
+    card = live.evaluate("""(() => { const f = document.querySelector('.rc-pm-item.face');
+      return f && {size: f.querySelector('.rc-pm-s').textContent, chip: f.querySelector('.box-chip-face .box-chip-label').textContent,
+                   parts: f.querySelectorAll('.rc-pm-chip').length}; })()""")
+    assert card == {"size": "2 mm", "chip": "Face 12 · round Ø15 mm", "parts": 0}, card
+    live.evaluate("document.querySelector('.rc-pm-item.face .rc-pm-row').click()")
+    assert live.evaluate("document.querySelectorAll('.rc-pm-item.active').length") == 0, "a face row is never re-tied"
+    # NO ROW OPEN: a click on the parts view picks the face there (not a part for a row)
+    assert live.evaluate("window._vdbg.facepick.ready()"), "the stage under the parts is settled"
+    xy = live.evaluate(SEEN_AT.replace("__SLOT__", "2"))
+    assert xy, "part 2 is seen on the model"
+    live.click(xy[0], xy[1])
+    live.wait_for("window._vdbg.facepick.picked().length === 1", timeout=10, what="the face to be picked")
+    out = live.evaluate("""({asked: window.__asked, picks: window.__picks, active: document.querySelectorAll('.rc-pm-item.active').length,
+      chat: window.__chips.items('chat').filter((i) => i.kind === 'face').map((i) => i.label)})""")
+    assert out == {"asked": 1, "picks": [], "active": 0, "chat": ["Face 4 · flat 1 × 1 mm"]}, out

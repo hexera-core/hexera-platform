@@ -326,7 +326,7 @@ export const Stage = {
     el.onclick=(e)=>{
       if(e.target.closest('.rc-fin-btn')){this._pmFinalize();return;}
       const m=this._pm;if(!m||m.status!=='done')return;
-      const item=e.target.closest('.rc-pm-item');if(!item)return;
+      const item=e.target.closest('.rc-pm-item');if(!item||item.classList.contains('face'))return;
       const i=Number(item.dataset.phrase);
       const x=e.target.closest('.rc-pm-x');
       if(x){this._pmToggle(x.dataset.part,i);return;}
@@ -421,6 +421,11 @@ export const Stage = {
     const open=this._pmOpen;
     const onModel=!!this._pmFig;
     const row=(r,k,unsure)=>{
+      // A ROW FOR A PICKED FACE (NOTE-17): the size and the face's own chip; it is the face's, never re-tied to parts
+      if(r.faces&&r.faces.length)return `<div class="rc-pm-item face" data-phrase="-1" style="--pm-c:${this._PM_COL[k%this._PM_COL.length]}">`
+        +`<div class="rc-pm-row"><span class="rc-pm-dot"></span><span class="rc-pm-q" title="${esc(r.quote||'')}">${esc(r.words)}</span>`
+        +`${r.size?`<span class="rc-pm-s">${esc(r.size)}</span>`:''}</div>`
+        +`<div class="rc-pm-chips">${attHtml(null,r.faces,'')}</div></div>`;
       const i=r.phrase,act=open===i,c=unsure?'#E3A23B':this._PM_COL[k%this._PM_COL.length];
       const ids=r.parts||[];
       const head=`<div class="rc-pm-row" role="button" tabindex="0" aria-pressed="${act}">`

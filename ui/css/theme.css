@@ -266,6 +266,8 @@ th,td{border-color:var(--border)}
 .req-card .rc-pm-item.active{background:var(--surface-2);box-shadow:inset 2px 0 0 var(--pm-c)}
 .req-card .rc-pm-row{display:grid;grid-template-columns:8px minmax(0,1fr) auto;align-items:center;gap:10px;
   padding:5px 0;color:var(--text);font:var(--fs-md)/1.45 var(--sans);cursor:pointer;outline:none}
+.req-card .rc-pm-item.face .rc-pm-row{cursor:default}
+.req-card .rc-pm-item.face .att-list{margin:0}
 .req-card .rc-pm-row:focus-visible{outline:2px solid var(--accent-line);outline-offset:1px;border-radius:var(--r-sm)}
 .req-card .rc-pm-dot{width:8px;height:8px;border-radius:50%;background:var(--pm-c)}
 .req-card .rc-pm-dot.none{box-sizing:border-box;background:transparent;border:1.5px dashed var(--warn)}

@@ -910,20 +910,39 @@ def picked_where(faces) -> str:
     return f"{head} ({'; '.join(labels[:3])}{'; ...' if len(labels) > 3 else ''})"
 
 
+def _carrying(notes) -> list[tuple[str, list]]:
+    return [(_squash(str(n.get("text") or "")), list(n.get("faces") or ()))
+            for n in notes or () if isinstance(n, Mapping) and n.get("faces")]
+
+
+def _faces_in(carrying: list[tuple[str, list]], quote) -> list | None:
+    q = _squash(str(quote or ""))
+    return next((f for text, f in carrying if len(q) >= 2 and q in text), None)
+
+
+def faces_for(quote, notes) -> list | None:
+    """NOTE-17: the faces picked with the own note whose words hold `quote` - the match bind_picks makes - or None.
+    `notes` as bind_picks takes them."""
+    return _faces_in(_carrying(notes), quote)
+
+
+def says_whole_mesh(quote) -> bool:
+    """Words that keep a size typed with a pick for the whole mesh all the same ("2 mm overall")."""
+    return bool(_WHOLE.search(str(quote or "")))
+
+
 def bind_picks(req: dict, notes, *, cells: bool = False) -> dict:
     """NOTE-17: a size or a refinement typed in a note (or a chat message kept as one) sent with faces picked on the
     model is for THOSE faces. A place entry whose place only points ("here", "this face") gets the faces; a global
     size typed with a pick becomes a size on those faces, never the global size, unless the words say the whole
     mesh. Done in code from the note that carries the faces - the model is never asked which face "here" is.
     `notes`: the user's own notes (contracts/user_notes.own_notes), each with its `faces` [{id, label, sig}]."""
-    carrying = [(_squash(str(n.get("text") or "")), list(n.get("faces") or ()))
-                for n in notes or () if isinstance(n, Mapping) and n.get("faces")]
+    carrying = _carrying(notes)
     if not carrying or not isinstance(req, dict):
         return req
 
     def faces_of(quote) -> list | None:
-        q = _squash(str(quote or ""))
-        return next((f for text, f in carrying if len(q) >= 2 and q in text), None)
+        return _faces_in(carrying, quote)
 
     def bind(e: dict, faces: list) -> None:
         where = picked_where(faces)
@@ -944,7 +963,7 @@ def bind_picks(req: dict, notes, *, cells: bool = False) -> dict:
     if sizes.get("global_mm") is not None:
         r = next((r for r in req.get("rows") or () if r.get("field") == "global"), None)
         faces = faces_of(r["quote"]) if r else None
-        if r and faces and not _WHOLE.search(str(r["quote"])):
+        if r and faces and not says_whole_mesh(r["quote"]):
             e = {"id": r["id"], "where": "", "what": "size", "mm": float(sizes["global_mm"]), "quote": r["quote"]}
             sizes["global_mm"] = None
             req["local"].append(e)

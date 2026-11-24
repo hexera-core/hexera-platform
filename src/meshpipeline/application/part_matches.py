@@ -268,8 +268,9 @@ def _view(session: Any, *, owner_id: str, start: bool) -> dict | None:
                            notes_only=seen is NOTES_ONLY):
             stored, current = _read(sid, MATCHES), True
     if current and stored is not None and stored.get("status") == "done":
-        got = rows_of(with_picks(sid, stored, seen["table"], notes), seen, sid) or {"status": "done", "rows": [],
-                                                                                    "unsure": []}
+        own = getattr(session, "user_notes", None)
+        got = with_faces(rows_of(with_picks(sid, stored, seen["table"], notes), seen, sid), own) or {
+            "status": "done", "rows": [], "unsure": []}
         lines = notes_lines(stored, notes=notes, facts=_acted_facts(session))
         return {**got, "lines": lines} if lines else got
     # NOT READ FOR THESE WORDS (yet): the last reading's rows stay on the card until the new one lands
@@ -277,7 +278,8 @@ def _view(session: Any, *, owner_id: str, start: bool) -> dict | None:
     out: dict[str, Any] = {"status": status}
     last = stored if stored is not None and stored.get("status") == "done" else (stored or {}).get("previous")
     if isinstance(last, dict) and last.get("status") == "done":
-        old = rows_of(with_picks(sid, last, seen["table"], notes), seen, sid)
+        old = with_faces(rows_of(with_picks(sid, last, seen["table"], notes), seen, sid),
+                         getattr(session, "user_notes", None))
         if old:
             out = {**old, "status": status, "stale": True}
     return out
@@ -342,6 +344,46 @@ def with_picks(session_id: str, stored: Mapping, table: list[dict], notes: str) 
     if reading.get("status") == "used" and picks and picks.get("key") == stored.get("key") and picks.get("picks"):
         reading = PW.picked(reading, picks["picks"], table, notes)
     return reading
+
+
+def with_faces(got: dict | None, user_notes) -> dict | None:
+    """NOTE-17 on the checklist before approval: a row read from words sent with faces picked on the model shows
+    those faces as its place ("2 mm · the face you picked (Face 12 · round Ø15 mm)"), as the run applies it
+    (engines/mesh_requirements.bind_picks, cad/part_words.with_picks), not the parts the reader tied the words to.
+    A phrase the reader could not place is placed by the pick. Left as read: words that say the whole mesh, and a
+    row the reader tied to a named area (the words named the place). A face row is not re-tied to parts. Pure."""
+    from meshpipeline.contracts.user_notes import own_notes
+    from meshpipeline.engines import mesh_requirements as MR
+    if not got:
+        return got
+    notes = [n for n in own_notes(user_notes) if n.get("faces")]
+    if not notes:
+        return got
+    areas = set(got.get("inside") or {})
+
+    def faces_of(r: Mapping) -> list | None:
+        quote = str(r.get("quote") or "")
+        if MR.says_whole_mesh(quote) or any(p in areas for p in r.get("parts") or ()):
+            return None
+        return MR.faces_for(quote, notes)
+
+    def face_row(r: Mapping, faces: list) -> dict:
+        row = {k: v for k, v in r.items() if k not in ("lit", "text", "picked")}
+        return {**row, "parts": [], "parts_text": MR.picked_where(faces),
+                "faces": [{"id": str(f.get("id") or ""), "label": str(f.get("label") or f.get("id") or "")}
+                          for f in faces]}
+
+    rows, unsure = [], []
+    for r in got.get("rows") or []:
+        f = faces_of(r)
+        rows.append(face_row(r, f) if f else r)
+    for u in got.get("unsure") or []:
+        f = faces_of(u) if u.get("size") else None
+        if f:
+            rows.append(face_row(u, f))
+        else:
+            unsure.append(u)
+    return {**got, "rows": rows, "unsure": unsure}
 
 
 def _num(pid: str) -> str:
@@ -618,7 +660,8 @@ def pick(session: Any, phrase: int, parts: list[str]) -> dict | None:
     kept = dict(picks.get("picks") or {}) if picks.get("key") == key else {}
     kept[str(int(phrase))] = [str(p) for p in parts if str(p) in ids]
     _write(sid, PICKS, {"key": key, "picks": kept, "at": time.time()})
-    return rows_of(with_picks(sid, stored, seen["table"], notes), seen, sid)
+    return with_faces(rows_of(with_picks(sid, stored, seen["table"], notes), seen, sid),
+                      getattr(session, "user_notes", None))
 
 
 def notes_for_run(session_id: str, user_notes, request_txt) -> dict | None:
@@ -660,4 +703,4 @@ def for_run(session_id: str, user_notes, request_txt) -> dict | None:
 __all__ = ["CARD_PICTURES", "CARD_VIEWS", "MODEL", "NOTES_ONLY", "before_run", "finalize", "flow_route", "notes_lines",
            "read_notes", "card_picture", "model_bytes", "readable", "MATCHES", "PARTS_KEY", "PICKS", "PICTURE_NAMES", "ROUTE_CFD", "ROUTE_FEA", "copy_parts",
            "enqueue_reading", "for_run", "key_of", "notes_of", "parts_seen", "parts_words", "pick", "picture_keys",
-           "rows_of", "run_reading", "size_words", "store_parts", "view", "with_picks"]
+           "rows_of", "run_reading", "size_words", "store_parts", "view", "with_faces", "with_picks"]
