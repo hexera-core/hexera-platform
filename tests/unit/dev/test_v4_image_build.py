@@ -84,3 +84,18 @@ def test_the_makefile_stamps_the_label_only_from_a_clean_tree() -> None:
     assert "|| echo dirty)" in makefile
     mesh = next(line for line in makefile.splitlines() if "docker build --target mesh " in line)
     assert '--label org.opencontainers.image.revision="$(SOURCE_REVISION)"' in mesh
+
+
+def test_the_build_and_the_push_are_not_held_to_a_registry_reads_two_minutes(monkeypatch) -> None:
+    """The first real build was refused: `make mesh-image` ran through preflight's runner, whose 120 s limit is for
+    gcloud reads. Building and pushing use the long runner; reads keep the short one."""
+    seen: dict[str, float | None] = {}
+
+    def fake_run(argv, capture_output, text, timeout):  # noqa: ANN001, ANN202
+        seen[argv[0] + " " + argv[1]] = timeout
+        return type("D", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(ib.subprocess, "run", fake_run)
+    ib._long_runner(["make", "mesh-image"])
+    ib._long_runner(["docker", "push", "x"])
+    assert seen["make mesh-image"] >= 3 * 3600 and seen["docker push"] >= 3 * 3600
