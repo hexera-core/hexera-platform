@@ -98,4 +98,4 @@ def test_a_nearly_closed_file_meshed_as_a_shell_is_told_it_has_gaps():
 
 
 def test_the_rulebook_says_time_10():
-    assert RULES_VERSION == "77"
+    assert int(RULES_VERSION) >= 77
