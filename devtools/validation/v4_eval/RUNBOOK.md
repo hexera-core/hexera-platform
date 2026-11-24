@@ -101,9 +101,13 @@ says 400 vCPU-h, ~6.3 h wall, 75 projected / 144 worst-case VM-hours against the
 **The exclusion rate is the risk, not the cost.** At the measured walls (900 s per file, 300 s per `check_valid`)
 ~8.7% of the pool was excluded, far over collect's 2% limit, so the wave would have ended at collect exit 2 with no
 split. Task 55 raised both walls (1800 s / 900 s; the numbers and their derivation are in the constants' own
-comments) which brings the PROJECTED exclusion to between 1.3% (every wall victim was merely slow) and ~4.8% (the
-size model's lognormal tail). That may still be over 2%, and if it is, **collect refuses and that refusal is
-correct**: `--allow-excluded` is not the answer to it. The remaining known exclusion the walls cannot touch is
+comments). Task 55 projected 1.3%-4.8%; Lane A job 3 then MEASURED it, re-running every wall-excluded file of Lane D's
+and Task 43's samples with the walls lifted (`lane-a3-report.md`): at 1800 s / 900 s, Lane D's sample is still
+**~5.6-6.6% excluded, pool-weighted**. The walls rescue the merely-slow files; what remains is one solid whose
+self-intersection analysis runs past an hour (no affordable wall), a panel whose single timeout retry is spent
+(inconclusive), and the body-pair cap below. Two Task 43 files need ~960-1,090 s per `check_valid` call on c2d, just
+over the 900 s call wall. So, as measured, **collect refuses and that refusal is correct**: `--allow-excluded` is not
+the answer to it. The remaining known exclusion the walls cannot touch is
 `valid_kernel.MAX_OVERLAP_PAIRS` (2000 bbox-overlapping body pairs per call, 1 of 59 sample files, ~1.3%
 pool-weighted) - a WORK cap, not a clock, and raising it without measuring the per-pair cost would only convert a
 fast exclusion into a slow one. Whatever is left is reported, named, as its own stratum
