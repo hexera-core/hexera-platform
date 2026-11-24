@@ -119,6 +119,24 @@ def select_sources(entries: list[Any], sources: str) -> list[Any]:
     return [e for e in entries if e.source in wanted]
 
 
+#: D22: kernel/mesher workers per file = candidate workers (`--workers`, the search's concurrent candidate
+#: evaluation) x panel threads (lane A's parallel panel: CRS_V4_PANEL_THREADS, 1 = the serial panel). Each candidate
+#: thread holds one pool worker for its op and one per panel member it meshes at once, so a pool smaller than the
+#: product would starve the threads it was sized for. Cores per container should be at least the product
+#: (snap-v4 VCPU_PER_SHARD), or the parallelism is oversubscription.
+PANEL_THREADS_ENV = "CRS_V4_PANEL_THREADS"
+
+
+def pool_size(workers: int) -> int:
+    import os
+
+    try:
+        panel = max(1, int(os.environ.get(PANEL_THREADS_ENV, "1")))
+    except ValueError:
+        panel = 1
+    return max(1, int(workers)) * panel
+
+
 def input_path(inputs: Path, entry: Any) -> str:
     """Where a staged input lives; a missing file raises FileNotFoundError (the entry is EXCLUDED)."""
     path = inputs / entry.sha256 / Path(entry.name).name
@@ -168,7 +186,7 @@ def run_reprobe(args: argparse.Namespace, out: Path, prov: dict) -> int:
     prov["sources"] = args.sources or "cleared"
     cache = make_cache(args.cache_uri)
     prov["cache_uri"] = args.cache_uri or None
-    pool = WorkerPool(args.workers)
+    pool = WorkerPool(pool_size(args.workers))
     rows_path = out / "rows.jsonl"
     try:
         with rows_path.open("w", encoding="utf-8") as handle:
@@ -256,7 +274,7 @@ def run_arms(args: argparse.Namespace, out: Path, prov: dict, ledger: Any | None
     rows: list[dict] = []
     excluded: list[dict] = []
     partial = out / "rows.partial.jsonl"  # streamed per file so a killed VM loses little; not the rows file
-    pool = WorkerPool(args.workers)
+    pool = WorkerPool(pool_size(args.workers))
     try:
         with partial.open("w", encoding="utf-8") as handle:
             for entry in entries:

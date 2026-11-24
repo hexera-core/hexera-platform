@@ -57,9 +57,10 @@ run_unit() { # group shard n split wave arms cap wave_type split_name
   date -u +%FT%TZ > $T/out/$name.start
   sudo docker run --rm --name snap-$group-$shard -v $T/code:/w:ro -v $T/splits:/eval/splits:ro \
     -v $T/inputs:/eval/inputs:ro -v $out:/eval/out -v $T/ledger:/eval/ledger -w /w -e PYTHONPATH=/w/src \
+    -e CRS_V4_PANEL_THREADS=${PANEL_THREADS:-1} \
     --env-file $T/secret.env $IMG \
     python devtools/validation/v4_eval/run_arm.py \
-    --mode arms --arms "$arms" --h-mm auto ${OPS:+--ops $OPS} --workers 1 --cache-uri $CACHE --commit $COMMIT \
+    --mode arms --arms "$arms" --h-mm auto ${OPS:+--ops $OPS} --workers ${WORKERS:-1} --cache-uri $CACHE --commit $COMMIT \
     --image $IMAGE_ID --machine-type $MACHINE --wave $wave --split $sname \
     --split-file /eval/splits/$split.json --shard-plan /eval/splits/plan_$group.json --shard ${shard}/${n} \
     --inputs /eval/inputs --out /eval/out --plan-provenance "$P" --route $ROUTE --wave-id $wid \
