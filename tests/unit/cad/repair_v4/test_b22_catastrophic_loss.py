@@ -121,3 +121,10 @@ def test_an_explicit_loss_argument_overrides_the_result_and_refuses() -> None:
 
     lost = from_kernel(_kernel({"S1": 1.0, "S2": 0.0}, part_kept=0.5))
     assert deliverable(NoLoss(), _V(True, 1), score_fn=_score, loss=lost) is None
+
+
+def test_a_payload_that_measured_NOTHING_claims_nothing() -> None:
+    """A report saying `measured` with no number in it would look like evidence while refusing nothing."""
+    report = from_kernel({"solidless": False, "bodies": {}, "bodies_total": 3, "part_kept": None})
+    assert not report.measured and not report.catastrophic
+    assert report.unmeasured_why == "nothing_measured"

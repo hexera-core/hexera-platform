@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import importlib
 import logging
+import threading
+import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol
@@ -26,6 +28,33 @@ from meshpipeline.cad.repair_v4.worker_pool import WorkerPool
 logger = logging.getLogger(__name__)
 MEMBER_TIMEOUT_S = 300.0
 UNMEASURED_SICN = -1.0  # a mesher that produced no mesh has no SICN; it ranks below any real one
+
+
+#: B23: VERDICT-LEVEL PHASE TIMING, so "the verdict is the cost" can be read per LAYER rather than per file.
+#: Seconds and call counts per phase, accumulated process-wide (the search judges states on several threads, so
+#: the totals are a sum of concurrent work and are NOT a wall-clock breakdown; `wall_s` on the row is the wall).
+#: Diagnostic only: nothing reads these to decide anything.
+_PHASES = ("valid", "panel", "panel_cache_hit", "faithful", "faithful_skipped", "key")
+_phase_lock = threading.Lock()
+_phase_totals: dict[str, float] = {}
+
+
+def _phase(name: str, seconds: float = 0.0) -> None:
+    with _phase_lock:
+        _phase_totals[f"{name}_s"] = _phase_totals.get(f"{name}_s", 0.0) + seconds
+        _phase_totals[f"{name}_n"] = _phase_totals.get(f"{name}_n", 0.0) + 1
+
+
+def verdict_phases() -> dict[str, float]:
+    """The phase totals so far: `<phase>_s` seconds and `<phase>_n` calls, for `<phase>` in `_PHASES`."""
+    with _phase_lock:
+        return {k: (round(v, 3) if k.endswith("_s") else int(v)) for k, v in sorted(_phase_totals.items())}
+
+
+def reset_verdict_phases() -> None:
+    """Zero the totals. The eval calls this per (file, arm) so a row's phases are that row's own."""
+    with _phase_lock:
+        _phase_totals.clear()
 
 
 class MemberResultLike(Protocol):
@@ -173,7 +202,9 @@ def _assemble(
     run_panel: PanelRunner | None,
     original_units: str | None,
 ) -> Verdict:
+    t = time.monotonic()
     valid = check_valid(pool, step, original_units=original_units)
+    _phase("valid", time.monotonic() - t)
     if valid.unbounded:  # outside the definition, decided before anything meshes it: no panel, no layer 3, no cache
         return Verdict(valid, [], None, False, tier, False)
 
@@ -182,27 +213,44 @@ def _assemble(
     sha = config = None
     panel: list[Any] | None = None
     if cache is not None:
+        t = time.monotonic()
         try:
             sha = file_sha256(step)
         except OSError as exc:  # a STEP that is not there is a broken export, not a file that failed
             raise CheckerUnavailable(f"cannot read {step!r} to key the verdict cache: {exc}") from exc
         config = panel_config_hash(chosen, MEMBER_TIMEOUT_S, mesher_versions(pool))  # fails closed, loudly
+        _phase("key", time.monotonic() - t)
         panel = _cache_get(cache, sha, config)
+        if panel is not None:
+            _phase("panel_cache_hit")
     if panel is None:
+        t = time.monotonic()
         panel = list(runner(pool, step, chosen, timeout_s=MEMBER_TIMEOUT_S))
+        _phase("panel", time.monotonic() - t)
         if cache is not None and sha is not None and config is not None:
             _cache_put(cache, sha, config, panel)
 
     # Layer 3 is REPORTED, never a gate (`clean_of`), so it is measured on every row it can be measured on -
     # including one that failed layer 1, where the fidelity numbers still say what the repair did to the part.
     # It can also be unmeasurable (an unreadable or extent-less shape); that is not an error and not a verdict.
+    #
+    # B23, THE ONE EXCEPTION, and it changes no decision: on the CHEAP tier - the search's inner loop, hundreds
+    # of candidates per file - an INVALID state's layer 3 is read by nobody. `score` zeroes keys 3 and 4 while
+    # layer 1 fails (see its docstring: that zeroing is lane A's frontier fix), `clean_of` is already False, and
+    # no row ever carries a cheap verdict's fidelity numbers - a row carries the delivered state's FULL verdict.
+    # So the measurement is computed and discarded. It is skipped here and counted as skipped.
     faithful: FaithfulReport | None = None
-    try:
-        faithful = check_faithful_steps(
-            pool, original, step, declared_added=declared.added, declared_removed=declared.removed
-        )
-    except (CheckerUnavailable, DeclaredIdError, ValueError) as why:
-        logger.info("layer 3 not measured for %s (reported as unmeasured, it gates nothing): %s", step, why)
+    if tier == "cheap" and not valid.ok:
+        _phase("faithful_skipped")
+    else:
+        t = time.monotonic()
+        try:
+            faithful = check_faithful_steps(
+                pool, original, step, declared_added=declared.added, declared_removed=declared.removed
+            )
+        except (CheckerUnavailable, DeclaredIdError, ValueError) as why:
+            logger.info("layer 3 not measured for %s (reported as unmeasured, it gates nothing): %s", step, why)
+        _phase("faithful", time.monotonic() - t)
 
     inconclusive = any(is_infrastructure_failure(r) for r in panel)
 

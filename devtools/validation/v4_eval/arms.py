@@ -232,6 +232,7 @@ def _search_arm(arm_name: str, *, pool: Any, ws: Any, start: Any, source: str, j
     """(output verdict, the SearchResult's own measured-ness fields, model USD) for a search arm."""
     from meshpipeline.cad.repair_v4 import search as S
     from meshpipeline.cad.repair_v4.proposer import MODEL_UNAVAILABLE
+    from meshpipeline.cad.repair_v4.verdict.assemble import reset_verdict_phases, verdict_phases
 
     ai_kwargs: dict[str, Any] = {}
     if arm_name == "search_ai":
@@ -243,7 +244,12 @@ def _search_arm(arm_name: str, *, pool: Any, ws: Any, start: Any, source: str, j
                                             **ai_kwargs)
     sbudget = S.Budget(wall_s=budget.wall_s, ops=budget.ops, model_calls=max_turns if proposer else 0,
                        model_usd=budget.model_usd)
+    # B23: the verdict's own phases (layer 1, the panel, cache hits, layer 3) for THIS search. Reset here, read
+    # the moment it returns, so the delivery verdict that follows is not counted into it. The totals are a sum of
+    # concurrent work across the search's threads, never a wall-clock breakdown: `wall_s` is the wall.
+    reset_verdict_phases()
     result = S.search(pool, start, source, generators, sbudget, workers=workers, judge=judge, h_mm=h_mm, clock=clock)
+    phases = verdict_phases()
     usd = float(proposer.result()["spent_usd"]) if proposer is not None else 0.0
     if workdir is not None:
         write_trace(result.trace, workdir)
@@ -265,7 +271,7 @@ def _search_arm(arm_name: str, *, pool: Any, ws: Any, start: Any, source: str, j
               # states the search refused as best for keeping too little. A refusal is reported, never silent.
               "loss": (result.best_loss.row() if getattr(result, "best_loss", None) is not None else None),
               "refused_catastrophic": int(getattr(result, "refused_catastrophic", 0) or 0),
-              "_triage": {"search": search_triage(result, generators)}}
+              "_triage": {"search": {**search_triage(result, generators), "verdict_phases": phases}}}
     if proposer is not None:
         fields["ai_stop_reason"] = MODEL_UNAVAILABLE if ai_unavailable else result.ai_stop_reason
     # `result.changed` says whether anything beat the search's START, which is the staged output, not the input: a

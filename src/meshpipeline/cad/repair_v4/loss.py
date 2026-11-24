@@ -130,6 +130,10 @@ def from_kernel(value: dict, *, keep_fraction: float = KEEP_FRACTION) -> LossRep
                           volume_ratio=value.get("volume_ratio"), detail={"bodies": {}})
     bodies: dict[str, Any] = dict(value.get("bodies") or {})
     kept = {k: float(v) for k, v in bodies.items() if v is not None}
+    if not kept and value.get("part_kept") is None:
+        # a payload that measured nothing claims nothing: `measured` True with no number in it would be a report
+        # that refuses nothing while LOOKING like evidence, and the next rule written on top of it would be wrong
+        return _unmeasured("nothing_measured")
     lost = tuple(sorted((k for k, v in kept.items() if v < keep_fraction), key=_body_index))
     part_kept = value.get("part_kept")
     return LossReport(
