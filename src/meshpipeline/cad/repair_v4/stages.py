@@ -65,6 +65,7 @@ from meshpipeline.cad.repair_v4.verdict.assemble import (
     Declared,
     InconclusiveVerdict,
     cheap_verdict,
+    full_panel_threads,
     score,
     with_brep_orientation,
 )
@@ -568,8 +569,13 @@ def _judge(pool: WorkerPool, ws: Workspace, cheap_members: Any = None, reuse: An
               else None)
     # the cache is the process-wide one `search.default_judge` also uses: the final staged state is the search's
     # start state, and its cheap verdict must not be meshed twice
+    # D25: the healer's cheap panels mesh their members in parallel (P per call = CRS_V4_PANEL_THREADS): unlike the
+    # search it has no candidate workers to share the cores with, and it was the top phase of death after D22/D23
     v = cheap_verdict(pool, step_for(pool, ws.brep_path), step_for(pool, ws.original),
                       cache=default_verdict_cache(), members=cheap_members,
+                      panel_threads=full_panel_threads(),
+                      # C18 P1 is independent of D25's P: a reused layer-1 report skips layer 1 only, and the
+                      # panel still runs on THIS file - in parallel.
                       **({"valid_report": reused} if reused is not None else {}))
     if ws.history:
         # lane C15: an op-made state's inside-out solid is visible only on the BREP (the STEP round trip re-orients it)

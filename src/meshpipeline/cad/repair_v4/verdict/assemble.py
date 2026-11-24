@@ -208,6 +208,7 @@ def _assemble(
     run_panel: PanelRunner | None,
     original_units: str | None,
     valid_report: ValidReport | None = None,
+    panel_threads: int | None = None,
 ) -> Verdict:
     t = time.monotonic()
     if valid_report is not None:  # C18 P1: the caller PROVED layer 1's answer is the standing state's (`stages`)
@@ -232,8 +233,11 @@ def _assemble(
     # D23.2: P (parallel panel members) is PER CALL: a full verdict (input, confirm, output) meshes its members at
     # once, up to CRS_V4_PANEL_THREADS; a cheap verdict (the search's inner loop, where candidates already run in
     # parallel) stays serial. P changes only WHEN members run, so it is NOT part of the cache key (`cap` is).
-    threads = {"panel_threads": full_panel_threads()} if (
-        tier == "full" and "panel_threads" in inspect.signature(runner).parameters) else {}
+    # D25: a CHEAP call may ask for P too (the staged healer: no candidate workers to protect); the search's cheap
+    # calls do not ask, so they stay serial
+    want = full_panel_threads() if tier == "full" else (panel_threads or 1)
+    threads = {"panel_threads": want} if (
+        want > 1 and "panel_threads" in inspect.signature(runner).parameters) else {}
     # A16: WHAT MAY THIS PANEL ASK FOR? `run_panel`'s worst case is (members + 2) x timeout_s, and a call longer
     # than the wall's remainder cannot be stopped by a check that happens after it (measured: one 929.95 s panel
     # against a 900 s search wall). So the per-member timeout comes from what is LEFT, and a panel with no useful
@@ -385,15 +389,19 @@ def cheap_verdict(
     run_panel: PanelRunner | None = None,
     original_units: str | None = None,
     valid_report: ValidReport | None = None,
+    panel_threads: int | None = None,
 ) -> Verdict:
     """Layer 1, the cheap members (`GmshDefault`, `GmshProd`; `default_members("cheap")`) and layer 3. For the
     search's inner loop and the staged healer's transactions; never `clean`.
 
     `valid_report` (C18 P1): a layer-1 report the caller has PROVED is this file's - the staged healer's standing
     state, when `layer1_gate` says no solid, face count or free shell changed. Layer 1 is then not re-run; the panel
-    and layer 3 still are, on THIS file. Only `stages._judge` passes it; the full tier never takes one."""
+    and layer 3 still are, on THIS file. Only `stages._judge` passes it; the full tier never takes one.
+
+    `panel_threads` (D25): cheap members meshed AT ONCE; None = 1 (the search, whose candidates already run in
+    parallel). The two are independent: when P1 reuses layer 1, the panel still runs and still takes P."""
     return _assemble(pool, step, original, declared or Declared(), "cheap", members, cache, run_panel, original_units,
-                     valid_report)
+                     valid_report, panel_threads=panel_threads)
 
 
 def with_brep_orientation(pool: Any, brep_path: str, v: Verdict) -> Verdict:
