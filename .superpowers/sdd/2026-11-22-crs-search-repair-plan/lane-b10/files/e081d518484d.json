@@ -1,0 +1,147 @@
+{
+ "file": "/in/e081d518484d5c708c6729353237f94a7d97da2b74a10d60d4c0d146d67a5855/nist_ctc_01_asme1_rd.stp",
+ "tiers": {
+  "pre_b8": {
+   "members": [
+    "gmsh_default"
+   ],
+   "kept": [
+    "baseline",
+    "normalise",
+    "shells",
+    "solids",
+    "finalise"
+   ],
+   "rolled_back": [
+    "simplify",
+    "condition"
+   ],
+   "skipped": [
+    "bodies",
+    "edges",
+    "faces"
+   ],
+   "inconclusive": [],
+   "standing": [
+    "normalise",
+    "shells",
+    "solids",
+    "finalise"
+   ],
+   "fell_back_to": null,
+   "dropped": [],
+   "checked": [
+    "finalise"
+   ],
+   "final_panel": {
+    "gmsh_prod": "fail",
+    "gmsh_default": "pass",
+    "gmsh_alt": "pass",
+    "netgen_occ": "pass"
+   },
+   "final_clean": false,
+   "changed": true,
+   "staged_s": 15.4,
+   "total_s": 26.3
+  },
+  "b8_static": {
+   "members": null,
+   "kept": [
+    "baseline",
+    "normalise",
+    "shells",
+    "solids",
+    "simplify",
+    "condition",
+    "finalise"
+   ],
+   "rolled_back": [],
+   "skipped": [
+    "bodies",
+    "edges",
+    "faces"
+   ],
+   "inconclusive": [],
+   "standing": [
+    "normalise",
+    "shells",
+    "solids",
+    "simplify",
+    "condition",
+    "finalise"
+   ],
+   "fell_back_to": null,
+   "dropped": [],
+   "checked": [
+    "finalise"
+   ],
+   "final_panel": {
+    "gmsh_prod": "fail",
+    "gmsh_default": "pass",
+    "gmsh_alt": "pass",
+    "netgen_occ": "pass"
+   },
+   "final_clean": false,
+   "changed": true,
+   "staged_s": 23.1,
+   "total_s": 37.5
+  },
+  "b8b_adaptive": {
+   "members": [
+    "gmsh_default",
+    "gmsh_prod"
+   ],
+   "kept": [
+    "baseline",
+    "normalise",
+    "shells",
+    "solids",
+    "simplify",
+    "condition",
+    "finalise"
+   ],
+   "rolled_back": [],
+   "skipped": [
+    "bodies",
+    "edges",
+    "faces"
+   ],
+   "inconclusive": [],
+   "standing": [
+    "normalise",
+    "shells",
+    "solids",
+    "simplify",
+    "condition",
+    "finalise"
+   ],
+   "fell_back_to": null,
+   "dropped": [],
+   "checked": [
+    "finalise"
+   ],
+   "final_panel": {
+    "gmsh_prod": "fail",
+    "gmsh_default": "pass",
+    "gmsh_alt": "pass",
+    "netgen_occ": "pass"
+   },
+   "final_clean": false,
+   "changed": true,
+   "staged_s": 12.1,
+   "total_s": 12.7
+  }
+ },
+ "input": {
+  "panel": {
+   "gmsh_prod": "fail",
+   "gmsh_default": "pass",
+   "gmsh_alt": "pass",
+   "netgen_occ": "pass"
+  },
+  "valid": true,
+  "clean": false,
+  "inconclusive": false,
+  "seconds": 12.1
+ }
+}

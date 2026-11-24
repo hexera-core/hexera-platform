@@ -1,0 +1,144 @@
+{
+ "file": "/in/a5f451e72f3a5ed7185a445fbdd3ba802889a2ad564e990203b1a4799b635a8b/0053_00533660_58a4821bab78c2106dbc0ab6_step_014.step",
+ "tiers": {
+  "pre_b8": {
+   "members": [
+    "gmsh_default"
+   ],
+   "kept": [
+    "baseline",
+    "normalise",
+    "shells",
+    "solids",
+    "finalise"
+   ],
+   "rolled_back": [],
+   "skipped": [
+    "bodies",
+    "condition",
+    "edges",
+    "faces",
+    "simplify"
+   ],
+   "inconclusive": [],
+   "standing": [
+    "normalise",
+    "shells",
+    "solids",
+    "finalise"
+   ],
+   "fell_back_to": null,
+   "dropped": [],
+   "checked": [
+    "finalise"
+   ],
+   "final_panel": {
+    "gmsh_prod": "fail",
+    "gmsh_default": "fail",
+    "gmsh_alt": "fail",
+    "netgen_occ": "fail"
+   },
+   "final_clean": false,
+   "changed": true,
+   "staged_s": 113.9,
+   "total_s": 281.8
+  },
+  "b8_static": {
+   "members": null,
+   "kept": [
+    "baseline",
+    "normalise",
+    "shells",
+    "solids",
+    "finalise"
+   ],
+   "rolled_back": [],
+   "skipped": [
+    "bodies",
+    "condition",
+    "edges",
+    "faces",
+    "simplify"
+   ],
+   "inconclusive": [],
+   "standing": [
+    "normalise",
+    "shells",
+    "solids",
+    "finalise"
+   ],
+   "fell_back_to": null,
+   "dropped": [],
+   "checked": [
+    "finalise"
+   ],
+   "final_panel": {
+    "gmsh_prod": "fail",
+    "gmsh_default": "fail",
+    "gmsh_alt": "fail",
+    "netgen_occ": "fail"
+   },
+   "final_clean": false,
+   "changed": true,
+   "staged_s": 118.5,
+   "total_s": 118.5
+  },
+  "b8b_adaptive": {
+   "members": [
+    "gmsh_default",
+    "gmsh_prod",
+    "gmsh_alt",
+    "netgen_occ"
+   ],
+   "kept": [
+    "baseline",
+    "normalise",
+    "shells",
+    "solids",
+    "finalise"
+   ],
+   "rolled_back": [],
+   "skipped": [
+    "bodies",
+    "condition",
+    "edges",
+    "faces",
+    "simplify"
+   ],
+   "inconclusive": [],
+   "standing": [
+    "normalise",
+    "shells",
+    "solids",
+    "finalise"
+   ],
+   "fell_back_to": null,
+   "dropped": [],
+   "checked": [
+    "finalise"
+   ],
+   "final_panel": {
+    "gmsh_prod": "fail",
+    "gmsh_default": "fail",
+    "gmsh_alt": "fail",
+    "netgen_occ": "fail"
+   },
+   "final_clean": false,
+   "changed": true,
+   "staged_s": 182.9,
+   "total_s": 182.9
+  }
+ },
+ "input": {
+  "panel": {
+   "gmsh_prod": "fail",
+   "gmsh_default": "fail",
+   "gmsh_alt": "fail",
+   "netgen_occ": "fail"
+  },
+  "valid": false,
+  "clean": false,
+  "inconclusive": false,
+  "seconds": 172.4
+ }
+}

@@ -101,10 +101,19 @@ def test_a_sew_candidate_is_generated_and_accepted_at_each_scale(pool: WorkerPoo
 
 
 @pytest.mark.parametrize("edge_mm", [1.0, 1000.0])
-def test_the_old_absolute_ladder_is_declined_not_failed_at_both_scales(pool: WorkerPool, tmp_path: Path, edge_mm: float) -> None:
+def test_the_old_absolute_ladder_is_refused_only_where_a_rung_is_below_the_floor(pool: WorkerPool, tmp_path: Path, edge_mm: float) -> None:
+    """B12: rungs over the fidelity bound are accepted (the 1 mm part); a rung under 1e-6 x diagonal is still a
+    decline, not a failure (the 1 m part: 1e-4 < 1.7e-3)."""
     ws = Workspace.from_brep(pool, _loose_box(edge_mm, 0.5 * _bound(edge_mm), tmp_path / "loose.brep"))
-    with pytest.raises(OpDeclined, match="must lie in"):  # OpFailed would not match: it is not a subclass
-        REGISTRY["sew"].apply(pool, ws.fork(), [], {"tol_ladder": OLD_LADDER}, timeout_s=TIMEOUT)
+    below_floor = min(OLD_LADDER) < 1e-6 * edge_mm * 3 ** 0.5
+    if below_floor:
+        with pytest.raises(OpDeclined, match="must be at least"):  # OpFailed would not match: not a subclass
+            REGISTRY["sew"].apply(pool, ws.fork(), [], {"tol_ladder": OLD_LADDER}, timeout_s=TIMEOUT)
+    else:
+        try:
+            REGISTRY["sew"].apply(pool, ws.fork(), [], {"tol_ladder": OLD_LADDER}, timeout_s=TIMEOUT)
+        except OpDeclined as why:
+            assert "tol_ladder" not in why.reason, why.reason
 
 
 def test_a_part_whose_window_is_empty_gets_no_sew_and_the_sweep_says_so(pool: WorkerPool, tmp_path: Path) -> None:

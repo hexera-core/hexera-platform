@@ -239,7 +239,7 @@ def test_what_clean_means_is_written_from_the_checkers_constants(monkeypatch):
     """The prompt's definition of clean is generated from the checker's own constants, so it cannot drift: every
     hard code is listed with a description, every soft code is said NOT to fail, and the numeric limits are the
     checker's. Changing a constant changes the prompt."""
-    from meshpipeline.cad.repair_v4.verdict import faithful_kernel, mesh_child, valid
+    from meshpipeline.cad.repair_v4.verdict import mesh_child, valid
 
     assert set(P.HARD_CODE_TEXT) == set(valid.HARD_CODES)
     text = P.system_prompt(stage_names=())
@@ -250,14 +250,17 @@ def test_what_clean_means_is_written_from_the_checkers_constants(monkeypatch):
     assert all(code in soft_line for code in valid.SOFT_CODES) and "do NOT fail" in valid_para
     assert not any(f"- {code}:" in valid_para for code in valid.SOFT_CODES)
     assert "(undescribed)" not in text
-    assert "at least 0.01" in text and "min(0.1 mm" in text and "0.1% of the part diagonal" in text
+    assert "at least 0.01" in text
+    # B12 (owner decision 2026-11-24): clean is VALID + MESHABLE. No fidelity limit is stated as a requirement any more
     flat = " ".join(text.split())
-    assert "total area changes by at most 2%" in flat and "unless the original holds no solid" in flat
+    assert "VALID and MESHABLE" in flat and "FAITHFULNESS IS REPORTED, NOT REQUIRED" in flat
+    for gone in ("min(0.1 mm", "0.1% of the part diagonal", "at most 2%", "are declined", "never fuses",
+                 "within the fidelity bound", "3. Faithful"):
+        assert gone not in flat, gone
     monkeypatch.setattr(mesh_child, "MIN_SICN", 0.05)
-    monkeypatch.setattr(faithful_kernel, "BOUND_ABS_MM", 0.2)
     monkeypatch.setattr(valid, "SOFT_CODES", ("small_edge", "tiny_thing"))
     changed = P.system_prompt(stage_names=())
-    assert "at least 0.05" in changed and "min(0.2 mm" in changed and "tiny_thing" in changed
+    assert "at least 0.05" in changed and "tiny_thing" in changed
 
 
 def test_without_declared_stages_run_stage_is_not_offered():
@@ -482,7 +485,7 @@ def test_the_cache_key_changes_when_the_prefix_does():
 def test_the_system_prompt_states_the_contract():
     text = P.system_prompt(stage_names=())
     low = text.lower()
-    for must in ("clean", "round trip", "every mesher", "0.1 mm", "0.1%", "overlap", "hole", "missing face",
+    for must in ("clean", "round trip", "every mesher", "reported, not required", "overlap", "hole", "missing face",
                  "budget", "order", "stop", "declare_unfixable", "malformed", "costs nothing but a turn"):
         assert must in low, must
     assert "split_angle" in text                                   # the op catalogue is part of the prefix

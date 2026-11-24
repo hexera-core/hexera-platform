@@ -36,11 +36,9 @@ from meshpipeline.cad.repair_v4.ws_kernel import (
     write_brep,
 )
 
-#: Largest fuzzy value / overlap the ops accept, whatever the part size (mm).
+#: The fidelity bound min(ABS_BOUND_MM, REL_BOUND x diagonal), REPORTED beside measurements; it refuses nothing (B12).
 ABS_BOUND_MM = 0.1
 REL_BOUND = 0.001
-#: Largest share of a body the cut may remove (the clean definition caps volume change at 2%).
-MAX_VOLUME_CHANGE = 0.02
 _KINDS = ("face", "edge", "solid")
 
 
@@ -394,8 +392,7 @@ def _conformalise(payload: dict) -> dict:
     fuzzy = float(payload.get("fuzzy_mm", 0.0))
     mode = payload["mode"]
     bound = fidelity_bound(diagonal_of(old))
-    if fuzzy > bound + 1e-12:
-        return _declined("exceeds_fidelity", what="fuzzy_mm", value=fuzzy, bound=bound)
+    # B12: no fuzzy cap. The bound is computed only to be REPORTED beside each measured overlap.
     targets = _targets(old, payload["bodies"])
     cut_by = payload.get("cut_by")
     keeper = _targets(old, [cut_by])[0] if cut_by is not None else None

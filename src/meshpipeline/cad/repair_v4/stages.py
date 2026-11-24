@@ -535,6 +535,8 @@ def _judge(pool: WorkerPool, ws: Workspace, cheap_members: Any = None) -> Scored
         except DeclaredIdError:
             report = v.faithful  # a mistranslated id must not crash a run; judge it undeclared
         v = replace(v, faithful=report)
+    # the score's first key is VALID alone (owner decision 2026-11-24): layer 3 is measured and reported, never a
+    # gate, so the old local gate for solid-less originals (excusing volume/body-count reasons) has nothing to excuse
     result = score(v)
     # the score the transaction compares, carrying the cheap panel it came from so a rollback can say which
     # member got worse (`rollback_detail`). It IS the score tuple: nothing else changes.

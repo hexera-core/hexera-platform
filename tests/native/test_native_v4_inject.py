@@ -351,13 +351,13 @@ def test_face_delete_only_deletes_a_face_the_op_could_fill(fixable_src, tmp_path
     assert case.label["status"] == "structural" and "expected_outcome" not in case.label
 
 
-def test_the_injector_and_the_op_share_one_fill_cap():
+def test_the_injector_and_the_faithful_layer_share_one_fill_threshold():
     from meshpipeline.cad.repair_v4 import limits
     from meshpipeline.cad.repair_v4.ops import faces
     from meshpipeline.cad.repair_v4.verdict import faithful_kernel
 
     assert inj.limits is limits                                          # read through the module, never copied
-    assert faces.MAX_FILL_SPAN_RATIO is limits.MAX_FILL_SPAN_RATIO
+    assert not hasattr(faces, "MAX_FILL_SPAN_RATIO")                    # B12: the op no longer caps a fill
     assert faithful_kernel.FILL_SPAN_FRACTION is limits.MAX_FILL_SPAN_RATIO
     assert limits.MAX_FILL_SPAN_RATIO == 0.05                            # design 7 decision 2: not ours to move here
 
@@ -400,7 +400,13 @@ def _op_verdict(path: Path, tmp_path: Path) -> tuple[bool, str]:
             if ancestors.FindFromIndex(i).Size() == 1]
     answer = face_ops._fill_loop({"brep_path": brep, "out_path": str(tmp_path / f"{path.stem}.out.brep"),
                                   "edges": free, "continuity": "G0", "quantum": quantum_for(ws_kernel.diagonal_of(shape))})
-    return "declined" not in answer, str(answer.get("declined", ""))
+    if "declined" in answer:
+        return False, str(answer["declined"])
+    # B12: the op no longer refuses an unfaithful fill; it reports. The bound is applied to its OWN measurement.
+    m = answer.get("params", {}).get("measured", {})
+    if float(m["fill_to_surroundings"]) > float(m["bound_mm"]):
+        return False, f"over_bound (measured): {m['fill_to_surroundings']} > {m['bound_mm']}"
+    return True, ""
 
 
 def test_face_delete_never_deletes_a_face_the_op_declines_and_inclined_always_does(mixed_src, tmp_path):

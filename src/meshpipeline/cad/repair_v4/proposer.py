@@ -40,7 +40,6 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any, Literal, TypeVar
 
-from meshpipeline.cad.repair_v4.limits import MAX_FILL_SPAN_RATIO
 from meshpipeline.cad.repair_v4.model_ledger import Admission, WaveLedger
 from meshpipeline.cad.repair_v4.ops import REGISTRY, validate_call
 from meshpipeline.cad.repair_v4.types import Site
@@ -176,9 +175,8 @@ OP_SUMMARIES: dict[str, str] = {
                     "measured and reported in the Diff). YOU choose which body yields. For overlap sites.",
     "fuse": "merge 2+ bodies into ONE solid (BRepAlgoAPI_Fuse): for a body inside another, two copies of one body, or "
             "halves meant to be one. Changes the body count (reported, not refused). For overlap sites.",
-    "fill_loop": "close ONE free (open) loop with one new declared face; targets are the loop's edges. Leaves faces "
-                 "loose: follow with make_volume to rebuild the solid. For open sites; loops spanning over "
-                 f"{MAX_FILL_SPAN_RATIO:.0%} of the diagonal are declined.",
+    "fill_loop": "close ONE free (open) loop with one new declared face, of any size; targets are the loop's edges. "
+                 "Leaves faces loose: follow with make_volume to rebuild the solid. For open sites.",
     "fix_poles": "ShapeFix_Face wire repair (degenerate edges at a pole, missing seam) on the target faces. For "
                  "pole/periodic/invalid sites.",
     "make_volume": "build solid(s) from the target faces, or from every face not already in a solid when none are "
@@ -258,33 +256,26 @@ HARD_CODE_TEXT: dict[str, str] = {
 
 def _clean_definition() -> str:
     """WHAT CLEAN MEANS, written from the checker's own constants so the model is told what the checker enforces and
-    nothing else: the hard and soft codes of layer 1, the SICN floor and member time limit of layer 2, and the
-    fidelity bound, area/volume tolerance and fill cap of layer 3."""
+    nothing else: the hard and soft codes of layer 1 and the SICN floor and member time limit of layer 2. Since the
+    owner decision of 2026-11-24 clean is VALID + MESHABLE; faithfulness is measured and reported only."""
     from meshpipeline.cad.repair_v4.verdict.assemble import MEMBER_TIMEOUT_S
-    from meshpipeline.cad.repair_v4.verdict.faithful_kernel import (
-        BOUND_ABS_MM,
-        BOUND_DIAG_FRACTION,
-        RATIO_TOLERANCE,
-    )
     from meshpipeline.cad.repair_v4.verdict.mesh_child import MIN_SICN
     from meshpipeline.cad.repair_v4.verdict.valid import HARD_CODES, SOFT_CODES
 
     hard = "\n".join(f"   - {code}: {HARD_CODE_TEXT.get(code, '(undescribed)')}" for code in HARD_CODES)
-    return f"""WHAT CLEAN MEANS. A file is clean only when it passes all three layers of the checker, and the checker - not you,
-and not a rule of thumb - decides.
+    return f"""WHAT CLEAN MEANS. A file is clean when it is VALID and MESHABLE - the two layers below - and the checker, not you
+and not a rule of thumb, decides.
 1. Valid: it fails on any of these HARD findings (the codes you will see in `valid.hard`):
 {hard}
    SOFT findings ({", ".join(SOFT_CODES)}) are reported but do NOT fail this layer: fix them only where a
    mesher fails because of them. Findings name solids and shells by position (S1, H1); ops take the stable ids.
 2. Meshable: it meshes in every mesher on a fixed panel, each within {MEMBER_TIMEOUT_S:.0f} s, with no tolerant
    fallback and no hints sidecar, and the worst element quality (min SICN) is at least {MIN_SICN:g}.
-3. Faithful, against the original: the maximum sampled surface distance is at most min({BOUND_ABS_MM:g} mm,
-   {BOUND_DIAG_FRACTION:.1%} of the part diagonal) - faces an op DECLARES added are measured one way only
-   (original -> repaired) and faces it declares removed are exempt; total area changes by at most
-   {RATIO_TOLERANCE:.0%}; unless the original holds no solid (then building solids is the repair), volume also
-   changes by at most {RATIO_TOLERANCE:.0%} and the number of bodies does not change; no filled loop spans over
-   {MAX_FILL_SPAN_RATIO:.0%} of the diagonal. A repair that makes a mesher happy by moving the surface farther than
-   the bound is a failure, not a fix."""
+FAITHFULNESS IS REPORTED, NOT REQUIRED. How far the surface moved, area, volume and body-count changes are measured
+on every candidate and shown to you, but no limit applies to them: a bigger change that makes more meshers pass
+ranks above a smaller one that does not. Between candidates equal on validity, meshers passing and element quality,
+the one that moved the part less ranks first - so prefer the smallest change that works, and remove or fill as much
+as the mesh needs."""
 
 
 #: The one paragraph a proposer with recipe memory adds to its system turn (CAD_REPAIR_V4_RECIPES). Absent when
@@ -310,12 +301,12 @@ operations on them, and are told what each of your candidates did to the part.
 WHAT YOU OWN. The checker finds sites; you supply the judgement deterministic sweeps cannot:
 - overlap intent: are two overlapping bodies a duplicate, a fit, or one meant to be subtracted from the other?
 - hole versus missing face: is an open loop a real hole to keep, or a face that should exist?
-- fix choice under the deviation budget: when several fixes would work, pick the one that stays inside the
-  fidelity bound, and prefer the smallest change;
+- fix choice: when several fixes would work, prefer the one that moves the part least - but a larger change that
+  makes the part meshable beats a small one that does not;
 - ordering and recovery: operations interact; a split can renumber faces, a sew can undo a split;
 - mapping a mesher's error to the entity that causes it;
-- when to stop: if a site cannot be fixed inside the bound, call {DECLARE_UNFIXABLE} with the site id and the
-  reason instead of spending turns on it. Declared sites are not retried.
+- when to stop: if no operation can fix a site, call {DECLARE_UNFIXABLE} with the site id and the reason instead
+  of spending turns on it. Declared sites are not retried.
 
 HOW YOU ACT. Reply only with tool calls.
 - {PROPOSE}(candidates): one to a few candidates, each {{op | run_stage, targets, params, rationale}}. `targets` are
@@ -326,8 +317,7 @@ HOW YOU ACT. Reply only with tool calls.
 - {DECLARE_UNFIXABLE}(site_id, reason).
 A malformed call costs nothing but a turn: you will get a structured error naming each problem (an unknown op, a
 parameter out of bounds, a target that no longer exists) and may call again. The turns, the dollars spent on you
-and the wall-clock are all budgeted and shown to you; stop when the file is clean or nothing within the bound
-remains.
+and the wall-clock are all budgeted and shown to you; stop when the file is clean or nothing more can be tried.
 {RECIPES_PARAGRAPH if recipes else ""}
 OPERATIONS AND THEIR PARAMETER SCHEMAS (JSON Schema; `x-targets` says what `targets` must hold):
 {_catalogue(stage_names)}
@@ -354,7 +344,7 @@ def tool_schemas(*, stage_names: Sequence[str] = ()) -> list[dict]:
                       "additionalProperties": False}}},
          "required": ["candidates"], "additionalProperties": False})
     unfixable = ToolSchema(
-        DECLARE_UNFIXABLE, "Declare a site unfixable within the fidelity bound; it will not be retried.",
+        DECLARE_UNFIXABLE, "Declare a site that no operation can fix; it will not be retried.",
         {"type": "object", "properties": {"site_id": {"type": "string"}, "reason": {"type": "string"}},
          "required": ["site_id", "reason"], "additionalProperties": False})
     return [propose.definition(), unfixable.definition()]

@@ -380,13 +380,13 @@ def test_cut_by_beyond_the_old_bound_cuts_and_reports_the_depth(pool: WorkerPool
     assert _common_volume(a, b) < 1e-6
 
 
-def test_fuzzy_above_the_bound_declines(pool: WorkerPool, tmp_path: Path) -> None:
-    # a 10 mm part has bound min(0.1, 0.001 * 8.7) = 0.0087 mm, so 0.05 mm of fuzz is outside it
+def test_fuzzy_above_the_old_bound_is_accepted(pool: WorkerPool, tmp_path: Path) -> None:
+    # a 10 mm part has bound min(0.1, 0.001 * 8.7) = 0.0087 mm; 0.05 mm of fuzz was refused before B12
     small = Workspace.from_brep(pool, _write(
         _compound(_box(0, 0, 0, 5, 5, 5), _box(5, 0, 0, 5, 5, 5)), tmp_path / "small.brep"))
     _, diff = Conformalise().apply(pool, small, _bodies(small),
                                    {"mode": "fragment", "fuzzy_mm": 0.05}, timeout_s=TIMEOUT)
-    assert diff.params["declined"] == "exceeds_fidelity"
+    assert diff.params.get("declined") != "exceeds_fidelity", diff.params
 
 
 def test_fragment_never_resolves_an_overlap_by_adding_bodies(pool: WorkerPool, tmp_path: Path) -> None:

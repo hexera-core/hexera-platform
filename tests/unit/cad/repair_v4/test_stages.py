@@ -356,17 +356,24 @@ def test_judge_threads_declared_edits_into_layer_three(monkeypatch):
     assert out[4] == -2  # and churn is no longer permanently 0
 
 
-def test_a_solidless_original_is_judged_on_layer_1_alone(monkeypatch):
-    """The old local gate (valid AND every layer-3 reason expected) is gone with the layer-3 gate itself: a
-    solid-less original is now judged exactly like any other, on layer 1 and the panel."""
+def test_a_transaction_is_judged_on_validity_alone_whatever_layer_3_reports(monkeypatch):
+    """B12: the staged keep rule's first key is VALID; no layer-3 reason (area, deviation, volume, body count) can sink
+    a stage any more, for a solid-less original or any other. (It used to gate on the two expected reasons.)"""
     monkeypatch.setattr(stages, "step_for", lambda pool, brep: brep)
-    monkeypatch.setattr(stages, "original_facts", lambda pool, brep: (6, 0))
-    ws = Workspace(brep_path="n", ids={}, labels={}, history=[], original="o")
-    expected = ["volume_changed", "body_count_changed"]
-    cases = [(True, expected, 1),                        # a correct heal of loose faces
-             (False, [], 0),                             # BRepCheck-invalid: still fails key 0
-             (True, expected + ["area_changed"], 1),      # layer 3 no longer vetoes
-             (True, expected + ["deviation_exceeds_bound"], 1)]
+    for solids in (0, 1):
+        monkeypatch.setattr(stages, "original_facts", lambda pool, brep, _s=solids: (6, _s))
+        ws = Workspace(brep_path="n", ids={}, labels={}, history=[], original="o")
+        expected = ["volume_changed", "body_count_changed"]
+        cases = [(True, expected, 1),
+                 (False, [], 0),                            # BRepCheck-invalid still scores 0
+                 (True, expected + ["area_changed"], 1),
+                 (True, expected + ["deviation_exceeds_bound"], 1),
+                 (True, ["fill_too_large", "area_changed"], 1)]
+        for ok, reasons, want in cases:
+            monkeypatch.setattr(stages, "cheap_verdict", lambda *a, _v=_verdict(ok, reasons), **k: _v)
+            assert stages._judge(None, ws)[0] == want, (solids, ok, reasons)
+
+
     for ok, reasons, want in cases:
         monkeypatch.setattr(stages, "cheap_verdict", lambda *a, _v=_verdict(ok, reasons), **k: _v)
         assert stages._judge(None, ws)[0] == want, (ok, reasons)

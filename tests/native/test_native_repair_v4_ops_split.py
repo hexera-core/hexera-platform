@@ -395,7 +395,7 @@ def test_split_by_proximity_turns_the_refused_thin_wall_into_a_meshable_part(
 # --- runtime guard and worker failure -----------------------------------------------------------
 
 
-def test_guard_declines_a_result_that_moved_geometry_or_changed_the_solid_count(
+def test_guard_declines_only_a_changed_solid_count_never_moved_geometry(
         tmp_path: Path) -> None:
     from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox, BRepPrimAPI_MakeCylinder
 
@@ -403,8 +403,9 @@ def test_guard_declines_a_result_that_moved_geometry_or_changed_the_solid_count(
 
     box = BRepPrimAPI_MakeBox(10.0, 10.0, 10.0).Shape()
     assert guard(box, box) is None
-    assert "geometry_moved" in str(guard(box, BRepPrimAPI_MakeBox(10.0, 10.0, 10.5).Shape()))
-    assert "geometry_moved" in str(guard(box, BRepPrimAPI_MakeCylinder(5.0, 10.0).Shape()))
+    # B12: moved geometry is reported elsewhere (layer 3), never refused by the guard
+    assert guard(box, BRepPrimAPI_MakeBox(10.0, 10.0, 10.5).Shape()) is None
+    assert guard(box, BRepPrimAPI_MakeCylinder(5.0, 10.0).Shape()) is None
     from OCP.BRep import BRep_Builder
     from OCP.TopoDS import TopoDS_Compound
 
