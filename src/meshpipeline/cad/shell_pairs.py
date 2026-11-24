@@ -132,17 +132,29 @@ def _sample_rays(s: ff.Surface, *, rays: int = PAIR_RAYS, seed: int = 0):
 RAY_TOL_MM = 1e-9
 
 
-def ray_partners(s: ff.Surface) -> dict[tuple[int, int], int]:
-    """{(a, b) with a < b: rays that crossed between them, both ways} for every pair that passes the ray
-    test (PAIR_MIN_RAYS and PAIR_SHARE, read from either side)."""
-    P, D, L = _sample_rays(s)
-    if P is None:
-        return {}
-    eps = 1e-6 * s.diag
+#: SHELL-51, A WALL THINNER THAN ITS TESSELLATION'S ERROR IS NO COINCIDENCE: the rays read faces LYING ON EACH OTHER
+#: (cad/fea_features COINCIDENT_BAND: a pair of faces sharing no edge, met under the floor somewhere) through out to
+#: the two faces' tessellation error added. On a big thin skin that error is several walls: a 1000 x 700 mm floor
+#: panel 0.9 mm thick, its two B-spline skins tessellated 4.2 and 3.2 mm off their surfaces, crossed each other where
+#: the chords sag most, and all but 20 of its 19,955 rays across the wall were read through - "no two faces run side
+#: by side", no mesh. A pair the plain pass nominates (PAIR_MIN_RAYS, PAIR_SHARE) that the lying-on pass then loses is
+#: given back, said to be RESTORED; the exact test on the B-rep then settles it, and a restored pair whose exact wall
+#: is under the floor (LYING_FLOOR_FRACTION of the part's diagonal: they really do lie on each other) is no wall
+#: (cad/midsurface). A part none of whose faces lie on each other is read exactly as before.
+COINCIDENT_RESCUE = True
+LYING_FLOOR_FRACTION = ff.FLOOR_FRACTION
+
+
+def _exits(s: ff.Surface, P, D, L, eps: float, lying: list | None = None) -> np.ndarray:
+    """The face each ray leaves the material through (-1: no wall read), wall_reach's own reading."""
     hit = np.full(len(P), -1, dtype=np.int64)
-    ff.wall_reach(s, P + D * eps, D, L, eps=eps, exit_label=hit, ray_tol=RAY_TOL_MM)
+    ff.wall_reach(s, P + D * eps, D, L, eps=eps, exit_label=hit, ray_tol=RAY_TOL_MM, lying_on=lying)
+    return hit
+
+
+def _nominated(hit: np.ndarray, L: np.ndarray, m: int) -> dict[tuple[int, int], int]:
+    """{(a, b): rays both ways} for the pairs the exits name (PAIR_MIN_RAYS and PAIR_SHARE, from either side)."""
     ok = hit >= 0
-    m = len(s.names)
     keys, counts = np.unique(L[ok] * m + hit[ok], return_counts=True)
     read = np.bincount(L[ok], minlength=m)
     both: dict[tuple[int, int], int] = {}
@@ -156,6 +168,31 @@ def ray_partners(s: ff.Surface) -> dict[tuple[int, int], int]:
         if c >= PAIR_MIN_RAYS and c >= PAIR_SHARE * read[a]:
             nominated.add(key)
     return {k: both[k] for k in sorted(nominated)}
+
+
+def ray_partners(s: ff.Surface, restored: set | None = None) -> dict[tuple[int, int], int]:
+    """{(a, b) with a < b: rays that crossed between them, both ways} for every pair that passes the ray
+    test (PAIR_MIN_RAYS and PAIR_SHARE, read from either side). `restored`, when given, gets the pairs SHELL-51 gave
+    back (the plain pass read a wall between them; the lying-on pass read through it)."""
+    P, D, L = _sample_rays(s)
+    if P is None:
+        return {}
+    eps = 1e-6 * s.diag
+    m = len(s.names)
+    lying: list = []
+    out = _nominated(_exits(s, P, D, L, eps, lying), L, m)
+    if COINCIDENT_RESCUE and lying and s.defl_mm is not None:
+        from dataclasses import replace
+
+        # the plain pass alone: wall_reach reads no lying-on pass for a surface without tessellation errors
+        plain = _nominated(_exits(replace(s, defl_mm=None), P, D, L, eps), L, m)
+        for key in sorted(set(lying)):
+            if key in plain and key not in out:
+                out[key] = plain[key]
+                if restored is not None:
+                    restored.add(key)
+        out = {k: out[k] for k in sorted(out)}
+    return out
 
 
 #: A surface that runs to infinity one way (an extrusion, a revolution's profile, an offset of either - not the

@@ -168,12 +168,13 @@ def _faces_of(target: Mapping, owners: list[str], mids: Mapping[str, Mapping]) -
 def _why_not(target: Mapping) -> str:
     """Why a target has no face on the shell, in plain words."""
     if not target.get("area"):
-        return "this part stays solid, so it is not in the shell"
+        # SHSTAGE-9: no solid is made beside a shell - a part with no plate is not in the mesh at all
+        return "this part has no plate in it, so it is not in this shell mesh"
     kind = str(target.get("kind") or "")
     if kind in EDGE_KINDS:
         return "a hole is only an edge on a shell (the shell is the middle of the plate), so it has no faces to size"
     if kind in SOLID_KINDS:
-        return "it is solid, not a plate, so it is not in the shell"
+        return "it is solid, not a plate, so it is not in this shell mesh"
     return "it is not on the shell's mid-surface"
 
 

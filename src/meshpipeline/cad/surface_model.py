@@ -715,16 +715,25 @@ def has_solid(shape) -> bool:
     return bool(TopExp_Explorer(shape, TopAbs_SOLID).More())
 
 
-def classify(sheets: list[dict], *, said_shell: bool = False) -> tuple[str, str, float]:
+#: SURF-14: what a closed skin read as the part's skin says of itself (engines/surface_run.closed_skin_words)
+CLOSED_SKIN_WHY = ("its faces close round a space with no wall in it, and a shell was asked for: the faces are the "
+                   "part's skin")
+
+
+def classify(sheets: list[dict], *, said_shell: bool = False, closed_skin: bool = False) -> tuple[str, str, float]:
     """SURF-1: (kind, why, the file's open share) from the measured sheets. "closed" when any sheet closes (the
     file's closed shells are read as the solids they bound, MESH-1, as before); "gap" when the openings of the whole
-    file span at most GAP_SHARE of its surface and the user's words did not ask for a shell; else "surface"."""
+    file span at most GAP_SHARE of its surface and the user's words did not ask for a shell; else "surface".
+    `closed_skin` (SURF-14): the closed shells were read as solids and the solid they bound has no wall a shell
+    could stand for, while a shell was asked for - the faces are the part's skin: "surface"."""
     if not sheets:
         return "empty", "the file holds no faces", 0.0
     area = sum(s["area_mm2"] for s in sheets)
     spanned = sum(s["open_share"] * s["area_mm2"] for s in sheets)
     share = spanned / area if area > 0 else 0.0
     if any(s["closed"] for s in sheets):
+        if closed_skin:
+            return "surface", CLOSED_SKIN_WHY, _r(share)
         return "closed", "its faces close into a solid", _r(share)
     pct = f"{100 * share:.2g}%"
     if share > GAP_SHARE:
@@ -739,19 +748,24 @@ def classify(sheets: list[dict], *, said_shell: bool = False) -> tuple[str, str,
 
 def read(shape, *, mm_per_unit: float, said_shell: bool = False, stitch: bool = True,
          sew_mm: float | None = None, holes_mm: float | None = None, mend: bool = True,
-         element_mm: float | None = None, wall_mm: float | None = None) -> tuple[dict, Sewn | None]:
+         element_mm: float | None = None, wall_mm: float | None = None,
+         closed_skin: bool = False) -> tuple[dict, Sewn | None]:
     """SURF-1: what kind of file this is, with the sheets as measured: (the reading, the sewn faces - None unless
     the reading is "surface" or "gap"). A surface part is then cleaned (SURF-8..10, cad/surface_clean): a face written
     twice is left out, the gaps between neighbouring faces are closed up the sewing ladder, pinholes are filled -
     and the reading says what was done ("cleaned") and measures what is left. `stitch` False: the user said not
     to; `sew_mm`: the stitch tolerance their notes state (None: the rule's); `holes_mm`: the size under which they
-    asked for holes to be filled (None: only pinholes no wider than the gaps being closed)."""
+    asked for holes to be filled (None: only pinholes no wider than the gaps being closed). `closed_skin` (SURF-14):
+    the file's faces are read as the part's skin even though they close (and even though MESH-1 made them a solid:
+    its faces are read)."""
     from meshpipeline.cad import midsurface as ms
     from meshpipeline.cad import surface_clean as sc
     from meshpipeline.cad.validity_brep import SEW_TOLERANCE, _bbox
 
     if has_solid(shape):
-        return {"kind": "solid", "why": "the file holds a solid", "sheets": []}, None
+        if not closed_skin:
+            return {"kind": "solid", "why": "the file holds a solid", "sheets": []}, None
+        shape = ms._compound(ms._faces(shape))         # SURF-14: the solid MESH-1 made, read as the skin it was
     # SURF-9: A FACE WRITTEN TWICE is left out before anything is sewn or judged (sewn in, it pairs its edges with
     # its twin's and the two read as a closed pocket)
     twice: list[int] = []
@@ -768,7 +782,7 @@ def read(shape, *, mm_per_unit: float, said_shell: bool = False, stitch: bool = 
     if sewn is None:
         return {"kind": "empty", "why": "the file holds no faces", "sheets": []}, None
     sheets = measure(sewn, mm_per_unit=mm_per_unit)
-    kind, why, share = classify(sheets, said_shell=said_shell)
+    kind, why, share = classify(sheets, said_shell=said_shell, closed_skin=closed_skin)
     unmet = sum(int(s["unmet_edges"]) for s in sheets)
     if kind in ("surface", "gap") and unmet:
         # SURF-2: EDGES LEFT LYING ALONG A NEIGHBOUR may be a junction - a rib's foot on the line two plate faces
@@ -787,7 +801,7 @@ def read(shape, *, mm_per_unit: float, said_shell: bool = False, stitch: bool = 
                 again = measure(scored, mm_per_unit=mm_per_unit)
                 if sum(int(s["unmet_edges"]) for s in again) < unmet and not any(s["closed"] for s in again):
                     sewn, sheets = scored, again
-        kind, why, share = classify(sheets, said_shell=said_shell)
+        kind, why, share = classify(sheets, said_shell=said_shell, closed_skin=closed_skin)
     cleaned: dict | None = None
     if kind == "surface":
         # SURF-8 / SURF-10: THE CLEAN-UP, only once the file is known to be a surface part (what kind of file it is

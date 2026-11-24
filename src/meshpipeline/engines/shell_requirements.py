@@ -234,6 +234,22 @@ def _edge_stats(mesh) -> tuple[np.ndarray, np.ndarray]:
 _pct = MR.pct
 _n = MR.share_words
 
+#: SHMESH-85: a figure within this share of a line is AT the line (inside it), as the delivered deck reads it: the
+#: deck writes each node to 10 significant digits, so an edge made exactly 5 mm long reads 4.9999999999 here and
+#: 5.0000000001 from the deck - a part of 251 elements was told 100% under the user's 5 mm where its deck held 89%
+AT_LIMIT = 1e-6
+
+
+def _at(values: np.ndarray, *lines) -> np.ndarray:
+    """SHMESH-85: the figures, each within AT_LIMIT of one of the lines put on that line."""
+    out = np.asarray(values, dtype=float).copy()
+    for v in lines:
+        if v is None:
+            continue
+        v = float(v)
+        out[np.abs(out - v) <= AT_LIMIT * max(abs(v), 1.0)] = v
+    return out
+
 
 def _size_row(row: Mapping, field: str, mesh, sizing: Mapping | None, req: Mapping) -> dict:
     s = req.get("sizes") or {}
@@ -249,14 +265,21 @@ def _size_row(row: Mapping, field: str, mesh, sizing: Mapping | None, req: Mappi
             out["met"] = False
             said += (f"; {_g(s['global_mm'])} mm would make more elements than a shell mesh is made of in the time "
                      f"allowed, so the nearest size that builds was used ({_g(s['global_mm'] * sizing['scale'])} mm)")
-        elif sizing.get("coarser"):
+        elif sizing.get("coarser") and typical >= BAND[0] * s["global_mm"]:
+            # (only when the built elements are near the size asked: built far finer, they are not coarser than ours)
             said += "; this is coarser than our accuracy rules ask for on some faces, so results may be less exact"
         if sizing.get("finer"):
             said += "; some elements are smaller than half the wall, finer than a shell usually needs"
         out["delivered"] = said
+        if not sizing.get("held") and len(mesh.xyz):
+            # NOTE-14: built far finer than asked - the same true thing the plan says, with why (finer_global)
+            ext = float(np.max(np.ptp(np.asarray(mesh.xyz, dtype=float), axis=0)))
+            got = MR.finer_global(row, float(s["global_mm"]), typical, ext)
+            if got is not None:
+                out.update(got)
     elif field in ("min_edge", "max_edge"):
         limit = float(s[f"{field}_mm"])
-        v = lo if field == "min_edge" else hi
+        v = _at(lo if field == "min_edge" else hi, limit)
         outside = int((v < limit).sum() if field == "min_edge" else (v > limit).sum())
         worst = float(v.min() if field == "min_edge" else v.max()) if n else 0.0
         # AN EDGE LENGTH IS A TARGET, reported with the percent outside: met when every element is inside it,
@@ -310,7 +333,21 @@ def _limit_row(lim: Mapping, mesh, q: Mapping, t: Mapping) -> dict:
         return {"applied": False, "met": None, "delivered": f"not applied - {name} of this kind is not a measure of "
                                                              "shell elements"}
     vals = [d[figs[k]] for k, d in (("quad", q), ("tria", t)) if k in figs and d]
-    return MR.limit_row(lim, np.concatenate(vals) if vals else np.zeros(0), mesh.n_elements)
+    got = MR.limit_row(lim, _at(np.concatenate(vals) if vals else np.zeros(0), lim.get("target"), lim.get("outer")),
+                       mesh.n_elements)
+    # SHMESH-51o33: the base of the share said in words, and the share of the elements the line reads (a line of
+    # triangles' angles: 4 triangles of 63 are 0.007% of a 54,000-element mesh but 6.3% of its triangles)
+    shapes = [k for k in ("quad", "tria") if k in figs]
+    n_read = int(sum(len(v) for v in vals))
+    got["share_base"] = "all elements"
+    if n_read and n_read != mesh.n_elements:
+        got["read_elements"] = n_read
+        got["outside_pct_of_read"] = MR.pct(int(got.get("outside") or 0), n_read)
+        what = "triangles" if shapes == ["tria"] else "quads" if shapes == ["quad"] else "elements it reads"
+        if got.get("outside"):
+            got["delivered"] = (f"{got['delivered']} (the share is of all {mesh.n_elements:,} elements; of the "
+                                f"{n_read:,} {what} it is {got['outside_pct_of_read']:g}%)")
+    return got
 
 
 def report(mesh, req: Mapping | None, sizing: Mapping | None = None, *, places: Mapping | None = None) -> dict | None:
@@ -370,7 +407,7 @@ def report(mesh, req: Mapping | None, sizing: Mapping | None = None, *, places: 
             got = {"applied": False, "met": None, "delivered": "not applied - shell elements are made as 4-node quads "
                                                                "and 3-node triangles"}
         rows.append({"id": row["id"], "field": field, "asked": row["asked"], **got,
-                     **({"from": row["from"]} if row.get("from") else {})})
+                     **({"from": row["from"]} if row.get("from") else {}), **MR.carried(row)})
     return MR.finish_report(rows, n, DEFINITIONS)
 
 

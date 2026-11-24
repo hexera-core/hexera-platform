@@ -202,6 +202,14 @@ def summarise(record: dict, drawn: dict | None = None) -> dict:
                             if p in pairs and _is_wall(pairs[p])})
             regions.append({"body": body, "whole": False, "faces": names[:12], "n_faces": len(names),
                             "thick_mm": _r(thick[0]) if thick else None, "at_mm": places.get(f"{body}:{k}")})
+    # SHSTAGE-9: what the shell mesh has no elements for - each region's size and shares (cad/shell_words.left_out
+    # reads the bodies in the same order as above), and the totals
+    from meshpipeline.cad.shell_words import left_out
+
+    lo = left_out(record)
+    for reg, got in zip(regions, lo.get("regions") or [], strict=False):
+        reg.update({k: got[k] if k == "size_mm" else _r(got[k]) for k in ("size_mm", "volume_share", "area_share")
+                    if got.get(k) is not None})
     opened = [q for row in record.get("sewn") or [] for q in row.get("open_at_mm") or []]
     groups = [{"body": g.get("body"), "at_mm": (g.get("at_mm") or [None])[0]} for g in record.get("fallback_regions") or []]
     return {"bodies": bodies, "share": _r(thin / area) if area > 0 else 0.0,
@@ -210,6 +218,7 @@ def summarise(record: dict, drawn: dict | None = None) -> dict:
             "open_edges": len(opened), "open_places": groups[:50] or [{"at_mm": q} for q in opened[:50]],
             "open_at_mm": opened[:400], "connected": bool((record.get("checks") or {}).get("connected", True)),
             "complete": bool(record.get("complete", False)), "notes": list(record.get("notes") or [])[:6],
+            "left_out": {k: v for k, v in lo.items() if k != "regions"},
             # SHELL-23: the walls that are a shell only because the user asked (short for their thickness): the
             # stage says one line of advice from these rows, in the unit it shows
             "short_walls": [{k: r.get(k) for k in ("body", "sheet", "thickness_mm", "span_mm", "width_mm", "span_walls",
@@ -270,36 +279,59 @@ def solid_short(detail: str) -> str:
     return ""
 
 
+def _sized(reg: dict) -> list[str]:
+    """SHSTAGE-9: a left-out region's size and share of the part's volume, as measured (cad/midsurface SHELL-60)."""
+    from meshpipeline.cad.shell_words import dims, pct
+
+    bits = []
+    if reg.get("size_mm"):
+        bits.append(f"about {dims(reg['size_mm'])} mm")
+    if reg.get("volume_share") is not None:
+        bits.append(f"{pct(reg['volume_share'])} of the part's volume")
+    return bits
+
+
 def not_shelled(summary: dict | None) -> list[dict]:
-    """What stays solid if the part is meshed as a shell, and where the plates do not meet, each in plain
-    words with a tag and a place to mark: S1, S2 ... for solid regions, O1, O2 ... for open places. Each also
-    carries `short`, the same in a few words for the stage's one line (the full words stay for its tooltip)."""
+    """What a shell mesh of the part leaves out (SHSTAGE-9: no solid is made beside a shell, so it has no elements
+    there), and where the plates do not meet, each in plain words with a tag and a place to mark: S1, S2 ... for the
+    regions left out, O1, O2 ... for open places; first a head row with the totals and the way on. Each also carries
+    `short`, the same in a few words for the stage's one line (the full words stay for its tooltip)."""
+    from meshpipeline.cad.shell_words import left_out_short, left_out_words
+
     s = summary or {}
     many = len(s.get("bodies") or []) > 1
-    out = []
+    out: list[dict] = []
+    lo = s.get("left_out") or {}
+    if lo and s.get("solid_regions"):
+        out.append({"id": "", "kind": "solid_head", "at_mm": None, "faces": [],
+                    "words": left_out_words({**lo, "regions": s["solid_regions"]}),
+                    "short": left_out_short({**lo, "regions": s["solid_regions"]})})
     for k, reg in enumerate(s.get("solid_regions") or [], start=1):
         who = reg.get("body") if many else "The part"
         name = reg.get("body") if many else "Whole part"
+        sized = _sized(reg)
         if reg.get("whole"):
-            words = (f"{reg.get('body')} stays solid: no wall of it is a plate." if many
-                     else "The whole part stays solid: no wall of it is a plate.")
+            words = (f"{reg.get('body')} is not in this shell mesh: no wall of it is a plate." if many
+                     else "The whole part is not in this shell mesh: no wall of it is a plate.")
             detail = _solid_detail(s, reg.get("body"))
             if detail:
                 words = f"{words[:-1]}: {detail}."
-            short = f"{name} · {solid_short(detail) or 'no plate'}"
+            short = f"{name} · {solid_short(detail) or 'no plate'} · not in the mesh"
         else:
             n = int(reg.get("n_faces") or len(reg.get("faces") or []))
-            where = f"A thick region of {who if many else 'the part'} ({n} face{'s' if n != 1 else ''})"
-            words = (f"{where} stays solid: it is {_mm(reg['thick_mm'])} thick or more, too thick for a shell."
-                     if reg.get("thick_mm") else f"{where} stays solid: it is not a thin wall.")
-            faces = f"{n} face{'s' if n != 1 else ''}"
+            where = (f"A thick region of {who if many else 'the part'} ("
+                     + ", ".join([f"{n} face{'s' if n != 1 else ''}", *sized]) + ")")
+            words = (f"{where} is not in this shell mesh: it is {_mm(reg['thick_mm'])} thick or more, too thick for a "
+                     "shell." if reg.get("thick_mm") else f"{where} is not in this shell mesh: it is not a thin wall.")
+            size = f", {sized[0][len('about '):]}" if sized and reg.get("size_mm") else ""
             short = (f"{reg.get('body') if many else 'Thick region'} · "
-                     + (f"{_mm(reg['thick_mm'])}+ thick, {faces}" if reg.get("thick_mm") else f"not a thin wall, {faces}"))
+                     + (f"{_mm(reg['thick_mm'])}+ thick{size}" if reg.get("thick_mm") else f"not a thin wall{size}")
+                     + " · not in the mesh")
         out.append({"id": f"S{k}", "kind": "solid", "words": words, "short": short, "at_mm": reg.get("at_mm"),
                     "faces": list(reg.get("faces") or [])})
     if s.get("solid_more"):
-        out.append({"id": "", "kind": "solid", "words": f"And {s['solid_more']} more regions stay solid.",
-                    "short": f"+{s['solid_more']} more stay solid", "at_mm": None, "faces": []})
+        out.append({"id": "", "kind": "solid", "words": f"And {s['solid_more']} more regions are not in this shell mesh.",
+                    "short": f"+{s['solid_more']} more not in the mesh", "at_mm": None, "faces": []})
     places = s.get("open_places") or []
     if s.get("open_edges"):
         n = len(places) or int(s["open_edges"])
@@ -361,9 +393,21 @@ def shell_view(status: dict | None, facts: dict | None, said: dict | None = None
         from meshpipeline.cad.shell_words import short_wall_words
 
         why = short_wall_words(list(summary["short_walls"]))
+    settle_why = ""
+    if mesh_as == pm.MESH_SHELL and isinstance(summary, dict) and summary.get("left_out") \
+            and summary.get("solid_regions"):
+        # SHSTAGE-9: what this shell mesh has no elements for is said where the user reads the choice, and settled
+        # with it (the declaration carries it to the request card and the run)
+        from meshpipeline.cad.shell_words import left_out_words
+
+        left = left_out_words({**summary["left_out"], "regions": summary["solid_regions"]})
+        why = f"{left} {why}".strip()
+        settle_why = f"{SAID_SHELL} {left}"
     out: dict = {"question": QUESTION, "state": state, "said": pm.MESH_SHELL, "said_words": SAID_SHELL,
            "mesh_as": mesh_as, "label": SHELL_LABEL if mesh_as == pm.MESH_SHELL else SOLID_LABEL, "reason": why,
            "measuring_words": MEASURING_WORDS if state == MEASURING and mesh_as == pm.MESH_SHELL else ""}
+    if settle_why:
+        out["settle_why"] = settle_why
     if isinstance(summary, dict) and mesh_as == pm.MESH_SHELL:
         out.update(share=summary.get("share"), t_min_mm=summary.get("t_min_mm"), t_max_mm=summary.get("t_max_mm"),
                    bodies=summary.get("bodies"), not_shelled=not_shelled(summary),

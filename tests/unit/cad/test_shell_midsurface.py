@@ -377,14 +377,16 @@ def test_a_thick_block_lends_no_size_to_a_short_plate_on_it():
     assert [w["thickness_mm"] for w in rec["short_walls"]] == pytest.approx([3.0])
 
 
-def test_where_mid_faces_do_not_meet_the_region_is_meshed_solid_and_said_so(monkeypatch):
+def test_where_mid_faces_do_not_meet_the_region_is_named_and_said_open(monkeypatch):
     monkeypatch.setattr(ms, "CLOSE_STRIPS", False)   # the join itself under test, no SHELL-13 strips
     monkeypatch.setattr(ms, "CLOSE_GAPS", False)     # ... and no SHELL-22 strips
     monkeypatch.setattr(ms, "snap_steps", lambda *_a, **_k: None)   # leave the butt step open
     rec, _ = ms.extract(sf.butt_step(6.0, 3.0), mm_per_unit=1.0)
     regions = rec["fallback_regions"]
     assert regions and all(r["faces"] and r["at_mm"] and r["why"] for r in regions)
-    assert any("meshed solid" in n for n in rec["notes"])
+    # SHSTAGE-9: no route meshes such a region solid: the shell is said to be open there
+    assert any("the shell has open edges there (SHELL-6)" in n for n in rec["notes"])
+    assert not any("meshed solid" in n for n in rec["notes"]) and all("open edges" in r["why"] for r in regions)
 
 
 def test_a_part_the_extraction_cannot_read_is_meshed_solid_whole(tmp_path, monkeypatch):
@@ -951,11 +953,15 @@ def test_an_extraction_past_its_work_budget_fails_fast_in_words(tmp_path):
     assert json.loads((tmp_path / "o" / ms.RECORD_FILE).read_text())["bodies"][0]["why"] == rec["bodies"][0]["why"]
 
 
-def test_a_general_join_gets_only_what_is_left_of_the_budget(monkeypatch):
-    # SHELL-18: with under JOIN_MIN_S left after the reserve, no general join starts; the straight join stands
+def test_a_general_join_is_never_skipped_for_the_budget_left(monkeypatch):
+    # SHELL-61 (TIME-1): with under JOIN_MIN_S left after the reserve the general join still runs, so a loaded machine
+    # makes the same shell; as before (JOIN_TIMED) it did not start and the straight join stood, said (SHELL-18)
     monkeypatch.setattr(ms, "CLOSE_STRIPS", False)
     monkeypatch.setattr(ms, "CLOSE_GAPS", False)     # ... and no SHELL-22 strips
     monkeypatch.setattr(ms, "JOIN_RESERVE_S", 1e9)
+    rec, _ = ms.extract(sf.tube_on_plate(), mm_per_unit=1.0)
+    assert rec["sewn"][0]["join"] == "general" and not any("SHELL-18" in n for n in rec["notes"])
+    monkeypatch.setattr(ms, "JOIN_TIMED", True)
     rec, _ = ms.extract(sf.tube_on_plate(), mm_per_unit=1.0)
     assert rec["sewn"][0]["join"] == "straight"
     assert any("SHELL-18" in n for n in rec["notes"])
@@ -1538,7 +1544,7 @@ def test_plates_that_would_hang_loose_stay_solid(monkeypatch):
     rec, surface = ms.extract(None, mm_per_unit=1.0)
     assert surface == "without" and calls == [set(), {"Part_2"}]
     assert rec["notes"] == ["Part_2: its short plates would leave 3 edge(s) open where they meet its other walls (0 "
-                            "without them), so they stay solid, as before (SHELL-23)."]
+                            "without them), so they are read as thick metal, as before (SHELL-23)."]
     calls.clear()
     monkeypatch.setattr(ms, "_extract", reading(3, 3))
     rec, surface = ms.extract(None, mm_per_unit=1.0)

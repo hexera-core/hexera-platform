@@ -608,6 +608,10 @@ def user_sized(zone_list: list[dict], sizes: Mapping[str, Mapping]) -> list[dict
         row = {**z, "user": key, "user_min_m": lo, "user_max_m": hi, "rule_size_m": size}
         if z.get("kind") == "part":
             new = mid
+        elif want.get("min_flexible") and size < lo:
+            # NOTE-14: under a flexible shortest edge a zone the rules make finer keeps its own size (the user said it
+            # may go below it in places); only past the middle of the range is it brought down
+            new = min(size, mid)
         elif on and want.get("scale"):
             # PLAN-fea-36 on an area ("finer at the fillets"): each zone on it its OWN size halved (a wall's through-
             # thickness size halved, not set to the fillet's 0.028 mm over the wall's 1.6 mm reach: 124 million
@@ -1022,12 +1026,25 @@ def user_words(plan: Mapping) -> list[str]:
         finest = min([float(z["size_m"]) for z in own if z.get("kind") != "part"] or [0.5 * (lo + hi)])
         rng = f"{lo * 1e3:.3g} mm" if abs(hi - lo) < 1e-12 else f"{lo * 1e3:.3g}-{hi * 1e3:.3g} mm"
         said = [str(sizes[i].get("name") or i) for i in ids[:8]]
+        asked = ""
         if all(sizes[i].get("whole") for i in ids):
-            # PLAN-fea-33: a size asked for the whole mesh (engines/fea_requirements) is said once, not per part
+            # PLAN-fea-33: a size asked for the whole mesh (engines/fea_requirements) is said once, not per part; sized
+            # by edge lengths alone, it is said as asked - the range is the rules' size, not theirs
             ids, said = ids[:1], [str(sizes[ids[0]].get("name") or "the whole mesh")]
-        line = (f"You asked for {rng} elements on {', '.join(said)}{' and more' if len(ids) > 8 else ''}: "
-                f"they are meshed at {0.5 * (lo + hi) * 1e3:.3g} mm, and nothing in them finer than "
+            asked = str(sizes[ids[0]].get("asked") or "")
+        line = (f"You asked for {asked or f'{rng} elements'} on {', '.join(said)}"
+                f"{' and more' if len(ids) > 8 else ''}: {'its elements are' if asked else 'they are'} meshed at "
+                f"{0.5 * (lo + hi) * 1e3:.3g} mm, and nothing in them finer than "
                 f"{max(finest, 0.0) * 1e3:.3g} mm")
+        across = max([float(z.get("diag_m") or 0.0) for z in own if z.get("kind") == "part"] or [0.0])
+        if 0.0 < across < 3.0 * 0.5 * (lo + hi):
+            # NOTE-14: a size larger than the part itself is no size it is meshed at - said as the result's row says it
+            # (mesh_requirements.finer_global): asked, built, and why it is finer
+            line = (f"You asked for {asked or f'{rng} elements'} on {', '.join(said)}"
+                    f"{' and more' if len(ids) > 8 else ''}: your part is {across * 1e3:.3g} mm across, so its "
+                    f"elements are finer than the {0.5 * (lo + hi) * 1e3:.3g} mm {'planned' if asked else 'asked'} "
+                    f"- down to {max(finest, 0.0) * 1e3:.3g} mm, so its walls, "
+                    "holes and curves keep their shape")
         counted = [z for z in own if z.get("count_wins")]
         if counted and finest < lo * (1 - 1e-6):
             # NOTE-13: the elements through the walls the notes ask are the more exact ask, and win over the range
@@ -1035,7 +1052,7 @@ def user_words(plan: Mapping) -> list[str]:
                      "through them your notes ask for.")
         else:
             line += (" - finer than you asked only where coarser elements cannot be built valid."
-                     if finest < lo * (1 - 1e-6) else ".")
+                     if finest < lo * (1 - 1e-6) and not 0.0 < across < 3.0 * 0.5 * (lo + hi) else ".")
         out.append(line)
     user_zones = [z for z in zs if z.get("user")]
     out.extend(crossed_words(user_zones, why="the sizes you asked for"))

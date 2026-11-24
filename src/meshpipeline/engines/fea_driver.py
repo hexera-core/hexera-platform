@@ -284,6 +284,19 @@ def _solidified(shape, diag: float) -> tuple[Any, int, int] | None:
         return None
 
 
+#: MESH-1b: the share of the file's face area the solids read from its shells must hold to stand for the file (the
+#: rest is an allowance for faces a solid reading re-makes - an IGES cylinder's two halves made one)
+SOLIDS_HOLD_SHARE = 0.98
+
+
+def _held_share(shape, comp) -> float:
+    """MESH-1b: the share of `shape`'s face area that the solids `comp` hold (1.0 for a file of no area)."""
+    from meshpipeline.cad.midsurface import _area
+
+    whole = float(_area(shape))
+    return 1.0 if whole <= 0 else min(1.0, float(_area(comp)) / whole)
+
+
 def solids_from_shells(ws: Path, seen: dict | None = None) -> int:
     """MESH-1: A FILE OF FACES THAT CLOSE is read as the solid it bounds: a STEP or IGES written as closed
     shells with no solid entity (aircraft and keel surfaces, 24 Oct gate) - the shells are made solids,
@@ -293,7 +306,9 @@ def solids_from_shells(ws: Path, seen: dict | None = None) -> int:
     solids - so an IGES copy's staged solid is its STEP's, for the solid mesh and the shell alike. Writes
     geometry.brep and returns how many solids it made (0: nothing to do, or no shell closes - the part is then
     meshed, or refused, as it stands). `seen` (when given) is told "open": True for a file with no solid none of
-    whose shells closes - a surface for engines/surface_run to read (SURF-1)."""
+    whose shells closes - a surface for engines/surface_run to read (SURF-1). MESH-1b: solids that hold less than
+    SOLIDS_HOLD_SHARE of the file's face area are no reading of the file - it is the surface it is ("open", and
+    "partial" says what closed)."""
     from OCP.BRepTools import BRepTools
     from OCP.TopAbs import TopAbs_SOLID
     from OCP.TopExp import TopExp_Explorer
@@ -315,8 +330,23 @@ def solids_from_shells(ws: Path, seen: dict | None = None) -> int:
     read_as = _solidified(shape, diag)
     if read_as is not None and read_as[2] >= held:
         comp, made, held = read_as
+    if made and (share := _held_share(shape, comp)) < SOLIDS_HOLD_SHARE:
+        # MESH-1b: the solids stand for the FILE only when they hold its faces. A sheet with a few faces that happen
+        # to close (two beads' pockets on a stamped panel: 8 of its 73 faces) is the surface it is - reading the
+        # pockets as the part dropped the rest of it without a word, and a fragment was delivered as "passed"
+        if seen is not None:
+            seen["partial"] = {"solids": made, "faces_held": held, "faces": _faces_in(shape),
+                               "area_share": round(share, 4)}
+        made = 0
     if made:
         BRepTools.Write_s(comp, str(ws / "geometry.brep"))
+        from meshpipeline.engines.shell_delivery import write_kept
+
+        # MESH-1c: the staged file now holds this share of the upload - a shell made on it is measured against the
+        # upload, so a reading that dropped faces is never a quiet pass
+        write_kept(ws, ws / "geometry.brep", _held_share(shape, comp))
+        if seen is not None:
+            seen["closed"] = made          # SURF-14: the solids came from the file's closed surfaces
     elif seen is not None:
         seen["open"] = True
     return made
@@ -483,6 +513,17 @@ async def read_requirements(ws: Path, state, *, job_id: str, run=None, publish=N
     from meshpipeline.engines import notes_acted as NA
     sec = NA.apply(sec, MR.notes_text(state or {}), NA.facts_of(state))
     MR.write(ws, sec)
+    if MR.strictness_unnamed(sec):
+        # NOTE-14: a note on how strict the limits are that names none the user set: one fixed plain line on the
+        # result, never a model's sentence (A6: "Treated the flexible note as guidance; all geometry remains present")
+        from meshpipeline.contracts.user_notes import record_remark
+        record_remark(ws, MR.NO_LIMIT_WORDS, by=MR.STRICTNESS_REMARK)
+    if read.get("status") == "none" and read.get("standard_not_applied"):
+        # STD-5: a saved standard written for flow meshes, applied in nothing here: told, the run as with no standard
+        MS.told_not_applied(ws, str(read["standard_not_applied"]))
+        if say and publish is not None:
+            from meshpipeline.contracts import narration as _N
+            await _N.asay(publish, str(read["standard_not_applied"]), op_id="fea:notes:standard")
     if sec.get("status") == "none":
         return sec
     entries = ([*MR.decisions(read, stage="fea_ai"), *MS.decisions(read, stage="fea_ai")]
@@ -549,9 +590,11 @@ async def shell_pass(ws: Path, state, *, job_id: str, run=None, target: dict | N
         argv = [sys.executable, "-m", mod.__name__, str(ws), str(step), "staged"]
         if kind == "shell" and target and int(target.get("elements") or 0) > 0:
             argv.append(json.dumps({k: target[k] for k in ("elements", "mode", "low", "high") if k in target}))
+        # (SHMESH-31g: the shell mesh is told when this run is stopped, so it starts no pass that cannot finish)
+        env = {**os.environ, "HEXERA_SHELL_RUN_END": f"{time.time() + limit:.3f}"}
         proc = await asyncio.to_thread(
             subprocess.run, argv,
-            capture_output=True, text=True, timeout=limit, check=False)
+            capture_output=True, text=True, timeout=limit, check=False, env=env)
         rec = mod.read(ws)
         if not rec:
             rec = {"made": False, "why": f"the {kind} run stopped (exit {proc.returncode})"}
@@ -2551,6 +2594,13 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
             _cite(job_id, [{"stage": "fea_plan", "decided": "closed shells read as solids", "value": made,
                             "rule": "MESH-1", "inputs": {"solids": made},
                             "words": f"The file's {made} closed shell(s) were read as the solid(s) they bound."}])
+        elif seen.get("partial"):
+            part = seen["partial"]
+            _cite(job_id, [{"stage": "fea_plan", "decided": "closed shells not read as the part", "rule": "MESH-1b",
+                            "value": part.get("area_share"), "inputs": part,
+                            "words": (f"{part.get('faces_held')} of the file's {part.get('faces')} faces close into "
+                                      f"solids, {100 * float(part.get('area_share') or 0):.0f}% of its area: they are "
+                                      "not the part, so the file is meshed as the surface it is.")}])
     except Exception as exc:  # noqa: BLE001 - the part is meshed, or refused, as it stands
         logger.warning("fea driver: closed shells not read as solids (%s)", type(exc).__name__)
     asked: dict | None = None
@@ -2566,6 +2616,20 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
                                          target=target)
         if surfaced is not None:
             return await _deliver_surface(ws, surfaced, job_id=job_id, run=run, target=target, asked=asked)
+    elif seen.get("closed"):
+        # SURF-14: closed shells read as solids (MESH-1), a shell asked for, and the solid they bound has no wall a
+        # shell could stand for: the surfaces are the part's skin, meshed as a surface part. Else as before.
+        from meshpipeline.engines import surface_run as SR
+
+        if SR.said_shell(state) and await asyncio.to_thread(SR.closed_skin_check, ws):
+            target, asked = await surface_asks(ws, state, job_id=job_id, run=run, publish=publish)
+            surfaced = await SR.surface_pass(ws, state, job_id=job_id, run=run, cite=_cite,
+                                             left_s=attempt_left_s(run), target=target, closed_skin=True)
+            if surfaced is not None:
+                _cite(job_id, [{"stage": SR.GATE, "decided": "closed skin meshed as the skin", "rule": "SURF-14",
+                                "value": (surfaced.get("surface") or {}).get("thickness_mm"),
+                                "inputs": {"solids": seen.get("closed")}, "words": SR.closed_skin_words(surfaced)}])
+                return await _deliver_surface(ws, surfaced, job_id=job_id, run=run, target=target, asked=asked)
     # MESH-8 FOR A SINGLE PART: its skins left out, its faces still named for the CAD faces they came from
     skins = await asyncio.to_thread(open_single_skins, ws)
     from meshpipeline.contracts import narration as _N
@@ -2686,7 +2750,9 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
                          diag_m=diag_m, limit=element_limit(record)[0], job_id=job_id, run=run,
                          wait_s=ai_wait_s(run))
     # what the AI did with the user's notes, kept for the result's "From your notes" line
-    if (ai.get("decision") or {}).get("notes_remark"):
+    # - only when the rules decided none of the notes' asks (NOTE-13; a strictness is theirs too, NOTE-14): beside the
+    # rules' own lines a model's sentence could only say them again, or wrongly (A6, round 12)
+    if (ai.get("decision") or {}).get("notes_remark") and _MR.ai_remark_kept_for(asked, skip=_MR.COUNT_FIELDS):
         from meshpipeline.contracts.user_notes import record_remark
         record_remark(ws, ai["decision"]["notes_remark"], by="fea_ai")
     # PLAN-fea-27: an element count the user named, as the AI read it from their notes (AI-fea-4)
