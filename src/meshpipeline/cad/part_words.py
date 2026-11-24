@@ -589,6 +589,105 @@ def from_stored(stored: Mapping | None, table: list[dict]) -> dict | None:
                    phrases=stored.get("phrases") or [], unsure=stored.get("unsure") or [])
 
 
+# #
+# NOTE-17: the faces the user picked on the model, as areas of their own
+# #
+PICK = "Pick_"
+_PICK_ASK = {"size": "size", "finer": "refine", "coarser": "coarsen"}
+GONE_WORDS = "is no longer on the model as meshed, so nothing was applied there (no other face was guessed)"
+
+
+def _unit_of(mm: float, quote: str) -> tuple[float, str]:
+    """(the number the user wrote, its unit) for a size the requirements hold in millimetres: the unit whose number
+    is in their words ("0.1 in" is 2.54 mm), else millimetres."""
+    nums = _numbers(quote)
+    for unit, k in UNITS_MM.items():
+        v = float(mm) / k
+        if any(abs(v - n) <= 1e-6 * max(1.0, abs(n)) for n in nums):
+            return v, unit
+    return float(mm), "mm"
+
+
+def with_picks(ps: Mapping | None, req: Mapping | None, surface) -> dict:
+    """NOTE-17: the reading `ps` with each size typed with faces picked on the model (engines/mesh_requirements
+    .bind_picks: a `local` entry with `faces` and their `sigs`) as an area of its own, `Pick_n` (`feature`, its
+    faces in `features`, `in_part`), and an entry tied to it with the user's quote and numbers, checked by the same
+    rules as any other (`check`: quote in the words, numbers in the quote, size sane for the area). Each picked face
+    is kept only when it is still the face picked on THIS run's own surface (cad/face_map.same_face: its area and
+    centre); one that is not is told, never guessed. The user's pick wins over the reader on the same words: an entry
+    the reader tied to a whole part for those words is dropped (a size typed with a pick is never the part's).
+    Pure; never raises; `ps` unchanged when nothing was picked."""
+    picks = [e for e in (req or {}).get("local") or [] if isinstance(e, Mapping) and e.get("faces")]
+    if not picks:
+        return dict(ps) if ps is not None else section("none")
+    try:
+        from meshpipeline.cad import face_map as FM
+        fm = FM.from_surface(surface, scale_to_m=1.0)
+    except Exception as exc:  # noqa: BLE001 - no surface to re-check against: every pick told, none guessed
+        logger.warning("part words: picked faces not re-checked (%s)", type(exc).__name__)
+        fm = None
+    ps = dict(ps or {})
+    used = ps.get("status") == "used"
+    entries = [dict(e) for e in ps.get("entries") or []] if used else []
+    table = [dict(r) for r in ps.get("parts") or []] if used else []
+    features = dict(ps.get("features") or {})
+    dropped = list(ps.get("dropped") or []) if used else []
+    said = list(ps.get("words") or []) if used else ([str(ps.get("note"))] if ps.get("note") and
+                                                     ps.get("status") not in (None, "none") else [])
+    quotes = {_norm(str(e.get("quote") or "")) for e in picks}
+    # the pick wins on its own words: the reader's entry for the same words sized a whole part
+    entries = [e for e in entries if not any(q and (q in _norm(str(e.get("quote") or "")) or
+                                                    _norm(str(e.get("quote") or "")) in q) for q in quotes)]
+    for n, e in enumerate(picks, 1):
+        pid = f"{PICK}{n}"
+        ids = [str(f) for f in e.get("faces") or []]
+        sigs = list(e.get("sigs") or [])
+        labels = list(e.get("labels") or [])
+        quote = " ".join(str(e.get("quote") or "").split())[:300]
+        kept: list[str] = []
+        gone: list[str] = []
+        for i, f in enumerate(ids):
+            sig = sigs[i] if i < len(sigs) and isinstance(sigs[i], Mapping) else None
+            ok = fm is not None and sig is not None and FM.same_face(fm, f, dict(sig))
+            (kept if ok else gone).append(f)
+        for f in gone:
+            label = labels[ids.index(f)] if ids.index(f) < len(labels) and labels[ids.index(f)] else f
+            dropped.append(f'"{quote}": the face you picked ({label}) {GONE_WORDS}')
+        if not kept or fm is None:
+            continue
+        import numpy as np
+        sel = np.isin(fm.label, [fm.names.index(f) for f in kept])
+        pts = fm.xyz[np.unique(fm.tris[sel])].astype(float) * 1000.0
+        diag = float(np.linalg.norm(pts.max(axis=0) - pts.min(axis=0))) if len(pts) else 0.0
+        shown = [labels[ids.index(f)] if ids.index(f) < len(labels) and labels[ids.index(f)] else f for f in kept]
+        where = (f"the face you picked ({shown[0]})" if len(kept) == 1 else
+                 f"the {len(kept)} faces you picked ({'; '.join(shown[:3])}{'; ...' if len(shown) > 3 else ''})")
+        row = {"id": pid, "feature": True, "kind": "picked", "name": where, "in_part": _part_of(kept[0]),
+               "faces": len(kept), **({"diag_mm": _g(diag)} if diag > 0 else {})}
+        ask = _PICK_ASK.get(str(e.get("what") or "size"), "size")
+        phrase: dict[str, Any] = {"quote": quote, "ask": ask, "parts": [pid], "everything_else": False,
+                                  "confidence": 1.0, "why": "picked by you on the model"}
+        if ask == "size":
+            if e.get("mm") is None:
+                dropped.append(f'"{quote}": no size was read from it, so nothing was applied there')
+                continue
+            v, unit = _unit_of(float(e["mm"]), quote)
+            phrase.update(min=v, max=v, unit=unit)
+        got, why_not, _w = check(json.dumps({"phrases": [phrase]}), [row], quote)
+        dropped.extend(d.replace(pid, where) for d in why_not)
+        for g in got:
+            g.update(phrase=None, rule="NOTE-17", picked=kept)
+            entries.append(g)
+            table.append(row)
+            features[pid] = kept
+    out = section("used", entries=entries, dropped=dropped, words=said, table=table,
+                  pictures=ps.get("pictures") or [], note=str(ps.get("note") or ""), key=str(ps.get("key") or ""),
+                  source=str(ps.get("source") or "picked on the model"), phrases=ps.get("phrases") or [],
+                  unsure=ps.get("unsure") or [] if used else [])
+    out["features"] = features
+    return out
+
+
 def _key(messages: list[dict], tool: dict) -> str:
     import hashlib
     return hashlib.sha256(json.dumps({"m": messages, "t": tool}, sort_keys=True).encode()).hexdigest()[:16]
@@ -746,4 +845,4 @@ def decisions(ps: Mapping | None, stage: str = "notes") -> list[dict]:
 
 __all__ = ["ASKS", "MIN_CONFIDENCE", "PART_FINEST", "PICTURES_DIR", "RULE", "SYSTEM", "TOOL", "UNREAD_WORDS", "UNITS_MM",
            "ask", "check", "check_record", "decide", "decisions", "draw", "from_stored", "messages_for", "notes_text",
-           "part_table", "per_part", "picked", "section", "size_tool", "wanted", "words"]
+           "part_table", "per_part", "picked", "section", "size_tool", "wanted", "with_picks", "words"]
