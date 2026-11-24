@@ -100,6 +100,7 @@ import time
 from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
+from types import SimpleNamespace
 from typing import Any, Literal, Protocol
 
 from meshpipeline.cad.repair_v4 import render
@@ -200,6 +201,9 @@ class SearchState:
     #: the `SiteRegistry` of this state's lineage. Before expansion: the PARENT's, as the parent left it (never
     #: mutated again). On expansion it is replaced by this state's own deep copy with its sites applied.
     site_registry: Any = None
+    #: A read-only fact for the generators: have this lineage's AIMED repairs all been tried without cleaning?
+    #: Set by the expansion loop before `propose` is called, from `AimedProgress`; never written by a generator.
+    aimed: Any = None
     #: the state ids from the start down to this state (its own last). Site ids are minted per lineage, so
     #: anything keyed by a site id (an unfixable declaration, "picture already drawn") is keyed by this too.
     lineage: tuple[str, ...] = ()
@@ -1441,6 +1445,40 @@ _FAMILIES: tuple[str, ...] = ("near_faces", "face_split", "face_rebuild", "small
 #: cannot win is wall-clock taken from one that can, and lane A's bisect measured a file at 1230 s of search - past
 #: its 900 s wall - with three COMBINATORIAL `split_by_proximity` evaluations sitting in front of the op that
 #: cleaned it. Aimedness is read off the row and the site, so no builder has to declare it.
+@dataclass(frozen=True)
+class AimedProgress:
+    """HAS EVERY AIMED REPAIR ON THIS LINEAGE BEEN TRIED, AND DID NONE OF THEM CLEAN THE FILE?
+
+    A read-only fact on `SearchState`, for a generator that must act only AFTER the aimed repairs are spent - the
+    owner's whole-part defeature as a LAST RESORT (lane B). It is derived here, in the expansion loop that already
+    owns B20's `tried` / `no_change` maps, so no generator reaches into them: this is the only seam.
+
+    `offered` counts the candidates proposed on this lineage whose targets the KERNEL ITSELF measured
+    (`_aimedness` == `AIMED_MEASURED`: a located face, a measured clash, a named body). `tried` counts those that
+    were actually evaluated - a candidate pruned, deduplicated or cut by `k` was never put to the test. `cleaned`
+    counts those whose verdict came back clean.
+
+    `exhausted` is the fact Lane B gates on, and it is FALSE when `offered` is 0. A file whose aimed rows were
+    NEVER PROPOSED has not exhausted anything, and the owner's gating excludes exactly that case: a part-wide
+    removal must not be reached for because nothing aimed was ever offered.
+    """
+
+    #: aimed candidates proposed on this lineage (AIMED_MEASURED only)
+    offered: int = 0
+    #: of those, how many were actually evaluated rather than pruned, deduplicated or cut by `k`
+    tried: int = 0
+    #: of those tried, how many produced a CLEAN verdict
+    cleaned: int = 0
+
+    @property
+    def exhausted(self) -> bool:
+        """Every aimed repair offered here was tried and none cleaned - and at least one WAS offered."""
+        return self.offered > 0 and self.tried >= self.offered and self.cleaned == 0
+
+    def plus(self, *, offered: int = 0, tried: int = 0, cleaned: int = 0) -> AimedProgress:
+        return AimedProgress(self.offered + offered, self.tried + tried, self.cleaned + cleaned)
+
+
 AIMED_MEASURED = 0   # the entities the kernel itself measured: a located face, a measured clash, a named body
 AIMED_SITE = 1       # the site's own entities, but not the ones a measurement singled out
 AIMED_GUESSED = 2    # a combination the kernel never measured, or a part-wide sweep
@@ -1496,6 +1534,53 @@ def _candidate_key(c: Candidate) -> str:
 def _target_key(c: Candidate) -> str:
     """The op and WHERE it was aimed, without its parameters: what a `no_change` decline is about."""
     return json.dumps([c.op, sorted(c.targets)], sort_keys=True, default=str)
+
+
+def _candidate_of(child: Any) -> Any:
+    """The candidate that produced `child`, as a shape `_aimed_candidates` can read (op, targets, params)."""
+    via = getattr(child, "via", None) or {}
+    return SimpleNamespace(op=via.get("op"), targets=list(via.get("targets") or ()),
+                           params=dict(via.get("params") or {}))
+
+
+def _aimed_candidates(state: Any, candidates: Any) -> int:
+    """How many of `candidates` are AIMED at something the kernel measured, judged against this state's sites.
+
+    A candidate is aimed when `_aimedness` reads AIMED_MEASURED against at least one of the state's sites: its
+    targets are a located face, a measured clash or a named body. The best (lowest) classification over the sites
+    is taken, because a candidate built for one site is not made less aimed by another site that does not name its
+    targets.
+    """
+    sites = list(getattr(state, "sites", None) or ())
+    if not sites:
+        return 0
+    count = 0
+    for c in candidates:
+        try:
+            best = min(_aimedness(site, c.op, list(c.targets), dict(c.params)) for site in sites)
+        except Exception:  # noqa: BLE001, S112 - an unclassifiable candidate is NOT COUNTED as aimed, by design
+            # Not logged: this runs per candidate per expansion, and the consequence of a miss is a FALSE
+            # `exhausted` (fewer aimed rows counted as offered), which is the safe direction - lane B's last
+            # resort stays shut rather than opening early.
+            continue
+        count += int(best == AIMED_MEASURED)
+    return count
+
+
+def _lineage_aimed(by_state: dict, state: Any) -> Any:
+    """`AimedProgress` summed over this state's lineage.
+
+    WHAT IT COVERS, and the boundary a caller must understand: rows already OFFERED AND RESOLVED on this lineage -
+    this state's ancestors, plus this state itself if it has been expanded before. It does NOT cover the rows the
+    caller is about to build in the very `propose` that reads it. A generator proposing its own aimed rows can see
+    those itself; this answers only "has the lineage's aimed work been spent and did it fail".
+    """
+    total = AimedProgress()
+    for sid in (getattr(state, "lineage", None) or (getattr(state, "id", None),)):
+        got = by_state.get(sid)
+        if got is not None:
+            total = total.plus(offered=got.offered, tried=got.tried, cleaned=got.cleaned)
+    return total
 
 
 def _aimedness(site: Site, op: str, targets: list[StableId], params: dict) -> int:
@@ -1983,6 +2068,9 @@ def search(
     #: there. Read over the whole lineage, so a descendant never pays again for its ancestors' answers.
     tried: dict[str, set[str]] = {}
     no_change: dict[str, set[str]] = {}
+    #: per state: how much AIMED work was offered, tried and cleaned there (`AimedProgress`). Summed over a
+    #: lineage it is the fact `SearchState.aimed` carries for the generators.
+    aimed_by_state: dict[str, AimedProgress] = {}
     #: what the prune saved, by reason. Each is one cheap verdict not spent (`verdicts_saved`).
     pruned: collections.Counter[str] = collections.Counter()
     #: B22: state id -> what it kept of the original input, and how many states that cost us a best
@@ -2076,6 +2164,9 @@ def search(
                     unfixable=declared_unfixable,
                 )
 
+            # THE AIMED FACT, set before any generator proposes, so a generator can gate on it without reaching
+            # into B20's maps (lane B's whole-part defeature as a last resort). Read-only to them.
+            state.aimed = _lineage_aimed(aimed_by_state, state)
             # gather and validate
             proposals: list[tuple[int, Candidate]] = []
             for gi in ([g for g in active if g in model_gens] if reprompt else active):
@@ -2133,11 +2224,15 @@ def search(
             for gi, c in valid[room:]:
                 _record_candidate(trace, state, c, "skipped_budget")
                 fates.append((gi, _Outcome(c, gi, "declined", ["not run: the op budget was exhausted"]), None, False))
+            aimed_by_state[state.id] = aimed_by_state.get(state.id, AimedProgress()).plus(
+                offered=_aimed_candidates(state, [c for _gi, c in proposals]))
             to_run = valid[:room]
             # ONE op reserved per candidate that is about to run: the attempt is charged even when the op
             # declines or fails (its kernel work was still done). What a candidate applied BEYOND that one op
             # is charged below, once the outcomes are known.
             spent["ops"] += len(to_run)
+            aimed_by_state[state.id] = aimed_by_state[state.id].plus(
+                tried=_aimed_candidates(state, [c for _gi, c in to_run]))
             for _gi, c in to_run:
                 tried.setdefault(state.id, set()).add(_candidate_key(c))
 
@@ -2282,6 +2377,13 @@ def search(
                     trace.record("confirm_error", state=child.id, error=f"{type(exc).__name__}: {exc}")
                     continue
                 cheap_score = child.score
+                if bool(getattr(full, "clean", False)):
+                    # An AIMED repair that actually cleaned the file, counted on the state that PROPOSED it (its
+                    # parent): `AimedProgress.exhausted` must be false for a lineage whose aimed work succeeded.
+                    # Judged on the FULL verdict, because only the full panel can say clean.
+                    parent_id = child.parent or state.id
+                    if _aimed_candidates(state, [_candidate_of(child)]):
+                        aimed_by_state[parent_id] = aimed_by_state.get(parent_id, AimedProgress()).plus(cleaned=1)
                 child.verdict, child.tier, child.score, child.rank = full, "full", full_score, full_score
                 trace.record(
                     "confirm",
