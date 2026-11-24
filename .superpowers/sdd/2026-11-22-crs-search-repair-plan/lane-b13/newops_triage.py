@@ -11,11 +11,12 @@ TRACES. A trace (`Trace.to_dict()`: {"events": [...]}) is matched to a search ro
 with a trace is triaged from the trace (every candidate event); a row without one falls back to the row's op table.
 From a trace, per new op:
   - conformalise is split by mode: `conformalise:fragment` / `conformalise:cut_by` (the candidate's params);
-  - every evaluated candidate: cheap score vs its parent's score -> applied->better / equal / worse (no cap);
+  - every evaluated candidate, TIERS MATCHED (no cap): `full_vs_full:better|equal|worse` when the child was confirmed
+    by the full panel and its parent was full; `cheap_vs_cheap:...` when both are cheap; otherwise
+    `cheap_vs_full:` / `cheap_vs_unknown:` on the tier-invariant keys only (made_INVALID / made_VALID /
+    stays_valid|stays_INVALID:dev_less|dev_same|dev_more);
   - `kept_on_best_path`: the candidate produced a state on `stop.best_path`. That is the BEST state's path; whether it
     was DELIVERED is the delivery gate's call, read off the row (out vs in), not the trace;
-  - `full_confirmed->better/equal/worse`: the child was one of the top-k the search confirmed with the FULL panel
-    (`confirm` events), its full score vs the parent's score;
   - `never_proposed:site_present` vs `never_proposed:no_site`: whether a site the op is proposed for (overlap for
     fuse/conformalise, unbounded for trim_unbounded, DEFEATURE_SITE_KINDS for defeature) was open at any expanded
     state;
@@ -35,9 +36,10 @@ Per failing (arm, file) row:
                      never_proposed  the op is absent from the row's op table (not proposed, or declined in advance
                                      by the sweep - the row's `not_proposed` counter is keyed by reason, not by op)
                      declined:<code> / failed:<code> / invalid:<code>  rejected, with the op's own first reason token
-                     applied->better / ->equal / ->worse   evaluated, its cheap score vs its parent's (from `deltas`,
-                                     which keeps only the first 8 evaluated candidates of the whole search)
-                     applied->unscored  evaluated beyond the deltas cap
+                     applied:made_INVALID / made_VALID / stays_valid|stays_INVALID:dev_less|dev_same|dev_more   evaluated; a CHEAP
+                                     child against a parent of unrecorded tier, so ONLY validity and deviation are
+                                     compared (from `deltas`: the first 8 evaluated candidates of the whole search)
+                     applied:unscored(past deltas cap)  evaluated beyond the deltas cap
                      duplicate / inconclusive / skipped_budget
 Grouped by failure kind (and per individual code / member), so it shows where each new op bites and where it does
 nothing."""
@@ -160,6 +162,7 @@ def _code(reason: str) -> str:
 
 
 def _cmp(parent: Any, score: Any) -> str:
+    """Same-tier comparison of two whole score tuples (only ever called with BOTH sides on the same tier)."""
     try:
         p, s = list(parent), list(score)
     except TypeError:
@@ -168,6 +171,29 @@ def _cmp(parent: Any, score: Any) -> str:
         return "better" if s > p else ("equal" if s == p else "worse")
     except TypeError:  # a None inside a score
         return "unscored"
+
+
+#: score() = (valid, panel passes, min SICN, -max deviation mm, -churn). Keys 0, 3 and 4 come from layers 1 and 3,
+#: which BOTH tiers run, so they compare across tiers; keys 1 and 2 depend on which panel members ran (the cheap tier
+#: meshes a subset), so a cheap child against a full parent is NOT comparable on them (lane D's correction).
+KEY_VALID, KEY_DEV, KEY_CHURN = 0, 3, 4
+
+
+def _cross_tier(parent: Any, score: Any) -> str:
+    """A child scored on one tier against a parent on another (or unknown) tier: tier-invariant keys only."""
+    try:
+        pv, sv = int(parent[KEY_VALID]), int(score[KEY_VALID])
+    except (TypeError, IndexError, ValueError):
+        return "unscored"
+    if sv < pv:
+        return "made_INVALID"
+    if sv > pv:
+        return "made_VALID"
+    try:
+        pd, sd = float(parent[KEY_DEV]), float(score[KEY_DEV])
+    except (TypeError, IndexError, ValueError):
+        return ("stays_valid:" if pv else "stays_INVALID:") + "dev_unscored"
+    return ("stays_valid:" if pv else "stays_INVALID:") + ("dev_less" if sd > pd else "dev_same" if sd == pd else "dev_more")
 
 
 def op_outcomes(r: dict, op: str) -> Counter:
@@ -186,10 +212,10 @@ def op_outcomes(r: dict, op: str) -> Counter:
             out[fate] += int(stats[fate])
     evaluated = int(stats.get("evaluated") or 0)
     scored = [d for d in s.get("deltas") or [] if d.get("op") == op]
-    for d in scored[:evaluated]:
-        out[f"applied->{_cmp(d.get('parent'), d.get('score'))}"] += 1
+    for d in scored[:evaluated]:  # child: CHEAP tier; parent: its state's score, tier not in the row -> cross-tier
+        out[f"applied:{_cross_tier(d.get('parent'), d.get('score'))}"] += 1
     if evaluated > len(scored):
-        out["applied->unscored"] += evaluated - len(scored)
+        out["applied:unscored(past deltas cap)"] += evaluated - len(scored)
     return out
 
 
@@ -231,6 +257,8 @@ def trace_outcomes(events: list[dict]) -> dict[str, Any]:
     stop = next((e for e in reversed(events) if e.get("kind") == "stop"), {})
     on_path = set(stop.get("best_path") or [])
     confirmed = {e.get("state"): e.get("score") for e in events if e.get("kind") == "confirm"}
+    tier_of = {e.get("state"): e.get("tier") for e in events if e.get("kind") == "expand"}
+    tier_of.update({s_: "full" for s_ in confirmed})
     site_kinds = {str(s.get("kind")) for e in events if e.get("kind") == "expand" for s in e.get("sites") or []}
     ops: dict[str, Counter] = {op: Counter() for op in TRACE_OPS}
     extra: dict[str, Counter] = {"defeature_source": Counter(), "defeature_features_per_call": Counter(),
@@ -245,12 +273,16 @@ def trace_outcomes(events: list[dict]) -> dict[str, Any]:
         extra["proposed_by"][f"{op}/{e.get('source')}"] += 1
         outcome = e.get("outcome")
         if outcome == "evaluated":
-            c[f"applied->{_cmp(e.get('parent_score'), e.get('score'))}"] += 1
             child = e.get("child")
+            ptier = tier_of.get(e.get("state"))  # the parent's tier when it was expanded (full if confirmed)
+            if child in confirmed and ptier == "full":
+                c[f"full_vs_full:{_cmp(e.get('parent_score'), confirmed[child])}"] += 1
+            elif ptier == "cheap":
+                c[f"cheap_vs_cheap:{_cmp(e.get('parent_score'), e.get('score'))}"] += 1
+            else:
+                c[f"cheap_vs_{ptier or 'unknown'}:{_cross_tier(e.get('parent_score'), e.get('score'))}"] += 1
             if child in on_path:
                 c["kept_on_best_path"] += 1
-            if child in confirmed:
-                c[f"full_confirmed->{_cmp(e.get('parent_score'), confirmed[child])}"] += 1
         elif outcome == "rejected":
             errors = e.get("errors") or ["(no reason recorded)"]
             c[f"{_REJECTED_AS.get(str(e.get('stage')), 'failed')}:{_code(errors[0])}"] += 1
@@ -394,8 +426,11 @@ def _cell(d: dict, n: int = 6) -> str:
 
 ROWS_ONLY_CAVEAT = [
     "**ROWS-ONLY TRIAGE for every search row below without a trace. Unavailable from rows, and why:**",
-    "1. per-op better/equal/worse: rows keep `deltas` for only the FIRST 8 evaluated candidates of the whole search; "
-    "the rest show as `applied->unscored`.",
+    "1. per-op better/worse: rows keep `deltas` for only the FIRST 8 evaluated candidates of the whole search (the "
+    "rest: `applied:unscored(past deltas cap)`), and each delta is a CHEAP-tier child against its parent state's "
+    "score, whose tier the row does not record (FULL for the start and every confirmed state). So rows compare ONLY "
+    "the tier-invariant keys - validity (layer 1) and deviation (layer 3): `applied:made_INVALID` / `made_VALID` / "
+    "`stays_valid|stays_INVALID:dev_less|dev_same|dev_more`. Panel passes and min SICN are NOT compared across tiers.",
     "2. whether an op is on the best/delivered path: the row has no path; the trace's `stop.best_path` is gone.",
     "3. conformalise mode (fragment vs cut_by) and cut depth: the row's op table is keyed by op name only.",
     "4. never-proposed with vs without a target site: the row's `open_sites` is at the best state only, and "
@@ -416,6 +451,12 @@ def markdown(t: dict, notes: list[str] | None = None) -> str:
                                    for a, c in t["clean_control"].items()) or "no clean-split rows yet")
            + f". Regressions: {len(t['clean_control_regressions'])}"
            + (" - " + ", ".join(t["clean_control_regressions"][:10]) if t["clean_control_regressions"] else "") + ".",
+           "",
+           (f"**CRASH ATTRIBUTION IS MEASURED ONLY FOR FINISHED SHARDS:** {t['shards']['finished']} of "
+            f"{t['shards']['total']} shards have EXCLUDED.json on disk. run_arm holds exclusions IN MEMORY until a shard "
+            "ends, so for the other " + str(len(t["shards"]["unfinished"])) + " the harness-crash count is UNKNOWN, "
+            "not 0; if the wave is stopped at its deadline those reasons are LOST ('excluded before the stop, reason "
+            "not on disk'), and only the row-gap signature below can point at them." if t.get("shards") else ""),
            "",
            "**EXCLUDED (no row):** " + (_cell(t["excluded_by_class_arm"], 20) if t["excluded_by_class_arm"] else "none")
            + ". Partial shards (no EXCLUDED yet): files passed over with arms MISSING "
@@ -492,6 +533,10 @@ def main(argv: list[str]) -> int:
         row_globs, trace_globs = args, []
     t = triage(load(row_globs), load_traces(trace_globs), load_excluded(row_globs))
     t["row_gaps"] = row_gaps(row_globs)
+    shard_dirs = sorted({path.rsplit("/", 1)[0] for pat in row_globs for path in glob.glob(pat)})
+    finished = [d for d in shard_dirs if glob.glob(d + "/EXCLUDED*.json")]
+    t["shards"] = {"total": len(shard_dirs), "finished": len(finished),
+                   "unfinished": [d.split("/")[-2] + "/" + d.split("/")[-1] for d in shard_dirs if d not in finished]}
     with open(argv[1] + ".json", "w") as fh:
         json.dump(t, fh, indent=1, default=str)
     with open(argv[1] + ".md", "w") as fh:
