@@ -151,6 +151,10 @@ def run_file(arm_name: str, entry: Any, source: str, *, pool: Any, engine: Engin
         bad = _usable(v_in, "the input")
         if bad:
             return excluded(bad)
+        try:
+            overlap = overlap_triage(pool, ws, v_in)
+        except Exception as exc:  # noqa: BLE001 - a measurement for the report never loses the row
+            overlap = {"max_depth_mm": None, "error": f"{type(exc).__name__}: {exc}"[:200]}
         out_v, usd = v_in, 0.0
         extra: dict[str, Any] = {}
         if arm_name == "input_only":
@@ -179,12 +183,13 @@ def run_file(arm_name: str, entry: Any, source: str, *, pool: Any, engine: Engin
     extra = {k: v for k, v in extra.items() if k not in ("_unmeasured", "_triage")}
     if unmeasured:
         return ArmOutcome(row={**base, "inconclusive": True, "model_usd": usd, "wall_s": wall, **extra,
-                               "triage": triage})
+                               "triage": {**triage, "overlap": overlap}})
     bad = _usable(out_v, "the output")
     if bad:
         return excluded(bad)
     return ArmOutcome(row={**base, "inconclusive": False, "model_usd": usd, "wall_s": wall,
-                           **_verdict_fields(v_in, out_v), **extra, "triage": {**verdict_triage(out_v), **triage}})
+                           **_verdict_fields(v_in, out_v), **extra,
+                           "triage": {**verdict_triage(out_v), **triage, "overlap": overlap}})
 
 
 def _search_arm(arm_name: str, *, pool: Any, ws: Any, start: Any, source: str, judge: Any, v_in: Any, ledger: Any,
@@ -378,6 +383,50 @@ def search_triage(result: Any, generators: Any) -> dict[str, Any]:
             "open_sites": dict(Counter(str(s.get("kind")) for s in at.get("sites") or [])), "open_sites_at": where,
             "ops": ops, "not_proposed": _top(skipped), "ai": ai, "deltas": deltas, "deltas_total": len(evaluated),
             "sites_by_placement": _placement(at.get("sites") or [])}
+
+
+#: body pairs whose overlap is measured per input, at most (each pair is two `_cut_depth` calls on the kernel)
+MAX_OVERLAP_PAIRS = 10
+OVERLAP_TIMEOUT_S = 240.0
+
+
+def overlap_triage(pool: Any, ws: Any, v_in: Any) -> dict | None:
+    """The INPUT's body overlap as the owner's ruling needs it ("reported both ways": with and without a stratum for
+    overlaps beyond fidelity), so either cut is computed from rows without a rerun. Per overlapping body pair (layer 1's
+    `body_overlap` findings), both cuts measured by the kernel's own `body_kernel._cut_depth` (the measure `cut_by`
+    declines on), with its method; per pair the cheaper cut is what a repair would need, and the FILE needs every pair,
+    so `max_depth_mm` is the worst pair's cheaper cut, `within_bound` compares it with the fidelity bound. None when the
+    input has no overlap. A failed measurement is recorded, never a reason to lose the row."""
+    pairs: list[list[int]] = []
+    for finding in getattr(v_in.valid, "hard", []) or []:
+        if finding.code != "body_overlap" or len(finding.entities) < 2:
+            continue
+        try:
+            pair = sorted(int(str(e)[1:]) for e in finding.entities[:2])
+        except ValueError:
+            continue
+        if pair not in pairs and len(pairs) < MAX_OVERLAP_PAIRS:
+            pairs.append(pair)
+    if not pairs:
+        return None
+    result = pool.call("v4_overlap_depths", {"brep_path": ws.brep_path, "pairs": pairs}, timeout_s=OVERLAP_TIMEOUT_S)
+    if not result.ok or result.value is None:
+        return {"max_depth_mm": None, "method": None, "bound_mm": None, "within_bound": None, "pairs": [],
+                "error": f"{result.status}: {result.error}"[:200]}
+    rec = result.value
+    out_pairs, worst = [], None
+    for p in rec.get("pairs") or []:
+        cuts = [c for c in (p.get("a_by_b"), p.get("b_by_a")) if c and c.get("depth_mm") is not None]
+        need = min(cuts, key=lambda c: c["depth_mm"]) if cuts else None
+        out_pairs.append({**p, "required_mm": None if need is None else need["depth_mm"],
+                          "required_method": None if need is None else need["method"]})
+        if need is not None and (worst is None or need["depth_mm"] > worst["depth_mm"]):
+            worst = need
+    bound = rec.get("bound_mm")
+    return {"max_depth_mm": None if worst is None else worst["depth_mm"],
+            "method": None if worst is None else worst["method"], "bound_mm": bound,
+            "within_bound": None if worst is None or bound is None else worst["depth_mm"] <= bound,
+            "diag_mm": rec.get("diag_mm"), "pairs": out_pairs, "measured_on": "input"}
 
 
 def _placement(sites: list[dict]) -> dict[str, int]:
