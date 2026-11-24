@@ -264,3 +264,13 @@ def test_a_pass_and_a_low_quality_fail_use_the_one_floor() -> None:
     assert (ok.status, ok.min_sicn, ok.elements) == ("pass", 0.3, 10)
     low, _ = _run({**PASS, "min_sicn": mesh_child.MIN_SICN / 2})
     assert (low.status, low.error_kind) == ("fail", "low_quality")
+
+
+def test_a_netgen_retry_after_a_timeout_is_one_outcome_whatever_it_hit() -> None:
+    """The same rule as the gmsh members (Lane A's bug32314 measurement): after a first timeout, a retry that
+    crashed or timed out is one outcome, the genuine netgen timeout."""
+    outcomes = {(r.status, r.error_kind) for r, _ in (_run(POOL_TIMEOUT, POOL_TIMEOUT), _run(POOL_TIMEOUT, SEGV),
+                                                     _run(STAGE_TIMEOUT, SEGV))}
+    assert outcomes == {("timeout", "netgen_timeout")}
+    crash, _ = _run(SEGV)  # no timeout before it: the crash is the file's own answer, kind kept
+    assert crash.status == "crashed" and crash.error_kind != "netgen_timeout"

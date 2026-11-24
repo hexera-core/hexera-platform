@@ -17,6 +17,7 @@ from meshpipeline.cad.repair_v4.verdict.panel import (
     Located,
     MemberResult,
     call_with_timeout_retry,
+    classify_after_timeout,
     inner_timeout_s,
     sigkill_verdict,
     timeout_cause,
@@ -109,7 +110,9 @@ class GmshMember:
         retried = call_with_timeout_retry(
             pool, self.fn_name, payload, timeout_s=timeout_s, timed_out=timed_out, killed=killed
         )
-        return result_from_call(self.name, retried.call, retried.timeouts, retried.kills, retried.skipped)
+        return classify_after_timeout(
+            result_from_call(self.name, retried.call, retried.timeouts, retried.kills, retried.skipped), retried.timeouts
+        )
 
 
 class GmshProd(GmshMember):
