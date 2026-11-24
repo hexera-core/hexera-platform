@@ -331,6 +331,16 @@ def _assemble(
         #     parts that had run all day: 2 of 2 "the file was never measured".
         # A timeout under a clipped limit is still not the part's fault, which is the original concern and all that
         # survives of it: the clock I shortened is what stopped that member.
+        #
+        # WHAT WAS AND WAS NOT AFFECTED, measured by LEAD-3 on the live wave rather than inferred: NO WAVE WAS
+        # AFFECTED AND NO PUBLISHED RESULT NEEDS RE-READING. Only `repair_v4`'s own entry point sets the file
+        # deadline (`__init__.py`); `devtools/validation/v4_eval/arms.py` dispatches `search` /
+        # `repair_sequentially` directly and sets none, so the wall module is INERT in the eval harness by design -
+        # nothing clips there and this clause could not fire. Wave 202611242110 was checked live while the blanket
+        # version was on the tip: 6 rows, inconclusive false on all 6, zero "ran CLIPPED" and zero
+        # SearchUnavailable in any dev log. The blast radius was the ENGINE ENTRY POINT - the held-out run and
+        # production-shaped callers - which is worse than a wave in one way (it cannot be re-run) and better in
+        # another (today's numbers stand).
         inconclusive = inconclusive or any(getattr(r, "status", "pass") == "timeout" for r in panel)
 
     clean = clean_of(tier=tier, inconclusive=inconclusive, valid=valid, panel=panel, faithful=faithful)
