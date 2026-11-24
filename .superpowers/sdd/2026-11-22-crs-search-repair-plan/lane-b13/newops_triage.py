@@ -1,6 +1,6 @@
 """B13: triage a snapshot wave's rows - for every file still failing, what still fails and what the NEW ops did.
 
-Usage:  python newops_triage.py OUT_PREFIX ROWS_GLOB [ROWS_GLOB ...] [--traces TRACE_GLOB ...]
+Usage:  python newops_triage.py OUT_PREFIX ROWS_GLOB [ROWS_GLOB ...] [--note TEXT]... [--traces TRACE_GLOB ...]
         e.g. python newops_triage.py /tmp/v2 'snap-v2-dev/*/rows.jsonl' 'snap-v2-clean/*/rows.jsonl' \
                  --traces 'snap-v2-traces/**/*.json'
 Writes OUT_PREFIX.json and OUT_PREFIX.md. Reads the rows and, WHERE PRESENT, the per-file search traces (no kernel, no
@@ -268,8 +268,11 @@ def triage(rows: list[dict], traces: dict[str, list[dict]] | None = None) -> dic
     for (split, name), arms in by_file.items():
         if any(x.get("out_clean") for x in arms.values()) or all(x.get("inconclusive") for x in arms.values()):
             continue
-        last = arms.get("search_ai") or arms.get("search_det") or next(iter(arms.values()))
-        still[f"{split}/{name}"] = failure_kind(last)[0]
+        conclusive = {a: x for a, x in arms.items() if not x.get("inconclusive")}
+        last = next(conclusive[a] for a in ("search_ai", "search_det", "staged", *conclusive) if a in conclusive)
+        gone = sorted(a for a in arms if a not in conclusive)
+        still[f"{split}/{name}"] = failure_kind(last)[0] + (f"  [read off {last.get('arm')}; inconclusive: "
+                                                             f"{', '.join(gone)}]" if gone else "")
     return {"files_still_failing": len(still), "files_still_failing_by_kind": dict(Counter(still.values()).most_common()),
             "files_still_failing_list": still,
             "failing_search_rows_from_trace": dict(n_traced),
@@ -285,11 +288,27 @@ def _cell(d: dict, n: int = 6) -> str:
     return (s + (f", +{len(items) - n} more" if len(items) > n else "")) or "-"
 
 
-def markdown(t: dict) -> str:
-    out = ["# New-op triage (B13)", "",
+ROWS_ONLY_CAVEAT = [
+    "**ROWS-ONLY TRIAGE for every search row below without a trace. Unavailable from rows, and why:**",
+    "1. per-op better/equal/worse: rows keep `deltas` for only the FIRST 8 evaluated candidates of the whole search; "
+    "the rest show as `applied->unscored`.",
+    "2. whether an op is on the best/delivered path: the row has no path; the trace's `stop.best_path` is gone.",
+    "3. conformalise mode (fragment vs cut_by) and cut depth: the row's op table is keyed by op name only.",
+    "4. never-proposed with vs without a target site: the row's `open_sites` is at the best state only, and "
+    "`not_proposed` is keyed by reason, not op; so `never_proposed` here also covers 'declined in advance by the sweep'.",
+    "5. defeature source (site/recognised) and features per call: candidate params are not in the row.",
+    "6. (not available from traces either) a full-panel verdict per candidate: only confirmed states get one.",
+    ""]
+
+
+def markdown(t: dict, notes: list[str] | None = None) -> str:
+    traced = sum(t["failing_search_rows_from_trace"].values())
+    searched = sum(1 for r in t["rows"] if r["arm"] in SEARCH_ARMS)
+    out = ["# New-op triage (B13)", "", *(notes or []), "" if notes else "",
+           *(ROWS_ONLY_CAVEAT if traced < searched else []),
            f"Rows read: {t['rows_read']}. Failing rows (conclusive, not clean): {t['failing_rows']}. "
-           f"FILES still failing in every repair arm: {t['files_still_failing']} (kind read off search_ai, else "
-           "search_det, else staged).", "",
+           f"FILES still failing in every repair arm: {t['files_still_failing']} (kind read off the last CONCLUSIVE "
+           "arm of search_ai, search_det, staged; inconclusive arms named).", "",
            "| still-failing kind | files |", "|---|---|",
            *[f"| {k} | {n} |" for k, n in t["files_still_failing_by_kind"].items()], "",
            "Rows per split/arm: " + _cell(t["rows_by_split_arm"], 20),
@@ -332,7 +351,12 @@ def main(argv: list[str]) -> int:
     if len(argv) < 3:
         print(__doc__)
         return 2
-    args = argv[2:]
+    args = list(argv[2:])
+    notes = []
+    while "--note" in args:
+        i = args.index("--note")
+        notes.append(args[i + 1])
+        del args[i:i + 2]
     if "--traces" in args:
         i = args.index("--traces")
         row_globs, trace_globs = args[:i], args[i + 1:]
@@ -342,7 +366,7 @@ def main(argv: list[str]) -> int:
     with open(argv[1] + ".json", "w") as fh:
         json.dump(t, fh, indent=1, default=str)
     with open(argv[1] + ".md", "w") as fh:
-        fh.write(markdown(t))
+        fh.write(markdown(t, notes))
     print(f"{t['rows_read']} rows, {t['failing_rows']} failing -> {argv[1]}.json / .md")
     return 0
 
