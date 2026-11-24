@@ -1309,8 +1309,9 @@ def cfmesh_one_layer_cells(ask: Ask | None, *, bore_D: float, max_cell: float,
     conditions' y+ gives on the bore over that share - finer than the background when the y+ layer is thinner (00134075:
     a 2.16 mm layer planned on 5.87 mm cells came out 2.96 mm, 1.37 x the plan), coarser when it is thicker (CFDREQ-18
     only ever coarsened the wall, and the passage caps' background then held it finer: 00184523 planned 3.65 mm, built
-    3.16 mm, y+ 50 -> 41). Never fewer cells across the bore than CFDREQ-18 / CFDREQ-25 keep: there the wall cell is
-    the bore over that count and the y+ the nearest it allows, said. The background becomes the wall cell times the
+    3.16 mm, y+ 50 -> 41). Never coarser than CFDREQ-18 / CFDREQ-25's fewest cells across the bore, or the plan's own
+    background where that is coarser already (the minimum never refines the wall): there the y+ is the nearest that
+    cell allows, said. The background becomes the wall cell times the
     whole power of two nearest it (never finer than `min_background`, the budget's), so cfMesh's halvings land on the
     wall cell itself."""
     typed = wall_functions_typed(ask)
@@ -1328,27 +1329,31 @@ def cfmesh_one_layer_cells(ask: Ask | None, *, bore_D: float, max_cell: float,
             return None
         h = deepest
     share = CFMESH_ONE_LAYER_SHARE
-    want = max(1, int(math.floor(share * float(bore_D) / float(h) + 1e-9)))
     least = wall_function_hard_cells(share) if typed else WALL_FUNCTION_MIN_CELLS_ACROSS
-    n = max(want, least)
-    wall = float(bore_D) / n
+    # the coarsest wall cell allowed: our fewest cells across the bore, or the plan's own background where that is
+    # coarser already - the minimum never refines a wall the plan had coarser (the first cut did: 00185618 went from
+    # 102k to 503k cells and its layer was capped thinner)
+    want = float(h) / share
+    wall = min(want, max(float(bore_D) / least, float(max_cell)))
+    n = float(bore_D) / wall
     k = max(0, int(round(math.log2(float(max_cell) / wall))))
     while wall * 2 ** k < float(min_background) * (1 - 1e-9):
         k += 1
-    if n > want:
+    if wall < want * (1 - 1e-6):
         built = share * wall
         ask.wall_level_note = (
             f"a y+ {MR._g(float(ask.y_plus))} wall-function layer is {_mm(h)} high and this mesher builds one layer "
-            f"about {MR._g(share)} of the cell it stands on, so it needs {_mm(h / share)} cells at the wall; the "
-            f"passage keeps at least {least} cells across its {_mm(float(bore_D))} bore, so the wall cells are "
+            f"about {MR._g(share)} of the cell it stands on, so it needs {_mm(want)} cells at the wall; the passage "
+            f"keeps {MR._g(round(n, 1))} cells across its {_mm(float(bore_D))} bore, so the wall cells are "
             f"{_mm(wall)} and the first layer {_mm(built)}: y+ about {MR._g(round(y_plus_of(built, how), 1))}, "
             "the nearest to the y+ asked that the passage allows")
-        if typed and n < WALL_FUNCTION_MIN_CELLS_ACROSS:
+        if typed and n < WALL_FUNCTION_MIN_CELLS_ACROSS - 1e-9:
             ask.wall_level_note += (f"; we would normally keep at least {WALL_FUNCTION_MIN_CELLS_ACROSS} across, but "
                                     "you asked for wall functions, so the flow across the passage is coarser than we "
                                     "would choose")
     else:
-        ask.wall_level_note = (f"the wall cells are {_mm(wall)} ({n} across the bore): this mesher builds one layer "
+        ask.wall_level_note = (f"the wall cells are {_mm(wall)} ({MR._g(round(n, 1))} across the bore): this mesher "
+                               "builds one layer "
                                f"about {MR._g(share)} of the cell it stands on, so that is the {_mm(h)} the y+ asks")
     ask.cfmesh_one_layer = {"wall_m": wall, "how": how}
     return (wall * 1.001 if k > 0 else wall), wall * 2 ** k
