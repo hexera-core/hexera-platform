@@ -1,8 +1,12 @@
-# Responsibility: Verify a user can attach pictures and files to the chat box and the notes box - the paper-clip,
+# Responsibility: Verify a user can attach pictures and files to the chat box - the paper-clip,
 #   Ctrl+V of a screenshot, a drop on the box - see each as a chip, take one off, hear the limits in one plain line,
-#   send a picture alone, and see what they sent in the conversation and the notes.
+#   send a picture alone, and see what they sent in the conversation.
 # Boundaries: the console's own modules in the page; the server's routes are stubbed in-page. It reads the DOM.
 from __future__ import annotations
+
+import base64
+import json
+import os
 
 import pytest
 from conftest import assert_clean
@@ -130,6 +134,64 @@ def test_a_picture_alone_is_sent_and_shows_in_the_users_bubble(live):
     assert_clean(live, "sending a picture alone")
 
 
+# A SENT PICTURE IS SEEN, NOT GUESSED AT: at most 240 px wide and 180 px high by its own shape, never stretched
+# past its own size, in the user's bubble, and a click opens it whole.
+SIZES = {"a1": (1600, 1200, 240, 180), "a2": (2000, 400, 240, 48), "a3": (300, 900, 60, 180), "a4": (100, 60, 100, 60)}
+
+
+def test_a_sent_picture_is_shown_large_enough_to_read_and_opens_on_a_click(live):
+    out = live.evaluate("(async () => {" + SETUP + """
+      const SIZES = __SIZES__, blobs = {};
+      for (const [k, [w, h]] of Object.entries(SIZES)) blobs[k.padEnd(16, '0')] = await new Promise(r => {
+        const c = document.createElement('canvas'); c.width = w; c.height = h; const g = c.getContext('2d');
+        g.fillStyle = '#4a6'; g.fillRect(0, 0, w, h); c.toBlob(r, 'image/png'); });
+      const stubbed = window.fetch;
+      window.fetch = async (url, opts) => { const id = String(url).split('/').pop();
+        return blobs[id] ? new Response(blobs[id], {status: 200, headers: {'Content-Type': 'image/png'}}) : stubbed(url, opts); };
+      const rows = Object.keys(SIZES).map(k => ({id: k.padEnd(16, '0'), kind: 'image', name: k + '.png'}));
+      Stage.chat('user', 'see the pictures', undefined, {attachments: rows, sid: 's-attach'});
+      const imgs = () => [...document.querySelectorAll('.att-img img')];
+      for (let i = 0; i < 100 && !(imgs().length === 4 && imgs().every(m => m.complete && m.naturalWidth)); i++) await sleep(30);
+      await sleep(50);
+      const look = (root) => [...root.querySelectorAll('.att-img')].map(a => { const m = a.querySelector('img'),
+        r = m.getBoundingClientRect(), box = root.getBoundingClientRect(), f = a.getBoundingClientRect();
+        return {w: Math.round(r.width), h: Math.round(r.height), nat: m.naturalWidth,
+                hugs: f.width - r.width <= 2.5 && f.height - r.height <= 2.5,
+                round: parseFloat(getComputedStyle(a).borderTopLeftRadius) > 0, inside: r.right <= box.right + 0.5}; });
+      // the plan step has no notes box any more (NOTE-18): the bubble is where a sent picture is seen
+      const note = document.querySelector('#cc .im.user');
+      const wide = {bubble: look(note)};
+      const nr = note.getBoundingClientRect();
+      window.__noteRect = {x: nr.left, y: nr.top, width: nr.width, height: nr.height, scale: 1};
+      // A NARROW PANEL: the pictures stay inside the bubble
+      const host = document.getElementById('cc'), was = host.style.width;
+      host.style.width = '200px'; await sleep(50);
+      const narrow = look(note);
+      host.style.width = was;
+      // A CLICK opens the stored picture whole, in a new tab
+      const opened = []; const realOpen = window.open; window.open = (u, t) => { opened.push([u, t]); return null; };
+      note.querySelector('.att-img').click(); await sleep(50);
+      window.open = realOpen;
+      return {wide, narrow, opened, src: note.querySelector('.att-img img').src};
+    })()""".replace("__SIZES__", json.dumps(SIZES)))
+    if os.environ.get("THUMB_SHOTS"):              # the note as drawn, kept for a look by eye
+        shot = live._send("Page.captureScreenshot", {"format": "png", "clip": live.evaluate("window.__noteRect"),
+                                                     "captureBeyondViewport": True})
+        os.makedirs(os.environ["THUMB_SHOTS"], exist_ok=True)
+        with open(os.path.join(os.environ["THUMB_SHOTS"], "note_pictures.png"), "wb") as fh:
+            fh.write(base64.b64decode(shot["data"]))
+    want = [{"w": w, "h": h} for _, _, w, h in SIZES.values()]
+    for where in ("bubble",):
+        got = out["wide"][where]
+        assert [{"w": g["w"], "h": g["h"]} for g in got] == want, (where, got)
+        # the rounded frame hugs the picture: no empty band beside or under it
+        assert all(g["round"] and g["inside"] and g["hugs"] for g in got), (where, got)
+        assert [g["nat"] for g in got] == [w for w, _, _, _ in SIZES.values()], "the stored picture was not the one drawn"
+    assert all(g["inside"] and g["hugs"] and g["w"] <= 240 for g in out["narrow"]), out["narrow"]
+    assert out["opened"] == [[out["src"], "_blank"]], out
+    assert_clean(live, "a sent picture's size")
+
+
 def test_a_refused_send_keeps_the_chips_and_the_words_and_says_why_under_the_box(live):
     out = live.evaluate("(async () => {" + SETUP + """
       const stubbed = window.fetch;
@@ -165,36 +227,6 @@ def test_chips_tell_a_listener_of_every_change_a_silent_clear_too(live):
       return heard;
     })()""")
     assert out == [["lx", 1], ["lx", 2], ["lx", 1], ["lx", 0]], out
-
-
-def test_the_notes_box_takes_a_picture_and_the_notes_show_what_was_attached(live):
-    out = live.evaluate("(async () => {" + SETUP + """
-      const sent = [];
-      const add = async (t, extra) => { sent.push([t, extra]);
-        Stage.brief({purpose: 'structural', engine: 'gmsh', user_notes: [{text: t, attachments: [
-          {id: 'a100000000000000', kind: 'image', name: 'bore.png'}, {id: 'b200000000000000', kind: 'text', name: 'spec.pdf'}]}]}, add); };
-      Stage.brief({purpose: 'structural', engine: 'gmsh', user_notes: []}, add);
-      await sleep(0);
-      const box = document.querySelector('.rc-notes-in'), addBtn = document.querySelector('.rc-notes-add');
-      const clip = document.querySelector('.rc-notes-row > .attach-clip');
-      paste(box, [pic('bore.png')]);
-      await A.idle('notes');
-      const chipsNow = row('notes'), enabled = !addBtn.disabled;
-      addBtn.click();
-      await sleep(50); await sleep(150);
-      const note = document.querySelector('.rc-notes-list li.rc-note');
-      return {clip: !!clip, chipsNow, enabled, sent, after: row('notes'),
-              thumb: note && note.querySelector('.att-img img') && note.querySelector('.att-img img').src,
-              file: note && note.querySelector('.att-file') && note.querySelector('.att-file').textContent,
-              clipAgain: !!document.querySelector('.rc-notes-row > .attach-clip')};
-    })()""")
-    assert out["clip"] and len(out["chipsNow"]) == 1 and out["chipsNow"][0]["thumb"], out
-    assert out["enabled"], "Add stayed off with only a picture"
-    assert out["sent"] == [["", {"attachments": ["a100000000000000"], "faces": []}]], out
-    assert out["after"] == [], out
-    assert out["thumb"] and out["thumb"].startswith("blob:") and out["file"] == "spec.pdf", out
-    assert out["clipAgain"], "the redrawn notes box lost its paper-clip"
-    assert_clean(live, "attaching in the notes box")
 
 
 def test_a_reloaded_conversation_shows_a_picture_sent_alone(live):

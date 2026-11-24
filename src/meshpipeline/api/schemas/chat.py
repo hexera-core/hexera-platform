@@ -101,3 +101,6 @@ class ChatResponse(BaseModel):
     # question's buttons, FLOW-1) - {"flow", "input_kind"} - which the console sets on the open stage's "The fluid
     # flows" and "The file is" before Proceed (agents/intake/message)
     stage_flow: dict[str, str] | None = None
+    # A REQUIREMENT'S REPLY STILL ON ITS WAY (NOTE-19): its reading takes longer than the send waits, so the console
+    # keeps "Reading…" and the reply comes with the card's poll of the reading (GET .../check/parts, its `reply`)
+    reply_later: bool = False

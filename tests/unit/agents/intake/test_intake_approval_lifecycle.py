@@ -335,7 +335,9 @@ def test_an_ambiguous_reply_asks_once_and_dispatches_nothing():
     rec, sel = _approval(msg_count=1)
     resp, calls, repo = _route("maybe", rec, sel)
     assert calls["dispatch"] == 0 and calls["intake"] == 0
-    assert resp.reply == ap.CLARIFICATION and resp.awaiting_confirmation is True
+    # NOTE-18: a hedge at the plan step is asked the one go question
+    from meshpipeline.agents.intake import plan_talk as PT
+    assert resp.reply == PT.ASK_LINE and resp.awaiting_confirmation is True
 
 
 def test_a_correction_invalidates_the_snapshot_and_returns_to_intake():

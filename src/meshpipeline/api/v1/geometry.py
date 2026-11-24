@@ -3,7 +3,8 @@
 # A check is served through the application's time box, so a step whose worker died reads as
 # failed with a reason and a way on (a retry, or the chat), never as a spinner that never ends.
 # Boundaries: transport. It reads and writes the check's stored objects and the session's declared
-# fields; it judges nothing, draws nothing and calls no model.
+# fields; it judges nothing, draws nothing and calls no model itself (a requirement's reply that comes with the
+# parts checklist's poll is the intake's own, agents/intake/plan_reply).
 from __future__ import annotations
 
 import asyncio
@@ -638,10 +639,19 @@ async def get_check_parts(session_id: uuid.UUID, owner_id: str = Depends(owner_d
                           organization_id: str = Depends(org_dep)) -> dict:
     """The parts checklist on the request card (NOTE-4 before approval): which parts the notes mean.
     {"status": "none"} when the notes name no part; "waiting" / "reading" while it is worked out; "done" with
-    the rows, the parts and a link to the picture."""
+    the rows, the parts and a link to the picture. NOTE-19: once the reading has landed, the reply still owed to the
+    user's last requirement is written and kept, and handed back here as `reply` (the send did not wait for it)."""
     session = await _owned_session(session_id, owner_id, organization_id)
     from meshpipeline.application import part_matches as PM
     got = await asyncio.to_thread(lambda: PM.view(session, owner_id=owner_id))
+    if not got or got.get("status") not in ("reading", "waiting"):
+        from meshpipeline.agents.intake import plan_reply as PR
+        from meshpipeline.persistence.repositories.session_repository import SessionRepository
+        from meshpipeline.persistence.session import get_db
+        reply = await PR.answer_owed(session, got, owner_id=owner_id, session_repo=SessionRepository(),
+                                     db_factory=get_db, organization_id=organization_id)
+        if reply:
+            return {**(got or {"status": "none"}), "reply": reply}
     return got or {"status": "none"}
 
 

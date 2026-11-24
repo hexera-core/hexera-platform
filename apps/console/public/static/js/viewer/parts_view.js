@@ -366,7 +366,7 @@ export async function mountPartsView(host, payload, opts = {}) {
   });
   // THE FACE PICK: on the settled stage, with no row open, a click names the face under it (the picked faces are
   // lit here too); with a row open a click picks a part for it, as before
-  const detachPick = attachView({ ren, rw });
+  const detachPick = attachView({ ren, rw, skin: () => [pd] });
   let clicks = null;
   host.addEventListener("pointerup", (e) => {
     if (!st.picking && facePickReady() && isClick(down, [e.clientX, e.clientY])) {

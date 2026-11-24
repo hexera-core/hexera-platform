@@ -141,6 +141,41 @@ async def _picked_faces(session_id, faces, owner_id: str, organization_id) -> li
     return kept
 
 
+#: how long the send waits for a requirement's reading before it answers without the reply (the reply then comes
+#: with the card's poll of the reading, GET .../check/parts): with the model's TIMEOUT_S, no send is held past ~20 s
+REQUIREMENT_READ_WAIT_S = 12.0
+REQUIREMENT_POLL_S = 1.0
+
+
+async def _requirement_reply(outcome, session_repo, owner_id: str, session_id, organization_id) -> ChatResponse:
+    """NOTE-18: a requirement typed at the plan step - kept as a note by the authority - is read for the checklist
+    now (what Finalize notes did), and answered with what the checklist took from it - written by the intake's model
+    from those facts under a guard (agents/intake/plan_reply, NOTE-19) - kept in the conversation. A reading that
+    takes longer than REQUIREMENT_READ_WAIT_S is not waited on: the send answers with `reply_later` and the reply comes
+    with the card's poll. The plan stands: the answer carries the card as it now is."""
+    import asyncio
+    import time
+
+    from meshpipeline.agents.intake import plan_reply as PR
+    from meshpipeline.application import part_matches as PM
+
+    async with get_db() as db:
+        held = await session_repo.get_for_owner(db, session_id, owner_id, organization_id=organization_id)
+    held = _require_session(held, session_id)
+    view = await asyncio.to_thread(lambda: PM.finalize(held, owner_id=owner_id))
+    t0 = time.monotonic()
+    while view and view.get("status") == "reading" and time.monotonic() - t0 < REQUIREMENT_READ_WAIT_S:
+        await asyncio.sleep(REQUIREMENT_POLL_S)
+        view = await asyncio.to_thread(lambda: PM.view(held, owner_id=owner_id))
+    if view and view.get("status") == "reading":
+        return ChatResponse(session_id=session_id, reply="", reply_later=True, awaiting_confirmation=True,
+                            brief=await _brief(held, owner_id))
+    reply = await PR.answer_owed(held, view, owner_id=owner_id, session_repo=session_repo, db_factory=get_db,
+                                 organization_id=organization_id)
+    return ChatResponse(session_id=session_id, reply=reply, reply_later=not reply, awaiting_confirmation=True,
+                        brief=await _brief(held, owner_id))
+
+
 def _require_session(session, session_id):
     if session is None:
         raise HTTPException(
@@ -177,6 +212,8 @@ async def chat_message(body: ChatMessageIn, owner_id: str = Depends(owner_dep),
         return await _confirm_pending_approval(outcome.session, session_repo, owner_id,
                                                session_id,
                                                organization_id=organization_id)
+    if outcome.status is msg.MessageStatus.requirement:
+        return await _requirement_reply(outcome, session_repo, owner_id, session_id, organization_id)
     if outcome.status is msg.MessageStatus.already_dispatched:
         return ChatResponse(session_id=session_id, reply=outcome.reply, done=True,
                             job_id=outcome.job_id)

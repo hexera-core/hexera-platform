@@ -383,7 +383,7 @@ def test_a_route_answer_is_no_note_and_a_switch_does_not_turn_layers_off():
     from meshpipeline.contracts import user_notes as UN
     msgs = [{"role": "assistant", "content": "Geometry received. What are you meshing this for?"},
             {"role": "user", "content": "FEA shell mesh"},
-            {"role": "assistant", "content": "Here's the plan. Add any notes, then press Proceed."},
+            {"role": "assistant", "content": "Here's the plan. Tell me any mesh requirements here, then say go or press Proceed."},
             {"role": "user", "content": "use 3 mm elements on the flanges"}]
     notes, _un = UN.capture(msgs, ["FEA shell mesh", "use 3 mm elements on the flanges"], consumer="intake",
                             route_question=F.route_question)

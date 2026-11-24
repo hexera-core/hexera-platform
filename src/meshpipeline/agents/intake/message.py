@@ -69,6 +69,9 @@ class MessageStatus(str, enum.Enum):
     #: a bare yes with no plan awaiting it: never the model's - our fixed line with the true state, and the plan
     #: offered again when there is one (a run that did not start, a plan that expired)
     yes_nothing_pending = "yes_nothing_pending"
+    #: THE PLAN STEP'S CONVERSATION (NOTE-18): a mesh requirement typed in the chat while the plan stands - kept as a
+    #: note; the route reads it for the checklist and answers with what was taken in (agents/intake/plan_talk)
+    requirement = "requirement"
     #: the session does not exist for this owner
     not_found = "not_found"
 
@@ -144,6 +147,8 @@ class MessageOutcome:
     #: THE STAGE'S FORM, SET FROM THE CHAT: a flow the user stated while the stage waits on Proceed (the
     #: flow-kind question's buttons, FLOW-1) - {"flow", "input_kind"} for "The fluid flows" and "The file is"
     stage_flow: dict | None = None
+    #: the note a requirement message was kept as (NOTE-18): its words, files and faces
+    note: dict | None = None
 
     @property
     def answered(self) -> bool:
@@ -348,8 +353,23 @@ async def _settle(inbound: InboundMessage, db, *, gate: dict, locked, messages: 
     approval = gate.get("approval")
     if ap.is_live(approval):
         # the summary's own engine, named in the answer, is part of the yes, not a change
-        intent = ap.classify(inbound.content,
-                             engine=str(((approval or {}).get("payload") or {}).get("mesh_engine") or ""))
+        engine = str(((approval or {}).get("payload") or {}).get("mesh_engine") or "")
+        intent = ap.classify(inbound.content, engine=engine)
+        # THE PLAN STEP IS A CONVERSATION (NOTE-18): a plain "go" in any words starts the run; a requirement is kept
+        # and answered with what the checklist took; a go asked back is asked once; the rest is the intake's
+        from meshpipeline.agents.intake import consent as _consent
+        from meshpipeline.agents.intake import plan_talk as PT
+        talk = PT.INTAKE if _ours(inbound.content, messages) else PT.reading(
+            inbound.content, carries=bool(inbound.attachments or inbound.faces), asked=PT.asked_last(messages[:-1]),
+            consent=_consent.reading(inbound.content, named=(engine,) if engine else ()), engine=engine)
+        if talk == PT.GO:
+            intent = ap.APPROVE_INTENT
+        if talk == PT.BOTH:
+            # "use cfMesh at 2 mm": the size is kept as the user's requirement now, and the turn goes on to the
+            # intake, which switches the plan as it always did (the note is not kept twice: capture keys it alike)
+            await _keep_requirement(inbound, db, locked=locked, messages=messages, session_repo=session_repo)
+            logger.info("intake message: a requirement with a plan change - kept, and the plan changes (%s) - "
+                        "session=%s", PT.RULE, inbound.session_id)
         if uc.needs_confirmation(locked):
             # THE UNIT BEFORE THE RUN. A run cannot start on a file whose scale nobody has named
             # (application/dispatch_contract refuses the pair), so an approval given while the
@@ -373,6 +393,26 @@ async def _settle(inbound: InboundMessage, db, *, gate: dict, locked, messages: 
                     status=MessageStatus.approval_deferred, reply=reply, awaiting_confirmation=True,
                     transition=GateTransition(change=GateChange.approval_deferred, revision=revision,
                                               approval_status=ap.AWAITING))
+        if talk in (PT.NOTE, PT.ASK, PT.HOLD):
+            # the plan stands, one turn further on, and stays fresh while the user talks it through
+            gate["approval"] = {**(ap.defer(approval) or {}), "expires_at": time.time() + ap.APPROVAL_TTL_S}
+            if talk in (PT.ASK, PT.HOLD):
+                # asked once whether to start; or "wait": nothing starts, nothing is kept, and we say so
+                line = PT.ASK_LINE if talk == PT.ASK else PT.HOLD_LINE
+                await session_repo.set_intake_gate(db, inbound.session_id, gate)
+                await session_repo.append_message(db, inbound.session_id, "assistant", line)
+                return MessageOutcome(
+                    status=MessageStatus.approval_deferred, reply=line, awaiting_confirmation=True,
+                    transition=GateTransition(change=GateChange.approval_deferred, revision=revision,
+                                              approval_status=ap.AWAITING))
+            note = await _keep_requirement(inbound, db, locked=locked, messages=messages, session_repo=session_repo)
+            await session_repo.set_intake_gate(db, inbound.session_id, gate)
+            logger.info("intake message: a requirement at the plan step, kept as a note (%s) - session=%s",
+                        PT.RULE, inbound.session_id)
+            return MessageOutcome(
+                status=MessageStatus.requirement, awaiting_confirmation=True, note=note,
+                transition=GateTransition(change=GateChange.approval_deferred, revision=revision,
+                                          approval_status=ap.AWAITING))
         if intent == ap.APPROVE_INTENT and not (approval or {}).get("notes_read_first") \
                 and await notes_unread(inbound, locked):
             # A YES BEFORE THE NOTES WERE FINALIZED (NOTE-5): the words are read now - the card shows
@@ -1136,6 +1176,32 @@ async def add_console_note(session_id: uuid.UUID, owner_id: str, text: str, *, s
         fresh = await session_repo.get_for_owner(db, session_id, owner_id,
                                                  organization_id=organization_id)
     return NoteStatus.added, fresh
+
+
+def _ours(content: str, messages: list) -> bool:
+    """A turn the application wrote in the user's name (the stage's Proceed), or a click on a button we offered under
+    our last message: never a requirement of the user's (contracts/user_notes.capture leaves both out too)."""
+    from meshpipeline.application.purpose_map import choices_for
+    from meshpipeline.contracts.user_notes import clicked, system_written
+    if system_written(content):
+        return True
+    asked = next((str(m.get("content") or "") for m in reversed(messages[:-1])
+                  if isinstance(m, dict) and m.get("role") == "assistant"), "")
+    return clicked(content, asked, choices_for)
+
+
+async def _keep_requirement(inbound: InboundMessage, db, *, locked, messages: list, session_repo) -> dict:
+    """NOTE-18: a requirement typed in the chat at the plan step, kept as the user's note exactly as typed, with the
+    files and faces the turn carries - the chat note of that turn (contracts/user_notes.capture keys it the same way,
+    so a later capture of the same turn is not kept twice). Returns the note."""
+    from meshpipeline.contracts.user_notes import SOURCE_CHAT, make, system_written
+    turn = sum(1 for m in messages if isinstance(m, dict) and m.get("role") == "user" and not m.get("_synthetic")
+               and not system_written(m.get("content")))
+    last = messages[-1] if messages and isinstance(messages[-1], dict) else {}
+    note = make(inbound.content, source=SOURCE_CHAT, turn=turn, attachments=list(last.get("attachments") or ()),
+                faces=list(last.get("faces") or ()))
+    await session_repo.set_user_notes(db, inbound.session_id, [note])
+    return note
 
 
 def _carried_here(session: Any, attachments: Sequence[Any], faces: Sequence[Any]) -> dict:

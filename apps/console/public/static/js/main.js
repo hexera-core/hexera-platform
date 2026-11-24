@@ -13,7 +13,7 @@
  * loads this module, and this module is the only thing index.html loads.
  */
 import { apiFetch, setNotifier, useIdentity } from "./api/client.js";
-import { addNote, finalizePartMatches, getChatHistory, getJob, getPartMatches, getPartModel,
+import { finalizePartMatches, getChatHistory, getJob, getPartMatches, getPartModel,
   getPartPicture, pickPartMatch } from "./api/endpoints.js";
 import { dispatch, resultSurface } from "./core/events.js";
 import { beginRun, get as getState, isTerminalStatus, set as setState, waitingCopy }
@@ -221,14 +221,6 @@ function openBox(id, { sessionId = null } = {}) {
   Stage.ensureProc();
 }
 
-/* THE NOTES BOX under the plan: the user's own text, kept as typed; the card redraws with it */
-async function addBriefNote(text, extra = {}) {
-  const d = await addNote(getState.sessionId(), text, extra);
-  Stage.brief(d.brief, addBriefNote, briefParts, proceedPlan);
-  // "use cfMesh" in a note chooses the engine as it does in the chat: said there for the user
-  if (d.say) say(d.say);
-}
-
 /* THE PARTS CHECKLIST under the notes: which parts the notes mean, and the user's fix for one phrase */
 const briefParts = {
   get: () => getPartMatches(getState.sessionId()),
@@ -256,7 +248,9 @@ configureComposer({
   notice: Notice,
   // the user's bubble is handed back: a refused send that carried files takes it away again
   chat: (role, text, extra) => Stage.chat(role, text, undefined, extra),
-  brief: (b) => Stage.brief(b, addBriefNote, briefParts, proceedPlan),
+  pending: () => Stage.pending(),
+  replyLater: (el) => Stage.replyLater(el),
+  brief: (b) => Stage.brief(b, null, briefParts, proceedPlan),
   // a yes before Finalize notes: wait (a minute at most) for the reading the server started
   notesRead: async () => {
     const t0 = Date.now();

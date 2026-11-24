@@ -169,7 +169,7 @@ def test_a_summary_redone_in_the_models_words_keeps_the_conditions():
                                          "mm; outlet (outlet), 221 mm across at (693, 0, 124) mm."},
         {"role": "assistant", "content": F.conditions_question([])},
         {"role": "user", "content": "OK"},
-        {"role": "assistant", "content": "Here's the plan. Add any notes, then press Proceed."},
+        {"role": "assistant", "content": "Here's the plan. Tell me any mesh requirements here, then say go or press Proceed."},
         {"role": "user", "content": "Use snappyHexMesh"},
     ]
     patches = [{"name": "inlet", "type": "inlet", "diameter_mm": 149}, {"name": "outlet", "type": "outlet"}]

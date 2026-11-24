@@ -201,47 +201,23 @@ th,td{border-color:var(--border)}
 .req-card .rc-ck.bad .ic{background:var(--danger-soft);color:var(--danger)}
 .req-card .rc-ck.bad{color:var(--text)}
 .req-card .rc-d{color:var(--text-faint);font-size:var(--fs-sm)}
-/* the user's own notes: a short list, then one quiet line that grows as it is used */
-.req-card .rc-notes-list{margin:0;padding:0 16px 2px;list-style:none}
-.req-card .rc-note{position:relative;padding:3px 0 3px 14px;color:var(--text);font-size:var(--fs-md);
-  line-height:1.5;white-space:pre-wrap;overflow-wrap:anywhere}
-.req-card .rc-note::before{content:'';position:absolute;left:2px;top:.72em;width:4px;height:4px;
-  border-radius:50%;background:var(--stone-muted)}
-.req-card .rc-notes-box{padding:6px 16px 4px}
-.req-card .rc-notes-row{display:flex;align-items:flex-end;gap:8px}
-.req-card .rc-notes-in{flex:1;min-width:0;box-sizing:border-box;height:34px;min-height:34px;max-height:240px;
-  resize:none;overflow-y:auto;padding:7px 10px;font:var(--fs-md)/1.45 var(--sans);color:var(--text);
-  background:var(--surface-2);border:1px solid transparent;border-radius:var(--r-md);
-  transition:border-color .12s,background .12s,min-height .16s cubic-bezier(.25,1,.5,1)}
-.req-card .rc-notes-in::placeholder{color:var(--text-faint)}
-/* a placeholder that wraps in a narrow card never shows a scrollbar; the box grows with typed text */
-.req-card .rc-notes-in:placeholder-shown{overflow-y:hidden;white-space:nowrap;text-overflow:ellipsis}
-.req-card .rc-notes-in:hover{border-color:var(--border)}
-.req-card .rc-notes-in:focus{outline:none;min-height:64px;border-color:var(--focus-edge);background:var(--surface-1)}
-.req-card .rc-notes-add{flex:none;height:34px;padding:0 12px;border:1px solid var(--border);border-radius:var(--r-md);
-  background:var(--surface-2);color:var(--text);font:500 var(--fs-sm)/1 var(--sans);cursor:pointer;
-  transition:background .12s,border-color .12s,opacity .12s}
-.req-card .rc-notes-add:hover:not(:disabled){border-color:var(--border-strong);background:var(--surface-raised)}
-.req-card .rc-notes-add:disabled{opacity:.45;cursor:default}
-.req-card .rc-notes-msg{display:block;margin-top:4px;color:var(--danger);font-size:var(--fs-sm)}
-.req-card .rc-notes-msg:empty{display:none}
 /* the parts the notes mean: one picture, a quiet row per phrase that opens the part list */
-.req-card .rc-pm:empty{display:none}
-.req-card .rc-pm{padding:6px 16px 2px}
+.rc-pm:empty{display:none}
+.rc-pm{padding:6px 16px 2px}
 /* a flow mesh's notes as they were read (NOTES-CFD-1): the reader's own lines, quiet */
-.req-card .rc-pm-lines{margin:2px 0 6px;padding:0;list-style:none}
-.req-card .rc-pm-lines li{padding:2px 0;color:var(--text-muted);font-size:var(--fs-md);line-height:1.5;overflow-wrap:anywhere}
-.req-card .rc-pm-h{margin:2px 0 6px;color:var(--text-faint);font-size:var(--fs-sm)}
-.req-card .rc-pm-wait{padding:2px 0 4px;color:var(--text-faint);font-size:var(--fs-md);
+.rc-pm-lines{margin:2px 0 6px;padding:0;list-style:none}
+.rc-pm-lines li{padding:2px 0;color:var(--text-muted);font-size:var(--fs-md);line-height:1.5;overflow-wrap:anywhere}
+.rc-pm-h{margin:2px 0 6px;color:var(--text-faint);font-size:var(--fs-sm)}
+.rc-pm-wait{padding:2px 0 4px;color:var(--text-faint);font-size:var(--fs-md);
   animation:rc-pm-pulse 1.6s ease-in-out infinite}
 @keyframes rc-pm-pulse{50%{opacity:.45}}
-@media (prefers-reduced-motion:reduce){.req-card .rc-pm-wait{animation:none}}
-.req-card .rc-pm-fig{position:relative;margin:4px 0 10px;text-align:center}
-.req-card .rc-pm-pic{display:inline-block;max-width:100%;max-height:250px;vertical-align:top}
+@media (prefers-reduced-motion:reduce){.rc-pm-wait{animation:none}}
+.rc-pm-fig{position:relative;margin:4px 0 10px;text-align:center}
+.rc-pm-pic{display:inline-block;max-width:100%;max-height:250px;vertical-align:top}
 /* the model in 3D: drag turns it, the wheel zooms; the tags ride on it */
-.req-card .rc-pm-fig.rc-pm-3d{height:300px;overflow:hidden;cursor:grab;touch-action:none}
-.req-card .rc-pm-fig.rc-pm-3d:active{cursor:grabbing}
-.req-card .rc-pm-3d canvas{display:block}
+.rc-pm-fig.rc-pm-3d{height:300px;overflow:hidden;cursor:grab;touch-action:none}
+.rc-pm-fig.rc-pm-3d:active{cursor:grabbing}
+.rc-pm-3d canvas{display:block}
 .pv-tags{position:absolute;inset:0;pointer-events:none;z-index:1}
 .pv-tag{position:absolute;left:0;top:0;margin:-9px 0 0 0;translate:-50% 0;height:18px;min-width:18px;
   padding:0 5px;box-sizing:border-box;border:1.5px solid var(--c);border-radius:9px;background:rgba(255,255,255,.94);
@@ -253,39 +229,58 @@ th,td{border-color:var(--border)}
 .pv-tip{position:absolute;left:0;top:0;z-index:2;padding:3px 8px;border:1px solid var(--border);
   border-radius:var(--r-sm,6px);background:var(--surface-raised);color:var(--text);font:500 var(--fs-sm)/1.35 var(--sans);
   white-space:nowrap;pointer-events:none;box-shadow:0 2px 8px rgba(0,0,0,.25)}
-/* Finalize notes: under the notes box, the one step that reads the parts the words name */
-.req-card .rc-fin{display:flex;align-items:center;justify-content:flex-end;gap:12px;padding:2px 0 8px}
-.req-card .rc-fin-msg{color:var(--danger);font-size:var(--fs-sm)}
-.req-card .rc-fin-msg:empty{display:none}
+/* a reply on its way: quiet, the way a status line is */
+.im.im-pending .txt{color:var(--text-faint);font-size:var(--fs-sm)}
+/* THE PLAN BAR (NOTE-18): pinned just above the chat box while the plan stands - the count that opens the list of
+   what will be applied, a quiet hint, and the plan's one Proceed at the right end */
+#plan-bar{max-width:1060px;margin:0 auto 10px}
+#plan-bar [hidden]{display:none!important}
+#plan-bar .pb-line{display:flex;align-items:center;gap:10px;min-height:34px}
+#plan-bar .pb-count{display:inline-flex;align-items:center;gap:6px;flex:none;height:30px;padding:0 10px;
+  border:1px solid var(--border);border-radius:var(--r-md);background:var(--surface-2);color:var(--text);
+  font:500 var(--fs-sm)/1 var(--sans);cursor:pointer;transition:border-color .12s,background .12s}
+#plan-bar .pb-count:hover{border-color:var(--border-strong);background:var(--surface-raised)}
+/* a small chevron: up while the list is closed (it opens upward), down while it is open */
+#plan-bar .pb-chev{width:5px;height:5px;margin:3px 2px 0 4px;border-right:1.5px solid var(--text-faint);
+  border-bottom:1.5px solid var(--text-faint);transform:rotate(-135deg)}
+#plan-bar .pb-count[aria-expanded="true"] .pb-chev{transform:rotate(45deg);margin-top:-3px}
+/* in the bar the list itself scrolls; a row's chips never get a scroll area of their own */
+#plan-bar .rc-pm-chips{max-height:none;overflow:visible}
+#plan-bar .pb-hint{flex:1;min-width:0;color:var(--text-faint);font-size:var(--fs-sm);white-space:nowrap;overflow:hidden;
+  text-overflow:ellipsis}
+#plan-bar .rc-go{margin-left:auto;flex:none}
+#plan-bar .pb-list{max-height:min(42vh,360px);overflow-y:auto;margin:0 0 8px;padding:8px 8px 4px;
+  border:1px solid var(--border);border-radius:var(--r-md);background:var(--surface-1)}
+#plan-bar .rc-pm{padding:0 8px}
 /* an older reading's rows wait, quiet, while the notes changed since */
-.req-card .rc-pm-body.stale .rc-pm-rows{opacity:.55}
+.rc-pm-body.stale .rc-pm-rows{opacity:.55}
 /* a row per size request: its colour, its words and its size, its parts as small chips under it. Hovered it lights
    its parts on the model; the active one (clicked) carries its colour on the edge and takes clicks on the model. */
-.req-card .rc-pm-item{margin:0 -8px;padding:1px 8px 3px;border-radius:var(--r-md);transition:background .12s,box-shadow .12s}
-.req-card .rc-pm-item:hover,.req-card .rc-pm-item.hot{background:var(--surface-2)}
-.req-card .rc-pm-item.active{background:var(--surface-2);box-shadow:inset 2px 0 0 var(--pm-c)}
-.req-card .rc-pm-row{display:grid;grid-template-columns:8px minmax(0,1fr) auto;align-items:center;gap:10px;
+.rc-pm-item{margin:0 -8px;padding:1px 8px 3px;border-radius:var(--r-md);transition:background .12s,box-shadow .12s}
+.rc-pm-item:hover,.rc-pm-item.hot{background:var(--surface-2)}
+.rc-pm-item.active{background:var(--surface-2);box-shadow:inset 2px 0 0 var(--pm-c)}
+.rc-pm-row{display:grid;grid-template-columns:8px minmax(0,1fr) auto;align-items:center;gap:10px;
   padding:5px 0;color:var(--text);font:var(--fs-md)/1.45 var(--sans);cursor:pointer;outline:none}
-.req-card .rc-pm-item.face .rc-pm-row{cursor:default}
-.req-card .rc-pm-item.face .att-list{margin:0}
-.req-card .rc-pm-row:focus-visible{outline:2px solid var(--accent-line);outline-offset:1px;border-radius:var(--r-sm)}
-.req-card .rc-pm-dot{width:8px;height:8px;border-radius:50%;background:var(--pm-c)}
-.req-card .rc-pm-dot.none{box-sizing:border-box;background:transparent;border:1.5px dashed var(--warn)}
-.req-card .rc-pm-q{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text)}
-.req-card .rc-pm-s{white-space:nowrap;color:var(--text-muted);font-variant-numeric:tabular-nums}
-.req-card .rc-pm-item.unk .rc-pm-q{color:var(--warn)}
-.req-card .rc-pm-chips{display:flex;flex-wrap:wrap;gap:4px;padding:0 0 4px 18px;max-height:84px;overflow-y:auto}
-.req-card .rc-pm-chip{display:inline-flex;align-items:center;gap:1px;height:22px;padding:0 1px 0 8px;box-sizing:border-box;
+.rc-pm-item.face .rc-pm-row{cursor:default}
+.rc-pm-item.face .att-list{margin:0}
+.rc-pm-row:focus-visible{outline:2px solid var(--accent-line);outline-offset:1px;border-radius:var(--r-sm)}
+.rc-pm-dot{width:8px;height:8px;border-radius:50%;background:var(--pm-c)}
+.rc-pm-dot.none{box-sizing:border-box;background:transparent;border:1.5px dashed var(--warn)}
+.rc-pm-q{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text)}
+.rc-pm-s{white-space:nowrap;color:var(--text-muted);font-variant-numeric:tabular-nums}
+.rc-pm-item.unk .rc-pm-q{color:var(--warn)}
+.rc-pm-chips{display:flex;flex-wrap:wrap;gap:4px;padding:0 0 4px 18px;max-height:84px;overflow-y:auto}
+.rc-pm-chip{display:inline-flex;align-items:center;gap:1px;height:22px;padding:0 1px 0 8px;box-sizing:border-box;
   border:1px solid var(--border);border-radius:11px;background:var(--surface-1);color:var(--text-muted);
   font:500 var(--fs-xs)/1 var(--sans);white-space:nowrap;font-variant-numeric:tabular-nums}
-.req-card .rc-pm-item.active .rc-pm-chip{border-color:color-mix(in srgb,var(--pm-c) 45%,var(--border))}
-.req-card .rc-pm-x{display:inline-grid;place-items:center;width:18px;height:18px;padding:0;border:0;border-radius:50%;
+.rc-pm-item.active .rc-pm-chip{border-color:color-mix(in srgb,var(--pm-c) 45%,var(--border))}
+.rc-pm-x{display:inline-grid;place-items:center;width:18px;height:18px;padding:0;border:0;border-radius:50%;
   background:transparent;color:var(--text-faint);font:9px/1 var(--sans);cursor:pointer;transition:background .12s,color .12s}
-.req-card .rc-pm-x:hover{background:var(--surface-raised);color:var(--text)}
-.req-card .rc-pm-x:focus-visible{outline:2px solid var(--accent-line);outline-offset:0}
-.req-card .rc-pm-hint{padding:0 0 4px 18px;color:var(--text-faint);font-size:var(--fs-sm)}
-.req-card .rc-pm-msg{display:block;color:var(--danger);font-size:var(--fs-sm)}
-.req-card .rc-pm-msg:empty{display:none}
+.rc-pm-x:hover{background:var(--surface-raised);color:var(--text)}
+.rc-pm-x:focus-visible{outline:2px solid var(--accent-line);outline-offset:0}
+.rc-pm-hint{padding:0 0 4px 18px;color:var(--text-faint);font-size:var(--fs-sm)}
+.rc-pm-msg{display:block;color:var(--danger);font-size:var(--fs-sm)}
+.rc-pm-msg:empty{display:none}
 .req-card .rc-ck code{font-family:var(--mono);font-size:.9em;color:var(--stone-bright)}
 
 

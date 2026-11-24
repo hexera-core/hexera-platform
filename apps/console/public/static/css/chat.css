@@ -143,22 +143,22 @@
   border:0;border-radius:8px;background:none;color:var(--text-faint);cursor:pointer;transition:color .12s,background .12s}
 .attach-clip:hover:not(:disabled){color:var(--text);background:var(--surface-2)}
 .attach-clip:disabled{opacity:.4;cursor:default}
-.rc-notes-row .attach-clip{width:28px;height:34px;border-radius:var(--r-md)}
 .attach-over{box-shadow:inset 0 0 0 1px var(--focus-edge);border-radius:var(--r-md)}
 /* the chat box's chips and its one plain line sit under the box, as wide as it */
 #input-bar>.box-chips,#input-bar>.box-msg{max-width:1060px;margin-left:auto;margin-right:auto}
 #input-bar>.box-chips,#input-bar>.box-msg{padding-left:40px}
 #app.wb #input-bar>.box-chips,#app.wb #input-bar>.box-msg{max-width:none}
 /* the clip narrows the notes box: its one-line placeholder never shows a sideways scrollbar */
-.req-card .rc-notes-row .rc-notes-in:placeholder-shown{overflow:hidden}
 .box-msg{margin-top:4px;color:var(--danger);font-size:var(--fs-sm)}
 .box-msg:empty{display:none}
-/* what a message or a note carried: a small thumbnail per picture, a chip per file; each opens the stored file */
+/* what a message or a note carried: the picture itself, large enough to read (at most 240 x 180, by its own shape,
+   never stretched past its size; 242 = 240 + the frame's two 1 px sides), a chip per file; each opens the stored file */
 .att-list{display:flex;flex-wrap:wrap;gap:6px;margin:2px 0 6px}
 .im.user .att-list{justify-content:flex-end;max-width:78%}
 .rc-note .att-list{margin:4px 0 2px}
-.att-img{display:block;line-height:0;border:1px solid var(--border);border-radius:var(--r-md);overflow:hidden}
-.att-img img{display:block;width:72px;height:54px;object-fit:cover;background:var(--surface-2)}
+.att-img{display:block;align-self:flex-start;max-width:min(242px,100%);line-height:0;border:1px solid var(--border);border-radius:var(--r-md);overflow:hidden;cursor:zoom-in}
+.att-img img{display:block;width:auto;height:auto;max-width:100%;max-height:180px;background:var(--surface-2)}
+.att-img img:not([src]){width:72px;height:54px}
 .att-file{text-decoration:none;cursor:pointer;padding:0 10px}
 .att-img:hover,.att-file:hover{border-color:var(--border-strong)}
 .att-gone{opacity:.5;pointer-events:none}
