@@ -46,8 +46,22 @@ SIZING_AGAIN = (2.0, 4.0)
 #: SURF-4: a thickness past this share of its sheet's size is said (shell theory holds to about 1/10, SHELL-2);
 #: the user's number still stands
 THICK_SHARE = 0.1
-#: the run's time limit, seconds (sewing is seconds; the shell mesh is bounded by its own deadline, SHMESH-21)
+#: the run's time limit, seconds (sewing is seconds; the shell mesh is bounded by its own deadline, SHMESH-21) - its
+#: usual stop: SHMESH-21e moves it out to a shell mesh priced longer, up to RUN_CAP_S
 RUN_LIMIT_S = 1800
+#: SHMESH-21e: the most the surface run is given (no solid to fall back to: up to 0.8 of what the attempt has left,
+#: as the usual stop) - the Cloud Run job's wall less its margin (fea_driver.ceiling_for, 13,800 s)
+RUN_CAP_S = 13_800
+
+
+def run_limits(left_s: float | None) -> tuple[float, float]:
+    """SURF-3 / SHMESH-21e: (the surface run's usual stop, its hard cap), seconds: RUN_LIMIT_S and RUN_CAP_S, each at
+    most 0.8 of what the attempt has left (the usual stop at least 120 s, the cap never under it)."""
+    limit, cap = float(RUN_LIMIT_S), float(RUN_CAP_S)
+    if left_s is not None:
+        limit = max(120.0, min(limit, 0.8 * left_s))
+        cap = min(cap, 0.8 * left_s)
+    return limit, max(limit, cap)
 SURFACE_LINE = "This file is a surface, not a solid. It is meshed as a shell"
 #: with no thickness given: what the stage says before the run, and what the result says after it
 NO_THICKNESS_YET = ('No thickness given yet. Add it to your notes (for example "1.2 mm thick"), or set it later in '
@@ -768,15 +782,17 @@ def thickness_for(state):
 
 
 async def surface_pass(ws: Path, state, *, job_id: str, run=None, target: dict | None = None, cite=None,
-                       left_s: float | None = None, closed_skin: bool = False) -> dict | None:
+                       left_s: float | None = None, closed_skin: bool = False, env: dict | None = None) -> dict | None:
     """SURF-3: the FEA driver's step for a file with no solid whose faces do not close. Reads the user's thickness
     (SURF-4), runs the surface run in a process of its own and cites what it found. Returns the run's record when
     the file IS a surface part (made or not - there is no solid to fall back to), None when it is not (the driver
-    carries on as before)."""
+    carries on as before). `env`: the environment the run's process gets (fea_driver.shell_env; the run's stops are
+    added to it, SHMESH-31g/21e); None: this process's, no stops told."""
     import asyncio
     import subprocess
 
     from meshpipeline.engines.fea_plan import STAGED_SOLIDS
+    from meshpipeline.engines.gmsh import shell_adapter as sa
 
     step = next((ws / n for n in STAGED_SOLIDS if (ws / n).exists()), None)
     if step is None:
@@ -795,20 +811,20 @@ async def surface_pass(ws: Path, state, *, job_id: str, run=None, target: dict |
                                                          if k in target} if target and target.get("elements") else None,
             "stitch": not sewing.off, "sew_mm": sewing.mm, "holes_mm": sewing.holes_mm,
             "mend": not sewing.keep_surfaces, **({"closed_skin": True} if closed_skin else {})}
-    limit = float(RUN_LIMIT_S)
-    if left_s is not None:
-        limit = max(120.0, min(limit, 0.8 * left_s))
+    limit, cap = run_limits(left_s)
     try:
-        proc = await asyncio.to_thread(
-            subprocess.run, [sys.executable, "-m", __name__, str(ws), str(step), "staged", json.dumps(args)],
-            capture_output=True, text=True, timeout=limit, check=False)
+        # (SHMESH-31g/21e: the shell mesh is told this run's stops; one priced longer moves the stop out, never past
+        # `cap`)
+        proc, _allowed = await asyncio.to_thread(
+            sa.run_following, [sys.executable, "-m", __name__, str(ws), str(step), "staged", json.dumps(args)],
+            base_s=limit, cap_s=cap, folder=ws, env=env)
         rec = read(ws)
         if not rec:
             rec = {"made": False, "surface": {"kind": "unread"},
                    "why": f"the surface run stopped (exit {proc.returncode})"}
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as exc:
         rec = {"made": False, "surface": {"kind": "surface"},
-               "why": f"it took longer than the {int(limit) // 60} minutes allowed"}
+               "why": sa.run_stopped_words(float(exc.timeout or limit), ws)}
     except Exception as exc:  # noqa: BLE001 - not a surface run: the driver carries on as before
         logger.warning("surface run: not started (%s)", type(exc).__name__)
         return None
@@ -916,6 +932,6 @@ if __name__ == "__main__":
     raise SystemExit(main())
 
 
-__all__ = ["CLOSED_SKIN_LIMIT_S", "CLOSED_SKIN_UNFINISHED", "GATE", "NO_THICKNESS", "NO_THICKNESS_YET", "READING", "SIZING_AGAIN", "SIZING_DIVISIONS", "clean_words",
+__all__ = ["RUN_CAP_S", "run_limits", "CLOSED_SKIN_LIMIT_S", "CLOSED_SKIN_UNFINISHED", "GATE", "NO_THICKNESS", "NO_THICKNESS_YET", "READING", "SIZING_AGAIN", "SIZING_DIVISIONS", "clean_words",
            "closed_skin_check", "closed_skin_no_wall", "closed_skin_words", "deck_notes", "gap_words", "is_surface", "line", "main", "read", "requirements_in", "run", "said_shell",
            "sizing_wall", "stitch_for", "surface_pass", "thickness_for", "words"]
