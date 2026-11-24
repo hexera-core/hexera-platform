@@ -418,10 +418,23 @@ def load_wave(root: Path, wave: Any, split_rows: Iterable[Any], *, n_shards: int
             if s["prov"].get("ledger") != "shard":
                 raise ReportRefused(f"{s['dir'].name}: a wave with a model arm ran without a shard ledger "
                                     f"(provenance {s['prov'].get('ledger')!r})")
-            spent = sum(r.model_usd for r in s["rows"])
-            if spent > shard_cap + SPEND_EPS_USD:
-                raise ReportRefused(f"{s['dir'].name}: spent ${spent:.4f}, over its slice ${shard_cap:.4f} "
-                                    f"of the ${wave.cap_usd:g} {wave.wave_type} cap: the ledger did not bind")
+        original = _original_shard_spend(shards)
+        if original is not None:
+            # A REGROUPED wave (snap-v4's per-arm groups merged into one wave): a merged shard pools rows from several
+            # ORIGINAL shards, so its sum is not what any ledger bound. Each original shard ran its own ledger slice,
+            # the wave type's cap over ITS group's shard count, and is checked against exactly that (lane C13: v4's
+            # merged report refused a merged shard while every original AI shard stayed under its cap, max $1.16).
+            for g, n_g, i, spent in original:
+                cap_g = wave.cap_usd / n_g
+                if spent > cap_g + SPEND_EPS_USD:
+                    raise ReportRefused(f"group {g} shard {i}/{n_g}: spent ${spent:.4f}, over its slice ${cap_g:.4f} "
+                                        f"of the ${wave.cap_usd:g} {wave.wave_type} cap: the ledger did not bind")
+        else:
+            for s in shards:
+                spent = sum(r.model_usd for r in s["rows"])
+                if spent > shard_cap + SPEND_EPS_USD:
+                    raise ReportRefused(f"{s['dir'].name}: spent ${spent:.4f}, over its slice ${shard_cap:.4f} "
+                                        f"of the ${wave.cap_usd:g} {wave.wave_type} cap: the ledger did not bind")
 
     by_sha = {r.sha256: r for r in split}
     for s in shards:
@@ -604,6 +617,29 @@ def _excluded_block(excluded: Sequence[Mapping[str, Any]], n_files: int,
 #: not demote: a flagged file is still clean and still in every rate. The owner reads the list.
 GAMING_VOLUME_CHANGE = 0.25   # |volume_ratio - 1| above this
 GAMING_BBOX_SHRINK = 0.10     # bbox_ratio below 1 - this
+
+
+def _original_shard_spend(shards: Sequence[dict]) -> list[tuple[str, int, int, float]] | None:
+    """(group, its shard count, shard index, spend) for every ORIGINAL shard of a regrouped wave, from the merged
+    provenance's `groups[g].shard_spend_usd` (snap-v4 regroup.py). None when the wave was not regrouped or a merged
+    shard does not carry the numbers, so the per-shard check applies as before. Every merged shard carries the SAME
+    groups block; a disagreement is refused, not averaged."""
+    blocks = [s["prov"].get("groups") for s in shards if s["prov"].get("regrouped")]
+    if not blocks or len(blocks) != len(shards):
+        return None
+    if any(not isinstance(b, dict) or any("shard_spend_usd" not in v for v in b.values()) for b in blocks):
+        return None
+    first = json.dumps({g: v["shard_spend_usd"] for g, v in blocks[0].items()}, sort_keys=True)
+    if any(json.dumps({g: v["shard_spend_usd"] for g, v in b.items()}, sort_keys=True) != first for b in blocks):
+        raise ReportRefused("the merged shards disagree on the original shards' spend: the regroup is inconsistent")
+    out = []
+    for g, v in sorted(blocks[0].items()):
+        spends = [float(x) for x in v["shard_spend_usd"]]
+        n_g = int(v.get("n_shards") or len(spends))
+        if len(spends) != n_g:
+            raise ReportRefused(f"group {g}: {len(spends)} original shard spends for {n_g} shards")
+        out += [(g, n_g, i + 1, x) for i, x in enumerate(spends)]
+    return out
 
 
 def gaming_why(row: ArmRow) -> list[str]:

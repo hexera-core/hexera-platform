@@ -1386,3 +1386,41 @@ def test_a_valid_unclean_output_inside_the_limits_is_not_flagged(tmp_path) -> No
     gv = report.build_report(load(tmp_path, split))["gaming_flags_valid_unclean"]
     assert all(b["files"] == 0 for b in gv["arms"].values())
     assert "none in this wave" in report.render_text(report.build_report(load(tmp_path, split)))
+
+
+# ------------------------------------------------------------------ C13 (LEAD-3): spend bound per ORIGINAL shard
+
+NORMAL4 = ev.WAVES["snap_v2_dev"]   # the four arms, a NORMAL wave: $50 cap, so a merged slice of $25 over 2 shards
+
+
+def _pooled_wave(tmp_path, groups):
+    """v4's merged-dev case: merged shard 1 pools $1 AI rows from ~40 files (about $40, over the merged slice $25 of
+    the $50 cap / 2), while the regroup's per-ORIGINAL-shard spends are in `groups`. Every file stays under the $1
+    per-file ceiling."""
+    split = split_rows(80)
+
+    def rows(b, i, a):
+        hot = a == "search_ai" and ev.shard_of(b.sha256, 1, 2)
+        return arm_row(b, i, a, model=1.0 if hot else 0.0)
+
+    build(tmp_path, NORMAL4, split, rows_for=rows, prov={"regrouped": True, "groups": groups})
+    return split
+
+
+def test_a_merged_shard_over_its_slice_passes_when_every_original_shard_stayed_under_its_own(tmp_path) -> None:
+    split = _pooled_wave(tmp_path, {"dev_ai": {"n_shards": 4, "shard_spend_usd": [10.0, 10.0, 10.0, 10.0]},
+                                    "dev_det": {"n_shards": 2, "shard_spend_usd": [0.0, 0.0]}})
+    rep = report.build_report(load(tmp_path, split, wave=NORMAL4))   # the per-merged-shard check refused this
+    assert rep["status"] in ("OK", "UNRELIABLE")
+
+
+def test_an_original_shard_over_its_own_slice_is_refused_by_name(tmp_path) -> None:
+    split = _pooled_wave(tmp_path, {"dev_ai": {"n_shards": 4, "shard_spend_usd": [15.0, 10.0, 10.0, 5.0]}})
+    with pytest.raises(report.ReportRefused, match=r"group dev_ai shard 1/4: spent \$15.0000, over its slice \$12.5000"):
+        load(tmp_path, split, wave=NORMAL4)
+
+
+def test_without_the_original_numbers_the_merged_shard_check_still_binds(tmp_path) -> None:
+    split = _pooled_wave(tmp_path, {"dev_ai": {"n_shards": 4}})   # an older regroup: no shard_spend_usd
+    with pytest.raises(report.ReportRefused, match="over its slice"):
+        load(tmp_path, split, wave=NORMAL4)
