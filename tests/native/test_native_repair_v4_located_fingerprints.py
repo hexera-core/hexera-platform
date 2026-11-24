@@ -136,3 +136,41 @@ def test_a_located_gmsh_failure_gets_a_defeature_of_exactly_the_face_it_named(po
     assert rows and rows[0].params["source"] == "located" and rows[0].targets == named
     new, diff = REGISTRY["defeature"].apply(pool, ws.fork(), named, dict(rows[0].params), timeout_s=120)
     assert set(named) <= set(diff.declared_removed) and diff.params["removed_groups"]
+
+
+def _boxes_at(step: str, scale: float) -> dict[int, tuple]:
+    gmsh.initialize(interruptible=False)
+    try:
+        gmsh.option.setNumber("General.Terminal", 0)
+        gmsh.option.setNumber("Geometry.OCCScaling", scale)
+        gmsh.model.occ.importShapes(step)
+        gmsh.model.occ.synchronize()
+        return {int(t): tuple(gmsh.model.getBoundingBox(2, t)) for _, t in gmsh.model.getEntities(2)}
+    finally:
+        gmsh.finalize()
+
+
+@pytest.mark.parametrize("scale", [1e-3, 1.0], ids=["prod_metres", "mm_members"])
+def test_every_surface_box_names_a_live_face_at_prods_scale_and_the_mm_members(pool: WorkerPool, tmp_path: Path,
+                                                                               scale: float) -> None:
+    """D17: gmsh pads getBoundingBox by 1e-7 MODEL units; gmsh_prod imports in metres, where that is 1e-4 mm, about a
+    fingerprint cell. `_located` now takes it off before the scale divide: every surface of the part names a live
+    face at prod's scale, and the millimetre members (gmsh_default, gmsh_alt) still match as they did."""
+    from meshpipeline.cad.repair_v4.sites import _near_fingerprints
+
+    step = _part(tmp_path)
+    read = pool.call("read_step_xcaf", {"path": step, "brep_out": str(tmp_path / "in.brep")}, timeout_s=300)
+    assert read.ok and read.value is not None, read.error
+    ws = Workspace.from_brep(pool, read.value["brep"], read.value.get("labels") or {})
+    live = set(ws.ids.values()) | set(_near_fingerprints(pool, ws))
+    boxes = _boxes_at(step, scale)
+    failure = SimpleNamespace(kind="other", surfaces=tuple(boxes), surfaces_from_log=False, stage="3d", point=None)
+    located = mesh_child._located(failure, boxes, scale, quantum_for(mesh_child._diagonal(boxes) / scale))
+    missed = [loc["mesher_tag"] for loc in located if loc["entity"] not in live]
+    assert len(located) == len(boxes) and not missed, missed
+    if scale != 1.0:   # and the old arithmetic is what missed: the regression this pins
+        from meshpipeline.cad.repair.identity import fingerprint_of
+        q = quantum_for(mesh_child._diagonal(boxes) / scale)
+        old = [fingerprint_of("face", {"bbox_min": [v / scale for v in b[:3]], "bbox_max": [v / scale for v in b[3:]]},
+                              quantum=q) for b in boxes.values()]
+        assert sum(fp in live for fp in old) < len(boxes)

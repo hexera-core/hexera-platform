@@ -75,7 +75,8 @@ def test_a_file_with_no_faithful_measurement_can_still_be_clean() -> None:
 
 
 def test_the_verdict_code_version_is_bumped_past_the_gating_definition() -> None:
-    assert VERDICT_CODE_VERSION == "crs-v4.verdict.4"
+    # past .4 (the gating definition); .5 is lane D17's located-padding fix, which bumps it again
+    assert int(VERDICT_CODE_VERSION.rsplit(".", 1)[1]) >= 4
 
 
 def test_faithful_is_measured_even_when_layer_one_fails_and_never_changes_the_verdict(monkeypatch) -> None:

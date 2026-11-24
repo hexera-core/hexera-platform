@@ -39,7 +39,12 @@ from meshpipeline.settings.cad_repair import verdict_cache_uri
 #: either one is unreadable by the other: the timeout-rule code never stored `located`, so a .2 entry from it
 #: would hand the search the old unlocated answer, which is the very thing the lane C5 note forbids. The rule at
 #: the top of this file is per result-altering change, so two of them merged is one further bump.
-VERDICT_CODE_VERSION = "crs-v4.verdict.4"  # .4: clean = valid + panel; layer 3 reports and no longer gates
+#: .4: clean = valid + panel; layer 3 reports and no longer gates
+#: .5 (lane D17): gmsh_prod's `located` faces are fingerprinted without gmsh's bounding-box padding
+#: (`mesh_child.box_mm`). Pass/fail, min SICN and element counts are unchanged (checked field by field), but `located`
+#: is part of the cached panel result, and a .4 entry would hand the search gmsh_prod's old fingerprints, which
+#: matched almost no workspace face (1 of 15 on the measured file).
+VERDICT_CODE_VERSION = "crs-v4.verdict.5"
 logger = logging.getLogger(__name__)
 CACHEABLE_STATUSES = ("pass", "fail")
 

@@ -213,6 +213,37 @@ def worst(ids: Sequence[int], qualities: Sequence[float], n: int) -> list[int]:
     return [int(ids[i]) for i in order[:n]]
 
 
+#: gmsh's `getBoundingBox` pads every box by 1e-7 MODEL units on each side (measured, lane D17: a planar face at
+#: z = 0 reads z in [-1e-7, 1e-7] whether gmsh imported in millimetres or in metres). The kernel's own face box
+#: (`BRepBndLib.Add`, which `ws_kernel.fingerprint` reads) carries the face's tolerance, 1e-7 MILLIMETRES for a
+#: default face, so a millimetre import matches it as it stands. gmsh_prod imports in METRES (`Geometry.OCCScaling`
+#: 1e-3, as the FEA adapter reads the part), so there the same 1e-7 is 1e-4 mm: against the fingerprint quantum of
+#: 1.28e-4 mm at a 104 mm diagonal (`identity.quantum_for`) that is about 0.8 of a cell, and the rounded box lands
+#: in the next cell. Measured on dev db90265b9b: gmsh_prod's surfaces matched 1 of 15 workspace faces as they were,
+#: 15 of 15 with the padding taken off. So gmsh_prod - the member that fails most - had its failures placed on no
+#: face, and every aimed op (D16's located defeature) missed it.
+GMSH_BOX_PAD = 1e-7
+#: the padding the kernel's box carries for a default-tolerance face, in mm
+KERNEL_BOX_PAD_MM = 1e-7
+
+
+def box_mm(box: Sequence[float], scale: float) -> list[float]:
+    """A gmsh surface box (model units, padded) as the kernel would box the same face, in mm: gmsh's padding is taken
+    off in MODEL units before the scale divide and the kernel's put back in mm. At scale 1 (the millimetre members)
+    the two cancel, and the box is returned AS IT IS (not round-tripped through the arithmetic, which could move a
+    coordinate by one ulp across a half-cell boundary), so only gmsh_prod's boxes change. A box thinner than the
+    padding (a planar face) keeps its centre rather than inverting."""
+    if scale == 1.0:
+        return [float(v) for v in box]
+    out = []
+    for low, high in zip(box[:3], box[3:], strict=True):
+        lo, hi = (low + GMSH_BOX_PAD) / scale - KERNEL_BOX_PAD_MM, (high - GMSH_BOX_PAD) / scale + KERNEL_BOX_PAD_MM
+        if lo > hi:
+            lo = hi = (low + high) / 2 / scale
+        out.append((lo, hi))
+    return [lo for lo, _ in out] + [hi for _, hi in out]
+
+
 def located_from_nodes(gmsh, groups: Sequence[Sequence[int]], boxes: dict[int, tuple], scale: float,
                        quantum: float, *, boundary_only: bool = False) -> list[dict]:
     """Locations from groups of mesh nodes (a failing triangle, a bad tet): the surfaces the nodes lie on, named by
@@ -242,7 +273,7 @@ def located_from_nodes(gmsh, groups: Sequence[Sequence[int]], boxes: dict[int, t
         box = boxes.get(tag)
         if box is None:
             continue
-        mm = [v / scale for v in box]
+        mm = box_mm(box, scale)
         entity = fingerprint_of("face", {"bbox_min": mm[:3], "bbox_max": mm[3:]}, quantum=quantum)
         if entity:
             named.append({"entity": entity, "xyz": None, "mesher_tag": f"surface {tag}"})
@@ -299,7 +330,7 @@ def _located(failure, boxes: dict[int, tuple], scale: float, quantum: float) -> 
         box = boxes.get(int(tag))
         if box is None:
             continue
-        mm = [v / scale for v in box]
+        mm = box_mm(box, scale)
         entity = fingerprint_of("face", {"bbox_min": mm[:3], "bbox_max": mm[3:]}, quantum=quantum)
         found.append({"entity": entity or None, "xyz": None, "mesher_tag": f"surface {int(tag)}"})
     if failure.point is not None:

@@ -102,3 +102,30 @@ def test_the_capture_sees_c_level_output_on_both_streams_and_gives_it_back() -> 
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
     assert "CAPTURED [(204, 324, 326), (203, 271, 282)]" in out.stdout
     assert "el1 = np = 3 204 324 326" in out.stdout and "[203, 271, 282]" in out.stderr  # given back
+
+
+# ------------------------------------------------------------------ D17: gmsh's box padding, in model units
+
+def test_a_millimetre_box_is_unchanged_so_the_mm_members_locate_exactly_as_before() -> None:
+    box = (1.7945, -5.0800001, -1e-07, 6.8745, 1e-07, 20.3200001)
+    assert mesh_child.box_mm(box, 1.0) == list(box)                # bit for bit
+
+
+def test_a_metre_box_loses_gmshs_padding_and_gets_the_kernels_back() -> None:
+    """gmsh_prod imports in metres: gmsh's 1e-7 pad is 1e-4 mm there. The result is the kernel's box: the true extent
+    plus 1e-7 mm, so the fingerprint lands in the kernel's cell."""
+    true = (10.0, 20.0, 0.0, 30.0, 40.0, 5.0)
+    gmsh_box = tuple(v / 1000.0 - 1e-7 for v in true[:3]) + tuple(v / 1000.0 + 1e-7 for v in true[3:])
+    got = mesh_child.box_mm(gmsh_box, 1e-3)
+    want = [v - 1e-7 for v in true[:3]] + [v + 1e-7 for v in true[3:]]
+    assert all(abs(a - b) < 1e-9 for a, b in zip(got, want, strict=True)), (got, want)
+    from meshpipeline.cad.repair.identity import fingerprint_of, quantum_for
+    q = quantum_for(104.0)
+    kernel = fingerprint_of("face", {"bbox_min": want[:3], "bbox_max": want[3:]}, quantum=q)
+    assert fingerprint_of("face", {"bbox_min": got[:3], "bbox_max": got[3:]}, quantum=q) == kernel
+
+
+def test_a_planar_face_thinner_than_the_padding_keeps_its_plane() -> None:
+    got = mesh_child.box_mm((0.0, 0.0, 0.005 - 1e-7, 0.01, 0.01, 0.005 + 1e-7), 1e-3)
+    assert abs(got[2] - 5.0) < 1e-6 and abs(got[5] - 5.0) < 1e-6 and got[2] <= got[5]
+
