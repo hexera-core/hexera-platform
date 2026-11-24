@@ -475,12 +475,27 @@ def params_for(op: str, defect: Defect, *, pair: tuple[StableId, StableId] | Non
         bodies = solids or [b for b in (clash or {}).values() if isinstance(b, str) and b[:1] in ("S", "B")]
         if not bodies:
             raise NoParameters("no bodies named at this defect")
+        # THE FUZZY VALUE IS ZERO, and that is what the measurement says - not an absence of one.
+        #
+        # The design said "fuse/cut fuzzy = the measured gap/clash", and I implemented 1.1x the clash. Two
+        # things from the wave and from lane D's table say that was wrong. Lane D's oracle won body_overlap
+        # with `fuzzy_mm: 0.0` on every one of its 7 conformalise files and its 8 fuse files - there is not a
+        # single non-zero fuzzy among them. And on 8c6a3f2186e7, whose three pairs really do overlap (308, 458
+        # and 24 mm3 of common volume, measured), a 1.375 mm fuzzy made `conformalise` return `cut_degenerate`
+        # and `fuse` say `nothing_to_fuse: the bodies do not touch or overlap` - a fuzzy that large moves the
+        # Boolean's own tolerance far enough that it stops seeing the interface it was given.
+        #
+        # So the clash is what SELECTS and ORDERS the repair, and it is reported in the trace; the Boolean runs
+        # at the kernel's own tolerance.
         measured = (m.get("clash_by_pair") or {}).get(pair_key(*pair)) if pair else None
         if measured is None and clash is not None:
             measured = float(clash["dist_mm"])
-        fuzzy = 0.0 if measured is None else FUZZY_MARGIN * float(measured)
+        fuzzy = 0.0
         if op == "fuse":
             return sorted(set(bodies)), {"fuzzy_mm": fuzzy}
+        # `cut_by:<id>` names the body that is KEPT whole; the other is cut back off it. With no volume for the
+        # pair the choice is the lower id, which is deterministic and no worse than a coin toss - lane D's
+        # winners name every body in turn across its files, so the table has no preference to copy.
         keep = sorted(set(bodies))[0]
         return sorted(set(bodies)), {"mode": f"cut_by:{keep}", "fuzzy_mm": fuzzy}
     if op == "split_by_proximity":

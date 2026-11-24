@@ -88,16 +88,17 @@ def test_two_SEPARATE_overlaps_are_two_defects() -> None:
     assert [d.pairs for d in defects] == [(("B1", "B2"),), (("B3", "B4"),)]
 
 
-def test_a_pair_is_repaired_with_ITS_own_measured_clash_not_the_clusters_worst() -> None:
+def test_a_pairs_OWN_measured_clash_is_what_its_line_reports() -> None:
     site = _site("S1", entities=["B1", "B2", "B3"],
                  graph={"clashes": [{"a": "B1", "b": "B2", "dist_mm": 0.4},
                                     {"a": "B2", "b": "B3", "dist_mm": 0.1}]})
     [defect] = seq.defects_of(_V([_Finding("body_overlap", ["B1", "B2"]),
                                   _Finding("body_overlap", ["B2", "B3"])]), [site])
-    _t, mild = seq.params_for("fuse", defect, pair=("B2", "B3"))
-    _t, worst = seq.params_for("fuse", defect, pair=("B1", "B2"))
-    assert mild["fuzzy_mm"] == pytest.approx(seq.FUZZY_MARGIN * 0.1)
-    assert worst["fuzzy_mm"] == pytest.approx(seq.FUZZY_MARGIN * 0.4)
+    # each pair's own measured clash is on the defect and in its trace line, and both run at zero fuzzy
+    assert defect.measurement["clash_by_pair"] == {"B1|B2": 0.4, "B2|B3": 0.1}
+    assert "clash 0.1 mm" in seq.defect_line(defect, pair=("B2", "B3"))
+    assert "clash 0.4 mm" in seq.defect_line(defect, pair=("B1", "B2"))
+    assert seq.params_for("fuse", defect, pair=("B2", "B3"))[1]["fuzzy_mm"] == 0.0
 # --- the rule table ------------------------------------------------------------------------------------------
 
 def test_the_table_is_what_lane_Ds_rows_derive_ranked_by_DISTINCT_FILES() -> None:
@@ -129,11 +130,17 @@ def test_remove_smalls_width_comes_from_the_measured_face_not_a_ladder() -> None
     assert params["max_width_mm"] == pytest.approx(seq.REMOVE_SMALL_MARGIN * 11.4)
 
 
-def test_a_fuzzy_value_comes_from_the_measured_clash() -> None:
+def test_the_fuzzy_value_is_ZERO_and_the_clash_only_selects_the_repair() -> None:
+    """Lane D's oracle won body_overlap with fuzzy_mm 0.0 on every one of its 7 conformalise and 8 fuse files,
+    and on 8c6a3f2186e7 - whose three pairs really do overlap, 308/458/24 mm3 measured - a 1.375 mm fuzzy made
+    conformalise return cut_degenerate and fuse say "the bodies do not touch or overlap". A fuzzy that large
+    moves the Boolean's own tolerance past the interface it was given. The clash picks and orders the repair
+    and is reported in the trace; the Boolean runs at the kernel's tolerance."""
     defect = _defect("body_overlap", entities=("B1", "B2"),
                      measurement={"clash": {"a": "B1", "b": "B2", "dist_mm": 0.25}})
-    _t, params = seq.params_for("fuse", defect)
-    assert params["fuzzy_mm"] == pytest.approx(seq.FUZZY_MARGIN * 0.25)
+    for op in ("fuse", "conformalise"):
+        _t, params = seq.params_for(op, defect)
+        assert params["fuzzy_mm"] == 0.0
 
 
 def test_a_defect_with_no_measurement_gets_NO_repair_rather_than_a_guessed_parameter() -> None:
@@ -375,7 +382,7 @@ def test_the_line_says_WHICH_pair_of_a_cluster_and_its_own_measurement() -> None
         out = _cluster_run(lambda *a, **k: _local(seconds=0.5))
     assert out.rounds[0].steps[0].startswith("body_overlap on B1+B2 (clash 0.4 mm) -> conformalise{")
     assert out.rounds[0].steps[1].startswith("body_overlap on B2+B3 (clash 0.1 mm) -> conformalise{")
-    assert "fuzzy_mm=0.11" in out.rounds[0].steps[1]       # the pair's OWN clash, not the cluster's worst
+    assert "fuzzy_mm=0" in out.rounds[0].steps[1]          # the Boolean runs at the kernel's own tolerance
 
 
 def test_an_INCONCLUSIVE_verdict_stops_the_arm_and_says_so_rather_than_crashing() -> None:
