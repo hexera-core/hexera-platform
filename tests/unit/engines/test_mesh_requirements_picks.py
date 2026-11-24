@@ -46,14 +46,18 @@ def test_a_here_place_gets_the_picked_faces_and_the_flow_route_says_cells():
     assert req["rows"][0]["asked"].startswith("finer cells at the 2 faces you picked")
 
 
-def test_a_named_place_or_the_whole_mesh_is_left_as_written():
-    notes = [{"text": "3 mm on the flange. Global size 10 mm everywhere", "source": "console", "faces": [BORE]}]
+def test_a_named_place_typed_with_a_pick_is_the_pick_and_the_whole_mesh_is_left_as_written():
+    # ONE RULE (NOTE-17, picked_for): the words of a note sent with a face picked are for that face whatever place
+    # they name - the card (part_matches.with_faces) shows the same face - unless they say the whole mesh
+    notes = [{"text": "3 mm on the bore. Global size 10 mm everywhere", "source": "console", "faces": [BORE]}]
     req = _read(notes, _answer(
         sizes=[{"what": "global", "value": 10, "unit": "mm", "quote": "Global size 10 mm everywhere"}],
-        local=[{"where": "the flange", "what": "size", "value": 3, "unit": "mm", "quote": "3 mm on the flange"}]))
+        local=[{"where": "the bore", "what": "size", "value": 3, "unit": "mm", "quote": "3 mm on the bore"}]))
     assert req["sizes"]["global_mm"] == 10.0
     (loc,) = req["local"]
-    assert loc["where"] == "the flange" and "faces" not in loc
+    assert loc["faces"] == ["Face_12"] and loc["where"] == "the face you picked (Face 12 · round Ø15 mm)"
+    assert MR.picked_for("3 mm on the bore", own_notes(notes)) == [BORE]
+    assert MR.picked_for("Global size 10 mm everywhere", own_notes(notes)) is None
 
 
 def test_only_the_note_that_carries_the_pick_is_bound():

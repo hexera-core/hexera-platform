@@ -232,6 +232,16 @@ def test_a_face_and_a_file_go_together_a_refused_send_keeps_both_and_the_face_lo
 
 def test_the_checklist_shows_a_picked_face_and_a_click_in_the_parts_view_with_no_row_open_picks_a_face(live):
     from test_brief_part_matches import MODEL, SEEN_AT, _stage_under
+
+    from meshpipeline.application import part_matches as PM
+    # the server's row (NOTE-17's one rule, mesh_requirements.picked_for): the part reader tied the words to a hole
+    # area (the live fault showed "a hole, 22 mm across", picked false); with the bore picked the row is the face's
+    face = {"id": "Face_12", "label": "Face 12 · round Ø15 mm", "sig": {"area_m2": 0.0004, "centroid_m": [0, 0, 0]}}
+    read = {"phrase": 1, "words": "2 mm elements here", "quote": "2 mm elements here", "parts": ["Feature_4"],
+            "parts_text": "a hole, 22 mm across", "size": "2 mm", "picked": False, "lit": ["Feature_4"]}
+    (served,) = PM.with_faces({"status": "done", "rows": [read], "unsure": [], "inside": {"Feature_4": "Part_1"}},
+                              [{"text": "2 mm elements here", "source": "console", "faces": [face]}])["rows"]
+    assert served["picked"] is True and served["parts"] == [] and served["faces"][0]["id"] == "Face_12", served
     _stage_under(live)
     live.evaluate("""(async () => {
       const { Stage } = await import('/static/js/render/stage.js');
@@ -240,9 +250,7 @@ def test_the_checklist_shows_a_picked_face_and_a_click_in_the_parts_view_with_no
       window.__chips = await import('/static/js/shell/chips.js');
       Stage.mount();
       __MODEL__
-      done.rows.push({phrase: 1, words: '2 mm here', quote: '2 mm here', parts: [], size: '2 mm',
-                      parts_text: 'the face you picked (Face 12 · round Ø15 mm)',
-                      faces: [{id: 'Face_12', label: 'Face 12 · round Ø15 mm'}]});
+      done.rows.push(__SERVED__);
       const real = window.fetch;
       window.__asked = 0;
       window.fetch = (u, o) => String(u).includes('/check/faces/at')
@@ -254,9 +262,9 @@ def test_the_checklist_shows_a_picked_face_and_a_click_in_the_parts_view_with_no
                      pick: async (i, ids) => { window.__picks.push([i, ids]); return null; },
                      mount: async (h, m, o) => (window.__view = await mountPartsView(h, m, o)),
                      host: () => partsHost(), drop: (el) => dropPartsHost(el)};
-      Stage.brief({purpose: 'structural', engine: 'gmsh', user_notes: [{text: 'the rail'}, {text: '2 mm here',
+      Stage.brief({purpose: 'structural', engine: 'gmsh', user_notes: [{text: 'the rail'}, {text: '2 mm elements here',
                    faces: [{id: 'Face_12', label: 'Face 12 · round Ø15 mm'}]}], part_matches: done}, async () => {}, parts);
-    })()""".replace("__MODEL__", MODEL), timeout=40)
+    })()""".replace("__MODEL__", MODEL).replace("__SERVED__", json.dumps(served)), timeout=40)
     live.wait_for("window.__view && window.__view.debug.ready()", timeout=40, what="the parts model to be drawn")
     # THE CHECKLIST, BEFORE APPROVAL: the size typed with the pick shows the face's own chip, not a part
     card = live.evaluate("""(() => { const f = document.querySelector('.rc-pm-item.face');

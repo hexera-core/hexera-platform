@@ -2778,12 +2778,15 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
             read_early = PS.with_picks(read_early, MR.requirements_of(asked), surface)
             if read_early.get("status") != "none":
                 _cite(job_id, PS.decisions(read_early))
-            SP.write(ws, SP.from_reading(read_early))
+            # SHMESH-52b: a hole-like or picked face keeps its triangles, so a face the shell makes an edge of is sized
+            # on that edge
+            SP.write(ws, SP.with_shapes(SP.from_reading(read_early), surface))
     shelled = await shell_pass(ws, state, job_id=job_id, run=run, target=target)
     if shelled and shelled.get("places"):
         from meshpipeline.engines import shell_places as SP
         _cite(job_id, [{"stage": SHELL_GATE, "decided": "sizes in named places", "rule": SP.RULE,
-                        "value": sum(1 for p in shelled["places"].get("places") or [] if p.get("faces")),
+                        "value": sum(1 for p in shelled["places"].get("places") or []
+                                  if p.get("faces") or p.get("edges")),
                         "inputs": {"places": [{k: p.get(k) for k in ("id", "name", "ask", "min_mm", "max_mm",
                                                                       "faces", "set_mm", "why")}
                                               for p in shelled["places"].get("places") or []]},

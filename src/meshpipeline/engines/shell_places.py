@@ -9,9 +9,12 @@ words. Which faces of the CAD that place is comes from the parts reading (NOTE-4
 On a shell every mid-face knows its body and the two CAD faces it is the middle of (cad/midsurface's record), so:
 
 * a part is every sewn face whose mid-face is of that body;
-* an area is every sewn face whose mid-face was made from one of the area's CAD faces. A hole, a bore or a notch is
-  only an EDGE of the shell (the shell is the middle of the plate) and a solid boss is not in the shell at all: such
-  an area meets no mid-face and is told not applied, with why.
+* an area is every sewn face whose mid-face was made from one of the area's CAD faces. A solid boss is not in the
+  shell at all: told not applied, with why.
+* SHMESH-52b: a hole's bore, a notch, the plate's edge wall - a face picked on the model or a named hole that meets
+  no mid-face - is only an EDGE of the shell (the shell is the middle of the plate). Its size goes on the mid-surface
+  curves that lie on that face (`edge_curves`, found on the mesher's own model): the elements round the hole are
+  about the size asked, graded out to the rest. A face that meets no mid-face and no curve is told not applied.
 
 Only a reading whose quote is the quote of a `local` row is applied (so what is meshed is what is told); an area wins
 over its part on its faces (PLAN-fea-32); a part sized with a number keeps it over a "finer" / "coarser"."""
@@ -33,6 +36,14 @@ SCALES = {"refine": 0.5, "coarsen": 2.0}
 #: an area whose CAD faces are only edges of a shell, or are not in it
 EDGE_KINDS = ("hole", "hole group", "bore", "notch")
 SOLID_KINDS = ("bosses",)
+#: SHMESH-52b: the areas whose CAD faces may be only edges of the shell (their triangles are kept for the mesher)
+EDGE_SHAPED = (*EDGE_KINDS, "picked")
+#: ... a mid-surface curve is on such a face when every point read along it lies within this share of the wall
+EDGE_TOL_WALL = 0.25
+#: ... the most CAD triangles kept per area (a larger face is told not applied as before)
+EDGE_TRIS_MAX = 6000
+#: ... points read along each curve
+EDGE_SAMPLES = 41
 #: a plan past this share of what a shell mesh is made of in the time allowed is stepped back (as SHMESH-24 does)
 FIT_SHARE = 0.95
 #: a place whose typical element came out under this share of the size asked says why (its holes, bends and finer
@@ -108,6 +119,116 @@ def read(workspace) -> dict | None:
     except (OSError, ValueError):
         return None
     return got if isinstance(got, dict) else None
+
+
+# #
+# SHMESH-52b: a face the shell collapses to an edge
+# #
+
+def with_shapes(places: Mapping | None, surface) -> Mapping | None:
+    """The reading with each hole-like or picked area's CAD triangles (`tris_mm`: [[x, y, z] x 3], mm) from the run's
+    own surface (metres, as cad/face_map.from_surface reads it), so the mesher can find the shell's curves on them.
+    Unchanged when there is nothing such or no surface; never raises."""
+    want = [t for e in (places or {}).get("entries") or [] for t in e.get("targets") or []
+            if t.get("area") and str(t.get("kind") or "") in EDGE_SHAPED and t.get("faces")]
+    if not want:
+        return places
+    try:
+        from meshpipeline.cad import face_map as FM
+        fm = FM.from_surface(surface, scale_to_m=1.0)
+    except Exception:  # noqa: BLE001 - no surface: such a place is told not applied, as before
+        return places
+    for t in want:
+        ids = [fm.names.index(str(f)) for f in t["faces"] if str(f) in fm.names]
+        tris = fm.xyz[fm.tris[np.isin(fm.label, ids)]].astype(float) * 1000.0
+        if 0 < len(tris) <= EDGE_TRIS_MAX:
+            t["tris_mm"] = np.round(tris, 4).tolist()
+    return places
+
+
+def _seg_dist(p: np.ndarray, a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """(n, m): each point's distance to each segment a-b."""
+    ab = b - a
+    t = np.einsum("nmk,mk->nm", p[:, None, :] - a[None], ab) / np.maximum(np.einsum("mk,mk->m", ab, ab), 1e-30)
+    q = a[None] + np.clip(t, 0.0, 1.0)[..., None] * ab[None]
+    return np.linalg.norm(p[:, None, :] - q, axis=2)
+
+
+def tri_dist(points, tris) -> np.ndarray:
+    """Each point's distance to the nearest of the triangles (mm in, mm out)."""
+    p = np.asarray(points, dtype=float).reshape(-1, 3)
+    t = np.asarray(tris, dtype=float).reshape(-1, 3, 3)
+    if not len(t):
+        return np.full(len(p), np.inf)
+    a, b, c = t[:, 0], t[:, 1], t[:, 2]
+    n = np.cross(b - a, c - a)
+    nn = np.linalg.norm(n, axis=1)
+    un = n / np.maximum(nn, 1e-30)[:, None]
+    out = np.empty(len(p))
+    step = max(1, 2_000_000 // len(t))
+    for s in range(0, len(p), step):
+        q = p[s:s + step]
+        h = np.einsum("nmk,mk->nm", q[:, None, :] - a[None], un)
+        f = q[:, None, :] - h[..., None] * un[None]
+        inside = np.broadcast_to(nn[None] > 1e-12, h.shape).copy()
+        for u, v in ((a, b), (b, c), (c, a)):
+            inside &= np.einsum("nmk,mk->nm", np.cross((v - u)[None], f - u[None]), n) >= 0.0
+        d = np.where(inside, np.abs(h), np.inf)
+        for u, v in ((a, b), (b, c), (c, a)):
+            d = np.minimum(d, _seg_dist(q, u, v))
+        out[s:s + step] = d.min(axis=1)
+    return out
+
+
+def edge_curves(curves: Mapping[int, np.ndarray], tris, tol_mm: float) -> list[int]:
+    """SHMESH-52b: the curves (tag -> the points read along it, mm) lying on the face whose triangles are `tris`: every
+    point within `tol_mm` of it. A curve that only touches the face (a line running up to a hole) is not one."""
+    t = np.asarray(tris, dtype=float).reshape(-1, 3, 3)
+    if not len(t):
+        return []
+    lo, hi = t.reshape(-1, 3).min(axis=0) - tol_mm, t.reshape(-1, 3).max(axis=0) + tol_mm
+    near = {c: np.asarray(p, dtype=float) for c, p in curves.items()
+            if len(p) and bool(np.all(np.asarray(p) >= lo)) and bool(np.all(np.asarray(p) <= hi))}
+    return sorted(c for c, p in near.items() if float(tri_dist(p, t).max()) <= tol_mm)
+
+
+def edge_found(applied: Mapping | None, j: int, polylines: list | None, target: Mapping) -> None:
+    """SHMESH-52b: what the mesher found for edge place `j`: the curves' points (`rim_mm`, one polyline each; the
+    report measures the elements touching them), or none - then told not applied with why, as before."""
+    p = (applied or {}).get("places", [])[j]
+    if polylines:
+        p.update(edges=len(polylines), rim_mm=[np.round(np.asarray(pl, dtype=float), 4).tolist()
+                                               for pl in polylines], why="")
+        return
+    p.update(edge=False, edges=0, why=_why_not(target))
+    p.pop("rim_mm", None)
+    for a in (applied or {}).get("asks") or []:
+        if j in a.get("places") or ():
+            a["places"].remove(j)
+            a["not_applied"].append({"name": p["name"], "why": p["why"]})
+
+
+def _near_rim(xyz: np.ndarray, rims: list, tol: float) -> np.ndarray:
+    """Which nodes lie within `tol` of the polylines (mm)."""
+    hit = np.zeros(len(xyz), dtype=bool)
+    for pl in rims:
+        pts = np.asarray(pl, dtype=float).reshape(-1, 3)
+        if len(pts) < 2:
+            continue
+        lo, hi = pts.min(axis=0) - tol, pts.max(axis=0) + tol
+        cand = np.flatnonzero(np.all((xyz >= lo) & (xyz <= hi), axis=1))
+        for s in range(0, len(cand), 4096):
+            k = cand[s:s + 4096]
+            hit[k] |= _seg_dist(xyz[k], pts[:-1], pts[1:]).min(axis=1) <= tol
+    return hit
+
+
+def _edge_elements(mesh, rims: list, size_mm: float) -> np.ndarray:
+    """Each element (quads then triangles, as shell_requirements._edge_stats) with a node on the rim."""
+    xyz = np.asarray(mesh.xyz, dtype=float)
+    on = _near_rim(xyz, rims, max(0.25 * float(size_mm), 1e-3))
+    parts = [on[np.asarray(c, dtype=int)].any(axis=1) for c in (mesh.quads, mesh.trias) if len(c)]
+    return np.concatenate(parts) if parts else np.zeros(0, dtype=bool)
 
 
 # #
@@ -212,16 +333,21 @@ def plan(rows: list[dict], owners: list[str], record: Mapping, places: Mapping |
         return {"rule": RULE, "asks": [{"id": loc.get("id"), "places": [], "not_applied": [], "why": _unread(loc, places)}
                                        for loc in local], "places": [], "applied": False, "held": False}
     # who sizes each face: areas over parts (PLAN-fea-32); a number over a "finer" / "coarser" (PLAN-fea-36)
-    order = sorted(((i, t) for i in serving for t in entries[i]["targets"]),
-                   key=lambda it: (0 if it[1].get("area") else 1, 0 if entries[it[0]]["ask"] == "size" else 1))
+    order = sorted(((i, ti, t) for i in serving for ti, t in enumerate(entries[i]["targets"])),
+                   key=lambda it: (0 if it[2].get("area") else 1, 0 if entries[it[0]]["ask"] == "size" else 1))
     owner_of: dict[int, int] = {}
     found: list[dict] = []
-    for i, t in order:
+    for i, ti, t in order:
         ks, on = _faces_of(t, owners, mids)
         e = entries[i]
+        # SHMESH-52b: on no mid-face but with its triangles kept: sized on the shell's curves lying on it (the
+        # mesher finds them, edge_found); a size in mm only (an edge has no size of its own to halve)
+        edge = not ks and bool(t.get("tris_mm")) and e["ask"] == "size"
         p = {"entry": i, "id": t["id"], "name": name_of(t), "area": bool(t.get("area")), "ask": e["ask"],
              **({"min_mm": e["min_mm"], "max_mm": e["max_mm"]} if e["ask"] == "size" else {}),
-             "faces": 0, "mids": [], "why": "" if ks else _why_not(t), **({"piece": True} if t.get("piece") else {})}
+             "faces": 0, "mids": [], "why": "" if ks or edge else _why_not(t),
+             **({"piece": True} if t.get("piece") else {}),
+             **({"edge": True, "target": ti, "set_mm": _r(0.5 * (e["min_mm"] + e["max_mm"]))} if edge else {})}
         if t.get("area") and ks:
             p["cad_faces"] = [on, len(t.get("faces") or [])]
         for k in ks:
@@ -271,17 +397,18 @@ def plan(rows: list[dict], owners: list[str], record: Mapping, places: Mapping |
             p["finer"] = any(rows[k]["size_mm"] < 0.5 * float(rows[k]["wall_mm"]) * (1 - 1e-6) for k in ks)
             p["coarser"] = any(rows[k]["size_mm"] > before[k] * (1 + 1e-6) for k in ks)
             p["held"] = bool(out["held"])
-        elif not p["why"]:
+        elif not p["why"] and not p.get("edge"):
             # every face it means is sized by an area or an earlier phrase
             p["why"] = "its faces are sized by another phrase of your notes"
     for a, loc in zip(asks, local, strict=True):
         mine = [p for p in found if p["entry"] in a["entries"]]
-        a["places"] = [j for j, p in enumerate(found) if p["entry"] in a["entries"] and p["faces"]]
-        a["not_applied"] = [{"name": p["name"], "why": p["why"]} for p in mine if not p["faces"]]
+        a["places"] = [j for j, p in enumerate(found) if p["entry"] in a["entries"] and (p["faces"] or p.get("edge"))]
+        a["not_applied"] = [{"name": p["name"], "why": p["why"]} for p in mine if not (p["faces"] or p.get("edge"))]
         a["why"] = "" if a["entries"] else _unread(loc, places)
         del a["entries"]
-    sized = [rows[k]["size_mm"] for k in owner_of]
-    out.update(asks=asks, places=found, planned=int(round(planned)), applied=bool(owner_of),
+    sized = [rows[k]["size_mm"] for k in owner_of] + [float(p["set_mm"]) for p in found if p.get("edge")]
+    out.update(asks=asks, places=found, planned=int(round(planned)),
+               applied=bool(owner_of) or any(p.get("edge") for p in found),
                finest_mm=_r(min(sized)) if sized else None)
     return out
 
@@ -331,7 +458,11 @@ def row(local_id, applied: Mapping | None, mesh) -> dict | None:
     said, met, measured, nearest = [], True, None, False
     for j in ask["places"]:
         p = places[j]
-        sel = np.isin(mid, p["mids"]) if len(mid) else np.zeros(0, dtype=bool)
+        if p.get("edge"):
+            # SHMESH-52b: the elements touching the shell's edge on that face
+            sel = _edge_elements(mesh, p.get("rim_mm") or [], float(p["set_mm"]))
+        else:
+            sel = np.isin(mid, p["mids"]) if len(mid) else np.zeros(0, dtype=bool)
         n = int(sel.sum())
         typical = float(np.median(0.5 * (lo_e[sel] + hi_e[sel]))) if n else 0.0
         measured = _r(typical) if measured is None else measured
@@ -342,6 +473,11 @@ def row(local_id, applied: Mapping | None, mesh) -> dict | None:
         ok = bool(n) and SR.BAND[0] * lo <= typical <= SR.BAND[1] * hi and not p.get("held")
         met = met and ok
         line = f"{p['name']}: elements are about {_g(typical)} mm ({n:,} elements)"
+        if p.get("edge"):
+            line = (f"{p['name']}: on a shell it is an edge; the elements along it are about {_g(typical)} mm "
+                    f"({n:,} elements)")
+            if n and typical < SMALLER_SHARE * lo:
+                line += "; the plate round it is already finer, and keeps its own size"
         if p["ask"] != "size":
             line = (f"{p['name']}: its own size {'halved' if p['ask'] == 'refine' else 'doubled'}, from "
                     f"{_g(p['before_mm'])} to {_g(p['set_mm'])} mm; elements are about {_g(typical)} mm "
@@ -350,7 +486,7 @@ def row(local_id, applied: Mapping | None, mesh) -> dict | None:
             line += f" (on {p['cad_faces'][0]} of its {p['cad_faces'][1]} CAD faces; the rest are only edges of the shell)"
         if p.get("held"):
             line += "; that many elements would take longer than a shell mesh is given, so the nearest size that builds was used"
-        if n and p["ask"] == "size" and typical < SMALLER_SHARE * lo:
+        if n and p["ask"] == "size" and typical < SMALLER_SHARE * lo and not p.get("edge"):
             # the holes, bends and finer faces beside it keep their own sizes (SHMESH-52): said, not hidden
             line += "; smaller near holes, bends and finer faces beside it, so shapes stay true and sizes change smoothly"
         if p.get("finer"):
@@ -375,7 +511,7 @@ def row(local_id, applied: Mapping | None, mesh) -> dict | None:
 
 def summary_words(applied: Mapping | None) -> str:
     """What the applier did, for the registry's row (control_appliers): "sized 2 places on the shell"."""
-    n = sum(1 for p in (applied or {}).get("places") or [] if p.get("faces"))
+    n = sum(1 for p in (applied or {}).get("places") or [] if p.get("faces") or p.get("edges"))
     if not n:
         return "no place your notes name is on the shell"
     return f"sized {n} place{'s' if n != 1 else ''} on the shell" + (
@@ -388,5 +524,5 @@ def told(_lane: str, _key: str) -> dict:
     return {"applied": True, "met": None, "delivered": "measured on the built mesh, place by place"}
 
 
-__all__ = ["FILE", "RULE", "SCALES", "from_reading", "matched", "name_of", "plan", "read", "row", "same_words",
-           "summary_words", "told", "wanted", "write"]
+__all__ = ["FILE", "RULE", "SCALES", "edge_curves", "edge_found", "from_reading", "matched", "name_of", "plan", "read",
+           "row", "same_words", "summary_words", "told", "tri_dist", "wanted", "with_shapes", "write"]

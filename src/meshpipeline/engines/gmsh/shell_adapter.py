@@ -4927,6 +4927,15 @@ def _mesh_once_core(brep: Path, record: dict, owners: list[str], mm: float, log:
                 low_mm=(sizing or {}).get("low_mm"), high_mm=(sizing or {}).get("high_mm"),
                 low_soft=not _edge_hard(requirements)[0], low_soft_off=_under_low_off(no_cut))
             washers_planned = list(washers)
+            if places is not None and places.get("applied") and any(p.get("edge") for p in places.get("places") or []):
+                # SHMESH-52b: a hole the user asked a size at is meshed free, that size graded out from its edge (a
+                # ring holds its own count round the hole: a bore asked 1 mm under 8 mm came out 4.56 mm)
+                asked_at = {c for cs in _edge_place_curves(gmsh, places, (requirements or {}).get("places"), mm, float(
+                    np.median([r["wall_mm"] for r in rows]))).values() for c in cs}
+                for w in [w for w in washers if asked_at & {abs(int(c)) for c in w.hole}]:
+                    w.info.update(washer=False, why="a size you asked is set at this hole")
+                    washer_skipped[w.info["why"]] = washer_skipped.get(w.info["why"], 0) + 1
+                    washers.remove(w)
             # SHMESH-45f: square holes take a square ring (mapped below); never gridded nor polar
             squares = [w for w in washers if w.corners] if ST.MAPPED and ST.SQUARES else []
             for w in washers:
@@ -5386,6 +5395,12 @@ def _mesh_once_core(brep: Path, record: dict, owners: list[str], mm: float, log:
                         h0 = SR.curved_size(r * mm, 0.0, floor=0.0, rule=rows[k]["size_mm"], per_turn=SR.HOLE_PER_TURN)
                     if h0 < rows[k]["size_mm"]:
                         arcs_by.setdefault(float(f"{h0:.6g}"), []).append(abs(c))
+        if places is not None and places.get("applied"):
+            # SHMESH-52b: a place the shell makes an edge of (a hole's bore, the plate's edge wall) is sized on the
+            # curves lying on it, graded out as an arc's size is
+            for h, curves in _edge_place_curves(gmsh, places, (requirements or {}).get("places"), mm,
+                                                float(np.median([r["wall_mm"] for r in rows]))).items():
+                arcs_by.setdefault(h, []).extend(curves)
         if short_edges is not None:
             for h, curves in short_edges["by_size"].items():
                 arcs_by.setdefault(h, []).extend(curves)
@@ -9288,6 +9303,32 @@ def _place_sizes(rows: list[dict], owners: list[str], record: dict, requirements
     if not (got or {}).get("applied"):
         rows[:] = kept
     return got
+
+
+def _edge_place_curves(gmsh, applied: dict, source: dict | None, mm: float, wall_mm: float) -> dict[float, list[int]]:
+    """SHMESH-52b: {size (mm): curves} - for each edge place of `applied` (engines/shell_places.plan), the model's curves
+    lying on its CAD face (its triangles kept in `source`, the reading), within shell_places.EDGE_TOL_WALL of the
+    wall. Each place is told what was found (shell_places.edge_found): its curves' points, or not applied, with why."""
+    from meshpipeline.engines import shell_places as SP
+
+    out: dict[float, list[int]] = {}
+    edge = [(j, p) for j, p in enumerate(applied.get("places") or []) if p.get("edge")]
+    if not edge:
+        return out
+    pts: dict[int, np.ndarray] = {}
+    for _d, c in gmsh.model.getEntities(1):
+        lo, hi = gmsh.model.getParametrizationBounds(1, c)
+        if not len(lo) or hi[0] <= lo[0]:
+            continue
+        xyz = gmsh.model.getValue(1, c, list(np.linspace(lo[0], hi[0], SP.EDGE_SAMPLES)))
+        pts[int(c)] = np.asarray(xyz, dtype=float).reshape(-1, 3) * mm
+    for j, p in edge:
+        t = ((source or {}).get("entries") or [])[p["entry"]]["targets"][p["target"]]
+        curves = SP.edge_curves(pts, t.get("tris_mm") or [], SP.EDGE_TOL_WALL * wall_mm)
+        SP.edge_found(applied, j, [pts[c] for c in curves], t)
+        if curves:
+            out.setdefault(float(f"{float(p['set_mm']):.6g}"), []).extend(curves)
+    return out
 
 
 def _projector(facts: list[dict], on_face: np.ndarray, mm: float):

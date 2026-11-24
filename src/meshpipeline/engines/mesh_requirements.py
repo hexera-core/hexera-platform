@@ -945,10 +945,6 @@ def check(arguments: str, notes: str, route: str = "") -> tuple[dict, list[str],
 # NOTE-17: what is typed with faces picked on the model is for those faces
 # #
 RULE_PICKED = "NOTE-17"
-#: a place that only points at what was picked ("here", "this face", "these holes", "the selected face")
-_HERE = re.compile(r"^(?:(?:on|at|for|to|in|round|around|near)\s+)?(?:here|there|it|them|"
-                   r"(?:the\s+)?(?:selected|picked|chosen|clicked|highlighted|marked)\s+[\w -]{1,40}|"
-                   r"(?:this|that|these|those)(?:\s+[\w -]{1,40})?|the\s+(?:faces?|surfaces?))$", re.I)
 #: words that say a size typed with a pick is for the whole mesh all the same
 _WHOLE = re.compile(r"\b(?:global(?:ly)?|whole|overall|everywhere|entire|all\s+over|everything|rest\s+of)\b", re.I)
 
@@ -981,18 +977,25 @@ def says_whole_mesh(quote) -> bool:
     return bool(_WHOLE.search(str(quote or "")))
 
 
+def picked_for(quote, notes) -> list | None:
+    """NOTE-17, THE ONE RULE the run (bind_picks) and the checklist (application/part_matches.with_faces) both use:
+    words in a note sent with faces picked are for those faces - whatever place the words name - unless they say
+    the whole mesh. The faces, or None."""
+    return None if says_whole_mesh(quote) else faces_for(quote, notes)
+
+
 def bind_picks(req: dict, notes, *, cells: bool = False) -> dict:
     """NOTE-17: a size or a refinement typed in a note (or a chat message kept as one) sent with faces picked on the
-    model is for THOSE faces. A place entry whose place only points ("here", "this face") gets the faces; a global
-    size typed with a pick becomes a size on those faces, never the global size, unless the words say the whole
-    mesh. Done in code from the note that carries the faces - the model is never asked which face "here" is.
+    model is for THOSE faces (picked_for). A place entry gets the faces, whatever place its words name ("here", "the
+    bore"); a global size typed with a pick becomes a size on those faces, never the global size; words that say the
+    whole mesh are left as written. Done in code from the note that carries the faces - the model is never asked which face "here" is.
     `notes`: the user's own notes (contracts/user_notes.own_notes), each with its `faces` [{id, label, sig}]."""
     carrying = _carrying(notes)
     if not carrying or not isinstance(req, dict):
         return req
 
     def faces_of(quote) -> list | None:
-        return _faces_in(carrying, quote)
+        return None if says_whole_mesh(quote) else _faces_in(carrying, quote)
 
     def bind(e: dict, faces: list) -> None:
         where = picked_where(faces)
@@ -1007,13 +1010,13 @@ def bind_picks(req: dict, notes, *, cells: bool = False) -> dict:
     req.setdefault("local", [])
     for e in req["local"]:
         faces = faces_of(e.get("quote"))
-        if faces and _HERE.match(" ".join(str(e.get("where") or "").split())):
+        if faces:
             bind(e, faces)
     sizes = req.get("sizes") or {}
     if sizes.get("global_mm") is not None:
         r = next((r for r in req.get("rows") or () if r.get("field") == "global"), None)
         faces = faces_of(r["quote"]) if r else None
-        if r and faces and not says_whole_mesh(r["quote"]):
+        if r and faces:
             e = {"id": r["id"], "where": "", "what": "size", "mm": float(sizes["global_mm"]), "quote": r["quote"]}
             sizes["global_mm"] = None
             req["local"].append(e)

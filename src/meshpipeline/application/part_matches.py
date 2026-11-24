@@ -349,9 +349,9 @@ def with_picks(session_id: str, stored: Mapping, table: list[dict], notes: str) 
 def with_faces(got: dict | None, user_notes) -> dict | None:
     """NOTE-17 on the checklist before approval: a row read from words sent with faces picked on the model shows
     those faces as its place ("2 mm · the face you picked (Face 12 · round Ø15 mm)"), as the run applies it
-    (engines/mesh_requirements.bind_picks, cad/part_words.with_picks), not the parts the reader tied the words to.
-    A phrase the reader could not place is placed by the pick. Left as read: words that say the whole mesh, and a
-    row the reader tied to a named area (the words named the place). A face row is not re-tied to parts. Pure."""
+    (engines/mesh_requirements.bind_picks, cad/part_words.with_picks), not the parts or areas the reader tied the
+    words to: the one rule both call is mesh_requirements.picked_for. A phrase the reader could not place is placed by
+    the pick. Left as read: words that say the whole mesh. A face row is not re-tied to parts. Pure."""
     from meshpipeline.contracts.user_notes import own_notes
     from meshpipeline.engines import mesh_requirements as MR
     if not got:
@@ -359,17 +359,13 @@ def with_faces(got: dict | None, user_notes) -> dict | None:
     notes = [n for n in own_notes(user_notes) if n.get("faces")]
     if not notes:
         return got
-    areas = set(got.get("inside") or {})
 
     def faces_of(r: Mapping) -> list | None:
-        quote = str(r.get("quote") or "")
-        if MR.says_whole_mesh(quote) or any(p in areas for p in r.get("parts") or ()):
-            return None
-        return MR.faces_for(quote, notes)
+        return MR.picked_for(str(r.get("quote") or ""), notes)
 
     def face_row(r: Mapping, faces: list) -> dict:
         row = {k: v for k, v in r.items() if k not in ("lit", "text", "picked")}
-        return {**row, "parts": [], "parts_text": MR.picked_where(faces),
+        return {**row, "parts": [], "picked": True, "parts_text": MR.picked_where(faces),
                 "faces": [{"id": str(f.get("id") or ""), "label": str(f.get("label") or f.get("id") or "")}
                           for f in faces]}
 
