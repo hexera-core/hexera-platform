@@ -141,14 +141,14 @@ def _verdict_only(pool: WorkerPool, ws: Workspace, source: str, *, input_verdict
     from meshpipeline.cad.repair_v4.search import SearchResult
     from meshpipeline.cad.repair_v4.stages import confirm_staged, run_staged
     from meshpipeline.cad.repair_v4.trace import Trace
-    from meshpipeline.cad.repair_v4.verdict.assemble import InconclusiveVerdict
+    from meshpipeline.cad.repair_v4.verdict.assemble import InconclusiveVerdict, adaptive_cheap_members
 
     trace = Trace()
     trace.record("start")
     if ARM == "input_only":
         return SearchResult(best=ws, best_verdict=input_verdict, clean=bool(input_verdict.clean), trace=trace,
                             changed=False, reason="input_only")
-    staged = run_staged(pool, ws)
+    staged = run_staged(pool, ws, cheap_members=adaptive_cheap_members(input_verdict))
     # the stages were judged by the CHEAP tier; the whole panel confirms the result, falling back stage by stage
     conf = confirm_staged(pool, ws, staged, full=lambda w: judge.full(pool, w, source), input_verdict=input_verdict)
     verdict = conf.verdict if conf.verdict is not None else judge.full(pool, staged.ws, source)
@@ -166,11 +166,12 @@ def _find_best(pool: WorkerPool, ws: Workspace, source: str, *, budget: Budget, 
     from meshpipeline.cad.repair_v4.search import Budget as SearchBudget
     from meshpipeline.cad.repair_v4.search import arm_generators, search
     from meshpipeline.cad.repair_v4.stages import confirm_staged, run_staged
+    from meshpipeline.cad.repair_v4.verdict.assemble import adaptive_cheap_members
 
-    staged = run_staged(pool, ws)
+    input_verdict = input_verdict if input_verdict is not None else judge.full(pool, ws, source)
+    staged = run_staged(pool, ws, cheap_members=adaptive_cheap_members(input_verdict))
     # the search starts from the healer's output only once the FULL panel says it is no worse than the input
-    confirm_staged(pool, ws, staged, full=lambda w: judge.full(pool, w, source),
-                   input_verdict=input_verdict if input_verdict is not None else judge.full(pool, ws, source))
+    confirm_staged(pool, ws, staged, full=lambda w: judge.full(pool, w, source), input_verdict=input_verdict)
     ai = _ai_kwargs(source, budget) if ARM == "search_ai" else {}
     generators, _proposer = arm_generators(ARM, **ai)
     remaining = deadline_s - time.monotonic() - WRITE_RESERVE_S

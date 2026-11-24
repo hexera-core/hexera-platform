@@ -442,7 +442,7 @@ def declared_edits(ws: Workspace, original_faces: int) -> Declared:
     return Declared(added=added, removed=removed)
 
 
-def _judge(pool: WorkerPool, ws: Workspace) -> Score:
+def _judge(pool: WorkerPool, ws: Workspace, cheap_members: Any = None) -> Score:
     """`score(cheap_verdict(...))` of `ws` against the lineage's original. Raises
     `InconclusiveVerdict` / `CheckerUnavailable` when the checker could not say.
 
@@ -457,7 +457,7 @@ def _judge(pool: WorkerPool, ws: Workspace) -> Score:
     # the cache is the process-wide one `search.default_judge` also uses: the final staged state is the search's
     # start state, and its cheap verdict must not be meshed twice
     v = cheap_verdict(pool, step_for(pool, ws.brep_path), step_for(pool, ws.original),
-                      cache=default_verdict_cache())
+                      cache=default_verdict_cache(), members=cheap_members)
     declared = declared_edits(ws, faces)
     if v.valid.ok and (declared.added or declared.removed):
         report: FaithfulReport | None
@@ -475,23 +475,24 @@ def _judge(pool: WorkerPool, ws: Workspace) -> Score:
     return result
 
 
-def _judged(pool: WorkerPool, ws: Workspace) -> Score | None:
-    """`_judge`, retried on an inconclusive verdict; None when it stays inconclusive."""
+def _judged(pool: WorkerPool, ws: Workspace, cheap_members: Any = None) -> Score | None:
+    """`_judge`, retried on an inconclusive verdict; None when it stays inconclusive. `cheap_members` (the run's
+    `assemble.adaptive_cheap_members`) is passed on only when given."""
     for _ in range(JUDGE_ATTEMPTS):
         try:
-            return _judge(pool, ws)
+            return _judge(pool, ws) if cheap_members is None else _judge(pool, ws, cheap_members=cheap_members)
         except (InconclusiveVerdict, CheckerUnavailable):
             continue
     return None
 
 
 def _transact(pool: WorkerPool, ws: Workspace, stage: Stage, params: dict, before: Score | None,
-              out: StagedResult) -> tuple[Workspace, Score | None]:
+              out: StagedResult, cheap_members: Any = None) -> tuple[Workspace, Score | None]:
     """One stage as a transaction; returns the workspace that stands and its score."""
     name = stage.name
     if name == "baseline":
         out.applied_ops[name] = 0  # the baseline applies no op: it is the verdict of the state as handed in
-        score_now = before if before is not None else _judged(pool, ws)
+        score_now = before if before is not None else _judged(pool, ws, cheap_members)
         if score_now is None:
             out.inconclusive.append(name)
         else:
@@ -510,8 +511,8 @@ def _transact(pool: WorkerPool, ws: Workspace, stage: Stage, params: dict, befor
         out.skipped[name] = steps.notes[0] if steps.notes else "no_change"
         return ws, before
     if before is None:
-        before = _judged(pool, ws)  # the earlier judgement of the standing state was inconclusive
-    after = _judged(pool, steps.ws)
+        before = _judged(pool, ws, cheap_members)  # the earlier judgement of the standing state was inconclusive
+    after = _judged(pool, steps.ws, cheap_members)
     if before is None or after is None:
         out.inconclusive.append(name)
         return ws, before
@@ -524,8 +525,10 @@ def _transact(pool: WorkerPool, ws: Workspace, stage: Stage, params: dict, befor
     return ws, before
 
 
-def run_staged(pool: WorkerPool, ws: Workspace, *, params: dict[str, dict] | None = None) -> StagedResult:
-    """Every stage in `STAGES` order, each a transaction; `ws` itself is never modified."""
+def run_staged(pool: WorkerPool, ws: Workspace, *, params: dict[str, dict] | None = None,
+               cheap_members: Any = None) -> StagedResult:
+    """Every stage in `STAGES` order, each a transaction; `ws` itself is never modified. `cheap_members`: the
+    transactions' cheap tier (`assemble.adaptive_cheap_members(<the input's full verdict>)`); None = static."""
     params = params or {}
     unknown = sorted(set(params) - set(_BY_NAME))
     if unknown:
@@ -533,7 +536,8 @@ def run_staged(pool: WorkerPool, ws: Workspace, *, params: dict[str, dict] | Non
     result = StagedResult(ws=ws)
     current, standing = ws, None
     for stage in STAGES:
-        current, standing = _transact(pool, current, stage, params.get(stage.name, {}), standing, result)
+        current, standing = _transact(pool, current, stage, params.get(stage.name, {}), standing, result,
+                                      cheap_members)
         result.ws = current
         if stage.name == "baseline" and "baseline" in result.inconclusive:
             # A dead checker must not look like a healer that found nothing to do.

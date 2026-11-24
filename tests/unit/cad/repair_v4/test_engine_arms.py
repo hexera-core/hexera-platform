@@ -22,7 +22,7 @@ from meshpipeline.cad.repair_v4.measurement import file_unmeasured
 def staged(monkeypatch: pytest.MonkeyPatch) -> list[Any]:
     calls: list[Any] = []
 
-    def run_staged(pool: Any, ws: Any) -> Any:
+    def run_staged(pool: Any, ws: Any, **_kw: Any) -> Any:
         calls.append(ws)
         return SimpleNamespace(ws=dataclasses.replace(ws, brep_path="/w/staged.brep"))
 
@@ -217,7 +217,7 @@ def test_nothing_changed_at_all_delivers_nothing(
     monkeypatch.setattr(v4, "_find_best", _REAL_FIND_BEST)
     monkeypatch.setattr(v4, "_ai_kwargs", lambda source, budget: {})
     monkeypatch.setattr(search_mod, "arm_generators", lambda name, **kw: ([], None))
-    monkeypatch.setattr("meshpipeline.cad.repair_v4.stages.run_staged", lambda pool, ws: SimpleNamespace(ws=ws))
+    monkeypatch.setattr("meshpipeline.cad.repair_v4.stages.run_staged", lambda pool, ws, **_kw: SimpleNamespace(ws=ws))
     monkeypatch.setattr(v4, "_make_judge", lambda pool, ws: SimpleNamespace(full=lambda p, w, o: FakeVerdict(q=1)))
     monkeypatch.setattr(search_mod, "score", lambda v: (1, v.q, 0.0, 0.0, 0))
     monkeypatch.setattr(search_mod, "search", lambda pool, start, *a, **k: search_mod.SearchResult(
