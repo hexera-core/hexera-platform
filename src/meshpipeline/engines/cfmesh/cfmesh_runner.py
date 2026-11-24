@@ -783,6 +783,15 @@ def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
                                                 cap_rel=CR.CFMESH_STACK_REL)
             if _n_wf < _n0:
                 wall_cell, _band_r = min(max_cell, _bore / _n_wf), 0.0
+            # CFDREQ-31: cfMesh builds its one wall-function layer at about half the cell it stands on, whatever the
+            # cap says - where the y+ layer is thinner than that the wall cell is refined to it and the background
+            # moved so the halvings land on it (a layer planned at 0.37 of a 5.87 mm cell came out 1.37 x the plan,
+            # 00134075); never coarsened (the gap plan refines a coarser wall back: 00185618 102k -> 503k cells)
+            _one = CR.cfmesh_one_layer_cells(
+                _ask, bore_D=_bore, max_cell=max_cell, wall_cell=wall_cell,
+                growth=float(strategy.get("thickness_ratio", 1.2)), min_background=((vol / (0.4 * cell_budget)) ** (1.0 / 3.0) if cell_budget else 0.0))
+            if _one is not None:
+                wall_cell, max_cell, _band_r = _one[0], _one[1], 0.0
     wall_cell = max(wall_cell, max_cell / float(2 ** max(1, int(max_halvings))))
     if snap_wall:
         # a wall size the engine chose from the budget: the octree level at or above it
@@ -981,6 +990,11 @@ def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
                      "centre": [0.5 * (b["min"][k] + b["max"][k]) for k in range(3)],
                      "lengthX": b["max"][0] - b["min"][0], "lengthY": b["max"][1] - b["min"][1],
                      "lengthZ": b["max"][2] - b["min"][2]} for i, b in enumerate(_narrow)]))
+    if _ask is not None and _narrow:
+        # CFDREQ-31: narrow passages meshed finer than the wall cell under the one wall-function layer - the y+ row
+        # says the layer there (and cfMesh's evened layer) is about half their cell, the nearest they allow
+        CR.cfmesh_thin_spot_layer(_ask, [octree_cell(max_cell, float(b["cell_needed_m"])) for b in _narrow
+                                         if b.get("cell_needed_m")])
     _wake_boxes: list[dict] = []
     _wake_rec = None
     if wake is not None and max_cell > wall_cell > 0:
@@ -1137,9 +1151,14 @@ def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
         _entries = "".join(
             f"        {w}\n        {{ nLayers {n_layers}; thicknessRatio {ratio:g};"
             f"{first_line} allowedDiscontinuity 0; }}\n" for w in dict.fromkeys(_walls))
+        # CFDREQ-30: the layer optimiser's parameters in full - its relThicknessTol is what holds a layer to
+        # the height asked (one layer is otherwise ~0.63 of the wall cell, whatever maxFirstLayerThickness says)
+        from meshpipeline.engines.cfd_requirements import CFMESH_LAYER_OPTIMISATION
+        _opt = " ".join(f"{k} {v:g};" for k, v in CFMESH_LAYER_OPTIMISATION.items())
         dict_parts.append(
             "boundaryLayers\n{\n    patchBoundaryLayers\n    {\n" + _entries
-            + "    }\n    optimiseLayer 1;\n    untangleLayers 1;\n}\n")
+            + "    }\n    optimiseLayer 1;\n    optimisationParameters { " + _opt + " }\n"
+            + "    untangleLayers 1;\n}\n")
 
     # renameBoundary: every contract patch → its OpenFOAM type. The solids in
     # geom.fms are named for the contract (prepare_surface), so the mesh's final
