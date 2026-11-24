@@ -1491,14 +1491,16 @@ CFMESH_STACK_REL = 0.5
 #: CFDREQ-30: cfMesh's layer optimiser, written out in full in every meshDict with layers. With one layer cfMesh
 #: builds it at about 0.63 of the wall cell whatever maxFirstLayerThickness says, and with no optimisationParameters
 #: block its own defaults are not the documented ones (the block below at relThicknessTol 0.1 already moved the
-#: built layer). It is relThicknessTol that holds the layer to the height asked: measured on batch 7's cfMesh parts
-#: (one wall-function layer, nothing else changed) 0.1 -> 0.005 took the first cell from 1.27 to 0.98 of the plan on
-#: 00180172 and 1.32 to 0.97 on 00188075, from 1.70 to 1.27 on 00134075 and 1.62 to 1.22 on 00163330 (planned well
-#: under half their cell), and the wall at plan with no thinner cell above it from 70 / 79 / 2 / 5% to 89 / 91 / 87
-#: / 82%; 0.001 is unstable (the first cell fell to 0.29 of the plan on 00180172). featureSizeFactor,
-#: maxNumIterations and nSmoothNormals moved nothing; with two layers or more the cap is obeyed already.
+#: built layer). It is relThicknessTol that holds the layer to the height asked: measured on eight of batch 7's cfMesh
+#: parts (one wall-function layer, nothing else changed), with no block -> 0.02 the first cell over the plan went
+#: 1.27 -> 1.07 (00180172), 1.32 -> 1.05 (00188075), 1.34 -> 0.93 (00142033), 1.36 -> 1.07 (00178392), 1.25 -> 0.98
+#: (00185618), 1.29 -> 1.11 (00172106), 1.70 -> 1.37 (00134075), 1.62 -> 1.30 (00163330), and the wall at plan with no
+#: thinner cell above it 70 -> 86, 79 -> 88, 74 -> 90, 78 -> 98, 76 -> 83, 58 -> 74, 2 -> 66, 5 -> 73%. Tighter is not
+#: safe: the optimiser evens the layer towards its thinnest spot, and at 0.01 / 0.005 the first cell fell to 0.47 /
+#: 0.24 of the plan on 00142033 and 0.58 / 0.29 on 00178392 (a y+ under the band). featureSizeFactor 0.1-0.4,
+#: maxNumIterations 1-20 and nSmoothNormals 3-5 moved nothing; with two layers or more the cap is obeyed already.
 CFMESH_LAYER_OPTIMISATION = {"nSmoothNormals": 3, "maxNumIterations": 5, "featureSizeFactor": 0.4,
-                             "reCalculateNormals": 1, "relThicknessTol": 0.005}
+                             "reCalculateNormals": 1, "relThicknessTol": 0.02}
 
 
 @guarded(lambda ask, strategy, wall_cell_m, **_kw: dict(strategy))

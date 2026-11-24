@@ -35,13 +35,13 @@ def test_the_meshdict_names_every_wall_with_cfmeshs_own_keywords(tmp_path):
 
 def test_the_layer_optimiser_is_written_in_full_so_one_layer_lands_at_its_planned_height(tmp_path):
     # CFDREQ-30: with one layer cfMesh ignores maxFirstLayerThickness unless relThicknessTol is tight (measured: 0.1 ->
-    # 0.005 took the first cell from 1.27 to 0.98 of the plan); its built-in defaults are not the documented ones, so
+    # 0.02 took the first cell from 1.27 to 1.07 of the plan on 00180172); its built-in defaults are not the documented ones, so
     # every parameter is written
     text = _render(tmp_path, {"n_layers": 1, "thickness_ratio": 1.2, "first_layer_thickness": 0.0013642},
                    [{"name": "body", "type": "wall"}])
     layers = text[text.index("boundaryLayers"):]
     assert ("optimisationParameters { nSmoothNormals 3; maxNumIterations 5; featureSizeFactor 0.4; "
-            "reCalculateNormals 1; relThicknessTol 0.005; }") in layers
+            "reCalculateNormals 1; relThicknessTol 0.02; }") in layers
     assert "maxFirstLayerThickness 0.0013642;" in layers and layers.count("optimiseLayer 1;") == 1
     # the rescue's protective re-mesh still swaps in its own parameters, once
     from meshpipeline.engines.cfmesh import rescue as RS
