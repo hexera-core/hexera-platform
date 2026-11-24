@@ -614,3 +614,14 @@ def test_the_verdict_on_an_unbounded_file_is_out_of_scope_and_nothing_meshes_it(
     v = verdict(pool, step, step, members=[object()], run_panel=panel_must_not_run)
     assert v.out_of_scope and not v.clean and not v.inconclusive and v.counts_for_scoreboard
     assert v.panel == [] and v.faithful is None
+
+
+def test_check_shape_without_booleans_skips_exactly_the_two_boolean_rules(tmp_path: Path) -> None:
+    """C16 lever b': the round-trip re-check of an already-invalid file runs without its Booleans."""
+    from meshpipeline.cad.repair_v4.verdict.valid_kernel import check_shape
+
+    brep = str(tmp_path / "two.brep")
+    BRepTools.Write_s(_compound(_box(), _box(x=5.0)), brep)  # two boxes overlapping by half
+    assert "body_overlap" in {f["code"] for f in check_shape(brep)["hard"]}
+    skipped = check_shape(brep, booleans=False)
+    assert skipped["solids"] == 2 and not {f["code"] for f in skipped["hard"]} & {"body_overlap", "self_intersection"}

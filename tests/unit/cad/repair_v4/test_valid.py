@@ -73,7 +73,7 @@ def test_code_sets_are_exactly_the_binding_ones() -> None:
         "no_solids",
         "unbounded_geometry",
     }
-    assert set(SOFT_CODES) == {"small_edge", "small_face", "large_tolerance"}
+    assert set(SOFT_CODES) == {"small_edge", "small_face", "large_tolerance", "orientation_unchecked"}
 
 
 def test_clean_file_is_ok() -> None:
@@ -223,3 +223,44 @@ def test_the_per_file_wall_is_larger_than_one_call_may_take() -> None:
     spec.loader.exec_module(evalspec)
 
     assert evalspec.DEFAULT_FILE_TIMEOUT_S > limits.CHECKER_CALL_TIMEOUT_S
+
+
+class RecordingPool(ScriptedPool):
+    """Records whether each check asked for the Booleans, and runs the round trip only after the input's check
+    (the workers=1 order) so the skip is exercised."""
+
+    def __init__(self, **kw) -> None:
+        super().__init__(**kw)
+        self.booleans: dict[str, bool] = {}
+
+    def call(self, fn: str, payload: dict, *, timeout_s: float) -> CallResult:
+        if fn == "valid_extent":
+            return _ok({"unbounded": None})  # not known bounded: the plain order, input check first
+        if fn == "check_valid":
+            self.booleans["round_trip" if "round_trip" in payload["brep"] else "input"] = payload["booleans"]
+        return super().call(fn, payload, timeout_s=timeout_s)
+
+
+def test_round_trip_skips_its_booleans_only_when_the_input_is_already_invalid() -> None:
+    pool = RecordingPool(hard=["open_shell"])
+    report = check_valid(pool, "a.step", original_units=None)
+    assert pool.booleans == {"input": True, "round_trip": False}
+    assert report.ok is False and [f.code for f in report.hard] == ["open_shell"]
+
+    pool = RecordingPool()
+    assert check_valid(pool, "a.step", original_units=None).ok is True
+    assert pool.booleans == {"input": True, "round_trip": True}
+
+
+@pytest.mark.parametrize("ran_booleans", [True, False])
+def test_a_new_boolean_code_on_an_invalid_input_is_ignored_so_the_skip_cannot_change_the_report(
+    ran_booleans: bool,
+) -> None:
+    rt_hard = ["open_shell", "body_overlap"] if ran_booleans else ["open_shell"]
+    report = check_valid(ScriptedPool(hard=["open_shell"], rt_hard=rt_hard), "a.step", original_units=None)
+    assert [f.code for f in report.hard] == ["open_shell"] and report.round_trip_ok is True
+
+
+def test_a_new_boolean_code_on_a_valid_input_still_fails_the_round_trip() -> None:
+    report = check_valid(ScriptedPool(rt_hard=["self_intersection"]), "a.step", original_units=None)
+    assert [f.code for f in report.hard] == ["round_trip_invalid"] and report.round_trip_ok is False
