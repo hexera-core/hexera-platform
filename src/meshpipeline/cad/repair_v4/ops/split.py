@@ -236,7 +236,7 @@ def _split_by_proximity(payload: dict) -> dict:
     start = time.perf_counter()
     old = ws_kernel.read_brep(payload["brep_path"])
     faces = ws_kernel._maps(old)["face"]
-    diagonal = ws_kernel.diagonal_of(old)
+    diagonal = ws_kernel.part_diagonal(payload, old)  # lane C13
     size = gap_split._mesh_size(diagonal)
     area = sum(float(_face_area(faces.FindKey(i))) for i in range(1, faces.Extent() + 1))
     edges: list = []

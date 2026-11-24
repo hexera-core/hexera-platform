@@ -698,7 +698,7 @@ def _fill_loop(payload: dict) -> dict:
 
     start = time.perf_counter()
     old = ws_kernel.read_brep(payload["brep_path"])
-    diagonal = ws_kernel.diagonal_of(old)
+    diagonal = ws_kernel.part_diagonal(payload, old)  # lane C13
     bound = fidelity_bound(diagonal)
     edge_index = ws_kernel._maps(old)["edge"]
     edges = [TopoDS.Edge_s(edge_index.FindKey(i)) for i in payload["edges"]]
@@ -780,7 +780,7 @@ def _rebuild_face(payload: dict) -> dict:
 
     start = time.perf_counter()
     old = ws_kernel.read_brep(payload["brep_path"])
-    bound = fidelity_bound(ws_kernel.diagonal_of(old))
+    bound = fidelity_bound(ws_kernel.part_diagonal(payload, old))  # lane C13
     (face,) = _faces_of(old, payload["faces"])
     was_valid = _is_valid(face)
     from OCP.BRep import BRep_Tool
@@ -875,7 +875,7 @@ def _reapproximate(payload: dict) -> dict:
 
     start = time.perf_counter()
     old = ws_kernel.read_brep(payload["brep_path"])
-    bound = fidelity_bound(ws_kernel.diagonal_of(old))
+    bound = fidelity_bound(ws_kernel.part_diagonal(payload, old))  # lane C13
     faces = _faces_of(old, payload["faces"])
     surfaces: list[Any] = []
     for face in faces:
@@ -912,7 +912,7 @@ def _to_canonical(payload: dict) -> dict:
 
     start = time.perf_counter()
     old = ws_kernel.read_brep(payload["brep_path"])
-    bound = fidelity_bound(ws_kernel.diagonal_of(old))
+    bound = fidelity_bound(ws_kernel.part_diagonal(payload, old))  # lane C13
     faces = _faces_of(old, payload["faces"])
     tol = payload["tol_mm"]
     surfaces: list[Any] = []
@@ -1007,7 +1007,7 @@ def _refit_cluster(payload: dict) -> dict:
 
     start = time.perf_counter()
     old = ws_kernel.read_brep(payload["brep_path"])
-    bound = fidelity_bound(ws_kernel.diagonal_of(old))
+    bound = fidelity_bound(ws_kernel.part_diagonal(payload, old))  # lane C13
     faces = _faces_of(old, payload["faces"])
     if len(faces) < 2:
         return _decline(payload, "not_a_cluster: refit_cluster needs at least two faces")

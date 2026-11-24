@@ -47,7 +47,7 @@ def _index(ws: Workspace, sid: StableId, prefix: str) -> int:
 
 
 def _run(pool: WorkerPool, ws: Workspace, fn: str, payload: dict, timeout_s: float) -> dict:
-    payload = {**payload, "brep_path": ws.brep_path, "quantum": ws.quantum,
+    payload = {**payload, "brep_path": ws.brep_path, "quantum": ws.quantum, "part_diag_mm": ws.part_diag_mm,
                "out_path": _new_path(ws, fn), "ids": _ids_by_index(ws)}
     result = pool.call(fn, payload, timeout_s=timeout_s)
     if not result.ok or result.value is None:
