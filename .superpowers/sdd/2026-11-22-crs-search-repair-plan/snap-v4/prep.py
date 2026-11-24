@@ -145,6 +145,21 @@ def prior_unclean(root: Path) -> set[str]:
     return out
 
 
+def probe_usd_ceiling(code: Path) -> float | None:
+    """What the ROUTE PROBE reserves against a shard's ledger before any arm runs
+    (`model_route.ROUTE_PROBE_USD_CEILING`). A model shard whose cap is below it cannot even probe the route: the
+    ledger refuses with `wave_cap` and run_arm exits 6 with no row. The pilot found this the hard way - a $0.12
+    clean-group cap, five units, one silent exit 6 - so it is checked here, against the commit's own number."""
+    if str(code / "src") not in sys.path:
+        sys.path.insert(0, str(code / "src"))
+    try:
+        from meshpipeline.cad.repair_v4.model_route import ROUTE_PROBE_USD_CEILING
+
+        return float(ROUTE_PROBE_USD_CEILING)
+    except Exception:  # noqa: BLE001 - refused by the caller, never guessed at
+        return None
+
+
 def throttle_ceiling(route: str, code: Path) -> int | None:
     """The most shards a MODEL group may have: `model_throttle.wave_max_in_flight`, whose `for_shard` refuses as
     soon as `ceiling // n_shards` is below one call (lane B11). None when the module cannot be imported, which is
@@ -274,6 +289,7 @@ def main() -> int:  # noqa: PLR0915 - one linear script: read, plan, refuse, wri
     manifest: dict = {"profile": a.profile, "label": a.label, "ts": a.ts,
                       "file_timeout_s": wall, "target_min": a.target_min,
                       "throttle_ceiling_shards": ceiling, "route": a.route,
+                      "route_probe_usd_ceiling": probe_usd_ceiling(code),
                       "calibration": {"k_dev_four_arms_per_model_s": k_dev, "from_prior_files": len(ratios),
                                       "clean_default_s": clean_default, "arm_share": ARM_SHARE,
                                       "prior_rows": str(prior_root),
@@ -372,11 +388,21 @@ def main() -> int:  # noqa: PLR0915 - one linear script: read, plan, refuse, wri
         files_here = manifest["groups"][u["group"]]["files_per_shard"][u["shard"] - 1]
         weight = 1.0 if u["split"] == "dev" else CLEAN_WEIGHT
         demand[(u["group"], u["shard"])] = files_here * a.file_usd_cap * weight
-    floor_ = {key: min(d, a.file_usd_cap) for key, d in demand.items()}
+    probe_usd = probe_usd_ceiling(code)
+    if probe_usd is None:
+        raise SystemExit("REFUSED: cannot read model_route.ROUTE_PROBE_USD_CEILING from the commit; a model shard "
+                         "whose cap is below it exits 6 with no row")
+    # THE FLOOR IS THE ROUTE PROBE'S OWN RESERVATION. The probe is charged against the shard's ledger before any
+    # file runs, so a cap under it means run_arm exits 6, writes no row, and the arm is silently unmeasured - the
+    # pilot's clean group did exactly that at $0.12. A model shard gets at least enough to probe, or the wave is
+    # refused here with the arithmetic.
+    floor_ = {key: max(min(d, a.file_usd_cap), probe_usd) for key, d in demand.items()}
     left = a.total_usd - sum(floor_.values())
     if left < 0:
-        raise SystemExit(f"REFUSED: {len(floor_)} model shards x one file's ${a.file_usd_cap} exceeds "
-                         f"${a.total_usd}: fewer model shards or a larger total")
+        raise SystemExit(
+            f"REFUSED: {len(floor_)} model shards need at least ${probe_usd:.2f} each (the route probe's own "
+            f"reservation), which is ${sum(floor_.values()):.2f}, over the ${a.total_usd:.2f} total. Raise "
+            f"--total-usd to ${sum(floor_.values()):.2f} or more, or cut the model shards (raise --target-min).")
     rest = sum(demand[key] - floor_[key] for key in demand)
     scale = min(1.0, left / rest) if rest > 0 else 0.0
     for u in units:
@@ -386,6 +412,15 @@ def main() -> int:  # noqa: PLR0915 - one linear script: read, plan, refuse, wri
                                math.floor(100 * (floor_[key] + (demand[key] - floor_[key]) * scale)) / 100)
         else:
             u["cap_usd"] = round(a.file_usd_cap, 2)   # nominal: this group's arms make no model calls
+    # unreachable if the floor above held; kept because a silent sub-probe cap costs a whole arm
+    thin = [(u["group"], u["shard"], u["cap_usd"]) for u in units if u["uses_model"] and u["cap_usd"] < probe_usd]
+    if thin:
+        n_model = sum(1 for u in units if u["uses_model"])
+        raise SystemExit(
+            f"REFUSED: {len(thin)} model shard(s) have a cap below the route probe's own reservation of "
+            f"${probe_usd:.2f}: {thin[:4]}. The probe is charged against the shard's ledger BEFORE any file runs, so "
+            f"such a shard exits 6 with no row and the arm is silently unmeasured. {n_model} model shards need "
+            f"--total-usd of at least ${n_model * probe_usd:.2f}, or fewer model shards (raise --target-min).")
     total_caps = round(sum(u["cap_usd"] for u in units if u["uses_model"]), 2)
     if total_caps > a.total_usd + 1e-9:
         raise SystemExit(f"REFUSED: model shard caps sum to ${total_caps} > ${a.total_usd}")
