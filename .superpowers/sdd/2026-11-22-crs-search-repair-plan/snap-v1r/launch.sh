@@ -157,7 +157,7 @@ while true; do
 done
 
 # ---------------------------------------------------------------- 7. collect, delete
-SSH 'cd ~/snap; shred -u secret.env 2>/dev/null; ls secret.env 2>/dev/null; tar czf /tmp/collect.tgz --exclude="*/work" out ledger driver.log; find out -name search-trace.json > /tmp/traces.txt; tar czf /tmp/traces.tgz -T /tmp/traces.txt; date -u +%FT%TZ > out/COLLECTED' >> "$RUN/launch.log"
+SSH 'cd ~/snap; shred -u secret.env 2>/dev/null; ls secret.env 2>/dev/null; tar czf /tmp/collect.tgz --exclude="*/work" out ledger driver.log; find out \( -name search-trace.json -o -name delivered.json -o -name delivered.brep \) > /tmp/traces.txt; tar czf /tmp/traces.tgz -T /tmp/traces.txt; date -u +%FT%TZ > out/COLLECTED' >> "$RUN/launch.log"
 gcloud compute scp $VM:/tmp/collect.tgz "$RUN/collect.tgz" --zone $ZONE --project $PROJECT >> "$RUN/launch.log" 2>&1 || die "collect failed"
 tar xzf "$RUN/collect.tgz" -C "$RUN" || die "collect archive unreadable"
 gcloud compute scp $VM:/tmp/traces.tgz "$RUN/traces.tgz" --zone $ZONE --project $PROJECT >> "$RUN/launch.log" 2>&1 \
@@ -171,20 +171,27 @@ from pathlib import Path
 run, label, wid_dev, wid_clean = Path(sys.argv[1]), sys.argv[2], sys.argv[3], sys.argv[4]
 split_of = {wid_dev: "dev", wid_clean: "clean"}
 n = 0
-for t in (run / "traces-raw").rglob("search-trace.json"):
+ARMS = ("input_only", "staged", "search_det", "search_ai")
+for t in (run / "traces-raw").rglob("*"):
+    if t.name not in ("search-trace.json", "delivered.json", "delivered.brep"):
+        continue
     arm, sha12 = t.parent.name, t.parent.parent.name          # .../<wave_id>/shard-I-of-N/work/<sha12>/<arm>/
     wid = next((p for p in t.parts if p in split_of), None)
-    if arm not in ("search_det", "search_ai") or wid is None or len(sha12) != 12:
+    if arm not in ARMS or wid is None or len(sha12) != 12:
         continue
-    dst = run / "traces" / f"snap-{label}-{split_of[wid]}" / arm / f"{sha12}.json"
+    if t.name == "search-trace.json":
+        dst = run / "traces" / f"snap-{label}-{split_of[wid]}" / arm / f"{sha12}.json"
+    else:  # the delivered state: states/snap-<label>-<split>/<arm>/<sha12>.{json,brep}
+        dst = run / "states" / f"snap-{label}-{split_of[wid]}" / arm / f"{sha12}{t.suffix}"
     dst.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy(t, dst)
     n += 1
 print(n)
 PY
 )
-  gcloud storage cp -r -q "$RUN/traces/"* "gs://$BUCKET/eval/snap-$LABEL-$TS/traces/" >> "$RUN/launch.log" 2>&1
-  log "traces: $NT renamed to $RUN/traces/snap-$LABEL-<split>/<arm>/<sha12>.json, uploaded to gs://$BUCKET/eval/snap-$LABEL-$TS/traces/"
+  [ -d "$RUN/traces" ] && gcloud storage cp -r -q "$RUN/traces/"* "gs://$BUCKET/eval/snap-$LABEL-$TS/traces/" >> "$RUN/launch.log" 2>&1
+  [ -d "$RUN/states" ] && gcloud storage cp -r -q "$RUN/states/"* "gs://$BUCKET/eval/snap-$LABEL-$TS/states/" >> "$RUN/launch.log" 2>&1
+  log "traces + delivered states: $NT files -> $RUN/{traces,states}/snap-$LABEL-<split>/<arm>/<sha12>.{json,brep}, uploaded to gs://$BUCKET/eval/snap-$LABEL-$TS/{traces,states}/ ($(du -sh "$RUN/states" 2>/dev/null | cut -f1) of states)"
 fi
 HOURS=$(python3 -I -c "from datetime import datetime as d,timezone as z;print(round((d.now(z.utc)-d.fromisoformat('$CREATED'.replace('Z','+00:00'))).total_seconds()/3600,2))")
 echo "{\"name\":\"$VM\",\"zone\":\"$ZONE\",\"max_run\":\"$MAX_RUN\",\"created\":\"$CREATED\",\"deleted\":\"(see vm_deleted.json)\",\"hours\":$HOURS,\"usd\":$(python3 -c "print(round($HOURS*$VM_USD_PER_H,2))")}" > "$RUN/vm.json"
