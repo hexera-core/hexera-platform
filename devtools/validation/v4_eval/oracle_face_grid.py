@@ -102,6 +102,66 @@ def _cand(op: str, targets: list[str], params: dict, why: str) -> Any:
 SKIPPED: list[str] = []
 
 
+#: the ops whose output faces a SECOND split can divide further (`ops.split`)
+SPLIT_OPS = ("split_angle", "split_continuity", "split_closed", "split_by_proximity")
+#: depth-2 rungs are strictly FINER than the parent split's, down to the schema floor: repeating the parent's rung
+#: divides nothing, and the kernel says so ("split_angle found nothing to divide on the target faces").
+DEPTH2_ANGLES = (60.0, 45.0, 30.0)
+
+
+def split_made_faces(ws: Any) -> tuple[str | None, dict, list[str]]:
+    """(op, params, the FACE ids it made) for the last op in this lineage, from the workspace's own history.
+
+    `state.parent` is only an id, so the parent workspace is out of reach here; the last `Diff` is the authority and
+    is local. A Modified shape's old id is gone and its new ids are the division; a Generated shape's old id
+    survives alongside its new ones. Both are faces the split made, and neither is a face the mesher named - which
+    is A11's caveat the other way round: at depth 2 the thing to aim at did not exist when the member failed.
+    """
+    history = list(getattr(ws, "history", None) or ())
+    if not history:
+        return (None, {}, [])
+    last = history[-1]
+    made: list[str] = []
+    for mapping in (getattr(last, "modified", None) or {}, getattr(last, "generated", None) or {}):
+        for kids in mapping.values():
+            made += [k for k in kids or () if isinstance(k, str) and k[:1] == "F"]
+    live = set(getattr(ws, "ids", None) or ())
+    seen: set[str] = set()
+    keep = [f for f in made if f in live and not (f in seen or seen.add(f))]
+    return (getattr(last, "op", None), dict(getattr(last, "params", None) or {}), keep)
+
+
+def depth2_rows(state: Any) -> list:
+    """Rows only a SECOND step can reach: a split of the faces a previous split created.
+
+    The sweep allows two steps and no single-step grid reaches these faces, because they did not exist at depth 0.
+    The pilot's one clean-in-one-step win was a `split_angle`, so a split-then-split chain is where a second win is
+    most likely to be hiding. Tagged `depth2` so the table can tell these from the depth-1 rows.
+    """
+    rows: list = []
+    op, params, made = split_made_faces(getattr(state, "ws", None))
+    if op not in SPLIT_OPS:
+        return rows
+    if not made:
+        SKIPPED.append(f"depth-2 rows not built: {op} recorded no new face in the workspace history")
+        return rows
+    aim = made[:MAX_AIMED_FACES]
+    parent_deg = params.get("max_deg")
+    for deg in DEPTH2_ANGLES:
+        if parent_deg is not None and deg >= float(parent_deg):
+            continue      # no finer than the parent's own cut: it would divide nothing
+        rows.append(_cand("split_angle", aim, {"max_deg": deg},
+                          f"depth2: split at {deg:g} deg the {len(aim)} face(s) {op} made"
+                          + (f" at {float(parent_deg):g} deg" if parent_deg is not None else "")))
+    for order in (1, 2):
+        rows.append(_cand("split_continuity", aim, {"order": order},
+                          f"depth2: split at C{order} breaks the {len(aim)} face(s) {op} made"))
+    for f in aim:
+        rows.append(_cand("rebuild_face", [f], {"continuity": "G0"},
+                          f"depth2: re-fill {f}, a face {op} made, in case the split left its wires broken"))
+    return rows
+
+
 def _diagonal_of(site: Any, diagonal_mm: float | None) -> float | None:
     """The ORIGINAL's diagonal in mm, or None when nothing measured one.
 
@@ -118,8 +178,9 @@ def _diagonal_of(site: Any, diagonal_mm: float | None) -> float | None:
 def extra_rows(state: Any, diagonal_mm: float | None = None) -> list:
     """Face-op candidates for `state`, det's own rows excluded. `diagonal_mm` is the ORIGINAL's diagonal; without
     one the sized rows (reapproximate, remove_small) are skipped rather than guessed."""
-    rows: list = []
-    seen: set[tuple] = set()
+    rows: list = list(depth2_rows(state))
+    seen: set[tuple] = {(c.op, tuple(c.targets), tuple(sorted((k, repr(v)) for k, v in c.params.items())))
+                        for c in rows}
 
     def add(op: str, targets: list[str], params: dict, why: str) -> None:
         key = (op, tuple(targets), tuple(sorted((k, repr(v)) for k, v in params.items())))
