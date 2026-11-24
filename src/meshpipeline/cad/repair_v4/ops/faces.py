@@ -770,6 +770,97 @@ def _fill_loop(payload: dict) -> dict:
                    added_faces=[_find_in(new, fill)])
 
 
+@register_kernel_fn("op_heal_self_intersections")
+@_declines
+def _heal_self_intersections(payload: dict) -> dict:
+    """A19: fix every face of the target SOLIDS whose own wires self-intersect, in ONE rebuild.
+
+    WHY A SOLID AND NOT A FACE, measured rather than assumed. Lane B's wave 202611242110 showed the
+    `self_intersection` defect reaching the sequential arm as a BODY after lane C's relocate: all six repair
+    attempts were refused with "defeature needs the faces the defect is on, and re-located onto BN", because every
+    reachable table entry was face-targeted. `rebuild_face` already does this repair - ShapeFix_Wire's
+    FixSelfIntersection plus a re-fill - but it takes exactly one FACE, so nothing could aim it from a body. This
+    op takes the body and FINDS the offending faces itself.
+
+    WHAT IT DOES NOT FIX, and the measurement that says so: on my own 9 solo family parts, 4 have faces whose wires
+    self-intersect (117ecb94: 26 faces, 3f2c6372: 7, eb3bc130: 2, 32ca3e9a: 1) and 5 have a solid whose DIFFERENT
+    faces cross each other with no single faulty face (09f296a1, 448333aa, 532be443, f8cbd019, 7b13ec12). On those
+    five there is nothing here to aim at: they need a boolean on the solid, not a wire repair, and this op declines
+    them as `no_change` rather than pretending. That half of the kind is lane B's op family on one body.
+
+    Every bad face is replaced in ONE `ShapeBuild_ReShape` pass, as `_replace_surfaces` does: adjacent faces share
+    edges, and two independent isolations of a shared edge would crack the seam between them.
+    """
+    from OCP.BRep import BRep_Tool
+    from OCP.TopAbs import TopAbs_FACE
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS
+
+    from meshpipeline.cad.repair_v4 import ws_kernel
+    from meshpipeline.cad.repair_v4.verdict.valid_kernel import _self_intersects
+
+    start = time.perf_counter()
+    old = ws_kernel.read_brep(payload["brep_path"])
+    bound = fidelity_bound(ws_kernel.part_diagonal(payload, old))
+    maps = ws_kernel._maps(old)
+    solids = [maps["solid"].FindKey(i) for i in payload["solids"]]
+    seen: list[Any] = []
+    for solid in solids:
+        explorer = TopExp_Explorer(solid, TopAbs_FACE)
+        while explorer.More():
+            face = TopoDS.Face_s(explorer.Current())
+            if not any(face.IsSame(f) for f in seen):
+                seen.append(face)
+            explorer.Next()
+    bad = [f for f in seen if _self_intersects(f)][: int(payload["max_faces"])]
+    if not bad:
+        # The honest decline, and the commonest one on this family: the SOLID self-intersects because two of its
+        # faces cross, which is not a defect of any single face. Lane B's boolean family owns that half.
+        return _decline(payload, "no_change: no face of these solids has a self-intersecting wire "
+                                 f"({len(seen)} faces checked)")
+
+    # one isolation for every bad face at once: shared edges must stay shared
+    wires_by_face = [_wires_of(f) for f in bad]
+    flat = _isolate([w for ws_ in wires_by_face for w in ws_], old)
+    candidates, taken, refilled_any = [], 0, False
+    for face, ws_ in zip(bad, wires_by_face, strict=True):
+        fixed, _changed = _fix_wires_in_uv(face, min(bound, 1e-3))
+        mine = flat[taken:taken + len(ws_)] if len(fixed) != len(ws_) else fixed
+        taken += len(ws_)
+        candidate = _face_on_surface(mine, BRep_Tool.Surface_s(face))
+        if payload["continuity"] == "G1" or not _is_valid(candidate):
+            filled, _how = _fill_face(_outer_edges(candidate), old, payload["continuity"], bound, None)
+            if filled is not None and _is_valid(filled):
+                candidate, refilled_any = filled, True
+        candidates.append(candidate)
+    if not all(_is_valid(c) for c in candidates):
+        return _decline(payload, "unfixable: a face is still invalid after FixSelfIntersection and a re-fill")
+
+    pairs: list[tuple[Any, Any]] = []
+    for f, c in zip(bad, candidates, strict=True):
+        pairs.extend(p for p in _match_pairs(_wires_of(f), c) if not any(p[0].IsSame(q[0]) for q in pairs))
+
+    def build(flipped: bool) -> Any:
+        return _apply_replacement(
+            old, [*((f, c.Reversed() if flipped else c) for f, c in zip(bad, candidates, strict=True)), *pairs])
+
+    built, reason = _first_valid(old, build)
+    if built is None:
+        return _decline(payload, f"no_valid_rebuild: {reason}")
+    new, history = built
+    still_bad = sum(1 for c in candidates if _self_intersects(c))
+    measured = {"bound_mm": bound, "faces_checked": len(seen), "faces_self_intersecting": len(bad),
+                "faces_still_self_intersecting": still_bad, "refilled": refilled_any,
+                "continuity_requested": payload["continuity"],
+                "area_change_ratio": (abs(sum(map(_area, candidates)) - sum(map(_area, bad)))
+                                      / max(sum(map(_area, bad)), 1e-12)),
+                "boundary_shift": max((_max_distance(_edge_points(f), c)
+                                       for f, c in zip(bad, candidates, strict=True)), default=0.0)}
+    return _finish(old, new, history, payload, op="heal_self_intersections",
+                   params={"continuity": payload["continuity"], "max_faces": int(payload["max_faces"])},
+                   start=start, measured=measured)
+
+
 @register_kernel_fn("op_rebuild_face")
 @_declines
 def _rebuild_face(payload: dict) -> dict:
@@ -1112,6 +1203,33 @@ def _schema(kind: str, minimum: int, maximum: int | None, properties: dict) -> d
             "x-targets": {"kind": kind, "min": minimum, "max": maximum}}
 
 
+class HealSelfIntersections(_FaceOp):
+    """A19: every self-intersecting FACE WIRE inside the target solids, fixed in one rebuild.
+
+    Targets SOLIDS because that is how the defect arrives (lane B's wave: relocated onto a body, and every
+    face-targeted entry refused). It declines `no_change` when no face of those solids has a self-intersecting
+    wire - which on the measured family is the commonest case, and is the half that needs a boolean on the solid
+    rather than a wire repair.
+    """
+
+    name = "heal_self_intersections"
+    kernel_fn = "op_heal_self_intersections"
+    params_schema = {
+        "type": "object",
+        "properties": {"continuity": _CONTINUITY,
+                       "max_faces": {"type": "integer", "minimum": 1, "maximum": 200}},
+        "required": ["continuity", "max_faces"],
+        "additionalProperties": False,
+        "x-targets": {"kind": "solid", "min": 1, "max": None},
+        "description": "Fix the self-intersecting wires of every face inside these solids, in one rebuild. "
+                       "Declines when no face of them self-intersects (the solid may still self-intersect "
+                       "BETWEEN faces, which this does not repair).",
+    }
+    site_kinds = frozenset({"invalid", "self_overlap", "intersection"})
+    entity_prefix = "B"
+    payload_key = "solids"
+
+
 class RebuildFace(_FaceOp):
     name = "rebuild_face"
     kernel_fn = "op_rebuild_face"
@@ -1172,4 +1290,5 @@ class RefitCluster(_FaceOp):
     declares_removed = True
 
 
-OPS = (RebuildFace(), FillLoop(), Reapproximate(), ToCanonical(), RefitCluster())
+OPS = (RebuildFace(), FillLoop(), Reapproximate(), ToCanonical(), RefitCluster(),
+       HealSelfIntersections())
