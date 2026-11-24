@@ -37,6 +37,15 @@ ALGORITHM = 6
 RECOMBINATION = 1
 #: SHMESH-42: the 2D algorithm for flat faces left free (None: ALGORITHM)
 PLANE_ALGORITHM: int | None = None
+#: SHMESH-21g: gmsh's Blossom recombination grows far faster than the elements on ONE big face of algorithm 6's
+#: triangles (gmsh 4.15, the 1200 x 800 plate's face alone, one core: 23k quads 10 s, 69k 603 s, 138k 357 s; the
+#: product's 200k plate made no mesh in 900 s, all of it in gmsh's 2D mesh); on Frontal-Delaunay-for-quads' (8)
+#: right triangles the same Blossom stays near the elements (21k 7 s, 63k 33 s, 125k 102 s, 250k 219 s) with every
+#: element a quad and a better mean quality (0.92 against 0.85). A flat face left free planned past BIG_FLAT_FACE
+#: elements is meshed by BIG_FLAT_ALGORITHM; under it every face meshes exactly as before. Flat faces only: 8 left
+#: B-spline mid-surfaces 7 times coarser than their size (above). 0: off
+BIG_FLAT_FACE = 30_000
+BIG_FLAT_ALGORITHM = 8
 #: SHMESH-49k: gmsh's algorithm for a round plate's paved band (None: the default)
 POLAR_BAND_ALGORITHM: int | None = None
 #: SHMESH-10: cut every quad past Nastran's own limits into two triangles
@@ -777,6 +786,21 @@ def _not_worse(applied: dict, past_n: int, other: dict, other_n: int) -> bool:
     m_a = int(((applied.get("quality") or {}).get("structure") or {}).get("mapped_faces") or 0)
     m_b = int(((other.get("quality") or {}).get("structure") or {}).get("mapped_faces") or 0)
     return a[2] <= b[2] and a[3] <= b[3] and m_a >= GUARD_MAPPED * m_b
+
+
+def big_flat_faces(gmsh, tag_of: dict[int, int], facts: list[dict], rows: list[dict], mm: float,
+                   skip: set[int] | frozenset = frozenset()) -> dict[int, int]:
+    """SHMESH-21g: the flat faces (gmsh tag -> fact index) not in `skip` (grids, mapped) planned past BIG_FLAT_FACE
+    elements (area over size squared, as face_planned.json): meshed by BIG_FLAT_ALGORITHM. None under the gate."""
+    out: dict[int, int] = {}
+    for t in sorted(tag_of):
+        k = tag_of[t]
+        size = float(rows[k].get("size_mm") or 0.0)
+        if t in skip or size <= 0.0 or float(facts[k]["area"]) * mm * mm / size ** 2 <= BIG_FLAT_FACE:
+            continue
+        if gmsh.model.getType(2, t) == "Plane":
+            out[t] = k
+    return out
 
 
 def _generate(gmsh, tag_of: dict[int, int]) -> None:
@@ -5832,6 +5856,11 @@ def _mesh_once_core(brep: Path, record: dict, owners: list[str], mm: float, log:
             for t in sorted(tag_of):
                 if gmsh.model.getType(2, t) == "Plane" and t not in grids and t not in mapped:
                     gmsh.model.mesh.setAlgorithm(2, t, PLANE_ALGORITHM)
+        if BIG_FLAT_FACE and kind != "triangles":
+            # SHMESH-21g: a big flat face left free is meshed by the quad-aligned algorithm (Blossom scales on it)
+            for t, k in big_flat_faces(gmsh, tag_of, facts, rows, mm, skip=set(grids) | set(mapped) | {w.annulus for w in rings}).items():
+                gmsh.model.mesh.setAlgorithm(2, t, BIG_FLAT_ALGORITHM)
+                rows[k]["big_flat"] = BIG_FLAT_ALGORITHM
         if POLAR_BAND_ALGORITHM is not None and polar_faces_made:
             # SHMESH-49k: a round plate's free cells (the band inside its bolt circle) paved by this algorithm
             for t in sorted(tag_of):
