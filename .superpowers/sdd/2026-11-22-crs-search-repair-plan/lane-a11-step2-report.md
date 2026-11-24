@@ -84,3 +84,36 @@ fidelity cap in the proposal, which the 2026-11-24 decision removes) and keep th
 6 tiny-edge cases become reachable while the verdict (valid + panel, with the gaming flag reporting the movement)
 decides whether the edit is worth it. I have not changed it: it widens an edit on every part, which deserves an
 explicit yes.
+
+## 4. Priority 3 as built, and the clean control (LEAD-2's three conditions)
+
+LEAD-2 approved dropping the absolute 0.1 mm ceiling from the det ladder on 2026-11-24, under the owner's removal of
+"op parameter bounds tied to the deviation budget".
+
+**(a) diagonal-relative.** `det_sliver_widths` = `(1e-4, 1e-3, 1e-2) x diagonal`, no absolute term, so a 1 m part and
+a 10 mm part are treated alike. On a 441 mm part: 0.044 / 0.441 / 4.41 mm, where the old fidelity-bound ladder gave
+0.001 / 0.01 / 0.05 mm whatever the part's size.
+
+**A SCOPE DECISION, not asked for and reversible.** `stages._shells` shares `scaled_sliver_widths`, so widening that
+function would have widened the STAGED healer too - the baseline every snapshot compares a search arm against, which
+would confound every arm comparison. `scaled_sliver_widths` is untouched and the sweep now calls a new
+`det_sliver_widths`; a test pins that the staged healer still uses the old ladder.
+
+**(b) no extra candidates.** Three rungs before, three after. The widths change, the count does not, and a test pins
+it. (The per-expansion candidate count measured on the failing dev parts is in the same evidence run as the widths.)
+
+**(c) the 40-file clean control: 40 of 40, nothing delivered, no errors.** Run locally on `jig` against
+`PROVISIONAL_clean_v2.json`'s 40 files, fetched from the staged wave inputs, through the real `search_det` arm with
+the widened ladder. Total 527 s, median 7.4 s per file, max 70.3 s.
+
+WHAT THAT CONTROL DOES AND DOES NOT PROVE. It proves the risk the owner accepted caps for - an arm wrecking a clean
+part - does not materialise: nothing was delivered on any of the 40. But the reason is structural, not a property of
+the ladder: a clean input's verdict is already clean, so the search stops without proposing anything and
+`search.deliverable` refuses to replace a clean input regardless. **The control therefore cannot distinguish "the
+wider ladder is safe" from "the wider ladder never ran".** That is why the widths are also measured on the parts that
+DO fail, where the removal is actually proposed.
+
+A HARNESS BUG OF MINE, found in this run and worth recording: the runner globbed `*.ste*`, which silently skipped
+the one control file named `.stp` (`nist_ftc_11_asme1_rb.stp`) - 39 rows for 40 files. Fixed to match `.step` and
+`.stp` by suffix and that file ran: not delivered, input clean, 7.5 s. The A11 step-1 and step-2 inputs are all
+`.step`, so no earlier measurement in this report lost a file to it.

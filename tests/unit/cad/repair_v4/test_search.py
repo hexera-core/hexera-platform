@@ -465,7 +465,10 @@ def test_det_generator_sweeps_parameters_per_site_kind() -> None:
     assert {c.op for c in prox} >= {"split_by_proximity", "split_angle"}
 
     sliver = gen.propose(_state([_site("sliver", ["F1"])]), 50)
-    assert sorted(c.params["max_width_mm"] for c in sliver if c.op == "remove_small") == pytest.approx([0.001, 0.01, 0.05])
+    # A11 step 2 priority 3: the det widths are fractions of the DIAGONAL with no absolute ceiling, so on this
+    # 100 mm part they are 0.01 / 0.1 / 1.0 mm where the old fidelity-bound ladder gave 0.001 / 0.01 / 0.05 mm.
+    assert sorted(c.params["max_width_mm"] for c in sliver if c.op == "remove_small") == pytest.approx(
+        [1e-4 * 100.0, 1e-3 * 100.0, 1e-2 * 100.0])
 
     assert gen.propose(_state([_site("unlocated", ["F1"])]), 50) == []
     assert len(gen.propose(_state([_site("proximity", ["F1", "F2"])]), 2)) == 2

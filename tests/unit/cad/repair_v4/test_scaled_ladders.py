@@ -240,3 +240,48 @@ def test_an_unbounded_part_gets_no_fill_loop_and_says_why() -> None:
     got = gen.propose(_state_of(_open_site_with([(["E1", "E2", "E3"], 4.0)], diagonal=3.46e100)), 50)
     assert "fill_loop" not in {c.op for c in got}
     assert any("fill_loop not proposed" in n and "unbounded" in n for n in gen.notes), gen.notes
+
+
+# --- A11 step 2 priority 3: the det sweep's remove_small widths lose the absolute ceiling ---------------------------
+
+
+@pytest.mark.parametrize("diag", DIAGONALS)
+def test_the_det_widths_are_diagonal_relative_with_no_absolute_ceiling(diag: float) -> None:
+    """LEAD-2's condition (a): a 1 m part and a 10 mm part are treated alike, so every width is a fixed fraction of
+    the diagonal and none is pinned to a constant."""
+    from meshpipeline.cad.repair_v4.ops.shells import det_sliver_widths
+
+    widths = det_sliver_widths(diag)
+    assert list(widths) == sorted(widths) and all(w > 0 for w in widths)
+    assert [w / diag for w in widths] == pytest.approx([1e-4, 1e-3, 1e-2])
+    assert len(widths) == 3
+
+
+def test_the_det_widths_reach_the_tiny_edges_the_old_ceiling_could_not() -> None:
+    """Measured (A11): 6 of the 16 faces a low_quality failure located carry an edge of 0.001 to 0.2 mm, which is 1
+    to 4 times the old min(0.1 mm, 1e-3 x diagonal) ceiling. The worst case is a 0.202 mm edge on a 46.9 mm part."""
+    from meshpipeline.cad.repair_v4.ops.shells import det_sliver_widths, scaled_sliver_widths
+
+    for diag, edge_mm in ((46.9, 0.202), (437.1, 0.129), (441.0, 0.110)):
+        assert max(scaled_sliver_widths(diag)) < edge_mm, "the old ladder could not reach it"
+        assert max(det_sliver_widths(diag)) >= edge_mm, (diag, edge_mm, det_sliver_widths(diag))
+
+
+def test_the_staged_healer_keeps_the_OLD_ladder_so_the_baseline_does_not_move() -> None:
+    """The staged arm is the baseline every snapshot compares a search arm against. Widening its removal would move
+    that baseline and confound the comparison, so only the det sweep's ladder changed."""
+    import inspect
+
+    from meshpipeline.cad.repair_v4 import stages
+
+    assert "scaled_sliver_widths" in inspect.getsource(stages._shells)
+    assert "det_sliver_widths" not in inspect.getsource(stages._shells)
+
+
+def test_widening_the_ladder_adds_no_candidates_per_expansion() -> None:
+    """LEAD-2's condition (b): k and the op budget are what bind, so the width change must not cost candidates. It
+    is the same three rungs, so a sliver site proposes exactly as many remove_small rows as before."""
+    from meshpipeline.cad.repair_v4.ops.shells import det_sliver_widths, scaled_sliver_widths
+
+    for diag in DIAGONALS:
+        assert len(det_sliver_widths(diag)) == len(scaled_sliver_widths(diag)) == 3
