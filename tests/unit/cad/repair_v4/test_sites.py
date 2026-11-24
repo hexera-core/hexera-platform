@@ -53,7 +53,8 @@ class ScriptedPool:
                 }
             return _ok({"geometry": geometry, "diagonal": 100.0})
         if fn == "sites_locate_points":
-            return _ok({"faces": [self.locate.get(tuple(p), []) for p in payload["points"]]})
+            found = [self.locate.get(tuple(p), []) for p in payload["points"]]
+            return _ok({"faces": found, "dists": [[0.25 * (k + 1) for k in range(len(f))] for f in found]})
         if fn == "sites_proximity":
             return _ok({"pairs": [{"a": a, "b": b, "dist": d, "point_a": [1.0, 2.0, 3.0],
                                    "point_b": [1.0, 2.5, 3.0]} for a, b, d in self.prox]})
@@ -650,6 +651,19 @@ def test_a_point_resolved_to_faces_is_measured_like_any_face() -> None:
     sites = find_sites(pool, ws, verdict, h_mm=H)
     assert sorted(tuple(s.entities) for s in sites) == [("F1",), ("F2",)]
     assert pool.calls.count("sites_distance") >= 1
+
+
+def test_a_located_point_carries_its_distance_to_the_nearest_face_in_the_site_row() -> None:
+    """Lane D28: the site's `points` row says how far the mesher's point lies from the nearest face, and which faces
+    it lies on; a point no face is within h of says None (it is its own site)."""
+    ws = _ws()
+    on, off = (20.5, 0.5, 0.5), (500.0, 500.0, 500.0)
+    pool = ScriptedPool(ws, _all_overlapping(ws), locate={on: [2, 3]}, distance=lambda a, b: 40.0)
+    verdict = _verdict(_fail("gmsh", "other", Located(None, on, "plc"), Located(None, off, "far")))
+    rows = [p for s in find_sites(pool, ws, verdict, h_mm=H) for p in s.graph["points"]]
+    by = {tuple(r["xyz"]): r for r in rows}
+    assert by[on]["nearest_face_mm"] == 0.25 and by[on]["faces_at"] == ["F2", "F3"]
+    assert by[off]["nearest_face_mm"] is None and by[off]["faces_at"] == []
 
 
 def test_a_point_never_chains_entities_through_a_large_faces_box() -> None:

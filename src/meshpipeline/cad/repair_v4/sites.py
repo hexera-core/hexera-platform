@@ -525,7 +525,13 @@ def _geometric_sites(pool: WorkerPool, ws: Workspace, valid: Any, nodes: dict[St
         answer = _call(pool, "sites_locate_points", {
             "brep_path": ws.brep_path, "points": [list(p.xyz[0]) for p in points], "radius": h_mm})
         faces = answer["faces"] if answer else []
-        for node, indices in zip(points, faces, strict=False):
+        dists = (answer or {}).get("dists") or [[] for _ in faces]
+        for node, indices, ds in zip(points, faces, dists, strict=False):
+            # lane D28: how far the mesher's point lies from the nearest face (None: no face within h) and which
+            # faces it lies on, kept on the point's notes so the site's `points` row carries the measurement
+            for n in node.notes:
+                n["nearest_face_mm"] = round(ds[0], 6) if ds else None
+                n["faces_at"] = [f"F{int(i)}" for i in indices]
             for index in indices:
                 sid = reverse.get(("F", int(index)))
                 if sid is None:
@@ -729,7 +735,8 @@ def _site_of(component: list[_Node], boxes: dict) -> Site:
                 failures.append({k: note[k] for k in ("mesher", "error_kind", "tag", "message")})
             if note["xyz"] is not None and len(located) < MAX_NOTES:
                 located.append({"xyz": [round(c, 3) for c in note["xyz"]], "entity": note["entity"],
-                                "mesher": note["mesher"], "tag": note["tag"]})
+                                "mesher": note["mesher"], "tag": note["tag"],
+                                **{k: note[k] for k in ("nearest_face_mm", "faces_at") if k in note}})
     # The failure-implicated entities only: proximity context faces come and go with h and must
     # not move a site's identity.
     site.graph["failure_entities"] = sorted(
