@@ -158,3 +158,16 @@ def test_per_file_lists_each_not_clean_search_row_with_its_sites_ops_and_deltas(
     assert x["deltas"] == ["fill_loop [0, 1, 0.0, 0.0, 0] -> [0, 1, 0.0, 0.0, -1]"]
     assert x["panel_failing"] == ["netgen: overlapping_facets"]
     assert "## Per file" in triage.render_markdown(triage.triage_wave(rows, [], per_file=True))
+
+
+def test_a_member_capped_after_doom_is_counted_apart_not_as_a_mesher_failure() -> None:
+    """Lane C16: a member that ran after the panel was already doomed and hit the cap is not a defect the mesher
+    found; it must not inflate 'panel member still failing' or members-failing-per-file."""
+    rows = [row(1, "search_det", t={**verdict_part([("gmsh_default", "low_quality"),
+                                                    ("netgen_occ", triage.CAPPED_KIND)], 0.1),
+                                    **search_part("exhausted", {}, {})})]
+    t = triage.triage_wave(rows, [])
+    p = t["arms"]["search_det"]["panel"]
+    assert list(p["by_member"]) == ["gmsh_default"] and p["capped_after_doom"] == {"netgen_occ": 1}
+    assert p["members_failing_per_file"] == {"1": 1}
+    assert "capped after doom" in triage.render_markdown(t)
