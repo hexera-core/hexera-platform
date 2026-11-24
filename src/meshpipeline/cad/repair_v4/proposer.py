@@ -256,22 +256,32 @@ HARD_CODE_TEXT: dict[str, str] = {
 }
 
 
-#: B21: the two-step chains lane D's oracle pass 1 measured as the only wins neither arm reached. The arms HAD the
-#: first step of each; what they never did was follow it. Phrased by DEFECT and by what the first step did, with no
-#: file named and no dev answer in it: the dev split is tuning data and the held-out split must stay a fair test, so
-#: a hint that named files would leak the answers. Both chains are also wired into the det sweep (search.py's
-#: CHAIN_AFTER_DEFEATURE), so this is the same advice the deterministic arm now follows, not a hint only you get.
-CHAIN_HINTS = """WHAT TWO-STEP CHAINS HAVE WORKED, measured by running every op at every site on a dev sample:
-- A FACE REMOVAL THAT HELD, THEN A RE-CONDITIONING STAGE. When you remove the face(s) a mesher located (defeature
-  aimed at those faces, or at the site's own faces) and the verdict holds or improves but the file is still not
-  clean, the next thing that worked was a whole stage, not another face op: run_stage `bodies`, `condition` or
-  `shells`. Removing a face leaves the shell, the body set or the tolerances needing a pass that the single ops do
-  not give. This was the only repair in the sample that nothing else reached.
-- A SLIVER REMOVAL THAT HELD, THEN A SPLIT ON MEASURED PAIRS. When `remove_small` on a narrow face holds, follow it
-  with `split_by_proximity` on the face pairs the checker MEASURED (the observation's clashes), not on pairs you
-  pick yourself: the measured pair is the one the mesher is failing between.
-Neither is a rule. They are the only two sequences on that sample that reached clean where no single op did, so try
-the follow-up before you start a new line of attack."""
+#: B21b: the chains lane D's oracle pass 1 measured, KEYED ON THE DEFECT FAMILY THE TABLE ITSELF RECORDS
+#: (`winners_by_defect.jsonl`'s `label_family`), counting only UNGAMED wins that no v4 arm reached. No file, no
+#: sha, no split name: the dev sample is tuning data and the held-out split has to stay a fair test, so a hint that
+#: named files would leak the answers. The same table drives the det sweep's own hoist (search.CHAIN_FOLLOWUPS), so
+#: this is advice the deterministic arm now follows too, not something only the model is told.
+CHAIN_HINTS = """WHAT HAS WORKED, BY DEFECT, measured by running every op at every site on a dev sample and keeping
+only the sequences that reached clean where no single op did. The number is how many files that sequence won.
+- overlapping_facets: remove_small THEN split_angle (21); remove_small THEN defeature (14); defeature THEN
+  defeature (14); remove_small THEN run_stage (13); defeature THEN run_stage (12); remove_small THEN
+  split_by_proximity (12).
+- body_overlap: fuse THEN conformalise (26) - by far the strongest single pattern anywhere; conformalise THEN
+  defeature (7); remove_small THEN defeature (7); defeature THEN conformalise (6); fuse THEN fuse (6).
+- self_intersection: defeature THEN conformalise (9); defeature THEN fuse (9).
+- edge_through_face: defeature THEN defeature (7); conformalise THEN conformalise (6); defeature THEN run_stage (5).
+- plc_intersection: remove_small THEN split_angle (3); defeature THEN split_by_proximity (3); defeature THEN
+  split_angle (3).
+- open_shell: fill_loop THEN remove_small (4); defeature THEN defeature (3).
+- brep_invalid: defeature THEN run_stage (4).
+- no_volume: split_by_proximity THEN remove_small (3).
+HOW TO USE IT. These are two-step sequences: the first op often does not clean the file and often does not even
+improve the verdict much, and the win comes from the FOLLOW-UP. So when a first step HOLDS - the verdict is no
+worse - prefer its measured follow-up over starting a new line of attack. Aim each step at what the checker
+measured: the faces a mesher located, the pairs in the observation's clashes, the bodies the site names. When you
+follow a removal with `run_stage`, `bodies`, `condition` and `shells` are the three that won.
+Nothing here is a rule, and your file may not look like the sample: a sequence that the verdict rejects is still
+rejected."""
 
 
 def _clean_definition() -> str:

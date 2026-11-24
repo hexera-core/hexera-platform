@@ -45,17 +45,52 @@ def test_a_kept_aimed_defeature_is_followed_by_the_three_reconditioning_stages()
     gen.propose(_state("S0", (1, 1, 0.0, 0.0, 0)), 12)                 # the parent, so its score is known
     child = _state("S1", (1, 1, 0.0, 0.0, 0), parent="S0", via=_defeature())
     got = gen.propose(child, 12)
-    stages = [c.params["stage"] for c in got if c.op == S.RUN_STAGE]
-    assert stages == list(S.CHAIN_AFTER_DEFEATURE), stages
-    # and they come FIRST, so `k` cannot drop the one follow-up the oracle measured
-    assert [c.op for c in got[:3]] == [S.RUN_STAGE] * 3, [c.op for c in got[:5]]
+    assert [c.params["stage"] for c in got if c.op == S.RUN_STAGE] == list(S.CHAIN_AFTER_DEFEATURE)
+    # B21b: the follow-ups come first, ONE row per follow-up op, in the oracle's win order for this opener
+    head = [c.op for c in got[:len(S.CHAIN_FOLLOWUPS["defeature"])]]
+    assert head[0] == "defeature" and S.RUN_STAGE in head, head
+
+
+def test_the_openers_cover_every_chain_the_oracle_measured_at_six_or_more_wins() -> None:
+    """B21b read `winners_by_defect.jsonl` (658 paths; 316 ungamed chain wins no arm reached). B21's two hardcoded
+    chains opened 37 of those. These are the openers and follow-ups that clear six measured wins."""
+    want = {
+        "defeature": {"defeature", S.RUN_STAGE, "conformalise", "fuse", "split_angle"},
+        "remove_small": {"split_angle", "defeature", S.RUN_STAGE, "split_by_proximity", "rebuild_face",
+                         "remove_small"},
+        "fuse": {"conformalise", "fuse"},
+        "conformalise": {"defeature", "remove_small", "conformalise"},
+        "rebuild_face": {"split_angle", S.RUN_STAGE},
+        "split_angle": {S.RUN_STAGE},
+    }
+    for opener, follows in want.items():
+        got = set(S.CHAIN_FOLLOWUPS.get(opener, ()))
+        assert follows <= got, f"{opener}: missing {sorted(follows - got)}"
+    # the strongest single pattern in the table, 26 wins on body_overlap
+    assert S.CHAIN_FOLLOWUPS["fuse"][0] == "conformalise"
+
+
+def test_the_hoist_is_capped_and_never_fills_itself_with_one_op() -> None:
+    gen = _gen()
+    bodies = site("overlap", ("F1", "F2", "B1", "B2"))
+    gen.propose(_state("S0", (1, 1, 0.0, 0.0, 0), sites=[bodies]), 50)
+    via = {"op": "fuse", "targets": ["B1", "B2"], "params": {"fuzzy_mm": 0.0}, "source": "det", "rationale": "fuse"}
+    got = gen.propose(_state("S1", (1, 1, 0.0, 0.0, 0), parent="S0", via=via, sites=[bodies]), 50)
+    # the generator's own note is the record of what was hoisted, in order
+    note = next(n for n in gen.notes if n.startswith("chain after a kept fuse"))
+    hoisted = note.split(": ", 1)[1].split(", ")
+    assert hoisted[0] == "conformalise"                                   # 26 wins, the strongest in the table
+    assert len(hoisted) <= S.CHAIN_MAX_ROWS and len(hoisted) == len(set(hoisted))
+    assert [c.op for c in got[:len(hoisted)]] == hoisted, [c.op for c in got[:4]]
 
 
 def test_the_chain_survives_a_cap_of_one() -> None:
+    """`k` cannot drop the follow-up: at a cap of ONE the single candidate is the opener's best-measured one
+    (for a kept aimed defeature that is a second defeature, 30 wins in the table)."""
     gen = _gen()
     gen.propose(_state("S0", (1, 1, 0.0, 0.0, 0)), 12)
     got = gen.propose(_state("S1", (1, 1, 0.0, 0.0, 0), parent="S0", via=_defeature()), 1)
-    assert len(got) == 1 and got[0].op == S.RUN_STAGE
+    assert len(got) == 1 and got[0].op == S.CHAIN_FOLLOWUPS["defeature"][0]
 
 
 def test_a_defeature_the_verdict_pushed_DOWN_opens_no_chain() -> None:
@@ -90,7 +125,12 @@ def test_a_kept_remove_small_is_followed_by_a_split_on_the_measured_pairs_only()
     splits = [c for c in got if c.op == "split_by_proximity"]
     assert splits, [c.op for c in got]
     assert all(c.params["face_pairs"] == [["F1", "F2"]] for c in splits), [c.params for c in splits]
-    assert got[0].op == "split_by_proximity", [c.op for c in got[:3]]   # first, ahead of the fair share
+    # B21b: the hoist is ordered by the oracle's win counts, so split_angle (24) leads and the measured-pair split
+    # (14) is in the hoist behind it - both ahead of the fair share
+    note = next(n for n in gen.notes if n.startswith("chain after a kept remove_small"))
+    hoisted = note.split(": ", 1)[1].split(", ")
+    assert hoisted[0] == "split_angle" and "split_by_proximity" in hoisted, hoisted
+    assert [c.op for c in got[:len(hoisted)]] == hoisted, [c.op for c in got[:4]]
 
 
 def test_without_a_measured_pair_the_kept_remove_small_adds_nothing() -> None:
@@ -105,10 +145,14 @@ def test_without_a_measured_pair_the_kept_remove_small_adds_nothing() -> None:
 
 # ---- the AI gets the same two chains, and no dev answers ----------------------------------------
 
-def test_the_prompt_carries_both_chains_and_names_no_file() -> None:
+def test_the_prompt_is_keyed_on_the_tables_own_defect_families_and_names_no_file() -> None:
     prompt = system_prompt(stage_names=("bodies", "condition", "shells"))
     assert CHAIN_HINTS in prompt
-    for must in ("defeature", "run_stage", "remove_small", "split_by_proximity", "MEASURED"):
+    # B21b: keyed on `winners_by_defect.jsonl`'s own `label_family` values
+    for family in ("overlapping_facets", "body_overlap", "self_intersection", "edge_through_face",
+                   "plc_intersection", "open_shell", "brep_invalid", "no_volume"):
+        assert family in CHAIN_HINTS, family
+    for must in ("defeature", "run_stage", "remove_small", "split_by_proximity", "fuse THEN conformalise"):
         assert must in CHAIN_HINTS, must
     # no file id, no sha, no split name: the dev sample's answers must not reach the model
     import re
