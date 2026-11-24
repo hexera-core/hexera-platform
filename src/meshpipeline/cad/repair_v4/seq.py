@@ -356,7 +356,12 @@ RULE_TABLE: dict[str, tuple[Repair, ...]] = {
     "open_shell": (("defeature",), ("remove_small",), ("defeature", "defeature"),
                    ("fill_loop", "remove_small")),
     # 11 files, the broadest evidence in the table - and the kind nothing yet clears (see the caveat above).
-    "overlapping_facets": (("split_angle", "run_stage:condition"), ("remove_small", "split_angle"),
+    # C23 (lane C): `split_aligned` FIRST, AHEAD OF THE ORACLE'S ORDER, with its reason: the oracle never had this
+    # op, and B10 measured that nothing in the library clears this kind. Measured on a real part instead: on
+    # f9501251fb30 (7 ABC duplicates of one part) the meshers' discretisations of a shaft and its coaxial bore cross;
+    # aligned splitting took gmsh_default from overlapping_facets and gmsh_prod from HXT 'other' to a mesh. The
+    # oracle's rows stay behind it.
+    "overlapping_facets": (("split_aligned",), ("split_angle", "run_stage:condition"), ("remove_small", "split_angle"),
                            ("remove_small", "defeature"), ("remove_small", "run_stage:condition"),
                            ("defeature", "run_stage:bodies")),
     # 1 file, 30 oracle-only rows: one file's pattern, ranked by paths within it.
@@ -417,6 +422,8 @@ FUZZY_MARGIN = 1.1
 #: do not align op-for-op with its `path`, so nothing finer is read out of them).
 DEFAULT_PARAMS: dict[str, dict[str, Any]] = {
     "split_angle": {"max_deg": 60},
+    # C23: part-wide (it finds every near-coaxial group itself); 8 rays, the value measured on f9501251fb30
+    "split_aligned": {"segments": 8, "scope": "all"},
     "split_continuity": {"order": 2},
     "reapproximate": {"max_degree": 9, "tol_mm": 0.025},
 }
@@ -451,6 +458,8 @@ def params_for(op: str, defect: Defect, *, pair: tuple[StableId, StableId] | Non
 
     if op.startswith("run_stage:"):
         return [], {"stage": op.split(":", 1)[1], "params": {}}
+    if op == "split_aligned":  # C23: part-wide, it finds the near-coaxial groups itself - no located face needed
+        return [], dict(DEFAULT_PARAMS[op])
     if op == "remove_small":
         face = m.get("narrowest_face")
         if not face:

@@ -50,6 +50,8 @@ _KINDS = ("face", "edge", "solid")
 #: the degenerate pieces a cut left on dev 0051_00518960. The SAME threshold says when two bodies merely touch
 #: (`_conformalise`'s overlap test) and when a piece a cut leaves has no volume, so the op judges both alike.
 ZERO_VOLUME_FRACTION = 1e-9
+#: `_degenerate`'s union bounds hold within this fraction of the targets' total volume (Boolean volume rounding)
+UNION_REL_TOL = 1e-6
 
 
 def zero_volume_mm3(diagonal: float) -> float:
@@ -597,7 +599,11 @@ def _degenerate(targets: list[Any], result: list[Any], eps: float) -> dict | Non
     if neg:
         return {"why": "a result solid has negative signed volume (inside out)", "negative_mm3": neg[:4]}
     total, lo, hi = sum(got), max(vols), sum(vols)
-    if total < lo - eps or total > hi + eps:
+    # C23: the union bounds are compared within the Boolean's own volume rounding, which scales with the volumes
+    # involved (relative ~1e-7 measured), not with the zero-volume floor: an exact fragment of f9501251fb30's 7 bodies
+    # came out 0.11 mm3 over their 927,163.93 mm3 sum (1.2e-7) and was refused as "not a union" by the 0.084 mm3 floor
+    bound = max(eps, UNION_REL_TOL * hi)
+    if total < lo - bound or total > hi + bound:
         return {"why": "the result is not a union of the targets", "result_mm3": total, "largest_target_mm3": lo,
                 "sum_of_targets_mm3": hi}
     return None

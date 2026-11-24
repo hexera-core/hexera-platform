@@ -582,6 +582,9 @@ _REAPPROX_KINDS = ("self_overlap", "pole", "periodic", "proximity")
 _REAPPROX_SWEEP = ((0.25, 9), (0.5, 6))
 _MAX_REAPPROX_FACES = 8
 _REFIT_KINDS = ("sliver", "overlap", "self_overlap")
+#: C23: the kinds where nearby faces' discretisations cross - overlapping_facets (self_overlap), edge_through_face
+#: (intersection) and a near miss (proximity) - and `split_aligned` is swept
+_ALIGNED_KINDS = ("self_overlap", "intersection", "proximity")
 _REFIT_SHARES = (0.5, 1.0)  # of the fidelity bound; the op declines above its own tol_mm
 _REFIT_MAX_FACES = 6
 #: `fix_poles` is ShapeFix_Face, and its kernel half RAISES when a targeted face does not change, so it is swept
@@ -1292,6 +1295,16 @@ class DetGenerator:
                         f"split the near faces so chords sag at most {ratio} of the gap",
                     )
                 )
+        if kind in _ALIGNED_KINDS:
+            # C23: the meshers' discretisations of nearby curved faces cross (gmsh_default overlapping_facets /
+            # edge_through_face; gmsh_prod's HXT 'other' on the same files). The part-wide pass aligns every coaxial
+            # group within the chordal sag; the named faces are then split on their own axes, which stays valid where
+            # split_angle's ShapeDivideAngle does not (measured on f9501251fb30's mitred cylinders).
+            rows.append(("split_aligned", [], {"segments": 8, "scope": "all"},
+                         "split every near-coaxial cylinder/cone group on common rays so their meshes nest"))
+            for face in faces[:2]:
+                rows.append(("split_aligned", [face], {"segments": 12},
+                             f"split {face} at 30 deg on its own axis so the mesher has vertices round it"))
         rows += self._contact_rows(contacts)
         rows += self._overlap_rows(site, faces)      # B19: the duplicate/contact removals at every kind
         if faces:
@@ -1410,7 +1423,7 @@ class DetGenerator:
 #: not a kind of site: the point of B19 is that the site's kind decides the ORDER of the families, never which of
 #: them is allowed.
 _OP_FAMILY: dict[str, str] = {
-    "split_by_proximity": "near_faces", "split_angle": "face_split", "split_closed": "face_split",
+    "split_by_proximity": "near_faces", "split_aligned": "near_faces", "split_angle": "face_split", "split_closed": "face_split",
     "split_continuity": "face_split", "rebuild_face": "face_rebuild", "fix_poles": "face_rebuild",
     "reapproximate": "surface_refit", "to_canonical": "surface_refit", "refit_cluster": "surface_refit",
     "rebuild_edge_as_intersection": "edge", "remove_small": "small", "unify_same_domain": "small",
