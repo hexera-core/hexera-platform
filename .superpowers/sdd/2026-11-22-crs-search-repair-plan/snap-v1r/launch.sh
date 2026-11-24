@@ -32,8 +32,9 @@ git -C "$REPO" archive --format=tar "$COMMIT" > "$RUN/code.tar" || die "git arch
 mkdir -p "$RUN/code" && tar xf "$RUN/code.tar" -C "$RUN/code" devtools src || die "extract failed"
 
 # ---------------------------------------------------------------- 2. splits (a git ref:path, or a file)
-resolve_split() { # spec override out
+resolve_split() { # spec override out   (a spec "COMMIT:<path>" is read from the run commit itself)
   local spec=$1 override=$2 out=$3
+  case $spec in COMMIT:*) spec="$COMMIT:${spec#COMMIT:}";; esac
   if [ -n "$override" ]; then [ -f "$override" ] || die "split file $override not found"; cp "$override" "$out"; echo "file:$override"; return; fi
   if git -C "$REPO" cat-file -e "$spec" 2>/dev/null; then git -C "$REPO" show "$spec" > "$out"; echo "git:$spec@$(git -C "$REPO" rev-parse "${spec%%:*}")"; return; fi
   die "split $spec is not written yet (pass DEV_SPLIT=/path or CLEAN_SPLIT=/path, or wait for the re-probe)"

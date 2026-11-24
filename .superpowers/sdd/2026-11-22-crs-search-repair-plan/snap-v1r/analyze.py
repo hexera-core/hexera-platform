@@ -29,6 +29,8 @@ def reason_key(reason: str) -> str:
         return "deadline stop"
     if reason.startswith("excluded before the stop"):
         return "excluded before the stop (reason not on disk)"
+    if reason.startswith("error:"):
+        return "harness crash"
     return reason.split(":")[0]
 
 
@@ -53,6 +55,19 @@ def deadline_section(out: Path, led_total: float, cap: float) -> str:
     lines += [f"| {k} | {v['rows']} | {v['excluded_before_stop']} | {v['deadline']} | {v['had_provenance']} |"
               for k, v in sorted(d.items())]
     return "\n".join(lines) + "\n"
+
+
+def crash_section(exc: list[dict], label: str) -> str:
+    """An arm that RAISED (reason `error: <Type>: ...`, e.g. a TypeError inside run_staged) is a HARNESS CRASH: the code
+    under test fell over, nothing was measured. Named per (file, arm), never folded into repair failures."""
+    crashes = [e for e in exc if e["reason"].startswith("error:")]
+    if not crashes:
+        return f"{label}: none."
+    by_type = Counter(e["reason"].split(":")[1].strip() for e in crashes)
+    lines = [f"{label}: **{len(crashes)} (file, arm) crash(es)** ({', '.join(f'{k} {v}' for k, v in by_type.items())}); "
+             "each is unmeasured, not a failed repair:", "", "| file | arm | error |", "|---|---|---|"]
+    lines += [f"| `{short(e['name'])}` | {e['arm']} | `{e['reason'][7:180]}` |" for e in crashes]
+    return "\n".join(lines)
 
 
 def short(name: str) -> str:
@@ -418,6 +433,12 @@ Widest version, for reference: every body-overlap input left out ({len(overlap)}
 {clean_tab}
 
 {moved_md}
+
+## Harness crashes (by name; a crash is not a repair failure)
+
+{crash_section(dev_exc, "Dev")}
+
+{crash_section(cl_exc, "Clean control")}
 
 ## Excluded files, each its own group (not in any rate; the ruling on the exclusion rate is pending)
 
