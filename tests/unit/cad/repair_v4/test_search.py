@@ -618,3 +618,73 @@ def test_det_generator_proposes_for_a_whole_part_open_site() -> None:
     assert {c.op for c in got} == {"sew", "make_volume", "orient_and_close"}
     for c in got:
         assert validate_call(c.op, c.targets, c.params, state.ws) == []
+
+
+# --- D9: the AI is re-prompted while it has turns and dollars, not dropped when the frontier empties -------------
+
+
+class ListeningAI(ScriptedAI):
+    """A model generator that also hears what became of its candidates (as AIProposer does via `feedback`)."""
+
+    def __init__(self, script: Any) -> None:
+        super().__init__(script)
+        self.heard: list[list[Any]] = []
+        self.stop_reason: str | None = None
+
+    def propose(self, state: SearchState, k: int) -> list[Candidate]:
+        self.model_calls += 1
+        self.model_usd += 0.01
+        return super().propose(state, k)
+
+    def feedback(self, outcomes: list[Any]) -> None:
+        self.heard.append(list(outcomes))
+
+
+def _declining(params: dict) -> None:
+    raise OpDeclined("no_change: nothing to do here")
+
+
+def test_an_ai_whose_proposals_decline_is_reprompted_until_patience() -> None:
+    """Snapshot v1: on 19 of 27 files search_ai stopped `exhausted` after ONE model turn - its proposals declined,
+    the frontier emptied, and the search ended with turns and dollars left. Now the model is asked again on the best
+    state, told why its candidates failed, until patience (or the $ ceiling, or the wall) ends the search."""
+    SetOp.behaviour = _declining
+    ai = ListeningAI(lambda s: [Candidate("t18_set", [], {"q": 5}, "ai", rationale="try")])
+    result, start = run([ai], FakeJudge())
+    assert ai.calls > 1, "the model was asked once and the search reported exhausted"
+    assert stop_reason(result) == "patience"
+    assert len(result.trace.of_kind("reprompt")) == ai.calls - 1
+    assert all(s.ws is start for s in ai.states)  # re-asked on the best state, which is still the start
+    # each re-prompt carries the outcome of the previous round: the decline and its reason
+    assert ai.heard and all(o.status == "declined" and "no_change" in o.message for batch in ai.heard for o in batch)
+
+
+def test_no_reprompt_once_the_ai_has_stopped_itself_or_its_budget_is_spent() -> None:
+    SetOp.behaviour = _declining
+    stopped = ListeningAI(lambda s: [Candidate("t18_set", [], {"q": 5}, "ai")])
+    stopped.stop_reason = "file_ceiling"  # the proposer's own stop: the per-file $ ceiling
+    result, _ = run([stopped], FakeJudge())
+    assert stop_reason(result) == "exhausted" and not result.trace.of_kind("reprompt")
+    capped = ListeningAI(lambda s: [Candidate("t18_set", [], {"q": 5}, "ai")])
+    result, _ = run([capped], FakeJudge(), Budget(wall_s=1000, ops=1000, model_calls=2, model_usd=100))
+    assert capped.calls == 2 and stop_reason(result) == "exhausted"
+
+
+def test_a_reprompt_asks_only_the_model_not_the_deterministic_sweep() -> None:
+    SetOp.behaviour = _declining
+    ai = ListeningAI(lambda s: [Candidate("t18_set", [], {"q": 5}, "ai")])
+    det = Scripted(lambda s: [cand(7)])
+    run([ai, det], FakeJudge())
+    assert det.calls == 1 and ai.calls > 1
+
+
+def test_search_det_is_unchanged_one_expansion_then_exhausted() -> None:
+    """The deterministic arm has no model generator: when its frontier empties it is exhausted, exactly as before."""
+    SetOp.behaviour = _declining
+    det = Scripted(lambda s: [cand(7), cand(8)])
+    result, _ = run([det], FakeJudge())
+    assert det.calls == 1 and stop_reason(result) == "exhausted" and not result.trace.of_kind("reprompt")
+    SetOp.behaviour = None
+    det_ok = Scripted(lambda s: [cand(s.depth + 1)] if s.depth < 2 else [])
+    result, _ = run([det_ok], FakeJudge(), patience=9)
+    assert stop_reason(result) == "exhausted" and not result.trace.of_kind("reprompt") and det_ok.calls == 3

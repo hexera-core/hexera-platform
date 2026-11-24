@@ -1210,6 +1210,15 @@ def search(
             return "ops"
         return None
 
+    def can_reprompt() -> bool:
+        """A model generator is still active, has not stopped itself (max turns, its per-file $ ceiling, the wave
+        cap, an unreachable model), and the search's model budget has room."""
+        live = [gi for gi in model_gens if gi in active and getattr(generators[gi], "stop_reason", None) is None]
+        if not live or ai_capped or best.verdict.clean:
+            return False
+        calls, usd = usage()
+        return calls < budget.model_calls and usd < budget.model_usd
+
     def new_state(
         ws: Workspace,
         verdict: Any,
@@ -1305,61 +1314,73 @@ def search(
                 if not cand_state.expanded and pushed_score == _rank(cand_state):
                     state = cand_state
                     break
+            reprompt = False
             if state is None:
-                reason = "exhausted"
-                break
-            state.expanded = True
+                # THE FRONTIER IS EMPTY. A deterministic search is done. A model generator that still has turns and
+                # dollars is asked AGAIN, on the best state, with what became of its last candidates: its `feedback`
+                # carries every decline, op error and judged delta into the next turn's prompt, and the observation
+                # names the failing panel members and their sites. Snapshot v1: on 19 of 27 files search_ai stopped
+                # here after one turn with its budget unspent. Each re-prompt counts toward patience, so patience, the
+                # per-file $ ceiling (the proposer's own stop), the model budget and the wall still end the search.
+                # A re-prompt reuses the state's sites, pictures and patience; it is not a second expansion.
+                if not can_reprompt():
+                    reason = "exhausted"
+                    break
+                state, reprompt = best, True
+                trace.record("reprompt", state=state.id, spent=spent_now())
+            if not reprompt:
+                state.expanded = True
 
-            try:
-                state.sites = judge.sites(pool, state.ws, state.verdict)
-            except Exception as exc:  # expand blind rather than lose the search
-                state.sites = []
-                trace.record("judge_error", where="sites", state=state.id, error=f"{type(exc).__name__}: {exc}")
-            else:
-                state.site_registry = _carry_site_ids(state, trace)
-            state.budget = {"spent": spent_now(), "limits": budget.__dict__}
-            if fixed_patience is None and state is s0:
-                holes = open_site_count(state.sites)
-                patience_now = scaled_patience(holes)
-                trace.record("patience", open_sites=holes, patience=patience_now, floor=PATIENCE_FLOOR)
-            declared_unfixable = [
-                s.id for s in state.sites if unfixable is not None and unfixable.is_declared(s.id, state.lineage)
-            ]
-            viewed = set(viewed_in.get(state.parent, frozenset())) if state.parent is not None else set()
-            if any(_will_look(generators[gi]) for gi in model_gens.intersection(active)):
-                drawn = 0
-                for s in state.sites:
-                    if s.kind in IMAGE_KINDS and s.id not in viewed and s.id not in declared_unfixable:
-                        if drawn >= MAX_VIEWS_PER_EXPANSION:
-                            break  # not marked viewed: a descendant may still draw it
-                        viewed.add(s.id)  # the proposer shows a site's picture once, so the driver draws it once
-                        drawn += 1
-                        try:
-                            render.view(pool, state.ws, s)  # None is a legitimate answer: no picture, still proposable
-                        except Exception as exc:  # a picture is optional evidence, never a verdict
-                            trace.record("view_unavailable", state=state.id, site=s.id,
-                                         error=f"{type(exc).__name__}: {exc}")
-            viewed_in[state.id] = frozenset(viewed)
-            trace.record(
-                "expand",
-                state=state.id,
-                parent=state.parent,
-                depth=state.depth,
-                via=state.via,
-                tier=state.tier,
-                score=state.score,
-                clean=bool(state.verdict.clean),
-                sites=[
-                    {"id": s.id, "kind": s.kind, "entities": s.entities, "meshers_failing": s.meshers_failing,
-                     "coarse": bool((s.graph or {}).get("coarse"))}
-                    for s in state.sites
-                ],
-                unfixable=declared_unfixable,
-            )
+                try:
+                    state.sites = judge.sites(pool, state.ws, state.verdict)
+                except Exception as exc:  # expand blind rather than lose the search
+                    state.sites = []
+                    trace.record("judge_error", where="sites", state=state.id, error=f"{type(exc).__name__}: {exc}")
+                else:
+                    state.site_registry = _carry_site_ids(state, trace)
+                state.budget = {"spent": spent_now(), "limits": budget.__dict__}
+                if fixed_patience is None and state is s0:
+                    holes = open_site_count(state.sites)
+                    patience_now = scaled_patience(holes)
+                    trace.record("patience", open_sites=holes, patience=patience_now, floor=PATIENCE_FLOOR)
+                declared_unfixable = [
+                    s.id for s in state.sites if unfixable is not None and unfixable.is_declared(s.id, state.lineage)
+                ]
+                viewed = set(viewed_in.get(state.parent, frozenset())) if state.parent is not None else set()
+                if any(_will_look(generators[gi]) for gi in model_gens.intersection(active)):
+                    drawn = 0
+                    for s in state.sites:
+                        if s.kind in IMAGE_KINDS and s.id not in viewed and s.id not in declared_unfixable:
+                            if drawn >= MAX_VIEWS_PER_EXPANSION:
+                                break  # not marked viewed: a descendant may still draw it
+                            viewed.add(s.id)  # the proposer shows a site's picture once, so the driver draws it once
+                            drawn += 1
+                            try:
+                                render.view(pool, state.ws, s)  # None is a legitimate answer: no picture, still proposable
+                            except Exception as exc:  # a picture is optional evidence, never a verdict
+                                trace.record("view_unavailable", state=state.id, site=s.id,
+                                             error=f"{type(exc).__name__}: {exc}")
+                viewed_in[state.id] = frozenset(viewed)
+                trace.record(
+                    "expand",
+                    state=state.id,
+                    parent=state.parent,
+                    depth=state.depth,
+                    via=state.via,
+                    tier=state.tier,
+                    score=state.score,
+                    clean=bool(state.verdict.clean),
+                    sites=[
+                        {"id": s.id, "kind": s.kind, "entities": s.entities, "meshers_failing": s.meshers_failing,
+                         "coarse": bool((s.graph or {}).get("coarse"))}
+                        for s in state.sites
+                    ],
+                    unfixable=declared_unfixable,
+                )
 
             # gather and validate
             proposals: list[tuple[int, Candidate]] = []
-            for gi in active:
+            for gi in ([g for g in active if g in model_gens] if reprompt else active):
                 try:
                     proposals += [(gi, c) for c in generators[gi].propose(state, k_propose)]
                 except Exception as exc:  # a flaky proposer costs its proposals, not the search

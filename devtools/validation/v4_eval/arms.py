@@ -384,7 +384,9 @@ def search_triage(result: Any, generators: Any) -> dict[str, Any]:
     evaluated = [e for e in trace.of_kind("candidate") if e.get("outcome") == "evaluated"]
     deltas = [{"op": e.get("op"), "source": e.get("source"), "parent": e.get("parent_score"), "score": e.get("score")}
               for e in evaluated[:TRIAGE_MAX_DELTAS]]
-    return {"stop": {"reason": stop.get("reason"), "ended_by": stop.get("ended_by"), "spent": stop.get("spent")},
+    return {"stop": {"reason": stop.get("reason"), "ended_by": stop.get("ended_by"), "spent": stop.get("spent"),
+                     # D9: how often the model was asked again on an empty frontier (0 for search_det, always)
+                     "reprompts": len(trace.of_kind("reprompt"))},
             "open_sites": dict(Counter(str(s.get("kind")) for s in at.get("sites") or [])), "open_sites_at": where,
             "ops": ops, "not_proposed": _top(skipped), "ai": ai, "deltas": deltas, "deltas_total": len(evaluated),
             "sites_by_placement": _placement(at.get("sites") or [])}
