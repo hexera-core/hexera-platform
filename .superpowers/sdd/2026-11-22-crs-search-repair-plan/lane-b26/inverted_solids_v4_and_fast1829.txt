@@ -1,0 +1,12 @@
+367 delivered BREPs under 2 wave dir(s)
+
+PASS 1 - inverted solids in deliveries: 1 of 367 deliveries carry at least one (0.3%)
+   search_ai        1 of 114 deliveries have an inverted solid
+   search_det       0 of 119 deliveries have an inverted solid
+   search_seq       0 of  11 deliveries have an inverted solid
+   staged           0 of 123 deliveries have an inverted solid
+
+   3e7c2a1197c3/search_ai: 4 solids, 1 negative (-13.46)
+
+PASS 2 - what the orientation cost the measurement (part_kept both ways):
+   3e7c2a1197c3/search_ai: pre-B26 1.0  B26 0.0004  <- a pre-B26 PASS that B26 REFUSES
