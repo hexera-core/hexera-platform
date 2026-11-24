@@ -352,8 +352,11 @@ KEPT_GROW = "growing a thick region into its walls had not finished after {s:.0f
 #: (6.98), lab_sh0023 2.0, the development parts 2.6 to 69 but all under 48 s. The floor is 1.25 x the slowest keeper
 #: attempt on a small all-shell mesh (48 s on 0.7 s); the multiple about 1.4 x the largest ratio past the floor (6.98).
 #: Made beside the all-shell mesh, an attempt that fails before it is done costs about nothing on top.
-KEPT_PER_PLAIN = 10.0
-KEPT_FLOOR_S = 60.0
+#: MIXED-27: counted in CPU seconds, both are 1.5 x the wall-second values above (10 and 60): the attempt's process tree
+#: works on more than one core where it has them (CPU over wall seconds 1.17 lab_sh0023, 1.42 cen_s0186, 1.43 pub_0020;
+#: the all-shell mesh 1.0 to 1.4), and at 10 and 60 cen_s0184 and cen_s0190 lost their kept regions to the clock.
+KEPT_PER_PLAIN = 15.0
+KEPT_FLOOR_S = 90.0
 KEPT_CLOCK = "keeping them solid did not finish in the {s:.0f} s it was given, {k:g} times what the all-shell mesh took"
 
 
