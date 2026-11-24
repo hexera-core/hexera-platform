@@ -778,21 +778,20 @@ def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
             # stack is half the wall cell here); the band's finer cells would squash it, so there is none.
             # CFDREQ-20: on the passage measured, else on the openings' bore - a case whose passage reading did not
             # close (no passage_radius) kept the builder's 0.7 mm wall cells and a y+ 0.5 wall
+            _n0 = max(1, int(round(_bore / wall_cell)))
+            _n_wf = CR.wall_function_bore_cells(_ask, bore_D=_bore, cells_across=_n0,
+                                                cap_rel=CR.CFMESH_STACK_REL)
+            if _n_wf < _n0:
+                wall_cell, _band_r = min(max_cell, _bore / _n_wf), 0.0
             # CFDREQ-31: cfMesh builds its one wall-function layer at about half the cell it stands on, whatever the
-            # cap says - so the wall cell is that layer's height over the share, finer or coarser than the background,
-            # and the background is moved so the halvings land on it (a layer planned at 0.37 of a 5.87 mm background
-            # cell came out 1.37 x the plan, 00134075; a 3.65 mm plan held to a 3.16 mm background, 00184523)
+            # cap says - where the y+ layer is thinner than that the wall cell is refined to it and the background
+            # moved so the halvings land on it (a layer planned at 0.37 of a 5.87 mm cell came out 1.37 x the plan,
+            # 00134075); never coarsened (the gap plan refines a coarser wall back: 00185618 102k -> 503k cells)
             _one = CR.cfmesh_one_layer_cells(
                 _ask, bore_D=_bore, max_cell=max_cell, wall_cell=wall_cell,
                 min_background=((vol / (0.4 * cell_budget)) ** (1.0 / 3.0) if cell_budget else 0.0))
             if _one is not None:
                 wall_cell, max_cell, _band_r = _one[0], _one[1], 0.0
-            else:
-                _n0 = max(1, int(round(_bore / wall_cell)))
-                _n_wf = CR.wall_function_bore_cells(_ask, bore_D=_bore, cells_across=_n0,
-                                                    cap_rel=CR.CFMESH_STACK_REL)
-                if _n_wf < _n0:
-                    wall_cell, _band_r = min(max_cell, _bore / _n_wf), 0.0
     wall_cell = max(wall_cell, max_cell / float(2 ** max(1, int(max_halvings))))
     if snap_wall:
         # a wall size the engine chose from the budget: the octree level at or above it
