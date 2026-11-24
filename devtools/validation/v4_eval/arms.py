@@ -248,14 +248,17 @@ def cheap_full_cells(confirms: list[dict]) -> dict[str, int]:
     """Cheap tier vs full panel over the states this search CONFIRMED (the search's `confirm` trace events carry the
     state's cheap score and the full verdict's `clean`). Since the re-probe runs the full verdict only (plan amendment
     2026-11-23 19:15), this is where the cheap tier's agreement is measured: the tier now exists only to rank search
-    states. A cheap PASS is `score[0] == 1` (valid AND faithful) and `score[1] >= 1` (the cheap panel is GmshDefault
-    alone, `verdict.assemble.cheap_verdict`); a full pass is `clean`."""
+    states. A cheap PASS is `score[0] == 1` (valid AND faithful) and `score[1]` = EVERY cheap member passing (the
+    cheap panel is `verdict.assemble.default_members("cheap")`); a full pass is `clean`."""
+    from meshpipeline.cad.repair_v4.verdict.assemble import default_members
+
+    n_cheap = len(default_members("cheap"))
     cells = dict.fromkeys(CHEAP_FULL_CELLS, 0)
     for e in confirms:
         cheap = e.get("cheap_score")
         if not cheap or len(cheap) < 2 or e.get("clean") is None:
             continue
-        cheap_pass = int(cheap[0]) == 1 and int(cheap[1]) >= 1
+        cheap_pass = int(cheap[0]) == 1 and int(cheap[1]) >= n_cheap
         cells[f"cheap_{'pass' if cheap_pass else 'fail'}_full_{'pass' if e['clean'] else 'fail'}"] += 1
     return cells
 

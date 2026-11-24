@@ -65,7 +65,7 @@ def test_the_full_tier_contains_a_non_gmsh_member_and_the_cheap_tier_does_not() 
         "meshpipeline.cad.repair_v4.verdict.netgen_member",
     }
     assert [type(m) for m in full] == [GmshProd, GmshDefault, GmshAlt, NetgenOCC]
-    assert [type(m) for m in assemble.default_members("cheap")] == [GmshDefault]
+    assert [type(m) for m in assemble.default_members("cheap")] == [GmshDefault, GmshProd]
     # every member carries a config, so the cache can key the whole panel
     hash_a = panel_config_hash(full, 300.0, {"gmsh": "1"})
     assert len({json.dumps(m.config, sort_keys=True) for m in full}) == len(full) == 4

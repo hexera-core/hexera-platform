@@ -325,9 +325,10 @@ def test_search_triage_records_each_evaluated_candidates_verdict_delta() -> None
 
 
 def test_cheap_full_cells_reads_the_confirm_events() -> None:
+    # a cheap PASS is every cheap member passing: 2 of 2 since lane B8 added gmsh_prod to the cheap tier
     cells = run_arm.arms_mod.cheap_full_cells([
-        {"cheap_score": [1, 1, 0.3, 0.0, 0], "clean": True}, {"cheap_score": [1, 1, 0.3, 0.0, 0], "clean": False},
-        {"cheap_score": [0, 1, 0.3, 0.0, 0], "clean": True}, {"cheap_score": [1, 0, 0.0, 0.0, 0], "clean": False},
+        {"cheap_score": [1, 2, 0.3, 0.0, 0], "clean": True}, {"cheap_score": [1, 2, 0.3, 0.0, 0], "clean": False},
+        {"cheap_score": [0, 2, 0.3, 0.0, 0], "clean": True}, {"cheap_score": [1, 1, 0.0, 0.0, 0], "clean": False},
         {"cheap_score": None, "clean": True}])
     assert cells == {"cheap_pass_full_pass": 1, "cheap_pass_full_fail": 1, "cheap_fail_full_pass": 1,
                      "cheap_fail_full_fail": 1}

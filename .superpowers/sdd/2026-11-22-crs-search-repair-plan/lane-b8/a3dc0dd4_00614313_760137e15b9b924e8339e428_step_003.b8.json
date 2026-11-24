@@ -1,0 +1,137 @@
+{
+ "file": "a3dc0dd4_00614313_760137e15b9b924e8339e428_step_003.step",
+ "states": [
+  {
+   "state": "input",
+   "members": {
+    "gmsh_prod": {
+     "status": "pass",
+     "error_kind": null,
+     "min_sicn": 0.06023027203101483,
+     "seconds": 2.8
+    },
+    "gmsh_default": {
+     "status": "pass",
+     "error_kind": null,
+     "min_sicn": 0.04359321568322206,
+     "seconds": 0.41
+    },
+    "gmsh_alt": {
+     "status": "pass",
+     "error_kind": null,
+     "min_sicn": 0.08744167388920947,
+     "seconds": 0.55
+    },
+    "netgen_occ": {
+     "status": "pass",
+     "error_kind": null,
+     "min_sicn": 0.13438975388678434,
+     "seconds": 2.67
+    }
+   },
+   "valid": true,
+   "faithful": true,
+   "full_clean": true
+  },
+  {
+   "state": "staged(cheap-only)",
+   "members": {
+    "gmsh_prod": {
+     "status": "fail",
+     "error_kind": "other",
+     "min_sicn": null,
+     "seconds": 0.37
+    },
+    "gmsh_default": {
+     "status": "pass",
+     "error_kind": null,
+     "min_sicn": 0.09113096117794871,
+     "seconds": 0.41
+    },
+    "gmsh_alt": {
+     "status": "pass",
+     "error_kind": null,
+     "min_sicn": 0.1440545728625616,
+     "seconds": 0.65
+    },
+    "netgen_occ": {
+     "status": "pass",
+     "error_kind": null,
+     "min_sicn": 0.16357809861350983,
+     "seconds": 2.62
+    }
+   },
+   "valid": true,
+   "faithful": true,
+   "full_clean": false
+  },
+  {
+   "state": "split_angle 90",
+   "error": "OpDeclined: invalidated: the result is not BRepCheck-valid"
+  },
+  {
+   "state": "unify_same_domain all",
+   "members": {
+    "gmsh_prod": {
+     "status": "pass",
+     "error_kind": null,
+     "min_sicn": 0.06712047794741155,
+     "seconds": 2.84
+    },
+    "gmsh_default": {
+     "status": "pass",
+     "error_kind": null,
+     "min_sicn": 0.04359321568331299,
+     "seconds": 0.39
+    },
+    "gmsh_alt": {
+     "status": "pass",
+     "error_kind": null,
+     "min_sicn": 0.15716407288169384,
+     "seconds": 0.63
+    },
+    "netgen_occ": {
+     "status": "pass",
+     "error_kind": null,
+     "min_sicn": 0.24212836742334978,
+     "seconds": 2.63
+    }
+   },
+   "valid": true,
+   "faithful": true,
+   "full_clean": true
+  },
+  {
+   "state": "tighten_tolerances 1e-5",
+   "members": {
+    "gmsh_prod": {
+     "status": "fail",
+     "error_kind": "other",
+     "min_sicn": null,
+     "seconds": 0.36
+    },
+    "gmsh_default": {
+     "status": "pass",
+     "error_kind": null,
+     "min_sicn": 0.09113096117794871,
+     "seconds": 0.42
+    },
+    "gmsh_alt": {
+     "status": "pass",
+     "error_kind": null,
+     "min_sicn": 0.1440545728625616,
+     "seconds": 0.64
+    },
+    "netgen_occ": {
+     "status": "pass",
+     "error_kind": null,
+     "min_sicn": 0.16357809861350983,
+     "seconds": 2.58
+    }
+   },
+   "valid": true,
+   "faithful": true,
+   "full_clean": false
+  }
+ ]
+}

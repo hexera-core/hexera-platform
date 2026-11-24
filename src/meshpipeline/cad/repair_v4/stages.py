@@ -580,7 +580,8 @@ def confirm_staged(pool: WorkerPool, input_ws: Workspace, result: StagedResult, 
                    input_verdict: Any) -> Confirmation:
     """Confirm `result` with the FULL panel and fall back, stage by stage, until it is no worse than the input.
 
-    WHY. Each stage is a transaction judged by `cheap_verdict`: layer 1 and gmsh_default only. A stage can therefore
+    WHY. Each stage is a transaction judged by `cheap_verdict` (layer 1 and the cheap members; gmsh_default ALONE
+    until lane B8 added gmsh_prod). A stage can therefore
     break gmsh_prod, gmsh_alt or Netgen without the transaction seeing it - Task 49's smoke caught `condition`
     (split_angle 90 / split_closed / split_continuity) taking a CLEAN file from 4 panel passes to 3, while
     gmsh_default's quality went up. So the staged result is meshed by the whole panel once; if it `regressed`
