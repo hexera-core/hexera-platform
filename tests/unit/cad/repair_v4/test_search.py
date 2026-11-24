@@ -688,3 +688,101 @@ def test_search_det_is_unchanged_one_expansion_then_exhausted() -> None:
     det_ok = Scripted(lambda s: [cand(s.depth + 1)] if s.depth < 2 else [])
     result, _ = run([det_ok], FakeJudge(), patience=9)
     assert stop_reason(result) == "exhausted" and not result.trace.of_kind("reprompt") and det_ok.calls == 3
+
+
+# --- B18: the search is ANYTIME - a wall must not erase its result ------------------------------
+
+
+def test_the_wall_stops_proposing_at_the_reserve_so_the_verdict_budget_is_real(monkeypatch) -> None:
+    """The VERDICT BUDGET comes OUT of the wall: proposing stops at 1 - VERDICT_RESERVE of it. Pinned at 8.5 s of a
+    10 s wall, a reserve of 0.2 stops the search and a reserve of 0 does not - which is the reserve, measured."""
+    from meshpipeline.cad.repair_v4 import search as search_mod
+
+    def pinned(at: float):
+        calls = {"n": 0}
+
+        def clock() -> float:
+            calls["n"] += 1
+            return 0.0 if calls["n"] <= 6 else at      # the start's own judging happens at t=0
+        return clock
+
+    def run_at(reserve: float, at: float) -> str:
+        monkeypatch.setattr(search_mod, "VERDICT_RESERVE", reserve)
+        fj = FakeJudge()
+        start = _ws(0)
+        got = search_mod.search(None, start, start.original, [Scripted(lambda s: [cand(1)] if s.depth < 1 else [])],
+                                Budget(wall_s=10, ops=1000, model_calls=99, model_usd=99), workers=1,
+                                judge=fj.judge(), patience=99, clock=pinned(at))
+        return str(got.reason)
+
+    assert run_at(0.2, 8.5) == "wall", "8.5 s is past the 8 s proposing deadline of a 10 s wall"
+    assert run_at(0.0, 8.5) != "wall", "with no reserve the same 8.5 s is still inside the wall"
+
+
+def test_a_wall_stopped_search_is_CONCLUSIVE_and_carries_its_best_state() -> None:
+    """B16's finding, fixed: on bcf201b55323 the AI's row passed 3 panel members and was discarded for stopping on
+    the wall. A wall stop now delivers the best state's FULL verdict, so the row counts."""
+    ticks = itertools.count(0, 1)
+    fj = FakeJudge()
+    gen = Scripted(lambda s: [cand(3)] if s.depth == 0 else [cand(_q(s.ws))])
+    start = _ws(0)
+    result = search(None, start, start.original, [gen], Budget(wall_s=12, ops=1000, model_calls=99, model_usd=99),
+                    workers=1, judge=fj.judge(), clock=lambda: float(next(ticks)))
+    assert result.reason == "wall" and result.stopped_on_wall is True
+    assert result.best_tier == "full", "the delivered state must be judged by the whole panel"
+    assert result.unmeasured is False, "a wall stop with a full verdict is a MEASUREMENT, not machine time"
+    assert _q(result.best) == 3 and result.best_verdict.q == 3
+
+
+def test_a_cheap_only_best_state_is_given_the_full_panel_in_the_reserve() -> None:
+    """When the wall lands before the confirm step has judged the best state, the reserve pays for it: the row is
+    still full-tier. The trace records that final verdict."""
+    fj = FakeJudge()
+    gen = Scripted(lambda s: [cand(2)] if s.depth == 0 else [])
+    result, _start = run([gen], fj, Budget(wall_s=1000, ops=1000, model_calls=9, model_usd=9), patience=1)
+    assert result.best_tier == "full"
+    # the search's own confirm already made it full, so no reserve verdict was needed
+    assert result.final_verdict is None
+    assert result.trace.of_kind("final_verdict") == []
+
+
+def test_the_delivered_state_is_always_full_tier_whatever_stopped_the_search() -> None:
+    """Why the reserve is a GUARANTEE and not a hope: `search` only ever promotes a child to best AFTER the confirm
+    step has judged it with the full panel, so the delivered state carries a full verdict however the search ended.
+    The reserve keeps time for the one case that is not covered - a best state that never got that far - and
+    `final_verdict` records what happened when it is used."""
+    fj = FakeJudge()
+    for reason, kw in (("ops", {"budget": Budget(wall_s=1000, ops=2, model_calls=9, model_usd=9)}),
+                       ("patience", {"patience": 1}),
+                       ("exhausted", {})):
+        gen = Scripted(lambda s: [cand(_q(s.ws) + 1)] if _q(s.ws) < 2 and reason != "exhausted" else [])
+        result, _start = run([gen], fj, **kw)
+        assert result.best_tier == "full", f"{reason}: delivered tier {result.best_tier}"
+        assert result.unmeasured is False, reason
+
+
+def test_a_time_stop_whose_final_verdict_did_not_complete_is_the_ONLY_unmeasured_case() -> None:
+    """The rule, stated as the ruling states it: a file is unmeasured only if even the final verdict cannot
+    complete. `out_tier` carries that - the full panel is the only tier that can say what a state is."""
+    from meshpipeline.cad.repair_v4.measurement import file_unmeasured
+
+    common = {"infrastructure_failed": False, "inconclusive_candidates": 0, "verdict_candidates": 4,
+              "out_clean": False}
+    assert file_unmeasured(reason="wall", out_tier="cheap", **common) is True
+    assert file_unmeasured(reason="wall", out_tier=None, **common) is True
+    assert file_unmeasured(reason="wall", out_tier="full", **common) is False
+
+
+def test_every_arm_gets_the_same_rule_whatever_stopped_it() -> None:
+    """det exhausting its candidates in 50 s and the AI still working at 650 s are judged by ONE rule: the tier of
+    the verdict being delivered, not how the search ended."""
+    from meshpipeline.cad.repair_v4.measurement import file_unmeasured
+
+    common = {"infrastructure_failed": False, "inconclusive_candidates": 0, "verdict_candidates": 4,
+              "out_clean": False}
+    assert file_unmeasured(reason="exhausted", out_tier="full", **common) is False
+    assert file_unmeasured(reason="patience", out_tier="full", **common) is False
+    assert file_unmeasured(reason="wall", out_tier="full", **common) is False      # B18: was True
+    assert file_unmeasured(reason="wall", out_tier="cheap", **common) is True
+    # a row written BEFORE the ruling carries no tier on a time stop and keeps its old classification
+    assert file_unmeasured(reason="wall", **common) is True

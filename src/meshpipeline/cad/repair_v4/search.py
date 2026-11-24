@@ -103,7 +103,7 @@ from dataclasses import dataclass, field, replace
 from typing import Any, Literal, Protocol
 
 from meshpipeline.cad.repair_v4 import render
-from meshpipeline.cad.repair_v4.measurement import NO_VERDICT, file_unmeasured, no_verdict_failure
+from meshpipeline.cad.repair_v4.measurement import NO_VERDICT, TIME_STOPS, file_unmeasured, no_verdict_failure
 from meshpipeline.cad.repair_v4.ops import REGISTRY, OpDeclined, OpFailed, validate_call
 from meshpipeline.cad.repair_v4.ops.shells import scaled_sew_ladder, scaled_sliver_widths
 from meshpipeline.cad.repair_v4.proposer import (
@@ -394,6 +394,10 @@ def default_judge(*, h_mm: float, cache: VerdictCache | None = None) -> Judge:
     )
 
 
+#: THE VERDICT BUDGET: the share of `Budget.wall_s` the search keeps back to judge its best state with the FULL
+#: panel after it stops proposing (design 5.7's "output the best state so far"; owner ruling 2026-11-24, the
+#: owner's own example was the last ~20%). It is taken OUT of the wall, never added to it.
+VERDICT_RESERVE = 0.2
 #: Position of layer 1 in a `Score` (valid, panel passes, min SICN, -max_dev, -churn). The delivery gate reads
 #: key 0 and key 1 by name, so a change to the tuple's shape cannot silently move the gate.
 VALID_KEY = 0
@@ -428,6 +432,14 @@ class SearchResult:
     #: PARENT state's sites, "ops": the ops that candidate applied (1 unless it was a multi-op `run_stage`)}` -
     #: what `recipes.recipe_from_path` turns into a recipe when the file ends clean
     path_steps: list[dict] = field(default_factory=list)
+    #: the search stopped on the CLOCK (`measurement.TIME_STOPS`). The row carries it so a reader can keep these
+    #: rows out of a clean-rate denominator; it is NOT a reason to discard the verdict (the anytime rule).
+    stopped_on_wall: bool = False
+    #: the tier of the verdict being delivered. "full" means the best state was judged by the whole panel, which
+    #: is what makes a wall-stopped row a measurement rather than machine time.
+    best_tier: str = "full"
+    #: when the final full verdict had to be run in the reserve: whether it completed, and what it cost
+    final_verdict: dict | None = None
     #: why the search stopped: "clean", "patience", "exhausted", a budget reason, or "no_verdict" (nothing was
     #: measured: see `infrastructure_failed`)
     reason: str | None = None
@@ -446,10 +458,12 @@ class SearchResult:
     @property
     def unmeasured(self) -> bool:
         """True when this outcome says nothing about the file (never measured, as opposed to measured and failed).
-        The same rule the report applies to a row (`measurement.file_unmeasured`)."""
+        The same rule the report applies to a row (`measurement.file_unmeasured`), `best_tier` included: a wall stop
+        whose best state carries a FULL verdict is a measurement (the anytime rule)."""
         return file_unmeasured(reason=self.reason, infrastructure_failed=self.infrastructure_failed,
                                inconclusive_candidates=self.inconclusive_candidates,
-                               verdict_candidates=self.verdict_candidates, out_clean=self.clean)
+                               verdict_candidates=self.verdict_candidates, out_clean=self.clean,
+                               out_tier=self.best_tier)
 
     @property
     def inconclusive_rate(self) -> float:
@@ -1529,7 +1543,7 @@ def search(
 
     def over_budget() -> str | None:
         s = spent_now()
-        if s["wall_s"] >= budget.wall_s:
+        if s["wall_s"] >= propose_wall_s:
             return "wall"
         if s["ops"] >= budget.ops:
             return "ops"
@@ -1614,6 +1628,11 @@ def search(
     #: expansion; an int is a fixed patience, as before
     fixed_patience = patience
     patience_now = PATIENCE_FLOOR if patience is None else patience
+    # THE VERDICT BUDGET (design 5.7, owner ruling 2026-11-24). Proposing stops at `1 - VERDICT_RESERVE` of the
+    # wall and the rest is kept to judge the best state with the FULL panel, so a wall stop still delivers a
+    # measurement. It comes OUT of the existing wall: no arm gets more wall-clock than it had before, or this
+    # wave's numbers stop being comparable with the last one's.
+    propose_wall_s = budget.wall_s * (1.0 - VERDICT_RESERVE)
     best = s0
     seen = {_fingerprint(start)}
     heap: list[tuple] = [_entry(s0, s0.score, next(tie))]
@@ -1906,6 +1925,24 @@ def search(
                 reason = "patience"
 
     ended_by = reason
+    # ANYTIME: whatever stopped the search, the state being delivered is judged by the FULL panel before the row is
+    # written. Usually it already is (the confirm step judges the top-k children), and then this costs nothing.
+    stopped_on_wall = ended_by in TIME_STOPS
+    final_verdict: dict | None = None
+    if best.tier != "full":
+        left = budget.wall_s - (clock() - t0)
+        try:
+            full = judge.full(pool, best.ws, original)
+            full_score = judge.score(full)
+        except Exception as exc:  # noqa: BLE001 - the final verdict is the ONE thing whose failure means unmeasured
+            final_verdict = {"ok": False, "error": f"{type(exc).__name__}: {exc}", "reserve_s_left": round(left, 1)}
+            trace.record("final_verdict", state=best.id, ok=False, error=final_verdict["error"])
+        else:
+            best.verdict, best.tier, best.score, best.rank = full, "full", full_score, full_score
+            final_verdict = {"ok": True, "score": list(full_score), "clean": bool(full.clean),
+                             "reserve_s_left": round(left, 1), "took_s": round(clock() - t0 - (budget.wall_s - left), 1)}
+            trace.record("final_verdict", state=best.id, ok=True, tier="full", score=full_score,
+                         clean=bool(full.clean), spent=spent_now())
     infrastructure_failed = no_verdict_failure(
         inconclusive_candidates=n_inconclusive, verdict_candidates=n_verdicts, best_clean=bool(best.verdict.clean))
     if infrastructure_failed:
@@ -1928,6 +1965,9 @@ def search(
         ai_capped=ai_capped,
         ai_stop_reason=ai_stop_reason,
         ai=ai_results,
+        stopped_on_wall=stopped_on_wall,
+        best_tier=best.tier,
+        final_verdict=final_verdict,
     )
     return SearchResult(
         best=best.ws,
@@ -1940,6 +1980,8 @@ def search(
         ai=ai_results,
         path_steps=_path_steps(by_id, best),
         reason=reason,
+        stopped_on_wall=stopped_on_wall,
+        best_tier=best.tier,
         inconclusive_candidates=n_inconclusive,
         verdict_candidates=n_verdicts,
         infrastructure_failed=infrastructure_failed,

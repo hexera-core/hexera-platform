@@ -795,30 +795,66 @@ def test_a_search_that_stopped_on_its_wall_was_not_measured() -> None:
         assert measurement.file_unmeasured(**{**smoke, "reason": counted, "verdict_candidates": 3}) is False
 
 
-def test_a_wall_stop_written_as_a_conclusive_failure_is_refused_by_the_report() -> None:
+def test_a_wall_stop_with_a_full_verdict_is_a_CONCLUSIVE_row_and_one_without_is_still_refused() -> None:
+    """B18, the anytime rule (owner ruling 2026-11-24): the search reserves the last of its wall, judges its best
+    state with the FULL panel and delivers it, so a wall stop carrying `out_tier: "full"` IS a measurement. A wall
+    stop with no full verdict is still not a conclusive failure, and claiming otherwise is still refused - that is
+    the contradiction check, now keyed on the tier of the verdict instead of on how the search ended."""
     row = {"name": "0052_00528484_step_003.step", "sha256": SHA, "source": "abc_fail", "arm": "search_det",
-           "inconclusive": False, "model_usd": 0.0, "wall_s": 900.9, "reason": "wall", "verdict_candidates": 0,
-           "inconclusive_candidates": 0, "infrastructure_failed": False, "in_clean": False, "in_panel_passes": 3,
+           "inconclusive": False, "model_usd": 0.0, "wall_s": 900.9, "reason": "wall", "verdict_candidates": 2,
+           "inconclusive_candidates": 0, "infrastructure_failed": False, "in_clean": False, "in_panel_passes": 2,
            "in_valid": True, "in_faithful_ok": True, "out_valid": True, "out_faithful_ok": True,
-           "out_panel_passes": 3, "panel_size": 4, "out_tier": "full", "out_clean": False}
-    with pytest.raises(report.ReportRefused, match="NOT a conclusive failure"):
-        report._row_from_dict(row)
-    assert report._row_from_dict({**row, "inconclusive": True}).counts is False
+           "out_panel_passes": 3, "panel_size": 4, "out_tier": "full", "out_clean": False,
+           "stopped_on_wall": True}
+    loaded = report._row_from_dict(row)
+    assert loaded.counts is True and loaded.derived_inconclusive is False
+    assert loaded.stopped_on_wall is True
+    thin = {**row, "out_tier": "cheap"}
+    with pytest.raises(report.ReportRefused):
+        report._row_from_dict(thin)
+    assert report._row_from_dict({**thin, "inconclusive": True}).counts is False
 
 
-def test_a_wall_stop_through_the_real_arm_path_is_an_inconclusive_row(shard: Any, monkeypatch: pytest.MonkeyPatch) -> None:
-    """The same stop through run_arms -> arms.run_file -> search: a search whose wall is already spent stops on `wall`;
-    its row must say inconclusive, and the report must accept it as such (not count it as a failure)."""
+def test_the_wall_stopped_rows_are_counted_separately_so_a_reader_can_drop_them() -> None:
+    """The row says it was wall-stopped and the arm block reports those rows apart, with the clean rate WITHOUT
+    them, so nobody has to take them on trust in a denominator."""
+    base = {"source": "abc_fail", "arm": "search_det", "inconclusive": False, "model_usd": 0.0, "wall_s": 10.0,
+            "reason": "exhausted", "verdict_candidates": 2, "inconclusive_candidates": 0,
+            "infrastructure_failed": False, "in_clean": False, "in_panel_passes": 1, "in_valid": True,
+            "in_faithful_ok": True, "out_valid": True, "out_faithful_ok": True, "panel_size": 4,
+            "out_tier": "full"}
+    rows = [
+        report._row_from_dict({**base, "name": "a.step", "sha256": "a" * 64, "out_panel_passes": 4,
+                               "out_clean": True}),
+        report._row_from_dict({**base, "name": "b.step", "sha256": "b" * 64, "out_panel_passes": 2,
+                               "out_clean": False, "reason": "wall", "stopped_on_wall": True}),
+    ]
+    block = report._arm_block("search_det", rows, {"a" * 64: "face_delete", "b" * 64: "face_delete"}, len(rows))
+    assert block["conclusive"] == 2 and block["inconclusive"] == 0
+    walled = block["stopped_on_wall"]
+    assert walled["conclusive_rows"] == 1 and walled["clean"] == 0
+    assert walled["clean_rate_without_them"] == 1.0
+    assert block["clean_rate"] == 0.5
+
+
+def test_a_wall_stop_through_the_real_arm_path_is_a_conclusive_row_carrying_its_best_state(
+        shard: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The same stop through run_arms -> arms.run_file -> search, under B18: a search whose wall is already spent
+    stops on `wall`, judges its best state with the full panel and delivers it. The row is CONCLUSIVE, says
+    stopped_on_wall, and the report counts it - which is what lane B16 found the old rule throwing away."""
     import dataclasses
 
     det = ev.ARMS["search_det"]
-    monkeypatch.setitem(ev.ARMS, "search_det", dataclasses.replace(det, budget=dataclasses.replace(det.budget, wall_s=1e-9)))
+    monkeypatch.setitem(ev.ARMS, "search_det",
+                        dataclasses.replace(det, budget=dataclasses.replace(det.budget, wall_s=1e-9)))
     rows, excluded = go(shard, "search_det", None)
     [row] = rows
     assert excluded == [] and row["reason"] == "wall"
-    assert row["inconclusive"] is True
+    assert row["stopped_on_wall"] is True
+    assert row["inconclusive"] is False, "the anytime rule: a wall stop still delivers its best state's verdict"
+    assert row["out_tier"] == "full"
     loaded = report._row_from_dict(row)
-    assert loaded.derived_inconclusive and not loaded.counts
+    assert loaded.counts and not loaded.derived_inconclusive
 
 
 def test_the_triage_names_each_failing_members_cause() -> None:
