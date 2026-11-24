@@ -1091,11 +1091,17 @@ class DetGenerator:
         solids = _of_kind(site.entities, "B")
         rows: list[tuple[str, list[StableId], dict, str]] = []
         kind = site.kind
+        # A CONTACT IS GEOMETRY, NOT A SITE KIND (lane C12's second finding; this builder is mine). Two faces
+        # measured at gap 0 need the same ops wherever the clash was measured, so the contact rows are read for
+        # EVERY kind. Lane C found a post-cut `self_overlap` site carrying 4 touching clashes with both areas
+        # (F127-F123 at 768/620 mm2) while the sweep built 0 contact rows from 14 proposals, because this was
+        # reached only for `proximity`. The near-miss split stays proximity's own: its plan is sized from the gap,
+        # which only a near miss has.
+        near, contacts = _clash_pairs(site)
         if kind == "proximity" and len(faces) >= 2:
             # AIMED, lane A11: the pairs the kernel MEASURED (`graph["clashes"]`), nearest first, not every
             # combination of the site's faces - a combinatorial list proposes work no mesher complained about and
             # crowds the one pair it did out of the op budget. With no measured pair, fall back to the old sweep.
-            near, contacts = _clash_pairs(site)
             pairs = near or ([list(p) for p in itertools.combinations(faces, 2)][:_MAX_PAIRS] if not contacts else [])
             for ratio in _PROXIMITY_RATIOS if pairs else ():
                 rows.append(
@@ -1106,7 +1112,7 @@ class DetGenerator:
                         f"split the near faces so chords sag at most {ratio} of the gap",
                     )
                 )
-            rows += self._contact_rows(contacts)
+        rows += self._contact_rows(contacts)
         if kind == "self_overlap":
             rows += self._overlap_rows(site, faces)
         if kind in ("proximity", "self_overlap", "periodic") and faces:
