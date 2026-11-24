@@ -185,6 +185,11 @@ class ArmRow:
     overlap_pairs_skipped: int | None = None
     local_s: float | None = None
     full_s: float | None = None
+    #: LEAD-3: round-end panels that said NOTHING (no netgen on the shard, a dead pool). The arm's headline is full
+    #: panels per file, so a row short by an unmeasured panel would FLATTER it; the count is carried so a reader can
+    #: see it beside `full_checks`. `seq.py` has always emitted it - its absence here crashed all 7 search_seq units
+    #: of fast-202611241829 with "unexpected keyword argument" AFTER they had done the repair work.
+    inconclusive_verdicts: int | None = None
 
     @property
     def clean(self) -> bool:
@@ -571,6 +576,10 @@ def _seq_block(rows: list[ArmRow]) -> dict | None:
         # THE HEADLINE (owner, 2026-11-24): full 4-mesher checks per file
         "full_checks_per_file": round(full / len(seq), 2),
         "full_checks": full, "local_checks": local,
+        # LEAD-3: round-end panels that said NOTHING, beside the headline. A row short by an unmeasured panel has a
+        # full-check count that FLATTERS the arm, so the headline is never read without this number.
+        "inconclusive_verdicts": sum(int(r.inconclusive_verdicts or 0) for r in seq),
+        "rows_with_an_inconclusive_panel": sum(1 for r in seq if (r.inconclusive_verdicts or 0) > 0),
         "local_per_full": (round(local / full, 2) if full else None),
         "rounds_per_file": round(sum(int(r.rounds or 0) for r in seq) / len(seq), 2),
         "seconds": {"full": round(sum(float(r.full_s or 0.0) for r in seq), 1),
