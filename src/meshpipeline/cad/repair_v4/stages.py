@@ -92,10 +92,16 @@ class Scored(tuple):  # noqa: SLOT001 - a Score that also remembers the cheap pa
     that hands back a plain tuple - a test's scripted judge, an older path - simply has no members to report."""
 
     members: dict[str, dict]
+    #: C18 P1: the layer-1 report this score was judged on, and the `layer1_gate` of the BREP it was judged on. A
+    #: later state with the same gate reuses `valid` instead of re-running layer 1 (`_judge`). None: not reusable.
+    valid: Any
+    gate: str | None
 
-    def __new__(cls, score: Score, members: dict[str, dict] | None = None) -> Scored:
+    def __new__(cls, score: Score, members: dict[str, dict] | None = None, valid: Any = None,
+                gate: str | None = None) -> Scored:
         self = super().__new__(cls, score)
         self.members = dict(members or {})
+        self.valid, self.gate = valid, gate
         return self
 
 
@@ -402,6 +408,10 @@ class StagedResult:
     standing: list[tuple[str, Workspace]] = field(default_factory=list)
     #: what the FULL panel said about the result (`confirm_staged`); None until it is asked
     confirmation: Confirmation | None = None
+    #: C18 P1: stages whose result was JUDGED (after a change), and among them those whose layer-1 report was reused
+    #: from the standing state because no solid, face count or free shell changed (`layer1_gate`)
+    judged: list[str] = field(default_factory=list)
+    layer1_reused: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -518,7 +528,28 @@ def declared_edits(ws: Workspace, original_faces: int) -> Declared:
     return Declared(added=added, removed=removed)
 
 
-def _judge(pool: WorkerPool, ws: Workspace, cheap_members: Any = None) -> Scored:
+def layer1_gate(pool: WorkerPool, brep: str) -> str | None:
+    """C18 P1: the key under which two BREPs get the SAME layer-1 answer (`layer1_gate_kernel`): A17's per-solid memo
+    key (geometry_key + tolerances + reversed faces) over every solid, plus the face and free-shell counts. None when
+    it cannot be computed, which never reuses anything.
+
+    MEASURED (C18, 782 stored v4 staged op transactions, 169 on clean controls): 570 change no solid's key; on ALL
+    570 the STEP-read full layer-1 check returned the IDENTICAL findings, entities included, and the same solid
+    count. The 4 transactions where a per-solid BRepCheck flipped under orient_and_close with an unchanged geometry
+    key: A17's key differs on 1 (re-judged), and on the other 3 layer 1's whole-shape answer is identical (reuse is
+    correct) - `tests/native/test_native_repair_v4_c18_layer1_reuse.py` names all four."""
+    try:
+        got = pool.call("layer1_gate", {"brep": brep}, timeout_s=CALL_GATE_TIMEOUT_S)
+    except Exception:  # noqa: BLE001 - a gate that cannot be computed reuses nothing; it is never a verdict
+        return None
+    return str(got.value["gate"]) if got.ok and got.value else None
+
+
+#: one `layer1_gate` call: a key per solid and two counts, far cheaper than the check it saves
+CALL_GATE_TIMEOUT_S = 120.0
+
+
+def _judge(pool: WorkerPool, ws: Workspace, cheap_members: Any = None, reuse: Any = None) -> Scored:
     """`score(cheap_verdict(...))` of `ws` against the lineage's original. Raises
     `InconclusiveVerdict` / `CheckerUnavailable` when the checker could not say.
 
@@ -530,10 +561,16 @@ def _judge(pool: WorkerPool, ws: Workspace, cheap_members: Any = None) -> Scored
     reports volume_changed / body_count_changed for one). Key 0 is layer 1 alone since the owner's 2026-11-24
     decision, so that exemption is gone with the gate that made it necessary."""
     faces, _solids = original_facts(pool, ws.original)
+    gate = layer1_gate(pool, ws.brep_path)
+    # C18 P1: the standing state's layer-1 report, when THIS BREP has the same gate (no solid, face count or free
+    # shell changed). The panel and layer 3 still run on this file; only layer 1 is not re-checked.
+    reused = (getattr(reuse, "valid", None) if gate is not None and getattr(reuse, "gate", None) == gate
+              else None)
     # the cache is the process-wide one `search.default_judge` also uses: the final staged state is the search's
     # start state, and its cheap verdict must not be meshed twice
     v = cheap_verdict(pool, step_for(pool, ws.brep_path), step_for(pool, ws.original),
-                      cache=default_verdict_cache(), members=cheap_members)
+                      cache=default_verdict_cache(), members=cheap_members,
+                      **({"valid_report": reused} if reused is not None else {}))
     if ws.history:
         # lane C15: an op-made state's inside-out solid is visible only on the BREP (the STEP round trip re-orients it)
         v = with_brep_orientation(pool, ws.brep_path, v)
@@ -551,15 +588,23 @@ def _judge(pool: WorkerPool, ws: Workspace, cheap_members: Any = None) -> Scored
     result = score(v)
     # the score the transaction compares, carrying the cheap panel it came from so a rollback can say which
     # member got worse (`rollback_detail`). It IS the score tuple: nothing else changes.
-    return Scored(result, _members_of(v))
+    scored = Scored(result, _members_of(v), valid=v.valid, gate=gate)
+    scored.reused_layer1 = reused is not None  # type: ignore[attr-defined]
+    return scored
 
 
-def _judged(pool: WorkerPool, ws: Workspace, cheap_members: Any = None) -> Score | None:
+def _judged(pool: WorkerPool, ws: Workspace, cheap_members: Any = None, reuse: Any = None) -> Score | None:
     """`_judge`, retried on an inconclusive verdict; None when it stays inconclusive. `cheap_members` (the run's
-    `assemble.adaptive_cheap_members`) is passed on only when given."""
+    `assemble.adaptive_cheap_members`) and `reuse` (the standing state's score, C18 P1) are passed on only when
+    given."""
+    kw: dict[str, Any] = {}
+    if cheap_members is not None:
+        kw["cheap_members"] = cheap_members
+    if getattr(reuse, "gate", None) is not None:  # only a real `Scored` with a gate is reusable (a test's plain tuple
+        kw["reuse"] = reuse                          # judge, or a gate that could not be computed, never is)
     for _ in range(JUDGE_ATTEMPTS):
         try:
-            return _judge(pool, ws) if cheap_members is None else _judge(pool, ws, cheap_members=cheap_members)
+            return _judge(pool, ws, **kw)
         except (InconclusiveVerdict, CheckerUnavailable):
             continue
     return None
@@ -591,7 +636,11 @@ def _transact(pool: WorkerPool, ws: Workspace, stage: Stage, params: dict, befor
         return ws, before
     if before is None:
         before = _judged(pool, ws, cheap_members)  # the earlier judgement of the standing state was inconclusive
-    after = _judged(pool, steps.ws, cheap_members)
+    after = _judged(pool, steps.ws, cheap_members, reuse=before)
+    if getattr(after, "reused_layer1", False):
+        out.layer1_reused.append(name)  # C18 P1: on the row, beside how many stages were judged at all
+    if after is not None:
+        out.judged.append(name)
     if before is None or after is None:
         out.inconclusive.append(name)
         return ws, before

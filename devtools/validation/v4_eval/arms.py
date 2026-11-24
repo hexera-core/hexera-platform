@@ -228,6 +228,7 @@ def run_file(arm_name: str, entry: Any, source: str, *, pool: Any, engine: Engin
             overlap = {"max_depth_mm": None, "error": f"{type(exc).__name__}: {exc}"[:200]}
         out_v, usd = v_in, 0.0
         extra: dict[str, Any] = {}
+        staged: Any = None
         if arm_name == "input_only":
             keep_delivered(ws.brep_path, workdir, is_input=True)
         elif arm_name == "staged":
@@ -271,6 +272,8 @@ def run_file(arm_name: str, entry: Any, source: str, *, pool: Any, engine: Engin
     wall = round(clock() - t0, 3)
     unmeasured = bool(extra.get("_unmeasured"))
     triage = {k: v for k, v in (extra.get("_triage") or {}).items() if v is not None}
+    if staged is not None and "stages" not in triage:  # every arm that ran the healer says what it did (C18 P1)
+        triage["stages"] = stages_triage(staged)
     triage["phases"] = ph.summary()
     extra = {k: v for k, v in extra.items() if k not in ("_unmeasured", "_triage")}
     if unmeasured:
@@ -506,6 +509,11 @@ def stages_triage(staged: Any) -> dict[str, Any] | None:
     if kept is None and rolled is None and conf is None:
         return None
     out: dict[str, Any] = {"kept": list(kept or []), "rolled_back": list(rolled or [])}
+    # C18 P1: of the stages JUDGED after a change, those whose layer-1 report was reused because no solid, face
+    # count or free shell changed (the measured companion of C18's 73% per-op upper bound)
+    judged, reused = getattr(staged, "judged", None), getattr(staged, "layer1_reused", None)
+    if judged is not None:
+        out["layer1"] = {"judged": len(judged), "reused": len(reused or []), "reused_stages": list(reused or [])}
     if conf is not None:      # what the FULL panel undid of what the cheap tier kept
         out["full_panel"] = {"fell_back_to": conf.fell_back_to, "dropped": list(conf.dropped)}
     return out

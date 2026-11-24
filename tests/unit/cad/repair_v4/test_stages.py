@@ -590,3 +590,25 @@ def test_the_solidless_workaround_is_gone_because_layer_three_no_longer_gates(mo
     assert "_SOLIDLESS_OK_REASONS" not in src
     body = src[src.index("def _judge("):src.index("def _judged(")]
     assert "solids == 0" not in body and _re.search(r"\(int\(gate\), \*result", body) is None
+
+
+def test_c18_p1_layer_one_is_reused_only_when_the_gate_is_unchanged(monkeypatch):
+    """P1: the standing state's layer-1 report is handed to the cheap verdict only when `layer1_gate` (A17's per-solid
+    key + face and free-shell counts) is the same; any other gate, or none, re-runs layer 1."""
+    seen: list = []
+    monkeypatch.setattr(stages, "step_for", lambda pool, brep: brep)
+    monkeypatch.setattr(stages, "original_facts", lambda pool, brep: (6, 1))
+    monkeypatch.setattr(stages, "layer1_gate", lambda pool, brep: {"a": "G1", "b": "G1", "c": "G2"}.get(brep))
+
+    def cheap(*a, **k):
+        seen.append(k.get("valid_report"))
+        return _verdict(True, [])
+
+    monkeypatch.setattr(stages, "cheap_verdict", cheap)
+    ws = lambda brep: Workspace(brep_path=brep, ids={}, labels={}, history=[], original="o")  # noqa: E731
+    standing = stages._judge(None, ws("a"))
+    assert seen == [None] and standing.gate == "G1" and not standing.reused_layer1
+    same = stages._judge(None, ws("b"), reuse=standing)
+    assert seen[-1] is standing.valid and same.reused_layer1
+    for brep in ("c", "unknown"):  # a different gate, and a gate that could not be computed
+        assert not stages._judge(None, ws(brep), reuse=standing).reused_layer1 and seen[-1] is None
