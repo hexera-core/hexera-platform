@@ -1,0 +1,81 @@
+/usr/local/lib/python3.11/site-packages/google/api_core/_python_version_support.py:254: FutureWarning: You are using a Python version (3.11.17) which Google will stop supporting in new releases of google.api_core once it reaches its end of life (2027-10-24). Please upgrade to the latest Python version, or at least Python 3.12, to continue receiving updates for google.api_core past that date.
+  warnings.warn(message, FutureWarning)
+[32;1m
+*******************************************************************
+******        Statistics on Transfer (Write)                 ******[0m
+[32;1m
+*******************************************************************
+******        Transfer Mode = 0  I.E.  As Is       ******[0m
+[32;1m******        Transferring Shape, ShapeType = 2                      ******[0m
+[32;1m** WorkSession : Sending all data[0m
+[32;1m Step File Name : /tmp/stages_step__9xxg0ma/state_0.step(1030 ents)  Write  Done[0m
+[32;1m
+*******************************************************************
+******        Statistics on Transfer (Write)                 ******[0m
+[32;1m
+*******************************************************************
+******        Transfer Mode = 0  I.E.  As Is       ******[0m
+[32;1m******        Transferring Shape, ShapeType = 2                      ******[0m
+[32;1m** WorkSession : Sending all data[0m
+[32;1m Step File Name : /tmp/valid_85_c4mva/round_trip.step(1030 ents)  Write  Done[0m
+[32;1m
+*******************************************************************
+******        Statistics on Transfer (Write)                 ******[0m
+[32;1m
+*******************************************************************
+******        Transfer Mode = 0  I.E.  As Is       ******[0m
+[32;1m******        Transferring Shape, ShapeType = 2                      ******[0m
+[32;1m** WorkSession : Sending all data[0m
+[32;1m Step File Name : /tmp/stages_step__9xxg0ma/state_1.step(1030 ents)  Write  Done[0m
+[32;1m
+*******************************************************************
+******        Statistics on Transfer (Write)                 ******[0m
+[32;1m
+*******************************************************************
+******        Transfer Mode = 0  I.E.  As Is       ******[0m
+[32;1m******        Transferring Shape, ShapeType = 2                      ******[0m
+[32;1m** WorkSession : Sending all data[0m
+[32;1m Step File Name : /tmp/valid_p_v8_xsl/round_trip.step(1030 ents)  Write  Done[0m
+[32;1m
+*******************************************************************
+... [trimmed     3316 lines; errors then tail] ...
+[32;1m** WorkSession : Sending all data[0m
+[32;1m Step File Name : /tmp/valid_kv5w2yw9/round_trip.step(388 ents)  Write  Done[0m
+[32;1m
+*******************************************************************
+******        Statistics on Transfer (Write)                 ******[0m
+[32;1m
+*******************************************************************
+******        Transfer Mode = 0  I.E.  As Is       ******[0m
+[32;1m******        Transferring Shape, ShapeType = 2                      ******[0m
+[32;1m** WorkSession : Sending all data[0m
+[32;1m Step File Name : /tmp/stages_step__9xxg0ma/state_169.step(334 ents)  Write  Done[0m
+[32;1m
+*******************************************************************
+******        Statistics on Transfer (Write)                 ******[0m
+[32;1m
+*******************************************************************
+******        Transfer Mode = 0  I.E.  As Is       ******[0m
+[32;1m******        Transferring Shape, ShapeType = 2                      ******[0m
+[32;1m** WorkSession : Sending all data[0m
+[32;1m Step File Name : /tmp/valid_e2a3k0_f/round_trip.step(334 ents)  Write  Done[0m
+kernel call op_split_angle: error (IndexInstabilityError: '/eval/out/work/a5abfea46049/search_ai/split_angle-4688b90c0738.brep' does not read back with the in-memory entity order (59 entities in memory, 59 on disk); refusing to hand out indices that would bind ids to the wrong geometry)
+kernel call op_split_closed: error (IndexInstabilityError: '/eval/out/work/a5abfea46049/search_ai/split_closed-07b402f19cf1.brep' does not read back with the in-memory entity order (33 entities in memory, 33 on disk); refusing to hand out indices that would bind ids to the wrong geometry)
+[32;1m
+*******************************************************************
+******        Statistics on Transfer (Write)                 ******[0m
+[32;1m
+*******************************************************************
+******        Transfer Mode = 0  I.E.  As Is       ******[0m
+[32;1m******        Transferring Shape, ShapeType = 2                      ******[0m
+[32;1m** WorkSession : Sending all data[0m
+[32;1m Step File Name : /tmp/stages_step__9xxg0ma/state_170.step(388 ents)  Write  Done[0m
+[32;1m
+*******************************************************************
+******        Statistics on Transfer (Write)                 ******[0m
+[32;1m
+*******************************************************************
+******        Transfer Mode = 0  I.E.  As Is       ******[0m
+[32;1m******        Transferring Shape, ShapeType = 2                      ******[0m
+[32;1m** WorkSession : Sending all data[0m
+[32;1m Step File Name : /tmp/valid_a5l3x20u/round_trip.step(388 ents)  Write  Done[0m

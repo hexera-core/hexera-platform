@@ -1,0 +1,93 @@
+{
+ "arms": [
+  "input_only",
+  "staged",
+  "search_det",
+  "search_ai"
+ ],
+ "arms_run": [
+  "input_only",
+  "staged",
+  "search_det",
+  "search_ai"
+ ],
+ "check_valid_timeout_s": 900.0,
+ "commit": "a9dae3bb79dde62157a13dfc1b0ab4b8b756e40c",
+ "ended_at": "2026-11-24T04:25:11Z",
+ "excluded": 3,
+ "exit_code": 0,
+ "file_timeout_s": 1800.0,
+ "h_mm": Infinity,
+ "hardware_class": "linux-x86_64",
+ "host": "2e74edc9aa3e",
+ "image": "sha256:3807995301c1518c551c7298e308203cbdbc45167833c88dc09dd47b2c0377e3",
+ "label": "arms/1/6",
+ "ledger": "shard",
+ "ledger_attached": true,
+ "ledger_detail": {
+  "cap_usd": 1.0,
+  "file_usd_cap_flag": 1.0,
+  "model_usd_cap_flag": 1.0,
+  "n_shards": 6,
+  "path": "/eval/ledger/snap-v1r-dev-202611240237-s1.jsonl",
+  "wave_id": "snap-v1r-dev-202611240237",
+  "wave_type": "normal"
+ },
+ "machine_type": "c2d-standard-16",
+ "marker_backend": "gcs/dev-crsv3-transfer-224734058693",
+ "max_turns": 12,
+ "mode": "arms",
+ "model_throttle": {
+  "in_flight_floor_override": false,
+  "in_flight_floored": false,
+  "max_in_flight": 6,
+  "n_shards": 6,
+  "rate_limited_calls": 0,
+  "rpm": 125.0,
+  "tpm": 333333,
+  "waits_timed_out": 0
+ },
+ "model_usd": 0.0,
+ "n_shards": 6,
+ "pool_dropped_by_source": {
+  "f360": 42912
+ },
+ "pool_listed": 53799,
+ "recipes": {
+  "enabled": false
+ },
+ "route": "openai:gpt-6-astra",
+ "route_probe": {
+  "candidates": [
+   "openai:gpt-6-astra"
+  ],
+  "chosen": "openai:gpt-6-astra"
+ },
+ "rows": 1,
+ "shard": "1/6",
+ "shard_cap_usd": 8.333333333333334,
+ "shard_files": 1,
+ "shard_plan": "3abd202cdeb622f01f239bb8025bc25f4990a3c4bdf6eb7300caa7e0f57f597d",
+ "slot": null,
+ "sources": "cleared",
+ "split": "dev",
+ "started_at": "2026-11-24T02:40:11Z",
+ "unmeasured_rows": 0,
+ "wall_seconds": 6299.8,
+ "wave": "snap_v1r_dev",
+ "wave_backoff": {
+  "guard": "wave_backoff",
+  "held_s": 0.0,
+  "holds": 0,
+  "malformed_markers": 0,
+  "reported_429": 0,
+  "store_errors": 0,
+  "threshold": 10,
+  "tripped_here": 0,
+  "trips_seen": [],
+  "window_s": 300.0
+ },
+ "wave_cap_usd": 50.0,
+ "wave_id": "snap-v1r-dev-202611240237",
+ "wave_type": "normal"
+}

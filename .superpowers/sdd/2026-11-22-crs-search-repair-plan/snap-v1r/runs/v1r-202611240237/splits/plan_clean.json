@@ -1,0 +1,26 @@
+{
+ "assign": {
+  "0b21edaaf3055fd916c1ad1158ab2186a3ecae0238ab1ff7ac4d3ca178d6bd37": 1,
+  "58d9b29c913f82d0063e47082799b090c6ba93d843cf4881f6a9a3d9f3be6701": 1,
+  "8dfc38ac974236460e9d638269a7037010bcc05fe8216f43baeaac37cfb9d886": 1,
+  "a3dc0dd4b7d092e7245273e0bd3e3d0f26505af233433acde267e284bc2b39d3": 1,
+  "a5abfea460499dc31bc812aca68917948a117565fea4f5a080e36eb32f39650d": 1,
+  "c2bfeb3e732ad39bc203fa1a86ec76b13962d045cb84d8db896a447000770dcd": 1,
+  "c7b32ea0f1c8fa43cd35084d5634e99265c88d13957d2329031d67e0833fcbd1": 1,
+  "d77ea9a558b257cde4d9f53df1d3f83c2aac2cbf1fdacba5a9646df62c4ad8e8": 1,
+  "e6368ff786884688c139b19c4c86ce3870cd4a50489f837e471f64d3de8b53c6": 1
+ },
+ "cost_source": {
+  "calibration_k": 18.936236876741376,
+  "file_timeout_s": 1800.0,
+  "prior": 9,
+  "size_model": 0,
+  "unit": "predicted seconds, all four arms"
+ },
+ "model": [
+  -1.263,
+  0.36
+ ],
+ "n": 1,
+ "version": 1
+}

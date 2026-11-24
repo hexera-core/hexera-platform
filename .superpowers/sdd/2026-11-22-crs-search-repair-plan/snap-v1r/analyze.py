@@ -23,6 +23,40 @@ CELLS = ("cheap_pass_full_pass", "cheap_pass_full_fail", "cheap_fail_full_pass",
 DEPTH = re.compile(r"'what': 'overlap_depth', 'value': ([-0-9.eE+]+)(?:, 'bound': ([-0-9.eE+]+))?")
 
 
+def reason_key(reason: str) -> str:
+    """A short, DISTINCT key per kind of exclusion: a deadline stop and an exclusion before it are different facts."""
+    if reason.startswith("unmeasured: stopped at the wave deadline"):
+        return "deadline stop"
+    if reason.startswith("excluded before the stop"):
+        return "excluded before the stop (reason not on disk)"
+    return reason.split(":")[0]
+
+
+def deadline_section(out: Path, led_total: float, cap: float) -> str:
+    f = out / "deadline_summary.json"
+    if not f.exists():
+        return ""
+    d = json.loads(f.read_text())
+    stopped = (out / "DEADLINE_STOP").read_text().strip() if (out / "DEADLINE_STOP").exists() else "?"
+    tot = {k: sum(v[k] for v in d.values()) for k in ("rows", "excluded_before_stop", "deadline")}
+    when, _, why = stopped.partition("; ")
+    why = why or "reaper minus 30 min (deadline guard, coordinator-approved)"
+    lines = [f"## STOPPED BEFORE IT FINISHED ({when}): {why}", "",
+             f"The wave was stopped before every shard finished. Shards that had not finished were stopped; their rows "
+             f"written so far are kept. **{tot['deadline']} (file, arm) pairs were never measured because of the stop** "
+             f"(in progress or not started), reported as `unmeasured: stopped at the wave deadline`. "
+             f"Separately, **{tot['excluded_before_stop']} (file, arm) pairs were excluded BEFORE the stop**; their exact "
+             f"reasons are not on disk (run_arm writes EXCLUDED.json only at shard end), so they are a group of their own. "
+             f"A stopped shard has no PROVENANCE.json and none was written, so the official report refuses those shards; the "
+             f"tables here are computed from the rows.", "",
+             f"**The ledger ${led_total:.4f} is therefore a FLOOR on what the full wave would cost.** It is "
+             f"{100 * led_total / cap:.1f}% of the ${cap:.2f} wave cap: money did not bound this wave, wall clock did.", "",
+             "| shard | rows kept | excluded before the stop | unmeasured (deadline) | had provenance |", "|---|---|---|---|---|"]
+    lines += [f"| {k} | {v['rows']} | {v['excluded_before_stop']} | {v['deadline']} | {v['had_provenance']} |"
+              for k, v in sorted(d.items())]
+    return "\n".join(lines) + "\n"
+
+
 def short(name: str) -> str:
     return name.split("/")[-1]
 
@@ -101,7 +135,7 @@ def arm_table(rows: list[dict], exc: list[dict], keep=lambda s: True) -> tuple[s
                       if r["out_panel_passes"] < r["in_panel_passes"]],
             "more": sum(r["out_panel_passes"] > r["in_panel_passes"] for r in c),
             "inconclusive": len(rs) - len(c),
-            "excluded": Counter(e["reason"].split(":")[0] for e in ex[a]),
+            "excluded": Counter(reason_key(e["reason"]) for e in ex[a]),
             "usd": sum(float(r.get("model_usd") or 0) for r in rs),
             # NEW definition (2026-11-24): clean = valid + full panel. Cross-checked against the row's own out_clean.
             "vp_mismatch": [short(r["name"]) for r in c
@@ -193,9 +227,9 @@ def excluded_group(rows: list[dict], exc: list[dict], wall: float) -> str:
         by[e["sha256"]]["excluded"][e["arm"]] = e["reason"]
     for r in rows:
         if r["sha256"] in by:
-            by[r["sha256"]]["measured"][r["arm"]] = ("clean" if r["out_clean"] else "not clean") + (
-                " (inconclusive)" if r["inconclusive"] else "")
-    reasons = Counter(e["reason"].split(":")[0] for e in exc)
+            by[r["sha256"]]["measured"][r["arm"]] = ("inconclusive (unmeasured search)" if r.get("inconclusive")
+                                                     else "clean" if r.get("out_clean") else "not clean")
+    reasons = Counter(reason_key(e["reason"]) for e in exc)
     lines = [f"**{len(by)} file(s), {len(exc)} excluded (file, arm) rows** ({', '.join(f'{k} {v}' for k, v in reasons.items())}). "
              f"File wall {wall:.0f} s.", "",
              "| file | excluded arms (reason) | measured arms |", "|---|---|---|"]
@@ -354,6 +388,10 @@ def main() -> int:
 | Shard exits | {', '.join(f'{k}={v}' for k, v in rcs.items())}{'; retried once after a probe refusal: ' + ', '.join(retried) if retried else ''} |
 
 {notes}
+<<<<<<< HEAD
+=======
+{deadline_section(out, led_total, float(man['total_caps_usd']))}
+>>>>>>> sdd/snap-v1r
 ## Official reports
 
 | report | result |
