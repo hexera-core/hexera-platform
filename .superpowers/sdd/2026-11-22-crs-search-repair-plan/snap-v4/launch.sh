@@ -39,6 +39,12 @@ COMMIT=$(git -C "$REPO" rev-parse --verify "$COMMIT_ARG^{commit}") || die "canno
 log "profile=$PROFILE commit=$COMMIT regions=$REGIONS run dir $RUN"
 git -C "$REPO" archive --format=tar "$COMMIT" > "$RUN/code.tar" || die "git archive failed"
 mkdir -p "$RUN/code" && tar xf "$RUN/code.tar" -C "$RUN/code" devtools src || die "extract failed"
+# IMPORT PRE-FLIGHT, before any VM: byte-compile the engine and the eval code of THIS commit. A SyntaxError (the
+# ws_kernel docstring that broke 36261625..b53614732) fails here in a second instead of on every unit twenty
+# minutes into a wave. A full import needs OCP and the image; the compile catches what the image cannot fix.
+python3 -I -m compileall -q "$RUN/code/src/meshpipeline/cad/repair_v4" "$RUN/code/devtools/validation/v4_eval" \
+  > "$RUN/compile.log" 2>&1 || die "commit $COMMIT does NOT compile (see $RUN/compile.log): $(grep -m1 -E 'Error' "$RUN/compile.log")"
+log "pre-flight: repair_v4 and v4_eval compile at $COMMIT"
 
 # ---------------------------------------------------------------- 2. the op budget is the COMMIT's own
 DEFAULT_OPS=$(cd "$RUN/code" && PYTHONPATH="$RUN/code/src" python3 -c "
