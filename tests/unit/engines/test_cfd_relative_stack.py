@@ -8,11 +8,11 @@ from __future__ import annotations
 import re
 
 import pytest
+from tests.unit.engines.test_cfd_external_wall import SHM, _ask
+from tests.unit.engines.test_layer_census import _write_column_mesh
 
 from meshpipeline.engines import cfd_requirements as CR
 from meshpipeline.engines import layer_census as LC
-from tests.unit.engines.test_cfd_external_wall import SHM, _ask
-from tests.unit.engines.test_layer_census import _write_column_mesh
 
 ONE_LEVEL = "castellatedMeshControls { refinementSurfaces { body { level (4 4); } } resolveFeatureAngle 25; }\n"
 TWO_LEVELS = "castellatedMeshControls { refinementSurfaces { body { level (3 4); } } resolveFeatureAngle 25; }\n"
