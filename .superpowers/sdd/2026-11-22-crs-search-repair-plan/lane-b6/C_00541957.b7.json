@@ -1,0 +1,38 @@
+{
+ "file": "C_00541957.step",
+ "rows": [
+  {
+   "keeper": "B1",
+   "victim": "B4",
+   "volume": 4325.78044217857,
+   "depth_new": 1.600006757038222,
+   "method": "mean_thickness",
+   "side_new": "beyond",
+   "op": "exceeds_fidelity",
+   "op_detail": {
+    "what": "overlap_depth",
+    "value": 1.600006757038222,
+    "bound": 0.1,
+    "volume": 4325.78044217857,
+    "method": "mean_thickness"
+   }
+  },
+  {
+   "keeper": "B4",
+   "victim": "B1",
+   "volume": 4325.764345050756,
+   "depth_new": 2.0000000000000293,
+   "method": "measured",
+   "side_new": "beyond",
+   "op": "exceeds_fidelity",
+   "op_detail": {
+    "what": "overlap_depth",
+    "value": 2.0000000000000293,
+    "bound": 0.1,
+    "volume": 4325.764345050756,
+    "method": "measured"
+   }
+  }
+ ],
+ "bound_mm": 0.1
+}

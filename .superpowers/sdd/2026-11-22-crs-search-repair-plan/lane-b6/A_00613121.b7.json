@@ -1,0 +1,38 @@
+{
+ "file": "A_00613121.step",
+ "rows": [
+  {
+   "keeper": "B1",
+   "victim": "B2",
+   "volume": 24704960.474901147,
+   "depth_new": 37.16376935044447,
+   "method": "mean_thickness",
+   "side_new": "beyond",
+   "op": "exceeds_fidelity",
+   "op_detail": {
+    "what": "overlap_depth",
+    "value": 37.16376935044447,
+    "bound": 0.1,
+    "volume": 24704960.474901147,
+    "method": "mean_thickness"
+   }
+  },
+  {
+   "keeper": "B2",
+   "victim": "B1",
+   "volume": 24704960.474901147,
+   "depth_new": 37.16376935044447,
+   "method": "mean_thickness",
+   "side_new": "beyond",
+   "op": "exceeds_fidelity",
+   "op_detail": {
+    "what": "overlap_depth",
+    "value": 37.16376935044447,
+    "bound": 0.1,
+    "volume": 24704960.474901147,
+    "method": "mean_thickness"
+   }
+  }
+ ],
+ "bound_mm": 0.1
+}

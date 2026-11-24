@@ -9,7 +9,7 @@
 Constraints (Global Constraints of the v4 plan): no `fuse`; `cut_by` only when the overlap is within
 the fidelity bound `min(0.1 mm, 0.001 * diagonal)`, otherwise the call DECLINES (it never clamps).
 "Within the bound" is read as overlap DEPTH (a length, like the bound; a volume would be
-dimensionally meaningless), estimated as max(2V/A, thinnest bbox extent of the common part). A
+dimensionally meaningless): HOW FAR THE CUT MOVES THE VICTIM'S SURFACE, measured (`_cut_depth`). A
 second guard stops a thin-but-vast cut passing on depth alone: the removed volume may not exceed
 2% of the body it is cut from (`volume_change`). `conformalise` also declines
 `no_shared_interface` if, afterwards, no face is shared by two bodies;
@@ -112,26 +112,87 @@ def _common_volume(a: Any, b: Any, fuzzy: float) -> float:
     return _volume(op.Shape()) if _solid_count(op.Shape()) else 0.0
 
 
-def _overlap_depth(a: Any, b: Any, fuzzy: float) -> tuple[float, float]:
-    """(volume, depth) of the overlap of two solids; `depth` is the larger of the mean thickness
-    2V/A and the thinnest bounding-box extent of the common part. For a slab both are the slab's
-    thickness; for a fat overlap the bounding extent keeps the estimate from under-reporting."""
+#: sample points over the victim's surface inside the keeper, and the wall-clock the measurement may take
+DEPTH_SAMPLES = 400
+DEPTH_BUDGET_S = 20.0
+
+
+def _cut_depth(victim: Any, keeper: Any, fuzzy: float) -> tuple[float, float, str]:
+    """(overlap volume, depth, method) for cutting `victim` by `keeper`.
+
+    THE DEPTH IS HOW FAR THE CUT MOVES THE VICTIM'S SURFACE. The overlap C = victim n keeper is bounded by two kinds
+    of face: pieces of the victim's surface that lie inside the keeper (the cut removes them) and pieces of the
+    keeper's surface that lie inside the victim (the cut leaves the victim bounded by them). The depth is the largest
+    distance from the first to the second, sampled - a slab of thickness t reads t, a corner cube of side s reads s,
+    in any orientation. (It replaced max(2V/A, thinnest AXIS-ALIGNED bbox extent of C), which read millimetres for a
+    thin INCLINED slab and declined cuts well inside the bound: lane B6 measured it 5-12x over on real files.)
+
+    Falls back to the mean thickness 2V/A of C (method "mean_thickness") when there is no movement to measure: a
+    duplicate or contained body (no victim surface lies inside the keeper alone), a face set that cannot be
+    classified, or a measurement over its budget. Never 0 for a real overlap."""
     from OCP.BRepAlgoAPI import BRepAlgoAPI_Common
 
     op = BRepAlgoAPI_Common()
-    op.SetArguments(_list([a]))
-    op.SetTools(_list([b]))
+    op.SetArguments(_list([victim]))
+    op.SetTools(_list([keeper]))
     op.SetFuzzyValue(fuzzy)
     op.Build()
     if not op.IsDone():
         raise RuntimeError("common failed while measuring overlap")
     common = op.Shape()
     if not _solid_count(common):
-        return 0.0, 0.0
+        return 0.0, 0.0, "none"
     volume, area = _volume(common), _area(common)
     if volume <= 0.0 or area <= 0.0:
-        return 0.0, 0.0
-    return volume, max(2.0 * volume / area, min(_extents(common)))
+        return 0.0, 0.0, "none"
+    mean = 2.0 * volume / area
+    try:
+        measured = _surface_movement(common, victim, keeper)
+    except Exception:  # noqa: BLE001 - a measurement that broke is not a reason to admit or refuse a cut
+        measured = None
+    if measured is None:
+        return volume, mean, "mean_thickness"
+    return volume, measured, "measured"
+
+
+def _surface_movement(common: Any, victim: Any, keeper: Any) -> float | None:
+    """The largest distance from C's victim-side faces to its keeper-side faces, or None (see `_cut_depth`)."""
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeVertex
+    from OCP.BRepExtrema import BRepExtrema_DistShapeShape
+    from OCP.gp import gp_Pnt
+
+    from meshpipeline.cad.repair_v4.verdict.faithful_kernel import _compound, _face_points, _faces
+
+    deadline = time.perf_counter() + DEPTH_BUDGET_S
+    on_victim, on_keeper = _compound(_faces(victim)), _compound(_faces(keeper))
+    tol = max(1e-7, 1e-6 * max(_extents(common)))
+
+    def dist(point: tuple[float, float, float], target: Any) -> float:
+        d = BRepExtrema_DistShapeShape(BRepBuilderAPI_MakeVertex(gp_Pnt(*point)).Vertex(), target)
+        return float(d.Value()) if d.IsDone() else float("inf")
+
+    victim_side, keeper_side = [], []
+    for face in _faces(common):
+        probe = _face_points(face, 1)[0]
+        if dist(probe, on_keeper) <= tol:
+            keeper_side.append(face)       # on the keeper's surface (including faces the two bodies share)
+        elif dist(probe, on_victim) <= tol:
+            victim_side.append(face)       # the victim's own surface, inside the keeper: what the cut removes
+        else:
+            return None                    # a face on neither surface: the classification cannot be trusted
+        if time.perf_counter() > deadline:
+            return None
+    if not victim_side or not keeper_side:
+        return None                        # a duplicate or contained body: no movement to measure
+    target = _compound(keeper_side)
+    per_face = max(4, DEPTH_SAMPLES // len(victim_side))
+    worst = 0.0
+    for face in victim_side:
+        for point in _face_points(face, per_face):
+            worst = max(worst, dist(point, target))
+            if time.perf_counter() > deadline:
+                return None
+    return worst
 
 
 def _builder(args: list[Any], fuzzy: float) -> Any:
@@ -321,16 +382,17 @@ def _conformalise(payload: dict) -> dict:
     cuts: list[Any] = []
     for i, a in enumerate(targets):
         for b in targets[i + 1:]:
-            volume, depth = _overlap_depth(a, b, fuzzy)
+            volume = _common_volume(a, b, fuzzy)
             if volume <= 1e-9 * max(diagonal_of(old), 1.0) ** 3:
                 continue  # touching, not overlapping
             involves_keeper = keeper is not None and (a.IsSame(keeper) or b.IsSame(keeper))
             if not involves_keeper:
                 return _declined("unresolved_overlap", volume=volume)
+            victim = b if a.IsSame(keeper) else a
+            volume, depth, method = _cut_depth(victim, keeper, fuzzy)
             if depth > bound:
                 return _declined("exceeds_fidelity", what="overlap_depth", value=depth,
-                                 bound=bound, volume=volume)
-            victim = b if a.IsSame(keeper) else a
+                                 bound=bound, volume=volume, method=method)
             fraction = volume / max(_volume(victim), 1e-12)
             if fraction > MAX_VOLUME_CHANGE:
                 return _declined("exceeds_fidelity", what="volume_change", value=fraction,
