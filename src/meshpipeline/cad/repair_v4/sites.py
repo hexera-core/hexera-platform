@@ -649,8 +649,13 @@ def _geometric_sites(pool: WorkerPool, ws: Workspace, valid: Any, nodes: dict[St
     context: dict[StableId, _Node] = {}
     standalone: list[list[_Node]] = []
     for a, b, pair in prox_pairs:
+        # CARRY what the kernel measured. These three decide which ops a clash gets (`search._clash_pairs`,
+        # `_contact_rows`): rebuilding the entry without them made every pair read as a near miss, so no contact row
+        # could be proposed in production however many contacts the kernel found (lane C12 found this on the tip).
         entry = {"a": a, "b": b, "dist_mm": round(float(pair["dist"]), 4),
-                 "point_a": pair.get("point_a"), "point_b": pair.get("point_b")}
+                 "point_a": pair.get("point_a"), "point_b": pair.get("point_b"),
+                 "touching": bool(pair.get("touching")),
+                 "area_a_mm2": pair.get("area_a_mm2"), "area_b_mm2": pair.get("area_b_mm2")}
         home = owner.get(a, owner.get(b))
         if home is not None:
             if len(clashes[home]) >= MAX_CLASH_PAIRS:
@@ -792,8 +797,17 @@ def _attach_distances(pool: WorkerPool, ws: Workspace, sites: list[Site], compon
             continue  # a shared edge is distance 0 for a reason that says nothing about the gap
         d = round(float(item["dist"]) / h_mm, 4)
         site.dist_over_h = d if site.dist_over_h is None else min(site.dist_over_h, d)
+        # `touching` by the KERNEL's threshold, not a local copy of it. Imported here, not at module scope: no
+        # parent-side module imports a kernel one, and the worker's import order is load-bearing.
+        from meshpipeline.cad.repair_v4.sites_kernel import CONTACT_MM
+
+        # `sites_distance` answers for any entity kind, so it reports no areas; a clash without them is still
+        # proposed on, with each side offered in turn (`search._contact_rows`), rather than guessing which face
+        # is the smaller.
         entry = {"a": ask["a"]["id"], "b": ask["b"]["id"], "dist_mm": round(float(item["dist"]), 4),
-                 "point_a": item.get("point_a"), "point_b": item.get("point_b")}
+                 "point_a": item.get("point_a"), "point_b": item.get("point_b"),
+                 "touching": float(item["dist"]) <= CONTACT_MM,
+                 "area_a_mm2": None, "area_b_mm2": None}
         if not any({c["a"], c["b"]} == {entry["a"], entry["b"]} for c in site.graph["clashes"]):
             site.graph["clashes"].append(entry)
     for site in sites:
