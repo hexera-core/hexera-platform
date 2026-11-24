@@ -602,6 +602,25 @@ MAX_AIMED_SMALL = 2
 #: and blends touching a site's faces; the site's faces), and so does the plain `defeature(faces)` op in the AI's
 #: catalogue. The code is kept so a later measurement can turn it back on.
 WHOLE_PART_DEFEATURE = False
+#: HOW MANY CANDIDATES an expansion may propose. The default is unchanged at 12: B19 widened permission so `k`
+#: now spans about 7 op families instead of 2 or 3, which buys breadth per expansion and spends wall doing it, and
+#: the fast loop is what decides whether that trade is right. CAD_REPAIR_V4_K_PROPOSE flips it for a comparison run
+#: WITHOUT a code change - lower to spend the wall on depth, higher to let a family offer more than one rung.
+#: An unreadable or non-positive value is ignored, with the default kept, because a typo in an env var must not
+#: silently make a wave's searches one candidate wide.
+K_PROPOSE_DEFAULT = 12
+
+
+def k_propose_setting(raw: str | None = None) -> int:
+    """`K_PROPOSE_DEFAULT`, or CAD_REPAIR_V4_K_PROPOSE when it reads as a positive integer."""
+    text = os.environ.get("CAD_REPAIR_V4_K_PROPOSE", "") if raw is None else raw
+    try:
+        want = int(str(text).strip())
+    except (TypeError, ValueError):
+        return K_PROPOSE_DEFAULT
+    return want if want >= 1 else K_PROPOSE_DEFAULT
+
+
 #: B20: whether a pair row may be built from COMBINATIONS at a site whose pairs the kernel could not measure.
 #: OFF by default. Dropping an UNMEASURED guess is the one rule in B20 that is defensible rather than provable - a
 #: guessed pair could in principle be the one that wins - so it is a flag, and `notes` says when it fires.
@@ -796,39 +815,35 @@ class DetGenerator:
                              f"remove the site's {len(faces)} face(s) with BRepAlgoAPI_Defeaturing"))
         return rows
 
-    def _chain_rows(self, state: SearchState) -> list[tuple[str, list[StableId], dict, str]]:
-        """B21: the second step of a chain whose FIRST step this state's own parent edge was, and which the verdict
-        kept. Lane D's oracle pass 1 found these two chains were the only wins the arms could not reach: the arms
-        had the first step and never followed it, because the follow-up sat behind a whole sweep under `k`.
-
-        KEPT means the state's score is not below its parent's: the step either improved the verdict or held it.
-        A step the verdict pushed DOWN opens no chain - there is nothing to build on."""
+    def _chain_opener(self, state: SearchState) -> str | None:
+        """The op this state's own parent edge was, when that edge opened a chain: the verdict KEPT it (its score
+        held or improved - a step the verdict pushed down opens nothing, there is nothing to build on) and, where
+        aiming matters, it was aimed. None otherwise."""
         via = state.via or {}
         op = str(via.get("op") or "")
-        if not op or state.parent is None:
-            return []
+        if not op or state.parent is None or op not in CHAIN_FOLLOWUPS:
+            return None
         before = self._score_of.get(state.parent)
         if before is None or state.score is None or list(state.score) < list(before):
-            return []
+            return None
         params = dict(via.get("params") or {})
         targets = [t for t in (via.get("targets") or []) if isinstance(t, str)]
-        rows: list[tuple[str, list[StableId], dict, str]] = []
-        if op == "defeature" and str(params.get("source") or "") in AIMED_DEFEATURE_SOURCES:
-            for stage in CHAIN_AFTER_DEFEATURE:
-                rows.append((RUN_STAGE, [], {"stage": stage, "params": {}},
-                             f"the chain lane D's oracle measured: the aimed defeature held, so re-condition the "
-                             f"part with the {stage} stage"))
-        if op == "remove_small" and targets:
-            near, _contacts = ([], [])
-            for site in state.sites:
-                got, _ = _clash_pairs(site)
-                near = near or got
-            if near:
-                for ratio in _PROXIMITY_RATIOS:
-                    rows.append(("split_by_proximity", [], {"face_pairs": near, "target_ratio": ratio},
-                                 "the chain lane D's oracle measured: the aimed remove_small held, so split the "
-                                 f"pairs the kernel measured so chords sag at most {ratio} of the gap"))
-        return rows
+        if op == "defeature" and str(params.get("source") or "") not in AIMED_DEFEATURE_SOURCES:
+            return None          # the whole recognised set opens nothing: its oracle wins were gamed
+        if op == "remove_small" and not targets:
+            return None          # a part-wide ladder rung is not an aimed first step
+        return op
+
+    def _chain_rows(self, state: SearchState) -> list[tuple[str, list[StableId], dict, str]]:
+        """The one follow-up the sweep cannot build for itself: `run_stage`. Everything else a chain asks for is
+        already a row for this state, and `propose` HOISTS those rather than duplicating them."""
+        opener = self._chain_opener(state)
+        if opener is None or RUN_STAGE not in CHAIN_FOLLOWUPS.get(opener, ()):
+            return []
+        return [(RUN_STAGE, [], {"stage": stage, "params": {}},
+                 f"the chain lane D's oracle measured: the {opener} held, so re-condition the part with the "
+                 f"{stage} stage")
+                for stage in CHAIN_AFTER_DEFEATURE]
 
     def _diag_of(self, ws: Workspace) -> float | None:
         if self.diagonal is None:
@@ -936,9 +951,25 @@ class DetGenerator:
         out.sort(key=lambda c: c.op != "trim_unbounded")
         # B21: the chain's rows are taken out of the fair share and put first, so `k` cannot drop the one follow-up
         # the oracle measured. The rest of the list is shared across families as before.
-        chain_keys = {_candidate_key(Candidate(op, list(t), dict(pm), "det", why)) for op, t, pm, why in chain_rows}
-        first = [c for c in out if _candidate_key(c) in chain_keys]
-        rest = [c for c in out if _candidate_key(c) not in chain_keys]
+        # B21b: the chain's follow-ups go FIRST, in the order the oracle's win counts put them, ONE row per
+        # follow-up op so a single op cannot fill the hoist. They are the sweep's own rows (already aimed, already
+        # measured-only), except `run_stage`, which only exists here.
+        opener = self._chain_opener(state)
+        first: list[Candidate] = []
+        if opener is not None:
+            taken: set[str] = set()
+            for want in CHAIN_FOLLOWUPS.get(opener, ()):
+                for c in out:
+                    if c.op == want and _candidate_key(c) not in taken:
+                        first.append(c)
+                        taken.add(_candidate_key(c))
+                        break
+                if len(first) >= CHAIN_MAX_ROWS:
+                    break
+            if first:
+                self._note(f"chain after a kept {opener}: {', '.join(c.op for c in first)}")
+        keys = {_candidate_key(c) for c in first}
+        rest = [c for c in out if _candidate_key(c) not in keys]
         return [*first[:k], *_fair_share(rest, max(0, k - len(first[:k])))]
 
     @staticmethod
@@ -1387,13 +1418,36 @@ AIMED_GUESSED = 2    # a combination the kernel never measured, or a part-wide s
 
 
 
-#: B21: the TWO-STEP CHAINS lane D's oracle pass 1 measured as the only ORACLE-ONLY wins (24 of its 30 clean files
-#: the arms already solved). The first step is an op the arms have; what they never did was follow it with the
-#: second step inside `k` and patience. So the follow-up is proposed ONLY as a continuation of a kept first step,
-#: never as a general row:
-#:   aimed/site `defeature` that the verdict KEPT  ->  `run_stage` bodies | condition | shells
-#:   aimed `remove_small` that the verdict KEPT    ->  `split_by_proximity` on the MEASURED pairs
+#: B21b: THE CHAINS, from lane D's oracle pass 1 (`lane-d21/pass1/winners_by_defect.jsonl`, 658 winning paths). Of
+#: its 316 UNGAMED chain wins that no v4 arm reached, B21's two hardcoded chains opened 37. This table is the same
+#: data, read as "what followed what": opener -> follow-up ops, ORDERED BY MEASURED WINS. The follow-ups are not new
+#: rows - they are the sweep's own rows for this state, hoisted ahead of the fair share - so every B20 rule still
+#: binds (a guessed pair is still not built, a duplicate is still dropped). `run_stage` is the one exception, since
+#: the sweep does not build it; it reaches det only here.
+#:   defeature    30 defeature, 23 run_stage, 17 conformalise, 14 fuse, 11 split_angle
+#:   remove_small 24 split_angle, 22 defeature, 15 run_stage, 14 split_by_proximity, 6 remove_small, 6 rebuild_face
+#:   fuse         26 conformalise, 6 fuse, 4 defeature
+#:   conformalise 8 defeature, 6 remove_small, 6 conformalise
+#:   rebuild_face 8 split_angle, 8 run_stage
+#:   split_angle  8 run_stage, 4 split_continuity
+#:   fill_loop    4 remove_small
+#:   split_by_proximity 3 remove_small, 3 split_by_proximity
+CHAIN_FOLLOWUPS: dict[str, tuple[str, ...]] = {
+    "defeature": ("defeature", RUN_STAGE, "conformalise", "fuse", "split_angle"),
+    "remove_small": ("split_angle", "defeature", RUN_STAGE, "split_by_proximity", "rebuild_face", "remove_small"),
+    "fuse": ("conformalise", "fuse", "defeature"),
+    "conformalise": ("defeature", "remove_small", "conformalise"),
+    "rebuild_face": ("split_angle", RUN_STAGE),
+    "split_angle": (RUN_STAGE, "split_continuity"),
+    "fill_loop": ("remove_small",),
+    "split_by_proximity": ("remove_small", "split_by_proximity"),
+}
+#: the stages a kept opener is followed by, when `run_stage` is one of its follow-ups
 CHAIN_AFTER_DEFEATURE: tuple[str, ...] = ("bodies", "condition", "shells")
+#: at most this many rows are hoisted ahead of the fair share for a chain. The hoist is what makes the follow-up
+#: survive `k`; letting a whole table through would undo B20's breadth control, so it is capped and ordered by the
+#: measured win count.
+CHAIN_MAX_ROWS = 6
 #: `defeature` params["source"] values that count as AIMED (D16's located faces, D14's site faces). The whole
 #: recognised set ("recognised") is NOT a chain opener: its oracle wins were gamed (x3.98) and it stays off in arms.
 AIMED_DEFEATURE_SOURCES: frozenset[str] = frozenset({"located", "site"})
@@ -1756,11 +1810,14 @@ def search(
     workers: int,
     k_confirm: int = 3,
     patience: int | None = None,
-    k_propose: int = 12,
+    k_propose: int | None = None,
     judge: Judge | None = None,
     h_mm: float | None = None,
     clock: Callable[[], float] = time.monotonic,
 ) -> SearchResult:
+    # None asks the setting (K_PROPOSE_DEFAULT, or CAD_REPAIR_V4_K_PROPOSE); an explicit int still wins, so every
+    # caller and test that passes one is unaffected.
+    k_propose = k_propose_setting() if k_propose is None else k_propose
     if judge is None:
         if h_mm is None:
             raise ValueError("search needs either a judge or h_mm for the real one; there is no default")
