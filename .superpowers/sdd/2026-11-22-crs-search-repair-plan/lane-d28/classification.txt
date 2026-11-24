@@ -1,0 +1,25 @@
+      41
+files: 41; ok (prod PASSED on the input engine form): 0
+
+## distinct error/warning lines (files carrying each)
+ 41  Error: HXT #D mesh failed
+ 41  HXT #D mesh failed
+ 40  Info: failed to recover constrained lines/triangles
+ 14  Warning: # elements remain invalid in surface #
+  4  PLC Error: A segment and a facet intersect at point (#,#,#).
+  4  Found two exactly self-intersecting facets (dihedral angle #E+#).
+  4  PLC Error: A segment and a facet intersect at point (-#,-#,#).
+  3  PLC Error: A segment and a facet intersect at point (#,-#,#).
+  2  PLC Error: A segment and a facet intersect at point (-#,-#,-#).
+  2  PLC Error: A segment and a facet intersect at point (-#,#,#).
+  1  PLC Error: A segment and a facet intersect at point (#,#,-#).
+  1  PLC Error: A segment and a facet intersect at point (-#,#,-#).
+  1  Warning: Impossible to recover edge # # (error tag -#)
+  1  PLC Error: A segment and a facet intersect at point (#,-#,-#).
+
+## kinds (first match in order; a file counts once)
+- self-intersecting surface mesh (HXT intersecting triangles): 22  stage {'3d': 22}  e.g. ['da386833c1', 'cbe8c3abc1', 'd9b92b7973']
+- boundary recovery failure: 18  stage {'3d': 18}  e.g. ['9c6e77a796', '37b6afa4cf', 'bbd860fa0f']
+- unclassified: HXT #D mesh failed: 1  stage {'3d': 1}  e.g. ['9d0d49a626']
+
+[exited with code 0]
