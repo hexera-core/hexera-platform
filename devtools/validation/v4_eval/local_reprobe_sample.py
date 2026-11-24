@@ -212,8 +212,8 @@ def cmd_probe(args: argparse.Namespace) -> int:
                 e = Entry(s)
                 rec = {"name": s["name"], "sha256": s["sha256"], "source": s["source"], "size": s["size"],
                        "diag_mm": s["diag_mm"], "group": s["group"]}
-                kw = dict(pool=pool, resolve=lambda _e, p=s["path"]: p, cache=cache,
-                          file_timeout_s=args.file_timeout_s)
+                kw = {"pool": pool, "resolve": lambda _e, p=s["path"]: p, "cache": cache,
+                      "file_timeout_s": args.file_timeout_s}
                 before = dict(counters.mesher_runs)
                 for tier in ("cheap", "full"):
                     if tier == "full":
@@ -245,7 +245,7 @@ def cmd_probe(args: argparse.Namespace) -> int:
                       f"cheap={rec.get('cheap_s', 0):.0f}s full={rec.get('full_s', 0):.0f}s", flush=True)
         stats = {"pass": 1, "mesher_runs": dict(counters.mesher_runs), "cache_get": counters.cache_get,
                  "cache_hit": counters.cache_hit, "cache_put": counters.cache_put,
-                 "member_seconds": {k: v for k, v in counters.mesher_seconds.items()}}
+                 "member_seconds": dict(counters.mesher_seconds)}
         (out / "stats_pass1.json").write_text(json.dumps(stats, indent=1))
         if args.pass2:  # replay: same files, same cache. Every verdict that was stored must now be a hit.
             base = (counters.cache_get, counters.cache_hit, dict(counters.mesher_runs))
