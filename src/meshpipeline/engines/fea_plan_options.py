@@ -235,8 +235,11 @@ def stage_file(src: Path, ws: Path, *, to_metres: float) -> None:
         gmsh.option.setNumber("General.Terminal", 0)
         gmsh.model.add("plan_options")
         gmsh.option.setNumber("Geometry.OCCScaling", float(to_metres))
+        from meshpipeline.cad.iges_read import gmsh_import_path
         try:
-            gmsh.model.occ.importShapes(str(src))
+            # an IGES reaches gmsh as the product's own reading of it (cad/iges_read), as the run stages it
+            with gmsh_import_path(src) as imported:
+                gmsh.model.occ.importShapes(str(imported))
         finally:
             gmsh.option.setNumber("Geometry.OCCScaling", 1.0)
         gmsh.model.occ.synchronize()

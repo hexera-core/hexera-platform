@@ -124,3 +124,76 @@ def test_the_scout_reads_with_it(tmp_path):
     _read_with_continuity(path, 1)
     assert _count(read_cad(path), TopAbs_EDGE) == 4
     assert continuity_in_force() == 0
+
+
+# ----------------------------------------------------------------- the IGES gmsh stages (gmsh_import_path) ----
+def _gmsh_import(path, scale: float = 1.0):
+    """(faces, curves, box) of `path` imported by gmsh at OCCScaling `scale`, as the job's staging imports it."""
+    gmsh = pytest.importorskip("gmsh")
+    gmsh.initialize(interruptible=False)
+    try:
+        gmsh.option.setNumber("General.Terminal", 0)
+        gmsh.option.setNumber("Geometry.OCCScaling", scale)
+        gmsh.model.occ.importShapes(str(path))
+        gmsh.model.occ.synchronize()
+        return (len(gmsh.model.getEntities(2)), len(gmsh.model.getEntities(1)),
+                [round(v, 9) for v in gmsh.model.getBoundingBox(-1, -1)])
+    finally:
+        gmsh.finalize()
+
+
+def test_gmsh_is_handed_the_iges_as_read_here_same_size_and_faces_edges_kept_whole(tmp_path):
+    """gmsh's own OpenCascade splits the C0 edge (7 curves) whatever this process sets; the BREP of this reading
+    keeps it whole (4), at the same metre size."""
+    from meshpipeline.cad.iges_read import gmsh_import_path
+
+    path = _c0_face_iges(tmp_path)
+    direct = _gmsh_import(path, 0.001)
+    with gmsh_import_path(path) as handed:
+        assert handed.suffix == ".brep" and handed.exists()
+        via = _gmsh_import(handed, 0.001)
+    assert not handed.exists()                            # the BREP lives only while gmsh imports it
+    assert direct[1] == 7 and via[1] == 4
+    assert direct[0] == via[0] == 1
+    assert direct[2] == pytest.approx(via[2], abs=1e-9)
+
+
+def test_any_other_file_is_handed_to_gmsh_as_it_is(tmp_path):
+    from meshpipeline.cad.iges_read import gmsh_import_path
+
+    step = tmp_path / "part.step"
+    step.write_text("ISO-10303-21;")
+    with gmsh_import_path(step) as handed:
+        assert handed == step
+
+
+def test_an_iges_that_cannot_be_read_here_is_staged_as_before(tmp_path, monkeypatch, caplog):
+    """Never a new failure: the IGES itself goes to gmsh, and it is logged."""
+    import logging
+
+    from meshpipeline.cad import iges_read
+
+    path = _c0_face_iges(tmp_path)
+
+    def _fail(p):
+        raise iges_read.IgesReadError("unreadable here")
+    monkeypatch.setattr(iges_read, "read_iges", _fail)
+    with caplog.at_level(logging.WARNING, logger="meshpipeline.cad.iges_read"):
+        with iges_read.gmsh_import_path(path) as handed:
+            assert handed == path
+    assert "handed to gmsh as it is" in caplog.text
+
+
+def test_the_job_staging_stages_an_iges_with_its_edges_whole(tmp_path):
+    """engines/gmsh/gmsh_runner._stage_here (the job's staging) writes the staged B-rep from this reading."""
+    gmsh = pytest.importorskip("gmsh")
+    from OCP.TopAbs import TopAbs_EDGE
+
+    from meshpipeline.cad.scout import read_cad
+    from meshpipeline.engines.gmsh.gmsh_runner import _stage_here
+
+    path = _c0_face_iges(tmp_path)
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    _stage_here(gmsh, path, ws / "input.stl", 0.001, extras=True)
+    assert _count(read_cad(ws / "geometry.brep"), TopAbs_EDGE) == 4
