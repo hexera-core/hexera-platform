@@ -607,7 +607,7 @@ class RebuildEdgeAsIntersection:
     params_schema: dict = {"type": "object", "properties": {}, "additionalProperties": False}
 
     def applies_to(self, site: Site) -> bool:
-        return site.kind in _SIDE_KINDS and any(e.startswith("E") for e in site.entities)
+        return any(e.startswith("E") for e in site.entities)        # B19: any kind naming an edge
 
     def apply(self, pool: WorkerPool, ws: Workspace, targets: list[StableId], params: dict,
               *, timeout_s: float) -> tuple[Workspace, Diff]:
@@ -623,7 +623,7 @@ class TightenTolerances:
         "required": ["target_rel"], "additionalProperties": False}
 
     def applies_to(self, site: Site) -> bool:
-        return site.kind in _SIDE_KINDS
+        return True                                                  # B19: no kind forbids it
 
     def apply(self, pool: WorkerPool, ws: Workspace, targets: list[StableId], params: dict,
               *, timeout_s: float) -> tuple[Workspace, Diff]:
@@ -638,7 +638,7 @@ class FixPoles:
     params_schema: dict = {"type": "object", "properties": {}, "additionalProperties": False}
 
     def applies_to(self, site: Site) -> bool:
-        return site.kind in ("pole", "periodic", "invalid") and any(e.startswith("F") for e in site.entities)
+        return any(e.startswith("F") for e in site.entities)        # B19: any kind naming a face
 
     def apply(self, pool: WorkerPool, ws: Workspace, targets: list[StableId], params: dict,
               *, timeout_s: float) -> tuple[Workspace, Diff]:

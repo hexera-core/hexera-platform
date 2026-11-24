@@ -1082,8 +1082,9 @@ class _FaceOp:
     declares_removed = False
 
     def applies_to(self, site: Site) -> bool:
-        return site.kind in self.site_kinds and any(
-            e.startswith(self.entity_prefix) for e in site.entities)
+        # B19: the site's KIND no longer forbids a family - `site_kinds` is now only the preference the det sweep
+        # orders by (`search._PREFERRED_FAMILIES`). What an op still needs is an entity of its own sort.
+        return any(e.startswith(self.entity_prefix) for e in site.entities)
 
     def apply(self, pool: WorkerPool, ws: Workspace, targets: list[StableId], params: dict, *,
               timeout_s: float) -> tuple[Workspace, Diff]:

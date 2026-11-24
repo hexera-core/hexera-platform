@@ -201,7 +201,10 @@ def test_a_no_solids_site_proposes_make_volume_and_other_invalid_sites_do_not() 
 
     gen = DetGenerator(diagonal=lambda ws: 127.0)
     assert "make_volume" in {c.op for c in gen.propose(_state_of(invalid(["no_solids"])), 50)}
-    assert "make_volume" not in {c.op for c in gen.propose(_state_of(invalid(["brep_invalid"])), 50)}
+    # B19: the shell family is offered at every kind now, so `make_volume` appears without a `no_solids` finding
+    # too. What still refuses it is the STATE, not the site kind: `_declines_in_advance` drops it when no subset of
+    # the faces closes a volume (`make_volume_without_a_closable_shell`).
+    assert "make_volume" in {c.op for c in gen.propose(_state_of(invalid(["brep_invalid"])), 50)}
 
 
 def _unbounded_notes(kind: str) -> list[str]:

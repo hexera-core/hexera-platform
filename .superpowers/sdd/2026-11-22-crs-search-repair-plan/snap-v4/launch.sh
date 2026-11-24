@@ -95,8 +95,8 @@ for r,n in sorted(need.items()): print(r,n)
 " "$RUN/vm_plan.json" > "$RUN/quota_need.txt" || die "cannot read the VM plan"
 [ -s "$RUN/quota_need.txt" ] || die "the VM plan asks for no VM"
 while read -r REGION NEED; do
-  gcloud compute regions describe "$REGION" --project $PROJECT --format=json > "$RUN/quota_$REGION.json" \
-    || die "cannot read $REGION quota"
+  gcloud compute regions describe "$REGION" --project $PROJECT --format=json </dev/null \
+    > "$RUN/quota_$REGION.json" || die "cannot read $REGION quota"
   python3 -I -c "
 import json,sys
 q={x['metric']:x for x in json.load(open(sys.argv[1]))['quotas']}
@@ -139,7 +139,7 @@ SYNC=$SYNC
 FILE_TIMEOUT_S=${FILE_TIMEOUT_S:-}
 SEARCH_WALL_S=${SEARCH_WALL_S:-}
 EOF
-cp "$HERE/vm_run.sh" "$HERE/post.py" "$HERE/regroup.py" "$RUN/tools/"
+cp "$HERE/vm_run.sh" "$HERE/post.py" "$HERE/regroup.py" "$HERE/collect.sh" "$RUN/tools/"
 python3 -I -c "
 import json,sys
 print('\n'.join(v['name'] for v in json.load(open(sys.argv[1]))['vms']))
@@ -152,22 +152,39 @@ if [ "$DRY" = 1 ]; then
 fi
 
 # ---------------------------------------------------------------- 6. the VMs (always deleted on the way out)
+# EVERY VM, every time, and a survivor is a FAILURE - not a line in the log. The first pilot leaked one for 35
+# minutes because `gcloud` inside a `while read` loop CONSUMED the loop's stdin and the second VM was never
+# iterated: hence `for ... $(cat)` and `< /dev/null` on every gcloud call in a loop.
+delete_vms() {
+  for vm in $(cat "$RUN/vms.txt"); do
+    [ "${KEEP_VM:-0}" = 1 ] && continue
+    # delete this NAME in EVERY zone it exists in, not only the recorded one: a leaked duplicate is never left
+    # behind (the fast-loop lane's fix; my pilot 1 leaked exactly that way, a second VM of the same name in
+    # another zone after a failed create). `< /dev/null` on every gcloud call because inside a loop reading a
+    # file ssh would EAT the rest of the VM list and only the first VM would be deleted.
+    for z in $(gcloud compute instances list --project $PROJECT --filter="name=$vm" --format='value(zone.basename())' </dev/null 2>/dev/null); do
+      gcloud compute ssh "$vm" --zone "$z" --project $PROJECT --command 'shred -u ~/snap/secret.env 2>/dev/null; true' </dev/null >/dev/null 2>&1
+      gcloud compute instances delete "$vm" --zone "$z" --project $PROJECT --quiet </dev/null >> "$RUN/launch.log" 2>&1 &
+    done
+  done
+  wait
+}
 cleanup() {
   local rc=$?
-  while read -r vm; do
-    [ "${KEEP_VM:-0}" = 1 ] && continue
-    # delete this NAME in EVERY zone it exists in, not only the recorded one: a leaked duplicate is never left behind
-    for z in $(gcloud compute instances list --project $PROJECT --filter="name=$vm" --format='value(zone.basename())' 2>/dev/null); do
-      # < /dev/null: inside `while read ... < vms.txt`, ssh would otherwise EAT the rest of the VM list - the cleanup
-      # then deleted only the FIRST VM (fast run 1 leaked four; deleted by hand)
-      gcloud compute ssh "$vm" --zone "$z" --project $PROJECT --command 'shred -u ~/snap/secret.env 2>/dev/null; true' >/dev/null 2>&1 < /dev/null
-      gcloud compute instances delete "$vm" --zone "$z" --project $PROJECT --quiet >> "$RUN/launch.log" 2>&1 < /dev/null &
-    done
-  done < "$RUN/vms.txt"
-  wait
+  delete_vms
   gcloud compute instances list --project $PROJECT --filter="labels.snapshot=$LABEL" \
-    --format='value(name,status)' > "$RUN/vm_surviving.txt" 2>&1
-  log "VM deletes requested; surviving: $(tr '\n' ' ' < "$RUN/vm_surviving.txt")"
+    --format='value(name,zone,status)' </dev/null > "$RUN/vm_surviving.txt" 2>&1
+  if [ -s "$RUN/vm_surviving.txt" ] && [ "${KEEP_VM:-0}" != 1 ]; then
+    log "VMs STILL PRESENT after the first delete: $(tr '\n' ' ' < "$RUN/vm_surviving.txt"); retrying"
+    delete_vms
+    gcloud compute instances list --project $PROJECT --filter="labels.snapshot=$LABEL" \
+      --format='value(name,zone,status)' </dev/null > "$RUN/vm_surviving.txt" 2>&1
+    if [ -s "$RUN/vm_surviving.txt" ]; then
+      log "LEAKED VM(S), DELETE THEM BY HAND NOW: $(tr '\n' ' ' < "$RUN/vm_surviving.txt")"
+      [ "$rc" = 0 ] && rc=1
+    fi
+  fi
+  log "VM deletes done; surviving: $(tr '\n' ' ' < "$RUN/vm_surviving.txt")"
   exit $rc
 }
 trap cleanup EXIT INT TERM
@@ -188,7 +205,7 @@ f=v[sys.argv[3]]
 print(' '.join(f) if isinstance(f,list) else f)
 " "$RUN/vm_plan.json" "$1" "$2"; }
 
-while read -r vm; do
+for vm in $(cat "$RUN/vms.txt"); do
   machine=$(vm_field "$vm" machine); zones=$(vm_field "$vm" zones); created=""
   for z in $zones; do
     if gcloud compute instances create "$vm" --project $PROJECT --zone "$z" --machine-type "$machine" \
@@ -210,7 +227,7 @@ while read -r vm; do
   done
   [ -n "$created" ] || die "no zone of '$zones' had $machine capacity for $vm"
   log "created $vm in $created"
-done < "$RUN/vms.txt"
+done
 
 push_and_run() { # name
   local vm=$1 z i st
@@ -252,26 +269,25 @@ push_and_run() { # name
 }
 
 log "running $(wc -l < "$RUN/vms.txt" | tr -d ' ') VMs"
-while read -r vm; do ( push_and_run "$vm" < /dev/null; echo $? > "$RUN/rc.$vm" ) & done < "$RUN/vms.txt"
+for vm in $(cat "$RUN/vms.txt"); do ( push_and_run "$vm" </dev/null; echo $? > "$RUN/rc.$vm" ) & done
 wait
 # EVERY VM's outcome is READ. A staging abort on one VM leaves its groups short, and that used to log DONE.
-while read -r vm; do
+for vm in $(cat "$RUN/vms.txt"); do
   rc=$(cat "$RUN/rc.$vm" 2>/dev/null || echo missing)
   outcome=$(cat "$RUN/outcome.$vm" 2>/dev/null || echo missing)
   log "VM $vm: rc=$rc outcome=$outcome"
   [ "$rc" = 0 ] && [ "$outcome" = ok ] || fail "$vm did not finish cleanly (rc=$rc outcome=$outcome)"
-done < "$RUN/vms.txt"
+done
 
 # ---------------------------------------------------------------- 7. collect, regroup, report on ONE VM
 FIRST=$(head -1 "$RUN/vms.txt"); FZ=$(cat "$RUN/zone.$FIRST")
-gcloud compute ssh "$FIRST" --zone "$FZ" --project $PROJECT --command \
-  "set -e; cd ~/snap; gcloud storage rsync -r -q $SYNC/out out; gcloud storage rsync -r -q $SYNC/ledger ledger || true; \
-   sudo docker run --rm -v ~/snap/code:/w:ro -v ~/snap/tools:/tools:ro -v ~/snap/splits:/eval/splits:ro \
-     -v ~/snap/out:/eval/out -w /w -e PYTHONPATH=/w/src meshpipeline-mesh:native \
-     python /tools/post.py --out /eval/out --splits /eval/splits --manifest /eval/splits/launch_manifest.json \
-     > ~/snap/out/post.log 2>&1; echo \$? > ~/snap/out/post.rc; \
-   date -u +%FT%TZ > ~/snap/out/ALLDONE; gcloud storage rsync -r -q ~/snap/out $SYNC/out" \
-  >> "$RUN/launch.log" 2>&1 || fail "the collect/post step failed on $FIRST"
+# ONE remote script, not a chained --command string: every step reports its own status into collect.log, so a
+# failure here names the step instead of being "the collect/post step failed" with nothing under it (pilot 3).
+gcloud compute ssh "$FIRST" --zone "$FZ" --project $PROJECT --command 'bash ~/snap/tools/collect.sh' </dev/null \
+  > "$RUN/collect.log" 2>&1
+COLLECT_RC=$?
+grep '^COLLECT ' "$RUN/collect.log" | while read -r line; do log "$line"; done
+[ "$COLLECT_RC" = 0 ] || fail "the collect/post step on $FIRST exited $COLLECT_RC (see collect.log)"
 mkdir -p "$RUN/out"
 gcloud storage rsync -r -q "$SYNC/out" "$RUN/out" >> "$RUN/launch.log" 2>&1 || fail "could not pull $SYNC/out"
 

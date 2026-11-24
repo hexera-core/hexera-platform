@@ -81,7 +81,7 @@ class Conformalise:
     }
 
     def applies_to(self, site: Site) -> bool:
-        return site.kind in ("overlap", "intersection", "proximity")
+        return sum(1 for e in site.entities if e[:1] == "B") >= 2   # B19: any kind naming 2+ bodies
 
     def apply(self, pool: WorkerPool, ws: Workspace, targets: list[StableId], params: dict,
               *, timeout_s: float) -> tuple[Workspace, Diff]:
@@ -118,7 +118,7 @@ class RemoveDuplicateFaces:
     def applies_to(self, site: Site) -> bool:
         # proximity and self_overlap too (lane A11): a measured gap-0 contact and gmsh's overlapping_facets pair are
         # both "two faces in the same place", which is exactly what this removes - and the sweep now proposes it there.
-        return site.kind in ("overlap", "intersection", "proximity", "self_overlap")
+        return sum(1 for e in site.entities if e[:1] == "B") >= 2   # B19: any kind naming 2+ bodies
 
     def apply(self, pool: WorkerPool, ws: Workspace, targets: list[StableId], params: dict,
               *, timeout_s: float) -> tuple[Workspace, Diff]:
@@ -145,7 +145,7 @@ class Fuse:
     }
 
     def applies_to(self, site: Site) -> bool:
-        return site.kind in ("overlap", "intersection")
+        return sum(1 for e in site.entities if e[:1] == "B") >= 2   # B19: any kind naming 2+ bodies
 
     def apply(self, pool: WorkerPool, ws: Workspace, targets: list[StableId], params: dict,
               *, timeout_s: float) -> tuple[Workspace, Diff]:
@@ -173,7 +173,9 @@ class TrimUnbounded:
     }
 
     def applies_to(self, site: Site) -> bool:
-        return site.kind == "unbounded"
+        # the ONE op still conditioned on a finding rather than a kind: on a bounded part it declines
+        # `nothing_unbounded`, and the det sweep hoists a trim row ahead of everything (lane C9).
+        return site.kind == "unbounded" or "unbounded_geometry" in ((site.graph or {}).get("hard_codes") or ())
 
     def apply(self, pool: WorkerPool, ws: Workspace, targets: list[StableId], params: dict,
               *, timeout_s: float) -> tuple[Workspace, Diff]:

@@ -480,6 +480,8 @@ _MAX_PAIRS = 16  # split_by_proximity's maxItems
 #: body pairs an overlap site sweeps `cut_by` over, each both ways (which body is kept is exactly what the sweep cannot
 #: know; the overlap's depth and volume are measured and reported, and refuse nothing)
 _MAX_CUT_PAIRS = 3
+#: bodies in ONE `cut_by` / `fuse` call when a site names more than two (lane C11's one-keeper-many-victims row)
+_MAX_CUT_GROUP = 6
 #: trim_unbounded's padding, as a share of the part's finite diagonal: Raymond Lee's 1% (devtools/simplify), then 5%
 _TRIM_PADS = (0.01, 0.05)
 #: a coarse site's angle splits: the two settings the staged healer's condition stage does not use (it runs 90)
@@ -517,6 +519,14 @@ DET_UNREACHABLE_OPS: dict[str, str] = {
 #: normalise stage's own target (`stages.DEFAULTS["normalise"]["target_rel"]`), i.e. an edge the healer could not
 #: bring to the tolerance it aims for
 _EDGE_REL = 1e-5
+# B19 (owner priority 2026-11-24): THE SEARCH LACKED PERMISSION, NOT OPS. A mesher failure and a layer-1 finding on
+# the same faces merge into ONE site which takes the MESHER's kind, so a face-defect file can land at a kind that
+# FORBIDS the op that fixes it. Lane A measured `split_angle` at 60 and 45 reaching CLEAN IN ONE STEP on 3596803faa,
+# a file both arms fail, with an op AND a rung the sweep already has - it was never allowed to propose them there.
+# Lane C measured the same defect on the body ops: overlapping bodies on a `self_overlap` site got no cut at all.
+# So every list below is now a PREFERENCE (its kind's rows come FIRST) and no longer a permission: every family is
+# offered at every kind, aimed at the site's own faces and bodies. `oracle_face_grid.py` and `oracle_grid.py` are
+# the measured specification of what each kind used to forbid.
 _EDGE_KINDS = ("invalid", "self_overlap", "overlap", "intersection", "proximity")  # = ops.edges._SIDE_KINDS
 _MAX_EDGE_REBUILDS = 2  # one candidate per edge (one bad edge must not sink the others), worst first
 _REBUILD_FACE_CODES = frozenset({"self_intersection", "brep_invalid"})
@@ -826,9 +836,17 @@ class DetGenerator:
         # op; then the whole recognised set, last. `k` and the op budget cut from the end, so defeature never
         # pre-empts an op that suits the site. Snapshot v2 (lane B13): on the one body_overlap dev file seven
         # defeature applications came first and fuse/cut_by were `skipped_budget`.
-        own = [(site, [*self._aimed_small_rows(site, has_solid), *self._recipe_rows(site, diag),
-                       *self._sweep(site, diag), *self._coverage(site, sized),
-                       *(self._coarse_rows(site, state.ws, sized) if only_coarse else [])]) for site in sites]
+        def ordered(site: Site, rows: list[tuple[str, list[StableId], dict, str]]
+                    ) -> list[tuple[str, list[StableId], dict, str]]:
+            """B19: the site's own kind decides the ORDER of the families, never which are allowed. A stable sort,
+            so the aimed rows inside a family keep the order their builder gave them."""
+            rank = _family_order(site.kind)
+            return sorted(rows, key=lambda row: rank.get(_family_of(row[0]), len(rank)))
+
+        own = [(site, ordered(site, [*self._aimed_small_rows(site, has_solid), *self._recipe_rows(site, diag),
+                                     *self._sweep(site, diag), *self._coverage(site, sized),
+                                     *(self._coarse_rows(site, state.ws, sized) if only_coarse else [])]))
+               for site in sites]
         generic = [(site, self._defeature_rows(site, features)) for site in sites]
         whole = [(sites[0], part_rows)] if part_rows else []
         for site, rows in [*own, *generic, *whole]:
@@ -850,7 +868,7 @@ class DetGenerator:
         # repair quality: until the part is bounded, every other candidate's state is unbounded too and is judged
         # invalid without being measured; after the trim every later re-export is an ordinary, cheap one.
         out.sort(key=lambda c: c.op != "trim_unbounded")
-        return out[:k]
+        return _fair_share(out, k)
 
     @staticmethod
     def _declines_in_advance(op: str, targets: list[StableId], volume: dict | None, has_solid: bool) -> str | None:
@@ -914,27 +932,26 @@ class DetGenerator:
         faces = _of_kind(site.entities, "F")
         graph = site.graph or {}
         rows: list[tuple[str, list[StableId], dict, str]] = []
-        kind = site.kind
-        if faces and (kind == "self_overlap" or (kind == "invalid" and _REBUILD_FACE_CODES & set(
-                graph.get("hard_codes") or ()))):
+        if faces:   # B19: at EVERY kind, not only self_overlap and an invalid carrying a rebuild code
             # AIMED, lane A11: the faces the mesher NAMED come first. A gmsh overlapping_facets message names its
             # surfaces ("on surface 108 surface 109") and D16 resolves them to faces, so on a 843-face part the
             # rebuild starts at the two the mesher failed on instead of at face 1.
             for face in _located_first(site, faces)[:_MAX_FACE_REBUILDS]:
                 rows.append(("rebuild_face", [face], {"continuity": "G0"},
                              "re-fill the face after fixing its self-intersecting wires (G0)"))
-        if kind in _POLE_KINDS:
+        if not faces:
+            self._note(f"site {site.id}: fix_poles not proposed: the site names no face")
+        if faces:   # B19: fix_poles at every kind, aimed at the site's own faces
             # The staged healer ran fix_poles over every face before the search; an op applied since may have left a
             # new broken wire, and only this row lets the det arm try again on the face the mesher is still failing on.
-            if not faces:
-                self._note(f"site {site.id}: fix_poles not proposed: the site names no face")
-            for face in faces[:_MAX_POLE_FIXES]:
+            for face in _located_first(site, faces)[:_MAX_POLE_FIXES]:
                 rows.append(("fix_poles", [face], {},
                              "repair the face's wires (degenerate edge at the pole, missing seam)"))
-        wants_edges = kind in _EDGE_KINDS and any(not e.get("kind") for e in graph.get("edges") or [])
-        wants_reapprox = kind in _REAPPROX_KINDS and faces
-        wants_refit = kind in _REFIT_KINDS and len(faces) >= 2
-        wants_canonical = kind in _CANONICAL_KINDS and bool(faces)
+        # B19: what the op NEEDS, not what the kind allows. The kind only decides the order (`_family_order`).
+        wants_edges = any(not e.get("kind") for e in graph.get("edges") or [])
+        wants_reapprox = bool(faces)
+        wants_refit = len(faces) >= 2
+        wants_canonical = bool(faces)
         if not (wants_edges or wants_reapprox or wants_refit or wants_canonical):
             return rows
         diag = sized()
@@ -1112,7 +1129,7 @@ class DetGenerator:
         # reached only for `proximity`. The near-miss split stays proximity's own: its plan is sized from the gap,
         # which only a near miss has.
         near, contacts = _clash_pairs(site)
-        if kind == "proximity" and len(faces) >= 2:
+        if len(faces) >= 2:   # B19: the near-face split at every kind that names two faces
             # AIMED, lane A11: the pairs the kernel MEASURED (`graph["clashes"]`), nearest first, not every
             # combination of the site's faces - a combinatorial list proposes work no mesher complained about and
             # crowds the one pair it did out of the op budget. With no measured pair, fall back to the old sweep.
@@ -1127,26 +1144,30 @@ class DetGenerator:
                     )
                 )
         rows += self._contact_rows(contacts)
-        if kind == "self_overlap":
-            rows += self._overlap_rows(site, faces)
-        if kind in ("proximity", "self_overlap", "periodic") and faces:
-            # self_overlap aims at the named faces (see `_overlap_rows`); the other kinds have no per-face place yet.
-            at = _located_first(site, faces) if kind == "self_overlap" else faces
-            at = at[:_MAX_FACE_REBUILDS] if kind == "self_overlap" else at
+        rows += self._overlap_rows(site, faces)      # B19: the duplicate/contact removals at every kind
+        if faces:
+            # B19 + A11's caveat: the faces a member LOCATED are split FIRST and on their own, then the site's whole
+            # face set behind them. A `low_quality` location is the worst ELEMENT, so the named face is not
+            # necessarily the defect - which is why the aimed call comes first but the wider one is still offered.
+            aimed = _located_first(site, faces)[:_MAX_FACE_REBUILDS]
             for deg in _SPLIT_ANGLES:
-                rows.append(("split_angle", at, {"max_deg": deg}, f"split faces at {deg} deg"))
-        if kind == "periodic" and faces:
+                rows.append(("split_angle", aimed, {"max_deg": deg},
+                             f"split the {len(aimed)} face(s) the mesher located at {deg} deg"))
+            if sorted(faces) != sorted(aimed):
+                for deg in _SPLIT_ANGLES:
+                    rows.append(("split_angle", faces, {"max_deg": deg},
+                                 f"split all {len(faces)} of the site's faces at {deg} deg"))
             rows.append(("split_closed", faces, {}, "split closed periodic faces at the seam"))
-        if kind == "invalid":
-            if faces:
-                for order in (1, 2):
-                    rows.append(("split_continuity", faces, {"order": order}, f"split faces at C{order} breaks"))
+            for order in (1, 2):
+                rows.append(("split_continuity", faces, {"order": order}, f"split faces at C{order} breaks"))
+        if solids:
             rows.append(("orient_and_close", solids, {}, "fix shell orientation"))
+        if kind == "invalid":
             if "no_solids" in (site.graph.get("hard_codes") or ()):
                 # Loose faces and no solid at all: a shell that is closed (a fill just closed it) still has to be
                 # made a solid. make_volume declines when the faces enclose nothing.
                 rows.append(("make_volume", faces, {}, "no solid exists: build one from the closed shell"))
-        if kind == "sliver":
+        if site.entities:   # B19: the sliver ladder and the same-domain merge at every kind
             sized = diag is not None and diag <= UNBOUNDED_DIAGONAL_MM
             if not sized:
                 self._note(f"site {site.id}: remove_small not proposed: {self._why_no_size(diag)}")
@@ -1160,7 +1181,7 @@ class DetGenerator:
                     )
                 )
             rows.append(("unify_same_domain", [], {"scope": "all", "keep": []}, "merge same-domain faces"))
-        if kind == "open":
+        if True:   # B19: the shell-closing family at every kind (`_declines_in_advance` still refuses a sew on a solid)
             ladder = scaled_sew_ladder(diag) if diag is not None and diag <= UNBOUNDED_DIAGONAL_MM else []
             if ladder:
                 rows.append(
@@ -1180,7 +1201,10 @@ class DetGenerator:
         # that any two touch or overlap; body ops there fragmented already-conformal bodies for nothing (lane C10: 11
         # no-op conformalise calls on one v2 file). It gets only its part-wide conditioning rows (`_coarse_rows`).
         whole_part = bool(((site.graph or {}).get("coarse") or {}).get("whole_part"))
-        if kind in ("overlap", "intersection") and not whole_part:
+        # B19 + lane C: ANY site naming 2+ bodies gets the body rows, whatever its kind. A whole-part coarse site
+        # still gets none: it lists every body and is no evidence that any two touch (C10 measured 11 no-op
+        # conformalise calls from exactly that).
+        if not whole_part:
             if len(solids) >= 2:
                 for fuzzy in (0.0, 0.01):
                     rows.append(
@@ -1191,7 +1215,7 @@ class DetGenerator:
                             f"fragment the bodies (fuzzy {fuzzy} mm)",
                         )
                     )
-            if kind == "overlap" and len(solids) >= 2:
+            if len(solids) >= 2:
                 # fragment declines every REAL overlap (no keeper: `unresolved_overlap`); cut_by is the mode that
                 # resolves one. Lane C4: 10 of the smoke's 30 files carried body_overlap and det never proposed it.
                 for a, b in list(itertools.combinations(solids, 2))[:_MAX_CUT_PAIRS]:
@@ -1202,6 +1226,15 @@ class DetGenerator:
                 # owner's 2026-11-24 goal allows (lane C7)
                 for a, b in list(itertools.combinations(solids, 2))[:_MAX_CUT_PAIRS]:
                     rows.append(("fuse", [a, b], {"fuzzy_mm": 0.0}, f"fuse {a} and {b} into one body"))
+                if len(solids) > 2:
+                    # ONE KEEPER, MANY VICTIMS (lane C11): on dev 0051 one body overlapped three others and the cut
+                    # that resolved layer 1 was `cut_by:B4` over ALL FOUR bodies, which no pair row can express.
+                    group = solids[:_MAX_CUT_GROUP]
+                    for keep in group:
+                        rows.append(("conformalise", group, {"mode": f"cut_by:{keep}", "fuzzy_mm": 0.0},
+                                     f"cut {keep} out of all {len(group) - 1} others at once"))
+                    rows.append(("fuse", group, {"fuzzy_mm": 0.0},
+                                 f"fuse all {len(group)} of the site's bodies into one"))
             if len(faces) >= 2:
                 rows.append(
                     (
@@ -1211,11 +1244,81 @@ class DetGenerator:
                         "remove coincident duplicate faces",
                     )
                 )
-        if kind == "unbounded":
+        # trim_unbounded is conditioned on a layer-1 FINDING, not on a kind: on a bounded part it declines
+        # `nothing_unbounded` AND would take the hoisted first slot below, so it is offered wherever the finding is.
+        if kind == "unbounded" or "unbounded_geometry" in ((site.graph or {}).get("hard_codes") or ()):
             for pad in _TRIM_PADS:
                 rows.append(("trim_unbounded", [], {"pad_fraction": pad},
                              f"bound the infinite surfaces to the part's extent plus {pad:g} of its diagonal"))
         return rows
+
+
+
+#: WHICH FAMILY an op belongs to, for B19's ordering and for the fair share under `k`. A family is a kind of repair,
+#: not a kind of site: the point of B19 is that the site's kind decides the ORDER of the families, never which of
+#: them is allowed.
+_OP_FAMILY: dict[str, str] = {
+    "split_by_proximity": "near_faces", "split_angle": "face_split", "split_closed": "face_split",
+    "split_continuity": "face_split", "rebuild_face": "face_rebuild", "fix_poles": "face_rebuild",
+    "reapproximate": "surface_refit", "to_canonical": "surface_refit", "refit_cluster": "surface_refit",
+    "rebuild_edge_as_intersection": "edge", "remove_small": "small", "unify_same_domain": "small",
+    "defeature": "remove", "remove_duplicate_faces": "remove",
+    "sew": "shell", "make_volume": "shell", "orient_and_close": "shell", "fill_loop": "shell",
+    "conformalise": "body", "fuse": "body", "trim_unbounded": "trim", "run_stage": "stage",
+    "tighten_tolerances": "condition",
+}
+#: what each site kind PREFERS, first; every other family follows in `_FAMILIES` order. Read off what each kind used
+#: to be the only one allowed (`oracle_face_grid.py` / `oracle_grid.py` list those gates), so a kind keeps exactly
+#: the rows it had at the front of its list and gains the rest behind them.
+_PREFERRED_FAMILIES: dict[str, tuple[str, ...]] = {
+    "proximity": ("near_faces", "face_split", "surface_refit", "edge"),
+    "self_overlap": ("face_rebuild", "face_split", "remove", "surface_refit", "edge", "body"),
+    "periodic": ("face_split", "surface_refit", "face_rebuild"),
+    "invalid": ("face_split", "shell", "face_rebuild", "edge", "surface_refit"),
+    "sliver": ("small", "remove", "surface_refit"),
+    "open": ("shell", "small"),
+    "overlap": ("body", "remove", "edge", "surface_refit"),
+    "intersection": ("body", "remove", "edge"),
+    "pole": ("face_rebuild", "surface_refit", "face_split"),
+    "unbounded": ("trim",),
+    "timeout": ("small", "remove", "face_split"),
+}
+#: the order a family is offered in when the kind does not prefer it
+_FAMILIES: tuple[str, ...] = ("near_faces", "face_split", "face_rebuild", "small", "shell", "body", "remove",
+                              "surface_refit", "edge", "condition", "trim", "stage")
+
+
+def _family_of(op: str) -> str:
+    return _OP_FAMILY.get(op, op)
+
+
+def _family_order(kind: str) -> dict[str, int]:
+    """Family -> rank for a site of this kind: its preferred families first, then the rest in `_FAMILIES` order."""
+    pref = _PREFERRED_FAMILIES.get(kind, ())
+    rest = [f for f in _FAMILIES if f not in pref]
+    return {fam: i for i, fam in enumerate([*pref, *rest])}
+
+
+def _fair_share(cands: list[Candidate], k: int) -> list[Candidate]:
+    """`k` candidates, taken ROUND ROBIN across families in the order they appear.
+
+    B19's second half. With every family offered at every kind the list is longer than `k`, and a flat `[:k]` let one
+    family eat the budget: lane A measured the det sweep PROPOSING `split_angle` at 60 on 3596803faa and then
+    dropping it under the cap, on a file where that very candidate reaches clean in one step. A family contributes
+    its first row before any family contributes its second, so the right candidate cannot be crowded out by another
+    family's rungs - and the per-site order within a family is kept, so the aimed rows still come first.
+    """
+    if len(cands) <= k:
+        return cands
+    buckets: dict[str, list[Candidate]] = {}
+    for c in cands:
+        buckets.setdefault(_family_of(c.op), []).append(c)
+    out: list[Candidate] = []
+    while len(out) < k and any(buckets.values()):
+        for fam in list(buckets):
+            if buckets[fam] and len(out) < k:
+                out.append(buckets[fam].pop(0))
+    return out
 
 
 # --- the driver ---------------------------------------------------------------------------------

@@ -127,7 +127,9 @@ class _ShellOp:
     _site_kinds: tuple[str, ...] = ()
 
     def applies_to(self, site: Site) -> bool:
-        return site.kind in self._site_kinds
+        # B19: `_site_kinds` is a PREFERENCE now (see search._PREFERRED_FAMILIES), not a permission. `sew` on a
+        # solid and `make_volume` without a closable shell are still refused, by `search._declines_in_advance`.
+        return True
 
 
 class RemoveSmall(_ShellOp):

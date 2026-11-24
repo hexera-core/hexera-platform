@@ -512,7 +512,7 @@ class Defeature:
     }
 
     def applies_to(self, site: Site) -> bool:
-        return any(e[:1] == "F" for e in site.entities) and (site.kind == "sliver" or bool(site.meshers_failing))
+        return any(e[:1] == "F" for e in site.entities)             # B19: any kind naming a face
 
     def apply(self, pool: WorkerPool, ws: Workspace, targets: list[StableId], params: dict, *,
               timeout_s: float) -> tuple[Workspace, Diff]:
