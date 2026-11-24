@@ -105,7 +105,49 @@ def order_defects(defects: Sequence[Defect]) -> list[Defect]:
     return sorted(defects, key=defect_rank)
 
 
-def defects_of(verdict: Any, sites: Sequence[Site]) -> list[Defect]:
+#: LAYER 1 NAMES ITS OWN SOLID LIST. `valid_kernel` emits `f"S{i+1}"` over `TopExp` order on the STEP it read;
+#: the workspace names bodies `B...` and carries each one's `TopExp` index on the BREP (`ws.indices`). The two
+#: enumerations are the same order over the same topology, so the translation is by INDEX - but they are read
+#: from two different files (layer 1 judges a re-exported STEP), and a round trip is not guaranteed to preserve
+#: solid order (lane A's note). So the count is checked first, and a mismatch REFUSES to translate rather than
+#: guessing: a wrong body id would aim a cut at the wrong solid, which is worse than skipping the defect.
+LAYER1_SOLID = "S"
+
+
+def body_ids_of(ws: Any, entities: Sequence[StableId]) -> tuple[list[StableId], list[StableId]]:
+    """(the workspace body ids for `entities`, the layer-1 names that could not be translated).
+
+    An entity that is already a workspace id (a `B...` body, an `F...` face) passes through untouched; a layer-1
+    `S<k>` is translated through the workspace's own body index. This is the fix for B24's worst bug: body
+    defects were built straight from layer 1's finding entities, so every `body_overlap` and `open_shell` repair
+    in wave 202611242007 was refused by B26's live-id filter before it was ever tried - 18 of 52 steps, with
+    nothing changed before them.
+    """
+    by_index: dict[int, StableId] = {}
+    for sid, index in (getattr(ws, "indices", None) or {}).items():
+        if str(sid)[:1] == "B":
+            by_index[int(index)] = sid
+    out: list[StableId] = []
+    unmapped: list[StableId] = []
+    for e in entities:
+        name = str(e)
+        if name[:1] != LAYER1_SOLID:
+            out.append(e)
+            continue
+        try:
+            index = int(name[1:])
+        except ValueError:
+            unmapped.append(e)
+            continue
+        mapped = by_index.get(index)
+        if mapped is None:
+            unmapped.append(e)
+        else:
+            out.append(mapped)
+    return out, unmapped
+
+
+def defects_of(verdict: Any, sites: Sequence[Site], ws: Any = None) -> list[Defect]:
     """This state's defects as lane C's `Defect`s: layer 1's hard findings first, then every mesher failure the
     sites located, ordered by `defect_rank`.
 
@@ -124,20 +166,34 @@ def defects_of(verdict: Any, sites: Sequence[Site]) -> list[Defect]:
     fallback = next((s for s in sites if s.kind in ("unlocated", "invalid")), sites[0] if sites else None)
 
     seen: set[tuple[str, str]] = set()
+    unmapped_total: list[StableId] = []
+
+    def ids_of(entities: Sequence[StableId]) -> tuple[tuple[StableId, ...], tuple[StableId, ...]]:
+        if ws is None:
+            return tuple(entities), ()
+        mapped, bad = body_ids_of(ws, entities)
+        unmapped_total.extend(bad)
+        return tuple(mapped), tuple(bad)
+
     hard = list(getattr(getattr(verdict, "valid", None), "hard", ()) or ())
     for finding in hard:
         code = str(getattr(finding, "code", "") or "")
         if not code or code == "body_overlap":      # clustered below, never one defect per pair
             continue
-        ents = tuple(getattr(finding, "entities", ()) or ())
-        site = next((by_entity[e] for e in ents if e in by_entity), fallback)
+        raw = tuple(getattr(finding, "entities", ()) or ())
+        ents, bad = ids_of(raw)
+        site = next((by_entity[e] for e in (*ents, *raw) if e in by_entity), fallback)
         if site is None or (code, site.id) in seen:
             continue
         seen.add((code, site.id))
+        measurement = _measure(site, ents)
+        if bad:
+            # LOUD, and its own reason: never again indistinguishable from "the ids died in an earlier repair"
+            measurement["unmapped_layer1_entities"] = list(bad)
         out.append(Defect(id=site.id, kind=VALIDITY, code=code, entities=ents,
-                          xyz=_points(site), box=_box(site), measurement=_measure(site, ents)))
+                          xyz=_points(site), box=_box(site), measurement=measurement))
     out.extend(_overlap_clusters([f for f in hard if str(getattr(f, "code", "")) == "body_overlap"],
-                                 by_entity, fallback))
+                                 by_entity, fallback, ids_of))
 
     for site in sites:
         graph = site.graph or {}
@@ -155,8 +211,9 @@ def defects_of(verdict: Any, sites: Sequence[Site]) -> list[Defect]:
     return order_defects(out)
 
 
-def _overlap_clusters(findings: Sequence[Any], by_entity: dict[StableId, Site],
-                      fallback: Site | None) -> list[Defect]:
+def _overlap_clusters(findings: Sequence[Any], by_entity: dict[StableId, Site], fallback: Site | None,
+                      ids_of: Callable[[Sequence[StableId]], tuple[tuple[StableId, ...], tuple[StableId, ...]]],
+                      ) -> list[Defect]:
     """One defect per CONNECTED cluster of overlapping bodies (owner note 1).
 
     Two bodies are in one cluster when a `body_overlap` finding names them together, transitively: a chain of
@@ -173,8 +230,11 @@ def _overlap_clusters(findings: Sequence[Any], by_entity: dict[StableId, Site],
         return x
 
     pairs: list[tuple[StableId, StableId]] = []
+    unmapped: list[StableId] = []
     for finding in findings:
-        ents = list(getattr(finding, "entities", ()) or ())
+        ents, bad = ids_of(list(getattr(finding, "entities", ()) or ()))
+        unmapped.extend(bad)
+        ents = list(ents)
         for i, a in enumerate(ents):
             for b in ents[i + 1:]:
                 pairs.append((a, b) if a <= b else (b, a))
@@ -188,9 +248,12 @@ def _overlap_clusters(findings: Sequence[Any], by_entity: dict[StableId, Site],
         site = next((by_entity[e] for e in bodies if e in by_entity), fallback)
         if site is None:
             continue
+        measurement = _measure(site, bodies)
+        if unmapped:
+            measurement["unmapped_layer1_entities"] = sorted(set(map(str, unmapped)))
         out.append(Defect(id=f"{site.id}:overlap:{root}", kind=VALIDITY, code="body_overlap", entities=bodies,
                           pairs=tuple(sorted(cluster_pairs)), xyz=_points(site), box=_box(site),
-                          measurement=_measure(site, bodies)))
+                          measurement=measurement))
     return out
 
 
@@ -279,8 +342,13 @@ RULE_TABLE: dict[str, tuple[Repair, ...]] = {
                           ("defeature", "run_stage:bodies")),
     # 1 file. Kept because an arm with no entry falls to the AI, and one measured win beats a guess.
     "hxt_3d_failed": (("defeature",),),
-    # 1 file, 5 oracle-only rows of 58: this kind is mostly solved by the arms already.
-    "low_quality": (("reapproximate",), ("split_by_proximity",)),
+    # 1 file, 5 oracle-only rows of 58: this kind is mostly solved by the arms already. ORDER CORRECTED FROM
+    # THE WAVE, not from the oracle: on 202611242007 `reapproximate` declined `no_valid_face: the new carrier
+    # does not give a valid face` on all 10 real attempts, while `split_by_proximity` produced every one of the
+    # arm's 3 repairs. The oracle's single file cannot outweigh ten refusals on ten others. This is a STOPGAP in
+    # the same spirit as the learned demotion (demote what did not apply), done by hand for the one entry the
+    # wave was unambiguous about; the general rule comes with the next wave's counts.
+    "low_quality": (("split_by_proximity",), ("reapproximate",)),
     # 1 file. The 2-step leader is the only entry with more than one winning path.
     "no_volume": (("split_by_proximity", "remove_small"), ("defeature",),
                   ("remove_small", "unify_same_domain")),
@@ -331,6 +399,9 @@ def rule_table_from_winners(rows: Sequence[dict], *, max_repairs: int = 5) -> di
 #: face it was aimed at. 1.05 is the margin the det sweep's aimed row already uses; this is that rule, applied to
 #: a measurement rather than to a ladder rung.
 REMOVE_SMALL_MARGIN = 1.05
+#: the aspect at which a face is narrow enough for a removal to be SIZED from it - the same 8:1 the det sweep's
+#: aimed rows use (`search.NARROW_ASPECT`), named here so this module does not import the search driver.
+NARROW_ASPECT = 8.0
 #: at most this many measured face pairs are handed to `split_by_proximity` (its own schema takes a list)
 MAX_PROXIMITY_PAIRS = 8
 #: a clash or gap is closed by a fuzzy value at least the measured distance; 1.1 covers the measurement's own
@@ -384,7 +455,20 @@ def params_for(op: str, defect: Defect, *, pair: tuple[StableId, StableId] | Non
         face = m.get("narrowest_face")
         if not face:
             raise NoParameters("no located face with a measured width at this defect")
-        width = REMOVE_SMALL_MARGIN * (float(face["length_mm"]) + float(face["width_mm"]))
+        w, length = float(face["width_mm"]), float(face["length_mm"])
+        # ONLY FROM A FACE THAT IS ACTUALLY NARROW. `length` is area/width, so on a big face with one small
+        # dimension it is huge: wave 202611242007 derived limits of 1211 mm and 974 mm this way and the op
+        # declined all 13 of them ("nothing at or under X mm to remove"). The det sweep's margin rule was only
+        # ever applied to faces of aspect >= NARROW_ASPECT, and that condition is the missing half of it.
+        if w <= 0 or length / w < NARROW_ASPECT:
+            raise NoParameters(f"the narrowest face at this defect is {length / max(w, 1e-9):.1f}:1, under the "
+                               f"{NARROW_ASPECT:g}:1 a removal is sized from: nothing here is a sliver")
+        width = REMOVE_SMALL_MARGIN * (length + w)
+        diagonal = m.get("diagonal_mm")
+        if diagonal and width > float(diagonal):
+            # a limit larger than the part is a derivation bug, not a parameter choice (LEAD-3)
+            raise NoParameters(f"a removal limit of {width:.3g} mm is larger than the part "
+                               f"({float(diagonal):.3g} mm): the measurement does not size this op")
         return [face["id"]], {"max_width_mm": width}
     if op in ("conformalise", "fuse"):
         clash = m.get("clash")
@@ -705,7 +789,7 @@ def repair_sequentially(
         this = SeqRound(index=index)
         rounds.append(this)
         counters.rounds = index
-        defects = _with_diagonal(pool, best, defects_of(verdict, sites_of(pool, best, verdict)))
+        defects = _with_diagonal(pool, best, defects_of(verdict, sites_of(pool, best, verdict), best))
         for d in defects:
             counters.found[d.code] += 1
         current = best
@@ -719,6 +803,14 @@ def repair_sequentially(
             # RE-LOCATE BEFORE REPAIRING (seq-arm-design.md). An earlier repair in this round renamed faces, so
             # the ids this defect was diagnosed with can be stale: the first end-to-end run had `remove_small`
             # replace F3 with F16 and the NEXT defect was refused for naming F3. Lane C's `relocate` carries it.
+            if (listed.measurement or {}).get("unmapped_layer1_entities") and not listed.entities:
+                # layer 1 named solids this workspace's body index cannot place (see `body_ids_of`). Its OWN
+                # reason, so this can never again read as "the ids died in an earlier repair".
+                counters.skipped[listed.code] += 1
+                counters.skipped_why["layer1_entity_unmapped"] += 1
+                into(this)(f"{defect_line(listed)} -> not attempted [layer-1 entity could not be mapped to a "
+                           f"body: {', '.join(map(str, listed.measurement['unmapped_layer1_entities']))}]")
+                continue
             defect = listed
             if current is not diagnosed_on:
                 moved = relocate(pool, diagnosed_on, current, listed)
