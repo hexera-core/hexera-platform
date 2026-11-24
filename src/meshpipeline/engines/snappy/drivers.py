@@ -2709,7 +2709,8 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
         # what the probe left out to keep the budget (cad/thin_features.ThinRegions); a plain
         # list carries none
         _thin_note = str(getattr(_thin_regions, "note", "") or "")
-        if _thin_regions or _thin_note:
+        # CFDREQ-29: thin spots left unrefined for the wall-function layer are told too (layer_note)
+        if _thin_regions or _thin_note or str(getattr(_thin_regions, "layer_note", "") or ""):
             # the thinnest REAL reading among the regions refined (or found, when none could be):
             # faces lying on each other are filtered out by the probe and never reach this text
             _t_min = (min(float(r.get("thinnest_m") or 0.0) for r in _thin_regions)

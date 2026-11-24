@@ -1250,8 +1250,8 @@ def wall_function_keep_cell(ask: Ask | None, *, bore_D: float, wall_cell_m: floa
                             cap_rel: float = FIRST_CAP_REL) -> float | None:
     """CFDREQ-24, LOCAL REFINEMENT AT THE WALL SUITS THE WALL-FUNCTION LAYER: the smallest cell a local refinement (a
     thin feature's) may put at the wall of an internal flow in wall-function mode - the first layer that will be built
-    there (the conditions' y+ on the bore, capped at `cap_rel` of the wall cell as wall_fit caps it) over
-    WALL_FUNCTION_JUMP. None when there is no such layer: no wall-function y+, a height or stack of the user's, a
+    there (the conditions' y+ on the bore, capped at `cap_rel` of the wall cell as wall_fit caps it) over `cap_rel`
+    (CFDREQ-29: the cell the layer stands on keeps the share of it the wall cell was sized to give it). None when there is no such layer: no wall-function y+, a height or stack of the user's, a
     laminar flow, or a wall that will be resolved."""
     if (ask is None or (ask.treatment != "functions" and not wall_functions_typed(ask)) or ask.y_plus is None
             or ask.first_m is not None or ask.total_m is not None or not bore_D or not wall_cell_m
@@ -1264,7 +1264,12 @@ def wall_function_keep_cell(ask: Ask | None, *, bore_D: float, wall_cell_m: floa
     built = float(h) if ask.treatment is None else min(float(h), float(cap_rel) * float(wall_cell_m))
     if y_plus_of(built, how, float(ask.y_plus)) < WALL_FUNCTIONS_BAND[0] * (1 - 1e-9):
         return None
-    return built / WALL_FUNCTION_JUMP
+    # CFDREQ-29: CELL HEIGHTS DO NOT SHRINK INTO A JUMP GOING AWAY FROM THE WALL. snappyHexMesh makes room for the
+    # layer by pushing the snapped wall into the cell it stands on, so the cell above is about that cell less the
+    # layer: the layer needs a cell at least built / cap_rel tall (the share wall_fit sizes the wall cell by; the cell
+    # above is then 0.67 of the layer). The keep cell was the layer over WALL_FUNCTION_JUMP, which let a 1.57 mm layer
+    # stand on 1.31 mm cells - the cell above read 0.33 of it on 61% of the wall (00157704, batch 7)
+    return built / float(cap_rel)
 
 
 def wall_functions_typed(ask: Ask | None) -> bool:

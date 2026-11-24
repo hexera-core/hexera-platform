@@ -170,7 +170,41 @@ def test_the_keep_cell_is_the_wall_function_layer_over_the_jump_allowed():
     D = 0.04447
     keep = CR.wall_function_keep_cell(acc, bore_D=D, wall_cell_m=0.00342)
     h = CR.y_plus_height(50.0, acc.req["physics"], length_m=D, length_from="the bore")[0]
-    assert keep == pytest.approx(min(h, CR.FIRST_CAP_REL * 0.00342) / CR.WALL_FUNCTION_JUMP)
+    assert keep == pytest.approx(min(h, CR.FIRST_CAP_REL * 0.00342) / CR.FIRST_CAP_REL)     # CFDREQ-29
     # no wall-function layer to keep: a wall that will be resolved, or none asked
     assert CR.wall_function_keep_cell(acc, bore_D=D, wall_cell_m=0.0005) is None
     assert CR.wall_function_keep_cell(None, bore_D=D, wall_cell_m=0.00342) is None
+
+
+# -- CFDREQ-29: no thinner cell above the wall-function layer -----------------------------------------------------------
+
+def test_the_keep_cell_leaves_the_cell_above_the_layer_no_jump():
+    # snappy pushes the wall into the cell the layer stands on: the cell above is about that cell less the layer, so a
+    # cell of the keep size leaves it at least 1 / WALL_FUNCTION_JUMP of the layer (00157704: 1.57 mm on 1.31 mm cells)
+    acc = _ask(typed=False)
+    D, wall = 0.034, 0.002628
+    keep = CR.wall_function_keep_cell(acc, bore_D=D, wall_cell_m=wall)
+    layer = keep * CR.FIRST_CAP_REL
+    assert keep <= wall * (1 + 1e-9)                         # never coarser than the wall cell the plan sized
+    assert (keep - layer) / layer >= 1.0 / CR.WALL_FUNCTION_JUMP
+    assert wall / 2 < keep                                   # the +1 level 00157704 took is under it
+
+
+def test_a_thin_spot_no_reachable_level_captures_is_not_refined_under_a_wall_function_layer():
+    # a 0.03 mm reading under 2.628 mm wall cells: even +4 (0.164 mm) is wider than it, so the refinement captures
+    # nothing and only puts the 1.57 mm layer on cells it cannot stand on
+    plate, cell, keep = _plate(0.00003), 0.002628, 0.001569 / CR.FIRST_CAP_REL
+    plain = thin_refinement_boxes(plate, cell_m=cell)
+    assert plain and plain[0]["level_bump"] >= 1             # no layer to keep: refined as before
+    held = thin_refinement_boxes(plate, cell_m=cell, keep_cell_m=keep)
+    assert not held                                          # no box: the wall keeps its cells
+    assert held.thinnest_m == pytest.approx(0.00003, rel=0.2)
+    assert "were not refined" in held.layer_note and "2.63 mm cells there" in held.layer_note
+    assert "stands under thinner cells" not in held.layer_note
+
+
+def test_a_thin_spot_the_levels_capture_is_still_refined_under_a_wall_function_layer():
+    # CFDREQ-24's plate: 2.2 mm under 3.42 mm cells, +1 gives 1.71 mm - one across, captured - so it is kept
+    held = thin_refinement_boxes(_plate(0.0022), cell_m=0.00342, keep_cell_m=0.00192 / CR.FIRST_CAP_REL)
+    assert held and held[0]["level_bump"] == 1
+    assert "were not refined" not in held.layer_note
