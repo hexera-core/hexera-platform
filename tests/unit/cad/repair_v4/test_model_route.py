@@ -202,6 +202,42 @@ def test_every_route_probe_call_is_metered_into_the_shard_ledger(wire):
     assert ledger.reserved_usd() == 0.0 and ledger.spent_usd() == pytest.approx(entry["usd"])
 
 
+def test_a_salmon_answer_passes_and_a_retry_is_metered_too(wire):
+    """dev6's failure mode through the real router and the shard ledger: "salmon" passes on the first call; a wrong
+    colour then a right one passes on the second - and BOTH calls are settled in the ledger."""
+    model_route.install_router()
+    real = wire.client
+
+    def client_answering(colours):
+        it = iter(colours)
+
+        def client(target):
+            inner = real(target)
+
+            async def create(**kw):
+                wire.requests.append(kw)
+                if "report_colour" in [t["name"] for t in kw.get("tools", [])]:
+                    return SimpleNamespace(
+                        output=[{"type": "function_call", "call_id": "c1", "name": "report_colour",
+                                 "arguments": json.dumps({"colour": next(it)})}],
+                        usage={"input_tokens": 100, "output_tokens": 10, "input_tokens_details": {"cached_tokens": 0},
+                               "output_tokens_details": {"reasoning_tokens": 0}}, status="completed")
+                return await inner.responses.create(**kw)
+            return SimpleNamespace(responses=SimpleNamespace(create=create))
+        return client
+
+    providers.client_for = client_answering(["salmon"])
+    ledger = WaveLedger.for_test(cap_usd=5.0)
+    assert model_route.probe_route_chain([ASTRA], ledger=ledger) == ASTRA
+    assert len(ledger.entries()) == 1
+
+    providers.client_for = client_answering(["blue", "red"])
+    ledger2 = WaveLedger.for_test(cap_usd=5.0)
+    assert model_route.probe_route_chain([ASTRA], ledger=ledger2) == ASTRA
+    assert [e["kind"] for e in ledger2.entries()] == ["route_probe", "route_probe"]
+    assert ledger2.reserved_usd() == 0.0
+
+
 def test_a_probe_the_ledger_has_no_room_for_is_never_sent(wire):
     model_route.install_router()
     ledger = WaveLedger.for_test(cap_usd=0.001)

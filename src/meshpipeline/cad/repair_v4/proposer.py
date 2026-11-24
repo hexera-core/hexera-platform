@@ -776,11 +776,36 @@ def _solid_png(rgb: tuple[int, int, int], size: int = 16) -> bytes:
             + chunk(b"IDAT", zlib.compress(row * size)) + chunk(b"IEND", b""))
 
 
+#: How many probe calls a route gets before it fails: a WRONG ANSWER (an out-of-family colour, or no tool call) is
+#: asked once more, because snapshot v1's dev6 shard was refused on a single answer ("salmon") that an unchanged
+#: retry passed. A provider failure or an exception is not retried here (the router already retried the call).
+PROBE_ATTEMPTS = 2
+#: The probe swatch's side in pixels: large enough that the model sees a solid colour, not a smudge.
+PROBE_IMAGE_PX = 64
+#: Colour NAMES in the red hue family. The probe asks whether the image is SEEN, not whether the model names pure
+#: #FF0000 the way we would: "salmon", "crimson" and "coral" all mean it saw a red swatch. Other hues (orange,
+#: yellow, green, blue, pink...) and anything that is not a colour fail.
+RED_FAMILY = frozenset({
+    "red", "reddish", "scarlet", "crimson", "vermilion", "vermillion", "ruby", "cherry", "carmine", "maroon",
+    "salmon", "coral", "tomato", "brick", "burgundy", "rose", "rosso", "rouge", "cardinal", "cerise", "garnet",
+})
+
+
+def _is_red_family(answer: str) -> bool:
+    import re
+
+    return any(token in RED_FAMILY or token.startswith("red") for token in re.findall(r"[a-z]+", answer.lower()))
+
+
 async def probe_route(route: str, *, call: ModelCall | None = None) -> ProbeResult:
     """The smallest possible check that `route` takes images AND calls tools: one solid-red image, one tool
     (`report_colour`), `tool_choice` required. Cents, and it must pass before a wave is paid for - a model with no
     in-repo usage (gpt-6-astra) has unproven tool-use and image support HERE. Never raises: a failure, including
-    an exception, is a result."""
+    an exception, is a result.
+
+    It passes on any colour name in the red hue family (`RED_FAMILY`), and a wrong answer gets one more call
+    (`PROBE_ATTEMPTS`). Every call goes through `call`, so on a wave shard each one is metered
+    (`model_route.metered_call`)."""
     if call is None:
         from meshpipeline.contracts.model_inference import call_repair_v4_propose
         call = call_repair_v4_propose
@@ -791,25 +816,31 @@ async def probe_route(route: str, *, call: ModelCall | None = None) -> ProbeResu
         {"role": "system", "content": "You are a connectivity probe. Answer only by calling the tool."},
         {"role": "user", "content": [
             {"type": "text", "text": "What single colour is this image? Call report_colour with its name."},
-            {"type": "image_url", "image_url": {"url": _png_data_url(_solid_png((255, 0, 0)))}}]}]
-    try:
-        priced = await call(messages, [tool], route=route, job_id="", tool_choice="required",
-                            cache_key="")
-    except Exception as exc:  # noqa: BLE001 - a probe reports, it does not raise
-        return ProbeResult(False, route, f"{type(exc).__name__}: {exc}")
-    reply: ModelRoundResult = priced.reply
-    if reply.failure_marker:
-        return ProbeResult(False, route, f"provider failure: {reply.failure_marker}")
-    calls = [c for c in reply.tool_calls if c.name == "report_colour"]
-    if not calls:
-        return ProbeResult(False, route, "the model did not call the tool")
-    try:
-        colour = str(json.loads(calls[0].arguments).get("colour", "")).strip().lower()
-    except (ValueError, AttributeError):
-        return ProbeResult(False, route, "the tool call's arguments were not a JSON object")
-    if "red" not in colour:
-        return ProbeResult(False, route, f"the model saw {colour!r}, not red: images are not understood")
-    return ProbeResult(True, route, "tool call and image both understood")
+            {"type": "image_url",
+             "image_url": {"url": _png_data_url(_solid_png((255, 0, 0), PROBE_IMAGE_PX))}}]}]
+    last = ProbeResult(False, route, "no probe call was made")
+    for _attempt in range(PROBE_ATTEMPTS):
+        try:
+            priced = await call(messages, [tool], route=route, job_id="", tool_choice="required",
+                                cache_key="")
+        except Exception as exc:  # noqa: BLE001 - a probe reports, it does not raise
+            return ProbeResult(False, route, f"{type(exc).__name__}: {exc}")
+        reply: ModelRoundResult = priced.reply
+        if reply.failure_marker:
+            return ProbeResult(False, route, f"provider failure: {reply.failure_marker}")
+        calls = [c for c in reply.tool_calls if c.name == "report_colour"]
+        if not calls:
+            last = ProbeResult(False, route, "the model did not call the tool")
+            continue
+        try:
+            colour = str(json.loads(calls[0].arguments).get("colour", "")).strip()
+        except (ValueError, AttributeError):
+            last = ProbeResult(False, route, "the tool call's arguments were not a JSON object")
+            continue
+        if _is_red_family(colour):
+            return ProbeResult(True, route, f"tool call and image both understood (saw {colour!r})")
+        last = ProbeResult(False, route, f"the model saw {colour!r}, not red: images are not understood")
+    return last
 
 
 async def select_route(routes: Sequence[str], *, call: ModelCall | None = None) -> str:
@@ -825,6 +856,7 @@ async def select_route(routes: Sequence[str], *, call: ModelCall | None = None) 
 
 
 __all__ = ["AIProposer", "DECLARE_UNFIXABLE", "IMAGE_KINDS", "MAX_CONSECUTIVE_FAILURES", "MODEL_UNAVAILABLE",
+           "PROBE_ATTEMPTS", "RED_FAMILY",
            "NoUsableRoute",
            "Outcome", "PROPOSE", "ProbeResult", "ProposedCandidate", "UnfixableRegistry", "cache_key_for",
            "estimate_call_usd", "lineage_of", "probe_route", "select_route", "system_prompt", "tool_schemas"]
