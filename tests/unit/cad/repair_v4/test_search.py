@@ -470,7 +470,11 @@ def test_det_generator_sweeps_parameters_per_site_kind() -> None:
     assert sorted(c.params["max_width_mm"] for c in sliver if c.op == "remove_small") == pytest.approx(
         [1e-4 * 100.0, 1e-3 * 100.0, 1e-2 * 100.0])
 
-    assert gen.propose(_state([_site("unlocated", ["F1"])]), 50) == []
+    # B19: a kind the sweep had no rows for is no longer offered NOTHING - it gets every family, aimed at its own
+    # entities. That was the defect: a face-defect file could land at a kind that forbade the op that fixes it.
+    unlocated = gen.propose(_state([_site("unlocated", ["F1"])]), 50)
+    assert unlocated, "an unlocated site naming a face must still be offered the face families"
+    assert all(set(c.targets) <= {"F1"} or not c.targets for c in unlocated), [c.targets for c in unlocated]
     assert len(gen.propose(_state([_site("proximity", ["F1", "F2"])]), 2)) == 2
     # every proposed call is well formed against the real registry
     from meshpipeline.cad.repair_v4.ops import validate_call

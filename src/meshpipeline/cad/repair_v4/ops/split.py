@@ -338,7 +338,7 @@ class SplitByProximity:
     }
 
     def applies_to(self, site: Site) -> bool:
-        return site.kind == "proximity"
+        return sum(1 for e in site.entities if e[:1] == "F") >= 2   # B19: any kind naming 2+ faces
 
     def apply(self, pool: WorkerPool, ws: Workspace, targets: list[StableId], params: dict, *,
               timeout_s: float) -> tuple[Workspace, Diff]:
@@ -361,7 +361,7 @@ class SplitAngle:
     }
 
     def applies_to(self, site: Site) -> bool:
-        return site.kind in ("periodic", "proximity", "self_overlap")
+        return any(e[:1] == "F" for e in site.entities)   # B19: split_angle at any kind naming a face
 
     def apply(self, pool: WorkerPool, ws: Workspace, targets: list[StableId], params: dict, *,
               timeout_s: float) -> tuple[Workspace, Diff]:
@@ -380,7 +380,7 @@ class SplitClosed:
     }
 
     def applies_to(self, site: Site) -> bool:
-        return site.kind == "periodic"
+        return any(e[:1] == "F" for e in site.entities)   # B19: any kind naming a face
 
     def apply(self, pool: WorkerPool, ws: Workspace, targets: list[StableId], params: dict, *,
               timeout_s: float) -> tuple[Workspace, Diff]:
@@ -401,7 +401,7 @@ class SplitContinuity:
     }
 
     def applies_to(self, site: Site) -> bool:
-        return site.kind == "invalid"
+        return any(e[:1] == "F" for e in site.entities)   # B19: split_continuity at any kind naming a face
 
     def apply(self, pool: WorkerPool, ws: Workspace, targets: list[StableId], params: dict, *,
               timeout_s: float) -> tuple[Workspace, Diff]:
@@ -432,7 +432,7 @@ class UnifySameDomain:
     def applies_to(self, site: Site) -> bool:
         # self_overlap too (lane A11): gmsh's overlapping_facets names two surfaces, and where they are two faces on
         # the same geometry, merging JUST those two is the aimed repair - scope "targets", never "all".
-        return site.kind in ("sliver", "self_overlap")
+        return any(e[:1] == "F" for e in site.entities)   # B19: any kind naming a face
 
     def extra_errors(self, targets: list[StableId], params: dict) -> list[str]:
         """validate_call's cross-field rule: targets exist exactly when scope is "targets"."""

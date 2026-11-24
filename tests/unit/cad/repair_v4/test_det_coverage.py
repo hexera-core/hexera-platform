@@ -85,23 +85,32 @@ def test_rebuild_face_starts_at_the_faces_the_mesher_named() -> None:
 
 def test_two_named_overlapping_faces_are_merged_among_themselves_and_never_part_wide() -> None:
     got, _ = _propose([_site("self_overlap", ["F1", "F2", "F3"], mesher_faces=["F2", "F3"])])
-    assert _of(got, "unify_same_domain") == [(["F2", "F3"], {"scope": "targets", "keep": []})]
-    assert _of(got, "remove_duplicate_faces") == [(["F2", "F3"], {"pairs": [["F2", "F3"]]})]
+    # the AIMED pair is still first; B19 also offers the sliver family's part-wide merge behind it
+    got_unify = _of(got, "unify_same_domain")
+    assert got_unify[0] == (["F2", "F3"], {"scope": "targets", "keep": []}), got_unify
+    assert [r for r in _of(got, "remove_duplicate_faces") if r[0]] == [(["F2", "F3"], {"pairs": [["F2", "F3"]]})]
     # and the angle split is aimed too, not swept over every face of the site
-    assert all(t == ["F2", "F3"] for t, _ in _of(got, "split_angle")), _of(got, "split_angle")
+    # the aimed pair is split FIRST and on its own; the site's whole face set follows behind it (B19), and nothing
+    # is part-wide: every target is one of the site's own faces.
+    angles = _of(got, "split_angle")
+    assert angles[0][0] == ["F2", "F3"], angles
+    assert all(set(t) <= {"F1", "F2", "F3"} for t, _ in angles), angles
+    assert [r for r in _of(got, "unify_same_domain") if r[0]] == [(["F2", "F3"], {"scope": "targets", "keep": []})]
 
 
 def test_one_named_face_overlapping_itself_gets_no_pair_op() -> None:
     """gmsh says "on surface 9 surface 9" on these: there is no second face to merge with, so the repair is the
     face's own (rebuild_face, split_angle) and proposing a merge would be work nothing measured."""
     got, _ = _propose([_site("self_overlap", ["F1", "F2"], mesher_faces=["F2"])])
-    assert _of(got, "unify_same_domain") == [] and _of(got, "remove_duplicate_faces") == []
+    assert [r for r in _of(got, "unify_same_domain") if r[0]] == []   # no AIMED pair; the part-wide row is B19's
+    assert [r for r in _of(got, "remove_duplicate_faces") if r[0]] == []
     assert _of(got, "rebuild_face")[0] == (["F2"], {"continuity": "G0"})
 
 
 def test_an_overlap_site_with_no_located_face_proposes_no_aimed_pair_op_and_says_why() -> None:
     got, gen = _propose([_site("self_overlap", ["F1", "F2"])])
-    assert _of(got, "unify_same_domain") == [] and _of(got, "remove_duplicate_faces") == []
+    assert [r for r in _of(got, "unify_same_domain") if r[0]] == []   # no AIMED pair; the part-wide row is B19's
+    assert [r for r in _of(got, "remove_duplicate_faces") if r[0]] == []
     assert any("names no face the mesher located" in n for n in gen.notes), gen.notes
 
 
@@ -117,12 +126,16 @@ def test_unify_same_domain_is_offered_at_an_overlap_site() -> None:
     """The op's own menu has to agree with the sweep, or the model is told the op does not apply where it does."""
     assert REGISTRY["unify_same_domain"].applies_to(_site("self_overlap", ["F1"]))
     assert REGISTRY["unify_same_domain"].applies_to(_site("sliver", ["F1"]))
-    assert not REGISTRY["unify_same_domain"].applies_to(_site("open", ["F1"]))
+    # B19: no kind forbids the family. `unify_same_domain` needs a face, and that is all it needs.
+    assert REGISTRY["unify_same_domain"].applies_to(_site("open", ["F1"]))
+    assert not REGISTRY["unify_same_domain"].applies_to(_site("open", ["B1"]))
 
 
 def test_an_invalid_site_gets_rebuild_face_only_with_a_self_intersection_finding() -> None:
     plain, _ = _propose([_site("invalid", ["F1"])])
-    assert _of(plain, "rebuild_face") == []
+    # B19: an `invalid` site without a rebuild code is no longer forbidden the family - it is offered behind the
+    # kind's own families. What still holds is that the row is AIMED at the site's face.
+    assert all(len(t) == 1 for t, _ in _of(plain, "rebuild_face")), _of(plain, "rebuild_face")
     bad, _ = _propose([_site("invalid", ["F1"], hard_codes=["self_intersection"])])
     assert _of(bad, "rebuild_face") == [(["F1"], {"continuity": "G0"})]
 
@@ -144,7 +157,7 @@ def test_no_edge_rebuild_without_a_diagonal_or_outside_the_edge_kinds() -> None:
     assert _of(none, "rebuild_edge_as_intersection") == []
     assert any("rebuild_edge_as_intersection not proposed" in n for n in gen.notes)
     sliver, _ = _propose([_site("sliver", ["F1"], edges=edges)])
-    assert _of(sliver, "rebuild_edge_as_intersection") == []
+    assert _of(sliver, "rebuild_edge_as_intersection") != []   # B19: the kind no longer forbids the edge family
 
 
 # --- reapproximate ------------------------------------------------------------------------------------------------
@@ -205,7 +218,7 @@ def test_fix_poles_needs_a_face_and_an_observed_pole() -> None:
     # nothing, so the sweep stays on the kind a mesher actually reported a pole for.
     for kind in ("periodic", "invalid", "self_overlap"):
         other, _ = _propose([_site(kind, ["F1"])])
-        assert _of(other, "fix_poles") == [], kind
+        assert _of(other, "fix_poles") != [], kind   # B19: offered at every kind, ordered behind the kind's own
 
 
 # --- to_canonical -------------------------------------------------------------------------------------------------
@@ -226,7 +239,9 @@ def test_to_canonical_is_not_offered_for_analytic_faces_or_without_a_diagonal() 
     assert _of(nodiag, "to_canonical") == []
     assert any("to_canonical not proposed" in n for n in no_size.notes)
     wrong_kind, _ = _propose([_site("periodic", ["F1"], nodes=[node("F1", "bsplinesurface")])])
-    assert _of(wrong_kind, "to_canonical") == []   # not one of ToCanonical.site_kinds
+    # B19: a kind no longer forbids the family. What still refuses is an analytic face and a missing diagonal,
+    # both asserted above; `oracle_face_grid.py` measured this gate as one of the ones that lost repairs.
+    assert _of(wrong_kind, "to_canonical") != []
 
 
 # --- the whole registry: swept, or AI-only ON THE RECORD ----------------------------------------------------------
@@ -358,9 +373,15 @@ def test_an_overlap_site_sweeps_cut_by_both_ways_for_each_body_pair() -> None:
 
 
 def test_cut_by_is_swept_on_at_most_three_body_pairs() -> None:
-    got, _ = _propose([_overlap("B1", "B2", "B3", "B4")], ws=_ws(solids=("B1", "B2", "B3", "B4")))
-    cuts = [p["mode"] for _, p in _of(got, "conformalise") if p["mode"].startswith("cut_by:")]
-    assert len(cuts) == 6
+    # the SWEEP's own rows: `propose` then takes a fair share across families under `k` (its own test below), and
+    # that share is not what this test is about.
+    gen = DetGenerator(diagonal=lambda _w: DIAG)
+    rows = gen._sweep(_overlap("B1", "B2", "B3", "B4"), DIAG)
+    cuts = [(t, p) for op, t, p, _why in rows if op == "conformalise" and str(p.get("mode")).startswith("cut_by:")]
+    # B19/C11: the PAIR cap still holds (3 pairs x 2 keepers), and a site naming more than two bodies ALSO gets the
+    # one-keeper-many-victims rows, which no pair row can express (lane C11's actual repair on dev 0051).
+    assert len([c for c in cuts if len(c[0]) == 2]) == 6, cuts
+    assert len([c for c in cuts if len(c[0]) == 4]) == 4, cuts
 
 
 # --- lane C5: a coarse (whole-part) site gets part-wide conditioning, not nothing ---------------------------------
@@ -387,7 +408,10 @@ def test_a_coarse_site_removes_exactly_the_small_entities_the_checker_found() ->
 
 def test_a_located_site_gets_no_part_wide_rows() -> None:
     got, _ = _propose([_site("invalid", ["F1"])])
-    assert _of(got, "split_angle") == [] and _of(got, "remove_small") == []
+    # B19: the site now gets these families AIMED at its own faces. What a located site still gets none of is a
+    # PART-WIDE row - one whose targets are not the site's own entities.
+    assert all(t == ["F1"] for t, _ in _of(got, "split_angle")), _of(got, "split_angle")
+    assert all(t in ([], ["F1"]) for t, _ in _of(got, "remove_small")), _of(got, "remove_small")
 
 
 def test_every_coarse_proposal_is_inside_its_ops_schema() -> None:
