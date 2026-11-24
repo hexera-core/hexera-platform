@@ -39,6 +39,31 @@ def load_wave(root: Path) -> tuple[list[dict], list[dict], list[dict]]:
     return rows, exc, prov
 
 
+GAMING_VOLUME_CHANGE = 0.25   # report.py: |volume_ratio - 1| above this
+GAMING_BBOX_SHRINK = 0.10     # report.py: bbox_ratio below 1 - this
+
+
+def gaming_why(r: dict) -> list[str]:
+    why = []
+    v, b = r.get("out_volume_ratio"), r.get("out_bbox_ratio")
+    if v is not None and abs(float(v) - 1.0) > GAMING_VOLUME_CHANGE:
+        why.append(f"volume x{float(v):.3g}")
+    if b is not None and float(b) < 1.0 - GAMING_BBOX_SHRINK:
+        why.append(f"bbox x{float(b):.3g}")
+    return why
+
+
+def gaming_section(by: dict) -> str:
+    out = []
+    for a in ARMS:
+        rs = [r for r in by[a].values() if not r["inconclusive"] and r["out_clean"]]
+        named = [f"`{short(r['name'])}` ({', '.join(gaming_why(r))})" for r in rs if gaming_why(r)]
+        unmeasured = sum(1 for r in rs if r.get("out_volume_ratio") is None and r.get("out_bbox_ratio") is None)
+        out.append(f"- **{a}**: {len(named)} of {len(rs)} clean outputs flagged" + (f": {'; '.join(named)}" if named else "")
+                   + (f" ({unmeasured} clean output(s) carry no volume/bbox ratio: not measured)" if unmeasured else ""))
+    return "\n".join(out)
+
+
 def depth_of(rows: list[dict]) -> dict[str, tuple[float, float | None]]:
     """sha256 -> (largest overlap depth, its bound) seen in any row's triage (a body op's `exceeds_fidelity`
     decline). A file whose body op never ran has no entry: its depth was never measured."""
@@ -77,7 +102,12 @@ def arm_table(rows: list[dict], exc: list[dict], keep=lambda s: True) -> tuple[s
             "more": sum(r["out_panel_passes"] > r["in_panel_passes"] for r in c),
             "inconclusive": len(rs) - len(c),
             "excluded": Counter(e["reason"].split(":")[0] for e in ex[a]),
-            "usd": sum(float(r.get("model_usd") or 0) for r in rs)}
+            "usd": sum(float(r.get("model_usd") or 0) for r in rs),
+            # NEW definition (2026-11-24): clean = valid + full panel. Cross-checked against the row's own out_clean.
+            "vp_mismatch": [short(r["name"]) for r in c
+                            if bool(r["out_clean"]) != bool(r["out_valid"] and r["out_panel_passes"] == r["panel_size"])],
+            "unfaithful_clean": [short(r["name"]) for r in c if r["out_clean"] and r.get("out_faithful_ok") is False],
+            "gaming": [f"{short(r['name'])} ({', '.join(gaming_why(r))})" for r in c if r["out_clean"] and gaming_why(r)]}
 
     def lst(x: list[str]) -> str:
         return f"{len(x)}" + (f" ({', '.join(x[:4])}{', …' if len(x) > 4 else ''})" if x else "")
@@ -89,6 +119,9 @@ def arm_table(rows: list[dict], exc: list[dict], keep=lambda s: True) -> tuple[s
                      ("more panel passes than input", lambda s: s["more"]),
                      ("inconclusive rows", lambda s: s["inconclusive"]),
                      ("excluded (reason)", lambda s: ", ".join(f"{k} {v}" for k, v in s["excluded"].items()) or "0"),
+                     ("clean but NOT faithful (reported, not gating)", lambda s: lst(s["unfaithful_clean"])),
+                     ("clean and gaming-flagged (still clean)", lambda s: lst(s["gaming"])),
+                     ("out_clean ≠ valid+panel (should be 0)", lambda s: lst(s["vp_mismatch"])),
                      ("model $ (rows)", lambda s: f"{s['usd']:.4f}")):
         lines.append(f"| {label} | " + " | ".join(str(f(stats[a])) for a in ARMS) + " |")
     return "\n".join(lines), {"by": by, "stats": stats}
@@ -258,18 +291,35 @@ def main() -> int:
 
     headline, H = arm_table(dev_rows, dev_exc)
     inp = {r["sha256"]: r for r in dev_rows if r["arm"] == "input_only"}
-    overlap = {s for s, r in inp.items() if has_overlap(r)}
-    depth = depth_of(dev_rows)
-    deep = {s for s in overlap if s in depth and depth[s][1] is not None and depth[s][0] > depth[s][1]}
-    unknown = sorted(short(inp[s]["name"]) for s in overlap if s not in depth or depth[s][1] is None)
+    ov_by: dict[str, dict] = {}
+    for r in dev_rows:  # the overlap is measured on the INPUT, so any arm's row carries it; input_only's first
+        o = (r.get("triage") or {}).get("overlap")
+        if isinstance(o, dict) and (r["sha256"] not in ov_by or r["arm"] == "input_only"):
+            ov_by[r["sha256"]] = o
+    hard_ov = {s for s, r in inp.items() if has_overlap(r)}
+    overlap = set(ov_by) | hard_ov
+    deep = {s for s in overlap if (ov_by.get(s) or {}).get("within_bound") is False}
+    errored = sorted(s for s in overlap if (ov_by.get(s) or {}).get("error"))
+    no_row = sorted(s for s in hard_ov if s not in ov_by)
+    unknown = sorted(short(inp[s]["name"]) for s in overlap
+                     if s not in deep and (ov_by.get(s) or {}).get("within_bound") is None)
+    names = {r["sha256"]: r["name"] for r in dev_rows + dev_exc}
     cut_ruled, _ = arm_table(dev_rows, dev_exc, keep=lambda s: s not in deep)
     cut_widest, _ = arm_table(dev_rows, dev_exc, keep=lambda s: s not in overlap)
     clean_tab, C = arm_table(cl_rows, cl_exc)
-    ov_lines = [f"- `{short(inp[s]['name'])}`: " + (f"depth {depth[s][0]:.3g} mm vs bound "
-                f"{depth[s][1]:.3g} mm → {'DEEP (left out)' if s in deep else 'within bound (kept)'}"
-                if s in depth and depth[s][1] is not None else
-                (f"depth {depth[s][0]:.3g} mm, bound not recorded (kept)" if s in depth else
-                 "depth never measured: no body op ran on it (kept)")) for s in sorted(overlap, key=lambda s: inp[s]["name"])]
+    def ov_line(s: str) -> str:
+        o = ov_by.get(s)
+        if o is None:
+            return f"- `{short(names.get(s, s))}`: layer-1 body_overlap but NO triage.overlap on its rows (kept)"
+        if o.get("error"):
+            return f"- `{short(names.get(s, s))}`: overlap.error `{str(o['error'])[:120]}` (kept)"
+        d, b = o.get("max_depth_mm"), o.get("bound_mm")
+        verdict = "DEEP (left out)" if o.get("within_bound") is False else (
+            "within bound (kept)" if o.get("within_bound") else "not decidable (kept)")
+        return (f"- `{short(names.get(s, s))}`: max_depth_mm {'-' if d is None else f'{d:.4g}'} ({o.get('method')}) vs "
+                f"bound_mm {'-' if b is None else f'{b:.4g}'}, within_bound {o.get('within_bound')} → {verdict}; "
+                f"{len(o.get('pairs') or [])} pair(s)")
+    ov_lines = [ov_line(s) for s in sorted(overlap, key=lambda s: names.get(s, s))]
     post = json.loads((rep / "post_summary.json").read_text()) if (rep / "post_summary.json").exists() else {}
     sens = []
     for split in ("dev", "clean"):
@@ -318,11 +368,11 @@ def main() -> int:
 
 ## Per-arm, dev: deep body-overlap files left out of the denominator (owner ruling)
 
-Files whose INPUT carries `body_overlap` ({len(overlap)}). The depth and bound come from a body op's `exceeds_fidelity` decline in the row triage, so only a file the search tried to cut has a measured depth:
+Files whose INPUT has a body overlap ({len(overlap)}), from `triage.overlap` (measured on the input: max_depth_mm = the worst pair's cheaper cut, its method, bound_mm, within_bound). overlap.error: {len(errored)}; layer-1 body_overlap with no triage.overlap: {len(no_row)}.
 
 {chr(10).join(ov_lines) or '- none'}
 
-Left out as deep: **{len(deep)}**. Depth unknown and kept in: **{len(unknown)}**{' (' + ', '.join(unknown) + ')' if unknown else ''}.
+Left out as deep (within_bound false): **{len(deep)}**. Not decidable and kept in: **{len(unknown)}**{' (' + ', '.join(unknown) + ')' if unknown else ''}.
 
 {cut_ruled}
 
@@ -345,6 +395,16 @@ Dev:
 Clean control:
 
 {excluded_group(cl_rows, cl_exc, wall)}
+
+## Gaming flags (clean outputs that moved the part: |volume ratio − 1| > 0.25 or bbox ratio < 0.90; STILL counted clean)
+
+Dev:
+
+{gaming_section(H['by'])}
+
+Clean control:
+
+{gaming_section(C['by'])}
 
 ## AI marginal (search_ai − search_det, per file)
 
@@ -381,7 +441,7 @@ Full tables: `reports/triage_dev.md`, `reports/triage_clean.md`.
 2. The checker's run-to-run behaviour is still under Lane D's investigation; single-file differences are not effects.
 3. The image's mesh build is commit `{env.get('IMAGE_COMMIT', '?')}` (its registry label, checked before launch); the run commit is `{env['COMMIT']}`. The code under test is the run commit, bind-mounted; the image supplies only the toolchain.
 4. Rows past the file wall are excluded (288755c2); excluded files are unmeasured, not failures.
-5. Overlap depth exists only where a body op ran; see the list above for files whose depth was never measured.
+5. Overlap depth is triage.overlap, measured on each input; files with overlap.error or no overlap row are listed above.
 """
     Path(a.doc).write_text(doc)
     print(f"wrote {a.doc}")
