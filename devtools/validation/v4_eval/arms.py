@@ -98,8 +98,11 @@ def _layers(v: Any, prefix: str) -> dict:
         # layer 3 gates nothing since the owner's 2026-11-24 decision, so the ROW carries what it measured and
         # report.py flags a clean output that moved the part (`gaming_flags`). None = not measured, never a 1.0.
         fields.update({"out_volume_ratio": None if f is None else _opt_float(f.volume_ratio),
+                       "out_area_ratio": None if f is None else _opt_float(f.area_ratio),
                        "out_bbox_ratio": None if f is None else _opt_float(getattr(f, "bbox_ratio", None)),
-                       "out_max_dev_mm": None if f is None else _opt_float(f.max_dev_mm)})
+                       "out_max_dev_mm": None if f is None else _opt_float(f.max_dev_mm),
+                       "out_bodies_before": None if f is None else f.bodies_before,
+                       "out_bodies_after": None if f is None else f.bodies_after})
     return fields
 
 
@@ -275,8 +278,10 @@ def cheap_full_cells(confirms: list[dict]) -> dict[str, int]:
     """Cheap tier vs full panel over the states this search CONFIRMED (the search's `confirm` trace events carry the
     state's cheap score and the full verdict's `clean`). Since the re-probe runs the full verdict only (plan amendment
     2026-11-23 19:15), this is where the cheap tier's agreement is measured: the tier now exists only to rank search
-    states. A cheap PASS is `score[0] == 1` (valid AND faithful) and `score[1]` = EVERY cheap member passing (the
-    cheap panel is `verdict.assemble.default_members("cheap")`); a full pass is `clean`."""
+    states. A cheap PASS is `score[0] == 1` (layer 1 VALID since the owner's 2026-11-24 decision; it was "valid AND
+    faithful") and `score[1]` = EVERY cheap member passing (the cheap panel is
+    `verdict.assemble.default_members("cheap")`); a full pass is `clean`. The code reads key 0 rather than the
+    layers, so it followed the definition without a change - only this sentence was stale."""
     from meshpipeline.cad.repair_v4.verdict.assemble import default_members
 
     n_cheap = len(default_members("cheap"))

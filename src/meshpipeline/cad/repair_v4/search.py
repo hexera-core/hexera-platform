@@ -243,9 +243,19 @@ def adaptive_cheap(judge: Judge, start_verdict: Any) -> Callable[[Any, Workspace
 def _clean_with(v: Verdict, faithful: FaithfulReport | None) -> bool:
     """`Verdict.clean` for a verdict whose layer 3 was replaced, by the ONE rule (`assemble.clean_of`).
 
-    `Judge.score` key 0 is VALIDITY alone since lane B12 (owner decision 2026-11-24), so a state layer 3 calls
-    unfaithful still ranks on its meshing; deviation is a tie-breaker. What `clean` itself reads is `clean_of`'s rule
-    (not changed by B12)."""
+    INERT TODAY, KEPT AS THE SEAM. Since the owner's 2026-11-24 decision the rule is layer 1 + layer 2, so
+    replacing layer 3 cannot change `clean` and this returns `v.clean` for every input (pinned by
+    `test_clean_with_cannot_change_the_answer_under_the_current_definition`). It stays because it is the one place
+    that re-derives clean after the declared-edits re-run: a future change to the definition lands in `clean_of`
+    and flows through here, instead of the search growing a second copy of the rule.
+
+    `Judge.score` key 0 is VALIDITY alone, so a state layer 3 calls unfaithful still ranks on its meshing and
+    deviation is only a tie-breaker; lane B12 removed the op-level fidelity caps under the same decision.
+
+    The deadlock this used to escalate is settled by it too: a solid-less original always reports
+    `volume_changed` / `body_count_changed`, which used to force `faithful.ok` False, score key 0 to 0 and `clean`
+    to False forever. Layer 3 gates nothing now, so stage keep/rollback and search ranking agree without the local
+    exemption that `stages._judge` carried (deleted with the gate that needed it)."""
     return clean_of(
         tier=v.tier, inconclusive=v.inconclusive, valid=v.valid, panel=v.panel, faithful=faithful
     )

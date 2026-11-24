@@ -148,8 +148,11 @@ class ArmRow:
     #: them to flag a clean output that moved the part. None = not measured (no extent, or a row written before
     #: they existed), counted as unmeasured and never as "within the limits".
     out_volume_ratio: float | None = None
+    out_area_ratio: float | None = None
     out_bbox_ratio: float | None = None
     out_max_dev_mm: float | None = None
+    out_bodies_before: int | None = None
+    out_bodies_after: int | None = None
 
     @property
     def clean(self) -> bool:
@@ -607,7 +610,9 @@ def _gaming_block(rows: Sequence[ArmRow], arms: Sequence[str]) -> dict[str, Any]
     for a in arms:
         mine = [r for r in rows if r.arm == a and r.counts and r.clean]
         named = [{"name": r.name, "sha256": r.sha256, "source": r.source, "volume_ratio": r.out_volume_ratio,
-                  "bbox_ratio": r.out_bbox_ratio, "max_dev_mm": r.out_max_dev_mm, "why": ", ".join(w)}
+                  "area_ratio": r.out_area_ratio, "bbox_ratio": r.out_bbox_ratio, "max_dev_mm": r.out_max_dev_mm,
+                  "bodies": None if r.out_bodies_before is None else [r.out_bodies_before, r.out_bodies_after],
+                  "why": ", ".join(w)}
                  for r, w in ((r, gaming_why(r)) for r in mine) if w]
         out[a] = {"files": len(named), "clean_reviewed": len(mine),
                   "unmeasured": sum(1 for r in mine if r.out_volume_ratio is None and r.out_bbox_ratio is None),

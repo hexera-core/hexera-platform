@@ -885,3 +885,20 @@ def test_a_row_without_a_layer_three_measurement_carries_none_not_a_number() -> 
     fields = arms_mod._layers(v, "out")
     assert fields["out_volume_ratio"] is None and fields["out_bbox_ratio"] is None
     assert fields["out_max_dev_mm"] is None and fields["out_faithful_ok"] is False
+
+
+def test_the_row_carries_every_fidelity_quantity_the_decision_says_to_report() -> None:
+    """Owner 2026-11-24: deviation, volume/area change, bbox and body count are REPORTED on every row."""
+    from types import SimpleNamespace
+
+    import arms as arms_mod
+
+    f = SimpleNamespace(ok=False, max_dev_mm=4.2, bound_mm=0.1, reasons=["volume_changed"], volume_ratio=3.0,
+                        area_ratio=1.1, bbox_ratio=0.4, diag_after_mm=40.0, bodies_before=1, bodies_after=7,
+                        declared_added=[], declared_removed=[])
+    v = SimpleNamespace(valid=SimpleNamespace(ok=True, hard=[]), panel=[], faithful=f, clean=True, tier="full")
+    out = arms_mod._layers(v, "out")
+    assert out["out_area_ratio"] == 1.1
+    assert out["out_bodies_before"] == 1 and out["out_bodies_after"] == 7
+    # and the input side stays as it was: these are the OUTPUT's numbers
+    assert "in_area_ratio" not in arms_mod._layers(v, "in")
