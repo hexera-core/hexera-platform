@@ -414,6 +414,9 @@ WAVES: dict[str, WaveDef] = {w.name: w for w in (
     # --split-file). NORMAL waves, not checkpoint: checkpoint slots are limited to three.
     WaveDef("snap_v2_dev", "normal", "dev", _ALL[:4]),
     WaveDef("snap_v2_clean", "normal", "clean", _ALL[:4]),
+    # FAST-DEV v1 (the fast loop): the frozen 15 + 5 files of corpora/v4/fast_dev_v1, SEARCH ARMS ONLY, normal waves
+    WaveDef("fast_v1_dev", "normal", "dev", ("search_det", "search_ai")),
+    WaveDef("fast_v1_clean", "normal", "clean", ("search_det", "search_ai")),
 )}
 
 

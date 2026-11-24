@@ -241,3 +241,17 @@ def test_the_firewall_reads_a_differently_named_file_by_what_it_says_it_is(tmp_p
 
 def test_v3_is_the_one_arm_whose_spend_is_not_metered() -> None:
     assert [a for a, x in ev.ARMS.items() if not x.spend_metered] == ["v3_meshability_pass_ai"]
+
+
+def test_the_fast_loop_waves_run_the_search_arms_only_on_the_frozen_fast_dev_v1_files() -> None:
+    import json
+    from pathlib import Path
+
+    root = Path(ev.__file__).resolve().parents[1] / "corpora/v4/fast_dev_v1"
+    for name, split, n in (("fast_v1_dev", "dev", 15), ("fast_v1_clean", "clean", 5)):
+        w = ev.WAVES[name]
+        assert (w.wave_type, w.split, w.arms) == ("normal", split, ("search_det", "search_ai"))
+        body = json.loads((root / f"FAST_{split}_v1.json").read_text())
+        assert body["split"] == split and len(body["files"]) == n
+    dev = {f["sha256"][:12] for f in json.loads((root / "FAST_dev_v1.json").read_text())["files"]}
+    assert not {"4c1fc7d5579d", "e63710eae340"} <= dev, "the duplicated part is in FAST-DEV v1 twice"
