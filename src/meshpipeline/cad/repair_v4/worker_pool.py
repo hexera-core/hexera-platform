@@ -22,6 +22,7 @@ without OCP (the hermetic unit tier) the worker still starts and runs the non-OC
 
 from __future__ import annotations
 
+import contextvars
 import logging
 import multiprocessing
 import os
@@ -32,7 +33,7 @@ import time
 from dataclasses import dataclass
 from multiprocessing.connection import Connection
 from multiprocessing.process import BaseProcess
-from typing import Literal
+from typing import Any, Literal
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +93,34 @@ class _Worker:
         self.process.join(5)
         if close_conn:
             self.conn.close()
+
+
+class Deadline:
+    """A deadline that can be moved EARLIER while calls wait on it (the parallel panel's doom clock, D23): `at` is a
+    time.monotonic() instant, or None for no deadline beyond each call's own timeout."""
+
+    def __init__(self) -> None:
+        self.at: float | None = None
+
+
+#: the deadline a call made from this context must also honour (set per member thread by `panel.run_panel`)
+CALL_DEADLINE: contextvars.ContextVar[Deadline | None] = contextvars.ContextVar("pool_call_deadline", default=None)
+_POLL_SLICE_S = 0.5
+
+
+def _poll_until(conn: Any, end: float) -> bool:
+    """`conn.poll` until `end` or the context's `CALL_DEADLINE`, whichever is first; True when a reply is waiting.
+    Without a context deadline this is one `conn.poll(end - now)`, exactly as before."""
+    cut = CALL_DEADLINE.get()
+    if cut is None:
+        return bool(conn.poll(max(0.0, end - time.monotonic())))
+    while True:
+        now = time.monotonic()
+        stop = end if cut.at is None else min(end, cut.at)
+        if now >= stop:
+            return bool(conn.poll(0))
+        if conn.poll(min(_POLL_SLICE_S, stop - now)):
+            return True
 
 
 class WorkerPool:
@@ -186,8 +215,12 @@ class WorkerPool:
                 worker.next_id += 1
                 req_id = worker.next_id
                 worker.conn.send((req_id, fn_name, payload))
-                if not worker.conn.poll(timeout_s):
-                    status, error = "timeout", f"{fn_name} exceeded {timeout_s}s; worker killed"
+                if not _poll_until(worker.conn, start + timeout_s):
+                    cut = CALL_DEADLINE.get()
+                    if cut is not None and cut.at is not None and time.monotonic() < start + timeout_s:
+                        status, error = "timeout", f"{fn_name} cut at the doomed cap; worker killed"
+                    else:
+                        status, error = "timeout", f"{fn_name} exceeded {timeout_s}s; worker killed"
                     slot = self._replace(worker)
                     clean = True
                 else:
