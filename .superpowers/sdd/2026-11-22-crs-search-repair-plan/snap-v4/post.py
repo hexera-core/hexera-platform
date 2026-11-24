@@ -35,9 +35,13 @@ def run(cmd: list[str], stem: Path) -> int:
     return rc
 
 
+#: the held-out run's extra report flags (lane C14): set once in main from --frozen-commit / --markers-dir
+REPORT_EXTRA: list[str] = []
+
+
 def report(src: Path, wave: str, n: int, split: Path, plan: Path, stem: Path) -> int:
     return run([sys.executable, str(V4 / "report.py"), "--from", str(src), "--wave", wave, "--shards", str(n),
-                "--split", str(split), "--shard-plan", str(plan), "--json", f"{stem}.json"], stem)
+                "--split", str(split), "--shard-plan", str(plan), "--json", f"{stem}.json", *REPORT_EXTRA], stem)
 
 
 def triage(src: Path, n: int, split: Path, stem: Path) -> int:
@@ -66,7 +70,13 @@ def main() -> int:
     for k in ("out", "splits", "manifest"):
         p.add_argument(f"--{k}", required=True)
     p.add_argument("--merged-prefix", default="merged")
+    p.add_argument("--frozen-commit", default="", help="the held-out run's frozen commit (report.py refuses without)")
+    p.add_argument("--markers-dir", default="", help="a FileMarkerStore holding the held_out slot, to VERIFY it")
     a = p.parse_args()
+    if a.frozen_commit:
+        REPORT_EXTRA.extend(["--frozen-commit", a.frozen_commit])
+    if a.markers_dir:
+        REPORT_EXTRA.extend(["--markers-dir", a.markers_dir])
     out, sp = Path(a.out), Path(a.splits)
     rep = out / "reports"
     rep.mkdir(exist_ok=True)

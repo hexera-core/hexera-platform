@@ -516,3 +516,101 @@ def test_a_real_wave_split_into_groups_and_regrouped_reports_the_same_numbers(tm
     both = [json.loads((tmp_path / f"{s}.json").read_text()) for s in ("baseline", "merged")]
     assert both[0]["warnings"] == both[1]["warnings"]
     assert both[0]["status"] == both[1]["status"]
+
+
+# ------------------------------------------------------------------ lane C14: the sealed held-out run
+
+def _heldout(fx: dict, tmp_path: Path) -> None:
+    """Relabel the fixture's dev split as the held-out split (the 'dev' ROLE carries it, prep --dev-split-name)."""
+    body = json.loads(Path(fx["dev"]).read_text())
+    body["split"] = "heldout"
+    Path(fx["dev"]).write_text(json.dumps(body))
+    # prior rows are what calibrates the size model; the held-out files themselves have none, as in the real run
+    (tmp_path / "prior" / "snap-x-dev" / "shard-1-of-1" / "rows.json").write_text(
+        json.dumps([{**r, "sha256": "e" + r["sha256"][1:]} for r in json.loads(
+            (tmp_path / "prior" / "snap-x-dev" / "shard-1-of-1" / "rows.json").read_text())]))
+    ls = Path(fx["ls"]).read_text().splitlines()
+    ls += [ln.replace("/inputs/d", "/inputs/e") for ln in ls if "/inputs/d" in ln]   # the calibration files' sizes
+    Path(fx["ls"]).write_text("\n".join(ls) + "\n")
+
+
+HO_ONE_GROUP = "heldout:input_only,staged,search_det,search_ai:dev clean:input_only,staged,search_det,search_ai:clean"
+
+
+def _run_prep_heldout(tmp_path: Path, fx: dict, groups: str) -> tuple[int, dict, dict, str]:
+    out = tmp_path / "out"
+    cmd = [sys.executable, "-I", str(HERE / "prep.py"), "--code", str(REPO), "--profile", "heldout",
+           "--dev-split", str(fx["dev"]), "--clean-split", str(fx["clean"]), "--dev-split-name", "heldout",
+           "--dev-wave", "heldout_v4", "--clean-wave", "snap_v2_clean", "--total-usd", "300",
+           "--inputs-ls", str(fx["ls"]), "--prior-rows", str(fx["prior"]), "--groups", groups,
+           "--regions", "us-central1:88:us-central1-b", "--target-min", "60", "--vcpu-per-shard", "1.5",
+           "--out", str(out)]
+    got = subprocess.run(cmd, capture_output=True, text=True)
+    manifest = json.loads((out / "launch_manifest.json").read_text()) if (out / "launch_manifest.json").exists() else {}
+    plan = json.loads((out / "vm_plan.json").read_text()) if (out / "vm_plan.json").exists() else {}
+    return got.returncode, manifest, plan, got.stdout + got.stderr
+
+
+def test_heldout_per_arm_groups_are_refused_because_the_slot_is_one(tmp_path):
+    fx = _fixture(tmp_path)
+    _heldout(fx, tmp_path)
+    groups = ("ho_ai:search_ai:dev ho_det:search_det:dev ho_st:staged:dev ho_in:input_only:dev "
+              "clean:input_only,staged,search_det,search_ai:clean")
+    rc, _, _, log = _run_prep_heldout(tmp_path, fx, groups)
+    assert rc != 0 and "the held-out split must run as ONE group" in log, log
+
+
+def test_heldout_as_one_group_is_planned_on_the_held_out_cap_and_type(tmp_path):
+    fx = _fixture(tmp_path)
+    _heldout(fx, tmp_path)
+    rc, manifest, plan, log = _run_prep_heldout(tmp_path, fx, HO_ONE_GROUP)
+    assert rc == 0, log
+    assert manifest["wave_types"] == {"dev": "held_out", "clean": "normal"}
+    assert manifest["split_names"] == {"dev": "heldout", "clean": "clean"}
+    units = [u for v in plan["vms"] for u in v["units"]]
+    ho = [u for u in units if u["group"] == "heldout"]
+    assert ho and all(u["wave"] == "heldout_v4" and u["wave_type"] == "held_out" and u["split_name"] == "heldout"
+                      for u in ho)
+    n = ho[0]["n"]
+    # the slice is the HELD_OUT cap's ($250 / n), never the normal $50 / n
+    assert all(u["cap_usd"] <= 250.0 / n + 1e-9 for u in ho)
+
+
+def test_a_wrong_wave_for_the_heldout_split_is_refused(tmp_path):
+    fx = _fixture(tmp_path)
+    _heldout(fx, tmp_path)
+    out = tmp_path / "out"
+    cmd = [sys.executable, "-I", str(HERE / "prep.py"), "--code", str(REPO), "--profile", "heldout",
+           "--dev-split", str(fx["dev"]), "--clean-split", str(fx["clean"]), "--dev-split-name", "heldout",
+           "--dev-wave", "snap_v2_dev", "--clean-wave", "snap_v2_clean", "--total-usd", "300",
+           "--inputs-ls", str(fx["ls"]), "--prior-rows", str(fx["prior"]), "--groups", HO_ONE_GROUP,
+           "--regions", "us-central1:88:us-central1-b", "--target-min", "60", "--out", str(out)]
+    got = subprocess.run(cmd, capture_output=True, text=True)
+    assert got.returncode != 0 and "held_out type" in got.stdout + got.stderr
+
+
+def test_regroup_keeps_the_heldout_groups_own_wave_id_and_its_slot(tmp_path):
+    """The bucket slot holds the GROUP's wave id; a renamed merged id would make the held-out report refuse."""
+    out, splits = tmp_path / "out", tmp_path / "splits"
+    splits.mkdir()
+    shas = [f"{i:064x}" for i in range(3)]
+    wid = "snap-heldout-heldout-TS"
+    rows = [[_row(s, a) for s in shas for a in ("input_only", "staged", "search_det", "search_ai")]]
+    _group_run(out, wid, 1, rows, arms=list(regroup.ARMS4), ledger="shard", slot="slot/held_out/1",
+               wave="heldout_v4")
+    for d in (out / wid).iterdir():   # the held-out shard's own type and split
+        p = json.loads((d / "PROVENANCE.json").read_text())
+        p.update(wave_type="held_out", split="heldout")
+        (d / "PROVENANCE.json").write_text(json.dumps(p))
+    man = tmp_path / "m.json"
+    man.write_text(json.dumps({"label": "heldout", "ts": "TS", "waves": {"dev": "heldout_v4"},
+                               "groups": {"heldout": {"split": "dev", "wave_id": wid, "arms": list(regroup.ARMS4),
+                                                      "n_shards": 1}}}))
+    got = subprocess.run([sys.executable, "-I", str(HERE / "regroup.py"), "--out", str(out), "--splits", str(splits),
+                          "--manifest", str(man)], capture_output=True, text=True)
+    assert got.returncode == 0, got.stdout + got.stderr
+    summary = json.loads((out / "regroup_summary.json").read_text())["dev"]
+    assert summary["wave_id"] == wid
+    for d in (out / summary["merged_dir"]).iterdir():
+        prov = json.loads((d / "PROVENANCE.json").read_text())
+        assert prov["wave_id"] == wid and prov["slot"] == "slot/held_out/1"

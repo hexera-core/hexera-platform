@@ -390,6 +390,37 @@ def walls(by: dict, exc: list[dict], wall: float) -> str:
     return "; ".join(out)
 
 
+def _q(xs: list[float]) -> str:
+    """median [min, max] of a list, or '-'."""
+    if not xs:
+        return "-"
+    xs = sorted(xs)
+    return f"{xs[len(xs) // 2]:.4g} [{xs[0]:.4g}, {xs[-1]:.4g}]"
+
+
+def fidelity_section(by: dict) -> str:
+    """Per arm, the layer-3 quantities of every CONCLUSIVE output and of the CLEAN ones apart (lane C14: the held-out
+    report must show what a 'clean' cost the part): volume ratio, area ratio, bbox ratio (optimal boxes since C13 c),
+    max deviation, body count changed, and outputs layer 3 called unfaithful. Faithfulness never gates clean."""
+    lines = ["| arm | outputs | volume ratio | area ratio | bbox ratio | max dev mm | body count changed | "
+             "unfaithful (reported) |", "|---|---|---|---|---|---|---|---|"]
+    for a in ARMS:
+        c = [r for r in by[a].values() if not r["inconclusive"]]
+        for label, rs in (("all conclusive", c), ("clean only", [r for r in c if r["out_clean"]])):
+            def vals(k: str) -> list[float]:
+                return [float(r[k]) for r in rs if r.get(k) is not None]
+            bodies = [f"{short(r['name'])} {r.get('out_bodies_before')}→{r.get('out_bodies_after')}" for r in rs
+                      if r.get("out_bodies_before") is not None and r.get("out_bodies_after") is not None
+                      and r["out_bodies_before"] != r["out_bodies_after"]]
+            unf = sum(1 for r in rs if r.get("out_faithful_ok") is False)
+            lines.append(f"| {a} ({label}) | {len(rs)} | {_q(vals('out_volume_ratio'))} | {_q(vals('out_area_ratio'))} | "
+                         f"{_q(vals('out_bbox_ratio'))} | {_q(vals('out_max_dev_mm'))} | {len(bodies)}"
+                         + (f" ({', '.join(bodies[:4])}{', …' if len(bodies) > 4 else ''})" if bodies else "")
+                         + f" | {unf} |")
+    return "\n".join(lines) + ("\n\nmedian [min, max] over the outputs that carry the ratio; an output with none "
+                               "(not measured, e.g. layer 1 failed) is left out of that column, not counted as 1.")
+
+
 def main() -> int:
     p = argparse.ArgumentParser()
     p.add_argument("--run", required=True)
@@ -480,19 +511,27 @@ def main() -> int:
                          f"| {r['arm']} | {r['in_clean']} | {r['out_clean']} | {r['in_panel_passes']}→{r['out_panel_passes']} | "
                          f"{r['inconclusive']} | {float(r.get('model_usd') or 0):.4f} |\n" for r in rs)
                      + "".join(f"| {e['arm']} | excluded: {e['reason'][:80]} | | | | |\n" for e in ex))
-    doc = f"""# CRS v4 dev snapshot {env['LABEL']} (PROVISIONAL)
+    L = env.get("SPLIT_LABEL", "dev")           # 'heldout' in the sealed run (lane C14)
+    held = L == "heldout"
+    frozen = env.get("FROZEN_COMMIT", "")
+    title = (f"# CRS v4 HELD-OUT run {env['LABEL']}: ONCE ONLY, frozen `{frozen or '?'}`, NEVER for tuning"
+             if held else f"# CRS v4 dev snapshot {env['LABEL']} (PROVISIONAL)")
+    proj = man.get("projection") or {}
+    vm_cost = (f"projected {proj.get('vcpu_hours', '?')} vCPU-h ≈ ${proj.get('vm_usd', '?')} on {proj.get('vms', '?')} VMs "
+               f"({proj.get('vcpu', '?')} vCPU)" if proj else "")
+    doc = f"""{title}
 
-**PROVISIONAL.** {len(inp)} dev + {len({r['sha256'] for r in cl_rows} | {e['sha256'] for e in cl_exc})} clean files. Written by `snap-v1r/analyze.py` from the collected run; every table is computed from the rows.
+**{'SEALED HELD-OUT: this is the one measurement nobody tuned against. Nothing in it may feed a threshold, prompt, recipe or memory (evalspec.refuse_heldout_for_tuning).' if held else 'PROVISIONAL.'}** {len(inp)} {L} + {len({r['sha256'] for r in cl_rows} | {e['sha256'] for e in cl_exc})} clean files. Written by `snap-v1r/analyze.py` from the collected run; every table is computed from the rows.
 
 | | |
 |---|---|
 | Code | `{env['COMMIT']}` (resolved by launch.sh from `{env.get('COMMIT_ARG', '?')}`) |
 | Image | `{env.get('IMAGE_REF', '?')}`, local id `{image}`. Label `org.opencontainers.image.revision` = `{env.get('IMAGE_COMMIT', '?')}`: the image's MESH BUILD (toolchain) is that commit; the RUN commit above is the code bind-mounted at `/w`, and the two may differ |
 | VM | `{vm.get('name', '?')}`, {env['MACHINE']}, {vm.get('zone', '?')}, reaper max-run {vm.get('max_run', '?')} → DELETE; created {vm.get('created', '?')}, deleted {vm.get('deleted', '?')} |
-| Splits | dev `{man['splits']['dev']['path']}` (sha256 `{man['splits']['dev']['sha256'][:16]}…`, {man['splits']['dev']['files']} files); clean `{man['splits']['clean']['path']}` (sha256 `{man['splits']['clean']['sha256'][:16]}…`, {man['splits']['clean']['files']} files) |
+| Splits | {L} `{man['splits']['dev']['path']}` (sha256 `{man['splits']['dev']['sha256'][:16]}…`, {man['splits']['dev']['files']} files); clean `{man['splits']['clean']['path']}` (sha256 `{man['splits']['clean']['sha256'][:16]}…`, {man['splits']['clean']['files']} files) |
 | Waves | `{wd['dev']['wave']}` ({wd['dev']['n_shards']} shards, files {wd['dev']['files_per_shard']}), `{wd['clean']['wave']}` ({wd['clean']['n_shards']} shards, files {wd['clean']['files_per_shard']}); cost-balanced plans (digests `{wd['dev']['plan_digest'][:12]}`, `{wd['clean']['plan_digest'][:12]}`) |
 | Flags | `--ops {env['OPS']}` (APPLIED ops; from {env.get('OPS_SOURCE', '?')}), `--file-usd-cap {env['FILE_USD_CAP']}`, `--route {env['ROUTE']}`, `--h-mm auto`, `--workers 1`, file wall {wall:.0f} s (the commit's default), verdict cache `{env['CACHE']}` (fresh) |
-| Model caps | dev {wd['dev']['caps_usd']}, clean {wd['clean']['caps_usd']}: total **${man['total_caps_usd']}** |
+| Model caps | {L} {wd['dev']['caps_usd']}, clean {wd['clean']['caps_usd']}: total **${man['total_caps_usd']}** |
 | Shard exits | {', '.join(f'{k}={v}' for k, v in rcs.items())}{'; retried once after a probe refusal: ' + ', '.join(retried) if retried else ''} |
 
 {notes}
@@ -502,15 +541,15 @@ def main() -> int:
 
 | report | result |
 |---|---|
-| dev | {report_line(rep, 'report_dev')} |
+| {L} | {report_line(rep, 'report_dev')} |
 | clean | {report_line(rep, 'report_clean')} |
 {chr(10).join(sens)}
 
-## Per-arm, dev: body-overlap files counted as failures (headline)
+## Per-arm, {L}: body-overlap files counted as failures (headline)
 
 {tcv}{headline}
 
-## Per-arm, dev: deep body-overlap files left out of the denominator (owner ruling)
+## Per-arm, {L}: deep body-overlap files left out of the denominator (owner ruling)
 
 Files whose INPUT has a body overlap ({len(overlap)}), from `triage.overlap` (measured on the input: max_depth_mm = the worst pair's cheaper cut, its method, bound_mm, within_bound). overlap.error: {len(errored)}; layer-1 body_overlap with no triage.overlap: {len(no_row)}.
 
@@ -532,13 +571,13 @@ Widest version, for reference: every body-overlap input left out ({len(overlap)}
 
 ## Harness crashes (by name; a crash is not a repair failure)
 
-{crash_section(dev_exc, "Dev")}
+{crash_section(dev_exc, L)}
 
 {crash_section(cl_exc, "Clean control")}
 
 ## Excluded files, each its own group (not in any rate; the ruling on the exclusion rate is pending)
 
-Dev:
+{L}:
 
 {excluded_group(dev_rows, dev_exc, wall)}
 
@@ -548,13 +587,21 @@ Clean control:
 
 ## Gaming flags (clean outputs that moved the part: |volume ratio − 1| > 0.25 or bbox ratio < 0.90; STILL counted clean)
 
-Dev:
+{L}:
 
 {gaming_section(H['by'])}
 
 Clean control:
 
 {gaming_section(C['by'])}
+
+## Fidelity, per arm ({L}; layer 3, reported, never gating)
+
+{fidelity_section(H['by'])}
+
+Clean control:
+
+{fidelity_section(C['by'])}
 
 ## AI marginal (search_ai − search_det, per file)
 
@@ -572,7 +619,7 @@ Clean control:
 
 {cheap_full(H['by'])}
 
-## Triage (triage.py, dev): leads
+## Triage (triage.py, {L}): leads
 
 {leads(rep / 'triage_dev.md')}
 
@@ -584,12 +631,12 @@ Full tables: `reports/triage_dev.md`, `reports/triage_clean.md`.
 
 - **Ledger ${led_total:.4f}** (route probes are metered in the shard ledgers on this code). {led_text}
 - **Wave wall {f'{wave_min:.1f}' if wave_min is not None else '?'} min** (launch to last shard). Shard minutes: {', '.join(f'{k} {v}' for k, v in sorted(shard_min.items()))}.
-- Per-file arm wall, dev (excluded at the {wall:.0f} s wall), median / mean / p90: {walls(H['by'], dev_exc, wall)}.
-- VM ~{vm.get('hours', '?')} h ≈ ${vm.get('usd', '?')}.
+- Per-file arm wall, {L} (excluded at the {wall:.0f} s wall), median / mean / p90: {walls(H['by'], dev_exc, wall)}.
+- VM ~{vm.get('hours', '?')} h ≈ ${vm.get('usd', '?')}{('; ' + vm_cost) if vm_cost else ''}.
 
 ## Caveats
 
-1. PROVISIONAL split ({man['splits']['dev']['files']} dev files); small and stratified by source, not by defect.
+1. {'The sealed held-out split' if held else 'PROVISIONAL split'} ({man['splits']['dev']['files']} {L} files); small and stratified by source, not by defect.
 2. The checker's run-to-run behaviour is still under Lane D's investigation; single-file differences are not effects.
 3. The image's mesh build is commit `{env.get('IMAGE_COMMIT', '?')}` (its registry label, checked before launch); the run commit is `{env['COMMIT']}`. The code under test is the run commit, bind-mounted; the image supplies only the toolchain.
 4. Rows past the file wall are excluded (288755c2); excluded files are unmeasured, not failures.

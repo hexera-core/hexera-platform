@@ -37,6 +37,9 @@ echo "staged=$n bad=$bad" > $T/out/$VM_NAME.STAGE_DONE
 if [ "$bad" != 0 ]; then echo "input staging failed: $bad of $n" > $T/out/$VM_NAME.ABORTED; date -u +%FT%TZ > $T/out/$VM_NAME.VMDONE; exit 1; fi
 
 prov() { # wave wave_id n
+  # NOTE (lane C14): this store is FRESH, so plan_wave's slot claim here is local - it only shapes the provenance.
+  # For the held-out wave the DURABLE, once-only claim of model-ledger/slot/held_out/1 is made by launch.sh against
+  # the bucket before any VM exists, and the report verifies it (--markers-dir); the content written here is the same.
   sudo docker run --rm -v $T/code:/w:ro -w /w -e PYTHONPATH=/w/src $IMG python -c "
 import sys,tempfile; sys.path.insert(0,'/w/devtools/validation/v4_eval')
 import evalspec as e, json
@@ -45,8 +48,8 @@ m=FileMarkerStore(tempfile.mkdtemp())
 print(json.dumps(e.plan_wave(e.wave('$1'),wave_id='$2',n_shards=$3,markers=m).provenance(),sort_keys=True))" 2>/dev/null
 }
 
-run_unit() { # group shard n split wave arms cap
-  local group=$1 shard=$2 n=$3 split=$4 wave=$5 arms=$6 cap=$7
+run_unit() { # group shard n split wave arms cap wave_type split_name
+  local group=$1 shard=$2 n=$3 split=$4 wave=$5 arms=$6 cap=$7 wtype=${8:-normal} sname=${9:-$4}
   local wid="snap-$LABEL-$group-$TS"
   local name="$VM_NAME.$group-$shard"
   local P; P=$(prov $wave $wid $n)
@@ -57,10 +60,10 @@ run_unit() { # group shard n split wave arms cap
     --env-file $T/secret.env $IMG \
     python devtools/validation/v4_eval/run_arm.py \
     --mode arms --arms "$arms" --h-mm auto ${OPS:+--ops $OPS} --workers 1 --cache-uri $CACHE --commit $COMMIT \
-    --image $IMAGE_ID --machine-type $MACHINE --wave $wave --split $split \
+    --image $IMAGE_ID --machine-type $MACHINE --wave $wave --split $sname \
     --split-file /eval/splits/$split.json --shard-plan /eval/splits/plan_$group.json --shard ${shard}/${n} \
     --inputs /eval/inputs --out /eval/out --plan-provenance "$P" --route $ROUTE --wave-id $wid \
-    --wave-type normal --n-shards $n --ledger-path /eval/ledger/$wid-s$shard.jsonl --marker-bucket $BUCKET \
+    --wave-type $wtype --n-shards $n --ledger-path /eval/ledger/$wid-s$shard.jsonl --marker-bucket $BUCKET \
     --model-usd-cap $cap --file-usd-cap $FILE_USD_CAP ${FILE_TIMEOUT_S:+--file-timeout-s $FILE_TIMEOUT_S} \
     ${SEARCH_WALL_S:+--search-wall-s $SEARCH_WALL_S} > $T/out/$name.log 2>&1
   echo $? > $T/out/$name.rc; date -u +%FT%TZ > $T/out/$name.end
@@ -95,10 +98,11 @@ plan=json.load(open('$T/vm_plan.json'))
 vm=next((v for v in plan['vms'] if v['name']=='$VM_NAME'), None)
 if vm is None: sys.exit('no units for $VM_NAME in vm_plan.json')
 for u in vm['units']:
-    print(u['group'], u['shard'], u['n'], u['split'], u['wave'], ','.join(u['arms']), f\"{u['cap_usd']:.2f}\")
+    print(u['group'], u['shard'], u['n'], u['split'], u['wave'], ','.join(u['arms']), f\"{u['cap_usd']:.2f}\",
+          u.get('wave_type', 'normal'), u.get('split_name', u['split']))
 " > $T/units.txt || { echo "no units" > $T/out/$VM_NAME.ABORTED; date -u +%FT%TZ > $T/out/$VM_NAME.VMDONE; exit 1; }
-while read -r group shard n split wave arms cap; do
-  unit_with_retry "$group" "$shard" "$n" "$split" "$wave" "$arms" "$cap" &
+while read -r group shard n split wave arms cap wtype sname; do
+  unit_with_retry "$group" "$shard" "$n" "$split" "$wave" "$arms" "$cap" "$wtype" "$sname" &
   UNIT_PIDS="${UNIT_PIDS:-} $!"
 done < $T/units.txt
 wait $UNIT_PIDS          # the units only (the sampler is stopped right after)

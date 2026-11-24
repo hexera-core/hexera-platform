@@ -55,13 +55,15 @@ def main() -> int:
                         "plan_digest": got["plan_digest"],
                         "caps_usd": [c for g in model_groups for c in g.get("caps_usd", [])]}
     view_man = {"file_timeout_s": man["file_timeout_s"], "splits": man["splits"], "waves": waves,
+                "projection": man.get("projection") or {},
                 "total_caps_usd": round(sum(sum(w["caps_usd"]) for w in waves.values()), 2)}
     (view / "launch_manifest.json").write_text(json.dumps(view_man, indent=1))
     vms = man.get("vms", [])
     machines = ", ".join(f"{v['name']} ({v['machine']}, {v['region']})" for v in vms)
     (view / "run.env").write_text("\n".join([
         f"LABEL={env.get('LABEL')}", f"COMMIT={env.get('COMMIT')}", f"COMMIT_ARG={env.get('COMMIT')}",
-        f"IMAGE_REF={env.get('IMAGE_REF')}", "IMAGE_COMMIT=1d6ed735f7284609a269ca314c15ff6b0e359d4b",
+        f"IMAGE_REF={env.get('IMAGE_REF')}", f"IMAGE_COMMIT={env.get('IMAGE_COMMIT') or '1d6ed735f7284609a269ca314c15ff6b0e359d4b'}",
+        f"SPLIT_LABEL={(man.get('split_names') or {}).get('dev', 'dev')}", f"FROZEN_COMMIT={env.get('FROZEN_COMMIT', '')}",
         f"MACHINE={len(vms)} VMs: {machines}", f"OPS={env.get('OPS') or '(the commit default)'}",
         f"FILE_USD_CAP={env.get('FILE_USD_CAP')}", f"ROUTE={env.get('ROUTE')}", f"CACHE={env.get('CACHE')}",
         f"WAVE_ID_DEV={regroup['dev']['merged_dir']}", f"WAVE_ID_CLEAN={regroup['clean']['merged_dir']}"]) + "\n")

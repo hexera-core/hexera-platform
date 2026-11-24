@@ -399,6 +399,10 @@ WAVES: dict[str, WaveDef] = {w.name: w for w in (
     WaveDef("dev_search", "normal", "dev", ("search_det", "search_ai")),
     WaveDef("dev_checkpoint", "checkpoint", "dev", _ALL[:4]),
     WaveDef("heldout", HELDOUT_WAVE_TYPE, HELDOUT, _ALL),
+    # Lane C14: the held-out run as the sprint ends it - the FOUR v4 arms every snapshot ran (no v3 arm), one
+    # held_out slot, the held_out cap. `heldout` above keeps the v3 arm for whoever still wants it; only ONE of the
+    # two can ever run, because both take the single `slot/held_out/1`.
+    WaveDef("heldout_v4", HELDOUT_WAVE_TYPE, HELDOUT, _ALL[:4]),
     WaveDef("clean_control", "normal", "clean", _ALL),
     # Task 49 (T2 smoke): the three arms that call no model, over a split; search_ai is run separately on a subset
     # under `dev_search`, because a wave must have a row for every (file, arm).
