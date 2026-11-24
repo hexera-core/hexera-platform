@@ -113,12 +113,12 @@ def test_an_overlap_quad_past_nastran_is_cut_into_two_triangles_and_nothing_else
 
 def test_a_kept_mesh_past_nastran_is_held_for_the_all_shell_mesh(tmp_path, monkeypatch):
     sub = {"shell_quality": {"valid": True, "within_nastran": False}, "solid_quality": {"valid": True}}
-    monkeypatch.setattr(sr, "_guarded", lambda *a, **k: ("joined", sub))
-    rec = {"extract_s": 1.0}
-    held: dict = {}
-    assert sr._thick_kept(tmp_path, tmp_path, None, {}, rec, mm_per_unit=1.0, source="", target=None,
-                          requirements=None, held=held) is False
-    assert held["joined"] == "joined" and held["sub"] is sub
+    # MIXED-26: the all-shell mesh is made beside the attempt, so the weighing happens once the attempt is in
+    monkeypatch.setattr(sr, "_wait", lambda *a, **k: ("joined", sub))
+    rec = {"extract_s": 1.0, "made": True, "quality": {"valid": True, "within_nastran": True}}
+    h = {"t0": time.time(), "budget": 300.0, "done_s": 5.0}
+    assert sr._kept_finish(tmp_path, h, {}, rec, {}, plain_s=10.0, source="", requirements=None) is False
+    assert rec["made"] is True and "kept_solid" not in rec       # the all-shell mesh stays delivered
     assert rec["kept_solid_why"] == sr.KEPT_NOT.format(why=sr.KEPT_PAST)
     assert sr._plain_inside({"made": True, "quality": {"valid": True, "within_nastran": True}})
     assert not sr._plain_inside({"made": True, "quality": {"valid": True, "within_nastran": False}})
