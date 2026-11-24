@@ -1,7 +1,7 @@
 # Lane C18: does the staged healer need a full layer-1 check per transaction?
 
-Measured on 782 stored v4 staged-arm OP transactions (parent -> child BREP, 178 files, 169 transactions on clean
-controls) and 1,015 of their 1,098 states, each judged as today (STEP export as `step_for` writes it, read back,
+FINAL: measured on 837 stored v4 staged-arm OP transactions (parent -> child BREP, 178 files, 187 transactions on
+clean controls) and 1,050 of their 1,098 states (48 hit the 3 h container limit; 0 errors), each judged as today (STEP export as `step_for` writes it, read back,
 `check_shape`; plus the BREP's own `check_shape`, per-solid rules and per-pair overlap, each timed). Harness:
 `st_record.py` / `st_analyse.py` (lane C, VM `lanec18-st-1740`); raw records `gs://dev-crsv3-transfer-224734058693/eval/lane-c18/results/`.
 
@@ -9,16 +9,16 @@ controls) and 1,015 of their 1,098 states, each judged as today (STEP export as 
 
 | | seconds | share |
 |---|---|---|
-| today, no memo | 18,282 | |
-| after A17 | 7,863 | 100% |
-| - Booleans on CHANGED solids / pairs (memo misses) | 4,073 | 52% |
-| - non-Boolean rules + soft findings, x2 (read + round trip) | 2,582 | 33% |
-| - STEP export + read, x2 | 1,208 | 15% |
+| today, no memo | 19,347 | |
+| after A17 | 8,197 | 100% |
+| - Booleans on CHANGED solids / pairs (memo misses) | 4,210 | 51% |
+| - non-Boolean rules + soft findings, x2 (read + round trip) | 2,720 | 33% |
+| - STEP export + read, x2 | 1,267 | 15% |
 
 ## RETIRED: "judge the BREP, export once at the stage boundary"
 
 **Do not re-propose this without new evidence.** Layer 1 on the BREP and layer 1 on the STEP re-read are NOT the same
-judgement. On 795 dev states, VALIDITY differs on 8 and the code set on 26 more (0 of 220 clean-control states):
+judgement. On 819 dev states, VALIDITY differs on 8 (0 of 231 clean-control states):
 
 | file | state | BREP says | STEP re-read says (the judgement) |
 |---|---|---|---|
@@ -41,8 +41,8 @@ solids A17 already does the Booleans, which are the cost.
 
 ## BUILT: P1 - a stage that changes no solid reuses the standing state's layer-1 report
 
-- 570 of 782 op transactions (73%; 138 on clean controls) change no solid's geometry_key + tolerances.
-- On ALL 570 the STEP-read layer-1 check is IDENTICAL to the standing state's: same findings, ENTITIES included,
+- 613 of 837 op transactions (73%) change no solid's geometry_key + tolerances.
+- On ALL 613 the STEP-read layer-1 check is IDENTICAL to the standing state's: same findings, ENTITIES included,
   same solid count. 0 exceptions, clean controls included.
 - The gate is A17's own per-solid key (`valid_kernel._shape_memo_key`: geometry_key + tolerances + reversed faces),
   called, not copied, plus the face count and the free-shell count (the whole-shape facts an op can change without
@@ -51,7 +51,7 @@ solids A17 already does the Booleans, which are the cost.
   (7ab61ea7d641, 3e7c2a1197c3, 6aa493da5bbf, 6109dea12cc5): A17's key differs on 6109dea12cc5 (re-judged); on the
   other three layer 1's whole-shape answer is identical, so reuse is correct
   (`tests/native/test_native_repair_v4_c18_layer1_reuse.py`).
-- Modelled: 7,863 -> 5,501 s after A17 (-30%), an UPPER bound: the numbers are per op and a stage is a chain. The
+- Modelled: 8,197 -> 5,683 s after A17 (-31%), an UPPER bound: the numbers are per op and a stage is a chain. The
   row now says, per arm that ran the healer, how many stages were judged and how many reused layer 1
   (`triage.stages.layer1`), the measured companion of the 73%.
 - Gate cost: ~1.4 s per big state, against 65-185 s for the check it replaces on the same files.

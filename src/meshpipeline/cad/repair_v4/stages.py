@@ -534,8 +534,8 @@ def layer1_gate(pool: WorkerPool, brep: str) -> str | None:
     key (geometry_key + tolerances + reversed faces) over every solid, plus the face and free-shell counts. None when
     it cannot be computed, which never reuses anything.
 
-    MEASURED (C18, 782 stored v4 staged op transactions, 169 on clean controls): 570 change no solid's key; on ALL
-    570 the STEP-read full layer-1 check returned the IDENTICAL findings, entities included, and the same solid
+    MEASURED (C18, 837 stored v4 staged op transactions, 187 on clean controls): 613 change no solid's key; on ALL
+    613 the STEP-read full layer-1 check returned the IDENTICAL findings, entities included, and the same solid
     count. The 4 transactions where a per-solid BRepCheck flipped under orient_and_close with an unchanged geometry
     key: A17's key differs on 1 (re-judged), and on the other 3 layer 1's whole-shape answer is identical (reuse is
     correct) - `tests/native/test_native_repair_v4_c18_layer1_reuse.py` names all four."""
