@@ -637,6 +637,44 @@ def _gaming_block(rows: Sequence[ArmRow], arms: Sequence[str]) -> dict[str, Any]
             "arms": out}
 
 
+#: The worked example the valid-not-clean group is headed by (lane C12 on snap-v4-202611240851): search_ai DELIVERED
+#: a VALID state with 0.07% of the part left. score() ranks validity first, so it outranked the intact invalid input.
+VALID_UNCLEAN_EXAMPLE = ("0051_00510567 search_ai (v4): volume x0.00069, area x0.0036, bbox x0.281, max dev 40.0 mm, "
+                         "bodies 8->4 - VALID, delivered as improved, and flagged nowhere before this group existed")
+
+
+def _valid_unclean_gaming_block(rows: Sequence[ArmRow], arms: Sequence[str]) -> dict[str, Any]:
+    """VALID but NOT clean outputs of the REPAIR arms that moved the part a long way, NAMED with their numbers (lane
+    C12). Their own group, NOT clean-rate gaming: these rows are in no clean rate at all. The gaming rule used to read
+    clean outputs only, so a delivered near-empty part (VALID_UNCLEAN_EXAMPLE) was flagged nowhere. Reporting only:
+    nothing here changes a count, a verdict or what is delivered. input_only is skipped (its output is the input)."""
+    out: dict[str, Any] = {}
+    for a in arms:
+        if a == "input_only":
+            continue
+        mine = [r for r in rows if r.arm == a and r.counts and not r.clean and r.out_valid]
+        named = [{"name": r.name, "sha256": r.sha256, "source": r.source, "volume_ratio": r.out_volume_ratio,
+                  "area_ratio": r.out_area_ratio, "bbox_ratio": r.out_bbox_ratio, "max_dev_mm": r.out_max_dev_mm,
+                  "bodies": None if r.out_bodies_before is None else [r.out_bodies_before, r.out_bodies_after],
+                  "why": ", ".join(w)}
+                 for r, w in ((r, gaming_why(r)) for r in mine) if w]
+        out[a] = {"files": len(named), "valid_unclean_reviewed": len(mine),
+                  "unmeasured": sum(1 for r in mine if r.out_volume_ratio is None and r.out_bbox_ratio is None),
+                  "names": sorted(named, key=lambda x: str(x["sha256"]))}
+    return {"counted_as": "VALID but NOT clean: in NO clean rate; a delivered output that moved the part a long way",
+            "limits": {"volume_change": GAMING_VOLUME_CHANGE, "bbox_shrink": GAMING_BBOX_SHRINK},
+            "example": VALID_UNCLEAN_EXAMPLE, "arms": out}
+
+
+def _numbers(x: Mapping[str, Any]) -> str:
+    """A flagged row's own numbers, never a bare flag."""
+    def f(v: Any, fmt: str) -> str:
+        return "-" if v is None else format(v, fmt)
+    b = x.get("bodies")
+    return (f"volume x{f(x['volume_ratio'], '.3g')}, area x{f(x['area_ratio'], '.3g')}, bbox x{f(x['bbox_ratio'], '.3g')}, "
+            f"max dev {f(x['max_dev_mm'], '.3g')} mm, bodies {'-' if not b else f'{b[0]}->{b[1]}'}")
+
+
 def _paired_columns(by_sha: Mapping[str, dict[str, ArmRow]], blocks: dict[str, dict[str, Any]],
                     n_files: int) -> dict[str, Any]:
     """The PAIRED marginal: each measured arm's clean rate over the files EVERY measured arm judged. Per-arm
@@ -831,6 +869,7 @@ def build_report(result: WaveResult, *, previous: Mapping[str, Any] | None = Non
         "files": result.n_files, "files_measured_strata": n_main, "arms": blocks, "paired_set": paired_set,
         "declined_stratum": _declined_block(stratum, len(result.declined)),
         "gaming_flags": _gaming_block(result.rows, wave.arms),
+        "gaming_flags_valid_unclean": _valid_unclean_gaming_block(result.rows, wave.arms),
         "excluded_stratum": _excluded_block(result.excluded, result.n_files, result.walls),
         "marginals": {"ai_marginal (search_ai - search_det)": _paired(by_sha, "search_ai", "search_det", blocks),
                       "deterministic_marginal (staged - input_only)": _paired(by_sha, "staged", "input_only", blocks)},
@@ -933,7 +972,20 @@ def render_text(rep: dict[str, Any]) -> str:
         if b["files"]:
             out += [f"- {a}: {b['files']} of {b['clean_reviewed']} clean"
                     + (f" ({b['unmeasured']} unmeasured)" if b["unmeasured"] else "")]
-            out += [f"  - {x['name']}: {x['why']}" for x in b["names"]]
+            out += [f"  - {x['name']}: {x['why']} ({_numbers(x)})" for x in b["names"]]
+    gv = rep.get("gaming_flags_valid_unclean")
+    if gv is not None:
+        vtotal = sum(b["files"] for b in gv["arms"].values())
+        out += ["", f"## Gaming flags on VALID-NOT-CLEAN delivered outputs ({vtotal} row(s); same limits). "
+                    f"{gv['counted_as']}. NOT clean-rate gaming: these rows are in no clean rate.",
+                f"Worked example: {gv['example']}."]
+        for a, b in gv["arms"].items():
+            if b["files"]:
+                out += [f"- {a}: {b['files']} of {b['valid_unclean_reviewed']} valid-not-clean"
+                        + (f" ({b['unmeasured']} unmeasured)" if b["unmeasured"] else "")]
+                out += [f"  - {x['name']}: {_numbers(x)}" for x in b["names"]]
+        if not vtotal:
+            out += ["- none in this wave"]
     ds = rep["declined_stratum"]
     if ds["files"]:
         out += ["", f"## Declined stratum ({ds['files']} files; expected outcome: {ds['expected_outcome']}). NOT a "
