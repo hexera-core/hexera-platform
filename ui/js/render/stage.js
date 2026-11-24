@@ -173,6 +173,10 @@ export const Stage = {
       g.innerHTML=`<div class="who">${esc(who||'You')}</div>${att}${String(text||'').trim()||!att?`<div class="bub">${mdBlock(text)}</div>`:''}`;}
     else g.innerHTML=`<div class="who">${esc(who||'Hexera')}</div><div class="txt">${mdBlock(prettyText(displayText(text)))}</div>`;
     this.col().appendChild(g);this.scrollBottom(role==='user');return g;},
+  // A REPLY ON ITS WAY (NOTE-18): a quiet "Reading…" where it will be; the composer removes it when it comes
+  pending(){this.clearEmpty();const g=document.createElement('div');g.className='im assistant im-pending';
+    g.innerHTML='<div class="who">Hexera</div><div class="txt" role="status">Reading…</div>';
+    this.col().appendChild(g);this.scrollBottom(true);return g;},
   // THE CLOSING ACCOUNT of a finished run, in the same voice as every other turn (render/outcome.js)
   outcome(text,opts){this.clearEmpty();const g=document.createElement('div');g.className='im assistant';
     g.innerHTML=`<div class="who">Hexera</div><div class="txt">${outcomeHtml(displayText(text),opts)}</div>`;
@@ -215,25 +219,19 @@ export const Stage = {
       return `<div class="rc-ck${good?'':(unknown?' unk':' bad')}">`
         +`<span class="ic">${good?'✓':(unknown?'?':'✕')}</span>`
         +`<span>${esc(c.label)}${c.detail?` <span class="rc-d">${esc(c.detail)}</span>`:''}</span></div>`;}).join('');
-    // THE USER'S OWN NOTES, exactly as typed (a pasted spec keeps its lines), and the box that adds
-    // one. Guidance for the mesh, never a check: the plan above is what is approved.
-    // A short list, then one quiet line that grows as it is used: Enter adds, Shift+Enter starts a line.
-    // a note's attached pictures and files under its words (shell/attach.js opens them)
-    const items=(b.user_notes||[]).map(n=>`<li class="rc-note">${esc(n.text)}${attHtml(n.attachments,n.faces,'')}</li>`).join('');
-    const notes=items?`<ul class="rc-notes-list">${items}</ul>`:'';
-    const box=addNote?`<div class="rc-notes-box"><div class="rc-notes-row"><textarea class="rc-notes-in" rows="1" maxlength="20000"
-        aria-label="Add a note" placeholder="Add a note, or paste a spec…"></textarea>
-        <button type="button" class="rc-notes-add" disabled>Add</button></div>
-        <span class="rc-notes-msg" role="status"></span></div>`:'';
-    // THE PLAN STEP'S ONE BUTTON: the plan stands for approval (the server says so with its line), so
-    // Proceed sits at the card's foot, under the notes - a press says "Proceed" in the chat, as a typed yes would
-    const goRow=b.proceed_ask&&go?'<div class="rc-fin"><button type="button" class="gc-proceed rc-go">Proceed</button></div>':'';
+    // THE PLAN STEP IS A CONVERSATION (NOTE-18): requirements are typed in the chat box, each answered there, and
+    // the card keeps ONE live list of what will be applied (the checklist, `.rc-pm`) - the user's own words are
+    // already in the conversation, so they are not listed again here
+    const live=!!(b.proceed_ask||(b.user_notes||[]).length);
+    // THE PLAN STEP'S ONE BUTTON, alone at the card's foot, right-aligned on its content edge: a press says
+    // "Proceed" in the chat, as a typed "go" would
+    const goRow=b.proceed_ask&&go?'<div class="rc-go-row"><button type="button" class="gc-proceed rc-go">Proceed</button></div>':'';
     const html=`<div class="who">Hexera · your request, as understood</div>
       <div class="req-card${(b.checks||[]).every(c=>c.status==='pass')?' ok':''}">
         ${thermal?`<div class="rc-h">Job sheet</div><p class="rc-sheet">${esc(b.job_sheet)}</p>`
           :'<div class="rc-h">Mesh plan</div>'}${rows}
         ${ck?`<div class="rc-h rc-h2">Checked</div>${ck}`:''}
-        ${notes||box?`<div class="rc-h rc-h2">Your notes</div>${notes}${box}<div class="rc-pm"></div>`:''}
+        ${live?'<div class="rc-pm"></div>':''}
         ${goRow}
       </div>`;
     if(this._briefEl){this._briefEl.innerHTML=html;}
@@ -244,25 +242,6 @@ export const Stage = {
     this._partMatches(b.part_matches,parts,'');
     const goBtn=this._briefEl.querySelector('.rc-go');
     if(goBtn)goBtn.onclick=()=>{if(goBtn.disabled)return;goBtn.disabled=true;go();};
-    const add=this._briefEl.querySelector('.rc-notes-add');
-    const inp=this._briefEl.querySelector('.rc-notes-in');
-    if(add&&inp){
-      const msg=this._briefEl.querySelector('.rc-notes-msg');
-      // the box is one line until it holds more: it grows with what is typed or pasted
-      // Add takes words, or a file attached / a face picked with none (the chip row under the box, shell/chips.js)
-      const carries=()=>{const p=chips.payload('notes');return p.attachments.length+p.faces.length>0;};
-      const fit=()=>{inp.style.height='';if(inp.value)inp.style.height=Math.min(inp.scrollHeight+2,240)+'px';
-        add.disabled=!(inp.value.trim()||carries());};
-      inp.addEventListener('input',fit);
-      chips.mount('notes',this._briefEl.querySelector('.rc-notes-row'),{input:inp,onChange:fit});
-      const send=async()=>{
-        const text=inp.value;if(!(text.trim()||carries())||chips.busy('notes')||add.dataset.busy)return;
-        add.dataset.busy='1';add.disabled=true;msg.textContent='';
-        const extra=chips.payload('notes');
-        try{this._briefSig='';await addNote(text,extra);chips.clear('notes');}
-        catch(e){delete add.dataset.busy;add.disabled=false;msg.textContent=(e&&e.message)||'The note was not saved.';}};
-      add.onclick=send;
-      inp.addEventListener('keydown',(e)=>{if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing){e.preventDefault();send();}});}
     this.scrollBottom();},
 
   /* THE PARTS YOUR NOTES MEAN, under the notes, before the yes: a row per size request ("frame rail · 3–4 mm")
@@ -324,7 +303,6 @@ export const Stage = {
       const r=(this._pm&&this._pm.rows||[]).find(x=>(x.parts||[]).includes(id));
       if(r){this._pmOpen=r.phrase;this._pmHoverPart=null;draw();}};
     el.onclick=(e)=>{
-      if(e.target.closest('.rc-fin-btn')){this._pmFinalize();return;}
       const m=this._pm;if(!m||m.status!=='done')return;
       const item=e.target.closest('.rc-pm-item');if(!item||item.classList.contains('face'))return;
       const i=Number(item.dataset.phrase);
@@ -351,7 +329,7 @@ export const Stage = {
     const m=this._pm;
     if(!m){el.innerHTML='';this._pmDrop();return;}     // nothing to read: nothing at all
     if(!el.querySelector('.rc-pm-top'))
-      el.innerHTML='<div class="rc-pm-top"></div><div class="rc-pm-body" hidden><div class="rc-pm-h">In your notes</div><div class="rc-pm-rows"></div><span class="rc-pm-msg" role="status"></span></div>';
+      el.innerHTML='<div class="rc-pm-top"></div><div class="rc-pm-body" hidden><div class="rc-pm-h">What will be applied</div><div class="rc-pm-rows"></div><span class="rc-pm-msg" role="status"></span></div>';
     const top=el.querySelector('.rc-pm-top'),body=el.querySelector('.rc-pm-body'),rowsEl=el.querySelector('.rc-pm-rows');
     top.innerHTML=this._pmHtml(m);
     const has=!!m&&((m.rows||[]).length+(m.unsure||[]).length>0);
@@ -371,21 +349,7 @@ export const Stage = {
     if(this._pmFig&&!this._pmFigOut&&this._pmFig.parentNode!==body)body.insertBefore(this._pmFig,rowsEl);
     rowsEl.innerHTML=this._pmRowsHtml(m);},
 
-  /* FINALIZE NOTES: the parts the words name are read now (the first answer and every note); the card follows */
-  async _pmFinalize(){
-    const parts=this._pmParts,btn=this._briefEl&&this._briefEl.querySelector('.rc-fin-btn');
-    if(!parts||!parts.finalize||(btn&&btn.disabled))return;
-    if(btn)btn.disabled=true;
-    let got=null;
-    try{got=await parts.finalize();}
-    catch(e){if(btn){btn.disabled=false;const msg=this._briefEl.querySelector('.rc-fin-msg');if(msg)msg.textContent=(e&&e.message)||'Not started. Try again.';}return;}
-    this._pmAskDue=true;
-    this._pm=got&&got.status!=='none'?got:null;
-    if(this._pmDraw)this._pmDraw();
-    if(this._pm&&(this._pm.status==='reading'||this._pm.status==='waiting'))this._pmPoll();
-    else this._pmAsked();},
-
-  // the approval question, said once under the card when a Finalize notes has been read
+  // the approval question, said once under the card when a reading the user waited on has landed
   _pmAsked(){
     if(!this._pmAskDue)return;
     this._pmAskDue=false;
@@ -402,8 +366,7 @@ export const Stage = {
 
   _pmHtml(m){
     if(m&&m.status==='reading')return '<div class="rc-pm-wait" role="status">Reading your notes…</div>';
-    if(m&&m.status==='ready')return '<div class="rc-fin"><span class="rc-fin-msg" role="status"></span>'
-      +'<button type="button" class="gc-proceed rc-fin-btn">Finalize notes</button></div>';
+    // NOTE-18: nothing to press - each message is read as it is sent, and a "go" reads what is left first
     // what the notes were read as on a flow mesh (NOTES-CFD-1): the CFD reader's own lines, "From your notes: ..."
     if(m&&m.status==='done'&&(m.lines||[]).length)
       return `<ul class="rc-pm-lines">${m.lines.map(l=>`<li>${esc(l)}</li>`).join('')}</ul>`;

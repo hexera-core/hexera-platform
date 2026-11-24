@@ -253,10 +253,11 @@ th,td{border-color:var(--border)}
 .pv-tip{position:absolute;left:0;top:0;z-index:2;padding:3px 8px;border:1px solid var(--border);
   border-radius:var(--r-sm,6px);background:var(--surface-raised);color:var(--text);font:500 var(--fs-sm)/1.35 var(--sans);
   white-space:nowrap;pointer-events:none;box-shadow:0 2px 8px rgba(0,0,0,.25)}
-/* Finalize notes: under the notes box, the one step that reads the parts the words name */
-.req-card .rc-fin{display:flex;align-items:center;justify-content:flex-end;gap:12px;padding:2px 0 8px}
-.req-card .rc-fin-msg{color:var(--danger);font-size:var(--fs-sm)}
-.req-card .rc-fin-msg:empty{display:none}
+/* THE PLAN'S ONE PROCEED (NOTE-18): alone at the card's foot, right-aligned on the content edge (16px, as the rows) */
+.req-card .rc-go-row{display:flex;justify-content:flex-end;margin-top:10px;padding:12px 16px 2px;
+  border-top:1px solid var(--divider)}
+/* a reply on its way: quiet, the way a status line is */
+.im.im-pending .txt{color:var(--text-faint);font-size:var(--fs-sm)}
 /* an older reading's rows wait, quiet, while the notes changed since */
 .req-card .rc-pm-body.stale .rc-pm-rows{opacity:.55}
 /* a row per size request: its colour, its words and its size, its parts as small chips under it. Hovered it lights

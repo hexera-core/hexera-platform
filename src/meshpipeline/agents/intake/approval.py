@@ -106,7 +106,7 @@ def classify(message: str, engine: str = "") -> str:
 #: question about it, a hedge, a turn that settled nothing - says exactly this, so the step reads the
 #: same every time. A typed yes still starts the run; the button sends "Proceed". No "above" or
 #: "below": a plan redone in place is drawn above the line, a new one under it.
-PROCEED_ASK = "Here's the plan. Add any notes, then press Proceed."
+PROCEED_ASK = "Here's the plan. Tell me any mesh requirements here, then say go or press Proceed."
 #: Said above the line when the user's last message was read as a change and changed nothing -
 #: a chatty yes ("ha, we're going in circles - yes, go ahead!") is not a bare yes, and without this
 #: the user saw the same plan again with no idea why.

@@ -206,11 +206,13 @@ def test_a_face_and_a_file_go_together_a_refused_send_keeps_both_and_the_face_lo
       // RELOADED: the stored turn carries both, and draws both
       const turn = carried({role: 'user', content: '2 mm here', attachments: [{id: 'a100000000000000', kind: 'image', name: 'bore.png'}],
                             faces: [{id: 'Face_12', label: 'Face 12 · round Ø15 mm'}]});
-      // A SAVED NOTE that carried a face shows the same chip in the notes list
+      // THE CHECKLIST ROW for words sent with a face shows the same chip (NOTE-18: the notes list is gone)
       Stage.brief({purpose: 'structural', engine: 'gmsh', user_notes: [{text: '2 mm here', attachments: [],
-                   faces: [{id: 'Face_12', label: 'Face 12 · round Ø15 mm'}]}]}, async () => {});
+                   faces: [{id: 'Face_12', label: 'Face 12 · round Ø15 mm'}]}],
+                   part_matches: {status: 'done', unsure: [], rows: [{phrase: 0, quote: '2 mm here', words: '2 mm here',
+                   size: '2 mm', parts: [], picked: true, faces: [{id: 'Face_12', label: 'Face 12 · round Ø15 mm'}]}]}}, null);
       await sleep(0);
-      const note = document.querySelector('.rc-note');
+      const note = document.querySelector('.rc-pm-item.face');
       return {before, refused, sent, done, turn, onNote: note ? look(note) : []};
     })()""".replace("__S__", sid), timeout=60)
     face = {"id": "Face_12", "label": "Face 12 · round Ø15 mm"}

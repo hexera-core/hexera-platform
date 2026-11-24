@@ -1,6 +1,6 @@
-# Responsibility: Verify a user can attach pictures and files to the chat box and the notes box - the paper-clip,
+# Responsibility: Verify a user can attach pictures and files to the chat box - the paper-clip,
 #   Ctrl+V of a screenshot, a drop on the box - see each as a chip, take one off, hear the limits in one plain line,
-#   send a picture alone, and see what they sent in the conversation and the notes.
+#   send a picture alone, and see what they sent in the conversation.
 # Boundaries: the console's own modules in the page; the server's routes are stubbed in-page. It reads the DOM.
 from __future__ import annotations
 
@@ -165,36 +165,6 @@ def test_chips_tell_a_listener_of_every_change_a_silent_clear_too(live):
       return heard;
     })()""")
     assert out == [["lx", 1], ["lx", 2], ["lx", 1], ["lx", 0]], out
-
-
-def test_the_notes_box_takes_a_picture_and_the_notes_show_what_was_attached(live):
-    out = live.evaluate("(async () => {" + SETUP + """
-      const sent = [];
-      const add = async (t, extra) => { sent.push([t, extra]);
-        Stage.brief({purpose: 'structural', engine: 'gmsh', user_notes: [{text: t, attachments: [
-          {id: 'a100000000000000', kind: 'image', name: 'bore.png'}, {id: 'b200000000000000', kind: 'text', name: 'spec.pdf'}]}]}, add); };
-      Stage.brief({purpose: 'structural', engine: 'gmsh', user_notes: []}, add);
-      await sleep(0);
-      const box = document.querySelector('.rc-notes-in'), addBtn = document.querySelector('.rc-notes-add');
-      const clip = document.querySelector('.rc-notes-row > .attach-clip');
-      paste(box, [pic('bore.png')]);
-      await A.idle('notes');
-      const chipsNow = row('notes'), enabled = !addBtn.disabled;
-      addBtn.click();
-      await sleep(50); await sleep(150);
-      const note = document.querySelector('.rc-notes-list li.rc-note');
-      return {clip: !!clip, chipsNow, enabled, sent, after: row('notes'),
-              thumb: note && note.querySelector('.att-img img') && note.querySelector('.att-img img').src,
-              file: note && note.querySelector('.att-file') && note.querySelector('.att-file').textContent,
-              clipAgain: !!document.querySelector('.rc-notes-row > .attach-clip')};
-    })()""")
-    assert out["clip"] and len(out["chipsNow"]) == 1 and out["chipsNow"][0]["thumb"], out
-    assert out["enabled"], "Add stayed off with only a picture"
-    assert out["sent"] == [["", {"attachments": ["a100000000000000"], "faces": []}]], out
-    assert out["after"] == [], out
-    assert out["thumb"] and out["thumb"].startswith("blob:") and out["file"] == "spec.pdf", out
-    assert out["clipAgain"], "the redrawn notes box lost its paper-clip"
-    assert_clean(live, "attaching in the notes box")
 
 
 def test_a_reloaded_conversation_shows_a_picture_sent_alone(live):

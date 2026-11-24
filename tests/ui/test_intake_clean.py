@@ -78,7 +78,9 @@ def test_the_engine_is_chosen_with_no_card_and_the_plan_names_it_in_one_line(liv
     assert_clean(live, "the plan with its engine line")
 
 
-def test_a_note_that_says_use_cfmesh_is_said_in_the_chat_for_the_user(live):
+def test_an_engine_named_at_the_plan_step_is_typed_in_the_chat_as_said(live):
+    """NOTE-18: there is no notes box; "use cfMesh please" at the plan step is the user's own message in the chat (the
+    server's intake takes the engine from it)."""
     session = "clean-note"
     live.evaluate("""(async () => {
       __JSON__
@@ -86,9 +88,6 @@ def test_a_note_that_says_use_cfmesh_is_said_in_the_chat_for_the_user(live):
       const real = window.fetch.bind(window);
       window.fetch = (u, o) => {
         const s = String(u);
-        if (s.includes('/api/v1/chat/notes'))
-          return json({session_id: '__S__', brief: __BRIEF__, say: 'Use cfMesh',
-                       user_notes: [{id: 'n1', text: 'use cfMesh please', source: 'console'}]});
         if (s.includes('/api/v1/chat/message')) {
           window.__bodies.push(JSON.parse(o.body).content);
           return json({session_id: '__S__', reply: window.__bodies.length === 1 ? 'Here is the plan.' : 'Switched.',
@@ -101,16 +100,17 @@ def test_a_note_that_says_use_cfmesh_is_said_in_the_chat_for_the_user(live):
       st.set.sessionId('__S__');
       const c = await import('/static/js/shell/composer.js');
       await c.say('external aero of this car');
-    })()""".replace("__JSON__", _json_fetch()).replace("__BRIEF__", json.dumps(_brief()))
+    })()""".replace("__JSON__", _json_fetch()).replace("__BRIEF__", json.dumps({**_brief(), "proceed_ask": "x"}))
        .replace("__S__", session), timeout=60)
-    live.wait_for("document.querySelector('.req-card .rc-notes-in')", timeout=30, what="the notes box")
+    live.wait_for("document.querySelector('.req-card .rc-go')", timeout=30, what="the plan card")
+    assert live.evaluate("document.querySelectorAll('.req-card .rc-notes-in, .req-card textarea').length") == 0
     live.evaluate("""(() => {
-      const inp = document.querySelector('.req-card .rc-notes-in');
+      const inp = document.getElementById('chat-input');
       inp.value = 'use cfMesh please'; inp.dispatchEvent(new Event('input'));
-      document.querySelector('.req-card .rc-notes-add').click();
+      document.getElementById('send-btn').click();
     })()""")
-    live.wait_for("window.__bodies.length === 2", timeout=30, what="the note's engine to be said in the chat")
-    assert live.evaluate("window.__bodies") == ["external aero of this car", "Use cfMesh"]
+    live.wait_for("window.__bodies.length === 2", timeout=30, what="the message to be sent")
+    assert live.evaluate("window.__bodies") == ["external aero of this car", "use cfMesh please"]
 
 
 # ---------------------------------------------------------------- the stage and the chat ----

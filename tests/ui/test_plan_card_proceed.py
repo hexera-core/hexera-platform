@@ -1,4 +1,4 @@
-# Responsibility: Verify the plan step reads as one card - the plan, the notes box, and Proceed at its foot - and that the stage's Proceed never draws the application's own turn as the user's words.
+# Responsibility: Verify the plan step reads as one card - the plan, its live checklist, and Proceed alone at its foot - and that the stage's Proceed never draws the application's own turn as the user's words.
 # Boundaries: the console's own modules in the page; the confirm endpoint is stood in for in the page. It reads the DOM, never pixels.
 from __future__ import annotations
 
@@ -8,18 +8,20 @@ from conftest import assert_clean
 pytestmark = pytest.mark.ui
 
 PLAN = {"purpose": "structural", "engine": "gmsh", "user_notes": [],
-        "proceed_ask": "Here's the plan. Add any notes, then press Proceed."}
+        "proceed_ask": "Here's the plan. Tell me any mesh requirements here, then say go or press Proceed."}
 
 
-def test_the_plan_card_has_proceed_under_its_notes_and_a_press_says_proceed_once(live):
+def test_the_plan_card_has_proceed_alone_at_its_foot_and_a_press_says_proceed_once(live):
     out = live.evaluate("""(async () => {
       const { Stage } = await import('/static/js/render/stage.js');
       Stage.mount();
       const said = [];
       Stage.brief(__PLAN__, async () => {}, null, () => said.push('Proceed'));
       const card = document.querySelector('.req-card');
-      const go = card.querySelector('.rc-go'), box = card.querySelector('.rc-notes-box');
-      const after = box && go ? !!(box.compareDocumentPosition(go) & Node.DOCUMENT_POSITION_FOLLOWING) : false;
+      const go = card.querySelector('.rc-go');
+      // NOTE-18: no notes box on the card (requirements are typed in the chat); Proceed is the card's last row, alone
+      const after = !card.querySelector('.rc-notes-box, textarea') && card.lastElementChild === go.parentElement
+        && go.parentElement.children.length === 1;
       go.click(); go.click();
       // a plan no longer awaiting approval has no button
       Stage.brief({...__PLAN__, proceed_ask: undefined, engine: 'netgen'}, async () => {}, null, () => said.push('x'));

@@ -169,6 +169,10 @@ def step_of(text: Any) -> tuple[str, ...]:
         return (CONFIRMED,)
     if t == msg.READING_FIRST_REPLY:
         return (READING,)
+    from meshpipeline.agents.intake import plan_talk as PT
+    if t == PT.ASK_LINE:
+        # NOTE-18: the one go question is the plan step asking again, in fewer words
+        return (PLAN,)
     if is_conditions_question(t):
         return (FLOW_QUESTION,) if any(t.startswith(lead) for lead in (EXTERNAL_LEAD, INTERNAL_LEAD)) \
             else (ANSWER, FLOW_QUESTION)
