@@ -730,3 +730,40 @@ def test_a_whole_part_site_records_which_finding_put_it_there() -> None:
     verdict = _verdict(MemberResult("gmsh", "pass"), hard=[Finding("no_solids", [], {"free_shells": 1})])
     (site,) = find_sites(pool, ws, verdict, h_mm=H)
     assert site.kind == "invalid" and site.graph["hard_codes"] == ["no_solids"]
+
+
+def test_a_located_fingerprint_is_translated_to_the_live_face_it_names() -> None:
+    """The REAL gmsh member reports `Located.entity` as the face's FINGERPRINT (`mesh_child._located`,
+    `identity.fingerprint_of` over the surface's box), not a stable id. `find_sites` read it as a stable id, found it
+    not live, and dropped every surface location (lane C4: the smoke's `open_loop` file lost its open site)."""
+    ws = _ws()
+    pool = ScriptedPool(ws, _boxes(ws))
+    verdict = _verdict(_fail("gmsh", "open_loop", Located(ws.ids["F3"], None, "surface 7")))
+    (site,) = find_sites(pool, ws, verdict, h_mm=H)
+    assert site.kind == "open" and site.entities == ["F3"]
+
+
+def test_a_fingerprint_no_live_face_carries_is_still_unlocated() -> None:
+    ws = _ws()
+    pool = ScriptedPool(ws, _boxes(ws))
+    (site,) = find_sites(pool, ws, _verdict(_fail("gmsh", "open_loop", Located("face:0000dead", None, "s"))), h_mm=H)
+    assert site.kind == "unlocated" and site.entities == []
+
+
+def test_a_fingerprint_one_half_cell_rounding_away_still_names_its_face() -> None:
+    """gmsh and the kernel measure the same box to ~1e-12 mm, but a coordinate exactly on a half-cell (3.0 mm on a
+    0.000128 grid is 23437.5 cells) rounds either way, so the fingerprints differ. Measured on a filleted box: 2 of 8
+    surfaces. The face's own box, rounded both ways at such a coordinate, must still name it."""
+    import dataclasses
+
+    from meshpipeline.cad.repair.identity import fingerprint_of
+
+    ws = dataclasses.replace(_ws(), quantum=0.5)
+    boxes = _boxes(ws)
+    boxes["F3"] = [30.25, 0.0, 0.0, 31.0, 1.0, 1.0]      # x0 = 60.5 cells: on the boundary
+    pool = ScriptedPool(ws, boxes)
+    gmsh_box = {"bbox_min": [30.25 + 1e-12, 0.0, 0.0], "bbox_max": [31.0, 1.0, 1.0]}
+    fp = fingerprint_of("face", gmsh_box, quantum=0.5)
+    assert fp != fingerprint_of("face", {"bbox_min": boxes["F3"][:3], "bbox_max": boxes["F3"][3:]}, quantum=0.5)
+    (site,) = find_sites(pool, ws, _verdict(_fail("gmsh", "open_loop", Located(fp, None, "surface 3"))), h_mm=H)
+    assert site.kind == "open" and site.entities == ["F3"]

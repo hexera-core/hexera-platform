@@ -263,3 +263,19 @@ def test_every_module_of_the_ops_package_is_imported_by_discovery() -> None:
 
     for module in pkgutil.iter_modules(ops.__path__):
         assert f"{ops.__name__}.{module.name}" in __import__("sys").modules
+
+
+@pytest.mark.parametrize("name, targets, params", [
+    ("remove_small", ["F2"], {"max_width_mm": 0.01}),
+    ("remove_small", ["E1", "F1"], {"max_width_mm": 0.01}),
+    ("sew", ["F1", "F2"], {"tol_ladder": [0.001]}),
+])
+def test_an_any_kind_target_accepts_every_live_entity(name: str, targets: list, params: dict) -> None:
+    """`x-targets: {"kind": "any"}` means any live entity. It was compared literally ("F2 is a face, not an any"), so
+    remove_small (min 1 target) could NEVER be called and sew with targets never ran: the lane-C4 smoke diagnosis."""
+    assert validate_call(name, targets, params, _ws()) == []
+
+
+def test_an_any_kind_target_still_refuses_a_dead_one() -> None:
+    errors = validate_call("remove_small", ["F9"], {"max_width_mm": 0.01}, _ws())
+    assert len(errors) == 1 and "F9" in errors[0] and "not an any" not in errors[0]

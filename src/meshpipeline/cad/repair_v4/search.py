@@ -395,6 +395,9 @@ class SearchResult:
 _PROXIMITY_RATIOS = (0.25, 0.125, 0.06)  # gap_split's rungs
 _SPLIT_ANGLES = (90, 60, 45)
 _MAX_PAIRS = 16  # split_by_proximity's maxItems
+#: body pairs an overlap site sweeps `cut_by` over, each both ways (which body is kept is exactly what the sweep cannot
+#: know; the kernel refuses an overlap deeper than the fidelity bound or a volume change over its cap either way)
+_MAX_CUT_PAIRS = 3
 
 # The ops below used to be reachable ONLY from the AI proposer during the search - the last two only after the
 # pre-search staged healer had had its single go at them (`stages._edges` / `stages._faces`; lane C3's smaller
@@ -794,6 +797,13 @@ class DetGenerator:
                             f"fragment the bodies (fuzzy {fuzzy} mm)",
                         )
                     )
+            if kind == "overlap" and len(solids) >= 2:
+                # fragment declines every REAL overlap (no keeper: `unresolved_overlap`); cut_by is the mode that
+                # resolves one. Lane C4: 10 of the smoke's 30 files carried body_overlap and det never proposed it.
+                for a, b in list(itertools.combinations(solids, 2))[:_MAX_CUT_PAIRS]:
+                    for keep in (a, b):
+                        rows.append(("conformalise", [a, b], {"mode": f"cut_by:{keep}", "fuzzy_mm": 0.0},
+                                     f"cut the overlap out of the other body, keeping {keep}"))
             if len(faces) >= 2:
                 rows.append(
                     (
@@ -1335,6 +1345,12 @@ def search(
                         new, diff = REGISTRY[c.op].apply(
                             pool, state.ws.fork(), list(c.targets), dict(c.params), timeout_s=timeout_s
                         )
+                        declined = diff.params.get("declined") if isinstance(diff.params, dict) else None
+                        if declined is not None:
+                            # the body ops decline with an UNCHANGED workspace and the reason in the Diff (stages.py
+                            # reads it the same way): a decline, not an applied op whose result duplicates the start
+                            detail = diff.params.get("detail")
+                            return _Outcome(c, gi, "declined", [f"{declined}: {detail}" if detail else str(declined)])
                         diffs = [diff]
                     assert new is not None
                     v, sc = judge_cheap(new)
