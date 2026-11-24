@@ -112,6 +112,79 @@ def cells_of(polymesh: Path) -> int | None:
     return max(1, int(n.group(1)) // 3) if n else None
 
 
+#: INS-39: the record of which connected cell region of the merged mesh holds which opening, written beside the
+#: mesh of a case meshed as several passages (evidence; the run's words come from it)
+PASSAGE_REGIONS_FILE = "passage_regions.json"
+PASSAGE_REGIONS_RULE = "INS-39"
+
+
+def opening_regions(polymesh: Path, ports: list[str]) -> dict | None:
+    """INS-39: the connected cell regions of a polyMesh (cells joined through internal faces) and the region each
+    of `ports` has its faces in, largest region first: {"cells": [per region], "openings": {port: [regions]}}.
+    None when the mesh cannot be read (binary, missing files): nothing is judged then."""
+    import numpy as np
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import connected_components
+
+    from meshpipeline.engines.layer_census import NotMeasurable, _boundary
+    from meshpipeline.render.face_quality import UnreadableMesh, _read_labels
+    try:
+        owner = _read_labels(polymesh / "owner")
+        neighbour = _read_labels(polymesh / "neighbour")
+        patches = _boundary(polymesh / "boundary")
+    except (OSError, ValueError, UnreadableMesh, NotMeasurable):
+        return None
+    if not len(owner):
+        return None
+    n = int(max(int(owner.max()), int(neighbour.max()) if len(neighbour) else -1)) + 1
+    k = len(neighbour)
+    graph = coo_matrix((np.ones(k, dtype=np.int8), (owner[:k], neighbour)), shape=(n, n))
+    _count, label = connected_components(graph, directed=False)
+    sizes = np.bincount(label)
+    rank = np.empty(len(sizes), dtype=np.int64)
+    rank[np.argsort(-sizes, kind="stable")] = np.arange(len(sizes))
+    out: dict = {"cells": sorted((int(s) for s in sizes), reverse=True), "openings": {}}
+    for p in ports:
+        start, nf = patches.get(p, (0, 0))
+        if nf <= 0:
+            out["openings"][p] = []
+            continue
+        regs = np.unique(rank[label[owner[start:start + nf]]])
+        out["openings"][p] = [int(r) + 1 for r in regs]
+    return out
+
+
+def regions_judged(read: dict, port_lists: list[list[str]]) -> tuple[str, str]:
+    """INS-39: (refusal, account) for a merged multi-passage mesh, from opening_regions. A passage whose openings
+    sit in more than one cell region is cut in two inside the mesh, so the flow cannot go from one of its openings
+    to another: that is a refusal in plain words. Otherwise the account says which region holds which openings,
+    and that the passages lie side by side, not joined (they do not connect in the CAD); a region holding no
+    opening is named (cells the flow never reaches)."""
+    openings = read.get("openings") or {}
+    cells = list(read.get("cells") or [])
+    cut = []
+    for k, ports in enumerate(port_lists, start=1):
+        regs = sorted({r for p in ports for r in openings.get(p, [])})
+        if len(regs) > 1:
+            where = "; ".join(f"region {r}: " + ", ".join(p for p in ports if r in openings.get(p, []))
+                              for r in regs)
+            cut.append(f"passage {k} came out as {len(regs)} separate pieces ({where})")
+    held = {r for regs in openings.values() for r in regs}
+    rows = []
+    for r in range(1, len(cells) + 1):
+        names = [p for p, regs in openings.items() if r in regs]
+        rows.append(f"region {r} ({cells[r - 1]:,} cells): " + (", ".join(names) if names else "no opening"))
+    account = (f"the mesh holds {len(cells)} separate fluid volume(s), side by side and not joined - the passages "
+               "do not connect in the CAD: " + "; ".join(rows) + ".")
+    stray = [r for r in range(1, len(cells) + 1) if r not in held]
+    if stray:
+        account += (f" {len(stray)} region(s) hold no opening: cells the flow never reaches.")
+    if cut:
+        return (f"[CFMESH] the merged mesh does not keep each passage in one piece: {'; '.join(cut)}. The flow "
+                "cannot pass between those openings in this mesh. " + PORT_REGION_WAY_OUT, account)
+    return "", account
+
+
 def finer_mesh_dict(text: str, factor: float = 0.5) -> str:
     """INS-29: a meshDict with every cell size it sets (background, wall band, local boxes) times `factor`."""
     return _CELL_SIZES.sub(lambda m: f"{m.group(1)}{m.group(2)}{float(m.group(3)) * factor:.6g}{m.group(4)}", text)
@@ -466,7 +539,26 @@ def mesh_passages(ws: Path, *, bashrc: str = _DEFAULT_BASHRC, timeout: float = 1
             return -1, True, f"[CFMESH] passage {k} ran out of time"
         # the merged mesh is the case's; the passage's own copy only fills the returned archive
         shutil.rmtree(sub / "constant" / "polyMesh", ignore_errors=True)
-    logger.info("cfMesh: %d further passage(s) meshed and merged", len(spec.get("runs") or []))
+    # INS-39: mergeMeshes only puts the passages' meshes side by side - it joins nothing. The merged mesh's cell
+    # regions are read, with the openings each holds, so the run says what it delivers (abc 63401: inlet + outlet_1
+    # in one volume, outlet_2 + outlet_3 in another 100 mm away - two solids of an assembly) and refuses a mesh
+    # that cut one passage in two
+    read = opening_regions(ws / "constant" / "polyMesh", [p for ports in port_lists for p in ports])
+    if read is not None:
+        refusal, account = regions_judged(read, port_lists)
+        try:
+            (ws / PASSAGE_REGIONS_FILE).write_text(json.dumps(
+                {"rule": PASSAGE_REGIONS_RULE, "passages": port_lists, "account": account, "refusal": refusal,
+                 **read}, indent=1))
+        except OSError:
+            pass
+        if refusal:
+            return 1, False, refusal
+        logger.info("cfMesh: %d further passage(s) meshed and placed beside the first (%s): %s",
+                    len(spec.get("runs") or []), PASSAGE_REGIONS_RULE, account)
+    else:
+        logger.info("cfMesh: %d further passage(s) meshed and placed beside the first, not joined (their cell "
+                    "regions could not be read)", len(spec.get("runs") or []))
     return 0, False, ""
 
 
