@@ -1,0 +1,259 @@
+[
+ {
+  "arm_input": {
+   "clean": false,
+   "counts_for_scoreboard": true,
+   "faithful": null,
+   "hard": [
+    "brep_invalid"
+   ],
+   "out_of_scope": false,
+   "panel": [
+    {
+     "error_kind": null,
+     "min_sicn": 0.012257863084049286,
+     "name": "gmsh_prod",
+     "status": "pass"
+    },
+    {
+     "error_kind": null,
+     "min_sicn": 0.010111412908208736,
+     "name": "gmsh_default",
+     "status": "pass"
+    },
+    {
+     "error_kind": null,
+     "min_sicn": 0.01704153180287447,
+     "name": "gmsh_alt",
+     "status": "pass"
+    },
+    {
+     "error_kind": "netgen_meshing_failed",
+     "min_sicn": null,
+     "name": "netgen_occ",
+     "status": "fail"
+    }
+   ],
+   "soft": [],
+   "tier": "full",
+   "valid": false
+  },
+  "arm_input_s": 9.3,
+  "reprobe": {
+   "family": "brep_invalid",
+   "layer": "valid",
+   "summary": {
+    "clean": false,
+    "counts_for_scoreboard": true,
+    "faithful": null,
+    "hard": [
+     "brep_invalid"
+    ],
+    "out_of_scope": false,
+    "panel": [
+     {
+      "error_kind": null,
+      "min_sicn": 0.012257863084049286,
+      "name": "gmsh_prod",
+      "status": "pass"
+     },
+     {
+      "error_kind": null,
+      "min_sicn": 0.010111412908208736,
+      "name": "gmsh_default",
+      "status": "pass"
+     },
+     {
+      "error_kind": null,
+      "min_sicn": 0.01704153180287447,
+      "name": "gmsh_alt",
+      "status": "pass"
+     },
+     {
+      "error_kind": "netgen_meshing_failed",
+      "min_sicn": null,
+      "name": "netgen_occ",
+      "status": "fail"
+     }
+    ],
+    "soft": [],
+    "tier": "full",
+    "valid": false
+   }
+  },
+  "reprobe_s": 12.3,
+  "sha": "0af8f4f0"
+ },
+ {
+  "arm_input": {
+   "clean": false,
+   "counts_for_scoreboard": true,
+   "faithful": null,
+   "hard": [
+    "body_overlap"
+   ],
+   "out_of_scope": false,
+   "panel": [
+    {
+     "error_kind": "other",
+     "min_sicn": null,
+     "name": "gmsh_prod",
+     "status": "fail"
+    },
+    {
+     "error_kind": "edge_through_face",
+     "min_sicn": null,
+     "name": "gmsh_default",
+     "status": "fail"
+    },
+    {
+     "error_kind": "low_quality",
+     "min_sicn": 0.008658531483800061,
+     "name": "gmsh_alt",
+     "status": "fail"
+    },
+    {
+     "error_kind": null,
+     "min_sicn": 0.17716192931413113,
+     "name": "netgen_occ",
+     "status": "pass"
+    }
+   ],
+   "soft": [],
+   "tier": "full",
+   "valid": false
+  },
+  "arm_input_s": 2.3,
+  "reprobe": {
+   "family": "body_overlap",
+   "layer": "valid",
+   "summary": {
+    "clean": false,
+    "counts_for_scoreboard": true,
+    "faithful": null,
+    "hard": [
+     "body_overlap"
+    ],
+    "out_of_scope": false,
+    "panel": [
+     {
+      "error_kind": "other",
+      "min_sicn": null,
+      "name": "gmsh_prod",
+      "status": "fail"
+     },
+     {
+      "error_kind": "edge_through_face",
+      "min_sicn": null,
+      "name": "gmsh_default",
+      "status": "fail"
+     },
+     {
+      "error_kind": "low_quality",
+      "min_sicn": 0.008658531483800061,
+      "name": "gmsh_alt",
+      "status": "fail"
+     },
+     {
+      "error_kind": null,
+      "min_sicn": 0.17716192931413113,
+      "name": "netgen_occ",
+      "status": "pass"
+     }
+    ],
+    "soft": [],
+    "tier": "full",
+    "valid": false
+   }
+  },
+  "reprobe_s": 2.3,
+  "sha": "74dcb7bf"
+ },
+ {
+  "arm_input": {
+   "clean": false,
+   "counts_for_scoreboard": true,
+   "faithful": true,
+   "hard": [],
+   "out_of_scope": false,
+   "panel": [
+    {
+     "error_kind": "low_quality",
+     "min_sicn": 0.002022946955985039,
+     "name": "gmsh_prod",
+     "status": "fail"
+    },
+    {
+     "error_kind": "low_quality",
+     "min_sicn": 0.0014838512973946198,
+     "name": "gmsh_default",
+     "status": "fail"
+    },
+    {
+     "error_kind": "low_quality",
+     "min_sicn": 0.002033341107374659,
+     "name": "gmsh_alt",
+     "status": "fail"
+    },
+    {
+     "error_kind": "low_quality",
+     "min_sicn": 0.00877585818907818,
+     "name": "netgen_occ",
+     "status": "fail"
+    }
+   ],
+   "soft": [
+    "small_edge",
+    "small_face"
+   ],
+   "tier": "full",
+   "valid": true
+  },
+  "arm_input_s": 4.8,
+  "reprobe": {
+   "family": "low_quality",
+   "layer": "panel",
+   "summary": {
+    "clean": false,
+    "counts_for_scoreboard": true,
+    "faithful": true,
+    "hard": [],
+    "out_of_scope": false,
+    "panel": [
+     {
+      "error_kind": "low_quality",
+      "min_sicn": 0.002022946955985039,
+      "name": "gmsh_prod",
+      "status": "fail"
+     },
+     {
+      "error_kind": "low_quality",
+      "min_sicn": 0.0014838512973946198,
+      "name": "gmsh_default",
+      "status": "fail"
+     },
+     {
+      "error_kind": "low_quality",
+      "min_sicn": 0.002033341107374659,
+      "name": "gmsh_alt",
+      "status": "fail"
+     },
+     {
+      "error_kind": "low_quality",
+      "min_sicn": 0.00877585818907818,
+      "name": "netgen_occ",
+      "status": "fail"
+     }
+    ],
+    "soft": [
+     "small_edge",
+     "small_face"
+    ],
+    "tier": "full",
+    "valid": true
+   }
+  },
+  "reprobe_s": 5.8,
+  "sha": "bf6465f4"
+ }
+]
