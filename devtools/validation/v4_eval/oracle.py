@@ -375,6 +375,7 @@ def run_file(entry: dict, inputs: str, out: str, wall_s: float, *, _cmd: list[st
         if (odir / "progress.json").is_file():
             row["stopped_at"] = json.loads((odir / "progress.json").read_text())
     row["wall_s"] = round(time.monotonic() - t0, 1)
+    row["commit"] = os.environ.get("ORACLE_COMMIT")   # set by the launcher: rows from a relaunch say which code ran
     row = summarise(row, odir / "candidates.jsonl")
     row_path.write_text(json.dumps(row, default=str))
     return row
