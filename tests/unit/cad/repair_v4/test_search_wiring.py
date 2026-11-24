@@ -566,6 +566,8 @@ class RealishPool:
             return CallResult(True, {}, None, "ok", 0.0)
         if fn == "mesher_versions":
             return CallResult(True, {"gmsh": "4.15.2", "netgen": "6.2", "ocp": "7.8"}, None, "ok", 0.0)
+        if fn == "valid_extent":  # D10: the input's extent is asked first; this part is bounded
+            return CallResult(True, {"unbounded": False}, None, "ok", 0.0)
         if fn == "faithful_check":
             v = {"ok": True, "max_dev_mm": 0.0, "bound_mm": 0.1, "area_ratio": 1.0, "volume_ratio": 1.0,
                  "bodies_before": 1, "bodies_after": 1, "reasons": []}

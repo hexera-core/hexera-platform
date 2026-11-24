@@ -241,6 +241,14 @@ def _clean_with(v: Verdict, faithful: FaithfulReport | None) -> bool:
     )
 
 
+def _unbounded(pool: Any, brep: str) -> bool:
+    """True only when the kernel's `valid_extent` - a bounding box, the very rule layer 1 stops at
+    (`valid_kernel._unbounded_finding`) - says the BREP is unbounded. A failed call is False: the input is then judged
+    exactly as before, so this check can only ever restore a verdict, never invent one."""
+    extent = pool.call("valid_extent", {"brep": brep}, timeout_s=300)
+    return bool(extent.ok and extent.value is not None and extent.value.get("unbounded") is True)
+
+
 def _judged(fn: Callable[..., Verdict], pool: Any, ws: Workspace, original: str,
             cache: VerdictCache | None = None) -> Verdict:
     """`fn` (`cheap_verdict` / `verdict`) on workspace `ws`, judged as Task 16's `stages._judge` judges it.
@@ -251,7 +259,12 @@ def _judged(fn: Callable[..., Verdict], pool: Any, ws: Workspace, original: str,
     whenever the lineage declared anything; `clean` is recomputed from that report. A declared id the shapes do not
     match is judged undeclared rather than crashing the run (as `stages._judge` does)."""
     faces, _solids = original_facts(pool, ws.original)
-    step = step_for(pool, ws.brep_path)
+    # THE INPUT OF AN UNBOUNDED PART is judged on its ORIGINAL STEP: on the re-export layer 1's `unbounded_geometry`
+    # no longer fires and check_valid runs to its timeout (lane D, sha bfc8d0b5: 4 s out of scope on the original,
+    # an 1800 s exclusion on the re-export). Only the input (no history): a state an op produced is always judged
+    # as the engine exports it.
+    step = (str(original) if not ws.history and _unbounded(pool, ws.brep_path)
+            else step_for(pool, ws.brep_path))
     # the cache holds only the panel (the meshing); layers 1 and 3 are recomputed, so a hit never skips a check
     v: Verdict = fn(pool, step, original) if cache is None else fn(pool, step, original, cache=cache)
     declared = declared_edits(ws, faces)
@@ -289,6 +302,10 @@ def engine_form(pool: Any, step_path: str, *, timeout_s: float = 300) -> str:
     read = pool.call("read_step_xcaf", {"path": str(step_path), "brep_out": brep}, timeout_s=timeout_s)
     if not read.ok or read.value is None:
         raise CheckerUnavailable(f"read_step_xcaf could not read {step_path!r}: {read.status}: {read.error}")
+    if _unbounded(pool, read.value["brep"]):
+        # infinite extent is a property of the INPUT: judged on the original, layer 1 reports `unbounded_geometry`
+        # (out of scope) in seconds; the re-export would hide it and run check_valid to its timeout (see `_judged`)
+        return str(step_path)
     return step_for(pool, read.value["brep"])
 
 
