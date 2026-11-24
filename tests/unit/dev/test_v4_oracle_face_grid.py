@@ -202,3 +202,29 @@ def test_depth2_rows_reach_the_table_through_extra_rows_and_are_not_duplicated()
     ws.indices.update({"F9": 9, "F10": 10})
     for c in deep:
         assert validate_call(c.op, list(c.targets), dict(c.params), ws) == [], (c.op, c.params)
+
+
+# --- LEAD-3's standing rule: a new row field must be declared, or report.load refuses the whole row --------------
+
+
+def test_the_wall_numbers_ride_inside_triage_so_no_row_can_be_refused() -> None:
+    """A16 put `overrun_s` and `wall_skipped_candidates` on the search's stop event, and LEAD-3 reads them per
+    file. `report.load` builds `ArmRow(**row)`, so a NEW TOP-LEVEL field would refuse the whole row - after the
+    file's repair work is done and paid for, which cost two waves today. They therefore live inside `triage`,
+    which ArmRow already declares as one dict. This pins both halves: the names are in the triage block, and they
+    are NOT top-level row keys."""
+    import inspect
+    import sys
+    from pathlib import Path
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "devtools/validation/v4_eval"))
+    import arms  # noqa: PLC0415
+    import report  # noqa: PLC0415
+
+    src = inspect.getsource(arms.search_triage) if hasattr(arms, "search_triage") else inspect.getsource(arms)
+    assert '"overrun_s": stop.get("overrun_s")' in src, "the overrun must be carried somewhere readable"
+    declared = set(report.ArmRow.__dataclass_fields__)
+    assert "triage" in declared, "the nesting only works because ArmRow declares triage"
+    for leaked in ("overrun_s", "wall_skipped_candidates"):
+        assert leaked not in declared, (
+            f"{leaked} became a top-level row field; either declare it on ArmRow in THIS commit or keep it nested")
