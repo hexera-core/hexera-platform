@@ -119,6 +119,10 @@ class Outcome:
     #: metric -> [before, after], e.g. {"valid": [0, 1], "panel_passes": [1, 2], "min_sicn": [0.001, 0.2]}
     delta: dict | None = None
     message: str = ""
+    #: the structured reason, when the caller already knows more than the message says (a rolled-back stage knows
+    #: WHICH cheap member got worse). None = parse it from `message` (`reason_of`). The message itself is never
+    #: enriched: arms.py and triage.py group their tables on it.
+    reason: dict | None = None
 
 
 def lineage_of(state: Any) -> tuple[str, ...]:
@@ -434,7 +438,8 @@ def reason_of(status: str, message: str) -> dict | None:
 def _outcome_json(o: Outcome) -> dict:
     c = o.candidate
     return {"op": c.op, "targets": c.targets, "params": c.params, "rationale": c.rationale,
-            "status": o.status, "message": o.message, "reason": reason_of(o.status, o.message),
+            "status": o.status, "message": o.message,
+            "reason": o.reason if o.reason is not None else reason_of(o.status, o.message),
             "diff": _diff_json(o.diff), "delta": o.delta}
 
 

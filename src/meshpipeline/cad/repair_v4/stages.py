@@ -78,6 +78,63 @@ DEFAULT_OP_TIMEOUT_S = 300.0
 JUDGE_ATTEMPTS = 2
 
 Score = tuple[int, int, float, float, int]
+#: Names of the five `Score` keys, in order, as the rollback phrase reports them. `max_dev_mm` and `churn` are
+#: stored negated (bigger is better in a Score), so the phrase un-negates them.
+_SCORE_KEYS = ("valid", "panel_passes", "min_sicn", "max_dev_mm", "churn")
+
+
+class Scored(tuple):  # noqa: SLOT001 - a Score that also remembers the cheap panel it came from
+    """A `Score` that carries the cheap tier's per-member results it was computed from.
+
+    A TUPLE subclass on purpose: every comparison, index and unpack in the transaction rule keeps working on it
+    unchanged (`after >= before` is still the score comparison, and nothing else knows it is here), and a caller
+    that hands back a plain tuple - a test's scripted judge, an older path - simply has no members to report."""
+
+    members: dict[str, dict]
+
+    def __new__(cls, score: Score, members: dict[str, dict] | None = None) -> Scored:
+        self = super().__new__(cls, score)
+        self.members = dict(members or {})
+        return self
+
+
+def _members_of(verdict: Any) -> dict[str, dict]:
+    """The cheap panel as the rollback phrase reads it: status, min SICN and the failure kind per member."""
+    members = {}
+    for r in getattr(verdict, "panel", ()):
+        name = getattr(r, "name", None)
+        if name is None:  # a member that cannot be named cannot be reported; the phrase falls back to the score
+            continue
+        members[str(name)] = {"status": str(getattr(r, "status", "")), "min_sicn": getattr(r, "min_sicn", None),
+                              "error_kind": getattr(r, "error_kind", None)}
+    return members
+
+
+def rollback_detail(before: Any, after: Any) -> str:
+    """WHY a stage was rolled back, for the proposer (and D9's re-prompt): the cheap members that got worse and by
+    how much, then the score keys that fell. Facts only - a rollback is still a rollback, and when the two scores
+    differ in nothing this says exactly that rather than inventing a cause."""
+    parts: list[str] = []
+    old, new = getattr(before, "members", None) or {}, getattr(after, "members", None) or {}
+    for name in sorted(set(old) & set(new)):
+        was, now = old[name], new[name]
+        if was["status"] != now["status"]:
+            kind = now.get("error_kind")
+            parts.append(f"{name} {was['status']} -> {now['status']}" + (f" ({kind})" if kind else ""))
+        elif (was.get("min_sicn") or 0.0) > (now.get("min_sicn") or 0.0):
+            parts.append(f"{name} min_sicn {was.get('min_sicn'):g} -> {now.get('min_sicn'):g}")
+    for i, key in enumerate(_SCORE_KEYS):
+        if i >= min(len(before), len(after)):
+            break
+        a, b = before[i], after[i]
+        if key in ("max_dev_mm", "churn"):
+            a, b = -a, -b          # stored negated; report the quantity itself
+            worse = b > a
+        else:
+            worse = b < a
+        if worse:
+            parts.append(f"{key} {a:g} -> {b:g}")
+    return "; ".join(parts) if parts else "no measured difference"
 
 DEFAULTS: dict[str, dict[str, Any]] = {
     "baseline": {},
@@ -241,6 +298,9 @@ def _bodies(s: _Steps, p: dict) -> None:
     solids = s.ids("B")
     if len(solids) >= 2:
         s.apply("conformalise", solids, {"mode": "fragment", "fuzzy_mm": p["fuzzy_mm"]})
+    else:
+        s.notes.append(f"conformalise: skipped: the part has {len(solids)} solid(s); fragmenting a shared "
+                       "interface needs 2 or more")
 
 
 def _simplify(s: _Steps, p: dict) -> None:
@@ -256,16 +316,23 @@ def _condition(s: _Steps, p: dict) -> None:
         s.apply("split_closed", s.ids("F"), {})
     if s.ids("F"):
         s.apply("split_continuity", s.ids("F"), {"order": p["continuity"]})
+    if not faces:
+        s.notes.append("split_angle/split_closed/split_continuity: skipped: the part has no face to split")
     pairs = [list(x) for x in p["face_pairs"] if all(f in s.ws.ids for f in x)]
     if pairs:
         s.apply("split_by_proximity", [], {"face_pairs": pairs, "target_ratio": p["proximity_ratio"]})
     elif not p["face_pairs"]:
         s.notes.append("split_by_proximity: skipped: no face_pairs (they come from site detection)")
+    else:
+        s.notes.append(f"split_by_proximity: skipped: none of the {len(p['face_pairs'])} face_pair(s) from site "
+                       "detection is still live on this state")
 
 
 def _finalise(s: _Steps, p: dict) -> None:
     if s.ids("B"):
         s.apply("orient_and_close", s.ids("B"), {})
+    else:
+        s.notes.append("orient_and_close: skipped: the part has no solid to orient or close")
 
 
 def _baseline(s: _Steps, p: dict) -> None:
@@ -308,6 +375,9 @@ class StagedResult:
     rolled_back: list[str] = field(default_factory=list)
     #: stage -> the score tuple it was judged on (the "after" score, even when it was rolled back)
     verdicts: dict[str, tuple] = field(default_factory=dict)
+    #: per rolled-back stage, WHY in the cheap tier's own numbers (`rollback_detail`): which member got worse and
+    #: by how much. The rollback itself is unchanged; this is what the proposer is told.
+    rollback_why: dict[str, str] = field(default_factory=dict)
     #: stages that could not be judged (infrastructure), so were neither kept nor blamed
     inconclusive: list[str] = field(default_factory=list)
     #: stage -> why it changed nothing: "no_change" or the first op trouble
@@ -442,7 +512,7 @@ def declared_edits(ws: Workspace, original_faces: int) -> Declared:
     return Declared(added=added, removed=removed)
 
 
-def _judge(pool: WorkerPool, ws: Workspace, cheap_members: Any = None) -> Score:
+def _judge(pool: WorkerPool, ws: Workspace, cheap_members: Any = None) -> Scored:
     """`score(cheap_verdict(...))` of `ws` against the lineage's original. Raises
     `InconclusiveVerdict` / `CheckerUnavailable` when the checker could not say.
 
@@ -472,7 +542,9 @@ def _judge(pool: WorkerPool, ws: Workspace, cheap_members: Any = None) -> Score:
         gate = bool(v.valid.ok and v.faithful is not None
                     and set(v.faithful.reasons) <= _SOLIDLESS_OK_REASONS)
         result = (int(gate), *result[1:])
-    return result
+    # the score the transaction compares, carrying the cheap panel it came from so a rollback can say which
+    # member got worse (`rollback_detail`). It IS the score tuple: nothing else changes.
+    return Scored(result, _members_of(v))
 
 
 def _judged(pool: WorkerPool, ws: Workspace, cheap_members: Any = None) -> Score | None:
@@ -522,6 +594,7 @@ def _transact(pool: WorkerPool, ws: Workspace, stage: Stage, params: dict, befor
         out.standing.append((name, steps.ws))
         return steps.ws, after
     out.rolled_back.append(name)
+    out.rollback_why[name] = rollback_detail(before, after)
     return ws, before
 
 

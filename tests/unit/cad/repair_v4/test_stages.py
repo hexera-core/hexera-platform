@@ -521,3 +521,42 @@ def test_an_unchanged_staged_result_needs_no_confirmation(world):
     conf = stages.confirm_staged(None, start, res, full=lambda ws: pytest.fail("nothing changed: nothing to mesh"),
                                  input_verdict=_full(4))
     assert conf.fell_back_to is None and conf.verdict is None
+
+
+# ------------------------------------------------------------------ A8: a rollback and a no-op SAY WHY
+
+def _scored(valid, passes, sicn, members) -> Any:
+    return stages.Scored((valid, passes, sicn, 0.0, 0), members)
+
+
+def test_a_rollback_phrase_names_the_member_that_got_worse_and_by_how_much() -> None:
+    before = _scored(1, 2, 0.30, {"gmsh_prod": {"status": "pass", "min_sicn": 0.30},
+                                  "gmsh_default": {"status": "pass", "min_sicn": 0.50}})
+    after = _scored(1, 1, 0.12, {"gmsh_prod": {"status": "fail", "min_sicn": None, "error_kind": "no_volume"},
+                                 "gmsh_default": {"status": "pass", "min_sicn": 0.12}})
+    why = stages.rollback_detail(before, after)
+    assert "gmsh_prod pass -> fail (no_volume)" in why
+    assert "gmsh_default min_sicn 0.5 -> 0.12" in why
+    assert "panel_passes 2 -> 1" in why
+
+
+def test_the_phrase_reports_a_worse_score_even_when_no_member_changed_status() -> None:
+    m = {"gmsh_default": {"status": "pass", "min_sicn": 0.4}}
+    before, after = _scored(1, 1, 0.4, m), _scored(0, 1, 0.4, m)
+    assert "valid 1 -> 0" in stages.rollback_detail(before, after)
+    # nothing to say is said plainly, never a fabricated cause
+    assert stages.rollback_detail(_scored(1, 1, 0.4, m), _scored(1, 1, 0.4, m)) == "no measured difference"
+
+
+def test_the_phrase_is_empty_when_the_scores_carry_no_members() -> None:
+    assert stages.rollback_detail((1, 1, 0.3, 0.0, 0), (1, 0, 0.3, 0.0, 0)) == "panel_passes 1 -> 0"
+
+
+def test_a_stage_that_applied_nothing_says_what_it_looked_at(world) -> None:
+    ws = Workspace(brep_path="s0", ids={"F1": "a", "B1": "c"}, labels={}, history=[], original="s0",
+                   indices={"F1": 1, "B1": 1})
+    result = stages.run_stage(None, ws, "bodies", {})
+    assert "bodies" in result.skipped
+    why = result.skipped["bodies"]
+    assert why != "no_change" and "1 solid" in why and "2" in why  # what it looked at, and why nothing applied
+    assert result.applied_ops["bodies"] == 0 and not result.rolled_back
