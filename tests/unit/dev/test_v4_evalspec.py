@@ -86,6 +86,15 @@ def test_every_wave_cap_is_the_ledgers_and_finite() -> None:
     assert ev.WAVES["dev_search"].cap_usd == 50.0
 
 
+def test_the_snapshot_waves_run_all_four_v4_arms_without_a_checkpoint_slot() -> None:
+    m = Markers()
+    for name, split in (("snap_v1_dev", "dev"), ("snap_v1_clean", "clean")):
+        w = ev.WAVES[name]
+        assert (w.wave_type, w.split) == ("normal", split)
+        assert w.arms == ("input_only", "staged", "search_det", "search_ai") and w.has_model_arm
+        assert ev.plan_wave(w, wave_id=f"s-{name}", n_shards=6, markers=m).slot is None
+
+
 def test_a_wave_type_the_ledger_does_not_price_cannot_be_named() -> None:
     with pytest.raises(ValueError, match="no spending cap"):
         ev.WaveDef("w", "unlimited", "dev", ("staged",))
