@@ -155,8 +155,11 @@ MESH_DEADLINE_S = 900.0
 #: MESH_RATE a second (SHMESH-20's measure), or PRICE_FACTOR times its first whole mesh's measured seconds once one is
 #: made (this part's own rate and count), whichever is longer (TIME-2: a guard is 3x the cost); a price past
 #: MESH_DEADLINE_S is the mesh's limit, from its start, never past the run's hard cap (SHELL_CAP_ENV). A plan of 1.5M
-#: elements (PLANNED_MAX) is priced at 4,500 s: under the old 900 s it could not finish one mesh
-MESH_RATE = 1000.0
+#: elements (PLANNED_MAX) is priced at 7,500 s: under the old 900 s it could not finish one mesh.
+#: The book rate is the slowest whole-path rate measured on the big plate after SHMESH-21g (test VM, one core, first
+#: whole mesh: 20k 1,700 / 56k 1,300 / 108k 1,380 / 215k 930 / 473k 620 elements a second), rounded down to 600
+#: (1,000 before: the 473k plate took 764 s against a 1,350 s price, a margin of 1.8 where TIME-2 asks 3)
+MESH_RATE = 600.0
 PRICE_FACTOR = 3.0
 #: SHMESH-21f: A STUCK FACE IS STILL CAUGHT - while a limit runs past MESH_DEADLINE_S, a face gmsh's output shows it
 #: on (the parent reads "Meshing surface N" in the watched child's output: a new surface is progress) for longer than

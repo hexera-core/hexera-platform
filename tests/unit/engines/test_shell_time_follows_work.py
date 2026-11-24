@@ -35,15 +35,17 @@ def _no_rate_carried(monkeypatch):
 
 
 def test_the_limit_is_priced_from_the_plan_and_never_under_15_minutes(monkeypatch):
-    # SHMESH-21e: 3 x planned elements at 1,000 a second; at or under 900 s the limit is today's 900 s exactly
+    # SHMESH-21e: 3 x planned elements at 600 a second (the big plate's measured rate, rulebook 83); at or under 900 s
+    # the limit is today's 900 s exactly
     monkeypatch.delenv(sa.SHELL_CAP_ENV, raising=False)
+    assert sa.MESH_RATE == 600.0
     got = {n: sa._priced_total(sa.mesh_price_s(n), 900.0, 0.0)[0] for n in (1e4, 1e5, 5e5, 1.5e6)}
-    assert got == {1e4: 900.0, 1e5: 900.0, 5e5: 1500.0, 1.5e6: 4500.0}
-    # a plan of 1.5 million (SHMESH-20's most) takes about 1,500 s at the measured rate: its limit is above that
+    assert got == {1e4: 900.0, 1e5: 900.0, 5e5: 2500.0, 1.5e6: 7500.0}
+    # a plan of 1.5 million (SHMESH-20's most) takes about 2,500 s at the measured rate: its limit is above that
     assert got[1.5e6] > sa.PLANNED_MAX / sa.MESH_RATE
     # once a first whole mesh stands, this part's own seconds price it where they are longer
     assert sa.mesh_price_s(1e5, first_s=2000.0) == 6000.0
-    assert sa.mesh_price_s(1e5, first_s=10.0) == 300.0
+    assert sa.mesh_price_s(1e5, first_s=10.0) == 3 * 1e5 / sa.MESH_RATE
     # the outer stop already short (31g: 300 s left of it) - a small mesh keeps that, as before
     assert sa._priced_total(sa.mesh_price_s(1e4), 300.0, 0.0) == (300.0, False)
 
@@ -64,6 +66,8 @@ def test_the_jobs_cap_holds_a_priced_limit_and_says_so(monkeypatch):
 def test_a_big_mesh_runs_past_the_floor_to_its_price_and_is_delivered(tmp_path, monkeypatch):
     # SHMESH-21e (forked child, real clock, scaled down): floor 2 s; the child plans 8,000 elements at 1,000 a second
     # (price 8 s) and needs 4 s - before, it was stopped at 2 s with no mesh; now it finishes and the record says why
+    # (the mechanics at a book rate of 1,000 a second; the book rate itself is the first test's)
+    monkeypatch.setattr(sa, "MESH_RATE", 1000.0)
     def timed(*_a, **_k):
         sa._reprice(planned=8000.0)
         time.sleep(4.0)
@@ -116,6 +120,8 @@ def test_a_stuck_face_is_stopped_by_the_watchdog_long_before_the_larger_budget(t
 
 def test_a_face_is_stuck_only_past_its_own_price_and_only_under_a_stretched_limit(tmp_path, monkeypatch):
     # SHMESH-21f: held past max(300 s, 3 x its planned elements at 1,000 a second); under today's 900 s nothing new
+    # (the mechanics at a book rate of 1,000 a second; the book rate itself is the first test's)
+    monkeypatch.setattr(sa, "MESH_RATE", 1000.0)
     (tmp_path / "face_planned.json").write_text(json.dumps({"7": 1000.0, "8": 200_000.0}))
     monkeypatch.setattr(sa, "_CLOCK", {**sa._CLOCK, "t0": 0.0, "base": 900.0, "allowed": 4500.0})
     assert not sa._face_stuck(tmp_path, 7, 299.0)
@@ -179,13 +185,15 @@ def test_a_rate_measured_on_this_part_prices_its_plan(monkeypatch):
     monkeypatch.setattr(sa, "_RATE_SEEN", {"rate": 200.0})
     assert sa.mesh_price_s(1e5) == 1500.0
     monkeypatch.setattr(sa, "_RATE_SEEN", {"rate": 5000.0})
-    assert sa.mesh_price_s(1e5) == 300.0
+    assert sa.mesh_price_s(1e5) == 3 * 1e5 / sa.MESH_RATE
     assert sa.mesh_price_s(1e5, rate=100.0) == 3000.0
 
 
 def test_the_faces_gmsh_finishes_price_the_mesh_and_a_stuck_one_adds_nothing(tmp_path, monkeypatch):
     # SHMESH-21e: 15 faces of 100,000 planned elements; the first took 100 s (1,000 a second): the 1.5M plan is priced
     # at 4,500 s; while gmsh then stays on face 2, the price does not grow (a stuck face is SHMESH-21f's)
+    # (the progress arithmetic at a book rate of 1,000 a second; the book rate itself is the first test's)
+    monkeypatch.setattr(sa, "MESH_RATE", 1000.0)
     monkeypatch.delenv(sa.SHELL_CAP_ENV, raising=False)
     (tmp_path / "face_planned.json").write_text(json.dumps({str(k): 1e5 for k in range(1, 16)}))
     now = time.monotonic()
