@@ -1,0 +1,5 @@
+{"at": 1795488012.3562453, "n_shards": 6, "shard_index": 1, "t": "init", "wave": "normal", "wave_id": "snap-v1r-dev-202611240237"}
+{"at": 1795488013.7119842, "file": "_route_probe", "id": "e0559704ccc34f22979613eb595c7af8", "t": "reserve", "u": 231362}
+{"at": 1795488017.708365, "cached": 0, "cw": 0, "cw30": 0, "file": "_route_probe", "id": "e0559704ccc34f22979613eb595c7af8", "in": 89, "job": "", "kind": "route_probe", "model": "gpt-6-astra", "out": 18, "provider": "openai", "t": "settle", "u": 1790}
+{"at": 1795493844.6901038, "file": "440b9cdbc8f1c36c9910d25023b02176484c96c35b413190624503bdbd54f828", "id": "36049c92a9a64ae184550498c0626b03", "t": "reserve", "u": 464112}
+{"at": 1795493850.8522754, "cached": 3355, "cw": 11602, "cw30": 11602, "file": "440b9cdbc8f1c36c9910d25023b02176484c96c35b413190624503bdbd54f828", "id": "36049c92a9a64ae184550498c0626b03", "in": 14960, "job": "snap-v1r-dev-202611240237:440b9cdbc8f1:search_ai", "kind": "repair_v4_propose", "model": "gpt-6-astra", "out": 235, "provider": "openai", "t": "settle", "u": 160160}

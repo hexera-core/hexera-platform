@@ -1,0 +1,127 @@
+{
+ "budget": {
+  "wall_s": 600.0
+ },
+ "calibration": {
+  "clean_default_s": 34.75311111111111,
+  "from_prior_files": 29,
+  "k_dev_four_arms_per_model_s": 18.936236876741376
+ },
+ "cap_rule": {
+  "clean_weight": 0.25,
+  "file_usd_cap": 1.0,
+  "floor_per_shard": "min(demand, file_usd_cap)",
+  "scale_of_the_rest": 0.3278350515463917
+ },
+ "file_timeout_s": 1800.0,
+ "inputs": {
+  "01614811acf6f1824e6f94fa2e0997e684cdcbd927cf611ba3aace7a5862cd25": "gs://dev-crsv3-transfer-224734058693/eval/v4-reprobe/inputs/01614811acf6f1824e6f94fa2e0997e684cdcbd927cf611ba3aace7a5862cd25/0060_00606843_58c2e4ec85eca50f9755deb9_step_000.step",
+  "0b21edaaf3055fd916c1ad1158ab2186a3ecae0238ab1ff7ac4d3ca178d6bd37": "gs://dev-crsv3-transfer-224734058693/eval/v4-reprobe/inputs/0b21edaaf3055fd916c1ad1158ab2186a3ecae0238ab1ff7ac4d3ca178d6bd37/00613113_9ce269b97ce9e5e8567623b3_step_000.step",
+  "16ba131bf4c707adfb969504a10b856f58f45517e88ec590fdf6529f3a77479e": "gs://dev-crsv3-transfer-224734058693/eval/v4-reprobe/inputs/16ba131bf4c707adfb969504a10b856f58f45517e88ec590fdf6529f3a77479e/0057_00570551_59995fb3cd27b48fe0957ae2_step_007.step",
+  "1be95291290b9ff81ecd549829f2999858e3f2ea979032672da3b828ac29ce5d": "gs://dev-crsv3-transfer-224734058693/eval/v4-reprobe/inputs/1be95291290b9ff81ecd549829f2999858e3f2ea979032672da3b828ac29ce5d/0055_00550171_58ac32b095b047102fd8ce8c_step_013.step",
+  "1c444ace9e67c4dc16fe51a77d7b776ef1e4b13ddfc39dfd08019e3df6eabbe4": "gs://dev-crsv3-transfer-224734058693/eval/v4-reprobe/inputs/1c444ace9e67c4dc16fe51a77d7b776ef1e4b13ddfc39dfd08019e3df6eabbe4/00613121_58c67ddf032617103d59c101_step_003.step",
+  "1c9153fac8706f7ee2f7cc000ca6aedc935864d47d001eab44d8d56f02cfa84d": "gs://dev-crsv3-transfer-224734058693/eval/v4-reprobe/inputs/1c9153fac8706f7ee2f7cc000ca6aedc935864d47d001eab44d8d56f02cfa84d/0057_00573880_417ab441d502eafedde01127_step_005.step",
+  "1cc7634ec3387359a2ebc3918ae48ab6efeb01a77693e6491b9e4ed93a699c65": "gs://dev-crsv3-transfer-224734058693/eval/v4-reprobe/inputs/1cc7634ec3387359a2ebc3918ae48ab6efeb01a77693e6491b9e4ed93a699c65/00614908_a8619514c95972d6221f4629_step_000.step",
+  "28b5c833978d79af42def408e91e8c9b84a7eb325b1b653ff5842169d69fa19c": "gs://dev-crsv3-transfer-224734058693/eval/v4-reprobe/inputs/28b5c833978d79af42def408e91e8c9b84a7eb325b1b653ff5842169d69fa19c/0060_00608014_3fedd89a1d6b0c6f1c34e1b7_step_001.step",
+  "440b9cdbc8f1c36c9910d25023b02176484c96c35b413190624503bdbd54f828": "gs://dev-crsv3-transfer-224734058693/eval/v4-reprobe/inputs/440b9cdbc8f1c36c9910d25023b02176484c96c35b413190624503bdbd54f828/0052_00528484_58a256af264a260f6f931a1c_step_003.step",
+  "56375d76832be6df3b9d12968fd163495b0303a9cc321cdb33f6be07ccd1049c": "gs://dev-crsv3-transfer-224734058693/eval/v4-reprobe/inputs/56375d76832be6df3b9d12968fd163495b0303a9cc321cdb33f6be07ccd1049c/0060_00604433_58c21d4ea0c27b0f87b161a9_step_000.step",
+  "58d9b29c913f82d0063e47082799b090c6ba93d843cf4881f6a9a3d9f3be6701": "gs://dev-crsv3-transfer-224734058693/eval/v4-reprobe/inputs/58d9b29c913f82d0063e47082799b090c6ba93d843cf4881f6a9a3d9f3be6701/00615185_16e07d02e605cdd2f9bc3eb3_step_002.step",
+  "63d79ed926fa37797f7c55416e0f173e088da0fd43b3785b32fb08cf73944e79": "gs://dev-crsv3-transfer-224734058693/eval/v4-reprobe/inputs/63d79ed926fa37797f7c55416e0f173e088da0fd43b3785b32fb08cf73944e79/bug32314_corrupted.stp",
+  "6d30917b1303131cab85be9d7a21b4a5ac587d33c779117ce510e22d44de62d3": "gs://dev-crsv3-transfer-224734058693/eval/v4-reprobe/inputs/6d30917b1303131cab85be9d7a21b4a5ac587d33c779117ce510e22d44de62d3/0053_00535066_bb0bc8e7914fdea894ad2ec6_step_009.step",
+  "70aa160fe3f5741d4c8381e439836c485b9a2df8ede7744543980d49142c3313": "gs://dev-crsv3-transfer-224734058693/eval/v4-reprobe/inputs/70aa160fe3f5741d4c8381e439836c485b9a2df8ede7744543980d49142c3313/trj4_s1-tu-214.stp",
+  "71434a2ee23e77d5a615209a5eb24b428ce637d4be1a0b67964a9c9ab6e64e23": "gs://dev-crsv3-transfer-224734058693/eval/v4-reprobe/inputs/71434a2ee23e77d5a615209a5eb24b428ce637d4be1a0b67964a9c9ab6e64e23/0051_00519158_daf80b2021249a203e938429_step_009.step",
+  "74dcb7bf16ff6f32d662083b5008056647f37b5e0c0bcde99a2c1da942bd3383": "gs://dev-crsv3-transfer-224734058693/eval/v4-reprobe/inputs/74dcb7bf16ff6f32d662083b5008056647f37b5e0c0bcde99a2c1da942bd3383/0054_00541957_51229e00ebc25e88ce807b9e_step_000.step",
+  "8457da1cd2c4169259ce699eccdc3432cdee9017b26f26dd98bda15d4108b95b": "gs://dev-crsv3-transfer-224734058693/eval/v4-reprobe/inputs/8457da1cd2c4169259ce699eccdc3432cdee9017b26f26dd98bda15d4108b95b/0054_00547929_58ab27a87442550f6daa230f_step_014.step",
+  "8afc9c86d37b4c47beb90a6332ed812dc5f097f2aa253a230ba028a81d1b93ee": "gs://dev-crsv3-transfer-224734058693/eval/v4-reprobe/inputs/8afc9c86d37b4c47beb90a6332ed812dc5f097f2aa253a230ba028a81d1b93ee/0061_00614327_760137e15b9b924e8339e428_step_017.step",
+  "8dfc38ac974236460e9d638269a7037010bcc05fe8216f43baeaac37cfb9d886": "gs://dev-crsv3-transfer-224734058693/eval/v4-reprobe/inputs/8dfc38ac974236460e9d638269a7037010bcc05fe8216f43baeaac37cfb9d886/00616927_a9f937f458ff727ccf9860e9_step_007.step",
+  "8ed3c06f593d7500f41d33449028a92cf55d135647670b12b453fab3ca01d76b": "gs://dev-crsv3-transfer-224734058693/eval/v4-reprobe/inputs/8ed3c06f593d7500f41d33449028a92cf55d135647670b12b453fab3ca01d76b/0052_00521884_f7d1e4b9658237600ec82613_step_012.step",
+  "9f7d7953e92b896011c96a375b404040bb45a99e3312f809e2250fe9b75fae4a": "gs://dev-crsv3-transfer-224734058693/eval/v4-reprobe/inputs/9f7d7953e92b896011c96a375b404040bb45a99e3312f809e2250fe9b75fae4a/00611083_58c56432786ec50fe9e0d3ad_step_002.step",
+  "a3058f47323c7e0e24249eeaa19939867e66b243058805f67cd1b93c41f6c806": "gs://dev-crsv3-transfer-224734058693/eval/v4-reprobe/inputs/a3058f47323c7e0e24249eeaa19939867e66b243058805f67cd1b93c41f6c806/nist_ctc_01_asme1_ap203.stp",
+  "a3dc0dd4b7d092e7245273e0bd3e3d0f26505af233433acde267e284bc2b39d3": "gs://dev-crsv3-transfer-224734058693/eval/v4-reprobe/inputs/a3dc0dd4b7d092e7245273e0bd3e3d0f26505af233433acde267e284bc2b39d3/00614313_760137e15b9b924e8339e428_step_003.step",
+  "a5abfea460499dc31bc812aca68917948a117565fea4f5a080e36eb32f39650d": "gs://dev-crsv3-transfer-224734058693/eval/v4-reprobe/inputs/a5abfea460499dc31bc812aca68917948a117565fea4f5a080e36eb32f39650d/nist_ftc_11_asme1_rb.stp",
+  "a5f451e72f3a5ed7185a445fbdd3ba802889a2ad564e990203b1a4799b635a8b": "gs://dev-crsv3-transfer-224734058693/eval/v4-reprobe/inputs/a5f451e72f3a5ed7185a445fbdd3ba802889a2ad564e990203b1a4799b635a8b/0053_00533660_58a4821bab78c2106dbc0ab6_step_014.step",
+  "aa8115c12e12a99cc439477cbfd222916f9ec629fbb3c9002b18e0c264c9a892": "gs://dev-crsv3-transfer-224734058693/eval/v4-reprobe/inputs/aa8115c12e12a99cc439477cbfd222916f9ec629fbb3c9002b18e0c264c9a892/nist_ftc_07_asme1_ap242-e2.stp",
+  "af80cbfcd419d09974770c16af13ec9031725b8cc08171a64b0ad008bacfcf5b": "gs://dev-crsv3-transfer-224734058693/eval/v4-reprobe/inputs/af80cbfcd419d09974770c16af13ec9031725b8cc08171a64b0ad008bacfcf5b/0052_00526988_58a1d33fd3d9a2108b54be6d_step_000.step",
+  "b6c6630b530ed8a125793ffa02de932e12937e682c285f2deb14fcc1da09af30": "gs://dev-crsv3-transfer-224734058693/eval/v4-reprobe/inputs/b6c6630b530ed8a125793ffa02de932e12937e682c285f2deb14fcc1da09af30/0051_00519727_589dc8aa5abe5e0fe4ada930_step_014.step",
+  "beac2a59c2731acac8ded36b69a39668358e7a1ded48adc8a274314ee1949ae2": "gs://dev-crsv3-transfer-224734058693/eval/v4-reprobe/inputs/beac2a59c2731acac8ded36b69a39668358e7a1ded48adc8a274314ee1949ae2/0057_00574245_58b65964d2d73c0f795da35a_step_017.step",
+  "c2bfeb3e732ad39bc203fa1a86ec76b13962d045cb84d8db896a447000770dcd": "gs://dev-crsv3-transfer-224734058693/eval/v4-reprobe/inputs/c2bfeb3e732ad39bc203fa1a86ec76b13962d045cb84d8db896a447000770dcd/00618126_eed06e13c321a7668162e7fb_step_003.step",
+  "c7b32ea0f1c8fa43cd35084d5634e99265c88d13957d2329031d67e0833fcbd1": "gs://dev-crsv3-transfer-224734058693/eval/v4-reprobe/inputs/c7b32ea0f1c8fa43cd35084d5634e99265c88d13957d2329031d67e0833fcbd1/00611614_dc895f3def431f6a458ec669_step_001.step",
+  "d77ea9a558b257cde4d9f53df1d3f83c2aac2cbf1fdacba5a9646df62c4ad8e8": "gs://dev-crsv3-transfer-224734058693/eval/v4-reprobe/inputs/d77ea9a558b257cde4d9f53df1d3f83c2aac2cbf1fdacba5a9646df62c4ad8e8/00614204_19a2c877657141b8642cd25a_step_000.step",
+  "d797542cd9240d8b78ed834fc43dcb722663b5a088082379c0ad56106caf7262": "gs://dev-crsv3-transfer-224734058693/eval/v4-reprobe/inputs/d797542cd9240d8b78ed834fc43dcb722663b5a088082379c0ad56106caf7262/trj3_s1-db-214.stp",
+  "dad0185f630ba3b554742929f853a42fa6f699782c310902093deb6489681b6b": "gs://dev-crsv3-transfer-224734058693/eval/v4-reprobe/inputs/dad0185f630ba3b554742929f853a42fa6f699782c310902093deb6489681b6b/0061_00615999_4f1d2ad2e4e729a2f1836480_step_000.step",
+  "db90265b9b0c19c3fa2848ce56ccbb5637fc2e254e91cbe3d179a1004778bb8d": "gs://dev-crsv3-transfer-224734058693/eval/v4-reprobe/inputs/db90265b9b0c19c3fa2848ce56ccbb5637fc2e254e91cbe3d179a1004778bb8d/00619793_973db45bf9076901a50908bc_step_000.step",
+  "e081d518484d5c708c6729353237f94a7d97da2b74a10d60d4c0d146d67a5855": "gs://dev-crsv3-transfer-224734058693/eval/v4-reprobe/inputs/e081d518484d5c708c6729353237f94a7d97da2b74a10d60d4c0d146d67a5855/nist_ctc_01_asme1_rd.stp",
+  "e6368ff786884688c139b19c4c86ce3870cd4a50489f837e471f64d3de8b53c6": "gs://dev-crsv3-transfer-224734058693/eval/v4-reprobe/inputs/e6368ff786884688c139b19c4c86ce3870cd4a50489f837e471f64d3de8b53c6/00611852_673cbf4282be88b3374992cb_step_008.step",
+  "fdd2cb5507b97c3eb6188cdf3476883f11b943e2931184ec7901854dc4717db2": "gs://dev-crsv3-transfer-224734058693/eval/v4-reprobe/inputs/fdd2cb5507b97c3eb6188cdf3476883f11b943e2931184ec7901854dc4717db2/0060_00601268_01579e613800b230c1716e80_step_001.step"
+ },
+ "profile": "v1r",
+ "projection": {
+  "critical_shard_min": 104.9,
+  "expected_model_usd": 1.3,
+  "vm_hours": 2.1,
+  "vm_usd": 1.57,
+  "worst_single_file_min": 120.0
+ },
+ "splits": {
+  "clean": {
+   "files": 9,
+   "input_bytes": 602487,
+   "path": "/Users/kitts/archductor/snap-runs/v1r-202611240237/splits/clean.json",
+   "sha256": "de83039bea2ae13c9968895b66be279fba7bf00e2b3aefa0ddadc363163a2c07"
+  },
+  "dev": {
+   "files": 29,
+   "input_bytes": 36514188,
+   "path": "/Users/kitts/archductor/snap-runs/v1r-202611240237/splits/dev.json",
+   "sha256": "63fe30dfc59a796563b660c1d29a1c384731b9c6076e22649e5a517642d05d36"
+  }
+ },
+ "total_caps_usd": 14.93,
+ "waves": {
+  "clean": {
+   "caps_usd": [
+    1.4
+   ],
+   "files_per_shard": [
+    9
+   ],
+   "n_shards": 1,
+   "plan_digest": "2f0124bf7b9839b71c620bed75d084a8452f20366a73d1bf94de2afeead3b0d3",
+   "predicted_shard_s": [
+    313
+   ],
+   "slice_usd": 50.0,
+   "wave": "snap_v1r_clean"
+  },
+  "dev": {
+   "caps_usd": [
+    1.0,
+    1.0,
+    1.0,
+    3.29,
+    3.62,
+    3.62
+   ],
+   "files_per_shard": [
+    1,
+    1,
+    1,
+    8,
+    9,
+    9
+   ],
+   "n_shards": 6,
+   "plan_digest": "3abd202cdeb622f01f239bb8025bc25f4990a3c4bdf6eb7300caa7e0f57f597d",
+   "predicted_shard_s": [
+    6291,
+    5702,
+    3154,
+    2979,
+    2977,
+    2986
+   ],
+   "slice_usd": 8.333333333333334,
+   "wave": "snap_v1r_dev"
+  }
+ }
+}
