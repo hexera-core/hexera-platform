@@ -163,7 +163,8 @@ if [ "${KEEP_VM:-0}" != 1 ]; then
 fi
 
 # ---------------------------------------------------------------- 8. the doc and the artifacts
-python3 -I "$HERE/analyze.py" --run "$RUN" --doc "$DOC" | tee -a "$RUN/launch.log"
+python3 -I "$HERE/analyze.py" --run "$RUN" --doc "$DOC" ${NOTES_MD:+--notes "$NOTES_MD"} ${MOVED:+--moved "$MOVED"} | tee -a "$RUN/launch.log"
+[ -n "${NOTES_MD:-}" ] && cp "$NOTES_MD" "$RUN/notes.md"
 mkdir -p "$ART"
 ( cd "$RUN" && find out -path '*/shard-*' \( -name rows.json -o -name EXCLUDED.json -o -name PROVENANCE.json \) -print0 \
   | xargs -0 -I{} sh -c 'mkdir -p "$1/$(dirname "$2")" && cp "$2" "$1/$2"' _ "$ART" {} )
@@ -171,7 +172,7 @@ cp -r "$RUN/ledger" "$RUN/out/reports" "$ART/" 2>/dev/null; mkdir -p "$ART/logs"
 cp "$RUN"/out/*.rc "$RUN"/out/*.start "$RUN"/out/*.end "$RUN"/out/{LAUNCHED,RUN_DONE,ALLDONE,STAGE_DONE,stage_errors.txt,RETRIED} "$ART/logs/" 2>/dev/null
 cp -r "$RUN/out/attempt1" "$ART/logs/" 2>/dev/null
 for f in "$RUN"/out/*.log; do { head -40 "$f"; echo "... [trimmed $(wc -l < "$f") lines; errors then tail] ..."; grep -n -E 'Traceback|ERROR|REFUSED|file_timeout' "$f" | head -40; tail -40 "$f"; } > "$ART/logs/$(basename "$f")"; done
-cp "$RUN"/{launch_manifest.json,run.env,vm.json,vm_deleted.json,launch.log,image_on_vm.txt} "$ART/" 2>/dev/null
+cp "$RUN"/{launch_manifest.json,run.env,vm.json,vm_deleted.json,launch.log,image_on_vm.txt,notes.md} "$ART/" 2>/dev/null
 cp "$RUN"/splits/{dev.json,clean.json,plan_dev.json,plan_clean.json} "$ART/splits/"
 if grep -rlE 'sk-[A-Za-z0-9_-]{20,}' "$ART" "$DOC"; then die "a key-shaped string reached the artifacts: not committing"; fi
 BR=$(git -C "$REPO" branch --show-current)
