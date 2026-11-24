@@ -432,3 +432,46 @@ def test_a_missing_or_blank_cache_uri_is_a_per_process_memory_cache_and_says_so(
     assert [r.getMessage() for r in caplog.records].count(caplog.records[0].getMessage()) == 1  # once, not per call
     assert cache_mod.CACHE_URI_ENV in caplog.records[0].getMessage()
     cache_mod.reset_default_verdict_cache()
+
+
+# --- lane B15: the cache counts what it answered, so a wave can say whether sharing worked ---------
+
+
+def _member(name: str = "gmsh_default", status: str = "pass"):
+    from meshpipeline.cad.repair_v4.verdict.panel import MemberResult
+
+    return MemberResult(name=name, status=status, min_sicn=0.3, seconds=1.0)
+
+
+def test_the_cache_counts_hits_misses_stores_and_what_it_refused_to_store() -> None:
+    """B15: a wave cannot tell whether its arms shared one verdict without a counter. A miss, then a store, then a
+    hit on the same key; an unstable panel is counted apart from a store because it is deliberately not kept."""
+    from meshpipeline.cad.repair_v4.verdict.cache import MemoryStore, VerdictCache
+
+    cache = VerdictCache(MemoryStore())
+    assert cache.stats() == {"hits": 0, "misses": 0, "stored": 0, "unstable": 0, "errors": 0}
+
+    assert cache.get("sha1", "cfg") is None
+    assert cache.put("sha1", "cfg", [_member()]) is True
+    got = cache.get("sha1", "cfg")
+    assert got is not None and [r.name for r in got] == ["gmsh_default"]
+    assert cache.put("sha2", "cfg", [_member(status="timeout")]) is False   # not a definite verdict: not kept
+    assert cache.get("sha2", "cfg") is None
+    cache.note_error()
+
+    assert cache.stats() == {"hits": 1, "misses": 2, "stored": 1, "unstable": 1, "errors": 1}
+
+
+def test_a_store_that_raises_is_counted_as_an_error_not_a_verdict() -> None:
+    """`assemble._cache_get` turns any store failure into a miss; it must also be VISIBLE, or a wave whose cache
+    was unreachable would look exactly like a wave whose files never repeated."""
+    from meshpipeline.cad.repair_v4.verdict import assemble
+    from meshpipeline.cad.repair_v4.verdict.cache import MemoryStore, VerdictCache
+
+    class Broken(MemoryStore):
+        def get(self, key: str):
+            raise RuntimeError("no network")
+
+    cache = VerdictCache(Broken())
+    assert assemble._cache_get(cache, "sha", "cfg") is None
+    assert cache.stats()["errors"] == 1

@@ -178,6 +178,24 @@ class VerdictCache:
     def __init__(self, store: CacheStore, *, result_factory: Callable[[dict], Any] | None = None) -> None:
         self.store = store
         self._factory = result_factory or _default_factory
+        # lane B15: what this cache ANSWERED, so a wave can say whether its arms shared one verdict or each paid
+        # for its own meshing. A hit is a panel served; an `unstable` is a panel deliberately not kept (a timeout
+        # or a crash is not a verdict); an `error` is a store that could not answer, which `assemble` turns into a
+        # miss and which would otherwise be indistinguishable from a file that simply never repeated.
+        self._counts = {"hits": 0, "misses": 0, "stored": 0, "unstable": 0, "errors": 0}
+        self._counts_lock = threading.Lock()
+
+    def _count(self, what: str) -> None:
+        with self._counts_lock:
+            self._counts[what] += 1
+
+    def note_error(self) -> None:
+        """A store that raised. Called by `assemble`'s wrappers, which own the decision to treat it as a miss."""
+        self._count("errors")
+
+    def stats(self) -> dict[str, int]:
+        with self._counts_lock:
+            return dict(self._counts)
 
     @staticmethod
     def key(step_sha: str, config_hash: str, version: str = VERDICT_CODE_VERSION) -> str:
@@ -187,17 +205,22 @@ class VerdictCache:
         key_ = self.key(step_sha, config_hash, version)
         text = self.store.get(key_)
         if text is None:
+            self._count("misses")
             return None
         try:
             body = json.loads(text)
             if (body["version"], body["step_sha256"], body["config_hash"]) != (version, step_sha, config_hash):
                 logger.warning("verdict cache miss: record under %s carries a different version/sha/config", key_)
+                self._count("misses")
                 return None  # whatever the key says, a record that does not carry ours is a miss
-            return [self._factory(item) for item in body["panel"]]
+            panel = [self._factory(item) for item in body["panel"]]
+            self._count("hits")
+            return panel
         except (ValueError, KeyError, TypeError, AttributeError) as exc:
             # Re-mesh rather than trust it, but say why: a schema mismatch with the panel's result
             # type would otherwise disable the cache without anyone seeing it.
             logger.warning("verdict cache miss: unreadable entry %s: %s: %s", key_, type(exc).__name__, exc)
+            self._count("misses")
             return None
 
     def put(
@@ -205,6 +228,7 @@ class VerdictCache:
     ) -> bool:
         """Store `panel`; False (and nothing stored) if any result is not a definite pass or fail."""
         if any(r.status not in CACHEABLE_STATUSES for r in panel):
+            self._count("unstable")
             return False
         body = {
             "version": version,
@@ -213,6 +237,7 @@ class VerdictCache:
             "panel": [dataclasses.asdict(r) for r in panel],
         }
         self.store.put(self.key(step_sha, config_hash, version), json.dumps(body))
+        self._count("stored")
         return True
 
 

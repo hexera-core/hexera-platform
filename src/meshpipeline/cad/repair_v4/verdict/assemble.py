@@ -216,6 +216,7 @@ def _cache_get(cache: VerdictCache, sha: str, config: str) -> list[Any] | None:
         return cache.get(sha, config)
     except Exception as exc:  # noqa: BLE001 - any store failure
         logger.warning("verdict cache unreadable, meshing instead: %s: %s", type(exc).__name__, exc)
+        cache.note_error()
         return None
 
 
@@ -224,6 +225,7 @@ def _cache_put(cache: VerdictCache, sha: str, config: str, panel: Sequence[Any])
         cache.put(sha, config, panel)
     except Exception as exc:  # noqa: BLE001 - the measurement stands; only its memo is lost
         logger.warning("verdict cache write failed: %s: %s", type(exc).__name__, exc)
+        cache.note_error()
 
 
 def verdict(
