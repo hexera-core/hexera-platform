@@ -47,8 +47,9 @@ def test_a_kept_aimed_defeature_is_followed_by_the_three_reconditioning_stages()
     got = gen.propose(child, 12)
     assert [c.params["stage"] for c in got if c.op == S.RUN_STAGE] == list(S.CHAIN_AFTER_DEFEATURE)
     # B21b: the follow-ups come first, ONE row per follow-up op, in the oracle's win order for this opener
+    # B21c: the hoist is ordered by DISTINCT FILES, so run_stage (12 files) leads a second defeature (11)
     head = [c.op for c in got[:len(S.CHAIN_FOLLOWUPS["defeature"])]]
-    assert head[0] == "defeature" and S.RUN_STAGE in head, head
+    assert head[0] == S.RUN_STAGE and "defeature" in head, head
 
 
 def test_the_openers_cover_every_chain_the_oracle_measured_at_six_or_more_wins() -> None:
@@ -66,7 +67,22 @@ def test_the_openers_cover_every_chain_the_oracle_measured_at_six_or_more_wins()
     for opener, follows in want.items():
         got = set(S.CHAIN_FOLLOWUPS.get(opener, ()))
         assert follows <= got, f"{opener}: missing {sorted(follows - got)}"
-    # the strongest single pattern in the table, 26 wins on body_overlap
+
+
+def test_the_hoist_is_ordered_by_DISTINCT_FILES_not_by_winning_paths() -> None:
+    """B21c (LEAD-3's ruling on my own finding): a pattern that won 26 times on TWO files generalises worse than
+    one that won 8 times on EIGHT. The whole ungamed chain set rests on 29 files, so the path count was the wrong
+    key - these are the orders the file counts give."""
+    # defeature: run_stage 12 files beats a second defeature's 11, though the paths say 23 against 30
+    assert S.CHAIN_FOLLOWUPS["defeature"][:2] == (S.RUN_STAGE, "defeature")
+    # remove_small: defeature 9 files leads split_angle's 8, though the paths say 22 against 24
+    assert S.CHAIN_FOLLOWUPS["remove_small"][:3] == ("defeature", "split_angle", S.RUN_STAGE)
+    # split_angle THEN run_stage is 8 files - the broadest evidence in the table - and leads its opener
+    assert S.CHAIN_FOLLOWUPS["split_angle"][0] == S.RUN_STAGE
+    # conformalise: remove_small's 3 files lead defeature's 2, and the 1-file conformalise THEN conformalise is LAST
+    assert S.CHAIN_FOLLOWUPS["conformalise"][0] == "remove_small"
+    assert S.CHAIN_FOLLOWUPS["conformalise"][-1] == "conformalise"
+    # fuse's follow-ups are all 2-file rows, so the paths break the tie and conformalise (26) still leads
     assert S.CHAIN_FOLLOWUPS["fuse"][0] == "conformalise"
 
 
@@ -129,7 +145,8 @@ def test_a_kept_remove_small_is_followed_by_a_split_on_the_measured_pairs_only()
     # (14) is in the hoist behind it - both ahead of the fair share
     note = next(n for n in gen.notes if n.startswith("chain after a kept remove_small"))
     hoisted = note.split(": ", 1)[1].split(", ")
-    assert hoisted[0] == "split_angle" and "split_by_proximity" in hoisted, hoisted
+    # B21c order: defeature (9 files) leads split_angle (8), and the measured-pair split is still in the hoist
+    assert hoisted[0] == "defeature" and "split_by_proximity" in hoisted, hoisted
     assert [c.op for c in got[:len(hoisted)]] == hoisted, [c.op for c in got[:4]]
 
 
@@ -154,6 +171,10 @@ def test_the_prompt_is_keyed_on_the_tables_own_defect_families_and_names_no_file
         assert family in CHAIN_HINTS, family
     for must in ("defeature", "run_stage", "remove_small", "split_by_proximity", "fuse THEN conformalise"):
         assert must in CHAIN_HINTS, must
+    # B21c: the hint counts FILES, and says so, including that the biggest pattern rests on two of them
+    assert "DIFFERENT FILES" in CHAIN_HINTS and "8 files" in CHAIN_HINTS
+    assert "2 files, but 26 wins" in CHAIN_HINTS and "29 files" in CHAIN_HINTS
+    assert "(21)" not in CHAIN_HINTS, "path counts must not be quoted as if they were file counts"
     # no file id, no sha, no split name: the dev sample's answers must not reach the model
     import re
 

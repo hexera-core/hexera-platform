@@ -1418,27 +1418,34 @@ AIMED_GUESSED = 2    # a combination the kernel never measured, or a part-wide s
 
 
 
-#: B21b: THE CHAINS, from lane D's oracle pass 1 (`lane-d21/pass1/winners_by_defect.jsonl`, 658 winning paths). Of
-#: its 316 UNGAMED chain wins that no v4 arm reached, B21's two hardcoded chains opened 37. This table is the same
-#: data, read as "what followed what": opener -> follow-up ops, ORDERED BY MEASURED WINS. The follow-ups are not new
-#: rows - they are the sweep's own rows for this state, hoisted ahead of the fair share - so every B20 rule still
-#: binds (a guessed pair is still not built, a duplicate is still dropped). `run_stage` is the one exception, since
-#: the sweep does not build it; it reaches det only here.
-#:   defeature    30 defeature, 23 run_stage, 17 conformalise, 14 fuse, 11 split_angle
-#:   remove_small 24 split_angle, 22 defeature, 15 run_stage, 14 split_by_proximity, 6 remove_small, 6 rebuild_face
-#:   fuse         26 conformalise, 6 fuse, 4 defeature
-#:   conformalise 8 defeature, 6 remove_small, 6 conformalise
-#:   rebuild_face 8 split_angle, 8 run_stage
-#:   split_angle  8 run_stage, 4 split_continuity
-#:   fill_loop    4 remove_small
-#:   split_by_proximity 3 remove_small, 3 split_by_proximity
+#: B21c: THE CHAINS, from lane D's oracle pass 1 (`lane-d21/pass1/winners_by_defect.jsonl`, 658 winning paths, of
+#: which 316 are UNGAMED chain wins no v4 arm reached). Opener -> follow-up ops.
+#:
+#: ORDERED BY DISTINCT FILES, ties by paths (LEAD-3's ruling, on my own finding). The path count over-weights a
+#: pattern concentrated in a few files: the table's biggest single number, `fuse THEN conformalise` at 26 paths,
+#: comes from TWO files, while `split_angle THEN run_stage` at 8 paths is 8 DIFFERENT files - the broadest evidence
+#: in the table. The whole ungamed chain set rests on 29 files, so dev gains from this table are optimistic by
+#: construction and the held-out run is its honest test; file count is the better predictor of what generalises.
+#: Counts below are files/paths.
+#:   defeature    run_stage 12f/23p, defeature 11f/30p, split_angle 5f/11p, conformalise 4f/17p, fuse 3f/14p
+#:   remove_small defeature 9f/22p, split_angle 8f/24p, run_stage 8f/15p, remove_small 6f/6p,
+#:                split_by_proximity 5f/14p, rebuild_face 3f/6p
+#:   split_angle  run_stage 8f/8p, split_continuity 4f/4p
+#:   rebuild_face split_angle 4f/8p, run_stage 4f/8p
+#:   conformalise remove_small 3f/6p, defeature 2f/8p, fuse 2f/2p
+#:   fuse         conformalise 2f/26p, fuse 2f/6p, defeature 2f/4p
+#:   fill_loop    remove_small 1f/4p (one file: the weakest row kept, and last)
+#:
+#: The follow-ups are NOT new rows - they are the sweep's own rows for this state, hoisted ahead of the fair share -
+#: so every B20 rule still binds (a guessed pair is still not built, a duplicate is still dropped). `run_stage` is
+#: the one exception, since the sweep does not build it; it reaches det only here.
 CHAIN_FOLLOWUPS: dict[str, tuple[str, ...]] = {
-    "defeature": ("defeature", RUN_STAGE, "conformalise", "fuse", "split_angle"),
-    "remove_small": ("split_angle", "defeature", RUN_STAGE, "split_by_proximity", "rebuild_face", "remove_small"),
-    "fuse": ("conformalise", "fuse", "defeature"),
-    "conformalise": ("defeature", "remove_small", "conformalise"),
-    "rebuild_face": ("split_angle", RUN_STAGE),
+    "defeature": (RUN_STAGE, "defeature", "split_angle", "conformalise", "fuse", "remove_small"),
+    "remove_small": ("defeature", "split_angle", RUN_STAGE, "remove_small", "split_by_proximity", "rebuild_face"),
     "split_angle": (RUN_STAGE, "split_continuity"),
+    "rebuild_face": ("split_angle", RUN_STAGE),
+    "conformalise": ("remove_small", "defeature", "fuse", "conformalise"),
+    "fuse": ("conformalise", "fuse", "defeature", RUN_STAGE),
     "fill_loop": ("remove_small",),
     "split_by_proximity": ("remove_small", "split_by_proximity"),
 }
