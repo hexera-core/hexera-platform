@@ -771,14 +771,35 @@ def _with_pictures(llm_messages: list[dict], state_messages: list, *, vision: bo
             continue
         if not vision:
             out[i]["content"] = (words + "\n" if words else "") + (
-                f"[the user attached a picture: {names}. You cannot see pictures here. Say in one line: "
-                f"\"{NO_VISION_LINE}\" A number they want applied must be typed.]")
+                f"[the user attached a picture: {names}. You cannot see pictures here; the application tells "
+                f"the user so. A number they want applied must be typed.]")
             continue
         urls = [u for u in (load(p) for p in pics[:MAX_TURN_PICTURES]) if u]
         parts: list[dict] = [{"type": "text", "text": words or f"(a picture: {names})"}]
         parts += [{"type": "image_url", "image_url": {"url": u}} for u in urls]
         out[i]["content"] = parts if urls else words + f"\n[the user attached a picture that could not be read now: {names}]"
     return out
+
+
+def _shows_a_picture(llm_messages: list[dict]) -> bool:
+    """Whether a picture itself (an image part) is in what the model is sent."""
+    return any(isinstance(m.get("content"), list) and any(
+        isinstance(p, dict) and p.get("type") == "image_url" for p in m["content"]) for m in llm_messages
+        if isinstance(m, dict))
+
+
+def _with_no_vision_line(reply: str, state_messages: list, *, shown: bool) -> str:
+    """THE NO-VISION LINE, IN CODE (NOTE-16): when this turn's user message carried a picture the model was not
+    shown (the route has no vision, or the picture could not be read now), the reply ends with NO_VISION_LINE -
+    once: not when the reply already says it, and never on a later turn (only the user message this turn answers
+    counts: one an assistant reply already follows is an earlier turn's)."""
+    said = [m for m in state_messages or () if isinstance(m, dict) and not m.get("_synthetic")]
+    last_user = max((i for i, m in enumerate(said) if m.get("role") == "user"), default=-1)
+    if shown or last_user < 0 or not _pictures_of(said[last_user]) or NO_VISION_LINE in reply:
+        return reply
+    if any(m.get("role") == "assistant" for m in said[last_user + 1:]):
+        return reply
+    return f"{reply.rstrip()}\n\n{NO_VISION_LINE}" if reply.strip() else NO_VISION_LINE
 
 
 def _block_attachments_and_faces() -> str:
@@ -1466,6 +1487,7 @@ async def node_intake(state: PipelineState) -> dict:
         llm_messages = await asyncio.to_thread(
             _with_pictures, llm_messages, state_messages, vision=_intake_sees_pictures(),
             load=lambda row: data_url(_sid, row))
+    _pictures_shown = _shows_a_picture(llm_messages)
     _loop_result = await run_agent_loop(
         driver=_policy, provider_call=_script, messages=llm_messages, tools=INTAKE_TOOLS,
         job_id=str(job_id), user_id=_ctx.owner_id,
@@ -1545,6 +1567,8 @@ async def node_intake(state: PipelineState) -> dict:
         if _note and _note not in assistant_text and not any(
                 _note in str(m.get("content") or "") for m in _said if isinstance(m, dict)):
             assistant_text = f"{_note}\n\n{assistant_text}"
+    # a picture the model did not see is said by the application, in one line, never left to the model
+    assistant_text = _with_no_vision_line(assistant_text, state_messages, shown=_pictures_shown)
     _had_usage = bool(_in_tokens or _out_tokens)
     _record = turn.TurnRecord(
         finish_reason=_policy.finish_reason or "unknown",
