@@ -65,9 +65,11 @@ CLEAN_N=$(python3 -I -c "import json;print(json.load(open('$RUN/splits/launch_ma
 VCPU=${MACHINE##*-}
 FREE=$(gcloud compute regions describe us-central1 --project $PROJECT --format=json | python3 -I -c "
 import json,sys; q={x['metric']:x for x in json.load(sys.stdin)['quotas']}['C2D_CPUS']; print(int(q['limit']-q['usage']))")
+case "$FREE" in ''|*[!0-9]*) die "cannot read the C2D quota (got '$FREE')";; esac
 log "C2D_CPUS free in us-central1: $FREE, need $VCPU"
 [ "$FREE" -ge "$VCPU" ] || die "C2D quota: $FREE free < $VCPU"
-gcloud compute instances list --project $PROJECT --filter="name=$VM" --format='value(name)' | grep -q . && die "a VM named $VM already exists (not mine to touch)"
+EXISTING=$(gcloud compute instances list --project $PROJECT --filter="name=$VM" --format='value(name)') || die "cannot list instances"
+[ -n "$EXISTING" ] && die "a VM named $VM already exists (not mine to touch)"
 # the image is pinned by digest and its org.opencontainers.image.revision label must equal IMAGE_COMMIT (the commit
 # its mesh build came from; the RUN commit is bind-mounted separately and may differ)
 IMAGE_REF=${IMAGE:?set IMAGE (profile or env) to a digest-pinned image}
@@ -145,7 +147,8 @@ tar cf "$RUN/payload.tar" -C "$RUN" code.tar splits tools run.env
 gcloud compute scp "$RUN/payload.tar" $VM:~/payload.tar --zone $ZONE --project $PROJECT >> "$RUN/launch.log" 2>&1 || die "scp failed"
 SSH 'set -e; mkdir -p ~/snap/code; cd ~/snap; tar xf ~/payload.tar; tar xf code.tar -C code; chmod -R a+rX code splits tools' || die "unpack failed"
 { printf 'OPENAI_API_KEY='; gcloud secrets versions access latest --secret openai-api-key --project $PROJECT; echo; } \
-  | SSH 'umask 077; cat > ~/snap/secret.env; test -s ~/snap/secret.env && echo key-ok' | grep -q key-ok || die "key not written"
+  | SSH 'umask 077; cat > ~/snap/secret.env; grep -qE "^OPENAI_API_KEY=.{20,}$" ~/snap/secret.env && echo key-ok' | grep -q key-ok \
+  || die "the model key was not written (an empty or failed secret read)"
 SSH 'cd ~/snap; nohup setsid bash tools/vm_run.sh > driver.log 2>&1 < /dev/null & echo started' | grep -q started || die "driver did not start"
 log "running; polling every 2 min for out/ALLDONE"
 while true; do
@@ -157,7 +160,9 @@ while true; do
 done
 
 # ---------------------------------------------------------------- 7. collect, delete
-SSH 'cd ~/snap; shred -u secret.env 2>/dev/null; ls secret.env 2>/dev/null; tar czf /tmp/collect.tgz --exclude="*/work" out ledger driver.log; find out \( -name search-trace.json -o -name delivered.json -o -name delivered.brep \) > /tmp/traces.txt; tar czf /tmp/traces.tgz -T /tmp/traces.txt; date -u +%FT%TZ > out/COLLECTED' >> "$RUN/launch.log"
+COLLECT=$(SSH 'cd ~/snap; shred -u secret.env 2>/dev/null; ls secret.env 2>/dev/null; tar czf /tmp/collect.tgz --exclude="*/work" out ledger driver.log; echo COLLECT_RC=$?; find out \( -name search-trace.json -o -name delivered.json -o -name delivered.brep \) > /tmp/traces.txt; tar czf /tmp/traces.tgz -T /tmp/traces.txt; date -u +%FT%TZ > out/COLLECTED')
+echo "$COLLECT" >> "$RUN/launch.log"
+echo "$COLLECT" | grep -q '^COLLECT_RC=0$' || die "the collect archive failed on the VM ($(echo "$COLLECT" | grep COLLECT_RC)); VM left for the trap to delete"
 gcloud compute scp $VM:/tmp/collect.tgz "$RUN/collect.tgz" --zone $ZONE --project $PROJECT >> "$RUN/launch.log" 2>&1 || die "collect failed"
 tar xzf "$RUN/collect.tgz" -C "$RUN" || die "collect archive unreadable"
 gcloud compute scp $VM:/tmp/traces.tgz "$RUN/traces.tgz" --zone $ZONE --project $PROJECT >> "$RUN/launch.log" 2>&1 \
@@ -220,11 +225,14 @@ cp -r "$RUN/out/attempt1" "$ART/logs/" 2>/dev/null
 for f in "$RUN"/out/*.log; do { head -40 "$f"; echo "... [trimmed $(wc -l < "$f") lines; errors then tail] ..."; grep -n -E 'Traceback|ERROR|REFUSED|file_timeout' "$f" | head -40; tail -40 "$f"; } > "$ART/logs/$(basename "$f")"; done
 cp "$RUN"/{launch_manifest.json,run.env,vm.json,vm_deleted.json,launch.log,image_on_vm.txt,notes.md} "$ART/" 2>/dev/null
 cp "$RUN"/splits/{dev.json,clean.json,plan_dev.json,plan_clean.json} "$ART/splits/"
+NROWS=$(find "$ART/out" -name rows.json 2>/dev/null | wc -l | tr -d ' ')
+[ "$NROWS" -ge "$((DEV_N + CLEAN_N))" ] || die "only $NROWS rows.json copied into $ART (want $((DEV_N + CLEAN_N))): not committing"
 if grep -rlE 'sk-[A-Za-z0-9_-]{20,}' "$ART" "$DOC"; then die "a key-shaped string reached the artifacts: not committing"; fi
 BR=$(git -C "$REPO" branch --show-current)
 case $BR in sdd/*) git -C "$REPO" add "$DOC" && git -C "$REPO" add -f "$ART" && \
   git -C "$REPO" commit -q -m "docs(snap-$LABEL): CRS v4 dev snapshot $LABEL at ${COMMIT:0:8} (PROVISIONAL)
 
-Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>" && log "committed $(git -C "$REPO" rev-parse --short HEAD) on $BR";;
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>" && log "committed $(git -C "$REPO" rev-parse --short HEAD) on $BR" \
+  || die "the commit of $DOC and $ART FAILED (doc and artifacts are on disk)";;
   *) log "not on an sdd/* branch ($BR): doc and artifacts written, NOT committed";; esac
 log "DONE: $DOC"
