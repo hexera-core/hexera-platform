@@ -796,3 +796,50 @@ def test_the_triage_names_each_failing_members_cause() -> None:
                         valid=SimpleNamespace(ok=True, hard=[]))
     failing = run_arm.arms_mod.verdict_triage(v)["panel_failing"]
     assert failing == [{"name": "gmsh_alt", "status": "timeout", "error_kind": "timeout", "cause": "after_timeout_crashed"}]
+
+
+# --- the owner's overlap ruling: either cut computable from rows -------------------------------------------------
+
+
+class _OverlapPool:
+    def __init__(self, record: dict | None = None, fail: bool = False) -> None:
+        self.record, self.fail, self.calls = record, fail, []
+
+    def call(self, fn: str, payload: dict, *, timeout_s: float) -> CallResult:
+        self.calls.append((fn, payload))
+        if self.fail:
+            return CallResult(False, None, "boom", "error", 0.0)
+        return CallResult(True, self.record, None, "ok", 0.0)
+
+
+def _overlapping_input(*pairs: tuple[str, str]) -> Any:
+    from meshpipeline.cad.repair_v4.verdict.valid import Finding
+
+    hard = [Finding("body_overlap", [a, b], {}) for a, b in pairs]
+    return SimpleNamespace(valid=SimpleNamespace(hard=hard))
+
+
+def test_the_inputs_overlap_depth_and_bound_are_recorded_from_both_cuts() -> None:
+    pool = _OverlapPool({"diag_mm": 120.0, "bound_mm": 0.1, "pairs": [
+        {"bodies": ["S1", "S2"], "a_by_b": {"depth_mm": 4.6, "method": "measured", "volume_mm3": 43.0},
+         "b_by_a": {"depth_mm": 3.1, "method": "mean_thickness", "volume_mm3": 43.0}},
+        {"bodies": ["S2", "S3"], "a_by_b": {"depth_mm": 0.05, "method": "measured", "volume_mm3": 1.0},
+         "b_by_a": {"depth_mm": 0.07, "method": "measured", "volume_mm3": 1.0}}]})
+    o = run_arm.arms_mod.overlap_triage(pool, SimpleNamespace(brep_path="/w/in.brep"),
+                                        _overlapping_input(("S1", "S2"), ("S2", "S3"), ("S2", "S1")))
+    assert pool.calls == [("v4_overlap_depths", {"brep_path": "/w/in.brep", "pairs": [[1, 2], [2, 3]]})]
+    # per pair the cheaper cut; for the file the worst pair: the file is within the bound only if every pair is
+    assert o["max_depth_mm"] == 3.1 and o["method"] == "mean_thickness" and o["bound_mm"] == 0.1
+    assert o["within_bound"] is False and [p["required_mm"] for p in o["pairs"]] == [3.1, 0.05]
+
+
+def test_an_input_with_no_overlap_records_none_and_calls_nothing() -> None:
+    pool = _OverlapPool()
+    assert run_arm.arms_mod.overlap_triage(pool, SimpleNamespace(brep_path="x"), _overlapping_input()) is None
+    assert pool.calls == []
+
+
+def test_a_failed_measurement_is_recorded_as_such_never_breaks_the_row() -> None:
+    o = run_arm.arms_mod.overlap_triage(_OverlapPool(fail=True), SimpleNamespace(brep_path="x"),
+                                        _overlapping_input(("S1", "S2")))
+    assert o["max_depth_mm"] is None and "error" in o

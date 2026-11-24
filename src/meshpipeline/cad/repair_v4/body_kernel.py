@@ -363,6 +363,28 @@ def _targets(old: Any, indices: list[int]) -> list[Any]:
     return [solids.FindKey(i) for i in indices]
 
 
+@register("v4_overlap_depths")
+def _overlap_depths(payload: dict) -> dict:
+    """For each body pair `[i, j]` (1-based solid indices), BOTH cuts measured by `_cut_depth`, the measure
+    `conformalise(cut_by)` declines on: `a_by_b` cuts solid i by solid j, `b_by_a` the reverse. With the part's diagonal
+    and fidelity bound. For the evaluation's report (the owner's "both ways" overlap ruling); changes no shape."""
+    old = read_brep(payload["brep_path"])
+    diag = diagonal_of(old)
+    solids = _maps(old)["solid"]
+    pairs = []
+    for i, j in payload["pairs"]:
+        a, b = solids.FindKey(int(i)), solids.FindKey(int(j))
+        entry: dict[str, Any] = {"bodies": [f"S{i}", f"S{j}"]}
+        for name, (victim, keeper) in (("a_by_b", (a, b)), ("b_by_a", (b, a))):
+            try:
+                volume, depth, method = _cut_depth(victim, keeper, 0.0)
+                entry[name] = {"depth_mm": depth, "method": method, "volume_mm3": volume}
+            except Exception as exc:  # noqa: BLE001 - one pair that cannot be measured says so; the others stand
+                entry[name] = {"depth_mm": None, "method": f"error: {type(exc).__name__}", "volume_mm3": None}
+        pairs.append(entry)
+    return {"diag_mm": diag, "bound_mm": fidelity_bound(diag), "pairs": pairs}
+
+
 @register("v4_conformalise")
 def _conformalise(payload: dict) -> dict:
     start = time.perf_counter()
