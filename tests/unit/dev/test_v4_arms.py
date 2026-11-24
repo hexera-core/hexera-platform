@@ -223,6 +223,17 @@ def test_a_search_arm_starts_from_the_staged_healers_output_as_the_engine_does(s
     assert row["in_panel_passes"] == 0 and row["out_panel_passes"] == 1
 
 
+def test_a_search_arm_keeps_its_whole_trace_beside_its_work_states(shard: Any) -> None:
+    """The row keeps a summary (the first evaluated deltas, the top reasons); triage needs the whole search, so every
+    search arm writes its trace as `<workdir>/search-trace.json` for each file, and a non-search arm writes none."""
+    rows, excluded = go(shard, "input_only,search_det", None, FakeEngine())
+    assert excluded == [] and len(rows) == 2
+    traces = sorted(shard.out.rglob("search-trace.json"))
+    assert [t.parent.name for t in traces] == ["search_det"]
+    events = json.loads(traces[0].read_text())["events"]
+    assert any(e["kind"] == "stop" for e in events)
+
+
 def test_a_search_row_carries_the_cheap_full_table_of_the_states_it_confirmed(shard: Any, wire: Wire) -> None:  # noqa: F811
     wire.candidate = CLEAN_CANDIDATE
     [row], _ = go(shard, "search_ai", ledgered())

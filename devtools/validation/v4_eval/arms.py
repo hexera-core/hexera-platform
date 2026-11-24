@@ -19,6 +19,7 @@ checks against the engine's own rule (`repair_v4.measurement.file_unmeasured`).
 from __future__ import annotations
 
 import dataclasses
+import json
 import os
 import time
 import traceback
@@ -197,7 +198,8 @@ def run_file(arm_name: str, entry: Any, source: str, *, pool: Any, engine: Engin
             out_v, extra, usd = _search_arm(arm_name, pool=pool, ws=ws, start=start, source=source, judge=judge,
                                             v_in=v_in, ledger=ledger, arm=arm, budget=budget, h_mm=h_mm, route=route,
                                             max_turns=max_turns, job_id=job_id, entry=entry, workers=workers,
-                                            clock=clock, full=full, throttle=throttle, recipes=recipes)
+                                            clock=clock, full=full, throttle=throttle, recipes=recipes,
+                                            workdir=workdir)
         else:
             raise ValueError(f"arm {arm_name!r} is not dispatchable here")
     except (CheckerUnavailable, InconclusiveVerdict, EngineUnavailable) as exc:
@@ -220,7 +222,7 @@ def run_file(arm_name: str, entry: Any, source: str, *, pool: Any, engine: Engin
 def _search_arm(arm_name: str, *, pool: Any, ws: Any, start: Any, source: str, judge: Any, v_in: Any, ledger: Any,
                 arm: Any, budget: Any, h_mm: float | None, route: str | None, max_turns: int, job_id: str, entry: Any,
                 workers: int, clock: Any, full: Any, throttle: Any = None,
-                recipes: Any = None) -> tuple[Any, dict, float]:
+                recipes: Any = None, workdir: str | None = None) -> tuple[Any, dict, float]:
     """(output verdict, the SearchResult's own measured-ness fields, model USD) for a search arm."""
     from meshpipeline.cad.repair_v4 import search as S
     from meshpipeline.cad.repair_v4.proposer import MODEL_UNAVAILABLE
@@ -237,6 +239,8 @@ def _search_arm(arm_name: str, *, pool: Any, ws: Any, start: Any, source: str, j
                        model_usd=budget.model_usd)
     result = S.search(pool, start, source, generators, sbudget, workers=workers, judge=judge, h_mm=h_mm, clock=clock)
     usd = float(proposer.result()["spent_usd"]) if proposer is not None else 0.0
+    if workdir is not None:
+        write_trace(result.trace, workdir)
     # A search_ai file whose model could not be reached ran deterministic-only: its outcome measures search_det, not
     # the AI arm. It is INCONCLUSIVE for search_ai (never a failed repair, never a success credited to the AI), so an
     # outage that takes the model away from many files makes the arm NOT MEASURED instead of quietly search_det.
@@ -365,6 +369,24 @@ def _confirmed_or_input(pool: Any, ws: Any, staged: Any, source: str, *, full: A
     stand_in: Any = SimpleNamespace(changed=staged.ws.brep_path != ws.brep_path, best=staged.ws, best_verdict=out_v)
     shipped = deliverable(stand_in, v_in)
     return v_in if shipped is None else out_v
+
+
+TRACE_NAME = "search-trace.json"
+
+
+def write_trace(trace: Any, workdir: str) -> None:
+    """The WHOLE search trace beside the file's work states (`<workdir>/search-trace.json`): the row keeps a summary,
+    triage needs every candidate (kept vs abandoned, each op's mode, every verdict delta, a row's origin). A failed
+    write is recorded in place of the trace and never costs the row."""
+    path = Path(workdir) / TRACE_NAME
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        trace.write(path)
+    except Exception as exc:  # noqa: BLE001 - a lost trace is evidence lost, not a failed measurement
+        try:
+            path.write_text(json.dumps({"events": [], "write_error": f"{type(exc).__name__}: {exc}"[:300]}))
+        except OSError:
+            pass
 
 
 def search_triage(result: Any, generators: Any) -> dict[str, Any]:
