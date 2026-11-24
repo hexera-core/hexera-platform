@@ -136,3 +136,25 @@ def test_located_surfaces_carry_their_kernel_box_for_the_workspace_to_name() -> 
     box = (0.010 - pad, 0.020 - pad, 0.0 - pad, 0.030 + pad, 0.040 + pad, 0.005 + pad)
     [loc] = mesh_child._located(failure, {3: box}, 1e-3, 1.28e-4)
     assert loc["box"] == mesh_child.box_mm(box, 1e-3) and loc["entity"]
+
+
+# ------------------------------------------------------------------ D28: locations gmsh NAMES in its printed text / log
+
+def test_points_and_invalid_surfaces_named_in_the_text_are_located() -> None:
+    """TetGen prints the intersection point; gmsh logs the surface whose 2D mesh is invalid. Neither is in the
+    exception ('HXT 3D mesh failed'), so neither reached `located` before (measured on gmsh_prod's 42 files)."""
+    text = ("PLC Error: A segment and a facet intersect at point (0.0125,-0.003,0.02).\n"
+            "Warning : 3 elements remain invalid in surface 7\n"
+            "PLC Error: A segment and a facet intersect at point (0.0125,-0.003,0.02).\n")   # repeated: once
+    pad = 1e-7
+    boxes = {7: (0.010 - pad, 0.020 - pad, 0.0 - pad, 0.030 + pad, 0.040 + pad, 0.005 + pad)}
+    found = mesh_child.located_from_text(text, boxes, 1e-3, 1.28e-4)
+    points = [x for x in found if x["xyz"] is not None]
+    surfaces = [x for x in found if x["mesher_tag"] == "surface 7"]
+    assert len(points) == 1 and [round(v, 6) for v in points[0]["xyz"]] == [12.5, -3.0, 20.0]   # metres -> mm
+    assert len(surfaces) == 1 and surfaces[0]["entity"] and surfaces[0]["box"] == mesh_child.box_mm(boxes[7], 1e-3)
+
+
+def test_text_without_a_location_adds_nothing() -> None:
+    assert mesh_child.located_from_text("Error: HXT 3D mesh failed\nInfo: failed to recover", {}, 1e-3, 1e-4) == []
+    assert mesh_child.located_from_text("12 elements remain invalid in surface 99", {}, 1.0, 1e-4) == []  # no box

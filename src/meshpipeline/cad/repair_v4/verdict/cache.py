@@ -58,7 +58,9 @@ from meshpipeline.settings.cad_repair import verdict_cache_uri
 #: read are meshed exactly as before.
 #: .8 (lane D20, owner ruling): netgen_occ meshes EVERY root of a multi-root STEP, not only on a no-solids read; a
 #: cached .7 netgen result for a multi-root file judged its first body only.
-VERDICT_CODE_VERSION = "crs-v4.verdict.8"
+#: .9 (lane D28): a gmsh member's `located` also carries the intersection POINTS and invalid SURFACES its 3D back-end
+#: prints or logs (never in the exception). Pass/fail unchanged; `located` is in the cached panel result.
+VERDICT_CODE_VERSION = "crs-v4.verdict.9"
 logger = logging.getLogger(__name__)
 CACHEABLE_STATUSES = ("pass", "fail")
 
