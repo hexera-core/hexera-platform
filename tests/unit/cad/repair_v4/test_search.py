@@ -289,16 +289,14 @@ def test_confirms_top_k_with_full_panel() -> None:
 
 def test_patience_stops_flat_search() -> None:
     fj = FakeJudge()
-    # every child is worse than the start; the search keeps expanding but must stop after 3
-    gen = Scripted(
-        lambda s: [
-            cand(
-                0,
-            )
-            for _ in range(1)
-        ],
-        source="det",
-    )
+    # every child is worse than the start; the search keeps expanding but must stop after 3. B20: each proposal
+    # must be DISTINCT, or the duplicate prune drops it and the frontier empties into `exhausted` instead - which
+    # is the prune working, and is tested in test_b20_pruning.py.
+    # B20: each child must be a DISTINCT state, or the duplicate prune empties the frontier into `exhausted`
+    # (which is the prune working, and is tested in test_b20_pruning.py). `t18_set` builds the child from `q`, so
+    # a distinct q per proposal gives distinct children whose score is still flat against the start's q=5.
+    seq = itertools.count(1)
+    gen = Scripted(lambda s: [cand(next(seq) % 2)], source="det")
     result, start = run([gen], fj, start_q=5, patience=3)
     assert stop_reason(result) == "patience"
     assert gen.calls == 3
@@ -430,7 +428,7 @@ def test_deliverable_never_touches_a_clean_input_or_an_unchanged_result() -> Non
 # --- DetGenerator -------------------------------------------------------------------------------
 
 
-def _site(kind: str, entities: list[str]) -> Site:
+def _site(kind: str, entities: list[str], **graph: Any) -> Site:
     return Site(
         id="S1",
         kind=kind,
@@ -438,7 +436,7 @@ def _site(kind: str, entities: list[str]) -> Site:
         xyz=[],
         meshers_failing=[],
         dist_over_h=None,
-        graph={},
+        graph=dict(graph),
         view_png=None,
     )
 
@@ -458,7 +456,9 @@ def _state(sites: list[Site]) -> SearchState:
 
 def test_det_generator_sweeps_parameters_per_site_kind() -> None:
     gen = DetGenerator(diagonal=lambda ws: 100.0)  # a 100 mm part: bound 0.1 mm
-    prox = gen.propose(_state([_site("proximity", ["F1", "F2"])]), 50)
+    # B20(3): the pair comes from the kernel's own measurement, not from a combination of the site's faces
+    prox = gen.propose(_state([_site("proximity", ["F1", "F2"],
+                                     clashes=[{"a": "F1", "b": "F2", "touching": False, "gap_mm": 0.2}])]), 50)
     ratios = sorted(c.params["target_ratio"] for c in prox if c.op == "split_by_proximity")
     assert ratios == [0.06, 0.125, 0.25]
     assert all(c.source == "det" and c.rationale for c in prox)

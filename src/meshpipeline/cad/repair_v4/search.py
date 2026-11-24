@@ -440,6 +440,11 @@ class SearchResult:
     best_tier: str = "full"
     #: when the final full verdict had to be run in the reserve: whether it completed, and what it cost
     final_verdict: dict | None = None
+    #: B20: candidates dropped BEFORE any verdict, by reason, and the count of verdicts that were therefore not
+    #: spent. A dropped candidate that would have declined instantly costs nothing; a dropped candidate that would
+    #: have been EVALUATED costs a cheap verdict, which is what this counts.
+    pruned: dict[str, int] = field(default_factory=dict)
+    verdicts_saved: int = 0
     #: why the search stopped: "clean", "patience", "exhausted", a budget reason, or "no_verdict" (nothing was
     #: measured: see `infrastructure_failed`)
     reason: str | None = None
@@ -593,6 +598,11 @@ MAX_AIMED_SMALL = 2
 #: and blends touching a site's faces; the site's faces), and so does the plain `defeature(faces)` op in the AI's
 #: catalogue. The code is kept so a later measurement can turn it back on.
 WHOLE_PART_DEFEATURE = False
+#: B20: whether a pair row may be built from COMBINATIONS at a site whose pairs the kernel could not measure.
+#: OFF by default. Dropping an UNMEASURED guess is the one rule in B20 that is defensible rather than provable - a
+#: guessed pair could in principle be the one that wins - so it is a flag, and `notes` says when it fires.
+#: CAD_REPAIR_V4_GUESS_PAIRS=1 restores the old behaviour.
+GUESS_PAIRS = os.environ.get("CAD_REPAIR_V4_GUESS_PAIRS", "") not in ("", "0", "false", "False")
 
 #: how many of a mesher's named faces one aimed overlap op may take. gmsh names two surfaces; a third would mean
 #: two failures merged into one site, and a wider target is a wider edit than the mesher asked for.
@@ -630,6 +640,7 @@ class DetGenerator:
         recipes: Any = None,
         recipe_k: int = 3,
         whole_part_defeature: bool = WHOLE_PART_DEFEATURE,
+        guess_pairs: bool = GUESS_PAIRS,
     ) -> None:
         self.unfixable = unfixable
         #: a `recipes.RecipeBook` (CAD_REPAIR_V4_RECIPES): steps that took similar dev sites to clean, replayed
@@ -638,6 +649,9 @@ class DetGenerator:
         self.recipe_k = recipe_k
         #: D17: propose the WHOLE recognised set as one det candidate (off by default; see WHOLE_PART_DEFEATURE)
         self.whole_part_defeature = whole_part_defeature
+        #: B20: build pair rows from COMBINATIONS when the kernel could not measure the site's pairs. OFF: the one
+        #: pruning rule here that is defensible rather than provable, so it is a flag (see GUESS_PAIRS).
+        self.guess_pairs = guess_pairs
         #: workspace -> bounding-box diagonal in mm. `search()` binds the kernel's `ws_diagonal` (`bind_pool`) when
         #: this is None. Without one no size can be made: the ops that take a size (`sew`, `remove_small`) are
         #: not proposed, and `notes` says so.
@@ -838,10 +852,12 @@ class DetGenerator:
         # defeature applications came first and fuse/cut_by were `skipped_budget`.
         def ordered(site: Site, rows: list[tuple[str, list[StableId], dict, str]]
                     ) -> list[tuple[str, list[StableId], dict, str]]:
-            """B19: the site's own kind decides the ORDER of the families, never which are allowed. A stable sort,
-            so the aimed rows inside a family keep the order their builder gave them."""
+            """B19: the site's own kind decides the ORDER of the families, never which are allowed. B20: WITHIN a
+            family, a row aimed at something the kernel MEASURED goes ahead of one built from the site at large and
+            ahead of a guessed combination. A stable sort, so each builder's own order survives inside a tier."""
             rank = _family_order(site.kind)
-            return sorted(rows, key=lambda row: rank.get(_family_of(row[0]), len(rank)))
+            return sorted(rows, key=lambda row: (rank.get(_family_of(row[0]), len(rank)),
+                                                 _aimedness(site, row[0], list(row[1]), dict(row[2]))))
 
         own = [(site, ordered(site, [*self._aimed_small_rows(site, has_solid), *self._recipe_rows(site, diag),
                                      *self._sweep(site, diag), *self._coverage(site, sized),
@@ -1133,7 +1149,21 @@ class DetGenerator:
             # AIMED, lane A11: the pairs the kernel MEASURED (`graph["clashes"]`), nearest first, not every
             # combination of the site's faces - a combinatorial list proposes work no mesher complained about and
             # crowds the one pair it did out of the op budget. With no measured pair, fall back to the old sweep.
-            pairs = near or ([list(p) for p in itertools.combinations(faces, 2)][:_MAX_PAIRS] if not contacts else [])
+            # B20(3): the pairs the kernel MEASURED, and no guessed combination unless it could not measure. A
+            # site whose pairs WERE measured and showed no near miss has nothing for this op to size a plan from,
+            # and lane A's bisect measured three such evaluations standing in front of the op that cleaned the file.
+            pairs = near
+            if not pairs and not contacts:
+                unmeasured = int((site.graph or {}).get("unmeasured_pairs") or 0)
+                if unmeasured and self.guess_pairs:
+                    pairs = [list(p) for p in itertools.combinations(faces, 2)][:_MAX_PAIRS]
+                    self._note(f"site {site.id}: split_by_proximity on GUESSED pairs: the kernel could not measure "
+                               f"{unmeasured} pair(s) here")
+                else:
+                    self.skipped["no_measured_pair"] += 1
+                    self._note(f"site {site.id}: split_by_proximity not proposed: the kernel measured no near pair"
+                               + (f" and {unmeasured} pair(s) it could not measure are not guessed at"
+                                  if unmeasured else ""))
             for ratio in _PROXIMITY_RATIOS if pairs else ():
                 rows.append(
                     (
@@ -1236,14 +1266,17 @@ class DetGenerator:
                     rows.append(("fuse", group, {"fuzzy_mm": 0.0},
                                  f"fuse all {len(group)} of the site's bodies into one"))
             if len(faces) >= 2:
-                rows.append(
-                    (
-                        "remove_duplicate_faces",
-                        [],
-                        {"pairs": [list(p) for p in itertools.combinations(faces, 2)][:_MAX_PAIRS]},
-                        "remove coincident duplicate faces",
-                    )
-                )
+                # B20(3): a duplicate face pair is a CONTACT, which the kernel measures. Only when it could not
+                # measure the site's pairs is the combination guessed at, and then only behind everything aimed.
+                measured = [[c["a"], c["b"]] for c in contacts if c.get("a") and c.get("b")]
+                dup_pairs = measured or ([list(p) for p in itertools.combinations(faces, 2)][:_MAX_PAIRS]
+                                         if self.guess_pairs and (site.graph or {}).get("unmeasured_pairs") else [])
+                if dup_pairs:
+                    rows.append(("remove_duplicate_faces", [], {"pairs": dup_pairs},
+                                 "remove the coincident duplicate faces the kernel measured"
+                                 if measured else "remove coincident duplicate faces (pairs guessed: unmeasured)"))
+                else:
+                    self.skipped["no_measured_contact"] += 1
         # trim_unbounded is conditioned on a layer-1 FINDING, not on a kind: on a bounded part it declines
         # `nothing_unbounded` AND would take the hoisted first slot below, so it is offered wherever the finding is.
         if kind == "unbounded" or "unbounded_geometry" in ((site.graph or {}).get("hard_codes") or ()):
@@ -1287,6 +1320,48 @@ _PREFERRED_FAMILIES: dict[str, tuple[str, ...]] = {
 _FAMILIES: tuple[str, ...] = ("near_faces", "face_split", "face_rebuild", "small", "shell", "body", "remove",
                               "surface_refit", "edge", "condition", "trim", "stage")
 
+
+
+#: HOW WELL AIMED a row is, lowest first. B20 (owner priority 2026-11-24): every verdict spent on a candidate that
+#: cannot win is wall-clock taken from one that can, and lane A's bisect measured a file at 1230 s of search - past
+#: its 900 s wall - with three COMBINATORIAL `split_by_proximity` evaluations sitting in front of the op that
+#: cleaned it. Aimedness is read off the row and the site, so no builder has to declare it.
+AIMED_MEASURED = 0   # the entities the kernel itself measured: a located face, a measured clash, a named body
+AIMED_SITE = 1       # the site's own entities, but not the ones a measurement singled out
+AIMED_GUESSED = 2    # a combination the kernel never measured, or a part-wide sweep
+
+
+def _candidate_key(c: Candidate) -> str:
+    """A candidate's identity for B20's duplicate rule: the op, its targets as a SET, and its params."""
+    return json.dumps([c.op, sorted(c.targets), c.params], sort_keys=True, default=str)
+
+
+def _target_key(c: Candidate) -> str:
+    """The op and WHERE it was aimed, without its parameters: what a `no_change` decline is about."""
+    return json.dumps([c.op, sorted(c.targets)], sort_keys=True, default=str)
+
+
+def _aimedness(site: Site, op: str, targets: list[StableId], params: dict) -> int:
+    """Where a row's targets came from: a measurement, the site, or a guess."""
+    graph = site.graph or {}
+    located = {f for f in (graph.get("mesher_faces") or []) if isinstance(f, str)}
+    measured_pairs = {frozenset(p) for p in ([[c.get("a"), c.get("b")] for c in graph.get("clashes") or []])
+                      if len(set(p)) == 2}
+    pairs = params.get("face_pairs") or params.get("pairs") or []
+    if pairs:
+        got = [frozenset(p) for p in pairs if isinstance(p, (list, tuple)) and len(set(p)) == 2]
+        if got and all(p in measured_pairs for p in got):
+            return AIMED_MEASURED
+        return AIMED_GUESSED          # a combination the kernel never measured
+    if not targets:
+        # a part-wide row (scope "all", a ladder over the whole part): the last thing to spend a verdict on
+        return AIMED_SITE if op in ("sew", "orient_and_close", "make_volume") else AIMED_GUESSED
+    on = set(targets)
+    if located and on <= located:
+        return AIMED_MEASURED
+    if on <= set(site.entities):
+        return AIMED_SITE
+    return AIMED_GUESSED
 
 def _family_of(op: str) -> str:
     return _OP_FAMILY.get(op, op)
@@ -1744,6 +1819,12 @@ def search(
     propose_wall_s = budget.wall_s * (1.0 - VERDICT_RESERVE)
     best = s0
     seen = {_fingerprint(start)}
+    #: B20: state id -> the candidate keys already RUN there, and the (op, targets) that declined `no_change`
+    #: there. Read over the whole lineage, so a descendant never pays again for its ancestors' answers.
+    tried: dict[str, set[str]] = {}
+    no_change: dict[str, set[str]] = {}
+    #: what the prune saved, by reason. Each is one cheap verdict not spent (`verdicts_saved`).
+    pruned: collections.Counter[str] = collections.Counter()
     heap: list[tuple] = [_entry(s0, s0.score, next(tie))]
     reason: str | None = "clean" if start_verdict.clean else None
     flat = 0
@@ -1861,6 +1942,29 @@ def search(
                     fates.append((gi, _Outcome(c, gi, "validate", errors), None, False))
                 else:
                     valid.append((gi, c))
+            # B20(2): DROP BEFORE ANY VERDICT, and only where the drop is PROVABLE.
+            #  * an exact duplicate (same op, same targets, same params) already run on this lineage cannot reach a
+            #    new state: the ops are deterministic, so the same call on the same geometry gives the same result,
+            #    and `_fingerprint` would discard it AFTER paying for the op and a cheap verdict.
+            #  * an op that already declined `no_change` on exactly these targets on this lineage declined because
+            #    it found nothing to change there; nothing between then and now changed those targets, because a
+            #    state that changed them would be a different lineage.
+            # Each drop is one cheap verdict NOT spent (and, on a confirmed child, a full one). C10 measured 11
+            # no-op conformalise calls on one file: eleven verdicts for nothing.
+            kept: list[tuple[int, Candidate]] = []
+            for gi, c in valid:
+                ckey, tkey = _candidate_key(c), _target_key(c)
+                why = None
+                if any(ckey in tried.get(sid, ()) for sid in state.lineage):
+                    why = "already_run_on_this_lineage"
+                elif any(tkey in no_change.get(sid, ()) for sid in state.lineage):
+                    why = "no_change_on_these_targets_already"
+                if why is not None:
+                    pruned[why] += 1
+                    _record_candidate(trace, state, c, "pruned", reason=why)
+                    continue
+                kept.append((gi, c))
+            valid = kept
             room = max(0, budget.ops - spent["ops"])
             for gi, c in valid[room:]:
                 _record_candidate(trace, state, c, "skipped_budget")
@@ -1870,6 +1974,8 @@ def search(
             # declines or fails (its kernel work was still done). What a candidate applied BEYOND that one op
             # is charged below, once the outcomes are known.
             spent["ops"] += len(to_run)
+            for _gi, c in to_run:
+                tried.setdefault(state.id, set()).add(_candidate_key(c))
 
             # apply on forks and take the cheap verdict, in parallel
             timeout_s = max(1.0, budget.wall_s - (clock() - t0))
@@ -1929,6 +2035,10 @@ def search(
                                       ops_applied=out.applied)
                     continue  # not a rejection and no fate: the generator is not told its candidate failed
                 if out.kind != "ok":
+                    if out.kind == "declined" and any("no_change" in str(e) for e in out.errors or ()):
+                        # B20(2): this op found nothing to change on exactly these targets. No state on this lineage
+                        # can change that, so the call is never worth a second verdict.
+                        no_change.setdefault(state.id, set()).add(_target_key(out.candidate))
                     _reject(trace, rejections, state, out.gen, out.candidate, out.kind, out.errors,
                             ops_applied=out.applied)
                     fates.append((out.gen, out, None, False))
@@ -2077,6 +2187,8 @@ def search(
         stopped_on_wall=stopped_on_wall,
         best_tier=best.tier,
         final_verdict=final_verdict,
+        pruned=dict(pruned),
+        verdicts_saved=sum(pruned.values()),
     )
     return SearchResult(
         best=best.ws,
@@ -2091,6 +2203,8 @@ def search(
         reason=reason,
         stopped_on_wall=stopped_on_wall,
         best_tier=best.tier,
+        pruned=dict(pruned),
+        verdicts_saved=sum(pruned.values()),
         inconclusive_candidates=n_inconclusive,
         verdict_candidates=n_verdicts,
         infrastructure_failed=infrastructure_failed,
