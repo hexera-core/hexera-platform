@@ -119,7 +119,6 @@ def one(entry: dict, inputs: str, out: str, *, op_timeout: float = OP_TIMEOUT_S,
     from meshpipeline.cad.repair_v4 import search as S
     from meshpipeline.cad.repair_v4.ops import REGISTRY, OpDeclined, OpFailed
     from meshpipeline.cad.repair_v4.stages import STAGES, diagonal_mm
-    from meshpipeline.cad.repair_v4.types import Candidate
     from meshpipeline.cad.repair_v4.worker_pool import WorkerPool
 
     sha = entry["sha256"]
@@ -158,6 +157,12 @@ def one(entry: dict, inputs: str, out: str, *, op_timeout: float = OP_TIMEOUT_S,
             v_root = judge.full(pool, root, src) if root.brep_path != ws_in.brep_path else v_in
             row["staged"] = {**summary(v_root), "changed": root.brep_path != ws_in.brep_path,
                              **against(measure(root.brep_path), orig)}
+            if v_root.clean:
+                # the staged healer alone made it clean: on record, and the sweep runs from the INPUT instead, to see
+                # what the ops do on their own (a clean root has no sites and would only re-run the stages)
+                row["staged_clean"] = True
+                root, v_root = ws_in, v_in
+            row["root"] = "input" if root.brep_path == ws_in.brep_path else "staged"
             cheap_fn = S.adaptive_cheap(judge, v_root)
             root_cheap = judge.score(cheap_fn(pool, root, src))
             gen = S.DetGenerator(diagonal=lambda ws: d0, whole_part_defeature=True)
@@ -174,7 +179,7 @@ def one(entry: dict, inputs: str, out: str, *, op_timeout: float = OP_TIMEOUT_S,
                 st = S.SearchState.__new__(S.SearchState)
                 st.ws, st.sites, st.lineage, st.depth = ws, sites, (), depth
                 cands = list(gen.propose(st, 10**6))
-                cands += [Candidate(S.RUN_STAGE, [], {"stage": s.name}, "oracle", f"run stage {s.name}")
+                cands += [S.Candidate(S.RUN_STAGE, [], {"stage": s.name}, "oracle", f"run stage {s.name}")
                           for s in STAGES]
                 if extra is not None:
                     cands += list(extra(st))
@@ -284,10 +289,11 @@ def summarise(row: dict, jsonl_path: Path) -> dict:
     outcomes: dict[str, int] = {}
     for r in recs:
         outcomes[r.get("outcome", "?")] = outcomes.get(r.get("outcome", "?"), 0) + 1
-    base = (row.get("staged") or row.get("input") or {}).get("passes", 0)
+    base_v = row.get("input") if row.get("root") == "input" else (row.get("staged") or row.get("input"))
+    base = (base_v or {}).get("passes", 0)
     winners = [{k: r.get(k) for k in ("depth", "path", "op", "params", "targets", "full", "own", "gaming", "why")}
                for r in recs if r.get("full") and (r["full"]["clean"] or r["full"]["passes"] > base
-                                                  or (r["full"]["valid"] and not (row.get("staged") or {}).get("valid", True)))]
+                                                  or (r["full"]["valid"] and not (base_v or {}).get("valid", True)))]
     row["recorded_lines"] = len(recs)
     row["outcomes"] = outcomes
     row["lost_layer1"] = sum(1 for r in recs if r.get("lost_layer1"))
