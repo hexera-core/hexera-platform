@@ -174,3 +174,23 @@ def test_every_surface_box_names_a_live_face_at_prods_scale_and_the_mm_members(p
         old = [fingerprint_of("face", {"bbox_min": [v / scale for v in b[:3]], "bbox_max": [v / scale for v in b[3:]]},
                               quantum=q) for b in boxes.values()]
         assert sum(fp in live for fp in old) < len(boxes)
+
+
+def test_a_face_fingerprinted_on_another_grid_is_found_by_its_box(pool: WorkerPool, tmp_path: Path) -> None:
+    """D17 (.6): a member names a face on ITS grid; when its diagonal and the workspace's straddle a power of two the
+    two grids differ 2x and the name matches nothing. Emulated here with the mesher's quantum halved: the fingerprint
+    misses, and the box the member now carries still places every surface on its live face."""
+    step = _part(tmp_path)
+    read = pool.call("read_step_xcaf", {"path": step, "brep_out": str(tmp_path / "in.brep")}, timeout_s=300)
+    assert read.ok and read.value is not None, read.error
+    ws = Workspace.from_brep(pool, read.value["brep"], read.value.get("labels") or {})
+    boxes = _boxes_at(step, 1e-3)                    # gmsh_prod's scale: both fixes on one path
+    failure = SimpleNamespace(kind="other", surfaces=tuple(boxes), surfaces_from_log=False, stage="3d", point=None)
+    other_grid = ws.quantum / 2
+    located = mesh_child._located(failure, boxes, 1e-3, other_grid)
+    assert not any(loc["entity"] in set(ws.ids.values()) for loc in located)   # every name on the wrong grid
+    member = MemberResult("gmsh_prod", "fail", "other", "HXT 3D mesh failed",
+                          [Located(loc["entity"], None, loc["mesher_tag"], tuple(loc["box"])) for loc in located])
+    verdict = Verdict(ValidReport(True, [], [], "mm", 1, True), [member], None, False, "full")
+    named = {e for s in find_sites(pool, ws, verdict, h_mm=5.0) for e in s.entities if e[0] == "F"}
+    assert named == {sid for sid in ws.ids if sid[0] == "F"}

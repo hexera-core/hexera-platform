@@ -384,3 +384,16 @@ def test_an_unbounded_input_is_measured_out_of_scope_and_never_meshed(monkeypatc
 def test_only_an_unbounded_report_is_out_of_scope() -> None:
     assert not _v(True, _passes(1), _faith()).out_of_scope
     assert not _v(False).out_of_scope
+
+
+def test_a_cached_located_face_keeps_its_box(step, tmp_path) -> None:
+    """D17: `Located.box` is what the workspace names a mesher's face by; a cache round trip must not drop it."""
+    from meshpipeline.cad.repair_v4.verdict.cache import MemoryStore, VerdictCache, _default_factory
+    from meshpipeline.cad.repair_v4.verdict.panel import Located, MemberResult
+
+    cache = VerdictCache(MemoryStore(), result_factory=_default_factory)
+    r = MemberResult("gmsh_prod", "fail", "other", "HXT 3D mesh failed",
+                     [Located("face:ab", None, "surface 3", (1.0, 2.0, 3.0, 4.0, 5.0, 6.0))])
+    cache.put("sha", "cfg", [r])
+    [back] = cache.get("sha", "cfg")
+    assert back.located[0].box == (1.0, 2.0, 3.0, 4.0, 5.0, 6.0) and back == r

@@ -220,7 +220,7 @@ def _face_located(rec: dict) -> list:
     if not isinstance(box, list) or len(box) != 6 or not diag:
         return []
     entity = fingerprint_of("face", {"bbox_min": box[:3], "bbox_max": box[3:]}, quantum=quantum_for(float(diag)))
-    return [Located(entity, None, f"netgen face {rec.get('face')}")] if entity else []
+    return [Located(entity, None, f"netgen face {rec.get('face')}", tuple(float(v) for v in box))] if entity else []
 
 
 def member_result(

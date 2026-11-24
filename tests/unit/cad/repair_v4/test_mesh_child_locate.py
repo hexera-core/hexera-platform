@@ -129,3 +129,10 @@ def test_a_planar_face_thinner_than_the_padding_keeps_its_plane() -> None:
     got = mesh_child.box_mm((0.0, 0.0, 0.005 - 1e-7, 0.01, 0.01, 0.005 + 1e-7), 1e-3)
     assert abs(got[2] - 5.0) < 1e-6 and abs(got[5] - 5.0) < 1e-6 and got[2] <= got[5]
 
+
+def test_located_surfaces_carry_their_kernel_box_for_the_workspace_to_name() -> None:
+    failure = types.SimpleNamespace(kind="other", surfaces=(3,), surfaces_from_log=False, stage="3d", point=None)
+    pad = 1e-7
+    box = (0.010 - pad, 0.020 - pad, 0.0 - pad, 0.030 + pad, 0.040 + pad, 0.005 + pad)
+    [loc] = mesh_child._located(failure, {3: box}, 1e-3, 1.28e-4)
+    assert loc["box"] == mesh_child.box_mm(box, 1e-3) and loc["entity"]
