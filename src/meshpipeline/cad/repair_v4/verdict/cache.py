@@ -22,7 +22,9 @@ import dataclasses
 import hashlib
 import json
 import logging
+import os
 import threading
+import time
 import weakref
 from collections.abc import Callable, Sequence
 from pathlib import Path
@@ -112,6 +114,13 @@ class CacheStore(Protocol):
     def put(self, key: str, text: str) -> None: ...
 
 
+class LeaseStore(Protocol):
+    """A store that can make a LEASE (D23 single flight): create a key only if it does not exist, and delete it."""
+
+    def create_if_absent(self, key: str, text: str) -> bool: ...
+    def delete(self, key: str) -> None: ...
+
+
 class DirStore:
     """A directory of JSON files; also what tests use."""
 
@@ -129,6 +138,20 @@ class DirStore:
         tmp.write_text(text)
         tmp.replace(path)
 
+    def create_if_absent(self, key: str, text: str) -> bool:
+        path = self.root / key
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            return False
+        with os.fdopen(fd, "w") as fh:
+            fh.write(text)
+        return True
+
+    def delete(self, key: str) -> None:
+        (self.root / key).unlink(missing_ok=True)
+
 
 class MemoryStore:
     """An in-process store: what the engine's default cache is when no durable one is configured. Thread-safe
@@ -145,6 +168,17 @@ class MemoryStore:
     def put(self, key: str, text: str) -> None:
         with self._lock:
             self._data[key] = text
+
+    def create_if_absent(self, key: str, text: str) -> bool:
+        with self._lock:
+            if key in self._data:
+                return False
+            self._data[key] = text
+            return True
+
+    def delete(self, key: str) -> None:
+        with self._lock:
+            self._data.pop(key, None)
 
 
 class GcsStore:
@@ -169,6 +203,24 @@ class GcsStore:
     def put(self, key: str, text: str) -> None:
         self._blob(key).upload_from_string(text, content_type="application/json")
 
+    def create_if_absent(self, key: str, text: str) -> bool:
+        """GCS's atomic create: if_generation_match=0 succeeds only when no object exists."""
+        from google.api_core.exceptions import PreconditionFailed
+
+        try:
+            self._blob(key).upload_from_string(text, content_type="application/json", if_generation_match=0)
+            return True
+        except PreconditionFailed:
+            return False
+
+    def delete(self, key: str) -> None:
+        from google.api_core.exceptions import NotFound
+
+        try:
+            self._blob(key).delete()
+        except NotFound:
+            pass
+
 
 def _default_factory(data: dict) -> Any:
     import importlib
@@ -182,6 +234,11 @@ def _default_factory(data: dict) -> Any:
     return panel.MemberResult(**{**data, "located": located})
 
 
+#: D23 single flight: a claimer's lease lives this long unless renewed, and is renewed this often while it meshes
+LEASE_HEARTBEAT_TTL_S = 180.0
+LEASE_HEARTBEAT_EVERY_S = 60.0
+
+
 class VerdictCache:
     """Panel results in a `CacheStore`. `result_factory` rebuilds one member result from its dict."""
 
@@ -192,7 +249,7 @@ class VerdictCache:
         # for its own meshing. A hit is a panel served; an `unstable` is a panel deliberately not kept (a timeout
         # or a crash is not a verdict); an `error` is a store that could not answer, which `assemble` turns into a
         # miss and which would otherwise be indistinguishable from a file that simply never repeated.
-        self._counts = {"hits": 0, "misses": 0, "stored": 0, "unstable": 0, "errors": 0}
+        self._counts = {"hits": 0, "misses": 0, "stored": 0, "unstable": 0, "errors": 0, "leased": 0, "waited": 0}
         self._counts_lock = threading.Lock()
 
     def _count(self, what: str) -> None:
@@ -206,6 +263,92 @@ class VerdictCache:
     def stats(self) -> dict[str, int]:
         with self._counts_lock:
             return dict(self._counts)
+
+    @staticmethod
+    def lease_key(step_sha: str, config_hash: str, version: str = VERDICT_CODE_VERSION) -> str:
+        return f"lease/{version}/{step_sha}/{config_hash}.json"
+
+    def single_flight(self, step_sha: str, config_hash: str, compute: Callable[[], list], *, lease_s: float,
+                      poll_s: float = 10.0, clock: Callable[[], float] = time.time,
+                      sleep: Callable[[float], None] = time.sleep) -> list:
+        """The panel for (sha, config), computed by ONE unit of a wave (D23). Arms on different VMs judge the same
+        input at the same time; the first to CREATE the lease (an atomic create-if-absent) meshes and stores, the
+        others poll for the stored panel. A waiter computes itself when the lease is released with no panel stored
+        (the claimer got a timeout or a crash, which is never cached) or has expired (the claimer died). Bounded:
+        no wait outlives `lease_s` plus one claimer's expiry, and nobody is ever served a partial panel. A store
+        without leases, or one that raises, falls back to computing, as a miss always has."""
+        hit = self.get(step_sha, config_hash)
+        if hit is not None:
+            return hit
+        store = self.store
+        if not (hasattr(store, "create_if_absent") and hasattr(store, "delete")):
+            return compute()
+        lease = self.lease_key(step_sha, config_hash)
+        give_up = clock() + lease_s
+        while True:
+            owner = f"{os.uname().nodename}:{os.getpid()}:{threading.get_ident()}"
+            try:
+                claimed = store.create_if_absent(lease, json.dumps({"owner": owner,
+                                                                    "expires_at": clock() + LEASE_HEARTBEAT_TTL_S}))
+            except Exception as exc:  # noqa: BLE001 - a store that cannot lease is a miss, as before
+                logger.warning("verdict lease unavailable (%s: %s): computing", type(exc).__name__, exc)
+                return compute()
+            if claimed:
+                self._count("leased")
+                # HEARTBEAT: the lease lives a few minutes and is renewed while we mesh, so a claimer that is KILLED
+                # (its own file wall, a VM going away) frees the input within LEASE_HEARTBEAT_TTL_S, not lease_s
+                stop = threading.Event()
+
+                def beat(stop: threading.Event = stop, owner: str = owner) -> None:
+                    while not stop.wait(LEASE_HEARTBEAT_EVERY_S):
+                        try:
+                            store.put(lease, json.dumps({"owner": owner,
+                                                         "expires_at": clock() + LEASE_HEARTBEAT_TTL_S}))
+                        except Exception:  # noqa: BLE001 - a missed beat only shortens the lease
+                            pass
+
+                beater = threading.Thread(target=beat, daemon=True, name="verdict_lease")
+                beater.start()
+                try:
+                    panel = compute()
+                    try:
+                        self.put(step_sha, config_hash, panel)
+                    except Exception as exc:  # noqa: BLE001 - the measurement stands; only its memo is lost
+                        logger.warning("verdict cache write failed: %s: %s", type(exc).__name__, exc)
+                    return panel
+                finally:
+                    stop.set()
+                    beater.join(5)
+                    try:
+                        store.delete(lease)
+                    except Exception:  # noqa: BLE001 - an orphaned lease expires on its own
+                        pass
+            # someone else is computing it: wait for their panel, their release, or their expiry
+            while True:
+                sleep(poll_s)
+                hit = self.get(step_sha, config_hash)
+                if hit is not None:
+                    self._count("waited")
+                    return hit
+                try:
+                    text = store.get(lease)
+                except Exception:  # noqa: BLE001
+                    text = None
+                if text is None:
+                    break  # released without a stored panel: try to claim it ourselves
+                try:
+                    expired = float(json.loads(text).get("expires_at", 0)) < clock()
+                except (ValueError, TypeError, AttributeError):
+                    expired = True
+                if expired:
+                    try:
+                        store.delete(lease)  # the claimer died; the next create decides who takes over
+                    except Exception:  # noqa: BLE001
+                        pass
+                    break
+                if clock() > give_up:
+                    logger.warning("verdict lease on %s outlived our own bound: computing", lease)
+                    return compute()
 
     @staticmethod
     def key(step_sha: str, config_hash: str, version: str = VERDICT_CODE_VERSION) -> str:
