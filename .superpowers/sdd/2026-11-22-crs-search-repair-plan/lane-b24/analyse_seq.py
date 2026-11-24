@@ -121,8 +121,7 @@ def _seq_block(arm: str, seq: list[dict]) -> None:
         print(f"    {'rolled back':>11} {'of tried':>8}  {'applied':>7}  defect kind -> repair")
         for (kind, repair), n in rollbacks.most_common():
             print(f"    {n:>11} {tried[(kind, repair)]:>8}  {applied[(kind, repair)]:>7}  {kind} -> {repair}")
-        hit = {k for k, _ in rollbacks}
-        print(f"  affected: {len({k for k, _ in hit})} defect kind(s), "
+        print(f"  affected: {len({kind for kind, _repair in rollbacks})} defect kind(s), "
               f"{sum(rollbacks.values())} of {sum(tried.values())} steps")
     else:
         print("\n  no stage rollbacks on the cheap score in these traces (nothing to demote)")
