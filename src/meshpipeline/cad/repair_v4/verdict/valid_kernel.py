@@ -336,4 +336,7 @@ def _valid_extent(payload: dict) -> dict:
     shape = TopoDS_Shape()
     if not BRepTools.Read_s(shape, payload["brep"], BRep_Builder()):
         raise ValueError(f"could not read BREP {payload['brep']}")
-    return {"unbounded": _unbounded_finding(shape) is not None}
+    finding = _unbounded_finding(shape)
+    # the finding's own detail rides along, so a state found unbounded can be REPORTED as layer 1 would report it
+    # (`search._judged`, lane C9) without running the rest of check_valid on an infinite shape
+    return {"unbounded": finding is not None, "finding": finding}

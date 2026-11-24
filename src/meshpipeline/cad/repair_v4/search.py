@@ -138,7 +138,7 @@ from meshpipeline.cad.repair_v4.verdict.assemble import (
 )
 from meshpipeline.cad.repair_v4.verdict.cache import VerdictCache, default_verdict_cache
 from meshpipeline.cad.repair_v4.verdict.faithful import DeclaredIdError, FaithfulReport, check_faithful
-from meshpipeline.cad.repair_v4.verdict.valid import CheckerUnavailable
+from meshpipeline.cad.repair_v4.verdict.valid import CheckerUnavailable, Finding, ValidReport
 from meshpipeline.cad.repair_v4.workspace import Diff, UnknownTarget, Workspace
 
 #: the op name of the macro action: `params={"stage": name, "params": {...}}`, no targets
@@ -265,8 +265,32 @@ def _unbounded(pool: Any, brep: str) -> bool:
     """True only when the kernel's `valid_extent` - a bounding box, the very rule layer 1 stops at
     (`valid_kernel._unbounded_finding`) - says the BREP is unbounded. A failed call is False: the input is then judged
     exactly as before, so this check can only ever restore a verdict, never invent one."""
-    extent = pool.call("valid_extent", {"brep": brep}, timeout_s=300)
-    return bool(extent.ok and extent.value is not None and extent.value.get("unbounded") is True)
+    return _extent(pool, brep) is not None
+
+
+def _extent(pool: Any, brep: str) -> dict | None:
+    """Layer 1's `unbounded_geometry` finding for the BREP (`valid_extent`, ONE bounding-box call), or None when it is
+    bounded or the call failed (a failed call judges the state exactly as before)."""
+    try:
+        extent = pool.call("valid_extent", {"brep": brep}, timeout_s=300)
+    except Exception:  # noqa: BLE001 - a failed call judges the state exactly as before; it never invents a verdict
+        return None
+    if not (extent.ok and extent.value is not None and extent.value.get("unbounded") is True):
+        return None
+    return dict(extent.value.get("finding") or {"code": "unbounded_geometry", "entities": [], "detail": {}})
+
+
+def _unbounded_verdict(ws: Workspace, finding: dict, tier: Literal["cheap", "full"]) -> Verdict:
+    """What layer 1 says of an unbounded STATE, without running it: invalid, `unbounded_geometry`, nothing meshed.
+
+    Lane C9: a state an op produced is judged on its re-export, where `unbounded_geometry` no longer fires and
+    check_valid runs to its wall (the 1808 s the engine spent on sha bfc8d0b5 before anything was searched). A state
+    that is still unbounded is INVALID at layer 1 by definition, so that is reported, cheaply, instead of being made
+    inconclusive by a timeout. The input with no history keeps D10's path (judged on its original STEP)."""
+    report = ValidReport(False, [Finding("unbounded_geometry", list(finding.get("entities") or []),
+                                         dict(finding.get("detail") or {}))], [], "mm",
+                         sum(1 for sid in ws.ids if sid[:1] == "B"), False)
+    return Verdict(report, [], None, False, tier)
 
 
 def _judged(fn: Callable[..., Verdict], pool: Any, ws: Workspace, original: str,
@@ -281,10 +305,12 @@ def _judged(fn: Callable[..., Verdict], pool: Any, ws: Workspace, original: str,
     faces, _solids = original_facts(pool, ws.original)
     # THE INPUT OF AN UNBOUNDED PART is judged on its ORIGINAL STEP: on the re-export layer 1's `unbounded_geometry`
     # no longer fires and check_valid runs to its timeout (lane D, sha bfc8d0b5: 4 s out of scope on the original,
-    # an 1800 s exclusion on the re-export). Only the input (no history): a state an op produced is always judged
-    # as the engine exports it.
-    step = (str(original) if not ws.history and _unbounded(pool, ws.brep_path)
-            else step_for(pool, ws.brep_path))
+    # an 1800 s exclusion on the re-export). A STATE an op produced that is still unbounded is reported invalid by
+    # `_unbounded_verdict` without being checked (lane C9); a bounded state is judged as the engine exports it.
+    unbounded = _extent(pool, ws.brep_path)
+    if unbounded is not None and ws.history:
+        return _unbounded_verdict(ws, unbounded, "cheap" if fn is cheap_verdict else "full")
+    step = str(original) if unbounded is not None else step_for(pool, ws.brep_path)
     # the cache holds only the panel (the meshing); layers 1 and 3 are recomputed, so a hit never skips a check
     v: Verdict = fn(pool, step, original, **kw) if cache is None else fn(pool, step, original, cache=cache, **kw)
     declared = declared_edits(ws, faces)
@@ -705,6 +731,10 @@ class DetGenerator:
                     self._note(f"site {site.id}: {op} not proposed: {reason}")
                     continue
                 out.append(Candidate(op, targets, params, "det", f"{why} (site {site.id}, {site.kind})"))
+        # trim_unbounded FIRST, ahead of every other row and of the `k` cut (lane C9). A cost fact, not a judgement of
+        # repair quality: until the part is bounded, every other candidate's state is unbounded too and is judged
+        # invalid without being measured; after the trim every later re-export is an ordinary, cheap one.
+        out.sort(key=lambda c: c.op != "trim_unbounded")
         return out[:k]
 
     @staticmethod

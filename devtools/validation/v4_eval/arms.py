@@ -192,9 +192,15 @@ def run_file(arm_name: str, entry: Any, source: str, *, pool: Any, engine: Engin
         elif arm_name in ("search_det", "search_ai"):
             # the seam contract's call order (spec 04; `repair_v4._find_best`): the search starts from the staged
             # healer's output, never the raw input, or the arm would measure a pipeline the engine does not ship
-            staged = _run_staged(engine, pool, ws, v_in)
-            confirm_staged(pool, ws, staged, full=lambda w: full(pool, w, source), input_verdict=v_in)
-            start = staged.ws
+            if getattr(v_in, "out_of_scope", False):
+                # as `repair_v4._find_best` (lane C9): an unbounded input skips the staged healer, whose re-export runs
+                # check_valid to its wall. Dormant today - `_usable` excludes an out_of_scope input above - and kept so
+                # engine and eval stay one pipeline if the owner moves the unbounded stratum into scope.
+                start = ws
+            else:
+                staged = _run_staged(engine, pool, ws, v_in)
+                confirm_staged(pool, ws, staged, full=lambda w: full(pool, w, source), input_verdict=v_in)
+                start = staged.ws
             out_v, extra, usd = _search_arm(arm_name, pool=pool, ws=ws, start=start, source=source, judge=judge,
                                             v_in=v_in, ledger=ledger, arm=arm, budget=budget, h_mm=h_mm, route=route,
                                             max_turns=max_turns, job_id=job_id, entry=entry, workers=workers,
