@@ -497,9 +497,29 @@ def staged_mm_per_unit(step: Path) -> float:
 
 #: SHSTAGE-6: THE SHELL RUN's time limit, seconds (the extraction takes up to about ten minutes on the biggest
 #: corpus parts, the shell mesh up to about nine) - and never more than half of what the attempt has left, so
-#: the solid mesh beside it keeps its time.
+#: the solid mesh beside it keeps its time. SHMESH-21e: its USUAL stop - a shell mesh priced longer moves it out
+#: to that mesh's own limit, up to the cap (shell_run_limits)
 SHELL_RUN_LIMIT_S = 2400
 SHELL_GATE = "fea_shell"
+
+
+def shell_run_limits(run) -> tuple[float, float]:
+    """SHSTAGE-6 / SHMESH-21e: (the shell run's usual stop, its hard cap), seconds. The usual stop is
+    SHELL_RUN_LIMIT_S, at most half of what the attempt has left (at least 120 s); the cap - how far a shell mesh
+    priced longer (SHMESH-21e) may move it - is the machine's wall (ceiling_for), at most half of what the attempt
+    has left: the solid mesh delivered when no shell is made keeps the other half. Never under the usual stop."""
+    limit, cap = float(SHELL_RUN_LIMIT_S), ceiling_for(run)
+    left = attempt_left_s(run)
+    if left is not None:
+        limit = max(120.0, min(limit, 0.5 * left))
+        cap = min(cap, 0.5 * left)
+    return limit, max(limit, cap)
+
+
+def shell_env() -> dict[str, str]:
+    """SHMESH-31g/21e: the environment a shell or surface run's own process gets - this process's, forwarded whole
+    (shell_adapter.run_following adds that run's two stops)."""
+    return dict(os.environ)
 
 
 MIXED_GATE = "fea_mixed"
@@ -603,25 +623,23 @@ async def shell_pass(ws: Path, state, *, job_id: str, run=None, target: dict | N
 
     mod = mixed_run if kind == "mixed" else shell_run
 
+    from meshpipeline.engines.gmsh import shell_adapter as sa
+
     step = staged_solid(ws)
-    limit = float(SHELL_RUN_LIMIT_S)
-    left = attempt_left_s(run)
-    if left is not None:
-        limit = max(120.0, min(limit, 0.5 * left))
+    limit, cap = shell_run_limits(run)
     try:
         argv = [sys.executable, "-m", mod.__name__, str(ws), str(step), "staged"]
         if kind == "shell" and target and int(target.get("elements") or 0) > 0:
             argv.append(json.dumps({k: target[k] for k in ("elements", "mode", "low", "high") if k in target}))
-        # (SHMESH-31g: the shell mesh is told when this run is stopped, so it starts no pass that cannot finish)
-        env = {**os.environ, "HEXERA_SHELL_RUN_END": f"{time.time() + limit:.3f}"}
-        proc = await asyncio.to_thread(
-            subprocess.run, argv,
-            capture_output=True, text=True, timeout=limit, check=False, env=env)
+        # (SHMESH-31g: the shell mesh is told when this run is stopped, so it starts no pass that cannot finish;
+        # SHMESH-21e: a shell mesh priced longer moves this run's stop out to its own limit, never past `cap`)
+        proc, _allowed = await asyncio.to_thread(sa.run_following, argv, base_s=limit, cap_s=cap, folder=ws,
+                                                 env=shell_env())
         rec = mod.read(ws)
         if not rec:
             rec = {"made": False, "why": f"the {kind} run stopped (exit {proc.returncode})"}
-    except subprocess.TimeoutExpired:
-        rec = {"made": False, "why": f"it took longer than the {int(limit) // 60} minutes allowed"}
+    except subprocess.TimeoutExpired as exc:
+        rec = {"made": False, "why": sa.run_stopped_words(float(exc.timeout or limit), ws)}
     except Exception as exc:  # noqa: BLE001 - the solid mesh is still delivered
         rec = {"made": False, "why": f"it could not be started ({type(exc).__name__})"}
     if not rec.get("words"):
@@ -2639,7 +2657,7 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
         # SURF-11: the user's count and the notes' mesh requirements, read as the solid route reads them
         target, asked = await surface_asks(ws, state, job_id=job_id, run=run, publish=publish)
         surfaced = await SR.surface_pass(ws, state, job_id=job_id, run=run, cite=_cite, left_s=attempt_left_s(run),
-                                         target=target)
+                                         target=target, env=shell_env())
         if surfaced is not None:
             return await _deliver_surface(ws, surfaced, job_id=job_id, run=run, target=target, asked=asked)
     elif seen.get("closed"):
@@ -2656,7 +2674,8 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
         if skin:
             target, asked = await surface_asks(ws, state, job_id=job_id, run=run, publish=publish)
             surfaced = await SR.surface_pass(ws, state, job_id=job_id, run=run, cite=_cite,
-                                             left_s=attempt_left_s(run), target=target, closed_skin=True)
+                                             left_s=attempt_left_s(run), target=target, closed_skin=True,
+                                             env=shell_env())
             if surfaced is not None:
                 _cite(job_id, [{"stage": SR.GATE, "decided": "closed skin meshed as the skin", "rule": "SURF-14",
                                 "value": (surfaced.get("surface") or {}).get("thickness_mm"),
@@ -3357,7 +3376,7 @@ def driver_for(state):
     return drive if applies(state) else None
 
 
-__all__ = ["FEA_USUAL_FILL_RATES", "kept_plans", "memory_measured", "size_choice", "MIXED_GATE", "SHELL_RUN_LIMIT_S", "mesh_as_of", "shell_pass", "connection_of", "element_target", "target_plan", "prepare_assembly", "restage_tied", "BYTES_PER_ELEMENT", "MESH_JOB_MEMORY_GIB", "limit_facts", "memory_elements", "FILL_RATES", "FLOOR_STEPS", "WORKSPACE_BYTES_PER_ELEMENT", "memory_need", "MESH_JOB_LIMIT_S", "VM_CEILING_S", "attempt_left_s", "ceiling_for", "planned_seconds", "choose_plan",
+__all__ = ["shell_run_limits", "shell_env", "FEA_USUAL_FILL_RATES", "kept_plans", "memory_measured", "size_choice", "MIXED_GATE", "SHELL_RUN_LIMIT_S", "mesh_as_of", "shell_pass", "connection_of", "element_target", "target_plan", "prepare_assembly", "restage_tied", "BYTES_PER_ELEMENT", "MESH_JOB_MEMORY_GIB", "limit_facts", "memory_elements", "FILL_RATES", "FLOOR_STEPS", "WORKSPACE_BYTES_PER_ELEMENT", "memory_need", "MESH_JOB_LIMIT_S", "VM_CEILING_S", "attempt_left_s", "ceiling_for", "planned_seconds", "choose_plan",
            "complexity", "element_limit", "fill_rate", "watchdog_words", "BUILD_FAILED", "GUARD_TRIP", "NO_SOURCE", "QUALITY_GATE", "applies", "drive",
            "driver_for", "SOLIDIFY_LIMIT_S", "SOLIDIFY_RULE", "solidify_unfinished_words",
            "NOT_RUN", "NOT_RUN_GATE", "not_run", "not_run_words", "ladder_facts", "ladder_words", "make_plan", "measure_staged", "planned_work", "write_plan"]
