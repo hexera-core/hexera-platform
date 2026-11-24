@@ -276,7 +276,7 @@ def located_from_nodes(gmsh, groups: Sequence[Sequence[int]], boxes: dict[int, t
         mm = box_mm(box, scale)
         entity = fingerprint_of("face", {"bbox_min": mm[:3], "bbox_max": mm[3:]}, quantum=quantum)
         if entity:
-            named.append({"entity": entity, "xyz": None, "mesher_tag": f"surface {tag}"})
+            named.append({"entity": entity, "xyz": None, "mesher_tag": f"surface {tag}", "box": mm})
     return named + points[:MAX_OUTPUT_TRIANGLES]
 
 
@@ -332,7 +332,7 @@ def _located(failure, boxes: dict[int, tuple], scale: float, quantum: float) -> 
             continue
         mm = box_mm(box, scale)
         entity = fingerprint_of("face", {"bbox_min": mm[:3], "bbox_max": mm[3:]}, quantum=quantum)
-        found.append({"entity": entity or None, "xyz": None, "mesher_tag": f"surface {int(tag)}"})
+        found.append({"entity": entity or None, "xyz": None, "mesher_tag": f"surface {int(tag)}", "box": mm})
     if failure.point is not None:
         found.append({"entity": None, "xyz": [v / scale for v in failure.point], "mesher_tag": "point"})
     return found

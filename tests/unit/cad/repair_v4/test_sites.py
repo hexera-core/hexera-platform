@@ -819,3 +819,33 @@ def test_mesher_faces_are_only_the_faces_a_mesher_located_not_the_proximity_or_l
     site = next(s for s in sites if "F1" in s.entities)
     assert {"F1", "F2"} <= set(site.entities)
     assert site.graph["mesher_faces"] == ["F1"]
+
+
+def test_a_located_box_is_named_on_the_workspaces_grid_not_the_meshers() -> None:
+    """D17: a member fingerprints a face on ITS grid (quantum_for of its own diagonal); the workspace names faces on
+    its own, 2x different when the diagonals straddle a power of two. With the box, the face is still found."""
+    import dataclasses
+
+    from meshpipeline.cad.repair.identity import fingerprint_of
+
+    base = _ws()
+    boxes = _boxes(base)
+    q = 1.28e-4
+
+    def fp(sid: str, quantum: float) -> str:
+        b = boxes[sid]
+        return fingerprint_of("face", {"bbox_min": b[:3], "bbox_max": b[3:]}, quantum=quantum)
+
+    ids = {**base.ids, **{f"F{i}": fp(f"F{i}", q) for i in range(1, 13)}}
+    ws = dataclasses.replace(base, ids=ids, quantum=q)
+    pool = ScriptedPool(ws, boxes)
+    wrong_grid = fp("F5", q / 2)                    # what the mesher wrote: the right box, the wrong grid
+    assert wrong_grid not in ids.values()
+    box = tuple(boxes["F5"])
+    (site,) = find_sites(pool, ws, _verdict(_fail("gmsh_prod", "other", Located(wrong_grid, None, "surface 9", box))),
+                         h_mm=H)
+    assert site.entities == ["F5"] and site.graph["mesher_faces"] == ["F5"]
+    # without the box the old behaviour stands: the wrong-grid name places nothing
+    (blind,) = find_sites(pool, ws, _verdict(_fail("gmsh_prod", "other", Located(wrong_grid, None, "surface 9"))),
+                          h_mm=H)
+    assert "F5" not in blind.entities

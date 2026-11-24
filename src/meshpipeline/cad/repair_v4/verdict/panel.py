@@ -90,6 +90,11 @@ class Located:
     entity: str | None
     xyz: tuple[float, float, float] | None
     mesher_tag: str
+    #: the named face's box in mm AS THE KERNEL BOXES IT (gmsh's padding taken off, `mesh_child.box_mm`), or None.
+    #: `entity` is that box on the MESHER's grid (`quantum_for` of its own diagonal); the workspace names faces on its
+    #: own grid, and the two differ 2x when the diagonals straddle a power of two (lane D17: 2 of 12 dev files, every
+    #: fingerprint missing). `sites.find_sites` names this box on the workspace's grid instead.
+    box: tuple[float, ...] | None = None
 
 
 @dataclass(frozen=True)

@@ -390,6 +390,16 @@ def find_sites(pool: WorkerPool, ws: Workspace, verdict: Any, *, h_mm: float,
             near = _near_fingerprints(pool, ws)
         return near.get(entity, [])
 
+    def on_our_grid(loc: Any) -> str | None:
+        """The located face's box named on THIS workspace's grid (`ws.quantum`): the member fingerprinted it on its own
+        grid, which is 2x off when the two diagonals straddle a power of two (lane D17)."""
+        box = getattr(loc, "box", None)
+        if not box or len(box) != 6 or ws.quantum <= 0:
+            return None
+        from meshpipeline.cad.repair.identity import fingerprint_of
+
+        return fingerprint_of("face", {"bbox_min": list(box[:3]), "bbox_max": list(box[3:])}, quantum=ws.quantum) or None
+
     for member in failing:
         kind = _member_kind(member)
         used = False
@@ -398,7 +408,7 @@ def find_sites(pool: WorkerPool, ws: Workspace, verdict: Any, *, h_mm: float,
             note = {"mesher": member.name, "error_kind": getattr(member, "error_kind", None),
                     "message": str(getattr(member, "message", "") or "")[:MESSAGE_CHARS],
                     "tag": str(getattr(loc, "mesher_tag", "") or "")}
-            named = faces_named(loc.entity)
+            named = faces_named(on_our_grid(loc)) or faces_named(loc.entity)
             if named:
                 for sid in named:  # two faces sharing one box share its fingerprint: both are implicated
                     implicate(sid, xyz, kind, member.name, note)

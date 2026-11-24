@@ -73,7 +73,8 @@ def result_from_call(name: str, call: CallResult, timeouts: int = 0, kills: int 
             name, "crashed", value["error_kind"], value["message"], [], None, 0, call.seconds, value.get("cause")
         )
     located = [
-        Located(item["entity"], None if item["xyz"] is None else tuple(item["xyz"]), item["mesher_tag"])
+        Located(item["entity"], None if item["xyz"] is None else tuple(item["xyz"]), item["mesher_tag"],
+                tuple(item["box"]) if item.get("box") else None)
         for item in value["located"]
     ]
     retried = ("re-run at twice the budget after a timeout. " if timeouts == 1 else "") + (

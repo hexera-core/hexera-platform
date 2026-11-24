@@ -44,7 +44,13 @@ from meshpipeline.settings.cad_repair import verdict_cache_uri
 #: (`mesh_child.box_mm`). Pass/fail, min SICN and element counts are unchanged (checked field by field), but `located`
 #: is part of the cached panel result, and a .4 entry would hand the search gmsh_prod's old fingerprints, which
 #: matched almost no workspace face (1 of 15 on the measured file).
-VERDICT_CODE_VERSION = "crs-v4.verdict.5"
+#: .6 (lane D17, a SECOND and INDEPENDENT cause, not a fix to .5): every member fingerprinted a located face on its
+#: OWN grid (`quantum_for` of the mesher's diagonal), while the workspace names faces on ITS grid (`quantum_for` of
+#: `BRepBndLib.Add` over the whole shape, a looser box). When the two diagonals straddle a power of two the grids differ
+#: 2x and every fingerprint misses, for every member, mm members included (measured: 2 of 12 dev files). `Located` now
+#: carries the face's kernel-equivalent box and `sites.find_sites` names it on the workspace's grid. .5 fixed gmsh's
+#: padding (gmsh_prod only); .6 fixes the grid (all members). Pass/fail unchanged; `located` gained a field.
+VERDICT_CODE_VERSION = "crs-v4.verdict.6"
 logger = logging.getLogger(__name__)
 CACHEABLE_STATUSES = ("pass", "fail")
 
@@ -159,7 +165,8 @@ def _default_factory(data: dict) -> Any:
 
     panel = importlib.import_module("meshpipeline.cad.repair_v4.verdict.panel")
     located = [
-        panel.Located(**{**item, "xyz": tuple(item["xyz"]) if item.get("xyz") else None})
+        panel.Located(**{**item, "xyz": tuple(item["xyz"]) if item.get("xyz") else None,
+                         "box": tuple(item["box"]) if item.get("box") else None})
         for item in data.get("located", [])
     ]
     return panel.MemberResult(**{**data, "located": located})
