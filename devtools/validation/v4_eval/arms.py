@@ -253,6 +253,17 @@ def run_file(arm_name: str, entry: Any, source: str, *, pool: Any, engine: Engin
                                             max_turns=max_turns, job_id=job_id, entry=entry, workers=workers,
                                             clock=clock, full=full, throttle=throttle, recipes=recipes,
                                             workdir=workdir, phases=ph)
+        elif arm_name in ("search_seq", "search_seq_ai"):
+            # B24: the SAME start as the search arms (the staged healer's confirmed output), so the comparison is
+            # of method - frontier against one-defect-at-a-time - and not of where the two began. The phases are
+            # A14's, named as the other arms name them, so one table compares the arms phase by phase.
+            staged = ph.run("staged_healer", _run_staged, engine, pool, ws, v_in)
+            ph.run("confirm_staged", confirm_staged, pool, ws, staged, full=lambda w: full(pool, w, source),
+                   input_verdict=v_in)
+            out_v, extra, usd = ph.run("search", _seq_arm, arm_name, pool=pool, ws=ws, start=staged.ws,
+                                       source=source, judge=judge, v_in=v_in, budget=budget, clock=clock,
+                                       full=full, workdir=workdir, ledger=ledger, route=route, entry=entry,
+                                       job_id=job_id, throttle=throttle)
         else:
             raise ValueError(f"arm {arm_name!r} is not dispatchable here")
     except (CheckerUnavailable, InconclusiveVerdict, EngineUnavailable) as exc:
@@ -280,6 +291,7 @@ def _search_arm(arm_name: str, *, pool: Any, ws: Any, start: Any, source: str, j
     """(output verdict, the SearchResult's own measured-ness fields, model USD) for a search arm."""
     from meshpipeline.cad.repair_v4 import search as S
     from meshpipeline.cad.repair_v4.proposer import MODEL_UNAVAILABLE
+    from meshpipeline.cad.repair_v4.verdict.assemble import reset_verdict_phases, verdict_phases
 
     ai_kwargs: dict[str, Any] = {}
     if arm_name == "search_ai":
@@ -292,8 +304,15 @@ def _search_arm(arm_name: str, *, pool: Any, ws: Any, start: Any, source: str, j
     sbudget = S.Budget(wall_s=budget.wall_s, ops=budget.ops, model_calls=max_turns if proposer else 0,
                        model_usd=budget.model_usd)
     run = phases.run if phases is not None else (lambda _name, fn, *a, **kw: fn(*a, **kw))
+    # B23: the verdict's own phases (layer 1, the panel, cache hits, layer 3) for THIS search. Reset here, read
+    # the moment it returns, so the delivery verdict that follows is not counted into it. The totals are a sum of
+    # concurrent work across the search's threads, never a wall-clock breakdown: `wall_s` is the wall.
+    # NOTE: kept under its own name - `phases` is the PHASE RECORDER parameter (the per-file PHASE lines), and
+    # B23 reassigning it would have silenced every phase line after the search.
+    reset_verdict_phases()
     result = run("search", S.search, pool, start, source, generators, sbudget, workers=workers, judge=judge,
                  h_mm=h_mm, clock=clock)
+    vphases = verdict_phases()
     usd = float(proposer.result()["spent_usd"]) if proposer is not None else 0.0
     if workdir is not None:
         write_trace(result.trace, workdir)
@@ -311,7 +330,11 @@ def _search_arm(arm_name: str, *, pool: Any, ws: Any, start: Any, source: str, j
               "stopped_on_wall": bool(getattr(result, "stopped_on_wall", False)),
               "_unmeasured": bool(result.unmeasured or ai_unavailable),
               "cheap_full": cheap_full_cells(result.trace.of_kind("confirm")),
-              "_triage": {"search": search_triage(result, generators)}}
+              # B22 (owner ruling 2026-11-24): what the DELIVERED state kept of the input part, and how many
+              # states the search refused as best for keeping too little. A refusal is reported, never silent.
+              "loss": (result.best_loss.row() if getattr(result, "best_loss", None) is not None else None),
+              "refused_catastrophic": int(getattr(result, "refused_catastrophic", 0) or 0),
+              "_triage": {"search": {**search_triage(result, generators), "verdict_phases": vphases}}}
     if proposer is not None:
         fields["ai_stop_reason"] = MODEL_UNAVAILABLE if ai_unavailable else result.ai_stop_reason
     # `result.changed` says whether anything beat the search's START, which is the staged output, not the input: a
@@ -325,6 +348,64 @@ def _search_arm(arm_name: str, *, pool: Any, ws: Any, start: Any, source: str, j
     if recipes is not None and bool(getattr(out_v, "clean", False)) and not fields["_unmeasured"]:
         recipes.learn(result, file_sha256=entry.sha256, diagonal_mm=_diagonal_or_none(pool, start))
     return out_v, fields, usd
+
+
+def _seq_arm(arm_name: str = "search_seq", *, pool: Any, ws: Any, start: Any, source: str, judge: Any, v_in: Any,
+             budget: Any, clock: Any, full: Any, workdir: str | None = None, ledger: Any = None,
+             route: str | None = None, entry: Any = None, job_id: str = "", throttle: Any = None,
+             ) -> tuple[Any, dict, float]:
+    """(output verdict, the row's own fields, model USD) for `search_seq` and `search_seq_ai` (B24, B25).
+
+    The arm's claim is a RATIO - local checks against full panels - so the row carries both, and the headline
+    number is `full_checks`. The delivery gate is the one every arm meets, B22's catastrophic-loss refusal
+    included; a state that keeps under a tenth of the part is refused here exactly as it is in the search arms.
+    """
+    from types import SimpleNamespace
+
+    from meshpipeline.cad.repair_v4 import seq as Q
+    from meshpipeline.cad.repair_v4.loss import check_loss
+    from meshpipeline.cad.repair_v4.search import deliverable
+    from meshpipeline.cad.repair_v4.trace import Trace
+
+    trace = Trace()
+    trace.record("start", arm=arm_name)
+    # B25: the AI arm hands `seq` a PICKER. `seq.pick_repair` calls it only where the table cannot decide, and it
+    # chooses an index among the candidates the arm built - it can neither name an op nor set a parameter.
+    picker = None
+    if arm_name == "search_seq_ai":
+        from meshpipeline.cad.repair_v4.seq_ai import SeqPicker
+        if not route:
+            raise ValueError("search_seq_ai needs a route (provider:model)")
+        picker = SeqPicker(route, ledger=ledger, usd_ceiling=budget.model_usd,
+                           file_id=getattr(entry, "sha256", "") or "", job_id=job_id, throttle=throttle)
+    outcome = Q.repair_sequentially(pool, start, source, judge=judge, sites_of=judge.sites,
+                                    run_stage=Q.stage_runner(), wall_s=budget.wall_s, clock=clock, trace=trace,
+                                    ai_pick=picker)
+    if workdir is not None:
+        write_trace(trace, workdir)
+    # the delivery gate, as the staged arm meets it: `changed` is measured against the INPUT, not against the
+    # arm's own start, so a healer-only gain is still delivered (the same rule `_search_arm` applies)
+    stand_in: Any = SimpleNamespace(changed=outcome.best.brep_path != ws.brep_path, best=outcome.best,
+                                    best_verdict=outcome.verdict)
+    loss = (check_loss(pool, ws.brep_path, outcome.best.brep_path)
+            if outcome.best.brep_path != ws.brep_path else None)
+    delivered = deliverable(stand_in, v_in, loss=loss)
+    out_v = v_in if delivered is None else full(pool, delivered, source)
+    if workdir is not None:
+        keep_delivered(ws.brep_path if delivered is None else delivered.brep_path, workdir,
+                       is_input=delivered is None)
+    fields: dict[str, Any] = {
+        **outcome.counters.row(),
+        "loss": (loss.row() if loss is not None else None),
+        **({"ai_stop_reason": picker.stop_reason} if picker is not None and picker.stop_reason else {}),
+        # the owner's readable trace, one line per step and one per round, on the row as it is written
+        "_triage": {"seq": {"lines": outcome.rounds and outcome.lines() or [],
+                            "rounds": [{"index": r.index, "kept": r.kept, "full_check": r.full_check,
+                                        "steps": r.steps} for r in outcome.rounds]}},
+    }
+    if picker is not None:
+        fields["_triage"]["seq"]["ai"] = picker.result()
+    return out_v, fields, (picker.spent_usd if picker is not None else 0.0)
 
 
 def _diagonal_or_none(pool: Any, ws: Any) -> float | None:
@@ -437,6 +518,7 @@ def _confirmed_or_input(pool: Any, ws: Any, staged: Any, source: str, *, full: A
     the delivery gate - a clean input is never replaced, and nothing that passes fewer members is delivered."""
     from types import SimpleNamespace
 
+    from meshpipeline.cad.repair_v4.loss import check_loss
     from meshpipeline.cad.repair_v4.search import deliverable
 
     conf = confirm_staged(pool, ws, staged, full=lambda w: full(pool, w, source), input_verdict=v_in)
@@ -444,7 +526,9 @@ def _confirmed_or_input(pool: Any, ws: Any, staged: Any, source: str, *, full: A
     # `deliverable` reads only these three fields of a result; a SearchResult cannot be built here (there was no
     # search), so the stand-in is deliberate
     stand_in: Any = SimpleNamespace(changed=staged.ws.brep_path != ws.brep_path, best=staged.ws, best_verdict=out_v)
-    shipped = deliverable(stand_in, v_in)
+    # B22: the staged arm meets the same catastrophic-loss gate as the search arms, measured against the INPUT
+    loss = check_loss(pool, ws.brep_path, staged.ws.brep_path) if staged.ws.brep_path != ws.brep_path else None
+    shipped = deliverable(stand_in, v_in, loss=loss)
     if workdir is not None:
         keep_delivered(ws.brep_path if shipped is None else shipped.brep_path, workdir, is_input=shipped is None)
     return v_in if shipped is None else out_v

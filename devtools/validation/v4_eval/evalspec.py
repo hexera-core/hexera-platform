@@ -345,6 +345,18 @@ ARMS: dict[str, Arm] = {a.name: a for a in (
     Arm("search_det", "best-first search, deterministic proposers only", SHARED_BUDGET, False),
     Arm("search_ai", "best-first search with the AI proposer",
         Budget(SHARED_BUDGET.wall_s, SHARED_BUDGET.ops, model_usd=1.00), True),
+    # B24, owner direction 2026-11-24: one defect at a time, one repair each, LOCAL checks, one full panel per
+    # round. Same wall and op cap as the other arms, so the comparison is of method and not of budget. It is
+    # det-only for now (`uses_model` False): the AI pick decides only a table tie, and turning it on needs a
+    # per-file model ceiling on this line, which is the owner's call and not a default.
+    Arm("search_seq", "sequential defect repair: one defect, one repair, local checks, one panel per round",
+        SHARED_BUDGET, False),
+    # B25 (owner, 2026-11-24): the same arm with the model allowed to PICK where the table cannot decide - no
+    # entry for the defect's code, or a declared tie. It chooses an INDEX among the candidates the arm already
+    # built, so it can neither name an op nor set a parameter. Same wall and op cap as every other arm; the
+    # per-file model ceiling is the owner's $1.00, metered on THIS ledger.
+    Arm("search_seq_ai", "sequential defect repair with the AI picking where the table cannot decide",
+        Budget(SHARED_BUDGET.wall_s, SHARED_BUDGET.ops, model_usd=1.00), True),
     Arm("v3_meshability_pass_ai", "v3 as it ships (meshability pass + AI), run once for comparison",
         SHARED_BUDGET, False, spend_metered=False),  # calls a model; its spend is v3's, not this ledger's
 )}
@@ -419,8 +431,8 @@ WAVES: dict[str, WaveDef] = {w.name: w for w in (
     WaveDef("snap_v2_dev", "normal", "dev", _ALL[:4]),
     WaveDef("snap_v2_clean", "normal", "clean", _ALL[:4]),
     # FAST-DEV v1 (the fast loop): the frozen 15 + 5 files of corpora/v4/fast_dev_v1, SEARCH ARMS ONLY, normal waves
-    WaveDef("fast_v1_dev", "normal", "dev", ("search_det", "search_ai")),
-    WaveDef("fast_v1_clean", "normal", "clean", ("search_det", "search_ai")),
+    WaveDef("fast_v1_dev", "normal", "dev", ("search_det", "search_ai", "search_seq", "search_seq_ai")),
+    WaveDef("fast_v1_clean", "normal", "clean", ("search_det", "search_ai", "search_seq", "search_seq_ai")),
 )}
 
 

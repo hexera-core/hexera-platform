@@ -162,6 +162,36 @@ class ArmRow:
     out_max_dev_mm: float | None = None
     out_bodies_before: int | None = None
     out_bodies_after: int | None = None
+    #: B22 (owner ruling 2026-11-24), THE ONE FIDELITY MEASURE THAT REFUSES: what the delivered state kept of the
+    #: input part (`loss.LossReport.row()`). `catastrophic` True means the delivery gate REFUSED that state and the
+    #: input was shipped instead, so this row's verdict is the input's. `measured` False refuses nothing.
+    #: None on rows written before the rule existed.
+    loss: dict | None = None
+    #: search arms: states the search refused as best for the same reason, falling back to its next-best state
+    refused_catastrophic: int | None = None
+    #: B24 (`search_seq`): the arm's own numbers. The HEADLINE is `full_checks` - full 4-mesher panels per file -
+    #: against `local_checks`; the arm's whole claim is that ratio. `defects_*` are by defect code, and
+    #: `skipped_why` separates "the local check could not be had" (infrastructure) from a measured failure.
+    #: None on every other arm's rows.
+    full_checks: int | None = None
+    local_checks: int | None = None
+    rounds: int | None = None
+    ai_picks: int | None = None
+    defects_found: dict | None = None
+    defects_fixed: dict | None = None
+    defects_skipped: dict | None = None
+    skipped_why: dict | None = None
+    overlap_pairs_fixed: int | None = None
+    overlap_pairs_skipped: int | None = None
+    local_s: float | None = None
+    full_s: float | None = None
+    #: LEAD-3: round-end panels that said NOTHING (no netgen on the shard, a dead pool). The arm's headline is full
+    #: panels per file, so a row short by an unmeasured panel would FLATTER it; the count is carried so a reader can
+    #: see it beside `full_checks`. `seq.py` has always emitted it - its absence here crashed all 7 search_seq units
+    #: of fast-202611241829 with "unexpected keyword argument" AFTER they had done the repair work.
+    inconclusive_verdicts: int | None = None
+    #: defects an EARLIER repair resolved: re-checked and gone, so neither a repair of their own nor a skip.
+    resolved_by_earlier_repair: int | None = None
 
     @property
     def clean(self) -> bool:
@@ -529,6 +559,41 @@ def _rate(n: int, d: int) -> float | None:
     return n / d if d else None
 
 
+def _seq_block(rows: list[ArmRow]) -> dict | None:
+    """`search_seq`'s own numbers (B24), summed over the arm's rows: the full panels it paid per file, the local
+    checks it paid instead, and what it did with the defects it found. None when no row carries them, which is
+    every other arm."""
+    seq = [r for r in rows if r.full_checks is not None]
+    if not seq:
+        return None
+    def total(field: str) -> dict[str, int]:
+        out: Counter = Counter()
+        for r in seq:
+            out.update(getattr(r, field) or {})
+        return dict(out)
+    full = sum(int(r.full_checks or 0) for r in seq)
+    local = sum(int(r.local_checks or 0) for r in seq)
+    return {
+        "rows": len(seq),
+        # THE HEADLINE (owner, 2026-11-24): full 4-mesher checks per file
+        "full_checks_per_file": round(full / len(seq), 2),
+        "full_checks": full, "local_checks": local,
+        # LEAD-3: round-end panels that said NOTHING, beside the headline. A row short by an unmeasured panel has a
+        # full-check count that FLATTERS the arm, so the headline is never read without this number.
+        "inconclusive_verdicts": sum(int(r.inconclusive_verdicts or 0) for r in seq),
+        "rows_with_an_inconclusive_panel": sum(1 for r in seq if (r.inconclusive_verdicts or 0) > 0),
+        "local_per_full": (round(local / full, 2) if full else None),
+        "rounds_per_file": round(sum(int(r.rounds or 0) for r in seq) / len(seq), 2),
+        "seconds": {"full": round(sum(float(r.full_s or 0.0) for r in seq), 1),
+                    "local": round(sum(float(r.local_s or 0.0) for r in seq), 1)},
+        "defects": {"found": total("defects_found"), "fixed": total("defects_fixed"),
+                    "skipped": total("defects_skipped"), "skipped_why": total("skipped_why")},
+        "overlap_pairs": {"fixed": sum(int(r.overlap_pairs_fixed or 0) for r in seq),
+                          "skipped": sum(int(r.overlap_pairs_skipped or 0) for r in seq)},
+        "ai_picks": sum(int(r.ai_picks or 0) for r in seq),
+    }
+
+
 def _arm_block(arm: str, rows: list[ArmRow], kinds: Mapping[str, str], n_files: int,
                stratum_rows: Sequence[ArmRow] = ()) -> dict[str, Any]:
     """One arm's numbers over ITS OWN conclusive files. When the arm is NOT MEASURED, withhold means withhold:
@@ -569,9 +634,24 @@ def _arm_block(arm: str, rows: list[ArmRow], kinds: Mapping[str, str], n_files: 
     # reader can take them out of the denominator if they choose. `clean` among them is shown because a search that
     # ran out of wall can still have reached clean before it did.
     walled = [r for r in conclusive if r.stopped_on_wall]
+    # B22: how often the catastrophic-loss rule fired. Per FILE (the delivery gate refused the output, so the row's
+    # verdict is the input's) and per STATE (the search refused it as best and kept its next-best). Both are
+    # REPORTED; neither changes a rate, because a refused file is a measured file that was not repaired.
+    refused = [r for r in rows if (r.loss or {}).get("catastrophic")]
+    loss_rows = [r for r in rows if r.loss is not None]
     return {
         "files": n_files, "conclusive": len(conclusive), "inconclusive": inc, "inconclusive_rate": inc_rate,
         "measured": measured,
+        "catastrophic_loss": {
+            "files_refused": len(refused),
+            "files_refused_names": sorted(r.name for r in refused),
+            "reasons": dict(Counter(str((r.loss or {}).get("reason")) for r in refused)),
+            "states_refused": sum(int(r.refused_catastrophic or 0) for r in rows),
+            "rows_with_a_measurement": len(loss_rows),
+            "rows_not_measured": sum(1 for r in loss_rows if not r.loss.get("measured")),
+        },
+        # B24: the sequential arm's headline, per FILE, beside what it cost. None for an arm that carries none.
+        "sequential": _seq_block(rows),
         "stopped_on_wall": {"conclusive_rows": len(walled), "clean": sum(r.clean for r in walled),
                             "share_of_conclusive": _rate(len(walled), len(conclusive)),
                             "clean_rate_without_them": only(_rate(sum(r.clean for r in conclusive
@@ -1011,6 +1091,24 @@ def render_text(rep: dict[str, Any]) -> str:
                             f"({w['clean']} clean; clean rate without them "
                             f"{_pct(w.get('clean_rate_without_them'))})"
                             for a, w in walled.items() if w.get("conclusive_rows"))]
+    seqs = {a: b.get("sequential") for a, b in rep["arms"].items() if b.get("sequential")}
+    if seqs:
+        out += ["", "SEQUENTIAL arm (B24: one defect, one repair, local checks, one full panel per round). The "
+                    "headline is FULL CHECKS PER FILE: "
+                + "; ".join(f"{a} {s['full_checks_per_file']} full/file over {s['rows']} rows "
+                            f"({s['local_checks']} local checks, {s['local_per_full']} per full panel; "
+                            f"{s['rounds_per_file']} rounds/file; {s['seconds']['full']:.0f} s full vs "
+                            f"{s['seconds']['local']:.0f} s local)" for a, s in seqs.items())]
+    lost = {a: b.get("catastrophic_loss") or {} for a, b in rep["arms"].items()}
+    if any(w.get("files_refused") or w.get("states_refused") for w in lost.values()):
+        out += ["", "CATASTROPHIC LOSS refused (B22's rule, owner ruling 2026-11-24: an output keeping under 10% of "
+                    "the input part's volume, or losing a whole input body, is not delivered and is not clean; the "
+                    "input was shipped instead): "
+                + "; ".join(f"{a} {w.get('files_refused', 0)} files "
+                            f"({', '.join(f'{k} {v}' for k, v in sorted((w.get('reasons') or {}).items())) or 'none'}), "
+                            f"{w.get('states_refused', 0)} states refused mid-search, "
+                            f"{w.get('rows_not_measured', 0)} rows not measured"
+                            for a, w in lost.items() if w.get("files_refused") or w.get("states_refused"))]
     to = rep.get("timeouts") or {"arms": {}}
     out += ["", "repeated member timeouts (file failures under the D5 ruling; the rate moves with the machine): "
             + "; ".join(f"{a} {b['files']}/{b['conclusive']} files ({b['members']} members)" for a, b in to["arms"].items())]

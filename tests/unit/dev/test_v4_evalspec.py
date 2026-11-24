@@ -52,9 +52,13 @@ def _caps():
 def test_arms_share_budget_except_model() -> None:
     shared = {(a.budget.wall_s, a.budget.ops) for a in ev.ARMS.values()}
     assert shared == {(600.0, 60)}
-    assert {n for n, a in ev.ARMS.items() if a.budget.model_usd} == {"search_ai"}
+    assert {n for n, a in ev.ARMS.items() if a.budget.model_usd} == {"search_ai", "search_seq_ai"}
     assert ev.ARMS["search_ai"].budget.model_usd == 1.00
-    assert set(ev.ARMS) == {"input_only", "staged", "search_det", "search_ai", "v3_meshability_pass_ai"}
+    # B24 adds search_seq on the SHARED budget: the arms are compared on method, never on budget, and it is
+    # det-only for now (no model ceiling), so both assertions above still hold for it.
+    assert ev.ARMS["search_seq_ai"].budget.model_usd == 1.00
+    assert set(ev.ARMS) == {"input_only", "staged", "search_det", "search_ai", "search_seq", "search_seq_ai",
+                            "v3_meshability_pass_ai"}
 
 
 def test_aliases_resolve_to_one_arm_not_a_second() -> None:
@@ -250,7 +254,10 @@ def test_the_fast_loop_waves_run_the_search_arms_only_on_the_frozen_fast_dev_v1_
     root = Path(ev.__file__).resolve().parents[1] / "corpora/v4/fast_dev_v1"
     for name, split, n in (("fast_v1_dev", "dev", 15), ("fast_v1_clean", "clean", 5)):
         w = ev.WAVES[name]
-        assert (w.wave_type, w.split, w.arms) == ("normal", split, ("search_det", "search_ai"))
+        # LEAD-3 2026-11-24: search_seq (B24) joins the fast waves so the owner's sequential arm is measured
+        # beside the two search arms on the same files, same wall, same op cap.
+        assert (w.wave_type, w.split, w.arms) == ("normal", split,
+                                                  ("search_det", "search_ai", "search_seq", "search_seq_ai"))
         body = json.loads((root / f"FAST_{split}_v1.json").read_text())
         assert body["split"] == split and len(body["files"]) == n
     dev = {f["sha256"][:12] for f in json.loads((root / "FAST_dev_v1.json").read_text())["files"]}

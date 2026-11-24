@@ -1458,3 +1458,19 @@ def test_arms_that_disagree_on_the_input_are_still_refused(tmp_path) -> None:
           else arm_row(b, i, a))
     with pytest.raises(report.ReportRefused, match="one file has one input"):
         load(tmp_path, split)
+
+
+def test_every_field_the_sequential_arm_emits_is_declared_on_ArmRow() -> None:
+    """`report.load` builds `ArmRow(**row)`, so a field `seq.SeqCounters.row()` emits and `ArmRow` does not
+    declare REFUSES THE WHOLE ROW - after the arm has done its repair work. That cost two waves: every
+    search_seq unit of fast-202611241829 died on `inconclusive_verdicts`, and of ...1926 on
+    `resolved_by_earlier_repair`. The two lists are compared here rather than one field at a time."""
+    import dataclasses
+
+    from meshpipeline.cad.repair_v4.seq import SeqCounters
+
+    from devtools.validation.v4_eval.report import ArmRow
+
+    emitted = set(SeqCounters().row())
+    declared = {f.name for f in dataclasses.fields(ArmRow)}
+    assert not (emitted - declared), f"ArmRow would refuse every search_seq row: {sorted(emitted - declared)}"
