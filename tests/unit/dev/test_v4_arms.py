@@ -312,7 +312,10 @@ def test_search_triage_counts_each_fate_and_keeps_the_top_reasons() -> None:
     gen = SimpleNamespace(skipped={"no_solid": 2})
     res = SimpleNamespace(trace=t, ai=[], ai_capped=False, ai_stop_reason=None)
     s = run_arm.arms_mod.search_triage(res, [gen])
-    assert s["stop"] == {"reason": "ops", "ended_by": "ops", "spent": {"ops": 6}, "reprompts": 0}
+    # A16 (9625ded8a) carries the overrun INTO the row, nested in triage.stop so it cannot refuse one; this
+    # trace records no wall stop, so both read None.
+    assert s["stop"] == {"reason": "ops", "ended_by": "ops", "spent": {"ops": 6}, "reprompts": 0,
+                         "overrun_s": None, "wall_skipped_candidates": None}
     assert s["open_sites"] == {"open": 2, "proximity": 1} and s["open_sites_at"] == "best"
     f = s["ops"]["fill_loop"]
     assert (f["det"], f["evaluated"], f["duplicate"], f["skipped_budget"]) == (6, 1, 1, 1)
