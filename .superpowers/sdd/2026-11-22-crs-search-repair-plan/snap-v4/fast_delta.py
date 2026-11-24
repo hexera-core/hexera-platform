@@ -16,7 +16,10 @@ from pathlib import Path
 
 def state(run: Path) -> dict[tuple[str, str], dict]:
     out: dict[tuple[str, str], dict] = {}
-    for sd in sorted(run.glob("out/merged-*/shard-*")):
+    shard_dirs = sorted(run.glob("out/merged-*/shard-*"))
+    if not shard_dirs:   # a run whose post step refused (no merged wave): its raw per-group shard rows, as they are
+        shard_dirs = sorted(d for d in run.glob("out/snap-*/shard-*") if d.is_dir())
+    for sd in shard_dirs:
         for r in json.loads((sd / "rows.json").read_text()) if (sd / "rows.json").exists() else []:
             name = r["name"].split("/")[-1]
             if r.get("inconclusive"):
@@ -28,7 +31,9 @@ def state(run: Path) -> dict[tuple[str, str], dict]:
             else:
                 st = {"status": "invalid"}
             failing = [m.get("name") for m in ((r.get("triage") or {}).get("panel_failing") or [])]
-            st.update(name=name, failing=failing, in_clean=r.get("in_clean"), usd=r.get("model_usd") or 0.0)
+            stop = (((r.get("triage") or {}).get("search") or {}).get("stop") or {}).get("reason")
+            st.update(name=name, failing=failing, in_clean=r.get("in_clean"), usd=r.get("model_usd") or 0.0,
+                      stop=stop or "-", walled=bool(r.get("stopped_on_wall")))
             out[(r["sha256"][:12], r["arm"])] = st
         for e in json.loads((sd / "EXCLUDED.json").read_text()) if (sd / "EXCLUDED.json").exists() else []:
             out.setdefault((e["sha256"][:12], e["arm"]), {"status": "excluded", "why": e["reason"][:100],
@@ -75,6 +80,20 @@ def main() -> int:
     lines += ["## Now", ""] + [f"- **{arm}**: " + ", ".join(f"{s} {n}" for s, n in sorted(c.items())) for arm, c in
                                sorted(counts.items())]
     lines += ["", f"- model $ (rows): {sum(x.get('usd', 0) for x in cur.values()):.4f}", ""]
+    stops: dict[str, dict[str, int]] = {}
+    for (_, arm), x in cur.items():
+        if x["status"] != "excluded":
+            stops.setdefault(arm, {}).setdefault(x.get("stop", "-"), 0)
+            stops[arm][x.get("stop", "-")] += 1
+    lines += ["## Stop reasons per arm (search stop.reason; wall-stopped rows are conclusive under B18)", ""]
+    lines += [f"- **{arm}**: " + ", ".join(f"{k} {v}" for k, v in sorted(c.items())) +
+              f"; stopped_on_wall {sum(1 for (_, a2), x in cur.items() if a2 == arm and x.get('walled'))}"
+              for arm, c in sorted(stops.items())]
+    lines += [""]
+    if prev:
+        lost = [k for k in keys if k in cur and k in prev and prev[k]["status"] == "clean" and cur[k]["status"] != "clean"]
+        lines += [f"## CLEAN IN THE PREVIOUS RUN, NOT CLEAN NOW ({len(lost)})", ""] + \
+                 [f"- {fmt(k, cur)} (stop {cur[k].get('stop')})" for k in lost] + [""]
     if prev:
         lines += [f"## Improved ({len(better)})", ""] + [f"- {fmt(k, cur)} (was {prev[k]['status']})" for k in better]
         lines += ["", f"## REGRESSED ({len(worse)})", ""] + [f"- {fmt(k, cur)} (was {prev[k]['status']})" for k in worse]
