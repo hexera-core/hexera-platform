@@ -1,6 +1,6 @@
 # New-op triage (B13)
 
-Wave: snap-v2-202611240348 (PARTIAL rows, synced 04:16Z), code 5c43220a: HAS C4 fix ad716ef4, C7, D14, A10, B12. NO traces in this wave.
+Wave: snap-v2-202611240348 (PARTIAL rows, synced ~04:20Z), code 5c43220a: HAS C4 fix ad716ef4, C7, D14, A10, B12. NO traces in this wave.
 
 **ROWS-ONLY TRIAGE for every search row below without a trace. Unavailable from rows, and why:**
 1. per-op better/equal/worse: rows keep `deltas` for only the FIRST 8 evaluated candidates of the whole search; the rest show as `applied->unscored`.
@@ -9,6 +9,10 @@ Wave: snap-v2-202611240348 (PARTIAL rows, synced 04:16Z), code 5c43220a: HAS C4 
 4. never-proposed with vs without a target site: the row's `open_sites` is at the best state only, and `not_proposed` is keyed by reason, not op; so `never_proposed` here also covers 'declined in advance by the sweep'.
 5. defeature source (site/recognised) and features per call: candidate params are not in the row.
 6. (not available from traces either) a full-panel verdict per candidate: only confirmed states get one.
+
+**CLEAN CONTROL** (every clean-split file, every arm; a regression = input clean, output conclusive and not clean): input_only 40/40 clean; search_ai 40/40 clean; search_det 40/40 clean; staged 40/40 clean. Regressions: 0.
+
+**EXCLUDED (no row):** none. `deadline` pairs were never run before the wave was stopped: UNMEASURED, not failures, and counted nowhere else in this file; `file_wall` is the file's own wall clock.
 
 Rows read: 207. Failing rows (conclusive, not clean): 43. FILES still failing in every repair arm: 15 (kind read off the last CONCLUSIVE arm of search_ai, search_det, staged; inconclusive arms named).
 
@@ -31,6 +35,26 @@ Inconclusive per split/arm: snap-v2-dev-202611240348/search_det 2
 
 Failing search rows triaged from a TRACE: - (the rest from the row's op table: no mode split, deltas capped at 8, no best-path or full-confirm).
 Trace extras (defeature source / features per call / holes / blends; proposals per op/source): 
+
+## Failing dev files: did ANY arm improve panel passes or validity short of clean? 1 of 15 yes
+
+| file | any improved | per arm (valid in->out, panel in->out) |
+|---|---|---|
+| 0051_00518960_bb93f0d63e97fc3782a0c6dd_step_051.step | YES | search_ai: IMPROVED valid False->True panel 1->1/4; search_det: same valid False->False panel 1->1/4; staged: same valid False->False panel 1->1/4 |
+| 00542755_475d3d5812881065217cd6c1_step_002.step | no | staged: same valid True->True panel 3->3/4 |
+| 0051_00510314_5899e652a878da0f8226347a_step_000.step | no | staged: same valid False->False panel 1->1/4 |
+| 0051_00510565_589a00b4d2bc860f82f79a88_step_002.step | no | search_det: inconclusive; staged: same valid False->False panel 1->1/4 |
+| 0051_00510567_589a00b4d2bc860f82f79a88_step_004.step | no | staged: same valid False->False panel 1->1/4 |
+| 0051_00512819_0d20478fa07db557be91ad16_step_000.step | no | staged: same valid False->False panel 2->2/4 |
+| 0051_00514513_589b5807a417220f72384061_step_000.step | no | search_ai: same valid True->True panel 2->2/4; search_det: same valid True->True panel 2->2/4; staged: same valid True->True panel 2->2/4 |
+| 0051_00515810_589bdec38006660f7f91d8e2_step_014.step | no | staged: same valid False->False panel 0->0/4 |
+| 0052_00523933_58a02828f0a1c50ff6ebd077_step_012.step | no | staged: same valid False->False panel 1->1/4 |
+| 0052_00524943_fa9a21c8b070173bfc87844b_step_002.step | no | staged: same valid True->True panel 1->1/4 |
+| 0053_00535069_bb0bc8e7914fdea894ad2ec6_step_012.step | no | staged: same valid True->True panel 1->1/4 |
+| 0053_00539073_58a66b7522115e0f6fe163e3_step_000.step | no | staged: same valid True->True panel 1->1/4 |
+| 0054_00544196_58a93fda716d73109155df3d_step_090.step | no | staged: same valid False->False panel 2->2/4 |
+| 0054_00547086_58aaf7c222115e0f6fe69154_step_014.step | no | staged: same valid False->False panel 0->0/4 |
+| 0056_00562266_a20a56b200869b8723d9c310_step_018.step | no | search_det: inconclusive; staged: same valid False->False panel 0->0/4 |
 
 **C4 check (body-op declines once recorded as duplicates):** conformalise `duplicate` 11, declined/failed/invalid 4 on failing search rows. On the tip (C4 fixed) duplicates here are a FINDING, not the old bug.
 

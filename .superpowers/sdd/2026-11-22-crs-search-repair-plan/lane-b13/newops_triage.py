@@ -76,6 +76,27 @@ def load(patterns: list[str]) -> list[dict]:
     return list(rows.values())
 
 
+def load_excluded(patterns: list[str]) -> list[dict]:
+    """EXCLUDED*.json beside each rows file: (file, arm) pairs that produced NO row. Classed by reason: `deadline` (the
+    wave was stopped before the pair ran: UNMEASURED, never a failure), `file_wall` (the file's own wall clock), other."""
+    out: dict[tuple, dict] = {}
+    dirs = {path.rsplit("/", 1)[0] for pat in patterns for path in glob.glob(pat)}
+    for d in sorted(dirs):
+        split = d.split("/")[-2] if d.count("/") >= 1 else "?"
+        for path in sorted(glob.glob(d + "/EXCLUDED*.json")):
+            try:
+                with open(path) as fh:
+                    items = json.load(fh)
+            except (OSError, ValueError):
+                continue
+            for x in items if isinstance(items, list) else []:
+                reason = str(x.get("reason") or "")
+                cls = ("deadline" if "deadline" in reason.lower() else
+                       "file_wall" if ("file_timeout" in reason or "wall" in reason.lower()) else "other")
+                out[(split, x.get("arm"), x.get("sha256") or x.get("name"))] = {**x, "_split": split, "_class": cls}
+    return list(out.values())
+
+
 def failure_kind(r: dict) -> tuple[str, list[str]]:
     """(kind, its parts). Validity first: an invalid output is not meshed meaningfully past layer 1."""
     t = r.get("triage") or {}
@@ -213,7 +234,8 @@ def trace_outcomes(events: list[dict]) -> dict[str, Any]:
 _REJECTED_AS = {"validate": "invalid", "declined": "declined", "failed": "failed", "error": "failed"}
 
 
-def triage(rows: list[dict], traces: dict[str, list[dict]] | None = None) -> dict:
+def triage(rows: list[dict], traces: dict[str, list[dict]] | None = None,
+           excluded: list[dict] | None = None) -> dict:
     files = Counter((r["_split"], r.get("arm")) for r in rows)
     failing = [r for r in rows if not r.get("inconclusive") and not r.get("out_clean")]
     inconclusive = Counter((r["_split"], r.get("arm")) for r in rows if r.get("inconclusive"))
@@ -273,7 +295,48 @@ def triage(rows: list[dict], traces: dict[str, list[dict]] | None = None) -> dic
         gone = sorted(a for a in arms if a not in conclusive)
         still[f"{split}/{name}"] = failure_kind(last)[0] + (f"  [read off {last.get('arm')}; inconclusive: "
                                                              f"{', '.join(gone)}]" if gone else "")
-    return {"files_still_failing": len(still), "files_still_failing_by_kind": dict(Counter(still.values()).most_common()),
+    # the CLEAN CONTROL: every clean-split file, every arm - a regression is a conclusive row whose input was clean and
+    # whose output is not
+    control: dict[str, Counter] = defaultdict(Counter)
+    regressions = []
+    for r in rows:
+        if "clean" not in r["_split"].rsplit("/", 1)[-1].split("-"):
+            continue
+        c = control[str(r.get("arm"))]
+        c["rows"] += 1
+        if r.get("inconclusive"):
+            c["inconclusive"] += 1
+        elif r.get("out_clean"):
+            c["clean"] += 1
+        else:
+            c["not_clean"] += 1
+            if r.get("in_clean"):
+                regressions.append(f"{r['_split']}/{r.get('arm')}/{r.get('name')}")
+    # per failing DEV file: did ANY arm improve its panel-pass count or validity, even short of clean
+    improved: dict[str, dict] = {}
+    for (split, name), arms in by_file.items():
+        if "dev" not in split.rsplit("/", 1)[-1].split("-"):
+            continue
+        if any(x.get("out_clean") for x in arms.values()):
+            continue
+        per = {}
+        for a, x in sorted(arms.items()):
+            if x.get("inconclusive"):
+                per[a] = "inconclusive"
+                continue
+            pin, pout = x.get("in_panel_passes"), x.get("out_panel_passes")
+            vin, vout = bool(x.get("in_valid")), bool(x.get("out_valid"))
+            tag = ("IMPROVED" if (vout and not vin) or (vout == vin and (pout or 0) > (pin or 0)) else
+                   "WORSE" if (vin and not vout) or (vout == vin and (pout or 0) < (pin or 0)) else "same")
+            per[a] = f"{tag} valid {vin}->{vout} panel {pin}->{pout}/{x.get('panel_size')}"
+        improved[f"{split}/{name}"] = {"any_improved": any(v.startswith("IMPROVED") for v in per.values()),
+                                       "arms": per}
+    ex = excluded or []
+    return {"clean_control": {a: dict(c) for a, c in sorted(control.items())}, "clean_control_regressions": regressions,
+            "dev_failing_files": improved,
+            "excluded_by_class": dict(Counter(x["_class"] for x in ex)),
+            "excluded_by_class_arm": dict(Counter(f"{x['_class']}/{x.get('arm')}" for x in ex)),
+            "files_still_failing": len(still), "files_still_failing_by_kind": dict(Counter(still.values()).most_common()),
             "files_still_failing_list": still,
             "failing_search_rows_from_trace": dict(n_traced),
             "trace_extra_totals": {k: dict(v.most_common()) for k, v in defeature_extra.items()},
@@ -306,6 +369,16 @@ def markdown(t: dict, notes: list[str] | None = None) -> str:
     searched = sum(1 for r in t["rows"] if r["arm"] in SEARCH_ARMS)
     out = ["# New-op triage (B13)", "", *(notes or []), "" if notes else "",
            *(ROWS_ONLY_CAVEAT if traced < searched else []),
+           "**CLEAN CONTROL** (every clean-split file, every arm; a regression = input clean, output conclusive and not "
+           "clean): " + ("; ".join(f"{a} {c.get('clean', 0)}/{c.get('rows', 0)} clean"
+                                   + (f", {c['inconclusive']} inconclusive" if c.get("inconclusive") else "")
+                                   for a, c in t["clean_control"].items()) or "no clean-split rows yet")
+           + f". Regressions: {len(t['clean_control_regressions'])}"
+           + (" - " + ", ".join(t["clean_control_regressions"][:10]) if t["clean_control_regressions"] else "") + ".",
+           "",
+           "**EXCLUDED (no row):** " + (_cell(t["excluded_by_class_arm"], 20) if t["excluded_by_class_arm"] else "none")
+           + ". `deadline` pairs were never run before the wave was stopped: UNMEASURED, not failures, and counted "
+           "nowhere else in this file; `file_wall` is the file's own wall clock.", "",
            f"Rows read: {t['rows_read']}. Failing rows (conclusive, not clean): {t['failing_rows']}. "
            f"FILES still failing in every repair arm: {t['files_still_failing']} (kind read off the last CONCLUSIVE "
            "arm of search_ai, search_det, staged; inconclusive arms named).", "",
@@ -317,6 +390,14 @@ def markdown(t: dict, notes: list[str] | None = None) -> str:
             "(the rest from the row's op table: no mode split, deltas capped at 8, no best-path or full-confirm).",
             "Trace extras (defeature source / features per call / holes / blends; proposals per op/source): "
             + "; ".join(f"{k}: {_cell(v, 8)}" for k, v in t["trace_extra_totals"].items()), ""]
+    imp = t["dev_failing_files"]
+    out += [f"## Failing dev files: did ANY arm improve panel passes or validity short of clean? "
+            f"{sum(v['any_improved'] for v in imp.values())} of {len(imp)} yes", "",
+            "| file | any improved | per arm (valid in->out, panel in->out) |", "|---|---|---|"]
+    for name, v in sorted(imp.items(), key=lambda kv: (not kv[1]["any_improved"], kv[0])):
+        out.append(f"| {name.rsplit('/', 1)[-1]} | {'YES' if v['any_improved'] else 'no'} | "
+                   + "; ".join(f"{a}: {d}" for a, d in v["arms"].items()) + " |")
+    out.append("")
     dup = sum(int(n) for r in t["rows"] for op, c in r["new_ops"].items()
               if op.startswith("conformalise") for k, n in c.items() if k == "duplicate")
     rej = sum(int(n) for r in t["rows"] for op, c in r["new_ops"].items()
@@ -362,7 +443,7 @@ def main(argv: list[str]) -> int:
         row_globs, trace_globs = args[:i], args[i + 1:]
     else:
         row_globs, trace_globs = args, []
-    t = triage(load(row_globs), load_traces(trace_globs))
+    t = triage(load(row_globs), load_traces(trace_globs), load_excluded(row_globs))
     with open(argv[1] + ".json", "w") as fh:
         json.dump(t, fh, indent=1, default=str)
     with open(argv[1] + ".md", "w") as fh:
