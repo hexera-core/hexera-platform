@@ -189,6 +189,11 @@ def _assemble(
     # the full tier's doomed cap (lane C16), for a runner that takes it; a substituted runner (tests) runs as before
     takes_cap = "doomed_cap_s" in inspect.signature(runner).parameters
     cap = {"doomed_cap_s": DOOMED_CAP_S} if tier == "full" and takes_cap else {}
+    # D23.2: P (parallel panel members) is PER CALL: a full verdict (input, confirm, output) meshes its members at
+    # once, up to CRS_V4_PANEL_THREADS; a cheap verdict (the search's inner loop, where candidates already run in
+    # parallel) stays serial. P changes only WHEN members run, so it is NOT part of the cache key (`cap` is).
+    threads = {"panel_threads": full_panel_threads()} if (
+        tier == "full" and "panel_threads" in inspect.signature(runner).parameters) else {}
     if cache is not None:
         try:
             sha = file_sha256(step)
@@ -200,14 +205,14 @@ def _assemble(
         # (VerdictCache.single_flight), bounded by the panel's own worst case
         try:
             panel = cache.single_flight(
-                sha, config, lambda: list(runner(pool, step, chosen, timeout_s=MEMBER_TIMEOUT_S, **cap)),
+                sha, config, lambda: list(runner(pool, step, chosen, timeout_s=MEMBER_TIMEOUT_S, **cap, **threads)),
                 lease_s=lease_seconds(len(chosen)))
         except Exception as exc:  # noqa: BLE001 - a store failure is a miss, never a verdict and never a crash
             logger.warning("verdict cache unusable, meshing instead: %s: %s", type(exc).__name__, exc)
             cache.note_error()
             panel = None
     if panel is None:
-        panel = list(runner(pool, step, chosen, timeout_s=MEMBER_TIMEOUT_S, **cap))
+        panel = list(runner(pool, step, chosen, timeout_s=MEMBER_TIMEOUT_S, **cap, **threads))
 
     # Layer 3 is REPORTED, never a gate (`clean_of`), so it is measured on every row it can be measured on -
     # including one that failed layer 1, where the fidelity numbers still say what the repair did to the part.
@@ -224,6 +229,16 @@ def _assemble(
 
     clean = clean_of(tier=tier, inconclusive=inconclusive, valid=valid, panel=panel, faithful=faithful)
     return Verdict(valid, panel, faithful, clean, tier, inconclusive)
+
+
+def full_panel_threads() -> int:
+    """CRS_V4_PANEL_THREADS (the cap the wave sizes its pool by: run_arm.pool_size), 1 = the serial panel."""
+    import os
+
+    try:
+        return max(1, int(os.environ.get("CRS_V4_PANEL_THREADS", "1")))
+    except ValueError:
+        return 1
 
 
 def lease_seconds(n_members: int) -> float:

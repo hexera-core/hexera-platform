@@ -16,7 +16,6 @@ that is not the file's - is not a mesher finding and raises `CheckerUnavailable`
 from __future__ import annotations
 
 import dataclasses
-
 import logging
 import signal
 from collections import Counter
@@ -287,9 +286,51 @@ def doomed_result(result: MemberResult, cap_s: float) -> MemberResult:
     return result
 
 
+def _run_parallel(pool: WorkerPool, step_path: str, members: Sequence[PanelMember], timeout_s: float,
+                  doomed_cap_s: float | None, threads: int) -> list[MemberResult]:
+    """The PARALLEL path (D23.2, per lane C16's contract above). Up to `threads` members mesh at once, each in its own
+    thread with its own pool worker. With a doomed cap, the moment the first non-pass result arrives (t_doom) the
+    file's remaining retry is withdrawn and every member still running has its deadline cut to t_doom + cap (the
+    pool kills a worker cut there: `worker_pool.CALL_DEADLINE`); a member that then ends as a timeout or a pool death
+    converts through `doomed_result`. A member that ends before t_doom keeps its result exactly. Results come back in
+    the CALLER's order. An all-pass panel is never doomed, so it is the serial panel's results, member by member."""
+    import contextvars
+    import time
+    from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+
+    from meshpipeline.cad.repair_v4.worker_pool import CALL_DEADLINE, Deadline
+
+    clock = Deadline()
+    got: dict[int, MemberResult] = {}
+    after_doom: set[int] = set()
+    with retry_budget() as budget:
+        def one(i: int) -> MemberResult:
+            CALL_DEADLINE.set(clock)
+            return check_result(members[i].run(pool, step_path, timeout_s=timeout_s))
+
+        with ThreadPoolExecutor(max_workers=min(threads, len(members)), thread_name_prefix="panel") as ex:
+            # each member in a COPY of this context, so it sees the file's retry budget and sets its own deadline
+            futures = {ex.submit(contextvars.copy_context().run, one, i): i for i in range(len(members))}
+            pending = set(futures)
+            while pending:
+                done, pending = wait(pending, return_when=FIRST_COMPLETED)
+                for f in done:
+                    i = futures[f]
+                    got[i] = f.result()
+                    if clock.at is not None:
+                        after_doom.add(i)
+                    elif doomed_cap_s is not None and got[i].status != "pass":
+                        clock.at = time.monotonic() + doomed_cap_s   # t_doom + cap, for everything still running
+                        budget.retries_left = 0
+    if doomed_cap_s is not None:
+        for i in after_doom:
+            got[i] = doomed_result(got[i], doomed_cap_s)
+    return [got[i] for i in range(len(members))]
+
+
 def run_panel(
     pool: WorkerPool, step_path: str, members: Sequence[PanelMember], *, timeout_s: float,
-    doomed_cap_s: float | None = None,
+    doomed_cap_s: float | None = None, panel_threads: int = 1,
 ) -> list[MemberResult]:
     """Run every member on `step_path`, one result each, in the caller's order. A member that times out or
     crashes is a result like any other; the next member runs on a replaced worker. The file gets ONE
@@ -309,7 +350,9 @@ def run_panel(
         member still running has its deadline cut to t_doom + doomed_cap_s with no retry, and one cut there is killed.
       * Both convert through `doomed_result`, use CAPPED_KIND and return results in the CALLER's order. An all-pass
         panel is never doomed in either path, so no clean verdict can depend on which path ran."""
-    if doomed_cap_s is None:
+    if panel_threads > 1 and len(members) > 1:
+        results = _run_parallel(pool, step_path, members, timeout_s, doomed_cap_s, panel_threads)
+    elif doomed_cap_s is None:
         with retry_budget():
             results = [check_result(member.run(pool, step_path, timeout_s=timeout_s)) for member in members]
     else:
