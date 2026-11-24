@@ -436,7 +436,8 @@ def find_sites(pool: WorkerPool, ws: Workspace, verdict: Any, *, h_mm: float,
     for site in sites:
         if site.entities and not any(e[:1] in "FE" for e in site.entities) and not site.graph.get("coarse"):
             # a layer-1 finding that names only a BODY (self_intersection on S6): no face to aim at, so it is coarse
-            site.graph["coarse"] = {"reason": "the finding names the body, not a face", "members": ["valid"]}
+            site.graph["coarse"] = {"reason": "the finding names the body, not a face", "members": ["valid"],
+                                    "whole_part": False}  # the bodies ARE the evidence (body_overlap names them)
 
     def order(site: Site) -> tuple:
         return (_PRIORITY.index(site.kind), -len(site.meshers_failing),
@@ -473,7 +474,9 @@ def _coarse_site(ws: Workspace, valid: Any, unplaced: dict[str, SiteKind], rever
     reason = (f"{', '.join(members)} failed without saying where ({', '.join(sorted(set(unplaced.values())))}); "
               "the site is the whole part")
     return Site("", kind, bodies, [], members, None,
-                {"hard_codes": [], "coarse": {"reason": reason, "members": members}, "soft": soft}, None)
+                {"hard_codes": [], "soft": soft,
+                 # whole_part: nothing placed it, so the bodies listed are every body, not evidence about any (lane C10)
+                 "coarse": {"reason": reason, "members": members, "whole_part": True}}, None)
 
 
 def _assign_ids(sites: list[Site]) -> None:

@@ -981,7 +981,11 @@ class DetGenerator:
             rows.extend(self._fill_rows(site, diag))
             rows.append(("make_volume", faces, {}, "build a solid from the loose faces"))
             rows.append(("orient_and_close", solids, {}, "orient and close the shell"))
-        if kind in ("overlap", "intersection"):
+        # A WHOLE-PART coarse site (`sites._coarse_site`: a failure nobody placed) lists every body, which is no evidence
+        # that any two touch or overlap; body ops there fragmented already-conformal bodies for nothing (lane C10: 11
+        # no-op conformalise calls on one v2 file). It gets only its part-wide conditioning rows (`_coarse_rows`).
+        whole_part = bool(((site.graph or {}).get("coarse") or {}).get("whole_part"))
+        if kind in ("overlap", "intersection") and not whole_part:
             if len(solids) >= 2:
                 for fuzzy in (0.0, 0.01):
                     rows.append(
