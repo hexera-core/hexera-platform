@@ -256,6 +256,24 @@ HARD_CODE_TEXT: dict[str, str] = {
 }
 
 
+#: B21: the two-step chains lane D's oracle pass 1 measured as the only wins neither arm reached. The arms HAD the
+#: first step of each; what they never did was follow it. Phrased by DEFECT and by what the first step did, with no
+#: file named and no dev answer in it: the dev split is tuning data and the held-out split must stay a fair test, so
+#: a hint that named files would leak the answers. Both chains are also wired into the det sweep (search.py's
+#: CHAIN_AFTER_DEFEATURE), so this is the same advice the deterministic arm now follows, not a hint only you get.
+CHAIN_HINTS = """WHAT TWO-STEP CHAINS HAVE WORKED, measured by running every op at every site on a dev sample:
+- A FACE REMOVAL THAT HELD, THEN A RE-CONDITIONING STAGE. When you remove the face(s) a mesher located (defeature
+  aimed at those faces, or at the site's own faces) and the verdict holds or improves but the file is still not
+  clean, the next thing that worked was a whole stage, not another face op: run_stage `bodies`, `condition` or
+  `shells`. Removing a face leaves the shell, the body set or the tolerances needing a pass that the single ops do
+  not give. This was the only repair in the sample that nothing else reached.
+- A SLIVER REMOVAL THAT HELD, THEN A SPLIT ON MEASURED PAIRS. When `remove_small` on a narrow face holds, follow it
+  with `split_by_proximity` on the face pairs the checker MEASURED (the observation's clashes), not on pairs you
+  pick yourself: the measured pair is the one the mesher is failing between.
+Neither is a rule. They are the only two sequences on that sample that reached clean where no single op did, so try
+the follow-up before you start a new line of attack."""
+
+
 def _clean_definition() -> str:
     """WHAT CLEAN MEANS, written from the checker's own constants so the model is told what the checker enforces and
     nothing else: the hard and soft codes of layer 1 and the SICN floor and member time limit of layer 2. Since the
@@ -321,6 +339,8 @@ A malformed call costs nothing but a turn: you will get a structured error namin
 parameter out of bounds, a target that no longer exists) and may call again. The turns, the dollars spent on you
 and the wall-clock are all budgeted and shown to you; stop when the file is clean or nothing more can be tried.
 {RECIPES_PARAGRAPH if recipes else ""}
+{CHAIN_HINTS}
+
 OPERATIONS AND THEIR PARAMETER SCHEMAS (JSON Schema; `x-targets` says what `targets` must hold):
 {_catalogue(stage_names)}
 """
