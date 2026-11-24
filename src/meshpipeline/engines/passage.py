@@ -8,6 +8,7 @@ import contextlib
 import logging
 import signal
 import threading
+import time
 from pathlib import Path
 
 import numpy as np
@@ -691,7 +692,9 @@ def passage_of_surface(points, faces, *, max_points: int = MAX_MEASURE_POINTS,
     pts = np.asarray(points, dtype=float)
     f = np.asarray(faces, dtype=np.int64)
     surf = pv.PolyData(pts, np.hstack([np.full((len(f), 1), 3, dtype=np.int64), f]).ravel())
+    t0 = time.monotonic()
     interior = inside_point(surf)
+    logger.info("passage measure: interior point in %.1f s (%d triangles)", time.monotonic() - t0, len(f))
     if interior is None:
         return {}
     diag = float(np.linalg.norm(np.asarray(surf.bounds[1::2]) - np.asarray(surf.bounds[0::2])))
@@ -713,8 +716,11 @@ def passage_of_surface(points, faces, *, max_points: int = MAX_MEASURE_POINTS,
         logger.info("passage measure: %d boundary points, chords cast on %d", len(pts), len(cpts))
     else:
         r = local_radius(pts, f, interior, diag * 1e-5, diag / 2.0)
+    t1 = time.monotonic()
     out = {"passage_radius": radius_stats(r),
            "passage_cells_across_local": measure_passage(pts, f, r, edges=edges)}
+    logger.info("passage measure: chords done %.1f s after the interior point; cells across in %.1f s",
+                t1 - t0, time.monotonic() - t1)
     local = out["passage_cells_across_local"]
     if local and float(local.get("p05") or 0.0) < PASSAGE_FLOOR_CELLS:
         try:
@@ -839,6 +845,67 @@ def boundary_of_polymesh(polymesh, *, wall_only: bool = False
     return points[used], inv.reshape(tri.shape), edges
 
 
+def _measure_polymesh(pm: Path) -> dict:
+    """The passage measure of the polyMesh `pm`, unbounded (passage_of_polymesh bounds it)."""
+    t0 = time.monotonic()
+    pts, faces, edges = boundary_of_polymesh(pm)
+    if len(faces) < 4:
+        return {}
+    wpts, wfaces, wedges = boundary_of_polymesh(pm, wall_only=True)
+    logger.info("passage measure: boundary read in %.1f s (%d triangles, %d wall points)", time.monotonic() - t0,
+                len(faces), len(wpts))
+    if len(wfaces) >= 4:
+        return passage_of_surface(pts, faces, wall=(wpts, wfaces), edges=wedges)
+    return passage_of_surface(pts, faces, edges=edges)
+
+
+#: TIME-16: the passage measure runs in a forked child the parent stops at its guard. The SIGALRM guard
+#: (measure_deadline) cannot stop a VTK call - Python sees the signal only when the call returns - nor a
+#: measure run in a worker thread, where it never arms: abc 63401's 11.4 M-cell merged mesh sat 2 hours on
+#: one core in this measure under a 3,600 s guard.
+MEASURE_CHILD_RULE = "TIME-16"
+
+
+def _bounded(fn, *args, budget_s: float):
+    """fn(*args) in a forked child stopped after `budget_s` (MeasureOverdue); its exception re-raised here. Without
+    fork (not Linux) or without a budget, it runs here under measure_deadline as before."""
+    import multiprocessing as mp
+    import os
+
+    if not budget_s or budget_s <= 0 or "fork" not in mp.get_all_start_methods():
+        with measure_deadline(budget_s):
+            return fn(*args)
+    recv, send = mp.get_context("fork").Pipe(duplex=False)
+
+    def child() -> None:
+        try:
+            send.send(("ok", fn(*args)))
+        except BaseException as exc:  # noqa: BLE001 - told to the parent, which raises it there
+            send.send(("error", exc if isinstance(exc, Exception) else RuntimeError(repr(exc))))
+        finally:
+            send.close()
+            os._exit(0)
+
+    proc = mp.get_context("fork").Process(target=child, daemon=True)
+    proc.start()
+    send.close()
+    try:
+        if not recv.poll(budget_s):
+            raise MeasureOverdue(f"passage measure past its {budget_s:.0f} s budget ({MEASURE_CHILD_RULE})")
+        try:
+            status, out = recv.recv()
+        except EOFError as exc:      # the child died without a word (killed, out of memory)
+            raise RuntimeError("the passage measure's child process ended without a result") from exc
+    finally:
+        if proc.is_alive():
+            proc.kill()
+        proc.join()
+        recv.close()
+    if status != "ok":
+        raise out
+    return out
+
+
 def passage_of_polymesh(workspace, *, budget_s: float | None = None) -> dict:
     """The passage measure of the polyMesh under <workspace>/constant, from its boundary
     files alone, under its guard: `budget_s`, else the guard its planned work gives it
@@ -852,14 +919,7 @@ def passage_of_polymesh(workspace, *, budget_s: float | None = None) -> dict:
     if budget_s is None:
         budget_s = float(work.guard_seconds)
     try:
-        with measure_deadline(budget_s):
-            pts, faces, edges = boundary_of_polymesh(pm)
-            if len(faces) < 4:
-                return {}
-            wpts, wfaces, wedges = boundary_of_polymesh(pm, wall_only=True)
-            if len(wfaces) >= 4:
-                return passage_of_surface(pts, faces, wall=(wpts, wfaces), edges=wedges)
-            return passage_of_surface(pts, faces, edges=edges)
+        return _bounded(_measure_polymesh, pm, budget_s=float(budget_s))
     except MeasureOverdue:
         # PLANNED WORK (the mesh's boundary faces, MAX_MEASURE_POINTS chords); the clock is its
         # guard, set from that work (measure_guard). The measure is read beside a mesh checkMesh
