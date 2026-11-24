@@ -189,7 +189,8 @@ def _far_face(owner, cstart, cf_face, geo, cells, centres, n0):
     return faces[rows, j], d[rows, j], par, ufc[inv[rows, j]]
 
 
-def census(polymesh, n_layers: int, patches, planned_first_m: float | None = None) -> tuple[dict, str]:
+def census(polymesh, n_layers: int, patches, planned_first_m: float | None = None, *,
+           plain_cell_m: float | None = None) -> tuple[dict, str]:
     """(per-patch figures, "") - or ({}, why) when the mesh cannot be measured. Figures per named
     wall patch: faces, area_m2, area_with_any_layer, area_with_full_layers, mean_layers (each face
     capped at `n_layers`), mean_layers_found (uncapped), coverage_pct, layers_by_area {count: area
@@ -202,7 +203,12 @@ def census(polymesh, n_layers: int, patches, planned_first_m: float | None = Non
     with such a layer), coverage_at_plan_pct (the layer cells asked that stand on such a first layer) and
     first_vs_plan (the median first cell over the plan). Counted by shape alone, a cfMesh mesh asked a
     0.021 mm first layer under 5.9 mm cells read "layers on 54% of the wall" where its first cell was
-    3.2 mm (static_mixer_004, resolved wall): a stack 150 times the height asked is not the layer asked."""
+    3.2 mm (static_mixer_004, resolved wall): a stack 150 times the height asked is not the layer asked.
+
+    A STACK SIZED ON EACH FACE (CFDREQ-33): with `plain_cell_m` (the plain wall cell of a relative snappyHexMesh
+    stack, planned_plain_cell_of) a face k levels finer than that cell (its width, to the nearest level) was planned
+    a first layer 2^k times thinner, and is judged against that: the first cell 4 times thinner on a face 4 times
+    finer is the plan, not a miss."""
     if n_layers <= 0:
         return {}, "no layers were asked for"
     mesh, why = _read_mesh(polymesh)
@@ -277,7 +283,11 @@ def census(polymesh, n_layers: int, patches, planned_first_m: float | None = Non
             "first_cell_p90_m": _quantile(first_cell, A, 0.90),
         }
         if planned_first_m and planned_first_m > 0.0:
-            tall_ok = first_cell <= PLAN_FIRST_TOL * float(planned_first_m)
+            plan = np.full(nf, float(planned_first_m))
+            if plain_cell_m and plain_cell_m > 0.0:
+                finer = np.clip(np.round(np.log2(float(plain_cell_m) / np.maximum(width, 1e-300))), 0, None)
+                plan = plan / 2.0 ** finer
+            tall_ok = first_cell <= PLAN_FIRST_TOL * plan
             # CFDREQ-21: ONE LAYER AT THE HEIGHT ASKED IS TOLD BY ITS HEIGHT. A wall-function layer is built about
             # half the wall cell high (cfMesh's whole stack; snappyHexMesh's cap 0.6): past FLAT_RATIO of a face's
             # width on faces narrower than the cell, so the shape test read a single full layer as 0-3% of the wall
@@ -294,7 +304,7 @@ def census(polymesh, n_layers: int, patches, planned_first_m: float | None = Non
             # whose first cell is at the planned height (within PLAN_FIRST_TOL either way, its far face parallel) is
             # read with the cell next out: under a cell more than GROWTH_MAX times thinner it stands under a jump
             at_height = ((first_cell > 0) & (first_par > PARALLEL_COS) & tall_ok
-                         & (first_cell >= float(planned_first_m) / PLAN_FIRST_TOL))
+                         & (first_cell >= plan / PLAN_FIRST_TOL))
             ratio = np.full(nf, np.nan)
             look = np.flatnonzero((at_height | at_plan) & (first_far >= 0) & (first_far < nI))
             if len(look):
@@ -310,11 +320,14 @@ def census(polymesh, n_layers: int, patches, planned_first_m: float | None = Non
             # read the y+ met with 71% of its wall under a 3.3x jump); the jump is said, never counted as the layer
             y_share = (at_height | at_plan) & ~jump
             seen = np.isfinite(ratio) & (at_height | at_plan)
+            if plain_cell_m:
+                res[name]["planned_plain_cell_m"] = float(plain_cell_m)
             res[name].update({
                 "planned_first_m": float(planned_first_m),
                 "area_at_plan": round(float(A[at_plan].sum() / total), 4),
                 "coverage_at_plan_pct": round(float(100.0 * capped_p[at_plan].sum() / (n_layers * nf)), 2),
-                "first_vs_plan": (round(float(med) / float(planned_first_m), 2) if med is not None else None),
+                "first_vs_plan": (None if med is None else round(float(med) / float(planned_first_m), 2)
+                                  if not plain_cell_m else round(float(_median(first_cell / plan, A) or 0.0), 2)),
                 "area_first_at_plan": round(float(A[y_share].sum() / total), 4),
                 "area_under_jump": round(float(A[jump].sum() / total), 4),
                 "next_over_first": (round(nof, 3) if (nof := _median(ratio[seen], A[seen])) is not None else None),
@@ -431,21 +444,47 @@ def bl_cells(polymesh, patches, delta_m: float, *, met_at: float) -> tuple[dict,
 PLANNED_FIRST_IN = (("system/snappyHexMeshDict", "firstLayerThickness"), ("system/meshDict", "maxFirstLayerThickness"))
 
 
+#: CFDREQ-33: the comment a relative snappyHexMesh stack sized on the plain wall cell carries in its dictionary
+#: (cfd_requirements writes it): "/* plainWallCell <metres>; */" - the cell its firstLayerThickness is a share of
+PLAIN_CELL_KEY = "plainWallCell"
+
+
+def planned_plain_cell_of(workspace) -> float | None:
+    """CFDREQ-33: the plain wall cell (metres) a relative snappyHexMesh stack was sized on, or None (an absolute
+    stack, another mesher, or a relative stack the plan did not size on a height)."""
+    try:
+        text = (Path(workspace) / "system" / "snappyHexMeshDict").read_text(errors="replace")
+    except OSError:
+        return None
+    if not re.search(r"relativeSizes\s+(true|on|yes)\s*;", text):
+        return None
+    m = re.search(rf"\b{PLAIN_CELL_KEY}\s+([-+\d.eE]+)\s*;", text)
+    try:
+        v = float(m.group(1)) if m else 0.0
+    except ValueError:
+        return None
+    return v if v > 0.0 else None
+
+
 def planned_first_of(workspace) -> float | None:
     """The first layer height the mesher's dictionary was given (metres), or None when it was given none. A
-    snappyHexMesh case with relativeSizes on reads None (its height is a share of each cell, not a height)."""
+    snappyHexMesh case with relativeSizes on reads None (its height is a share of each cell, not a height) -
+    unless the plan sized it on a plain wall cell (CFDREQ-33): then the height on that cell, the share times it."""
     ws = Path(workspace)
     for rel, key in PLANNED_FIRST_IN:
         try:
             text = (ws / rel).read_text(errors="replace")
         except OSError:
             continue
+        plain = None
         if key == "firstLayerThickness" and re.search(r"relativeSizes\s+(true|on|yes)\s*;", text):
-            return None
+            plain = planned_plain_cell_of(ws)
+            if plain is None:
+                return None
         m = re.search(rf"\b{key}\s+([-+\d.eE]+)\s*;", text)
         if m:
             try:
-                v = float(m.group(1))
+                v = float(m.group(1)) * (plain or 1.0)
             except ValueError:
                 return None
             return v if v > 0.0 else None
@@ -576,6 +615,6 @@ def requested_layers_for(workspace) -> tuple[int, int, int]:
     return (stated or in_dict), stated, in_dict
 
 
-__all__ = ["CENSUS_MAX_CELLS", "GROWTH_MAX", "PLANNED_FIRST_IN", "PLAN_FIRST_TOL", "census", "height_quality",
-           "layer_census", "planned_first_of", "requested_layers", "requested_layers_for", "stated_layers",
+__all__ = ["CENSUS_MAX_CELLS", "GROWTH_MAX", "PLAIN_CELL_KEY", "PLANNED_FIRST_IN", "PLAN_FIRST_TOL", "census",
+           "height_quality", "layer_census", "planned_first_of", "planned_plain_cell_of", "requested_layers", "requested_layers_for", "stated_layers",
            "wall_summary"]
