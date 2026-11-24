@@ -75,6 +75,51 @@ def test_a_self_overlap_site_gets_rebuild_face_on_its_first_two_faces_at_g0() ->
     assert _of(got, "rebuild_face") == [(["F1"], {"continuity": "G0"}), (["F2"], {"continuity": "G0"})]
 
 
+def test_rebuild_face_starts_at_the_faces_the_mesher_named() -> None:
+    """A11: gmsh's overlapping_facets message names its surfaces ("on surface 108 surface 109"), D16 resolves them
+    to faces, and the sweep is capped at two rebuilds - so on a many-faced part it must spend them on those faces,
+    not on face 1."""
+    got, _ = _propose([_site("self_overlap", ["F1", "F2", "F3", "F4"], mesher_faces=["F3", "F4"])])
+    assert _of(got, "rebuild_face") == [(["F3"], {"continuity": "G0"}), (["F4"], {"continuity": "G0"})]
+
+
+def test_two_named_overlapping_faces_are_merged_among_themselves_and_never_part_wide() -> None:
+    got, _ = _propose([_site("self_overlap", ["F1", "F2", "F3"], mesher_faces=["F2", "F3"])])
+    assert _of(got, "unify_same_domain") == [(["F2", "F3"], {"scope": "targets", "keep": []})]
+    assert _of(got, "remove_duplicate_faces") == [(["F2", "F3"], {"pairs": [["F2", "F3"]]})]
+    # and the angle split is aimed too, not swept over every face of the site
+    assert all(t == ["F2", "F3"] for t, _ in _of(got, "split_angle")), _of(got, "split_angle")
+
+
+def test_one_named_face_overlapping_itself_gets_no_pair_op() -> None:
+    """gmsh says "on surface 9 surface 9" on these: there is no second face to merge with, so the repair is the
+    face's own (rebuild_face, split_angle) and proposing a merge would be work nothing measured."""
+    got, _ = _propose([_site("self_overlap", ["F1", "F2"], mesher_faces=["F2"])])
+    assert _of(got, "unify_same_domain") == [] and _of(got, "remove_duplicate_faces") == []
+    assert _of(got, "rebuild_face")[0] == (["F2"], {"continuity": "G0"})
+
+
+def test_an_overlap_site_with_no_located_face_proposes_no_aimed_pair_op_and_says_why() -> None:
+    got, gen = _propose([_site("self_overlap", ["F1", "F2"])])
+    assert _of(got, "unify_same_domain") == [] and _of(got, "remove_duplicate_faces") == []
+    assert any("names no face the mesher located" in n for n in gen.notes), gen.notes
+
+
+def test_an_overlap_pair_proposal_is_inside_the_op_schema() -> None:
+    got, _ = _propose([_site("self_overlap", ["F1", "F2", "F3"], mesher_faces=["F2", "F3"])])
+    ws = _ws()
+    for c in got:
+        if c.op in ("unify_same_domain", "remove_duplicate_faces"):
+            assert validate_call(c.op, list(c.targets), dict(c.params), ws) == [], (c.op, c.params)
+
+
+def test_unify_same_domain_is_offered_at_an_overlap_site() -> None:
+    """The op's own menu has to agree with the sweep, or the model is told the op does not apply where it does."""
+    assert REGISTRY["unify_same_domain"].applies_to(_site("self_overlap", ["F1"]))
+    assert REGISTRY["unify_same_domain"].applies_to(_site("sliver", ["F1"]))
+    assert not REGISTRY["unify_same_domain"].applies_to(_site("open", ["F1"]))
+
+
 def test_an_invalid_site_gets_rebuild_face_only_with_a_self_intersection_finding() -> None:
     plain, _ = _propose([_site("invalid", ["F1"])])
     assert _of(plain, "rebuild_face") == []

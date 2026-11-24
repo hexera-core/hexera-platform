@@ -430,7 +430,9 @@ class UnifySameDomain:
     }
 
     def applies_to(self, site: Site) -> bool:
-        return site.kind == "sliver"
+        # self_overlap too (lane A11): gmsh's overlapping_facets names two surfaces, and where they are two faces on
+        # the same geometry, merging JUST those two is the aimed repair - scope "targets", never "all".
+        return site.kind in ("sliver", "self_overlap")
 
     def extra_errors(self, targets: list[StableId], params: dict) -> list[str]:
         """validate_call's cross-field rule: targets exist exactly when scope is "targets"."""
