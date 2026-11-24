@@ -31,10 +31,12 @@ import collections
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import Any
 
+from meshpipeline.cad.repair_v4.local_verify import Defect, LocalResult, verify_local
 from meshpipeline.cad.repair_v4.ops import REGISTRY, OpDeclined, OpFailed, validate_call
 from meshpipeline.cad.repair_v4.types import Site, StableId
+from meshpipeline.cad.repair_v4.verdict.valid import CheckerUnavailable
 from meshpipeline.cad.repair_v4.workspace import Diff, UnknownTarget, Workspace
 
 #: Validity defects first, in the order a repair of one can only help the next (a body that is inside out or
@@ -62,75 +64,56 @@ MAX_ALTERNATIVES = 3
 MAX_ROUNDS = 3
 
 
-# --- lane C's interface, and a stub to build against ---------------------------------------------------------
+# --- lane C's interface (C17, `local_verify`), and what this arm does when it cannot answer -------------------
+
+#: Lane C owns the measurement; this arm owns the decision. Their `Defect` is the one defect model (so a defect
+#: does not get re-described on the way between us), their `LocalResult.outcome` / `.line()` is the trace's own
+#: word for what happened, and `verify_local` re-locates the defect itself.
+#:
+#: TWO FAILURE MODES, kept apart, because an arm that confuses them reports a lie:
+#:   - `CheckerUnavailable` - a worker timed out or crashed. INFRASTRUCTURE. The defect is skipped and recorded,
+#:     and the file's row says the check could not be had; it is never read as "the repair did not work".
+#:   - `NotImplementedError` - lane C's build has not landed yet (C17 published the signatures first). Same
+#:     treatment, its own reason, so a wave run before their build reads as "not measured" and not as "the arm
+#:     cannot repair". Both stop the alternatives for that defect: nothing would check the next one either.
+UNAVAILABLE: tuple[type[BaseException], ...] = (CheckerUnavailable, NotImplementedError)
+
+#: lane C's `Defect.kind` values, named here so this module never spells them as bare strings
+VALIDITY = "validity"
+MESHER = "mesher"
 
 
-@dataclass(frozen=True)
-class LocalResult:
-    """What `verify_local` answers. `gone` is about THIS defect on the touched entities; `new_hard` is any hard
-    code that was not there before, on those same entities. `measured` False means the question was not answered
-    (lane C could not re-locate the defect, or the region mesh failed) - and an unanswered question is never read
-    as a pass."""
+# --- defects: lane C's `Defect`, built from this state's sites -------------------------------------------------
 
-    gone: bool
-    new_hard: tuple[str, ...] = ()
-    measured: bool = True
-    detail: dict[str, Any] = field(default_factory=dict)
-    seconds: float = 0.0
-
-    @property
-    def kept(self) -> bool:
-        """Keep the repair only on a measured answer that removed the defect and added no hard code."""
-        return bool(self.measured and self.gone and not self.new_hard)
+#: `Defect.kind` is lane C's two-valued one; the ORDER below is over the CODE.
+_ORDER: dict[str, tuple[int, int]] = {
+    **{code: (0, i) for i, code in enumerate(VALIDITY_ORDER)},
+    **{code: (1, i) for i, code in enumerate(MESHER_ORDER)},
+}
 
 
-class VerifyLocal(Protocol):
-    """Lane C's `verify_local(ws_before, ws_after, defect, touched) -> LocalResult`."""
-
-    def __call__(self, ws_before: Workspace, ws_after: Workspace, defect: Defect,
-                 touched: Sequence[StableId]) -> LocalResult: ...
-
-
-def unanswered_local(ws_before: Workspace, ws_after: Workspace, defect: Defect,
-                     touched: Sequence[StableId]) -> LocalResult:
-    """The stub this arm runs against until lane C's lands: it ANSWERS NOTHING (`measured` False).
-
-    With it the arm applies no repair, keeps nothing, and reports every defect skipped as
-    `local_verification_unavailable` - which is the honest outcome of an arm whose verifier does not exist yet,
-    and is why a wave run before lane C lands reads as "not measured" rather than "the arm cannot repair"."""
-    return LocalResult(gone=False, measured=False, detail={"stub": "lane C's verify_local is not wired yet"})
+def defect_rank(defect: Defect) -> tuple:
+    """Validity before mesher, each code in its ruling's order, then the site id: deterministic, and a code the
+    tables do not name sorts LAST rather than first - an unmeasured kind must not pre-empt a measured one."""
+    where = _ORDER.get(defect.code, (0 if defect.kind == VALIDITY else 1, len(MESHER_ORDER) + 1))
+    return (where[0], where[1], defect.id, defect.code)
 
 
-# --- defects -------------------------------------------------------------------------------------------------
-
-
-@dataclass
-class Defect:
-    """One thing wrong with the part, as the verdict and the sites report it together."""
-
-    id: str
-    #: the code the rule table is keyed on: a layer-1 finding code, or a mesher `error_kind`
-    kind: str
-    #: layer 1 or layer 2 - a validity defect is repaired before any mesher defect
-    layer: int
-    site: Site
-    entities: tuple[StableId, ...]
-    #: the defect's own measurement, read off the site's graph; what the parameters are derived from
-    measurement: dict[str, Any] = field(default_factory=dict)
-
-    @property
-    def rank(self) -> tuple:
-        table = VALIDITY_ORDER if self.layer == 1 else MESHER_ORDER
-        where = table.index(self.kind) if self.kind in table else len(table)
-        return (self.layer, where, self.site.id, self.id)
+def order_defects(defects: Sequence[Defect]) -> list[Defect]:
+    return sorted(defects, key=defect_rank)
 
 
 def defects_of(verdict: Any, sites: Sequence[Site]) -> list[Defect]:
-    """The defect list for a state: layer 1's hard findings, then every mesher failure the sites located.
+    """This state's defects as lane C's `Defect`s: layer 1's hard findings first, then every mesher failure the
+    sites located, ordered by `defect_rank`.
 
-    One defect per (code, site): a code the verdict reports twice at one site is one thing to repair, and a code
-    at two sites is two. A finding no site carries is still a defect - it is attached to the site that names its
-    entities if there is one, and otherwise to the `unlocated`/coarse site, which is what the sweep does too."""
+    ONE DEFECT PER (code, site). Three panel members reporting one failure at one place is ONE thing to repair,
+    and the `member` carried is the first that reported it - the member lane C's local check re-runs.
+
+    BODY_OVERLAP IS CLUSTERED (owner note 1): the connected components of the overlapping-pair graph are one
+    defect each, carrying the cluster's bodies as `entities` and its pairs as `pairs`, so the arm repairs a
+    cluster PAIR BY PAIR and one bad pair neither blocks nor fails the rest.
+    """
     out: list[Defect] = []
     by_entity: dict[StableId, Site] = {}
     for site in sites:
@@ -138,53 +121,103 @@ def defects_of(verdict: Any, sites: Sequence[Site]) -> list[Defect]:
             by_entity.setdefault(e, site)
     fallback = next((s for s in sites if s.kind in ("unlocated", "invalid")), sites[0] if sites else None)
 
+    seen: set[tuple[str, str]] = set()
     hard = list(getattr(getattr(verdict, "valid", None), "hard", ()) or ())
-    for i, finding in enumerate(hard):
+    for finding in hard:
         code = str(getattr(finding, "code", "") or "")
+        if not code or code == "body_overlap":      # clustered below, never one defect per pair
+            continue
         ents = tuple(getattr(finding, "entities", ()) or ())
         site = next((by_entity[e] for e in ents if e in by_entity), fallback)
-        if site is None:
+        if site is None or (code, site.id) in seen:
             continue
-        out.append(Defect(id=f"v{i}:{code}", kind=code, layer=1, site=site, entities=ents,
-                          measurement=_measure(site, code, ents)))
+        seen.add((code, site.id))
+        out.append(Defect(id=site.id, kind=VALIDITY, code=code, entities=ents,
+                          xyz=_points(site), box=_box(site), measurement=_measure(site, ents)))
+    out.extend(_overlap_clusters([f for f in hard if str(getattr(f, "code", "")) == "body_overlap"],
+                                 by_entity, fallback))
 
     for site in sites:
-        for j, failure in enumerate((site.graph or {}).get("failures") or []):
+        graph = site.graph or {}
+        faces = tuple(f for f in (graph.get("mesher_faces") or []) if str(f)[:1] == "F")
+        for failure in graph.get("failures") or []:
             if failure.get("mesher") == "valid":
                 continue
-            kind = str(failure.get("error_kind") or "")
-            if not kind:
+            code = str(failure.get("error_kind") or "")
+            if not code or (code, site.id) in seen:
                 continue
-            ents = tuple(f for f in ((site.graph or {}).get("mesher_faces") or []) if str(f)[:1] == "F")
-            out.append(Defect(id=f"{site.id}:m{j}:{kind}", kind=kind, layer=2, site=site,
-                              entities=ents or tuple(site.entities),
-                              measurement=_measure(site, kind, ents or tuple(site.entities))))
-    # one defect per (kind, site): the same code reported by three meshers at one site is one thing to repair
-    seen: set[tuple[str, str]] = set()
-    unique: list[Defect] = []
-    for d in out:
-        key = (d.kind, d.site.id)
-        if key in seen:
+            seen.add((code, site.id))
+            out.append(Defect(id=site.id, kind=MESHER, code=code, entities=faces or tuple(site.entities),
+                              member=str(failure.get("mesher") or "") or None, xyz=_points(site), box=_box(site),
+                              measurement=_measure(site, faces or tuple(site.entities))))
+    return order_defects(out)
+
+
+def _overlap_clusters(findings: Sequence[Any], by_entity: dict[StableId, Site],
+                      fallback: Site | None) -> list[Defect]:
+    """One defect per CONNECTED cluster of overlapping bodies (owner note 1).
+
+    Two bodies are in one cluster when a `body_overlap` finding names them together, transitively: a chain of
+    three interpenetrating bodies is ONE defect with two pairs, because repairing one pair changes the geometry
+    the next is measured on, and because a cut aimed at one pair can push a clash onto the third body.
+    """
+    parent: dict[StableId, StableId] = {}
+
+    def find(x: StableId) -> StableId:
+        parent.setdefault(x, x)
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    pairs: list[tuple[StableId, StableId]] = []
+    for finding in findings:
+        ents = list(getattr(finding, "entities", ()) or ())
+        for i, a in enumerate(ents):
+            for b in ents[i + 1:]:
+                pairs.append((a, b) if a <= b else (b, a))
+                parent[find(a)] = find(b)
+    clusters: dict[StableId, set[tuple[StableId, StableId]]] = collections.defaultdict(set)
+    for a, b in pairs:
+        clusters[find(a)].add((a, b))
+    out: list[Defect] = []
+    for root, cluster_pairs in sorted(clusters.items()):
+        bodies = tuple(sorted({e for pair in cluster_pairs for e in pair}))
+        site = next((by_entity[e] for e in bodies if e in by_entity), fallback)
+        if site is None:
             continue
-        seen.add(key)
-        unique.append(d)
-    return order_defects(unique)
+        out.append(Defect(id=f"{site.id}:overlap:{root}", kind=VALIDITY, code="body_overlap", entities=bodies,
+                          pairs=tuple(sorted(cluster_pairs)), xyz=_points(site), box=_box(site),
+                          measurement=_measure(site, bodies)))
+    return out
 
 
-def order_defects(defects: Sequence[Defect]) -> list[Defect]:
-    """Validity first, then the mesher kinds, each in its table's order; ties by site then defect id."""
-    return sorted(defects, key=lambda d: d.rank)
+def _points(site: Site) -> tuple:
+    out = []
+    for p in (site.graph or {}).get("points") or site.xyz or []:
+        try:
+            out.append((float(p[0]), float(p[1]), float(p[2])))
+        except (TypeError, ValueError, IndexError, KeyError):
+            continue
+    return tuple(out)
 
 
-def _measure(site: Site, code: str, entities: Sequence[StableId]) -> dict[str, Any]:
-    """The defect's measurement, read off the site's graph. Only what the parameters are derived from, and only
-    what the site really carries - a key that is not there is absent, never a default, because a derived
-    parameter with an invented measurement behind it is a ladder with one rung."""
+def _box(site: Site) -> tuple | None:
+    box = (site.graph or {}).get("box")
+    try:
+        return tuple(float(v) for v in box) if box and len(box) == 6 else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _measure(site: Site, entities: Sequence[StableId]) -> dict[str, Any]:
+    """The defect's measurement, read off the site's graph. Only what a parameter is derived from, and only what
+    the site really carries: a key that is absent stays absent, because a derived parameter with an invented
+    measurement behind it is a ladder with one rung."""
     graph = site.graph or {}
     out: dict[str, Any] = {}
     if graph.get("diagonal_mm"):
         out["diagonal_mm"] = float(graph["diagonal_mm"])
-    # the narrowest located face at the defect, and its length: `remove_small`'s width comes from these
     best: dict[str, Any] | None = None
     named = set(entities) or set(graph.get("mesher_faces") or [])
     for node in graph.get("nodes") or []:
@@ -200,16 +233,19 @@ def _measure(site: Site, code: str, entities: Sequence[StableId]) -> dict[str, A
         out["narrowest_face"] = best
     clashes = [c for c in (graph.get("clashes") or []) if c.get("dist_mm") is not None]
     if clashes:
+        # per PAIR, so a cluster's pair is repaired with ITS own measured clash, not the cluster's worst
+        out["clash_by_pair"] = {pair_key(c.get("a"), c.get("b")): float(c["dist_mm"]) for c in clashes}
         worst = max(clashes, key=lambda c: float(c["dist_mm"]))
         out["clash"] = {"a": worst.get("a"), "b": worst.get("b"), "dist_mm": float(worst["dist_mm"])}
-    loops = graph.get("free_loops") or []
-    if loops:
-        out["free_loops"] = len(loops)
-    if graph.get("box"):
-        out["box"] = list(graph["box"])
+    if graph.get("free_loops"):
+        out["free_loops"] = len(graph["free_loops"])
     if graph.get("coarse"):
         out["coarse"] = True
     return out
+
+
+def pair_key(a: Any, b: Any) -> str:
+    return "|".join(sorted((str(a), str(b))))
 
 
 # --- the rule table ------------------------------------------------------------------------------------------
@@ -303,13 +339,17 @@ class NoParameters(ValueError):
     arm cannot derive is a ladder with one rung, and the design says parameters come from the measurement."""
 
 
-def params_for(op: str, defect: Defect) -> tuple[list[StableId], dict[str, Any]]:
-    """(targets, params) for `op` on `defect`, derived from the defect's measurement. Raises `NoParameters` when
-    the measurement does not carry what the op needs."""
+def params_for(op: str, defect: Defect, *, pair: tuple[StableId, StableId] | None = None
+               ) -> tuple[list[StableId], dict[str, Any]]:
+    """(targets, params) for `op` on `defect`, derived from the defect's own measurement. Raises `NoParameters`
+    when the measurement does not carry what the op needs.
+
+    With `pair` (one pair of a body_overlap cluster) the targets are that pair's two bodies and the fuzzy value
+    is THAT pair's measured clash - not the cluster's worst, which would over-cut the mild pairs."""
     m = defect.measurement
-    entities = list(defect.entities)
+    entities = list(pair) if pair else list(defect.entities)
     faces = [e for e in entities if str(e)[:1] == "F"]
-    solids = [e for e in entities if str(e)[:1] == "S"]
+    solids = [e for e in entities if str(e)[:1] in ("S", "B")]   # lane C names bodies B..; layer 1 names them S..
 
     if op.startswith("run_stage:"):
         return [], {"stage": op.split(":", 1)[1], "params": {}}
@@ -321,10 +361,13 @@ def params_for(op: str, defect: Defect) -> tuple[list[StableId], dict[str, Any]]
         return [face["id"]], {"max_width_mm": width}
     if op in ("conformalise", "fuse"):
         clash = m.get("clash")
-        bodies = solids or [b for b in (clash or {}).values() if isinstance(b, str) and b[:1] == "S"]
+        bodies = solids or [b for b in (clash or {}).values() if isinstance(b, str) and b[:1] in ("S", "B")]
         if not bodies:
             raise NoParameters("no bodies named at this defect")
-        fuzzy = 0.0 if clash is None else FUZZY_MARGIN * float(clash["dist_mm"])
+        measured = (m.get("clash_by_pair") or {}).get(pair_key(*pair)) if pair else None
+        if measured is None and clash is not None:
+            measured = float(clash["dist_mm"])
+        fuzzy = 0.0 if measured is None else FUZZY_MARGIN * float(measured)
         if op == "fuse":
             return sorted(set(bodies)), {"fuzzy_mm": fuzzy}
         keep = sorted(set(bodies))[0]
@@ -363,7 +406,8 @@ def pick_repair(defect: Defect, *, table: dict[str, tuple[Repair, ...]] | None =
 
     "Equally well evidenced" is the tie the design means: two repairs the table cannot separate. The table is
     already ranked by distinct files, so a tie here is a genuine one, not an artefact of the ordering."""
-    kind = defect.kind
+    # the table is keyed on the defect's CODE (lane C's `kind` is only validity/mesher)
+    kind = defect.code
     rows = (table if table is not None else RULE_TABLE).get(kind, ())
     rows = tuple(r for r in rows if applies is None or all(applies(op) for op in r))
     if not rows:
@@ -406,6 +450,12 @@ class SeqCounters:
     local_checks: int = 0
     rounds: int = 0
     ai_picks: int = 0
+    #: body_overlap clusters are repaired pair by pair, so the pairs are counted beside the defects: a cluster
+    #: that ended 3 pairs of 4 is a SKIPPED defect with 3 fixed pairs, and never reads as a repaired part
+    pairs_fixed: int = 0
+    pairs_skipped: int = 0
+    #: how many repairs this round kept (reset by the loop at the end of each round)
+    kept_in_round: int = 0
     found: collections.Counter[str] = field(default_factory=collections.Counter)
     fixed: collections.Counter[str] = field(default_factory=collections.Counter)
     skipped: collections.Counter[str] = field(default_factory=collections.Counter)
@@ -419,7 +469,46 @@ class SeqCounters:
         return {"full_checks": self.full_checks, "local_checks": self.local_checks, "rounds": self.rounds,
                 "ai_picks": self.ai_picks, "defects_found": dict(self.found), "defects_fixed": dict(self.fixed),
                 "defects_skipped": dict(self.skipped), "skipped_why": dict(self.skipped_why),
+                "overlap_pairs_fixed": self.pairs_fixed, "overlap_pairs_skipped": self.pairs_skipped,
                 "local_s": round(self.local_s, 1), "full_s": round(self.full_s, 1)}
+
+
+# --- the trace the owner asked for (note 2): one readable line per step ---------------------------------------
+
+
+def defect_line(defect: Defect, *, pair: tuple[StableId, StableId] | None = None) -> str:
+    """`body_overlap on B2+B5 (clash 0.42 mm)` - the defect third of the step line: kind, WHERE, measurement."""
+    where = "+".join(pair) if pair else ("+".join(defect.entities[:4]) + ("+..." if len(defect.entities) > 4 else ""))
+    m = defect.measurement or {}
+    bits: list[str] = []
+    if pair and (m.get("clash_by_pair") or {}).get(pair_key(*pair)) is not None:
+        bits.append(f"clash {m['clash_by_pair'][pair_key(*pair)]:.3g} mm")
+    elif m.get("clash"):
+        bits.append(f"clash {m['clash']['dist_mm']:.3g} mm")
+    if m.get("narrowest_face"):
+        bits.append(f"narrowest face {m['narrowest_face']['id']} {m['narrowest_face']['width_mm']:.3g} mm")
+    if m.get("free_loops"):
+        bits.append(f"{m['free_loops']} free loop(s)")
+    if defect.member:
+        bits.append(f"member {defect.member}")
+    return f"{defect.code} on {where or '?'}" + (f" ({', '.join(bits)})" if bits else "")
+
+
+def repair_line(repair: Repair, params: Sequence[dict], pick: Pick) -> str:
+    """`remove_small{max_width_mm=11.97} [table: the top rule for open_shell]` - the repair third: op, PARAMS,
+    and who chose it with why, so a reader never has to guess whether the table or the model decided."""
+    steps = " + ".join(
+        f"{op}{{{', '.join(f'{k}={_short(v)}' for k, v in sorted(p.items()))}}}" if p else op
+        for op, p in zip(repair, list(params) + [{}] * len(repair), strict=False))
+    return f"{steps} [{pick.by}: {pick.why}]"
+
+
+def _short(value: Any) -> str:
+    if isinstance(value, float):
+        return f"{value:.4g}"
+    if isinstance(value, dict):
+        return "{...}" if value else "{}"
+    return str(value)
 
 
 # --- the loop ------------------------------------------------------------------------------------------------
@@ -430,18 +519,25 @@ class _Applied:
     ws: Workspace
     diffs: list[Diff]
     touched: tuple[StableId, ...]
+    params: list[dict]
 
 
 def apply_repair(pool: Any, ws: Workspace, repair: Repair, defect: Defect, *, timeout_s: float,
+                 pair: tuple[StableId, StableId] | None = None,
                  run_stage: Callable[[Any, Workspace, str, dict, float], _Applied] | None = None) -> _Applied:
-    """Apply `repair`'s ops in order, on the defect's own entities. Raises what the ops raise (`OpDeclined`,
-    `OpFailed`, `UnknownTarget`, `NoParameters`): the caller records it against the defect and moves on.
+    """Apply `repair`'s ops in order, on this defect's own entities (or, in a cluster, on `pair`'s two bodies).
 
-    The SECOND step's targets are derived from the defect again, not from the first step's output, because a
-    two-step recipe is "do this, then re-condition what it touched" - the stage macros take no targets at all."""
-    current, diffs, touched = ws, [], []
+    Raises what the ops raise (`OpDeclined`, `OpFailed`, `UnknownTarget`) and `NoParameters`: the caller records
+    it against the defect and moves to the next alternative.
+
+    BOTH STEPS THEN ONE CHECK. A two-step recipe is "do this, then re-condition what it touched", and the table
+    exists because the oracle's wins are chains whose FIRST step alone changes nothing measurable - verifying
+    between the steps would throw away exactly those. The pair is kept or reverted as a unit.
+    """
+    current, diffs, touched, used = ws, [], [], []
     for op in repair:
-        targets, params = params_for(op, defect)
+        targets, params = params_for(op, defect, pair=pair)
+        used.append(params)
         if op.startswith("run_stage:"):
             if run_stage is None:
                 raise NoParameters(f"{op} needs the staged healer, which this caller did not provide")
@@ -452,7 +548,7 @@ def apply_repair(pool: Any, ws: Workspace, repair: Repair, defect: Defect, *, ti
             if errors:
                 raise NoParameters(f"{op} rejected the derived parameters: {errors[0]}")
             current, diff = REGISTRY[op].apply(pool, current.fork(), list(targets), dict(params),
-                                              timeout_s=timeout_s)
+                                               timeout_s=timeout_s)
             declined = diff.params.get("declined") if isinstance(diff.params, dict) else None
             if declined is not None:
                 # the body ops decline with an UNCHANGED workspace and the reason in the Diff, as stages reads it
@@ -463,19 +559,18 @@ def apply_repair(pool: Any, ws: Workspace, repair: Repair, defect: Defect, *, ti
         for d in step_diffs:
             touched.extend(d.generated or {})
             touched.extend(d.modified or {})
-            touched.extend(targets)
-    return _Applied(current, diffs, tuple(dict.fromkeys(touched)))
+        touched.extend(targets)
+    return _Applied(current, diffs, tuple(dict.fromkeys(touched)), used)
 
 
 @dataclass
 class SeqRound:
-    """One round, for the trace: what was diagnosed, what was kept, and what the end-of-round panel said."""
+    """One round, for the row: its steps as readable lines, and what the end-of-round FULL check said."""
 
     index: int
-    defects: list[dict] = field(default_factory=list)
+    steps: list[str] = field(default_factory=list)
     kept: int = 0
-    clean: bool | None = None
-    score: tuple | None = None
+    full_check: str | None = None
 
 
 def repair_sequentially(
@@ -485,22 +580,24 @@ def repair_sequentially(
     *,
     judge: Any,
     sites_of: Callable[[Any, Workspace, Any], list[Site]],
-    verify_local: VerifyLocal = unanswered_local,
+    verify: Callable[..., LocalResult] = verify_local,
     ai_pick: AIPick | None = None,
     run_stage: Callable[[Any, Workspace, str, dict, float], _Applied] | None = None,
     table: dict[str, tuple[Repair, ...]] | None = None,
     start_verdict: Any = None,
     op_timeout_s: float = 300.0,
+    local_timeout_s: float = 600.0,
     max_rounds: int = MAX_ROUNDS,
     wall_s: float | None = None,
     clock: Callable[[], float] = time.monotonic,
     trace: Any = None,
-) -> tuple[Workspace, Any, SeqCounters, list[SeqRound]]:
-    """The arm: (best workspace, its full verdict, the counters, the rounds).
+) -> SeqOutcome:
+    """The arm. One defect at a time, one repair each, local verification, ONE full panel per round.
 
-    One full panel per round, plus the one that is already paid for the start state. A repair is KEPT only on a
-    measured local pass; anything else reverts it and the defect is recorded as skipped with its reason. The
-    whole-part panel at the end of the round is the measurement - a local pass is not a whole-part pass.
+    A repair is KEPT only on a local pass (`gone` and no new hard code). Anything else - still there, a new
+    defect, an op that declined, a parameter that cannot be derived, a check that could not be had - reverts it
+    and records the defect as skipped with its reason. The end-of-round panel is the measurement: a local pass is
+    not a whole-part pass, which is what the rounds are for.
     """
     counters = SeqCounters()
     rounds: list[SeqRound] = []
@@ -509,77 +606,188 @@ def repair_sequentially(
     if start_verdict is None:
         counters.full_checks += 1
     best_score = judge.score(verdict)
+    t0 = clock()
 
     def out_of_wall() -> bool:
         return wall_s is not None and (clock() - t0) >= wall_s
 
-    t0 = clock()
+    def into(this: SeqRound) -> Callable[[str], None]:
+        """A `step` bound to THIS round (never a closure over the loop variable)."""
+        def step(line: str) -> None:
+            this.steps.append(line)
+            if trace is not None:
+                trace.record("seq_step", round=this.index, line=line)
+        return step
+
     for index in range(1, max_rounds + 1):
         if out_of_wall() or bool(getattr(verdict, "clean", False)):
             break
         this = SeqRound(index=index)
         rounds.append(this)
         counters.rounds = index
-        sites = sites_of(pool, best, verdict)
-        defects = defects_of(verdict, sites)
+        defects = defects_of(verdict, sites_of(pool, best, verdict))
         for d in defects:
-            counters.found[d.kind] += 1
+            counters.found[d.code] += 1
         current = best
         for defect in defects:
             if out_of_wall():
-                counters.skipped[defect.kind] += 1
+                counters.skipped[defect.code] += 1
                 counters.skipped_why["wall"] += 1
+                into(this)(f"{defect_line(defect)} -> not attempted [the file's wall]")
                 continue
-            record = {"defect": defect.id, "kind": defect.kind, "outcome": None, "repair": None, "by": None}
-            this.defects.append(record)
-            pick = pick_repair(defect, table=table, ai_pick=ai_pick,
-                               applies=lambda op: op.startswith("run_stage:") or op in REGISTRY)
-            if pick.by == "ai":
-                counters.ai_picks += 1
-            alternatives = [pick.repair, *[r for r in pick.candidates if r != pick.repair]][:MAX_ALTERNATIVES]
-            kept = False
-            for repair in [r for r in alternatives if r is not None]:
-                record["repair"], record["by"] = list(repair), pick.by
-                try:
-                    applied = apply_repair(pool, current, repair, defect, timeout_s=op_timeout_s,
-                                           run_stage=run_stage)
-                except (NoParameters, OpDeclined, OpFailed, UnknownTarget, ValueError) as why:
-                    record["outcome"] = f"not_applied: {type(why).__name__}: {why}"
-                    counters.skipped_why[type(why).__name__] += 1
-                    continue
-                local = verify_local(current, applied.ws, defect, applied.touched)
-                counters.local_checks += 1
-                counters.local_s += float(local.seconds or 0.0)
-                if local.kept:
-                    current, kept = applied.ws, True
-                    counters.fixed[defect.kind] += 1
-                    record["outcome"] = "kept"
-                    break
-                record["outcome"] = ("local_fail: new " + ",".join(local.new_hard)) if local.new_hard else (
-                    "local_fail: not gone" if local.measured else "local_unmeasured")
-                if not local.measured:
-                    # the verifier could not answer, so the next alternative cannot be judged either: stop here
-                    # rather than applying two more repairs nothing will check (and say which it was)
-                    counters.skipped_why["local_verification_unavailable"] += 1
-                    break
-            if not kept:
-                counters.skipped[defect.kind] += 1
-        this.kept = sum(1 for r in this.defects if r.get("outcome") == "kept")
-        if trace is not None:
-            trace.record("seq_round", index=index, defects=this.defects, kept=this.kept)
+            if defect.code == "body_overlap" and defect.pairs:
+                current = _repair_cluster(pool, current, defect, counters=counters, table=table, ai_pick=ai_pick,
+                                          verify=verify, run_stage=run_stage, op_timeout_s=op_timeout_s,
+                                          local_timeout_s=local_timeout_s, step=into(this))
+                continue
+            current = _repair_one(pool, current, defect, counters=counters, table=table, ai_pick=ai_pick,
+                                  verify=verify, run_stage=run_stage, op_timeout_s=op_timeout_s,
+                                  local_timeout_s=local_timeout_s, step=into(this))
+        this.kept = counters.kept_in_round
+        counters.kept_in_round = 0
         if this.kept == 0:
-            break                       # a round that keeps nothing stops: the next would diagnose the same state
-        # THE measurement: one full 4-mesher panel for the whole round's work
+            this.full_check = "not run: the round kept nothing"
+            break                       # the next round would diagnose the same state and ask the same questions
         full_t = clock()
         new_verdict = judge.full(pool, current, original)
         counters.full_checks += 1
         counters.full_s += clock() - full_t
         new_score = judge.score(new_verdict)
-        this.clean, this.score = bool(getattr(new_verdict, "clean", False)), tuple(new_score)
-        if new_score > best_score:
+        improved = new_score > best_score
+        this.full_check = (f"{'clean' if getattr(new_verdict, 'clean', False) else 'not clean'}, "
+                           f"score {tuple(new_score)}, {'improved' if improved else 'no better'} "
+                           f"({clock() - full_t:.1f} s)")
+        if trace is not None:
+            trace.record("seq_round", index=index, kept=this.kept, full_check=this.full_check)
+        if improved:
             best, verdict, best_score = current, new_verdict, new_score
         else:
-            # the round's repairs did not improve the whole part: keep the better state and diagnose IT again
-            verdict = new_verdict if current is best else verdict
-            break
-    return best, verdict, counters, rounds
+            break                       # the round's work did not improve the part: keep the better state
+    return SeqOutcome(best=best, verdict=verdict, counters=counters, rounds=rounds)
+
+
+@dataclass
+class SeqOutcome:
+    best: Workspace
+    verdict: Any
+    counters: SeqCounters
+    rounds: list[SeqRound]
+
+    def lines(self) -> list[str]:
+        """The whole file's trace, readable top to bottom: every step, and each round's full check."""
+        out: list[str] = []
+        for r in self.rounds:
+            out.append(f"round {r.index}:")
+            out.extend(f"  {line}" for line in r.steps)
+            out.append(f"  full check: {r.full_check}")
+        return out
+
+
+def _alternatives(pick: Pick) -> list[Repair]:
+    first = [pick.repair] if pick.repair is not None else []
+    return [*first, *[r for r in pick.candidates if r != pick.repair]][:MAX_ALTERNATIVES]
+
+
+def _pick_for(defect: Defect, table: dict[str, tuple[Repair, ...]] | None, ai_pick: AIPick | None,
+              counters: SeqCounters) -> Pick:
+    pick = pick_repair(defect, table=table, ai_pick=ai_pick,
+                       applies=lambda op: op.startswith("run_stage:") or op in REGISTRY)
+    if pick.by == "ai":
+        counters.ai_picks += 1
+    return pick
+
+
+def _repair_one(pool: Any, ws: Workspace, defect: Defect, *, counters: SeqCounters,
+                table: dict[str, tuple[Repair, ...]] | None, ai_pick: AIPick | None,
+                verify: Callable[..., LocalResult], run_stage: Any, op_timeout_s: float,
+                local_timeout_s: float, step: Callable[[str], None]) -> Workspace:
+    """One defect, one repair at a time until one is kept or the alternatives run out. Returns the workspace to
+    carry on from: the repaired one if a repair was kept, otherwise the one it was given (the revert)."""
+    pick = _pick_for(defect, table, ai_pick, counters)
+    if not pick.repair:
+        counters.skipped[defect.code] += 1
+        counters.skipped_why["no_rule"] += 1
+        step(f"{defect_line(defect)} -> no repair [{pick.why}]")
+        return ws
+    for repair in _alternatives(pick):
+        try:
+            applied = apply_repair(pool, ws, repair, defect, timeout_s=op_timeout_s, run_stage=run_stage)
+        except (NoParameters, OpDeclined, OpFailed, UnknownTarget) as why:
+            counters.skipped_why[type(why).__name__] += 1
+            step(f"{defect_line(defect)} -> {repair_line(repair, [], pick)} -> not applied: {why}")
+            continue
+        try:
+            local = verify(pool, ws, applied.ws, defect, list(applied.touched), timeout_s=local_timeout_s)
+        except UNAVAILABLE as why:
+            counters.skipped[defect.code] += 1
+            counters.skipped_why["local_check_unavailable"] += 1
+            step(f"{defect_line(defect)} -> {repair_line(repair, applied.params, pick)} -> "
+                 f"NOT CHECKED: {type(why).__name__}: {why}")
+            return ws                   # nothing would check the next alternative either
+        counters.local_checks += 1
+        counters.local_s += float(local.seconds or 0.0)
+        step(f"{defect_line(defect)} -> {repair_line(repair, applied.params, pick)} -> {local.line()}")
+        if local.gone and not local.new_hard:
+            counters.fixed[defect.code] += 1
+            counters.kept_in_round += 1
+            return applied.ws
+    counters.skipped[defect.code] += 1
+    return ws
+
+
+def _repair_cluster(pool: Any, ws: Workspace, defect: Defect, *, counters: SeqCounters,
+                    table: dict[str, tuple[Repair, ...]] | None, ai_pick: AIPick | None,
+                    verify: Callable[..., LocalResult], run_stage: Any, op_timeout_s: float,
+                    local_timeout_s: float, step: Callable[[str], None]) -> Workspace:
+    """A body_overlap CLUSTER, repaired PAIR BY PAIR (owner note 1).
+
+    One local check per pair, and a pair that cannot be repaired is skipped and recorded WITHOUT blocking the
+    rest of the cluster - the whole point of clustering rather than one defect per pair. The cluster counts as
+    fixed only if every pair ended gone; otherwise it is a skipped defect with its pairs counted separately, so
+    "3 of 4 pairs" never reads as a repaired part.
+    """
+    current = ws
+    gone = 0
+    for pair in defect.pairs:
+        pick = _pick_for(defect, table, ai_pick, counters)
+        if not pick.repair:
+            counters.pairs_skipped += 1
+            counters.skipped_why["no_rule"] += 1
+            step(f"{defect_line(defect, pair=pair)} -> no repair [{pick.why}]")
+            continue
+        kept = False
+        for repair in _alternatives(pick):
+            try:
+                applied = apply_repair(pool, current, repair, defect, timeout_s=op_timeout_s, pair=pair,
+                                       run_stage=run_stage)
+            except (NoParameters, OpDeclined, OpFailed, UnknownTarget) as why:
+                counters.skipped_why[type(why).__name__] += 1
+                step(f"{defect_line(defect, pair=pair)} -> {repair_line(repair, [], pick)} -> not applied: {why}")
+                continue
+            try:
+                local = verify(pool, current, applied.ws, defect, list(applied.touched), pair=pair,
+                               timeout_s=local_timeout_s)
+            except UNAVAILABLE as why:
+                counters.pairs_skipped += 1
+                counters.skipped_why["local_check_unavailable"] += 1
+                step(f"{defect_line(defect, pair=pair)} -> {repair_line(repair, applied.params, pick)} -> "
+                     f"NOT CHECKED: {type(why).__name__}: {why}")
+                break
+            counters.local_checks += 1
+            counters.local_s += float(local.seconds or 0.0)
+            step(f"{defect_line(defect, pair=pair)} -> {repair_line(repair, applied.params, pick)} -> "
+                 f"{local.line()}")
+            if local.gone and not local.new_hard:
+                current, kept = applied.ws, True
+                counters.pairs_fixed += 1
+                counters.kept_in_round += 1
+                gone += 1
+                break
+        if not kept:
+            counters.pairs_skipped += 1
+    if gone == len(defect.pairs):
+        counters.fixed[defect.code] += 1
+    else:
+        counters.skipped[defect.code] += 1
+        step(f"{defect_line(defect)} -> cluster partly repaired: {gone} of {len(defect.pairs)} pairs")
+    return current

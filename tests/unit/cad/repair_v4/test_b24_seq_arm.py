@@ -36,23 +36,68 @@ class _V:
         self.valid, self.clean = _Valid(hard or []), clean
 
 
+def _local(gone: bool = True, new_hard: list[dict] | None = None, seconds: float = 0.0) -> Any:
+    from meshpipeline.cad.repair_v4.local_verify import LocalResult
+    return LocalResult(gone=gone, new_hard=new_hard or [], detail={}, seconds=seconds)
+
+
 # --- ordering ------------------------------------------------------------------------------------------------
 
 def test_validity_defects_are_repaired_before_any_mesher_defect_and_in_the_rulings_order() -> None:
-    sites = [_site("S1", entities=["S1"], failures=[{"mesher": "gmsh_default", "error_kind": "overlapping_facets"}]),
-             _site("S2", entities=["S2"])]
-    verdict = _V([_Finding("open_shell", ["S2"]), _Finding("non_positive_volume", ["S1"])])
-    got = [(d.layer, d.kind) for d in seq.defects_of(verdict, sites)]
-    assert got == [(1, "non_positive_volume"), (1, "open_shell"), (2, "overlapping_facets")]
+    sites = [_site("S1", entities=["B1"], failures=[{"mesher": "gmsh_default", "error_kind": "overlapping_facets"}]),
+             _site("S2", entities=["B2"])]
+    verdict = _V([_Finding("open_shell", ["B2"]), _Finding("non_positive_volume", ["B1"])])
+    got = [(d.kind, d.code) for d in seq.defects_of(verdict, sites)]
+    assert got == [("validity", "non_positive_volume"), ("validity", "open_shell"), ("mesher", "overlapping_facets")]
+
+
+def test_a_code_no_ruling_names_sorts_LAST_so_it_cannot_pre_empt_a_measured_one() -> None:
+    sites = [_site("S1", entities=["B1"])]
+    verdict = _V([_Finding("something_nobody_ranked", ["B1"]), _Finding("open_shell", ["B1"])])
+    assert [d.code for d in seq.defects_of(verdict, sites)] == ["open_shell", "something_nobody_ranked"]
 
 
 def test_one_defect_per_kind_and_site_however_many_meshers_report_it() -> None:
     site = _site("S1", failures=[{"mesher": "gmsh_default", "error_kind": "overlapping_facets"},
                                  {"mesher": "gmsh_prod", "error_kind": "overlapping_facets"},
                                  {"mesher": "valid", "error_kind": "ignored"}])
-    assert [d.kind for d in seq.defects_of(_V(), [site])] == ["overlapping_facets"]
+    defects = seq.defects_of(_V(), [site])
+    assert [d.code for d in defects] == ["overlapping_facets"]
+    assert defects[0].member == "gmsh_default"      # the member lane C's local check re-runs
 
 
+# --- body_overlap clusters (owner note 1) --------------------------------------------------------------------
+
+def test_a_CHAIN_of_overlapping_bodies_is_ONE_defect_with_its_pairs() -> None:
+    """B1-B2 and B2-B3 interpenetrate: one cluster, two pairs. Repairing a pair changes what the next is
+    measured on, and a cut aimed at one can push a clash onto the third body."""
+    site = _site("S1", entities=["B1", "B2", "B3"],
+                 graph={"clashes": [{"a": "B1", "b": "B2", "dist_mm": 0.4},
+                                    {"a": "B2", "b": "B3", "dist_mm": 0.1}]})
+    verdict = _V([_Finding("body_overlap", ["B1", "B2"]), _Finding("body_overlap", ["B2", "B3"])])
+    [defect] = seq.defects_of(verdict, [site])
+    assert defect.code == "body_overlap" and defect.kind == "validity"
+    assert defect.entities == ("B1", "B2", "B3")
+    assert defect.pairs == (("B1", "B2"), ("B2", "B3"))
+
+
+def test_two_SEPARATE_overlaps_are_two_defects() -> None:
+    site = _site("S1", entities=["B1", "B2", "B3", "B4"])
+    verdict = _V([_Finding("body_overlap", ["B1", "B2"]), _Finding("body_overlap", ["B3", "B4"])])
+    defects = seq.defects_of(verdict, [site])
+    assert [d.pairs for d in defects] == [(("B1", "B2"),), (("B3", "B4"),)]
+
+
+def test_a_pair_is_repaired_with_ITS_own_measured_clash_not_the_clusters_worst() -> None:
+    site = _site("S1", entities=["B1", "B2", "B3"],
+                 graph={"clashes": [{"a": "B1", "b": "B2", "dist_mm": 0.4},
+                                    {"a": "B2", "b": "B3", "dist_mm": 0.1}]})
+    [defect] = seq.defects_of(_V([_Finding("body_overlap", ["B1", "B2"]),
+                                  _Finding("body_overlap", ["B2", "B3"])]), [site])
+    _t, mild = seq.params_for("fuse", defect, pair=("B2", "B3"))
+    _t, worst = seq.params_for("fuse", defect, pair=("B1", "B2"))
+    assert mild["fuzzy_mm"] == pytest.approx(seq.FUZZY_MARGIN * 0.1)
+    assert worst["fuzzy_mm"] == pytest.approx(seq.FUZZY_MARGIN * 0.4)
 # --- the rule table ------------------------------------------------------------------------------------------
 
 def test_the_table_is_what_lane_Ds_rows_derive_ranked_by_DISTINCT_FILES() -> None:
@@ -77,22 +122,22 @@ def test_a_gamed_win_and_one_an_arm_already_solves_are_not_in_the_table() -> Non
 # --- parameters ----------------------------------------------------------------------------------------------
 
 def test_remove_smalls_width_comes_from_the_measured_face_not_a_ladder() -> None:
-    defect = seq.Defect(id="d", kind="open_shell", layer=1, site=_site("S1"), entities=("F7",),
-                        measurement={"narrowest_face": {"id": "F7", "width_mm": 0.4, "length_mm": 11.0}})
+    defect = _defect("open_shell", entities=("F7",),
+                     measurement={"narrowest_face": {"id": "F7", "width_mm": 0.4, "length_mm": 11.0}})
     targets, params = seq.params_for("remove_small", defect)
     assert targets == ["F7"]
     assert params["max_width_mm"] == pytest.approx(seq.REMOVE_SMALL_MARGIN * 11.4)
 
 
 def test_a_fuzzy_value_comes_from_the_measured_clash() -> None:
-    defect = seq.Defect(id="d", kind="body_overlap", layer=1, site=_site("S1", entities=["S1", "S2"]),
-                        entities=("S1", "S2"), measurement={"clash": {"a": "S1", "b": "S2", "dist_mm": 0.25}})
+    defect = _defect("body_overlap", entities=("B1", "B2"),
+                     measurement={"clash": {"a": "B1", "b": "B2", "dist_mm": 0.25}})
     _t, params = seq.params_for("fuse", defect)
     assert params["fuzzy_mm"] == pytest.approx(seq.FUZZY_MARGIN * 0.25)
 
 
 def test_a_defect_with_no_measurement_gets_NO_repair_rather_than_a_guessed_parameter() -> None:
-    defect = seq.Defect(id="d", kind="open_shell", layer=1, site=_site("S1"), entities=(), measurement={})
+    defect = _defect("open_shell", entities=())
     with pytest.raises(seq.NoParameters):
         seq.params_for("remove_small", defect)
     with pytest.raises(seq.NoParameters):
@@ -101,8 +146,8 @@ def test_a_defect_with_no_measurement_gets_NO_repair_rather_than_a_guessed_param
 
 # --- the pick ------------------------------------------------------------------------------------------------
 
-def _defect(kind: str) -> seq.Defect:
-    return seq.Defect(id="d", kind=kind, layer=1, site=_site("S1"), entities=("F1",))
+def _defect(code: str, kind: str = "validity", *, entities: tuple = ("F1",), **kw: Any) -> seq.Defect:
+    return seq.Defect(id="S1", kind=kind, code=code, entities=entities, **kw)
 
 
 def test_the_table_decides_where_it_has_a_leader_and_the_model_is_not_asked() -> None:
@@ -124,6 +169,8 @@ def test_an_empty_table_and_no_model_picks_NOTHING_rather_than_anything() -> Non
     assert pick.repair is None and pick.by == "none"
 
 
+
+
 # --- the loop ------------------------------------------------------------------------------------------------
 
 class _Judge:
@@ -134,9 +181,8 @@ class _Judge:
 
     def full(self, pool: Any, ws: Any, original: str) -> Any:
         self.full_calls += 1
-        q = int(ws.labels.get("q", 0))
-        v = _V(clean=q >= 4)
-        v.q = q
+        v = _V(clean=int(ws.labels.get("q", 0)) >= 4)
+        v.q = int(ws.labels.get("q", 0))
         return v
 
     @staticmethod
@@ -145,8 +191,6 @@ class _Judge:
 
 
 class _WS:
-    """The least workspace the loop touches: labels, a fork, and a brep path."""
-
     def __init__(self, q: int = 0, name: str = "w0") -> None:
         self.labels, self.brep_path, self.original, self.history = {"q": q}, f"/fake/{name}.brep", "/fake/o.brep", []
 
@@ -154,105 +198,179 @@ class _WS:
         return self
 
 
-def _one_mesher_site() -> Site:
-    return _site("S1", kind="invalid", entities=["F1"],
-                 failures=[{"mesher": "gmsh_default", "error_kind": "edge_through_face"}],
-                 graph={"nodes": [{"id": "F1", "area": 4.4, "min_width": 0.4}], "mesher_faces": ["F1"]})
-
-
-def _run(**kw: Any) -> tuple:
-    judge = _Judge()
-    start = _WS(0)
-    best, verdict, counters, rounds = seq.repair_sequentially(
-        None, start, "o.step", judge=judge, sites_of=lambda pool, ws, v: [_one_mesher_site()],
-        start_verdict=judge.full(None, start, "o.step"), **kw)
-    return judge, best, verdict, counters, rounds
-
-
 @contextmanager
 def _patched(apply: Any) -> Any:
-    """`seq.apply_repair` replaced: these tests are about the LOOP's rules, not about the op layer."""
+    """`seq.apply_repair` replaced: the loop's rules are what these tests are about, not the op layer."""
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(seq, "apply_repair", apply)
         yield mp
 
 
 def _bump(by: int = 1, name: str = "up") -> Any:
-    def apply(pool: Any, ws: Any, repair: Any, defect: Any, *, timeout_s: float, run_stage: Any = None) -> Any:
-        return seq._Applied(_WS(int(ws.labels["q"]) + by, name=name), [], ("F1",))
+    """A repair that always applies and improves the part by `by`, carrying the REAL derived parameters so the
+    trace line under test is the line the arm would really write."""
+    def apply(pool: Any, ws: Any, repair: Any, defect: Any, *, timeout_s: float, pair: Any = None,
+              run_stage: Any = None) -> Any:
+        params = []
+        for op in repair:
+            try:
+                params.append(seq.params_for(op, defect, pair=pair)[1])
+            except seq.NoParameters:
+                params.append({})
+        return seq._Applied(_WS(int(ws.labels["q"]) + by, name=name), [], ("B1",), params)
     return apply
 
 
-def test_lane_Cs_stub_answers_nothing_so_the_arm_KEEPS_nothing_and_says_why() -> None:
-    """An arm whose verifier is not wired yet must read as "not measured", never as "cannot repair" - and it must
-    not apply two more repairs that nothing will check."""
-    tried: list[Any] = []
+def _mesher_site() -> Site:
+    return _site("S1", kind="invalid", entities=["F1"],
+                 failures=[{"mesher": "gmsh_default", "error_kind": "edge_through_face"}],
+                 graph={"nodes": [{"id": "F1", "area": 4.4, "min_width": 0.4}], "mesher_faces": ["F1"]})
 
-    def apply(pool: Any, ws: Any, repair: Any, defect: Any, *, timeout_s: float, run_stage: Any = None) -> Any:
-        tried.append(repair)
-        return seq._Applied(_WS(1, name="x"), [], ("F1",))
 
-    with _patched(apply) as _mp:
-        judge, _best, _v, counters, rounds = _run()
-    assert len(tried) == 1                                  # one attempt, not one per alternative
-    assert counters.fixed == {} and counters.skipped["edge_through_face"] == 1
-    assert counters.skipped_why["local_verification_unavailable"] == 1
-    assert counters.rounds == 1 and rounds[0].kept == 0
-    # a round that kept nothing stops, so the end-of-round panel is never paid for
-    assert counters.full_checks == 0 and judge.full_calls == 1   # the one call is the start verdict, passed in
+def _run(site: Site | None = None, **kw: Any) -> tuple:
+    judge = _Judge()
+    start = _WS(0)
+    out = seq.repair_sequentially(None, start, "o.step", judge=judge,
+                                  sites_of=lambda pool, ws, v: [site or _mesher_site()],
+                                  start_verdict=judge.full(None, start, "o.step"), **kw)
+    return judge, out
 
 
 def test_TWO_defects_in_a_round_cost_ONE_full_panel_between_them() -> None:
-    """The arm's whole claim: the panel is paid per ROUND, never per repair."""
+    """The arm's whole claim, and the headline number: FULL CHECKS PER FILE."""
     site = _site("S1", kind="invalid", entities=["F1"],
                  failures=[{"mesher": "gmsh_default", "error_kind": "edge_through_face"},
                            {"mesher": "gmsh_prod", "error_kind": "no_volume"}],
                  graph={"nodes": [{"id": "F1", "area": 4.4, "min_width": 0.4}], "mesher_faces": ["F1"]})
-    judge = _Judge()
-    start = _WS(0)
-    with _patched(_bump(2)) as _mp:
-        best, verdict, counters, rounds = seq.repair_sequentially(
-            None, start, "o.step", judge=judge, sites_of=lambda pool, ws, v: [site],
-            start_verdict=judge.full(None, start, "o.step"),
-            verify_local=lambda *a: seq.LocalResult(gone=True, seconds=0.25))
-    assert sorted(counters.fixed) == ["edge_through_face", "no_volume"]
-    assert counters.local_checks == 2 and counters.local_s == 0.5
-    assert counters.full_checks == 1 and counters.rounds == 1     # ONE panel for both repairs
-    assert verdict.clean and best.labels["q"] == 4
+    with _patched(_bump(2)):
+        _judge, out = _run(site, verify=lambda *a, **k: _local(seconds=0.25))
+    assert sorted(out.counters.fixed) == ["edge_through_face", "no_volume"]
+    assert out.counters.local_checks == 2 and out.counters.local_s == 0.5
+    assert out.counters.full_checks == 1 and out.counters.rounds == 1
+    assert out.verdict.clean and out.best.labels["q"] == 4
 
 
-def test_a_local_pass_that_the_whole_part_panel_does_not_confirm_ends_the_arm_on_the_better_state() -> None:
-    """A local pass is not a whole-part pass. The round's panel is the measurement: if it did not improve the
-    part, the arm keeps the better state rather than diagnosing a worse one again."""
-    with _patched(_bump(0, name="worse")) as _mp:
-        _judge, best, _v, counters, _rounds = _run(verify_local=lambda *a: seq.LocalResult(gone=True))
-    assert counters.rounds == 1 and counters.full_checks == 1
-    assert best.brep_path == "/fake/w0.brep"                  # the start state, not the unimproved repair
+def test_a_local_pass_the_whole_part_panel_does_not_confirm_keeps_the_BETTER_state() -> None:
+    with _patched(_bump(0, name="worse")):
+        _judge, out = _run(verify=lambda *a, **k: _local())
+    assert out.counters.rounds == 1 and out.counters.full_checks == 1
+    assert out.best.brep_path == "/fake/w0.brep"
 
 
 def test_the_arm_stops_at_three_rounds_however_well_it_is_going() -> None:
-    with _patched(_bump(1)) as _mp:
-        _judge, best, verdict, counters, rounds = _run(verify_local=lambda *a: seq.LocalResult(gone=True))
-    assert counters.rounds == 3 and len(rounds) == 3
-    assert counters.full_checks == 3                          # one per round, never one per repair
-    assert best.labels["q"] == 3 and not verdict.clean        # clean is 4: it ran out of rounds, not of defects
+    with _patched(_bump(1)):
+        _judge, out = _run(verify=lambda *a, **k: _local())
+    assert out.counters.rounds == 3 and out.counters.full_checks == 3
+    assert out.best.labels["q"] == 3 and not out.verdict.clean
+
+
+def test_a_round_that_keeps_nothing_stops_and_pays_NO_panel() -> None:
+    with _patched(_bump(1)):
+        _judge, out = _run(verify=lambda *a, **k: _local(gone=False))
+    assert out.counters.full_checks == 0 and out.counters.rounds == 1
+    assert out.rounds[0].full_check == "not run: the round kept nothing"
+
+
+def test_a_repair_that_breaks_something_else_is_NOT_kept() -> None:
+    with _patched(_bump(1)):
+        _judge, out = _run(verify=lambda *a, **k: _local(gone=True, new_hard=[{"code": "open_shell",
+                                                                              "entities": ["B3"]}]))
+    assert out.counters.fixed == {} and out.counters.skipped["edge_through_face"] == 1
+    assert "new defect: open_shell on B3" in out.rounds[0].steps[-1]
+
+
+def test_a_check_that_could_not_be_had_is_not_a_failed_repair_and_stops_the_alternatives() -> None:
+    """`CheckerUnavailable` is infrastructure. The row must say the check could not be had, and the arm must not
+    apply two more repairs that nothing will check either."""
+    tried: list[Any] = []
+
+    def apply(pool: Any, ws: Any, repair: Any, defect: Any, *, timeout_s: float, pair: Any = None,
+              run_stage: Any = None) -> Any:
+        tried.append(repair)
+        return seq._Applied(_WS(1), [], ("B1",), [{}])
+
+    def dead(*a: Any, **k: Any) -> Any:
+        raise seq.CheckerUnavailable("the worker died")
+
+    with _patched(apply):
+        _judge, out = _run(verify=dead)
+    assert len(tried) == 1
+    assert out.counters.skipped_why["local_check_unavailable"] == 1 and out.counters.local_checks == 0
+    assert "NOT CHECKED: CheckerUnavailable" in out.rounds[0].steps[-1]
 
 
 def test_a_measured_local_FAILURE_moves_on_to_the_next_alternative() -> None:
     tried: list[Any] = []
 
-    def apply(pool: Any, ws: Any, repair: Any, defect: Any, *, timeout_s: float, run_stage: Any = None) -> Any:
+    def apply(pool: Any, ws: Any, repair: Any, defect: Any, *, timeout_s: float, pair: Any = None,
+              run_stage: Any = None) -> Any:
         tried.append(repair)
-        return seq._Applied(_WS(1, name="x"), [], ("F1",))
+        return seq._Applied(_WS(1), [], ("B1",), [{}])
 
-    with _patched(apply) as _mp:
-        _judge, _best, _v, counters, _rounds = _run(
-            verify_local=lambda *a: seq.LocalResult(gone=False, new_hard=("self_intersection",)))
-    assert tried == [("defeature",), ("conformalise",), ("defeature", "defeature")]   # at most MAX_ALTERNATIVES
-    assert counters.local_checks == 3 and counters.skipped["edge_through_face"] == 1
+    with _patched(apply):
+        _judge, out = _run(verify=lambda *a, **k: _local(gone=False))
+    assert tried == [("defeature",), ("conformalise",), ("defeature", "defeature")]
+    assert out.counters.local_checks == 3 and out.counters.skipped["edge_through_face"] == 1
 
 
-def test_a_clean_round_stops_immediately_and_pays_no_further_panel() -> None:
-    with _patched(_bump(4, name="clean")) as _mp:
-        _judge, _best, verdict, counters, _rounds = _run(verify_local=lambda *a: seq.LocalResult(gone=True))
-    assert verdict.clean and counters.rounds == 1 and counters.full_checks == 1
+# --- clusters, pair by pair (owner note 1) -------------------------------------------------------------------
+
+def _cluster_site() -> Site:
+    return _site("S1", kind="overlap", entities=["B1", "B2", "B3"],
+                 graph={"clashes": [{"a": "B1", "b": "B2", "dist_mm": 0.4},
+                                    {"a": "B2", "b": "B3", "dist_mm": 0.1}]})
+
+
+def _cluster_run(verify: Any) -> Any:
+    judge = _Judge()
+    start = _WS(0)
+    verdict = _V([_Finding("body_overlap", ["B1", "B2"]), _Finding("body_overlap", ["B2", "B3"])])
+    verdict.q = 0
+    return seq.repair_sequentially(None, start, "o.step", judge=judge,
+                                   sites_of=lambda pool, ws, v: [_cluster_site()], start_verdict=verdict,
+                                   verify=verify)
+
+
+def test_one_bad_pair_is_skipped_WITHOUT_blocking_the_rest_of_the_cluster() -> None:
+    seen: list[Any] = []
+
+    def verify(pool: Any, before: Any, after: Any, defect: Any, touched: Any = None, *, pair: Any = None,
+               timeout_s: float = 0.0) -> Any:
+        seen.append(pair)
+        return _local(gone=pair != ("B1", "B2"))      # the first pair cannot be repaired, the second can
+
+    with _patched(_bump(1)):
+        out = _cluster_run(verify)
+    # every pair was attempted, and each was checked on its own
+    assert [p for p in seen if p is not None] and ("B2", "B3") in seen
+    assert out.counters.pairs_fixed == 1 and out.counters.pairs_skipped == 1
+    # the cluster did not end repaired, and the row says so rather than counting a half-fixed part as fixed
+    assert out.counters.fixed == {} and out.counters.skipped["body_overlap"] == 1
+    assert "cluster partly repaired: 1 of 2 pairs" in out.rounds[0].steps[-1]
+
+
+def test_a_cluster_whose_every_pair_goes_counts_as_ONE_fixed_defect() -> None:
+    with _patched(_bump(2)):
+        out = _cluster_run(lambda *a, **k: _local())
+    assert out.counters.pairs_fixed == 2 and out.counters.pairs_skipped == 0
+    assert out.counters.fixed == {"body_overlap": 1}
+
+
+# --- the readable trace (owner note 2) -----------------------------------------------------------------------
+
+def test_every_step_is_one_readable_line_defect_then_repair_then_local_result() -> None:
+    with _patched(_bump(4, name="clean")):
+        _judge, out = _run(verify=lambda *a, **k: _local(seconds=1.2))
+    [line] = out.rounds[0].steps
+    assert line == ("edge_through_face on F1 (narrowest face F1 0.4 mm, member gmsh_default) -> "
+                    "defeature [table: the top rule for 'edge_through_face'] -> gone (1.2 s)")
+    assert out.lines()[0] == "round 1:"
+    assert out.lines()[-1].startswith("  full check: clean, score (1, 4, 0.0, 0.0, 0), improved")
+
+
+def test_the_line_says_WHICH_pair_of_a_cluster_and_its_own_measurement() -> None:
+    with _patched(_bump(2)):
+        out = _cluster_run(lambda *a, **k: _local(seconds=0.5))
+    assert out.rounds[0].steps[0].startswith("body_overlap on B1+B2 (clash 0.4 mm) -> conformalise{")
+    assert out.rounds[0].steps[1].startswith("body_overlap on B2+B3 (clash 0.1 mm) -> conformalise{")
+    assert "fuzzy_mm=0.11" in out.rounds[0].steps[1]       # the pair's OWN clash, not the cluster's worst
