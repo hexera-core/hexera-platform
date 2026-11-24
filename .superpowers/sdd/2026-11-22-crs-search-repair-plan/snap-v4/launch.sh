@@ -361,7 +361,8 @@ gcloud storage rsync -r -q "$SYNC/out" "$RUN/out" >> "$RUN/launch.log" 2>&1 || f
 POST_RC=$(cat "$RUN/out/post.rc" 2>/dev/null || echo missing)
 [ "$POST_RC" = 0 ] || fail "post.py rc=$POST_RC (regroup or report refused; see out/post.log and out/reports/)"
 [ -f "$RUN/out/ALLDONE" ] || fail "no ALLDONE marker"
-UNIT_BAD=$(cat "$RUN/out"/*.rc 2>/dev/null | grep -vc '^0$' || true)
+# the UNITS' exit codes: <vm>.<group>-<shard>.rc (post.rc is the post step's, counted on its own above)
+UNIT_BAD=$(ls "$RUN/out"/*.rc 2>/dev/null | grep -v '/post\.rc$' | xargs cat 2>/dev/null | grep -vc '^0$' || true)
 [ "${UNIT_BAD:-0}" = 0 ] || fail "$UNIT_BAD shard unit(s) exited non-zero (out/*.rc)"
 ABORTS=$(ls "$RUN/out"/*.ABORTED 2>/dev/null | wc -l | tr -d ' ')
 [ "$ABORTS" = 0 ] || fail "$ABORTS VM(s) aborted staging (out/*.ABORTED)"
