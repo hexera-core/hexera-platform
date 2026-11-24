@@ -113,6 +113,7 @@ from meshpipeline.cad.repair_v4.proposer import (
     Outcome,
     ProposedCandidate,
     UnfixableRegistry,
+    reason_of,
 )
 from meshpipeline.cad.repair_v4.sites import SiteRegistry, find_sites
 from meshpipeline.cad.repair_v4.stages import (
@@ -938,6 +939,9 @@ class _Outcome:
     #: chain. This is what the op budget is charged (`max(1, applied)`); it is never derived from the op or
     #: stage NAME, so a stage body that changes cannot leave a stale cost behind.
     applied: int = 0
+    #: what the caller knows beyond `errors` (a rolled-back stage: which cheap member got worse and by how much).
+    #: It reaches the proposer as the structured reason's `detail`; the message is left alone.
+    detail: str = ""
 
 
 def _validate(c: Candidate, ws: Workspace) -> list[str]:
@@ -975,8 +979,10 @@ def _stage_outcome(pool: Any, ws: Workspace, c: Candidate, gi: int, timeout_s: f
                         [f"inconclusive: stage {name!r} could not be judged (checker unavailable)"],
                         applied=applied)
     if name in result.rolled_back:
+        # the message stays exactly what it was (arms.py and triage.py group on it); WHY, in the cheap tier's own
+        # numbers, travels as the structured reason the proposer feeds back (`detail`)
         return _Outcome(c, gi, "declined", [f"stage {name!r} was rolled back: it lowered the cheap score"],
-                        applied=applied)
+                        applied=applied, detail=result.rollback_why.get(name, ""))
     if name in result.skipped:
         return _Outcome(c, gi, "declined", [f"stage {name!r} changed nothing: {result.skipped[name]}"],
                         applied=applied)
@@ -1030,7 +1036,11 @@ def _feedback_for(out: _Outcome, parent: SearchState, child: SearchState | None,
     c = out.candidate
     proposed = ProposedCandidate(c.op, list(c.targets), dict(c.params), c.source, c.rationale)
     if out.kind != "ok":
-        return Outcome(proposed, _STATUS[out.kind], message="; ".join(out.errors))
+        message = "; ".join(out.errors)
+        reason = reason_of(_STATUS[out.kind], message)
+        if out.detail and reason is not None:  # the caller knows more than the message says
+            reason = {**reason, "detail": out.detail}
+        return Outcome(proposed, _STATUS[out.kind], message=message, reason=reason)
     assert out.score is not None
     before = parent.cheap_score if parent.cheap_score is not None else parent.score
     delta, how = _delta(before, out.score), "cheap tier (one mesher) against the parent's cheap score"
