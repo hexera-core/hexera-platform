@@ -517,6 +517,9 @@ def _conformalise(payload: dict) -> dict:
     result_solids = _maps(frag.Shape())["solid"]
     new_solids = [result_solids.FindKey(i) for i in range(1, result_solids.Extent() + 1)]
     new_solids, dropped = _drop_zero_volume(new_solids, zero_volume_mm3(part))
+    bad = _degenerate(targets, new_solids, zero_volume_mm3(part))
+    if bad is not None:
+        return _declined("cut_degenerate" if keeper is not None else "fragment_degenerate", **bad)
     if dropped["history"] is not None:
         stages.append((dropped["history"], None))
     params = {"bodies": payload.get("body_ids", []), "fuzzy_mm": fuzzy, "mode": mode,
@@ -579,6 +582,27 @@ def _remove_duplicate_faces(payload: dict) -> dict:
                    op="remove_duplicate_faces", params=params, start=start, must_merge=pairs)
 
 
+def _degenerate(targets: list[Any], result: list[Any], eps: float) -> dict | None:
+    """Why a Boolean's result cannot be the UNION of `targets`, or None. A union is never smaller than its largest
+    member nor larger than the sum of its members, and no solid has negative signed volume (an inside-out solid).
+
+    Lane C15, dev 0051_00510567 on v4: OCCT's BRepAlgoAPI_Fuse, run on eight overlapping bodies after the staged
+    healer's split_closed, returned 4 solids of +0.14, +19.6, +0.02 and -13.5 mm3 from bodies totalling 47,870 mm3,
+    and reported no failure. The fuse passed BRepCheck (an inside-out solid does), the STEP round trip re-oriented the
+    solid so layer 1 called it VALID, and validity-first ranking delivered 0.07% of the part. This detects a broken
+    Boolean; it is not a fidelity bound: any real union passes it, whatever it does to the part."""
+    vols = [_volume(t) for t in targets]
+    got = [_volume(x) for x in result]
+    neg = [v for v in got if v < -eps]
+    if neg:
+        return {"why": "a result solid has negative signed volume (inside out)", "negative_mm3": neg[:4]}
+    total, lo, hi = sum(got), max(vols), sum(vols)
+    if total < lo - eps or total > hi + eps:
+        return {"why": "the result is not a union of the targets", "result_mm3": total, "largest_target_mm3": lo,
+                "sum_of_targets_mm3": hi}
+    return None
+
+
 @register("v4_fuse")
 def _fuse(payload: dict) -> dict:
     """Fuse the target bodies into one (BRepAlgoAPI_Fuse, non-destructive, with history). The owner's 2026-11-24 goal
@@ -614,6 +638,9 @@ def _fuse(payload: dict) -> dict:
     if len(new_solids) >= len(targets):
         return _declined("nothing_to_fuse", detail="the bodies do not touch or overlap: nothing merged",
                          bodies=len(targets))
+    bad = _degenerate(targets, new_solids, zero_volume_mm3(part_diagonal(payload, old)))
+    if bad is not None:
+        return _declined("fuse_degenerate", **bad)
     params = {"bodies": payload.get("body_ids", []), "fuzzy_mm": fuzzy,
               "measured": {"pairs": measured, "solids_before": len(targets), "solids_after": len(new_solids)}}
     return _finish(payload, old, [(op.History(), None)], targets, new_solids, op="fuse", params=params, start=start,

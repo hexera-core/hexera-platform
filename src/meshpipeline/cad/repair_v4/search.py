@@ -136,6 +136,7 @@ from meshpipeline.cad.repair_v4.verdict.assemble import (
     clean_of,
     score,
     verdict,
+    with_brep_orientation,
 )
 from meshpipeline.cad.repair_v4.verdict.cache import VerdictCache, default_verdict_cache
 from meshpipeline.cad.repair_v4.verdict.faithful import DeclaredIdError, FaithfulReport, check_faithful
@@ -332,6 +333,9 @@ def _judged(fn: Callable[..., Verdict], pool: Any, ws: Workspace, original: str,
     step = str(original) if unbounded is not None else step_for(pool, ws.brep_path)
     # the cache holds only the panel (the meshing); layers 1 and 3 are recomputed, so a hit never skips a check
     v: Verdict = fn(pool, step, original, **kw) if cache is None else fn(pool, step, original, cache=cache, **kw)
+    if ws.history:
+        # lane C15: an op-made state's inside-out solid is visible only on the BREP (the STEP round trip re-orients it)
+        v = with_brep_orientation(pool, ws.brep_path, v)
     declared = declared_edits(ws, faces)
     if v.valid.ok and (declared.added or declared.removed):
         try:
@@ -1989,6 +1993,7 @@ def search(
     flat = 0
     n_inconclusive = 0
     n_verdicts = 0
+    n_wall_skipped = 0        # A16: candidates not submitted because the wall passed mid-expansion
 
     with ThreadPoolExecutor(max_workers=max(1, workers)) as executor:
         while reason is None:
@@ -2177,7 +2182,24 @@ def search(
                     return _Outcome(c, gi, "error", [f"{type(exc).__name__}: {exc}"])
 
             children: list[SearchState] = []
-            evaluated = [f.result() for f in [executor.submit(evaluate, i) for i in to_run]]
+            # A16: THE WALL IS HONOURED INSIDE THE EXPANSION, not only between them. `over_budget()` runs at the
+            # top of the loop, so before this a batch submitted at second 899 of a 900 s wall ran to completion -
+            # which on 263d5e2d5bab meant one 929.95 s panel carrying the file 1150 s past its wall. The check is
+            # on the SUBMISSION side: a candidate is not started once the wall has passed, the ones already
+            # submitted are left to finish (their own timeouts bound them, now wall-derived), and the reduction is
+            # still in submission order, so the frontier cannot change with timing.
+            # The check is the WALL ALONE, never over_budget(): this expansion's ops are RESERVED above
+            # (`spent["ops"] += len(to_run)`), so over_budget() reads "ops" here for every candidate of a batch
+            # that filled the budget, and skipped all of them - test_respects_wall_and_op_budget applied 0 of 3.
+            futures = []
+            nonlocal_wall_skips = 0
+            for item in to_run:
+                if spent_now()["wall_s"] >= propose_wall_s:
+                    nonlocal_wall_skips += 1
+                    continue
+                futures.append(executor.submit(evaluate, item))
+            n_wall_skipped += nonlocal_wall_skips
+            evaluated = [f.result() for f in futures]
             # THE BUDGET IS CHARGED PER APPLIED OP (Task 53). A candidate that applied k ops costs k, for
             # every generator: a `run_stage` macro whose body is a chain (shells = sew + make_volume) must not
             # buy k ops of geometry for the price of one, or `search_ai - search_det` measures routing rather
@@ -2360,6 +2382,10 @@ def search(
         best_path=_path(trace, best),
         spent=spent_now(),
         budget=budget.__dict__,
+        # A16: the honest overrun. 0.0 when the search stopped at or before its wall; otherwise how far past it the
+        # last in-flight call carried the file, which is the number the harness used to have to infer from a row.
+        overrun_s=round(max(0.0, spent_now()["wall_s"] - propose_wall_s), 2),
+        wall_skipped_candidates=n_wall_skipped,
         ai_capped=ai_capped,
         ai_stop_reason=ai_stop_reason,
         ai=ai_results,

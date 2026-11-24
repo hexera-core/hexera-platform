@@ -114,4 +114,5 @@ def test_trim_unbounded_is_proposed_first_and_survives_the_k_cut() -> None:
     state = SearchState(id="S0", ws=ws, verdict=None, score=(0, 0, 0.0, 0.0, 0), parent=None, depth=0, via=None,
                         sites=[_site("overlap", ["B1", "B2", "F1", "F2"]), _site("unbounded", [])])
     got = DetGenerator(diagonal=lambda w: 100.0).propose(state, 2)
-    assert [c.op for c in got] == ["trim_unbounded", "trim_unbounded"]
+    # trim first, inside the k cut; since B19 the sweep interleaves op families, so the second slot is another family
+    assert got[0].op == "trim_unbounded"

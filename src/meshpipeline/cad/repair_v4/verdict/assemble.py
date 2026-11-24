@@ -13,20 +13,26 @@ non-passes; they are never cached.
 from __future__ import annotations
 
 import importlib
+import inspect
 import logging
 import threading
 import time
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Literal, Protocol
 
 from meshpipeline.cad.repair_v4.verdict.cache import VerdictCache, file_sha256, mesher_versions, panel_config_hash
 from meshpipeline.cad.repair_v4.verdict.faithful import DeclaredIdError, FaithfulReport, check_faithful_steps
 from meshpipeline.cad.repair_v4.verdict.valid import CheckerUnavailable, ValidReport, check_valid
+from meshpipeline.cad.repair_v4.verdict.wall import TooLateToStart, clip_member_timeout, remaining_s  # noqa: F401
 from meshpipeline.cad.repair_v4.worker_pool import WorkerPool
 
 logger = logging.getLogger(__name__)
 MEMBER_TIMEOUT_S = 300.0
+#: lane C16: the doomed cap of BOTH tiers (`panel.run_panel`). Once a member fails the file cannot be clean, so the rest
+#: get this budget and no retry. The slowest PASS on any of v4's 150 all-pass (clean) panels was 68.5 s (netgen), and
+#: an all-pass panel is never doomed, so this changes no clean verdict; it bounds what a doomed panel can spend.
+DOOMED_CAP_S = 60.0
 UNMEASURED_SICN = -1.0  # a mesher that produced no mesh has no SICN; it ranks below any real one
 
 
@@ -212,23 +218,73 @@ def _assemble(
     runner = run_panel or _panel_module().run_panel
     sha = config = None
     panel: list[Any] | None = None
-    if cache is not None:
+    # the doomed cap (lane C16), BOTH tiers, for a runner that takes it; a substituted runner (tests) runs as before.
+    # The cheap tier too: the staged healer and the search judge with every member the start fails (adaptive), and
+    # without the cap one hanging member cost 300 s + its 600 s retry on EVERY stage of a panel already doomed in
+    # seconds (695d74ca7fa6: 2,575 of 2,636 staged s). On the stored cheap-only panels the cap loses 0 passes.
+    takes_cap = "doomed_cap_s" in inspect.signature(runner).parameters
+    cap = {"doomed_cap_s": DOOMED_CAP_S} if takes_cap else {}
+    # D23.2: P (parallel panel members) is PER CALL: a full verdict (input, confirm, output) meshes its members at
+    # once, up to CRS_V4_PANEL_THREADS; a cheap verdict (the search's inner loop, where candidates already run in
+    # parallel) stays serial. P changes only WHEN members run, so it is NOT part of the cache key (`cap` is).
+    threads = {"panel_threads": full_panel_threads()} if (
+        tier == "full" and "panel_threads" in inspect.signature(runner).parameters) else {}
+    # A16: WHAT MAY THIS PANEL ASK FOR? `run_panel`'s worst case is (members + 2) x timeout_s, and a call longer
+    # than the wall's remainder cannot be stopped by a check that happens after it (measured: one 929.95 s panel
+    # against a 900 s search wall). So the per-member timeout comes from what is LEFT, and a panel with no useful
+    # time left raises `TooLateToStart` rather than guaranteeing an overrun.
+    try:
+        member_timeout, clipped = clip_member_timeout(len(chosen), MEMBER_TIMEOUT_S)
+    except TooLateToStart as why:
+        # Translated to the exception every caller ALREADY treats as infrastructure rather than a verdict: the
+        # search records the candidate inconclusive and stops on its wall, the healer's transaction rolls back,
+        # and `repair_v4` reports a file it did not measure. A part must never be called bad because a clock ran
+        # out. (Translated here, not raised as CheckerUnavailable from `wall`, so `wall` stays import-free.)
+        raise CheckerUnavailable(f"not starting a panel on {step!r}: {why}") from why
+    if cache is not None and not clipped:
         t = time.monotonic()
         try:
             sha = file_sha256(step)
         except OSError as exc:  # a STEP that is not there is a broken export, not a file that failed
             raise CheckerUnavailable(f"cannot read {step!r} to key the verdict cache: {exc}") from exc
-        config = panel_config_hash(chosen, MEMBER_TIMEOUT_S, mesher_versions(pool))  # fails closed, loudly
+        config = panel_config_hash(chosen, MEMBER_TIMEOUT_S, mesher_versions(pool),  # fails closed, loudly
+                                   extra=cap or None)
         _phase("key", time.monotonic() - t)
-        panel = _cache_get(cache, sha, config)
-        if panel is not None:
-            _phase("panel_cache_hit")
+        # D23: ONE unit of a wave meshes a given STEP under a given panel; concurrent arms wait for its panel
+        # (VerdictCache.single_flight), bounded by the panel's own worst case
+        meshed: list[bool] = []
+
+        def mesh() -> list[Any]:
+            meshed.append(True)
+            t_mesh = time.monotonic()
+            try:
+                return list(runner(pool, step, chosen, timeout_s=member_timeout, **cap, **threads))
+            finally:
+                _phase("panel", time.monotonic() - t_mesh)
+
+        try:
+            panel = cache.single_flight(sha, config, mesh, lease_s=lease_seconds(len(chosen)))
+        except Exception as exc:  # noqa: BLE001 - a STORE failure is a miss, never a verdict and never a crash
+            if meshed:
+                raise  # the meshing itself failed: once, as without a cache - never meshed a second time
+            logger.warning("verdict cache unusable, meshing instead: %s: %s", type(exc).__name__, exc)
+            cache.note_error()
+            panel = None
+        else:
+            # B23: a panel the cache (or another unit's single flight) supplied, so this unit meshed nothing
+            if not meshed:
+                _phase("panel_cache_hit")
     if panel is None:
-        t = time.monotonic()
-        panel = list(runner(pool, step, chosen, timeout_s=MEMBER_TIMEOUT_S))
-        _phase("panel", time.monotonic() - t)
-        if cache is not None and sha is not None and config is not None:
-            _cache_put(cache, sha, config, panel)
+        # A CLIPPED PANEL IS NEVER STORED (LEAD-3's cache rule). It is a weaker measurement than the key promises:
+        # `panel_config_hash` carries MEMBER_TIMEOUT_S, so storing a 40 s-per-member panel under the 300 s key would
+        # hand every later reader a fail that is about the clock. Clipped panels therefore skip the cache entirely -
+        # no read, no single-flight claim, no store - and the key keeps meaning exactly what it says.
+        t_mesh = time.monotonic()
+        panel = list(runner(pool, step, chosen, timeout_s=member_timeout, **cap, **threads))
+        _phase("panel", time.monotonic() - t_mesh)
+        if clipped:
+            logger.info("panel on %s ran CLIPPED at %.1f s per member (%.1f s of wall left) and is NOT cached",
+                        step, member_timeout, remaining_s() or -1.0)
 
     # Layer 3 is REPORTED, never a gate (`clean_of`), so it is measured on every row it can be measured on -
     # including one that failed layer 1, where the fidelity numbers still say what the repair did to the part.
@@ -253,9 +309,30 @@ def _assemble(
         _phase("faithful", time.monotonic() - t)
 
     inconclusive = any(is_infrastructure_failure(r) for r in panel)
+    if clipped:
+        # A clipped panel cannot certify: a member that did not finish in a clipped slot says nothing about the
+        # part, so the verdict is INCONCLUSIVE rather than a fail. `clean_of` already refuses an inconclusive
+        # verdict, and `score` raises on one, so nothing ranks or ships on the strength of a clock.
+        inconclusive = inconclusive or any(getattr(r, "status", "pass") != "pass" for r in panel)
 
     clean = clean_of(tier=tier, inconclusive=inconclusive, valid=valid, panel=panel, faithful=faithful)
     return Verdict(valid, panel, faithful, clean, tier, inconclusive)
+
+
+def full_panel_threads() -> int:
+    """CRS_V4_PANEL_THREADS (the cap the wave sizes its pool by: run_arm.pool_size), 1 = the serial panel."""
+    import os
+
+    try:
+        return max(1, int(os.environ.get("CRS_V4_PANEL_THREADS", "1")))
+    except ValueError:
+        return 1
+
+
+def lease_seconds(n_members: int) -> float:
+    """How long a single-flight lease lives (D23): the panel's worst case run serially - every member to its
+    timeout and its one retry at twice the budget - plus slack. A claimer that dies frees the file after this."""
+    return n_members * MEMBER_TIMEOUT_S * 3 + 120.0
 
 
 def _cache_get(cache: VerdictCache, sha: str, config: str) -> list[Any] | None:
@@ -306,6 +383,32 @@ def cheap_verdict(
     """Layer 1, the cheap members (`GmshDefault`, `GmshProd`; `default_members("cheap")`) and layer 3. For the
     search's inner loop and the staged healer's transactions; never `clean`."""
     return _assemble(pool, step, original, declared or Declared(), "cheap", members, cache, run_panel, original_units)
+
+
+def with_brep_orientation(pool: Any, brep_path: str, v: Verdict) -> Verdict:
+    """`v` made INVALID when the BREP it judged holds a solid of negative signed volume (lane C15). Layer 1 judges the
+    STEP re-export, whose round trip re-orients an inside-out solid (dev 0051_00510567: -13.46 mm3 read back as
+    +13.46), so the finding has to be made on the BREP, before the export hides it. Same code as layer 1's own:
+    `non_positive_volume`, with `seen_on: brep`, and layer 1's own threshold (<= 0). A check that could not run (pool
+    failure, the 120 s timeout) leaves validity as it was but is NOT silent: soft `orientation_unchecked` with why."""
+    from meshpipeline.cad.repair_v4.verdict.valid import Finding
+
+    def unchecked(why: str) -> Verdict:
+        return replace(v, valid=replace(v.valid, soft=[*v.valid.soft, Finding("orientation_unchecked", [],
+                                                                              {"reason": why[:200]})]))
+
+    try:
+        got = pool.call("valid_signed_volumes", {"brep_path": brep_path}, timeout_s=120.0)
+    except Exception as exc:  # noqa: BLE001 - a pool that cannot answer says nothing about the part
+        return unchecked(f"{type(exc).__name__}: {exc}")
+    if not got.ok or got.value is None:
+        return unchecked(f"{got.status}: {got.error}")
+    neg = [(i, float(x)) for i, x in enumerate(got.value.get("volumes") or [], start=1) if float(x) <= 0.0]
+    if not neg:
+        return v
+    found = [Finding("non_positive_volume", [f"S{i}"], {"volume": x, "seen_on": "brep (before the STEP export)"})
+             for i, x in neg]
+    return replace(v, valid=replace(v.valid, ok=False, hard=[*v.valid.hard, *found]), clean=False)
 
 
 def score(v: Verdict) -> tuple[int, int, float, float, int]:

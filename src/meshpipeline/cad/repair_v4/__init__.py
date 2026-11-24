@@ -234,9 +234,20 @@ def _run_search(source: str, dest: str, *, budget: Budget, deadline_s: float) ->
             raise ValueError(f"unknown search arm {ARM!r}; the arms are {VERDICT_ONLY_ARMS + tuple(ARMS)}")
     if deadline_s - time.monotonic() <= 0:
         return passthrough({"status": "not_measured", "reason": "deadline_expired"})
+    # A16: ONE place sets the file's wall, and every panel and op reads it from there (`verdict.wall`). Without
+    # this the wall module is inert and every call keeps its fixed timeout, which is exactly the old behaviour -
+    # so a caller that does not set it loses nothing but the new ceiling.
+    from meshpipeline.cad.repair_v4.verdict import wall
+
+    wall.set_file_deadline(deadline_s)
     try:
         pool = WorkerPool(_workers())
     except Exception as exc:  # noqa: BLE001 - no pool is our failure, whatever its type
+        # THE ONLY PATH THAT RAISES BEFORE THE `finally` BELOW, and it leaked the wall: the first A16 left the
+        # deadline set for the rest of the process, so every later panel saw a shrinking remainder, got clipped,
+        # and with any non-pass member came back inconclusive. That made the unit directory fail 28/40/29/28/29/
+        # 29/30 times over 7 runs, varying with machine speed. A file that never ran must leave no wall behind.
+        wall.set_file_deadline(None)
         raise SearchUnavailable(f"the v4 worker pool could not start: {type(exc).__name__}: {exc}") from exc
     try:
         with tempfile.TemporaryDirectory(prefix="v4-run-") as work:
@@ -301,6 +312,7 @@ def _run_search(source: str, dest: str, *, budget: Budget, deadline_s: float) ->
             return V4Result(trace_path=trace_path, verdict_summary=summary, delivered=True)
     finally:
         pool.close()
+        wall.set_file_deadline(None)   # the next file in this process must not inherit this one's wall
 
 
 def repair_v4(source: str, dest: str, *, budget: Budget, deadline_s: float) -> V4Result:

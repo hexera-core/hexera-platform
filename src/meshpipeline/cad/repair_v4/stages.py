@@ -66,6 +66,7 @@ from meshpipeline.cad.repair_v4.verdict.assemble import (
     InconclusiveVerdict,
     cheap_verdict,
     score,
+    with_brep_orientation,
 )
 from meshpipeline.cad.repair_v4.verdict.cache import default_verdict_cache
 from meshpipeline.cad.repair_v4.verdict.faithful import DeclaredIdError, FaithfulReport, check_faithful
@@ -533,6 +534,9 @@ def _judge(pool: WorkerPool, ws: Workspace, cheap_members: Any = None) -> Scored
     # start state, and its cheap verdict must not be meshed twice
     v = cheap_verdict(pool, step_for(pool, ws.brep_path), step_for(pool, ws.original),
                       cache=default_verdict_cache(), members=cheap_members)
+    if ws.history:
+        # lane C15: an op-made state's inside-out solid is visible only on the BREP (the STEP round trip re-orients it)
+        v = with_brep_orientation(pool, ws.brep_path, v)
     declared = declared_edits(ws, faces)
     if v.valid.ok and (declared.added or declared.removed):
         report: FaithfulReport | None

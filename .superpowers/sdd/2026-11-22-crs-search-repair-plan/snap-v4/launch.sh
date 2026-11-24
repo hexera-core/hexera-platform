@@ -20,7 +20,7 @@ set -u -o pipefail
 HERE=$(cd "$(dirname "$0")" && pwd); REPO=$(git -C "$HERE" rev-parse --show-toplevel)
 COMMIT_ARG=${1:?usage: launch.sh <commit> [profile] [--dry-run]}; PROFILE=v4; DRY=0
 for x in "${@:2}"; do case $x in --dry-run) DRY=1;; *) PROFILE=$x;; esac; done
-KEYS="REGIONS TARGET_MIN TOTAL_USD MAX_RUN IMAGE IMAGE_COMMIT OPS ARM_GROUPS FILE_TIMEOUT_S SEARCH_WALL_S VCPU_PER_SHARD"
+KEYS="REGIONS TARGET_MIN TOTAL_USD MAX_RUN IMAGE IMAGE_COMMIT OPS ARM_GROUPS FILE_TIMEOUT_S SEARCH_WALL_S VCPU_PER_SHARD WORKERS PANEL_THREADS"
 for k in $KEYS; do eval "OVR_$k=\${$k:-}"; done
 source "$HERE/profiles/$PROFILE.env"
 for k in $KEYS; do eval "v=\$OVR_$k"; [ -n "$v" ] && eval "$k=\$v"; done
@@ -198,6 +198,10 @@ CACHE=$( [ "${VERDICT_CACHE:-shared}" = fresh ] && echo gs://$BUCKET/eval/snap-$
 SYNC=$SYNC
 FILE_TIMEOUT_S=${FILE_TIMEOUT_S:-}
 SEARCH_WALL_S=${SEARCH_WALL_S:-}
+# D22: concurrent candidate evaluation per file (run_arm --workers) and lane A's panel threads; the product should be
+# <= VCPU_PER_SHARD, or it is oversubscription
+WORKERS=${WORKERS:-1}
+PANEL_THREADS=${PANEL_THREADS:-1}
 FROZEN_COMMIT=$( [ "$HELDOUT" = 1 ] && echo "$COMMIT" )
 HELDOUT_SLOT=$( [ "$HELDOUT" = 1 ] && echo "gs://$BUCKET/model-ledger/slot/held_out/1" )
 EOF

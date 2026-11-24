@@ -1,6 +1,6 @@
 # Responsibility: An exact content digest of an OCCT shape, and a small per-worker LRU keyed by it, so a kernel
 #                 result that is a pure function of one shape is computed once per worker.
-# Owns: `digest`, `WorkerMemo`.
+# Owns: `digest`, `geometry_key` (the round-trip-stable key, lane C16), `WorkerMemo`.
 # Boundaries: runs inside a kernel worker only; OCP is imported inside functions. It never decides anything:
 #             callers memoise only results that depend on nothing but the digested shape.
 """Why the digest is exact: it is the sha256 of the shape's `BinTools` serialisation, which writes geometry,
@@ -37,6 +37,74 @@ def digest(shape: Any) -> str:
         raise RuntimeError("BinTools could not serialise the shape")
     with open(path, "rb") as handle:
         return hashlib.sha256(handle.read()).hexdigest()
+
+
+#: lane C16: the resolution `geometry_key` rounds to, as a fraction of the shape's own optimal-box diagonal (lengths),
+#: its square (areas) and its cube (volumes). Far below any real edit, far above a STEP round trip's float noise.
+GEOMETRY_KEY_RESOLUTION = 1e-9
+
+
+def geometry_key(shape: Any) -> str:
+    """A key that is STABLE across a STEP round trip and changes with any real edit - THE one shared function for
+    memoising a result that depends only on a shape's geometry (lane C16; Lanes A and B build their shape memos on it).
+
+    `digest` is exact but not stable: on dev a2807f9a2fef all 3 unchanged solids got new BinTools digests after one
+    `step_for` export + re-read, and 2 of 3 changed again on a second, so a digest memo never hits across judgements.
+    This key hashes what an export cannot change but an edit must: per solid, its SIGNED volume and centre of
+    mass; per face, its surface type, area and centroid (a sorted multiset, so face order does not matter); and the
+    counts of solids, faces, edges and vertices. Every real number is rounded to GEOMETRY_KEY_RESOLUTION of the shape's
+    own optimal-box diagonal (to its power for areas and volumes). Two shapes with the same key agree on all of that to
+    1e-9 of their size; a false hit would need two different solids identical in every face's type, area and centroid
+    at that resolution. A miss (a value straddling a rounding edge) only costs a recomputation.
+
+    It does NOT carry tolerances or orientation flags. Measured on v4's stored states (C16): per solid it survives one
+    round trip 290/311 times (the digest 109/311); of 48 parent->child edits that changed the digest, 33 kept the key,
+    all `orient_and_close` with identical max tolerances and reversed-face counts, and layer 1's full `check_shape`
+    gave the IDENTICAL result on both sides of all 33. A memo whose result reads tolerances must add them itself."""
+    from OCP.Bnd import Bnd_Box
+    from OCP.BRepAdaptor import BRepAdaptor_Surface
+    from OCP.BRepBndLib import BRepBndLib
+    from OCP.BRepGProp import BRepGProp
+    from OCP.GProp import GProp_GProps
+    from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_SOLID, TopAbs_VERTEX
+    from OCP.TopExp import TopExp
+    from OCP.TopoDS import TopoDS
+    from OCP.TopTools import TopTools_IndexedMapOfShape
+
+    box = Bnd_Box()
+    BRepBndLib.AddOptimal_s(shape, box, False, False)
+    if box.IsVoid():
+        return hashlib.sha256(b"void").hexdigest()
+    x0, y0, z0, x1, y1, z1 = box.Get()
+    diag = max(((x1 - x0) ** 2 + (y1 - y0) ** 2 + (z1 - z0) ** 2) ** 0.5, 1e-12)
+    q = GEOMETRY_KEY_RESOLUTION
+
+    def r(v: float, power: int = 1) -> int:
+        return round(v / (q * diag ** power))
+
+    def mapped(kind: Any) -> TopTools_IndexedMapOfShape:
+        m = TopTools_IndexedMapOfShape()
+        TopExp.MapShapes_s(shape, kind, m)
+        return m
+
+    solids, faces = mapped(TopAbs_SOLID), mapped(TopAbs_FACE)
+    rows: list[tuple] = [("counts", solids.Extent(), faces.Extent(), mapped(TopAbs_EDGE).Extent(),
+                          mapped(TopAbs_VERTEX).Extent())]
+    for i in range(1, solids.Extent() + 1):
+        g = GProp_GProps()
+        BRepGProp.VolumeProperties_s(solids.FindKey(i), g)
+        c = g.CentreOfMass()
+        rows.append(("solid", r(g.Mass(), 3), r(c.X()), r(c.Y()), r(c.Z())))
+    face_rows = []
+    for i in range(1, faces.Extent() + 1):
+        f = TopoDS.Face_s(faces.FindKey(i))
+        g = GProp_GProps()
+        BRepGProp.SurfaceProperties_s(f, g)
+        c = g.CentreOfMass()
+        face_rows.append((int(BRepAdaptor_Surface(f).GetType()), r(g.Mass(), 2), r(c.X()), r(c.Y()), r(c.Z())))
+    rows.extend(sorted(face_rows))
+    rows.sort(key=repr)
+    return hashlib.sha256(repr(rows).encode()).hexdigest()
 
 
 def file_digest(path: str) -> str:

@@ -505,7 +505,7 @@ def test_every_registered_op_is_explained_in_the_catalogue_not_just_named():
     # the checker's SOFT codes must not be presented to the model as failing "valid"
     from meshpipeline.cad.repair_v4.verdict.valid import SOFT_CODES
     valid_para = text.split("1. Valid:")[1].split("2. Meshable:")[0].lower()
-    assert "do not fail" in valid_para and {"small_edge", "small_face", "large_tolerance"} == set(SOFT_CODES)
+    assert "do not fail" in valid_para and {"small_edge", "small_face", "large_tolerance", "orientation_unchecked"} == set(SOFT_CODES)
     assert "small-edge or small-face errors" not in valid_para
     # the open-loop repair is two ops in sequence; the catalogue must say so
     assert "make_volume" in P.OP_SUMMARIES["fill_loop"]

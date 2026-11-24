@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from meshpipeline.cad.repair_v4.kernel_calls import register
 from meshpipeline.cad.repair_v4.units import UNBOUNDED_DIAGONAL_MM
-from meshpipeline.cad.repair_v4.verdict.shape_digest import WorkerMemo, digest
+from meshpipeline.cad.repair_v4.verdict.shape_digest import WorkerMemo, geometry_key
 
 OVERLAP_FRACTION = 1e-9  # Common volume above this fraction of the smaller body is overlap
 OVERLAP_THICKNESS_FRACTION = 1e-6  # of the bounding-box diagonal; thinner is contact
@@ -129,14 +129,54 @@ def _self_intersects(solid) -> bool:
     return bool(analyzer.HasFaulty())
 
 
-#: Self-intersection of a solid, by the solid's exact digest. `_self_intersects` reads nothing but the solid, so a
-#: solid seen before in this worker (an untouched body of a search candidate, a state reached twice) is not
-#: re-analysed. It is most of layer 1's time (Lane A profile: 68% of layers 1+3).
+#: Self-intersection of a solid, keyed on its GEOMETRY plus the tolerances the analyzer reads. `_self_intersects`
+#: looks at nothing but the solid, so a solid seen before in this worker - an untouched body of a candidate, a state
+#: reached twice, the same part judged by two arms - is not re-analysed. It is most of layer 1's time (Lane A
+#: profile: 68% of layers 1+3; Lane C measured check_shape at ~22 s per call, 83% of the healer on one file).
+#:
+#: A17: the key was `digest(solid)`, which is EXACT but not stable across a STEP round trip - on dev a2807f9a2fef
+#: all 3 unchanged solids got new digests after one export and re-read, so the memo almost never hit between
+#: judgements. `geometry_key` survives a round trip 290/311 times against the digest's 109/311 (C16). It carries no
+#: tolerances and this analysis reads them, so the key adds them: `BRepCheck_Analyzer` with `SelfInterMode` tests
+#: faces against each other within their own tolerances, and two shapes identical in geometry but not in tolerance
+#: can differ in the answer.
 SELF_INTERSECTS = WorkerMemo(4096)
+#: Overlap of a PAIR of solids, keyed on both geometries, both tolerance summaries and the fuzzy value the caller
+#: derived from the WHOLE shape's diagonal. The stored value is the DECISION, never the finding: a finding carries
+#: positional labels (S1, S2) and the same pair can sit at different indices in a later state.
+OVERLAP_PAIRS = WorkerMemo(4096)
+
+
+def _tolerance_key(shape) -> tuple:
+    """The tolerances `BRepCheck_Analyzer` and the Booleans actually read, as a key fragment: the max tolerance over
+    faces, edges and vertices, each rounded, plus the count of reversed faces (an orientation flip changes no
+    geometry and no tolerance, and C16 measured 33 such edits where layer 1's answer was identical - so the count is
+    carried to make a change in it a MISS rather than a silent reuse)."""
+    from OCP.ShapeAnalysis import ShapeAnalysis_ShapeTolerance
+    from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_REVERSED, TopAbs_VERTEX
+
+    tol = ShapeAnalysis_ShapeTolerance()
+    maxima = []
+    for kind in (TopAbs_FACE, TopAbs_EDGE, TopAbs_VERTEX):
+        try:
+            maxima.append(round(float(tol.Tolerance(shape, 1, kind)), 12))
+        except Exception:  # noqa: BLE001 - an unreadable tolerance must miss, never key as 0.0
+            return ("tolerance_unreadable", id(shape))
+    reversed_faces = sum(1 for f in _children(shape, TopAbs_FACE) if f.Orientation() == TopAbs_REVERSED)
+    return (*maxima, reversed_faces)
+
+
+def _shape_memo_key(shape) -> tuple:
+    """`geometry_key` plus the tolerances: the one key for a memo whose result reads both."""
+    return (geometry_key(shape), _tolerance_key(shape))
 
 
 def _self_intersects_once(solid) -> bool:
-    return bool(SELF_INTERSECTS.get_or_compute(digest(solid), lambda: _self_intersects(solid)))
+    try:
+        key = _shape_memo_key(solid)
+    except Exception:  # noqa: BLE001 - a key we cannot build is a MISS, never a wrong hit
+        return bool(_self_intersects(solid))
+    return bool(SELF_INTERSECTS.get_or_compute(key, lambda: _self_intersects(solid)))
 
 
 def _common(a, b, fuzzy: float):
@@ -170,8 +210,6 @@ def _overlapping_pairs(solids: list, volumes: list[float]) -> list[dict]:
     """
     from OCP.Bnd import Bnd_Box
     from OCP.BRepBndLib import BRepBndLib
-    from OCP.BRepGProp import BRepGProp
-    from OCP.GProp import GProp_GProps
 
     boxes = []
     whole = Bnd_Box()
@@ -190,36 +228,66 @@ def _overlapping_pairs(solids: list, volumes: list[float]) -> list[dict]:
         raise ValueError(f"{len(candidates)} body pairs to test exceeds the cap of {MAX_OVERLAP_PAIRS}")
     found = []
     for i, j in candidates:
-        common = _common(solids[i], solids[j], thin)
-        if common is None:
-            found.append(_finding("body_overlap", [f"S{i + 1}", f"S{j + 1}"], boolean_failed=True))
+        # A17: the Boolean is the expensive half and depends only on the two solids and the fuzzy value, so the
+        # DECISION is memoised per pair. The finding is built here, from this state's indices: a stored finding
+        # would carry S1/S2 labels that a later state can reorder, which is a wrong answer rather than a slow one.
+        decision = _pair_decision(solids[i], solids[j], abs(volumes[i]), abs(volumes[j]), thin)
+        if decision is None:
             continue
-        overlap = _volume(common.Shape())
-        smaller = min(abs(volumes[i]), abs(volumes[j]))
-        if overlap <= OVERLAP_FRACTION * smaller:
-            continue
-        surface = GProp_GProps()
-        BRepGProp.SurfaceProperties_s(common.Shape(), surface)
-        thickness = 2 * overlap / surface.Mass() if surface.Mass() > 0 else 0.0
-        if thickness > thin:
-            found.append(_finding("body_overlap", [f"S{i + 1}", f"S{j + 1}"], volume=overlap, thickness=thickness))
+        found.append(_finding("body_overlap", [f"S{i + 1}", f"S{j + 1}"], **decision))
     return found
 
 
-def _soft_findings(shape) -> list[dict]:
-    from OCP.Bnd import Bnd_Box
-    from OCP.BRepBndLib import BRepBndLib
+def _pair_decision(a, b, va: float, vb: float, thin: float) -> dict | None:
+    """Do these two solids really share volume? The finding's KEYWORDS, or None for no overlap.
+
+    Memoised on both geometries, both tolerance summaries and `thin` (which the caller derives from the WHOLE
+    shape's diagonal, so the same pair in a differently sized assembly is a different question). Carries no index:
+    the caller labels it.
+    """
+    try:
+        key = ("pair", *sorted([_shape_memo_key(a), _shape_memo_key(b)], key=repr),
+               round(float(thin), 12), round(float(va), 9), round(float(vb), 9))
+    except Exception:  # noqa: BLE001 - no key, no memo; compute it the slow way rather than risk a wrong hit
+        return _pair_decision_now(a, b, va, vb, thin)
+    return OVERLAP_PAIRS.get_or_compute(key, lambda: _pair_decision_now(a, b, va, vb, thin))
+
+
+def _pair_decision_now(a, b, va: float, vb: float, thin: float) -> dict | None:
+    from OCP.BRepGProp import BRepGProp
+    from OCP.GProp import GProp_GProps
+
+    common = _common(a, b, thin)
+    if common is None:
+        return {"boolean_failed": True}
+    overlap = _volume(common.Shape())
+    if overlap <= OVERLAP_FRACTION * min(va, vb):
+        return None
+    surface = GProp_GProps()
+    BRepGProp.SurfaceProperties_s(common.Shape(), surface)
+    thickness = 2 * overlap / surface.Mass() if surface.Mass() > 0 else 0.0
+    return {"volume": overlap, "thickness": thickness} if thickness > thin else None
+
+
+def _soft_findings(shape, diag: float | None = None) -> list[dict]:
+    """The soft findings, scaled by the shape's diagonal.
+
+    `diag` IS PASSED IN by `check_shape`, measured before anything analysed the shape. It used to be re-measured
+    here, which made every soft THRESHOLD depend on what had already run: `BRepCheck_Analyzer` touches the shape in
+    place, so a bounding box taken after it differs from one taken before in the last bits. That was invisible
+    until A17 memoised the analyzer - skipping it moved a `small_edge` threshold from 0.014493446827583856 to
+    ...842 on de9ad40118a4, same edges, 1.4e-17 relative. Measuring once, first, removes the order dependence
+    rather than hiding it: the number now cannot depend on which checks ran.
+    """
     from OCP.BRepGProp import BRepGProp
     from OCP.GProp import GProp_GProps
     from OCP.ShapeAnalysis import ShapeAnalysis_ShapeTolerance
     from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE
 
-    box = Bnd_Box()
-    BRepBndLib.Add_s(shape, box)
-    if box.IsVoid():
+    if diag is None:
+        diag = _bbox_diagonal(shape)
+    if diag is None:
         return []
-    xmin, ymin, zmin, xmax, ymax, zmax = box.Get()
-    diag = ((xmax - xmin) ** 2 + (ymax - ymin) ** 2 + (zmax - zmin) ** 2) ** 0.5
     soft = []
     small_edges = []
     for index, edge in enumerate(_children(shape, TopAbs_EDGE), start=1):
@@ -241,6 +309,20 @@ def _soft_findings(shape) -> list[dict]:
     if worst > LARGE_TOLERANCE_FRACTION * diag:
         soft.append(_finding("large_tolerance", [], max_tolerance=worst, threshold=LARGE_TOLERANCE_FRACTION * diag))
     return soft
+
+
+def _bbox_diagonal(shape) -> float | None:
+    """The shape's bounding-box diagonal, or None when the box is void. ONE measurement, taken before any analysis,
+    so everything scaled by it agrees."""
+    from OCP.Bnd import Bnd_Box
+    from OCP.BRepBndLib import BRepBndLib
+
+    box = Bnd_Box()
+    BRepBndLib.Add_s(shape, box)
+    if box.IsVoid():
+        return None
+    xmin, ymin, zmin, xmax, ymax, zmax = box.Get()
+    return ((xmax - xmin) ** 2 + (ymax - ymin) ** 2 + (zmax - zmin) ** 2) ** 0.5
 
 
 def _unbounded_finding(shape) -> dict | None:
@@ -270,8 +352,9 @@ def _unbounded_finding(shape) -> dict | None:
     return _finding("unbounded_geometry", [], diagonal_mm=diag, limit_mm=UNBOUNDED_DIAGONAL_MM, open_sides=open_sides)
 
 
-def check_shape(brep_path: str) -> dict:
-    """Run every layer 1 rule that needs the kernel on the BREP at `brep_path`."""
+def check_shape(brep_path: str, *, booleans: bool = True) -> dict:
+    """Run every layer 1 rule that needs the kernel on the BREP at `brep_path`. `booleans=False` skips the two
+    Boolean rules (self_intersection, body_overlap); `valid` asks for that only where they cannot change a verdict."""
     from OCP.BRep import BRep_Builder
     from OCP.BRepTools import BRepTools
     from OCP.TopAbs import TopAbs_SOLID
@@ -282,6 +365,8 @@ def check_shape(brep_path: str) -> dict:
         raise ValueError(f"could not read BREP {brep_path}")
 
     solids = _children(shape, TopAbs_SOLID)
+    # measured BEFORE any analysis touches the shape, and used for every scaled threshold below
+    diag = _bbox_diagonal(shape)
     unbounded = _unbounded_finding(shape)
     if unbounded is not None:  # the input is outside what the definition can judge: say so and stop
         return {"solids": len(solids), "hard": [unbounded], "soft": []}
@@ -309,17 +394,37 @@ def check_shape(brep_path: str) -> dict:
     for i, volume in enumerate(volumes, start=1):
         if volume <= 0:
             hard.append(_finding("non_positive_volume", [f"S{i}"], volume=volume))
-    for i, solid in enumerate(solids, start=1):
-        if _self_intersects_once(solid):
-            hard.append(_finding("self_intersection", [f"S{i}"]))
-    hard.extend(_overlapping_pairs(solids, volumes))
+    if booleans:
+        for i, solid in enumerate(solids, start=1):
+            if _self_intersects_once(solid):
+                hard.append(_finding("self_intersection", [f"S{i}"]))
+        hard.extend(_overlapping_pairs(solids, volumes))
 
-    return {"solids": len(solids), "hard": hard, "soft": _soft_findings(shape)}
+    return {"solids": len(solids), "hard": hard, "soft": _soft_findings(shape, diag)}
 
 
 @register("check_valid")
 def _check_valid(payload: dict) -> dict:
-    return check_shape(payload["brep"])
+    return check_shape(payload["brep"], booleans=bool(payload.get("booleans", True)))
+
+
+@register("valid_signed_volumes")
+def _valid_signed_volumes(payload: dict) -> dict:
+    """Every solid's SIGNED volume, read from the BREP itself (lane C15). Layer 1 judges the STEP re-export, and writing
+    and re-reading STEP re-orients an inside-out solid: on dev 0051_00510567 a fused solid of -13.46 mm3 came back as
+    +13.46, so layer 1 called the part valid. Only the BREP still shows it."""
+    from OCP.BRep import BRep_Builder
+    from OCP.BRepTools import BRepTools
+    from OCP.TopAbs import TopAbs_SOLID
+    from OCP.TopExp import TopExp
+    from OCP.TopoDS import TopoDS_Shape
+    from OCP.TopTools import TopTools_IndexedMapOfShape
+
+    shape = TopoDS_Shape()
+    BRepTools.Read_s(shape, payload["brep_path"], BRep_Builder())
+    solids = TopTools_IndexedMapOfShape()
+    TopExp.MapShapes_s(shape, TopAbs_SOLID, solids)
+    return {"volumes": [_volume(solids.FindKey(i)) for i in range(1, solids.Extent() + 1)]}
 
 
 @register("valid_extent")
