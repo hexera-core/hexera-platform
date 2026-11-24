@@ -141,3 +141,20 @@ def test_triage_reads_a_wave_the_real_dispatch_wrote(shard: Any, wire: Any, tmp_
     assert ai["clean"] == 1 and ai["not_clean"] == 0  # the model's candidate repairs it: nothing to explain
     assert t["arms"]["input_only"]["panel"]["by_member"].keys() == {"m0", "m1", "m2"}
     assert "## search_det" in out_md.read_text()
+
+
+def test_per_file_lists_each_not_clean_search_row_with_its_sites_ops_and_deltas() -> None:
+    fill = op(det=2, evaluated=1, declined={"fill_too_large: span 9 mm": 1})
+    t = {**verdict_part([("netgen", "overlapping_facets")], 0.4),
+         **search_part("exhausted", {"open": 1, "unlocated": 1}, {"fill_loop": fill})}
+    t["search"]["deltas"] = [{"op": "fill_loop", "source": "det", "parent": [0, 1, 0.0, 0.0, 0], "score": [0, 1, 0.0, 0.0, -1]}]
+    rows = [row(1, "search_det", t=t), row(2, "search_det", clean=True, t={**verdict_part([], 0.0)}),
+            row(3, "staged", t=verdict_part([("netgen", "x")], 0.0))]
+    out = triage.triage_wave(rows, [], per_file=True)["per_file"]
+    assert [x["name"] for x in out] == ["f1.step"]  # search arms only, not-clean only
+    (x,) = out
+    assert x["arm"] == "search_det" and x["stop"] == "exhausted" and x["open_sites"] == {"open": 1, "unlocated": 1}
+    assert x["ops"] == {"fill_loop": "det 2, evaluated 1, declined 1 (fill_too_large: span 9 mm)"}
+    assert x["deltas"] == ["fill_loop [0, 1, 0.0, 0.0, 0] -> [0, 1, 0.0, 0.0, -1]"]
+    assert x["panel_failing"] == ["netgen: overlapping_facets"]
+    assert "## Per file" in triage.render_markdown(triage.triage_wave(rows, [], per_file=True))

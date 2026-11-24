@@ -272,6 +272,8 @@ def cheap_full_cells(confirms: list[dict]) -> dict[str, int]:
 #: reasons are free text; each is cut to this and each fate keeps only its most common few, so a row stays small
 TRIAGE_REASON_CHARS = 120
 TRIAGE_TOP_REASONS = 5
+#: evaluated candidates whose (parent score -> cheap score) is kept, in proposal order; the total is kept beside it
+TRIAGE_MAX_DELTAS = 8
 _REJECTED_AS = {"validate": "invalid", "declined": "declined", "failed": "failed", "error": "failed"}
 _COUNTED = ("evaluated", "duplicate", "inconclusive", "skipped_budget")
 
@@ -365,9 +367,12 @@ def search_triage(result: Any, generators: Any) -> dict[str, Any]:
         keys = ("turns", "tool_errors", "candidate_errors", "declared_unfixable", "truncated_rounds", "spent_usd")
         ai = {k: sum(float(r.get(k) or 0) if k == "spent_usd" else int(r.get(k) or 0) for r in result.ai) for k in keys}
         ai.update(stop_reason=result.ai_stop_reason, ai_capped=bool(result.ai_capped))
+    evaluated = [e for e in trace.of_kind("candidate") if e.get("outcome") == "evaluated"]
+    deltas = [{"op": e.get("op"), "source": e.get("source"), "parent": e.get("parent_score"), "score": e.get("score")}
+              for e in evaluated[:TRIAGE_MAX_DELTAS]]
     return {"stop": {"reason": stop.get("reason"), "ended_by": stop.get("ended_by"), "spent": stop.get("spent")},
             "open_sites": dict(Counter(str(s.get("kind")) for s in at.get("sites") or [])), "open_sites_at": where,
-            "ops": ops, "not_proposed": _top(skipped), "ai": ai}
+            "ops": ops, "not_proposed": _top(skipped), "ai": ai, "deltas": deltas, "deltas_total": len(evaluated)}
 
 
 def failure_reason(exc: BaseException) -> str:

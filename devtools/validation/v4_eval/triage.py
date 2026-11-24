@@ -197,14 +197,43 @@ def _leads(arms: Mapping[str, Mapping[str, Any]]) -> list[dict[str, Any]]:
     return sorted(out, key=lambda x: -(x["files"] or 0))
 
 
+def _per_file(rows: list[Any]) -> list[dict[str, Any]]:
+    """One line of evidence per NOT-clean conclusive search row: what was open, what each op did, what the verdict
+    said about the candidates that were judged. The aggregate says how often; this says which file."""
+    out = []
+    for r in sorted(rows, key=lambda r: (r.arm, r.name)):
+        if r.inconclusive or r.clean or r.arm not in _report.SEARCH_ARMS:
+            continue
+        t = r.triage or {}
+        s = t.get("search") or {}
+        ops = {}
+        for name, o in (s.get("ops") or {}).items():
+            parts = [f"{k} {o[k]}" for k in ("det", "ai", *FATES) if o.get(k)]
+            for k in REASONED:
+                if o.get(k):
+                    parts.append(f"{k} {sum(o[k].values())} ({'; '.join(o[k])})")
+            ops[name] = ", ".join(parts)
+        out.append({"name": r.name, "arm": r.arm, "stop": (s.get("stop") or {}).get("reason") or r.reason,
+                    "open_sites": s.get("open_sites"), "ops": ops, "not_proposed": s.get("not_proposed"),
+                    "deltas": [f"{d.get('op')} {d.get('parent')} -> {d.get('score')}" for d in s.get("deltas") or []],
+                    "panel_failing": [f"{m['name']}: {m.get('error_kind')}" for m in t.get("panel_failing") or []],
+                    "in_out_panel": f"{r.in_panel_passes} -> {r.out_panel_passes}", "triage": bool(r.triage)})
+    return out
+
+
 def triage_wave(rows: Iterable[Any], excluded: Iterable[dict], *, kinds: Mapping[str, str] | None = None,
-                arms: Iterable[str] | None = None, source: str = "", complete: bool = True) -> dict[str, Any]:
+                arms: Iterable[str] | None = None, source: str = "", complete: bool = True,
+                per_file: bool = False) -> dict[str, Any]:
     rows, excluded = list(rows), list(excluded)
     names = list(arms) if arms else sorted({str(r.arm) for r in rows} | {str(x["arm"]) for x in excluded if x.get("arm")})
     blocks = {a: _arm_block([r for r in rows if r.arm == a], [x for x in excluded if x.get("arm") == a], kinds or {})
               for a in names}
-    return {"source": source, "complete_wave": complete, "unit": "files (one row per file and arm) unless 'candidates'",
-            "arms": blocks, "leads": _leads(blocks)}
+    t: dict[str, Any] = {"source": source, "complete_wave": complete,
+                         "unit": "files (one row per file and arm) unless 'candidates'", "arms": blocks,
+                         "leads": _leads(blocks)}
+    if per_file:
+        t["per_file"] = _per_file([r for r in rows if r.arm in names])
+    return t
 
 
 # ------------------------------------------------------------------ markdown
@@ -267,6 +296,15 @@ def render_markdown(t: Mapping[str, Any]) -> str:
                        f"({a['candidate_errors']} candidates refused), {a['declared_unfixable']} sites declared "
                        f"unfixable, {a['truncated_rounds']} truncated rounds, ${a['spent_usd']:.2f}; stopped on "
                        f"{_cell(a['stop_reasons'])}; ai_capped {a['ai_capped']}")
+    if t.get("per_file"):
+        out += ["", "## Per file (not-clean search rows)", "",
+                "| file | arm | stop | panel in->out | open sites | ops | deltas | failing members |",
+                "|---|---|---|---|---|---|---|---|"]
+        for x in t["per_file"]:
+            out.append("| " + " | ".join(str(v).replace("|", "/") for v in (
+                x["name"][-48:], x["arm"], x["stop"], x["in_out_panel"], _cell(x["open_sites"], 8),
+                "; ".join(f"{k}: {v}" for k, v in x["ops"].items()) or "-", "; ".join(x["deltas"]) or "-",
+                ", ".join(x["panel_failing"]) or "-")) + " |")
     return "\n".join(out) + "\n"
 
 
@@ -287,6 +325,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--arms", default="", help="comma list (default: every arm in the rows)")
     p.add_argument("--json", default="")
     p.add_argument("--md", default="")
+    p.add_argument("--per-file", action="store_true", help="also list every not-clean search row's evidence")
     args = p.parse_args(argv)
     try:
         rows, excluded, complete = load(Path(args.src), args.shards)
@@ -295,7 +334,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     kinds = {r.sha256: _report.defect_kind(r) for r in rp.read_split(args.split)} if args.split else None
     t = triage_wave(rows, excluded, kinds=kinds, arms=[a for a in args.arms.split(",") if a] or None,
-                    source=str(args.src), complete=complete)
+                    source=str(args.src), complete=complete, per_file=args.per_file)
     text = render_markdown(t)
     if args.json:
         Path(args.json).write_text(json.dumps(t, indent=1, sort_keys=True) + "\n")

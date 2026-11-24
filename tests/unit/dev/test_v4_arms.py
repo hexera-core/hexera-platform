@@ -292,6 +292,23 @@ def test_search_triage_counts_each_fate_and_keeps_the_top_reasons() -> None:
     # one candidate, but the chain it ran cost two ops of budget (Task 53); a plain op costs one each
     assert s["ops"]["run_stage:shells"]["ops_applied"] == 2 and f["ops_applied"] == 1
     assert s["not_proposed"] == {"no_solid": 2} and s["ai"] is None
+    assert s["deltas"] == [{"op": "fill_loop", "source": "det", "parent": None, "score": None},
+                           {"op": "run_stage", "source": "ai", "parent": None, "score": None}]
+
+
+def test_search_triage_records_each_evaluated_candidates_verdict_delta() -> None:
+    from meshpipeline.cad.repair_v4.trace import Trace
+
+    t = Trace()
+    t.record("candidate", state="s0", outcome="evaluated", op="sew", source="det", params={},
+             score=(0, 2, 0.1, 0.0, 0), parent_score=(0, 1, 0.0, 0.0, 0))
+    for i in range(12):
+        t.record("candidate", state="s0", outcome="evaluated", op="split_angle", source="det", params={},
+                 score=(0, 1, 0.0, 0.0, -i), parent_score=(0, 1, 0.0, 0.0, 0))
+    t.record("stop", reason="exhausted", best="s0")
+    s = run_arm.arms_mod.search_triage(SimpleNamespace(trace=t, ai=[], ai_capped=False, ai_stop_reason=None), [])
+    assert s["deltas"][0] == {"op": "sew", "source": "det", "parent": [0, 1, 0.0, 0.0, 0], "score": [0, 2, 0.1, 0.0, 0]}
+    assert len(s["deltas"]) == run_arm.arms_mod.TRIAGE_MAX_DELTAS and s["deltas_total"] == 13
 
 
 def test_cheap_full_cells_reads_the_confirm_events() -> None:
