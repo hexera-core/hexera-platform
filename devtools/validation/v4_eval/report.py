@@ -59,7 +59,7 @@ import json
 import math
 import re
 import sys
-from collections import defaultdict
+from collections import Counter, defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -640,7 +640,67 @@ def _paired(rows: Mapping[str, dict[str, ArmRow]], a: str, b: str, blocks: Mappi
     return {"value": gain / len(shas), "files_gained": gain, "n_paired": len(shas), "reason": None}
 
 
-def build_report(result: WaveResult) -> dict[str, Any]:
+#: Member causes that are a REPEATED timeout judged against the file (lead ruling D5: it stays a file failure):
+#: two timeouts, a second one when the retry budget was already spent, or a retry after a timeout that ended any
+#: other non-pass way (panel.classify_after_timeout). Counted per arm because the rate moves with the MACHINE, not
+#: only the file - the report must show it, and say when it jumps.
+REPEATED_TIMEOUT_CAUSES = ("timeout_twice", "timeout_after_hang")
+REPEATED_TIMEOUT_PREFIX = "after_timeout_"
+#: A jump: an arm's files-with-a-repeated-timeout exceed the reference rate's expectation by at least this many
+#: files AND by this factor. Both, so one file more on a small wave is not an alarm and a large wave is not muted.
+TIMEOUT_JUMP_MIN_FILES = 3
+TIMEOUT_JUMP_FACTOR = 2.0
+
+
+def _is_repeated_timeout(cause: Any) -> bool:
+    return isinstance(cause, str) and (cause in REPEATED_TIMEOUT_CAUSES or cause.startswith(REPEATED_TIMEOUT_PREFIX))
+
+
+def _timeout_block(per_arm: Mapping[str, Sequence[ArmRow]]) -> dict[str, Any]:
+    """Per arm: conclusive files, files with >= 1 repeated-timeout member, those members, and their causes."""
+    arms: dict[str, Any] = {}
+    for arm, rows in per_arm.items():
+        conclusive = [r for r in rows if r.counts]
+        causes: Counter[str] = Counter()
+        files = 0
+        for r in conclusive:
+            hit = [str(m["cause"]) for m in ((r.triage or {}).get("panel_failing") or [])
+                   if isinstance(m, Mapping) and _is_repeated_timeout(m.get("cause"))]
+            causes.update(hit)
+            files += bool(hit)
+        arms[arm] = {"conclusive": len(conclusive), "files": files, "members": sum(causes.values()),
+                     "rate": files / len(conclusive) if conclusive else None, "by_cause": dict(sorted(causes.items()))}
+    return {"arms": arms, "wave": {"files": sum(b["files"] for b in arms.values()),
+                                   "members": sum(b["members"] for b in arms.values())},
+            "jump_rule": {"min_files": TIMEOUT_JUMP_MIN_FILES, "factor": TIMEOUT_JUMP_FACTOR}}
+
+
+def _timeout_jumps(block: Mapping[str, Any], previous: Mapping[str, Any] | None) -> list[str]:
+    """Warnings for arms whose repeated-timeout files jump against the reference: input_only of THIS wave when the
+    wave has it (the same machines, the same files, no repair), else the same arm in `previous` (an earlier
+    snapshot's report JSON). No reference, no claim."""
+    out: list[str] = []
+    arms = block["arms"]
+    prev_arms = ((previous or {}).get("timeouts") or {}).get("arms") or {}
+    for arm, b in arms.items():
+        if arm == "input_only" or not b["conclusive"]:
+            continue
+        if "input_only" in arms and arms["input_only"]["conclusive"]:
+            ref, label = arms["input_only"], "input_only in this wave"
+        elif arm in prev_arms and prev_arms[arm].get("conclusive"):
+            ref, label = prev_arms[arm], "the previous snapshot"
+        else:
+            continue
+        expected = ref["files"] / ref["conclusive"] * b["conclusive"]
+        if b["files"] - expected >= TIMEOUT_JUMP_MIN_FILES and b["files"] > TIMEOUT_JUMP_FACTOR * expected:
+            out.append(f"{arm}: repeated member timeouts on {b['files']} of {b['conclusive']} files against "
+                       f"{expected:.1f} expected from {label} ({ref['files']} of {ref['conclusive']}): a repeated "
+                       "timeout is a file failure, and a jump this size usually means the machine got slower, not "
+                       "that the files did - check the hosts before reading this arm's clean rate")
+    return out
+
+
+def build_report(result: WaveResult, *, previous: Mapping[str, Any] | None = None) -> dict[str, Any]:
     if not isinstance(result, WaveResult):
         raise TypeError("build_report takes a WaveResult from load_wave, never raw rows")
     wave = result.wave
@@ -678,6 +738,8 @@ def build_report(result: WaveResult) -> dict[str, Any]:
                     for s in both):
                 warnings.append(f"{a} and {b} are indistinguishable on all {len(both)} files they share: "
                                 "check that the harness varies the arm; " + FALSE_POSITIVE_NOTE)
+    timeouts = _timeout_block(per_arm)
+    warnings += _timeout_jumps(timeouts, previous)
     if paired_set["arms"] and paired_set["n_files"] < MIN_PAIRED_FRACTION * n_main:
         warnings.append(
             f"the PAIRED columns cover only {paired_set['n_files']} of {n_main} files "
@@ -708,6 +770,7 @@ def build_report(result: WaveResult) -> dict[str, Any]:
                  "shard_seconds_total": sum(shard_wall)},
         "throttle": dict(result.backoff or {"status": "unrecorded"}),
         "cheap_full_agreement": _cheap_full_block(result.rows, wave.arms),
+        "timeouts": timeouts,
         "warnings": warnings,
         "status": "OK" if not warnings else "UNRELIABLE",
         #: a script reading the JSON must not have to parse the banner to learn the numbers are not to be used
@@ -752,6 +815,9 @@ def render_text(rep: dict[str, Any]) -> str:
                    f"| {b['inconclusive_rate']:.1%} | {_pct(b['clean_rate'])} | {gain} | "
                    f"{_pct(b['paired']['clean_rate'])} (n={b['paired']['n']}) | {pg} | {regs} | "
                    f"{usd} | {b['wall_s']['per_file_mean']:.1f} |")
+    to = rep.get("timeouts") or {"arms": {}}
+    out += ["", "repeated member timeouts (file failures under the D5 ruling; the rate moves with the machine): "
+            + "; ".join(f"{a} {b['files']}/{b['conclusive']} files ({b['members']} members)" for a, b in to["arms"].items())]
     frac = "n/a" if ps["fraction"] is None else f"{ps['fraction']:.1%}"
     out += ["", f"PAIRED columns cover the {ps['n_files']} of {ps['of']} files judged conclusively by ALL of these "
                 f"{len(ps['arms'])} measured arm(s): {', '.join(ps['arms']) or 'none'}"
@@ -830,6 +896,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--shard-plan", default="", help="the cost-balanced shard plan the wave was cut by (default: hash)")
     p.add_argument("--purpose", default="report", choices=("report", "tuning"))
     p.add_argument("--json", default="")
+    p.add_argument("--previous-report", default="",
+                   help="an earlier snapshot's report JSON: the reference for the repeated-timeout jump warning when "
+                        "this wave has no input_only arm")
     p.add_argument("--markers-dir", default="",
                    help="a directory-backed marker store (model_ledger.FileMarkerStore) to verify the once-only "
                         "slot against; without it the slot is only read from the shards' provenance")
@@ -847,7 +916,7 @@ def main(argv: list[str] | None = None) -> int:
     except (ReportRefused, _collect.CollectRefused, ev.HeldOutInTuning, rp.DisallowedSource, ValueError) as exc:
         print(f"REFUSED {exc}", file=sys.stderr)
         return 1
-    rep = build_report(result)
+    rep = build_report(result, previous=json.loads(Path(args.previous_report).read_text()) if args.previous_report else None)
     if args.json:
         Path(args.json).write_text(json.dumps(rep, indent=1, sort_keys=True) + "\n")
     print(render_text(rep))

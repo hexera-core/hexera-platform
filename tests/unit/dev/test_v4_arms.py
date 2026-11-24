@@ -773,3 +773,12 @@ def test_a_wall_stop_through_the_real_arm_path_is_an_inconclusive_row(shard: Any
     assert row["inconclusive"] is True
     loaded = report._row_from_dict(row)
     assert loaded.derived_inconclusive and not loaded.counts
+
+
+def test_the_triage_names_each_failing_members_cause() -> None:
+    """The report counts repeated member timeouts by cause (timeout_twice / after_timeout_*), so the row must carry it."""
+    member = SimpleNamespace(name="gmsh_alt", status="timeout", error_kind="timeout", cause="after_timeout_crashed")
+    v = SimpleNamespace(faithful=None, panel=[member, SimpleNamespace(name="gmsh_prod", status="pass")],
+                        valid=SimpleNamespace(ok=True, hard=[]))
+    failing = run_arm.arms_mod.verdict_triage(v)["panel_failing"]
+    assert failing == [{"name": "gmsh_alt", "status": "timeout", "error_kind": "timeout", "cause": "after_timeout_crashed"}]

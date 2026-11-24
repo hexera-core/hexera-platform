@@ -297,7 +297,8 @@ def verdict_triage(v: Any) -> dict[str, Any]:
     deviation = None if f is None else {
         "ok": bool(f.ok), "max_dev_mm": f.max_dev_mm, "bound_mm": f.bound_mm,
         "used": (f.max_dev_mm / f.bound_mm) if f.bound_mm else None, "reasons": list(getattr(f, "reasons", []))}
-    return {"panel_failing": [{"name": m.name, "status": m.status, "error_kind": getattr(m, "error_kind", None)}
+    return {"panel_failing": [{"name": m.name, "status": m.status, "error_kind": getattr(m, "error_kind", None),
+                               "cause": getattr(m, "cause", None)}  # report.py counts repeated timeouts by cause
                               for m in v.panel if m.status != "pass"],
             "deviation": deviation,
             "valid": {"ok": bool(v.valid.ok), "hard": [x.code for x in v.valid.hard]}}
