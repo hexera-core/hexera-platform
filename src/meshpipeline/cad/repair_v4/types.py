@@ -15,6 +15,8 @@ StableId = str
 SiteKind = Literal[
     "proximity", "self_overlap", "intersection", "open", "overlap", "invalid", "sliver",
     "periodic", "pole", "timeout", "unlocated",
+    # lane C7: layer 1's `unbounded_geometry` (an infinite surface) - the site `trim_unbounded` answers
+    "unbounded",
 ]
 
 

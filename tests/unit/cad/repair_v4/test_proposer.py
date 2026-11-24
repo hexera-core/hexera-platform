@@ -403,7 +403,7 @@ def test_images_attached_when_site_has_view():
 
 
 @pytest.mark.parametrize("kind", ["proximity", "self_overlap", "intersection", "invalid", "sliver",
-                                  "periodic", "pole", "timeout", "unlocated"])
+                                  "periodic", "pole", "timeout", "unlocated", "unbounded"])
 def test_images_are_not_attached_for_kinds_that_need_no_intent_call(kind):
     fake = Fake([reply()])
     make(fake).propose(state([site("S1", kind)]), k=3)

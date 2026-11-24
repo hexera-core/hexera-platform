@@ -172,8 +172,10 @@ class ProbeResult:
 #: registry must have one (tests/unit/cad/repair_v4/test_proposer_prompt.py), so a new op cannot ship unexplained.
 OP_SUMMARIES: dict[str, str] = {
     "conformalise": "make touching/overlapping bodies share faces exactly: `fragment` splits them at each other, "
-                    "`cut_by:B<n>` subtracts body B<n> (only when the overlap is within the fidelity bound); never "
-                    "fuses. For overlap sites.",
+                    "`cut_by:B<n>` keeps body B<n> and cuts the overlap out of the other (at any depth; the depth is "
+                    "measured and reported in the Diff). YOU choose which body yields. For overlap sites.",
+    "fuse": "merge 2+ bodies into ONE solid (BRepAlgoAPI_Fuse): for a body inside another, two copies of one body, or "
+            "halves meant to be one. Changes the body count (reported, not refused). For overlap sites.",
     "fill_loop": "close ONE free (open) loop with one new declared face; targets are the loop's edges. Leaves faces "
                  "loose: follow with make_volume to rebuild the solid. For open sites; loops spanning over "
                  f"{MAX_FILL_SPAN_RATIO:.0%} of the diagonal are declined.",
@@ -196,6 +198,8 @@ OP_SUMMARIES: dict[str, str] = {
     "split_angle": "split the target faces so no face spans more than max_deg of angle. Moves no geometry.",
     "split_by_proximity": "split each face of each face_pair along iso-curves so a chord across a patch sags less "
                           "than target_ratio of the gap between the pair. Moves no geometry. For proximity sites.",
+    "trim_unbounded": "bound the part's infinite (untrimmed) surfaces to its real extent: the part intersected with "
+                      "its finite-face box enlarged by pad_fraction of the diagonal. No targets. For unbounded sites.",
     "split_closed": "split closed (periodic) faces - full cylinders, cones, spheres, tori - into open patches. "
                     "Moves no geometry.",
     "split_continuity": "split the target faces at their internal C1 (order 1) or C2 (order 2) breaks. Moves no "
@@ -243,7 +247,7 @@ HARD_CODE_TEXT: dict[str, str] = {
     "units_changed": "the length unit differs from the input's, or does not survive the round trip",
     "round_trip_invalid": "the written STEP does not re-read valid",
     "no_solids": "the part holds no solid at all (only faces or shells)",
-    "unbounded_geometry": "infinite extent: OUT OF SCOPE, not a defect you can repair - declare it unfixable",
+    "unbounded_geometry": "infinite extent: an untrimmed surface; trim_unbounded bounds it to the part's real extent",
 }
 
 

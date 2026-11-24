@@ -64,7 +64,7 @@ OBSERVATION_MAX_BYTES = 56_000
 #: Most informative first. Used to name a merged site and to order sites.
 _PRIORITY: tuple[SiteKind, ...] = (
     "intersection", "self_overlap", "open", "overlap", "invalid", "periodic", "pole", "sliver",
-    "proximity", "timeout", "unlocated",
+    "proximity", "unbounded", "timeout", "unlocated",
 )
 _MESHER_KINDS: dict[str, SiteKind] = {
     "overlapping_facets": "self_overlap",
@@ -85,6 +85,8 @@ _HARD_KINDS: dict[str, SiteKind] = {
     "non_manifold": "invalid",
     "non_positive_volume": "invalid",
     "no_solids": "invalid",
+    # an infinite surface (`valid.UNBOUNDED`): `trim_unbounded` bounds it to the part's real extent (lane C7)
+    "unbounded_geometry": "unbounded",
 }
 _KERNEL_PREFIX = {"F": "F", "E": "E", "S": "B"}
 _TYPE_OF_PREFIX = {"F": "face", "E": "edge", "B": "solid"}

@@ -795,3 +795,11 @@ def test_an_unlocated_member_beside_a_located_one_still_gets_its_coarse_site() -
     sites = find_sites(pool, ws, verdict, h_mm=H)
     assert sorted(s.kind for s in sites) == ["invalid", "self_overlap"]
     assert [s.graph["coarse"]["members"] for s in sites if s.graph.get("coarse")] == [["netgen"]]
+
+
+def test_an_unbounded_input_is_an_unbounded_site_the_trim_can_answer() -> None:
+    """Layer 1's `unbounded_geometry` had no site kind, so nothing in the search could aim at it (lane C7)."""
+    ws = _ws()
+    pool = ScriptedPool(ws, _boxes(ws))
+    (site,) = find_sites(pool, ws, _verdict(hard=[Finding("unbounded_geometry", [], {"diagonal_mm": 2e100})]), h_mm=H)
+    assert site.kind == "unbounded" and site.graph["hard_codes"] == ["unbounded_geometry"]
