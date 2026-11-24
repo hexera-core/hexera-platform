@@ -39,8 +39,10 @@ def deadline_section(out: Path, led_total: float, cap: float) -> str:
     d = json.loads(f.read_text())
     stopped = (out / "DEADLINE_STOP").read_text().strip() if (out / "DEADLINE_STOP").exists() else "?"
     tot = {k: sum(v[k] for v in d.values()) for k in ("rows", "excluded_before_stop", "deadline")}
-    lines = [f"## STOPPED AT ITS DEADLINE ({stopped}; reaper minus 30 min, coordinator-approved)", "",
-             f"The wave did not finish inside its VM's run limit. Shards that had not finished were stopped; their rows "
+    when, _, why = stopped.partition("; ")
+    why = why or "reaper minus 30 min (deadline guard, coordinator-approved)"
+    lines = [f"## STOPPED BEFORE IT FINISHED ({when}): {why}", "",
+             f"The wave was stopped before every shard finished. Shards that had not finished were stopped; their rows "
              f"written so far are kept. **{tot['deadline']} (file, arm) pairs were never measured because of the stop** "
              f"(in progress or not started), reported as `unmeasured: stopped at the wave deadline`. "
              f"Separately, **{tot['excluded_before_stop']} (file, arm) pairs were excluded BEFORE the stop**; their exact "
