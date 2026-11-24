@@ -88,7 +88,8 @@ def test_every_wave_cap_is_the_ledgers_and_finite() -> None:
 
 def test_the_snapshot_waves_run_all_four_v4_arms_without_a_checkpoint_slot() -> None:
     m = Markers()
-    for name, split in (("snap_v1_dev", "dev"), ("snap_v1_clean", "clean")):
+    for name, split in (("snap_v1_dev", "dev"), ("snap_v1_clean", "clean"),
+                        ("snap_v1r_dev", "dev"), ("snap_v1r_clean", "clean")):
         w = ev.WAVES[name]
         assert (w.wave_type, w.split) == ("normal", split)
         assert w.arms == ("input_only", "staged", "search_det", "search_ai") and w.has_model_arm
