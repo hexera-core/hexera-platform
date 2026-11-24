@@ -97,3 +97,37 @@ def test_the_markdown_says_it_is_a_re_score_and_names_the_rule(tmp_path) -> None
     assert "RE-SCORE" in md and "clean = valid + panel" in md
     assert "not a re-run" in md.lower() and "snap-v1/results/snap-v1-dev" in md
     assert "| staged |" in md
+
+
+# ------------------------------------------------------------------ a wave still running: rows.partial.jsonl
+
+def _write_partial(tmp_path: Path, rows: list[dict], name: str = "p", shard: str = "shard-1-of-6") -> Path:
+    root = tmp_path / name
+    d = root / shard
+    d.mkdir(parents=True)
+    (d / "rows.partial.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+    return root
+
+
+def test_a_running_wave_is_re_scored_from_its_streamed_partial_rows(tmp_path) -> None:
+    out = rs.rescore(_write_partial(tmp_path, [_row(1, "staged", out_faithful_ok=False, out_clean=False),
+                                               _row(2, "staged")]))
+    assert out["partial"] is True and out["partial_shards"] == ["shard-1-of-6"]
+    arm = out["arms"]["staged"]
+    assert arm["conclusive"] == 2 and arm["clean_old"] == 1 and arm["clean_new"] == 2
+
+
+def test_a_finished_shard_is_preferred_over_its_own_partial_file(tmp_path) -> None:
+    root = _write_partial(tmp_path, [_row(1, "staged", out_clean=False, out_valid=False)], "x", "shard-1-of-1")
+    (root / "shard-1-of-1" / "rows.jsonl").write_text(json.dumps(_row(1, "staged")) + "\n")
+    out = rs.rescore(root)
+    assert out["partial"] is False and out["partial_shards"] == []
+    assert out["arms"]["staged"]["clean_new"] == 1      # the final file, not the streamed one
+
+
+def test_the_markdown_says_a_partial_table_is_provisional(tmp_path) -> None:
+    out = rs.rescore(_write_partial(tmp_path, [_row(1, "staged")]))
+    md = rs.render(out, title="dev snapshot v1r", source="snap-v1r/partial")
+    assert "PROVISIONAL" in md and "still running" in md and "shard-1-of-6" in md
+    done = rs.rescore(_write(tmp_path, [_row(1, "staged")], "done"))
+    assert "still running" not in rs.render(done, title="t", source="s")
