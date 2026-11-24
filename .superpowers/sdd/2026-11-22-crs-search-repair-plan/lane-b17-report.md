@@ -90,6 +90,31 @@ refused rather than reported as a whole wave**; and each merged shard's provenan
 Tests cover: the merge (four arms per merged shard, no file in two shards, the plan written), a failed group
 (refused, exit code carried), and groups that disagree on the commit (refused).
 
+## What the pilots caught that the tests could not
+
+21 hermetic tests, two clean dry runs and `bash -n` on both scripts all passed before the first VM existed. Then
+three two-VM pilots, about $0.25 each, found **four** defects — every one of them fatal to a 150-file wave, and not
+one of them reachable by a test that does not create a VM:
+
+| # | what happened | why no test could see it |
+|---|---|---|
+| 1 | With `OPS=` empty (fix 7, the commit's own default), `vm_run.sh` passed a bare `--ops` and **argparse exited 2 on all five units**. | The empty-OPS path only exists on the VM; the tests never invoke `run_arm`'s CLI, and `bash -n` parses `--ops $OPS` happily. |
+| 2 | A model shard whose cap is **under the route probe's own $1.00 reservation** exits 6 with **no row**: the clean group at $0.12 silently lost its arm. | The reservation is charged by the ledger inside `run_arm` before any file runs. Nothing in the plan looks wrong; the arithmetic only fails when a real probe meets a real ledger. |
+| 3 | `gcloud` inside a `while read` loop **ate the loop's stdin**, so the second VM was never iterated and pilot 1 **leaked an east VM for 35 minutes** (deleted by hand). | Shell stdin consumption is invisible to `bash -n` and to any test that does not actually run `gcloud` in a loop. The fast-loop lane hit the identical bug independently and leaked four. |
+| 4 | A survivor was **logged instead of retried**: cleanup printed "surviving: …" and exited 0. | The code did exactly what it said; what was wrong was that saying it was treated as handling it. |
+
+A fifth, found by pilot 3 and fixed for pilot 4: the collect/post step was a chained remote `--command` that died in
+**five seconds with no diagnosis at all** — one sub-command's exit code ended the whole ssh and the log said only
+"the collect/post step failed". It is now `tools/collect.sh`: no `set -e`, every step reports its own `rc`
+(`pull_out`, `pull_ledger`, `post`, `push_out`), the post log's tail is echoed on failure, and `launch.sh` mirrors
+every `COLLECT` line into the run log.
+
+Two things follow. **A pilot on two real VMs is not optional before a 150-file wave** — it is the only gate that
+exercises the CLI, the ledger, the key, the regions and the cleanup together, and it costs a quarter of a dollar
+against a wave that costs ~$10 and two hours of wall clock. And **three of the four were silent successes**: the
+units exited, the log said DONE, and only the exit-code reading added in fix (4) turned them into failures anybody
+would notice. That is the fix that made the other three visible.
+
 ## What the runner has to decide, and what I did not do
 
 - **`REGIONS` is a profile variable now**, `<region>:<vcpu>:<zones>`. The vCPU figure is what the LIVE quota allows,
