@@ -115,7 +115,8 @@ def sites_geometry(payload: dict) -> dict:
 
 @register("sites_locate_points")
 def sites_locate_points(payload: dict) -> dict:
-    """Per point, the kernel indices of up to three faces within `radius` of it, nearest first."""
+    """Per point, the kernel indices of up to three faces within `radius` of it, nearest first, and (`dists`, mm) each
+    one's distance from the point: the first is how far the mesher's point lies from the nearest face (lane D28)."""
     from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeVertex
     from OCP.gp import gp_Pnt
 
@@ -125,6 +126,7 @@ def sites_locate_points(payload: dict) -> dict:
     radius = float(payload["radius"])
     boxes = {i: _box(faces.FindKey(i)) for i in range(1, faces.Extent() + 1)}
     answers: list[list[int]] = []
+    dists: list[list[float]] = []
     for x, y, z in payload["points"]:
         found: list[tuple[float, int]] = []
         vertex = BRepBuilderAPI_MakeVertex(gp_Pnt(float(x), float(y), float(z))).Vertex()
@@ -138,7 +140,8 @@ def sites_locate_points(payload: dict) -> dict:
                 found.append((d, index))
         found.sort()
         answers.append([index for _, index in found[:3]])
-    return {"faces": answers}
+        dists.append([float(d) for d, _ in found[:3]])
+    return {"faces": answers, "dists": dists}
 
 
 #: A gap at or under this (mm) is a CONTACT, not a near miss: below it the two faces touch as far as any mesher
