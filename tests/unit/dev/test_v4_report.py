@@ -1136,3 +1136,64 @@ def test_a_wall_excluded_file_is_neither_a_failure_nor_a_regression(tmp_path) ->
         assert block["conclusive"] == other["conclusive"] == len(judged)
         assert block["inconclusive"] == 2  # counted as unmeasured, which is what it is
     assert killed["excluded_stratum"]["files"] == 2 and kept["excluded_stratum"]["files"] == 0
+
+
+# ------------------------------------------------------------------ repeated member timeouts, counted and watched
+
+def _timed_out(cause: str = "timeout_twice") -> dict:
+    return {"panel_failing": [{"name": "gmsh_alt", "status": "timeout", "error_kind": "timeout", "cause": cause}]}
+
+
+def _timeout_rows(timeouts_by_arm: dict[str, set[int]]):
+    """`rows_for` putting a repeated-timeout member on the files listed for each arm (unfixed files only, so the row's
+    own clean/panel fields stay consistent with a non-pass member)."""
+    def rows_for(base, i, arm):
+        row = arm_row(base, i, arm)
+        if i in timeouts_by_arm.get(arm, set()) and not row["out_clean"]:
+            row["triage"] = _timed_out("after_timeout_fail" if i % 2 else "timeout_twice")
+        return row
+    return rows_for
+
+
+UNFIXED = [i for i in range(40) if not any(_fixed(i, a) for a in ("staged", "search_det", "search_ai"))]
+
+
+def test_repeated_member_timeouts_are_counted_per_arm_and_for_the_wave(tmp_path) -> None:
+    split = split_rows()
+    two = set(UNFIXED[:2])
+    build(tmp_path, WAVE, split, rows_for=_timeout_rows(dict.fromkeys(WAVE.arms, two)))
+    rep = report.build_report(load(tmp_path, split))
+    t = rep["timeouts"]
+    assert all(t["arms"][a]["files"] == 2 and t["arms"][a]["members"] == 2 for a in WAVE.arms)
+    assert t["wave"]["members"] == 2 * len(WAVE.arms)
+    assert set(t["arms"]["staged"]["by_cause"]) <= {"timeout_twice", "after_timeout_fail"}
+    assert rep["status"] == "OK" and not [w for w in rep["warnings"] if "timeout" in w]  # level with input_only
+    assert "repeated member timeouts" in report.render_text(rep)
+
+
+def test_a_jump_against_input_only_of_the_same_wave_warns(tmp_path) -> None:
+    split = split_rows()
+    rows_for = _timeout_rows({"input_only": set(UNFIXED[:1]), "staged": set(UNFIXED[:7])})
+    build(tmp_path, WAVE, split, rows_for=rows_for)
+    rep = report.build_report(load(tmp_path, split))
+    jumps = [w for w in rep["warnings"] if "repeated member timeouts" in w]
+    assert len(jumps) == 1 and jumps[0].startswith("staged") and "input_only" in jumps[0]
+    assert rep["status"] == "UNRELIABLE"
+
+
+def test_a_small_difference_is_not_a_jump(tmp_path) -> None:
+    split = split_rows()
+    build(tmp_path, WAVE, split, rows_for=_timeout_rows({"input_only": set(UNFIXED[:1]), "staged": set(UNFIXED[:2])}))
+    assert not [w for w in report.build_report(load(tmp_path, split))["warnings"] if "timeout" in w]
+
+
+def test_without_input_only_the_previous_snapshot_is_the_reference(tmp_path) -> None:
+    wave = ev.WAVES["dev_search"]  # search_det, search_ai: no input_only in the wave
+    split = split_rows()
+    build(tmp_path, wave, split, rows_for=_timeout_rows({"search_det": set(UNFIXED[:6])}))
+    result = load(tmp_path, split, wave)
+    alone = report.build_report(result)
+    assert not [w for w in alone["warnings"] if "timeout" in w]  # no reference, no claim
+    previous = {"timeouts": {"arms": {"search_det": {"files": 0, "conclusive": 40}}}}
+    jumped = report.build_report(result, previous=previous)
+    assert [w for w in jumped["warnings"] if w.startswith("search_det") and "previous snapshot" in w]
