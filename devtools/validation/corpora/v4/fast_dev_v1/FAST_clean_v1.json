@@ -4,7 +4,6 @@
  "files": [
   {
    "family": "",
-   "fast_why": "clean control (lowest sha256 of its source)",
    "first_failing_layer": null,
    "group": null,
    "kind": null,
@@ -51,7 +50,6 @@
   },
   {
    "family": "",
-   "fast_why": "clean control (lowest sha256 of its source)",
    "first_failing_layer": null,
    "group": null,
    "kind": null,
@@ -98,7 +96,6 @@
   },
   {
    "family": "",
-   "fast_why": "clean control (lowest sha256 of its source)",
    "first_failing_layer": null,
    "group": null,
    "kind": null,
@@ -145,7 +142,6 @@
   },
   {
    "family": "",
-   "fast_why": "clean control (lowest sha256 of its source)",
    "first_failing_layer": null,
    "group": "nist-ftc-11",
    "kind": null,
@@ -192,7 +188,6 @@
   },
   {
    "family": "",
-   "fast_why": "clean control (lowest sha256 of its source)",
    "first_failing_layer": null,
    "group": null,
    "kind": null,
@@ -239,6 +234,13 @@
   }
  ],
  "frozen": "2026-11-24",
+ "rationale": {
+  "07088e489198": "clean control (lowest sha256 of its source)",
+  "0b20e9cd191d": "clean control (lowest sha256 of its source)",
+  "1352537ef98e": "clean control (lowest sha256 of its source)",
+  "d94ee0bed48f": "clean control (lowest sha256 of its source)",
+  "e26f6abcb88a": "clean control (lowest sha256 of its source)"
+ },
  "split": "clean",
  "subset_of": {
   "clean": "PROVISIONAL_clean_v2.json",

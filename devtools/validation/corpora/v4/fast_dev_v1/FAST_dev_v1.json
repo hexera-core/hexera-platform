@@ -4,7 +4,6 @@
  "files": [
   {
    "family": "overlapping_facets",
-   "fast_why": "Lane A located: proximity x4, sliver x4, overlapping_facets (taken INSTEAD of its duplicate e63710eae340: the same part)",
    "first_failing_layer": "panel",
    "group": null,
    "kind": null,
@@ -53,7 +52,6 @@
   },
   {
    "family": "overlapping_facets",
-   "fast_why": "Lane A located: proximity x3, sliver x3, overlapping_facets",
    "first_failing_layer": "panel",
    "group": null,
    "kind": null,
@@ -100,7 +98,6 @@
   },
   {
    "family": "overlapping_facets",
-   "fast_why": "Lane A located: proximity x3, overlapping_facets x2, sliver x2",
    "first_failing_layer": "panel",
    "group": null,
    "kind": null,
@@ -149,7 +146,6 @@
   },
   {
    "family": "overlapping_facets",
-   "fast_why": "Lane A located: proximity x4, overlapping_facets x2",
    "first_failing_layer": "panel",
    "group": null,
    "kind": null,
@@ -198,7 +194,6 @@
   },
   {
    "family": "hxt_3d_failed",
-   "fast_why": "Lane A located: sliver 2995:1 and 46:1 (hxt_3d_failed)",
    "first_failing_layer": "panel",
    "group": null,
    "kind": null,
@@ -245,7 +240,6 @@
   },
   {
    "family": "overlapping_facets",
-   "fast_why": "Lane A located: proximity x4",
    "first_failing_layer": "panel",
    "group": null,
    "kind": null,
@@ -292,7 +286,6 @@
   },
   {
    "family": "overlapping_facets",
-   "fast_why": "Lane A located: overlapping_facets on COINCIDENT DUPLICATE faces 108/109",
    "first_failing_layer": "panel",
    "group": null,
    "kind": null,
@@ -339,7 +332,6 @@
   },
   {
    "family": "low_quality",
-   "fast_why": "Lane A located: proximity + sliver, low_quality (abc_pass source)",
    "first_failing_layer": "panel",
    "group": null,
    "kind": null,
@@ -386,7 +378,6 @@
   },
   {
    "family": "body_overlap",
-   "fast_why": "body overlap made VALID by search_det (v2)",
    "first_failing_layer": "valid",
    "group": null,
    "kind": null,
@@ -438,7 +429,6 @@
   },
   {
    "family": "body_overlap",
-   "fast_why": "body overlap made VALID by search_ai (v2)",
    "first_failing_layer": "valid",
    "group": null,
    "kind": null,
@@ -491,7 +481,6 @@
   },
   {
    "family": "overlapping_facets",
-   "fast_why": "Lane D census: multi-root (2), netgen step_unreadable with 0 solids seen (D19 A)",
    "first_failing_layer": "panel",
    "group": null,
    "kind": null,
@@ -540,7 +529,6 @@
   },
   {
    "family": "brep_invalid",
-   "fast_why": "Lane D census: multi-root (2), netgen_meshing_failed; brep_invalid",
    "first_failing_layer": "valid",
    "group": null,
    "kind": null,
@@ -594,7 +582,6 @@
   },
   {
    "family": "hxt_3d_failed",
-   "fast_why": "v3c: REPAIRED (clean out) - regression guard",
    "first_failing_layer": "panel",
    "group": null,
    "kind": null,
@@ -641,7 +628,6 @@
   },
   {
    "family": "overlapping_facets",
-   "fast_why": "v3c: search output VALID but not clean (overlapping_facets)",
    "first_failing_layer": "panel",
    "group": null,
    "kind": null,
@@ -690,7 +676,6 @@
   },
   {
    "family": "open_shell",
-   "fast_why": "v3c: search output VALID but not clean (open_shell family)",
    "first_failing_layer": "valid",
    "group": null,
    "kind": null,
@@ -739,6 +724,23 @@
   }
  ],
  "frozen": "2026-11-24",
+ "rationale": {
+  "263d5e2d5bab": "Lane A located: sliver 2995:1 and 46:1 (hxt_3d_failed)",
+  "2a387cc52f65": "v3c: REPAIRED (clean out) - regression guard",
+  "32ca3e9a6e9a": "Lane D census: multi-root (2), netgen_meshing_failed; brep_invalid",
+  "4c1fc7d5579d": "Lane A located: proximity x4, sliver x4, overlapping_facets (taken INSTEAD of its duplicate e63710eae340: the same part)",
+  "5accc12fa47d": "Lane A located: proximity x3, sliver x3, overlapping_facets",
+  "695d74ca7fa6": "Lane A located: proximity x3, overlapping_facets x2, sliver x2",
+  "722c122c9b80": "Lane A located: proximity x4",
+  "7917f3122cae": "body overlap made VALID by search_det (v2)",
+  "7e573047c1a6": "Lane A located: overlapping_facets on COINCIDENT DUPLICATE faces 108/109",
+  "8c6a3f2186e7": "body overlap made VALID by search_ai (v2)",
+  "a2807f9a2fef": "v3c: search output VALID but not clean (open_shell family)",
+  "bb0fe0d1c8e9": "Lane D census: multi-root (2), netgen step_unreadable with 0 solids seen (D19 A)",
+  "d2cb9938a2d7": "Lane A located: proximity + sliver, low_quality (abc_pass source)",
+  "de9ad40118a4": "Lane A located: proximity x4, overlapping_facets x2",
+  "f3819472cf82": "v3c: search output VALID but not clean (overlapping_facets)"
+ },
  "split": "dev",
  "subset_of": {
   "clean": "PROVISIONAL_clean_v2.json",
