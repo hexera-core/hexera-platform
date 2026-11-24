@@ -276,6 +276,17 @@ CAPPED_KIND = "capped_after_doom"
 DOOM_ORDER = ("gmsh_default", "gmsh_prod", "gmsh_alt", "netgen_occ")
 
 
+def doomed_result(result: MemberResult, cap_s: float) -> MemberResult:
+    """THE one conversion for a member that ran under the doomed cap, shared by the serial path below and any parallel
+    path (Lane A's A15): a timeout, or a pool death that would otherwise be inconclusive, is a FAIL of CAPPED_KIND.
+    Anything the member actually decided (a pass, a real mesher failure) is kept as it came."""
+    if result.status in ("timeout", "crashed") and (is_inconclusive(result) or result.status == "timeout"):
+        return dataclasses.replace(result, status="fail", error_kind=CAPPED_KIND, cause=None,
+                                   message=f"the panel was already not clean; {result.status} inside the {cap_s:g} s "
+                                           f"doomed cap ({result.message[:120]})")
+    return result
+
+
 def run_panel(
     pool: WorkerPool, step_path: str, members: Sequence[PanelMember], *, timeout_s: float,
     doomed_cap_s: float | None = None,
@@ -289,7 +300,15 @@ def run_panel(
     member runs with that budget and NO retry, and one that does not finish (or dies for pool reasons) is a fail of
     kind CAPPED_KIND. An all-pass panel is never doomed, so no clean verdict can change; measured on v4's cache it cut
     full-panel member time 34% before hangs (a doomed hang costs the cap, not 300 s + a 600 s retry), losing 2% of
-    passes, all on panels that were not clean."""
+    passes, all on panels that were not clean.
+
+    ONE DESIGN FOR BOTH PATHS (LEAD-3's condition (b), with Lane A's parallel members, A15):
+      * SERIAL (this function): members run cheapest-first (DOOM_ORDER); after the first non-pass, each remaining
+        member gets `doomed_cap_s` and no retry.
+      * PARALLEL (A15): the order does not matter. At the moment the first non-pass result arrives (t_doom), every
+        member still running has its deadline cut to t_doom + doomed_cap_s with no retry, and one cut there is killed.
+      * Both convert through `doomed_result`, use CAPPED_KIND and return results in the CALLER's order. An all-pass
+        panel is never doomed in either path, so no clean verdict can depend on which path ran."""
     if doomed_cap_s is None:
         with retry_budget():
             results = [check_result(member.run(pool, step_path, timeout_s=timeout_s)) for member in members]
@@ -304,11 +323,8 @@ def run_panel(
                     r = check_result(members[i].run(pool, step_path, timeout_s=timeout_s))
                 else:
                     with retry_budget(0):
-                        r = check_result(members[i].run(pool, step_path, timeout_s=doomed_cap_s))
-                    if r.status in ("timeout", "crashed") and (is_inconclusive(r) or r.status == "timeout"):
-                        r = dataclasses.replace(r, status="fail", error_kind=CAPPED_KIND, cause=None,
-                                                message=f"the panel was already not clean; {r.status} inside the "
-                                                        f"{doomed_cap_s:g} s doomed cap ({r.message[:120]})")
+                        r = doomed_result(check_result(members[i].run(pool, step_path, timeout_s=doomed_cap_s)),
+                                          doomed_cap_s)
                 got[i] = r
                 doomed = doomed or r.status != "pass"
         results = [got[i] for i in range(len(members))]

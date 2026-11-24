@@ -36,6 +36,9 @@ rp = _report.rp
 
 FATES = ("evaluated", "duplicate", "inconclusive", "skipped_budget")
 REASONED = ("declined", "failed", "invalid")
+#: panel.CAPPED_KIND, mirrored so triage reads rows without importing the engine (lane C16): a member that ran after
+#: the panel was already doomed and hit the doomed cap. Counted apart, never as a mesher defect.
+CAPPED_KIND = "capped_after_doom"
 AI_SUMS = ("turns", "tool_errors", "candidate_errors", "declared_unfixable", "truncated_rounds")
 #: how many entries a "top" list keeps in the JSON (the markdown shows fewer)
 TOP_N = 10
@@ -89,6 +92,7 @@ def _arm_block(rows: list[Any], excluded: list[dict], kinds: Mapping[str, str]) 
     ops, not_proposed = _Ops(), Counter[str]()
     members: dict[str, dict[str, Any]] = defaultdict(lambda: {"files": 0, "status": Counter(), "error_kind": Counter()})
     failing_count: Counter[int] = Counter()
+    capped: Counter[str] = Counter()
     hard: Counter[str] = Counter()
     used: list[float] = []
     dev_reasons: Counter[str] = Counter()
@@ -125,8 +129,10 @@ def _arm_block(rows: list[Any], excluded: list[dict], kinds: Mapping[str, str]) 
                 ai_capped += bool(a.get("ai_capped"))
         failing = t.get("panel_failing")
         if failing is not None:
-            failing_count[len(failing)] += 1
-            for m in failing:
+            real = [m for m in failing if m.get("error_kind") != CAPPED_KIND]
+            capped.update(m["name"] for m in failing if m.get("error_kind") == CAPPED_KIND)
+            failing_count[len(real)] += 1
+            for m in real:
                 e = members[m["name"]]
                 e["files"] += 1
                 e["status"][m.get("status")] += 1
@@ -154,6 +160,7 @@ def _arm_block(rows: list[Any], excluded: list[dict], kinds: Mapping[str, str]) 
         "open_sites": {"files_with_kind": _top(site_files), "total_sites": site_total},
         "ops": ops.result(), "not_proposed": _top(not_proposed),
         "panel": {"members_failing_per_file": {str(k): v for k, v in sorted(failing_count.items())},
+                  "capped_after_doom": _top(capped),
                   "by_member": {name: {"files": e["files"], "status": _top(e["status"]),
                                        "error_kind": _top(e["error_kind"])}
                                 for name, e in sorted(members.items(), key=lambda kv: -kv[1]["files"])}},
@@ -282,6 +289,9 @@ def render_markdown(t: Mapping[str, Any]) -> str:
                     "| panel member | files failing | status | error kinds |", "|---|---|---|---|"]
             for name, m in b["panel"]["by_member"].items():
                 out.append(f"| {name} | {m['files']} | {_cell(m['status'])} | {_cell(m['error_kind'], 5)} |")
+        if b["panel"].get("capped_after_doom"):
+            out += ["", f"capped after doom (the panel had already failed; NOT a mesher defect, not in the table above): "
+                        f"{_cell(b['panel']['capped_after_doom'])}"]
         d = b["deviation"]
         q = d["budget_used"]
         out += ["", f"layer-1 hard findings: {_cell(b['valid_hard'], 6)}",
