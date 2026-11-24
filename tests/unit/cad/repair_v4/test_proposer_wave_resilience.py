@@ -327,23 +327,68 @@ def test_the_requests_and_tokens_per_minute_slices_hold() -> None:
     assert not throttle.acquire(2_000, wait_s=0)                     # 11k tokens would exceed 10k in the window
 
 
-def test_a_wave_is_sliced_one_nth_per_shard_and_floored_at_one_call() -> None:
+def test_a_wave_is_sliced_one_nth_per_shard_and_a_floor_needs_a_recorded_override() -> None:
     m = wave_max_in_flight(ROUTE)
     assert WAVE_SHARE == 0.05
     assert m == 37                                                   # 0.05 x 15000 rpm x 3 s / 60, floored
-    s = WaveThrottle.for_shard(ROUTE, n_shards=96).slice
-    # 37 // 96 == 0: the slice is floored to one call, so a 96-shard wave may have 96 in flight (> 37) ON PURPOSE;
-    # the per-shard RPM/TPM slices are the binding protection, and the slice says it was floored
+    # 37 // 96 == 0: a 96-shard wave's slice would be below one call. Flooring it to one lets the wave have 96 calls
+    # in flight against a ceiling of 37, so that is REFUSED unless the launch says so explicitly (B11)
+    with pytest.raises(ThrottleConfigError, match="allow.in.flight.floor"):
+        WaveThrottle.for_shard(ROUTE, n_shards=96)
+    s = WaveThrottle.for_shard(ROUTE, n_shards=96, allow_floor=True).slice
     assert s.max_in_flight == 1 and s.floored and s.max_in_flight * 96 > m
     assert s.rpm == pytest.approx(0.05 * 15_000 / 96) and s.tpm == pytest.approx(0.05 * 40_000_000 / 96)
     assert s.rpm * 96 == pytest.approx(750) and s.tpm * 96 == pytest.approx(2_000_000)    # the wave's whole share
     few = WaveThrottle.for_shard(ROUTE, n_shards=4).slice
-    assert few.max_in_flight == 9 and not few.floored                # 37 // 4: no floor needed
-    assert WaveThrottle.for_shard(ROUTE, n_shards=96, max_in_flight=50).slice.max_in_flight == 1
+    assert few.max_in_flight == 9 and not few.floored                # 37 // 4: no floor needed, no override needed
+    assert WaveThrottle.for_shard(ROUTE, n_shards=6).slice.max_in_flight == 6     # snapshot v1r's dev shards
+    with pytest.raises(ThrottleConfigError):
+        WaveThrottle.for_shard(ROUTE, n_shards=96, max_in_flight=50)
+    assert WaveThrottle.for_shard(ROUTE, n_shards=96, max_in_flight=50, allow_floor=True).slice.max_in_flight == 1
     with pytest.raises(ThrottleConfigError):
         WaveThrottle.for_shard("openai:unmeasured", n_shards=1)
     with pytest.raises(ThrottleConfigError):
         WaveThrottle.for_shard(ROUTE, n_shards=0)
+
+
+def test_acquire_never_blocks_past_its_wall_time_budget_even_under_a_wave_backoff() -> None:
+    """B11 (1): while the wave guard held, `deadline += wait` meant `remaining` never shrank, so acquire() could block
+    for ever (300 s plus jitter per trip, re-armed by every new trip), outside the router's own deadline. Now wait_s
+    of time is the bound, whatever is holding the call."""
+    now = [0.0]
+
+    class HoldForever:
+        def hold_for(self) -> float:
+            return 300.0
+
+        def note_held(self, seconds: float) -> None:
+            pass
+
+    throttle = WaveThrottle(Slice(4, 1000, 1e9), clock=lambda: now[0], sleep=lambda s: now.__setitem__(0, now[0] + s),
+                            guard=HoldForever())  # type: ignore[arg-type]
+    assert throttle.acquire(100, wait_s=5.0) is False
+    assert now[0] == pytest.approx(5.0)                               # exactly the budget, not 300 s, not for ever
+    assert throttle.waits_timed_out == 1
+
+
+def test_a_malformed_trip_marker_is_ignored_not_raised_into_the_proposer(tmp_path: Any) -> None:
+    """B11 (2): `hold_for` read t["until"] from whatever JSON the store held. A marker without a numeric `until`, or
+    one that is not JSON, is now dropped in `_refresh` and counted; the shard is not held by it and nothing raises."""
+    from meshpipeline.cad.repair_v4.model_ledger import FileMarkerStore
+
+    store, clock = FileMarkerStore(tmp_path), Clock()
+    guard = guard_for(store, "1/1", clock)
+    bucket = int(clock() // guard.window_s)
+    store.put(f"w1/429/{bucket}/tripped", json.dumps({"bucket": bucket, "at": clock()}))          # no until
+    store.put(f"w1/429/{bucket - 1}/tripped", "not json at all")
+    assert guard.hold_for() == 0.0
+    assert guard.describe()["malformed_markers"] == 2
+    store.put(f"w1/429/{bucket}/tripped", json.dumps({"until": "soon"}))                           # not a number
+    guard._checked_at = -1e18
+    assert guard.hold_for() == 0.0
+    store.put(f"w1/429/{bucket}/tripped", json.dumps({"until": clock() + 60.0}))                   # a real trip
+    guard._checked_at = -1e18
+    assert guard.hold_for() > 0.0
 
 
 # --- the wave-level 429 guard ---------------------------------------------------------------------------------------
@@ -403,8 +448,11 @@ def test_the_throttle_holds_every_new_call_while_the_wave_is_tripped(tmp_path: A
         clock.t += s
 
     throttle = WaveThrottle(Slice(4, 1000, 1e9), clock=lambda: t[0], sleep=sleep, guard=mine)
-    assert throttle.acquire(10, wait_s=5)                            # held ~300 s, and NOT failed at wait_s=5
-    assert t[0] >= 299 and mine.describe()["held_s"] >= 299 and mine.describe()["holds"] >= 1
+    # held for the whole of a short budget, then given up - never blocked past wait_s (B11)
+    assert throttle.acquire(10, wait_s=5) is False and t[0] == 5.0
+    assert mine.describe()["held_s"] >= 5 and mine.describe()["holds"] >= 1 and throttle.waits_timed_out == 1
+    # a call whose budget covers the trip is held until it lifts (~300 s), then goes
+    assert throttle.acquire(10, wait_s=400) and t[0] >= 299
     assert mine.describe()["trips_seen"] and mine.describe()["trips_seen"][0]["by_shard"] == "2/2"
 
 
