@@ -148,9 +148,11 @@ while true; do
 done
 
 # ---------------------------------------------------------------- 7. collect, delete
-SSH 'cd ~/snap; shred -u secret.env 2>/dev/null; ls secret.env 2>/dev/null; tar czf /tmp/collect.tgz --exclude="*/work" out ledger driver.log; date -u +%FT%TZ > out/COLLECTED' >> "$RUN/launch.log"
+SSH 'cd ~/snap; shred -u secret.env 2>/dev/null; ls secret.env 2>/dev/null; tar czf /tmp/collect.tgz --exclude="*/work" out ledger driver.log; find out -name search-trace.json > /tmp/traces.txt; tar czf /tmp/traces.tgz -T /tmp/traces.txt; date -u +%FT%TZ > out/COLLECTED' >> "$RUN/launch.log"
 gcloud compute scp $VM:/tmp/collect.tgz "$RUN/collect.tgz" --zone $ZONE --project $PROJECT >> "$RUN/launch.log" 2>&1 || die "collect failed"
 tar xzf "$RUN/collect.tgz" -C "$RUN" || die "collect archive unreadable"
+gcloud compute scp $VM:/tmp/traces.tgz "$RUN/traces.tgz" --zone $ZONE --project $PROJECT >> "$RUN/launch.log" 2>&1 \
+  && log "search traces: $(tar tzf "$RUN/traces.tgz" | wc -l | tr -d ' ') file(s) in $RUN/traces.tgz" || log "no search traces collected"
 HOURS=$(python3 -I -c "from datetime import datetime as d,timezone as z;print(round((d.now(z.utc)-d.fromisoformat('$CREATED'.replace('Z','+00:00'))).total_seconds()/3600,2))")
 echo "{\"name\":\"$VM\",\"zone\":\"$ZONE\",\"max_run\":\"$MAX_RUN\",\"created\":\"$CREATED\",\"deleted\":\"(see vm_deleted.json)\",\"hours\":$HOURS,\"usd\":$(python3 -c "print(round($HOURS*$VM_USD_PER_H,2))")}" > "$RUN/vm.json"
 # delete now; clearing CREATED disarms the trap's delete (it stays armed until this line)
@@ -162,6 +164,8 @@ if [ "${KEEP_VM:-0}" != 1 ]; then
   log "VM delete rc=$drc; list: [$(gcloud compute instances list --project $PROJECT --filter="name=$VM" --format='value(name,status)' 2>&1 | tr '\n' ' ')]"
 fi
 
+# an ABORTED run (input staging failed) has evidence but no measurement: no doc, no commit
+if [ -f "$RUN/out/ABORTED" ]; then die "the run ABORTED on the VM: $(cat "$RUN/out/ABORTED"); evidence in $RUN/out (stage_errors.txt); VM deleted, no doc written"; fi
 # ---------------------------------------------------------------- 8. the doc and the artifacts
 python3 -I "$HERE/analyze.py" --run "$RUN" --doc "$DOC" ${NOTES_MD:+--notes "$NOTES_MD"} ${MOVED:+--moved "$MOVED"} | tee -a "$RUN/launch.log"
 [ -n "${NOTES_MD:-}" ] && cp "$NOTES_MD" "$RUN/notes.md"

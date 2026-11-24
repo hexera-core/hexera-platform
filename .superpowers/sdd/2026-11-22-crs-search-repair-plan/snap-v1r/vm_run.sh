@@ -10,6 +10,15 @@ mkdir -p $T/out $T/ledger $T/inputs; chmod 777 $T/out $T/ledger
 date -u +%FT%TZ > $T/out/STAGE_START
 # --- inputs: <sha256>/<basename>, every byte checked against the split's sha256
 cut -d' ' -f1,2 $T/splits/inputs.txt | xargs -P 16 -n 2 sh -c 'mkdir -p "$0/inputs/$1" && gcloud storage cp -q "$2" "$0/inputs/$1/" >/dev/null 2>&1 || echo "$1 copy-failed"' $T > $T/out/stage_errors.txt
+# a copy that failed under the parallel pass is retried, one at a time, up to 3 times (transient on a fresh VM)
+for attempt in 1 2 3; do
+  failed=$(grep copy-failed $T/out/stage_errors.txt 2>/dev/null | cut -d' ' -f1 | sort -u)
+  [ -z "$failed" ] && break
+  : > $T/out/stage_errors.txt
+  for sha in $failed; do url=$(grep "^$sha " $T/splits/inputs.txt | cut -d' ' -f2)
+    sleep 2; gcloud storage cp -q "$url" "$T/inputs/$sha/" >/dev/null 2>&1 || echo "$sha copy-failed" >> $T/out/stage_errors.txt
+    echo "$sha retried attempt=$attempt" >> $T/out/stage_retries.txt; done
+done
 bad=0; n=0
 while read -r sha url; do
   n=$((n+1)); f="$T/inputs/$sha/$(basename "$url")"
