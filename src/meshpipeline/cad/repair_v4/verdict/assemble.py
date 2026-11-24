@@ -229,7 +229,13 @@ def _assemble(
     # without the cap one hanging member cost 300 s + its 600 s retry on EVERY stage of a panel already doomed in
     # seconds (695d74ca7fa6: 2,575 of 2,636 staged s). On the stored cheap-only panels the cap loses 0 passes.
     takes_cap = "doomed_cap_s" in inspect.signature(runner).parameters
-    cap = {"doomed_cap_s": DOOMED_CAP_S} if takes_cap else {}
+    cap: dict[str, Any] = {"doomed_cap_s": DOOMED_CAP_S} if takes_cap else {}
+    # lane C22: once the file's INPUT has been judged, later panels run in the input's EVIDENCE order (fast
+    # failures first, input hangs last), so the doomed cap lands on the hang. It changes who is capped, so it is in
+    # the key with the cap. The input verdict itself (no order set yet) keeps DOOM_ORDER.
+    order = _EVIDENCE_ORDER.get("order")
+    if order and takes_cap and "order" in inspect.signature(runner).parameters:
+        cap = {**cap, "order": list(order)}
     # D23.2: P (parallel panel members) is PER CALL: a full verdict (input, confirm, output) meshes its members at
     # once, up to CRS_V4_PANEL_THREADS; a cheap verdict (the search's inner loop, where candidates already run in
     # parallel) stays serial. P changes only WHEN members run, so it is NOT part of the cache key (`cap` is).
@@ -345,6 +351,19 @@ def _assemble(
 
     clean = clean_of(tier=tier, inconclusive=inconclusive, valid=valid, panel=panel, faithful=faithful)
     return Verdict(valid, panel, faithful, clean, tier, inconclusive)
+
+
+#: lane C22: the current file's evidence order (`panel.evidence_order` of its INPUT verdict), set by the caller that
+#: judged the input (the eval arms, the engine) and cleared when the file is done. Per PROCESS on purpose: the search's
+#: candidate threads do not inherit context variables, and a process works on one file at a time.
+_EVIDENCE_ORDER: dict[str, tuple[str, ...] | None] = {"order": None}
+
+
+def set_evidence_order(input_verdict: Any | None) -> None:
+    """Order this file's later panels by its INPUT's evidence; None clears it (DOOM_ORDER again)."""
+    from meshpipeline.cad.repair_v4.verdict.panel import evidence_order
+
+    _EVIDENCE_ORDER["order"] = None if input_verdict is None else evidence_order(input_verdict)
 
 
 def full_panel_threads() -> int:

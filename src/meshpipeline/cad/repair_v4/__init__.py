@@ -169,12 +169,24 @@ def _find_best(pool: WorkerPool, ws: Workspace, source: str, *, budget: Budget, 
                judge: Any, input_verdict: Any = None) -> SearchResult:
     """The middle: staged healers, then the search. Other lanes own both; this only calls them in the
     frozen order (04-task-22-engine-seam-contract.md). Tests fake THIS function."""
+    from meshpipeline.cad.repair_v4.verdict.assemble import set_evidence_order
+
+    input_verdict = input_verdict if input_verdict is not None else judge.full(pool, ws, source)
+    set_evidence_order(input_verdict)   # lane C22: later panels run input failures first, input hangs last
+    try:
+        return _find_best_from(pool, ws, source, budget=budget, deadline_s=deadline_s, judge=judge,
+                               input_verdict=input_verdict)
+    finally:
+        set_evidence_order(None)
+
+
+def _find_best_from(pool: WorkerPool, ws: Workspace, source: str, *, budget: Budget, deadline_s: float,
+                    judge: Any, input_verdict: Any) -> SearchResult:
     from meshpipeline.cad.repair_v4.search import Budget as SearchBudget
     from meshpipeline.cad.repair_v4.search import arm_generators, search
     from meshpipeline.cad.repair_v4.stages import confirm_staged, run_staged
     from meshpipeline.cad.repair_v4.verdict.assemble import adaptive_cheap_members
 
-    input_verdict = input_verdict if input_verdict is not None else judge.full(pool, ws, source)
     if getattr(input_verdict, "out_of_scope", False):
         # AN UNBOUNDED INPUT SKIPS THE STAGED HEALER (lane C9) and the search starts from the input itself. The staged
         # healer's `_judge` always judges a RE-EXPORT of the workspace, and on an unbounded shape the re-export's

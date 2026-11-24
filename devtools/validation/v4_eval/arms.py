@@ -209,6 +209,9 @@ def run_file(arm_name: str, entry: Any, source: str, *, pool: Any, engine: Engin
         return ArmOutcome(excluded=why)
 
     ph = _Phases(f"{entry.sha256[:12]} {arm_name}", clock)
+    from meshpipeline.cad.repair_v4.verdict.assemble import set_evidence_order
+
+    set_evidence_order(None)   # lane C22: a new file starts in DOOM_ORDER; its input verdict sets the evidence order
 
     try:
         ws = ph.run("open_workspace", engine.open_workspace, pool, source, workdir)
@@ -222,6 +225,7 @@ def run_file(arm_name: str, entry: Any, source: str, *, pool: Any, engine: Engin
         bad = _usable(v_in, "the input")
         if bad:
             return excluded(bad)
+        set_evidence_order(v_in)   # every later panel of this file: input failures first, input hangs last
         try:
             overlap = ph.run("overlap_triage", overlap_triage, pool, ws, v_in)
         except Exception as exc:  # noqa: BLE001 - a measurement for the report never loses the row
