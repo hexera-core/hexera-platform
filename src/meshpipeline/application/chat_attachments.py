@@ -302,6 +302,24 @@ def with_text(session: Any, rows: Iterable[Mapping]) -> list[dict]:
     return out
 
 
+def data_url(session_id: Any, row: Mapping) -> str | None:
+    """A stored picture as a data URL for a model call (built at call time, never kept), or None when it cannot be
+    read now. Blocking (the store)."""
+    import base64
+
+    if row.get("kind") != KIND_IMAGE or not _ID.match(str(row.get("id") or "")) or not str(session_id or ""):
+        return None
+    mime = str(row.get("mime") or "image/png")
+    if mime not in IMAGE_MIMES.values():
+        return None
+    try:
+        data = get_bytes(object_key(session_id, str(row["id"]), "file"))
+    except Exception:  # noqa: BLE001 - the turn goes on; the picture is named instead
+        logger.warning("chat attachment: picture %s could not be read", row.get("id"))
+        return None
+    return f"data:{mime};base64," + base64.b64encode(data).decode("ascii")
+
+
 def object_keys(session: Any) -> list[str]:
     """Every object key this session's attachments are kept under (erasure deletes them by name)."""
     keys = []

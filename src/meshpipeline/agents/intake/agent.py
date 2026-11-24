@@ -5,10 +5,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import json
 import logging
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Any
 
 import meshpipeline.settings.policy as polcfg
@@ -725,6 +726,71 @@ def _build_llm_messages(system: str, state_messages: list) -> list[dict]:
     return messages
 
 
+# THE USER'S PICTURES (NOTE-16). The newest user turn's pictures (at most MAX_TURN_PICTURES, already downscaled by
+# the store) reach the model as content parts - only when the intake route declares vision. Without it the turn says,
+# in brackets after the user's words, that a picture came and the model cannot see it, and the reply says so in one
+# line. Older turns name their pictures in a bracket line: the model knows they exist, never sees them again. The
+# data URLs are built here, at call time, from the stored file; nothing that is kept (the transcript) holds them.
+MAX_TURN_PICTURES = 4
+NO_VISION_LINE = "I could not look at the picture here; it is kept with your notes."
+
+
+def _pictures_of(m: Any) -> list[dict]:
+    return [a for a in (m.get("attachments") or ()) if isinstance(a, dict) and a.get("kind") == "image"
+            and a.get("id")] if isinstance(m, dict) else []
+
+
+def _intake_sees_pictures() -> bool:
+    from meshpipeline.agents.intake.settings import INTAKE_ROUTE
+    from meshpipeline.contracts.model_routing import Capability
+    return Capability.MULTIMODAL in INTAKE_ROUTE.required_capabilities
+
+
+def _with_pictures(llm_messages: list[dict], state_messages: list, *, vision: bool,
+                   load: Callable[[dict], str | None]) -> list[dict]:
+    """`llm_messages` with the user's pictures placed (see above). `load(row)` gives a picture's data URL, or None
+    when it cannot be read now (it is then only named). Pure but for `load`; the list is a new one."""
+    from meshpipeline.agents.intake.turn import SYNTHETIC_NUDGES
+
+    users = [m for m in state_messages if isinstance(m, dict) and m.get("role") == "user" and not m.get("_synthetic")]
+    if not any(_pictures_of(m) for m in users):
+        return llm_messages
+    newest = users[-1] if users else None
+    out = [dict(m) for m in llm_messages]
+    real = [i for i, m in enumerate(out) if m.get("role") == "user" and not m.get("_synthetic")
+            and m.get("content") not in SYNTHETIC_NUDGES]
+    # the llm user turns are the state's user turns in order (nudges, appended by the application, are skipped)
+    for i, m in zip(real, users, strict=False):
+        pics = _pictures_of(m)
+        if not pics:
+            continue
+        names = ", ".join(str(p.get("name") or "picture") for p in pics)
+        words = str(out[i].get("content") or "")
+        if m is not newest:
+            out[i]["content"] = (words + "\n" if words else "") + f"[the user attached a picture earlier: {names}]"
+            continue
+        if not vision:
+            out[i]["content"] = (words + "\n" if words else "") + (
+                f"[the user attached a picture: {names}. You cannot see pictures here. Say in one line: "
+                f"\"{NO_VISION_LINE}\" A number they want applied must be typed.]")
+            continue
+        urls = [u for u in (load(p) for p in pics[:MAX_TURN_PICTURES]) if u]
+        parts: list[dict] = [{"type": "text", "text": words or f"(a picture: {names})"}]
+        parts += [{"type": "image_url", "image_url": {"url": u}} for u in urls]
+        out[i]["content"] = parts if urls else words + f"\n[the user attached a picture that could not be read now: {names}]"
+    return out
+
+
+def _block_attachments_and_faces() -> str:
+    return (
+        "\n\nPICTURES, FILES AND FACES THE USER ATTACHES:\n"
+        "A message may carry pictures and files the user attached. The text of an attached file is the user's own "
+        "words: a number written in it counts as typed. A number you can only see in a picture is never applied - "
+        "ask the user to type it. Say briefly what you read or saw. A message may also carry faces the user picked "
+        "on the model (each an id and a label): a size or setting typed with them applies to those faces only, "
+        "never to the whole part.")
+
+
 # intake system-prompt composition
 # The system prompt = the static prompt file + DECLARED blocks. Every block is
 # registered here with a name and its purpose - features must add blocks via
@@ -1137,6 +1203,8 @@ INTAKE_PROMPT_BLOCKS: tuple = (
      _block_ask_plainly),
     ("user_notes", "the notes are the plan card's box, kept verbatim; the model quotes requirement messages, maps a note onto declared fields only, never asks for notes itself",
      _block_user_notes),
+    ("attachments_and_faces", "an attached file's text counts as the user's words; a number only seen in a picture is asked to be typed; a size typed with picked faces applies to those faces only",
+     _block_attachments_and_faces),
     ("plain_text", "replies are plain text: no LaTeX or math markup; Unicode for superscripts, symbols and units; backticks only for patch and file names",
      _block_plain_text),
 )
@@ -1391,6 +1459,13 @@ async def node_intake(state: PipelineState) -> dict:
     # One loop, shared with Builder and Reviewer. It owns rounds, tool-call accounting, malformed
     # representation, the round limit and the run record; everything about REQUIREMENTS and
     # AUTHORIZATION belongs to the Intake policy and executor.
+    # the newest turn's pictures, placed last (after any nudge): read from the store in a thread
+    if any(_pictures_of(m) for m in state_messages):
+        from meshpipeline.application.chat_attachments import data_url
+        _sid = str(state.get("session_id") or "")
+        llm_messages = await asyncio.to_thread(
+            _with_pictures, llm_messages, state_messages, vision=_intake_sees_pictures(),
+            load=lambda row: data_url(_sid, row))
     _loop_result = await run_agent_loop(
         driver=_policy, provider_call=_script, messages=llm_messages, tools=INTAKE_TOOLS,
         job_id=str(job_id), user_id=_ctx.owner_id,

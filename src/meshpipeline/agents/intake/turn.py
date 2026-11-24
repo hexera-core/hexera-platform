@@ -324,6 +324,15 @@ def unsettled_reply(state, exit_reason=None) -> str:
     return f"I could not settle this in one go - {ask} and I will continue."
 
 
+def _words_of(content) -> str:
+    """A message's words as kept: a content-parts list (the user's pictures) keeps its text and names each picture -
+    never its data URL (NOTE-16: base64 is never stored)."""
+    if not isinstance(content, list):
+        return str(content)
+    return "\n".join(str(p.get("text") or "") if p.get("type") == "text" else "[picture]"
+                     for p in content if isinstance(p, dict))
+
+
 def serialise_transcript(llm_messages, assistant_text: str) -> list:
     messages = list(llm_messages) + (
         [{"role": "assistant", "content": assistant_text}] if assistant_text else [])
@@ -331,7 +340,7 @@ def serialise_transcript(llm_messages, assistant_text: str) -> list:
     for m in messages:
         if not isinstance(m, dict) or m.get("role") == "system":
             continue
-        entry: dict = {"role": m.get("role"), "content": str(m.get("content", ""))}
+        entry: dict = {"role": m.get("role"), "content": _words_of(m.get("content", ""))}
         for carried in ("tool_calls", "tool_call_id"):
             if m.get(carried):
                 entry[carried] = m[carried]
