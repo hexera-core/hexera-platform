@@ -32,6 +32,7 @@ from meshpipeline.cad.repair_v4.ws_kernel import (
     _maps,
     diagonal_of,
     entities_of,
+    fingerprint,
     history_record,
     part_diagonal,
     read_brep,
@@ -340,6 +341,45 @@ def _ids(payload: dict, kind: str, indices: list[int]) -> list[str]:
     return [table[str(i)] for i in indices if str(i) in table]
 
 
+
+#: B24 (ii), INSTRUMENTATION ONLY, off unless CAD_REPAIR_V4_DEBUG_RECORD names an index. No behaviour change,
+#: and nothing is computed when it is unset: wave 202611242110 refused a `conformalise` record whose row for one
+#: edge carried a fingerprint held by NO workspace in the lineage, and the surviving explanation is that the
+#: rows are computed over an INTERMEDIATE stage shape rather than the `old` the workspace holds. This prints the
+#: same index's fingerprint from `old`, from `new`, and from every stage, which separates those directly.
+def _debug_record_shapes(payload: dict, old: Any, new: Any, stages: list[tuple[Any, Any]]) -> None:
+    import os
+
+    want = os.environ.get("CAD_REPAIR_V4_DEBUG_RECORD")
+    if not want:
+        return
+    import sys
+
+    kind, _, raw = want.partition(":")
+    try:
+        index = int(raw)
+    except ValueError:
+        return
+    quantum = float(payload["quantum"])
+
+    def at(shape: Any, label: str) -> str:
+        indexed = _maps(shape).get(kind)
+        if indexed is None or not (1 <= index <= indexed.Extent()):
+            return f"{label}: no {kind} at {index} (extent {0 if indexed is None else indexed.Extent()})"
+        sub = indexed.FindKey(index)
+        return (f"{label}: {fingerprint(kind, sub, quantum, index)}"
+                f"{'' if sub.Location().IsIdentity() else ' [LOCATED]'} (extent {indexed.Extent()})")
+
+    print(f"DEBUG_RECORD {kind} {index} for op on {payload.get('brep_path')}", file=sys.stderr)
+    print(f"  {at(old, 'old   ')}", file=sys.stderr)
+    print(f"  {at(new, 'new   ')}", file=sys.stderr)
+    for i, entry in enumerate(stages, start=1):
+        shape = entry[0] if isinstance(entry, tuple) else entry
+        try:
+            print(f"  {at(shape, f'stage{i}')}", file=sys.stderr)
+        except Exception as exc:  # noqa: BLE001 - instrumentation never breaks the op
+            print(f"  stage{i}: not measurable ({type(exc).__name__}: {exc})", file=sys.stderr)
+
 def _finish(payload: dict, old: Any, stages: list[tuple[Any, Any]], targets: list[Any], new_solids: list[Any],
             *, op: str, params: dict, start: float, must_merge: list[tuple[int, int]] | None = None,
             require_shared: bool = False, expected_solids: int | None = None) -> dict:
@@ -365,6 +405,7 @@ def _finish(payload: dict, old: Any, stages: list[tuple[Any, Any]], targets: lis
         # Success that shared nothing would record progress that did not happen (e.g. a gap wider
         # than the fuzzy value after STEP rounding): refuse, and say why.
         return _declined("no_shared_interface", detail="no face is shared by two bodies afterwards")
+    _debug_record_shapes(payload, old, new, stages)
     hist, merged = _composed_history(old, new, stages, targets)
     gone = set(merged["face"])
     for a_i, b_i in must_merge or []:
