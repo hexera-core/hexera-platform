@@ -665,6 +665,51 @@ def orient_fluid_boundary(points, faces, cap_polys, *, samples: int = 9):
     return pts, f
 
 
+#: TIME-16: the longest the quadric decimation of a measured surface may take before the measure falls back to vertex
+#: clustering. A 750k-point, 1.5 M-triangle voxel surface decimates in 13 s; abc 63401's merged 717k-point wall did
+#: not finish in 58 minutes (the stack the trip logged was inside vtkQuadricDecimation).
+DECIMATE_BOUND_S = 300.0
+
+
+def _quadric_arrays(surf, max_points: int):
+    coarse = surf.decimate(1.0 - max_points / float(surf.n_points)).clean()
+    return np.asarray(coarse.points, dtype=float), np.asarray(coarse.faces).reshape(-1, 4)[:, 1:]
+
+
+def _clustered_arrays(surf, max_points: int):
+    """Vertex clustering (vtkQuadricClustering) to about `max_points` points: linear in the triangles, so bounded,
+    but it merges walls closer than a bin (about sqrt(area / max_points)) - a passage narrower than that is read
+    wider at the chords; the cells-across figure is still taken at every real boundary point."""
+    import pyvista as pv
+    import vtk
+    b = np.asarray(surf.bounds, dtype=float).reshape(3, 2)
+    ext = np.maximum(b[:, 1] - b[:, 0], 1e-12)
+    h = max(float(np.sqrt(max(float(surf.area), 1e-24) / max_points)), float(ext.max()) / 1024.0)
+    div = np.clip(np.ceil(ext / h), 1, 1024).astype(int)
+    q = vtk.vtkQuadricClustering()
+    q.SetInputData(surf)
+    q.AutoAdjustNumberOfDivisionsOff()
+    q.SetNumberOfDivisions(int(div[0]), int(div[1]), int(div[2]))
+    q.Update()
+    coarse = pv.wrap(q.GetOutput()).triangulate().clean()
+    return np.asarray(coarse.points, dtype=float), np.asarray(coarse.faces).reshape(-1, 4)[:, 1:]
+
+
+def coarse_copy(surf, max_points: int):
+    """(points, triangles) of a copy of `surf` with about `max_points` points for the chords: quadric decimation
+    (keeps the shape) within DECIMATE_BOUND_S, else vertex clustering (TIME-16)."""
+    td = time.monotonic()
+    try:
+        cpts, cf = _bounded(_quadric_arrays, surf, max_points, budget_s=DECIMATE_BOUND_S, what="decimation")
+        how = "decimated"
+    except MeasureOverdue:
+        cpts, cf = _clustered_arrays(surf, max_points)
+        how = f"clustered (the decimation ran past {DECIMATE_BOUND_S:.0f} s, {MEASURE_CHILD_RULE})"
+    logger.info("passage measure: %d points %s to %d in %.1f s", surf.n_points, how, len(cpts),
+                time.monotonic() - td)
+    return cpts, cf
+
+
 def passage_of_surface(points, faces, *, max_points: int = MAX_MEASURE_POINTS,
                        wall=None, edges=None) -> dict:
     """Local radius (half the inward chord to the opposite wall, engines/vmtk/lumen_staging)
@@ -706,12 +751,7 @@ def passage_of_surface(points, faces, *, max_points: int = MAX_MEASURE_POINTS,
         surf = pv.PolyData(pts, np.hstack([np.full((len(f), 1), 3, dtype=np.int64), f]).ravel())
     if max_points and len(pts) > max_points:
         from scipy.spatial import cKDTree
-        td = time.monotonic()
-        coarse = surf.decimate(1.0 - max_points / float(len(pts))).clean()
-        logger.info("passage measure: %d points decimated to %d in %.1f s", len(pts), coarse.n_points,
-                    time.monotonic() - td)
-        cpts = np.asarray(coarse.points, dtype=float)
-        cf = np.asarray(coarse.faces).reshape(-1, 4)[:, 1:]
+        cpts, cf = coarse_copy(surf, max_points)
         if len(cf) < 4:
             return {}
         r = local_radius(cpts, cf, interior, diag * 1e-5, diag / 2.0)
@@ -869,7 +909,7 @@ def _measure_polymesh(pm: Path) -> dict:
 MEASURE_CHILD_RULE = "TIME-16"
 
 
-def _bounded(fn, *args, budget_s: float):
+def _bounded(fn, *args, budget_s: float, what: str = "passage measure"):
     """fn(*args) in a forked child stopped after `budget_s` (MeasureOverdue); its exception re-raised here. Without
     fork (not Linux) or without a budget, it runs here under measure_deadline as before."""
     import multiprocessing as mp
@@ -902,12 +942,12 @@ def _bounded(fn, *args, budget_s: float):
     send.close()
     try:
         if not recv.poll(budget_s):
-            _say_where(proc, where)
-            raise MeasureOverdue(f"passage measure past its {budget_s:.0f} s budget ({MEASURE_CHILD_RULE})")
+            _say_where(proc, where, what)
+            raise MeasureOverdue(f"{what} past its {budget_s:.0f} s budget ({MEASURE_CHILD_RULE})")
         try:
             status, out = recv.recv()
         except EOFError as exc:      # the child died without a word (killed, out of memory)
-            raise RuntimeError("the passage measure's child process ended without a result") from exc
+            raise RuntimeError(f"the {what}'s child process ended without a result") from exc
     finally:
         if proc.is_alive():
             proc.kill()
@@ -920,7 +960,7 @@ def _bounded(fn, *args, budget_s: float):
     return out
 
 
-def _say_where(proc, where: str) -> None:
+def _say_where(proc, where: str, what: str = "passage measure") -> None:
     """Log the innermost frames of a measure stopped at its guard (TIME-16), so the slow step is named. A frame
     inside a C call shows the Python line that made the call (faulthandler dumps from its C signal handler)."""
     import os
@@ -931,10 +971,9 @@ def _say_where(proc, where: str) -> None:
     except OSError:
         return
     if lines:
-        logger.warning("passage measure stopped at its guard (%s), in: %s", MEASURE_CHILD_RULE, " | ".join(lines[:8]))
+        logger.warning("%s stopped at its guard (%s), in: %s", what, MEASURE_CHILD_RULE, " | ".join(lines[:8]))
     else:
-        logger.warning("passage measure stopped at its guard (%s) inside a call that did not return in 2 s (a "
-                       "native call: no Python stack)", MEASURE_CHILD_RULE)
+        logger.warning("%s stopped at its guard (%s); no Python stack was dumped", what, MEASURE_CHILD_RULE)
 
 
 def passage_of_polymesh(workspace, *, budget_s: float | None = None) -> dict:

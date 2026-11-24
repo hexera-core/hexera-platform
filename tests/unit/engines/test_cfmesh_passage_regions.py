@@ -111,3 +111,30 @@ def test_the_bounded_measure_returns_its_result_and_its_error():
         raise ValueError("no surface")
     with pytest.raises(ValueError, match="no surface"):
         passage._bounded(boom, budget_s=5.0)
+
+
+def _box(level: int = 40):
+    import pyvista as pv
+    return pv.Box(bounds=(0, 1, 0, 0.4, 0, 0.2), level=level, quads=True).triangulate().clean()
+
+
+def test_the_chords_surface_is_decimated_when_the_decimation_is_quick():
+    pts, tri = passage.coarse_copy(_box(), 2000)
+    assert 1000 < len(pts) < 4000 and tri.shape[1] == 3
+
+
+@pytest.mark.skipif(not hasattr(signal, "pthread_sigmask"), reason="POSIX only")
+def test_a_decimation_past_its_bound_falls_back_to_clustering(monkeypatch, caplog):
+    # abc 63401: vtkQuadricDecimation on the merged wall ran past an hour; the chords then use vertex clustering
+    def stuck(_surf, _n):
+        signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGALRM})
+        time.sleep(12.0)
+        raise AssertionError("never reached in time")
+    monkeypatch.setattr(passage, "_quadric_arrays", stuck)
+    monkeypatch.setattr(passage, "DECIMATE_BOUND_S", 0.5)
+    t0 = time.monotonic()
+    with caplog.at_level("INFO", logger="meshpipeline.engines.passage"):
+        pts, tri = passage.coarse_copy(_box(), 2000)
+    assert time.monotonic() - t0 < 8.0
+    assert 300 < len(pts) < 6000 and len(tri) > 100
+    assert "clustered (the decimation ran past" in caplog.text
