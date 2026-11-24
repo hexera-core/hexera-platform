@@ -1,0 +1,59 @@
+{
+ "file": "A_00613121.step",
+ "diagonal_mm": 3204.0297129335863,
+ "bound_mm": 0.1,
+ "solids": 2,
+ "solid_ids": [
+  "B1",
+  "B2"
+ ],
+ "volumes": [
+  24704960.474901147,
+  24704960.474901147
+ ],
+ "overlapping_pairs": [
+  {
+   "pair": [
+    "B1",
+    "B2"
+   ],
+   "overlap_volume": 24704960.474901147,
+   "overlap_area": 1329518.555663175,
+   "mean_thickness_2V_over_A": 37.16376935044447,
+   "aabb_min_extent": 50.800000200000134,
+   "obb_min_extent": 50.80000020000003,
+   "kernel_depth": 50.800000200000134,
+   "share_of_body_i": 1.0,
+   "share_of_body_j": 1.0,
+   "contained": true
+  }
+ ],
+ "input_panel": {
+  "gmsh_prod": "pass",
+  "gmsh_default": "pass",
+  "gmsh_alt": "pass",
+  "netgen_occ": "pass"
+ },
+ "forced_cut_by": [
+  {
+   "pair": [
+    "B1",
+    "B2"
+   ],
+   "keeper": "B1",
+   "declined": "changes_body_count",
+   "declared_removed": 0,
+   "modified": 0
+  },
+  {
+   "pair": [
+    "B1",
+    "B2"
+   ],
+   "keeper": "B2",
+   "declined": "changes_body_count",
+   "declared_removed": 0,
+   "modified": 0
+  }
+ ]
+}
