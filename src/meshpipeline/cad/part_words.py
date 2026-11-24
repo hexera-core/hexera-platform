@@ -273,16 +273,22 @@ def wanted(state: Mapping) -> bool:
 
 def messages_for(state: Mapping, table: list[dict], pictures: list[Path], *, consumer: str,
                  purpose: str = "") -> list[dict]:
+    """What the reader is sent: the notes and the parts table, the parts' pictures, then the user's own pictures
+    (NOTE-16: the newest few, each after a line naming the note it came with - contracts/user_pictures; their data
+    URLs exist only here, in the request). Blocking (the pictures are read)."""
     from meshpipeline.contracts.user_notes import own_notes, prompt_block
+    from meshpipeline.contracts.user_pictures import content_parts
     s = state or {}
+    notes = own_notes(s.get("user_notes") or [])
     text = {"mesh_for": purpose,
-            "user_notes": prompt_block(own_notes(s.get("user_notes") or []), consumer=consumer),
+            "user_notes": prompt_block(notes, consumer=consumer),
             "parts": table,
             "pictures": [p.stem for p in pictures]}
     content: list[dict] = [{"type": "text", "text": json.dumps(text, sort_keys=True, separators=(",", ":"))}]
     for p in pictures:
         content.append({"type": "image_url", "image_url": {
             "url": "data:image/png;base64," + base64.b64encode(Path(p).read_bytes()).decode("ascii")}})
+    content += content_parts(notes, s.get("session_id"))
     return [{"role": "system", "content": SYSTEM}, {"role": "user", "content": content}]
 
 
@@ -657,7 +663,7 @@ async def ask(ws: Path | None, table: list[dict], pictures: list[Path], state: M
               purpose: str = "", job_id: str = "", run=None, wait_s: float = TIMEOUT_S) -> dict:
     """The model asked on a parts table and its pictures, already made (decide's second half; the geometry check's
     step before approval calls it on what it measured). Never raises (but a fenced worker's stale publish)."""
-    msgs = messages_for(state, table, pictures, consumer=consumer, purpose=purpose)
+    msgs = await asyncio.to_thread(messages_for, state, table, pictures, consumer=consumer, purpose=purpose)
     tool = size_tool()
     key = _key(msgs, tool)
     notes = notes_text(state)

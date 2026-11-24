@@ -551,7 +551,9 @@ def run_reading(*, session_id: str, key: str, user_notes=None, request_txt: str 
         if not (_read(session_id, MATCHES) or {}).get("notes_only"):
             return {"status": "none"}
         seen = NOTES_ONLY
-    state = {"user_notes": list(user_notes or []), "request_txt": request_txt or "", "user_id": owner_id}
+    # session_id: the user's own pictures with their notes are read from it (NOTE-16, contracts/user_pictures)
+    state = {"user_notes": list(user_notes or []), "request_txt": request_txt or "", "user_id": owner_id,
+             "session_id": str(session_id or "")}
     route = str(seen.get("route") or ROUTE_FEA)
     consumer, purpose, enabled = _route_ask(route)
     started = time.time()
