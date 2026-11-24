@@ -586,18 +586,32 @@ class DetGenerator:
 
     def _defeature_rows(self, site: Site, features: Callable[[], list[dict]]
                         ) -> list[tuple[str, list[StableId], dict, str]]:
-        """D14: defeature at the sites it suits. The recognised holes and blends touching the site's faces, removed in
-        one call; and the site's own faces (a sliver, or small faces where a mesher fails), removed as they are. Never
-        at a coarse whole-part site: it names no place to remove."""
+        """Defeature at a site, most targeted first. Never at a coarse whole-part site: it names no place to remove.
+
+        1. D16, LOCATED: the faces a panel member's own located failure named (`graph["mesher_faces"]`), at ANY site
+           kind but `open` (faces already missing) and `unbounded`: the owner's direction after snapshot v2, where
+           every whole-part removal scored worse. A gmsh "other" failure becomes an `invalid` site and a periodic one a
+           `periodic` site, kinds the D14 rule below left out, so before this a mesher could name faces and get no
+           removal aimed at them.
+        2. D14: at the kinds it suits, the recognised holes and blends touching those faces, then the site's faces as
+           they are (when that differs from 1: they include the proximity context)."""
         from meshpipeline.cad.repair_v4.ops.defeature import defeature_rows
 
+        graph = site.graph or {}
         faces = _of_kind(site.entities, "F")
-        if (not faces or (site.graph or {}).get("coarse") or site.kind not in DEFEATURE_SITE_KINDS
-                or not (site.kind == "sliver" or site.meshers_failing)):
+        if not faces or graph.get("coarse"):
             return []
-        rows = defeature_rows(features(), faces)
-        rows.append(("defeature", faces, {"source": "site"},
-                     f"remove the site's {len(faces)} face(s) with BRepAlgoAPI_Defeaturing"))
+        meshers = [m for m in site.meshers_failing if m != "valid"]   # layer 1 is not a mesher
+        named = [f for f in graph.get("mesher_faces") or [] if f in faces]
+        rows: list[tuple[str, list[StableId], dict, str]] = []
+        if named and meshers and site.kind not in ("open", "unbounded"):
+            rows.append(("defeature", named, {"source": "located"},
+                         f"remove the {len(named)} face(s) {', '.join(meshers)} failed on"))
+        if site.kind in DEFEATURE_SITE_KINDS and (site.kind == "sliver" or meshers):
+            rows += defeature_rows(features(), named or faces)
+            if sorted(faces) != sorted(named):
+                rows.append(("defeature", faces, {"source": "site"},
+                             f"remove the site's {len(faces)} face(s) with BRepAlgoAPI_Defeaturing"))
         return rows
 
     def _diag_of(self, ws: Workspace) -> float | None:
@@ -652,16 +666,21 @@ class DetGenerator:
             return cached[0]
 
         part_rows: list[tuple[str, list[StableId], dict, str]] = []
-        if any(s.meshers_failing for s in sites):
+        if any(m != "valid" for s in sites for m in s.meshers_failing):   # a MESHER fails, not only layer 1
             # the whole recognised set, removed in ONE call (Raymond's attempt), proposed once per state
             from meshpipeline.cad.repair_v4.ops.defeature import defeature_rows
             part_rows = defeature_rows(features())
-        for site in sites:
-            coarse_rows = self._coarse_rows(site, state.ws, sized) if only_coarse else []
-            for op, targets, params, why in [*self._recipe_rows(site, diag), *self._sweep(site, diag),
-                                             *self._coverage(site, sized), *coarse_rows,
-                                             *self._defeature_rows(site, features),
-                                             *(part_rows if site is sites[0] else [])]:
+        # D16 ORDER: every site's OWN rows first (its kind's sweep, coverage, coarse rows), for all sites; then the
+        # defeature rows, which are generic (a face removal any site kind may get) and come after every site-specific
+        # op; then the whole recognised set, last. `k` and the op budget cut from the end, so defeature never
+        # pre-empts an op that suits the site. Snapshot v2 (lane B13): on the one body_overlap dev file seven
+        # defeature applications came first and fuse/cut_by were `skipped_budget`.
+        own = [(site, [*self._recipe_rows(site, diag), *self._sweep(site, diag), *self._coverage(site, sized),
+                       *(self._coarse_rows(site, state.ws, sized) if only_coarse else [])]) for site in sites]
+        generic = [(site, self._defeature_rows(site, features)) for site in sites]
+        whole = [(sites[0], part_rows)] if part_rows else []
+        for site, rows in [*own, *generic, *whole]:
+            for op, targets, params, why in rows:
                 if op not in REGISTRY:
                     continue
                 key = json.dumps([op, list(targets), params], sort_keys=True, default=str)

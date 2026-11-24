@@ -557,6 +557,13 @@ def test_the_phrase_reports_a_worse_score_even_when_no_member_changed_status() -
     assert stages.rollback_detail(_scored(1, 1, 0.4, m), _scored(1, 1, 0.4, m)) == "no measured difference"
 
 
+def test_a_member_whose_sicn_vanished_without_a_status_change_does_not_crash_the_phrase() -> None:
+    """D15: a fail -> fail member with min_sicn 0.3 -> None raised TypeError in the staged healer, which took the
+    staged arm and both search arms down on 3 of 30 dev_v1r files."""
+    before = _scored(1, 1, 0.3, {"gmsh_alt": {"status": "fail", "min_sicn": 0.3}})
+    after = _scored(1, 1, 0.0, {"gmsh_alt": {"status": "fail", "min_sicn": None}})
+    assert "gmsh_alt min_sicn 0.3 -> none" in stages.rollback_detail(before, after)
+
 def test_the_phrase_is_empty_when_the_scores_carry_no_members() -> None:
     assert stages.rollback_detail((1, 1, 0.3, 0.0, 0), (1, 0, 0.3, 0.0, 0)) == "panel_passes 1 -> 0"
 

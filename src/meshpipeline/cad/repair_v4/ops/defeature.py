@@ -505,7 +505,8 @@ class Defeature:
             "groups": {"type": "array", "minItems": 1, "maxItems": 256,
                        "items": {"type": "array", "minItems": 1, "maxItems": 256,
                                  "items": {"type": "integer", "minimum": 0, "maximum": 100000}}},
-            "source": {"type": "string", "enum": ["recognised", "site"]},
+            # who proposed it, for the trace: the recogniser, a mesher's located failure (D16), or the site's faces
+            "source": {"type": "string", "enum": ["recognised", "located", "site"]},
         },
         "additionalProperties": False,
     }

@@ -110,6 +110,10 @@ def _members_of(verdict: Any) -> dict[str, dict]:
     return members
 
 
+def _sicn(value: Any) -> str:
+    return "none" if value is None else f"{value:g}"
+
+
 def rollback_detail(before: Any, after: Any) -> str:
     """WHY a stage was rolled back, for the proposer (and D9's re-prompt): the cheap members that got worse and by
     how much, then the score keys that fell. Facts only - a rollback is still a rollback, and when the two scores
@@ -122,7 +126,10 @@ def rollback_detail(before: Any, after: Any) -> str:
             kind = now.get("error_kind")
             parts.append(f"{name} {was['status']} -> {now['status']}" + (f" ({kind})" if kind else ""))
         elif (was.get("min_sicn") or 0.0) > (now.get("min_sicn") or 0.0):
-            parts.append(f"{name} min_sicn {was.get('min_sicn'):g} -> {now.get('min_sicn'):g}")
+            # a member with the SAME status may have measured no SICN after (a fail before and after, a pass whose
+            # mesh had no elements): None is reported as "none", never formatted as a number (D15: this crashed
+            # the staged healer, and with it both search arms, on 3 of 30 dev_v1r files)
+            parts.append(f"{name} min_sicn {_sicn(was.get('min_sicn'))} -> {_sicn(now.get('min_sicn'))}")
     for i, key in enumerate(_SCORE_KEYS):
         if i >= min(len(before), len(after)):
             break
