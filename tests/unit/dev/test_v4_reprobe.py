@@ -987,3 +987,23 @@ def test_the_default_form_is_the_engines() -> None:
 
     assert inspect.signature(rp.reprobe).parameters["engine_form"].default is None
     assert rp.default_engine_form() is search.engine_form
+
+
+def test_a_reprobe_verdict_that_finished_past_its_file_wall_is_excluded_not_a_row(monkeypatch, tmp_path) -> None:
+    import signal
+
+    import meshpipeline.cad.repair_v4.verdict as verdict_pkg
+
+    def slow_but_fine(pool, step, original, **kw):
+        signal.setitimer(signal.ITIMER_REAL, 0)  # the alarm is lost
+        time.sleep(0.5)
+        return SimpleNamespace(counts_for_scoreboard=True, panel=[1], out_of_scope=False)
+
+    entry = SimpleNamespace(name="a.step", sha256="a" * 64, source="abc_fail", group=None, kind=None, kind_status=None)
+    monkeypatch.setattr(verdict_pkg, "verdict", slow_but_fine)
+    excluded: list = []
+    rows = rp.reprobe([entry], tier="full", pool=None, resolve=lambda e: str(tmp_path / "a.step"), excluded=excluded,
+                      file_timeout_s=0.2, engine_form=lambda pool, step: step)
+    assert rows == [] and excluded[0].reason.startswith("file_timeout: finished")
+    assert rp.overran(0.0, 0.0, now=99.0) is None and rp.overran(0.0, 100.0, now=99.0) is None
+    assert rp.overran(0.0, 10.0, now=99.0).startswith("file_timeout")

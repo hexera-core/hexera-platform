@@ -264,6 +264,7 @@ def run_arms(args: argparse.Namespace, out: Path, prov: dict, ledger: Any | None
                     spec = effective_arm(evalspec.ARMS[name], args)
                     try:
                         source = input_path(Path(args.inputs), entry)
+                        started = time.monotonic()
                         with reprobe_mod._WallClock(args.file_timeout_s):
                             if runner is not None:
                                 row, why = runner(entry, name, source)
@@ -284,6 +285,9 @@ def run_arms(args: argparse.Namespace, out: Path, prov: dict, ledger: Any | None
                         raise
                     except Exception as exc:  # noqa: BLE001 - one file's failure is an excluded file, never a verdict
                         outcome = arms_mod.ArmOutcome(excluded=arms_mod.failure_reason(exc))
+                    late = reprobe_mod.overran(started, args.file_timeout_s) if outcome.row is not None else None
+                    if late is not None:  # the alarm was lost; a row past its wall is not a measurement
+                        outcome = arms_mod.ArmOutcome(excluded=late)
                     if outcome.row is not None:
                         rows.append(outcome.row)
                         handle.write(json.dumps(outcome.row, sort_keys=True) + "\n")

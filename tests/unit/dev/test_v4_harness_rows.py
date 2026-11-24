@@ -423,3 +423,58 @@ def test_a_harness_shard_of_a_search_wave_without_an_element_size_is_refused(tmp
     called: list[str] = []
     assert go(monkeypatch, argv, sp, lambda e, a, s: called.append(a) or (conclusive_row(e, a), None)) == 4
     assert called == [] and "--h-mm" in prov_of(out)["error"] and not (out / "rows.json").exists()
+
+
+# ------------------------------------------------------------------ the file wall is honoured (snapshot v1: 1262 s > 900 s)
+
+def _late_shard(tmp_path, world):
+    wave = ev.WAVES["dev_deterministic"]
+    plan = ev.plan_wave(wave, wave_id="wv1", n_shards=1, markers=world)
+    return run_shard(tmp_path, wave, runner=None, plan=plan, n=1, extra=("--file-timeout-s", "0.3"))
+
+
+def test_an_engine_that_swallows_exceptions_cannot_swallow_the_file_wall(tmp_path, monkeypatch, world) -> None:
+    """Snapshot v1: search_det on bug32314 was a MEASURED row at 1262 s under a 900 s wall. The search loop's broad
+    `except Exception` (one broken branch must not end the search) ate the alarm; the run went on to its own wall."""
+    import time
+
+    argv, out, sp = _late_shard(tmp_path, world)
+
+    def runner(entry, arm, source):
+        try:
+            time.sleep(2.0)  # the alarm fires in here
+        except Exception:  # noqa: BLE001 - what search.py does around a branch
+            pass
+        return conclusive_row(entry, arm, fixed=False), None
+
+    assert go(monkeypatch, argv, sp, runner) == 0, prov_of(out).get("error")
+    assert json.loads((out / "rows.json").read_text()) == []
+    reasons = [x["reason"] for x in json.loads((out / "EXCLUDED.json").read_text())]
+    assert len(reasons) == 2 and all(r.startswith("file_timeout") for r in reasons)
+
+
+def test_a_row_that_finished_past_its_wall_is_excluded_even_if_the_alarm_was_lost(tmp_path, monkeypatch, world) -> None:
+    import signal
+    import time
+
+    argv, out, sp = _late_shard(tmp_path, world)
+
+    def runner(entry, arm, source):
+        signal.setitimer(signal.ITIMER_REAL, 0)  # the alarm is gone (cancelled, or spent and swallowed earlier)
+        time.sleep(0.6)
+        return conclusive_row(entry, arm, fixed=False), None
+
+    assert go(monkeypatch, argv, sp, runner) == 0, prov_of(out).get("error")
+    assert json.loads((out / "rows.json").read_text()) == []
+    reasons = [x["reason"] for x in json.loads((out / "EXCLUDED.json").read_text())]
+    assert len(reasons) == 2 and all(r.startswith("file_timeout") and "past" in r for r in reasons)
+
+
+def test_a_row_inside_its_wall_is_still_a_row(tmp_path, monkeypatch, world) -> None:
+    argv, out, sp = _late_shard(tmp_path, world)
+    assert go(monkeypatch, argv, sp, lambda e, a, s: (conclusive_row(e, a, fixed=False), None)) == 0
+    assert len(json.loads((out / "rows.json").read_text())) == 2
+
+
+def test_file_timeout_is_not_an_exception_a_broad_handler_can_eat() -> None:
+    assert not issubclass(rp.FileTimeout, Exception) and issubclass(rp.FileTimeout, BaseException)

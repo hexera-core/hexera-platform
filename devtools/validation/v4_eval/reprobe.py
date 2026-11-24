@@ -31,6 +31,7 @@ import random
 import re
 import signal
 import sys
+import time
 import types
 from collections import Counter, defaultdict
 from collections.abc import Callable, Collection, Iterable, Sequence
@@ -360,8 +361,23 @@ def panel_family(members: Iterable[tuple[str, str | None, str]]) -> str:
     return min(families, key=rank)
 
 
-class FileTimeout(Exception):
-    pass
+class FileTimeout(BaseException):
+    """The file's wall-clock kill. A BaseException, like KeyboardInterrupt, ON PURPOSE: the engine has broad
+    `except Exception` handlers (the search loop: "one broken branch must not end the search"; stages: "a stage
+    failure, not a crash"), and as an Exception the alarm was eaten there, the one-shot timer was spent, and the run
+    went on to its own wall: snapshot v1 measured search_det on bug32314 at 1,262 s under a 900 s wall. Every handler
+    that catches BaseException on that path cleans up and re-raises."""
+
+
+def overran(started: float, seconds: float, now: float | None = None) -> str | None:
+    """The exclusion reason when a file finished PAST its wall (the alarm was lost: cancelled, or spent and eaten),
+    else None. The guard behind the alarm: a row past its wall is excluded, never measured."""
+    if seconds <= 0:
+        return None
+    took = (time.monotonic() if now is None else now) - started
+    if took <= seconds:
+        return None
+    return f"file_timeout: finished {took:.0f}s, past the file wall clock {seconds:g}s (the alarm did not stop it)"
 
 
 class _WallClock:
@@ -438,6 +454,7 @@ def reprobe(
     for entry in entries:
         try:
             step = resolve(entry)
+            started = time.monotonic()
             with _WallClock(file_timeout_s):
                 v = check(pool, form(pool, step), step, cache=cache, members=members, run_panel=run_panel)
         except FileNotFoundError as exc:
@@ -448,6 +465,10 @@ def reprobe(
             continue
         except CheckerUnavailable as exc:
             skip(entry, f"checker_unavailable: {exc}")
+            continue
+        late = overran(started, file_timeout_s)
+        if late is not None:
+            skip(entry, late)
             continue
         if not v.counts_for_scoreboard:
             skip(entry, "inconclusive: a panel member failed for pool reasons")
