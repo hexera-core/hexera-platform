@@ -431,8 +431,8 @@ WAVES: dict[str, WaveDef] = {w.name: w for w in (
     WaveDef("snap_v2_dev", "normal", "dev", _ALL[:4]),
     WaveDef("snap_v2_clean", "normal", "clean", _ALL[:4]),
     # FAST-DEV v1 (the fast loop): the frozen 15 + 5 files of corpora/v4/fast_dev_v1, SEARCH ARMS ONLY, normal waves
-    WaveDef("fast_v1_dev", "normal", "dev", ("search_det", "search_ai", "search_seq")),
-    WaveDef("fast_v1_clean", "normal", "clean", ("search_det", "search_ai", "search_seq")),
+    WaveDef("fast_v1_dev", "normal", "dev", ("search_det", "search_ai", "search_seq", "search_seq_ai")),
+    WaveDef("fast_v1_clean", "normal", "clean", ("search_det", "search_ai", "search_seq", "search_seq_ai")),
 )}
 
 
