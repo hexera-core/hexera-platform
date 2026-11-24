@@ -166,3 +166,46 @@ def test_the_prompt_stays_byte_identical_so_the_provider_cache_still_serves_it()
     a = system_prompt(stage_names=("bodies", "condition"))
     b = system_prompt(stage_names=("bodies", "condition"))
     assert a == b
+
+
+# ---- the k_propose knob: present, default UNCHANGED ---------------------------------------------
+
+def test_k_propose_defaults_to_twelve_and_only_a_positive_integer_moves_it() -> None:
+    """LEAD-3 asked for the knob pre-built with the default unchanged, so a comparison run needs no code change.
+    A typo must not silently make every search one candidate wide."""
+    assert S.K_PROPOSE_DEFAULT == 12
+    assert S.k_propose_setting("") == 12
+    assert S.k_propose_setting(None if False else "  6 ") == 6
+    assert S.k_propose_setting("24") == 24
+    for bad in ("0", "-3", "nine", "6.5", " "):
+        assert S.k_propose_setting(bad) == 12, bad
+
+
+def test_the_env_var_is_read_but_an_explicit_argument_still_wins(monkeypatch) -> None:
+    monkeypatch.setenv("CAD_REPAIR_V4_K_PROPOSE", "3")
+    assert S.k_propose_setting() == 3
+    seen: list[int] = []
+
+    class Count:
+        def propose(self, state: Any, k: int) -> list:
+            seen.append(k)
+            return []
+
+    start = _ws()
+
+    class _J:
+        def judge(self) -> S.Judge:
+            return S.Judge(cheap=lambda *a: _VV(), full=lambda *a: _VV(), score=lambda v: (1, 0, 0.0, 0.0, 0),
+                           sites=lambda *a: [site()])
+
+    class _VV:
+        clean = False
+        inconclusive = False
+
+    S.search(None, start, start.original, [Count()], S.Budget(wall_s=50, ops=5, model_calls=0, model_usd=0.0),
+             workers=1, judge=_J().judge(), patience=1)
+    assert seen and seen[0] == 3, seen                      # the env var reached the generator
+    seen.clear()
+    S.search(None, start, start.original, [Count()], S.Budget(wall_s=50, ops=5, model_calls=0, model_usd=0.0),
+             workers=1, judge=_J().judge(), patience=1, k_propose=9)
+    assert seen and seen[0] == 9, seen                      # an explicit argument still wins

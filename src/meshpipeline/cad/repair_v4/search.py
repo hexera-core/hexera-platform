@@ -602,6 +602,25 @@ MAX_AIMED_SMALL = 2
 #: and blends touching a site's faces; the site's faces), and so does the plain `defeature(faces)` op in the AI's
 #: catalogue. The code is kept so a later measurement can turn it back on.
 WHOLE_PART_DEFEATURE = False
+#: HOW MANY CANDIDATES an expansion may propose. The default is unchanged at 12: B19 widened permission so `k`
+#: now spans about 7 op families instead of 2 or 3, which buys breadth per expansion and spends wall doing it, and
+#: the fast loop is what decides whether that trade is right. CAD_REPAIR_V4_K_PROPOSE flips it for a comparison run
+#: WITHOUT a code change - lower to spend the wall on depth, higher to let a family offer more than one rung.
+#: An unreadable or non-positive value is ignored, with the default kept, because a typo in an env var must not
+#: silently make a wave's searches one candidate wide.
+K_PROPOSE_DEFAULT = 12
+
+
+def k_propose_setting(raw: str | None = None) -> int:
+    """`K_PROPOSE_DEFAULT`, or CAD_REPAIR_V4_K_PROPOSE when it reads as a positive integer."""
+    text = os.environ.get("CAD_REPAIR_V4_K_PROPOSE", "") if raw is None else raw
+    try:
+        want = int(str(text).strip())
+    except (TypeError, ValueError):
+        return K_PROPOSE_DEFAULT
+    return want if want >= 1 else K_PROPOSE_DEFAULT
+
+
 #: B20: whether a pair row may be built from COMBINATIONS at a site whose pairs the kernel could not measure.
 #: OFF by default. Dropping an UNMEASURED guess is the one rule in B20 that is defensible rather than provable - a
 #: guessed pair could in principle be the one that wins - so it is a flag, and `notes` says when it fires.
@@ -1791,11 +1810,14 @@ def search(
     workers: int,
     k_confirm: int = 3,
     patience: int | None = None,
-    k_propose: int = 12,
+    k_propose: int | None = None,
     judge: Judge | None = None,
     h_mm: float | None = None,
     clock: Callable[[], float] = time.monotonic,
 ) -> SearchResult:
+    # None asks the setting (K_PROPOSE_DEFAULT, or CAD_REPAIR_V4_K_PROPOSE); an explicit int still wins, so every
+    # caller and test that passes one is unaffected.
+    k_propose = k_propose_setting() if k_propose is None else k_propose
     if judge is None:
         if h_mm is None:
             raise ValueError("search needs either a judge or h_mm for the real one; there is no default")
