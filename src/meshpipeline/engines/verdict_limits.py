@@ -227,6 +227,10 @@ def _cut_stacks(quality: Mapping, cells_pct: float) -> str:
             "than planned there")
 
 
+#: VER-9: separate passages side by side are held to their own count of regions; openings left unmeshed are told
+SIDE_BY_SIDE_RULE = "VER-9"
+
+
 def _side_by_side(quality: Mapping) -> int:
     """VER-9: how many separate passages the mesh was meshed as, side by side (engines/manifest records it from the
     case's passages record); 1 when it is one passage or not recorded."""
@@ -332,8 +336,9 @@ def inputs_for(*, engine: str, topology: str, manifest: Mapping | None, valid: b
             # read which opening is in which); the limit is the passages the plan meshed, never one
             limit = side
             label = f"{lim.label} (the plan meshed {side} separate passages side by side)"
+        rule = {"rule": SIDE_BY_SIDE_RULE} if side > 1 else {}
         row = {"key": lim.key, "label": label, "op": lim.op, "limit": limit,
-               "measured": _plain(measured), "source": lim.source}
+               "measured": _plain(measured), "source": lim.source, **rule}
         if lim.key == "layer_coverage_pct":
             said = coverage_words(quality, measured, limit)
             if said:
@@ -351,6 +356,7 @@ def inputs_for(*, engine: str, topology: str, manifest: Mapping | None, valid: b
         limits.append({"key": "openings_not_meshed", "op": "empty", "limit": [], "measured": _plain(list(told)),
                        "label": "Openings in a cavity no inlet opens into, not meshed",
                        "source": "docs/RULES.md INS-40 (cad/fluid_passages.plan_passages)",
+                       "rule": SIDE_BY_SIDE_RULE,
                        **({"said": said} if said else {})})
     for row in _declared_advisory(engine):
         limits.append({**row, "measured": _plain(quality.get(row["key"]))})
