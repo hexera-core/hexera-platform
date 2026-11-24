@@ -42,15 +42,20 @@ def main(dirs: list[str]) -> int:
     for r in rows:
         by_arm[str(r.get("arm"))].append(r)
 
-    print(f"{'arm':12} {'rows':>4} {'incl':>4} {'clean':>5} {'wall_s mean':>11} {'full/file':>9} {'local/file':>10}")
+    # LEAD-3's ruling: `inconclusive verdicts` sits BESIDE the headline, so a file whose round-end panel was
+    # never measured cannot make the arm look cheap. A row with one is a row whose full-check count is short by
+    # however many panels said nothing, and the column is printed whether it is zero or not.
+    print(f"{'arm':12} {'rows':>4} {'incl':>4} {'clean':>5} {'wall_s mean':>11} {'full/file':>9} "
+          f"{'incv':>4} {'local/file':>10}")
     for arm, rs in sorted(by_arm.items()):
         con = [r for r in rs if not r.get("inconclusive")]
         full = [r for r in rs if r.get("full_checks") is not None]
         fpf = f"{sum(r['full_checks'] for r in full) / len(full):.2f}" if full else "-"
         lpf = f"{sum(r.get('local_checks') or 0 for r in full) / len(full):.2f}" if full else "-"
+        incv = str(sum(int(r.get("inconclusive_verdicts") or 0) for r in full)) if full else "-"
         wall = sum(float(r.get("wall_s") or 0) for r in rs) / max(len(rs), 1)
         print(f"{arm:12} {len(rs):>4} {len(rs) - len(con):>4} {sum(clean(r) for r in con):>5} "
-              f"{wall:>11.1f} {fpf:>9} {lpf:>10}")
+              f"{wall:>11.1f} {fpf:>9} {incv:>4} {lpf:>10}")
 
     seq = by_arm.get("search_seq") or []
     if not seq:
@@ -61,6 +66,8 @@ def main(dirs: list[str]) -> int:
     defects: dict[str, collections.Counter] = {k: collections.Counter() for k in ("found", "fixed", "skipped")}
     why: collections.Counter = collections.Counter()
     rollbacks: collections.Counter = collections.Counter()
+    tried: collections.Counter = collections.Counter()
+    applied: collections.Counter = collections.Counter()
     first_choice: collections.Counter = collections.Counter()
     for r in seq:
         for k in ("full_checks", "local_checks", "rounds", "ai_picks", "overlap_pairs_fixed",
@@ -75,9 +82,15 @@ def main(dirs: list[str]) -> int:
         for line in ((r.get("triage") or {}).get("seq") or {}).get("lines") or []:
             if "->" not in line or line.strip().startswith(("round", "full check")):
                 continue
-            if "rolled back: it lowered the cheap score" in line:
-                rollbacks[line.split(" -> ")[1].split(" [")[0]] += 1
+            kind = line.strip().split(" on ")[0]
+            repair = line.split(" -> ")[1].split(" [")[0] if " -> " in line else "?"
             outcome = line.rsplit(" -> ", 1)[-1]
+            tried[(kind, repair)] += 1
+            if "rolled back: it lowered the cheap score" in line:
+                # the table's entry refused by the STAGE's cheap-tier veto, not by the part
+                rollbacks[(kind, repair)] += 1
+            elif not outcome.startswith("not applied"):
+                applied[(kind, repair)] += 1
             first_choice[outcome.split(" (")[0].split(":")[0].strip()] += 1
     print(f"  full checks {tot['full_checks']} ({tot['full_checks'] / len(seq):.2f} per file)  "
           f"local checks {tot['local_checks']} ({tot['local_checks'] / len(seq):.2f} per file)")
@@ -92,12 +105,18 @@ def main(dirs: list[str]) -> int:
           f"inconclusive verdicts {tot['inconclusive_verdicts']}; AI picks {tot['ai_picks']}")
     print(f"  step outcomes {dict(first_choice)}")
     if rollbacks:
-        print("\n  THE CHEAP-VS-FULL COUNT - repairs the STAGE rolled back for lowering the CHEAP score, while the "
-              "oracle that put them in the table judged on the FULL verdict:")
-        for repair, n in rollbacks.most_common():
-            print(f"    {n:>3}  {repair}")
+        print("\n  THE CHEAP-VS-FULL COUNT, per DEFECT KIND and repair - the table's entry refused by the STAGE "
+              "for lowering the CHEAP score, while the oracle that put it there judged on the FULL verdict.")
+        print("  This is the evidence for the demotion LEAD-3 approved: an entry rolled back here is demoted "
+              "below the alternatives that APPLIED, for that kind.")
+        print(f"    {'rolled back':>11} {'of tried':>8}  {'applied':>7}  defect kind -> repair")
+        for (kind, repair), n in rollbacks.most_common():
+            print(f"    {n:>11} {tried[(kind, repair)]:>8}  {applied[(kind, repair)]:>7}  {kind} -> {repair}")
+        hit = {k for k, _ in rollbacks}
+        print(f"  affected: {len({k for k, _ in hit})} defect kind(s), "
+              f"{sum(rollbacks.values())} of {sum(tried.values())} steps")
     else:
-        print("\n  no stage rollbacks on the cheap score in these traces")
+        print("\n  no stage rollbacks on the cheap score in these traces (nothing to demote)")
     return 0
 
 
