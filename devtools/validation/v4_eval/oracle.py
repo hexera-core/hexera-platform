@@ -190,7 +190,11 @@ def one(entry: dict, inputs: str, out: str, *, op_timeout: float = OP_TIMEOUT_S,
             seen = {S._fingerprint(root)}
 
             def candidates(ws: Any, verdict: Any, depth: int) -> list:
-                sites = judge.sites(pool, ws, verdict)[:max_sites]
+                try:
+                    sites = judge.sites(pool, ws, verdict)[:max_sites]
+                except Exception as exc:  # noqa: BLE001 - as the search does: expand blind rather than lose the file
+                    sites = []
+                    row.setdefault("sites_errors", []).append(f"d{depth}: {type(exc).__name__}: {exc}"[:200])
                 st = S.SearchState.__new__(S.SearchState)
                 st.ws, st.sites, st.lineage, st.depth = ws, sites, (), depth
                 # what the sites WERE: lanes A13/C found the det sweep gated out where a mesher failure and a layer-1
@@ -371,6 +375,7 @@ def run_file(entry: dict, inputs: str, out: str, wall_s: float, *, _cmd: list[st
         if (odir / "progress.json").is_file():
             row["stopped_at"] = json.loads((odir / "progress.json").read_text())
     row["wall_s"] = round(time.monotonic() - t0, 1)
+    row["commit"] = os.environ.get("ORACLE_COMMIT")   # set by the launcher: rows from a relaunch say which code ran
     row = summarise(row, odir / "candidates.jsonl")
     row_path.write_text(json.dumps(row, default=str))
     return row
