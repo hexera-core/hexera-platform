@@ -79,6 +79,11 @@ resolve_split() { # spec override out
 DEV_SRC=$(resolve_split "$DEV_SPLIT_SPEC" "${DEV_SPLIT:-}" "$RUN/splits/dev.json") || exit 1
 CLEAN_SRC=$(resolve_split "$CLEAN_SPLIT_SPEC" "${CLEAN_SPLIT:-}" "$RUN/splits/clean.json") || exit 1
 log "dev split $DEV_SRC; clean split $CLEAN_SRC"
+if [ "$HELDOUT" = 1 ] && [ -n "${HELDOUT_SPLIT_SHA256:-}" ]; then
+  GOT=$(shasum -a 256 "$RUN/splits/dev.json" | cut -d' ' -f1)
+  [ "$GOT" = "$HELDOUT_SPLIT_SHA256" ] || die "the held-out manifest in $COMMIT has sha256 $GOT, not the pinned $HELDOUT_SPLIT_SHA256: the sealed split changed"
+  log "held-out manifest sha256 $GOT (pinned)"
+fi
 
 # ---------------------------------------------------------------- 4. inputs, groups, VM plan, caps (prep.py)
 if [ "$HELDOUT" = 1 ]; then
