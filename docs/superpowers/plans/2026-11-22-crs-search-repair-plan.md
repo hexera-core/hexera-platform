@@ -864,3 +864,64 @@ sources of run-to-run nondeterminism are now measured (a near-threshold min SICN
 of 0.0042 against the 0.01 floor flipping `gmsh_alt`, and a corrupted file
 flipping mesher-crash against mesher-failure), and splits built from one run of
 that checker will disagree with the next run on those files.
+
+## Amendment settled 2026-11-24, 02:47 UTC - THE GOAL CHANGED: clean is valid + panel
+
+Owner decision. It **supersedes design section 7 items 1-3 and the whole
+gating role of the faithful layer**. It is **not a rearchitecture**: the v4
+design stays exactly as built - the staged healer, failure sites, best-first
+search, the AI proposer and the eval are unchanged. Only what the engine is
+*aiming at* changed.
+
+1. **CLEAN = layer 1 VALID + layer 2 PANEL.** All four meshers, min SICN
+   `>= 0.01`, no hints. **Faithfulness no longer gates clean.** Every row still
+   REPORTS deviation, volume and area change, mass, bbox and body-count change,
+   but none of them can fail a clean verdict or refuse an edit.
+
+2. **The geometry/fidelity caps are REMOVED, not loosened:** the deviation bound
+   `min(0.1 mm, 0.1% diag)` and the per-op deviation budget; the area/volume
+   caps as applied in v4; the 5%-of-diagonal `fill_loop` limit; the
+   overlap-must-fit-the-bound rule on `cut_by`; the no-fuse rule; the
+   `remove_small` width bound; and op parameter bounds tied to the deviation
+   budget. **Face removal is allowed** (defeaturing). The score tuple becomes
+   `(valid, panel passes, min SICN)`, with deviation a **tie-breaker only**.
+
+   **KEPT, and not negotiable:** the spend caps ($/file, wave caps, VM budget),
+   the worker kill/timeout safety, the sealed held-out set, no merge to main, no
+   deploy, no production flags.
+
+3. **Raymond's approach is adopted** (`origin/raymond/cad-simplification`,
+   `docs/superpowers/specs/2026-11-19-cad-simplification-design.md`,
+   `docs/simplification/DEVLOG.md`). What we need is **ported and attributed**
+   into `repair_v4`; his branch is **not merged**. New ops: `defeature(faces)`
+   via `BRepAlgoAPI_Defeaturing`, with his feature recogniser as a site and
+   candidate source (holes and blends, **never slot ends** - OCCT returns a
+   180-degree concave round unchanged, as his DEVLOG records); `fuse(bodies)`;
+   `cut_by(a, b)` at **any** overlap depth; and `trim_unbounded`, a Common with
+   an enlarged part bbox that bounds infinite surfaces to the part's real
+   extent. The search may now use aggressive edits to reach clean.
+
+4. **Gaming is reported, not capped.** The report flags any CLEAN output whose
+   volume changed more than 25% or whose bbox shrank more than 10%, and lists
+   them per arm, so a "clean" cube cannot hide inside the headline. The owner
+   reviews that list; the files still count as clean.
+
+5. **Sequencing.** Let snapshot v1r finish under the OLD definition, then
+   **re-score v1 and v1r from the recorded layers, with no rerun** - that is the
+   new baseline, free. The four jobs run in parallel, one per lane: the verdict
+   and report change (A10), the cap removal (B12), `defeature` (D14), and the
+   body and unbounded ops (C7). Then snapshot v2 on the 150-file dev split under
+   the new definition, cap $50; v2 launches as soon as A10 and B12 are in, and
+   D14 and C7 make it better. The verdict cache version is bumped, so every
+   cached verdict misses.
+
+**Why.** Snapshot v1 measured an AI marginal of **0** on every file, and the
+diagnosis was not that the model lacked judgement: 57% of its proposals died
+inside the ops, its cheap-tier passes were vacuous because the tier could not
+see the member that fails, and it was never asked a second time. Those are
+fixed. What remains is that the op library cannot express the edit many of these
+defects need, and the fidelity caps refused the edits that could. The owner's
+judgement is that a mesher-clean part the customer can run is worth more than a
+part held bit-faithful and unmeshable - so the caps go, the aggressive ops land,
+and faithfulness becomes something we REPORT and the owner reads, not something
+that silently refuses a repair.
