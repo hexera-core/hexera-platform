@@ -261,6 +261,10 @@ def _search_arm(arm_name: str, *, pool: Any, ws: Any, start: Any, source: str, j
               "stopped_on_wall": bool(getattr(result, "stopped_on_wall", False)),
               "_unmeasured": bool(result.unmeasured or ai_unavailable),
               "cheap_full": cheap_full_cells(result.trace.of_kind("confirm")),
+              # B22 (owner ruling 2026-11-24): what the DELIVERED state kept of the input part, and how many
+              # states the search refused as best for keeping too little. A refusal is reported, never silent.
+              "loss": (result.best_loss.row() if getattr(result, "best_loss", None) is not None else None),
+              "refused_catastrophic": int(getattr(result, "refused_catastrophic", 0) or 0),
               "_triage": {"search": search_triage(result, generators)}}
     if proposer is not None:
         fields["ai_stop_reason"] = MODEL_UNAVAILABLE if ai_unavailable else result.ai_stop_reason
@@ -387,6 +391,7 @@ def _confirmed_or_input(pool: Any, ws: Any, staged: Any, source: str, *, full: A
     the delivery gate - a clean input is never replaced, and nothing that passes fewer members is delivered."""
     from types import SimpleNamespace
 
+    from meshpipeline.cad.repair_v4.loss import check_loss
     from meshpipeline.cad.repair_v4.search import deliverable
 
     conf = confirm_staged(pool, ws, staged, full=lambda w: full(pool, w, source), input_verdict=v_in)
@@ -394,7 +399,9 @@ def _confirmed_or_input(pool: Any, ws: Any, staged: Any, source: str, *, full: A
     # `deliverable` reads only these three fields of a result; a SearchResult cannot be built here (there was no
     # search), so the stand-in is deliberate
     stand_in: Any = SimpleNamespace(changed=staged.ws.brep_path != ws.brep_path, best=staged.ws, best_verdict=out_v)
-    shipped = deliverable(stand_in, v_in)
+    # B22: the staged arm meets the same catastrophic-loss gate as the search arms, measured against the INPUT
+    loss = check_loss(pool, ws.brep_path, staged.ws.brep_path) if staged.ws.brep_path != ws.brep_path else None
+    shipped = deliverable(stand_in, v_in, loss=loss)
     if workdir is not None:
         keep_delivered(ws.brep_path if shipped is None else shipped.brep_path, workdir, is_input=shipped is None)
     return v_in if shipped is None else out_v

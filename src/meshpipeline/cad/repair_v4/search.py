@@ -103,6 +103,7 @@ from dataclasses import dataclass, field, replace
 from typing import Any, Literal, Protocol
 
 from meshpipeline.cad.repair_v4 import render
+from meshpipeline.cad.repair_v4.loss import LossReport, check_loss
 from meshpipeline.cad.repair_v4.measurement import NO_VERDICT, TIME_STOPS, file_unmeasured, no_verdict_failure
 from meshpipeline.cad.repair_v4.ops import REGISTRY, OpDeclined, OpFailed, validate_call
 from meshpipeline.cad.repair_v4.ops.shells import det_sliver_widths, scaled_sew_ladder
@@ -259,6 +260,24 @@ def _clean_with(v: Verdict, faithful: FaithfulReport | None) -> bool:
     return clean_of(
         tier=v.tier, inconclusive=v.inconclusive, valid=v.valid, panel=v.panel, faithful=faithful
     )
+
+
+#: B22: state id -> what that state kept of the original input. One measurement per state, at most.
+def _loss_of(pool: Any, state: SearchState, memo: dict[str, LossReport]) -> LossReport:
+    """What `state` kept of the ORIGINAL INPUT (`loss.check_loss`), memoised per state id.
+
+    The reference is `ws.original` - the BREP the lineage started from - and never the parent state: a chain of
+    individually mild losses is exactly how a part disappears, and each step would pass a parent comparison.
+    A state that IS the original keeps all of it by construction, so it costs no Boolean."""
+    got = memo.get(state.id)
+    if got is not None:
+        return got
+    if state.ws.brep_path == state.ws.original:
+        got = LossReport(measured=True, part_kept=1.0, volume_ratio=1.0)
+    else:
+        got = check_loss(pool, state.ws.original, state.ws.brep_path)
+    memo[state.id] = got
+    return got
 
 
 def _unbounded(pool: Any, brep: str) -> bool:
@@ -445,6 +464,12 @@ class SearchResult:
     #: have been EVALUATED costs a cheap verdict, which is what this counts.
     pruned: dict[str, int] = field(default_factory=dict)
     verdicts_saved: int = 0
+    #: B22 (owner ruling 2026-11-24): what the DELIVERED state kept of the original input - the one fidelity
+    #: measure that refuses. None when it was never measured, which refuses nothing (`loss.LossReport`).
+    best_loss: LossReport | None = None
+    #: states that reached the top of the frontier and were REFUSED as best because they kept under
+    #: `loss.KEEP_FRACTION` of the part or lost a whole input body. The search fell back to its next-best state.
+    refused_catastrophic: int = 0
     #: why the search stopped: "clean", "patience", "exhausted", a budget reason, or "no_verdict" (nothing was
     #: measured: see `infrastructure_failed`)
     reason: str | None = None
@@ -1956,6 +1981,9 @@ def search(
     no_change: dict[str, set[str]] = {}
     #: what the prune saved, by reason. Each is one cheap verdict not spent (`verdicts_saved`).
     pruned: collections.Counter[str] = collections.Counter()
+    #: B22: state id -> what it kept of the original input, and how many states that cost us a best
+    losses: dict[str, LossReport] = {}
+    refused_catastrophic = 0
     heap: list[tuple] = [_entry(s0, s0.score, next(tie))]
     reason: str | None = "clean" if start_verdict.clean else None
     flat = 0
@@ -2241,10 +2269,25 @@ def search(
                     clean=bool(full.clean),
                 )
                 heapq.heappush(heap, _entry(child, child.score, next(tie)))
-                if child.score > best.score:
-                    trace.record("best", state=child.id, score=child.score, previous=best.id, previous_score=best.score)
-                    best, improved = child, True
-                if child.score >= best.score:
+                # B22, THE ONE FIDELITY RULE THAT REFUSES (owner ruling 2026-11-24): a state that kept under
+                # `loss.KEEP_FRACTION` of the input part, or that lost a whole input body, may not rank as best
+                # however well it meshes - the search keeps its next-best state instead. Measured only here, at
+                # the gate, so it costs one call per state that was actually about to win (never per candidate).
+                # `best_bad` lets a WORSE but intact state displace a catastrophic incumbent (the staged output
+                # can be the catastrophic one): otherwise the search would have nothing to fall back to.
+                best_bad = _loss_of(pool, best, losses).catastrophic
+                if child.score >= best.score or best_bad:
+                    loss = _loss_of(pool, child, losses)
+                    if loss.catastrophic:
+                        refused_catastrophic += 1
+                        trace.record("refused_catastrophic", state=child.id, score=child.score,
+                                     reason=loss.reason, part_kept=loss.part_kept,
+                                     lost_bodies=list(loss.lost_bodies), bodies=loss.detail.get("bodies"))
+                        continue
+                    if child.score > best.score or best_bad:
+                        trace.record("best", state=child.id, score=child.score, previous=best.id,
+                                     previous_score=best.score, displaced_catastrophic=best_bad)
+                        best, improved = child, True
                     # A new state that ties the best so far (or beats it) is a step of a multi-op repair. Judged
                     # against the BEST, not the parent: a child of a worse state that merely ties its worse parent
                     # is a search wandering at a loss, and must still run out of patience.
@@ -2300,6 +2343,11 @@ def search(
     ai_capped = ai_capped or any(bool(getattr(generators[gi], "ai_capped", False)) for gi in model_gens)
     ai_stop_reason = next(iter(ai_stopped.values()), "model_budget" if ai_capped else None)
     ai_results = [g.result() for g in any_gens if isinstance(g, AIProposer)]
+    # B22: what the state being DELIVERED kept of the original input. Ranking already refused every
+    # catastrophic state it saw, so this is normally intact; it is measured again here because the start state
+    # itself can be the catastrophic one (the staged healer produced it and nothing beat it), and because the
+    # delivery gate must read a measurement rather than infer one from the ranking.
+    best_loss = _loss_of(pool, best, losses)
     trace.record(
         "stop",
         reason=reason,
@@ -2320,6 +2368,8 @@ def search(
         final_verdict=final_verdict,
         pruned=dict(pruned),
         verdicts_saved=sum(pruned.values()),
+        loss=best_loss.row(),
+        refused_catastrophic=refused_catastrophic,
     )
     return SearchResult(
         best=best.ws,
@@ -2336,6 +2386,8 @@ def search(
         best_tier=best.tier,
         pruned=dict(pruned),
         verdicts_saved=sum(pruned.values()),
+        best_loss=best_loss,
+        refused_catastrophic=refused_catastrophic,
         inconclusive_candidates=n_inconclusive,
         verdict_candidates=n_verdicts,
         infrastructure_failed=infrastructure_failed,
@@ -2415,7 +2467,8 @@ def _path(trace: Trace, best: SearchState) -> list[str]:
 
 
 def deliverable(
-    result: SearchResult, input_verdict: Any, *, score_fn: Callable[[Any], Score] | None = None
+    result: SearchResult, input_verdict: Any, *, score_fn: Callable[[Any], Score] | None = None,
+    loss: LossReport | None = None,
 ) -> Workspace | None:
     """The workspace to ship, or None meaning "ship the input unchanged".
 
@@ -2424,8 +2477,14 @@ def deliverable(
     least as many panel members. A clean input is never replaced, and a search that beat nothing delivers
     nothing. This is the gate against shipping a "repair" that made things worse.
 
-    Layer 3 is not consulted: fidelity is reported, never a gate. A delivered output that moved the part a long
-    way is flagged for the owner in the report (`gaming_flags`).
+    AND, since lane B22 (owner ruling 2026-11-24), the gate against shipping a FRAGMENT of the part: a state
+    that kept under `loss.KEEP_FRACTION` of the input's volume, or that lost a whole input body, is refused
+    whatever it meshes like. `loss` defaults to the result's own measurement (`SearchResult.best_loss`); a
+    caller with no measurement (a stand-in result, an old row) refuses nothing, exactly as before. The
+    measurement is of the ORIGINAL INPUT, never of the search's start state - see `loss.py`.
+
+    The REST of layer 3 is still not consulted: fidelity is reported, never a gate. A delivered output that
+    moved the part a long way is flagged for the owner in the report (`gaming_flags`).
     """
     if not result.changed or input_verdict.clean:
         return None
@@ -2434,6 +2493,9 @@ def deliverable(
     if out[VALID_KEY] < inp[VALID_KEY]:           # layer 1 regressed: never shipped
         return None
     if panel_passes(out) < panel_passes(inp):
+        return None
+    loss = loss if loss is not None else getattr(result, "best_loss", None)
+    if loss is not None and loss.catastrophic:    # B22: a fragment of the part is not a repair of it
         return None
     return result.best
 

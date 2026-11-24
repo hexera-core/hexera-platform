@@ -162,6 +162,13 @@ class ArmRow:
     out_max_dev_mm: float | None = None
     out_bodies_before: int | None = None
     out_bodies_after: int | None = None
+    #: B22 (owner ruling 2026-11-24), THE ONE FIDELITY MEASURE THAT REFUSES: what the delivered state kept of the
+    #: input part (`loss.LossReport.row()`). `catastrophic` True means the delivery gate REFUSED that state and the
+    #: input was shipped instead, so this row's verdict is the input's. `measured` False refuses nothing.
+    #: None on rows written before the rule existed.
+    loss: dict | None = None
+    #: search arms: states the search refused as best for the same reason, falling back to its next-best state
+    refused_catastrophic: int | None = None
 
     @property
     def clean(self) -> bool:
@@ -569,9 +576,22 @@ def _arm_block(arm: str, rows: list[ArmRow], kinds: Mapping[str, str], n_files: 
     # reader can take them out of the denominator if they choose. `clean` among them is shown because a search that
     # ran out of wall can still have reached clean before it did.
     walled = [r for r in conclusive if r.stopped_on_wall]
+    # B22: how often the catastrophic-loss rule fired. Per FILE (the delivery gate refused the output, so the row's
+    # verdict is the input's) and per STATE (the search refused it as best and kept its next-best). Both are
+    # REPORTED; neither changes a rate, because a refused file is a measured file that was not repaired.
+    refused = [r for r in rows if (r.loss or {}).get("catastrophic")]
+    loss_rows = [r for r in rows if r.loss is not None]
     return {
         "files": n_files, "conclusive": len(conclusive), "inconclusive": inc, "inconclusive_rate": inc_rate,
         "measured": measured,
+        "catastrophic_loss": {
+            "files_refused": len(refused),
+            "files_refused_names": sorted(r.name for r in refused),
+            "reasons": dict(Counter(str((r.loss or {}).get("reason")) for r in refused)),
+            "states_refused": sum(int(r.refused_catastrophic or 0) for r in rows),
+            "rows_with_a_measurement": len(loss_rows),
+            "rows_not_measured": sum(1 for r in loss_rows if not r.loss.get("measured")),
+        },
         "stopped_on_wall": {"conclusive_rows": len(walled), "clean": sum(r.clean for r in walled),
                             "share_of_conclusive": _rate(len(walled), len(conclusive)),
                             "clean_rate_without_them": only(_rate(sum(r.clean for r in conclusive
@@ -1011,6 +1031,16 @@ def render_text(rep: dict[str, Any]) -> str:
                             f"({w['clean']} clean; clean rate without them "
                             f"{_pct(w.get('clean_rate_without_them'))})"
                             for a, w in walled.items() if w.get("conclusive_rows"))]
+    lost = {a: b.get("catastrophic_loss") or {} for a, b in rep["arms"].items()}
+    if any(w.get("files_refused") or w.get("states_refused") for w in lost.values()):
+        out += ["", "CATASTROPHIC LOSS refused (B22's rule, owner ruling 2026-11-24: an output keeping under 10% of "
+                    "the input part's volume, or losing a whole input body, is not delivered and is not clean; the "
+                    "input was shipped instead): "
+                + "; ".join(f"{a} {w.get('files_refused', 0)} files "
+                            f"({', '.join(f'{k} {v}' for k, v in sorted((w.get('reasons') or {}).items())) or 'none'}), "
+                            f"{w.get('states_refused', 0)} states refused mid-search, "
+                            f"{w.get('rows_not_measured', 0)} rows not measured"
+                            for a, w in lost.items() if w.get("files_refused") or w.get("states_refused"))]
     to = rep.get("timeouts") or {"arms": {}}
     out += ["", "repeated member timeouts (file failures under the D5 ruling; the rate moves with the machine): "
             + "; ".join(f"{a} {b['files']}/{b['conclusive']} files ({b['members']} members)" for a, b in to["arms"].items())]
