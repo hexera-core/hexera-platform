@@ -1,0 +1,81 @@
+/usr/local/lib/python3.11/site-packages/google/api_core/_python_version_support.py:254: FutureWarning: You are using a Python version (3.11.17) which Google will stop supporting in new releases of google.api_core once it reaches its end of life (2027-10-24). Please upgrade to the latest Python version, or at least Python 3.12, to continue receiving updates for google.api_core past that date.
+  warnings.warn(message, FutureWarning)
+[32;1m
+*******************************************************************
+******        Statistics on Transfer (Write)                 ******[0m
+[32;1m
+*******************************************************************
+******        Transfer Mode = 0  I.E.  As Is       ******[0m
+[32;1m******        Transferring Shape, ShapeType = 2                      ******[0m
+[32;1m
+*******************************************************************
+******        Statistics on Transfer (Write)                 ******[0m
+[32;1m
+*******************************************************************
+******        Transfer Mode = 0  I.E.  As Is       ******[0m
+[32;1m******        Transferring Shape, ShapeType = 2                      ******[0m
+[32;1m
+*******************************************************************
+******        Statistics on Transfer (Write)                 ******[0m
+[32;1m
+*******************************************************************
+******        Transfer Mode = 0  I.E.  As Is       ******[0m
+[32;1m******        Transferring Shape, ShapeType = 2                      ******[0m
+[32;1m
+*******************************************************************
+******        Statistics on Transfer (Write)                 ******[0m
+[32;1m
+*******************************************************************
+******        Transfer Mode = 0  I.E.  As Is       ******[0m
+[32;1m******        Transferring Shape, ShapeType = 2                      ******[0m
+[32;1m
+*******************************************************************
+******        Statistics on Transfer (Write)                 ******[0m
+[32;1m
+*******************************************************************
+******        Transfer Mode = 0  I.E.  As Is       ******[0m
+[32;1m******        Transferring Shape, ShapeType = 2                      ******[0m
+[32;1m
+*******************************************************************
+******        Statistics on Transfer (Write)                 ******[0m
+... [trimmed    13934 lines; errors then tail] ...
+******        Transfer Mode = 0  I.E.  As Is       ******[0m
+[32;1m******        Transferring Shape, ShapeType = 2                      ******[0m
+[32;1m
+*******************************************************************
+******        Statistics on Transfer (Write)                 ******[0m
+[32;1m
+*******************************************************************
+******        Transfer Mode = 0  I.E.  As Is       ******[0m
+[32;1m******        Transferring Shape, ShapeType = 2                      ******[0m
+[32;1m
+*******************************************************************
+******        Statistics on Transfer (Write)                 ******[0m
+[32;1m
+*******************************************************************
+******        Transfer Mode = 0  I.E.  As Is       ******[0m
+[32;1m******        Transferring Shape, ShapeType = 2                      ******[0m
+[32;1m
+*******************************************************************
+******        Statistics on Transfer (Write)                 ******[0m
+[32;1m
+*******************************************************************
+******        Transfer Mode = 0  I.E.  As Is       ******[0m
+[32;1m******        Transferring Shape, ShapeType = 2                      ******[0m
+[32;1m
+*******************************************************************
+******        Statistics on Transfer (Write)                 ******[0m
+[32;1m
+*******************************************************************
+******        Transfer Mode = 0  I.E.  As Is       ******[0m
+[32;1m******        Transferring Shape, ShapeType = 2                      ******[0m
+[32;1m
+*******************************************************************
+******        Statistics on Transfer (Write)                 ******[0m
+[32;1m
+*******************************************************************
+******        Transfer Mode = 0  I.E.  As Is       ******[0m
+[32;1m******        Transferring Shape, ShapeType = 2                      ******[0m
+[32;1m** WorkSession : Sending all data[0m
+[32;1m Step File Name : /tmp/valid_f1m4ae5r/round_trip.step(47480 ents)  Write  Done[0m
+kernel call op_split_angle: error (IndexInstabilityError: '/eval/out/work/bbd860fa0f5a/search_det/split_angle-972c60bfa8b7.brep' does not read back with the in-memory entity order (1759 entities in memory, 1759 on disk); refusing to hand out indices that would bind ids to the wrong geometry)
