@@ -352,14 +352,14 @@ def _tighten_tolerances(payload: dict) -> dict:
     from OCP.TopExp import TopExp, TopExp_Explorer
     from OCP.TopoDS import TopoDS
 
-    from meshpipeline.cad.repair_v4.ws_kernel import diagonal_of, read_brep
+    from meshpipeline.cad.repair_v4.ws_kernel import part_diagonal, read_brep
 
     start = time.perf_counter()
     target_rel = float(payload["target_rel"])
     if not 1e-7 <= target_rel <= 1e-4:
         raise KernelDeclined("invalid_params", f"target_rel {target_rel!r} is outside [1e-7, 1e-4]")
     old, base = read_brep(payload["brep_path"]), read_brep(payload["brep_path"])
-    diag = diagonal_of(base)
+    diag = part_diagonal(payload, base)  # lane C13: the part as it arrived
     target = target_rel * diag
     before = max_edge_tolerance(base)
     anc = _edge_faces(base)
@@ -446,11 +446,11 @@ def _rebuild_edge_as_intersection(payload: dict) -> dict:
     from OCP.TopLoc import TopLoc_Location
     from OCP.TopoDS import TopoDS
 
-    from meshpipeline.cad.repair_v4.ws_kernel import diagonal_of, read_brep
+    from meshpipeline.cad.repair_v4.ws_kernel import part_diagonal, read_brep
 
     start = time.perf_counter()
     old, base = read_brep(payload["brep_path"]), read_brep(payload["brep_path"])
-    diag = diagonal_of(base)
+    diag = part_diagonal(payload, base)  # lane C13
     bound = fidelity_bound(diag)
     anc = _edge_faces(base)
     emap = _indexed(base, "edge")
@@ -585,7 +585,7 @@ def _split(ws: Workspace, targets: list[StableId], allowed: str) -> dict[str, li
 
 
 def _run(pool: WorkerPool, ws: Workspace, fn: str, payload: dict, timeout_s: float) -> tuple[Workspace, Diff]:
-    payload = {**payload, "brep_path": ws.brep_path, "quantum": ws.quantum,
+    payload = {**payload, "brep_path": ws.brep_path, "quantum": ws.quantum, "part_diag_mm": ws.part_diag_mm,
                "out_path": os.path.join(os.path.dirname(ws.brep_path), f"{fn}-{uuid.uuid4().hex[:8]}.brep")}
     result = pool.call(fn, payload, timeout_s=timeout_s)
     if not result.ok or result.value is None:

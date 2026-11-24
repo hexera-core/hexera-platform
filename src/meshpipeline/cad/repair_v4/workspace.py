@@ -98,6 +98,10 @@ class Workspace:
     #: `ws_kernel.shape_signature` of `brep_path`: orientation, shell layout and closedness, which no entity
     #: fingerprint sees. Empty for a workspace the kernel never described (every fake in the unit tier).
     signature: tuple = ()
+    #: the lineage's ORIGINAL bounding-box diagonal (mm), measured once by `ws_index` on the input and passed to every
+    #: op as `part_diag_mm`, so relative thresholds never read a state's control-pole box (lane C13,
+    #: `ws_kernel.part_diagonal`). None: not known; the kernel then measures the shape it is given.
+    part_diag_mm: float | None = None
 
     def __post_init__(self) -> None:
         for sid in self.ids:
@@ -121,7 +125,8 @@ class Workspace:
             raise RuntimeError(f"cannot index {brep_path!r}: {result.status}: {result.error}")
         ws = cls(brep_path=brep_path, ids={}, labels=copy.deepcopy(labels or {}), history=[],
                  original=brep_path, quantum=float(result.value["quantum"]),
-                 signature=tuple(result.value.get("signature") or ()))
+                 signature=tuple(result.value.get("signature") or ()),
+                 part_diag_mm=(None if result.value.get("diag_mm") is None else float(result.value["diag_mm"])))
         for entity in result.value["entities"]:
             sid = ws._mint(entity["type"])
             ws.ids[sid] = entity["fp"]
@@ -139,7 +144,8 @@ class Workspace:
         return Workspace(brep_path=self.brep_path, ids=dict(self.ids),
                          labels=copy.deepcopy(self.labels), history=copy.deepcopy(self.history),
                          original=self.original, quantum=self.quantum,
-                         counters=dict(self.counters), indices=dict(self.indices), signature=self.signature)
+                         counters=dict(self.counters), indices=dict(self.indices), signature=self.signature,
+                         part_diag_mm=self.part_diag_mm)
 
     def resolve(self, ids: list[StableId]) -> list[StableId]:
         """`ids` unchanged if all are live; else UnknownTarget for the first that is not."""

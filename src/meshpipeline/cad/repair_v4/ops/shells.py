@@ -107,6 +107,7 @@ def _run(pool: WorkerPool, ws: Workspace, op: str, kernel_fn: str, targets: list
     out_path = str(brep.with_name(f"{brep.stem}.{op}.{uuid4().hex[:8]}.brep"))
     payload = {
         "brep_path": ws.brep_path, "out_path": out_path, "quantum": ws.quantum, "params": params,
+        "part_diag_mm": ws.part_diag_mm,
         "targets": [{"id": t, "type": _KIND_OF_PREFIX[t[0]], "index": ws.indices[t]} for t in targets],
         # kernel index -> stable id, so the kernel can name what it removes in `declared_removed`
         "ids": {f"{_KIND_OF_PREFIX[sid[0]]}:{index}": sid for sid, index in ws.indices.items()},
@@ -235,11 +236,11 @@ def ladder_floor(diag_mm: float) -> float:
     return _LADDER_FLOOR_FRACTION * diag_mm
 
 
-def _bound(shape: Any) -> tuple[float, float]:
-    """(diagonal, fidelity bound) of `shape`."""
-    from meshpipeline.cad.repair_v4.ws_kernel import diagonal_of
+def _bound(shape: Any, payload: dict | None = None) -> tuple[float, float]:
+    """(diagonal, fidelity bound) of the PART (`ws_kernel.part_diagonal`: the lineage's original, lane C13)."""
+    from meshpipeline.cad.repair_v4.ws_kernel import part_diagonal
 
-    diag = diagonal_of(shape)
+    diag = part_diagonal(payload or {}, shape)
     return diag, fidelity_bound(diag)
 
 
@@ -423,7 +424,7 @@ def _sew(payload: dict) -> dict:
     start = time.perf_counter()
     old = ws_kernel.read_brep(payload["brep_path"])
     params = dict(payload["params"])
-    diag, bound = _bound(old)
+    diag, bound = _bound(old, payload)
     floor = ladder_floor(diag)
     ladder = sorted({float(t) for t in params["tol_ladder"]})
     off = [t for t in ladder if t < floor]

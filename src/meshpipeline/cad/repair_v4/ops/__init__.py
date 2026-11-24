@@ -256,7 +256,7 @@ def run_kernel_op(pool: WorkerPool, ws: Workspace, *, kernel_fn: str, op: str, p
     """
     out_path = str(Path(ws.brep_path).parent / f"{op}-{uuid.uuid4().hex[:12]}.brep")
     result = pool.call(kernel_fn, {**payload, "brep_path": ws.brep_path, "out_path": out_path,
-                                   "quantum": ws.quantum}, timeout_s=timeout_s)
+                                   "quantum": ws.quantum, "part_diag_mm": ws.part_diag_mm}, timeout_s=timeout_s)
     try:
         if not result.ok or result.value is None:
             raise OpFailed(result.status, result.error or "no answer")

@@ -105,3 +105,25 @@ def test_every_contact_proposal_is_inside_its_op_schema() -> None:
             assert validate_call(op, list(targets), dict(params), ws) == [], (op, targets, params)
             checked += 1
     assert checked, "the sweep proposed none of the pair ops, so nothing was checked"
+
+
+def test_a_contact_measured_on_any_site_kind_gets_its_ops() -> None:
+    """Lane C12's second finding: a post-cut `self_overlap` site carried 4 touching clashes with both areas and the
+    sweep built 0 contact rows, because the builder was reached only for `proximity`. A gap-0 pair is the same
+    geometry whatever the site was named for."""
+    clashes = [{"a": "F127", "b": "F123", "dist_mm": 0.0, "touching": True,
+                "area_a_mm2": 768.0, "area_b_mm2": 620.0}]
+    for kind in ("self_overlap", "invalid", "sliver", "periodic", "proximity"):
+        ops = {r[0] for r in _sweep(_site(kind=kind, entities=["F127", "F123"], clashes=clashes))}
+        assert "remove_duplicate_faces" in ops, (kind, ops)
+        smaller = [r for r in _sweep(_site(kind=kind, entities=["F127", "F123"], clashes=clashes))
+                   if r[0] == "defeature" and r[1] == ["F123"]]
+        assert smaller, f"{kind}: the smaller face (620 mm2) must be offered for removal"
+
+
+def test_the_near_miss_split_stays_proximitys_own() -> None:
+    """Its plan is sized from the gap, which only a near miss has, so a near pair on another kind must not get it."""
+    near = [{"a": "F1", "b": "F2", "dist_mm": 0.3, "touching": False}]
+    prox = {r[0] for r in _sweep(_site(kind="proximity", entities=["F1", "F2"], clashes=near))}
+    other = {r[0] for r in _sweep(_site(kind="sliver", entities=["F1", "F2"], clashes=near))}
+    assert "split_by_proximity" in prox and "split_by_proximity" not in other
