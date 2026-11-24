@@ -706,7 +706,10 @@ def passage_of_surface(points, faces, *, max_points: int = MAX_MEASURE_POINTS,
         surf = pv.PolyData(pts, np.hstack([np.full((len(f), 1), 3, dtype=np.int64), f]).ravel())
     if max_points and len(pts) > max_points:
         from scipy.spatial import cKDTree
+        td = time.monotonic()
         coarse = surf.decimate(1.0 - max_points / float(len(pts))).clean()
+        logger.info("passage measure: %d points decimated to %d in %.1f s", len(pts), coarse.n_points,
+                    time.monotonic() - td)
         cpts = np.asarray(coarse.points, dtype=float)
         cf = np.asarray(coarse.faces).reshape(-1, 4)[:, 1:]
         if len(cf) < 4:
@@ -875,11 +878,19 @@ def _bounded(fn, *args, budget_s: float):
     if not budget_s or budget_s <= 0 or "fork" not in mp.get_all_start_methods():
         with measure_deadline(budget_s):
             return fn(*args)
+    import faulthandler
+    import tempfile
+
     recv, send = mp.get_context("fork").Pipe(duplex=False)
+    # where the child was when it was stopped: its Python stack, dumped on SIGUSR1 into this file
+    fd, where = tempfile.mkstemp(prefix="passage_measure_", suffix=".stack")
+    os.close(fd)
 
     def child() -> None:
         try:
-            send.send(("ok", fn(*args)))
+            with open(where, "w") as stack:
+                faulthandler.register(signal.SIGUSR1, file=stack, all_threads=False)
+                send.send(("ok", fn(*args)))
         except BaseException as exc:  # noqa: BLE001 - told to the parent, which raises it there
             send.send(("error", exc if isinstance(exc, Exception) else RuntimeError(repr(exc))))
         finally:
@@ -891,6 +902,7 @@ def _bounded(fn, *args, budget_s: float):
     send.close()
     try:
         if not recv.poll(budget_s):
+            _say_where(proc, where)
             raise MeasureOverdue(f"passage measure past its {budget_s:.0f} s budget ({MEASURE_CHILD_RULE})")
         try:
             status, out = recv.recv()
@@ -901,9 +913,28 @@ def _bounded(fn, *args, budget_s: float):
             proc.kill()
         proc.join()
         recv.close()
+        with contextlib.suppress(OSError):
+            os.unlink(where)
     if status != "ok":
         raise out
     return out
+
+
+def _say_where(proc, where: str) -> None:
+    """Log the innermost frames of a measure stopped at its guard (TIME-16), so the slow step is named. A frame
+    inside a C call shows the Python line that made the call (faulthandler dumps from its C signal handler)."""
+    import os
+    try:
+        os.kill(proc.pid, signal.SIGUSR1)
+        time.sleep(2.0)
+        lines = [ln.strip() for ln in Path(where).read_text(errors="replace").splitlines() if ln.strip()]
+    except OSError:
+        return
+    if lines:
+        logger.warning("passage measure stopped at its guard (%s), in: %s", MEASURE_CHILD_RULE, " | ".join(lines[:8]))
+    else:
+        logger.warning("passage measure stopped at its guard (%s) inside a call that did not return in 2 s (a "
+                       "native call: no Python stack)", MEASURE_CHILD_RULE)
 
 
 def passage_of_polymesh(workspace, *, budget_s: float | None = None) -> dict:

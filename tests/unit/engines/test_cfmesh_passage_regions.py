@@ -93,12 +93,15 @@ def _stuck(_pm):
 
 
 @pytest.mark.skipif(not hasattr(signal, "pthread_sigmask"), reason="POSIX only")
-def test_the_passage_measure_is_stopped_at_its_guard(tmp_path, monkeypatch):
+def test_the_passage_measure_is_stopped_at_its_guard(tmp_path, monkeypatch, caplog):
     _two_volumes(tmp_path)
     monkeypatch.setattr(passage, "_measure_polymesh", _stuck)
     t0 = time.monotonic()
-    assert passage.passage_of_polymesh(tmp_path, budget_s=0.5) == {}
-    assert time.monotonic() - t0 < 3.0
+    with caplog.at_level("WARNING", logger="meshpipeline.engines.passage"):
+        assert passage.passage_of_polymesh(tmp_path, budget_s=0.5) == {}
+    assert time.monotonic() - t0 < 4.5
+    # the log names where the measure was when it was stopped
+    assert "in _stuck" in caplog.text
 
 
 def test_the_bounded_measure_returns_its_result_and_its_error():
