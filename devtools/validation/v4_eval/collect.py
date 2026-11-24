@@ -39,7 +39,7 @@ import re
 import subprocess
 import sys
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -111,43 +111,101 @@ def merge(shards: list[dict]) -> dict[str, Any]:
             "cheap_failed": cheap_failed}
 
 
-def wall_values() -> dict[str, float]:
-    """The two walls whose kills land in the excluded stratum, as the wave will actually run them, READ from their
-    own definitions and not retyped here: `check_valid_timeout_s` is the checker's one-call wall
-    (`repair_v4.limits.CHECKER_CALL_TIMEOUT_S`) and `file_timeout_s` bounds the SUM of a file's calls
-    (`evalspec.DEFAULT_FILE_TIMEOUT_S`). They are reported with the stratum so a reader sees which numbers
-    produced the exclusions."""
-    from meshpipeline.cad.repair_v4.limits import CHECKER_CALL_TIMEOUT_S
-
-    return {"file_timeout_s": float(evalspec.DEFAULT_FILE_TIMEOUT_S),
-            "check_valid_timeout_s": float(CHECKER_CALL_TIMEOUT_S)}
+#: The walls whose kills land in the excluded stratum: `file_timeout_s` bounds the SUM of one file's calls
+#: (`run_arm --file-timeout-s`), `check_valid_timeout_s` is the checker's one-call wall
+#: (`repair_v4.limits.CHECKER_CALL_TIMEOUT_S`, carried by the shard's code, not a flag).
+WALL_KEYS = ("file_timeout_s", "check_valid_timeout_s")
 
 
-def excluded_stratum(merged: dict[str, Any]) -> dict[str, Any]:
+def wall_values(shards: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """The walls the SHARDS ACTUALLY RAN WITH, read from their own provenance.
+
+    Never today's module constants: a wave run at 900/300 stays a wave run at 900/300 after the constants are
+    raised, and reporting the current value would attribute the exclusions to a wall nobody ran. A key no shard
+    recorded is `None` and named in `unrecorded` (an older shard); a key its shards disagree on is `None` and its
+    values are listed in `disagreed`, because there is no single number to report."""
+    provs = [dict(s.get("prov") or {}) for s in shards]
+    walls: dict[str, Any] = {"disagreed": {}, "unrecorded": []}
+    for key in WALL_KEYS:
+        seen = sorted({float(p[key]) for p in provs if p.get(key) is not None})
+        walls[key] = seen[0] if len(seen) == 1 else None
+        if not seen:
+            walls["unrecorded"].append(key)
+        elif len(seen) > 1:
+            walls["disagreed"][key] = seen
+    return walls
+
+
+def _wall_text(walls: Mapping[str, Any]) -> str:
+    """The walls as one phrase, for the stratum's line. Says `unrecorded` or `disagree` rather than a number
+    that was not run."""
+    out = []
+    for key in WALL_KEYS:
+        if key in (walls.get("disagreed") or {}):
+            values = "/".join(f"{v:g}s" for v in walls["disagreed"][key])
+            out.append(f"{key} {values} (shards disagree)")
+        elif walls.get(key) is None:
+            out.append(f"{key} unrecorded")
+        else:
+            out.append(f"{key} {float(walls[key]):g}s")
+    return ", ".join(out)
+
+
+def excluded_stratum(merged: dict[str, Any], walls: Mapping[str, Any]) -> dict[str, Any]:
     """THE EXCLUDED STRATUM: the files the probe reached no verdict on - a wall kill (the per-file wall or the
     checker's one-call wall), a pool death, an unreadable input. A THIRD category, exactly like report.py's
     declined stratum: never a failure, never clean, in no failing count, no clean count and no per-stratum rate,
     and NAMED here so it cannot be silently dropped. `over_limit` is the honest refusal: when it is true collect
-    writes no split, and raising the walls is the fix, never `--allow-excluded`."""
+    writes no split, and raising the walls is the fix, never `--allow-excluded`.
+
+    EVERY COUNT HERE IS A COUNT OF FILES, deduplicated on sha256. An ARM wave writes one EXCLUDED entry per
+    (file, arm), so one file killed on four arms is four entries and ONE file; counting entries would report four
+    files that do not exist and a fraction four times too large. `entries` keeps the raw count, and a file's
+    `arms` lists the arms it was excluded for (absent in a re-probe entry, which has no arm).
+
+    `walls` are the walls the shards ran with (`wall_values`), never the current constants."""
     xs = sorted(merged["excluded"], key=lambda x: (str(x.get("reason", "")), str(x.get("name", ""))))
+    files = _by_file(xs)
     frac = excluded_fraction(merged)
     return {
         "counted_as": "none: not a failure, not clean, in no failing count and no stratum rate",
-        "files": len(xs),
+        "files": len(files),
+        "entries": len(xs),
         "fraction_of_pool": frac,
         "limit": MAX_EXCLUDED_FRACTION,
         "over_limit": frac > MAX_EXCLUDED_FRACTION,
-        "walls": wall_values(),
-        "by_reason": dict(Counter(str(x.get("reason", "")).split(":")[0] for x in xs)),
-        "by_source": dict(Counter(str(x.get("source", "")) for x in xs)),
-        "names": [{"name": x.get("name"), "sha256": x.get("sha256"), "source": x.get("source"),
-                   "reason": x.get("reason")} for x in xs],
+        "walls": dict(walls),
+        "by_reason": dict(Counter(f["reason"].split(":")[0] for f in files)),
+        "by_source": dict(Counter(str(f["source"]) for f in files)),
+        "names": files,
     }
+
+
+def _by_file(xs: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """One record per sha256, in the order the entries were sorted. `reason` is the first entry's; a file whose
+    arms failed for different reasons carries the others in `other_reasons`, so nothing is thrown away."""
+    files: dict[str, dict[str, Any]] = {}
+    for x in xs:
+        sha = str(x.get("sha256"))
+        reason, arm = str(x.get("reason", "")), x.get("arm")
+        f = files.setdefault(sha, {"name": x.get("name"), "sha256": x.get("sha256"), "source": x.get("source"),
+                                   "reason": reason, "entries": 0})
+        f["entries"] += 1
+        if reason != f["reason"]:
+            f.setdefault("other_reasons", [])
+            if reason not in f["other_reasons"]:
+                f["other_reasons"].append(reason)
+        if arm is not None:
+            f.setdefault("arms", []).append(str(arm))
+    for f in files.values():
+        if "arms" in f:
+            f["arms"] = sorted(set(f["arms"]))
+    return list(files.values())
 
 
 def describe_excluded_stratum(block: dict[str, Any]) -> str:
     """The stratum's own line, for the humans reading collect's stdout."""
-    walls = ", ".join(f"{k} {v:g}s" for k, v in sorted(block["walls"].items()))
+    walls = _wall_text(block["walls"])
     reasons = ", ".join(f"{k} {n}" for k, n in sorted(block["by_reason"].items())) or "none"
     return (f"EXCLUDED STRATUM {block['files']} file(s), {block['fraction_of_pool']:.2%} of the pool "
             f"(limit {block['limit']:.0%}: {'OVER' if block['over_limit'] else 'under'}) at walls {walls}; "
@@ -155,7 +213,9 @@ def describe_excluded_stratum(block: dict[str, Any]) -> str:
             "report.excluded_stratum.names in collect-report.json.")
 
 
-def report(merged: dict[str, Any], splits: Any | None) -> dict:
+def report(merged: dict[str, Any], splits: Any | None, walls: Mapping[str, Any] | None = None) -> dict:
+    """`walls` are the walls the shards ran with (`wall_values(shards)`); None means no shard recorded any, which
+    the stratum states rather than filling in a constant."""
     rows = merged["rows"]
     failing = [r for r in rows if r.first_failing_layer is not None]
     no_solids = [r for r in failing if rp.is_no_solids(r)]
@@ -165,7 +225,7 @@ def report(merged: dict[str, Any], splits: Any | None) -> dict:
         "excluded_fraction": excluded_fraction(merged),
         "excluded_by_source": dict(Counter(x["source"] for x in merged["excluded"])),
         "excluded_by_reason": dict(Counter(x["reason"].split(":")[0] for x in merged["excluded"])),
-        "excluded_stratum": excluded_stratum(merged),
+        "excluded_stratum": excluded_stratum(merged, walls if walls is not None else wall_values([])),
         "failing": len(failing) - len(no_solids),
         "no_solids_not_repairable": len(no_solids),
         "by_layer": dict(Counter(str(r.first_failing_layer) for r in rows)),
@@ -184,8 +244,12 @@ MAX_EXCLUDED_FRACTION = 0.02
 
 
 def excluded_fraction(merged: dict[str, Any]) -> float:
-    total = len(merged["rows"]) + len(merged["excluded"])
-    return len(merged["excluded"]) / total if total else 0.0
+    """Excluded FILES over all files the wave covered. Deduplicated on sha256: an arm wave writes one EXCLUDED
+    entry per (file, arm), and counting entries would make one file killed on four arms read as 4 files and a
+    fraction four times too large - against a 2% limit."""
+    excluded = len({str(x.get("sha256")) for x in merged["excluded"]})
+    total = len(merged["rows"]) + excluded
+    return excluded / total if total else 0.0
 
 
 # ------------------------------------------------------------------ the pull
@@ -432,10 +496,10 @@ def main(argv: list[str] | None = None, *, transport: Transport | None = None) -
         print(f"REFUSED {exc}", file=sys.stderr)
         return 1
     frac = excluded_fraction(merged)
-    stratum = excluded_stratum(merged)
+    stratum = excluded_stratum(merged, wall_values(shards))
     problems: list[str] = []
     if frac > MAX_EXCLUDED_FRACTION and not args.allow_excluded:
-        walls = ", ".join(f"{k} {v:g}s" for k, v in sorted(stratum["walls"].items()))
+        walls = _wall_text(stratum["walls"])
         problems.append(f"{frac:.1%} of the pool was excluded (limit {MAX_EXCLUDED_FRACTION:.0%}) at walls "
                         f"{walls}: the failing set is biased toward files the checker could finish; rerun the "
                         "excluded shards, or raise the walls and re-probe - the stratum names every file "
@@ -450,7 +514,7 @@ def main(argv: list[str] | None = None, *, transport: Transport | None = None) -
             return 2
     if splits is not None and splits.shortfall and not args.allow_shortfall:
         problems.append(f"splits are short: {splits.shortfall}")
-    rep = report(merged, splits)
+    rep = report(merged, splits, wall_values(shards))
     print(json.dumps(rep, indent=1, sort_keys=True))
     # The stratum gets its own line, always - at 0 files too, so a reader never has to infer that nothing was lost.
     print(describe_excluded_stratum(rep["excluded_stratum"]))

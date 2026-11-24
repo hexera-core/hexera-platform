@@ -78,6 +78,12 @@ def arm_row(base, i, arm, *, inconclusive=False, model=None, wall=10.0, **over):
     return row
 
 
+def _call_wall() -> float:
+    from meshpipeline.cad.repair_v4.limits import CHECKER_CALL_TIMEOUT_S
+
+    return float(CHECKER_CALL_TIMEOUT_S)
+
+
 def build(root: Path, wave, split, *, n_shards=2, rows_for=None, prov=None, excluded=None, skip=(), fail=()):
     """Write shard-I-of-N dirs the way the arm harness would, partitioned by hash. `rows_for(base, i, arm)`."""
     rows_for = rows_for or (lambda base, i, arm: arm_row(base, i, arm))
@@ -92,6 +98,8 @@ def build(root: Path, wave, split, *, n_shards=2, rows_for=None, prov=None, excl
         p = {"commit": COMMIT, "image": IMAGE, "exit_code": 1 if s in fail else 0, "wall_seconds": 100.0 * s,
              "wave": wave.name, "wave_id": "wv1", "wave_type": wave.wave_type, "split": wave.split,
              "arms": list(wave.arms), "wave_cap_usd": wave.cap_usd, "ledger": "shard",
+             # the walls the shard ran with, as run_arm records them
+             "file_timeout_s": ev.DEFAULT_FILE_TIMEOUT_S, "check_valid_timeout_s": _call_wall(),
              "slot": (ev.slot_keys(wave.wave_type) or [None])[0]}
         p.update(prov or {})
         (d / "PROVENANCE.json").write_text(json.dumps(p))
@@ -1100,8 +1108,10 @@ def test_the_excluded_stratum_appears_in_the_report_named_with_the_walls_that_ma
     assert sorted(n["name"] for n in block["names"]) == sorted(x["name"] for x in xs)
     assert block["by_reason"] == {"file_timeout": 1, "checker_unavailable": 1}
     assert block["fraction_of_split"] == pytest.approx(2 / 40)
-    assert block["walls"] == {"file_timeout_s": ev.DEFAULT_FILE_TIMEOUT_S,
-                              "check_valid_timeout_s": CHECKER_CALL_TIMEOUT_S}
+    # the shards of this wave recorded today's constants, because that is what they ran
+    assert block["walls"]["file_timeout_s"] == ev.DEFAULT_FILE_TIMEOUT_S
+    assert block["walls"]["check_valid_timeout_s"] == CHECKER_CALL_TIMEOUT_S
+    assert not block["walls"]["disagreed"] and not block["walls"]["unrecorded"]
     # collect's pool limit is about the re-probe pool, not a split: it is not quoted here
     assert "limit" not in block and "over_limit" not in block
     text = report.render_text(rep)
@@ -1197,3 +1207,40 @@ def test_without_input_only_the_previous_snapshot_is_the_reference(tmp_path) -> 
     previous = {"timeouts": {"arms": {"search_det": {"files": 0, "conclusive": 40}}}}
     jumped = report.build_report(result, previous=previous)
     assert [w for w in jumped["warnings"] if w.startswith("search_det") and "previous snapshot" in w]
+
+
+# ------------------------------------------------------------------ A7: one file is one file; the shards' own walls
+
+def test_a_file_excluded_on_every_arm_is_one_file_not_four(tmp_path) -> None:
+    """An arm wave writes one EXCLUDED entry per (file, arm). The stratum counts FILES."""
+    split = split_rows()
+    xs = [{**_wall_excluded(split[5]), "arm": a} for a in WAVE.arms]
+    build(tmp_path, WAVE, split, excluded=xs)
+    block = report.build_report(load(tmp_path, split))["excluded_stratum"]
+    assert block["files"] == 1 and block["entries"] == len(WAVE.arms)
+    assert block["fraction_of_split"] == pytest.approx(1 / 40)
+    assert [n["sha256"] for n in block["names"]] == [split[5].sha256]
+    assert block["names"][0]["arms"] == sorted(WAVE.arms)
+    assert block["by_reason"] == {"file_timeout": 1}
+    assert "## Excluded stratum (1 file" in report.render_text(report.build_report(load(tmp_path, split)))
+
+
+def test_the_arm_report_quotes_the_walls_its_shards_ran_with(tmp_path) -> None:
+    split = split_rows()
+    build(tmp_path, WAVE, split, excluded=[_wall_excluded(split[5])],
+          prov={"file_timeout_s": 900.0, "check_valid_timeout_s": 300.0})
+    block = report.build_report(load(tmp_path, split))["excluded_stratum"]
+    assert block["walls"]["file_timeout_s"] == 900.0 and block["walls"]["check_valid_timeout_s"] == 300.0
+    assert block["walls"]["file_timeout_s"] != ev.DEFAULT_FILE_TIMEOUT_S
+
+
+def test_a_shard_that_recorded_no_walls_says_unrecorded_never_a_constant(tmp_path) -> None:
+    """An older shard has no wall keys. Saying `unrecorded` is honest; filling in today's constant would claim a
+    wall nobody ran."""
+    split = split_rows()
+    build(tmp_path, WAVE, split, excluded=[_wall_excluded(split[5])],
+          prov={"file_timeout_s": None, "check_valid_timeout_s": None})
+    block = report.build_report(load(tmp_path, split))["excluded_stratum"]
+    assert block["walls"]["file_timeout_s"] is None
+    assert sorted(block["walls"]["unrecorded"]) == ["check_valid_timeout_s", "file_timeout_s"]
+    assert "file_timeout_s unrecorded" in report.render_text(report.build_report(load(tmp_path, split)))
