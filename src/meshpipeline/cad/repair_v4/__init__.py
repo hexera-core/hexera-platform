@@ -138,6 +138,7 @@ def _verdict_only(pool: WorkerPool, ws: Workspace, source: str, *, input_verdict
     """The `input_only` and `staged` arms as a `SearchResult`, so one delivery gate and one summary serve all four.
     `input_only` changes nothing; `staged` runs the staged healers and is judged once more. No candidate goes
     through a search, so there are none to count."""
+    from meshpipeline.cad.repair_v4.loss import check_loss
     from meshpipeline.cad.repair_v4.search import SearchResult
     from meshpipeline.cad.repair_v4.stages import confirm_staged, run_staged
     from meshpipeline.cad.repair_v4.trace import Trace
@@ -155,8 +156,13 @@ def _verdict_only(pool: WorkerPool, ws: Workspace, source: str, *, input_verdict
     if getattr(verdict, "inconclusive", False):
         raise InconclusiveVerdict("the staged output could not be measured")
     trace.record("staged_confirmation", fell_back_to=conf.fell_back_to, dropped=conf.dropped, checked=conf.checked)
+    # B22: the staged healer can lose the part too (it is where a `defeature` chain runs), so its output carries
+    # the same measurement the search's does and meets the same delivery gate. Reference: the input workspace.
+    loss = check_loss(pool, ws.brep_path, staged.ws.brep_path) if staged.ws.brep_path != ws.brep_path else None
+    if loss is not None:
+        trace.record("loss", state="staged", **loss.row())
     return SearchResult(best=staged.ws, best_verdict=verdict, clean=bool(verdict.clean), trace=trace,
-                        changed=staged.ws.brep_path != ws.brep_path, reason="staged")
+                        changed=staged.ws.brep_path != ws.brep_path, reason="staged", best_loss=loss)
 
 
 def _find_best(pool: WorkerPool, ws: Workspace, source: str, *, budget: Budget, deadline_s: float,
@@ -284,6 +290,10 @@ def _run_search(source: str, dest: str, *, budget: Budget, deadline_s: float) ->
                 "input": _summarise(input_verdict),
                 "search": _search_summary(result),
             }
+            # B22: what the state the gate just judged kept of the input, in the summary either way - a refusal
+            # is reported, never silent (the row's `loss` field; `report.py` counts them)
+            if getattr(result, "best_loss", None) is not None:
+                summary["loss"] = result.best_loss.row()
             best = deliverable(result, input_verdict)
             if best is None:
                 return passthrough(summary, trace_path)

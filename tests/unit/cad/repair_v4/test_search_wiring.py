@@ -501,7 +501,9 @@ def test_the_driver_renders_image_kind_sites_for_a_model_generator_once_through_
 def test_no_model_generator_means_no_render() -> None:
     pool = PngPool()
     run([Scripted(lambda s: [])], World(sites_fn=_open_site), pool=pool)
-    assert pool.calls == []
+    # B22 measures what the delivered state kept of the part, which is a pool call of its own; the claim here is
+    # about RENDERING, so it is made about the render calls
+    assert [fn for fn, _ in pool.calls if fn == "render_view"] == []
 
 
 # --- the unguarded score calls ------------------------------------------------------------------------------------
@@ -1127,7 +1129,7 @@ def test_a_site_with_no_picture_is_still_proposed_and_nothing_reads_as_a_failure
     pool = pool_factory()
     model = FakeModel([reply(call_of("propose", {"candidates": [ai_cand(1)]})), reply()])
     r = run([proposer(model)], World(sites_fn=_open_site), pool=pool, patience=50)
-    assert [fn for fn, _ in pool.calls] == ["render_view"]
+    assert [fn for fn, _ in pool.calls if fn != "v4_volume_loss"] == ["render_view"]
     assert "image_url" not in json.dumps(model.calls[0])           # no picture, and the proposer was still asked
     assert [e["outcome"] for e in r.trace.of_kind("candidate")] != [] and _q(r.best) == 1
     assert not r.trace.of_kind("judge_error")

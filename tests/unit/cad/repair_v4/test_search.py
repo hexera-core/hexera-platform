@@ -821,3 +821,66 @@ def test_parallel_candidate_evaluation_ranks_exactly_as_serial() -> None:
     serial, parallel = trace_of(1), trace_of(6)
     assert len(serial) > 20
     assert parallel == serial
+
+
+# --- B22: catastrophic loss never ranks best (owner ruling 2026-11-24) --------------------------
+
+class LossPool:
+    """A pool whose only call is `v4_volume_loss`. `kept(repaired_path, nth_call)` is the fraction of the input
+    part that state still occupies; the search asks only about a state that is ABOUT TO WIN."""
+
+    def __init__(self, kept: Any) -> None:
+        self.kept = kept
+        self.asked: list[tuple[str, str]] = []
+
+    def call(self, fn: str, payload: dict, *, timeout_s: float) -> Any:
+        from meshpipeline.cad.repair_v4.worker_pool import CallResult
+
+        assert fn == "v4_volume_loss", fn
+        self.asked.append((payload["original"], payload["repaired"]))
+        k = self.kept(payload["repaired"], len(self.asked))
+        return CallResult(ok=True, value={"solidless": False, "bodies": {"S1": k}, "bodies_total": 1,
+                                          "part_kept": k, "volume_ratio": k},
+                          error=None, status="ok", seconds=0.0)
+
+
+def test_B22_a_state_that_kept_almost_none_of_the_part_is_refused_as_best() -> None:
+    """The best-scoring child keeps 0.05% of the input (v4's sha 3e7c2a1197c3 was 0.069%). It is refused, counted
+    and traced, and the search keeps the intact lower-scoring state instead."""
+    fj = FakeJudge(target=99)
+    gen = Scripted(lambda state: [cand(50), cand(20)] if state.depth == 0 else [])
+    # the second thing the gate asks about is the q=50 child (the first is the start state itself)
+    pool = LossPool(lambda path, nth: 0.0005 if nth == 2 else 1.0)
+    start = _ws(0)
+    result = search(pool, start, start.original, [gen], BIG, workers=2, judge=fj.judge())
+
+    assert result.refused_catastrophic == 1
+    # the INTACT child is what the search kept: the fragment scored 50 panel passes and the delivery is 20
+    assert fj._score(result.best_verdict)[1] == 20
+    refusals = result.trace.of_kind("refused_catastrophic")
+    assert len(refusals) == 1 and refusals[0]["reason"] == "part_volume_lost"
+    assert result.best_loss is not None and not result.best_loss.catastrophic
+    assert deliverable(result, FakeVerdict(1, False, "full"), score_fn=fj._score) is result.best
+    # EVERY measurement is against the ORIGINAL input, never against the parent state
+    assert {o for o, _ in pool.asked} == {start.original}
+
+
+def test_B22_a_refused_state_is_not_delivered_even_when_it_is_the_only_one() -> None:
+    """Nothing beat it, so there is nothing to fall back to: the gate ships the INPUT (None)."""
+    fj = FakeJudge(target=99)
+    gen = Scripted(lambda state: [cand(50)] if state.depth == 0 else [])
+    pool = LossPool(lambda path, nth: 0.0005 if nth >= 2 else 1.0)
+    start = _ws(0)
+    result = search(pool, start, start.original, [gen], BIG, workers=2, judge=fj.judge())
+    assert result.refused_catastrophic >= 1
+    assert deliverable(result, FakeVerdict(1, False, "full"), score_fn=fj._score) is None
+
+
+def test_B22_an_unmeasurable_loss_changes_nothing_about_the_search() -> None:
+    """A dead pool (these tests pass None) must leave the search exactly as it was before the rule."""
+    fj = FakeJudge(target=99)
+    gen = Scripted(lambda state: [cand(50), cand(20)] if state.depth == 0 else [])
+    result, _ = run([gen], fj)
+    assert result.refused_catastrophic == 0
+    assert result.best_loss is not None and not result.best_loss.measured
+    assert deliverable(result, FakeVerdict(1, False, "full"), score_fn=fj._score) is result.best

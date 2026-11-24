@@ -61,6 +61,7 @@ if kernel_test_fns_enabled():
 # so a per-op-module import here would be redundant.
 from meshpipeline.cad.repair_v4 import (
     body_kernel,  # noqa: E402,F401
+    loss_kernel,  # noqa: E402,F401
     ops,  # noqa: E402,F401
     sites_kernel,  # noqa: E402,F401
     ws_kernel,  # noqa: E402,F401
