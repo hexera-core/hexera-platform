@@ -50,6 +50,39 @@ back as `e181c1` from both fingerprint paths, twice, with 0 of 613 ids stale. So
 the writing op verified and what the next op reads is **INTERMITTENT**, which also explains why one file in a
 15-file wave hit it and why both seq arms hit the same one (they run the same pipeline).
 
+### It is NOT cross-process, and the price of the defence
+
+**All three calls ran in ONE process (pid 28645).** The worker that wrote the file in call 2 is the worker that
+read it in call 3, so a file's identity does NOT depend on which worker wrote it - which was the more serious
+of the two candidates, because it would have touched the verdict cache's own keying by file content. That
+candidate is dead; what is left is a same-process difference.
+
+**The read-time defence costs ~9 ms.** Measured on this part (607 entities), three reads in one process:
+`read_brep` 1320 ms + `entities_of` 18 ms on the first call (OCCT warm-up every op already pays), then 3 ms +
+6 ms, then 3 ms + 6 ms. Against a 300 s op timeout, and the op reads that same BREP immediately afterwards,
+so a pre-flight in the same worker is warm.
+
+### The strongest remaining candidate: a triangulation, not nondeterminism
+
+`fingerprint` measures `_centroid_and_box(sub)`, which is `BRepBndLib.Add_s` - and **that reads a
+TRIANGULATION when one is present**, which this repository already knows: `verdict/shape_digest.digest`'s own
+docstring says "bounding boxes (and so the Booleans) read a triangulation when one is present, so it is part
+of the input". `_centroid_and_box` itself has no cache (checked), so the difference cannot come from a stale
+memo - but a shape that carries a triangulation and the same shape without one have DIFFERENT boxes and
+therefore different fingerprints, with no nondeterminism required anywhere.
+
+That fits every measurement: the in-memory `new` of call 2 and the file it wrote compared equal at write time
+(`_verify_round_trip` passed), the file read back equal to itself twice in the PARENT process, and the worker
+- which had just run two Booleans and whatever meshing the verdict asked of it - read the same file and
+measured one edge differently. It also explains the intermittency: whether a triangulation is present depends
+on what else that worker did to that shape.
+
+**The experiment that would settle it, for whoever takes this:** report `BRep_Tool::Triangulation` presence
+(or `Poly_Triangulation` on the owning faces) beside the fingerprint in the same debug hook, for `old`, for
+`new`, and for a fresh read. If presence differs, the fix is to measure fingerprints from geometry alone -
+`BRepBndLib::AddOptimal`, or stripping triangulations before fingerprinting - and the read-time check becomes
+a belt-and-braces rather than the fix.
+
 **The open question, stated for whoever owns `ws_kernel`:** how can a BREP that verified equal to its
 in-memory shape at write time read back differently to the next op in the same run? Candidates not yet
 separated: a write that is not byte-deterministic for a twice-Booleaned compound, and a cross-process read of

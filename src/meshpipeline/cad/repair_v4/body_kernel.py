@@ -370,7 +370,8 @@ def _debug_record_shapes(payload: dict, old: Any, new: Any, stages: list[tuple[A
         return (f"{label}: {fingerprint(kind, sub, quantum, index)}"
                 f"{'' if sub.Location().IsIdentity() else ' [LOCATED]'} (extent {indexed.Extent()})")
 
-    print(f"DEBUG_RECORD {kind} {index} for op on {payload.get('brep_path')}", file=sys.stderr)
+    print(f"DEBUG_RECORD pid {os.getpid()} {kind} {index} for op on {payload.get('brep_path')}",
+          file=sys.stderr)
     print(f"  {at(old, 'old   ')}", file=sys.stderr)
     print(f"  {at(new, 'new   ')}", file=sys.stderr)
     for i, entry in enumerate(stages, start=1):
