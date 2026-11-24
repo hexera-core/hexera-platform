@@ -79,6 +79,14 @@ unit_with_retry() { # same args: one retry when the shard refused BEFORE any fil
 }
 
 date -u +%FT%TZ > $T/out/$VM_NAME.LAUNCHED
+# PACKING PILOT evidence (owner directive): every 15 s, load per core, memory and running containers; at the end the
+# kernel's OOM kills and every unit that exited 137 (SIGKILL: the OOM killer's signature for a docker run)
+( printf 'utc\tnproc\tload1\tload_per_core\tmem_used_mb\tmem_avail_mb\tcontainers\n'
+  while [ ! -f $T/out/$VM_NAME.RUN_DONE ]; do
+    read l1 _ < /proc/loadavg; np=$(nproc); set -- $(free -m | awk '/^Mem:/{print $3, $7}')
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date -u +%H:%M:%S)" "$np" "$l1" "$(awk -v a=$l1 -v b=$np 'BEGIN{printf "%.2f", a/b}')" "$1" "$2" "$(sudo docker ps -q | wc -l)"
+    sleep 15
+  done ) > $T/out/$VM_NAME.sysmon.tsv 2>/dev/null &
 # the units for THIS VM, one line each: group shard n split wave arms cap
 python3 -I -c "
 import json,sys
@@ -93,5 +101,8 @@ while read -r group shard n split wave arms cap; do
 done < $T/units.txt
 wait
 date -u +%FT%TZ > $T/out/$VM_NAME.RUN_DONE
+sudo dmesg -T 2>/dev/null | grep -i -E 'out of memory|oom-kill|killed process' > $T/out/$VM_NAME.oom.txt
+grep -l '^137$' $T/out/$VM_NAME.*.rc 2>/dev/null > $T/out/$VM_NAME.rc137.txt
+echo "oom_kernel_lines=$(wc -l < $T/out/$VM_NAME.oom.txt) units_exit_137=$(wc -l < $T/out/$VM_NAME.rc137.txt)" > $T/out/$VM_NAME.pack_summary
 shred -u $T/secret.env 2>/dev/null; ls $T/secret.env >/dev/null 2>&1 && echo present > $T/out/$VM_NAME.SECRET_STILL_THERE
 date -u +%FT%TZ > $T/out/$VM_NAME.VMDONE

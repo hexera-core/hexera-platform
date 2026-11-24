@@ -171,7 +171,7 @@ def parse_regions(specs: list[str]) -> list[dict]:
     return out
 
 
-def vms_for(regions: list[dict], label: str) -> list[dict]:
+def vms_for(regions: list[dict], label: str, ts: str = "", vcpu_per_shard: float = 0.0) -> list[dict]:
     """A region's vCPU budget filled with c2d VMs, largest first. Every VM is c2d so one benchmark's walls stay
     comparable across regions; the size ladder only decides how the budget is cut up."""
     vms = []
@@ -181,9 +181,11 @@ def vms_for(regions: list[dict], label: str) -> list[dict]:
             size = next(s for s in C2D_LADDER if s <= left)
             n += 1
             left -= size
-            vms.append({"name": f"dev-crsv4-snap-{label}-{r['region']}-{n}", "region": r["region"],
+            # the run stamp is IN the name: a name is unique per run, so a retried create can never yield two VMs of one
+            # name in two zones that nothing keyed on name can tell apart (the B17 pilot's leaked VM)
+            vms.append({"name": f"dev-crsv4-snap-{label}-{r['region']}-{n}" + (f"-{ts}" if ts else ""), "region": r["region"],
                         "zones": r["zones"], "machine": f"c2d-standard-{size}", "vcpu": size,
-                        "slots": size // VCPU_PER_SHARD, "units": []})
+                        "slots": int(size / (vcpu_per_shard or VCPU_PER_SHARD)), "units": []})
     return vms
 
 
@@ -229,6 +231,8 @@ def main() -> int:  # noqa: PLR0915 - one linear script: read, plan, refuse, wri
     p.add_argument("--file-timeout-s", type=float, default=None, help="the per-file wall the shards run with "
                    "(default the commit's DEFAULT_FILE_TIMEOUT_S); every (file, arm) cost is capped at it")
     p.add_argument("--search-wall-s", type=float, default=None, help="passed through to run_arm (lower only)")
+    p.add_argument("--vcpu-per-shard", type=float, default=0.0, help="vCPU per container (default VCPU_PER_SHARD=2); "
+                   "1 = one container per core (the owner's packing directive), below 1 oversubscribes")
     p.add_argument("--vm-usd-per-vcpu-h", type=float, default=0.047,
                    help="c2d-standard-56 at the v1r profile's own VM_USD_PER_H=2.63 (lane B14; NOT $0.38)")
     a = p.parse_args()
@@ -325,7 +329,7 @@ def main() -> int:  # noqa: PLR0915 - one linear script: read, plan, refuse, wri
         cost_of[group], source_of[group] = costs, source
 
     regions = parse_regions(a.regions)
-    capacity = sum(v["slots"] for v in vms_for(regions, a.label))
+    capacity = sum(v["slots"] for v in vms_for(regions, a.label, a.ts, a.vcpu_per_shard))
 
     def slots_at(target_minutes: float) -> dict[str, int]:
         """The shard count each group needs to finish inside `target_minutes`, with the model ceiling applied."""
@@ -344,7 +348,7 @@ def main() -> int:  # noqa: PLR0915 - one linear script: read, plan, refuse, wri
                          if sum(slots_at(t).values()) <= capacity), None)
         raise SystemExit(
             f"REFUSED: {sum(want.values())} shard slots ({want}) do not fit {capacity} on "
-            f"{len(vms_for(regions, a.label))} VMs. The plan asks for {work_h:.1f} core-h. "
+            f"{len(vms_for(regions, a.label, a.ts, a.vcpu_per_shard))} VMs. The plan asks for {work_h:.1f} core-h. "
             + (f"--target-min {feasible} fits ({sum(slots_at(feasible).values())} slots) and is the smallest that "
                f"does; " if feasible else "no target under 24 h fits, so the regions are too small for this split; ")
             + "or raise --regions vCPU, or cut the split. I will not quietly pack more work into fewer shards.")
@@ -408,7 +412,7 @@ def main() -> int:  # noqa: PLR0915 - one linear script: read, plan, refuse, wri
     if any(u["cap_usd"] <= 0 for u in units):
         raise SystemExit("REFUSED: a shard cap rounded to $0: fewer shards or a larger total")
 
-    vms = pack(vms_for(regions, a.label), units)
+    vms = pack(vms_for(regions, a.label, a.ts, a.vcpu_per_shard), units)
     placed = sum(len(v["units"]) for v in vms)
     if placed != len(units):
         raise SystemExit(f"REFUSED: {placed} of {len(units)} shard slots placed")
