@@ -75,6 +75,22 @@ def scaled_sliver_widths(diag_mm: float) -> tuple[float, ...]:
 _DET_SLIVER_WIDTH_RATIOS = (1e-4, 1e-3, 1e-2)
 
 
+# NO MEASURED WIN RESTS ON THIS LADDER YET, and the A11-p3 commit that widened it reads as though one did. The
+# honest position, from lane D's oracle (`.superpowers/sdd/2026-11-22-crs-search-repair-plan/lane-d21/pass1/
+# winners_by_defect.jsonl` - check it rather than trusting this comment):
+#   * Of 179 winner states that reached CLEAN, seven used `remove_small` with a width, and every one is 0.69 to
+#     1.09 TIMES THE PART DIAGONAL (1003.5 mm on a 919.9 mm part, 338.5 on 413.0, 798.0 on 1156.5, ...). This
+#     ladder tops out at 1e-2 of the diagonal, so it reaches NONE of them - it is 69x to 109x too small.
+#   * Those winners are not ladder rungs at all. Divided by 1.05 they are 955.7, 925.4, 322.3, 386.0, 760.0,
+#     755.0 mm: D18's AIMED width, `1.05 * (length + width)` of the sliver a mesher named, proposed per-face by
+#     `DetGenerator._aimed_small_rows` with `last_op_origin` "det". That aimed row is what the wins pay for.
+#   * What this ladder rests on is a different and so-far UNWON defect class: 6 of the 16 faces a `low_quality`
+#     failure located carry a tiny EDGE of 0.001 to 0.2 mm, which the old min(0.1 mm, ...) ceiling could not
+#     reach on a part over 100 mm. Real, measured, and not yet shown to win anything.
+# It is kept because it is three rungs and costs no extra candidates, not because it is load-bearing. Widening it
+# towards the measured band would duplicate the aimed row worse and spend k; reverting it would restore a ceiling
+# that was hiding a per-state-diagonal order dependence. If the oracle later wins on a width in the 1e-4..1e-2
+# band, this comment is what should change first.
 def det_sliver_widths(diag_mm: float) -> tuple[float, ...]:
     """`remove_small` widths (mm) the DET SWEEP proposes for a part of this diagonal: fractions of the diagonal
     itself, with no absolute ceiling. A part with no usable diagonal has none.
