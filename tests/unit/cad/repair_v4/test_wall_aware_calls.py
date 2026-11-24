@@ -153,3 +153,52 @@ def test_a_panel_refused_for_time_is_infrastructure_not_a_bad_part(monkeypatch) 
     with pytest.raises(CheckerUnavailable) as why:
         _assemble_with(monkeypatch, left=3.0)
     assert "not starting a panel" in str(why.value)
+
+
+# --- the leak that made the unit directory flaky (A16 follow-up) ----------------------------------------------------
+
+
+def test_a_failed_pool_start_does_not_LEAK_the_file_deadline(monkeypatch, tmp_path) -> None:
+    """THE CAUSE of A16's flaky directory. `set_file_deadline` ran before the pool's try/except, so a pool that
+    failed to start raised `SearchUnavailable` past the only `finally` that cleared it. The deadline then stayed
+    set for the rest of the PROCESS: every later panel saw a shrinking remainder, got clipped, and - with any
+    non-pass member - came back inconclusive instead of a real verdict. Whether a given test tripped over it
+    depended on how far into the run it was and how fast the machine was, which is exactly the 28/40/29/28/29/29/30
+    pattern LEAD-3 measured.
+    """
+    import meshpipeline.cad.repair_v4 as v4
+
+    src = tmp_path / "in.step"
+    src.write_text("ISO-10303-21;\n")
+
+    def no_pool(*a, **kw):  # noqa: ANN001, ANN003, ARG001
+        raise RuntimeError("no worker for you")
+
+    # `_run_search` imports WorkerPool locally, so it must be patched where it is DEFINED, not on this module
+    import meshpipeline.cad.repair_v4.worker_pool as wp
+
+    monkeypatch.setattr(wp, "WorkerPool", no_pool)
+    monkeypatch.setattr(v4, "ARM", "search_det")
+    wall.set_file_deadline(None)
+    with pytest.raises(v4.SearchUnavailable):
+        v4.repair_v4(str(src), str(tmp_path / "out.step"),
+                     budget=v4.Budget(wall_s=10.0, ops=1, model_calls=0, model_usd=0.0),
+                     deadline_s=time.monotonic() + 600.0)
+    assert wall.file_deadline() is None, (
+        "a failed run must leave no deadline behind: the next call in this process would be clipped by a wall that "
+        "belongs to a file that never ran")
+
+
+def test_an_expired_deadline_returns_early_and_sets_nothing(monkeypatch, tmp_path) -> None:
+    """The other early exit: a deadline already past returns `not_measured` before the wall is set at all."""
+    import meshpipeline.cad.repair_v4 as v4
+
+    src = tmp_path / "in.step"
+    src.write_text("ISO-10303-21;\n")
+    monkeypatch.setattr(v4, "ARM", "search_det")
+    wall.set_file_deadline(None)
+    out = v4.repair_v4(str(src), str(tmp_path / "out.step"),
+                       budget=v4.Budget(wall_s=10.0, ops=1, model_calls=0, model_usd=0.0),
+                       deadline_s=time.monotonic() - 1.0)
+    assert out.verdict_summary.get("reason") == "deadline_expired"
+    assert wall.file_deadline() is None
