@@ -157,12 +157,11 @@ def one(entry: dict, inputs: str, out: str, *, op_timeout: float = OP_TIMEOUT_S,
             v_root = judge.full(pool, root, src) if root.brep_path != ws_in.brep_path else v_in
             row["staged"] = {**summary(v_root), "changed": root.brep_path != ws_in.brep_path,
                              **against(measure(root.brep_path), orig)}
+            row["root"] = "staged"   # LEAD-2 (a): the root is the staged output only, the state the arms start from
             if v_root.clean:
-                # the staged healer alone made it clean: on record, and the sweep runs from the INPUT instead, to see
-                # what the ops do on their own (a clean root has no sites and would only re-run the stages)
-                row["staged_clean"] = True
-                root, v_root = ws_in, v_in
-            row["root"] = "input" if root.brep_path == ws_in.brep_path else "staged"
+                # the staged healer alone made it clean: every arm already wins this file, there is nothing to sweep
+                row["status"] = "staged_clean"
+                return row
             cheap_fn = S.adaptive_cheap(judge, v_root)
             root_cheap = judge.score(cheap_fn(pool, root, src))
             gen = S.DetGenerator(diagonal=lambda ws: d0, whole_part_defeature=True)
