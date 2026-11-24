@@ -166,3 +166,39 @@ def test_faithful_report_carries_the_bbox_ratio() -> None:
     assert r.bbox_ratio is None            # not measured: None, never a fabricated 1.0
     r2 = FaithfulReport(True, 0.0, 0.1, 1.0, 0.5, 1, 1, bbox_ratio=0.5, diag_after_mm=50.0)
     assert r2.bbox_ratio == 0.5 and r2.diag_after_mm == 50.0
+
+
+# ------------------------------------------------------------------ _clean_with, now mine (LEAD-2, 2026-11-24)
+
+def test_clean_with_cannot_change_the_answer_under_the_current_definition() -> None:
+    """The search replaces layer 3 with a declared-edits re-run and re-derives clean through the ONE rule. Since
+    the rule no longer reads layer 3, that re-derivation is an identity: it is kept as the seam so a future change
+    to the definition flows through `clean_of` alone, and this pins that it is inert today."""
+    from dataclasses import replace as dc_replace
+
+    from meshpipeline.cad.repair_v4 import search
+    from meshpipeline.cad.repair_v4.verdict.assemble import Verdict
+
+    for valid in (True, False):
+        for passes, fails in ((2, 0), (1, 1), (0, 0)):
+            panel = [_m() for _ in range(passes)] + [_m("fail") for _ in range(fails)]
+            for tier in ("full", "cheap"):
+                for inconclusive in (False, True):
+                    v = Verdict(_valid(valid), panel, _faith(True), False, tier, inconclusive)
+                    v = dc_replace(v, clean=assemble.clean_of(tier=tier, inconclusive=inconclusive,
+                                                              valid=v.valid, panel=panel, faithful=v.faithful))
+                    for report in (None, _faith(True), _faith(False, volume_ratio=9.0)):
+                        assert search._clean_with(v, report) is v.clean, (valid, passes, tier, inconclusive)
+
+
+def test_clean_with_no_longer_cites_the_decision_it_used_to_escalate() -> None:
+    """Its docstring described the solid-less layer-3 deadlock as an OPEN owner decision and pointed at code that
+    no longer exists. The decision is made; a stale comment is the next reader's bug."""
+    from pathlib import Path
+
+    from meshpipeline.cad.repair_v4 import search
+
+    doc = search._clean_with.__doc__ or ""
+    assert "OPEN OWNER DECISION" not in doc and "_SOLIDLESS_OK_REASONS" not in doc
+    assert "2026-11-24" in doc
+    assert "_SOLIDLESS_OK_REASONS" not in Path(search.__file__).read_text()
