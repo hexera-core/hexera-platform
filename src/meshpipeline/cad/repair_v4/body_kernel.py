@@ -42,6 +42,17 @@ from meshpipeline.cad.repair_v4.ws_kernel import (
 ABS_BOUND_MM = 0.1
 REL_BOUND = 0.001
 _KINDS = ("face", "edge", "solid")
+#: A volume this small, as a fraction of the part's bounding-box diagonal CUBED, is ZERO to the body ops. Relative, not
+#: absolute: the part's own size decides what is negligible (a 1e-6 mm3 sliver is noise on a 300 mm part and not on a
+#: 0.3 mm one). Cubing the diagonal gives a volume scale; 1e-9 of it is far below any feature a mesher resolves (on a
+#: 100 mm part, 1e-3 mm3 - a 0.1 mm cube) and far above the 1e-13 to 1e-10 mm3 OCCT round-off that lane C11 measured on
+#: the degenerate pieces a cut left on dev 0051_00518960. The SAME threshold says when two bodies merely touch
+#: (`_conformalise`'s overlap test) and when a piece a cut leaves has no volume, so the op judges both alike.
+ZERO_VOLUME_FRACTION = 1e-9
+
+
+def zero_volume_mm3(diagonal: float) -> float:
+    return ZERO_VOLUME_FRACTION * max(diagonal, 1.0) ** 3
 
 
 def fidelity_bound(diagonal: float) -> float:
@@ -415,6 +426,38 @@ def _overlap_depths(payload: dict) -> dict:
     return {"diag_mm": diag, "bound_mm": fidelity_bound(diag), "pairs": pairs}
 
 
+def _drop_zero_volume(solids: list[Any], eps: float) -> tuple[list[Any], dict]:
+    """`solids` without the pieces whose |volume| <= `eps`, and a history stage that REMOVES what only those pieces
+    held. Lane C11 on dev 0051_00518960: cut_by:B4 left two 2-face 'solids' of 1e-13 and 1e-10 mm3, each
+    BRepCheck-valid alone, which layer 1 reports as `non_positive_volume`, so the whole output was invalid. Dropped,
+    the part is VALID. This is NOT a repair win: that file stays 0/4 on the panel, and the cut itself cost netgen_occ
+    the pass it had on the input. It only stops the op emitting a shape layer 1 must reject.
+    A sub-shape a dropped piece SHARES with a kept solid is not removed: it lives on in the kept one."""
+    from OCP.BRepTools import BRepTools_History
+
+    kept, volumes = [], []
+    gone = []
+    for solid in solids:
+        v = _volume(solid)
+        if abs(v) <= eps:
+            gone.append(solid)
+            volumes.append(v)
+        else:
+            kept.append(solid)
+    if not gone:
+        return solids, {"history": None, "volumes": []}
+    kept_maps = [_maps(s) for s in kept]
+    hist = BRepTools_History()
+    for piece in gone:
+        maps = _maps(piece)
+        for kind in _KINDS:
+            for i in range(1, maps[kind].Extent() + 1):
+                sub = maps[kind].FindKey(i)
+                if not any(m[kind].Contains(sub) for m in kept_maps):
+                    hist.Remove(sub)
+    return kept, {"history": hist, "volumes": volumes}
+
+
 @register("v4_conformalise")
 def _conformalise(payload: dict) -> dict:
     start = time.perf_counter()
@@ -437,7 +480,7 @@ def _conformalise(payload: dict) -> dict:
     for i, a in enumerate(targets):
         for b in targets[i + 1:]:
             volume = _common_volume(a, b, fuzzy)
-            if volume <= 1e-9 * max(diagonal_of(old), 1.0) ** 3:
+            if volume <= zero_volume_mm3(diagonal_of(old)):
                 continue  # touching, not overlapping
             involves_keeper = keeper is not None and (a.IsSame(keeper) or b.IsSame(keeper))
             if not involves_keeper:
@@ -471,8 +514,12 @@ def _conformalise(payload: dict) -> dict:
     stages.append((frag.History(), None))
     result_solids = _maps(frag.Shape())["solid"]
     new_solids = [result_solids.FindKey(i) for i in range(1, result_solids.Extent() + 1)]
+    new_solids, dropped = _drop_zero_volume(new_solids, zero_volume_mm3(diagonal_of(old)))
+    if dropped["history"] is not None:
+        stages.append((dropped["history"], None))
     params = {"bodies": payload.get("body_ids", []), "fuzzy_mm": fuzzy, "mode": mode,
-              "measured": {"overlaps": measured, "solids_before": len(targets), "solids_after": len(new_solids)}}
+              "measured": {"overlaps": measured, "solids_before": len(targets), "solids_after": len(new_solids),
+                           "zero_volume_pieces_dropped": dropped["volumes"]}}
     return _finish(payload, old, stages, targets, new_solids, op="conformalise", params=params,
                    start=start, require_shared=len(new_solids) >= 2,
                    expected_solids=_solid_count(old) - len(targets) + len(new_solids))

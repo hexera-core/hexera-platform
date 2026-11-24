@@ -178,3 +178,48 @@ def test_rebuild_drops_only_the_emptied_compound_and_keeps_the_same_tshapes() ->
     solids = [m.FindKey(i) for i in range(1, m.Extent() + 1)]
     assert any(s.IsPartner(far) for s in solids) and any(s.IsPartner(repl) for s in solids)  # same TShape
     assert not any(s.IsPartner(a) or s.IsPartner(b) for s in solids)
+
+
+# ------------------------------------------------------------------ zero-volume pieces a cut leaves (lane C11, 0051)
+
+ABC_0051 = Path(__file__).resolve().parents[1] / "fixtures" / "geometry" / "abc_body_overlap_00518960.step"
+
+
+def test_a_cut_does_not_emit_zero_volume_pieces_so_0051_comes_out_valid(pool: WorkerPool, tmp_path: Path) -> None:
+    """Dev 0051_00518960 (ABC): B4 overlaps B1, B2 and B3. cut_by:B4 used to leave two 2-face 'solids' of 1e-13 and
+    1e-10 mm3, which layer 1 reports as `non_positive_volume`. The cut now drops them: VALID, 4 solids.
+    NOT a repair win: the panel stays 0/4 and netgen_occ, which passed on the input, crashes on the cut. This pins
+    the output's validity only."""
+    from meshpipeline.cad.repair_v4.stages import step_for
+    from meshpipeline.cad.repair_v4.verdict.valid import check_valid
+
+    read = pool.call("read_step_xcaf", {"path": str(ABC_0051), "brep_out": str(tmp_path / "in.brep")},
+                     timeout_s=TIMEOUT)
+    assert read.ok, read.error
+    ws = Workspace.from_brep(pool, read.value["brep"], read.value["labels"])
+    before = check_valid(pool, str(ABC_0051), original_units=None)
+    assert not before.ok and {f.code for f in before.hard} == {"body_overlap"}
+
+    new, diff = REGISTRY["conformalise"].apply(pool, ws, ["B1", "B2", "B3", "B4"], {"mode": "cut_by:B4"},
+                                               timeout_s=TIMEOUT)
+    assert diff.params.get("declined") is None, diff.params
+    measured = diff.params["measured"]
+    assert len(measured["zero_volume_pieces_dropped"]) == 2
+    assert all(abs(v) < 1e-6 for v in measured["zero_volume_pieces_dropped"])
+    assert measured["solids_after"] == 4
+
+    after = check_valid(pool, step_for(pool, new.brep_path), original_units="mm")
+    assert after.ok, [(f.code, f.entities) for f in after.hard]
+    from OCP.TopAbs import TopAbs_SOLID
+    from OCP.TopExp import TopExp
+    from OCP.TopTools import TopTools_IndexedMapOfShape
+    m = TopTools_IndexedMapOfShape()
+    TopExp.MapShapes_s(_read(new.brep_path), TopAbs_SOLID, m)
+    assert m.Extent() == 4
+    assert sum(1 for s in new.ids if s[0] == "B") == 4  # the workspace's ids agree with the shape
+
+
+def test_a_cut_with_no_degenerate_piece_reports_none_dropped(pool: WorkerPool, tmp_path: Path) -> None:
+    ws, _ = _input(pool, tmp_path)
+    new, diff = REGISTRY["conformalise"].apply(pool, ws, ["B1", "B2"], {"mode": "cut_by:B1"}, timeout_s=TIMEOUT)
+    assert diff.params["measured"]["zero_volume_pieces_dropped"] == []

@@ -1,0 +1,162 @@
+{
+ "0057": [
+  [
+   [
+    "conformalise",
+    {
+     "mode": "cut_by:B14"
+    },
+    [
+     "B10",
+     "B13",
+     "B14"
+    ]
+   ],
+   [
+    "conformalise",
+    {
+     "mode": "fragment"
+    },
+    "all"
+   ]
+  ],
+  [
+   [
+    "fuse",
+    {},
+    [
+     "B10",
+     "B13",
+     "B14"
+    ]
+   ],
+   [
+    "conformalise",
+    {
+     "mode": "fragment"
+    },
+    "all"
+   ]
+  ]
+ ],
+ "0054": [
+  [
+   [
+    "conformalise",
+    {
+     "mode": "cut_by:B2"
+    },
+    [
+     "B2",
+     "B3"
+    ]
+   ],
+   [
+    "conformalise",
+    {
+     "mode": "fragment"
+    },
+    "all"
+   ]
+  ],
+  [
+   [
+    "fuse",
+    {},
+    [
+     "B2",
+     "B3"
+    ]
+   ],
+   [
+    "conformalise",
+    {
+     "mode": "fragment"
+    },
+    "all"
+   ]
+  ],
+  [
+   [
+    "conformalise",
+    {
+     "mode": "cut_by:B3"
+    },
+    [
+     "B2",
+     "B3"
+    ]
+   ],
+   [
+    "conformalise",
+    {
+     "mode": "fragment"
+    },
+    "all"
+   ]
+  ]
+ ],
+ "0051": [
+  [
+   [
+    "conformalise",
+    {
+     "mode": "cut_by:B4"
+    },
+    [
+     "B1",
+     "B2",
+     "B3",
+     "B4"
+    ]
+   ],
+   [
+    "orient_and_close",
+    {},
+    []
+   ]
+  ],
+  [
+   [
+    "conformalise",
+    {
+     "mode": "cut_by:B4"
+    },
+    [
+     "B1",
+     "B2",
+     "B3",
+     "B4"
+    ]
+   ],
+   [
+    "conformalise",
+    {
+     "mode": "fragment"
+    },
+    "all"
+   ]
+  ]
+ ],
+ "twobox": [
+  [
+   [
+    "conformalise",
+    {
+     "mode": "cut_by:B1"
+    },
+    [
+     "B1",
+     "B2"
+    ]
+   ],
+   [
+    "conformalise",
+    {
+     "mode": "fragment"
+    },
+    "all"
+   ]
+  ]
+ ]
+}
