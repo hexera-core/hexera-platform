@@ -362,6 +362,9 @@ def default_judge(*, h_mm: float, cache: VerdictCache | None = None) -> Judge:
     )
 
 
+#: Position of layer 1 in a `Score` (valid, panel passes, min SICN, -max_dev, -churn). The delivery gate reads
+#: key 0 and key 1 by name, so a change to the tuple's shape cannot silently move the gate.
+VALID_KEY = 0
 #: Position of the panel-pass count in a `Score` (valid, panel passes, min SICN, -max_dev, -churn).
 #: The delivery gate reads it by this name; `panel_passes` fails loudly if the tuple's shape changes.
 SCORE_PANEL_PASSES = 1
@@ -1779,14 +1782,21 @@ def deliverable(
 ) -> Workspace | None:
     """The workspace to ship, or None meaning "ship the input unchanged".
 
-    The delivery rule: the best state is delivered ONLY if it passes at least as many panel
-    members as the input. A clean input is never replaced, and a search that beat nothing delivers
+    The delivery rule, "no worse than the input", measured in WHAT CLEAN IS (owner decision 2026-11-24:
+    valid + panel): the best state is delivered only if it is no worse than the input in layer 1 AND passes at
+    least as many panel members. A clean input is never replaced, and a search that beat nothing delivers
     nothing. This is the gate against shipping a "repair" that made things worse.
+
+    Layer 3 is not consulted: fidelity is reported, never a gate. A delivered output that moved the part a long
+    way is flagged for the owner in the report (`gaming_flags`).
     """
     if not result.changed or input_verdict.clean:
         return None
     score_of = score_fn or score
-    if panel_passes(score_of(result.best_verdict)) < panel_passes(score_of(input_verdict)):
+    out, inp = score_of(result.best_verdict), score_of(input_verdict)
+    if out[VALID_KEY] < inp[VALID_KEY]:           # layer 1 regressed: never shipped
+        return None
+    if panel_passes(out) < panel_passes(inp):
         return None
     return result.best
 

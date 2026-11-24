@@ -135,7 +135,8 @@ def _run(layers_state, members, **kwargs) -> Verdict:
     return verdict(None, "s.step", "o.step", members=members, run_panel=run_panel, **kwargs)  # type: ignore[arg-type]
 
 
-def test_clean_requires_all_layers(layers) -> None:
+def test_clean_requires_valid_and_the_whole_panel(layers) -> None:
+    """Owner decision 2026-11-24: the two layers that gate are 1 and 2."""
     members = [FakeMember("a"), FakeMember("b")]
     assert _run(layers, members).clean is True
 
@@ -145,14 +146,18 @@ def test_clean_requires_all_layers(layers) -> None:
 
     assert _run(layers, [FakeMember("a"), FakeMember("b", status="fail", sicn=None)]).clean is False
 
+    # layer 3 is measured and reported, and does not gate: an unfaithful output is still clean
     layers["faithful"] = _faith(ok=False, dev=0.5)
-    assert _run(layers, members).clean is False
+    v = _run(layers, members)
+    assert v.clean is True and v.faithful is not None and v.faithful.ok is False
 
 
-def test_an_invalid_file_has_no_faithful_layer_and_is_not_compared(layers) -> None:
+def test_an_invalid_file_is_still_measured_against_the_original(layers) -> None:
+    """Reported on EVERY row: the fidelity numbers of an invalid output still say what the repair did."""
     layers["valid"] = False
     v = _run(layers, [FakeMember("a")])
-    assert v.faithful is None and layers["faithful_calls"] == []
+    assert layers["faithful_calls"] == [("o.step", "s.step", [], [])]
+    assert v.faithful is not None and v.clean is False
 
 
 def test_declared_edits_reach_layer_3(layers) -> None:
@@ -307,10 +312,16 @@ def test_an_inconclusive_panel_is_never_cached(layers, step, tmp_path) -> None:
     assert member.runs == 2
 
 
-def test_an_unfaithful_state_never_outranks_a_faithful_one() -> None:
-    clean = _v(True, _passes(1, 0.05), _faith(ok=True, dev=0.09))
-    unfaithful = _v(True, _passes(3, 0.9), _faith(ok=False, dev=0.0))  # e.g. area_changed or fill_too_large
-    assert score(clean) > score(unfaithful)
+def test_a_state_that_meshes_better_now_outranks_a_more_faithful_one() -> None:
+    """The reverse of the old rule, on purpose (owner decision 2026-11-24): fidelity is preferred, not required,
+    so a state that passes more panel members wins even though it moved the part."""
+    faithful_but_worse = _v(True, _passes(1, 0.05), _faith(ok=True, dev=0.09))
+    moved_but_meshes = _v(True, _passes(3, 0.9), _faith(ok=False, dev=0.0))
+    assert score(moved_but_meshes) > score(faithful_but_worse)
+    # among states equal on layers 1 and 2, less movement still wins
+    near = _v(True, _passes(3, 0.9), _faith(ok=True, dev=0.01))
+    far = _v(True, _passes(3, 0.9), _faith(ok=True, dev=5.0))
+    assert score(near) > score(far)
 
 
 def test_declared_default_is_not_shared_between_calls(layers) -> None:

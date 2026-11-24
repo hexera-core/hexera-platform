@@ -356,15 +356,17 @@ def test_judge_threads_declared_edits_into_layer_three(monkeypatch):
     assert out[4] == -2  # and churn is no longer permanently 0
 
 
-def test_solidless_original_gates_on_validity_and_the_two_expected_reasons(monkeypatch):
+def test_a_solidless_original_is_judged_on_layer_1_alone(monkeypatch):
+    """The old local gate (valid AND every layer-3 reason expected) is gone with the layer-3 gate itself: a
+    solid-less original is now judged exactly like any other, on layer 1 and the panel."""
     monkeypatch.setattr(stages, "step_for", lambda pool, brep: brep)
     monkeypatch.setattr(stages, "original_facts", lambda pool, brep: (6, 0))
     ws = Workspace(brep_path="n", ids={}, labels={}, history=[], original="o")
     expected = ["volume_changed", "body_count_changed"]
-    cases = [(True, expected, 1),                       # a correct heal of loose faces
-             (False, [], 0),                            # BRepCheck-invalid: must NOT pass on equal SICN
-             (True, expected + ["area_changed"], 0),
-             (True, expected + ["deviation_exceeds_bound"], 0)]
+    cases = [(True, expected, 1),                        # a correct heal of loose faces
+             (False, [], 0),                             # BRepCheck-invalid: still fails key 0
+             (True, expected + ["area_changed"], 1),      # layer 3 no longer vetoes
+             (True, expected + ["deviation_exceeds_bound"], 1)]
     for ok, reasons, want in cases:
         monkeypatch.setattr(stages, "cheap_verdict", lambda *a, _v=_verdict(ok, reasons), **k: _v)
         assert stages._judge(None, ws)[0] == want, (ok, reasons)
@@ -560,3 +562,17 @@ def test_a_stage_that_applied_nothing_says_what_it_looked_at(world) -> None:
     why = result.skipped["bodies"]
     assert why != "no_change" and "1 solid" in why and "2" in why  # what it looked at, and why nothing applied
     assert result.applied_ops["bodies"] == 0 and not result.rolled_back
+
+
+def test_the_solidless_workaround_is_gone_because_layer_three_no_longer_gates(monkeypatch) -> None:
+    """It existed only because score key 0 was "valid AND faithful": a solid-less original always reports
+    volume_changed/body_count_changed, so a correct heal had to be exempted by hand. Key 0 is now layer 1 alone
+    (owner decision 2026-11-24), so the exemption is dead code and the score is the plain one."""
+    import re as _re
+
+    from meshpipeline.cad.repair_v4 import stages as st
+
+    src = __import__("pathlib").Path(st.__file__).read_text()
+    assert "_SOLIDLESS_OK_REASONS" not in src
+    body = src[src.index("def _judge("):src.index("def _judged(")]
+    assert "solids == 0" not in body and _re.search(r"\(int\(gate\), \*result", body) is None

@@ -367,7 +367,18 @@ def _run_panel(pool, step, members, *, timeout_s):
     return [m.run(pool, step, timeout_s=timeout_s) for m in members]
 
 
-def test_verdict_over_a_real_file_is_clean_only_when_faithful(pool, tmp_path) -> None:
+def test_the_bbox_ratio_is_measured_on_real_shapes(pool, tmp_path) -> None:
+    """The number report.py's gaming flag reads: the repaired shape's extent over the original's."""
+    original = _write_brep(_box(100.0), tmp_path / "o.brep")
+    same = check_faithful(pool, original, original, declared_added=[], declared_removed=[])
+    assert same.bbox_ratio == pytest.approx(1.0) and same.diag_after_mm == pytest.approx(same.bbox_ratio * 173.2, abs=1)
+    half = check_faithful(pool, original, _write_brep(_box(50.0), tmp_path / "h.brep"),
+                          declared_added=[], declared_removed=[])
+    assert half.bbox_ratio == pytest.approx(0.5, abs=0.01)   # a part shrunk to half its extent
+    assert half.volume_ratio == pytest.approx(0.125, abs=0.01)
+
+
+def test_verdict_over_a_real_file_is_clean_by_valid_and_panel_alone(pool, tmp_path) -> None:
     box = _box()
     original = _write_step(box, tmp_path / "o.step")
     same = _write_step(box, tmp_path / "same.step")
@@ -376,9 +387,10 @@ def test_verdict_over_a_real_file_is_clean_only_when_faithful(pool, tmp_path) ->
     good = verdict(pool, same, original, members=[_Member()], run_panel=_run_panel)
     assert good.valid.ok and good.faithful is not None and good.faithful.ok and good.clean is True
 
+    # a real part moved 0.2 mm: layer 3 says unfaithful, and since the owner's 2026-11-24 decision it is CLEAN
     bad = verdict(pool, moved, original, members=[_Member()], run_panel=_run_panel)
     assert bad.valid.ok and bad.faithful is not None and bad.faithful.ok is False
-    assert bad.clean is False
+    assert bad.clean is True
 
     unmeshable = verdict(pool, same, original, members=[_Member(status="fail")], run_panel=_run_panel)
     assert unmeshable.faithful is not None and unmeshable.faithful.ok and unmeshable.clean is False
@@ -443,7 +455,7 @@ def test_a_correct_heal_of_a_solidless_input_reads_clean_and_a_damaging_one_does
 
     shifted = verdict(pool, moved, original, members=[_Member()], run_panel=_run_panel)
     assert shifted.valid.ok and shifted.faithful is not None
-    assert shifted.faithful.reason == "deviation_exceeds_bound" and shifted.clean is False
+    assert shifted.faithful.reason == "deviation_exceeds_bound" and shifted.clean is True  # reported, not gating
 
     broken = verdict(pool, open_shell, original, members=[_Member()], run_panel=_run_panel)
     assert broken.valid.ok is False and broken.clean is False  # a dropped face: layer 1 says invalid

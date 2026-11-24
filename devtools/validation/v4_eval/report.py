@@ -14,7 +14,7 @@
 
 THE ROW. One `ArmRow` per (file, arm): the INPUT's clean flag and panel passes, and the OUTPUT's `valid`,
 `faithful_ok` and `panel_passes` of `panel_size`, judged at the FULL tier, plus model dollars and wall
-seconds. Clean is DERIVED here (`valid AND faithful_ok AND every panel member passes`, the verdict's
+seconds. Clean is DERIVED here (`valid AND every panel member passes`, the verdict's
 definition); a row whose stored `clean` disagrees is refused, so a harness cannot hand over a verdict the
 parts do not support. A row the checker could not judge (a CheckerUnavailable, a pool death, a missing
 mesher) is `inconclusive`: it carries no verdict and counts as NEITHER a pass NOR a failure, anywhere.
@@ -144,11 +144,20 @@ class ArmRow:
     #: search_ai only: why the AI stopped (`proposer.StopReason`, or `model_budget`). `model_unavailable` = the model
     #: could not be reached after the router's retries, so the row is INCONCLUSIVE: the arm was never really run.
     ai_stop_reason: str | None = None
+    #: the OUTPUT's fidelity numbers, REPORTED and never a gate (owner decision 2026-11-24). `gaming_flags` reads
+    #: them to flag a clean output that moved the part. None = not measured (no extent, or a row written before
+    #: they existed), counted as unmeasured and never as "within the limits".
+    out_volume_ratio: float | None = None
+    out_bbox_ratio: float | None = None
+    out_max_dev_mm: float | None = None
 
     @property
     def clean(self) -> bool:
-        """The verdict's definition, derived: valid AND faithful.ok AND the whole panel passes."""
-        return bool(self.out_valid and self.out_faithful_ok
+        """The verdict's definition, derived: valid AND the whole panel passes.
+
+        OWNER DECISION 2026-11-24: layer 3 does not gate. `out_faithful_ok` is still carried and reported, and a
+        clean output that moved the part is FLAGGED (`gaming_flags`), never demoted."""
+        return bool(self.out_valid
                     and self.out_panel_passes is not None and self.out_panel_passes == self.panel_size)
 
     @property
@@ -573,6 +582,41 @@ def _excluded_block(excluded: Sequence[Mapping[str, Any]], n_files: int,
     return block
 
 
+#: Owner review thresholds for a CLEAN output that moved the part (owner decision 2026-11-24). They FLAG, they do
+#: not demote: a flagged file is still clean and still in every rate. The owner reads the list.
+GAMING_VOLUME_CHANGE = 0.25   # |volume_ratio - 1| above this
+GAMING_BBOX_SHRINK = 0.10     # bbox_ratio below 1 - this
+
+
+def gaming_why(row: ArmRow) -> list[str]:
+    """Why this CLEAN row is worth the owner's eye, in its own numbers; empty when it is inside both limits or was
+    never measured."""
+    why = []
+    if row.out_volume_ratio is not None and abs(row.out_volume_ratio - 1.0) > GAMING_VOLUME_CHANGE:
+        why.append(f"volume x{row.out_volume_ratio:.3g}")
+    if row.out_bbox_ratio is not None and row.out_bbox_ratio < 1.0 - GAMING_BBOX_SHRINK:
+        why.append(f"bbox x{row.out_bbox_ratio:.3g}")
+    return why
+
+
+def _gaming_block(rows: Sequence[ArmRow], arms: Sequence[str]) -> dict[str, Any]:
+    """Clean outputs that moved the part a long way, per arm, NAMED. Not a failure and not a demotion: these files
+    are clean under the definition (valid + panel) and stay in every count. The flag exists because a repair that
+    deletes or inflates geometry can satisfy the meshers, and the owner reviews that by hand."""
+    out: dict[str, Any] = {}
+    for a in arms:
+        mine = [r for r in rows if r.arm == a and r.counts and r.clean]
+        named = [{"name": r.name, "sha256": r.sha256, "source": r.source, "volume_ratio": r.out_volume_ratio,
+                  "bbox_ratio": r.out_bbox_ratio, "max_dev_mm": r.out_max_dev_mm, "why": ", ".join(w)}
+                 for r, w in ((r, gaming_why(r)) for r in mine) if w]
+        out[a] = {"files": len(named), "clean_reviewed": len(mine),
+                  "unmeasured": sum(1 for r in mine if r.out_volume_ratio is None and r.out_bbox_ratio is None),
+                  "names": sorted(named, key=lambda x: str(x["sha256"]))}
+    return {"counted_as": "clean: flagged for owner review, in every rate and no failure",
+            "limits": {"volume_change": GAMING_VOLUME_CHANGE, "bbox_shrink": GAMING_BBOX_SHRINK},
+            "arms": out}
+
+
 def _paired_columns(by_sha: Mapping[str, dict[str, ArmRow]], blocks: dict[str, dict[str, Any]],
                     n_files: int) -> dict[str, Any]:
     """The PAIRED marginal: each measured arm's clean rate over the files EVERY measured arm judged. Per-arm
@@ -766,6 +810,7 @@ def build_report(result: WaveResult, *, previous: Mapping[str, Any] | None = Non
         "heldout_split": wave.split == ev.HELDOUT,
         "files": result.n_files, "files_measured_strata": n_main, "arms": blocks, "paired_set": paired_set,
         "declined_stratum": _declined_block(stratum, len(result.declined)),
+        "gaming_flags": _gaming_block(result.rows, wave.arms),
         "excluded_stratum": _excluded_block(result.excluded, result.n_files, result.walls),
         "marginals": {"ai_marginal (search_ai - search_det)": _paired(by_sha, "search_ai", "search_det", blocks),
                       "deterministic_marginal (staged - input_only)": _paired(by_sha, "staged", "input_only", blocks)},
@@ -849,6 +894,17 @@ def render_text(rep: dict[str, Any]) -> str:
                        f"cheap fail but full pass {g['cheap_fail_full_pass']}")
                        + (f"; {g['rows_without_data']} conclusive row(s) carried NO table"
                           if g.get("rows_without_data") else ""))
+    g = rep["gaming_flags"]
+    total = sum(b["files"] for b in g["arms"].values())
+    files = len({x["sha256"] for b in g["arms"].values() for x in b["names"]})
+    out += ["", f"## Gaming flags ({total} flagged clean row(s) over {files} file(s) that moved the part; volume "
+                f"change over {g['limits']['volume_change']:.0%} or bbox shrink over "
+                f"{g['limits']['bbox_shrink']:.0%}). {g['counted_as']}."]
+    for a, b in g["arms"].items():
+        if b["files"]:
+            out += [f"- {a}: {b['files']} of {b['clean_reviewed']} clean"
+                    + (f" ({b['unmeasured']} unmeasured)" if b["unmeasured"] else "")]
+            out += [f"  - {x['name']}: {x['why']}" for x in b["names"]]
     ds = rep["declined_stratum"]
     if ds["files"]:
         out += ["", f"## Declined stratum ({ds['files']} files; expected outcome: {ds['expected_outcome']}). NOT a "

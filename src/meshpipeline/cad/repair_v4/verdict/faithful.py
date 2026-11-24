@@ -42,6 +42,10 @@ class FaithfulReport:
     declared_added: list[str] = field(default_factory=list)
     declared_removed: list[str] = field(default_factory=list)
     reasons: list[str] = field(default_factory=list)
+    #: the repaired shape's bbox diagonal over the original's, and the diagonal itself (mm). None = not measured
+    #: (no extent, or an older row). Layer 3 gates nothing; report.py flags a clean output that shrank the part.
+    bbox_ratio: float | None = None
+    diag_after_mm: float | None = None
 
     @property
     def reason(self) -> str | None:
@@ -91,6 +95,8 @@ def check_faithful(
         volume_ratio=None if v["volume_ratio"] is None else float(v["volume_ratio"]),
         bodies_before=int(v["bodies_before"]),
         bodies_after=int(v["bodies_after"]),
+        bbox_ratio=None if v.get("bbox_ratio") is None else float(v["bbox_ratio"]),
+        diag_after_mm=None if v.get("diag_after_mm") is None else float(v["diag_after_mm"]),
         declared_added=list(declared_added),
         declared_removed=list(declared_removed),
         reasons=list(v["reasons"]),

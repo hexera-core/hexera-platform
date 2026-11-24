@@ -461,8 +461,6 @@ def step_for(pool: WorkerPool, brep: str) -> str:
     return out
 
 
-#: what layer 3 always reports when the ORIGINAL has no solid (6 loose faces -> 1 body, no volume)
-_SOLIDLESS_OK_REASONS = frozenset({"volume_changed", "body_count_changed"})
 _ORIGINAL_FACTS: dict[tuple[str, float], tuple[int, int]] = {}
 
 
@@ -520,10 +518,10 @@ def _judge(pool: WorkerPool, ws: Workspace, cheap_members: Any = None) -> Scored
       * the edits the ops DECLARED (fill_loop, remove_small, refit_cluster add and remove surface on
         purpose); without them layer 3 calls every such edit unfaithful and the op is rolled back
         every time. Layer 3 is then re-run on the BREPs, where the declared indices are exact.
-      * an original with NO SOLID: layer 3 then always reports volume_changed/body_count_changed,
-        and `valid.ok` lives only in score key 0, so key 0 is replaced by a local gate: valid AND
-        every layer-3 reason is one of those two (area and deviation reasons are not)."""
-    faces, solids = original_facts(pool, ws.original)
+    A solid-less original needed a second exemption while score key 0 was "valid AND faithful" (layer 3 always
+    reports volume_changed / body_count_changed for one). Key 0 is layer 1 alone since the owner's 2026-11-24
+    decision, so that exemption is gone with the gate that made it necessary."""
+    faces, _solids = original_facts(pool, ws.original)
     # the cache is the process-wide one `search.default_judge` also uses: the final staged state is the search's
     # start state, and its cheap verdict must not be meshed twice
     v = cheap_verdict(pool, step_for(pool, ws.brep_path), step_for(pool, ws.original),
@@ -538,10 +536,6 @@ def _judge(pool: WorkerPool, ws: Workspace, cheap_members: Any = None) -> Scored
             report = v.faithful  # a mistranslated id must not crash a run; judge it undeclared
         v = replace(v, faithful=report)
     result = score(v)
-    if solids == 0:
-        gate = bool(v.valid.ok and v.faithful is not None
-                    and set(v.faithful.reasons) <= _SOLIDLESS_OK_REASONS)
-        result = (int(gate), *result[1:])
     # the score the transaction compares, carrying the cheap panel it came from so a rollback can say which
     # member got worse (`rollback_detail`). It IS the score tuple: nothing else changes.
     return Scored(result, _members_of(v))
