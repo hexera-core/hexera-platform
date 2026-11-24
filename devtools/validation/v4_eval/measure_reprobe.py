@@ -10,6 +10,7 @@
 
     measure_reprobe.py sample --inputs DIR --out sample.json [--n 60] [--candidates 360]
     measure_reprobe.py probe  --sample sample.json --inputs DIR --shard I/N --out DIR
+    measure_reprobe.py form   --sample sample.json --inputs DIR --shard I/N --out DIR   # engine_form cost only
 
 `probe` writes one JSON line per file: wall seconds, the container's cgroup CPU seconds and THROTTLED seconds
 over that file, and the outcome (a row's first failing layer, or the exclusion reason). Throttled time is the
@@ -154,6 +155,38 @@ def cmd_probe(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_form(args: argparse.Namespace) -> int:
+    """What judging the engine's form adds per file: `search.engine_form` (XCAF read -> BREP -> STEP export), timed
+    alone, no meshing. The re-probe pays this once per file on top of the verdict."""
+    from meshpipeline.cad.repair_v4.search import engine_form
+    from meshpipeline.cad.repair_v4.worker_pool import WorkerPool
+
+    sample = json.loads(Path(args.sample).read_text())["files"]
+    i, n = evalspec.parse_shard(args.shard)
+    by_sha = {e.sha256: e for e in pool_mod.read_pool(Path(args.pool))}
+    mine = [s for k, s in enumerate(sorted(sample, key=lambda s: s["sha256"])) if k % n == i - 1]
+    out = Path(args.out)
+    out.mkdir(parents=True, exist_ok=True)
+    pool = WorkerPool(1)
+    try:
+        with (out / "form.jsonl").open("w") as handle:
+            for s in mine:
+                step = _ra.input_path(Path(args.inputs), by_sha[s["sha256"]])
+                c0, t0 = _cgroup(), time.monotonic()
+                error = None
+                try:
+                    engine_form(pool, step)
+                except Exception as exc:  # noqa: BLE001 - recorded: an unreadable file is excluded by the re-probe
+                    error = f"{type(exc).__name__}: {exc}"[:300]
+                wall, c1 = time.monotonic() - t0, _cgroup()
+                rec = {**s, "form_s": wall, "cpu_s": c1["cpu_s"] - c0["cpu_s"], "error": error}
+                handle.write(json.dumps(rec, sort_keys=True) + "\n")
+                handle.flush()
+    finally:
+        pool.close()
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -163,16 +196,21 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--n", type=int, default=60)
     s.add_argument("--candidates", type=int, default=360)
     s.add_argument("--jobs", type=int, default=8)
+    f = sub.add_parser("form")
+    f.add_argument("--sample", required=True)
+    f.add_argument("--inputs", required=True)
+    f.add_argument("--shard", required=True)
+    f.add_argument("--out", required=True)
     p = sub.add_parser("probe")
     p.add_argument("--sample", required=True)
     p.add_argument("--inputs", required=True)
     p.add_argument("--shard", required=True)
     p.add_argument("--out", required=True)
     p.add_argument("--file-timeout-s", type=float, default=evalspec.DEFAULT_FILE_TIMEOUT_S)
-    for x in (s, p):
+    for x in (s, p, f):
         x.add_argument("--pool", default=str(pool_mod.OUT))
     args = ap.parse_args(argv)
-    return cmd_sample(args) if args.cmd == "sample" else cmd_probe(args)
+    return {"sample": cmd_sample, "probe": cmd_probe, "form": cmd_form}[args.cmd](args)
 
 
 if __name__ == "__main__":
