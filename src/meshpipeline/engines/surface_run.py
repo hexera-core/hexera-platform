@@ -71,8 +71,12 @@ def words(rec: dict) -> str:
     """What the surface run made, in plain words, for the decision record and the result."""
     s = rec.get("surface") or {}
     if not rec.get("made"):
-        return (f"This file is a surface, not a solid, so it can only be meshed as a shell - and the shell mesh could "
-                f"not be made: {rec.get('why') or 'it could not be made'}.")
+        # SURF-8: with no mesh, what the clean-up did and what is still open are said too (the gaps, the widest, the
+        # words that close them when a tolerance was tried and closed them) - before, only the reason was
+        cleaned = s.get("cleaned") if isinstance(s.get("cleaned"), dict) else None
+        told = (clean_words(cleaned) + gap_words(int(cleaned.get("open_places") or 0), cleaned)) if cleaned else []
+        return " ".join([f"This file is a surface, not a solid, so it can only be meshed as a shell - and the shell "
+                         f"mesh could not be made: {rec.get('why') or 'it could not be made'}.", *told])
     n, q, t = int(rec.get("elements") or 0), int(rec.get("quads") or 0), int(rec.get("trias") or 0)
     gone = ((rec.get("quality") or {}).get("face_watch") or {}).get("words")
     from meshpipeline.engines.shell_delivery import cover_short, cover_words

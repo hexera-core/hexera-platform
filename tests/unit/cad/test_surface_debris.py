@@ -72,6 +72,20 @@ def test_changing_the_surfaces_stops_by_the_clock_and_says_so(monkeypatch):
     assert "did not finish in" in said and "1 place was not tried" in said
 
 
+def test_with_no_mesh_the_gaps_left_open_are_still_said():
+    # SURF-8: a run that made no mesh says what the clean-up did and what is open, not only why it stopped
+    from meshpipeline.engines import surface_run as sr
+
+    cleaned = {"places_before": 14, "closed_places": 13, "closed_places_widest_mm": 0.25, "open_places": 1,
+               "applied_mm": 0.269, "left_open": 0, "wider_gaps": 1, "wider_widest_mm": 0.54,
+               "wider_narrowest_mm": 0.54, "advice_mm": 0.6, "stitch": "on", "mend": {"off": True}}
+    said = sr.words({"made": False, "why": "the shell mesh ran past 15 minutes and was stopped",
+                     "surface": {"kind": "surface", "cleaned": cleaned}})
+    assert "could not be made: the shell mesh ran past 15 minutes" in said
+    assert "Closed 13 of the 14 places" in said and "0.54 mm apart" in said
+    assert '"stitch gaps up to 0.6 mm"' in said
+
+
 def test_each_surface_s_open_places_are_measured_once(monkeypatch):
     calls: list = []
     real = sm.open_places
