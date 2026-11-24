@@ -2,7 +2,9 @@
 
 OpenCascade's default (`read.iges.bspline.continuity` 1) splits a B-spline at every place it is less
 smooth than C1, so an exported spline part came in with ten times its own edges and stitching it took
-minutes. The setting only takes once a reader has been built, so the reader sets it after building."""
+minutes. The setting only takes once a reader has been built, so the reader sets it after building.
+MESH-26: a face whose boundary curve turns a CORNER at one of its breaks is still split there, as
+OpenCascade splits it; a break where the curve runs on tangent keeps the curve whole."""
 from __future__ import annotations
 
 import pytest
@@ -10,22 +12,25 @@ import pytest
 pytest.importorskip("OCP")
 
 
-def _c0_face_iges(tmp_path):
-    """A flat face whose top edge is ONE degree-1 B-spline with three C0 kinks, written as an IGES trimmed
-    surface (entity 144, writer mode 0: how a pre-processor exports spline faces)."""
+#: the top edge's poles: TANGENT runs straight on through its three C0 breaks, its parameter speed jumping
+#: (no knot can be removed, so OpenCascade's default splits it); CORNER turns 33 degrees at each break
+TANGENT = [(0, 0), (1, 0), (3, 0), (3.5, 0), (4, 0)]
+CORNER = [(0, 0), (1, 0.3), (2, 0), (3, 0.3), (4, 0)]
+
+
+def _c0_face(pts=TANGENT, dz: float = 0.0):
+    """A flat face whose top edge is ONE degree-1 B-spline through `pts` with three C0 breaks."""
     from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge, BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakeWire
     from OCP.Geom import Geom_BSplineCurve
     from OCP.gp import gp_Pnt
-    from OCP.IGESControl import IGESControl_Writer
     from OCP.STEPControl import STEPControl_Writer
     from OCP.TColgp import TColgp_Array1OfPnt
     from OCP.TColStd import TColStd_Array1OfInteger, TColStd_Array1OfReal
 
     STEPControl_Writer()          # (test_declared_foot_scale: keeps "write.step.unit" registered for later tests)
-    pts = [(0, 0), (1, 0.3), (2, 0), (3, 0.3), (4, 0)]
     poles = TColgp_Array1OfPnt(1, len(pts))
     for i, (x, y) in enumerate(pts, 1):
-        poles.SetValue(i, gp_Pnt(float(x), float(y), 0.0))
+        poles.SetValue(i, gp_Pnt(float(x), float(y), dz))
     knots, mults = TColStd_Array1OfReal(1, 5), TColStd_Array1OfInteger(1, 5)
     for i in range(1, 6):
         knots.SetValue(i, float(i - 1))
@@ -34,14 +39,25 @@ def _c0_face_iges(tmp_path):
     wire = BRepBuilderAPI_MakeWire()
     wire.Add(BRepBuilderAPI_MakeEdge(spline).Edge())
     for a, b in (((4, 0), (4, -2)), ((4, -2), (0, -2)), ((0, -2), (0, 0))):
-        wire.Add(BRepBuilderAPI_MakeEdge(gp_Pnt(a[0], a[1], 0), gp_Pnt(b[0], b[1], 0)).Edge())
-    face = BRepBuilderAPI_MakeFace(wire.Wire(), True).Face()
+        wire.Add(BRepBuilderAPI_MakeEdge(gp_Pnt(a[0], a[1], dz), gp_Pnt(b[0], b[1], dz)).Edge())
+    return BRepBuilderAPI_MakeFace(wire.Wire(), True).Face()
+
+
+def _write_iges(path, *shapes):
+    """`shapes` written as IGES trimmed surfaces (entity 144, writer mode 0: how a pre-processor exports spline
+    faces)."""
+    from OCP.IGESControl import IGESControl_Writer
+
     w = IGESControl_Writer("MM", 0)
-    w.AddShape(face)
+    for shape in shapes:
+        w.AddShape(shape)
     w.ComputeModel()
-    path = tmp_path / "c0_face.igs"
     assert w.Write(str(path))
     return path
+
+
+def _c0_face_iges(tmp_path, pts=TANGENT):
+    return _write_iges(tmp_path / "c0_face.igs", _c0_face(pts))
 
 
 def _count(shape, kind) -> int:
@@ -87,7 +103,7 @@ def test_the_setting_is_made_after_the_reader_is_built():
     assert continuity_in_force() == 0
 
 
-def test_a_c0_spline_edge_is_read_as_one_edge_not_split(tmp_path):
+def test_a_tangent_c0_spline_edge_is_read_as_one_edge_not_split(tmp_path):
     from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE
 
     from meshpipeline.cad.iges_read import read_iges
@@ -96,9 +112,35 @@ def test_a_c0_spline_edge_is_read_as_one_edge_not_split(tmp_path):
     split = _read_with_continuity(path, 1)              # OpenCascade's own default
     whole = read_iges(path)
     assert _count(split, TopAbs_FACE) == _count(whole, TopAbs_FACE) == 1
-    # the kinked edge is 4 pieces by default (one per C0 span), one edge as the product reads it
+    # the edge is 4 pieces by default (one per C0 span), one edge as the product reads it
     assert _count(split, TopAbs_EDGE) == 7
     assert _count(whole, TopAbs_EDGE) == 4
+
+
+def test_a_spline_edge_that_turns_corners_is_split_as_opencascade_splits_it(tmp_path):
+    """MESH-26: kept whole, a curve round a corner is one edge where the CAD has a corner (4 edges)."""
+    from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE
+
+    from meshpipeline.cad.iges_read import read_iges
+
+    path = _c0_face_iges(tmp_path, CORNER)
+    split = _read_with_continuity(path, 1)
+    read = read_iges(path)
+    assert _count(read, TopAbs_FACE) == 1
+    assert _count(split, TopAbs_EDGE) == _count(read, TopAbs_EDGE) == 7
+
+
+def test_only_the_faces_that_turn_a_corner_are_split(tmp_path):
+    """One file, a cornered face and a tangent one: the first is split (4 edges -> 7), the second stays whole (4)."""
+    from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE
+
+    from meshpipeline.cad.iges_read import read_iges
+
+    path = _write_iges(tmp_path / "two.igs", _c0_face(CORNER), _c0_face(TANGENT, dz=5.0))
+    read = read_iges(path)
+    assert _count(read, TopAbs_FACE) == 2
+    assert _count(read, TopAbs_EDGE) == 7 + 4
+    assert _count(_read_with_continuity(path, 1), TopAbs_EDGE) == 7 + 7
 
 
 def test_every_product_read_of_an_iges_goes_through_the_one_reader():
@@ -143,8 +185,8 @@ def _gmsh_import(path, scale: float = 1.0):
 
 
 def test_gmsh_is_handed_the_iges_as_read_here_same_size_and_faces_edges_kept_whole(tmp_path):
-    """gmsh's own OpenCascade splits the C0 edge (7 curves) whatever this process sets; the BREP of this reading
-    keeps it whole (4), at the same metre size."""
+    """gmsh's own OpenCascade splits the tangent C0 edge (7 curves) whatever this process sets; the BREP of this
+    reading keeps it whole (4), at the same metre size."""
     from meshpipeline.cad.iges_read import gmsh_import_path
 
     path = _c0_face_iges(tmp_path)
