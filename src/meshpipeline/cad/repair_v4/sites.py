@@ -715,6 +715,12 @@ def _site_of(component: list[_Node], boxes: dict) -> Site:
     site.graph["failure_entities"] = sorted(
         (n.entity for n in component if n.entity is not None and n.sources != {"proximity"}),
         key=lambda e: (e[0], _number(e)))
+    # D16: the faces a MESHER's own located failure named (C5 put locations on the panel members), without the
+    # layer-1 and proximity context: what a site-targeted removal (`defeature` at the site) aims at
+    site.graph["mesher_faces"] = sorted(
+        (n.entity for n in component if n.entity is not None and n.entity[:1] == "F"
+         and n.sources - {"proximity", "valid"}),
+        key=lambda e: (e[0], _number(e)))
     site.graph["failures"] = failures
     site.graph["points"] = located
     site_box = _union_box([n.box for n in component if n.box is not None])
@@ -829,7 +835,8 @@ def _attach_graphs(pool: WorkerPool, ws: Workspace, sites: list[Site], reverse: 
         graph: dict = {"k": GRAPH_HOPS, "h_mm": h_mm}
         if site.graph.get("coarse"):
             graph["coarse"] = site.graph["coarse"]
-        for key in ("failures", "points", "clashes", "failure_entities", "unmeasured_pairs", "hard_codes"):
+        for key in ("failures", "points", "clashes", "failure_entities", "mesher_faces", "unmeasured_pairs",
+                    "hard_codes"):
             # `unmeasured_pairs` is a COUNT (line 562 writes an int); every other key is a list. A site that was
             # never clustered (an `unlocated` one) has neither, and a `[]` there crashed `observation`'s int().
             graph[key] = site.graph.get(key, 0 if key == "unmeasured_pairs" else [])

@@ -803,3 +803,19 @@ def test_an_unbounded_input_is_an_unbounded_site_the_trim_can_answer() -> None:
     pool = ScriptedPool(ws, _boxes(ws))
     (site,) = find_sites(pool, ws, _verdict(hard=[Finding("unbounded_geometry", [], {"diagonal_mm": 2e100})]), h_mm=H)
     assert site.kind == "unbounded" and site.graph["hard_codes"] == ["unbounded_geometry"]
+
+
+def test_mesher_faces_are_only_the_faces_a_mesher_located_not_the_proximity_or_layer1_context() -> None:
+    """D16: site-targeted defeature aims at `graph["mesher_faces"]`: F1, which gmsh named; not F2, a proximity
+    neighbour, and not F3, which only layer 1 named."""
+    ws = _ws()
+    boxes = _boxes(ws)
+    boxes["F2"] = [10.0, 1.5, 0.0, 11.0, 2.5, 1.0]
+    boxes["F3"] = [10.0, 3.0, 0.0, 11.0, 4.0, 1.0]
+    pool = ScriptedPool(ws, boxes, prox=[(1, 2, 0.3)])
+    verdict = _verdict(_fail("gmsh", "other", Located("F1", None, "surf 1")),
+                       hard=[Finding("self_intersection", ["F3"], {})])
+    sites = find_sites(pool, ws, verdict, h_mm=H)
+    site = next(s for s in sites if "F1" in s.entities)
+    assert {"F1", "F2"} <= set(site.entities)
+    assert site.graph["mesher_faces"] == ["F1"]

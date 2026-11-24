@@ -96,3 +96,57 @@ def test_groups_must_index_the_targets_each_once() -> None:
         Defeature().apply(Any, ws, ["F1", "F2"], {"groups": [[0, 2]]}, timeout_s=1)  # type: ignore[arg-type]
     with pytest.raises(OpDeclined, match="invalid_params"):
         Defeature().apply(Any, ws, ["F1", "F2"], {"groups": [[0], [0]]}, timeout_s=1)  # type: ignore[arg-type]
+
+
+def test_defeature_comes_after_every_sites_own_rows_so_k_cuts_it_first() -> None:
+    """D16 (lane B13, snapshot v2): on the one body_overlap dev file seven defeature applications ran first and the
+    body ops were `skipped_budget`. Every site's own rows now come before any defeature row, the site-level removals
+    before the whole recognised set, so the cap and the op budget cut defeature first."""
+    g, _ = _gen(FEATURES)
+    sites = [_site("S1", "sliver", ["F7", "F8"], ["gmsh_alt"]), _site("S2", "proximity", ["F3", "F5"], ["gmsh_prod"])]
+    cands = g.propose(_state(sites), 999)
+    ops = [c.op for c in cands]
+    assert "defeature" in ops and any(op != "defeature" for op in ops)
+    first = ops.index("defeature")
+    assert all(op == "defeature" for op in ops[first:]), ops       # nothing site-specific after a defeature row
+    assert any("(site S2," in c.rationale for c in cands[:first])  # S2's own rows are not behind S1's defeature
+    tail = [c.params.get("source") for c in cands[first:]]
+    assert tail[-1] == "recognised" and "on the part" in cands[-1].rationale   # the whole set is last
+    g2, _ = _gen(FEATURES)
+    assert all(c.op != "defeature" for c in g2.propose(_state(sites), first))   # k at the own rows: no defeature
+
+
+def _located(sid: str, kind: str, entities: list[str], failing: list[str], named: list[str]) -> Site:
+    s = _site(sid, kind, entities, failing)
+    s.graph = {"mesher_faces": named}
+    return s
+
+
+def test_a_mesher_located_failure_gets_a_removal_of_exactly_the_faces_it_named_at_any_kind() -> None:
+    """D16: gmsh's "other" failure is an `invalid` site, a kind the D14 rule left out; the faces it named are now
+    proposed for removal, alone, and nothing else from the D14 rule fires there."""
+    g, _ = _gen(FEATURES)
+    cands = [c for c in g.propose(_state([_located("S1", "invalid", ["F7", "F8"], ["gmsh_prod"], ["F7"])]), 999)
+             if c.op == "defeature" and c.params.get("source") != "recognised"]
+    assert [(c.targets, c.params["source"]) for c in cands] == [(["F7"], "located")]
+    assert "gmsh_prod failed on" in cands[0].rationale
+
+
+def test_the_located_removal_comes_before_the_recognised_and_site_rows_and_the_whole_part() -> None:
+    g, _ = _gen(FEATURES)
+    cands = [c for c in g.propose(_state([_located("S1", "proximity", ["F3", "F5"], ["gmsh_prod"], ["F3"])]), 999)
+             if c.op == "defeature"]
+    assert [(c.params["source"], c.targets) for c in cands] == [
+        ("located", ["F3"]),                 # what the mesher named
+        ("recognised", ["F3", "F4"]),        # the hole touching it, whole
+        ("site", ["F3", "F5"]),              # the site's faces, with the proximity context
+        ("recognised", ["F7", "F3", "F4"]),  # the whole recognised set, last
+    ]
+
+
+def test_no_located_removal_without_a_mesher_or_at_an_open_site() -> None:
+    g, _ = _gen(FEATURES)
+    valid_only = _located("S1", "self_overlap", ["F3"], ["valid"], ["F3"])   # layer 1 is not a mesher
+    open_site = _located("S2", "open", ["F7"], ["gmsh_prod"], ["F7"])        # faces already missing
+    cands = g.propose(_state([valid_only, open_site]), 999)
+    assert not [c for c in cands if c.op == "defeature" and c.params.get("source") in ("located", "site")]
