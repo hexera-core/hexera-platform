@@ -353,6 +353,39 @@ def test_the_first_layer_row_reads_the_first_cell_the_mesh_has(tmp_path, heights
     assert words in row["delivered"]
 
 
+def _body_and_far_wall(ws, far: str, heights) -> None:
+    """A column mesh whose z=0 face is the body's wall and whose every other boundary face is a second wall `far`
+    on cells a hundred times the first layer (a ground plane on background cells, or a second body wall)."""
+    from tests.unit.engines.test_layer_census import _write_column_mesh
+    pm = ws / "constant" / "polyMesh"
+    _write_column_mesh(pm, list(heights), nx=3)
+    b = pm / "boundary"
+    b.write_text(b.read_text().replace("side { type patch;", f"{far} {{ type wall;"))
+    (ws / "patches_contract.txt").write_text(f"  • body  →  type wall\n  • {far}  →  type wall\n")
+    b.write_text(b.read_text().replace("    wall { type wall;", "    body { type wall;"))
+
+
+def test_the_first_cell_and_the_cells_across_are_measured_on_the_body_not_the_ground(tmp_path):
+    """CFDREQ-19/22: the y+ row's first cell and the laminar row's cells across are the BODY's. abc 00034783_002 had
+    a ground wall on 417 mm background cells; taken by area with the body it set the median first cell to 422 mm
+    (y+ about 5709) and read the row missed at 96% layer coverage."""
+    from meshpipeline.engines.workspace_facts import contract_body_walls
+    heights = [0.01] * 10 + [1.0] * 3
+    ws = tmp_path / "ground"
+    _body_and_far_wall(ws, "ground", heights)
+    assert contract_body_walls(ws) == ["body"]
+    first = CR.built_first_cells(ws, {}, 0.01)
+    assert first["layer_first_cell_m"] == pytest.approx(0.01, rel=0.05)
+    bl = CR.built_bl_cells(ws, 0.1)
+    assert bl["bl_cells_median"] == pytest.approx(10, abs=0.6) and bl["bl_area_met_pct"] == pytest.approx(100.0)
+    # a second wall the user declared is the body's own: it is measured (the rule is the ground, not a size filter)
+    ws2 = tmp_path / "fin"
+    _body_and_far_wall(ws2, "fin", heights)
+    assert contract_body_walls(ws2) == ["body", "fin"]
+    assert CR.built_first_cells(ws2, {}, 0.01)["layer_first_cell_m"] > 0.1
+    assert CR.built_bl_cells(ws2, 0.1)["bl_area_met_pct"] < 50.0
+
+
 def test_the_coverage_line_says_the_height_the_layers_stand_at():
     """CFDREQ-14: the coverage limit's own line, when the census counted by height."""
     from meshpipeline.engines.verdict_limits import coverage_words

@@ -125,6 +125,14 @@ def contract_patches(workspace) -> list[dict]:
     return out
 
 
+def contract_body_walls(workspace) -> list[str]:
+    """The walls of the body being studied: every declared wall except the ground plane the domain
+    lays as the far-field box's floor (engines/ground_plane.body_walls, the one rule). A first cell or
+    a layer count judged on the body's wall is measured here, never on the floor's background cells."""
+    from meshpipeline.engines.ground_plane import body_walls
+    return body_walls(contract_patches(workspace))
+
+
 def contract_wall_patch(workspace) -> str | None:
     """The BODY's wall: the first declared wall that is not the ground plane. The ground is a
     face of the far-field box, so naming the body's surface after it would stage the car as the

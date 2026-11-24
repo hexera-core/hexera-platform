@@ -164,6 +164,15 @@ def _gate_boundary_types(ctx: GateCtx) -> tuple[bool, str]:
     return (False, reason) if reason else (True, "")
 
 
+def _gate_wall_function_layer(ctx: GateCtx) -> tuple[bool, str]:
+    """CFDREQ-27 on cfMesh: answered, never refused. The gate refuses snappyHexMesh's wall-function layer when it
+    sits under a much thinner cell on more of the wall than the y+ row can leave out, because snappy lays the layer
+    on its snapped wall cells and no setting lifts them; the ladder then moves the run here. cfMesh splits its wall
+    cell to build the layer, so it is the engine that builds that layer, and refusing it would leave the run no
+    engine to move to. What its wall really carries is still measured and told on the y+ row (CFDREQ-19/26)."""
+    return True, ""
+
+
 def _gate_quality_floor(ctx: GateCtx) -> tuple[bool, str]:
     # This engine's OWN declared gating criteria, enforced before the reviewer can see the mesh.
     # The bars and thresholds are the engine's (engines/cfmesh/criteria.py); this gate adds none.
@@ -205,6 +214,10 @@ FLOW_GATES: tuple[GateSpec, ...] = (
     GateSpec(key="boundary_types", check=_gate_boundary_types, section="GROUPS",
              proves="Each boundary is typed as the solver needs it (wall / symmetry / empty)",
              cause=FailureCause.BOUNDARY_TYPE),
+    # CFDREQ-27: the same gate as snappy's, in the same place; on cfMesh it never refuses (the reason is on the gate)
+    GateSpec(key="wall_function_layer", check=_gate_wall_function_layer, section="MESH",
+             proves="The wall-function first layer sits on cells that suit it - cfMesh splits its wall cell to build it",
+             cause=FailureCause.MESH_QUALITY),
     # SHARED with every flow engine (engines/cad_fidelity.py), and LAST: a sound, correctly named mesh
     # is held to the CAD it was built from - its boundary on the surface, none of the surface
     # missing, the fluid volume the CAD's. The numbers are recorded either way; only a mesh that is

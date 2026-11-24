@@ -63,6 +63,15 @@ def test_snappy_gate_refuses_with_its_number_and_passes_otherwise(tmp_path):
     assert keys.index("wall_function_layer") < keys.index("cad_fidelity")
 
 
+def test_cfmesh_answers_the_same_gate_and_never_refuses_the_layer_it_is_sent_to_build(tmp_path):
+    from meshpipeline.engines.cfmesh import flow_gates as CG
+    _plan(tmp_path)
+    # the same jump snappy is refused for: cfMesh splits its wall cell, so it is where the ladder sends this layer
+    assert CG._gate_wall_function_layer(_Ctx(tmp_path, _q(71.1))) == (True, "")
+    keys = [g.key for g in CG.FLOW_GATES]
+    assert keys == [g.key for g in FG.FLOW_GATES]
+
+
 def test_no_lever_on_snappy_so_the_ladder_moves_and_the_mesh_stays_deliverable():
     assert not EF.lever_bears("wall_function_layer", "snappy")
     assert EF.refusal_without_lever({"executor_success": False, "executor_failed_gate": "wall_function_layer",

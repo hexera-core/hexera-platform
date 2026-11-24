@@ -687,8 +687,9 @@ def _run_and_judge(ctx: BuilderToolContext, prepared: PreparedMeshRun) -> dict:
         logger.warning("run_mesh: %s", _line)
         # INS-36: a mesh WAS built - refused in the plan-time stop's own words (the opening, the narrowest gap on its
         # way, what was built, the ways out), and that refusal stands over the mesh (never a manifest error)
-        from meshpipeline.engines.cfmesh.cfmesh_runner import after_build_refusal
-        _after = after_build_refusal(workspace)
+        # reached through the engine seam (get_engine): only an engine that drops a region declares it
+        _after_build = getattr(R, "after_build_refusal", None)
+        _after = _after_build(workspace) if callable(_after_build) else None
         if _after is not None:
             _after.write(workspace)
             _line = _after.builder_text.removeprefix("[PORT_REGION_DROPPED] ")

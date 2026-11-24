@@ -291,10 +291,11 @@ SHM_EXT = ("castellatedMeshControls { maxLocalCells 1000000; maxGlobalCells 1000
 
 def test_a_laminar_snappy_stack_keeps_its_layers_and_gets_the_band_it_can_afford():
     delta = float(_ask_lam().fallback["bl_delta_m"])
-    # the stack ends in one step where it stops, so its layers are not stepped down round every stopped point
+    # the buffer stays as the case has it: -1 lost the 10-cell wall on 6 of 12 sample parts and ran 2-10x slower
     ask = _ask_lam()
     out = CR.snappy_dict(ask, SHM_EXT, wall_cell_m=delta * 2)
-    assert "nBufferCellsNoExtrude -1;" in out and "levels ((0.01 6) (0.08 4));" in out
+    assert "nBufferCellsNoExtrude 0;" in out and "nBufferCellsNoExtrude -1" not in out
+    assert "levels ((0.01 6) (0.08 4));" in out
     # wall cells half the layer: the band two levels finer, a short stack, the castellation ceiling raised for it
     ask = _ask_lam()
     out = CR.snappy_dict(ask, SHM_EXT, wall_cell_m=delta / 2, bridge={"faces": 1000.0, "room": 1e9}, band=True)

@@ -2479,13 +2479,10 @@ def _snappy_layers(ask: Ask, text: str, wall_cell_m: float | None, bridge: Mappi
         if n_lam != n:
             out = re.sub(r"\bnSurfaceLayers\s+[1-9][0-9]*\s*;", f"nSurfaceLayers {n_lam};", out)
             n = n_lam
-        # CFDREQ-23: THE STACK ENDS IN ONE STEP WHERE IT STOPS. snappyHexMesh's default (nBufferCellsNoExtrude 0)
-        # steps the layer count down one layer per ring of faces round every point it does not extrude (a feature
-        # edge, a rejected face): a 10-layer stack lost layers on a band ten faces wide round each, and the wall
-        # with 10 cells across its layer fell to 61-79% though layers grew on 97-99% of the faces (the cloud
-        # sample: abc 00032926 extruded 97.6% of its faces and added 73.6% of the layer cells). -1 keeps the
-        # whole stack up to where it stops
-        out = re.sub(r"\bnBufferCellsNoExtrude\s+-?[0-9]+\s*;", "nBufferCellsNoExtrude -1;", out, count=1)
+        # CFDREQ-23: THE BUFFER STAYS AS THE CASE HAS IT (nBufferCellsNoExtrude 0). -1 ("the stack ends in one
+        # step") was tried on the 12-part external sample (extlam2_s12_8f2765ba): the wall with 10 cells across
+        # its layer FELL on 6 parts (00000039 79 -> 2%, 00069804 73 -> 0%, 00116175 65 -> 0%), rose about a point
+        # on 2, and the runs were 2-10x slower (00000039 8 -> 83 min; 00032019 250 min and no mesh). Not set
         ask.fallback.update(layers=int(n), cells_across=round(across, 1), first_m=float(first))
     elif ask.fallback is not None and first is not None and wall_cell_m and n > 0:
         # CFDREQ-17: THE RESOLVED BODY WALL RESOLVES ITS BOUNDARY LAYER - BL_CELLS across it, the layers counted up
@@ -2996,13 +2993,13 @@ def _bl_cells_row(workspace, p: Mapping) -> dict | None:
 
 def built_bl_cells(workspace, delta_m: float) -> dict:
     """CFDREQ-22: the cells across a boundary layer `delta_m` thick on the delivered polyMesh's walls
-    (layer_census.bl_cells); {} when it cannot be counted."""
+    (layer_census.bl_cells); {} when it cannot be counted. Counted on the body's walls only (CFDREQ-19): the
+    ground plane the domain lays is a far wall on background cells, not the boundary layer the plan resolves."""
     from meshpipeline.engines import layer_census as LC
-    from meshpipeline.engines.workspace_facts import contract_patches
+    from meshpipeline.engines.workspace_facts import contract_body_walls
     ws = Path(workspace)
     try:
-        walls = [str(c.get("name")) for c in contract_patches(ws) or []
-                 if isinstance(c, Mapping) and str(c.get("type") or "") == "wall" and c.get("name")]
+        walls = contract_body_walls(ws)
     except Exception:  # noqa: BLE001 - evidence, not a verdict
         walls = []
     if not walls or not (ws / "constant" / "polyMesh" / "owner").exists():
@@ -3171,7 +3168,11 @@ _PLAN_KEYS = ("layer_area_at_plan_pct", "layer_first_cell_m", "layer_first_vs_pl
 def built_first_cells(workspace, q: Mapping, planned_m: float) -> dict:
     """CFDREQ-14 on every engine: the wall's first cell against the planned first layer - the quality record's
     figures when its census measured them at that height (cfMesh), else measured here on the delivered polyMesh
-    (engines/layer_census: any ascii OpenFOAM mesh up to its cell limit). {} when it cannot be measured."""
+    (engines/layer_census: any ascii OpenFOAM mesh up to its cell limit). {} when it cannot be measured.
+
+    CFDREQ-19: measured on the walls of the body being studied, never on the ground plane the domain lays (the
+    box's floor, a wall on background cells): abc 00034783_002's ground set the median first cell to 422 mm, y+
+    about 5709, and the row read missed at 96% layer coverage. cfMesh's own census leaves the ground out too."""
     if q.get("layer_coverage_basis") == "height" and q.get("layer_first_planned_m"):
         try:
             if abs(float(q["layer_first_planned_m"]) - float(planned_m)) <= 0.01 * float(planned_m):
@@ -3180,11 +3181,10 @@ def built_first_cells(workspace, q: Mapping, planned_m: float) -> dict:
         except (TypeError, ValueError):
             pass
     from meshpipeline.engines import layer_census as LC
-    from meshpipeline.engines.workspace_facts import contract_patches
+    from meshpipeline.engines.workspace_facts import contract_body_walls
     ws = Path(workspace)
     try:
-        walls = [str(c.get("name")) for c in contract_patches(ws) or []
-                 if isinstance(c, Mapping) and str(c.get("type") or "") == "wall" and c.get("name")]
+        walls = contract_body_walls(ws)
     except Exception:  # noqa: BLE001 - evidence, not a verdict
         walls = []
     if not walls or not (ws / "constant" / "polyMesh" / "owner").exists():
