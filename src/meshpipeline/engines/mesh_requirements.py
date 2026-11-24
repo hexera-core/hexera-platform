@@ -891,6 +891,67 @@ def check(arguments: str, notes: str, route: str = "") -> tuple[dict, list[str],
         return empty(), [f"the reading did not fit the schema ({type(exc).__name__}): nothing applied"], []
 
 
+# #
+# NOTE-17: what is typed with faces picked on the model is for those faces
+# #
+RULE_PICKED = "NOTE-17"
+#: a place that only points at what was picked ("here", "this face", "these holes", "the selected face")
+_HERE = re.compile(r"^(?:(?:on|at|for|to|in|round|around|near)\s+)?(?:here|there|it|them|"
+                   r"(?:the\s+)?(?:selected|picked|chosen|clicked|highlighted|marked)\s+[\w -]{1,40}|"
+                   r"(?:this|that|these|those)(?:\s+[\w -]{1,40})?|the\s+(?:faces?|surfaces?))$", re.I)
+#: words that say a size typed with a pick is for the whole mesh all the same
+_WHOLE = re.compile(r"\b(?:global(?:ly)?|whole|overall|everywhere|entire|all\s+over|everything|rest\s+of)\b", re.I)
+
+
+def picked_where(faces) -> str:
+    """The place as the user saw it: "the face you picked (Face 12 · round Ø15 mm)"."""
+    labels = [str(f.get("label") or f.get("id") or "") for f in faces or ()]
+    head = "the face you picked" if len(labels) == 1 else f"the {len(labels)} faces you picked"
+    return f"{head} ({'; '.join(labels[:3])}{'; ...' if len(labels) > 3 else ''})"
+
+
+def bind_picks(req: dict, notes, *, cells: bool = False) -> dict:
+    """NOTE-17: a size or a refinement typed in a note (or a chat message kept as one) sent with faces picked on the
+    model is for THOSE faces. A place entry whose place only points ("here", "this face") gets the faces; a global
+    size typed with a pick becomes a size on those faces, never the global size, unless the words say the whole
+    mesh. Done in code from the note that carries the faces - the model is never asked which face "here" is.
+    `notes`: the user's own notes (contracts/user_notes.own_notes), each with its `faces` [{id, label, sig}]."""
+    carrying = [(_squash(str(n.get("text") or "")), list(n.get("faces") or ()))
+                for n in notes or () if isinstance(n, Mapping) and n.get("faces")]
+    if not carrying or not isinstance(req, dict):
+        return req
+
+    def faces_of(quote) -> list | None:
+        q = _squash(str(quote or ""))
+        return next((f for text, f in carrying if len(q) >= 2 and q in text), None)
+
+    def bind(e: dict, faces: list) -> None:
+        where = picked_where(faces)
+        # the signatures go with the ids: the run re-checks each face is still the one picked (cad/face_map.same_face)
+        e.update(where=where, faces=[str(f.get("id")) for f in faces], labels=[str(f.get("label") or "") for f in faces],
+                 sigs=[f.get("sig") for f in faces], rule=RULE_PICKED)
+        for r in req.get("rows") or ():
+            if r.get("id") == e.get("id"):
+                r["field"] = "local"
+                r["asked"] = _local_words(where, str(e.get("what") or "size"), e.get("mm"), cells=cells)
+
+    req.setdefault("local", [])
+    for e in req["local"]:
+        faces = faces_of(e.get("quote"))
+        if faces and _HERE.match(" ".join(str(e.get("where") or "").split())):
+            bind(e, faces)
+    sizes = req.get("sizes") or {}
+    if sizes.get("global_mm") is not None:
+        r = next((r for r in req.get("rows") or () if r.get("field") == "global"), None)
+        faces = faces_of(r["quote"]) if r else None
+        if r and faces and not _WHOLE.search(str(r["quote"])):
+            e = {"id": r["id"], "where": "", "what": "size", "mm": float(sizes["global_mm"]), "quote": r["quote"]}
+            sizes["global_mm"] = None
+            req["local"].append(e)
+            bind(e, faces)
+    return req
+
+
 #: a count of elements through or across something ("3 elements through the thickness", "two rows across the flange")
 _COUNTED = re.compile(r"\b(?:\d+|one|two|three|four|five|six)\s+(?:\w+\s+)?(?:elements?|rows?|layers)\b[^.;\n]{0,24}?"
                       r"\b(?:through|across)\b", re.I)
@@ -2059,6 +2120,9 @@ async def decide(state: Mapping, *, route: str = "", job_id: str = "", run=None,
         if args is None:
             return None
         req, dropped, not_applied = check(args, notes, route)
+        # NOTE-17: what was typed with picked faces is for those faces (never the global size)
+        from meshpipeline.contracts.user_notes import own_notes
+        req = bind_picks(req, own_notes((state or {}).get("user_notes") or []), cells=route == FLOW)
         return section("used", requirements=req, dropped=dropped, not_applied=not_applied, key=key, source=source)
 
     def without(status: str, why: str) -> dict:

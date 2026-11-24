@@ -985,6 +985,13 @@ def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analy
         _band = PL.BAND_CELLS * float(base_actual) / 2 ** int(_plevel)
         _part_geom += f" {_pf}.stl {{ type triSurfaceMesh; name {_pf}; }}"
         _part_refine += f" {_pf} {{ mode distance; levels (({_band:.6g} {int(_plevel)})); }}"
+    if _ask is not None and getattr(_ask, "picked_levels", None):
+        # NOTE-17: the faces the user picked, each finer on its own triangles (engines/snappy/part_levels)
+        from meshpipeline.engines.snappy import part_levels as PL
+        _pg, _pr = PL.picked_refinement(_ask.picked_levels, base_m=float(base_actual),
+                                        have=lambda s: (ws / "constant" / "triSurface" / f"{s}.stl").exists())
+        _part_geom += _pg
+        _part_refine += _pr
     # ONE ENTRY PER REGION, by the patch's real name. snappyHexMesh names a region patch after the
     # region itself, not <surface>_<region>: a pattern built on the surface name matches nothing,
     # and OpenFOAM says so in the log and then adds no layers at all - a wall-resolved case would

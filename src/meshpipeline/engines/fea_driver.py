@@ -2708,6 +2708,8 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
             # Nothing asked in one place: nothing is read here and the run is the run it always was
             read_early = await PS.decide(ws, record, surface, state or {}, job_id=job_id, run=run,
                                          wait_s=ai_wait_s(run))
+            # NOTE-17: a size typed with faces picked on the model sizes those faces (re-checked on this surface)
+            read_early = PS.with_picks(read_early, MR.requirements_of(asked), surface)
             if read_early.get("status") != "none":
                 _cite(job_id, PS.decisions(read_early))
             SP.write(ws, SP.from_reading(read_early))
@@ -2760,6 +2762,9 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
     # model from the parts' facts and pictures, checked by the rules; nothing applied when it cannot be read
     part_sizes = (read_early if read_early is not None else
                   await PS.decide(ws, record, surface, state or {}, job_id=job_id, run=run, wait_s=ai_wait_s(run)))
+    if read_early is None:
+        # NOTE-17: a size typed with faces picked on the model sizes those faces (re-checked on this surface)
+        part_sizes = PS.with_picks(part_sizes, _MR.requirements_of(asked), surface)
     sizes = PS.sizes_of(part_sizes)
     if read_early is None and part_sizes.get("status") != "none":
         _cite(job_id, PS.decisions(part_sizes))

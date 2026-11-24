@@ -51,7 +51,11 @@ async def test_the_notes_route_passes_files_and_faces_through_and_returns_them()
 
     app = FastAPI()
     app.include_router(chat_router, prefix="/api/v1/chat")
+    async def _verified(session_id, faces, owner_id, organization_id):   # NOTE-17's check: tests/unit/api/test_chat_face_verify.py
+        return [f.model_dump() for f in faces or ()]
+
     with patch.object(msg, "add_console_note", _add), \
+            patch("meshpipeline.api.v1.chat._picked_faces", _verified), \
             patch("meshpipeline.persistence.repositories.session_repository.SessionRepository"):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
             resp = await c.post("/api/v1/chat/notes",

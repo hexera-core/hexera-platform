@@ -625,7 +625,9 @@ def user_sized(zone_list: list[dict], sizes: Mapping[str, Mapping]) -> list[dict
     for k, v in areas.items():
         lo, hi = float(v["min_m"]), float(v["max_m"])
         mid = 0.5 * (lo + hi)
-        out.append({"id": f"U{str(k).rsplit('_', 1)[-1]}", "kind": "area", "faces": [str(f) for f in v["faces"]],
+        # a face picked on the model (NOTE-17, Pick_n) never shares its zone id with an area found (Feature_n)
+        tag = "UP" if str(k).startswith("Pick_") else "U"
+        out.append({"id": f"{tag}{str(k).rsplit('_', 1)[-1]}", "kind": "area", "faces": [str(f) for f in v["faces"]],
                     "size_m": _r(mid), "reach_m": _r(AREA_REACH * mid), "user": k, "user_min_m": lo,
                     "user_max_m": hi, "rule_size_m": _r(mid), "rule": "PLAN-fea-32"})
     return out

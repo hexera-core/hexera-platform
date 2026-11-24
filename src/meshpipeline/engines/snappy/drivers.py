@@ -524,6 +524,27 @@ def _write_part_surfaces(workspace, got: dict | None, regions: list) -> None:
         logger.warning("snappy part levels: a part's own surface was not written (%s)", type(exc).__name__)
 
 
+def _picked_faces(workspace, local, state, cache: dict) -> dict:
+    """NOTE-17: {entry id: {"file", "where"} | {"gone"}} for the sizes typed with picked faces - the face map the
+    check kept read through the contract seam (an engine never reads the check), the staged surface's box read once
+    per run. {} when it cannot be read: each pick is then told as not re-checked. Never raises."""
+    try:
+        import numpy as np
+
+        from meshpipeline.cad.stl_io import read_stl_solids
+        from meshpipeline.contracts import geometry_check as GC
+        from meshpipeline.engines.snappy import part_levels as PL
+        if "picked_box" not in cache:
+            pts = np.asarray([t for v in read_stl_solids(Path(workspace) / "input.stl").values() for t in v],
+                             dtype=float).reshape(-1, 3)
+            cache["picked_box"] = [pts.min(axis=0).tolist(), pts.max(axis=0).tolist()]
+        fm = GC.face_map(str((state or {}).get("session_id") or ""))
+        return PL.picked_surfaces(Path(workspace), local, fm, box=cache["picked_box"])
+    except Exception as exc:  # noqa: BLE001 - the picks are told as not re-checked, never a failed run
+        logger.warning("snappy picked faces: not read (%s)", type(exc).__name__)
+        return {}
+
+
 async def _say_part_levels(workspace, publish, got: dict, levels: dict | None, *, job_id: str) -> None:
     """The notes about parts, said once per run: in the run's words, the "From your notes" line, the why record."""
     from meshpipeline.engines.snappy import part_levels as PL
@@ -1429,6 +1450,10 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
                 _part_cache["got"] = await _part_sizes(workspace, state, job_id=str(job_id or ""), run=run)
             _part_got = _part_cache["got"]
             _write_part_surfaces(workspace, _part_got, prep.get("surface_regions") or [])
+            if _ask is not None and any(e.get("faces") for e in _ask.local):
+                # NOTE-17: the faces the user picked, re-checked on the check's face map and written as their own
+                # surfaces for a finer distance region each (engines/snappy/part_levels.picked_surfaces)
+                _ask.picked = _picked_faces(workspace, _ask.local, state, _part_cache)
             summary = R.render_snappy_case(
                 workspace, surface_name=prep["surface_name"], feature_file=prep["feature_file"],
                 analysis=analysis, recommendation=rec, domain_min=dmin, domain_max=dmax,

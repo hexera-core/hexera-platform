@@ -17,6 +17,8 @@ PURPOSE = "FEA: quadratic tetrahedra of a solid (structural)"
 section = PW.section
 part_table = PW.part_table
 per_part = PW.per_part
+#: NOTE-17: the faces picked on the model as areas of their own, re-checked on this run's surface
+with_picks = PW.with_picks
 
 
 async def decide(ws: Path, record: Mapping, surface, state: Mapping, *, job_id: str = "", run=None,
@@ -139,4 +141,4 @@ def decisions(ps: Mapping | None) -> list[dict]:
 
 
 __all__ = ["CONSUMER", "RULE", "SCALES", "decide", "decisions", "part_table", "per_part", "resolve_scales", "section",
-           "sizes_of", "told", "words"]
+           "sizes_of", "told", "with_picks", "words"]
