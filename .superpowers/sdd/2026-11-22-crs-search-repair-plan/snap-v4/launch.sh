@@ -174,7 +174,11 @@ OPS=$OPS
 FILE_USD_CAP=$FILE_USD_CAP
 ROUTE=$ROUTE
 BUCKET=$BUCKET
-CACHE=gs://$BUCKET/eval/snap-$LABEL-$TS/verdict-cache
+# LEAD-3: ONE persistent verdict cache across runs. The key is (STEP sha256, panel config hash incl. member
+# timeouts and mesher versions, VERDICT_CODE_VERSION), so a verdict is reused only for the same file under the same
+# judge; the input verdict (up to ~1100 s on slow files, phase probe 2026-11-24) is paid once, not per run.
+# VERDICT_CACHE=fresh restores a per-run cache (cold-wall timing comparisons).
+CACHE=$( [ "${VERDICT_CACHE:-shared}" = fresh ] && echo gs://$BUCKET/eval/snap-$LABEL-$TS/verdict-cache || echo gs://$BUCKET/eval/verdict-cache-shared )
 SYNC=$SYNC
 FILE_TIMEOUT_S=${FILE_TIMEOUT_S:-}
 SEARCH_WALL_S=${SEARCH_WALL_S:-}
