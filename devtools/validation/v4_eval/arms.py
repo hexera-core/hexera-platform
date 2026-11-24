@@ -184,10 +184,10 @@ def run_file(arm_name: str, entry: Any, source: str, *, pool: Any, engine: Engin
         out_v, usd = v_in, 0.0
         extra: dict[str, Any] = {}
         if arm_name == "input_only":
-            pass
+            keep_delivered(ws.brep_path, workdir, is_input=True)
         elif arm_name == "staged":
             staged = _run_staged(engine, pool, ws, v_in)
-            out_v = _confirmed_or_input(pool, ws, staged, source, full=full, v_in=v_in)
+            out_v = _confirmed_or_input(pool, ws, staged, source, full=full, v_in=v_in, workdir=workdir)
             extra["_triage"] = {"stages": stages_triage(staged)}
         elif arm_name in ("search_det", "search_ai"):
             # the seam contract's call order (spec 04; `repair_v4._find_best`): the search starts from the staged
@@ -267,6 +267,8 @@ def _search_arm(arm_name: str, *, pool: Any, ws: Any, start: Any, source: str, j
     # delivery gate states it - against the INPUT - rather than measuring the bug.
     delivered = S.deliverable(dataclasses.replace(result, changed=result.changed or start.brep_path != ws.brep_path), v_in)
     out_v = v_in if delivered is None else full(pool, delivered, source)
+    if workdir is not None:
+        keep_delivered(ws.brep_path if delivered is None else delivered.brep_path, workdir, is_input=delivered is None)
     if recipes is not None and bool(getattr(out_v, "clean", False)) and not fields["_unmeasured"]:
         recipes.learn(result, file_sha256=entry.sha256, diagonal_mm=_diagonal_or_none(pool, start))
     return out_v, fields, usd
@@ -337,13 +339,28 @@ def _top(counter: Any) -> dict[str, int]:
     return top
 
 
+#: located entries kept per failing member in a row (a mesher can name hundreds of faces; the total is kept beside them)
+LOCATED_CAP = 20
+
+
+def _located(m: Any) -> dict[str, Any]:
+    """Where the member said it went wrong (`panel.Located`): the face fingerprint, the point in mm and the mesher's own
+    tag, the first LOCATED_CAP of them, and how many there were."""
+    loc = list(getattr(m, "located", None) or [])
+    return {"located": [{"entity": getattr(x, "entity", None),
+                         "xyz": None if getattr(x, "xyz", None) is None else [float(c) for c in x.xyz],
+                         "mesher_tag": getattr(x, "mesher_tag", None)} for x in loc[:LOCATED_CAP]],
+            "located_total": len(loc)}
+
+
 def verdict_triage(v: Any) -> dict[str, Any]:
     f = v.faithful
     deviation = None if f is None else {
         "ok": bool(f.ok), "max_dev_mm": f.max_dev_mm, "bound_mm": f.bound_mm,
         "used": (f.max_dev_mm / f.bound_mm) if f.bound_mm else None, "reasons": list(getattr(f, "reasons", []))}
     return {"panel_failing": [{"name": m.name, "status": m.status, "error_kind": getattr(m, "error_kind", None),
-                               "cause": getattr(m, "cause", None)}  # report.py counts repeated timeouts by cause
+                               "cause": getattr(m, "cause", None),  # report.py counts repeated timeouts by cause
+                               **_located(m)}                        # the face / point the mesher named (C5)
                               for m in v.panel if m.status != "pass"],
             "deviation": deviation,
             "valid": {"ok": bool(v.valid.ok), "hard": [x.code for x in v.valid.hard]}}
@@ -360,7 +377,8 @@ def stages_triage(staged: Any) -> dict[str, Any] | None:
     return out
 
 
-def _confirmed_or_input(pool: Any, ws: Any, staged: Any, source: str, *, full: Any, v_in: Any) -> Any:
+def _confirmed_or_input(pool: Any, ws: Any, staged: Any, source: str, *, full: Any, v_in: Any,
+                        workdir: str | None = None) -> Any:
     """The staged arm's output verdict, measured as the ENGINE ships it (`repair_v4._verdict_only` + `deliverable`):
     the healer's result confirmed by the full panel, falling back stage by stage (`stages.confirm_staged`), and then
     the delivery gate - a clean input is never replaced, and nothing that passes fewer members is delivered."""
@@ -374,10 +392,34 @@ def _confirmed_or_input(pool: Any, ws: Any, staged: Any, source: str, *, full: A
     # search), so the stand-in is deliberate
     stand_in: Any = SimpleNamespace(changed=staged.ws.brep_path != ws.brep_path, best=staged.ws, best_verdict=out_v)
     shipped = deliverable(stand_in, v_in)
+    if workdir is not None:
+        keep_delivered(ws.brep_path if shipped is None else shipped.brep_path, workdir, is_input=shipped is None)
     return v_in if shipped is None else out_v
 
 
 TRACE_NAME = "search-trace.json"
+DELIVERED_BREP = "delivered.brep"
+DELIVERED_JSON = "delivered.json"
+
+
+def keep_delivered(source_brep: str | None, workdir: str, *, is_input: bool) -> None:
+    """Which state this (file, arm) SHIPPED, beside its work states: `delivered.json` always, and a copy of a non-input
+    output as `delivered.brep` (the input is already `input.brep` there), so a repaired output can be measured after
+    the wave. A failed copy is recorded in the json and never costs the row."""
+    import shutil
+
+    rec: dict[str, Any] = {"is_input": is_input, "source_brep": source_brep, "kept": None}
+    try:
+        Path(workdir).mkdir(parents=True, exist_ok=True)
+        if not is_input and source_brep:
+            shutil.copyfile(source_brep, Path(workdir) / DELIVERED_BREP)
+            rec["kept"] = True
+    except Exception as exc:  # noqa: BLE001 - evidence lost, not a failed measurement
+        rec.update(kept=False, error=f"{type(exc).__name__}: {exc}"[:300])
+    try:
+        (Path(workdir) / DELIVERED_JSON).write_text(json.dumps(rec))
+    except OSError:
+        pass
 
 
 def write_trace(trace: Any, workdir: str) -> None:

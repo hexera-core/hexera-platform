@@ -234,6 +234,25 @@ def test_a_search_arm_keeps_its_whole_trace_beside_its_work_states(shard: Any) -
     assert any(e["kind"] == "stop" for e in events)
 
 
+def test_every_arm_records_which_state_it_delivered_and_keeps_its_brep(shard: Any, tmp_path: Path) -> None:
+    """A REPAIRED output cannot be measured after the wave unless its BREP is kept: each (file, arm) writes
+    `<workdir>/delivered.json` (which state shipped, whether it is the input) and copies a non-input output to
+    `<workdir>/delivered.brep`. A failed copy is recorded, never a lost row."""
+    rows, excluded = go(shard, "input_only,staged,search_det", None, FakeEngine())
+    assert excluded == [] and len(rows) == 3
+    recs = {p.parent.name: json.loads(p.read_text()) for p in shard.out.rglob("delivered.json")}
+    assert set(recs) == {"input_only", "staged", "search_det"}
+    assert recs["input_only"]["is_input"] is True and recs["input_only"]["kept"] is None  # the input is input.brep
+    for arm in ("staged", "search_det"):  # the fake world ships the staged state (q=1), not the input
+        assert recs[arm]["is_input"] is False and recs[arm]["source_brep"]
+        assert recs[arm]["kept"] is False and "error" in recs[arm]  # the fake's path is not a file: recorded, not raised
+    real = tmp_path / "s.brep"
+    real.write_text("brep")
+    dst = tmp_path / "w"
+    run_arm.arms_mod.keep_delivered(str(real), str(dst), is_input=False)
+    assert (dst / "delivered.brep").read_text() == "brep" and json.loads((dst / "delivered.json").read_text())["kept"]
+
+
 def test_a_search_row_carries_the_cheap_full_table_of_the_states_it_confirmed(shard: Any, wire: Wire) -> None:  # noqa: F811
     wire.candidate = CLEAN_CANDIDATE
     [row], _ = go(shard, "search_ai", ledgered())
@@ -808,7 +827,27 @@ def test_the_triage_names_each_failing_members_cause() -> None:
     v = SimpleNamespace(faithful=None, panel=[member, SimpleNamespace(name="gmsh_prod", status="pass")],
                         valid=SimpleNamespace(ok=True, hard=[]))
     failing = run_arm.arms_mod.verdict_triage(v)["panel_failing"]
-    assert failing == [{"name": "gmsh_alt", "status": "timeout", "error_kind": "timeout", "cause": "after_timeout_crashed"}]
+    assert failing == [{"name": "gmsh_alt", "status": "timeout", "error_kind": "timeout", "cause": "after_timeout_crashed",
+                        "located": [], "located_total": 0}]
+
+
+def test_the_triage_keeps_where_each_failing_member_said_it_went_wrong() -> None:
+    """A row must carry the face / point a mesher named (C5, Lane D's padding fix): without it a wave cannot say which
+    face failed. Capped per member so one row cannot blow up; the total is kept, so the cap is visible."""
+    from meshpipeline.cad.repair_v4.verdict.panel import Located
+
+    cap = run_arm.arms_mod.LOCATED_CAP
+    many = [Located(f"fp{i}", (float(i), 0.5, -1.25), f"S{i}") for i in range(cap + 7)]
+    member = SimpleNamespace(name="gmsh_prod", status="fail", error_kind="other", cause=None, located=many)
+    unplaced = SimpleNamespace(name="netgen_occ", status="fail", error_kind="netgen_meshing_failed", cause=None,
+                               located=[Located(None, None, "?")])
+    v = SimpleNamespace(faithful=None, panel=[member, unplaced, SimpleNamespace(name="gmsh_alt", status="pass")],
+                        valid=SimpleNamespace(ok=True, hard=[]))
+    prod, ng = run_arm.arms_mod.verdict_triage(v)["panel_failing"]
+    assert prod["located_total"] == cap + 7 and len(prod["located"]) == cap
+    assert prod["located"][0] == {"entity": "fp0", "xyz": [0.0, 0.5, -1.25], "mesher_tag": "S0"}
+    assert ng["located"] == [{"entity": None, "xyz": None, "mesher_tag": "?"}] and ng["located_total"] == 1
+    json.dumps(prod)  # a row is JSON
 
 
 # --- the owner's overlap ruling: either cut computable from rows -------------------------------------------------
