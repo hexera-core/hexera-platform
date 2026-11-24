@@ -169,15 +169,24 @@ def _find_best(pool: WorkerPool, ws: Workspace, source: str, *, budget: Budget, 
     from meshpipeline.cad.repair_v4.verdict.assemble import adaptive_cheap_members
 
     input_verdict = input_verdict if input_verdict is not None else judge.full(pool, ws, source)
-    staged = run_staged(pool, ws, cheap_members=adaptive_cheap_members(input_verdict))
-    # the search starts from the healer's output only once the FULL panel says it is no worse than the input
-    confirm_staged(pool, ws, staged, full=lambda w: judge.full(pool, w, source), input_verdict=input_verdict)
+    if getattr(input_verdict, "out_of_scope", False):
+        # AN UNBOUNDED INPUT SKIPS THE STAGED HEALER (lane C9) and the search starts from the input itself. The staged
+        # healer's `_judge` always judges a RE-EXPORT of the workspace, and on an unbounded shape the re-export's
+        # check_valid runs to its timeout: on sha bfc8d0b5 the engine spent 1808 s in the staged baseline and raised
+        # SearchUnavailable before anything was searched. The search judges an unbounded input on its original STEP
+        # and an unbounded state by its extent alone (`search._judged`), and its det sweep proposes trim_unbounded first.
+        start = ws
+    else:
+        staged = run_staged(pool, ws, cheap_members=adaptive_cheap_members(input_verdict))
+        # the search starts from the healer's output only once the FULL panel says it is no worse than the input
+        confirm_staged(pool, ws, staged, full=lambda w: judge.full(pool, w, source), input_verdict=input_verdict)
+        start = staged.ws
     ai = _ai_kwargs(source, budget) if ARM == "search_ai" else {}
     generators, _proposer = arm_generators(ARM, **ai)
     remaining = deadline_s - time.monotonic() - WRITE_RESERVE_S
     capped = SearchBudget(wall_s=max(0.0, min(budget.wall_s, remaining)), ops=budget.ops,
                           model_calls=budget.model_calls, model_usd=budget.model_usd)
-    result = search(pool, staged.ws, source, generators, capped, workers=_workers(), judge=judge)
+    result = search(pool, start, source, generators, capped, workers=_workers(), judge=judge)
     # `search` judges `changed` against ITS start, which is the staged healer's output. Delivery asks a different
     # question - did the best state improve on the INPUT? - so a healer-only gain must still count as changed.
     # `deliverable` still compares result.best_verdict (the verdict of that very state) with the input verdict,

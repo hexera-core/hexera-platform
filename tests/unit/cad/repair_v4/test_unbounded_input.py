@@ -81,9 +81,13 @@ def test_the_engine_and_arms_input_verdict_of_an_unbounded_file_is_the_originals
     assert _judge(Pool(unbounded=False), _ws()) == "/tmp/engine_form/state_0.step"
 
 
-def test_a_repaired_state_is_always_judged_as_the_engine_exports_it(exports: list[str]) -> None:
-    """Only the input is classified on its original; a state an op produced is never swapped for the input."""
+def test_a_repaired_state_is_never_swapped_for_the_input(exports: list[str]) -> None:
+    """Only the input is classified on its original. A state an op produced is judged as the engine exports it when it
+    is bounded; when it is still unbounded it is invalid by its extent alone and never checked (lane C9: on the
+    re-export of an unbounded shape check_valid runs to its wall). Neither is ever the original."""
     edited = _ws(history=[Diff(op="sew", params={}, modified={}, generated={}, removed=[], declared_added=[],
                                declared_removed=[], seconds=0.0)])
-    pool = Pool(unbounded=True)
-    assert _judge(pool, edited) == "/tmp/engine_form/state_0.step" and "valid_extent" not in pool.calls
+    assert _judge(Pool(unbounded=False), edited) == "/tmp/engine_form/state_0.step"
+    seen: list[str] = []
+    v = search._judged(lambda pool, step, original: seen.append(step), Pool(unbounded=True), edited, ORIGINAL)
+    assert seen == [] and [f.code for f in v.valid.hard] == ["unbounded_geometry"] and v.panel == []

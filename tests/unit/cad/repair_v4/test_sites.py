@@ -849,3 +849,43 @@ def test_a_located_box_is_named_on_the_workspaces_grid_not_the_meshers() -> None
     (blind,) = find_sites(pool, ws, _verdict(_fail("gmsh_prod", "other", Located(wrong_grid, None, "surface 9"))),
                           h_mm=H)
     assert "F5" not in blind.entities
+
+# --- lane C10 (2): body ops only where the evidence names bodies -----------------------------------------------------
+
+BODY_OPS = {"conformalise", "fuse", "remove_duplicate_faces"}
+
+
+def _propose_for(ws: Workspace, sites: list) -> list:
+    from meshpipeline.cad.repair_v4.search import DetGenerator, SearchState
+
+    state = SearchState(id="S0", ws=ws, verdict=None, score=(0, 0, 0.0, 0.0, 0), sites=sites, depth=0, parent=None,
+                        via=None)
+    return DetGenerator(diagonal=lambda w: 100.0).propose(state, 50)
+
+
+def _two_bodies() -> Workspace:
+    ws = _ws()
+    ids = {**ws.ids, "B2": "fpB2"}
+    return Workspace(brep_path=ws.brep_path, ids=ids, labels=ws.labels, history=[], original=ws.original,
+                     indices={**ws.indices, "B2": 2})
+
+
+def test_the_v2_case_a_valid_two_body_part_with_an_unlocated_plc_gets_no_body_op() -> None:
+    """dev abc/0051_00514513 (v2, lane B13): valid, two bodies, gmsh_default fails PLC with no point. C5 made that a
+    coarse whole-part 'intersection' site naming every body, and the sweep fragmented them: 11 ops, all no-ops."""
+    ws = _two_bodies()
+    pool = ScriptedPool(ws, _boxes(ws))
+    (site,) = find_sites(pool, ws, _verdict(_fail("gmsh_default", "edge_through_face")), h_mm=H)
+    assert site.kind == "intersection" and site.graph["coarse"]["whole_part"] is True
+    assert not BODY_OPS & {c.op for c in _propose_for(ws, [site])}
+
+
+def test_a_layer1_overlap_naming_its_bodies_keeps_the_body_ops() -> None:
+    ws = _two_bodies()
+    boxes = _boxes(ws)
+    boxes["B2"] = [10.5, 0.0, 0.0, 11.5, 1.0, 1.0]  # overlapping bodies sit together: one site
+    pool = ScriptedPool(ws, boxes)
+    (site,) = find_sites(pool, ws, _verdict(hard=[Finding("body_overlap", ["S1", "S2"], {})]), h_mm=H)
+    assert site.kind == "overlap" and site.graph["coarse"]["whole_part"] is False
+    ops = {c.op for c in _propose_for(ws, [site])}
+    assert {"conformalise", "fuse"} <= ops
