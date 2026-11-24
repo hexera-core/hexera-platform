@@ -322,6 +322,25 @@ def _check_valid(payload: dict) -> dict:
     return check_shape(payload["brep"])
 
 
+@register("valid_signed_volumes")
+def _valid_signed_volumes(payload: dict) -> dict:
+    """Every solid's SIGNED volume, read from the BREP itself (lane C15). Layer 1 judges the STEP re-export, and writing
+    and re-reading STEP re-orients an inside-out solid: on dev 0051_00510567 a fused solid of -13.46 mm3 came back as
+    +13.46, so layer 1 called the part valid. Only the BREP still shows it."""
+    from OCP.BRep import BRep_Builder
+    from OCP.BRepTools import BRepTools
+    from OCP.TopAbs import TopAbs_SOLID
+    from OCP.TopExp import TopExp
+    from OCP.TopoDS import TopoDS_Shape
+    from OCP.TopTools import TopTools_IndexedMapOfShape
+
+    shape = TopoDS_Shape()
+    BRepTools.Read_s(shape, payload["brep_path"], BRep_Builder())
+    solids = TopTools_IndexedMapOfShape()
+    TopExp.MapShapes_s(shape, TopAbs_SOLID, solids)
+    return {"volumes": [_volume(solids.FindKey(i)) for i in range(1, solids.Extent() + 1)]}
+
+
 @register("valid_extent")
 def _valid_extent(payload: dict) -> dict:
     """Is the BREP unbounded, by the very rule `check_shape` stops at? A bounding box only, so it is cheap.

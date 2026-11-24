@@ -135,6 +135,7 @@ from meshpipeline.cad.repair_v4.verdict.assemble import (
     clean_of,
     score,
     verdict,
+    with_brep_orientation,
 )
 from meshpipeline.cad.repair_v4.verdict.cache import VerdictCache, default_verdict_cache
 from meshpipeline.cad.repair_v4.verdict.faithful import DeclaredIdError, FaithfulReport, check_faithful
@@ -313,6 +314,9 @@ def _judged(fn: Callable[..., Verdict], pool: Any, ws: Workspace, original: str,
     step = str(original) if unbounded is not None else step_for(pool, ws.brep_path)
     # the cache holds only the panel (the meshing); layers 1 and 3 are recomputed, so a hit never skips a check
     v: Verdict = fn(pool, step, original, **kw) if cache is None else fn(pool, step, original, cache=cache, **kw)
+    if ws.history:
+        # lane C15: an op-made state's inside-out solid is visible only on the BREP (the STEP round trip re-orients it)
+        v = with_brep_orientation(pool, ws.brep_path, v)
     declared = declared_edits(ws, faces)
     if v.valid.ok and (declared.added or declared.removed):
         try:

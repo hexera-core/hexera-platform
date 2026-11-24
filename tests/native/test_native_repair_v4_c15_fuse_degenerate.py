@@ -46,3 +46,30 @@ def test_the_degenerate_eight_body_fuse_of_00510567_is_declined(pool: WorkerPool
 # The other side - a REAL union still applies - is the C7 fuse tests (test_native_repair_v4_c7_body_ops.py), which run
 # with this guard in place. This root cannot host it: the staged orient_and_close left the compound BRepCheck-invalid,
 # so any op that keeps those solids declines invalid_result.
+
+
+# ------------------------------------------------------------------ layer 1 sees an inside-out solid on the BREP
+
+DELIVERED = Path(__file__).resolve().parents[1] / "fixtures" / "geometry" / "abc_00510567_delivered.brep.gz"
+
+
+def test_an_inside_out_solid_makes_an_op_made_state_invalid_before_the_step_export_hides_it(pool: WorkerPool,
+                                                                                         tmp_path: Path) -> None:
+    """v4 DELIVERED this BREP: 4 solids, one of -13.46 mm3. The STEP round trip re-orients it, so layer 1 alone called
+    it valid. On an op-made state (history) the BREP's signed volumes are now checked: INVALID, not clean."""
+    import dataclasses
+
+    from meshpipeline.cad.repair_v4.search import _judged
+    from meshpipeline.cad.repair_v4.verdict.assemble import cheap_verdict
+    from meshpipeline.cad.repair_v4.workspace import Diff
+
+    brep = tmp_path / "delivered.brep"
+    brep.write_bytes(gzip.decompress(DELIVERED.read_bytes()))
+    ws = Workspace.from_brep(pool, str(brep))
+    blind = _judged(cheap_verdict, pool, ws, str(brep))                  # no history: the input path, unchanged
+    assert blind.valid.ok, "precondition: layer 1 alone calls the delivered part valid"
+    made = dataclasses.replace(ws, history=[Diff("fuse", {}, {}, {}, [], [], [], 0.0)])
+    v = _judged(cheap_verdict, pool, made, str(brep))
+    assert not v.valid.ok and not v.clean
+    (f,) = [f for f in v.valid.hard if f.code == "non_positive_volume"]
+    assert f.detail["volume"] < -13.0 and f.detail["seen_on"].startswith("brep")
