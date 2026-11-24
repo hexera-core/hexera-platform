@@ -116,7 +116,9 @@ class RemoveDuplicateFaces:
     }
 
     def applies_to(self, site: Site) -> bool:
-        return site.kind in ("overlap", "intersection")
+        # proximity and self_overlap too (lane A11): a measured gap-0 contact and gmsh's overlapping_facets pair are
+        # both "two faces in the same place", which is exactly what this removes - and the sweep now proposes it there.
+        return site.kind in ("overlap", "intersection", "proximity", "self_overlap")
 
     def apply(self, pool: WorkerPool, ws: Workspace, targets: list[StableId], params: dict,
               *, timeout_s: float) -> tuple[Workspace, Diff]:

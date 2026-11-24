@@ -85,3 +85,23 @@ def test_a_low_quality_point_does_not_make_its_face_the_defect() -> None:
 def test_the_sliver_family_still_gets_its_own_ops() -> None:
     rows = {r[0] for r in _sweep(_site(kind="sliver", entities=["F4"]))}
     assert "remove_small" in rows or "defeature" in rows
+
+
+def test_every_contact_proposal_is_inside_its_op_schema() -> None:
+    """A proposal the op's own schema refuses costs a candidate and buys nothing. This caught
+    `remove_duplicate_faces` being proposed with no params at all: the op acts on PAIRS and requires them."""
+    from meshpipeline.cad.repair_v4.ops import validate_call
+    from meshpipeline.cad.repair_v4.workspace import Workspace
+
+    faces = ["F1", "F2", "F7"]
+    ws = Workspace(brep_path="/fake/a.brep", ids={f: f"fp{f}" for f in faces}, labels={}, history=[],
+                   original="/fake/o.brep", indices={f: i for i, f in enumerate(faces, start=1)})
+    site = _site(entities=faces, clashes=[{"a": "F1", "b": "F2", "dist_mm": 0.0, "touching": True,
+                                           "area_a_mm2": 2.0, "area_b_mm2": 9.0},
+                                          {"a": "F1", "b": "F7", "dist_mm": 0.3, "touching": False}])
+    checked = 0
+    for op, targets, params, _why in _sweep(site):
+        if op in ("remove_duplicate_faces", "split_by_proximity", "unify_same_domain"):
+            assert validate_call(op, list(targets), dict(params), ws) == [], (op, targets, params)
+            checked += 1
+    assert checked, "the sweep proposed none of the pair ops, so nothing was checked"

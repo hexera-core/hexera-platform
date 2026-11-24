@@ -563,6 +563,24 @@ def _of_kind(entities: list[StableId], prefix: str) -> list[StableId]:
 #: catalogue. The code is kept so a later measurement can turn it back on.
 WHOLE_PART_DEFEATURE = False
 
+#: how many of a mesher's named faces one aimed overlap op may take. gmsh names two surfaces; a third would mean
+#: two failures merged into one site, and a wider target is a wider edit than the mesher asked for.
+_MAX_OVERLAP_FACES = 2
+
+
+def _located_first(site: Site, faces: list[StableId]) -> list[StableId]:
+    """`faces`, with the ones a panel member's located failure NAMED moved to the front (order otherwise kept).
+
+    The site's face list is in topological order, so an op capped at the first few faces was aiming at face 1 of a
+    843-face part while the mesher's message named surface 108. Nothing is dropped: an op the named faces do not fix
+    can still reach the rest."""
+    named = [f for f in (site.graph or {}).get("mesher_faces") or [] if f in faces]
+    if not named:
+        return list(faces)
+    rest = [f for f in faces if f not in set(named)]
+    return named + rest
+
+
 DEFEATURE_SITE_KINDS = frozenset({"sliver", "proximity", "pole", "self_overlap", "intersection", "timeout"})
 
 
@@ -818,7 +836,10 @@ class DetGenerator:
         kind = site.kind
         if faces and (kind == "self_overlap" or (kind == "invalid" and _REBUILD_FACE_CODES & set(
                 graph.get("hard_codes") or ()))):
-            for face in faces[:_MAX_FACE_REBUILDS]:
+            # AIMED, lane A11: the faces the mesher NAMED come first. A gmsh overlapping_facets message names its
+            # surfaces ("on surface 108 surface 109") and D16 resolves them to faces, so on a 843-face part the
+            # rebuild starts at the two the mesher failed on instead of at face 1.
+            for face in _located_first(site, faces)[:_MAX_FACE_REBUILDS]:
                 rows.append(("rebuild_face", [face], {"continuity": "G0"},
                              "re-fill the face after fixing its self-intersecting wires (G0)"))
         if kind in _POLE_KINDS:
@@ -937,6 +958,36 @@ class DetGenerator:
             return "the faces are not one connected patch, so they have no single outline"
         return None
 
+    def _overlap_rows(self, site: Site, faces: list[StableId]) -> list[tuple[str, list[StableId], dict, str]]:
+        """What an `overlapping_facets` failure allows, aimed at the surfaces gmsh named (lane A11, 12 of 35 rows).
+
+        Measured on the real members (gmsh_default / gmsh_alt on the dev parts): the message names TWO surfaces and
+        D16 resolves both, and the pair falls into two classes.
+
+        ONE named face ("on surface 9 surface 9"): the face overlaps ITSELF, so the repair is on that face -
+        `rebuild_face` and `split_angle`, which the sweep now aims at it rather than at face 1 of 843.
+
+        TWO named faces whose boxes overlap ("on surface 108 surface 109", both 2.5 x 5 x 1150 mm and
+        box-overlapping; elsewhere a 2e-7 mm-thick face lying on its neighbour): two faces occupy the same space, so
+        the repair is to merge or drop one of them - `unify_same_domain` scoped to JUST those faces (never "all",
+        which merges across the part), and `remove_duplicate_faces` for the case where they are two copies. The
+        removal of the smaller one is already proposed by `_defeature_rows` through D16's `located` source.
+
+        No located face: nothing here is aimed, so nothing is proposed and the note says why."""
+        named = [f for f in (site.graph or {}).get("mesher_faces") or [] if f in faces]
+        if not named:
+            self._note(f"site {site.id}: no aimed overlap op: the site names no face the mesher located")
+            return []
+        if len(named) == 1:
+            return []     # the face's own ops (rebuild_face, split_angle) are aimed at it above
+        pair = named[:_MAX_OVERLAP_FACES]
+        return [
+            ("unify_same_domain", pair, {"scope": "targets", "keep": []},
+             f"merge the {len(pair)} same-domain faces the mesher's facets overlap on"),
+            ("remove_duplicate_faces", list(pair), {"pairs": [list(pair)]},
+             f"the overlap on {', '.join(pair)} may be two copies of one face"),
+        ]
+
     @staticmethod
     def _contact_rows(contacts: list[dict]) -> list[tuple[str, list[StableId], dict, str]]:
         """What a CONTACT allows (lane A11: the commonest mesher cause on a valid part, 18 of 35 located failures).
@@ -949,8 +1000,9 @@ class DetGenerator:
         rows: list[tuple[str, list[StableId], dict, str]] = []
         if not contacts:
             return rows
-        rows.append(("remove_duplicate_faces", [], {},
-                     "the contact may be two copies of one face"))
+        pairs = [[str(c.get("a")), str(c.get("b"))] for c in contacts][:_MAX_PAIRS]
+        rows.append(("remove_duplicate_faces", sorted({f for p in pairs for f in p}), {"pairs": pairs},
+                     f"the {len(pairs)} contact(s) may be two copies of one face"))
         offered: set[str] = set()
         for c in contacts:
             a, b = str(c.get("a")), str(c.get("b"))
@@ -988,9 +1040,14 @@ class DetGenerator:
                     )
                 )
             rows += self._contact_rows(contacts)
+        if kind == "self_overlap":
+            rows += self._overlap_rows(site, faces)
         if kind in ("proximity", "self_overlap", "periodic") and faces:
+            # self_overlap aims at the named faces (see `_overlap_rows`); the other kinds have no per-face place yet.
+            at = _located_first(site, faces) if kind == "self_overlap" else faces
+            at = at[:_MAX_FACE_REBUILDS] if kind == "self_overlap" else at
             for deg in _SPLIT_ANGLES:
-                rows.append(("split_angle", faces, {"max_deg": deg}, f"split faces at {deg} deg"))
+                rows.append(("split_angle", at, {"max_deg": deg}, f"split faces at {deg} deg"))
         if kind == "periodic" and faces:
             rows.append(("split_closed", faces, {}, "split closed periodic faces at the seam"))
         if kind == "invalid":
