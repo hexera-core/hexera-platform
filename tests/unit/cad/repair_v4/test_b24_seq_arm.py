@@ -164,10 +164,12 @@ def test_the_table_decides_where_it_has_a_leader_and_the_model_is_not_asked() ->
 
 
 def test_the_model_decides_only_on_a_TIE_and_only_among_the_tables_own_candidates() -> None:
-    pick = seq.pick_repair(_defect("body_overlap"), ai_pick=lambda d, c: ("fuse",))
+    # a BODY defect, because body_overlap's entries are body ops and the entity-kind filter now runs first
+    tied = _defect("body_overlap", entities=("B1", "B2"))
+    pick = seq.pick_repair(tied, ai_pick=lambda d, c: ("fuse",))
     assert pick.by == "ai" and pick.repair == ("fuse",)
     # an answer that was not offered is ignored and the table's order stands
-    other = seq.pick_repair(_defect("body_overlap"), ai_pick=lambda d, c: ("invent_something",))
+    other = seq.pick_repair(tied, ai_pick=lambda d, c: ("invent_something",))
     assert other.by == "table" and other.repair == ("conformalise",)
 
 
@@ -318,7 +320,9 @@ def test_a_measured_local_FAILURE_moves_on_to_the_next_alternative() -> None:
 
     with _patched(apply):
         _judge, out = _run(verify=lambda *a, **k: _local(gone=False))
-    assert tried == [("defeature",), ("conformalise",), ("defeature", "defeature")]
+    # `conformalise` is no longer among them: it is a BODY op and this defect carries a face, so the
+    # entity-kind filter drops it before the cap rather than letting it waste an alternative
+    assert tried == [("defeature",), ("defeature", "defeature"), ("defeature", "run_stage:bodies")]
     assert out.counters.local_checks == 3 and out.counters.skipped["edge_through_face"] == 1
 
 
@@ -559,3 +563,36 @@ def test_the_arms_OWN_refusal_is_still_told_apart_from_the_workspaces() -> None:
     assert seq.apply_failure_reason(ValueError("history record is missing ['entities']")) == "record_malformed"
     from meshpipeline.cad.repair_v4.ops import OpDeclined
     assert seq.apply_failure_reason(OpDeclined("no_change")) == "OpDeclined"
+
+
+# --- the entity-kind filter runs BEFORE the alternatives cap --------------------------------------------------
+
+def test_a_BODY_defect_is_offered_the_body_op_the_cap_used_to_hide() -> None:
+    """self_intersection's table is (defeature), (defeature, conformalise), (defeature, fuse), (conformalise),
+    and MAX_ALTERNATIVES is 3 - so plain conformalise, its one body op and a measured oracle winner, was never
+    reached. Wave 202611242110 relocated both of that kind's defects onto BODIES and all six attempts failed on
+    face ops while the repair that could have applied sat at index 3."""
+    body = _defect("self_intersection", entities=("B2",))
+    pick = seq.pick_repair(body)
+    assert pick.repair == ("conformalise",) and pick.by == "table"
+    # and the face-op entries are not merely ranked lower, they are not candidates at all
+    assert all("defeature" not in r for r in pick.candidates)
+
+
+def test_a_FACE_defect_of_the_same_kind_still_gets_the_face_ops() -> None:
+    face = _defect("self_intersection", entities=("F9",))
+    pick = seq.pick_repair(face)
+    assert pick.repair == ("defeature",)
+    assert ("conformalise",) not in pick.candidates      # a body op has no body to aim at here
+
+
+def test_can_aim_fails_SHUT_on_an_op_it_has_no_rule_for() -> None:
+    assert not seq.can_aim("an_op_nobody_declared", _defect("self_intersection", entities=("B2",)))
+    assert seq.can_aim("run_stage:bodies", _defect("brep_invalid", entities=()))   # the macro needs no targets
+    assert seq.can_aim("split_by_proximity", _defect("low_quality", entities=("B1",)))  # whole-part op
+
+
+def test_low_qualitys_demotion_is_evidence_now_and_the_rollback_entry_is_UNTOUCHED() -> None:
+    assert seq.RULE_TABLE["low_quality"] == (("split_by_proximity",), ("reapproximate",))
+    # the cheap-score rollback entry applied 4 of 9 in 2110 and 3 of 9 in 2007: it leads and stays leading
+    assert seq.RULE_TABLE["overlapping_facets"][0] == ("split_angle", "run_stage:condition")

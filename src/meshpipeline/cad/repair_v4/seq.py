@@ -342,12 +342,12 @@ RULE_TABLE: dict[str, tuple[Repair, ...]] = {
                           ("defeature", "run_stage:bodies")),
     # 1 file. Kept because an arm with no entry falls to the AI, and one measured win beats a guess.
     "hxt_3d_failed": (("defeature",),),
-    # 1 file, 5 oracle-only rows of 58: this kind is mostly solved by the arms already. ORDER CORRECTED FROM
-    # THE WAVE, not from the oracle: on 202611242007 `reapproximate` declined `no_valid_face: the new carrier
-    # does not give a valid face` on all 10 real attempts, while `split_by_proximity` produced every one of the
-    # arm's 3 repairs. The oracle's single file cannot outweigh ten refusals on ten others. This is a STOPGAP in
-    # the same spirit as the learned demotion (demote what did not apply), done by hand for the one entry the
-    # wave was unambiguous about; the general rule comes with the next wave's counts.
+    # DEMOTED ON TWO WAVES OF EVIDENCE, no longer a stopgap (LEAD-3's approval, 2026-11-24). `reapproximate`
+    # was the oracle's leader on ONE file; measured in the arm it has never once applied:
+    #     wave 202611242007   reapproximate 0 applied of 10 tried    split_by_proximity 5 of 10
+    #     wave 202611242110   reapproximate 0 applied of  7 tried    split_by_proximity 5 of 10
+    # every refusal `no_valid_face: the new carrier does not give a valid face`. Seventeen refusals on real
+    # parts outweigh one oracle file, and `split_by_proximity` made every low_quality repair in either wave.
     "low_quality": (("split_by_proximity",), ("reapproximate",)),
     # 1 file. The 2-step leader is the only entry with more than one winning path.
     "no_volume": (("split_by_proximity", "remove_small"), ("defeature",),
@@ -526,6 +526,47 @@ def params_for(op: str, defect: Defect, *, pair: tuple[StableId, StableId] | Non
     raise NoParameters(f"no parameter rule for {op!r}")
 
 
+#: WHAT EACH OP CAN AIM AT, as `params_for` itself derives its targets: faces, bodies, or nothing (a whole-part
+#: op that takes no targets). One source of truth with `params_for` by construction - an op added there and not
+#: here is filtered out rather than mis-aimed, so this fails SHUT.
+_AIMS_AT: dict[str, frozenset[str]] = {
+    "conformalise": frozenset({"B"}),
+    "fuse": frozenset({"B"}),
+    "defeature": frozenset({"F"}),
+    "unify_same_domain": frozenset({"F"}),
+    "rebuild_face": frozenset({"F"}),
+    "reapproximate": frozenset({"F"}),
+    "split_angle": frozenset({"F"}),
+    "split_continuity": frozenset({"F"}),
+    "fill_loop": frozenset({"F"}),
+    "remove_small": frozenset({"F"}),
+    "split_by_proximity": frozenset(),      # whole-part: its pairs come from the measurement, not from targets
+}
+
+
+def can_aim(op: str, defect: Defect) -> bool:
+    """Can `op` be aimed at what this defect ACTUALLY CARRIES?
+
+    THE CAP WAS HIDING A WORKING ENTRY. `self_intersection`'s table is (defeature), (defeature, conformalise),
+    (defeature, fuse), (conformalise) - and `MAX_ALTERNATIVES` is 3, so plain `conformalise`, its one BODY op
+    and a measured oracle winner, was never reached. On wave 202611242110 lane C's `relocate` carried both of
+    that kind's defects onto BODIES, so all six attempts failed with "defeature needs the faces the defect is
+    on, and re-located onto B<k>" while the repair that could have applied sat at index 3.
+
+    A CAP OVER AN UNFILTERED LIST IS A SILENT CORRECTNESS RISK, NOT JUST A BUDGET - the same shape as this
+    arm's own analyser reading "applied 0" because param-laden keys hid the three repairs that did apply. So
+    the filter runs BEFORE the cap, and an op whose targets this defect cannot supply is not a candidate at all.
+    """
+    if op.startswith("run_stage:"):
+        return True                 # the stage macro takes no targets: it re-conditions the whole state
+    wants = _AIMS_AT.get(op)
+    if wants is None:
+        return False
+    if not wants:
+        return True
+    return any(str(e)[:1] in wants for e in defect.entities)
+
+
 # --- the pick ------------------------------------------------------------------------------------------------
 
 #: What an AI pick is asked for and what it may answer: ONE repair, out of the candidates this arm names. The
@@ -553,7 +594,9 @@ def pick_repair(defect: Defect, *, table: dict[str, tuple[Repair, ...]] | None =
     # the table is keyed on the defect's CODE (lane C's `kind` is only validity/mesher)
     kind = defect.code
     rows = (table if table is not None else RULE_TABLE).get(kind, ())
-    rows = tuple(r for r in rows if applies is None or all(applies(op) for op in r))
+    # BOTH filters run BEFORE the cap: the op must exist, AND it must be aimable at what this defect carries
+    rows = tuple(r for r in rows
+                 if (applies is None or all(applies(op) for op in r)) and all(can_aim(op, defect) for op in r))
     if not rows:
         if ai_pick is None:
             return Pick(None, "none", f"no rule for {kind!r} and no model to ask", ())
