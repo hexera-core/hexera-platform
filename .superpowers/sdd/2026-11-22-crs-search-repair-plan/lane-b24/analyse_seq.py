@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import collections
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -33,7 +34,48 @@ def clean(r: dict) -> bool:
                 and r.get("out_panel_passes") == r.get("panel_size"))
 
 
+def outcomes(rows: list[dict]) -> dict[str, dict]:
+    """Per (defect kind, repair): how often it was TRIED, how often it APPLIED, and the causes of every
+    non-application, counted. THIS IS MEASUREMENT ONLY - the demotion is a policy that reads it, and it is not
+    decided here. One place, so the policy cannot be argued from a different count than the report shows.
+
+    A cause is the op's own words with the numbers stripped, so `nothing at or under 1211.9 mm` and `nothing at
+    or under 974.0 mm` are one cause and not two.
+    """
+    out: dict[str, dict] = {}
+    for r in rows:
+        for line in ((r.get("triage") or {}).get("seq") or {}).get("lines") or []:
+            t = line.strip()
+            if " -> " not in t or t.startswith(("round", "full check")):
+                continue
+            kind = t.split(" on ")[0]
+            parts = t.split(" -> ")
+            if len(parts) < 3:
+                continue                      # "no repair [...]" and the cluster summary carry no repair
+            # the key is the OP SEQUENCE, with the derived parameters stripped: the table ranks ops, and keying
+            # on the params made every call its own row - which hid the three repairs that did apply under
+            # param-laden keys while the bare op read applied 0.
+            # THE KEY IS THE OP SEQUENCE. Each op's own name is the text before its first brace, so the derived
+            # parameters drop out whatever they contain - and they contain both " [" (a face-pair list) and
+            # nested braces (`run_stage`'s `params={}`), each of which defeated a cheaper strip.
+            repair = " + ".join(op.split("{")[0].split(" [")[0].strip() for op in parts[1].split(" + ")) or "?"
+            tail = parts[-1]
+            entry = out.setdefault(kind, {}).setdefault(repair, {"tried": 0, "applied": 0, "causes": {}})
+            entry["tried"] += 1
+            if tail.startswith("not applied"):
+                cause = re.sub(r"[-+]?\d*\.?\d+(?:e[-+]?\d+)?", "N", tail.split("not applied: ", 1)[-1])
+                cause = re.sub(r"\s+", " ", cause).strip()[:120]
+                entry["causes"][cause] = entry["causes"].get(cause, 0) + 1
+            else:
+                entry["applied"] += 1
+    return out
+
+
 def main(dirs: list[str]) -> int:
+    emit = None
+    if "--json" in dirs:
+        at = dirs.index("--json")
+        emit, dirs = dirs[at + 1], dirs[:at] + dirs[at + 2:]
     rows = [r for d in dirs for r in rows_of(Path(d))]
     if not rows:
         print("no rows found")
@@ -66,6 +108,12 @@ def main(dirs: list[str]) -> int:
         return 0
     for arm in seq_arms:
         _seq_block(arm, [r for r in by_arm[arm] if r.get("full_checks") is not None])
+    if emit:
+        measured = {arm: outcomes([r for r in by_arm[arm] if r.get("full_checks") is not None])
+                    for arm in seq_arms}
+        Path(emit).write_text(json.dumps(measured, indent=1, sort_keys=True) + "\n")
+        print(f"\nper (defect kind, repair) tried/applied/causes written to {emit} - the demotion's evidence, "
+              f"as measurement and not yet as policy")
     return 0
 
 
