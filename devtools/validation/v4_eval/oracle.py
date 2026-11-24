@@ -167,10 +167,14 @@ def one(entry: dict, inputs: str, out: str, *, op_timeout: float = OP_TIMEOUT_S,
             gen = S.DetGenerator(diagonal=lambda ws: d0, whole_part_defeature=True)
             gen.bind_pool(pool)
             try:
+                import inspect
+
                 import oracle_grid  # type: ignore[import-not-found,unused-ignore]  # lane C's; absent = none
                 extra = oracle_grid.extra_rows
+                extra_takes_d0 = len(inspect.signature(extra).parameters) >= 2
+                annotate = getattr(oracle_grid, "annotate", None)
             except ImportError:
-                extra = None
+                extra, extra_takes_d0, annotate = None, False, None
             seen = {S._fingerprint(root)}
 
             def candidates(ws: Any, verdict: Any, depth: int) -> list:
@@ -180,8 +184,11 @@ def one(entry: dict, inputs: str, out: str, *, op_timeout: float = OP_TIMEOUT_S,
                 cands = list(gen.propose(st, 10**6))
                 cands += [S.Candidate(S.RUN_STAGE, [], {"stage": s.name}, "oracle", f"run stage {s.name}")
                           for s in STAGES]
-                if extra is not None:   # lane C: extra_rows(state, d0_mm) -> list[search.Candidate]
-                    cands += list(extra(st, d0))
+                if extra is not None:   # lane C: extra_rows(state[, d0_mm]) -> list[search.Candidate]
+                    try:
+                        cands += list(extra(st, d0) if extra_takes_d0 else extra(st))
+                    except Exception as exc:  # noqa: BLE001 - a grid extension never loses the file
+                        row.setdefault("grid_errors", []).append(f"{type(exc).__name__}: {exc}"[:200])
                 return cands
 
             def evaluate(ws: Any, c: Any, depth: int, path: list, base_cheap: tuple, base_valid: bool) -> dict:
@@ -228,6 +235,11 @@ def one(entry: dict, inputs: str, out: str, *, op_timeout: float = OP_TIMEOUT_S,
                         if rec["beats_parent"]:
                             vf = judge.full(pool, new, src)
                             rec["full"] = summary(vf)
+                            if annotate is not None:   # lane C: NEW / OLD / UNPLACED faces of the improvement
+                                try:
+                                    rec["faces"] = annotate(ws, new, vf)
+                                except Exception as exc:  # noqa: BLE001
+                                    rec["faces"] = {"error": f"{type(exc).__name__}: {exc}"[:200]}
                             if vf.clean:
                                 rec["gaming"] = gamed(rec["own"])
                         rec["_ws"] = new
