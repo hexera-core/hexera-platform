@@ -253,7 +253,9 @@ def test_the_fast_loop_waves_run_the_search_arms_only_on_the_frozen_fast_dev_v1_
     root = Path(ev.__file__).resolve().parents[1] / "corpora/v4/fast_dev_v1"
     for name, split, n in (("fast_v1_dev", "dev", 15), ("fast_v1_clean", "clean", 5)):
         w = ev.WAVES[name]
-        assert (w.wave_type, w.split, w.arms) == ("normal", split, ("search_det", "search_ai"))
+        # LEAD-3 2026-11-24: search_seq (B24) joins the fast waves so the owner's sequential arm is measured
+        # beside the two search arms on the same files, same wall, same op cap.
+        assert (w.wave_type, w.split, w.arms) == ("normal", split, ("search_det", "search_ai", "search_seq"))
         body = json.loads((root / f"FAST_{split}_v1.json").read_text())
         assert body["split"] == split and len(body["files"]) == n
     dev = {f["sha256"][:12] for f in json.loads((root / "FAST_dev_v1.json").read_text())["files"]}
