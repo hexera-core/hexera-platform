@@ -76,9 +76,46 @@ def load(patterns: list[str]) -> list[dict]:
     return list(rows.values())
 
 
+ARM_ORDER = ("input_only", "staged", "search_det", "search_ai")
+
+
+def row_gaps(patterns: list[str]) -> dict[str, list]:
+    """From rows.partial.jsonl (which OMITS excluded pairs, and whose EXCLUDED.json is written only at shard end):
+    files the shard has MOVED PAST with arms missing = excluded pairs whose reason is not yet readable; and each
+    shard's current file (may still be running). A rollback_detail crash kills staged + both search arms in seconds,
+    so its signature is a passed-over file with only `input_only`."""
+    passed, current = [], []
+    for pat in patterns:
+        for path in sorted(glob.glob(pat)):
+            if not path.endswith("rows.partial.jsonl"):
+                continue
+            order: list[str] = []
+            arms: dict[str, dict] = defaultdict(dict)
+            with open(path) as fh:
+                for line in fh:
+                    if line.strip():
+                        r = json.loads(line)
+                        if r.get("sha256") not in arms:
+                            order.append(r.get("sha256"))
+                        arms[r.get("sha256")][r.get("arm")] = r
+            shard = path.split("/")[-2]
+            for i, sha in enumerate(order):
+                have = arms[sha]
+                missing = [a for a in ARM_ORDER if a not in have]
+                if not missing:
+                    continue
+                item = {"shard": shard, "name": next(iter(have.values())).get("name"), "have": sorted(have),
+                        "missing": missing,
+                        "crash_signature": sorted(have) == ["input_only"] and i < len(order) - 1}
+                (current if i == len(order) - 1 else passed).append(item)
+    return {"passed_over_with_missing_arms": passed, "current_file_per_shard": current}
+
+
 def load_excluded(patterns: list[str]) -> list[dict]:
     """EXCLUDED*.json beside each rows file: (file, arm) pairs that produced NO row. Classed by reason: `deadline` (the
-    wave was stopped before the pair ran: UNMEASURED, never a failure), `file_wall` (the file's own wall clock), other."""
+    wave was stopped before the pair ran: UNMEASURED, never a failure), `file_wall` (the file's own wall clock),
+    `harness_crash:rollback_detail` (the A8 `:g`-on-None TypeError in stages.rollback_detail, present at 5c43220a,
+    fixed b320e979), `harness_crash:other` (any other exception). A crash is the HARNESS's, never a repair failure."""
     out: dict[tuple, dict] = {}
     dirs = {path.rsplit("/", 1)[0] for pat in patterns for path in glob.glob(pat)}
     for d in sorted(dirs):
@@ -92,7 +129,11 @@ def load_excluded(patterns: list[str]) -> list[dict]:
             for x in items if isinstance(items, list) else []:
                 reason = str(x.get("reason") or "")
                 cls = ("deadline" if "deadline" in reason.lower() else
-                       "file_wall" if ("file_timeout" in reason or "wall" in reason.lower()) else "other")
+                       "file_wall" if ("file_timeout" in reason or "wall clock" in reason.lower()) else
+                       "harness_crash:rollback_detail" if ("unsupported format string" in reason
+                                                          or "rollback_detail" in reason
+                                                          or ("TypeError" in reason and "format" in reason)) else
+                       "harness_crash:other")
                 out[(split, x.get("arm"), x.get("sha256") or x.get("name"))] = {**x, "_split": split, "_class": cls}
     return list(out.values())
 
@@ -377,7 +418,13 @@ def markdown(t: dict, notes: list[str] | None = None) -> str:
            + (" - " + ", ".join(t["clean_control_regressions"][:10]) if t["clean_control_regressions"] else "") + ".",
            "",
            "**EXCLUDED (no row):** " + (_cell(t["excluded_by_class_arm"], 20) if t["excluded_by_class_arm"] else "none")
-           + ". `deadline` pairs were never run before the wave was stopped: UNMEASURED, not failures, and counted "
+           + ". Partial shards (no EXCLUDED yet): files passed over with arms MISSING "
+           + str(len(t.get("row_gaps", {}).get("passed_over_with_missing_arms", [])))
+           + " (crash signature, input_only alone: "
+           + str(sum(g["crash_signature"] for g in t.get("row_gaps", {}).get("passed_over_with_missing_arms", [])))
+           + "); files still running " + str(len(t.get("row_gaps", {}).get("current_file_per_shard", [])))
+           + ". `harness_crash:*` pairs died in the HARNESS (e.g. the 5c43220a rollback_detail TypeError): not a repair "
+           "failure, reported apart from file_wall and deadline. `deadline` pairs were never run before the wave was stopped: UNMEASURED, not failures, and counted "
            "nowhere else in this file; `file_wall` is the file's own wall clock.", "",
            f"Rows read: {t['rows_read']}. Failing rows (conclusive, not clean): {t['failing_rows']}. "
            f"FILES still failing in every repair arm: {t['files_still_failing']} (kind read off the last CONCLUSIVE "
@@ -444,6 +491,7 @@ def main(argv: list[str]) -> int:
     else:
         row_globs, trace_globs = args, []
     t = triage(load(row_globs), load_traces(trace_globs), load_excluded(row_globs))
+    t["row_gaps"] = row_gaps(row_globs)
     with open(argv[1] + ".json", "w") as fh:
         json.dump(t, fh, indent=1, default=str)
     with open(argv[1] + ".md", "w") as fh:
