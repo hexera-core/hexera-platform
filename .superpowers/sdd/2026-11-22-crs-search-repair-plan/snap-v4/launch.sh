@@ -269,7 +269,7 @@ gcloud compute ssh "$FIRST" --zone "$FZ" --project $PROJECT --command \
    sudo docker run --rm -v ~/snap/code:/w:ro -v ~/snap/tools:/tools:ro -v ~/snap/splits:/eval/splits:ro \
      -v ~/snap/out:/eval/out -w /w -e PYTHONPATH=/w/src meshpipeline-mesh:native \
      python /tools/post.py --out /eval/out --splits /eval/splits --manifest /eval/splits/launch_manifest.json \
-     > ~/snap/out/post.log 2>&1; echo \$? > ~/snap/out/post.rc; \
+     > ~/snap/out/post.log 2>&1 && echo 0 > ~/snap/out/post.rc || echo \$? > ~/snap/out/post.rc; \
    date -u +%FT%TZ > ~/snap/out/ALLDONE; gcloud storage rsync -r -q ~/snap/out $SYNC/out" \
   >> "$RUN/launch.log" 2>&1 || fail "the collect/post step failed on $FIRST"
 mkdir -p "$RUN/out"

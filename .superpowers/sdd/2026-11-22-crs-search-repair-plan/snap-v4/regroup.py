@@ -135,8 +135,11 @@ def merge_split(out: Path, splits: Path, split: str, groups: dict, prefix: str,
                                  "a shard is missing or an extra one is present")
     agreed: dict[str, object] = {}
     for key in MUST_AGREE:
+        # `route` is the MODEL arm's provider:model; a group that runs no model arm records none (null), so it must
+        # agree only among the shards that ran a model arm - comparing it with null refused EVERY mixed split
+        # (fast baseline 2026-11-24: 'clean: the groups disagree on route'), which is every per-arm wave
         values = {json.dumps(s["prov"].get(key), sort_keys=True) for g in loaded for s in loaded[g]
-                  if key in s["prov"]}
+                  if key in s["prov"] and not (key == "route" and s["prov"].get(key) is None)}
         if len(values) > 1:
             raise RegroupRefused(f"{split}: the groups disagree on {key}: {sorted(values)}")
         if values:
