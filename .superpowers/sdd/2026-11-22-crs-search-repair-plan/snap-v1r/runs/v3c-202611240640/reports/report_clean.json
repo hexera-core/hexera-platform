@@ -1,0 +1,463 @@
+{
+ "arms": {
+  "input_only": {
+   "by_defect_kind": {
+    "clean_control": {
+     "clean": 40,
+     "clean_rate": 1.0,
+     "conclusive": 40,
+     "files": 40,
+     "inconclusive": 0,
+     "measured": true
+    }
+   },
+   "clean_gain": 0,
+   "clean_gain_rate": 0.0,
+   "clean_in": 40,
+   "clean_out": 40,
+   "clean_rate": 1.0,
+   "conclusive": 40,
+   "files": 40,
+   "inconclusive": 0,
+   "inconclusive_rate": 0.0,
+   "layers": {
+    "clean": 40,
+    "faithful_ok": 40,
+    "panel_all_pass": 40,
+    "valid": 40
+   },
+   "measured": true,
+   "model_usd": {
+    "per_file_mean": 0.0,
+    "total": 0.0
+   },
+   "paired": {
+    "clean": 40,
+    "clean_gain": 0,
+    "clean_in": 40,
+    "clean_rate": 1.0,
+    "n": 40
+   },
+   "regressions": {
+    "clean_to_unclean": 0,
+    "either": 0,
+    "fewer_panel_passes": 0
+   },
+   "spend_metered": true,
+   "wall_s": {
+    "max": 31.066,
+    "per_file_mean": 4.917499999999999,
+    "total": 196.69999999999996
+   }
+  },
+  "search_ai": {
+   "by_defect_kind": {
+    "clean_control": {
+     "clean": 40,
+     "clean_rate": 1.0,
+     "conclusive": 40,
+     "files": 40,
+     "inconclusive": 0,
+     "measured": true
+    }
+   },
+   "clean_gain": 0,
+   "clean_gain_rate": 0.0,
+   "clean_in": 40,
+   "clean_out": 40,
+   "clean_rate": 1.0,
+   "conclusive": 40,
+   "files": 40,
+   "inconclusive": 0,
+   "inconclusive_rate": 0.0,
+   "layers": {
+    "clean": 40,
+    "faithful_ok": 40,
+    "panel_all_pass": 40,
+    "valid": 40
+   },
+   "measured": true,
+   "model_usd": {
+    "per_file_mean": 0.0,
+    "total": 0.0
+   },
+   "paired": {
+    "clean": 40,
+    "clean_gain": 0,
+    "clean_in": 40,
+    "clean_rate": 1.0,
+    "n": 40
+   },
+   "regressions": {
+    "clean_to_unclean": 0,
+    "either": 0,
+    "fewer_panel_passes": 0
+   },
+   "spend_metered": true,
+   "wall_s": {
+    "max": 21.111,
+    "per_file_mean": 4.999249999999998,
+    "total": 199.96999999999994
+   }
+  },
+  "search_det": {
+   "by_defect_kind": {
+    "clean_control": {
+     "clean": 40,
+     "clean_rate": 1.0,
+     "conclusive": 40,
+     "files": 40,
+     "inconclusive": 0,
+     "measured": true
+    }
+   },
+   "clean_gain": 0,
+   "clean_gain_rate": 0.0,
+   "clean_in": 40,
+   "clean_out": 40,
+   "clean_rate": 1.0,
+   "conclusive": 40,
+   "files": 40,
+   "inconclusive": 0,
+   "inconclusive_rate": 0.0,
+   "layers": {
+    "clean": 40,
+    "faithful_ok": 40,
+    "panel_all_pass": 40,
+    "valid": 40
+   },
+   "measured": true,
+   "model_usd": {
+    "per_file_mean": 0.0,
+    "total": 0.0
+   },
+   "paired": {
+    "clean": 40,
+    "clean_gain": 0,
+    "clean_in": 40,
+    "clean_rate": 1.0,
+    "n": 40
+   },
+   "regressions": {
+    "clean_to_unclean": 0,
+    "either": 0,
+    "fewer_panel_passes": 0
+   },
+   "spend_metered": true,
+   "wall_s": {
+    "max": 21.164,
+    "per_file_mean": 5.103674999999999,
+    "total": 204.14699999999996
+   }
+  },
+  "staged": {
+   "by_defect_kind": {
+    "clean_control": {
+     "clean": 40,
+     "clean_rate": 1.0,
+     "conclusive": 40,
+     "files": 40,
+     "inconclusive": 0,
+     "measured": true
+    }
+   },
+   "clean_gain": 0,
+   "clean_gain_rate": 0.0,
+   "clean_in": 40,
+   "clean_out": 40,
+   "clean_rate": 1.0,
+   "conclusive": 40,
+   "files": 40,
+   "inconclusive": 0,
+   "inconclusive_rate": 0.0,
+   "layers": {
+    "clean": 40,
+    "faithful_ok": 40,
+    "panel_all_pass": 40,
+    "valid": 40
+   },
+   "measured": true,
+   "model_usd": {
+    "per_file_mean": 0.0,
+    "total": 0.0
+   },
+   "paired": {
+    "clean": 40,
+    "clean_gain": 0,
+    "clean_in": 40,
+    "clean_rate": 1.0,
+    "n": 40
+   },
+   "regressions": {
+    "clean_to_unclean": 0,
+    "either": 0,
+    "fewer_panel_passes": 0
+   },
+   "spend_metered": true,
+   "wall_s": {
+    "max": 70.308,
+    "per_file_mean": 11.770324999999998,
+    "total": 470.81299999999993
+   }
+  }
+ },
+ "budgets": {
+  "input_only": {
+   "model_usd": 0.0,
+   "ops": 60,
+   "wall_s": 600.0
+  },
+  "search_ai": {
+   "model_usd": 1.0,
+   "ops": 60,
+   "wall_s": 600.0
+  },
+  "search_det": {
+   "model_usd": 0.0,
+   "ops": 60,
+   "wall_s": 600.0
+  },
+  "staged": {
+   "model_usd": 0.0,
+   "ops": 60,
+   "wall_s": 600.0
+  }
+ },
+ "cheap_full_agreement": {
+  "arms": {
+   "search_ai": {
+    "agree": null,
+    "cheap_fail_full_fail": 0,
+    "cheap_fail_full_pass": 0,
+    "cheap_false_alarm_rate_among_cheap_fails": null,
+    "cheap_miss_rate_among_cheap_passes": null,
+    "cheap_pass_full_fail": 0,
+    "cheap_pass_full_pass": 0,
+    "compared": 0,
+    "rows_without_data": 0
+   },
+   "search_det": {
+    "agree": null,
+    "cheap_fail_full_fail": 0,
+    "cheap_fail_full_pass": 0,
+    "cheap_false_alarm_rate_among_cheap_fails": null,
+    "cheap_miss_rate_among_cheap_passes": null,
+    "cheap_pass_full_fail": 0,
+    "cheap_pass_full_pass": 0,
+    "compared": 0,
+    "rows_without_data": 0
+   }
+  },
+  "measured": false,
+  "pooled": {
+   "agree": null,
+   "cheap_fail_full_fail": 0,
+   "cheap_fail_full_pass": 0,
+   "cheap_false_alarm_rate_among_cheap_fails": null,
+   "cheap_miss_rate_among_cheap_passes": null,
+   "cheap_pass_full_fail": 0,
+   "cheap_pass_full_pass": 0,
+   "compared": 0
+  },
+  "rows_without_data": 0,
+  "source": "search confirm events (the re-probe's own agreement is in collect.py report['agreement'])",
+  "unit": "states confirmed by the full panel"
+ },
+ "commit": "4c74661ebafc6e50872f6bc4253635b9f79300aa",
+ "declined_stratum": {
+  "arms": {
+   "input_only": {
+    "declined": 0,
+    "files": 0,
+    "inconclusive": 0,
+    "unexpectedly_clean": 0
+   },
+   "search_ai": {
+    "declined": 0,
+    "files": 0,
+    "inconclusive": 0,
+    "unexpectedly_clean": 0
+   },
+   "search_det": {
+    "declined": 0,
+    "files": 0,
+    "inconclusive": 0,
+    "unexpectedly_clean": 0
+   },
+   "staged": {
+    "declined": 0,
+    "files": 0,
+    "inconclusive": 0,
+    "unexpectedly_clean": 0
+   }
+  },
+  "counted_as": "none: not a failure, not a gain",
+  "expected_outcome": "correctly_declined",
+  "files": 0
+ },
+ "excluded_stratum": {
+  "by_reason": {},
+  "by_source": {},
+  "counted_as": "inconclusive for every arm: not a failure, not a gain, in no clean rate and no regression",
+  "entries": 0,
+  "files": 0,
+  "fraction_of_split": 0.0,
+  "names": [],
+  "walls": {
+   "check_valid_timeout_s": 900.0,
+   "disagreed": {},
+   "file_timeout_s": 1800.0,
+   "unrecorded": []
+  }
+ },
+ "files": 40,
+ "files_measured_strata": 40,
+ "frozen_commit_checked": false,
+ "gaming_flags": {
+  "arms": {
+   "input_only": {
+    "clean_reviewed": 40,
+    "files": 0,
+    "names": [],
+    "unmeasured": 0
+   },
+   "search_ai": {
+    "clean_reviewed": 40,
+    "files": 0,
+    "names": [],
+    "unmeasured": 0
+   },
+   "search_det": {
+    "clean_reviewed": 40,
+    "files": 0,
+    "names": [],
+    "unmeasured": 0
+   },
+   "staged": {
+    "clean_reviewed": 40,
+    "files": 0,
+    "names": [],
+    "unmeasured": 0
+   }
+  },
+  "counted_as": "clean: flagged for owner review, in every rate and no failure",
+  "limits": {
+   "bbox_shrink": 0.1,
+   "volume_change": 0.25
+  }
+ },
+ "heldout_split": false,
+ "image": "sha256:3807995301c1518c551c7298e308203cbdbc45167833c88dc09dd47b2c0377e3",
+ "marginals": {
+  "ai_marginal (search_ai - search_det)": {
+   "files_gained": 0,
+   "n_paired": 40,
+   "reason": null,
+   "value": 0.0
+  },
+  "deterministic_marginal (staged - input_only)": {
+   "files_gained": 0,
+   "n_paired": 40,
+   "reason": null,
+   "value": 0.0
+  }
+ },
+ "not_reported_here": [
+  "the re-probe's own cheap/full agreement (collect.py report['agreement'])",
+  "per-op or per-layer pass counts below the four in `layers`"
+ ],
+ "numbers_valid": false,
+ "paired_set": {
+  "arms": [
+   "input_only",
+   "staged",
+   "search_det",
+   "search_ai"
+  ],
+  "excluded_not_measured": [],
+  "fraction": 1.0,
+  "min_fraction": 0.8,
+  "n_files": 40,
+  "of": 40
+ },
+ "primary_artifact": false,
+ "slot": null,
+ "slot_verified_against_store": false,
+ "spend": {
+  "cap_usd": 50.0,
+  "model_usd_total": 0.0,
+  "unmetered_arms": []
+ },
+ "split": "clean",
+ "status": "UNRELIABLE",
+ "throttle": {
+  "held_s_max_shard": 0.0,
+  "held_s_total": 0.0,
+  "rate_limited_calls_reported": 0,
+  "shards": 2,
+  "shards_held": 0,
+  "shards_without_guard": 0,
+  "status": "free",
+  "store_errors": 0,
+  "trips": []
+ },
+ "timeouts": {
+  "arms": {
+   "input_only": {
+    "by_cause": {},
+    "conclusive": 40,
+    "files": 0,
+    "members": 0,
+    "rate": 0.0
+   },
+   "search_ai": {
+    "by_cause": {},
+    "conclusive": 40,
+    "files": 0,
+    "members": 0,
+    "rate": 0.0
+   },
+   "search_det": {
+    "by_cause": {},
+    "conclusive": 40,
+    "files": 0,
+    "members": 0,
+    "rate": 0.0
+   },
+   "staged": {
+    "by_cause": {},
+    "conclusive": 40,
+    "files": 0,
+    "members": 0,
+    "rate": 0.0
+   }
+  },
+  "jump_rule": {
+   "factor": 2.0,
+   "min_files": 3
+  },
+  "wave": {
+   "files": 0,
+   "members": 0
+  }
+ },
+ "wall": {
+  "shard_seconds_total": 1082.2,
+  "shards": 2,
+  "slowest_shard_s": 541.2
+ },
+ "warnings": [
+  "staged: every conclusive file has the same outcome (40/40 clean): a constant verdict looks like a broken harness, not a result - but this is ALSO what a real result looks like when two deterministic arms truly agree on every shared file, or when an arm is perfect on the clean-control split: check that the harness varies the arm before discarding the numbers",
+  "search_det: every conclusive file has the same outcome (40/40 clean): a constant verdict looks like a broken harness, not a result - but this is ALSO what a real result looks like when two deterministic arms truly agree on every shared file, or when an arm is perfect on the clean-control split: check that the harness varies the arm before discarding the numbers",
+  "search_ai: every conclusive file has the same outcome (40/40 clean): a constant verdict looks like a broken harness, not a result - but this is ALSO what a real result looks like when two deterministic arms truly agree on every shared file, or when an arm is perfect on the clean-control split: check that the harness varies the arm before discarding the numbers",
+  "input_only and staged are indistinguishable on all 40 files they share: check that the harness varies the arm; this is ALSO what a real result looks like when two deterministic arms truly agree on every shared file, or when an arm is perfect on the clean-control split: check that the harness varies the arm before discarding the numbers",
+  "input_only and search_det are indistinguishable on all 40 files they share: check that the harness varies the arm; this is ALSO what a real result looks like when two deterministic arms truly agree on every shared file, or when an arm is perfect on the clean-control split: check that the harness varies the arm before discarding the numbers",
+  "input_only and search_ai are indistinguishable on all 40 files they share: check that the harness varies the arm; this is ALSO what a real result looks like when two deterministic arms truly agree on every shared file, or when an arm is perfect on the clean-control split: check that the harness varies the arm before discarding the numbers",
+  "staged and search_det are indistinguishable on all 40 files they share: check that the harness varies the arm; this is ALSO what a real result looks like when two deterministic arms truly agree on every shared file, or when an arm is perfect on the clean-control split: check that the harness varies the arm before discarding the numbers",
+  "staged and search_ai are indistinguishable on all 40 files they share: check that the harness varies the arm; this is ALSO what a real result looks like when two deterministic arms truly agree on every shared file, or when an arm is perfect on the clean-control split: check that the harness varies the arm before discarding the numbers",
+  "search_det and search_ai are indistinguishable on all 40 files they share: check that the harness varies the arm; this is ALSO what a real result looks like when two deterministic arms truly agree on every shared file, or when an arm is perfect on the clean-control split: check that the harness varies the arm before discarding the numbers"
+ ],
+ "wave": "snap_v2_clean",
+ "wave_id": "snap-v3c-v2splits-clean-202611240640",
+ "wave_type": "normal"
+}

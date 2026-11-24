@@ -1,0 +1,30 @@
+[
+ {
+  "name": "abc/0060_00608682_58c401c28e887f101dd42c22_step_000.step",
+  "sha256": "97314ccbe4e124ff3e6be66947e7c91c5821181d092b1c1159f50307b3d43a56",
+  "source": "abc_fail",
+  "arm": "input_only",
+  "reason": "out_of_scope: the input is unbounded (layer 1 unbounded_geometry); it is not a failure and not unmeasured"
+ },
+ {
+  "name": "abc/0060_00608682_58c401c28e887f101dd42c22_step_000.step",
+  "sha256": "97314ccbe4e124ff3e6be66947e7c91c5821181d092b1c1159f50307b3d43a56",
+  "source": "abc_fail",
+  "arm": "staged",
+  "reason": "out_of_scope: the input is unbounded (layer 1 unbounded_geometry); it is not a failure and not unmeasured"
+ },
+ {
+  "name": "abc/0060_00608682_58c401c28e887f101dd42c22_step_000.step",
+  "sha256": "97314ccbe4e124ff3e6be66947e7c91c5821181d092b1c1159f50307b3d43a56",
+  "source": "abc_fail",
+  "arm": "search_det",
+  "reason": "out_of_scope: the input is unbounded (layer 1 unbounded_geometry); it is not a failure and not unmeasured"
+ },
+ {
+  "name": "abc/0060_00608682_58c401c28e887f101dd42c22_step_000.step",
+  "sha256": "97314ccbe4e124ff3e6be66947e7c91c5821181d092b1c1159f50307b3d43a56",
+  "source": "abc_fail",
+  "arm": "search_ai",
+  "reason": "out_of_scope: the input is unbounded (layer 1 unbounded_geometry); it is not a failure and not unmeasured"
+ }
+]
