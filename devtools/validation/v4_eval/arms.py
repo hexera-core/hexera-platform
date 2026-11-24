@@ -256,6 +256,9 @@ def _search_arm(arm_name: str, *, pool: Any, ws: Any, start: Any, source: str, j
     fields = {"reason": result.reason, "verdict_candidates": result.verdict_candidates,
               "inconclusive_candidates": result.inconclusive_candidates,
               "infrastructure_failed": result.infrastructure_failed,
+              # B18 (owner ruling 2026-11-24): a wall stop no longer deletes the row, so the row has to SAY it was
+              # wall-stopped - a reader keeping those out of a clean-rate denominator needs to see which they are.
+              "stopped_on_wall": bool(getattr(result, "stopped_on_wall", False)),
               "_unmeasured": bool(result.unmeasured or ai_unavailable),
               "cheap_full": cheap_full_cells(result.trace.of_kind("confirm")),
               "_triage": {"search": search_triage(result, generators)}}

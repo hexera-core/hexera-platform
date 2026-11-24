@@ -134,6 +134,11 @@ class ArmRow:
     verdict_candidates: int | None = None
     inconclusive_candidates: int | None = None
     infrastructure_failed: bool | None = None
+    #: the search stopped on the CLOCK and still delivered its best state's FULL verdict (B18's anytime rule, owner
+    #: ruling 2026-11-24). The row COUNTS - `out_tier: "full"` is what makes it a measurement - and this flag is
+    #: here so a reader can keep such rows out of a clean-rate denominator if they choose. Reported per arm.
+    #: None on every row written before the ruling, where a time stop was discarded instead.
+    stopped_on_wall: bool | None = None
     #: search arms only: cheap tier vs full panel over the states the search CONFIRMED (`arms.cheap_full_cells`),
     #: the four cells named as `reprobe.agreement` names them. Optional: a row without it is counted as missing data
     #: in `cheap_full_agreement`, never as agreement.
@@ -175,7 +180,8 @@ class ArmRow:
 
         return file_unmeasured(reason=self.reason, infrastructure_failed=self.infrastructure_failed,
                                inconclusive_candidates=self.inconclusive_candidates,
-                               verdict_candidates=self.verdict_candidates, out_clean=self.out_clean)
+                               verdict_candidates=self.verdict_candidates, out_clean=self.out_clean,
+                               out_tier=self.out_tier)
 
 
 def _row_from_dict(d: Mapping[str, Any]) -> ArmRow:
@@ -527,9 +533,18 @@ def _arm_block(arm: str, rows: list[ArmRow], kinds: Mapping[str, str], n_files: 
     # of the bill, so the spend the cap is checked against still includes it.
     billed = [*rows, *stratum_rows]
     spend = sum(r.model_usd for r in billed)
+    # B18: wall-stopped rows COUNT (their best state carries a full verdict), and they are counted SEPARATELY so a
+    # reader can take them out of the denominator if they choose. `clean` among them is shown because a search that
+    # ran out of wall can still have reached clean before it did.
+    walled = [r for r in conclusive if r.stopped_on_wall]
     return {
         "files": n_files, "conclusive": len(conclusive), "inconclusive": inc, "inconclusive_rate": inc_rate,
         "measured": measured,
+        "stopped_on_wall": {"conclusive_rows": len(walled), "clean": sum(r.clean for r in walled),
+                            "share_of_conclusive": _rate(len(walled), len(conclusive)),
+                            "clean_rate_without_them": only(_rate(sum(r.clean for r in conclusive
+                                                                      if not r.stopped_on_wall),
+                                                                  len(conclusive) - len(walled)))},
         "clean_in": only(clean_in), "clean_out": only(clean_out),
         "clean_rate": only(_rate(clean_out, len(conclusive))),
         "clean_gain": only(clean_out - clean_in),
@@ -874,6 +889,15 @@ def render_text(rep: dict[str, Any]) -> str:
                    f"| {b['inconclusive_rate']:.1%} | {_pct(b['clean_rate'])} | {gain} | "
                    f"{_pct(b['paired']['clean_rate'])} (n={b['paired']['n']}) | {pg} | {regs} | "
                    f"{usd} | {b['wall_s']['per_file_mean']:.1f} |")
+    walled = {a: b.get("stopped_on_wall") or {} for a, b in rep["arms"].items()}
+    if any(w.get("conclusive_rows") for w in walled.values()):
+        out += ["", "WALL-STOPPED rows (B18's anytime rule: the search stopped on the clock, judged its best state "
+                    "with the full panel and delivered it, so the row COUNTS above). Keep them out of a clean rate "
+                    "by using the last column: "
+                + "; ".join(f"{a} {w['conclusive_rows']}/{rep['arms'][a]['conclusive']} rows "
+                            f"({w['clean']} clean; clean rate without them "
+                            f"{_pct(w.get('clean_rate_without_them'))})"
+                            for a, w in walled.items() if w.get("conclusive_rows"))]
     to = rep.get("timeouts") or {"arms": {}}
     out += ["", "repeated member timeouts (file failures under the D5 ruling; the rate moves with the machine): "
             + "; ".join(f"{a} {b['files']}/{b['conclusive']} files ({b['members']} members)" for a, b in to["arms"].items())]
