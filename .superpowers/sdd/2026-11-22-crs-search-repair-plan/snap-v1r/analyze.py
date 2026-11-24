@@ -149,6 +149,30 @@ def cheap_full(by: dict) -> str:
     return "\n".join(lines)
 
 
+def excluded_group(rows: list[dict], exc: list[dict], wall: float) -> str:
+    """Every excluded file as its own group: which arms were excluded, why, and what the other arms said. An excluded
+    arm is unmeasured, never a failure; the file is listed here instead of being folded into any rate."""
+    if not exc:
+        return "None."
+    by: dict[str, dict] = defaultdict(lambda: {"name": "", "excluded": {}, "measured": {}})
+    for e in exc:
+        by[e["sha256"]]["name"] = e["name"]
+        by[e["sha256"]]["excluded"][e["arm"]] = e["reason"]
+    for r in rows:
+        if r["sha256"] in by:
+            by[r["sha256"]]["measured"][r["arm"]] = ("clean" if r["out_clean"] else "not clean") + (
+                " (inconclusive)" if r["inconclusive"] else "")
+    reasons = Counter(e["reason"].split(":")[0] for e in exc)
+    lines = [f"**{len(by)} file(s), {len(exc)} excluded (file, arm) rows** ({', '.join(f'{k} {v}' for k, v in reasons.items())}). "
+             f"File wall {wall:.0f} s.", "",
+             "| file | excluded arms (reason) | measured arms |", "|---|---|---|"]
+    for _s, g in sorted(by.items(), key=lambda kv: kv[1]["name"]):
+        ex = "; ".join(f"{a}: {why[:90]}" for a, why in sorted(g["excluded"].items()))
+        me = "; ".join(f"{a}: {v}" for a, v in sorted(g["measured"].items())) or "-"
+        lines.append(f"| `{short(g['name'])}` | {ex} | {me} |")
+    return "\n".join(lines)
+
+
 def ledger(root: Path) -> tuple[str, float]:
     lines, total = [], 0.0
     kinds: Counter = Counter()
@@ -296,6 +320,16 @@ Widest version, for reference: every body-overlap input left out ({len(overlap)}
 ## Clean control
 
 {clean_tab}
+
+## Excluded files, each its own group (not in any rate; the ruling on the exclusion rate is pending)
+
+Dev:
+
+{excluded_group(dev_rows, dev_exc, wall)}
+
+Clean control:
+
+{excluded_group(cl_rows, cl_exc, wall)}
 
 ## AI marginal (search_ai − search_det, per file)
 
