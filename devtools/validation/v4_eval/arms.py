@@ -146,6 +146,49 @@ def confirm_staged(pool: Any, ws: Any, staged: Any, *, full: Any, input_verdict:
     return _confirm(pool, ws, staged, full=full, input_verdict=input_verdict)
 
 
+class _Phases:
+    """Per-file phase timings. Each phase's START and END goes to stderr (the unit log) the moment it happens, so a
+    file the wall kills still shows which phase was running and what the finished ones cost; the totals also go in
+    the row's `triage.phases`. `full_panels` counts full-panel verdicts per phase (confirm_staged's fallbacks)."""
+
+    def __init__(self, tag: str, clock: Any) -> None:
+        self.tag, self.clock, self.t0 = tag, clock, clock()
+        self.seconds: dict[str, float] = {}
+        self.full_panels: dict[str, int] = {}
+        self.current = "setup"
+
+    def _say(self, what: str) -> None:
+        import sys
+
+        print(f"PHASE {self.tag} t={self.clock() - self.t0:.1f} {what}", file=sys.stderr, flush=True)
+
+    def run(self, name: str, fn: Any, *a: Any, **kw: Any) -> Any:
+        prev, self.current = self.current, name
+        self._say(f"start {name}")
+        t = self.clock()
+        try:
+            return fn(*a, **kw)
+        finally:
+            dt = self.clock() - t
+            self.seconds[name] = round(self.seconds.get(name, 0.0) + dt, 3)
+            self._say(f"end {name} {dt:.1f}s full_panels={self.full_panels.get(name, 0)}")
+            self.current = prev
+
+    def counted(self, full: Any) -> Any:
+        """`full` wrapped to count and log each full-panel verdict against the running phase."""
+        def wrapped(*a: Any, **kw: Any) -> Any:
+            t = self.clock()
+            try:
+                return full(*a, **kw)
+            finally:
+                self.full_panels[self.current] = self.full_panels.get(self.current, 0) + 1
+                self._say(f"full_panel in {self.current} {self.clock() - t:.1f}s")
+        return wrapped
+
+    def summary(self) -> dict[str, Any]:
+        return {"seconds": dict(self.seconds), "full_panels": dict(self.full_panels)}
+
+
 def run_file(arm_name: str, entry: Any, source: str, *, pool: Any, engine: Engine, ledger: Any | None,
              arm: Any, budget: Any, h_mm: float | None, route: str | None, max_turns: int, job_id: str,
              workdir: str, workers: int = 1, clock: Any = time.monotonic, throttle: Any = None,
@@ -165,20 +208,22 @@ def run_file(arm_name: str, entry: Any, source: str, *, pool: Any, engine: Engin
     def excluded(why: str) -> ArmOutcome:
         return ArmOutcome(excluded=why)
 
+    ph = _Phases(f"{entry.sha256[:12]} {arm_name}", clock)
+
     try:
-        ws = engine.open_workspace(pool, source, workdir)
+        ws = ph.run("open_workspace", engine.open_workspace, pool, source, workdir)
         if h_mm is not None and h_mm == H_MM_AUTO:
             from meshpipeline.cad.repair_v4.search import h_mm_for
 
-            h_mm = h_mm_for(pool, ws)  # CheckerUnavailable (unmeasurable part) is caught below: infrastructure
+            h_mm = ph.run("h_mm_for", h_mm_for, pool, ws)  # CheckerUnavailable (unmeasurable part) is caught below: infrastructure
         judge = engine.judge(h_mm)
-        full = judge.full
-        v_in = full(pool, ws, source)
+        full = ph.counted(judge.full)
+        v_in = ph.run("input_verdict", full, pool, ws, source)
         bad = _usable(v_in, "the input")
         if bad:
             return excluded(bad)
         try:
-            overlap = overlap_triage(pool, ws, v_in)
+            overlap = ph.run("overlap_triage", overlap_triage, pool, ws, v_in)
         except Exception as exc:  # noqa: BLE001 - a measurement for the report never loses the row
             overlap = {"max_depth_mm": None, "error": f"{type(exc).__name__}: {exc}"[:200]}
         out_v, usd = v_in, 0.0
@@ -186,8 +231,9 @@ def run_file(arm_name: str, entry: Any, source: str, *, pool: Any, engine: Engin
         if arm_name == "input_only":
             keep_delivered(ws.brep_path, workdir, is_input=True)
         elif arm_name == "staged":
-            staged = _run_staged(engine, pool, ws, v_in)
-            out_v = _confirmed_or_input(pool, ws, staged, source, full=full, v_in=v_in, workdir=workdir)
+            staged = ph.run("staged_healer", _run_staged, engine, pool, ws, v_in)
+            out_v = ph.run("confirm_staged", _confirmed_or_input, pool, ws, staged, source, full=full, v_in=v_in,
+                           workdir=workdir)
             extra["_triage"] = {"stages": stages_triage(staged)}
         elif arm_name in ("search_det", "search_ai"):
             # the seam contract's call order (spec 04; `repair_v4._find_best`): the search starts from the staged
@@ -198,14 +244,15 @@ def run_file(arm_name: str, entry: Any, source: str, *, pool: Any, engine: Engin
                 # engine and eval stay one pipeline if the owner moves the unbounded stratum into scope.
                 start = ws
             else:
-                staged = _run_staged(engine, pool, ws, v_in)
-                confirm_staged(pool, ws, staged, full=lambda w: full(pool, w, source), input_verdict=v_in)
+                staged = ph.run("staged_healer", _run_staged, engine, pool, ws, v_in)
+                ph.run("confirm_staged", confirm_staged, pool, ws, staged, full=lambda w: full(pool, w, source),
+                       input_verdict=v_in)
                 start = staged.ws
             out_v, extra, usd = _search_arm(arm_name, pool=pool, ws=ws, start=start, source=source, judge=judge,
                                             v_in=v_in, ledger=ledger, arm=arm, budget=budget, h_mm=h_mm, route=route,
                                             max_turns=max_turns, job_id=job_id, entry=entry, workers=workers,
                                             clock=clock, full=full, throttle=throttle, recipes=recipes,
-                                            workdir=workdir)
+                                            workdir=workdir, phases=ph)
         else:
             raise ValueError(f"arm {arm_name!r} is not dispatchable here")
     except (CheckerUnavailable, InconclusiveVerdict, EngineUnavailable) as exc:
@@ -213,6 +260,7 @@ def run_file(arm_name: str, entry: Any, source: str, *, pool: Any, engine: Engin
     wall = round(clock() - t0, 3)
     unmeasured = bool(extra.get("_unmeasured"))
     triage = {k: v for k, v in (extra.get("_triage") or {}).items() if v is not None}
+    triage["phases"] = ph.summary()
     extra = {k: v for k, v in extra.items() if k not in ("_unmeasured", "_triage")}
     if unmeasured:
         return ArmOutcome(row={**base, "inconclusive": True, "model_usd": usd, "wall_s": wall, **extra,
@@ -228,7 +276,7 @@ def run_file(arm_name: str, entry: Any, source: str, *, pool: Any, engine: Engin
 def _search_arm(arm_name: str, *, pool: Any, ws: Any, start: Any, source: str, judge: Any, v_in: Any, ledger: Any,
                 arm: Any, budget: Any, h_mm: float | None, route: str | None, max_turns: int, job_id: str, entry: Any,
                 workers: int, clock: Any, full: Any, throttle: Any = None,
-                recipes: Any = None, workdir: str | None = None) -> tuple[Any, dict, float]:
+                recipes: Any = None, workdir: str | None = None, phases: Any = None) -> tuple[Any, dict, float]:
     """(output verdict, the SearchResult's own measured-ness fields, model USD) for a search arm."""
     from meshpipeline.cad.repair_v4 import search as S
     from meshpipeline.cad.repair_v4.proposer import MODEL_UNAVAILABLE
@@ -243,7 +291,9 @@ def _search_arm(arm_name: str, *, pool: Any, ws: Any, start: Any, source: str, j
                                             **ai_kwargs)
     sbudget = S.Budget(wall_s=budget.wall_s, ops=budget.ops, model_calls=max_turns if proposer else 0,
                        model_usd=budget.model_usd)
-    result = S.search(pool, start, source, generators, sbudget, workers=workers, judge=judge, h_mm=h_mm, clock=clock)
+    run = phases.run if phases is not None else (lambda _name, fn, *a, **kw: fn(*a, **kw))
+    result = run("search", S.search, pool, start, source, generators, sbudget, workers=workers, judge=judge,
+                 h_mm=h_mm, clock=clock)
     usd = float(proposer.result()["spent_usd"]) if proposer is not None else 0.0
     if workdir is not None:
         write_trace(result.trace, workdir)
@@ -269,7 +319,7 @@ def _search_arm(arm_name: str, *, pool: Any, ws: Any, start: Any, source: str, j
     # engine has this bug today (`_find_best`; strict xfail in test_engine_arms.py); the eval applies the rule as the
     # delivery gate states it - against the INPUT - rather than measuring the bug.
     delivered = S.deliverable(dataclasses.replace(result, changed=result.changed or start.brep_path != ws.brep_path), v_in)
-    out_v = v_in if delivered is None else full(pool, delivered, source)
+    out_v = v_in if delivered is None else run("output_verdict", full, pool, delivered, source)
     if workdir is not None:
         keep_delivered(ws.brep_path if delivered is None else delivered.brep_path, workdir, is_input=delivered is None)
     if recipes is not None and bool(getattr(out_v, "clean", False)) and not fields["_unmeasured"]:
