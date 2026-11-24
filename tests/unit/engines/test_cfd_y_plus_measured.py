@@ -9,11 +9,14 @@ from meshpipeline.engines import cfd_requirements as CR
 from meshpipeline.engines import mesh_requirements as MR
 
 
-def _case(tmp_path, wall_cell_of_h: float, *, engine: str = "snappy"):
-    """A snappyHexMesh case for water at 1 m/s with wall functions (y+ 50, the accepted proposal), wall cells
-    `wall_cell_of_h` times the y+ 50 first layer: the dictionary and the plan as the driver leaves them."""
+def _case(tmp_path, wall_cell_of_h: float, *, engine: str = "snappy", typed: bool = False):
+    """A snappyHexMesh case for water at 1 m/s with wall functions (y+ 50, the accepted proposal; `typed`: chosen by
+    the user), wall cells `wall_cell_of_h` times the y+ 50 first layer: the dictionary and the plan as the driver
+    leaves them."""
     sec = CR.with_conditions(MR.section("none"), {"request_txt": OK_INTERNAL, "intake_patches": PATCHES,
                                                   "purpose": "internal_cfd"})
+    if typed:
+        sec["requirements"]["layers"]["treatment_said"] = True
     ask = CR.Ask(MR.requirements_of(sec), engine)
     h = CR.y_plus_height(50.0, ask.req["physics"])[0]
     out = CR.snappy_dict(ask, SHM, wall_cell_m=wall_cell_of_h * h)
@@ -58,12 +61,19 @@ def test_a_layer_built_as_planned_is_met_by_its_measured_y_plus_too(tmp_path):
     assert row["met"] is True and row["y_plus_measured"] == pytest.approx(52.5, rel=0.01)
 
 
-def test_a_resolved_wall_against_an_asked_50_stays_missed_with_the_y_plus_reached_and_why(tmp_path):
-    ws, _ask, written, _n, h = _case(tmp_path, 0.5)
+def test_a_resolved_wall_against_a_typed_50_stays_missed_with_the_y_plus_reached_and_why(tmp_path):
+    ws, _ask, written, _n, h = _case(tmp_path, 0.5, typed=True)
     row = _y_row(CR.report(ws, _q(written, written), "snappy"))
     assert row["met"] is False and row["excess"] >= 1
     assert row["y_plus_measured"] < 1.0
     assert "y+ about 0.5, not 50" in row["delivered"] and "wall functions do not suit" in row["delivered"]
+
+
+def test_a_resolved_wall_for_an_accepted_50_is_the_proposal_applied_with_why(tmp_path):
+    # CFDREQ-25: the accepted proposal says the wall is resolved where wall functions do not fit
+    ws, _ask, written, _n, h = _case(tmp_path, 0.5)
+    row = _y_row(CR.report(ws, _q(written, written), "snappy"))
+    assert row["met"] is True and "wall functions do not suit" in row["delivered"]
 
 
 def test_a_first_cell_outside_the_band_or_missing_on_most_of_the_wall_is_missed(tmp_path):

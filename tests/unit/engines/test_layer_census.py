@@ -6,8 +6,9 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
+import pytest
 
-from meshpipeline.engines.layer_census import layer_census, requested_layers
+from meshpipeline.engines.layer_census import bl_cells, layer_census, requested_layers
 
 HDR = ('FoamFile\n{{\n    version 2.0;\n    format ascii;\n    class {cls};\n    object {obj};\n}}\n')
 
@@ -236,3 +237,24 @@ def test_one_wall_function_layer_at_the_planned_height_covers_the_wall(tmp_path)
     _write_column_mesh(pm2, [1.0, 1.0, 1.0])
     out, _ = lc.census(pm2, 1, ["wall"], planned_first_m=0.7)
     assert out["wall"]["area_at_plan"] == 0.0
+
+
+def test_the_cells_across_a_boundary_layer_count_layers_and_core_cells(tmp_path):
+    # CFDREQ-22: 4 layers (0.1, 0.12, 0.144, 0.173 = 0.537) then unit core cells: across a 1.0 layer, 4 layers and
+    # 0.463 of the first core cell
+    pm = tmp_path / "polyMesh"
+    _write_column_mesh(pm, [0.1, 0.12, 0.144, 0.1728, 1.0, 1.0, 1.0])
+    got, why = bl_cells(pm, ["wall"], 1.0, met_at=4.0)
+    assert why == "" and got["bl_cells_median"] == pytest.approx(4.4632, abs=0.01)
+    assert got["bl_area_met_pct"] == 100.0 and got["bl_faces"] == 9
+    got, _ = bl_cells(pm, ["wall"], 1.0, met_at=9.5)
+    assert got["bl_area_met_pct"] == 0.0
+    # a layer thicker than the whole mesh counts what was crossed, nothing more
+    got, _ = bl_cells(pm, ["wall"], 50.0, met_at=9.5)
+    assert got["bl_cells_median"] == pytest.approx(7.0, abs=1e-6)
+    # ten thin cells across a thin layer
+    pm2 = tmp_path / "fine" / "polyMesh"
+    _write_column_mesh(pm2, [0.01] * 12)
+    got, _ = bl_cells(pm2, ["wall"], 0.1, met_at=9.5)
+    assert got["bl_cells_median"] == pytest.approx(10.0, abs=1e-6) and got["bl_area_met_pct"] == 100.0
+    assert bl_cells(pm2, ["nowall"], 0.1, met_at=9.5)[0] == {}

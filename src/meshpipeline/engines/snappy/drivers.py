@@ -2688,12 +2688,19 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
             from meshpipeline.cad.stl_io import read_stl_triangles as _read_tris
             from meshpipeline.cad.thin_features import thin_refinement_boxes as _thin_boxes
             if _wall_stl.exists():
+                # CFDREQ-24: in wall-function mode the thin spots' cells are held where the first
+                # layer stands on them without a jump, as far as capturing the feature allows
+                from meshpipeline.engines import cfd_requirements as _CRt
+                _keep = _CRt.wall_function_keep_cell(_ask, bore_D=float(bore_D), wall_cell_m=_wall_cell)
                 # the extra levels may spend at most half the run's cell budget: a thin feature
                 # is captured locally, never by re-meshing the whole part at the finest level
                 _thin_regions = _thin_boxes(
                     _read_tris(_wall_stl), cell_m=_wall_cell,
                     budget_cells=max(50_000, int(strategy.get("thin_budget")
-                                                 or 0.5 * _planned_budget)))
+                                                 or 0.5 * _planned_budget)),
+                    keep_cell_m=_keep)
+                if _layer_note := str(getattr(_thin_regions, "layer_note", "") or ""):
+                    logger.info("internal pass %d: %s - job_id=%s", attempt, _layer_note, job_id)
         except Exception:  # noqa: BLE001 - a measurement is an optimisation, never fatal
             logger.exception("internal build: thin-feature probe failed - continuing without "
                              "local thin refinement - job_id=%s", job_id)
@@ -2712,7 +2719,8 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
                 + ("not refined locally" if not _thin_regions
                    else "refining locally so it is captured" if not _thin_note
                    else "refining locally as far as the cell budget allows")
-                + (f" ({_thin_note})" if _thin_note else ""),
+                + (f" ({_thin_note})" if _thin_note else "")
+                + (f"; {_ln}" if (_ln := str(getattr(_thin_regions, "layer_note", "") or "")) else ""),
                 op_id=f"internal:thin-feature:{attempt}")
         # NARROW PASSAGES, against the cell at the wall too (the gap plan above): what is refined
         # where, and what the budget became - or, over the limit, how far the limit lets them be
