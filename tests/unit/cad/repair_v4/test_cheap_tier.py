@@ -69,3 +69,68 @@ def test_the_agreement_cells_count_a_cheap_pass_only_when_every_cheap_member_pas
     ])
     assert cells["cheap_pass_full_pass"] == 1 and cells["cheap_fail_full_fail"] == 1
     assert cells["cheap_pass_full_fail"] == 0
+
+
+# --- state-adaptive: the cheap tier also meshes every member the START state fails (lane B8, D7's evidence) -------
+
+
+def _start(**status: str):
+    from types import SimpleNamespace
+    return SimpleNamespace(panel=_results(**status))
+
+
+def test_the_adaptive_cheap_tier_adds_every_member_the_start_fails():
+    start = _start(gmsh_prod="pass", gmsh_default="pass", gmsh_alt="fail", netgen_occ="fail")
+    names = [m.name for m in assemble.adaptive_cheap_members(start)]
+    assert names == ["gmsh_default", "gmsh_prod", "gmsh_alt", "netgen_occ"]
+
+
+def test_the_adaptive_cheap_tier_keeps_gmsh_prod_even_when_the_start_passes_everything():
+    """A CLEAN start fails nothing, but a stage can still break gmsh_prod (B5's `condition`): the static pair stays."""
+    start = _start(gmsh_prod="pass", gmsh_default="pass", gmsh_alt="pass", netgen_occ="pass")
+    assert [m.name for m in assemble.adaptive_cheap_members(start)] == ["gmsh_default", "gmsh_prod"]
+
+
+def test_the_adaptive_cheap_tier_never_invents_a_member_and_uses_the_full_panels_configs():
+    import json
+    start = _start(gmsh_prod="fail", gmsh_default="fail", gmsh_alt="fail", netgen_occ="crashed", m_unknown="fail")
+    full = {m.name: json.dumps(m.config, sort_keys=True) for m in default_members("full")}
+    got = assemble.adaptive_cheap_members(start)
+    assert [m.name for m in got] == ["gmsh_default", "gmsh_prod", "gmsh_alt", "netgen_occ"]
+    assert all(json.dumps(m.config, sort_keys=True) == full[m.name] for m in got)
+    assert assemble.adaptive_cheap_members(None) and [m.name for m in assemble.adaptive_cheap_members(None)] == \
+        ["gmsh_default", "gmsh_prod"]
+
+
+def test_the_search_judges_cheap_with_the_members_its_start_fails(monkeypatch):
+    """The search's start is judged FULL; its failing members join every cheap verdict of that search."""
+    from meshpipeline.cad.repair_v4 import search as S
+
+    seen: list = []
+    judge = S.default_judge(h_mm=1.0, cache=None)
+    monkeypatch.setattr(S, "cheap_verdict",
+                        lambda pool, step, original, **kw: seen.append([m.name for m in kw["members"]]) or None)
+    cheap = S.adaptive_cheap(judge, _start(gmsh_prod="pass", gmsh_default="pass", gmsh_alt="fail",
+                                           netgen_occ="pass"))
+    monkeypatch.setattr(S, "_judged", lambda fn, pool, ws, original, cache, **kw: fn(pool, "s", original, **kw))
+    cheap(None, None, "o")
+    assert seen == [["gmsh_default", "gmsh_prod", "gmsh_alt"]]
+
+
+def test_stages_judge_their_transactions_with_the_members_they_are_given(monkeypatch):
+    from meshpipeline.cad.repair_v4 import stages
+
+    seen: list = []
+    monkeypatch.setattr(stages, "original_facts", lambda pool, brep: (6, 1))
+    monkeypatch.setattr(stages, "step_for", lambda pool, brep: brep)
+
+    def cheap(pool, step, original, **kw):
+        seen.append([m.name for m in kw.get("members") or []])
+        raise stages.InconclusiveVerdict("stop here")
+
+    monkeypatch.setattr(stages, "cheap_verdict", cheap)
+    ws = stages.Workspace(brep_path="s0", ids={}, labels={}, history=[], original="s0")
+    members = assemble.adaptive_cheap_members(_start(gmsh_prod="pass", gmsh_default="pass", gmsh_alt="fail",
+                                                     netgen_occ="pass"))
+    assert stages._judged(None, ws, cheap_members=members) is None
+    assert seen and all(s == ["gmsh_default", "gmsh_prod", "gmsh_alt"] for s in seen)

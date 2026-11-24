@@ -68,10 +68,10 @@ class RealEngine:
         # input_only and staged only ask for verdicts; a search arm without h_mm is refused at the command line
         return dataclasses.replace(default_judge(h_mm=float("nan")), sites=no_sites)
 
-    def run_staged(self, pool: Any, ws: Any) -> Any:
+    def run_staged(self, pool: Any, ws: Any, cheap_members: Any = None) -> Any:
         from meshpipeline.cad.repair_v4.stages import run_staged
 
-        return run_staged(pool, ws)
+        return run_staged(pool, ws, cheap_members=cheap_members)
 
 
 class EngineUnavailable(RuntimeError):
@@ -112,6 +112,16 @@ def _usable(v: Any, what: str) -> str | None:
     if not v.panel:
         return f"empty_panel: {what} produced no member result"
     return None
+
+
+def _run_staged(engine: Any, pool: Any, ws: Any, v_in: Any) -> Any:
+    """The staged healer as the engine runs it: its transactions' cheap tier also meshes every member the input
+    fails (`assemble.adaptive_cheap_members`). A test engine without that parameter is called as before."""
+    if isinstance(engine, RealEngine):
+        from meshpipeline.cad.repair_v4.verdict.assemble import adaptive_cheap_members
+
+        return engine.run_staged(pool, ws, cheap_members=adaptive_cheap_members(v_in))
+    return engine.run_staged(pool, ws)
 
 
 def confirm_staged(pool: Any, ws: Any, staged: Any, *, full: Any, input_verdict: Any) -> Any:
@@ -156,13 +166,13 @@ def run_file(arm_name: str, entry: Any, source: str, *, pool: Any, engine: Engin
         if arm_name == "input_only":
             pass
         elif arm_name == "staged":
-            staged = engine.run_staged(pool, ws)
+            staged = _run_staged(engine, pool, ws, v_in)
             out_v = _confirmed_or_input(pool, ws, staged, source, full=full, v_in=v_in)
             extra["_triage"] = {"stages": stages_triage(staged)}
         elif arm_name in ("search_det", "search_ai"):
             # the seam contract's call order (spec 04; `repair_v4._find_best`): the search starts from the staged
             # healer's output, never the raw input, or the arm would measure a pipeline the engine does not ship
-            staged = engine.run_staged(pool, ws)
+            staged = _run_staged(engine, pool, ws, v_in)
             confirm_staged(pool, ws, staged, full=lambda w: full(pool, w, source), input_verdict=v_in)
             start = staged.ws
             out_v, extra, usd = _search_arm(arm_name, pool=pool, ws=ws, start=start, source=source, judge=judge,

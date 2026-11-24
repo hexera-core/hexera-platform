@@ -126,6 +126,20 @@ def default_members(tier: Literal["cheap", "full"]) -> list[Any]:
     return [members.GmshProd(), members.GmshDefault(), members.GmshAlt(), netgen.NetgenOCC()]
 
 
+def adaptive_cheap_members(start: Any) -> list[Any]:
+    """The cheap tier for a search or staged run that starts from a state with FULL verdict `start`: the static cheap
+    members, plus every full-panel member `start` does not pass. A cheap verdict then sees every member already
+    failing at the start (lane D7: v1's cheap passes were vacuous - gmsh_default passed at the start, so the cheap
+    tier passed before any op acted), and still sees gmsh_prod on a start that passes everything (a stage can
+    break it: B5). Members are the full panel's own, configured identically; a name the full panel does not have is
+    ignored. `start` None gives the static cheap tier."""
+    chosen = list(default_members("cheap"))
+    failing = {str(r.name) for r in getattr(start, "panel", None) or () if str(r.status) != "pass"}
+    have = {m.name for m in chosen}
+    chosen += [m for m in default_members("full") if m.name in failing and m.name not in have]
+    return chosen
+
+
 def clean_of(
     *, tier: str, inconclusive: bool, valid: Any, panel: Sequence[Any], faithful: FaithfulReport | None
 ) -> bool:

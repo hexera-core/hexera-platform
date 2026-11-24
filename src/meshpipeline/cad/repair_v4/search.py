@@ -130,6 +130,7 @@ from meshpipeline.cad.repair_v4.units import UNBOUNDED_DIAGONAL_MM
 from meshpipeline.cad.repair_v4.verdict.assemble import (
     InconclusiveVerdict,
     Verdict,
+    adaptive_cheap_members,
     cheap_verdict,
     clean_of,
     score,
@@ -225,6 +226,18 @@ class Judge:
     full: Callable[[Any, Workspace, str], Any]
     score: Callable[[Any], Score]
     sites: Callable[[Any, Workspace, Any], list[Site]]
+    #: `cheap` with explicit members (`assemble.adaptive_cheap_members`); None for a judge that cannot (a test's)
+    cheap_with: Callable[[Any, Workspace, str, Any], Any] | None = None
+
+
+def adaptive_cheap(judge: Judge, start_verdict: Any) -> Callable[[Any, Workspace, str], Any]:
+    """The cheap verdict this search ranks with: `judge.cheap` over the static cheap members PLUS every member the
+    start state's full verdict fails (`assemble.adaptive_cheap_members`), when the judge can take members."""
+    if judge.cheap_with is None:
+        return judge.cheap
+    members = adaptive_cheap_members(start_verdict)
+    cheap_with = judge.cheap_with
+    return lambda pool, ws, original: cheap_with(pool, ws, original, members)
 
 
 def _clean_with(v: Verdict, faithful: FaithfulReport | None) -> bool:
@@ -242,7 +255,7 @@ def _clean_with(v: Verdict, faithful: FaithfulReport | None) -> bool:
 
 
 def _judged(fn: Callable[..., Verdict], pool: Any, ws: Workspace, original: str,
-            cache: VerdictCache | None = None) -> Verdict:
+            cache: VerdictCache | None = None, **kw: Any) -> Verdict:
     """`fn` (`cheap_verdict` / `verdict`) on workspace `ws`, judged as Task 16's `stages._judge` judges it.
 
     The checker reads STEP files, a workspace is a BREP, so the BREP is exported first (`step_for`). Declared
@@ -253,7 +266,7 @@ def _judged(fn: Callable[..., Verdict], pool: Any, ws: Workspace, original: str,
     faces, _solids = original_facts(pool, ws.original)
     step = step_for(pool, ws.brep_path)
     # the cache holds only the panel (the meshing); layers 1 and 3 are recomputed, so a hit never skips a check
-    v: Verdict = fn(pool, step, original) if cache is None else fn(pool, step, original, cache=cache)
+    v: Verdict = fn(pool, step, original, **kw) if cache is None else fn(pool, step, original, cache=cache, **kw)
     declared = declared_edits(ws, faces)
     if v.valid.ok and (declared.added or declared.removed):
         try:
@@ -326,6 +339,8 @@ def default_judge(*, h_mm: float, cache: VerdictCache | None = None) -> Judge:
         full=lambda pool, ws, original: _judged(verdict, pool, ws, original, cache),
         score=score,
         sites=lambda pool, ws, v: find_sites(pool, ws, v, h_mm=h_mm),
+        cheap_with=lambda pool, ws, original, members: _judged(cheap_verdict, pool, ws, original, cache,
+                                                               members=members),
     )
 
 
@@ -1212,7 +1227,7 @@ def search(
         last: InconclusiveVerdict | CheckerUnavailable | None = None
         for _ in range(JUDGE_ATTEMPTS):
             try:
-                v = judge.cheap(pool, ws, original)
+                v = cheap_fn(pool, ws, original)
                 return v, judge.score(v)
             except (InconclusiveVerdict, CheckerUnavailable) as exc:
                 last = exc
@@ -1227,9 +1242,11 @@ def search(
     viewed_in: dict[str, frozenset[str]] = {}
 
     start_verdict = judge.full(pool, start, original)
+    # the cheap tier of THIS search also meshes every member its start fails (lane B8 / D7)
+    cheap_fn = adaptive_cheap(judge, start_verdict)
     s0 = new_state(start, start_verdict, judge.score(start_verdict), "full", 0, None, None, SiteRegistry())
     try:
-        s0.cheap_score = judge.score(judge.cheap(pool, start, original))
+        s0.cheap_score = judge.score(cheap_fn(pool, start, original))
     except Exception as exc:  # children of an uncalibrated start are ranked by their cheap score
         trace.record("judge_error", where="start_cheap", error=f"{type(exc).__name__}: {exc}")
     trace.record(
