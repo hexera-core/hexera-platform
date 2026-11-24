@@ -331,13 +331,28 @@ def _top(counter: Any) -> dict[str, int]:
     return top
 
 
+#: located entries kept per failing member in a row (a mesher can name hundreds of faces; the total is kept beside them)
+LOCATED_CAP = 20
+
+
+def _located(m: Any) -> dict[str, Any]:
+    """Where the member said it went wrong (`panel.Located`): the face fingerprint, the point in mm and the mesher's own
+    tag, the first LOCATED_CAP of them, and how many there were."""
+    loc = list(getattr(m, "located", None) or [])
+    return {"located": [{"entity": getattr(x, "entity", None),
+                         "xyz": None if getattr(x, "xyz", None) is None else [float(c) for c in x.xyz],
+                         "mesher_tag": getattr(x, "mesher_tag", None)} for x in loc[:LOCATED_CAP]],
+            "located_total": len(loc)}
+
+
 def verdict_triage(v: Any) -> dict[str, Any]:
     f = v.faithful
     deviation = None if f is None else {
         "ok": bool(f.ok), "max_dev_mm": f.max_dev_mm, "bound_mm": f.bound_mm,
         "used": (f.max_dev_mm / f.bound_mm) if f.bound_mm else None, "reasons": list(getattr(f, "reasons", []))}
     return {"panel_failing": [{"name": m.name, "status": m.status, "error_kind": getattr(m, "error_kind", None),
-                               "cause": getattr(m, "cause", None)}  # report.py counts repeated timeouts by cause
+                               "cause": getattr(m, "cause", None),  # report.py counts repeated timeouts by cause
+                               **_located(m)}                        # the face / point the mesher named (C5)
                               for m in v.panel if m.status != "pass"],
             "deviation": deviation,
             "valid": {"ok": bool(v.valid.ok), "hard": [x.code for x in v.valid.hard]}}
