@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import logging
 import math
+import time
 from typing import Any
 
 import numpy as np
@@ -462,7 +463,8 @@ def _with_strip(here, p, e, k: int, nbr: int, gap: float, band: float, look: flo
         return None, why, width
     faces = list(here.faces) + [piece]
     got = _imprint_some(sm.Sewn(faces, list(here.names) + [here.names[k]], sm._sheets(faces), here.tol, here.diag),
-                        sorted({k, len(faces) - 1} | set(touch) | set(_cutters(here, k, piece, own_too=True))))
+                        sorted({k, len(faces) - 1} | set(touch)
+                               | set(_cutters(here, k, piece, own_too=True, among=set(touch)))))
     if got is None:
         return None, "the changed face would still not meet its neighbour", width
     return got, "", width
@@ -1248,10 +1250,12 @@ def _wall(edge, face, depth: float):
     return BRepPrimAPI_MakePrism(start, gp_Vec(*map(float, 2.0 * n * depth))).Shape()
 
 
-def _cutters(sewn, k: int, ext, own_too: bool = False) -> list[int]:
+def _cutters(sewn, k: int, ext, own_too: bool = False, among: set[int] | None = None) -> list[int]:
     """The faces a continued face `ext` (face k's) reaches: every face but k and the faces sharing an edge with k (its
     own sheet's neighbours run on beside it, they are not what it should meet) whose box comes within the sew
-    tolerance of ext's and that ext's section with crosses or touches. `own_too`: k's neighbours as well."""
+    tolerance of ext's and that ext's section with crosses or touches. `own_too`: k's neighbours as well. `among`:
+    only these faces are looked at (with own_too, k's neighbours too) - a piece of a strip whose own cutters are
+    known reaches no face the whole strip did not."""
     from OCP.BRepAlgoAPI import BRepAlgoAPI_Section
     from OCP.TopAbs import TopAbs_EDGE
 
@@ -1262,6 +1266,8 @@ def _cutters(sewn, k: int, ext, own_too: bool = False) -> list[int]:
     out = []
     for j, f in enumerate(sewn.faces):
         if j == k:
+            continue
+        if among is not None and j not in among and not (own_too and any(own.Contains(x) for x in _edges(f))):
             continue
         flo, fhi = ms._box(f)
         if np.any(flo > hi + sewn.tol) or np.any(lo > fhi + sewn.tol):
@@ -1429,11 +1435,11 @@ def _close_one(here, p, e, k: int, nbr: int, gap: float, allowed: float, look: f
         abs(float(np.dot(na, nb0))) > math.cos(math.radians(SAME_SIDE_DEG))
     # a change is kept only when it leaves less open (fewer places, or as many with less open edge) and never more
     # places; one that does not gives way to the next kind
-    bp = sm.open_places(here, mm_per_unit=1.0, reach=look)
+    bp = _open(here, look)
     bl = sum(float(x["length_mm"]) for x in bp)
 
     def less_open(new_sewn) -> bool:
-        ap = sm.open_places(new_sewn, mm_per_unit=1.0, reach=look)
+        ap = _open(new_sewn, look)
         al = sum(float(x["length_mm"]) for x in ap)
         return not (len(ap) > len(bp) or (len(ap) == len(bp) and al >= bl - 2.0 * here.tol))
 
@@ -1441,7 +1447,7 @@ def _close_one(here, p, e, k: int, nbr: int, gap: float, allowed: float, look: f
         """The place closed whole: fewer places after (a last way that closes part of a place leaves the rest
         harder for the mesh to close than the whole was - 12 Nov: a 1.5 mm place three faces round, which the mesh
         closed, filled along one face only, left 0.75 mm the mesh could not)."""
-        ap = sm.open_places(new_sewn, mm_per_unit=1.0, reach=look)
+        ap = _open(new_sewn, look)
         if len(ap) >= len(bp):
             return False
         # ... and no place left that was not there before (by its faces): a change that moves the gap elsewhere
@@ -1481,7 +1487,7 @@ def _close_one(here, p, e, k: int, nbr: int, gap: float, allowed: float, look: f
             # other edge beside the new face - the hole there is filled in the same change
             if hgot is None or gone(hgot):
                 break
-            fresh = [x for x in sm.open_places(hgot, mm_per_unit=1.0, reach=look)
+            fresh = [x for x in _open(hgot, look)
                      if tuple(map(tuple, x["pairs"])) not in before and rule < float(x["gap_mm"]) <= allowed]
             if not fresh:
                 break
@@ -1636,21 +1642,68 @@ def mend(sewn, *, mm_per_unit: float, limit_mm: float | None = None,
     """SURF-12: the open places of a surface part's sewn sheets closed one at a time, nearest gap first: (the Sewn,
     the record in mm). `limit_mm`: the reach the user's notes give; else `element_mm` (the user's element size,
     `element_from` "asked", or the run's own, "run"), never past REACH_PART of the part (reach_of)."""
-    from meshpipeline.cad import midsurface as ms
-    from meshpipeline.cad import surface_model as sm
-
     mm = float(mm_per_unit)
     reach_mm, reach_from = reach_of(float(sewn.diag) * mm, limit_mm=limit_mm, element_mm=element_mm,
                                     element_from=element_from)
     reach = reach_mm / mm
+    look = max(reach, OPEN_REACH_LOOK * sewn.tol)
+    _MEMO.clear()
+    _MEMO[None] = (None, look, [])                  # on: this mend's searches are kept (cleared when it ends)
+    try:
+        return _mend(sewn, mm, reach, reach_from, look)
+    finally:
+        _MEMO.clear()
+
+
+#: SURF-12: the open places of each surface one mend reads, measured once (a Sewn is never changed after it is made:
+#: a change makes a new one). Before, the same search - every free edge against every face - ran again on one surface
+#: for each face of each place tried (the "before"), for each test of each candidate change (less open, closed whole)
+#: and for the count before and after a change: 20 minutes on a 231-face sheet-metal part. At most MEMO_MAX kept.
+_MEMO: dict = {}
+MEMO_MAX = 64
+#: SURF-17: the most seconds SURF-12 spends making the surfaces meet before the places not yet tried are left to the
+#: stitching and the mesh (TIME-10's 300 s, the bound on the other readings made before meshing starts)
+MEND_LIMIT_S = 300.0
+
+
+def _open(s, look: float) -> list[dict]:
+    """sm.open_places(s, reach=look) in the surface's own units, from this mend's memo when it has it."""
+    from meshpipeline.cad import surface_model as sm
+
+    if None not in _MEMO:
+        return sm.open_places(s, mm_per_unit=1.0, reach=look)
+    hit = _MEMO.get(id(s))
+    if hit is not None and hit[0] is s and hit[1] == look:
+        return hit[2]
+    got = sm.open_places(s, mm_per_unit=1.0, reach=look)
+    if len(_MEMO) > MEMO_MAX:
+        del _MEMO[next(k for k in _MEMO if k is not None)]
+    _MEMO[id(s)] = (s, look, got)
+    return got
+
+
+def _mend(sewn, mm: float, reach: float, reach_from: str, look: float) -> tuple[Any, dict]:
+    """mend()'s rounds (SURF-12), with its searches kept (_open)."""
+    from meshpipeline.cad import midsurface as ms
+
     done: list[dict] = []
     left: list[dict] = []
     tried: set = set()
     here = sewn
-    look = max(reach, OPEN_REACH_LOOK * sewn.tol)
+
+    def places_of(s) -> list[dict]:
+        return _open(s, look)
+
+    started = time.monotonic()
+    stopped: dict[str, Any] = {}
     for _round in range(400):
-        places = [p for p in sm.open_places(here, mm_per_unit=1.0, reach=look) if tuple(map(tuple, p["pairs"])) not in tried]
+        places = [p for p in places_of(here) if tuple(map(tuple, p["pairs"])) not in tried]
         if not places:
+            break
+        if time.monotonic() - started > MEND_LIMIT_S:
+            # SURF-17: by the clock, as TIME-10 bounds its readings - the places not yet tried are left to the
+            # stitching (SURF-8) and the mesh (SURF-13), and said
+            stopped = {"stopped_s": _r(time.monotonic() - started), "untried": len(places)}
             break
         places.sort(key=lambda p: (float(p["gap_mm"]), list(p["at_mm"])))
         p = places[0]
@@ -1690,8 +1743,8 @@ def mend(sewn, *, mm_per_unit: float, limit_mm: float | None = None,
             row["tried"] = steps
             left.append(row)
             continue
-        before_n = len(sm.open_places(here, mm_per_unit=1.0, reach=look))
-        after_n = len(sm.open_places(got, mm_per_unit=1.0, reach=look))
+        before_n = len(places_of(here))
+        after_n = len(places_of(got))
         here = got
         tried.discard(tuple(map(tuple, p["pairs"])))       # what is left of a place closed piece by piece is tried again
         row.update(how=how, face=row["faces"][0], moved_mm=_r(max(changed, gap) * mm), places_closed=before_n - after_n)
@@ -1705,7 +1758,7 @@ def mend(sewn, *, mm_per_unit: float, limit_mm: float | None = None,
               "trimmed": sum(1 for r in done if r["how"].startswith("trimmed")),
               "filled": sum(1 for r in done if r["how"].startswith("filled")),
               "widest_mm": _r(max([float(r["moved_mm"]) for r in done] + [0.0])),
-              "changes": done[:40], "left": len(left), "left_places": left[:40]}
+              "changes": done[:40], "left": len(left), "left_places": left[:40], **stopped}
     return here, record
 
 

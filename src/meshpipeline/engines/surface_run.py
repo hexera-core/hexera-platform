@@ -224,6 +224,17 @@ def clean_words(cleaned: dict | None, closing: dict | None = None) -> list[str]:
     if c.get("duplicates"):
         n = int(c["duplicates"])
         out.append(f"{_count(n, 'face was', 'faces were')} in the file twice: the second copy of {'it' if n == 1 else 'each'} is left out.")
+    loose = c.get("loose") or {}
+    if loose.get("faces"):
+        # SURF-16: loose debris left out, never silently
+        n, k = int(loose["faces"]), int(loose.get("sheets") or 1)
+        size = ("the element size you asked for" if loose.get("element_from") == "asked"
+                else "one element of this mesh")
+        out.append(f"Left out {_count(n, 'loose face')} ({_count(k, 'stray piece')}, "
+                   f"{'' if k == 1 else 'the largest '}{_gap(float(loose.get('widest_mm') or 0.0))} across, "
+                   f"{float(loose.get('area_mm2') or 0.0):.2g} mm2 in all): smaller than {size} "
+                   f"({_gap(float(loose.get('element_mm') or 0.0))}), they are stray bits of the export, not part "
+                   "of the sheet.")
     in_mesh = int((closing or {}).get("closed") or 0)
     if c.get("closed_places") or in_mesh:
         # SURF-8: said in PLACES, the count the record and gap_words use: places before - closed = places after.
@@ -253,12 +264,25 @@ def clean_words(cleaned: dict | None, closing: dict | None = None) -> list[str]:
                    f" (each change is listed in the run's record).")
     if m.get("off"):
         out.append("No surface was changed, as your notes asked.")
+    if m.get("stopped_s"):
+        # SURF-17: the clock stopped the changes; the places not tried are stitched or closed in the mesh if they can be
+        k = int(m.get("untried") or 0)
+        out.append(f"Changing the surfaces to make them meet did not finish in {int(smd_limit_min())} minutes, so "
+                   f"{_count(k, 'place was', 'places were')} not tried: they are stitched or closed in the mesh where "
+                   "they can be. The mesh goes ahead.")
     if c.get("fell_back"):
         out.append(f"Stitching up to {_gap(c['limit_mm'])}, as your notes asked, would have left more open than the "
                    f"usual {_gap(c.get('rule_mm') or 0.0)}, so the usual result is kept.")
     if c.get("stitch") == "off":
         out.append("Nothing was stitched, as your notes asked.")
     return out
+
+
+def smd_limit_min() -> float:
+    """SURF-17: the clock on making the surfaces meet, in minutes."""
+    from meshpipeline.cad.surface_mend import MEND_LIMIT_S
+
+    return MEND_LIMIT_S / 60.0
 
 
 def gap_words(n: int, cleaned: dict | None) -> list[str]:
