@@ -234,6 +234,25 @@ def test_a_search_arm_keeps_its_whole_trace_beside_its_work_states(shard: Any) -
     assert any(e["kind"] == "stop" for e in events)
 
 
+def test_every_arm_records_which_state_it_delivered_and_keeps_its_brep(shard: Any, tmp_path: Path) -> None:
+    """A REPAIRED output cannot be measured after the wave unless its BREP is kept: each (file, arm) writes
+    `<workdir>/delivered.json` (which state shipped, whether it is the input) and copies a non-input output to
+    `<workdir>/delivered.brep`. A failed copy is recorded, never a lost row."""
+    rows, excluded = go(shard, "input_only,staged,search_det", None, FakeEngine())
+    assert excluded == [] and len(rows) == 3
+    recs = {p.parent.name: json.loads(p.read_text()) for p in shard.out.rglob("delivered.json")}
+    assert set(recs) == {"input_only", "staged", "search_det"}
+    assert recs["input_only"]["is_input"] is True and recs["input_only"]["kept"] is None  # the input is input.brep
+    for arm in ("staged", "search_det"):  # the fake world ships the staged state (q=1), not the input
+        assert recs[arm]["is_input"] is False and recs[arm]["source_brep"]
+        assert recs[arm]["kept"] is False and "error" in recs[arm]  # the fake's path is not a file: recorded, not raised
+    real = tmp_path / "s.brep"
+    real.write_text("brep")
+    dst = tmp_path / "w"
+    run_arm.arms_mod.keep_delivered(str(real), str(dst), is_input=False)
+    assert (dst / "delivered.brep").read_text() == "brep" and json.loads((dst / "delivered.json").read_text())["kept"]
+
+
 def test_a_search_row_carries_the_cheap_full_table_of_the_states_it_confirmed(shard: Any, wire: Wire) -> None:  # noqa: F811
     wire.candidate = CLEAN_CANDIDATE
     [row], _ = go(shard, "search_ai", ledgered())
