@@ -2346,8 +2346,9 @@ def _one_passage(workspace: Path, srcs: dict, wall_key: str, declaration: list) 
                "mesh each passage as a file of its own.")
     if why:
         raise InternalSurfaceError(why)
-    if not plan.left_out:
+    if not plan.left_out and not plan.no_inlet:
         return srcs
+    # INS-40: a passage no inlet opens into is off the staged surface too (told in the plan's notes)
     logger.info("internal build: %s", "; ".join(plan.notes()))
     return write_passage(passage_surfaces(plan)[0], Path(workspace) / "_passages" / "p0")
 

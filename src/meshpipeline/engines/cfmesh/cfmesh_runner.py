@@ -1598,7 +1598,8 @@ def _stage_passages(ws: Path, srcs: dict, wall_key: str, declaration: list | Non
         return {"error": why[0].upper() + why[1:],
                 "next": "Relay this to the user verbatim - only they can say which openings are "
                         "real. Do NOT retry with a different strategy."}
-    if not plan.left_out and not plan.several:
+    if not plan.left_out and not plan.several and not plan.no_inlet:
+        # (INS-40: a passage left unmeshed for having no inlet is taken off the staged surface here too)
         return unchanged
     from meshpipeline.cad.fluid_passages import passage_surfaces
     from meshpipeline.cad.stl_io import _write_solid

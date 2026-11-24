@@ -227,6 +227,13 @@ def _cut_stacks(quality: Mapping, cells_pct: float) -> str:
             "than planned there")
 
 
+def _side_by_side(quality: Mapping) -> int:
+    """VER-9: how many separate passages the mesh was meshed as, side by side (engines/manifest records it from the
+    case's passages record); 1 when it is one passage or not recorded."""
+    n = _num(quality.get("passages_side_by_side"))
+    return int(n) if n is not None and n >= 1 else 1
+
+
 def _cad_fidelity_concerns(quality: Mapping) -> int | None:
     """How many of the CAD fidelity measures missed their bar (engines/cad_fidelity.py); None when
     the check did not run or could not measure."""
@@ -313,18 +320,38 @@ def inputs_for(*, engine: str, topology: str, manifest: Mapping | None, valid: b
              "size_concerns": int(size_concerns or 0)}
     limits: list[dict] = []
     for lim in limits_for(engine, topology, layers_planned=layers_planned):
+        label = lim.label
         if lim.key == "passage_cells_across":
             measured, floor = _passage(quality)
             limit: Any = floor
         else:
             measured, limit = _measured(lim.key, quality, facts), lim.limit
-        row = {"key": lim.key, "label": lim.label, "op": lim.op, "limit": limit,
+        side = _side_by_side(quality) if lim.key == "regions" else 1
+        if side > 1:
+            # VER-9: separate passages meshed side by side are separate flow volumes by the CAD's own truth (INS-39
+            # read which opening is in which); the limit is the passages the plan meshed, never one
+            limit = side
+            label = f"{lim.label} (the plan meshed {side} separate passages side by side)"
+        row = {"key": lim.key, "label": label, "op": lim.op, "limit": limit,
                "measured": _plain(measured), "source": lim.source}
         if lim.key == "layer_coverage_pct":
             said = coverage_words(quality, measured, limit)
             if said:
                 row["said"] = said
+        if side > 1 and _num(measured) is not None and _num(measured) == side:
+            row["said"] = (f"The part has {side} separate flow volumes that do not connect in the CAD; each is "
+                           f"meshed, side by side, one cell region per volume ({side} regions)")
         limits.append(row)
+    told = quality.get("openings_not_meshed")
+    if isinstance(told, (list, tuple)) and told:
+        # VER-9: the openings the staging left unmeshed (INS-40: a cavity no inlet opens into) are told on the
+        # verdict, never silently met - a concern in the words the user was told before meshing
+        said = " ".join(str(w)[0].upper() + str(w)[1:] + "." for w in quality.get("openings_not_meshed_words") or ()
+                        if str(w))
+        limits.append({"key": "openings_not_meshed", "op": "empty", "limit": [], "measured": _plain(list(told)),
+                       "label": "Openings in a cavity no inlet opens into, not meshed",
+                       "source": "docs/RULES.md INS-40 (cad/fluid_passages.plan_passages)",
+                       **({"said": said} if said else {})})
     for row in _declared_advisory(engine):
         limits.append({**row, "measured": _plain(quality.get(row["key"]))})
     limits.extend(fea_limits(quality))

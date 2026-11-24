@@ -449,13 +449,18 @@ async def node_executor(state: PipelineState) -> dict:
         # whatever the catalog row declares - no per-engine branches here. Crash
         # semantics (gate crash = SystemFailure, never a mesh rejection) live in
         # run_gates, written once.
+        from meshpipeline.cad.fluid_passages import openings_not_meshed
         from meshpipeline.engines.gates import GateCtx, facts_of, run_gates
         from meshpipeline.engines.registry import get_spec
+        # INS-40: the openings the staging left unmeshed (a cavity no inlet opens into) were told before meshing;
+        # the gates hold the mesh to the openings it was built for, and the verdict tells the rest (VER-9)
+        _told = openings_not_meshed(workspace)
         _ctx = GateCtx(
             workspace=Path(workspace),
             engine=state.get("engine", ""),
             domain=state.get("domain", ""),
-            intake_patches=state.get("intake_patches", []) or [],
+            intake_patches=[p for p in state.get("intake_patches", []) or []
+                            if not (isinstance(p, dict) and str(p.get("name")) in _told)],
             engine_params=state.get("engine_params", {}) or {},
         )
         _spec = get_spec(state.get("engine", ""))

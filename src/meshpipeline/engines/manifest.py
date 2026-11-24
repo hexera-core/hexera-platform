@@ -146,6 +146,20 @@ def write_manifest(workspace, *, patch_types: dict, patch_entities: dict,
     volume_path = _published_volume(ws, volume_path)
     fc = _patch_face_counts(ws)
     roles = dict(patch_types)
+    # INS-40: the openings the staging left unmeshed (a cavity no inlet opens into) are not this mesh's patches -
+    # they were told before meshing, and the verdict holds the mesh to them as told (VER-9), never as met
+    from meshpipeline.cad.fluid_passages import openings_not_meshed, passages_side_by_side
+    told = openings_not_meshed(ws)
+    if told:
+        roles = {p: r for p, r in roles.items() if p not in told}
+        if isinstance(patch_entities, dict):
+            patch_entities = {p: e for p, e in patch_entities.items() if p not in told}
+        quality = {**quality, "openings_not_meshed": sorted(told),
+                   "openings_not_meshed_words": list(dict.fromkeys(told[n] for n in sorted(told)))}
+    # VER-9: how many separate passages the mesh holds side by side - the regions it is meant to have
+    side = passages_side_by_side(ws)
+    if side > 1:
+        quality = {**quality, "passages_side_by_side": side}
     types = set(roles.values())
     # "the mesh physically exists" - asked of THE ARTIFACT THIS ENGINE DELIVERS, which each spec
     # already declares as its Deliverable marker. This used to be a hardcoded
