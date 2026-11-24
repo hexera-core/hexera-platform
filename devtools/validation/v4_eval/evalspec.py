@@ -357,6 +357,11 @@ ARMS: dict[str, Arm] = {a.name: a for a in (
     # per-file model ceiling is the owner's $1.00, metered on THIS ledger.
     Arm("search_seq_ai", "sequential defect repair with the AI picking where the table cannot decide",
         Budget(SHARED_BUDGET.wall_s, SHARED_BUDGET.ops, model_usd=1.00), True),
+    # CRS v5 (owner-approved redesign, 2026-11-24): diagnose into defect classes, the class's dedicated repairs with
+    # local checks, then v4's search_ai from the best state if not clean and time remains. Same wall and op cap;
+    # the model ceiling is the owner's $1.00 per file (spent by the fallback).
+    Arm("v5", "defect-class repair, then search_ai as the fallback",
+        Budget(SHARED_BUDGET.wall_s, SHARED_BUDGET.ops, model_usd=1.00), True),
     Arm("v3_meshability_pass_ai", "v3 as it ships (meshability pass + AI), run once for comparison",
         SHARED_BUDGET, False, spend_metered=False),  # calls a model; its spend is v3's, not this ledger's
 )}
@@ -433,6 +438,9 @@ WAVES: dict[str, WaveDef] = {w.name: w for w in (
     # FAST-DEV v1 (the fast loop): the frozen 15 + 5 files of corpora/v4/fast_dev_v1, SEARCH ARMS ONLY, normal waves
     WaveDef("fast_v1_dev", "normal", "dev", ("search_det", "search_ai", "search_seq", "search_seq_ai")),
     WaveDef("fast_v1_clean", "normal", "clean", ("search_det", "search_ai", "search_seq", "search_seq_ai")),
+    # CRS v5's fast loop: the same frozen FAST-DEV v1 files, v5 against its baseline v4 search_ai
+    WaveDef("fast_v5_dev", "normal", "dev", ("search_ai", "v5")),
+    WaveDef("fast_v5_clean", "normal", "clean", ("search_ai", "v5")),
 )}
 
 

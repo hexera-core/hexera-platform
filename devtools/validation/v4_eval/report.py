@@ -192,6 +192,14 @@ class ArmRow:
     inconclusive_verdicts: int | None = None
     #: defects an EARLIER repair resolved: re-checked and gone, so neither a repair of their own nor a skip.
     resolved_by_earlier_repair: int | None = None
+    #: CRS v5 (`v5` arm): defects by CLASS (found / fixed / unrepaired), and whether the search_ai fallback ran,
+    #: improved on the class loop's state, and whether the class loop alone had already made the part clean.
+    classes_found: dict | None = None
+    classes_fixed: dict | None = None
+    classes_unrepaired: dict | None = None
+    fallback_ran: bool | None = None
+    fallback_improved: bool | None = None
+    clean_before_fallback: bool | None = None
 
     @property
     def clean(self) -> bool:

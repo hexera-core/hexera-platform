@@ -550,6 +550,9 @@ _AIMS_AT: dict[str, frozenset[str]] = {
     "fill_loop": frozenset({"F"}),
     "remove_small": frozenset({"F"}),
     "split_by_proximity": frozenset(),      # whole-part: its pairs come from the measurement, not from targets
+    # v5: whole-part, it finds the near-coaxial groups itself. MISSING until v5, so `can_aim` failed shut and
+    # C23's `split_aligned` row - first for overlapping_facets - was filtered out before any seq run could try it.
+    "split_aligned": frozenset(),
 }
 
 
@@ -594,14 +597,16 @@ class Pick:
 
 
 def pick_repair(defect: Defect, *, table: dict[str, tuple[Repair, ...]] | None = None,
-                ai_pick: AIPick | None = None, applies: Callable[[str], bool] | None = None) -> Pick:
+                ai_pick: AIPick | None = None, applies: Callable[[str], bool] | None = None,
+                key: str | None = None) -> Pick:
     """ONE repair for `defect`. The table decides where it has an unambiguous leader; the AI decides only where
     the table is empty, or where its top two entries are equally well evidenced.
 
     "Equally well evidenced" is the tie the design means: two repairs the table cannot separate. The table is
     already ranked by distinct files, so a tie here is a genuine one, not an artefact of the ordering."""
-    # the table is keyed on the defect's CODE (lane C's `kind` is only validity/mesher)
-    kind = defect.code
+    # the table is keyed on the defect's CODE (lane C's `kind` is only validity/mesher); v5 keys it on the
+    # defect's CLASS instead (`classes.table_key`), handed in as `key`
+    kind = key if key is not None else defect.code
     rows = (table if table is not None else RULE_TABLE).get(kind, ())
     # BOTH filters run BEFORE the cap: the op must exist, AND it must be aimable at what this defect carries
     rows = tuple(r for r in rows
@@ -667,8 +672,21 @@ class SeqCounters:
     local_s: float = 0.0
     full_s: float = 0.0
 
+    #: v5: the same three tallies by DEFECT CLASS (empty when the loop was not given a diagnosis)
+    found_class: collections.Counter[str] = field(default_factory=collections.Counter)
+    fixed_class: collections.Counter[str] = field(default_factory=collections.Counter)
+    skipped_class: collections.Counter[str] = field(default_factory=collections.Counter)
+
+    def tally(self, what: str, defect: Defect) -> None:
+        getattr(self, what)[defect.code] += 1
+        cls = (defect.measurement or {}).get("class")
+        if cls:
+            getattr(self, f"{what}_class")[str(cls)] += 1
+
     def row(self) -> dict[str, Any]:
-        return {"full_checks": self.full_checks, "local_checks": self.local_checks, "rounds": self.rounds,
+        classes = ({"classes_found": dict(self.found_class), "classes_fixed": dict(self.fixed_class),
+                    "classes_unrepaired": dict(self.skipped_class)} if self.found_class else {})
+        return {**classes, "full_checks": self.full_checks, "local_checks": self.local_checks, "rounds": self.rounds,
                 "ai_picks": self.ai_picks, "defects_found": dict(self.found), "defects_fixed": dict(self.fixed),
                 "defects_skipped": dict(self.skipped), "skipped_why": dict(self.skipped_why),
                 "overlap_pairs_fixed": self.pairs_fixed, "overlap_pairs_skipped": self.pairs_skipped,
@@ -695,6 +713,8 @@ def defect_line(defect: Defect, *, pair: tuple[StableId, StableId] | None = None
         bits.append(f"{m['free_loops']} free loop(s)")
     if defect.member:
         bits.append(f"member {defect.member}")
+    if m.get("class"):
+        bits.append(f"class {m['class']}")
     return f"{defect.code} on {where or '?'}" + (f" ({', '.join(bits)})" if bits else "")
 
 
@@ -829,6 +849,9 @@ def repair_sequentially(
     wall_s: float | None = None,
     clock: Callable[[], float] = time.monotonic,
     trace: Any = None,
+    diagnose: Callable[[list[Defect]], list[Defect]] | None = None,
+    key_of: Callable[[Defect], str] | None = None,
+    max_alternatives: int = MAX_ALTERNATIVES,
 ) -> SeqOutcome:
     """The arm. One defect at a time, one repair each, local verification, ONE full panel per round.
 
@@ -881,13 +904,16 @@ def repair_sequentially(
         rounds.append(this)
         counters.rounds = index
         defects = _with_diagonal(pool, best, defects_of(verdict, sites_of(pool, best, verdict), best))
+        if diagnose is not None:
+            # v5: every defect gets its CLASS and CAUSE before any repair (`classes.diagnose`)
+            defects = diagnose(defects)
         for d in defects:
-            counters.found[d.code] += 1
+            counters.tally("found", d)
         current = best
         diagnosed_on = best      # every defect in this list was diagnosed on THIS state
         for listed in defects:
             if out_of_wall():
-                counters.skipped[listed.code] += 1
+                counters.tally("skipped", listed)
                 counters.skipped_why["wall"] += 1
                 into(this)(f"{defect_line(listed)} -> not attempted [the file's wall]")
                 continue
@@ -897,7 +923,7 @@ def repair_sequentially(
             if (listed.measurement or {}).get("unmapped_layer1_entities") and not listed.entities:
                 # layer 1 named solids this workspace's body index cannot place (see `body_ids_of`). Its OWN
                 # reason, so this can never again read as "the ids died in an earlier repair".
-                counters.skipped[listed.code] += 1
+                counters.tally("skipped", listed)
                 counters.skipped_why["layer1_entity_unmapped"] += 1
                 into(this)(f"{defect_line(listed)} -> not attempted [layer-1 entity could not be mapped to a "
                            f"body: {', '.join(map(str, listed.measurement['unmapped_layer1_entities']))}]")
@@ -915,11 +941,13 @@ def repair_sequentially(
             if defect.code == "body_overlap" and defect.pairs:
                 current = _repair_cluster(pool, current, defect, counters=counters, table=table, ai_pick=ai_pick,
                                           verify=verify, run_stage=run_stage, op_timeout_s=op_timeout_s,
-                                          local_timeout_s=local_timeout_s, step=into(this))
+                                          local_timeout_s=local_timeout_s, step=into(this), key_of=key_of,
+                                          cap=max_alternatives)
                 continue
             current = _repair_one(pool, current, defect, counters=counters, table=table, ai_pick=ai_pick,
                                   verify=verify, run_stage=run_stage, op_timeout_s=op_timeout_s,
-                                  local_timeout_s=local_timeout_s, step=into(this))
+                                  local_timeout_s=local_timeout_s, step=into(this), key_of=key_of,
+                                  cap=max_alternatives)
         this.kept = counters.kept_in_round
         counters.kept_in_round = 0
         if this.kept == 0:
@@ -985,15 +1013,16 @@ def _with_diagonal(pool: Any, ws: Workspace, defects: list[Defect]) -> list[Defe
             for d in defects]
 
 
-def _alternatives(pick: Pick) -> list[Repair]:
+def _alternatives(pick: Pick, cap: int = MAX_ALTERNATIVES) -> list[Repair]:
     first = [pick.repair] if pick.repair is not None else []
-    return [*first, *[r for r in pick.candidates if r != pick.repair]][:MAX_ALTERNATIVES]
+    return [*first, *[r for r in pick.candidates if r != pick.repair]][:cap]
 
 
 def _pick_for(defect: Defect, table: dict[str, tuple[Repair, ...]] | None, ai_pick: AIPick | None,
-              counters: SeqCounters) -> Pick:
+              counters: SeqCounters, key_of: Callable[[Defect], str] | None = None) -> Pick:
     pick = pick_repair(defect, table=table, ai_pick=ai_pick,
-                       applies=lambda op: op.startswith("run_stage:") or op in REGISTRY)
+                       applies=lambda op: op.startswith("run_stage:") or op in REGISTRY,
+                       key=key_of(defect) if key_of is not None else None)
     if pick.by == "ai":
         counters.ai_picks += 1
     return pick
@@ -1002,16 +1031,17 @@ def _pick_for(defect: Defect, table: dict[str, tuple[Repair, ...]] | None, ai_pi
 def _repair_one(pool: Any, ws: Workspace, defect: Defect, *, counters: SeqCounters,
                 table: dict[str, tuple[Repair, ...]] | None, ai_pick: AIPick | None,
                 verify: Callable[..., LocalResult], run_stage: Any, op_timeout_s: float,
-                local_timeout_s: float, step: Callable[[str], None]) -> Workspace:
+                local_timeout_s: float, step: Callable[[str], None],
+                key_of: Callable[[Defect], str] | None = None, cap: int = MAX_ALTERNATIVES) -> Workspace:
     """One defect, one repair at a time until one is kept or the alternatives run out. Returns the workspace to
     carry on from: the repaired one if a repair was kept, otherwise the one it was given (the revert)."""
-    pick = _pick_for(defect, table, ai_pick, counters)
+    pick = _pick_for(defect, table, ai_pick, counters, key_of)
     if not pick.repair:
-        counters.skipped[defect.code] += 1
+        counters.tally("skipped", defect)
         counters.skipped_why["no_rule"] += 1
         step(f"{defect_line(defect)} -> no repair [{pick.why}]")
         return ws
-    for repair in _alternatives(pick):
+    for repair in _alternatives(pick, cap):
         try:
             applied = apply_repair(pool, ws, repair, defect, timeout_s=op_timeout_s, run_stage=run_stage)
         except APPLY_FAILED as why:
@@ -1022,7 +1052,7 @@ def _repair_one(pool: Any, ws: Workspace, defect: Defect, *, counters: SeqCounte
         try:
             local = verify(pool, ws, applied.ws, defect, list(applied.touched), timeout_s=local_timeout_s)
         except UNAVAILABLE as why:
-            counters.skipped[defect.code] += 1
+            counters.tally("skipped", defect)
             counters.skipped_why["local_check_unavailable"] += 1
             step(f"{defect_line(defect)} -> {repair_line(repair, applied.params, pick)} -> "
                  f"NOT CHECKED: {type(why).__name__}: {why}")
@@ -1031,17 +1061,18 @@ def _repair_one(pool: Any, ws: Workspace, defect: Defect, *, counters: SeqCounte
         counters.local_s += float(local.seconds or 0.0)
         step(f"{defect_line(defect)} -> {repair_line(repair, applied.params, pick)} -> {local.line()}")
         if local.gone and not local.new_hard:
-            counters.fixed[defect.code] += 1
+            counters.tally("fixed", defect)
             counters.kept_in_round += 1
             return applied.ws
-    counters.skipped[defect.code] += 1
+    counters.tally("skipped", defect)
     return ws
 
 
 def _repair_cluster(pool: Any, ws: Workspace, defect: Defect, *, counters: SeqCounters,
                     table: dict[str, tuple[Repair, ...]] | None, ai_pick: AIPick | None,
                     verify: Callable[..., LocalResult], run_stage: Any, op_timeout_s: float,
-                    local_timeout_s: float, step: Callable[[str], None]) -> Workspace:
+                    local_timeout_s: float, step: Callable[[str], None],
+                    key_of: Callable[[Defect], str] | None = None, cap: int = MAX_ALTERNATIVES) -> Workspace:
     """A body_overlap CLUSTER, repaired PAIR BY PAIR (owner note 1).
 
     One local check per pair, and a pair that cannot be repaired is skipped and recorded WITHOUT blocking the
@@ -1052,14 +1083,14 @@ def _repair_cluster(pool: Any, ws: Workspace, defect: Defect, *, counters: SeqCo
     current = ws
     gone = 0
     for pair in defect.pairs:
-        pick = _pick_for(defect, table, ai_pick, counters)
+        pick = _pick_for(defect, table, ai_pick, counters, key_of)
         if not pick.repair:
             counters.pairs_skipped += 1
             counters.skipped_why["no_rule"] += 1
             step(f"{defect_line(defect, pair=pair)} -> no repair [{pick.why}]")
             continue
         kept = False
-        for repair in _alternatives(pick):
+        for repair in _alternatives(pick, cap):
             try:
                 applied = apply_repair(pool, current, repair, defect, timeout_s=op_timeout_s, pair=pair,
                                        run_stage=run_stage)
@@ -1090,9 +1121,9 @@ def _repair_cluster(pool: Any, ws: Workspace, defect: Defect, *, counters: SeqCo
         if not kept:
             counters.pairs_skipped += 1
     if gone == len(defect.pairs):
-        counters.fixed[defect.code] += 1
+        counters.tally("fixed", defect)
     else:
-        counters.skipped[defect.code] += 1
+        counters.tally("skipped", defect)
         step(f"{defect_line(defect)} -> cluster partly repaired: {gone} of {len(defect.pairs)} pairs")
     return current
 

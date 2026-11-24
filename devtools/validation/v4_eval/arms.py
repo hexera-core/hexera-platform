@@ -269,6 +269,15 @@ def run_file(arm_name: str, entry: Any, source: str, *, pool: Any, engine: Engin
                                        source=source, judge=judge, v_in=v_in, budget=budget, clock=clock,
                                        full=full, workdir=workdir, ledger=ledger, route=route, entry=entry,
                                        job_id=job_id, throttle=throttle)
+        elif arm_name == "v5":
+            # CRS v5 (2026-11-24): the same start as every search arm, then the class loop and the search_ai fallback
+            staged = ph.run("staged_healer", _run_staged, engine, pool, ws, v_in)
+            ph.run("confirm_staged", confirm_staged, pool, ws, staged, full=lambda w: full(pool, w, source),
+                   input_verdict=v_in)
+            out_v, extra, usd = ph.run("search", _v5_arm, pool=pool, ws=ws, start=staged.ws, source=source,
+                                       judge=judge, v_in=v_in, budget=budget, clock=clock, full=full,
+                                       workdir=workdir, ledger=ledger, route=route, entry=entry, job_id=job_id,
+                                       throttle=throttle, h_mm=h_mm, workers=workers, max_turns=max_turns, arm=arm)
         else:
             raise ValueError(f"arm {arm_name!r} is not dispatchable here")
     except (CheckerUnavailable, InconclusiveVerdict, EngineUnavailable) as exc:
@@ -413,6 +422,68 @@ def _seq_arm(arm_name: str = "search_seq", *, pool: Any, ws: Any, start: Any, so
     if picker is not None:
         fields["_triage"]["seq"]["ai"] = picker.result()
     return out_v, fields, (picker.spent_usd if picker is not None else 0.0)
+
+
+def _v5_arm(*, pool: Any, ws: Any, start: Any, source: str, judge: Any, v_in: Any, budget: Any, clock: Any,
+            full: Any, workdir: str | None, ledger: Any, route: str | None, entry: Any, job_id: str, throttle: Any,
+            h_mm: float | None, workers: int, max_turns: int, arm: Any) -> tuple[Any, dict, float]:
+    """(output verdict, the row's own fields, model USD) for `v5`: `repair_v4.v5.repair_v5` with v4's search_ai
+    as the fallback, through the same delivery gate and catastrophic-loss guard as every other arm."""
+    from types import SimpleNamespace
+
+    from meshpipeline.cad.repair_v4 import search as S
+    from meshpipeline.cad.repair_v4.loss import check_loss
+    from meshpipeline.cad.repair_v4.proposer import MODEL_UNAVAILABLE
+    from meshpipeline.cad.repair_v4.trace import Trace
+    from meshpipeline.cad.repair_v4.v5 import repair_v5
+
+    trace = Trace()
+    trace.record("start", arm="v5")
+    spent: dict[str, Any] = {"usd": 0.0, "ai_unavailable": False, "unmeasured": False, "triage": None}
+
+    def fallback(best: Any, _verdict: Any, left_s: float) -> Any:
+        if not route:
+            raise ValueError("v5's fallback is search_ai, which needs a route (provider:model)")
+        generators, proposer = S.arm_generators(
+            "search_ai", route=route, ledger=ledger, max_turns=max_turns, usd_ceiling=arm.budget.model_usd,
+            file_id=entry.sha256, job_id=job_id, throttle=throttle)
+        sbudget = S.Budget(wall_s=left_s, ops=budget.ops, model_calls=max_turns, model_usd=budget.model_usd)
+        result = S.search(pool, best, source, generators, sbudget, workers=workers, judge=judge, h_mm=h_mm,
+                          clock=clock)
+        spent["usd"] = float(proposer.result()["spent_usd"]) if proposer is not None else 0.0
+        spent["ai_unavailable"] = bool(proposer is not None and proposer.model_unavailable)
+        spent["unmeasured"] = bool(result.unmeasured)
+        spent["ai_stop_reason"] = MODEL_UNAVAILABLE if spent["ai_unavailable"] else result.ai_stop_reason
+        spent["triage"] = search_triage(result, generators)
+        return result
+
+    outcome = repair_v5(pool, start, source, judge=judge, sites_of=judge.sites, wall_s=budget.wall_s,
+                        fallback=fallback if route else None, clock=clock, trace=trace)
+    if workdir is not None:
+        write_trace(trace, workdir)
+    changed = outcome.best.brep_path != ws.brep_path
+    stand_in: Any = SimpleNamespace(changed=changed, best=outcome.best, best_verdict=outcome.verdict)
+    loss = check_loss(pool, ws.brep_path, outcome.best.brep_path) if changed else None
+    delivered = S.deliverable(stand_in, v_in, loss=loss)
+    out_v = v_in if delivered is None else full(pool, delivered, source)
+    if workdir is not None:
+        keep_delivered(ws.brep_path if delivered is None else delivered.brep_path, workdir,
+                       is_input=delivered is None)
+    fields: dict[str, Any] = {
+        **outcome.seq.counters.row(),
+        "loss": (loss.row() if loss is not None else None),
+        "fallback_ran": outcome.fallback is not None,
+        "fallback_improved": bool(outcome.fallback is not None and getattr(outcome.fallback, "changed", False)),
+        "clean_before_fallback": bool(getattr(outcome.seq.verdict, "clean", False)),
+        # a fallback whose model was never reached measured v5 without its AI: inconclusive, as for search_ai
+        "_unmeasured": bool(spent["ai_unavailable"] or spent["unmeasured"]),
+        **({"ai_stop_reason": spent["ai_stop_reason"]} if outcome.fallback is not None else {}),
+        "_triage": {"v5": {"lines": outcome.lines(), "fallback": outcome.fallback_why,
+                           "rounds": [{"index": r.index, "kept": r.kept, "full_check": r.full_check,
+                                       "steps": r.steps} for r in outcome.seq.rounds]},
+                    **({"search": spent["triage"]} if spent["triage"] is not None else {})},
+    }
+    return out_v, fields, float(spent["usd"])
 
 
 def _diagonal_or_none(pool: Any, ws: Any) -> float | None:
