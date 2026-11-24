@@ -513,6 +513,14 @@ def _of_kind(entities: list[StableId], prefix: str) -> list[StableId]:
 #: Site kinds where removing the site's faces (or the recognised features among them) is a plausible repair: small or
 #: thin faces, degenerate poles, faces too close or crossing, a mesher stuck on them. NOT `open` (faces are missing
 #: already), `overlap` (between bodies), `invalid` (topology) or an unknown kind.
+#: D17, owner direction: the det sweep does NOT propose the whole recognised set (every hole and blend on the part,
+#: removed in one call) unless a DetGenerator is built with `whole_part_defeature=True`. Basis: lane D15 on dev_v1r,
+#: on the search's calibrated rank, that candidate was worse than its parent 18 of 22 times and made the part
+#: INVALID 14 of 22. The aimed rows stay on (`located`: the faces a mesher's own failure named; the recognised holes
+#: and blends touching a site's faces; the site's faces), and so does the plain `defeature(faces)` op in the AI's
+#: catalogue. The code is kept so a later measurement can turn it back on.
+WHOLE_PART_DEFEATURE = False
+
 DEFEATURE_SITE_KINDS = frozenset({"sliver", "proximity", "pole", "self_overlap", "intersection", "timeout"})
 
 
@@ -530,12 +538,15 @@ class DetGenerator:
         diagonal: Callable[[Workspace], float] | None = None,
         recipes: Any = None,
         recipe_k: int = 3,
+        whole_part_defeature: bool = WHOLE_PART_DEFEATURE,
     ) -> None:
         self.unfixable = unfixable
         #: a `recipes.RecipeBook` (CAD_REPAIR_V4_RECIPES): steps that took similar dev sites to clean, replayed
         #: on this site's own entities BEFORE the fixed sweep. None: no recipe memory.
         self.recipes = recipes
         self.recipe_k = recipe_k
+        #: D17: propose the WHOLE recognised set as one det candidate (off by default; see WHOLE_PART_DEFEATURE)
+        self.whole_part_defeature = whole_part_defeature
         #: workspace -> bounding-box diagonal in mm. `search()` binds the kernel's `ws_diagonal` (`bind_pool`) when
         #: this is None. Without one no size can be made: the ops that take a size (`sew`, `remove_small`) are
         #: not proposed, and `notes` says so.
@@ -666,7 +677,7 @@ class DetGenerator:
             return cached[0]
 
         part_rows: list[tuple[str, list[StableId], dict, str]] = []
-        if any(m != "valid" for s in sites for m in s.meshers_failing):   # a MESHER fails, not only layer 1
+        if self.whole_part_defeature and any(m != "valid" for s in sites for m in s.meshers_failing):
             # the whole recognised set, removed in ONE call (Raymond's attempt), proposed once per state
             from meshpipeline.cad.repair_v4.ops.defeature import defeature_rows
             part_rows = defeature_rows(features())
