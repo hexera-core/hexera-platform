@@ -793,3 +793,31 @@ def test_every_arm_gets_the_same_rule_whatever_stopped_it() -> None:
     assert file_unmeasured(reason="wall", out_tier="cheap", **common) is True
     # a row written BEFORE the ruling carries no tier on a time stop and keeps its old classification
     assert file_unmeasured(reason="wall", **common) is True
+
+
+def test_parallel_candidate_evaluation_ranks_exactly_as_serial() -> None:
+    """D22: an expansion's candidates evaluated concurrently (workers > 1) finish in any order, but results are reduced
+    in SUBMISSION order, so every state id, score, duplicate and the path are identical to the serial run. The fake
+    op sleeps a different time per candidate so the parallel completion order is scrambled."""
+    import time as _time
+
+    def slow(params: dict) -> None:
+        _time.sleep(0.002 * ((params["q"] * 7) % 5))
+
+    def script(state: SearchState) -> list[Candidate]:
+        base = _q(state.ws)
+        return [cand(min(100, base + d)) for d in (3, 1, 4, 1, 5, 9, 2, 6)]  # a duplicate (1) on purpose
+
+    def trace_of(workers: int) -> list[dict]:
+        SetOp.applied = []
+        SetOp.behaviour = slow
+        fj = FakeJudge()
+        start = _ws(0)
+        r = search(None, start, start.original, [Scripted(script)], Budget(wall_s=1000, ops=60, model_calls=0,
+                   model_usd=0), workers=workers, judge=fj.judge(), patience=4)
+        return [{k: v for k, v in e.items() if k not in ("t", "seq", "budget", "spent")} for e in r.trace.to_dict()["events"]
+                if e["kind"] in ("candidate", "expand", "best", "stop")]
+
+    serial, parallel = trace_of(1), trace_of(6)
+    assert len(serial) > 20
+    assert parallel == serial
