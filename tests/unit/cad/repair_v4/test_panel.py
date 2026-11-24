@@ -559,3 +559,33 @@ def test_every_gmsh_member_meshes_single_threaded_with_a_fixed_seed(monkeypatch:
     mesh_child.run_in_process({"step": "/x.step", "profile": "prod"})
     assert {k: seen.get(k) for k in mesh_child.REPRODUCIBLE} == mesh_child.REPRODUCIBLE
     assert mesh_child.REPRODUCIBLE["General.NumThreads"] == 1 and mesh_child.REPRODUCIBLE["Mesh.MaxNumThreads3D"] == 1
+
+
+# ---- what a retry hits after a first timeout is the clock's, not the file's ---------------------------------------
+
+_FAIL = {"status": "fail", "error_kind": "other", "message": "gmsh stopped", "located": [], "min_sicn": None,
+         "elements": 0}
+_SEGV = {"status": "crashed", "error_kind": "gmsh_crash", "cause": "signal_11", "message": "killed by signal 11",
+         "located": [], "min_sicn": None, "elements": 0}
+
+
+def test_a_retry_after_a_timeout_is_one_outcome_whatever_it_hit() -> None:
+    """Lane A, occt/bug32314_corrupted.stp, gmsh_alt alone, native x86, --cpus=1, 8 runs: the first attempt timed out
+    every time, and the 2x retry ended timeout x2, fail/other x3, crashed/gmsh_crash (SIGSEGV) x3 - where gmsh was
+    when the clock ran out. Recorded as is, one file's member status and kind flip run to run. Any non-pass that
+    follows a timeout is now the timeout's outcome (the genuine kind, as if it had timed out twice); the original
+    outcome stays in the message and the cause for triage."""
+    seen = set()
+    for second in (_call(None, status="timeout", error="slower"), _call(_FAIL), _call(_SEGV)):
+        result = GmshAlt().run(_ScriptedPool(_TIMED_OUT, second), "/x.step", timeout_s=100)  # type: ignore[arg-type]
+        seen.add((result.status, result.error_kind))
+        assert not panel.is_inconclusive(result)
+    assert seen == {("timeout", "timeout")}
+    failed = GmshAlt().run(_ScriptedPool(_TIMED_OUT, _call(_FAIL)), "/x.step", timeout_s=100)  # type: ignore[arg-type]
+    assert failed.cause == "after_timeout_fail" and "fail" in failed.message
+
+
+def test_without_a_timeout_a_fail_and_a_crash_keep_their_own_kinds() -> None:
+    assert GmshAlt().run(_ScriptedPool(_call(_FAIL)), "/x.step", timeout_s=100).error_kind == "other"  # type: ignore[arg-type]
+    crash = GmshAlt().run(_ScriptedPool(_call(_SEGV)), "/x.step", timeout_s=100)  # type: ignore[arg-type]
+    assert (crash.status, crash.error_kind) == ("crashed", "gmsh_crash")

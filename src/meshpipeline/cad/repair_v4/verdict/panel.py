@@ -221,6 +221,23 @@ def timeout_kind(timeouts: int, genuine_kind: str = TIMEOUT_KIND) -> str:
     return genuine_kind if timeouts >= 2 else INFRASTRUCTURE_KIND
 
 
+def classify_after_timeout(result: MemberResult, timeouts: int, genuine_kind: str = TIMEOUT_KIND) -> MemberResult:
+    """After a first timeout, a retry that did not pass is ONE outcome: the member's genuine timeout, as if it had
+    timed out twice. What the retry hit (another timeout, gmsh stopping with a `fail`, a SIGSEGV) is where the mesher
+    was when its clock ran out, so it depends on the machine, not the file: Lane A measured occt/bug32314_corrupted.stp
+    (gmsh_alt, native x86, --cpus=1, 8 runs) time out first every run and then end timeout x2, fail/other x3,
+    crashed/gmsh_crash x3. A pass after a timeout is still a pass, and an infrastructure result stays one. The
+    retry's own outcome is kept in `message` and `cause` for triage."""
+    if timeouts < 1 or result.status not in ("fail", "crashed") or result.error_kind == INFRASTRUCTURE_KIND:
+        return result
+    return MemberResult(
+        name=result.name, status="timeout", error_kind=genuine_kind,
+        message=f"retry after a timeout ended {result.status} ({result.error_kind}): classified by the timeout. "
+                + result.message,
+        seconds=result.seconds, cause=f"after_timeout_{result.status}",
+    )
+
+
 class PanelContractError(RuntimeError):
     """A member returned a `timeout`/`crashed` result that does not say whose fault it is."""
 

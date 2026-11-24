@@ -205,7 +205,10 @@ class NetgenOCC:
             return failed("crashed", INFRASTRUCTURE_KIND, "pool_worker")
         if not call.ok or call.value is None:
             return failed("crashed", INFRASTRUCTURE_KIND, "kernel_call")
-        return member_result(self.name, call.value, call.seconds, retried.timeouts, retried.kills, retried.skipped)
+        return panel.classify_after_timeout(
+            member_result(self.name, call.value, call.seconds, retried.timeouts, retried.kills, retried.skipped),
+            retried.timeouts, "netgen_timeout",
+        )
 
 
 def member_result(

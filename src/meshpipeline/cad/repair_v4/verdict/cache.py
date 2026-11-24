@@ -30,7 +30,9 @@ from typing import Any, Protocol
 
 from meshpipeline.settings.cad_repair import verdict_cache_uri
 
-VERDICT_CODE_VERSION = "crs-v4.verdict.1"
+#: .2: a retry that ended fail or crashed after a timeout is the timeout (panel.classify_after_timeout); a
+#: cached .1 "fail" for such a file is what the retry happened to hit, so .1 entries must not be read.
+VERDICT_CODE_VERSION = "crs-v4.verdict.2"
 logger = logging.getLogger(__name__)
 CACHEABLE_STATUSES = ("pass", "fail")
 
