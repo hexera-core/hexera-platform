@@ -351,6 +351,12 @@ ARMS: dict[str, Arm] = {a.name: a for a in (
     # per-file model ceiling on this line, which is the owner's call and not a default.
     Arm("search_seq", "sequential defect repair: one defect, one repair, local checks, one panel per round",
         SHARED_BUDGET, False),
+    # B25 (owner, 2026-11-24): the same arm with the model allowed to PICK where the table cannot decide - no
+    # entry for the defect's code, or a declared tie. It chooses an INDEX among the candidates the arm already
+    # built, so it can neither name an op nor set a parameter. Same wall and op cap as every other arm; the
+    # per-file model ceiling is the owner's $1.00, metered on THIS ledger.
+    Arm("search_seq_ai", "sequential defect repair with the AI picking where the table cannot decide",
+        Budget(SHARED_BUDGET.wall_s, SHARED_BUDGET.ops, model_usd=1.00), True),
     Arm("v3_meshability_pass_ai", "v3 as it ships (meshability pass + AI), run once for comparison",
         SHARED_BUDGET, False, spend_metered=False),  # calls a model; its spend is v3's, not this ledger's
 )}

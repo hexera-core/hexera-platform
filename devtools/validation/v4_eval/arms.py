@@ -253,15 +253,17 @@ def run_file(arm_name: str, entry: Any, source: str, *, pool: Any, engine: Engin
                                             max_turns=max_turns, job_id=job_id, entry=entry, workers=workers,
                                             clock=clock, full=full, throttle=throttle, recipes=recipes,
                                             workdir=workdir, phases=ph)
-        elif arm_name == "search_seq":
+        elif arm_name in ("search_seq", "search_seq_ai"):
             # B24: the SAME start as the search arms (the staged healer's confirmed output), so the comparison is
             # of method - frontier against one-defect-at-a-time - and not of where the two began. The phases are
             # A14's, named as the other arms name them, so one table compares the arms phase by phase.
             staged = ph.run("staged_healer", _run_staged, engine, pool, ws, v_in)
             ph.run("confirm_staged", confirm_staged, pool, ws, staged, full=lambda w: full(pool, w, source),
                    input_verdict=v_in)
-            out_v, extra = ph.run("search", _seq_arm, pool=pool, ws=ws, start=staged.ws, source=source,
-                                  judge=judge, v_in=v_in, budget=budget, clock=clock, full=full, workdir=workdir)
+            out_v, extra, usd = ph.run("search", _seq_arm, arm_name, pool=pool, ws=ws, start=staged.ws,
+                                       source=source, judge=judge, v_in=v_in, budget=budget, clock=clock,
+                                       full=full, workdir=workdir, ledger=ledger, route=route, entry=entry,
+                                       job_id=job_id, throttle=throttle)
         else:
             raise ValueError(f"arm {arm_name!r} is not dispatchable here")
     except (CheckerUnavailable, InconclusiveVerdict, EngineUnavailable) as exc:
@@ -348,9 +350,11 @@ def _search_arm(arm_name: str, *, pool: Any, ws: Any, start: Any, source: str, j
     return out_v, fields, usd
 
 
-def _seq_arm(*, pool: Any, ws: Any, start: Any, source: str, judge: Any, v_in: Any, budget: Any, clock: Any,
-             full: Any, workdir: str | None = None) -> tuple[Any, dict]:
-    """(output verdict, the row's own fields) for `search_seq` (B24).
+def _seq_arm(arm_name: str = "search_seq", *, pool: Any, ws: Any, start: Any, source: str, judge: Any, v_in: Any,
+             budget: Any, clock: Any, full: Any, workdir: str | None = None, ledger: Any = None,
+             route: str | None = None, entry: Any = None, job_id: str = "", throttle: Any = None,
+             ) -> tuple[Any, dict, float]:
+    """(output verdict, the row's own fields, model USD) for `search_seq` and `search_seq_ai` (B24, B25).
 
     The arm's claim is a RATIO - local checks against full panels - so the row carries both, and the headline
     number is `full_checks`. The delivery gate is the one every arm meets, B22's catastrophic-loss refusal
@@ -364,9 +368,19 @@ def _seq_arm(*, pool: Any, ws: Any, start: Any, source: str, judge: Any, v_in: A
     from meshpipeline.cad.repair_v4.trace import Trace
 
     trace = Trace()
-    trace.record("start", arm="search_seq")
+    trace.record("start", arm=arm_name)
+    # B25: the AI arm hands `seq` a PICKER. `seq.pick_repair` calls it only where the table cannot decide, and it
+    # chooses an index among the candidates the arm built - it can neither name an op nor set a parameter.
+    picker = None
+    if arm_name == "search_seq_ai":
+        from meshpipeline.cad.repair_v4.seq_ai import SeqPicker
+        if not route:
+            raise ValueError("search_seq_ai needs a route (provider:model)")
+        picker = SeqPicker(route, ledger=ledger, usd_ceiling=budget.model_usd,
+                           file_id=getattr(entry, "sha256", "") or "", job_id=job_id, throttle=throttle)
     outcome = Q.repair_sequentially(pool, start, source, judge=judge, sites_of=judge.sites,
-                                    run_stage=Q.stage_runner(), wall_s=budget.wall_s, clock=clock, trace=trace)
+                                    run_stage=Q.stage_runner(), wall_s=budget.wall_s, clock=clock, trace=trace,
+                                    ai_pick=picker)
     if workdir is not None:
         write_trace(trace, workdir)
     # the delivery gate, as the staged arm meets it: `changed` is measured against the INPUT, not against the
@@ -383,12 +397,15 @@ def _seq_arm(*, pool: Any, ws: Any, start: Any, source: str, judge: Any, v_in: A
     fields: dict[str, Any] = {
         **outcome.counters.row(),
         "loss": (loss.row() if loss is not None else None),
+        **({"ai_stop_reason": picker.stop_reason} if picker is not None and picker.stop_reason else {}),
         # the owner's readable trace, one line per step and one per round, on the row as it is written
         "_triage": {"seq": {"lines": outcome.rounds and outcome.lines() or [],
                             "rounds": [{"index": r.index, "kept": r.kept, "full_check": r.full_check,
                                         "steps": r.steps} for r in outcome.rounds]}},
     }
-    return out_v, fields
+    if picker is not None:
+        fields["_triage"]["seq"]["ai"] = picker.result()
+    return out_v, fields, (picker.spent_usd if picker is not None else 0.0)
 
 
 def _diagonal_or_none(pool: Any, ws: Any) -> float | None:
