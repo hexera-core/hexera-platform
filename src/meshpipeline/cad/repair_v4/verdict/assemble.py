@@ -22,6 +22,7 @@ from typing import Any, Literal, Protocol
 from meshpipeline.cad.repair_v4.verdict.cache import VerdictCache, file_sha256, mesher_versions, panel_config_hash
 from meshpipeline.cad.repair_v4.verdict.faithful import DeclaredIdError, FaithfulReport, check_faithful_steps
 from meshpipeline.cad.repair_v4.verdict.valid import CheckerUnavailable, ValidReport, check_valid
+from meshpipeline.cad.repair_v4.verdict.wall import TooLateToStart, clip_member_timeout, remaining_s  # noqa: F401
 from meshpipeline.cad.repair_v4.worker_pool import WorkerPool
 
 logger = logging.getLogger(__name__)
@@ -197,7 +198,19 @@ def _assemble(
     # parallel) stays serial. P changes only WHEN members run, so it is NOT part of the cache key (`cap` is).
     threads = {"panel_threads": full_panel_threads()} if (
         tier == "full" and "panel_threads" in inspect.signature(runner).parameters) else {}
-    if cache is not None:
+    # A16: WHAT MAY THIS PANEL ASK FOR? `run_panel`'s worst case is (members + 2) x timeout_s, and a call longer
+    # than the wall's remainder cannot be stopped by a check that happens after it (measured: one 929.95 s panel
+    # against a 900 s search wall). So the per-member timeout comes from what is LEFT, and a panel with no useful
+    # time left raises `TooLateToStart` rather than guaranteeing an overrun.
+    try:
+        member_timeout, clipped = clip_member_timeout(len(chosen), MEMBER_TIMEOUT_S)
+    except TooLateToStart as why:
+        # Translated to the exception every caller ALREADY treats as infrastructure rather than a verdict: the
+        # search records the candidate inconclusive and stops on its wall, the healer's transaction rolls back,
+        # and `repair_v4` reports a file it did not measure. A part must never be called bad because a clock ran
+        # out. (Translated here, not raised as CheckerUnavailable from `wall`, so `wall` stays import-free.)
+        raise CheckerUnavailable(f"not starting a panel on {step!r}: {why}") from why
+    if cache is not None and not clipped:
         try:
             sha = file_sha256(step)
         except OSError as exc:  # a STEP that is not there is a broken export, not a file that failed
@@ -208,14 +221,21 @@ def _assemble(
         # (VerdictCache.single_flight), bounded by the panel's own worst case
         try:
             panel = cache.single_flight(
-                sha, config, lambda: list(runner(pool, step, chosen, timeout_s=MEMBER_TIMEOUT_S, **cap, **threads)),
+                sha, config, lambda: list(runner(pool, step, chosen, timeout_s=member_timeout, **cap, **threads)),
                 lease_s=lease_seconds(len(chosen)))
         except Exception as exc:  # noqa: BLE001 - a store failure is a miss, never a verdict and never a crash
             logger.warning("verdict cache unusable, meshing instead: %s: %s", type(exc).__name__, exc)
             cache.note_error()
             panel = None
     if panel is None:
-        panel = list(runner(pool, step, chosen, timeout_s=MEMBER_TIMEOUT_S, **cap, **threads))
+        # A CLIPPED PANEL IS NEVER STORED (LEAD-3's cache rule). It is a weaker measurement than the key promises:
+        # `panel_config_hash` carries MEMBER_TIMEOUT_S, so storing a 40 s-per-member panel under the 300 s key would
+        # hand every later reader a fail that is about the clock. Clipped panels therefore skip the cache entirely -
+        # no read, no single-flight claim, no store - and the key keeps meaning exactly what it says.
+        panel = list(runner(pool, step, chosen, timeout_s=member_timeout, **cap, **threads))
+        if clipped:
+            logger.info("panel on %s ran CLIPPED at %.1f s per member (%.1f s of wall left) and is NOT cached",
+                        step, member_timeout, remaining_s() or -1.0)
 
     # Layer 3 is REPORTED, never a gate (`clean_of`), so it is measured on every row it can be measured on -
     # including one that failed layer 1, where the fidelity numbers still say what the repair did to the part.
@@ -229,6 +249,11 @@ def _assemble(
         logger.info("layer 3 not measured for %s (reported as unmeasured, it gates nothing): %s", step, why)
 
     inconclusive = any(is_infrastructure_failure(r) for r in panel)
+    if clipped:
+        # A clipped panel cannot certify: a member that did not finish in a clipped slot says nothing about the
+        # part, so the verdict is INCONCLUSIVE rather than a fail. `clean_of` already refuses an inconclusive
+        # verdict, and `score` raises on one, so nothing ranks or ships on the strength of a clock.
+        inconclusive = inconclusive or any(getattr(r, "status", "pass") != "pass" for r in panel)
 
     clean = clean_of(tier=tier, inconclusive=inconclusive, valid=valid, panel=panel, faithful=faithful)
     return Verdict(valid, panel, faithful, clean, tier, inconclusive)
