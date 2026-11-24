@@ -439,3 +439,87 @@ def test_a_face_op_on_a_defect_that_re_located_onto_a_BODY_says_so() -> None:
     defect = _defect("low_quality", entities=("B1",))
     with pytest.raises(seq.NoParameters, match="re-located onto B1"):
         seq.params_for("reapproximate", defect, live={"B1"})
+
+
+# --- B24 fix: layer 1 names solids, the workspace names bodies ------------------------------------------------
+
+class _WSIds:
+    """The least workspace `body_ids_of` reads: stable id -> that entity's index in its kind's map."""
+
+    def __init__(self, indices: dict[str, int]) -> None:
+        self.indices = indices
+        self.ids = dict.fromkeys(indices, "fp")
+        self.labels, self.brep_path, self.original, self.history = {}, "/fake/w.brep", "/fake/o.brep", []
+
+
+def test_a_layer1_solid_name_is_translated_to_the_workspace_BODY_id() -> None:
+    """The wave-202611242007 bug: `valid_kernel` emits S1, S4 over its own solid list while the workspace names
+    bodies B..., so every body defect was built with ids the workspace had never heard of and B26's live-id
+    filter refused them - 18 of 52 steps, none of them after a kept repair."""
+    ws = _WSIds({"B7": 1, "B9": 2, "B4": 3, "B2": 4, "F1": 1})
+    mapped, unmapped = seq.body_ids_of(ws, ("S1", "S4"))
+    assert mapped == ["B7", "B2"] and unmapped == []
+    # a workspace id passes through untouched, whatever its kind
+    assert seq.body_ids_of(ws, ("B9", "F1")) == (["B9", "F1"], [])
+
+
+def test_a_layer1_name_the_workspace_cannot_place_is_reported_NOT_guessed() -> None:
+    """A wrong body id would aim a cut at the wrong solid, which is worse than skipping the defect."""
+    ws = _WSIds({"B7": 1})
+    assert seq.body_ids_of(ws, ("S1", "S4", "Sx")) == (["B7"], ["S4", "Sx"])
+
+
+def test_body_defects_are_built_with_workspace_ids_when_the_workspace_is_given() -> None:
+    ws = _WSIds({"B7": 1, "B2": 4})
+    site = _site("S1", kind="overlap", entities=["B7", "B2"])
+    verdict = _V([_Finding("body_overlap", ["S1", "S4"])])
+    [defect] = seq.defects_of(verdict, [site], ws)
+    assert defect.entities == ("B2", "B7") and defect.pairs == (("B2", "B7"),)
+
+
+def test_an_unmappable_body_defect_is_skipped_with_its_OWN_reason() -> None:
+    """Never again indistinguishable from "the ids died in an earlier repair"."""
+    ws = _WSIds({"B7": 1})
+    site = _site("S1", kind="invalid", entities=["B7"])
+    verdict = _V([_Finding("open_shell", ["S9"])])
+    [defect] = seq.defects_of(verdict, [site], ws)
+    assert defect.entities == () and defect.measurement["unmapped_layer1_entities"] == ["S9"]
+
+    judge = _Judge()
+    start = _WS(0)
+    with _patched(_bump(1)):
+        out = seq.repair_sequentially(None, start, "o.step", judge=judge,
+                                      sites_of=lambda pool, w, v: [site], start_verdict=_V([_Finding("open_shell",
+                                                                                                     ["S9"])]),
+                                      verify=lambda *a, **k: _local())
+    assert out.counters.skipped_why["layer1_entity_unmapped"] == 1
+    assert "could not be mapped to a body" in out.rounds[0].steps[0]
+
+
+# --- B24 fix: a removal is sized only from a face that is actually a sliver -----------------------------------
+
+def test_a_removal_is_NOT_sized_from_a_face_that_is_not_narrow() -> None:
+    """Wave 202611242007 derived limits of 1211 mm and 974 mm from `area/width` on big faces and the op declined
+    all 13 ("nothing at or under X mm to remove"). The det sweep's margin rule only ever applied to slivers."""
+    wide = _defect("overlapping_facets", entities=("F7",),
+                   measurement={"narrowest_face": {"id": "F7", "width_mm": 40.0, "length_mm": 120.0}})
+    with pytest.raises(seq.NoParameters, match="nothing here is a sliver"):
+        seq.params_for("remove_small", wide)
+
+
+def test_a_removal_limit_LARGER_THAN_THE_PART_is_refused_as_a_derivation_bug() -> None:
+    huge = _defect("overlapping_facets", entities=("F7",),
+                   measurement={"diagonal_mm": 250.0,
+                                "narrowest_face": {"id": "F7", "width_mm": 0.5, "length_mm": 1100.0}})
+    with pytest.raises(seq.NoParameters, match="larger than the part"):
+        seq.params_for("remove_small", huge)
+    # and a real sliver on the same part still sizes one
+    fine = _defect("overlapping_facets", entities=("F7",),
+                   measurement={"diagonal_mm": 250.0,
+                                "narrowest_face": {"id": "F7", "width_mm": 0.4, "length_mm": 11.0}})
+    assert seq.params_for("remove_small", fine)[1]["max_width_mm"] == pytest.approx(1.05 * 11.4)
+
+
+def test_low_quality_now_leads_with_the_repair_that_actually_applied() -> None:
+    """`reapproximate` declined no_valid_face on all 10 real attempts; `split_by_proximity` made every fix."""
+    assert seq.RULE_TABLE["low_quality"][0] == ("split_by_proximity",)
