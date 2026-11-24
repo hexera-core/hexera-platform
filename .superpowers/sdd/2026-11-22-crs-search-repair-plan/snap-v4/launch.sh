@@ -27,6 +27,17 @@ for k in $KEYS; do eval "v=\$OVR_$k"; [ -n "$v" ] && eval "$k=\$v"; done
 OPS=${OPS:-}
 PROJECT=hexera-dev; BUCKET=dev-crsv3-transfer-224734058693; SECRET=openai-api-key
 TS=$(date -u +%Y%m%d%H%M); RUN=${SNAP_RUNS:-$HOME/archductor/snap-runs}/$LABEL-$TS
+RESUME=0
+if [ "${HELDOUT:-0}" = 1 ] && [ -n "${HELDOUT_RESUME_TS:-}" ]; then
+  # RESUME (lane C14b): relaunch a held-out run that died AFTER it claimed the once-only slot, under the SAME run stamp,
+  # hence the same wave id (claim_wave_slot allows a resume of the same id), the same sync prefix and the same fresh
+  # verdict cache. Shards re-run from their start; their LEDGERS are restored from the sync prefix first, so what the
+  # dead run spent still counts against the $250 cap (a shard whose log never reached the bucket refuses with
+  # LostShardLog: an unknown spend is not started at $0).
+  echo "$HELDOUT_RESUME_TS" | grep -qE '^[0-9]{12}$' || { echo "HELDOUT_RESUME_TS must be the dead run's 12-digit stamp" >&2; exit 1; }
+  TS=$HELDOUT_RESUME_TS; RESUME=1
+  RUN=${SNAP_RUNS:-$HOME/archductor/snap-runs}/$LABEL-$TS-resume-$(date -u +%Y%m%d%H%M)
+fi
 SYNC=gs://$BUCKET/eval/snap-$LABEL-$TS/partial-sync
 FAILURES=0
 log() { echo "[$(date -u +%H:%M:%S)] $*" | tee -a "$RUN/launch.log"; }
@@ -208,6 +219,12 @@ assert len(g)==1, g
 print(g[0]['wave_id'])" "$RUN/launch_manifest.json") || die "the held-out run must be ONE group with one wave id"
   SLOT="gs://$BUCKET/model-ledger/slot/held_out/1"
   HOLDER=$(gcloud storage cat "$SLOT" 2>/dev/null || true)
+  if [ "$RESUME" = 1 ]; then
+    [ "$HOLDER" = "$HO_WID" ] || die "HELDOUT_RESUME_TS=$TS: the slot holds '${HOLDER:-nothing}', not $HO_WID: there is no claimed run of that stamp to resume"
+    LIVE=$(gcloud compute instances list --project $PROJECT --filter="labels.snapshot=$LABEL" --format='value(name)' </dev/null 2>/dev/null)
+    [ -z "$LIVE" ] || die "resume refused: held-out VMs still exist ($LIVE). The launcher ADOPTS a VM of the same name; delete them (or let the dead run finish) first"
+    log "RESUME of $HO_WID: the slot is this run's; shards restart with their ledgers restored from $SYNC/ledger"
+  fi
   if [ -n "$HOLDER" ] && [ "$HOLDER" != "$HO_WID" ]; then
     die "the held_out slot is SPENT: $SLOT holds wave '$HOLDER'. The held-out files run once (evalspec.claim_wave_slot); releasing the slot is a deliberate human act, not a launcher option."
   fi
@@ -322,7 +339,13 @@ push_and_run() { # name
   { printf 'OPENAI_API_KEY='; gcloud secrets versions access latest --secret "$SECRET" --project $PROJECT; echo; } \
     | SSH 'umask 077; cat > ~/snap/secret.env; grep -qE "^OPENAI_API_KEY=.{20,}$" ~/snap/secret.env && echo key-ok' \
     | grep -q key-ok || { echo "key-not-written" > "$RUN/outcome.$vm"; return 1; }
-  SSH "export VM_NAME=$vm; nohup setsid bash -c 'while :; do gcloud storage rsync -r -q ~/snap/out $SYNC/out >/dev/null 2>&1; sleep 600; done' >/dev/null 2>&1 < /dev/null & echo synced" >/dev/null 2>&1
+  if [ "$RESUME" = 1 ]; then
+    # the dead run's shard ledgers, so its spend still binds (model_ledger refuses a marker without its log)
+    SSH "mkdir -p ~/snap/ledger && gcloud storage rsync -r -q $SYNC/ledger ~/snap/ledger && echo restored" | grep -q restored \
+      || { echo "ledger-restore-failed" > "$RUN/outcome.$vm"; return 1; }
+  fi
+  # out/ AND the ledgers every 10 min: a held-out run can only be resumed with its ledgers (lane C14b)
+  SSH "export VM_NAME=$vm; nohup setsid bash -c 'while :; do gcloud storage rsync -r -q ~/snap/out $SYNC/out >/dev/null 2>&1; [ -d ~/snap/ledger ] && gcloud storage rsync -r -q ~/snap/ledger $SYNC/ledger >/dev/null 2>&1; sleep 600; done' >/dev/null 2>&1 < /dev/null & echo synced" >/dev/null 2>&1
   SSH "cd ~/snap; VM_NAME=$vm nohup setsid bash tools/vm_run.sh > vm_run.$vm.log 2>&1 < /dev/null & echo started" \
     | grep -q started || { echo "driver-did-not-start" > "$RUN/outcome.$vm"; return 1; }
   # poll for this VM's own VMDONE, bounded by the reaper
