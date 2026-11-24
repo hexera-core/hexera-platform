@@ -144,6 +144,9 @@ class ModelRouter(Protocol):
         job_id: str = "", user_id: str = "",
         parallel_tool_calls: ParallelToolCalls = None,
         on_reasoning: ReasoningSink = None,
+        # Which asking of this question it is, for the decision cache alone - see
+        # CachingModelRouter.call_reviewer_with_tools. "" is the first, and keeps the old key.
+        scope: str = "",
     ) -> ModelRoundResult: ...
 
     # The search summarizer is respond-or-RAISE and calls no tools, but it returns the SAME
@@ -206,10 +209,11 @@ async def call_repair_review_model(
 async def call_reviewer_with_tools(
     messages: Conversation, tools: list[ToolDefinition], job_id: str = "", user_id: str = "",
     parallel_tool_calls: ParallelToolCalls = None, on_reasoning: ReasoningSink = None,
+    scope: str = "",
 ) -> ModelRoundResult:
     return await _r().call_reviewer_with_tools(
         messages=messages, tools=tools, job_id=job_id, user_id=user_id,
-        parallel_tool_calls=parallel_tool_calls, on_reasoning=on_reasoning)
+        parallel_tool_calls=parallel_tool_calls, on_reasoning=on_reasoning, scope=scope)
 
 
 async def call_summarizer_model(messages: Conversation, job_id: str = "") -> ModelRoundResult:

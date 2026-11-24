@@ -143,7 +143,12 @@ async def _run_reviewer(route, label, messages: Conversation, tools: list[ToolDe
 async def call_reviewer_with_tools(messages: Conversation, tools: list[ToolDefinition],
                                    job_id: str = "", user_id: str = "",
                                    parallel_tool_calls: ParallelToolCalls = None,
-                                   on_reasoning: ReasoningSink = None) -> ModelRoundResult:
+                                   on_reasoning: ReasoningSink = None,
+                                   scope: str = "") -> ModelRoundResult:
+    # `scope` is accepted and deliberately unused: it tells the DECISION CACHE which asking of
+    # this question it is, and the question put to the provider is the same either way. It is
+    # declared here so the port's signature is honoured whether or not a cache is installed.
+    del scope
     return await _run_reviewer(rcfg.VISUAL_REVIEWER_ROUTE, "Reviewer", messages, tools,
                                job_id, user_id, parallel_tool_calls, on_reasoning=on_reasoning)
 

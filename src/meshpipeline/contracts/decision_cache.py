@@ -304,11 +304,30 @@ class CachingModelRouter:
             messages=messages, tools=tools, tool_choice=name, job_id=job_id, user_id=user_id)
 
     async def call_reviewer_with_tools(self, messages, tools, job_id="", user_id="",
-                                       parallel_tool_calls=None, on_reasoning=None):
+                                       parallel_tool_calls=None, on_reasoning=None, scope=""):
+        # `scope` IS A CACHE CONCERN AND GOES NOWHERE NEAR THE PROVIDER. A review rerun is the
+        # one place in this product that asks an identical question in order to get a DIFFERENT
+        # answer: the pipeline reruns a review only when it ended with no verdict, and
+        # loop_policy's own note for that says a stalled conversation "is exactly what a fresh
+        # look at the same mesh can get past". Without a scope term the key - {v, step, model,
+        # prompt, inputs, owner} - is byte-identical across reruns, so the fresh look replayed
+        # the stalled one round for round. Measured on job 74bc3e2e: 20 rounds asked of the
+        # model, 40 served from the record, the three conversation.jsonl files sharing one md5,
+        # and both reruns re-saving the same null verdict in 9 and 5 seconds.
+        #
+        # It rides in on tool_choice because that is already hashed into the inputs hash
+        # (decision_key) and because call_intake_model already carries `name` the same way. It
+        # must NOT be appended to `step`: _route_model returns "" for any step outside the four
+        # known names, which would blank the model out of the key and the run record both.
+        #
+        # An empty scope leaves the key exactly as it was, so every record written before this
+        # change still matches a first review.
         return await self._round("reviewer", lambda: self._inner.call_reviewer_with_tools(
             messages=messages, tools=tools, job_id=job_id, user_id=user_id,
             parallel_tool_calls=parallel_tool_calls, on_reasoning=on_reasoning),
-            messages=messages, tools=tools, tool_choice="auto", job_id=job_id, user_id=user_id)
+            messages=messages, tools=tools,
+            tool_choice="auto" if not scope else f"auto|{scope}",
+            job_id=job_id, user_id=user_id)
 
     async def call_repair_review_model(self, messages, job_id="", name="RepairReview"):
         # the CAD-repair review names no owner, so - like every ownerless round - it is asked of

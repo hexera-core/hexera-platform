@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import logging
 import os
@@ -106,6 +107,62 @@ def _with_adjudicated_deviations(brief: str, caveats: list) -> str:
             + ". These measured near-misses are accepted for delivery and will be stated to "
               "the user verbatim - judge the mesh's QUALITY on every axis as normal, but do "
               "not fail the mesh for these deviations themselves.")
+
+
+def _declares(call, name: str) -> bool:
+    """Whether a callable will take `name` at all.
+
+    The same question loop/tracing.accepts_reasoning asks, and for the same reason its comment
+    gives: "asked at each seam that forwards, because the callable one layer down is not the one
+    this layer declares". accepts_reasoning IS _declares(call, "on_reasoning").
+    """
+    try:
+        params = inspect.signature(call).parameters
+    except (TypeError, ValueError):          # a builtin or C callable declares nothing
+        return False
+    return name in params or any(p.kind is inspect.Parameter.VAR_KEYWORD
+                                 for p in params.values())
+
+
+def _reviewer_provider(rerun: int):
+    """The reviewer's model call, told which asking of this question it is.
+
+    A rerun exists to get a DIFFERENT answer about the same mesh - the pipeline reruns a review
+    only when the last one ended with no verdict, and loop_policy's own note for that says a
+    stalled conversation "is exactly what a fresh look at the same mesh can get past". The
+    decision cache keys on {step, model, prompt, inputs, owner}, none of which moves between a
+    review and its rerun, so without a term for WHICH asking it is the fresh look replays the
+    stalled one round for round. Measured on job 74bc3e2e: 20 rounds asked of the model, 40
+    served from the record, all three conversation.jsonl files sharing one md5, both reruns
+    re-saving the same null verdict in 9 and 5 seconds. Nothing the model sees changes here.
+    """
+    target = llm_router.call_reviewer_with_tools
+    if not rerun:
+        # A FIRST REVIEW IS THE PORT ITSELF - the same object, not a wrapper that forwards to it.
+        # It is the overwhelmingly common case and nothing written below can reach it.
+        return target
+    if not _declares(target, "scope"):
+        # Nothing one layer down can tell the askings apart, so there is nothing to tell it: a
+        # provider with no decision cache in front of it answers freshly by construction. Asked
+        # rather than assumed, because what `llm_router.call_reviewer_with_tools` names is
+        # whatever is installed - the caching router in a run, a stand-in under test.
+        return target
+    scope = f"rerun{rerun}"
+
+    async def _call(messages, tools, job_id="", user_id="", **kw):
+        return await target(messages=messages, tools=tools, job_id=job_id, user_id=user_id,
+                            scope=scope, **kw)
+
+    # AND IT WEARS THE TARGET'S SIGNATURE, because provider_round.request asks the callable it
+    # was handed whether it takes the reasoning sink and offers it only if so. A forwarding seam
+    # that declares MORE than the layer below makes the loop offer what that layer cannot take:
+    # an explicit `on_reasoning` parameter here cost 31 reviewer tests, each one a TypeError
+    # raised inside a stand-in written before the sink existed. Wearing the target's own
+    # signature makes the offer exact instead of generous, and leaves nothing for this wrapper
+    # to quietly drop.
+    bound: Any = _call                       # a function object carries no declared __signature__
+    bound.__signature__ = inspect.signature(target)
+    return bound
 
 
 async def node_reviewer(state: PipelineState) -> dict:
@@ -335,7 +392,7 @@ async def node_reviewer(state: PipelineState) -> dict:
             outcome = await run_unified_review(
                 plan=plan, ledger=ledger, runtime=runtime, opening=opening,
                 system_prompt=system_prompt, opening_context_text=review_context,
-                provider_call=llm_router.call_reviewer_with_tools,
+                provider_call=_reviewer_provider(rerun),
                 max_rounds=rcfg.REVIEWER_MAX_ROUNDS, # budget, -capped at pipeline in-loop
                 total_timeout_s=rcfg.REVIEWER_TOTAL_TIMEOUT_SECONDS,
                 pipeline_deadline_epoch=state.get("pipeline_deadline_epoch"),
