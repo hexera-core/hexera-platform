@@ -57,11 +57,13 @@ def part_diagonal(payload: dict, shape: Any) -> float:
 
     Lane C13, measured on dev 263d5e2d5bab: `diagonal_of` is plain `BRepBndLib.Add`, which bounds a B-spline face by
     its CONTROL NET. A located defeature made 7 B-spline faces whose poles sit far outside them: the state's plain
-    diagonal went 441 -> 1237 mm while its optimal box is 446.5 mm, its volume unchanged and the shape valid (Lane A
-    saw 34.66 m, 78x). Every threshold sized from the CURRENT shape inherited that: the zero-volume eps (1e-9 x
-    diag^3) would have been ~41,600 mm3 at 34.66 m - enough to drop a real solid - and the fidelity bounds and the
-    touching test with it. A threshold belongs to the part as it arrived, measured once (where plain and optimal
-    agree within 0-3% on 40 of 42 dev overlap inputs), not re-measured on every state an op produced."""
+    diagonal went 441 -> 1237 mm (2.8x) while its optimal box is 446.5 mm, its volume unchanged and the shape valid.
+    A threshold sized from the CURRENT shape inherits that, and pole distance has no ceiling. At the measured 2.8x the
+    effect is small (the zero-volume eps 1.89 mm3 instead of 0.089; tighten_tolerances' target and the proximity split
+    size 2.8x looser; the fidelity bounds are capped at 0.1 mm on any part over 100 mm), so this is a consistency fix:
+    a threshold belongs to the part as it arrived, measured once (plain and optimal agree within 0-3% on 40 of 42 dev
+    overlap inputs), and must not drift from state to state along a lineage. (An earlier "78x / 34.66 m" figure was
+    retracted by Lane A: it was inferred from a D18 sliver width, never measured.)
     from meshpipeline.cad.repair_v4.units import UNBOUNDED_DIAGONAL_MM
 
     given = payload.get("part_diag_mm")

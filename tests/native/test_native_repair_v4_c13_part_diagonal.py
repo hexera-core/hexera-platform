@@ -1,9 +1,10 @@
 # Responsibility: Lane C13 - an op's relative thresholds read the PART's size, never a state's control-pole box; and
 #                 layer 3 reports the TRUE extent. Measured on dev 263d5e2d5bab: a located defeature made B-spline faces
-#                 whose poles sit far outside them, so plain BRepBndLib.Add said 1237 mm for a 446.5 mm state (Lane A saw
-#                 34.66 m). The zero-volume eps (1e-9 x diag^3) read from such a box drops REAL solids; bbox_ratio read
-#                 from it reports growth that is not there. The fixture here is a 4 mm face on a degree-1 B-spline
-#                 whose poles sit 10 m out: plain box +-10 m, optimal +-2 mm.
+#                 whose poles sit far outside them, so plain BRepBndLib.Add said 1237 mm for a 446.5 mm state (2.8x). A
+#                 threshold read from such a box drifts with pole distance, which has no ceiling; bbox_ratio read from it
+#                 reports growth that is not there. The fixture here exaggerates on purpose: a 4 mm face on a degree-1
+#                 B-spline whose poles sit 10 m out (plain box +-10 m, optimal +-2 mm), so the drift is large enough to
+#                 drop a real solid and the test can see it.
 # Boundaries: the native tier; real OCCT in spawned workers through the ops' own `apply` and layer 3's kernel.
 from __future__ import annotations
 
