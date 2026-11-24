@@ -225,6 +225,8 @@ def test_the_wall_numbers_ride_inside_triage_so_no_row_can_be_refused() -> None:
     assert '"overrun_s": stop.get("overrun_s")' in src, "the overrun must be carried somewhere readable"
     declared = set(report.ArmRow.__dataclass_fields__)
     assert "triage" in declared, "the nesting only works because ArmRow declares triage"
-    for leaked in ("overrun_s", "wall_skipped_candidates"):
+    assert '"early_stop_failed_full": stop.get("early_stop_failed_full")' in src, (
+        "the cost of the early-stop trade must be carried where LEAD-3 can read it")
+    for leaked in ("overrun_s", "wall_skipped_candidates", "early_stopped", "early_stop_failed_full"):
         assert leaked not in declared, (
             f"{leaked} became a top-level row field; either declare it on ArmRow in THIS commit or keep it nested")

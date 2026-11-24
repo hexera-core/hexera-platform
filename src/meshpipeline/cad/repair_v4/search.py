@@ -2082,6 +2082,10 @@ def search(
     n_inconclusive = 0
     n_verdicts = 0
     n_wall_skipped = 0        # A16: candidates not submitted because the wall passed mid-expansion
+    early_stop_on = early_stop_enabled()
+    n_early_stopped = 0       # A18: candidates not submitted because an earlier one passed every cheap member
+    n_early_stop_failed_full = 0   # A18: of those stops, how many were then REFUSED by the full panel
+    early_stop_children: set[str] = set()   # fingerprints of the states an early stop confirmed
 
     with ThreadPoolExecutor(max_workers=max(1, workers)) as executor:
         while reason is None:
@@ -2286,15 +2290,59 @@ def search(
             # The check is the WALL ALONE, never over_budget(): this expansion's ops are RESERVED above
             # (`spent["ops"] += len(to_run)`), so over_budget() reads "ops" here for every candidate of a batch
             # that filled the budget, and skipped all of them - test_respects_wall_and_op_budget applied 0 of 3.
-            futures = []
+            #
+            # A18, THE EARLY STOP: a candidate whose CHEAP verdict passes every cheap member is confirmed before
+            # the rest of its expansion is evaluated. Lane D measured the cost of not doing this (lane-d26): the
+            # mean winning path is 1.6 ops while the mean spend is 19.3 ops and 183 s, at ~9.5 s per evaluated
+            # candidate - a one-op fix pays for a whole expansion of up to k=12 because every candidate was
+            # evaluated before the winner was kept.
+            #
+            # A cheap all-pass is NOT clean: clean needs the FULL panel (`clean_of`), and the full confirm below
+            # still runs. This only stops SUBMITTING more work once a candidate worth confirming exists.
+            #
+            # DETERMINISM, which is the whole difficulty. Candidates are submitted in a FIXED window of `workers`
+            # and reduced by popping the HEAD, so the first all-pass IN SUBMISSION ORDER wins - never the first to
+            # finish. The set evaluated is therefore {0 .. i + window - 1} for an all-pass at index i: a function
+            # of the window and the index, not of which worker was quick. A timing-dependent window (submit
+            # everything, stop when something returns) would let a slow machine evaluate a different set and
+            # reach a different frontier, which is exactly what A16 was careful to avoid.
+            window = max(1, workers)
+            futures: list[Any] = []
+            evaluated = []
             nonlocal_wall_skips = 0
-            for item in to_run:
-                if spent_now()["wall_s"] >= propose_wall_s:
-                    nonlocal_wall_skips += 1
-                    continue
-                futures.append(executor.submit(evaluate, item))
+            early_stop = False
+            early_stop_child: Any = None
+            pos = 0
+            #: the generators this expansion drew from, and the ones that have had a candidate evaluated. The
+            #: stop may not fire until EVERY contributing generator has been heard from at least once (LEAD-3's
+            #: option (1)): otherwise a det candidate that all-passes ends an expansion whose AI candidate was
+            #: never evaluated, which is what `test_the_search_ai_arm_reaches_the_ai_proposer...` exists to refuse.
+            contributing = {gi for gi, _c in to_run}
+            heard = set()
+            while pos < len(to_run) or futures:
+                while (not early_stop and pos < len(to_run) and len(futures) < window
+                       and spent_now()["wall_s"] < propose_wall_s):
+                    futures.append(executor.submit(evaluate, to_run[pos]))
+                    pos += 1
+                if not futures:
+                    break                      # nothing in flight and nothing may start: the wall or the stop
+                out = futures.pop(0).result()  # THE HEAD: submission order, never completion order
+                evaluated.append(out)
+                heard.add(getattr(out, "gen", None))
+                if (early_stop_on and not early_stop and heard >= contributing
+                        and _cheap_all_pass(out) and _not_worse_than_seen(out, evaluated)):
+                    early_stop = True
+                    early_stop_child = out
+            # whatever was never submitted: the wall stopped it, or the early stop did
+            not_submitted = len(to_run) - pos
+            if early_stop:
+                n_early_stopped += not_submitted
+            else:
+                nonlocal_wall_skips += not_submitted
             n_wall_skipped += nonlocal_wall_skips
-            evaluated = [f.result() for f in futures]
+            # REFUND the reservation for candidates that never ran. One op per candidate was reserved above for
+            # the whole batch; work not done must not be charged, or the op budget pays for the early stop.
+            spent["ops"] -= not_submitted
             # THE BUDGET IS CHARGED PER APPLIED OP (Task 53). A candidate that applied k ops costs k, for
             # every generator: a `run_stage` macro whose body is a chain (shells = sew + make_volume) must not
             # buy k ops of geometry for the price of one, or `search_ai - search_det` measures routing rather
@@ -2331,6 +2379,10 @@ def search(
                     out.ws, out.verdict, out.score, "cheap", state.depth + 1, state.id, _via(out.candidate),
                     state.site_registry,
                 )
+                if early_stop_child is not None and out is early_stop_child:
+                    # A18: remember WHICH child ended its expansion early, so the confirm below can record
+                    # whether the full panel then refused it - the cost of the trade, measured per row.
+                    early_stop_children.add(child.id)
                 child.cheap_score = child.score
                 child.rank = _estimate(state, child.score)
                 child.ops_applied = out.applied
@@ -2377,6 +2429,11 @@ def search(
                     trace.record("confirm_error", state=child.id, error=f"{type(exc).__name__}: {exc}")
                     continue
                 cheap_score = child.score
+                if early_stop_children and child.id in early_stop_children and not bool(
+                        getattr(full, "clean", False)):
+                    # THE COST OF THE TRADE, measured: this candidate ended its expansion on a cheap all-pass and
+                    # the full panel then refused it, so the siblings never evaluated were given up for nothing.
+                    n_early_stop_failed_full += 1
                 if bool(getattr(full, "clean", False)):
                     # An AIMED repair that actually cleaned the file, counted on the state that PROPOSED it (its
                     # parent): `AimedProgress.exhausted` must be false for a lineage whose aimed work succeeded.
@@ -2489,6 +2546,8 @@ def search(
         # last in-flight call carried the file, which is the number the harness used to have to infer from a row.
         overrun_s=round(max(0.0, spent_now()["wall_s"] - propose_wall_s), 2),
         wall_skipped_candidates=n_wall_skipped,
+        early_stopped_candidates=n_early_stopped,
+        early_stop_failed_full=n_early_stop_failed_full,
         ai_capped=ai_capped,
         ai_stop_reason=ai_stop_reason,
         ai=ai_results,
@@ -2564,6 +2623,101 @@ def _op_seconds(out: Any) -> float | None:
     seconds = [getattr(d, "seconds", None) for d in diffs]
     measured = [float(x) for x in seconds if isinstance(x, (int, float))]
     return round(sum(measured), 3) if measured else None
+
+
+def early_stop_enabled() -> bool:
+    """CRS_V4_EARLY_STOP: may an expansion stop submitting once a candidate passes every cheap member?
+    DEFAULT OFF (LEAD-3's ruling, 2026-11-24), and it must not be defaulted ON without re-ruling.
+
+    WHAT IT TRADES. Wall for "the best candidate in an expansion". With it on, the first candidate that passes
+    every cheap member - and is no worse than any already evaluated, and comes after every generator has been
+    heard from once - ends its expansion, so a BETTER SIBLING LATER IN SUBMISSION ORDER IS NEVER EVALUATED. No
+    condition on the stopping candidate can protect a sibling that has not run; that is why this is a flag and
+    not a fix.
+    THE PRIZE, measured by lane D (lane-d26): the mean winning path is 1.6 ops while the mean spend is 19.3 ops
+    and 183 s of search, at ~9.5 s per evaluated candidate - a one-op fix pays for a whole expansion of up to
+    k=12.
+    THE RISK, against the owner's one hard constraint of no loss of clean count: losing a better sibling is
+    exactly how an early stop costs a clean file, so the trade must be MEASURED - one wave with the flag on
+    against a wave at the same tip, clean/file and wall/file side by side - before anyone argues it.
+
+    WHAT IT WOULD BREAK IF DEFAULTED ON, by name, so whoever flips it reads these two first. Both encode the
+    general guarantee that the search keeps the best candidate it was offered in an expansion, and both lose a
+    better sibling to an earlier all-pass:
+      * tests/unit/cad/repair_v4/test_search_wiring.py::
+          test_the_search_ai_arm_reaches_the_ai_proposer_and_the_search_det_arm_cannot
+        - an AI candidate at quality 3 is never evaluated after a det candidate all-passes at quality 1.
+      * tests/unit/cad/repair_v4/test_search_wiring.py::
+          test_an_inconclusive_child_verdict_does_not_abort_the_branch_and_is_retried_once
+        - SINGLE generator, so option (1) does not save it: q=1 turns conclusive on its retry, all-passes, and
+          the clean q=3 the test asserts as best is never evaluated.
+    A third, `test_a_mixed_search_reports_both_counts_and_is_not_infrastructure_failed`, changes only a COUNT
+    (inconclusive candidates that never ran), which would be legitimate to update - the two above would not.
+    """
+    import os
+
+    return os.environ.get("CRS_V4_EARLY_STOP", "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _not_worse_than_seen(out: Any, evaluated: Any) -> bool:
+    """LEAD-3's ruling (2): the early stop only fires on a candidate at least as good, BY THE SAME SCORE, as every
+    candidate already evaluated in this expansion.
+
+    Without it the search could stop on a cheap all-pass that is WORSE than a sibling it had already seen and
+    keep the worse state - caught by
+    `test_search_wiring::test_the_search_ai_arm_reaches_the_ai_proposer_and_the_search_det_arm_cannot`, where a det
+    all-pass at quality 1 ended an expansion whose AI candidate was quality 3.
+
+    THE RESIDUAL THIS DOES NOT REMOVE, and it is honest to name it: a BETTER sibling LATER in submission order is
+    never evaluated, because the whole point is not to evaluate the rest. The trade is measured rather than
+    argued - the row carries how often the stop fired and how often the stopped candidate then failed the full
+    panel (`early_stopped_candidates`, `early_stop_failed_full`).
+    """
+    mine = getattr(out, "score", None)
+    if mine is None:
+        return False
+    others = [o for o in evaluated if o is not out]
+    seen = [o.score for o in others if getattr(o, "score", None) is not None]
+    if not all(mine >= other for other in seen):
+        return False
+    # THE PANEL-SIZE CLAUSE, AND WHY IT IS HERE DESPITE BEING A NO-OP IN PRODUCTION. Do not delete it.
+    #
+    # `_cheap_all_pass` asks a candidate about ITSELF - did every member of ITS panel pass? - and carries no
+    # notion of "all passed, OF THE SAME SET its siblings were judged by". In the engine that distinction is
+    # invisible: the cheap member set is fixed per file (`default_members("cheap")` plus whatever
+    # `adaptive_cheap_members` adds from the START state), so every sibling is judged by the same members and
+    # this clause can never bind.
+    #
+    # `tests/unit/cad/repair_v4/test_search_wiring.py` is where it DOES bind, and the reason the clause exists:
+    # its `make_verdict(q)` encodes quality as the NUMBER of passing members, so a q=1 candidate has a
+    # one-member all-passing panel and reads as "passed everything". Without this clause the early stop fired on
+    # the first candidate of every expansion in that world and
+    # `test_the_search_ai_arm_reaches_the_ai_proposer_and_the_search_det_arm_cannot` kept quality 1 while the
+    # AI's quality 3 was never evaluated - the test exists to prove the AI's candidate reaches the frontier, so
+    # the failure was the rule's gap and not the fixture's fault (LEAD-3's ruling (B), 2026-11-24).
+    #
+    # A rule that reads "all passed" without reference to how much it was judged by is locally true and
+    # meaningless against its siblings - the same shape as a clipped panel calling a geometric fail
+    # inconclusive.
+    biggest = max((len(getattr(getattr(o, "verdict", None), "panel", None) or ()) for o in others), default=0)
+    return len(getattr(getattr(out, "verdict", None), "panel", None) or ()) >= biggest
+
+
+def _cheap_all_pass(out: Any) -> bool:
+    """Did this candidate's CHEAP verdict pass every cheap member it ran?
+
+    The A18 early stop's condition, and deliberately NOT "is it clean": clean needs the full panel
+    (`assemble.clean_of`), so this says only "worth confirming now". An inconclusive verdict says nothing about
+    the part and never qualifies; nor does a candidate that did not apply (`kind != "ok"`), or an empty panel,
+    which would make "every member passed" vacuously true.
+    """
+    if getattr(out, "kind", None) != "ok":
+        return False
+    verdict = getattr(out, "verdict", None)
+    panel = list(getattr(verdict, "panel", None) or ())
+    if not panel or getattr(verdict, "inconclusive", False):
+        return False
+    return all(getattr(r, "status", "fail") == "pass" for r in panel)
 
 
 def _record_candidate(trace: Trace, state: SearchState, c: Candidate, outcome: str, **extra: Any) -> None:

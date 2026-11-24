@@ -638,7 +638,14 @@ def search_triage(result: Any, generators: Any) -> dict[str, Any]:
                      # field refuses the WHOLE row after the repair work is paid for (LEAD-3's standing rule, and
                      # the two waves it cost). Nesting needs no ArmRow change and cannot refuse a row.
                      "overrun_s": stop.get("overrun_s"),
-                     "wall_skipped_candidates": stop.get("wall_skipped_candidates")},
+                     "wall_skipped_candidates": stop.get("wall_skipped_candidates"),
+                     # A18: the early stop's two numbers, and they read 0 with CRS_V4_EARLY_STOP off (the
+                     # default). `early_stopped` is how much work the stop skipped; `early_stop_failed_full` is
+                     # THE COST OF THE TRADE - how often the candidate that ended its expansion was then refused
+                     # by the full panel, so the siblings never evaluated were given up for nothing. Nested in
+                     # `triage` rather than promoted to row fields, per the ArmRow rule.
+                     "early_stopped": stop.get("early_stopped_candidates"),
+                     "early_stop_failed_full": stop.get("early_stop_failed_full")},
             "open_sites": dict(Counter(str(s.get("kind")) for s in at.get("sites") or [])), "open_sites_at": where,
             "ops": ops, "not_proposed": _top(skipped), "ai": ai, "deltas": deltas, "deltas_total": len(evaluated),
             "sites_by_placement": _placement(at.get("sites") or [])}
