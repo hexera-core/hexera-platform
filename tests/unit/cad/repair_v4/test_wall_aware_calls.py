@@ -202,3 +202,18 @@ def test_an_expired_deadline_returns_early_and_sets_nothing(monkeypatch, tmp_pat
                        deadline_s=time.monotonic() - 1.0)
     assert out.verdict_summary.get("reason") == "deadline_expired"
     assert wall.file_deadline() is None
+
+
+def test_the_op_s_own_seconds_reach_the_row_so_a_worst_case_can_be_measured() -> None:
+    """A16 item (1) needs per-op worst cases, and no stored row carried them: a candidate event had only the
+    BATCH's timestamp, shared by every candidate in it. The kernel already measures each op (`Diff.seconds`); it
+    was simply not written down. Summed, because a `run_stage` macro applies a chain."""
+    from types import SimpleNamespace as NS
+
+    from meshpipeline.cad.repair_v4.search import _op_seconds
+
+    assert _op_seconds(NS(diffs=[NS(seconds=1.25)])) == 1.25
+    assert _op_seconds(NS(diffs=[NS(seconds=1.5), NS(seconds=2.25)])) == 3.75   # a chain pays for every link
+    assert _op_seconds(NS(diffs=[])) is None                                     # applied nothing, measured nothing
+    assert _op_seconds(NS()) is None
+    assert _op_seconds(NS(diffs=[NS(seconds=None), NS(seconds=0.5)])) == 0.5     # an unmeasured link is skipped

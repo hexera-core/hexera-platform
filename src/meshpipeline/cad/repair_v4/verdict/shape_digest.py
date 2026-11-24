@@ -60,7 +60,22 @@ def geometry_key(shape: Any) -> str:
     It does NOT carry tolerances or orientation flags. Measured on v4's stored states (C16): per solid it survives one
     round trip 290/311 times (the digest 109/311); of 48 parent->child edits that changed the digest, 33 kept the key,
     all `orient_and_close` with identical max tolerances and reversed-face counts, and layer 1's full `check_shape`
-    gave the IDENTICAL result on both sides of all 33. A memo whose result reads tolerances must add them itself."""
+    gave the IDENTICAL result on both sides of all 33. A memo whose result reads tolerances must add them itself.
+
+    COINCIDENT DUPLICATE BODIES SHARE A KEY, BY DESIGN, and a memo keyed on this must expect it. The key carries each
+    solid's centre of mass, so two solids with one key are the same geometry in the same place - a duplicate body.
+    Measured on Lane C's 1,391-state corpus (A17): on the worst state 11 solids give 8 distinct keys, and its 55
+    candidate solid PAIRS collapse to 29 keys, so `valid_kernel.OVERLAP_PAIRS` serves one pair's stored decision to
+    its twin. That is correct for the DECISION - a pair of coincident twins is the same geometric question - and it
+    makes a `body_overlap` finding's `detail.volume` / `detail.thickness` NOT BIT-REPRODUCIBLE across a memo
+    boundary: they come from whichever twin pair was computed first. Measured drift on 12 of 1,391 states, all
+    within 1e-9 relative, with every code, entity list and finding count identical.
+
+    THAT IS SAFE ONLY WHILE NOTHING DECIDES ON THOSE MAGNITUDES. It is not that nothing reads a magnitude - B24's
+    `search_seq` derives parameters from a defect's measurement - but it reads the SITE GRAPH's numbers (`sites`:
+    a node's area and min_width, a clash's dist_mm, diagonal_mm), not a `check_shape` finding's detail. IF ANY
+    FUTURE CODE MAKES A DECISION, GATE, SCORE OR OP PARAMETER OUT OF `detail.volume` OR `detail.thickness`, THE
+    PAIR MEMO MUST BE REVISITED (LEAD-3's condition, 2026-11-24)."""
     from OCP.Bnd import Bnd_Box
     from OCP.BRepAdaptor import BRepAdaptor_Surface
     from OCP.BRepBndLib import BRepBndLib

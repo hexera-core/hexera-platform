@@ -2213,7 +2213,7 @@ def search(
                 if out.kind == "inconclusive":
                     n_inconclusive += 1
                     _record_candidate(trace, state, out.candidate, "inconclusive", errors=out.errors,
-                                      ops_applied=out.applied)
+                                      ops_applied=out.applied, op_seconds=_op_seconds(out))
                     continue  # not a rejection and no fate: the generator is not told its candidate failed
                 if out.kind != "ok":
                     if out.kind == "declined" and any("no_change" in str(e) for e in out.errors or ()):
@@ -2228,7 +2228,7 @@ def search(
                 fp = _fingerprint(out.ws)
                 if fp in seen:
                     _record_candidate(trace, state, out.candidate, "duplicate", score=out.score,
-                                      ops_applied=out.applied)
+                                      ops_applied=out.applied, op_seconds=_op_seconds(out))
                     fates.append((out.gen, out, None, True))
                     continue
                 seen.add(fp)
@@ -2245,6 +2245,7 @@ def search(
                     out.candidate,
                     "evaluated",
                     child=child.id,
+                    op_seconds=_op_seconds(out),
                     score=child.score,
                     parent_score=state.score,
                     rank=child.rank,
@@ -2446,6 +2447,21 @@ def _carry_site_ids(state: SearchState, trace: Trace) -> SiteRegistry:
 
 def _via(c: Candidate) -> dict:
     return {"op": c.op, "targets": c.targets, "params": c.params, "source": c.source, "rationale": c.rationale}
+
+
+def _op_seconds(out: Any) -> float | None:
+    """How long the OP ITSELF took for this candidate, from the kernel's own `Diff.seconds` - summed, because a
+    `run_stage` macro applies a chain and each link reports its own.
+
+    A16 item (1) wants no OP started whose worst case is past the wall, and nothing could say what an op's worst
+    case IS: the candidate events carried only the batch's timestamp `t`, shared by every candidate in the batch,
+    so a per-op distribution could not be derived from any stored row. The number was already measured by the
+    kernel and simply not written down. None when the candidate applied nothing.
+    """
+    diffs = getattr(out, "diffs", None) or ()
+    seconds = [getattr(d, "seconds", None) for d in diffs]
+    measured = [float(x) for x in seconds if isinstance(x, (int, float))]
+    return round(sum(measured), 3) if measured else None
 
 
 def _record_candidate(trace: Trace, state: SearchState, c: Candidate, outcome: str, **extra: Any) -> None:

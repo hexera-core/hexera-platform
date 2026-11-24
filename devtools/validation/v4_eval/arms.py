@@ -619,7 +619,14 @@ def search_triage(result: Any, generators: Any) -> dict[str, Any]:
             "verdicts_saved": int(getattr(result, "verdicts_saved", 0) or 0),
             "stop": {"reason": stop.get("reason"), "ended_by": stop.get("ended_by"), "spent": stop.get("spent"),
                      # D9: how often the model was asked again on an empty frontier (0 for search_det, always)
-                     "reprompts": len(trace.of_kind("reprompt"))},
+                     "reprompts": len(trace.of_kind("reprompt")),
+                     # A16: how far past its wall the file actually ran, and how many candidates were not started
+                     # because the wall passed mid-expansion. INSIDE `triage`, which ArmRow declares as one dict,
+                     # rather than as new top-level row fields: report.load builds ArmRow(**row), so an undeclared
+                     # field refuses the WHOLE row after the repair work is paid for (LEAD-3's standing rule, and
+                     # the two waves it cost). Nesting needs no ArmRow change and cannot refuse a row.
+                     "overrun_s": stop.get("overrun_s"),
+                     "wall_skipped_candidates": stop.get("wall_skipped_candidates")},
             "open_sites": dict(Counter(str(s.get("kind")) for s in at.get("sites") or [])), "open_sites_at": where,
             "ops": ops, "not_proposed": _top(skipped), "ai": ai, "deltas": deltas, "deltas_total": len(evaluated),
             "sites_by_placement": _placement(at.get("sites") or [])}
