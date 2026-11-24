@@ -42,23 +42,31 @@ def _clean(valid: Any, passes: Any, size: Any) -> bool:
     return bool(valid) and passes is not None and size is not None and int(passes) == int(size)
 
 
-def read_rows(root: Path) -> list[dict]:
+def read_rows(root: Path) -> tuple[list[dict], list[str]]:
+    """Every shard's rows, and the shards that are still STREAMING.
+
+    A finished shard writes `rows.jsonl` / `rows.json`; a running one streams `rows.partial.jsonl` per file, so a
+    wave in flight can be re-scored early (the lead would rather have a provisional table now). The final file wins
+    where both exist, and the partial shards are named so the table can say what it is."""
     rows: list[dict] = []
+    partial: list[str] = []
     for shard in sorted(root.glob("shard-*")):
-        one = shard / "rows.jsonl"
-        many = shard / "rows.json"
+        one, many, streaming = shard / "rows.jsonl", shard / "rows.json", shard / "rows.partial.jsonl"
         if one.is_file():
             rows += [json.loads(line) for line in one.read_text().splitlines() if line.strip()]
         elif many.is_file():
             rows += json.loads(many.read_text())
+        elif streaming.is_file():
+            rows += [json.loads(line) for line in streaming.read_text().splitlines() if line.strip()]
+            partial.append(shard.name)
     if not rows:
         raise RescoreRefused(f"no rows under {root}")
-    return rows
+    return rows, sorted(partial)
 
 
 def rescore(root: Path | str, *, arms: Sequence[str] | None = None) -> dict[str, Any]:
     """Both numbers per arm, and the files the decision moved."""
-    rows = read_rows(Path(root))
+    rows, partial = read_rows(Path(root))
     for r in rows:
         missing = [k for k in REQUIRED if r.get(k) is None]
         if missing and not r.get("inconclusive"):
@@ -85,7 +93,8 @@ def rescore(root: Path | str, *, arms: Sequence[str] | None = None) -> dict[str,
             "no_longer_clean": [{"name": r["name"], "sha256": r["sha256"]} for r in lost],
             "gaming": _gaming(new),
         }
-    return {"definition": "clean = valid + panel (owner decision 2026-11-24)", "rows": len(rows), "arms": out}
+    return {"definition": "clean = valid + panel (owner decision 2026-11-24)", "rows": len(rows), "arms": out,
+            "partial": bool(partial), "partial_shards": partial}
 
 
 def _why(row: Mapping[str, Any]) -> str:
@@ -122,8 +131,14 @@ def _gaming(clean_rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
 
 def render(out: Mapping[str, Any], *, title: str, source: str) -> str:
     """The table, labelled for what it is."""
-    lines = [f"# {title}: RE-SCORE under clean = valid + panel",
-             "",
+    lines = [f"# {title}: RE-SCORE under clean = valid + panel"
+             + (" (PROVISIONAL, PARTIAL WAVE)" if out.get("partial") else ""),
+             ""]
+    if out.get("partial"):
+        lines += [f"**PROVISIONAL: the wave is still running.** {len(out['partial_shards'])} shard(s) are streaming "
+                  f"their rows ({', '.join(out['partial_shards'])}), so the counts below cover only the files those "
+                  "shards have finished so far and will grow. Re-run this when the wave completes.", ""]
+    lines += [
              f"**This is a RE-SCORE of an existing run, not a re-run.** Source rows: `{source}`. Every number below "
              f"comes from a layer those rows already recorded ({out['rows']} rows); no checker, mesher or model ran, "
              "and no geometry was measured again.",
