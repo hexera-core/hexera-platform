@@ -17,9 +17,10 @@ try:
 except Exception:  # noqa: BLE001
     pytest.skip("OCP not available", allow_module_level=True)
 
+from tests.unit.cad.test_scout import _prepared
+
 from meshpipeline.cad.cad_tessellate import tessellate_internal
 from meshpipeline.engines.port_binding import declaration_targets
-from tests.unit.cad.test_scout import _prepared
 
 
 def _write(shape, path: Path) -> Path:

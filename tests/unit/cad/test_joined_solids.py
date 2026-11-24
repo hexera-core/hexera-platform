@@ -92,8 +92,9 @@ def test_a_fluid_domain_in_regions_reads_as_the_fluid_with_its_two_ends(tmp_path
 
 def test_the_regions_read_one_by_one_hide_their_ends(tmp_path):
     """The parts read as they are (before INS-11): no flat end reads as a mouth."""
-    from meshpipeline.cad.scout import scout_cad
     from tests.unit.cad.test_scout import _prepared
+
+    from meshpipeline.cad.scout import scout_cad
 
     path = _regions(tmp_path / "regions.step")
     r = scout_cad(path, prepared=_prepared(path))
