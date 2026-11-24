@@ -1,0 +1,37 @@
+{
+ "file": "e6368ff7_00611852_673cbf4282be88b3374992cb_step_008.step",
+ "states": [
+  {
+   "state": "input",
+   "members": {
+    "gmsh_prod": {
+     "status": "pass",
+     "error_kind": null,
+     "min_sicn": 0.03808967452884232,
+     "seconds": 0.27
+    },
+    "gmsh_default": {
+     "status": "pass",
+     "error_kind": null,
+     "min_sicn": 0.03912879046178162,
+     "seconds": 0.21
+    },
+    "gmsh_alt": {
+     "status": "fail",
+     "error_kind": "low_quality",
+     "min_sicn": 0.004168410106909501,
+     "seconds": 0.29
+    },
+    "netgen_occ": {
+     "status": "pass",
+     "error_kind": null,
+     "min_sicn": 0.05630649408993774,
+     "seconds": 0.38
+    }
+   },
+   "valid": true,
+   "faithful": true,
+   "full_clean": false
+  }
+ ]
+}

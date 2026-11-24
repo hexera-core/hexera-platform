@@ -106,12 +106,22 @@ def _panel_module() -> Any:
 
 
 def default_members(tier: Literal["cheap", "full"]) -> list[Any]:
-    """Cheap: GmshDefault only, deliberately. Full: the four-mesher panel the clean-STEP definition
-    names - gmsh prod FEA, gmsh defaults, gmsh alt and Netgen-via-OCC. Netgen is the only non-gmsh
-    member, so it is what makes a full verdict mesher-agnostic."""
+    """Cheap: GmshDefault and GmshProd. Full: the four-mesher panel the clean-STEP definition names - gmsh prod FEA,
+    gmsh defaults, gmsh alt and Netgen-via-OCC. Netgen is the only non-gmsh member, so it is what makes a full verdict
+    mesher-agnostic.
+
+    WHY GmshProd IS IN THE CHEAP TIER (lane B8). The cheap tier ranks search states and judges each staged-healer
+    transaction. With GmshDefault alone it was blind to the member that failed most: in snapshot v1, 11 of 11 search
+    states it passed failed the full panel, every one on gmsh_prod alone (low_quality at min SICN < 0.01, or HXT 3D
+    failing outright). Re-judged natively, layer 1 + GmshDefault agreed with the full panel on 6 of 22 states, and
+    with GmshProd added on 21 of 22; on v1's 38 inputs, 35 of 38 against 38 of 38. Neither Netgen nor GmshAlt
+    would have caught one of them, and no GmshDefault SICN threshold separates them (GmshProd fails where
+    GmshDefault reads 0.178 and passes where it reads 0.021). Cost: GmshProd's own meshing, ~1.1 s mean and 2.8 s
+    worst on those states, against ~0.3 s for GmshDefault and ~4.7 s for the four members of a full verdict.
+    The members are the FULL panel's own, configured identically, so a cheap failure is always a full failure."""
     members = importlib.import_module("meshpipeline.cad.repair_v4.verdict.gmsh_members")
     if tier == "cheap":
-        return [members.GmshDefault()]
+        return [members.GmshDefault(), members.GmshProd()]
     netgen = importlib.import_module("meshpipeline.cad.repair_v4.verdict.netgen_member")
     return [members.GmshProd(), members.GmshDefault(), members.GmshAlt(), netgen.NetgenOCC()]
 
@@ -218,7 +228,8 @@ def cheap_verdict(
     run_panel: PanelRunner | None = None,
     original_units: str | None = None,
 ) -> Verdict:
-    """Layer 1, `GmshDefault` only, and layer 3. For the search's inner loop; never `clean`."""
+    """Layer 1, the cheap members (`GmshDefault`, `GmshProd`; `default_members("cheap")`) and layer 3. For the
+    search's inner loop and the staged healer's transactions; never `clean`."""
     return _assemble(pool, step, original, declared or Declared(), "cheap", members, cache, run_panel, original_units)
 
 
