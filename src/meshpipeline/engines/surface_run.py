@@ -667,9 +667,20 @@ def closed_skin_no_wall(record: dict | None) -> bool:
                                 for b in bodies)
 
 
-def closed_skin_check(ws: Path) -> bool:
+#: TIME-10 (rulebook 77): THE CLOSED-SKIN CHECK STOPS AT THIS MANY SECONDS. It runs the whole mid-surface extraction
+#: before any meshing starts, and the shell run extracts again after it with its own limit: a public 1,220-face IGES
+#: cover kept it 1,968 s, to the extraction's own 1,800 s limit, and the answer was "not a skin". Stopped, the file is
+#: not read as a skin: it goes on to the shell run as the solid its surfaces close round, and the run says so
+CLOSED_SKIN_LIMIT_S = 300.0
+CLOSED_SKIN_UNFINISHED = ("The check of whether your file's surfaces are only a skin, with no wall inside, did not "
+                          f"finish in {CLOSED_SKIN_LIMIT_S / 60:g} minutes, so they are meshed as the solid they close "
+                          "round. The mesh goes ahead.")
+
+
+def closed_skin_check(ws: Path, told: dict | None = None) -> bool:
     """SURF-14: the staged solid (made from the file's closed surfaces, MESH-1) read by the mid-surface extraction
-    alone, in a process of its own: True when no body has a wall a shell could stand for."""
+    alone, in a process of its own: True when no body has a wall a shell could stand for. TIME-10: the extraction is
+    stopped at CLOSED_SKIN_LIMIT_S; it is then False and `told` (when given) gets "unfinished"."""
     from meshpipeline.cad import midsurface as ms
     from meshpipeline.engines.fea_driver import staged_mm_per_unit
     from meshpipeline.engines.fea_plan import STAGED_SOLIDS
@@ -678,10 +689,16 @@ def closed_skin_check(ws: Path) -> bool:
     if step is None:
         return False
     try:
-        return closed_skin_no_wall(ms.extract_file(step, None, mm_per_unit=staged_mm_per_unit(step)))
+        record = ms.extract_file(step, None, mm_per_unit=staged_mm_per_unit(step), deadline_s=CLOSED_SKIN_LIMIT_S)
     except Exception as exc:  # noqa: BLE001 - read as before: the solid route
         logger.warning("surface run: the closed skin could not be read (%s)", type(exc).__name__)
         return False
+    stopped = f"ran past {CLOSED_SKIN_LIMIT_S:.0f} s and was stopped"
+    if any(stopped in str(b.get("why") or "") for b in (record or {}).get("bodies") or []):
+        if told is not None:
+            told["unfinished"] = CLOSED_SKIN_LIMIT_S
+        return False
+    return closed_skin_no_wall(record)
 
 
 def closed_skin_words(rec: dict | None) -> str:
@@ -871,6 +888,6 @@ if __name__ == "__main__":
     raise SystemExit(main())
 
 
-__all__ = ["GATE", "NO_THICKNESS", "NO_THICKNESS_YET", "READING", "SIZING_AGAIN", "SIZING_DIVISIONS", "clean_words",
+__all__ = ["CLOSED_SKIN_LIMIT_S", "CLOSED_SKIN_UNFINISHED", "GATE", "NO_THICKNESS", "NO_THICKNESS_YET", "READING", "SIZING_AGAIN", "SIZING_DIVISIONS", "clean_words",
            "closed_skin_check", "closed_skin_no_wall", "closed_skin_words", "deck_notes", "gap_words", "is_surface", "line", "main", "read", "requirements_in", "run", "said_shell",
            "sizing_wall", "stitch_for", "surface_pass", "thickness_for", "words"]
