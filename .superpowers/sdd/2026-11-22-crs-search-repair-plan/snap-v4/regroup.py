@@ -234,7 +234,12 @@ def merge_split(out: Path, splits: Path, split: str, groups: dict, prefix: str,
                 **({"wall_seconds": round(max(walls), 1)} if walls else {}),
                 "groups": {g: {"wave_id": groups[g]["wave_id"], "n_shards": len(loaded[g]),
                                "shards": source[g],
-                               "per_shard": [{k: s["prov"].get(k) for k in PER_GROUP} for s in loaded[g]]}
+                               "per_shard": [{k: s["prov"].get(k) for k in PER_GROUP} for s in loaded[g]],
+                               # lane C13 (LEAD-3): each ORIGINAL shard's model spend from its own rows, in shard
+                               # order. A merged shard pools AI rows from several original shards, so the report binds
+                               # the spend per ORIGINAL shard against the slice its ledger actually had.
+                               "shard_spend_usd": [round(sum(float(r.get("model_usd") or 0.0) for r in s["rows"]), 6)
+                                                   for s in loaded[g]]}
                            for g in sorted(loaded)}}
         d.joinpath("PROVENANCE.json").write_text(json.dumps(prov, indent=1, sort_keys=True, default=str) + "\n")
     return {"split": split, "merged_dir": dest_root.name, "wave_id": merged_wave_id, "ledger": ledger_value,
