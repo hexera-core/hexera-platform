@@ -103,6 +103,45 @@ async def test_erasure_removes_the_person_and_keeps_the_ledger(db):
         await privacy_service.request_erasure(db, owner_id=email, organization_id=str(org_id))
 
 
+async def test_attached_files_are_exported_then_their_names_go_and_the_sweep_deletes_them(db):
+    from meshpipeline.application import chat_attachments as ca
+    from meshpipeline.application import privacy_service
+    from meshpipeline.persistence.models import ChatSession
+
+    email, org_id, _, _ = await _owner(db)
+    session = (await db.execute(select(ChatSession)
+                                .where(ChatSession.organization_id == org_id))).scalar_one()
+    aid = "e" * 16
+    file_key = ca.object_key(session.id, aid, "file")
+    session.attachments = {aid: {"kind": "image", "name": "bearing bore.png", "mime": "image/png",
+                                 "bytes": 10, "object_key": file_key, "sha256": "0" * 64}}
+    await db.commit()
+
+    exported = await privacy_service.export_account(db, owner_id=email, organization_id=str(org_id))
+    assert [f["name"] for f in exported["attached_files"]] == ["bearing bore.png"]
+
+    await privacy_service.request_erasure(db, owner_id=email, organization_id=str(org_id))
+    await db.commit()
+    await db.refresh(session)
+    assert session.attachments == {aid: {"object_key": file_key}}
+
+    class _Store:
+        gone: list = []
+
+        def exists(self, *, object_key):
+            return object_key == file_key
+
+        def get_bytes(self, *, object_key):
+            raise FileNotFoundError(object_key)
+
+        def delete_object(self, *, object_key):
+            self.gone.append(object_key)
+
+    store = _Store()
+    result = await privacy_service.sweep_erasures(db, store, limit=1000)
+    assert result["failed"] == 0 and store.gone == [file_key]
+
+
 async def test_the_sweep_marks_an_erasure_complete(db):
     from meshpipeline.application import privacy_service
     from meshpipeline.persistence.models import ChatSession, Organization

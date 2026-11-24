@@ -320,6 +320,30 @@ def object_keys(session: Any) -> list[str]:
     return keys
 
 
+#: what an erased account's index keeps of each file: only where its bytes are, for the sweep to delete them
+_ERASED_KEEPS = ("object_key", "text_key")
+
+
+def erased_index(index: Any) -> dict | None:
+    """The index as the erasure request leaves it (application/privacy_service): each entry only its object keys -
+    the names the user gave their files go with everything else they wrote; the keys stay until the sweep
+    deletes the bytes by them (the object store cannot list a session's keys). None with no files."""
+    if not isinstance(index, Mapping) or not index:
+        return None
+    return {str(aid): {k: e[k] for k in _ERASED_KEEPS if e.get(k)} for aid, e in index.items()
+            if isinstance(e, Mapping)}
+
+
+def exported(index: Any) -> list[dict]:
+    """The files of one session's index as the account export lists them: the public row and when it was
+    attached - never the bytes or the read text (each file downloads from its own route while the account is
+    active)."""
+    if not isinstance(index, Mapping):
+        return []
+    return [{**public(str(aid), e), **({"at": e["at"]} if e.get("at") else {})} for aid, e in index.items()
+            if isinstance(e, Mapping) and _ID.match(str(aid))]
+
+
 def stored(session: Any, attachment_id: str) -> dict | None:
     """The index entry of one attachment this session holds, or None."""
     entry = index_of(session).get(str(attachment_id or ""))
