@@ -58,6 +58,30 @@ def _box(shape):
     return box
 
 
+def _positive(solid) -> tuple[Any, float]:
+    """`solid` with its volume POSITIVE, and that volume. ORIENTATION IS NOT GEOMETRY: a solid whose faces point
+    inward encloses the same point set, and `GProp` reports its volume negative.
+
+    WHY THIS IS NOT COSMETIC (lane C20, on 0051_00510567): `BRepAlgoAPI_Common` against an INSIDE-OUT solid
+    returns its COMPLEMENT, so everything OUTSIDE the inverted solid counted as kept. The delivered BREP of that
+    part holds a -13.461 mm3 solid, and B22 read `part_kept` 0.697 for a delivery holding 0.07% of the part - it
+    refused the file only because four other bodies happened to fall wholly outside. An inverted solid that
+    covered the rest would have made the rule DELIVER a destroyed fragment, which is the thing the owner ruled
+    against. Re-oriented, the same call reads 0.0004 kept and all 8 bodies lost.
+
+    Returns `(None, volume)` when reversing does not make it positive (a zero or degenerate piece): the caller
+    then measures nothing rather than measuring a complement.
+    """
+    volume = _volume(solid)
+    if volume > 0.0:
+        return solid, volume
+    flipped = solid.Reversed()
+    flipped_volume = _volume(flipped)
+    if flipped_volume > 0.0:
+        return flipped, flipped_volume
+    return None, volume
+
+
 def _common_volume(body, tools: list) -> float | None:
     """`volume(Common(body, tools))`, or None when a Boolean did not complete (UNMEASURED, not zero).
 
@@ -93,26 +117,51 @@ def _volume_loss(payload: dict) -> dict:
     original = read_brep(payload["original"])
     repaired = read_brep(payload["repaired"])
     max_bodies = int(payload.get("max_bodies") or 64)
-    in_solids = _solids(original)
-    out_solids = _solids(repaired)
+    raw_in = _solids(original)
+    raw_out = _solids(repaired)
     vol_in = _volume(original)
     vol_out = _volume(repaired)
-    if not in_solids or vol_in <= 0.0:
+    if not raw_in or vol_in <= 0.0:
         # no volume to keep: a loose-faces or shell input. Reported, never refused (loss.py).
-        return {"solidless": True, "bodies": {}, "bodies_total": len(in_solids), "part_kept": None,
+        return {"solidless": True, "bodies": {}, "bodies_total": len(raw_in), "part_kept": None,
                 "volume_ratio": None, "seconds": time.perf_counter() - start}
-    volumes = [abs(_volume(s)) for s in in_solids]
+
+    # EVERY Boolean below runs on POSITIVELY ORIENTED solids (see `_positive`). An inside-out solid makes
+    # `Common` return a complement, which is how this rule came to read 0.697 for a 0.07% delivery.
+    fixed_in = [_positive(s) for s in raw_in]
+    in_solids = [s if s is not None else raw for (s, _v), raw in zip(fixed_in, raw_in, strict=True)]
+    volumes = [abs(v) for _s, v in fixed_in]
+    unorientable_in = [f"S{i + 1}" for i, (s, _v) in enumerate(fixed_in) if s is None]
+    inverted_in = sum(1 for (s, _v), raw in zip(fixed_in, raw_in, strict=True) if s is not None and s is not raw)
+
+    fixed_out = [_positive(s) for s in raw_out]
+    out_solids = [s for s, _v in fixed_out if s is not None]
+    unorientable_out = sum(1 for s, _v in fixed_out if s is None)
+    inverted_out = sum(1 for (s, _v), raw in zip(fixed_out, raw_out, strict=True) if s is not None and s is not raw)
+    if unorientable_out:
+        # a solid in the OUTPUT that cannot be made positive would still turn its Common into a complement, and
+        # this rule must never silently measure one. Nothing is claimed about this output (loss.py refuses
+        # nothing on an unmeasured report; layer 1 reports the negative solid on its own account).
+        return {"solidless": False, "bodies": {}, "bodies_total": len(raw_in), "bodies_after": len(raw_out),
+                "part_kept": None, "volume_ratio": None if vol_in <= 0.0 else vol_out / vol_in,
+                "unmeasured_why": f"{unorientable_out} output solid(s) could not be oriented positive",
+                "inverted": {"input": inverted_in, "output": inverted_out,
+                             "unorientable_input": unorientable_in, "unorientable_output": unorientable_out},
+                "seconds": time.perf_counter() - start}
     order = sorted(range(len(in_solids)), key=lambda i: volumes[i], reverse=True)[:max_bodies]
     bodies: dict[str, Any] = {}
     kept_sum = 0.0
     vol_sum = 0.0
     for i in sorted(order):
         name = f"S{i + 1}"
-        if volumes[i] <= 0.0:
+        if fixed_in[i][0] is None or volumes[i] <= 0.0:
             # a zero-volume input "body" has nothing to keep; it is layer 1's `non_positive_volume`, not ours
             bodies[name] = None
             continue
-        tools = out_solids if len(out_solids) <= _PER_BODY_TOOLS else [repaired]
+        # the compound shortcut is only safe when NOTHING had to be re-oriented: the compound carries the
+        # original orientations, and one inverted solid inside it would make the whole Common a complement
+        tools = (out_solids if (len(out_solids) <= _PER_BODY_TOOLS or inverted_out or unorientable_out)
+                 else [repaired])
         try:
             common = _common_volume(in_solids[i], tools)
         except Exception:  # noqa: BLE001 - one body that cannot be measured says so; the others still stand
@@ -126,12 +175,15 @@ def _volume_loss(payload: dict) -> dict:
     return {
         "solidless": False,
         "bodies": bodies,
-        "bodies_total": len(in_solids),
-        "bodies_after": len(out_solids),
+        "bodies_total": len(raw_in),
+        "bodies_after": len(raw_out),
         # the same measurement at the part level: the measured bodies' kept volume over their own volume
         "part_kept": None if vol_sum <= 0.0 else kept_sum / vol_sum,
         # reported only, and deliberately not what the rule reads (loss.py's docstring says why)
         "volume_ratio": None if vol_in <= 0.0 else vol_out / vol_in,
         "unmeasured_why": "too_many_bodies" if len(in_solids) > max_bodies else None,
+        # what had to be re-oriented, so a reader can tell a re-oriented measurement from a plain one
+        "inverted": {"input": inverted_in, "output": inverted_out,
+                     "unorientable_input": unorientable_in, "unorientable_output": 0},
         "seconds": time.perf_counter() - start,
     }

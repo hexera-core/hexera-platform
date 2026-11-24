@@ -44,14 +44,21 @@ def test_the_0_07_percent_delivery_of_00510567_is_refused(pool: WorkerPool, tmp_
     assert report.bodies_total == 8 and set(report.lost_bodies) >= {"S1", "S2", "S5", "S8"}
 
 
-@pytest.mark.xfail(strict=True, reason="B22 hole: the delivered BREP holds an INSIDE-OUT solid (-13.5 mm3), and a Common "
-                   "against an inverted solid is its complement, so the part reads 0.697 kept (and bodies S3/S4/S6/S7 "
-                   "1.0) on a delivery holding 0.07% of the part. 0051 is still refused, by its other four bodies only.")
 def test_the_part_level_number_of_00510567_says_what_is_left(pool: WorkerPool, tmp_path: Path) -> None:
+    """Lane C20 recorded this as a strict xfail and it was right: the delivered BREP holds an INSIDE-OUT solid
+    (-13.461 mm3), and OCCT's `Common` against an inverted solid returns its COMPLEMENT, so everything OUTSIDE
+    that solid counted as KEPT - the part read 0.697 kept on a delivery holding 0.07% of it, and the file was
+    refused only because four other bodies happened to fall wholly outside. B26 fixed the measurement
+    (`loss_kernel._positive`: every Boolean runs on positively oriented solids), so the part-level number now
+    says what is actually left and the file is refused for the RIGHT reason."""
     report = check_loss(pool, _brep(tmp_path, "abc_00510567_input.brep.gz"),
                         _brep(tmp_path, "abc_00510567_delivered.brep.gz"))
     assert report.part_kept is not None and report.part_kept < 0.01, report.row()
     assert report.reason == "part_volume_lost"
+    # and it is not refused by luck any more: EVERY input body is gone, not just the four outside the inverted one
+    assert len(report.lost_bodies) == report.bodies_total == 8
+    # the report says the measurement had to re-orient something, so a reader can tell it from a plain one
+    assert (report.detail.get("inverted") or {}).get("output", 0) >= 1
 
 
 @pytest.mark.parametrize("stem, bodies", [("abc_00611396", 14), ("00571995", 2), ("abc_00602103", 5)])

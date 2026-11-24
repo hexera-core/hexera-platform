@@ -111,3 +111,27 @@ def test_a_SOLIDLESS_input_is_measured_and_refuses_nothing(pool: WorkerPool, tmp
     original = _write(tmp_path / "shell.brep", [shell])
     report = check_loss(pool, original, _write(tmp_path / "solid.brep", [solid]))
     assert report.measured and report.solidless and not report.catastrophic
+
+
+def test_an_INSIDE_OUT_output_solid_cannot_make_a_fragment_look_like_a_kept_part(pool: WorkerPool,
+                                                                                 tmp_path: Path) -> None:
+    """B26, the hole lane C20 found on 0051_00510567, in one synthetic case.
+
+    The output is a tiny box that happens to be INSIDE OUT, sitting in the corner of a large input. Measured as
+    OCCT reports it, the `Common` against that solid is its complement and almost the whole input reads as kept;
+    measured on the re-oriented solid - the same point set - almost nothing is kept, which is the truth.
+    """
+    big = _box(0, 0, 0, 50, 40, 30)
+    tiny = _box(0, 0, 0, 5, 4, 3)
+    original = _write(tmp_path / "in.brep", [big])
+    inside_out = _write(tmp_path / "flipped.brep", [tiny.Reversed()])
+
+    report = check_loss(pool, original, inside_out)
+    assert report.measured, report.unmeasured_why
+    assert report.part_kept is not None and report.part_kept < 0.02, report.row()
+    assert report.catastrophic and report.reason == "part_volume_lost"
+    assert (report.detail.get("inverted") or {}).get("output") == 1
+
+    # and the same output the right way round measures the same thing: orientation is not geometry
+    upright = check_loss(pool, original, _write(tmp_path / "upright.brep", [tiny]))
+    assert upright.part_kept == pytest.approx(report.part_kept, rel=1e-6)
