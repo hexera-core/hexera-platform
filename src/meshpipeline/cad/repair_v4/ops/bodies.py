@@ -17,6 +17,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from meshpipeline.cad.repair_v4.ops import OpFailed
 from meshpipeline.cad.repair_v4.types import Site, StableId
 from meshpipeline.cad.repair_v4.worker_pool import WorkerPool
 from meshpipeline.cad.repair_v4.workspace import Diff, Workspace, apply_history
@@ -50,7 +51,7 @@ def _run(pool: WorkerPool, ws: Workspace, fn: str, payload: dict, timeout_s: flo
                "out_path": _new_path(ws, fn), "ids": _ids_by_index(ws)}
     result = pool.call(fn, payload, timeout_s=timeout_s)
     if not result.ok or result.value is None:
-        raise RuntimeError(f"{fn} failed: {result.status}: {result.error}")
+        raise OpFailed(result.status, f"{fn}: {result.error or 'no answer'}")
     return result.value
 
 

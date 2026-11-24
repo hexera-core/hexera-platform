@@ -499,6 +499,8 @@ def _fix_wires_in_uv(face: Any, precision_mm: float) -> tuple[list[Any], bool]:
                       adaptor.FirstVParameter(), adaptor.LastVParameter())
     um, vm = (u0 + u1) / 2, (v0 + v1) / 2
     du, dv = (u1 - u0) * 1e-3, (v1 - v0) * 1e-3
+    if not (du > 0.0 and dv > 0.0):  # snapshot v1, bug32314 face 203: a UV domain with no extent was a ZeroDivisionError
+        raise _Declined(f"degenerate_face: the face's UV domain has no extent (u {u0:g}..{u1:g}, v {v0:g}..{v1:g})")
     mm_per_u = adaptor.Value(um + du, vm).Distance(adaptor.Value(um, vm)) / du
     mm_per_v = adaptor.Value(um, vm + dv).Distance(adaptor.Value(um, vm)) / dv
     precision = precision_mm / max(mm_per_u, mm_per_v, 1e-12)
@@ -1142,7 +1144,7 @@ class _FaceOp:
               timeout_s: float) -> tuple[Workspace, Diff]:
         errors = validate_call(self.name, targets, params, ws)
         if errors:  # an op raises only OpDeclined / OpFailed
-            raise OpDeclined(f"invalid call to {self.name}: " + "; ".join(errors))
+            raise OpDeclined(f"invalid_params: invalid call to {self.name}: " + "; ".join(errors))
         new, diff = run_kernel_op(
             pool, ws, kernel_fn=self.kernel_fn, op=self.name, timeout_s=timeout_s,
             payload={**params, self.payload_key: [ws.indices[t] for t in targets]})

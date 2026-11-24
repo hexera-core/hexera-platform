@@ -14,6 +14,7 @@ import pytest
 
 pytest.importorskip("OCP.BRepAlgoAPI", reason="the CAD kernel is a native-tier dependency")
 
+from meshpipeline.cad.repair_v4.ops import OpDeclined  # noqa: E402
 from meshpipeline.cad.repair_v4.ops.edges import (  # noqa: E402
     OPS,
     FixPoles,
@@ -248,14 +249,14 @@ def test_rebuild_edge_refuses_to_move_geometry_beyond_the_fidelity_bound(
 ) -> None:
     path, eindex = _box_with_off_surface_edge(tmp_path, 0.5)         # bound is 0.001 x 173 = 0.173
     ws0 = Workspace.from_brep(pool, path)
-    with pytest.raises(RuntimeError, match="fidelity bound"):
+    with pytest.raises(OpDeclined, match="^over_bound: .*fidelity bound"):
         RebuildEdgeAsIntersection().apply(pool, ws0, [_id_of(ws0, "E", eindex)], {}, timeout_s=300)
 
 
 def test_target_rel_outside_its_bounds_is_refused(pool: WorkerPool, tmp_path: Path) -> None:
     path, _ = _inflated_box(tmp_path)
     ws = Workspace.from_brep(pool, path)
-    with pytest.raises(RuntimeError, match="target_rel"):
+    with pytest.raises(OpDeclined, match="^invalid_params: target_rel"):
         TightenTolerances().apply(pool, ws, [], {"target_rel": 1e-2}, timeout_s=300)
 
 
@@ -483,7 +484,7 @@ def test_fix_poles_fails_loudly_when_it_changes_nothing(pool: WorkerPool, tmp_pa
     path = _write(BRepPrimAPI_MakeSphere(50.0).Shape(), tmp_path / "good_sphere.brep")
     ws0 = Workspace.from_brep(pool, path)
     (face_id,) = [s for s in ws0.ids if s.startswith("F")]
-    with pytest.raises(RuntimeError, match="changed nothing"):
+    with pytest.raises(OpDeclined, match="^no_change: ShapeFix_Face.Perform changed nothing"):
         FixPoles().apply(pool, ws0, [face_id], {}, timeout_s=300)
 
 
@@ -516,7 +517,7 @@ def test_fix_poles_refuses_when_only_some_targeted_faces_changed(pool: WorkerPoo
     ws0 = Workspace.from_brep(pool, path)
     faces = [s for s in ws0.ids if s.startswith("F")]
     assert len(faces) == 2
-    with pytest.raises(RuntimeError, match="changed nothing on face"):
+    with pytest.raises(OpDeclined, match="^no_change: .*changed nothing on face"):
         FixPoles().apply(pool, ws0, faces, {}, timeout_s=300)
 
 
@@ -528,7 +529,7 @@ def test_the_no_new_invalid_gate_can_reject_and_works_on_invalid_inputs() -> Non
     from meshpipeline.cad.repair_v4.ops import edges as ops_edges
 
     good, broken = BRepPrimAPI_MakeSphere(50.0).Shape(), _broken_sphere()
-    with pytest.raises(RuntimeError, match="accepted before"):
+    with pytest.raises(ops_edges.KernelDeclined, match="^invalidated: .*accepted before"):
         ops_edges._assert_no_new_invalid("x", good, broken, same_indices=False)
     ops_edges._assert_no_new_invalid("x", broken, _broken_sphere(), same_indices=False)   # no raise
     ops_edges._assert_no_new_invalid("x", broken, broken, same_indices=True)              # no raise

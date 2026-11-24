@@ -32,6 +32,7 @@ import asyncio
 import base64
 import hashlib
 import json
+import re
 import struct
 import zlib
 from collections.abc import Awaitable, Callable, Coroutine, Sequence
@@ -382,10 +383,54 @@ def _diff_json(diff: Diff | None) -> dict | None:
             "declared_removed": diff.declared_removed}
 
 
+_CODE = re.compile(r"^([a-z][a-z0-9_]*): (.*)$", re.S)
+_STAGE_ROLLED = re.compile(r"^stage '([^']+)' was rolled back: (.*)$", re.S)
+_STAGE_NOTHING = re.compile(r"^stage '([^']+)' changed nothing(?:: (.*))?$", re.S)
+_STEP = re.compile(r"^([a-z][a-z0-9_]*): (declined|failed|error): (.*)$", re.S)
+_FAIL_STATUSES = ("error", "timeout", "crashed")
+
+
+def reason_of(status: str, message: str) -> dict | None:
+    """Why a candidate was not applied, in ONE stable shape for the proposer (and the re-prompt):
+    `{"status", "code", "detail", "stage", "op"}`.
+
+    `status` is the outcome ("declined" / "failed" / "invalid"); `code` a snake_case reason: the op's own
+    leading code when it gave one (`no_change`, `invalidated`, `over_bound`, `invalid_params`, `no_intersection`,
+    ...), `rolled_back` / `no_change` for a stage, the pool status (`error` / `timeout` / `crashed`) for a failure,
+    `invalid_call` for a call that failed validation, and plain `declined` for an uncoded decline. `stage` and `op`
+    name the stage and its inner op when a `run_stage` carried the reason. `detail` is the rest, verbatim. None for an
+    applied candidate."""
+    if status == "applied":
+        return None
+    stage = op = None
+    text = message.strip()
+    if status == "invalid":
+        return {"status": status, "code": "invalid_call", "detail": text, "stage": None, "op": None}
+    if m := _STAGE_ROLLED.match(text):
+        return {"status": status, "code": "rolled_back", "detail": m.group(2), "stage": m.group(1), "op": None}
+    if m := _STAGE_NOTHING.match(text):
+        stage, text = m.group(1), m.group(2) or ""
+        if not text:
+            return {"status": status, "code": "no_change", "detail": "", "stage": stage, "op": None}
+        if step := _STEP.match(text):
+            op, kind, text = step.group(1), step.group(2), step.group(3)
+            if kind == "error":
+                return {"status": status, "code": "error", "detail": text, "stage": stage, "op": op}
+    if (m := _CODE.match(text)) is not None:
+        code, detail = m.group(1), m.group(2)
+        if status == "failed" or code in _FAIL_STATUSES:
+            return {"status": status, "code": code if code in _FAIL_STATUSES else "error", "detail": detail,
+                    "stage": stage, "op": op}
+        return {"status": status, "code": code, "detail": detail, "stage": stage, "op": op}
+    return {"status": status, "code": "declined" if status == "declined" else "error", "detail": text,
+            "stage": stage, "op": op}
+
+
 def _outcome_json(o: Outcome) -> dict:
     c = o.candidate
     return {"op": c.op, "targets": c.targets, "params": c.params, "rationale": c.rationale,
-            "status": o.status, "message": o.message, "diff": _diff_json(o.diff), "delta": o.delta}
+            "status": o.status, "message": o.message, "reason": reason_of(o.status, o.message),
+            "diff": _diff_json(o.diff), "delta": o.delta}
 
 
 def _message_tokens(messages: Sequence[dict]) -> int:

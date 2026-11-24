@@ -130,9 +130,68 @@ def _divide_faces(payload: dict, make_divider: Any, *, op: str, params: dict) ->
             return {"declined": f"no_change: {op} found nothing to divide on the target faces"}
         context = divider.GetContext()
         new = context.Apply(old)
+        settle_same_parameter(old, new)
     except Exception as exc:  # noqa: BLE001 - a kernel refusal is a decline, not a crash
-        return {"declined": f"split_failed ({type(exc).__name__})"}
+        return {"declined": f"split_failed: the splitter raised {type(exc).__name__}"}
     return _finish(old, new, context.History(), payload, op=op, params=params, start=start)
+
+
+def _same_parameter_rejected(shape: Any) -> list[Any]:
+    """Edges of `shape` BRepCheck rejects with InvalidSameParameterFlag, on the edge itself or in a face's context."""
+    from OCP.BRepCheck import BRepCheck_Analyzer, BRepCheck_InvalidSameParameterFlag
+    from OCP.TopAbs import TopAbs_EDGE
+    from OCP.TopExp import TopExp
+    from OCP.TopTools import TopTools_IndexedMapOfShape
+
+    edges = TopTools_IndexedMapOfShape()
+    TopExp.MapShapes_s(shape, TopAbs_EDGE, edges)
+    analyzer = BRepCheck_Analyzer(shape)
+    rejected = []
+    for i in range(1, edges.Extent() + 1):
+        edge = edges.FindKey(i)
+        result = analyzer.Result(edge)
+        if result is None:
+            continue
+        statuses = list(result.Status())
+        result.InitContextIterator()
+        while result.MoreShapeInContext():
+            statuses += list(result.StatusOnShape())
+            result.NextShapeInContext()
+        if any(st == BRepCheck_InvalidSameParameterFlag for st in statuses):
+            rejected.append(edge)
+    return rejected
+
+
+def settle_same_parameter(old: Any, new: Any) -> int:
+    """Recompute SameParameter, in place, on the edges of `new` that BRepCheck rejects for it and did NOT reject in
+    `old` (same TShapes, so the split's history still maps every entity); returns how many. A defect the input
+    already had is left alone, so nothing changes that the op did not cause.
+
+    Snapshot v1: `split_angle` at 90 deg on the BRepCheck-valid nist_ctc_01_asme1_ap203 left 3 edges with
+    BRepCheck_InvalidSameParameterFlag (the split gave shared edges new pcurves; the flag claimed SameParameter, the
+    geometry was not within tolerance) and nothing else wrong, and `guard` declined all 13 such proposals as
+    `invalidated`. Only a FORCED recompute fixes such an edge (measured: the non-forced call and
+    ShapeFix_Edge.FixSameParameter leave it invalid); forcing it raised the part's largest edge tolerance from
+    0.00654 to 0.00688 mm. `guard` still refuses a result that is invalid, or that moved area or volume,
+    afterwards."""
+    from OCP.BRep import BRep_Builder
+    from OCP.BRepLib import BRepLib
+    from OCP.Precision import Precision
+    from OCP.TopoDS import TopoDS
+    from OCP.TopTools import TopTools_IndexedMapOfShape
+
+    already = TopTools_IndexedMapOfShape()
+    for edge in _same_parameter_rejected(old):
+        already.Add(edge)
+    builder, settled = BRep_Builder(), 0
+    for edge in _same_parameter_rejected(new):
+        if already.Contains(edge):
+            continue
+        edge = TopoDS.Edge_s(edge)
+        builder.SameParameter(edge, False)  # forced: the flag claimed it already
+        BRepLib.SameParameter_s(edge, Precision.Confusion_s())
+        settled += 1
+    return settled
 
 
 @register_kernel_fn("op_split_angle")
@@ -223,7 +282,7 @@ def _split_by_proximity(payload: dict) -> dict:
     try:
         splitter.Build()
     except Exception as exc:  # noqa: BLE001 - a kernel refusal is a decline, as in gap_split
-        return {"declined": f"split_failed ({type(exc).__name__})"}
+        return {"declined": f"split_failed: the splitter raised {type(exc).__name__}"}
     if not splitter.IsDone():
         return {"declined": "split_failed: the splitter reported errors"}
     return _finish(old, splitter.Shape(), splitter.History(), payload, op="split_by_proximity",
@@ -259,7 +318,7 @@ def _unify_same_domain(payload: dict) -> dict:
     try:
         unifier.Build()
     except Exception as exc:  # noqa: BLE001
-        return {"declined": f"split_failed ({type(exc).__name__})"}
+        return {"declined": f"split_failed: the splitter raised {type(exc).__name__}"}
     return _finish(old, unifier.Shape(), unifier.History(), payload, op="unify_same_domain",
                    params={"scope": payload["scope"], "keep": payload["keep_ids"]}, start=start)
 

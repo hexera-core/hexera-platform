@@ -29,13 +29,16 @@ changed appear in `Diff.modified`.
 
 from __future__ import annotations
 
+import functools
 import logging
 import os
 import time
 import uuid
+from collections.abc import Callable
 from typing import Any
 
 from meshpipeline.cad.repair_v4.kernel_calls import register
+from meshpipeline.cad.repair_v4.ops import OpDeclined, OpFailed
 from meshpipeline.cad.repair_v4.types import Site, StableId
 from meshpipeline.cad.repair_v4.worker_pool import WorkerPool
 from meshpipeline.cad.repair_v4.workspace import Diff, Workspace, apply_history
@@ -172,6 +175,28 @@ def _invalid_subshapes(shape: Any) -> set[tuple[str, int]]:
     return out
 
 
+class KernelDeclined(Exception):
+    """A kernel refusal ABOUT THE SHAPE (nothing to change, a bound it would break, a geometry it cannot handle):
+    `_declines` returns it to the parent as `{"declined": "<code>: <detail>"}`, the protocol every op uses, so the
+    search and the proposer see a decline with a stable code, never an `error: RuntimeError`. A real bug still
+    raises and comes back as `OpFailed`."""
+
+    def __init__(self, code: str, detail: str) -> None:
+        super().__init__(f"{code}: {detail}")
+        self.code, self.detail = code, detail
+
+
+def _declines(fn: Callable[[dict], dict]) -> Callable[[dict], dict]:
+    @functools.wraps(fn)
+    def kernel(payload: dict) -> dict:
+        try:
+            return fn(payload)
+        except KernelDeclined as why:
+            return {"declined": str(why)}
+
+    return kernel
+
+
 def _assert_no_new_invalid(op: str, old: Any, result: Any, *, same_indices: bool) -> None:
     """Fail if the op made BRepCheck reject anything it accepted before. Unlike a whole-shape
     validity test this works on the usual repair input, which is already invalid elsewhere.
@@ -186,7 +211,7 @@ def _assert_no_new_invalid(op: str, old: Any, result: Any, *, same_indices: bool
         fresh = sorted(k for k in kinds
                        if sum(1 for x, _ in after if x == k) > sum(1 for x, _ in before if x == k))
     if fresh:
-        raise RuntimeError(f"{op}: BRepCheck rejects sub-shapes it accepted before the op: {fresh}")
+        raise KernelDeclined("invalidated", f"{op}: BRepCheck rejects sub-shapes it accepted before the op: {fresh}")
 
 
 def _mapping_and_changed(old: Any, base: Any, result: Any, h: Any, quantum: float,
@@ -306,6 +331,7 @@ def _targets_to_faces(base: Any, targets: dict[str, list[int]]) -> list[Any]:
 
 
 @register("v4_tighten_tolerances")
+@_declines
 def _tighten_tolerances(payload: dict) -> dict:
     """Lower edge, vertex and face tolerances to what the geometry has been shown to satisfy.
 
@@ -331,7 +357,7 @@ def _tighten_tolerances(payload: dict) -> dict:
     start = time.perf_counter()
     target_rel = float(payload["target_rel"])
     if not 1e-7 <= target_rel <= 1e-4:
-        raise ValueError(f"target_rel {target_rel!r} is outside [1e-7, 1e-4]")
+        raise KernelDeclined("invalid_params", f"target_rel {target_rel!r} is outside [1e-7, 1e-4]")
     old, base = read_brep(payload["brep_path"]), read_brep(payload["brep_path"])
     diag = diagonal_of(base)
     target = target_rel * diag
@@ -359,7 +385,7 @@ def _tighten_tolerances(payload: dict) -> dict:
             continue   # at or below target: not ours to touch, and not ours to re-judge
         index = emap.FindIndex(edge)
         if not BRep_Tool.IsGeometric_s(edge) and not BRepLib.BuildCurves3d_s(edge, 1e-7):
-            raise RuntimeError(f"edge {index} has no 3D curve and BuildCurves3d could not make one")
+            raise KernelDeclined("no_3d_curve", f"edge {index} has no 3D curve and BuildCurves3d could not make one")
         was = BRep_Tool.Tolerance_s(edge)
         _settle_tolerance(edge, _distinct_faces(anc, edge))
         touched.append(edge)
@@ -407,6 +433,7 @@ def _no_history() -> Any:
 
 
 @register("v4_rebuild_edge_as_intersection")
+@_declines
 def _rebuild_edge_as_intersection(payload: dict) -> dict:
     """Replace an edge's 3D curve, in place, by the intersection curve of its two faces."""
     from OCP.BRep import BRep_Builder, BRep_Tool
@@ -434,13 +461,13 @@ def _rebuild_edge_as_intersection(payload: dict) -> dict:
         edge = TopoDS.Edge_s(emap.FindKey(index))
         faces = _distinct_faces(anc, edge)
         if BRep_Tool.Degenerated_s(edge) or len(faces) != 2:
-            raise ValueError(f"edge {index} does not lie between exactly two faces "
+            raise KernelDeclined("not_applicable", f"edge {index} does not lie between exactly two faces "
                              f"({len(faces)} found, degenerated={BRep_Tool.Degenerated_s(edge)})")
         # vertices in the order of the edge's STORED curve parameter, whatever its face orientation
         forward = TopoDS.Edge_s(edge.Oriented(TopAbs_FORWARD))
         v1, v2 = TopExp.FirstVertex_s(forward, True), TopExp.LastVertex_s(forward, True)
         if v1.IsSame(v2):
-            raise ValueError(f"edge {index} is closed; rebuilding a closed edge is not supported")
+            raise KernelDeclined("not_applicable", f"edge {index} is closed; rebuilding a closed edge is not supported")
         p1, p2 = BRep_Tool.Pnt_s(v1), BRep_Tool.Pnt_s(v2)
         cur = BRepAdaptor_Curve(edge)
         t0, t1 = cur.FirstParameter(), cur.LastParameter()
@@ -448,7 +475,7 @@ def _rebuild_edge_as_intersection(payload: dict) -> dict:
         mid_old = samples[_SAMPLES // 2]
         inter = GeomAPI_IntSS(BRep_Tool.Surface_s(faces[0]), BRep_Tool.Surface_s(faces[1]), 1e-7)
         if not inter.IsDone() or inter.NbLines() == 0:
-            raise ValueError(f"the faces of edge {index} have no intersection curve")
+            raise KernelDeclined("no_intersection", f"the faces of edge {index} have no intersection curve")
         best: tuple[float, Any, float, float] | None = None
         for li in range(1, inter.NbLines() + 1):
             line = inter.Line(li)
@@ -475,11 +502,11 @@ def _rebuild_edge_as_intersection(payload: dict) -> dict:
                 if best is None or score < best[0]:
                     best = (score, candidate, u1, u2)
         if best is None:
-            raise ValueError(f"no intersection curve of edge {index}'s faces spans its vertices")
+            raise KernelDeclined("no_intersection", f"no intersection curve of edge {index}'s faces spans its vertices")
         _, curve, u1, u2 = best
         move = max(GeomAPI_ProjectPointOnCurve(s, curve).LowerDistance() for s in samples)
         if move > bound:
-            raise ValueError(f"edge {index}: the intersection curve is {move:.3g} from the existing "
+            raise KernelDeclined("over_bound", f"edge {index}: the intersection curve is {move:.3g} from the existing "
                              f"edge, beyond the fidelity bound {bound:.3g}")
         moves[index] = move
         builder = BRep_Builder()
@@ -493,7 +520,7 @@ def _rebuild_edge_as_intersection(payload: dict) -> dict:
                 # False is "nothing to add": benign only if the kernel can still give a pcurve (on a
                 # plane it derives one by projection). If it cannot, the op must not continue.
                 if BRep_Tool.CurveOnSurface_s(edge, face, 0.0, 0.0) is None:
-                    raise RuntimeError(f"edge {index}: FixAddPCurve added no pcurve and none exists")
+                    raise KernelDeclined("no_pcurve", f"edge {index}: FixAddPCurve added no pcurve and none exists")
                 logger.debug("rebuild: edge %d already has a derivable pcurve on a face", index)
         if fixer.FixSameParameter(edge, 1e-7):
             logger.debug("rebuild: FixSameParameter adjusted edge %d", index)
@@ -508,6 +535,7 @@ def _rebuild_edge_as_intersection(payload: dict) -> dict:
 
 
 @register("v4_fix_poles")
+@_declines
 def _fix_poles(payload: dict) -> dict:
     """Run ShapeFix_Face on the faces (wire fixing incl. FixDegenerated, missing seam), through one
     ReShape context so the rebuilt faces and their containers come back with a history.
@@ -536,11 +564,11 @@ def _fix_poles(payload: dict) -> dict:
         if not fixer.Perform():
             unchanged.append(index)
     if unchanged:
-        raise RuntimeError(f"ShapeFix_Face.Perform changed nothing on face(s) {unchanged}")
+        raise KernelDeclined("no_change", f"ShapeFix_Face.Perform changed nothing on face(s) {unchanged}")
     result = ctx.Apply(base)
     bad = [i for i, f in faces.items() if not BRepCheck_Analyzer(ctx.Value(f)).IsValid()]
     if bad:
-        raise RuntimeError(f"fix_poles: the rebuilt face(s) {bad} still fail BRepCheck_Analyzer")
+        raise KernelDeclined("invalidated", f"fix_poles: the rebuilt face(s) {bad} still fail BRepCheck_Analyzer")
     params = {"faces": list(payload["targets"]["face"]),
               "max_edge_tolerance_before": max_edge_tolerance(base)}
     return _finish(payload, "fix_poles", params, old, base, result, ctx.History(), set(), start)
@@ -564,8 +592,10 @@ def _run(pool: WorkerPool, ws: Workspace, fn: str, payload: dict, timeout_s: flo
                "out_path": os.path.join(os.path.dirname(ws.brep_path), f"{fn}-{uuid.uuid4().hex[:8]}.brep")}
     result = pool.call(fn, payload, timeout_s=timeout_s)
     if not result.ok or result.value is None:
-        raise RuntimeError(f"{fn} failed: {result.status}: {result.error}")
+        raise OpFailed(result.status, f"{fn}: {result.error or 'no answer'}")
     record = result.value
+    if "declined" in record:
+        raise OpDeclined(str(record["declined"]))
     new = apply_history(ws, record)
     # a 1:1 Modified entry for an entity that did not change is noise the proposer must not read
     changed = {(c["type"], int(c["index"])) for c in record["changed"]}

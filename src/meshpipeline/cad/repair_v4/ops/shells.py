@@ -313,7 +313,7 @@ def _remove_small(payload: dict) -> dict:
     _, bound = _bound(old)
     if not 0 < max_width <= bound:
         # the op does not apply at this width on this part: a decline, not a failure. The bound is unchanged.
-        return {"declined": f"max_width_mm {max_width} is outside (0, {bound}] for this part: "
+        return {"declined": f"invalid_params: max_width_mm {max_width} is outside (0, {bound}] for this part: "
                             "min(0.1 mm, 0.001 x diagonal)"}
     by_kind = {"face": _entities(old, "face"), "edge": _entities(old, "edge")}
     wanted: dict[str, list[Any]] = {"face": [], "edge": []}
@@ -364,7 +364,7 @@ def _remove_small(payload: dict) -> dict:
             history.Merge(step)
         via.append("fix_small_edges")
     if history is None or not (history.HasRemoved() or history.HasModified()):
-        return {"declined": f"nothing at or under {max_width} mm to remove at {[t['id'] for t in payload['targets']]}"}
+        return {"declined": f"no_change: nothing at or under {max_width} mm to remove at {[t['id'] for t in payload['targets']]}"}
     params["via"] = via
     # Work still to do: a caller must see it, since the shape can pass BRepCheck with these left
     remaining = _count_small(shape, max_width)
@@ -405,14 +405,14 @@ def _sew(payload: dict) -> dict:
     off = [t for t in ladder if not floor <= t <= bound]
     if not ladder or off:
         # the ladder does not apply to this part: a decline, not a failure. The window is unchanged.
-        return {"declined": f"tol_ladder rungs {off or ladder} must lie in [{floor}, {bound}] "
+        return {"declined": f"invalid_params: tol_ladder rungs {off or ladder} must lie in [{floor}, {bound}] "
                             "(1e-6 x diagonal .. min(0.1 mm, 0.001 x diagonal))"}
     if _entities(old, "solid"):
-        return {"declined": "input carries a solid; sewing returns shells and would destroy it "
+        return {"declined": "not_applicable: input carries a solid; sewing returns shells and would destroy it "
                             "(undeclared). Sew only open shells or loose faces"}
     before = _free_edge_count(old)
     if before == 0:
-        return {"declined": "input has no free edges; nothing to sew"}
+        return {"declined": "no_change: input has no free edges; nothing to sew"}
     best: tuple[int, float, Any, Any] | None = None
     tried: list[dict] = []
     for tol in ladder:
@@ -433,7 +433,7 @@ def _sew(payload: dict) -> dict:
     params.update(tol_used=tol, free_edges_before=before, free_edges_after=free, tried=tried,
                   closed=free == 0)
     if free >= before and not params["closed"]:
-        return {"declined": f"sewing at {ladder} left {free} free edges (input had {before}); "
+        return {"declined": f"not_closed: sewing at {ladder} left {free} free edges (input had {before}); "
                             "no rung improved the shape"}
     history = _history_from_lookup(old, sewing.ModifiedSubShape)
     return _record(old, result, history, payload, "sew", params, start)
@@ -474,7 +474,7 @@ def _make_volume(payload: dict) -> dict:
             solids.Next()
         chosen = [f for f in faces if not in_solid.Contains(f)]
     if not chosen:
-        return {"declined": "no faces outside a solid to build a volume from"}
+        return {"declined": "not_applicable: no faces outside a solid to build a volume from"}
 
     maker = BOPAlgo_MakerVolume()
     arguments = TopTools_ListOfShape()
@@ -485,10 +485,10 @@ def _make_volume(payload: dict) -> dict:
     maker.SetToFillHistory(True)
     maker.Perform()
     if maker.HasErrors():
-        return {"declined": "MakerVolume could not form a volume from these faces"}
+        return {"declined": "no_volume: MakerVolume could not form a volume from these faces"}
     volumes = _entities(maker.Shape(), "solid")
     if not volumes:
-        return {"declined": "MakerVolume found no closed volume in these faces"}
+        return {"declined": "no_volume: MakerVolume found no closed volume in these faces"}
 
     new = TopoDS_Compound()
     builder = BRep_Builder()
