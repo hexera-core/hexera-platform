@@ -388,6 +388,13 @@ class _WallClock:
             signal.signal(signal.SIGALRM, self._old)
 
 
+def default_engine_form() -> Callable[[Any, str], str]:
+    """`repair_v4.search.engine_form`, imported late (the module loads the op library)."""
+    from meshpipeline.cad.repair_v4.search import engine_form
+
+    return engine_form
+
+
 def reprobe(
     entries: Iterable[Any],
     *,
@@ -400,6 +407,7 @@ def reprobe(
     file_timeout_s: float = 0.0,
     excluded: list[Excluded] | None = None,
     on_row: Callable[[ProbeRow], None] | None = None,
+    engine_form: Callable[[Any, str], str] | None = None,
 ) -> list[ProbeRow]:
     """Run `tier` of the checker on each entry's own file (the input is its own "original") and return
     one ProbeRow per CONCLUSIVE verdict.
@@ -407,6 +415,11 @@ def reprobe(
     Not returned, but appended to `excluded` when given: a `CheckerUnavailable` (layer 1/3 could not be
     measured), an inconclusive panel (pool failure), an unreadable path and a file wall-clock timeout.
     None of these says anything about the CAD, so none may count as failing, unclean or clean.
+
+    THE FORM. The panel meshes `engine_form(step)` - the file as the engine reads it (XCAF -> BREP -> STEP, the form
+    every arm and the shipping engine judge) - with the original STEP as layer 3's reference. Judging the raw file
+    instead labelled a split with a verdict the arms never reproduce (Task 49: gmsh_alt 0.00417 on the original,
+    0.0494 on the engine's form). `engine_form` defaults to `repair_v4.search.engine_form`; tests inject one.
     """
     from meshpipeline.cad.repair_v4.verdict import cheap_verdict, verdict
     from meshpipeline.cad.repair_v4.verdict.valid import CheckerUnavailable
@@ -415,6 +428,7 @@ def reprobe(
     check_sources(entries)
     check_not_quarantined(entries)  # before any mesh: a quarantined kind must cost nothing
     check = cheap_verdict if tier == "cheap" else verdict
+    form = engine_form if engine_form is not None else default_engine_form()
     rows: list[ProbeRow] = []
 
     def skip(entry: Any, reason: str) -> None:
@@ -425,7 +439,7 @@ def reprobe(
         try:
             step = resolve(entry)
             with _WallClock(file_timeout_s):
-                v = check(pool, step, step, cache=cache, members=members, run_panel=run_panel)
+                v = check(pool, form(pool, step), step, cache=cache, members=members, run_panel=run_panel)
         except FileNotFoundError as exc:
             skip(entry, f"input_missing: {exc}")
             continue

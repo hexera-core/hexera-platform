@@ -98,6 +98,7 @@ def layers(monkeypatch):
 
 def _probe(entries, tier="cheap", members=None, **kw):
     excluded: list = []
+    kw.setdefault("engine_form", lambda pool, step: step)  # no kernel here: the file is its own engine form
     rows = rp.reprobe(entries, tier=tier, pool=object(), resolve=lambda e: f"/x/{e.name}", members=members,
                       run_panel=run_panel, excluded=excluded, **kw)
     return rows, excluded
@@ -150,7 +151,8 @@ def test_file_wall_clock_excludes_the_file(layers) -> None:
 
     excluded: list = []
     rows = rp.reprobe([Entry("a", _sha(1))], tier="cheap", pool=object(), resolve=lambda e: "/x",
-                      members=[FakeMember("m")], run_panel=slow, file_timeout_s=0.2, excluded=excluded)
+                      members=[FakeMember("m")], run_panel=slow, file_timeout_s=0.2, excluded=excluded,
+                      engine_form=lambda pool, step: step)
     assert rows == [] and excluded[0].reason.startswith("file_timeout")
 
 
@@ -160,7 +162,8 @@ def test_missing_input_is_excluded(layers) -> None:
 
     excluded: list = []
     rows = rp.reprobe([Entry("a", _sha(1))], tier="cheap", pool=object(), resolve=resolve,
-                      members=[FakeMember("m")], run_panel=run_panel, excluded=excluded)
+                      members=[FakeMember("m")], run_panel=run_panel, excluded=excluded,
+                      engine_form=lambda pool, step: step)
     assert rows == [] and excluded[0].reason.startswith("input_missing")
 
 
@@ -181,7 +184,7 @@ def test_cache_prevents_a_second_mesh(layers, tmp_path) -> None:
     entry = Entry("a.step", _sha(1))
     for _ in range(3):
         rp.reprobe([entry], tier="cheap", pool=object(), resolve=lambda e: str(step), members=[member],
-                   run_panel=run_panel, cache=cache)
+                   run_panel=run_panel, cache=cache, engine_form=lambda pool, s: s)
     assert member.runs == 1  # hit twice, meshed once
 
 
@@ -945,3 +948,42 @@ def test_stratum_keeps_source_and_buckets_kinds_coarsely():
     valid = _row(3, "valid", "round_trip_invalid")
     assert rp._stratum(valid) == ("valid", "-", "valid_other", "abc_fail")
     assert rp._stratum(_row(4, "valid", "body_overlap"))[2] == "body_overlap"
+
+
+
+# ------------------------------------------------------------------ the form the checker judges
+
+def test_the_reprobe_judges_the_file_as_the_engine_reads_it(layers) -> None:
+    """Task 49's flip, root-caused by lane D (panel_repro.py, 11 near-threshold files x 2 forms): the panel is
+    bit-identical run to run, but the ORIGINAL STEP and the STEP the engine re-exports from its BREP are different
+    geometry to a mesher - gmsh_alt failed the original at min SICN 0.00417 and passed the re-export at 0.0494, and
+    4 of 11 near-threshold files changed pass/fail between the two forms, in both directions. Every arm and the
+    shipping engine judge the re-export; the re-probe that cuts the split labels must judge the same thing."""
+    meshed: list[str] = []
+
+    class Seen(FakeMember):
+        def run(self, pool, step_path, *, timeout_s):
+            meshed.append(step_path)
+            return super().run(pool, step_path, timeout_s=timeout_s)
+
+    rows, _ = _probe([Entry("a", _sha(1))], tier="full", members=[Seen("gmsh_alt")],
+                     engine_form=lambda pool, step: step + ".engine.step")
+    assert meshed == ["/x/a.engine.step"] and len(rows) == 1
+
+
+def test_a_file_the_engine_cannot_read_is_excluded_not_judged(layers) -> None:
+    def unreadable(pool, step):
+        raise CheckerUnavailable("read_step_xcaf failed")
+
+    rows, excluded = _probe([Entry("a", _sha(1))], tier="full", members=[FakeMember("gmsh_alt")],
+                            engine_form=unreadable)
+    assert rows == [] and excluded and excluded[0].reason.startswith("checker_unavailable")
+
+
+def test_the_default_form_is_the_engines() -> None:
+    import inspect
+
+    from meshpipeline.cad.repair_v4 import search
+
+    assert inspect.signature(rp.reprobe).parameters["engine_form"].default is None
+    assert rp.default_engine_form() is search.engine_form
