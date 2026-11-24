@@ -138,3 +138,9 @@ def test_a_decimation_past_its_bound_falls_back_to_clustering(monkeypatch, caplo
     assert time.monotonic() - t0 < 8.0
     assert 300 < len(pts) < 6000 and len(tri) > 100
     assert "clustered (the decimation ran past" in caplog.text
+
+
+def test_a_bounded_step_inside_the_bounded_measure_runs():
+    # the measure's child bounds its decimation in a child of its own (63401 run c: "daemonic processes are not
+    # allowed to have children" lost the measure)
+    assert passage._bounded(lambda: passage._bounded(lambda: 7, budget_s=5.0), budget_s=10.0) == 7

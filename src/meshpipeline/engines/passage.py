@@ -937,7 +937,9 @@ def _bounded(fn, *args, budget_s: float, what: str = "passage measure"):
             send.close()
             os._exit(0)
 
-    proc = mp.get_context("fork").Process(target=child, daemon=True)
+    # not a daemon: a daemonic child may not fork one of its own, and the measure's child bounds its decimation
+    # the same way (coarse_copy); the finally below always kills and joins it
+    proc = mp.get_context("fork").Process(target=child, daemon=False)
     proc.start()
     send.close()
     try:
