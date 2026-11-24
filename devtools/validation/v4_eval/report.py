@@ -96,6 +96,10 @@ SPEND_EPS_USD = 1e-6
 #: The injector's status for a defect no op may repair by design (inject.KIND_STATUS); the one string the report
 #: reads, and `load_wave` checks it against the injector's own declined kinds.
 DECLINED_STATUS = "declined_stratum"
+#: lane C14b: a file whose input verdict contradicts its split label is reported as LABEL DRIFT (its own stratum) up to
+#: this share of the split; beyond it the wave is refused, because a checker that disagrees with most labels (e.g. one
+#: that calls everything clean) is broken, not merely newer. v4's dev drifted on 4 of 150 (2.7%).
+MAX_LABEL_DRIFT_FRACTION = 0.25
 #: The cells of a search row's `cheap_full` table; the same names `arms.CHEAP_FULL_CELLS` writes and
 #: `reprobe.agreement` reports (not imported from arms.py, which would pull the arm dispatch into the report).
 CHEAP_FULL_CELLS = ("cheap_pass_full_pass", "cheap_pass_full_fail", "cheap_fail_full_pass", "cheap_fail_full_fail")
@@ -304,6 +308,10 @@ class WaveResult:
     #: the merged `wave_backoff` provenance of every shard (see `backoff_summary`); a wave that was throttled must not
     #: pass for a free-running one, or its wall-clock would be read as the engine's
     backoff: Mapping[str, Any] | None = None
+    #: LABEL DRIFT (lane C14b): sha256 -> the split's clean label and the input verdict THIS commit measured, for files
+    #: where they disagree. Its own stratum, named, in no rate - not a wave refusal (v4's dev report refused on 4 such
+    #: files, and a held-out run labelled on old code cannot be repeated to try again).
+    drifted: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
     _key: object = None
 
     def __post_init__(self) -> None:
@@ -460,6 +468,7 @@ def load_wave(root: Path, wave: Any, split_rows: Iterable[Any], *, n_shards: int
         raise ReportRefused(f"{len(extra)} row(s) are not in the {wave.split} split x {list(wave.arms)} "
                             f"(first: {extra[0][0][:12]} {extra[0][1]})")
 
+    drifted: dict[str, dict[str, Any]] = {}
     for sha, base in by_sha.items():
         truth = base.verdict_summary.get("clean")
         if truth is None:
@@ -471,8 +480,12 @@ def load_wave(root: Path, wave: Any, split_rows: Iterable[Any], *, n_shards: int
             if r.source != base.source:
                 raise ReportRefused(f"{r.name} [{a}]: source {r.source!r} but the split says {base.source!r}")
             if bool(r.in_clean) != bool(truth):
-                raise ReportRefused(f"{r.name} [{a}]: the arm saw an input with clean={r.in_clean} but the "
-                                    f"{wave.split} split says clean={truth}")
+                # the split was labelled on older code than this wave ran: the file is reported in its own stratum
+                # with the input verdict measured here, and left out of every rate (the arms must still agree with
+                # each other on that input: the "one file has one input" check below still refuses otherwise)
+                drifted[sha] = {"name": base.name, "split_clean": bool(truth), "input_clean": bool(r.in_clean),
+                                "input_valid": r.in_valid, "input_panel_passes": r.in_panel_passes,
+                                "panel_size": r.panel_size}
             if a == "input_only" and (r.out_clean != r.in_clean or r.out_panel_passes != r.in_panel_passes
                                       or r.out_valid != r.in_valid or r.out_faithful_ok != r.in_faithful_ok):
                 raise ReportRefused(f"{r.name} [input_only]: the output differs from the input "
@@ -490,6 +503,12 @@ def load_wave(root: Path, wave: Any, split_rows: Iterable[Any], *, n_shards: int
             raise ReportRefused(f"{base.name}: arms measured different inputs {sorted(map(str, seen))}: one "
                                 "file has one input")
 
+    if len(drifted) > MAX_LABEL_DRIFT_FRACTION * len(split):
+        first = next(iter(drifted.values()))
+        raise ReportRefused(f"{len(drifted)} of {len(split)} files have an input verdict the {wave.split} split "
+                            f"contradicts (first: {first['name']}: split says clean={first['split_clean']}, input "
+                            f"clean={first['input_clean']}); over {MAX_LABEL_DRIFT_FRACTION:.0%} that is a broken "
+                            "checker, not stale labels")
     total = sum(r.model_usd for r in rows.values())
     if total > wave.cap_usd + SPEND_EPS_USD:
         raise ReportRefused(f"wave spend ${total:.2f} exceeds the ${wave.cap_usd:g} {wave.wave_type} cap")
@@ -501,7 +520,7 @@ def load_wave(root: Path, wave: Any, split_rows: Iterable[Any], *, n_shards: int
         tuple(float(s["prov"].get("wall_seconds") or 0.0) for s in shards), bool(frozen_commit),
         declined=declined, slot=slot, slot_verified=slot_verified, walls=_collect.wall_values(shards),
         backoff=backoff_summary(shards, has_model_arm=bool(wave.has_model_arm)),
-        excluded=tuple(dict(x) for s in shards for x in s["excluded"]), _key=_TOKEN)
+        excluded=tuple(dict(x) for s in shards for x in s["excluded"]), drifted=drifted, _key=_TOKEN)
 
 
 # ---------------------------------------------------------------------------------------------- the report
@@ -576,6 +595,20 @@ def _arm_block(arm: str, rows: list[ArmRow], kinds: Mapping[str, str], n_files: 
         "wall_s": {"total": sum(r.wall_s for r in billed), "per_file_mean": sum(r.wall_s for r in billed) / len(billed),
                    "max": max(r.wall_s for r in billed)},
     }
+
+
+def _drift_block(drifted: Mapping[str, Mapping[str, Any]], rows: Mapping[str, Mapping[str, ArmRow]],
+                 split: str) -> dict[str, Any]:
+    """Files whose split label disagrees with the input verdict THIS commit measured (lane C14b). Named, with that
+    verdict and every arm's outcome; in NO clean rate, gain, regression or marginal - the split's label is stale, so
+    neither 'repaired' nor 'regressed' can be read off them."""
+    files = []
+    for sha, d in sorted(drifted.items(), key=lambda kv: str(kv[1]["name"])):
+        arms = {a: {"out_clean": r.clean, "out_panel_passes": r.out_panel_passes, "inconclusive": r.inconclusive}
+                for a, r in sorted(rows.get(sha, {}).items())}
+        files.append({"sha256": sha, **d, "arms": arms})
+    return {"counted_as": f"none: the {split} split's label disagrees with this commit's input verdict; in no rate",
+            "files": len(files), "names": files}
 
 
 def _declined_block(stratum: Mapping[str, list[ArmRow]], n: int) -> dict[str, Any]:
@@ -854,13 +887,17 @@ def build_report(result: WaveResult, *, previous: Mapping[str, Any] | None = Non
     per_arm: dict[str, list[ArmRow]] = {a: [] for a in wave.arms}
     by_sha: dict[str, dict[str, ArmRow]] = defaultdict(dict)
     stratum: dict[str, list[ArmRow]] = {a: [] for a in wave.arms}
+    drift_rows: dict[str, dict[str, ArmRow]] = defaultdict(dict)
     for r in result.rows:
         if r.sha256 in result.declined:  # the third category: kept out of EVERY figure below, reported on its own
             stratum[r.arm].append(r)
             continue
+        if r.sha256 in result.drifted:  # label drift (C14b): kept out of every figure too, reported on its own
+            drift_rows[r.sha256][r.arm] = r
+            continue
         per_arm[r.arm].append(r)
         by_sha[r.sha256][r.arm] = r
-    n_main = result.n_files - len(result.declined)
+    n_main = result.n_files - len(result.declined) - len(set(result.drifted) - set(result.declined))
     if n_main < 1:
         raise ReportRefused("every file in the split is declined-stratum: there is nothing to measure a clean rate on")
     blocks = {a: _arm_block(a, rs, result.kinds, n_main, stratum[a]) for a, rs in per_arm.items()}
@@ -904,6 +941,7 @@ def build_report(result: WaveResult, *, previous: Mapping[str, Any] | None = Non
         "heldout_split": wave.split == ev.HELDOUT,
         "files": result.n_files, "files_measured_strata": n_main, "arms": blocks, "paired_set": paired_set,
         "declined_stratum": _declined_block(stratum, len(result.declined)),
+        "label_drift_stratum": _drift_block(result.drifted, drift_rows, wave.split),
         "gaming_flags": _gaming_block(result.rows, wave.arms),
         "gaming_flags_valid_unclean": _valid_unclean_gaming_block(result.rows, wave.arms),
         "excluded_stratum": _excluded_block(result.excluded, result.n_files, result.walls),
@@ -1022,6 +1060,17 @@ def render_text(rep: dict[str, Any]) -> str:
                 out += [f"  - {x['name']}: {_numbers(x)}" for x in b["names"]]
         if not vtotal:
             out += ["- none in this wave"]
+    dr = rep.get("label_drift_stratum") or {}
+    if dr.get("files"):
+        out += ["", f"## Label drift ({dr['files']} file(s); {dr['counted_as']}). The split was labelled on older code; "
+                    "these files are NOT failures, gains or regressions here."]
+        for x in dr["names"]:
+            arms = ", ".join(f"{a} {'clean' if v['out_clean'] else 'not clean'} ({v['out_panel_passes']}/"
+                             f"{x.get('panel_size')})" + (" inconclusive" if v["inconclusive"] else "")
+                             for a, v in x["arms"].items())
+            out += [f"- {x['name']}: split says clean={x['split_clean']}, this commit's input verdict clean="
+                    f"{x['input_clean']} (valid {x['input_valid']}, panel {x['input_panel_passes']}/{x['panel_size']}); "
+                    f"{arms}"]
     ds = rep["declined_stratum"]
     if ds["files"]:
         out += ["", f"## Declined stratum ({ds['files']} files; expected outcome: {ds['expected_outcome']}). NOT a "
