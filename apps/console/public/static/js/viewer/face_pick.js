@@ -114,8 +114,8 @@ function light(key, box, f) {
 /* WHY THE LIGHT IS THE SKIN'S OWN TRIANGLES. The server's face is tessellated apart from the skin (a CAD face's
  * triangles are not the skin's): drawn as they are, the two surfaces cross each other a hair apart, and on a curved
  * face, at a grazing angle, the grey wins in stripes. So the light is made of the skin triangles that lie on the
- * server's face - the very triangles the part is drawn with - at the same depth, so a fixed nudge toward the eye wins
- * at every angle and never shows through anything in front of it. */
+ * server's face - the very triangles the part is drawn with - drawn after the skin at the same depth, so the depth
+ * test lets it win at every angle and never shows it through anything in front of it. */
 const ON_FACE = 0.3;      // a skin corner is on the face within this share of the face triangle's shortest edge
 const FACING = 0.3;       // ... and the skin triangle faces the same way within ~72 degrees (a wall at 90 is not)
 
@@ -230,15 +230,18 @@ function drawIn(entry, view) {
 
 function lightActor(pd) {
   const mapper = vtk.Rendering.Core.vtkMapper.newInstance(); mapper.setInputData(pd);
-  // the skin's own triangles, at the very depth of the face under them: one fixed depth step toward the eye wins
-  // over it at every angle. No slope term: on a wall seen edge-on that grows without bound and pokes the light
-  // through what is in front (vtk's default polygon factor 2 is taken back to 0 here)
-  if (mapper.setRelativeCoincidentTopologyPolygonOffsetParameters) mapper.setRelativeCoincidentTopologyPolygonOffsetParameters(-2, -1);
+  // the skin's own triangles, drawn after the skin, at its very depth sample for sample: the depth test (vtk's
+  // "less or equal") lets the light win everywhere on the face and nowhere else. No depth offset at all: vtk makes
+  // one by writing the pixel's depth from the shader, one value for the whole pixel, which at a grazing angle loses
+  // to the skin's own per-sample depths (a dim 25% red); a slope-scaled one pokes through what is in front where a
+  // wall is seen edge-on. vtk's default polygon factor 2 is taken back to 0 here.
+  if (mapper.setRelativeCoincidentTopologyPolygonOffsetParameters) mapper.setRelativeCoincidentTopologyPolygonOffsetParameters(-2, 0);
   if (mapper.setResolveCoincidentTopology) mapper.setResolveCoincidentTopology(1);
   const actor = vtk.Rendering.Core.vtkActor.newInstance(); actor.setMapper(mapper); actor.setPickable(false);
   const pr = actor.getProperty(), c = themeRgb("--accent", ACCENT);
-  pr.setColor(c[0], c[1], c[2]); pr.setAmbient(0.45); pr.setDiffuse(0.6); pr.setSpecular(0); pr.setOpacity(1);
-  return actor;
+  // mostly unlit: the accent holds at 80% from every angle (a wall turned from the light is still clearly the
+  // picked red, never a dim maroon), with a little lit shading on top so the shape still reads
+  pr.setColor(c[0], c[1], c[2]); pr.setAmbient(0.8); pr.setDiffuse(0.25); pr.setSpecular(0); pr.setOpacity(1);  return actor;
 }
 
 function unlight(key) {

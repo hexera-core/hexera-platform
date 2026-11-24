@@ -1,6 +1,7 @@
 # Responsibility: Verify in a real browser that a picked face is drawn solid in the accent from every angle (NOTE-17):
 # the bore of a tube, picked, read back pixel by pixel looking into the bore, at a grazing angle and from inside it -
-# every pixel the bore shows is the accent, none the grey of the part; from the side, where the bore is hidden behind
+# every pixel the bore shows is the accent, none the grey of the part, and the accent holds (no dim maroon where the
+# wall turns from the light: every picked pixel within a tight band of the accent); from the side, where the bore is hidden behind
 # the wall, no accent shows through; two faces at once, and a chip's x puts back the grey of that face only.
 # Boundaries: the skin is built through the worker's own code from a tube made here; the server's face (faces/at) is
 # stood in for in the page, its triangles NOT the skin's (turned half a step round the bore, wound the other way), as
@@ -165,6 +166,29 @@ def _count(live, samples, img, dpr, accent, what: str) -> tuple[int, int]:
     return lit, other
 
 
+def _band(accent) -> tuple:
+    """THE PICKED COLOUR HOLDS: every picked pixel, lit or turned from the light, stays this close to the accent -
+    its leading channel at least 70% of the accent's, the other two at most 35 above the accent's (the default
+    red 226/44/44: red >= 158, green and blue <= 79). A wall turned from the light in a lit red (53/29/28) is out."""
+    i = int(np.argmax(accent))
+    hi = max(v for k, v in enumerate(accent) if k != i) + 35
+    return i, 0.70 * accent[i], hi
+
+
+def _off_band(samples, img, dpr, accent, what: str) -> list:
+    """The samples of `what` whose colour is outside the picked band (empty when the colour held)."""
+    i, lo, hi = _band(accent)
+    w, h = img.size
+    out = []
+    for x, y, k in samples:
+        if k != what:
+            continue
+        px = img.getpixel((min(w - 1, int(x * dpr)), min(h - 1, int(y * dpr))))
+        if px[i] < lo or any(v > hi for kk, v in enumerate(px) if kk != i):
+            out.append((x, y, px))
+    return out
+
+
 def _keep(img, live, sid: str, name: str) -> None:
     """With FACEPICK_SHOTS set, the stage's canvas is kept there as <name>.png (the before/after pictures)."""
     where = os.environ.get("FACEPICK_SHOTS")
@@ -196,12 +220,15 @@ def test_a_picked_face_is_solid_from_every_angle_and_never_shows_through(live):
     got = live.evaluate(f"""(async () => [await window._vdbg.facepick.pickAt({json.dumps(hit)}),
                                           await window._vdbg.facepick.pickAt({json.dumps(hit)})])()""")
     assert got == [{"picked": "Face_3"}, {"picked": "Face_1"}], got
-    seen = {}
+    seen, off = {}, {}
     for view in ("into_bore", "grazing", "inside_bore", "side"):
         samples = _look(live, sid, view)
         img, dpr = _screen(live)
         _keep(img, live, sid, f"facepick_{view}")
         seen[view] = {k: _count(live, samples, img, dpr, accent, k) for k in ("bore", "outer", "ring")}
+        off[view] = _off_band(samples, img, dpr, accent, "bore") + _off_band(samples, img, dpr, accent, "outer")
+    # THE PICKED COLOUR HOLDS from every angle: no dim maroon where a wall turns from the light
+    assert all(not v for v in off.values()), {k: (len(v), v[:3]) for k, v in off.items()}
     for view in ("into_bore", "grazing", "inside_bore"):
         lit, other = seen[view]["bore"]
         # every pixel of the bore is the accent: no grey stripes, no part-covered face
@@ -218,6 +245,7 @@ def test_a_picked_face_is_solid_from_every_angle_and_never_shows_through(live):
     img, dpr = _screen(live)
     lit, other = _count(live, samples, img, dpr, accent, "bore")
     assert lit > 50 and other == 0, (lit, other)
+    assert not _off_band(samples, img, dpr, accent, "bore")
     assert _count(live, samples, img, dpr, accent, "outer")[0] == 0, "the outer wall stayed lit after its x"
     # FROM THE SIDE the lit bore is behind the grey outer wall: no accent shows through it anywhere
     samples = _look(live, sid, "side")
