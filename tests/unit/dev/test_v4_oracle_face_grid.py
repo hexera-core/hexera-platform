@@ -136,3 +136,69 @@ def test_rows_are_unique_so_no_verdict_is_spent_twice() -> None:
     # params hold lists (`keep: []`), so compare them by repr, as the module's own de-duplication does
     keys = [(c.op, tuple(c.targets), tuple(sorted((k, repr(v)) for k, v in c.params.items()))) for c in rows]
     assert len(keys) == len(set(keys)), [k for k in keys if keys.count(k) > 1]
+
+
+# --- depth 2: the faces a previous split MADE (LEAD-2's next thing) ------------------------------------------------
+
+
+def _diff(op: str, params: dict, modified=None, generated=None):
+    return SimpleNamespace(op=op, params=dict(params), modified=dict(modified or {}),
+                           generated=dict(generated or {}), removed=[], declared_added=[], declared_removed=[],
+                           seconds=0.1)
+
+
+def _split_state(op="split_angle", deg=60.0, made=("F9", "F10"), live=None, depth=1):
+    ids = {f: f"fp{f}" for f in (live if live is not None else [*FACES, *made])}
+    ws = SimpleNamespace(ids=ids, original="/fake/o.brep",
+                         history=[_diff(op, {"max_deg": deg} if deg else {}, modified={"F2": list(made)})])
+    return SimpleNamespace(sites=[_site("proximity", located=["F1"])], ws=ws, depth=depth, parent="S0")
+
+
+def test_depth2_aims_at_the_faces_the_SPLIT_made_not_the_ones_the_mesher_named() -> None:
+    """A11's caveat the other way round: at depth 2 the thing to aim at did not exist when the member failed."""
+    rows = g.depth2_rows(_split_state())
+    assert rows, "a split parent must produce depth-2 rows"
+    for c in rows:
+        assert set(c.targets) <= {"F9", "F10"}, c.targets
+        assert "depth2" in c.rationale and c.rationale.startswith("oracle_face_grid: "), c.rationale
+
+
+def test_depth2_angles_are_strictly_finer_than_the_parent_split() -> None:
+    """Repeating the parent's own rung divides nothing - the kernel answers "found nothing to divide"."""
+    degs = {c.params["max_deg"] for c in g.depth2_rows(_split_state(deg=60.0)) if c.op == "split_angle"}
+    assert degs == {45.0, 30.0}, degs
+    assert {c.params["max_deg"] for c in g.depth2_rows(_split_state(deg=30.0)) if c.op == "split_angle"} == set()
+    assert {c.params["max_deg"] for c in g.depth2_rows(_split_state(deg=180.0))
+            if c.op == "split_angle"} == set(g.DEPTH2_ANGLES)
+
+
+def test_depth2_fires_only_after_a_split() -> None:
+    assert g.depth2_rows(_split_state(op="defeature", deg=None)) == []
+    assert g.depth2_rows(_split_state(op="remove_small", deg=None)) == []
+    assert g.depth2_rows(SimpleNamespace(sites=[], ws=SimpleNamespace(ids={}, history=[]), depth=0)) == []
+
+
+def test_a_face_the_split_made_but_that_no_longer_lives_is_not_aimed_at() -> None:
+    """A later op can have consumed it; aiming at a dead id is a candidate the workspace refuses to resolve."""
+    rows = g.depth2_rows(_split_state(made=("F9", "F10"), live=[*FACES, "F9"]))
+    assert rows and all(c.targets == ["F9"] or set(c.targets) == {"F9"} for c in rows), [c.targets for c in rows]
+
+
+def test_a_split_that_recorded_no_new_face_is_reported_not_guessed() -> None:
+    ws = SimpleNamespace(ids={f: f"fp{f}" for f in FACES}, original="/fake/o.brep",
+                         history=[_diff("split_angle", {"max_deg": 60.0})])
+    assert g.depth2_rows(SimpleNamespace(sites=[], ws=ws, depth=1)) == []
+    assert any("recorded no new face" in n for n in g.SKIPPED), g.SKIPPED
+
+
+def test_depth2_rows_reach_the_table_through_extra_rows_and_are_not_duplicated() -> None:
+    rows = g.extra_rows(_split_state(), diagonal_mm=200.0)
+    deep = [c for c in rows if "depth2" in c.rationale]
+    assert deep, "extra_rows must include the depth-2 rows"
+    keys = [(c.op, tuple(c.targets), tuple(sorted((k, repr(v)) for k, v in c.params.items()))) for c in rows]
+    assert len(keys) == len(set(keys))
+    ws = _ws()
+    ws.ids.update({"F9": "fpF9", "F10": "fpF10"})
+    ws.indices.update({"F9": 9, "F10": 10})
+    for c in deep:
+        assert validate_call(c.op, list(c.targets), dict(c.params), ws) == [], (c.op, c.params)

@@ -173,30 +173,50 @@ def one(entry: dict, inputs: str, out: str, *, op_timeout: float = OP_TIMEOUT_S,
             # ORACLE_GRIDS overrides the list. A module that is absent adds nothing.
             grids = []
             annotate = None
-            for name in os.environ.get("ORACLE_GRIDS", "oracle_grid,oracle_grid_faces").split(","):
+            for name in os.environ.get("ORACLE_GRIDS", "oracle_grid,oracle_face_grid").split(","):
                 try:
                     mod = importlib.import_module(name.strip())
                 except ImportError:
                     continue
                 fn = getattr(mod, "extra_rows", None)
                 if fn is not None:
-                    grids.append((name, fn, len(inspect.signature(fn).parameters) >= 2))
+                    grids.append((name, fn, len(inspect.signature(fn).parameters) >= 2, mod))
                 annotate = annotate or getattr(mod, "annotate", None)
             row["grids"] = [g[0] for g in grids]
+            #: pass 2: ORACLE_GRIDS_ONLY=1 proposes only the grid modules' rows (the det sweep and the stages ran in
+            #: pass 1 on these files and found nothing; re-running them would only repeat pass 1)
+            grids_only = os.environ.get("ORACLE_GRIDS_ONLY") == "1"
+            row["grids_only"] = grids_only
             seen = {S._fingerprint(root)}
 
             def candidates(ws: Any, verdict: Any, depth: int) -> list:
                 sites = judge.sites(pool, ws, verdict)[:max_sites]
                 st = S.SearchState.__new__(S.SearchState)
                 st.ws, st.sites, st.lineage, st.depth = ws, sites, (), depth
-                cands = list(gen.propose(st, 10**6))
-                cands += [S.Candidate(S.RUN_STAGE, [], {"stage": s.name}, "oracle", f"run stage {s.name}")
-                          for s in STAGES]
-                for name, extra, takes_d0 in grids:   # extra_rows(state[, d0_mm]) -> list[search.Candidate]
+                # what the sites WERE: lanes A13/C found the det sweep gated out where a mesher failure and a layer-1
+                # finding merged into one site that takes the mesher's kind; the table needs that to tell 'not allowed'
+                # from 'no op'
+                row.setdefault("sites", []).append({"depth": depth, "sites": [
+                    {"id": x.id, "kind": x.kind, "meshers": list(x.meshers_failing),
+                     "hard": list((x.graph or {}).get("hard_codes") or []),
+                     "errors": sorted({f.get("error_kind") for f in (x.graph or {}).get("failures") or []
+                                       if f.get("error_kind")}),
+                     "coarse": bool((x.graph or {}).get("coarse")), "faces": sum(1 for e in x.entities if e[:1] == "F")}
+                    for x in sites]})
+                cands = [] if grids_only else list(gen.propose(st, 10**6))
+                if not grids_only:
+                    cands += [S.Candidate(S.RUN_STAGE, [], {"stage": s.name}, "oracle", f"run stage {s.name}")
+                              for s in STAGES]
+                for name, extra, takes_d0, mod in grids:   # extra_rows(state[, d0_mm]) -> list[search.Candidate]
+                    skipped = getattr(mod, "SKIPPED", None)
+                    before = len(skipped) if isinstance(skipped, list) else 0
                     try:
-                        cands += list(extra(st, d0) if takes_d0 else extra(st))
+                        cands += list(extra(st, d0) if takes_d0 else extra(st))   # d0: the ORIGINAL's diagonal
                     except Exception as exc:  # noqa: BLE001 - a grid extension never loses the file
                         row.setdefault("grid_errors", []).append(f"{name}: {type(exc).__name__}: {exc}"[:200])
+                    if isinstance(skipped, list) and len(skipped) > before:
+                        # lane A: a row not built for want of a size is REPORTED, never read as a measured negative
+                        row.setdefault("grid_skipped", []).extend(f"{name} d{depth}: {x}"[:300] for x in skipped[before:])
                 return cands
 
             def evaluate(ws: Any, c: Any, depth: int, path: list, base_cheap: tuple, base_valid: bool) -> dict:
