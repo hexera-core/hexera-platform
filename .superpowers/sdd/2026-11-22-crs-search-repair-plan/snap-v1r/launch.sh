@@ -14,12 +14,11 @@ set -u -o pipefail
 HERE=$(cd "$(dirname "$0")" && pwd); REPO=$(git -C "$HERE" rev-parse --show-toplevel)
 COMMIT_ARG=${1:?usage: launch.sh <commit> [profile] [--dry-run]}; PROFILE=v1r; DRY=0
 for x in "${@:2}"; do case $x in --dry-run) DRY=1;; *) PROFILE=$x;; esac; done
-KEYS="MACHINE VM_USD_PER_H DEV_SHARDS CLEAN_SHARDS TOTAL_USD MAX_RUN"   # the environment overrides the profile
+KEYS="MACHINE VM_USD_PER_H DEV_SHARDS CLEAN_SHARDS TOTAL_USD MAX_RUN IMAGE IMAGE_COMMIT"   # the environment overrides the profile
 for k in $KEYS; do eval "OVR_$k=\${$k:-}"; done
 source "$HERE/profiles/$PROFILE.env"
 for k in $KEYS; do eval "v=\$OVR_$k"; [ -n "$v" ] && eval "$k=\$v"; done
 PROJECT=hexera-dev; BUCKET=dev-crsv3-transfer-224734058693
-IMAGE_REPO=us-central1-docker.pkg.dev/hexera-dev/mesh/crsv4-mesh
 TS=$(date -u +%Y%m%d%H%M); RUN=${SNAP_RUNS:-$HOME/archductor/snap-runs}/$LABEL-$TS
 VM=dev-crsv4-snap-$LABEL; ART=$HERE/runs/$LABEL-$TS; DOC=$REPO/docs/benchmarks/crs-v4-dev-snapshot-$LABEL.md
 log() { echo "[$(date -u +%H:%M:%S)] $*" | tee -a "$RUN/launch.log"; }
@@ -61,8 +60,13 @@ import json,sys; q={x['metric']:x for x in json.load(sys.stdin)['quotas']}['C2D_
 log "C2D_CPUS free in us-central1: $FREE, need $VCPU"
 [ "$FREE" -ge "$VCPU" ] || die "C2D quota: $FREE free < $VCPU"
 gcloud compute instances list --project $PROJECT --filter="name=$VM" --format='value(name)' | grep -q . && die "a VM named $VM already exists (not mine to touch)"
-IMAGE_DIGEST=$(gcloud artifacts docker images describe "$IMAGE_REPO:native" --format='value(image_summary.digest)' 2>/dev/null) || die "image $IMAGE_REPO:native not found"
-IMAGE_REF="$IMAGE_REPO@$IMAGE_DIGEST"; log "image $IMAGE_REF"
+# the image is pinned by digest and its org.opencontainers.image.revision label must equal IMAGE_COMMIT (the commit
+# its mesh build came from; the RUN commit is bind-mounted separately and may differ)
+IMAGE_REF=${IMAGE:?set IMAGE (profile or env) to a digest-pinned image}
+IMAGE_COMMIT=${IMAGE_COMMIT:?set IMAGE_COMMIT to the full sha the image label must carry}
+LABEL_REV=$(python3 -I "$HERE/image_label.py" "$IMAGE_REF" --token "$(gcloud auth print-access-token)" --expect "$IMAGE_COMMIT") \
+  || die "image label check refused: $IMAGE_REF label '$LABEL_REV', expected $IMAGE_COMMIT"
+log "image $IMAGE_REF, label org.opencontainers.image.revision=$LABEL_REV (== IMAGE_COMMIT)"
 
 WAVE_ID_DEV=snap-$LABEL-dev-$TS; WAVE_ID_CLEAN=snap-$LABEL-clean-$TS
 cat > "$RUN/run.env" <<EOF
@@ -70,6 +74,7 @@ LABEL=$LABEL
 COMMIT=$COMMIT
 COMMIT_ARG=$COMMIT_ARG
 IMAGE_REF=$IMAGE_REF
+IMAGE_COMMIT=$IMAGE_COMMIT
 MACHINE=$MACHINE
 OPS=$OPS
 FILE_USD_CAP=$FILE_USD_CAP

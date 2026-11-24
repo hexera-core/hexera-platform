@@ -259,7 +259,7 @@ def main() -> int:
 | | |
 |---|---|
 | Code | `{env['COMMIT']}` (resolved by launch.sh from `{env.get('COMMIT_ARG', '?')}`) |
-| Image | `meshpipeline-mesh:native` = `{env.get('IMAGE_REF', '?')}`, local id `{image}` |
+| Image | `{env.get('IMAGE_REF', '?')}`, local id `{image}`. Label `org.opencontainers.image.revision` = `{env.get('IMAGE_COMMIT', '?')}`: the image's MESH BUILD (toolchain) is that commit; the RUN commit above is the code bind-mounted at `/w`, and the two may differ |
 | VM | `{vm.get('name', '?')}`, {env['MACHINE']}, {vm.get('zone', '?')}, reaper max-run {vm.get('max_run', '?')} → DELETE; created {vm.get('created', '?')}, deleted {vm.get('deleted', '?')} |
 | Splits | dev `{man['splits']['dev']['path']}` (sha256 `{man['splits']['dev']['sha256'][:16]}…`, {man['splits']['dev']['files']} files); clean `{man['splits']['clean']['path']}` (sha256 `{man['splits']['clean']['sha256'][:16]}…`, {man['splits']['clean']['files']} files) |
 | Waves | `{wd['dev']['wave']}` ({wd['dev']['n_shards']} shards, files {wd['dev']['files_per_shard']}), `{wd['clean']['wave']}` ({wd['clean']['n_shards']} shards, files {wd['clean']['files_per_shard']}); cost-balanced plans (digests `{wd['dev']['plan_digest'][:12]}`, `{wd['clean']['plan_digest'][:12]}`) |
@@ -330,7 +330,7 @@ Full tables: `reports/triage_dev.md`, `reports/triage_clean.md`.
 
 1. PROVISIONAL split ({man['splits']['dev']['files']} dev files); small and stratified by source, not by defect.
 2. The checker's run-to-run behaviour is still under Lane D's investigation; single-file differences are not effects.
-3. The `crsv4-mesh:native` image carries no `org.opencontainers.image.revision` label (Lane A job 3); the code is bind-mounted at the commit above, the image supplies only the toolchain.
+3. The image's mesh build is commit `{env.get('IMAGE_COMMIT', '?')}` (its registry label, checked before launch); the run commit is `{env['COMMIT']}`. The code under test is the run commit, bind-mounted; the image supplies only the toolchain.
 4. Rows past the file wall are excluded (288755c2); excluded files are unmeasured, not failures.
 5. Overlap depth exists only where a body op ran; see the list above for files whose depth was never measured.
 """
