@@ -266,7 +266,7 @@ done < "$RUN/vms.txt"
 FIRST=$(head -1 "$RUN/vms.txt"); FZ=$(cat "$RUN/zone.$FIRST")
 gcloud compute ssh "$FIRST" --zone "$FZ" --project $PROJECT --command \
   "set -e; cd ~/snap; gcloud storage rsync -r -q $SYNC/out out; gcloud storage rsync -r -q $SYNC/ledger ledger || true; \
-   sudo docker run --rm -v ~/snap/code:/w:ro -v ~/snap/tools:/tools:ro -v ~/snap/splits:/eval/splits:ro \
+   sudo docker run --rm -v ~/snap/code:/w:ro -v ~/snap/tools:/tools:ro -v ~/snap/splits:/eval/splits \
      -v ~/snap/out:/eval/out -w /w -e PYTHONPATH=/w/src meshpipeline-mesh:native \
      python /tools/post.py --out /eval/out --splits /eval/splits --manifest /eval/splits/launch_manifest.json \
      > ~/snap/out/post.log 2>&1 && echo 0 > ~/snap/out/post.rc || echo \$? > ~/snap/out/post.rc; \
@@ -279,7 +279,8 @@ gcloud storage rsync -r -q "$SYNC/out" "$RUN/out" >> "$RUN/launch.log" 2>&1 || f
 POST_RC=$(cat "$RUN/out/post.rc" 2>/dev/null || echo missing)
 [ "$POST_RC" = 0 ] || fail "post.py rc=$POST_RC (regroup or report refused; see out/post.log and out/reports/)"
 [ -f "$RUN/out/ALLDONE" ] || fail "no ALLDONE marker"
-UNIT_BAD=$(cat "$RUN/out"/*.rc 2>/dev/null | grep -vc '^0$' || true)
+# the UNITS' exit codes: <vm>.<group>-<shard>.rc (post.rc is the post step's, counted on its own above)
+UNIT_BAD=$(ls "$RUN/out"/*.rc 2>/dev/null | grep -v '/post\.rc$' | xargs cat 2>/dev/null | grep -vc '^0$' || true)
 [ "${UNIT_BAD:-0}" = 0 ] || fail "$UNIT_BAD shard unit(s) exited non-zero (out/*.rc)"
 ABORTS=$(ls "$RUN/out"/*.ABORTED 2>/dev/null | wc -l | tr -d ' ')
 [ "$ABORTS" = 0 ] || fail "$ABORTS VM(s) aborted staging (out/*.ABORTED)"
