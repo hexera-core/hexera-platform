@@ -1,0 +1,73 @@
+[03:48:25] profile=v2 commit=5c43220a4ce4d993c12af1a602ad0d5000fcda31 (from 5c43220a) run dir /Users/kitts/archductor/snap-runs/v2-202611240348
+[03:48:26] dev split file:/tmp/v2splits/dev.json; clean split file:/tmp/v2splits/clean.json
+OK profile=v2 file_wall=1800s dev=150 files/26 shards [5, 5, 5, 5, 5, 5, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6] clean=40 files/2 shards [20, 20]
+   caps dev [1.66, 1.66, 1.66, 1.66, 1.66, 1.66, 1.83, 1.83, 1.83, 1.83, 1.83, 1.83, 1.83, 1.83, 1.83, 1.83, 1.83, 1.83, 1.83, 1.83, 1.83, 1.83, 1.83, 1.83, 1.83, 1.83] clean [1.66, 1.66] total $49.88 (limit $49.95)
+   predicted shard minutes dev [69, 69, 69, 69, 68, 67, 68, 69, 69, 69, 69, 68, 69, 69, 68, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69] clean [20, 20]; cost source dev k=18.94 from 29 prior files
+   projection: wave ~69 min (critical shard), VM ~1.51 h ~$3.97, model ~$6.56 expected (cap $49.88); a file that walls in all 4 arms costs 120 min on its shard
+[03:48:35] C2D_CPUS free in us-central1: 60, need 56
+[03:48:38] image us-central1-docker.pkg.dev/hexera-dev/mesh/crsv4-mesh@sha256:3e8c6fae170342bbb53cf63685c2e49a77f0e6ab042e308a1f038a82e05e3592, label org.opencontainers.image.revision=1d6ed735f7284609a269ca314c15ff6b0e359d4b (== IMAGE_COMMIT)
+Created [https://www.googleapis.com/compute/v1/projects/hexera-dev/zones/us-central1-b/instances/dev-crsv4-snap-v2].
+WARNING: Some requests generated warnings:
+ - Disk size: '100 GB' is larger than image size: '10 GB'. You might need to resize the root repartition manually if the operating system does not support automatic resizing. See https://cloud.google.com/compute/docs/disks/add-persistent-disk#resize_pd for details.
+
+NAME               ZONE           MACHINE_TYPE     PREEMPTIBLE  INTERNAL_IP  EXTERNAL_IP    STATUS
+dev-crsv4-snap-v2  us-central1-b  c2d-standard-56               10.128.0.86  34.46.118.198  RUNNING
+[03:48:48] VM dev-crsv4-snap-v2 up in us-central1-b at 2026-11-24T03:48:48Z (reaper: max-run 5h, DELETE)
+[03:50:49] running; polling every 2 min for out/ALLDONE
+[03:52:52] status: staged=190 bad=0 0 
+[03:54:56] status: staged=190 bad=0 0 
+[03:56:59] status: staged=190 bad=0 0 
+[03:59:02] status: staged=190 bad=0 0 
+[04:01:06] status: staged=190 bad=0 2 
+[04:03:09] status: staged=190 bad=0 2 
+[04:05:12] status: staged=190 bad=0 2 
+[04:07:16] status: staged=190 bad=0 2 
+[04:09:18] status: staged=190 bad=0 2 
+[04:11:21] status: staged=190 bad=0 2 
+[04:13:24] status: staged=190 bad=0 2 
+[04:15:28] status: staged=190 bad=0 2 
+[04:17:31] status: staged=190 bad=0 2 
+[04:19:34] status: staged=190 bad=0 2 
+[04:21:37] status: staged=190 bad=0 2 
+[04:23:41] status: staged=190 bad=0 2 
+[04:25:44] status: staged=190 bad=0 2 
+[04:27:46] status: staged=190 bad=0 2 
+[04:29:50] status: staged=190 bad=0 2 
+[04:31:53] status: staged=190 bad=0 2 
+[04:33:56] status: staged=190 bad=0 2 
+[04:35:59] status: staged=190 bad=0 2 
+[04:38:02] status: staged=190 bad=0 2 
+[04:40:05] status: staged=190 bad=0 2 
+[04:42:09] status: staged=190 bad=0 2 
+[04:44:12] status: staged=190 bad=0 2 
+[04:46:15] status: staged=190 bad=0 2 
+[04:48:18] status: staged=190 bad=0 2 
+[04:50:21] status: staged=190 bad=0 2 
+[04:52:24] status: staged=190 bad=0 2 
+[04:54:27] status: staged=190 bad=0 2 
+[04:56:31] status: staged=190 bad=0 2 
+[04:58:34] status: staged=190 bad=0 2 
+[05:00:37] status: staged=190 bad=0 2 
+[05:02:40] status: staged=190 bad=0 2 
+[05:04:44] status: staged=190 bad=0 2 
+[05:06:46] status: staged=190 bad=0 2 
+[05:08:49] status: staged=190 bad=0 2 
+[05:10:53] status: staged=190 bad=0 2 
+[05:12:56] status: staged=190 bad=0 2 
+[05:14:59] status: staged=190 bad=0 2 
+[05:17:02] status: staged=190 bad=0 2 
+[05:19:05] status: staged=190 bad=0 2 
+[05:21:08] status: staged=190 bad=0 2 
+[05:23:11] status: staged=190 bad=0 2 
+[05:25:14] status: staged=190 bad=0 2 
+[05:27:18] status: staged=190 bad=0 2 
+[05:29:21] status: staged=190 bad=0 2 
+[05:31:24] status: staged=190 bad=0 2 
+[05:33:27] status: staged=190 bad=0 2 
+[05:35:31] status: staged=190 bad=0 2 
+[05:37:35] status: staged=190 bad=0 2 
+[05:39:38] status: staged=190 bad=0 2 
+[05:41:42] status: staged=190 bad=0 3 ALLDONE 
+[05:41:50] search traces: 0 file(s) in /Users/kitts/archductor/snap-runs/v2-202611240348/traces.tgz
+Deleted [https://www.googleapis.com/compute/v1/projects/hexera-dev/zones/us-central1-b/instances/dev-crsv4-snap-v2].
+[05:42:10] VM delete rc=0; list: []

@@ -277,8 +277,8 @@ def excluded_group(rows: list[dict], exc: list[dict], wall: float) -> str:
         by[e["sha256"]]["excluded"][e["arm"]] = e["reason"]
     for r in rows:
         if r["sha256"] in by:
-            by[r["sha256"]]["measured"][r["arm"]] = ("clean" if r["out_clean"] else "not clean") + (
-                " (inconclusive)" if r["inconclusive"] else "")
+            by[r["sha256"]]["measured"][r["arm"]] = ("inconclusive (unmeasured search)" if r.get("inconclusive")
+                                                     else "clean" if r.get("out_clean") else "not clean")
     reasons = Counter(reason_key(e["reason"]) for e in exc)
     lines = [f"**{len(by)} file(s), {len(exc)} excluded (file, arm) rows** ({', '.join(f'{k} {v}' for k, v in reasons.items())}). "
              f"File wall {wall:.0f} s.", "",

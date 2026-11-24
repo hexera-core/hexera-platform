@@ -1,0 +1,37 @@
+# Failure triage: /eval/out/snap-v2-clean-202611240348
+
+Counts are files (one row per file and arm) unless 'candidates'. Only conclusive, NOT clean outputs are explained; inconclusive and excluded files are counted apart, because nothing about the part made them so.
+
+## Leads (largest first)
+
+| arm | what | key | files | of not clean | candidates |
+|---|---|---|---|---|---|
+
+## input_only
+
+files 40: clean 40, NOT clean 0, inconclusive rows 0, excluded 0 (-)
+
+layer-1 hard findings: -
+deviation: faithful failed on 0, over the bound on 0; budget used -; reasons -
+
+## search_ai
+
+files 40: clean 40, NOT clean 0, inconclusive rows 0, excluded 0 (-)
+
+layer-1 hard findings: -
+deviation: faithful failed on 0, over the bound on 0; budget used -; reasons -
+
+## search_det
+
+files 40: clean 40, NOT clean 0, inconclusive rows 0, excluded 0 (-)
+
+layer-1 hard findings: -
+deviation: faithful failed on 0, over the bound on 0; budget used -; reasons -
+
+## staged
+
+files 40: clean 40, NOT clean 0, inconclusive rows 0, excluded 0 (-)
+
+layer-1 hard findings: -
+deviation: faithful failed on 0, over the bound on 0; budget used -; reasons -
+
