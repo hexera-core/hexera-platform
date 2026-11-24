@@ -439,13 +439,16 @@ def main() -> int:  # noqa: PLR0915 - one linear script: read, plan, refuse, wri
             f"REFUSED: {len(floor_)} model shards need at least ${probe_usd:.2f} each (the route probe's own "
             f"reservation), which is ${sum(floor_.values()):.2f}, over the ${a.total_usd:.2f} total. Raise "
             f"--total-usd to ${sum(floor_.values()):.2f} or more, or cut the model shards (raise --target-min).")
-    rest = sum(demand[key] - floor_[key] for key in demand)
+    # ONLY a shard whose demand EXCEEDS its floor shares what is left. A shard with few files demands LESS than
+    # the probe reservation, and the old arithmetic then scaled it BELOW its own floor - a 1-file clean shard came
+    # out at $0.95 against a $1.00 probe and would have exited 6 with no row. The floor is a floor.
+    rest = sum(max(0.0, demand[key] - floor_[key]) for key in demand)
     scale = min(1.0, left / rest) if rest > 0 else 0.0
     for u in units:
         key = (u["group"], u["shard"])
         if u["uses_model"]:
-            u["cap_usd"] = min(slice_cap[u["group"]],
-                               math.floor(100 * (floor_[key] + (demand[key] - floor_[key]) * scale)) / 100)
+            share = floor_[key] + max(0.0, demand[key] - floor_[key]) * scale
+            u["cap_usd"] = max(floor_[key], min(slice_cap[u["group"]], math.floor(100 * share) / 100))
         else:
             u["cap_usd"] = round(a.file_usd_cap, 2)   # nominal: this group's arms make no model calls
     # unreachable if the floor above held; kept because a silent sub-probe cap costs a whole arm
