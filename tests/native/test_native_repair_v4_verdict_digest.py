@@ -79,3 +79,25 @@ def test_layer_3_side_facts_are_reused_and_change_nothing(tmp_path) -> None:
     assert second == first and faithful_kernel._FACTS.hits >= 2 and faithful_kernel._FACTS.misses == misses
     faithful_kernel._FACTS = WorkerMemo(16)
     assert faithful_kernel._faithful_check(payload) == first
+
+
+def test_the_geometry_key_survives_a_step_round_trip_and_moves_with_a_real_edit(tmp_path) -> None:
+    """C16: the digest changes on a STEP round trip of unchanged geometry; `geometry_key` must not, and must still
+    change when the geometry does."""
+    from OCP.IFSelect import IFSelect_RetDone
+    from OCP.STEPControl import STEPControl_AsIs, STEPControl_Reader, STEPControl_Writer
+
+    from meshpipeline.cad.repair_v4.verdict.shape_digest import geometry_key
+
+    shape = _compound(_box(0.0), _box(20.0, size=5.0))
+    writer = STEPControl_Writer()
+    writer.Transfer(shape, STEPControl_AsIs)
+    assert writer.Write(str(tmp_path / "rt.step")) == IFSelect_RetDone
+    reader = STEPControl_Reader()
+    assert reader.ReadFile(str(tmp_path / "rt.step")) == IFSelect_RetDone
+    reader.TransferRoots()
+    again = reader.OneShape()
+
+    assert geometry_key(again) == geometry_key(shape)
+    assert geometry_key(_compound(_box(0.0), _box(20.001, size=5.0))) != geometry_key(shape)  # moved 1 um
+    assert geometry_key(_compound(_box(0.0), _box(20.0, size=5.001))) != geometry_key(shape)  # grown 1 um
