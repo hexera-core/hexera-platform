@@ -247,12 +247,13 @@ def _plain_solids(shape, tol: float, diag: float) -> tuple[Any, int, int]:
     return comp, made, _faces_in(comp) if made else 0
 
 
-def _solidified(shape, diag: float) -> tuple[Any, int, int] | None:
+def _solidified(shape, diag: float, seen: dict | None = None) -> tuple[Any, int, int] | None:
     """SHELL-15j: the file's loose faces read as the solids they bound THE WAY THE MID-SURFACE EXTRACTION READS THEM
     (cad/midsurface.solidify, SHELL-15): a surface written in another form (an IGES file's surface of revolution or
     B-spline) re-made as the plane, cylinder, cone, sphere or torus it is, the sewing tolerance measured from the
     faces' own gaps, bodies that touch kept apart, a sealed cavity put into its body, every solid checked valid.
-    Returns (the compound of those solids, how many, how many faces they hold); None when it makes none or fails."""
+    Returns (the compound of those solids, how many, how many faces they hold); None when it makes none or fails.
+    TIME-10: its volume maker stops at SOLIDIFY_LIMIT_S (`seen` is then told "solidify_unfinished": None)."""
     from OCP.BRep import BRep_Builder
     from OCP.BRepCheck import BRepCheck_Analyzer
     from OCP.TopAbs import TopAbs_SOLID
@@ -262,7 +263,7 @@ def _solidified(shape, diag: float) -> tuple[Any, int, int] | None:
     from meshpipeline.cad import midsurface as ms
 
     try:
-        read_as, _notes = ms.solidify(shape, 1.0)
+        read_as, _notes = ms.solidify(shape, 1.0, volumes_limit_s=SOLIDIFY_LIMIT_S)
         comp = TopoDS_Compound()
         b = BRep_Builder()
         b.MakeCompound(comp)
@@ -278,18 +279,24 @@ def _solidified(shape, diag: float) -> tuple[Any, int, int] | None:
             b.Add(comp, solid)
             made += 1
         return (comp, made, _faces_in(comp)) if made else None
+    except ms.VolumesStopped:
+        # TIME-10: the volume maker ran past its limit - the plain sewing stands, and the run says so
+        logger.warning("fea driver: the loose faces' volume maker ran past %.0f s and was stopped", SOLIDIFY_LIMIT_S)
+        if seen is not None:
+            seen["solidify_unfinished"] = SOLIDIFY_LIMIT_S
+        return None
     except Exception as exc:  # noqa: BLE001 - the plain sewing stands
         logger.warning("fea driver: the loose faces were not read as the extraction reads them (%s)",
                        type(exc).__name__)
         return None
 
 
-#: TIME-10 (rulebook 77): THE SECOND READING OF A FILE'S LOOSE FACES (_solidified) RUNS IN A PROCESS OF ITS OWN AND
-#: STOPS AT THIS MANY SECONDS; the plain stitch's reading then stands, and the run says so. Its volume maker
-#: (cad/midsurface._volumes_of) is unbounded: on a public 1,423-face IGES assembly it ran 930 s and then failed, while
-#: the plain stitch had already closed every face into 2 solids in 1.5 s
+#: TIME-10 (rulebook 77): THE VOLUME MAKER OF THE SECOND READING OF A FILE'S LOOSE FACES (_solidified, through
+#: cad/midsurface._volumes_of) RUNS IN A PROCESS OF ITS OWN AND STOPS AT THIS MANY SECONDS; the plain stitch's reading
+#: then stands, and the run says so. Unbounded it ran 930 s on a public 1,423-face IGES assembly and then failed, while
+#: the plain stitch had already closed every face into 2 solids in 1.5 s. 3 times the slowest second reading measured
+#: that made a solid (104 s, a public impeller)
 SOLIDIFY_LIMIT_S = 300.0
-SOLIDIFY_ENTRY = "meshpipeline.engines.fea_driver:solidified_file"
 SOLIDIFY_RULE = "TIME-10"
 
 
@@ -297,55 +304,6 @@ def solidify_unfinished_words(limit_s: float = SOLIDIFY_LIMIT_S) -> str:
     """TIME-10's one line for the user."""
     return (f"Joining your file's faces the slower, finer way did not finish in {limit_s / 60:g} minutes, so they "
             "were joined by plain stitching alone. The mesh goes ahead.")
-
-
-def solidified_file(path: str, diag: float, out: str) -> list[int] | None:
-    """TIME-10: _solidified on the staged file at `path` (the bounded child's work): its solids written to `out`,
-    [how many, how many faces they hold] returned; None when it makes none."""
-    from OCP.BRepTools import BRepTools
-
-    from meshpipeline.cad.scout import read_cad
-
-    got = _solidified(read_cad(Path(path)), float(diag))
-    if got is None:
-        return None
-    BRepTools.Write_s(got[0], out)
-    return [int(got[1]), int(got[2])]
-
-
-def _solidified_bounded(step: Path, shape, diag: float, seen: dict | None) -> tuple[Any, int, int] | None:
-    """TIME-10: _solidified in a process of its own, stopped at SOLIDIFY_LIMIT_S (`seen` is then told
-    "solidify_unfinished"); None when it makes none, fails or is stopped - the plain reading stands. Judged here
-    only when the child could not be started."""
-    import tempfile
-
-    from OCP.BRep import BRep_Builder
-    from OCP.BRepTools import BRepTools
-    from OCP.TopoDS import TopoDS_Shape
-
-    from meshpipeline.cad import midsurface as ms
-
-    with tempfile.TemporaryDirectory(prefix="solidify_") as tmp:
-        out = str(Path(tmp) / "solids.brep")
-        try:
-            status, got = ms.run_bounded(SOLIDIFY_ENTRY, {"path": str(step), "diag": diag, "out": out},
-                                         SOLIDIFY_LIMIT_S)
-        except OSError as exc:
-            logger.warning("fea driver: the second reading could not be started beside the run (%s)", exc)
-            return _solidified(shape, diag)
-        if status == "timeout":
-            logger.warning("fea driver: the second reading of the loose faces ran past %.0f s and was stopped",
-                           SOLIDIFY_LIMIT_S)
-            if seen is not None:
-                seen["solidify_unfinished"] = SOLIDIFY_LIMIT_S
-            return None
-        if status != "ok" or not isinstance(got, list) or len(got) != 2:
-            if status != "ok":
-                logger.warning("fea driver: the second reading stopped with no answer (%s)", got)
-            return None
-        comp = TopoDS_Shape()
-        BRepTools.Read_s(comp, out, BRep_Builder())
-        return comp, int(got[0]), int(got[1])
 
 
 #: MESH-1b: the share of the file's face area the solids read from its shells must hold to stand for the file (the
@@ -391,7 +349,7 @@ def solids_from_shells(ws: Path, seen: dict | None = None) -> int:
         return 0
     diag = float(math.dist(tuple(lo), tuple(hi)))
     comp, made, held = _plain_solids(shape, SEW_TOLERANCE * diag, diag)
-    read_as = _solidified_bounded(step, shape, diag, seen)
+    read_as = _solidified(shape, diag, seen)
     if read_as is not None and read_as[2] >= held:
         comp, made, held = read_as
     if made and (share := _held_share(shape, comp)) < SOLIDS_HOLD_SHARE:
@@ -3393,5 +3351,5 @@ def driver_for(state):
 
 __all__ = ["FEA_USUAL_FILL_RATES", "kept_plans", "memory_measured", "size_choice", "MIXED_GATE", "SHELL_RUN_LIMIT_S", "mesh_as_of", "shell_pass", "connection_of", "element_target", "target_plan", "prepare_assembly", "restage_tied", "BYTES_PER_ELEMENT", "MESH_JOB_MEMORY_GIB", "limit_facts", "memory_elements", "FILL_RATES", "FLOOR_STEPS", "WORKSPACE_BYTES_PER_ELEMENT", "memory_need", "MESH_JOB_LIMIT_S", "VM_CEILING_S", "attempt_left_s", "ceiling_for", "planned_seconds", "choose_plan",
            "complexity", "element_limit", "fill_rate", "watchdog_words", "BUILD_FAILED", "GUARD_TRIP", "NO_SOURCE", "QUALITY_GATE", "applies", "drive",
-           "driver_for", "SOLIDIFY_LIMIT_S", "SOLIDIFY_RULE", "solidified_file", "solidify_unfinished_words",
+           "driver_for", "SOLIDIFY_LIMIT_S", "SOLIDIFY_RULE", "solidify_unfinished_words",
            "NOT_RUN", "NOT_RUN_GATE", "not_run", "not_run_words", "ladder_facts", "ladder_words", "make_plan", "measure_staged", "planned_work", "write_plan"]

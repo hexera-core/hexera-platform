@@ -5,11 +5,15 @@
 # mesher, no store.
 from __future__ import annotations
 
+import tempfile
+from pathlib import Path
+
 import pytest
 
 pytest.importorskip("OCP.BRepPrimAPI")
 pytest.importorskip("gmsh")
 
+from OCP.TopAbs import TopAbs_FACE  # noqa: E402
 from tests import surface_fixtures as sx  # noqa: E402
 from tests.unit.engines.test_surface_run import _stage  # noqa: E402
 
@@ -19,21 +23,20 @@ from meshpipeline.engines import fea_driver as FD  # noqa: E402
 from meshpipeline.engines import surface_run  # noqa: E402
 
 
-def _faces(path):
+def test_the_volume_maker_beside_the_run_makes_the_same_volumes_as_here():
+    # a 40 mm box written as its six faces: the bounded child's volumes are the in-process ones
     from meshpipeline.cad.scout import read_cad
 
-    return FD._faces_in(read_cad(path))
+    ws = _stage(sx.closed_skin(40.0, 40.0, 40.0), Path(tempfile.mkdtemp()) / "ws")
+    faces = ms._faces(read_cad(FD.staged_solid(ws)))
+    here, there = ms._volumes_of(faces, 1e-7), ms._volumes_bounded(faces, 1e-7, 120.0)
+    assert len(here) == len(there) == 1
+    assert [ms._map(v, TopAbs_FACE).Extent() for v in there] == [ms._map(v, TopAbs_FACE).Extent() for v in here]
+    assert abs(ms._volume(there[0]) - ms._volume(here[0])) <= 1e-12 * abs(ms._volume(here[0]))
 
 
-def test_the_second_reading_runs_beside_the_run_and_gives_the_same_solid(tmp_path):
-    # a 40 mm box written as its six faces: the bounded child reads it as the in-process reading does
-    ws = _stage(sx.closed_skin(40.0, 40.0, 40.0), tmp_path / "ws")
-    seen: dict = {}
-    assert FD.solids_from_shells(ws, seen) == 1
-    assert seen == {"closed": 1} and _faces(ws / "geometry.brep") == 6
-
-
-def test_a_second_reading_past_its_limit_leaves_the_plain_stitch_and_is_told(tmp_path, monkeypatch):
+def test_a_volume_maker_past_its_limit_stops_the_second_reading(monkeypatch):
+    # open surfaces: the sewing closes no body, so the volume maker runs - here faked as stopped at its limit
     calls = []
 
     def stopped(entry, kwargs, deadline_s):
@@ -41,23 +44,23 @@ def test_a_second_reading_past_its_limit_leaves_the_plain_stitch_and_is_told(tmp
         return "timeout", None
 
     monkeypatch.setattr(ms, "run_bounded", stopped)
+    with pytest.raises(ms.VolumesStopped):
+        ms.solidify(sx.bracket(), 1.0, volumes_limit_s=FD.SOLIDIFY_LIMIT_S)
+    assert calls == [(ms.VOLUMES_ENTRY, FD.SOLIDIFY_LIMIT_S)] and FD.SOLIDIFY_LIMIT_S == 300.0
+
+
+def test_a_stopped_second_reading_leaves_the_plain_stitch_and_is_told(tmp_path, monkeypatch):
+    def stopped(shape, mm, *, volumes_limit_s=None):
+        assert volumes_limit_s == FD.SOLIDIFY_LIMIT_S
+        raise ms.VolumesStopped("stopped")
+
+    monkeypatch.setattr(ms, "solidify", stopped)
     ws = _stage(sx.closed_skin(40.0, 40.0, 40.0), tmp_path / "ws")
     seen: dict = {}
     assert FD.solids_from_shells(ws, seen) == 1                    # the plain stitch's solid stands
-    assert calls == [(FD.SOLIDIFY_ENTRY, FD.SOLIDIFY_LIMIT_S)] and FD.SOLIDIFY_LIMIT_S == 300.0
     assert seen == {"closed": 1, "solidify_unfinished": FD.SOLIDIFY_LIMIT_S}
     words = FD.solidify_unfinished_words()
     assert "did not finish in 5 minutes" in words and "plain stitching" in words and "goes ahead" in words
-
-
-def test_a_child_that_cannot_start_is_read_here(tmp_path, monkeypatch):
-    def cannot(entry, kwargs, deadline_s):
-        raise OSError("no process")
-
-    monkeypatch.setattr(ms, "run_bounded", cannot)
-    ws = _stage(sx.closed_skin(40.0, 40.0, 40.0), tmp_path / "ws")
-    seen: dict = {}
-    assert FD.solids_from_shells(ws, seen) == 1 and seen == {"closed": 1}
 
 
 def test_the_closed_skin_check_stops_at_its_limit_and_is_not_a_skin(tmp_path, monkeypatch):
