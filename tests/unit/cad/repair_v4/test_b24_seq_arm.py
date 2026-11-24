@@ -594,5 +594,12 @@ def test_can_aim_fails_SHUT_on_an_op_it_has_no_rule_for() -> None:
 
 def test_low_qualitys_demotion_is_evidence_now_and_the_rollback_entry_is_UNTOUCHED() -> None:
     assert seq.RULE_TABLE["low_quality"] == (("split_by_proximity",), ("reapproximate",))
-    # the cheap-score rollback entry applied 4 of 9 in 2110 and 3 of 9 in 2007: it leads and stays leading
-    assert seq.RULE_TABLE["overlapping_facets"][0] == ("split_angle", "run_stage:condition")
+    # LEAD-3: C23's `split_aligned` now LEADS overlapping_facets - it is the op for the MEASURED mechanism of the
+    # kind (nearby curved faces whose discretisations cross; on f9501251fb30 all three gmsh members stopped failing
+    # boundary recovery). The cheap-score rollback entry is NOT demoted relative to its alternatives - it applied
+    # 4 of 9 in 2110 and 3 of 9 in 2007, so it stays ahead of every remove_small entry; a new leader is not a
+    # demotion. Both halves are pinned so neither lane's intent can be lost in a merge again.
+    table = seq.RULE_TABLE["overlapping_facets"]
+    assert table[0] == ("split_aligned",)
+    assert table[1] == ("split_angle", "run_stage:condition")
+    assert table.index(("split_angle", "run_stage:condition")) < table.index(("remove_small", "split_angle"))
