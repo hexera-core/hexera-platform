@@ -63,7 +63,7 @@ def part_diagonal(payload: dict, shape: Any) -> float:
     size 2.8x looser; the fidelity bounds are capped at 0.1 mm on any part over 100 mm), so this is a consistency fix:
     a threshold belongs to the part as it arrived, measured once (plain and optimal agree within 0-3% on 40 of 42 dev
     overlap inputs), and must not drift from state to state along a lineage. (An earlier "78x / 34.66 m" figure was
-    retracted by Lane A: it was inferred from a D18 sliver width, never measured.)
+    retracted by Lane A: it was inferred from a D18 sliver width, never measured.)"""
     from meshpipeline.cad.repair_v4.units import UNBOUNDED_DIAGONAL_MM
 
     given = payload.get("part_diag_mm")
