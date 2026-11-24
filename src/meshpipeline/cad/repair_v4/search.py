@@ -431,6 +431,8 @@ _MAX_PAIRS = 16  # split_by_proximity's maxItems
 #: body pairs an overlap site sweeps `cut_by` over, each both ways (which body is kept is exactly what the sweep cannot
 #: know; the kernel refuses an overlap deeper than the fidelity bound or a volume change over its cap either way)
 _MAX_CUT_PAIRS = 3
+#: trim_unbounded's padding, as a share of the part's finite diagonal: Raymond Lee's 1% (devtools/simplify), then 5%
+_TRIM_PADS = (0.01, 0.05)
 #: a coarse site's angle splits: the two settings the staged healer's condition stage does not use (it runs 90)
 _COARSE_ANGLES = (60, 45)
 
@@ -871,6 +873,10 @@ class DetGenerator:
                     for keep in (a, b):
                         rows.append(("conformalise", [a, b], {"mode": f"cut_by:{keep}", "fuzzy_mm": 0.0},
                                      f"cut the overlap out of the other body, keeping {keep}"))
+                # after both cuts: one body instead of two (a body inside another, two copies of one body), which the
+                # owner's 2026-11-24 goal allows (lane C7)
+                for a, b in list(itertools.combinations(solids, 2))[:_MAX_CUT_PAIRS]:
+                    rows.append(("fuse", [a, b], {"fuzzy_mm": 0.0}, f"fuse {a} and {b} into one body"))
             if len(faces) >= 2:
                 rows.append(
                     (
@@ -880,6 +886,10 @@ class DetGenerator:
                         "remove coincident duplicate faces",
                     )
                 )
+        if kind == "unbounded":
+            for pad in _TRIM_PADS:
+                rows.append(("trim_unbounded", [], {"pad_fraction": pad},
+                             f"bound the infinite surfaces to the part's extent plus {pad:g} of its diagonal"))
         return rows
 
 

@@ -366,21 +366,18 @@ def test_cut_by_within_the_bound_is_valid_and_faithful(pool: WorkerPool, tmp_pat
     assert diff.removed and set(diff.removed) == set(diff.declared_removed)
 
 
-def test_cut_by_beyond_the_bound_declines_without_clamping(pool: WorkerPool, tmp_path: Path) -> None:
+def test_cut_by_beyond_the_old_bound_cuts_and_reports_the_depth(pool: WorkerPool, tmp_path: Path) -> None:
+    """Lane C7, the owner's 2026-11-24 goal: the fidelity bound no longer gates an edit. A 5 mm overlap (50x the old
+    bound) is cut; its measured depth is REPORTED in the Diff instead of refusing the op."""
     ws = _overlap_ws(pool, tmp_path, 5.0)
     keeper, other = _bodies(ws)
-    siblings = sorted(p.name for p in tmp_path.iterdir())
-
     new, diff = Conformalise().apply(pool, ws, [keeper, other],
                                      {"mode": f"cut_by:{keeper}"}, timeout_s=TIMEOUT)
-
-    assert diff.params["declined"] == "exceeds_fidelity"
-    assert new is ws and new.brep_path == ws.brep_path
-    assert diff.modified == {} and diff.removed == [] and diff.declared_removed == []
-    assert sorted(p.name for p in tmp_path.iterdir()) == siblings  # nothing was written
-    # A decline is not a clamp: the part on disk still overlaps by the full 5 mm.
-    a, b = _solids(_read(ws.brep_path))
-    assert _common_volume(a, b) == pytest.approx(100 * 100 * 5.0, rel=1e-6)
+    assert "declined" not in diff.params, diff.params
+    (overlap,) = diff.params["measured"]["overlaps"]
+    assert overlap["depth_mm"] == pytest.approx(5.0, rel=1e-3) and overlap["depth_mm"] > overlap["bound_mm"]
+    a, b = _solids(_read(new.brep_path))
+    assert _common_volume(a, b) < 1e-6
 
 
 def test_fuzzy_above_the_bound_declines(pool: WorkerPool, tmp_path: Path) -> None:
@@ -399,8 +396,10 @@ def test_fragment_never_resolves_an_overlap_by_adding_bodies(pool: WorkerPool, t
     assert new is ws
 
 
-def test_fuse_is_not_an_op_and_not_a_mode(pool: WorkerPool, tmp_path: Path) -> None:
-    assert [op.name for op in OPS] == ["conformalise", "remove_duplicate_faces"]
+def test_fuse_is_its_own_op_never_a_conformalise_mode(pool: WorkerPool, tmp_path: Path) -> None:
+    """Lane C7: the no-fuse rule is gone, and fuse is an op of its own (tests/native/test_native_repair_v4_c7_body_ops.py),
+    not a hidden mode of conformalise."""
+    assert [op.name for op in OPS] == ["conformalise", "remove_duplicate_faces", "fuse", "trim_unbounded"]
     assert "fuse" not in Conformalise.params_schema["properties"]["mode"]["pattern"]
     ws = _overlap_ws(pool, tmp_path, 0.05)
     with pytest.raises(ValueError):
@@ -466,16 +465,16 @@ def test_fuzzy_within_the_bound_closes_a_rounding_gap(pool: WorkerPool, tmp_path
     assert BRepCheck_Analyzer(out).IsValid()
 
 
-def test_thin_but_vast_cut_is_declined_on_volume_change(pool: WorkerPool, tmp_path: Path) -> None:
-    """Depth 0.05 mm passes the length bound, but it removes 5% of a 1 mm plate: over the 2% cap."""
+def test_thin_but_vast_cut_is_cut_and_its_volume_change_reported(pool: WorkerPool, tmp_path: Path) -> None:
+    """It removes 5% of a 1 mm plate: over the old 2% cap, which no longer gates (lane C7); the share is reported."""
     shape = _compound(_box(0, 0, 0, 100, 100, 100), _box(99.95, 0, 0, 1, 100, 100))
     ws = Workspace.from_brep(pool, _write(shape, tmp_path / "plate.brep"))
     keeper, plate = _bodies(ws)
     new, diff = Conformalise().apply(pool, ws, [keeper, plate],
                                      {"mode": f"cut_by:{keeper}"}, timeout_s=TIMEOUT)
-    assert diff.params["declined"] == "exceeds_fidelity"
-    assert diff.params["detail"]["what"] == "volume_change"
-    assert new is ws
+    assert "declined" not in diff.params, diff.params
+    (overlap,) = diff.params["measured"]["overlaps"]
+    assert overlap["volume_fraction"] == pytest.approx(0.05, rel=1e-3)
 
 
 # ---- the overlap DEPTH is how far a cut moves the victim's surface (lane B6/B7) -----------------
@@ -525,14 +524,13 @@ def test_a_thin_inclined_overlap_under_the_bound_is_cut_not_declined(pool: Worke
     assert _common_volume(s1, s2) < 1e-6 and _shared_faces(out) >= 1
 
 
-def test_a_thick_inclined_overlap_is_still_declined_on_its_real_depth(pool: WorkerPool, tmp_path: Path) -> None:
+def test_a_thick_inclined_overlap_is_cut_and_reports_its_real_depth(pool: WorkerPool, tmp_path: Path) -> None:
     ws = _inclined_slab_ws(pool, tmp_path, 0.5)
     keeper, other = _bodies(ws)
     _, diff = Conformalise().apply(pool, ws, [keeper, other], {"mode": f"cut_by:{keeper}"}, timeout_s=TIMEOUT)
-    assert diff.params["declined"] == "exceeds_fidelity"
-    detail = diff.params["detail"]
-    assert detail["what"] == "overlap_depth" and detail["method"] == "measured"
-    assert detail["value"] == pytest.approx(0.5, rel=0.05)
+    assert "declined" not in diff.params, diff.params
+    (overlap,) = diff.params["measured"]["overlaps"]
+    assert overlap["method"] == "measured" and overlap["depth_mm"] == pytest.approx(0.5, rel=0.05)
 
 
 def test_the_depth_is_the_surface_movement_for_a_slab_and_a_corner_cube() -> None:

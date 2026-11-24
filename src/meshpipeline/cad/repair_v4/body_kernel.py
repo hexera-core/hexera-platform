@@ -317,16 +317,18 @@ def _ids(payload: dict, kind: str, indices: list[int]) -> list[str]:
 
 def _finish(payload: dict, old: Any, stages: list[tuple[Any, Any]], targets: list[Any], new_solids: list[Any],
             *, op: str, params: dict, start: float, must_merge: list[tuple[int, int]] | None = None,
-            require_shared: bool = False) -> dict:
-    """Assemble the new compound, check it, write it, and build the workspace record."""
+            require_shared: bool = False, expected_solids: int | None = None) -> dict:
+    """Assemble the new compound, check it, write it, and build the workspace record. `expected_solids`: the solid
+    count the op means to leave (a fuse, a cut that splits or removes its victim); None means unchanged."""
     from OCP.TopTools import TopTools_IndexedMapOfShape
 
     drop = TopTools_IndexedMapOfShape()
     for s in targets:
         drop.Add(s)
     new = _rebuild(old, drop, new_solids)
-    if _solid_count(new) != _solid_count(old):
-        return _declined("changes_body_count", before=_solid_count(old), after=_solid_count(new))
+    want = _solid_count(old) if expected_solids is None else expected_solids
+    if _solid_count(new) != want:
+        return _declined("changes_body_count", before=_solid_count(old), after=_solid_count(new), expected=want)
     if not _is_valid(new):
         return _declined("invalid_result")
     if require_shared and _shared_face_count(new) == 0:
@@ -400,8 +402,11 @@ def _conformalise(payload: dict) -> dict:
     if mode != "fragment" and keeper is None:
         raise ValueError(f"mode {mode!r} needs a cut_by body")
 
-    # Every overlap is measured BEFORE anything is changed, so a decline leaves nothing half done.
+    # Every overlap is measured BEFORE anything is changed, so a decline leaves nothing half done. The depth, method
+    # and volume are RECORDED, never a reason to decline: the owner's 2026-11-24 goal removed the fidelity gate (lane C7;
+    # clean = valid + panel, faithfulness reported), so a cut at any depth is the verdict's to judge.
     cuts: list[Any] = []
+    measured: list[dict] = []
     for i, a in enumerate(targets):
         for b in targets[i + 1:]:
             volume = _common_volume(a, b, fuzzy)
@@ -412,13 +417,8 @@ def _conformalise(payload: dict) -> dict:
                 return _declined("unresolved_overlap", volume=volume)
             victim = b if a.IsSame(keeper) else a
             volume, depth, method = _cut_depth(victim, keeper, fuzzy)
-            if depth > bound:
-                return _declined("exceeds_fidelity", what="overlap_depth", value=depth,
-                                 bound=bound, volume=volume, method=method)
-            fraction = volume / max(_volume(victim), 1e-12)
-            if fraction > MAX_VOLUME_CHANGE:
-                return _declined("exceeds_fidelity", what="volume_change", value=fraction,
-                                 bound=MAX_VOLUME_CHANGE, volume=volume)
+            measured.append({"depth_mm": depth, "method": method, "volume_mm3": volume, "bound_mm": bound,
+                             "volume_fraction": volume / max(_volume(victim), 1e-12)})
             cuts.append(victim)
 
     from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
@@ -433,20 +433,22 @@ def _conformalise(payload: dict) -> dict:
         cut.SetFuzzyValue(fuzzy)
         cut.SetToFillHistory(True)
         cut.Build()
-        if not cut.IsDone() or _solid_count(cut.Shape()) != 1:
-            return _declined("changes_body_count", detail="cut did not leave exactly one body")
+        if not cut.IsDone():
+            return _declined("cut_failed", detail="BRepAlgoAPI_Cut did not complete")
+        # a deep cut may leave the victim in several pieces, or in none (a body inside its keeper): both are what the
+        # cut means, and the body count is reported by layer 3, not refused here (lane C7)
+        pieces = [_maps(cut.Shape())["solid"].FindKey(k) for k in range(1, _solid_count(cut.Shape()) + 1)]
         stages.append((cut.History(), victim))
-        current = [_maps(cut.Shape())["solid"].FindKey(1) if t.IsSame(victim) else t
-                   for t in current]
+        current = [p for t in current for p in (pieces if t.IsSame(victim) else [t])]
     frag = _builder(current, fuzzy)
     stages.append((frag.History(), None))
     result_solids = _maps(frag.Shape())["solid"]
     new_solids = [result_solids.FindKey(i) for i in range(1, result_solids.Extent() + 1)]
-    if len(new_solids) != len(targets):
-        return _declined("changes_body_count", before=len(targets), after=len(new_solids))
-    params = {"bodies": payload.get("body_ids", []), "fuzzy_mm": fuzzy, "mode": mode}
+    params = {"bodies": payload.get("body_ids", []), "fuzzy_mm": fuzzy, "mode": mode,
+              "measured": {"overlaps": measured, "solids_before": len(targets), "solids_after": len(new_solids)}}
     return _finish(payload, old, stages, targets, new_solids, op="conformalise", params=params,
-                   start=start, require_shared=True)
+                   start=start, require_shared=len(new_solids) >= 2,
+                   expected_solids=_solid_count(old) - len(targets) + len(new_solids))
 
 
 def _faces_coincide(a: Any, b: Any, tol: float) -> bool:
@@ -499,3 +501,129 @@ def _remove_duplicate_faces(payload: dict) -> dict:
     params = {"pairs": [list(p) for p in payload.get("pair_ids", [])]}
     return _finish(payload, old, [(frag.History(), None)], parents, new_solids,
                    op="remove_duplicate_faces", params=params, start=start, must_merge=pairs)
+
+
+@register("v4_fuse")
+def _fuse(payload: dict) -> dict:
+    """Fuse the target bodies into one (BRepAlgoAPI_Fuse, non-destructive, with history). The owner's 2026-11-24 goal
+    removed the no-fuse rule (lane C7): an overlap the cut cannot or should not resolve - a body inside another, two
+    copies of one body, two halves meant to be one - becomes one solid, and the panel judges it. The body count change
+    is reported by layer 3, not refused. Bodies that do not touch decline `nothing_to_fuse` (a fuse that merged nothing
+    would read as progress)."""
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Fuse
+
+    start = time.perf_counter()
+    old = read_brep(payload["brep_path"])
+    targets = _targets(old, payload["bodies"])
+    if len(targets) < 2:
+        raise ValueError("fuse needs at least two bodies")
+    fuzzy = float(payload.get("fuzzy_mm", 0.0))
+    measured = []
+    for i, a in enumerate(targets):
+        for b in targets[i + 1:]:
+            measured.append({"common_volume_mm3": _common_volume(a, b, fuzzy)})
+    op = BRepAlgoAPI_Fuse()
+    op.SetArguments(_list(targets[:1]))
+    op.SetTools(_list(targets[1:]))
+    op.SetNonDestructive(True)
+    op.SetFuzzyValue(fuzzy)
+    op.SetToFillHistory(True)
+    op.Build()
+    if not op.IsDone():
+        return _declined("fuse_failed", detail="BRepAlgoAPI_Fuse did not complete")
+    solids = _maps(op.Shape())["solid"]
+    new_solids = [solids.FindKey(i) for i in range(1, solids.Extent() + 1)]
+    if not new_solids:
+        return _declined("fuse_failed", detail="the fuse produced no solid")
+    if len(new_solids) >= len(targets):
+        return _declined("nothing_to_fuse", detail="the bodies do not touch or overlap: nothing merged",
+                         bodies=len(targets))
+    params = {"bodies": payload.get("body_ids", []), "fuzzy_mm": fuzzy,
+              "measured": {"pairs": measured, "solids_before": len(targets), "solids_after": len(new_solids)}}
+    return _finish(payload, old, [(op.History(), None)], targets, new_solids, op="fuse", params=params, start=start,
+                   expected_solids=_solid_count(old) - len(targets) + len(new_solids))
+
+
+#: a coordinate this far from the origin is OpenCascade's Precision::Infinite (2e100) or a surface standing in for it,
+#: never a part (the threshold `units.UNBOUNDED_DIAGONAL_MM` applies to the diagonal; the same value per coordinate)
+_UNBOUNDED_COORD = 1e9
+
+
+def _bounded_extent(shape: Any) -> tuple[Any, int, int]:
+    """(the box of the faces that HAVE a finite extent, how many faces were left out as unbounded, how many faces in
+    all). After the rule in raymond/cad-simplification `cad/occ_box.surface_box` (A. Patil): a face on an untrimmed
+    surface has an infinite box and is no part of the surface any engine meshes, so it is left out of the size."""
+    from OCP.Bnd import Bnd_Box
+    from OCP.BRepBndLib import BRepBndLib
+    from OCP.TopAbs import TopAbs_FACE
+    from OCP.TopExp import TopExp_Explorer
+
+    box, skipped, total = Bnd_Box(), 0, 0
+    exp = TopExp_Explorer(shape, TopAbs_FACE)
+    while exp.More():
+        face = exp.Current()
+        exp.Next()
+        total += 1
+        own = Bnd_Box()
+        BRepBndLib.AddOptimal_s(face, own, False, False)
+        if own.IsVoid() or any(abs(float(v)) >= _UNBOUNDED_COORD for v in own.Get()):
+            skipped += 1
+            continue
+        box.Add(own)
+    return box, skipped, total
+
+
+@register("v4_trim_unbounded")
+def _trim_unbounded(payload: dict) -> dict:
+    """Bound a part's infinite surfaces to its real extent: BRepAlgoAPI_Common of the part with its finite-face box
+    enlarged by `pad_fraction` of the diagonal on every side. The approach is Raymond Lee's (raymond/cad-simplification,
+    devtools/simplify: `Common(shape, MakeBox(lo - pad, hi + pad))`), copied, not merged. The faces the box
+    contributes are DECLARED added. Declines `nothing_unbounded` when every face already has a finite extent, and
+    `no_bounded_extent` when no face does (no real size to trim to)."""
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Common
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
+    from OCP.gp import gp_Pnt
+    from OCP.TopTools import TopTools_IndexedMapOfShape
+
+    start = time.perf_counter()
+    old = read_brep(payload["brep_path"])
+    box, skipped, total = _bounded_extent(old)
+    if skipped == 0:
+        return _declined("nothing_unbounded", faces=total)
+    if box.IsVoid():
+        return _declined("no_bounded_extent", faces=total, unbounded_faces=skipped)
+    x0, y0, z0, x1, y1, z1 = box.Get()
+    diag = ((x1 - x0) ** 2 + (y1 - y0) ** 2 + (z1 - z0) ** 2) ** 0.5
+    pad = max(float(payload["pad_fraction"]) * diag, 1e-6)
+    tool = BRepPrimAPI_MakeBox(gp_Pnt(x0 - pad, y0 - pad, z0 - pad), gp_Pnt(x1 + pad, y1 + pad, z1 + pad)).Shape()
+    op = BRepAlgoAPI_Common()
+    op.SetArguments(_list([old]))
+    op.SetTools(_list([tool]))
+    op.SetNonDestructive(True)
+    op.SetToFillHistory(True)
+    op.Build()
+    if not op.IsDone():
+        return _declined("trim_failed", detail="BRepAlgoAPI_Common did not complete")
+    new = op.Shape()
+    new_faces = _maps(new)["face"]
+    if new_faces.Extent() == 0:
+        return _declined("trim_failed", detail="nothing of the part is inside its own box")
+    if diagonal_of(new) >= _UNBOUNDED_COORD:
+        return _declined("trim_failed", detail="the result is still unbounded")
+    # a face of the result that is no image of an old face came from the box: it is the trim's own addition
+    images = TopTools_IndexedMapOfShape()
+    old_faces = _maps(old)["face"]
+    hist = op.History()
+    for i in range(1, old_faces.Extent() + 1):
+        f = old_faces.FindKey(i)
+        for m in [f, *list(hist.Modified(f)), *list(hist.Generated(f))]:
+            images.Add(m)
+    added = [i for i in range(1, new_faces.Extent() + 1) if not images.Contains(new_faces.FindKey(i))]
+    write_brep(new, payload["out_path"])
+    params = {"pad_fraction": float(payload["pad_fraction"]), "added_face_indices": added,
+              "measured": {"unbounded_faces": skipped, "faces_before": total, "faces_after": new_faces.Extent(),
+                           "bounded_diagonal_mm": diag, "pad_mm": pad}}
+    record = history_record(old, new, hist, op="trim_unbounded", params=params, old_path=payload["brep_path"],
+                            new_path=payload["out_path"], quantum=payload["quantum"],
+                            seconds=time.perf_counter() - start)
+    return {"record": record}

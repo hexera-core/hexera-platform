@@ -202,6 +202,7 @@ def _one_site_per_kind() -> list[Site]:
         _site("self_overlap", ["F1", "F2"], nodes=free, edges=bad_edge),
         _site("overlap", ["F1", "F2", "B1", "B2"], nodes=free, edges=bad_edge),
         _site("intersection", ["F1", "F2", "B1", "B2"], edges=bad_edge),
+        _site("unbounded", []),
     ]
 
 
@@ -359,3 +360,35 @@ def test_part_wide_rows_wait_while_any_site_is_placed() -> None:
     assert _of(got, "split_angle") == [] and _of(got, "split_continuity") == []
     alone, _ = _propose([_coarse()])
     assert _of(alone, "split_angle")
+
+
+# --- lane C7: fuse, cut_by at any depth, trim_unbounded (the owner's 2026-11-24 goal) -----------------------------
+
+
+def test_an_overlap_site_sweeps_both_cuts_then_a_fuse_for_each_pair() -> None:
+    got, _ = _propose([_overlap("B1", "B2")], ws=_ws(solids=("B1", "B2")))
+    assert _of(got, "fuse") == [(["B1", "B2"], {"fuzzy_mm": 0.0})]
+    modes = [p["mode"] for _, p in _of(got, "conformalise")]
+    assert modes.index("cut_by:B1") < len(modes) and "cut_by:B2" in modes  # the det arm tries which body yields
+
+
+def test_an_unbounded_site_sweeps_trim_unbounded_at_raymonds_pad_then_a_wider_one() -> None:
+    got, _ = _propose([_site("unbounded", [])])
+    assert _of(got, "trim_unbounded") == [([], {"pad_fraction": 0.01}), ([], {"pad_fraction": 0.05})]
+
+
+def test_the_c7_proposals_are_inside_their_ops_schemas() -> None:
+    got, _ = _propose([_overlap("B1", "B2"), _site("unbounded", [])], ws=_ws(solids=("B1", "B2")))
+    for c in got:
+        if c.op in ("fuse", "trim_unbounded", "conformalise"):
+            assert validate_call(c.op, list(c.targets), dict(c.params), _ws(solids=("B1", "B2"))) == [], c
+
+
+def test_fuse_and_trim_unbounded_are_registered_with_bounded_schemas() -> None:
+    from meshpipeline.cad.repair_v4.ops import REGISTRY
+
+    assert REGISTRY["fuse"].params_schema["x-targets"] == {"kind": "solid", "min": 2, "max": None}
+    assert REGISTRY["trim_unbounded"].params_schema["properties"]["pad_fraction"] == {
+        "type": "number", "minimum": 0.001, "maximum": 0.25}
+    assert validate_call("fuse", ["B1"], {}, _ws(solids=("B1", "B2")))  # one body is not a fuse
+    assert validate_call("trim_unbounded", ["F1"], {"pad_fraction": 0.01}, _ws())  # it takes no targets
