@@ -101,3 +101,23 @@ def test_a_mesher_defect_meshes_the_touched_region_alone_with_the_member_that_fa
     assert got.detail["member"] == "gmsh_default" and got.detail["touched"] == [c]
     assert got.gone and got.detail["member_status"] == "pass"
     assert got.detail["region_passed_before"] is True  # a box meshes alone: the local mesh cannot see a defect here
+
+
+def test_a_repair_that_pushes_the_clash_onto_a_neighbour_is_a_new_defect(pool: WorkerPool, tmp_path: Path) -> None:
+    """B moved off A (the defect is gone) but into C, which it only touched before: a NEW body_overlap B/C, so the
+    repair is not kept. The moved state is written by hand and joined to the lineage by a history entry naming B."""
+    import dataclasses
+
+    from meshpipeline.cad.repair_v4.workspace import Diff
+
+    before = Workspace.from_brep(pool, _write([_box(0, 50), _box(46, 50), _box(96, 30)], tmp_path / "b.brep"))
+    moved = Workspace.from_brep(pool, _write([_box(0, 50), _box(50, 50), _box(96, 30)], tmp_path / "a.brep"))
+    a, b, c = _body_at(pool, before, 10), _body_at(pool, before, 80), _body_at(pool, before, 110)
+    assert (_body_at(pool, moved, 10), _body_at(pool, moved, 80), _body_at(pool, moved, 110)) == (a, b, c)
+    after = dataclasses.replace(moved, history=[*before.history, Diff("move", {}, {}, {b: []}, [], [], [], 0.0)])
+    defect = Defect("s1", "validity", "body_overlap", (a, b), pairs=((a, b),))
+
+    got = verify_local(pool, before, after, defect, pair=(a, b), timeout_s=TIMEOUT)
+    assert got.gone and got.pairs[0].gone
+    assert got.new_hard == [{"code": "body_overlap", "entities": sorted([b, c])}]
+    assert got.outcome == "new_defect" and got.line().startswith(f"new defect: body_overlap on {'/'.join(sorted([b, c]))}")
