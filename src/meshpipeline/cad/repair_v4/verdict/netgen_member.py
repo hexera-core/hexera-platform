@@ -27,7 +27,7 @@ from typing import Literal
 from meshpipeline.cad.repair_v4.kernel_calls import register
 from meshpipeline.cad.repair_v4.verdict import panel
 from meshpipeline.cad.repair_v4.verdict.mesh_child import MIN_SICN
-from meshpipeline.cad.repair_v4.verdict.panel import INFRASTRUCTURE_KIND, MemberResult
+from meshpipeline.cad.repair_v4.verdict.panel import INFRASTRUCTURE_KIND, Located, MemberResult
 from meshpipeline.cad.repair_v4.worker_pool import CallResult, WorkerPool
 
 NETGEN_PYTHON = "/opt/netgen-env/bin/python"
@@ -211,6 +211,18 @@ class NetgenOCC:
         )
 
 
+def _face_located(rec: dict) -> list:
+    """The face Netgen named in its failure, by the box fingerprint gmsh's member uses (`mesh_child._located`), which
+    `sites.find_sites` translates to the live face. Netgen's face numbering is its own; the box is not."""
+    from meshpipeline.cad.repair.identity import fingerprint_of, quantum_for
+
+    box, diag = rec.get("face_box"), rec.get("diag")
+    if not isinstance(box, list) or len(box) != 6 or not diag:
+        return []
+    entity = fingerprint_of("face", {"bbox_min": box[:3], "bbox_max": box[3:]}, quantum=quantum_for(float(diag)))
+    return [Located(entity, None, f"netgen face {rec.get('face')}")] if entity else []
+
+
 def member_result(
     name: str, rec: dict, seconds: float, timeouts: int = 0, kills: int = 0, skipped: bool = False
 ) -> MemberResult:
@@ -225,10 +237,10 @@ def member_result(
 
     def result(
         status: Status, kind: str | None, message: str, *, sicn: float | None = None, elements: int = 0,
-        cause: str | None = None,
+        cause: str | None = None, located: list | None = None,
     ) -> MemberResult:
         return MemberResult(
-            name=name, status=status, error_kind=kind, message=message, located=[],
+            name=name, status=status, error_kind=kind, message=message, located=located or [],
             min_sicn=sicn, elements=elements, seconds=seconds, cause=cause,
         )
 
@@ -251,7 +263,7 @@ def member_result(
             return result("crashed", "netgen_crash", message, cause=f"exit_{code}")
         if stage in ("unavailable", "import"):
             return result("crashed", INFRASTRUCTURE_KIND, message, cause="toolchain_absent")
-        return result("fail", _FAIL_KINDS.get(stage, "netgen_failed"), message)
+        return result("fail", _FAIL_KINDS.get(stage, "netgen_failed"), message, located=_face_located(rec))
     tets, sicn = int(rec["tets"]), rec.get("min_sicn")
     if tets == 0 or sicn is None:
         return result("fail", "no_tets", "Netgen mesh has no tetrahedra")

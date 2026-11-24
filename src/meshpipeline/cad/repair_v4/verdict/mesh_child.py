@@ -33,8 +33,10 @@ differences (OCC scale, element size, 2D or 3D algorithm) drives a disagreement,
 
 from __future__ import annotations
 
+import contextlib
 import math
-from collections.abc import Sequence
+import re
+from collections.abc import Iterator, Sequence
 
 MIN_SICN = 0.01
 #: Set in every child before it meshes. These ARE gmsh 4.15.2's defaults (so no verdict changes), pinned so a
@@ -153,14 +155,18 @@ def _read_algorithms(gmsh) -> list[int]:
 
 
 def _tet_qualities(gmsh) -> list[float]:
+    return _tets_and_qualities(gmsh)[1]
+
+
+def _tets_and_qualities(gmsh) -> tuple[list[int], list[float]]:
     import numpy as np
 
     types, tags, _nodes = gmsh.model.mesh.getElements(3)
     tets = [np.asarray(t, dtype=np.uint64) for kind, t in zip(types, tags, strict=True) if int(kind) in _TET_TYPES]
     if not tets:
-        return []
-    ids = np.concatenate(tets)
-    return [float(q) for q in gmsh.model.mesh.getElementQualities([int(i) for i in ids], "minSICN")]
+        return [], []
+    ids = [int(i) for i in np.concatenate(tets)]
+    return ids, [float(q) for q in gmsh.model.mesh.getElementQualities(ids, "minSICN")]
 
 
 def _message(kind: str | None, qualities: Sequence[float]) -> str:
@@ -174,6 +180,114 @@ def _message(kind: str | None, qualities: Sequence[float]) -> str:
     if kind == "inverted_elements":
         return f"{sum(1 for q in qualities if not q >= 0.0)} inverted element(s)"
     return f"minimum SICN {min(qualities):.4g} is below {MIN_SICN}"
+
+
+#: What gmsh's 3D back-ends print, to the process's stdout and not to `gmsh.logger`, when they fail: TetGen's
+#: "Found two duplicated facets. 1st: [203, 271, 282] #19" and HXT's "el1 = np = 3 204 324 326". Mesh NODE ids,
+#: which the live 2D mesh turns into coordinates and the surfaces they lie on. Lane C5: the exception text gmsh
+#: raises ("PLC Error: A segment and a facet intersect at point", "HXT 3D mesh failed") carries neither.
+_FACET_NODES = re.compile(r"\[\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\]\s*#\s*\d+")
+_TRIANGLE_NODES = re.compile(r"\bel[12]\s*=\s*np\s*=\s*3\s+(\d+)\s+(\d+)\s+(\d+)")
+MAX_OUTPUT_TRIANGLES = 6
+#: a low-quality mesh is located at this many of its worst tets
+WORST_TETS = 3
+_STDOUT_KEEP = 200_000
+
+
+def triangles_in(text: str) -> list[tuple[int, int, int]]:
+    """The node triples gmsh's 3D back-ends printed, each once, in order, at most MAX_OUTPUT_TRIANGLES."""
+    found: list[tuple[int, int, int]] = []
+    for line in text.splitlines():
+        for match in (*_FACET_NODES.finditer(line), *_TRIANGLE_NODES.finditer(line)):
+            tri = (int(match.group(1)), int(match.group(2)), int(match.group(3)))
+            if tri not in found:
+                found.append(tri)
+                if len(found) >= MAX_OUTPUT_TRIANGLES:
+                    return found
+    return found
+
+
+def worst(ids: Sequence[int], qualities: Sequence[float], n: int) -> list[int]:
+    """The `n` element ids of lowest quality (NaN counts as lowest), lowest first."""
+    order = sorted(range(len(ids)), key=lambda i: qualities[i] if qualities[i] == qualities[i] else -math.inf)
+    return [int(ids[i]) for i in order[:n]]
+
+
+def located_from_nodes(gmsh, groups: Sequence[Sequence[int]], boxes: dict[int, tuple], scale: float,
+                       quantum: float, *, boundary_only: bool = False) -> list[dict]:
+    """Locations from groups of mesh nodes (a failing triangle, a bad tet): the surfaces the nodes lie on, named by
+    their box fingerprint as `_located` names them, and one point per group (the centroid, in mm). With
+    `boundary_only` the point is the centroid of the nodes on a surface, curve or vertex (a tet's interior centroid is
+    on no face). A node gmsh does not know is skipped; a surface with no box gives no fingerprint."""
+    from meshpipeline.cad.repair.identity import fingerprint_of
+
+    surfaces: list[int] = []
+    points: list[dict] = []
+    for group in groups:
+        coords: list[list[float]] = []
+        for node in group:
+            try:
+                coord, _param, dim, tag = gmsh.model.mesh.getNode(int(node))
+            except Exception:  # noqa: BLE001, S112 - gmsh raises a plain Exception for an unknown node: skip it
+                continue
+            if int(dim) == 2 and int(tag) not in surfaces:
+                surfaces.append(int(tag))
+            if not boundary_only or int(dim) < 3:
+                coords.append([float(v) for v in coord])
+        if coords:
+            centre = [sum(c[a] for c in coords) / len(coords) / scale for a in range(3)]
+            points.append({"entity": None, "xyz": centre, "mesher_tag": "nodes " + ",".join(str(n) for n in group)})
+    named: list[dict] = []
+    for tag in surfaces[:MAX_OUTPUT_TRIANGLES]:
+        box = boxes.get(tag)
+        if box is None:
+            continue
+        mm = [v / scale for v in box]
+        entity = fingerprint_of("face", {"bbox_min": mm[:3], "bbox_max": mm[3:]}, quantum=quantum)
+        if entity:
+            named.append({"entity": entity, "xyz": None, "mesher_tag": f"surface {tag}"})
+    return named + points[:MAX_OUTPUT_TRIANGLES]
+
+
+@contextlib.contextmanager
+def _captured_stdout() -> Iterator[dict]:
+    """The C-level stdout AND stderr of the block (TetGen and HXT print with printf, TetGen's "duplicated facets" to
+    stderr), as `holder["text"]`. File-descriptor level, because nothing gmsh's back-ends write passes through Python's
+    `sys.stdout`. What was captured is also written back to the real descriptors afterwards, so nothing the caller
+    used to see (a crash's stderr tail) is lost."""
+    import ctypes
+    import os
+    import sys
+    import tempfile
+
+    holder: dict = {"text": ""}
+    try:
+        libc = ctypes.CDLL(None)
+    except OSError:
+        libc = None
+    sys.stdout.flush()
+    sys.stderr.flush()
+    saved = {fd: os.dup(fd) for fd in (1, 2)}
+    with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
+        os.dup2(out.fileno(), 1)
+        os.dup2(err.fileno(), 2)
+        try:
+            yield holder
+        finally:
+            if libc is not None:
+                libc.fflush(None)
+            sys.stdout.flush()
+            sys.stderr.flush()
+            for fd, keep in saved.items():
+                os.dup2(keep, fd)
+                os.close(keep)
+            texts = []
+            for fd, sink in ((1, out), (2, err)):
+                sink.seek(0)
+                data = sink.read()
+                os.write(fd, data[-_STDOUT_KEEP:])
+                texts.append(data[-_STDOUT_KEEP:].decode("utf-8", errors="replace"))
+            holder["text"] = "\n".join(texts)
 
 
 def _located(failure, boxes: dict[int, tuple], scale: float, quantum: float) -> list[dict]:
@@ -243,22 +357,38 @@ def run_in_process(payload: dict) -> dict:
             for key, value in options.items():
                 _set(gmsh, key, value)
             stage = STAGE_2D
-            gmsh.model.mesh.generate(2)
-            stage = STAGE_3D
-            gmsh.model.mesh.generate(3)
+            with _captured_stdout() as printed:
+                gmsh.model.mesh.generate(2)
+                stage = STAGE_3D
+                gmsh.model.mesh.generate(3)
         except Exception as exc:  # noqa: BLE001 - narrowed on the next line
             if not is_gmsh_error(exc):
                 raise  # a MemoryError, a numpy error, our own option read-back: never a finding about the file
             failure = classify(str(exc), gmsh.logger.get(), stage=stage)
             failed_kind = "import_failed" if stage == STAGE_IMPORT else failure.kind
-            located = _located(failure, boxes, scale, quantum_for(_diagonal(boxes) / scale))
-            return _answer("fail", failed_kind, failure.message, located, algorithms=_read_algorithms(gmsh))
-        qualities = _tet_qualities(gmsh)
+            quantum = quantum_for(_diagonal(boxes) / scale)
+            where = _located(failure, boxes, scale, quantum)
+            if stage != STAGE_IMPORT:
+                try:  # best effort, as for a low-quality mesh below
+                    where += [x for x in located_from_nodes(gmsh, triangles_in(printed["text"]), boxes, scale,
+                                                            quantum) if x not in where]
+                except Exception:  # noqa: BLE001
+                    pass
+            return _answer("fail", failed_kind, failure.message, where, algorithms=_read_algorithms(gmsh))
+        ids, qualities = _tets_and_qualities(gmsh)
         status, kind = judge(qualities)
         finite = [q for q in qualities if math.isfinite(q)]
         message = _message(kind, qualities)
+        located: list[dict] | None = None
+        if status == "fail" and ids:  # a mesh exists, so its worst elements say where it went wrong
+            try:  # WHERE is best effort: a failure to locate never changes or breaks the verdict
+                groups = [list(gmsh.model.mesh.getElement(tag)[1]) for tag in worst(ids, qualities, WORST_TETS)]
+                located = located_from_nodes(gmsh, groups, boxes, scale, quantum_for(_diagonal(boxes) / scale),
+                                             boundary_only=True)
+            except Exception:  # noqa: BLE001
+                located = None
         return _answer(
-            status, kind, message, None, min(finite) if finite else None, len(qualities), _read_algorithms(gmsh)
+            status, kind, message, located, min(finite) if finite else None, len(qualities), _read_algorithms(gmsh)
         )
     finally:
         try:

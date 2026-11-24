@@ -398,6 +398,8 @@ _MAX_PAIRS = 16  # split_by_proximity's maxItems
 #: body pairs an overlap site sweeps `cut_by` over, each both ways (which body is kept is exactly what the sweep cannot
 #: know; the kernel refuses an overlap deeper than the fidelity bound or a volume change over its cap either way)
 _MAX_CUT_PAIRS = 3
+#: a coarse site's angle splits: the two settings the staged healer's condition stage does not use (it runs 90)
+_COARSE_ANGLES = (60, 45)
 
 # The ops below used to be reachable ONLY from the AI proposer during the search - the last two only after the
 # pre-search staged healer had had its single go at them (`stages._edges` / `stages._faces`; lane C3's smaller
@@ -548,9 +550,13 @@ class DetGenerator:
 
         if self.recipes is not None and len(self.recipes) and diag is None:
             diag = sized()                    # a replayed step's millimetres are fractions of THIS part's diagonal
+        # part-wide rows only when NOTHING is placed: aim where there is evidence first (a placed site beside a coarse
+        # one turned Task 47's one-hole repair from 5 ops into 11)
+        only_coarse = all((s.graph or {}).get("coarse") for s in sites)
         for site in sites:
+            coarse_rows = self._coarse_rows(site, state.ws, sized) if only_coarse else []
             for op, targets, params, why in [*self._recipe_rows(site, diag), *self._sweep(site, diag),
-                                             *self._coverage(site, sized)]:
+                                             *self._coverage(site, sized), *coarse_rows]:
                 if op not in REGISTRY:
                     continue
                 key = json.dumps([op, list(targets), params], sort_keys=True, default=str)
@@ -699,6 +705,34 @@ class DetGenerator:
                 for share in _REFIT_SHARES:
                     rows.append(("refit_cluster", list(faces), {"tol_mm": share * bound},
                                  f"refit the {len(faces)} faces as one within {share:g} of the bound"))
+        return rows
+
+    def _coarse_rows(self, site: Site, ws: Workspace,
+                     sized: Callable[[], float | None]) -> list[tuple[str, list[StableId], dict, str]]:
+        """A COARSE site (a failure no member placed, or a layer-1 finding that names only a body; `sites._coarse_site`)
+        gets part-wide conditioning instead of nothing: the angle split at the two settings the staged healer did not
+        use (it ran 90 deg), the continuity split at C2 (it ran C1), and `remove_small` on EXACTLY the small faces and
+        edges the checker reported (the op refuses any wider target). Lane C5."""
+        coarse = (site.graph or {}).get("coarse")
+        if not coarse:
+            return []
+        faces = sorted((sid for sid in ws.ids if sid[:1] == "F"), key=lambda s: int(s[1:]) if s[1:].isdigit() else 0)
+        why = f"part-wide, because {coarse.get('reason', 'no member said where')}"
+        rows: list[tuple[str, list[StableId], dict, str]] = []
+        if faces:
+            for deg in _COARSE_ANGLES:
+                rows.append(("split_angle", faces, {"max_deg": deg}, f"split every face at {deg} deg ({why})"))
+            rows.append(("split_continuity", faces, {"order": 2}, f"split every face at C2 breaks ({why})"))
+        small = [x["entity"] for x in (site.graph or {}).get("soft") or []
+                 if x.get("code") in ("small_face", "small_edge") and x.get("entity") in ws.ids]
+        if small:
+            diag = sized()
+            if diag is None or diag > UNBOUNDED_DIAGONAL_MM:
+                self._note(f"site {site.id}: remove_small not proposed: {self._why_no_size(diag)}")
+            else:
+                for width in scaled_sliver_widths(diag):
+                    rows.append(("remove_small", list(dict.fromkeys(small)), {"max_width_mm": width},
+                                 f"remove the {len(small)} small entities the checker found ({why})"))
         return rows
 
     @staticmethod
@@ -1076,7 +1110,8 @@ def open_site_count(sites: list[Site]) -> int:
     carries (`graph["free_loops_total"]`, the uncapped count; every open site carries the same part-wide list),
     or at least one per `open` site when the loops could not be read. This is the number of `fill_loop`s the
     deterministic sweep can make, so it is the number of non-improving rounds a repair may need before its volume."""
-    open_sites = [s for s in sites if s.kind == "open"]
+    # a coarse site (`sites._coarse_site`: a member that said nothing about where) is not a hole of its own
+    open_sites = [s for s in sites if s.kind == "open" and not (s.graph or {}).get("coarse")]
     loops = max((int(s.graph.get("free_loops_total") or len(s.graph.get("free_loops") or ())) for s in open_sites),
                 default=0)
     return max(loops, len(open_sites))
@@ -1281,7 +1316,8 @@ def search(
                 score=state.score,
                 clean=bool(state.verdict.clean),
                 sites=[
-                    {"id": s.id, "kind": s.kind, "entities": s.entities, "meshers_failing": s.meshers_failing}
+                    {"id": s.id, "kind": s.kind, "entities": s.entities, "meshers_failing": s.meshers_failing,
+                     "coarse": bool((s.graph or {}).get("coarse"))}
                     for s in state.sites
                 ],
                 unfixable=declared_unfixable,

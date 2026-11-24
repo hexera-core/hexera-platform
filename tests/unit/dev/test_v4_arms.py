@@ -296,6 +296,19 @@ def test_search_triage_counts_each_fate_and_keeps_the_top_reasons() -> None:
                            {"op": "run_stage", "source": "ai", "parent": None, "score": None}]
 
 
+def test_search_triage_counts_sites_by_how_well_they_are_placed() -> None:
+    from meshpipeline.cad.repair_v4.trace import Trace
+
+    t = Trace()
+    t.record("expand", state="s0", sites=[{"kind": "proximity", "entities": ["F1"], "coarse": False},
+                                          {"kind": "invalid", "entities": ["B1"], "coarse": True},
+                                          {"kind": "unlocated", "entities": [], "coarse": False},
+                                          {"kind": "open", "entities": []}])
+    t.record("stop", reason="exhausted", best="s0")
+    s = run_arm.arms_mod.search_triage(SimpleNamespace(trace=t, ai=[], ai_capped=False, ai_stop_reason=None), [])
+    assert s["sites_by_placement"] == {"located": 1, "coarse": 1, "unlocated": 2}
+
+
 def test_search_triage_records_each_evaluated_candidates_verdict_delta() -> None:
     from meshpipeline.cad.repair_v4.trace import Trace
 

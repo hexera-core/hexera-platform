@@ -72,6 +72,8 @@ _MESHER_KINDS: dict[str, SiteKind] = {
     "open_loop": "open",
     "no_volume": "open",
     "periodic_surface": "periodic",
+    # a mesh that exists but is too poor: thin or near-touching geometry is the usual cause (lane C5)
+    "low_quality": "proximity",
     "pole": "pole",
     "timeout": "timeout",
 }
@@ -350,6 +352,7 @@ def find_sites(pool: WorkerPool, ws: Workspace, verdict: Any, *, h_mm: float,
     nodes: dict[StableId, _Node] = {}
     points: list[_Node] = []
     whole_part: dict[SiteKind, set[str]] = defaultdict(set)
+    unplaced: dict[str, SiteKind] = {}  # member -> its kind, for the members that said nothing about where
     whole_codes: dict[SiteKind, set[str]] = defaultdict(set)  # which layer-1 codes put a site on the whole part
 
     def implicate(entity: StableId | None, xyz: tuple | None, kind: SiteKind, source: str,
@@ -404,7 +407,10 @@ def find_sites(pool: WorkerPool, ws: Workspace, verdict: Any, *, h_mm: float,
                 implicate(None, xyz, kind, member.name, note)
                 used = True
         if not used:
-            whole_part["timeout" if kind == "timeout" else "unlocated"].add(member.name)
+            if kind == "timeout":
+                whole_part["timeout"].add(member.name)
+            else:
+                unplaced[member.name] = kind
     for finding in hard:
         resolved = _kernel_entities(ws, list(finding.entities), reverse)
         for sid in resolved:
@@ -423,6 +429,12 @@ def find_sites(pool: WorkerPool, ws: Workspace, verdict: Any, *, h_mm: float,
         sites.extend(_geometric_sites(pool, ws, valid, nodes, points, reverse, h_mm))
     for kind, names in whole_part.items():
         sites.append(Site("", kind, [], [], sorted(names), None, {"hard_codes": sorted(whole_codes.get(kind, ()))}, None))
+    if unplaced:
+        sites.append(_coarse_site(ws, valid, unplaced, reverse))
+    for site in sites:
+        if site.entities and not any(e[:1] in "FE" for e in site.entities) and not site.graph.get("coarse"):
+            # a layer-1 finding that names only a BODY (self_intersection on S6): no face to aim at, so it is coarse
+            site.graph["coarse"] = {"reason": "the finding names the body, not a face", "members": ["valid"]}
 
     def order(site: Site) -> tuple:
         return (_PRIORITY.index(site.kind), -len(site.meshers_failing),
@@ -437,6 +449,31 @@ def find_sites(pool: WorkerPool, ws: Workspace, verdict: Any, *, h_mm: float,
     return sites
 
 
+#: soft findings a coarse site carries at most (they are the part-wide sweep's only precise targets)
+MAX_COARSE_SOFT = 40
+
+
+def _coarse_site(ws: Workspace, valid: Any, unplaced: dict[str, SiteKind], reverse: dict) -> Site:
+    """One site for the members that failed WITHOUT saying where: the whole part, as its bodies (or, with no body, as
+    nothing), with the reason, the most informative of those members' kinds, and the part's own small-entity findings.
+    It replaces the `unlocated` site, for which the deterministic sweep had nothing at all (lane C5: 8 of 13 conclusive
+    smoke failures). Coarse means the sweeps it gets are part-wide; it never pretends to know a face."""
+    kinds = set(unplaced.values())
+    kind: SiteKind = next((k for k in _PRIORITY if k in kinds and k not in ("unlocated", "timeout")), "invalid")
+    bodies = sorted((sid for sid in ws.ids if sid[:1] == "B" and _live(ws, sid)), key=_number)
+    soft: list[dict] = []
+    for finding in getattr(valid, "soft", []) or []:
+        if finding.code in ("small_face", "small_edge"):
+            for sid in _kernel_entities(ws, list(finding.entities), reverse):
+                if len(soft) < MAX_COARSE_SOFT:
+                    soft.append({"code": finding.code, "entity": sid, "detail": dict(finding.detail)})
+    members = sorted(unplaced)
+    reason = (f"{', '.join(members)} failed without saying where ({', '.join(sorted(set(unplaced.values())))}); "
+              "the site is the whole part")
+    return Site("", kind, bodies, [], members, None,
+                {"hard_codes": [], "coarse": {"reason": reason, "members": members}, "soft": soft}, None)
+
+
 def _assign_ids(sites: list[Site]) -> None:
     """Ids from WHAT the site is, not where it sits in this round's ordering: a proposer that
     discussed "S@F12" last round must find the same geometry under that name now. The anchor is the
@@ -445,6 +482,11 @@ def _assign_ids(sites: list[Site]) -> None:
     taken: dict[str, int] = {}
     for site in sites:
         failing = site.graph.get("failure_entities") or site.entities
+        if site.graph.get("coarse") and not site.graph.get("failure_entities"):
+            base = f"S@coarse-{site.kind}"
+            taken[base] = taken.get(base, 0) + 1
+            site.id = base if taken[base] == 1 else f"{base}-{taken[base]}"
+            continue
         if failing:
             anchor = min(failing, key=lambda e: (e[0], _number(e)))
         elif site.xyz:
@@ -783,6 +825,8 @@ def _attach_graphs(pool: WorkerPool, ws: Workspace, sites: list[Site], reverse: 
     for site in sites:
         soft, box = site.graph.get("soft", []), site.graph.get("box")
         graph: dict = {"k": GRAPH_HOPS, "h_mm": h_mm}
+        if site.graph.get("coarse"):
+            graph["coarse"] = site.graph["coarse"]
         for key in ("failures", "points", "clashes", "failure_entities", "unmeasured_pairs", "hard_codes"):
             # `unmeasured_pairs` is a COUNT (line 562 writes an int); every other key is a list. A site that was
             # never clustered (an `unlocated` one) has neither, and a `[]` there crashed `observation`'s int().
@@ -865,6 +909,8 @@ def _site_entry(ws: Workspace, site: Site, level: tuple) -> dict:
     sub: dict = {k: graph[k] for k in ("k", "error", "note", "truncated") if k in graph}
     if graph.get("hard_codes"):
         sub["hard_codes"] = list(graph["hard_codes"])  # why a whole-part site exists: e.g. no_solids
+    if graph.get("coarse"):
+        sub["coarse"] = dict(graph["coarse"])  # the whole part, because these members said nothing about where
     if graph.get("free_loops"):
         sub["free_loops"] = _round(graph["free_loops"])  # the edges fill_loop takes, smallest loop first
         sub["diagonal_mm"] = _round(graph.get("diagonal_mm"))

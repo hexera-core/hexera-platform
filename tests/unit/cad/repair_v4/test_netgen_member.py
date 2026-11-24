@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from meshpipeline.cad.repair_v4.verdict import mesh_child, panel
+from meshpipeline.cad.repair_v4.verdict import mesh_child, netgen_member, panel
 from meshpipeline.cad.repair_v4.verdict.cache import panel_config_hash
 from meshpipeline.cad.repair_v4.verdict.gmsh_members import GmshAlt, GmshDefault, GmshProd
 from meshpipeline.cad.repair_v4.verdict.netgen_member import NETGEN_PIN, NetgenOCC
@@ -274,3 +274,24 @@ def test_a_netgen_retry_after_a_timeout_is_one_outcome_whatever_it_hit() -> None
     assert outcomes == {("timeout", "netgen_timeout")}
     crash, _ = _run(SEGV)  # no timeout before it: the crash is the file's own answer, kind kept
     assert crash.status == "crashed" and crash.error_kind != "netgen_timeout"
+
+
+def test_a_netgen_failure_naming_a_face_is_located_at_that_faces_box() -> None:
+    """Netgen names the face it could not triangulate ("OCC-Triangulation could not be built for face 1"); the script
+    sends that face's box, and the member names it by the same box fingerprint gmsh's member uses, which `find_sites`
+    translates to the live face (lane C5)."""
+    from meshpipeline.cad.repair.identity import fingerprint_of, quantum_for
+
+    rec = {"ok": False, "stage": "mesh", "error": "NgException: OCC-Triangulation could not be built for face 1",
+           "face_box": [0.0, 0.0, 0.0, 10.0, 10.0, 0.0], "face": 1, "diag": 100.0}
+    r = netgen_member.member_result("netgen_occ", rec, 1.0)
+    assert r.status == "fail"
+    (loc,) = r.located
+    assert loc.entity == fingerprint_of("face", {"bbox_min": [0.0, 0.0, 0.0], "bbox_max": [10.0, 10.0, 0.0]},
+                                        quantum=quantum_for(100.0))
+    assert loc.mesher_tag == "netgen face 1" and loc.xyz is None
+
+
+def test_a_netgen_failure_naming_no_face_stays_unlocated() -> None:
+    r = netgen_member.member_result("netgen_occ", {"ok": False, "stage": "mesh", "error": "NgException: Meshing failed!"}, 1.0)
+    assert r.located == []

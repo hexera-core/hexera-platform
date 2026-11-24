@@ -163,12 +163,15 @@ def test_distant_failures_are_separate_sites() -> None:
     assert {s.kind for s in sites} == {"intersection"}
 
 
-def test_failure_without_location_is_one_unlocated_site_not_dropped() -> None:
+def test_failure_without_location_is_one_coarse_whole_body_site_not_dropped() -> None:
+    """Lane C5: an `unlocated` site gave the search nothing to aim at (8 of 13 conclusive smoke failures). A failure
+    with no place is now a COARSE site on the whole body, with the reason, so the part-wide sweeps can run."""
     ws = _ws()
     pool = ScriptedPool(ws, _boxes(ws))
     verdict = _verdict(_fail("gmsh", "other"), MemberResult("netgen", "crashed", "crash", "boom"))
     (site,) = find_sites(pool, ws, verdict, h_mm=H)
-    assert site.kind == "unlocated" and site.entities == [] and site.meshers_failing == ["gmsh", "netgen"]
+    assert site.kind == "invalid" and site.entities == ["B1"] and site.meshers_failing == ["gmsh", "netgen"]
+    assert site.graph["coarse"]["members"] == ["gmsh", "netgen"] and "without saying where" in site.graph["coarse"]["reason"]
 
 
 def test_an_unlocated_site_is_observable_by_the_proposer() -> None:
@@ -228,7 +231,7 @@ def test_dead_entity_is_not_reported() -> None:
     pool = ScriptedPool(ws, _boxes(ws))
     verdict = _verdict(_fail("gmsh", "other", Located("F99", None, "ghost")))
     (site,) = find_sites(pool, ws, verdict, h_mm=H)
-    assert site.entities == [] and site.kind == "unlocated"
+    assert "F99" not in site.entities and site.graph.get("coarse")
 
 
 def test_kernel_failure_degrades_to_sites_without_geometry() -> None:
@@ -613,7 +616,7 @@ def test_entityless_sites_keep_their_ids_across_three_rounds() -> None:
         assert sorted(s.id for s in found) == sorted(s.id for s in rounds[0])
         assert all("was" not in s.graph and not s.graph.get("id_carried") for s in found)
     ids = [s.id for s in rounds[0]]
-    assert any(i.startswith("S@p") for i in ids) and "S@unlocated" in ids
+    assert any(i.startswith("S@p") for i in ids) and "S@coarse-invalid" in ids
     assert not any(i.endswith(("-2", "-3")) for r in rounds for i in (s.id for s in r))
 
 
@@ -747,7 +750,7 @@ def test_a_fingerprint_no_live_face_carries_is_still_unlocated() -> None:
     ws = _ws()
     pool = ScriptedPool(ws, _boxes(ws))
     (site,) = find_sites(pool, ws, _verdict(_fail("gmsh", "open_loop", Located("face:0000dead", None, "s"))), h_mm=H)
-    assert site.kind == "unlocated" and site.entities == []
+    assert site.graph.get("coarse") and site.entities == ["B1"]  # no live face: the whole body, never a guessed face
 
 
 def test_a_fingerprint_one_half_cell_rounding_away_still_names_its_face() -> None:
@@ -767,3 +770,28 @@ def test_a_fingerprint_one_half_cell_rounding_away_still_names_its_face() -> Non
     assert fp != fingerprint_of("face", {"bbox_min": boxes["F3"][:3], "bbox_max": boxes["F3"][3:]}, quantum=0.5)
     (site,) = find_sites(pool, ws, _verdict(_fail("gmsh", "open_loop", Located(fp, None, "surface 3"))), h_mm=H)
     assert site.kind == "open" and site.entities == ["F3"]
+
+
+def test_a_coarse_site_takes_the_failing_members_kind_and_the_parts_small_entities() -> None:
+    ws = _ws()
+    pool = ScriptedPool(ws, _boxes(ws))
+    small = Finding("small_face", ["F4"], {"width": 1e-4})
+    (site,) = find_sites(pool, ws, _verdict(_fail("gmsh_prod", "low_quality"), soft=[small]), h_mm=H)
+    assert site.kind == "proximity" and site.graph["coarse"]
+    assert [x["entity"] for x in site.graph["soft"]] == ["F4"]
+
+
+def test_a_layer1_finding_that_names_only_a_body_is_marked_coarse() -> None:
+    ws = _ws()
+    pool = ScriptedPool(ws, _boxes(ws))
+    (site,) = find_sites(pool, ws, _verdict(hard=[Finding("self_intersection", ["S1"], {})]), h_mm=H)
+    assert site.kind == "self_overlap" and site.entities == ["B1"] and site.graph["coarse"]
+
+
+def test_an_unlocated_member_beside_a_located_one_still_gets_its_coarse_site() -> None:
+    ws = _ws()
+    pool = ScriptedPool(ws, _boxes(ws))
+    verdict = _verdict(_fail("gmsh_prod", "overlapping_facets", Located("F1", None, "s1")), _fail("netgen", "other"))
+    sites = find_sites(pool, ws, verdict, h_mm=H)
+    assert sorted(s.kind for s in sites) == ["invalid", "self_overlap"]
+    assert [s.graph["coarse"]["members"] for s in sites if s.graph.get("coarse")] == [["netgen"]]

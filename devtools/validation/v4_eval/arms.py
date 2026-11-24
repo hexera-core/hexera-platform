@@ -373,7 +373,22 @@ def search_triage(result: Any, generators: Any) -> dict[str, Any]:
               for e in evaluated[:TRIAGE_MAX_DELTAS]]
     return {"stop": {"reason": stop.get("reason"), "ended_by": stop.get("ended_by"), "spent": stop.get("spent")},
             "open_sites": dict(Counter(str(s.get("kind")) for s in at.get("sites") or [])), "open_sites_at": where,
-            "ops": ops, "not_proposed": _top(skipped), "ai": ai, "deltas": deltas, "deltas_total": len(evaluated)}
+            "ops": ops, "not_proposed": _top(skipped), "ai": ai, "deltas": deltas, "deltas_total": len(evaluated),
+            "sites_by_placement": _placement(at.get("sites") or [])}
+
+
+def _placement(sites: list[dict]) -> dict[str, int]:
+    """located = names an entity and is not coarse; coarse = the whole part (`sites._coarse_site`, or a finding that
+    names only a body); unlocated = names nothing at all (an `unlocated` site, or a whole-part one with no entity)."""
+    out = {"located": 0, "coarse": 0, "unlocated": 0}
+    for s in sites:
+        if s.get("coarse"):
+            out["coarse"] += 1
+        elif s.get("entities") and s.get("kind") != "unlocated":
+            out["located"] += 1
+        else:
+            out["unlocated"] += 1
+    return out
 
 
 def failure_reason(exc: BaseException) -> str:

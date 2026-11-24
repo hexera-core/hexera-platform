@@ -32,7 +32,14 @@ from meshpipeline.settings.cad_repair import verdict_cache_uri
 
 #: .2: a retry that ended fail or crashed after a timeout is the timeout (panel.classify_after_timeout); a
 #: cached .1 "fail" for such a file is what the retry happened to hit, so .1 entries must not be read.
-VERDICT_CODE_VERSION = "crs-v4.verdict.2"
+#: .2 (lane C5): members now LOCATE failures they used to leave unlocated (gmsh's printed node triples, a low-quality
+#: mesh's worst tets, the face Netgen names). Pass/fail is unchanged, but `located` is part of the cached panel result,
+#: and a .1 entry would hand the search the old, unlocated answer.
+#: .3: BOTH of the above landed independently, and each ALONE bumped .1 -> .2. Merged, a .2 entry written by
+#: either one is unreadable by the other: the timeout-rule code never stored `located`, so a .2 entry from it
+#: would hand the search the old unlocated answer, which is the very thing the lane C5 note forbids. The rule at
+#: the top of this file is per result-altering change, so two of them merged is one further bump.
+VERDICT_CODE_VERSION = "crs-v4.verdict.3"
 logger = logging.getLogger(__name__)
 CACHEABLE_STATUSES = ("pass", "fail")
 
