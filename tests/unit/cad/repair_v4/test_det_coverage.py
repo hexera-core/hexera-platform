@@ -258,3 +258,60 @@ def test_each_covered_op_is_reached_from_the_search_det_arm(op: str) -> None:
             budget=search.Budget(wall_s=60, ops=60, model_calls=0, model_usd=0.0))
     reached = {e["op"] for e in r.trace.of_kind("candidate") if e.get("source") == "det"}
     assert op in reached, reached
+
+
+# --- lane C4: why search_det repaired 0 of 30 in the smoke --------------------------------------------------------
+
+
+class _DeclinesInParams:
+    """An op that declines the way the body ops do: an UNCHANGED workspace and `diff.params["declined"]`."""
+
+    name = "c4_param_decline"
+    params_schema = {"type": "object", "properties": {}, "additionalProperties": False,
+                     "x-targets": {"kind": "face", "min": 0}}
+
+    def applies_to(self, site: Site) -> bool:
+        return True
+
+    def apply(self, pool: Any, ws: Workspace, targets: list[str], params: dict, *, timeout_s: float):
+        from meshpipeline.cad.repair_v4.workspace import Diff
+
+        return ws, Diff(op=self.name, params={"declined": "unresolved_overlap", "detail": {"volume": 2.5}},
+                        modified={}, generated={}, removed=[], declared_added=[], declared_removed=[], seconds=0.0)
+
+
+def test_a_decline_carried_in_the_diff_is_a_decline_with_its_reason_not_a_duplicate_state(monkeypatch: Any) -> None:
+    """conformalise / remove_duplicate_faces answer a decline with the unchanged workspace and the reason in the
+    Diff. The search took that as applied, spent a cheap verdict on the unchanged shape, and recorded a DUPLICATE: the
+    smoke's overlap files showed `conformalise: duplicate` with no reason at all."""
+    from tests.unit.cad.repair_v4.test_search_wiring import Scripted
+
+    from meshpipeline.cad.repair_v4.ops import REGISTRY
+
+    monkeypatch.setitem(REGISTRY, "c4_param_decline", _DeclinesInParams())
+    gen = Scripted(lambda s: [search.Candidate("c4_param_decline", [], {}, "det")] if s.depth == 0 else [])
+    w = World(target=3)
+    r = run([gen], w, start=make_ws(0), budget=search.Budget(wall_s=60, ops=10, model_calls=0, model_usd=0.0))
+    [e] = [e for e in r.trace.of_kind("candidate") if e["op"] == "c4_param_decline"]
+    assert e["outcome"] == "rejected" and e["stage"] == "declined"
+    assert e["errors"][0].startswith("unresolved_overlap")
+
+
+def _overlap(*solids: str) -> Site:
+    return _site("overlap", list(solids))
+
+
+def test_an_overlap_site_sweeps_cut_by_both_ways_for_each_body_pair() -> None:
+    """fragment mode declines EVERY real overlap (`unresolved_overlap`: no keeper); only `cut_by:<B>` can resolve one,
+    and the kernel still refuses an overlap deeper than the bound or a volume change over its cap. 10 of the smoke's
+    30 files carry body_overlap; det never proposed cut_by, so only the AI could."""
+    got, _ = _propose([_overlap("B1", "B2")], ws=_ws(solids=("B1", "B2")))
+    cuts = [(t, p) for t, p in _of(got, "conformalise") if p["mode"].startswith("cut_by:")]
+    assert cuts == [(["B1", "B2"], {"mode": "cut_by:B1", "fuzzy_mm": 0.0}),
+                    (["B1", "B2"], {"mode": "cut_by:B2", "fuzzy_mm": 0.0})]
+
+
+def test_cut_by_is_swept_on_at_most_three_body_pairs() -> None:
+    got, _ = _propose([_overlap("B1", "B2", "B3", "B4")], ws=_ws(solids=("B1", "B2", "B3", "B4")))
+    cuts = [p["mode"] for _, p in _of(got, "conformalise") if p["mode"].startswith("cut_by:")]
+    assert len(cuts) == 6
