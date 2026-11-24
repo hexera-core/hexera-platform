@@ -1,7 +1,6 @@
 """Self-check for divergence.py: a real divergence, and the ACCESS / JUDGEMENT / DUPLICATE call.
 Run: python -m pytest -q test_divergence.py"""
 import importlib.util
-import json
 from pathlib import Path
 
 spec = importlib.util.spec_from_file_location("dv", Path(__file__).with_name("divergence.py"))
