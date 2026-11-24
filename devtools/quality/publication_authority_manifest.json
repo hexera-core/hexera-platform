@@ -5123,19 +5123,6 @@
   "roots": []
  },
  {
-  "context": "engines/mesh_requirements.py::bind_picks::search#1|NotAPublisher|not-a-publisher|",
-  "path": "engines/mesh_requirements.py",
-  "qualname": "bind_picks",
-  "semantic": "search",
-  "method": "search",
-  "ordinal": 1,
-  "receiver": "_WHOLE",
-  "authority": "NotAPublisher",
-  "lifecycle": "not-a-publisher",
-  "gated_required": false,
-  "roots": []
- },
- {
   "context": "engines/mesh_requirements.py::instead_for::search#1|NotAPublisher|not-a-publisher|",
   "path": "engines/mesh_requirements.py",
   "qualname": "instead_for",
@@ -5169,6 +5156,19 @@
   "method": "search",
   "ordinal": 2,
   "receiver": "_SAID_TRIANGLES",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "engines/mesh_requirements.py::says_whole_mesh::search#1|NotAPublisher|not-a-publisher|",
+  "path": "engines/mesh_requirements.py",
+  "qualname": "says_whole_mesh",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "_WHOLE",
   "authority": "NotAPublisher",
   "lifecycle": "not-a-publisher",
   "gated_required": false,
