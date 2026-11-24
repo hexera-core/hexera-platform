@@ -34,6 +34,8 @@ _CONTINUITY_KEY = "read.iges.bspline.continuity"
 #: break - the thousands on the spline exports the whole reading was made for - by under 0.031 degrees
 #: (tangent: only the parameter speed jumps). 0.1 lies in that gap.
 CORNER_TURN_DEG = 0.1
+#: the rule behind the split (docs/RULES.md)
+CORNER_RULE = "MESH-26"
 
 
 def is_iges(path) -> bool:
