@@ -4,7 +4,7 @@ Every decision a mesh run makes on its own is made by a written rule. Each rule 
 and each decision the run records in its "why" record names the rule behind it
 (`contracts/decision_record.py`). This file is the one home for those rules.
 
-Rulebook version: **106**
+Rulebook version: **107**
 
 How the book is kept honest:
 
@@ -41,6 +41,7 @@ Each decision in the record also says where it came from:
 | ENG-7 | in force | **An engine that reads the upload's own format comes first**, measured or not: a conversion loses what the file describes (an ECXML's parts, materials and powers). |
 | ENG-8 | in force | **Nothing measured, nothing named: the declared default.** When the run's geometry could not be measured, a run nobody chose an engine for takes the engine the declarations name for its flow (or the flow-only order). |
 | ENG-9 | in force | **The user confirmed an engine the measured ranking did not put first** (for example, the ranking was not ready while the user was asked). The confirmed engine stands. This is a gap D1 closes: the proposal should always be the ranked one. |
+| ENG-10 | in force | **What the user typed steers the engine** (rulebook 107, `engines/cfd_requirements.steer`, `pipeline/engine_select.engine_for_asks`). Before the first attempt of a flow run whose engine the system picked (recommended and confirmed, or picked with nobody asking), the notes are read (the same reading the builder makes next) and each engine valid for the run - it admits the request and meshes its passages (ENG-1, ENG-5's `able_engines`), and its own declared turf does not mark the case weak or outside (ENG-2) - scores the asks it has a setting for: an ask with a number the user typed counts 2, a vague one ("finer around the bend") 1. What each engine has no setting for is declared once in `cfd_requirements` (`FIRST_LAYER_ENGINES`, `NO_LAYER_ENGINES`, `STACK_ENGINES`, `CELL_GROWTH_ENGINES`, `PLACE_SIZE_ENGINES`, `NO_SETTING`, and a control's NotHere lane), the same fields its applier tells as not applied. The run moves only when another engine scores strictly more; ties go to the engine that delivers an absolute layer height over the whole wall first when one is asked (CFDREQ-10's `LAYER_HEIGHT_DELIVERS`), then the ladder's order. The move is told in one plain line on the run's engine line and kept with the result ("Meshed with snappyHexMesh, because it can set the first layer for the y+ you asked for, which VMTK has no setting for."), with what the new engine cannot set either; the result's rows say each ask applied or not, as before. Recorded as stage `engine_for_asks` (inputs: who chose, the order, the scores) and replayed by `decision_record.engine_for_asks`. Never an engine the user named (ENG-6: the result says what it could not apply), never a dispute, and nothing typed changes nothing. CFDREQ-10 (the card's reading before the run) uses the same pick. |
 
 ## SW: whether a run moves to another engine after a failed attempt
 

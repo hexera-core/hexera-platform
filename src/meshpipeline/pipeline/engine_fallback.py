@@ -145,7 +145,10 @@ def measure_order(state: Mapping) -> dict:
             # the rule that put the recommended engine first (fitness ENG-2/3/4), for the record
             "order_rule": getattr(rec.fit_of(rec.engine), "rule", "") or "",
             "order_table": rec.table_version,
-            "order_reasons": {f.engine: f.reason for f in rec.fits}, **counted}
+            "order_reasons": {f.engine: f.reason for f in rec.fits},
+            # each engine whose own declared turf marks this case weak or outside (ENG-10 never moves a run to one)
+            "order_turf": {f.engine: f.turf for f in rec.fits if getattr(f, "turf", "") in ("weak", "outside")},
+            **counted}
 
 
 async def seed_measured_order(state: Mapping, *, timeout_s: float = ORDER_WAIT_S) -> dict:

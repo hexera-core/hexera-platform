@@ -50,6 +50,8 @@ RULE_LIMITS = "CFDREQ-5"
 RULE_REPORT = "CFDREQ-6"
 RULE_SAME = "CFDREQ-7"
 RULE_WALL = "CFDREQ-13"
+#: what the user asked steers the engine, among the engines valid for the part (steer)
+RULE_ASKS_ENGINE = "ENG-10"
 ROUTE = MR.FLOW
 CONSUMER = "mesh_requirements"
 #: each CFD engine's lane in the controls registry (contracts/mesh_controls.LANES): gmsh's flow lane is its own
@@ -149,6 +151,7 @@ async def read_for_attempt(workspace, state, *, job_id: str = "", publish=None, 
     sec = NA.apply(sec, MR.notes_text(state or {}), NA.facts_of(state, engine))
     MR.write(ws, sec)
     (ws / PLAN_FILE).unlink(missing_ok=True)          # a carried plan never speaks for this attempt
+    _say_engine_for_asks(ws, state, engine)
     if sec.get("status") == "none":
         return sec
     try:
@@ -163,6 +166,20 @@ async def read_for_attempt(workspace, state, *, job_id: str = "", publish=None, 
         for i, line in enumerate(MR.live_words(sec)):
             await _N.asay(publish, line, op_id=f"cfd:notes:{i}")
     return sec
+
+
+def _say_engine_for_asks(ws: Path, state, engine: str) -> None:
+    """ENG-10: an attempt on the engine the user's asks moved the run to keeps that line with its result (one remark:
+    "Meshed with snappyHexMesh, because it can set ..."). Nothing moved, or another engine now: nothing."""
+    try:
+        rec = (state or {}).get("engine_ladder")
+        asks = rec.get("asks") if isinstance(rec, Mapping) else None
+        if not isinstance(asks, Mapping) or not asks.get("words") or str(asks.get("to") or "") != str(engine or ""):
+            return
+        from meshpipeline.contracts.user_notes import record_remark
+        record_remark(ws, str(asks["words"]), by="engine_for_asks")
+    except Exception:  # noqa: BLE001 - a line that cannot be kept never stops a mesh
+        logger.debug("ENG-10 line not kept", exc_info=True)
 
 
 def live(lines) -> list[str]:
@@ -2806,52 +2823,137 @@ _ASK_NAMES = {"layers:first_height": "the first layer height", "layers:y_plus": 
               "layers:total_thickness": "the layer stack's thickness"}
 
 
+#: ENG-10: WHAT EACH CFD ENGINE HAS NO SETTING FOR, by requirement field - the one declaration the engine pick reads
+#: (each engine's applier below says "not applied" for the same fields: cfmesh_strategy, gmsh_sizes, snapgrid_plan,
+#: vmtk_spec, netgen_inputs). The layer heights are FIRST_LAYER_ENGINES' (above); a control is its lane's NotHere.
+#: no prism layers at all: every layer field
+NO_LAYER_ENGINES = frozenset({"gmsh", "snapgrid"})
+#: a layer stack's total thickness as a setting
+STACK_ENGINES = frozenset({"snappy", "snappy_multiregion", "netgen"})
+#: a growth of the cells from one size to the next (snappy's cells between levels, the snap grid's grading)
+CELL_GROWTH_ENGINES = frozenset({"snappy", "snappy_multiregion", "snapgrid"})
+#: a size in one named place - a face, a part, a region (snappy's surface levels, cfMesh's local refinement)
+PLACE_SIZE_ENGINES = frozenset({"snappy", "snappy_multiregion", "cfmesh"})
+#: the other fields one engine has no setting for
+NO_SETTING = {"gmsh": frozenset({"cells:target", "cells:ceiling", "cells:floor"}),
+              "snapgrid": frozenset({"near_wall", "min_edge"})}
+#: ENG-10: a requirement the user gave a number for counts twice a vague one ("finer around the bend")
+TYPED_WEIGHT = 2
+VAGUE_WEIGHT = 1
+
+
 def _cannot(engine: str, field: str) -> bool:
-    """Whether `engine` has no setting for a requirement row's field (the registry's NotHere for a control, the
-    first-layer engines for a layer height or a y+)."""
+    """ENG-10: whether `engine` has no setting for a requirement row's field (the declaration above, the registry's
+    NotHere for a control, the first-layer engines for a layer height or a y+)."""
+    if field.startswith("layers:") and engine in NO_LAYER_ENGINES:
+        return True
     if field in ("layers:first_height", "layers:y_plus"):
         return engine not in FIRST_LAYER_ENGINES
     if field == "layers:total_thickness":
-        return engine not in ("snappy", "snappy_multiregion", "netgen")
+        return engine not in STACK_ENGINES
+    if field == "growth":
+        return engine not in CELL_GROWTH_ENGINES
+    if field == "local":
+        return engine not in PLACE_SIZE_ENGINES
     if field.startswith("control:"):
         from meshpipeline.contracts import mesh_controls as MC
         return isinstance(MC.lane_of(LANES.get(engine, engine), field.split(":", 1)[1]), MC.NotHere)
-    return False
+    return field in NO_SETTING.get(engine, frozenset())
+
+
+def asks_of(sec: Mapping | None, *, conditions_y_plus: bool = False) -> list[dict]:
+    """ENG-10: the requirements the reading holds, one {field, asked, weight} each (TYPED_WEIGHT when the user gave a
+    number, VAGUE_WEIGHT when not), plus a y+ for a resolved wall the user chose in the conditions. [] = nothing asked."""
+    req = MR.requirements_of(sec) or {}
+    local_mm = {str(e.get("id")): e.get("mm") for e in req.get("local") or [] if isinstance(e, Mapping)}
+    out = []
+    for r in req.get("rows") or []:
+        if not isinstance(r, Mapping) or not r.get("field"):
+            continue
+        field = str(r["field"])
+        typed = (local_mm.get(str(r.get("id"))) is not None if field == "local"
+                 else bool(re.search(r"\d", str(r.get("quote") or r.get("asked") or ""))))
+        out.append({"field": field, "asked": str(r.get("asked") or r.get("quote") or field),
+                    "weight": TYPED_WEIGHT if typed else VAGUE_WEIGHT})
+    if conditions_y_plus and not any(a["field"] in ("layers:y_plus", "layers:first_height") for a in out):
+        out.append({"field": "layers:y_plus", "asked": "a resolved wall", "weight": TYPED_WEIGHT})
+    return out
+
+
+def _settable(engine: str, ask: Mapping, *, functions: bool, conditions_y_plus: bool) -> bool:
+    if ask["field"] == "layers:y_plus" and engine == "vmtk" and functions and not conditions_y_plus:
+        # CFDREQ-13: VMTK sizes a wall-function stack itself (_vmtk_wall); only a resolved wall is past it
+        return True
+    return not _cannot(engine, str(ask["field"]))
+
+
+def steer(sec: Mapping | None, engine: str, candidates, *, conditions_y_plus: bool = False) -> dict:
+    """ENG-10: THE ENGINE THAT APPLIES THE MOST OF WHAT THE USER ASKED, among `candidates` (the engines valid for this
+    geometry and flow, in the ladder's order). Each candidate scores the weights of the asks it has a setting for; the
+    engine stays unless another scores more; ties go to the engine that delivers an absolute layer height over the
+    whole wall first when one is asked and `engine` cannot set it (LAYER_HEIGHT_DELIVERS), then the ladder's order.
+    Returns {"engine", "before", "order", "scores", "asks", "missing" (what the chosen engine cannot set), "words"}:
+    "words" is "" when the engine stays. Nothing asked: `engine` itself, scores {}."""
+    asks = asks_of(sec, conditions_y_plus=conditions_y_plus)
+    out = {"engine": engine, "before": engine, "order": [], "scores": {}, "asks": asks, "missing": [], "words": ""}
+    if not asks:
+        return out
+    functions = ((MR.requirements_of(sec) or {}).get("layers") or {}).get("treatment") == "functions"
+
+    def can(e: str) -> list[bool]:
+        return [_settable(e, a, functions=functions, conditions_y_plus=conditions_y_plus) for a in asks]
+
+    order = [engine, *[str(e) for e in candidates or () if str(e) != engine]]
+    missing_here = [a for a, ok in zip(asks, can(engine), strict=True) if not ok]
+    if any(a["field"] in LAYER_HEIGHT_FIELDS for a in missing_here):
+        # an absolute first layer (or a y+ made one) goes to the engine that DELIVERS it over the whole wall first: on
+        # s_duct_004, y+ 1 on cfMesh had layers on 78% of the wall (the rest none, not met), on snappyHexMesh on 100%
+        # (m483 round 9, 2e against 2c)
+        rest = sorted(order[1:], key=lambda e: LAYER_HEIGHT_DELIVERS.index(e) if e in LAYER_HEIGHT_DELIVERS
+                      else len(LAYER_HEIGHT_DELIVERS))
+        order = [engine, *rest]
+    scores = {e: sum(a["weight"] for a, ok in zip(asks, can(e), strict=True) if ok) for e in order}
+    from meshpipeline.contracts import decision_record as _dr
+    # the record's own rule function picks, so the replay re-decides exactly this
+    chosen = _dr.engine_for_asks({"order": order, "scores": scores})[0] or engine
+    out.update(engine=chosen, order=order, scores=scores,
+               missing=[a["asked"] for a, ok in zip(asks, can(chosen), strict=True) if not ok])
+    if chosen != engine:
+        out["words"] = _steer_words(engine, chosen, missing_here, out["missing"])
+    return out
+
+
+def _label(engine: str) -> str:
+    from meshpipeline.engines.registry import engine_label
+    try:
+        return engine_label(str(engine))
+    except Exception:  # noqa: BLE001 - the engine's own name still says which
+        return str(engine)
+
+
+def _steer_words(before: str, chosen: str, missing_before: list[dict], missing_after: list[str]) -> str:
+    """The plain line the run's engine line and result say: "Meshed with snappyHexMesh, because it can set the first
+    layer for the y+ you asked for, which VMTK has no setting for." (+ what the chosen engine cannot set either)."""
+    first = missing_before[0] if missing_before else {"field": "", "asked": "what"}
+    what = _ASK_NAMES.get(str(first["field"])) or str(first["asked"])
+    more = len(missing_before) - 1
+    if more > 0:
+        what += f" and {more} other thing{'' if more == 1 else 's'}"
+    words = f"Meshed with {_label(chosen)}, because it can set {what} you asked for, which {_label(before)} has no " \
+            "setting for."
+    if missing_after:
+        n = len(missing_after)
+        words += (f" {_label(chosen)} has no setting for {n} of the things you asked for either "
+                  "(the result says which); no engine that can mesh this part sets more of them.")
+    return words
 
 
 def engine_that_can(sec: Mapping | None, engine: str, ladder, *, conditions_y_plus: bool = False) -> tuple[str, str]:
-    """ENG-asks: (the engine to mesh with, the plain line that says why - "" when it is `engine`). When the notes'
-    reading (and a wall treatment the user chose, `conditions_y_plus`) asks something `engine` has no setting for and
-    another engine of the job's `ladder` can set all of those, that one - the first in the ladder's order. Nothing
-    asked, or nothing `engine` cannot set: `engine` itself, as always."""
-    req = MR.requirements_of(sec) or {}
-    fields = [str(r.get("field") or "") for r in req.get("rows") or [] if isinstance(r, Mapping)]
-    if conditions_y_plus and "layers:y_plus" not in fields and "layers:first_height" not in fields:
-        fields.append("layers:y_plus")
-    if (req.get("layers") or {}).get("treatment") == "functions" and engine == "vmtk" and not conditions_y_plus:
-        # CFDREQ-13: VMTK sizes a wall-function stack itself (_vmtk_wall); only a resolved wall moves the engine
-        fields = [f for f in fields if f != "layers:y_plus"]
-    missing = [f for f in fields if _cannot(engine, f)]
-    if not missing:
-        return engine, ""
-    # an absolute first layer (or a y+ made one) goes to the engine that DELIVERS it over the whole wall first, then
-    # the ladder's order: on s_duct_004, y+ 1 on cfMesh had layers on 78% of the wall (the rest none, not met), on
-    # snappyHexMesh on 100% (m483 round 9, 2e against 2c)
-    order = list(ladder or ())
-    if any(f in LAYER_HEIGHT_FIELDS for f in missing):
-        order.sort(key=lambda e: LAYER_HEIGHT_DELIVERS.index(e) if e in LAYER_HEIGHT_DELIVERS
-                   else len(LAYER_HEIGHT_DELIVERS))
-    for other in order:
-        if other != engine and not any(_cannot(str(other), f) for f in missing):
-            from meshpipeline.engines.registry import engine_label
-            try:
-                name = engine_label(str(other))
-            except Exception:  # noqa: BLE001 - the engine's own name still says which
-                name = str(other)
-            what = _ASK_NAMES.get(missing[0]) or next(
-                (str(r.get("asked")) for r in req.get("rows") or [] if r.get("field") == missing[0]), "what")
-            return str(other), f"Meshed with {name}, because it can set {what} you asked for."
-    return engine, ""
+    """CFDREQ-10 (the request card's reading, before the run) through ENG-10's pick: (the engine to mesh with, the
+    plain line that says why - "" when it is `engine`). Nothing asked, or no engine of `ladder` that sets more of it:
+    `engine` itself, as always."""
+    got = steer(sec, engine, ladder, conditions_y_plus=conditions_y_plus)
+    return str(got["engine"]), str(got["words"])
 
 
 def stack_count(first_m: float, wall_cell_m: float, g: float) -> int:

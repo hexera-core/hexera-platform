@@ -36,7 +36,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 #: docs/RULES.md "Rulebook version". Raised whenever a rule changes what it decides.
-RULES_VERSION = "106"
+RULES_VERSION = "107"
 
 SOURCE_RULE = "rule"
 SOURCE_USER = "user"
@@ -45,6 +45,8 @@ SOURCE_GUARD_CLOCK = "guard-clock"
 SOURCES = (SOURCE_RULE, SOURCE_USER, SOURCE_AI_LEVER, SOURCE_GUARD_CLOCK)
 
 STAGE_ENGINE_PICK = "engine_pick"
+#: ENG-10: the engine the user's asks moved the run to, before its first attempt
+STAGE_ENGINE_FOR_ASKS = "engine_for_asks"
 STAGE_SWITCH = "switch"
 STAGE_DELIVERED = "delivered"
 STAGE_VERDICT = "verdict"
@@ -122,6 +124,34 @@ SWITCH_ALSO = ("ENG-5",)
 
 def engine_pick_source(rule: str) -> str:
     return SOURCE_USER if rule in ("ENG-6", "ENG-9") else SOURCE_RULE
+
+
+#: ENG-10: what the user asked steers the engine (engines/cfd_requirements.steer decides; this replays it)
+RULE_ENGINE_FOR_ASKS = "ENG-10"
+
+
+def engine_for_asks(inputs: Mapping[str, Any]) -> tuple[str, str]:
+    """(the engine, the rule) of ENG-10 from its recorded inputs: engine_source; order (the engine as picked first,
+    then the valid candidates in the order ties go); scores (each candidate's weight of the asks it has a setting
+    for). An engine the user named stays (ENG-6); else the first of `order` with the highest score, the engine as
+    picked unless another scores strictly more."""
+    order = [str(e) for e in (inputs.get("order") or ()) if e]
+    if str(inputs.get("engine_source") or "") in _USER_NAMED:
+        return (order[0] if order else ""), "ENG-6"
+    scores = inputs.get("scores") or {}
+    if not order:
+        return "", RULE_ENGINE_FOR_ASKS
+    best = max(_score(scores.get(e)) for e in order)
+    if _score(scores.get(order[0])) >= best:
+        return order[0], RULE_ENGINE_FOR_ASKS
+    return next(e for e in order if _score(scores.get(e)) >= best), RULE_ENGINE_FOR_ASKS
+
+
+def _score(v: Any) -> float:
+    try:
+        return float(v or 0)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 # #
@@ -356,6 +386,7 @@ def guard(inputs: Mapping[str, Any]) -> tuple[Any, str]:
 #: stage -> the pure rule function that decides it again from the recorded inputs
 REPLAYERS: dict[str, Callable[[Mapping[str, Any]], tuple[Any, str]]] = {
     STAGE_ENGINE_PICK: engine_pick,
+    STAGE_ENGINE_FOR_ASKS: engine_for_asks,
     STAGE_SWITCH: switch,
     STAGE_DELIVERED: delivered,
     STAGE_VERDICT: verdict,
@@ -451,7 +482,7 @@ def record(entries: Sequence[Entry | Mapping[str, Any]]) -> dict:
 
 __all__ = ["DELIVERY_ONLY_ONE", "DELIVERY_RULES", "REPLAYERS", "RULES_VERSION", "SOURCES",
            "SOURCE_AI_LEVER", "SOURCE_GUARD_CLOCK", "SOURCE_RULE", "SOURCE_USER",
-           "STAGE_DELIVERED", "STAGE_ENGINE_PICK", "STAGE_SWITCH", "SWITCH_ALSO", "SWITCH_RULES",
+           "STAGE_DELIVERED", "STAGE_ENGINE_FOR_ASKS", "STAGE_ENGINE_PICK", "STAGE_SWITCH", "SWITCH_ALSO", "SWITCH_RULES",
            "ENGINE_PICK_ALSO", "Entry",
            "cite", "cited_for", "cited_rules", "delivered", "delivery_rule", "engine_pick",
            "engine_pick_source", "record", "replay", "sentences", "switch", "switch_rule",

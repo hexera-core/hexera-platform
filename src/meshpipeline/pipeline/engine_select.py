@@ -111,6 +111,64 @@ def _pinned_by(state) -> str:
     return "dispute" if src == "dispute" else _PINNED_BY.get(src, f"source {src or 'unknown'}")
 
 
+#: ENG-10: the turf verdicts no run is moved TO for what the user asked (engines/fitness: the engine's own declared
+#: rows mark this case one it is weak at, or outside what it meshes)
+_NOT_FOR_ASKS = frozenset({"weak", "outside"})
+
+
+async def engine_for_asks(state, engine: str) -> dict:
+    """ENG-10: WHAT THE USER TYPED STEERS THE ENGINE. Before the first attempt of a flow run whose engine the system
+    picked (recommended and confirmed, or picked with nobody asked - never one the user named, never a dispute), the
+    notes are read (the same reading the builder makes next: the decision cache answers it again) and the run moves to
+    the engine that has a setting for the most of what they ask (engines/cfd_requirements.steer), among the engines
+    that admit this request and mesh its passages (engine_fallback.able_engines), never one whose own declared turf
+    marks this case weak or outside. The state update ({} when the engine stays): the engine, its own default
+    parameters, and the ladder record's "asks" (from, to, the plain line) that the run's line and result say.
+    Never raises (but a fenced worker's stale publish)."""
+    from meshpipeline.contracts.event_stream import StaleExecutionPublish
+    job_id = str(state.get("job_id") or "")
+    try:
+        from meshpipeline.pipeline import engine_fallback as lad
+        if not engine or not lad.may_switch_on_its_own(state):
+            return {}
+        if flow_topology(state.get("purpose", "") or "") not in ("internal", "external"):
+            return {}
+        from meshpipeline.engines import cfd_requirements as CR
+        from meshpipeline.engines import mesh_requirements as MR
+        if not MR.wanted(state):
+            return {}
+        from meshpipeline.engines import meshing_standard as MS
+        sec = await MS.decide(state, route=CR.ROUTE, job_id=job_id)
+        rec = lad.record_of(state)
+        turf = rec.get("order_turf") if isinstance(rec.get("order_turf"), dict) else {}
+        able = lad.able_engines(state)
+        candidates = [e for e in able if e == engine or str(turf.get(e) or "") not in _NOT_FOR_ASKS]
+        got = CR.steer(sec, engine, candidates)
+        moved = str(got["engine"])
+        if moved == engine:
+            return {}
+        from meshpipeline.contracts import decision_record as dr
+        words = str(got["words"])
+        dr.cite(job_id, stage=dr.STAGE_ENGINE_FOR_ASKS, decided="engine", value=moved, rule=CR.RULE_ASKS_ENGINE,
+                inputs={"engine_source": lad.engine_source(state), "order": list(got["order"]),
+                        "scores": dict(got["scores"]), "asks": list(got["asks"]),
+                        "held_back": [e for e in able if e not in candidates]},
+                alternatives=list(got["order"]), words=words)
+        logger.info("node_engine_select: ENG-10 %s -> %s for the notes' asks %s - job_id=%s",
+                    engine, moved, got["scores"], job_id)
+        await _publish(job_id, words, "asks")
+        from meshpipeline.engines.registry import resolve_engine_params
+        return {"engine": moved, "engine_params": resolve_engine_params(moved, {}),
+                "engine_ladder": {**rec, "asks": {"from": engine, "to": moved, "rule": CR.RULE_ASKS_ENGINE,
+                                                  "words": words, "not_set": list(got["missing"])}}}
+    except StaleExecutionPublish:
+        raise
+    except Exception:  # noqa: BLE001 - the engine as picked stands
+        logger.warning("node_engine_select: ENG-10 not decided - the engine as picked stands - job_id=%s",
+                       job_id, exc_info=True)
+        return {}
+
+
 async def node_engine_select(state: PipelineState) -> dict:
     job_id = state.get("job_id", "unknown")
 
@@ -124,9 +182,15 @@ async def node_engine_select(state: PipelineState) -> dict:
                     state.get("engine"), _pinned_by(state), job_id)
         seeded = await _measured_ladder(state, state["engine"])
         st = {**state, "engine_ladder": seeded} if seeded else state
-        _log_selection(job_id, {"chosen": state.get("engine"), "source": source,
+        # ENG-10: a pick the system made moves to the engine that sets what the user asked
+        asks = await engine_for_asks(st, str(state["engine"]))
+        chosen = str(asks.get("engine") or state["engine"])
+        st = {**st, **asks}
+        _log_selection(job_id, {"chosen": chosen, "source": source,
                                 "model": None, "usage": None,
-                                **_ladder_facts(st, state["engine"])})
+                                **_ladder_facts(st, chosen)})
+        if asks:
+            return asks
         return {"engine_ladder": seeded} if seeded else {}
 
     # Topology is DERIVED from the declared purpose, not read back out of engine_params
@@ -154,12 +218,18 @@ async def node_engine_select(state: PipelineState) -> dict:
             forced, source = measured, "measured"
         logger.info("node_engine_select: topology=internal → %s (spec: %s) - job_id=%s",
                     forced, candidates, job_id)
-        # THE ENGINE, BY NAME AND WHY: the run's live line shows this one sentence
-        await _publish(job_id, engine_choice_words(forced, source), "forced")
         st = {**state, "engine_ladder": seeded} if seeded else state
+        # ENG-10: the system's own pick moves to the engine that sets what the user asked (said in its own line)
+        asks = await engine_for_asks({**st, "engine": forced, "engine_source": st.get("engine_source") or "system"},
+                                     forced)
+        if not asks:
+            # THE ENGINE, BY NAME AND WHY: the run's live line shows this one sentence
+            await _publish(job_id, engine_choice_words(forced, source), "forced")
+        forced = str(asks.get("engine") or forced)
+        st = {**st, **asks}
         _log_selection(job_id, {"chosen": forced, "source": source,
                                 "model": None, "usage": None, **_ladder_facts(st, forced)})
-        return {"engine": forced, **({"engine_ladder": seeded} if seeded else {})}
+        return {"engine": forced, **({"engine_ladder": seeded} if seeded else {}), **asks}
 
     # direct dispatch without any declaration: the deterministic default
     engine = default_engine()
