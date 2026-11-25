@@ -536,7 +536,9 @@ async def node_deliver_sound(state: PipelineState) -> dict:
     _choice = _rp.engine_choice(state)
     if _choice is not None:
         # CFDREQ-28: the mesh of the other engine that was not chosen, and why, in one plain line
-        ladder["delivered_from"].update(why=_choice["line"], rule=_choice["rule"])
+        _why = str(ladder["delivered_from"].get("why") or "")
+        ladder["delivered_from"].update(
+            why=(_choice["line"] if _last_sound else f"{_why}; {_choice['line']}"), choice_rule=_choice["rule"])
     try:
         from meshpipeline.contracts import decision_record as dr
         dr.cite(str(state.get("job_id") or ""), stage="resolution_ladder", decided="delivered sound",

@@ -595,6 +595,10 @@ def _by_verdict(a: Mapping, b: Mapping, ctx: Mapping | None) -> int | None:
     the order below decides, as it always did."""
     if not ctx or str(a.get("engine") or "") == str(b.get("engine") or ""):
         return None
+    pa, pb = _past_hard(a), _past_hard(b)
+    if pa != pb:
+        # LAD-cfd-11 first: a mesh past the solver's hard non-orthogonality is the last resort, whatever it misses
+        return -1 if pa else 1
     sa = a.get("standing") or verdict_standing(a, **ctx)
     sb = b.get("standing") or verdict_standing(b, **ctx)
     if not sa or not sb:
@@ -602,6 +606,9 @@ def _by_verdict(a: Mapping, b: Mapping, ctx: Mapping | None) -> int | None:
     got = standing_order(sa, sb)
     if got:
         return got
+    if a.get("refused") and str(a.get("refused")) == str(b.get("refused")):
+        # the same gate refused both and the verdict reads them alike: the one nearer that gate's bar (LAD-cfd-9)
+        return None
     return 1 if int(a.get("attempt") or 0) < int(b.get("attempt") or 0) else -1
 
 
@@ -620,10 +627,14 @@ def engine_choice(state: Mapping) -> dict | None:
     for row in rows:
         if str(row.get("engine") or "") == str(best.get("engine") or ""):
             continue
-        q = _manifest_quality(str(row.get("workspace") or ""))
-        if not q:
+        try:
+            manifest = json.loads((Path(str(row.get("workspace") or "")) / "mesh_manifest.json")
+                                  .read_text(encoding="utf-8"))
+        except (OSError, ValueError):
             continue
-        cand = {**dict(row), "manifest": {"quality": dict(q)}}
+        if not isinstance(manifest, dict):
+            continue
+        cand = {**dict(row), "manifest": manifest}
         cand["standing"] = verdict_standing(cand, **ctx)
         others.append(cand)
     if not others:

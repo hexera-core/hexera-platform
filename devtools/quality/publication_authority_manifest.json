@@ -5721,6 +5721,19 @@
   "roots": []
  },
  {
+  "context": "engines/resolution_policy.py::verdict_standing::verdict#1|NotAPublisher|not-a-publisher|",
+  "path": "engines/resolution_policy.py",
+  "qualname": "verdict_standing",
+  "semantic": "verdict",
+  "method": "verdict",
+  "ordinal": 1,
+  "receiver": "dr",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "engines/size_brake.py::SizeBrake.__call__::search#1|NotAPublisher|not-a-publisher|",
   "path": "engines/size_brake.py",
   "qualname": "SizeBrake.__call__",
