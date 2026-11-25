@@ -2712,12 +2712,14 @@ def _num(text: str, key: str) -> float | None:
 
 @guarded(lambda ask, text, **_k: text)
 def snappy_dict(ask: Ask | None, text: str, *, wall_cell_m: float | None = None,
-                bridge: Mapping | None = None, band: bool = False, relative_ok: bool = False) -> str:
+                bridge: Mapping | None = None, band: bool = False, relative_ok: bool = False,
+                relative_now: bool = True) -> str:
     """The snappyHexMeshDict text with the user's growth, layer sizes and quality limits applied (CFDREQ-2, 4, 5).
     The count of layers, the sizes and the budget are the plan's (the drivers set them before the dict is
     written). Unchanged with nothing asked. `bridge`: {"faces": wall faces, "room": cells the layers may add} on a
     case whose first layer may be far thinner than its wall cells (layer_bridge, CFDREQ-9); None leaves the count
-    the plan's. `band`: a laminar resolved body wall may get its near-wall band (CFDREQ-23; the external body case)."""
+    the plan's. `band`: a laminar resolved body wall may get its near-wall band (CFDREQ-23; the external body case).
+    `relative_ok` / `relative_now`: CFDREQ-33 (amended, rulebook 113) - see _snappy_layers."""
     if ask is None:
         return text
     out = text
@@ -2727,7 +2729,8 @@ def snappy_dict(ask: Ask | None, text: str, *, wall_cell_m: float | None = None,
         ask.done("growth", f"{n} cells between refinement levels, so sizes grow about {MR._g(2 ** (1 / n))} from one "
                            "cell to the next", cells_between_levels=n)
     if "addLayersControls" in out and (ask.first_m or ask.total_m or ask.layer_growth or ask.y_plus):
-        out = _snappy_layers(ask, out, wall_cell_m, bridge, band=band, relative_ok=relative_ok)
+        out = _snappy_layers(ask, out, wall_cell_m, bridge, band=band, relative_ok=relative_ok,
+                             relative_now=relative_now)
     for lim in ask.limits:
         key = SNAPPY_QUALITY.get(lim["measure"])
         if key is None:
@@ -2815,6 +2818,15 @@ RELATIVE_FINER_LEVELS = 3
 #: layers on 79-85% of the area of faces one to three levels finer), while relative it was halved there and the full
 #: stack fell to 62-64% of that area, the wall with 10 cells across its boundary layer from 85.4 to 63.2% (ENGINEER 27)
 RELATIVE_MIN_DEPTH = 0.5
+#: CFDREQ-33 amended (rulebook 113): THE STACK IN METRES FIRST, EACH FACE'S OWN ONLY ON THE RETRY. A stack that may be
+#: written relative is written in metres on the first attempt and marked with this comment; a layer-stack refusal of
+#: that attempt (snappy flow_gates layer_stack, `relative_next`) is answered on snappyHexMesh by the same plan written
+#: relative (gate_facts.relative_stack_next), and only that one's refusal moves the run to the next engine. Measured
+#: why (ENGINEER 36, kept meshes of the batch 7 tree, absolute, against the 4f823f8e tree, relative, same dictionary
+#: otherwise, a 10-layer stack 1.0 of the plain wall cell deep): abc 00011034 layer cover 81.5 -> 79.8%, 00039049
+#: 85.2 -> 79.5% (snappyHexMesh's mean layers 8.15 -> 7.98 and 8.52 -> 7.95): the faces one level finer than the
+#: plain cell kept the full 10 layers on 57-59% of them in metres and on 27-35% relative, at the same faces extruded
+RELATIVE_ON_RETRY_KEY = "relativeOnRetry"
 
 
 def _one_wall_level(text: str) -> bool:
@@ -2870,6 +2882,33 @@ def _relative_stack(ask: Ask, text: str, first: float, wall_cell_m: float, thinn
         row = ask.rows[rid]
         row["note"] = f"{row['note']}; {said}" if row.get("note") else said
     return out
+
+
+def _mark_relative_on_retry(text: str, wall_cell_m: float) -> str:
+    """CFDREQ-33 amended: the stack stays in metres (relativeSizes false) and the dictionary says, in a comment, that
+    it may be written relative on the plain wall cell - the layer-stack gate reads it (relative_on_retry) and the
+    next attempt writes it so. No reader turns the comment into a height (planned_plain_cell_of needs relativeSizes
+    true)."""
+    m = re.search(r"addLayersControls\s*\{", text)
+    if not m:
+        return text
+    head, rest = text[:m.end()], text[m.end():]
+    if not re.search(r"\brelativeSizes\s+false\s*;", rest):
+        return text
+    rest = re.sub(r"\brelativeSizes\s+false\s*;",
+                  f"relativeSizes false; /* {RELATIVE_ON_RETRY_KEY} {float(wall_cell_m):.6g}; */", rest, count=1)
+    return head + rest
+
+
+def relative_on_retry(workspace) -> bool:
+    """CFDREQ-33 amended: the attempt's snappyHexMeshDict wrote in metres a stack it may write relative
+    (_mark_relative_on_retry)."""
+    try:
+        text = (Path(workspace) / "system" / "snappyHexMeshDict").read_text(errors="replace")
+    except OSError:
+        return False
+    return (RELATIVE_ON_RETRY_KEY in text
+            and re.search(r"\brelativeSizes\s+false\s*;", text) is not None)
 
 
 def layer_bridge(first_m: float, wall_cell_m: float, *, n_plan: int, growth: float, last_rel: float,
@@ -2936,10 +2975,12 @@ def capped_stack(first_m: float, wall_cell_m: float, stack_m: float, cap_m: floa
 
 
 def _snappy_layers(ask: Ask, text: str, wall_cell_m: float | None, bridge: Mapping | None = None, *,
-                   band: bool = False, relative_ok: bool = False) -> str:
+                   band: bool = False, relative_ok: bool = False, relative_now: bool = True) -> str:
     """The layer thicknesses in absolute sizes when the user gave one (first height, stack, or a y+ turned into a
     first height); the growth alone keeps our relative sizes. With `bridge` (CFDREQ-9), a first layer far thinner
-    than the wall cells gets the layers that fill our own stack from it (layer_bridge), said on its row."""
+    than the wall cells gets the layers that fill our own stack from it (layer_bridge), said on its row.
+    `relative_now` False (CFDREQ-33 amended): a stack that may be written relative is written in metres and marked
+    (RELATIVE_ON_RETRY_KEY) so its layer-stack refusal is answered relative on the next attempt."""
     m = re.search(r"addLayersControls\s*\{", text)
     if not m:
         return text
@@ -3136,8 +3177,10 @@ def _snappy_layers(ask: Ask, text: str, wall_cell_m: float | None, bridge: Mappi
         # finer than that cell gets the same stack in its own cells. Only where the caller's wall cell is the wall's
         # plain cell (relative_ok: the external body case); an internal case sizes on the near-wall band, finer than
         # the surface, and a relative stack there would thicken the surface's own faces. And only a stack at least
-        # RELATIVE_MIN_DEPTH of the plain cell deep: a shallower one fits the finer faces' cells as it is
-        out = _relative_stack(ask, out, float(first), float(wall_cell_m), float(thinnest), total)
+        # RELATIVE_MIN_DEPTH of the plain cell deep: a shallower one fits the finer faces' cells as it is.
+        # Amended (rulebook 113): in metres first, marked; relative on the attempt after its layer-stack refusal
+        out = (_relative_stack(ask, out, float(first), float(wall_cell_m), float(thinnest), total) if relative_now
+               else _mark_relative_on_retry(out, float(wall_cell_m)))
     if bridged is not None:
         _say_bridge(ask, bridged, g, float(wall_cell_m or 0.0))
     if capped is not None:
@@ -4092,6 +4135,6 @@ def attach(workspace, quality: dict, engine: str) -> dict:
 __all__ = ["Ask", "CONSUMER", "DEFINITIONS", "ENGINES", "NU", "PLAN_FILE", "ROUTE", "RULE_CELLS", "RULE_LAYERS",
            "RULE_LIMITS", "RULE_REPORT", "RULE_SAME", "RULE_SEAM", "RULE_SIZES", "SNAPPY_QUALITY", "attach",
            "cells_between_levels", "flow_run", "level_for", "netgen_built", "netgen_inputs", "netgen_planned",
-           "read_for_attempt",
+           "read_for_attempt", "relative_on_retry",
            "report", "requirements_for", "wrap_rows",
            "skin_friction", "snappy_dict", "summary", "y_plus_height"]

@@ -1276,7 +1276,11 @@ mergeTolerance 1e-6; debug 0;
         # of the wall (the CFD board: 13 resolved bodies with layers on 0-44% of the wall, y+ <= 1 on
         # 0-9%; ahmed_variant_007 13%, a wind-tunnel juncture model 0%)
         _body_cell = base_actual / (2 ** smax)
+        # CFDREQ-33 amended (rulebook 113): the stack in metres first; written on each face's own cells only on the
+        # attempt after that one's layer-stack refusal (gate_facts.relative_stack_next)
+        from meshpipeline.engines.gate_facts import relative_stack_next
         _shm = CR.snappy_dict(_ask, _shm, wall_cell_m=_body_cell, relative_ok=True,  # CFDREQ-33
+                              relative_now=relative_stack_next(ws),
                               bridge=_layer_bridge_room(ws / "constant" / "triSurface" / f"{surface_name}.stl",
                                                         _body_cell, max_cells,
                                                         narrowest_gap_m=(_gap.record().get("narrowest_m")

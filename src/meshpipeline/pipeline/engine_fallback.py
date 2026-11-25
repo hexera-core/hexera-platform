@@ -295,8 +295,13 @@ GATE_LEVERS: dict[str, dict[str, str]] = {
     # CFDREQ-28: snappyHexMesh drops a layer wherever it would fold a cell, and its layer-stage levers (the band, the
     # cap, the buffer cells) did not keep a resolved or laminar stack on real bodies - the next engine builds it
     # (cfMesh splits its wall cell into the layers). A rebuild on the same engine lays the same stack again
+    # (CFDREQ-33 amended: one exception, a stack written in metres that may be written on each face's own cells -
+    # lever_bears, LAYER_STACK_RELATIVE_LEVER)
     "layer_stack": {},
 }
+#: CFDREQ-33 amended (rulebook 113): snappyHexMesh's one answer to a layer-stack refusal - the same plan, the stack
+#: sized on each wall face's own cells (relativeSizes true), only after the stack in metres was refused
+LAYER_STACK_RELATIVE_LEVER: dict[str, str] = {"snappy": "the same stack sized on each wall face's own cells"}
 #: A gate whose refusal its cause's words would misname (cad_fidelity shares PATCH_NOT_CAPTURED).
 _REASON_BY_GATE: dict[str, str] = {
     "cad_fidelity": "its mesh did not follow your CAD closely enough",
@@ -350,6 +355,10 @@ def lever_bears(gate: str, engine: str, facts: Mapping | None = None) -> bool:
     past the solver's hard non-orthogonality (LAD-cfd-11), which only HARD_NON_ORTHO_LEVERS' engines change."""
     if str(gate or "") == "quality_floor" and past_hard_non_ortho(facts) is not None:
         return str(engine or "") in HARD_NON_ORTHO_LEVERS
+    if str(gate or "") == "layer_stack" and isinstance(facts, Mapping) and facts.get("relative_next") is True:
+        # CFDREQ-33 amended (rulebook 113): a stack written in metres that may be written on each face's own cells -
+        # snappyHexMesh's next attempt writes it so (LAYER_STACK_RELATIVE_LEVER); that one's refusal moves the run on
+        return str(engine or "") in LAYER_STACK_RELATIVE_LEVER
     row = GATE_LEVERS.get(str(gate or ""))
     if row is None or str(engine or "") not in RULES_PLANNED:
         return True

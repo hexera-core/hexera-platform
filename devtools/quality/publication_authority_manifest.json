@@ -4601,6 +4601,32 @@
   "roots": []
  },
  {
+  "context": "engines/cfd_requirements.py::_mark_relative_on_retry::search#1|NotAPublisher|not-a-publisher|",
+  "path": "engines/cfd_requirements.py",
+  "qualname": "_mark_relative_on_retry",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "re",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "engines/cfd_requirements.py::_mark_relative_on_retry::search#2|NotAPublisher|not-a-publisher|",
+  "path": "engines/cfd_requirements.py",
+  "qualname": "_mark_relative_on_retry",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 2,
+  "receiver": "re",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "engines/cfd_requirements.py::_num::search#1|NotAPublisher|not-a-publisher|",
   "path": "engines/cfd_requirements.py",
   "qualname": "_num",
@@ -4672,6 +4698,19 @@
   "semantic": "search",
   "method": "search",
   "ordinal": 2,
+  "receiver": "re",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "engines/cfd_requirements.py::relative_on_retry::search#1|NotAPublisher|not-a-publisher|",
+  "path": "engines/cfd_requirements.py",
+  "qualname": "relative_on_retry",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
   "receiver": "re",
   "authority": "NotAPublisher",
   "lifecycle": "not-a-publisher",

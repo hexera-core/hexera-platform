@@ -190,10 +190,18 @@ def _gate_layer_stack(ctx: GateCtx) -> tuple[bool, str]:
     splits its wall cell into the layers, and this sound mesh is kept as the fallback (DELIVERABLE_GATES), chosen
     over the other engine's mesh when its wall is the nearer the bar (gate_distance). A plan with no stack, or a
     wall that was not measured, is not judged."""
-    from meshpipeline.engines.cfd_requirements import STACK_KEPT_PCT, stack_lost
+    from meshpipeline.engines.cfd_requirements import STACK_KEPT_PCT, relative_on_retry, stack_lost
     got = stack_lost(ctx.workspace, ctx.manifest_or_load().get("quality") or {})
     if not got:
         return True, ""
+    if relative_on_retry(ctx.workspace):
+        # CFDREQ-33 amended (rulebook 113): a stack written in metres that may be written on each face's own cells is
+        # answered on this engine first - the next attempt writes it so (engine_fallback.lever_bears)
+        return False, refuse(
+            f"The {got['layers']}-layer stack was kept on {got['coverage_pct']:.1f}% of the wall, under the "
+            f"{STACK_KEPT_PCT:.0f}% the layer row needs: snappyHexMesh dropped the stack on wall faces finer than the "
+            "wall cell; the next attempt sizes the same stack on each face's own cells.",
+            FailureCause.MESH_QUALITY.value, **got, relative_next=True)
     return False, refuse(
         f"The {got['layers']}-layer stack was kept on {got['coverage_pct']:.1f}% of the wall, under the "
         f"{STACK_KEPT_PCT:.0f}% the layer row needs: snappyHexMesh drops layers wherever one would fold a cell, and "

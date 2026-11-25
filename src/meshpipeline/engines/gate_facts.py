@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 #: The record beside the attempt (carried to the next one by the builder).
 GATE_FACTS_FILE = "gate_facts.json"
 #: The facts kept: what a plan can act on, and what the delivery may say.
-_KEPT = ("misses", "fidelity", "detail", "checks", "patches")
+_KEPT = ("misses", "fidelity", "detail", "checks", "patches", "relative_next")
 
 
 def write_gate_facts(workspace, gate: str, facts: Mapping | None) -> None:
@@ -55,4 +55,17 @@ def missed_ports(workspace) -> set[str]:
     return {str(m.get("name")) for m in facts.get("misses") or () if isinstance(m, dict) and m.get("name")}
 
 
-__all__ = ["GATE_FACTS_FILE", "MISSED_PORT_GATES", "missed_ports", "write_gate_facts"]
+def relative_stack_next(workspace) -> bool:
+    """CFDREQ-33 amended (rulebook 113): the previous attempt's layer-stack refusal was of a stack written in metres
+    that may be written relative on the plain wall cell (its `relative_next`) - this attempt writes it so."""
+    try:
+        rec = json.loads((Path(workspace) / GATE_FACTS_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return False
+    if not isinstance(rec, dict) or rec.get("gate") != "layer_stack":
+        return False
+    facts = rec.get("facts")
+    return isinstance(facts, dict) and facts.get("relative_next") is True
+
+
+__all__ = ["GATE_FACTS_FILE", "MISSED_PORT_GATES", "missed_ports", "relative_stack_next", "write_gate_facts"]

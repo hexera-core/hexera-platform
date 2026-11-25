@@ -54,8 +54,18 @@ def test_a_resolved_first_layer_round_a_body_gets_the_layers_that_reach_its_wall
     # 0.034 mm under ~10 mm wall cells: far more than the plan's 5 layers carry it out to the cells
     assert _layers(ws) > 5
     text = (ws / "system" / "snappyHexMeshDict").read_text()
-    # CFDREQ-33: a box at one wall level: the stack written relative to the plain wall cell it was planned on
-    assert "firstLayerThickness" in text and "relativeSizes true" in text and "plainWallCell" in text
+    # CFDREQ-33 amended (rulebook 113): a box at one wall level - the first attempt writes the stack in metres, marked
+    assert "firstLayerThickness" in text and "relativeSizes false" in text and "relativeOnRetry" in text
+    assert "plainWallCell" not in text
+    # ...and the attempt after its layer-stack refusal (the carried gate facts) writes it relative to the plain cell
+    from meshpipeline.engines.gate_facts import write_gate_facts
+    write_gate_facts(ws, "layer_stack", {"coverage_pct": 61.8, "relative_next": True})
+    R.render_snappy_case(ws, surface_name="body", feature_file="body.eMesh", analysis=ANALYSIS,
+                         recommendation=REC, domain_min=[-4.0, -3.0, -3.0], domain_max=[7.0, 4.0, 4.0],
+                         strategy={"n_layers": 5, "last_layer_rel": 0.35, "max_cells": 2_000_000},
+                         requirements=_ask(0.034))
+    text = (ws / "system" / "snappyHexMeshDict").read_text()
+    assert "relativeSizes true" in text and "plainWallCell" in text and "relativeOnRetry" not in text
 
 
 def test_a_first_layer_the_wall_cells_keep_is_left_at_the_plan_s_count(tmp_path):
