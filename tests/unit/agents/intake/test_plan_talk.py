@@ -96,14 +96,14 @@ def test_a_size_on_one_picked_face():
     note = {"text": "can you do a 1 mm mesh sizing in here?", "faces": [FACE32]}
     row = {"phrase": 0, "quote": "can you do a 1 mm mesh sizing in here?", "words": "can you do a 1 mm…",
            "size": "1 mm", "faces": [FACE32], "picked": True, "parts": []}
-    assert PT.reply_for(note, _done([row])) == "1 mm elements on Face 32 (round Ø6 mm)."
+    assert PT.reply_for(note, _done([row])) == "I've set 1 mm elements on Face 32 (round Ø6 mm)."
 
 
 def test_a_size_on_several_picked_faces():
     faces = [{"id": f"Face_{k}", "label": f"Face {k} · flat 10 × 10 mm"} for k in (1, 2, 3, 4)]
     note = {"text": "1 mm on these", "faces": faces}
     row = {"quote": "1 mm on these", "size": "1 mm", "faces": faces, "picked": True, "parts": []}
-    assert PT.reply_for(note, _done([row])) == "1 mm elements on the 4 faces you picked."
+    assert PT.reply_for(note, _done([row])) == "I've set 1 mm elements on the 4 faces you picked."
 
 
 def test_a_place_the_reader_guessed_says_so_and_how_to_fix_it():
@@ -112,8 +112,8 @@ def test_a_place_the_reader_guessed_says_so_and_how_to_fix_it():
            "parts": ["Feature_3", "Feature_5"], "parts_text": "the fillet (radius 8 mm) and the boss (36 mm across)"}
     other = {"quote": "2 mm on the frame rail", "size": "2 mm", "parts": ["Part_9"], "parts_text": "part 9"}
     assert PT.reply_for(note, _done([other, row])) == (
-        "Finer mesh at the fillet (radius 8 mm) and the boss (36 mm across). Click the model if you meant "
-        "somewhere else.")
+        "I've made the mesh finer at the fillet (radius 8 mm) and the boss (36 mm across). That's my guess from "
+        "your words; click it on the model if you meant another spot.")
 
 
 def test_words_that_are_no_mesh_requirement_are_said_so():
@@ -126,32 +126,34 @@ def test_words_that_are_no_mesh_requirement_are_said_so():
 def test_a_phrase_it_could_not_place():
     note = {"text": "1 mm on the lip"}
     got = PT.reply_for(note, _done(unsure=[{"quote": "1 mm on the lip", "words": "1 mm on the lip", "size": "1 mm"}]))
-    assert got == "I couldn't tell where “1 mm on the lip” is: click it on the model and send it again."
+    assert got == "I couldn't tell where “1 mm on the lip” is. Click it on the model and send it again."
 
 
 def test_a_picture_alone_says_what_it_will_and_will_not_do():
     note = {"text": "", "attachments": [{"id": "a1", "kind": "image", "mime": "image/png"}]}
     got = PT.reply_for(note, _done())
-    assert got == PT.PICTURE_ONLY and "sets nothing" in got
+    assert got == PT.PICTURE_ONLY and "don't read pictures" in got
 
 
-def test_words_with_a_picture_say_a_number_in_the_picture_is_not_used():
+def test_words_with_a_picture_say_the_picture_is_kept_but_not_read():
     note = {"text": "finer here", "attachments": [{"id": "a1", "kind": "image", "mime": "image/png"}],
             "faces": [FACE32]}
     row = {"quote": "finer here", "size": "finer", "faces": [FACE32], "picked": True, "parts": []}
-    assert PT.reply_for(note, _done([row])) == ("Finer mesh on Face 32 (round Ø6 mm). " + PT.PICTURE_NUMBERS)
+    assert PT.reply_for(note, _done([row])) == ("I've made the mesh finer on Face 32 (round Ø6 mm). " + PT.PICTURE_NOTE)
+    assert "number" not in PT.PICTURE_NOTE and "don't read pictures" in PT.PICTURE_NOTE
 
 
 def test_a_flow_mesh_says_the_readers_own_lines_for_these_words():
     note = {"text": "3 layers on the walls"}
     lines = ['From your notes: "3 layers on the walls": 3 layers on the walls.',
              'From your notes: "2 mm on the inlet": cells of 2 mm at the inlet.']
-    assert PT.reply_for(note, _done(lines=lines)) == '"3 layers on the walls": 3 layers on the walls.'
+    assert PT.reply_for(note, _done(lines=lines)) == ('"3 layers on the walls": 3 layers on the walls. '
+                                                      + PT.CONFIRM_ON_RESULT)
 
 
 def test_no_checklist_still_reading_and_not_read_yet_never_claim_a_reading():
     note = {"text": "2 mm on the bore", "faces": [FACE32]}
-    assert PT.reply_for(note, None).startswith("Kept for Face 32 (round Ø6 mm).")
+    assert PT.reply_for(note, None) == f"Got it, I've kept 2 mm on Face 32 (round Ø6 mm) for the mesh. {PT.NO_CHECKLIST}"
     assert PT.reply_for(note, {"status": "reading"}) == PT.STILL_READING
     assert PT.reply_for(note, {"status": "ready"}) == PT.READ_BEFORE_RUN
 

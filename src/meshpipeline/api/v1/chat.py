@@ -144,7 +144,8 @@ async def _picked_faces(session_id, faces, owner_id: str, organization_id) -> li
 #: how long the send waits for a requirement's reading before it answers without the reply (the reply then comes
 #: with the card's poll of the reading, GET .../check/parts): with the model's TIMEOUT_S, no send is held past ~20 s
 REQUIREMENT_READ_WAIT_S = 12.0
-REQUIREMENT_POLL_S = 1.0
+#: how often the send looks for the landed reading (a landed reading waited up to this long for nothing)
+REQUIREMENT_POLL_S = 0.25
 
 
 async def _requirement_reply(outcome, session_repo, owner_id: str, session_id, organization_id) -> ChatResponse:
@@ -163,6 +164,17 @@ async def _requirement_reply(outcome, session_repo, owner_id: str, session_id, o
         held = await session_repo.get_for_owner(db, session_id, owner_id, organization_id=organization_id)
     held = _require_session(held, session_id)
     view = await asyncio.to_thread(lambda: PM.finalize(held, owner_id=owner_id))
+    from meshpipeline.agents.intake import plan_talk as PT
+    note = PR.owed_note(held)
+    quick = PT.plain_face_rows(note) if note is not None else None
+    if quick and view is not None and view.get("status") == "reading" and not view.get("failed"):
+        # THE SHORT WAY: faces picked and one plain size - where and what are known now, so the reply is written at
+        # once while the reading (started above) fills the card's list
+        reply = await PR.answer_owed(held, {"status": "done", "rows": quick, "unsure": []}, owner_id=owner_id,
+                                     session_repo=session_repo, db_factory=get_db, organization_id=organization_id)
+        if reply:
+            return ChatResponse(session_id=session_id, reply=reply, awaiting_confirmation=True,
+                                brief=await _brief(held, owner_id))
     t0 = time.monotonic()
     while view and view.get("status") == "reading" and time.monotonic() - t0 < REQUIREMENT_READ_WAIT_S:
         await asyncio.sleep(REQUIREMENT_POLL_S)

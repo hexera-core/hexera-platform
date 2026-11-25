@@ -39,15 +39,15 @@ def test_the_rule_id_is_cited():
 def test_the_prompt_carries_the_message_and_the_facts_and_is_composed_from_its_registry():
     msgs = PR.messages_for(NOTE, _done([ROW]), note_id="n2", last_reply="Here's the plan.")
     system, user = msgs[0]["content"], msgs[1]["content"]
-    assert [b[0] for b in PR.PLAN_REPLY_PROMPT_BLOCKS] == ["voice", "facts_only", "guess_and_unused", "language"]
+    assert [b[0] for b in PR.PLAN_REPLY_PROMPT_BLOCKS] == ["voice", "facts_only", "guess_and_picture", "examples", "language"]
     assert system == PR.compose_system() and all(purpose and callable(b) for _, purpose, b in PR.PLAN_REPLY_PROMPT_BLOCKS)
-    assert "engineer colleague" in system and "Never use a number that is not in the facts" in system
+    assert "first person" in system and "Never use a number that is not in the facts" in system
     body = json.loads(user.split("\n", 1)[1])
     f = body["facts"]
     assert f["message"]["words"] == NOTE["text"] and f["message"]["faces_picked"] == ["Face 32 · round Ø6 mm"]
     assert f["applied"] == [{"what": "1 mm elements", "where": "Face 32 (round Ø6 mm)",
-                             "place": "the user's own click on the model"}]
-    assert f["plain_version_that_is_exactly_right"] == "1 mm elements on Face 32 (round Ø6 mm)."
+                             "place": "they clicked it on the model"}]
+    assert f["plain_version_that_is_exactly_right"] == "I've set 1 mm elements on Face 32 (round Ø6 mm)."
     assert body["your_last_reply"] == "Here's the plan."
 
 
@@ -55,9 +55,10 @@ def test_the_facts_say_a_guess_a_place_not_found_and_a_number_only_in_a_picture(
     note = {**GUESSED_NOTE, "attachments": [{"id": "a1", "kind": "image", "mime": "image/png"}]}
     unsure = {"note": "n3", "quote": "1 mm on the lip", "words": "1 mm on the lip", "size": "1 mm"}
     f = PR.facts(note, _done([GUESSED], [unsure]), note_id="n3")
-    assert "guess" in f["applied"][0]["place"] and "click the model" in f["applied"][0]["place"]
+    assert "guess" in f["applied"][0]["place"] and "click it on the model" in f["applied"][0]["place"]
     assert f["could_not_place"] == ["1 mm on the lip"]
-    assert f["message"]["pictures"] == 1 and "only in the picture" in f["not_used"][0]
+    assert f["message"]["pictures"] == 1 and "do not read pictures" in f["picture"] and "number" not in f["picture"]
+    assert PR.facts(GUESSED_NOTE, _done([GUESSED]), note_id="n3")["picture"] == ""      # no picture, no line
 
 
 # the guard
@@ -97,10 +98,10 @@ def test_the_guard_refuses_each_bad_kind_and_the_plain_sentence_is_said(kind, no
     assert got == (PT.reply_for(note, view, note_id=nid), PR.SOURCE_FALLBACK), kind
 
 
-def test_the_same_opener_as_the_last_reply_is_refused():
+def test_the_same_opener_as_the_last_reply_is_no_longer_refused_variety_is_asked_of_the_prompt():
     f = PR.facts(NOTE, _done([ROW]), note_id="n2")
-    assert PR.check("All right, 1 mm on Face 32.", f, last_reply="All right, finer mesh at the fillet.") != ""
-    assert PR.check("Sounds good, 1 mm on Face 32.", f, last_reply="All right, finer mesh at the fillet.") == ""
+    assert PR.check("All right, 1 mm on Face 32.", f, last_reply="All right, finer mesh at the fillet.") == ""
+    assert "Vary your wording" in PR.compose_system()
 
 
 def _stub(monkeypatch, answer=None, *, raises=None, sleep=0.0):
@@ -141,13 +142,13 @@ def test_a_good_model_reply_is_said_and_its_source_kept(monkeypatch):
 def test_a_failing_model_gives_the_plain_sentence(monkeypatch):
     _stub(monkeypatch, raises=RuntimeError("provider down"))
     assert asyncio.run(PR.write(NOTE, _done([ROW]), note_id="n2")) == (
-        "1 mm elements on Face 32 (round Ø6 mm).", PR.SOURCE_FALLBACK)
+        "I've set 1 mm elements on Face 32 (round Ø6 mm).", PR.SOURCE_FALLBACK)
 
 
 def test_a_slow_model_gives_the_plain_sentence(monkeypatch):
     _stub(monkeypatch, "All right, 1 mm on Face 32 (round Ø6 mm).", sleep=0.5)
     assert asyncio.run(PR.write(NOTE, _done([ROW]), note_id="n2", timeout_s=0.05)) == (
-        "1 mm elements on Face 32 (round Ø6 mm).", PR.SOURCE_FALLBACK)
+        "I've set 1 mm elements on Face 32 (round Ø6 mm).", PR.SOURCE_FALLBACK)
     assert PR.TIMEOUT_S <= 6.0
 
 
@@ -163,7 +164,7 @@ def test_a_row_is_matched_by_its_note_id_even_when_its_quote_is_reworded():
     note = {"text": "can you do a 1 mm mesh sizing in here?", "faces": [FACE32]}
     reworded = {**ROW, "quote": "1 mm mesh sizing here"}       # not word for word in the message
     other = {**ROW, "note": "n1", "quote": "can you do a 1 mm mesh sizing in here?"}   # another note's row
-    assert PT.reply_for(note, _done([reworded, other]), note_id="n2") == "1 mm elements on Face 32 (round Ø6 mm)."
+    assert PT.reply_for(note, _done([reworded, other]), note_id="n2") == "I've set 1 mm elements on Face 32 (round Ø6 mm)."
     assert PT.mine(note, _done([other]), note_id="n2") == ([], [])
 
 

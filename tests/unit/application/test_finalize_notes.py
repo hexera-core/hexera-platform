@@ -273,7 +273,9 @@ def test_a_flow_part_with_no_parts_to_name_still_finalizes_its_notes(monkeypatch
     assert PM.run_reading(**queued.pop())["status"] == "done"
     # read as the run's CFD reader reads them (the flow route, the user's own notes), and shown as its lines
     assert asked == [("flow", [f"Put {LAYERS}."])]
-    assert PM.view(session) == {"status": "done", "rows": [], "unsure": [], "lines": [f"From your notes: {LAYERS}."]}
+    # a flow route with no parts: marked so (a reply then says a requirement is kept for the run, NOTE-18)
+    assert PM.view(session) == {"status": "done", "rows": [], "unsure": [], "lines": [f"From your notes: {LAYERS}."],
+                                "flow": True, "notes_only": True}
     assert PM.before_run(session) == "go"                                   # read: the yes runs
     # a note added after re-arms it
     session.user_notes.append(_note("Keep it under 2 million cells.", "n2"))

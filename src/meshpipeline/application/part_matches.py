@@ -275,6 +275,11 @@ def _view(session: Any, *, owner_id: str, start: bool) -> dict | None:
             # the model step did not answer: said so plainly (the run reads the notes again)
             got = {**got, "failed": True}
         lines = notes_lines(stored, notes=notes, facts=_acted_facts(session))
+        if seen.get("route") == ROUTE_CFD:
+            # a flow mesh: the run's own CFD reader reads every note again, so what is not in this checklist is
+            # still kept for the run (the reply says it is kept, never that it was unreadable -
+            # agents/intake/plan_talk.reply_for); `notes_only`: no parts to tie words to at all
+            got = {**got, "flow": True, **({"notes_only": True} if seen is NOTES_ONLY else {})}
         return {**got, "lines": lines} if lines else got
     # NOT READ FOR THESE WORDS (yet): the last reading's rows stay on the card until the new one lands
     status = "reading" if current and stored is not None and stored.get("status") == "reading" else "ready"
@@ -629,6 +634,15 @@ def run_reading(*, session_id: str, key: str, user_notes=None, request_txt: str 
     route = str(seen.get("route") or ROUTE_FEA)
     consumer, purpose, enabled = _route_ask(route)
     started = time.time()
+    # NOTES-CFD-1: on the flow route the notes themselves are read too, as the run's CFD reader reads them - in a
+    # thread of its own, beside the parts reading (the two model calls are independent; one after the other they
+    # cost their sum, side by side the longer of the two)
+    notes_job = None
+    if route == ROUTE_CFD:
+        import concurrent.futures
+        pool = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="notes-read")
+        notes_job = pool.submit(read_notes, state, session_id)
+        pool.shutdown(wait=False)
     if seen is NOTES_ONLY:
         section = PW.section("none", note="no parts to tie the words to")
     elif not enabled:
@@ -653,8 +667,7 @@ def run_reading(*, session_id: str, key: str, user_notes=None, request_txt: str 
         except Exception as exc:  # noqa: BLE001 - nothing read; the run asks again
             logger.warning("part matches: the reading failed (%s) - session=%s", type(exc).__name__, session_id)
             section = PW.section("failed", note=PW.UNREAD_WORDS)
-    # NOTES-CFD-1: on the flow route the notes themselves are read too, as the run's CFD reader reads them
-    notes_sec = read_notes(state, session_id) if route == ROUTE_CFD else None
+    notes_sec = notes_job.result() if notes_job is not None else None
     now = _read(session_id, MATCHES)
     if now is not None and now.get("key") not in (None, key):
         logger.info("part matches: the notes changed while they were read - this reading dropped - session=%s",
