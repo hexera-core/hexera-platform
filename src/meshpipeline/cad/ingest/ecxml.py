@@ -593,13 +593,35 @@ class _Reader:
         self._extensions(node, ("material",))
         return out
 
+    #: The conductivity models the schema defines (JEP181A 4.3). Anything else beside one of
+    #: them is a vendor annotation and is counted like every other one.
+    CONDUCTIVITY_KINDS = ("isotropic", "orthotropic", "linearTemperatureDependant",
+                          "nonLinearTemperatureDependant")
+
     def conductivity(self, node: Node, path) -> dict:
         here = path + ("thermalConductivity",)
-        kinds = list(node.children)
+        # THE KINDS, not every child. Counting every child refused a file for carrying one
+        # vendor element beside its conductivity model, and the IDENTICAL element inside a
+        # <solid3dBlock> is counted by `_extensions` and tolerated - so the reader was
+        # stricter about a material than about a part, on a file whose geometry it would
+        # happily read. MEASURED 2026-11-25: <vendorKModel>table7</vendorKModel> beside
+        # <orthotropic> in one of the real file's 33 materials refused the whole upload with
+        # a 422, and the message named the material but not the element to remove. A tool
+        # that annotates its conductivity models could not upload at all.
+        kinds = [c for c in node.children if c.tag in self.CONDUCTIVITY_KINDS]
+        self._extensions(node, self.CONDUCTIVITY_KINDS)
         if len(kinds) != 1:
-            raise EcxmlError(self._where(here, "it must hold exactly one of isotropic, orthotropic, "
-                                               "linearTemperatureDependant, "
-                                               "nonLinearTemperatureDependant"))
+            stray = [c.tag for c in node.children if c.tag not in self.CONDUCTIVITY_KINDS]
+            if kinds:
+                said = (f"; it holds {len(kinds)} of them: "
+                        + ", ".join(f"<{c.tag}>" for c in kinds))
+            elif stray:
+                said = ("; it holds " + ", ".join(f"<{t}>" for t in stray[:4])
+                        + " and none of those")
+            else:
+                said = "; it is empty"
+            raise EcxmlError(self._where(here, "it must hold exactly one of "
+                                               + ", ".join(self.CONDUCTIVITY_KINDS) + said))
         k = kinds[0]
         if k.tag == "isotropic":
             return {"kind": "isotropic",
@@ -667,7 +689,10 @@ class _Reader:
             heatsink: str = "") -> Obj:
         kind = el.tag
         fields = OBJECT_FIELDS[kind]
-        name = self.text(el, "name", path + (f"<{kind}> on line {el.line}",))
+        # NOT the line here: `child()` puts "<kind> on line N" in the message itself, so
+        # carrying it in the path too said the same number twice -
+        # "T28.1/<solid3dBlock> on line 413: <solid3dBlock> on line 413 has no <name>".
+        name = self.text(el, "name", path + (f"<{kind}>",))
         here = path + (name,)
         active = self.boolean(el, "active", here) and not inactive_parent
         self.order += 1
