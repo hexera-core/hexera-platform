@@ -437,7 +437,9 @@ CASES = {
                                        ("say", "OK"), ("say", "Proceed")], "cfd_second_question", [P, S, C, F, PL, ST]),
     "cfd_off_script_at_plan": ([("say", "water flowing through this elbow"), ("stage", INTERNAL_DECL),
                                 ("say", "OK"), ("say", "how many cells will it have?"), ("say", "Proceed")],
-                               "", [P, S, C, F, PL, ANS, PL, ST]),
+                               # NOTE-20: a question about the mesh's count is answered from the plan's numbers; the
+                               # plan stands on the card, so it is not shown again before the Proceed
+                               "", [P, S, C, F, PL, ANS, ST]),
     "cfd_question_with_the_plan_due": ([("say", "CFD of water through this elbow at 2 m/s"), ("stage", INTERNAL_DECL),
                                         ("say", "hmm"), ("say", "Proceed")], "", [P, S, C, PL, PL, ST]),
     # a change of analysis after the stage: the stage opens again on the new route, nothing asked in chat

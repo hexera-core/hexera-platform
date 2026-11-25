@@ -72,6 +72,10 @@ def facts(note: Mapping, view: Mapping | None, *, note_id: str = "") -> dict[str
         "applied": applied,
         "flow_lines": PT.lines_mine(view, text),
         "could_not_place": [str(u.get("words") or u.get("quote") or "") for u in unsure],
+        # NOTE-21: words that name ONE place where the part has several they do not tell apart: nothing set there,
+        # one click asked for (how many there are, and what they are)
+        "which_one": [{"words": str(u.get("words") or u.get("quote") or ""), "how_many_there_are": int(u["which_one"]),
+                       "noun": str(u.get("noun") or "")} for u in unsure if PT.which_one_line(u)],
         "picture": picture,
         "no_checklist": view is None and bool(text.strip()),
         # nothing reads it before the run on this route: kept, read when the mesh is built - never "couldn't read"
@@ -114,7 +118,10 @@ def _block_facts_only() -> str:
 def _block_guess_and_picture() -> str:
     return ("If a place is your guess, say so as yours ('I took that as the 22 mm hole') and that they can click it "
             "on the model if they meant another spot. If some words could not be placed, say which and that they can "
-            "click the spot on the model and send it again. If a picture came, add ONE short clause, in your own "
+            "click the spot on the model and send it again. If which_one lists words, they named ONE place and the "
+            "part has that many: say how many there are, that you can't tell which one they mean (from the picture "
+            "either, if one came), that you haven't set it anywhere yet, and ask them to click it on the model and send it "
+            "again. If a picture came, add ONE short clause, in your own "
             "words, that you can't read the picture itself so you went by their words (or by the face they "
             "clicked); nothing more about the picture.\n")
 
@@ -136,6 +143,9 @@ def _block_examples() -> str:
             "They: 'use 3 mm everywhere' (applied 3 mm on the whole model) -> 'All right, 3 mm elements across the "
             "whole part.'\n"
             "They: '1 mm on the lip' (could not be placed) -> 'I couldn't tell where the lip is. Click it on the "
+            "model and send that again.'\n"
+            "They: 'make it finer at this fillet' (picture; which_one: 7 fillets) -> 'There are 7 fillets on this "
+            "part and I can't tell which one you mean from the picture, so I haven't set it yet. Click it on the "
             "model and send that again.'\n"
             "They: 'y+ of 1 on the walls please' (kept_for_the_run) -> 'Noted, y+ of 1 on the walls. The result "
             "will show whether this mesher could apply it.'\n"
@@ -188,6 +198,8 @@ _BANNED = re.compile(r"!|\bcertainly\b|\bas an ai\b|\bgreat question\b|[\U0001F3
 #: a guessed place said as one: the reply says it is a guess, or how to correct it
 _GUESS_SAID = re.compile(r"\b(?:click|pick|guess\w*|took (?:that|it|this) as|assum\w*|another (?:spot|place|one)|"
                          r"somewhere else|elsewhere|different (?:spot|place|one)|meant)\b", re.I)
+#: NOTE-21: one place among several is asked for by a click
+_CLICK = re.compile(r"\b(?:click|pick|select)\w*\b", re.I)
 #: a requirement kept for the run is said as kept, never as unreadable
 _UNREAD = re.compile(r"\b(?:couldn'?t|could not|can'?t|cannot|unable|didn'?t|did not)\b", re.I)
 _KEPT = re.compile(r"\b(?:kept|keep(?:ing)?|noted|saved|hold(?:ing)? on to|held)\b", re.I)
@@ -270,6 +282,8 @@ def check(reply: str, f: Mapping, *, last_reply: str = "") -> str:
         return "claims something was applied when nothing was"
     if f.get("kept_for_the_run") and (_UNREAD.search(text) or not _KEPT.search(text)):
         return "a kept requirement not said as kept"
+    if f.get("which_one") and not _CLICK.search(text):
+        return "one place among several, and no click asked for"
     return ""
 
 
@@ -359,9 +373,20 @@ async def answer_owed(session: Any, view: Mapping | None, *, owner_id: str, sess
     async with lock:
         try:
             nid = PM.note_id(getattr(session, "user_notes", None), note)
-            reply, source = await (write_fn or write)(
-                note, view, note_id=nid, last_reply=last_reply_of(getattr(session, "messages", None) or ()),
-                session_id=sid, user_id=owner_id)
+            if asked_not_set(note, view, note_id=nid):
+                # NOTE-20: the checklist took nothing and the words ask a question: answered as the question it is,
+                # from the numbers the product holds before the run - never "I couldn't find a mesh setting"
+                from meshpipeline.application import fea_check
+                plan = await asyncio.to_thread(fea_check.planned_sizes, sid)
+                got = await answered(str(note.get("text") or ""), view, plan, faces=list(note.get("faces") or ()),
+                                     pictures=len(PT.pictures_of(note)),
+                                     last_reply=last_reply_of(getattr(session, "messages", None) or ()),
+                                     session_id=sid, user_id=owner_id)
+                reply, source = got["text"], got["source"]
+            else:
+                reply, source = await (write_fn or write)(
+                    note, view, note_id=nid, last_reply=last_reply_of(getattr(session, "messages", None) or ()),
+                    session_id=sid, user_id=owner_id)
             async with db_factory() as db:
                 fresh = await session_repo.get_for_owner(db, session.id, owner_id,
                                                          organization_id=organization_id)
@@ -376,6 +401,269 @@ async def answer_owed(session: Any, view: Mapping | None, *, owner_id: str, sess
             return ""
 
 
+# #
+# NOTE-20: a question about the mesh, answered from the numbers the product holds before the run
+# #
+
+QUESTION_RULE = PT.QUESTION_RULE
+#: an answer may say a little more than a requirement's reply (the sizes, the requirements so far, what is not known)
+MAX_ANSWER_CHARS = 500
+#: the requirements so far listed in the facts at most
+MAX_LISTED = 8
+
+
+def _size_there(row: Mapping, step: Mapping) -> str:
+    """What one requirement does to the size, in words the answer may repeat: a typed size as typed; "finer" /
+    "coarser" as the one step it takes (PLAN-fea-36) - the exact size there is the run's."""
+    size = str(row.get("size") or "")
+    if size in ("finer", "coarser"):
+        k = step.get(size)
+        if not k:
+            return (f"{size} than the rest; the exact size there is settled when the mesh is built")
+        return (f"about {'half' if size == 'finer' else 'twice'} the size the mesh would have had there "
+                f"(x{float(k):g}); the exact size there is settled when the mesh is built")
+    if size and size[0].isdigit():
+        return f"{size}, as you typed it"
+    return ""
+
+
+def question_facts(text: str, view: Mapping | None, plan: Mapping | None, *, faces: Sequence[Any] = (),
+                   pictures: int = 0) -> dict[str, Any]:
+    """NOTE-20: what the product really holds for a question about the mesh, as the model is told it: the plan's own
+    numbers (application/fea_check.planned_sizes - made before the user's requirements), each requirement so far from
+    the checklist (what, where, and what it does to the size), the phrases still waiting for a click, and what is not
+    known yet with when it will be. Pure."""
+    plan = dict(plan or {})
+    step = plan.get("step") or {}
+    rows = [r for r in (view or {}).get("rows") or () if isinstance(r, Mapping)]
+    reqs = []
+    for r in rows[:MAX_LISTED]:
+        where, _how = PT.row_place(r)
+        item = {"what": PT.row_what(r), "where": where}
+        there = _size_there(r, step)
+        if there:
+            item["size_there"] = there
+        reqs.append(item)
+    waiting = [{"words": str(u.get("words") or u.get("quote") or ""),
+                **({"places_it_could_be": int(u["which_one"]), "noun": str(u.get("noun") or "")}
+                   if PT.which_one_line(u) else {})}
+               for u in (view or {}).get("unsure") or () if isinstance(u, Mapping)][:MAX_LISTED]
+    numbers = {k: plan[k] for k in ("coarsest_mm", "parts_mm", "finest_mm", "finest_where", "elements", "time")
+               if plan.get(k)}
+    not_known: list[str] = []
+    if not plan.get("known"):
+        if plan.get("why"):
+            not_known.append(str(plan["why"]))
+    elif not plan.get("elements"):
+        not_known.append("The element count is known once the run starts.")
+    f: dict[str, Any] = {
+        "question": {"words": str(text or ""), "pictures": int(pictures),
+                     "faces_picked": [str(x.get("label") or x.get("id") or "") for x in faces or ()
+                                      if isinstance(x, Mapping)]},
+        "plan": ({**numbers, "planned": "by the geometry check, before your requirements"} if numbers else {}),
+        "your_requirements": reqs,
+        "more_requirements": max(0, len(rows) - MAX_LISTED),
+        "waiting_for_a_click": waiting,
+        "still_being_read": bool(view is not None and view.get("status") == "reading"),
+        "not_known_yet": [s for s in not_known if s],
+    }
+    f["plain_version_that_is_exactly_right"] = answer_plain(f)
+    return f
+
+
+def _mm_range(v) -> str:
+    return f"{v[0]:g} to {v[1]:g} mm" if isinstance(v, (list, tuple)) and len(v) == 2 else ""
+
+
+def answer_plain(f: Mapping) -> str:
+    """The plain answer that says exactly the facts (the model's fallback and the guard's source of truth)."""
+    plan = f.get("plan") or {}
+    out: list[str] = []
+    if plan.get("coarsest_mm") or plan.get("parts_mm"):
+        size = (f"about {_mm_range(plan['parts_mm'])} on the parts" if plan.get("parts_mm")
+                else f"about {plan['coarsest_mm']:g} mm where nothing needs finer")
+        fine = (f", down to about {plan['finest_mm']:g} mm at {plan['finest_where']}"
+                if plan.get("finest_mm") and plan.get("finest_where") else "")
+        out.append(f"Before your requirements, the plan sizes the mesh at {size}{fine}.")
+    reqs = list(f.get("your_requirements") or ())
+    if plan.get("elements"):
+        out.append(f"The check planned {plan['elements']}"
+                   + ("; the count with your requirements comes once the run starts." if reqs else "."))
+    if reqs:
+        bits = [f"{r['what'][:1].lower()}{r['what'][1:]} on {r['where']}" for r in reqs[:3]]
+        more = len(reqs) - 3 + int(f.get("more_requirements") or 0)
+        out.append("Your requirements: " + PT._and(bits) + "." + (f" There are {more} more in the list."
+                                                                   if more > 0 else ""))
+        steps = {"half" if "about half" in str(r.get("size_there")) else "twice" for r in reqs
+                 if "settled when the mesh is built" in str(r.get("size_there") or "")}
+        if steps:
+            out.append(f"Where you asked {'finer' if steps == {'half'} else 'coarser' if steps == {'twice'} else 'finer or coarser'}"
+                       f" it'll be about {' or '.join(sorted(steps))} the size around it; the exact size is set when "
+                       "the mesh is built.")
+    for w in list(f.get("waiting_for_a_click") or ())[:2]:
+        out.append(f"“{w['words']}” is not set yet: click the place on the model and send it again.")
+    if f.get("still_being_read"):
+        out.append("Your latest requirement is still being read; the list will show it in a moment.")
+    out += [str(s) for s in f.get("not_known_yet") or ()]
+    return " ".join(out) or PT.ASK_LINE
+
+
+def _block_answer_voice() -> str:
+    return ("You are the meshing assistant, talking with an engineer in chat before their mesh is built. They asked "
+            "a question about the mesh. Answer it the way a friendly colleague would: plainly, first person, "
+            "contractions, everyday words, one to three short sentences. Answer what they asked first. No "
+            "exclamation marks, no emoji, no 'Certainly', no 'Great question', no 'As an AI'.\n")
+
+
+def _block_answer_facts() -> str:
+    return ("Say ONLY what the FACTS say. Every number you write must be in the facts exactly: never work out a new "
+            "number yourself (no multiplying, no adding, no rounding to another figure). For a place asked finer or "
+            "coarser with no number, say it will be about half (or twice) the size around it and that the exact "
+            "size is settled when the mesh is built. Give an element count or a time only if the facts have one, and "
+            "say a planned count was planned before their requirements. If something is not known yet, say what and "
+            "when, in one short sentence. Nothing has been set by this message and nothing has been meshed yet. "
+            "Never cite rule ids.\n")
+
+
+def _block_answer_examples() -> str:
+    return ("Examples of the voice (the facts differ each time; never copy their numbers):\n"
+            "They: 'so what would the element size be roughly' (plan: about 4 mm where nothing needs finer; finer on "
+            "the 6 faces you picked; count not known) -> 'Roughly 4 mm over most of the part. On the 6 faces you "
+            "picked it'll be about half that, and I'll have the element count once the run starts.'\n"
+            "They: 'how many elements will it be' (plan: about 180,000 elements, planned before the requirements) "
+            "-> 'About 180,000 elements as planned before your requirements; your finer places will add to that, "
+            "and I'll have the real count once the run starts.'\n"
+            "They: 'what size will it use' (no plan numbers: not known until the run) -> 'I don't have the size yet: "
+            "it's worked out from the measured part when the mesh is built, and I'll have it once the run starts.'\n")
+
+
+def _block_answer_language() -> str:
+    return ("Answer in the language the user wrote in. Plain text only: no markdown, no lists, no quotes around the "
+            "whole reply. At most 500 characters.\n")
+
+
+#: THE QUESTION ANSWERER'S PROMPT BLOCKS (name, purpose, build), composed in this order - the only system text it gets
+PLAN_ANSWER_PROMPT_BLOCKS: tuple = (
+    ("voice", "answer the question like a colleague: first person, plain, one to three sentences, no filler",
+     _block_answer_voice),
+    ("facts_only", "only the facts' own numbers, none worked out; finer/coarser as about half/twice with the exact "
+                   "size at the build; a count or time only when given; what is not known said with when",
+     _block_answer_facts),
+    ("examples", "three example exchanges in that voice", _block_answer_examples),
+    ("language", "the user's own language; plain text; at most 500 characters", _block_answer_language),
+)
+
+
+def compose_answer_system() -> str:
+    return "".join(build() for _name, _purpose, build in PLAN_ANSWER_PROMPT_BLOCKS)
+
+
+def answer_messages(f: Mapping, *, last_reply: str = "") -> list[dict]:
+    body = {"facts": dict(f), "your_last_reply": last_reply}
+    return [{"role": "system", "content": compose_answer_system()},
+            {"role": "user", "content": "Answer this question.\n" + json.dumps(body, ensure_ascii=False)}]
+
+
+#: a count said in words ("a million", "a few thousand"): only when the facts say one
+_BIG_WORDS = re.compile(r"\b(?:hundreds?|thousands?|millions?|billions?|dozens?)\b", re.I)
+_SMALL_WORDS = {w: str(n) for n, w in _COUNT_WORDS.items()}
+#: "I've set..." in an answer: only when there is a requirement to speak of
+_SET_NOW = re.compile(r"\bi(?:'| ha)ve (?:set|added|put|applied|made)\b|\bi(?:'| wi)ll (?:set|add|apply)\b", re.I)
+
+
+def check_answer(reply: str, f: Mapping) -> str:
+    """NOTE-20: why a model-written answer may not be said ("" when it may), against the facts `f`: empty; longer than
+    MAX_ANSWER_CHARS; a rule id; an exclamation, filler or emoji; a number the facts do not hold, in figures or in
+    words ("a million", "six"); a claim that something is set when no requirement is."""
+    text = " ".join(str(reply or "").split())
+    if not text:
+        return "empty"
+    if len(text) > MAX_ANSWER_CHARS:
+        return "too long"
+    if _RULE_ID.search(text):
+        return "a rule id"
+    if _BANNED.search(text):
+        return "an exclamation, filler or emoji"
+    held = json.dumps(f, ensure_ascii=False)
+    stray = sorted(_numbers(text) - _numbers(held))
+    if stray:
+        return f"a number not in the facts ({', '.join(stray)})"
+    low, held_low = text.casefold(), held.casefold()
+    big = sorted({w.casefold().rstrip("s") for w in _BIG_WORDS.findall(text)} - {
+        w.casefold().rstrip("s") for w in _BIG_WORDS.findall(held)})
+    small = sorted(w for w, n in _SMALL_WORDS.items() if re.search(rf"\b{w}\b", low)
+                   and n not in _numbers(held) and not re.search(rf"\b{w}\b", held_low))
+    if big or small:
+        return f"a number not in the facts ({', '.join(big + small)})"
+    if not f.get("your_requirements") and _SET_NOW.search(text):
+        return "claims something is set when nothing is"
+    return ""
+
+
+async def answered(text: str, view: Mapping | None, plan: Mapping | None, *, faces: Sequence[Any] = (),
+                   pictures: int = 0, last_reply: str = "", session_id: str = "", user_id: str = "",
+                   timeout_s: float = TIMEOUT_S, ask_fn=None) -> dict[str, str]:
+    """NOTE-20: the answer to a question about the mesh: {"text", "source", "raw", "why"}, written by the intake's
+    model from `question_facts` and checked by `check_answer`; refused, failed or slow, the plain answer. Never
+    raises."""
+    f = question_facts(text, view, plan, faces=faces, pictures=pictures)
+    plain = str(f["plain_version_that_is_exactly_right"])
+    try:
+        said = await asyncio.wait_for((ask_fn or _ask)(answer_messages(f, last_reply=last_reply),
+                                                       job_id=f"plan-answer-{session_id}", user_id=user_id),
+                                      timeout=timeout_s)
+    except Exception as exc:  # noqa: BLE001 - a slow or failed model: the plain answer (NOTE-20)
+        logger.info("plan answer: the plain answer (%s, %s) - session=%s", QUESTION_RULE, type(exc).__name__,
+                    session_id)
+        return {"text": plain, "source": SOURCE_FALLBACK, "raw": "", "why": f"no answer ({type(exc).__name__})"}
+    said = " ".join(str(said or "").strip().strip('"“”').split())
+    why = check_answer(said, f)
+    if why:
+        logger.info("plan answer: the model's answer refused by the check '%s' (%s) - session=%s", why,
+                    QUESTION_RULE, session_id)
+        return {"text": plain, "source": SOURCE_FALLBACK, "raw": said, "why": why}
+    return {"text": said, "source": SOURCE_MODEL, "raw": said, "why": ""}
+
+
+def asked_not_set(note: Mapping, view: Mapping | None, *, note_id: str = "") -> bool:
+    """NOTE-20, THE SAFE SIDE OF "I couldn't find a mesh setting in that": a message kept as a requirement from which
+    the checklist took nothing, whose words ask a question - it is answered as the question it is."""
+    text = str(note.get("text") or "")
+    return bool(text.strip()) and view is not None and PT.asks(text) and PT.NOT_READ in PT.reply_for(
+        note, view, note_id=note_id)
+
+
+async def answer_question(session: Any, view: Mapping | None, plan: Mapping | None, *, owner_id: str, session_repo,
+                          db_factory, organization_id: str = "", text: str = "", faces: Sequence[Any] = (),
+                          pictures: int = 0, ask_fn=None) -> str:
+    """NOTE-20: the answer to the conversation's last message - a question about the mesh - written now and kept in
+    the conversation, once (the conversation is read again first: an answer already given, or a conversation that
+    moved on, keeps nothing). Never raises; "" when nothing was kept."""
+    sid = str(getattr(session, "id", "") or "")
+    messages = list(getattr(session, "messages", None) or [])
+    if not sid or not messages or not isinstance(messages[-1], Mapping) or messages[-1].get("role") != "user":
+        return ""
+    asked = messages[-1]
+    text = text or str(asked.get("content") or "")
+    lock = _LOCKS.setdefault(sid, asyncio.Lock())
+    async with lock:
+        try:
+            got = await answered(text, view, plan, faces=faces or list(asked.get("faces") or ()), pictures=pictures,
+                                 last_reply=last_reply_of(messages), session_id=sid, user_id=owner_id, ask_fn=ask_fn)
+            async with db_factory() as db:
+                fresh = await session_repo.get_for_owner(db, session.id, owner_id, organization_id=organization_id)
+                last = list(getattr(fresh, "messages", None) or [])[-1:] if fresh is not None else []
+                if not last or not isinstance(last[0], Mapping) or last[0].get("role") != "user":
+                    return ""          # answered meanwhile, or the conversation moved on
+                await session_repo.append_message(db, session.id, "assistant", got["text"])
+                await db.commit()
+            logger.info("plan answer: said (%s, source=%s) - session=%s", QUESTION_RULE, got["source"], sid)
+            return got["text"]
+        except Exception as exc:  # noqa: BLE001 - the question stays; the user can ask again
+            logger.warning("plan answer: not said (%s: %s) - session=%s", type(exc).__name__, str(exc)[:200], sid)
+            return ""
+
+
 def last_reply_of(messages: Sequence[Any]) -> str:
     """Our last line in the conversation (its opener is not used again)."""
     for m in reversed(list(messages or ())):
@@ -384,5 +672,7 @@ def last_reply_of(messages: Sequence[Any]) -> str:
     return ""
 
 
-__all__ = ["MAX_CHARS", "PLAN_REPLY_PROMPT_BLOCKS", "RULE", "SOURCE_FALLBACK", "SOURCE_FIXED", "SOURCE_MODEL",
-           "TIMEOUT_S", "check", "compose_system", "facts", "last_reply_of", "messages_for", "write"]
+__all__ = ["MAX_ANSWER_CHARS", "MAX_CHARS", "PLAN_ANSWER_PROMPT_BLOCKS", "PLAN_REPLY_PROMPT_BLOCKS", "QUESTION_RULE",
+           "RULE", "SOURCE_FALLBACK", "SOURCE_FIXED", "SOURCE_MODEL", "TIMEOUT_S", "answer_messages", "answer_plain",
+           "answer_question", "answered", "asked_not_set", "check", "check_answer", "compose_answer_system",
+           "compose_system", "facts", "last_reply_of", "messages_for", "question_facts", "write"]

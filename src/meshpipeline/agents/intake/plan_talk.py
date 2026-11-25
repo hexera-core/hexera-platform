@@ -22,6 +22,10 @@ here, in code, as one of:
   under a guard (agents/intake/plan_reply, NOTE-19); `reply_for` is its plain fallback and the guard's source of truth.
 - BOTH: a requirement that also names another engine ("use cfMesh at 2 mm"): kept as a NOTE and handed to the intake,
   which switches the plan.
+- QUESTION: a question about the mesh itself - its size, element count, how fine, how long, what was set ("so what
+  would the elemnt size be roughly", typos and no question mark included): nothing is kept; it is answered from the
+  numbers the product already holds before the run (agents/intake/plan_reply, NOTE-20). Never "I couldn't find a
+  mesh setting in that".
 """
 from __future__ import annotations
 
@@ -29,6 +33,8 @@ import re
 from collections.abc import Iterable, Mapping
 
 RULE = "NOTE-18"
+#: a question about the mesh at the plan step is answered from the numbers the product holds before the run
+QUESTION_RULE = "NOTE-20"
 
 GO, ASK, NOTE, INTAKE = "go", "ask", "note", "intake"
 #: "wait", "not yet", "don't proceed yet": nothing starts, nothing is kept, and we say so
@@ -36,6 +42,8 @@ HOLD = "hold"
 #: a plan change with a requirement in the same breath ("use cfMesh at 2 mm"): the words are kept as a requirement
 #: AND the intake changes the plan, as it did before the plan step was a conversation
 BOTH = "both"
+#: a question about the mesh (its sizes, count, time, what was set): answered from the plan's own numbers (NOTE-20)
+QUESTION = "question"
 
 #: the one question when a "go" is not plain
 ASK_LINE = "Start the mesh now?"
@@ -89,8 +97,18 @@ _REQUIREMENT = re.compile(
     r"density|resolution|resolve|size|sizes|sizing|sized|element|elements|cell|cells|layer|layers|inflation|quality|"
     r"skew|skewness|aspect|jacobian|warp|warpage|growth|spacing|curvature|tet|tets|tetra|hex|"
     r"hexes|hexa|quad|quads|triangles|tris|quadratic|linear|yplus|smooth|smoother|gradual|transition)\b")
-#: a question that asks about something rather than asking for it ("what will the cell count be?"): the intake answers
-_ASKS_ABOUT = re.compile(r"^(?:what|whats|how|hows|why|which|when|where|who|is|are|does|do|will|would|did|was|were) ")
+#: NOTE-20: A QUESTION IN ITS WORDS, question mark or not: a question word with a word after it anywhere ("so for this
+#: mesh, what would the size be"), never the suggestion forms ("how about finer at the bore", "what if"); a question
+#: lead-in ("tell me", "do you know", "any idea"); or a clause that opens on an auxiliary not addressed to us ("will
+#: it be fine", "is the hole finer" - never "will you make it finer", which asks for it)
+_Q_WORD = re.compile(r"\b(?:what|whats|how|hows|which|why)\s+(?!about\b|if\b|not\b)[a-z]")
+_Q_LEAD_IN = re.compile(r"\b(?:tell me|do you know|any idea|i wonder|wondering|curious)\b")
+_Q_AUX = re.compile(r"^(?:is|are|does|do|did|will|would|was|were|should)\s+(?!you\b|u\b)[a-z]")
+#: NOTE-20: words that make a question one about the mesh beyond the requirement words: its count, its time, what is set
+_MESH_ASK = re.compile(r"\b(?:count|how many|how long|how fine|how coarse|how big|how small|how dense|time|take|"
+                       r"takes|set|requirement|requirements)\b")
+#: ... but a question about the plan's KIND of mesh (element type, order, engine), which no number answers: the intake's
+_NOT_OUR_NUMBERS = re.compile(r"\b(?:type|types|kind|kinds|order|shape|family|engine|mesher|why)\b")
 #: a change to the plan itself, not a mesh requirement: the intake re-plans it
 _PLAN_WORDS = re.compile(
     r"\b(?:engine|mesher|purpose|internal|external|2d|3d|far ?field|domain|reference length|flow direction|"
@@ -169,10 +187,13 @@ def reading(text: str, *, carries: bool = False, asked: bool = False, consent: s
     if not words:
         # "👍" is the consent reader's yes; anything else with no words is asked about once
         return GO if consent == "approve" and "?" not in raw else (NOTE if asked else ASK)
+    if mesh_question(raw):
+        # "can you do 1 mm here?" asks for it; "what will the cell count be?" and "so what would the elemnt size be
+        # roughly" ask about it (NOTE-20)
+        return QUESTION
     if _REQUIREMENT.search(words):
-        # "can you do 1 mm here?" asks for it; "what will the cell count be?" asks about it
-        asks_about = "?" in raw and _ASKS_ABOUT.match(words + " ") and not re.search(r"\d", words)
-        if asks_about:
+        if asks(raw) and not re.search(r"\d", words):
+            # a question about the plan's kind of mesh ("what element type will it use?"): the intake answers
             return INTAKE
         # "use cfMesh at 2 mm": the engine is switched now, and the size kept
         return BOTH if _names_another_engine(raw, engine) else NOTE
@@ -185,6 +206,36 @@ def reading(text: str, *, carries: bool = False, asked: bool = False, consent: s
     if _PLAN_WORDS.search(words) or "?" in raw or _names_an_engine(raw):
         return INTAKE
     return NOTE
+
+
+def asks(text: str) -> bool:
+    """NOTE-20: the words are a question - a question word anywhere ("..., what would the size be roughly"), a question
+    lead-in ("tell me", "do you know"), a clause opening on an auxiliary not addressed to us ("will it be fine"), or
+    a question mark after a question-word opening. Typos elsewhere in the words do not matter."""
+    raw = str(text or "")
+    words = _words(raw)
+    if not words:
+        return False
+    if _Q_WORD.search(words) or _Q_LEAD_IN.search(words):
+        return True
+    return any(_Q_AUX.match(c) or (c.startswith(("who ", "why ", "when ", "where ")) and "?" in raw)
+               for c in (_trimmed(c, ends=False) for c in _clauses(raw)))
+
+
+def mesh_question(text: str) -> bool:
+    """NOTE-20, IN CODE: a question about the mesh itself - asked in question words, about a size, the element count,
+    how fine, how long, what was set - and no number in it (a number states something to set: "would 2 mm do?" is kept
+    as the requirement it names). Never a go, never kept as a requirement."""
+    words = _words(text)
+    return bool(words) and not re.search(r"\d", words) and not _NOT_OUR_NUMBERS.search(words) and asks(text) \
+        and bool(_REQUIREMENT.search(words) or _MESH_ASK.search(words))
+
+
+def about_the_mesh(text: str) -> bool:
+    """The words hold a mesh word or a word about the mesh's count, time or settings (the model's "question" is ours
+    to answer from the plan's numbers, NOTE-20; any other question is the intake's)."""
+    words = _words(text)
+    return bool(words) and bool(_REQUIREMENT.search(words) or _MESH_ASK.search(words))
 
 
 def requirement_content(text: str, *, carries: bool = False) -> bool:
@@ -371,6 +422,23 @@ def _lines_mine(lines: Iterable[str], said: str) -> list[str]:
     return out
 
 
+def plural(noun: str) -> str:
+    """"hole" -> "holes", "notch" -> "notches", "boss" -> "bosses"."""
+    noun = str(noun or "place")
+    return noun + ("es" if noun.endswith(("ch", "sh", "s", "x")) else "s")
+
+
+def which_one_line(u: Mapping) -> str:
+    """NOTE-21: a phrase that names ONE place where the part has several the words do not tell apart (the reader's
+    `which_one`: how many, and the noun): nothing is set, and one click is asked for. "" for any other phrase."""
+    n = u.get("which_one")
+    if not isinstance(n, int) or isinstance(n, bool) or n < 2:
+        return ""
+    noun = str(u.get("noun") or "place")
+    return (f"There are {n} {plural(noun)} on this part and I can't tell which one you mean, so I haven't set it "
+            f"anywhere yet. Click it on the model and send that again.")
+
+
 #: the reading failed (the model step did not answer): the note stays, and the run reads it again
 READ_FAILED = "I couldn't read that one just now. It's kept, and it will be read again when the mesh starts."
 
@@ -447,7 +515,7 @@ def reply_for(note: Mapping, view: Mapping | None, *, note_id: str = "") -> str:
         out.append(CLICK_IF_ELSEWHERE)
     for u in unsure[:MAX_SAID]:
         what = str(u.get("words") or u.get("quote") or "").strip()
-        out.append(f"I couldn't tell where “{what}” is. Click it on the model and send it again.")
+        out.append(which_one_line(u) or f"I couldn't tell where “{what}” is. Click it on the model and send it again.")
     flow = [_cap(x) for x in _lines_mine(view.get("lines") or (), said)][:MAX_SAID]
     if flow:
         # the flow reader's own lines: what a flow mesher applies depends on the mesher
@@ -514,6 +582,8 @@ def lines_mine(view: Mapping | None, text: str) -> list[str]:
     return [_cap(x) for x in _lines_mine((view or {}).get("lines") or (), _norm(text))][:MAX_SAID]
 
 
-__all__ = ["ASK", "ASK_LINE", "BOTH", "GO", "HOLD", "HOLD_LINE", "INTAKE", "NOTE", "RULE", "answers_another_question",
-           "asked_last", "exact_go", "face_words", "fixed_reply", "lines_mine", "mine", "never_go", "pictures_of",
-           "plain_face_rows", "plan_change", "reading", "reply_for", "requirement_content", "row_place", "row_what"]
+__all__ = ["ASK", "ASK_LINE", "BOTH", "GO", "HOLD", "HOLD_LINE", "INTAKE", "NOTE", "QUESTION", "QUESTION_RULE", "RULE",
+           "about_the_mesh",
+           "answers_another_question", "asked_last", "asks", "exact_go", "face_words", "fixed_reply", "lines_mine",
+           "mesh_question", "mine", "never_go", "pictures_of", "plain_face_rows", "plan_change", "plural", "reading",
+           "reply_for", "requirement_content", "row_place", "row_what", "which_one_line"]

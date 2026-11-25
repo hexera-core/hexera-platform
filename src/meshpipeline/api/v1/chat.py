@@ -188,6 +188,34 @@ async def _requirement_reply(outcome, session_repo, owner_id: str, session_id, o
                         brief=await _brief(held, owner_id))
 
 
+async def _question_reply(session_repo, owner_id: str, session_id, organization_id, *, text: str = "",
+                          faces=()) -> ChatResponse:
+    """NOTE-20: a question about the mesh at the plan step - nothing kept - answered from the numbers the product
+    already holds before the run: the check's planned sizes (application/fea_check.planned_sizes) and the checklist's
+    rows (its reading started, and waited on as a requirement's is, so what the user just set is in it). The plan
+    stands: the answer carries the card as it now is."""
+    import asyncio
+    import time
+
+    from meshpipeline.agents.intake import plan_reply as PR
+    from meshpipeline.application import fea_check
+    from meshpipeline.application import part_matches as PM
+
+    async with get_db() as db:
+        held = await session_repo.get_for_owner(db, session_id, owner_id, organization_id=organization_id)
+    held = _require_session(held, session_id)
+    view = await asyncio.to_thread(lambda: PM.finalize(held, owner_id=owner_id))
+    t0 = time.monotonic()
+    while view and view.get("status") == "reading" and time.monotonic() - t0 < REQUIREMENT_READ_WAIT_S:
+        await asyncio.sleep(REQUIREMENT_POLL_S)
+        view = await asyncio.to_thread(lambda: PM.view(held, owner_id=owner_id))
+    plan = await asyncio.to_thread(fea_check.planned_sizes, str(session_id))
+    reply = await PR.answer_question(held, view, plan, owner_id=owner_id, session_repo=session_repo,
+                                     db_factory=get_db, organization_id=organization_id, text=text, faces=faces)
+    return ChatResponse(session_id=session_id, reply=reply, awaiting_confirmation=True,
+                        brief=await _brief(held, owner_id))
+
+
 def _require_session(session, session_id):
     if session is None:
         raise HTTPException(
@@ -226,6 +254,9 @@ async def chat_message(body: ChatMessageIn, owner_id: str = Depends(owner_dep),
                                                organization_id=organization_id)
     if outcome.status is msg.MessageStatus.requirement:
         return await _requirement_reply(outcome, session_repo, owner_id, session_id, organization_id)
+    if outcome.status is msg.MessageStatus.plan_question:
+        return await _question_reply(session_repo, owner_id, session_id, organization_id, text=body.content,
+                                     faces=faces)
     if outcome.status is msg.MessageStatus.already_dispatched:
         return ChatResponse(session_id=session_id, reply=outcome.reply, done=True,
                             job_id=outcome.job_id)

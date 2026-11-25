@@ -72,6 +72,8 @@ class MessageStatus(str, enum.Enum):
     #: THE PLAN STEP'S CONVERSATION (NOTE-18): a mesh requirement typed in the chat while the plan stands - kept as a
     #: note; the route reads it for the checklist and answers with what was taken in (agents/intake/plan_talk)
     requirement = "requirement"
+    #: a question about the mesh at the plan step (NOTE-20): nothing kept; the route answers it from the plan's numbers
+    plan_question = "plan_question"
     #: the session does not exist for this owner
     not_found = "not_found"
 
@@ -414,9 +416,19 @@ async def _settle(inbound: InboundMessage, db, *, gate: dict, locked, messages: 
                     status=MessageStatus.approval_deferred, reply=reply, awaiting_confirmation=True,
                     transition=GateTransition(change=GateChange.approval_deferred, revision=revision,
                                               approval_status=ap.AWAITING))
-        if talk in (PT.NOTE, PT.ASK, PT.HOLD):
+        if talk in (PT.NOTE, PT.ASK, PT.HOLD, PT.QUESTION):
             # the plan stands, one turn further on, and stays fresh while the user talks it through
             gate["approval"] = {**(ap.defer(approval) or {}), "expires_at": time.time() + ap.APPROVAL_TTL_S}
+            if talk == PT.QUESTION:
+                # NOTE-20: a question about the mesh - nothing kept, nothing started; the route answers it from the
+                # numbers the product holds before the run (agents/intake/plan_reply.answer_question)
+                await session_repo.set_intake_gate(db, inbound.session_id, gate)
+                logger.info("intake message: a question about the mesh at the plan step (%s) - session=%s",
+                            PT.QUESTION_RULE, inbound.session_id)
+                return MessageOutcome(
+                    status=MessageStatus.plan_question, awaiting_confirmation=True,
+                    transition=GateTransition(change=GateChange.approval_deferred, revision=revision,
+                                              approval_status=ap.AWAITING))
             if talk in (PT.ASK, PT.HOLD):
                 # asked once whether to start; or "wait": nothing starts, nothing is kept, and we say so
                 line = PT.ASK_LINE if talk == PT.ASK else PT.HOLD_LINE

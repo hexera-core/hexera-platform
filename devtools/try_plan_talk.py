@@ -1,5 +1,5 @@
-"""Try the plan step's conversation against the REAL intake model (NOTE-18, NOTE-19): the go reading and the reply
-writer, through the same functions the product calls (agents/intake/plan_go.read, agents/intake/plan_reply.written
+"""Try the plan step's conversation against the REAL intake model (NOTE-18, NOTE-19, NOTE-20): the go reading, the
+reply writer and the question answerer (agents/intake/plan_reply.answered), through the same functions the product calls (agents/intake/plan_go.read, agents/intake/plan_reply.written
 with its guard), on cases built here in memory. Nothing is stored; no session, no database, no worker.
 
 The model settings are read the way the app reads them: from the environment (meshpipeline.settings, the intake's
@@ -8,7 +8,7 @@ route in agents/intake/settings). No setting value is printed. With no model con
 Run from the worktree, with the environment the app runs with:
     PYTHONPATH=src python devtools/try_plan_talk.py            # both parts
     PYTHONPATH=src python devtools/try_plan_talk.py --go       # the go reading only
-    PYTHONPATH=src python devtools/try_plan_talk.py --replies  # the replies only
+    PYTHONPATH=src python devtools/try_plan_talk.py --replies  # the replies and the answers to questions only
 """
 from __future__ import annotations
 
@@ -20,7 +20,8 @@ import time
 PLAN_LINE = "Here's the plan. Tell me any mesh requirements here, then say go or press Proceed."
 ASKED_OTHER = "Do you want the fillets finer as well?"
 
-#: (message, our last line, what it should be) - "go" means it must start the run, "no go" that it must not
+#: (message, our last line, what it should be) - "go" means it must start the run, "no go" that it must not,
+#: "question" that it is a question about the mesh, answered from the plan's numbers (NOTE-20)
 GO_CASES: list[tuple[str, str, str]] = [
     *[(t, PLAN_LINE, "go") for t in (
         "proceed", "ok I'm good to mesh", "all right, I'm good to mesh", "let's proceed to mesh generation",
@@ -37,6 +38,14 @@ GO_CASES: list[tuple[str, str, str]] = [
         "wait, one more thing", "run it at 1 mm", "can we refine the bore first?", "no, not yet", "stop",
         "yes but coarser on the plate", "proceed?", "ready to mesh?", "give me a sec", "how long will it take?")],
     ("ok", ASKED_OTHER, "no go"),
+    # NOTE-20: questions about the mesh, typos and no question mark included (the first as typed on the site)
+    *[(t, PLAN_LINE, "question") for t in (
+        "so for this mesh basedon my rquirements, what would the elemwnt size be roughly",
+        "how many elements will it be", "how long will it tak", "what did i set so far",
+        "what will the cell count be?", "roughly how fine will the mesh be on the fillets",
+        "tell me the element size")],
+    # NOTE-21's message as typed on the site (a screenshot came with it, no face picked): a requirement, never a go
+    ("make it finer in this hole", PLAN_LINE, "no go"),
 ]
 
 FACE23 = {"id": "Face_23", "label": "Face 23 · round Ø19.8 mm"}
@@ -97,6 +106,39 @@ REPLY_CASES = [
      None, PLAN_LINE),
     ("CFD no checklist: finer around the bend, picture", {"text": "finer around the bend", "attachments": PIC},
      None, PLAN_LINE),
+    # NOTE-21, as typed on the site: one hole named, a screenshot, no face picked, 11 holes on the part
+    ("one hole named, eleven on the part, picture", {"text": "make it finer in this hole", "attachments": PIC},
+     _done(unsure=[{"quote": "make it finer in this hole", "words": "make it finer in this hole", "size": "finer",
+                    "which_one": 11, "noun": "hole"}]), PLAN_LINE),
+]
+
+#: NOTE-20: (title, the question as typed, the checklist's view, the plan's numbers as
+#: application/fea_check.planned_sizes gives them) - answered by agents/intake/plan_reply.answered
+STEP = {"finer": 0.5, "coarser": 2.0}
+SIX = [{"id": f"Face_{k}", "label": f"Face {k} · round Ø8 mm"} for k in range(1, 7)]
+ANSWER_CASES = [
+    ("size question, as typed on the site, plan sized",
+     "so for this mesh basedon my rquirements, what would the elemwnt size be roughly",
+     _done([_row("finer on these", "finer", faces=SIX), _row("2 mm on part 2", "2 mm", where="part 2"),
+            _row("finer in the bore", "finer", where="the bore (12 mm across)")]),
+     {"known": True, "step": STEP, "coarsest_mm": 4.1, "finest_mm": 0.62, "finest_where": "the fillets",
+      "elements": "about 412,000 elements", "time": "usually about 3 minutes, up to 7 minutes",
+      "before_requirements": True}),
+    ("size question, as typed on the site, nothing sized before the run",
+     "so for this mesh basedon my rquirements, what would the elemwnt size be roughly",
+     _done([_row("finer on these", "finer", faces=SIX)]),
+     {"known": False, "step": STEP, "why": "The overall element size is worked out from the measured part when the "
+                                           "mesh is built, so I'll have it, and the element count, once the run "
+                                           "starts."}),
+    ("count question, plan sized, no requirements", "how many elements will it be", _done(),
+     {"known": True, "step": STEP, "coarsest_mm": 6.0, "elements": "about 95,000 elements",
+      "before_requirements": True}),
+    ("what was set", "what did i set so far",
+     _done([_row("1 mm on these too", "1 mm", faces=THREE)],
+           [{"quote": "make it finer in this hole", "words": "make it finer in this hole", "size": "finer",
+             "which_one": 11, "noun": "hole"}]),
+     {"known": False, "step": STEP, "why": "The check is still sizing the mesh, so the overall element size and the "
+                                           "element count will be on the stage in a moment."}),
 ]
 
 
@@ -135,7 +177,7 @@ async def _go_part() -> tuple[int, int]:
         got = await PG.read(text, consent=C.reading(text), last_line=last, asked=PT.asked_last(
             [{"role": "assistant", "content": last}]), user_id="try-plan-talk", session_id="try")
         took = time.monotonic() - t0
-        ok = (got.reading == PT.GO) == (want == "go")
+        ok = got.reading == PT.QUESTION if want == "question" else (got.reading == PT.GO) == (want == "go")
         right += ok
         print(f"{'ok ' if ok else 'BAD'} {took:5.2f}s  {text!r:58} last={'start?' if last == PT.ASK_LINE else 'q' if last == ASKED_OTHER else 'plan'}"
               f"  model={got.raw!r:14} -> {got.reading:7} (by {got.by}: {got.why}); want {want}")
@@ -156,7 +198,17 @@ async def _reply_part() -> tuple[int, int]:
         print(f"--- {title} ({took:.2f}s)\n  user:   {note.get('text')!r}{extra}\n  model:  {got['raw']!r}\n"
               f"  guard:  {'accepted' if got['source'] == PR.SOURCE_MODEL else got['why'] or got['source']}\n"
               f"  shown:  {got['text']}")
-    return said_by_model, len(REPLY_CASES)
+    print("=" * 100 + "\nTHE ANSWERS TO QUESTIONS (agents/intake/plan_reply.answered: the model, then the guard)\n"
+          + "=" * 100)
+    for title, text, view, plan in ANSWER_CASES:
+        t0 = time.monotonic()
+        got = await PR.answered(text, view, plan, last_reply=PLAN_LINE, session_id="try", user_id="try-plan-talk")
+        took = time.monotonic() - t0
+        said_by_model += got["source"] == PR.SOURCE_MODEL
+        print(f"--- {title} ({took:.2f}s)\n  user:   {text!r}\n  model:  {got['raw']!r}\n"
+              f"  guard:  {'accepted' if got['source'] == PR.SOURCE_MODEL else got['why'] or got['source']}\n"
+              f"  shown:  {got['text']}")
+    return said_by_model, len(REPLY_CASES) + len(ANSWER_CASES)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -177,7 +229,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"\ngo reading: {right}/{n} as wanted\n")
         if both or args.replies:
             by_model, n = await _reply_part()
-            print(f"\nreplies: {by_model}/{n} said as the model wrote them (the rest: the plain sentence)")
+            print(f"\nreplies and answers: {by_model}/{n} said as the model wrote them (the rest: the plain sentence)")
     asyncio.run(run())
     return 0
 

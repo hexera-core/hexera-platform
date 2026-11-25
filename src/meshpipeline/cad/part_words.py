@@ -373,8 +373,10 @@ def _check(arguments: str, table: list[dict], notes: str,
             dropped.append(f"{tag}: the unit {unit!r} is not a length unit, so nothing was applied for it")
             continue
         holes = _holes_named(quote, rows)
+        tied_by_us = False
         if holes and (conf is None or conf < MIN_CONFIDENCE
                       or not any(str(p) in rows for p in e.get("parts") or [])):
+            tied_by_us = True
             # NOTE-6: words about the holes are tied by our own hole finding, the same every run: every area of the
             # hole kinds (holes, hole groups, bores). A reader unsure whether "the holes" meant the one bore it saw
             # left a place that exists on the part "could not be applied" (fea0184, m483 round 10)
@@ -410,6 +412,23 @@ def _check(arguments: str, table: list[dict], notes: str,
         if not ids and not rest:
             dropped.append(f"{tag}: it named no part, so nothing was applied for it")
             continue
+        one = _one_place(quote) if why != "picked by you" and not rest else ""
+        if one:
+            # NOTE-21: WORDS THAT NAME ONE PLACE ("this hole", "that fillet") are never spread over several. Our own
+            # hole tie is narrowed by what the words say (a part, a size, big or small); one candidate left is set as
+            # before, several the words do not tell apart wait for one click - nothing is applied for them
+            if tied_by_us:
+                ids = _told_apart(ids, rows, quote)
+            n = _candidates(ids, rows)
+            if n > 1:
+                if unsure is not None:
+                    unsure.append({"phrase": i, "quote": quote, "ask": ask, "which_one": n, "noun": one,
+                                   "why": f"the words name one {one} and the part has {n} they do not tell apart",
+                                   **({"min_mm": _g(lo * UNITS_MM[unit]), "max_mm": _g(hi * UNITS_MM[unit])}
+                                      if ask == "size" else {})})
+                dropped.append(f"{tag}: it names one {one} and there are {n} it could be, so nothing was applied "
+                               "until you click the one you mean")
+                continue
         entry: dict[str, Any] = {"phrase": i, "parts": [], "everything_else": rest, "ask": ask, "quote": quote, "why": why,
                  "confidence": round(float(conf), 2),
                  **({"min_mm": _g(lo_mm), "max_mm": _g(hi_mm), "unit": unit, "asked": [lo, hi]} if ask == "size" else {})}
@@ -478,6 +497,68 @@ def _holes_named(quote: str, rows: Mapping[str, Mapping]) -> list[str]:
     if not _HOLE_WORDS.search(str(quote or "")):
         return []
     return [str(i) for i, r in rows.items() if r.get("feature") and str(r.get("kind") or "") in HOLE_KINDS]
+
+
+#: NOTE-21: words that name ONE place are never spread over several (rulebook 88)
+ONE_PLACE_RULE = "NOTE-21"
+#: the places of a part people name one at a time (cad/part_features' areas and their everyday names)
+#: (a feature's own name first: "the round hole" names a hole; the shape words only when no feature is named)
+_PLACE_NOUNS = (("hole", "bore", "fillet", "notch", "slot", "groove", "boss", "rib", "flange", "pocket", "chamfer",
+                 "cutout", "opening", "lip", "tab"), ("round", "corner", "edge", "face", "wall"))
+_ONE_LEAD = r"\b(?:this|that|the|a|an|one|single)\s+(?:[\w.]+\s+){0,3}?"
+
+
+def _plural(noun: str) -> str:
+    return noun + ("es" if noun.endswith(("ch", "sh", "s", "x")) else "s")
+#: the area kinds whose count is how many of them there are (a thin-wall area's count is its faces)
+_COUNTED_KINDS = ("hole", "hole group", "bore", "notch", "fillets", "bosses")
+_BIG = re.compile(r"\b(?:big|bigger|biggest|large|larger|largest|main|wide|widest)\b", re.I)
+_SMALL = re.compile(r"\b(?:small|smaller|smallest|little|tiny|narrow|narrowest)\b", re.I)
+
+
+def _one_place(quote: str) -> str:
+    """NOTE-21: the noun when the words name ONE place ("this hole", "that fillet", "the notch here", "the 22 mm
+    hole"); "" when they name none or several ("the holes", "all holes", "every fillet", "each hole")."""
+    q = str(quote or "")
+    for nouns in _PLACE_NOUNS:
+        m = re.search(_ONE_LEAD + r"(" + "|".join(nouns) + r")\b", q, re.I)
+        if m:
+            noun = m.group(1).casefold()
+            many = re.search(rf"\b{_plural(noun)}\b", q, re.I) or re.search(
+                rf"\b(?:all|every|each|both|any)\s+(?:[\w.]+\s+){{0,3}}?{noun}\b", q, re.I)
+            return "" if many else noun
+    return ""
+
+
+def _candidates(ids: list[str], rows: Mapping[str, Mapping]) -> int:
+    """How many places the ids are: a hole group or a fillet group counts its members; any other row is one."""
+    n = 0
+    for p in ids:
+        r = rows.get(p) or {}
+        c = r.get("count") if r.get("feature") and str(r.get("kind") or "") in _COUNTED_KINDS else 1
+        n += int(c) if isinstance(c, (int, float)) and c >= 1 else 1
+    return n
+
+
+def _told_apart(ids: list[str], rows: Mapping[str, Mapping], quote: str) -> list[str]:
+    """NOTE-21: the candidates the words tell apart: those in the part the words name ("in part 2"), those whose own
+    size is a number in the words ("the 22 mm hole"), the biggest or the smallest when the words say so. The ids as
+    they were when the words say none of these."""
+    q = str(quote or "")
+    cands = list(ids)
+    part = re.search(r"\bpart\s*(\d+)\b", q, re.I)
+    if part:
+        cands = [p for p in cands if str((rows.get(p) or {}).get("in_part") or "").rsplit("_", 1)[-1] == part.group(1)]
+    nums = set(_numbers(q))
+    if nums:
+        sized = [p for p in cands if nums & set(_numbers(str((rows.get(p) or {}).get("name") or "")))]
+        cands = sized or cands
+    if len(cands) > 1 and (_BIG.search(q) or _SMALL.search(q)):
+        size = {p: float((rows.get(p) or {}).get("diag_mm") or 0.0) for p in cands}
+        pick = max(size.values()) if _BIG.search(q) else min(size.values())
+        ends = [p for p in cands if size[p] == pick]
+        cands = ends if len(ends) == 1 else cands
+    return cands
 
 
 def _by_geometry(ids: list[str], rows: Mapping[str, Mapping]) -> tuple[list[str], bool]:

@@ -13,12 +13,14 @@ A phrase table cannot know every way of saying "I'm done here, mesh it". So:
 1. CODE DECIDES THE SAFE CASES, no model: a message that carries a face, a picture or a file, or whose words hold a
    number, a unit, a size or a mesh requirement word, is a requirement (never a go); the Proceed button's own text is
    a go; a word about the plan itself (engine, flow kind, unit) is the intake's; a message with no words is the
-   consent reader's.
+   consent reader's; a question about the mesh in question words ("so what would the elemnt size be roughly") is
+   answered from the plan's numbers (NOTE-20).
 2. THE REST (short words, no requirement in them) is asked of the intake's model, ONE small question with a strict
    answer set - go / wait / question / requirement / other - given our last line and the user's message.
 3. A GO STARTS THE RUN only when the model says go AND code found no requirement content, no negation ("not", "but",
-   "first") and no plain "ok" to some other question. "wait" is held. A question goes to the intake (or, for a go
-   asked back, "Start the mesh now?"). Anything else is asked "Start the mesh now?" once - never "I couldn't read that
+   "first") and no plain "ok" to some other question. "wait" is held. A question about the mesh is answered from the
+   plan's numbers, any other goes to the intake (or, for a go asked back, "Start the mesh now?"); a "requirement"
+   whose words ask a question is answered as a question (NOTE-20). Anything else is asked "Start the mesh now?" once - never "I couldn't read that
    as a mesh requirement".
 4. NO ANSWER (error, or slower than `TIMEOUT_S`, or an answer outside the set): the phrase reading
    (plan_talk.reading) decides; where it is unsure the go question is asked once.
@@ -55,15 +57,20 @@ def _block_labels() -> str:
             "go - they mean: start meshing now / I'm done with this step (\"ok I'm good to mesh\", \"yep run it\", "
             "\"that's everything\", \"looks good, start\", \"send it\").\n"
             "wait - they mean: not yet, hold on, don't start.\n"
-            "question - they are asking something (\"is it good to mesh like this?\", \"what happens if I proceed?\").\n"
-            "requirement - they ask for something about the mesh (\"go finer on the bore\", \"proceed with 2 mm\").\n"
+            "question - they are asking something (\"is it good to mesh like this?\", \"what happens if I proceed?\"), "
+            "above all anything they ask ABOUT the mesh: its size, element count, how fine, how long it takes, what "
+            "was set, what will happen (\"so what wud the elemnt size be roughly\", \"how many elements will that "
+            "be\", \"how long will it tak\", \"what did i set so far\"), with or without a question mark.\n"
+            "requirement - they ask FOR something about the mesh, a thing to set (\"go finer on the bore\", "
+            "\"proceed with 2 mm\"). Asking what something will be is a question, not a requirement.\n"
             "other - anything else, or you are not sure. A plain \"ok\" or \"yes\" that answers a question we asked "
             "that was not about starting is other.\n")
 
 
 def _block_rules() -> str:
-    return ("Use the assistant's last line to understand short replies. Typos and lower case are normal. If in "
-            "doubt between go and anything else, answer other.\n")
+    return ("Use the assistant's last line to understand short replies. Typos, missing spaces, lower case and no "
+            "question mark are normal: read what they mean. If in doubt between go and anything else, answer other; "
+            "if in doubt between question and requirement, answer question.\n")
 
 
 #: THE GO QUESTION'S PROMPT BLOCKS (name, purpose, build), composed in this order - the only system text it gets
@@ -117,6 +124,9 @@ async def read(text: str, *, carries: bool = False, asked: bool = False, consent
                timeout_s: float = TIMEOUT_S) -> Read:
     """What one message at the plan step means (the module's docstring). Never raises."""
     code = PT.reading(text, carries=carries, asked=asked, consent=consent, engine=engine)
+    if code == PT.QUESTION:
+        # NOTE-20: a question about the mesh, in question words (typos and no question mark included): ours to answer
+        return Read(code, BY_CODE, why="a question about the mesh")
     if PT.requirement_content(text, carries=carries):
         return Read(code, BY_CODE, why="requirement content")
     if PT.exact_go(text):
@@ -152,8 +162,15 @@ async def read(text: str, *, carries: bool = False, asked: bool = False, consent
     if label == "wait":
         return Read(PT.HOLD, BY_MODEL, raw=raw, why="wait")
     if label == "question":
-        return Read(PT.ASK if code == PT.ASK else PT.INTAKE, BY_MODEL, raw=raw, why="question")
+        if code == PT.ASK:
+            return Read(PT.ASK, BY_MODEL, raw=raw, why="question: a go asked back")
+        # NOTE-20: a question about the mesh (its count, its time, what is set) is answered from the plan's numbers;
+        # any other question is the intake's
+        return Read(PT.QUESTION if PT.about_the_mesh(text) else PT.INTAKE, BY_MODEL, raw=raw, why="question")
     if label == "requirement":
+        if PT.asks(text):
+            # NOTE-20: the words are a question - answered as one, never "I couldn't find a mesh setting in that"
+            return Read(PT.QUESTION, BY_MODEL, raw=raw, why="requirement, but the words ask a question")
         return Read(PT.NOTE, BY_MODEL, raw=raw, why="requirement")
     # other: never a start; the go question once, else the intake answers
     return Read(other, BY_MODEL, raw=raw, why="other")

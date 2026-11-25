@@ -7,7 +7,7 @@ import pytest
 from meshpipeline.agents.intake import consent as C
 from meshpipeline.agents.intake import plan_talk as PT
 
-GO, ASK, NOTE, INTAKE, HOLD, BOTH = PT.GO, PT.ASK, PT.NOTE, PT.INTAKE, PT.HOLD, PT.BOTH
+GO, ASK, NOTE, INTAKE, HOLD, BOTH, QUESTION = PT.GO, PT.ASK, PT.NOTE, PT.INTAKE, PT.HOLD, PT.BOTH, PT.QUESTION
 
 READINGS = [
     # plainly go
@@ -50,9 +50,9 @@ READINGS = [
     ("can we proceed?", ASK),
     ("shall we start the mesh?", ASK),
     ("maybe", ASK),
-    # a question about it, or a change to the plan: the intake's
-    ("what will the cell count be?", INTAKE),
-    ("how long will this take?", INTAKE),
+    # a question about the mesh: answered from the plan's numbers (NOTE-20); a change to the plan: the intake's
+    ("what will the cell count be?", QUESTION),
+    ("how long will this take?", QUESTION),
     ("use cfMesh instead", INTAKE),
     ("actually this is an external flow", INTAKE),
 ]
@@ -65,7 +65,7 @@ def test_what_a_message_at_the_plan_step_means(text, want):
 
 def test_the_table_is_long_enough_and_covers_every_reading():
     assert len(READINGS) >= 25
-    assert {w for _, w in READINGS} == {GO, ASK, NOTE, INTAKE, HOLD, BOTH}
+    assert {w for _, w in READINGS} == {GO, ASK, NOTE, INTAKE, HOLD, BOTH, QUESTION}
 
 
 def test_a_message_that_carries_a_picture_or_a_face_is_always_a_requirement():

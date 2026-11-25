@@ -558,6 +558,82 @@ def confirmed_plan_choice(session_id: str) -> str:
     return v if v in (PLAN_FULL, PLAN_QUICKER) else ""
 
 
+#: NOTE-20: what is said when the product holds no planned size before the run, by why (one sentence each: what is
+#: not known yet, and when it will be)
+SIZES_AT_RUN = ("The overall element size is worked out from the measured part when the mesh is built, so I'll have "
+                "it, and the element count, once the run starts.")
+SIZES_BEING_PLANNED = ("The check is still sizing the mesh, so the overall element size and the element count will "
+                       "be on the stage in a moment.")
+#: the zone kinds of the FEA plan (engines/fea_plan.zones) in the words the answer names them by
+_ZONE_WORDS = {"wall": "the thin walls", "wall_spot": "thin spots in a wall", "corner": "the sharp inside corners",
+               "round": "the rounded edges", "relief": "the raised or sunk detail", "fillet": "the fillets",
+               "hole": "the holes", "notch": "the notches", "groove": "the grooves", "area": "an area you named"}
+
+
+def _g(v: float) -> float:
+    return float(f"{float(v):.3g}")
+
+
+def _kept_plans(session_id: str) -> dict:
+    """The plans the check's sizing kept for the run (PLAN-fea-22, engines/fea_plan_options.PLANS_FILE), or {}."""
+    import json
+
+    from meshpipeline.contracts.object_storage import get_object_store
+    try:
+        got = json.loads(get_object_store().get_bytes(object_key=plans_object_key(session_id)))
+    except Exception:  # noqa: BLE001 - none kept: the sizes are said as not known yet
+        return {}
+    return got if isinstance(got, dict) else {}
+
+
+def planned_sizes(session_id: str, facts: dict | None = None) -> dict:
+    """NOTE-20: THE NUMBERS THE PRODUCT ALREADY HOLDS about the mesh before it runs, for the plan step's answer to a
+    question about it: from the check's own sizing (PLAN-fea-22, made before the user's requirements) the plan's base
+    size (`coarsest_mm`), an assembly's part sizes (`parts_mm`, PLAN-fea-17), the finest zone and what it is
+    (`finest_mm`, `finest_where`), the element estimate and the time in the stage's own words (`elements`, `time`);
+    `step`: the one step "finer" / "coarser" with no number takes (PLAN-fea-36). Nothing estimated here. When none is
+    held, `known` is False and `why` says in one sentence what is not known yet and when it will be. Never raises."""
+    from meshpipeline.engines.fea_part_sizes import SCALES
+    out: dict = {"known": False, "step": {"finer": SCALES["refine"], "coarser": SCALES["coarsen"]},
+                 "why": SIZES_AT_RUN}
+    try:
+        if facts is None:
+            from meshpipeline.application.geometry_check import read_check
+            facts = (read_check(session_id) or {}).get("facts") or {}
+        got = (facts or {}).get(PLAN_FACT_KEY)
+        if not isinstance(got, dict) or not got.get("sized"):
+            if isinstance(got, dict) and got.get("sizing"):
+                out["why"] = SIZES_BEING_PLANNED
+            return out
+        pick = confirmed_plan_choice(session_id) or str(got.get("recommended") or PLAN_FULL)
+        chosen, full = got.get(pick), got.get("full")
+        row: dict = chosen if isinstance(chosen, dict) else full if isinstance(full, dict) else {}
+        plan = _kept_plans(session_id).get(pick if isinstance(got.get(pick), dict) else PLAN_FULL)
+        plan = plan if isinstance(plan, dict) else {}
+        n = int(row.get("elements") or 0)
+        if n:
+            out["elements"] = _elements_words(n, bool(row.get("at_least")))
+        t = _time_words(row.get("minutes"), row.get("usual_minutes"))
+        if t:
+            out["time"] = t
+        if plan.get("base_size_m"):
+            out["coarsest_mm"] = _g(float(plan["base_size_m"]) * 1e3)
+        zones = [z for z in plan.get("zones") or [] if isinstance(z, dict) and z.get("size_m")]
+        parts = sorted(_g(float(z["size_m"]) * 1e3) for z in zones if z.get("kind") == "part")
+        if len(parts) > 1:
+            out["parts_mm"] = [parts[0], parts[-1]]
+        fine = min((z for z in zones if z.get("kind") != "part"), key=lambda z: float(z["size_m"]), default=None)
+        if fine is not None:
+            out["finest_mm"] = _g(float(fine["size_m"]) * 1e3)
+            out["finest_where"] = _ZONE_WORDS.get(str(fine.get("kind") or ""), f"the {fine.get('kind')}s")
+        if any(k in out for k in ("elements", "coarsest_mm")):
+            out.update(known=True, before_requirements=True)
+            out.pop("why", None)
+    except Exception:  # noqa: BLE001 - not known: said as not known yet, never a made-up number
+        return {"known": False, "step": out["step"], "why": SIZES_AT_RUN}
+    return out
+
+
 def assembly_view(facts: dict | None) -> dict | None:
     """An assembly as the stage shows it: its parts (Part_k and the CAD's name), the interfaces the
     measurement found - where parts touch (contact candidates) and where they pass into each other

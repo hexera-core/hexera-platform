@@ -498,6 +498,17 @@ def _short(quote: str, n: int = 60) -> str:
     return q if len(q) <= n else q[: n - 1].rstrip() + "…"
 
 
+def _unsure_text(u: Mapping) -> str:
+    """The card's line for a phrase not placed: which part was unclear, or (NOTE-21) which one of several places."""
+    quote = _short(u.get("quote") or "", 40)
+    n = u.get("which_one")
+    if isinstance(n, int) and n > 1:
+        noun = str(u.get("noun") or "place")
+        nouns = noun + ("es" if noun.endswith(("ch", "sh", "s", "x")) else "s")
+        return f"Not set yet: “{quote}” - there are {n} {nouns}, click the one you mean"
+    return f"Couldn't tell which part is “{quote}”"
+
+
 def rows_of(reading: Mapping, seen: Mapping, session_id: str) -> dict | None:
     """The card's rows from a checked reading: one per phrase that holds ("frame rail → part 9 → 3–4 mm"), one
     line per phrase the model could not place ("Couldn't tell which part is 'X'"); None when the notes name no
@@ -516,7 +527,10 @@ def rows_of(reading: Mapping, seen: Mapping, session_id: str) -> dict | None:
                      "parts_text": _where(e, ids, names, one_part),
                      "size": size_words(e), "picked": e.get("why") == "picked by you"})
     unsure = [{"phrase": u.get("phrase"), "words": _short(u.get("quote") or ""), "quote": u.get("quote") or "",
-               "text": f"Couldn't tell which part is “{_short(u.get('quote') or '', 40)}”", "size": size_words(u)}
+               "text": _unsure_text(u), "size": size_words(u),
+               # NOTE-21: one place named, several it could be - how many, and what they are
+               **({"which_one": int(u["which_one"]), "noun": str(u.get("noun") or "")}
+                  if isinstance(u.get("which_one"), int) else {})}
               for u in reading.get("unsure") or []]
     if not rows and not unsure:
         return None
