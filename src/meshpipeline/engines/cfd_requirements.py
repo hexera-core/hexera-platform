@@ -2872,7 +2872,7 @@ def asks_of(sec: Mapping | None, *, conditions_y_plus: bool = False) -> list[dic
             continue
         field = str(r["field"])
         typed = (local_mm.get(str(r.get("id"))) is not None if field == "local"
-                 else bool(re.search(r"\d", str(r.get("quote") or r.get("asked") or ""))))
+                 else any(ch.isdigit() for ch in str(r.get("quote") or r.get("asked") or "")))
         out.append({"field": field, "asked": str(r.get("asked") or r.get("quote") or field),
                     "weight": TYPED_WEIGHT if typed else VAGUE_WEIGHT})
     if conditions_y_plus and not any(a["field"] in ("layers:y_plus", "layers:first_height") for a in out):
@@ -2916,10 +2916,10 @@ def steer(sec: Mapping | None, engine: str, candidates, *, conditions_y_plus: bo
     from meshpipeline.contracts import decision_record as _dr
     # the record's own rule function picks, so the replay re-decides exactly this
     chosen = _dr.engine_for_asks({"order": order, "scores": scores})[0] or engine
-    out.update(engine=chosen, order=order, scores=scores,
-               missing=[a["asked"] for a, ok in zip(asks, can(chosen), strict=True) if not ok])
+    missing = [str(a["asked"]) for a, ok in zip(asks, can(chosen), strict=True) if not ok]
+    out.update(engine=chosen, order=order, scores=scores, missing=missing)
     if chosen != engine:
-        out["words"] = _steer_words(engine, chosen, missing_here, out["missing"])
+        out["words"] = _steer_words(engine, chosen, missing_here, missing)
     return out
 
 

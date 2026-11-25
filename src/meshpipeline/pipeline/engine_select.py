@@ -140,7 +140,8 @@ async def engine_for_asks(state, engine: str) -> dict:
         from meshpipeline.engines import meshing_standard as MS
         sec = await MS.decide(state, route=CR.ROUTE, job_id=job_id)
         rec = lad.record_of(state)
-        turf = rec.get("order_turf") if isinstance(rec.get("order_turf"), dict) else {}
+        raw_turf = rec.get("order_turf")
+        turf: dict = raw_turf if isinstance(raw_turf, dict) else {}
         able = lad.able_engines(state)
         candidates = [e for e in able if e == engine or str(turf.get(e) or "") not in _NOT_FOR_ASKS]
         got = CR.steer(sec, engine, candidates)

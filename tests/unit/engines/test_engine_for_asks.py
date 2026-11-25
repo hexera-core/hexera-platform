@@ -123,6 +123,17 @@ def test_the_run_moves_a_system_pick_cites_it_and_keeps_the_line_for_the_result(
     assert read_remarks(other) == []
 
 
+def test_the_why_record_names_the_engine_as_picked_before_the_asks_moved_it():
+    from meshpipeline.application import why_record as W
+    st = {"engine": "snappy", "engine_source": "suggested_confirmed", "purpose": "internal_cfd",
+          "engine_ladder": {"order": ["vmtk", "cfmesh", "snappy"], "order_recommended": "vmtk", "order_rule": "ENG-2",
+                            "order_source": "measured", "asks": {"from": "vmtk", "to": "snappy", "rule": "ENG-10"},
+                            "attempts": [{"engine": "snappy"}]}}
+    e = W.engine_pick_entry(st)
+    assert e is not None and e.value == "vmtk" and e.rule == "ENG-2"
+    assert dr.replay([e.as_dict()]) == []
+
+
 def test_a_named_engine_a_dispute_and_no_notes_are_never_moved(monkeypatch):
     sec = MR.section("used", requirements=_read("y+ of 1 on the walls please", layers=[YP1])[0])
     ES = _patch(monkeypatch, sec, ["vmtk", "cfmesh", "snappy"])
