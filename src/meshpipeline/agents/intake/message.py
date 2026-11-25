@@ -362,6 +362,12 @@ async def _settle(inbound: InboundMessage, db, *, gate: dict, locked, messages: 
         from meshpipeline.agents.intake import consent as _consent
         from meshpipeline.agents.intake import plan_go as PG
         from meshpipeline.agents.intake import plan_talk as PT
+        # NOTE-22: A CLICK SENT ALONE ANSWERS THE ONE-PLACE ASK THAT WAITS ("which hole?"): faces with no words or only
+        # pointing words take the waiting words; words of the user's own win and drop it; anything else keeps it one
+        # more turn at most (every write of the gate below stores what is left)
+        answers, still = PT.after_turn(gate.pop(PT.WAITING, None), text=inbound.content, faces=bool(inbound.faces))
+        if still:
+            gate[PT.WAITING] = still
         if _ours(inbound.content, messages):
             talk = PT.INTAKE
         else:
@@ -438,10 +444,12 @@ async def _settle(inbound: InboundMessage, db, *, gate: dict, locked, messages: 
                     status=MessageStatus.approval_deferred, reply=line, awaiting_confirmation=True,
                     transition=GateTransition(change=GateChange.approval_deferred, revision=revision,
                                               approval_status=ap.AWAITING))
-            note = await _keep_requirement(inbound, db, locked=locked, messages=messages, session_repo=session_repo)
+            note = await _keep_requirement(inbound, db, locked=locked, messages=messages, session_repo=session_repo,
+                                           answers=answers)
             await session_repo.set_intake_gate(db, inbound.session_id, gate)
-            logger.info("intake message: a requirement at the plan step, kept as a note (%s) - session=%s",
-                        PT.RULE, inbound.session_id)
+            logger.info("intake message: a requirement at the plan step, kept as a note (%s%s) - session=%s",
+                        PT.RULE, f", a click answering the waiting ask: {PT.CLICK_RULE}" if answers else "",
+                        inbound.session_id)
             return MessageOutcome(
                 status=MessageStatus.requirement, awaiting_confirmation=True, note=note,
                 transition=GateTransition(change=GateChange.approval_deferred, revision=revision,
@@ -1223,18 +1231,30 @@ def _ours(content: str, messages: list) -> bool:
     return clicked(content, asked, choices_for)
 
 
-async def _keep_requirement(inbound: InboundMessage, db, *, locked, messages: list, session_repo) -> dict:
+async def _keep_requirement(inbound: InboundMessage, db, *, locked, messages: list, session_repo,
+                            answers: str = "") -> dict:
     """NOTE-18: a requirement typed in the chat at the plan step, kept as the user's note exactly as typed, with the
     files and faces the turn carries - the chat note of that turn (contracts/user_notes.capture keys it the same way,
-    so a later capture of the same turn is not kept twice). Returns the note."""
+    so a later capture of the same turn is not kept twice). `answers` (NOTE-22): the earlier words its click sent
+    alone answers, kept beside its own. Returns the note."""
     from meshpipeline.contracts.user_notes import SOURCE_CHAT, make, system_written
     turn = sum(1 for m in messages if isinstance(m, dict) and m.get("role") == "user" and not m.get("_synthetic")
                and not system_written(m.get("content")))
     last = messages[-1] if messages and isinstance(messages[-1], dict) else {}
     note = make(inbound.content, source=SOURCE_CHAT, turn=turn, attachments=list(last.get("attachments") or ()),
-                faces=list(last.get("faces") or ()))
+                faces=list(last.get("faces") or ()), answers=answers)
     await session_repo.set_user_notes(db, inbound.session_id, [note])
     return note
+
+
+async def keep_one_place_ask(db, session: Any, waiting: dict, *, session_repo) -> None:
+    """NOTE-22: the one-place ask a reply has just said ("which hole?") waits with the plan-step state - the session's
+    intake gate, written here as every gate change is - so a click sent alone next answers it (and a page reload
+    keeps it). Called with the reply's own transaction (agents/intake/plan_reply.answer_owed)."""
+    from meshpipeline.agents.intake import plan_talk as PT
+    gate = dict(getattr(session, "intake_gate", None) or {})
+    gate[PT.WAITING] = dict(waiting)
+    await session_repo.set_intake_gate(db, session.id, gate)
 
 
 def _carried_here(session: Any, attachments: Sequence[Any], faces: Sequence[Any]) -> dict:
@@ -1263,5 +1283,5 @@ def _reply_of(result: dict) -> str:
 
 
 __all__ = ["STILL_RUNNING_REPLY", "GateChange", "GateTransition", "InboundMessage", "NoteStatus",
-           "add_console_note", "ask_flow_kind",
+           "add_console_note", "ask_flow_kind", "keep_one_place_ask",
            "MessageOutcome", "MessageStatus", "PreviousRun", "accept", "persist_turn"]

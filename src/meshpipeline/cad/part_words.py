@@ -773,10 +773,13 @@ def with_picks(ps: Mapping | None, req: Mapping | None, surface) -> dict:
             entries.append(g)
             table.append(row)
             features[pid] = kept
+    # a phrase that waited for a click (NOTE-21) is placed by the pick on its words (NOTE-22): no longer unplaced
+    unsure = [u for u in (ps.get("unsure") or [] if used else [])
+              if not (isinstance(u, Mapping) and _norm(str(u.get("quote") or "")) in quotes)]
     out = section("used", entries=entries, dropped=dropped, words=said, table=table,
                   pictures=ps.get("pictures") or [], note=str(ps.get("note") or ""), key=str(ps.get("key") or ""),
                   source=str(ps.get("source") or "picked on the model"), phrases=ps.get("phrases") or [],
-                  unsure=ps.get("unsure") or [] if used else [])
+                  unsure=unsure)
     out["features"] = features
     return out
 

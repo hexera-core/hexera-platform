@@ -396,10 +396,11 @@ def with_notes(got: dict | None, user_notes) -> dict | None:
     let the row onto the card), so a reply finds the rows of its own message by id, not by matching words again.
     Pure; a row no note holds is left without one."""
     from meshpipeline.cad import part_words as PW
-    from meshpipeline.contracts.user_notes import own_notes
+    from meshpipeline.contracts.user_notes import own_notes, said
     if not got or not (got.get("rows") or got.get("unsure")):
         return got
-    notes = [(str(n.get("id") or ""), str(n.get("text") or "")) for n in own_notes(user_notes)]
+    # a click that answers earlier words (NOTE-22) holds them: the row they make on its faces is that message's
+    notes = [(str(n.get("id") or ""), said(n)) for n in own_notes(user_notes)]
 
     def stamp(r: Mapping) -> dict:
         quote = str(r.get("quote") or "")

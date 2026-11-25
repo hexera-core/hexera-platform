@@ -957,7 +957,9 @@ def picked_where(faces) -> str:
 
 
 def _carrying(notes) -> list[tuple[str, list]]:
-    return [(_squash(str(n.get("text") or "")), list(n.get("faces") or ()))
+    # the note's own words and (NOTE-22) the earlier words its click answers
+    from meshpipeline.contracts.user_notes import said
+    return [(_squash(said(n)), list(n.get("faces") or ()))
             for n in notes or () if isinstance(n, Mapping) and n.get("faces")]
 
 

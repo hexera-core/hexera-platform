@@ -248,13 +248,34 @@ def for_browser(message: Any) -> Any:
     return {**message, **shown(message)}
 
 
+#: NOTE-22: a click sent alone after we asked "which one?" answers the words still waiting for it
+RULE_CLICK_ANSWERS = "NOTE-22"
+#: the most of the earlier words one click answers that a note keeps
+MAX_ANSWERS_CHARS = 300
+
+
+def _answers(raw: Any) -> dict:
+    words = " ".join(str(raw or "").split())[:MAX_ANSWERS_CHARS]
+    return {"answers": words} if words else {}
+
+
 def make(text: str, *, source: str, turn: int | None = None, at: str = "",
-         attachments: Iterable[Any] = (), faces: Iterable[Any] = ()) -> dict:
+         attachments: Iterable[Any] = (), faces: Iterable[Any] = (), answers: str = "") -> dict:
     """One note: the user's words exactly as typed (only cut past MAX_NOTE_CHARS), with the files they attached and
-    the faces they picked when it has them (a note of a picture alone has no words)."""
+    the faces they picked when it has them (a note of a picture alone has no words). `answers` (NOTE-22): the user's
+    earlier words a click sent alone answers ("make it finer in this hole"), kept beside the words, never in them."""
     return {"text": str(text or "")[:MAX_NOTE_CHARS], "source": source,
             "turn": int(turn) if turn is not None else None, "at": at or _now(),
-            **carried({"attachments": list(attachments or ()), "faces": list(faces or ())})}
+            **carried({"attachments": list(attachments or ()), "faces": list(faces or ())}), **_answers(answers)}
+
+
+def said(note: Any) -> str:
+    """NOTE-22: the words a note stands for - its own words, then the earlier words its click answers - the words
+    the picked faces are bound to (engines/mesh_requirements.picked_for) and its rows are found by."""
+    if not isinstance(note, Mapping):
+        return ""
+    text, answers = str(note.get("text") or ""), str(note.get("answers") or "")
+    return f"{text} {answers}".strip() if answers else text
 
 
 def clicked(text: Any, asked: Any, offered: Callable[[str], Iterable[Mapping]] | None) -> bool:
@@ -333,7 +354,7 @@ def clean(raw: Any) -> list[dict]:
             out.append({"text": str(n.get("text") or "")[:MAX_NOTE_CHARS],
                         "source": str(n.get("source") or SOURCE_CHAT),
                         "turn": n.get("turn") if isinstance(n.get("turn"), int) else None,
-                        "at": str(n.get("at") or ""), **carried(n)})
+                        "at": str(n.get("at") or ""), **carried(n), **_answers(n.get("answers"))})
     return [{"id": f"n{i}", **n} for i, n in enumerate(out, start=1)]
 
 
@@ -377,6 +398,9 @@ def _carried_lines(note: Mapping) -> str:
     faces = [f"{f['id']} ({f['label']})" if f.get("label") else str(f["id"]) for f in note.get("faces") or ()]
     if faces:
         lines.append("[picked on the model: " + ", ".join(faces) + "]")
+    if note.get("answers"):
+        # NOTE-22: the click answers the user's earlier words, which are for these faces
+        lines.append(f"[this click answers the user's earlier words: “{note['answers']}”]")
     return "".join("\n" + line for line in lines)
 
 
@@ -561,7 +585,7 @@ __all__ = ["ATTACHED_TEXT_MAX", "ATTACHMENT_KEYS", "FACE_KEYS", "carried", "for_
            "QUESTION", "REMARKS_FILE", "REMARK_DESCRIPTION", "ROUTE_CONSUMERS", "RULE_EVERY_ROUTE",
            "RULE_NEVER_FAILS", "RULE_VERBATIM", "SOURCE_CHAT", "SOURCE_CONSOLE", "SOURCE_SETTINGS", "answer",
            "answers_now", "asked", "capture", "chat_block", "clean", "clicked", "context_block", "drop_remark", "is_skip", "make",
-           "merge", "own_notes",
+           "merge", "own_notes", "MAX_ANSWERS_CHARS", "RULE_CLICK_ANSWERS", "said",
            "prompt_block", "SYSTEM_LEADS", "system_written",
            "read_remarks", "record_remark", "render", "result_lines", "workspace_block",
            "write_file"]

@@ -32,6 +32,8 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable, Mapping
 
+from meshpipeline.contracts import user_notes as UN
+
 RULE = "NOTE-18"
 #: a question about the mesh at the plan step is answered from the numbers the product holds before the run
 QUESTION_RULE = "NOTE-20"
@@ -439,6 +441,64 @@ def which_one_line(u: Mapping) -> str:
             f"anywhere yet. Click it on the model and send that again.")
 
 
+# #
+# NOTE-22: a click sent alone answers the one-place ask that waits for it
+# #
+#: a click sent alone after a "which one?" (NOTE-21) applies the words that wait to exactly the faces clicked
+CLICK_RULE = "NOTE-22"
+#: where the waiting ask is kept: the session's plan-step state (its intake gate, stored with the session)
+WAITING = "one_place_ask"
+#: words that only point at what was clicked ("this one", "here", "that hole", "these") - nothing to set in them
+_POINTING = frozenset((
+    "this", "that", "these", "those", "here", "there", "it", "its", "thats", "is", "the", "one", "ones", "a",
+    "an", "please", "pls", "plz", "ok", "okay", "i", "mean", "meant", "yes", "yeah", "yep", "right", "exactly", "just",
+    "on", "in", "at", "me", "my", "hole", "holes", "bore", "bores", "fillet", "fillets", "notch", "notches",
+    "slot", "slots", "groove", "boss", "rib", "flange", "pocket", "chamfer", "cutout", "opening", "lip", "tab", "round",
+    "corner", "edge", "edges", "face", "faces", "wall", "spot", "place", "area", "surface", "bit"))
+#: the most words a pointing message has
+_POINTING_MAX = 8
+
+
+def points_only(text: str) -> bool:
+    """NOTE-22: the words, if any, only point at what was clicked - no words, or "this one", "here", "that hole",
+    "these" - with no number and no mesh word of their own."""
+    words = _words(text).split()
+    return len(words) <= _POINTING_MAX and not _REQUIREMENT.search(" ".join(words)) and all(
+        w in _POINTING for w in words)
+
+
+def waiting_ask(note: Mapping, view: Mapping | None, *, note_id: str = "") -> dict | None:
+    """NOTE-22: the one-place ask this message leaves waiting for a click - its phrase that names ONE place where the
+    part has several (NOTE-21's `which_one`): its words, the kind of place, how many there are - kept one more turn
+    when the next message is not a click. None when it left none, or more than one (one click answers one)."""
+    if view is None:
+        return None
+    asks = [u for u in mine(note, view, note_id=note_id)[1] if which_one_line(u)]
+    if len(asks) != 1:
+        return None
+    u = asks[0]
+    words = " ".join(str(u.get("quote") or u.get("words") or "").split())
+    return {"words": words, "noun": str(u.get("noun") or ""), "n": int(u["which_one"]), "turns_left": 1} \
+        if words else None
+
+
+def after_turn(waiting: Mapping | None, *, text: str, faces: bool) -> tuple[str, dict | None]:
+    """NOTE-22, decided in code for each message at the plan step while an ask waits: (the earlier words this
+    message's click answers - "" for none; the ask still waiting after it - None when it is dropped).
+    Faces picked with no words or only pointing words answer it (applied to exactly those faces, whatever kind they
+    are); faces with words of their own, or mesh-setting words, win and it is dropped unsaid; any other message keeps
+    it one more turn at most - it is never applied to a place the user did not click."""
+    if not isinstance(waiting, Mapping) or not str(waiting.get("words") or "").strip():
+        return "", None
+    if faces:
+        return (str(waiting["words"]) if points_only(text) else ""), None
+    if requirement_content(text) and not mesh_question(text):
+        return "", None                 # mesh-setting words of their own ("make the fillet finer")
+    left = waiting.get("turns_left")
+    left = left if isinstance(left, int) and not isinstance(left, bool) else 0
+    return "", ({**waiting, "turns_left": left - 1} if left > 0 else None)
+
+
 #: the reading failed (the model step did not answer): the note stays, and the run reads it again
 READ_FAILED = "I couldn't read that one just now. It's kept, and it will be read again when the mesh starts."
 
@@ -459,7 +519,7 @@ def _row_is_mine(row: Mapping, note_id: str, said: str) -> bool:
 
 def mine(note: Mapping, view: Mapping | None, *, note_id: str = "") -> tuple[list[Mapping], list[Mapping]]:
     """(this message's rows, this message's phrases no place was found for) in a done view."""
-    said = _norm(note.get("text"))
+    said = _norm(UN.said(note))       # its words, and (NOTE-22) the earlier words its click answers
     rows = [r for r in (view or {}).get("rows") or () if isinstance(r, Mapping) and _row_is_mine(r, note_id, said)]
     unsure = [u for u in (view or {}).get("unsure") or ()
               if isinstance(u, Mapping) and _row_is_mine(u, note_id, said)]
@@ -469,7 +529,7 @@ def mine(note: Mapping, view: Mapping | None, *, note_id: str = "") -> tuple[lis
 def fixed_reply(note: Mapping, view: Mapping | None) -> str:
     """The reply no model writes: the reading is not there to say anything about (still going, not started, failed).
     Empty when there are facts to answer from."""
-    if not _norm(note.get("text")):
+    if not _norm(UN.said(note)):
         return ""
     if view is not None and view.get("failed"):
         return READ_FAILED
@@ -486,7 +546,7 @@ def reply_for(note: Mapping, view: Mapping | None, *, note_id: str = "") -> str:
     not. `note`: the message as kept (text, attachments, faces); `note_id`: its id among the user's notes, which the
     reading stamps on the rows it read from it. The plain sentence the model-written reply falls back to
     (agents/intake/plan_reply, NOTE-19) and the guard's source of truth."""
-    text = str(note.get("text") or "")
+    text = UN.said(note)               # (NOTE-22) with the earlier words a click sent alone answers
     said = _norm(text)
     faces = [f for f in note.get("faces") or () if isinstance(f, Mapping)]
     pictures = pictures_of(note)
@@ -582,8 +642,8 @@ def lines_mine(view: Mapping | None, text: str) -> list[str]:
     return [_cap(x) for x in _lines_mine((view or {}).get("lines") or (), _norm(text))][:MAX_SAID]
 
 
-__all__ = ["ASK", "ASK_LINE", "BOTH", "GO", "HOLD", "HOLD_LINE", "INTAKE", "NOTE", "QUESTION", "QUESTION_RULE", "RULE",
-           "about_the_mesh",
+__all__ = ["ASK", "ASK_LINE", "BOTH", "CLICK_RULE", "GO", "HOLD", "HOLD_LINE", "INTAKE", "NOTE", "QUESTION",
+           "QUESTION_RULE", "RULE", "WAITING", "about_the_mesh", "after_turn", "points_only", "waiting_ask",
            "answers_another_question", "asked_last", "asks", "exact_go", "face_words", "fixed_reply", "lines_mine",
            "mesh_question", "mine", "never_go", "pictures_of", "plain_face_rows", "plan_change", "plural", "reading",
            "reply_for", "requirement_content", "row_place", "row_what", "which_one_line"]

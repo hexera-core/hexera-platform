@@ -29,6 +29,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from meshpipeline.agents.intake import plan_talk as PT
+from meshpipeline.contracts import user_notes as UN
 
 logger = logging.getLogger(__name__)
 
@@ -68,9 +69,12 @@ def facts(note: Mapping, view: Mapping | None, *, note_id: str = "") -> dict[str
     return {
         "message": {"words": text, "is_a_question": "?" in text, "pictures": len(pictures),
                     "files": len(files) - len(pictures),
-                    "faces_picked": [str(f.get("label") or f.get("id") or "") for f in faces]},
+                    "faces_picked": [str(f.get("label") or f.get("id") or "") for f in faces],
+                    # NOTE-22: a click sent alone answers their earlier words, which were for the place they clicked
+                    **({"a_click_that_answers_their_earlier_words": str(note["answers"])}
+                       if note.get("answers") else {})},
         "applied": applied,
-        "flow_lines": PT.lines_mine(view, text),
+        "flow_lines": PT.lines_mine(view, UN.said(note)),
         "could_not_place": [str(u.get("words") or u.get("quote") or "") for u in unsure],
         # NOTE-21: words that name ONE place where the part has several they do not tell apart: nothing set there,
         # one click asked for (how many there are, and what they are)
@@ -392,6 +396,13 @@ async def answer_owed(session: Any, view: Mapping | None, *, owner_id: str, sess
                                                          organization_id=organization_id)
                 if fresh is None or owed_note(fresh) != note:
                     return ""          # answered meanwhile, or the conversation moved on
+                waiting = PT.waiting_ask(note, view, note_id=nid)
+                if waiting:
+                    # NOTE-22: the one-place ask waits with the plan-step state (it survives a reload): a click sent
+                    # alone next applies it to exactly the faces clicked (agents/intake/message._settle)
+                    from meshpipeline.agents.intake import message as M
+                    await M.keep_one_place_ask(db, fresh, waiting, session_repo=session_repo)
+                    logger.info("plan reply: a one-place ask waits for a click (%s) - session=%s", PT.CLICK_RULE, sid)
                 await session_repo.append_message(db, session.id, "assistant", reply)
                 await db.commit()
             logger.info("plan reply: said (%s, source=%s) - session=%s", RULE, source, sid)

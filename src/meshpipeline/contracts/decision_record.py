@@ -36,7 +36,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 #: docs/RULES.md "Rulebook version". Raised whenever a rule changes what it decides.
-RULES_VERSION = "89"
+RULES_VERSION = "90"
 
 SOURCE_RULE = "rule"
 SOURCE_USER = "user"
