@@ -250,7 +250,7 @@ def test_the_prompt_answers_the_person_with_examples_and_asks_for_variety():
 def test_the_fallback_sentences_speak_in_the_first_person_and_the_picture_line_is_true():
     assert PT.reply_for(*SEVERAL) == "I've set 1 mm elements on the 3 faces you picked."
     got = PT.reply_for(*GUESS)
-    assert got.startswith("I've made the mesh finer at the hole (22 mm across).")
+    assert got.startswith("I've set a finer mesh at the hole (22 mm across).")
     assert "my guess" in got and "system" not in got
     assert got.endswith(PT.PICTURE_NOTE) and got.count("picture") == 2 and "number" not in got
     assert "picture" not in PT.reply_for(*ONE)                            # only when a picture came

@@ -112,7 +112,7 @@ def test_a_place_the_reader_guessed_says_so_and_how_to_fix_it():
            "parts": ["Feature_3", "Feature_5"], "parts_text": "the fillet (radius 8 mm) and the boss (36 mm across)"}
     other = {"quote": "2 mm on the frame rail", "size": "2 mm", "parts": ["Part_9"], "parts_text": "part 9"}
     assert PT.reply_for(note, _done([other, row])) == (
-        "I've made the mesh finer at the fillet (radius 8 mm) and the boss (36 mm across). That's my guess from "
+        "I've set a finer mesh at the fillet (radius 8 mm) and the boss (36 mm across). That's my guess from "
         "your words; click it on the model if you meant another spot.")
 
 
@@ -139,7 +139,7 @@ def test_words_with_a_picture_say_the_picture_is_kept_but_not_read():
     note = {"text": "finer here", "attachments": [{"id": "a1", "kind": "image", "mime": "image/png"}],
             "faces": [FACE32]}
     row = {"quote": "finer here", "size": "finer", "faces": [FACE32], "picked": True, "parts": []}
-    assert PT.reply_for(note, _done([row])) == ("I've made the mesh finer on Face 32 (round Ø6 mm). " + PT.PICTURE_NOTE)
+    assert PT.reply_for(note, _done([row])) == ("I've set a finer mesh on Face 32 (round Ø6 mm). " + PT.PICTURE_NOTE)
     assert "number" not in PT.PICTURE_NOTE and "don't read pictures" in PT.PICTURE_NOTE
 
 

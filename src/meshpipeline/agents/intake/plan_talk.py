@@ -327,12 +327,12 @@ def _cap(text: str) -> str:
 
 
 def _done_what(row: Mapping) -> str:
-    """What a row sets, said in the first person: "set 1 mm elements", "made the mesh finer", "noted “...”"."""
+    """What a row sets, said in the first person: "set 1 mm elements", "set a finer mesh", "noted “...”"."""
     size = str(row.get("size") or "")
     if size == "finer":
-        return "made the mesh finer"
+        return "set a finer mesh"
     if size == "coarser":
-        return "made the mesh coarser"
+        return "set a coarser mesh"
     if size and size[0].isdigit():
         return f"set {size} elements"
     words = str(row.get("words") or row.get("quote") or "").strip()

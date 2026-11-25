@@ -103,7 +103,9 @@ def _block_facts_only() -> str:
             "picked', 'the 22 mm hole', 'the whole mesh'. Never mention mesh quality, element or cell counts, time, "
             "or anything that will happen beyond the facts. Never use a number that is not in the facts. If nothing "
             "was applied, do not say or suggest that anything was set: say plainly what you couldn't take and what "
-            "they can do. If kept_for_the_run is true, nothing reads it before the run: say you've noted it (with "
+            "they can do. Nothing has been meshed yet at this point: speak of what you've SET or what you'll do "
+            "('I've set 1 mm on Face 23', 'I'll go finer at that hole'), never of a mesh already made ('I've made the "
+            "mesh finer' is wrong). If kept_for_the_run is true, nothing reads it before the run: say you've noted it (with "
             "the size and face from their message) and, in a few words of your own, that the result will show "
             "whether this mesher could apply it; never say it is applied or set, and never say you couldn't read "
             "it. Never cite rule ids.\n")
