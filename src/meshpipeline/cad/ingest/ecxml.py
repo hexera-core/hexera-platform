@@ -90,7 +90,14 @@ SCHEMA_TAGS = frozenset({
     "fixedFlowRate", "fanCurve", "fanCurvePoint", "volumeFlow", "hubSize", "rotationMatrix",
     "r11", "r12", "r13", "r21", "r22", "r23", "r31", "r32", "r33", "fileName",
     *OBJECT_FIELDS})
-_CANONICAL_TAG = {t.lower(): t for t in SCHEMA_TAGS}
+#: SORTED, so the map cannot depend on the hash seed. Tags are matched case-insensitively
+#: because vendors spell them differently (solid2DBlock, rectangular2dfan), which means two
+#: tags differing only in case would collide here - and a frozenset of strings iterates in
+#: str-hash order, so which one won would change run to run and `parse_xml` would read a
+#: field on one run and ignore it on the next. There is no collision today (70 tags, 70
+#: lowercase keys, measured 2026-11-25) and the test beside this file keeps it that way;
+#: sorted() is what makes the answer the same every run if one ever appears.
+_CANONICAL_TAG = {t.lower(): t for t in sorted(SCHEMA_TAGS)}
 #: Objects the schema describes as two-dimensional (a plate, a face): their plane is the object.
 TWO_D = frozenset({"solid2dBlock", "source2dBlock", "grille", "rectangular2dFan"})
 #: Objects whose size may be zero on an axis (schema type sizeAllowZero). It is exactly the 2D set

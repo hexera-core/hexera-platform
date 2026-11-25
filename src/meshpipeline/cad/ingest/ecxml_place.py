@@ -532,9 +532,23 @@ def _snap_roundoff(model: EcxmlModel, objs: list[Obj], precision):
             if values[-1] - values[0] > noise:
                 his = [w for w in cl if w[2] == 1 and w[1] >= 0]
                 los = [w for w in cl if w[2] == 0 and w[1] >= 0]
+                # THE KEY IS TOTAL, and it has to be: the widest gap first, then the two
+                # names. Keyed on the gap alone, pairs with the SAME gap kept the iteration
+                # order of a set of tuples holding strings, which is the str hash seed's.
+                # MEASURED, 2026-11-25: four 1 mm blocks whose faces sit 50 nm apart on one
+                # plane make four pairs all exactly 4.99999999999199e-08 apart, and eight runs
+                # of the same bytes gave eight different orders. Only the first four survive
+                # the slice below, so the order decides WHICH gaps are reported - and this list
+                # is written into the stored sidecar (`placement_sidecar`) and into the physics
+                # brief the intake agent is given, so the same file produced a different record
+                # and a different prompt on every run. The mesh never moved: the STL was
+                # byte-identical in all six runs of the writer.
+                # Pinning the seed instead would mean PYTHONHASHSEED=0 on the api image too,
+                # which is where hash randomisation is a DoS mitigation on untrusted input;
+                # a total key needs no seed.
                 closed = sorted({(names[a[1]], names[b[1]], b[0] - a[0]) for a in his for b in los
                                  if a[1] != b[1] and b[0] - a[0] > noise},
-                                key=lambda r: -r[2])
+                                key=lambda r: (-r[2], r[0], r[1]))
                 merges.append({"axis": "xyz"[i], "at_m": rep, "step_m": values[-1] - values[0],
                                "objects": sorted({names[w[1]] for w in cl})[:6],
                                "gaps_closed": [{"between": [a, b], "gap_m": g}
