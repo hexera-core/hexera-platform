@@ -3447,6 +3447,13 @@ def report(workspace, quality: Mapping, engine: str) -> dict | None:
                 pl := _place_row(workspace, req, row, p)) is not None:
             # CFDREQ-35: a size in a place is applied when the built mesh has it there, measured
             got = pl
+        elif field == "local" and status in ("applied", "nearest") and p.get("picked") and Path(
+                workspace, "constant", "polyMesh", "boundary").exists():
+            # CFDREQ-35: no wall face of the built mesh lies on the face picked (it does not touch the flow): nothing
+            # was built there, so it is not applied - never "applied" on a plan alone
+            got = {"applied": False, "met": None,
+                   "delivered": "not applied - no wall of the built mesh lies on the face you picked (it may not touch "
+                                "the flow: pick a face the fluid wets)"}
         elif field == "local" and status in ("applied", "nearest") and (p.get("picked") or p.get("patches")):
             got = {"applied": True, "met": None,
                    "delivered": f"{built}; the cells there were not measured on the built mesh"}

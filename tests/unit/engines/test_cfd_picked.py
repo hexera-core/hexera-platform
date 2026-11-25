@@ -189,3 +189,21 @@ def test_framed_keeps_a_small_fluid_inside_a_big_solid(tmp_path):
     CP.resolve(tmp_path, req, "", surface=_surface())
     got = CP.framed(tmp_path, ([0, 0, 0], [0.0041, 0.0041, 0.0002]))     # a thin fluid slab under the 4 x 4 x 1 mm solid
     assert got["r1"]["unit_factor"] == 1.0
+
+
+def test_a_picked_face_no_wall_lies_on_is_not_applied(tmp_path, monkeypatch):
+    """Lab 00139975: the picked cone was not wetted - no wall face lay on it - and the row said applied."""
+    _polymesh(tmp_path)
+    tri = tmp_path / "constant" / "triSurface"
+    tri.mkdir(parents=True)
+    from meshpipeline.cad.stl_io import _write_solid
+    with (tri / "picked_1.stl").open("w") as fh:
+        _write_solid(fh, "picked_1", [((0, 0, 0.5), (0.004, 0, 0.5), (0.004, 0.004, 0.5))])
+    req = {"rows": [{"id": "r1", "field": "local", "asked": "cells of 0.3 mm at the face you picked"}],
+           "local": [{"id": "r1", "where": "the face you picked", "what": "size", "mm": 0.3, "faces": ["Face_9"]}]}
+    monkeypatch.setattr(CR, "requirements_for", lambda ws: req)
+    monkeypatch.setattr(CR, "_plan", lambda ws: {"rows": {"r1": {"status": "applied", "built": "cells of 0.25 mm",
+                                                                 "built_m": 0.00025, "picked": "picked_1"}}})
+    monkeypatch.setattr(CR.MR, "read", lambda ws: {})
+    row = next(r for r in CR.report(tmp_path, {"cells": 16}, "snappy")["rows"] if r["id"] == "r1")
+    assert row["applied"] is False and "no wall of the built mesh" in row["delivered"]
