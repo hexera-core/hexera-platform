@@ -41,6 +41,8 @@ SAME_AREA_SHARE = 0.02
 SAME_CENTRE_SHARE = 0.01
 #: a size is met when the median wall cell on the place is at most this much over the size asked (a maximum)
 MET_SLACK = 1.05
+#: the most points the picked surface is sampled with for the measure
+MAX_SAMPLES = 400_000
 #: the fewest wall faces on a place for a measure
 MIN_FACES = 3
 #: words that keep a size typed with a pick for the whole mesh all the same ("2 mm overall")
@@ -354,7 +356,13 @@ def measure(case, *, picked: str | None = None, patches=None, size_m: float | No
 
         tol = 0.5 * float(size_m) if size_m else 0.5 * float(np.median(w))
         tol = max(tol, 0.25 * float(np.median(w)))
-        tree = cKDTree(_samples(t, 0.5 * tol))
+        # samples no farther apart than half the reach, but never more than MAX_SAMPLES of them (a large face asked
+        # fine: the elbow's 0.58 m2 bend at 0.5 mm was 20 M points and half an hour of the report)
+        a, b, c = t[:, 0], t[:, 1], t[:, 2]
+        area = float(0.5 * np.linalg.norm(np.cross(b - a, c - a), axis=1).sum())
+        h = max(0.5 * tol, math.sqrt(2.0 * area / MAX_SAMPLES))
+        tol = max(tol, h)
+        tree = cKDTree(_samples(t, h))
         d, _i = tree.query(ctr, distance_upper_bound=tol)
         on = np.isfinite(d)
         w = w[on]
