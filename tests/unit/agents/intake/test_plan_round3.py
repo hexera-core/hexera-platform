@@ -241,7 +241,7 @@ async def _with_model(model, note, view):
 
 def test_the_prompt_answers_the_person_with_examples_and_asks_for_variety():
     system = PR.compose_system()
-    assert "first person" in system and "Sure" in system and "Got it" in system and "Vary your wording" in system
+    assert "first person" in system and "Sure" in system and "Got it" in system and "a different one each time" in system
     assert system.count("They: '") >= 4                                   # few-shot examples in that voice
     assert "Sure, I've set 0.5 mm elements on Face 23." in system
     assert "the system's guess" not in system and "!" not in system.replace("No exclamation", "")

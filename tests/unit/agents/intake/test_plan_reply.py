@@ -101,7 +101,7 @@ def test_the_guard_refuses_each_bad_kind_and_the_plain_sentence_is_said(kind, no
 def test_the_same_opener_as_the_last_reply_is_no_longer_refused_variety_is_asked_of_the_prompt():
     f = PR.facts(NOTE, _done([ROW]), note_id="n2")
     assert PR.check("All right, 1 mm on Face 32.", f, last_reply="All right, finer mesh at the fillet.") == ""
-    assert "Vary your wording" in PR.compose_system()
+    assert "a different one each time" in PR.compose_system()
 
 
 def _stub(monkeypatch, answer=None, *, raises=None, sleep=0.0):
