@@ -71,13 +71,18 @@ from meshpipeline.contracts.work_limits import (
     guard_for,
 )
 from meshpipeline.engines.determinism import note_guard_trip
+from meshpipeline.engines.verdict_limits import production_limit
 
 logger = logging.getLogger(__name__)
 
-#: A valid mesh whose worst face is more than this many degrees out of square is near the edge:
-#: the corpus' cfMesh meshes that came out broken on one run read 82-86 on the others, and the
-#: delivered ones mostly sit under 65 (median 60 in the cfm-after set).
-NEAR_EDGE_NON_ORTHO = 75.0
+#: LAD-cfd-15: a valid mesh whose worst face is more than this many degrees out of square is near the edge - the
+#: limit the verdict itself holds a cfMesh mesh to (engines/verdict_limits PRODUCTION_LIMITS max_non_ortho, read from
+#: there, never a copy). It was 75 before: a first mesh landing at 70-75 was delivered "with concerns" without the
+#: re-mesh that, on abc 00164305 (e34, 25 Nov), brought the same cells to 60.8 every time it fired (first meshes of
+#: that part read 70.4-92.8 run to run). The best measured mesh is still the one kept, the first mesh included.
+NEAR_EDGE_NON_ORTHO = float(production_limit("max_non_ortho", "cfmesh"))
+#: the rule a rescue's trigger is recorded under (the rescue record's `trigger_rule`)
+NEAR_EDGE_RULE = "LAD-cfd-15"
 #: Only a candidate this many degrees better than the best so far displaces it (checkMesh's
 #: figure moves by a few hundredths between two reads of the same mesh).
 MIN_GAIN_DEG = 0.5
@@ -437,7 +442,8 @@ def rescue(workspace, q: dict, *, bashrc: str, deadline: float, mesher_seconds: 
     if not why:
         return q
     ws = Path(workspace)
-    record: dict = {"trigger": why, "before": _brief(q), "tried": [], "kept": "as built"}
+    record: dict = {"trigger": why, "trigger_rule": NEAR_EDGE_RULE, "before": _brief(q), "tried": [],
+                    "kept": "as built"}
     cells = _num(q.get("cells")) or 0
     if is_2d:
         return _done(ws, q, {**record, "skipped": "2D case (cartesian2DMesh) - not rescued"})

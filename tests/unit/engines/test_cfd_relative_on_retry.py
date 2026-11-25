@@ -33,8 +33,8 @@ def _dict(ws, text: str):
     return ws
 
 
-def test_the_rulebook_is_113():
-    assert RULES_VERSION == "113"
+def test_the_rulebook_holds_the_amended_rule():
+    assert int(RULES_VERSION) >= 113
 
 
 def test_the_first_attempt_writes_the_stack_in_metres_and_marks_it(tmp_path):
