@@ -185,3 +185,22 @@ def test_a_repeated_description_is_a_note_and_not_a_refusal(tmp_path):
 def test_one_of_each_is_still_read_without_a_word(tmp_path):
     model = read_ecxml(_written(tmp_path, _file()))
     assert list(model.notes) == [], model.notes
+
+
+def test_a_size_too_big_to_write_out_is_still_readable(tmp_path):
+    # My own first cut of this warning printed a 1e300 coordinate as 300 grouped digits inside a
+    # sentence telling the user their part was too big. Past a trillion the magnitude IS the
+    # message. (This file is ACCEPTED - nothing refuses it - so the sentence is all the user gets.)
+    view, _pl = _view(_written(tmp_path, _file(size=1e300), name="huge.ecxml"))
+    said = " ".join(w["text"] for w in view["warnings"] if w["level"] == "warn")
+    assert "electronics-cooling model" in said, said
+    assert "e+30" in said, said
+    assert "," not in said.split("comes out")[1].split("mm")[0], said
+
+
+def test_a_real_size_still_reads_as_a_number_a_person_writes(tmp_path):
+    from meshpipeline.application.thermal_view import _num
+
+    assert _num(177.5) == "177.5"
+    assert _num(70000.0) == "70000"
+    assert _num(70000000000.0) == "70,000,000,000"

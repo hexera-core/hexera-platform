@@ -95,7 +95,15 @@ def _num(v) -> str:
         f = _round(float(v))
     except (TypeError, ValueError):
         return str(v)
-    return f"{f:g}" if abs(f) < 1e6 else f"{f:,.0f}"
+    if abs(f) < 1e6:
+        return f"{f:g}"
+    # GROUPED DIGITS STOP BEING READABLE LONG BEFORE A FLOAT DOES. A file whose coordinates are
+    # 1e300 - which this product accepts and now warns about - formatted as "1,000,000,...,65"
+    # with 300 digits, in a sentence telling the user their part is too big. Past a trillion the
+    # magnitude IS the message.
+    if abs(f) < 1e12:
+        return f"{f:,.0f}"
+    return f"{f:.3g}"
 
 
 def _watts(v) -> str:
