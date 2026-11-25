@@ -172,7 +172,8 @@ def test_the_model_down_shows_nothing_and_the_run_reads_again(world, monkeypatch
     monkeypatch.setattr(model_inference, "_router", _Down())
     PM.finalize(world.session)
     _run_queued(world)
-    assert PM.view(world.session) == {"status": "done", "rows": [], "unsure": []}
+    # the reading failed: nothing is shown as understood, and the view says so (NOTE-18: the reply tells the user)
+    assert PM.view(world.session) == {"status": "done", "rows": [], "unsure": [], "failed": True}
     assert PM.for_run(SID, world.session.user_notes, world.session.request_txt) is None
 
 

@@ -362,6 +362,11 @@ async def _settle(inbound: InboundMessage, db, *, gate: dict, locked, messages: 
         talk = PT.INTAKE if _ours(inbound.content, messages) else PT.reading(
             inbound.content, carries=bool(inbound.attachments or inbound.faces), asked=PT.asked_last(messages[:-1]),
             consent=_consent.reading(inbound.content, named=(engine,) if engine else ()), engine=engine)
+        if talk in (PT.NOTE, PT.BOTH) and uc.stated_unit(inbound.content) is not None:
+            # A UNIT NAMED BESIDE A REQUEST ("the file is in metres, and make the mesh finer"): the turn answers
+            # both, as it did before the plan step became a conversation - a requirement's reply says only what
+            # the checklist took, and would pass over the unit
+            talk = PT.INTAKE
         if talk == PT.GO:
             intent = ap.APPROVE_INTENT
         if talk == PT.BOTH:
