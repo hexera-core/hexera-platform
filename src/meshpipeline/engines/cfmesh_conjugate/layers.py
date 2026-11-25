@@ -885,6 +885,15 @@ def read_layer_log(text: str) -> dict:
     return {
         "iterations": len(extruding),
         "coverage_pct": (extruding[-1][2] if extruding else None),
+        # WHAT THE MOVER WAS EVER OFFERED. The first `Extruding N out of M` line is the decision
+        # the extruder makes BEFORE it moves anything: every face where the surface turns by more
+        # than `featureAngle` is refused up front. The last line is what survived ten iterations
+        # of repair. The two are different questions and only the second was ever published, so a
+        # coverage shortfall read as "the mover failed" when it was mostly "the engine declined".
+        # MEASURED on job cba7ac69's 16,582,198-face interface: offered 90.8603% on iteration 1,
+        # finished at 90.6422% on iteration 10 - the whole of the 9.14% shortfall was the refusal
+        # and 0.22 points was the repair.
+        "offered_pct": (extruding[0][2] if extruding else None),
         "coverage_by_iteration": [c for _a, _b, c in extruding],
         "faces_extruded": (extruding[-1][0] if extruding else None),
         "faces_offered": (extruding[-1][1] if extruding else None),
@@ -949,9 +958,25 @@ def shortfalls(report: dict, *, interface_patch: str, n_layers: int = 0,
     out: list[str] = []
     cover = got.get("coverage_pct")
     if cover is not None and float(cover) < COVERAGE_FLOOR_PCT:
-        out.append(f"covered {float(cover):.4f}% of the interface against the {COVERAGE_FLOOR_PCT:g}% "
-                   f"this engine aims at; the measured run of the other part reached 95.553% and "
-                   f"the run that was refused for not fitting its cell reached 90.7146%")
+        said = (f"covered {float(cover):.4f}% of the interface against the "
+                f"{COVERAGE_FLOOR_PCT:g}% this engine aims at; the measured run of the other part "
+                f"reached 95.553% and the run that was refused for not fitting its cell reached "
+                f"90.7146%")
+        # WHERE THE SHORTFALL CAME FROM, because the two causes ask for different things. A face
+        # the extruder never offered is `featureAngle` declining to grow a prism where the surface
+        # turns - raising the angle would recover it and cost quality. A face it offered and then
+        # lost is the mover failing, which more iterations or a thinner stack might fix. Without
+        # this the reader sees one number under a floor and cannot tell which.
+        offered = got.get("offered_pct")
+        if offered is not None:
+            never = 100.0 - float(offered)
+            lost = float(offered) - float(cover)
+            said += (f". Of the {100.0 - float(cover):.2f} points missing, {never:.2f} were never "
+                     f"offered to the layer pass at all - the extruder declines a face where the "
+                     f"surface turns by more than featureAngle {int(FEATURE_ANGLE)} degrees - and "
+                     f"{lost:.2f} were offered and then lost over "
+                     f"{int(got.get('iterations') or 0)} iteration(s) of repair")
+        out.append(said)
     thick = row.get("thickness_pct")
     if thick is not None and float(thick) < THICKNESS_FLOOR_PCT:
         out.append(f"{interface_patch} came back at {float(thick):.1f}% of the thickness it was "
