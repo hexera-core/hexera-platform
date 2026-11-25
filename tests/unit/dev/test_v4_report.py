@@ -1467,9 +1467,9 @@ def test_every_field_the_sequential_arm_emits_is_declared_on_ArmRow() -> None:
     `resolved_by_earlier_repair`. The two lists are compared here rather than one field at a time."""
     import dataclasses
 
-    from meshpipeline.cad.repair_v4.seq import SeqCounters
-
     from devtools.validation.v4_eval.report import ArmRow
+
+    from meshpipeline.cad.repair_v4.seq import SeqCounters
 
     emitted = set(SeqCounters().row())
     declared = {f.name for f in dataclasses.fields(ArmRow)}

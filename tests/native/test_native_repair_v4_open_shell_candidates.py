@@ -12,11 +12,11 @@ import pytest
 pytest.importorskip("OCP.STEPControl", reason="the CAD kernel is a native-tier dependency")
 
 from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox  # noqa: E402
+from OCP.BRepTools import BRepTools_ReShape  # noqa: E402
 from OCP.STEPControl import STEPControl_AsIs, STEPControl_Writer  # noqa: E402
 from OCP.TopAbs import TopAbs_FACE  # noqa: E402
 from OCP.TopExp import TopExp_Explorer  # noqa: E402
 from OCP.TopoDS import TopoDS  # noqa: E402
-from OCP.BRepTools import BRepTools_ReShape  # noqa: E402
 
 from meshpipeline.cad.repair_v4 import search as S  # noqa: E402
 from meshpipeline.cad.repair_v4.worker_pool import WorkerPool  # noqa: E402

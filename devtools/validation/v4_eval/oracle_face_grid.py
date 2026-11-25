@@ -193,12 +193,14 @@ def extra_rows(state: Any, diagonal_mm: float | None = None) -> list:
         if not faces:
             continue
         kind = getattr(site, "kind", "")
-        coarse = bool(((getattr(site, "graph", None) or {}).get("coarse") or {}))
+        coarse = bool((getattr(site, "graph", None) or {}).get("coarse") or {})
         aim = _aim(site)
         named = set(_located(site))
         diag = _diagonal_of(site, diagonal_mm)
 
-        def where(f: str) -> str:
+        def where(f: str, named: frozenset[str] = frozenset()) -> str:
+            # `named` is bound as a DEFAULT, not closed over: it is rebound every iteration of this loop, and a
+            # closure over it would read the last site's faces if it ever outlived the iteration (ruff B023).
             return "the mesher's own face" if f in named else "a face at the site"
 
         # --- split_angle: det's rungs at the kinds det forbids, and new rungs everywhere ----------------------
@@ -225,7 +227,7 @@ def extra_rows(state: Any, diagonal_mm: float | None = None) -> list:
         # --- rebuild_face: det is G0 only, located-first, two faces ------------------------------------------
         for f in aim:
             add("rebuild_face", [f], {"continuity": "G1"},
-                f"re-fill {f} ({where(f)}) at G1, which det never proposes; the op reports what it achieved")
+                f"re-fill {f} ({where(f, frozenset(named))}) at G1, which det never proposes; the op reports what it achieved")
 
         # --- unify_same_domain: det scopes it `all` at `sliver`, and A11 aims a named PAIR at self_overlap ----
         if len(aim) >= 2:
@@ -233,7 +235,7 @@ def extra_rows(state: Any, diagonal_mm: float | None = None) -> list:
                 f"merge the {len(aim)} aimed faces among themselves on a {kind} site")
         for f in aim:
             add("unify_same_domain", [f], {"scope": "targets", "keep": []},
-                f"merge {f} ({where(f)}) into its own domain, one face at a time")
+                f"merge {f} ({where(f, frozenset(named))}) into its own domain, one face at a time")
         if kind != "sliver":
             add("unify_same_domain", [], {"scope": "all", "keep": []},
                 f"merge same-domain faces part-wide on a {kind} site (det: `sliver` only)")
@@ -260,6 +262,6 @@ def extra_rows(state: Any, diagonal_mm: float | None = None) -> list:
             width = ratio * diag
             for f in aim:
                 add("remove_small", [f], {"max_width_mm": width},
-                    f"remove {f} ({where(f)}) if under {width:.4g} mm, {ratio:g} of the ORIGINAL's diagonal, past "
+                    f"remove {f} ({where(f, frozenset(named))}) if under {width:.4g} mm, {ratio:g} of the ORIGINAL's diagonal, past "
                     "the det ladder's 1e-2 top rung; aimed at one face, never part-wide")
     return rows

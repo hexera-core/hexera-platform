@@ -1,8 +1,14 @@
 """D10 native check: the re-probe row and the arms' input verdict, per file, with timings."""
-import json, sys, tempfile, time
+import json
+import sys
+import tempfile
+import time
 from pathlib import Path
+
 sys.path.insert(0, "/w/devtools/validation/v4_eval")
-import arms, reprobe as rp
+import arms
+import reprobe as rp
+
 from meshpipeline.cad.repair_v4.search import default_judge
 from meshpipeline.cad.repair_v4.worker_pool import WorkerPool
 

@@ -185,7 +185,7 @@ def _read_back(path: str, tmp: Path) -> int:
     try:
         read = pool.call("read_step_xcaf", {"path": path, "brep_out": str(tmp / "rb.brep")}, timeout_s=120)
         assert read.ok, read.error
-        return len([k for k in read.value["labels"]]) or 1
+        return len(read.value["labels"]) or 1
     finally:
         pool.close()
 
