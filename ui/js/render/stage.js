@@ -233,7 +233,13 @@ export const Stage = {
     if(this._briefEl){this._briefEl.innerHTML=html;}
     else{this.clearEmpty();
       const g=document.createElement('div');g.className='im assistant';g.innerHTML=html;
-      this.col().appendChild(g);this._briefEl=g;}
+      // ONE CARD, WHERE IT WAS: live it follows the plan line; a reload draws the conversation first, so the card
+      // goes back under that line, not under the last reply
+      const line=b.proceed_ask&&[...this.col().querySelectorAll(':scope > .im.assistant .txt')].reverse()
+        .find(t=>t.textContent.trim()===String(b.proceed_ask).trim());
+      const at=line&&line.closest('.im');
+      if(at)at.after(g);else this.col().appendChild(g);
+      this._briefEl=g;}
     // WHAT WILL BE APPLIED, AND PROCEED, STAY IN REACH: one slim bar pinned just above the chat box at this step
     // (`_planBar`) holds the live list and the plan's one Proceed - not the card, which scrolls away
     this._planBar(live,b.proceed_ask&&go?go:null);
@@ -299,7 +305,10 @@ export const Stage = {
     const el=this._pmEl();
     if(!el)return;
     this._pm=m||null;this._pmParts=parts||null;this._pmAskLine=ask||'';
-    const draw=()=>{this._pmDrawIn(el);this._pmPaint(el);this._pbLine();};
+    // the faces the requirements hold, once the reading is done: a sent face's mark on the model goes with its row
+    const marks=()=>{const m=this._pm,p=this._pmParts;
+      if(m&&m.status==='done'&&p&&p.faces)p.faces([...(m.rows||[]),...(m.unsure||[])].flatMap(r=>(r.faces||[]).map(f=>f.id)));};
+    const draw=()=>{this._pmDrawIn(el);this._pmPaint(el);this._pbLine();marks();};
     this._pmDraw=draw;
     draw();
     // WHILE THE NOTES ARE READ the list follows the reading; a reply still owed to the user's last requirement
