@@ -4471,6 +4471,58 @@
   "roots": []
  },
  {
+  "context": "engines/cfd_picked.py::_boundary::search#1|NotAPublisher|not-a-publisher|",
+  "path": "engines/cfd_picked.py",
+  "qualname": "_boundary",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "re",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "engines/cfd_picked.py::_boundary::search#2|NotAPublisher|not-a-publisher|",
+  "path": "engines/cfd_picked.py",
+  "qualname": "_boundary",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 2,
+  "receiver": "re",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "engines/cfd_picked.py::_boundary::search#3|NotAPublisher|not-a-publisher|",
+  "path": "engines/cfd_picked.py",
+  "qualname": "_boundary",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 3,
+  "receiver": "re",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "engines/cfd_picked.py::bind.faces_of::search#1|NotAPublisher|not-a-publisher|",
+  "path": "engines/cfd_picked.py",
+  "qualname": "bind.faces_of",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "_WHOLE",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "engines/cfd_requirements.py::_layer_determinant::search#1|NotAPublisher|not-a-publisher|",
   "path": "engines/cfd_requirements.py",
   "qualname": "_layer_determinant",

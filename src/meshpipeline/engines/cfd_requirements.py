@@ -149,6 +149,8 @@ async def read_for_attempt(workspace, state, *, job_id: str = "", publish=None, 
     # never told or counted as not applied, whatever the reading made of it
     from meshpipeline.engines import notes_acted as NA
     sec = NA.apply(sec, MR.notes_text(state or {}), NA.facts_of(state, engine))
+    # CFDREQ-34: a size typed with faces picked on the model is for those faces, resolved to their own triangles
+    _with_picks(ws, sec, state)
     MR.write(ws, sec)
     (ws / PLAN_FILE).unlink(missing_ok=True)          # a carried plan never speaks for this attempt
     _say_engine_for_asks(ws, state, engine)
@@ -166,6 +168,27 @@ async def read_for_attempt(workspace, state, *, job_id: str = "", publish=None, 
         for i, line in enumerate(MR.live_words(sec)):
             await _N.asay(publish, line, op_id=f"cfd:notes:{i}")
     return sec
+
+
+def _with_picks(ws: Path, sec: Mapping, state) -> None:
+    """CFDREQ-34: the sizes typed in a note sent with faces picked bound to those faces (engines/cfd_picked.bind), and
+    each picked face resolved from the uploaded CAD to its own triangles (cfd_picked.resolve). Never raises."""
+    from meshpipeline.engines import cfd_picked as CP
+
+    req = sec.get("requirements") if isinstance(sec, Mapping) and sec.get("status") == "used" else None
+    if not isinstance(req, dict):
+        (ws / CP.FILE).unlink(missing_ok=True)
+        return
+    try:
+        CP.bind(req, (state or {}).get("user_notes") or [])
+        if CP.picked_entries(req.get("local")):
+            from meshpipeline.pipeline.geometry_state import materialized
+            g = materialized(state or {})
+            CP.resolve(ws, req, str(g.path) if g else "")
+        else:
+            (ws / CP.FILE).unlink(missing_ok=True)
+    except Exception:  # noqa: BLE001 - the picks never fail a run; an unresolved pick is told by the engine
+        logger.warning("cfd requirements: the picked faces were not resolved", exc_info=True)
 
 
 def _say_engine_for_asks(ws: Path, state, engine: str) -> None:
@@ -1169,6 +1192,8 @@ def snappy_levels(ask: Ask, base: float, *, floor: int, level: int, flevel: int,
                                   "halves to)", built_m=base / 2 ** lv, level=lv)
     for e in ask.local:
         where = str(e.get("where") or "")
+        if e.get("faces"):
+            continue                                   # snappy_picked (CFDREQ-34)
         if "wake" in where.casefold():
             continue                                   # snappy_wake
         if part_levels:
@@ -1186,7 +1211,7 @@ def snappy_levels(ask: Ask, base: float, *, floor: int, level: int, flevel: int,
         cell = base / 2 ** got
         if r is not None:
             ask.region_levels[r] = (got, got)
-            ask.done(e["id"], f"cells of {_mm(cell)} on {r}")
+            ask.done(e["id"], f"cells of {_mm(cell)} on {r}", built_m=cell, patches=[r])
         else:
             if ask.wall_m is None:
                 lv = got
@@ -1519,16 +1544,19 @@ def snappy_port_levels(ask: Ask, port_lvls: dict, names: Mapping, wall_key: str,
     roles = dict(roles or {})
     for e in ask.local:
         where = str(e.get("where") or "")
+        if e.get("faces"):
+            continue                                   # snappy_picked (CFDREQ-34)
         if "wake" in where.casefold():
             ask.not_here(e["id"], "an internal flow has no wake behind a body")
             continue
         hits, how = openings_named(where, list(ports), roles)
         if not hits:
             if re.search(r"\b(wall|walls|surface|pipe|duct|passage|inside)\b", where, re.I):
-                ask.not_here(e["id"], "the walls take the size at the walls; give it as a wall cell size")
+                ask.not_here(e["id"], f"I could not tell which wall '{where}' is: {CLICK_WORDS}; for every wall, give "
+                                      "it as a wall cell size")
             else:
-                ask.not_here(e["id"], f"no opening named '{where}' in this model (its openings: "
-                                      f"{_openings_words(list(ports), roles)})")
+                ask.not_here(e["id"], f"I could not tell where '{where}' is: no opening has that name (its openings: "
+                                      f"{_openings_words(list(ports), roles)}); {CLICK_WORDS}")
             continue
         made, held = [], []
         for hit in hits:
@@ -1555,7 +1583,7 @@ def snappy_port_levels(ask: Ask, port_lvls: dict, names: Mapping, wall_key: str,
         if held:
             said += (f"; {' and '.join(h for h, _n in held)} kept at cells of {_mm(base_m / 2 ** held[0][1])}: larger "
                      "cells could close the opening")
-        ask.done(e["id"], said, built_m=base_m / 2 ** lv)
+        ask.done(e["id"], said, built_m=base_m / 2 ** lv, patches=[str(names[ports[h]]) for h, _n in made])
     return out
 
 
@@ -1856,6 +1884,8 @@ def cfmesh_local(ask: Ask, patches, wall_patch: str, *, max_cell: float, wall_ce
     entries, boxes = "", []
     for e in ask.local:
         where = str(e.get("where") or "")
+        if e.get("faces"):
+            continue                                   # cfmesh_picked (CFDREQ-34)
         size = float(e["mm"]) * 1e-3 if e["what"] == "size" else (wall_cell / 2.0 if e["what"] == "finer" else None)
         if "wake" in where.casefold():
             if body_bbox is None or domain is None:
@@ -1901,15 +1931,18 @@ def cfmesh_local(ask: Ask, patches, wall_patch: str, *, max_cell: float, wall_ce
             size = max(size, floor)
             entries += "".join(f"    {h} {{ cellSize {size:.6g}; }}\n" for h in hits)
             ask.done(e["id"], f"cells of {_mm(octree_cell(max_cell, size))} on {' and '.join(hits)}"
-                              + (f" ({how})" if how else ""), built_m=octree_cell(max_cell, size))
+                              + (f" ({how})" if how else ""), built_m=octree_cell(max_cell, size), patches=list(hits))
             continue
         hit = hits[0] if hits else _region_of(where, names)
         if hit is None:
-            if len([n for n in names if n == wall_patch]) and len(names) <= 3 and e["what"] != "coarser":
-                hit = wall_patch          # one body: "around the wing" is its wall
+            if (body_bbox is not None and len([n for n in names if n == wall_patch]) and len(names) <= 3
+                    and e["what"] != "coarser"):
+                hit = wall_patch          # one body in the flow: "around the wing" is its wall
             else:
-                ask.not_here(e["id"], f"no part named '{where}' in this model (its parts: "
-                                      f"{_openings_words(names, roles)})")
+                # CFDREQ-35: an internal flow's "the bend" is no place this mesher knows - told, never guessed onto
+                # the walls (the elbow's "finer around the bend" was told applied while nothing there was finer)
+                ask.not_here(e["id"], f"I could not tell where '{where}' is: no part or opening has that name (its "
+                                      f"parts: {_openings_words(names, roles)}); {CLICK_WORDS}")
                 continue
         if size is None:
             ask.not_here(e["id"], "this mesher refines a surface; a coarser cell than the wall's is not a refinement it "
@@ -1920,11 +1953,180 @@ def cfmesh_local(ask: Ask, patches, wall_patch: str, *, max_cell: float, wall_ce
         if hit == wall_patch:
             if ask.wall_m is None:
                 wall_cell = size
-            ask.done(e["id"], f"cells of {_mm(octree_cell(max_cell, wall_cell))} on the body's walls", built_m=got)
+            ask.done(e["id"], f"cells of {_mm(octree_cell(max_cell, wall_cell))} on the body's walls", built_m=got,
+                     patches=[wall_patch])
             continue
         entries += f"    {hit} {{ cellSize {size:.6g}; }}\n"
-        ask.done(e["id"], f"cells of {_mm(got)} on {hit}", built_m=got)
+        ask.done(e["id"], f"cells of {_mm(got)} on {hit}", built_m=got, patches=[hit])
     return entries, boxes, wall_cell
+
+
+#: CFDREQ-35: what the user is told to do when the place they named is not one the product knows
+CLICK_WORDS = "click the faces on the model and send the size with them"
+#: CFDREQ-34: a picked face's refinement reaches this many of its own cells off the wall (the first cells too)
+PICKED_BAND_CELLS = 3.0
+#: CFDREQ-34: the most of the run's cell limit the picked places may take together (the price guard)
+PICKED_ROOM = 0.5
+
+
+def picked_cells(area_m2: float, cell_m: float) -> float:
+    """About how many cells a picked face's refinement adds: its band of PICKED_BAND_CELLS cells and the levels
+    stepping back out to the cells around it (about as many again)."""
+    return 2.0 * PICKED_BAND_CELLS * float(area_m2) / max(float(cell_m), 1e-30) ** 2
+
+
+def _priced(ask: Ask, area: float, cell: float, coarser) -> tuple[float, bool]:
+    """The picked place's cell, made coarser (by `coarser`) while its refinement would cost more than PICKED_ROOM of
+    the run's cell limit: (cell, whether it was coarsened)."""
+    room = PICKED_ROOM * float(ask.cell_limit(_hard()))
+    held = False
+    while area > 0 and picked_cells(area, cell) > room:
+        nxt = coarser(cell)
+        if nxt is None:
+            break
+        cell, held = nxt, True
+    return cell, held
+
+
+def _picked_words(where: str, cell: float, asked: float | None, *, halves: str, held: bool, area: float) -> str:
+    if asked is None:
+        return f"cells of {_mm(cell)} on {where} and in the first cells off it"
+    said = f"cells of {_mm(cell)} on {where} and in the first cells off it"
+    if held:
+        return (said + f": {_mm(asked)} cells there would be about {_cells(picked_cells(area, asked))} - more than "
+                       f"{int(PICKED_ROOM * 100)}% of the cells this run may build")
+    if cell < asked * 0.999:
+        return said + f" (you asked {_mm(asked)}: {halves}, and the next size up, {_mm(2.0 * cell)}, is over your size)"
+    return said
+
+
+@guarded(lambda ask, ws, **_k: [])
+def snappy_picked(ask: Ask, ws, *, base_m: float, wall_level: int, hard_max: int = 10, box=None) -> list[dict]:
+    """CFDREQ-34: a size typed with faces picked, on snappyHexMesh: each picked place's own surface (picked_<n>.stl)
+    refines the cells within PICKED_BAND_CELLS cells of it - a distance refinement, never a refinementSurface, so
+    never a patch and the layers stay the wall's. Its level is the coarsest whose cell is AT OR UNDER the size asked
+    (a size typed is a maximum: 0.62 mm for 0.5 asked would be over it, so 0.31 mm, said why), held to the hard
+    level and to the price guard (coarser, said). Returns [{name, file, level, distance_m}]."""
+    from meshpipeline.engines import cfd_picked as CP
+
+    got = CP.framed(ws, box)
+    out: list[dict] = []
+    wall_cell = base_m / 2 ** int(wall_level)
+    for e in ask.local:
+        if not e.get("faces"):
+            continue
+        r = got.get(str(e["id"])) or {}
+        where = str(e.get("where") or "the faces you picked")
+        if not r.get("file"):
+            ask.not_here(e["id"], r.get("gone") or f"{where} could not be found on this model")
+            continue
+        if e["what"] == "coarser":
+            ask.not_here(e["id"], "this mesher refines near a face; cells coarser there than the walls' are not a "
+                                  "refinement it makes")
+            continue
+        asked = float(e["mm"]) * 1e-3 if e["what"] == "size" else None
+        want = (int(math.ceil(math.log2(base_m / asked) - 1e-9)) if asked else int(wall_level) + 1)
+        lv = min(int(hard_max), max(0, want))
+        area = float(r.get("area_m2") or 0.0)
+        cell, held = _priced(ask, area, base_m / 2 ** lv, lambda c: 2.0 * c if 2.0 * c <= wall_cell * 1.0001 else None)
+        lv = int(round(math.log2(base_m / cell)))
+        if lv <= int(wall_level):
+            said = f"the walls already have cells of {_mm(wall_cell)} on {where}"
+            if asked is None or wall_cell <= asked * 1.0001:
+                ask.done(e["id"], said, built_m=wall_cell, picked=r["file"], rule=CP.RULE_BUILT)
+            else:
+                ask.nearest(e["id"], said + (f": {_mm(asked)} cells there would be more than "
+                                            f"{int(PICKED_ROOM * 100)}% of the cells this run may build" if held
+                                            else ""), built_m=wall_cell, picked=r["file"], rule=CP.RULE_BUILT)
+            continue
+        out.append({"name": r["file"], "file": f"{r['file']}.stl", "level": lv,
+                    "distance_m": PICKED_BAND_CELLS * cell})
+        said = _picked_words(where, cell, asked, halves=f"this mesher halves its {_mm(base_m)} background cell",
+                             held=held, area=area)
+        if want > hard_max or held:
+            ask.nearest(e["id"], said, built_m=cell, picked=r["file"], level=lv, rule=CP.RULE_BUILT)
+        else:
+            ask.done(e["id"], said, built_m=cell, picked=r["file"], level=lv, rule=CP.RULE_BUILT)
+    return out
+
+
+@guarded(lambda ask, ws, **_k: "")
+def cfmesh_picked(ask: Ask, ws, *, max_cell: float, wall_cell: float, floor: float, box=None) -> str:
+    """CFDREQ-34: a size typed with faces picked, on cfMesh: each picked place's own surface (picked_<n>.stl) as a
+    surfaceMeshRefinement of the size asked over PICKED_BAND_CELLS of its cells - a refinement, never a patch. The
+    octree lands on max / 2^n at or under it; held to the passage floor and the price guard (coarser, said). Returns
+    the entries' text for meshDict's surfaceMeshRefinement."""
+    from meshpipeline.engines import cfd_picked as CP
+    from meshpipeline.engines.cfmesh.cfmesh_runner import octree_cell
+
+    got = CP.framed(ws, box)
+    text = ""
+    for e in ask.local:
+        if not e.get("faces"):
+            continue
+        r = got.get(str(e["id"])) or {}
+        where = str(e.get("where") or "the faces you picked")
+        if not r.get("file"):
+            ask.not_here(e["id"], r.get("gone") or f"{where} could not be found on this model")
+            continue
+        if e["what"] == "coarser":
+            ask.not_here(e["id"], "this mesher refines near a face; cells coarser there than the walls' are not a "
+                                  "refinement it makes")
+            continue
+        asked = float(e["mm"]) * 1e-3 if e["what"] == "size" else None
+        size = asked if asked else 0.5 * wall_cell
+        floored = size < floor
+        size = max(size, floor)
+        area = float(r.get("area_m2") or 0.0)
+        cell = octree_cell(max_cell, size)
+        cell, held = _priced(ask, area, cell, lambda c: 2.0 * c if 2.0 * c <= wall_cell * 1.0001 else None)
+        if cell >= wall_cell * 0.9999:
+            said = f"the walls already have cells of {_mm(octree_cell(max_cell, wall_cell))} on {where}"
+            if asked is None or wall_cell <= asked * 1.0001:
+                ask.done(e["id"], said, built_m=wall_cell, picked=r["file"], rule=CP.RULE_BUILT)
+            else:
+                ask.nearest(e["id"], said, built_m=wall_cell, picked=r["file"], rule=CP.RULE_BUILT)
+            continue
+        text += (f'    {r["file"]} {{ surfaceFile "constant/triSurface/{r["file"]}.stl"; cellSize {cell:.6g}; '
+                 f"refinementThickness {PICKED_BAND_CELLS * cell:.6g}; }}\n")
+        said = _picked_words(where, cell, asked, halves=f"this mesher halves its {_mm(max_cell)} largest cell",
+                             held=held, area=area)
+        if floored:
+            ask.nearest(e["id"], said + f"; cells finer than {_mm(floor)} would cut the narrowest passage too fine",
+                        built_m=cell, picked=r["file"], rule=CP.RULE_BUILT)
+        elif held:
+            ask.nearest(e["id"], said, built_m=cell, picked=r["file"], rule=CP.RULE_BUILT)
+        else:
+            ask.done(e["id"], said, built_m=cell, picked=r["file"], rule=CP.RULE_BUILT)
+    return text
+
+
+def _place_row(workspace, req: Mapping, row: Mapping, p: Mapping) -> dict | None:
+    """CFDREQ-35: a size in a place, judged on the BUILT mesh there: the median wall cell on the picked face (or the
+    named patches) against the size asked - met at or under it; over it the size was not applied, said with the
+    number built. None when the place was not measured (the row then says so)."""
+    from meshpipeline.engines import cfd_picked as CP
+
+    e = next((x for x in req.get("local") or () if str(x.get("id")) == str(row["id"])), None)
+    if e is None or not (p.get("picked") or p.get("patches")):
+        return None
+    asked = float(e["mm"]) * 1e-3 if e.get("what") == "size" and e.get("mm") is not None else None
+    limit = asked if asked is not None else (float(p["built_m"]) if p.get("built_m") else None)
+    got = CP.measure(workspace, picked=p.get("picked"), patches=p.get("patches"), size_m=limit)
+    if got is None or limit is None:
+        return None
+    med, p90, nf = got["median_m"], got["p90_m"], got["n_faces"]
+    where = str(e.get("where") or "") or "there"
+    on = f"median of {nf:,} wall faces on {where}; 90% at or under {_mm(p90)}"
+    met = med <= CP.MET_SLACK * limit
+    head = f"asked {_mm(asked)}, built {_mm(med)}" if asked is not None else f"built {_mm(med)} (planned {_mm(limit)})"
+    built = str(p.get("built") or "")
+    if not met:
+        return {"applied": False, "met": False, "measured": float(f"{med * 1e3:.4g}"),
+                "delivered": f"not applied - {head} ({on}); the mesher was set for {built}" if built else
+                f"not applied - {head} ({on})"}
+    return {"applied": True, "met": True if p.get("status") == "applied" else None,
+            "measured": float(f"{med * 1e3:.4g}"), "delivered": f"{head} ({on}): {built}" if built else f"{head} ({on})"}
 
 
 # #
@@ -3241,6 +3443,13 @@ def report(workspace, quality: Mapping, engine: str) -> dict | None:
         elif field == "control:surface_level" and status in ("applied", "nearest") and (
                 lv := _level_row(workspace, req)) is not None:
             got = lv
+        elif field == "local" and status in ("applied", "nearest") and (
+                pl := _place_row(workspace, req, row, p)) is not None:
+            # CFDREQ-35: a size in a place is applied when the built mesh has it there, measured
+            got = pl
+        elif field == "local" and status in ("applied", "nearest") and (p.get("picked") or p.get("patches")):
+            got = {"applied": True, "met": None,
+                   "delivered": f"{built}; the cells there were not measured on the built mesh"}
         else:
             got = {"applied": True, "met": False if status == "nearest" else None,
                    "delivered": (f"not possible as asked - {built}" if status == "nearest" else built)

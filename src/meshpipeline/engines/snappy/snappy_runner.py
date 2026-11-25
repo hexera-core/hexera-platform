@@ -1037,6 +1037,16 @@ def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analy
         _band = PL.BAND_CELLS * float(base_actual) / 2 ** int(_plevel)
         _part_geom += f" {_pf}.stl {{ type triSurfaceMesh; name {_pf}; }}"
         _part_refine += f" {_pf} {{ mode distance; levels (({_band:.6g} {int(_plevel)})); }}"
+    # CFDREQ-34: a size typed with faces picked on the body - each picked place's own surface refines the cells
+    # within a few of its cells (a distance refinement: never a patch, the body's layers stay as planned)
+    _picked_lv: list[int] = []
+    if _ask is not None:
+        from meshpipeline.engines import cfd_requirements as _CRp
+        for _pk in _CRp.snappy_picked(_ask, ws, base_m=base_actual, wall_level=int(smax),
+                                      hard_max=_HARD_MAX_LEVEL, box=(analysis["bbox_min"], analysis["bbox_max"])):
+            _part_geom += f" {_pk['file']} {{ type triSurfaceMesh; name {_pk['name']}; }}"
+            _part_refine += f" {_pk['name']} {{ mode distance; levels (({_pk['distance_m']:.6g} {_pk['level']})); }}"
+            _picked_lv.append(int(_pk["level"]))
     # ONE ENTRY PER REGION, by the patch's real name. snappyHexMesh names a region patch after the
     # region itself, not <surface>_<region>: a pattern built on the surface name matches nothing,
     # and OpenFOAM says so in the log and then adds no layers at all - a wall-resolved case would
@@ -1049,7 +1059,7 @@ def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analy
                    else _n_for(surface_name) > 0)
     # minVol from the mesh's own finest wall cell (layer_min_vol): the feature/near-band level
     _finest = (min(ext[i] / max(div[i], 1) for i in range(3))
-               / (2 ** max(smax, flevel, near_band_level)))
+               / (2 ** max(smax, flevel, near_band_level, *_picked_lv)))
     _min_vol = layer_min_vol(_finest, n_layers=max([n_layers, *layer_counts.values()]),
                              min_thickness_rel=_min_thick)
     # THE WAKE (engines/wake_region.py). Graded boxes behind the body, along the flow, each one
@@ -1852,6 +1862,16 @@ def render_internal_case(workspace, *, names: dict, features: dict, interior_poi
                  f"name {_dr['name']}; }} ")
         thin_refine += (f"{_dr['name']} {{ mode distance; "
                         f"levels (({float(_dr['distance_m']):.6g} {_lvl})); }} ")
+    # CFDREQ-34: a size typed with faces picked on the model - each picked place's own surface (picked_<n>.stl)
+    # refines the cells within a few of its cells; a distance refinement, so never a patch and the wall's layers stay
+    _picked: list[dict] = []
+    if _ask is not None:
+        from meshpipeline.engines import cfd_requirements as _CRp
+        _picked = _CRp.snappy_picked(_ask, ws, base_m=base_actual, wall_level=int(smax), hard_max=_HARD_MAX_LEVEL,
+                                     box=(bbox_min, bbox_max))
+    for _pk in _picked:
+        geom += f"{_pk['name']} {{ type triSurfaceMesh; file \"{_pk['file']}\"; name {_pk['name']}; }} "
+        thin_refine += f"{_pk['name']} {{ mode distance; levels (({_pk['distance_m']:.6g} {_pk['level']})); }} "
     # a small port's rim must be feature-snapped at least as finely as its surface is
     # refined, or snapping re-opens the very cells the refinement just won
     feat_entries = "".join(
@@ -1885,7 +1905,7 @@ def render_internal_case(workspace, *, names: dict, features: dict, interior_poi
     # millimetres across has layer cells far below the tutorials' absolute 1e-13 m^3
     _top = max([smax, flevel, near_level, *port_lvls.values(),
                 *(min(_HARD_MAX_LEVEL, smin + int(r.get("level_bump", 1)))
-                  for r in [*_thin, *_dist])])
+                  for r in [*_thin, *_dist]), *(int(_pk["level"]) for _pk in _picked)])
     _min_vol = layer_min_vol(min(dext[i] / max(div[i], 1) for i in range(3)) / (2 ** _top),
                              n_layers=n_layers, min_thickness_rel=0.05)
     _shm = (

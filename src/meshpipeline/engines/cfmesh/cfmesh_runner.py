@@ -876,14 +876,21 @@ def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
         if 0.0 < _c < wall_cell and _pn != wall_patch:
             _port_cells[str(_pn)] = max(_c, _floor, max_cell / float(2 ** 12))
     _local = "".join(f"    {_pn} {{ cellSize {_c:.6g}; }}\n" for _pn, _c in _port_cells.items())
+    _picked = ""
     if _ask is not None:
         _local += _ask_local
+        # CFDREQ-34: a size typed with faces picked on the model - each picked place's own surface refined to it
+        _picked = CR.cfmesh_picked(_ask, ws, max_cell=max_cell, wall_cell=wall_cell, floor=_floor,
+                                   box=body_bbox if body_bbox is not None else (
+                                       (domain_min, domain_max) if domain_min is not None else None))
     dict_parts = [
         _MESHDICT_HDR,
         f'surfaceFile "{surface_file}";\n',
         f"maxCellSize {max_cell:.6g};\n",
         f"localRefinement\n{{\n    {wall_patch} {{ cellSize {wall_cell:.6g};{_thick} }}\n{_local}}}\n",
     ]
+    if _picked:
+        dict_parts.append(f"surfaceMeshRefinement\n{{\n{_picked}}}\n")
     # NARROW PASSAGES, LOCALLY. The band above is sized for the passage most of the wall bounds;
     # where a passage is narrower than that cell carries at the floor, a box refines it to 13
     # across its own narrowest point - and only there (engines/passage.narrow_passage_regions).
