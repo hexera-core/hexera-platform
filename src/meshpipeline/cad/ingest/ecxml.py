@@ -490,6 +490,33 @@ class _Reader:
                                                f"must be one of {', '.join(PLANES)}"))
         return value
 
+    #: Root elements whose SECOND copy is model content: dropping one silently loses parts and
+    #: their power, the materials they are made of, or the air box the model sits in. Those are
+    #: refused; a repeated <name> or <producer> is a note, because nothing is lost by reading
+    #: the first. MEASURED 2026-11-25: a second root <geometry> holding one 5 W copper block was
+    #: read as 57 objects (unchanged), no note, no ignored element, and the user was told "The
+    #: model's total power is 0 W: nothing in it gives off heat."
+    CONTENT_ONCE = frozenset({"geometry", "materials", "solutionDomain"})
+
+    def _repeats(self, node: Node, known, path) -> None:
+        """A second copy of a KNOWN element, which `first` would drop unread.
+
+        `_extensions` cannot see this: it counts children the schema does not name, and a
+        repeat is a child it names. Root only - that is where a dropped copy costs a whole
+        list of parts.
+        """
+        for tag in known:
+            n = len(node.all(tag))
+            if n < 2:
+                continue
+            if tag in self.CONTENT_ONCE:
+                raise EcxmlError(self._where(
+                    path, f"there are {n} <{tag}> elements where the ECXML schema allows one; "
+                          f"only the first can be read, so the rest of the model would be "
+                          f"dropped without saying so"))
+            self.notes.append(f"there are {n} <{tag}> elements where the schema allows one; "
+                              f"the first is read and the others are ignored")
+
     def _extensions(self, node: Node, known) -> None:
         """Children the schema does not name - vendor extensions where it allows them (xs:any),
         strays where it does not - counted and reported; nothing in them is read."""
@@ -513,6 +540,7 @@ class _Reader:
         objects: list[Obj] = []
         self.geometry(self.child(root, "geometry", ()), (), objects)
         self._extensions(root, ("name", "producer", "solutionDomain", "materials", "geometry"))
+        self._repeats(root, ("name", "producer", "solutionDomain", "materials", "geometry"), ())
         model = EcxmlModel(name=name, producer=producer, domain=domain, materials=materials,
                            objects=objects, notes=self.notes, ignored_elements=dict(self.ignored),
                            print_unit_m=print_limit(self.places, exponent=False),

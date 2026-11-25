@@ -960,7 +960,19 @@ def thermal_facts(view: dict, canonical) -> dict:
         # the placed parts are written in millimetres, the unit the ECXML geometry is read in
         "scale_to_m": 0.001, "unit_assumed": False,
         "title": str(view.get("title") or ""),
-        "notes": [w["text"] for w in view.get("warnings") or [] if w.get("level") == "warn"],
+        # THE READER'S OWN NOTES FIRST, then the view's warnings. Seeding these from the
+        # view alone made every note cad/ingest/ecxml writes dead on this path, and they are
+        # written for exactly the files the reader was not shown: an unlisted producer, a
+        # material defined twice, a material used and never defined - and
+        # "the heatsink lists no <parts>, so it has no blocks to build and is left out",
+        # which REMOVES A PART FROM THE MESH. MEASURED 2026-11-25: with <producer>6SigmaET
+        # </producer> the note was on model.notes and on placement.notes and the user saw
+        # neither. Every other format already does this (the `canonical.notes` extend on the
+        # CAD path); the thermal path returns before reaching it.
+        "notes": list(getattr(canonical, "notes", None) or [])
+                 + [w["text"] for w in view.get("warnings") or []
+                    if w.get("level") == "warn"
+                    and w["text"] not in (getattr(canonical, "notes", None) or [])],
     }
     facts.update(canonical.facts())
     return facts

@@ -31,6 +31,17 @@ _RUN_BASE_S, _RUN_S_PER_MCELL, _ROUND_S_PER_PART_MCELL = 30.0, 40.0, 0.75
 MAX_TREE_ROWS = 5000
 #: Names listed in one warning before the rest are counted.
 _NAMES_SHOWN = 6
+#: THE SIZE BAND AN ELECTRONICS-COOLING MODEL FALLS IN, and the only check on the size at all.
+#: ECXML gives every length in metres and the schema has no way to say otherwise - every XML
+#: attribute is discarded unread, so a `units="mm"` a tool writes changes nothing - and this
+#: format records `unit_assumed: False`, which switches OFF the unit question that catches a
+#: mis-scaled STEP. MEASURED 2026-11-25: the real chip.ecxml with every location and size
+#: multiplied by 1000, as a millimetre export would be, was read as a 70000 x 78615 x 3549 mm
+#: part and its warning list came out byte-identical to the correct file's. The band is wide
+#: on purpose: 10 m takes in a rack and a cabinet, and the error this catches is a factor of
+#: a thousand, not a factor of two. 10 um is under a single metallisation layer.
+PLAUSIBLE_MAX_MM = 10_000.0
+PLAUSIBLE_MIN_MM = 0.01
 
 _KIND_WORDS = {"solid3dBlock": "block", "printedCircuitBoard": "PCB", "enclosure": "enclosure",
                "heatsink": "heat sink", "twoResistorModel": "2R package", "solidCylinder": "cylinder",
@@ -451,6 +462,22 @@ def _warn(level: str, text: str, parts=()) -> dict:
 def _warnings(sidecar: dict, placement, tree: list[dict], detail: dict | None) -> list[dict]:
     """Plain sentences, each from a structured field - never from the build report's prose."""
     out: list[dict] = []
+    # FIRST, because if this one is right nothing else in the list is worth reading.
+    size = [float(v) for v in (_domain_block(sidecar) or {}).get("size_mm") or []]
+    big = [v for v in size if v > PLAUSIBLE_MAX_MM]
+    small = [v for v in size if 0.0 < v < PLAUSIBLE_MIN_MM]
+    if big or small:
+        worst = max(big) if big else min(small)
+        out.append(_warn("warn",
+                         f"The air box comes out {_num(worst)} mm across, which is not a size "
+                         "an electronics-cooling model has. ECXML gives every length in "
+                         "metres and has no way to say otherwise, so a file a tool exported "
+                         "in "
+                         + ("millimetres is read a thousand times too large"
+                            if big else "metres but written in millimetres is read a "
+                                        "thousand times too small")
+                         + ". Check the units the exporter wrote, because nothing in the "
+                         "file says what they are."))
     left = [r for r in tree if r.get("left_out")]
     outside = [r for r in left if "outside the solution domain" in str(r["left_out"])]
     if outside:
