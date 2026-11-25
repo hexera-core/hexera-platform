@@ -345,15 +345,17 @@ async def get_check(session_id: uuid.UUID, owner_id: str = Depends(owner_dep),
     payload["route"] = fea_check.stage_route(payload, getattr(session, "messages", None))
     if payload["route"] == fea_check.STAGE_FEA:
         # the part, its unit and size (the proposal), its bodies and the clean check - no flow form
+        # SURF-18: a file with no solid still being read as a surface waits while the check runs (`live`)
+        _live = fea_check.check_live(payload)
         payload["fea"] = await asyncio.to_thread(fea_check.fea_view, payload.get("facts"),
-                                                 getattr(session, "messages", None))
+                                                 getattr(session, "messages", None), live=_live)
         # SHSTAGE-2: A SHELL ONLY WHEN THE USER'S WORDS ASKED FOR ONE - the shell check as it stands (started now when
         # it was asked for after the naming); nothing at all for a solid, the stage from before shell existed
         from meshpipeline.application import shell_check
         _msgs = getattr(session, "messages", None)
         # SURF-6: A FILE THAT IS A SURFACE is a shell by what it is: its one line, and no mid-surface to extract
         from meshpipeline.application import surface_check
-        _shell = surface_check.view(payload.get("facts"), _msgs)
+        _shell = surface_check.view(payload.get("facts"), _msgs, live=_live)
         if _shell is None:
             try:
                 await asyncio.to_thread(shell_check.start_if_asked, str(session_id), owner_id,
@@ -825,7 +827,8 @@ async def confirm_check(session_id: uuid.UUID, body: ConfirmIn, owner_id: str = 
         else fea_check.STAGE_FEA if _fea else ""})
     if body.check_mode == fea_check.STAGE_FEA:
         facts = _stored_check.get("facts") or {}
-        blocked, _kind, way_out = fea_check.blocker(facts, session.messages)
+        _live = fea_check.check_live(_stored_check)
+        blocked, _kind, way_out = fea_check.blocker(facts, session.messages, live=_live)
         if blocked:
             # VERSION 1 MESHES ONE CLOSED SOLID AT A TIME: no guessing at how parts connect, and no
             # solid mesh of a surface - said with the way on, never a silent failure later
@@ -859,7 +862,7 @@ async def confirm_check(session_id: uuid.UUID, body: ConfirmIn, owner_id: str = 
         # form's: it has no pick), else a solid as before shell existed. The run never waits on the user after this.
         from meshpipeline.application import shell_check, surface_check
         # SURF-6: a surface file is a shell by what it is, at the thickness the user's words gave (None: not set)
-        _view = surface_check.view(facts, session.messages)
+        _view = surface_check.view(facts, session.messages, live=_live)
         if _view is None:
             try:
                 await asyncio.to_thread(shell_check.start_if_asked, str(session_id), owner_id, facts=facts,

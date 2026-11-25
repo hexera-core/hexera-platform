@@ -310,12 +310,21 @@ def warnings(facts: dict | None) -> list[str]:
     return out
 
 
-def blocker(facts: dict | None, messages=None) -> tuple[str, str, str]:
-    """(what stops version 1, its kind - "surface" | "gap" | "self_overlap" | "", the way on) for the stage
-    and the confirmation alike. Several bodies are no stop: an assembly is meshed (design 14); a body
+def check_live(stored: dict | None) -> bool:
+    """Whether the stored check is still running (pending or scouted): its FEA measurement may still come."""
+    from meshpipeline.application.geometry_check import STATUS_PENDING, STATUS_SCOUTED
+
+    return str((stored or {}).get("status") or "") in (STATUS_PENDING, STATUS_SCOUTED)
+
+
+def blocker(facts: dict | None, messages=None, *, live: bool = True) -> tuple[str, str, str]:
+    """(what stops version 1, its kind - "surface" | "gap" | "surface_reading" | "surface_unread" | "", the way on)
+    for the stage and the confirmation alike. Several bodies are no stop: an assembly is meshed (design 14); a body
     that crosses itself is (it needs CAD repair; detected only, never healed). A CAD FILE THAT IS A SURFACE
     (application/surface_check, SURF-1) is no stop either: it is meshed as a shell. `messages`: the
-    conversation, for a shell or a thickness said after the check."""
+    conversation, for a shell or a thickness said after the check. SURF-18: a CAD file with no solid whose surface
+    reading is still to come (`live`: the check is still running) waits ("surface_reading", no way out to give);
+    one whose measurement ended with no reading says what stopped it ("surface_unread") - never "coming"."""
     from meshpipeline.application import surface_check
 
     if surface_check.is_surface(facts, messages):
@@ -328,6 +337,11 @@ def blocker(facts: dict | None, messages=None) -> tuple[str, str, str]:
     # "needs CAD repair" (engines/fea_driver)
     surface = not_solid_message(facts)
     if surface:
+        if surface_check.reading_pending(facts, live=live):
+            return surface_check.PENDING_WORDS, surface_check.PENDING_KIND, ""
+        unread = surface_check.unread_why(facts, live=live)
+        if unread:
+            return surface_check.UNREAD_WORDS.format(why=unread), surface_check.UNREAD_KIND, surface_check.UNREAD_WAY_OUT
         return surface, "surface", WAY_OUT_SOLID
     return "", "", ""
 
@@ -377,27 +391,33 @@ def clean_details(said: str, clean: bool | None, found: list[str]) -> list[str]:
     return out
 
 
-def fea_view(facts: dict | None, messages=None) -> dict:
+def fea_view(facts: dict | None, messages=None, *, live: bool = True) -> dict:
     """What the FEA stage shows beside the part (the size and unit come with the proposal); for an
-    assembly also its parts, their interfaces and the connection question."""
+    assembly also its parts, their interfaces and the connection question. SURF-18: while a CAD file with no solid
+    is still being read as a surface, `waiting` says so and Proceed waits - no stop and no way out is shown."""
+    from meshpipeline.application import surface_check
+
     clean, said = clean_words(facts)
-    blocked, kind, way_out = blocker(facts, messages)
-    found = [] if blocked else warnings(facts)
+    blocked, kind, way_out = blocker(facts, messages, live=live)
+    waiting = ""
+    if kind == surface_check.PENDING_KIND:
+        waiting, blocked = blocked, ""
+    found = [] if blocked or waiting else warnings(facts)
     details = clean_details(said, clean, found)
     if found:
         said = f"{said} {' '.join(found)}".strip()
     out = {"question": QUESTION, "bodies": body_count(facts), "pieces": piece_count(facts),
            "clean": clean, "clean_summary": said, "single_part_only": blocked, "blocked_kind": kind, "way_out": way_out,
-           "can_proceed": not blocked, "warnings": found, "measure": measure_view(facts),
-           "clean_short": clean_line(facts, clean, blocked, found), "clean_details": details,
+           "can_proceed": not (blocked or waiting), "waiting": waiting, "warnings": found,
+           "measure": None if waiting else measure_view(facts),
+           "clean_short": surface_check.PENDING_SHORT if waiting else clean_line(facts, clean, blocked, found),
+           "clean_details": details,
            # THE PANEL'S TITLE: an assembly is named after its file - the first part's own name would read as the
            # whole (a bolt's name over an 11-part assembly); "" leaves the stage its own
            "title": str((facts or {}).get("file_name") or "") if (body_count(facts) or 0) > 1 else ""}
     sewn = sewn_body_count(facts)
     if sewn is not None:
         out["bodies_sewn"] = sewn
-    from meshpipeline.application import surface_check
-
     if surface_check.is_surface(facts, messages):
         # SURF-6: A SURFACE'S OPEN EDGES ARE ITS OWN - the check row says what the file is, not that it is broken;
         # and the solid measurement (a thinnest wall, hot spots to refine) is not said of a sheet: it has no wall
@@ -405,10 +425,10 @@ def fea_view(facts: dict | None, messages=None) -> dict:
         out.update(surface_check.clean_view(facts) or {})
         out["measure"] = None
     # several closed solids: an assembly, with its one question (a surface that is no solid stops first)
-    asm = None if blocked else assembly_view(facts)
+    asm = None if blocked or waiting else assembly_view(facts)
     if asm is not None:
         out["assembly"] = asm
-    plan = None if blocked else plan_view(facts)
+    plan = None if blocked or waiting else plan_view(facts)
     if plan is not None:
         out["plan"] = plan
     return out

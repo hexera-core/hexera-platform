@@ -517,8 +517,13 @@ export function followClean(root, f) {
     moved = true;
   } else if (box && !blocked) { box.remove(); moved = true; }
   else if (box && box.textContent !== blocked) { box.textContent = blocked; moved = true; }
-  if (btn && btn.textContent !== "Confirming…") btn.disabled = !!blocked;
+  // SURF-18: A FILE STILL BEING READ AS A SURFACE waits - Proceed off, the hint says why, no stop drawn
+  const waiting = f.waiting || "";
+  if (btn && btn.textContent !== "Confirming…") btn.disabled = !!blocked || !!waiting;
   if (hint && blocked) hint.textContent = f.way_out || "Upload a single part to go on.";
+  else if (hint && waiting) hint.textContent = waiting;
+  else if (hint && hint.dataset.waited) hint.textContent = "Right part, right unit?";
+  if (hint) { if (waiting) hint.dataset.waited = "1"; else delete hint.dataset.waited; }
   return moved;
 }
 
@@ -597,7 +602,7 @@ export function effectiveMeshAs(s) {
 /** The shell fold's header line: how much of the part is a shell. */
 function shellSummary(s) {
   if (!showsShell(effectiveMeshAs(s))) return "not possible · meshed solid";
-  if (s.state === "measuring") return `<span class="gc-spin" aria-hidden="true"></span> making the mid-surface…`;
+  if (s.state === "measuring") return `<span class="gc-spin" aria-hidden="true"></span> ${s.surface ? "reading the surface…" : "making the mid-surface…"}`;
   const bodies = s.bodies || [];
   const solid = (s.not_shelled || []).filter((r) => r.kind === "solid" && r.id).length;
   const open = Number(s.open_edges) > 0 ? (s.not_shelled || []).filter((r) => r.kind === "open" && r.id).length || Number(s.open_edges) : 0;
@@ -697,8 +702,8 @@ export function feaPanelHtml(f, p) {
       ${assemblyHtml(f.assembly)}
       ${planHtml(f.plan)}
       ${blocked ? `<div class="fea-blocked" role="alert">${esc(blocked)}</div>` : ""}
-      <div class="gc-actions fea-foot"><button class="gc-proceed" type="button"${blocked ? " disabled" : ""} title="${attr(f.question || "Is this your part and are the units right?")}">Yes, proceed</button>
-        <span class="gc-hint">${blocked ? esc(f.way_out || "Upload a single part to go on.") : "Right part, right unit?"}</span></div>
+      <div class="gc-actions fea-foot"><button class="gc-proceed" type="button"${blocked || f.waiting ? " disabled" : ""} title="${attr(f.question || "Is this your part and are the units right?")}">Yes, proceed</button>
+        <span class="gc-hint"${f.waiting && !blocked ? ' data-waited="1"' : ""}>${blocked ? esc(f.way_out || "Upload a single part to go on.") : f.waiting ? esc(f.waiting) : "Right part, right unit?"}</span></div>
     </div>`;
 }
 
@@ -795,7 +800,7 @@ export function bindFeaPanel(root, f, p, { confirm, done }) {
   const btn = form.querySelector(".gc-proceed"), hint = form.querySelector(".gc-hint");
   if (!btn) return;
   btn.onclick = async () => {
-    if (f.single_part_only) return;
+    if (f.single_part_only || btn.disabled) return;
     if (unitChoiceNeeded(p)) {
       hint.textContent = unitChoiceHint(p);
       const pick = form.querySelector(".gc-pick"); if (pick) pick.focus();

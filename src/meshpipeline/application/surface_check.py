@@ -38,6 +38,23 @@ GAP_WORDS = ("This file has no solid, and its faces nearly close into one but le
              "neither as a solid nor as a sheet.")
 GAP_WAY_OUT = ("To go on, close the gaps in your CAD and upload it again. If it is a surface you want meshed as a "
                'shell, say so (for example "shell, 1.2 mm thick").')
+#: SURF-18: A CAD FILE WITH NO SOLID BEFORE ITS SURFACE READING IS MADE (the reading comes with the FEA measurement,
+#: minutes after the scout): the stage waits, it does not say the file cannot be meshed...
+READING_RULE = "SURF-18"
+PENDING_KIND = "surface_reading"
+PENDING_WORDS = ("This file has no closed solid, so it is being read as a surface to mesh as a shell. This can take "
+                 "a few minutes; Proceed opens when it is done.")
+PENDING_SHORT = "No closed solid - reading it as a surface"
+PENDING_LABEL = "No closed solid: it is being read as a surface, to mesh as a shell."
+PENDING_MEASURING = "This can take a few minutes."
+#: ... and when the measurement ended with no reading, what stopped it and the way on
+UNREAD_KIND = "surface_unread"
+UNREAD_WORDS = "This file has no closed solid, and it could not be read as a surface to mesh as a shell: {why}."
+UNREAD_WAY_OUT = ("To go on, upload it again to read it once more, or upload the part as one closed solid (a STEP from "
+                  "your CAD). If you meant a fluid flowing around or through it (CFD), upload it again and say so.")
+UNREAD_STOPPED = "the check stopped before the surface was read"
+UNREAD_FACES = "its faces could not be read as one surface"
+_BREP_FORMATS = ("step", "stp", "iges", "igs", "brep")
 
 
 def summarise(reading: dict | None) -> dict | None:
@@ -75,6 +92,41 @@ def reading_of(facts: dict | None) -> dict | None:
     return got if isinstance(got, dict) else None
 
 
+def cad_without_solid(facts: dict | None) -> bool:
+    """A B-rep file (STEP, IGES, BREP) in which the scout found no solid: the files the surface reading is made for."""
+    f = facts or {}
+    v = f.get("validity") or {}
+    solids = f.get("solids")
+    return (str(f.get("source_format") or "").lower() in _BREP_FORMATS and v.get("kind") != "triangles"
+            and isinstance(solids, (int, float)) and not isinstance(solids, bool) and int(solids) == 0)
+
+
+def reading_pending(facts: dict | None, *, live: bool = True) -> bool:
+    """SURF-18: a CAD file with no solid whose FEA measurement (and with it the surface reading) is still to come:
+    no measurement record yet, and the check still running (`live`: its status pending or scouted). A file whose
+    faces the clean check found closed is a solid (MESH-1) and waits for nothing."""
+    from meshpipeline.application.fea_check import has_solid
+    from meshpipeline.cad.fea_measure import FACT_KEY
+
+    return (live and cad_without_solid(facts) and not has_solid(facts)
+            and not isinstance((facts or {}).get(FACT_KEY), dict))
+
+
+def unread_why(facts: dict | None, *, live: bool = True) -> str:
+    """SURF-18: why a CAD file with no solid has no surface reading once its measurement is over, in plain words; ""
+    when it has one, is still to get one, or is no such file."""
+    from meshpipeline.cad.fea_measure import FACT_KEY
+
+    if not cad_without_solid(facts) or reading_of(facts) is not None or reading_pending(facts, live=live):
+        return ""
+    rec = (facts or {}).get(FACT_KEY)
+    if not isinstance(rec, dict):
+        return UNREAD_STOPPED
+    if not rec.get("measured"):
+        return str(rec.get("reason") or "").strip().rstrip(".") or UNREAD_STOPPED
+    return UNREAD_FACES
+
+
 def _user_texts(messages) -> list[str]:
     return [str(m.get("content") or "") for m in messages or []
             if isinstance(m, dict) and m.get("role") == "user"]
@@ -106,20 +158,23 @@ def is_gap(facts: dict | None, messages=None) -> bool:
     return r is not None and r.get("kind") == GAP and not said_shell(facts, messages)
 
 
-def view(facts: dict | None, messages=None) -> dict | None:
+def view(facts: dict | None, messages=None, *, live: bool = True) -> dict | None:
     """SURF-6: the stage's shell fold for a surface file (the shape application/shell_check.shell_view gives, so the
-    stage draws it with what it has): its ONE line, and the thickness read from the user's words. None for any other
-    file."""
-    if not is_surface(facts, messages):
+    stage draws it with what it has): its ONE line, and the thickness read from the user's words. SURF-18: while the
+    reading of a CAD file with no solid is still to come, the fold says it is being read (state "measuring"), so it
+    never says "you can proceed now" beside a Proceed that waits. None for any other file."""
+    pending = reading_pending(facts, live=live)
+    if not pending and not is_surface(facts, messages):
         return None
     from meshpipeline.engines.surface_run import NO_THICKNESS_YET, line
 
     r = reading_of(facts) or {}
     got = thickness_of(messages)
-    said = line(got.mm)
-    return {"question": "Mesh as", "state": "ready", "said": pm.MESH_SHELL, "said_words": "",
-            "mesh_as": pm.MESH_SHELL, "label": said, "reason": "" if got.given else NO_THICKNESS_YET,
-            "measuring_words": "",
+    said = PENDING_LABEL if pending else line(got.mm)
+    return {"question": "Mesh as", "state": "measuring" if pending else "ready", "said": pm.MESH_SHELL,
+            "said_words": "", "mesh_as": pm.MESH_SHELL, "label": said,
+            "reason": "" if got.given or pending else NO_THICKNESS_YET,
+            "measuring_words": PENDING_MEASURING if pending else "",
             "surface": True, "by": "surface file", "settle_why": said,
             "thickness_mm": got.mm, "thickness_quote": got.quote, "sheets": r.get("sheets"),
             "bodies": [], "not_shelled": [], "open_edges": 0, "open_at_mm": [], "overlay": False}
@@ -163,5 +218,7 @@ def confirmed_thickness(session_id: str) -> float | None:
     return t if st.MIN_MM <= t <= st.MAX_MM else None
 
 
-__all__ = ["CLEAN_SHORT", "DECLARED_CLEAN", "GAP", "GAP_WAY_OUT", "GAP_WORDS", "KEY", "SURFACE", "clean_view", "confirmed_thickness",
-           "is_gap", "is_surface", "measure", "reading_of", "said_shell", "summarise", "thickness_of", "view"]
+__all__ = ["CLEAN_SHORT", "DECLARED_CLEAN", "GAP", "GAP_WAY_OUT", "GAP_WORDS", "KEY", "PENDING_KIND", "PENDING_SHORT",
+           "PENDING_WORDS", "READING_RULE", "SURFACE", "UNREAD_KIND", "UNREAD_WAY_OUT", "UNREAD_WORDS",
+           "cad_without_solid", "clean_view", "confirmed_thickness", "is_gap", "is_surface", "measure", "reading_of",
+           "reading_pending", "said_shell", "summarise", "thickness_of", "unread_why", "view"]

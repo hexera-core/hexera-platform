@@ -117,10 +117,12 @@ def test_a_closed_skin_with_a_gap_is_still_stopped_with_both_ways_on():
 
 
 def test_any_other_file_sees_the_stage_it_saw_before():
-    # no reading (a measurement from before this, a triangle file): the old stop and words, unchanged
+    # no reading (a measurement from before this): still a stop, but SURF-18 - what stopped it, never "coming"
+    # (a triangle file keeps the old words: test_surface_reading_pending)
     facts = _facts(None)
     blocked, kind, way_out = fea_check.blocker(facts, _user("FEA, 1 mm thick"))
-    assert kind == "surface" and blocked.startswith("This is a surface, not a closed solid") and way_out == fea_check.WAY_OUT_SOLID
+    assert kind == "surface_unread" and blocked.startswith("This file has no closed solid, and it could not be read")
+    assert way_out == surface_check.UNREAD_WAY_OUT and "coming" not in blocked
     assert surface_check.view(facts, _user("shell")) is None
     # faces that close: read as the solid they bound, as before (MESH-1)
     closed = {**_facts({**SHEET, "kind": "closed"}), "validity": {"clean": True, "kind": "brep", "reasons": []}}

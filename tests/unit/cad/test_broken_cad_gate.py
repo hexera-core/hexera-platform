@@ -53,10 +53,11 @@ def test_flagged_files_warn_and_are_not_stopped(tmp_path):
 
 
 def test_a_surface_is_still_stopped(tmp_path):
-    """The one stop left before meshing: no closed solid can be read (here, an open sheet)."""
+    """The one stop left before meshing: no closed solid can be read (here, an open sheet). The gate makes no
+    surface reading (SURF-1 is the stage's), so the sheet stops as a file with no solid and no reading (SURF-18)."""
     from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace
     from OCP.gp import gp_Pln
 
     sheet = BRepBuilderAPI_MakeFace(gp_Pln(), 0.0, 10.0, 0.0, 10.0).Face()
     r = _gate().check_file(str(fx.write_step(sheet, tmp_path / "sheet.step")))
-    assert r["stop"] == "surface"
+    assert r["stop"] == "surface_unread"
