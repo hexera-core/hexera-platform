@@ -358,10 +358,26 @@ async def _settle(inbound: InboundMessage, db, *, gate: dict, locked, messages: 
         # THE PLAN STEP IS A CONVERSATION (NOTE-18): a plain "go" in any words starts the run; a requirement is kept
         # and answered with what the checklist took; a go asked back is asked once; the rest is the intake's
         from meshpipeline.agents.intake import consent as _consent
+        from meshpipeline.agents.intake import plan_go as PG
         from meshpipeline.agents.intake import plan_talk as PT
-        talk = PT.INTAKE if _ours(inbound.content, messages) else PT.reading(
-            inbound.content, carries=bool(inbound.attachments or inbound.faces), asked=PT.asked_last(messages[:-1]),
-            consent=_consent.reading(inbound.content, named=(engine,) if engine else ()), engine=engine)
+        if _ours(inbound.content, messages):
+            talk = PT.INTAKE
+        else:
+            # "GO" READ ROBUSTLY: code decides the safe cases; the intake's model is asked one small question for
+            # the rest (3 s at most), the phrase reading standing in when it does not answer
+            last_line = next((str(m.get("content") or "") for m in reversed(messages[:-1])
+                              if isinstance(m, dict) and m.get("role") == "assistant"), "")
+            got = await PG.read(
+                inbound.content, carries=bool(inbound.attachments or inbound.faces),
+                asked=PT.asked_last(messages[:-1]),
+                consent=_consent.reading(inbound.content, named=(engine,) if engine else ()), engine=engine,
+                last_line=last_line, user_id=inbound.owner_id, session_id=str(inbound.session_id))
+            talk = got.reading
+            logger.info("intake message: plan step read as %s (%s, by %s: %s) - session=%s", talk, PT.RULE, got.by,
+                        got.why, inbound.session_id)
+            if got.by == PG.BY_MODEL and talk != PT.GO and intent == ap.APPROVE_INTENT:
+                # the model read it as no start: the yes-words reader may not start it either
+                intent = ap.QUESTION_INTENT
         if talk in (PT.NOTE, PT.BOTH) and uc.stated_unit(inbound.content) is not None:
             # A UNIT NAMED BESIDE A REQUEST ("the file is in metres, and make the mesh finer"): the turn answers
             # both, as it did before the plan step became a conversation - a requirement's reply says only what
