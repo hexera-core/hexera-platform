@@ -438,6 +438,7 @@ class Ask:
         self.req = dict(req)
         self.engine = str(engine)
         self.rows: dict[str, dict] = {}
+        self.picked_cells: float = 0.0       # CFDREQ-36: cells cfmesh_picked's refinements add to the plan
         s = self.req.get("sizes") or {}
         self.global_m = _m(s.get("global_mm"))
         self.min_m = _m(s.get("min_edge_mm"))
@@ -1967,6 +1968,16 @@ CLICK_WORDS = "click the faces on the model and send the size with them"
 PICKED_BAND_CELLS = 3.0
 #: CFDREQ-36: a size on a picked face is built as asked whenever the whole mesh then fits the run's cell limit
 RULE_PICKED_PRICE = "CFDREQ-36"
+#: CFDREQ-36: the octree cells cfMesh's surfaceMeshRefinement makes per wall face it adds, its refinementThickness
+#: PICKED_BAND_CELLS cells (measured on the kept elbow case at 4.957 mm under a 9.91 mm wall: 219,559 octree cells
+#: against 85,092 without the entry - 134 k for 17.8 k added faces; the boxes the surface cuts and the step down to
+#: the wall's band are in it). snappy's distance band is PICKED_BAND_CELLS (19 a face with 16 layers, measured)
+CFMESH_PICKED_BAND_CELLS = 7.5
+#: CFDREQ-36: cfMesh halves its largest cell while a box is larger than the size asked, and a size written exactly
+#: at a level (max / 2^n, to the dictionary's six digits) is read as over it - one level finer, 8x the band's cells
+#: (the elbow: 1,089,248 octree cells for cellSize 0.0049573 under maxCellSize 0.0198292; 219,559 for
+#: additionalRefinementLevels 2, the same level). The size written is nudged this much over the level priced
+CFMESH_LEVEL_NUDGE = 1.001
 
 
 def picked_faces_added(area_m2: float, cell_m: float, wall_cell_m: float) -> float:
@@ -1976,13 +1987,14 @@ def picked_faces_added(area_m2: float, cell_m: float, wall_cell_m: float) -> flo
 
 def picked_estimate(*, asked_m: float, wall_cell_m: float, layers: int, limit: float,
                     area_m2: float | None = None, share: float | None = None, model_area_m2: float | None = None,
-                    plan_cells: float | None = None) -> dict:
+                    plan_cells: float | None = None, band_cells: float = PICKED_BAND_CELLS) -> dict:
     """CFDREQ-36, pure (the intake may call it at the plan step to warn before the run): the cells a size of
     `asked_m` on a picked face adds, and whether the whole mesh then fits `limit` (the count the user typed, else the
     product's own limit for the run).
 
     The face is `area_m2`, or `share` of a model of `model_area_m2`. Every wall face the refinement adds over the
-    plan's `wall_cell_m` carries the plan's `layers` and about PICKED_BAND_CELLS cells of the band off it (the pipe
+    plan's `wall_cell_m` carries the plan's `layers` and about `band_cells` cells of the band off it (snappy:
+    PICKED_BAND_CELLS; cfMesh's octree: CFMESH_PICKED_BAND_CELLS, measured) (the pipe
     elbow, measured on snappy with 16 layers: 4.34 M cells for 231 k added faces at 1.53 mm, 0.88 M for 46 k at
     3.08 mm - 19 a face both times). The plan's own count is `plan_cells` when the caller has it, else the model's
     wall priced the same way (its faces at the plan's wall cell, each with its layers and band) - the share is what
@@ -1999,7 +2011,7 @@ def picked_estimate(*, asked_m: float, wall_cell_m: float, layers: int, limit: f
     if area is None and s is not None and model_area_m2:
         area = s * float(model_area_m2)
     a = max(0.0, float(area or 0.0))
-    per_face = max(0, int(layers)) + PICKED_BAND_CELLS
+    per_face = max(0, int(layers)) + float(band_cells)
     added = picked_faces_added(a, float(asked_m), float(wall_cell_m)) * per_face
     if plan_cells is None:
         whole = (a / min(1.0, s)) if s is not None else (float(model_area_m2) if model_area_m2 else a)
@@ -2010,7 +2022,8 @@ def picked_estimate(*, asked_m: float, wall_cell_m: float, layers: int, limit: f
 
 
 def _priced(ask: Ask, area: float, cell: float, coarser, *, wall_cell: float, share: float | None = None,
-            layers: int = 0, plan_cells: float | None = None) -> tuple[float, dict | None]:
+            layers: int = 0, plan_cells: float | None = None,
+            band_cells: float = PICKED_BAND_CELLS) -> tuple[float, dict | None]:
     """CFDREQ-36: the picked place's cell - as asked when the whole mesh then fits the run's cell limit, else made
     coarser (by `coarser`) to the finest that fits. (cell, the estimate at the size asked when it was held coarser,
     else None)."""
@@ -2018,7 +2031,7 @@ def _priced(ask: Ask, area: float, cell: float, coarser, *, wall_cell: float, sh
 
     def est(c: float) -> dict:
         return picked_estimate(asked_m=c, wall_cell_m=wall_cell, layers=layers, limit=limit, area_m2=area,
-                               share=share, plan_cells=plan_cells)
+                               share=share, plan_cells=plan_cells, band_cells=band_cells)
     first = est(cell)
     if area <= 0 or first["fits"]:
         return cell, None
@@ -2143,7 +2156,8 @@ def cfmesh_picked(ask: Ask, ws, *, max_cell: float, wall_cell: float, floor: flo
         cell = octree_cell(max_cell, size)
         share = r.get("model_share")
         cell, need = _priced(ask, area, cell, lambda c: 2.0 * c if 2.0 * c <= wall_cell * 1.0001 else None,
-                             wall_cell=wall_cell, share=share, layers=layers, plan_cells=plan_cells)
+                             wall_cell=wall_cell, share=share, layers=layers, plan_cells=plan_cells,
+                             band_cells=CFMESH_PICKED_BAND_CELLS)
         rule = RULE_PICKED_PRICE if need is not None else CP.RULE_BUILT
         facts = {"needs_cells": int(need["total"]), "cell_limit": int(need["limit"])} if need is not None else {}
         if cell >= wall_cell * 0.9999:
@@ -2154,10 +2168,13 @@ def cfmesh_picked(ask: Ask, ws, *, max_cell: float, wall_cell: float, floor: flo
                 ask.nearest(e["id"], said + (_held_why(ask, asked, wall_cell, need) if need is not None else ""),
                             built_m=wall_cell, picked=r["file"], rule=rule, **facts)
             continue
-        plan_cells = picked_estimate(asked_m=cell, wall_cell_m=wall_cell, layers=layers, limit=0.0, area_m2=area,
-                                     share=share, plan_cells=plan_cells)["total"]
-        text += (f'    {r["file"]} {{ surfaceFile "constant/triSurface/{r["file"]}.stl"; cellSize {cell:.6g}; '
-                 f"refinementThickness {PICKED_BAND_CELLS * cell:.6g}; }}\n")
+        got_e = picked_estimate(asked_m=cell, wall_cell_m=wall_cell, layers=layers, limit=0.0, area_m2=area,
+                                share=share, plan_cells=plan_cells, band_cells=CFMESH_PICKED_BAND_CELLS)
+        plan_cells = got_e["total"]
+        # the refinement is in the plan the size brake measures the run against (render_cfmesh_case adds it)
+        ask.picked_cells = float(getattr(ask, "picked_cells", 0.0) or 0.0) + got_e["cells_added"]
+        text += (f'    {r["file"]} {{ surfaceFile "constant/triSurface/{r["file"]}.stl"; '
+                 f"cellSize {cell * CFMESH_LEVEL_NUDGE:.6g}; refinementThickness {PICKED_BAND_CELLS * cell:.6g}; }}\n")
         said = _picked_words(ask, where, cell, asked, halves=f"this mesher halves its {_mm(max_cell)} largest cell",
                              need=need)
         if floored:

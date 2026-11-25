@@ -1202,6 +1202,16 @@ def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
     # cells runs on a VM that carries them
     machine_for_plan(ws, plan, user_cells=int(cell_budget or 0) if _ask is not None and (
         _ask.user_budget() or _ask.floor is not None) else 0)
+    # CFDREQ-36: a picked place's refinement (cfd_requirements.cfmesh_picked) is in the cells the run is planned
+    # at, so the size brake measures the octree against what the entry really makes
+    _pk_cells = float(getattr(_ask, "picked_cells", 0.0) or 0.0) if _ask is not None else 0.0
+    if _pk_cells > 0.0:
+        if _planned:
+            _planned = int(float(_planned) + _pk_cells)
+        if plan is not None and plan.get("estimated_cells"):
+            plan["estimated_cells"] = int(float(plan["estimated_cells"]) + _pk_cells)
+            _secs = plan["estimated_cells"] / CELLS_PER_SECOND
+            plan.update(estimated_seconds=round(_secs, 1), run_cap_s=run_cap_for(_secs), fits=fits_one_run(_secs))
     if plan is not None:
         _plan_path.write_text(json.dumps({k: v for k, v in plan.items() if k != "wall_cell"}))
     else:

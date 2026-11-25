@@ -128,7 +128,9 @@ def test_cfmesh_builds_the_picked_face_as_a_surface_refinement(tmp_path):
     ask = _ask(tmp_path)
     text = CR.cfmesh_picked(ask, tmp_path, max_cell=0.008, wall_cell=0.002, floor=0.0,
                             box=([0, 0, 0], [0.004, 0.004, 0.001]))
-    assert 'surfaceFile "constant/triSurface/picked_1.stl"; cellSize 0.0005;' in text
+    # nudged over the level so cfMesh stops at it (CFDREQ-36: exactly at a level it goes one finer)
+    assert 'surfaceFile "constant/triSurface/picked_1.stl"; cellSize 0.0005005;' in text
+    assert ask.picked_cells > 0.0
     assert ask.rows["r1"]["status"] == "applied"
 
 
@@ -265,7 +267,12 @@ def test_a_count_typed_too_small_is_named_as_theirs(tmp_path, limit_8m):
 def test_cfmesh_builds_the_finest_picked_size_inside_the_limit(tmp_path, limit_8m):
     ask, box = _priced_ask(tmp_path, 583_561.0, 2_536_387.0, 0.5)
     text = CR.cfmesh_picked(ask, tmp_path, max_cell=0.03966, wall_cell=0.0049575, floor=0.0, box=box, layers=4)
-    assert "cellSize 0.0012393" in text                       # 0.31 / 0.62 mm are past 8 M; 1.24 mm (~3.4 M) fits
+    # 0.31 / 0.62 mm are past 8 M with the octree band cfMesh really makes; 1.24 mm fits (written nudged)
+    assert "cellSize 0.00124061;" in text
+    est = CR.picked_estimate(asked_m=0.03966 / 32, wall_cell_m=0.0049575, layers=4, limit=8e6,
+                             area_m2=0.583561, share=583_561.0 / 3_119_948.0,
+                             band_cells=CR.CFMESH_PICKED_BAND_CELLS)
+    assert ask.picked_cells == pytest.approx(est["cells_added"], rel=1e-3)
     assert ask.rows["r1"]["rule"] == "CFDREQ-36" and ask.rows["r1"]["status"] == "nearest"
 
 
@@ -298,3 +305,14 @@ def test_picked_estimate_takes_the_share_and_prices_the_plan_from_it():
     assert by_area["fits"] is (by_area["total"] <= 1e6)
     roomy = CR.picked_estimate(asked_m=1e-3, wall_cell_m=4e-3, layers=5, limit=1e9, share=0.25, model_area_m2=1.0)
     assert roomy["fits"] is True and roomy["cells_added"] == by_area["cells_added"]
+
+
+def test_cfmesh_plan_carries_the_picked_octree_band_the_brake_measures():
+    # the kept elbow case: picked 0.58 m2 at 4.957 mm under a 9.91 mm wall, 3 layers. Octree measured with the
+    # entry at that level 219,559 cells, 85,092 without it; the plan (131,773 without the face) must hold the
+    # with-entry octree inside the size brake's margin
+    from meshpipeline.engines.size_brake import SIZE_BRAKE_MARGIN
+    e = CR.picked_estimate(asked_m=0.0049573, wall_cell_m=0.0099146, layers=3, limit=8e6, area_m2=0.5836,
+                           plan_cells=131_773, band_cells=CR.CFMESH_PICKED_BAND_CELLS)
+    assert 219_559 <= SIZE_BRAKE_MARGIN * e["total"]
+    assert e["cells_added"] >= 219_559 - 85_092
