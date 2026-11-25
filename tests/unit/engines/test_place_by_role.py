@@ -78,7 +78,8 @@ def test_not_found_lists_every_opening_with_its_role():
     _levels(ask, NAMES, {"p_1": "inlet", "p_2": "outlet"})
     row = _row(ask)
     assert row["status"] == "not_applied"
-    assert "no opening named 'the side port' in this model (its openings: p_1 (inlet), p_2 (outlet))" in row["built"]
+    # CFDREQ-35's wording (rulebook 108): the openings with their roles, and what to do
+    assert "I could not tell where 'the side port' is: no opening has that name (its openings: p_1 (inlet), "            "p_2 (outlet)); " + CR.CLICK_WORDS in row["built"]
 
 
 def test_the_roles_are_read_from_the_port_declaration(tmp_path):
