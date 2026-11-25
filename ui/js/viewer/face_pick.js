@@ -13,18 +13,22 @@ import { themeRgb } from "./toolbar.js";
 
 /* WHAT THE USER SEES. Nothing new until a face is clicked; then the face in the product's one accent and one chip,
  * "Face 12 · round Ø15 mm ✕", under the chat box (or the notes box when that was the last one used). Up to 20 faces.
- * A click that lands on no face does nothing. The chips go when the message or note is sent - the light goes with
- * them. Only once the stage is settled (after Proceed): before that a click on the part means what it always did. */
+ * A click that lands on no face does nothing. The chips go when the message or note is sent; the face stays marked
+ * in a quieter colour (it has a requirement now) until its requirement is gone or the run starts, and the next
+ * faces picked are lit in the accent beside it. Only once the stage is settled (after Proceed): before that a click
+ * on the part means what it always did. */
 
 export const MAX_FACES = 20;
 export const TOO_MANY_FACES = `${MAX_FACES} faces is the most.`;
 export const CLICK_PX = 6;                       // a press that moves further than this turned the model: no pick
 const ACCENT = [0.886, 0.173, 0.173];            // the stage's own selection colour, when the theme gives none
+const KEPT = [0.627, 0.392, 0.361];              // a sent face's quiet mark (--pick-kept), when the theme gives none
 
-let stage = null;                                // {sessionId, box}: the settled stage the faces are picked on
+let stage = null;                                // {sessionId, box, skin}: the settled stage the faces are picked on
 const views = new Set();                         // {ren, rw, skin}: where the picked faces are drawn; skin() = the
                                                  // view's own surfaces (vtkPolyData), the light is made of them
 const lit = new Map();                           // chip key -> {id, box, hl: {pts, tris}, actors: Map(view -> [actor])}
+const kept = new Map();                          // face id -> the same, for a face already sent: drawn quiet
 let asking = false, unwatch = null;
 
 /** A press and its release are one click (not a turn of the model). */
@@ -32,8 +36,50 @@ export function isClick(down, up) {
   return !!down && Math.hypot(up[0] - down[0], up[1] - down[1]) <= CLICK_PX;
 }
 
-/** The stage the faces are picked on (geometry_stage's scene, CFD and FEA): picking is on once its box is settled. */
-export function bindStage(sessionId, box) { stage = { sessionId, box }; }
+/** The stage the faces are picked on (geometry_stage's scene, CFD and FEA): picking is on once its box is settled.
+ *  `skin()`: the stage's surfaces (vtkPolyData, metres) - the frame every other view is put in (toStageFrame). */
+export function bindStage(sessionId, box, skin) { stage = { sessionId, box, skin: skin || null }; }
+
+/* ONE FRAME FOR EVERY VIEW. The stage draws the skin in metres, and the server names a face by a point in them. The
+ * parts model laid over the stage is drawn from the measured surface, which is in MILLIMETRES on a CAD file (metres
+ * on a flow STL): a click on it sent a point a thousand times too far out, so no face was found, and a face's light
+ * (metres) matched none of its triangles. So a view drawn in another frame says its box (`view.bounds()`), and the
+ * click and the light are carried between the two: the scale and shift that lay its box on the skin's box, the
+ * scale a whole power of ten when it is one (mm -> m). Read when used, so a view drawn before the stage (a reload)
+ * is matched once the stage is there. */
+function frameOf(view) {
+  let skins = null, b = null;
+  try { skins = stage && stage.skin ? stage.skin() : null; b = view && view.bounds ? view.bounds() : null; } catch { return null; }
+  if (!skins || !skins.length || !b) return null;
+  const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+  for (const sp of skins) {
+    const sb = sp.getBounds();
+    for (let k = 0; k < 3; k++) { lo[k] = Math.min(lo[k], sb[2 * k]); hi[k] = Math.max(hi[k], sb[2 * k + 1]); }
+  }
+  const dS = Math.hypot(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]), dP = Math.hypot(b[1] - b[0], b[3] - b[2], b[5] - b[4]);
+  if (!(dS > 0) || !(dP > 0) || !isFinite(dS) || !isFinite(dP)) return null;
+  let s = dS / dP;
+  const p10 = Math.round(Math.log10(s));
+  if (Math.abs(Math.log10(s) - p10) < 0.02) s = 10 ** p10;
+  const o = [0, 1, 2].map((k) => (lo[k] + hi[k]) / 2 - s * (b[2 * k] + b[2 * k + 1]) / 2);
+  if (Math.hypot(o[0], o[1], o[2]) < 1e-3 * dS) o.fill(0);
+  return s === 1 && o.every((v) => v === 0) ? null : { s, o };
+}
+
+/** A hit on `view` ({point, normal} in the view's own frame) in the stage skin's frame (metres). */
+export function toStage(view, hit) {
+  const f = hit && frameOf(view);
+  return f ? { point: hit.point.map((v, k) => f.s * v + f.o[k]), normal: hit.normal } : hit;
+}
+
+// the server's face (metres) in a view's own frame
+function inView(view, pts) {
+  const f = frameOf(view);
+  if (!f) return pts;
+  const out = new Float32Array(pts.length);
+  for (let i = 0; i < pts.length; i++) out[i] = (pts[i] - f.o[i % 3]) / f.s;
+  return out;
+}
 
 /** A click on the part is a face pick now: the stage is drawn and settled. */
 export function ready() {
@@ -43,10 +89,14 @@ export function ready() {
 /** A view the picked faces are drawn in. Returns its detach (call it before the view is disposed). */
 export function attachView(view) {
   views.add(view);
+  // the sent faces first, then the ones picked now: drawn later at the same depth, a face picked again wins
+  for (const f of kept.values()) drawIn(f, view, KEPT_TOKEN);
   for (const f of lit.values()) drawIn(f, view);
-  if (lit.size) view.rw.render();
+  if (lit.size || kept.size) view.rw.render();
   return () => {
-    for (const f of lit.values()) { const a = f.actors.get(view); if (a) { for (const x of a) view.ren.removeActor(x); f.actors.delete(view); } }
+    for (const f of [...kept.values(), ...lit.values()]) {
+      const a = f.actors.get(view); if (a) { for (const x of a) view.ren.removeActor(x); f.actors.delete(view); }
+    }
     views.delete(view);
   };
 }
@@ -217,18 +267,26 @@ function surfaceOf(part, hl) {
   return pd;
 }
 
-function drawIn(entry, view) {
+const ACCENT_TOKEN = ["--accent", ACCENT], KEPT_TOKEN = ["--pick-kept", KEPT];
+
+function drawIn(entry, view, colour = ACCENT_TOKEN) {
   if (!entry.hl || entry.actors.has(view)) return;
+  const hl = { pts: inView(view, entry.hl.pts), tris: entry.hl.tris };
   let parts = null;
-  try { parts = view.skin ? onSkin(view.skin(), entry.hl.pts, entry.hl.tris) : null; }
+  try { parts = view.skin ? onSkin(view.skin(), hl.pts, hl.tris) : null; }
   catch (e) { console.warn("face pick: the skin could not be read", e && e.message); }
   // no skin to match (or nothing on it matched): the server's own triangles, as they are
-  const actors = (parts || [null]).map((part) => lightActor(surfaceOf(part, entry.hl)));
+  const actors = (parts || [null]).map((part) => lightActor(surfaceOf(part, hl), colour));
   for (const a of actors) view.ren.addActor(a);
   entry.actors.set(view, actors);
 }
 
-function lightActor(pd) {
+function tint(actor, colour) {
+  const c = themeRgb(colour[0], colour[1]);
+  actor.getProperty().setColor(c[0], c[1], c[2]);
+}
+
+function lightActor(pd, colour = ACCENT_TOKEN) {
   const mapper = vtk.Rendering.Core.vtkMapper.newInstance(); mapper.setInputData(pd);
   // the skin's own triangles, drawn after the skin, at its very depth sample for sample: the depth test (vtk's
   // "less or equal") lets the light win everywhere on the face and nowhere else. No depth offset at all: vtk makes
@@ -238,39 +296,68 @@ function lightActor(pd) {
   if (mapper.setRelativeCoincidentTopologyPolygonOffsetParameters) mapper.setRelativeCoincidentTopologyPolygonOffsetParameters(-2, 0);
   if (mapper.setResolveCoincidentTopology) mapper.setResolveCoincidentTopology(1);
   const actor = vtk.Rendering.Core.vtkActor.newInstance(); actor.setMapper(mapper); actor.setPickable(false);
-  const pr = actor.getProperty(), c = themeRgb("--accent", ACCENT);
+  tint(actor, colour);
   // mostly unlit: the accent holds at 80% from every angle (a wall turned from the light is still clearly the
   // picked red, never a dim maroon), with a little lit shading on top so the shape still reads
-  pr.setColor(c[0], c[1], c[2]); pr.setAmbient(0.8); pr.setDiffuse(0.25); pr.setSpecular(0); pr.setOpacity(1);  return actor;
+  const pr = actor.getProperty();
+  pr.setAmbient(0.8); pr.setDiffuse(0.25); pr.setSpecular(0); pr.setOpacity(1);  return actor;
+}
+
+function remove(e) {
+  for (const [view, actors] of e.actors) { for (const a of actors) view.ren.removeActor(a); view.rw.render(); }
 }
 
 function unlight(key) {
   const e = lit.get(key);
   if (!e) return;
   lit.delete(key);
-  for (const [view, actors] of e.actors) { for (const a of actors) view.ren.removeActor(a); view.rw.render(); }
+  remove(e);
   if (!lit.size && unwatch) { unwatch(); unwatch = null; }
 }
 
-/* A send clears the chip row without a word to the chips (what was sent stays sent): the light follows the row.
- * A refused send keeps the row, so the face stays lit. */
+/* SENT: the face keeps its light, in the quiet colour - the same triangles, only their colour changes. A face sent
+ * again keeps one mark. */
+function keep(key) {
+  const e = lit.get(key);
+  if (!e) return;
+  lit.delete(key);
+  const was = kept.get(e.id);
+  if (was) remove(was);
+  kept.set(e.id, e);
+  for (const [view, actors] of e.actors) { for (const a of actors) tint(a, KEPT_TOKEN); view.rw.render(); }
+  if (!lit.size && unwatch) { unwatch(); unwatch = null; }
+}
+
+/* A send takes the chips it carried off the row without a word to them (what was sent stays sent): their faces stay
+ * marked. A chip's x or a second click drops its face (unlight, before the row changes). A refused send keeps the
+ * row, so the face stays lit. */
 function keepWatch() {
   if (unwatch) return;
   unwatch = chips.listen((box, items) => {
-    for (const [key, e] of [...lit]) if (e.box === box && !items.some((i) => i.key === key)) unlight(key);
+    for (const [key, e] of [...lit]) if (e.box === box && !items.some((i) => i.key === key)) keep(key);
   });
+}
+
+/** The faces the requirements hold now (ids, from the plan's list once its reading is done): a mark whose
+ *  requirement is gone goes with it. */
+export function keepMarks(ids) {
+  const on = new Set(ids || []);
+  for (const [id, e] of [...kept]) if (!on.has(id)) { kept.delete(id); remove(e); }
 }
 
 /** The faces picked now (ids), in the order picked. */
 export function picked() { return [...lit.values()].map((e) => e.id); }
 
-/** The intake is over (the run started, or another part was drawn): every picked face and its chip goes. */
+/** The intake is over (the run started, or another part was drawn): every picked face and its chip goes, and every
+ *  mark of a sent one. */
 export function resetFacePick() {
   for (const box of ["chat", "notes"]) chips.items(box).filter((i) => i.kind === "face").forEach((i) => chips.remove(box, i.key));
   for (const key of [...lit.keys()]) unlight(key);
+  keepMarks([]);
   stage = null; views.clear();
 }
 
-/* support/debug hook - the browser tier reads the picked faces and their light */
+/* support/debug hook - the browser tier reads the picked faces, their light and the sent faces' marks */
 window._vdbg = window._vdbg || {};
-window._vdbg.facepick = { picked, ready, lit: () => [...lit.values()].reduce((n, e) => n + e.actors.size, 0), pickAt };
+window._vdbg.facepick = { picked, ready, lit: () => [...lit.values()].reduce((n, e) => n + e.actors.size, 0), pickAt,
+  marked: () => [...kept.keys()] };

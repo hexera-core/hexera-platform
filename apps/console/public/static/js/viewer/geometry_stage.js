@@ -883,7 +883,7 @@ function initScene(sessionId, box, surf, p) {
   }, true);
   /* THE FACE PICK (viewer/face_pick.js): once the stage is settled, a plain click on the part names the face there
      and lights it; adding an opening and measuring keep the click while they are on */
-  bindStage(sessionId, box);
+  bindStage(sessionId, box, () => skins.map((s) => s.pd));
   const detachPick = attachView({ ren, rw, skin: () => skins.map((s) => s.pd) });
   let toolAtDown = false;              // read at the press: the click that ends adding an opening is not a pick
   host.addEventListener("pointerdown", () => { toolAtDown = addMode || measuring; }, true);

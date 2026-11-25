@@ -7,7 +7,7 @@
 // Boundaries: it decides nothing about the notes: the colours, the lit row and the tags arrive through `set`;
 // a hover or a click on a part is handed back through the callbacks it was given. It fetches nothing; once the
 // stage is settled and no row is open, a click is a face pick (viewer/face_pick.js), which does.
-import { attachView, hitOn, isClick, pickAt, rayThrough, ready as facePickReady } from "./face_pick.js";
+import { attachView, hitOn, isClick, pickAt, rayThrough, ready as facePickReady, toStage } from "./face_pick.js";
 import { clickIndex } from "./open_ends.js";
 import { b64f32, b64u8, loadVtk } from "./scene/vtk_load.js";
 import { mountCanvas } from "./scene/canvas.js";
@@ -365,14 +365,17 @@ export async function mountPartsView(host, payload, opts = {}) {
     if (hovered) { hovered = null; if (opts.onHover) opts.onHover(null); }
   });
   // THE FACE PICK: on the settled stage, with no row open, a click names the face under it (the picked faces are
-  // lit here too); with a row open a click picks a part for it, as before
-  const detachPick = attachView({ ren, rw, skin: () => [pd] });
+  // lit here too); with a row open a click picks a part for it, as before. This model is drawn from the measured
+  // surface (millimetres on a CAD file), the faces are named on the stage's skin (metres): `bounds` lets face_pick
+  // carry the click and the light between the two
+  const pickView = { ren, rw, skin: () => [pd], bounds: () => bs };
+  const detachPick = attachView(pickView);
   let clicks = null;
   host.addEventListener("pointerup", (e) => {
     if (!st.picking && facePickReady() && isClick(down, [e.clientX, e.clientY])) {
       down = null;
       if (!clicks) clicks = clickIndex([{ pts, polys }], []);
-      pickAt(hitOn(clicks, rayThrough(host, ren, apiRW, cam, e.clientX, e.clientY)));
+      pickAt(toStage(pickView, hitOn(clicks, rayThrough(host, ren, apiRW, cam, e.clientX, e.clientY))));
       return;
     }
     if (!down || Math.hypot(e.clientX - down[0], e.clientY - down[1]) > 5) { down = null; return; }

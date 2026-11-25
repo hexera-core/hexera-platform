@@ -101,11 +101,13 @@ export function remove(name, key) {
   draw(name);
 }
 
-/** Empty the row (after a send). `silent`: the chips' onRemove is not called - what was sent stays sent. */
-export function clear(name, { silent = true } = {}) {
+/** Empty the row (after a send). `silent`: the chips' onRemove is not called - what was sent stays sent. `keys`: only
+ *  these chips go (the ones the send carried; a face picked while the reply was on its way stays for the next one). */
+export function clear(name, { silent = true, keys = null } = {}) {
   const b = box(name);
-  const gone = b.items;
-  b.items = [];
+  const only = keys ? new Set(keys) : null;
+  const gone = only ? b.items.filter((i) => only.has(i.key)) : b.items;
+  b.items = only ? b.items.filter((i) => !only.has(i.key)) : [];
   if (!silent) gone.forEach((it) => it.onRemove && it.onRemove(it));
   draw(name);
 }

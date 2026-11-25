@@ -62,6 +62,7 @@
   --accent-display:#e0302f;      /* accent type at display sizes */
   --accent-line:rgba(232,64,61,.55);     /* a focus ring's softer form, the divider under the pointer */
   --accent-ink:#fff6ee;          /* the ONLY safe text colour on --accent */
+  --pick-kept:#a0645c;           /* a face already sent with a requirement, on the model: the accent, quieted */
 
   /* the wash under a selected row or an armed control: stone, so a red wash always means failure */
   --selected:rgba(175,174,162,.1);

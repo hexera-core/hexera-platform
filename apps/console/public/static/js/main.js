@@ -35,6 +35,7 @@ import { offerReview, openParked } from "./review/review.js";
 import { openGeometryStage } from "./viewer/geometry_stage.js";
 import { dropPartsHost, endIntake, partsHost } from "./viewer/intake_view.js";
 import { mountPartsView } from "./viewer/parts_view.js";
+import { keepMarks } from "./viewer/face_pick.js";
 import { savedUp } from "./viewer/view_controls.js";
 import { openViewer } from "./viewer/viewer.js";
 import { dropMeshPartial, showMeshPartial } from "./viewer/mesh_partial.js";
@@ -235,6 +236,8 @@ const briefParts = {
   drop: (el) => dropPartsHost(el),
   // Finalize notes: the parts the words name are read now
   finalize: () => finalizePartMatches(getState.sessionId()),
+  // the faces the requirements hold: the sent faces' marks on the model follow them
+  faces: (ids) => keepMarks(ids),
 };
 
 /* THE CONVERSATION IN THE ADDRESS: an upload's session is named in the URL (?session=<id>) until a run takes the

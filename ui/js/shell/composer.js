@@ -312,6 +312,14 @@ export async function watchGeometryCheck(sessionId) {
       deps.checkProgress(null, { offline: true, retry: rowRetry });
     }
     if (d && d.confirmed) {
+      // A RELOAD AT THE PLAN STEP: the check was answered before this page was opened - the part is drawn again,
+      // settled, so it is beside the plan and its faces can be picked (without it the parts model alone was drawn,
+      // and a click on it could only turn it)
+      if (!stage && !stageFailed && d.skin && (d.thermal || d.route)) {
+        stageKind = kindOf(d);
+        stage = _stage = await deps.geometryCheck(sessionId, d, confirmFn, retryFn);
+        if (stage === null) stageFailed = true;
+      }
       // answered, on the stage or the card, whatever the naming did afterwards
       // the part stays on the stage, settled, beside the rest of the intake (viewer/intake_view.js)
       _checkState = "done"; _stageOpen = false; releaseHold(); if (stage) (stage.settle || stage.release)();
@@ -464,6 +472,8 @@ async function sendText(txt, { again = false, extra = null } = {}) {
   const sessionId = getState.sessionId();
   const carries = !!(extra && (extra.attachments.length || extra.faces.length));
   if ((!txt && !carries) || !sessionId) return;
+  // the chips this message carries (chips.payload's own rule): only they go once it is in
+  const carried = carries ? chips.items("chat").filter((i) => !i.pending && i.value != null).map((i) => i.key) : [];
   clearNewRunOffer();
   inp.value = ""; autoResize(inp);
   // the user's bubble shows what they attached, as the conversation will show it after a reload
@@ -479,8 +489,9 @@ async function sendText(txt, { again = false, extra = null } = {}) {
     const d = await sendMessage(sessionId, txt, extra || {}).then(
       (r) => { if (waiting && waiting.remove && !(r && r.reply_later)) waiting.remove(); return r; },
       (err) => { if (waiting && waiting.remove) waiting.remove(); throw err; });
-    // the chips go only once the message is in: a refused send keeps the pictures, files and faces
-    if (carries) { chips.clear("chat"); sayUnder("chat", ""); }
+    // the chips go only once the message is in: a refused send keeps the pictures, files and faces - and a face
+    // picked while "Reading…" stood stays under the box for the next message
+    if (carries) { chips.clear("chat", { keys: carried }); sayUnder("chat", ""); }
     if (!startsRun(d) && !d.reply_later) deps.chat("assistant", d.reply);
     deps.choices(d.choices || [], sendText);
     deps.brief(d.brief);

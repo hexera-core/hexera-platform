@@ -123,7 +123,17 @@ let partsEl = null;   // the parts model's host inside the held box, while the n
 
 /** The geometry stage opened as the intake's viewer: `release` gives the workbench back and stops its scene. */
 export function holdIntake(box, release) {
-  if (held && held.box !== box) endIntake();
+  if (held && held.box !== box) {
+    // THE PART DRAWN AFTER THE PARTS MODEL (a reload at the plan step draws the plan's list before the check is read
+    // again): the parts model moves onto the part's viewer and its own box goes - the picked faces and their marks
+    // stay. Any other viewer before this one ends the intake's.
+    if (held.box.dataset.own === "1" && partsEl && partsEl.isConnected) {
+      const own = held;
+      held = null;
+      box.appendChild(partsEl); box.classList.add("iv-parts-on");
+      try { own.release(); } catch (e) { console.warn("intake viewer: release failed", e); }
+    } else endIntake();
+  }
   held = { box, release };
   splitOn();
 }
