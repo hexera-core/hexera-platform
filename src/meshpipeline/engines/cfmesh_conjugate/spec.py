@@ -95,6 +95,60 @@ def _region_names(manifest) -> list[str]:
     return sorted(dict.fromkeys(names))
 
 
+def _cuts_that_can_be_shown(m) -> list[str]:
+    """The drawn cuts whose producer did not refuse every frame it drew for them.
+
+    A CUT IS NAMED AS AN OBLIGATION ONLY IF ITS OWN PICTURES CAN DISCHARGE IT, and that is a
+    different question from whether its pictures are worth publishing.
+
+    `inspection_regions` carries every cut that was drawn, the refused ones included, and that is
+    deliberate: "publishing the picture WITH shows_structure: false is strictly stronger than
+    hiding it - the region is still not discharged, and the reviewer gets the picture and the
+    figure that refused it" (native.py). Naming all of them HERE is the part that does not follow.
+    An `exact_ids` obligation demands every id be PRODUCED, and `render_adapter` will not offer a
+    region with "no prepared frame a cell is countable in" - so a refused cut became an obligation
+    nothing could ever discharge, and the review ended with no verdict on a mesh that had passed
+    every gate.
+
+    MEASURED on job 110daca9's own 279,281,786-cell plate, through this engine's own `_review_aids`
+    with its re-aiming on. Of the three cuts it planned, the y-normal `through_the_plate` holds the
+    array - 39 repeats - and the x- and z-normal cuts do not, after TWENTY placements each:
+
+        across_the_flow    normal x   zoom structure False, 0 repeats   (20 places tried)
+        through_the_plate  normal y   zoom structure True, 39 repeats   (5 places tried)
+        along_the_flow     normal z   zoom structure False, 1 repeat    (20 places tried)
+
+    That is the PART and not the engine. The passages are prismatic along y, so a plane cut along
+    them shows slots rather than a periodic array, and no placement of an x- or z-normal plane can
+    show one. `_render_cuts` reported `rendered: 6, usable: 1`; the manifest promised three.
+
+    THE PRODUCER'S OWN VERDICT IS THE TEST, AND ONLY AS A VETO. `shows_structure` is the same
+    figure `_render_cuts` counts `usable` by, and `review_session` already treats the claim as
+    "a claim from the producer may veto and may not grant" - so a cut the producer refused
+    certainly cannot be produced, which is the whole of what this has to decide. A cut it did NOT
+    refuse may still be refused by the home side's own measurement of its own copy of the PNG;
+    that stays where it is, and this does not try to predict it.
+
+    A REGION WITH NO FRAMES AT ALL is the older shape - geometry-derived slices with no pictures
+    beside them (`manifest._inspection_regions`) - and is named exactly as it always was. Nothing
+    has refused those, and `_regions_published` only publishes them when there is a volume at
+    home to cut them from.
+    """
+    out: list[str] = []
+    for r in (m or {}).get("inspection_regions") or []:
+        if not isinstance(r, dict) or not r.get("name"):
+            continue
+        # ONLY A MEASURED False VETOES. A frame that carries no content block has refused
+        # nothing - it was never measured - and dropping its cut would silently stop naming
+        # the frames an older mesher wrote, which carry windows and no measurement at all.
+        # The claim may veto and may not grant, so the test is on the frames that SPOKE.
+        spoke = [f.get("content") or {} for f in (r.get("frames") or []) if isinstance(f, dict)]
+        spoke = [c for c in spoke if "shows_structure" in c]
+        if not spoke or any(c.get("shows_structure") for c in spoke):
+            out.append(str(r["name"]))
+    return out
+
+
 def _target_obligations(manifest, engine_params, purpose):
     from meshpipeline.contracts.evidence_ledger import (
         PATCH_INSPECTION_FLOOR,
@@ -132,12 +186,13 @@ def _target_obligations(manifest, engine_params, purpose):
                                 provenance="a renderable boundary (no per-region rows in the "
                                            "manifest to name)")]
 
-    names = [r.get("name") for r in (m.get("inspection_regions") or [])
-             if isinstance(r, dict) and r.get("name")]
+    # THE CUTS THAT CAN BE SHOWN, not every cut that was drawn - see `_cuts_that_can_be_shown`
+    # for the measurement and for why the refused ones still travel with their pictures.
+    names = _cuts_that_can_be_shown(m)
     if names:
         obs.append(TargetObligation(
             kind=TargetKind.REGION, exact_ids=tuple(f"region:{n}" for n in names),
-            provenance="the cuts a cooled solid is read through"))
+            provenance="the cuts a cooled solid is read through that hold its passages"))
     else:
         obs.append(TargetObligation(kind=TargetKind.REGION, min_count=1,
                                     provenance="the coolant and the metal around it"))
