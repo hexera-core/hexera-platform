@@ -118,6 +118,68 @@ def test_a_stuck_face_is_stopped_by_the_watchdog_long_before_the_larger_budget(t
     assert applied["quality"]["clock"]["limit_s"] > 50.0
 
 
+_CONE_ROOF_STREAM = (
+    # (cen_s0195's gmsh output, cut down: the big curved face 7 meshes in seconds, Blossom cannot pair it, the last
+    # surface is a small transfinite one; then gmsh is done and our own clean-up and pairing of the whole mesh runs
+    # silent - 278 s on the test VM - with surface 68's line the last one read)
+    b"Info    : Meshing 2D...\n"
+    b"Info    : [ 10%] Meshing surface 7 (Cone, Frontal-Delaunay)\n"
+    b"Info    : [ 10%] Blossom: 31629 internal 1200 closed\n"
+    b"Info    : [ 80%] Meshing surface 67 (Transfinite)\n"
+    b"Info    : [100%] Meshing surface 68 (Transfinite)\n"
+    b"Info    : Done meshing 2D (Wall 28.1s, CPU 28.0s)\n"
+    b"Info    : 58930 nodes 71187 elements\n")
+
+
+def test_the_silent_work_after_gmshs_2d_mesh_drops_no_face(tmp_path, monkeypatch):
+    # SHMESH-21f (forked child, real clock): the plan is priced past the floor; gmsh meshes every face and says it is
+    # done, then the child works on for 4 s with no line (the whole mesh's clean-up). That wait is no face's: the last
+    # surface read (68, a small face) is NOT stopped, left out and the part meshed again - one child, no trip
+    def timed(*_a, **_k):
+        sa._reprice(planned=60_000.0)
+        sa._watch_tags({7: 0, 67: 0, 68: 0}, [{"centroid": [1.0, 2.0, 3.0], "area": 5.0}], {7: 40.0, 67: 1.0, 68: 1.0})
+        os.write(1, _CONE_ROOF_STREAM)
+        time.sleep(4.0)
+        return _mesh(), _applied()
+
+    monkeypatch.setattr(sa, "_mesh_shell_timed", timed)
+    monkeypatch.setattr(sa, "MESH_DEADLINE_S", 2.0)
+    monkeypatch.setattr(sa, "PRICE_FACTOR", 1.0)
+    monkeypatch.setattr(sa, "FACE_HELD_FLOOR_S", 1.0)
+    monkeypatch.setattr(sa, "FACE_WATCH_POLL", 0.2)
+    monkeypatch.delenv(sa.SHELL_END_ENV, raising=False)
+    monkeypatch.delenv(sa.SHELL_CAP_ENV, raising=False)
+    _m, applied = sa.mesh_shell(str(tmp_path / "x.brep"), {}, requirements={})
+    assert "face_watch" not in applied["quality"] and not sa._FACE_FATE["out"] and not sa._FACE_FATE["level"]
+    assert applied["quality"]["clock"]["limit_s"] > 50.0
+
+
+def test_gmshs_done_line_ends_the_face_and_a_new_surface_starts_one(tmp_path):
+    # SHMESH-21f: read from the stream, no face is on after "Done meshing 2D" (the last one counts as done); the next
+    # pass's first surface line is current again, so a face stuck in a later pass is still timed
+    (tmp_path / "gmsh.out").write_bytes(_CONE_ROOF_STREAM)
+    seen: dict = {}
+    assert sa._watch_read(tmp_path, seen) is None and 68 in seen["done"] and 7 in seen["done"]
+    with open(tmp_path / "gmsh.out", "ab") as fh:
+        fh.write(b"Info    : Meshing 2D...\nInfo    : [  0%] Meshing surface 9 (Plane, Frontal-Delaunay)\n")
+    tag, held = sa._watch_read(tmp_path, seen)
+    assert tag == 9 and held < 1.0
+
+
+def test_a_big_face_is_priced_at_this_runs_own_measured_rate(tmp_path, monkeypatch):
+    # SHMESH-21f: cen_s0195's first whole mesh took 481.6 s for a 28,408-element plan (59 planned elements a second,
+    # against the book's 600): a face of 15,000 planned elements is inside its price at 700 s (3 x 15,000 / 59 = 763 s)
+    (tmp_path / "face_planned.json").write_text(json.dumps({"7": 15_000.0, "68": 2.0}))
+    monkeypatch.setattr(sa, "_CLOCK", {**sa._CLOCK, "t0": 0.0, "base": 900.0, "allowed": 1444.8,
+                                       "planned": 28_408, "first_s": 481.6, "rate_seen": None})
+    assert not sa._face_stuck(tmp_path, 7, 700.0) and sa._face_stuck(tmp_path, 7, 800.0)
+    # a small face keeps the floor: a face truly stuck is still stopped at 300 s
+    assert not sa._face_stuck(tmp_path, 68, 299.0) and sa._face_stuck(tmp_path, 68, 301.0)
+    # a rate measured faster than the book's never shortens a face's price
+    monkeypatch.setattr(sa, "_CLOCK", {**sa._CLOCK, "planned": 28_408, "first_s": 1.0, "rate_seen": 5000.0})
+    assert sa._face_rate() == sa.MESH_RATE
+
+
 def test_a_face_is_stuck_only_past_its_own_price_and_only_under_a_stretched_limit(tmp_path, monkeypatch):
     # SHMESH-21f: held past max(300 s, 3 x its planned elements at 1,000 a second); under today's 900 s nothing new
     # (the mechanics at a book rate of 1,000 a second; the book rate itself is the first test's)

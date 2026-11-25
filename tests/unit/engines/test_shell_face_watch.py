@@ -101,15 +101,21 @@ def test_a_face_gmsh_holds_goes_down_its_ladder_then_is_left_out_and_said(tmp_pa
     chosen: list = []
 
     def one_face(d, seen):
-        # (only one face is "held" - the largest under a fifth of the part: the same face every pass)
+        # (only one face is "held" - the largest under a fifth of the part: the same face every pass - whenever gmsh
+        # is seen on it in this read: SHMESH-21f, rulebook 85, leaves no face current once gmsh's 2D mesh is done, so
+        # a small sheet's face is not left "current" through the silent work after it)
+        before = set(seen.get("done") or ())
         got = real_read(d, seen)
-        if got is None:
+        on = (set(seen.get("done") or ()) - before) | ({got[0]} if got is not None else set())
+        try:
+            rows = json.loads((Path(d) / "tags.json").read_text())
+        except (OSError, ValueError):
             return None
-        rows = json.loads((Path(d) / "tags.json").read_text())
         total = sum(v[1] for v in rows.values())
         if not chosen:
             chosen.append(rows[max((t for t in rows if rows[t][1] < 0.2 * total), key=lambda t: rows[t][1])][1])
-        return got if str(got[0]) in rows and abs(rows[str(got[0])][1] - chosen[0]) < 1e-6 * chosen[0] else None
+        held = [t for t in on if str(t) in rows and abs(rows[str(t)][1] - chosen[0]) < 1e-6 * chosen[0]]
+        return (held[0], 1.0) if held else None
 
     monkeypatch.setattr(SA, "_watch_read", one_face)
     rec, applied = _run(tmp_path / "w", sheet)
