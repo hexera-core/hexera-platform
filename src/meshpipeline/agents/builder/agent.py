@@ -69,6 +69,21 @@ _advisory_block = attempt_mod.advisory_block
 _authored_digest = noop_mod.authored_digest
 
 
+def _hold_for_handback(workspace, state) -> None:
+    """CFDREQ-28: the hand-back time for this attempt's native runs - the run's anchored deadline (never the one
+    progress moved on: a mesh is already in hand) less contracts/native_time.HANDBACK_RESERVE_S - when an earlier
+    attempt left a sound mesh the run can deliver; removed otherwise. Never raises."""
+    from meshpipeline.contracts import native_time
+    try:
+        from meshpipeline.engines import resolution_policy as _rp
+        deadline = state.get("pipeline_deadline_epoch")
+        kept = bool(deadline) and _rp.deliverable_sound(state) is not None
+        native_time.hold_for_handback(
+            workspace, float(deadline) - native_time.HANDBACK_RESERVE_S if kept else None)
+    except Exception:  # noqa: BLE001 - a hold never stops an attempt
+        logger.debug("builder: hand-back hold not written", exc_info=True)
+
+
 async def node_builder(state: PipelineState) -> dict:
     mode = state.get("builder_mode", "initial")
     job_id = state["job_id"]
@@ -87,6 +102,9 @@ async def node_builder(state: PipelineState) -> dict:
     _publish = execution_publisher(job_id, agent="builder")
 
     attempt = attempt_mod.prepare(state, job_id=job_id, mode=mode)
+    # A KEPT MESH IS HANDED BACK INSIDE THE RUN'S OWN TIME (CFDREQ-28): when an earlier attempt left a sound mesh, this
+    # attempt's native runs end by the run's anchored deadline less the hand-back reserve (contracts/native_time)
+    _hold_for_handback(attempt.workspace, state)
     from meshpipeline.contracts.progress_clock import native_seconds
     budget = budget_mod.settle(carried_epoch=state.get("builder_deadline_epoch", 0.0),
                                pipeline_deadline_epoch=state.get("pipeline_deadline_epoch"),

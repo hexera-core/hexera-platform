@@ -1386,8 +1386,10 @@ def _near_misses(caveats) -> int:
     (engines/resolution_policy: fewer cells across the narrowest gap than the floor, more cells
     than one job is sized for) are not requirement near-misses: the narrowest gap is its own
     production limit (passage_cells_across), and a mesh's size is not a fault."""
-    from meshpipeline.engines.resolution_policy import NOTE_KINDS
-    return sum(1 for c in caveats or () if (c or {}).get("kind") not in NOTE_KINDS)
+    # ...nor is a refusal whose measure is already a row of the verdict (CFDREQ-28's layer stack is the layer row):
+    # one shortfall, one missed row - the same count the engine choice reads (resolution_policy.near_misses)
+    from meshpipeline.engines.resolution_policy import near_misses
+    return near_misses(caveats)
 
 
 def measured_verdict(outcome: RunOutcome) -> dict | None:

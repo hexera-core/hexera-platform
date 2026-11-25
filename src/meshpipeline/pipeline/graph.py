@@ -370,6 +370,14 @@ def route_after_executor(
                 return "node_classifier"
             logger.info("route_after_executor: no rung after the switch (%s) - job_id=%s", why,
                         state.get("job_id"))
+        if not state.get("user_dispute") and _rp.engine_choice(state) is not None:
+            # THE BETTER OF TWO ENGINES' MESHES (CFDREQ-28): a gate moved the run on and both engines built a
+            # sound mesh - the run ends on the better by the product's own measured verdict (the first on a
+            # tie), and the one not chosen is said on the result
+            logger.warning("route_after_executor: sound meshes from two engines → node_deliver_sound, the better "
+                           "by the measured verdict (%s) - job_id=%s", _rp.ENGINE_BETTER_OF_TWO,
+                           state.get("job_id"))
+            return "node_deliver_sound"
         if caveats and _rp.better_earlier_sound(state) is not None:
             # THE BEST SOUND MESH IS DELIVERED (LAD-cfd-3): this attempt's rung came out with
             # fewer cells across the narrowest gap than an earlier sound mesh of the run
@@ -389,6 +397,15 @@ def route_after_executor(
     # coarser plan, no other engine. The same attempt is replayed once; a second trip ends the run
     # as ran out of time.
     if guard_trip_of(state):
+        from meshpipeline.engines import resolution_policy as _rp
+        if not state.get("user_dispute") and _rp.deliverable_sound(state) is not None:
+            # A KEPT MESH IS HANDED BACK WHEN THE NEXT ATTEMPT RUNS OUT OF TIME (CFDREQ-28): a replay would spend
+            # the same time again with a mesh already in hand (abc 00025560: cfMesh ran into the wall clock and
+            # the kept snappyHexMesh mesh was never delivered)
+            logger.warning("route_after_executor: a guard clock stopped the attempt and the run holds a kept "
+                           "sound mesh → node_deliver_sound (%s) - job_id=%s", _rp.ENGINE_BETTER_OF_TWO,
+                           state.get("job_id"))
+            return "node_deliver_sound"
         if _after_guard_trip(state) == "replay":
             return "node_guard_replay"
         logger.warning("route_after_executor: a guard clock stopped the attempt again after its "
@@ -516,6 +533,10 @@ async def node_deliver_sound(state: PipelineState) -> dict:
                 (f"attempt {state.get('retry_count')} did not pass the automatic checks, and "
                  f"attempt {best.get('attempt')} built a sound mesh")),
         "short_of": [str(c.get("kind")) for c in best.get("requirement_caveats") or []]}
+    _choice = _rp.engine_choice(state)
+    if _choice is not None:
+        # CFDREQ-28: the mesh of the other engine that was not chosen, and why, in one plain line
+        ladder["delivered_from"].update(why=_choice["line"], rule=_choice["rule"])
     try:
         from meshpipeline.contracts import decision_record as dr
         dr.cite(str(state.get("job_id") or ""), stage="resolution_ladder", decided="delivered sound",

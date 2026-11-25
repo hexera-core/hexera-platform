@@ -3915,8 +3915,15 @@ def wall_function_jump(workspace, quality: Mapping | None) -> dict | None:
             "first_m": first}
 
 
-#: CFDREQ-28: the share of the wall the planned stack must stand on - the layer row's own bar (_layers_row)
-STACK_KEPT_PCT = 80.0
+def _verdict_layer_bar() -> float:
+    from meshpipeline.engines.verdict_limits import PRODUCTION_LIMITS
+    return float(next(lim.limit for lim in PRODUCTION_LIMITS if lim.key == "layer_coverage_pct"))
+
+
+#: CFDREQ-28: the share of the wall the planned stack must stand on - THE VERDICT'S OWN layer row (engines/
+#: verdict_limits, `layer_coverage_pct`), read from it so the gate and the verdict can never hold two bars: a mesh
+#: the verdict passes on its layers is never refused by the gate
+STACK_KEPT_PCT = _verdict_layer_bar()
 
 
 def stack_lost(workspace, quality: Mapping | None) -> dict | None:
@@ -3989,7 +3996,7 @@ def _layers_row(req: Mapping, q: Mapping, built: str) -> dict:
     if isinstance(in_dict, (int, float)) and not isinstance(in_dict, bool) and in_dict < asked:
         return {"applied": True, "met": False, "delivered": f"{said}; {int(in_dict)} were built"}
     if isinstance(cover, (int, float)) and not isinstance(cover, bool):
-        return {"applied": True, "met": bool(cover >= 80.0), "measured": float(cover),
+        return {"applied": True, "met": bool(cover >= STACK_KEPT_PCT), "measured": float(cover),
                 "delivered": f"{said}; {MR._g(cover)}% of the wall has them"}
     return {"applied": True, "met": None, "delivered": said}
 
