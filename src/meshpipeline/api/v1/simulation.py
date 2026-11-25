@@ -195,7 +195,7 @@ def served_review(final_result: dict | None, review: dict) -> dict:
     return {**review, "verdict": verdict}
 
 
-def _failed_concerns(review: dict, engine: str) -> list[str]:
+def _failed_concerns(review: dict, engine: str, purpose: str = "") -> list[str]:
     findings = review.get("axis_findings") or []
     if isinstance(findings, list):
         failed = [str(f.get("axis_key", "")) for f in findings
@@ -205,8 +205,18 @@ def _failed_concerns(review: dict, engine: str) -> list[str]:
     if not failed:
         return []
     try:
-        from meshpipeline.engines.registry import get_spec
-        axes = {a.name: a for a in get_spec(engine).review_rubric}
+        # THE RUBRIC THE REVIEW ACTUALLY RAN, which is the engine's axes UNION the purpose's.
+        # `spec.review_rubric` is the engine's four; a conjugate job is judged on seven, and
+        # the three the purpose owns were looked up in a map that could not hold them. Every
+        # one of them has a `concern` declared (purpose_review_axes), so the fallback below
+        # fired on a sentence that existed: job cba7ac69 failed `near_interface_resolution`
+        # and this said "The reviewer found a problem it could not put in words here" while
+        # the same page showed "The mesh is too coarse where the regions meet to resolve
+        # transfer across them" from the terminal record.
+        # An absent or unknown purpose composes to the engine's axes alone, which is what
+        # this did before.
+        from meshpipeline.engines.quality_criteria import compose_review_rubric
+        axes = {a.name: a for a in compose_review_rubric(engine, purpose or "")}
     except Exception:  # noqa: BLE001
         axes = {}
     out = []
@@ -382,7 +392,8 @@ async def get_job(job_id: uuid.UUID, owner_id: str = Depends(owner_dep),
             reviewer_verdict=_review.get("verdict"),
             # the reviewer model's own words, shown on the result card: its math markup made plain
             reviewer_reasoning=engineering_text.plain(_review.get("reasoning", "")),
-            reviewer_findings=_failed_concerns(_review, _engine),
+            reviewer_findings=_failed_concerns(_review, _engine,
+                                               str((_fr_dict or {}).get("purpose") or "")),
             final_message=_final_message,
             final_result=_fr_dict,
             delivery_manifest=_manifest,
