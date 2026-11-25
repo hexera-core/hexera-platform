@@ -1,0 +1,2176 @@
+[
+{
+"sha256": "2a387cc52f65bb0e5e0d3ecdf849cbe3aeec5214b9037c852860d1a8f1c45fd6",
+"name": "abc/0054_00540309_4ef8a7619ffd2eb17e6eb519_step_000.step",
+"split": "dev_v2",
+"label_fail": [
+[
+"gmsh_prod",
+"other"
+]
+],
+"all_fail": [
+[
+"gmsh_prod",
+"other"
+]
+]
+},
+{
+"sha256": "ca3ee58ee0a6cfab09802a18c2df7882b16f8bd4c453e757bc9aab5001caf5ed",
+"name": "00551787/00551787_cf931dcb8717801dea5fd095_step_000.step",
+"split": "dev_v2",
+"label_fail": [
+[
+"netgen_occ",
+"step_unreadable"
+]
+],
+"all_fail": [
+[
+"netgen_occ",
+"step_unreadable"
+]
+]
+},
+{
+"sha256": "c483e15bddb0527410ab2adc83d263ab74a468dcd30539871139817da21b9c3d",
+"name": "00615057/00615057_1355e20b21640d942232cd85_step_000.step",
+"split": "dev_v2",
+"label_fail": [
+[
+"netgen_occ",
+"step_unreadable"
+]
+],
+"all_fail": [
+[
+"netgen_occ",
+"step_unreadable"
+]
+]
+},
+{
+"sha256": "e9f6abaf7d4d26b04697d86250959d048585df30dc6f6bf34f8059066bfab1e1",
+"name": "00576061/00576061_58b6fdf8dbdd800f7e712b44_step_000.step",
+"split": "dev_v2",
+"label_fail": [
+[
+"netgen_occ",
+"step_unreadable"
+]
+],
+"all_fail": [
+[
+"netgen_occ",
+"step_unreadable"
+]
+]
+},
+{
+"sha256": "84148b671b4f24e919b89c549d14b1553da786794c9852c1b5b11f4c5d174a0a",
+"name": "00521046/00521046_589e2cfbdd79ff0fc41309a8_step_018.step",
+"split": "dev_v2",
+"label_fail": [
+[
+"gmsh_prod",
+"other"
+]
+],
+"all_fail": [
+[
+"gmsh_prod",
+"other"
+]
+]
+},
+{
+"sha256": "d92ecb192f7f489868823afca0c34d272864d74f77e3b1dbd14d3fdf575ea8f2",
+"name": "00606468/00606468_58c2cd0d85eca50f9755927c_step_144.step",
+"split": "dev_v2",
+"label_fail": [
+[
+"gmsh_prod",
+"low_quality"
+]
+],
+"all_fail": [
+[
+"gmsh_prod",
+"low_quality"
+]
+]
+},
+{
+"sha256": "3ca940d41ed307401a2d4ba376f25def1507daece4c0339922c682a1ffda119d",
+"name": "abc/0057_00579594_83b3892e48b2778f2d468928_step_000.step",
+"split": "dev_v2",
+"label_fail": [
+[
+"gmsh_prod",
+"other"
+]
+],
+"all_fail": [
+[
+"gmsh_prod",
+"other"
+],
+[
+"gmsh_default",
+"overlapping_facets"
+]
+]
+},
+{
+"sha256": "615e4cde051893283533867db756cc38cb3fae28802b379116a16617fb915498",
+"name": "abc/0051_00514513_589b5807a417220f72384061_step_000.step",
+"split": "dev_v2",
+"label_fail": [
+[
+"gmsh_prod",
+"other"
+]
+],
+"all_fail": [
+[
+"gmsh_prod",
+"other"
+],
+[
+"gmsh_default",
+"edge_through_face"
+]
+]
+},
+{
+"sha256": "54f1189a15c917629e94f5507e1dedf288d479d9ae9097900065c26ebddc97bf",
+"name": "abc/0056_00561725_ce82e436f164059a066d0713_step_000.step",
+"split": "dev_v2",
+"label_fail": [
+[
+"gmsh_prod",
+"low_quality"
+]
+],
+"all_fail": [
+[
+"gmsh_prod",
+"low_quality"
+],
+[
+"gmsh_default",
+"edge_through_face"
+]
+]
+},
+{
+"sha256": "e357818b22f8fd2e41bde62a2ea7172194bd3d9d98de305d9797f9c837875c41",
+"name": "abc/0054_00545731_58aa1a11baa7e90f79546cff_step_002.step",
+"split": "dev_v2",
+"label_fail": [
+[
+"gmsh_prod",
+"other"
+]
+],
+"all_fail": [
+[
+"gmsh_prod",
+"other"
+],
+[
+"gmsh_default",
+"overlapping_facets"
+]
+]
+},
+{
+"sha256": "67a0c04ed27aa33dd007f5ec765dd1724c5a6b3b770febcc4e4f6cb3583dbc60",
+"name": "abc/0056_00561477_ca18416aea564660ee2eea7a_step_006.step",
+"split": "dev_v2",
+"label_fail": [
+[
+"gmsh_prod",
+"other"
+]
+],
+"all_fail": [
+[
+"gmsh_prod",
+"other"
+],
+[
+"gmsh_default",
+"edge_through_face"
+]
+]
+},
+{
+"sha256": "aa30db67bbb6397999bcd1827bc1253c451a38ae3c86a50f9287b9dfbbd0579e",
+"name": "abc/0056_00564820_9f99023025ad12ef276d1bf9_step_002.step",
+"split": "dev_v2",
+"label_fail": [
+[
+"gmsh_prod",
+"other"
+]
+],
+"all_fail": [
+[
+"gmsh_prod",
+"other"
+],
+[
+"gmsh_alt",
+"no_volume"
+]
+]
+},
+{
+"sha256": "448d830578c766ad6b59d631276505b48f4c2aa94fefdef161ff383196577160",
+"name": "abc/0061_00618651_d89a52b42c828ded4e4cae62_step_028.step",
+"split": "dev_v2",
+"label_fail": [
+[
+"gmsh_prod",
+"low_quality"
+]
+],
+"all_fail": [
+[
+"gmsh_prod",
+"low_quality"
+],
+[
+"gmsh_default",
+"overlapping_facets"
+]
+]
+},
+{
+"sha256": "f62ed385ec02a640a4441ba26d681164886d5e79ebea7fde32045c0508f02355",
+"name": "00542809/00542809_58a894c022115e0f6fe41de9_step_008.step",
+"split": "dev_v2",
+"label_fail": [
+[
+"gmsh_prod",
+"other"
+]
+],
+"all_fail": [
+[
+"gmsh_prod",
+"other"
+],
+[
+"gmsh_default",
+"overlapping_facets"
+]
+]
+},
+{
+"sha256": "5efc2c25c2eccef0ec06d7afb2cdf3652a7a5ec9d30d00bd373af6102751f670",
+"name": "abc/0060_00609783_3df4aeffe01eb64ef9a65e8f_step_019.step",
+"split": "dev_v2",
+"label_fail": [
+[
+"gmsh_prod",
+"other"
+]
+],
+"all_fail": [
+[
+"gmsh_prod",
+"other"
+],
+[
+"gmsh_alt",
+"low_quality"
+]
+]
+},
+{
+"sha256": "9205f7b642c16e63dc0c8e39823ef7d65d9836d8bc9d5b8cd057e201816cd5f1",
+"name": "abc/0054_00540598_c9c1928f21b45230075b9fde_step_004.step",
+"split": "dev_v2",
+"label_fail": [
+[
+"gmsh_prod",
+"other"
+]
+],
+"all_fail": [
+[
+"gmsh_prod",
+"other"
+],
+[
+"gmsh_default",
+"low_quality"
+]
+]
+},
+{
+"sha256": "75e9d59b46e2431da7c88a7b99535c009a081b279196c71dbbc78f54a7a27913",
+"name": "00526522/00526522_2096e13f381fdeed3052900f_step_070.step",
+"split": "dev_v2",
+"label_fail": [
+[
+"gmsh_prod",
+"other"
+]
+],
+"all_fail": [
+[
+"gmsh_prod",
+"other"
+],
+[
+"gmsh_alt",
+"low_quality"
+]
+]
+},
+{
+"sha256": "7f07861fcd0f3f3476576657eebfac2def3ad441e8e911defcaecd8eb1e6e47c",
+"name": "00597851/00597851_54911a92f479626781c654b3_step_000.step",
+"split": "dev_v2",
+"label_fail": [
+[
+"gmsh_prod",
+"low_quality"
+]
+],
+"all_fail": [
+[
+"gmsh_prod",
+"low_quality"
+],
+[
+"gmsh_default",
+"low_quality"
+]
+]
+},
+{
+"sha256": "a0bc551656780b26d7a0ee1beedbc07d43f41efa092f74f3c2d8383417f04481",
+"name": "NIST-PMI-STEP-Files/AP203 geometry only/nist_ftc_07_asme1_rd.stp",
+"split": "dev_v2",
+"label_fail": [
+[
+"gmsh_prod",
+"low_quality"
+]
+],
+"all_fail": [
+[
+"gmsh_prod",
+"low_quality"
+],
+[
+"gmsh_default",
+"low_quality"
+]
+]
+},
+{
+"sha256": "af9fc48e75819be88892f9b13257e87cbb4d25e66c1bd73331d83ee9563b27c7",
+"name": "abc/0053_00538785_58a65b38deaa381032ddddec_step_009.step",
+"split": "dev_v2",
+"label_fail": [
+[
+"gmsh_prod",
+"other"
+]
+],
+"all_fail": [
+[
+"gmsh_prod",
+"other"
+],
+[
+"gmsh_default",
+"edge_through_face"
+],
+[
+"gmsh_alt",
+"low_quality"
+]
+]
+},
+{
+"sha256": "0df08227f52ac225763f7499c1b913673f913638f5bc23a6f48e23565e5e932e",
+"name": "abc/0052_00526908_81cccc4a79fc27bf121c4ec9_step_000.step",
+"split": "dev_v2",
+"label_fail": [
+[
+"gmsh_prod",
+"other"
+],
+[
+"netgen_occ",
+"netgen_meshing_failed"
+]
+],
+"all_fail": [
+[
+"gmsh_prod",
+"other"
+],
+[
+"gmsh_default",
+"edge_through_face"
+],
+[
+"netgen_occ",
+"netgen_meshing_failed"
+]
+]
+},
+{
+"sha256": "bbd860fa0f5aa207580575a032f96fb6b6c38158655d084f2b331913e6533e4a",
+"name": "abc/0053_00539088_58a67037ebf14d0f8e1e4852_step_000.step",
+"split": "dev_v2",
+"label_fail": [
+[
+"gmsh_prod",
+"other"
+]
+],
+"all_fail": [
+[
+"gmsh_prod",
+"other"
+],
+[
+"gmsh_default",
+"overlapping_facets"
+],
+[
+"gmsh_alt",
+"low_quality"
+]
+]
+},
+{
+"sha256": "ce546aef9bd085931851969f72dfb950829bf9b9a4dca48ee750c706aeb1077c",
+"name": "abc/0057_00577202_58b74d5dd2d73c0f795fd3c7_step_000.step",
+"split": "dev_v2",
+"label_fail": [
+[
+"gmsh_prod",
+"other"
+]
+],
+"all_fail": [
+[
+"gmsh_prod",
+"other"
+],
+[
+"gmsh_default",
+"overlapping_facets"
+],
+[
+"gmsh_alt",
+"low_quality"
+]
+]
+},
+{
+"sha256": "f9501251fb30161cdcde0e0ebc51396e1d438af032c6e5f1ea9f7e00c43b36f9",
+"name": "abc/0055_00555512_58adf189df48ba0f834d4e71_step_000.step",
+"split": "dev_v2",
+"label_fail": [
+[
+"gmsh_prod",
+"other"
+]
+],
+"all_fail": [
+[
+"gmsh_prod",
+"other"
+],
+[
+"gmsh_default",
+"overlapping_facets"
+],
+[
+"gmsh_alt",
+"low_quality"
+]
+]
+},
+{
+"sha256": "b13ba9c6a96e0b685b78822699bcee3b7bde63ac98d24f8f3b427271740ea309",
+"name": "abc/0055_00552754_78fab44c55201efeb3082719_step_000.step",
+"split": "dev_v2",
+"label_fail": [
+[
+"gmsh_prod",
+"low_quality"
+]
+],
+"all_fail": [
+[
+"gmsh_prod",
+"low_quality"
+],
+[
+"gmsh_default",
+"overlapping_facets"
+],
+[
+"gmsh_alt",
+"no_volume"
+]
+]
+},
+{
+"sha256": "f56dd3b77d61a5e8aa5ea8fd4c58a2e207893ea8e39578f1a251a697b9da6e0b",
+"name": "abc/0061_00618192_58c83c0c03a00a0f8603bd1c_step_031.step",
+"split": "dev_v2",
+"label_fail": [
+[
+"gmsh_prod",
+"other"
+]
+],
+"all_fail": [
+[
+"gmsh_prod",
+"other"
+],
+[
+"gmsh_default",
+"edge_through_face"
+],
+[
+"gmsh_alt",
+"low_quality"
+]
+]
+},
+{
+"sha256": "985de5aaaaab1fe5e152785bfd364f5a98b15863fbe1f842e74a79bb0d38fdfc",
+"name": "abc/0059_00594048_58bee1790505910f8018a531_step_000.step",
+"split": "dev_v2",
+"label_fail": [
+[
+"gmsh_prod",
+"other"
+]
+],
+"all_fail": [
+[
+"gmsh_prod",
+"other"
+],
+[
+"gmsh_default",
+"overlapping_facets"
+],
+[
+"gmsh_alt",
+"low_quality"
+]
+]
+},
+{
+"sha256": "cbe8c3abc11cb28ee8b555fd81c3ea0ec3c28f51a2faaa97f00f8e0315493daf",
+"name": "abc/0052_00524943_fa9a21c8b070173bfc87844b_step_002.step",
+"split": "dev_v2",
+"label_fail": [
+[
+"gmsh_prod",
+"other"
+]
+],
+"all_fail": [
+[
+"gmsh_prod",
+"other"
+],
+[
+"gmsh_default",
+"edge_through_face"
+],
+[
+"gmsh_alt",
+"low_quality"
+]
+]
+},
+{
+"sha256": "2f3034493d1d573ad79769858f3f55ef88968f3ff5f3461df89039463298962b",
+"name": "abc/0053_00533268_58a469534ed19e0ff68bb62f_step_008.step",
+"split": "dev_v2",
+"label_fail": [
+[
+"gmsh_prod",
+"low_quality"
+],
+[
+"netgen_occ",
+"netgen_meshing_failed"
+]
+],
+"all_fail": [
+[
+"gmsh_prod",
+"low_quality"
+],
+[
+"gmsh_default",
+"overlapping_facets"
+],
+[
+"netgen_occ",
+"netgen_meshing_failed"
+]
+]
+},
+{
+"sha256": "80c009cb74568efaef2c8f36e58a6a2b087c47beb06f7ebf45b6a737e9f9c868",
+"name": "abc/0055_00555903_19170ca5f7030848f6985b79_step_001.step",
+"split": "dev_v2",
+"label_fail": [
+[
+"gmsh_prod",
+"other"
+]
+],
+"all_fail": [
+[
+"gmsh_prod",
+"other"
+],
+[
+"gmsh_default",
+"other"
+],
+[
+"gmsh_alt",
+"low_quality"
+]
+]
+},
+{
+"sha256": "de9ad40118a4beb0b640c494f7866280c1f07aeea6dab2c671e077846e1b9825",
+"name": "abc/0056_00567964_2dc8697785b603ebd064db60_step_000.step",
+"split": "dev_v2",
+"label_fail": [
+[
+"gmsh_prod",
+"low_quality"
+]
+],
+"all_fail": [
+[
+"gmsh_prod",
+"low_quality"
+],
+[
+"gmsh_default",
+"overlapping_facets"
+],
+[
+"gmsh_alt",
+"low_quality"
+]
+]
+},
+{
+"sha256": "761fdee1951e97857345413c86d27aae46a95ba897c2a156f2ffbe6931855c3d",
+"name": "abc/0057_00577690_58b778c39c037a0f70331a6e_step_032.step",
+"split": "dev_v2",
+"label_fail": [
+[
+"gmsh_prod",
+"other"
+]
+],
+"all_fail": [
+[
+"gmsh_prod",
+"other"
+],
+[
+"gmsh_default",
+"no_volume"
+],
+[
+"gmsh_alt",
+"no_volume"
+]
+]
+},
+{
+"sha256": "37b6afa4cf69c8168ee2831eabde75ef614ab215a5ced16ee4a0e77913c857a6",
+"name": "abc/0055_00554260_58ada6478105ed0f83971f1e_step_000.step",
+"split": "dev_v2",
+"label_fail": [
+[
+"gmsh_prod",
+"other"
+]
+],
+"all_fail": [
+[
+"gmsh_prod",
+"other"
+],
+[
+"gmsh_default",
+"overlapping_facets"
+],
+[
+"gmsh_alt",
+"low_quality"
+]
+]
+},
+{
+"sha256": "85ab4da1c72c768b7cf2075a20848d6f63b81a3d75b8d6d0e1b6b2497b1e30ee",
+"name": "abc/0059_00599513_67e4a5106b69d7e77716f579_step_012.step",
+"split": "dev_v2",
+"label_fail": [
+[
+"gmsh_prod",
+"low_quality"
+]
+],
+"all_fail": [
+[
+"gmsh_prod",
+"low_quality"
+],
+[
+"gmsh_default",
+"overlapping_facets"
+],
+[
+"gmsh_alt",
+"low_quality"
+]
+]
+},
+{
+"sha256": "e63710eae3406a2382c3971466d4ac8cd2b660c4b4e1208e486ba23dbb99a575",
+"name": "abc/0059_00595948_58bf7c0dacb579101e76c788_step_000.step",
+"split": "dev_v2",
+"label_fail": [
+[
+"gmsh_prod",
+"other"
+]
+],
+"all_fail": [
+[
+"gmsh_prod",
+"other"
+],
+[
+"gmsh_default",
+"overlapping_facets"
+],
+[
+"gmsh_alt",
+"low_quality"
+]
+]
+},
+{
+"sha256": "da386833c1f36ee1ed8f5767fa414dca06c9c2ba32321dfc3be45dd9260bbb59",
+"name": "abc/0059_00593651_58bec7caafe56e0fcddaeff0_step_031.step",
+"split": "dev_v2",
+"label_fail": [
+[
+"gmsh_prod",
+"other"
+]
+],
+"all_fail": [
+[
+"gmsh_prod",
+"other"
+],
+[
+"gmsh_default",
+"edge_through_face"
+],
+[
+"gmsh_alt",
+"low_quality"
+]
+]
+},
+{
+"sha256": "4c1fc7d5579d76e36784adada096c94b265ea1a1403821c4140024987681050d",
+"name": "abc/0053_00539073_58a66b7522115e0f6fe163e3_step_000.step",
+"split": "dev_v2",
+"label_fail": [
+[
+"gmsh_prod",
+"other"
+]
+],
+"all_fail": [
+[
+"gmsh_prod",
+"other"
+],
+[
+"gmsh_default",
+"overlapping_facets"
+],
+[
+"gmsh_alt",
+"low_quality"
+]
+]
+},
+{
+"sha256": "80ce6b8c4ffffe8663bcb9e7f28f82998b995d9257094e336b87d4a9be059848",
+"name": "abc/0060_00604173_4ec13d006f4db95425937572_step_023.step",
+"split": "dev_v2",
+"label_fail": [
+[
+"gmsh_prod",
+"other"
+]
+],
+"all_fail": [
+[
+"gmsh_prod",
+"other"
+],
+[
+"gmsh_default",
+"no_volume"
+],
+[
+"gmsh_alt",
+"no_volume"
+]
+]
+},
+{
+"sha256": "a3cbae214aa3346d8fb12268930f9eba6f892b6e92e93d2a1868b8ccc4c8d79c",
+"name": "abc/0051_00516114_24c77a4e4477f9a84d0a86f3_step_000.step",
+"split": "dev_v2",
+"label_fail": [
+[
+"gmsh_prod",
+"other"
+]
+],
+"all_fail": [
+[
+"gmsh_prod",
+"other"
+],
+[
+"gmsh_default",
+"edge_through_face"
+],
+[
+"gmsh_alt",
+"no_volume"
+]
+]
+},
+{
+"sha256": "bc860ab1a1e188781ddeaa1f062e5c07293c8e18c3bdf8f9495539c985eca8c3",
+"name": "abc/0052_00524677_ce40b542d96733a3ccc2e6c3_step_000.step",
+"split": "dev_v2",
+"label_fail": [
+[
+"gmsh_prod",
+"other"
+]
+],
+"all_fail": [
+[
+"gmsh_prod",
+"other"
+],
+[
+"gmsh_default",
+"overlapping_facets"
+],
+[
+"gmsh_alt",
+"no_volume"
+]
+]
+},
+{
+"sha256": "5accc12fa47d338aa8a3b7f81febcd5b1c0dc9c2ba57141ae632223c2006336d",
+"name": "abc/0053_00532577_58a4246ffb62730f86f554b7_step_003.step",
+"split": "dev_v2",
+"label_fail": [
+[
+"gmsh_prod",
+"other"
+]
+],
+"all_fail": [
+[
+"gmsh_prod",
+"other"
+],
+[
+"gmsh_default",
+"overlapping_facets"
+],
+[
+"gmsh_alt",
+"timeout"
+]
+]
+},
+{
+"sha256": "0daa964f71391e61c052b8e65214d58ed226b545ef265ba9386527f4aefae2a6",
+"name": "abc/0059_00599448_58c07b8e910b980f78da6060_step_003.step",
+"split": "dev_v2",
+"label_fail": [
+[
+"gmsh_prod",
+"other"
+]
+],
+"all_fail": [
+[
+"gmsh_prod",
+"other"
+],
+[
+"gmsh_default",
+"edge_through_face"
+],
+[
+"gmsh_alt",
+"low_quality"
+]
+]
+},
+{
+"sha256": "c7b0fca2f2c38d36d523840711edc0c7883e5cc50478ae0b5b2d093233c46a2e",
+"name": "abc/0057_00570936_f868f0f84bb5ce9c3926e742_step_020.step",
+"split": "dev_v2",
+"label_fail": [
+[
+"gmsh_prod",
+"low_quality"
+]
+],
+"all_fail": [
+[
+"gmsh_prod",
+"low_quality"
+],
+[
+"gmsh_default",
+"overlapping_facets"
+],
+[
+"gmsh_alt",
+"no_volume"
+]
+]
+},
+{
+"sha256": "52cd2fdb5dc33e974a2813b6b7cf477c77c266e0181ea86fdffef9c8cbc4b872",
+"name": "abc/0052_00524615_58a08791cbc1f90fc89aefc2_step_005.step",
+"split": "dev_v2",
+"label_fail": [
+[
+"gmsh_prod",
+"other"
+]
+],
+"all_fail": [
+[
+"gmsh_prod",
+"other"
+],
+[
+"gmsh_default",
+"overlapping_facets"
+],
+[
+"gmsh_alt",
+"low_quality"
+]
+]
+},
+{
+"sha256": "722c122c9b800e234fb9804ffd1d4c2c49c95f9d13c937b4af6c8053240ddf50",
+"name": "abc/0053_00535069_bb0bc8e7914fdea894ad2ec6_step_012.step",
+"split": "dev_v2",
+"label_fail": [
+[
+"gmsh_prod",
+"low_quality"
+]
+],
+"all_fail": [
+[
+"gmsh_prod",
+"low_quality"
+],
+[
+"gmsh_default",
+"overlapping_facets"
+],
+[
+"gmsh_alt",
+"low_quality"
+]
+]
+},
+{
+"sha256": "8538f529f8754d8ef4ef8f8e3dcf8378d45ff891cd1eb187bbb10247d9a22640",
+"name": "00569755/00569755_58b4bbec8115250f775a5752_step_002.step",
+"split": "dev_v2",
+"label_fail": [
+[
+"gmsh_prod",
+"other"
+]
+],
+"all_fail": [
+[
+"gmsh_prod",
+"other"
+],
+[
+"gmsh_default",
+"overlapping_facets"
+],
+[
+"gmsh_alt",
+"no_volume"
+]
+]
+},
+{
+"sha256": "b26a079a5e88fe669e762469f47c3d9324899f683acb5be3dad0dfc52b9178bc",
+"name": "00593998/00593998_58bedf240159270f85d925eb_step_018.step",
+"split": "dev_v2",
+"label_fail": [
+[
+"gmsh_prod",
+"low_quality"
+]
+],
+"all_fail": [
+[
+"gmsh_prod",
+"low_quality"
+],
+[
+"gmsh_default",
+"overlapping_facets"
+],
+[
+"gmsh_alt",
+"low_quality"
+]
+]
+},
+{
+"sha256": "7e81aa0fa1b5fff0a0ea5fdaf1ca681b8f0cdaba3b49c304d9d99fd81aa7e4dc",
+"name": "00616555/00616555_58c7bfe463ebf60f9147b95a_step_064.step",
+"split": "dev_v2",
+"label_fail": [
+[
+"gmsh_prod",
+"other"
+]
+],
+"all_fail": [
+[
+"gmsh_prod",
+"other"
+],
+[
+"gmsh_default",
+"overlapping_facets"
+],
+[
+"gmsh_alt",
+"low_quality"
+]
+]
+},
+{
+"sha256": "5e30f0903f9470c14a98e70395ca005fe90bcd3fb704c381a80a69958838f169",
+"name": "NIST-PMI-STEP-Files/AP203 geometry only/nist_ftc_06_asme1_rd.stp",
+"split": "dev_v2",
+"label_fail": [
+[
+"gmsh_prod",
+"low_quality"
+]
+],
+"all_fail": [
+[
+"gmsh_prod",
+"low_quality"
+],
+[
+"gmsh_default",
+"overlapping_facets"
+],
+[
+"gmsh_alt",
+"low_quality"
+]
+]
+},
+{
+"sha256": "798565ef85710dee5fc18511a2d58b9c893c7b9ffdf5b6d90c45da25d7bb6e60",
+"name": "occt/bm2_ec_leverrod-A.stp",
+"split": "dev_v2",
+"label_fail": [
+[
+"gmsh_prod",
+"other"
+]
+],
+"all_fail": [
+[
+"gmsh_prod",
+"other"
+],
+[
+"gmsh_default",
+"no_volume"
+],
+[
+"gmsh_alt",
+"no_volume"
+]
+]
+},
+{
+"sha256": "cfe077313b04ba9527be5aa113df78cd36c1542dbafad1cdb5670a2b68b9e229",
+"name": "occt/trj4_s1-ug-214.stp",
+"split": "dev_v2",
+"label_fail": [
+[
+"gmsh_prod",
+"other"
+],
+[
+"netgen_occ",
+"netgen_meshing_failed"
+]
+],
+"all_fail": [
+[
+"gmsh_prod",
+"other"
+],
+[
+"gmsh_default",
+"edge_through_face"
+],
+[
+"netgen_occ",
+"netgen_meshing_failed"
+]
+]
+},
+{
+"sha256": "36399c623980403c8a3e5c2321d849fc3cd426287793486dfee1113851d557e2",
+"name": "abc/0051_00513736_589b1e411529400fd28c70ee_step_034.step",
+"split": "dev_v2",
+"label_fail": [
+[
+"gmsh_prod",
+"other"
+]
+],
+"all_fail": [
+[
+"gmsh_prod",
+"other"
+],
+[
+"gmsh_default",
+"timeout"
+],
+[
+"gmsh_alt",
+"timeout"
+]
+]
+},
+{
+"sha256": "263d5e2d5babc9a2fd344835eed8107d7fbbf34f8b3c17798ecfd3774f4d8a83",
+"name": "abc/0053_00532482_58a41a786e328e0f6f32065d_step_009.step",
+"split": "dev_v2",
+"label_fail": [
+[
+"gmsh_prod",
+"other"
+]
+],
+"all_fail": [
+[
+"gmsh_prod",
+"other"
+],
+[
+"gmsh_default",
+"low_quality"
+],
+[
+"gmsh_alt",
+"low_quality"
+]
+]
+},
+{
+"sha256": "7ab61ea7d6412b2df3b9b75123544d15810fe6792bf5adf7c820e6fe9e136424",
+"name": "NIST-FTC-CTC-PMI-CAD-models/FTC Definitions/nist_ftc_10_asme1_rb.stp",
+"split": "dev_v2",
+"label_fail": [
+[
+"gmsh_prod",
+"other"
+]
+],
+"all_fail": [
+[
+"gmsh_prod",
+"other"
+],
+[
+"gmsh_default",
+"low_quality"
+],
+[
+"gmsh_alt",
+"low_quality"
+]
+]
+},
+{
+"sha256": "7e626274654e48fb67e897e0fb8cf15aaceb62f7653d2c0a148bf52f19deaf74",
+"name": "abc/0057_00578194_02db97dfc9db7d283d359af0_step_000.step",
+"split": "dev_v2",
+"label_fail": [
+[
+"gmsh_prod",
+"low_quality"
+]
+],
+"all_fail": [
+[
+"gmsh_prod",
+"low_quality"
+],
+[
+"gmsh_default",
+"low_quality"
+],
+[
+"gmsh_alt",
+"low_quality"
+]
+]
+},
+{
+"sha256": "7613ed549d9ad488427ae68131c704ab31c3a72a198dc5e45932ddb60559bed9",
+"name": "00566501/00566501_3daa0f06888b329e557a6a76_step_000.step",
+"split": "dev_v2",
+"label_fail": [
+[
+"gmsh_prod",
+"low_quality"
+]
+],
+"all_fail": [
+[
+"gmsh_prod",
+"low_quality"
+],
+[
+"gmsh_default",
+"low_quality"
+],
+[
+"gmsh_alt",
+"low_quality"
+]
+]
+},
+{
+"sha256": "541e13051f0da33ff2db10247b71cf3350db0cd9dfa3edd45d9813f2eceff509",
+"name": "00596083/00596083_90f123a7b7e505aa9a785623_step_000.step",
+"split": "dev_v2",
+"label_fail": [
+[
+"gmsh_prod",
+"low_quality"
+],
+[
+"netgen_occ",
+"step_unreadable"
+]
+],
+"all_fail": [
+[
+"gmsh_prod",
+"low_quality"
+],
+[
+"gmsh_default",
+"low_quality"
+],
+[
+"netgen_occ",
+"step_unreadable"
+]
+]
+},
+{
+"sha256": "82d8ab32dca1569b260c2e4dad3dab655a984bcb6644edc08575f67dbf1ec92c",
+"name": "00567915/00567915_58b41f11dbdd800f7e6adfd0_step_000.step",
+"split": "dev_v2",
+"label_fail": [
+[
+"gmsh_prod",
+"low_quality"
+]
+],
+"all_fail": [
+[
+"gmsh_prod",
+"low_quality"
+],
+[
+"gmsh_default",
+"low_quality"
+],
+[
+"gmsh_alt",
+"low_quality"
+]
+]
+},
+{
+"sha256": "d4158ed46a3fb1d83c85cfec2e640bbaff8c28b2b39e1e66cb87fba9b7985af3",
+"name": "NIST-FTC-CTC-PMI-CAD-models/CTC Definitions/nist_ctc_03_asme1_rc.stp",
+"split": "dev_v2",
+"label_fail": [
+[
+"gmsh_prod",
+"low_quality"
+]
+],
+"all_fail": [
+[
+"gmsh_prod",
+"low_quality"
+],
+[
+"gmsh_default",
+"low_quality"
+],
+[
+"gmsh_alt",
+"low_quality"
+]
+]
+},
+{
+"sha256": "5abbaf0b550810d7e5cfd312569bf6e044a05bbd9c32b876783381ffa3bd0d01",
+"name": "abc/0056_00566187_58b33579367d56104c5e8230_step_002.step",
+"split": "dev_v2",
+"label_fail": [
+[
+"gmsh_prod",
+"other"
+],
+[
+"netgen_occ",
+"netgen_meshing_failed"
+]
+],
+"all_fail": [
+[
+"gmsh_prod",
+"other"
+],
+[
+"gmsh_default",
+"no_volume"
+],
+[
+"gmsh_alt",
+"no_volume"
+],
+[
+"netgen_occ",
+"netgen_meshing_failed"
+]
+]
+},
+{
+"sha256": "6892359075ba058f3aa373e2ef879222872bba45b7bebff04269402c331a257c",
+"name": "abc/0061_00619937_58c915a03045b20fe8b6b4a3_step_001.step",
+"split": "dev_v2",
+"label_fail": [
+[
+"gmsh_prod",
+"other"
+],
+[
+"netgen_occ",
+"netgen_meshing_failed"
+]
+],
+"all_fail": [
+[
+"gmsh_prod",
+"other"
+],
+[
+"gmsh_default",
+"edge_through_face"
+],
+[
+"gmsh_alt",
+"low_quality"
+],
+[
+"netgen_occ",
+"netgen_meshing_failed"
+]
+]
+},
+{
+"sha256": "88130bbc32203e7a2edc22843f6791aa334a074d258cc7cecf126230fa9ed571",
+"name": "abc/0059_00595893_24ae031415592b9fdd33eb15_step_001.step",
+"split": "dev_v2",
+"label_fail": [
+[
+"gmsh_prod",
+"other"
+],
+[
+"netgen_occ",
+"low_quality"
+]
+],
+"all_fail": [
+[
+"gmsh_prod",
+"other"
+],
+[
+"gmsh_default",
+"no_volume"
+],
+[
+"gmsh_alt",
+"no_volume"
+],
+[
+"netgen_occ",
+"low_quality"
+]
+]
+},
+{
+"sha256": "eda22c2f6e7c467611ecc1bf5dea11560e7f5403b468a26953fecefe211773f3",
+"name": "abc/0053_00531292_58a364a1d8d7800fd43939cf_step_000.step",
+"split": "dev_v2",
+"label_fail": [
+[
+"gmsh_prod",
+"other"
+],
+[
+"netgen_occ",
+"netgen_meshing_failed"
+]
+],
+"all_fail": [
+[
+"gmsh_prod",
+"other"
+],
+[
+"gmsh_default",
+"edge_through_face"
+],
+[
+"gmsh_alt",
+"low_quality"
+],
+[
+"netgen_occ",
+"netgen_meshing_failed"
+]
+]
+},
+{
+"sha256": "557c3c0563c1cd8b1cad46d9ef897a44fb53d48c5cd728ec6a9da110b1c8dec3",
+"name": "abc/0059_00593298_58bea51a3badff0fc550e4d4_step_013.step",
+"split": "dev_v2",
+"label_fail": [
+[
+"gmsh_prod",
+"other"
+],
+[
+"netgen_occ",
+"netgen_meshing_failed"
+]
+],
+"all_fail": [
+[
+"gmsh_prod",
+"other"
+],
+[
+"gmsh_default",
+"edge_through_face"
+],
+[
+"gmsh_alt",
+"no_volume"
+],
+[
+"netgen_occ",
+"netgen_meshing_failed"
+]
+]
+},
+{
+"sha256": "695d74ca7fa66509d84905c33bbb6747a1fd1c36ebe1252dfea990fb66e3b96b",
+"name": "abc/0052_00527796_945276583aeb7d4221f130f8_step_006.step",
+"split": "dev_v2",
+"label_fail": [
+[
+"gmsh_prod",
+"low_quality"
+],
+[
+"netgen_occ",
+"netgen_timeout"
+]
+],
+"all_fail": [
+[
+"gmsh_prod",
+"low_quality"
+],
+[
+"gmsh_default",
+"overlapping_facets"
+],
+[
+"gmsh_alt",
+"low_quality"
+],
+[
+"netgen_occ",
+"netgen_timeout"
+]
+]
+},
+{
+"sha256": "e91b70f1e37cbcff5c581cad7e4fbeb953526837263148eb912bb0b378bcd0ed",
+"name": "abc/0056_00567586_aaf14752252a80d40c9e1283_step_005.step",
+"split": "dev_v2",
+"label_fail": [
+[
+"gmsh_prod",
+"low_quality"
+],
+[
+"netgen_occ",
+"low_quality"
+]
+],
+"all_fail": [
+[
+"gmsh_prod",
+"low_quality"
+],
+[
+"gmsh_default",
+"overlapping_facets"
+],
+[
+"gmsh_alt",
+"low_quality"
+],
+[
+"netgen_occ",
+"low_quality"
+]
+]
+},
+{
+"sha256": "7e573047c1a6591e2ac6eb8a58124bd1f36e94623ed84e610e301b6dcc577922",
+"name": "abc/0051_00518226_7aa4de49968de523e2091a87_step_001.step",
+"split": "dev_v2",
+"label_fail": [
+[
+"gmsh_prod",
+"other"
+],
+[
+"netgen_occ",
+"netgen_timeout"
+]
+],
+"all_fail": [
+[
+"gmsh_prod",
+"other"
+],
+[
+"gmsh_default",
+"overlapping_facets"
+],
+[
+"gmsh_alt",
+"timeout"
+],
+[
+"netgen_occ",
+"netgen_timeout"
+]
+]
+},
+{
+"sha256": "bb0fe0d1c8e92d9085fe788f14c7c0bd1e84a4ed664e451a6584ce6fbf1aaf90",
+"name": "abc/0059_00592329_58be052560d0ea0f7c80053f_step_006.step",
+"split": "dev_v2",
+"label_fail": [
+[
+"gmsh_prod",
+"other"
+],
+[
+"netgen_occ",
+"step_unreadable"
+]
+],
+"all_fail": [
+[
+"gmsh_prod",
+"other"
+],
+[
+"gmsh_default",
+"overlapping_facets"
+],
+[
+"gmsh_alt",
+"no_volume"
+],
+[
+"netgen_occ",
+"step_unreadable"
+]
+]
+},
+{
+"sha256": "f1eef4cd072e1447ecf487e45754995c138231dbd9f9397fc000d2418c8e1d38",
+"name": "00538723/00538723_2e9dcb57dfa7846a2f2c5fbc_step_010.step",
+"split": "dev_v2",
+"label_fail": [
+[
+"gmsh_prod",
+"low_quality"
+],
+[
+"netgen_occ",
+"low_quality"
+]
+],
+"all_fail": [
+[
+"gmsh_prod",
+"low_quality"
+],
+[
+"gmsh_default",
+"low_quality"
+],
+[
+"gmsh_alt",
+"no_volume"
+],
+[
+"netgen_occ",
+"low_quality"
+]
+]
+},
+{
+"sha256": "0522f1987786e2dc4753f128ac41e2a93978ee1f9ce9bb47ebea503ec3a3f3eb",
+"name": "abc/0052_00526588_ae911af3880ea83f28728e58_step_000.step",
+"split": "dev_v2",
+"label_fail": [
+[
+"gmsh_prod",
+"gmsh_crash"
+],
+[
+"netgen_occ",
+"netgen_timeout"
+]
+],
+"all_fail": [
+[
+"gmsh_prod",
+"gmsh_crash"
+],
+[
+"gmsh_default",
+"timeout"
+],
+[
+"gmsh_alt",
+"timeout"
+],
+[
+"netgen_occ",
+"netgen_timeout"
+]
+]
+},
+{
+"sha256": "0e8e2236c74f2d5d9440561a5e6e05679d99e21cd9590e9145f77926826d06ef",
+"name": "abc/0057_00571912_58b5a0e4b1ea23104135d522_step_004.step",
+"split": "dev_v2",
+"label_fail": [
+[
+"gmsh_prod",
+"other"
+],
+[
+"netgen_occ",
+"netgen_timeout"
+]
+],
+"all_fail": [
+[
+"gmsh_prod",
+"other"
+],
+[
+"gmsh_default",
+"low_quality"
+],
+[
+"gmsh_alt",
+"low_quality"
+],
+[
+"netgen_occ",
+"netgen_timeout"
+]
+]
+},
+{
+"sha256": "532f9baa4a9d9dd1cf54761225cfa35a46c20114e50500743e812bfb6fc32bbc",
+"name": "00522863/00522863_64293c310e5d6b9a8b377109_step_019.step",
+"split": "dev_v2",
+"label_fail": [
+[
+"gmsh_prod",
+"low_quality"
+],
+[
+"netgen_occ",
+"low_quality"
+]
+],
+"all_fail": [
+[
+"gmsh_prod",
+"low_quality"
+],
+[
+"gmsh_default",
+"low_quality"
+],
+[
+"gmsh_alt",
+"low_quality"
+],
+[
+"netgen_occ",
+"low_quality"
+]
+]
+},
+{
+"sha256": "af80cbfcd419d09974770c16af13ec9031725b8cc08171a64b0ad008bacfcf5b",
+"name": "abc/0052_00526988_58a1d33fd3d9a2108b54be6d_step_000.step",
+"split": "dev_v1r",
+"label_fail": [
+[
+"gmsh_prod",
+"other"
+]
+],
+"all_fail": [
+[
+"gmsh_prod",
+"other"
+],
+[
+"gmsh_default",
+"other"
+],
+[
+"gmsh_alt",
+"no_volume"
+]
+]
+},
+{
+"sha256": "fdd2cb5507b97c3eb6188cdf3476883f11b943e2931184ec7901854dc4717db2",
+"name": "abc/0060_00601268_01579e613800b230c1716e80_step_001.step",
+"split": "dev_v1r",
+"label_fail": [
+[
+"gmsh_prod",
+"other"
+],
+[
+"netgen_occ",
+"low_quality"
+]
+],
+"all_fail": [
+[
+"gmsh_prod",
+"other"
+],
+[
+"gmsh_default",
+"no_volume"
+],
+[
+"gmsh_alt",
+"no_volume"
+],
+[
+"netgen_occ",
+"low_quality"
+]
+]
+},
+{
+"sha256": "1be95291290b9ff81ecd549829f2999858e3f2ea979032672da3b828ac29ce5d",
+"name": "abc/0055_00550171_58ac32b095b047102fd8ce8c_step_013.step",
+"split": "dev_v1r",
+"label_fail": [
+[
+"gmsh_prod",
+"other"
+],
+[
+"netgen_occ",
+"netgen_meshing_failed"
+]
+],
+"all_fail": [
+[
+"gmsh_prod",
+"other"
+],
+[
+"gmsh_default",
+"edge_through_face"
+],
+[
+"gmsh_alt",
+"no_volume"
+],
+[
+"netgen_occ",
+"netgen_meshing_failed"
+]
+]
+},
+{
+"sha256": "8afc9c86d37b4c47beb90a6332ed812dc5f097f2aa253a230ba028a81d1b93ee",
+"name": "abc/0061_00614327_760137e15b9b924e8339e428_step_017.step",
+"split": "dev_v1r",
+"label_fail": [
+[
+"gmsh_prod",
+"other"
+]
+],
+"all_fail": [
+[
+"gmsh_prod",
+"other"
+],
+[
+"gmsh_default",
+"edge_through_face"
+],
+[
+"gmsh_alt",
+"low_quality"
+]
+]
+},
+{
+"sha256": "71434a2ee23e77d5a615209a5eb24b428ce637d4be1a0b67964a9c9ab6e64e23",
+"name": "abc/0051_00519158_daf80b2021249a203e938429_step_009.step",
+"split": "dev_v1r",
+"label_fail": [
+[
+"gmsh_prod",
+"other"
+],
+[
+"netgen_occ",
+"netgen_meshing_failed"
+]
+],
+"all_fail": [
+[
+"gmsh_prod",
+"other"
+],
+[
+"gmsh_default",
+"edge_through_face"
+],
+[
+"gmsh_alt",
+"no_volume"
+],
+[
+"netgen_occ",
+"netgen_meshing_failed"
+]
+]
+},
+{
+"sha256": "dad0185f630ba3b554742929f853a42fa6f699782c310902093deb6489681b6b",
+"name": "abc/0061_00615999_4f1d2ad2e4e729a2f1836480_step_000.step",
+"split": "dev_v1r",
+"label_fail": [
+[
+"gmsh_prod",
+"low_quality"
+]
+],
+"all_fail": [
+[
+"gmsh_prod",
+"low_quality"
+],
+[
+"gmsh_default",
+"overlapping_facets"
+]
+]
+},
+{
+"sha256": "56375d76832be6df3b9d12968fd163495b0303a9cc321cdb33f6be07ccd1049c",
+"name": "abc/0060_00604433_58c21d4ea0c27b0f87b161a9_step_000.step",
+"split": "dev_v1r",
+"label_fail": [
+[
+"gmsh_prod",
+"other"
+]
+],
+"all_fail": [
+[
+"gmsh_prod",
+"other"
+],
+[
+"gmsh_default",
+"low_quality"
+],
+[
+"gmsh_alt",
+"low_quality"
+]
+]
+},
+{
+"sha256": "8457da1cd2c4169259ce699eccdc3432cdee9017b26f26dd98bda15d4108b95b",
+"name": "abc/0054_00547929_58ab27a87442550f6daa230f_step_014.step",
+"split": "dev_v1r",
+"label_fail": [
+[
+"gmsh_prod",
+"low_quality"
+]
+],
+"all_fail": [
+[
+"gmsh_prod",
+"low_quality"
+],
+[
+"gmsh_default",
+"edge_through_face"
+],
+[
+"gmsh_alt",
+"low_quality"
+]
+]
+},
+{
+"sha256": "9f7d7953e92b896011c96a375b404040bb45a99e3312f809e2250fe9b75fae4a",
+"name": "00611083/00611083_58c56432786ec50fe9e0d3ad_step_002.step",
+"split": "dev_v1r",
+"label_fail": [
+[
+"gmsh_prod",
+"low_quality"
+]
+],
+"all_fail": [
+[
+"gmsh_prod",
+"low_quality"
+],
+[
+"gmsh_default",
+"low_quality"
+],
+[
+"gmsh_alt",
+"low_quality"
+]
+]
+},
+{
+"sha256": "db90265b9b0c19c3fa2848ce56ccbb5637fc2e254e91cbe3d179a1004778bb8d",
+"name": "00619793/00619793_973db45bf9076901a50908bc_step_000.step",
+"split": "dev_v1r",
+"label_fail": [
+[
+"gmsh_prod",
+"other"
+]
+],
+"all_fail": [
+[
+"gmsh_prod",
+"other"
+]
+]
+},
+{
+"sha256": "e081d518484d5c708c6729353237f94a7d97da2b74a10d60d4c0d146d67a5855",
+"name": "NIST-PMI-STEP-Files/AP203 geometry only/nist_ctc_01_asme1_rd.stp",
+"split": "dev_v1r",
+"label_fail": [
+[
+"gmsh_prod",
+"low_quality"
+]
+],
+"all_fail": [
+[
+"gmsh_prod",
+"low_quality"
+]
+]
+},
+{
+"sha256": "a3058f47323c7e0e24249eeaa19939867e66b243058805f67cd1b93c41f6c806",
+"name": "NIST-PMI-STEP-Files/AP203 with PMI/nist_ctc_01_asme1_ap203.stp",
+"split": "dev_v1r",
+"label_fail": [
+[
+"gmsh_prod",
+"low_quality"
+]
+],
+"all_fail": [
+[
+"gmsh_prod",
+"low_quality"
+]
+]
+},
+{
+"sha256": "16ba131bf4c707adfb969504a10b856f58f45517e88ec590fdf6529f3a77479e",
+"name": "abc/0057_00570551_59995fb3cd27b48fe0957ae2_step_007.step",
+"split": "dev_v1r",
+"label_fail": [
+[
+"gmsh_prod",
+"periodic_surface"
+]
+],
+"all_fail": [
+[
+"gmsh_prod",
+"periodic_surface"
+],
+[
+"gmsh_default",
+"no_volume"
+],
+[
+"gmsh_alt",
+"no_volume"
+]
+]
+},
+{
+"sha256": "1c9153fac8706f7ee2f7cc000ca6aedc935864d47d001eab44d8d56f02cfa84d",
+"name": "abc/0057_00573880_417ab441d502eafedde01127_step_005.step",
+"split": "dev_v1r",
+"label_fail": [
+[
+"gmsh_prod",
+"other"
+],
+[
+"netgen_occ",
+"netgen_crash"
+]
+],
+"all_fail": [
+[
+"gmsh_prod",
+"other"
+],
+[
+"gmsh_default",
+"low_quality"
+],
+[
+"gmsh_alt",
+"low_quality"
+],
+[
+"netgen_occ",
+"netgen_crash"
+]
+]
+}
+]

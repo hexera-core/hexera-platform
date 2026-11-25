@@ -1,0 +1,68 @@
+files: 24
+
+per file:
+{"i": 0, "sha": "af80cbfcd4", "label": "boundary_recovery", "excluded": null, "err": null, "wall": 1402.9, "reason": "wall", "ops": 14, "search_wall": 1184.1301, "exp": 2, "skipped_budget": 0, "outcomes": {"duplicate": 3, "evaluated": 8, "rejected": 3}, "clean": null, "in_clean": null, "max_full": 9, "new_full": {"defeature:recognised": 3, "defeature:site": 1}, "new_in_k": {"defeature:recognised": 3, "defeature:site": 1}, "site_kinds": ["open"]}
+{"i": 1, "sha": "fdd2cb5507", "label": "no_volume", "excluded": null, "err": null, "wall": 573.5, "reason": "patience", "ops": 32, "search_wall": 481.5104, "exp": 4, "skipped_budget": 0, "outcomes": {"evaluated": 4, "duplicate": 10, "rejected": 18}, "clean": false, "in_clean": false, "max_full": 8, "new_full": {"defeature:recognised": 4, "defeature:site": 4}, "new_in_k": {"defeature:recognised": 4, "defeature:site": 4}, "site_kinds": ["proximity"]}
+{"i": 2, "sha": "1be9529129", "label": "edge_through_face", "excluded": null, "err": null, "wall": 241.1, "reason": "patience", "ops": 12, "search_wall": 185.994, "exp": 3, "skipped_budget": 0, "outcomes": {"evaluated": 7, "rejected": 3, "duplicate": 2}, "clean": false, "in_clean": false, "max_full": 8, "new_full": {"defeature:recognised": 2, "defeature:site": 1}, "new_in_k": {"defeature:recognised": 2, "defeature:site": 1}, "site_kinds": ["invalid", "self_overlap"]}
+{"i": 3, "sha": "8afc9c86d3", "label": "edge_through_face", "excluded": null, "err": "TypeError: unsupported format string passed to NoneType.__format__", "wall": 1087.2, "reason": null, "ops": null, "search_wall": null, "exp": 0, "skipped_budget": 0, "outcomes": {}, "clean": null, "in_clean": null, "max_full": 0, "new_full": {}, "new_in_k": {}, "site_kinds": []}
+{"i": 4, "sha": "71434a2ee2", "label": "edge_through_face", "excluded": null, "err": null, "wall": 994.8, "reason": "wall", "ops": 13, "search_wall": 828.9018, "exp": 2, "skipped_budget": 0, "outcomes": {"duplicate": 4, "evaluated": 6, "rejected": 3}, "clean": null, "in_clean": null, "max_full": 8, "new_full": {"defeature:recognised": 2, "defeature:site": 1}, "new_in_k": {"defeature:recognised": 2, "defeature:site": 1}, "site_kinds": ["invalid", "open"]}
+{"i": 5, "sha": "dad0185f63", "label": "overlapping_facets", "excluded": null, "err": null, "wall": 785.1, "reason": "patience", "ops": 36, "search_wall": 558.0063, "exp": 3, "skipped_budget": 0, "outcomes": {"rejected": 26, "duplicate": 6, "evaluated": 4}, "clean": false, "in_clean": false, "max_full": 21, "new_full": {"defeature:site": 6}, "new_in_k": {"defeature:site": 3}, "site_kinds": ["proximity", "self_overlap"]}
+{"i": 6, "sha": "56375d7683", "label": "hxt_3d_failed", "excluded": null, "err": "TypeError: unsupported format string passed to NoneType.__format__", "wall": 419.7, "reason": null, "ops": null, "search_wall": null, "exp": 0, "skipped_budget": 0, "outcomes": {}, "clean": null, "in_clean": null, "max_full": 0, "new_full": {}, "new_in_k": {}, "site_kinds": []}
+{"i": 7, "sha": "8457da1cd2", "label": "edge_through_face", "excluded": null, "err": "TypeError: unsupported format string passed to NoneType.__format__", "wall": 271.5, "reason": null, "ops": null, "search_wall": null, "exp": 0, "skipped_budget": 0, "outcomes": {}, "clean": null, "in_clean": null, "max_full": 0, "new_full": {}, "new_in_k": {}, "site_kinds": []}
+{"i": 9, "sha": "1cc7634ec3", "label": "low_quality", "excluded": null, "err": "TypeError: unsupported format string passed to NoneType.__format__", "wall": 25.8, "reason": null, "ops": null, "search_wall": null, "exp": 0, "skipped_budget": 0, "outcomes": {}, "clean": null, "in_clean": null, "max_full": 0, "new_full": {}, "new_in_k": {}, "site_kinds": []}
+{"i": 10, "sha": "db90265b9b", "label": "hxt_3d_failed", "excluded": null, "err": null, "wall": 2023.7, "reason": "clean", "ops": 8, "search_wall": 2006.5269, "exp": 1, "skipped_budget": 0, "outcomes": {"evaluated": 4, "duplicate": 4}, "clean": true, "in_clean": false, "max_full": 8, "new_full": {"defeature:recognised": 1, "defeature:site": 1}, "new_in_k": {"defeature:recognised": 1, "defeature:site": 1}, "site_kinds": ["proximity"]}
+{"i": 11, "sha": "e6368ff786", "label": "", "excluded": null, "err": null, "wall": 9.1, "reason": "clean", "ops": 0, "search_wall": 0.0015, "exp": 0, "skipped_budget": 0, "outcomes": {}, "clean": true, "in_clean": true, "max_full": 0, "new_full": {}, "new_in_k": {}, "site_kinds": []}
+{"i": 12, "sha": "e081d51848", "label": "low_quality", "excluded": null, "err": null, "wall": 574.6, "reason": "patience", "ops": 45, "search_wall": 480.1779, "exp": 5, "skipped_budget": 0, "outcomes": {"rejected": 21, "duplicate": 16, "evaluated": 8}, "clean": false, "in_clean": false, "max_full": 9, "new_full": {"defeature:recognised": 10, "defeature:site": 5}, "new_in_k": {"defeature:recognised": 10, "defeature:site": 5}, "site_kinds": ["proximity"]}
+{"i": 13, "sha": "a3058f4732", "label": "low_quality", "excluded": null, "err": null, "wall": 594.4, "reason": "patience", "ops": 45, "search_wall": 502.0249, "exp": 5, "skipped_budget": 0, "outcomes": {"rejected": 21, "duplicate": 16, "evaluated": 8}, "clean": false, "in_clean": false, "max_full": 9, "new_full": {"defeature:recognised": 10, "defeature:site": 5}, "new_in_k": {"defeature:recognised": 10, "defeature:site": 5}, "site_kinds": ["proximity"]}
+{"i": 14, "sha": "16ba131bf4", "label": "periodic_surface", "excluded": null, "err": null, "wall": 745.4, "reason": "wall", "ops": 8, "search_wall": 659.2629, "exp": 1, "skipped_budget": 0, "outcomes": {"duplicate": 3, "rejected": 4, "evaluated": 1}, "clean": null, "in_clean": null, "max_full": 8, "new_full": {"defeature:recognised": 1}, "new_in_k": {"defeature:recognised": 1}, "site_kinds": ["open"]}
+{"i": 16, "sha": "8ed3c06f59", "label": "body_overlap", "excluded": null, "err": null, "wall": 791.9, "reason": "wall", "ops": 9, "search_wall": 673.4417, "exp": 1, "skipped_budget": 0, "outcomes": {"rejected": 6, "evaluated": 3}, "clean": null, "in_clean": null, "max_full": 9, "new_full": {"defeature:recognised": 1, "cut_by": 2, "fuse": 1}, "new_in_k": {"defeature:recognised": 1, "cut_by": 2, "fuse": 1}, "site_kinds": ["intersection", "overlap"]}
+{"i": 17, "sha": "74dcb7bf16", "label": "body_overlap", "excluded": null, "err": null, "wall": 218.8, "reason": "patience", "ops": 33, "search_wall": 182.7923, "exp": 5, "skipped_budget": 0, "outcomes": {"rejected": 13, "evaluated": 12, "duplicate": 8}, "clean": false, "in_clean": false, "max_full": 9, "new_full": {"defeature:recognised": 5, "cut_by": 2, "fuse": 1}, "new_in_k": {"defeature:recognised": 5, "cut_by": 2, "fuse": 1}, "site_kinds": ["intersection", "overlap"]}
+{"i": 19, "sha": "b6c6630b53", "label": "body_overlap", "excluded": null, "err": null, "wall": 924.5, "reason": "exhausted", "ops": 12, "search_wall": 201.8588, "exp": 1, "skipped_budget": 0, "outcomes": {"rejected": 12}, "clean": false, "in_clean": false, "max_full": 14, "new_full": {"cut_by": 6, "fuse": 3, "defeature:recognised": 1}, "new_in_k": {"cut_by": 6, "fuse": 3, "defeature:recognised": 0}, "site_kinds": ["invalid", "overlap"]}
+{"i": 20, "sha": "1c444ace9e", "label": "body_overlap", "excluded": null, "err": null, "wall": 162.1, "reason": "patience", "ops": 18, "search_wall": 130.6457, "exp": 4, "skipped_budget": 0, "outcomes": {"rejected": 13, "evaluated": 3, "duplicate": 2}, "clean": false, "in_clean": false, "max_full": 9, "new_full": {"cut_by": 4, "fuse": 2, "defeature:recognised": 2}, "new_in_k": {"cut_by": 4, "fuse": 2, "defeature:recognised": 2}, "site_kinds": ["overlap"]}
+{"i": 21, "sha": "70aa160fe3", "label": "body_overlap", "excluded": null, "err": null, "wall": 774.9, "reason": "wall", "ops": 12, "search_wall": 649.4833, "exp": 1, "skipped_budget": 0, "outcomes": {"rejected": 11, "evaluated": 1}, "clean": null, "in_clean": null, "max_full": 23, "new_full": {"defeature:recognised": 1, "cut_by": 6, "fuse": 3}, "new_in_k": {"defeature:recognised": 1, "cut_by": 1, "fuse": 0}, "site_kinds": ["intersection", "overlap"]}
+{"i": 22, "sha": "28b5c83397", "label": "brep_invalid", "excluded": null, "err": null, "wall": 20.0, "reason": "exhausted", "ops": 11, "search_wall": 12.0689, "exp": 3, "skipped_budget": 0, "outcomes": {"rejected": 4, "evaluated": 2, "duplicate": 5}, "clean": false, "in_clean": false, "max_full": 4, "new_full": {}, "new_in_k": {}, "site_kinds": ["open"]}
+{"i": 24, "sha": "01614811ac", "label": "open_shell", "excluded": null, "err": null, "wall": 1147.4, "reason": "patience", "ops": 25, "search_wall": 920.7699, "exp": 3, "skipped_budget": 0, "outcomes": {"duplicate": 5, "evaluated": 6, "rejected": 14}, "clean": false, "in_clean": false, "max_full": 13, "new_full": {"defeature:recognised": 2, "defeature:site": 2}, "new_in_k": {"defeature:recognised": 2, "defeature:site": 1}, "site_kinds": ["invalid", "open", "proximity"]}
+{"i": 27, "sha": "beac2a59c2", "label": "self_intersection", "excluded": null, "err": null, "wall": 1751.1, "reason": "wall", "ops": 9, "search_wall": 766.8918, "exp": 1, "skipped_budget": 0, "outcomes": {"rejected": 6, "evaluated": 4}, "clean": null, "in_clean": null, "max_full": 10, "new_full": {"defeature:recognised": 2, "defeature:site": 1}, "new_in_k": {"defeature:recognised": 2, "defeature:site": 1}, "site_kinds": ["intersection", "self_overlap"]}
+{"i": 28, "sha": "1c9153fac8", "label": "timeout_crash", "excluded": null, "err": null, "wall": 763.2, "reason": "wall", "ops": 36, "search_wall": 664.8537, "exp": 5, "skipped_budget": 0, "outcomes": {"rejected": 19, "duplicate": 6, "evaluated": 11}, "clean": null, "in_clean": null, "max_full": 9, "new_full": {"defeature:recognised": 5}, "new_in_k": {"defeature:recognised": 5}, "site_kinds": ["invalid"]}
+{"i": 29, "sha": "d797542cd9", "label": "self_intersection", "excluded": null, "err": null, "wall": 832.0, "reason": "wall", "ops": 23, "search_wall": 782.3517, "exp": 2, "skipped_budget": 0, "outcomes": {"rejected": 15, "evaluated": 8}, "clean": null, "in_clean": null, "max_full": 12, "new_full": {"defeature:recognised": 3, "defeature:site": 2}, "new_in_k": {"defeature:recognised": 3, "defeature:site": 2}, "site_kinds": ["intersection", "self_overlap"]}
+
+expansions: 52 rows/expansion median 8.5 max 23 expansions over k: 6 rows cut: 39
+
+per site kind (rows per site per expansion): n, mean, max, share of those rows past k
+  intersection   n=  14 mean= 2.29 max=  8 past_k=0/32
+  invalid        n=  14 mean= 3.50 max=  7 past_k=1/49
+  open           n=  12 mean= 2.00 max=  7 past_k=0/24
+  overlap        n=   6 mean= 9.00 max= 14 past_k=11/54
+  proximity      n=  25 mean= 7.72 max= 11 past_k=26/193
+  self_overlap   n=   8 mean= 6.50 max= 10 past_k=0/52
+
+per op: rows made, rows within k
+  split_angle                        101    93
+  split_by_proximity                  69    67
+  defeature:recognised                55    54
+  conformalise:fragment               32    32
+  defeature:site                      29    25
+  split_continuity                    27    27
+  orient_and_close                    24    23
+  cut_by                              20    15
+  reapproximate                       16    10
+  to_canonical                        13     7
+  rebuild_face                        12    12
+  fuse                                10     7
+  rebuild_edge_as_intersection        10    10
+  remove_small                         9     6
+  refit_cluster                        6     6
+  make_volume                          4     4
+  remove_duplicate_faces               3     3
+  fill_loop                            1     1
+
+new ops in the trace (evaluated or rejected or skipped):
+  cut_by                   {'evaluated': 5, 'rejected:declined': 6, 'rejected:failed': 4}
+  defeature:recognised     {'evaluated': 22, 'duplicate': 15, 'rejected:declined': 12, 'rejected:failed': 4, 'rejected:validate': 1}
+  defeature:site           {'evaluated': 10, 'duplicate': 9, 'rejected:declined': 6}
+  fuse                     {'evaluated': 4, 'rejected:declined': 3}
+
+ops_applied per candidate event: {1: 190, 0: 212}
+stop reasons: {'wall': 8, 'patience': 8, None: 4, 'clean': 2, 'exhausted': 2}
+files ending on ops: [] on wall: [0, 4, 14, 16, 21, 27, 28, 29]
+skipped_budget total: 0

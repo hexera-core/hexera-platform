@@ -269,7 +269,7 @@ def test_the_round_result_surface_is_exactly_the_agreed_fields(field):
     assert field in names
     assert names == {"tool_calls", "assistant_text", "reasoning_text", "reasoning_tokens",
                      "finish_reason", "input_tokens", "cached_input_tokens", "output_tokens",
-                     "provider", "failure_marker"}
+                     "cache_write_tokens", "cache_write_30m_tokens", "provider", "failure_marker"}
 
 
 async def test_no_provider_object_is_reachable_from_the_result(monkeypatch):

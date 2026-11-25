@@ -1,0 +1,20 @@
+i label | exp1 rows: own / defeature (site,part) | own past k=12 now | s/candidate run (exp1) | start s | wall to run own+defeature in exp1
+0 boundary_recovery | 4 / 0 1 | 0 | 90 | 0 | 449 rows 5
+1 no_volume | 6 / 1 1 | 0 | 31 | 0 | 252 rows 8
+2 edge_through_face | 3 / 0 1 | 0 | 22 | 23 | 109 rows 4
+4 edge_through_face | 4 / 0 1 | 0 | 37 | 23 | 207 rows 5
+5 overlapping_facets | 17 / 2 0 | 6 | 24 | 62 | 518 rows 19
+10 hxt_3d_failed | 6 / 1 1 | 0 | 251 | 0 | 2007 rows 8
+12 low_quality | 6 / 1 2 | 0 | 14 | 8 | 134 rows 9
+13 low_quality | 6 / 1 2 | 0 | 14 | 9 | 134 rows 9
+14 periodic_surface | 7 / 0 1 | 0 | 82 | 0 | 659 rows 8
+16 body_overlap | 8 / 0 1 | 0 | 68 | 61 | 673 rows 9
+17 body_overlap | 8 / 0 1 | 0 | 5 | 3 | 44 rows 9
+19 body_overlap | 13 / 0 1 | 1 | 1 | 192 | 203 rows 14
+20 body_overlap | 8 / 0 1 | 0 | 3 | 21 | 50 rows 9
+21 body_overlap | 22 / 0 1 | 11 | 49 | 63 | 1187 rows 23
+22 brep_invalid | 4 / 0 0 | 0 | 1 | 0 | 5 rows 4
+24 open_shell | 8 / 1 1 | 0 | 37 | 77 | 451 rows 10
+27 self_intersection | 7 / 1 2 | 0 | 71 | 54 | 767 rows 10
+28 timeout_crash | 8 / 0 1 | 0 | 11 | 21 | 121 rows 9
+29 self_intersection | 9 / 1 1 | 0 | 42 | 10 | 471 rows 11

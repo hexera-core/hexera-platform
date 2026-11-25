@@ -1,0 +1,8 @@
+{"at": 1795483237.2156017, "n_shards": 6, "shard_index": 4, "t": "init", "wave": "normal", "wave_id": "d9-live"}
+{"at": 1795483239.3865407, "file": "_route_probe", "id": "6abe0107084c4cf0b6ad3dcc4e86a8a3", "t": "reserve", "u": 231362}
+{"at": 1795483242.0283122, "cached": 0, "cw": 0, "cw30": 0, "file": "_route_probe", "id": "6abe0107084c4cf0b6ad3dcc4e86a8a3", "in": 86, "job": "", "kind": "route_probe", "model": "gpt-6-astra", "out": 18, "provider": "openai", "t": "settle", "u": 1760}
+{"at": 1795483393.259156, "file": "dad0185f630ba3b554742929f853a42fa6f699782c310902093deb6489681b6b", "id": "576f834beba14750aea752d0ff9fddfc", "t": "reserve", "u": 296538}
+{"at": 1795483399.1051877, "cached": 3355, "cw": 3502, "cw30": 3502, "file": "dad0185f630ba3b554742929f853a42fa6f699782c310902093deb6489681b6b", "id": "576f834beba14750aea752d0ff9fddfc", "in": 6860, "job": "d9-live:dad0185f630b:search_ai", "kind": "repair_v4_propose", "model": "gpt-6-astra", "out": 189, "provider": "openai", "t": "settle", "u": 56610}
+{"at": 1795483505.5734541, "file": "dad0185f630ba3b554742929f853a42fa6f699782c310902093deb6489681b6b", "id": "7d32b5c4a48449bfb66b2362ea4f5a05", "t": "reserve", "u": 346112}
+{"at": 1795483510.5523677, "cached": 6857, "cw": 4595, "cw30": 4595, "file": "dad0185f630ba3b554742929f853a42fa6f699782c310902093deb6489681b6b", "id": "7d32b5c4a48449bfb66b2362ea4f5a05", "in": 11455, "job": "d9-live:dad0185f630b:search_ai", "kind": "repair_v4_propose", "model": "gpt-6-astra", "out": 170, "provider": "openai", "t": "settle", "u": 72824}
+{"at": 1795483534.9265387, "capped": true, "file": "dad0185f630ba3b554742929f853a42fa6f699782c310902093deb6489681b6b", "stop": "file_ceiling", "t": "status"}

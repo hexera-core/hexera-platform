@@ -372,6 +372,10 @@ mesh-adopt: ## Fill .env's mesh settings from the executor this session can alre
 #: current if it really was built from these bytes. Recursive on purpose: only the recipes below
 #: pay for the shell call.
 SOURCE_DIGEST = $(shell bash tests/integration/source_digest.sh)
+#: The commit an image is built from, stamped as its org.opencontainers.image.revision label: the 40-hex HEAD of a
+#: CLEAN tree, or "dirty" (an image built from uncommitted work is from no commit). The v4 launcher refuses an image
+#: whose label is not the --image-commit it was handed (devtools/validation/v4_eval/preflight.py).
+SOURCE_REVISION = $(shell test -z "$$(git status --porcelain 2>/dev/null)" && git rev-parse HEAD 2>/dev/null || echo dirty)
 # The compose project this checkout owns - the scope of every destructive target here. Compose
 # derives it by lowercasing the directory name, so this must too, or a destructive target would
 # match nothing and quietly leave what it promised to remove.
@@ -488,7 +492,7 @@ MESH_TOOLCHAIN_TAG ?= meshpipeline-mesh-toolchain:openfoam2412.260127-1
 mesh-image: ##! Build the production mesh image from source - OpenFOAM 2412 + vmtk + gmsh + the app. Self-contained: no registry, no prebuilt base, no credentials. First build downloads OpenFOAM (slow); Docker caches that layer afterwards.
 	@# Stamped with the same working-tree digest the application images carry, so the native
 	@# runners can prove the image was built from the checkout they are testing.
-	docker build --target mesh --build-arg MESH_SOURCE_TREE="$(SOURCE_DIGEST)" --build-arg APP_VERSION="$(PRODUCT_VERSION)" -t $(MESH_IMAGE) .
+	docker build --target mesh --build-arg MESH_SOURCE_TREE="$(SOURCE_DIGEST)" --build-arg APP_VERSION="$(PRODUCT_VERSION)" --label org.opencontainers.image.revision="$(SOURCE_REVISION)" -t $(MESH_IMAGE) .
 	@echo "built $(MESH_IMAGE)"
 
 mesh-toolchain: ##! OPTIONAL: build just the pinned native floor (OpenFOAM 2412 + vmtk + gmsh libs) to prewarm the cache or inspect it. `make mesh-image` builds this automatically - you never need to run it first.

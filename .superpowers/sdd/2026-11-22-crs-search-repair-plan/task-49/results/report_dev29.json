@@ -1,0 +1,371 @@
+{
+ "arms": {
+  "input_only": {
+   "by_defect_kind": {
+    "body_overlap": {
+     "clean": 0,
+     "clean_rate": 0.0,
+     "conclusive": 7,
+     "files": 7,
+     "inconclusive": 0,
+     "measured": true
+    },
+    "brep_invalid": {
+     "clean": 0,
+     "clean_rate": 0.0,
+     "conclusive": 2,
+     "files": 2,
+     "inconclusive": 0,
+     "measured": true
+    },
+    "open_shell": {
+     "clean": 0,
+     "clean_rate": 0.0,
+     "conclusive": 3,
+     "files": 3,
+     "inconclusive": 0,
+     "measured": true
+    },
+    "other": {
+     "clean": 0,
+     "clean_rate": 0.0,
+     "conclusive": 13,
+     "files": 13,
+     "inconclusive": 0,
+     "measured": true
+    },
+    "periodic_surface": {
+     "clean": 0,
+     "clean_rate": 0.0,
+     "conclusive": 1,
+     "files": 1,
+     "inconclusive": 0,
+     "measured": true
+    },
+    "self_intersection": {
+     "clean": 0,
+     "clean_rate": 0.0,
+     "conclusive": 3,
+     "files": 3,
+     "inconclusive": 0,
+     "measured": true
+    }
+   },
+   "clean_gain": 0,
+   "clean_gain_rate": 0.0,
+   "clean_in": 0,
+   "clean_out": 0,
+   "clean_rate": 0.0,
+   "conclusive": 29,
+   "files": 29,
+   "inconclusive": 0,
+   "inconclusive_rate": 0.0,
+   "layers": {
+    "clean": 0,
+    "faithful_ok": 14,
+    "panel_all_pass": 1,
+    "valid": 15
+   },
+   "measured": true,
+   "model_usd": {
+    "per_file_mean": 0.0,
+    "total": 0.0
+   },
+   "paired": {
+    "clean": 0,
+    "clean_gain": 0,
+    "clean_in": 0,
+    "clean_rate": 0.0,
+    "n": 26
+   },
+   "regressions": {
+    "clean_to_unclean": 0,
+    "either": 0,
+    "fewer_panel_passes": 0
+   },
+   "spend_metered": true,
+   "wall_s": {
+    "max": 888.712,
+    "per_file_mean": 105.81303448275862,
+    "total": 3068.578
+   }
+  },
+  "search_det": {
+   "by_defect_kind": {
+    "body_overlap": {
+     "clean": 0,
+     "clean_rate": 0.0,
+     "conclusive": 7,
+     "files": 7,
+     "inconclusive": 0,
+     "measured": true
+    },
+    "brep_invalid": {
+     "clean": null,
+     "clean_rate": null,
+     "conclusive": 1,
+     "files": 2,
+     "inconclusive": 1,
+     "measured": false
+    },
+    "open_shell": {
+     "clean": null,
+     "clean_rate": null,
+     "conclusive": 2,
+     "files": 3,
+     "inconclusive": 1,
+     "measured": false
+    },
+    "other": {
+     "clean": 0,
+     "clean_rate": 0.0,
+     "conclusive": 13,
+     "files": 13,
+     "inconclusive": 0,
+     "measured": true
+    },
+    "periodic_surface": {
+     "clean": 0,
+     "clean_rate": 0.0,
+     "conclusive": 1,
+     "files": 1,
+     "inconclusive": 0,
+     "measured": true
+    },
+    "self_intersection": {
+     "clean": 0,
+     "clean_rate": 0.0,
+     "conclusive": 3,
+     "files": 3,
+     "inconclusive": 0,
+     "measured": true
+    }
+   },
+   "clean_gain": 0,
+   "clean_gain_rate": 0.0,
+   "clean_in": 0,
+   "clean_out": 0,
+   "clean_rate": 0.0,
+   "conclusive": 27,
+   "files": 29,
+   "inconclusive": 2,
+   "inconclusive_rate": 0.06896551724137931,
+   "layers": {
+    "clean": 0,
+    "faithful_ok": 14,
+    "panel_all_pass": 1,
+    "valid": 15
+   },
+   "measured": true,
+   "model_usd": {
+    "per_file_mean": 0.0,
+    "total": 0.0
+   },
+   "paired": {
+    "clean": 0,
+    "clean_gain": 0,
+    "clean_in": 0,
+    "clean_rate": 0.0,
+    "n": 26
+   },
+   "regressions": {
+    "clean_to_unclean": 0,
+    "either": 0,
+    "fewer_panel_passes": 0
+   },
+   "spend_metered": true,
+   "wall_s": {
+    "max": 900.878,
+    "per_file_mean": 95.14741379310345,
+    "total": 2759.275
+   }
+  },
+  "staged": {
+   "by_defect_kind": {
+    "body_overlap": {
+     "clean": 0,
+     "clean_rate": 0.0,
+     "conclusive": 7,
+     "files": 7,
+     "inconclusive": 0,
+     "measured": true
+    },
+    "brep_invalid": {
+     "clean": 0,
+     "clean_rate": 0.0,
+     "conclusive": 2,
+     "files": 2,
+     "inconclusive": 0,
+     "measured": true
+    },
+    "open_shell": {
+     "clean": null,
+     "clean_rate": null,
+     "conclusive": 1,
+     "files": 3,
+     "inconclusive": 2,
+     "measured": false
+    },
+    "other": {
+     "clean": 1,
+     "clean_rate": 0.07692307692307693,
+     "conclusive": 13,
+     "files": 13,
+     "inconclusive": 0,
+     "measured": true
+    },
+    "periodic_surface": {
+     "clean": 0,
+     "clean_rate": 0.0,
+     "conclusive": 1,
+     "files": 1,
+     "inconclusive": 0,
+     "measured": true
+    },
+    "self_intersection": {
+     "clean": 0,
+     "clean_rate": 0.0,
+     "conclusive": 3,
+     "files": 3,
+     "inconclusive": 0,
+     "measured": true
+    }
+   },
+   "clean_gain": 1,
+   "clean_gain_rate": 0.037037037037037035,
+   "clean_in": 0,
+   "clean_out": 1,
+   "clean_rate": 0.037037037037037035,
+   "conclusive": 27,
+   "files": 29,
+   "inconclusive": 2,
+   "inconclusive_rate": 0.06896551724137931,
+   "layers": {
+    "clean": 1,
+    "faithful_ok": 14,
+    "panel_all_pass": 2,
+    "valid": 15
+   },
+   "measured": true,
+   "model_usd": {
+    "per_file_mean": 0.0,
+    "total": 0.0
+   },
+   "paired": {
+    "clean": 1,
+    "clean_gain": 1,
+    "clean_in": 0,
+    "clean_rate": 0.038461538461538464,
+    "n": 26
+   },
+   "regressions": {
+    "clean_to_unclean": 0,
+    "either": 1,
+    "fewer_panel_passes": 1
+   },
+   "spend_metered": true,
+   "wall_s": {
+    "max": 712.804,
+    "per_file_mean": 185.63944827586207,
+    "total": 5383.544
+   }
+  }
+ },
+ "budgets": {
+  "input_only": {
+   "model_usd": 0.0,
+   "ops": 60,
+   "wall_s": 600.0
+  },
+  "search_det": {
+   "model_usd": 0.0,
+   "ops": 60,
+   "wall_s": 600.0
+  },
+  "staged": {
+   "model_usd": 0.0,
+   "ops": 60,
+   "wall_s": 600.0
+  }
+ },
+ "commit": "1b57059222998a3f0175794e29aeed8112321f01",
+ "declined_stratum": {
+  "arms": {
+   "input_only": {
+    "declined": 0,
+    "files": 0,
+    "inconclusive": 0,
+    "unexpectedly_clean": 0
+   },
+   "search_det": {
+    "declined": 0,
+    "files": 0,
+    "inconclusive": 0,
+    "unexpectedly_clean": 0
+   },
+   "staged": {
+    "declined": 0,
+    "files": 0,
+    "inconclusive": 0,
+    "unexpectedly_clean": 0
+   }
+  },
+  "counted_as": "none: not a failure, not a gain",
+  "expected_outcome": "correctly_declined",
+  "files": 0
+ },
+ "files": 29,
+ "files_measured_strata": 29,
+ "frozen_commit_checked": false,
+ "heldout_split": false,
+ "image": "sha256:633e1c3bfd8e2c0fb97b166fa28ff834d0433b84ca8e77c24eb4b00c83ece361",
+ "marginals": {
+  "ai_marginal (search_ai - search_det)": {
+   "reason": "arm search_ai is not in this wave",
+   "value": null
+  },
+  "deterministic_marginal (staged - input_only)": {
+   "files_gained": 1,
+   "n_paired": 27,
+   "reason": null,
+   "value": 0.037037037037037035
+  }
+ },
+ "not_reported_here": [
+  "cheap/full agreement (measured by the re-probe: collect.py report['agreement'])",
+  "per-op or per-layer pass counts below the four in `layers`"
+ ],
+ "numbers_valid": false,
+ "paired_set": {
+  "arms": [
+   "input_only",
+   "staged",
+   "search_det"
+  ],
+  "excluded_not_measured": [],
+  "n_files": 26,
+  "of": 29
+ },
+ "primary_artifact": false,
+ "slot": null,
+ "slot_verified_against_store": false,
+ "spend": {
+  "cap_usd": 50.0,
+  "model_usd_total": 0.0,
+  "unmetered_arms": []
+ },
+ "split": "dev",
+ "status": "UNRELIABLE",
+ "wall": {
+  "shard_seconds_total": 14837.1,
+  "shards": 5,
+  "slowest_shard_s": 6273.0
+ },
+ "warnings": [
+  "search_det: every conclusive file has the same outcome (0/27 clean): a constant verdict looks like a broken harness, not a result - but this is ALSO what a real result looks like when two deterministic arms truly agree on every shared file, or when an arm is perfect on the clean-control split: check that the harness varies the arm before discarding the numbers",
+  "input_only and search_det are indistinguishable on all 27 files they share: check that the harness varies the arm; this is ALSO what a real result looks like when two deterministic arms truly agree on every shared file, or when an arm is perfect on the clean-control split: check that the harness varies the arm before discarding the numbers"
+ ],
+ "wave": "t2_smoke_dev",
+ "wave_id": "t49-dev",
+ "wave_type": "normal"
+}

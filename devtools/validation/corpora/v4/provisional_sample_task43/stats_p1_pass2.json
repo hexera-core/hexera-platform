@@ -1,0 +1,9 @@
+{
+ "pass": 2,
+ "seconds": 115.87141949499983,
+ "cache_get": 21,
+ "cache_hit": 20,
+ "mesher_runs": {
+  "gmsh_default": 1
+ }
+}

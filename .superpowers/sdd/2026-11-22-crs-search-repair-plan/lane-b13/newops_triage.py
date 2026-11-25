@@ -1,0 +1,549 @@
+"""B13: triage a snapshot wave's rows - for every file still failing, what still fails and what the NEW ops did.
+
+Usage:  python newops_triage.py OUT_PREFIX ROWS_GLOB [ROWS_GLOB ...] [--note TEXT]... [--traces TRACE_GLOB ...]
+        e.g. python newops_triage.py /tmp/v2 'snap-v2-dev/*/rows.jsonl' 'snap-v2-clean/*/rows.jsonl' \
+                 --traces 'snap-v2-traces/**/*.json'
+Writes OUT_PREFIX.json and OUT_PREFIX.md. Reads the rows and, WHERE PRESENT, the per-file search traces (no kernel, no
+model, no VM); safe to re-run as shards land - each run is a snapshot of whatever exists.
+
+TRACES. A trace (`Trace.to_dict()`: {"events": [...]}) is matched to a search row when its PATH contains the row's arm
+(`search_det` / `search_ai`) AND either the first 12 hex of the row's sha256 or the stem of the row's file name. A row
+with a trace is triaged from the trace (every candidate event); a row without one falls back to the row's op table.
+From a trace, per new op:
+  - conformalise is split by mode: `conformalise:fragment` / `conformalise:cut_by` (the candidate's params);
+  - every evaluated candidate, TIERS MATCHED (no cap): `full_vs_full:better|equal|worse` when the child was confirmed
+    by the full panel and its parent was full; `cheap_vs_cheap:...` when both are cheap; otherwise
+    `cheap_vs_full:` / `cheap_vs_unknown:` on the tier-invariant keys only (made_INVALID / made_VALID /
+    stays_valid|stays_INVALID:dev_less|dev_same|dev_more);
+  - `kept_on_best_path`: the candidate produced a state on `stop.best_path`. That is the BEST state's path; whether it
+    was DELIVERED is the delivery gate's call, read off the row (out vs in), not the trace;
+  - `never_proposed:site_present` vs `never_proposed:no_site`: whether a site the op is proposed for (overlap for
+    fuse/conformalise, unbounded for trim_unbounded, DEFEATURE_SITE_KINDS for defeature) was open at any expanded
+    state;
+  - defeature: candidates by params.source (site / recognised) and the recognised features per call (len(groups), and
+    the holes/blends the rationale names).
+STILL IMPOSSIBLE from traces, and not inferred here:
+  - a full-panel verdict for EVERY candidate: only the top-k children per expansion are confirmed, and the best state
+    is; every other candidate has a cheap score only (and member names are not in any score);
+  - the measured cut depth / bound of a conformalise cut: it is in the op's Diff params, not in the trace;
+  - why the det sweep did NOT propose an op: its skip reasons live in the generator (`skipped`, `notes`), keyed by
+    reason, never written to the trace; only the site-present / no-site split above is derivable.
+
+Per failing (arm, file) row:
+  failure kind   - layer 1 first: `invalid: <sorted distinct hard codes>`; else `panel: <sorted failing member/error_kind>`.
+  new-op outcome - for each of defeature, fuse, conformalise (cut_by at any depth / fragment; the row does not split
+                   the modes), trim_unbounded:
+                     never_proposed  the op is absent from the row's op table (not proposed, or declined in advance
+                                     by the sweep - the row's `not_proposed` counter is keyed by reason, not by op)
+                     declined:<code> / failed:<code> / invalid:<code>  rejected, with the op's own first reason token
+                     applied:made_INVALID / made_VALID / stays_valid|stays_INVALID:dev_less|dev_same|dev_more   evaluated; a CHEAP
+                                     child against a parent of unrecorded tier, so ONLY validity and deviation are
+                                     compared (from `deltas`: the first 8 evaluated candidates of the whole search)
+                     applied:unscored(past deltas cap)  evaluated beyond the deltas cap
+                     duplicate / inconclusive / skipped_budget
+Grouped by failure kind (and per individual code / member), so it shows where each new op bites and where it does
+nothing."""
+from __future__ import annotations
+
+import glob
+import json
+import re
+import sys
+from collections import Counter, defaultdict
+from typing import Any
+
+NEW_OPS = ("defeature", "fuse", "conformalise", "trim_unbounded")
+#: trace-level split of conformalise by mode; the row op table cannot split it
+TRACE_OPS = ("defeature", "fuse", "conformalise:cut_by", "conformalise:fragment", "trim_unbounded")
+#: the site kinds each op is proposed at (search.DetGenerator; DEFEATURE_SITE_KINDS copied from search.py)
+SITE_KINDS = {"defeature": {"sliver", "proximity", "pole", "self_overlap", "intersection", "timeout"},
+              "fuse": {"overlap"}, "conformalise:cut_by": {"overlap"}, "conformalise:fragment": {"overlap"},
+              "conformalise": {"overlap"}, "trim_unbounded": {"unbounded"}}
+SEARCH_ARMS = ("search_det", "search_ai")
+
+
+def load(patterns: list[str]) -> list[dict]:
+    rows: dict[tuple, dict] = {}
+    for pat in patterns:
+        for path in sorted(glob.glob(pat)):
+            split = path.split("/")[-3] if path.count("/") >= 2 else "?"
+            with open(path) as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    r = json.loads(line)
+                    r["_split"] = split
+                    rows[(split, r.get("arm"), r.get("sha256") or r.get("name"))] = r   # a re-run row replaces
+    return list(rows.values())
+
+
+ARM_ORDER = ("input_only", "staged", "search_det", "search_ai")
+
+
+def row_gaps(patterns: list[str]) -> dict[str, list]:
+    """From rows.partial.jsonl (which OMITS excluded pairs, and whose EXCLUDED.json is written only at shard end):
+    files the shard has MOVED PAST with arms missing = excluded pairs whose reason is not yet readable; and each
+    shard's current file (may still be running). A rollback_detail crash kills staged + both search arms in seconds,
+    so its signature is a passed-over file with only `input_only`."""
+    passed, current = [], []
+    for pat in patterns:
+        for path in sorted(glob.glob(pat)):
+            if not path.endswith("rows.partial.jsonl"):
+                continue
+            order: list[str] = []
+            arms: dict[str, dict] = defaultdict(dict)
+            with open(path) as fh:
+                for line in fh:
+                    if line.strip():
+                        r = json.loads(line)
+                        if r.get("sha256") not in arms:
+                            order.append(r.get("sha256"))
+                        arms[r.get("sha256")][r.get("arm")] = r
+            shard = path.split("/")[-2]
+            for i, sha in enumerate(order):
+                have = arms[sha]
+                missing = [a for a in ARM_ORDER if a not in have]
+                if not missing:
+                    continue
+                item = {"shard": shard, "name": next(iter(have.values())).get("name"), "have": sorted(have),
+                        "missing": missing,
+                        "crash_signature": sorted(have) == ["input_only"] and i < len(order) - 1}
+                (current if i == len(order) - 1 else passed).append(item)
+    return {"passed_over_with_missing_arms": passed, "current_file_per_shard": current}
+
+
+def load_excluded(patterns: list[str]) -> list[dict]:
+    """EXCLUDED*.json beside each rows file: (file, arm) pairs that produced NO row. Classed by reason: `deadline` (the
+    wave was stopped before the pair ran: UNMEASURED, never a failure), `file_wall` (the file's own wall clock),
+    `harness_crash:rollback_detail` (the A8 `:g`-on-None TypeError in stages.rollback_detail, present at 5c43220a,
+    fixed b320e979), `harness_crash:other` (any other exception). A crash is the HARNESS's, never a repair failure."""
+    out: dict[tuple, dict] = {}
+    dirs = {path.rsplit("/", 1)[0] for pat in patterns for path in glob.glob(pat)}
+    for d in sorted(dirs):
+        split = d.split("/")[-2] if d.count("/") >= 1 else "?"
+        for path in sorted(glob.glob(d + "/EXCLUDED*.json")):
+            try:
+                with open(path) as fh:
+                    items = json.load(fh)
+            except (OSError, ValueError):
+                continue
+            for x in items if isinstance(items, list) else []:
+                reason = str(x.get("reason") or "")
+                cls = ("deadline" if "deadline" in reason.lower() else
+                       "file_wall" if ("file_timeout" in reason or "wall clock" in reason.lower()) else
+                       "harness_crash:rollback_detail" if ("unsupported format string" in reason
+                                                          or "rollback_detail" in reason
+                                                          or ("TypeError" in reason and "format" in reason)) else
+                       "harness_crash:other")
+                out[(split, x.get("arm"), x.get("sha256") or x.get("name"))] = {**x, "_split": split, "_class": cls}
+    return list(out.values())
+
+
+def failure_kind(r: dict) -> tuple[str, list[str]]:
+    """(kind, its parts). Validity first: an invalid output is not meshed meaningfully past layer 1."""
+    t = r.get("triage") or {}
+    valid = t.get("valid") or {}
+    if not r.get("out_valid", valid.get("ok", False)):
+        codes = sorted(set(valid.get("hard") or [])) or ["(no hard code recorded)"]
+        return "invalid: " + ", ".join(codes), [f"valid:{c}" for c in codes]
+    members = sorted({f"{m.get('name')}/{m.get('error_kind') or m.get('status')}" for m in t.get("panel_failing") or []})
+    members = members or ["(no failing member recorded)"]
+    return "panel: " + ", ".join(members), [f"panel:{m}" for m in members]
+
+
+def _code(reason: str) -> str:
+    """The reason's code: the first token, e.g. `nothing_to_fuse`, `invalid_params`, `stage 'x'`."""
+    s = str(reason).strip()
+    for sep in (":", " - "):
+        if sep in s:
+            s = s.split(sep)[0]
+    return s.strip()[:60] or "(none)"
+
+
+def _cmp(parent: Any, score: Any) -> str:
+    """Same-tier comparison of two whole score tuples (only ever called with BOTH sides on the same tier)."""
+    try:
+        p, s = list(parent), list(score)
+    except TypeError:
+        return "unscored"
+    try:
+        return "better" if s > p else ("equal" if s == p else "worse")
+    except TypeError:  # a None inside a score
+        return "unscored"
+
+
+#: score() = (valid, panel passes, min SICN, -max deviation mm, -churn). Keys 0, 3 and 4 come from layers 1 and 3,
+#: which BOTH tiers run, so they compare across tiers; keys 1 and 2 depend on which panel members ran (the cheap tier
+#: meshes a subset), so a cheap child against a full parent is NOT comparable on them (lane D's correction).
+KEY_VALID, KEY_DEV, KEY_CHURN = 0, 3, 4
+
+
+def _cross_tier(parent: Any, score: Any) -> str:
+    """A child scored on one tier against a parent on another (or unknown) tier: tier-invariant keys only."""
+    try:
+        pv, sv = int(parent[KEY_VALID]), int(score[KEY_VALID])
+    except (TypeError, IndexError, ValueError):
+        return "unscored"
+    if sv < pv:
+        return "made_INVALID"
+    if sv > pv:
+        return "made_VALID"
+    try:
+        pd, sd = float(parent[KEY_DEV]), float(score[KEY_DEV])
+    except (TypeError, IndexError, ValueError):
+        return ("stays_valid:" if pv else "stays_INVALID:") + "dev_unscored"
+    return ("stays_valid:" if pv else "stays_INVALID:") + ("dev_less" if sd > pd else "dev_same" if sd == pd else "dev_more")
+
+
+def op_outcomes(r: dict, op: str) -> Counter:
+    """Every fate this op met on this row, counted."""
+    s = ((r.get("triage") or {}).get("search")) or {}
+    stats = (s.get("ops") or {}).get(op)
+    out: Counter = Counter()
+    if not stats:
+        out["never_proposed"] += 1
+        return out
+    for fate in ("declined", "failed", "invalid"):
+        for reason, n in (stats.get(fate) or {}).items():
+            out[f"{fate}:{_code(reason)}"] += int(n)
+    for fate in ("duplicate", "inconclusive", "skipped_budget"):
+        if stats.get(fate):
+            out[fate] += int(stats[fate])
+    evaluated = int(stats.get("evaluated") or 0)
+    scored = [d for d in s.get("deltas") or [] if d.get("op") == op]
+    for d in scored[:evaluated]:  # child: CHEAP tier; parent: its state's score, tier not in the row -> cross-tier
+        out[f"applied:{_cross_tier(d.get('parent'), d.get('score'))}"] += 1
+    if evaluated > len(scored):
+        out["applied:unscored(past deltas cap)"] += evaluated - len(scored)
+    return out
+
+
+def load_traces(patterns: list[str]) -> dict[str, list[dict]]:
+    out: dict[str, list[dict]] = {}
+    for pat in patterns:
+        for path in sorted(glob.glob(pat, recursive=True)):
+            try:
+                with open(path) as fh:
+                    d = json.load(fh)
+            except (OSError, ValueError):
+                continue
+            events = d.get("events") if isinstance(d, dict) else d
+            if isinstance(events, list):
+                out[path] = events
+    return out
+
+
+def trace_for(r: dict, traces: dict[str, list[dict]]) -> tuple[str, list[dict]] | None:
+    arm = str(r.get("arm"))
+    sha = str(r.get("sha256") or "")[:12]
+    stem = str(r.get("name") or "").rsplit("/", 1)[-1].rsplit(".", 1)[0]
+    for path, events in traces.items():
+        if arm in path and ((sha and sha in path) or (stem and stem in path)):
+            return path, events
+    return None
+
+
+def _trace_op(e: dict) -> str:
+    op = str(e.get("op"))
+    if op == "conformalise":
+        mode = str((e.get("params") or {}).get("mode") or "")
+        return "conformalise:cut_by" if mode.startswith("cut_by") else f"conformalise:{mode or '?'}"
+    return op
+
+
+def trace_outcomes(events: list[dict]) -> dict[str, Any]:
+    """Per new op, every fate it met in this search, from the candidate / confirm / expand / stop events."""
+    stop = next((e for e in reversed(events) if e.get("kind") == "stop"), {})
+    on_path = set(stop.get("best_path") or [])
+    confirmed = {e.get("state"): e.get("score") for e in events if e.get("kind") == "confirm"}
+    tier_of = {e.get("state"): e.get("tier") for e in events if e.get("kind") == "expand"}
+    tier_of.update({s_: "full" for s_ in confirmed})
+    site_kinds = {str(s.get("kind")) for e in events if e.get("kind") == "expand" for s in e.get("sites") or []}
+    ops: dict[str, Counter] = {op: Counter() for op in TRACE_OPS}
+    extra: dict[str, Counter] = {"defeature_source": Counter(), "defeature_features_per_call": Counter(),
+                                 "defeature_holes": Counter(), "defeature_blends": Counter(), "proposed_by": Counter()}
+    for e in events:
+        if e.get("kind") != "candidate":
+            continue
+        op = _trace_op(e)
+        if op not in ops:
+            continue
+        c = ops[op]
+        extra["proposed_by"][f"{op}/{e.get('source')}"] += 1
+        outcome = e.get("outcome")
+        if outcome == "evaluated":
+            child = e.get("child")
+            ptier = tier_of.get(e.get("state"))  # the parent's tier when it was expanded (full if confirmed)
+            if child in confirmed and ptier == "full":
+                c[f"full_vs_full:{_cmp(e.get('parent_score'), confirmed[child])}"] += 1
+            elif ptier == "cheap":
+                c[f"cheap_vs_cheap:{_cmp(e.get('parent_score'), e.get('score'))}"] += 1
+            else:
+                c[f"cheap_vs_{ptier or 'unknown'}:{_cross_tier(e.get('parent_score'), e.get('score'))}"] += 1
+            if child in on_path:
+                c["kept_on_best_path"] += 1
+        elif outcome == "rejected":
+            errors = e.get("errors") or ["(no reason recorded)"]
+            c[f"{_REJECTED_AS.get(str(e.get('stage')), 'failed')}:{_code(errors[0])}"] += 1
+        else:
+            c[str(outcome)] += 1
+        if op == "defeature":
+            params = e.get("params") or {}
+            extra["defeature_source"][str(params.get("source"))] += 1
+            if params.get("source") == "recognised":
+                extra["defeature_features_per_call"][str(len(params.get("groups") or []))] += 1
+                m = re.search(r"\((\d+) holes, (\d+) blends\)", str(e.get("rationale") or ""))
+                if m:
+                    extra["defeature_holes"][m.group(1)] += 1
+                    extra["defeature_blends"][m.group(2)] += 1
+    for op, c in ops.items():
+        if not c:
+            c["never_proposed:site_present" if site_kinds & SITE_KINDS[op] else "never_proposed:no_site"] += 1
+    return {"ops": ops, "extra": extra, "best_path": list(on_path)}
+
+
+#: the search's rejection stages, as arms.search_triage names them
+_REJECTED_AS = {"validate": "invalid", "declined": "declined", "failed": "failed", "error": "failed"}
+
+
+def triage(rows: list[dict], traces: dict[str, list[dict]] | None = None,
+           excluded: list[dict] | None = None) -> dict:
+    files = Counter((r["_split"], r.get("arm")) for r in rows)
+    failing = [r for r in rows if not r.get("inconclusive") and not r.get("out_clean")]
+    inconclusive = Counter((r["_split"], r.get("arm")) for r in rows if r.get("inconclusive"))
+    groups: dict[str, dict] = {}
+    parts: dict[str, dict] = {}
+    per_row = []
+    n_traced: Counter = Counter()
+    defeature_extra: dict[str, Counter] = defaultdict(Counter)
+    for r in failing:
+        kind, bits = failure_kind(r)
+        arm = r.get("arm")
+        is_search = arm in SEARCH_ARMS
+        found = trace_for(r, traces or {}) if is_search else None
+        extra: dict = {}
+        if found is not None:
+            got = trace_outcomes(found[1])
+            outcomes, extra = got["ops"], {k: dict(v) for k, v in got["extra"].items() if v}
+            n_traced[arm] += 1
+        else:
+            outcomes = {op: op_outcomes(r, op) for op in NEW_OPS} if is_search else {}
+        open_sites = ((r.get("triage") or {}).get("search") or {}).get("open_sites") or {}
+        per_row.append({"split": r["_split"], "arm": arm, "name": r.get("name"), "kind": kind,
+                        "panel": f"{r.get('in_panel_passes')}->{r.get('out_panel_passes')}/{r.get('panel_size')}",
+                        "valid": f"{r.get('in_valid')}->{r.get('out_valid')}", "open_sites": open_sites,
+                        "from": "trace" if found is not None else "row",
+                        "trace": found[0] if found is not None else None, "trace_extra": extra,
+                        "new_ops": {op: dict(c) for op, c in outcomes.items()},
+                        "overlap": (r.get("triage") or {}).get("overlap")})
+        for key, table in ((kind, groups), *((b, parts) for b in bits)):
+            g = table.setdefault(key, {"rows": Counter(), "files": set(), "ops": defaultdict(Counter),
+                                       "rows_touched": Counter(), "open_sites": Counter()})
+            g["rows"][arm] += 1
+            g["files"].add(r.get("name"))
+            g["open_sites"].update(open_sites)
+            for op, c in outcomes.items():
+                g["ops"][op].update(c)
+                if not all(k.startswith("never_proposed") for k in c):
+                    g["rows_touched"][op] += 1
+        for k, v in extra.items():
+            defeature_extra[k].update(v)
+    def freeze(table: dict) -> dict:
+        return {k: {"rows": dict(v["rows"]), "files": len(v["files"]), "open_sites": dict(v["open_sites"]),
+                    "rows_where_proposed": dict(v["rows_touched"]),
+                    "ops": {op: dict(c.most_common()) for op, c in v["ops"].items()}}
+                for k, v in sorted(table.items(), key=lambda kv: -sum(kv[1]["rows"].values()))}
+    # a FILE still failing: conclusive and not clean in every repair arm it ran (input_only is the baseline, not a repair)
+    by_file: dict[tuple, dict] = defaultdict(dict)
+    for r in rows:
+        if r.get("arm") != "input_only":
+            by_file[(r["_split"], r.get("name"))][r.get("arm")] = r
+    still = {}
+    for (split, name), arms in by_file.items():
+        if any(x.get("out_clean") for x in arms.values()) or all(x.get("inconclusive") for x in arms.values()):
+            continue
+        conclusive = {a: x for a, x in arms.items() if not x.get("inconclusive")}
+        last = next(conclusive[a] for a in ("search_ai", "search_det", "staged", *conclusive) if a in conclusive)
+        gone = sorted(a for a in arms if a not in conclusive)
+        still[f"{split}/{name}"] = failure_kind(last)[0] + (f"  [read off {last.get('arm')}; inconclusive: "
+                                                             f"{', '.join(gone)}]" if gone else "")
+    # the CLEAN CONTROL: every clean-split file, every arm - a regression is a conclusive row whose input was clean and
+    # whose output is not
+    control: dict[str, Counter] = defaultdict(Counter)
+    regressions = []
+    for r in rows:
+        if "clean" not in r["_split"].rsplit("/", 1)[-1].split("-"):
+            continue
+        c = control[str(r.get("arm"))]
+        c["rows"] += 1
+        if r.get("inconclusive"):
+            c["inconclusive"] += 1
+        elif r.get("out_clean"):
+            c["clean"] += 1
+        else:
+            c["not_clean"] += 1
+            if r.get("in_clean"):
+                regressions.append(f"{r['_split']}/{r.get('arm')}/{r.get('name')}")
+    # per failing DEV file: did ANY arm improve its panel-pass count or validity, even short of clean
+    improved: dict[str, dict] = {}
+    for (split, name), arms in by_file.items():
+        if "dev" not in split.rsplit("/", 1)[-1].split("-"):
+            continue
+        if any(x.get("out_clean") for x in arms.values()):
+            continue
+        per = {}
+        for a, x in sorted(arms.items()):
+            if x.get("inconclusive"):
+                per[a] = "inconclusive"
+                continue
+            pin, pout = x.get("in_panel_passes"), x.get("out_panel_passes")
+            vin, vout = bool(x.get("in_valid")), bool(x.get("out_valid"))
+            tag = ("IMPROVED" if (vout and not vin) or (vout == vin and (pout or 0) > (pin or 0)) else
+                   "WORSE" if (vin and not vout) or (vout == vin and (pout or 0) < (pin or 0)) else "same")
+            per[a] = f"{tag} valid {vin}->{vout} panel {pin}->{pout}/{x.get('panel_size')}"
+        improved[f"{split}/{name}"] = {"any_improved": any(v.startswith("IMPROVED") for v in per.values()),
+                                       "arms": per}
+    ex = excluded or []
+    return {"clean_control": {a: dict(c) for a, c in sorted(control.items())}, "clean_control_regressions": regressions,
+            "dev_failing_files": improved,
+            "excluded_by_class": dict(Counter(x["_class"] for x in ex)),
+            "excluded_by_class_arm": dict(Counter(f"{x['_class']}/{x.get('arm')}" for x in ex)),
+            "files_still_failing": len(still), "files_still_failing_by_kind": dict(Counter(still.values()).most_common()),
+            "files_still_failing_list": still,
+            "failing_search_rows_from_trace": dict(n_traced),
+            "trace_extra_totals": {k: dict(v.most_common()) for k, v in defeature_extra.items()},
+            "rows_read": len(rows), "rows_by_split_arm": {f"{s}/{a}": n for (s, a), n in sorted(files.items())},
+            "inconclusive_by_split_arm": {f"{s}/{a}": n for (s, a), n in sorted(inconclusive.items())},
+            "failing_rows": len(failing), "by_kind": freeze(groups), "by_part": freeze(parts), "rows": per_row}
+
+
+def _cell(d: dict, n: int = 6) -> str:
+    items = list(d.items())
+    s = ", ".join(f"{k} {v}" for k, v in items[:n])
+    return (s + (f", +{len(items) - n} more" if len(items) > n else "")) or "-"
+
+
+ROWS_ONLY_CAVEAT = [
+    "**ROWS-ONLY TRIAGE for every search row below without a trace. Unavailable from rows, and why:**",
+    "1. per-op better/worse: rows keep `deltas` for only the FIRST 8 evaluated candidates of the whole search (the "
+    "rest: `applied:unscored(past deltas cap)`), and each delta is a CHEAP-tier child against its parent state's "
+    "score, whose tier the row does not record (FULL for the start and every confirmed state). So rows compare ONLY "
+    "the tier-invariant keys - validity (layer 1) and deviation (layer 3): `applied:made_INVALID` / `made_VALID` / "
+    "`stays_valid|stays_INVALID:dev_less|dev_same|dev_more`. Panel passes and min SICN are NOT compared across tiers.",
+    "2. whether an op is on the best/delivered path: the row has no path; the trace's `stop.best_path` is gone.",
+    "3. conformalise mode (fragment vs cut_by) and cut depth: the row's op table is keyed by op name only.",
+    "4. never-proposed with vs without a target site: the row's `open_sites` is at the best state only, and "
+    "`not_proposed` is keyed by reason, not op; so `never_proposed` here also covers 'declined in advance by the sweep'.",
+    "5. defeature source (site/recognised) and features per call: candidate params are not in the row.",
+    "6. (not available from traces either) a full-panel verdict per candidate: only confirmed states get one.",
+    ""]
+
+
+def markdown(t: dict, notes: list[str] | None = None) -> str:
+    traced = sum(t["failing_search_rows_from_trace"].values())
+    searched = sum(1 for r in t["rows"] if r["arm"] in SEARCH_ARMS)
+    out = ["# New-op triage (B13)", "", *(notes or []), "" if notes else "",
+           *(ROWS_ONLY_CAVEAT if traced < searched else []),
+           "**CLEAN CONTROL** (every clean-split file, every arm; a regression = input clean, output conclusive and not "
+           "clean): " + ("; ".join(f"{a} {c.get('clean', 0)}/{c.get('rows', 0)} clean"
+                                   + (f", {c['inconclusive']} inconclusive" if c.get("inconclusive") else "")
+                                   for a, c in t["clean_control"].items()) or "no clean-split rows yet")
+           + f". Regressions: {len(t['clean_control_regressions'])}"
+           + (" - " + ", ".join(t["clean_control_regressions"][:10]) if t["clean_control_regressions"] else "") + ".",
+           "",
+           (f"**CRASH ATTRIBUTION IS MEASURED ONLY FOR FINISHED SHARDS:** {t['shards']['finished']} of "
+            f"{t['shards']['total']} shards have EXCLUDED.json on disk. run_arm holds exclusions IN MEMORY until a shard "
+            "ends, so for the other " + str(len(t["shards"]["unfinished"])) + " the harness-crash count is UNKNOWN, "
+            "not 0; if the wave is stopped at its deadline those reasons are LOST ('excluded before the stop, reason "
+            "not on disk'), and only the row-gap signature below can point at them." if t.get("shards") else ""),
+           "",
+           "**EXCLUDED (no row):** " + (_cell(t["excluded_by_class_arm"], 20) if t["excluded_by_class_arm"] else "none")
+           + ". Partial shards (no EXCLUDED yet): files passed over with arms MISSING "
+           + str(len(t.get("row_gaps", {}).get("passed_over_with_missing_arms", [])))
+           + " (crash signature, input_only alone: "
+           + str(sum(g["crash_signature"] for g in t.get("row_gaps", {}).get("passed_over_with_missing_arms", [])))
+           + "); files still running " + str(len(t.get("row_gaps", {}).get("current_file_per_shard", [])))
+           + ". `harness_crash:*` pairs died in the HARNESS (e.g. the 5c43220a rollback_detail TypeError): not a repair "
+           "failure, reported apart from file_wall and deadline. `deadline` pairs were never run before the wave was stopped: UNMEASURED, not failures, and counted "
+           "nowhere else in this file; `file_wall` is the file's own wall clock.", "",
+           f"Rows read: {t['rows_read']}. Failing rows (conclusive, not clean): {t['failing_rows']}. "
+           f"FILES still failing in every repair arm: {t['files_still_failing']} (kind read off the last CONCLUSIVE "
+           "arm of search_ai, search_det, staged; inconclusive arms named).", "",
+           "| still-failing kind | files |", "|---|---|",
+           *[f"| {k} | {n} |" for k, n in t["files_still_failing_by_kind"].items()], "",
+           "Rows per split/arm: " + _cell(t["rows_by_split_arm"], 20),
+           "Inconclusive per split/arm: " + (_cell(t["inconclusive_by_split_arm"], 20)), ""]
+    out += [f"Failing search rows triaged from a TRACE: {_cell(t['failing_search_rows_from_trace'])} "
+            "(the rest from the row's op table: no mode split, deltas capped at 8, no best-path or full-confirm).",
+            "Trace extras (defeature source / features per call / holes / blends; proposals per op/source): "
+            + "; ".join(f"{k}: {_cell(v, 8)}" for k, v in t["trace_extra_totals"].items()), ""]
+    imp = t["dev_failing_files"]
+    out += [f"## Failing dev files: did ANY arm improve panel passes or validity short of clean? "
+            f"{sum(v['any_improved'] for v in imp.values())} of {len(imp)} yes", "",
+            "| file | any improved | per arm (valid in->out, panel in->out) |", "|---|---|---|"]
+    for name, v in sorted(imp.items(), key=lambda kv: (not kv[1]["any_improved"], kv[0])):
+        out.append(f"| {name.rsplit('/', 1)[-1]} | {'YES' if v['any_improved'] else 'no'} | "
+                   + "; ".join(f"{a}: {d}" for a, d in v["arms"].items()) + " |")
+    out.append("")
+    dup = sum(int(n) for r in t["rows"] for op, c in r["new_ops"].items()
+              if op.startswith("conformalise") for k, n in c.items() if k == "duplicate")
+    rej = sum(int(n) for r in t["rows"] for op, c in r["new_ops"].items()
+              if op.startswith("conformalise") for k, n in c.items() if k.split(":")[0] in ("declined", "failed", "invalid"))
+    out += [f"**C4 check (body-op declines once recorded as duplicates):** conformalise `duplicate` {dup}, "
+            f"declined/failed/invalid {rej} on failing search rows. On the tip (C4 fixed) duplicates here are a "
+            "FINDING, not the old bug." if dup else
+            f"**C4 check:** conformalise `duplicate` 0, declined/failed/invalid {rej} on failing search rows.", ""]
+    ops_seen = [op for op in dict.fromkeys((*TRACE_OPS, *NEW_OPS))
+                if any(op in g["ops"] for g in t["by_part"].values())]
+    for title, key in (("By individual failure (a row counts under each of its codes/members)", "by_part"),
+                       ("By full failure kind", "by_kind")):
+        out += [f"## {title}", "",
+                "| failure | files | rows by arm | open sites at best | " + " | ".join(ops_seen) + " |",
+                "|---|---|---|---|" + "---|" * len(ops_seen)]
+        for kind, g in t[key].items():
+            cells = []
+            for op in ops_seen:
+                c = g["ops"].get(op, {})
+                prop = g["rows_where_proposed"].get(op, 0)
+                never = {k: v for k, v in c.items() if k.startswith("never_proposed")}
+                seen = {k: v for k, v in c.items() if not k.startswith("never_proposed")}
+                cells.append((f"proposed in {prop} rows; {_cell(seen, 5)}" if prop else "never proposed")
+                             + (f" [not proposed: {_cell(never, 2)}]" if never and prop else ""))
+            out.append(f"| {kind} | {g['files']} | {_cell(g['rows'])} | {_cell(g['open_sites'], 4)} | "
+                       + " | ".join(cells) + " |")
+        out.append("")
+    return "\n".join(out)
+
+
+def main(argv: list[str]) -> int:
+    if len(argv) < 3:
+        print(__doc__)
+        return 2
+    args = list(argv[2:])
+    notes = []
+    while "--note" in args:
+        i = args.index("--note")
+        notes.append(args[i + 1])
+        del args[i:i + 2]
+    if "--traces" in args:
+        i = args.index("--traces")
+        row_globs, trace_globs = args[:i], args[i + 1:]
+    else:
+        row_globs, trace_globs = args, []
+    t = triage(load(row_globs), load_traces(trace_globs), load_excluded(row_globs))
+    t["row_gaps"] = row_gaps(row_globs)
+    shard_dirs = sorted({path.rsplit("/", 1)[0] for pat in row_globs for path in glob.glob(pat)})
+    finished = [d for d in shard_dirs if glob.glob(d + "/EXCLUDED*.json")]
+    t["shards"] = {"total": len(shard_dirs), "finished": len(finished),
+                   "unfinished": [d.split("/")[-2] + "/" + d.split("/")[-1] for d in shard_dirs if d not in finished]}
+    with open(argv[1] + ".json", "w") as fh:
+        json.dump(t, fh, indent=1, default=str)
+    with open(argv[1] + ".md", "w") as fh:
+        fh.write(markdown(t, notes))
+    print(f"{t['rows_read']} rows, {t['failing_rows']} failing -> {argv[1]}.json / .md")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

@@ -1,0 +1,85 @@
+{
+ "arms": [
+  "input_only",
+  "staged",
+  "search_det",
+  "search_ai"
+ ],
+ "arms_run": [
+  "search_ai"
+ ],
+ "commit": "9bd64b642c44",
+ "ended_at": "2026-11-24T01:24:42Z",
+ "excluded": 0,
+ "exit_code": 0,
+ "file_timeout_s": 1800.0,
+ "h_mm": Infinity,
+ "hardware_class": "linux-x86_64",
+ "host": "eeba6e536515",
+ "image": "us-central1-docker.pkg.dev/hexera-dev/mesh/crsv4-mesh@sha256:633e1c3bfd8e2c0fb97b166fa28ff834d0433b84ca8e77c24eb4b00c83ece361",
+ "label": "arms/4/6",
+ "ledger": "shard",
+ "ledger_attached": true,
+ "ledger_detail": {
+  "cap_usd": 0.5,
+  "file_usd_cap_flag": 0.5,
+  "model_usd_cap_flag": 0.5,
+  "n_shards": 6,
+  "path": "/eval/ledger/d9-s4.jsonl",
+  "wave_id": "d9-live",
+  "wave_type": "normal"
+ },
+ "machine_type": "c2d-standard-8",
+ "marker_backend": "gcs/dev-crsv3-transfer-224734058693",
+ "max_turns": 12,
+ "mode": "arms",
+ "model_throttle": {
+  "in_flight_floored": false,
+  "max_in_flight": 6,
+  "n_shards": 6,
+  "rate_limited_calls": 0,
+  "rpm": 125.0,
+  "tpm": 333333
+ },
+ "model_usd": 0.102538,
+ "n_shards": 6,
+ "pool_dropped_by_source": {
+  "f360": 42912
+ },
+ "pool_listed": 53799,
+ "recipes": {
+  "enabled": false
+ },
+ "route": "openai:gpt-6-astra",
+ "route_probe": {
+  "candidates": [
+   "openai:gpt-6-astra"
+  ],
+  "chosen": "openai:gpt-6-astra"
+ },
+ "rows": 1,
+ "shard": "4/6",
+ "shard_cap_usd": 8.333333333333334,
+ "shard_files": 1,
+ "slot": null,
+ "sources": "cleared",
+ "split": "dev",
+ "started_at": "2026-11-24T01:20:36Z",
+ "unmeasured_rows": 0,
+ "wall_seconds": 245.8,
+ "wave": "snap_v1_dev",
+ "wave_backoff": {
+  "guard": "wave_backoff",
+  "held_s": 0.0,
+  "holds": 0,
+  "reported_429": 0,
+  "store_errors": 0,
+  "threshold": 10,
+  "tripped_here": 0,
+  "trips_seen": [],
+  "window_s": 300.0
+ },
+ "wave_cap_usd": 50.0,
+ "wave_id": "d9-live",
+ "wave_type": "normal"
+}

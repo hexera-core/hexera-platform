@@ -1,0 +1,47 @@
+{
+ "arms": [
+  "input_only",
+  "staged",
+  "search_det"
+ ],
+ "arms_run": [
+  "input_only",
+  "staged",
+  "search_det"
+ ],
+ "commit": "1b57059222998a3f0175794e29aeed8112321f01",
+ "ended_at": "2026-11-23T20:15:02Z",
+ "excluded": 0,
+ "exit_code": 0,
+ "file_timeout_s": 900.0,
+ "h_mm": Infinity,
+ "hardware_class": "linux-x86_64",
+ "host": "adc597f317b2",
+ "image": "sha256:633e1c3bfd8e2c0fb97b166fa28ff834d0433b84ca8e77c24eb4b00c83ece361",
+ "label": "arms/1/1",
+ "ledger_attached": false,
+ "machine_type": "c2d-standard-16",
+ "max_turns": 12,
+ "mode": "arms",
+ "model_usd": 0.0,
+ "n_shards": 1,
+ "pool_dropped_by_source": {
+  "f360": 42912
+ },
+ "pool_listed": 53799,
+ "route": null,
+ "rows": 24,
+ "shard": "1/1",
+ "shard_cap_usd": 50.0,
+ "shard_files": 8,
+ "slot": null,
+ "sources": "cleared",
+ "split": "clean",
+ "started_at": "2026-11-23T20:10:02Z",
+ "unmeasured_rows": 0,
+ "wall_seconds": 299.9,
+ "wave": "t2_smoke_clean",
+ "wave_cap_usd": 50.0,
+ "wave_id": "t49-clean",
+ "wave_type": "normal"
+}

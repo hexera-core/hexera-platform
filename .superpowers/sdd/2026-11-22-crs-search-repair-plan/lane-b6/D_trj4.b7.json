@@ -1,0 +1,102 @@
+{
+ "file": "D_trj4.stp",
+ "rows": [
+  {
+   "keeper": "B8",
+   "victim": "B10",
+   "volume": 97.3004264721913,
+   "depth_new": 0.4963616975624232,
+   "method": "mean_thickness",
+   "side_new": "beyond",
+   "op": "exceeds_fidelity",
+   "op_detail": {
+    "what": "overlap_depth",
+    "value": 0.4963616975624232,
+    "bound": 0.1,
+    "volume": 97.3004264721913,
+    "method": "mean_thickness"
+   }
+  },
+  {
+   "keeper": "B10",
+   "victim": "B8",
+   "volume": 97.30042646386599,
+   "depth_new": 0.5396563287271932,
+   "method": "measured",
+   "side_new": "beyond",
+   "op": "exceeds_fidelity",
+   "op_detail": {
+    "what": "overlap_depth",
+    "value": 0.5396563287271932,
+    "bound": 0.1,
+    "volume": 97.30042646386599,
+    "method": "measured"
+   }
+  },
+  {
+   "keeper": "B8",
+   "victim": "B11",
+   "volume": 81.33003337634503,
+   "depth_new": 0.604129849833043,
+   "method": "measured",
+   "side_new": "beyond",
+   "op": "exceeds_fidelity",
+   "op_detail": {
+    "what": "overlap_depth",
+    "value": 0.604129849833043,
+    "bound": 0.1,
+    "volume": 81.33003337634503,
+    "method": "measured"
+   }
+  },
+  {
+   "keeper": "B11",
+   "victim": "B8",
+   "volume": 81.33003337981191,
+   "depth_new": 0.916666666666714,
+   "method": "measured",
+   "side_new": "beyond",
+   "op": "exceeds_fidelity",
+   "op_detail": {
+    "what": "overlap_depth",
+    "value": 0.916666666666714,
+    "bound": 0.1,
+    "volume": 81.33003337981191,
+    "method": "measured"
+   }
+  },
+  {
+   "keeper": "B9",
+   "victim": "B11",
+   "volume": 152.17986320833998,
+   "depth_new": 0.8183477905327412,
+   "method": "measured",
+   "side_new": "beyond",
+   "op": "exceeds_fidelity",
+   "op_detail": {
+    "what": "overlap_depth",
+    "value": 0.8183477905327412,
+    "bound": 0.1,
+    "volume": 152.17986320833998,
+    "method": "measured"
+   }
+  },
+  {
+   "keeper": "B11",
+   "victim": "B9",
+   "volume": 152.1799463703385,
+   "depth_new": 0.5399643691770545,
+   "method": "measured",
+   "side_new": "beyond",
+   "op": "exceeds_fidelity",
+   "op_detail": {
+    "what": "overlap_depth",
+    "value": 0.5399643691770545,
+    "bound": 0.1,
+    "volume": 152.1799463703385,
+    "method": "measured"
+   }
+  }
+ ],
+ "bound_mm": 0.1
+}

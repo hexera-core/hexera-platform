@@ -1,0 +1,1 @@
+{"i": 3, "sha": "ca3ee58ee0", "v": "crs-v4.verdict.7", "status": "pass", "error_kind": null, "message": "424 tets, 1 solid(s) [read from every STEP root: Netgen's STEP reader keeps only the first]", "min_sicn": 0.39599665282598756, "elements": 424, "cause": null, "located": [], "s": 0.5}

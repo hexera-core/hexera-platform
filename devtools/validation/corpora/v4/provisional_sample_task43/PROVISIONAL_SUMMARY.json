@@ -1,0 +1,70 @@
+{
+ "PROVISIONAL": "PROVISIONAL, DRAWN FROM A LOCAL SAMPLE OF THE CLEARED POOL. For the T2 smoke only. The real splits must come from the full re-probe; do not use these for any reported number.",
+ "clean": 8,
+ "dev": 30,
+ "excluded_no_solids": 2,
+ "excluded_unbounded": 4,
+ "excluded_uncounted": 0,
+ "files": 86,
+ "heldout": 25,
+ "refused": null,
+ "rows": 80,
+ "shortfall": {},
+ "strata": {
+  "clean": {
+   "abc_pass": 7,
+   "nist": 1
+  },
+  "clean_from_cheap_fail": {
+   "count": 0
+  },
+  "dev": {
+   "panel/other/abc_fail": 8,
+   "panel/other/abc_pass": 4,
+   "panel/other/nist": 2,
+   "panel/periodic_surface/abc_fail": 1,
+   "valid/body_overlap/abc_fail": 5,
+   "valid/body_overlap/abc_pass": 1,
+   "valid/body_overlap/occt": 1,
+   "valid/brep_invalid/abc_fail": 1,
+   "valid/brep_invalid/occt": 1,
+   "valid/open_shell/abc_fail": 2,
+   "valid/open_shell/nist": 1,
+   "valid/self_intersection/abc_fail": 2,
+   "valid/self_intersection/occt": 1
+  },
+  "failing_population": {
+   "panel/other/abc_fail": 17,
+   "panel/other/abc_pass": 10,
+   "panel/other/nist": 4,
+   "panel/periodic_surface/abc_fail": 2,
+   "valid/body_overlap/abc_fail": 12,
+   "valid/body_overlap/abc_pass": 2,
+   "valid/body_overlap/occt": 1,
+   "valid/brep_invalid/abc_fail": 1,
+   "valid/brep_invalid/occt": 1,
+   "valid/open_shell/abc_fail": 3,
+   "valid/open_shell/abc_pass": 1,
+   "valid/open_shell/nist": 3,
+   "valid/round_trip_invalid/abc_fail": 1,
+   "valid/round_trip_invalid/occt": 1,
+   "valid/self_intersection/abc_fail": 4,
+   "valid/self_intersection/occt": 3
+  },
+  "heldout": {
+   "panel/other/abc_fail": 6,
+   "panel/other/abc_pass": 4,
+   "panel/other/nist": 1,
+   "panel/periodic_surface/abc_fail": 1,
+   "valid/body_overlap/abc_fail": 5,
+   "valid/body_overlap/abc_pass": 1,
+   "valid/open_shell/abc_fail": 1,
+   "valid/open_shell/abc_pass": 1,
+   "valid/open_shell/nist": 1,
+   "valid/round_trip_invalid/abc_fail": 1,
+   "valid/round_trip_invalid/occt": 1,
+   "valid/self_intersection/abc_fail": 1,
+   "valid/self_intersection/occt": 1
+  }
+ }
+}

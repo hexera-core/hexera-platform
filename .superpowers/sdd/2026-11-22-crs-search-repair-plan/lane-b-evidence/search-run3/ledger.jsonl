@@ -1,0 +1,5 @@
+{"at": 1795466038.1240788, "n_shards": 1, "shard_index": 0, "t": "init", "wave": "normal", "wave_id": "live-readiness"}
+{"at": 1795466088.5085232, "file": "search", "id": "48202c11171a40c2b5f11d27dd073e21", "t": "reserve", "u": 277320}
+{"at": 1795466093.8527346, "cached": 0, "file": "search", "id": "48202c11171a40c2b5f11d27dd073e21", "in": 4438, "job": "repair_v4:4b0e38cffad6", "kind": "repair_v4_propose", "model": "gpt-6-astra", "out": 103, "provider": "openai", "t": "settle", "u": 49530}
+{"at": 1795466099.365643, "file": "search", "id": "c5ea1ec1cb47416b82790fd97d232445", "t": "reserve", "u": 289270}
+{"at": 1795466103.5060937, "cached": 4435, "file": "search", "id": "c5ea1ec1cb47416b82790fd97d232445", "in": 5650, "job": "repair_v4:4b0e38cffad6", "kind": "repair_v4_propose", "model": "gpt-6-astra", "out": 66, "provider": "openai", "t": "settle", "u": 19885}

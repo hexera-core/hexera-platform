@@ -1,0 +1,6 @@
+{
+ "0057": [["conformalise", {"mode": "cut_by:B14"}, ["B10","B13","B14"]]],
+ "0054": [["conformalise", {"mode": "cut_by:B3"}, ["B2","B3"]]],
+ "0054b": [["conformalise", {"mode": "cut_by:B2"}, ["B2","B3"]]],
+ "twobox": [["conformalise", {"mode": "cut_by:B1"}, ["B1","B2"]]]
+}

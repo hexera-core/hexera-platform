@@ -1,0 +1,38 @@
+{
+ "file": "B_00521884.step",
+ "rows": [
+  {
+   "keeper": "B2",
+   "victim": "B3",
+   "volume": 43.03353616887286,
+   "depth_new": 0.6000000000000011,
+   "method": "measured",
+   "side_new": "beyond",
+   "op": "exceeds_fidelity",
+   "op_detail": {
+    "what": "overlap_depth",
+    "value": 0.6000000000000011,
+    "bound": 0.08426787741970648,
+    "volume": 43.03353616887286,
+    "method": "measured"
+   }
+  },
+  {
+   "keeper": "B3",
+   "victim": "B2",
+   "volume": 43.03353616887284,
+   "depth_new": 0.6000000000000004,
+   "method": "measured",
+   "side_new": "beyond",
+   "op": "exceeds_fidelity",
+   "op_detail": {
+    "what": "overlap_depth",
+    "value": 0.6000000000000004,
+    "bound": 0.08426787741970648,
+    "volume": 43.03353616887284,
+    "method": "measured"
+   }
+  }
+ ],
+ "bound_mm": 0.08426787741970648
+}

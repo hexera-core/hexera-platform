@@ -1,0 +1,160 @@
+{
+ "file": "D_trj4.stp",
+ "diagonal_mm": 540.6211222248529,
+ "bound_mm": 0.1,
+ "solids": 11,
+ "solid_ids": [
+  "B1",
+  "B2",
+  "B3",
+  "B4",
+  "B5",
+  "B6",
+  "B7",
+  "B8",
+  "B9",
+  "B10",
+  "B11"
+ ],
+ "volumes": [
+  23080.35949198436,
+  22244.065989635856,
+  17940.53146621878,
+  302625.1406696075,
+  302625.1406696075,
+  2358.2139926720606,
+  2403.8529448505415,
+  2358.213992672063,
+  2403.852944850538,
+  69516.99669105464,
+  70407.15673231412
+ ],
+ "overlapping_pairs": [
+  {
+   "pair": [
+    "B8",
+    "B10"
+   ],
+   "overlap_volume": 97.30042646386599,
+   "overlap_area": 392.05453180478554,
+   "mean_thickness_2V_over_A": 0.49636169752178494,
+   "aabb_min_extent": 9.547073206988905,
+   "obb_min_extent": 1.3959092002574043,
+   "kernel_depth": 9.547073206988905,
+   "share_of_body_i": 0.04126021928723105,
+   "share_of_body_j": 0.0013996638389930111,
+   "contained": false
+  },
+  {
+   "pair": [
+    "B8",
+    "B11"
+   ],
+   "overlap_volume": 81.33003337981191,
+   "overlap_area": 412.74903716315794,
+   "mean_thickness_2V_over_A": 0.39408951230411954,
+   "aabb_min_extent": 5.512577638526004,
+   "obb_min_extent": 2.4964399585049595,
+   "kernel_depth": 5.512577638526004,
+   "share_of_body_i": 0.03448797845850192,
+   "share_of_body_j": 0.0011551387267210098,
+   "contained": false
+  },
+  {
+   "pair": [
+    "B9",
+    "B11"
+   ],
+   "overlap_volume": 152.1799463703385,
+   "overlap_area": 521.6081262417656,
+   "mean_thickness_2V_over_A": 0.5835029736473202,
+   "aabb_min_extent": 10.015174916351029,
+   "obb_min_extent": 5.746686488331122,
+   "kernel_depth": 10.015174916351029,
+   "share_of_body_i": 0.06330667884503245,
+   "share_of_body_j": 0.0021614272388376945,
+   "contained": false
+  }
+ ],
+ "input_panel": {
+  "gmsh_prod": "fail",
+  "gmsh_default": "fail",
+  "gmsh_alt": "pass",
+  "netgen_occ": "fail"
+ },
+ "forced_cut_by": [
+  {
+   "pair": [
+    "B8",
+    "B10"
+   ],
+   "keeper": "B8",
+   "declined": "changes_body_count",
+   "declared_removed": 0,
+   "modified": 0
+  },
+  {
+   "pair": [
+    "B8",
+    "B10"
+   ],
+   "keeper": "B10",
+   "declined": "changes_body_count",
+   "declared_removed": 0,
+   "modified": 0
+  },
+  {
+   "pair": [
+    "B8",
+    "B11"
+   ],
+   "keeper": "B8",
+   "declined": "changes_body_count",
+   "declared_removed": 0,
+   "modified": 0
+  },
+  {
+   "pair": [
+    "B8",
+    "B11"
+   ],
+   "keeper": "B11",
+   "declined": null,
+   "declared_removed": 0,
+   "modified": 32,
+   "panel": {
+    "gmsh_prod": "fail",
+    "gmsh_default": "fail",
+    "gmsh_alt": "fail",
+    "netgen_occ": "fail"
+   },
+   "clean": false,
+   "valid": false,
+   "valid_hard": [
+    "body_overlap",
+    "body_overlap"
+   ],
+   "faithful": null
+  },
+  {
+   "pair": [
+    "B9",
+    "B11"
+   ],
+   "keeper": "B9",
+   "declined": "changes_body_count",
+   "declared_removed": 0,
+   "modified": 0
+  },
+  {
+   "pair": [
+    "B9",
+    "B11"
+   ],
+   "keeper": "B11",
+   "declined": "changes_body_count",
+   "declared_removed": 0,
+   "modified": 0
+  }
+ ]
+}

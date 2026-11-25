@@ -1,0 +1,49 @@
+{
+ "arms": [
+  "input_only",
+  "staged",
+  "search_det",
+  "search_ai"
+ ],
+ "commit": "79d7ba35993f9569e0ee3dfffe2752da9d38f2b4",
+ "ended_at": "2026-11-23T23:33:07Z",
+ "error": "NoUsableRoute: no repair_v4_propose route passed the probe: openai:gpt-6-astra: the model saw 'salmon', not red: images are not understood",
+ "exit_code": 6,
+ "file_timeout_s": 900.0,
+ "hardware_class": "linux-x86_64",
+ "host": "88b08018c452",
+ "image": "sha256:03844d4454ccb620c5e3dce134d5c1f318ba3f509178cb9e7f21b5b6031ec6f4",
+ "label": "arms/6/6",
+ "ledger": "shard",
+ "ledger_detail": {
+  "cap_usd": 3.85,
+  "file_usd_cap_flag": 0.5,
+  "model_usd_cap_flag": 3.85,
+  "n_shards": 6,
+  "path": "/eval/ledger/snap-v1-dev-s6.jsonl",
+  "wave_id": "snap-v1-dev",
+  "wave_type": "normal"
+ },
+ "machine_type": "c2d-standard-16",
+ "marker_backend": "gcs/dev-crsv3-transfer-224734058693",
+ "mode": "arms",
+ "n_shards": 6,
+ "pool_dropped_by_source": {
+  "f360": 42912
+ },
+ "pool_listed": 53799,
+ "recipes": {
+  "enabled": false
+ },
+ "shard": "6/6",
+ "shard_cap_usd": 8.333333333333334,
+ "shard_plan": "0562e0d913cfd391fb27416c04e4245b8b2d8168cac78af97037633fd8b02235",
+ "slot": null,
+ "split": "dev",
+ "started_at": "2026-11-23T23:33:00Z",
+ "wall_seconds": 6.7,
+ "wave": "snap_v1_dev",
+ "wave_cap_usd": 50.0,
+ "wave_id": "snap-v1-dev",
+ "wave_type": "normal"
+}

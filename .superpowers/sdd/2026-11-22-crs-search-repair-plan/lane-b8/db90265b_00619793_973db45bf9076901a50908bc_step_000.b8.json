@@ -1,0 +1,165 @@
+{
+ "file": "db90265b_00619793_973db45bf9076901a50908bc_step_000.step",
+ "states": [
+  {
+   "state": "input",
+   "members": {
+    "gmsh_prod": {
+     "status": "fail",
+     "error_kind": "other",
+     "min_sicn": null,
+     "seconds": 0.27
+    },
+    "gmsh_default": {
+     "status": "pass",
+     "error_kind": null,
+     "min_sicn": 0.07805501814767302,
+     "seconds": 0.19
+    },
+    "gmsh_alt": {
+     "status": "pass",
+     "error_kind": null,
+     "min_sicn": 0.2224730732415113,
+     "seconds": 0.27
+    },
+    "netgen_occ": {
+     "status": "pass",
+     "error_kind": null,
+     "min_sicn": 0.22506546191058138,
+     "seconds": 0.61
+    }
+   },
+   "valid": true,
+   "faithful": true,
+   "full_clean": false
+  },
+  {
+   "state": "staged(cheap-only)",
+   "members": {
+    "gmsh_prod": {
+     "status": "fail",
+     "error_kind": "other",
+     "min_sicn": null,
+     "seconds": 0.21
+    },
+    "gmsh_default": {
+     "status": "pass",
+     "error_kind": null,
+     "min_sicn": 0.1783255642194771,
+     "seconds": 0.19
+    },
+    "gmsh_alt": {
+     "status": "pass",
+     "error_kind": null,
+     "min_sicn": 0.22503493087647383,
+     "seconds": 0.28
+    },
+    "netgen_occ": {
+     "status": "pass",
+     "error_kind": null,
+     "min_sicn": 0.2071972435182809,
+     "seconds": 0.57
+    }
+   },
+   "valid": true,
+   "faithful": true,
+   "full_clean": false
+  },
+  {
+   "state": "split_angle 90",
+   "members": {
+    "gmsh_prod": {
+     "status": "fail",
+     "error_kind": "low_quality",
+     "min_sicn": 0.0005166762052442108,
+     "seconds": 0.42
+    },
+    "gmsh_default": {
+     "status": "pass",
+     "error_kind": null,
+     "min_sicn": 0.018859956425325987,
+     "seconds": 0.21
+    },
+    "gmsh_alt": {
+     "status": "pass",
+     "error_kind": null,
+     "min_sicn": 0.08141376437543699,
+     "seconds": 0.32
+    },
+    "netgen_occ": {
+     "status": "pass",
+     "error_kind": null,
+     "min_sicn": 0.23490045014875616,
+     "seconds": 0.61
+    }
+   },
+   "valid": true,
+   "faithful": true,
+   "full_clean": false
+  },
+  {
+   "state": "unify_same_domain all",
+   "members": {
+    "gmsh_prod": {
+     "status": "fail",
+     "error_kind": "other",
+     "min_sicn": null,
+     "seconds": 0.23
+    },
+    "gmsh_default": {
+     "status": "pass",
+     "error_kind": null,
+     "min_sicn": 0.07127371042544883,
+     "seconds": 0.21
+    },
+    "gmsh_alt": {
+     "status": "pass",
+     "error_kind": null,
+     "min_sicn": 0.13171769436690225,
+     "seconds": 0.28
+    },
+    "netgen_occ": {
+     "status": "pass",
+     "error_kind": null,
+     "min_sicn": 0.29237073939511593,
+     "seconds": 0.56
+    }
+   },
+   "valid": true,
+   "faithful": true,
+   "full_clean": false
+  },
+  {
+   "state": "tighten_tolerances 1e-5",
+   "members": {
+    "gmsh_prod": {
+     "status": "fail",
+     "error_kind": "other",
+     "min_sicn": null,
+     "seconds": 0.21
+    },
+    "gmsh_default": {
+     "status": "pass",
+     "error_kind": null,
+     "min_sicn": 0.1783255642194771,
+     "seconds": 0.2
+    },
+    "gmsh_alt": {
+     "status": "pass",
+     "error_kind": null,
+     "min_sicn": 0.22503493087647383,
+     "seconds": 0.27
+    },
+    "netgen_occ": {
+     "status": "pass",
+     "error_kind": null,
+     "min_sicn": 0.2071972435182809,
+     "seconds": 0.55
+    }
+   },
+   "valid": true,
+   "faithful": true,
+   "full_clean": false
+  }
+ ]
+}

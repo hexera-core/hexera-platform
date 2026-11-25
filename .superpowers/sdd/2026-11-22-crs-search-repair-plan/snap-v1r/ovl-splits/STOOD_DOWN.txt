@@ -1,0 +1,1 @@
+STOOD DOWN 2026-11-24 by the coordinator: redundant with v3b (e2b25ddf), which covers the 42 overlap files with both fixes. Never launched; no VM dev-crsv4-snap-ovl was ever created.

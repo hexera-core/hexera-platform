@@ -1,0 +1,228 @@
+{
+ "route": "openai:gpt-6-astra",
+ "case": "/out/case/flush_patch_box.face_delete.3.step",
+ "label": {
+  "kind": "face_delete",
+  "seed": 3,
+  "status": "structural",
+  "clean_source": "/out/case/flush_patch_box.step",
+  "fidelity_reference": "damaged_input",
+  "entities": [
+   {
+    "type": "face",
+    "src_index": 8,
+    "center": [
+     30.0,
+     20.0,
+     40.0
+    ],
+    "area": 9.0
+   }
+  ],
+  "loop_span_ratio": 0.034412,
+  "fill_cap_ratio": 0.05,
+  "fill_loop_accepts": true,
+  "fill_fill_to_surroundings": 0.0,
+  "fill_bound_mm": 0.1,
+  "fill_fill_surface": "Plane"
+ },
+ "seconds": 108.7,
+ "delivered": true,
+ "verdict_summary": {
+  "status": "clean",
+  "input": {
+   "clean": false,
+   "tier": "full",
+   "valid": false,
+   "panel": {
+    "gmsh_prod": "fail",
+    "gmsh_default": "fail",
+    "gmsh_alt": "fail",
+    "netgen_occ": "fail"
+   },
+   "faithful": null
+  },
+  "search": {
+   "reason": "clean",
+   "changed": true,
+   "clean": true,
+   "verdict_candidates": 7,
+   "inconclusive_candidates": 0,
+   "infrastructure_failed": false
+  },
+  "delivered": {
+   "clean": true,
+   "tier": "full",
+   "valid": true,
+   "panel": {
+    "gmsh_prod": "pass",
+    "gmsh_default": "pass",
+    "gmsh_alt": "pass",
+    "netgen_occ": "pass"
+   },
+   "faithful": true
+  }
+ },
+ "proposer": {
+  "file_id": "search",
+  "ai_capped": false,
+  "stop_reason": null,
+  "turns": 2,
+  "truncated_rounds": 0,
+  "spent_usd": 0.102561
+ },
+ "candidates": [
+  {
+   "op": "sew",
+   "source": "det",
+   "status": null,
+   "state": "S0",
+   "targets": [],
+   "params": {
+    "tol_ladder": [
+     0.001,
+     0.010000000000000002,
+     0.1
+    ]
+   }
+  },
+  {
+   "op": "fill_loop",
+   "source": "det",
+   "status": null,
+   "state": "S0",
+   "targets": [
+    "E21",
+    "E22",
+    "E23",
+    "E24"
+   ],
+   "params": {
+    "continuity": "G0"
+   }
+  },
+  {
+   "op": "make_volume",
+   "source": "det",
+   "status": null,
+   "state": "S0",
+   "targets": [],
+   "params": {}
+  },
+  {
+   "op": "orient_and_close",
+   "source": "det",
+   "status": null,
+   "state": "S0",
+   "targets": [],
+   "params": {}
+  },
+  {
+   "op": "orient_and_close",
+   "source": "det",
+   "status": null,
+   "state": "S0",
+   "targets": [],
+   "params": {}
+  },
+  {
+   "op": "make_volume",
+   "source": "det",
+   "status": null,
+   "state": "S0",
+   "targets": [],
+   "params": {}
+  },
+  {
+   "op": "fill_loop",
+   "source": "ai",
+   "status": null,
+   "state": "S0",
+   "targets": [
+    "E21",
+    "E22",
+    "E23",
+    "E24"
+   ],
+   "params": {
+    "continuity": "G0"
+   }
+  },
+  {
+   "op": "orient_and_close",
+   "source": "det",
+   "status": null,
+   "state": "S1",
+   "targets": [],
+   "params": {}
+  },
+  {
+   "op": "make_volume",
+   "source": "det",
+   "status": null,
+   "state": "S1",
+   "targets": [],
+   "params": {}
+  },
+  {
+   "op": "make_volume",
+   "source": "ai",
+   "status": null,
+   "state": "S1",
+   "targets": [],
+   "params": {}
+  }
+ ],
+ "stop": {
+  "seq": 18,
+  "t": 52.6485,
+  "kind": "stop",
+  "reason": "clean",
+  "ended_by": "clean",
+  "inconclusive_candidates": 0,
+  "verdict_candidates": 7,
+  "best": "S3",
+  "best_score": [
+   1,
+   4,
+   0.16115886730976917,
+   -0.0,
+   -1
+  ],
+  "clean": true,
+  "best_path": [
+   "S0",
+   "S1",
+   "S3"
+  ],
+  "spent": {
+   "wall_s": 52.6485,
+   "ops": 10,
+   "model_calls": 2,
+   "model_usd": 0.102561
+  },
+  "budget": {
+   "wall_s": 600.0,
+   "ops": 12,
+   "model_calls": 6,
+   "model_usd": 0.463166
+  },
+  "ai_capped": false,
+  "ai_stop_reason": null,
+  "ai": [
+   {
+    "file_id": "search",
+    "ai_capped": false,
+    "stop_reason": null,
+    "turns": 2,
+    "truncated_rounds": 0,
+    "spent_usd": 0.102561
+   }
+  ]
+ },
+ "search_spent_usd": 0.06572700000000001,
+ "transcript": "/out/transcript.json",
+ "trace": "/out/trace.json",
+ "wire": "/out/wire.jsonl",
+ "ledger": "/out/ledger.jsonl"
+}

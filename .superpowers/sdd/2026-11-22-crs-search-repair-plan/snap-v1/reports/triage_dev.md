@@ -1,0 +1,139 @@
+# Failure triage: /Users/kitts/archductor/snap-v1-data/results/out/snap-v1-dev
+
+Counts are files (one row per file and arm) unless 'candidates'. Only conclusive, NOT clean outputs are explained; inconclusive and excluded files are counted apart, because nothing about the part made them so.
+
+## Leads (largest first)
+
+| arm | what | key | files | of not clean | candidates |
+|---|---|---|---|---|---|
+| input_only | layer-1 hard finding | body_overlap | 74 | 29 | - |
+| search_ai | layer-1 hard finding | body_overlap | 38 | 26 | - |
+| search_det | layer-1 hard finding | body_overlap | 38 | 26 | - |
+| staged | layer-1 hard finding | body_overlap | 38 | 26 | - |
+| search_ai | open site kind | unlocated | 25 | 26 | - |
+| search_det | stop reason | exhausted | 25 | 26 | - |
+| search_det | open site kind | unlocated | 25 | 26 | - |
+| search_ai | stop reason | exhausted | 24 | 26 | - |
+| input_only | panel member still failing | gmsh_prod: other | 19 | 29 | - |
+| search_ai | panel member still failing | gmsh_prod: other | 18 | 26 | - |
+| search_det | panel member still failing | gmsh_prod: other | 18 | 26 | - |
+| staged | panel member still failing | gmsh_prod: other | 18 | 26 | - |
+| search_ai | op declined | run_stage:condition: stage 'condition' changed nothing: split_angle: declined: invalidated: the result is not BRepCheck-valid | 14 | 26 | 11 |
+| search_ai | op declined | unify_same_domain: no_change: unify_same_domain left the part as it was | 6 | 26 | 3 |
+| search_ai | op declined | run_stage:normalise: stage 'normalise' changed nothing: tighten_tolerances: error: RuntimeError: v4_tighten_tolerances failed: error: Runtime | 6 | 26 | 1 |
+| search_ai | op declined | run_stage:simplify: stage 'simplify' changed nothing: unify_same_domain: declined: no_change: unify_same_domain left the part as it was | 6 | 26 | 2 |
+| search_ai | op declined | run_stage:faces: stage 'faces' changed nothing: to_canonical: declined: no_change: a face is already a Plane | 4 | 26 | 2 |
+| search_ai | op declined | run_stage:edges: stage 'edges' changed nothing: fix_poles: error: RuntimeError: v4_fix_poles failed: error: RuntimeError: ShapeFix_Face.P | 3 | 26 | 3 |
+| search_ai | op invalid | remove_small: targets[0]: F79 is a face, not an any | 2 | 26 | 6 |
+| search_ai | op failed | fix_poles: RuntimeError: v4_fix_poles failed: error: RuntimeError: ShapeFix_Face.Perform changed nothing on face(s) [2, 3] | 2 | 26 | 1 |
+| search_ai | op declined | sew: tol_ladder rungs [1e-07, 1e-05, 0.001, 0.01] must lie in [0.02553517176289336, 0.1] (1e-6 x diagonal .. min(0.1 mm, 0.00 | 2 | 26 | 1 |
+| search_det | op invalid | remove_small: targets[0]: F79 is a face, not an any | 2 | 26 | 6 |
+| search_det | op declined | unify_same_domain: no_change: unify_same_domain left the part as it was | 2 | 26 | 2 |
+| input_only | deviation reason | deviation_exceeds_bound | 1 | 29 | - |
+| search_ai | deviation reason | deviation_exceeds_bound | 1 | 26 | - |
+
+## input_only
+
+files 30: clean 1, NOT clean 29, inconclusive rows 0, excluded 0 (-)
+not clean by defect kind: other (13); body_overlap (7); open_shell (3); self_intersection (3); brep_invalid (2); periodic_surface (1)
+
+members failing per file: {'0': 1, '1': 4, '2': 1, '3': 16, '4': 7}
+
+| panel member | files failing | status | error kinds |
+|---|---|---|---|
+| gmsh_prod | 27 | fail (27) | other (19); low_quality (6); open_loop (1); periodic_surface (1) |
+| gmsh_default | 25 | fail (25) | edge_through_face (9); overlapping_facets (6); low_quality (5); no_volume (2); other (2) |
+| gmsh_alt | 20 | fail (16); crashed (4) | low_quality (10); no_volume (5); gmsh_crash (4); open_loop (1) |
+| netgen_occ | 10 | fail (8); crashed (1); timeout (1) | netgen_meshing_failed (6); low_quality (2); netgen_crash (1); netgen_timeout (1) |
+
+layer-1 hard findings: body_overlap (74); open_shell (7); brep_invalid (3); self_intersection (2)
+deviation: faithful failed on 1, over the bound on 1; budget used median 0.00, p90 0.00, max 8.71 (1.0 = the bound); reasons deviation_exceeds_bound (1)
+
+## search_ai
+
+files 30: clean 2, NOT clean 26, inconclusive rows 0, excluded 2 (file_timeout (2))
+not clean by defect kind: other (12); body_overlap (7); self_intersection (3); brep_invalid (2); open_shell (1); periodic_surface (1)
+
+stop reasons: exhausted (24); patience (2) (ended by: exhausted (24); patience (2))
+open site kinds at stop (files): unlocated (25); overlap (7); open (2); self_overlap (2); sliver (2); 38 sites open in all
+
+| op | files | proposed det | proposed ai | ops charged | evaluated | declined | failed | invalid | duplicate | skipped (budget) | top declined | top failed | top invalid |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| conformalise | 9 | 14 | 9 | 23 | 0 | 0 | 0 | 0 | 23 | 0 | - | - | - |
+| run_stage:condition | 14 | 0 | 23 | 12 | 4 | 17 | 0 | 0 | 2 | 0 | stage 'condition' changed nothing: split_angle: declined: invalidated: the result is not BRepCheck-valid (11) | - | - |
+| remove_small | 2 | 9 | 0 | 0 | 0 | 0 | 0 | 9 | 0 | 0 | - | - | targets[0]: F79 is a face, not an any (6) |
+| unify_same_domain | 6 | 3 | 4 | 4 | 3 | 3 | 0 | 0 | 1 | 0 | no_change: unify_same_domain left the part as it was (3) | - | - |
+| run_stage:normalise | 6 | 0 | 6 | 5 | 2 | 2 | 0 | 0 | 2 | 0 | stage 'normalise' changed nothing: tighten_tolerances: error: RuntimeError: v4_tighten_tolerances failed: error: Runtime (1) | - | - |
+| run_stage:simplify | 6 | 0 | 6 | 4 | 2 | 4 | 0 | 0 | 0 | 0 | stage 'simplify' changed nothing: unify_same_domain: declined: no_change: unify_same_domain left the part as it was (2) | - | - |
+| run_stage:faces | 4 | 0 | 4 | 0 | 0 | 4 | 0 | 0 | 0 | 0 | stage 'faces' changed nothing: to_canonical: declined: no_change: a face is already a Plane (2) | - | - |
+| split_angle | 2 | 0 | 3 | 3 | 3 | 0 | 0 | 0 | 0 | 0 | - | - | - |
+| fill_loop | 1 | 3 | 0 | 0 | 0 | 3 | 0 | 0 | 0 | 0 | over_bound: fill deviates from its surroundings by inf mm (fill_to_surroundings) exceeds the fidelity bound 0.1 mm - the (3) | - | - |
+| orient_and_close | 2 | 3 | 0 | 3 | 0 | 0 | 0 | 0 | 3 | 0 | - | - | - |
+| run_stage:edges | 3 | 0 | 3 | 0 | 0 | 3 | 0 | 0 | 0 | 0 | stage 'edges' changed nothing: fix_poles: error: RuntimeError: v4_fix_poles failed: error: RuntimeError: ShapeFix_Face.P (3) | - | - |
+| fix_poles | 2 | 0 | 2 | 0 | 0 | 0 | 2 | 0 | 0 | 0 | - | RuntimeError: v4_fix_poles failed: error: RuntimeError: ShapeFix_Face.Perform changed nothing on face(s) [2, 3] (1) | - |
+| run_stage:shells | 2 | 0 | 2 | 2 | 0 | 0 | 0 | 0 | 2 | 0 | - | - | - |
+| sew | 2 | 0 | 2 | 0 | 0 | 2 | 0 | 0 | 0 | 0 | tol_ladder rungs [1e-07, 1e-05, 0.001, 0.01] must lie in [0.02553517176289336, 0.1] (1e-6 x diagonal .. min(0.1 mm, 0.00 (1) | - | - |
+| tighten_tolerances | 1 | 0 | 1 | 1 | 1 | 0 | 0 | 0 | 0 | 0 | - | - | - |
+| rebuild_face | 1 | 0 | 1 | 0 | 0 | 0 | 1 | 0 | 0 | 0 | - | error: ZeroDivisionError: float division by zero (1) | - |
+| run_stage:bodies | 1 | 0 | 1 | 0 | 0 | 1 | 0 | 0 | 0 | 0 | stage 'bodies' changed nothing: conformalise: declined: changes_body_count (1) | - | - |
+det sweep declined to propose (candidates): make_volume_without_a_closable_shell (3); sew_on_a_solid (3)
+
+members failing per file: {'0': 1, '1': 3, '2': 1, '3': 17, '4': 4}
+
+| panel member | files failing | status | error kinds |
+|---|---|---|---|
+| gmsh_prod | 25 | fail (25) | other (18); low_quality (5); open_loop (1); periodic_surface (1) |
+| gmsh_default | 20 | fail (20) | edge_through_face (7); low_quality (6); overlapping_facets (4); no_volume (1); open_loop (1) |
+| gmsh_alt | 18 | fail (15); crashed (3) | low_quality (10); no_volume (4); gmsh_crash (3); open_loop (1) |
+| netgen_occ | 9 | fail (8); crashed (1) | netgen_meshing_failed (6); low_quality (2); netgen_crash (1) |
+
+layer-1 hard findings: body_overlap (38); open_shell (3); brep_invalid (2); self_intersection (2)
+deviation: faithful failed on 1, over the bound on 1; budget used median 0.00, p90 0.00, max 8.71 (1.0 = the bound); reasons deviation_exceeds_bound (1)
+AI on 26 not-clean files: 37 turns, 2 tool errors (3 candidates refused), 0 sites declared unfixable, 0 truncated rounds, $1.00; stopped on None (24); file_ceiling (2); ai_capped 2
+
+## search_det
+
+files 30: clean 2, NOT clean 26, inconclusive rows 0, excluded 2 (file_timeout (2))
+not clean by defect kind: other (12); body_overlap (7); self_intersection (3); brep_invalid (2); open_shell (1); periodic_surface (1)
+
+stop reasons: exhausted (25); wall (1) (ended by: exhausted (25); wall (1))
+open site kinds at stop (files): unlocated (25); overlap (7); open (2); self_overlap (2); sliver (2); 38 sites open in all
+
+| op | files | proposed det | proposed ai | ops charged | evaluated | declined | failed | invalid | duplicate | skipped (budget) | top declined | top failed | top invalid |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| conformalise | 7 | 14 | 0 | 14 | 0 | 0 | 0 | 0 | 14 | 0 | - | - | - |
+| remove_small | 2 | 9 | 0 | 0 | 0 | 0 | 0 | 9 | 0 | 0 | - | - | targets[0]: F79 is a face, not an any (6) |
+| fill_loop | 1 | 3 | 0 | 0 | 0 | 3 | 0 | 0 | 0 | 0 | over_bound: fill deviates from its surroundings by inf mm (fill_to_surroundings) exceeds the fidelity bound 0.1 mm - the (3) | - | - |
+| orient_and_close | 2 | 3 | 0 | 3 | 0 | 0 | 0 | 0 | 3 | 0 | - | - | - |
+| unify_same_domain | 2 | 3 | 0 | 1 | 1 | 2 | 0 | 0 | 0 | 0 | no_change: unify_same_domain left the part as it was (2) | - | - |
+det sweep declined to propose (candidates): make_volume_without_a_closable_shell (3); sew_on_a_solid (3)
+
+members failing per file: {'0': 1, '1': 3, '2': 1, '3': 17, '4': 4}
+
+| panel member | files failing | status | error kinds |
+|---|---|---|---|
+| gmsh_prod | 25 | fail (25) | other (18); low_quality (5); open_loop (1); periodic_surface (1) |
+| gmsh_default | 20 | fail (20) | edge_through_face (6); low_quality (6); overlapping_facets (5); no_volume (1); open_loop (1) |
+| gmsh_alt | 18 | fail (14); crashed (4) | low_quality (9); gmsh_crash (4); no_volume (4); open_loop (1) |
+| netgen_occ | 9 | fail (7); crashed (2) | netgen_meshing_failed (5); low_quality (2); netgen_crash (2) |
+
+layer-1 hard findings: body_overlap (38); open_shell (3); brep_invalid (2); self_intersection (2)
+deviation: faithful failed on 1, over the bound on 1; budget used median 0.00, p90 0.00, max 8.71 (1.0 = the bound); reasons deviation_exceeds_bound (1)
+
+## staged
+
+files 30: clean 2, NOT clean 26, inconclusive rows 0, excluded 2 (file_timeout (2))
+not clean by defect kind: other (12); body_overlap (7); self_intersection (3); brep_invalid (2); open_shell (1); periodic_surface (1)
+
+members failing per file: {'0': 1, '1': 3, '2': 1, '3': 16, '4': 5}
+
+| panel member | files failing | status | error kinds |
+|---|---|---|---|
+| gmsh_prod | 25 | fail (25) | other (18); low_quality (5); open_loop (1); periodic_surface (1) |
+| gmsh_default | 20 | fail (20) | low_quality (7); edge_through_face (6); overlapping_facets (4); no_volume (1); open_loop (1) |
+| gmsh_alt | 18 | fail (15); crashed (3) | low_quality (10); no_volume (4); gmsh_crash (3); open_loop (1) |
+| netgen_occ | 10 | fail (8); crashed (2) | netgen_meshing_failed (5); low_quality (3); netgen_crash (2) |
+
+layer-1 hard findings: body_overlap (38); open_shell (3); brep_invalid (2); self_intersection (2)
+deviation: faithful failed on 1, over the bound on 1; budget used median 0.00, p90 0.00, max 8.71 (1.0 = the bound); reasons deviation_exceeds_bound (1)
+stages kept: baseline (26); finalise (25); shells (25); solids (25); normalise (23); condition (9); simplify (9); rolled back: condition (6); simplify (3); bodies (2); normalise (1)

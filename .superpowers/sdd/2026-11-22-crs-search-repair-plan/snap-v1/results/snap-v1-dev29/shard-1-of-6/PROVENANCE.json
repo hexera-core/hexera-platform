@@ -1,0 +1,76 @@
+{
+ "arms": [
+  "input_only",
+  "staged",
+  "search_det",
+  "search_ai"
+ ],
+ "arms_run": [
+  "input_only",
+  "staged",
+  "search_det",
+  "search_ai"
+ ],
+ "commit": "79d7ba35993f9569e0ee3dfffe2752da9d38f2b4",
+ "ended_at": "2026-11-24T00:32:56Z",
+ "excluded": 3,
+ "exit_code": 0,
+ "file_timeout_s": 900.0,
+ "h_mm": Infinity,
+ "hardware_class": "linux-x86_64",
+ "host": "042ec24b3fdd",
+ "image": "sha256:03844d4454ccb620c5e3dce134d5c1f318ba3f509178cb9e7f21b5b6031ec6f4",
+ "label": "arms/1/6",
+ "ledger": "shard",
+ "ledger_attached": true,
+ "ledger_detail": {
+  "cap_usd": 0.5,
+  "file_usd_cap_flag": 0.5,
+  "model_usd_cap_flag": 0.5,
+  "n_shards": 6,
+  "path": "/eval/ledger/snap-v1-dev-s1.jsonl",
+  "wave_id": "snap-v1-dev",
+  "wave_type": "normal"
+ },
+ "machine_type": "c2d-standard-16",
+ "marker_backend": "gcs/dev-crsv3-transfer-224734058693",
+ "max_turns": 12,
+ "mode": "arms",
+ "model_throttle": {
+  "max_in_flight": 62,
+  "n_shards": 6,
+  "rpm": 1250.0,
+  "tpm": 3333333
+ },
+ "model_usd": 0.0,
+ "n_shards": 6,
+ "pool_dropped_by_source": {
+  "f360": 42912
+ },
+ "pool_listed": 53799,
+ "recipes": {
+  "enabled": false
+ },
+ "route": "openai:gpt-6-astra",
+ "route_probe": {
+  "candidates": [
+   "openai:gpt-6-astra"
+  ],
+  "chosen": "openai:gpt-6-astra"
+ },
+ "rows": 1,
+ "shard": "1/6",
+ "shard_cap_usd": 8.333333333333334,
+ "shard_files": 1,
+ "shard_plan": "0562e0d913cfd391fb27416c04e4245b8b2d8168cac78af97037633fd8b02235",
+ "slot": null,
+ "sources": "cleared",
+ "split": "dev",
+ "started_at": "2026-11-23T23:32:56Z",
+ "unmeasured_rows": 0,
+ "wall_seconds": 3600.3,
+ "wave": "snap_v1_dev",
+ "wave_cap_usd": 50.0,
+ "wave_id": "snap-v1-dev",
+ "wave_type": "normal"
+}

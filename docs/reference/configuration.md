@@ -642,7 +642,7 @@ API: it logs that the directory is missing and leaves `/ui` and `/static` unmoun
 
 <!-- Regenerate: python -m meshpipeline.settings.inventory --reference -->
 
-Every supported setting (317 entries). `template` settings are the ones `.env.example` carries; `internal` are advanced controls deliberately kept out of it; `external` are supplied by the platform or a library rather than by editing `.env`.
+Every supported setting (323 entries). `template` settings are the ones `.env.example` carries; `internal` are advanced controls deliberately kept out of it; `external` are supplied by the platform or a library rather than by editing `.env`.
 
 | Setting | Exposure | Read by | Secret |
 |---|---|---|---|
@@ -719,6 +719,7 @@ Every supported setting (317 entries). `template` settings are the ones `.env.ex
 | `CAD_REPAIR_BUDGET_ATTEMPTS` | internal | app |  |
 | `CAD_REPAIR_CLOSE_WIRE_GAPS` | internal | app |  |
 | `CAD_REPAIR_ENABLED` | template | app |  |
+| `CAD_REPAIR_ENGINE` | internal | app |  |
 | `CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS` | internal | app |  |
 | `CAD_REPAIR_FILL_NONPLANAR_HOLES` | internal | app |  |
 | `CAD_REPAIR_FILL_PLANAR_HOLES` | internal | app |  |
@@ -769,6 +770,11 @@ Every supported setting (317 entries). `template` settings are the ones `.env.ex
 | `CAD_REPAIR_TOLERANT_PROBE_TIMEOUT_S` | internal | app |  |
 | `CAD_REPAIR_TOURNAMENT` | internal | app |  |
 | `CAD_REPAIR_TOURNAMENT_K` | internal | app |  |
+| `CAD_REPAIR_V4_RECIPES` | internal | app |  |
+| `CAD_REPAIR_V4_RECIPES_URI` | internal | app |  |
+| `CRS_V4_VERDICT_CACHE_URI` | internal | app |  |
+| `HEXERA_TEST_KERNEL_FNS` | internal | app |  |
+| `PYTEST_CURRENT_TEST` | external | app |  |
 | `CELERY_WORKER_CONCURRENCY` | template | compose |  |
 | `CONSOLE_SIGNUP_ENABLED` | template | app |  |
 | `CREDITS_PER_MESH_MINUTE` | template | app |  |

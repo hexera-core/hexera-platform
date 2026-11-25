@@ -1,0 +1,48 @@
+{
+ "arms": [
+  "input_only",
+  "staged",
+  "search_det",
+  "search_ai"
+ ],
+ "commit": "9bd64b642c44",
+ "ended_at": "2026-11-24T01:20:42Z",
+ "error": "NoUsableRoute: no repair_v4_propose route passed the probe: openai:gpt-6-astra: the model saw 'pink', not red: images are not understood",
+ "exit_code": 6,
+ "file_timeout_s": 1800.0,
+ "hardware_class": "linux-x86_64",
+ "host": "b87d444a2db3",
+ "image": "us-central1-docker.pkg.dev/hexera-dev/mesh/crsv4-mesh@sha256:633e1c3bfd8e2c0fb97b166fa28ff834d0433b84ca8e77c24eb4b00c83ece361",
+ "label": "arms/1/6",
+ "ledger": "shard",
+ "ledger_detail": {
+  "cap_usd": 0.5,
+  "file_usd_cap_flag": 0.5,
+  "model_usd_cap_flag": 0.5,
+  "n_shards": 6,
+  "path": "/eval/ledger/d9-s1.jsonl",
+  "wave_id": "d9-live",
+  "wave_type": "normal"
+ },
+ "machine_type": "c2d-standard-8",
+ "marker_backend": "gcs/dev-crsv3-transfer-224734058693",
+ "mode": "arms",
+ "n_shards": 6,
+ "pool_dropped_by_source": {
+  "f360": 42912
+ },
+ "pool_listed": 53799,
+ "recipes": {
+  "enabled": false
+ },
+ "shard": "1/6",
+ "shard_cap_usd": 8.333333333333334,
+ "slot": null,
+ "split": "dev",
+ "started_at": "2026-11-24T01:20:36Z",
+ "wall_seconds": 5.7,
+ "wave": "snap_v1_dev",
+ "wave_cap_usd": 50.0,
+ "wave_id": "d9-live",
+ "wave_type": "normal"
+}

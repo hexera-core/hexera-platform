@@ -1,0 +1,354 @@
+{
+ "arms": {
+  "input_only": {
+   "by_defect_kind": {
+    "clean_control": {
+     "clean": 8,
+     "clean_rate": 1.0,
+     "conclusive": 8,
+     "files": 8,
+     "inconclusive": 0,
+     "measured": true
+    }
+   },
+   "clean_gain": 0,
+   "clean_gain_rate": 0.0,
+   "clean_in": 8,
+   "clean_out": 8,
+   "clean_rate": 1.0,
+   "conclusive": 8,
+   "files": 8,
+   "inconclusive": 0,
+   "inconclusive_rate": 0.0,
+   "layers": {
+    "clean": 8,
+    "faithful_ok": 8,
+    "panel_all_pass": 8,
+    "valid": 8
+   },
+   "measured": true,
+   "model_usd": {
+    "per_file_mean": 0.0,
+    "total": 0.0
+   },
+   "paired": {
+    "clean": 8,
+    "clean_gain": 0,
+    "clean_in": 8,
+    "clean_rate": 1.0,
+    "n": 8
+   },
+   "regressions": {
+    "clean_to_unclean": 0,
+    "either": 0,
+    "fewer_panel_passes": 0
+   },
+   "spend_metered": true,
+   "wall_s": {
+    "max": 56.828,
+    "per_file_mean": 10.5205,
+    "total": 84.164
+   }
+  },
+  "search_ai": {
+   "by_defect_kind": {
+    "clean_control": {
+     "clean": 8,
+     "clean_rate": 1.0,
+     "conclusive": 8,
+     "files": 8,
+     "inconclusive": 0,
+     "measured": true
+    }
+   },
+   "clean_gain": 0,
+   "clean_gain_rate": 0.0,
+   "clean_in": 8,
+   "clean_out": 8,
+   "clean_rate": 1.0,
+   "conclusive": 8,
+   "files": 8,
+   "inconclusive": 0,
+   "inconclusive_rate": 0.0,
+   "layers": {
+    "clean": 8,
+    "faithful_ok": 8,
+    "panel_all_pass": 8,
+    "valid": 8
+   },
+   "measured": true,
+   "model_usd": {
+    "per_file_mean": 0.00549375,
+    "total": 0.04395
+   },
+   "paired": {
+    "clean": 8,
+    "clean_gain": 0,
+    "clean_in": 8,
+    "clean_rate": 1.0,
+    "n": 8
+   },
+   "regressions": {
+    "clean_to_unclean": 0,
+    "either": 0,
+    "fewer_panel_passes": 0
+   },
+   "spend_metered": true,
+   "wall_s": {
+    "max": 31.72,
+    "per_file_mean": 6.82575,
+    "total": 54.606
+   }
+  },
+  "search_det": {
+   "by_defect_kind": {
+    "clean_control": {
+     "clean": 8,
+     "clean_rate": 1.0,
+     "conclusive": 8,
+     "files": 8,
+     "inconclusive": 0,
+     "measured": true
+    }
+   },
+   "clean_gain": 0,
+   "clean_gain_rate": 0.0,
+   "clean_in": 8,
+   "clean_out": 8,
+   "clean_rate": 1.0,
+   "conclusive": 8,
+   "files": 8,
+   "inconclusive": 0,
+   "inconclusive_rate": 0.0,
+   "layers": {
+    "clean": 8,
+    "faithful_ok": 8,
+    "panel_all_pass": 8,
+    "valid": 8
+   },
+   "measured": true,
+   "model_usd": {
+    "per_file_mean": 0.0,
+    "total": 0.0
+   },
+   "paired": {
+    "clean": 8,
+    "clean_gain": 0,
+    "clean_in": 8,
+    "clean_rate": 1.0,
+    "n": 8
+   },
+   "regressions": {
+    "clean_to_unclean": 0,
+    "either": 0,
+    "fewer_panel_passes": 0
+   },
+   "spend_metered": true,
+   "wall_s": {
+    "max": 15.512,
+    "per_file_mean": 4.898375,
+    "total": 39.187
+   }
+  },
+  "staged": {
+   "by_defect_kind": {
+    "clean_control": {
+     "clean": 7,
+     "clean_rate": 0.875,
+     "conclusive": 8,
+     "files": 8,
+     "inconclusive": 0,
+     "measured": true
+    }
+   },
+   "clean_gain": -1,
+   "clean_gain_rate": -0.125,
+   "clean_in": 8,
+   "clean_out": 7,
+   "clean_rate": 0.875,
+   "conclusive": 8,
+   "files": 8,
+   "inconclusive": 0,
+   "inconclusive_rate": 0.0,
+   "layers": {
+    "clean": 7,
+    "faithful_ok": 8,
+    "panel_all_pass": 7,
+    "valid": 8
+   },
+   "measured": true,
+   "model_usd": {
+    "per_file_mean": 0.0,
+    "total": 0.0
+   },
+   "paired": {
+    "clean": 7,
+    "clean_gain": -1,
+    "clean_in": 8,
+    "clean_rate": 0.875,
+    "n": 8
+   },
+   "regressions": {
+    "clean_to_unclean": 1,
+    "either": 1,
+    "fewer_panel_passes": 1
+   },
+   "spend_metered": true,
+   "wall_s": {
+    "max": 72.981,
+    "per_file_mean": 15.727374999999999,
+    "total": 125.81899999999999
+   }
+  }
+ },
+ "budgets": {
+  "input_only": {
+   "model_usd": 0.0,
+   "ops": 60,
+   "wall_s": 600.0
+  },
+  "search_ai": {
+   "model_usd": 1.0,
+   "ops": 60,
+   "wall_s": 600.0
+  },
+  "search_det": {
+   "model_usd": 0.0,
+   "ops": 60,
+   "wall_s": 600.0
+  },
+  "staged": {
+   "model_usd": 0.0,
+   "ops": 60,
+   "wall_s": 600.0
+  }
+ },
+ "cheap_full_agreement": {
+  "arms": {
+   "search_ai": {
+    "agree": 0.0,
+    "cheap_fail_full_fail": 0,
+    "cheap_fail_full_pass": 0,
+    "cheap_false_alarm_rate_among_cheap_fails": null,
+    "cheap_miss_rate_among_cheap_passes": 1.0,
+    "cheap_pass_full_fail": 1,
+    "cheap_pass_full_pass": 0,
+    "compared": 1,
+    "rows_without_data": 0
+   },
+   "search_det": {
+    "agree": null,
+    "cheap_fail_full_fail": 0,
+    "cheap_fail_full_pass": 0,
+    "cheap_false_alarm_rate_among_cheap_fails": null,
+    "cheap_miss_rate_among_cheap_passes": null,
+    "cheap_pass_full_fail": 0,
+    "cheap_pass_full_pass": 0,
+    "compared": 0,
+    "rows_without_data": 0
+   }
+  },
+  "measured": true,
+  "pooled": {
+   "agree": 0.0,
+   "cheap_fail_full_fail": 0,
+   "cheap_fail_full_pass": 0,
+   "cheap_false_alarm_rate_among_cheap_fails": null,
+   "cheap_miss_rate_among_cheap_passes": 1.0,
+   "cheap_pass_full_fail": 1,
+   "cheap_pass_full_pass": 0,
+   "compared": 1
+  },
+  "rows_without_data": 0,
+  "source": "search confirm events (the re-probe's own agreement is in collect.py report['agreement'])",
+  "unit": "states confirmed by the full panel"
+ },
+ "commit": "79d7ba35993f9569e0ee3dfffe2752da9d38f2b4",
+ "declined_stratum": {
+  "arms": {
+   "input_only": {
+    "declined": 0,
+    "files": 0,
+    "inconclusive": 0,
+    "unexpectedly_clean": 0
+   },
+   "search_ai": {
+    "declined": 0,
+    "files": 0,
+    "inconclusive": 0,
+    "unexpectedly_clean": 0
+   },
+   "search_det": {
+    "declined": 0,
+    "files": 0,
+    "inconclusive": 0,
+    "unexpectedly_clean": 0
+   },
+   "staged": {
+    "declined": 0,
+    "files": 0,
+    "inconclusive": 0,
+    "unexpectedly_clean": 0
+   }
+  },
+  "counted_as": "none: not a failure, not a gain",
+  "expected_outcome": "correctly_declined",
+  "files": 0
+ },
+ "files": 8,
+ "files_measured_strata": 8,
+ "frozen_commit_checked": false,
+ "heldout_split": false,
+ "image": "sha256:03844d4454ccb620c5e3dce134d5c1f318ba3f509178cb9e7f21b5b6031ec6f4",
+ "marginals": {
+  "ai_marginal (search_ai - search_det)": {
+   "files_gained": 0,
+   "n_paired": 8,
+   "reason": null,
+   "value": 0.0
+  },
+  "deterministic_marginal (staged - input_only)": {
+   "files_gained": -1,
+   "n_paired": 8,
+   "reason": null,
+   "value": -0.125
+  }
+ },
+ "not_reported_here": [
+  "the re-probe's own cheap/full agreement (collect.py report['agreement'])",
+  "per-op or per-layer pass counts below the four in `layers`"
+ ],
+ "numbers_valid": true,
+ "paired_set": {
+  "arms": [
+   "input_only",
+   "staged",
+   "search_det",
+   "search_ai"
+  ],
+  "excluded_not_measured": [],
+  "fraction": 1.0,
+  "min_fraction": 0.8,
+  "n_files": 8,
+  "of": 8
+ },
+ "primary_artifact": false,
+ "slot": null,
+ "slot_verified_against_store": false,
+ "spend": {
+  "cap_usd": 50.0,
+  "model_usd_total": 0.04395,
+  "unmetered_arms": []
+ },
+ "split": "clean",
+ "status": "OK",
+ "wall": {
+  "shard_seconds_total": 309.6,
+  "shards": 1,
+  "slowest_shard_s": 309.6
+ },
+ "warnings": [],
+ "wave": "snap_v1_clean",
+ "wave_id": "snap-v1-clean",
+ "wave_type": "normal"
+}

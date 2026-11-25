@@ -1,0 +1,114 @@
+[02:37:05] profile=v1r commit=a9dae3bb79dde62157a13dfc1b0ab4b8b756e40c (from a9dae3bb) run dir /Users/kitts/archductor/snap-runs/v1r-202611240237
+[02:37:06] dev split file:/tmp/v1rsplits/dev_v1r_moved.json; clean split file:/tmp/v1rsplits/clean_v1r_moved.json
+OK profile=v1r file_wall=1800s dev=29 files/6 shards [1, 1, 1, 8, 9, 9] clean=9 files/1 shards [9]
+   caps dev [1.0, 1.0, 1.0, 3.29, 3.62, 3.62] clean [1.4] total $14.93 (limit $14.95)
+   predicted shard minutes dev [105, 95, 53, 50, 50, 50] clean [5]; cost source dev k=18.94 from 29 prior files
+   projection: wave ~105 min (critical shard), VM ~2.10 h ~$1.57, model ~$1.30 expected (cap $14.93); a file that walls in all 4 arms costs 120 min on its shard
+[02:37:16] C2D_CPUS free in us-central1: 76, need 16
+[02:37:42] profile=v1r commit=a9dae3bb79dde62157a13dfc1b0ab4b8b756e40c (from a9dae3bb) run dir /Users/kitts/archductor/snap-runs/v1r-202611240237
+[02:37:43] dev split file:/tmp/v1rsplits/dev_v1r_moved.json; clean split file:/tmp/v1rsplits/clean_v1r_moved.json
+OK profile=v1r file_wall=1800s dev=29 files/6 shards [1, 1, 1, 8, 9, 9] clean=9 files/1 shards [9]
+   caps dev [1.0, 1.0, 1.0, 3.29, 3.62, 3.62] clean [1.4] total $14.93 (limit $14.95)
+   predicted shard minutes dev [105, 95, 53, 50, 50, 50] clean [5]; cost source dev k=18.94 from 29 prior files
+   projection: wave ~105 min (critical shard), VM ~2.10 h ~$1.57, model ~$1.30 expected (cap $14.93); a file that walls in all 4 arms costs 120 min on its shard
+[02:37:55] C2D_CPUS free in us-central1: 76, need 16
+[02:37:59] image us-central1-docker.pkg.dev/hexera-dev/mesh/crsv4-mesh@sha256:3e8c6fae170342bbb53cf63685c2e49a77f0e6ab042e308a1f038a82e05e3592, label org.opencontainers.image.revision=1d6ed735f7284609a269ca314c15ff6b0e359d4b (== IMAGE_COMMIT)
+Created [https://www.googleapis.com/compute/v1/projects/hexera-dev/zones/us-central1-b/instances/dev-crsv4-snap-v1r].
+WARNING: Some requests generated warnings:
+ - Disk size: '100 GB' is larger than image size: '10 GB'. You might need to resize the root repartition manually if the operating system does not support automatic resizing. See https://cloud.google.com/compute/docs/disks/add-persistent-disk#resize_pd for details.
+
+NAME                ZONE           MACHINE_TYPE     PREEMPTIBLE  INTERNAL_IP  EXTERNAL_IP   STATUS
+dev-crsv4-snap-v1r  us-central1-b  c2d-standard-16               10.128.0.14  34.69.160.86  RUNNING
+[02:38:08] VM dev-crsv4-snap-v1r up in us-central1-b at 2026-11-24T02:38:08Z (reaper: max-run 6h, DELETE)
+[02:40:02] running; polling every 2 min for out/ALLDONE
+[02:42:06] status: staged=38 bad=0 0 
+[02:44:09] status: staged=38 bad=0 0 
+[02:46:12] status: staged=38 bad=0 0 
+[02:48:16] status: staged=38 bad=0 1 
+[02:50:19] status: staged=38 bad=0 1 
+[02:52:22] status: staged=38 bad=0 1 
+[02:54:26] status: staged=38 bad=0 1 
+[02:56:29] status: staged=38 bad=0 1 
+[02:58:32] status: staged=38 bad=0 1 
+[03:00:35] status: staged=38 bad=0 1 
+[03:02:40] status: staged=38 bad=0 1 
+[03:04:44] status: staged=38 bad=0 1 
+[03:06:47] status: staged=38 bad=0 1 
+[03:08:51] status: staged=38 bad=0 1 
+[03:10:55] status: staged=38 bad=0 1 
+[03:12:58] status: staged=38 bad=0 1 
+[03:15:01] status: staged=38 bad=0 1 
+[03:17:05] status: staged=38 bad=0 1 
+[03:19:08] status: staged=38 bad=0 1 
+[03:21:12] status: staged=38 bad=0 1 
+[03:23:15] status: staged=38 bad=0 1 
+[03:25:18] status: staged=38 bad=0 1 
+[03:27:21] status: staged=38 bad=0 1 
+[03:29:24] status: staged=38 bad=0 1 
+[03:31:27] status: staged=38 bad=0 1 
+[03:33:31] status: staged=38 bad=0 1 
+[03:35:34] status: staged=38 bad=0 1 
+[03:37:37] status: staged=38 bad=0 1 
+[03:39:40] status: staged=38 bad=0 1 
+[03:41:43] status: staged=38 bad=0 1 
+[03:43:46] status: staged=38 bad=0 1 
+[03:45:49] status: staged=38 bad=0 1 
+[03:47:52] status: staged=38 bad=0 1 
+[03:49:55] status: staged=38 bad=0 1 
+[03:51:58] status: staged=38 bad=0 1 
+[03:54:01] status: staged=38 bad=0 1 
+[03:56:04] status: staged=38 bad=0 1 
+[03:58:07] status: staged=38 bad=0 1 
+[04:00:10] status: staged=38 bad=0 1 
+[04:02:14] status: staged=38 bad=0 1 
+[04:04:17] status: staged=38 bad=0 1 
+[04:06:20] status: staged=38 bad=0 1 
+[04:08:23] status: staged=38 bad=0 1 
+[04:10:26] status: staged=38 bad=0 1 
+[04:12:28] status: staged=38 bad=0 1 
+[04:14:32] status: staged=38 bad=0 1 
+[04:16:35] status: staged=38 bad=0 1 
+[04:18:38] status: staged=38 bad=0 1 
+[04:20:41] status: staged=38 bad=0 2 
+[04:22:45] status: staged=38 bad=0 2 
+[04:24:48] status: staged=38 bad=0 2 
+[04:26:52] status: staged=38 bad=0 4 
+[04:28:55] status: staged=38 bad=0 4 
+[04:30:59] status: staged=38 bad=0 4 
+[04:33:02] status: staged=38 bad=0 4 
+[04:35:05] status: staged=38 bad=0 4 
+[04:37:09] status: staged=38 bad=0 4 
+[04:39:12] status: staged=38 bad=0 4 
+[04:41:15] status: staged=38 bad=0 4 
+[04:43:18] status: staged=38 bad=0 4 
+[04:45:21] status: staged=38 bad=0 4 
+[04:47:24] status: staged=38 bad=0 4 
+[04:49:28] status: staged=38 bad=0 4 
+[04:51:31] status: staged=38 bad=0 4 
+[04:53:35] status: staged=38 bad=0 4 
+[04:55:39] status: staged=38 bad=0 5 
+[04:57:42] status: staged=38 bad=0 5 
+[04:59:45] status: staged=38 bad=0 5 
+[05:01:49] status: staged=38 bad=0 5 
+[05:03:52] status: staged=38 bad=0 5 
+[05:05:55] status: staged=38 bad=0 5 
+[05:07:58] status: staged=38 bad=0 5 
+[05:10:02] status: staged=38 bad=0 5 
+[05:12:05] status: staged=38 bad=0 5 
+[05:14:09] status: staged=38 bad=0 5 
+[05:16:12] status: staged=38 bad=0 5 
+[05:18:15] status: staged=38 bad=0 5 
+[05:20:18] status: staged=38 bad=0 5 
+[05:22:22] status: staged=38 bad=0 5 
+[05:24:25] status: staged=38 bad=0 5 
+[05:26:28] status: staged=38 bad=0 5 
+[05:28:31] status: staged=38 bad=0 5 
+[05:30:34] status: staged=38 bad=0 5 
+[05:32:37] status: staged=38 bad=0 5 
+[05:34:41] status: staged=38 bad=0 6 
+[05:36:44] status: staged=38 bad=0 6 
+[05:38:47] status: staged=38 bad=0 6 
+[05:40:52] status: staged=38 bad=0 7 ALLDONE 
+Deleted [https://www.googleapis.com/compute/v1/projects/hexera-dev/zones/us-central1-b/instances/dev-crsv4-snap-v1r].
+[05:41:18] VM delete rc=0; list: []
+wrote /Users/kitts/archductor/sdd-worktrees/snap-v1r/docs/benchmarks/crs-v4-dev-snapshot-v1r.md

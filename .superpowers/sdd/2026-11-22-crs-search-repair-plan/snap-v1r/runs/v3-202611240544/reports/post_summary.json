@@ -1,0 +1,10 @@
+{
+ "clean": {
+  "report_rc": 2,
+  "triage_rc": 0
+ },
+ "dev": {
+  "report_rc": 1,
+  "triage_rc": 1
+ }
+}

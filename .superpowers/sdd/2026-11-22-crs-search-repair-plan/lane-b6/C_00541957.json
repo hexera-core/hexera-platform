@@ -1,0 +1,81 @@
+{
+ "file": "C_00541957.step",
+ "diagonal_mm": 2225.5006711197443,
+ "bound_mm": 0.1,
+ "solids": 4,
+ "solid_ids": [
+  "B1",
+  "B2",
+  "B3",
+  "B4"
+ ],
+ "volumes": [
+  31812.67570661936,
+  375250.0,
+  375250.0,
+  9643517.990596171
+ ],
+ "overlapping_pairs": [
+  {
+   "pair": [
+    "B1",
+    "B4"
+   ],
+   "overlap_volume": 4325.764345050756,
+   "overlap_area": 5407.20456588127,
+   "mean_thickness_2V_over_A": 1.6000002560826878,
+   "aabb_min_extent": 18.92062361932051,
+   "obb_min_extent": 18.910926503242692,
+   "kernel_depth": 18.92062361932051,
+   "share_of_body_i": 0.13597612426391034,
+   "share_of_body_j": 0.0004485670425739863,
+   "contained": false
+  }
+ ],
+ "input_panel": {
+  "gmsh_prod": "fail",
+  "gmsh_default": "fail",
+  "gmsh_alt": "fail",
+  "netgen_occ": "pass"
+ },
+ "forced_cut_by": [
+  {
+   "pair": [
+    "B1",
+    "B4"
+   ],
+   "keeper": "B1",
+   "declined": null,
+   "declared_removed": 8,
+   "modified": 11,
+   "panel": {
+    "gmsh_prod": "fail",
+    "gmsh_default": "fail",
+    "gmsh_alt": "fail",
+    "netgen_occ": "pass"
+   },
+   "clean": false,
+   "valid": true,
+   "valid_hard": [],
+   "faithful": {
+    "ok": true,
+    "reasons": [],
+    "max_dev_mm": 2.842170943040401e-14,
+    "bound_mm": 0.1,
+    "area_ratio": 0.9996691042179009,
+    "volume_ratio": 0.9995851042071575,
+    "declared_removed": 2
+   }
+  },
+  {
+   "pair": [
+    "B1",
+    "B4"
+   ],
+   "keeper": "B4",
+   "declined": "changes_body_count",
+   "declared_removed": 0,
+   "modified": 0
+  }
+ ]
+}

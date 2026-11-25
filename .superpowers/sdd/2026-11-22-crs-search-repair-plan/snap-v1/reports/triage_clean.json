@@ -1,0 +1,192 @@
+{
+ "arms": {
+  "input_only": {
+   "ai": null,
+   "clean": 8,
+   "conclusive": 8,
+   "deviation": {
+    "budget_used": {
+     "max": null,
+     "median": null,
+     "n": 0,
+     "p90": null
+    },
+    "faithful_failed": 0,
+    "over_bound": 0,
+    "reasons": {}
+   },
+   "ended_by": {},
+   "excluded": 0,
+   "excluded_reasons": {},
+   "files": 8,
+   "inconclusive_rows": 0,
+   "not_clean": 0,
+   "not_clean_by_defect_kind": {},
+   "not_clean_without_triage": 0,
+   "not_proposed": {},
+   "open_sites": {
+    "files_with_kind": {},
+    "total_sites": 0
+   },
+   "ops": {},
+   "panel": {
+    "by_member": {},
+    "members_failing_per_file": {}
+   },
+   "stages": null,
+   "stop_reasons": {},
+   "unmeasured_stop_reasons": {},
+   "valid_hard": {}
+  },
+  "search_ai": {
+   "ai": null,
+   "clean": 8,
+   "conclusive": 8,
+   "deviation": {
+    "budget_used": {
+     "max": null,
+     "median": null,
+     "n": 0,
+     "p90": null
+    },
+    "faithful_failed": 0,
+    "over_bound": 0,
+    "reasons": {}
+   },
+   "ended_by": {},
+   "excluded": 0,
+   "excluded_reasons": {},
+   "files": 8,
+   "inconclusive_rows": 0,
+   "not_clean": 0,
+   "not_clean_by_defect_kind": {},
+   "not_clean_without_triage": 0,
+   "not_proposed": {},
+   "open_sites": {
+    "files_with_kind": {},
+    "total_sites": 0
+   },
+   "ops": {},
+   "panel": {
+    "by_member": {},
+    "members_failing_per_file": {}
+   },
+   "stages": null,
+   "stop_reasons": {},
+   "unmeasured_stop_reasons": {},
+   "valid_hard": {}
+  },
+  "search_det": {
+   "ai": null,
+   "clean": 8,
+   "conclusive": 8,
+   "deviation": {
+    "budget_used": {
+     "max": null,
+     "median": null,
+     "n": 0,
+     "p90": null
+    },
+    "faithful_failed": 0,
+    "over_bound": 0,
+    "reasons": {}
+   },
+   "ended_by": {},
+   "excluded": 0,
+   "excluded_reasons": {},
+   "files": 8,
+   "inconclusive_rows": 0,
+   "not_clean": 0,
+   "not_clean_by_defect_kind": {},
+   "not_clean_without_triage": 0,
+   "not_proposed": {},
+   "open_sites": {
+    "files_with_kind": {},
+    "total_sites": 0
+   },
+   "ops": {},
+   "panel": {
+    "by_member": {},
+    "members_failing_per_file": {}
+   },
+   "stages": null,
+   "stop_reasons": {},
+   "unmeasured_stop_reasons": {},
+   "valid_hard": {}
+  },
+  "staged": {
+   "ai": null,
+   "clean": 7,
+   "conclusive": 8,
+   "deviation": {
+    "budget_used": {
+     "max": 0.0,
+     "median": 0.0,
+     "n": 1,
+     "p90": 0.0
+    },
+    "faithful_failed": 0,
+    "over_bound": 0,
+    "reasons": {}
+   },
+   "ended_by": {},
+   "excluded": 0,
+   "excluded_reasons": {},
+   "files": 8,
+   "inconclusive_rows": 0,
+   "not_clean": 1,
+   "not_clean_by_defect_kind": {
+    "clean_control": 1
+   },
+   "not_clean_without_triage": 0,
+   "not_proposed": {},
+   "open_sites": {
+    "files_with_kind": {},
+    "total_sites": 0
+   },
+   "ops": {},
+   "panel": {
+    "by_member": {
+     "gmsh_prod": {
+      "error_kind": {
+       "other": 1
+      },
+      "files": 1,
+      "status": {
+       "fail": 1
+      }
+     }
+    },
+    "members_failing_per_file": {
+     "1": 1
+    }
+   },
+   "stages": {
+    "kept": {
+     "baseline": 1,
+     "condition": 1,
+     "finalise": 1,
+     "normalise": 1,
+     "shells": 1,
+     "solids": 1
+    },
+    "rolled_back": {}
+   },
+   "stop_reasons": {},
+   "unmeasured_stop_reasons": {},
+   "valid_hard": {}
+  }
+ },
+ "complete_wave": true,
+ "leads": [
+  {
+   "arm": "staged",
+   "files": 1,
+   "key": "gmsh_prod: other",
+   "of_not_clean": 1,
+   "what": "panel member still failing"
+  }
+ ],
+ "source": "/Users/kitts/archductor/snap-v1-data/results/out/snap-v1-clean",
+ "unit": "files (one row per file and arm) unless 'candidates'"
+}

@@ -1,0 +1,516 @@
+{
+ "arms": {
+  "input_only": {
+   "by_defect_kind": {
+    "body_overlap": {
+     "clean": 0,
+     "clean_rate": 0.0,
+     "conclusive": 7,
+     "files": 7,
+     "inconclusive": 0,
+     "measured": true
+    },
+    "brep_invalid": {
+     "clean": 0,
+     "clean_rate": 0.0,
+     "conclusive": 2,
+     "files": 2,
+     "inconclusive": 0,
+     "measured": true
+    },
+    "open_shell": {
+     "clean": 0,
+     "clean_rate": 0.0,
+     "conclusive": 3,
+     "files": 3,
+     "inconclusive": 0,
+     "measured": true
+    },
+    "other": {
+     "clean": 0,
+     "clean_rate": 0.0,
+     "conclusive": 13,
+     "files": 13,
+     "inconclusive": 0,
+     "measured": true
+    },
+    "periodic_surface": {
+     "clean": 0,
+     "clean_rate": 0.0,
+     "conclusive": 1,
+     "files": 1,
+     "inconclusive": 0,
+     "measured": true
+    },
+    "self_intersection": {
+     "clean": 0,
+     "clean_rate": 0.0,
+     "conclusive": 3,
+     "files": 3,
+     "inconclusive": 0,
+     "measured": true
+    }
+   },
+   "clean_gain": 0,
+   "clean_gain_rate": 0.0,
+   "clean_in": 0,
+   "clean_out": 0,
+   "clean_rate": 0.0,
+   "conclusive": 29,
+   "files": 29,
+   "inconclusive": 0,
+   "inconclusive_rate": 0.0,
+   "layers": {
+    "clean": 0,
+    "faithful_ok": 14,
+    "panel_all_pass": 1,
+    "valid": 15
+   },
+   "measured": true,
+   "model_usd": {
+    "per_file_mean": 0.0,
+    "total": 0.0
+   },
+   "paired": {
+    "clean": 0,
+    "clean_gain": 0,
+    "clean_in": 0,
+    "clean_rate": 0.0,
+    "n": 27
+   },
+   "regressions": {
+    "clean_to_unclean": 0,
+    "either": 0,
+    "fewer_panel_passes": 0
+   },
+   "spend_metered": true,
+   "wall_s": {
+    "max": 891.193,
+    "per_file_mean": 103.12251724137931,
+    "total": 2990.553
+   }
+  },
+  "search_ai": {
+   "by_defect_kind": {
+    "body_overlap": {
+     "clean": 0,
+     "clean_rate": 0.0,
+     "conclusive": 7,
+     "files": 7,
+     "inconclusive": 0,
+     "measured": true
+    },
+    "brep_invalid": {
+     "clean": 0,
+     "clean_rate": 0.0,
+     "conclusive": 2,
+     "files": 2,
+     "inconclusive": 0,
+     "measured": true
+    },
+    "open_shell": {
+     "clean": null,
+     "clean_rate": null,
+     "conclusive": 1,
+     "files": 3,
+     "inconclusive": 2,
+     "measured": false
+    },
+    "other": {
+     "clean": 1,
+     "clean_rate": 0.07692307692307693,
+     "conclusive": 13,
+     "files": 13,
+     "inconclusive": 0,
+     "measured": true
+    },
+    "periodic_surface": {
+     "clean": 0,
+     "clean_rate": 0.0,
+     "conclusive": 1,
+     "files": 1,
+     "inconclusive": 0,
+     "measured": true
+    },
+    "self_intersection": {
+     "clean": 0,
+     "clean_rate": 0.0,
+     "conclusive": 3,
+     "files": 3,
+     "inconclusive": 0,
+     "measured": true
+    }
+   },
+   "clean_gain": 1,
+   "clean_gain_rate": 0.037037037037037035,
+   "clean_in": 0,
+   "clean_out": 1,
+   "clean_rate": 0.037037037037037035,
+   "conclusive": 27,
+   "files": 29,
+   "inconclusive": 2,
+   "inconclusive_rate": 0.06896551724137931,
+   "layers": {
+    "clean": 1,
+    "faithful_ok": 14,
+    "panel_all_pass": 2,
+    "valid": 15
+   },
+   "measured": true,
+   "model_usd": {
+    "per_file_mean": 0.03448106896551724,
+    "total": 0.999951
+   },
+   "paired": {
+    "clean": 1,
+    "clean_gain": 1,
+    "clean_in": 0,
+    "clean_rate": 0.037037037037037035,
+    "n": 27
+   },
+   "regressions": {
+    "clean_to_unclean": 0,
+    "either": 0,
+    "fewer_panel_passes": 0
+   },
+   "spend_metered": true,
+   "wall_s": {
+    "max": 701.887,
+    "per_file_mean": 114.56817241379309,
+    "total": 3322.477
+   }
+  },
+  "search_det": {
+   "by_defect_kind": {
+    "body_overlap": {
+     "clean": 0,
+     "clean_rate": 0.0,
+     "conclusive": 7,
+     "files": 7,
+     "inconclusive": 0,
+     "measured": true
+    },
+    "brep_invalid": {
+     "clean": 0,
+     "clean_rate": 0.0,
+     "conclusive": 2,
+     "files": 2,
+     "inconclusive": 0,
+     "measured": true
+    },
+    "open_shell": {
+     "clean": null,
+     "clean_rate": null,
+     "conclusive": 1,
+     "files": 3,
+     "inconclusive": 2,
+     "measured": false
+    },
+    "other": {
+     "clean": 1,
+     "clean_rate": 0.07692307692307693,
+     "conclusive": 13,
+     "files": 13,
+     "inconclusive": 0,
+     "measured": true
+    },
+    "periodic_surface": {
+     "clean": 0,
+     "clean_rate": 0.0,
+     "conclusive": 1,
+     "files": 1,
+     "inconclusive": 0,
+     "measured": true
+    },
+    "self_intersection": {
+     "clean": 0,
+     "clean_rate": 0.0,
+     "conclusive": 3,
+     "files": 3,
+     "inconclusive": 0,
+     "measured": true
+    }
+   },
+   "clean_gain": 1,
+   "clean_gain_rate": 0.037037037037037035,
+   "clean_in": 0,
+   "clean_out": 1,
+   "clean_rate": 0.037037037037037035,
+   "conclusive": 27,
+   "files": 29,
+   "inconclusive": 2,
+   "inconclusive_rate": 0.06896551724137931,
+   "layers": {
+    "clean": 1,
+    "faithful_ok": 14,
+    "panel_all_pass": 2,
+    "valid": 15
+   },
+   "measured": true,
+   "model_usd": {
+    "per_file_mean": 0.0,
+    "total": 0.0
+   },
+   "paired": {
+    "clean": 1,
+    "clean_gain": 1,
+    "clean_in": 0,
+    "clean_rate": 0.037037037037037035,
+    "n": 27
+   },
+   "regressions": {
+    "clean_to_unclean": 0,
+    "either": 0,
+    "fewer_panel_passes": 0
+   },
+   "spend_metered": true,
+   "wall_s": {
+    "max": 1262.12,
+    "per_file_mean": 112.54693103448275,
+    "total": 3263.861
+   }
+  },
+  "staged": {
+   "by_defect_kind": {
+    "body_overlap": {
+     "clean": 0,
+     "clean_rate": 0.0,
+     "conclusive": 7,
+     "files": 7,
+     "inconclusive": 0,
+     "measured": true
+    },
+    "brep_invalid": {
+     "clean": 0,
+     "clean_rate": 0.0,
+     "conclusive": 2,
+     "files": 2,
+     "inconclusive": 0,
+     "measured": true
+    },
+    "open_shell": {
+     "clean": null,
+     "clean_rate": null,
+     "conclusive": 1,
+     "files": 3,
+     "inconclusive": 2,
+     "measured": false
+    },
+    "other": {
+     "clean": 1,
+     "clean_rate": 0.07692307692307693,
+     "conclusive": 13,
+     "files": 13,
+     "inconclusive": 0,
+     "measured": true
+    },
+    "periodic_surface": {
+     "clean": 0,
+     "clean_rate": 0.0,
+     "conclusive": 1,
+     "files": 1,
+     "inconclusive": 0,
+     "measured": true
+    },
+    "self_intersection": {
+     "clean": 0,
+     "clean_rate": 0.0,
+     "conclusive": 3,
+     "files": 3,
+     "inconclusive": 0,
+     "measured": true
+    }
+   },
+   "clean_gain": 1,
+   "clean_gain_rate": 0.037037037037037035,
+   "clean_in": 0,
+   "clean_out": 1,
+   "clean_rate": 0.037037037037037035,
+   "conclusive": 27,
+   "files": 29,
+   "inconclusive": 2,
+   "inconclusive_rate": 0.06896551724137931,
+   "layers": {
+    "clean": 1,
+    "faithful_ok": 14,
+    "panel_all_pass": 2,
+    "valid": 15
+   },
+   "measured": true,
+   "model_usd": {
+    "per_file_mean": 0.0,
+    "total": 0.0
+   },
+   "paired": {
+    "clean": 1,
+    "clean_gain": 1,
+    "clean_in": 0,
+    "clean_rate": 0.037037037037037035,
+    "n": 27
+   },
+   "regressions": {
+    "clean_to_unclean": 0,
+    "either": 1,
+    "fewer_panel_passes": 1
+   },
+   "spend_metered": true,
+   "wall_s": {
+    "max": 612.983,
+    "per_file_mean": 127.99068965517242,
+    "total": 3711.73
+   }
+  }
+ },
+ "budgets": {
+  "input_only": {
+   "model_usd": 0.0,
+   "ops": 60,
+   "wall_s": 600.0
+  },
+  "search_ai": {
+   "model_usd": 1.0,
+   "ops": 60,
+   "wall_s": 600.0
+  },
+  "search_det": {
+   "model_usd": 0.0,
+   "ops": 60,
+   "wall_s": 600.0
+  },
+  "staged": {
+   "model_usd": 0.0,
+   "ops": 60,
+   "wall_s": 600.0
+  }
+ },
+ "cheap_full_agreement": {
+  "arms": {
+   "search_ai": {
+    "agree": 0.26666666666666666,
+    "cheap_fail_full_fail": 4,
+    "cheap_fail_full_pass": 0,
+    "cheap_false_alarm_rate_among_cheap_fails": 0.0,
+    "cheap_miss_rate_among_cheap_passes": 1.0,
+    "cheap_pass_full_fail": 11,
+    "cheap_pass_full_pass": 0,
+    "compared": 15,
+    "rows_without_data": 0
+   },
+   "search_det": {
+    "agree": null,
+    "cheap_fail_full_fail": 0,
+    "cheap_fail_full_pass": 0,
+    "cheap_false_alarm_rate_among_cheap_fails": null,
+    "cheap_miss_rate_among_cheap_passes": null,
+    "cheap_pass_full_fail": 0,
+    "cheap_pass_full_pass": 0,
+    "compared": 0,
+    "rows_without_data": 0
+   }
+  },
+  "measured": true,
+  "pooled": {
+   "agree": 0.26666666666666666,
+   "cheap_fail_full_fail": 4,
+   "cheap_fail_full_pass": 0,
+   "cheap_false_alarm_rate_among_cheap_fails": 0.0,
+   "cheap_miss_rate_among_cheap_passes": 1.0,
+   "cheap_pass_full_fail": 11,
+   "cheap_pass_full_pass": 0,
+   "compared": 15
+  },
+  "rows_without_data": 0,
+  "source": "search confirm events (the re-probe's own agreement is in collect.py report['agreement'])",
+  "unit": "states confirmed by the full panel"
+ },
+ "commit": "79d7ba35993f9569e0ee3dfffe2752da9d38f2b4",
+ "declined_stratum": {
+  "arms": {
+   "input_only": {
+    "declined": 0,
+    "files": 0,
+    "inconclusive": 0,
+    "unexpectedly_clean": 0
+   },
+   "search_ai": {
+    "declined": 0,
+    "files": 0,
+    "inconclusive": 0,
+    "unexpectedly_clean": 0
+   },
+   "search_det": {
+    "declined": 0,
+    "files": 0,
+    "inconclusive": 0,
+    "unexpectedly_clean": 0
+   },
+   "staged": {
+    "declined": 0,
+    "files": 0,
+    "inconclusive": 0,
+    "unexpectedly_clean": 0
+   }
+  },
+  "counted_as": "none: not a failure, not a gain",
+  "expected_outcome": "correctly_declined",
+  "files": 0
+ },
+ "files": 29,
+ "files_measured_strata": 29,
+ "frozen_commit_checked": false,
+ "heldout_split": false,
+ "image": "sha256:03844d4454ccb620c5e3dce134d5c1f318ba3f509178cb9e7f21b5b6031ec6f4",
+ "marginals": {
+  "ai_marginal (search_ai - search_det)": {
+   "files_gained": 0,
+   "n_paired": 27,
+   "reason": null,
+   "value": 0.0
+  },
+  "deterministic_marginal (staged - input_only)": {
+   "files_gained": 1,
+   "n_paired": 27,
+   "reason": null,
+   "value": 0.037037037037037035
+  }
+ },
+ "not_reported_here": [
+  "the re-probe's own cheap/full agreement (collect.py report['agreement'])",
+  "per-op or per-layer pass counts below the four in `layers`"
+ ],
+ "numbers_valid": false,
+ "paired_set": {
+  "arms": [
+   "input_only",
+   "staged",
+   "search_det",
+   "search_ai"
+  ],
+  "excluded_not_measured": [],
+  "fraction": 0.9310344827586207,
+  "min_fraction": 0.8,
+  "n_files": 27,
+  "of": 29
+ },
+ "primary_artifact": false,
+ "slot": null,
+ "slot_verified_against_store": false,
+ "spend": {
+  "cap_usd": 50.0,
+  "model_usd_total": 0.999951,
+  "unmetered_arms": []
+ },
+ "split": "dev",
+ "status": "UNRELIABLE",
+ "wall": {
+  "shard_seconds_total": 18735.1,
+  "shards": 6,
+  "slowest_shard_s": 3600.3
+ },
+ "warnings": [
+  "search_det and search_ai are indistinguishable on all 27 files they share: check that the harness varies the arm; this is ALSO what a real result looks like when two deterministic arms truly agree on every shared file, or when an arm is perfect on the clean-control split: check that the harness varies the arm before discarding the numbers"
+ ],
+ "wave": "snap_v1_dev",
+ "wave_id": "snap-v1-dev",
+ "wave_type": "normal"
+}
