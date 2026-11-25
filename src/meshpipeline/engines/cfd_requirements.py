@@ -2322,6 +2322,13 @@ MAX_BRIDGE_LAYERS = 25
 #: CFDREQ-33: how many levels finer than the plain wall cell a relative stack's volume bar allows for (feature edges
 #: refine the wall two levels past it, curvature more: faces 8 times finer measured on abc 00008237)
 RELATIVE_FINER_LEVELS = 3
+#: CFDREQ-33: the shallowest stack, as a share of the plain wall cell, that is written relative. A stack at least half
+#: the plain cell deep is at least as deep as the cells of a face one level finer, and snappyHexMesh dropped it there
+#: (00008746, 00058385, 00039088: stacks 0.68-1.15 of the plain cell, kept on the finer faces only when relative). A
+#: shallower one already fits the finer faces in metres: kept there absolute (00078646, 0.33 of the cell: the full 10
+#: layers on 79-85% of the area of faces one to three levels finer), while relative it was halved there and the full
+#: stack fell to 62-64% of that area, the wall with 10 cells across its boundary layer from 85.4 to 63.2% (ENGINEER 27)
+RELATIVE_MIN_DEPTH = 0.5
 
 
 def _one_wall_level(text: str) -> bool:
@@ -2333,6 +2340,15 @@ def _one_wall_level(text: str) -> bool:
     j = text.find("resolveFeatureAngle", i)
     pairs = re.findall(r"\blevel\s*\(\s*(\d+)\s+(\d+)\s*\)", text[i:j if j > i else None])
     return bool(pairs) and all(a == b for a, b in pairs)
+
+
+def _stack_depth(first: float, growth: float, n: int, total: float | None) -> float:
+    """CFDREQ-33: the planned stack's depth in metres - the thickness given, else n layers from `first` growing by
+    `growth`."""
+    if total is not None:
+        return float(total)
+    g = max(float(growth), 1.0)
+    return float(first) * sum(g ** k for k in range(max(1, int(n))))
 
 
 def _relative_stack(ask: Ask, text: str, first: float, wall_cell_m: float, thinnest: float,
@@ -2628,11 +2644,13 @@ def _snappy_layers(ask: Ask, text: str, wall_cell_m: float | None, bridge: Mappi
                 ask.layer_note = thin
     if (relative_ok and first is not None and wall_cell_m and wall_cell_m > 0 and _one_wall_level(out)
             and ((wf["treatment"] == "resolved") if wf is not None else
-                 (bridged is not None or capped is not None or ask.treatment == "resolved"))):
+                 (bridged is not None or capped is not None or ask.treatment == "resolved"))
+            and _stack_depth(float(first), g, n, total) >= RELATIVE_MIN_DEPTH * float(wall_cell_m)):
         # CFDREQ-33: A RESOLVED WALL'S STACK FITS EACH WALL FACE - sized on the plain wall cell, relative, so a face
         # finer than that cell gets the same stack in its own cells. Only where the caller's wall cell is the wall's
         # plain cell (relative_ok: the external body case); an internal case sizes on the near-wall band, finer than
-        # the surface, and a relative stack there would thicken the surface's own faces
+        # the surface, and a relative stack there would thicken the surface's own faces. And only a stack at least
+        # RELATIVE_MIN_DEPTH of the plain cell deep: a shallower one fits the finer faces' cells as it is
         out = _relative_stack(ask, out, float(first), float(wall_cell_m), float(thinnest), total)
     if bridged is not None:
         _say_bridge(ask, bridged, g, float(wall_cell_m or 0.0))

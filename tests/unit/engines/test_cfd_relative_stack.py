@@ -24,7 +24,7 @@ def _num(text: str, key: str) -> float | None:
 
 
 def test_a_resolved_wall_at_one_level_gets_its_stack_on_each_face(tmp_path):
-    wc = 0.0016
+    wc = 0.0004                                           # the stack about 1.7 plain wall cells deep
     absolute = CR.snappy_dict(_ask("10 m/s", 0.06), TWO_LEVELS + SHM, wall_cell_m=wc, relative_ok=True)
     assert "relativeSizes false;" in absolute            # faces coarser than the wall cell: kept in metres
     first = _num(absolute, "firstLayerThickness")
@@ -39,6 +39,18 @@ def test_a_resolved_wall_at_one_level_gets_its_stack_on_each_face(tmp_path):
     (tmp_path / "system" / "snappyHexMeshDict").write_text(out)
     assert LC.planned_plain_cell_of(tmp_path) == pytest.approx(wc)
     assert LC.planned_first_of(tmp_path) == pytest.approx(first, rel=1e-5)
+
+
+def test_a_stack_shallower_than_half_the_wall_cell_stays_in_metres():
+    # the same ask on 1.6 mm wall cells: 10 layers from 0.026 mm make a 0.67 mm stack, 0.42 of the cell - it already
+    # fits the cells of faces a level finer, so it is kept absolute there (relative, 00078646 lost its full stack)
+    wc = 0.0016
+    out = CR.snappy_dict(_ask("10 m/s", 0.06), ONE_LEVEL + SHM, wall_cell_m=wc, relative_ok=True)
+    first, n = _num(out, "firstLayerThickness"), _num(out, "nSurfaceLayers")
+    assert "relativeSizes false;" in out and LC.PLAIN_CELL_KEY not in out
+    assert CR._stack_depth(first, _num(out, "expansionRatio"), int(n), None) < CR.RELATIVE_MIN_DEPTH * wc
+    deep = CR.snappy_dict(_ask("10 m/s", 0.6), ONE_LEVEL + SHM, wall_cell_m=wc, relative_ok=True)
+    assert "relativeSizes true;" in deep                   # 1.3 cells deep: relative, as before
 
 
 def test_a_relative_stack_without_a_plain_cell_still_reads_no_height(tmp_path):
