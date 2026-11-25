@@ -25,6 +25,91 @@ LAYERS_MET_FULL_PCT = 95.0
 LAYERS_MET_ANY_PCT = 99.0
 
 
+#: How much of a text recipe file reaches the prompt. A binary one is summarised instead.
+RECIPE_TEXT_BUDGET = 4000
+
+
+def recipe_text(path) -> str:
+    """One required file as evidence: its text, or a description of what it is.
+
+    NEVER RAISES AND NEVER RETURNS NOTHING. This used to be `read_text(encoding="utf-8")` inside a
+    try that logged and SKIPPED, so a file that is not text was simply absent from the evidence -
+    and the engine writes `constant/triSurface/fluid.stl` as BINARY STL. Job cba7ac69 reviewed a
+    279,281,786-cell mesh having never seen it: "'utf-8' codec can't decode byte 0xcc in position
+    81".
+
+    AN STL IS SUMMARISED WHETHER OR NOT IT IS READABLE. Its sibling `block.stl` IS ascii and was
+    read all along - as four thousand characters of vertex soup, which is noise in a prompt that
+    asks a model to judge a mesh. What is evidence about a surface here is how finely it was
+    tessellated and over what span, so both forms now give that and neither gives triangles.
+    """
+    import pathlib
+
+    p = pathlib.Path(path)
+    if p.suffix.lower() == ".stl":
+        try:
+            return _stl_summary(p)
+        except Exception as exc:  # noqa: BLE001 - evidence must never fail the review
+            return f"(an STL that could not be summarised: {exc})"
+    try:
+        return p.read_text(encoding="utf-8")[:RECIPE_TEXT_BUDGET]
+    except UnicodeDecodeError:
+        try:
+            return f"(binary file, {p.stat().st_size:,} bytes - not shown)"
+        except OSError as exc:
+            return f"(could not be read: {exc})"
+    except OSError as exc:
+        return f"(could not be read: {exc})"
+
+
+def _stl_summary(p) -> str:
+    """Triangle count and extent, from either STL form. No triangles."""
+    import struct
+
+    size = p.stat().st_size
+    with p.open("rb") as fh:
+        head = fh.read(84)
+        ascii_stl = head[:5].lower() == b"solid" and not (
+            len(head) >= 84 and size == 84 + 50 * struct.unpack("<I", head[80:84])[0])
+        lo = [float("inf")] * 3
+        hi = [float("-inf")] * 3
+        n = 0
+        if ascii_stl:
+            fh.seek(0)
+            for line in fh:
+                if not line.lstrip().lower().startswith(b"vertex"):
+                    if line.lstrip().lower().startswith(b"facet"):
+                        n += 1
+                    continue
+                try:
+                    xyz = [float(v) for v in line.split()[1:4]]
+                except ValueError:
+                    continue
+                for i, c in enumerate(xyz):
+                    lo[i] = min(lo[i], c)
+                    hi[i] = max(hi[i], c)
+        else:
+            n = struct.unpack("<I", head[80:84])[0] if len(head) >= 84 else 0
+            if size != 84 + 50 * n:
+                return f"(an STL this reader does not recognise, {size:,} bytes)"
+            fh.seek(84)
+            for _ in range(n):
+                rec = fh.read(50)
+                if len(rec) < 50:
+                    break
+                for v in range(3):
+                    xyz = struct.unpack_from("<3f", rec, 12 + 12 * v)
+                    for i, c in enumerate(xyz):
+                        lo[i] = min(lo[i], c)
+                        hi[i] = max(hi[i], c)
+    if not n or lo[0] == float("inf"):
+        return f"({'ascii' if ascii_stl else 'binary'} STL, {size:,} bytes, no triangles read)"
+    span = " x ".join(f"{(hi[i] - lo[i]) * 1000.0:.1f}" for i in range(3))
+    corner = ", ".join(f"{lo[i] * 1000.0:.1f}" for i in range(3))
+    return (f"({'ascii' if ascii_stl else 'binary'} STL, {n:,} triangles, {size:,} bytes; "
+            f"spans {span} mm from ({corner}) mm. The triangles themselves are not shown.)")
+
+
 def _esc(s: str) -> str:
     return s.replace("{", "{{").replace("}", "}}")
 
@@ -300,12 +385,10 @@ def build_review_prompt(
         _p = workspace / _rel
         if not _p.exists():
             continue
-        try:
-            # bound each file so one large authored artifact cannot dominate the prompt; the
-            # `--- {_rel} ---` header preserves the evidence reference to the actual file.
-            _recipe_parts.append(f"--- {_rel} ---\n{_p.read_text(encoding='utf-8')[:4000]}")
-        except Exception as exc:
-            logger.warning("Reviewer: could not read %s - job_id=%s: %s", _rel, job_id, exc)
+        # bound each file so one large authored artifact cannot dominate the prompt; the
+        # `--- {_rel} ---` header preserves the evidence reference to the actual file. A file
+        # that is not text is DESCRIBED rather than skipped - see `recipe_text`.
+        _recipe_parts.append(f"--- {_rel} ---\n{recipe_text(_p)}")
     # the builder-authored config is untrusted evidence - framed, bounded, delimiter-neutralised.
     script_block = _untrusted_script_block(_recipe_parts)
 
