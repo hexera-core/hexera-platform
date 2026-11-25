@@ -369,6 +369,22 @@ def _bound_elsewhere(facts: Mapping) -> bool:
     return bool(misses) and all(m.get("bound_elsewhere") for m in misses)
 
 
+#: CFDREQ-27: the refusals that never move an EXTERNAL run to another engine. Once cfMesh refined the external wake
+#: (CFDREQ-28) it became the same external mesh, and the wall-function gate sent bodies to it for nothing (abc 00000646:
+#: 3.8 min more, the same mesh delivered); the layer stack's own gate (layer_stack) still moves them
+EXTERNAL_STAYS = frozenset({"wall_function_layer"})
+
+
+def stays_on_external(state: Mapping) -> bool:
+    """CFDREQ-27: the attempt that just failed is an external flow refused by a gate in EXTERNAL_STAYS - the ladder
+    keeps the run on its engine and the sound mesh is delivered with the refusal said."""
+    from meshpipeline.engines.capability import flow_of
+    if state.get("executor_success"):
+        return False
+    return (str(state.get("executor_failed_gate") or "") in EXTERNAL_STAYS
+            and flow_of(state.get("purpose", "")) == "external")
+
+
 def refusal_without_lever(state: Mapping) -> bool:
     """The attempt that just failed was refused by a gate this engine's next attempt cannot answer."""
     if state.get("executor_success"):
@@ -1258,6 +1274,10 @@ def decide(state: Mapping, *, record: Mapping, now: float | None = None) -> Deci
     open_rungs = [r for r in ladder({**state, "engine_ladder": record})
                   if r.same_contract and r.engine not in tried
                   and not _measures_its_input(r.engine)]
+    if open_rungs and stays_on_external(state):
+        # CFDREQ-27 on an external flow: the run is never moved (as before cfMesh refined the external wake) - the
+        # sound mesh is delivered with the refusal said (rulebook 98)
+        open_rungs = []
     _facts = state.get("executor_failure_facts")
     _past_hard = past_hard_non_ortho(_facts if isinstance(_facts, Mapping) else None) is not None
     if not open_rungs and refusal_without_lever(state) and not _past_hard:

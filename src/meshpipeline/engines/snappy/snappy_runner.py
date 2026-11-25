@@ -1264,7 +1264,7 @@ mergeTolerance 1e-6; debug 0;
         # of the wall (the CFD board: 13 resolved bodies with layers on 0-44% of the wall, y+ <= 1 on
         # 0-9%; ahmed_variant_007 13%, a wind-tunnel juncture model 0%)
         _body_cell = base_actual / (2 ** smax)
-        _shm = CR.snappy_dict(_ask, _shm, wall_cell_m=_body_cell,
+        _shm = CR.snappy_dict(_ask, _shm, wall_cell_m=_body_cell, relative_ok=True,  # CFDREQ-33
                               bridge=_layer_bridge_room(ws / "constant" / "triSurface" / f"{surface_name}.stl",
                                                         _body_cell, max_cells,
                                                         narrowest_gap_m=(_gap.record().get("narrowest_m")

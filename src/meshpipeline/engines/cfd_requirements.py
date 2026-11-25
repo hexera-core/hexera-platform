@@ -729,7 +729,16 @@ def laminar_stack(delta_m: float, wall_cell_m: float, growth: float, *, n_min: i
             # aside, as CFDREQ-9's cap only ever shortened a bridged stack before
             stack_max_m = None
     best = None
+    thinned = False
     for n in counts:
+        if n > LAMINAR_LAYERS_KEPT and not n_fixed and not thinned:
+            # CFDREQ-32: BEFORE A STACK GOES PAST THE COUNT SNAPPYHEXMESH KEEPS, ITS FIRST LAYER IS THINNED (to
+            # LAMINAR_CAP_THIN of the floor, as a tight wall's cap does) so the core cells inside the layer make up
+            # BL_CELLS on LAMINAR_LAYERS_KEPT layers - the thickest such first layer
+            thinned = True
+            got = _kept_thin(counts, top, floor, g, wc, delta)
+            if got is not None:
+                return got
         hi = top(n)
         if cells_across(hi, g, n, wc, delta) >= BL_CELLS - 1e-9:
             # at its thickest the stack already gives them: keep the thickest
@@ -750,6 +759,25 @@ def laminar_stack(delta_m: float, wall_cell_m: float, growth: float, *, n_min: i
             best = got
     assert best is not None
     return best
+
+
+def _kept_thin(counts: list[int], top, floor: float, g: float, wc: float,
+               delta: float) -> tuple[int, float, float] | None:
+    """CFDREQ-32: the stack of the most layers up to LAMINAR_LAYERS_KEPT whose first layer, between LAMINAR_CAP_THIN
+    of the floor and its top, puts BL_CELLS across `delta` - the thickest first layer that does (the smoothest step
+    into the wall cells). None when even the thinnest does not: the stack then fills the layer, as before."""
+    kept = [c for c in counts if c <= LAMINAR_LAYERS_KEPT]
+    if not kept:
+        return None
+    n = max(kept)
+    hi = top(n)
+    lo = min(LAMINAR_CAP_THIN * floor, hi)
+    if cells_across(lo, g, n, wc, delta) < BL_CELLS:
+        return None
+    for _ in range(60):
+        mid = math.sqrt(lo * hi)
+        lo, hi = (mid, hi) if cells_across(mid, g, n, wc, delta) >= BL_CELLS else (lo, mid)
+    return n, lo, cells_across(lo, g, n, wc, delta)
 
 
 #: CFDREQ-23: A LAMINAR WALL'S NEAR-WALL BAND. Where the wall cells are as thick as the boundary layer (abc 00000039:
@@ -2339,7 +2367,7 @@ def _num(text: str, key: str) -> float | None:
 
 @guarded(lambda ask, text, **_k: text)
 def snappy_dict(ask: Ask | None, text: str, *, wall_cell_m: float | None = None,
-                bridge: Mapping | None = None, band: bool = False) -> str:
+                bridge: Mapping | None = None, band: bool = False, relative_ok: bool = False) -> str:
     """The snappyHexMeshDict text with the user's growth, layer sizes and quality limits applied (CFDREQ-2, 4, 5).
     The count of layers, the sizes and the budget are the plan's (the drivers set them before the dict is
     written). Unchanged with nothing asked. `bridge`: {"faces": wall faces, "room": cells the layers may add} on a
@@ -2354,7 +2382,7 @@ def snappy_dict(ask: Ask | None, text: str, *, wall_cell_m: float | None = None,
         ask.done("growth", f"{n} cells between refinement levels, so sizes grow about {MR._g(2 ** (1 / n))} from one "
                            "cell to the next", cells_between_levels=n)
     if "addLayersControls" in out and (ask.first_m or ask.total_m or ask.layer_growth or ask.y_plus):
-        out = _snappy_layers(ask, out, wall_cell_m, bridge, band=band)
+        out = _snappy_layers(ask, out, wall_cell_m, bridge, band=band, relative_ok=relative_ok)
     for lim in ask.limits:
         key = SNAPPY_QUALITY.get(lim["measure"])
         if key is None:
@@ -2407,6 +2435,71 @@ def snappy_dict(ask: Ask | None, text: str, *, wall_cell_m: float | None = None,
 THIN_LAYER_RATIO = 50.0
 #: CFDREQ-9: the most layers a stack bridged that way gets; past it the first layer is the thinnest it still fills
 MAX_BRIDGE_LAYERS = 25
+#: CFDREQ-33: how many levels finer than the plain wall cell a relative stack's volume bar allows for (feature edges
+#: refine the wall two levels past it, curvature more: faces 8 times finer measured on abc 00008237)
+RELATIVE_FINER_LEVELS = 3
+#: CFDREQ-33: the shallowest stack, as a share of the plain wall cell, that is written relative. A stack at least half
+#: the plain cell deep is at least as deep as the cells of a face one level finer, and snappyHexMesh dropped it there
+#: (00008746, 00058385, 00039088: stacks 0.68-1.15 of the plain cell, kept on the finer faces only when relative). A
+#: shallower one already fits the finer faces in metres: kept there absolute (00078646, 0.33 of the cell: the full 10
+#: layers on 79-85% of the area of faces one to three levels finer), while relative it was halved there and the full
+#: stack fell to 62-64% of that area, the wall with 10 cells across its boundary layer from 85.4 to 63.2% (ENGINEER 27)
+RELATIVE_MIN_DEPTH = 0.5
+
+
+def _one_wall_level(text: str) -> bool:
+    """CFDREQ-33: every wall surface of the dictionary is refined to one level (level (a a)), so no wall face is
+    coarser than the plain wall cell - only finer, at features and curvature."""
+    i = text.find("refinementSurfaces")
+    if i < 0:
+        return False
+    j = text.find("resolveFeatureAngle", i)
+    pairs = re.findall(r"\blevel\s*\(\s*(\d+)\s+(\d+)\s*\)", text[i:j if j > i else None])
+    return bool(pairs) and all(a == b for a, b in pairs)
+
+
+def _stack_depth(first: float, growth: float, n: int, total: float | None) -> float:
+    """CFDREQ-33: the planned stack's depth in metres - the thickness given, else n layers from `first` growing by
+    `growth`."""
+    if total is not None:
+        return float(total)
+    g = max(float(growth), 1.0)
+    return float(first) * sum(g ** k for k in range(max(1, int(n))))
+
+
+def _relative_stack(ask: Ask, text: str, first: float, wall_cell_m: float, thinnest: float,
+                    total: float | None) -> str:
+    """CFDREQ-33: the stack planned in metres on the plain wall cell, written relative to it (relativeSizes true):
+    the plain faces get exactly the heights planned (or typed), a face 2^k times finer the same stack 2^k times
+    thinner, as thick in its own cells as the plain wall's. The plain cell rides in the dictionary as a comment
+    (layer_census.PLAIN_CELL_KEY) so every reader turns the shares back into the heights planned on each face; the
+    volume bar is lowered for the finest faces' layer cells. Said on the layer row when the user typed the height."""
+    from meshpipeline.engines.layer_census import PLAIN_CELL_KEY
+    h = float(wall_cell_m)
+    m = re.search(r"addLayersControls\s*\{", text)
+    if not m:
+        return text
+    head, rest = text[:m.end()], text[m.end():]
+    if not re.search(r"\brelativeSizes\s+false\s*;", rest):
+        return text
+    rest = re.sub(r"\brelativeSizes\s+false\s*;", f"relativeSizes true; /* {PLAIN_CELL_KEY} {h:.6g}; */", rest, count=1)
+    rest = re.sub(r"\bfirstLayerThickness\s+[-+0-9.eE]+\s*;", f"firstLayerThickness {first / h:.6g};", rest, count=1)
+    if total is not None:
+        rest = re.sub(r"(?<![A-Za-z])thickness\s+[-+0-9.eE]+\s*;", f"thickness {float(total) / h:.6g};", rest, count=1)
+    rest = re.sub(r"\bminThickness\s+[-+0-9.eE]+\s*;", f"minThickness {0.1 * thinnest / h:.6g};", rest, count=1)
+    out = head + rest
+    ours = _num(out, "minVol")
+    if ours is not None:
+        out = _sub(out, "minVol", f"{max(1e-30, ours / 8.0 ** RELATIVE_FINER_LEVELS):.3g}",
+                   inside="meshQualityControls", count=1)
+    rid = ask.rid("layers:first_height") or ask.rid("layers:y_plus")
+    if rid and rid in ask.rows:
+        said = (f"on wall faces finer than the {_mm(h)} wall cells (edges, curves) the stack is sized on their own "
+                f"cells, so the first layer there is thinner in step: {_mm(first / 2)} on faces twice as fine, "
+                f"{_mm(first / 4)} on faces four times as fine")
+        row = ask.rows[rid]
+        row["note"] = f"{row['note']}; {said}" if row.get("note") else said
+    return out
 
 
 def layer_bridge(first_m: float, wall_cell_m: float, *, n_plan: int, growth: float, last_rel: float,
@@ -2473,7 +2566,7 @@ def capped_stack(first_m: float, wall_cell_m: float, stack_m: float, cap_m: floa
 
 
 def _snappy_layers(ask: Ask, text: str, wall_cell_m: float | None, bridge: Mapping | None = None, *,
-                   band: bool = False) -> str:
+                   band: bool = False, relative_ok: bool = False) -> str:
     """The layer thicknesses in absolute sizes when the user gave one (first height, stack, or a y+ turned into a
     first height); the growth alone keeps our relative sizes. With `bridge` (CFDREQ-9), a first layer far thinner
     than the wall cells gets the layers that fill our own stack from it (layer_bridge), said on its row."""
@@ -2665,6 +2758,16 @@ def _snappy_layers(ask: Ask, text: str, wall_cell_m: float | None, bridge: Mappi
             ask.rows.get(ask.rid("layers:first_height") or ask.rid("layers:y_plus") or "", {}).update(note=thin)
             if not ask.layer_note:
                 ask.layer_note = thin
+    if (relative_ok and first is not None and wall_cell_m and wall_cell_m > 0 and _one_wall_level(out)
+            and ((wf["treatment"] == "resolved") if wf is not None else
+                 (bridged is not None or capped is not None or ask.treatment == "resolved"))
+            and _stack_depth(float(first), g, n, total) >= RELATIVE_MIN_DEPTH * float(wall_cell_m)):
+        # CFDREQ-33: A RESOLVED WALL'S STACK FITS EACH WALL FACE - sized on the plain wall cell, relative, so a face
+        # finer than that cell gets the same stack in its own cells. Only where the caller's wall cell is the wall's
+        # plain cell (relative_ok: the external body case); an internal case sizes on the near-wall band, finer than
+        # the surface, and a relative stack there would thicken the surface's own faces. And only a stack at least
+        # RELATIVE_MIN_DEPTH of the plain cell deep: a shallower one fits the finer faces' cells as it is
+        out = _relative_stack(ask, out, float(first), float(wall_cell_m), float(thinnest), total)
     if bridged is not None:
         _say_bridge(ask, bridged, g, float(wall_cell_m or 0.0))
     if capped is not None:
@@ -3076,8 +3179,6 @@ def _count_row(field: str, req: Mapping, n: int, p: Mapping) -> dict:
     return {"applied": True, "measured": n, "met": bool(met), "delivered": said}
 
 
-#: CFDREQ-6: where each mesher writes the first layer height it was given (the dictionary in the case), and the key
-_FIRST_LAYER_IN = (("system/snappyHexMeshDict", "firstLayerThickness"), ("system/meshDict", "maxFirstLayerThickness"))
 
 
 def _bl_cells_row(workspace, p: Mapping) -> dict | None:
@@ -3219,14 +3320,10 @@ def _first_layer_facts(workspace, req: Mapping, q: Mapping, p: Mapping) -> tuple
     cover = q.get("layer_coverage_pct")
     if not planned or not isinstance(cover, (int, float)) or isinstance(cover, bool):
         return None
-    written = None
-    for rel, key in _FIRST_LAYER_IN:
-        try:
-            written = _num((Path(workspace) / rel).read_text(errors="replace"), key)
-        except OSError:
-            continue
-        if written is not None:
-            break
+    # CFDREQ-33: the height the dictionary gave the plain wall cell - a relative stack's share read as that height,
+    # never as metres (layer_census.planned_first_of reads both)
+    from meshpipeline.engines.layer_census import planned_first_of, planned_plain_cell_of
+    written = planned_first_of(workspace)
     if written is None:
         return None
     as_asked = abs(written - float(planned)) <= 0.01 * float(planned)
@@ -3245,6 +3342,9 @@ def _first_layer_facts(workspace, req: Mapping, q: Mapping, p: Mapping) -> tuple
         said = (f"first layer {_mm(written)} set{', as asked' if as_asked else f', not {_mm(float(planned))}'}; "
                 f"on the built mesh the wall's first cell is {_mm(float(first_cell))} (median)")
         ratio = float(first_cell) / float(written)
+        if planned_plain_cell_of(workspace) and _num_or_none(tall.get("layer_first_vs_plan")):
+            # CFDREQ-33: against each face's own plan - a finer face's thinner first cell is the plan, not thinner
+            ratio = float(tall["layer_first_vs_plan"])
         from meshpipeline.engines.layer_census import PLAN_FIRST_TOL
         if ratio > PLAN_FIRST_TOL:
             said += f", {ratio:.3g} times that"
@@ -3306,7 +3406,9 @@ def built_first_cells(workspace, q: Mapping, planned_m: float) -> dict:
     if not walls or not (ws / "constant" / "polyMesh" / "owner").exists():
         return {}
     try:
-        per, _why = LC.census(ws / "constant" / "polyMesh", 1, walls, planned_first_m=float(planned_m))
+        # CFDREQ-33: a stack sized on each face is judged on each face's own plan
+        per, _why = LC.census(ws / "constant" / "polyMesh", 1, walls, planned_first_m=float(planned_m),
+                              plain_cell_m=LC.planned_plain_cell_of(ws))
     except Exception:  # noqa: BLE001 - evidence, not a verdict
         logger.warning("first-cell census failed; the row reads the setting", exc_info=True)
         return {}
