@@ -1,0 +1,280 @@
+"""A decomposed delivery still has an interior, and the review is entitled to it.
+
+Job 110daca9, 2026-11-24, meshed the Corintis cold plate to 279,281,786 cells, passed all eight
+gates, and shipped `review_inconclusive`. The whole of the cause is one command:
+
+    foamToVTK -constant -noZero -noFaceZones -allRegions
+    --> FOAM FATAL ERROR: Cannot find file "points" in directory "fluid/polyMesh"
+
+This engine delivers the regions decomposed across N ranks with no `reconstructParMesh`, so
+`constant/<region>/polyMesh` carries a patch table and no cells, and the serial export cannot read
+it. Everything downstream is a consequence, not a second fault:
+
+    export_volume_vtk -> None
+    native._review_aids  has nothing to pv.read, so not one cut is drawn
+    manifest._regions_published  falls to [] for want of BOTH a volume and a picture
+    the reviewer is asked for one region target and the mesh produces none
+    reviewer_evidence_missing
+
+The engine's own note rules out the obvious repair: "`foamToVTK -parallel` is not the way out
+because every consumer of its output is written for the serial layout" (native.py). A processorN
+directory IS a serial case, though, so each rank is exported on its own and the pieces are merged
+into the one serial-layout file every consumer already expects.
+
+MEASURED against the real thing, not only here. On a 4-rank blockMesh of 8,000 cells the merged
+export is 8,000 cells exactly - none lost at a rank boundary, none counted twice. On two of job
+110daca9's own eight delivered ranks it merged 21,710,181 real cells into a 574,340,404-byte file
+in 451 s at 4.09 GB of peak RSS, and a plane through it cut 1,170 cells.
+"""
+from __future__ import annotations
+
+import logging
+from pathlib import Path
+
+import pytest
+
+from meshpipeline.engines.cfmesh_conjugate import foam_exec as FE
+
+REGION = "fluid"
+
+
+class _FakeMesh:
+    """Enough of a pyvista mesh for the merge: a cell count, a merge and a save."""
+
+    def __init__(self, cells: int) -> None:
+        self.n_cells = cells
+
+    def merge(self, other: _FakeMesh) -> _FakeMesh:
+        return _FakeMesh(self.n_cells + other.n_cells)
+
+    def save(self, path: str) -> None:
+        # THE COUNT IS WHAT IS WRITTEN, so the merged file can be read back and checked. A save
+        # that wrote a placeholder let the arithmetic of the merge go untested.
+        Path(path).write_text(str(self.n_cells), encoding="utf-8")
+
+
+class _FakePv:
+    """`pv.read` of a rank piece. The cell count rides in the file so the merge is checkable."""
+
+    @staticmethod
+    def read(path: str) -> _FakeMesh:
+        return _FakeMesh(int(Path(path).read_text(encoding="utf-8").strip() or 0))
+
+
+def _lay_out_a_decomposed_delivery(root: Path, *, ranks: int = 3, region: str = REGION) -> Path:
+    """The shape a delivered decomposed mesh has, and the shape that broke the review.
+
+    The root region mesh has its `boundary` - it is the PUBLISHED patch table, which is why
+    nothing here may rewrite it - and no points. The cells are in the processor directories.
+    """
+    (root / "constant" / region / "polyMesh").mkdir(parents=True)
+    (root / "constant" / region / "polyMesh" / "boundary").write_text("3(...)", encoding="utf-8")
+    (root / "system").mkdir(exist_ok=True)
+    for r in range(ranks):
+        (root / f"processor{r}" / "constant" / region / "polyMesh").mkdir(parents=True)
+        (root / f"processor{r}" / "constant" / region / "polyMesh" / "points").write_text(
+            "x", encoding="utf-8")
+    return root
+
+
+def _lay_out_a_merged_delivery(root: Path, *, region: str = REGION) -> Path:
+    """A reconstructed case: the root region mesh has cells, so the serial command is right."""
+    (root / "constant" / region / "polyMesh").mkdir(parents=True)
+    for f in ("boundary", "points", "faces", "owner", "neighbour"):
+        (root / "constant" / region / "polyMesh" / f).write_text("x", encoding="utf-8")
+    (root / "system").mkdir(exist_ok=True)
+    return root
+
+
+def _foam_that_writes(cells_per_rank: int = 1000, *, skip: str = "", raises: bool = False):
+    """A stand-in for foamToVTK that leaves behind what foamToVTK leaves behind.
+
+    The export globs for `internal.vtu` AFTER the command returns, so a fake that only records
+    the command tests half of it. `skip` names a rank that exports nothing, which is the case
+    that must not become a merged mesh missing a piece of itself.
+    """
+    calls: list[dict] = []
+
+    def fake(cmd, **kw):
+        text = cmd[-1]
+        calls.append({"cmd": text, "timeout": kw.get("timeout")})
+        if raises:
+            raise TimeoutError("stopped")
+        case = text.split("-case '", 1)[1].split("'", 1)[0] if "-case '" in text else ""
+        name = Path(case).name
+        if not case or name == skip:
+            return None
+        out = Path(case) / FE.RANK_VTK_DIRNAME / REGION / f"{name}_0"
+        out.mkdir(parents=True, exist_ok=True)
+        (out / "internal.vtu").write_text(str(cells_per_rank), encoding="utf-8")
+        out.with_suffix(FE.VTM_SUFFIX).write_text("<VTKFile>", encoding="utf-8")
+        return None
+
+    fake.calls = calls           # type: ignore[attr-defined]
+    return fake
+
+
+@pytest.fixture
+def pv_patched(monkeypatch):
+    """The merge runs for real against a fake pyvista, through the import the code actually uses."""
+    import meshpipeline.sandbox.backend as backend
+    monkeypatch.setattr(backend, "pv", _FakePv(), raising=False)
+    return backend
+
+
+def test_a_decomposed_delivery_does_not_take_the_serial_command(tmp_path, monkeypatch, pv_patched):
+    """The command that exited FATAL on job 110daca9 must not be the one that runs."""
+    ws = _lay_out_a_decomposed_delivery(tmp_path)
+    foam = _foam_that_writes()
+    monkeypatch.setattr(FE, "run_guarded", foam)
+    assert FE.export_volume_vtk(ws, all_regions=True, region=REGION)
+    for call in foam.calls:
+        assert "-allRegions" not in call["cmd"], (
+            "-allRegions is what reads constant/<region>/polyMesh, which on this path has no cells")
+        assert "-case '" in call["cmd"], "each rank is exported as its own serial case"
+        assert f"-region {REGION}" in call["cmd"]
+
+
+def test_every_rank_is_exported_in_rank_order(tmp_path, monkeypatch, pv_patched):
+    """All of them, and in order: a mesh missing rank 5 is not the mesh that was delivered."""
+    ws = _lay_out_a_decomposed_delivery(tmp_path, ranks=4)
+    foam = _foam_that_writes()
+    monkeypatch.setattr(FE, "run_guarded", foam)
+    assert FE.export_volume_vtk(ws, all_regions=True, region=REGION)
+    cases = [c["cmd"].split("-case '", 1)[1].split("'", 1)[0] for c in foam.calls]
+    assert [Path(c).name for c in cases] == ["processor0", "processor1", "processor2",
+                                             "processor3"]
+
+
+def test_a_merged_delivery_still_takes_the_command_it_was_measured_with(tmp_path, monkeypatch):
+    """A reconstructed case is untouched by this: one command, -allRegions, no -case."""
+    ws = _lay_out_a_merged_delivery(tmp_path)
+    foam = _foam_that_writes()
+    monkeypatch.setattr(FE, "run_guarded", foam)
+    FE.export_volume_vtk(ws, all_regions=True, region=REGION)
+    assert len(foam.calls) == 1
+    assert "-allRegions" in foam.calls[0]["cmd"]
+    assert "-case '" not in foam.calls[0]["cmd"]
+
+
+def test_a_merged_case_that_also_has_processor_dirs_stays_serial(tmp_path, monkeypatch):
+    """Processor directories alone do not decide it - the root mesh having cells does.
+
+    A case can carry both, and the serial export is right whenever there is a root mesh to read.
+    """
+    ws = _lay_out_a_merged_delivery(tmp_path)
+    (ws / "processor0" / "constant" / REGION / "polyMesh").mkdir(parents=True)
+    foam = _foam_that_writes()
+    monkeypatch.setattr(FE, "run_guarded", foam)
+    FE.export_volume_vtk(ws, all_regions=True, region=REGION)
+    assert len(foam.calls) == 1
+    assert "-case '" not in foam.calls[0]["cmd"]
+
+
+def test_the_merged_file_lands_where_the_serial_export_would_have_left_one(
+        tmp_path, monkeypatch, pv_patched):
+    """`newest()` globs VTK/<region>/*/internal.vtu, so the merged file is one of those."""
+    ws = _lay_out_a_decomposed_delivery(tmp_path)
+    monkeypatch.setattr(FE, "run_guarded", _foam_that_writes())
+    out = FE.export_volume_vtk(ws, all_regions=True, region=REGION)
+    assert out == f"VTK/{REGION}/{FE.MERGED_TIME_DIRNAME}/internal.vtu"
+    assert (ws / out).is_file()
+    assert list((ws / "VTK" / REGION).glob("*/internal.vtu")) == [ws / out]
+
+
+def test_the_merged_export_carries_the_finished_marker(tmp_path, monkeypatch, pv_patched):
+    """A merged export dies partway exactly as foamToVTK's does, so it earns the same marker."""
+    ws = _lay_out_a_decomposed_delivery(tmp_path)
+    monkeypatch.setattr(FE, "run_guarded", _foam_that_writes())
+    out = FE.export_volume_vtk(ws, all_regions=True, region=REGION)
+    time_dir = (ws / out).parent
+    assert FE.finished_export(time_dir), "prefer_finished would otherwise fall back blindly"
+    assert FE.prefer_finished([time_dir]) == [time_dir]
+    assert "internal.vtu" in time_dir.with_suffix(FE.VTM_SUFFIX).read_text(encoding="utf-8")
+
+
+def test_every_rank_counts_toward_the_merged_mesh(tmp_path, monkeypatch, pv_patched):
+    """Measured for real at 8,000 of 8,000 cells; here the arithmetic is the assertion."""
+    ws = _lay_out_a_decomposed_delivery(tmp_path, ranks=4)
+    monkeypatch.setattr(FE, "run_guarded", _foam_that_writes(cells_per_rank=1234))
+    out = FE.export_volume_vtk(ws, all_regions=True, region=REGION)
+    assert int((ws / out).read_text(encoding="utf-8")) == 4 * 1234, (
+        "a rank dropped at the merge is a coolant with a piece missing, which reviews as a "
+        "coolant")
+
+
+def test_the_rank_pieces_are_removed_once_they_are_merged(tmp_path, monkeypatch, pv_patched):
+    """They are a second copy of every cell in the region - 7.2 GB at this plate's size."""
+    ws = _lay_out_a_decomposed_delivery(tmp_path)
+    monkeypatch.setattr(FE, "run_guarded", _foam_that_writes())
+    assert FE.export_volume_vtk(ws, all_regions=True, region=REGION)
+    assert not list(ws.glob(f"processor*/{FE.RANK_VTK_DIRNAME}"))
+
+
+def test_a_rank_that_exported_nothing_is_not_half_a_mesh(tmp_path, monkeypatch, pv_patched, caplog):
+    """Seven eighths of a coolant would review as a coolant. It must not be published as one."""
+    ws = _lay_out_a_decomposed_delivery(tmp_path, ranks=4)
+    monkeypatch.setattr(FE, "run_guarded", _foam_that_writes(skip="processor2"))
+    with caplog.at_level(logging.ERROR):
+        assert FE.export_volume_vtk(ws, all_regions=True, region=REGION) is None
+    assert "processor2" in caplog.text
+    assert not (ws / "VTK" / REGION / FE.MERGED_TIME_DIRNAME).exists()
+
+
+def test_a_rank_that_stops_never_raises_out_of_the_export(tmp_path, monkeypatch, pv_patched,
+                                                          caplog):
+    """A review aid may never cost a mesh that is already built."""
+    ws = _lay_out_a_decomposed_delivery(tmp_path)
+    monkeypatch.setattr(FE, "run_guarded", _foam_that_writes(raises=True))
+    with caplog.at_level(logging.ERROR):
+        assert FE.export_volume_vtk(ws, all_regions=True, region=REGION) is None
+    assert "processor0" in caplog.text
+
+
+def test_a_decomposed_case_with_no_region_named_runs_nothing(tmp_path, monkeypatch, caplog):
+    """The serial command would spend 90 s reaching the same FATAL. Said once instead."""
+    ws = _lay_out_a_decomposed_delivery(tmp_path)
+    foam = _foam_that_writes()
+    monkeypatch.setattr(FE, "run_guarded", foam)
+    with caplog.at_level(logging.ERROR):
+        assert FE.export_volume_vtk(ws, all_regions=True, region="") is None
+    assert not foam.calls
+    assert "decomposed" in caplog.text
+
+
+def test_the_ranks_share_one_timeout(tmp_path, monkeypatch, pv_patched):
+    """Eight exports inside one budget, not eight budgets: the run's life is derived from it."""
+    ws = _lay_out_a_decomposed_delivery(tmp_path, ranks=4)
+    foam = _foam_that_writes()
+    monkeypatch.setattr(FE, "run_guarded", foam)
+    assert FE.export_volume_vtk(ws, all_regions=True, region=REGION, timeout=600.0)
+    seen = [c["timeout"] for c in foam.calls]
+    assert seen[0] <= 600.0
+    assert seen == sorted(seen, reverse=True), f"the budget must not grow back: {seen}"
+
+
+def test_the_export_asks_for_neither_fields_nor_boundary(tmp_path, monkeypatch, pv_patched):
+    """The consumer slices this file; the boundary reaches the reviewer by the index instead."""
+    ws = _lay_out_a_decomposed_delivery(tmp_path)
+    foam = _foam_that_writes()
+    monkeypatch.setattr(FE, "run_guarded", foam)
+    assert FE.export_volume_vtk(ws, all_regions=True, region=REGION)
+    assert "-no-fields" in foam.calls[0]["cmd"]
+    assert "-no-boundary" in foam.calls[0]["cmd"]
+    assert FE.NO_FIELD_TIME in foam.calls[0]["cmd"]
+
+
+def test_nothing_rewrites_the_published_patch_table(tmp_path, monkeypatch, pv_patched):
+    """`reconstructParMesh` is the other repair and this is why it is not taken.
+
+    On a decomposed delivery `constant/<region>/polyMesh/boundary` is the published patch table -
+    the file `open_index` stamps the boundary-index sidecar against, where a 64-byte difference
+    already dropped a coolant once. The export may not touch it.
+    """
+    ws = _lay_out_a_decomposed_delivery(tmp_path)
+    table = ws / "constant" / REGION / "polyMesh" / "boundary"
+    before = table.read_bytes()
+    monkeypatch.setattr(FE, "run_guarded", _foam_that_writes())
+    assert FE.export_volume_vtk(ws, all_regions=True, region=REGION)
+    assert table.read_bytes() == before
+    assert not (ws / "constant" / REGION / "polyMesh" / "points").exists()

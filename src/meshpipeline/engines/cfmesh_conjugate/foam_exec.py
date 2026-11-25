@@ -5,7 +5,9 @@ from __future__ import annotations
 import json
 import logging
 import re
+import shutil
 import subprocess
+import time
 from pathlib import Path
 
 import meshpipeline.settings.runtime as rtcfg
@@ -716,6 +718,162 @@ def prefer_finished(time_dirs: list) -> list:
     return finished or list(time_dirs)
 
 
+#: WHERE A DECOMPOSED DELIVERY KEEPS ITS CELLS, and the one shape of case the serial export
+#: below cannot read. This engine delivers the regions across N ranks with no
+#: `reconstructParMesh` - driver.py says so in the run's own log, "the regions will be delivered
+#: decomposed across 8 ranks" - so `constant/<region>/polyMesh` carries a patch table and no
+#: points, and foamToVTK run over it exits FATAL before it reads a cell:
+#:
+#:     Cannot find file "points" in directory "fluid/polyMesh" in times "constant"
+#:
+#: MEASURED, job 110daca9, 2026-11-24, and it is not one missing picture. The export returned
+#: None, so `native._review_aids` had nothing to `pv.read`, so not one cut was drawn, so
+#: `manifest._regions_published` fell to [] for want of BOTH a volume and a picture, so the
+#: reviewer was asked for one region target and the mesh produced none. A 279,281,786-cell mesh
+#: that passed all eight gates shipped `review_inconclusive`. One failed export is the review of
+#: every decomposed delivery this engine makes, and the big parts are the decomposed ones.
+#:
+#: NOT `foamToVTK -parallel`, which native.py rules out by name - "every consumer of its output is
+#: written for the serial layout". A processorN directory IS a serial case, though: its
+#: `constant/<region>/polyMesh` is a complete mesh. So each rank is exported on its own, serially,
+#: and the pieces are merged into the single serial-layout file every consumer already expects.
+#: Nothing downstream learns that the delivery was decomposed.
+#:
+#: NOT `reconstructParMesh` either, and that is the dangerous option rather than the slow one: it
+#: writes `constant/<region>/polyMesh`, which on a decomposed delivery is the PUBLISHED patch
+#: table - the file `open_index` stamps the boundary-index sidecar against, where a 64-byte
+#: difference already dropped a coolant once. Rebuilding the deliverable to take a picture of it
+#: is the wrong way round.
+#:
+#: MEASURED TWICE, both on job 110daca9's own delivered ranks. One rank alone, 10,857,613 of the
+#: fluid region's 87,194,075 cells: foamToVTK 163 s for a 900,568,786-byte internal.vtu, read back
+#: by the home side's own pyvista in 14.0 s at 1.12 GB of peak RSS. Two ranks through THIS
+#: function: 451 s, 21,710,181 real cells merged into 574,340,404 bytes at 4.09 GB of peak RSS,
+#: and a plane through the result cut 1,170 cells. Eight ranks is about 30 minutes, a 2.3 GB file
+#: and about 16 GB of peak RSS - against the 7,200 s EXPORT_TIMEOUT_S and the mesh VM's 512 GiB.
+#:
+#: PEAK RSS TRACKS CELLS AND NOT BYTES, which is worth saying here because VOLUME_READ_RSS_RATIO
+#: is written as a multiple of the file's size. 9.5x there on an 18.8-byte-a-cell uniform grid and
+#: 1.24x here on an 83-byte-a-cell export are the same statement said twice: about 100 to 190
+#: bytes of RSS per cell. Sizing this pass off the ratio would have priced it at ten times what it
+#: costs and skipped it on a machine that fits it easily.
+RANK_VTK_DIRNAME = "VTKRANK"
+
+#: WHAT THE MERGED EXPORT IS CALLED. The trailing `_0` is load-bearing and not decoration:
+#: `export_volume_vtk.newest` reads the index off `name.rpartition("_")` to sort `_10` after `_9`,
+#: and a name without one sorts to -1. Dot-free, because `finished_export` finds the marker beside
+#: it with `Path.with_suffix`.
+MERGED_TIME_DIRNAME = "decomposed_0"
+
+#: NO FIELDS AND NO BOUNDARY on the per-rank exports, and both are about what the cuts need. The
+#: consumer is `native._review_aids`, which reads this file to SLICE it; the boundary of a
+#: decomposed delivery reaches the reviewer by another road entirely
+#: (`review_surface.build_region_msh` falls back to the boundary index, which is why mesh.msh
+#: exists on a run where this export produced nothing at all). Measured above: 83 bytes a cell
+#: without them against the 113.5 the plate's own fielded export carried.
+RANK_EXPORT_FLAGS = "-no-boundary -no-fields"
+
+
+def _merged_vtm(time_dir: Path) -> None:
+    """foamToVTK's own finished-export marker, written beside a merged time directory.
+
+    `finished_export` reads this file and nothing else to tell a complete export from one that
+    died partway - see VTM_SUFFIX, and the live run whose last .vtp stopped mid-base64. A merged
+    export has exactly the same failure mode and earns the marker exactly the same way: written
+    only once internal.vtu is closed, so `prefer_finished` goes on meaning what it means.
+    """
+    time_dir.with_suffix(VTM_SUFFIX).write_text(
+        '<?xml version="1.0"?>\n'
+        '<VTKFile type="vtkMultiBlockDataSet" version="1.0" byte_order="LittleEndian" '
+        'header_type="UInt64">\n'
+        '  <vtkMultiBlockDataSet>\n'
+        f'    <DataSet index="0" name="internal" file="{time_dir.name}/internal.vtu"/>\n'
+        '  </vtkMultiBlockDataSet>\n'
+        '</VTKFile>\n', encoding="utf-8")
+
+
+def _volume_from_ranks(ws: Path, ranks: list, region: str, *, bashrc: str,
+                       timeout: float) -> str | None:
+    """One region's cells out of a decomposed case, as the one file a serial export would leave.
+
+    None on any failure, like the serial path: a review aid may never cost a mesh that is already
+    built. Every reason it can return None is logged at ERROR with the rank that caused it,
+    because an export that lands nothing is otherwise indistinguishable from one that was never
+    attempted - which is exactly how job 110daca9's review was lost without a line about it.
+    """
+    log = ws / EXPORT_LOG
+    started = time.monotonic()
+    pieces: list[Path] = []
+    # ONE LOG FOR THE WHOLE PASS, appended rank by rank, for the reason the serial export writes
+    # to a file at all: `runtime/mesh_runner._output_mark` counts a *.log whose size moves as the
+    # run making progress, and eight silent exports in a row is 22 minutes of a dead-looking job.
+    with log.open("w", encoding="utf-8") as fh:
+        for rank in ranks:
+            left = float(timeout) - (time.monotonic() - started)
+            if left <= 0.0:
+                logger.error("the volume export ran out of its %.0f s before %s; the mesh stands "
+                             "and the review will have no interior to cut", float(timeout),
+                             rank.name)
+                return None
+            fh.write(f"\n----- {rank.name} -----\n")
+            fh.flush()
+            cmd = (f"source {bashrc} >/dev/null 2>&1 && "
+                   f"foamToVTK -case '{rank}' -region {region} -constant {NO_FIELD_TIME} "
+                   f"{RANK_EXPORT_FLAGS} -overwrite -name {RANK_VTK_DIRNAME}")
+            try:
+                run_guarded(["bash", "-lc", cmd], cwd=str(ws), env=_foam_env(),
+                            stdout=fh, stderr=subprocess.STDOUT, timeout=left,
+                            stall_s=STALL_WINDOW_S)
+            except Exception as exc:    # noqa: BLE001 - subprocess timeout types vary by caller
+                logger.error("foamToVTK stopped on %s (%s); the mesh stands, but the review will "
+                             "have no interior to cut and %s has what it printed",
+                             rank.name, exc, log.name)
+                return None
+            got = sorted((rank / RANK_VTK_DIRNAME / region).glob("*/internal.vtu"))
+            keep = set(prefer_finished([p.parent for p in got]))
+            got = [p for p in got if p.parent in keep]
+            if not got:
+                logger.error("%s exported no cells for region %r - %s has what foamToVTK printed",
+                             rank.name, region, log.name)
+                return None
+            pieces.append(max(got, key=lambda p: p.stat().st_size))
+
+    out_dir = ws / "VTK" / region / MERGED_TIME_DIRNAME
+    try:
+        # THROUGH backend's OWN pyvista and not an `import pyvista` here, for the reason
+        # native.py states where it draws the cuts: backend pins VTK to Mesa's software
+        # rasteriser before pyvista is first imported, and an import sorter would lift a bare
+        # `import pyvista` above that line. Reaching through backend makes the order enforceable.
+        from meshpipeline.sandbox.backend import pv
+
+        merged = None
+        for piece in pieces:
+            part = pv.read(str(piece))
+            merged = part if merged is None else merged.merge(part)
+        if merged is None or not merged.n_cells:
+            logger.error("the %d rank exports of region %r merged to nothing", len(pieces), region)
+            return None
+        out_dir.mkdir(parents=True, exist_ok=True)
+        merged.save(str(out_dir / "internal.vtu"))
+        cells = int(merged.n_cells)
+        del merged
+    except Exception:                   # noqa: BLE001 - a review aid may never cost a built mesh
+        logger.error("the rank exports of region %r could not be merged; the mesh stands and the "
+                     "review will have no interior to cut", region, exc_info=True)
+        return None
+    # ONLY NOW. The marker says the time directory is complete, so it is written after the file is
+    # closed and never before - the whole point of VTM_SUFFIX.
+    _merged_vtm(out_dir)
+    # AND THE PIECES GO. They are a second copy of every cell in the region - 7.2 GB at this
+    # plate's size - and `engines/dispatch` hands whatever is left on the workspace to
+    # `return_scope`, which compresses every byte of it to decide whether the archive fits.
+    for rank in ranks:
+        shutil.rmtree(rank / RANK_VTK_DIRNAME, ignore_errors=True)
+    logger.info("the volume export merged %d rank(s) of region %r into %d cells",
+                len(pieces), region, cells)
+    return str((out_dir / "internal.vtu").relative_to(ws))
+
+
 def export_volume_vtk(workspace, *, all_regions: bool = False, region: str = "",
                       bashrc: str = _DEFAULT_BASHRC,
                       timeout: float = EXPORT_TIMEOUT_S) -> str | None:
@@ -735,6 +893,24 @@ def export_volume_vtk(workspace, *, all_regions: bool = False, region: str = "",
     if reason:
         logger.warning("export_volume_vtk: %s", reason)
         return None
+    # A DECOMPOSED DELIVERY GOES THE OTHER WAY, and the test is the FATAL's own two halves rather
+    # than the presence of processor dirs alone: a case can carry both, and the serial export is
+    # right whenever the root region mesh has cells in it. See RANK_VTK_DIRNAME for what this
+    # cost when it was missing.
+    from meshpipeline.engines.cfmesh_conjugate.pinch import processor_dirs
+
+    ranks = processor_dirs(ws)
+    # THE MESH THE SERIAL COMMAND BELOW WOULD READ, which is the region's only when one is named.
+    root_mesh = (ws / "constant" / region if region else ws / "constant") / "polyMesh"
+    if ranks and not (root_mesh / "points").is_file():
+        if not region:
+            # WHICH REGION'S CELLS cannot be guessed here. The serial command would read the root
+            # mesh, which on this path has none, and spend 90 s reaching the same FATAL - measured
+            # on job 110daca9's own workspace. Said once, here, instead.
+            logger.error("export_volume_vtk: the case is decomposed across %d rank(s) and no "
+                         "region was named, so there is no mesh to export", len(ranks))
+            return None
+        return _volume_from_ranks(ws, ranks, region, bashrc=bashrc, timeout=timeout)
     _all = " -allRegions" if all_regions else ""
     cmd = (f"source {bashrc} >/dev/null 2>&1 && "
            f"foamToVTK -constant {NO_FIELD_TIME} -noFaceZones{_all}")
