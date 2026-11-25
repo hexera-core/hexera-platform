@@ -1330,6 +1330,16 @@ def decide(state: Mapping, *, record: Mapping, now: float | None = None) -> Deci
     left = bcfg.MAX_BUILDER_RETRIES + 1 - int(state.get("retry_count", 0) or 0)
     if left < 1:
         return Decision(why="no regular attempt is left", failure=failure)
+    if (failure.kind == FIXABLE and str(state.get("executor_failed_gate") or "") == "layer_stack"
+            and isinstance(_facts, Mapping) and lever_bears("layer_stack", engine, _facts)
+            and _facts.get("relative_next") is True):
+        # CFDREQ-33 amended (rulebook 113): THE STACK IN METRES WAS REFUSED - the same plan with the stack on each
+        # face's own cells is tried before the next engine, even on the run's last regular attempt. Measured why
+        # (ENGINEER 36, testlab-5): with the next engine first, 00008746 / 00039088 / 00058385 went to cfMesh and ended
+        # concerns, where the relative stack passes them (85.6 / 80.6 / 88.2% cover)
+        return Decision(why="a measured check failed - this engine's own levers are tried first (SW-5): the layer "
+                            "stack in metres was refused, so the same stack goes on each wall face's own cells "
+                            "before the next engine (CFDREQ-33)", failure=failure)
     if failure.kind == FIXABLE and not _levers_spent(record, engine) and left > len(open_rungs):
         # LEVERS FIRST, WHERE THERE IS ROOM FOR THEM: a retry with this engine's own levers must
         # still leave every untried rung an attempt. When it would not, it spends the run's last

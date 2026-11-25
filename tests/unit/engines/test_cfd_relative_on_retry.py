@@ -100,3 +100,18 @@ def test_the_next_attempt_reads_the_carried_refusal(tmp_path):
     GF.write_gate_facts(tmp_path, "port_areas", {"relative_next": True})
     assert not GF.relative_stack_next(tmp_path)
     # the rendered case on both attempts: tests/unit/engines/test_snappy_external_layer_bridge.py
+
+
+def test_the_relative_retry_comes_before_the_next_engine_even_on_the_last_regular_attempt():
+    from tests.unit.pipeline.test_engine_fallback_ladder import _external
+    for retry in (0, 1):
+        st = _external(engine="snappy", retry_count=retry, executor_failed_gate="layer_stack",
+                       executor_failure_cause="mesh_quality",
+                       executor_failure_facts={"coverage_pct": 66.5, "layers": 10, "relative_next": True})
+        d = EF.decide(st, record=EF.with_attempt(st, EF.classify(st)))
+        assert not d.switch_to and "own cells" in d.why and d.why.startswith("a measured check failed")
+        assert not EF.another_engine_takes_over(st)
+    # the relative attempt refused: the next engine, as CFDREQ-28 always did
+    st = _external(engine="snappy", retry_count=1, executor_failed_gate="layer_stack",
+                   executor_failure_cause="mesh_quality", executor_failure_facts={"coverage_pct": 79.5, "layers": 10})
+    assert EF.decide(st, record=EF.with_attempt(st, EF.classify(st))).switch_to == "cfmesh"
