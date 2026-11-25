@@ -1222,7 +1222,7 @@ def _render_outcome(fr: FinalResult) -> str:
 
 
 def _reaped_result(category: FailureCategory, *, job_id: str, owner_id: str, attempts: int,
-                   attempts_max: int) -> FinalResult:
+                   attempts_max: int, detail: str = "") -> FinalResult:
     """The durable record for a job the REAPER failed.
 
     The reaper has no graph state, no approved intent and no checkpoint - only the job row -
@@ -1237,15 +1237,25 @@ def _reaped_result(category: FailureCategory, *, job_id: str, owner_id: str, att
         outcome_code=category.value, failure_category=category.value,
         attempts=max(0, int(attempts or 0)), attempts_max=max(0, int(attempts_max or 0)),
         required_ready=False, delivered_types=[], missing_outputs=[],
+        # WHEN THE CLASS SENTENCE IS NOT TRUE OF THIS RUN. `_render_outcome` prefers this
+        # over `user_message_for(class)`, and the worker-lost class sentence ends by asking
+        # the user to say "run it again" - which is right for a job that lost ONE machine
+        # and wrong for one the reaper has just declined to send to a third.
+        failure_detail=str(detail or ""),
         finalized_at=datetime.now(UTC).isoformat())
 
 
 def worker_lost_result(*, job_id: str, owner_id: str, attempts: int = 0,
-                       attempts_max: int = 0) -> FinalResult:
+                       attempts_max: int = 0, detail: str = "") -> FinalResult:
     """A job that was RUNNING when the reaper failed it: the worker holding it was lost (its
-    lease lapsed, or it started long ago without ever holding one)."""
+    lease lapsed, or it started long ago without ever holding one).
+
+    `detail`: said INSTEAD of the class sentence. The caller passes one when the class
+    sentence would not be true of this run - a job that lost a SECOND machine, which the
+    reaper will not re-run (maintenance/cleanup.SECOND_LOSS_NOTE).
+    """
     return _reaped_result(FailureCategory.worker_lost, job_id=job_id, owner_id=owner_id,
-                          attempts=attempts, attempts_max=attempts_max)
+                          attempts=attempts, attempts_max=attempts_max, detail=detail)
 
 
 def refused_result(category: FailureCategory, *, job_id: str, owner_id: str,

@@ -171,6 +171,66 @@ async def test_a_job_lost_a_second_time_is_failed_as_before(monkeypatch):
     assert [e for e in events if e[0] == "closing"]
 
 
+# A SECOND LOSS IS NOT A FIRST ONE, and until this it was told as one.
+#
+# MEASURED on job db32e461 (2026-11-25): its machine died, the reaper re-ran it once and said "We
+# are running it again on another machine - nothing is needed from you", the replacement machine
+# died too, and the reaper failed it with failure_detail "". That makes `_render_outcome` fall back
+# to the worker-lost class sentence, which ends "please try again: say \"run it again\" in this
+# chat to start a new run" - inviting exactly the third machine `rerun_eligible` has just refused,
+# for the reason RERUN_MARK states: a job that loses two machines may be what is stopping them.
+
+
+def _rendered(values):
+    from meshpipeline.application.final_result import FinalResult, render_message
+
+    return render_message(FinalResult.from_dict(values["final_result"]))
+
+
+async def test_a_second_loss_is_not_told_as_a_first_loss(monkeypatch):
+    result, updates, events = await _reap(
+        monkeypatch, [_lost(pipeline_dispatch_state=cleanup.RERUN_MARK)], _Launcher())
+
+    assert result["reaped"] == ["job-lost"]
+    (stmt,) = updates
+    values = _values(stmt)
+    assert values["final_result"]["failure_detail"], (
+        "the record cannot tell a second loss from a first")
+    message = _rendered(values)
+    assert "run it again" not in message, (
+        "the reaper declined to send it to a third machine and then asked for one")
+    assert "so did the machine we moved it to" in message, message
+    assert "not your geometry or request" in message, message
+    # the closing line a live socket receives is the same sentence the record renders
+    closing = [e for e in events if e[0] == "closing"]
+    assert closing and "run it again" not in str(closing[0]), closing
+
+
+async def test_a_first_loss_still_says_what_it_always_said(monkeypatch):
+    # Failed on its FIRST loss because there is nothing to re-launch. Nothing about that run says
+    # a second machine would go the same way, so the class sentence - and its offer - stands.
+    _result, updates, _events = await _reap(
+        monkeypatch, [_lost(dispatch_payload=None)], _Launcher())
+
+    values = _values(updates[0])
+    assert values["final_result"]["failure_category"] == "worker_lost"
+    assert values["final_result"]["failure_detail"] == "", (
+        "a first loss was given the second-loss sentence")
+    assert "run it again" in _rendered(values)
+
+
+async def test_a_job_that_never_started_is_untouched_by_the_second_loss_sentence(monkeypatch):
+    # The mark is only read on a RUNNING row. A pending row that never started never had a
+    # machine, and its own record says so.
+    _result, updates, _events = await _reap(
+        monkeypatch, [_lost(status=JobStatus.pending, started_at=None,
+                            pipeline_dispatch_state=cleanup.RERUN_MARK)], _Launcher())
+
+    values = _values(updates[0])
+    assert values["final_result"]["failure_category"] != "worker_lost"
+    assert values["final_result"]["failure_detail"] == ""
+
+
 async def test_a_re_run_that_cannot_be_launched_is_tried_again_by_the_next_sweep(monkeypatch):
     # A broker outage is transient. The release stays marked unconfirmed, which is exactly what
     # the next sweep selects a lease later; the deadline bounds how long that can go on.

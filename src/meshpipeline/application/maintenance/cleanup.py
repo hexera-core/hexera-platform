@@ -212,6 +212,18 @@ RERUN_MARK = "rerun_worker_lost"
 #: before it meshed anything. Failing now tells the user sooner and truthfully.
 RERUN_MIN_REMAINING_SECONDS = 1800
 
+#: Said to the user when the reaper has ALREADY re-run their job once and the second machine
+#: went the same way. Said instead of the worker-lost class sentence, which is written for a
+#: first loss and ends by asking them to say "run it again" - the one thing the reaper has
+#: just decided against, for the reason RERUN_MARK states. It does not pretend to know which
+#: part of the run is at fault, because the reaper has only the job row.
+SECOND_LOSS_NOTE = (
+    "The machine running this job stopped before it finished, and so did the machine we "
+    "moved it to. This is on our side, not your geometry or request. We have not sent it to "
+    "a third machine: a run that loses two machines may be what is stopping them, so the "
+    "next attempt should change something rather than repeat the same work. Tell me in this "
+    "chat what you would like to try and I will set up a new run.")
+
 #: Said to the user when the reaper re-runs their job. Plain words: what happened, that it is
 #: handled, and that nothing is needed from them.
 RERUN_NOTE = ("The machine running this job stopped before the job finished. We are running it "
@@ -338,9 +350,20 @@ async def _reap_stalled_async() -> dict:
                 # told so.
                 _never_started = (_was in (JobStatus.pending, JobStatus.queued)
                                   and getattr(job, "started_at", None) is None)
-                _record = (never_started_result if _never_started else worker_lost_result)(
+                # A SECOND LOSS IS NOT A FIRST ONE. The row carries the mark the reaper left
+                # when it re-ran this job, and that is the only place the fact is written -
+                # without it the record cannot tell the two apart and the sentence asks for
+                # the third machine `rerun_eligible` just refused.
+                _second = (_was == JobStatus.running
+                           and (getattr(job, "pipeline_dispatch_state", None) or "")
+                           == RERUN_MARK)
+                _record = (never_started_result(
                     job_id=str(job.id), owner_id=str(getattr(job, "owner_id", "") or ""),
                     attempts=int(getattr(job, "current_attempt", 0) or 0))
+                    if _never_started else worker_lost_result(
+                        job_id=str(job.id), owner_id=str(getattr(job, "owner_id", "") or ""),
+                        attempts=int(getattr(job, "current_attempt", 0) or 0),
+                        detail=SECOND_LOSS_NOTE if _second else ""))
                 # COMPARE-AND-SET on the state the row was SELECTED in: a job that raced to a
                 # terminal result between the SELECT above and here is never overwritten by the
                 # reaper, and neither is a pending job a worker claimed in that window - it is
