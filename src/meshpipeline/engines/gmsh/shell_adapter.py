@@ -5272,6 +5272,20 @@ def _mesh_once_core(brep: Path, record: dict, owners: list[str], mm: float, log:
             elif per_turn:
                 h0 = min(h0, max(2 * math.pi * r_mm / per_turn, mesh_min))
             return min(h0, rows[k]["size_mm"])
+
+        def edge_own(c: int) -> tuple[float, float, list[str]] | None:
+            # SHMESH-52c: the size the mesh would have had along curve c (the plan's size round a hole of the faces
+            # it bounds, else their size), the most it can take (those faces' size - their own size field meets it -
+            # and SR.HOLE_PER_TURN round a hole), and their mid-faces; None when no face of the plan bounds it
+            ks = sorted({tag_of[int(s)] for s in gmsh.model.getAdjacencies(1, abs(int(c)))[0] if int(s) in tag_of})
+            if not ks:
+                return None
+            plate = min(float(rows[k]["size_mm"]) for k in ks)
+            r = _arc_radius(gmsh, abs(int(c)))
+            if r is None:
+                return plate, plate, [owners[k] for k in ks]
+            own = min(hole_size(r * mm, k) for k in ks)
+            return own, min(plate, 2 * math.pi * r * mm / SR.HOLE_PER_TURN), [owners[k] for k in ks]
         washers: list = []
         washers_planned: list = []          # SHMESH-45k: every washer planned, built or not
         washer_skipped: dict[str, int] = {}
@@ -5311,7 +5325,7 @@ def _mesh_once_core(brep: Path, record: dict, owners: list[str], mm: float, log:
                 # SHMESH-52b: a hole the user asked a size at is meshed free, that size graded out from its edge (a
                 # ring holds its own count round the hole: a bore asked 1 mm under 8 mm came out 4.56 mm)
                 asked_at = {c for cs in _edge_place_curves(gmsh, places, (requirements or {}).get("places"), mm, float(
-                    np.median([r["wall_mm"] for r in rows]))).values() for c in cs}
+                    np.median([r["wall_mm"] for r in rows])), own_of=edge_own).values() for c in cs}
                 for w in [w for w in washers if asked_at & {abs(int(c)) for c in w.hole}]:
                     w.info.update(washer=False, why="a size you asked is set at this hole")
                     washer_skipped[w.info["why"]] = washer_skipped.get(w.info["why"], 0) + 1
@@ -5751,6 +5765,31 @@ def _mesh_once_core(brep: Path, record: dict, owners: list[str], mm: float, log:
         # 5,392 faces made 5,392 constant fields (sh0048: its 1D mesh alone ran past 30 minutes). The same sizes.
         const_by: dict[float, list[int]] = {}
         arcs_by: dict[float, list[int]] = {}
+        edge_sized: dict[float, list[int]] = {}
+        coarse_at: set[int] = set()
+        if places is not None and places.get("applied"):
+            # SHMESH-52b: a place the shell makes an edge of (a hole's bore, the plate's edge wall) is sized on the
+            # curves lying on it, graded out as an arc's size is
+            edge_sized = _edge_place_curves(gmsh, places, (requirements or {}).get("places"), mm,
+                                            float(np.median([r["wall_mm"] for r in rows])), own_of=edge_own)
+            # SHMESH-52c: a curve asked coarser keeps no finer arc size of ours (it is the size asked, at most the
+            # plate's and 8 round a hole); a finer one is meshed at what it was given, under the wall's floor too
+            coarse_at = {c for p in places.get("places") or [] if p.get("edge") and p.get("ask") == "coarsen"
+                         for c in p.get("curves") or []}
+            # ... and holds its count: gmsh's own curvature sizing (PER_TURN a turn) would keep a small hole as
+            # fine as before whatever its field says (a 5 mm hole asked coarser stayed at 0.98 mm, 16 a turn)
+            set_of = {c: h for h, cs in edge_sized.items() for c in cs}
+            for c in sorted(coarse_at & set(set_of)):
+                lo_c, hi_c = gmsh.model.getParametrizationBounds(1, c)
+                xyz_c = np.asarray(gmsh.model.getValue(1, c, list(np.linspace(lo_c[0], hi_c[0], 65))),
+                                   dtype=float).reshape(-1, 3)
+                length = float(np.linalg.norm(np.diff(xyz_c, axis=0), axis=1).sum()) * mm
+                gmsh.model.mesh.setTransfiniteCurve(c, max(1, math.ceil(length / set_of[c] - 1e-6)) + 1)
+            scaled = [float(p["set_mm"]) for p in places.get("places") or []
+                      if p.get("edge") and p.get("scale") and p.get("set_mm")]
+            if scaled and 0.5 * min(scaled) < size_floor:
+                size_floor = 0.5 * min(scaled)
+                gmsh.option.setNumber("Mesh.MeshSizeMin", size_floor / mm)
         for t, k in sorted(tag_of.items()):
             const_by.setdefault(float(rows[k]["size_mm"]), []).append(t)
             if "curve_mm" in rows[k]:
@@ -5758,7 +5797,7 @@ def _mesh_once_core(brep: Path, record: dict, owners: list[str], mm: float, log:
                 # and wider arcs keep the face's size (one small hole no longer refines the whole rim)
                 for _d, c in gmsh.model.getBoundary([(2, t)], oriented=False):
                     r = _arc_radius(gmsh, abs(c))
-                    if r is None or abs(c) in washer_holes:
+                    if r is None or abs(c) in washer_holes or abs(c) in coarse_at:
                         continue
                     h0, _rule = plan_rules.curve_size(r * mm, wall=rows[k]["wall_mm"])
                     h0 *= sz
@@ -5775,12 +5814,8 @@ def _mesh_once_core(brep: Path, record: dict, owners: list[str], mm: float, log:
                         h0 = SR.curved_size(r * mm, 0.0, floor=0.0, rule=rows[k]["size_mm"], per_turn=SR.HOLE_PER_TURN)
                     if h0 < rows[k]["size_mm"]:
                         arcs_by.setdefault(float(f"{h0:.6g}"), []).append(abs(c))
-        if places is not None and places.get("applied"):
-            # SHMESH-52b: a place the shell makes an edge of (a hole's bore, the plate's edge wall) is sized on the
-            # curves lying on it, graded out as an arc's size is
-            for h, curves in _edge_place_curves(gmsh, places, (requirements or {}).get("places"), mm,
-                                                float(np.median([r["wall_mm"] for r in rows]))).items():
-                arcs_by.setdefault(h, []).extend(curves)
+        for h, curves in edge_sized.items():
+            arcs_by.setdefault(h, []).extend(curves)
         if short_edges is not None:
             for h, curves in short_edges["by_size"].items():
                 arcs_by.setdefault(h, []).extend(curves)
@@ -9691,10 +9726,13 @@ def _place_sizes(rows: list[dict], owners: list[str], record: dict, requirements
     return got
 
 
-def _edge_place_curves(gmsh, applied: dict, source: dict | None, mm: float, wall_mm: float) -> dict[float, list[int]]:
+def _edge_place_curves(gmsh, applied: dict, source: dict | None, mm: float, wall_mm: float,
+                       own_of=None) -> dict[float, list[int]]:
     """SHMESH-52b: {size (mm): curves} - for each edge place of `applied` (engines/shell_places.plan), the model's curves
     lying on its CAD face (its triangles kept in `source`, the reading), within shell_places.EDGE_TOL_WALL of the
-    wall. Each place is told what was found (shell_places.edge_found): its curves' points, or not applied, with why."""
+    wall. Each place is told what was found (shell_places.edge_found): its curves' points, or not applied, with why.
+    SHMESH-52c: a "finer" / "coarser" place's curves take the size `own_of(curve)` says the mesh would have had there
+    -> (own mm, the most it can take mm, the plate's mid-faces), or None - halved or doubled (shell_places.edge_scaled)."""
     from meshpipeline.engines import shell_places as SP
 
     out: dict[float, list[int]] = {}
@@ -9712,7 +9750,16 @@ def _edge_place_curves(gmsh, applied: dict, source: dict | None, mm: float, wall
         t = ((source or {}).get("entries") or [])[p["entry"]]["targets"][p["target"]]
         curves = SP.edge_curves(pts, t.get("tris_mm") or [], SP.EDGE_TOL_WALL * wall_mm)
         SP.edge_found(applied, j, [pts[c] for c in curves], t)
-        if curves:
+        if curves and p.get("scale"):
+            got = [(c, own_of(c)) for c in curves] if own_of is not None else []
+            keep = [(c, g) for c, g in got if g is not None]
+            if not keep:
+                SP.edge_found(applied, j, None, t)          # no face of the plate meets it: not applied, as before
+                continue
+            for h, cs in SP.edge_scaled(applied, j, [c for c, _g in keep], [g[0] for _c, g in keep],
+                                        [g[1] for _c, g in keep], [m for _c, g in keep for m in g[2]]).items():
+                out.setdefault(h, []).extend(cs)
+        elif curves:
             out.setdefault(float(f"{float(p['set_mm']):.6g}"), []).extend(curves)
     return out
 
