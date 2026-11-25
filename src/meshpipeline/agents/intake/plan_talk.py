@@ -160,9 +160,45 @@ def _filler_only(clause: str) -> bool:
     return all(w in _FILLER for w in clause.split())
 
 
+#: a go that does something - the last word of "nope, nothing else. go" (never "nothing else", which only ends)
+_ACTION_GO = [re.compile(rf"^{p}$") for p in (
+    r"(?:go|go ahead|go for it|go on|proceed|start|begin|run|run it|mesh|mesh it|do it|send it|ship it|carry on|"
+    r"continue)",
+    rf"(?:go ahead and |please )?(?:proceed|go ahead|go on|move on|carry on|continue)(?: (?:to|with) {_MESH})?",
+    rf"(?:start|begin|run|generate|build|make|create|kick off) {_MESH}",
+    r"(?:lets|let us) (?:go|mesh(?: it)?|proceed|start|begin|run(?: it)?|do it|go ahead|get going)",
+)]
+#: "nope, nothing else": a no to "anything else?" - a no that says nothing more is wanted, never a no to the run
+_NOTHING_MORE = re.compile(
+    r"^(?:(?:no|nope|nah)(?: thanks| thank you)? )?(?:nothing (?:else|more)(?: to add)?(?: from me)?|"
+    r"no (?:more|other|further) (?:changes|requirements|edits|notes)(?: from me)?|"
+    r"(?:thats|that is|that s) (?:all|it|everything)(?: from me)?|(?:i have|ive) nothing (?:else|more)(?: to add)?)$")
+_NO_WORD = re.compile(r"^(?:no|nope|nah)(?: thanks| thank you)?$")
+
+
+def _done_then_go(text: str) -> bool:
+    """NOTE-18: says nothing more is wanted, then ends on a clear go ("nope, nothing else. go", "no, that's all, mesh
+    it"): every clause a no to more, a nothing-more, or filler, and the last a go that acts. Never "no go", "don't go
+    yet", "nothing else to go on" (no clause of theirs is a go)."""
+    if "?" in str(text or ""):
+        return False
+    # each clause as typed and with fillers off its ends ("ok go" -> "go"; "that's all" keeps its "all")
+    clauses = [(c, _trimmed(c)) for c in _clauses(text) if not _filler_only(c)]
+    if len(clauses) < 2 or not any(p.match(f) for p in _ACTION_GO for f in clauses[-1]):
+        return False
+
+    def nothing_more(forms: tuple[str, str]) -> bool:
+        return any(_NOTHING_MORE.match(f) for f in forms)
+    head = clauses[:-1]
+    return any(nothing_more(c) for c in head) and all(
+        nothing_more(c) or any(_NO_WORD.match(f) for f in c) for c in head)
+
+
 def _plain_go(text: str) -> bool:
     """Every clause is a go clause or filler, and at least one is a go."""
     clauses = _clauses(text)
+    if _done_then_go(text):
+        return True
     if not clauses or never_go(text):
         return False
     gos = [c for c in clauses if _go_clause(c)]
@@ -263,7 +299,10 @@ def plan_change(text: str) -> bool:
 
 
 def never_go(text: str) -> bool:
-    """A negation or a condition in the words ("not", "don't", "but", "instead", "first"): never a go."""
+    """A negation or a condition in the words ("not", "don't", "but", "instead", "first"): never a go - except a no
+    that only says nothing more is wanted before a clear go ("nope, nothing else. go")."""
+    if _done_then_go(text):
+        return False
     return bool(_NEVER_GO.search(_BENIGN_NO.sub(" ", _words(text))))
 
 
