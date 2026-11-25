@@ -5779,12 +5779,12 @@ def _mesh_once_core(brep: Path, record: dict, owners: list[str], mm: float, log:
             # ... and holds its count: gmsh's own curvature sizing (PER_TURN a turn) would keep a small hole as
             # fine as before whatever its field says (a 5 mm hole asked coarser stayed at 0.98 mm, 16 a turn)
             set_of = {c: h for h, cs in edge_sized.items() for c in cs}
-            for c in sorted(coarse_at & set(set_of)):
-                lo_c, hi_c = gmsh.model.getParametrizationBounds(1, c)
-                xyz_c = np.asarray(gmsh.model.getValue(1, c, list(np.linspace(lo_c[0], hi_c[0], 65))),
+            for c_co in sorted(coarse_at & set(set_of)):
+                lo_c, hi_c = gmsh.model.getParametrizationBounds(1, c_co)
+                xyz_c = np.asarray(gmsh.model.getValue(1, c_co, list(np.linspace(lo_c[0], hi_c[0], 65))),
                                    dtype=float).reshape(-1, 3)
                 length = float(np.linalg.norm(np.diff(xyz_c, axis=0), axis=1).sum()) * mm
-                gmsh.model.mesh.setTransfiniteCurve(c, max(1, math.ceil(length / set_of[c] - 1e-6)) + 1)
+                gmsh.model.mesh.setTransfiniteCurve(c_co, max(1, math.ceil(length / set_of[c_co] - 1e-6)) + 1)
             scaled = [float(p["set_mm"]) for p in places.get("places") or []
                       if p.get("edge") and p.get("scale") and p.get("set_mm")]
             if scaled and 0.5 * min(scaled) < size_floor:

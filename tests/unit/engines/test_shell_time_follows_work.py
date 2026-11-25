@@ -185,7 +185,9 @@ def test_a_face_is_stuck_only_past_its_own_price_and_only_under_a_stretched_limi
     # (the mechanics at a book rate of 1,000 a second; the book rate itself is the first test's)
     monkeypatch.setattr(sa, "MESH_RATE", 1000.0)
     (tmp_path / "face_planned.json").write_text(json.dumps({"7": 1000.0, "8": 200_000.0}))
-    monkeypatch.setattr(sa, "_CLOCK", {**sa._CLOCK, "t0": 0.0, "base": 900.0, "allowed": 4500.0})
+    # (no rate measured by an earlier mesh in this process: the book rate alone prices the faces here)
+    monkeypatch.setattr(sa, "_CLOCK", {**sa._CLOCK, "t0": 0.0, "base": 900.0, "allowed": 4500.0,
+                                       "planned": None, "first_s": None, "rate_seen": None})
     assert not sa._face_stuck(tmp_path, 7, 299.0)
     assert sa._face_stuck(tmp_path, 7, 301.0)
     assert not sa._face_stuck(tmp_path, 8, 590.0) and sa._face_stuck(tmp_path, 8, 601.0)
