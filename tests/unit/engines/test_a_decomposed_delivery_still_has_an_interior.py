@@ -278,3 +278,50 @@ def test_nothing_rewrites_the_published_patch_table(tmp_path, monkeypatch, pv_pa
     assert FE.export_volume_vtk(ws, all_regions=True, region=REGION)
     assert table.read_bytes() == before
     assert not (ws / "constant" / REGION / "polyMesh" / "points").exists()
+
+
+# ---------------------------------------------------------------------------------------------
+# THE CONSUMER SIDE. Everything above is about the writer. The merged file is only worth writing
+# if the code that draws the reviewer's interior cuts opens it, and that code does not take the
+# path it is handed on trust: `review_surface.review_volume` re-derives one by CONVENTION, from
+# the time directories it finds in VTK/<region>. `decomposed_0` satisfies that convention by two
+# properties of its NAME which nothing on the consumer side states - it ends in "_<n>", so
+# `_time_index` scores it 0 rather than -1, and it is dot-free, so `with_suffix` turns it into
+# `decomposed_0.vtm` and the finished marker is found. Rename the constant to "merged" and the
+# index becomes -1; both halves still happen to work, and that is exactly the kind of accident
+# worth pinning rather than arguing about.
+
+
+def test_the_name_the_merge_writes_scores_as_a_time_directory():
+    from meshpipeline.engines.cfmesh_conjugate import review_surface as RS
+
+    assert RS._time_index(FE.MERGED_TIME_DIRNAME) == 0, (
+        f"{FE.MERGED_TIME_DIRNAME!r} does not read as a time directory, so _newest_time would "
+        "rank it below any numeric export beside it")
+
+
+def test_the_review_reads_back_exactly_the_path_the_export_returned(tmp_path, monkeypatch,
+                                                                    pv_patched):
+    """The one test that spans the seam: write a merged interior, then ask the review for it."""
+    from meshpipeline.engines.cfmesh_conjugate import review_surface as RS
+
+    ws = _lay_out_a_decomposed_delivery(tmp_path)
+    monkeypatch.setattr(FE, "run_guarded", _foam_that_writes())
+    wrote = FE.export_volume_vtk(ws, all_regions=True, region=REGION)
+    assert wrote == f"VTK/{REGION}/{FE.MERGED_TIME_DIRNAME}/internal.vtu"
+    assert RS.review_volume(ws) == wrote, (
+        "the interior was written and the review derived a different path for it")
+
+
+def test_a_merged_export_with_no_marker_is_still_read(tmp_path, monkeypatch, pv_patched):
+    """`prefer_finished` prefers and does not require: a missing marker may not cost a readable
+    interior. This is the half of the naming accident that is documented as deliberate."""
+    from meshpipeline.engines.cfmesh_conjugate import review_surface as RS
+
+    ws = _lay_out_a_decomposed_delivery(tmp_path)
+    monkeypatch.setattr(FE, "run_guarded", _foam_that_writes())
+    wrote = FE.export_volume_vtk(ws, all_regions=True, region=REGION)
+    marker = ws / "VTK" / REGION / f"{FE.MERGED_TIME_DIRNAME}.vtm"
+    assert marker.is_file()
+    marker.unlink()
+    assert RS.review_volume(ws) == wrote
