@@ -181,3 +181,11 @@ def test_report_measures_a_place_row(tmp_path, monkeypatch):
     row = next(r for r in rep["rows"] if r["id"] == "r1")
     assert row["applied"] is False and row["measured"] == pytest.approx(1.0)
     json.dumps(rep)
+
+
+def test_framed_keeps_a_small_fluid_inside_a_big_solid(tmp_path):
+    """An internal flow's staged fluid may be far smaller than the solid around it: the face is still framed."""
+    req = CP.bind(_req(), _notes())
+    CP.resolve(tmp_path, req, "", surface=_surface())
+    got = CP.framed(tmp_path, ([0, 0, 0], [0.0041, 0.0041, 0.0002]))     # a thin fluid slab under the 4 x 4 x 1 mm solid
+    assert got["r1"]["unit_factor"] == 1.0

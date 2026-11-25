@@ -249,15 +249,17 @@ def framed(ws, box) -> dict:
         tol = 0.02 * float(np.linalg.norm(hi - lo))
     except (TypeError, ValueError, IndexError):
         return {k: v for k, v in got.items() if not k.startswith("_")}
-    # the unit: the one that makes the whole model as big as the staged one (within a factor of 2, nearest first)
+    # the unit: the one that makes the whole model nearest the staged one in size first
     mb = got.get("_model_box")
     units = list(_UNITS)
     if isinstance(mb, list) and len(mb) == 2:
         d_model = float(np.linalg.norm(np.asarray(mb[1], dtype=float) - np.asarray(mb[0], dtype=float)))
         d_staged = float(np.linalg.norm(hi - lo))
         if d_model > 0 and d_staged > 0:
-            units = sorted((u for u in _UNITS if 0.5 <= d_staged / (d_model * u) <= 2.0),
-                           key=lambda u: abs(math.log(d_staged / (d_model * u))))
+            # every unit stays a candidate: an internal flow's staged fluid can be far smaller than the solid
+            # (a small bore in a big block: 00139975, 00188096 were told "another frame" when only units within a
+            # factor 2 were tried)
+            units = sorted(_UNITS, key=lambda u: abs(math.log(d_staged / (d_model * u))))
     for rid, r in list(got.items()):
         if not isinstance(r, dict) or not r.get("file"):
             continue
