@@ -175,6 +175,13 @@ def resolve(ws, req: Mapping | None, source_path: str, *, surface=None) -> dict:
     diag = float(np.linalg.norm(xyz.max(0) - xyz.min(0))) if len(xyz) else 0.0
     if len(xyz):
         out["_model_box"] = [xyz.min(0).tolist(), xyz.max(0).tolist()]
+    # CFDREQ-36: the whole model's surface, so each picked place's share of it prices its refinement against the
+    # plan's own wall (a ratio of the file's own areas: no unit in it)
+    try:
+        model_area = float(0.5 * np.linalg.norm(np.cross(xyz[tris[:, 1]] - xyz[tris[:, 0]],
+                                                         xyz[tris[:, 2]] - xyz[tris[:, 0]]), axis=1).sum())
+    except (IndexError, ValueError):
+        model_area = 0.0
     tri_dir = ws / "constant" / "triSurface"
     n = 0
     for e in entries:
@@ -209,8 +216,9 @@ def resolve(ws, req: Mapping | None, source_path: str, *, surface=None) -> dict:
             out[str(e["id"])] = {"gone": f"{e.get('where')}: its surface could not be written ({type(exc).__name__})"}
             continue
         a, b, c = t[:, 0], t[:, 1], t[:, 2]
-        out[str(e["id"])] = {"file": name, "where": str(e.get("where") or ""), "faces": ids,
-                             "area_m2": float(0.5 * np.linalg.norm(np.cross(b - a, c - a), axis=1).sum()),
+        here = float(0.5 * np.linalg.norm(np.cross(b - a, c - a), axis=1).sum())
+        out[str(e["id"])] = {"file": name, "where": str(e.get("where") or ""), "faces": ids, "area_m2": here,
+                             **({"model_share": min(1.0, here / model_area)} if model_area > 0 else {}),
                              **({"missing": missing} if missing else {})}
     _save(ws, out)
     return out

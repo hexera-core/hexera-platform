@@ -1042,7 +1042,8 @@ def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analy
     _picked_lv: list[int] = []
     if _ask is not None:
         from meshpipeline.engines import cfd_requirements as _CRp
-        for _pk in _CRp.snappy_picked(_ask, ws, base_m=base_actual, wall_level=int(smax),
+        # the wall's own cell is the near band's (CFDREQ-36 prices the picked face against the wall as built)
+        for _pk in _CRp.snappy_picked(_ask, ws, base_m=base_actual, wall_level=int(max(smax, near_band_level)),
                                       hard_max=_HARD_MAX_LEVEL, box=(analysis["bbox_min"], analysis["bbox_max"])):
             _part_geom += f" {_pk['file']} {{ type triSurfaceMesh; name {_pk['name']}; }}"
             _part_refine += f" {_pk['name']} {{ mode distance; levels (({_pk['distance_m']:.6g} {_pk['level']})); }}"
@@ -1867,8 +1868,9 @@ def render_internal_case(workspace, *, names: dict, features: dict, interior_poi
     _picked: list[dict] = []
     if _ask is not None:
         from meshpipeline.engines import cfd_requirements as _CRp
-        _picked = _CRp.snappy_picked(_ask, ws, base_m=base_actual, wall_level=int(smax), hard_max=_HARD_MAX_LEVEL,
-                                     box=(bbox_min, bbox_max))
+        # the wall's own cell is the near band's (CFDREQ-36 prices the picked face against the wall as built)
+        _picked = _CRp.snappy_picked(_ask, ws, base_m=base_actual, wall_level=int(max(smax, near_level)),
+                                     hard_max=_HARD_MAX_LEVEL, box=(bbox_min, bbox_max))
     for _pk in _picked:
         geom += f"{_pk['name']} {{ type triSurfaceMesh; file \"{_pk['file']}\"; name {_pk['name']}; }} "
         thin_refine += f"{_pk['name']} {{ mode distance; levels (({_pk['distance_m']:.6g} {_pk['level']})); }} "

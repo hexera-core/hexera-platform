@@ -1975,26 +1975,74 @@ def picked_cells(area_m2: float, cell_m: float) -> float:
     return 2.0 * PICKED_BAND_CELLS * float(area_m2) / max(float(cell_m), 1e-30) ** 2
 
 
-def _priced(ask: Ask, area: float, cell: float, coarser) -> tuple[float, bool]:
+#: CFDREQ-36: the picked places' price is set against the plan's own count, not the cell limit
+RULE_PICKED_PRICE = "CFDREQ-36"
+#: CFDREQ-36: the wall faces a picked refinement may add, as a multiple of the faces the whole model has at the
+#: plan's wall cell (1: the run's wall at most doubles; every wall face carries the plan's layers, so the run does too)
+PICKED_GROWTH = 1.0
+#: CFDREQ-36: ... or this many wall faces, whichever is more: a refinement that small (with a 16-layer stack, about a
+#: million cells) costs minutes on the standard machine whatever the plan
+PICKED_FREE_FACES = 50_000
+
+
+def picked_faces_added(area_m2: float, cell_m: float, wall_cell_m: float) -> float:
+    """CFDREQ-36: the wall faces a picked place of `area_m2` gains at `cell_m` over the plan's `wall_cell_m`."""
+    return max(0.0, float(area_m2) * (1.0 / max(float(cell_m), 1e-30) ** 2 - 1.0 / max(float(wall_cell_m), 1e-30) ** 2))
+
+
+def picked_face_room(area_m2: float, share: float | None, wall_cell_m: float) -> float | None:
+    """CFDREQ-36: the most wall faces the picked place may add: PICKED_GROWTH times the faces the whole model has at
+    the plan's wall cell (its area is the place's over its `share` of the model's surface), or PICKED_FREE_FACES,
+    whichever is more. None when the share is unknown (the cell-limit guard alone then holds it)."""
+    try:
+        s = float(share)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    if not (s > 0.0 and math.isfinite(s)) or wall_cell_m <= 0:
+        return None
+    model_faces = float(area_m2) / min(1.0, s) / float(wall_cell_m) ** 2
+    return max(PICKED_GROWTH * model_faces, float(PICKED_FREE_FACES))
+
+
+def _priced(ask: Ask, area: float, cell: float, coarser, *, wall_cell: float = 0.0,
+            share: float | None = None) -> tuple[float, str]:
     """The picked place's cell, made coarser (by `coarser`) while its refinement would cost more than PICKED_ROOM of
-    the run's cell limit: (cell, whether it was coarsened)."""
+    the run's cell limit ("limit"), or (CFDREQ-36) add more wall faces than picked_face_room ("plan"): (cell, why it
+    was coarsened - "" when it was not)."""
     room = PICKED_ROOM * float(ask.cell_limit(_hard()))
-    held = False
-    while area > 0 and picked_cells(area, cell) > room:
+    faces = picked_face_room(area, share, wall_cell)
+    held = ""
+    while area > 0:
+        why = ("limit" if picked_cells(area, cell) > room else
+               "plan" if faces is not None and picked_faces_added(area, cell, wall_cell) > faces else "")
+        if not why:
+            break
         nxt = coarser(cell)
         if nxt is None:
             break
-        cell, held = nxt, True
+        cell, held = nxt, why
     return cell, held
 
 
-def _picked_words(where: str, cell: float, asked: float | None, *, halves: str, held: bool, area: float) -> str:
+def _held_why(asked: float, cell: float, *, held: str, area: float, wall_cell: float, share: float | None) -> str:
+    """Why a picked place's size was held coarser than asked (CFDREQ-36's price, or the cell limit)."""
+    if held == "plan":
+        whole = float(area) / max(min(1.0, float(share or 1.0)), 1e-12) / max(wall_cell, 1e-30) ** 2
+        return (f" (you asked {_mm(asked)}: that would add about {_cells(picked_faces_added(area, asked, wall_cell))} "
+                f"wall faces, each with its layers, to a model whose whole wall has about {_cells(whole)} at this run's "
+                f"{_mm(wall_cell)} wall cells, so the run would cost many times the mesh without it; {_mm(cell)} is the "
+                f"finest size that adds at most {PICKED_GROWTH:g} times that wall, or {PICKED_FREE_FACES:,} faces)")
+    return (f": {_mm(asked)} cells there would be about {_cells(picked_cells(area, asked))} - more than "
+            f"{int(PICKED_ROOM * 100)}% of the cells this run may build")
+
+
+def _picked_words(where: str, cell: float, asked: float | None, *, halves: str, held: str, area: float,
+                  wall_cell: float = 0.0, share: float | None = None) -> str:
     if asked is None:
         return f"cells of {_mm(cell)} on {where} and in the first cells off it"
     said = f"cells of {_mm(cell)} on {where} and in the first cells off it"
     if held:
-        return (said + f": {_mm(asked)} cells there would be about {_cells(picked_cells(area, asked))} - more than "
-                       f"{int(PICKED_ROOM * 100)}% of the cells this run may build")
+        return said + _held_why(asked, cell, held=held, area=area, wall_cell=wall_cell, share=share)
     if cell < asked * 0.999:
         return said + f" (you asked {_mm(asked)}: {halves}, and the next size up, {_mm(2.0 * cell)}, is over your size)"
     return said
@@ -2028,23 +2076,26 @@ def snappy_picked(ask: Ask, ws, *, base_m: float, wall_level: int, hard_max: int
         want = (int(math.ceil(math.log2(base_m / asked) - 1e-9)) if asked else int(wall_level) + 1)
         lv = min(int(hard_max), max(0, want))
         area = float(r.get("area_m2") or 0.0)
-        cell, held = _priced(ask, area, base_m / 2 ** lv, lambda c: 2.0 * c if 2.0 * c <= wall_cell * 1.0001 else None)
+        share = r.get("model_share")
+        cell, held = _priced(ask, area, base_m / 2 ** lv, lambda c: 2.0 * c if 2.0 * c <= wall_cell * 1.0001 else None,
+                             wall_cell=wall_cell, share=share)
+        rule = RULE_PICKED_PRICE if held == "plan" else CP.RULE_BUILT
         lv = int(round(math.log2(base_m / cell)))
         if lv <= int(wall_level):
             said = f"the walls already have cells of {_mm(wall_cell)} on {where}"
             if asked is None or wall_cell <= asked * 1.0001:
                 ask.done(e["id"], said, built_m=wall_cell, picked=r["file"], rule=CP.RULE_BUILT)
             else:
-                ask.nearest(e["id"], said + (f": {_mm(asked)} cells there would be more than "
-                                            f"{int(PICKED_ROOM * 100)}% of the cells this run may build" if held
-                                            else ""), built_m=wall_cell, picked=r["file"], rule=CP.RULE_BUILT)
+                ask.nearest(e["id"], said + (_held_why(asked, wall_cell, held=held, area=area, wall_cell=wall_cell,
+                                                       share=share) if held else ""),
+                            built_m=wall_cell, picked=r["file"], rule=rule)
             continue
         out.append({"name": r["file"], "file": f"{r['file']}.stl", "level": lv,
                     "distance_m": PICKED_BAND_CELLS * cell})
         said = _picked_words(where, cell, asked, halves=f"this mesher halves its {_mm(base_m)} background cell",
-                             held=held, area=area)
+                             held=held, area=area, wall_cell=wall_cell, share=share)
         if want > hard_max or held:
-            ask.nearest(e["id"], said, built_m=cell, picked=r["file"], level=lv, rule=CP.RULE_BUILT)
+            ask.nearest(e["id"], said, built_m=cell, picked=r["file"], level=lv, rule=rule)
         else:
             ask.done(e["id"], said, built_m=cell, picked=r["file"], level=lv, rule=CP.RULE_BUILT)
     return out
@@ -2079,23 +2130,28 @@ def cfmesh_picked(ask: Ask, ws, *, max_cell: float, wall_cell: float, floor: flo
         size = max(size, floor)
         area = float(r.get("area_m2") or 0.0)
         cell = octree_cell(max_cell, size)
-        cell, held = _priced(ask, area, cell, lambda c: 2.0 * c if 2.0 * c <= wall_cell * 1.0001 else None)
+        share = r.get("model_share")
+        cell, held = _priced(ask, area, cell, lambda c: 2.0 * c if 2.0 * c <= wall_cell * 1.0001 else None,
+                             wall_cell=wall_cell, share=share)
+        rule = RULE_PICKED_PRICE if held == "plan" else CP.RULE_BUILT
         if cell >= wall_cell * 0.9999:
             said = f"the walls already have cells of {_mm(octree_cell(max_cell, wall_cell))} on {where}"
             if asked is None or wall_cell <= asked * 1.0001:
                 ask.done(e["id"], said, built_m=wall_cell, picked=r["file"], rule=CP.RULE_BUILT)
             else:
-                ask.nearest(e["id"], said, built_m=wall_cell, picked=r["file"], rule=CP.RULE_BUILT)
+                ask.nearest(e["id"], said + (_held_why(asked, wall_cell, held=held, area=area, wall_cell=wall_cell,
+                                                       share=share) if held else ""),
+                            built_m=wall_cell, picked=r["file"], rule=rule)
             continue
         text += (f'    {r["file"]} {{ surfaceFile "constant/triSurface/{r["file"]}.stl"; cellSize {cell:.6g}; '
                  f"refinementThickness {PICKED_BAND_CELLS * cell:.6g}; }}\n")
         said = _picked_words(where, cell, asked, halves=f"this mesher halves its {_mm(max_cell)} largest cell",
-                             held=held, area=area)
+                             held=held, area=area, wall_cell=wall_cell, share=share)
         if floored:
             ask.nearest(e["id"], said + f"; cells finer than {_mm(floor)} would cut the narrowest passage too fine",
-                        built_m=cell, picked=r["file"], rule=CP.RULE_BUILT)
+                        built_m=cell, picked=r["file"], rule=rule)
         elif held:
-            ask.nearest(e["id"], said, built_m=cell, picked=r["file"], rule=CP.RULE_BUILT)
+            ask.nearest(e["id"], said, built_m=cell, picked=r["file"], rule=rule)
         else:
             ask.done(e["id"], said, built_m=cell, picked=r["file"], rule=CP.RULE_BUILT)
     return text

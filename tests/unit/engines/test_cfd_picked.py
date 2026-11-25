@@ -207,3 +207,60 @@ def test_a_picked_face_no_wall_lies_on_is_not_applied(tmp_path, monkeypatch):
     monkeypatch.setattr(CR.MR, "read", lambda ws: {})
     row = next(r for r in CR.report(tmp_path, {"cells": 16}, "snappy")["rows"] if r["id"] == "r1")
     assert row["applied"] is False and "no wall of the built mesh" in row["delivered"]
+
+
+def _two_faces(picked_mm2: float, rest_mm2: float):
+    """Two square CAD faces in millimetres: Face_1 (the one picked, `picked_mm2`) at z=0 and the rest of the model
+    (`rest_mm2`) at z=1."""
+    a, b = picked_mm2 ** 0.5, rest_mm2 ** 0.5
+    xyz = np.array([[0, 0, 0], [a, 0, 0], [a, a, 0], [0, a, 0], [0, 0, 1], [b, 0, 1], [b, b, 1], [0, b, 1]], float)
+    return SimpleNamespace(xyz=xyz, tris=np.array([[0, 1, 2], [0, 2, 3], [4, 5, 6], [4, 6, 7]]),
+                           label=np.array([0, 0, 1, 1]), names=["Face_1", "Face_2"])
+
+
+def _priced_ask(tmp_path, picked_mm2: float, rest_mm2: float, mm: float):
+    a = picked_mm2 ** 0.5
+    sig = {"area_m2": picked_mm2 * 1e-6, "centroid_m": [a / 2e3, a / 2e3, 0.0], "normal": [0, 0, -1]}
+    req = CP.bind(_req(mm), _notes(sig=sig))
+    got = CP.resolve(tmp_path, req, "", surface=_two_faces(picked_mm2, rest_mm2))
+    assert got["r1"]["model_share"] == pytest.approx(picked_mm2 / (picked_mm2 + rest_mm2))
+    b = max(a, rest_mm2 ** 0.5) / 1e3
+    return CR.Ask(req, "snappy"), ([0, 0, 0], [b, b, 0.001])
+
+
+def test_a_picked_face_is_priced_against_the_plan_own_wall_not_the_cell_limit(tmp_path):
+    # CFDREQ-36, the elbow's shape: the picked face is 0.58 m2 of a 3.12 m2 model, walls at 6.15 mm, 0.5 mm asked.
+    # Against half the cell limit it was held only at 1.537 mm (the run went 856k -> 5.2M cells); against the plan's
+    # own wall (82k faces at 6.15 mm, at most doubled) the finest size inside the price is 3.075 mm, said why
+    ask, box = _priced_ask(tmp_path, 583_561.0, 2_536_387.0, 0.5)
+    regions = CR.snappy_picked(ask, tmp_path, base_m=0.0492, wall_level=3, box=box)   # 49.2 mm halved 3 times
+    assert [r["level"] for r in regions] == [4]
+    row = ask.rows["r1"]
+    assert row["status"] == "nearest" and row["rule"] == CR.RULE_PICKED_PRICE == "CFDREQ-36"
+    assert row["built_m"] == pytest.approx(0.0492 / 16)
+    assert "you asked 0.5 mm" in row["built"] and "wall faces" in row["built"]
+
+
+def test_cfmesh_prices_a_picked_face_against_the_plan_own_wall(tmp_path):
+    ask, box = _priced_ask(tmp_path, 583_561.0, 2_536_387.0, 0.5)
+    text = CR.cfmesh_picked(ask, tmp_path, max_cell=0.03966, wall_cell=0.0049575, floor=0.0, box=box)
+    assert "cellSize 0.0024787" in text                       # 0.31 mm halved up to 2.479 mm: 71k faces added, 126k room
+    assert ask.rows["r1"]["rule"] == "CFDREQ-36" and ask.rows["r1"]["status"] == "nearest"
+
+
+def test_a_small_picked_face_still_gets_the_size_asked(tmp_path):
+    # 00165872's shape: 1510 mm2 of a 4378 mm2 part, walls at 1.49 mm, 0.3 mm asked -> 0.186 mm, 43k faces added:
+    # under PICKED_FREE_FACES whatever the plan, so it is built as asked
+    ask, box = _priced_ask(tmp_path, 1510.0, 2868.0, 0.3)
+    regions = CR.snappy_picked(ask, tmp_path, base_m=0.005961, wall_level=2, box=box)
+    assert [r["level"] for r in regions] == [5]
+    assert ask.rows["r1"]["status"] == "applied" and ask.rows["r1"]["rule"] == "CFDREQ-34"
+
+
+def test_picked_face_room_is_the_larger_of_the_doubled_wall_and_the_free_faces():
+    assert CR.picked_face_room(1.0, 0.5, 0.01) == pytest.approx(CR.PICKED_GROWTH * 2.0 / 1e-4 if
+                                                                CR.PICKED_GROWTH * 2e4 > CR.PICKED_FREE_FACES
+                                                                else CR.PICKED_FREE_FACES)
+    assert CR.picked_face_room(1.0, 0.25, 0.001) == pytest.approx(CR.PICKED_GROWTH * 4.0e6)
+    assert CR.picked_face_room(1.0, None, 0.001) is None
+    assert CR.picked_faces_added(1.0, 0.001, 0.002) == pytest.approx(1e6 - 2.5e5)
