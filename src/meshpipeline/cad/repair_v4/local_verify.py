@@ -340,10 +340,11 @@ def verify_local(pool: WorkerPool, ws_before: Workspace, ws_after: Workspace, de
     if not pre and not diffs:
         pre = sorted(after_group)
     before_region = os.path.join(work, "region_before.brep")
-    pre_payload = {"brep": ws_before.brep_path, "solids": _live(ws_before, pre, "B"), "faces": [],
+    pre_solids = _live(ws_before, pre, "B")
+    pre_payload = {"brep": ws_before.brep_path, "solids": pre_solids, "faces": [],
                    "neighbours": overlap, "diag_mm": ws_before.part_diag_mm,
                    "export": before_region if defect.kind == "mesher" else None}
-    before = _remembered(("check", _brep_key(ws_before.brep_path), tuple(pre_payload["solids"]), overlap),
+    before = _remembered(("check", _brep_key(ws_before.brep_path), tuple(pre_solids), overlap),
                          lambda: _kernel(pool, "local_check", pre_payload, timeout_s))
 
     found_after = _findings(ws_after, after)
@@ -372,7 +373,7 @@ def verify_local(pool: WorkerPool, ws_before: Workspace, ws_after: Workspace, de
 
     pairs: list[PairResult] = []
     if overlap and located is not None and located.pairs:
-        live_overlaps = {ids: next((o for o in after["overlaps"]
+        live_overlaps: dict[tuple, dict] = {ids: next((o for o in after["overlaps"]
                                     if tuple(sorted((bodies_after.get(o["pair"][0], ""),
                                                      bodies_after.get(o["pair"][1], "")))) == ids), {})
                          for c, ids in found_after if c == "body_overlap"}
@@ -384,7 +385,7 @@ def verify_local(pool: WorkerPool, ws_before: Workspace, ws_after: Workspace, de
     if defect.kind == "mesher" and defect.member:
         result = _mesh_region(pool, region, defect.member)
         gone = result.status == "pass"
-        before_result = _remembered(("mesh", _brep_key(ws_before.brep_path), tuple(pre_payload["solids"]),
+        before_result = _remembered(("mesh", _brep_key(ws_before.brep_path), tuple(pre_solids),
                                      defect.member),
                                     lambda: _mesh_region(pool, before_region, defect.member))
         detail.update(member=defect.member, member_status=result.status, member_error_kind=result.error_kind,

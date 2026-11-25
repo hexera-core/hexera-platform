@@ -32,7 +32,7 @@ import dataclasses
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 from meshpipeline.cad.repair_v4.local_verify import Defect, LocalResult, relocate, verify_local
 from meshpipeline.cad.repair_v4.ops import REGISTRY, OpDeclined, OpFailed, validate_call
@@ -81,8 +81,8 @@ MAX_ROUNDS = 3
 UNAVAILABLE: tuple[type[BaseException], ...] = (CheckerUnavailable, NotImplementedError)
 
 #: lane C's `Defect.kind` values, named here so this module never spells them as bare strings
-VALIDITY = "validity"
-MESHER = "mesher"
+VALIDITY: Literal["validity"] = "validity"
+MESHER: Literal["mesher"] = "mesher"
 
 
 # --- defects: lane C's `Defect`, built from this state's sites -------------------------------------------------
@@ -182,16 +182,17 @@ def defects_of(verdict: Any, sites: Sequence[Site], ws: Any = None) -> list[Defe
             continue
         raw = tuple(getattr(finding, "entities", ()) or ())
         ents, bad = ids_of(raw)
-        site = next((by_entity[e] for e in (*ents, *raw) if e in by_entity), fallback)
-        if site is None or (code, site.id) in seen:
+        # named apart from the `site` the loop above binds: this one may be None (the fallback) and mypy must see it
+        at_site: Site | None = next((by_entity[e] for e in (*ents, *raw) if e in by_entity), fallback)
+        if at_site is None or (code, at_site.id) in seen:
             continue
-        seen.add((code, site.id))
-        measurement = _measure(site, ents)
+        seen.add((code, at_site.id))
+        measurement = _measure(at_site, ents)
         if bad:
             # LOUD, and its own reason: never again indistinguishable from "the ids died in an earlier repair"
             measurement["unmapped_layer1_entities"] = list(bad)
-        out.append(Defect(id=site.id, kind=VALIDITY, code=code, entities=ents,
-                          xyz=_points(site), box=_box(site), measurement=measurement))
+        out.append(Defect(id=at_site.id, kind=VALIDITY, code=code, entities=ents,
+                          xyz=_points(at_site), box=_box(at_site), measurement=measurement))
     out.extend(_overlap_clusters([f for f in hard if str(getattr(f, "code", "")) == "body_overlap"],
                                  by_entity, fallback, ids_of))
 
@@ -232,9 +233,9 @@ def _overlap_clusters(findings: Sequence[Any], by_entity: dict[StableId, Site], 
     pairs: list[tuple[StableId, StableId]] = []
     unmapped: list[StableId] = []
     for finding in findings:
-        ents, bad = ids_of(list(getattr(finding, "entities", ()) or ()))
+        found, bad = ids_of(list(getattr(finding, "entities", ()) or ()))
         unmapped.extend(bad)
-        ents = list(ents)
+        ents = list(found)
         for i, a in enumerate(ents):
             for b in ents[i + 1:]:
                 pairs.append((a, b) if a <= b else (b, a))
@@ -762,7 +763,10 @@ def apply_repair(pool: Any, ws: Workspace, repair: Repair, defect: Defect, *, ti
     exists because the oracle's wins are chains whose FIRST step alone changes nothing measurable - verifying
     between the steps would throw away exactly those. The pair is kept or reverted as a unit.
     """
-    current, diffs, touched, used = ws, [], [], []
+    current: Workspace = ws
+    diffs: list[Any] = []
+    touched: list[StableId] = []
+    used: list[dict] = []
     here = defect
     for step_i, op in enumerate(repair):
         if step_i:
