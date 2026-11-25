@@ -218,49 +218,83 @@ def _two_faces(picked_mm2: float, rest_mm2: float):
                            label=np.array([0, 0, 1, 1]), names=["Face_1", "Face_2"])
 
 
-def _priced_ask(tmp_path, picked_mm2: float, rest_mm2: float, mm: float):
+def _priced_ask(tmp_path, picked_mm2: float, rest_mm2: float, mm: float, cells: dict | None = None):
     a = picked_mm2 ** 0.5
     sig = {"area_m2": picked_mm2 * 1e-6, "centroid_m": [a / 2e3, a / 2e3, 0.0], "normal": [0, 0, -1]}
-    req = CP.bind(_req(mm), _notes(sig=sig))
+    req = CP.bind(dict(_req(mm), **({"cells": cells} if cells else {})), _notes(sig=sig))
     got = CP.resolve(tmp_path, req, "", surface=_two_faces(picked_mm2, rest_mm2))
     assert got["r1"]["model_share"] == pytest.approx(picked_mm2 / (picked_mm2 + rest_mm2))
     b = max(a, rest_mm2 ** 0.5) / 1e3
     return CR.Ask(req, "snappy"), ([0, 0, 0], [b, b, 0.001])
 
 
-def test_a_picked_face_is_priced_against_the_plan_own_wall_not_the_cell_limit(tmp_path):
-    # CFDREQ-36, the elbow's shape: the picked face is 0.58 m2 of a 3.12 m2 model, walls at 6.15 mm, 0.5 mm asked.
-    # Against half the cell limit it was held only at 1.537 mm (the run went 856k -> 5.2M cells); against the plan's
-    # own wall (82k faces at 6.15 mm, at most doubled) the finest size inside the price is 3.075 mm, said why
+@pytest.fixture
+def limit_8m(monkeypatch):
+    from meshpipeline.settings import policy as pol
+    monkeypatch.setattr(pol, "CELL_HARD_LIMIT", 8_000_000)
+
+
+def test_a_picked_size_that_cannot_fit_the_limit_is_built_at_the_finest_that_fits_and_said(tmp_path, limit_8m):
+    # CFDREQ-36, the elbow's shape: the picked face is 0.58 m2 of a 3.12 m2 model, walls at 6.15 mm, 16 layers,
+    # 0.5 mm asked. 0.384 mm there is ~77 M cells, 0.77 mm ~20 M: past the 8 M limit; 1.54 mm (~6 M) fits.
     ask, box = _priced_ask(tmp_path, 583_561.0, 2_536_387.0, 0.5)
-    regions = CR.snappy_picked(ask, tmp_path, base_m=0.0492, wall_level=3, box=box)   # 49.2 mm halved 3 times
-    assert [r["level"] for r in regions] == [4]
+    regions = CR.snappy_picked(ask, tmp_path, base_m=0.0492, wall_level=3, box=box, layers=16)
+    assert [r["level"] for r in regions] == [5]
     row = ask.rows["r1"]
-    assert row["status"] == "nearest" and row["rule"] == CR.RULE_PICKED_PRICE == "CFDREQ-36"
-    assert row["built_m"] == pytest.approx(0.0492 / 16)
-    assert "you asked 0.5 mm" in row["built"] and "wall faces" in row["built"]
+    assert row["status"] == "nearest" and row["rule"] == CR.RULE_PICKED_PRICE
+    assert row["built_m"] == pytest.approx(0.0492 / 32)
+    assert row["cell_limit"] == 8_000_000 and row["needs_cells"] > 50_000_000
+    assert "0.5 mm on that face needs about" in row["built"] and "this run's limit is 8 million" in row["built"]
+    assert "Give a higher cell count to get 0.5 mm" in row["built"]
 
 
-def test_cfmesh_prices_a_picked_face_against_the_plan_own_wall(tmp_path):
+def test_a_picked_size_is_built_as_asked_when_the_count_typed_holds_it(tmp_path, limit_8m):
+    ask, box = _priced_ask(tmp_path, 583_561.0, 2_536_387.0, 0.5, cells={"ceiling": 100_000_000})
+    regions = CR.snappy_picked(ask, tmp_path, base_m=0.0492, wall_level=3, box=box, layers=16)
+    assert [r["level"] for r in regions] == [7]                      # 0.384 mm: at or under the 0.5 mm asked
+    assert ask.rows["r1"]["status"] == "applied" and "needs_cells" not in ask.rows["r1"]
+
+
+def test_a_count_typed_too_small_is_named_as_theirs(tmp_path, limit_8m):
+    ask, box = _priced_ask(tmp_path, 583_561.0, 2_536_387.0, 0.5, cells={"ceiling": 25_000_000})
+    regions = CR.snappy_picked(ask, tmp_path, base_m=0.0492, wall_level=3, box=box, layers=16)
+    assert [r["level"] for r in regions] == [6]                      # 0.77 mm (~20 M) fits 25 M; 0.384 mm does not
+    assert "the count you gave is 25 million" in ask.rows["r1"]["built"]
+
+
+def test_cfmesh_builds_the_finest_picked_size_inside_the_limit(tmp_path, limit_8m):
     ask, box = _priced_ask(tmp_path, 583_561.0, 2_536_387.0, 0.5)
-    text = CR.cfmesh_picked(ask, tmp_path, max_cell=0.03966, wall_cell=0.0049575, floor=0.0, box=box)
-    assert "cellSize 0.0024787" in text                       # 0.31 mm halved up to 2.479 mm: 71k faces added, 126k room
+    text = CR.cfmesh_picked(ask, tmp_path, max_cell=0.03966, wall_cell=0.0049575, floor=0.0, box=box, layers=4)
+    assert "cellSize 0.0012393" in text                       # 0.31 / 0.62 mm are past 8 M; 1.24 mm (~3.4 M) fits
     assert ask.rows["r1"]["rule"] == "CFDREQ-36" and ask.rows["r1"]["status"] == "nearest"
 
 
-def test_a_small_picked_face_still_gets_the_size_asked(tmp_path):
-    # 00165872's shape: 1510 mm2 of a 4378 mm2 part, walls at 1.49 mm, 0.3 mm asked -> 0.186 mm, 43k faces added:
-    # under PICKED_FREE_FACES whatever the plan, so it is built as asked
+def test_a_small_picked_face_still_gets_the_size_asked(tmp_path, limit_8m):
+    # 00165872's shape: 1510 mm2 of a 4378 mm2 part, walls at 1.49 mm, 0.3 mm asked -> 0.186 mm
     ask, box = _priced_ask(tmp_path, 1510.0, 2868.0, 0.3)
-    regions = CR.snappy_picked(ask, tmp_path, base_m=0.005961, wall_level=2, box=box)
+    regions = CR.snappy_picked(ask, tmp_path, base_m=0.005961, wall_level=2, box=box, layers=16)
     assert [r["level"] for r in regions] == [5]
     assert ask.rows["r1"]["status"] == "applied" and ask.rows["r1"]["rule"] == "CFDREQ-34"
 
 
-def test_picked_face_room_is_the_larger_of_the_doubled_wall_and_the_free_faces():
-    assert CR.picked_face_room(1.0, 0.5, 0.01) == pytest.approx(CR.PICKED_GROWTH * 2.0 / 1e-4 if
-                                                                CR.PICKED_GROWTH * 2e4 > CR.PICKED_FREE_FACES
-                                                                else CR.PICKED_FREE_FACES)
-    assert CR.picked_face_room(1.0, 0.25, 0.001) == pytest.approx(CR.PICKED_GROWTH * 4.0e6)
-    assert CR.picked_face_room(1.0, None, 0.001) is None
+def test_picked_estimate_is_the_added_faces_with_their_layers_and_band():
+    # the elbow, measured on snappy (16 layers): 856,183 -> 5,200,609 cells at 1.534 mm, -> 1,736,762 at 3.083 mm
+    e = CR.picked_estimate(asked_m=1.534e-3, wall_cell_m=6.15e-3, layers=16, limit=8e6, area_m2=0.5836,
+                           plan_cells=856_183)
+    assert e["rule"] == CR.RULE_PICKED_PRICE and e["fits"] is True
+    assert e["cells_added"] == pytest.approx(5_200_609 - 856_183, rel=0.1)
+    e = CR.picked_estimate(asked_m=3.083e-3, wall_cell_m=6.15e-3, layers=16, limit=8e6, area_m2=0.5836,
+                           plan_cells=856_183)
+    assert e["cells_added"] == pytest.approx(1_736_762 - 856_183, rel=0.1)
     assert CR.picked_faces_added(1.0, 0.001, 0.002) == pytest.approx(1e6 - 2.5e5)
+
+
+def test_picked_estimate_takes_the_share_and_prices_the_plan_from_it():
+    by_area = CR.picked_estimate(asked_m=1e-3, wall_cell_m=4e-3, layers=5, limit=1e6, area_m2=0.25, share=0.25)
+    by_share = CR.picked_estimate(asked_m=1e-3, wall_cell_m=4e-3, layers=5, limit=1e6, share=0.25, model_area_m2=1.0)
+    assert by_area == by_share
+    assert by_area["plan_cells"] == pytest.approx(1.0 / 16e-6 * (5 + CR.PICKED_BAND_CELLS))
+    assert by_area["total"] == pytest.approx(by_area["plan_cells"] + by_area["cells_added"])
+    assert by_area["fits"] is (by_area["total"] <= 1e6)
+    roomy = CR.picked_estimate(asked_m=1e-3, wall_cell_m=4e-3, layers=5, limit=1e9, share=0.25, model_area_m2=1.0)
+    assert roomy["fits"] is True and roomy["cells_added"] == by_area["cells_added"]

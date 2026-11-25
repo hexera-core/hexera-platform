@@ -881,6 +881,7 @@ def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
         _local += _ask_local
         # CFDREQ-34: a size typed with faces picked on the model - each picked place's own surface refined to it
         _picked = CR.cfmesh_picked(_ask, ws, max_cell=max_cell, wall_cell=wall_cell, floor=_floor,
+                                   layers=max(0, int(strategy.get("n_layers", 0))),
                                    box=body_bbox if body_bbox is not None else (
                                        (domain_min, domain_max) if domain_min is not None else None))
     dict_parts = [
