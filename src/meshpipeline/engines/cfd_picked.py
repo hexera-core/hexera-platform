@@ -41,6 +41,9 @@ SAME_AREA_SHARE = 0.02
 SAME_CENTRE_SHARE = 0.01
 #: a size is met when the median wall cell on the place is at most this much over the size asked (a maximum)
 MET_SLACK = 1.05
+#: CFDREQ-35: the place "the body's walls" as a row's patches - every patch of type wall in the built mesh (a mesher
+#: that names its wall patches only when it writes them: snappy's one-body surface)
+WALL_PATCHES = "*walls"
 #: the most points the picked surface is sampled with for the measure
 MAX_SAMPLES = 400_000
 #: the fewest wall faces on a place for a measure
@@ -351,7 +354,7 @@ def measure(case, *, picked: str | None = None, patches=None, size_m: float | No
         rows = [(s, k) for s, k, ty in bnd.values() if ty == "wall"] or [(s, k) for s, k, _t in bnd.values()]
     else:
         want = {str(p) for p in patches or ()}
-        rows = [(s, k) for nm, (s, k, _t) in bnd.items() if nm in want]
+        rows = [(s, k) for nm, (s, k, ty) in bnd.items() if nm in want or (WALL_PATCHES in want and ty == "wall")]
     idx = np.concatenate([np.arange(s, s + k) for s, k in rows]) if rows else np.zeros(0, dtype=np.int64)
     if not len(idx):
         return None

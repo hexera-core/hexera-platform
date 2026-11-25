@@ -3,6 +3,7 @@ applied only when the built mesh measures it there."""
 from __future__ import annotations
 
 import json
+import re
 from types import SimpleNamespace
 
 import numpy as np
@@ -316,3 +317,111 @@ def test_cfmesh_plan_carries_the_picked_octree_band_the_brake_measures():
                            plan_cells=131_773, band_cells=CR.CFMESH_PICKED_BAND_CELLS)
     assert 219_559 <= SIZE_BRAKE_MARGIN * e["total"]
     assert e["cells_added"] >= 219_559 - 85_092
+
+
+ELBOW = [{"name": "wall", "type": "wall"}, {"name": "inlet", "type": "inlet"}, {"name": "outlet", "type": "outlet"}]
+BOX = ([0.0, 0.0, 0.0], [0.1, 0.1, 0.1])
+
+
+def _local_req(what, mm=None, where="the bend", physics=None):
+    quote = f"{'' if mm is None else f'{mm} mm '}{what if what != 'size' else 'cells'} at {where}"
+    return {"rows": [{"id": "r1", "field": "local", "asked": quote}],
+            "local": [{"id": "r1", "where": where, "what": what, "mm": mm, "quote": quote}],
+            **({"physics": physics} if physics else {})}
+
+
+@pytest.mark.parametrize("what,mm", [("finer", None), ("coarser", None), ("size", 2.0)])
+def test_cfmesh_internal_place_it_cannot_tell_is_told_even_with_the_fluid_box(what, mm):
+    """The elbow on cfMesh: the runner hands the internal case its fluid's box as body_bbox, and "finer at the bend"
+    was read as the body's walls and told applied (measured 4.231 mm). CFDREQ-35: told, on every ask."""
+    ask = CR.Ask(_local_req(what, mm), "cfmesh")
+    CR.cfmesh_local(ask, ELBOW, "wall", max_cell=0.008, wall_cell=0.002, floor=0.0, body_bbox=BOX,
+                    domain=BOX, internal=True)
+    row = ask.rows["r1"]
+    assert row["status"] == "not_applied" and CR.CLICK_WORDS in row["built"]
+    by_physics = CR.Ask(_local_req(what, mm, physics={"flow": "internal"}), "cfmesh")
+    CR.cfmesh_local(by_physics, ELBOW, "wall", max_cell=0.008, wall_cell=0.002, floor=0.0, body_bbox=BOX, domain=BOX)
+    assert by_physics.rows["r1"]["status"] == "not_applied"
+
+
+def test_cfmesh_external_body_still_takes_around_the_wing_and_keeps_the_cell_before():
+    ask = CR.Ask(_local_req("finer", where="around the wing"), "cfmesh")
+    _e, _b, wall = CR.cfmesh_local(ask, [{"name": "wing", "type": "wall"}], "wing", max_cell=0.008, wall_cell=0.002,
+                                   floor=0.0, body_bbox=BOX, domain=BOX, internal=False)
+    row = ask.rows["r1"]
+    assert row["status"] == "applied" and row["patches"] == ["wing"] and wall == pytest.approx(0.001)
+    assert row["before_m"] == pytest.approx(0.002)
+
+
+def test_snappy_internal_place_it_cannot_tell_is_told():
+    for what, mm in (("finer", None), ("coarser", None), ("size", 2.0)):
+        ask = CR.Ask(_local_req(what, mm), "snappy")
+        CR.snappy_port_levels(ask, {"inlet": 2, "outlet": 2}, {"wall": "wall", "inlet": "inlet", "outlet": "outlet"},
+                              "wall", base_m=0.01)
+        assert ask.rows["r1"]["status"] == "not_applied" and CR.CLICK_WORDS in ask.rows["r1"]["built"]
+
+
+def test_snappy_body_walls_read_from_a_relative_ask_are_measured_on_every_wall():
+    """A "finer around the car" on a one-body snappy case was told applied on the plan alone (no place to measure)."""
+    ask = CR.Ask(_local_req("finer", where="around the car"), "snappy")
+    CR.snappy_levels(ask, 0.016, floor=1, level=3, flevel=3, regions=["body"], part_levels=False)
+    row = ask.rows["r1"]
+    assert row["status"] == "applied" and row["patches"] == [CP.WALL_PATCHES]
+    assert row["built_m"] == pytest.approx(0.001) and row["before_m"] == pytest.approx(0.002)
+
+
+def test_measure_reads_every_wall_patch_for_the_body_walls(tmp_path):
+    _polymesh(tmp_path)
+    got = CP.measure(tmp_path, patches=[CP.WALL_PATCHES])
+    assert got["n_faces"] == 16 and got["median_m"] == pytest.approx(1e-3)
+
+
+def test_a_relative_ask_is_judged_against_the_cell_before_it(tmp_path):
+    """1 mm walls built: "finer" planned 0.5 mm from 1 mm is not applied; planned 1 mm from 2 mm is applied, met;
+    "coarser" planned 2 mm from 1 mm and built 1 mm is not applied (the measure is a minimum for it)."""
+    _polymesh(tmp_path)
+    finer = _local_req("finer", where="the wall")
+    p = {"status": "applied", "built": "cells of 0.5 mm on the body's walls", "built_m": 0.0005,
+         "patches": ["wall"], "before_m": 0.001}
+    got = CR._place_row(tmp_path, finer, finer["rows"][0], p)
+    assert got["applied"] is False and "1 mm without the ask" in got["delivered"]
+    same = CR._place_row(tmp_path, finer, finer["rows"][0], {**p, "built_m": 0.001})
+    assert same["applied"] is False                               # planned at the size it already had: not finer
+    ok = CR._place_row(tmp_path, finer, finer["rows"][0], {**p, "built_m": 0.001, "before_m": 0.002})
+    assert ok["applied"] is True and ok["met"] is True
+    coarser = _local_req("coarser", where="the wall")
+    bad = CR._place_row(tmp_path, coarser, coarser["rows"][0], {**p, "built_m": 0.002, "before_m": 0.001})
+    assert bad["applied"] is False
+    good = CR._place_row(tmp_path, coarser, coarser["rows"][0], {**p, "built_m": 0.001, "before_m": 0.0005})
+    assert good["applied"] is True
+
+
+def test_the_stack_a_picked_face_is_priced_with_is_the_one_the_dict_writes():
+    """CFDREQ-36: the elbow's row priced its face with the plan's layers while snappy_dict wrote the y+ stack (16):
+    "needs about 32 M" where ~77 M was right. The count priced is snappy_dict's own, and no row is touched."""
+    from meshpipeline.engines import mesh_requirements as MR
+    base = {"stated_unit": "none", "sizes": [], "counts": [], "physics": [], "element_kind": [], "limits": [],
+            "other": [], "local": [],
+            "layers": [{"what": "first_height", "value": 0.0224, "unit": "mm", "quote": "first layer 0.0224 mm"}]}
+    req, _d, _na = MR.check(json.dumps(base), "first layer 0.0224 mm", route="flow")
+    ask = CR.Ask(req, "snappy")
+    bridge = {"faces": 110_000, "room": 3_000_000}
+    dict_text = ("addLayersControls { relativeSizes true; layers { wall { nSurfaceLayers 5; } }\n"
+                 "  expansionRatio 1.2; finalLayerThickness 0.3; minThickness 0.05; nGrow 0; featureAngle 130; }\n")
+    before = json.dumps(ask.rows, sort_keys=True, default=str)
+    n = CR.snappy_layers_written(ask, 5, wall_cell_m=0.00436, bridge=bridge, last_rel=0.3)
+    assert json.dumps(ask.rows, sort_keys=True, default=str) == before
+    written = CR.snappy_dict(ask, dict_text, wall_cell_m=0.00436, bridge=bridge)
+    assert n == int(re.search(r"nSurfaceLayers (\d+);", written).group(1)) and n > 5
+    assert CR.snappy_layers_written(CR.Ask({"rows": [], "local": []}, "snappy"), 3, wall_cell_m=0.004) == 3
+    assert CR.snappy_layers_written(None, 3) == 3
+
+
+def test_a_picked_face_priced_with_the_written_stack_says_the_right_count(tmp_path, limit_8m):
+    # the elbow: priced with 3 layers the row said ~32 M; with the 16 the dict writes ~77 M - the size built the same
+    ask3, box = _priced_ask(tmp_path, 583_561.0, 2_536_387.0, 0.5)
+    CR.snappy_picked(ask3, tmp_path, base_m=0.0492, wall_level=3, box=box, layers=3)
+    ask16, box = _priced_ask(tmp_path, 583_561.0, 2_536_387.0, 0.5)
+    CR.snappy_picked(ask16, tmp_path, base_m=0.0492, wall_level=3, box=box, layers=16)
+    assert ask16.rows["r1"]["built_m"] == pytest.approx(0.0492 / 32)
+    assert ask16.rows["r1"]["needs_cells"] > 2 * ask3.rows["r1"]["needs_cells"]

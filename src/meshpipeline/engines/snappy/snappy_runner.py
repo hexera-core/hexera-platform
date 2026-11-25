@@ -1867,11 +1867,21 @@ def render_internal_case(workspace, *, names: dict, features: dict, interior_poi
     # CFDREQ-34: a size typed with faces picked on the model - each picked place's own surface (picked_<n>.stl)
     # refines the cells within a few of its cells; a distance refinement, so never a patch and the wall's layers stay
     _picked: list[dict] = []
+    _layer_bridge = None
     if _ask is not None:
         from meshpipeline.engines import cfd_requirements as _CRp
+        # CFDREQ-9 / CFDREQ-36: the layer bridge snappy_dict sizes the y+ stack with below, read once - the picked
+        # face is priced with the stack the dict will write (the elbow: 16 layers, not the plan's 3)
+        _layer_bridge = _layer_bridge_room(ws / "constant" / "triSurface" / f"{names[wall_key]}.stl",
+                                           base_actual / (2 ** near_level), max_cells,
+                                           [ws / "constant" / "triSurface" / f"{n}.stl"
+                                            for k, n in names.items() if k != wall_key],
+                                           narrowest_gap_m=_narrowest_planned_gap(ws))
+        _stack = _CRp.snappy_layers_written(_ask, n_layers, wall_cell_m=base_actual / (2 ** near_level),
+                                            bridge=_layer_bridge, last_rel=last_rel)
         # the wall's own cell is the near band's (CFDREQ-36 prices the picked face against the wall as built)
         _picked = _CRp.snappy_picked(_ask, ws, base_m=base_actual, wall_level=int(max(smax, near_level)),
-                                     hard_max=_HARD_MAX_LEVEL, box=(bbox_min, bbox_max), layers=n_layers)
+                                     hard_max=_HARD_MAX_LEVEL, box=(bbox_min, bbox_max), layers=_stack)
     for _pk in _picked:
         geom += f"{_pk['name']} {{ type triSurfaceMesh; file \"{_pk['file']}\"; name {_pk['name']}; }} "
         thin_refine += f"{_pk['name']} {{ mode distance; levels (({_pk['distance_m']:.6g} {_pk['level']})); }} "
@@ -1938,12 +1948,8 @@ mergeTolerance 1e-6; debug 0;
         from meshpipeline.engines import cfd_requirements as CR
         # the cells the layers grow into: the near-wall band's, one level finer than the wall's, where there is one
         _layer_cell = base_actual / (2 ** near_level)
-        _shm = CR.snappy_dict(_ask, _shm, wall_cell_m=_layer_cell,
-                              bridge=_layer_bridge_room(ws / "constant" / "triSurface" / f"{wall}.stl",
-                                                        _layer_cell, max_cells,
-                                                        [ws / "constant" / "triSurface" / f"{n}.stl"
-                                                         for k, n in names.items() if k != wall_key],
-                                                        narrowest_gap_m=_narrowest_planned_gap(ws)))
+        # the same bridge the picked face was priced with (CFDREQ-36: one source for the stack)
+        _shm = CR.snappy_dict(_ask, _shm, wall_cell_m=_layer_cell, bridge=_layer_bridge)
         _ask.write(ws)
     (ws / "system" / "snappyHexMeshDict").write_text(_shm)
     # WHERE THE CELLS WILL GO (engines/snappy/cell_record, rulebook 75): every refinement this dict

@@ -708,7 +708,7 @@ def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
                        accept_fewer: bool = False,
                        port_widths: dict | None = None,
                        internal_wall_area: float | None = None,
-                       wake: Any = None) -> dict:
+                       wake: Any = None, internal: bool = False) -> dict:
     ws = Path(workspace)
     strategy = strategy or {}
     ext = [float(domain_max[i] - domain_min[i]) for i in range(3)]
@@ -810,7 +810,8 @@ def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
         fit_run = fit_run and _fit
         _ask_local, _ask_boxes, wall_cell = CR.cfmesh_local(
             _ask, patches, wall_patch, max_cell=max_cell, wall_cell=wall_cell, floor=_floor,
-            body_bbox=body_bbox, domain=(domain_min, domain_max), budget=cell_budget, roles=CR.port_roles(ws))
+            body_bbox=body_bbox, domain=(domain_min, domain_max), budget=cell_budget, roles=CR.port_roles(ws),
+            internal=internal)
     _thick = (f" refinementThickness {_caps['refinement_thickness']:.6g};" if _caps else "")
 
     # THE RUN, TIMED BEFORE IT RUNS (CELLS_PER_SECOND): the cap it gets, and - for a wall the
@@ -1852,7 +1853,7 @@ def _configure_internal(workspace, *, strategy: dict, wall_patch: str,
         domain_min=bb_min, domain_max=bb_max, strategy=strategy, cell_budget=cell_budget,
         passage_radius=passage_radius, passage_field=_field,
         accept_fewer=accepted_fewer(read_engine_params(workspace)),
-        port_widths=_port_widths, internal_wall_area=_wall_area_of(_staged["sizing"], _wall_key))
+        port_widths=_port_widths, internal_wall_area=_wall_area_of(_staged["sizing"], _wall_key), internal=True)
     if summary.get("neck_stop"):
         # INS-32: an opening reaches its passage only through a gap whose cells do not fit the limit -
         # said at plan time, with what the user can change, never found as a zero-face patch after an
