@@ -10,7 +10,7 @@ from dataclasses import dataclass
 class Criterion:
     key:          str    # measurement key (see measurements_from below)
     label:        str    # human-readable name
-    op:           str    # "==" | "<=" | ">" | "empty"
+    op:           str    # "==" | "<=" | ">" | ">=" | "empty"
     threshold:    object # comparison value ("empty" ignores it)
     gating:       bool   # True = failing this fails production-grade; False = advisory
     rationale:    str    # WHY this bar exists (user-facing)
@@ -35,6 +35,13 @@ class Criterion:
             return v <= self.threshold
         if self.op == ">":
             return v > self.threshold
+        # A FLOOR THAT INCLUDES ITS OWN VALUE. ">" cannot say "at least": a bar written as
+        # `> 92.0` fails a measurement of exactly 92.0, and an engine whose own module calls
+        # `< 92.0` the shortfall then disagrees with its own criterion on that one value.
+        # `verdict_limits` has spoken ">=" since it was written ("at least", line 293) and
+        # `base.TurfRule` evaluates it; this is the same op, in the one switch that lacked it.
+        if self.op == ">=":
+            return v >= self.threshold
         raise ValueError(f"unknown criterion op: {self.op}")
 
 

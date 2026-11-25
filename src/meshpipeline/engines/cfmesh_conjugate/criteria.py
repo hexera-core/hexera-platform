@@ -8,6 +8,9 @@ from meshpipeline.contracts.review_evidence import (
     RenderTargetRequirement,
     TargetKind,
 )
+from meshpipeline.engines.cfmesh_conjugate.layers import (
+    COVERAGE_FLOOR_PCT as _COVERAGE_FLOOR_PCT,
+)
 from meshpipeline.engines.openfoam_criteria import (
     FATAL_TOPOLOGY as _FATAL_TOPOLOGY,
 )
@@ -195,6 +198,37 @@ CRITERIA_ROWS: tuple[Criterion, ...] = (
         evidence_url=_OF_MESH_VALIDITY,
     ),
     Criterion(
+        key="layer_coverage_pct",
+        label="How much of the conjugate interface the prism layers covered",
+        op=">=", threshold=_COVERAGE_FLOOR_PCT, gating=False,
+        rationale=(
+            "THE SAME FIGURE `layer_short` ALREADY JUDGES, DECLARED AS A BAR SO THE REVIEW CAN "
+            "CITE IT. `layer_short` is an `empty` row: it carries the miss as a SENTENCE in its "
+            "`measured` list, and a sentence is not evidence. The reviewer's ledger is filled "
+            "from `plan.required_metric_keys`, which `agents/reviewer/assurance` builds out of "
+            "the axes' own `requires` and nothing else, so a key no axis asks for is never "
+            "filed: `ledger.usable_metric('layer_coverage_pct')` returned None and a finding "
+            "could not cite the number it was about. "
+            "MEASURED, job 110daca9's 279,281,786-cell cold plate: the layer pass covered "
+            "90.6422% of the 16,582,198-face interface and kept 2.00 of 3 layers, the review "
+            "failed the near-interface axis on exactly that, and the only citable metric on file "
+            "was non-orthogonality - a true number about a different property. "
+            "THE THRESHOLD IS `layers.COVERAGE_FLOOR_PCT` ITSELF, imported and not restated, and "
+            "the comparison is the one `layers.shortfalls` makes (`coverage < FLOOR` is the "
+            "shortfall), so the two cannot disagree - including at exactly 92.0, which a `>` row "
+            "would fail while `shortfalls` called it a pass. "
+            "NOT GATING, for the reason the two rows above are not: the layer pass has already "
+            "moved the only copy of the coolant mesh and rewritten it in place, so refusing on a "
+            "coverage miss throws away a finished mesh nothing else has anything against. "
+            "ABSENT when no layer pass was judged, which `eligibility.advisory_gaps` records as "
+            "a stated gap on an advisory row and never as missing evidence - an unmeasured "
+            "advisory number must not end a review, and once did. "
+            "`engines/cfmesh` and `engines/snappy_multiregion` have both declared this key since "
+            "they were written; this engine produced the figure (`layers.py`'s "
+            "`layer_coverage_pct`) and declared no bar on it."),
+        evidence_url=_OF_MESH_VALIDITY,
+    ),
+    Criterion(
         key="resolution_short",
         label="Every passage has the cells across it the fidelity asks for", op="empty",
         threshold=None, gating=False,
@@ -256,8 +290,14 @@ REVIEW_AXES: tuple[ReviewAxis, ...] = (
                          "an interface running through solid metal",
                          "an interface across an inlet or outlet, which is open to the outside"),
         evidence=("inspect_region", "render", "quality_metrics"),
+        # `layer_coverage_pct` is HERE because this is the axis about the interface and the
+        # figure is measured ON it, per interface patch (`layers.shortfalls`). Declaring it
+        # puts the key in `plan.required_metric_keys`, which is plan-wide, so the purpose's
+        # own near-interface axis can cite it too - and it is NOT declared on that axis,
+        # which is shared by every CHT engine and would oblige a key the others never write.
         requires=(HardGateRequirement("interface"),
                   MetricRequirement("max_non_ortho"),
+                  MetricRequirement("layer_coverage_pct"),
                   RenderTargetRequirement(TargetKind.REGION, "region:*")),
         evidence_url=_OF_MESH_VALIDITY,
     ),

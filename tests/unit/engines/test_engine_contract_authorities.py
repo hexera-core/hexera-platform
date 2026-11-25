@@ -106,7 +106,10 @@ def test_6_gate_order_and_gating_status_are_stable(engine):
 @pytest.mark.parametrize("engine", EXPECTED_ENGINES)
 def test_6b_criteria_rows_carry_their_bar_and_gating_flag(engine):
     for c in get_spec(engine).criteria:
-        assert c.op in ("==", "<=", ">", "empty"), f"{engine}: unknown op {c.op!r}"
+        # ">=" is a FLOOR THAT INCLUDES ITS OWN VALUE, which ">" cannot say: a bar written
+        # `> 92.0` fails a measurement of exactly 92.0 while the engine module whose floor
+        # it is calls `< 92.0` the shortfall, so the two disagree on that one value.
+        assert c.op in ("==", "<=", ">", ">=", "empty"), f"{engine}: unknown op {c.op!r}"
         assert isinstance(c.gating, bool)
         assert c.label and c.rationale, f"{engine} criterion {c.key!r} has no user-facing prose"
 
