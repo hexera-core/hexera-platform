@@ -15,6 +15,9 @@ On a shell every mid-face knows its body and the two CAD faces it is the middle 
   no mid-face - is only an EDGE of the shell (the shell is the middle of the plate). Its size goes on the mid-surface
   curves that lie on that face (`edge_curves`, found on the mesher's own model): the elements round the hole are
   about the size asked, graded out to the rest. A face that meets no mid-face and no curve is told not applied.
+* SHMESH-52c: "finer" / "coarser" with no number there: the size the mesh would have had along those curves halved
+  or doubled (`edge_scaled`; coarser no more than the plate it bounds and 8 round a hole), met only when the elements
+  along it came out clearly finer (coarser) than before.
 
 Only a reading whose quote is the quote of a `local` row is applied (so what is meshed is what is told); an area wins
 over its part on its faces (PLAN-fea-32); a part sized with a number keeps it over a "finer" / "coarser"."""
@@ -44,6 +47,15 @@ EDGE_TOL_WALL = 0.25
 EDGE_TRIS_MAX = 6000
 #: ... points read along each curve
 EDGE_SAMPLES = 41
+#: SHMESH-52c: "finer" / "coarser" with no number on such an edge: the size the mesh would have had along it (the
+#: plan's size round a hole there, else the plate's) halved or doubled - SCALES, the same one step as on a face and on
+#: a solid (PLAN-fea-36). Off: told not applied, as before
+EDGE_SCALE_RULE = "SHMESH-52c"
+EDGE_SCALED = True
+#: ... told met only when the elements along the edge came out clearly finer (coarser) than before: at most this share
+#: of the plate round it and of the size it would have had (at least its inverse, coarser). 0.75: the solid's own
+#: band for a halved size (fea_requirements: met within 1.5 x the size asked, 1.5 x 0.5 = 0.75)
+EDGE_MARGIN = 0.75
 #: a plan past this share of what a shell mesh is made of in the time allowed is stepped back (as SHMESH-24 does)
 FIT_SHARE = 0.95
 #: a place whose typical element came out under this share of the size asked says why (its holes, bends and finer
@@ -200,12 +212,47 @@ def edge_found(applied: Mapping | None, j: int, polylines: list | None, target: 
         p.update(edges=len(polylines), rim_mm=[np.round(np.asarray(pl, dtype=float), 4).tolist()
                                                for pl in polylines], why="")
         return
-    p.update(edge=False, edges=0, why=_why_not(target))
+    _not_applied(applied, j, _why_not(target))
+
+
+def _not_applied(applied: Mapping | None, j: int, why: str) -> None:
+    p = (applied or {}).get("places", [])[j]
+    p.update(edge=False, edges=0, why=why)
     p.pop("rim_mm", None)
     for a in (applied or {}).get("asks") or []:
         if j in a.get("places") or ():
             a["places"].remove(j)
             a["not_applied"].append({"name": p["name"], "why": p["why"]})
+
+
+#: SHMESH-52c: why a "coarser" on an edge built nothing (each curve already at the most it can take)
+NO_COARSER_WHY = ("on a shell it is an edge of the plate round it, and the elements along it are already as coarse as "
+                  "that plate and the roundness of the hole allow (at least 8 elements round a hole), so nothing was "
+                  "made coarser")
+
+
+def edge_scaled(applied: Mapping | None, j: int, curves: list[int], own_mm: list[float], cap_mm: list[float],
+                mids: list[str]) -> dict[float, list[int]]:
+    """SHMESH-52c: edge place `j`'s "finer" / "coarser" set on the curves the mesher found on it: {size (mm): curves}.
+    `own_mm[i]`: the size the mesh would have had along curve i (the plan's size round a hole there, else the plate's);
+    `cap_mm[i]`: the most it can take (the plate it bounds - an edge is never coarser than the plate meeting it - and
+    SR.HOLE_PER_TURN round a hole). Finer: own x 0.5; coarser: own x 2, no more than the cap. The place keeps
+    `before_mm` / `set_mm` (medians), `mids` (the plate's mid-faces, for the row's "the plate round it") and `curves`.
+    A coarser that cannot be built anywhere is told not applied, with why. {} with no curve."""
+    p = (applied or {}).get("places", [])[j]
+    scale = float(p.get("scale") or 1.0)
+    if not curves:
+        return {}
+    sets = [o * scale if scale < 1.0 else max(o, min(o * scale, c)) for o, c in zip(own_mm, cap_mm, strict=True)]
+    if scale > 1.0 and all(s <= o * (1 + 1e-6) for s, o in zip(sets, own_mm, strict=True)):
+        _not_applied(applied, j, NO_COARSER_WHY)
+        return {}
+    p.update(before_mm=_r(float(np.median(own_mm))), set_mm=_r(float(np.median(sets))), mids=sorted(set(mids)),
+             curves=sorted(int(c) for c in curves))
+    out: dict[float, list[int]] = {}
+    for c, s in zip(curves, sets, strict=True):
+        out.setdefault(float(f"{s:.6g}"), []).append(int(c))
+    return out
 
 
 def _near_rim(xyz: np.ndarray, rims: list, tol: float) -> np.ndarray:
@@ -341,13 +388,16 @@ def plan(rows: list[dict], owners: list[str], record: Mapping, places: Mapping |
         ks, on = _faces_of(t, owners, mids)
         e = entries[i]
         # SHMESH-52b: on no mid-face but with its triangles kept: sized on the shell's curves lying on it (the
-        # mesher finds them, edge_found); a size in mm only (an edge has no size of its own to halve)
-        edge = not ks and bool(t.get("tris_mm")) and e["ask"] == "size"
+        # mesher finds them, edge_found). SHMESH-52c: "finer" / "coarser" there too - the size the mesh would have
+        # had along those curves halved or doubled, set by the mesher once it has found them (edge_scaled)
+        edge = not ks and bool(t.get("tris_mm")) and (e["ask"] == "size" or (EDGE_SCALED and e["ask"] in SCALES))
         p = {"entry": i, "id": t["id"], "name": name_of(t), "area": bool(t.get("area")), "ask": e["ask"],
              **({"min_mm": e["min_mm"], "max_mm": e["max_mm"]} if e["ask"] == "size" else {}),
              "faces": 0, "mids": [], "why": "" if ks or edge else _why_not(t),
              **({"piece": True} if t.get("piece") else {}),
-             **({"edge": True, "target": ti, "set_mm": _r(0.5 * (e["min_mm"] + e["max_mm"]))} if edge else {})}
+             **({"edge": True, "target": ti} if edge else {}),
+             **({"set_mm": _r(0.5 * (e["min_mm"] + e["max_mm"]))} if edge and e["ask"] == "size" else {}),
+             **({"scale": SCALES[e["ask"]], "rule": EDGE_SCALE_RULE} if edge and e["ask"] in SCALES else {})}
         if t.get("area") and ks:
             p["cad_faces"] = [on, len(t.get("faces") or [])]
         for k in ks:
@@ -406,7 +456,9 @@ def plan(rows: list[dict], owners: list[str], record: Mapping, places: Mapping |
         a["not_applied"] = [{"name": p["name"], "why": p["why"]} for p in mine if not (p["faces"] or p.get("edge"))]
         a["why"] = "" if a["entries"] else _unread(loc, places)
         del a["entries"]
-    sized = [rows[k]["size_mm"] for k in owner_of] + [float(p["set_mm"]) for p in found if p.get("edge")]
+    # (a "finer" / "coarser" edge's size is set by the mesher, SHMESH-52c: it lowers the mesh's floor itself)
+    sized = [rows[k]["size_mm"] for k in owner_of] + [float(p["set_mm"]) for p in found
+                                                       if p.get("edge") and p.get("set_mm") is not None]
     out.update(asks=asks, places=found, planned=int(round(planned)),
                applied=bool(owner_of) or any(p.get("edge") for p in found),
                finest_mm=_r(min(sized)) if sized else None)
@@ -466,6 +518,32 @@ def row(local_id, applied: Mapping | None, mesh) -> dict | None:
         n = int(sel.sum())
         typical = float(np.median(0.5 * (lo_e[sel] + hi_e[sel]))) if n else 0.0
         measured = _r(typical) if measured is None else measured
+        if p.get("edge") and p["ask"] != "size":
+            # SHMESH-52c: "finer" / "coarser" on an edge, against the plate round it (its mid-faces' elements not on
+            # the edge) and the size it would have had there
+            plate_sel = (np.isin(mid, p.get("mids") or []) & ~sel) if len(mid) else np.zeros(0, dtype=bool)
+            plate = float(np.median(0.5 * (lo_e[plate_sel] + hi_e[plate_sel]))) if plate_sel.any() else None
+            before = float(p.get("before_mm") or 0.0)
+            ref = min(before, plate) if plate is not None else before
+            if p["ask"] == "refine":
+                ok = bool(n) and typical <= EDGE_MARGIN * ref
+            else:
+                ok = bool(n) and typical >= before / EDGE_MARGIN
+            met = met and ok
+            line = (f"{p['name']}: on a shell it is an edge; elements along it are about {_g(typical)} mm "
+                    f"({n:,} elements)" + (f", the plate round it about {_g(plate)} mm" if plate is not None else "")
+                    + f"; the size it would have had there, {_g(before)} mm, "
+                    + ("halved" if p["ask"] == "refine" else "doubled") + f" to {_g(p['set_mm'])} mm")
+            if p["ask"] == "coarsen" and float(p["set_mm"]) < 2.0 * before * (1 - 1e-3):
+                line += " (no coarser than the plate round it, and at least 8 elements round a hole)"
+            if not ok:
+                line += ("; it did not come out clearly finer than before" if p["ask"] == "refine"
+                         else "; it did not come out clearly coarser than before")
+            if p.get("piece"):
+                line = "applied to the whole part, the nearest there is - " + line
+                nearest = True
+            said.append(line)
+            continue
         if p["ask"] == "size":
             lo, hi = float(p["min_mm"]), float(p["max_mm"])
         else:
@@ -524,5 +602,5 @@ def told(_lane: str, _key: str) -> dict:
     return {"applied": True, "met": None, "delivered": "measured on the built mesh, place by place"}
 
 
-__all__ = ["FILE", "RULE", "SCALES", "edge_curves", "edge_found", "from_reading", "matched", "name_of", "plan", "read",
+__all__ = ["FILE", "RULE", "SCALES", "edge_curves", "edge_found", "edge_scaled", "from_reading", "matched", "name_of", "plan", "read",
            "row", "same_words", "summary_words", "told", "tri_dist", "wanted", "with_shapes", "write"]
