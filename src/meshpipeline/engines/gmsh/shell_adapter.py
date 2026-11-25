@@ -14,6 +14,7 @@ import functools
 import json
 import logging
 import math
+import re
 import time
 from collections import Counter
 from pathlib import Path
@@ -163,8 +164,10 @@ MESH_RATE = 600.0
 PRICE_FACTOR = 3.0
 #: SHMESH-21f: A STUCK FACE IS STILL CAUGHT - while a limit runs past MESH_DEADLINE_S, a face gmsh's output shows it
 #: on (the parent reads "Meshing surface N" in the watched child's output: a new surface is progress) for longer than
-#: PRICE_FACTOR times its own planned elements at MESH_RATE, and never under FACE_HELD_FLOOR_S, trips SHMESH-71's
-#: watchdog (its ladder, then left out, said). A watched child only: an unwatched one is held to the floor's limit
+#: PRICE_FACTOR times its own planned elements at the slowest rate known (MESH_RATE or this run's measured one,
+#: _face_rate), and never under FACE_HELD_FLOOR_S, trips SHMESH-71's watchdog (its ladder, then left out, said).
+#: Rulebook 85: once gmsh says its 2D mesh is done no face is on (FACE_PHASES) - the wait after it is no face's.
+#: A watched child only: an unwatched one is held to the floor's limit
 FACE_HELD_FLOOR_S = 300.0
 #: SHMESH-17: two triangles of a face that together make a quad inside Nastran's own limits are joined into it
 PAIR_TRIAS = True
@@ -2232,9 +2235,16 @@ def _watch_tags(tag_of: dict[int, int], facts: list[dict], planned: dict[int, fl
         pass
 
 
+#: SHMESH-21f: the gmsh lines after which no face is being meshed (its 2D mesh done; a phase of the whole mesh): the
+#: wait that follows is no face's (False: the last "Meshing surface" line stays current until the next, as before)
+FACE_PHASES = True
+_NO_FACE_LINE = re.compile(r"Done meshing [123]D|Meshing [123]D\.\.\.|Optimizing mesh|Recombining 2D mesh")
+
+
 def _watch_read(d: Path, seen: dict) -> tuple[int, float] | None:
     """SHMESH-71: (the surface gmsh is meshing, seconds on it) from the child's gmsh output; the deepest recovery
-    level on it is kept in `seen` (the reading between calls). None while nothing was read."""
+    level on it is kept in `seen` (the reading between calls). None while nothing was read, or while no face is on
+    (SHMESH-21f: after gmsh's 2D mesh is done, or in a phase of the whole mesh)."""
     import re
 
     try:
@@ -2252,6 +2262,13 @@ def _watch_read(d: Path, seen: dict) -> tuple[int, float] | None:
                     # (SHMESH-21e: the surfaces gmsh moved past - this mesh's measured progress)
                     seen.setdefault("done", set()).add(int(seen["tag"]))
                 seen.update(tag=int(m.group(1)), since=time.monotonic(), level=0, curves=set())
+            continue
+        if FACE_PHASES and seen.get("tag") is not None and _NO_FACE_LINE.search(line):
+            # SHMESH-21f: gmsh's 2D mesh is done, or a phase of the whole mesh began: no face is on any more. What
+            # follows (our own clean-up and pairing of the whole mesh: 278 s after a 28 s 2D mesh on cen_s0195) is no
+            # face's time - the last surface meshed was blamed for it and left out
+            seen.setdefault("done", set()).add(int(seen["tag"]))
+            seen.update(tag=None, since=time.monotonic(), level=0, curves=set())
             continue
         m = re.search(r"in the 1D mesh \(curves ([\d ]+)\)", line) or re.search(r"on curve (\d+)", line)
         if m and seen.get("tag") is not None:
@@ -2666,7 +2683,8 @@ def _clock_take(watch_dir: Path) -> float:
 
 def _face_stuck(watch_dir: Path, tag: int, held: float) -> bool:
     """SHMESH-21f: while the limit runs past MESH_DEADLINE_S, whether gmsh has been on surface `tag` longer than its own
-    price (PRICE_FACTOR x its planned elements at MESH_RATE, at least FACE_HELD_FLOOR_S)."""
+    price (PRICE_FACTOR x its planned elements at the slowest rate known - MESH_RATE, or the planned elements a second
+    this run was measured to mesh at (_face_rate) - at least FACE_HELD_FLOOR_S)."""
     if _CLOCK.get("allowed") is None or float(_CLOCK["allowed"]) <= max(float(_CLOCK["base"]), MESH_DEADLINE_S):
         return False
     if held <= FACE_HELD_FLOOR_S:
@@ -2675,7 +2693,20 @@ def _face_stuck(watch_dir: Path, tag: int, held: float) -> bool:
         n = float(json.loads((watch_dir / "face_planned.json").read_text()).get(str(tag)) or 0.0)
     except (OSError, ValueError, AttributeError):
         n = 0.0
-    return held > max(FACE_HELD_FLOOR_S, PRICE_FACTOR * n / MESH_RATE)
+    return held > max(FACE_HELD_FLOOR_S, PRICE_FACTOR * n / _face_rate())
+
+
+def _face_rate() -> float:
+    """SHMESH-21f: the planned elements a second a face is priced at - MESH_RATE, or slower where this run measured
+    slower: its plan over its first whole mesh's seconds, the faces gmsh was seen to finish (rate_seen). A face is
+    never held to a rate faster than the run's own (a big curved face whose pairing is slow is inside its price)."""
+    rates = [float(MESH_RATE)]
+    planned, first_s = _CLOCK.get("planned"), _CLOCK.get("first_s")
+    if planned and first_s and float(first_s) > 0:
+        rates.append(float(planned) / float(first_s))
+    if _CLOCK.get("rate_seen"):
+        rates.append(float(_CLOCK["rate_seen"]))
+    return max(1e-3, min(rates))
 
 
 def run_env(base_s: float, cap_s: float, now: float | None = None) -> dict[str, str]:
