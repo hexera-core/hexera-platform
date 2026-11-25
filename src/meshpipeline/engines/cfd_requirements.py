@@ -39,6 +39,7 @@ from pathlib import Path
 from meshpipeline.contracts import flow_conditions as _FC
 from meshpipeline.contracts.event_stream import StaleExecutionPublish
 from meshpipeline.engines import mesh_requirements as MR
+from meshpipeline.engines import verdict_limits as _VL
 
 logger = logging.getLogger(__name__)
 
@@ -1748,8 +1749,9 @@ THINNER_THAN_ASKED = 0.85
 GROW_MIN_CELLS_ACROSS = 12
 
 
-#: cfMesh's own edge (engines/cfmesh/rescue.NEAR_EDGE_NON_ORTHO): past it the engine's optimiser is tried
-CFMESH_EDGE_NON_ORTHO = 75.0
+#: cfMesh's own edge (engines/cfmesh/rescue.NEAR_EDGE_NON_ORTHO): past it the engine's optimiser is tried. LAD-cfd-15:
+#: the verdict's own max_non_ortho for cfMesh, read from engines/verdict_limits, never a copy
+CFMESH_EDGE_NON_ORTHO = float(_VL.production_limit("max_non_ortho", "cfmesh"))
 
 
 def non_ortho_limit(workspace) -> float | None:

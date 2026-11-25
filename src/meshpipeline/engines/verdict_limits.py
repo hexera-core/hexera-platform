@@ -267,6 +267,14 @@ def limits_for(engine: str, topology: str, *, layers_planned: bool) -> tuple[Lim
     return tuple(rows)
 
 
+def production_limit(key: str, engine: str, topology: str = "", *, layers_planned: bool = False) -> Any:
+    """The number the verdict holds `engine`'s mesh to on `key` (the first PRODUCTION_LIMITS row that applies), or
+    None when no row does. The one place a mesher reads the verdict's own bar from, so the two never part
+    (LAD-cfd-15: the cfMesh rescue fires at the verdict's max_non_ortho)."""
+    return next((lim.limit for lim in limits_for(engine, topology, layers_planned=layers_planned)
+                 if lim.key == key), None)
+
+
 def _declared_advisory(engine: str) -> list[dict]:
     """The advisory rows an engine's own criteria declare as lists that must be empty (the
     snap-grid engine's thin-layer and resolution shortfalls): production limits as declared. The
@@ -536,5 +544,5 @@ def words(row: Mapping) -> str:
     return f"{row.get('label')}: measured {measured}, limit {op}{limit_text}"
 
 
-__all__ = ["FEA_RULES_ROW", "PRODUCTION_LIMITS", "Limit", "coverage_words", "fea_limits", "gating_rows",
+__all__ = ["FEA_RULES_ROW", "PRODUCTION_LIMITS", "Limit", "coverage_words", "fea_limits", "gating_rows", "production_limit",
            "inputs_for", "limits_for", "wall_treatment", "words"]

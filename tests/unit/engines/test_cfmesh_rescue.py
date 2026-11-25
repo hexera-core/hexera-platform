@@ -95,11 +95,52 @@ def test_a_mesh_inside_the_edge_is_left_alone(tmp_path):
     assert calls == [] and not (ws / RS.RESCUE_FILE).exists()
 
 
-def test_the_edge_is_a_fatal_defect_or_cells_past_75_degrees():
+def test_the_edge_is_a_fatal_defect_or_cells_past_the_verdicts_limit():
     assert RS.near_edge({"fatal": ["negative-volume cells"]})
     assert RS.near_edge({"max_non_ortho": 82.4, "fatal": []})
-    assert not RS.near_edge({"max_non_ortho": 74.9, "fatal": []})
+    assert not RS.near_edge({"max_non_ortho": 69.9, "fatal": []})
     assert not RS.near_edge({})
+
+
+def test_the_edge_is_the_verdicts_own_limit_read_from_one_place():
+    # LAD-cfd-15: the number the verdict holds a cfMesh mesh to (VER-2), not a second copy of it
+    from meshpipeline.engines import cfd_requirements as CR
+    from meshpipeline.engines.verdict_limits import PRODUCTION_LIMITS, production_limit
+    row = next(x for x in PRODUCTION_LIMITS if x.key == "max_non_ortho" and "cfmesh" in x.engines)
+    assert RS.NEAR_EDGE_NON_ORTHO == float(row.limit) == production_limit("max_non_ortho", "cfmesh") == 70.0
+    assert CR.CFMESH_EDGE_NON_ORTHO == RS.NEAR_EDGE_NON_ORTHO
+
+
+def test_a_first_mesh_at_72_degrees_is_rescued_and_one_at_69_is_not(tmp_path):
+    # LAD-cfd-15, abc 00164305 (e34): first meshes at 70-75 were delivered "with concerns" un-rescued; the re-mesh
+    # brings the same cells to 60.8
+    assert "over 70" in RS.near_edge({"max_non_ortho": 72.0, "fatal": []})
+    assert not RS.near_edge({"max_non_ortho": 69.0, "fatal": []})
+    calls: list = []
+    first = {"cells": 276_271, "max_non_ortho": 72.0, "fatal": []}
+    out = _rescue(_ws(tmp_path / "a"), dict(first), {"remeshed": {"cells": 276_271, "max_non_ortho": 60.8,
+                                                                    "fatal": []}}, calls)
+    assert out["rescue"]["kept"] == RS.REMESHED and out["max_non_ortho"] == 60.8
+    assert out["rescue"]["trigger_rule"] == "LAD-cfd-15"
+    assert [c["cmd"].split("&& ")[-1].split()[0] for c in calls] == ["cartesianMesh"]
+    calls = []
+    q = {"cells": 276_271, "max_non_ortho": 69.0, "fatal": []}
+    assert _rescue(_ws(tmp_path / "b"), q, {}, calls) is q and calls == []
+
+
+def test_a_rescue_that_comes_out_worse_than_a_72_degree_first_mesh_is_not_kept(tmp_path):
+    # LAD-cfd-15 keeps the rescue's rule: the mesh as built is a candidate, so a lever can only improve what is delivered
+    ws = _ws(tmp_path)
+    calls: list = []
+    table = {"remeshed": {"cells": 276_271, "max_non_ortho": 78.0, "fatal": []},
+             "optimised(as built)": {"cells": 276_271, "max_non_ortho": 74.0, "fatal": []},
+             "optimised(remeshed)": {"cells": 276_271, "max_non_ortho": 76.0, "fatal": []}}
+    out = _rescue(ws, {"cells": 276_271, "max_non_ortho": 72.0, "fatal": []}, table, calls)
+    assert out["rescue"]["kept"] == "as built" and out["max_non_ortho"] == 72.0
+    assert (ws / "constant" / "polyMesh" / "owner").read_text() == "as built"
+    assert (ws / "constant" / "polyMesh" / "faces").read_text() == "faces of as built"
+    assert (ws / "system" / "meshDict").read_text() == _BASE_DICT, "the dict that built the kept mesh"
+    assert not (ws / RS.SCRATCH).exists()
 
 
 def test_no_fatal_defect_beats_any_angle_then_the_lowest_angle_wins():
@@ -140,7 +181,7 @@ def test_a_re_mesh_off_the_edge_is_not_optimised(tmp_path):
     # TIME-11: the re-mesh ran first and came out off the edge with its layers: no optimiser runs at all
     ws = _ws(tmp_path)
     calls: list = []
-    table = {"remeshed": {"cells": 980_000, "max_non_ortho": 70.2, "fatal": []}}
+    table = {"remeshed": {"cells": 980_000, "max_non_ortho": 65.2, "fatal": []}}
     out = _rescue(ws, dict(_BROKEN), table, calls)
     assert out["rescue"]["kept"] == RS.REMESHED
     assert [c["cmd"].split("&& ")[-1].split()[0] for c in calls] == ["cartesianMesh"]
@@ -175,7 +216,7 @@ def test_the_cheaper_lever_is_chosen_from_planned_work_never_the_clock():
 def test_a_fixed_mesh_is_not_re_meshed(tmp_path, optimiser_first):
     ws = _ws(tmp_path)
     calls: list = []
-    table = {"optimised(as built)": {"cells": 979_224, "max_non_ortho": 70.2, "fatal": []}}
+    table = {"optimised(as built)": {"cells": 979_224, "max_non_ortho": 65.2, "fatal": []}}
     out = _rescue(ws, dict(_BROKEN), table, calls)
     assert out["rescue"]["kept"] == "optimised" and len(calls) == 1
     assert (ws / "system" / "meshDict").read_text() == _BASE_DICT, "the dict as asked stays"
@@ -198,7 +239,7 @@ def test_when_nothing_measures_better_the_mesh_as_built_is_kept(tmp_path):
 def test_a_missing_optimiser_binary_costs_nothing(tmp_path, optimiser_first):
     ws = _ws(tmp_path)
     calls: list = []
-    table = {"remeshed": {"cells": 980_000, "max_non_ortho": 71.0, "fatal": []}}
+    table = {"remeshed": {"cells": 980_000, "max_non_ortho": 66.0, "fatal": []}}
     out = _rescue(ws, dict(_BROKEN), table, calls, optimise_rc=127)
     assert out["rescue"]["kept"] == "re-meshed protecting the layers"
     assert out["rescue"]["tried"][0]["rc"] == 127
@@ -490,7 +531,7 @@ def test_a_candidate_that_loses_the_planned_layers_ranks_under_one_that_keeps_th
 def test_validity_still_comes_before_the_layers(tmp_path):
     ws = _ws(tmp_path)
     calls: list = []
-    table = {"optimised(as built)": {"cells": 979_224, "max_non_ortho": 70.2, "fatal": []}}
+    table = {"optimised(as built)": {"cells": 979_224, "max_non_ortho": 65.2, "fatal": []}}
     out = RS.rescue(ws, dict(_BROKEN), bashrc="/dev/null", deadline=time.monotonic() + 3600.0,
                     mesher_seconds=30.0, measure=_measure(table), runner=_runner(calls), env={},
                     layers=lambda w: {"as built": 90.0}.get(
@@ -526,7 +567,7 @@ def test_when_no_candidate_has_both_the_result_says_the_resolved_wall_was_not_bu
     calls: list = []
     table = {"optimised(as built)": {"cells": 320_412, "max_non_ortho": 69.3, "fatal": []},
              "remeshed": {"cells": 320_412, "max_non_ortho": 88.7, "fatal": []},
-             "optimised(remeshed)": {"cells": 320_412, "max_non_ortho": 70.8, "fatal": []}}
+             "optimised(remeshed)": {"cells": 320_412, "max_non_ortho": 65.8, "fatal": []}}
     at_plan = {"as built": 100.0, "optimised(as built)": 0.0, "remeshed": 100.0, "optimised(remeshed)": 0.0}
     out = RS.rescue(ws, {"cells": 320_412, "max_non_ortho": 86.8, "fatal": []}, bashrc="/dev/null",
                     deadline=time.monotonic() + 3600.0, mesher_seconds=30.0, measure=_measure(table),
@@ -560,7 +601,7 @@ def _bnd(ws: Path, counts: dict) -> None:
 
 _ALL = {"inlet": 40, "outlet_1": 20, "outlet_3": 12, "fixedWalls": 900}
 _FIRST_ONLY = {"inlet": 40, "outlet_1": 20, "fixedWalls": 800}
-_SQUARE = {"cells": 201_037, "max_non_ortho": 73.5, "fatal": []}
+_SQUARE = {"cells": 201_037, "max_non_ortho": 68.5, "fatal": []}
 
 
 def _first_passage_remesher(calls: list):
