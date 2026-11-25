@@ -219,6 +219,19 @@ def revive(approval: dict, *, user_msg_count: int) -> dict:
     return out
 
 
+def rearm(approval: dict, *, user_msg_count: int) -> dict:
+    """THE PLAN OFFERED AGAIN, as it stands: a fresh awaiting snapshot of the same approved submission - a new id, a
+    new expiry, answerable by the user's next message - with no trace of a run (a snapshot that dispatched a run
+    that never started, or that expired unanswered). The approval authority verifies it like any other."""
+    now = time.time()
+    out = {k: v for k, v in approval.items()
+           if k not in ("job_id", "invalidated_reason", "invalidated_at", "dispatched_at", "approved_at")}
+    out.update(id=uuid.uuid4().hex, status=AWAITING, created_at=now, expires_at=now + APPROVAL_TTL_S,
+               expected_confirmation_msg_count=int(user_msg_count) + 1,
+               rearmed_count=int(approval.get("rearmed_count", 0) or 0) + 1)
+    return out
+
+
 #: The fields a summary's change is read from, in the words a user knows them by.
 _CHANGE_LABELS = (("mesh_engine", "engine"), ("purpose", "purpose"), ("input_kind", "input"),
                   ("dimensionality", "dimensions"), ("mesh_fidelity", "detail level"),
@@ -253,7 +266,12 @@ def changes_between(before: dict | None, after: dict | None, *, limit: int = 6) 
     a, b = dict(before or {}), dict(after or {})
     out: list[str] = []
     pa, pb = dict(a.get("engine_params") or {}), dict(b.get("engine_params") or {})
+    switched = a.get("mesh_engine") != b.get("mesh_engine")
     for key in sorted(set(pa) | set(pb)):
+        if switched and key not in pb:
+            # a setting only the old engine has is not "turned off" by a switch ("wall layers: on -> none" when
+            # VMTK's own wall_layers switch went with VMTK; the new engine's layers are its own - round 4)
+            continue
         if pa.get(key) != pb.get(key):
             out.append(f"{key.replace('_', ' ')}: {_shown(pa.get(key))} -> {_shown(pb.get(key))}")
     for key, label in _CHANGE_LABELS:

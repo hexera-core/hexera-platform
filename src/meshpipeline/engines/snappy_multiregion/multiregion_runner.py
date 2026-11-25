@@ -752,7 +752,7 @@ def configure_mesh(workspace, *, strategy: dict, wall_patch: str = "",
     surface_level = tuple(strategy.get("surface_level") or (2, 2))
     interface_refinement = int(strategy.get("interface_refinement", 1))
     n_layers = int(strategy.get("n_layers", 3))
-    first_rel = float(strategy.get("first_layer_rel", 0.35))
+    last_rel = float(strategy.get("last_layer_rel", 0.35))
     quality = strategy.get("quality", "balanced")
     max_cells = int(strategy.get("max_cells", 6_000_000))
     # CFDREQ-1: THE USER'S REQUIREMENTS from their notes (engines/cfd_requirements) - the one seam. None: every line
@@ -937,7 +937,7 @@ def configure_mesh(workspace, *, strategy: dict, wall_patch: str = "",
     (ws / "system" / "topoSetDict.zoned").write_text(render_zoned_set_dict(rmap))
     _shm = render_snappy_multiregion_dict(rmap, allmins, allmaxs, surface_level=surface_level,
                                           interface_refinement=interface_refinement, n_layers=n_layers,
-                                          first_layer_rel=first_rel, quality=quality, max_cells=max_cells,
+                                          last_layer_rel=last_rel, quality=quality, max_cells=max_cells,
                                           region_points=region_points, region_refinement=region_refinement)
     if _ask is not None:
         _shm = CR.snappy_dict(_ask, _shm, wall_cell_m=base_cell / 2 ** int(surface_level[1]))
@@ -1008,7 +1008,7 @@ def _locations_in_mesh(region_points: dict | None, fallback) -> str:
 
 
 def render_snappy_multiregion_dict(rmap: dict, bbox_min, bbox_max, *, surface_level, interface_refinement,
-                           n_layers, first_layer_rel, quality, max_cells,
+                           n_layers, last_layer_rel, quality, max_cells,
                            region_points: dict | None = None,
                            region_refinement: dict | None = None) -> str:
     (x0, y0, z0), (x1, y1, z1) = bbox_min, bbox_max
@@ -1066,8 +1066,8 @@ addLayersControls
 {layer_block}
     }}
     expansionRatio 1.2;
-    finalLayerThickness {first_layer_rel};
-    minThickness {first_layer_rel * 0.25:.4g};
+    finalLayerThickness {last_layer_rel};
+    minThickness {last_layer_rel * 0.25:.4g};
     nGrow 0; featureAngle 130; nRelaxIter 5;
     nSmoothSurfaceNormals 1; nSmoothNormals 3; nSmoothThickness 10;
     maxFaceThicknessRatio 0.5; maxThicknessToMedialRatio 0.3;

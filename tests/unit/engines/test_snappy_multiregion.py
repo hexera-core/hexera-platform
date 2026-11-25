@@ -86,7 +86,7 @@ def test_snappy_multiregion_dict_has_multiregion_snap_and_layers_on_interfaces()
     rmap = multiregion_runner.region_map(_REGIONS)
     d = multiregion_runner.render_snappy_multiregion_dict(
         rmap, (0, 0, 0), (1, 1, 1), surface_level=(2, 2), interface_refinement=1,
-        n_layers=3, first_layer_rel=0.35, quality="balanced", max_cells=4_000_000)
+        n_layers=3, last_layer_rel=0.35, quality="balanced", max_cells=4_000_000)
     assert "multiRegionFeatureSnap true;" in d
     assert "locationInMesh (0.5 0.5 0.5);" in d
     # prism layers sit on the fluid side of each fluid-solid interface
@@ -99,7 +99,7 @@ def test_strict_quality_tightens_skew_and_nonortho():
     rmap = multiregion_runner.region_map(_REGIONS)
     d = multiregion_runner.render_snappy_multiregion_dict(
         rmap, (0, 0, 0), (1, 1, 1), surface_level=(2, 2), interface_refinement=0,
-        n_layers=0, first_layer_rel=0.35, quality="strict", max_cells=1_000_000)
+        n_layers=0, last_layer_rel=0.35, quality="strict", max_cells=1_000_000)
     assert "maxInternalSkewness 3.5;" in d and "maxNonOrtho 65;" in d
     assert "addLayers       false;" in d   # n_layers 0
 

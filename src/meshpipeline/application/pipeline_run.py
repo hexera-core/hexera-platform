@@ -551,6 +551,36 @@ def _notes_remarks(final_state) -> list:
         return []
 
 
+def _engine_for_asks(session_id: str, req, request_txt: str, engine: str) -> tuple[str, str]:
+    """ENG-asks (engines/cfd_requirements.engine_that_can): (the engine to mesh with, why in one plain line - "" for
+    `engine`) from the notes the request card already read (application/part_matches.notes_for_run: no model call)
+    and a wall treatment the user chose in the flow conditions. Only a flow mesh; never raises."""
+    try:
+        from meshpipeline.contracts import flow_conditions as FC
+        from meshpipeline.engines import cfd_requirements as CR
+        from meshpipeline.engines.purposes import topology_of
+        from meshpipeline.engines.registry import engines_producing_topology
+        topology = topology_of(getattr(req, "purpose", "") or "")
+        if topology not in ("internal", "external"):
+            return engine, ""
+        from meshpipeline.application.part_matches import notes_for_run
+        sec = notes_for_run(session_id, getattr(req, "user_notes", None), request_txt)
+        c = FC.read(request_txt or "")
+        chose_wall = bool(c and c.get("wall") == "resolved" and c.get("wall_said", True))
+        if sec is None and not chose_wall:
+            return engine, ""
+        try:
+            from meshpipeline.engines.capability import engines_for
+            ladder = list(engines_for(topology, ""))
+        except Exception:  # noqa: BLE001 - the engines that build this flow, by name
+            ladder = []
+        ladder = ladder or sorted(engines_producing_topology(topology))
+        return CR.engine_that_can(sec, engine, ladder, conditions_y_plus=chose_wall)
+    except Exception:  # noqa: BLE001 - the engine as approved
+        logger.warning("engine for the notes' asks: not decided - the approved engine stands", exc_info=True)
+        return engine, ""
+
+
 def _planner_model() -> str:
     from meshpipeline.engines.snappy.settings import PLANNER_MODEL
     return PLANNER_MODEL
@@ -775,10 +805,24 @@ async def _run_async(req: JobRequest) -> dict:
                     _shown = _label(name)
                 except Exception:  # noqa: BLE001 - the engine's own name still says which
                     _shown = name
-                # the engine is picked for the user now (2026-11-13), so the line names it and claims nothing
-                await _e.anote(f"Mesh engine: {_shown}", op_id="pinned")
+                # the engine is picked for the user now (2026-11-13), so the line names it and claims nothing - but
+                # an engine chosen for the user's own ask says that ask (ENG-asks, below)
+                await _e.anote(_engine_why or f"Mesh engine: {_shown}", op_id="pinned")
 
-        _pinned_engine = await pin_selected_engine(initial_state, req.mesh_engine, jlog=jlog,
+        # ENG-asks: AN ENGINE THAT CAN SET WHAT THE NOTES ASK. The engine is picked for the user; when the notes the
+        # card already read (NOTES-CFD-1: no model call here), or a wall treatment the user chose, ask what that engine
+        # has no setting for (an absolute first layer or y+ on VMTK) and another engine of this job's ladder can set it,
+        # the run meshes with that one and says why. Never an engine the user named, never a run that asks nothing.
+        _engine_why = ""
+        _asked_engine = str(req.mesh_engine or "")
+        _engine_src0 = engine_provenance(req.intake_events, _asked_engine, dispute=bool(req.user_dispute))
+        if _asked_engine and _engine_src0 == "suggested_confirmed":
+            _for_asks = await asyncio.to_thread(_engine_for_asks, str(session_id or ""), req, request_txt,
+                                                _asked_engine)
+            if _for_asks[0] != _asked_engine:
+                logger.info("engine for the notes' asks: %s -> %s - job_id=%s", _asked_engine, _for_asks[0], job_id)
+                _asked_engine, _engine_why = _for_asks
+        _pinned_engine = await pin_selected_engine(initial_state, _asked_engine, jlog=jlog,
                                                    publish=_announce_engine)
 
         # Engine-native params ONLY: resolved deterministically against the spec of the engine
@@ -789,7 +833,8 @@ async def _run_async(req: JobRequest) -> dict:
         # `flow_topology` state field, keeping engine_params to engine-native knobs only.
         from meshpipeline.engines.purposes import topology_of
         from meshpipeline.engines.registry import resolve_engine_params
-        initial_state["engine_params"] = resolve_engine_params(_pinned_engine, req.engine_params)
+        # (an engine chosen for the notes' asks starts from its own defaults: the parameters were the other engine's)
+        initial_state["engine_params"] = resolve_engine_params(_pinned_engine, {} if _engine_why else req.engine_params)
         initial_state["flow_topology"] = topology_of(getattr(req, "purpose", "") or "")
         # THE LEAK SIZE the user confirmed on the stage (INS-8): every leak of the surface up to it
         # is closed for the mesh by each route's staging; read off the stored confirmation
@@ -858,6 +903,9 @@ async def _run_async(req: JobRequest) -> dict:
         # an unreadable provenance reads as the user's, so it is never switched on a guess.
         initial_state["engine_source"] = engine_provenance(
             req.intake_events, _pinned_engine, dispute=bool(req.user_dispute))
+        if _engine_why and not req.user_dispute:
+            # an engine chosen for the notes' asks is still the system's pick (the ladder may move it), never the user's
+            initial_state["engine_source"] = _engine_src0
 
         initial_state["schema_version"] = STATE_SCHEMA_VERSION
         # MAY THIS RUN BEGIN? pipeline_budget anchors the absolute top-level deadline and decides;

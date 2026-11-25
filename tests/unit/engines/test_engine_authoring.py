@@ -52,7 +52,7 @@ def test_valid_cfmesh_strategy_has_no_diagnostics():
 
 def test_valid_snappy_strategy_has_no_diagnostics():
     strat = {"domain_margin": {"up": 6, "down": 6, "side": 5, "vert": 5},
-             "n_layers": 5, "first_layer_rel": 0.35, "quality": "strict",
+             "n_layers": 5, "last_layer_rel": 0.35, "quality": "strict",
              "surface_level": [2, 4], "feature_level": 4, "max_cells": 8_000_000}
     assert get_spec("snappy").validate_authoring(strat) == []
 
@@ -107,7 +107,7 @@ def test_builder_holds_no_engine_block_vocabulary():
     import re
     # configure_mesh lives in the meshing family.
     src = (APP / "agents" / "builder" / "tools" / "meshing.py").read_text()
-    for knob in ("surface_level", "wall_cell", "max_cell_factor", "first_layer_rel",
+    for knob in ("surface_level", "wall_cell", "max_cell_factor", "last_layer_rel",
                  "feature_level", "thickness_ratio", "max_cells"):
         assert not re.search(rf"\b{knob}\b", src), f"builder still names the engine knob {knob!r}"
 

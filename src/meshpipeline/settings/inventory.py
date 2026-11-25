@@ -756,6 +756,7 @@ INVENTORY: list[Group] = [
         EnvVar("GOOGLE_APPLICATION_CREDENTIALS", "", kind="path", exposure="external", consumer="app", help="Compose mounts GOOGLE_ADC_FILE here and points google-auth at it"),
         EnvVar("PROMETHEUS_MULTIPROC_DIR", "", kind="path", exposure="external", consumer="app", help="prometheus_client's own variable; set by the worker entrypoint"),
         EnvVar("ALEMBIC_CONFIG", "", kind="path", exposure="external", consumer="app", help="alembic's own variable; the migration wrapper honours it when set"),
+        EnvVar("HEXERA_SHELL_RUN_END", "", kind="float", exposure="external", consumer="app", help="set by the FEA driver for one shell-mesh run (engines/fea_driver.py shell_pass), never in .env: when that run is stopped, in seconds since the epoch; the shell mesh starts no pass that cannot finish before it (SHMESH-31g). Unset = the shell mesh's own limit only"),
     ]),
     Group("Inference overrides", note="Two structured settings, each one declared name. They replace the MODEL_PRICE_<PROVIDER>_<MODEL> and MODEL_BUDGET_<DOMAIN> namespaces, where the variable NAME was built from provider and model data: so the supported surface was unlistable and a typo was indistinguishable from an unsupported setting.", vars=[
         EnvVar("MODEL_PRICE_OVERRIDES", "", help=(

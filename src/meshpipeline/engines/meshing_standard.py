@@ -460,6 +460,55 @@ def _follow_global(req: dict, glob: float | None) -> None:
         _set_size(row, req, k * glob, MR._size_words(field, k * glob, k, "x_global", k))
 
 
+#: a saved standard applies to the kinds of mesh it is written for (docs/RULES.md)
+KINDS_RULE = "STD-5"
+#: STD-5: how the kinds of mesh a standard speaks to are said, and this run's kind
+_KIND_WORDS = {"shell": "shell", "solid": "solid", "cfd": "flow (CFD)"}
+
+
+def _kinds_of(row: Mapping, req: Mapping) -> list[str]:
+    """STD-5: the kinds of mesh a standard's row speaks to: its own line's tag when the reading gave the line one, else
+    the list's; ["any"] with no tag (a standard read before the tag existed applies as it always did)."""
+    raw_tag = req.get("applies_to")
+    tag: Mapping = raw_tag if isinstance(raw_tag, Mapping) else {}
+    rq = MR._squash(str(row.get("quote") or ""))
+    for ln in tag.get("lines") or []:
+        lq = MR._squash(str(ln.get("quote") or ""))
+        if lq and rq and (lq in rq or rq in lq):
+            return list(ln.get("kinds") or ["any"])
+    return list(tag.get("whole") or ["any"])
+
+
+def _fits(kinds: list[str], route: str) -> bool:
+    """STD-5: whether words for `kinds` of mesh apply to this run's (the flow route: cfd; the FEA route: shell or
+    solid; a route not named: every line, as before)."""
+    if "any" in kinds or route not in (FLOW, "fea"):
+        return True
+    return "cfd" in kinds if route == FLOW else bool({"shell", "solid"} & set(kinds))
+
+
+def _not_here_words(req: Mapping, not_here: list[dict], route: str, *, everything: bool) -> str:
+    """STD-5 in plain words, said once: the standard (or its lines) written for other kinds of mesh, not applied."""
+    if not not_here:
+        return ""
+    raw_tag = req.get("applies_to")
+    tag: Mapping = raw_tag if isinstance(raw_tag, Mapping) else {}
+    kinds = [k for k in (tag.get("whole") or []) if k in _KIND_WORDS] or \
+        sorted({k for r in not_here for k in _kinds_of(r, req) if k in _KIND_WORDS})
+    names = " and ".join(_KIND_WORDS[k] for k in kinds) or "other"
+    here = "this flow mesh" if route == FLOW else "this solid or shell mesh"
+    if everything:
+        return f"Your saved meshing standard is written for {names} meshes; it was not applied to {here}."
+    asked = "; ".join(str(r.get("asked")) for r in not_here[:6]) + ("; and more" if len(not_here) > 6 else "")
+    return (f"{len(not_here)} line{'s' if len(not_here) != 1 else ''} of your saved meshing standard "
+            f"{'are' if len(not_here) != 1 else 'is'} written for {names} meshes and {'were' if len(not_here) != 1 else 'was'} "
+            f"not applied to {here}: {asked}.")
+
+
+def _gone(line: str, rows: list[dict]) -> bool:
+    return any(str(r.get("asked") or "") and str(r.get("asked")) in line for r in rows)
+
+
 def merge(settings: Mapping | None, notes: Mapping, *, route: str = "") -> dict:
     """THE MERGED SECTION a route applies (STD-2): the notes' section shape, every row marked with where it came
     from ("settings" / "notes"), the lines said before meshing worked out once here (mesh_requirements.words reads
@@ -474,10 +523,26 @@ def merge(settings: Mapping | None, notes: Mapping, *, route: str = "") -> dict:
     if s_used and n_used and settings.get("stated_unit"):
         _in_unit(N, str(settings["stated_unit"]), told_n, cells=route == FLOW)
     _reid(S, "s")
-    for r in S.get("rows") or []:
+    # NOTE-12 is the run's notes': the standard's words that are no mesh setting stay with STD-1's own lines
+    S.pop("not_mesh", None)
+    for r in [*(S.get("rows") or []), *(S.get("strictness") or [])]:
         r["from"] = "settings"
-    for r in N.get("rows") or []:
+    for r in [*(N.get("rows") or []), *(N.get("strictness") or [])]:
         r["from"] = "notes"
+
+    # STD-5: the standard's lines for another kind of mesh are not this run's (a structural quality list's global size
+    # is no CFD cell size); told once, here and with the result
+    not_here = [r for r in S.get("rows") or [] if not _fits(_kinds_of(r, S), route)]
+    for r in not_here:
+        _drop_row(S, r)
+    std_off = bool(not_here) and not S.get("rows")
+    said_not_here = _not_here_words(S, not_here, route, everything=std_off)
+    S.pop("applies_to", None)
+    if said_not_here and not S.get("rows") and not n_used:
+        # nothing of it is for this mesh and the notes ask nothing: the run is the run with no standard, and told
+        out_none = dict(notes) if notes.get("status") == "none" else dict(MR.section("none"))
+        out_none["standard_not_applied"] = said_not_here
+        return out_none
 
     # field by field: a slot the notes set is theirs this run
     taken = {_slot(r, N) for r in N.get("rows") or []}
@@ -496,6 +561,10 @@ def merge(settings: Mapping | None, notes: Mapping, *, route: str = "") -> dict:
         elif v is not None:
             out[k] = v
     out["rows"] = [*list(S.get("rows") or []), *copy.deepcopy(list(N.get("rows") or []))]
+    if out.get("strictness"):
+        # NOTE-14: how strict each limit is, the standard's words first and the notes' after (a later sentence refines
+        # an earlier one): "we're flexible around the 5 mm minimum" in the notes is the standard's 5 mm minimum's too
+        MR.apply_strictness(out)
 
     # a multiple of the global size follows the global size in force
     if N["sizes"].get("global_mm") is not None:
@@ -547,9 +616,9 @@ def merge(settings: Mapping | None, notes: Mapping, *, route: str = "") -> dict:
         # neither was read: the standard's reason when the notes asked nothing, else the notes'
         status = str(settings.get("status") if notes.get("status") in (None, "none") else notes.get("status"))
     n_dropped = list(notes.get("dropped") or []) if n_used else []
-    s_dropped = list(settings.get("dropped") or []) if s_used else []
+    s_dropped = list(settings.get("dropped") or []) if s_used and not std_off else []
     n_not = list(notes.get("not_applied") or []) if n_used else []
-    s_not = list(settings.get("not_applied") or []) if s_used else []
+    s_not = list(settings.get("not_applied") or []) if s_used and not std_off else []
     dropped = [*n_dropped, *told_n, *[f"from your settings - {d}" for d in (*s_dropped, *told_s)]]
     not_applied = [*n_not, *[f"from your settings - {q}" for q in s_not]]
     sec = MR.section(status, requirements=out if status == "used" else None, dropped=dropped,
@@ -560,7 +629,12 @@ def merge(settings: Mapping | None, notes: Mapping, *, route: str = "") -> dict:
                        "key": settings.get("key"), "unit": settings.get("stated_unit"),
                        "overridden": [{"field": r.get("field"), "asked": r.get("asked")} for r in overridden],
                        "from": {str(r["id"]): r["from"] for r in out.get("rows") or []}}
-    sec["lines"] = lines(settings, notes, out, told_s=told_s, told_n=told_n)
+    sec["lines"] = lines(MR.section("none") if std_off else settings, notes, out, told_s=told_s, told_n=told_n)
+    if said_not_here:
+        sec["standard"]["not_applied_here"] = said_not_here
+        sec["standard_not_applied"] = said_not_here
+        sec["lines"] = [said_not_here, *[w for w in sec["lines"]
+                                         if not (w.startswith("Not applied (your settings)") and _gone(w, not_here))]]
     if status != "used":
         sec["note"] = " ".join(sec["lines"]) or UNREAD_WORDS
     return sec
@@ -617,6 +691,7 @@ def lines(settings: Mapping, notes: Mapping, merged: Mapping, *, told_s=(), told
         for _quote, *files in settings.get("solver_files") or []:
             out.append(f"From your settings: {' and '.join(files)} files - every FEA run delivers them.")
     out += [f"From your notes: {r['asked']}." for r in rows if r.get("from") == "notes"]
+    out += MR.strictness_words(merged)
     for sec in (settings, notes):
         if sec.get("status") == "used" and sec.get("source") == "saved" and sec.get("note"):
             out.append(str(sec["note"]))
@@ -624,6 +699,7 @@ def lines(settings: Mapping, notes: Mapping, merged: Mapping, *, told_s=(), told
         out += [f"Not applied: {d}." for d in notes.get("dropped") or []]
         out += [f'Not applied: "{MR._short(q)}" - no mesh setting of ours matches it yet.'
                 for q in notes.get("not_applied") or []]
+        out += MR.not_mesh_words((notes.get("requirements") or {}).get("not_mesh"))
     out += [f"Not applied: {d}." for d in told_n]
     if s_used:
         out += [f"Not applied (your settings): {d}." for d in settings.get("dropped") or []]
@@ -661,17 +737,30 @@ def understood(text: str, reading: Mapping | None) -> list[str]:
     return out
 
 
+def told_not_applied(workspace, words: str) -> None:
+    """STD-5: the result's line when the saved standard was not applied to this kind of mesh at all (the run asked
+    nothing else): kept with the result, said as the settings' own."""
+    try:
+        from meshpipeline.contracts.user_notes import record_remark
+        record_remark(workspace, f"From your settings: {words[:1].lower()}{words[1:]}", by="meshing_standard")
+    except Exception:  # noqa: BLE001 - a line not kept never stops a mesh
+        logger.debug("STD-5 line not kept", exc_info=True)
+
+
 def remark(sec: Mapping | None, line: str) -> str:
     """The result's one closing line ("all 5 things you asked for are met"), led by where the things asked came
     from: unchanged with no standard (the result says "From your notes: ..." as it always has)."""
     if not line or not isinstance(sec, Mapping) or not sec.get("standard"):
         return line
     got = set(((sec.get("standard") or {}).get("from") or {}).values())
+    # STD-5: the standard (or its lines) written for another kind of mesh, said with the result too
+    off = str((sec.get("standard") or {}).get("not_applied_here") or "")
+    tail = f" {off}" if off else ""
     if got == {"settings"}:
-        return f"From your settings: {line}"
+        return f"From your settings: {line}{tail}"
     if "settings" in got:
-        return f"From your settings and notes: {line}"
-    return line
+        return f"From your settings and notes: {line}{tail}"
+    return f"From your notes: {line}{tail}" if off else line
 
 
 def size_remark(sec: Mapping | None, line: str) -> str:

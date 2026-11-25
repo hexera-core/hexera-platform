@@ -279,6 +279,12 @@ async def _confirm_pending_approval(session, session_repo, owner_id: str,
     except ap.ApprovalTransactionError as exc:
         outcome, cause = exc.outcome, exc
 
+    if outcome.status is ap.ConfirmStatus.dispatch_failed and outcome.job_id:
+        # A RUN THAT DID NOT START (the job row exists, nothing runs): told now, in our words, with the plan offered
+        # again so Proceed works - never a 500 the console shows as "Could not send that: ..."
+        logger.error("approval: the run did not start - session=%s job=%s: %s", session_id, outcome.job_id, cause)
+        reply = await msg.offer_again_after_failed_start(session_id, owner_id, session_repo=session_repo)
+        return ChatResponse(session_id=session_id, reply=reply, awaiting_confirmation=True)
     status = _APPROVAL_STATUS.get(outcome.status)
     if status is not None:
         raise HTTPException(status_code=status, detail=outcome.message) from cause

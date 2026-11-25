@@ -28,7 +28,7 @@ WORKFLOW (linear - do not loop back without a concrete failure):
      leak and the region split would fail).
    - interface_refinement: extra levels (0-3) at the fluid-solid interfaces, where the coupling gradient concentrates - 1 is a good default.
    - n_layers: prism layers on the FLUID-side walls (the near-wall layer).
-   - first_layer_rel: outer prism-layer thickness vs local cell (default 0.35).
+   - last_layer_rel: outer prism-layer thickness vs local cell (default 0.35).
    - quality: 'balanced' (default) or 'strict' (tighter checkMesh skew) - use 'strict' if skew is widespread.
    - max_cells: background cell budget (default 6e6). Remember the split multiplies work across regions.
 4. run_mesh - meshes the background, then runs splitMeshRegions and writes regionProperties, and reports per-region cell counts, the interface patches, and any fatal defects. If a region is MISSING, its cellZone leaked (a surface was not sealed) - fix that region's assignment or raise surface_level. If skew is widespread, set quality='strict'. If it TIMED OUT or blew the budget, LOWER max_cells / surface_level.

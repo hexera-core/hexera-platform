@@ -1,0 +1,329 @@
+{
+ "about": "The parts reader's stage readings of m483 round 13 on dev-areen (deploy ef26e05e, 21 Nov): the table it was shown - answered from earlier sessions' checks, so its areas predate rounds 9-12 - and its raw answer. 6b: L_shaped_5_holes-Plate (FreeCAD library), '1.5 mm elements on the vertical leg'. 6c: Nema-17_MountBracket (FreeCAD library), '2 mm elements on the base plate'.",
+ "6b": {
+  "notes": "1.5 mm elements on the vertical leg",
+  "table": [
+   {
+    "id": "Part_1",
+    "name": "",
+    "size_mm": [
+     60.0,
+     60.0,
+     4.0
+    ],
+    "diag_mm": 84.95,
+    "volume_mm3": 10680.0,
+    "area_mm2": 6463.0,
+    "box_fill": 0.741,
+    "thinnest_wall_mm": 3.5,
+    "typical_wall_mm": 5.356,
+    "faces": 27,
+    "face_kinds": {
+     "cone": 10,
+     "cylinder": 5,
+     "plane": 12
+    },
+    "bore_diameters_mm": [
+     5.5
+    ],
+    "alike": 1
+   },
+   {
+    "id": "Feature_1",
+    "feature": true,
+    "kind": "hole group",
+    "name": "5 holes, 5.5 mm across",
+    "count": 5,
+    "in_part": "Part_1",
+    "faces": 5,
+    "size_mm": [
+     45.5,
+     45.5,
+     3.0
+    ],
+    "diag_mm": 64.42
+   },
+   {
+    "id": "Feature_2",
+    "feature": true,
+    "kind": "flat face",
+    "name": "a large flat face, 2,634 mm²",
+    "count": 1,
+    "in_part": "Part_1",
+    "faces": 1,
+    "size_mm": [
+     60.0,
+     60.0,
+     3.997e-15
+    ],
+    "diag_mm": 84.85
+   },
+   {
+    "id": "Feature_3",
+    "feature": true,
+    "kind": "flat face",
+    "name": "a large flat face, 2,527 mm²",
+    "count": 1,
+    "in_part": "Part_1",
+    "faces": 1,
+    "size_mm": [
+     59.0,
+     59.0,
+     3.947e-14
+    ],
+    "diag_mm": 83.44
+   }
+  ],
+  "phrases": [
+   {
+    "parts": [
+     "Part_1"
+    ],
+    "everything_else": false,
+    "ask": "size",
+    "min": 1.5,
+    "max": 1.5,
+    "unit": "mm",
+    "quote": "1.5 mm elements on the vertical leg",
+    "why": "The only model part is Part_1, but the plate has no separately listed vertical leg, so Part_1 is the nearest available target.",
+    "confidence": 0.45,
+    "extent": "portion",
+    "extent_words": "the vertical leg"
+   }
+  ],
+  "entries": [],
+  "dropped": [
+   "\"1.5 mm elements on the vertical leg\": it was not clear which parts you meant (The only model part is Part_1, but the plate has no separately listed vertical leg, so Part_1 is the nearest available target.), so nothing was applied for it"
+  ],
+  "words": [
+   "I read “the vertical leg” as a portion of the only plate, Part_1. No separate vertical-leg region is listed, so this is an uncertain nearest-part mapping."
+  ]
+ },
+ "6c": {
+  "notes": "2 mm elements on the base plate",
+  "table": [
+   {
+    "id": "Part_1",
+    "name": "",
+    "size_mm": [
+     50.0,
+     50.0,
+     50.0
+    ],
+    "diag_mm": 86.6,
+    "volume_mm3": 13110.0,
+    "area_mm2": 10340.0,
+    "box_fill": 0.105,
+    "thinnest_wall_mm": 3.0,
+    "typical_wall_mm": 10.53,
+    "faces": 43,
+    "face_kinds": {
+     "cylinder": 23,
+     "plane": 20
+    },
+    "bore_diameters_mm": [
+     1.0,
+     4.0,
+     22.5
+    ],
+    "shaft_diameters_mm": [
+     2.0,
+     6.0
+    ],
+    "alike": 1
+   },
+   {
+    "id": "Feature_1",
+    "feature": true,
+    "kind": "hole group",
+    "name": "4 holes, 4 mm across",
+    "count": 4,
+    "in_part": "Part_1",
+    "faces": 4,
+    "size_mm": [
+     35.0,
+     35.0,
+     3.0
+    ],
+    "diag_mm": 49.59
+   },
+   {
+    "id": "Feature_2",
+    "feature": true,
+    "kind": "hole",
+    "name": "a hole, 22.5 mm across",
+    "count": 1,
+    "in_part": "Part_1",
+    "faces": 1,
+    "size_mm": [
+     22.5,
+     22.5,
+     3.0
+    ],
+    "diag_mm": 31.96
+   },
+   {
+    "id": "Feature_3",
+    "feature": true,
+    "kind": "notch",
+    "name": "a notch, radius 2 mm",
+    "count": 1,
+    "in_part": "Part_1",
+    "faces": 1,
+    "size_mm": [
+     4.0,
+     3.0,
+     2.0
+    ],
+    "diag_mm": 5.385
+   },
+   {
+    "id": "Feature_4",
+    "feature": true,
+    "kind": "notch",
+    "name": "a notch, radius 2 mm",
+    "count": 1,
+    "in_part": "Part_1",
+    "faces": 1,
+    "size_mm": [
+     4.0,
+     3.0,
+     2.0
+    ],
+    "diag_mm": 5.385
+   },
+   {
+    "id": "Feature_5",
+    "feature": true,
+    "kind": "notch",
+    "name": "a notch, radius 2 mm",
+    "count": 1,
+    "in_part": "Part_1",
+    "faces": 1,
+    "size_mm": [
+     4.0,
+     3.0,
+     2.0
+    ],
+    "diag_mm": 5.385
+   },
+   {
+    "id": "Feature_6",
+    "feature": true,
+    "kind": "notch",
+    "name": "a notch, radius 2 mm",
+    "count": 1,
+    "in_part": "Part_1",
+    "faces": 1,
+    "size_mm": [
+     4.0,
+     3.0,
+     2.0
+    ],
+    "diag_mm": 5.385
+   },
+   {
+    "id": "Feature_7",
+    "feature": true,
+    "kind": "fillets",
+    "name": "a fillet, radius 0.5 mm",
+    "count": 1,
+    "in_part": "Part_1",
+    "faces": 1,
+    "size_mm": [
+     44.0,
+     0.5,
+     0.5
+    ],
+    "diag_mm": 44.01
+   },
+   {
+    "id": "Feature_8",
+    "feature": true,
+    "kind": "bosses",
+    "name": "12 bosses or shafts, 2 mm across",
+    "count": 12,
+    "in_part": "Part_1",
+    "faces": 12,
+    "size_mm": [
+     50.0,
+     50.0,
+     50.0
+    ],
+    "diag_mm": 86.6
+   },
+   {
+    "id": "Feature_9",
+    "feature": true,
+    "kind": "bosses",
+    "name": "a boss or shaft, 6 mm across",
+    "count": 1,
+    "in_part": "Part_1",
+    "faces": 1,
+    "size_mm": [
+     50.0,
+     3.0,
+     3.0
+    ],
+    "diag_mm": 50.18
+   },
+   {
+    "id": "Feature_10",
+    "feature": true,
+    "kind": "thin wall",
+    "name": "thin walls (ribs or flanges), 3 mm thick",
+    "count": 6,
+    "in_part": "Part_1",
+    "faces": 6,
+    "size_mm": [
+     50.0,
+     50.0,
+     50.0
+    ],
+    "diag_mm": 86.6
+   }
+  ],
+  "phrases": [
+   {
+    "parts": [
+     "Part_1"
+    ],
+    "everything_else": false,
+    "ask": "size",
+    "min": 2,
+    "max": 2,
+    "unit": "mm",
+    "quote": "2 mm elements on the base plate",
+    "why": "The base plate is the horizontal portion of the single bracket part, Part_1.",
+    "confidence": 0.98,
+    "extent": "portion",
+    "extent_words": "the base plate"
+   }
+  ],
+  "entries": [
+   {
+    "phrase": 0,
+    "parts": [
+     "Part_1"
+    ],
+    "everything_else": false,
+    "ask": "size",
+    "quote": "2 mm elements on the base plate",
+    "why": "The base plate is the horizontal portion of the single bracket part, Part_1.",
+    "confidence": 0.98,
+    "min_mm": 2.0,
+    "max_mm": 2.0,
+    "unit": "mm",
+    "asked": [
+     2.0,
+     2.0
+    ],
+    "piece": true
+   }
+  ],
+  "dropped": [],
+  "words": [
+   "I read “the base plate” as the horizontal base portion of the one-piece bracket. Part_1 is the nearest available mesh region for that portion."
+  ]
+ }
+}

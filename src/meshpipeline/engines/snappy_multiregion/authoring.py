@@ -45,7 +45,7 @@ AUTHORING_TOOL: dict = {
                 "surface_level": {"type": "array", "items": {"type": "integer"}, "description": "[min,max] surface refinement (clamped to budget)"},
                 "interface_refinement": {"type": "integer", "description": "extra refinement levels at fluid-solid interfaces (0-2)"},
                 "n_layers": {"type": "integer", "description": "prism layers on the FLUID-side walls (0=none)"},
-                "first_layer_rel": {"type": "number", "description": "outer layer thickness vs local cell (default 0.35)"},
+                "last_layer_rel": {"type": "number", "description": "outer layer thickness vs local cell (default 0.35)"},
                 "quality": {"type": "string", "description": "'balanced' (default) or 'strict' (checkMesh skew<4)"},
                 "max_cells": {"type": "integer", "description": "cell budget for the background mesh (default 6e6)"},
                 "region_refinement": {"type": "object", "description": "per-region [min,max] surface-level OVERRIDE, keyed by region name or a glob pattern over region names, e.g. {\"fasteners\": [5, 6], \"Cap_*\": [4, 4]} - the scale-aware handle for multi-scale assemblies: refine the region holding tiny solids locally (see geometry_report per_solid_scale.needed_level) instead of raising the global surface_level"},
@@ -56,7 +56,7 @@ AUTHORING_TOOL: dict = {
 }
 
 _STRATEGY = {"regions", "surface_level", "interface_refinement", "n_layers",
-             "first_layer_rel", "quality", "max_cells", "region_refinement"}
+             "last_layer_rel", "quality", "max_cells", "region_refinement"}
 _PREAMBLE = {"geometry_file", "wall_patch", "feature_angle", "strategy", "fluid_topology"}
 _KNOWN = _STRATEGY | _PREAMBLE
 _QUALITY = {"balanced", "strict"}
@@ -152,8 +152,8 @@ def validate(strategy: dict) -> list[Diagnostic]:
         d.append(Diagnostic("error", "interface_refinement", "interface_refinement must be an integer in 0..3"))
     if "max_cells" in strategy and (not _int(strategy["max_cells"]) or strategy["max_cells"] <= 0):
         d.append(Diagnostic("error", "max_cells", "max_cells must be a positive integer"))
-    if "first_layer_rel" in strategy and not (_num(strategy["first_layer_rel"]) and strategy["first_layer_rel"] > 0):
-        d.append(Diagnostic("error", "first_layer_rel", "first_layer_rel must be a positive number"))
+    if "last_layer_rel" in strategy and not (_num(strategy["last_layer_rel"]) and strategy["last_layer_rel"] > 0):
+        d.append(Diagnostic("error", "last_layer_rel", "last_layer_rel must be a positive number"))
     if "quality" in strategy and strategy["quality"] not in _QUALITY:
         d.append(Diagnostic("error", "quality", f"quality must be one of {sorted(_QUALITY)}"))
     if "region_refinement" in strategy:

@@ -22,7 +22,7 @@ REC = {"base_cell": 1.0 / 24, "surface_level": (2, 2), "afford_level": 3,
        "feature_level": 3, "feature_level_true": 3, "budget_capped": False,
        "distance_bands": [(0.0625, 2), (0.25, 1)], "resolve_feature_angle": 35.0,
        "min_feature": 0.001, "surface_area": 1.0, "cells_across_min_feature": 8}
-STRATEGY = {"n_layers": 3, "first_layer_rel": 0.35, "max_cells": 2_000_000}
+STRATEGY = {"n_layers": 3, "last_layer_rel": 0.35, "max_cells": 2_000_000}
 H = (1.0 / 24) / 4
 ANALYSIS = {"bbox_min": [0.0, 0.0, 0.0], "bbox_max": [1.0, 1.0, 1.0],
             "extent": [1.0, 1.0, 1.0], "diag": 1.7320508, "L": 1.0,

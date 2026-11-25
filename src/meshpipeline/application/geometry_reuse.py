@@ -58,7 +58,10 @@ def _digest(value) -> str:
 def unit_key(interpretation: dict | None) -> str:
     """What a scout's reading depends on besides the bytes: the unit it was told, if any."""
     scale = (interpretation or {}).get("scale_to_metres") if isinstance(interpretation, dict) else None
-    return f"v{SCOUT_REUSE_VERSION}-" + ("file" if scale is None else f"{float(scale):.12g}")
+    # ... and the rules its kept parts and areas were read by (cad/part_features.VERSION): a check answered from an
+    # earlier one never hands the parts reader areas an older rule made (m483 round 13, 6b and 6c)
+    from meshpipeline.cad.part_features import VERSION as AREAS
+    return f"v{SCOUT_REUSE_VERSION}-a{AREAS}-" + ("file" if scale is None else f"{float(scale):.12g}")
 
 
 def fea_key(sha256: str, interpretation: dict | None, scale_to_m: float, validity) -> str:

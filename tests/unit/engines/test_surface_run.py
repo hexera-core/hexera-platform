@@ -429,7 +429,7 @@ def test_a_solid_and_faces_that_close_never_reach_the_surface_run(tmp_path, monk
     for k, (shape, made) in enumerate(((sx.box_solid(), 0), (sx.closed_skin(), 1))):
         ws = _stage(shape, tmp_path / str(k))
         seen: dict = {}
-        assert FD.solids_from_shells(ws, seen) == made and seen == {}
+        assert FD.solids_from_shells(ws, seen) == made and seen == ({"closed": made} if made else {})  # SURF-14
         assert FD.solids_from_shells(ws) in (0, made)            # the call as it was still works
     ws = _stage(sx.bracket(), tmp_path / "open")
     seen = {}
@@ -515,7 +515,7 @@ def test_the_notes_requirements_reader_is_called_for_a_surface_file_when_it_is_b
     async def decide(record, state, zones, **kw):
         return {"status": "off"}
 
-    async def reader(w, state, *, job_id, run=None, publish=None):
+    async def reader(w, state, *, job_id, run=None, publish=None, say=True):
         order.append("requirements")
         return {"status": "none"}
 
@@ -592,7 +592,7 @@ def test_an_iges_copy_of_a_solid_is_staged_as_the_solid_its_step_is(tmp_path):
     assert not TopExp_Explorer(raw, TopAbs_SOLID).More() and "Cylinder" not in _kinds(raw)
     ws = _stage_file(igs, tmp_path / "ws")
     seen: dict = {}
-    assert FD.solids_from_shells(ws, seen) == 1 and seen == {}
+    assert FD.solids_from_shells(ws, seen) == 1 and seen == {"closed": 1}  # SURF-14: told the solid came from closed surfaces
     staged = read_cad(ws / "geometry.brep")
     assert TopExp_Explorer(staged, TopAbs_SOLID).More()
     assert _kinds(staged) == {"Plane": 6, "Cylinder": 1}
@@ -608,6 +608,100 @@ def test_a_face_written_twice_is_no_solid(tmp_path):
     rec = surface_run.run(ws, ws / "geometry.step", mm_per_unit=1000.0, thickness_mm=1.0)
     assert rec["made"] and rec["surface"]["cleaned"]["duplicates"] == 1 and rec["surface"]["faces"] == 1
     assert "1 face was in the file twice: the second copy of it is left out." in rec["words"]
+
+
+def test_a_size_larger_than_the_whole_part_is_said_in_plain_words(tmp_path):
+    """SHMESH-12b: a 2 mm sheet asked for 20 mm elements has no face the size can mesh. The run says so with the way
+    on - the part's size, the size that fits, the file's unit to check - never "max() arg is an empty sequence"."""
+    src = _file(sx.plate(2.0, 0.5), tmp_path / "in")
+    (tmp_path / "a").mkdir()
+    rec = surface_run.run(tmp_path / "a", src, mm_per_unit=1.0, requirements={"sizes": {"global_mm": 20.0}})
+    assert not rec["made"]
+    why = str(rec["why"])
+    assert "max()" not in why and "Error" not in why
+    assert why.startswith("the part is only 2 mm across") and "20 mm element" in why and "under about 0.2 mm" in why
+    assert "check the unit" in why
+
+
+def test_a_sheet_with_a_small_closed_pocket_is_the_sheet_not_the_pocket(tmp_path):
+    """MESH-1b: a sheet whose faces include a small closed skin (a bead's pocket on a stamped panel) is read as the
+    surface it is. Before, the pocket was read as THE solid and the sheet dropped without a word (s33: 8 of 73
+    faces delivered, 28 x 93 mm of a 90 x 160 mm part); a skin that is the whole file still reads as its solid."""
+    pocket = sx.moved(sx.closed_skin(10.0, 10.0, 5.0), (20.0, 20.0, 1.0))
+    ws = _stage(sx.compound([sx.plate_with_hole(), pocket]), tmp_path / "ws")
+    seen: dict = {}
+    assert FD.solids_from_shells(ws, seen) == 0 and seen.get("open") is True
+    assert seen["partial"]["solids"] == 1 and seen["partial"]["faces_held"] == 6 and seen["partial"]["faces"] == 7
+    assert seen["partial"]["area_share"] < 0.05 and not (ws / "geometry.brep").exists()
+    whole = _stage(sx.closed_skin(), tmp_path / "ws2")
+    seen = {}
+    assert FD.solids_from_shells(whole, seen) == 1 and seen == {"closed": 1}
+
+
+def test_a_surface_staged_in_metres_is_cleaned_and_meshed_in_millimetres(tmp_path, monkeypatch):
+    """SURF-15: the website stages a surface file in metres and runs it "staged"; the lab hands the same file over in
+    millimetres. Read in metres, the clean-up chose other mends (a stamped dome: a hole filled with a new face where the
+    lab moved an edge) and the mesher left the dome's main face bare (80% covered against 99.7%). The staged surface is
+    now put in millimetres (its faces in the same order) before the clean-up and the mesher see it: the same shell as
+    the file read in millimetres, its files in metres as before."""
+    seen: list = []
+    real = surface_run.run
+
+    def spy(ws, step, *, mm_per_unit, **more):
+        seen.append((Path(step).name, mm_per_unit))
+        return real(ws, step, mm_per_unit=mm_per_unit, **more)
+
+    monkeypatch.setattr(surface_run, "run", spy)
+    ws = _stage(sx.plate_with_hole(), tmp_path / "ws")
+    assert FD.staged_mm_per_unit(ws / "geometry.step") == 1000.0
+    more = {"thickness_mm": 1.2, "said_shell": True}
+    assert surface_run.main([str(ws), str(ws / "geometry.step"), "staged", json.dumps(more)]) == 0
+    assert seen == [(shell_run.MM_COPY, 1.0)]
+    rec = shell_run.read(ws)
+    assert rec["made"] and rec["mm_per_unit"] == 1.0 and rec["coverage"]["share"] > 0.99
+    lo, hi = rec["bounds_m"][:3], rec["bounds_m"][3:]
+    assert 0.01 < max(h - lo_ for lo_, h in zip(lo, hi)) < 1.0          # metres, as before
+    lab = tmp_path / "lab"
+    lab.mkdir()
+    rec_lab = real(lab, ws / "upload.step", mm_per_unit=1.0, thickness_mm=1.2, said_shell=True)
+    assert rec["elements"] == rec_lab["elements"]
+
+
+def _shell_result(ws: Path, staged: str, more: dict) -> tuple[dict, dict]:
+    from meshpipeline.engines import shell_delivery as SD
+
+    assert surface_run.main([str(ws), str(ws / staged), "staged", json.dumps(more)]) == 0
+    rec = shell_run.read(ws)
+    assert rec["made"] is True and SD.deliver(ws, rec)
+    q = json.loads((ws / "quality.json").read_text())
+    return rec, SD.results(ws, q, json.loads((ws / "fea_plan.json").read_text()))
+
+
+def test_a_shell_that_covers_a_fraction_of_the_part_is_never_a_pass(tmp_path, monkeypatch):
+    """MESH-1c: the delivered shell is measured against the upload. The old reading of s33 (MESH-1b off: the two
+    bead pockets read as THE solid) made a shell on 7% of the part and the result said "passed"; it now reads with a
+    concern naming how much of the part has no elements. A sheet meshed whole covers all of it, said."""
+    pocket = sx.moved(sx.closed_skin(10.0, 10.0, 5.0), (20.0, 20.0, 1.0))
+    part = sx.compound([sx.plate_with_hole(), pocket])
+    old = _stage(part, tmp_path / "old")
+    monkeypatch.setattr(FD, "SOLIDS_HOLD_SHARE", 0.0)       # the reading before MESH-1b
+    assert FD.solids_from_shells(old, {}) == 1
+    rec, res = _shell_result(old, "geometry.brep", {"thickness_mm": 1.2, "said_shell": True, "closed_skin": True})
+    assert rec["coverage"]["kept_share"] < 0.05 and rec["coverage"]["share"] < 0.05
+    assert res["check"]["outcome"] == "concerns" and res["check"]["words"].startswith("This shell covers only ")
+    assert "of it has no elements" in rec["words"]
+    assert [r["key"] for r in res["check"]["rows"] if r["key"] == "part_covered"] == ["part_covered"]
+    monkeypatch.undo()
+    new = _stage(sx.plate_with_hole(), tmp_path / "new")
+    seen: dict = {}
+    assert FD.solids_from_shells(new, seen) == 0 and seen.get("open") is True
+    rec, res = _shell_result(new, "geometry.step", {"thickness_mm": 1.2, "said_shell": True})
+    assert rec["coverage"]["kept_share"] == 1.0 and 0.95 < rec["coverage"]["share"] <= 1.01
+    # SURF-15: meshed in millimetres (as the lab meshes the file) one quad corner is 138 degrees, a figure past its
+    # limit that is told but not gating; the cover is whole and says so either way
+    assert res["check"]["outcome"] in ("pass", "concerns") and "covers only" not in res["check"]["words"]
+    assert not [r for r in res["check"]["rows"] if r["key"] == "part_covered" and r.get("ok") is False]
+    assert any(w.startswith("The elements cover ") for w in res["plan_words"])
 
 
 def _volumes(shape) -> list[float]:

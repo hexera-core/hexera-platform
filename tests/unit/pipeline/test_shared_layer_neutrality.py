@@ -23,7 +23,7 @@ _FORBIDDEN_TOKENS = (
     "snappyhexmesh",       # snappy mesher binary
     "min_sicn",            # gmsh quality key
     "surface_level", "feature_level", "wall_cell", "max_cell_factor",  # palette knobs
-    "first_layer_rel",
+    "last_layer_rel",
 )
 
 # The shared layers where decision #2 ("builder holds no engine vocabulary") and the

@@ -176,7 +176,7 @@ def results(workspace) -> dict | None:
     """The block, or None for a workspace that holds no FEA plan."""
     from meshpipeline.contracts.decision_record import limit_met
     from meshpipeline.engines.fea_solvers import judge
-    from meshpipeline.engines.verdict_limits import fea_limits, words
+    from meshpipeline.engines.verdict_limits import fea_limits, through_wall_planned, words
 
     ws = Path(workspace)
     plan = _read(ws / "fea_plan.json")
@@ -200,17 +200,22 @@ def results(workspace) -> dict | None:
          "limit": 0, "measured": q.get("fea_inverted")},
     ]
     rows = []
-    for r in gating + fea_limits(q):
-        met = limit_met(r.get("measured"), str(r.get("op")), r.get("limit"))
+    # EVERY TYPED ASK HAS ITS ROW (m485w round 15): the asks with nothing to judge them by - an edge-length target past
+    # its share, a setting, the nearest there is, not applied - told with their status, never judged
+    from meshpipeline.engines.mesh_requirements import asked_rows as _asked
+    told = [r for r in _asked(q, source="your notes (engines/fea_requirements.py)", told=True) if r.get("told")]
+    for r in gating + fea_limits(q) + told:
+        met = None if r.get("told") else limit_met(r.get("measured"), str(r.get("op")), r.get("limit"))
         # A VALID MESH IS THE ONLY BLOCKER: inverted elements fail; the floor and the walls are notes
         held = r in gating and r["key"] == "fea_inverted"
         rows.append({**{k: r.get(k) for k in ("key", "label", "op", "limit", "measured")}, "ok": met,
+                     **({k: r[k] for k in ("told", "status", "shown") if k in r} if r.get("told") else {}),
                      "gating": held, "words": words(r)})
     if any(r["ok"] is False and r["gating"] for r in rows) or q.get("fatal"):
         outcome, said = "fail", "The mesh fails a check no solver can work around."
     elif any(r["ok"] is False for r in rows):
         outcome, said = "concerns", "Passed, with notes: the mesh is valid; some figures are past a limit (listed)."
-    elif any(r["ok"] is None for r in rows):
+    elif any(r["ok"] is None and not r.get("told") for r in rows):
         # NOT MEASURED IS NOT MET: a figure missing (an older runner, a measurement that failed) is
         # never said to pass
         outcome, said = "unmeasured", ("Not fully checked: some figures were not measured on this mesh "
@@ -219,11 +224,18 @@ def results(workspace) -> dict | None:
         outcome, said = "pass", "Every element meets the strictest limit of the solvers it is for."
 
     short = (rules.get("through_wall") or {}).get("short") or []
-    through = {"ok": tw is not None and float(tw) >= 1.8, "min": tw, "needed": 2,
+    # NOTE-13: the count the notes asked when they asked one (verdict_limits.through_wall_planned), else our 2
+    need, floor, why = through_wall_planned(fea)
+    tw_n = float(tw) if tw is not None else None
+    reached = tw_n is not None and tw_n >= floor
+    through = {"ok": reached, "min": tw, "needed": need,
                "short": [{"face": s.get("face"), "thickness_mm": s.get("thickness_mm"), "elements": s.get("elements")}
                          for s in short],
-               "words": (f"Yes - at least {float(tw):.3g} elements through every wall (2 needed)."
-                         if tw is not None and float(tw) >= 1.8 else
+               "words": (f"Yes - at least {tw_n:.3g} elements through every wall "
+                         f"({need} {'asked in your notes' if why else 'needed'})."
+                         if reached and tw_n is not None else
+                         f"No - {tw_n:.3g} elements through the thinnest wall, {need} asked in your notes."
+                         if tw_n is not None and why and not short else
                          ("No - " + ", ".join(f"{s.get('face')} has {s.get('elements')} through a "
                                               f"{s.get('thickness_mm')} mm wall" for s in short[:5])
                           if short else "Not measured on this mesh."))}

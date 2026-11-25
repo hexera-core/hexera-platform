@@ -195,7 +195,7 @@ async def _read_flow_requirements(attempt: BuilderAttempt, state, *, job_id: str
         ws = getattr(attempt, "workspace", None)
         if ws is None or attempt.engine not in CR.ENGINES or not CR.flow_run(ws, state):
             return
-        await CR.read_for_attempt(ws, state, job_id=job_id, publish=publish)
+        await CR.read_for_attempt(ws, state, job_id=job_id, publish=publish, engine=str(attempt.engine or ""))
     except StaleExecutionPublish:
         raise
     except Exception:  # noqa: BLE001 - the notes never stop a mesh

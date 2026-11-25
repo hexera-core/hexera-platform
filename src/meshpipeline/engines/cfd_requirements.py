@@ -20,6 +20,8 @@
               missed limit is "delivered with notes", never a failed run.
     CFDREQ-7  NOTHING SAID = IDENTICAL: no notes, or notes that ask nothing, change no byte of any plan,
               dictionary or mesh.
+    CFDREQ-8  THE FLOW CONDITIONS the user confirmed (fluid, speed, wall treatment) size the first layer as a y+
+              in the notes would; the notes' own layer values win (with_conditions).
 """
 from __future__ import annotations
 
@@ -31,6 +33,7 @@ import re
 from collections.abc import Callable, Mapping
 from pathlib import Path
 
+from meshpipeline.contracts import flow_conditions as _FC
 from meshpipeline.contracts.event_stream import StaleExecutionPublish
 from meshpipeline.engines import mesh_requirements as MR
 
@@ -45,12 +48,14 @@ RULE_REPORT = "CFDREQ-6"
 RULE_SAME = "CFDREQ-7"
 ROUTE = MR.FLOW
 CONSUMER = "mesh_requirements"
+#: each CFD engine's lane in the controls registry (contracts/mesh_controls.LANES): gmsh's flow lane is its own
+LANES = {"gmsh": "gmsh_flow"}
 #: what each engine built for each requirement (beside the case; the report reads it after the mesh)
 PLAN_FILE = "cfd_requirements_plan.json"
 #: the CFD engines (engines/registry names)
 ENGINES = ("snappy", "cfmesh", "snappy_multiregion", "gmsh", "vmtk", "snapgrid", "netgen")
-#: kinematic viscosity at 20 °C, m^2/s, of the fluids a note may name
-NU = {"air": 1.516e-5, "water": 1.004e-6}
+#: kinematic viscosity at 20 °C, m^2/s, of the fluids a note may name (one table with the flow conditions')
+NU = _FC.NU
 DEFINITIONS = ("Non-orthogonality: on each internal face, the angle between the face normal and the line joining "
                "the two cell centres (a cell's worst face). Skewness: the OpenFOAM measure, the distance from the "
                "face centre to where that line crosses the face, over the face's size. Aspect ratio: OpenFOAM's "
@@ -110,7 +115,7 @@ def flow_run(workspace, state=None) -> bool:
 
 
 async def read_for_attempt(workspace, state, *, job_id: str = "", publish=None, run=None,
-                           wait_s: float | None = None) -> dict:
+                           wait_s: float | None = None, engine: str = "") -> dict:
     """NOTE-10 / CFDREQ-1: the notes read once for this attempt on the flow route, kept in the workspace for every
     engine (and every process) that builds it, cited, and told before any mesh is made - one short line each, and
     what was not applied. No words: nothing asked, nothing written, nothing said. Never raises (but a fenced
@@ -131,8 +136,26 @@ async def read_for_attempt(workspace, state, *, job_id: str = "", publish=None, 
     except Exception as exc:  # noqa: BLE001 - the notes never fail a run
         logger.warning("cfd requirements: not read (%s) - job_id=%s", type(exc).__name__, job_id)
         sec = MR.section("failed", note=MR.UNREAD_WORDS)
+    # STD-5: a saved standard written for other kinds of mesh, applied in nothing here: told before meshing and with
+    # the result (the run is the run with no standard)
+    off = str(sec.get("standard_not_applied") or "") if sec.get("status") == "none" else ""
+    # CFDREQ-8: the flow conditions the user confirmed size the first layer, as a y+ in their notes would
+    sec = with_conditions(sec, state)
+    # NOTE-15: what the notes say that the product acted on outside the reading - the engine they name (this
+    # attempt's engine says whether it was used), the flow conditions confirmed, the kind of mesh, the unit - is
+    # never told or counted as not applied, whatever the reading made of it
+    from meshpipeline.engines import notes_acted as NA
+    sec = NA.apply(sec, MR.notes_text(state or {}), NA.facts_of(state, engine))
     MR.write(ws, sec)
+    if MR.strictness_unnamed(sec):
+        # NOTE-14: a note on how strict the limits are that names none the user set: one fixed plain line
+        from meshpipeline.contracts.user_notes import record_remark
+        record_remark(ws, MR.NO_LIMIT_WORDS, by=MR.STRICTNESS_REMARK)
     (ws / PLAN_FILE).unlink(missing_ok=True)          # a carried plan never speaks for this attempt
+    if off:
+        MS.told_not_applied(ws, off)
+        if publish is not None:
+            await _N.asay(publish, off, op_id="cfd:notes:standard")
     if sec.get("status") == "none":
         return sec
     try:
@@ -229,6 +252,78 @@ def y_plus_height(y_plus: float, physics: Mapping | None, *, length_m: float | N
 
 
 # #
+# CFDREQ-8: the flow conditions the user confirmed (the intake's conditions step)
+# #
+
+#: where a row the conditions set comes from, as the user reads it ("(from your flow conditions)")
+CONDITIONS_FROM = "flow conditions"
+
+
+def with_conditions(sec: dict, state) -> dict:
+    """CFDREQ-8: THE CONDITIONS STEP'S ANSWER REACHES THE MESH. The plan's conditions sentence (contracts/flow_conditions,
+    in request_txt) gives the y+ of the wall treatment and the flow's speed and fluid; they go into the set exactly as
+    the same words typed in the notes would - the first layer is then sized by every engine that sizes one, and told
+    "not applied on this mesher" by every other. What the user's own notes (or settings) set wins: the conditions only
+    fill what they left. No such sentence (a plan in the model's own words, no conditions step): `sec` unchanged."""
+    import copy
+
+    from meshpipeline.contracts import flow_conditions as FC
+
+    s = state or {}
+    c = FC.read(str(s.get("request_txt") or ""), s.get("intake_patches") or [])
+    if c is None:
+        return sec
+    if not c.get("wall_said", True) and c["wall"] == "functions":
+        # THE PROPOSAL ONLY ACCEPTED IS NO ASK (round 4, F): pressing OK on the proposed wall functions made an
+        # absolute y+ 50 first layer about as thick as the wall cells, which snappyHexMesh grew on 4-6% of the wall
+        # (jobs 07fd516d, 8eec5b7b, c0b45ad1); the mesher's own relative layers grow on all of it. A y+, first layer or
+        # wall treatment the user gave themselves stays an ask (below, and CFDREQ-9 makes it one the mesher keeps).
+        # Their speed and fluid still reach a y+ of their own notes.
+        req0 = (sec.get("requirements") or {}) if sec.get("status") == "used" else {}
+        lay0, ph0 = req0.get("layers") or {}, req0.get("physics") or {}
+        if lay0.get("y_plus") is None or (ph0.get("velocity_ms") is not None and ph0.get("fluid") is not None):
+            return sec
+    before = MR.words(sec)
+    used = sec.get("status") == "used"
+    req = copy.deepcopy(dict(sec.get("requirements") or MR.empty())) if used else MR.empty()
+    lay = req.setdefault("layers", {})
+    ph = req.setdefault("physics", {})
+    treatment = "a resolved wall" if c["wall"] == "resolved" else "wall functions, y+ 30-300"
+    lead = "From your flow conditions:"
+    if lay.get("count") == 0:
+        line = f"{lead} no boundary layers are built, as asked, so the wall treatment sizes none."
+    elif lay.get("first_mm") is not None:
+        line = f"{lead} the first layer is the height you gave, not the one the wall treatment's y+ would give."
+    elif lay.get("y_plus") is not None:
+        line = f"{lead} the y+ you gave ({MR._g(lay['y_plus'])}) is used, not the wall treatment's."
+        # ... at the fluid and speed of the conditions, where the notes give none: a y+ typed as the answer to the
+        # conditions question ("y+ of 1 at the wall") is read as a note too, and with no speed or fluid of its own it
+        # was never turned into a height - the layers kept our relative sizing, about y+ 50 (job 63b0fd25)
+        if ph.get("velocity_ms") is None and ph.get("reynolds") is None and c["velocity_ms"] is not None:
+            ph["velocity_ms"] = float(c["velocity_ms"])
+        if ph.get("fluid") is None and ph.get("nu_m2s") is None and c["fluid"] in FC.NU:
+            ph["fluid"] = c["fluid"]
+    else:
+        lay["y_plus"] = float(c["y_plus"])
+        if ph.get("velocity_ms") is None and c["velocity_ms"] is not None:
+            ph["velocity_ms"] = float(c["velocity_ms"])
+        if ph.get("fluid") is None and c["fluid"] in FC.NU:
+            ph["fluid"] = c["fluid"]
+        asked = f"y+ of about {MR._g(c['y_plus'])} at the walls ({treatment}), for {c['fluid_words']} at {c['speed_words']}"
+        req.setdefault("rows", []).append({"id": "c1", "field": "layers:y_plus", "asked": asked,
+                                           "quote": f"Fluid: {c['fluid_words']} at {c['speed_words']}; "
+                                                    f"{FC.WALL_WORDS[c['wall']]}",
+                                           "from": CONDITIONS_FROM})
+        line = f"{lead} {asked}" + (f" - the first layer keeps our sizing, because {c['why']}." if c["why"] else ".")
+    out = dict(sec) if used else MR.section("used", note=str(sec.get("note") or ""), source=str(sec.get("source") or ""))
+    out["status"] = "used"
+    out["requirements"] = req
+    out["lines"] = [line, *before]
+    out["conditions"] = {k: c[k] for k in ("fluid", "velocity_ms", "wall", "y_plus", "why")}
+    return out
+
+
+# #
 # what an engine does with the set: one Ask per engine and attempt
 # #
 
@@ -251,6 +346,9 @@ class Ask:
         s = self.req.get("sizes") or {}
         self.global_m = _m(s.get("global_mm"))
         self.min_m = _m(s.get("min_edge_mm"))
+        # NOTE-14: a smallest cell the user said is HARD is held even where the body's shape would want finer cells
+        self.min_hard = any(r.get("field") == "min_edge" and r.get("strictness") == "hard"
+                            for r in self.req.get("rows") or [] if isinstance(r, Mapping))
         self.max_m = _m(s.get("max_edge_mm"))
         self.wall_m = _m(s.get("near_wall_mm"))
         self.growth = s.get("growth")
@@ -301,6 +399,15 @@ class Ask:
             return field_or_id
         return self.rid(field_or_id)
 
+    def controls(self, target: dict) -> dict:
+        """NOTE-13: the one loop at this engine's plan seam - each control the set asks for applied on `target` by the
+        registry's applier, or not applied with its reason; the rows say what was done. Returns `target`."""
+        from meshpipeline.engines import control_appliers as CA
+
+        for got in CA.apply(LANES.get(self.engine, self.engine), self.req, target).values():
+            self._set(got.get("id"), got["status"], got["built"])
+        return target
+
     def limit(self, measure: str) -> dict | None:
         return next((lim for lim in self.limits if lim["measure"] == measure), None)
 
@@ -322,6 +429,12 @@ class Ask:
             if str(r["field"]).startswith("limit:"):
                 self.rows[r["id"]] = {"status": "measured", "built": f"{name} has no setting for it while meshing; "
                                                                      "it is measured on the mesh"}
+            elif str(r["field"]).startswith("control:"):
+                # NOTE-13: "not on this mesher", with the registry's own reason
+                from meshpipeline.contracts import mesh_controls as MC
+                how = MC.lane_of(LANES.get(self.engine, self.engine), str(r["field"]).split(":", 1)[1])
+                self.rows[r["id"]] = {"status": "not_applied", "built": how.why if isinstance(how, MC.NotHere)
+                                      else f"{name} has no setting for it on this case"}
             else:
                 self.rows[r["id"]] = {"status": "not_applied", "built": f"{name} has no setting for this"}
         try:
@@ -412,7 +525,7 @@ class Ask:
                                         length_from=length_from)
         if h is None:
             self.not_here("layers:y_plus", f"{' and '.join(missing)} {'is' if len(missing) == 1 else 'are'} not "
-                                           "in your notes, so the first layer height cannot be worked out from it; "
+                                           "known, so the first layer height cannot be worked out from it; "
                                            "the layers keep our sizing")
             return None
         self.done("layers:y_plus", f"first layer {_mm(h)} high (worked out at Re {MR._g(how['reynolds'])}, with "
@@ -598,8 +711,12 @@ def snappy_levels(ask: Ask, base: float, *, floor: int, level: int, flevel: int,
         most = int(math.floor(math.log2(base / ask.min_m) + 1e-9))
         if most < floor:
             cap = floor
+            # (NOTE-14: a HARD minimum too - the floor is the level that closes the body off from the flow, validity
+            # before any limit; said so)
             ask.nearest("min_edge", f"the finest cells are {_mm(base / 2 ** cap)}: larger ones would not hold the "
-                                    "body's shape", built_m=base / 2 ** cap)
+                                    "body's shape" + (" (your minimum is hard, but cells that large would let the flow "
+                                                      "leak into the body)" if ask.min_hard else ""),
+                        built_m=base / 2 ** cap)
         else:
             cap = min(hard_max, most)
             ask.done("min_edge", f"the finest cells are {_mm(base / 2 ** cap)} (boundary layer cells are thinner, "
@@ -632,39 +749,107 @@ def snappy_wake(ask: Ask, wake, *, wall_cell: float):
     return wake
 
 
+#: the roles an opening is confirmed with at intake that make it an opening (port_declaration.json's "type")
+OPENING_ROLES = ("inlet", "outlet", "opening", "farfield", "symmetry")
+
+
+def port_roles(workspace) -> dict[str, str]:
+    """CFDREQ-12: each declared opening's confirmed role by its name ({"p_1": "inlet", "p_2": "outlet"}), from the
+    intake's port declaration (engines/workspace_facts.port_declaration); {} when none was confirmed."""
+    from meshpipeline.engines.workspace_facts import port_declaration
+    out: dict[str, str] = {}
+    for p in port_declaration(workspace) if workspace else []:
+        if isinstance(p, Mapping) and str(p.get("type") or "").lower() in OPENING_ROLES and p.get("name"):
+            out[str(p["name"])] = str(p["type"]).lower()
+    return out
+
+
+def _role_of(name: str, roles: Mapping[str, str]) -> str:
+    """An opening's confirmed role, by its name as declared or as the mesher spells it (p-1 / p_1)."""
+    if name in roles:
+        return roles[name]
+    flat = {re.sub(r"[^A-Za-z0-9]+", "_", k).strip("_").lower(): v for k, v in roles.items()}
+    return flat.get(re.sub(r"[^A-Za-z0-9]+", "_", name).strip("_").lower(), "")
+
+
+def openings_named(where: str, openings: list[str], roles: Mapping[str, str]) -> tuple[list[str], str]:
+    """CFDREQ-12: the openings a place's words name, and how ("" by name). A ROLE the user confirmed at intake comes
+    first ("the outlet": the opening confirmed as the outlet, whatever the CAD called it; "outlet 2": the second
+    of them; "the outlets", or one role several openings share with no number: all of them, said), then the name.
+    The role wins over a name that is another opening's (said which was used). ([], "") when neither matches."""
+    words = re.findall(r"[a-z0-9]+", str(where).casefold())
+    have = {o: _role_of(o, roles) for o in openings}
+    for role in dict.fromkeys(r for r in have.values() if r):
+        if role not in words and f"{role}s" not in words:
+            continue
+        mine = [o for o in openings if have[o] == role]
+        at = words.index(role) if role in words else words.index(f"{role}s")
+        n = words[at + 1] if at + 1 < len(words) and words[at + 1].isdigit() else ""
+        by_name = _region_of(where, openings)
+        if n and 1 <= int(n) <= len(mine):
+            mine = [mine[int(n) - 1]]
+        how = f"the {role} you confirmed"
+        if len(mine) > 1:
+            how = f"all {len(mine)} openings you confirmed as {role}s"
+        if by_name is not None and by_name not in mine:
+            how += f"; the opening named '{by_name}' is your {have[by_name] or 'other opening'}, so it was not used"
+        return mine, how
+    hit = _region_of(where, openings)
+    return ([hit], "") if hit is not None else ([], "")
+
+
+def _openings_words(openings: list[str], roles: Mapping[str, str]) -> str:
+    return ", ".join(f"{o} ({_role_of(o, roles)})" if _role_of(o, roles) else o for o in sorted(openings)) or "none"
+
+
 @guarded(lambda ask, port_lvls, *a, **_k: dict(port_lvls))
 def snappy_port_levels(ask: Ask, port_lvls: dict, names: Mapping, wall_key: str, *, base_m: float,
-                       hard_max: int = 10) -> dict:
-    """An internal flow's sizes in named places: a port the user named gets their size (or one level finer or
-    coarser) on its own surface; the walls by name take the wall's own size; anything else is told."""
+                       hard_max: int = 10, roles: Mapping[str, str] | None = None) -> dict:
+    """An internal flow's sizes in named places: a port the user named - by the role they confirmed for it, or by
+    its name (CFDREQ-12) - gets their size (or one level finer or coarser) on its own surface; the walls by name
+    take the wall's own size; anything else is told, with every opening and its role."""
     out = dict(port_lvls)
     ports = {str(names[p]): p for p in names if p != wall_key}
+    roles = dict(roles or {})
     for e in ask.local:
         where = str(e.get("where") or "")
         if "wake" in where.casefold():
             ask.not_here(e["id"], "an internal flow has no wake behind a body")
             continue
-        hit = _region_of(where, list(ports))
-        if hit is None:
+        hits, how = openings_named(where, list(ports), roles)
+        if not hits:
             if re.search(r"\b(wall|walls|surface|pipe|duct|passage|inside)\b", where, re.I):
                 ask.not_here(e["id"], "the walls take the size at the walls; give it as a wall cell size")
             else:
                 ask.not_here(e["id"], f"no opening named '{where}' in this model (its openings: "
-                                      f"{', '.join(sorted(ports)) or 'none'})")
+                                      f"{_openings_words(list(ports), roles)})")
             continue
-        p = ports[hit]
-        now = int(out.get(p, 1))
-        if e["what"] == "size":
-            lv = level_for(base_m, float(e["mm"]) * 1e-3, lo=1, hi=hard_max)
-        else:
-            lv = min(hard_max, now + 1) if e["what"] == "finer" else max(1, now - 1)
-        if lv < now:
-            # an opening is held at the level that keeps it open (coarser, castellation can close it)
-            ask.nearest(e["id"], f"cells of {_mm(base_m / 2 ** now)} on {hit}: larger cells could close the opening",
-                        built_m=base_m / 2 ** now)
+        made, held = [], []
+        for hit in hits:
+            p = ports[hit]
+            now = int(out.get(p, 1))
+            if e["what"] == "size":
+                lv = level_for(base_m, float(e["mm"]) * 1e-3, lo=1, hi=hard_max)
+            else:
+                lv = min(hard_max, now + 1) if e["what"] == "finer" else max(1, now - 1)
+            if lv < now:
+                # an opening is held at the level that keeps it open (coarser, castellation can close it)
+                held.append((hit, now))
+                continue
+            out[p] = lv
+            made.append((hit, lv))
+        tail = f" ({how})" if how else ""
+        if not made:
+            hit, now = held[0]
+            ask.nearest(e["id"], f"cells of {_mm(base_m / 2 ** now)} on {' and '.join(h for h, _n in held)}: larger "
+                                 f"cells could close the opening{tail}", built_m=base_m / 2 ** now)
             continue
-        out[p] = lv
-        ask.done(e["id"], f"cells of {_mm(base_m / 2 ** lv)} on {hit}", built_m=base_m / 2 ** lv)
+        lv = made[0][1]
+        said = f"cells of {_mm(base_m / 2 ** lv)} on {' and '.join(h for h, _n in made)}{tail}"
+        if held:
+            said += (f"; {' and '.join(h for h, _n in held)} kept at cells of {_mm(base_m / 2 ** held[0][1])}: larger "
+                     "cells could close the opening")
+        ask.done(e["id"], said, built_m=base_m / 2 ** lv)
     return out
 
 
@@ -866,12 +1051,16 @@ def cfmesh_fit_count(ask: Ask, *, volume: float, max_cell: float, wall_cell: flo
 
 @guarded(lambda ask, patches, wall_patch, **k: ('', [], k['wall_cell']))
 def cfmesh_local(ask: Ask, patches, wall_patch: str, *, max_cell: float, wall_cell: float, floor: float,
-                 body_bbox=None, domain=None, budget: int | None = None) -> tuple[str, list[dict], float]:
+                 body_bbox=None, domain=None, budget: int | None = None,
+                 roles: Mapping[str, str] | None = None) -> tuple[str, list[dict], float]:
     """(localRefinement entries for the patches the user named, objectRefinements for a wake box). A coarser cell
     than the wall's on a named wall is not a refinement cfMesh makes: said."""
     from meshpipeline.engines.cfmesh.cfmesh_runner import octree_cell
 
     names = [str(p.get("name")) for p in (patches or []) if p.get("name")]
+    # CFDREQ-12: the roles confirmed at intake - the patches' own types, over the port declaration's
+    roles = {**dict(roles or {}), **{str(p["name"]): str(p.get("type") or "").lower() for p in (patches or [])
+                                     if p.get("name") and str(p.get("type") or "").lower() in OPENING_ROLES}}
     entries, boxes = "", []
     for e in ask.local:
         where = str(e.get("where") or "")
@@ -910,12 +1099,25 @@ def cfmesh_local(ask: Ask, patches, wall_patch: str, *, max_cell: float, wall_ce
             else:
                 ask.done(e["id"], said, built_m=octree_cell(max_cell, cell))
             continue
-        hit = _region_of(where, names)
+        # CFDREQ-12: an opening by the role the user confirmed for it first ("the outlet"), then by its name
+        hits, how = openings_named(where, [n for n in names if n != wall_patch], roles)
+        if len(hits) > 1 or (hits and how):
+            if size is None:
+                ask.not_here(e["id"], "this mesher refines a surface; a coarser cell than the wall's is not a "
+                                      "refinement it makes")
+                continue
+            size = max(size, floor)
+            entries += "".join(f"    {h} {{ cellSize {size:.6g}; }}\n" for h in hits)
+            ask.done(e["id"], f"cells of {_mm(octree_cell(max_cell, size))} on {' and '.join(hits)}"
+                              + (f" ({how})" if how else ""), built_m=octree_cell(max_cell, size))
+            continue
+        hit = hits[0] if hits else _region_of(where, names)
         if hit is None:
             if len([n for n in names if n == wall_patch]) and len(names) <= 3 and e["what"] != "coarser":
                 hit = wall_patch          # one body: "around the wing" is its wall
             else:
-                ask.not_here(e["id"], f"no part named '{where}' in this model (its parts: {', '.join(names)})")
+                ask.not_here(e["id"], f"no part named '{where}' in this model (its parts: "
+                                      f"{_openings_words(names, roles)})")
                 continue
         if size is None:
             ask.not_here(e["id"], "this mesher refines a surface; a coarser cell than the wall's is not a refinement it "
@@ -1054,6 +1256,8 @@ def vmtk_spec(ask: Ask, s: Mapping) -> dict:
         out["min_edge_length"] = float(lo)
     if hi is not None:
         out["max_edge_length"] = float(hi)
+    # NOTE-13: the controls the user's words set - cells across every passage is the edge factor (2 / N)
+    out = ask.controls(out)
     if ask.user_budget() or ask.floor is not None:
         out["max_cells"] = ask.budget(int(out.get("max_cells") or _hard()))
     if ask.n_layers is not None:
@@ -1072,6 +1276,35 @@ def vmtk_spec(ask: Ask, s: Mapping) -> dict:
     for e in ask.local:
         ask.not_here(e["id"], "this mesher sizes cells from the local vessel radius; it has no setting for one named place")
     return out
+
+
+def cfmesh_cells_built(ask: Ask, asked: Mapping, *, passage_d: float, wall_cell: float) -> None:
+    """NOTE-13 on cfMesh: the cells across the passage the octree really builds (its width over the cell cfMesh lands
+    on at the walls) against the count asked - said with the number either way."""
+    rid, n = asked.get("id"), asked.get("value")
+    row = ask.rows.get(str(rid or ""))
+    if not row or row.get("status") != "applied" or not n or wall_cell <= 0 or passage_d <= 0:
+        return
+    got = passage_d / float(wall_cell)
+    said = f"{MR._g(round(got, 1))} cells across the passage (cells of {_mm(wall_cell)} at its walls)"
+    if got < 0.95 * float(n):
+        ask.nearest(str(rid), f"{said}: the finest the passage's own cap and the run's time allow")
+    else:
+        ask.done(str(rid), said)
+
+
+def vmtk_cells_built(ask: Ask, edge_length_factor: float) -> None:
+    """NOTE-13 on VMTK: the cells across every passage the spec really carries (2 / its edge factor, after the cell
+    budget's fit) against the count asked - kept as asked, or the nearest with the number."""
+    c = (ask.req.get("controls") or {}).get("cells_across") or {}
+    rid, n = c.get("id"), c.get("value")
+    row = ask.rows.get(str(rid or ""))
+    if not row or row.get("status") != "applied" or not n or edge_length_factor <= 0:
+        return
+    got = 2.0 / float(edge_length_factor)
+    if got < 0.95 * float(n):
+        ask.nearest(str(rid), f"{MR._g(round(got, 1))} cells across every passage: {int(n)} would not fit the cell "
+                              "budget")
 
 
 # #
@@ -1308,10 +1541,13 @@ def _num(text: str, key: str) -> float | None:
 
 
 @guarded(lambda ask, text, **_k: text)
-def snappy_dict(ask: Ask | None, text: str, *, wall_cell_m: float | None = None) -> str:
+def snappy_dict(ask: Ask | None, text: str, *, wall_cell_m: float | None = None,
+                bridge: Mapping | None = None) -> str:
     """The snappyHexMeshDict text with the user's growth, layer sizes and quality limits applied (CFDREQ-2, 4, 5).
     The count of layers, the sizes and the budget are the plan's (the drivers set them before the dict is
-    written). Unchanged with nothing asked."""
+    written). Unchanged with nothing asked. `bridge`: {"faces": wall faces, "room": cells the layers may add} on a
+    case whose first layer may be far thinner than its wall cells (layer_bridge, CFDREQ-9); None leaves the count
+    the plan's."""
     if ask is None:
         return text
     out = text
@@ -1321,7 +1557,7 @@ def snappy_dict(ask: Ask | None, text: str, *, wall_cell_m: float | None = None)
         ask.done("growth", f"{n} cells between refinement levels, so sizes grow about {MR._g(2 ** (1 / n))} from one "
                            "cell to the next", cells_between_levels=n)
     if "addLayersControls" in out and (ask.first_m or ask.total_m or ask.layer_growth or ask.y_plus):
-        out = _snappy_layers(ask, out, wall_cell_m)
+        out = _snappy_layers(ask, out, wall_cell_m, bridge)
     for lim in ask.limits:
         key = SNAPPY_QUALITY.get(lim["measure"])
         if key is None:
@@ -1367,9 +1603,48 @@ def snappy_dict(ask: Ask | None, text: str, *, wall_cell_m: float | None = None)
     return out
 
 
-def _snappy_layers(ask: Ask, text: str, wall_cell_m: float | None) -> str:
+#: CFDREQ-9: a first layer more than this many times thinner than the wall cells it grows into is not kept by
+#: snappyHexMesh with the plan's few layers (measured: a 0.011 mm first layer under 2 mm wall cells kept layers on
+#: 1.8% of a wing; a 0.022 mm one under 4.4 mm cells on 0% of a pipe reducer, job f4019933; 0.027 mm under 1.25 mm
+#: cells, 46 times, kept 81.6% of a rotor, job 9c638f7a)
+THIN_LAYER_RATIO = 50.0
+#: CFDREQ-9: the most layers a stack bridged that way gets; past it the first layer is the thinnest it still fills
+MAX_BRIDGE_LAYERS = 25
+
+
+def layer_bridge(first_m: float, wall_cell_m: float, *, n_plan: int, growth: float, last_rel: float,
+                 max_layers: int = MAX_BRIDGE_LAYERS, faces: float | None = None,
+                 room: float | None = None) -> tuple[int, float, float]:
+    """CFDREQ-9: (layer count, first layer height, stack thickness) for a first layer far thinner than the wall
+    cells. The stack keeps the thickness our own plan gives the wall - `n_plan` layers growing by `growth` up to a
+    last layer `last_rel` times the wall cell (snappy's relative finalLayerThickness) - and the asked first layer
+    starts it: as many layers as the growth needs to fill it, so the last layer meets the cells beside it the way
+    our own stack does. Never fewer than the plan's. Past `max_layers`, or past the cells `room` lets the layers add
+    on `faces` wall faces, the count stops there and the first layer is the thinnest that count still fills the
+    stack with (never thinner than asked)."""
+    g, n0 = max(float(growth), 1.0), max(1, int(n_plan))
+    total = float(last_rel) * float(wall_cell_m) * sum(g ** -k for k in range(n0))
+    first = float(first_m)
+    if g <= 1.0001:
+        need = total / first
+    else:
+        need = math.log(1.0 + total * (g - 1.0) / first) / math.log(g)
+    n = max(n0, int(round(need)))
+    cap = int(max_layers)
+    if faces and room is not None and faces > 0:
+        cap = min(cap, n0 + int(max(0.0, float(room)) // float(faces)))
+    cap = max(n0, cap)
+    if n <= cap:
+        return n, first, total
+    n = cap
+    fill = total / n if g <= 1.0001 else total * (g - 1.0) / (g ** n - 1.0)
+    return n, max(first, fill), total
+
+
+def _snappy_layers(ask: Ask, text: str, wall_cell_m: float | None, bridge: Mapping | None = None) -> str:
     """The layer thicknesses in absolute sizes when the user gave one (first height, stack, or a y+ turned into a
-    first height); the growth alone keeps our relative sizes."""
+    first height); the growth alone keeps our relative sizes. With `bridge` (CFDREQ-9), a first layer far thinner
+    than the wall cells gets the layers that fill our own stack from it (layer_bridge), said on its row."""
     m = re.search(r"addLayersControls\s*\{", text)
     if not m:
         return text
@@ -1383,6 +1658,28 @@ def _snappy_layers(ask: Ask, text: str, wall_cell_m: float | None) -> str:
             ask.done("layers:growth", f"each layer {MR._g(g)} times the one under it")
         return out
     n = int(_num(out, "nSurfaceLayers") or 3)
+    bridged = None
+    if (bridge is not None and first is not None and total is None and ask.n_layers is None and n > 0
+            and wall_cell_m and wall_cell_m / first > THIN_LAYER_RATIO):
+        last_rel = _num(out, "finalLayerThickness") or 0.3
+        n_new, first_new, stack = layer_bridge(first, float(wall_cell_m), n_plan=n, growth=g, last_rel=last_rel,
+                                               faces=bridge.get("faces"), room=bridge.get("room"))
+        if n_new > n:
+            out = re.sub(r"\bnSurfaceLayers\s+[1-9][0-9]*\s*;", f"nSurfaceLayers {n_new};", out)
+            bridged = (n, n_new, first, first_new, stack)
+            n, first = n_new, first_new
+    thick = None
+    if (bridged is None and first is not None and total is None and ask.n_layers is None and n > 0
+            and wall_cell_m):
+        # CFDREQ-9, THE THICK SIDE: a first layer so thick that the plan's layers make a stack several wall cells
+        # deep, which snappyHexMesh cannot shrink the mesh for (a y+ 50 layer, 1.35 mm under 1.72 mm cells: 5 layers
+        # are 10 mm, and grew on 5.7% of the wall) - as few layers as fill the stack our own plan gives the wall
+        last_rel = _num(out, "finalLayerThickness") or 0.3
+        n_new, first_new, stack = layer_fit(first, float(wall_cell_m), n_plan=n, growth=g, last_rel=last_rel)
+        if n_new < n or first_new < first:
+            out = re.sub(r"\bnSurfaceLayers\s+[1-9][0-9]*\s*;", f"nSurfaceLayers {n_new};", out)
+            thick = (n, n_new, first, first_new, stack)
+            n, first = n_new, first_new
     spec = []
     if first is not None and total is not None and ask.layer_growth is None:
         spec = [f"firstLayerThickness {first:.6g};", f"thickness {total:.6g};"]
@@ -1419,7 +1716,8 @@ def _snappy_layers(ask: Ask, text: str, wall_cell_m: float | None) -> str:
             new = max(1e-30, min(ours, 1e-3 * pyramid))
             if new < ours:
                 out = _sub(out, "minVol", f"{new:.3g}", inside="meshQualityControls", count=1)
-        if first is not None and wall_cell_m / first > 50:
+        out = _layer_determinant(ask, out, thinnest, float(wall_cell_m))
+        if bridged is None and first is not None and wall_cell_m / first > THIN_LAYER_RATIO:
             # a stack far thinner than the cells it grows into is hard for the mesher to keep (measured: a 0.011 mm
             # first layer under 2 mm wall cells kept layers on 1.8% of a wing): said where it is set and where the
             # layers are reported, with what keeps more of them
@@ -1428,7 +1726,177 @@ def _snappy_layers(ask: Ask, text: str, wall_cell_m: float | None) -> str:
             ask.rows.get(ask.rid("layers:first_height") or ask.rid("layers:y_plus") or "", {}).update(note=thin)
             if not ask.layer_note:
                 ask.layer_note = thin
+    if bridged is not None:
+        _say_bridge(ask, bridged, g, float(wall_cell_m or 0.0))
+    if thick is not None:
+        _say_thick(ask, thick, g, float(wall_cell_m or 0.0))
     return out
+
+
+#: ENG-asks: the engines that set an absolute first layer (a height, or a y+ turned into one) - snappyHexMesh and the
+#: multi-region mesher (this module's snappy_dict), cfMesh (maxFirstLayerThickness), Netgen (its first layer). VMTK
+#: sizes its stack from the vessel radius; gmsh flow and the snap grid build no prism layers.
+FIRST_LAYER_ENGINES = frozenset({"snappy", "snappy_multiregion", "cfmesh", "netgen"})
+#: CFDREQ-10: the asks of an absolute layer height, and the engines that set one in the order they deliver it over the
+#: whole wall, measured (snappyHexMesh 100% coverage at y+ 1 on s_duct_004, cfMesh 78%; the order only ranks engines
+#: of the job's own ladder, never adds one)
+LAYER_HEIGHT_FIELDS = frozenset({"layers:first_height", "layers:y_plus", "layers:total_thickness"})
+LAYER_HEIGHT_DELIVERS = ("snappy", "snappy_multiregion", "cfmesh", "netgen")
+#: what each such ask is called in the line that says why the engine was chosen
+_ASK_NAMES = {"layers:first_height": "the first layer height", "layers:y_plus": "the first layer for the y+",
+              "layers:total_thickness": "the layer stack's thickness"}
+
+
+def _cannot(engine: str, field: str) -> bool:
+    """Whether `engine` has no setting for a requirement row's field (the registry's NotHere for a control, the
+    first-layer engines for a layer height or a y+)."""
+    if field in ("layers:first_height", "layers:y_plus"):
+        return engine not in FIRST_LAYER_ENGINES
+    if field == "layers:total_thickness":
+        return engine not in ("snappy", "snappy_multiregion", "netgen")
+    if field.startswith("control:"):
+        from meshpipeline.contracts import mesh_controls as MC
+        return isinstance(MC.lane_of(LANES.get(engine, engine), field.split(":", 1)[1]), MC.NotHere)
+    return False
+
+
+def engine_that_can(sec: Mapping | None, engine: str, ladder, *, conditions_y_plus: bool = False) -> tuple[str, str]:
+    """ENG-asks: (the engine to mesh with, the plain line that says why - "" when it is `engine`). When the notes'
+    reading (and a wall treatment the user chose, `conditions_y_plus`) asks something `engine` has no setting for and
+    another engine of the job's `ladder` can set all of those, that one - the first in the ladder's order. Nothing
+    asked, or nothing `engine` cannot set: `engine` itself, as always."""
+    req = MR.requirements_of(sec) or {}
+    fields = [str(r.get("field") or "") for r in req.get("rows") or [] if isinstance(r, Mapping)]
+    if conditions_y_plus and "layers:y_plus" not in fields and "layers:first_height" not in fields:
+        fields.append("layers:y_plus")
+    missing = [f for f in fields if _cannot(engine, f)]
+    if not missing:
+        return engine, ""
+    # an absolute first layer (or a y+ made one) goes to the engine that DELIVERS it over the whole wall first, then
+    # the ladder's order: on s_duct_004, y+ 1 on cfMesh had layers on 78% of the wall (the rest none, not met), on
+    # snappyHexMesh on 100% (m483 round 9, 2e against 2c)
+    order = list(ladder or ())
+    if any(f in LAYER_HEIGHT_FIELDS for f in missing):
+        order.sort(key=lambda e: LAYER_HEIGHT_DELIVERS.index(e) if e in LAYER_HEIGHT_DELIVERS
+                   else len(LAYER_HEIGHT_DELIVERS))
+    for other in order:
+        if other != engine and not any(_cannot(str(other), f) for f in missing):
+            from meshpipeline.engines.registry import engine_label
+            try:
+                name = engine_label(str(other))
+            except Exception:  # noqa: BLE001 - the engine's own name still says which
+                name = str(other)
+            what = _ASK_NAMES.get(missing[0]) or next(
+                (str(r.get("asked")) for r in req.get("rows") or [] if r.get("field") == missing[0]), "what")
+            return str(other), f"Meshed with {name}, because it can set {what} you asked for."
+    return engine, ""
+
+
+def _say_thick(ask: Ask, thick: tuple, g: float, wall_cell_m: float) -> None:
+    """CFDREQ-9 (the thick side) in the rows' words: how many layers the stack got and why, and - when even one layer
+    of the height asked is past the stack our plan gives the wall - the first layer built and the y+ it gives."""
+    n0, n, asked, built, stack = thick
+    deep = asked * (g ** n0 - 1.0) / (g - 1.0) if g > 1.0001 else asked * n0
+    field = "layers:y_plus" if ask.first_m is None and ask.y_plus is not None else "layers:first_height"
+    rid = ask.rid(field)
+    if built >= asked * (1 - 1e-6):
+        how = (f"{n} layer{'s' if n != 1 else ''} (not our usual {n0}): from a first layer that high our usual {n0} "
+               f"would make a stack {_mm(deep)} deep under {_mm(wall_cell_m)} wall cells, more than the mesher can grow; "
+               f"{n} fill{'s' if n == 1 else ''} the {_mm(stack)} our plan gives the wall")
+        row = ask.rows.get(rid or "")
+        if row is not None:
+            row["built"] = f"{row['built']}; {how}"
+            row["layers"] = n
+        ask.layer_note = ask.layer_note or how
+        return
+    yp = ask.y_plus
+    got = (f"y+ about {MR._g(float(yp) * built / asked)}, not {MR._g(float(yp))}"
+           if field == "layers:y_plus" and yp is not None else f"not the {_mm(asked)} asked")
+    ask.nearest(field, f"first layer {_mm(built)} high ({got}), one layer: a thicker one would not fit the {_mm(stack)} "
+                       f"stack our plan gives the {_mm(wall_cell_m)} wall cells, and the mesher could not grow it",
+                first_m=float(f"{built:.4g}"), asked_m=float(f"{asked:.4g}"), layers=n)
+    ask.layer_note = ask.layer_note or f"one layer {_mm(built)} high"
+
+
+def layer_fit(first_m: float, wall_cell_m: float, *, n_plan: int, growth: float,
+              last_rel: float) -> tuple[int, float, float]:
+    """CFDREQ-9, the thick side: (layer count, first layer height, stack thickness) for a first layer so thick that
+    the plan's count would stack it past the thickness our own plan gives the wall (`n_plan` layers up to a last one
+    `last_rel` of the wall cell): the most layers, from the height asked, that stay inside it (at least one); one
+    layer of that whole thickness when even one of the height asked is past it. The plan's count and the height
+    asked when they fit already."""
+    g, n0 = max(float(growth), 1.0), max(1, int(n_plan))
+    stack = float(last_rel) * float(wall_cell_m) * sum(g ** -k for k in range(n0))
+    first = float(first_m)
+
+    def height(k: int) -> float:
+        return first * k if g <= 1.0001 else first * (g ** k - 1.0) / (g - 1.0)
+
+    if height(n0) <= stack * (1 + 1e-9):
+        return n0, first, stack
+    if first > stack:
+        return 1, stack, stack
+    n = max(k for k in range(1, n0 + 1) if height(k) <= stack * (1 + 1e-9))
+    return n, first, stack
+
+
+#: CFDREQ-9: the cell determinant snappyHexMesh checks is about this times (thickness / width)^2 for a flat cell, so a
+#: layer cell is "bad" by its flatness alone - a 0.022 mm layer under 4.4 mm cells reads 0.0007, under our 0.001 bar
+#: (job f4019933: every wall face's layers taken back for it, 633,244 faces)
+FLAT_CELL_DETERMINANT = 27.0
+#: the lowest the layer stage's determinant bar goes for a thin first layer (cells still have positive volume)
+LAYER_DETERMINANT_FLOOR = 1e-6
+
+
+def _layer_determinant(ask: Ask, text: str, thinnest: float, wall_cell_m: float) -> str:
+    """CFDREQ-9: the layer stage's determinant bar (meshQualityControls/relaxed minDeterminant) set under what the
+    thinnest layer cell reads - for a cell as flat as the asked first layer the check only measures flatness, which
+    is what a thin layer is. Faces up to twice the wall cell wide and half of that as margin; never above ours, never
+    with a determinant limit of the user's (theirs holds), and unchanged when the layers clear our bar already."""
+    if ask.limit("determinant") is not None or thinnest <= 0 or wall_cell_m <= 0:
+        return text
+    ours = _num(text, "minDeterminant")
+    m = re.search(r"relaxed\s*\{[^}]*\}", text)
+    if ours is None or m is None:
+        return text
+    reads = FLAT_CELL_DETERMINANT * (thinnest / (2.0 * wall_cell_m)) ** 2
+    if reads >= 2.0 * ours:
+        return text
+    want = max(LAYER_DETERMINANT_FLOOR, min(ours, 0.5 * reads))
+    block = m.group(0)
+    if re.search(r"\bminDeterminant\s+", block):
+        block = _sub(block, "minDeterminant", f"{want:.3g}")
+    else:
+        block = re.sub(r"relaxed\s*\{", f"relaxed {{ minDeterminant {want:.3g};", block, count=1)
+    return text[:m.start()] + block + text[m.end():]
+
+
+def _say_bridge(ask: Ask, bridged: tuple, g: float, wall_cell_m: float) -> None:
+    """CFDREQ-9 in the rows' words: how many layers the stack got and why, and - when the count could not fill it
+    from the height asked - the first layer built and the y+ it gives."""
+    n0, n, asked, built, stack = bridged
+    how = (f"{n} layers (not our usual {n0}), each {MR._g(g)} times the one under it, so the stack fills the "
+           f"{_mm(stack)} our plan gives the wall: a first layer {int(wall_cell_m / asked):,} times thinner than the "
+           f"{_mm(wall_cell_m)} wall cells is not kept with only {n0}")
+    field = "layers:y_plus" if ask.first_m is None and ask.y_plus is not None else "layers:first_height"
+    rid = ask.rid(field)
+    if built <= asked * (1 + 1e-6):
+        row = ask.rows.get(rid or "")
+        if row is not None:
+            row["built"] = f"{row['built']}; {how}"
+            row["layers"] = n
+        ask.layer_note = ask.layer_note or how
+        return
+    yp = ask.y_plus
+    if field == "layers:y_plus" and yp is not None:
+        got = f"y+ about {MR._g(float(yp) * built / asked)}, not {MR._g(float(yp))}"
+    else:
+        got = f"not the {_mm(asked)} asked"
+    ask.nearest(field, f"first layer {_mm(built)} high ({got}): {n} layers are the most this mesh takes "
+                       f"(each {MR._g(g)} times the one under it), and from a thinner first layer they would not "
+                       f"fill the {_mm(stack)} stack our plan gives the wall, which is how layers that thin are kept",
+                first_m=float(f"{built:.4g}"), asked_m=float(f"{asked:.4g}"), layers=n)
+    ask.layer_note = ask.layer_note or f"{n} layers from a first layer {_mm(built)} high"
 
 
 # #
@@ -1456,9 +1924,16 @@ def _cells_words(s: str) -> str:
 
 def report(workspace, quality: Mapping, engine: str) -> dict | None:
     """CFDREQ-6: for every requirement read from the notes, what was asked and what the built flow mesh delivers
-    (the shape of engines/mesh_requirements.finish_report). None with no requirement."""
-    req = requirements_for(workspace)
-    if not req or not req.get("rows"):
+    (the shape of engines/mesh_requirements.finish_report). Every ask the reading holds gets a row, whatever its
+    outcome - one the checks set aside too ("not applied - <why>"), so an attempt whose only ask was set aside is
+    never silent (5b/5c of the round-4 matrix had no tally at all). None with no ask."""
+    sec = MR.read(workspace) if workspace else {}
+    req = requirements_for(workspace) or {}
+    aside = [str(d) for d in (sec.get("dropped") or [])] if sec.get("status") == "used" else []
+    # NOTE-15: the engine the notes chose is an ask too, met when it built this mesh
+    from meshpipeline.engines import notes_acted as NA
+    engine_row = NA.report_row(sec, engine)
+    if not req.get("rows") and not aside and engine_row is None:
         return None
     plan = (_plan(workspace).get("rows") or {})
     q = dict(quality or {})
@@ -1471,11 +1946,12 @@ def report(workspace, quality: Mapping, engine: str) -> dict | None:
     n_meas = int(figs["n_cells"]) if figs else n
     limits = {lim["id"]: lim for lim in req.get("limits") or []}
     rows = []
-    for row in req["rows"]:
+    for row in req.get("rows") or []:
         field, p = str(row["field"]), plan.get(row["id"]) or {}
         status, built = p.get("status"), str(p.get("built") or "")
         if field.startswith("limit:"):
             got = _limit_row(limits[row["id"]], q, figs, n_meas, p)
+            got = _layer_cells_said(limits[row["id"]], got, q, row)
         elif field.startswith("cells:"):
             # a count is measured on every mesh, a setting of this mesher or not
             got = _count_row(field, req, n, p)
@@ -1487,6 +1963,12 @@ def report(workspace, quality: Mapping, engine: str) -> dict | None:
             got = _layers_row(req, q, built)
             if p.get("note") and got.get("met") is False:
                 got["delivered"] += f"; {p['note']}"
+        elif field in ("layers:y_plus", "layers:first_height") and status == "applied" and (
+                fl := _first_layer_row(workspace, req, q, p)) is not None:
+            got = fl
+        elif field == "control:surface_level" and status in ("applied", "nearest") and (
+                lv := _level_row(workspace, req)) is not None:
+            got = lv
         else:
             got = {"applied": True, "met": False if status == "nearest" else None,
                    "delivered": (f"not possible as asked - {built}" if status == "nearest" else built)
@@ -1497,7 +1979,15 @@ def report(workspace, quality: Mapping, engine: str) -> dict | None:
                 got.update(measured=float(f"{big * 1e3:.4g}"), met=bool(big <= 1.05 * lim) and status != "nearest",
                            delivered=got["delivered"] + f"; the largest cell is {_mm(big)}")
         rows.append({"id": row["id"], "field": field, "asked": row["asked"], **got,
-                     **({"from": row["from"]} if row.get("from") else {})})
+                     **({"from": row["from"]} if row.get("from") else {}), **MR.carried(row)})
+    for i, d in enumerate(aside, 1):
+        # an ask the checks set aside: '"<the user's words>": <why>: not applied' (engines/mesh_requirements.check)
+        asked, _sep, why = d.partition(": ")
+        why = why.removesuffix(": not applied").removesuffix(" not applied").strip() or "it could not be read"
+        rows.append({"id": f"x{i}", "field": "set_aside", "asked": asked.strip().strip('"'), "applied": False,
+                     "met": None, "delivered": f"not applied - {why}"})
+    if engine_row is not None:
+        rows.insert(0, engine_row)
     return MR.finish_report(rows, n_meas or n, DEFINITIONS)
 
 
@@ -1519,6 +2009,78 @@ def _count_row(field: str, req: Mapping, n: int, p: Mapping) -> dict:
     return {"applied": True, "measured": n, "met": bool(met), "delivered": said}
 
 
+#: CFDREQ-6: where each mesher writes the first layer height it was given (the dictionary in the case), and the key
+_FIRST_LAYER_IN = (("system/snappyHexMeshDict", "firstLayerThickness"), ("system/meshDict", "maxFirstLayerThickness"))
+
+
+def _first_layer_row(workspace, req: Mapping, q: Mapping, p: Mapping) -> dict | None:
+    """CFDREQ-6: a first layer height asked (or a y+ turned into one) against the built mesh - the height the
+    mesher's dictionary was given, and the layers it really grew (the wall's coverage, the layer count's 80%): met,
+    or not met with the numbers. None when either was not measured (the row stays "applied as a setting"). The
+    reducer of job 63b0fd25 was built at 0.0224 mm with 100% of its wall covered and read "0 met; 1 applied as a
+    setting"."""
+    planned = p.get("first_m")
+    if planned is None:
+        first_mm = (req.get("layers") or {}).get("first_mm")
+        planned = float(first_mm) * 1e-3 if first_mm is not None else None
+    cover = q.get("layer_coverage_pct")
+    if not planned or not isinstance(cover, (int, float)) or isinstance(cover, bool):
+        return None
+    written = None
+    for rel, key in _FIRST_LAYER_IN:
+        try:
+            written = _num((Path(workspace) / rel).read_text(errors="replace"), key)
+        except OSError:
+            continue
+        if written is not None:
+            break
+    if written is None:
+        return None
+    as_asked = abs(written - float(planned)) <= 0.01 * float(planned)
+    grown = float(cover) >= 80.0
+    said = (f"first layer {_mm(written)} high, as asked; layers on {MR._g(float(cover))}% of the wall" if as_asked
+            else f"first layer {_mm(written)} high, not {_mm(float(planned))}; layers on "
+                 f"{MR._g(float(cover))}% of the wall")
+    if as_asked and not grown:
+        said += " - the rest of the wall has none, so the first cell there is not this height"
+    return {"applied": True, "met": bool(as_asked and grown), "measured": float(f"{written:.4g}"), "delivered": said}
+
+
+_WALL_LEVEL = re.compile(r"refinementSurfaces\s*\{\s*[\w.]+\s*\{\s*level\s*\(\s*(\d+)\s+(\d+)\s*\)")
+_BLOCKS = re.compile(r"hex\s*\([^)]*\)\s*\(\s*(\d+)\s+(\d+)\s+(\d+)\s*\)")
+
+
+def _level_row(workspace, req: Mapping) -> dict | None:
+    """NOTE-13 x CFDREQ-6: the wall's refinement level asked against the level snappyHexMesh's dictionary really
+    carries (its first refinement surface, the wall) and the cell that gives at the walls - met, or not met with
+    both levels and why. None when the dictionary cannot be read (the row stays a setting)."""
+    n = ((req.get("controls") or {}).get("surface_level") or {}).get("value")
+    try:
+        shm = (Path(workspace) / "system" / "snappyHexMeshDict").read_text(errors="replace")
+    except OSError:
+        return None
+    m = _WALL_LEVEL.search(shm)
+    if n is None or m is None:
+        return None
+    built = int(m.group(2))
+    cell = ""
+    try:
+        blk = (Path(workspace) / "system" / "blockMeshDict").read_text(errors="replace")
+        pts = [tuple(float(v) for v in t.split()) for t in re.findall(r"\(([-+\d.eE]+ [-+\d.eE]+ [-+\d.eE]+)\)", blk)]
+        blocks = _BLOCKS.search(blk)
+        div = [int(v) for v in blocks.groups()] if blocks else []
+        if len(pts) >= 7 and div:
+            base = max(abs(pts[6][i] - pts[0][i]) / max(div[i], 1) for i in range(3))
+            cell = f" (cells of {_mm(base / 2 ** built)} at the walls)"
+    except (OSError, ValueError, IndexError):
+        cell = ""
+    if built >= int(n):
+        return {"applied": True, "met": True, "measured": built, "delivered": f"level {built} at the walls{cell}"}
+    return {"applied": True, "met": False, "measured": built,
+            "delivered": f"level {built} at the walls{cell}, not {int(n)}: the level was counted again on the background "
+                         "cell the cell budget allows"}
+
+
 def _layers_row(req: Mapping, q: Mapping, built: str) -> dict:
     asked = int((req.get("layers") or {}).get("count") or 0)
     cover = q.get("layer_coverage_pct")
@@ -1532,6 +2094,28 @@ def _layers_row(req: Mapping, q: Mapping, built: str) -> dict:
         return {"applied": True, "met": bool(cover >= 80.0), "measured": float(cover),
                 "delivered": f"{said}; {MR._g(cover)}% of the wall has them"}
     return {"applied": True, "met": None, "delivered": said}
+
+
+#: a limit written for even cells is not judged on prism-layer cells (docs/RULES.md)
+LAYER_CELLS_RULE = "CFDREQ-11"
+#: CFDREQ-11: the shape limits written for even (isotropic) cells - judged on a mesh with prism layers, the layers'
+#: own thin cells count against them by design
+ISOTROPIC_MEASURES = ("aspect_ratio",)
+
+
+def _layer_cells_said(lim: Mapping, got: dict, q: Mapping, row: Mapping | None = None) -> dict:
+    """CFDREQ-11: an aspect-ratio limit (written for even cells - a structural criteria list's "aspect ratio under 4")
+    on a mesh with prism layers is not judged: the layer cells are thin by design, their aspect ratio set by the first
+    layer height, and this mesh's figures do not tell them apart from the rest - so the share past it is told as
+    information, never "not met" (a y+ 1 stack read "43.9% of cells over 4 - not met"). Met, or no layers: as it was."""
+    cover = q.get("layer_coverage_pct")
+    layered = isinstance(cover, (int, float)) and not isinstance(cover, bool) and float(cover) > 0.0
+    if (str(lim.get("measure")) not in ISOTROPIC_MEASURES or not layered or got.get("met") is not False
+            or (row or {}).get("strictness") == "hard"):
+        return got                      # (said hard: judged on every cell, as the user asked)
+    return {**got, "met": None, "layer_cells": True,
+            "delivered": f"{got.get('delivered')} - prism layer cells are thin by design (set by the first layer height) "
+                         "and are counted here; a limit for even cells is told, not judged, on a mesh with layers"}
 
 
 def _limit_row(lim: Mapping, q: Mapping, figs: dict | None, n: int, p: Mapping) -> dict:
@@ -1559,6 +2143,12 @@ def _limit_row(lim: Mapping, q: Mapping, figs: dict | None, n: int, p: Mapping) 
         return got
     worst = q.get(key)
     if not isinstance(worst, (int, float)) or isinstance(worst, bool):
+        if not lever:
+            # neither set by this mesher nor measured on its cells: never "set as asked" (an aspect ratio from a saved
+            # criteria list on VMTK and cfMesh read "Set as asked" over "was not measured", m483 with a standard)
+            return {"applied": False, "met": None,
+                    "delivered": f"not applied - this mesher has no setting for {name}, and it was not measured on "
+                                 "this mesh"}
         return {"applied": True, "met": None, "delivered": f"{name} was not measured on this mesh{lever}"}
     worst = float(worst)
     target, outer, share = float(lim["target"]), lim.get("outer"), float(lim.get("share") or 0.0)
@@ -1605,15 +2195,16 @@ def attach(workspace, quality: dict, engine: str) -> dict:
     except Exception:  # noqa: BLE001 - a report that cannot be made never stops a delivery
         logger.warning("cfd requirements: no report", exc_info=True)
         return quality
-    if rep is None:
-        return quality
-    out = {**quality, "requirements": rep}
+    # an attempt whose notes asked only things no setting matches still says so in its closing line (never silent)
+    out = {**quality, "requirements": rep} if rep is not None else quality
     try:
         from meshpipeline.contracts.user_notes import record_remark
         from meshpipeline.engines import meshing_standard as MS
         sec = MR.read(workspace)
-        # STD-2: the closing line says where the things asked came from ("From your settings: ...")
-        said = MS.remark(sec, summary(rep, not_applied=len(MR.not_applied_words(sec))))
+        # STD-2: the closing line says where the things asked came from ("From your settings: ..."); an ask the checks
+        # set aside is a row of the report already, so it is not counted twice among the other things not applied
+        others = max(0, len(MR.not_applied_words(sec)) - len(sec.get("dropped") or []))
+        said = MS.remark(sec, summary(rep, not_applied=others))
         if said:
             record_remark(Path(workspace), said, by=CONSUMER)
     except Exception:  # noqa: BLE001

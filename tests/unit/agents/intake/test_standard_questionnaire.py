@@ -545,6 +545,23 @@ async def test_the_cfd_plan_is_the_applications_and_carries_the_answer(monkeypat
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("answer,y_plus,speed", [
+    ("OK", 50.0, 1.0),
+    ("Resolve the wall (y⁺ ≈ 1)", 1.0, 1.0),
+    ("water at 2.5 m/s, resolve the wall", 1.0, 2.5),
+])
+async def test_the_conditions_answer_typed_or_clicked_reaches_the_run(monkeypatch, answer, y_plus, speed):
+    # CFDREQ-8: the plan's conditions sentence is what the run reads back - a click on "Resolve the wall" is never
+    # a note (NOTE-1), so before this the click reached no engine and the first layer kept the planner's own size
+    from meshpipeline.contracts import flow_conditions as FC
+
+    world = await _run(monkeypatch, [("say", "water flowing through this elbow"), ("stage", INTERNAL_DECL),
+                                     ("say", answer)])
+    got = FC.read(world.session.request_txt, world.session.intake_patches)
+    assert got is not None and got["y_plus"] == y_plus and got["velocity_ms"] == speed and got["why"] == ""
+
+
+@pytest.mark.asyncio
 async def test_the_external_plan_carries_the_far_field_the_stage_confirmed(monkeypatch):
     world = await _run(monkeypatch, [("say", "external aero over this car"), ("stage", EXTERNAL_DECL), ("say", "OK")])
     assert world.model.calls == 0 and world.session.purpose == "external_cfd"

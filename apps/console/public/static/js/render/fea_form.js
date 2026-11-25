@@ -561,12 +561,12 @@ export function shellLegendHtml(s) {
     </div>`;
 }
 
-/** The marks on the part for what stays solid (S1, S2 ...) and where plates do not meet (O1, O2 ...),
+/** The marks on the part for what the shell leaves out (S1, S2 ...) and where plates do not meet (O1, O2 ...),
  *  in the hot spots' shape. */
 export function shellMarks(s) {
   return ((s && s.not_shelled) || []).filter((r) => r.id && r.at_mm && r.at_mm.length === 3).map((r) => ({
     id: r.id, type: r.kind === "open" ? "shell_open" : "shell_solid",
-    shape: r.kind === "open" ? "plates do not meet" : "stays solid", at_mm: r.at_mm }));
+    shape: r.kind === "open" ? "plates do not meet" : "not in the mesh", at_mm: r.at_mm }));
 }
 
 /** One string for what a shell view shows: a later view that says more is drawn again. */
@@ -604,8 +604,8 @@ function shellSummary(s) {
   const bits = [];
   if (bodies.length > 1) {
     const sh = bodies.filter((b) => b.verdict !== "solid").length;
-    bits.push(`${sh} of ${bodies.length} parts as shell`, `${bodies.length - sh} stay solid`);
-  } else bits.push(solid ? `${plural(solid, "region")} stay${solid === 1 ? "s" : ""} solid` : "whole part");
+    bits.push(`${sh} of ${bodies.length} parts as shell`, `${bodies.length - sh} not in the mesh`);
+  } else bits.push(solid ? `${plural(solid, "region")} left out` : "whole part");
   if (open) bits.push(`${open} open`);
   return esc(bits.join(" · "));
 }

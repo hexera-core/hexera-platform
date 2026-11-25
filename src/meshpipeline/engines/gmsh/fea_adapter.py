@@ -2210,7 +2210,10 @@ def _mesh(workspace) -> int:
             from meshpipeline.engines import fea_requirements, shell_run
             wanted = shell_run.requirements_in(ws)
             if wanted and solid is not None:
-                asked_report = fea_requirements.report(solid, wanted, order=order)
+                asked_report = fea_requirements.report(
+                    solid, wanted, order=order, applied=plan.get("controls"),
+                    through_wall=(rules.get("through_wall") or {}).get("min") if rules else None,
+                    places=plan.get("part_sizes") if isinstance(plan.get("part_sizes"), dict) else None)
                 if mmg.get("targets"):
                     from meshpipeline.engines import fea_mmg as _mmg_told
                     asked_report = _mmg_told.tell(asked_report, mmg)
@@ -2231,6 +2234,10 @@ def _mesh(workspace) -> int:
         if shape.get("fea_inverted"):
             fatal.append(f"{shape['fea_inverted']} inverted element(s) (Jacobian not above zero)")
         tw = (rules.get("through_wall") or {}).get("min")
+        # NOTE-13: the count through the walls the notes asked, which the report holds the mesh to (PLAN-fea-3's 2
+        # otherwise)
+        from meshpipeline.engines.control_appliers import asked_count
+        asked_through = asked_count(plan)
         # EVERY CAD FACE ACCOUNTED FOR (engines/fea_review.face_accounting): named in the files, or left out for a
         # measured reason - a skin of no thickness (MESH-8) or a tiny face merged into its neighbour (MESH-9)
         try:
@@ -2295,6 +2302,7 @@ def _mesh(workspace) -> int:
                         "resolution_short": list(plan.get("resolution_short") or [])}
                        if plan.get("coarsened") else {}),
                     "through_wall_min": tw, "rules": rules, "quality": shape, "exports": exports,
+                    **({"through_wall_asked": asked_through} if asked_through is not None else {}),
                     # PLAN-fea-17: the parts, how they are joined, and every joint as written
                     **({"assembly": assembly_out} if asm else {}),
                     # LAD-fea-9: the parts fTetWild meshed, how close to the CAD, the faces it affected

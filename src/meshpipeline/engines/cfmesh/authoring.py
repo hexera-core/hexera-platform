@@ -39,7 +39,7 @@ _KNOWN = _STRATEGY | _PREAMBLE
 _MARGIN_KEYS = {"up", "down", "side", "vert"}
 _FEATURE_TYPES = {"box", "sphere", "cone", "line"}
 # snappy knobs a confused model might send to cfMesh - name them so the redirect helps
-_SNAPPY_ONLY = {"surface_level", "feature_level", "first_layer_rel", "quality", "max_cells"}
+_SNAPPY_ONLY = {"surface_level", "feature_level", "last_layer_rel", "quality", "max_cells"}
 
 
 def _num(v) -> bool:

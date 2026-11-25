@@ -58,6 +58,16 @@ def whole_sizes(sizes: Mapping[str, Mapping] | None, req: Mapping | None, part_i
             return out                      # a longest edge the rules' own sizes are already under: nothing to hold
     low = min(low, mid)
     entry = {"min_m": float(f"{low:.6g}"), "max_m": float(f"{2.0 * mid - low:.6g}"), "name": WHOLE, "whole": True}
+    if G is None:
+        # sized by edge lengths alone, the range is the rules' size held by them - not an ask: the plan says what
+        # was asked (engines/fea_plan.user_words)
+        entry["asked"] = " and ".join(f"a {w} edge of {float(v):g} mm" for w, v in (("shortest", lo), ("longest", hi))
+                                      if v is not None)
+    if lo is not None and any(r.get("field") == "min_edge" and r.get("strictness") == "flexible"
+                              for r in (req or {}).get("rows") or []):
+        # NOTE-14: a shortest edge the user said is flexible is a target: the zones the accuracy rules make finer (a
+        # round's elements, a thin wall's) keep their size under it; the part's own size still follows it
+        entry["min_flexible"] = True
     for pid in part_ids:
         out.setdefault(str(pid), dict(entry))
     return out
@@ -100,10 +110,45 @@ def _measures(mesh) -> dict[str, np.ndarray]:
     return {k: np.concatenate(v) if v else np.zeros(0) for k, v in parts.items()}
 
 
-def report(mesh, req: Mapping | None, *, mm_per_unit: float = 1000.0, order: int = 2) -> dict | None:
+def _through_row(req: Mapping, got: dict, measured: float) -> dict:
+    """NOTE-13: elements through the walls, asked against delivered - the fewest measured through any planned wall
+    (engines/fea_checks, read to within its 10%) against the count asked: met or not met, never "applied as a
+    setting" when the mesh says which (hinge e0f6a98b measured 3.0 for 3 asked and was told "0 met")."""
+    from meshpipeline.engines.fea_checks import TOLERANCE
+    n = ((req.get("controls") or {}).get("wall_elements") or {}).get("value")
+    if not n or got.get("applied") is False:
+        return got
+    met = measured >= float(n) * TOLERANCE
+    said = f"{MR._g(round(measured, 2))} elements through the thinnest wall"
+    return {"applied": True, "met": met, "measured": float(f"{measured:.4g}"),
+            "delivered": said if met else f"{said}, not {int(n)}"}
+
+
+def _placed(row: Mapping, req: Mapping, places: Mapping) -> bool:
+    """Whether the parts reader (cad/part_words, the plan's "part_sizes") tied this size-in-a-place row's words to a
+    part or an area: an entry whose quote is the row's own (either holds the other) with parts it names."""
+    def squash(t: str) -> str:
+        return "".join(ch for ch in str(t or "").lower() if ch.isalnum())
+
+    if places.get("status") != "used":
+        return False
+    quote = next((str(e.get("quote") or "") for e in req.get("local") or [] if e.get("id") == row["id"]), "")
+    q = squash(quote or str(row.get("quote") or ""))
+    for e in places.get("entries") or []:
+        eq = squash(str(e.get("quote") or ""))
+        if q and eq and (q in eq or eq in q) and (e.get("parts") or e.get("rest_parts")):
+            return True
+    return False
+
+
+def report(mesh, req: Mapping | None, *, mm_per_unit: float = 1000.0, order: int = 2,
+           applied: Mapping | None = None, through_wall: float | None = None,
+           places: Mapping | None = None) -> dict | None:
     """PLAN-fea-34: for every requirement read from the notes, what was asked and what the built solid mesh
     delivers (the shape of engines/shell_requirements.report). None with no requirement. `mm_per_unit`: the
-    mesh's coordinates in millimetres each (the solid is meshed in metres)."""
+    mesh's coordinates in millimetres each (the solid is meshed in metres). `applied`: what the plan's seam did with
+    each control (the plan's "controls", NOTE-13), when the caller has the plan. `through_wall`: the fewest
+    elements measured through a wall of the plan (engines/fea_checks), which the count through the walls is held to."""
     if not req or not req.get("rows"):
         return None
     m = _measures(mesh)
@@ -115,6 +160,14 @@ def report(mesh, req: Mapping | None, *, mm_per_unit: float = 1000.0, order: int
     for row in req["rows"]:
         field = str(row["field"])
         flow = MR.elements_row(field, req, n, "solid") if field in MR.FLOW_FIELDS else None
+        if field == "local" and places is not None and not _placed(row, req, places):
+            # NOTE-6: a size in one named place the parts reader tied to no part or area of this one: nothing was set
+            # there, so never "applied as a setting" ("make the mesh finer at the fillets", fea0254, round 4: J)
+            where = next((str(e.get("where") or "") for e in req.get("local") or [] if e.get("id") == row["id"]), "")
+            flow = {"applied": False, "met": None,
+                    "delivered": (f"not applied - no such place was found on the part{f' ({where})' if where else ''}"
+                                  if places.get("status") == "used" else
+                                  "not applied - the notes about parts were not read this run, so no place was sized")}
         if flow is not None:
             got = flow
         elif field.startswith("limit:"):
@@ -124,6 +177,12 @@ def report(mesh, req: Mapping | None, *, mm_per_unit: float = 1000.0, order: int
             got = {"applied": True, "measured": float(f"{typical:.6g}"),
                    "met": bool(n) and 0.5 * s["global_mm"] <= typical <= 1.5 * s["global_mm"],
                    "delivered": f"elements are about {MR._g(typical)} mm"}
+            xyz = np.asarray(getattr(mesh, "xyz", ()), dtype=float).reshape(-1, 3)
+            # NOTE-14: built far finer than asked - the same true thing the plan says, with why (finer_global)
+            fin = MR.finer_global(row, float(s["global_mm"]), typical,
+                                  float(np.max(np.ptp(xyz, axis=0))) * mm_per_unit if len(xyz) else 0.0)
+            if fin is not None:
+                got.update(fin)
         elif field in ("min_edge", "max_edge"):
             limit = float(s[f"{field}_mm"])
             v = lo if field == "min_edge" else hi
@@ -140,9 +199,12 @@ def report(mesh, req: Mapping | None, *, mm_per_unit: float = 1000.0, order: int
         elif field == "linear":
             got = {"applied": False, "met": None, "delivered": "not applied - a solid is meshed with quadratic "
                                                                "tetrahedra (10-node); linear ones are not offered yet"}
-        elif field == "growth":
-            got = {"applied": False, "met": None, "delivered": "not applied - on a solid, sizes grow by our own "
-                                                               "fixed rate"}
+        elif field == "growth" or field.startswith("control:"):
+            # NOTE-13: a control's row from the registry (the growth rate is one since the plan's seam applies it)
+            from meshpipeline.engines import control_appliers as CA
+            got = CA.report_row("fea_solid", field.split(":", 1)[-1], applied)
+            if field == "control:wall_elements" and through_wall is not None:
+                got = _through_row(req, got, float(through_wall))
         elif field == "thickness":
             got = {"applied": False, "met": None, "delivered": "not applied - a solid keeps the thickness of your CAD"}
         elif field in ("free_mesh", "no_washers", "structured"):
@@ -151,7 +213,7 @@ def report(mesh, req: Mapping | None, *, mm_per_unit: float = 1000.0, order: int
         else:  # quads_only, triangles_only, max_triangle_percent
             got = {"applied": False, "met": None, "delivered": "not applied - a solid is meshed with tetrahedra"}
         rows.append({"id": row["id"], "field": field, "asked": row["asked"], **got,
-                     **({"from": row["from"]} if row.get("from") else {})})
+                     **({"from": row["from"]} if row.get("from") else {}), **MR.carried(row)})
     return MR.finish_report(rows, n, DEFINITIONS)
 
 

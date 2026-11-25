@@ -32,8 +32,20 @@ def canonical_payload(engine, purpose, input_kind, dimensionality, patches, engi
     }
 
 
+def _no_negative_zero(v):
+    """The same numbers as the database keeps them: its JSON has no -0.0 (a centroid at -0 read back as 0), so a
+    fingerprint taken before the round trip must not depend on the sign of a zero."""
+    if isinstance(v, float):
+        return 0.0 if v == 0.0 else v
+    if isinstance(v, dict):
+        return {k: _no_negative_zero(x) for k, x in v.items()}
+    if isinstance(v, (list, tuple)):
+        return [_no_negative_zero(x) for x in v]
+    return v
+
+
 def fingerprint(canonical: dict) -> str:
-    return hashlib.sha256(json.dumps(canonical, sort_keys=True).encode()).hexdigest()
+    return hashlib.sha256(json.dumps(_no_negative_zero(canonical), sort_keys=True).encode()).hexdigest()
 
 
 # the COMPLETE approved intent (a strict superset of the admission canonical above)

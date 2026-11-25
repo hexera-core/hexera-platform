@@ -7,6 +7,7 @@ import json
 import logging
 import math
 import re
+from collections.abc import Mapping
 from pathlib import Path
 
 from meshpipeline.cad.cad_tessellate import (  # noqa: F401
@@ -928,9 +929,9 @@ def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analy
     # (layer_counts) and relax the termination knobs (layer_overrides); with neither given the
     # authored dict is byte-identical to the historical one - pinned by regression test.
     n_layers = max(0, plan_int(strategy, "n_layers", 3))
-    first_rel = plan_float(strategy, "first_layer_rel", 0.35)
-    if first_rel <= 0.0:
-        first_rel = 0.35
+    last_rel = plan_float(strategy, "last_layer_rel", 0.35)
+    if last_rel <= 0.0:
+        last_rel = 0.35
     layer_counts = {str(k): max(0, int(v)) for k, v in (layer_counts or {}).items()}
 
     def _n_for(patch: str) -> int:
@@ -1108,7 +1109,7 @@ castellatedMeshControls {{ maxLocalCells {cast_cells}; maxGlobalCells {cast_cell
 snapControls {{ nSmoothPatch 3; tolerance 2.0; nSolveIter 50; nRelaxIter 8; nFeatureSnapIter 15;
   implicitFeatureSnap false; explicitFeatureSnap true; multiRegionFeatureSnap false; }}
 addLayersControls {{ relativeSizes true; layers {{ {_layers} }}
-  expansionRatio 1.2; finalLayerThickness {first_rel:g}; minThickness {_min_thick:g}; nGrow 0; featureAngle 130;
+  expansionRatio 1.2; finalLayerThickness {last_rel:g}; minThickness {_min_thick:g}; nGrow 0; featureAngle 130;
   slipFeatureAngle 30; nRelaxIter 8; nSmoothSurfaceNormals 2; nSmoothNormals 3; nSmoothThickness 10;
   maxFaceThicknessRatio 0.5; maxThicknessToMedialRatio {medial}; minMedialAxisAngle 90;
   layerTerminationAngle {LAYER_TERMINATION_ANGLE};
@@ -1461,9 +1462,85 @@ def _port_levels(*, base_cell: float, default_level: int, smin: int,
 _off_grid = off_grid_point
 
 
+#: CFDREQ-9: the share of the pass's cell budget a bridged layer stack may add on top of the plan's own layers
+LAYER_BRIDGE_ROOM = 0.5
+
+
+def _wetted_area(tri, cap_stls) -> float | None:
+    """CFDREQ-9: the area of the staged wall the FLUID touches (m2). A hollow part is staged for a carve: its whole
+    metal skin - bore, outer skin, end rings, flanges - is 'wall', and snappyHexMesh puts faces on the bore alone.
+    engines/passage.cavity_skin (the test cfMesh's bore staging already uses) keeps the pieces with the cavity on one
+    side. None when no piece is kept (a fluid domain's wall is the fluid's own boundary: all of it is wetted) or the
+    test cannot run."""
+    try:
+        import numpy as np
+        import pyvista as pv
+
+        from meshpipeline.engines.passage import _triangles, cavity_skin
+        caps = [pv.read(str(p)) for p in cap_stls if Path(p).exists()]
+        if not caps:
+            return None
+        pts = tri.reshape(-1, 3)
+        raw = np.arange(len(pts), dtype=np.int64).reshape(-1, 3)
+        p, f = _triangles(pv.PolyData(pts, np.hstack([np.full((len(raw), 1), 3, dtype=np.int64), raw]).ravel()))
+        kp, kf = cavity_skin(p, f, caps)
+        if kf is f or len(kf) == 0 or len(kf) >= len(f):
+            return None
+        t = np.asarray(kp, dtype=float)[np.asarray(kf, dtype=np.int64)]
+        return 0.5 * float(np.linalg.norm(np.cross(t[:, 1] - t[:, 0], t[:, 2] - t[:, 0]), axis=1).sum())
+    except Exception:  # noqa: BLE001 - the whole wall's area stands: fewer layers, never more
+        logger.warning("render_internal_case: the wetted wall was not read - its whole area is used", exc_info=True)
+        return None
+
+
+class _LayerBridge(Mapping):
+    """CFDREQ-9's {"faces", "room"}, the faces read only when a bridge is asked for (the wetted test casts rays)."""
+
+    def __init__(self, area_of, layer_cell: float, room: float):
+        self._area_of, self._cell, self._room, self._faces = area_of, float(layer_cell), float(room), None
+
+    def __getitem__(self, key):
+        if key == "room":
+            return self._room
+        if key == "faces":
+            if self._faces is None:
+                self._faces = self._area_of() / (self._cell * self._cell)
+            return self._faces
+        raise KeyError(key)
+
+    def __iter__(self):
+        return iter(("faces", "room"))
+
+    def __len__(self) -> int:
+        return 2
+
+
+def _layer_bridge_room(wall_stl: Path, layer_cell: float, max_cells: int,
+                       cap_stls: list[Path] | None = None) -> Mapping | None:
+    """CFDREQ-9: what a first layer far thinner than the wall cells may spend on more layers - the WETTED wall's
+    faces at `layer_cell` (its area over the cell's: the outer skin of a hollow part gets no cell, s_duct_004's whole
+    skin read 2.5 times the 101,205 faces snappy made and held a y+ 1 ask at 15 layers) and half the pass's budget as
+    room. None (the plan's count kept) when the wall cannot be read."""
+    try:
+        import numpy as np
+        tri = np.asarray(read_stl_triangles(wall_stl), dtype=float)
+        if tri.ndim != 3 or len(tri) == 0 or layer_cell <= 0:
+            return None
+        whole = 0.5 * float(np.linalg.norm(np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0]), axis=1).sum())
+
+        def area() -> float:
+            wet = _wetted_area(tri, cap_stls or [])
+            return min(whole, wet) if wet else whole
+        return _LayerBridge(area, layer_cell, LAYER_BRIDGE_ROOM * float(max_cells))
+    except Exception:  # noqa: BLE001 - no bridge is the plan's own layer count, never a lost pass
+        logger.warning("render_internal_case: the wall's area was not read - the plan's layer count stands",
+                       exc_info=True)
+        return None
+
+
 def render_internal_case(workspace, *, names: dict, features: dict, interior_point,
                          bbox_min, bbox_max, base_cell: float, surface_level: int,
-                         feature_level: int, n_layers: int, first_layer_rel: float = 0.3,
+                         feature_level: int, n_layers: int, last_layer_rel: float = 0.3,
                          max_cells: int = 8_000_000, quality: str = "balanced",
                          wall_key: str = "wall", port_sizes: dict[str, float] | None = None,
                          sealed_before: frozenset[str] | set[str] = frozenset(),
@@ -1510,7 +1587,7 @@ def render_internal_case(workspace, *, names: dict, features: dict, interior_poi
     if _ask is not None:
         from meshpipeline.engines import cfd_requirements as CR
         port_lvls = CR.snappy_port_levels(_ask, port_lvls, names, wall_key, base_m=base_actual,
-                                          hard_max=_HARD_MAX_LEVEL)
+                                          hard_max=_HARD_MAX_LEVEL, roles=CR.port_roles(ws))
     # The near-wall band exists to give the wall a few FINE cells of depth. Scaling it by
     # base_cell made it 3 base cells deep - with an inflated base_cell that was most of
     # the domain at max level (the same detonation). Scale by the actual WALL cell.
@@ -1524,7 +1601,7 @@ def render_internal_case(workspace, *, names: dict, features: dict, interior_poi
                    if near_dist > 0.0 else "")
     max_cells = int(max_cells)
     n_layers = max(0, int(n_layers))
-    first_rel = float(first_layer_rel)
+    last_rel = float(last_layer_rel)
     if deficit or surplus:
         logger.info("render_internal_case: clamp correction deficit=%d surplus=%d "
                     "(base_cell=%.4g base_actual=%.4g) → surf=%d feat=%d wall_cell=%.4g",
@@ -1639,7 +1716,7 @@ castellatedMeshControls {{ maxLocalCells {max_cells}; maxGlobalCells {max_cells}
 snapControls {{ nSmoothPatch 3; tolerance 2.0; nSolveIter 50; nRelaxIter 8; nFeatureSnapIter 15;
   implicitFeatureSnap false; explicitFeatureSnap true; multiRegionFeatureSnap false; }}
 addLayersControls {{ relativeSizes true; layers {{ {wall} {{ nSurfaceLayers {n_layers}; }} }}
-  expansionRatio 1.2; finalLayerThickness {first_rel:g}; minThickness 0.05; nGrow 0; featureAngle 130;
+  expansionRatio 1.2; finalLayerThickness {last_rel:g}; minThickness 0.05; nGrow 0; featureAngle 130;
   slipFeatureAngle 30; nRelaxIter 8; nSmoothSurfaceNormals 2; nSmoothNormals 3; nSmoothThickness 10;
   maxFaceThicknessRatio 0.5; maxThicknessToMedialRatio {medial}; minMedialAxisAngle 90;
   layerTerminationAngle {LAYER_TERMINATION_ANGLE};
@@ -1652,7 +1729,13 @@ mergeTolerance 1e-6; debug 0;
 """)
     if _ask is not None:
         from meshpipeline.engines import cfd_requirements as CR
-        _shm = CR.snappy_dict(_ask, _shm, wall_cell_m=wall_cell_actual)
+        # the cells the layers grow into: the near-wall band's, one level finer than the wall's, where there is one
+        _layer_cell = base_actual / (2 ** near_level)
+        _shm = CR.snappy_dict(_ask, _shm, wall_cell_m=_layer_cell,
+                              bridge=_layer_bridge_room(ws / "constant" / "triSurface" / f"{wall}.stl",
+                                                        _layer_cell, max_cells,
+                                                        [ws / "constant" / "triSurface" / f"{n}.stl"
+                                                         for k, n in names.items() if k != wall_key]))
         _ask.write(ws)
     (ws / "system" / "snappyHexMeshDict").write_text(_shm)
     return {"divisions": div, "surface_level": [smin, smax], "feature_level": flevel,

@@ -26,7 +26,8 @@ a correction to a plan that stands):
 `flow_conditions` CFD: what flows and how fast, with the wall treatment, as one proposal - "OK" or
                   "Resolve the wall (y⁺ ≈ 1)" buttons, or the user's own words. The mesh uses exactly
                   these: the fluid and its speed size the first cell at the wall, and the wall
-                  treatment (wall functions, y⁺ 30–300, or a resolved wall, y⁺ ≈ 1) sets the layers.
+                  treatment (wall functions, y⁺ 30–300, or a resolved wall, y⁺ ≈ 1) sets the layers - the plan
+                  carries them as one sentence the run reads back (contracts/flow_conditions, CFDREQ-8).
 `plan`            the plan card - the mesh plan, the notes box, and Proceed - under one fixed line
 `started`         the run starts
 
@@ -43,6 +44,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from meshpipeline.application import flow_kind as _fk
+from meshpipeline.contracts import flow_conditions as _FC
 
 #: THE STEP IDS - what a test reads a conversation as, whatever prose the model wrote.
 PURPOSE = "purpose"
@@ -84,8 +86,10 @@ def _found(rx: re.Pattern, text: Any) -> re.Match | None:
 EXTERNAL_LEAD = "What flows around it, and how fast?"
 INTERNAL_LEAD = "What flows through it, and how fast?"
 _PROPOSAL = " I'd go with {fluid} at {speed}{inlet}, with {wall} - OK, or tell me what to change."
-WALL_FUNCTIONS = "wall functions (y⁺ 30–300)"
-WALL_RESOLVED = "a resolved wall (y⁺ ≈ 1)"
+#: the wall treatments' words and the plan's conditions sentence are contracts/flow_conditions' (CFDREQ-8): the run
+#: reads the same sentence back, so what the plan says is what the mesh uses
+WALL_FUNCTIONS = _FC.WALL_FUNCTIONS
+WALL_RESOLVED = _FC.WALL_RESOLVED
 #: its buttons: (label, what a click sends)
 CONDITIONS_CHOICES = (("OK", "OK"), ("Resolve the wall (y⁺ ≈ 1)", "Resolve the wall (y⁺ ≈ 1)"))
 #: THE FLOW-KIND QUESTION, asked only when neither the geometry nor the words decide it - the
@@ -97,10 +101,8 @@ FLOW_KIND_CHOICES = (("Through the inside", "The flow goes through the inside"),
 
 _DEFAULT_FLUID = {"external": "air at 20 °C", "internal": "water at 20 °C"}
 _DEFAULT_SPEED = {"external": "10 m/s", "internal": "1 m/s"}
-_FLUIDS = re.compile(r"\b(air|water|sea ?water|oil|nitrogen|helium|hydrogen|steam|blood|fuel|gasoline|petrol|"
-                     r"diesel|kerosene|glycol|co2|exhaust gas|natural gas|methane|argon|refrigerant)\b", re.I)
-_SPEED = re.compile(r"(?:\bmach\s*\d+(?:\.\d+)?)|(?:\d+(?:[.,]\d+)?\s*(?:m/s|km/h|kph|mph|knots?|kts?|l/min|lpm|"
-                    r"l/s|m3/s|m³/s|m3/h|m³/h|kg/s|kg/h|g/s|cfm|gpm)\b)", re.I)
+_FLUIDS = _FC.FLUIDS
+_SPEED = _FC.SPEED
 _RESOLVED = re.compile(r"y\s*\+?\s*⁺?\s*(?:≈|~|=|of|below|under|<=?|around)?\s*1\b|resolve(?:d)? (?:the )?wall|"
                        r"wall[- ]resolved|low[- ]re\b|no wall functions", re.I)
 _FUNCTIONS = re.compile(r"wall functions?|y\s*\+?\s*⁺?\s*(?:≈|~|=|of)?\s*30", re.I)
@@ -641,7 +643,6 @@ def cfd_submission(messages, case: dict, *, engine: str, engine_params: dict) ->
     ext = case["purpose"] == "external_cfd"
     got = flow_conditions(messages)
     what, where = _part_phrase(part, "the part")
-    wall = WALL_RESOLVED if got["wall"] == "resolved" else WALL_FUNCTIONS
     band = "y⁺ ≈ 1" if got["wall"] == "resolved" else "y⁺ 30–300"
     left = [w for w, said in (("the fluid", got["said_fluid"]), ("its speed", got["said_speed"]),
                               ("the wall treatment", got["said_wall"])) if not said]
@@ -659,11 +660,13 @@ def cfd_submission(messages, case: dict, *, engine: str, engine_params: dict) ->
             e = x["requested_extents"]
             far += (f" Far-field margins in reference lengths of {x['reference_length_m']:g} m: {e['upstream']:g} upstream, "
                     f"{e['downstream']:g} downstream, {e['lateral']:g} to each side, {e['vertical']:g} above.")
+    # CFDREQ-8: the conditions as ONE sentence the run reads back (contracts/flow_conditions) - the first layer is
+    # sized from them, or the sentence says why it keeps the mesher's own sizing
+    said = _FC.sentence(got["fluid"], got["speed"], got["wall"], internal=not ext, patches=case["patches"],
+                        wall_said=bool(got["said_wall"]))
     request = (f"{'External' if ext else 'Internal'} flow {'around' if ext else 'through'} {what}{where}, confirmed "
-               f"by the user on the geometry stage. Fluid: {got['fluid']} at {got['speed']}"
-               f"{'' if ext else ' at the inlet'}. Near the walls: {wall}; the first-layer thickness is sized "
-               f"for {band} at that speed.{ports}{far} "
-               + (f"Left to the application's proposal, which the user accepted: {', '.join(left)}. " if left else "")
+               f"by the user on the geometry stage. {said}{ports}{far} "
+               + (f"{_FC.ACCEPTED_LEAD} {', '.join(left)}. " if left else "")
                + "The user's own words are kept as notes, word for word.")
     review = (f"The fluid region is meshed whole. Every boundary patch is present: {names}. Near-wall prism "
               f"layers cover the walls for {band}. Cell sizes grade smoothly from the walls into the "
@@ -681,6 +684,44 @@ def cfd_submission(messages, case: dict, *, engine: str, engine_params: dict) ->
     if quotes:
         out["user_note_quotes"] = quotes
     return out
+
+
+def route_question(text: Any) -> bool:
+    """Whether the application's message is one of the route's own questions - what the mesh is for, CFD or FEA,
+    the analysis, through or around: an answer to it chooses the route and is no note (contracts/user_notes.capture)."""
+    from meshpipeline.application import purpose_map as pm
+
+    t = str(text or "")
+    return any(q and q in t for q in ("What are you meshing this for?", pm.DOMAIN_QUESTION, pm.ANALYSIS_QUESTION,
+                                      FLOW_KIND_QUESTION))
+
+
+def with_conditions_sentence(messages, args: dict) -> dict:
+    """CFDREQ-8: A SUMMARY REDONE IN THE MODEL'S OWN WORDS KEEPS THE CONDITIONS. The application's plan carries the
+    conditions as one fixed sentence the run reads back (contracts/flow_conditions); a note at the plan card ("use
+    snappyHexMesh") had the model submit a new summary in its own words, the sentence was gone, and the run sized
+    the layers as if no conditions step had been answered (job 9a7fcd14: relative layers, no conditions row). When
+    the conversation answered the conditions and the request carries no such sentence, it is added - the user's own
+    answer, as cfd_submission writes it. `args` itself otherwise."""
+    msgs = [m for m in messages or () if isinstance(m, dict)]
+    request = str(args.get("request_txt") or "")
+    if not cfd_declared(msgs) or not conditions_answered(msgs):
+        return args
+    patches = [p for p in args.get("patches") or () if isinstance(p, dict)]
+    if _FC.read(request, patches) is not None:
+        return args
+    got = flow_conditions(msgs)
+    said = _FC.sentence(got["fluid"], got["speed"], got["wall"], internal=flow_kind_of(msgs) == "internal",
+                        patches=patches, wall_said=bool(got["said_wall"]))
+    return {**args, "request_txt": f"{request.rstrip()} {said}{_left_to_proposal(got)}".strip()}
+
+
+def _left_to_proposal(got: dict) -> str:
+    """The plan's words for what the user left to the proposal (cfd_submission's own clause, which the run reads: an
+    accepted wall treatment is no ask of theirs - engines/cfd_requirements.with_conditions, CFDREQ-8)."""
+    left = [w for w, said in (("the fluid", got["said_fluid"]), ("its speed", got["said_speed"]),
+                              ("the wall treatment", got["said_wall"])) if not said]
+    return f" {_FC.ACCEPTED_LEAD} {', '.join(left)}." if left else ""
 
 
 def _engine_defaults(engine: str) -> dict:

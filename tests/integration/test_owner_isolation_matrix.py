@@ -419,6 +419,20 @@ async def _approvable_session(base, db, owner: str, organization_id) -> uuid.UUI
     return session_id
 
 
+async def _approved_job(db, owner: str):
+    """The newest job row this owner's approval created, read straight from the table - not
+    through the session's "current run" pointer (cleared when a run does not start) and not
+    through an organisation-scoped read (the very thing these tests are about)."""
+    from sqlalchemy import select
+
+    from meshpipeline.persistence.models import SimulationJob
+
+    db.expire_all()
+    found = await db.execute(select(SimulationJob).where(SimulationJob.owner_id == owner)
+                             .order_by(SimulationJob.created_at.desc()).limit(1))
+    return found.scalar_one_or_none()
+
+
 async def test_a_job_approved_in_chat_is_readable_by_the_owner_who_approved_it(api, db):
     # THE PRIMARY PRODUCT FLOW, for the only identity that can catch this: a provisioned owner.
     # Every other approval test in the tree signs in as a self-asserted header name with no
@@ -427,7 +441,6 @@ async def test_a_job_approved_in_chat_is_readable_by_the_owner_who_approved_it(a
     # and the write and the read no longer agree: `job_repo.create` in the approval transaction
     # must stamp organization_id, because `get_for_owner` compares on it, and NULL = <uuid> is
     # NULL. Without the stamp the user approves a run and then cannot see the job they started.
-    from meshpipeline.persistence.repositories.session_repository import SessionRepository
 
     base, _ = api
     owner, org_id = await _provisioned_owner(db, org_name="chat-approval")
@@ -438,16 +451,17 @@ async def test_a_job_approved_in_chat_is_readable_by_the_owner_who_approved_it(a
                                 json={"session_id": str(session_id),
                                       "content": "yes, proceed"})
 
-    # The LAUNCH needs a broker this tier does not run, so a 500 from the enqueue step is an
-    # expected outcome here and is deliberately not asserted on: the job row is created, linked
-    # and COMMITTED before any launch is attempted, which is the row this test is about.
-    db.expire_all()
-    linked = await SessionRepository().get_internal(db, session_id)
-    assert linked.job_id is not None, (
+    # The LAUNCH needs a broker this tier does not run, so the run does not start here and that
+    # outcome is deliberately not asserted on: the job row is created and COMMITTED before any
+    # launch is attempted, which is the row this test is about. Since #483 a run that did not
+    # start is told to the user and the session is freed for another Proceed, so the session no
+    # longer points at that job - the row is found by its owner instead.
+    job = await _approved_job(db, owner)
+    assert job is not None, (
         f"the chat approval created no job at all: {approved.status_code} {approved.text}")
 
     async with await _client(base) as c:
-        status = await c.get(f"/api/v1/simulation/{linked.job_id}", headers=_headers(owner))
+        status = await c.get(f"/api/v1/simulation/{job.id}", headers=_headers(owner))
     assert status.status_code == 200, (
         "the owner who approved this run cannot read the job it created "
         f"({status.status_code}) - the approval transaction did not stamp organization_id, so "
@@ -477,8 +491,6 @@ async def test_an_organisation_out_of_credits_is_refused_in_chat_and_no_job_is_c
 async def test_a_job_approved_in_chat_carries_its_organisation(api, db):
     # The same defect stated as the column it lives in, so a regression names its own cause
     # rather than only its symptom. An unstamped row is also what would block 0005's NOT NULL.
-    from meshpipeline.persistence.repositories.job_repository import JobRepository
-    from meshpipeline.persistence.repositories.session_repository import SessionRepository
 
     base, _ = api
     owner, org_id = await _provisioned_owner(db, org_name="chat-approval-stamp")
@@ -488,10 +500,10 @@ async def test_a_job_approved_in_chat_carries_its_organisation(api, db):
         await c.post("/api/v1/chat/message", headers=_headers(owner),
                      json={"session_id": str(session_id), "content": "yes, proceed"})
 
-    db.expire_all()
-    linked = await SessionRepository().get_internal(db, session_id)
-    assert linked.job_id is not None
-    job = await JobRepository().get_internal(db, linked.job_id)
+    # (found by its owner, not through the session: a run that did not start - no broker in this
+    # tier - frees the session for another Proceed, see the test above)
+    job = await _approved_job(db, owner)
+    assert job is not None
     assert str(job.organization_id) == str(org_id), (
         f"the approved job is stamped organization_id={job.organization_id!r}, expected "
         f"{org_id!r}: writes must stamp BOTH columns")

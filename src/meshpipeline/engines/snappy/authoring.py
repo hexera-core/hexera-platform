@@ -19,7 +19,7 @@ AUTHORING_TOOL: dict = {
             "properties": {
                 "domain_margin": {"type": "object", "description": "far-field margins as multiples of body length L: {up,down,side,vert}"},
                 "n_layers": {"type": "integer", "description": "near-wall prism layers (0=none)"},
-                "first_layer_rel": {"type": "number", "description": "outer layer thickness vs local cell (default 0.35)"},
+                "last_layer_rel": {"type": "number", "description": "outer layer thickness vs local cell (default 0.35)"},
                 "quality": {"type": "string", "description": "'balanced' (default) or 'strict' (checkMesh skew<4) - use 'strict' when max_skewness>4"},
                 "surface_level": {"type": "array", "items": {"type": "integer"}, "description": "[min,max] surface refinement (clamped to budget)"},
                 "feature_level": {"type": "integer", "description": "sharp-edge eMesh level (clamped to budget)"},
@@ -40,7 +40,7 @@ AUTHORING_TOOL: dict = {
     },
 }
 
-_STRATEGY = {"domain_margin", "n_layers", "first_layer_rel", "quality",
+_STRATEGY = {"domain_margin", "n_layers", "last_layer_rel", "quality",
              "surface_level", "feature_level", "max_cells", "wake"}
 _PREAMBLE = {"geometry_file", "domain_min", "domain_max", "wall_patch",
              "farfield_patch", "feature_angle", "strategy"}
@@ -75,8 +75,8 @@ def validate(strategy: dict) -> list[Diagnostic]:
         d.append(Diagnostic("error", "feature_level", "feature_level must be an integer >= 0"))
     if "max_cells" in strategy and (not _int(strategy["max_cells"]) or strategy["max_cells"] <= 0):
         d.append(Diagnostic("error", "max_cells", "max_cells must be a positive integer"))
-    if "first_layer_rel" in strategy and not (_num(strategy["first_layer_rel"]) and strategy["first_layer_rel"] > 0):
-        d.append(Diagnostic("error", "first_layer_rel", "first_layer_rel must be a positive number"))
+    if "last_layer_rel" in strategy and not (_num(strategy["last_layer_rel"]) and strategy["last_layer_rel"] > 0):
+        d.append(Diagnostic("error", "last_layer_rel", "last_layer_rel must be a positive number"))
     if "quality" in strategy and strategy["quality"] not in _QUALITY:
         d.append(Diagnostic("error", "quality", f"quality must be one of {sorted(_QUALITY)}"))
     if "surface_level" in strategy:

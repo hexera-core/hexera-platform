@@ -86,3 +86,16 @@ def test_the_pictures_name_areas_and_grey_the_rest():
     assert shown.names[0].startswith("Feature_1_Face_") and any(n.startswith("Rest_Face_") for n in shown.names)
     from meshpipeline.render.part_pictures import number
     assert number("Feature_3") == "F3" and number("Part_3") == "3"
+
+
+def test_a_one_plate_part_read_without_its_surface_offers_neither_side():
+    """The stage's checklist read the L-shaped plate with no face of its surface to take a normal from, and offered its
+    two sides as "a large flat face" (round 11): two plane faces, a wall apart, most of the part, are its sides."""
+    record = {"faces": {"Face_4": {"kind": "plane", "area_mm2": 2634, "centroid_mm": [-15.44, -4.0, 25.44],
+                                   "thickness_median_mm": 4.0},
+                        "Face_8": {"kind": "plane", "area_mm2": 2527, "centroid_mm": [-15.45, 0.0, 25.45],
+                                   "thickness_median_mm": 4.0},
+                        **{f"Face_{k}": {"kind": "plane", "area_mm2": 210, "centroid_mm": [0, 0, float(k)],
+                                         "thickness_median_mm": 35.0} for k in (1, 2, 5, 7)}}}
+    rows, _faces = PF.features(record, None)
+    assert not [r for r in rows if r["kind"] in ("flat face", "thin wall")], rows

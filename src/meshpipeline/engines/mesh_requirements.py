@@ -65,15 +65,18 @@ import math
 import re
 from collections.abc import Mapping
 
+from meshpipeline.contracts import mesh_controls as _MC
 from meshpipeline.contracts.event_stream import StaleExecutionPublish
 
 logger = logging.getLogger(__name__)
 
 RULE_READ = "NOTE-7"
+RULE_CONTROLS = "NOTE-13"       # the controls declared once (contracts/mesh_controls), read by one generic output
 RULE_NOT_APPLIED = "NOTE-8"
 RULE_NOTHING = "NOTE-9"
 RULE_FLOW = "NOTE-10"          # the flow fields of the same reading (a count, layers, a size at the walls or in a place)
 RULE_KIND_WORDS = "NOTE-11"
+RULE_TOLD = "NOTE-12"           # every ask is told back: applied, nearest, not applied, or not a mesh setting
 TOOL = "mesh_requirements"
 CONSUMER = "mesh_requirements"
 STEP = "mesh_requirements"
@@ -134,9 +137,41 @@ MEASURES: dict[str, tuple[tuple[str, ...], tuple[float, float], str, str]] = {
 _ENDS_SANE = ("jacobian", "taper", "min_volume", "determinant")
 #: the share of elements a limit may allow past its target, in percent, at most
 MAX_ALLOWED_PERCENT = 50.0
+
+#: NOTE-14: HOW STRICT A LIMIT IS, as the user's words say it - "hard" (a gate: the mesher gives structure up before it
+#: breaks it) or "flexible" (a target: it may go outside it where that keeps what the analyst wants more, and the
+#: result tells how many elements are outside and by how much, never "not met"). Unstated: STRICT_DEFAULT
+STRICTNESS = ("hard", "flexible")
+STRICT_RULE = "NOTE-14"
+#: what a strictness sentence may be about: one limit (a size field, a quality measure, the count) or a group of them
+STRICT_GROUPS = ("minimums", "maximums", "sizes", "quality", "angles", "counts", "all")
+#: the requirement rows a strictness can be on: the sizes that bound the elements, every quality limit, the counts
+STRICT_SIZES = ("global", "min_edge", "max_edge", "near_wall")
+#: the angle measures ("the angle limits are hard")
+STRICT_ANGLES = ("min_angle", "max_angle", "skew", "warpage")
+_STRICT_TARGETS = (*STRICT_SIZES, *MEASURES, "count", *STRICT_GROUPS)
+#: STD-5: the kinds of mesh words can speak to (a saved standard is applied by them, engines/meshing_standard.merge)
+MESH_KINDS = ("shell", "solid", "cfd", "any")
 #: sizes: an element size anyone means (mm), a growth ratio, a multiple of the global size
 SIZE_RANGE_MM = (1e-4, 1e5)
 GROWTH_RANGE = (1.0, 3.0)
+#: a growth written as a percent ("grow by no more than 25%", "20 percent"): the ratio is 1 + p / 100, for p up to this
+GROWTH_PERCENT_MAX = 200.0
+_PERCENT = re.compile(r"%|\bper\s*cent\b", re.I)
+
+
+def _percent_growth(value: float | None, quote: str, numbers: list[float]) -> tuple[float | None, bool]:
+    """(the growth ratio, whether it was written as a percent) for a growth the model read: a percent sign or the word
+    percent in the user's words makes a number past the ratio range p% (25 -> 1.25), and a ratio the model already
+    turned into one (1.25) is the user's when its percent (25) is in their words. Else the value as read."""
+    if value is None or not _PERCENT.search(quote or ""):
+        return value, False
+    if GROWTH_RANGE[1] < value <= GROWTH_PERCENT_MAX and _in_quote(value, numbers):
+        return 1.0 + value / 100.0, True
+    if GROWTH_RANGE[0] < value <= GROWTH_RANGE[1] and not _in_quote(value, numbers) \
+            and _in_quote(round((value - 1.0) * 100.0, 6), numbers):
+        return value, True
+    return value, False
 MULTIPLE_RANGE = (0.01, 100.0)
 
 
@@ -171,11 +206,14 @@ words for it, copied exactly (one line or phrase, as short as holds the whole re
   "mesh at 0.2 in", "element size 3", "base cell size 20 mm", "background cells 50 mm", "cells around 5 mm").
   min_edge = the shortest element edge / smallest element or cell size allowed ("min cell size 0.5 mm"); max_edge =
   the longest / largest allowed ("max cell size 100 mm", "no cell bigger than 0.1 m", "far-field cells max 0.5 m":
-  the cells far from the body are the largest).
+  the cells far from the body are the largest). A RANGE of sizes for the whole mesh ("element size 1-2 mm", "2 to
+  5 mm elements", "elements between 1 and 3 mm") is TWO entries from the same quote: min_edge the low end and
+  max_edge the high end - never one global size.
   near_wall = the cell or element size AT THE WALLS / on the body's surface, for the whole mesh ("surface cells 2 mm",
   "wall cell size 1 mm", "2 mm cells on the surface"). A first LAYER height is a layer, not this.
   growth = how fast cell or element sizes may grow from one to the next through the volume ("growth rate 1.2", "cell
-  size ratio at most 1.3"): unit "none". A growth or expansion ratio of the prism LAYERS is a layer, not this.
+  size ratio at most 1.3"): unit "none". A percent is the ratio 1 + percent / 100 ("grow by no more than 25% from
+  one to the next" -> 1.25). A growth or expansion ratio of the prism LAYERS is a layer, not this.
   thickness = a wall or shell thickness they state for the part ("2 mm sheet", "thickness = 1.5 mm").
   value and unit exactly as written: the unit beside the number (mm, cm, m, in for inches or ", um for microns);
   "x_global" when the number is a multiple of the global size ("0.5 x Global Size", "half the global size" -> 0.5,
@@ -189,15 +227,15 @@ words for it, copied exactly (one line or phrase, as short as holds the whole re
 - layers: the boundary layers at the walls (prism, inflation or wall layers; CFD). count ("5 prism layers" -> 5, "no
   boundary layers" -> 0); first_height ("first layer 0.02 mm", "first cell height 1e-5 m", "wall spacing 10 um"),
   value and unit as written; total_thickness (the whole stack: "layers 3 mm thick in total"); growth (how much each
-  layer grows over the one under it: "layer growth 1.2", "expansion ratio 1.15", "inflation rate 1.2" - unit
-  "none"); y_plus (the y+ they aim at: "y+ around 1" -> 1, "y+ < 5" -> 5, "y+ 30-100" -> 30, the low end of a
+  layer grows over the one under it: "layer growth 1.2", "expansion ratio 1.15", "inflation rate 1.2", "each layer
+  20% thicker" -> 1.2 - unit "none"); y_plus (the y+ they aim at: "y+ around 1" -> 1, "y+ < 5" -> 5, "y+ 30-100" -> 30, the low end of a
   range) - unit "none".
 - local: a size or a refinement in ONE named place, each with `where` = the place in the user's words ("the wing",
   "the inlet", "the bracket", "the holes", "the wake", "the gap between the wheels and the floor"). what: size (a
   size given: "refine around the wing to 2 mm" -> where "the wing", value 2, mm; "wake cells 10 mm" -> where "the
   wake"), finer ("finer near the inlet", "refine the wake"; value 0, unit "none"), coarser ("coarser at the outlet";
   value 0, unit "none"). The walls, the surface or the body as a whole are not one place: a size there is near_wall;
-  the far field is max_edge. A number of refinement LEVELS ("4 levels at the surface") is no size: other, "mesh".
+  the far field is max_edge. A number of refinement LEVELS ("4 levels at the surface") is no size: a control.
 - physics: the flow's numbers, ONLY as written, so a y+ can be turned into a first layer height. velocity ("air at
   30 m/s", "60 mph", "120 km/h"; unit m/s, km/h, mph, kn, ft/s), length (the reference length: "chord 0.5 m", "car
   length 4.2 m"; a length unit), kinematic_viscosity ("nu = 1.5e-5 m2/s"; unit m2/s), reynolds ("Re = 3e6"; unit
@@ -225,20 +263,45 @@ words for it, copied exactly (one line or phrase, as short as holds the whole re
   allowed_percent 0, has_outer false, outer 0.
   A limit on element LENGTH ("Min. Element Length > 0.5 x Global Size") is a size (min_edge / max_edge), not a limit.
 - other: every other thing they wrote, one entry per line, sentence or clause, never left out. kind "mesh": about
-  the mesh but fitting no field above (chordal deviation, elements through the thickness or across a flange,
-  cells across a gap, a named solver's own check, a quality measure not in the list, a
+  the mesh but fitting no field above or control below (chordal deviation, elements across a flange, a named
+  solver's own check, a quality measure not in the list, a
   preference like "quads preferred" or "hex-dominant", a vague wish like "good quality mesh" or "resolve the
   boundary layer well").
   "elsewhere": ONLY shell or solid (what to mesh the part as). "not_mesh": loads, supports, materials, the
   analysis, the flow's physics (velocity, fluid, Reynolds number, turbulence model, wall functions, inlet and outlet
   conditions), the solver or file format the mesh is for ("mesh for Fluent", "OpenFOAM format": the export is chosen
-  at download), greetings, thanks, "use your defaults", headings, a yes or a verdict on what was proposed ("looks
+  at download), the units or numbering of the files ("write it in mm", "node ids from 100001"), a time or cost limit,
+  what to do with their files or data ("delete my CAD after"), greetings, thanks, "use your defaults", headings, a yes or a verdict on what was proposed ("looks
   good", "the rest is right", "yes that's right"), anything that asks nothing of the mesh.
+- strictness: how strict the user says a limit is, one entry per sentence or clause that says it. strictness "flexible"
+  when the words make it a target they can live without in places ("we're flexible around the minimum of 5 mm",
+  "roughly", "where possible", "ok to go below in places", "not a hard minimum", "prefer", "aim for", "these are
+  guidelines"); "hard" when they make it a gate ("must", "never", "no element under", "strictly", "hard limit", "at all
+  costs"). target: what it is about - ONE limit (global, min_edge, max_edge, near_wall, a quality measure from the
+  limits list, or count), or a group: minimums (every lower bound), maximums (every upper bound), sizes, quality
+  (every quality limit), angles, counts, all (everything the notes limit). The quote is the user's own words for it,
+  with its number when they gave one. Only how strict a limit is: "flexible hose", "hard anodised", "a hard material"
+  are no strictness. "Around", "about" or "aim for" on a value of theirs makes that value flexible: give its own
+  limit as the target. The quote is the user's own words - never the lines around their notes. The same sentence may also give
+  the limit itself: list it in its own field too. A later sentence refines an earlier one: list both, in the order
+  written.
+- applies_to: which kinds of mesh the words speak to - shell, solid, cfd, or any. whole: the list as a whole (a
+  structural quality list - warpage, quad and tria angles, Jacobian, element lengths - is shell and solid, its global
+  size too; one of cells, y+, prism layers, non-orthogonality is cfd; a note of one or two asks is any). lines: only
+  the lines that speak to other kinds than the whole list does ("export in mm", "at most 2 million cells or elements"
+  -> any), each with its quote.
 When the notes give the SAME thing twice ("5 layers. Actually 10 layers."), list BOTH entries, in the order written:
 the LATEST one is kept (the user changed their mind).
 A number the user names as the one being REPLACED ("3 prism layers instead of 8", "3 layers, not 8", "2 mm rather
 than 5 mm") is not a request: list only the value they ask for (3, 3, 2).
 An empty note, or one with no mesh requirement: empty lists (other still lists what was written)."""
+#: NOTE-13: the controls the registry declares, one line each, generated from contracts/mesh_controls
+SYSTEM += ("\n- controls: a setting from this list, each with its key, the user's number (`value`, 0 for a choice) or "
+           "choice (`choice`, \"\" for a number), the unit written beside it, `where` (\"\" for the whole mesh - also "
+           "when the words only name what the setting is about: \"through each wall\", \"across the pipe\", "
+           "\"everywhere\"; else the ONE place in the user's words, \"the left flange\"), `strict` (true only when "
+           "they say it must hold) and the quote:\n"
+           + _MC.prompt_lines())
 
 
 def tool() -> dict:
@@ -249,7 +312,7 @@ def tool() -> dict:
         "parameters": {
             "type": "object", "additionalProperties": False,
             "required": ["stated_unit", "sizes", "counts", "layers", "local", "physics", "element_kind", "limits",
-                         "other"],
+                         "other", "controls", "strictness", "applies_to"],
             "properties": {
                 "stated_unit": {"type": "string", "enum": [*UNITS_MM, "none"]},
                 "sizes": {"type": "array", "items": {
@@ -291,6 +354,32 @@ def tool() -> dict:
                 "other": {"type": "array", "items": {
                     "type": "object", "additionalProperties": False, "required": ["quote", "kind"],
                     "properties": {"quote": q, "kind": {"type": "string", "enum": list(OTHER_KINDS)}}}},
+                # NOTE-13: ONE generic output for every control the registry declares (contracts/mesh_controls)
+                "controls": {"type": "array", "items": {
+                    "type": "object", "additionalProperties": False,
+                    "required": ["key", "value", "choice", "unit", "where", "strict", "quote"],
+                    "properties": {"key": {"type": "string", "enum": [c.key for c in _MC.read_by_reader()]},
+                                   "value": {"type": "number"},
+                                   "choice": {"type": "string", "enum": sorted({"", *(x for c in _MC.read_by_reader()
+                                                                                       for x in c.choices)})},
+                                   "unit": {"type": "string", "enum": [*UNITS_MM, "none"]},
+                                   "where": {"type": "string"}, "strict": {"type": "boolean"}, "quote": q}}},
+                # NOTE-14: how strict a limit, a group of them or all of them is, in the user's words
+                "strictness": {"type": "array", "items": {
+                    "type": "object", "additionalProperties": False,
+                    "required": ["target", "strictness", "quote"],
+                    "properties": {"target": {"type": "string", "enum": list(_STRICT_TARGETS)},
+                                   "strictness": {"type": "string", "enum": list(STRICTNESS)}, "quote": q}}},
+                # STD-5: which kinds of mesh a saved standard (and each line that differs from it) speaks to
+                "applies_to": {
+                    "type": "object", "additionalProperties": False, "required": ["whole", "lines"],
+                    "properties": {
+                        "whole": {"type": "array", "items": {"type": "string", "enum": list(MESH_KINDS)}},
+                        "lines": {"type": "array", "items": {
+                            "type": "object", "additionalProperties": False, "required": ["kinds", "quote"],
+                            "properties": {"kinds": {"type": "array",
+                                                     "items": {"type": "string", "enum": list(MESH_KINDS)}},
+                                           "quote": q}}}}},
             }}}}
 
 
@@ -448,18 +537,69 @@ def _locate(quote: str, notes: str) -> str | None:
     return best
 
 
-#: words that make a left-over clause one about the mesh (NOTE-8's floor)
+#: words that make a left-over clause one about the mesh (NOTE-8's floor) - "cell", "mesh", "size" and "patch" too
+#: (NOTE-12: "keep the wake cells uniform", left in no field by the model, was told nothing)
 _MESH_WORDS = re.compile(r"\b(?:elements?|nodes?|quads?|trias?|triangles?|tets?|tetrahedr\w+|hex\w*|"
-                         r"layers?|refine\w*|coarse\w*|jacobian|warp\w*|aspect|skew\w*|taper|washers?)\b", re.I)
+                         r"layers?|refine\w*|coarse\w*|jacobian|warp\w*|aspect|skew\w*|taper|washers?|"
+                         r"cells?|mesh|sizes?|patch(?:es)?)\b", re.I)
+#: NOTE-12: words that make a left-over clause an ask AROUND the mesh - the files, their units and numbering, the
+#: run's time or cost, the user's data - told as "not a mesh setting" with what to do instead
+_AROUND_WORDS = re.compile(r"\b(?:export\w*|files?|formats?|decks?|units?|fluent|openfoam|nastran|abaqus|ansys|"
+                           r"calculix|cgns|ls-?dyna|optistruct|star-?ccm\+?|su2|numbering|ids?|offsets?|minutes?|"
+                           r"hours?|cost|credits?|price|delete|erase|confidential|nda)\b", re.I)
+
+
+#: NOTE-12: WHAT TO DO INSTEAD, for an ask that is not a mesh setting - the first that fits, in this order (a file's
+#: units before its format: "export to Fluent in mm" is about the units)
+_NOT_MESH_HINTS: tuple[tuple[re.Pattern, str], ...] = (
+    (re.compile(r"\b(?:delete|remove|erase|wipe)\b.*\b(?:files?|cad|models?|uploads?|data|geometry)\b", re.I),
+     "deleting one file on request is not offered yet"),
+    (re.compile(r"\b(?:train\w*|confidential|nda|privacy)\b", re.I),
+     "how your data is kept is set for your whole organisation, not run by run"),
+    (re.compile(r"\b(?:cost|credits?|price|spend\w*|dollars?|euros?|pounds)\b|[$€£]\s*\d", re.I),
+     "a cost limit is not a setting yet; the run costs what the mesh needs"),
+    (re.compile(r"\b(?:minutes?|hours?|mins?|hrs?|seconds?|deadline)\b", re.I),
+     "a time limit is not a setting yet; the run takes as long as the mesh needs"),
+    (re.compile(r"\b(?:ids?|numbering)\b|\b(?:node|element|cell|grid)s?\b.*\b(?:numbers?|offset|start\w*)\b", re.I),
+     "node and element numbers start at 1; an offset is not a setting yet"),
+    (re.compile(r"\b(?:mm|millimet\w+|cm|centimet\w+|metres?|meters?|inch\w*|units?)\b", re.I),
+     "every file we write is in metres and says so"),
+    (re.compile(r"\b(?:cgns|ls-?dyna|optistruct|star-?ccm\+?|su2|exodus|med|unv|radioss|\.k)\b", re.I),
+     "we do not write that format yet; the formats we write are offered at download"),
+    (re.compile(r"\b(?:export\w*|files?|formats?|decks?|fluent|openfoam|nastran|abaqus|ansys|calculix|bdf|inp|cdb|"
+                r"ensight|solver)\b", re.I),
+     "every solver file we write comes with the mesh; pick the one you want at download"),
+    (re.compile(r"\b(?:load\w*|forces?|pressure|supports?|fixed|clamp\w*|constrain\w*|materials?|steel|alumin\w*|"
+                r"modulus|densit\w*|temperature|heat|inlet|outlet|velocity|speed|turbulen\w*|k-?omega|k-?epsilon|"
+                r"sst|wall functions?|boundary conditions?|reynolds|viscosit\w*)\b", re.I),
+     "it is a setting of your solver, not of the mesh: set it there (every face is a named group in the files)"),
+)
+#: ...and when none fits
+NOT_MESH_DEFAULT = "it asks nothing of the mesh, so the mesh does not change for it"
+
+
+def _notes_unit(text: str, stated: str) -> bool:
+    """Whether a line only gives the unit of the notes' own numbers ("Units: mm", "all dimensions in inches"), read as
+    stated_unit - never an ask about the files' units."""
+    return (stated in UNITS_MM and bool(re.search(r"\b(?:units?|dimensions?|lengths?|numbers?)\b", str(text), re.I))
+            and not re.search(r"\b(?:export\w*|files?|decks?|writ\w*|output\w*|deliver\w*)\b", str(text), re.I))
+
+
+def instead_for(quote: str) -> str:
+    """NOTE-12: what the user can do instead, for an ask that is not a mesh setting (_NOT_MESH_HINTS)."""
+    for rx, said in _NOT_MESH_HINTS:
+        if rx.search(str(quote or "")):
+            return said
+    return NOT_MESH_DEFAULT
 #: ... but a clause about WHAT to mesh the part as (shell or solid, FEA or CFD, the analysis) is another reader's
 #: (SHSTAGE, the purpose map), never a setting left out: "FEA shell mesh of this part" is not told as not applied
 _MESH_AS = re.compile(r"\b(?:shell|mid-?surface|solid|fea|cfd|structural|static|modal|buckling|analysis)\b", re.I)
 _MARKER = re.compile(r"^(?:\[n\d+\]\s*\(.*\)|<<<|>>>|\.\.\. \(cut here.*)$")
 
 
-def _left_over(notes: str, quotes: list[str]) -> list[str]:
-    """The clauses of the user's words that no quote of the reading covers and that speak of the mesh - at least
-    four words, as written. The model is told to list everything; this holds it to that."""
+def _left_over(notes: str, quotes: list[str], *, words: re.Pattern = _MESH_WORDS, least: int = 4) -> list[str]:
+    """The clauses of the user's words that no quote of the reading covers and that speak of the mesh (`words`) - at
+    least `least` words, as written. The model is told to list everything; this holds it to that."""
     text = "\n".join(line for line in str(notes or "").splitlines() if not _MARKER.match(line.strip()))
     mask = bytearray(len(text))
     for q in sorted({" ".join(str(q).split()) for q in quotes if str(q).strip()}, key=len, reverse=True):
@@ -478,7 +618,7 @@ def _left_over(notes: str, quotes: list[str]) -> list[str]:
     for run in runs:
         for piece in re.split(r"[.;!?。；]+\s+|[.;!?。；]+$", run):
             piece = re.sub(r"^(?:[\s,:\-–]+|(?:but|and|also|then)\b)+", "", piece.strip(), flags=re.I).strip(" ,:-–")
-            if (len(piece.split()) >= 4 and _MESH_WORDS.search(piece) and not _MESH_AS.search(piece)
+            if (len(piece.split()) >= least and words.search(piece) and not _MESH_AS.search(piece)
                     and piece not in out):
                 out.append(piece[:400])
     return out
@@ -771,7 +911,8 @@ def is_empty(req: Mapping | None) -> bool:
     return (not any(v is not None for v in (r.get("sizes") or {}).values())
             and not any(v is not None for v in (r.get("kind") or {}).values()) and not r.get("limits")
             and not any(v is not None for v in (r.get("cells") or {}).values())
-            and not any(v is not None for v in (r.get("layers") or {}).values()) and not r.get("local"))
+            and not any(v is not None for v in (r.get("layers") or {}).values()) and not r.get("local")
+            and not r.get("controls"))
 
 
 def check(arguments: str, notes: str, route: str = "") -> tuple[dict, list[str], list[str]]:
@@ -899,7 +1040,9 @@ def _flow_fields(raw: Mapping, out: dict, quoted, row, dropped: list[str], state
         if what not in LAYERS:
             dropped.append(f"{tag}: not a boundary-layer setting this step reads: not applied")
             continue
-        if value is None or value < 0 or not (_in_quote(value, numbers) or (what == "count" and value == 0
+        # a layer growth written as a percent is the ratio 1 + p / 100 ("each layer 20% thicker" -> 1.2)
+        value, as_pct = _percent_growth(value, quote, numbers) if what == "growth" else (value, False)
+        if value is None or value < 0 or not (as_pct or _in_quote(value, numbers) or (what == "count" and value == 0
                                                                           and re.search(r"\b(no|without|zero)\b",
                                                                                         quote, re.I))):
             dropped.append(f"{tag}: the number {e.get('value')!r} is not in those words: not applied")
@@ -1166,13 +1309,17 @@ def _check(arguments: str, notes: str, route: str = "") -> tuple[dict, list[str]
             dropped.append(f"{tag}: not a size this step reads: not applied")
             continue
         if _COUNTED.search(quote):
-            # "3 elements through the thickness" counts elements; it is no length (read once as a 3 inch wall)
-            dropped.append(f"{tag}: a count of elements through or across a wall is not a size: not applied")
+            # "3 elements through the thickness" counts elements; it is no length (read once as a 3 inch wall) - told
+            # unless the same words were read as a control (NOTE-13: wall_elements)
+            if not any(_squash(quote) == _squash(str(x.get("quote") or "")) for x in _rows_of(raw, "controls")):
+                dropped.append(f"{tag}: a count of elements through or across a wall is not a size: not applied")
             continue
-        if value is None or value <= 0 or not _in_quote(value, numbers):
+        # a growth written as a percent is the ratio 1 + p / 100 ("no more than 25%" -> 1.25), never "a growth of 25"
+        value, as_pct = _percent_growth(value, quote, numbers) if what == "growth" else (value, False)
+        if value is None or value <= 0 or not (as_pct or _in_quote(value, numbers)):
             dropped.append(f"{tag}: the number {e.get('value')!r} is not in those words: not applied")
             continue
-        if _in_quote(value, replaced_numbers(quote)):
+        if not as_pct and _in_quote(value, replaced_numbers(quote)):
             sizes_swapped.setdefault(what, (_g(value), quote))
             continue
         key = {"global": "global_mm", "min_edge": "min_edge_mm", "max_edge": "max_edge_mm", "growth": "growth",
@@ -1379,25 +1526,132 @@ def _check(arguments: str, notes: str, route: str = "") -> tuple[dict, list[str]
         seen[(measure, shape, direction)] = lim
     _replaced_only(limits_swapped, seen, dropped)
 
+    # NOTE-13: THE CONTROLS the registry declares (contracts/mesh_controls) - one generic branch, the same checks as
+    # every field: the quote is the user's, the number is in it (not the one being replaced), the unit is theirs, the
+    # range is sane, a choice is named in their words, a whole-mesh control is not asked for one place, the latest wins
+    controls: dict[str, dict] = {}
+    for e in order(_rows_of(raw, "controls")):
+        c = _MC.CONTROLS.get(str(e.get("key") or ""))
+        got_q = quoted(e) if c is not None and not c.field else None
+        if c is None or c.field:
+            dropped.append(f'"{_short(str(e.get("quote") or ""))}": not a setting this step reads: not applied')
+            continue
+        if got_q is None:
+            continue
+        quote, numbers = got_q
+        tag = f'"{_short(quote)}"'
+        # A `where` that only restates the control's own subject ("each wall", "the wall thickness", "everywhere",
+        # "the inlet passage", "the bore": contracts/mesh_controls.place_of) IS the whole-mesh ask. Only one place among
+        # several makes it a place-specific one, and then it is still applied - to the whole mesh, the nearest we
+        # have, and said on its row - never dropped to our default (jobs bfdc60b1, f2c6fc7d: 2 through for 4 and 5)
+        place = _MC.place_of(c, " ".join(str(e.get("where") or "").split())[:120]) if c.where == ("mesh",) else ""
+        if c.kind == "choice":
+            choice = str(e.get("choice") or "")
+            said_it = {"mm": r"\bmm\b|millimet", "m": r"\bm\b|\bmetres?\b|\bmeters?\b"}.get(choice, re.escape(choice))
+            if choice not in c.choices or not re.search(said_it, quote, re.I):
+                dropped.append(f"{tag}: {choice or 'the choice'} is not in those words: not applied")
+                continue
+            entry: dict = {"choice": choice}
+            words = _MC.asked_words(c, choice=choice)
+        else:
+            value = _f(e.get("value"))
+            if value is None or not _in_quote(value, numbers):
+                dropped.append(f"{tag}: the number {e.get('value')!r} is not in those words: not applied")
+                continue
+            if _in_quote(value, replaced_numbers(quote)):
+                continue
+            if c.kind == "length":
+                value = _length_mm(value, str(e.get("unit") or "none"), quote, stated)[0]
+            if (c.integer and value != int(value)) or (c.sane and not (c.sane[0] <= value <= c.sane[1])):
+                dropped.append(f"{tag}: {_g(value)} is not a value anyone means for this: not applied")
+                continue
+            entry = {"value": int(value) if c.integer else float(value)}
+            words = _MC.asked_words(c, value=value)
+        if c.key in controls:
+            _later(controls[c.key]["quote"], quote)
+            unrow(f"control:{c.key}")
+        if place:
+            entry["place"] = place
+            words += f" (asked for {place}: set on the whole mesh, the nearest there is)"
+        entry.update(quote=quote, strict=bool(e.get("strict")), id=row(f"control:{c.key}", quote, words))
+        controls[c.key] = entry
+    if controls:
+        out["controls"] = controls
+
+    # NOTE-14: how strict the user says a limit is - each checked as every field is (the quote is the user's), kept in
+    # the order written so a later sentence refines an earlier one, and put on the rows it names (apply_strictness)
+    strict: list[dict] = []
+    for e in order(list(_rows_of(raw, "strictness"))):
+        s_target, s_how = str(e.get("target") or ""), str(e.get("strictness") or "")
+        # A STRICTNESS IS NO ASK: one that does not hold (words not the user's - the notes block's own "Use them as
+        # GUIDANCE" read as "flexible" - or no limit or group) is set aside silently, never told as a thing not applied
+        # nor counted in the tally (m483 round 11: 8c and 2c each read "1 other thing ... could not be applied")
+        s_quote = " ".join(str(e.get("quote") or "").split())[:400]
+        if not s_quote or not _quoted(s_quote, said, squashed):
+            near = _locate(s_quote, notes) if s_quote else None
+            if near is None:
+                continue
+            s_quote = near[:400]
+        covered.append(s_quote)
+        if s_target not in _STRICT_TARGETS or s_how not in STRICTNESS:
+            continue
+        strict.append({"target": s_target, "strictness": s_how, "quote": s_quote})
+    if strict:
+        out["strictness"] = strict
+        apply_strictness(out)
+
+    # STD-5: the kinds of mesh the words speak to (read for a saved standard; the job's own notes apply as typed) - each
+    # line's quote checked as every field's; kept only when it says more than "any"
+    raw_told = raw.get("applies_to")
+    kinds_told: Mapping = raw_told if isinstance(raw_told, Mapping) else {}
+    kinds_whole = [k for k in kinds_told.get("whole") or [] if k in MESH_KINDS]
+    kinds_lines = []
+    for ke in [x for x in kinds_told.get("lines") or [] if isinstance(x, Mapping)]:
+        kinds = [k for k in ke.get("kinds") or [] if k in MESH_KINDS]
+        quote = " ".join(str(ke.get("quote") or "").split())[:400]
+        if kinds and quote and _quoted(quote, said, squashed):
+            kinds_lines.append({"quote": quote, "kinds": kinds})
+    if (kinds_whole and set(kinds_whole) != {"any"}) or kinds_lines:
+        out["applies_to"] = {"whole": kinds_whole or ["any"], "lines": kinds_lines}
+
     # what fits no field (NOTE-8): told, never silently dropped
     not_applied: list[str] = []
+    not_mesh: list[str] = []             # NOTE-12: asks that are no mesh setting, told with what to do instead
     typed = list(covered)                # the quotes read into a field: a line told "not applied" is what is left
     for e in _rows_of(raw, "other"):
-        quote = " ".join(str(e.get("quote") or "").split())[:400]
+        quote = " ".join(_unmarked(str(e.get("quote") or "")).split())[:400]
+        if not quote:
+            continue        # only a note's label ("[n1] (typed in the notes box)"): the application's words, no ask
         covered.append(quote)
         if rescued and kind_in_words(quote):
             continue        # NOTE-11: read above as the element kind
         if asks_nothing(quote):
             continue        # NOTE-8: a yes or a verdict ("the rest looks good") asks nothing, so nothing is left out
-        if str(e.get("kind")) == "mesh" and _quoted(quote, said, squashed) and quote not in not_applied:
-            over = [t for t in typed if t and (_squash(t) in _squash(quote) or _squash(quote) in _squash(t))]
+        kind = str(e.get("kind"))
+        if kind not in ("mesh", "not_mesh") or not _quoted(quote, said, squashed):
+            continue        # "elsewhere" (shell or solid) is the stage's reader's; a quote not the user's is no ask
+        over = [t for t in typed if t and (_squash(t) in _squash(quote) or _squash(quote) in _squash(t))]
+        if kind == "mesh" and quote not in not_applied:
             if over and not _left_over(quote, over):
                 continue                 # every mesh word of it was read into a field already
             not_applied.append(quote)
-    # NOTE-8's floor: words about the mesh that the reading listed NOWHERE are told too, as the user wrote them
-    for piece in _left_over(notes, covered):
+        elif (kind == "not_mesh" and quote not in not_mesh and not over and not quote.rstrip().endswith(":")
+              and not _notes_unit(quote, stated)):
+            # read into no field (the flow's speed for a y+ is read: it is not told again); a heading asks nothing
+            not_mesh.append(quote)
+    # NOTE-8's floor: words about the mesh that the reading listed NOWHERE are told too, as the user wrote them (the
+    # notes' own labels and fences are the application's words, never told back as the user's)
+    bare = _unmarked(notes)
+    for piece in _left_over(bare, covered):
         if piece not in not_applied and not (rescued and kind_in_words(piece)) and not asks_nothing(piece):
             not_applied.append(piece)
+    # NOTE-12's floor: an ask AROUND the mesh (the files, their units, numbering, time, cost, the data) that the reading
+    # listed nowhere is told as not a mesh setting - two words are enough ("export CGNS")
+    for piece in _left_over(bare, [*covered, *not_applied], words=_AROUND_WORDS, least=2):
+        if piece not in not_mesh and not asks_nothing(piece) and not _notes_unit(piece, stated):
+            not_mesh.append(piece)
+    if not_mesh:
+        out["not_mesh"] = [{"quote": q, "instead": instead_for(q)} for q in not_mesh[:20]]
     return out, dropped, not_applied[:20]
 
 
@@ -1432,6 +1686,108 @@ def not_applied_words(sec: Mapping | None) -> list[str]:
     return [w for w in words(sec) if w.startswith("Not applied")] if sec and sec.get("status") == "used" else []
 
 
+#: the application's own marks in a notes block (contracts/user_notes.render): "[n1] (typed in the notes box)", the
+#: fences round each note - never the user's words
+_NOTE_MARKS = re.compile(r"\[n\d+\]\s*\([^)\n]*\)|<<<|>>>")
+
+
+def _unmarked(text: str) -> str:
+    """The text with the notes block's labels and fences taken out (each left as a line break)."""
+    return _NOTE_MARKS.sub("\n", str(text or ""))
+
+
+def decided_asks(sec: Mapping | None, *, skip: tuple[str, ...] = ()) -> list[str]:
+    """NOTE-13: EVERY ask of the reading the rules decide and tell the user with what was built - applied, the nearest,
+    or not applied (a row of the set, an ask the checks set aside, words no setting matches) - for the AI steps that
+    also see the notes, so none of them claims, applies or refuses one in its own words. `skip`: row fields an AI step
+    still reads itself (the FEA AI's element count, "cells:")."""
+    if not sec or sec.get("status") != "used":
+        return []
+    req = sec.get("requirements") or {}
+    out = [str(r["asked"]) for r in req.get("rows") or []
+           if isinstance(r, Mapping) and r.get("asked") and not str(r.get("field") or "").startswith(skip)]
+    out += [str(d) for d in sec.get("dropped") or [] if str(d).strip()]
+    out += [f'"{_short(str(q))}" (no setting of ours matches it)' for q in sec.get("not_applied") or [] if str(q).strip()]
+    # NOTE-15: an ask the product acted on outside the reading (the engine the notes name) is decided too
+    out += [f'"{_short(str(q))}" ({str(e["line"]).removeprefix("From your notes: ").rstrip(".")})'
+            for e in sec.get("acted") or [] if isinstance(e, Mapping) and e.get("line")
+            for q in (e.get("quotes") or [])[:1] if str(q).strip()]
+    # NOTE-14: how strict the limits are is the rules' too - held on the limits it names, told with them
+    out += [f'"{_short(str(e["quote"]))}" (how strict the limits are: the rules hold the limits it names to it)'
+            for e in req.get("strictness") or [] if isinstance(e, Mapping) and str(e.get("quote") or "").strip()]
+    return out[:40]
+
+
+#: the instruction beside decided_asks in an AI step's prompt
+DECIDED_WORDS = ("The asks in {key} are decided by the rules - each is applied, applied as near as this mesher allows, "
+                 "or not applied - and told to the user with what was built. They are not yours: plan as if they "
+                 "were not asked (the rules set them over your plan), and leave them out of notes_remark - never say "
+                 "you applied, capped, kept, could not set or treated one as guidance. Leave notes_remark empty when "
+                 "nothing else in the notes was yours to act on.")
+
+
+def decided_block(sec: Mapping | None, *, skip: tuple[str, ...] = ()) -> str:
+    """decided_asks as a block of a prompt's text, with its instruction ('' with none)."""
+    asks = decided_asks(sec, skip=skip)
+    if not asks:
+        return ""
+    return ("THE ASKS THE RULES DECIDE (decided_by_rules):\n" + "\n".join(f"- {a}" for a in asks) + "\n"
+            + DECIDED_WORDS.format(key="decided_by_rules"))
+
+
+def ai_remark_kept(workspace) -> bool:
+    """NOTE-13: whether an AI step's own notes_remark joins the result's "From your notes" lines. Not when the rules
+    decided the notes' asks (a reading in use, with asks): every line the user wrote is then told by the rules' own
+    rows with what was built, and the remark could only say it again in other words - or give a cause no row states
+    (cfMesh beside "20 cells across the passage: 30 cells across the passage (cells of 8.613 mm at its walls)": "the
+    internal passage sizing caps governed the rendered mesh", where the octree's step did; m483 round 7, 4e)."""
+    try:
+        return ai_remark_kept_for(read(workspace))
+    except Exception:  # noqa: BLE001 - unread: the remark as before
+        return True
+
+
+def ai_remark_kept_for(sec: Mapping | None, *, skip: tuple[str, ...] = ()) -> bool:
+    """ai_remark_kept on the reading itself (a route that holds it: the FEA AI step's, which reads an element count
+    itself - `skip`)."""
+    return not decided_asks(sec, skip=skip)
+
+
+#: NOTE-14: the one line for a note on how strict the limits are that names no limit the user set (A6: "These limits
+#: are flexible." and nothing else) - plain and fixed, never a model's sentence, never "not applied" or a count
+NO_LIMIT_WORDS = "From your notes: your note set no limit, so nothing in the mesh changed because of it."
+#: ...the step that keeps it among the result's remarks (contracts/user_notes.record_remark)
+STRICTNESS_REMARK = "notes_strictness"
+
+
+def strictness_unnamed(sec: Mapping | None) -> bool:
+    """NOTE-14: whether the notes say how strict the limits are in words that name no limit the user set."""
+    if not sec or sec.get("status") != "used":
+        return False
+    req = sec.get("requirements") or {}
+    by_id = {str(r.get("id")): r for r in req.get("rows") or [] if isinstance(r, Mapping)}
+    return any(not [i for i in e.get("rows") or [] if i in by_id and by_id[i].get("strictness_quote") == e.get("quote")]
+               for e in req.get("strictness") or [] if isinstance(e, Mapping) and e.get("from") != "settings")
+
+
+#: NOTE-12: how a line that is no mesh setting starts
+NOT_MESH_LEAD = "Not a mesh setting"
+
+
+def not_mesh_words(entries) -> list[str]:
+    """NOTE-12: one line per ask that is no mesh setting, with what to do instead."""
+    return [f'{NOT_MESH_LEAD}: "{_short(str(e.get("quote") or ""))}" - {e.get("instead") or NOT_MESH_DEFAULT}.'
+            for e in entries or [] if isinstance(e, Mapping)]
+
+
+def told_words(sec: Mapping | None) -> list[str]:
+    """NOTE-8 and NOTE-12: every line of words() that says an ask was not applied or is no mesh setting - what stays
+    with the result, so no ask of the notes disappears."""
+    if not sec or sec.get("status") != "used":
+        return []
+    return [w for w in words(sec) if w.startswith(("Not applied", NOT_MESH_LEAD))]
+
+
 def write(workspace, sec: Mapping | None) -> bool:
     """Keep the reading in the workspace when it asks for something or has something to tell (what was not
     applied); remove a carried file when it has neither (a run with no notes leaves the workspace exactly as it
@@ -1441,7 +1797,10 @@ def write(workspace, sec: Mapping | None) -> bool:
     path = Path(workspace) / FILE
     try:
         # (a pick on the stage, STD-4, is kept too: the result says which elements were made and why)
-        if requirements_of(sec) is None and not not_applied_words(sec) and not (sec or {}).get("stage"):
+        # (and a strictness: every step reads it as the rules', so no AI step's remark speaks for it, NOTE-14)
+        if (requirements_of(sec) is None and not told_words(sec) and not (sec or {}).get("stage")
+                and not (sec or {}).get("acted")
+                and not ((sec or {}).get("requirements") or {}).get("strictness")):
             path.unlink(missing_ok=True)
             return False
         path.write_text(json.dumps(sec, indent=1, sort_keys=True), encoding="utf-8")
@@ -1469,13 +1828,18 @@ def words(sec: Mapping | None) -> list[str]:
     if isinstance(sec.get("lines"), list):
         # merged with the team's meshing standard (engines/meshing_standard): said by where each came from
         return [str(w) for w in sec["lines"]]
+    # NOTE-15: what the product acted on outside the reading (the engine the notes name, ...), one line each
+    acted = [str(e["line"]) for e in sec.get("acted") or [] if isinstance(e, Mapping) and e.get("line")]
     if sec.get("status") != "used":
-        return [str(sec.get("note") or UNREAD_WORDS)]
+        return [str(sec.get("note") or UNREAD_WORDS), *acted]
     out = [f"From your notes: {r['asked']}." for r in (sec.get("requirements") or {}).get("rows") or []]
+    out += strictness_words(sec.get("requirements"))
     if sec.get("source") == "saved" and sec.get("note"):
         out.append(str(sec["note"]))
+    out += acted
     out += [f"Not applied: {d}." for d in sec.get("dropped") or []]
     out += [f'Not applied: "{_short(q)}" - no mesh setting of ours matches it yet.' for q in sec.get("not_applied") or []]
+    out += not_mesh_words((sec.get("requirements") or {}).get("not_mesh"))
     return out
 
 
@@ -1504,6 +1868,10 @@ def decisions(sec: Mapping | None, stage: str = "notes") -> list[dict]:
                     "rule": RULE_NOT_APPLIED, "source": SOURCE_AI_LEVER,
                     "inputs": {"not_applied": sec.get("not_applied") or [], "dropped": sec.get("dropped") or []},
                     "words": "What the notes say about the mesh that was not applied, told to the user."})
+    if req.get("not_mesh"):
+        out.append({"stage": stage, "decided": "notes that are no mesh setting", "value": len(req["not_mesh"]),
+                    "rule": RULE_TOLD, "source": SOURCE_AI_LEVER, "inputs": {"not_mesh": req["not_mesh"]},
+                    "words": "What the notes ask that is no mesh setting, told to the user with what to do instead."})
     return out
 
 
@@ -1524,6 +1892,31 @@ def edge_words(field: str, outside: int, n: int, limit: float, worst: float) -> 
     short = field == "min_edge"
     return (f"a target - {share_words(outside, n)} have an edge {'shorter' if short else 'longer'} than {_g(limit)} mm "
             f"(the {'shortest' if short else 'longest'} is {_g(worst)} mm)")
+
+
+def forced_words(rec: Mapping | None, limit: float) -> str:
+    """SHMESH-51o64b: the one sentence after edge_words when the record measured elements no mesh could keep over
+    the shortest edge `limit` (mm) on this part at this size, with what forces them; "" when none is forced."""
+    r = rec or {}
+    n = int(r.get("forced") or 0)
+    if n <= 0:
+        return ""
+    by = r.get("forced_by") or {}
+    parts = []
+    if int(by.get("holes") or 0) and by.get("holes_under_mm"):
+        k = int(by["holes"])
+        parts.append(f"{k} hole{'s' if k > 1 else ''} under "
+                     f"{_g(math.ceil(10 * float(by['holes_under_mm']) + 1e-9) / 10)} mm across")
+    if int(by.get("short_cad_edges") or 0) and by.get("shortest_cad_edge_mm"):
+        k = int(by["short_cad_edges"])
+        parts.append(f"{k} CAD edge{'s' if k > 1 else ''} shorter than {_g(limit)} mm "
+                     f"(shortest {_g(float(by['shortest_cad_edge_mm']))} mm)")
+    if int(by.get("narrow_gaps") or 0) and by.get("narrowest_gap_mm"):
+        k = int(by["narrow_gaps"])
+        parts.append(f"{k} gap{'s' if k > 1 else ''} narrower than {_g(limit)} mm "
+                     f"(narrowest {_g(float(by['narrowest_gap_mm']))} mm)")
+    said = f"{n:,} of these cannot be longer on this part at this size"
+    return said + (": " + ", ".join(parts) + "." if parts else ".")
 
 
 def limit_row(lim: Mapping, values, n: int) -> dict:
@@ -1551,11 +1944,132 @@ def limit_row(lim: Mapping, values, n: int) -> dict:
     return out
 
 
+def _strict_members(target: str, req: Mapping) -> list[dict]:
+    """NOTE-14: the requirement rows a strictness target names - one limit, or a group of them."""
+    ops = {str(lim.get("id")): str(lim.get("op") or "") for lim in req.get("limits") or []}
+    out = []
+    for r in req.get("rows") or []:
+        f = str(r.get("field") or "")
+        lim = f.split(":", 1)[1] if f.startswith("limit:") else ""
+        if not (f in STRICT_SIZES or lim or f.startswith("cells:")):
+            continue
+        lower = f == "min_edge" or f == "cells:floor" or ops.get(str(r.get("id"))) == ">="
+        upper = f == "max_edge" or f == "cells:ceiling" or ops.get(str(r.get("id"))) == "<="
+        if (target == f or (lim and target == lim) or (target == "count" and f.startswith("cells:"))
+                or (target == "minimums" and lower) or (target == "maximums" and upper)
+                or (target == "sizes" and f in STRICT_SIZES) or (target == "quality" and lim)
+                or (target == "angles" and lim in STRICT_ANGLES) or (target == "counts" and f.startswith("cells:"))
+                or target == "all"):
+            out.append(r)
+    return out
+
+
+def apply_strictness(req: dict) -> list[dict]:
+    """NOTE-14: each strictness the user gave (req["strictness"], in the order written) on the rows it names: a later
+    one refines an earlier one. A quote with a number names only the rows whose own words hold that number ("flexible
+    around the 5 mm minimum" is the 5 mm minimum's, not a 15 mm maximum's). Returns the entries that named no row
+    (told, never silently lost); rows no entry names keep no strictness of their own (STRICT_DEFAULT)."""
+    for r in req.get("rows") or []:
+        r.pop("strictness", None)
+        r.pop("strictness_quote", None)
+    unmatched = []
+    for e in req.get("strictness") or []:
+        hits = _strict_members(str(e.get("target") or ""), req)
+        nums = _numbers(str(e.get("quote") or ""))
+        if nums:
+            hits = [r for r in hits if any(_in_quote(v, nums) for v in _numbers(str(r.get("quote") or "")))]
+        if not hits:
+            # SOFT WORDS ON A SETTING'S OWN LINE ("aim for y+ around 1"): the row read from the same words takes it
+            q = _squash(str(e.get("quote") or ""))
+            hits = [r for r in req.get("rows") or [] if q and _squash(str(r.get("quote") or ""))
+                    and (_squash(str(r.get("quote"))) in q or q in _squash(str(r.get("quote"))))]
+        for r in hits:
+            r["strictness"] = str(e["strictness"])
+            r["strictness_quote"] = str(e["quote"])
+        e["rows"] = [str(r["id"]) for r in hits]
+        if not hits:
+            unmatched.append(e)
+    return unmatched
+
+
+#: NOTE-14: a limit the user did not say how strict it is - an edge length is a target (criteria lists state lengths
+#: as targets, the meshes made to them break them in places; every route already reports them with the share
+#: outside, never as missed), every other limit is held as written (a stated allowance is that limit's own
+#: flexibility: hard at the outer value, flexible inside the allowance), and a count is held
+STRICT_DEFAULT = {"global": "flexible", "min_edge": "flexible", "max_edge": "flexible", "near_wall": "flexible"}
+
+
+def strictness(row: Mapping) -> str:
+    """NOTE-14: how strict a requirement row is - the user's word ("hard" / "flexible", row["strictness"]) when they
+    gave one, else the default for its kind (STRICT_DEFAULT; "hard" for a quality limit or a count). '' for a row that
+    is no limit (an element kind, a control, a layer)."""
+    f = str(row.get("field") or "")
+    if row.get("strictness") in STRICTNESS:
+        return str(row["strictness"])
+    if f in STRICT_DEFAULT:
+        return STRICT_DEFAULT[f]
+    return "hard" if f.startswith(("limit:", "cells:")) else ""
+
+
+def _strict_report(r: dict) -> None:
+    """NOTE-14 on a measured row, from the strictness the user SAID (row "strictness"): a flexible limit outside is a
+    target told with how many and by how much - never "not met"; a hard edge length is judged (met only with no
+    element outside). A row with no strictness said is as every route reports it."""
+    said = r.get("strictness")
+    if said == "flexible" and r.get("met") is False:
+        r.update(met=None, target=True, flexible=True, delivered=f"flexible - {r.get('delivered')}")
+    elif said == "flexible" and r.get("target") and r.get("met") is None:
+        r.update(flexible=True, delivered=f"flexible - {r.get('delivered')}")
+    elif said == "hard" and r.get("met") is None and r.get("target") and r.get("outside") is not None:
+        r.update(met=int(r.get("outside") or 0) == 0, target=False, hard=True,
+                 delivered=f"hard - {r.get('delivered')}")
+
+
+def strictness_words(req: Mapping | None) -> list[str]:
+    """NOTE-14 before meshing, one line per strictness the user gave: the limits it is on and how strict; a note naming
+    no limit they set gets one fixed plain line (NO_LIMIT_WORDS), never "not applied" and never counted."""
+    out: list[str] = []
+    by_id = {str(r.get("id")): r for r in (req or {}).get("rows") or []}
+    for e in (req or {}).get("strictness") or []:
+        lead = "From your settings" if e.get("from") == "settings" else "From your notes"
+        named = [str(by_id[i]["asked"]) for i in e.get("rows") or [] if i in by_id
+                 and by_id[i].get("strictness_quote") == e.get("quote")]
+        if named:
+            how = ("flexible - a target: the mesh may go past it in places, and the result says how many"
+                   if e["strictness"] == "flexible" else "hard - held before anything else")
+            out.append(f"{lead}: {', '.join(named)} - {how}.")
+        elif e.get("from") != "settings" and NO_LIMIT_WORDS not in out:
+            # (a strictness is no ask, so it is never told "not applied": said once, plainly)
+            out.append(NO_LIMIT_WORDS)
+    return out
+
+
+def finer_global(row: Mapping, asked_mm: float, typical_mm: float, extent_mm: float) -> dict | None:
+    """NOTE-14 on a size for the whole mesh that came out far finer than asked (under half of it): the row says the
+    same true thing the plan does - what was asked, what was built, and why it is finer (the part is smaller than the
+    size, or its walls, holes and curves need smaller elements to keep their shape). Flexible (the default for a size)
+    it is information, never "not met"; hard it is told not met, with the same why. None when it is not that far finer."""
+    if not (asked_mm > 0 and 0 < typical_mm < 0.5 * asked_mm):
+        return None
+    across = (f"your part is {_g(extent_mm)} mm across, so " if 0 < extent_mm < 3.0 * asked_mm else "")
+    said = (f"elements are about {_g(typical_mm)} mm, finer than the {_g(asked_mm)} mm asked: {across}its walls, holes "
+            "and curves need smaller elements to keep their shape")
+    if strictness(row) == "hard":
+        return {"met": False, "delivered": said}
+    return {"met": None, "finer_than_asked": True, "delivered": said}
+
+
+def carried(row: Mapping) -> dict:
+    """NOTE-14: what a route's report row carries over from its requirement row: the strictness the user said."""
+    return {"strictness": row["strictness"]} if row.get("strictness") in STRICTNESS else {}
+
+
 def finish_report(rows: list[dict], n: int, definitions: str) -> dict:
     """The report every route gives: its rows, each with the elements outside what was asked (`excess`: 0 when
     met - what the result's row and the verdict read), how many were met and missed, and how the figures are
     measured."""
     for r in rows:
+        _strict_report(r)
         r["excess"] = 0 if r["met"] is not False else max(
             1, int(r.get("beyond") or 0),
             int(r.get("outside") or 0) - int(math.floor(float(r.get("share") or 0.0) * n + 1e-9)))
@@ -1576,6 +2090,12 @@ def elements_row(field: str, req: Mapping, n: int, kind: str) -> dict | None:
         what = field.split(":", 1)[1]
         met = (n <= asked) if what == "ceiling" else (n >= asked) if what == "floor" else None
         return {"applied": True, "measured": int(n), "met": met, "delivered": f"the mesh has {n:,} elements"}
+    if field == "local" and kind == "shell":
+        # SHMESH-26: a shell handed no parts reading (a mixed mesh's shell, a surface file) does not size one named
+        # place - never told as applied. The shell route's own row is engines/shell_places.row (SHMESH-52)
+        return {"applied": False, "met": None,
+                "delivered": "not applied - a size in one named place is not applied on this shell yet; the whole "
+                             "shell takes the sizes asked for the whole mesh"}
     if field == "local":
         return {"applied": True, "met": None,
                 "delivered": "sizes in a named place are set part by part (see the lines about your parts)"}
@@ -1610,16 +2130,52 @@ def report_words(rep: Mapping | None) -> list[str]:
     return [line(r) for r in (rep or {}).get("rows") or []]
 
 
-def asked_rows(quality: Mapping | None, *, source: str = "your notes") -> list[dict]:
+def told_status(r: Mapping) -> tuple[str, str, str]:
+    """(how a row that is told, not judged, stands; its status in plain words; its measured figure in words) for a
+    requirement row with no met / not met: an edge-length target with its share outside, the nearest there is, a
+    setting applied, or not applied. NOTE-14: a limit the user said is flexible, outside in places, is "Flexible" -
+    never "Met", never "not met" - with the share outside (of a quality limit: "outside", it may bound either way)."""
+    if r.get("target"):
+        share = float(r.get("outside_pct") or 0.0)
+        f = str(r.get("field") or "")
+        side = "under" if f == "min_edge" else "outside" if f.startswith("limit:") else "over"
+        status = ("Flexible" if r.get("flexible") else "Target, not met") if r.get("outside") else "Met"
+        return "target", status, f"{share:g}% of elements {side}" if r.get("outside") else "0 outside"
+    if r.get("finer_than_asked"):
+        # NOTE-14: a size the part's shape built far finer than asked (finer_global), with the size built
+        built = r.get("measured")
+        return "finer", "Finer than asked", f"about {_g(float(built))} mm" if isinstance(built, (int, float)) else ""
+    if r.get("nearest"):
+        return "nearest", "Nearest there is", ""
+    if r.get("applied") is False:
+        return "not_applied", "Not applied", ""
+    return "setting", "Applied (a setting)", ""
+
+
+def asked_rows(quality: Mapping | None, *, source: str = "your notes", told: bool = False) -> list[dict]:
     """THE USER'S OWN REQUIREMENTS as rows of the result's and the verdict's one list of limits (quality.json's
     "requirements", written by the route that measured them): each measured as the elements outside what was
     asked (0 when met), with the plain line that says asked against delivered (`said`). One not reached is a
-    note - the mesh is delivered - never a failure; one with nothing to measure it against (applied as a setting,
-    or not applied) is no row: it is told in the plan's words."""
+    note - the mesh is delivered - never a failure. `told` (the report's own list): EVERY typed ask has its row, met
+    or not - one with nothing to judge it by (an edge-length target past its share, the nearest there is, a setting,
+    not applied) too, with its status and figure in plain words (`told`, `status`, `shown`), never judged (measured 0)
+    and never a verdict's limit (m485w round 15: the table showed only the asks that passed)."""
     rep = (quality or {}).get("requirements")
     out = []
     for r in (rep.get("rows") if isinstance(rep, Mapping) else None) or []:
-        if not isinstance(r, Mapping) or r.get("met") not in (True, False):
+        if not isinstance(r, Mapping):
+            continue
+        # NOTE-14: a limit the user said is flexible, outside in places, and a size built far finer than asked are
+        # told like any target - information, never a verdict's limit (both read "0 | exactly 0 | Met", case F1)
+        if r.get("met") not in (True, False):
+            if not told:
+                continue
+            kind, status, shown = told_status(r)
+            came = str(r.get("from") or "")
+            label = (f"Chosen on the stage: {r.get('asked')}" if came == "stage"
+                     else f"Your {came} ask: {r.get('asked')}" if came else f"You asked: {r.get('asked')}")
+            out.append({"key": f"asked_{r.get('id')}", "label": label, "op": "==", "limit": 0, "measured": 0,
+                        "said": line(r), "source": source, "told": kind, "status": status, "shown": shown})
             continue
         came = str(r.get("from") or "")
         label = (f"Chosen on the stage: {r.get('asked')}" if came == "stage"
@@ -1649,7 +2205,14 @@ def summary(rep: Mapping | None, *, kind: str = "mesh", limit: int = 380, not_ap
     missed = [r for r in rows if r.get("met") is False]
     targets = [r for r in rows if r.get("met") is None and r.get("target")]
     aside = [r for r in rows if r.get("met") is None and not r.get("target") and r.get("applied") is False]
-    settings = [r for r in rows if r.get("met") is None and not r.get("target") and r.get("applied") is not False]
+    settings = [r for r in rows if r.get("met") is None and not r.get("target") and r.get("applied") is not False
+                and not r.get("nearest") and not r.get("finer_than_asked") and not r.get("layer_cells")]
+    # CFDREQ-11: a limit for even cells on a mesh with prism layers - told, not judged
+    layered = [r for r in rows if r.get("met") is None and r.get("layer_cells")]
+    # NOTE-14: a size for the whole mesh the part's shape made finer (finer_global) - information, with its why
+    finer = [r for r in rows if r.get("met") is None and r.get("finer_than_asked")]
+    # a size asked on a piece of a part that is no face of its own, set on the whole part (SHMESH-52)
+    nearest = [r for r in rows if r.get("met") is None and r.get("nearest") and r.get("applied") is not False]
     n = len(rows)
     out = f"Of the {n} thing{'' if n == 1 else 's'} you asked for: {len(met)} met"
     if missed:
@@ -1662,14 +2225,33 @@ def summary(rep: Mapping | None, *, kind: str = "mesh", limit: int = 380, not_ap
             out, shown = out + more, shown + 1
         if shown < len(missed):
             out += f"{'; and ' if shown else ': '}{len(missed) - shown} more, listed on the result"
-    if targets:
-        shares = [f"{r.get('outside_pct'):g}% of elements have an edge "
-                  f"{'shorter' if r.get('field') == 'min_edge' else 'longer'} than you asked"
-                  for r in targets if r.get("outside")]
-        out += (f"; {len(targets)} edge-length target{'' if len(targets) == 1 else 's'}"
+    def outside(r: Mapping) -> str:
+        if r.get("field") in ("min_edge", "max_edge"):
+            return (f"{r.get('outside_pct'):g}% of elements have an edge "
+                    f"{'shorter' if r.get('field') == 'min_edge' else 'longer'} than you asked")
+        return f"{r.get('outside_pct'):g}% of elements outside {r['asked']}"
+
+    edges = [r for r in targets if r.get("field") in ("min_edge", "max_edge") and not r.get("flexible")]
+    if edges:
+        shares = [outside(r) for r in edges if r.get("outside")]
+        out += (f"; {len(edges)} edge-length target{'' if len(edges) == 1 else 's'}"
+                + (": " + ", ".join(shares) if shares else ""))
+    flexible = [r for r in targets if r not in edges]
+    if flexible:
+        # NOTE-14: a limit the user said is flexible (an edge length too), told with the share outside it -
+        # information, never "not met"
+        shares = [outside(r) for r in flexible if r.get("outside_pct") is not None and r.get("outside")]
+        out += (f"; {len(flexible)} flexible limit{'' if len(flexible) == 1 else 's'}"
                 + (": " + ", ".join(shares) if shares else ""))
     if settings:
         out += f"; {len(settings)} applied as {'a setting' if len(settings) == 1 else 'settings'}"
+    if nearest:
+        out += f"; {len(nearest)} applied to the whole part, the nearest there is"
+    if finer:
+        out += "; " + "; ".join(f"{r['asked']}: {r['delivered']}" for r in finer[:2])
+    if layered:
+        out += (f"; {len(layered)} limit{'' if len(layered) == 1 else 's'} for even cells told, not judged, on a mesh "
+                "with prism layers")
     if aside:
         out += f"; {len(aside)} could not be applied to a {kind} mesh (listed on the result)"
     if extra:

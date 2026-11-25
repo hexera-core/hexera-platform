@@ -270,7 +270,7 @@ def _view(session: Any, *, owner_id: str, start: bool) -> dict | None:
     if current and stored is not None and stored.get("status") == "done":
         got = rows_of(with_picks(sid, stored, seen["table"], notes), seen, sid) or {"status": "done", "rows": [],
                                                                                     "unsure": []}
-        lines = notes_lines(stored)
+        lines = notes_lines(stored, notes=notes, facts=_acted_facts(session))
         return {**got, "lines": lines} if lines else got
     # NOT READ FOR THESE WORDS (yet): the last reading's rows stay on the card until the new one lands
     status = "reading" if current and stored is not None and stored.get("status") == "reading" else "ready"
@@ -294,12 +294,32 @@ def flow_route(check: Mapping | None, session: Any) -> bool:
     return fea_check.stage_route(dict(check or {}), getattr(session, "messages", None)) == fea_check.STAGE_FLOW
 
 
-def notes_lines(stored: Mapping | None) -> list[str]:
+def notes_lines(stored: Mapping | None, *, notes: str = "", facts: Mapping | None = None) -> list[str]:
     """NOTES-CFD-1: the CFD reader's lines for a reading - "From your notes: ..." for each requirement it read, then
-    what it could not apply - as the run says them (engines/mesh_requirements.words); none when it read nothing."""
+    what it could not apply - as the run says them (engines/mesh_requirements.words); none when it read nothing.
+    `notes` and `facts` (engines/notes_acted, NOTE-15): what the product acts on outside the reading - the engine the
+    notes name, the conditions confirmed - is said as acted on, never "not applied"."""
     from meshpipeline.engines import mesh_requirements as MR
     sec = (stored or {}).get("notes")
-    return [str(w) for w in MR.words(sec)] if isinstance(sec, Mapping) else []
+    if not isinstance(sec, Mapping):
+        return []
+    if notes:
+        from meshpipeline.engines import notes_acted as NA
+        sec = NA.apply(sec, notes, facts)
+    return [str(w) for w in MR.words(sec)]
+
+
+def _acted_facts(session: Any) -> dict:
+    """NOTE-15 on the request card: the engine the session meshes with (the confirmed or proposed selection, else
+    the session's own), its purpose and the conditions its request carries. Never raises."""
+    from meshpipeline.engines import notes_acted as NA
+    try:
+        gate = getattr(session, "intake_gate", None) or {}
+        engine = str((gate.get("selection") or {}).get("engine") or getattr(session, "mesh_engine", "") or "")
+        return NA.facts_of({"purpose": str(getattr(session, "purpose", "") or ""),
+                            "request_txt": str(getattr(session, "request_txt", "") or "")}, engine)
+    except Exception:  # noqa: BLE001 - no facts: only the engine the notes name, as asked
+        return {}
 
 
 def read_notes(state: Mapping, session_id: str) -> dict:
@@ -597,6 +617,23 @@ def pick(session: Any, phrase: int, parts: list[str]) -> dict | None:
     kept[str(int(phrase))] = [str(p) for p in parts if str(p) in ids]
     _write(sid, PICKS, {"key": key, "picks": kept, "at": time.time()})
     return rows_of(with_picks(sid, stored, seen["table"], notes), seen, sid)
+
+
+def notes_for_run(session_id: str, user_notes, request_txt) -> dict | None:
+    """NOTES-CFD-1: the CFD reader's reading of the notes made before approval (run_reading's "notes"), when it is
+    of the notes as they stand; None otherwise. No model call - what the card already read. Never raises."""
+    try:
+        from meshpipeline.application.geometry_check import read_check
+        stored = _read(session_id, MATCHES)
+        if stored is None or stored.get("status") != "done" or not isinstance(stored.get("notes"), Mapping):
+            return None
+        seen = parts_seen(read_check(session_id)) or NOTES_ONLY
+        if stored.get("key") != key_of(notes_of(user_notes, request_txt), seen["table"]):
+            return None
+        return dict(stored["notes"])
+    except Exception as exc:  # noqa: BLE001 - the run reads the notes itself
+        logger.warning("part matches: the notes reading was not handed to the run (%s)", type(exc).__name__)
+        return None
 
 
 def for_run(session_id: str, user_notes, request_txt) -> dict | None:

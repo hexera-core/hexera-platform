@@ -15,7 +15,7 @@ REC = {"base_cell": 0.041666666666666664, "surface_level": (2, 2), "afford_level
        "distance_bands": [(0.0625, 2), (0.25, 1)], "resolve_feature_angle": 35.0,
        "min_feature": 0.001, "surface_area": 1.0, "cells_across_min_feature": 8}
 ANALYSIS = {"bbox_min": [0.0, -0.5, -0.5], "bbox_max": [1.0, 0.5, 0.5], "L": 1.0}
-STRATEGY = {"n_layers": 5, "first_layer_rel": 0.35, "max_cells": 2_000_000}
+STRATEGY = {"n_layers": 5, "last_layer_rel": 0.35, "max_cells": 2_000_000}
 
 
 def _ws(tmp_path: Path) -> Path:
