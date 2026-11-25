@@ -292,6 +292,24 @@ def _combo(n: int | None = None, fa: bool = False, frac: float | None = None):
     return go
 
 
+#: The dictionary the product renders TODAY, which is what these substitute against.
+_NOW_FA = "    featureAngle              120;"
+_NOW_SS = "    nSmoothSurfaceNormals       5;"
+
+
+def _now(line_now: str, line_new: str, what: str):
+    def go(text, cell):
+        return _sub1(text, line_now, line_new, what)
+    return go
+
+
+def _pre(text, cell):
+    """Everything run 4 had: no feature angle, no smoothing, seven tenths of the stack."""
+    text = _sub1(text, _NOW_FA, "    featureAngle              180;", "pre featureAngle")
+    text = _sub1(text, _NOW_SS, "    nSmoothSurfaceNormals       0;", "pre smoothing")
+    return _floor(0.70)(text, cell)
+
+
 def _floor(frac):
     """The product carries 0.5 of the stack; this asks what a different fraction would do."""
     def go(text, cell):
@@ -355,6 +373,16 @@ VARIANTS = {
     "fa150": (_one("    featureAngle              180;",
                    "    featureAngle              150;", "featureAngle 150"),
               "featureAngle 150: half way, for the coverage"),
+    # FOUR-ACROSS: the baseline is the new dictionary, so run 4's is a variant of its own, and
+    # each knob is isolated against the pair to see how the gains scale with the cell.
+    "pre": (_pre, "run 4's dictionary: featureAngle 180, smoothing 0, floor 0.70"),
+    "now_s0": (_now(_NOW_SS, "    nSmoothSurfaceNormals       0;", "smoothing 0"),
+               "the shipped dict with the smoothing taken back out"),
+    "now_fa180": (_now(_NOW_FA, "    featureAngle              180;", "featureAngle 180"),
+                  "the shipped dict with the feature angle taken back out"),
+    "now_s8": (_now(_NOW_SS, "    nSmoothSurfaceNormals       8;", "smoothing 8"),
+               "more smoothing, which a finer cell may want"),
+    "now_f70": (_floor(0.70), "the shipped dict at the 2-across concave minimum's floor"),
 }
 
 
