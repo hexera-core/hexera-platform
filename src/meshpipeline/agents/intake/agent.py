@@ -421,6 +421,20 @@ INTAKE_TOOLS: list[dict] = [
                             "whenever requested_extents is given. Never invent it."
                         ),
                     },
+                    "repair_goal": {
+                        "type": "string",
+                        "enum": ["meshing", "standalone", "off"],
+                        "description": (
+                            "WHAT HAPPENS TO THE CAD: 'meshing' (default - check the CAD, repair "
+                            "what it can, then mesh), 'standalone' (the user only wants the CAD "
+                            "fixed - e.g. 'just fix my STEP', 'repair the file, no mesh' - the run "
+                            "delivers the repaired STEP and meshes nothing), 'off' (the user wants "
+                            "no repair at all - e.g. 'mesh only', 'don't touch my geometry'). Carry "
+                            "the geometry check's choice (its declaration's 'Repair:' sentence) "
+                            "unless the user said otherwise in the chat afterwards; omit it for "
+                            "the default."
+                        ),
+                    },
                     "requirements_strict": {
                         "type": "boolean",
                         "description": (

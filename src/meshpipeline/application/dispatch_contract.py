@@ -90,6 +90,21 @@ def validate(payload: dict, *, where: str = "dispatch") -> None:
     _check_geometry_pair(payload, where)
     _check_patch_contract(payload, where)
     _check_intent_fingerprint(payload, where)
+    _check_repair_goal(payload, where)
+
+
+def _check_repair_goal(payload: dict, where: str) -> None:
+    """The customer's repair choice (meshing | standalone | off, plus the threshold and the review
+    bypass), validated where every producer's payload passes: a payload that would reach a run
+    with a choice the run cannot read is refused here, by the producer, not dropped by the node."""
+    raw = payload.get("repair_goal")
+    if not raw:
+        return                                          # no choice: "Repair + mesh", today's run
+    from meshpipeline.pipeline.repair_goal import GoalRequestError, parse
+    try:
+        parse(raw)
+    except GoalRequestError as exc:
+        raise DispatchContractError(f"{where}: repair_goal: {exc}") from exc
 
 
 def _check_geometry_pair(payload: dict, where: str) -> None:

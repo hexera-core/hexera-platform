@@ -196,6 +196,13 @@ class FinalResult:
     # and never a check (NOTE-3). Added without a schema bump: it defaults to [] and an older
     # reader ignores the key.
     notes_remarks: list = field(default_factory=list)
+    # THE REPAIR, AS THE CUSTOMER SEES IT (CRS v5 beta, pipeline/repair_result.section): the
+    # three-way choice, the engine's result in plain words (problems, counts, largest change vs
+    # allowed, meshers passing, volume and size change, flags, time), and whether it needed a
+    # review, waited for one, or was auto-accepted under the run's bypass. Served as the job API's
+    # `repair` section. Added without a schema bump: it defaults to {} and an older reader ignores
+    # the key.
+    repair: dict = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         # THE invariant, enforced at construction so no path can violate it.
@@ -257,7 +264,8 @@ class FinalResult:
             review_left=(dict(d["review_left"])
                          if isinstance(d.get("review_left"), Mapping) else {}),
             review_truncated=int(d.get("review_truncated", 0) or 0),
-            notes_remarks=[str(r) for r in (d.get("notes_remarks") or []) if str(r).strip()])
+            notes_remarks=[str(r) for r in (d.get("notes_remarks") or []) if str(r).strip()],
+            repair=(dict(d["repair"]) if isinstance(d.get("repair"), Mapping) else {}))
 
 
 # WHAT A CRASH STILL KNOWS.
@@ -662,6 +670,12 @@ def with_repair_lineage(fr: FinalResult, record: Mapping | None) -> FinalResult:
     """
     import dataclasses
     return dataclasses.replace(fr, repair_lineage=dict(record or {}))
+
+
+def with_repair(fr: FinalResult, section: Mapping | None) -> FinalResult:
+    """The repair as the customer sees it (pipeline/repair_result.section), kept on the record."""
+    import dataclasses
+    return dataclasses.replace(fr, repair=dict(section or {}))
 
 
 def with_review_parked(fr: FinalResult, count: int) -> FinalResult:

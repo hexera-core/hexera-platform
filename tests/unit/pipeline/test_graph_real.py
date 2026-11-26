@@ -65,7 +65,10 @@ def test_build_graph_calls_all_required_nodes():
     assert "node_repair_inspect" not in recorder.cond_edges
     assert "node_repair_attempt" in recorder.cond_edges
     targets = recorder.cond_maps["node_repair_attempt"]
-    assert set(targets.values()) == {"node_geometry_admission", "node_repair_deliver"}
+    # CRS v5 beta: a repair that waits for a person's review ends the run (it parks) - it never
+    # reaches a mesher either
+    assert set(targets.values()) == {"node_geometry_admission", "node_repair_deliver",
+                                     _graph_mod.END}
     assert "node_repair_deliver" in recorder.nodes
     # ...and the standalone target is terminal, so neither branch reaches a mesher unjudged
     assert ("node_repair_deliver", _graph_mod.END) in recorder.edges

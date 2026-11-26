@@ -432,19 +432,75 @@ async def node_repair_attempt(state: PipelineState) -> dict:
     inspection opened gets its one line (pipeline/repair_words.py), read from what was recorded -
     and, where there is detail worth a record, the receipt beside it: what was kept, what was
     undone, what was REFUSED and why (pipeline/repair_receipt.py)."""
-    from meshpipeline.pipeline import repair_receipt, repair_words
+    from meshpipeline.pipeline import repair_progress, repair_receipt, repair_words
 
     job_id = str(state.get("job_id", "unknown"))
-    out = await _attempt(state)
-    await repair_words.asay(job_id, repair_words.repair_check_words(state, out))
+    # THE PLAIN PROGRESS LANE (CRS v5 beta): "Checking your CAD" now, the engine's own steps while
+    # it repairs (`_attempt` tails its event log), and the closing count once the result is read.
+    lane = repair_progress.Lane(job_id)
+    await lane.say(repair_progress.progress(repair_progress.CHECKING,
+                                            repair_progress.CHECKING_TEXT))
+    out = await _attempt(state, lane=lane)
+    record = out.get("repair_attempt") or {}
+    if (record.get("result") or {}).get("waiting_for_review"):
+        await repair_words.asay(job_id, _WAITING_LINE)
+    else:
+        await repair_words.asay(job_id, repair_words.repair_check_words(state, out))
     await repair_receipt.apublish(job_id, repair_receipt.repair_receipt_rows(state, out))
+    await lane.say(_done(state, out))
     return out
 
 
-async def _attempt(state: PipelineState) -> dict:
+#: The lane's line when the repair stops for a person (`_review_decision`).
+_WAITING_LINE = ("Some fixes change your part more than is applied without your approval: "
+                 "they are waiting for your review")
+
+
+def _done(state, out: dict) -> dict:
+    """The lane's last line: what the section will say, counted from the same record."""
+    from meshpipeline.pipeline import repair_progress, repair_result
+
+    sec = repair_result.section({**dict(state), **out}, choice=goal_request.choice_of(state))
+    counts = sec.get("counts") or {}
+    text = (_WAITING_LINE if sec.get("waiting_for_review")
+            else repair_result.summary_text(sec))
+    ran = bool(sec.get("ran"))
+    return repair_progress.progress(repair_progress.DONE, text,
+                                    total=counts.get("found") if ran else None,
+                                    fixed=counts.get("fixed") if ran else None)
+
+
+def _review_decision(state, result: dict | None, directives) -> dict:
+    """Whether the engine's result may be applied, and how that was decided (CRS v5 beta,
+    "Bypass permission"). The record rides on `repair_attempt.result` into the job's section.
+
+    - nothing past the allowance: applied, nobody asked;
+    - past it, with the run's review bypass (allowed by the organisation at dispatch): applied,
+      recorded `auto_accepted`;
+    - past it, on a review re-run where a person accepted the changes: applied;
+    - past it otherwise: WAITS FOR A PERSON when the review screen is on here; with it off the
+      change is not applied at all (nobody can approve it, and nothing past the allowance is
+      applied unapproved)."""
+    from meshpipeline.pipeline import repair_result
+
+    needs = repair_result.needs_review(result)
+    bypass = goal_request.bypass_review(state)
+    accepted = repair_result.accepted_by_person(state.get("repair_directives") or directives)
+    record = {"engine_result": dict(result) if result else None, "needs_review": needs,
+              "review_bypass": bypass, "auto_accepted": bool(needs and bypass and not accepted),
+              "accepted_by_person": bool(needs and accepted), "waiting_for_review": False,
+              "applied": True, "choice": goal_request.choice_of(state)}
+    if needs and not bypass and not accepted:
+        record["applied"] = False
+        record["waiting_for_review"] = bool(rcfg.CAD_REPAIR_REVIEW_ENABLED)
+    return record
+
+
+async def _attempt(state: PipelineState, *, lane=None) -> dict:
     import asyncio
 
     from meshpipeline.cad.repair.triage import ROUTE_CONSERVATIVE_REPAIR, recommend
+    from meshpipeline.pipeline import repair_result
     from meshpipeline.pipeline.geometry_state import materialized as _materialized
 
     job_id = state.get("job_id", "unknown")
@@ -488,7 +544,9 @@ async def _attempt(state: PipelineState) -> dict:
     # proposals after the engineer's and replay directives, which keep their place. All of them
     # enter the same RepairPlanner and the kernel judges each directive exactly the same way.
     posture = _posture()
-    directives = tuple(state.get("repair_directives") or ())
+    # A PERSON'S ACCEPTANCE OF A WAITING CHANGE IS NOT AN OPERATION (pipeline/repair_result.py):
+    # it is read by `_review_decision`, and never handed to the planner as one.
+    directives = repair_result.without_acceptances(state.get("repair_directives") or ())
     shadow_plan = None
     if posture != "off":
         plan = await _prepass(report, job_id)
@@ -528,7 +586,9 @@ async def _attempt(state: PipelineState) -> dict:
     relay = None
     if rcfg.CAD_REPAIR_ENGINE == "v5" and _accepts(repair_step_file, "on_progress"):
         from meshpipeline.pipeline.repair_progress import ProgressRelay
-        relay = ProgressRelay(str(job_id)).start()
+        # ...as the narration rows the lane already draws AND as the typed `repair_progress`
+        # events the repair view reads (the lane's own Lane, which numbers and re-says them)
+        relay = ProgressRelay(str(job_id), lane=lane).start()
         extra["on_progress"] = relay.push
     try:
         # OFF THE EVENT LOOP AND ON A CLOCK. ShapeFix on a real part is seconds of CPU with no
@@ -624,8 +684,26 @@ async def _attempt(state: PipelineState) -> dict:
     # score, with the product mesher not involved (spec amendment 1). So the repaired file is
     # handed back as itself, and the customer's upload is not replaced in a run that will
     # never build from either of them.
+    # MAY THE RESULT BE APPLIED WITHOUT A PERSON? (CRS v5 beta, "Bypass permission"). A change
+    # past the auto-accept allowance waits for the review screen unless the run carries the
+    # organisation-allowed bypass; with the review screen off here it is not applied at all.
+    decision = _review_decision(
+        state, repair_result.extract({m.name: m.value for m in repair_report.measurements},
+                                     repair_report), directives)
+    if not decision["applied"] and not decision["waiting_for_review"]:
+        _shadow_row(job_id, shadow_plan, "not_executed")
+        logger.info("node_repair_attempt: the repair changes the part past the allowance and no "
+                    "review is available here - the original stands - job_id=%s", job_id)
+        declined = _declined("the repair changes the part more than is applied without a "
+                             "person's approval, and review is off here",
+                             outcome="needs_review", route=advice.route,
+                             returned=await _returned_untouched(source, job_id, name="returned"))
+        declined["repair_attempt"]["result"] = decision
+        return {**declined, **_not_reached(state, job_id, advice.route, directives)}
+    waiting = bool(decision["waiting_for_review"])
+
     update: dict = {}
-    if not standalone:
+    if not standalone and not waiting:
         from meshpipeline.pipeline.repair_promote import PromotionRefused, promote
         try:
             # HASHING THE WRITTEN FILE CAN FAIL TOO - it may be unreadable, truncated, or gone. That
@@ -711,15 +789,30 @@ async def _attempt(state: PipelineState) -> dict:
     except Exception:  # noqa: BLE001 - the corpus is never load-bearing for a run
         pass
 
-    minted = await asyncio.to_thread(
-        _mint, report=report,
-        measured={**measured, "operations": attempted,
-                  "survivors": [dict(e) for e in repair_report.entities]},
-        source=source, survivors_path=destination)
+    if waiting:
+        # THE RUN WAITS FOR A PERSON: the changes past the allowance are its review items, and
+        # the graph ends the run here for the terminal path to park (`repair_review_wait`).
+        minted = {"repair_review_candidates": repair_result.review_items(
+                      decision.get("engine_result") or {}),
+                  "repair_review_wait": True}
+    else:
+        minted = await asyncio.to_thread(
+            _mint, report=report,
+            measured={**measured, "operations": attempted,
+                      "survivors": [dict(e) for e in repair_report.entities]},
+            source=source, survivors_path=destination)
 
     # WHAT THE GOAL ADDS TO THE RECORD, and only when one was declared - so a run with no goal
     # produces the record it produced before this field existed, key for key.
-    goal_record: dict = {}
+    # THE RESULT AS THE CUSTOMER SEES IT (pipeline/repair_result.section reads it) and the two
+    # files the repair viewer draws before/after from (application/repair_viewer.py) - local to
+    # this worker's workspace, read at the terminal path on the same worker, never served.
+    goal_record: dict = {"result": decision,
+                         "viewer": {"original": str(source), "repaired": str(destination)}}
+    if waiting:
+        # THE HELD FILE: not delivered and not meshed, but drawn beside the original on the review
+        # screen (application/repair_viewer.py) so the person sees what they are approving.
+        goal_record["held_path"] = str(destination)
     if goal is not None:
         goal_record["goal"] = goal.value
         # THE THRESHOLD AS ASKED, recorded whether or not the seam below carries it yet: a reader
@@ -731,11 +824,11 @@ async def _attempt(state: PipelineState) -> dict:
             # auto-accept tier stayed inert for this run - said plainly rather than implied by a
             # tier that never fired.
             goal_record["auto_accept_reached_session"] = False
-    if standalone:
+    if standalone and not waiting:
         # THE DELIVERABLE. Nothing promoted it (see above), so the ending node is the only thing
         # that can name these bytes for the terminal path to hand back.
         goal_record["repaired_path"] = str(destination)
-    returned_step = _returned(measured, destination)
+    returned_step = {} if waiting else _returned(measured, destination)
     if returned_step:
         # THE RETURNED STEP AND ITS HINTS SIDECAR (pipeline/repair_return.py), so the terminal
         # path can upload the sidecar beside the repaired file and the mesh staging can apply it.

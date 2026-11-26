@@ -363,6 +363,16 @@ class _JobAdapter(logging.LoggerAdapter):
         return f"{msg} [job_id={job_id}]", kwargs
 
 
+def _repair_section(final_state) -> dict:
+    """The job API's `repair` section for this run (pipeline/repair_result.section). Never raises."""
+    try:
+        from meshpipeline.pipeline.repair_goal import choice_of
+        from meshpipeline.pipeline.repair_result import section
+        return section(final_state or {}, choice=choice_of(final_state or {}))
+    except Exception:  # noqa: BLE001 - a view of the repair never costs the run its ending
+        return {}
+
+
 def _terminal_event_id(job_id: str) -> str:
     from meshpipeline.persistence.repositories.terminal_outbox_repository import dedup_key_for
     return dedup_key_for(job_id)
@@ -1311,6 +1321,15 @@ async def _run_async(req: JobRequest) -> dict:
                             delivery_attempt=int(final_state.get("retry_count", 0) or 0),
                             execution_generation=_generation,
                             fence_commit=_fence_report)
+                    # THE REPAIR VIEWER (CRS v5 beta): original and repaired CAD as surfaces,
+                    # the problems pinned and how far each face moved - what the console's
+                    # repair view and the review screen's before/after draw. Evidence only.
+                    from meshpipeline.application import repair_viewer as _viewer
+                    await _viewer.deliver(
+                        AsyncSessionLocal, job_id=job_id, state=final_state,
+                        section=_repair_section(final_state), owner_id=owner_id,
+                        delivery_attempt=int(final_state.get("retry_count", 0) or 0),
+                        execution_generation=_generation, fence_commit=_fence_report)
             except _StaleFenced:
                 jlog.warning("Worker FENCED at repair report registration (the job was cancelled "
                              "or taken over) - producing no terminal side effects. job_id=%s",
@@ -1470,6 +1489,9 @@ async def _run_async(req: JobRequest) -> dict:
                 # THE FALLBACK LADDER'S ACCOUNT: which engines ran, why the run moved, and - when
                 # no mesh came out - the one offer the user can accept in a sentence
                 repair_lineage=dict(final_state.get("repair_lineage") or {}),
+                # THE REPAIR SECTION (CRS v5 beta): the choice, the engine's result in plain
+                # words, and whether it was reviewed, waited or was auto-accepted
+                repair=_repair_section(final_state),
                 cad_fidelity=_fidelity,
                 engine_ladder=_ladder_record(
                     final_state, succeeded=final_status == JobStatus.succeeded,

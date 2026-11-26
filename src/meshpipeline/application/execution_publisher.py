@@ -201,6 +201,12 @@ class OwnershipCheckedPublisher:
             self._inner.mesh_partial(phase, object_key, op_id=op_id)
 
     @_healing
+    async def arepair_progress(self, progress: dict, op_id: str = "") -> None:
+        _own = await self._authorized("repair_progress")
+        with self._fenced(_own):
+            self._inner.repair_progress(progress, op_id=op_id)
+
+    @_healing
     async def anarrate(self, kind: str, text: str, *, n: int | None = None, of: int | None = None,
                        unit: str = "", op_id: str = "") -> None:
         _own = await self._authorized("narrate")

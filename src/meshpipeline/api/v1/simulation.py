@@ -353,7 +353,7 @@ async def get_job(job_id: uuid.UUID, owner_id: str = Depends(owner_dep),
             # The viewer payload is what the VIEWER consumes, not something the user downloads.
             # Listing it would put an internal JSON blob in the deliverables panel beside the
             # engine case.
-            if a.artifact_type == ArtifactType.viewer_data:
+            if a.artifact_type in (ArtifactType.viewer_data, ArtifactType.repair_viewer):
                 continue
             if _surface_preview_hidden(a, _engine):
                 continue
@@ -430,7 +430,26 @@ async def get_job(job_id: uuid.UUID, owner_id: str = Depends(owner_dep),
                         if isinstance(getattr(job, "dispatch_payload", None), dict)
                         and job.dispatch_payload.get("session_id")
                         else None),
+            repair=repair_section_of(job, _fr_dict),
         )
+
+
+def repair_section_of(job, final_result: dict | None) -> dict:
+    """The job's `repair` section: the terminal record's (pipeline/repair_result.section), or -
+    before the run ends - the choice it was dispatched with and `ran: false`. Never raises."""
+    stored = (final_result or {}).get("repair")
+    if isinstance(stored, dict) and stored:
+        return stored
+    from meshpipeline.pipeline.repair_goal import choice_of
+    payload = getattr(job, "dispatch_payload", None)
+    try:
+        choice = choice_of(payload if isinstance(payload, dict) else {})
+        bypass = bool(((payload or {}).get("repair_goal") or {}).get("auto_accept_repairs")
+                      if isinstance((payload or {}).get("repair_goal"), dict) else False)
+    except Exception:  # noqa: BLE001 - a view of the choice never breaks the status read
+        choice, bypass = "meshing", False
+    return {"choice": choice, "ran": False, "needs_review": False, "auto_accepted": False,
+            "review_bypass": bypass}
 
 
 def geometry_filename_of(job) -> str | None:
@@ -599,6 +618,89 @@ async def get_mesh_report(job_id: uuid.UUID, owner_id: str = Depends(owner_dep),
     return Response(content=body.encode("utf-8"), media_type="text/html; charset=utf-8",
                     headers={"Content-Disposition":
                              f'attachment; filename="mesh_report_{str(job_id)[:8]}.html"',
+                             "X-Content-Type-Options": "nosniff"})
+
+
+async def _repair_viewer(job_id: uuid.UUID, owner_id: str, organization_id: str) -> dict:
+    """The job's repair viewer payload (application/repair_viewer.py), or a typed 404/503/500."""
+    import json as _json
+
+    from meshpipeline.application.repair_viewer import REPAIR_VIEWER_LOGICAL_KEY
+    from meshpipeline.contracts.object_storage import get_object_store
+    from meshpipeline.persistence.repositories.artifact_repository import ArtifactRepository
+
+    async with get_db() as db:
+        job = await svc.get_job(db, job_id, owner_id, organization_id=organization_id)
+        if not job:
+            raise HTTPException(404, "Job not found")
+        if _is_cancelled(job):
+            raise HTTPException(404, "This run was cancelled; it has no repair to show")
+        row = await ArtifactRepository().get_by_logical_key(db, job_id, REPAIR_VIEWER_LOGICAL_KEY)
+    if row is None:
+        raise HTTPException(404, "No repair view was stored for this job")
+    try:
+        raw = await asyncio.to_thread(lambda: get_object_store().get_bytes(object_key=row.storage_key))
+    except Exception as exc:  # noqa: BLE001 - the object store is a dependency, not the caller
+        logger.warning("repair viewer unreadable for job %s: %s", job_id, type(exc).__name__)
+        raise HTTPException(503, "The repair view is temporarily unavailable") from exc
+    try:
+        data = _json.loads(raw)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(500, "The repair view is corrupt") from exc
+    if not isinstance(data, dict):
+        raise HTTPException(500, "The repair view is corrupt")
+    return data
+
+
+@router.get("/{job_id}/repair/surfaces")
+async def get_repair_surfaces(job_id: uuid.UUID, owner_id: str = Depends(owner_dep),
+                              organization_id: str = Depends(org_dep)):
+    """THE REPAIR VIEW's two parts (CRS v5 beta, Decision 2): `{original, repaired}`, each in the
+    geometry check's skin shape (points in metres, VTK polys, each triangle's B-rep face in
+    `face_b64`), the repaired one carrying per-point `deviation_b64` - millimetres each point's face
+    moved from the upload (-1 where not measured) - with `deviation.by_face`, and the problems
+    pinned where they were found (`pins`, millimetres). The mirror of `GET /{job_id}/surface` for
+    the repair; `repaired` is null when the repair produced no file (the view draws the original)."""
+    data = await _repair_viewer(job_id, owner_id, organization_id)
+    if not data.get("original"):
+        raise HTTPException(404, "No repair view was stored for this job")
+    return {"job_id": str(job_id), "version": data.get("version"),
+            "original": data.get("original"), "repaired": data.get("repaired"),
+            "pins": data.get("pins") or [], "deviation": data.get("deviation") or {}}
+
+
+async def _repair_of(job_id: uuid.UUID, owner_id: str, organization_id: str) -> dict:
+    async with get_db() as db:
+        job = await svc.get_job(db, job_id, owner_id, organization_id=organization_id)
+    if not job:
+        raise HTTPException(404, "Job not found")
+    fr = getattr(job, "final_result", None)
+    section = repair_section_of(job, fr if isinstance(fr, dict) else None)
+    if not section.get("ran"):
+        raise HTTPException(404, "This job has no repair report")
+    return section
+
+
+@router.get("/{job_id}/repair/report.json")
+async def get_repair_report_json(job_id: uuid.UUID, owner_id: str = Depends(owner_dep),
+                                 organization_id: str = Depends(org_dep)):
+    """THE REPAIR REPORT as data: the job's `repair` section, in plain words."""
+    return {"job_id": str(job_id), **await _repair_of(job_id, owner_id, organization_id)}
+
+
+@router.get("/{job_id}/repair/report.html")
+async def get_repair_report(job_id: uuid.UUID, owner_id: str = Depends(owner_dep),
+                            organization_id: str = Depends(org_dep)):
+    """THE REPAIR REPORT as its own download (render/repair_report.py), the mirror of
+    `report.html` for the mesh: key numbers, then every problem -> what we did -> result."""
+    from fastapi.responses import Response
+
+    from meshpipeline.render.repair_report import repair_report_html
+    section = await _repair_of(job_id, owner_id, organization_id)
+    body = repair_report_html(section, job_id=str(job_id))
+    return Response(content=body.encode("utf-8"), media_type="text/html; charset=utf-8",
+                    headers={"Content-Disposition":
+                             f'attachment; filename="repair_report_{str(job_id)[:8]}.html"',
                              "X-Content-Type-Options": "nosniff"})
 
 

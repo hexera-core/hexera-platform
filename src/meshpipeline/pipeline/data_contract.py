@@ -268,11 +268,13 @@ CONTRACT: tuple[ContractVar, ...] = (
     ),
     ContractVar(
         concept="repair goal",
-        purpose="what a repair run is FINISHING FOR, as the job was asked for it: "
-                "{goal: standalone|meshing, auto_accept_deviation_mm: float|None}. A standalone "
-                "job's deliverable is the repaired CAD and the goal's own finishing verdict - the "
-                "product mesher is not involved; meshing is today's run. Empty on every job "
-                "dispatched without one, which is every job until the posture is live",
+        purpose="the customer's three-way choice and what a repair run is FINISHING FOR: "
+                "{goal: meshing|standalone|off, auto_accept_deviation_mm: float|None, "
+                "auto_accept_repairs: bool}. A standalone job's deliverable is the repaired CAD "
+                "and the goal's own finishing verdict - the product mesher is not involved; off "
+                "('Mesh only') skips the repair check and every repair; meshing is today's run. "
+                "Empty is meshing. auto_accept_repairs is the review bypass, carried only when the "
+                "organisation allows it",
         dispatch_kwarg="repair_goal", state_field="repair_goal",
         corpus="training: which goal a part was repaired for, and the threshold the customer "
                "accepted - the label behind every auto-accepted package",
@@ -477,8 +479,11 @@ STATE_FIELDS: dict[str, str] = {
                              "(kept, rolled_back, unplayable, not_reached) for the terminal "
                              "path to write back onto the review items; empty otherwise",
     "repair_goal":           "what this run is FINISHING FOR, as it was asked (see 'repair goal'): "
-                             "{goal, auto_accept_deviation_mm}; empty unless the job was dispatched "
-                             "as a repair job, and inert unless CAD_REPAIR_STANDALONE_JOBS is live",
+                             "{goal: meshing|standalone|off, auto_accept_deviation_mm, "
+                             "auto_accept_repairs}; empty is 'Repair + mesh', today's run",
+    "repair_review_wait":    "true when the repair waits for a person: a change past the "
+                             "auto-accept threshold on a run without the review bypass. The run "
+                             "ends after the repair node and parks in pending_review",
     "repair_delivery":       "a STANDALONE repair job's ending (pipeline/repair_deliver.py): the "
                              "outcome word, the goal's finishing verdict, and the repaired file "
                              "the terminal path hands back; empty on every meshing run",

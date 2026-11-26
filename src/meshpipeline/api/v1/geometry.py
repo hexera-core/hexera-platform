@@ -183,6 +183,15 @@ class ConfirmIn(BaseModel):
     fea_plan: str = ""
     #: SET BY THE SERVER: the size choice in words, for the declaration.
     plan_summary: str = ""
+    #: CRS v5 beta, Decision 1: the form's three-way choice - "meshing" (Repair + mesh, the
+    #: default), "standalone" (Repair CAD only: the run delivers a fixed STEP and meshes nothing) or
+    #: "off" (Mesh only: no repair). Left out, the default. Read into the run's dispatch payload from
+    #: the stored confirmation (application/geometry_confirmation.confirmed_repair_goal).
+    repair_goal: Literal["meshing", "standalone", "off"] | None = None
+    #: "Auto-accept repairs (skip review)": only when the organisation allows it (its owner's
+    #: setting, application/repair_settings) - refused with 403 otherwise. Default False: changes
+    #: past the auto-accept threshold wait for the review screen.
+    repair_auto_accept: bool = False
 
     @field_validator("extents")
     @classmethod
@@ -463,6 +472,21 @@ async def get_check(session_id: uuid.UUID, owner_id: str = Depends(owner_dep),
                                         confirmed=confirmed is not None,
                                         fea=payload.get("route") == fea_check.STAGE_FEA,
                                         queue=queue)
+    # THE REPAIR CHOICE THE FORM SHOWS (CRS v5 beta, Decision 1): what was confirmed (the default,
+    # "meshing", until then) and whether the organisation allows "auto-accept repairs"
+    if isinstance(payload.get("proposal"), dict):
+        from meshpipeline.application import repair_settings
+        try:
+            async with get_db() as db:
+                allowed = await repair_settings.bypass_allowed(db, organization_id=organization_id)
+        except Exception:  # noqa: BLE001 - unknown is "not allowed"
+            allowed = False
+        mine = confirmed if isinstance(confirmed, dict) else {}
+        payload["proposal"].update(
+            repair_goal=mine.get("repair_goal") or "meshing",
+            repair_goal_source="form" if mine.get("repair_goal") else "default",
+            repair_auto_accept=bool(mine.get("repair_auto_accept")) and allowed,
+            repair_auto_accept_allowed=allowed)
     return payload
 
 
@@ -522,6 +546,9 @@ UNIT_FIRST = ("Say what unit the file is in first - in the box beside the sizes,
               "nobody has named.")
 
 
+REPAIR_BYPASS_NOT_ALLOWED = ("Your organisation does not allow repairs to be accepted without "
+                             "review. Its owner can allow it in the settings, or leave "
+                             "\"auto-accept repairs\" off.")
 UNIT_FIXED = ("This file's unit is fixed at {unit}: {reason}. Leave the unit box as it is - the sizes "
               "are already right.")
 
@@ -730,6 +757,17 @@ async def confirm_check(session_id: uuid.UUID, body: ConfirmIn, owner_id: str = 
     session = await _owned_session(session_id, owner_id, organization_id)
     if session.job_id is not None:
         raise HTTPException(409, "This session has already been dispatched")
+    # THE REVIEW BYPASS IS THE ORGANISATION'S TO ALLOW (CRS v5 beta): asked for without that
+    # permission it is refused here, in the same request, rather than silently dropped later
+    if body.repair_auto_accept and body.repair_goal != "off":
+        from meshpipeline.application import repair_settings
+        from meshpipeline.persistence.session import get_db as _get_db
+        async with _get_db() as _db:
+            allowed = await repair_settings.bypass_allowed(_db, organization_id=organization_id)
+        if not allowed:
+            raise HTTPException(403, REPAIR_BYPASS_NOT_ALLOWED)
+    if body.repair_goal == "off" and body.repair_auto_accept:
+        body = body.model_copy(update={"repair_auto_accept": False})   # nothing to accept
     # TWO OPENINGS WITH ONE NAME ARE NAMED APART, not refused: the check itself named five discarded
     # stickers "not_an_opening" and the stage then refused Proceed until the user renamed stickers
     # they were throwing away. Stickers marked not an opening never become patches, so their names
@@ -925,6 +963,10 @@ async def confirm_check(session_id: uuid.UUID, body: ConfirmIn, owner_id: str = 
         message = f"{message} {renamed}"             # never silent: the chat shows it
     if reference_note:
         message = f"{message} {reference_note}"      # said in the declaration, never silent
+    from meshpipeline.application.geometry_confirmation import repair_choice_sentence
+    _repair_said = repair_choice_sentence(body.repair_goal, body.repair_auto_accept)
+    if _repair_said:
+        message = f"{message} {_repair_said}"        # the intake reads the form's repair choice
     patches = patches_from(body)
 
     # The stored copy goes first. If the store is down the user sees an error and nothing has

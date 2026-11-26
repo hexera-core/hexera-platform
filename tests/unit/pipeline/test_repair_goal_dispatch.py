@@ -83,9 +83,12 @@ def test_only_the_exact_live_string_turns_standalone_jobs_on(monkeypatch, postur
     assert rg.posture() == expected
 
 
-def test_a_declared_goal_is_inert_until_the_posture_is_live(monkeypatch):
+def test_a_customer_goal_is_honoured_whatever_the_posture(monkeypatch):
+    # CRS v5 beta, Decision 1: the three-way choice is every customer's; the posture gates only
+    # the operator's admin re-run route (api/v1/admin_repair.py)
     monkeypatch.setattr(rcfg, "CAD_REPAIR_STANDALONE_JOBS", "off", raising=False)
-    assert rg.from_state({"repair_goal": {"goal": "standalone"}}) is None
+    asked = rg.from_state({"repair_goal": {"goal": "standalone"}})
+    assert asked is not None and asked.goal is RepairGoal.standalone
 
 
 # ---------------------------------------------------------------- the untrusted threshold
@@ -143,8 +146,10 @@ def test_the_two_customer_goals_parse():
 def test_a_state_field_nobody_can_read_is_no_goal(live):
     # UNTRUSTED ON THE WAY OUT TOO: the state is reconstructed from a stored payload, so
     # `from_state` re-judges it and answers None rather than raising inside a node.
+    # (The bare choice word, "standalone", IS a request since the CRS v5 beta three-way choice.)
     for junk in [{"goal": "benchmark"}, {"goal": "standalone", "auto_accept_deviation_mm": 50.0},
-                 {"goal": None}, "standalone", 7, {"auto_accept_deviation_mm": 0.05}]:
+                 {"goal": None}, "bench", 7, {"auto_accept_deviation_mm": 0.05},
+                 {"goal": "standalone", "auto_accept_repairs": "yes"}]:
         assert rg.from_state({"repair_goal": junk}) is None
 
 
@@ -233,14 +238,11 @@ def repairs(monkeypatch):
     return seen
 
 
-def test_goal_reaches_repair_step_file_only_when_live(monkeypatch, tmp_path, repairs):
-    monkeypatch.setattr(rcfg, "CAD_REPAIR_STANDALONE_JOBS", "off", raising=False)
-    asyncio.run(node_repair_attempt(_state(tmp_path, repair_goal={"goal": "standalone"})))
-    assert repairs[-1]["goal"] is None, "a goal reached the kernel with the posture off"
-
-    monkeypatch.setattr(rcfg, "CAD_REPAIR_STANDALONE_JOBS", "live", raising=False)
-    asyncio.run(node_repair_attempt(_state(tmp_path, repair_goal={"goal": "standalone"})))
-    assert repairs[-1]["goal"] is RepairGoal.standalone
+def test_goal_reaches_repair_step_file_whatever_the_posture(monkeypatch, tmp_path, repairs):
+    for posture in ("off", "live"):
+        monkeypatch.setattr(rcfg, "CAD_REPAIR_STANDALONE_JOBS", posture, raising=False)
+        asyncio.run(node_repair_attempt(_state(tmp_path, repair_goal={"goal": "standalone"})))
+        assert repairs[-1]["goal"] is RepairGoal.standalone
 
 
 def test_an_unset_goal_still_passes_none_with_the_posture_live(live, tmp_path, repairs):
@@ -301,10 +303,10 @@ def test_meshing_goal_keeps_todays_edge(live, state):
     assert route_after_repair_attempt(state) == "node_geometry_admission"
 
 
-def test_the_route_is_todays_edge_with_the_posture_off(monkeypatch):
+def test_a_standalone_choice_ends_with_the_repair_with_the_posture_off(monkeypatch):
     monkeypatch.setattr(rcfg, "CAD_REPAIR_STANDALONE_JOBS", "off", raising=False)
     assert route_after_repair_attempt(
-        {"repair_goal": {"goal": "standalone"}}) == "node_geometry_admission"
+        {"repair_goal": {"goal": "standalone"}}) == "node_repair_deliver"
 
 
 # ---------------------------------------------------------------- the terminal status

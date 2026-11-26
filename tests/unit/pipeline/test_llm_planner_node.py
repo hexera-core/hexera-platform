@@ -141,9 +141,14 @@ def test_off_is_byte_for_byte_and_never_consults_the_model(tmp_path, monkeypatch
             # exactly how the declared-change fix came to be dead code in production.
             "measurements": {"planner": "rules-v1",
                              "operations_attempted": 1, "operations_kept": 1},
-            "summary": "Repaired within the conservative caps."},
+            "summary": "Repaired within the conservative caps.",
+            # CRS v5 beta: the review decision the job's repair section reads, and the two files
+            # the repair viewer draws - present on every attempted repair, planner or not
+            "result": out["repair_attempt"]["result"],
+            "viewer": out["repair_attempt"]["viewer"]},
     }
     assert out == expected
+    assert out["repair_attempt"]["result"]["applied"] is True
 
 
 @pytest.mark.parametrize("exit_", ["success", "refusal", "timeout", "unavailable", "generic", "promotion", "adopt"])
