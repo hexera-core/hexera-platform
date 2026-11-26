@@ -69,6 +69,8 @@ window.fetch = (u, o) => {
   const s = String(u);
   if (s.includes('/repair/surfaces')) return Promise.resolve(window.__noSurfaces ? json({}, 404) : json({original: SKIN, repaired: after}));
   if (s.includes('/check/skin')) return Promise.resolve(json(SKIN));
+  // the job read again as the panel opens: by default it says nothing newer
+  if (/\\/api\\/v1\\/simulation\\/[^/?]+$/.test(s)) return Promise.resolve(json(window.__job || {status: 'succeeded'}));
   return real(u, o);
 };
 """
@@ -474,3 +476,18 @@ def test_a_repair_only_run_waiting_for_a_worker_says_so_on_its_lane(live):
       return lane().live;
     })()""")
     assert "mesh" not in out.lower(), out
+
+
+def test_the_panel_follows_a_repair_section_written_after_the_ending(live):
+    # slug crsv5ui, 26 Nov: the ending carried `ran: false` and no files; the section and the report landed a moment
+    # later. The panel reads the job once as it opens and shows the job as it now stands.
+    late = _repair(outcome="unchanged", problems=[])
+    _open_result(live, {"pass": False, "repair": {"ran": False, "choice": "standalone", "problems": []}, "files": []},
+                 extra="window.__job = " + json.dumps({"status": "failed", "repair_goal": "standalone", "repair": late,
+                                                      "artifacts": [{"id": "r1", "artifact_type": "repair_report",
+                                                                     "label": "Repair report", "size_bytes": 900,
+                                                                     "download_url": "/d/r.json"}]}) + ";")
+    live.wait_for(f"/No problems found/.test(document.getElementById('repair-{JOB}').innerText)",
+                  what="the newer repair section")
+    text = live.evaluate(f"document.getElementById('repair-{JOB}').innerText")
+    assert "Repair report (JSON)" in text and "No repair files were kept" not in text
