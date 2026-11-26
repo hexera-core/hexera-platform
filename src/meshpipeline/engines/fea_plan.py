@@ -1075,7 +1075,8 @@ def target_words(plan: Mapping) -> list[str]:
                     "(below)."]
         return []
     said = asked_words(t)
-    src = " (read from your notes by the AI)" if t.get("source") == "ai" else ""
+    src = {"ai": " (read from your notes by the AI)", "settings": " (from your team's settings)"}.get(
+        str(t.get("source") or ""), "")
     out: list[str] = []
     est = int((plan.get("estimate") or {}).get("elements") or 0)
     rules = int(t.get("rules_elements") or 0)

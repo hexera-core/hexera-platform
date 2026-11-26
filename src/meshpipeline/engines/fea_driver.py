@@ -1272,18 +1272,48 @@ def _with_ai(plan: dict) -> dict:
     return plan
 
 
-def element_target(state: dict | None, ai: dict | None) -> dict | None:
+def settings_count(asked: dict | None) -> dict | None:
+    """STD-1: the team's saved element count, the default count of every run - the merged set's count rows that came
+    from the settings (a count in the run's notes takes them out, engines/meshing_standard.merge): {"elements",
+    "mode": "about" | "at_most" | "at_least" | "range", "low"/"high", "source": "settings"}; None with none."""
+    from meshpipeline.engines import mesh_requirements as MR
+    req = MR.requirements_of(asked) or {}
+    rows = [r for r in req.get("rows") or [] if str(r.get("field") or "").startswith("cells:")
+            and r.get("from") == "settings"]
+    if not rows:
+        return None
+    cells = req.get("cells") or {}
+    got = {str(r["field"]).split(":", 1)[1]: int(cells.get(str(r["field"]).split(":", 1)[1]) or 0) for r in rows}
+    got = {k: v for k, v in got.items() if v > 0}
+    quote = str(rows[0].get("quote") or "")
+    if got.get("target"):
+        return {"elements": got["target"], "mode": "about", "quote": quote, "source": "settings"}
+    if got.get("floor") and got.get("ceiling"):
+        lo, hi = got["floor"], got["ceiling"]
+        return {"elements": int(round((lo * hi) ** 0.5)), "mode": "range", "low": lo, "high": hi, "quote": quote,
+                "source": "settings"}
+    for what, mode in (("ceiling", "at_most"), ("floor", "at_least")):
+        if got.get(what):
+            return {"elements": got[what], "mode": mode, "quote": quote, "source": "settings"}
+    return None
+
+
+def element_target(state: dict | None, ai: dict | None, asked: dict | None = None) -> dict | None:
     """AI-fea-4 / PLAN-fea-27: the element count the user named, as the AI read it from their words and the
     rules checked it (engines/fea_ai._target): {"elements", "mode", "low"/"high" for a range, "source": "ai"};
     None when it named none. The AI alone reads the notes (a saved decision answers for it when it is down,
     AI-fea-6). When the AI gave no answer and the user left notes, {"unread": True}: the plan is the rules'
-    own and the words say a count in the notes was not applied this run."""
+    own and the words say a count in the notes was not applied this run. STD-1: with no count from the notes,
+    the team's saved count (settings_count of the merged set `asked`) - the notes' count always wins."""
     d = _used(ai)
+    team = settings_count(asked)
     if d is None:
+        if team:
+            return team
         return {"unread": True} if (state or {}).get("user_notes") else None
     n = int(d.get("target_elements") or d.get("budget_elements") or 0)
     if not n:
-        return None
+        return team
     mode = str(d.get("target_mode") or "about")
     out: dict = {"elements": n, "mode": mode, "quote": "", "source": "ai"}
     if mode == "range":
@@ -2566,6 +2596,9 @@ async def surface_asks(ws: Path, state, *, job_id: str, run=None, publish=None) 
     # NOTE-7..9 / SURF-7: the notes' mesh requirements, read once, BEFORE the surface is meshed (a file that turns
     # out not to be a surface carries the same reading on)
     asked = await read_requirements(ws, state, job_id=job_id, run=run, publish=publish)
+    if not (target and target.get("elements")):
+        # STD-1: the team's saved count, when the notes named none
+        target = settings_count(asked)
     return (target if target and target.get("elements") else None), asked
 
 
@@ -2806,8 +2839,9 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
     if (ai.get("decision") or {}).get("notes_remark") and _MR.ai_remark_kept_for(asked, skip=_MR.COUNT_FIELDS):
         from meshpipeline.contracts.user_notes import record_remark
         record_remark(ws, ai["decision"]["notes_remark"], by="fea_ai")
-    # PLAN-fea-27: an element count the user named, as the AI read it from their notes (AI-fea-4)
-    target = element_target(state, ai)
+    # PLAN-fea-27: an element count the user named, as the AI read it from their notes (AI-fea-4); else the team's
+    # saved count (STD-1)
+    target = element_target(state, ai, asked)
     if say_later:
         # the solid plan says the user's count itself, with what was planned (PLAN-fea-27): not said twice
         await say_requirements(asked, publish,

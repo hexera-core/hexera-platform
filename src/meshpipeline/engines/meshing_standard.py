@@ -63,8 +63,9 @@ UNREAD_WORDS = ("Your team's meshing settings were not applied this run: the AI 
                 "answer.")
 OFF_WORDS = ("Your team's meshing settings were not applied this run: the AI step that reads them is switched "
              "off.")
-#: a standard's words for one part, a count, or shell or solid: the run's notes are where those are read
-ELSEWHERE_WORDS = "put sizes for one part, an element count, or shell or solid in a run's notes"
+#: a standard's words for one part, or shell or solid: the run's notes are where those are read (an element or cell
+#: count is the standard's own default for every run, STD-1)
+ELSEWHERE_WORDS = "put sizes for one part, or shell or solid, in a run's notes"
 
 
 # #
@@ -218,10 +219,10 @@ def checked(arguments: str, text: str, *, route: str = "", key: str = "", source
             (req or {}).pop("not_mesh", None)
     elsewhere = _elsewhere(arguments, text)
     if route == "fea":
-        # STD-1: on the FEA routes only the run's notes are read for a size in one place (cad/part_words) and an
-        # element count (engines/fea_ai): the standard's are told to go there, never said as set and left unapplied
-        for row in [r for r in req.get("rows") or [] if r.get("field") == "local"
-                    or str(r.get("field") or "").startswith("cells:")]:
+        # STD-1: on the FEA routes only the run's notes are read for a size in one place (cad/part_words): the
+        # standard's is told to go there, never said as set and left unapplied. Its element COUNT stays: it is the
+        # default count of every run (engines/fea_driver.element_target, PLAN-fea-27 / SHMESH-23)
+        for row in [r for r in req.get("rows") or [] if r.get("field") == "local"]:
             _drop_row(req, row)
             if row.get("quote") and row["quote"] not in elsewhere:
                 elsewhere.append(str(row["quote"]))
@@ -666,6 +667,13 @@ def merge(settings: Mapping | None, notes: Mapping, *, route: str = "") -> dict:
     overridden = [dict(r) for r in S.get("rows") or [] if _slot(r, S) in taken]
     for r in overridden:
         _drop_row(S, r)
+    if route == "fea" and any(str(r.get("field") or "").startswith("cells:") for r in N.get("rows") or []):
+        # STD-1: on a solid or a shell ONE count aims the plan (PLAN-fea-27): a count in the run's notes, of any kind,
+        # is the run's, and every count of the standard gives way to it - told, never dropped without a word
+        for r in [r for r in S.get("rows") or [] if str(r.get("field") or "").startswith("cells:")]:
+            told_s.append(f"{r['asked']} - your notes give the element count for this run")
+            overridden.append(dict(r))
+            _drop_row(S, r)
     out = copy.deepcopy(S)
     for k, v in N.items():
         if k == "rows":

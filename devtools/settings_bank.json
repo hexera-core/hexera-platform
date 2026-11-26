@@ -741,7 +741,7 @@
    "text": "keep it under 2 million elements",
    "expect": {
     "*": [
-     "cells:ceiling=2000000|notes"
+     "cells:ceiling=2000000"
     ]
    }
   },
@@ -793,7 +793,7 @@
    "text": "aim for about 800k elements",
    "expect": {
     "*": [
-     "cells:target=800000|notes"
+     "cells:target=800000"
     ]
    }
   },
@@ -1648,10 +1648,10 @@
    "expect": {
     "shell": [
      "kind:tria%<=5",
-     "cells:ceiling=2000000|notes"
+     "cells:ceiling=2000000"
     ],
     "solid": [
-     "cells:ceiling=2000000|notes"
+     "cells:ceiling=2000000"
     ],
     "cfd": [
      "cells:ceiling=2000000"

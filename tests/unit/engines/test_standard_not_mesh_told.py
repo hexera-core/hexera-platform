@@ -41,7 +41,7 @@ def test_the_settings_page_shows_it_too():
     assert any(w.startswith("Nastran (.bdf) files") for w in shown)
 
 
-def test_on_the_fea_routes_a_count_and_a_size_in_one_place_are_told_to_go_in_a_runs_notes():
+def test_on_the_fea_routes_a_size_in_one_place_goes_to_a_runs_notes_and_a_count_is_the_default():
     text = "max 500k elements\n2 mm at the holes"
     answer = json.dumps({"stated_unit": "none", "sizes": [], "layers": [], "physics": [], "element_kind": [],
                          "limits": [], "other": [], "controls": [], "strictness": [],
@@ -50,12 +50,13 @@ def test_on_the_fea_routes_a_count_and_a_size_in_one_place_are_told_to_go_in_a_r
                                     "quote": "2 mm at the holes"}],
                          "applies_to": {"whole": ["any"], "lines": []}})
     fea = MS.merge(MS.checked(answer, text, route="fea"), MR.section("none"), route="fea")
-    # only the run's notes are read for these on a solid or a shell (engines/fea_ai, cad/part_words): never said as set
-    assert not any(w.startswith("From your settings") for w in fea["lines"])
+    # a place belongs to one part: only the run's notes are read for it (cad/part_words), never said as set
     assert [w for w in fea["lines"] if MS.ELSEWHERE_WORDS in w] == [
-        f'Not applied (your settings): "max 500k elements" - {MS.ELSEWHERE_WORDS}.',
         f'Not applied (your settings): "2 mm at the holes" - {MS.ELSEWHERE_WORDS}.']
-    assert fea["requirements"]["cells"]["ceiling"] is None and fea["requirements"]["local"] == []
+    assert fea["requirements"]["local"] == []
+    # STD-1: the count is the team's default count of every run (engines/fea_driver.element_target)
+    assert "From your settings: at most 500,000 elements." in fea["lines"]
+    assert fea["requirements"]["cells"]["ceiling"] == 500000
     # on the flow route both are the engines' own fields, applied as before
     flow = MS.merge(MS.checked(answer, text, route="flow"), MR.section("none"), route="flow")
     assert flow["requirements"]["cells"]["ceiling"] == 500000 and len(flow["requirements"]["local"]) == 1
