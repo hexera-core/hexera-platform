@@ -258,8 +258,11 @@ def section(state: Mapping, *, choice: str) -> dict:
 
 
 def _section(state: Mapping, *, choice: str) -> dict:
+    from meshpipeline.pipeline.repair_goal import bypass_review
+    # THE RUN'S OWN BYPASS, whatever the repair came to: a repair that declined records no review
+    # decision, and the job must still say it was dispatched with the bypass
     base: dict[str, Any] = {"choice": choice, "ran": False, "needs_review": False,
-                            "auto_accepted": False, "review_bypass": False}
+                            "auto_accepted": False, "review_bypass": bypass_review(state)}
     if choice == "off":
         return base
     attempt = _sub(state, "repair_attempt")
@@ -276,7 +279,8 @@ def _section(state: Mapping, *, choice: str) -> dict:
     out: dict[str, Any] = {**base, "ran": True,
                            "needs_review": bool(record.get("needs_review")),
                            "auto_accepted": bool(record.get("auto_accepted")),
-                           "review_bypass": bool(record.get("review_bypass")),
+                           "review_bypass": bool(record.get("review_bypass")
+                                                 or base["review_bypass"]),
                            "waiting_for_review": bool(record.get("waiting_for_review"))}
     if not result:
         return {**out, **_v3_section(attempt)}

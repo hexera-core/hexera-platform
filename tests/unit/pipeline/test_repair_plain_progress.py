@@ -188,6 +188,11 @@ def test_a_declined_v3_repair_claims_no_counts():
                      choice="meshing")
     assert sec["counts"] == {} and sec["outcome"] == "unrepairable"
     assert RR.summary_text(sec) == "Repair finished"
+    # ...and the run's own bypass survives a repair that made no review decision (found live)
+    sec = RR.section({"repair_attempt": {"attempted": False, "outcome": "refused"},
+                      "repair_goal": {"goal": "meshing", "auto_accept_repairs": True}},
+                     choice="meshing")
+    assert sec["review_bypass"] is True and sec["auto_accepted"] is False
 
 
 def test_mesh_only_has_no_repair():
