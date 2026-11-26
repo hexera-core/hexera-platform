@@ -271,8 +271,11 @@ def _section(state: Mapping, *, choice: str) -> dict:
     record = _sub(attempt, "result")
     # the review decision's copy, else the engine's own on the attempt record (PR 1 writes it there
     # on every exit, a refused repair included - `repair_attempt.repair_result_v5`)
-    result = (_sub(record, "engine_result")
-              or next((_sub(attempt, k) for k in RESULT_KEYS if _sub(attempt, k)), None))
+    result: Mapping[str, Any] | None = _sub(record, "engine_result") or None
+    for key in RESULT_KEYS:
+        if result:
+            break
+        result = _sub(attempt, key) or None
     if not record and result:
         record = {"needs_review": needs_review(result),
                   "auto_accepted": bool(result.get("auto_accepted"))}
