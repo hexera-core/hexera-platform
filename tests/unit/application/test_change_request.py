@@ -130,10 +130,20 @@ async def _fake_db():
     yield AsyncMock()
 
 
+_OWNER = "owner-of-the-run"
+
+
 def _app():
+    from meshpipeline.api.security import owner_dep
     app = FastAPI()
     app.include_router(sim_module.router, prefix="/api/v1/simulation")
+    app.dependency_overrides[owner_dep] = lambda: _OWNER
     return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
+
+
+def _chat(messages=()):
+    """The session the finished run belongs to, as the store holds it."""
+    return SimpleNamespace(id=uuid.UUID(_SESSION), owner_id=_OWNER, messages=list(messages))
 
 
 def _parent():
@@ -143,7 +153,7 @@ def _parent():
                            geometry_source_id=None, geometry_interpretation_id=None, geometry_source=None)
 
 
-async def _post(body, *, no_model=True):
+async def _post(body, *, no_model=True, chat=None, refuse=False):
     sent = {}
 
     async def _dispatch(job_id, payload, **kw):
@@ -152,10 +162,19 @@ async def _post(body, *, no_model=True):
     child = SimpleNamespace(id=_CHILD, dispute_operation_key=None, geometry_source_id=None,
                             geometry_interpretation_id=None)
     sessions = SimpleNamespace(get_by_job_id=AsyncMock(return_value=None))
+    # the session's conversation: the real append_message, on the row the lock read hands back
+    chat = chat if chat is not None else _chat()
+    _row = AsyncMock(side_effect=lambda db, sid: chat if sid == uuid.UUID(_SESSION) else None)
+    admit = (AsyncMock(side_effect=spend_gate.OutOfCredits("No credits left")) if refuse
+             else AsyncMock(return_value="pro"))
     with patch.object(sim_module, "get_db", _fake_db), \
             patch.object(sim_module.svc, "get_job", new=AsyncMock(return_value=_parent())), \
             patch.object(sim_module.svc, "check_quotas", new=AsyncMock()), \
-            patch.object(spend_gate, "admit", new=AsyncMock(return_value="pro")), \
+            patch.object(spend_gate, "admit", new=admit), \
+            patch("meshpipeline.persistence.repositories.session_repository.SessionRepository.get_for_update",
+                  new=_row), \
+            patch("meshpipeline.persistence.repositories.session_repository.SessionRepository.get_internal",
+                  new=_row), \
             patch.object(dispute_operation, "claim", new=AsyncMock(return_value=None)), \
             patch.object(dispute_operation, "dispatch_or_record_failure", new=_dispatch), \
             patch.object(face_pick, "current", return_value=(_plate(), 1.0)), \
@@ -200,6 +219,47 @@ async def test_a_doubt_still_goes_to_the_reviewer_as_before():
     assert payload["user_dispute"]["comment"] == "I think this region is bad, look again"
     from meshpipeline.pipeline.graph import route_after_engine_select
     assert route_after_engine_select({"user_dispute": payload["user_dispute"]}) == "node_reviewer"
+
+
+_TWO_MARKS = [_mark(0.048, 0.045, 0.0, 0.005), _mark(0.048, 0.042, 0.0, 0.005)]
+
+
+async def test_a_change_request_and_its_reply_are_kept_in_the_chat_with_the_new_run_on_the_users_turn():
+    chat = _chat([{"role": "assistant", "content": "Your mesh is ready."}])
+    resp, _ = await _post({"comment": _OWNER_WORDS, "flags": _TWO_MARKS}, chat=chat)
+    assert resp.status_code == 202, resp.text
+    got = resp.json()
+    *_, user, reply = chat.messages
+    assert user == {"role": "user", "job_id": str(_CHILD),
+                    "content": f"{_OWNER_WORDS}\n\n2 spots marked: Face 1 · flat 100 × 100 mm, Face 2 · flat 10 × 10 mm"}
+    assert reply == {"role": "assistant", "content": got["reply"]}
+    # a reload: the history serves both, in order, and the run's box attaches after the person's turn
+    from meshpipeline.contracts.user_notes import for_browser
+    assert [for_browser(m) for m in chat.messages][-2:] == [user, reply]
+
+
+async def test_an_ask_is_kept_in_the_chat_with_no_run_on_it():
+    chat = _chat()
+    resp, _ = await _post({"comment": "finer here", "flags": [_mark(0.5, 0.5, 0.5, 0.005)]}, chat=chat)
+    assert resp.json()["kind"] == "ask"
+    assert chat.messages == [{"role": "user", "content": "finer here\n\n1 spot marked"},
+                             {"role": "assistant", "content": resp.json()["reply"]}]
+
+
+async def test_a_refused_request_keeps_nothing_in_the_chat():
+    chat = _chat()
+    resp, payload = await _post({"comment": _OWNER_WORDS, "flags": _TWO_MARKS}, chat=chat, refuse=True)
+    assert resp.status_code == 402 and payload is None
+    assert chat.messages == []
+
+
+async def test_a_doubt_with_no_reply_and_a_repeat_of_a_kept_change_keep_nothing_more():
+    chat = _chat()
+    await _post({"comment": "I think this region is bad, look again", "flags": _TWO_MARKS[:1]}, chat=chat)
+    assert chat.messages == []
+    await _post({"comment": _OWNER_WORDS, "flags": _TWO_MARKS}, chat=chat)
+    await _post({"comment": _OWNER_WORDS, "flags": _TWO_MARKS}, chat=chat)
+    assert [m["role"] for m in chat.messages] == ["user", "assistant"]
 
 
 def test_the_reviewer_is_handed_marks_it_can_show(tmp_path):

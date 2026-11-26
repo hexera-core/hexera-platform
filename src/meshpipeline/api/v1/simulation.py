@@ -693,11 +693,11 @@ async def _rerun_base(db, parent, intake: _ParentIntake, payload: dict, *, owner
 
 
 async def _change_request(job_id: uuid.UUID, body: DisputeIn, *, owner_id: str, plan: str, organization_id: str,
-                          operation: str) -> DisputeOut:
+                          operation: str) -> tuple[DisputeOut, str]:
     """VER-9: a change asked on a finished mesh starts a NEW run of the same part with the change as a requirement
     on the marked faces; the reviewer reviews that new mesh afterwards, as any mesh. Nothing tied to the part:
     nothing starts, and the reply asks for the spot again. The reply is the model's, under the plan step's guard
-    (VER-12)."""
+    (VER-12). Returned with the person's side as the conversation keeps it (CR.said_in_chat)."""
     from meshpipeline.agents.intake import change_reply
     from meshpipeline.application import change_request as CR
     from meshpipeline.application import dispute_operation
@@ -726,6 +726,7 @@ async def _change_request(job_id: uuid.UUID, body: DisputeIn, *, owner_id: str, 
                               marks_not_on_the_part=facts.untied, session_id=_intake.session_id or None,
                               last_run_minutes=facts.last_run_minutes)
 
+        said_by_them = CR.said_in_chat(comment, marks=len(flags), where=facts.where())
         if facts.kind == CR.KIND_ASK:
             new_job = None
         else:
@@ -733,7 +734,7 @@ async def _change_request(job_id: uuid.UUID, body: DisputeIn, *, owner_id: str, 
             if _replay is not None:
                 if _replay.launch_failed:
                     raise HTTPException(500, _DISPATCH_FAILED)
-                return _out(_replay.job_id, CR.plain_reply(facts))
+                return _out(_replay.job_id, CR.plain_reply(facts)), said_by_them
             try:
                 _billed_plan = await spend_gate.admit(db, owner_id=owner_id, organization_id=organization_id)
                 await svc.check_quotas(db, owner_id, plan=plan or _billed_plan)
@@ -758,7 +759,28 @@ async def _change_request(job_id: uuid.UUID, body: DisputeIn, *, owner_id: str, 
         except Exception as exc:
             raise HTTPException(500, _DISPATCH_FAILED) from exc
     said = await change_reply.written(facts.as_dict(), session_id=_intake.session_id, user_id=owner_id)
-    return _out(new_job.id if new_job is not None else None, said["text"])
+    return _out(new_job.id if new_job is not None else None, said["text"]), said_by_them
+
+
+async def _keep_in_chat(out: DisputeOut, said_by_them: str, *, owner_id: str) -> None:
+    """The request and its reply kept in the session's conversation, so a reload draws both (GET /chat/history);
+    the intake authority writes them (message.keep_change_request). Nothing without a reply. The run has started
+    whatever happens here, so a failure to keep the turn is logged, never answered as a failed request."""
+    from meshpipeline.agents.intake import message as msg
+    from meshpipeline.persistence.repositories.session_repository import SessionRepository
+
+    if not (out.reply or "").strip() or not out.session_id:
+        return
+    try:
+        session_id = uuid.UUID(str(out.session_id))
+    except ValueError:
+        return
+    try:
+        await msg.keep_change_request(session_id, owner_id, said=said_by_them, reply=out.reply,
+                                      job_id=str(out.job_id) if out.job_id else "",
+                                      session_repo=SessionRepository(), db_factory=get_db)
+    except Exception:
+        logger.exception("change request: could not keep the turn in session %s's chat", session_id)
 
 
 @router.post("/{job_id}/dispute", response_model=DisputeOut, status_code=202)
@@ -793,8 +815,10 @@ async def dispute_job(job_id: uuid.UUID, body: DisputeIn, owner_id: str = Depend
 
     if _mode == "rebuild" and change_request.is_change(body.comment):
         # VER-9: words that ask for a change are a requirement of a NEW run - never a review of the old mesh
-        return await _change_request(job_id, body, owner_id=owner_id, plan=plan,
-                                     organization_id=organization_id, operation=_operation)
+        out, said_by_them = await _change_request(job_id, body, owner_id=owner_id, plan=plan,
+                                                  organization_id=organization_id, operation=_operation)
+        await _keep_in_chat(out, said_by_them, owner_id=owner_id)
+        return out
 
     job_repo = JobRepository()
     session_repo = SessionRepository()
@@ -893,8 +917,11 @@ async def dispute_job(job_id: uuid.UUID, body: DisputeIn, owner_id: str = Depend
     except Exception as exc:
         raise HTTPException(500, _DISPATCH_FAILED) from exc
 
-    return DisputeOut(job_id=new_job.id, dispute_of=job_id, flags=len(body.flags),
-                      session_id=_intake.session_id or None)
+    out = DisputeOut(job_id=new_job.id, dispute_of=job_id, flags=len(body.flags),
+                     session_id=_intake.session_id or None)
+    # a review says nothing of its own today (reply ""), so this keeps nothing until it does
+    await _keep_in_chat(out, change_request.said_in_chat(body.comment, marks=len(body.flags)), owner_id=owner_id)
+    return out
 
 
 @router.post("/{job_id}/cancel", response_model=CancelOut)

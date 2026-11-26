@@ -1184,6 +1184,33 @@ async def persist_turn(inbound: InboundMessage, result: dict, *, session_repo,
         await db.commit()
 
 
+async def keep_change_request(session_id: uuid.UUID, owner_id: str, *, said: str, reply: str, job_id: str = "",
+                              session_repo, db_factory) -> bool:
+    """A change request sent from the result view, kept in the conversation like any turn, so a reload draws it:
+    the person's words with their marks as the user's turn, carrying the new run's id when one started (the same
+    mark the plan step's "go" turn gets when its run is linked, so the run's box attaches after it), then the
+    reply as the assistant's. Nothing without a reply.
+
+    ONE TRANSACTION UNDER THE SESSION'S ROW LOCK, the lock a message and a confirmation take: two requests sent
+    close together each append their pair whole, one after the other, never interleaved and never one lost to
+    the other's read-modify-write of the message list. A repeat of a request already kept (the same new run)
+    adds nothing. Returns whether the pair was written."""
+    reply = (reply or "").strip()
+    if not reply:
+        return False
+    async with db_factory() as db:
+        locked = await session_repo.get_for_update(db, session_id)
+        if locked is None or locked.owner_id != owner_id:
+            return False
+        if job_id and any(isinstance(m, dict) and m.get("job_id") == job_id
+                          for m in getattr(locked, "messages", None) or []):
+            return False
+        await session_repo.append_message(db, session_id, "user", said, extra={"job_id": job_id} if job_id else None)
+        await session_repo.append_message(db, session_id, "assistant", reply)
+        await db.commit()
+    return True
+
+
 class NoteStatus(str, enum.Enum):
 
     added = "added"
