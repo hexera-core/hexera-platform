@@ -66,6 +66,38 @@ _CM = {
     "max_volume": re.compile(r"Max volume = ([0-9.eE+-]*[0-9])"),
     "max_aspect_ratio": re.compile(r"Max aspect ratio = ([0-9.eE+-]*[0-9])"),
     "max_cell_openness": re.compile(r"Max cell openness = ([0-9.eE+-]*[0-9])"),
+    # THE MINIMA THE COUNTS ARE COUNTED AGAINST, which this table never read. checkMesh prints a
+    # count only when a check FAILS, so "71,529 cells under determinant 0.001" said how many were
+    # under the floor and nothing about how far: a mesh one part in a thousand under the line and a
+    # mesh with folded cells in it published the identical figure. The shipped meshQualityDict's
+    # own scale settles it - "1 = hex, <= 0 = folded or flattened illegal cell" - and a POSITIVE
+    # minimum means nothing is folded however many sit under the advisory floor.
+    #
+    # MEASURED, job 22ac7054, from its own logs: fluid determinant minimum 0 average 0.382067,
+    # weight minimum 0.0170438 average 0.473058, volume ratio minimum 0.0100117 average 0.905281;
+    # solid determinant minimum 0 average 0.736294, weight 0.0197908 / 0.49306, volume ratio
+    # 0.0018164 / 0.972064. A day was spent arguing about those counts with these six numbers
+    # sitting unparsed in the file.
+    #
+    # A DETERMINANT MINIMUM OF EXACTLY 0 IS NOT BY ITSELF A FOLDED CELL HERE, and the reason is
+    # structural: `primitiveMeshTools::cellDeterminant` sums (Sf/avgArea) outer products over
+    # `internalOrCoupledFace` only, and the conjugate interface is a `mappedWall`, which
+    # `mappedWallPolyPatch` does not override `coupled()` for. So every first-layer cell loses its
+    # single largest face from the metric by construction, even though that face carries a real
+    # coupled temperature and flux in the solve. Both regions read 0 on job 22ac7054 - including
+    # the solid, which has no layers at all.
+    "determinant_min": re.compile(
+        r"Cell determinant \(wellposedness\) : minimum: ([0-9.eE+-]*[0-9])"),
+    "determinant_avg": re.compile(
+        r"Cell determinant \(wellposedness\) : minimum: [0-9.eE+-]*[0-9] average: ([0-9.eE+-]*[0-9])"),
+    "face_weight_min": re.compile(
+        r"Face interpolation weight : minimum: ([0-9.eE+-]*[0-9])"),
+    "face_weight_avg": re.compile(
+        r"Face interpolation weight : minimum: [0-9.eE+-]*[0-9] average: ([0-9.eE+-]*[0-9])"),
+    "face_vol_ratio_min": re.compile(
+        r"Face volume ratio : minimum: ([0-9.eE+-]*[0-9])"),
+    "face_vol_ratio_avg": re.compile(
+        r"Face volume ratio : minimum: [0-9.eE+-]*[0-9] average: ([0-9.eE+-]*[0-9])"),
     # Cells too flat for a solver to integrate over. checkMesh prints this only when it finds
     # some, so an absent pattern means none - the same convention as skew_faces below.
     "small_determinant_cells": re.compile(
