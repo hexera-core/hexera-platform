@@ -37,14 +37,18 @@ def _options(monkeypatch, full: dict, quick: dict | None = None) -> dict:
 
 
 def test_a_mesh_that_fits_the_standard_machine_has_nothing_to_choose(monkeypatch):
+    # its MEMORY fits the standard machine: nothing to choose - and RUN-10 runs it on the faster machine
     out = _options(monkeypatch, _plan(1_500_000))
-    assert out["choice"] is False and out["quicker"] is None and out["full"]["standard"] is True
+    assert out["choice"] is False and out["quicker"] is None and out["full"]["fits_standard"] is True
+    assert out["full"]["machine"] == "c2d-standard-32" and out["full"]["cpus"] == 32 and out["full"]["cores"] == 16
+    small = _options(monkeypatch, _plan(100_000))
+    assert small["choice"] is False and small["full"]["standard"] is True and small["full"]["cpus"] == 8
 
 
 def test_the_quicker_mesh_is_recommended_when_it_gives_up_only_corners_and_rounds(monkeypatch):
     out = _options(monkeypatch, _plan(25_000_000), _plan(3_000_000, ("corner", "corner", "round")))
     assert out["choice"] is True and out["recommended"] == PO.QUICKER
-    assert out["full"]["standard"] is False and out["quicker"]["standard"] is True
+    assert out["full"]["fits_standard"] is False and out["quicker"]["fits_standard"] is True
     assert out["quicker"]["short_kinds"] == ["corner", "round"] and out["quicker"]["short_zones"] == 3
     assert "capped sharp corners" in out["why"] and "same" in out["why"]
 
@@ -71,11 +75,13 @@ def test_the_stage_shows_both_meshes_with_the_recommended_one_picked(monkeypatch
     assert view["state"] == "sized" and view["choice"] is True and view["recommended"] == "quicker"
     full, quick = view["options"]
     assert (full["key"], quick["key"]) == ("full", "quicker") and quick["recommended"] and not full["recommended"]
-    assert "25.0 million elements" in full["words"] and "GiB machine" in full["words"]
+    # 25 M needs more memory than the faster machine holds: the memory ladder's machine, told by its cores
+    assert "25.0 million elements" in full["words"] and "a 16-core machine" in full["words"]
     # THE TIME, AS IT USUALLY GOES AND ITS UPPER END (Areen, 28 Oct), and that a retry can take longer
     assert "usually about" in full["words"] and ", up to " in full["words"]
     assert view["why"].endswith("A retry can take longer.")
-    assert "the standard machine" in quick["words"] and "1 zones coarser" in quick["words"]
+    # RUN-10: the quicker mesh (3 million) runs on the faster machine
+    assert "a faster machine (16 cores)" in quick["words"] and "1 zones coarser" in quick["words"]
     # the answer is checked against what was offered: the pick, else the recommended one
     assert F.plan_answer("full", _facts(out)) == "full"
     assert F.plan_answer("", _facts(out)) == "quicker"
@@ -86,7 +92,8 @@ def test_the_stage_shows_both_meshes_with_the_recommended_one_picked(monkeypatch
 def test_no_choice_offered_means_no_answer(monkeypatch):
     out = _options(monkeypatch, _plan(1_000_000))
     view = F.plan_view(_facts(out))
-    assert view["choice"] is False and "standard machine" in view["words"]
+    assert view["choice"] is False and "on a faster machine (16 cores)" in view["words"]
+    assert "on the standard machine" in F.plan_view(_facts(_options(monkeypatch, _plan(100_000))))["words"]
     assert F.plan_answer("quicker", _facts(out)) == ""
     assert F.plan_view({}) is None
     assert F.plan_view({F.PLAN_FACT_KEY: {"sizing": True, "token": "t"}})["state"] == "sizing"

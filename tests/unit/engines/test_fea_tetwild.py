@@ -107,7 +107,7 @@ def test_the_rungs_machine_holds_gmshs_model_and_ftetwilds_parts_beside_it():
     ox = 11_212_890                                   # ox_mc_lid's plan
     gmsh_gib, files = FD.memory_need(ox)
     d = TW.rung_machine(ox, gmsh_gib, files, margin=FD.MEMORY_MARGIN)
-    m = next(x for x in MM.MACHINES if x.name == d["machine"])
+    m = next(x for x in (*MM.MACHINES, MM.SPEED_MACHINE) if x.name == d["machine"])
     need = gmsh_gib + FD.MEMORY_MARGIN * TW.ftetwild_gib(ox, m.cpus)
     assert need <= MM.usable_gib(m) and d["need_gib"] == pytest.approx(need, abs=0.01)
     assert d["ftetwild"]["workers"] == m.cpus and d["ftetwild"]["gmsh_gib"] == pytest.approx(gmsh_gib, abs=0.01)

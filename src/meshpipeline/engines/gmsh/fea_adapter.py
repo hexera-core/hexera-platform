@@ -99,18 +99,19 @@ SECOND_ATTEMPT = True
 
 
 def mesh_threads(run: dict) -> int:
-    """The mesher's thread count: the plan's `threads`, else DEFAULT_THREADS; 0 = every core the job has."""
+    """The mesher's thread count: the plan's `threads`, else DEFAULT_THREADS; 0 = every core the job has - and never
+    more than determinism.MAX_GMSH_THREADS (MESH-25 / MESH-23: 32; 64 threads measured slower than 32)."""
+    from meshpipeline.engines.determinism import MAX_GMSH_THREADS, gmsh_threads
     raw = (run or {}).get("threads")
     try:
         n = int(DEFAULT_THREADS if raw is None else raw)
     except (TypeError, ValueError):
         n = 1
-    if n > 0:
-        return n
-    # every core THE JOB HAS (its CPU quota), never the host's: Cloud Run's os.cpu_count() is the host's - or
-    # MESH_GMSH_THREADS when set (1: our tests, the repeatable HXT fill)
-    from meshpipeline.engines.determinism import gmsh_threads
-    return gmsh_threads()
+    if n <= 0:
+        # every core THE JOB HAS (its CPU quota), never the host's: Cloud Run's os.cpu_count() is the host's - or
+        # MESH_GMSH_THREADS when set (1: our tests, the repeatable HXT fill)
+        n = gmsh_threads()
+    return max(1, min(n, MAX_GMSH_THREADS))
 
 
 def algorithm_3d(run: dict) -> str:
