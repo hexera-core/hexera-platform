@@ -1522,7 +1522,7 @@ def test_the_conditional_seq_row_keys_are_declared_too() -> None:
     from meshpipeline.cad.repair_v4.seq import SeqCounters
 
     c = SeqCounters()
-    c.phase_s["diagnose"] += 1.0
+    c.add_phase("diagnose", 1.0)
     c.found_class["low_quality"] += 1
     declared = {f.name for f in dataclasses.fields(ArmRow)}
     assert not (set(c.row()) - declared), sorted(set(c.row()) - declared)

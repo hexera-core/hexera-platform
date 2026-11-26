@@ -1009,7 +1009,11 @@ class SeqCounters:
     defects_left: int = 0
     sliced: bool = False
     #: seconds per phase of the loop (pre_round, sites, diagnose, repairs, full), for the row: where the wall went
-    phase_s: collections.defaultdict[str, float] = field(default_factory=lambda: collections.defaultdict(float))
+    #: a plain dict, not a defaultdict: `dataclasses.asdict` cannot rebuild a defaultdict on Python 3.11
+    phase_s: dict[str, float] = field(default_factory=dict)
+
+    def add_phase(self, name: str, seconds: float) -> None:
+        self.phase_s[name] = self.phase_s.get(name, 0.0) + seconds
     found: collections.Counter[str] = field(default_factory=collections.Counter)
     fixed: collections.Counter[str] = field(default_factory=collections.Counter)
     skipped: collections.Counter[str] = field(default_factory=collections.Counter)
@@ -1333,7 +1337,7 @@ def repair_sequentially(
         if pre_round is not None:
             phase_t = clock()
             got = pre_round(pool, best, verdict, counters=counters, step=into(this))
-            counters.phase_s["pre_round"] += clock() - phase_t
+            counters.add_phase("pre_round", clock() - phase_t)
             got_score = scored(got[1]) if got is not None else None
             if got is not None and got_score is not None:
                 best, verdict, best_score = got[0], got[1], got_score
@@ -1344,12 +1348,12 @@ def repair_sequentially(
         phase_t = clock()
         sites = sites_of(pool, best, verdict)
         defects = _with_diagonal(pool, best, defects_of(verdict, sites, best))
-        counters.phase_s["sites"] += clock() - phase_t
+        counters.add_phase("sites", clock() - phase_t)
         if diagnose is not None:
             # v5: every defect gets its CLASS and CAUSE before any repair (`repair_v5.diagnose.diagnose`)
             phase_t = clock()
             defects = diagnose(pool, best, verdict, sites, defects)
-            counters.phase_s["diagnose"] += clock() - phase_t
+            counters.add_phase("diagnose", clock() - phase_t)
             for d in [d for d in defects if d.cls == CHECKER_FAILED]:
                 counters.checker_failed += 1
                 EV.emit("checker_failed", severity="WARNING", reason_key=CHECKER_FAILED, reason=d.rule, **EV.defect_fields(d))
@@ -1422,7 +1426,7 @@ def repair_sequentially(
                                   verify=verify, run_stage=run_stage, op_timeout_s=op_timeout_s,
                                   local_timeout_s=local_timeout_s, step=into(this), key_of=key_of,
                                   cap=max_alternatives)
-        counters.phase_s["repairs"] += clock() - phase_t
+        counters.add_phase("repairs", clock() - phase_t)
         this.kept = counters.kept_in_round
         counters.kept_in_round = 0
         if this.kept == 0:
