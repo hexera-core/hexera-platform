@@ -258,6 +258,31 @@ async def test_framing_a_patch_with_no_review_geometry_is_refused_with_the_way_o
     assert typed.is_viewer_tool and typed.evidence is None, "a refusal must carry no evidence"
 
 
+async def test_a_mark_on_a_viewer_face_is_shown_at_its_point_not_refused(runtime, fake_backend, tmp_path):
+    # VER-11, the live FEA dispute of 25 Nov: the marks were handed over as '[patch: Face_12]', the reviewer passed
+    # it as patch_name, and every view was refused - the marked spots were never seen. A face of the user's viewer
+    # is where the mark is: the view at the point is taken, nothing is hidden, and the text says so.
+    async with await _open(runtime) as rt:
+        r = await rt.execute_viewer_tool(
+            "go_to_coordinates", {"x": 0.048, "y": 0.045, "z": 0.0, "span": 0.045, "patch_name": "Face_12"})
+        t = await rt.execute_viewer_tool("toggle_patch", {"patch_name": "Face_12", "visible": False})
+    assert isinstance(r, list) and r[1]["type"] == "image_url"
+    assert "nothing was hidden" in r[0]["text"]
+    assert any(c[0] == "go_to_coordinates" for c in fake_backend[0].calls)
+    assert isinstance(t, str) and "go_to_coordinates" in t and "without patch_name" in t
+
+
+def test_a_malformed_submission_with_marks_is_told_the_flag_contract():
+    from meshpipeline.agents.reviewer.loop_policy import ReviewLoopPolicy
+    policy = ReviewLoopPolicy.__new__(ReviewLoopPolicy)
+    policy.user_dispute = {"flags": [{"x": 0, "y": 0, "z": 0}, {"x": 1, "y": 0, "z": 0}]}
+    policy.dispute_phase = ""
+    text = policy._malformed_findings_correction(("flag 2 has no result",))
+    assert "one entry per marked spot, ordinals 1, 2" in text and "unassessable" in text
+    policy.user_dispute = None
+    assert "flag_findings" not in policy._malformed_findings_correction(("x",))
+
+
 async def test_framing_a_renderable_patch_still_renders(runtime, fake_backend, tmp_path):
     async with await _open(runtime) as rt:
         r = await rt.execute_viewer_tool(

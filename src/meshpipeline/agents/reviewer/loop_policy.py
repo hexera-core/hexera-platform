@@ -510,12 +510,27 @@ class ReviewLoopPolicy:
                 f"Call {SUBMIT_FINDINGS} again with valid JSON arguments.")
 
     def _malformed_findings_correction(self, problems: tuple[str, ...]) -> str:
-        return "\n".join([
+        from meshpipeline.contracts import human_flags as HF
+        lines = [
             "Submission rejected - the findings payload is malformed and was NOT evaluated.",
             *problems,
             "No axis was recorded as passing or failing. Every finding needs axis_key, finding, "
             "evidence_ids and a literal true/false `passed`, and no other fields.",
-        ])
+        ]
+        expected = HF.expected_ordinals(self.user_dispute)
+        if expected:
+            # VER-11: THE FLAG CONTRACT, SAID IN THE CORRECTION. It named only the axis shape, so a review that had
+            # not seen the marks (the live FEA dispute of 25 Nov) was sent back with nothing telling it how to file
+            # them, and its first "Finalized review findings" failed. A mark it could not see has an honest answer,
+            # unassessable, and is never left out.
+            phase = self.dispute_phase or HF.PHASE_PARENT
+            statuses = HF.PARENT_STATUSES if phase == HF.PHASE_PARENT else HF.REBUILT_STATUSES
+            lines.append(
+                "`flag_findings` needs exactly one entry per marked spot, ordinals "
+                f"{', '.join(map(str, expected))}: ordinal, status (one of {', '.join(statuses)}), observation "
+                "(what you saw there), explanation, measurements. Reach each spot with the go_to_coordinates call "
+                "given for it. A spot you could not see is 'unassessable' with the reason, never left out.")
+        return "\n".join(lines)
 
     def before_round(self, tally: LoopTally, messages: list[dict]) -> None:
         pass
