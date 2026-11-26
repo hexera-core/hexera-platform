@@ -1,0 +1,749 @@
+{
+ "PROVISIONAL": "FAST-DEV v1: a FROZEN 20-file subset of the v2 splits for the fast loop. NEVER edit: a changed list is FAST-DEV v2 with a new name.",
+ "duplicate_part": "dev_v2 holds one part twice (4c1fc7d5579d == e63710eae340, Lane A A11); only 4c1fc7d5579d is here",
+ "files": [
+  {
+   "family": "overlapping_facets",
+   "first_failing_layer": "panel",
+   "group": null,
+   "kind": null,
+   "kind_status": null,
+   "name": "abc/0053_00539073_58a66b7522115e0f6fe163e3_step_000.step",
+   "sha256": "4c1fc7d5579d76e36784adada096c94b265ea1a1403821c4140024987681050d",
+   "source": "abc_fail",
+   "verdict_summary": {
+    "clean": false,
+    "counts_for_scoreboard": true,
+    "faithful": true,
+    "hard": [],
+    "out_of_scope": false,
+    "panel": [
+     {
+      "error_kind": "other",
+      "min_sicn": null,
+      "name": "gmsh_prod",
+      "status": "fail"
+     },
+     {
+      "error_kind": "overlapping_facets",
+      "min_sicn": null,
+      "name": "gmsh_default",
+      "status": "fail"
+     },
+     {
+      "error_kind": "low_quality",
+      "min_sicn": 0.00012514823191292352,
+      "name": "gmsh_alt",
+      "status": "fail"
+     },
+     {
+      "error_kind": null,
+      "min_sicn": 0.28382621059951957,
+      "name": "netgen_occ",
+      "status": "pass"
+     }
+    ],
+    "soft": [
+     "small_edge"
+    ],
+    "tier": "full",
+    "valid": true
+   }
+  },
+  {
+   "family": "overlapping_facets",
+   "first_failing_layer": "panel",
+   "group": null,
+   "kind": null,
+   "kind_status": null,
+   "name": "abc/0053_00532577_58a4246ffb62730f86f554b7_step_003.step",
+   "sha256": "5accc12fa47d338aa8a3b7f81febcd5b1c0dc9c2ba57141ae632223c2006336d",
+   "source": "abc_fail",
+   "verdict_summary": {
+    "clean": false,
+    "counts_for_scoreboard": true,
+    "faithful": true,
+    "hard": [],
+    "out_of_scope": false,
+    "panel": [
+     {
+      "error_kind": "other",
+      "min_sicn": null,
+      "name": "gmsh_prod",
+      "status": "fail"
+     },
+     {
+      "error_kind": "overlapping_facets",
+      "min_sicn": null,
+      "name": "gmsh_default",
+      "status": "fail"
+     },
+     {
+      "error_kind": "timeout",
+      "min_sicn": null,
+      "name": "gmsh_alt",
+      "status": "timeout"
+     },
+     {
+      "error_kind": null,
+      "min_sicn": 0.33419092209180823,
+      "name": "netgen_occ",
+      "status": "pass"
+     }
+    ],
+    "soft": [],
+    "tier": "full",
+    "valid": true
+   }
+  },
+  {
+   "family": "overlapping_facets",
+   "first_failing_layer": "panel",
+   "group": null,
+   "kind": null,
+   "kind_status": null,
+   "name": "abc/0052_00527796_945276583aeb7d4221f130f8_step_006.step",
+   "sha256": "695d74ca7fa66509d84905c33bbb6747a1fd1c36ebe1252dfea990fb66e3b96b",
+   "source": "abc_fail",
+   "verdict_summary": {
+    "clean": false,
+    "counts_for_scoreboard": true,
+    "faithful": true,
+    "hard": [],
+    "out_of_scope": false,
+    "panel": [
+     {
+      "error_kind": "low_quality",
+      "min_sicn": 0.0024602356129433066,
+      "name": "gmsh_prod",
+      "status": "fail"
+     },
+     {
+      "error_kind": "overlapping_facets",
+      "min_sicn": null,
+      "name": "gmsh_default",
+      "status": "fail"
+     },
+     {
+      "error_kind": "low_quality",
+      "min_sicn": 0.008962574684086568,
+      "name": "gmsh_alt",
+      "status": "fail"
+     },
+     {
+      "error_kind": "netgen_timeout",
+      "min_sicn": null,
+      "name": "netgen_occ",
+      "status": "timeout"
+     }
+    ],
+    "soft": [
+     "small_edge"
+    ],
+    "tier": "full",
+    "valid": true
+   }
+  },
+  {
+   "family": "overlapping_facets",
+   "first_failing_layer": "panel",
+   "group": null,
+   "kind": null,
+   "kind_status": null,
+   "name": "abc/0056_00567964_2dc8697785b603ebd064db60_step_000.step",
+   "sha256": "de9ad40118a4beb0b640c494f7866280c1f07aeea6dab2c671e077846e1b9825",
+   "source": "abc_fail",
+   "verdict_summary": {
+    "clean": false,
+    "counts_for_scoreboard": true,
+    "faithful": true,
+    "hard": [],
+    "out_of_scope": false,
+    "panel": [
+     {
+      "error_kind": "low_quality",
+      "min_sicn": 0.00048660509005024936,
+      "name": "gmsh_prod",
+      "status": "fail"
+     },
+     {
+      "error_kind": "overlapping_facets",
+      "min_sicn": null,
+      "name": "gmsh_default",
+      "status": "fail"
+     },
+     {
+      "error_kind": "low_quality",
+      "min_sicn": 0.0008121210208307946,
+      "name": "gmsh_alt",
+      "status": "fail"
+     },
+     {
+      "error_kind": null,
+      "min_sicn": 0.3808513877117539,
+      "name": "netgen_occ",
+      "status": "pass"
+     }
+    ],
+    "soft": [
+     "small_edge"
+    ],
+    "tier": "full",
+    "valid": true
+   }
+  },
+  {
+   "family": "hxt_3d_failed",
+   "first_failing_layer": "panel",
+   "group": null,
+   "kind": null,
+   "kind_status": null,
+   "name": "abc/0053_00532482_58a41a786e328e0f6f32065d_step_009.step",
+   "sha256": "263d5e2d5babc9a2fd344835eed8107d7fbbf34f8b3c17798ecfd3774f4d8a83",
+   "source": "abc_fail",
+   "verdict_summary": {
+    "clean": false,
+    "counts_for_scoreboard": true,
+    "faithful": true,
+    "hard": [],
+    "out_of_scope": false,
+    "panel": [
+     {
+      "error_kind": "other",
+      "min_sicn": null,
+      "name": "gmsh_prod",
+      "status": "fail"
+     },
+     {
+      "error_kind": "low_quality",
+      "min_sicn": 0.001185395876172654,
+      "name": "gmsh_default",
+      "status": "fail"
+     },
+     {
+      "error_kind": "low_quality",
+      "min_sicn": 0.002150040208412587,
+      "name": "gmsh_alt",
+      "status": "fail"
+     },
+     {
+      "error_kind": null,
+      "min_sicn": 0.10805144544629894,
+      "name": "netgen_occ",
+      "status": "pass"
+     }
+    ],
+    "soft": [],
+    "tier": "full",
+    "valid": true
+   }
+  },
+  {
+   "family": "overlapping_facets",
+   "first_failing_layer": "panel",
+   "group": null,
+   "kind": null,
+   "kind_status": null,
+   "name": "abc/0053_00535069_bb0bc8e7914fdea894ad2ec6_step_012.step",
+   "sha256": "722c122c9b800e234fb9804ffd1d4c2c49c95f9d13c937b4af6c8053240ddf50",
+   "source": "abc_fail",
+   "verdict_summary": {
+    "clean": false,
+    "counts_for_scoreboard": true,
+    "faithful": true,
+    "hard": [],
+    "out_of_scope": false,
+    "panel": [
+     {
+      "error_kind": "low_quality",
+      "min_sicn": 0.003911452446770141,
+      "name": "gmsh_prod",
+      "status": "fail"
+     },
+     {
+      "error_kind": "overlapping_facets",
+      "min_sicn": null,
+      "name": "gmsh_default",
+      "status": "fail"
+     },
+     {
+      "error_kind": "low_quality",
+      "min_sicn": 0.001405070623707243,
+      "name": "gmsh_alt",
+      "status": "fail"
+     },
+     {
+      "error_kind": null,
+      "min_sicn": 0.04366716850544278,
+      "name": "netgen_occ",
+      "status": "pass"
+     }
+    ],
+    "soft": [],
+    "tier": "full",
+    "valid": true
+   }
+  },
+  {
+   "family": "overlapping_facets",
+   "first_failing_layer": "panel",
+   "group": null,
+   "kind": null,
+   "kind_status": null,
+   "name": "abc/0051_00518226_7aa4de49968de523e2091a87_step_001.step",
+   "sha256": "7e573047c1a6591e2ac6eb8a58124bd1f36e94623ed84e610e301b6dcc577922",
+   "source": "abc_fail",
+   "verdict_summary": {
+    "clean": false,
+    "counts_for_scoreboard": true,
+    "faithful": true,
+    "hard": [],
+    "out_of_scope": false,
+    "panel": [
+     {
+      "error_kind": "other",
+      "min_sicn": null,
+      "name": "gmsh_prod",
+      "status": "fail"
+     },
+     {
+      "error_kind": "overlapping_facets",
+      "min_sicn": null,
+      "name": "gmsh_default",
+      "status": "fail"
+     },
+     {
+      "error_kind": "timeout",
+      "min_sicn": null,
+      "name": "gmsh_alt",
+      "status": "timeout"
+     },
+     {
+      "error_kind": "netgen_timeout",
+      "min_sicn": null,
+      "name": "netgen_occ",
+      "status": "timeout"
+     }
+    ],
+    "soft": [],
+    "tier": "full",
+    "valid": true
+   }
+  },
+  {
+   "family": "low_quality",
+   "first_failing_layer": "panel",
+   "group": null,
+   "kind": null,
+   "kind_status": null,
+   "name": "00542755/00542755_475d3d5812881065217cd6c1_step_002.step",
+   "sha256": "d2cb9938a2d77581e067b642854d9ec44ba9c20044e9b632fc080028c8dd594a",
+   "source": "abc_pass",
+   "verdict_summary": {
+    "clean": false,
+    "counts_for_scoreboard": true,
+    "faithful": true,
+    "hard": [],
+    "out_of_scope": false,
+    "panel": [
+     {
+      "error_kind": null,
+      "min_sicn": 0.010517654483076982,
+      "name": "gmsh_prod",
+      "status": "pass"
+     },
+     {
+      "error_kind": "low_quality",
+      "min_sicn": 0.006708184548772799,
+      "name": "gmsh_default",
+      "status": "fail"
+     },
+     {
+      "error_kind": null,
+      "min_sicn": 0.06147991991241518,
+      "name": "gmsh_alt",
+      "status": "pass"
+     },
+     {
+      "error_kind": null,
+      "min_sicn": 0.08779524950776219,
+      "name": "netgen_occ",
+      "status": "pass"
+     }
+    ],
+    "soft": [],
+    "tier": "full",
+    "valid": true
+   }
+  },
+  {
+   "family": "body_overlap",
+   "first_failing_layer": "valid",
+   "group": null,
+   "kind": null,
+   "kind_status": null,
+   "name": "abc/0057_00574915_30a8ce52329868badc4fd335_step_014.step",
+   "sha256": "7917f3122caed0142b8bc396cf320ed89e8e2301d4c71f63498c990efc161704",
+   "source": "abc_fail",
+   "verdict_summary": {
+    "clean": false,
+    "counts_for_scoreboard": true,
+    "faithful": null,
+    "hard": [
+     "body_overlap",
+     "body_overlap"
+    ],
+    "out_of_scope": false,
+    "panel": [
+     {
+      "error_kind": null,
+      "min_sicn": 0.011636495818214666,
+      "name": "gmsh_prod",
+      "status": "pass"
+     },
+     {
+      "error_kind": "overlapping_facets",
+      "min_sicn": null,
+      "name": "gmsh_default",
+      "status": "fail"
+     },
+     {
+      "error_kind": "low_quality",
+      "min_sicn": 0.0006219128109318359,
+      "name": "gmsh_alt",
+      "status": "fail"
+     },
+     {
+      "error_kind": null,
+      "min_sicn": 0.0759756929332785,
+      "name": "netgen_occ",
+      "status": "pass"
+     }
+    ],
+    "soft": [
+     "small_edge"
+    ],
+    "tier": "full",
+    "valid": false
+   }
+  },
+  {
+   "family": "body_overlap",
+   "first_failing_layer": "valid",
+   "group": null,
+   "kind": null,
+   "kind_status": null,
+   "name": "abc/0051_00518960_bb93f0d63e97fc3782a0c6dd_step_051.step",
+   "sha256": "8c6a3f2186e7101508d2348cc96aa4cb8b00deb139cc280fe3c7f3d047522d79",
+   "source": "abc_fail",
+   "verdict_summary": {
+    "clean": false,
+    "counts_for_scoreboard": true,
+    "faithful": null,
+    "hard": [
+     "body_overlap",
+     "body_overlap",
+     "body_overlap"
+    ],
+    "out_of_scope": false,
+    "panel": [
+     {
+      "error_kind": "other",
+      "min_sicn": null,
+      "name": "gmsh_prod",
+      "status": "fail"
+     },
+     {
+      "error_kind": "overlapping_facets",
+      "min_sicn": null,
+      "name": "gmsh_default",
+      "status": "fail"
+     },
+     {
+      "error_kind": "low_quality",
+      "min_sicn": 0.0031674934649615558,
+      "name": "gmsh_alt",
+      "status": "fail"
+     },
+     {
+      "error_kind": null,
+      "min_sicn": 0.023009011255817946,
+      "name": "netgen_occ",
+      "status": "pass"
+     }
+    ],
+    "soft": [
+     "small_edge"
+    ],
+    "tier": "full",
+    "valid": false
+   }
+  },
+  {
+   "family": "overlapping_facets",
+   "first_failing_layer": "panel",
+   "group": null,
+   "kind": null,
+   "kind_status": null,
+   "name": "abc/0059_00592329_58be052560d0ea0f7c80053f_step_006.step",
+   "sha256": "bb0fe0d1c8e92d9085fe788f14c7c0bd1e84a4ed664e451a6584ce6fbf1aaf90",
+   "source": "abc_fail",
+   "verdict_summary": {
+    "clean": false,
+    "counts_for_scoreboard": true,
+    "faithful": true,
+    "hard": [],
+    "out_of_scope": false,
+    "panel": [
+     {
+      "error_kind": "other",
+      "min_sicn": null,
+      "name": "gmsh_prod",
+      "status": "fail"
+     },
+     {
+      "error_kind": "overlapping_facets",
+      "min_sicn": null,
+      "name": "gmsh_default",
+      "status": "fail"
+     },
+     {
+      "error_kind": "no_volume",
+      "min_sicn": null,
+      "name": "gmsh_alt",
+      "status": "fail"
+     },
+     {
+      "error_kind": "step_unreadable",
+      "min_sicn": null,
+      "name": "netgen_occ",
+      "status": "fail"
+     }
+    ],
+    "soft": [
+     "small_edge"
+    ],
+    "tier": "full",
+    "valid": true
+   }
+  },
+  {
+   "family": "brep_invalid",
+   "first_failing_layer": "valid",
+   "group": null,
+   "kind": null,
+   "kind_status": null,
+   "name": "abc/0054_00547994_58ab27a87442550f6daa230f_step_079.step",
+   "sha256": "32ca3e9a6e9a81c1bc5a95102b0de1dc8dbc3c8bc205028a00839ac7a43119e6",
+   "source": "abc_fail",
+   "verdict_summary": {
+    "clean": false,
+    "counts_for_scoreboard": true,
+    "faithful": null,
+    "hard": [
+     "brep_invalid",
+     "self_intersection",
+     "self_intersection"
+    ],
+    "out_of_scope": false,
+    "panel": [
+     {
+      "error_kind": "timeout",
+      "min_sicn": null,
+      "name": "gmsh_prod",
+      "status": "timeout"
+     },
+     {
+      "error_kind": "timeout",
+      "min_sicn": null,
+      "name": "gmsh_default",
+      "status": "timeout"
+     },
+     {
+      "error_kind": "timeout",
+      "min_sicn": null,
+      "name": "gmsh_alt",
+      "status": "timeout"
+     },
+     {
+      "error_kind": "netgen_meshing_failed",
+      "min_sicn": null,
+      "name": "netgen_occ",
+      "status": "fail"
+     }
+    ],
+    "soft": [
+     "small_edge",
+     "large_tolerance"
+    ],
+    "tier": "full",
+    "valid": false
+   }
+  },
+  {
+   "family": "hxt_3d_failed",
+   "first_failing_layer": "panel",
+   "group": null,
+   "kind": null,
+   "kind_status": null,
+   "name": "abc/0054_00540309_4ef8a7619ffd2eb17e6eb519_step_000.step",
+   "sha256": "2a387cc52f65bb0e5e0d3ecdf849cbe3aeec5214b9037c852860d1a8f1c45fd6",
+   "source": "abc_fail",
+   "verdict_summary": {
+    "clean": false,
+    "counts_for_scoreboard": true,
+    "faithful": true,
+    "hard": [],
+    "out_of_scope": false,
+    "panel": [
+     {
+      "error_kind": "other",
+      "min_sicn": null,
+      "name": "gmsh_prod",
+      "status": "fail"
+     },
+     {
+      "error_kind": null,
+      "min_sicn": 0.022016129340770334,
+      "name": "gmsh_default",
+      "status": "pass"
+     },
+     {
+      "error_kind": null,
+      "min_sicn": 0.05431884803321258,
+      "name": "gmsh_alt",
+      "status": "pass"
+     },
+     {
+      "error_kind": null,
+      "min_sicn": 0.11100196119809115,
+      "name": "netgen_occ",
+      "status": "pass"
+     }
+    ],
+    "soft": [],
+    "tier": "full",
+    "valid": true
+   }
+  },
+  {
+   "family": "overlapping_facets",
+   "first_failing_layer": "panel",
+   "group": null,
+   "kind": null,
+   "kind_status": null,
+   "name": "abc/0053_00531271_5063549c98bdbe89669a4f49_step_000.step",
+   "sha256": "f3819472cf820e488483e73ce6fa614e7be6db852f2e43d2ed7a8e73bb408278",
+   "source": "abc_fail",
+   "verdict_summary": {
+    "clean": false,
+    "counts_for_scoreboard": true,
+    "faithful": true,
+    "hard": [],
+    "out_of_scope": false,
+    "panel": [
+     {
+      "error_kind": null,
+      "min_sicn": 0.013474143745896401,
+      "name": "gmsh_prod",
+      "status": "pass"
+     },
+     {
+      "error_kind": "overlapping_facets",
+      "min_sicn": null,
+      "name": "gmsh_default",
+      "status": "fail"
+     },
+     {
+      "error_kind": null,
+      "min_sicn": 0.02245467998225262,
+      "name": "gmsh_alt",
+      "status": "pass"
+     },
+     {
+      "error_kind": null,
+      "min_sicn": 0.21563919800694495,
+      "name": "netgen_occ",
+      "status": "pass"
+     }
+    ],
+    "soft": [
+     "small_edge"
+    ],
+    "tier": "full",
+    "valid": true
+   }
+  },
+  {
+   "family": "open_shell",
+   "first_failing_layer": "valid",
+   "group": null,
+   "kind": null,
+   "kind_status": null,
+   "name": "abc/0051_00512819_0d20478fa07db557be91ad16_step_000.step",
+   "sha256": "a2807f9a2fef334a65bb5727266ed0c875c0340549fb53c12a853c6bd4055c06",
+   "source": "abc_fail",
+   "verdict_summary": {
+    "clean": false,
+    "counts_for_scoreboard": true,
+    "faithful": null,
+    "hard": [
+     "open_shell"
+    ],
+    "out_of_scope": false,
+    "panel": [
+     {
+      "error_kind": null,
+      "min_sicn": 0.013146985619790639,
+      "name": "gmsh_prod",
+      "status": "pass"
+     },
+     {
+      "error_kind": "overlapping_facets",
+      "min_sicn": null,
+      "name": "gmsh_default",
+      "status": "fail"
+     },
+     {
+      "error_kind": "low_quality",
+      "min_sicn": 0.008396896225921076,
+      "name": "gmsh_alt",
+      "status": "fail"
+     },
+     {
+      "error_kind": null,
+      "min_sicn": 0.08348168854221896,
+      "name": "netgen_occ",
+      "status": "pass"
+     }
+    ],
+    "soft": [],
+    "tier": "full",
+    "valid": false
+   }
+  }
+ ],
+ "frozen": "2026-11-24",
+ "rationale": {
+  "263d5e2d5bab": "Lane A located: sliver 2995:1 and 46:1 (hxt_3d_failed)",
+  "2a387cc52f65": "v3c: REPAIRED (clean out) - regression guard",
+  "32ca3e9a6e9a": "Lane D census: multi-root (2), netgen_meshing_failed; brep_invalid",
+  "4c1fc7d5579d": "Lane A located: proximity x4, sliver x4, overlapping_facets (taken INSTEAD of its duplicate e63710eae340: the same part)",
+  "5accc12fa47d": "Lane A located: proximity x3, sliver x3, overlapping_facets",
+  "695d74ca7fa6": "Lane A located: proximity x3, overlapping_facets x2, sliver x2",
+  "722c122c9b80": "Lane A located: proximity x4",
+  "7917f3122cae": "body overlap made VALID by search_det (v2)",
+  "7e573047c1a6": "Lane A located: overlapping_facets on COINCIDENT DUPLICATE faces 108/109",
+  "8c6a3f2186e7": "body overlap made VALID by search_ai (v2)",
+  "a2807f9a2fef": "v3c: search output VALID but not clean (open_shell family)",
+  "bb0fe0d1c8e9": "Lane D census: multi-root (2), netgen step_unreadable with 0 solids seen (D19 A)",
+  "d2cb9938a2d7": "Lane A located: proximity + sliver, low_quality (abc_pass source)",
+  "de9ad40118a4": "Lane A located: proximity x4, overlapping_facets x2",
+  "f3819472cf82": "v3c: search output VALID but not clean (overlapping_facets)"
+ },
+ "split": "dev",
+ "subset_of": {
+  "clean": "PROVISIONAL_clean_v2.json",
+  "dev": "PROVISIONAL_dev_v2.json"
+ }
+}

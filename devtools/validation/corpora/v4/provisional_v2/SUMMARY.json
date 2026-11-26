@@ -1,0 +1,544 @@
+{
+ "PROVISIONAL": "PROVISIONAL v2, DRAWN FROM A PARTIAL (reprobe-800) RE-PROBE OF THE CLEARED POOL. For dev-wave tuning and the clean control only. The real splits come from the full re-probe; do not report these as the benchmark.",
+ "by_source": {
+  "abc_fail": {
+   "clean": 3,
+   "excluded": 39,
+   "failing": 429,
+   "no_solids": 3,
+   "unbounded": 4
+  },
+  "abc_pass": {
+   "clean": 144,
+   "excluded": 2,
+   "failing": 106
+  },
+  "nist": {
+   "clean": 4,
+   "excluded": 1,
+   "failing": 34
+  },
+  "occt": {
+   "clean": 1,
+   "excluded": 4,
+   "failing": 23,
+   "no_solids": 3
+  }
+ },
+ "by_stratum": {
+  "abc_fail/0-100000": {
+   "clean": 3,
+   "failing": 67,
+   "no_solids": 1
+  },
+  "abc_fail/100000-1000000": {
+   "excluded": 2,
+   "failing": 188
+  },
+  "abc_fail/1000000-10000000": {
+   "excluded": 20,
+   "failing": 148,
+   "unbounded": 2
+  },
+  "abc_fail/10000000-inf": {
+   "excluded": 17,
+   "failing": 26,
+   "no_solids": 2,
+   "unbounded": 2
+  },
+  "abc_pass/0-100000": {
+   "clean": 118,
+   "failing": 34
+  },
+  "abc_pass/100000-1000000": {
+   "clean": 26,
+   "excluded": 2,
+   "failing": 54
+  },
+  "abc_pass/1000000-10000000": {
+   "failing": 17
+  },
+  "abc_pass/10000000-inf": {
+   "failing": 1
+  },
+  "nist/0-100000": {
+   "clean": 2
+  },
+  "nist/100000-1000000": {
+   "clean": 1,
+   "failing": 20
+  },
+  "nist/1000000-10000000": {
+   "clean": 1,
+   "excluded": 1,
+   "failing": 14
+  },
+  "occt/0-100000": {
+   "clean": 1,
+   "no_solids": 2
+  },
+  "occt/100000-1000000": {
+   "failing": 20,
+   "no_solids": 1
+  },
+  "occt/1000000-10000000": {
+   "excluded": 2,
+   "failing": 3
+  },
+  "occt/10000000-inf": {
+   "excluded": 2
+  }
+ },
+ "commits": [
+  "c8f5235fd45b7ffb58e3914bcaabe8e796fb07fc"
+ ],
+ "excluded": 46,
+ "excluded_by_reason": {
+  "checker_unavailable": 6,
+  "file_timeout": 39,
+  "inconclusive": 1
+ },
+ "excluded_by_source": {
+  "abc_fail": 39,
+  "abc_pass": 2,
+  "nist": 1,
+  "occt": 4
+ },
+ "failing_members_panel": {
+  "1": 51,
+  "2": 70,
+  "3": 157,
+  "4": 52
+ },
+ "failure_family_fine": {
+  "body_overlap": 100,
+  "boundary_recovery": 1,
+  "brep_invalid": 55,
+  "deviation_exceeds_bound": 2,
+  "edge_through_face": 55,
+  "hxt_3d_failed": 30,
+  "low_quality": 66,
+  "netgen_meshing_failed": 5,
+  "no_volume": 32,
+  "open_loop": 2,
+  "open_shell": 44,
+  "other": 6,
+  "overlapping_facets": 117,
+  "periodic_surface": 5,
+  "plc_intersection": 3,
+  "self_intersection": 61,
+  "timeout_crash": 8
+ },
+ "failure_kinds": {
+  "faithful/faithful": 2,
+  "panel/geometry": 215,
+  "panel/mesher": 49,
+  "panel/quality": 66,
+  "valid/body_overlap": 100,
+  "valid/open_shell": 44,
+  "valid/self_intersection": 61,
+  "valid/valid_other": 55
+ },
+ "files": 800,
+ "images": [
+  "us-central1-docker.pkg.dev/hexera-dev/mesh/crsv4-mesh@sha256:633e1c3bfd8e2c0fb97b166fa28ff834d0433b84ca8e77c24eb4b00c83ece361"
+ ],
+ "near_threshold": {
+  "all": 233,
+  "clean_v2": 10,
+  "dev_v2": 58,
+  "rule": "any panel member min SICN within x3 of the 0.01 floor"
+ },
+ "outcomes": {
+  "clean": 152,
+  "failing": 592,
+  "no_solids": 6,
+  "unbounded": 4
+ },
+ "rows": 754,
+ "seed_sample": 20261124,
+ "seed_split": 20261122,
+ "shards": 48,
+ "single_member_failures": {
+  "all": 51,
+  "dev_v2": 14
+ },
+ "splits": {
+  "clean": 40,
+  "clean_by_source": {
+   "abc_fail": 1,
+   "abc_pass": 38,
+   "nist": 1
+  },
+  "dev": 150,
+  "dev_by_source": {
+   "abc_fail": 109,
+   "abc_pass": 27,
+   "nist": 8,
+   "occt": 6
+  },
+  "shortfall": {}
+ },
+ "v1r": {
+  "clean": {
+   "changes": [],
+   "dropped": 0,
+   "dropped_files": [],
+   "files": 8,
+   "label_changed": 0,
+   "panel_changed_only": 0
+  },
+  "dev": {
+   "changes": [
+    {
+     "label_changed": true,
+     "name": "abc/0052_00526988_58a1d33fd3d9a2108b54be6d_step_000.step",
+     "sha256": "af80cbfcd419d09974770c16af13ec9031725b8cc08171a64b0ad008bacfcf5b",
+     "v1_label": "panel/mesher",
+     "v1_panel": [
+      "fail",
+      "fail",
+      "fail",
+      "pass"
+     ],
+     "v1r_label": "panel/geometry",
+     "v1r_panel": [
+      "fail",
+      "fail",
+      "fail",
+      "pass"
+     ]
+    },
+    {
+     "label_changed": true,
+     "name": "abc/0060_00601268_01579e613800b230c1716e80_step_001.step",
+     "sha256": "fdd2cb5507b97c3eb6188cdf3476883f11b943e2931184ec7901854dc4717db2",
+     "v1_label": "panel/mesher",
+     "v1_panel": [
+      "fail",
+      "fail",
+      "fail",
+      "fail"
+     ],
+     "v1r_label": "panel/geometry",
+     "v1r_panel": [
+      "fail",
+      "fail",
+      "fail",
+      "fail"
+     ]
+    },
+    {
+     "label_changed": true,
+     "name": "abc/0055_00550171_58ac32b095b047102fd8ce8c_step_013.step",
+     "sha256": "1be95291290b9ff81ecd549829f2999858e3f2ea979032672da3b828ac29ce5d",
+     "v1_label": "panel/mesher",
+     "v1_panel": [
+      "fail",
+      "fail",
+      "fail",
+      "fail"
+     ],
+     "v1r_label": "panel/geometry",
+     "v1r_panel": [
+      "fail",
+      "fail",
+      "fail",
+      "fail"
+     ]
+    },
+    {
+     "label_changed": true,
+     "name": "abc/0061_00614327_760137e15b9b924e8339e428_step_017.step",
+     "sha256": "8afc9c86d37b4c47beb90a6332ed812dc5f097f2aa253a230ba028a81d1b93ee",
+     "v1_label": "panel/mesher",
+     "v1_panel": [
+      "fail",
+      "fail",
+      "fail",
+      "pass"
+     ],
+     "v1r_label": "panel/geometry",
+     "v1r_panel": [
+      "fail",
+      "fail",
+      "fail",
+      "pass"
+     ]
+    },
+    {
+     "label_changed": true,
+     "name": "abc/0051_00519158_daf80b2021249a203e938429_step_009.step",
+     "sha256": "71434a2ee23e77d5a615209a5eb24b428ce637d4be1a0b67964a9c9ab6e64e23",
+     "v1_label": "panel/mesher",
+     "v1_panel": [
+      "fail",
+      "fail",
+      "fail",
+      "fail"
+     ],
+     "v1r_label": "panel/geometry",
+     "v1r_panel": [
+      "fail",
+      "fail",
+      "fail",
+      "fail"
+     ]
+    },
+    {
+     "label_changed": true,
+     "name": "abc/0061_00615999_4f1d2ad2e4e729a2f1836480_step_000.step",
+     "sha256": "dad0185f630ba3b554742929f853a42fa6f699782c310902093deb6489681b6b",
+     "v1_label": "panel/mesher",
+     "v1_panel": [
+      "fail",
+      "fail",
+      "pass",
+      "pass"
+     ],
+     "v1r_label": "panel/geometry",
+     "v1r_panel": [
+      "fail",
+      "fail",
+      "pass",
+      "pass"
+     ]
+    },
+    {
+     "label_changed": true,
+     "name": "abc/0054_00547929_58ab27a87442550f6daa230f_step_014.step",
+     "sha256": "8457da1cd2c4169259ce699eccdc3432cdee9017b26f26dd98bda15d4108b95b",
+     "v1_label": "panel/mesher",
+     "v1_panel": [
+      "fail",
+      "fail",
+      "fail",
+      "pass"
+     ],
+     "v1r_label": "panel/geometry",
+     "v1r_panel": [
+      "fail",
+      "fail",
+      "fail",
+      "pass"
+     ]
+    },
+    {
+     "label_changed": true,
+     "name": "00611083/00611083_58c56432786ec50fe9e0d3ad_step_002.step",
+     "sha256": "9f7d7953e92b896011c96a375b404040bb45a99e3312f809e2250fe9b75fae4a",
+     "v1_label": "panel/mesher",
+     "v1_panel": [
+      "fail",
+      "fail",
+      "fail",
+      "pass"
+     ],
+     "v1r_label": "panel/quality",
+     "v1r_panel": [
+      "fail",
+      "fail",
+      "fail",
+      "pass"
+     ]
+    },
+    {
+     "label_changed": true,
+     "name": "00614908/00614908_a8619514c95972d6221f4629_step_000.step",
+     "sha256": "1cc7634ec3387359a2ebc3918ae48ab6efeb01a77693e6491b9e4ed93a699c65",
+     "v1_label": "panel/mesher",
+     "v1_panel": [
+      "pass",
+      "fail",
+      "pass",
+      "pass"
+     ],
+     "v1r_label": "panel/quality",
+     "v1r_panel": [
+      "pass",
+      "fail",
+      "pass",
+      "pass"
+     ]
+    },
+    {
+     "label_changed": true,
+     "name": "00611852/00611852_673cbf4282be88b3374992cb_step_008.step",
+     "sha256": "e6368ff786884688c139b19c4c86ce3870cd4a50489f837e471f64d3de8b53c6",
+     "v1_label": "panel/mesher",
+     "v1_panel": [
+      "pass",
+      "pass",
+      "fail",
+      "pass"
+     ],
+     "v1r_label": "clean",
+     "v1r_panel": [
+      "pass",
+      "pass",
+      "pass",
+      "pass"
+     ]
+    },
+    {
+     "label_changed": true,
+     "name": "NIST-PMI-STEP-Files/AP203 geometry only/nist_ctc_01_asme1_rd.stp",
+     "sha256": "e081d518484d5c708c6729353237f94a7d97da2b74a10d60d4c0d146d67a5855",
+     "v1_label": "panel/mesher",
+     "v1_panel": [
+      "fail",
+      "pass",
+      "pass",
+      "pass"
+     ],
+     "v1r_label": "panel/quality",
+     "v1r_panel": [
+      "fail",
+      "pass",
+      "pass",
+      "pass"
+     ]
+    },
+    {
+     "label_changed": true,
+     "name": "NIST-PMI-STEP-Files/AP203 with PMI/nist_ctc_01_asme1_ap203.stp",
+     "sha256": "a3058f47323c7e0e24249eeaa19939867e66b243058805f67cd1b93c41f6c806",
+     "v1_label": "panel/mesher",
+     "v1_panel": [
+      "fail",
+      "pass",
+      "pass",
+      "pass"
+     ],
+     "v1r_label": "panel/quality",
+     "v1r_panel": [
+      "fail",
+      "pass",
+      "pass",
+      "pass"
+     ]
+    },
+    {
+     "label_changed": false,
+     "name": "abc/0053_00533660_58a4821bab78c2106dbc0ab6_step_014.step",
+     "sha256": "a5f451e72f3a5ed7185a445fbdd3ba802889a2ad564e990203b1a4799b635a8b",
+     "v1_label": "valid/body_overlap",
+     "v1_panel": [
+      "crashed",
+      "fail",
+      "crashed",
+      "fail"
+     ],
+     "v1r_label": "valid/body_overlap",
+     "v1r_panel": [
+      "fail",
+      "fail",
+      "fail",
+      "fail"
+     ]
+    },
+    {
+     "label_changed": false,
+     "name": "abc/0051_00519727_589dc8aa5abe5e0fe4ada930_step_014.step",
+     "sha256": "b6c6630b530ed8a125793ffa02de932e12937e682c285f2deb14fcc1da09af30",
+     "v1_label": "valid/body_overlap",
+     "v1_panel": [
+      "fail",
+      "fail",
+      "fail",
+      "pass"
+     ],
+     "v1r_label": "valid/body_overlap",
+     "v1r_panel": [
+      "fail",
+      "fail",
+      "crashed",
+      "pass"
+     ]
+    },
+    {
+     "label_changed": false,
+     "name": "occt/bug32314_corrupted.stp",
+     "sha256": "63d79ed926fa37797f7c55416e0f173e088da0fd43b3785b32fb08cf73944e79",
+     "v1_label": "valid/valid_other",
+     "v1_panel": [
+      "fail",
+      "fail",
+      "fail",
+      "pass"
+     ],
+     "v1r_label": "valid/valid_other",
+     "v1r_panel": [
+      "fail",
+      "fail",
+      "crashed",
+      "pass"
+     ]
+    },
+    {
+     "label_changed": false,
+     "name": "abc/0060_00606843_58c2e4ec85eca50f9755deb9_step_000.step",
+     "sha256": "01614811acf6f1824e6f94fa2e0997e684cdcbd927cf611ba3aace7a5862cd25",
+     "v1_label": "valid/open_shell",
+     "v1_panel": [
+      "fail",
+      "fail",
+      "fail",
+      "pass"
+     ],
+     "v1r_label": "valid/open_shell",
+     "v1r_panel": [
+      "fail",
+      "fail",
+      "crashed",
+      "pass"
+     ]
+    },
+    {
+     "label_changed": true,
+     "name": "abc/0052_00528484_58a256af264a260f6f931a1c_step_003.step",
+     "sha256": "440b9cdbc8f1c36c9910d25023b02176484c96c35b413190624503bdbd54f828",
+     "v1_label": "valid/open_shell",
+     "v1_panel": [
+      "fail",
+      "fail",
+      "crashed",
+      "pass"
+     ],
+     "v1r_label": "valid/valid_other",
+     "v1r_panel": [
+      "fail",
+      "fail",
+      "fail",
+      "pass"
+     ]
+    },
+    {
+     "label_changed": true,
+     "name": "abc/0057_00573880_417ab441d502eafedde01127_step_005.step",
+     "sha256": "1c9153fac8706f7ee2f7cc000ca6aedc935864d47d001eab44d8d56f02cfa84d",
+     "v1_label": "valid/self_intersection",
+     "v1_panel": [
+      "fail",
+      "fail",
+      "fail",
+      "crashed"
+     ],
+     "v1r_label": "panel/mesher",
+     "v1r_panel": [
+      "fail",
+      "fail",
+      "fail",
+      "crashed"
+     ]
+    }
+   ],
+   "dropped": 0,
+   "dropped_files": [],
+   "files": 30,
+   "label_changed": 14,
+   "panel_changed_only": 4
+  }
+ },
+ "wave_id": "reprobe-800-2"
+}

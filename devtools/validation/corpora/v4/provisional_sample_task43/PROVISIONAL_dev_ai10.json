@@ -1,0 +1,611 @@
+{
+ "PROVISIONAL": "PROVISIONAL, DRAWN FROM A LOCAL SAMPLE OF THE CLEARED POOL. For the T2 smoke only. The real splits must come from the full re-probe; do not use these for any reported number.",
+ "excluded_no_solids": 2,
+ "excluded_unbounded": 4,
+ "excluded_uncounted": 0,
+ "files": [
+  {
+   "family": "other",
+   "first_failing_layer": "panel",
+   "group": null,
+   "kind": null,
+   "kind_status": null,
+   "name": "abc/0055_00550171_58ac32b095b047102fd8ce8c_step_013.step",
+   "sha256": "1be95291290b9ff81ecd549829f2999858e3f2ea979032672da3b828ac29ce5d",
+   "source": "abc_fail",
+   "verdict_summary": {
+    "clean": false,
+    "counts_for_scoreboard": true,
+    "faithful": true,
+    "hard": [],
+    "out_of_scope": false,
+    "panel": [
+     {
+      "error_kind": "other",
+      "min_sicn": null,
+      "name": "gmsh_prod",
+      "status": "fail"
+     },
+     {
+      "error_kind": "edge_through_face",
+      "min_sicn": null,
+      "name": "gmsh_default",
+      "status": "fail"
+     },
+     {
+      "error_kind": "no_volume",
+      "min_sicn": null,
+      "name": "gmsh_alt",
+      "status": "fail"
+     },
+     {
+      "error_kind": "netgen_meshing_failed",
+      "min_sicn": null,
+      "name": "netgen_occ",
+      "status": "fail"
+     }
+    ],
+    "soft": [
+     "small_edge"
+    ],
+    "tier": "full",
+    "valid": true
+   }
+  },
+  {
+   "family": "body_overlap",
+   "first_failing_layer": "valid",
+   "group": null,
+   "kind": null,
+   "kind_status": null,
+   "name": "00613121/00613121_58c67ddf032617103d59c101_step_003.step",
+   "sha256": "1c444ace9e67c4dc16fe51a77d7b776ef1e4b13ddfc39dfd08019e3df6eabbe4",
+   "source": "abc_pass",
+   "verdict_summary": {
+    "clean": false,
+    "counts_for_scoreboard": true,
+    "faithful": null,
+    "hard": [
+     "body_overlap"
+    ],
+    "out_of_scope": false,
+    "panel": [
+     {
+      "error_kind": null,
+      "min_sicn": 0.026409043017461695,
+      "name": "gmsh_prod",
+      "status": "pass"
+     },
+     {
+      "error_kind": null,
+      "min_sicn": 0.01383730364797346,
+      "name": "gmsh_default",
+      "status": "pass"
+     },
+     {
+      "error_kind": null,
+      "min_sicn": 0.07690935953407509,
+      "name": "gmsh_alt",
+      "status": "pass"
+     },
+     {
+      "error_kind": null,
+      "min_sicn": 0.37917745434427175,
+      "name": "netgen_occ",
+      "status": "pass"
+     }
+    ],
+    "soft": [],
+    "tier": "full",
+    "valid": false
+   }
+  },
+  {
+   "family": "open_shell",
+   "first_failing_layer": "valid",
+   "group": null,
+   "kind": null,
+   "kind_status": null,
+   "name": "abc/0060_00606843_58c2e4ec85eca50f9755deb9_step_000.step",
+   "sha256": "01614811acf6f1824e6f94fa2e0997e684cdcbd927cf611ba3aace7a5862cd25",
+   "source": "abc_fail",
+   "verdict_summary": {
+    "clean": false,
+    "counts_for_scoreboard": true,
+    "faithful": null,
+    "hard": [
+     "open_shell"
+    ],
+    "out_of_scope": false,
+    "panel": [
+     {
+      "error_kind": "other",
+      "min_sicn": null,
+      "name": "gmsh_prod",
+      "status": "fail"
+     },
+     {
+      "error_kind": "low_quality",
+      "min_sicn": 0.0004234840087641847,
+      "name": "gmsh_default",
+      "status": "fail"
+     },
+     {
+      "error_kind": "low_quality",
+      "min_sicn": 0.000125839276253688,
+      "name": "gmsh_alt",
+      "status": "fail"
+     },
+     {
+      "error_kind": null,
+      "min_sicn": 0.421579697630937,
+      "name": "netgen_occ",
+      "status": "pass"
+     }
+    ],
+    "soft": [
+     "small_edge"
+    ],
+    "tier": "full",
+    "valid": false
+   }
+  },
+  {
+   "family": "self_intersection",
+   "first_failing_layer": "valid",
+   "group": null,
+   "kind": null,
+   "kind_status": null,
+   "name": "abc/0057_00573880_417ab441d502eafedde01127_step_005.step",
+   "sha256": "1c9153fac8706f7ee2f7cc000ca6aedc935864d47d001eab44d8d56f02cfa84d",
+   "source": "abc_fail",
+   "verdict_summary": {
+    "clean": false,
+    "counts_for_scoreboard": true,
+    "faithful": null,
+    "hard": [
+     "self_intersection"
+    ],
+    "out_of_scope": false,
+    "panel": [
+     {
+      "error_kind": "other",
+      "min_sicn": null,
+      "name": "gmsh_prod",
+      "status": "fail"
+     },
+     {
+      "error_kind": "edge_through_face",
+      "min_sicn": null,
+      "name": "gmsh_default",
+      "status": "fail"
+     },
+     {
+      "error_kind": "no_volume",
+      "min_sicn": null,
+      "name": "gmsh_alt",
+      "status": "fail"
+     },
+     {
+      "error_kind": "netgen_crash",
+      "min_sicn": null,
+      "name": "netgen_occ",
+      "status": "crashed"
+     }
+    ],
+    "soft": [],
+    "tier": "full",
+    "valid": false
+   }
+  },
+  {
+   "family": "brep_invalid",
+   "first_failing_layer": "valid",
+   "group": null,
+   "kind": null,
+   "kind_status": null,
+   "name": "abc/0060_00608014_3fedd89a1d6b0c6f1c34e1b7_step_001.step",
+   "sha256": "28b5c833978d79af42def408e91e8c9b84a7eb325b1b653ff5842169d69fa19c",
+   "source": "abc_fail",
+   "verdict_summary": {
+    "clean": false,
+    "counts_for_scoreboard": true,
+    "faithful": null,
+    "hard": [
+     "brep_invalid"
+    ],
+    "out_of_scope": false,
+    "panel": [
+     {
+      "error_kind": "open_loop",
+      "min_sicn": null,
+      "name": "gmsh_prod",
+      "status": "fail"
+     },
+     {
+      "error_kind": "open_loop",
+      "min_sicn": null,
+      "name": "gmsh_default",
+      "status": "fail"
+     },
+     {
+      "error_kind": "open_loop",
+      "min_sicn": null,
+      "name": "gmsh_alt",
+      "status": "fail"
+     },
+     {
+      "error_kind": "netgen_meshing_failed",
+      "min_sicn": null,
+      "name": "netgen_occ",
+      "status": "fail"
+     }
+    ],
+    "soft": [
+     "small_edge",
+     "small_face"
+    ],
+    "tier": "full",
+    "valid": false
+   }
+  },
+  {
+   "family": "periodic_surface",
+   "first_failing_layer": "panel",
+   "group": null,
+   "kind": null,
+   "kind_status": null,
+   "name": "abc/0057_00570551_59995fb3cd27b48fe0957ae2_step_007.step",
+   "sha256": "16ba131bf4c707adfb969504a10b856f58f45517e88ec590fdf6529f3a77479e",
+   "source": "abc_fail",
+   "verdict_summary": {
+    "clean": false,
+    "counts_for_scoreboard": true,
+    "faithful": true,
+    "hard": [],
+    "out_of_scope": false,
+    "panel": [
+     {
+      "error_kind": "periodic_surface",
+      "min_sicn": null,
+      "name": "gmsh_prod",
+      "status": "fail"
+     },
+     {
+      "error_kind": "no_volume",
+      "min_sicn": null,
+      "name": "gmsh_default",
+      "status": "fail"
+     },
+     {
+      "error_kind": "no_volume",
+      "min_sicn": null,
+      "name": "gmsh_alt",
+      "status": "fail"
+     },
+     {
+      "error_kind": null,
+      "min_sicn": 0.19562862260941402,
+      "name": "netgen_occ",
+      "status": "pass"
+     }
+    ],
+    "soft": [
+     "small_edge"
+    ],
+    "tier": "full",
+    "valid": true
+   }
+  },
+  {
+   "family": "other",
+   "first_failing_layer": "panel",
+   "group": null,
+   "kind": null,
+   "kind_status": null,
+   "name": "00614908/00614908_a8619514c95972d6221f4629_step_000.step",
+   "sha256": "1cc7634ec3387359a2ebc3918ae48ab6efeb01a77693e6491b9e4ed93a699c65",
+   "source": "abc_pass",
+   "verdict_summary": {
+    "clean": false,
+    "counts_for_scoreboard": true,
+    "faithful": true,
+    "hard": [],
+    "out_of_scope": false,
+    "panel": [
+     {
+      "error_kind": null,
+      "min_sicn": 0.07280977731054669,
+      "name": "gmsh_prod",
+      "status": "pass"
+     },
+     {
+      "error_kind": "low_quality",
+      "min_sicn": 0.00668091168580929,
+      "name": "gmsh_default",
+      "status": "fail"
+     },
+     {
+      "error_kind": null,
+      "min_sicn": 0.07561147913771604,
+      "name": "gmsh_alt",
+      "status": "pass"
+     },
+     {
+      "error_kind": null,
+      "min_sicn": 0.1043927626942052,
+      "name": "netgen_occ",
+      "status": "pass"
+     }
+    ],
+    "soft": [],
+    "tier": "full",
+    "valid": true
+   }
+  },
+  {
+   "family": "body_overlap",
+   "first_failing_layer": "valid",
+   "group": null,
+   "kind": null,
+   "kind_status": null,
+   "name": "abc/0053_00535066_bb0bc8e7914fdea894ad2ec6_step_009.step",
+   "sha256": "6d30917b1303131cab85be9d7a21b4a5ac587d33c779117ce510e22d44de62d3",
+   "source": "abc_fail",
+   "verdict_summary": {
+    "clean": false,
+    "counts_for_scoreboard": true,
+    "faithful": null,
+    "hard": [
+     "body_overlap",
+     "body_overlap",
+     "body_overlap",
+     "body_overlap"
+    ],
+    "out_of_scope": false,
+    "panel": [
+     {
+      "error_kind": "other",
+      "min_sicn": null,
+      "name": "gmsh_prod",
+      "status": "fail"
+     },
+     {
+      "error_kind": "overlapping_facets",
+      "min_sicn": null,
+      "name": "gmsh_default",
+      "status": "fail"
+     },
+     {
+      "error_kind": "gmsh_crash",
+      "min_sicn": null,
+      "name": "gmsh_alt",
+      "status": "crashed"
+     },
+     {
+      "error_kind": null,
+      "min_sicn": 0.2547348821622586,
+      "name": "netgen_occ",
+      "status": "pass"
+     }
+    ],
+    "soft": [
+     "small_edge"
+    ],
+    "tier": "full",
+    "valid": false
+   }
+  },
+  {
+   "family": "open_shell",
+   "first_failing_layer": "valid",
+   "group": null,
+   "kind": null,
+   "kind_status": null,
+   "name": "abc/0052_00528484_58a256af264a260f6f931a1c_step_003.step",
+   "sha256": "440b9cdbc8f1c36c9910d25023b02176484c96c35b413190624503bdbd54f828",
+   "source": "abc_fail",
+   "verdict_summary": {
+    "clean": false,
+    "counts_for_scoreboard": true,
+    "faithful": null,
+    "hard": [
+     "open_shell",
+     "open_shell",
+     "body_overlap",
+     "body_overlap",
+     "body_overlap",
+     "body_overlap",
+     "body_overlap",
+     "body_overlap",
+     "body_overlap",
+     "body_overlap",
+     "body_overlap",
+     "body_overlap",
+     "body_overlap",
+     "body_overlap",
+     "body_overlap",
+     "body_overlap",
+     "body_overlap",
+     "body_overlap",
+     "body_overlap",
+     "body_overlap",
+     "body_overlap",
+     "body_overlap",
+     "body_overlap",
+     "body_overlap",
+     "body_overlap",
+     "body_overlap",
+     "body_overlap",
+     "body_overlap",
+     "body_overlap",
+     "body_overlap",
+     "body_overlap",
+     "body_overlap",
+     "body_overlap",
+     "body_overlap",
+     "body_overlap",
+     "body_overlap",
+     "body_overlap",
+     "body_overlap",
+     "body_overlap"
+    ],
+    "out_of_scope": false,
+    "panel": [
+     {
+      "error_kind": "other",
+      "min_sicn": null,
+      "name": "gmsh_prod",
+      "status": "fail"
+     },
+     {
+      "error_kind": "overlapping_facets",
+      "min_sicn": null,
+      "name": "gmsh_default",
+      "status": "fail"
+     },
+     {
+      "error_kind": "gmsh_crash",
+      "min_sicn": null,
+      "name": "gmsh_alt",
+      "status": "crashed"
+     },
+     {
+      "error_kind": null,
+      "min_sicn": 0.235751436013451,
+      "name": "netgen_occ",
+      "status": "pass"
+     }
+    ],
+    "soft": [
+     "small_edge",
+     "small_face",
+     "large_tolerance"
+    ],
+    "tier": "full",
+    "valid": false
+   }
+  },
+  {
+   "family": "self_intersection",
+   "first_failing_layer": "valid",
+   "group": null,
+   "kind": null,
+   "kind_status": null,
+   "name": "abc/0057_00574245_58b65964d2d73c0f795da35a_step_017.step",
+   "sha256": "beac2a59c2731acac8ded36b69a39668358e7a1ded48adc8a274314ee1949ae2",
+   "source": "abc_fail",
+   "verdict_summary": {
+    "clean": false,
+    "counts_for_scoreboard": true,
+    "faithful": null,
+    "hard": [
+     "self_intersection",
+     "body_overlap",
+     "body_overlap",
+     "body_overlap",
+     "body_overlap",
+     "body_overlap",
+     "body_overlap",
+     "body_overlap",
+     "body_overlap",
+     "body_overlap",
+     "body_overlap"
+    ],
+    "out_of_scope": false,
+    "panel": [
+     {
+      "error_kind": "other",
+      "min_sicn": null,
+      "name": "gmsh_prod",
+      "status": "fail"
+     },
+     {
+      "error_kind": "edge_through_face",
+      "min_sicn": null,
+      "name": "gmsh_default",
+      "status": "fail"
+     },
+     {
+      "error_kind": "low_quality",
+      "min_sicn": 0.0008053036531505303,
+      "name": "gmsh_alt",
+      "status": "fail"
+     },
+     {
+      "error_kind": null,
+      "min_sicn": 0.11859652648775015,
+      "name": "netgen_occ",
+      "status": "pass"
+     }
+    ],
+    "soft": [
+     "small_edge"
+    ],
+    "tier": "full",
+    "valid": false
+   }
+  }
+ ],
+ "seed": 20261122,
+ "shortfall": {},
+ "split": "dev",
+ "strata": {
+  "clean": {
+   "abc_pass": 7,
+   "nist": 1
+  },
+  "clean_from_cheap_fail": {
+   "count": 0
+  },
+  "dev": {
+   "panel/other/abc_fail": 8,
+   "panel/other/abc_pass": 4,
+   "panel/other/nist": 2,
+   "panel/periodic_surface/abc_fail": 1,
+   "valid/body_overlap/abc_fail": 5,
+   "valid/body_overlap/abc_pass": 1,
+   "valid/body_overlap/occt": 1,
+   "valid/brep_invalid/abc_fail": 1,
+   "valid/brep_invalid/occt": 1,
+   "valid/open_shell/abc_fail": 2,
+   "valid/open_shell/nist": 1,
+   "valid/self_intersection/abc_fail": 2,
+   "valid/self_intersection/occt": 1
+  },
+  "failing_population": {
+   "panel/other/abc_fail": 17,
+   "panel/other/abc_pass": 10,
+   "panel/other/nist": 4,
+   "panel/periodic_surface/abc_fail": 2,
+   "valid/body_overlap/abc_fail": 12,
+   "valid/body_overlap/abc_pass": 2,
+   "valid/body_overlap/occt": 1,
+   "valid/brep_invalid/abc_fail": 1,
+   "valid/brep_invalid/occt": 1,
+   "valid/open_shell/abc_fail": 3,
+   "valid/open_shell/abc_pass": 1,
+   "valid/open_shell/nist": 3,
+   "valid/round_trip_invalid/abc_fail": 1,
+   "valid/round_trip_invalid/occt": 1,
+   "valid/self_intersection/abc_fail": 4,
+   "valid/self_intersection/occt": 3
+  },
+  "heldout": {
+   "panel/other/abc_fail": 6,
+   "panel/other/abc_pass": 4,
+   "panel/other/nist": 1,
+   "panel/periodic_surface/abc_fail": 1,
+   "valid/body_overlap/abc_fail": 5,
+   "valid/body_overlap/abc_pass": 1,
+   "valid/open_shell/abc_fail": 1,
+   "valid/open_shell/abc_pass": 1,
+   "valid/open_shell/nist": 1,
+   "valid/round_trip_invalid/abc_fail": 1,
+   "valid/round_trip_invalid/occt": 1,
+   "valid/self_intersection/abc_fail": 1,
+   "valid/self_intersection/occt": 1
+  }
+ },
+ "subset_note": "Task 49: 10 files of PROVISIONAL_dev.json for the search_ai arm, picked round-robin over the family label (largest family first), lowest sha256 first within a family. Not random; not tuned."
+}
