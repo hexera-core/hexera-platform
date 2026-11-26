@@ -115,6 +115,7 @@ FIELDS: dict[str, tuple[tuple[str, ...], str, dict, dict[str, str]]] = {
     "structured": (("shell",), "washers round all bolt holes", _kind("structured", "washers round all bolt holes"),
                    {}),
     "count": ((*FEA, *FLOW), "max 20k elements", _count("ceiling", 20000, "max 20k elements"), {}),
+    "count_fea": (FEA, "about 5,000 elements", _count("target", 5000, "about 5,000 elements"), {}),
     "count_target": (FLOW, "around 3M cells", _count("target", 3000000, "around 3M cells"), {}),
     "place": ((*FEA, *FLOW), "2 mm at the hole",
               {"local": [{"where": "the hole", "what": "size", "value": 2, "unit": "mm", "quote": "2 mm at the hole"}]},

@@ -216,9 +216,18 @@ def checked(arguments: str, text: str, *, route: str = "", key: str = "", source
                 nm.remove(e)
         if not nm:
             (req or {}).pop("not_mesh", None)
+    elsewhere = _elsewhere(arguments, text)
+    if route == "fea":
+        # STD-1: on the FEA routes only the run's notes are read for a size in one place (cad/part_words) and an
+        # element count (engines/fea_ai): the standard's are told to go there, never said as set and left unapplied
+        for row in [r for r in req.get("rows") or [] if r.get("field") == "local"
+                    or str(r.get("field") or "").startswith("cells:")]:
+            _drop_row(req, row)
+            if row.get("quote") and row["quote"] not in elsewhere:
+                elsewhere.append(str(row["quote"]))
     sec = MR.section("used", requirements=req, dropped=dropped, not_applied=not_applied, key=key, source=source)
     sec["stated_unit"] = unit
-    sec["elsewhere"] = _elsewhere(arguments, text)
+    sec["elsewhere"] = elsewhere
     sec["solver_files"] = files
     return sec
 

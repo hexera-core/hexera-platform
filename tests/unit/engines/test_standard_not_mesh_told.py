@@ -37,3 +37,23 @@ def test_the_settings_page_shows_it_too():
     assert shown[0] == "Global element size 5 mm."
     assert any(w.startswith('Not a mesh setting: "this goes into a crash model"') for w in shown)
     assert any(w.startswith("Nastran (.bdf) files") for w in shown)
+
+
+def test_on_the_fea_routes_a_count_and_a_size_in_one_place_are_told_to_go_in_a_runs_notes():
+    text = "max 500k elements\n2 mm at the holes"
+    answer = json.dumps({"stated_unit": "none", "sizes": [], "layers": [], "physics": [], "element_kind": [],
+                         "limits": [], "other": [], "controls": [], "strictness": [],
+                         "counts": [{"what": "ceiling", "value": 500000, "quote": "max 500k elements"}],
+                         "local": [{"where": "the holes", "what": "size", "value": 2, "unit": "mm",
+                                    "quote": "2 mm at the holes"}],
+                         "applies_to": {"whole": ["any"], "lines": []}})
+    fea = MS.merge(MS.checked(answer, text, route="fea"), MR.section("none"), route="fea")
+    # only the run's notes are read for these on a solid or a shell (engines/fea_ai, cad/part_words): never said as set
+    assert not any(w.startswith("From your settings") for w in fea["lines"])
+    assert [w for w in fea["lines"] if MS.ELSEWHERE_WORDS in w] == [
+        f'Not applied (your settings): "max 500k elements" - {MS.ELSEWHERE_WORDS}.',
+        f'Not applied (your settings): "2 mm at the holes" - {MS.ELSEWHERE_WORDS}.']
+    assert fea["requirements"]["cells"]["ceiling"] is None and fea["requirements"]["local"] == []
+    # on the flow route both are the engines' own fields, applied as before
+    flow = MS.merge(MS.checked(answer, text, route="flow"), MR.section("none"), route="flow")
+    assert flow["requirements"]["cells"]["ceiling"] == 500000 and len(flow["requirements"]["local"]) == 1
