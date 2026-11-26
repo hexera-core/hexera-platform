@@ -286,9 +286,9 @@ class _Timed:
     def __init__(self, fn: Any, key: str, work: FieldWork) -> None:
         self.fn, self.key, self.work = fn, key, work
 
-    def __call__(self, p: Any) -> Any:
+    def __call__(self, p: Any, *a: Any) -> Any:
         t0 = time.perf_counter()
-        out = self.fn(p)
+        out = self.fn(p, *a)
         self.work.time(self.key, time.perf_counter() - t0)
         self.work.add("point x group measured: " + self.key[len("distance: "):], len(p))
         return out
@@ -420,14 +420,16 @@ def instrument_parent(work: FieldWork, SF: Any, out_dir: Path) -> None:
         from concurrent.futures import ThreadPoolExecutor  # noqa: F401 - as the product's own __init__
         self.n = int(n)
         self._threads = None
-        cmd = [sys.executable, str(Path(__file__).resolve()), "--child-of", str(out_dir)]
+        self._sent = None
+        cmd =[sys.executable, str(Path(__file__).resolve()), "--child-of", str(out_dir)]
         self.procs = [subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE) for _ in range(self.n)]
         work.add("counting processes started", self.n)
         self.init(spec)
 
     def p_send_field(self, spec):
         t0 = time.perf_counter()
-        data = pickle.dumps(("init", spec), protocol=pickle.HIGHEST_PROTOCOL)
+        message = self.init_message(spec) if hasattr(self, "init_message") else ("init", spec)
+        data = pickle.dumps(message, protocol=pickle.HIGHEST_PROTOCOL)
         for proc in self.procs:
             proc.stdin.write(data)
             proc.stdin.flush()
