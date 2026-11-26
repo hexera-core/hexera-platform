@@ -65,8 +65,11 @@ def key_rows(section: Mapping) -> list[tuple[str, str]]:
         rows.append(("Review", "Waiting for your approval"))
     elif section.get("auto_accepted"):
         rows.append(("Review", "Accepted automatically (review skipped for this run)"))
-    elif section.get("needs_review"):
-        rows.append(("Review", "Approved"))
+    elif section.get("accepted_by_person"):
+        rows.append(("Review", "Approved by you"))
+    elif section.get("needs_review") and not section.get("applied", True):
+        rows.append(("Review", "Not applied: it needed your approval, and review isn't "
+                               "available here"))
     return rows
 
 

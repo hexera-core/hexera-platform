@@ -219,6 +219,50 @@ def test_a_change_past_the_allowance_needs_review_and_becomes_items():
     _assert_plain([items[0]["message"]])
 
 
+def _two_waiting():
+    return _result(problems=[
+        {"id": "a", "type": "close_faces", "status": "fixed", "change_mm": 0.4},
+        {"id": "b", "type": "close_faces", "status": "fixed", "change_mm": 0.3}])
+
+
+def test_one_acceptance_never_applies_the_other_change():
+    # review finding on #542: accepting one item and leaving another must not apply both
+    result = _two_waiting()
+    one = [{"op": RR.ACCEPT_OP, "targets": ["a"]}]
+    both = one + [{"op": RR.ACCEPT_OP, "targets": ["b"]}]
+    assert not RR.accepted_by_person(one, result)
+    assert RR.accepted_by_person(both, result)
+    assert not RR.accepted_by_person([], result)
+
+
+def test_a_review_no_problem_explains_still_has_an_item():
+    # review finding on #542: needs_review from a whole-part change with no per-problem movement
+    result = _result(problems=[{"id": "a", "type": "close_faces", "status": "fixed",
+                                "change_mm": None}], needs_review=True, max_change_mm=0.6)
+    items = RR.review_items(result)
+    assert [i["fingerprint"] for i in items] == [RR.WHOLE_PART_ID]
+    _assert_plain([items[0]["message"]])
+    assert RR.accepted_by_person([{"op": RR.ACCEPT_OP, "targets": [RR.WHOLE_PART_ID]}], result)
+
+
+def test_the_engines_flag_keys_are_said_in_words():
+    # review finding on #542: `volume_changed` / `size_shrank` were dropped by the leak guard
+    sec = RR.section(_state(_result(flags=["volume_changed", "size_shrank", "close_wire_gaps"])),
+                     choice="meshing")
+    assert sec["flags"] == ["The part's volume changed noticeably", "The part got smaller"]
+
+
+def test_a_refused_change_is_never_reported_approved():
+    # review finding on #542: needs_review with nothing applied read "Approved"
+    from meshpipeline.render.repair_report import key_rows
+    refused = dict(RR.section(_state(_result(), applied=False), choice="meshing"))
+    assert refused["applied"] is False
+    assert ("Review", "Approved by you") not in key_rows(refused)
+    assert any(k == "Review" and v.startswith("Not applied") for k, v in key_rows(refused))
+    approved = dict(RR.section(_state(_result(), accepted_by_person=True), choice="meshing"))
+    assert ("Review", "Approved by you") in key_rows(approved)
+
+
 def test_acceptances_are_read_never_played():
     directives = [{"op": RR.ACCEPT_OP, "targets": ["p1"]}, {"op": "sew_faces", "targets": []}]
     assert RR.accepted_by_person(directives)
@@ -237,7 +281,7 @@ def test_the_review_decision(monkeypatch, bypass, accepted, review_on, applied, 
     monkeypatch.setattr(rcfg, "CAD_REPAIR_REVIEW_ENABLED", review_on)
     state = {"repair_goal": {"goal": "meshing", **({"auto_accept_repairs": True} if bypass
                                                    else {})},
-             "repair_directives": [{"op": RR.ACCEPT_OP}] if accepted else []}
+             "repair_directives": [{"op": RR.ACCEPT_OP, "targets": ["p1"]}] if accepted else []}
     got = _review_decision(state, _result(), ())
     assert (got["applied"], got["waiting_for_review"], got["auto_accepted"]) == \
         (applied, waiting, auto)

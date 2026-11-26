@@ -31,6 +31,7 @@
 from __future__ import annotations
 
 import base64
+import contextlib
 import json
 import logging
 import math
@@ -288,19 +289,21 @@ async def deliver(session_factory, *, job_id: str, state: Mapping, section: Mapp
     if original is None:
         return ""
     try:
-        payload = await asyncio.wait_for(
-            asyncio.to_thread(build, original, repaired, dict(section or {})),
-            timeout=DEVIATION_BUDGET_S + 120.0)
-    except Exception as exc:  # noqa: BLE001 - a view never costs a run
-        logger.warning("repair viewer: not built for job %s (%s)", job_id, type(exc).__name__)
-        return ""
-    try:
-        from meshpipeline.application.repair_report_delivery import _deliver_file
-        from meshpipeline.artifact_keys import repair_viewer_key
-        from meshpipeline.persistence.models import ArtifactType
         with tempfile.TemporaryDirectory(prefix="repair_viewer_") as tmp:
             path = Path(tmp) / "repair_viewer.json"
-            path.write_text(json.dumps(payload, separators=(",", ":")))
+            spec = Path(tmp) / "section.json"
+            spec.write_text(json.dumps(dict(section or {}), default=str))
+            # IN A FRESH INTERPRETER, never in this worker: OCC holds the GIL through a kernel
+            # call and can crash on a pathological part, and a view must never cost the run
+            # its delivery. The child's whole process group is killed past its wall.
+            built = await asyncio.to_thread(_build_in_child, original, repaired, spec, path,
+                                            CHILD_WALL_S)
+            if not built:
+                logger.warning("repair viewer: not built for job %s", job_id)
+                return ""
+            from meshpipeline.application.repair_report_delivery import _deliver_file
+            from meshpipeline.artifact_keys import repair_viewer_key
+            from meshpipeline.persistence.models import ArtifactType
             return await _deliver_file(
                 session_factory, job_id=job_id, local_path=path,
                 key_for=lambda digest: repair_viewer_key(str(job_id), digest),
@@ -315,5 +318,58 @@ async def deliver(session_factory, *, job_id: str, state: Mapping, section: Mapp
         return ""
 
 
-__all__ = ["REPAIR_VIEWER_LOGICAL_KEY", "VERSION", "build", "deliver", "face_deviation",
-           "faces_and_triangles", "paths_of", "pins", "point_faces", "surface_block"]
+#: The child's whole wall: the deviation budget plus reading and tessellating two parts.
+CHILD_WALL_S = DEVIATION_BUDGET_S + 120.0
+
+
+def _build_in_child(original: Path, repaired: Path | None, spec: Path, out: Path,
+                    wall_s: float) -> bool:
+    """Run `build` in a fresh interpreter (`python -m meshpipeline.application.repair_viewer`),
+    in its own session so that a run past `wall_s` is killed with everything it started (the
+    deviation's own distance child included). True when the payload was written. Never raises."""
+    import os
+    import signal
+    import subprocess
+    import sys
+
+    cmd = [sys.executable, "-m", "meshpipeline.application.repair_viewer", str(original),
+           str(repaired or ""), str(spec), str(out)]
+    try:
+        proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                                start_new_session=True)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("repair viewer: the child could not start (%s)", type(exc).__name__)
+        return False
+    try:
+        _, err = proc.communicate(timeout=wall_s)
+    except subprocess.TimeoutExpired:
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.killpg(proc.pid, signal.SIGKILL)
+        proc.communicate()
+        logger.warning("repair viewer: the child ran past %.0fs and was killed", wall_s)
+        return False
+    if proc.returncode != 0:
+        logger.warning("repair viewer: the child ended %s (%s)", proc.returncode,
+                       (err or b"").decode("utf-8", "replace").strip().splitlines()[-1:])
+        return False
+    return out.is_file()
+
+
+def main(argv: list[str]) -> int:
+    """The child's entry: `<original> <repaired or ""> <section.json> <out.json>`."""
+    original, repaired, spec, out = argv
+    section = json.loads(Path(spec).read_text())
+    payload = build(Path(original), Path(repaired) if repaired else None, section)
+    Path(out).write_text(json.dumps(payload, separators=(",", ":")))
+    return 0
+
+
+__all__ = ["CHILD_WALL_S", "REPAIR_VIEWER_LOGICAL_KEY", "VERSION", "build", "deliver",
+           "face_deviation", "faces_and_triangles", "main", "paths_of", "pins", "point_faces",
+           "surface_block"]
+
+
+if __name__ == "__main__":
+    import sys
+
+    sys.exit(main(sys.argv[1:]))

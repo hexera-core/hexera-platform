@@ -48,6 +48,12 @@ ENGINE_KEYS: Final[dict[str, str]] = {
     "unidentified": "unknown",
 }
 
+#: The engine's flag keys (cad/repair_v5/result.flags_of) in the customer's words.
+FLAG_WORDS: Final[dict[str, str]] = {
+    "volume_changed": "The part's volume changed noticeably",
+    "size_shrank": "The part got smaller",
+}
+
 #: A problem's three endings (spec "Contract": fixed | not_fixed | left_as_is).
 STATUSES: Final = ("fixed", "not_fixed", "left_as_is")
 #: What a problem's line says when the engine gave no plain reason of its own (or one that leaked).
@@ -112,5 +118,6 @@ def a_or_an(words: str) -> str:
     return ("an " if words[:1].lower() in "aeiou" else "a ") + words
 
 
-__all__ = ["OUTCOMES", "PROBLEM_TYPES", "STATUSES", "STATUS_WORDS", "UNKNOWN_TYPE", "a_or_an",
+__all__ = ["ENGINE_KEYS", "FLAG_WORDS", "OUTCOMES", "PROBLEM_TYPES", "STATUSES", "STATUS_WORDS",
+           "UNKNOWN_TYPE", "a_or_an",
            "leaks", "plain", "type_key", "type_words"]

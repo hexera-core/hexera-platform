@@ -19,6 +19,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from meshpipeline.contracts.repair_plain import (
+    FLAG_WORDS,
     OUTCOMES,
     STATUS_WORDS,
     STATUSES,
@@ -131,9 +132,34 @@ def needs_review(result: Mapping | None) -> bool:
                if isinstance(p, Mapping))
 
 
-def accepted_by_person(directives) -> bool:
-    """Whether this run is a review re-run on which a person accepted the waiting changes."""
-    return any(isinstance(d, Mapping) and d.get("op") == ACCEPT_OP for d in directives or ())
+#: The review item that stands for a change to the whole part, when the engine needs a review the
+#: per-problem movements do not explain (a broader repair, a volume or size change).
+WHOLE_PART_ID = "whole_part"
+
+
+def accepted_ids(directives) -> frozenset[str]:
+    """The waiting changes a person accepted on the review re-run (each `accept_change`'s targets)."""
+    out: set[str] = set()
+    for d in directives or ():
+        if isinstance(d, Mapping) and d.get("op") == ACCEPT_OP:
+            out.update(str(t) for t in (d.get("targets") or ()) if t)
+            if d.get("defect_fingerprint"):
+                out.add(str(d["defect_fingerprint"]))
+    return frozenset(out)
+
+
+def accepted_by_person(directives, result: Mapping | None = None) -> bool:
+    """Whether a person accepted EVERY change this result would apply past the allowance.
+
+    Item by item, never "some acceptance means all": the waiting items this result would raise
+    (`review_items`) must each have been accepted on the review re-run. One left or unanswered
+    item and the change is not applied - it waits again. Without a result, whether any
+    acceptance was given at all."""
+    accepted = accepted_ids(directives)
+    if result is None:
+        return bool(accepted)
+    waiting = {str(item["fingerprint"]) for item in review_items(result)}
+    return bool(waiting) and waiting <= accepted
 
 
 def without_acceptances(directives) -> tuple:
@@ -174,6 +200,26 @@ def review_items(result: Mapping) -> list[dict]:
             "proposal": {"op": ACCEPT_OP, "targets": [pid], "source": "repair"},
             "camera": {},
         })
+    if not items and needs_review(result):
+        # A REVIEW NO SINGLE PROBLEM EXPLAINS (a broader repair, the part's volume or size moved):
+        # one item for the whole part, so the park always has something to approve
+        biggest = _num(result.get("max_change_mm"))
+        items.append({
+            "group_key": f"{REVIEW_ORIGIN}:{WHOLE_PART_ID}",
+            "defect_code": WHOLE_PART_ID,
+            "severity": "warning",
+            "entity_type": "part",
+            "entity_index": 0,
+            "fingerprint": WHOLE_PART_ID,
+            "measurements": {"change_mm": biggest, "allowed_change_mm": allowed,
+                             "volume_ratio": _num(result.get("volume_ratio")),
+                             "size_ratio": _num(result.get("size_ratio"))},
+            "message": (f"The repair changed your part by up to {_mm(biggest)} overall, more "
+                        "than is applied without your approval"),
+            "origin": REVIEW_ORIGIN,
+            "proposal": {"op": ACCEPT_OP, "targets": [WHOLE_PART_ID], "source": "repair"},
+            "camera": {},
+        })
     return items
 
 
@@ -211,8 +257,10 @@ def _problem(raw: Mapping, allowed_mm: float | None) -> dict:
 
 
 def _flag(value: Any) -> str | None:
-    """A flag the customer reads, or None when the engine's flag is not plain words."""
+    """A flag the customer reads: the engine's flag key in plain words (`FLAG_WORDS`), a flag that
+    already is plain words, or None (never shown by its key)."""
     text = " ".join(str(value or "").split())
+    text = FLAG_WORDS.get(text, text)
     return text if text and not leaks(text) else None
 
 
@@ -284,7 +332,12 @@ def _section(state: Mapping, *, choice: str) -> dict:
                            "auto_accepted": bool(record.get("auto_accepted")),
                            "review_bypass": bool(record.get("review_bypass")
                                                  or base["review_bypass"]),
-                           "waiting_for_review": bool(record.get("waiting_for_review"))}
+                           "waiting_for_review": bool(record.get("waiting_for_review")),
+                           # whether the change was applied, and whether a person approved it
+                           # (a review re-run) - a change that needed review is NOT "approved"
+                           # merely because it was reviewed for
+                           "applied": bool(record.get("applied", True)),
+                           "accepted_by_person": bool(record.get("accepted_by_person"))}
     if not result:
         return {**out, **_v3_section(attempt)}
     allowed = _num(result.get("allowed_change_mm"))

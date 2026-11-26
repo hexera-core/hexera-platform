@@ -477,7 +477,8 @@ def _review_decision(state, result: dict | None, directives) -> dict:
     - nothing past the allowance: applied, nobody asked;
     - past it, with the run's review bypass (allowed by the organisation at dispatch): applied,
       recorded `auto_accepted`;
-    - past it, on a review re-run where a person accepted the changes: applied;
+    - past it, on a review re-run where a person accepted EVERY waiting change of this result
+      (item by item - one left or unanswered and it waits again): applied;
     - past it otherwise: WAITS FOR A PERSON when the review screen is on here; with it off the
       change is not applied at all (nobody can approve it, and nothing past the allowance is
       applied unapproved)."""
@@ -485,7 +486,9 @@ def _review_decision(state, result: dict | None, directives) -> dict:
 
     needs = repair_result.needs_review(result)
     bypass = goal_request.bypass_review(state)
-    accepted = repair_result.accepted_by_person(state.get("repair_directives") or directives)
+    # the acceptances ride the STATE's directives (the planner's copy has them filtered out)
+    accepted = repair_result.accepted_by_person(state.get("repair_directives") or (),
+                                                result or {})
     record = {"engine_result": dict(result) if result else None, "needs_review": needs,
               "review_bypass": bypass, "auto_accepted": bool(needs and bypass and not accepted),
               "accepted_by_person": bool(needs and accepted), "waiting_for_review": False,
