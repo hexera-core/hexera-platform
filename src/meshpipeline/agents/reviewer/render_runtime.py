@@ -8,6 +8,7 @@ import base64
 import functools
 import logging
 import math
+import re
 from contextlib import AsyncExitStack, asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -37,6 +38,11 @@ from meshpipeline.sandbox.execution_lane import RendererExecutionLane
 from meshpipeline.sandbox.review_session import open_review_session
 
 logger = logging.getLogger(__name__)
+
+#: VER-11: a CAD face as the user's viewer names it (one patch per CAD face on an FEA mesh, a region of a staged
+#: flow skin) - where a user's mark is, never a boundary group a review session isolates
+RULE_MARK_SHOWN = "VER-11"
+_VIEWER_FACE = re.compile(r"^(?:Part_\d+_)?Face_\d+$|^Region_\d+$")
 
 # `fn` is not a viewer tool - the caller owns it (submit_findings / unknown).
 # Mirrors navigation.NOT_VIEWER_TOOL's role.
@@ -226,6 +232,20 @@ class ReviewerRenderRuntime:
             # each refusal counted as a round without progress, and the review ended with no
             # verdict on a mesh that had passed every gate. The refusal names the way out.
             renderable = list((await self.capabilities()).entities)
+            if patch_name not in renderable and _VIEWER_FACE.match(str(patch_name)):
+                # VER-11: A CAD FACE AS THE USER'S VIEWER NAMES IT (Face_k, Part_k_Face_j, Region_k) - where the
+                # user's mark is, not a boundary this review can hide others around. Refusing the whole view for
+                # it left the marked spots of a dispute unseen on every FEA mesh (Gmsh's groups are solid/free):
+                # the view at the point is taken, and the text says nothing was hidden.
+                ev = await self._exec(RenderCommand(
+                    kind=CommandKind.GO_TO_COORDINATES, coordinates=(x, y, z), span=span,
+                    view_id=preset or "", entity_id=""))
+                if not ev.image_ref:
+                    return self._refusal(ev)
+                return await self._parts(ev, go_to_coordinates_text(
+                    await self.scene(), x=x, y=y, z=z, span=span, preset=preset or "")
+                    + f" '{patch_name}' is a face of the user's viewer, not a group of this review, so "
+                      "nothing was hidden: this is the view at the point.")
             if patch_name not in renderable:
                 return (
                     f"Patch '{patch_name}' carries no review geometry and cannot be shown, so no "
@@ -287,6 +307,11 @@ class ReviewerRenderRuntime:
         # the authoritative resolution; this only screens a plainly-unknown token. For the visual
         # engines `entities` == the patch labels, so the text below is byte-identical.
         renderable = list((await self.capabilities()).entities)
+        if patch_name not in renderable and _VIEWER_FACE.match(str(patch_name)):
+            # VER-11: a face of the user's viewer, not a group here - the way to it is the mark's own point
+            return (f"'{patch_name}' is a face of the user's viewer, not a group of this review, so it cannot be "
+                    f"isolated. Renderable groups: {', '.join(renderable) or 'none'}. To see it, call "
+                    "go_to_coordinates with the point given for it (the user's mark), without patch_name.")
         if patch_name not in renderable:
             return (
                 f"Patch '{patch_name}' carries no review geometry and cannot be shown. "
