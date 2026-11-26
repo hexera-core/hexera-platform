@@ -42,9 +42,12 @@ KEY_FILE = "key.json"
 LAYERS_ONLY_FILE = "layers_only.json"
 #: Which path the attempt's snappyHexMesh ran (layers only, or the whole mesh) and why.
 REUSE_FILE = "snapped_reuse.json"
-#: The relative retry adds only the layers when it can (False: it rebuilds the whole mesh, as before rulebook 116 -
-#: the side-by-side proof's other arm).
-LAYERS_ONLY_RETRY = True
+#: OFF (ENGINEER 39, testlab-4/-5, a6639f89): the relative retry rebuilds the whole mesh, as before rulebook 116, and no
+#: snapped mesh is kept. On, it saved minutes (a retry pass 6-16 min against 16-26 rebuilt) but it is not the same mesh
+#: as the full retry: 00008746 kept its stack (86.0% cover) at max non-orthogonality 76.7 and lost its pass (the full
+#: retry passes at 85.6%), and 00087385's layers-only pass folded cells at 12 wall spots and was rebuilt in full anyway.
+#: Layers added in a second run on the read-back snapped mesh are not the layers the one run adds. True turns it on.
+LAYERS_ONLY_RETRY = False
 #: The dictionary's stage switches, as render_snappy_case writes them.
 _SWITCHES = re.compile(r"castellatedMesh\s+\w+\s*;\s*snap\s+\w+\s*;\s*addLayers\s+\w+\s*;")
 
@@ -171,7 +174,7 @@ def wants_keep(workspace) -> bool:
         text = (ws / "system" / "snappyHexMeshDict").read_text(errors="replace")
     except OSError:
         return False
-    return relative_on_retry(ws) and layers_on(text) and _switches(text) is not None
+    return LAYERS_ONLY_RETRY and relative_on_retry(ws) and layers_on(text) and _switches(text) is not None
 
 
 @contextlib.contextmanager

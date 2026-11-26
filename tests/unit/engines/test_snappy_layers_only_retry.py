@@ -84,6 +84,31 @@ class _Fake:
         return _Done()
 
 
+@pytest.fixture(autouse=True)
+def _switched_on(monkeypatch):
+    """The layers-only retry is off by default (snapped_keep.LAYERS_ONLY_RETRY); these tests are of the path when on."""
+    monkeypatch.setattr(SK, "LAYERS_ONLY_RETRY", True)
+
+
+def test_by_default_the_retry_rebuilds_in_full_and_nothing_is_kept(tmp_path, monkeypatch):
+    from meshpipeline.engines.snappy import native as N
+    monkeypatch.setattr(SK, "LAYERS_ONLY_RETRY", False)
+    monkeypatch.setattr(N, "_foam_version", lambda *a, **k: "v2412")
+    monkeypatch.setattr(N, "_rank_count", lambda: 2)
+    monkeypatch.setattr(N, "_measure", lambda *a, **k: None)
+    monkeypatch.setattr(N, "_export_volume_timed", lambda *a, **k: 0.0)
+    ws = _case(tmp_path / "job" / "attempt_1", _METRES)
+    fake = _Fake()
+    monkeypatch.setattr(N, "run_guarded", fake)
+    N._run_snappy_local(ws)
+    line = next(c for c in fake.calls if "snappyHexMesh" in c)
+    assert "-overwrite" in line and "writeFormat ascii;" in fake.snappy[0][1]      # exactly today's run
+    assert not (ws / SK.KEEP_DIR).exists() and SK.read_reuse(ws) is None
+    retry = _case(tmp_path / "job" / "attempt_2", _RELATIVE)
+    (retry / "gate_facts.json").write_text(json.dumps({"gate": "layer_stack", "facts": {"relative_next": True}}))
+    assert SK.adopt(retry)["why"] == "the layers-only retry is switched off"
+
+
 @pytest.fixture
 def native(monkeypatch):
     from meshpipeline.engines.snappy import native as N
