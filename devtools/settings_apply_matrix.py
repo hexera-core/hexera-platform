@@ -405,7 +405,7 @@ def verdict(key: str, route: str, base: dict, got: dict) -> tuple[str, str]:
         # here: not verified on this laptop (a CFD mesh on a cloud machine is)
         return "unverified", f"told '{said[:90]}'; set in the engine's driver, not at a seam run here"
     # the engine input only: the built count moves a little run to run (the 3D fill is threaded)
-    changed = base.get("input") != got.get("input")
+    changed = base.get("input") != got.get("input") or (route == "shell" and base.get("built") != got.get("built"))
     rows = got.get("rows") or []
     settings_rows = [r for r in rows if r.get("from") == "settings"]
     if mode == "told":
@@ -425,9 +425,16 @@ def verdict(key: str, route: str, base: dict, got: dict) -> tuple[str, str]:
         met = [r.get("met") for r in applied]
         return ("applied" if all(m is not False for m in met) else "nearest_told"), \
             "; ".join(f"{r.get('asked')}: {r.get('delivered')}" for r in applied)[:200]
-    if not changed and all(r.get("met") is True for r in applied):
+    if not applied and ("Not applied" in said or "Not a mesh" in said):
+        return "told_not", said[:200]
+    if not changed and applied and all(r.get("met") is True for r in applied):
         return "applied", ("the mesh already holds it, nothing needed to change: "
                            + "; ".join(f"{r.get('asked')}: {r.get('delivered')}" for r in applied))[:200]
+    if not changed and applied and all(r.get("delivered") for r in applied):
+        # nothing changed and the row says what was built (and why): honest, but only reading the code says whether
+        # the route tried (the shell's element kind is not in the record this harness compares)
+        return "unchanged_told", ("nothing changed; the row says: "
+                                  + "; ".join(f"{r.get('asked')}: {r.get('delivered')}" for r in applied))[:240]
     if not changed:
         return "TOLD_WRONG", ("told as applied, the engine input and the mesh did not change: "
                               + "; ".join(f"{r.get('asked')}: {r.get('delivered')}" for r in applied))[:240]
@@ -480,7 +487,7 @@ def table(rows: list[dict], out=print) -> dict:
         cell = agg[(r["field"], r["route"])]
         cell["parts"] += 1
         cell[r["verdict"]] += 1
-    cols = ("applied", "nearest_told", "told_not", "unverified", "SILENT", "TOLD_WRONG", "ERROR")
+    cols = ("applied", "nearest_told", "unchanged_told", "told_not", "unverified", "SILENT", "TOLD_WRONG", "ERROR")
     out("| field | route | parts | " + " | ".join(cols) + " |")
     out("|---|---|---|" + "---|" * len(cols))
     for (field, route), c in sorted(agg.items()):
@@ -511,8 +518,8 @@ def rejudge(rows: list[dict]) -> list[dict]:
             continue
         else:
             got = {"input": r.get("after"), "rows": r.get("rows"), "said": r.get("said"),
-                   "result_words": r.get("result_words")}
-            base = {"input": r.get("before")}
+                   "result_words": r.get("result_words"), "built": r.get("built_after")}
+            base = {"input": r.get("before"), "built": r.get("built_before")}
         v, why = verdict(r["field"], r["route"], base, got)
         out.append({**r, "verdict": v, "why": why})
     return out
