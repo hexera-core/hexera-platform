@@ -824,6 +824,7 @@ def _serve() -> None:
         try:
             if what == "init":
                 surf, zones, growth, scale = arg
+                field = None            # the last field goes first (its surface distances stay, in the scope)
                 field = SizeField(SimpleNamespace(**surf), zones, growth=growth, scale_to_m=scale)
                 continue
             assert field is not None
