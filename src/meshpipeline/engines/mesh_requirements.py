@@ -2304,11 +2304,37 @@ def asked_rows(quality: Mapping | None, *, source: str = "your notes", told: boo
     return out
 
 
-def summary(rep: Mapping | None, *, kind: str = "mesh", limit: int = 380, not_applied: int = 0) -> str:
-    """The one line the closing message carries ("From your notes: ..."): how many of the things asked for are
-    met, and the ones that are not with how far off each is - as many as fit `limit` characters (the result and
-    the mesh report list every one) - and how many things the notes say about the mesh that no setting of ours
-    matches (`not_applied`, NOTE-8). "" with nothing to say."""
+def ask_said(r: Mapping) -> str:
+    """One ask of the closing message's list: what was asked, where it came from, its outcome in the result's own
+    words, and what was built ("Aspect ratio under 5 (from your notes): not fully met - 0.0163% of elements (137) are
+    over 5."). An ask with nothing to judge it by says its status (`told_status`: "nearest there is", "target, not
+    met", ...)."""
+    said = line(r)
+    built = str(r.get("delivered") or "")
+    if r.get("met") in (True, False) or not built:
+        return said
+    head = said[:len(said) - len(built) - 3]        # line(): "<asked><from>: <delivered>."
+    status = told_status(r)[1].lower()
+    built = built.replace("a target - ", "", 1)     # the status says so
+    return f"{head}: {built}." if built.lower().startswith(status) else f"{head}: {status} - {built}."
+
+
+def asks_said(rep: Mapping | None) -> str:
+    """Every ask of the report, one after another (`ask_said`); "" with none. Said after `summary` in the closing
+    message, whole: the user reads each thing asked for with its outcome."""
+    return " ".join(ask_said(r) for r in (rep or {}).get("rows") or [] if isinstance(r, Mapping) and r.get("asked"))
+
+
+def closing(said: str, rep: Mapping | None) -> str:
+    """The closing message's requirements remark: the short count line (`summary`, led by where the asks came
+    from), then every ask with its outcome (`asks_said`). Recorded whole (contracts/user_notes.record_remark)."""
+    return " ".join(x for x in (said, asks_said(rep) if said else "") if x)
+
+
+def summary(rep: Mapping | None, *, kind: str = "mesh", not_applied: int = 0) -> str:
+    """The short line the closing message carries ("From your notes: ..."): how many of the things asked for there
+    are, by outcome (counts only; `closing` adds each ask with what was built), and how many things the notes say
+    about the mesh that no setting of ours matches (`not_applied`, NOTE-8). "" with nothing to say."""
     rows = list((rep or {}).get("rows") or [])
     extra = (f"{not_applied} other thing{'' if not_applied == 1 else 's'} your notes say about the mesh could not "
              "be applied (listed with the result)") if not_applied else ""
@@ -2330,46 +2356,29 @@ def summary(rep: Mapping | None, *, kind: str = "mesh", limit: int = 380, not_ap
     # a size asked on a piece of a part that is no face of its own, set on the whole part (SHMESH-52)
     nearest = [r for r in rows if r.get("met") is None and r.get("nearest") and r.get("applied") is not False]
     n = len(rows)
+    # COUNTS ONLY: the line is short and whole; each ask with what was built is said after it (`asks_said`, in the
+    # same remark, never cut) - a line carrying the first asks' figures was cut mid-sentence at 400 characters
     out = f"Of the {n} thing{'' if n == 1 else 's'} you asked for: {len(met)} met"
     if missed:
         out += f", {len(missed)} not fully met"
-        shown = 0
-        for r in missed:
-            more = f"{': ' if not shown else '; '}{r['asked']} ({r['delivered']})"
-            if len(out) + len(more) > limit - 90:
-                break
-            out, shown = out + more, shown + 1
-        if shown < len(missed):
-            out += f"{'; and ' if shown else ': '}{len(missed) - shown} more, listed on the result"
-    def outside(r: Mapping) -> str:
-        if r.get("field") in ("min_edge", "max_edge"):
-            return (f"{r.get('outside_pct'):g}% of elements have an edge "
-                    f"{'shorter' if r.get('field') == 'min_edge' else 'longer'} than you asked")
-        return f"{r.get('outside_pct'):g}% of elements outside {r['asked']}"
-
     edges = [r for r in targets if r.get("field") in ("min_edge", "max_edge") and not r.get("flexible")]
     if edges:
-        shares = [outside(r) for r in edges if r.get("outside")]
-        out += (f"; {len(edges)} edge-length target{'' if len(edges) == 1 else 's'}"
-                + (": " + ", ".join(shares) if shares else ""))
+        out += f"; {len(edges)} edge-length target{'' if len(edges) == 1 else 's'}"
     flexible = [r for r in targets if r not in edges]
     if flexible:
-        # NOTE-14: a limit the user said is flexible (an edge length too), told with the share outside it -
-        # information, never "not met"
-        shares = [outside(r) for r in flexible if r.get("outside_pct") is not None and r.get("outside")]
-        out += (f"; {len(flexible)} flexible limit{'' if len(flexible) == 1 else 's'}"
-                + (": " + ", ".join(shares) if shares else ""))
+        # NOTE-14: a limit the user said is flexible (an edge length too) - information, never "not met"
+        out += f"; {len(flexible)} flexible limit{'' if len(flexible) == 1 else 's'}"
     if settings:
         out += f"; {len(settings)} applied as {'a setting' if len(settings) == 1 else 'settings'}"
     if nearest:
-        out += f"; {len(nearest)} applied to the whole part, the nearest there is"
+        out += f"; {len(nearest)} nearest there is"
     if finer:
-        out += "; " + "; ".join(f"{r['asked']}: {r['delivered']}" for r in finer[:2])
+        out += f"; {len(finer)} finer than asked"
     if layered:
         out += (f"; {len(layered)} limit{'' if len(layered) == 1 else 's'} for even cells told, not judged, on a mesh "
                 "with prism layers")
     if aside:
-        out += f"; {len(aside)} could not be applied to a {kind} mesh (listed on the result)"
+        out += f"; {len(aside)} could not be applied to a {kind} mesh"
     if extra:
         out += f". {extra}"
     return out + "."

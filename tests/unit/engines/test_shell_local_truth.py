@@ -253,7 +253,7 @@ def test_a_piece_of_a_part_that_is_no_face_of_its_own_is_set_on_the_whole_part_a
                                 "(25 elements)")
     assert MR.line(row) == ("Elements of 3 mm at the vertical leg: applied to the whole part, the nearest there is - "
                             "bracket: elements are about 3 mm (25 elements).")
-    assert MR.summary(rep) == "Of the 1 thing you asked for: 0 met; 1 applied to the whole part, the nearest there is."
+    assert MR.summary(rep) == "Of the 1 thing you asked for: 0 met; 1 nearest there is."
     # the checked reading keeps the flag only on a part, never on an area (an area is the place itself)
     table = [{"id": "Part_1", "name": "plate"}, {"id": "Feature_1", "feature": True, "kind": "hole", "name": "a hole"}]
     phrase = {"everything_else": False, "ask": "size", "min": 3, "max": 3, "unit": "mm", "why": "the plate",

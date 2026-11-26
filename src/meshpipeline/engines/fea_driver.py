@@ -1732,9 +1732,10 @@ def built_remark(ws: Path, record: dict | None = None) -> None:
         from meshpipeline.engines import mesh_requirements as MR
         from meshpipeline.engines.fea_requirements import summary as asked_summary
         from meshpipeline.engines.meshing_standard import remark as led
-        record_remark(ws, led(plan.get("requirements"),
-                              asked_summary(delivered, len(MR.not_applied_words(plan.get("requirements"))))),
-                      by="mesh_requirements")
+        record_remark(ws, MR.closing(led(plan.get("requirements"),
+                                         asked_summary(delivered, len(MR.not_applied_words(plan.get("requirements"))))),
+                                     delivered),
+                      by="mesh_requirements", whole=True)
 
 
 #: PLAN-fea-13: THE FILL RATE BY COMPLEXITY - elements per second of one native gmsh pass, at the
@@ -2629,9 +2630,10 @@ async def _deliver_surface(ws: Path, rec: dict, *, job_id: str, run, target: dic
             from meshpipeline.engines import mesh_requirements as MR
             from meshpipeline.engines.meshing_standard import remark as led
             from meshpipeline.engines.shell_requirements import summary as asked_summary
-            said = led(asked, asked_summary(rec.get("requirements"), len(MR.not_applied_words(asked))))
+            said = MR.closing(led(asked, asked_summary(rec.get("requirements"), len(MR.not_applied_words(asked)))),
+                              rec.get("requirements"))
             if said:
-                record_remark(ws, said, by="mesh_requirements")
+                record_remark(ws, said, by="mesh_requirements", whole=True)
         _cite(job_id, [{"stage": SR.GATE, "decided": "shell delivered", "value": rec.get("elements"),
                         "rule": "SURF-3", "inputs": {"solid_made": False},
                         "words": "The shell on the surface is the delivered mesh: the file holds no solid to mesh."}])
@@ -2905,12 +2907,14 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
                 from meshpipeline.engines import mesh_requirements as MR
                 from meshpipeline.engines.meshing_standard import remark as led
                 from meshpipeline.engines.shell_requirements import summary as asked_summary
-                notes_line = led(asked, asked_summary(shelled.get("requirements"), len(MR.not_applied_words(asked))))
+                notes_line = MR.closing(led(asked, asked_summary(shelled.get("requirements"),
+                                                                 len(MR.not_applied_words(asked)))),
+                                        shelled.get("requirements"))
                 if notes_line:
                     # the AI's own remark (above) says what it did with the notes for the SOLID plan, which is not
                     # made: beside the shell's asked-against-delivered line it told the user of a solid mesh
                     drop_remark(ws, by="fea_ai")
-                    record_remark(ws, notes_line, by="mesh_requirements")
+                    record_remark(ws, notes_line, by="mesh_requirements", whole=True)
             _cite(job_id, [{"stage": SHELL_GATE, "decided": "shell delivered", "value": shelled.get("elements"),
                             "rule": "SHSTAGE-7", "inputs": {"solid_made": False},
                             "words": "The shell is the delivered mesh: no solid mesh is made beside it."}])

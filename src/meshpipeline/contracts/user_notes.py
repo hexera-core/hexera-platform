@@ -510,11 +510,13 @@ REMARK_DESCRIPTION = (
     "mesher does not remove features)'. Leave it out if you did nothing with them.")
 
 
-def record_remark(workspace: Any, remark: Any, *, by: str) -> None:
+def record_remark(workspace: Any, remark: Any, *, by: str, whole: bool = False) -> None:
     """Keep a step's one-line remark in the workspace (replacing that step's earlier one). Best
-    effort: a remark that cannot be kept is lost, and nothing else is affected (NOTE-3)."""
+    effort: a remark that cannot be kept is lost, and nothing else is affected (NOTE-3). A remark is
+    cut at MAX_REMARK_CHARS unless `whole` (the asked-against-built list: every ask is read)."""
     import json
-    text = " ".join(str(remark or "").split())[:MAX_REMARK_CHARS]
+    text = " ".join(str(remark or "").split())
+    text = text if whole else text[:MAX_REMARK_CHARS]
     if not workspace or not text:
         return
     path = Path(workspace) / REMARKS_FILE

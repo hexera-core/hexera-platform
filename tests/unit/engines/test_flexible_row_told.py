@@ -61,9 +61,10 @@ def test_f1_a_flexible_shortest_edge_almost_all_outside_is_told_flexible_never_m
     assert "Flexible" in html and "Met" not in html
     cfd = RP._asked_rows({"asked": rep})
     assert "Flexible" in cfd[0][3] and "Flexible: told" not in cfd[0][3]
-    # the tally: a flexible limit, with the share outside it
-    assert MR.summary(rep) == ("Of the 1 thing you asked for: 0 met; 1 flexible limit: 100% of elements have an "
-                               "edge shorter than you asked.")
+    # the tally: a flexible limit (counts only); the ask itself, with the share outside it, said after it
+    assert MR.summary(rep) == "Of the 1 thing you asked for: 0 met; 1 flexible limit."
+    assert MR.asks_said(rep) == ("Shortest element edge over 3 mm: flexible - 100% of elements (1,000) have an edge "
+                                 "shorter than 3 mm (the shortest is 0.118 mm).")
 
 
 def test_a_flexible_quality_limit_outside_is_told_flexible_with_its_share():
@@ -71,8 +72,8 @@ def test_a_flexible_quality_limit_outside_is_told_flexible_with_its_share():
     assert MR.asked_rows(q) == []
     told = MR.asked_rows(q, told=True)
     assert [(r["told"], r["status"], r["shown"]) for r in told] == [("target", "Flexible", "1.2% of elements outside")]
-    assert MR.summary(q["requirements"]) == ("Of the 1 thing you asked for: 0 met; 1 flexible limit: 1.2% of "
-                                             "elements outside aspect ratio under 3.")
+    assert MR.summary(q["requirements"]) == "Of the 1 thing you asked for: 0 met; 1 flexible limit."
+    assert MR.asks_said(q["requirements"]) == "Aspect ratio under 3: flexible - 1.2% of elements (12) are over 3; the worst is 5.2."
 
 
 def test_said_flexible_and_inside_is_simply_met():
@@ -90,8 +91,9 @@ def test_nothing_said_is_as_before():
     assert MR.asked_rows(q) == []
     assert [(r["status"], r["shown"]) for r in MR.asked_rows(q, told=True)] == [
         ("Target, not met", "100% of elements under")]
-    assert MR.summary(q["requirements"]) == ("Of the 1 thing you asked for: 0 met; 1 edge-length target: 100% of "
-                                             "elements have an edge shorter than you asked.")
+    assert MR.summary(q["requirements"]) == "Of the 1 thing you asked for: 0 met; 1 edge-length target."
+    assert MR.asks_said(q["requirements"]).startswith("Shortest element edge over 3 mm: target, not met - 100% of "
+                                                      "elements (1,000) have an edge shorter than 3 mm")
     # a quality limit: held as written - a judged row, not fully met
     q = _q(_quality())
     assert [(r["measured"], "told" in r) for r in MR.asked_rows(q)] == [(12, False)]
@@ -115,8 +117,9 @@ def test_a_size_built_far_finer_than_asked_is_told_never_a_met_limit(tmp_path):
         (None, "Finer than asked", "about 0.95 mm")]
     assert [r["status"] for r in SD.asked_rows(q)] == ["Finer than asked"]
     assert "Finer than asked" in RP._asked_rows({"asked": q["requirements"]})[0][3]
-    assert MR.summary(q["requirements"]).startswith("Of the 1 thing you asked for: 0 met; global element size 10 mm: "
-                                                    "elements are about 0.95 mm, finer than the 10 mm asked")
+    assert MR.summary(q["requirements"]) == "Of the 1 thing you asked for: 0 met; 1 finer than asked."
+    assert MR.asks_said(q["requirements"]).startswith("Global element size 10 mm: finer than asked - elements are "
+                                                      "about 0.95 mm, finer than the 10 mm asked")
 
 
 def test_a_hard_size_built_far_finer_than_asked_is_judged_not_met():

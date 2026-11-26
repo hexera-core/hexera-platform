@@ -279,10 +279,12 @@ def test_every_requirement_is_told_asked_against_delivered():
     assert (rep["met"], rep["missed"]) == (8, 1) and rep["definitions"] == SR.DEFINITIONS
     # the closing message's one line, and the verdict's rows: a miss is a note with its own plain words
     said = SR.summary(rep)
-    assert said == ("Of the 10 things you asked for: 8 met, 1 not fully met: aspect ratio under 4 (up to 1% of "
-                    "elements between 4 and 6) (1.5% of elements (3) are over 4, 1 of them over 6; the worst is 8); 1 "
-                    "edge-length target: 1.5% of elements have an edge longer than you asked.")
-    assert len(said) <= 400
+    assert said == "Of the 10 things you asked for: 8 met, 1 not fully met; 1 edge-length target."
+    # every ask follows the counts, each with its outcome, never cut
+    whole = MR.closing(said, rep)
+    assert whole.startswith(said + " ") and all(MR.line(r) in whole for r in rows if r.get("met") is not None)
+    assert ("Longest element edge under 15 mm (1.5 x the global size): target, not met - 1.5% of elements (3) have "
+            "an edge longer than 15 mm (the longest is 80 mm).") in whole
     asked = MR.asked_rows({"requirements": rep})
     assert [r["key"] for r in asked] == [f"asked_r{k}" for k in (1, 2, 4, 5, 6, 7, 8, 9, 10)]
     assert [r["measured"] for r in asked] == [0, 0, 0, 1, 0, 0, 0, 0, 0]
