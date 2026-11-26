@@ -164,6 +164,15 @@ def _broken_mesh(workspace, before: tuple[int, int] | None) -> list[str]:
     return [str(x) for x in fatal if str(x).strip()] if isinstance(fatal, list) else []
 
 
+def refusal_stands_over_mesh(refusal) -> bool:
+    """INS-36: a refusal written AFTER a mesh was built about that mesh (an opening it lost, in the plan-time stop's
+    words) is the attempt's verdict - the mesh on disk is not judged over it again into a manifest error. TIME-15: so is
+    the CAD check's refusal of a mesh as built that missed more of the CAD than a rescue could bring back (it was not
+    rescued, so its cells were never meant to be judged)."""
+    facts = getattr(refusal, "facts", None) or {}
+    return bool(facts.get("after_build") and (facts.get("port_region_dropped") or facts.get("fidelity_first")))
+
+
 def _attempt_ending(trips) -> list[dict]:
     """The guard trips that end an attempt (TIME-3, TIME-5). A wait's guard (TIME-4: the engine
     order, the intake recommendation, the geometry naming) is that step failing, not the
@@ -344,7 +353,10 @@ async def node_executor(state: PipelineState) -> dict:
     # judged as usual, and the verdict's facts travel with the failure - the retry policy reads
     # that another attempt builds the same mesh, and the user's sentence is the driver's own
     _driver_verdict = None
-    if _refusal is not None and _mesh_on_disk(state.get("engine", ""), workspace):
+    # INS-36: a mesh built that lost an opening is refused in the plan-time stop's own words; that refusal stands
+    # over the mesh on disk - judged, the same mesh ends as a manifest error ("zero faces") with no way out said
+    if (_refusal is not None and not refusal_stands_over_mesh(_refusal)
+            and _mesh_on_disk(state.get("engine", ""), workspace)):
         if (_refusal.facts or {}).get("ladder_exhausted"):
             _driver_verdict = _refusal
         _refusal = None
@@ -428,19 +440,27 @@ async def node_executor(state: PipelineState) -> dict:
     solvability_metrics: dict = {}  # residual/iters/n_cells/info
     # the note gates that said no on this mesh (filled by the gate run below)
     _noted: list[tuple[str, object]] = []
+    # LAD-cfd-8: the concern this attempt's sound mesh is delivered with if no retry can change its
+    # refusal (engine_fallback.deliverable_refusal); None when it is not deliverable
+    _refused_deliverable: dict | None = None
 
     if executor_success:
         # The ENGINE-DECLARED blocking gates (spec.gates): the executor iterates
         # whatever the catalog row declares - no per-engine branches here. Crash
         # semantics (gate crash = SystemFailure, never a mesh rejection) live in
         # run_gates, written once.
+        from meshpipeline.cad.fluid_passages import openings_not_meshed
         from meshpipeline.engines.gates import GateCtx, facts_of, run_gates
         from meshpipeline.engines.registry import get_spec
+        # INS-40: the openings the staging left unmeshed (a cavity no inlet opens into) were told before meshing;
+        # the gates hold the mesh to the openings it was built for, and the verdict tells the rest (VER-13)
+        _told = openings_not_meshed(workspace)
         _ctx = GateCtx(
             workspace=Path(workspace),
             engine=state.get("engine", ""),
             domain=state.get("domain", ""),
-            intake_patches=state.get("intake_patches", []) or [],
+            intake_patches=[p for p in state.get("intake_patches", []) or []
+                            if not (isinstance(p, dict) and str(p.get("name")) in _told)],
             engine_params=state.get("engine_params", {}) or {},
         )
         _spec = get_spec(state.get("engine", ""))
@@ -500,6 +520,44 @@ async def node_executor(state: PipelineState) -> dict:
                     job_id, exc,
                 )
                 executor_output += "\n[MANIFEST_LOAD_ERROR] manifest validated but could not be loaded"
+
+        if not _gates_ok and mesh_manifest:
+            # LAD-cfd-8: a refusal a sound mesh may still be delivered on (engine_fallback.
+            # DELIVERABLE_GATES) is kept deliverable - when every later gate passes it too - in case no
+            # retry and no other engine can change it; the router decides
+            from meshpipeline.pipeline import engine_fallback as _lad
+            _concern = _lad.deliverable_refusal(_gate_key, mesh_manifest.get("quality"), failure_facts)
+            if _concern is not None:
+                _keys = [g.key for g in _spec.gates]
+                _rest = tuple(_spec.gates[_keys.index(_gate_key) + 1:]) if _gate_key in _keys else ()
+                _rest_ok, _rest_key, _rest_why = await asyncio.to_thread(lambda: run_gates(_rest, _ctx))
+                if _rest_ok:
+                    _refused_deliverable = _concern
+                else:
+                    # A SOUND MESH NEVER VANISHES UNSAID (LAD-cfd-8): the later gate that also refused it is
+                    # named - 63643's production-grade 8.57 M wrap mesh, refused at its port areas, was
+                    # dropped here without a line, and the run ended with no mesh after 236 minutes
+                    _dropped = getattr(_rest_why, "message", None) or str(_rest_why or "")
+                    logger.warning("Executor: the mesh %s refused is sound, but the later gate %s refuses it "
+                                   "too, so it is not kept deliverable - job_id=%s - %s", _gate_key, _rest_key,
+                                   job_id, str(_dropped)[:400])
+                    failure_facts = {**(failure_facts or {}), "not_deliverable": {
+                        "gate": str(_rest_key), "why": str(_dropped)[:400]}}
+            else:
+                logger.info("Executor: the mesh %s refused is not one a mesh is delivered on (LAD-cfd-8) - "
+                            "job_id=%s", _gate_key, job_id)
+            from meshpipeline.engines.gate_facts import write_gate_facts
+            write_gate_facts(workspace, _gate_key, failure_facts)
+        elif not _gates_ok and _gate_key == "manifest_valid":
+            # LAD-cfd-8: an opening the mesh came back with no faces on is refined on the next attempt
+            # (gate_facts.missed_ports) - the same plan only loses it again (abc 00063401: twice, 47 min)
+            from meshpipeline.engines.gate_facts import write_gate_facts
+            write_gate_facts(workspace, _gate_key, failure_facts)
+        # CFDREQ-33 (engines/snapped_keep): the attempt's choice is made - its kept snapped mesh stays only for the
+        # relative retry that adds the layers to it
+        from meshpipeline.engines.snapped_keep import settle as _settle_snapped
+        _settle_snapped(workspace, refused_gate=None if _gates_ok else _gate_key,
+                        facts=failure_facts if not _gates_ok and isinstance(failure_facts, dict) else None)
 
         if executor_success:
             # WHAT THE MEASUREMENT SAYS, on the run's live line: the executor's own record of the
@@ -669,6 +727,11 @@ async def node_executor(state: PipelineState) -> dict:
                         failure_facts = {}
                         solvability_failed = True
                         executor_output += f"\n{_result[1]}"
+                        # LAD-cfd-8: every gate passed; deliverable only on checkMesh's validity
+                        from meshpipeline.pipeline import engine_fallback as _lad
+                        _refused_deliverable = _lad.deliverable_refusal(
+                            "solvability", (mesh_manifest or {}).get("quality"),
+                            dict(solvability_metrics))
                         logger.warning(
                             "Executor: solvability gate REJECTED mesh - job_id=%s: %s",
                             job_id, _result[1][:200],
@@ -713,6 +776,24 @@ async def node_executor(state: PipelineState) -> dict:
         _sound = {_rp.SOUND_KEY: _rp.with_sound(state, _rp.sound_entry(
             state, workspace=str(workspace), manifest=mesh_manifest,
             caveats=requirement_caveats))}
+    elif _refused_deliverable is not None and workspace:
+        # LAD-cfd-8: a sound mesh a gate refused, kept - ranked under every mesh no gate refused -
+        # with the refusal as its concern. The CAD-fidelity record already says its own (the delivery's
+        # cad_fidelity caveat reads the manifest), so it adds no second line
+        _concern_caveats = [*requirement_caveats,
+                            *([] if _refused_deliverable.get("gate") == "cad_fidelity"
+                              else [dict(_refused_deliverable)])]
+        # LAD-cfd-9: how far off the gate's bar it is, so two meshes the same gate refused are chosen by it
+        from meshpipeline.pipeline import engine_fallback as _lad
+        _refused_gate = str(_refused_deliverable.get("gate") or failed_gate)
+        _sound = {_rp.SOUND_KEY: _rp.with_sound(state, {
+            **_rp.sound_entry(state, workspace=str(workspace), manifest=mesh_manifest,
+                              caveats=_concern_caveats),
+            "refused": _refused_gate,
+            "refused_distance": _lad.gate_distance(_refused_gate, (mesh_manifest or {}).get("quality"),
+                                                   failure_facts)})}
+        logger.warning("Executor: the mesh %s refused is sound - kept deliverable with the refusal "
+                       "said, if no retry can change it (LAD-cfd-8) - job_id=%s", failed_gate, job_id)
 
     logger.info(
         "Executor: success=%s job_id=%s output_len=%d",

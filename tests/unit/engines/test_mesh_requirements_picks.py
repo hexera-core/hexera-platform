@@ -78,7 +78,7 @@ def test_notes_with_no_picks_read_exactly_as_before():
     assert MR.bind_picks(json.loads(json.dumps(before)), kept) == before and before["sizes"]["global_mm"] == 2.0
 
 
-def test_snappy_never_spreads_a_picked_size_to_the_whole_wall():
+def test_snappy_never_spreads_a_picked_size_to_the_whole_wall(tmp_path):
     # a single-body model: a size in a place is the one wall's - but a size typed with a pick is for the face only
     from meshpipeline.engines import cfd_requirements as CR
 
@@ -88,11 +88,11 @@ def test_snappy_never_spreads_a_picked_size_to_the_whole_wall():
     ask = CR.Ask(req, "snappy")
     cap, lo, hi, _f = CR.snappy_levels(ask, 0.02, floor=3, level=3, flevel=4, regions=[], part_levels=False)
     rid = req["local"][0]["id"]
-    # (no face map reached this Ask: the pick is told as not re-checked, never spread; the lever itself is in
-    # tests/unit/engines/test_snappy_picked_faces.py)
-    assert ask.rows[rid]["status"] == "not_applied" and "the face you picked" in ask.rows[rid]["built"]
-    assert "no other face was guessed" in ask.rows[rid]["built"]
     assert (lo, hi) == (3, 3)                                       # the walls are as they were
+    # the picked size is snappy_picked's (CFDREQ-34): no surface was resolved for the face here, so it is told and
+    # never spread (the lever itself is in tests/unit/engines/test_cfd_picked.py)
+    assert CR.snappy_picked(ask, tmp_path, base_m=0.02, wall_level=3) == []
+    assert ask.rows[rid]["status"] == "not_applied" and "the face you picked" in ask.rows[rid]["built"]
 
 
 class _Router:

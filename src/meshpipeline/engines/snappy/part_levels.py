@@ -111,83 +111,6 @@ def plan(ps: Mapping | None, by_id: Mapping[str, str], *, base_m: float, smin: i
     return out
 
 
-#: NOTE-17: the file stem of the n-th picked face's own refinement surface (constant/triSurface/picked_<n>.stl)
-PICKED = "picked_"
-#: a picked face's triangles must lie within this share of the staged surface's diagonal of its box (same frame)
-FRAME_SHARE = 0.02
-
-
-def picked_surfaces(ws: Path, local, face_map: tuple, *, box) -> dict[str, dict]:
-    """NOTE-17: for each size typed with faces picked on the model (a `local` entry with `faces` and `sigs`), its
-    faces re-checked against the face map the check kept (cad/face_map.same_face, through the contract seam) and
-    their triangles written as one surface of their own, constant/triSurface/picked_<n>.stl (metres), for a distance
-    refinement on them alone. Returns {entry id: {"file", "where"}} or {entry id: {"gone": the face(s) as the user
-    saw them}} - a face no longer on the model, no face map, or a map in another frame than the staged surface `box`
-    ([min, max] metres): told, never put on another face. Never raises."""
-    import numpy as np
-
-    out: dict[str, dict] = {}
-    fm, scale = face_map if isinstance(face_map, tuple) and len(face_map) == 2 else (None, 1.0)
-    n = 0
-    for e in local or ():
-        if not isinstance(e, Mapping) or not e.get("faces"):
-            continue
-        ids = [str(f) for f in e["faces"]]
-        labels = list(e.get("labels") or [])
-        sigs = list(e.get("sigs") or [])
-        try:
-            from meshpipeline.cad import face_map as FM
-            if fm is None:
-                raise LookupError("no face map")
-            kept = [fm.names.index(f) for i, f in enumerate(ids) if i < len(sigs) and isinstance(sigs[i], Mapping)
-                    and FM.same_face(fm, f, dict(sigs[i]), scale=float(scale))]
-            tris = [FM.highlight(fm, k, scale=float(scale)) for k in kept]
-            pts = np.vstack([p for p, _t in tris]) if tris else np.zeros((0, 3))
-            lo, hi = np.asarray(box[0], dtype=float), np.asarray(box[1], dtype=float)
-            tol = FRAME_SHARE * float(np.linalg.norm(hi - lo))
-            framed = bool(len(pts)) and bool(np.all(pts >= lo - tol) and np.all(pts <= hi + tol))
-        except Exception as exc:  # noqa: BLE001 - told as not re-checked, never a failed run
-            logger.warning("snappy picked faces: not re-checked (%s)", type(exc).__name__)
-            kept, framed, tris = [], False, []
-        if not kept or not framed:
-            shown = [labels[i] if i < len(labels) and labels[i] else f for i, f in enumerate(ids)]
-            out[str(e.get("id"))] = {"gone": f"the face you picked ({'; '.join(shown[:3])})" if len(ids) == 1 else
-                                     f"the {len(ids)} faces you picked ({'; '.join(shown[:3])})"}
-            continue
-        n += 1
-        name = f"{PICKED}{n}"
-        try:
-            from meshpipeline.cad.stl_io import _write_solid
-            tri_dir = Path(ws) / "constant" / "triSurface"
-            tri_dir.mkdir(parents=True, exist_ok=True)
-            corners = [tuple(map(tuple, p[t])) for p, ts in tris for t in ts.astype(np.int64)]
-            with (tri_dir / f"{name}.stl").open("w") as fh:
-                _write_solid(fh, name, corners)
-        except Exception as exc:  # noqa: BLE001 - told as not applied
-            logger.warning("snappy picked faces: surface not written (%s)", type(exc).__name__)
-            out[str(e.get("id"))] = {"gone": f"the face you picked ({labels[0] if labels else ids[0]})"}
-            continue
-        names = {str(fm.names[k]) for k in kept} if fm is not None else set()
-        missing = [labels[i] if i < len(labels) and labels[i] else f for i, f in enumerate(ids) if f not in names]
-        out[str(e.get("id"))] = {"file": name, "where": str(e.get("where") or ""),
-                                 **({"gone": "; ".join(missing[:3])} if missing else {})}
-    return out
-
-
-def picked_refinement(levels: Mapping[str, int], *, base_m: float, have) -> tuple[str, str]:
-    """NOTE-17: the snappyHexMesh geometry and refinementRegions entries for the picked faces' own surfaces
-    ({file stem: level}): a distance band BAND_CELLS of its own cells deep. `have(stem)`: whether its file was
-    written (an entry with no file is left out)."""
-    geom = refine = ""
-    for stem, lv in sorted(levels.items()):
-        if not have(stem):
-            continue
-        band = BAND_CELLS * float(base_m) / 2 ** int(lv)
-        geom += f" {stem}.stl {{ type triSurfaceMesh; name {stem}; }}"
-        refine += f" {stem} {{ mode distance; levels (({band:.6g} {int(lv)})); }}"
-    return geom, refine
-
-
 async def decide(ws: Path, solids: Mapping[str, list], state: Mapping, *, job_id: str = "", run=None,
                  wait_s: float = PW.TIMEOUT_S) -> dict:
     """The reading of the notes on the staged surface's parts (cad/part_words; the reading the user checked before
@@ -232,5 +155,4 @@ def decisions(got: Mapping | None, levels: Mapping | None = None) -> list[dict]:
     return out
 
 
-__all__ = ["CONSUMER", "FRAME_SHARE", "PICKED", "PURPOSE", "RULE", "decide", "decisions", "level_for", "picked_refinement",
-           "picked_surfaces", "plan", "safe", "surface_of", "words"]
+__all__ = ["CONSUMER", "PURPOSE", "RULE", "decide", "decisions", "level_for", "plan", "safe", "surface_of", "words"]

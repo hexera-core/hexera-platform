@@ -146,10 +146,30 @@ def prepare_surface(workspace, *, geometry_file: str,
             "surface_regions": list(regions)}
 
 
+#: LAD-cfd-10: the rule that meshes a wrapped skin on cfMesh with no feature edges but its patch borders.
+LAD_WRAP_NO_FEATURES = "LAD-cfd-10"
+
+
+def wrapped_skin(ws: Path) -> bool:
+    """Whether this case meshes the wrap rung's skin (the run's wrap request beside it: pipeline/cfd_wrap)."""
+    from meshpipeline.cad.surface_wrap import WRAP_REQUEST_FILE
+    return (Path(ws) / WRAP_REQUEST_FILE).exists()
+
+
 def _to_fms(ws: Path, feature_angle: float, bashrc: str) -> str:
     reason = scan_case_dicts(ws)
     if reason:
         raise ValueError(f"case dicts rejected: {reason}")
+    if wrapped_skin(ws):
+        # LAD-cfd-10: A WRAPPED SKIN HAS NO CAD EDGES. Its folds are the wrap's own creases (61 to 120 degrees at
+        # every zero-area face cfMesh left on the cooling pipe, the manifold and abc 00063643); feature edges at
+        # 30 degrees pin cfMesh's snapping to them and it collapses faces there. The named STL keeps each patch
+        # border (cfMesh keeps the edges between solids), so the openings are kept: on the pipe's skin no feature
+        # file gave the same patches, checkMesh OK, non-ortho 65.9 where 30 degrees gave 5 zero-area faces.
+        logger.info("cfMesh: the wrapped skin is meshed from its named STL with no feature edges but its "
+                    "patch borders (%s)", LAD_WRAP_NO_FEATURES)
+        (ws / "geom.fms").unlink(missing_ok=True)
+        return "geom.stl"
     fms = ws / "geom.fms"
     cmd = (f"source {bashrc} >/dev/null 2>&1 && "
            f"surfaceFeatureEdges -angle {feature_angle} geom.stl geom.fms")
@@ -342,6 +362,64 @@ def estimate_cells(*, volume: float, max_cell: float, wall_cell: float,
     return int(background + wall)
 
 
+#: Cells deep the wall's own cell reaches when no band thickness is set (cfMesh refines the cells the
+#: boundary cuts, then grades 2:1 to the background): the external model's shell depth.
+INTERNAL_SHELL_DEPTH = EXTERNAL_SHELL_DEPTH
+
+
+def internal_estimate(*, max_cell: float, wall_cell: float, thickness: float, n_layers: int,
+                      areas=None, radius=None, wall_area: float | None = None,
+                      typical_radius: float = 0.0) -> float:
+    """The cells an INTERNAL cfMesh case comes to before its narrow-passage boxes (rulebook 75): the
+    fluid at the background cell, the wall band at the wall cell, and the layers - on the measured
+    passage field (wall area and local half-width per point, gap_sizing.fill_cells: the fluid a wall
+    bounds, as a round tube holds it) when there is one, else on the staged wall's area round a tube
+    of the typical passage radius. The band is `thickness` deep (the passage caps' refinement
+    thickness), or INTERNAL_SHELL_DEPTH wall cells without one. Never the case's box volume: a vessel
+    tree's box is a hundred times its fluid."""
+    import numpy as np
+
+    from meshpipeline.engines.gap_sizing import fill_cells
+    if not (max_cell > 0.0 and wall_cell > 0.0):
+        return 0.0
+    depth = float(thickness) if thickness and thickness > 0.0 else INTERNAL_SHELL_DEPTH * float(wall_cell)
+    if areas is not None and radius is not None:
+        a = np.asarray(areas, dtype=float)
+        r = np.asarray(radius, dtype=float)
+        area = float(np.nansum(a))
+        cells = fill_cells(a, r, max_cell) + fill_cells(a, r, wall_cell, depth=depth)
+    else:
+        area = float(wall_area or 0.0)
+        r_t = float(typical_radius or 0.0)
+        if area <= 0.0:
+            return 0.0
+        fluid = area * r_t / 2.0 if r_t > 0.0 else 0.0
+        band = area * (min(depth, r_t) if r_t > 0.0 else depth)
+        cells = fluid / max_cell ** 3 + band / wall_cell ** 3
+    return float(cells + max(0, int(n_layers)) * area / wall_cell ** 2)
+
+
+def coarser_wall(priced, *, est: float, wall_cell: float, max_cell: float, limit: float,
+                 median_radius: float = 0.0, max_levels: int = 8) -> tuple[float, float, float, int]:
+    """THE WALL A LEVEL COARSER AT A TIME while the plan's estimate `est` is over `limit` (rulebook 75):
+    `priced(wall, background)` is the plan's estimate at a wall and background cell; the background
+    follows the wall once the wall reaches it. PLAN-cfd-8: a level is taken only when it cuts the
+    estimate by MIN_LEVEL_CUT or more (where the wall does not carry the count, coarsening it buys
+    nothing and loses the wall), and never past USABLE_WALL_CELLS_ACROSS across the typical passage
+    (its median radius). Returns (wall, background, estimate, levels taken)."""
+    w, m, levels = float(wall_cell), float(max_cell), 0
+    while est > limit and levels < max_levels:
+        w2 = w * 2.0
+        if median_radius > 0.0 and 2.0 * median_radius / w2 < USABLE_WALL_CELLS_ACROSS:
+            break
+        m2 = max(m, w2)
+        e2 = float(priced(w2, m2))
+        if e2 > (1.0 - MIN_LEVEL_CUT) * est:
+            break
+        w, m, est, levels = w2, m2, e2, levels + 1
+    return w, m, est, levels
+
+
 def run_guard(estimated_cells: float | None):
     """The planned work and GUARD of a cfMesh run planned to make `estimated_cells` cells
     (contracts/work_limits.PlannedWork): GUARD_FACTOR times its planned time at the slow rate,
@@ -382,6 +460,10 @@ def machine_for_plan(workspace, plan: dict | None, *, user_cells: int = 0) -> di
     if int(user_cells or 0) > MM.normal_cells():
         # RUN-9: the user's own count past the standard machine's cells runs on a VM that carries it
         decision = MM.for_cells(max(int(user_cells), cells), why="the cell count asked for")
+    elif (plan or {}).get("over_limit") and cells > MM.normal_cells():
+        # PLAN-cfd-8: an internal plan still over the standard machine once nothing more could be made coarser runs
+        # where its memory fits, never on a machine sized for its files alone (our other plans move for time only)
+        decision = MM.for_cells(cells, why="the cells the plan comes to")
     seconds = (plan or {}).get("estimated_seconds")
     decision = MM.for_time(decision, planned_s=float(seconds) if seconds else None,
                            wall_s=float(CLOUD_RUN_WALL_S))
@@ -483,6 +565,14 @@ CFMESH_CELLS_ACROSS = 15.0
 #: the reading's own scatter along a plain pipe (14.98 here, 15.02 there) boxed whole walls one
 #: level finer - 16 to 31 times the cells on five dev bends, reducers and transitions, offline.
 CFMESH_MIN_CELLS_ACROSS = CFMESH_CELLS_ACROSS - 0.5
+COARSER_PLAN_RULE = "PLAN-cfd-8"
+#: PLAN-cfd-8: a level coarser at the wall is taken only when it cuts the plan's estimate by at least this share.
+#: Where the wall carries the count a level cuts it four to eight times; abc 00063401's 210 M cells were 209.3 M
+#: of narrow-gap boxes priced at their own cells, and eight levels (0.85 mm to 218 mm) cut 0.3% of it.
+MIN_LEVEL_CUT = 0.25
+#: ...and never past this many cells across the typical passage (its median diameter over the wall cell): a
+#: passage with fewer has no flow profile left in it (63401's eighth level left 0.06 across).
+USABLE_WALL_CELLS_ACROSS = 2.0
 #: When the background cell is at most this much coarser than the band needs, the whole background
 #: is made that little finer (at most twice its cells) rather than the band a whole level finer
 #: (eight times the cells over a band that, in a tube, is most of the fluid).
@@ -587,6 +677,24 @@ def planned_cells_of(configured: dict) -> int | None:
     return int(v) if isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0 else None
 
 
+def wall_function_bore(passage_d: float, patches, port_widths: dict | None) -> float:
+    """CFDREQ-20: the bore a wall-function wall cell is chosen on (CFDREQ-18): the passage measured (twice its median
+    radius), else the inlets' widths (each lid's hydraulic diameter, the widest inlet - snappyHexMesh's bore is its
+    inlet's too), else the widest opening's. 0.0 when the case has neither."""
+    if passage_d and float(passage_d) > 0.0:
+        return float(passage_d)
+    widths: dict[str, float] = {}
+    for name, w in (port_widths or {}).items():
+        try:
+            if float(w) > 0.0:
+                widths[str(name)] = float(w)
+        except (TypeError, ValueError):
+            continue
+    inlets = [widths[str(p.get("name"))] for p in patches or []
+              if isinstance(p, dict) and str(p.get("type") or "") == "inlet" and str(p.get("name")) in widths]
+    return max(inlets or list(widths.values()) or [0.0])
+
+
 def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
                        patches: list, body_bbox, L: float,
                        domain_min, domain_max, strategy: dict | None = None,
@@ -598,7 +706,9 @@ def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
                        wall_area: float | None = None, fit_run: bool = False,
                        wall_ceiling: float | None = None,
                        accept_fewer: bool = False,
-                       port_widths: dict | None = None) -> dict:
+                       port_widths: dict | None = None,
+                       internal_wall_area: float | None = None,
+                       wake: Any = None, internal: bool = False) -> dict:
     ws = Path(workspace)
     strategy = strategy or {}
     ext = [float(domain_max[i] - domain_min[i]) for i in range(3)]
@@ -663,6 +773,25 @@ def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
             wall_cell, _band_r = float(_knobs["wall_cell"]), 0.0
             _asked_across = (_ask.req.get("controls") or {}).get("cells_across")
             max_halvings = max(int(max_halvings), math.ceil(math.log2(max(max_cell / wall_cell, 1.0))))
+        elif (_bore := wall_function_bore(_passage_d, patches, port_widths)) > 0.0 and wall_cell > 0.0:
+            # CFDREQ-18: in wall-function mode the wall cell is chosen with the first layer the y+ gives (its
+            # stack is half the wall cell here); the band's finer cells would squash it, so there is none.
+            # CFDREQ-20: on the passage measured, else on the openings' bore - a case whose passage reading did not
+            # close (no passage_radius) kept the builder's 0.7 mm wall cells and a y+ 0.5 wall
+            _n0 = max(1, int(round(_bore / wall_cell)))
+            _n_wf = CR.wall_function_bore_cells(_ask, bore_D=_bore, cells_across=_n0,
+                                                cap_rel=CR.CFMESH_STACK_REL)
+            if _n_wf < _n0:
+                wall_cell, _band_r = min(max_cell, _bore / _n_wf), 0.0
+            # CFDREQ-31: cfMesh builds its one wall-function layer at about half the cell it stands on, whatever the
+            # cap says - where the y+ layer is thinner than that the wall cell is refined to it and the background
+            # moved so the halvings land on it (a layer planned at 0.37 of a 5.87 mm cell came out 1.37 x the plan,
+            # 00134075); never coarsened (the gap plan refines a coarser wall back: 00185618 102k -> 503k cells)
+            _one = CR.cfmesh_one_layer_cells(
+                _ask, bore_D=_bore, max_cell=max_cell, wall_cell=wall_cell,
+                growth=float(strategy.get("thickness_ratio", 1.2)), min_background=((vol / (0.4 * cell_budget)) ** (1.0 / 3.0) if cell_budget else 0.0))
+            if _one is not None:
+                wall_cell, max_cell, _band_r = _one[0], _one[1], 0.0
     wall_cell = max(wall_cell, max_cell / float(2 ** max(1, int(max_halvings))))
     if snap_wall:
         # a wall size the engine chose from the budget: the octree level at or above it
@@ -681,7 +810,8 @@ def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
         fit_run = fit_run and _fit
         _ask_local, _ask_boxes, wall_cell = CR.cfmesh_local(
             _ask, patches, wall_patch, max_cell=max_cell, wall_cell=wall_cell, floor=_floor,
-            body_bbox=body_bbox, domain=(domain_min, domain_max), budget=cell_budget, roles=CR.port_roles(ws))
+            body_bbox=body_bbox, domain=(domain_min, domain_max), budget=cell_budget, roles=CR.port_roles(ws),
+            internal=internal)
     _thick = (f" refinementThickness {_caps['refinement_thickness']:.6g};" if _caps else "")
 
     # THE RUN, TIMED BEFORE IT RUNS (CELLS_PER_SECOND): the cap it gets, and - for a wall the
@@ -695,6 +825,35 @@ def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
     if _ask is not None:
         wall_cell = CR.cfmesh_fit_count(_ask, volume=vol, max_cell=max_cell, wall_cell=wall_cell,
                                         wall_area=wall_area, n_layers=max(0, int(strategy.get("n_layers", 0))))
+        # CFDREQ-13: the wall treatment's first layer fitted to the wall cell cfMesh lands on
+        # CFDREQ-16: a grown stack only where the passage has room for it (its cells across the narrowest 5%) - the
+        # wall band refined to that first when the cell budget affords it, else the plan's short stack, said
+        _p05 = float((passage_radius or {}).get("p05") or 0.0)
+        _across = (2.0 * _p05 / wall_cell) if _p05 > 0 and wall_cell > 0 else None
+        if _across is not None and _ask.treatment == "resolved" and _ask.n_layers is None \
+                and _across < CR.GROW_MIN_CELLS_ACROSS:
+            _fine = 2.0 * _p05 / CR.GROW_MIN_CELLS_ACROSS
+            _wall_a = float(internal_wall_area or wall_area or 0.0)
+            _r_t = float((passage_radius or {}).get("median") or _p05)
+            _n_grow = CR.MAX_BRIDGE_LAYERS
+            _cost = internal_estimate(max_cell=max_cell, wall_cell=octree_cell(max_cell, _fine), thickness=0.0,
+                                      n_layers=_n_grow, wall_area=_wall_a, typical_radius=_r_t)
+            import meshpipeline.settings.policy as _polg
+            _lim = int(cell_budget) if cell_budget else int(_polg.CELL_HARD_LIMIT)
+            if _wall_a > 0.0 and 0.0 < _cost <= _lim:
+                strategy = dict(strategy, wall_cell=_fine)
+                _ask.layer_note = (f"the passage is {_across:.1f} wall cells across at its narrowest: 12 are needed "
+                                   f"for a full layer stack - the wall cells were refined to "
+                                   f"{_fine * 1e3:.3g} mm for it (about {int(_cost):,} cells)")
+                logger.info("cfMesh: CFDREQ-16 - the wall band refined from %.4g to %.4g m so the passage holds %d "
+                            "cells across for the grown stack (about %d cells)", wall_cell, _fine,
+                            CR.GROW_MIN_CELLS_ACROSS, int(_cost))
+                wall_cell, _across = _fine, float(CR.GROW_MIN_CELLS_ACROSS)
+            elif _wall_a > 0.0 and _cost > _lim:
+                _ask.layer_note = (f"the passage is {_across:.1f} wall cells across at its narrowest: 12 are needed "
+                                   f"for a full layer stack - the short stack is kept: a finer mesh would need about "
+                                   f"{int(_cost):,} cells, over the {_lim:,} this run may build")
+        strategy = CR.cfmesh_layer_fit(_ask, strategy, wall_cell, cells_across=_across)
         if _asked_across:
             # the cells across the passage the octree really builds (cfMesh lands on max / 2^n), against the ask
             CR.cfmesh_cells_built(_ask, _asked_across, passage_d=_passage_d,
@@ -705,22 +864,35 @@ def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
     # back with no faces (a hot-end nozzle's 5 outlets at 19 k cells, census bucket 1b)
     from meshpipeline.engines.resolution_policy import PORT_CELLS_ACROSS
     _port_cells: dict[str, float] = {}
+    # LAD-cfd-8: an opening the port-area gate refused on the attempt before gets half its cell
+    from meshpipeline.engines.gate_facts import missed_ports
+    _missed = missed_ports(ws)
     for _pn, _pw in sorted((port_widths or {}).items()):
         try:
             _c = float(_pw) / float(PORT_CELLS_ACROSS)
         except (TypeError, ValueError):
             continue
+        if str(_pn) in _missed:
+            _c = 0.5 * min(_c, wall_cell)
         if 0.0 < _c < wall_cell and _pn != wall_patch:
             _port_cells[str(_pn)] = max(_c, _floor, max_cell / float(2 ** 12))
     _local = "".join(f"    {_pn} {{ cellSize {_c:.6g}; }}\n" for _pn, _c in _port_cells.items())
+    _picked = ""
     if _ask is not None:
         _local += _ask_local
+        # CFDREQ-34: a size typed with faces picked on the model - each picked place's own surface refined to it
+        _picked = CR.cfmesh_picked(_ask, ws, max_cell=max_cell, wall_cell=wall_cell, floor=_floor,
+                                   layers=max(0, int(strategy.get("n_layers", 0))),
+                                   box=body_bbox if body_bbox is not None else (
+                                       (domain_min, domain_max) if domain_min is not None else None))
     dict_parts = [
         _MESHDICT_HDR,
         f'surfaceFile "{surface_file}";\n',
         f"maxCellSize {max_cell:.6g};\n",
         f"localRefinement\n{{\n    {wall_patch} {{ cellSize {wall_cell:.6g};{_thick} }}\n{_local}}}\n",
     ]
+    if _picked:
+        dict_parts.append(f"surfaceMeshRefinement\n{{\n{_picked}}}\n")
     # NARROW PASSAGES, LOCALLY. The band above is sized for the passage most of the wall bounds;
     # where a passage is narrower than that cell carries at the floor, a box refines it to 13
     # across its own narrowest point - and only there (engines/passage.narrow_passage_regions).
@@ -733,6 +905,9 @@ def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
     # it comes on top of - is checked against the cell budget BEFORE cfMesh runs. The boxes used
     # to be held to half the budget and the rest dropped, to be refused at the floor after the run.
     _narrow: list = []
+    _necks: list = []                    # INS-32: the narrow spots an opening depends on
+    (Path(ws) / NECK_SPOTS_FILE).unlink(missing_ok=True)       # INS-36: this plan's spots only
+    _neck_stop = ""
     _narrow_note = ""
     _gap = None
     _base: float | None = None           # the internal fill without the boxes, when costed
@@ -789,11 +964,29 @@ def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
         if _gap.status == GS.OVER_LIMIT:
             # not even the fewest cells across fit beside the rest of the mesh (the plain mesh
             # nearly fills the limit): meshed as before gap sizing - the boxes held to half the
-            # budget - and never stopped before meshing; the gate measures the mesh
-            _narrow = list(narrow_passage_regions(
+            # budget - and never stopped before meshing; the gate measures the mesh.
+            # INS-32: but first the spots an opening (or a passage piece) reaches the rest of its
+            # passage only through get cells across them - at half the base, abc 63401's 0.25 mm
+            # slit got 0.425 mm cells, cfMesh kept the larger region and two outlets came back with
+            # no faces. What is left of the limit goes to the other spots, as before.
+            _left = 0.5 * float(cell_budget or _limit)
+            _spots = list(_regions_at(CFMESH_CELLS_ACROSS * _rung))
+            if _spots:
+                _necks, _neck_stop = neck_plan(
+                    passage_surfaces(ws, surface_file), wall_patch, _spots, wall_cell=wall_cell,
+                    base=float(_base or 0.0), limit=_limit)
+            if _necks:
+                write_neck_spots(ws, _necks)       # INS-36: a mesh that still loses the opening says them
+                _left = min(_left, float(_limit) - float(_base or 0.0)
+                            - GS.box_cost(_necks, wall_cell, whole_box=True))
+                logger.warning("cfMesh internal plan (INS-32): %d narrow spot(s) an opening depends on, "
+                               "sized first: %s%s", len(_necks),
+                               ", ".join(f"{1e3 * b['width_m']:.3g} mm" for b in _necks),
+                               f" - STOP: {_neck_stop}" if _neck_stop else "")
+            _narrow = list(_necks) + (list(narrow_passage_regions(
                 passage_field[0], passage_field[1], cell_m=wall_cell, areas=_areas,
                 target=CFMESH_CELLS_ACROSS * _rung, detect=_detect,
-                budget_cells=(0.5 * cell_budget if cell_budget else None)) or [])
+                budget_cells=_left, whole_box=True) or []) if _left > 0.0 else [])
         _narrow_note = (_gap.words(wall_cell) + (". Options: " + " ".join(
             f"({i}) {o}" for i, o in enumerate(_gap.options(), 1))
             if _gap.status in (GS.LIMITED, GS.OVER_LIMIT) else "")
@@ -806,6 +999,39 @@ def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
                      "centre": [0.5 * (b["min"][k] + b["max"][k]) for k in range(3)],
                      "lengthX": b["max"][0] - b["min"][0], "lengthY": b["max"][1] - b["min"][1],
                      "lengthZ": b["max"][2] - b["min"][2]} for i, b in enumerate(_narrow)]))
+    if _ask is not None and _narrow:
+        # CFDREQ-31: narrow passages meshed finer than the wall cell under the one wall-function layer - the y+ row
+        # says the layer there (and cfMesh's evened layer) is about half their cell, the nearest they allow
+        CR.cfmesh_thin_spot_layer(_ask, [octree_cell(max_cell, float(b["cell_needed_m"])) for b in _narrow
+                                         if b.get("cell_needed_m")])
+    _wake_boxes: list[dict] = []
+    _wake_rec = None
+    if wake is not None and max_cell > wall_cell > 0:
+        # CFDREQ-28 x PLAN-cfd-7: AN EXTERNAL CASE REFINES ITS WAKE, as snappyHexMesh's does - the shared wake plan
+        # (engines/wake_region) on cfMesh's own background cell and wall level, its boxes as objectRefinements and
+        # costed with the case. Before, cfMesh's external case had none, so it was never the same mesh as an external
+        # snappyHexMesh plan and the ladder could not move a lost layer stack to it
+        import meshpipeline.settings.policy as _polw
+        from meshpipeline.engines.ground_plane import ground_patch_name
+        from meshpipeline.engines.wake_region import plan_wake
+        _body_est = estimate_cells(volume=vol, max_cell=max_cell, wall_cell=octree_cell(max_cell, wall_cell),
+                                   wall_area=wall_area, n_layers=max(0, int(strategy.get("n_layers", 0)))) \
+            if wall_area else None
+        _wp = plan_wake(body_min=body_bbox[0], body_max=body_bbox[1], domain_min=domain_min, domain_max=domain_max,
+                        flow_axis=wake.flow_axis, base_cell=max_cell,
+                        surface_level=int(round(math.log2(max_cell / wall_cell))),
+                        budget_cells=float(cell_budget or _polw.CELL_HARD_LIMIT), knobs=wake.knobs,
+                        ruler_m=wake.ruler_m, grounded=bool(ground_patch_name(patches or [])),
+                        body_cells=float(_body_est) if _body_est else None)
+        _wake_rec = _wp.record()
+        # the same record snappyHexMesh's case leaves (its finalize reads it into the quality record)
+        (ws / "wake_refinement.json").write_text(json.dumps(_wake_rec, indent=2))
+        _wake_boxes = [{"name": f"wake{i}", "type": "box", "cellSize": t.cell_m,
+                        "centre": [0.5 * (t.box_min[k] + t.box_max[k]) for k in range(3)],
+                        "lengthX": t.box_max[0] - t.box_min[0], "lengthY": t.box_max[1] - t.box_min[1],
+                        "lengthZ": t.box_max[2] - t.box_min[2]} for i, t in enumerate(_wp.tiers)]
+        _blocks += _object_refinement_blocks(_wake_boxes)
+        logger.warning("cfMesh external wake (PLAN-cfd-7): %s", _wp.summary())
     if _blocks:
         dict_parts.append("objectRefinements\n{\n" + "\n".join(_blocks) + "\n}\n")
 
@@ -820,7 +1046,7 @@ def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
                                        n_layers=max(0, int(strategy.get("n_layers", 0))))
     _planned = _planned_total(
         base=_planned_base, narrow=_narrow, wall_cell=wall_cell, max_cell=max_cell,
-        features=[*(strategy.get("features") or []), *(_ask_boxes if _ask else [])], cell_floor=_floor)
+        features=[*(strategy.get("features") or []), *(_ask_boxes if _ask else []), *_wake_boxes], cell_floor=_floor)
     if _ask is not None and _planned:
         # CFDREQ-3: the user's count over the case's own estimate - the wall a level coarser at a time to fit it
         _w2 = CR.cfmesh_fit_planned(_ask, wall_cell=wall_cell, max_cell=max_cell, planned=_planned)
@@ -829,6 +1055,90 @@ def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
                                                   f"{wall_patch} {{ cellSize {_w2:.6g};", 1)
             _planned = int(_planned * (wall_cell / _w2) ** 2)
             wall_cell = _w2
+
+    # THE INTERNAL PLAN, PRICED BEFORE IT RUNS (rulebook 75): every flow through a part gets its cells
+    # estimated, and a plan over the run's cell budget is made coarser at the wall - one octree level
+    # at a time - before cartesianMesh starts, never found out of memory after it. A coronary tree
+    # banded at its smallest outlet asked for about 85 M cells and ran out of memory on seven machines
+    # in a row (the CFD board's failure hunt, 21 Nov). The user's own count is CFDREQ-3's, above.
+    _budget_note = ""
+    _field_areas = (passage_field[2] if passage_field is not None and len(passage_field) > 2 else None)
+    if plan is None and (bool(passage_radius) or bool(port_widths)) and (
+            internal_wall_area or _field_areas is not None):
+        import meshpipeline.settings.policy as _pol_b
+        from meshpipeline.engines.gap_sizing import box_cost
+        _user_count = _ask is not None and (_ask.user_budget() or _ask.floor is not None)
+        _thick_m = float(_caps.get("refinement_thickness") or 0.0) if _caps else 0.0
+        _n_lay = max(0, int(strategy.get("n_layers", 0)))
+        _limit = int(cell_budget) if cell_budget else int(_pol_b.CELL_HARD_LIMIT)
+        _field_r = passage_field[1] if (passage_field is not None and _field_areas is not None) else None
+
+        def _priced(w: float, m: float) -> float:
+            return (internal_estimate(max_cell=m, wall_cell=octree_cell(m, w),
+                                      thickness=_thick_m, n_layers=_n_lay,
+                                      areas=_field_areas, radius=_field_r,
+                                      wall_area=internal_wall_area,
+                                      typical_radius=float((passage_radius or {}).get("median") or 0.0))
+                    + box_cost(_narrow, w, whole_box=True))
+        _asked = max(float(_planned or 0.0), _priced(wall_cell, max_cell))
+        # a level coarser at a time: the wall first, then - once the wall is the background, as in a
+        # passage the band fills - the background with it
+        _med = float((passage_radius or {}).get("median") or 0.0)
+        w, m, est, levels = ((wall_cell, max_cell, _asked, 0) if _user_count else
+                             coarser_wall(_priced, est=_asked, wall_cell=wall_cell, max_cell=max_cell,
+                                          limit=_limit, median_radius=_med))
+        _box_cells = box_cost(_narrow, w, whole_box=True)
+        if est > _limit:
+            # what the plan still comes to, and what carries it, said plainly (the machine that carries it is
+            # chosen from this count: machine_for_plan)
+            _carry = (f"{_box_cells / 1e6:.3g} M of them in the {len(_narrow)} narrow-gap refinement"
+                      f"{'s' if len(_narrow) != 1 else ''}, refined whole at their own cells"
+                      if _box_cells >= 0.5 * est else
+                      f"the wall at {w * 1e3:.3g} mm carries most of them")
+            _over_note = (f"As planned the mesh comes to about {est / 1e6:.3g} M cells, more than the "
+                          f"{_limit / 1e6:.3g} M one standard job builds: {_carry}.")
+            logger.warning("cfMesh internal plan: %s", _over_note)
+        else:
+            _over_note = ""
+        if levels:
+            if m > max_cell:
+                dict_parts[2] = f"maxCellSize {m:.6g};\n"
+                max_cell = m
+            # every opening keeps its own cells across at the coarser wall (PLAN-cfd-2): a port the
+            # old wall cell carried may need its own cell now
+            for _pn, _pw in sorted((port_widths or {}).items()):
+                try:
+                    _c = float(_pw) / float(PORT_CELLS_ACROSS)
+                except (TypeError, ValueError):
+                    continue
+                if 0.0 < _c < w and _pn != wall_patch and str(_pn) not in _port_cells:
+                    _port_cells[str(_pn)] = max(_c, _floor, max_cell / float(2 ** 12))
+            _local = "".join(f"    {_pn} {{ cellSize {_c:.6g}; }}\n" for _pn, _c in _port_cells.items())
+            if _ask is not None:
+                _local += _ask_local
+            dict_parts[3] = f"localRefinement\n{{\n    {wall_patch} {{ cellSize {w:.6g};{_thick} }}\n{_local}}}\n"
+            _budget_note = (
+                f"The wall cells were made {levels} level{'s' if levels != 1 else ''} coarser "
+                f"({wall_cell * 1e3:.3g} mm -> {w * 1e3:.3g} mm) " + ("so the mesh fits" if est <= _limit else "to bring the mesh nearer") + f" the {_limit / 1e6:.3g} M "
+                f"cells one job builds: as planned it came to about {_asked / 1e6:.3g} M cells"
+                + (f"; about {2.0 * _med / w:.0f} cells now cross the typical passage"
+                   if _med > 0 and 2.0 * _med / w >= 1.0 else "")
+                + (f", and it is still about {est / 1e6:.3g} M" if est > _limit else "")
+                + ". To keep the finer wall, ask for a cell count in your notes.")
+            logger.warning("cfMesh internal plan: %s", _budget_note)
+            wall_cell = w
+        if _over_note:
+            _budget_note = (_budget_note + " " + _over_note).strip()
+        _planned = est
+        seconds = est / CELLS_PER_SECOND
+        plan = {"estimated_cells": int(est), "cells_per_second": CELLS_PER_SECOND,
+                "estimated_seconds": round(seconds, 1), "run_cap_s": run_cap_for(seconds),
+                "fits": fits_one_run(seconds), "wall_cell": wall_cell, "guard": run_guard(est).as_dict(),
+                "priced": "internal",
+                **({"coarsened_levels": levels, "cells_before": int(_asked)} if levels else {}),
+                **({"note": _budget_note} if _budget_note else {}),
+                **({"box_cells": int(_box_cells)} if _box_cells else {}),
+                **({"over_limit": True} if est > _limit else {})}
 
     n_layers = max(0, int(strategy.get("n_layers", 0)))
     if n_layers > 0:
@@ -850,9 +1160,14 @@ def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
         _entries = "".join(
             f"        {w}\n        {{ nLayers {n_layers}; thicknessRatio {ratio:g};"
             f"{first_line} allowedDiscontinuity 0; }}\n" for w in dict.fromkeys(_walls))
+        # CFDREQ-30: the layer optimiser's parameters in full - its relThicknessTol is what holds a layer to
+        # the height asked (one layer is otherwise ~0.63 of the wall cell, whatever maxFirstLayerThickness says)
+        from meshpipeline.engines.cfd_requirements import CFMESH_LAYER_OPTIMISATION
+        _opt = " ".join(f"{k} {v:g};" for k, v in CFMESH_LAYER_OPTIMISATION.items())
         dict_parts.append(
             "boundaryLayers\n{\n    patchBoundaryLayers\n    {\n" + _entries
-            + "    }\n    optimiseLayer 1;\n    untangleLayers 1;\n}\n")
+            + "    }\n    optimiseLayer 1;\n    optimisationParameters { " + _opt + " }\n"
+            + "    untangleLayers 1;\n}\n")
 
     # renameBoundary: every contract patch → its OpenFOAM type. The solids in
     # geom.fms are named for the contract (prepare_surface), so the mesh's final
@@ -888,6 +1203,16 @@ def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
     # cells runs on a VM that carries them
     machine_for_plan(ws, plan, user_cells=int(cell_budget or 0) if _ask is not None and (
         _ask.user_budget() or _ask.floor is not None) else 0)
+    # CFDREQ-36: a picked place's refinement (cfd_requirements.cfmesh_picked) is in the cells the run is planned
+    # at, so the size brake measures the octree against what the entry really makes
+    _pk_cells = float(getattr(_ask, "picked_cells", 0.0) or 0.0) if _ask is not None else 0.0
+    if _pk_cells > 0.0:
+        if _planned:
+            _planned = int(float(_planned) + _pk_cells)
+        if plan is not None and plan.get("estimated_cells"):
+            plan["estimated_cells"] = int(float(plan["estimated_cells"]) + _pk_cells)
+            _secs = plan["estimated_cells"] / CELLS_PER_SECOND
+            plan.update(estimated_seconds=round(_secs, 1), run_cap_s=run_cap_for(_secs), fits=fits_one_run(_secs))
     if plan is not None:
         _plan_path.write_text(json.dumps({k: v for k, v in plan.items() if k != "wall_cell"}))
     else:
@@ -898,15 +1223,342 @@ def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
     return {"max_cell_size": round(max_cell, 6), "wall_cell_size": round(wall_cell, 6),
             "n_layers": n_layers, "features": len(strategy.get("features") or []),
             "est_background_cells": est_bg,
+            **({"wake_refinement": _wake_rec} if _wake_rec is not None else {}),
             **({"planned_cells": int(_planned)} if _planned else {}),
             **({"run_plan": {k: v for k, v in plan.items() if k != "wall_cell"}} if plan else {}),
             "passage_caps": {k: round(v, 6) for k, v in _caps.items()} or None,
             "narrow_regions": [{"cell_size": round(b["cell_needed_m"], 6),
                                 "radius": round(b["radius_m"], 6)} for b in _narrow] or None,
             **({"narrow_note": _narrow_note} if _narrow_note else {}),
+            **({"budget_note": _budget_note} if _budget_note else {}),
             **({"port_cells": {k: round(v, 6) for k, v in _port_cells.items()}}
                if _port_cells else {}),
-            **({"gap_plan": _gap.record()} if _gap is not None and _gap.spots else {})}
+            **({"gap_plan": _gap.record()} if _gap is not None and _gap.spots else {}),
+            **({"neck_spots": [{"width_mm": round(1e3 * float(b["width_m"]), 4),
+                                "cell_size": round(b["cell_needed_m"], 7),
+                                "openings": [n or "passage piece" for n in b["neck_of"]],
+                                "rule": NECK_RULE} for b in _necks]}
+               if _necks else {}),
+            **({"neck_stop": _neck_stop} if _neck_stop else {})}
+
+
+#: INS-32: cells across a narrow spot an opening (or a passage piece) reaches the rest of its passage
+#: only through - its own width / 3: enough for cfMesh to keep the two sides one region
+NECK_CELLS_ACROSS = 3.0
+#: INS-33: when the needed spots do not fit the limit at NECK_CELLS_ACROSS, they are coarsened in
+#: steps of NECK_COARSEN_STEP cells across, never to fewer than NECK_CELLS_ACROSS_MIN across the gap
+NECK_CELLS_ACROSS_MIN = 2.0
+NECK_COARSEN_STEP = 0.25
+NECK_TIGHT_RULE = "INS-33"
+NECK_RULE = "INS-32"
+#: INS-38: two needed spots the walk read as touching get a box across the hole their boxes leave (_neck_bridges)
+NECK_RULE_WALKED = "INS-38"
+#: INS-32: the three ways out of a plan stopped at a gap it cannot afford (the user's result says them)
+NECK_WAYS_OUT = "Widen or close that gap in the CAD, allow more cells, or drop that opening."
+#: INS-36: a mesh built that still lost an opening is refused in the plan-time stop's own words (neck_words)
+NECK_AFTER_BUILD_RULE = "INS-36"
+#: INS-36: the plan's needed narrow spots, beside the case: width, where, and the openings that hang on each
+NECK_SPOTS_FILE = "system/neck_spots.json"
+
+
+def neck_words(named: list, width_m: float, where_m=None) -> str:
+    """THE ONE SENTENCE for an opening that hangs on a narrow gap (INS-32 at plan time, INS-36 after a build): who,
+    the gap's width and, when measured, where it is."""
+    named = [str(n) for n in named or () if n]
+    who = " and ".join(named) if named else "A piece of the passage"
+    at = ""
+    if where_m is not None:
+        at = " (near x {:.1f}, y {:.1f}, z {:.1f} mm)".format(*(1e3 * float(v) for v in where_m))
+    return (f"{who} {'reach' if len(named) > 1 else 'reaches'} the rest of its passage only through a gap about "
+            f"{float(width_m) * 1e3:.2g} mm wide{at}")
+
+
+def _centre(box: dict):
+    try:
+        return [0.5 * (float(box["min"][k]) + float(box["max"][k])) for k in range(3)]
+    except (KeyError, TypeError, ValueError, IndexError):
+        return None
+
+
+def write_neck_spots(ws: Path, boxes: list) -> None:
+    """INS-36: the plan's needed narrow spots beside the case (never raises)."""
+    try:
+        (Path(ws) / NECK_SPOTS_FILE).write_text(json.dumps(
+            [{"width_m": float(b["width_m"]), "where_m": _centre(b),
+              "openings": [n for n in b.get("neck_of") or [] if n]} for b in boxes]))
+    except (OSError, KeyError, TypeError, ValueError):
+        logger.warning("cfMesh internal: INS-36 neck spots not recorded", exc_info=True)
+
+
+def after_build_refusal(ws: Path):
+    """INS-36: A MESH WAS BUILT AND AN OPENING HAS NO FACES. The refusal the run ends with, in the plan-time stop's
+    words (neck_words, NECK_WAYS_OUT, neck_stop_refusal): the opening, the narrowest gap on its way (width and where,
+    from the plan's measured spots), what WAS built (the openings in the mesh with faces) and the ways out. None when
+    the case has no declared passages' openings to read, or every opening has faces."""
+    from meshpipeline.cad.fluid_passages import PASSAGES_FILE
+    from meshpipeline.engines.cfmesh.rescue import faced_patches
+    ws = Path(ws)
+    try:
+        spec = json.loads((ws / PASSAGES_FILE).read_text())
+        ports = [str(p) for group in spec.get("ports") or [] for p in group or []]
+    except (OSError, ValueError, AttributeError, TypeError):
+        return None
+    faced = faced_patches(ws / "constant" / "polyMesh")
+    if not ports or faced is None:
+        return None
+    lost = [p for p in ports if p not in faced]
+    built = [p for p in ports if p in faced]
+    if not lost:
+        return None
+    why, ways = lost_opening_words(ws, lost, built)
+    return neck_stop_refusal(why, after_build=True, ways_out=ways)
+
+
+#: INS-37: the ways out of a lost opening where no narrow spot on its way was measured (no gap is named)
+LOST_OPENING_WAYS_OUT = "Allow more cells, check that opening on the geometry stage, or drop that opening."
+#: INS-37: a single-passage cfMesh mesh that lost an opening is told in INS-36's words (lost_opening_words)
+LOST_OPENING_RULE = "INS-37"
+
+
+def lost_opening_words(ws: Path, lost: list, built: list) -> tuple[str, str]:
+    """INS-36 / INS-37: (the sentence, the ways out) for a mesh that was built with the openings `lost` at no faces and
+    `built` with faces. The narrowest gap the plan measured on their way (NECK_SPOTS_FILE: neck_words, width and where)
+    when there is one; else the openings and what is in the mesh, with no gap named."""
+    lost, built = [str(n) for n in lost if n], [str(n) for n in built if n]
+    try:
+        spots = json.loads((Path(ws) / NECK_SPOTS_FILE).read_text())
+    except (OSError, ValueError):
+        spots = []
+    mine = [s for s in spots if isinstance(s, dict) and set(s.get("openings") or ()) & set(lost)]
+    tight = min(mine, key=lambda s: float(s.get("width_m") or 1e9)) if mine else None
+    held = f" In the mesh with its faces: {', '.join(built)}." if built else ""
+    if tight is None:
+        return (f"the mesh was built, but {' and '.join(lost)} came out with no faces: the mesher kept no cells where "
+                f"{'they open' if len(lost) > 1 else 'it opens'}.{held}", LOST_OPENING_WAYS_OUT)
+    named = [n for n in lost if n in (tight.get("openings") or ())]
+    rest = [n for n in lost if n not in named]
+    head = neck_words(named, float(tight["width_m"]), tight.get("where_m"))
+    return (f"{head}; the mesh was built, but the mesher kept no cells across that gap, so "
+            f"{' and '.join(named)} came out with no faces."
+            + (f" Also without faces: {', '.join(rest)}." if rest else "") + held, NECK_WAYS_OUT)
+
+
+def lost_opening_facts(ws: Path, lost: list, built: list) -> dict:
+    """INS-37: the facts a manifest refusal of a single-passage mesh that lost an opening carries, so the user's result
+    says INS-36's words (failure_cause: plan_stop, after_build, ways_out). No port_region_dropped: the retry that
+    refines a missed opening (LAD-cfd-8, gate_facts.missed_ports) and the wrap rung still follow as before."""
+    why, ways = lost_opening_words(ws, lost, built)
+    return {"plan_stop": why, "ways_out": ways, "after_build": True, "rule": LOST_OPENING_RULE}
+
+
+def passage_surfaces(ws: Path, surface_file: str) -> list[dict]:
+    """Each passage's closed surface, {patch: triangles}: the case's own STL and every further passage's
+    (`_passages/p<k>/geom.stl`, listed in PASSAGES_FILE). A surface that does not read is left out."""
+    from meshpipeline.cad.fluid_passages import PASSAGES_FILE
+    first = Path(ws) / surface_file
+    # a surface cartesianMesh reads as .fms was staged as geom.stl first (_to_fms)
+    paths = [first if first.suffix.lower() == ".stl" else Path(ws) / "geom.stl"]
+    try:
+        paths += [Path(ws) / str(r) / "geom.stl"
+                  for r in json.loads((Path(ws) / PASSAGES_FILE).read_text()).get("runs") or []]
+    except (OSError, ValueError, AttributeError):
+        pass
+    out = []
+    for p in paths:
+        if p.suffix.lower() != ".stl" or not p.is_file():
+            continue
+        try:
+            out.append(read_stl_solids(p))
+        except Exception:  # noqa: BLE001 - a sizing aid, never a failure
+            logger.warning("cfMesh internal: passage surface %s not read for INS-32", p, exc_info=True)
+    return out
+
+
+def neck_plan(surfaces: list, wall_patch: str, spots: list, *, wall_cell: float, base: float,
+              limit: float) -> tuple[list, str]:
+    """INS-32: THE NARROW SPOTS AN OPENING CANNOT LOSE, sized first. Of the measured narrow spots
+    `spots` (gap sizing's boxes at the full count), the ones an opening - or a sizeable piece of its
+    passage - reaches the rest of its passage only through (cad/inside_space.opening_necks, on each
+    passage's surface in `surfaces`), each boxed at its own width / NECK_CELLS_ACROSS, the box padded
+    by two of its own cells on every side so a cell lies across the gap.
+
+    Each box is held tight round the gap itself (_neck_boxes). When they do not fit the cell `limit`
+    on top of the `base` fill they are coarsened NECK_COARSEN_STEP cells across at a time, never to
+    fewer than NECK_CELLS_ACROSS_MIN across. Returns (those boxes, "") when they fit, or (them at the
+    fewest cells across, the plain sentence that stops the plan) when not even they do: the opening,
+    the gap's width, the cells it needs, and what the user can change. ([], "") when no opening
+    depends on a spot."""
+    from meshpipeline.cad.inside_space import opening_necks
+    from meshpipeline.engines.gap_sizing import box_cost
+    need = NECK_CELLS_ACROSS * float(wall_cell)
+    found: dict[int, dict] = {}
+    for solids in surfaces or ():
+        try:
+            recs = opening_necks(solids, wall_patch, spots, need_m=need)
+        except Exception:  # noqa: BLE001 - a sizing aid: the plan stands as before
+            logger.warning("cfMesh internal: INS-32 neck reading failed", exc_info=True)
+            continue
+        for r in recs:
+            got = found.setdefault(int(r["box"]), {**r, "openings": []})
+            got["openings"] += [n for n in r["openings"] if n not in got["openings"]]
+            for key, pick in (("walk_min", min), ("walk_max", max)):   # INS-38: what each passage's walk meshed
+                if r.get(key) is not None and got.get(key) is not None:
+                    got[key] = [pick(float(a), float(b)) for a, b in zip(got[key], r[key], strict=True)]
+    if not found:
+        return [], ""
+    across = NECK_CELLS_ACROSS
+    while True:
+        boxes = _neck_boxes(found, spots, wall_cell, across)
+        if not boxes:
+            return [], ""
+        total = float(base or 0.0) + box_cost(boxes, wall_cell, whole_box=True)
+        if total <= float(limit):
+            return boxes, ""
+        if across - NECK_COARSEN_STEP < NECK_CELLS_ACROSS_MIN - 1e-9:
+            break
+        across -= NECK_COARSEN_STEP
+    tight = min(boxes, key=lambda b: b["width_m"])
+    return boxes, (f"{neck_words(tight['neck_of'], tight['width_m'], _centre(tight))}; meshing across it needs about "
+                   f"{total / 1e6:.3g} M cells even at {across:g} cells across the gap, over the "
+                   f"{float(limit) / 1e6:.3g} M limit. {NECK_WAYS_OUT}")
+
+
+def neck_stop_refusal(why: str, *, after_build: bool = False, ways_out: str = NECK_WAYS_OUT):
+    """INS-32's plan-time stop as the refusal the run records: a dropped opening (PATCH_NOT_CAPTURED
+    with port_region_dropped, so no wrap rung follows: LAD-cfd-12), decided before any mesher
+    started. Its facts carry the stop's own sentence and its ways out, which the user's result says
+    (failure_cause.describe) - never a boundary that "came out with no faces" from a mesher that
+    never started. `after_build` (INS-36): the same refusal for a mesh that was built and still lost the
+    opening - it stands over that mesh (pipeline/executor), never a manifest error."""
+    from meshpipeline.contracts.failure_cause import FailureCause
+    from meshpipeline.engines.preflight import PreflightRefusal
+    stop = why.replace(ways_out, "").strip()
+    return PreflightRefusal(
+        gate="finalize", cause=FailureCause.PATCH_NOT_CAPTURED.value,
+        builder_text=f"[PORT_REGION_DROPPED] {stop} {ways_out}",
+        facts={"port_region_dropped": True, "deterministic": True, "ladder_exhausted": True,
+               "before_meshing": not after_build, "meshers_started": 1 if after_build else 0,
+               **({"after_build": True, "rule": NECK_AFTER_BUILD_RULE} if after_build else {}),
+               "plan_stop": stop, "ways_out": ways_out})
+
+
+def wrap_opening_lost(ws: Path, t: dict, declaration: list) -> dict | None:
+    """LAD-cfd-14: THE WRAPPED SKIN CANNOT HOLD AN OPENING WHERE THE USER SAID IT IS. Of the openings the wrap
+    rung had to place on a wall (LAD-cfd-6, the staged record's facts["wrap"]), those placed farther than their
+    own size from where they are drawn (surface_wrap.moved_beyond_own_size) whose drawn place a declared
+    location lies within that size of: the declared ports could never bind there (port_binding's location
+    rule), so the attempt ends now - recorded once as its staging refusal, the opening named - never a
+    configure the builder repeats. None when every opening stands (a placement with no stated location is
+    delivered with LAD-cfd-6's concern, as before)."""
+    import numpy as np
+
+    from meshpipeline.cad.internal_surface import STAGING_GATE
+    from meshpipeline.cad.surface_wrap import RULE_OPENING_LOST, moved_beyond_own_size, opening_lost_words
+    from meshpipeline.contracts.failure_cause import FailureCause
+    from meshpipeline.engines.preflight import PreflightRefusal
+    if not t.get("wrapped"):
+        return None
+    words: list[str] = []
+    for q in moved_beyond_own_size((t.get("facts") or {}).get("wrap") or {}):
+        c = np.asarray(q["drawn_centre_m"], dtype=float)
+        named = [(float(np.linalg.norm(np.asarray(p["near_mm"], dtype=float) / 1e3 - c)), str(p.get("name") or ""))
+                 for p in declaration or [] if isinstance(p, dict) and p.get("near_mm") is not None]
+        near = [n for d, n in sorted(named) if d <= float(q["size_m"])]
+        if near:
+            words.append(opening_lost_words(q, near[0]))
+    if not words:
+        return None
+    reason = "The surface could not be wrapped: " + "; ".join(words) + "."
+    PreflightRefusal(
+        gate=STAGING_GATE, cause=FailureCause.NOT_BUILT.value,
+        builder_text=f"[STAGING_FAILED] cfmesh: {reason}",
+        facts={"engine": "cfMesh", "stage": "staging", "reason": reason, "deterministic": True, "ours": False,
+               "before_meshing": True, "rule": RULE_OPENING_LOST}).write(ws)
+    logger.warning("cfMesh internal (%s): %s", RULE_OPENING_LOST, reason)
+    return _opening_lost_reply(reason)
+
+
+def _opening_lost_reply(reason: str) -> dict:
+    return {"success": False, "error": reason,
+            "next": "Do NOT run_mesh and do NOT reconfigure: the wrapped surface cannot hold this opening. "
+                    "Relay this to the user verbatim and end your turn."}
+
+
+def opening_lost_said(ws: Path) -> dict | None:
+    """LAD-cfd-14: this attempt already recorded that the wrap cannot hold a declared opening: a configure
+    called again says it again without wrapping the same fluid a second time (abc 99768: 2.7 min each)."""
+    from meshpipeline.cad.internal_surface import STAGING_GATE
+    from meshpipeline.cad.surface_wrap import RULE_OPENING_LOST
+    from meshpipeline.engines.preflight import read_refusal
+    ref = read_refusal(ws)
+    if ref is None or ref.gate != STAGING_GATE or (ref.facts or {}).get("rule") != RULE_OPENING_LOST:
+        return None
+    return _opening_lost_reply(str((ref.facts or {}).get("reason") or ""))
+
+
+def _neck_boxes(found: dict, spots: list, wall_cell: float, across: float) -> list[dict]:
+    """INS-33: INS-32's boxes at `across` cells across each needed gap: held tight round the gap itself (its
+    own extent along the way through it, `gap_min` / `gap_max` from opening_necks, inside the spot's
+    box) - not the whole box gap sizing grouped it in - padded by two of its own cells on every side
+    so a cell lies across the gap. A gap whose extent did not read keeps its spot's box. Two spots the
+    walk read as touching whose boxes do not meet get a box across the hole between them (INS-38,
+    _neck_bridges)."""
+    boxes = []
+    for i, r in sorted(found.items()):
+        w = float(r["width_m"])
+        # never held to the passage floor (40 across the measured narrowest passage, not 3 across
+        # this gap), as no narrow-passage box is
+        c = w / across
+        if not 0.0 < c < float(wall_cell):
+            continue
+        s = spots[i]
+        lo = [float(s["min"][k]) for k in range(3)]
+        hi = [float(s["max"][k]) for k in range(3)]
+        tight = False
+        if r.get("gap_min") is not None and r.get("gap_max") is not None:
+            g_lo = [max(lo[k], float(r["gap_min"][k])) for k in range(3)]
+            g_hi = [min(hi[k], float(r["gap_max"][k])) for k in range(3)]
+            if all(g_lo[k] < g_hi[k] for k in range(3)):
+                lo, hi, tight = g_lo, g_hi, True
+        boxes.append({"min": [lo[k] - 2.0 * c for k in range(3)],
+                      "max": [hi[k] + 2.0 * c for k in range(3)],
+                      "radius_m": float(s["radius_m"]), "cell_m": c, "cell_needed_m": c, "level_bump": 0,
+                      "width_m": w, "cells_across": across, "tight": tight, "rule": NECK_TIGHT_RULE,
+                      "neck_of": list(r["openings"]), "layer_cells": s.get("layer_cells"),
+                      # the cubes it stands for: a tight box its gap's own cubes, else the spot's whole cubes
+                      "_walk": ((r.get("gap_min"), r.get("gap_max")) if tight else
+                                (r.get("walk_min"), r.get("walk_max")))})
+    return [{k: v for k, v in b.items() if k != "_walk"} for b in boxes + _neck_bridges(boxes)]
+
+
+def _touch(a_lo, a_hi, b_lo, b_hi) -> bool:
+    return all(float(a_lo[k]) <= float(b_hi[k]) + 1e-12 and float(b_lo[k]) <= float(a_hi[k]) + 1e-12
+               for k in range(3))
+
+
+def _neck_bridges(boxes: list) -> list[dict]:
+    """INS-38: A BOX ACROSS EACH HOLE THE WALK DID NOT SEE. opening_necks reads a spot as the whole cubes its
+    box touches (`_walk`: walk_min / walk_max), so two needed spots whose cubes touch read as one chain
+    even where their boxes stop short of each other inside a cube (a measured spot ends at its last
+    surface point, a point's spacing short of the next spot along the same gap). For each such pair
+    whose mesh boxes do not meet, the box between them (each side's overlap where they overlap, the
+    hole where they do not), padded by two of the finer cell into both, at the finer of the two."""
+    out = []
+    for i, a in enumerate(boxes):
+        for b in boxes[i + 1:]:
+            (wa_lo, wa_hi), (wb_lo, wb_hi) = a.get("_walk") or (None, None), b.get("_walk") or (None, None)
+            if None in (wa_lo, wa_hi, wb_lo, wb_hi) or not _touch(wa_lo, wa_hi, wb_lo, wb_hi):
+                continue
+            if _touch(a["min"], a["max"], b["min"], b["max"]):
+                continue
+            fine = a if a["cell_m"] <= b["cell_m"] else b
+            c = float(fine["cell_m"])
+            lo = [min(max(a["min"][k], b["min"][k]), min(a["max"][k], b["max"][k])) - 2.0 * c for k in range(3)]
+            hi = [max(max(a["min"][k], b["min"][k]), min(a["max"][k], b["max"][k])) + 2.0 * c for k in range(3)]
+            out.append({**{k: v for k, v in fine.items() if k != "_walk"}, "min": lo, "max": hi, "tight": False,
+                        "rule": NECK_RULE_WALKED, "bridge": True,
+                        "neck_of": list(dict.fromkeys([*a["neck_of"], *b["neck_of"]]))})
+    return out
 
 
 def _bind_intake_shared(t: dict, declaration: list, *, bore: bool = True):
@@ -1014,7 +1666,8 @@ def _stage_passages(ws: Path, srcs: dict, wall_key: str, declaration: list | Non
         return {"error": why[0].upper() + why[1:],
                 "next": "Relay this to the user verbatim - only they can say which openings are "
                         "real. Do NOT retry with a different strategy."}
-    if not plan.left_out and not plan.several:
+    if not plan.left_out and not plan.several and not plan.no_inlet:
+        # (INS-40: a passage left unmeshed for having no inlet is taken off the staged surface here too)
         return unchanged
     from meshpipeline.cad.fluid_passages import passage_surfaces
     from meshpipeline.cad.stl_io import _write_solid
@@ -1064,6 +1717,9 @@ def _configure_internal(workspace, *, strategy: dict, wall_patch: str,
         # openings the user confirmed on it - lids on open ends, the capped faces of a fluid body
         return stage_internal_surface(staged.path, ws / "_internal_stls", intake_patches=_decl)
 
+    _said = opening_lost_said(ws)
+    if _said is not None:
+        return _said
     if not solid.exists() and not Path(staged.path).exists():
         return {"success": False,
                 "error": f"the staged surface ({Path(staged.path).name}) is missing from the "
@@ -1073,14 +1729,15 @@ def _configure_internal(workspace, *, strategy: dict, wall_patch: str,
     try:
         if solid.exists():
             try:
+                from meshpipeline.engines.workspace_facts import fluid_solid_of
                 from meshpipeline.engines.workspace_facts import read_input_kind as _kind
                 t = tessellate_internal(solid, ws / "_internal_stls", prepared=prepared_state,
                                         opening_faces=args.get("opening_faces") or None,
                                         declared_ports=declaration_targets(_decl),
                                         # a DECLARED fluid domain: its touching solids are one
-                                        # fluid (cad_tessellate._fluid_union)
-                                        fluid_solid=(True if _kind(workspace) == "fluid-domain"
-                                                     else None))
+                                        # fluid (cad_tessellate._fluid_union); anything else is a
+                                        # body, read as snappy reads it (workspace_facts.fluid_solid_of)
+                                        fluid_solid=fluid_solid_of(_kind(workspace)))
             except BindError:
                 raise
             except Exception as exc:  # noqa: BLE001 - the solid's own surface is tried next
@@ -1104,6 +1761,9 @@ def _configure_internal(workspace, *, strategy: dict, wall_patch: str,
                 "next": "Relay this to the user verbatim - the declaration needs a size, "
                         "location or interchangeability answer only they can give. Do NOT "
                         "retry with invented values."}
+    _lost = wrap_opening_lost(ws, t, _decl)        # LAD-cfd-14: before the ports are bound to the wrap
+    if _lost is not None:
+        return _lost
     # the fluid is the solid itself only for a confirmed fluid domain; anything else is a body
     # whose fluid is the bore it closes (which measure of a ring port the flow crosses)
     from meshpipeline.engines.workspace_facts import read_input_kind
@@ -1193,8 +1853,18 @@ def _configure_internal(workspace, *, strategy: dict, wall_patch: str,
         domain_min=bb_min, domain_max=bb_max, strategy=strategy, cell_budget=cell_budget,
         passage_radius=passage_radius, passage_field=_field,
         accept_fewer=accepted_fewer(read_engine_params(workspace)),
-        port_widths=_port_widths)
+        port_widths=_port_widths, internal_wall_area=_wall_area_of(_staged["sizing"], _wall_key), internal=True)
+    if summary.get("neck_stop"):
+        # INS-32: an opening reaches its passage only through a gap whose cells do not fit the limit -
+        # said at plan time, with what the user can change, never found as a zero-face patch after an
+        # hour; recorded as the dropped-opening refusal, so no wrap rung follows (LAD-cfd-12)
+        _why = str(summary["neck_stop"])
+        neck_stop_refusal(_why).write(workspace)
+        return {"success": False, "error": _why, **summary,
+                "next": "Do NOT run_mesh and do NOT reconfigure: no setting of this plan fits that gap. Relay "
+                        "this to the user verbatim and end your turn."}
     _sizes = list((t.get("binding") or {}).get("size_notes") or [])
+    _budget = summary.get("budget_note")
     return {"success": True, "wrote": ["system/meshDict"], "topology": "internal",
             "openings": t.get("openings"), "passage_radius": passage_radius, **summary,
             **({"port_sizes": _sizes} if _sizes else {}),
@@ -1205,7 +1875,29 @@ def _configure_internal(workspace, *, strategy: dict, wall_patch: str,
                      + ("Tell the user, in these words, that a declared port size disagrees with "
                         "the geometry and the measured opening is used: " + " ".join(_sizes) + " "
                         if _sizes else "")
+                     + (f"Tell the user, in these words: {_budget} " if _budget else "")
                      + "Call run_mesh NOW. Reconfigure ONLY on a concrete run_mesh failure.")}
+
+
+def _wall_area_of(sizing: dict, wall_key: str) -> float | None:
+    """The staged wall's area (m2), every passage's wall included: what the internal plan prices its
+    wall band and layers on when no passage field reads. None when it cannot be read."""
+    try:
+        import numpy as np
+
+        from meshpipeline.cad.stl_io import read_stl_triangles
+        src = (sizing or {}).get(wall_key)
+        paths = src if isinstance(src, (list, tuple)) else [src]
+        total = 0.0
+        for p in paths:
+            if p and Path(str(p)).exists():
+                tri = np.asarray(read_stl_triangles(Path(str(p))), dtype=float).reshape(-1, 3, 3)
+                total += 0.5 * float(np.linalg.norm(np.cross(tri[:, 1] - tri[:, 0],
+                                                             tri[:, 2] - tri[:, 0]), axis=1).sum())
+        return total or None
+    except Exception:  # noqa: BLE001 - an estimate we cannot make leaves the case as planned
+        logger.warning("cfMesh internal: the staged wall's area was not read", exc_info=True)
+        return None
 
 
 def _clear_run_too_long(workspace) -> None:
@@ -1296,6 +1988,16 @@ def with_requested_layers(workspace, strategy: dict | None) -> tuple[dict, dict]
     return strategy, {"layers_requested": stated}
 
 
+def _external_wake_request(workspace, strategy: dict):
+    """CFDREQ-28 x PLAN-cfd-7: the wake this external case refines - the plan's wake knobs, the declared flow axis and
+    reference length, as snappyHexMesh's case reads them (engines/wake_region.WakeRequest)."""
+    from meshpipeline.engines.wake_region import WakeRequest
+    from meshpipeline.engines.workspace_facts import read_far_field_request
+    req = read_far_field_request(workspace) or {}
+    return WakeRequest(knobs=(strategy or {}).get("wake"), flow_axis=req.get("flow_axis"),
+                       ruler_m=(strategy or {}).get("reference_length_m") or req.get("reference_length_m"))
+
+
 def _configure_external_3d(workspace, *, geometry_file: str, strategy: dict, wall_patch: str,
                            contract_patches: list, args: dict, cell_budget: int,
                            surface=None) -> dict:
@@ -1307,9 +2009,30 @@ def _configure_external_3d(workspace, *, geometry_file: str, strategy: dict, wal
         dmin, dmax = args["domain_min"], args["domain_max"]
     else:
         from meshpipeline.engines.workspace_facts import read_far_field_request, read_request_txt
-        dmin, dmax = domain_from_strategy(body_bbox, analysis["L"], strategy,
-                                          request={**read_far_field_request(workspace),
-                                                   "request_txt": read_request_txt(workspace)})
+        _req = {**read_far_field_request(workspace), "request_txt": read_request_txt(workspace)}
+        dmin, dmax = domain_from_strategy(body_bbox, analysis["L"], strategy, request=_req)
+        from meshpipeline.engines.ground_plane import ground_patch_name
+        if not (ground_patch_name(contract_patches or []) or any(
+                str((p or {}).get("type") or "").lower() in ("symmetry", "symmetryplane")
+                for p in (contract_patches or []))):
+            # PLAN-cfd-6: the cross-section widened until the body blocks at most 3% of it (a free body only: a
+            # floor or a symmetry plane stays where it is declared, so such a box is left as planned)
+            from meshpipeline.engines.far_field import (
+                blockage_words,
+                flow_axis_of,
+                grow_for_blockage,
+                projected_areas_of,
+                ruler_of,
+            )
+            _areas = projected_areas_of(Path(workspace) / geometry_file)
+            _ax, _ = flow_axis_of(_req.get("flow_axis"))
+            if _areas:
+                dmin, dmax = list(dmin), list(dmax)
+                _rec = grow_for_blockage(dmin, dmax, _ax, _areas[_ax], ruler_m=ruler_of(
+                    body_bbox[0], body_bbox[1], _req.get("flow_axis"),
+                    strategy.get("reference_length_m") or _req.get("reference_length_m")))
+                if _rec is not None:
+                    logger.warning("far field: %s", blockage_words(_rec))
     from meshpipeline.engines.declared_boundary import body_walls, farfield_name
     _patches = list(contract_patches or [])
     _farfield = farfield_name(_patches)
@@ -1334,7 +2057,8 @@ def _configure_external_3d(workspace, *, geometry_file: str, strategy: dict, wal
         patches=_patches, body_bbox=prep["body_bbox"], L=analysis["L"],
         domain_min=dmin, domain_max=dmax, strategy=strategy, cell_budget=cell_budget,
         max_halvings=EXTERNAL_MAX_HALVINGS, snap_wall=_sized_here,
-        wall_area=float(analysis.get("surface_area") or 0.0) or None, fit_run=_sized_here)
+        wall_area=float(analysis.get("surface_area") or 0.0) or None, fit_run=_sized_here,
+        wake=_external_wake_request(workspace, strategy))
     plan = summary.get("run_plan") or {}
     if plan and not plan.get("fits"):
         # A RUN THAT WOULD CLEARLY NOT FINISH is not started: it is refused here, in seconds, with

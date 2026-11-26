@@ -55,3 +55,36 @@ def test_few_points_stay_on_one_core_and_many_never_pass_the_pinned_threads(monk
     assert RC.workers_for(60_000) == 3
     monkeypatch.setattr(RC.os, "sched_getaffinity", lambda pid: {0, 1})
     assert RC.workers_for(60_000) == 2
+
+
+def test_the_rays_are_planned_work_and_the_field_holds(duct, monkeypatch):
+    """TIME-7: at most MAX_POINT_RAYS points cast their own ray (an even share), the rest borrow the nearest
+    reading - a fuel tank sat 81 minutes casting one per point. The field read from a quarter of the rays stays
+    within a few percent of the full one on the wavy duct, and the sampled casting is the same on 1 or 4 cores."""
+    from meshpipeline.engines import radius_field as RF
+    points, faces = duct
+    full = _field(points, faces)
+    casts: list[int] = []
+    real = RC.cast
+
+    def counting(*a, **k):
+        casts.append(len(a[-1]))
+        return real(*a, **k)
+
+    monkeypatch.setattr(RC, "cast", counting)
+    monkeypatch.setattr(RF, "MAX_POINT_RAYS", len(points) // 4)
+    monkeypatch.setattr(RC, "workers_for", lambda n: 1)
+    one = _field(points, faces)
+    assert sum(casts) <= len(points) // 4 + 1
+    monkeypatch.setattr(RC, "workers_for", lambda n: 4)
+    many = _field(points, faces)
+    assert np.array_equal(one, many, equal_nan=True)
+    assert np.isfinite(one).all()
+    assert np.median(np.abs(one - full) / full) < 0.05
+
+
+def test_an_even_share_is_every_kth():
+    from meshpipeline.engines.radius_field import every_kth
+    assert np.array_equal(every_kth(10, 20), np.arange(10))
+    got = every_kth(1_000_003, 250_000)
+    assert len(got) <= 250_000 and got[0] == 0 and np.all(np.diff(got) == 5)

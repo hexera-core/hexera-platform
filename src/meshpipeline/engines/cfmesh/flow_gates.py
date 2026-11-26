@@ -37,6 +37,28 @@ def _polymesh_is_complete(pm: Path, engine_label: str) -> tuple[bool, str]:
     return True, ""
 
 
+def _lost_openings_said(workspace: Path, manifest: dict, patch_val: dict, empty: list, fb):
+    """INS-37: a mesh cfMesh built whose OPENINGS (never a wall) came out with no faces is refused in INS-36's words
+    (cfmesh_runner.lost_opening_words: the openings, the narrowest gap measured on their way if any, what is in the mesh,
+    the ways out) - the same refusal a case of several passages gets, never "these patches have zero faces". The
+    cause and every other fact are the zero-face check's own, so the retries that follow are unchanged."""
+    from meshpipeline.engines.gates import GateFeedback, cause_of, facts_of
+    if cause_of(fb) != FailureCause.PATCH_NOT_CAPTURED.value:
+        return fb
+    types = manifest.get("patch_types") if isinstance(manifest.get("patch_types"), dict) else {}
+    if not types or any(str(types.get(n) or "wall") == "wall" for n in empty):
+        return fb
+    try:
+        from meshpipeline.engines.cfmesh.cfmesh_runner import lost_opening_facts
+        built = [n for n, ok in patch_val.items() if ok and str(types.get(n) or "wall") != "wall"]
+        said = lost_opening_facts(Path(workspace), list(empty), built)
+    except Exception:  # noqa: BLE001 - the words are the user's; the refusal stands without them
+        logger.warning("cfMesh: INS-37 words for the lost openings not written", exc_info=True)
+        return fb
+    return GateFeedback(f"[MESH_LOST_OPENING] {said['plan_stop']} {said['ways_out']}\n{fb}", cause=cause_of(fb),
+                        facts={**facts_of(fb), **said})
+
+
 def _validate_manifest(workspace: Path, domain: str = "") -> tuple[bool, str]:
     manifest_path = workspace / "mesh_manifest.json"
 
@@ -80,8 +102,8 @@ def _validate_manifest(workspace: Path, domain: str = "") -> tuple[bool, str]:
     _empty = [name for name, has_faces in _patch_val.items() if not has_faces]
     if _empty:
         from meshpipeline.engines.preflight import zero_face_feedback
-        return False, zero_face_feedback(
-            f"mesh_manifest.json: these patches have zero faces: {_empty}", _empty, workspace)
+        fb = zero_face_feedback(f"mesh_manifest.json: these patches have zero faces: {_empty}", _empty, workspace)
+        return False, _lost_openings_said(workspace, manifest, _patch_val, _empty, fb)
 
     # THE CELL LIMIT is its own gate now (resolution_policy.gate_cell_limit, cell_limit below):
     # a note on a sound mesh, never a failure here (LAD-cfd-4).
@@ -142,6 +164,29 @@ def _gate_boundary_types(ctx: GateCtx) -> tuple[bool, str]:
     return (False, reason) if reason else (True, "")
 
 
+def _gate_wall_function_layer(ctx: GateCtx) -> tuple[bool, str]:
+    """CFDREQ-27 on cfMesh: answered, never refused. The gate refuses snappyHexMesh's wall-function layer when it
+    sits under a much thinner cell on more of the wall than the y+ row can leave out, because snappy lays the layer
+    on its snapped wall cells and no setting lifts them; the ladder then moves the run here. cfMesh splits its wall
+    cell to build the layer, so it is the engine that builds that layer, and refusing it would leave the run no
+    engine to move to. What its wall really carries is still measured and told on the y+ row (CFDREQ-19/26)."""
+    return True, ""
+
+
+def _gate_layer_stack(ctx: GateCtx) -> tuple[bool, str]:
+    """CFDREQ-28 on cfMesh: the same judgement as snappyHexMesh's - the planned stack kept on under the layer row's
+    share of the wall is refused, so when both engines' meshes miss it the one whose wall is nearer the bar is
+    delivered (engine_fallback.gate_distance, LAD-cfd-9), never the later one only because a gate passed it."""
+    from meshpipeline.engines.cfd_requirements import STACK_KEPT_PCT, stack_lost
+    got = stack_lost(ctx.workspace, ctx.manifest_or_load().get("quality") or {})
+    if not got:
+        return True, ""
+    return False, refuse(
+        f"The {got['layers']}-layer stack was kept on {got['coverage_pct']:.1f}% of the wall, under the "
+        f"{STACK_KEPT_PCT:.0f}% the layer row needs.",
+        FailureCause.MESH_QUALITY.value, **got)
+
+
 def _gate_quality_floor(ctx: GateCtx) -> tuple[bool, str]:
     # This engine's OWN declared gating criteria, enforced before the reviewer can see the mesh.
     # The bars and thresholds are the engine's (engines/cfmesh/criteria.py); this gate adds none.
@@ -183,6 +228,14 @@ FLOW_GATES: tuple[GateSpec, ...] = (
     GateSpec(key="boundary_types", check=_gate_boundary_types, section="GROUPS",
              proves="Each boundary is typed as the solver needs it (wall / symmetry / empty)",
              cause=FailureCause.BOUNDARY_TYPE),
+    # CFDREQ-27: the same gate as snappy's, in the same place; on cfMesh it never refuses (the reason is on the gate)
+    GateSpec(key="wall_function_layer", check=_gate_wall_function_layer, section="MESH",
+             proves="The wall-function first layer sits on cells that suit it - cfMesh splits its wall cell to build it",
+             cause=FailureCause.MESH_QUALITY),
+    # CFDREQ-28: the same gate as snappy's, in the same place
+    GateSpec(key="layer_stack", check=_gate_layer_stack, section="MESH",
+             proves="The planned boundary-layer stack stands on the share of the wall the layer row needs (80%)",
+             cause=FailureCause.MESH_QUALITY),
     # SHARED with every flow engine (engines/cad_fidelity.py), and LAST: a sound, correctly named mesh
     # is held to the CAD it was built from - its boundary on the surface, none of the surface
     # missing, the fluid volume the CAD's. The numbers are recorded either way; only a mesh that is

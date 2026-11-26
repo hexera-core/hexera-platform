@@ -288,9 +288,12 @@ class ThinRegions(list):
     """
 
     def __init__(self, boxes=(), *, note: str = "", thinnest_m: float | None = None,
-                 found: int = 0, coincident_triangles: int = 0) -> None:
+                 found: int = 0, coincident_triangles: int = 0, layer_note: str = "") -> None:
         super().__init__(boxes)
         self.note = note
+        #: CFDREQ-24: how the refinement was held back for a wall-function first layer, or what that layer meets
+        #: where it could not be ("" when no first layer was given or it took no part)
+        self.layer_note = layer_note
         self.thinnest_m = thinnest_m
         self.found = int(found)
         self.coincident_triangles = int(coincident_triangles)
@@ -374,7 +377,8 @@ def _tessellation_sag(T: np.ndarray) -> np.ndarray:
 def thin_refinement_boxes(tris, *, cell_m: float, cells_across: int = 2,
                           pad_frac: float = 0.6, max_level_bump: int = 4,
                           budget_cells: int | None = None,
-                          zero_rel: float = ZERO_THICKNESS_REL) -> ThinRegions:
+                          zero_rel: float = ZERO_THICKNESS_REL,
+                          keep_cell_m: float | None = None) -> ThinRegions:
     """Boxes enclosing surface regions too THIN for the planned cell, and the extra
     refinement level each needs.
 
@@ -407,6 +411,14 @@ def thin_refinement_boxes(tris, *, cell_m: float, cells_across: int = 2,
 
     A reading at or below zero_rel of the surface's size is not a thickness at all (see
     ZERO_THICKNESS_REL) and never drives refinement.
+
+    keep_cell_m (CFDREQ-24): the smallest cell a wall-function first layer stands on without a jump (the caller's
+    layer over the jump it allows). Where cells_across of the thinnest feature would go under it, the feature gets
+    the fewest levels that still put ONE cell across it (castellation keeps a feature at least a cell thick: a cell
+    centre lies inside it on every line through it), or as many as keep the cells at keep_cell_m, whichever is more:
+    a 2.2 mm wall under a 1.92 mm first layer was refined to 0.86 mm cells (+2 over a 3.4 mm wall cell) and the
+    layer stood under 0.35 mm cells over the whole part (yplab_e11_7821cb5b); +1 gives 1.71 mm cells, the wall still
+    captured. A feature thinner than that keeps the cells it needs, and layer_note says what the layer meets there.
     """
     import math as _math
 
@@ -466,6 +478,21 @@ def thin_refinement_boxes(tris, *, cell_m: float, cells_across: int = 2,
     if not (_math.isfinite(target) and target > 0.0):
         return ThinRegions()
     needed = max(1, int(_math.ceil(_math.log2(max(cell_m / target, 1.0) + 1e-12))))
+    layer_note = ""
+    if keep_cell_m and float(keep_cell_m) > 0.0 and cell_m / 2 ** needed < float(keep_cell_m) * (1 - 1e-9):
+        one = max(1, int(_math.ceil(_math.log2(max(cell_m / thinnest, 1.0)) - 1e-9)))
+        keep = int(_math.floor(_math.log2(max(cell_m / float(keep_cell_m), 1.0)) + 1e-9))
+        held = min(needed, max(one, keep))
+        if held < needed:
+            layer_note = (f"thin spots refined to {_mm_s(cell_m / 2 ** held)} cells, one across the "
+                          f"{_mm_s(thinnest)} feature (not {_mm_s(cell_m / 2 ** needed)}, two across), so the "
+                          "wall-function first layer stands on cells it suits")
+        if cell_m / 2 ** held < float(keep_cell_m) * (1 - 1e-9):
+            tail = (f"the {_mm_s(thinnest)} feature needs {_mm_s(cell_m / 2 ** held)} cells to be captured, finer "
+                    "than the wall-function first layer suits: there the layer stands under thinner cells (a jump "
+                    "in cell height), or the mesher thins it")
+            layer_note = f"{layer_note}; {tail}" if layer_note else tail
+        needed = held
     bump = max(1, min(int(max_level_bump), needed))
     tri_v = T[too_thin]
     thin_t = thickness[too_thin]
@@ -513,6 +540,29 @@ def thin_refinement_boxes(tris, *, cell_m: float, cells_across: int = 2,
                     f"{_cells(need)}, over the {_cells(budget_cells)} allowed for local "
                     "refinement")
             logger.warning("thin_refinement_boxes: %s", note)
+    if keep_cell_m and float(keep_cell_m) > 0.0 and boxes and cell_m / 2 ** bump < float(keep_cell_m) * (1 - 1e-9):
+        # CFDREQ-29: A REFINEMENT THAT CAPTURES NOTHING DOES NOT TAKE THE WALL-FUNCTION LAYER'S CELLS. A box whose
+        # feature is still thinner than the cells the levels reach (not one cell across it) gains no feature from them,
+        # and under a wall-function first layer those cells, finer than the keep cell, leave the cell above the layer a
+        # fraction of it: a 0.017 mm reading boxed over the whole part took +1, the 1.57 mm layer stood on 1.31 mm cells
+        # and the cell above was 0.33 of it on 61% of the wall (00157704; 00137655 0.0077 mm, +2: 63%, batch 7). Such
+        # boxes are left unrefined, and the run says so; a box whose feature the levels do capture is kept as before.
+        reached = cell_m / 2 ** bump
+        lost = [b for b in boxes if reached > float(b["thinnest_m"]) * (1 + 1e-9)]
+        if lost:
+            boxes = [b for b in boxes if b not in lost]
+            if not boxes:
+                layer_note = ""          # what CFDREQ-24 said the layer meets there is no longer built
+            t_lost = min(float(b["thinnest_m"]) for b in lost)
+            held_note = (f"{len(lost)} thin spot(s) down to {_mm_s(t_lost)} across were not refined: the "
+                         f"{_mm_s(reached)} cells this mesh could give them are still wider than they are, so they "
+                         f"would not capture them, and they would put the wall-function first layer on cells under "
+                         f"the {_mm_s(float(keep_cell_m))} it needs; the wall keeps its {_mm_s(cell_m)} cells there")
+            layer_note = f"{layer_note}; {held_note}" if layer_note else held_note
+            logger.info("thin_refinement_boxes: %s", held_note)
+            if not boxes:
+                return ThinRegions(note=note, thinnest_m=thinnest, found=n_found,
+                                   coincident_triangles=int(coincident.sum()), layer_note=layer_note)
     if boxes and bump < needed:
         # the honest half of a clamp: the user hears that the feature is refined LESS than it
         # needs, rather than reading "refining locally so it is captured" over a promise the
@@ -529,4 +579,9 @@ def thin_refinement_boxes(tris, *, cell_m: float, cells_across: int = 2,
                 (f" (clamped to the {budget_cells}-cell thin-refinement budget - the feature "
                  "may stay under-resolved)" if clamped else ""))
     return ThinRegions(boxes, note=note, thinnest_m=thinnest, found=n_found,
-                       coincident_triangles=int(coincident.sum()))
+                       coincident_triangles=int(coincident.sum()), layer_note=layer_note)
+
+
+def _mm_s(m: float) -> str:
+    """A length in millimetres, three figures."""
+    return f"{float(m) * 1000.0:.3g} mm"

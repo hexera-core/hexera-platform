@@ -130,10 +130,30 @@ def test_the_ports_vouch_for_the_chord_reading_or_replace_it():
     wall_gap = {"p05": 0.0043, "median": 0.0043}       # straight_reducer_006's first reading
     for bad in (outer_skin, wall_gap):
         assert not P.plausible_radius(bad, ports)
-        assert P.choose_passage_radius(bad, ports) == ports
+        assert P.choose_passage_radius(bad, ports) == ports       # a metal skin: as it always was
     assert P.choose_passage_radius(good, {})["source"] == "chord-unchecked"
     assert P.choose_passage_radius({}, {}) is None
     assert P.port_radius_stats({"x": {"area": "junk"}}) == {}
+
+
+def test_a_branching_vessel_s_reading_is_vouched_by_the_range_of_its_ports():
+    """The CFD board's coronary tree (vmr 0257): a 3.85 mm inlet, outlets down to a 0.33 mm lid; the
+    branches' narrowest 5% read 0.39 mm. Held to the smallest port alone it was refused, and the wall
+    was cut at that outlet's 22 um cell everywhere (about 85 M cells; out of memory on every machine)."""
+    ports = {"min": 0.000164, "p05": 0.000164, "median": 0.000479, "max": 0.00155, "points": 8,
+             "source": "ports"}
+    tree = {"min": 0.0001, "p05": 0.000392, "median": 0.001187, "max": 0.0022}
+    assert not P.plausible_radius(tree, ports, fluid_boundary=True)
+    assert P.choose_passage_radius(tree, ports, fluid_boundary=True)["source"] == "chord"
+    # with no trusted reading, a fluid boundary's band is the typical port's, not the smallest one's
+    fell_back = P.choose_passage_radius({"p05": 5e-6, "median": 5e-6}, ports, fluid_boundary=True)
+    assert fell_back["source"] == "ports" and fell_back["band"] == ports["median"]
+    caps = P.size_caps(fell_back, target=15.0)
+    assert abs(caps["wall_cell"] - 2 * 0.000479 / 15.0) < 1e-12
+    assert caps["wall_cell_floor"] == 2 * 0.000164 / P.PASSAGE_CEILING_CELLS
+    # a hollow part's metal skin keeps the old reading: a reducer's outer skin is not vouched for
+    skin_ports = {"min": 0.0825, "p05": 0.0825, "median": 0.124, "max": 0.165, "source": "ports"}
+    assert P.choose_passage_radius({"p05": 0.21, "median": 0.21}, skin_ports) == skin_ports
 
 
 def test_size_caps_put_thirteen_across_the_narrowest_and_typical_passage():

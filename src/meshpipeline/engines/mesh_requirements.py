@@ -991,9 +991,10 @@ _ONLY_THERE = re.compile(r"\b(?:no\s*where\s+else|not?\s+(?:any\s*where|elsewher
 
 
 def flow_sizes_picked_faces(engine: str) -> bool:
-    """NOTE-17: whether a FLOW engine sizes a picked face on its own triangles - only snappyHexMesh does
-    (snappy/part_levels.picked_surfaces); the others tell it with the next best (VER-12 says so up front)."""
-    return str(engine or "").strip().lower() == "snappy"
+    """NOTE-17: whether a FLOW engine sizes a picked face on its own triangles - snappyHexMesh and cfMesh do
+    (engines/cfd_requirements.snappy_picked / cfmesh_picked, CFDREQ-34); the others tell it with the next best
+    (VER-12 says so up front)."""
+    return str(engine or "").strip().lower() in ("snappy", "cfmesh")
 
 
 def says_whole_mesh(quote) -> bool:

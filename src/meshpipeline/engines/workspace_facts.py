@@ -57,6 +57,14 @@ def read_input_kind(workspace) -> str:
         return ""
 
 
+def fluid_solid_of(kind: str) -> bool:
+    """THE ONE READING of what the CAD's solid is, for the B-rep internal staging (cad/cad_tessellate's
+    fluid_solid): True when the user confirmed it is the fluid, False for anything else - a body, or nothing
+    confirmed. Every engine passes this value, so the declared-body rules (the hollow wall, the cavity seed) read
+    the same part the same way whichever engine meshes it."""
+    return str(kind or "").strip() == "fluid-domain"
+
+
 #: INS-8: the leak size the user confirmed on the stage, beside the run's surface (written by the
 #: builder's workspace, agents/builder/workspace.py).
 LEAK_CLOSING_FILE = "leak_closing.json"
@@ -115,6 +123,14 @@ def contract_patches(workspace) -> list[dict]:
             if name and role:
                 out.append({"name": name, "type": role})
     return out
+
+
+def contract_body_walls(workspace) -> list[str]:
+    """The walls of the body being studied: every declared wall except the ground plane the domain
+    lays as the far-field box's floor (engines/ground_plane.body_walls, the one rule). A first cell or
+    a layer count judged on the body's wall is measured here, never on the floor's background cells."""
+    from meshpipeline.engines.ground_plane import body_walls
+    return body_walls(contract_patches(workspace))
 
 
 def contract_wall_patch(workspace) -> str | None:

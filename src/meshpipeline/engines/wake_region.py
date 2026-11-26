@@ -63,6 +63,17 @@ MAX_LENGTH = 20.0
 MAX_START = 1.0
 #: Below this many wake lengths a budget-shortened box is not worth keeping.
 MIN_LENGTH = 0.5
+#: the rule the protected near wake and the near-body box are recorded under
+NEAR_RULE = "PLAN-cfd-7"
+#: PLAN-cfd-7: the near wake's own floor - its finest box reaches at least this many wake lengths behind the body
+#: (the wake one length behind sits well inside it, never on its edge) ...
+NEAR_WAKE_REACH = 1.5
+#: ... with at least this many cells per wake length (CB-E2's 25: drag and the wake deficit need it resolved)
+NEAR_WAKE_CELLS = 25.0
+#: PLAN-cfd-7: the cells per wake length just beside the body (CB-E3's 50), in a box round the body ...
+NEAR_BODY_CELLS = 50.0
+#: ... reaching this share of the wake length past the body's box on every side
+NEAR_BODY_PAD = 0.1
 
 _KNOBS = ("enabled", "length", "levels_below_surface", "tiers", "start")
 
@@ -155,6 +166,10 @@ class WakePlan:
     body_cells: float | None = None                  # the estimated cells the body itself needs
     changes: list[str] = field(default_factory=list)   # budget cuts, in plain words
     reason: str = ""                                 # why there is no wake, when there is none
+    #: PLAN-cfd-7: the cells the protected near wake costs past the allowance (the budget is raised by them)
+    raised: float = 0.0
+    #: PLAN-cfd-7: the near wake's floor - {"level", "reach"} - when it is protected
+    near: dict = field(default_factory=dict)
 
     @property
     def active(self) -> bool:
@@ -179,6 +194,7 @@ class WakePlan:
             "budget_cells": int(self.budget),
             "body_cells_estimate": int(self.body_cells) if self.body_cells is not None else None,
             "reduced": list(self.changes), "reason": self.reason,
+            **({"near_wake": dict(self.near), "raised_cells": int(self.raised)} if self.near else {}),
         }
 
     def summary(self) -> str:
@@ -236,9 +252,17 @@ def _grown(lo, hi, by: float, dmin, dmax) -> tuple[list[float], list[float]]:
             [min(float(dmax[i]), float(hi[i]) + by) for i in range(3)])
 
 
+def level_for_cells(base_cell: float, length_m: float, cells: float) -> int:
+    """PLAN-cfd-7: the coarsest refinement level whose cell puts at least `cells` across `length_m`."""
+    if not (base_cell > 0 and length_m > 0 and cells > 0):
+        return 0
+    return max(0, int(math.ceil(math.log2(float(base_cell) * float(cells) / float(length_m)) - 1e-9)))
+
+
 def _tiers(*, finest: int, n: int, length: float, start: float, body_min, body_max,
            domain_min, domain_max, axis: int, sign: int, scale: float, base_cell: float,
-           grounded: bool, floor: tuple[int, str] = DEFAULT_FLOOR) -> list[WakeTier]:
+           grounded: bool, floor: tuple[int, str] = DEFAULT_FLOOR,
+           near_reach: float = 0.0) -> list[WakeTier]:
     ext = [float(body_max[i]) - float(body_min[i]) for i in range(3)]
     trailing = float(body_max[axis]) if sign > 0 else float(body_min[axis])
     lead_in = start * ext[axis]
@@ -249,7 +273,7 @@ def _tiers(*, finest: int, n: int, length: float, start: float, body_min, body_m
     for k in range(n):
         level = finest - k
         cell = base_cell / 2.0 ** level
-        reach = length * scale * 2.0 ** (k - (n - 1))
+        reach = max(length * scale * 2.0 ** (k - (n - 1)), float(near_reach) * scale)
         lo = [0.0, 0.0, 0.0]
         hi = [0.0, 0.0, 0.0]
         if sign > 0:
@@ -317,24 +341,56 @@ def plan_wake(*, body_min, body_max, domain_min, domain_max, flow_axis: str | No
         plan.reason = "the body or the background cell has no size to scale it by"
         return plan
     finest = int(surface_level) - int(kn["levels_below_surface"])
+    # PLAN-cfd-7: THE NEAR WAKE IS PROTECTED. Its finest box keeps NEAR_WAKE_CELLS per wake length (finer than one
+    # level under the wall where the wall's own cells are coarse for the body, never finer than the wall) and reaches
+    # NEAR_WAKE_REACH wake lengths behind the body; budget cuts take the far wake first and never go past that floor.
+    # Before, the cuts halved every box's reach first, so a budget-cut near wake ended short of one body length and the
+    # wake there read the background (the CFD board's external sweep: 29 of 120 under 25 cells per body length 1 L
+    # behind, 4.8-24). A wake level the plan or the user chose coarser keeps the old cuts.
+    protect = int(kn["levels_below_surface"]) == int(WAKE_DEFAULTS["levels_below_surface"])
+    need = min(int(surface_level), level_for_cells(float(base_cell), scale, NEAR_WAKE_CELLS))
+    near_reach = NEAR_WAKE_REACH if protect else 0.0
+    if protect:
+        finest = max(finest, need)
+        plan.near = {"rule": NEAR_RULE, "level": need, "reach_wake_lengths": NEAR_WAKE_REACH, "cells_per_wake_length": NEAR_WAKE_CELLS}
     if finest < 1:
         plan.reason = ("the wall is already within a level of the background mesh, so the far "
                        "field is as fine as a wake box would be")
         return plan
-    length, n = float(kn["length"]), int(kn["tiers"])
+    length, n = max(float(kn["length"]), near_reach), int(kn["tiers"])
     changes: list[str] = []
     shortened = False
     while True:
         tiers = _tiers(finest=finest, n=n, length=length, start=float(kn["start"]),
                        body_min=body_min, body_max=body_max, domain_min=domain_min,
                        domain_max=domain_max, axis=axis, sign=sign, scale=scale,
-                       base_cell=float(base_cell), grounded=grounded, floor=floor)
+                       base_cell=float(base_cell), grounded=grounded, floor=floor, near_reach=near_reach)
         cost = sum(t.cells for t in tiers)
         if tiers and cost <= plan.allowance:
             plan.tiers, plan.cells, plan.changes = tiers, cost, changes
             return plan
         if not tiers:
             plan.reason = "the domain leaves no room behind the body for one"
+            return plan
+        if protect:
+            # the far wake first: shorter down to the near wake's own reach, then fewer (coarser) outer boxes, then the
+            # near wake one level coarser - never under its floor; past that the near wake stands, priced in
+            if length > max(near_reach, MIN_LENGTH) * (1 + 1e-9):
+                length = max(length / 2.0, near_reach, MIN_LENGTH)
+                changes.append(f"shortened to {length:.3g} body lengths")
+                continue
+            if n > 1:
+                n -= 1
+                changes.append(f"kept {n} graded box{'es' if n > 1 else ''} (the outer one dropped)")
+                continue
+            if finest > max(1, need):
+                finest -= 1
+                changes.append(f"made one level coarser (cells {_mm(base_cell / 2.0 ** finest)})")
+                continue
+            plan.tiers, plan.cells, plan.changes = tiers, cost, changes
+            plan.raised = max(0.0, cost - plan.allowance)
+            changes.append(f"the near wake kept ({len(tiers)} box, cells {_mm(tiers[0].cell_m)}, about "
+                           f"{cost / 1e6:.2g} M cells), the budget raised by {plan.raised / 1e6:.2g} M for it")
             return plan
         # shorter first (the near wake keeps its cells), then coarser; alternate
         if not shortened and length / 2.0 >= MIN_LENGTH:
@@ -359,5 +415,41 @@ def plan_wake(*, body_min, body_max, domain_min, domain_max, flow_axis: str | No
             return plan
 
 
-__all__ = ["MAX_TIERS", "WAKE_BUDGET_SHARE", "WAKE_DEFAULTS", "WakePlan", "WakeRequest", "WakeTier",
-           "plan_wake", "validate_wake", "wake_knobs", "wake_scale"]
+@dataclass(frozen=True)
+class NearBody:
+    """PLAN-cfd-7: the box round the body that holds NEAR_BODY_CELLS per wake length beside it."""
+    level: int
+    cell_m: float
+    box_min: list[float]
+    box_max: list[float]
+    cells: float
+
+    def record(self) -> dict:
+        return {"rule": NEAR_RULE, "level": self.level, "cell_m": round(self.cell_m, 6), "box_min": [round(v, 6) for v in self.box_min],
+                "box_max": [round(v, 6) for v in self.box_max], "est_cells": int(self.cells)}
+
+
+def plan_near_body(*, body_min, body_max, domain_min, domain_max, scale_m: float, base_cell: float,
+                   surface_level: int) -> NearBody | None:
+    """PLAN-cfd-7, BESIDE THE BODY: a box round the body's own box, NEAR_BODY_PAD wake lengths past it on every side
+    (clipped to the domain), at the coarsest level that puts NEAR_BODY_CELLS across a wake length - never finer than
+    the wall. The wall's distance bands only reach a few wall cells out, so where the body's box stands far from its
+    surface (a rotor's disc, a wide flat body) or its wall cells are coarse for its length, the flow just beside it
+    read the background: 29 of 120 board meshes under 50 cells per body length there (2.4-49). None when the
+    level is the background's own."""
+    if not (scale_m > 0 and base_cell > 0):
+        return None
+    lv = min(int(surface_level), level_for_cells(float(base_cell), float(scale_m), NEAR_BODY_CELLS))
+    if lv < 1:
+        return None
+    pad = NEAR_BODY_PAD * float(scale_m)
+    lo = [max(float(domain_min[i]), float(body_min[i]) - pad) for i in range(3)]
+    hi = [min(float(domain_max[i]), float(body_max[i]) + pad) for i in range(3)]
+    cell = float(base_cell) / 2.0 ** lv
+    glo, ghi = _grown(lo, hi, WAKE_BUFFER_CELLS * cell, domain_min, domain_max)
+    return NearBody(level=lv, cell_m=cell, box_min=lo, box_max=hi, cells=_volume(glo, ghi) / cell ** 3)
+
+
+__all__ = ["MAX_TIERS", "NEAR_BODY_CELLS", "NEAR_WAKE_CELLS", "NEAR_WAKE_REACH", "WAKE_BUDGET_SHARE", "WAKE_DEFAULTS",
+           "NearBody", "WakePlan", "WakeRequest", "WakeTier", "level_for_cells", "plan_near_body", "plan_wake",
+           "validate_wake", "wake_knobs", "wake_scale"]

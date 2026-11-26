@@ -127,12 +127,11 @@ def sizing_words(c: Mapping) -> str:
     return f"the first layer is sized for y⁺ ≈ {c['y_plus']:g}, inside 30–300, at that speed"
 
 
-#: what the plan says of a wall treatment the user only accepted (the proposal's wall functions): no ask of theirs, so
-#: the mesher's own relative layers - which it grows on the whole wall - stay (job 07fd516d: an absolute y+ 50 first
-#: layer 1.35 mm under 1.72 mm wall cells grew on 5.7% of the wall)
-PROPOSED_WORDS = ("the layers keep the mesher's own sizing, which it grows on the whole wall; their first cell is "
-                  "usually finer than wall functions want (y⁺ about 10-20, under 30-300) - give a first layer "
-                  "height or a y⁺ in the notes to land it in the band")
+#: what the plan says of a wall treatment the user only accepted (the proposal's wall functions): CFDREQ-13 sizes the
+#: first layer for them as for a chosen one, fitted to the wall cells (engines/cfd_requirements.wall_fit)
+PROPOSED_WORDS = ("the first layer is sized for wall functions (its cell centre at y⁺ about 50) at that speed; where "
+                  "the cells a passage needs at the wall are too fine for that, the wall is resolved instead (y⁺ about "
+                  "1), and the result says which")
 #: how the plan says what the user left to the proposal (agents/intake/flow), read back by `accepted`
 ACCEPTED_LEAD = "Left to the application's proposal, which the user accepted:"
 _ACCEPTED = re.compile(re.escape(ACCEPTED_LEAD) + r"([^.]*)\.")

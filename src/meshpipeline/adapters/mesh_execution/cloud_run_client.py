@@ -910,10 +910,17 @@ def _exchange(workspace, *, engine: str, timeout: int, operation_key: str,
         from meshpipeline.engines import bucket_files as BF
         # the files a previous result kept in the bucket, and its stand-ins, are not this result's
         BF.clear(ws)
+        import time as _time
         with tempfile.TemporaryDirectory(prefix="mesh_result_", dir=str(ws.parent)) as _tmp:
             _archive = Path(_tmp) / "result.tar.gz"
+            _t0 = _time.monotonic()
             bucket.blob(out_key).download_to_filename(str(_archive))
+            _t1 = _time.monotonic()
             safe_extract_tar(path=_archive, dest=str(ws), limits=result_extraction_limits(result))
+            # the way home's last steps, timed beside the remote's own (exchange_s, post_mesh_s)
+            logger.info("%s: result home - download %.1f s, extract %.1f s, %.0f MB; remote after the "
+                        "mesher %s, packing %s", engine, _t1 - _t0, _time.monotonic() - _t1,
+                        _archive.stat().st_size / 1e6, result.get("post_mesh_s"), result.get("exchange_s"))
         # BIG FILES KEPT IN THE BUCKET (RUN-7): the record is the remote's word, so every object it
         # names must be one of THIS run's - else nothing it names is ever read (refused: uncollected)
         try:

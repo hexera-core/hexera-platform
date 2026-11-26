@@ -56,6 +56,10 @@ def engine_pick_entry(state: Mapping) -> dr.Entry | None:
     from meshpipeline.pipeline.engine_fallback import engine_source
     ladder = _mapping(state.get("engine_ladder"))
     approved = str(ladder.get("approved") or "")
+    # ENG-10: the engine as picked, before the user's asks moved the run (that move is its own entry)
+    asks = _mapping(ladder.get("asks"))
+    if asks.get("from") and approved in ("", str(asks.get("to") or "")):
+        approved = str(asks["from"])
     if not approved:
         first = next((a for a in (ladder.get("attempts") or ())
                       if isinstance(a, Mapping) and a.get("engine")), None)

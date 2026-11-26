@@ -281,6 +281,36 @@ export async function openGeometryStage(sessionId, d, confirm, opts) {
     return null;
   }
 
+  /* A PERFORATED PLATE OR A GRILLE (INS-23): the three answers to "Flow goes through the holes?". Yes keeps the
+     plate's two sides (or the grille's one lid) as the openings; "each hole is its own passage" brings back the
+     openings as read hole by hole; "around it" turns the flow to around the part. The pins follow the rows. */
+  function bindPerforated() {
+    const pf = p.perforated;
+    if (!pf) return;
+    if (!plateOpenings) plateOpenings = (p.openings || []).map((o) => ({ ...o }));
+    form.querySelectorAll(".gc-perf-a").forEach((r) => { r.onchange = () => {
+      const k = Number(r.value);
+      p.perforated_answer = k;
+      const flowSel = form.querySelector(".gc-flow");
+      if (k === 2) {
+        if (flowSel) { flowSel.value = "external"; flowSel.dispatchEvent(new Event("change", { bubbles: true })); }
+        return;
+      }
+      const want = (k === 1 ? pf.holes_openings || [] : plateOpenings).map((o) => ({ ...o }));
+      p.flow = "internal";
+      if (p.user_set && "flow" in p.user_set) p.user_set.flow = "internal";
+      p.openings = [];
+      form.innerHTML = formHtml(p);
+      if (scene) scene.rebind();               // the pins of the openings swapped out go first
+      p.openings = want;
+      form.innerHTML = formHtml(p);
+      applyFlow(form); bindUnit(panel, p); bindAxis(form, p); noteDrawn(form); bindProceed(); bindPerforated();
+      if (scene) scene.rebind();
+    }; });
+  }
+  let plateOpenings = null;
+  bindPerforated();
+
   function bindProceed() {
     const btn = form.querySelector(".gc-proceed"), hint = form.querySelector(".gc-hint");
     btn.onclick = async () => {
@@ -353,7 +383,7 @@ export async function openGeometryStage(sessionId, d, confirm, opts) {
         Object.assign(p, incoming, chosen, answered, p.user_set);
         panel.querySelector(".gc-lead").innerHTML = leadHtml(p);
         form.innerHTML = formHtml(p);
-        applyFlow(form); bindUnit(panel, p); bindAxis(form, p); noteDrawn(form); bindProceed(); scene.rebind();
+        applyFlow(form); bindUnit(panel, p); bindAxis(form, p); noteDrawn(form); bindProceed(); bindPerforated(); scene.rebind();
         shown = "";
       } else {
         if (p2.faces) p.faces = p2.faces;
@@ -405,7 +435,7 @@ export async function openGeometryStage(sessionId, d, confirm, opts) {
       }
       panel.querySelector(".gc-lead").innerHTML = leadHtml(p);
       form.innerHTML = formHtml(p);
-      applyFlow(form); bindUnit(panel, p); bindAxis(form, p); noteDrawn(form); bindProceed(); scene.rebind();
+      applyFlow(form); bindUnit(panel, p); bindAxis(form, p); noteDrawn(form); bindProceed(); bindPerforated(); scene.rebind();
       shown = "ready"; showBanner("");
     } else {
       const key = "failed|" + (d2.reason || "");

@@ -59,18 +59,27 @@ TIME_REPAIR_WORK = "TIME-7"
 #: A guard that trips once the attempt already holds a valid mesh keeps the best valid mesh
 #: measured so far, with a note: the attempt goes on to its checks, never to "ran out of time".
 TIME_KEEP_VALID = "TIME-8"
+#: A step its OWN guard stopped does the same planned work on the same mesh when the attempt is run
+#: again (the trip says `same_on_replay`): no replay - the run ends as ran out of time at once.
+TIME_SAME_ON_REPLAY = "TIME-13"
+#: A guard that trips inside the rescue of ONE passage before it is merged (INS-31) belongs to that
+#: step, not the attempt: the passage goes on as built, the trip is recorded and told, and the mesh
+#: the attempt goes on to finish is judged like any other.
+TIME_PASSAGE_STEP = "TIME-14"
 
 TIME_RULES = (TIME_PLANNED_WORK, TIME_GUARD, TIME_TRIP, TIME_WAIT, TIME_JOB_GUARD,
-              TIME_REPAIR_CLOCK, TIME_REPAIR_WORK, TIME_KEEP_VALID)
+              TIME_REPAIR_CLOCK, TIME_REPAIR_WORK, TIME_KEEP_VALID, TIME_SAME_ON_REPLAY,
+              TIME_PASSAGE_STEP)
 
-#: The trips that do NOT end the attempt: a wait's guard is that step failing (TIME-4), and a trip
-#: once a valid mesh was already in hand keeps that mesh (TIME-8).
-NOT_ATTEMPT_ENDING = (TIME_WAIT, TIME_KEEP_VALID)
+#: The trips that do NOT end the attempt: a wait's guard is that step failing (TIME-4), a trip
+#: once a valid mesh was already in hand keeps that mesh (TIME-8), and a trip inside one passage's
+#: rescue keeps that passage as built (TIME-14).
+NOT_ATTEMPT_ENDING = (TIME_WAIT, TIME_KEEP_VALID, TIME_PASSAGE_STEP)
 
 
 def ends_attempt(trip: Mapping[str, Any] | None) -> bool:
     """Whether a recorded guard trip ends the attempt it happened in (TIME-3): every trip except a
-    wait's (TIME-4) and one that kept a valid mesh (TIME-8)."""
+    wait's (TIME-4), one that kept a valid mesh (TIME-8) and one inside a passage's rescue (TIME-14)."""
     return isinstance(trip, Mapping) and trip.get("rule") not in NOT_ATTEMPT_ENDING
 
 # #
@@ -200,7 +209,8 @@ RAN_OUT_OF_TIME = "ran_out_of_time"
 
 def after_trip(inputs: Mapping[str, Any]) -> tuple[str, str]:
     """(what the run does after a guard trip, TIME-3). inputs: replays (how many times this attempt
-    was already replayed after a trip), allowed (GUARD_REPLAYS). How long anything took is not an
+    was already replayed after a trip), allowed (GUARD_REPLAYS), same_on_replay (the step its own guard
+    stopped would do the same planned work again: TIME-13, no replay). How long anything took is not an
     input."""
     raw = inputs.get("allowed")
     try:
@@ -208,6 +218,8 @@ def after_trip(inputs: Mapping[str, Any]) -> tuple[str, str]:
         allowed = GUARD_REPLAYS if raw is None else int(raw)
     except (TypeError, ValueError):
         return "", ""
+    if inputs.get("same_on_replay") is True:
+        return RAN_OUT_OF_TIME, TIME_SAME_ON_REPLAY
     return (REPLAY if done < allowed else RAN_OUT_OF_TIME), TIME_TRIP
 
 
@@ -236,6 +248,6 @@ def _num(v: Any) -> float | None:
 
 __all__ = ["CEILINGS_S", "FILL_RATES", "FLOORS_S", "GUARD_FACTOR", "GUARD_REPLAYS",
            "NOT_ATTEMPT_ENDING", "PlannedWork", "RAN_OUT_OF_TIME", "REPLAY", "TIME_GUARD",
-           "TIME_JOB_GUARD", "TIME_KEEP_VALID", "TIME_PLANNED_WORK", "TIME_REPAIR_CLOCK",
+           "TIME_JOB_GUARD", "TIME_KEEP_VALID", "TIME_PASSAGE_STEP", "TIME_PLANNED_WORK", "TIME_REPAIR_CLOCK",
            "TIME_REPAIR_WORK", "TIME_RULES", "TIME_TRIP", "TIME_WAIT", "after_trip",
            "ends_attempt", "guard_for", "guard_seconds", "trip_words", "work_limit"]

@@ -66,6 +66,10 @@ PRODUCTION_LIMITS: tuple[Limit, ...] = (
     # carotid - so it is not held to one region)
     Limit("max_non_ortho", "Worst face non-orthogonality", "<=", 70.0, ("netgen",),
           source=_CHECKMESH),
+    # VMTK's tetrahedra + prisms: the same bar as the other flow meshers (VER-2), read off VMTK's own quality
+    # record, which measures non-orthogonality as checkMesh does (engines/vmtk/vmtk_runner.check_mesh)
+    Limit("max_non_ortho", "Worst face non-orthogonality", "<=", 70.0, ("vmtk",),
+          source="engines/vmtk/vmtk_runner.check_mesh (tet_non_orthogonality, checkMesh's measure)"),
     Limit("max_non_ortho", "Worst face non-orthogonality a CFD solver can correct", "<=", 85.0,
           ("gmsh",), topologies=_CFD,
           source="engines/gmsh/criteria.py (also gmsh's gating bar, so a mesh past it never "
@@ -126,6 +130,114 @@ def _passage(quality: Mapping) -> tuple[float | None, float | None]:
     return v.cells_across, v.floor
 
 
+def wall_treatment(quality: Mapping) -> str:
+    """The wall treatment the delivered mesh was built for ("resolved", "functions", or ""), read off
+    the y+ row of its requirements record (CFDREQ-13's wording: "a resolved wall: ...", "wall
+    functions: ...")."""
+    req = quality.get("requirements")
+    rows = req.get("rows") if isinstance(req, Mapping) else None
+    for r in rows or ():
+        if not isinstance(r, Mapping) or r.get("field") != "layers:y_plus":
+            continue
+        text = f"{r.get('delivered') or ''} {r.get('asked') or ''}".lower()
+        if "resolved wall" in text or "y+ about 1" in text:
+            return "resolved"
+        if "wall functions" in text:
+            return "functions"
+    return ""
+
+
+def coverage_words(quality: Mapping, measured: Any, limit: Any) -> str:
+    """THE PARTIAL WALL TREATMENT, SAID PLAINLY (rulebook 75): when the layers do not cover the wall, the
+    line names the treatment the wall was built for, how much of the wall it reached, and what the first
+    cell is where the layers did not grow - the wall's own cell. "" when coverage meets the limit or the
+    treatment is not known (the generic row stands)."""
+    try:
+        got, lim = float(measured), float(limit)
+    except (TypeError, ValueError):
+        return ""
+    if got >= lim:
+        return ""
+    tall = _by_height(quality, got, lim)
+    if tall:
+        return tall
+    cut = _cut_stacks(quality, got)
+    if cut:
+        return cut
+    kind = wall_treatment(quality)
+    if not kind:
+        return ""
+    sd = quality.get("surface_deviation")
+    cell = _num(sd.get("cell_size_m")) if isinstance(sd, Mapping) else None
+    where = (f"; elsewhere the first cell is the wall's own cell, about {cell * 1e3:.3g} mm"
+             if cell else "; elsewhere the first cell is the wall's own cell")
+    if kind == "resolved":
+        return (f"The resolved wall (y+ about 1) has its layers on {got:.0f}% of the wall{where}, so y+ "
+                f"there is well above 1 (we aim for layers on at least {lim:.0f}%)")
+    return (f"The wall-function layers are on {got:.0f}% of the wall{where}, where y+ is set by that cell "
+            f"instead (we aim for layers on at least {lim:.0f}%)")
+
+
+def _by_height(quality: Mapping, got: float, lim: float) -> str:
+    """CFDREQ-14, SAID: the coverage counted at the planned first layer height (engines/layer_census), with the
+    wall's first cell as built. "" when the coverage was not counted by height."""
+    if quality.get("layer_coverage_basis") != "height":
+        return ""
+    plan, first = _num(quality.get("layer_first_planned_m")), _num(quality.get("layer_first_cell_m"))
+    if not plan:
+        return ""
+    kind = wall_treatment(quality)
+    what = ("The resolved wall (y+ about 1)" if kind == "resolved" else
+            "The wall-function layers" if kind else "The wall's layers")
+    said = f"{what} were planned with a first layer {plan * 1e3:.3g} mm high; layers that thin stand on {got:.0f}% " \
+           "of the wall"
+    shape = _num(quality.get("layer_coverage_shape_pct"))
+    if shape is not None and shape >= got + 10.0:
+        said += f" (cells shaped like layers line {shape:.0f}%, but thicker than planned)"
+    if first:
+        said += f", and the wall's first cell is {first * 1e3:.3g} mm (median)"
+        if first > 1.5 * plan:
+            said += f", {first / plan:.3g} times the plan, so y+ there is that many times higher"
+    return said + f" (we aim for layers on at least {lim:.0f}%)"
+
+
+#: Faces that kept an extrusion this many points past the layer cells kept read as stacks cut short, not as walls
+#: without layers
+CUT_STACK_GAP = 20.0
+
+
+def _cut_stacks(quality: Mapping, cells_pct: float) -> str:
+    """THE STACK CUT SHORT, SAID AS THAT (rulebook 75): snappyHexMesh kept an extrusion on most wall faces but
+    only a few of the layers asked - a rotor extruded on 88% of its faces kept 5.4 of 19 layers (28% of the layer
+    cells), so its first cell was about 12 times the planned height. "" when the faces and the cells agree."""
+    faces = _num(quality.get("layer_faces_extruded_pct"))
+    if faces is None or faces < cells_pct + CUT_STACK_GAP:
+        return ""
+    per = quality.get("per_patch_layers")
+    rows = [v for v in per.values() if isinstance(v, Mapping)] if isinstance(per, Mapping) else []
+    kept: list[tuple[float, float]] = []
+    for v in rows:
+        k, t = _num(v.get("layers")), _num(v.get("target"))
+        if k is not None and t:
+            kept.append((k, t))
+    count = (f", but only {min(k for k, _ in kept):.1f} of the {max(t for _, t in kept):.0f} layers asked on "
+             "average" if kept else ", but only part of the layers asked")
+    return (f"The layers grew on {faces:.0f}% of the wall faces{count} ({cells_pct:.0f}% of the layer cells): "
+            "the stacks were cut short, and the mesher thickened the layers it kept, so the first cell is thicker "
+            "than planned there")
+
+
+#: VER-13: separate passages side by side are held to their own count of regions; openings left unmeshed are told
+SIDE_BY_SIDE_RULE = "VER-13"
+
+
+def _side_by_side(quality: Mapping) -> int:
+    """VER-13: how many separate passages the mesh was meshed as, side by side (engines/manifest records it from the
+    case's passages record); 1 when it is one passage or not recorded."""
+    n = _num(quality.get("passages_side_by_side"))
+    return int(n) if n is not None and n >= 1 else 1
+
+
 def _cad_fidelity_concerns(quality: Mapping) -> int | None:
     """How many of the CAD fidelity measures missed their bar (engines/cad_fidelity.py); None when
     the check did not run or could not measure."""
@@ -153,6 +265,14 @@ def limits_for(engine: str, topology: str, *, layers_planned: bool) -> tuple[Lim
     """The production limits that apply to this engine and flow."""
     rows = [lim for lim in PRODUCTION_LIMITS if lim.applies(engine, topology, layers_planned)]
     return tuple(rows)
+
+
+def production_limit(key: str, engine: str, topology: str = "", *, layers_planned: bool = False) -> Any:
+    """The number the verdict holds `engine`'s mesh to on `key` (the first PRODUCTION_LIMITS row that applies), or
+    None when no row does. The one place a mesher reads the verdict's own bar from, so the two never part
+    (LAD-cfd-15: the cfMesh rescue fires at the verdict's max_non_ortho)."""
+    return next((lim.limit for lim in limits_for(engine, topology, layers_planned=layers_planned)
+                 if lim.key == key), None)
 
 
 def _declared_advisory(engine: str) -> list[dict]:
@@ -212,13 +332,40 @@ def inputs_for(*, engine: str, topology: str, manifest: Mapping | None, valid: b
              "size_concerns": int(size_concerns or 0)}
     limits: list[dict] = []
     for lim in limits_for(engine, topology, layers_planned=layers_planned):
+        label = lim.label
         if lim.key == "passage_cells_across":
             measured, floor = _passage(quality)
             limit: Any = floor
         else:
             measured, limit = _measured(lim.key, quality, facts), lim.limit
-        limits.append({"key": lim.key, "label": lim.label, "op": lim.op, "limit": limit,
-                       "measured": _plain(measured), "source": lim.source})
+        side = _side_by_side(quality) if lim.key == "regions" else 1
+        if side > 1:
+            # VER-13: separate passages meshed side by side are separate flow volumes by the CAD's own truth (INS-39
+            # read which opening is in which); the limit is the passages the plan meshed, never one
+            limit = side
+            label = f"{lim.label} (the plan meshed {side} separate passages side by side)"
+        rule = {"rule": SIDE_BY_SIDE_RULE} if side > 1 else {}
+        row = {"key": lim.key, "label": label, "op": lim.op, "limit": limit,
+               "measured": _plain(measured), "source": lim.source, **rule}
+        if lim.key == "layer_coverage_pct":
+            said = coverage_words(quality, measured, limit)
+            if said:
+                row["said"] = said
+        if side > 1 and _num(measured) is not None and _num(measured) == side:
+            row["said"] = (f"The part has {side} separate flow volumes that do not connect in the CAD; each is "
+                           f"meshed, side by side, one cell region per volume ({side} regions)")
+        limits.append(row)
+    told = quality.get("openings_not_meshed")
+    if isinstance(told, (list, tuple)) and told:
+        # VER-13: the openings the staging left unmeshed (INS-40: a cavity no inlet opens into) are told on the
+        # verdict, never silently met - a concern in the words the user was told before meshing
+        said = " ".join(str(w)[0].upper() + str(w)[1:] + "." for w in quality.get("openings_not_meshed_words") or ()
+                        if str(w))
+        limits.append({"key": "openings_not_meshed", "op": "empty", "limit": [], "measured": _plain(list(told)),
+                       "label": "Openings in a cavity no inlet opens into, not meshed",
+                       "source": "docs/RULES.md INS-40 (cad/fluid_passages.plan_passages)",
+                       "rule": SIDE_BY_SIDE_RULE,
+                       **({"said": said} if said else {})})
     for row in _declared_advisory(engine):
         limits.append({**row, "measured": _plain(quality.get(row["key"]))})
     limits.extend(fea_limits(quality))
@@ -397,5 +544,5 @@ def words(row: Mapping) -> str:
     return f"{row.get('label')}: measured {measured}, limit {op}{limit_text}"
 
 
-__all__ = ["FEA_RULES_ROW", "PRODUCTION_LIMITS", "Limit", "fea_limits", "gating_rows", "inputs_for",
-           "limits_for", "words"]
+__all__ = ["FEA_RULES_ROW", "PRODUCTION_LIMITS", "Limit", "coverage_words", "fea_limits", "gating_rows", "production_limit",
+           "inputs_for", "limits_for", "wall_treatment", "words"]

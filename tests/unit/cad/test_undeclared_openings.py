@@ -139,15 +139,18 @@ def test_undeclared_stub_bore_is_sealed_and_the_seal_is_wall(tmp_path):
 
     # the stub is NOT a port: only the declared openings surface as ports
     assert set(t["openings"]) == {"inlet", "outlet"}
-    # the stub's end-ring bore hole was sealed with a planar cap. (The drill's rim on
-    # the bore wall straddles that cylinder face's parameter seam, so it forms no inner
-    # wire and is not seen - see the seam-straddling limitation test below; the end cap
-    # alone already closes the passage, leaving the stub bore a blind fluid pocket.)
-    sealed = t["sealed"]["undeclared_openings"]
+    # both ends of the stub's bore are sealed: its end-ring hole with a planar cap, and the
+    # drill's rim on the bore wall. That rim straddles the cylinder face's parameter seam, so
+    # it forms no inner wire; until INS-21 it was not seen (this test pinned one seal, the
+    # end cap, and the stub bore stayed a blind fluid pocket). INS-21 (cad_tessellate.
+    # seam_holes) reads a hole across a seam as a hole, so it is sealed where it leaves the
+    # channel - as a plain drilled hole is (test_plain_drilled_hole_is_sealed_via_rim_membranes).
+    sealed = sorted(t["sealed"]["undeclared_openings"], key=lambda s: s["centroid"][0])
     hole = math.pi * 0.006 ** 2
-    assert len(sealed) == 1, sealed
-    assert sealed[0]["area"] == pytest.approx(hole, rel=0.05), sealed
-    assert sealed[0]["centroid"] == pytest.approx([0.06, 0.0, 0.1], abs=1e-3)
+    assert len(sealed) == 2, sealed
+    assert all(s["area"] == pytest.approx(hole, rel=0.05) for s in sealed), sealed
+    assert sealed[0]["centroid"] == pytest.approx([0.0195, 0.0, 0.1], abs=1e-3)   # on the bore wall (r = 20 mm)
+    assert sealed[1]["centroid"] == pytest.approx([0.06, 0.0, 0.1], abs=1e-3)     # the stub's end
     assert t["sealed"]["open_rims"] == []
     # the seal is WALL: a straight escape from the channel through the stub now
     # crosses wall triangles (before sealing it crossed nothing - that was the leak);
@@ -158,10 +161,10 @@ def test_undeclared_stub_bore_is_sealed_and_the_seal_is_wall(tmp_path):
         "a straight path from the channel through the undeclared stub leaves the part "
         "without crossing the wall - the opening is not sealed")
     # and no port patch was polluted with the stub's seal: the ports still measure as
-    # their own full mouths (annular ring + declared-port mouth cap), nothing more
-    full_mouth = math.pi * 0.030 ** 2
-    assert _stl_area(t["stls"]["inlet"]) == pytest.approx(full_mouth, rel=0.02)
-    assert _stl_area(t["stls"]["outlet"]) == pytest.approx(full_mouth, rel=0.02)
+    # their own mouths (the bore's cap; the end ring is wall since INS-26), nothing more
+    mouth = math.pi * 0.020 ** 2
+    assert _stl_area(t["stls"]["inlet"]) == pytest.approx(mouth, rel=0.02)
+    assert _stl_area(t["stls"]["outlet"]) == pytest.approx(mouth, rel=0.02)
 
 
 def test_plain_drilled_hole_is_sealed_via_rim_membranes(tmp_path):
@@ -216,32 +219,32 @@ def test_a_protruding_boss_junction_is_not_mistaken_for_an_opening(tmp_path):
     assert _stl_area(t["stls"]["wall"]) == pytest.approx(expected, rel=0.02)
 
 
-# KNOWN LIMITATION, recorded deliberately rather than left to be rediscovered in a
-# customer's mesh (the same practice as the flat-junction-ring record in
-# test_internal_ports.py).
+# FORMERLY A KNOWN LIMITATION, now fixed by INS-21 (cad_tessellate.seam_holes).
 #
-# Opening detection walks the INNER wires of shell faces. A hole that straddles a face
-# boundary - here the cylinder faces' parameter seam, which OCC lays along +x - is
-# split across the host's outer wire(s) and forms no inner wire, so it is invisible to
-# the scan and stays open. The triangle-level rim audit cannot see it either: the B-rep
-# stays watertight around the drill wall, so the staged soup has no boundary edges. Such
-# a carve still leaks, and the finalize leak audit (internal_unexpected_patches) is the
-# net that blocks delivery. The general fix would detect openings by region
-# connectivity rather than by wire structure.
-def test_a_seam_straddling_hole_is_still_missed(tmp_path):
+# Opening detection walked only the INNER wires of shell faces. A hole that straddles a
+# face boundary - here the cylinder faces' parameter seam, which OCC lays along +x - is
+# split across the host's outer wire and forms no inner wire, so it was invisible to the
+# scan and stayed open (this test pinned that, asking to be folded into the sealed cases
+# once detection improved). INS-21 chains a periodic face's outer-wire edges other than the
+# seam into closed loops and seals a loop that keeps off the face's ends like an inner wire:
+# the hole is sealed on both surfaces it cuts, as the plain drilled hole above is.
+def test_a_seam_straddling_hole_is_sealed(tmp_path):
     step = tmp_path / "vessel_seam_hole.step"
     _vessel_with_plain_drilled_hole(step, direction=(1, 0, 0))   # dead on the seam
     out = tmp_path / "stls"
 
     t = tessellate_internal(step, out, prepared=_prepared())
 
-    assert t["sealed"]["undeclared_openings"] == []              # not seen
-    assert t["sealed"]["open_rims"] == []                        # and no rim to audit
+    sealed = t["sealed"]["undeclared_openings"]
+    hole = math.pi * 0.005 ** 2
+    assert len(sealed) == 2, sealed                              # outer-surface gap + bore-surface gap
+    assert all(s["area"] == pytest.approx(hole, rel=0.3) for s in sealed), sealed
+    assert t["sealed"]["open_rims"] == []
     wall_tris = read_stl_triangles(Path(t["stls"]["wall"]))
     assert _segment_crossings(wall_tris,
-                              (0.0007, 0.0005, 0.1004), (0.2, 0.0005, 0.1004)) == 0, (
-        "the seam-straddling hole got sealed - detection improved: fold this test into "
-        "the sealed cases above")
+                              (0.0007, 0.0005, 0.1004), (0.2, 0.0005, 0.1004)) >= 1, (
+        "a straight path from the channel through the seam-straddling hole leaves the part "
+        "without crossing the wall - the hole is not sealed")
 
 
 def test_seal_open_rims_closes_a_gap_and_leaves_closed_soups_alone():

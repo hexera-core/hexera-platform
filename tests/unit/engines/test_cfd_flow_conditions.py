@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import math
+import re
 
 import pytest
 from tests.unit.engines.test_cfd_requirements import _read, _snappy, re_num
@@ -68,8 +69,10 @@ def test_snappy_sizes_the_first_layer_from_the_conditions(tmp_path):
     ask = CR.Ask(MR.requirements_of(sec), "snappy")
     ask.length_m, ask.length_from = 0.05, "the bore"
     text, _s = _snappy(tmp_path / "c", ask)
-    h = re_num(text, "firstLayerThickness")
-    expected, missing, _how = CR.y_plus_height(1.0, {"velocity_ms": 1.0, "fluid": "water"}, length_m=0.05)
+    # CFDREQ-33: a relative stack carries its plain wall cell; the height is the share times it
+    h = re_num(text, "firstLayerThickness") * (float(re.search(r"plainWallCell\s+([-+0-9.eE]+)", text).group(1)) if "relativeSizes true" in text else 1.0)
+    expected, missing, _how = CR.y_plus_height(1.0, {"velocity_ms": 1.0, "fluid": "water", "flow": "internal"},
+                                               length_m=0.05)
     assert missing == [] and math.isclose(h, expected, rel_tol=1e-4)
     assert ask.rows["c1"]["status"] == "applied" and "first layer" in ask.rows["c1"]["built"]
 
@@ -81,7 +84,12 @@ def test_cfmesh_and_netgen_take_it_and_the_engines_without_layers_say_so():
     assert out["first_layer_thickness"] > 0 and a.rows["c1"]["status"] == "applied"
     a = CR.Ask(req, "netgen")
     out = CR.netgen_inputs(a, layers=3, port_diameters=[0.05], soft_budget=1_000_000, cell_limit=8_000_000)
-    assert out["first_layer"] > 0 and a.rows["c1"]["status"] == "applied"
+    # CFDREQ-17: Netgen's length here is the 50 mm port - Re 3.3e4 round a body is laminar: wall functions do not suit
+    # it, so the wall is resolved instead, said on the row; CFDREQ-22: sized on its boundary layer (BL_CELLS layers
+    # filling it until the wall cells are known), not from y+ 1
+    assert out["first_layer"] == pytest.approx(
+        CR.laminar_bl_m(a.how) / CR.stack_height(1.0, CR.LAMINAR_GROWTH, CR.BL_CELLS)) and a.fallback["why"] == "laminar"
+    assert "the wall is resolved instead" in a.rows["c1"]["built"]
     for engine, fn in (("gmsh", lambda x: CR.gmsh_sizes(x, 0.01, external=True)),
                        ("snapgrid", lambda x: CR.snapgrid_plan(x, {"max_cells": 1_000_000})),
                        ("vmtk", lambda x: CR.vmtk_spec(x, {"boundary_layers": 5}))):
@@ -206,29 +214,37 @@ ACCEPTED_FUNCTIONS = ("Internal flow through the diffuser, confirmed by the user
                       + f" {FC.ACCEPTED_LEAD} the fluid, its speed, the wall treatment.")
 
 
-@pytest.mark.parametrize(("job", "wall_cell_mm", "y50_first_mm"), [
-    ("07fd516d", 1.716, 1.348),       # no-notes external rotor: 5.7% of the wall had layers
-    ("8eec5b7b", 1.716, 1.348),       # the same file with a note the checks set aside: 5.59%
-    ("c0b45ad1", 2.352, 0.989),       # diffuser plenum: 4.18%
+@pytest.mark.parametrize(("job", "wall_cell_mm", "y50_first_mm", "built"), [
+    ("07fd516d", 1.716, 1.348, "resolved"),     # no-notes external rotor: 5.7% of the wall had layers
+    ("8eec5b7b", 1.716, 1.348, "resolved"),     # the same file with a note the checks set aside: 5.59%
+    ("c0b45ad1", 2.352, 0.989, "functions"),    # diffuser plenum: 4.18%
 ])
-def test_proposed_wall_functions_only_accepted_keep_the_meshers_own_layers(job, wall_cell_mm, y50_first_mm):
-    """F: pressing OK on the proposed conditions made an absolute y+ 50 first layer about as thick as the wall cells;
-    snappyHexMesh grew it on 4-6% of the wall. Accepted, it is no ask: the mesher's own relative layers (5 layers, the
-    last 0.3 of the cell, growing 1.2) stay, as on main - a first layer 0.145 of the wall cell, which it grows on the
-    whole wall."""
+def test_proposed_wall_functions_accepted_are_fitted_to_the_wall_cells(job, wall_cell_mm, y50_first_mm, built):
+    """CFDREQ-13 (was round 4, F): pressing OK on the proposed wall functions made an absolute y+ 50 first layer about
+    as thick as the wall cells, which snappyHexMesh grew on 4-6% of the wall; keeping the mesher's relative layers
+    instead put the first cell at y+ 3-14 (the CFD board, 20 Nov). Now the accepted wall functions are an ask, fitted
+    to the wall cells: a first layer that fits stays (one layer at most 0.6 of the cell, its centre at y+ 30 or more);
+    where none fits, the wall is resolved - never a stack several cells deep."""
     c = FC.read(ACCEPTED_FUNCTIONS)
     assert c["wall"] == "functions" and c["wall_said"] is False
-    assert FC.PROPOSED_WORDS in ACCEPTED_FUNCTIONS and "sized for y⁺ ≈ 50" not in ACCEPTED_FUNCTIONS
-    none = MR.section("none")
-    assert CR.with_conditions(none, {"request_txt": ACCEPTED_FUNCTIONS}) is none        # no Ask: main's own case
-    first = 0.3 * wall_cell_mm / 1.2 ** 4
-    assert first / wall_cell_mm == pytest.approx(0.1447, abs=1e-3) and first < y50_first_mm
-    # a y+ the user typed is still theirs, sized at the conditions' speed (CFDREQ-8), and made one the mesher keeps
+    assert FC.PROPOSED_WORDS in ACCEPTED_FUNCTIONS and "resolved instead" in FC.PROPOSED_WORDS
+    req = MR.requirements_of(CR.with_conditions(MR.section("none"), {"request_txt": ACCEPTED_FUNCTIONS}))
+    assert req["layers"]["y_plus"] == 50.0 and req["layers"]["treatment"] == "functions"
+    ask = CR.Ask(req, "snappy")
+    ask.how = {"visc_m": y50_first_mm / 1000.0 / 50.0}        # the job's y+ 50 height: its viscous length
+    fit = CR.wall_fit(ask, 2 * y50_first_mm / 1000.0, wall_cell_mm / 1000.0)
+    assert fit["treatment"] == built
+    if built == "functions":
+        assert fit["first_m"] <= 0.6 * wall_cell_mm / 1000.0 + 1e-12 and fit["y_plus"] >= 30
+    else:
+        assert fit["y_plus"] == pytest.approx(0.5) and "do not suit" in fit["why"]       # y+ 1 at the top
+    # a y+ the user typed is still theirs, sized at the conditions' speed (CFDREQ-8)
     req, _d, _na = _read("y+ of 1 at the wall",
                          layers=[{"what": "y_plus", "value": 1, "unit": "none", "quote": "y+ of 1 at the wall"}])
     got = MR.requirements_of(CR.with_conditions(MR.section("used", requirements=req),
                                                 {"request_txt": ACCEPTED_FUNCTIONS}))
     assert got["layers"]["y_plus"] == 1.0 and got["physics"]["velocity_ms"] == 1.0
+    assert got["layers"].get("treatment") is None                 # theirs: no wall-treatment fit
     # a wall treatment the user chose is an ask, as before
     assert FC.read(INT_RESOLVED)["wall_said"] is True
     assert MR.requirements_of(CR.with_conditions(MR.section("none"), {"request_txt": INT_RESOLVED}))["layers"][
@@ -306,3 +322,78 @@ def test_the_run_reads_the_conditions_with_no_notes(tmp_path):
     asyncio.run(CR.read_for_attempt(tmp_path, {"request_txt": INT_RESOLVED, "purpose": "internal_cfd"}))
     req = CR.requirements_for(tmp_path)
     assert req is not None and req["layers"]["y_plus"] == 1.0 and req["physics"]["velocity_ms"] == 1.0
+
+
+@pytest.mark.parametrize("heights, met, words", [
+    # the stack the plan asked: the first cell is the planned 0.02243 mm on the whole wall
+    ([2.243e-05, 2.7e-05, 1e-3, 1e-3], True, "the wall's first cell is 0.02243 mm (median), and layers of that height "
+                                            "stand on 100% of the wall"),
+    # cells shaped like layers, but 100 times too thick (cfMesh, resolved wall: mini_housing_002 1.8 mm, 0.02 mm asked)
+    ([2.243e-03, 2.7e-03, 1.0, 1.0], False, "the wall's first cell is 2.243 mm (median), 100 times that, and layers "
+                                           "of that height stand on 0% of the wall - the layers were not built at the "
+                                           "height asked"),
+])
+def test_the_first_layer_row_reads_the_first_cell_the_mesh_has(tmp_path, heights, met, words):
+    """CFDREQ-14: a coverage counted by shape said "layers on 100% of the wall" over a first cell 100 times the plan."""
+    from tests.unit.engines.test_layer_census import _write_column_mesh
+    req, _d, _na = _read("y+ of 1 at the wall",
+                         layers=[{"what": "y_plus", "value": 1, "unit": "none", "quote": "y+ of 1 at the wall"}])
+    got = MR.requirements_of(CR.with_conditions(MR.section("used", requirements=req), {"request_txt": INT_RESOLVED}))
+    rid = got["rows"][0]["id"]
+    ws = tmp_path / "case"
+    (ws / "system").mkdir(parents=True)
+    MR.write(ws, MR.section("used", requirements=got))
+    (ws / CR.PLAN_FILE).write_text(json.dumps({"engine": "cfmesh", "rows": {rid: {
+        "status": "applied", "built": "a resolved wall: first layer 0.02243 mm high", "first_m": 2.243e-05}}}))
+    (ws / "system" / "meshDict").write_text("wall { nLayers 2; thicknessRatio 1.2; maxFirstLayerThickness "
+                                            "2.243e-05; allowedDiscontinuity 0; }")
+    (ws / "patches_contract.txt").write_text("  • wall  →  type wall\n  • side  →  type patch\n")
+    _write_column_mesh(ws / "constant" / "polyMesh", list(heights), nx=3)
+    row = CR.report(ws, {"cells": 36, "layer_coverage_pct": 100.0}, "cfmesh")["rows"][0]
+    assert row["met"] is met
+    assert row["delivered"].startswith("first layer 0.02243 mm set, as asked; on the built mesh ")
+    assert words in row["delivered"]
+
+
+def _body_and_far_wall(ws, far: str, heights) -> None:
+    """A column mesh whose z=0 face is the body's wall and whose every other boundary face is a second wall `far`
+    on cells a hundred times the first layer (a ground plane on background cells, or a second body wall)."""
+    from tests.unit.engines.test_layer_census import _write_column_mesh
+    pm = ws / "constant" / "polyMesh"
+    _write_column_mesh(pm, list(heights), nx=3)
+    b = pm / "boundary"
+    b.write_text(b.read_text().replace("side { type patch;", f"{far} {{ type wall;"))
+    (ws / "patches_contract.txt").write_text(f"  • body  →  type wall\n  • {far}  →  type wall\n")
+    b.write_text(b.read_text().replace("    wall { type wall;", "    body { type wall;"))
+
+
+def test_the_first_cell_and_the_cells_across_are_measured_on_the_body_not_the_ground(tmp_path):
+    """CFDREQ-19/22: the y+ row's first cell and the laminar row's cells across are the BODY's. abc 00034783_002 had
+    a ground wall on 417 mm background cells; taken by area with the body it set the median first cell to 422 mm
+    (y+ about 5709) and read the row missed at 96% layer coverage."""
+    from meshpipeline.engines.workspace_facts import contract_body_walls
+    heights = [0.01] * 10 + [1.0] * 3
+    ws = tmp_path / "ground"
+    _body_and_far_wall(ws, "ground", heights)
+    assert contract_body_walls(ws) == ["body"]
+    first = CR.built_first_cells(ws, {}, 0.01)
+    assert first["layer_first_cell_m"] == pytest.approx(0.01, rel=0.05)
+    bl = CR.built_bl_cells(ws, 0.1)
+    assert bl["bl_cells_median"] == pytest.approx(10, abs=0.6) and bl["bl_area_met_pct"] == pytest.approx(100.0)
+    # a second wall the user declared is the body's own: it is measured (the rule is the ground, not a size filter)
+    ws2 = tmp_path / "fin"
+    _body_and_far_wall(ws2, "fin", heights)
+    assert contract_body_walls(ws2) == ["body", "fin"]
+    assert CR.built_first_cells(ws2, {}, 0.01)["layer_first_cell_m"] > 0.1
+    assert CR.built_bl_cells(ws2, 0.1)["bl_area_met_pct"] < 50.0
+
+
+def test_the_coverage_line_says_the_height_the_layers_stand_at():
+    """CFDREQ-14: the coverage limit's own line, when the census counted by height."""
+    from meshpipeline.engines.verdict_limits import coverage_words
+    q = {"layer_coverage_basis": "height", "layer_first_planned_m": 2.1e-05, "layer_first_cell_m": 3.2e-03,
+         "layer_coverage_shape_pct": 54.0, "layer_area_at_plan_pct": 0.0}
+    said = coverage_words(q, 0.0, 80.0)
+    assert said.startswith("The wall's layers were planned with a first layer 0.021 mm high; layers that thin stand "
+                           "on 0% of the wall (cells shaped like layers line 54%, but thicker than planned)")
+    assert "the wall's first cell is 3.2 mm (median), 152 times the plan" in said

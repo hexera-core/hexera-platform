@@ -214,3 +214,30 @@ def test_a_wait_that_trips_is_recorded_as_a_guard_trip_not_a_time_limited_decisi
     assert det.drain_process_notes() == []
     trips = det.drain_process_guard_trips()
     assert [(t["where"], t["rule"]) for t in trips] == [("intake.recommendation", "TIME-4")]
+
+
+# TIME-13: a step its own guard stopped does the same planned work on the same mesh when run again
+
+def test_a_trip_that_would_repeat_on_a_replay_is_not_replayed():
+    """abc 99768: the passage optimiser tripped its own 316 s guard, was run again unchanged and tripped at 316 s
+    again (~12 minutes spent on a replay that could not end otherwise)."""
+    assert W.after_trip({"replays": 0, "same_on_replay": True}) == (W.RAN_OUT_OF_TIME, "TIME-13")
+    assert W.after_trip({"replays": 0, "same_on_replay": False}) == (W.REPLAY, "TIME-3")
+    same = _tripped(executor_failure_facts={"engine": "cfmesh", "guard": {
+        "where": "cfmesh.rescue", "step": "optimised", "guard_s": 316.0, "planned_s": 105.6, "same_on_replay": True}})
+    assert G.route_after_executor(same) == G.END
+    # a trip that says nothing of the kind (an infrastructure stop as before) is replayed once, as before
+    assert G.route_after_executor(_tripped()) == "node_guard_replay"
+
+
+# TIME-14: a trip inside one passage's rescue belongs to that step, not the attempt
+
+def test_a_passage_rescue_trip_does_not_stop_the_attempt_s_finished_mesh_being_judged(tmp_path):
+    """abc 99768 (c2e13_p34d): the passage optimiser's trip sat in the record; the attempt went on, finished its mesh
+    (worst cell 85.4 degrees) and the executor threw it away as "an infrastructure stop, nothing judged"."""
+    from meshpipeline.pipeline import executor as X
+    det.note_guard_trip("cfmesh.rescue", workspace=tmp_path, rule=W.TIME_PASSAGE_STEP, step="optimised",
+                        guard_s=316.0, same_on_replay=True)
+    assert X._guard_trip({"engine": "cfmesh"}, tmp_path) == {}
+    assert not W.ends_attempt({"rule": "TIME-14"}) and W.ends_attempt({"rule": "TIME-3"})
+    assert "TIME-14" in W.TIME_RULES

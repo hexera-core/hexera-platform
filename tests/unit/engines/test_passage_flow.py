@@ -390,3 +390,48 @@ def test_a_delivered_mesh_with_the_note_reads_it_first():
     assert msg.startswith("Delivered with a note on its narrowest gaps:")
     assert "near-wall layer coverage" not in msg, "the layer closing is not this note's"
     assert "Mesh generation completed successfully." in msg
+
+
+# THE SET-ASIDE IS NEVER SILENT (rulebook 75): the CFD board's tube bank met the floor only by
+# setting its tube gaps aside; the note names the places, the narrowest, the count we aim for and
+# the cells that would resolve them, from the pass's own gap plan.
+_TUBE_PLAN = {"status": "over_limit", "spots": 80, "narrowest_m": 0.0079,
+              "where_m": [0.417, 0.0196, -0.0128], "rule_cells_across": 13.0, "target": 13.0,
+              "needed": 69_805_453, "limit": 8_000_000, "resolution_short": True, "route_big": True}
+
+
+def test_a_set_aside_always_leaves_the_note_with_the_places_and_the_cells_that_resolve_them():
+    from meshpipeline.application.final_result import (
+        RunOutcome,
+        _narrow_passage_lines,
+        narrow_passage_caveat,
+    )
+    from meshpipeline.engines.passage_flow import judge_resolution
+    q = {**_quality(7.1, SIDE_EVIDENCE), "gap_plan": _TUBE_PLAN}
+    c = narrow_passage_caveat(RunOutcome(executor_success=True, quality=q))
+    assert c is not None and c["spots"] == 80 and c["cells_needed"] == 69_805_453
+    text = "\n".join(_narrow_passage_lines(c))
+    assert "found 80 narrow place(s), the narrowest 7.9 mm across at (417, 20, -13) mm" in text
+    assert "We aim for 13 cells across every gap" in text
+    assert ("ask for about 69.8 million cells in your notes - that mesh runs on a bigger machine"
+            in text)
+    # every set-aside the gate makes leaves a note, with or without a plan on record
+    for p05 in (2.0, 5.2, 7.1, 11.9):
+        qq = _quality(p05, SIDE_EVIDENCE)
+        v = judge_resolution(qq)
+        assert v.ok and v.scope == "main", p05
+        note = narrow_passage_caveat(RunOutcome(executor_success=True, quality=qq))
+        assert note is not None, p05
+        assert "ask for a finer mesh" in "\n".join(_narrow_passage_lines(note))
+
+
+def test_the_gap_plan_reaches_the_quality_record(tmp_path):
+    import json
+
+    from meshpipeline.engines.gap_sizing import GAP_RECORD, QUALITY_KEY, quality_plan
+    assert quality_plan(tmp_path) == {}
+    (tmp_path / GAP_RECORD).write_text(json.dumps({**_TUBE_PLAN, "cost": 0, "ceiling": 4_000_000}))
+    got = quality_plan(tmp_path)[QUALITY_KEY]
+    assert got["spots"] == 80 and got["needed"] == 69_805_453 and "ceiling" not in got
+    (tmp_path / GAP_RECORD).write_text(json.dumps({"status": "none", "spots": 0}))
+    assert quality_plan(tmp_path) == {}

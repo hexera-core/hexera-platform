@@ -101,12 +101,17 @@ def test_solid_rod_keeps_the_old_inside_the_solid_semantics(tmp_path):
 # ring; writing only the ring leaves the bore hole open, the channel connects to the
 # exterior void through the mouths, and the snappy carve keeps channel+exterior as ONE
 # region (jobs 95bd0197 and 0de57541 delivered meshes with a spurious 'outer' patch).
-# The port STL must span the WHOLE opening: ring + a cap over the bore hole.
+# The bore hole is capped, and since INS-26 the cap alone is the port: the ring is the metal's end,
+# written into the wall, so the staged surface still spans the whole end and the port is the mouth.
 # #
 
 def _stl_area(path) -> float:
+    return _stl_area_of(read_stl_triangles(Path(path)))
+
+
+def _stl_area_of(tris) -> float:
     total = 0.0
-    for a, b, c in read_stl_triangles(Path(path)):
+    for a, b, c in tris:
         u = [b[i] - a[i] for i in range(3)]
         v = [c[i] - a[i] for i in range(3)]
         cx = u[1] * v[2] - u[2] * v[1]
@@ -120,16 +125,17 @@ def test_hollow_tube_port_stls_seal_the_full_mouth(tmp_path):
     step = tmp_path / "tube.step"
     _make_hollow_tube(step)                      # r_out=30mm, r_in=20mm → metres below
     out = tessellate_internal(step, tmp_path / "stls", prepared=_prepared())
-    full_mouth = math.pi * 0.030 ** 2            # ring + bore cap = the FULL end disc
+    bore = math.pi * 0.020 ** 2                  # the bore's cap = the mouth
     ring_only = math.pi * (0.030 ** 2 - 0.020 ** 2)
+    end_wall = [t for t in read_stl_triangles(Path(out["stls"]["wall"]))
+                if any(all(abs(p[2] - z) < 1e-7 for p in t) for z in (0.0, 0.2))]
     for port in ("inlet", "outlet"):
         area = _stl_area(out["stls"][port])
-        assert area > ring_only * 1.5, (
-            f"{port}.stl covers only the annular ring ({area:.6f} m²) - the bore hole "
-            "is open and the channel leaks to the exterior void")
-        assert area == pytest.approx(full_mouth, rel=0.02), (
-            f"{port}.stl area {area:.6f} m² should approximate the full end cap "
-            f"{full_mouth:.6f} m² (annular ring + bore cap)")
+        assert area == pytest.approx(bore, rel=0.02), (
+            f"{port}.stl area {area:.6f} m² should be the bore's cap {bore:.6f} m² - the mouth, nothing more")
+    # both end rings are wall: the staged surface still closes the ends whole
+    ring_area = sum(_stl_area_of([t]) for t in end_wall)
+    assert ring_area == pytest.approx(2.0 * ring_only, rel=0.02)
 
 
 def test_solid_rod_port_stls_are_unchanged_single_disc(tmp_path):

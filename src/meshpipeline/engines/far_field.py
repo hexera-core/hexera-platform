@@ -115,5 +115,89 @@ def far_field_box(bbox_min, bbox_max, margins: Mapping, *, flow_axis: str | None
     return dmin, dmax
 
 
-__all__ = ["DEFAULT_MARGINS", "extents_in_text", "far_field_box", "flow_axis_of",
-           "margins_from", "ruler_of"]
+#: PLAN-cfd-6: the most of the far field's cross-section a body may block (frontal area over the box's section across the
+#: flow): COST Action 732's best-practice guideline (Franke et al. 2007) and the usual wind-tunnel correction limit
+BLOCKAGE_MAX = 0.03
+#: the rule the widening is recorded under
+BLOCKAGE_RULE = "PLAN-cfd-6"
+#: the share of BLOCKAGE_MAX the widened box aims at
+BLOCKAGE_AIM = 0.95
+
+
+def projected_areas(triangles) -> list[float]:
+    """The body's frontal area seen along x, y and z: half the summed absolute projection of every wall triangle (a
+    closed surface's front and back each project once; the CFD board's own measure). [0, 0, 0] for no triangles."""
+    import numpy as np
+
+    t = np.asarray(triangles, dtype=float).reshape(-1, 3, 3)
+    if not len(t):
+        return [0.0, 0.0, 0.0]
+    n = np.cross(t[:, 1] - t[:, 0], t[:, 2] - t[:, 0]) * 0.5
+    return [float(v) for v in 0.5 * np.abs(n).sum(axis=0)]
+
+
+def projected_areas_of(stl_path) -> list[float] | None:
+    """projected_areas of a staged surface file (metres), or None when it cannot be read."""
+    try:
+        from pathlib import Path
+
+        from meshpipeline.cad.stl_io import read_stl_triangles
+        return projected_areas(read_stl_triangles(Path(stl_path)))
+    except Exception:  # noqa: BLE001 - no reading, no growth: the box stays as planned
+        return None
+
+
+def grow_for_blockage(dmin: list, dmax: list, axis: int, frontal_m2: float | None, *,
+                      fixed: frozenset | set | tuple = (), most: float = BLOCKAGE_MAX,
+                      ruler_m: float | None = None) -> dict | None:
+    """PLAN-cfd-6, THE CROSS-SECTION SIZED FOR BLOCKAGE: the box's two cross-flow axes moved out, every free face by
+    the same distance, until the body's frontal area is at most `most` of the section across the flow - the planned
+    margins stay as the minimum. A face in `fixed` ((axis, "min" | "max"): the floor under a grounded body, a
+    symmetry plane) never moves. Changes `dmin`/`dmax` in place; returns the record ({frontal_m2, section_before_m2,
+    blockage_before, blockage, grown_m, grown_rulers}) when it grew, else None (already within it, or nothing to
+    grow)."""
+    if not frontal_m2 or frontal_m2 <= 0.0:
+        return None
+    cross = [j for j in range(3) if j != int(axis)]
+    span = [float(dmax[j]) - float(dmin[j]) for j in cross]
+    free = [sum(1 for s in ("min", "max") if (j, s) not in set(fixed)) for j in cross]
+    # aimed a little under the limit: the meshed wall's projection reads a few percent off the staged surface's
+    need = float(frontal_m2) / (BLOCKAGE_AIM * float(most))
+
+    def section(d: float) -> float:
+        return (span[0] + free[0] * d) * (span[1] + free[1] * d)
+
+    before = section(0.0)
+    if before <= 0.0 or before >= need or not any(free):
+        return None
+    lo, hi = 0.0, max(span) + 1.0
+    while section(hi) < need:
+        hi *= 2.0
+    for _ in range(60):
+        mid = 0.5 * (lo + hi)
+        lo, hi = (mid, hi) if section(mid) < need else (lo, mid)
+    d = hi
+    for j, f in zip(cross, free, strict=True):
+        if f == 0:
+            continue
+        if (j, "min") not in set(fixed):
+            dmin[j] = float(dmin[j]) - d
+        if (j, "max") not in set(fixed):
+            dmax[j] = float(dmax[j]) + d
+    r = float(ruler_m) if ruler_m else None
+    return {"rule": BLOCKAGE_RULE, "frontal_m2": float(frontal_m2), "section_before_m2": before, "blockage_before": float(frontal_m2) / before,
+            "blockage": float(frontal_m2) / section(d), "grown_m": d,
+            **({"grown_rulers": d / r} if r else {})}
+
+
+def blockage_words(rec: Mapping) -> str:
+    """PLAN-cfd-6's plain line for the run note."""
+    by = (f"{float(rec['grown_rulers']):.3g} body lengths" if rec.get("grown_rulers") is not None
+          else f"{float(rec['grown_m']):.3g} m")
+    return (f"the far field was widened by {by} on each open side so the body blocks "
+            f"{100 * float(rec['blockage']):.2g}% of its cross-section (it was {100 * float(rec['blockage_before']):.2g}%; "
+            f"at most {100 * BLOCKAGE_MAX:.0f}%)")
+
+
+__all__ = ["BLOCKAGE_MAX", "DEFAULT_MARGINS", "blockage_words", "extents_in_text", "far_field_box", "flow_axis_of",
+           "grow_for_blockage", "margins_from", "projected_areas", "projected_areas_of", "ruler_of"]

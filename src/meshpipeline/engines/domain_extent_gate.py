@@ -199,6 +199,10 @@ def check_domain_extents(requested: dict | None, manifest: dict,
             continue
         if rv == 0:
             continue
+        if k == "lateral" and av >= rv:
+            # PLAN-cfd-6: the cross-section is widened past the margin asked when the body would block more than 3%
+            # of it - more room to the side is the rule, never a defect (the typed path judges it the same way)
+            continue
         if abs(av - rv) / abs(rv) > tol:
             mismatches.append(f"{k}: requested {rv:.3g}c, mesh has {av:.3g}c")
 

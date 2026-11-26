@@ -32,6 +32,23 @@ logger = logging.getLogger(__name__)
 #: imported, the tree built) costs about two seconds, and 4,000 rays take about seven on one core.
 PARALLEL_FROM = 4000
 
+#: THE TREE'S TOLERANCE IS THE SURFACE'S OWN SIZE, NEVER VTK'S ABSOLUTE 0.01. vtkOBBTree widens every
+#: box it tests a ray against by its Tolerance, 0.01 by default - in the metres every staged surface
+#: is in, 10 mm. On a part a few centimetres across every box then meets every ray, and each ray tests
+#: every triangle: 11-17 ms a ray on abc 00160152 (59 mm across) and 00088953 (77 mm), 0.2 ms with a
+#: tolerance of a millionth of the part (2026-11-22, testlab-4); on a 4 m pipe 0.4 against 0.2 ms.
+#: The radius field of 00160152 took 232 s of its 352 s staging for 72 k points.
+TREE_TOLERANCE_OF_SIZE = 1e-6
+
+
+def tree_tolerance(points) -> float:
+    """The tolerance a vtkOBBTree over `points` is built with: TREE_TOLERANCE_OF_SIZE of their box's
+    diagonal."""
+    p = np.asarray(points, dtype=float).reshape(-1, 3)
+    if not len(p):
+        return 1e-12
+    return max(float(np.linalg.norm(p.max(axis=0) - p.min(axis=0))) * TREE_TOLERANCE_OF_SIZE, 1e-12)
+
 
 def workers_for(n_points: int) -> int:
     """How many processes cast `n_points` rays: the cores this process may run on, no more than
@@ -65,6 +82,7 @@ def cast(points, faces, normals, face_normals, ring, fold, eps: float, reach: fl
     mesh = pv.PolyData(pts, np.hstack([np.full((len(f), 1), 3, dtype=np.int64), f]).ravel())
     obb = vtk.vtkOBBTree()
     obb.SetDataSet(mesh)
+    obb.SetTolerance(tree_tolerance(pts))
     obb.BuildLocator()
     hits = vtk.vtkPoints()
     ids = vtk.vtkIdList()
@@ -89,15 +107,19 @@ def _ring_arrays(ring) -> tuple[np.ndarray, np.ndarray]:
 
 
 def cast_all(points, faces, normals, face_normals, ring, fold, eps: float,
-             reach: float) -> tuple[np.ndarray, np.ndarray]:
-    """`cast` at every point, on workers_for(points) processes (see the module text)."""
+             reach: float, indices=None) -> tuple[np.ndarray, np.ndarray]:
+    """`cast` at every point - or at `indices` only, NaN elsewhere - on workers_for(points cast) processes
+    (see the module text)."""
     n = len(points)
-    k = workers_for(n)
-    if k <= 1:
-        return cast(points, faces, normals, face_normals, ring, fold, eps, reach, np.arange(n))
+    todo = np.arange(n) if indices is None else np.asarray(indices, dtype=np.int64)
+    k = workers_for(len(todo))
     first = np.full(n, np.nan)
     r = np.full(n, np.nan)
+    if k <= 1:
+        first[todo], r[todo] = cast(points, faces, normals, face_normals, ring, fold, eps, reach, todo)
+        return first, r
     done = np.zeros(n, dtype=bool)
+    done[np.setdiff1d(np.arange(n), todo)] = True          # not asked: left NaN, never cast
     with tempfile.TemporaryDirectory(prefix="chords_") as tmp:
         offsets, flat = _ring_arrays(ring)
         job = Path(tmp) / "job.npz"
@@ -105,7 +127,7 @@ def cast_all(points, faces, normals, face_normals, ring, fold, eps: float,
                  normals=np.asarray(normals, dtype=float),
                  face_normals=np.asarray(face_normals, dtype=float), ring_offsets=offsets,
                  ring_flat=flat, fold=np.asarray(fold, dtype=float), eps=float(eps),
-                 reach=float(reach))
+                 reach=float(reach), indices=todo)
         # the children get this process's environment through the one helper that hands it on
         # (no secrets), with one thread each: the split is across processes
         from meshpipeline.sandbox.safe_exec import scrubbed_subprocess_env
@@ -123,7 +145,7 @@ def cast_all(points, faces, normals, face_normals, ring, fold, eps: float,
                 _, err = proc.communicate()
                 if proc.returncode == 0 and out.is_file():
                     got = np.load(out)
-                    idx = np.arange(part, n, k)
+                    idx = todo[part::k]
                     first[idx], r[idx] = got["first"], got["r"]
                     done[idx] = True
                 else:
@@ -147,7 +169,7 @@ def _main(argv: list[str]) -> int:
     d = np.load(job)
     offsets, flat = d["ring_offsets"], d["ring_flat"]
     n = len(d["points"])
-    idx = np.arange(part, n, of)
+    idx = d["indices"][part::of] if "indices" in d.files else np.arange(part, n, of)
     ring: dict[int, frozenset] = {int(i): frozenset(flat[offsets[i]:offsets[i + 1]].tolist())
                                   for i in idx.tolist()}
     first, r = cast(d["points"], d["faces"], d["normals"], d["face_normals"], ring, d["fold"],

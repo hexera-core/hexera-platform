@@ -66,7 +66,8 @@ def census_quality(ws: Path, intake_patches: list) -> dict:
             "area_with_full_layers": v["area_with_full_layers"],
             "area_with_any_layer": v["area_with_any_layer"],
             "layers_by_area": v["layers_by_area"], "first_layer_m": v["first_layer_m"],
-            "stack_m": v["stack_m"], "growth": v["growth"]}
+            "stack_m": v["stack_m"], "growth": v["growth"],
+            "first_cell_m": v.get("first_cell_m"), "area_at_plan": v.get("area_at_plan")}
         for n, v in per.items()}
     return out
 
@@ -126,7 +127,9 @@ def finalize(workspace_dir: str, intake_patches: list, engine: str, domain: str 
             for _k in ("layer_coverage_pct", "layer_coverage_source", "layer_census_note",
                        "per_patch_layers", "layers_mean", "layer_area_full_pct",
                        "layer_area_any_pct", "layers_requested", "layers_stated",
-                       "layers_in_meshdict"):
+                       "layers_in_meshdict", "layer_coverage_shape_pct", "layer_coverage_basis",
+                       "layer_first_planned_m", "layer_area_at_plan_pct", "layer_coverage_at_plan_pct",
+                       "layer_first_cell_m", "layer_first_vs_plan"):
                 q.pop(_k, None)
             q.update(census_quality(ws, intake_patches))
     except Exception:

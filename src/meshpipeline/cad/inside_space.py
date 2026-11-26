@@ -57,6 +57,13 @@ MAX_ROUNDS = 24
 #: A loop strays from its plane by more than this share of its size: its cap is the lid builder's
 #: own surface (cad/lids), not the flat disc of its plane.
 CURVED_LOOP = 0.03
+#: INS-24: a smooth patch's outline whose points stray from their own plane by more than this many of its own
+#: widths is the outline of a band - a cylinder wall cut by a notch, whose one loop runs round its foot, up the
+#: notch, back round its top and down - never the rim of one opening. An equal tee's saddle-shaped branch hole
+#: strays half its width; the notched ring adapter's band (batch 4) 1.24.
+BAND_LOOP = 1.0
+#: docs/RULES.md id of that reading
+BAND_LOOP_RULE = "INS-24"
 #: A pocket counts as a passage of the part when it holds at least this share of the largest
 #: pocket's space; a smaller one (a bolt hole beside a flange's bore, a blind dimple) is a side
 #: pocket: its mouths are kept, proposed as not an opening.
@@ -214,7 +221,9 @@ class InsideMap:
                "mouths_per_passage": [len(p.mouths) for p in passages],
                "side_pockets": len([p for p in self.pockets if not p.passage]),
                "cell_mm": round(self.h * mm_per_unit, 4),
-               "enclosed_mm3": round(self.enclosed_volume * mm_per_unit ** 3, 3)}
+               "enclosed_mm3": round(self.enclosed_volume * mm_per_unit ** 3, 3),
+               # the space of its passages, which open to the outside (INS-18: set against enclosed_mm3)
+               "open_mm3": round(sum(p.volume for p in passages) * mm_per_unit ** 3, 3)}
         if passages:
             out["deepest_mm"] = r(passages[0].deepest)
             out["clearance_mm"] = round(passages[0].clearance * mm_per_unit, 3)
@@ -537,6 +546,15 @@ def _loops(mesh, grid: Grid) -> tuple[list[_Loop], int]:
         if mesh.shape(found) is None and mesh.why.startswith("covered"):
             continue
         rim = bool(np.all(mesh.count[eidx] == 1))
+        if not rim and dev > BAND_LOOP * d:
+            # INS-24: THE OUTLINE OF A BAND IS NO OPENING'S RIM. A ring wall notched from its foot to its top is
+            # one smooth patch whose outline runs round its foot, up the notch, back round its top and down: one
+            # loop across the whole part, its flat projection a sliver. Capped "toward the smallest area" it
+            # spanned the ring's inside, cut that space off as a pocket of its own and was proposed as a second
+            # opening of the part's one open end (a ring adapter, batch 4: capped at its bore's top and again
+            # "beside the tab", staged as two separate passages). Its edges stay wall; the space it rings is
+            # whatever the other loops make of it.
+            continue
         lp = _Loop(vidx=np.asarray(vidx), eidx=np.asarray(eidx), P=P, c=c, n=n, area=area, dev=dev,
                    wh=wh, kind="rim" if rim else "bore")
         if d < MIN_ACROSS * grid.h:
@@ -609,6 +627,12 @@ def read_inside(mesh=None, *, tris=None, cells: int = GRID_CELLS, h_max: float |
         in_air = np.bincount(flat_lab, weights=oa, minlength=n_lab + 1)
         pocket_ids = {g for g in range(1, n_lab + 1) if g not in outside and sizes[g] >= MIN_POCKET_CELLS
                       and in_air[g] >= 0.5 * sizes[g]}
+        # a closed shell's inside, label by label: space the open air never reached (the part's material)
+        is_shell = in_air < 0.5 * sizes
+        is_shell[0] = False
+        if outside:
+            is_shell[np.fromiter(outside, dtype=np.int64)] = False
+        keep_arr = np.fromiter(outside | pocket_ids, dtype=np.int64)
         split = False
         sides = {}
         for k, lp in enumerate(loops):
@@ -618,6 +642,17 @@ def read_inside(mesh=None, *, tris=None, cells: int = GRID_CELLS, h_max: float |
             kind_a = "out" if a in outside else "pocket" if a in pocket_ids else ""
             kind_b = "out" if b in outside else "pocket" if b in pocket_ids else ""
             if {kind_a, kind_b} == {"out", "pocket"}:
+                # INS-15: A MOUTH OPENS STRAIGHT ONTO BOTH ITS SPACES, NEVER THROUGH THE PART'S MATERIAL. The
+                # side reads skip a closed shell's inside, so a cap reached its space through metal: the loop
+                # round a solid stub's root, capped inside a cup's wall, read the cup through the wall, and
+                # the outline of the cup's bottom face read it through the floor - an open cup with eight
+                # solid stubs was "a passage with 8 mouths". Such a cap opens nothing: taken away, the space
+                # flooded again.
+                if (_through_material(lp, flat_lab, grid, 1.0, a, keep_arr, is_shell, kind_a == "out")
+                        or _through_material(lp, flat_lab, grid, -1.0, b, keep_arr, is_shell, kind_b == "out")):
+                    lp.active = False
+                    split = True
+                    continue
                 # A MOUTH: open air on one side of the cap, a pocket on the other
                 pocket, out_plus = (b, True) if kind_a == "out" else (a, False)
                 sides[k] = (pocket, a if out_plus else b, out_plus)
@@ -731,6 +766,16 @@ def _bottleneck(cubes: np.ndarray, nb: np.ndarray, flat_lab: np.ndarray, dist: n
     space beyond - the largest clearance from the drawn wall (`dist`) that every cube of some path
     of its cubes keeps (the cubes are let in from the clearest down until the passage and the space
     beyond first join). Returns that clearance and the cube where they joined (its middle)."""
+    got = _widest_join(cubes, nb, flat_lab, dist, shape, passage)
+    if got is not None:
+        return got
+    dc = dist[cubes]
+    return float(dc.min()), int(cubes[int(np.argmin(dc))])
+
+
+def _widest_join(cubes: np.ndarray, nb: np.ndarray, flat_lab: np.ndarray, dist: np.ndarray, shape,
+                 passage: set) -> tuple[float, int] | None:
+    """_bottleneck's widest way, or None when no path of `cubes` joins the two sides at all."""
     from scipy import ndimage
     sy, sz = int(shape[1]), int(shape[2])
     nb = np.unique(nb)
@@ -749,21 +794,244 @@ def _bottleneck(cubes: np.ndarray, nb: np.ndarray, flat_lab: np.ndarray, dist: n
     ls, ld, lc = local(src), local(dst), local(cubes)
     dc = dist[cubes]
     st = ndimage.generate_binary_structure(3, 1)
-    for level in sorted(set(np.round(dc, 6).tolist()), reverse=True):
+
+    def join(level: float):
         m = np.zeros(int(np.prod(box)), dtype=bool)
         m[ls] = True
         m[ld] = True
-        inn = dc >= level - 1e-9
+        inn = dc >= level - 1e-6   # the levels are rounded to 1e-6
         m[lc[inn]] = True
         lab, _n = ndimage.label(m.reshape(box), structure=st)
         lab = lab.ravel()
         joined = set(np.unique(lab[ls]).tolist()) & set(np.unique(lab[ld]).tolist())
         joined.discard(0)
-        if joined:
-            on = inn & np.isin(lab[lc], list(joined)) & (np.abs(dc - level) <= 1e-9)
-            at = int(cubes[np.flatnonzero(on)[0]]) if on.any() else int(cubes[int(np.argmax(dc))])
-            return float(level), at
-    return float(dc.min()), int(cubes[int(np.argmin(dc))])
+        return inn, lab, joined
+
+    # the cubes let in only grow as the level falls, so two sides once joined stay joined: the
+    # highest level that joins them is found by halving the list of levels (a whole passage holds
+    # hundreds of levels, and INS-32 reads one per opening)
+    levels = sorted(set(np.round(dc, 6).tolist()), reverse=True)
+    lo_i, hi_i, best = 0, len(levels) - 1, -1
+    while lo_i <= hi_i:
+        mid = (lo_i + hi_i) // 2
+        if join(levels[mid])[2]:
+            best, hi_i = mid, mid - 1
+        else:
+            lo_i = mid + 1
+    if best < 0:
+        return None
+    level = levels[best]
+    inn, lab, joined = join(level)
+    on = inn & np.isin(lab[lc], list(joined)) & (np.abs(dc - level) <= 1e-6)
+    at = int(cubes[np.flatnonzero(on)[0]]) if on.any() else int(cubes[int(np.argmax(dc))])
+    return float(level), at
+
+
+#: INS-32: a piece of a passage this share of its largest piece's size (or more) is a passage piece the
+#: mesh must keep, even with no opening on it
+NECK_PIECE_SHARE = 0.05
+#: INS-34: the walk from one opening to the rest of its passage reads narrow spots in a row until the opening
+#: joins at the needed size or the narrowest step is no measured spot - never a fixed number of steps. Each
+#: step names a spot not named before (a named spot is meshed across), so the walk ends within one step per
+#: measured spot. abc 63401: outlet_3 needed nine (eight 0.1 mm slits and a 1.6 mm gap); a cap of 8 left the
+#: ninth unboxed at 1.9 cells across, cfMesh cut it and dropped outlet_3's piece.
+NECK_RULE_WALK = "INS-34"
+
+
+#: INS-33: how far (in cubes) round a needed spot's box the gap's own extent is read
+NECK_EXTENT_MARGIN = 3
+#: INS-33: the cubes of a gap kept as its own: those whose way from one side to the other through the
+#: narrow cubes is at most this many cubes longer than the shortest such way
+NECK_EXTENT_SLACK = 2
+
+
+def _gap_clear_cap(r_cubes: float) -> float:
+    """INS-33: the most clearance (in cubes) a cube of a gap of half width `r_cubes` has: a gap thinner
+    than a cube is drawn shut and its cubes pass it at its own width, so those cubes only; a wider
+    one is read open, its middle at its half width and one cube more for the grid."""
+    return r_cubes if r_cubes < 1.0 else r_cubes + 1.0
+
+
+def _gap_extent(own: np.ndarray, narrow: np.ndarray, wide: np.ndarray, side_a: np.ndarray,
+                side_b: np.ndarray, grid: Grid, clear: np.ndarray,
+                at_most: float) -> tuple[list, list] | None:
+    """INS-33: THE GAP ITSELF, not the whole narrow-spot box round it. `own`: the spot box's cubes
+    (flat mask); `narrow`: the passable cubes a mesh at the needed size puts no cell across; `wide`:
+    the passable cubes it does; `side_a` / `side_b`: flat cube indices of the two sides the gap joins.
+    Near the box, the shortest way through narrow cubes from each side is counted (in cubes); the
+    box's cubes on a way from one side to the other at most NECK_EXTENT_SLACK cubes longer than the
+    shortest are the gap (a slit's own cubes - not the near-wall cubes of the chambers either side,
+    whose ways run round to the slit), and of those only the cubes whose clearance `clear` is at most
+    `at_most` cubes (_gap_clear_cap: the gap's own cubes, not the approach either side). Returns its extent (min, max) in metres, or None when no way
+    through the box's narrow cubes joins the two sides near it."""
+    from scipy import ndimage
+    shape = tuple(int(v) for v in grid.shape)
+    at = np.flatnonzero(own)
+    if not len(at):
+        return None
+    ijk = np.stack(np.unravel_index(at, shape), axis=1)
+    lo = np.maximum(ijk.min(axis=0) - NECK_EXTENT_MARGIN, 0)
+    hi = np.minimum(ijk.max(axis=0) + NECK_EXTENT_MARGIN + 1, np.asarray(shape))
+    win = tuple(slice(int(a), int(b)) for a, b in zip(lo, hi, strict=True))
+
+    def local(flat_idx: np.ndarray) -> np.ndarray:
+        m = np.zeros(int(np.prod(shape)), dtype=bool)
+        m[flat_idx] = True
+        return m.reshape(shape)[win]
+
+    nar = narrow.reshape(shape)[win]
+    wid = wide.reshape(shape)[win]
+    st = ndimage.generate_binary_structure(3, 1)
+    step = []
+    for side in (side_a, side_b):
+        front = ndimage.binary_dilation(local(side) & wid, structure=st) & nar
+        d = np.full(nar.shape, np.inf)
+        k = 1
+        while front.any():
+            d[front] = k
+            k += 1
+            front = ndimage.binary_dilation(front, structure=st) & nar & ~np.isfinite(d)
+        step.append(d)
+    tot = step[0] + step[1]
+    tot[~own.reshape(shape)[win]] = np.inf
+    tot[clear.reshape(shape)[win] > at_most + 1e-9] = np.inf
+    if not np.isfinite(tot).any():
+        return None
+    gap = np.argwhere(tot <= tot.min() + NECK_EXTENT_SLACK) + lo
+    g_lo = grid.origin + gap.min(axis=0) * grid.h
+    g_hi = grid.origin + (gap.max(axis=0) + 1) * grid.h
+    return [float(v) for v in g_lo], [float(v) for v in g_hi]
+
+
+def opening_necks(solids, wall_key: str, boxes, *, need_m: float, cells: int = GRID_CELLS) -> list[dict]:
+    """INS-32: THE NARROW SPOTS AN OPENING NEEDS. Of the measured narrow spots `boxes` (each with
+    `min`, `max` and its gap's half width `radius_m`), the ones that some opening of this passage - or a
+    piece of it at least NECK_PIECE_SHARE the size of its largest - reaches the rest of the passage
+    only through, at a mesh that puts no cells across a gap narrower than `need_m`.
+
+    `solids`: the passage's closed surface, {patch name: triangles (n, 3, 3)}, the wall `wall_key` and
+    every opening's lid. The inside is flooded on a grid of cubes (no coarser than need_m / 4 where
+    the grid allows); each cube keeps its clearance from the wall, and a cube in a narrow spot's box
+    the gap's own measured half width (a slit thinner than a cube is drawn shut, yet the flow passes
+    it). The LARGEST piece of the inside clear by need_m / 2 is the passage the mesher keeps (cfMesh
+    keeps the largest region). For each opening not in it, the widest way to it (_bottleneck's widest
+    path) is read; the narrow spot holding that way back is needed, and the way is read again with
+    that spot meshed across, until the opening joins at need_m or the narrowest step is no measured
+    spot. Returns one record per needed spot, narrowest first: {"box": its index in `boxes`,
+    "width_m": the gap's width, "openings": the names that depend on it (None for a passage piece),
+    "point": where the way is narrowest, "walk_min" / "walk_max": the whole cubes of the spot the walk
+    meshed across (INS-38: the spot's box rounded out to the grid, so a mesh box over them leaves no
+    hole the walk did not see), "gap_min" / "gap_max": the gap's own extent in metres (_gap_extent;
+    absent when it does not read)}. [] when nothing depends on a spot."""
+    from scipy import ndimage
+    tris = {str(n): np.asarray(t, dtype=float).reshape(-1, 3, 3) for n, t in (solids or {}).items()
+            if t is not None and len(t)}
+    if not tris or not boxes or not need_m > 0.0:
+        return []
+    T = np.concatenate(list(tris.values()))
+    lo, hi = T.reshape(-1, 3).min(axis=0), T.reshape(-1, 3).max(axis=0)
+    grid = Grid.around(lo, hi, cells=cells)
+    if grid.h < 0.25 * need_m:             # no finer than the gap the mesh must pass needs
+        grid = Grid.around(lo, hi, cells=max(4096, int(cells * (grid.h / (0.25 * need_m)) ** 3)),
+                           h_max=0.25 * need_m)
+    shape, sh, h = grid.shape, np.asarray(grid.shape), grid.h
+    drawn = np.zeros(grid.n, dtype=bool)
+    drawn[raster(T, grid)] = True
+    lab, _n = _label(~drawn.reshape(shape))
+    outside = _border_labels(lab)
+    lab = lab.ravel()
+    inside = (lab > 0) & ~np.isin(lab, list(outside))
+    clear = ndimage.distance_transform_edt(~drawn.reshape(shape)).ravel()   # in cubes
+    clear[~inside] = 0.0
+    passable = inside.copy()
+    owner = np.full(grid.n, -1, dtype=np.int64)
+    walked: dict[int, tuple[list, list]] = {}
+    # the widest spot first, so where two boxes overlap the narrower one owns the cube
+    for i in sorted(range(len(boxes)), key=lambda j: -float(boxes[j].get("radius_m") or 0.0)):
+        b = boxes[i]
+        r = float(b.get("radius_m") or 0.0)
+        if r <= 0.0 or b.get("min") is None or b.get("max") is None:
+            continue
+        a = np.clip(np.floor((np.asarray(b["min"], dtype=float) - grid.origin) / h).astype(int), 0, sh - 1)
+        z = np.clip(np.floor((np.asarray(b["max"], dtype=float) - grid.origin) / h).astype(int), 0, sh - 1)
+        # INS-38: the whole cubes the walk meshes across for this spot, which reach past its box by up
+        # to a cube - the mesh must cover them too, or two spots the walk reads as touching leave a hole
+        walked[i] = ([float(v) for v in grid.origin + a * h],
+                     [float(v) for v in grid.origin + (z + 1) * h])
+        ii, jj, kk = np.meshgrid(*[np.arange(a[d], z[d] + 1) for d in range(3)], indexing="ij")
+        c = ((ii * shape[1] + jj) * shape[2] + kk).ravel()
+        owner[c[inside[c]]] = i
+        if r < h:
+            # a gap thinner than a cube is drawn shut: its drawn cubes pass the flow at its own width.
+            # A wider one the grid sees open, at its own clearance - opening its drawn cubes too would
+            # join pieces through the wall (abc 63401: one piece read where the passage has two)
+            c = c[drawn[c]]
+            owner[c] = i
+            clear[c] = r / h
+            passable[c] = True
+    half = 0.5 * need_m / h
+    slab, ns = _label((passable & (clear >= half - 1e-9)).reshape(shape))
+    slab = slab.ravel()
+    if ns == 0:
+        return []
+    counts = np.bincount(slab, minlength=ns + 1)
+    counts[0] = 0
+    main = int(np.argmax(counts))
+    main_cubes = np.flatnonzero(slab == main)
+    targets: list[tuple[str | None, np.ndarray]] = []
+    touched: set[int] = set()
+    for name in sorted(tris):
+        if name == wall_key:
+            continue
+        seeds = np.unique(_neighbours(raster(tris[name], grid), shape))
+        seeds = seeds[passable[seeds]]
+        if not len(seeds) or (slab[seeds] == main).any():
+            continue
+        touched.update(int(g) for g in np.unique(slab[seeds]) if g)
+        targets.append((name, seeds))
+    for g in np.flatnonzero(counts >= NECK_PIECE_SHARE * counts[main]):
+        if int(g) not in (main, 0) and int(g) not in touched:
+            targets.append((None, np.flatnonzero(slab == g)))
+    found: dict[int, dict] = {}
+    # one clearance for every target: a spot already needed is meshed across for the next one, so a
+    # piece the openings' spots already join is no further target
+    cl = clear.copy()
+    for who, seeds in targets:
+        marks = np.zeros(grid.n, dtype=np.int32)
+        marks[main_cubes] = 2
+        marks[seeds] = 1
+        nb = np.r_[seeds, main_cubes]
+        cubes = np.flatnonzero(passable & (marks == 0))
+        # INS-34: one step per measured spot at most - each names a spot not yet meshed across for this target
+        for _ in range(len(boxes) + 1):
+            got = _widest_join(cubes, nb, marks, cl, shape, {1})
+            if got is None or got[0] >= half - 1e-9:
+                break
+            i = int(owner[got[1]])
+            if i < 0:
+                break                       # the narrowest step is no measured narrow spot
+            if i not in found:
+                # the gap's own extent, between the two sides it joins at the needed size
+                wide = passable & (cl >= half - 1e-9)
+                wl, _nw = _label((wide | (marks > 0)).reshape(shape))
+                wl = wl.ravel()
+                la = set(np.unique(wl[seeds]).tolist()) - {0}
+                lb = set(np.unique(wl[main_cubes]).tolist()) - {0}
+                ext = None
+                if la and lb and not la & lb:
+                    ext = _gap_extent(owner == i, passable & ~wide, wide,
+                                      np.flatnonzero(np.isin(wl, list(la))),
+                                      np.flatnonzero(np.isin(wl, list(lb))), grid, cl,
+                                      _gap_clear_cap(float(boxes[i]["radius_m"]) / h))
+                found[i] = {"box": i, "width_m": 2.0 * float(boxes[i]["radius_m"]), "openings": [],
+                            "point": grid.centre(np.unravel_index(got[1], shape)).tolist(),
+                            "walk_min": walked[i][0], "walk_max": walked[i][1],
+                            **({"gap_min": ext[0], "gap_max": ext[1]} if ext else {})}
+            rec = found[i]
+            if who not in rec["openings"]:
+                rec["openings"].append(who)
+            cl[owner == i] = half           # meshed across, it holds the way back no more
+    return sorted(found.values(), key=lambda d: (d["width_m"], d["box"]))
 
 
 def _surface_distance(points: np.ndarray, T: np.ndarray, tree, k: int = 32) -> np.ndarray:
@@ -1376,6 +1644,56 @@ def _side_labels(lp: _Loop, flat_lab: np.ndarray, grid: Grid, outside: set[int],
     return out[0], out[1]
 
 
+#: INS-15: a side of a cap is reached through the part's material when more than this share of the probes
+#: that reach its space there first passed through a closed shell's inside.
+MOUTH_MATERIAL = 0.5
+#: ...and a cap faces the material, not the open air, when more than this share of its probes toward the
+#: air land first in a closed shell's inside. A solid stub's root loop: 96-97 in 100 (the siphoned box, a
+#: cup with four stubs); a step in a venturi's bore, its cap a third bore and two thirds wall: 66 - a cap
+#: that still opens onto the bore, kept as before.
+MOUTH_FACES_MATERIAL = 0.9
+#: docs/RULES.md id of the reading that a mouth opens straight onto both its spaces, never through material
+THROUGH_MATERIAL_RULE = "INS-15"
+
+
+def _through_material(lp: _Loop, flat_lab: np.ndarray, grid: Grid, sgn: float, target: int,
+                      keep: np.ndarray, is_shell: np.ndarray, toward_air: bool) -> bool:
+    """INS-15: whether the space `target` a cap's `sgn` side reads (_side_labels: the first of SIDE_STEPS
+    that lands on open air or a pocket) is reached through the part's own material - most of the probes
+    that land in it first crossed a closed shell's inside (`is_shell[label]`) - rather than straight off
+    the cap; or, on the side `toward_air`, whether nearly all its probes (MOUTH_FACES_MATERIAL) land first in
+    that material at all.
+    The outline of a cup's bottom face reads the cup's space through its floor; a stub's root loop, capped
+    inside the cup's wall, faces the stub's metal and reads the cup through the wall: neither is where the
+    space opens."""
+    if lp.probe is None or lp.probe_n is None or not len(lp.probe) or target <= 0:
+        return False
+    shape = np.asarray(grid.shape)
+    first = np.zeros(len(lp.probe), dtype=np.int64)
+    got = np.zeros(len(lp.probe), dtype=np.int64)
+    for step in SIDE_STEPS:
+        todo = np.flatnonzero(got == 0)
+        if not len(todo):
+            break
+        q = lp.probe[todo] + sgn * step * grid.h * lp.probe_n[todo]
+        ijk = np.floor((q - grid.origin) / grid.h).astype(np.int64)
+        inside = np.all((ijk >= 0) & (ijk < shape), axis=1)
+        lab = np.zeros(len(q), dtype=np.int64)
+        lab[inside] = flat_lab[(ijk[inside, 0] * shape[1] + ijk[inside, 1]) * shape[2] + ijk[inside, 2]]
+        first[todo] = np.where(first[todo] == 0, lab, first[todo])
+        got[todo] = np.where(np.isin(lab, keep), lab, 0)
+    reached = got == target
+    if toward_air:
+        # TOWARD THE OPEN AIR: most of the probes land first in the part's material, and the few that
+        # reach the air slip past its edge - a stub's root loop capped inside the metal faces the stub
+        landed = first[first > 0]
+        if len(landed) and float(np.mean(is_shell[landed])) > MOUTH_FACES_MATERIAL:
+            return True
+    if not reached.any():
+        return False
+    return float(np.mean(is_shell[first[reached]])) > MOUTH_MATERIAL
+
+
 def _tightest(loops: list[_Loop], rows: list[tuple[int, list[int]]], outn: dict | None = None,
               h: float | None = None) -> list[tuple[int, list[int]]]:
     """Of mouth caps that close one pocket at one place - their caps share most of the smaller's
@@ -1521,4 +1839,5 @@ def leak_test(V: np.ndarray, F: np.ndarray, seed, *, cells: int = GRID_CELLS) ->
 
 
 __all__ = ["GRID_CELLS", "MAP_MAX_TRIANGLES", "MIN_ACROSS", "PASSAGE_SHARE", "Grid", "InsideMap", "Leak", "PartialMap",
-           "Mouth", "Pocket", "leak_test", "raster", "read_inside", "read_inside_or_none"]
+           "Mouth", "NECK_PIECE_SHARE", "NECK_RULE_WALK", "Pocket", "leak_test", "opening_necks", "raster",
+           "read_inside", "read_inside_or_none"]

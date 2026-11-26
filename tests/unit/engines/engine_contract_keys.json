@@ -65,6 +65,16 @@
     "GROUPS"
    ],
    [
+    "wall_function_layer",
+    true,
+    "MESH"
+   ],
+   [
+    "layer_stack",
+    true,
+    "MESH"
+   ],
+   [
     "cad_fidelity",
     true,
     "GEOMETRY"
@@ -417,6 +427,16 @@
     "boundary_types",
     true,
     "GROUPS"
+   ],
+   [
+    "wall_function_layer",
+    true,
+    "MESH"
+   ],
+   [
+    "layer_stack",
+    true,
+    "MESH"
    ],
    [
     "cad_fidelity",

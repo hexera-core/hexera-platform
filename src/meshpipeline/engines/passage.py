@@ -8,6 +8,7 @@ import contextlib
 import logging
 import signal
 import threading
+import time
 from pathlib import Path
 
 import numpy as np
@@ -235,15 +236,36 @@ def vouched_by_ports(chord: dict, ports: dict, *, low: float = 0.3, high: float 
 def choose_passage_radius(chord: dict | None, ports: dict | None, *,
                           fluid_boundary: bool = False) -> dict | None:
     """The radius statistics the size caps use: the chord reading when the ports vouch for it,
-    the port figures otherwise, None without either (`fluid_boundary`: see plausible_radius)."""
+    the port figures otherwise, None without either (`fluid_boundary`: see plausible_radius).
+
+    ON THE FLUID'S OWN BOUNDARY THE PORTS VOUCH BY THEIR RANGE (vouched_by_ports, as the snappy
+    driver reads them). There is no outer skin to misread there, and a branching vessel's narrowest
+    5% lies in its branches, between its smallest outlet and its inlet: held to the smallest port
+    alone (plausible_radius), a coronary tree's true 0.39 mm reading was refused beside a 0.16 mm
+    outlet lid. A hollow part's metal skin keeps the smallest port's band - a reducer's outer skin
+    (210 mm) sits within 1.5 times its wider port (165 mm).
+
+    ...AND THE PORT FIGURES NEVER SPREAD THE SMALLEST OPENING OVER IT: without a trusted reading a
+    fluid boundary is banded at the TYPICAL port (its median), and an opening narrower than that gets
+    its own finer cell at the opening (PLAN-cfd-2, the cfMesh writer's port cells). Banded at the
+    smallest outlet, the coronary tree asked for 22 um cells over 4,900 mm2 of wall - about 85 M
+    cells - and cartesianMesh ran out of memory on every machine the run stepped up to (the CFD
+    board's failure hunt, 21 Nov; rulebook 75)."""
     chord = chord or {}
     ports = ports or {}
-    if chord and ports and plausible_radius(chord, ports, fluid_boundary=fluid_boundary):
-        return {**chord, "source": "chord"}
+    if chord and ports:
+        if fluid_boundary:
+            rng = {**ports, "min": ports.get("min", ports.get("p05")),
+                   "max": ports.get("max", ports.get("p05"))}
+            if vouched_by_ports(chord, rng, low=FLUID_BOUNDARY_LOW):
+                return {**chord, "source": "chord"}
+        elif plausible_radius(chord, ports):
+            return {**chord, "source": "chord"}
     if chord and not ports:
         return {**chord, "source": "chord-unchecked"}
     if ports:
-        return ports
+        med = ports.get("median")
+        return {**ports, "band": med} if (fluid_boundary and med) else ports
     return None
 
 
@@ -643,6 +665,51 @@ def orient_fluid_boundary(points, faces, cap_polys, *, samples: int = 9):
     return pts, f
 
 
+#: TIME-16: the longest the quadric decimation of a measured surface may take before the measure falls back to vertex
+#: clustering. A 750k-point, 1.5 M-triangle voxel surface decimates in 13 s; abc 63401's merged 717k-point wall did
+#: not finish in 58 minutes (the stack the trip logged was inside vtkQuadricDecimation).
+DECIMATE_BOUND_S = 300.0
+
+
+def _quadric_arrays(surf, max_points: int):
+    coarse = surf.decimate(1.0 - max_points / float(surf.n_points)).clean()
+    return np.asarray(coarse.points, dtype=float), np.asarray(coarse.faces).reshape(-1, 4)[:, 1:]
+
+
+def _clustered_arrays(surf, max_points: int):
+    """Vertex clustering (vtkQuadricClustering) to about `max_points` points: linear in the triangles, so bounded,
+    but it merges walls closer than a bin (about sqrt(area / max_points)) - a passage narrower than that is read
+    wider at the chords; the cells-across figure is still taken at every real boundary point."""
+    import pyvista as pv
+    import vtk
+    b = np.asarray(surf.bounds, dtype=float).reshape(3, 2)
+    ext = np.maximum(b[:, 1] - b[:, 0], 1e-12)
+    h = max(float(np.sqrt(max(float(surf.area), 1e-24) / max_points)), float(ext.max()) / 1024.0)
+    div = np.clip(np.ceil(ext / h), 1, 1024).astype(int)
+    q = vtk.vtkQuadricClustering()
+    q.SetInputData(surf)
+    q.AutoAdjustNumberOfDivisionsOff()
+    q.SetNumberOfDivisions(int(div[0]), int(div[1]), int(div[2]))
+    q.Update()
+    coarse = pv.wrap(q.GetOutput()).triangulate().clean()
+    return np.asarray(coarse.points, dtype=float), np.asarray(coarse.faces).reshape(-1, 4)[:, 1:]
+
+
+def coarse_copy(surf, max_points: int):
+    """(points, triangles) of a copy of `surf` with about `max_points` points for the chords: quadric decimation
+    (keeps the shape) within DECIMATE_BOUND_S, else vertex clustering (TIME-16)."""
+    td = time.monotonic()
+    try:
+        cpts, cf = _bounded(_quadric_arrays, surf, max_points, budget_s=DECIMATE_BOUND_S, what="decimation")
+        how = "decimated"
+    except MeasureOverdue:
+        cpts, cf = _clustered_arrays(surf, max_points)
+        how = f"clustered (the decimation ran past {DECIMATE_BOUND_S:.0f} s, {MEASURE_CHILD_RULE})"
+    logger.info("passage measure: %d points %s to %d in %.1f s", surf.n_points, how, len(cpts),
+                time.monotonic() - td)
+    return cpts, cf
+
+
 def passage_of_surface(points, faces, *, max_points: int = MAX_MEASURE_POINTS,
                        wall=None, edges=None) -> dict:
     """Local radius (half the inward chord to the opposite wall, engines/vmtk/lumen_staging)
@@ -670,7 +737,9 @@ def passage_of_surface(points, faces, *, max_points: int = MAX_MEASURE_POINTS,
     pts = np.asarray(points, dtype=float)
     f = np.asarray(faces, dtype=np.int64)
     surf = pv.PolyData(pts, np.hstack([np.full((len(f), 1), 3, dtype=np.int64), f]).ravel())
+    t0 = time.monotonic()
     interior = inside_point(surf)
+    logger.info("passage measure: interior point in %.1f s (%d triangles)", time.monotonic() - t0, len(f))
     if interior is None:
         return {}
     diag = float(np.linalg.norm(np.asarray(surf.bounds[1::2]) - np.asarray(surf.bounds[0::2])))
@@ -682,9 +751,7 @@ def passage_of_surface(points, faces, *, max_points: int = MAX_MEASURE_POINTS,
         surf = pv.PolyData(pts, np.hstack([np.full((len(f), 1), 3, dtype=np.int64), f]).ravel())
     if max_points and len(pts) > max_points:
         from scipy.spatial import cKDTree
-        coarse = surf.decimate(1.0 - max_points / float(len(pts))).clean()
-        cpts = np.asarray(coarse.points, dtype=float)
-        cf = np.asarray(coarse.faces).reshape(-1, 4)[:, 1:]
+        cpts, cf = coarse_copy(surf, max_points)
         if len(cf) < 4:
             return {}
         r = local_radius(cpts, cf, interior, diag * 1e-5, diag / 2.0)
@@ -692,8 +759,11 @@ def passage_of_surface(points, faces, *, max_points: int = MAX_MEASURE_POINTS,
         logger.info("passage measure: %d boundary points, chords cast on %d", len(pts), len(cpts))
     else:
         r = local_radius(pts, f, interior, diag * 1e-5, diag / 2.0)
+    t1 = time.monotonic()
     out = {"passage_radius": radius_stats(r),
            "passage_cells_across_local": measure_passage(pts, f, r, edges=edges)}
+    logger.info("passage measure: chords done %.1f s after the interior point; cells across in %.1f s",
+                t1 - t0, time.monotonic() - t1)
     local = out["passage_cells_across_local"]
     if local and float(local.get("p05") or 0.0) < PASSAGE_FLOOR_CELLS:
         try:
@@ -818,6 +888,96 @@ def boundary_of_polymesh(polymesh, *, wall_only: bool = False
     return points[used], inv.reshape(tri.shape), edges
 
 
+def _measure_polymesh(pm: Path) -> dict:
+    """The passage measure of the polyMesh `pm`, unbounded (passage_of_polymesh bounds it)."""
+    t0 = time.monotonic()
+    pts, faces, edges = boundary_of_polymesh(pm)
+    if len(faces) < 4:
+        return {}
+    wpts, wfaces, wedges = boundary_of_polymesh(pm, wall_only=True)
+    logger.info("passage measure: boundary read in %.1f s (%d triangles, %d wall points)", time.monotonic() - t0,
+                len(faces), len(wpts))
+    if len(wfaces) >= 4:
+        return passage_of_surface(pts, faces, wall=(wpts, wfaces), edges=wedges)
+    return passage_of_surface(pts, faces, edges=edges)
+
+
+#: TIME-16: the passage measure runs in a forked child the parent stops at its guard. The SIGALRM guard
+#: (measure_deadline) cannot stop a VTK call - Python sees the signal only when the call returns - nor a
+#: measure run in a worker thread, where it never arms: abc 63401's 11.4 M-cell merged mesh sat 2 hours on
+#: one core in this measure under a 3,600 s guard.
+MEASURE_CHILD_RULE = "TIME-16"
+
+
+def _bounded(fn, *args, budget_s: float, what: str = "passage measure"):
+    """fn(*args) in a forked child stopped after `budget_s` (MeasureOverdue); its exception re-raised here. Without
+    fork (not Linux) or without a budget, it runs here under measure_deadline as before."""
+    import multiprocessing as mp
+    import os
+
+    if not budget_s or budget_s <= 0 or "fork" not in mp.get_all_start_methods():
+        with measure_deadline(budget_s):
+            return fn(*args)
+    import faulthandler
+    import tempfile
+
+    recv, send = mp.get_context("fork").Pipe(duplex=False)
+    # where the child was when it was stopped: its Python stack, dumped on SIGUSR1 into this file
+    fd, where = tempfile.mkstemp(prefix="passage_measure_", suffix=".stack")
+    os.close(fd)
+
+    def child() -> None:
+        try:
+            with open(where, "w") as stack:
+                faulthandler.register(signal.SIGUSR1, file=stack, all_threads=False)
+                send.send(("ok", fn(*args)))
+        except BaseException as exc:  # noqa: BLE001 - told to the parent, which raises it there
+            send.send(("error", exc if isinstance(exc, Exception) else RuntimeError(repr(exc))))
+        finally:
+            send.close()
+            os._exit(0)
+
+    # not a daemon: a daemonic child may not fork one of its own, and the measure's child bounds its decimation
+    # the same way (coarse_copy); the finally below always kills and joins it
+    proc = mp.get_context("fork").Process(target=child, daemon=False)
+    proc.start()
+    send.close()
+    try:
+        if not recv.poll(budget_s):
+            _say_where(proc, where, what)
+            raise MeasureOverdue(f"{what} past its {budget_s:.0f} s budget ({MEASURE_CHILD_RULE})")
+        try:
+            status, out = recv.recv()
+        except EOFError as exc:      # the child died without a word (killed, out of memory)
+            raise RuntimeError(f"the {what}'s child process ended without a result") from exc
+    finally:
+        if proc.is_alive():
+            proc.kill()
+        proc.join()
+        recv.close()
+        with contextlib.suppress(OSError):
+            os.unlink(where)
+    if status != "ok":
+        raise out
+    return out
+
+
+def _say_where(proc, where: str, what: str = "passage measure") -> None:
+    """Log the innermost frames of a measure stopped at its guard (TIME-16), so the slow step is named. A frame
+    inside a C call shows the Python line that made the call (faulthandler dumps from its C signal handler)."""
+    import os
+    try:
+        os.kill(proc.pid, signal.SIGUSR1)
+        time.sleep(2.0)
+        lines = [ln.strip() for ln in Path(where).read_text(errors="replace").splitlines() if ln.strip()]
+    except OSError:
+        return
+    if lines:
+        logger.warning("%s stopped at its guard (%s), in: %s", what, MEASURE_CHILD_RULE, " | ".join(lines[:8]))
+    else:
+        logger.warning("%s stopped at its guard (%s); no Python stack was dumped", what, MEASURE_CHILD_RULE)
+
+
 def passage_of_polymesh(workspace, *, budget_s: float | None = None) -> dict:
     """The passage measure of the polyMesh under <workspace>/constant, from its boundary
     files alone, under its guard: `budget_s`, else the guard its planned work gives it
@@ -831,14 +991,7 @@ def passage_of_polymesh(workspace, *, budget_s: float | None = None) -> dict:
     if budget_s is None:
         budget_s = float(work.guard_seconds)
     try:
-        with measure_deadline(budget_s):
-            pts, faces, edges = boundary_of_polymesh(pm)
-            if len(faces) < 4:
-                return {}
-            wpts, wfaces, wedges = boundary_of_polymesh(pm, wall_only=True)
-            if len(wfaces) >= 4:
-                return passage_of_surface(pts, faces, wall=(wpts, wfaces), edges=wedges)
-            return passage_of_surface(pts, faces, edges=edges)
+        return _bounded(_measure_polymesh, pm, budget_s=float(budget_s))
     except MeasureOverdue:
         # PLANNED WORK (the mesh's boundary faces, MAX_MEASURE_POINTS chords); the clock is its
         # guard, set from that work (measure_guard). The measure is read beside a mesh checkMesh
@@ -1173,7 +1326,7 @@ def narrow_passage_regions(points, radius, *, cell_m: float, areas=None,
                            target: float = PASSAGE_CELLS_ACROSS,
                            detect: float = NARROW_DETECT_CELLS, max_level_bump: int = 4,
                            max_regions: int = 128,
-                           budget_cells: float | None = None) -> NarrowRegions:
+                           budget_cells: float | None = None, whole_box: bool = False) -> NarrowRegions:
     """Boxes around the walls of passages too NARROW for the planned wall cell (fewer than
     `detect` cells across), each with the cell that puts `target` across its narrowest point
     (`cell_needed_m`) and the octree level bump over cell_m that reaches it (`level_bump`,
@@ -1193,7 +1346,10 @@ def narrow_passage_regions(points, radius, *, cell_m: float, areas=None,
     With a `budget_cells`, the extra levels are lowered while the boxes' cost exceeds it, and if
     even +1 does not fit, the cheapest boxes that fit are kept (and `note` says so). The cost is
     the fluid a box refines at its cell: with the wall `areas` of the points, the passage their
-    wall bounds (area x radius, a tube's volume twice over); without, the box's whole volume."""
+    wall bounds (area x radius, a tube's volume twice over); without, the box's whole volume.
+    `whole_box` costs every box at its whole volume whatever the areas say: what a mesher that refines
+    every cell inside a box (cfMesh's objectRefinements) makes there (gap_sizing.box_cost), so a budget
+    held here holds the plan that prices the boxes the same way (PLAN-cfd-8)."""
     pts = np.asarray(points, dtype=float)
     r = np.asarray(radius, dtype=float)
     out = NarrowRegions()
@@ -1257,8 +1413,13 @@ def narrow_passage_regions(points, radius, *, cell_m: float, areas=None,
                       # refined by distance instead of by the whole box: engines/gap_sizing)
                       "point_ids": where_narrow[idx]})
 
+    def _vol(b) -> float:
+        if whole_box:
+            return float(np.prod(np.maximum(np.asarray(b["max"]) - np.asarray(b["min"]), 0.0)))
+        return float(b["volume_m3"])
+
     def _cost(bs) -> float:
-        return sum(b["volume_m3"] / (float(cell_m) / (2 ** b["level_bump"])) ** 3 for b in bs)
+        return sum(_vol(b) / (float(cell_m) / (2 ** b["level_bump"])) ** 3 for b in bs)
 
     note = ""
     if budget_cells is not None and budget_cells > 0 and boxes:
@@ -1270,7 +1431,7 @@ def narrow_passage_regions(points, radius, *, cell_m: float, areas=None,
             note = "refinement held back by the cell budget"
         if _cost(boxes) > float(budget_cells):
             kept, spent = [], 0.0
-            for b in sorted(boxes, key=lambda b_: b_["volume_m3"]):
+            for b in sorted(boxes, key=_vol):
                 c = _cost([b])
                 if spent + c <= float(budget_cells):
                     kept.append(b)
