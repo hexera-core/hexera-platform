@@ -1489,4 +1489,6 @@ button.rp-kind:focus-visible{outline:2px solid var(--accent-line,var(--accent));
 .rpv-legend[hidden]{display:none}
 .rpv-legend span{display:inline-flex;align-items:center;gap:6px}
 .rpv-dev[hidden]{display:none}
-.rpv-hint{position:absolute;right:12px;top:12px;z-index:9}
+.rpv-hint{position:absolute;left:auto;right:12px;top:auto;bottom:12px;z-index:9}
+/* the panel's downloads sit inside the side bar, whose bold ink would otherwise hide the primary button's label */
+.rr-result .v-dlbtn.primary b{color:var(--primary-ink)}
