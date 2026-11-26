@@ -52,6 +52,9 @@ export function attemptsLabel(opened, built, serverCount) {
  *  Pure: (event, cursor) -> {stage, cursor}. Which of the four rows that stage feeds, and when a
  *  row closes, is the renderer's (core/run_rows.js holds the one table). */
 function resolveStage(ev, cursor) {
+  // A REPAIR'S PROGRESS is always the repair's: its own `stage` field names the repair's step (checking,
+  // repairing, ...), not a lane, and it must not move the cursor the next stage-less event joins
+  if (ev.type === "repair_progress") return { stage: "repair", cursor };
   const stage = ev.stage || cursor;
   return { stage, cursor: ev.stage || cursor };
 }
@@ -93,6 +96,9 @@ const HANDLERS = {
   // the verdict is kept on its lane, so the lane's mark can never contradict it
   verdict:     (ev, r, st) => r.verdict(st, ev.verdict === "PASS", verdictText(ev.verdict)),
   closing:     () => {},          // the stream holds it for the result card
+  // THE CAD REPAIR'S PROGRESS, typed (step, problem n of N, its plain type): the repair lane says it in
+  // plain words (core/repair_words.js), never the event's internals
+  repair_progress: (ev, r) => { if (r.repairProgress) r.repairProgress(ev); },
 };
 
 /** What a reasoning card's header says, given the event that produced it.

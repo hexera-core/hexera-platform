@@ -2,6 +2,7 @@
 // one editable row per numbered opening - and read the user's answer back out of it.
 // Boundaries: markup and a reading of it. It fetches nothing, draws no scene, and decides nothing
 // about what is right; the card and the 3D stage both use it so the user answers one form.
+import { readRepairChoice, repairChoiceHtml } from "./repair_choice.js";
 import { esc } from "../core/format.js";
 
 /* the two prefixes the conversation carries for the intake's sake; people see the words after them */
@@ -289,6 +290,7 @@ export function formHtml(p) {
     </div>
     ${external}
     ${notes}
+    ${repairChoiceHtml(p)}
     <div class="gc-actions"><button class="gc-proceed" type="button">Looks right, proceed</button>
       <span class="gc-hint">Fix any name or role first. The questions that follow skip everything confirmed here.</span></div>`;
 }
@@ -481,6 +483,8 @@ export function readForm(root, p) {
   const upSel = root.closest ? root.closest(".gc-stage")?.querySelector(".v-up select") : null;
   const up = (upSel && upSel.value) || p.up_axis;
   if (up) body.up_axis = up;
+  // REPAIR + MESH, REPAIR ONLY OR MESH ONLY, and whether larger repairs skip the review: the run's own choice
+  Object.assign(body, readRepairChoice(root));
   return body;
 }
 
@@ -495,7 +499,9 @@ function formAnswers(root) {
   const extents = {};
   root.querySelectorAll(".gc-extents input[data-k]").forEach((el) => { extents[el.dataset.k] = el.value; });
   const g = root.querySelector(".gc-ground");
-  return { input_kind: v(".gc-kind"), flow: v(".gc-flow"), extents, grounded: g ? g.checked : undefined };
+  const rc = readRepairChoice(root);
+  return { input_kind: v(".gc-kind"), flow: v(".gc-flow"), extents, grounded: g ? g.checked : undefined,
+           repair_goal: rc.repair_goal, repair_auto_accept: rc.repair_auto_accept };
 }
 export function noteDrawn(root) { if (root) root._drawn = formAnswers(root); }
 export function changedAnswers(root) {
@@ -508,6 +514,9 @@ export function changedAnswers(root) {
     out.extents = Object.fromEntries(Object.entries(now.extents).map(([k, x]) => [k, Math.max(0.5, num(x, 5))]));
   }
   if (now.grounded !== was.grounded) out.grounded = now.grounded;
+  // the repair choice a re-draw must keep: what the user picked, not what the check proposed
+  if (now.repair_goal !== was.repair_goal) out.repair_goal = now.repair_goal;
+  if (now.repair_auto_accept !== was.repair_auto_accept) out.repair_auto_accept = now.repair_auto_accept;
   return out;
 }
 

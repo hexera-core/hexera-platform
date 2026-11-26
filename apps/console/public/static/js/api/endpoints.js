@@ -319,3 +319,13 @@ export async function postReviewRun(jobId) {
   const data = await r.json().catch(() => ({}));
   return { ok: r.ok, status: r.status, data };
 }
+
+/** A repaired job's CAD as the repair view draws it: `{original, repaired}` skins in the geometry check's own shape
+ *  (patches of points and triangles, in the skin's units, with `rescaled_by`), the repaired one carrying per-point
+ *  `deviation_b64` - how far each point moved, in millimetres. Answers null when the server has none (an older run,
+ *  a repair that changed nothing): the view then draws the original part alone. */
+export async function getRepairSurfaces(jobId) {
+  const r = await apiFetch(`/api/v1/simulation/${jobId}/repair/surfaces`, { headers: headers() });
+  if (!r.ok) return null;
+  return r.json();
+}
