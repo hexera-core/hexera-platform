@@ -205,10 +205,57 @@ def _solver_files(quote: str) -> list[tuple[str, str]]:
     return [(name, ext) for name, rx, ext in _SOLVERS if re.search(rx, q, re.I)]
 
 
+#: the answer's lists whose entries quote one line each (the reader's tool): STD-5 sorts them by kind of mesh
+_KEEP_LISTS = ("other", "strictness")
+
+
+def _for_route(arguments: str, route: str) -> tuple[str, list[str]]:
+    """STD-5 BEFORE THE READER'S RULES: the entries of the answer whose own line is tagged for other kinds of mesh than
+    this run's ("CFD: base cell 10 mm" on a solid run) are set aside first, so the reader's "the later one wins" never
+    lets a flow line replace a structural one of the same field (H02: "FEA: global size 4 mm ... / CFD: base cell 10
+    mm" lost the 4 mm on a solid run). Returns (the answer for this route, the quotes set aside). Only a LINE's tag
+    sorts (the list's whole tag is merge()'s); no route, no tag, or nothing set aside: the answer itself."""
+    if route not in (FLOW, "fea"):
+        return arguments, []
+    try:
+        raw = json.loads(arguments or "")
+    except ValueError:
+        return arguments, []
+    tag = raw.get("applies_to") if isinstance(raw, dict) else None
+    lines_ = tag.get("lines") if isinstance(tag, Mapping) else None
+    if not lines_:
+        return arguments, []
+
+    def line_kinds(quote: str) -> list[str] | None:
+        rq = MR._squash(quote)
+        for ln in lines_:
+            lq = MR._squash(str((ln or {}).get("quote") or "")) if isinstance(ln, Mapping) else ""
+            if lq and rq and (lq in rq or rq in lq):
+                return list(ln.get("kinds") or ["any"])
+        return None
+
+    gone: list[str] = []
+    for k, v in list(raw.items()):
+        if k in _KEEP_LISTS or k == "applies_to" or not isinstance(v, list):
+            continue
+        kept = []
+        for e in v:
+            q = str(e.get("quote") or "") if isinstance(e, Mapping) else ""
+            kinds = line_kinds(q) if q else None
+            if kinds is not None and not _fits(kinds, route):
+                if q not in gone:
+                    gone.append(q)
+                continue
+            kept.append(e)
+        raw[k] = kept
+    return (json.dumps(raw), gone) if gone else (arguments, [])
+
+
 def checked(arguments: str, text: str, *, route: str = "", key: str = "", source: str = "") -> dict:
     """The standard's section from one answer of the model, checked by the reader's rules: the notes' section shape
     ("used", its requirements, what was dropped and not applied) and the unit it names, its words for elsewhere, and
     the solver files it names that every FEA run delivers."""
+    arguments, other_kinds = _for_route(arguments, route)
     req, dropped, not_applied = _check(arguments, text, route)
     unit = _stated_unit(arguments, text)
     if unit:
@@ -243,6 +290,9 @@ def checked(arguments: str, text: str, *, route: str = "", key: str = "", source
     sec["stated_unit"] = unit
     sec["elsewhere"] = elsewhere
     sec["solver_files"] = files
+    if other_kinds:
+        # STD-5: told with merge()'s line, as the lines written for other kinds of mesh
+        sec["other_kinds"] = other_kinds
     return sec
 
 
@@ -623,8 +673,11 @@ def _not_here_words(req: Mapping, not_here: list[dict], route: str, *, everythin
         return ""
     raw_tag = req.get("applies_to")
     tag: Mapping = raw_tag if isinstance(raw_tag, Mapping) else {}
-    kinds = [k for k in (tag.get("whole") or []) if k in _KIND_WORDS] or \
-        sorted({k for r in not_here for k in _kinds_of(r, req) if k in _KIND_WORDS})
+    # the kinds of the lines LEFT OUT, never every kind the list mentions ("5 lines ... are written for flow (CFD)
+    # meshes", not "for solid and flow (CFD)" on a solid run); none of this run's kind (a line that fits is not here)
+    left = sorted({k for r in not_here for k in _kinds_of(r, req) if k in _KIND_WORDS and not _fits([k], route)},
+                  key=list(_KIND_WORDS).index)
+    kinds = left or [k for k in (tag.get("whole") or []) if k in _KIND_WORDS and not _fits([k], route)]
     names = " and ".join(_KIND_WORDS[k] for k in kinds) or "other"
     here = "this flow mesh" if route == FLOW else "this solid or shell mesh"
     if everything:
@@ -669,6 +722,8 @@ def merge(settings: Mapping | None, notes: Mapping, *, route: str = "") -> dict:
     for r in not_here:
         _drop_row(S, r)
     not_here += [{"asked": f'"{MR._short(q)}"', "quote": q} for q in g_off]
+    if s_used:
+        not_here += [{"asked": f'"{MR._short(q)}"', "quote": q} for q in settings.get("other_kinds") or []]
     std_off = bool(not_here) and not S.get("rows") and not g_kept
     said_not_here = _not_here_words(S, not_here, route, everything=std_off)
     S.pop("applies_to", None)
