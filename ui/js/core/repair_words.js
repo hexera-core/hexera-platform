@@ -279,6 +279,8 @@ export function flagLines(r) {
     else if (isPlain(key)) out.push(key);
   }
   if (res.auto_accepted && !out.includes(FLAG_WORDS.auto_accepted)) out.push(FLAG_WORDS.auto_accepted);
+  // the job records which repair finished it; the customer is told only that it was a different method
+  if (res.engine === "v3" && !out.includes(FLAG_WORDS.engine_switched)) out.push(FLAG_WORDS.engine_switched);
   return out;
 }
 
