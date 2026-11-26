@@ -302,7 +302,39 @@ SMOOTH_NORMALS = 0
 #: more faces for nothing but a concave count that doubles, because an unextruded face beside an
 #: extruded one is a step in the layer itself. The bound is not abstract: the delivered 155 M
 #: plate came back at 64.8123 degrees against this engine's bar of 65, which is 0.19 degrees.
-FEATURE_ANGLE = 120
+#: SETTABLE PER RUN, and 120 unless it is set. The table above was measured on a 506,322-face
+#: coupon where 120 declined 0.35% of the interface. On job cba7ac69's 16,582,198-face plate
+#: it declined 9.14%, which is 26 times the share, and that refusal - not the mover - is what
+#: fails the coverage floor there: the pass kept 99.7599% of every face it was given. Whether
+#: those faces can carry prisms at acceptable cell quality is a question about THAT part, and
+#: the coupon cannot answer it. This exists so the answer can be measured rather than argued,
+#: on the real geometry, without a deploy between each attempt.
+#:
+#: ABSENT OR UNREADABLE, THE SHIPPED VALUE STANDS. An out-of-range or non-numeric setting is
+#: ignored rather than clamped: a run that silently meshed at an angle nobody chose would be
+#: worse than one that meshed at the angle the module documents.
+LAYER_FEATURE_ANGLE_ENV = "HEXERA_LAYER_FEATURE_ANGLE"
+FEATURE_ANGLE_DEFAULT = 120
+
+
+def _feature_angle() -> int:
+    import os
+
+    raw = (os.environ.get(LAYER_FEATURE_ANGLE_ENV) or "").strip()
+    if not raw:
+        return FEATURE_ANGLE_DEFAULT
+    try:
+        # OverflowError as well as ValueError: float("1e999") is inf, and int(inf) raises
+        # OverflowError, so a value that is merely huge would otherwise take the whole mesher
+        # down at import rather than being ignored like every other unusable setting.
+        got = int(float(raw))
+    except (ValueError, OverflowError):
+        return FEATURE_ANGLE_DEFAULT
+    # OpenFOAM reads this as degrees between two face normals: outside 0..180 it means nothing.
+    return got if 0 <= got <= 180 else FEATURE_ANGLE_DEFAULT
+
+
+FEATURE_ANGLE = _feature_angle()
 
 #: HOW MUCH OF THE INTERFACE HAS TO END UP LAYERED. The measured run finished at 95.553% after ten
 #: outer iterations; the DEFECTIVE delivered run finished at 90.7146%, so a floor under that would

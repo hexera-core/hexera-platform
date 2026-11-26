@@ -482,6 +482,18 @@ RETURN_BUDGET_STARTUP_LINE = (
     '  -e HEXERA_RETURN_CELL_BUDGET="$(get instance/attributes/return-cell-budget)" \\')
 RETURN_BUDGET_META_KEY = "return-cell-budget"
 
+#: ...AND WHAT THE LAYER-ANGLE CHANGE ADDED, named here for the same reason. The VM is now told
+#: the layer featureAngle when this side has been given one, and keeps the module's shipped 120
+#: when it has not: one `-e` on the docker run and the metadata key it reads from. It matters on
+#: THIS route because this is where the plate runs: job cba7ac69's layer pass is 49.5 minutes of
+#: a 127-minute VM - 39% of the run against cartesianMesh's 8.4 - and it laid prisms on 90.8603%
+#: of the interface because the extruder declined 1,515,568 faces that turn by more than the
+#: angle. Whether those faces can carry prisms is a question about that geometry and the answer
+#: needed a knob, not a deploy between attempts.
+LAYER_ANGLE_STARTUP_LINE = (
+    '  -e HEXERA_LAYER_FEATURE_ANGLE="$(get instance/attributes/layer-feature-angle)" \\')
+LAYER_ANGLE_META_KEY = "layer-feature-angle"
+
 #: ...AND WHAT THE FAILED-RUN DIAGNOSTICS ADDED, named here for the same reason the two above are.
 #: The box deletes itself pass or fail, so a run that did not finish had one chance to speak and
 #: took none of it: job 110daca9 meshed for 1 h 53 m on 2026-11-24, stopped, and was deleted six
@@ -556,6 +568,10 @@ def _without_later_startup_changes(body: dict, *, added: bool = True) -> dict:
                 "the container is no longer handed the carried budget - the metadata key would "
                 "then be written and never read")
             lines = [ln for ln in lines if ln != RETURN_BUDGET_STARTUP_LINE]
+            assert LAYER_ANGLE_STARTUP_LINE in lines, (
+                "the container is no longer handed the layer featureAngle - the metadata key "
+                "would then be written and never read")
+            lines = [ln for ln in lines if ln != LAYER_ANGLE_STARTUP_LINE]
             assert RUN_TAIL_NOW in lines, (
                 "the container's output is no longer kept, so a failed run on this route has "
                 "nothing to send and the box takes its only account with it")

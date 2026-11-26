@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 from dataclasses import dataclass
 
 import meshpipeline.settings.providers as provcfg
@@ -202,6 +203,7 @@ docker run --rm --name mesh \
   -e TIMEOUT="$(get instance/attributes/timeout)" \
   -e HEXERA_MESH_CONTRACT="$(get instance/attributes/mesh-contract)" \
   -e HEXERA_RETURN_CELL_BUDGET="$(get instance/attributes/return-cell-budget)" \
+  -e HEXERA_LAYER_FEATURE_ANGLE="$(get instance/attributes/layer-feature-angle)" \
   -e TMPDIR=/work -v /mnt/stateful_partition/work:/work \
   "$IMG" python -m meshpipeline.runtime.mesh_runner 2>&1 | tee "$CONSOLE"
 # ${PIPESTATUS[0]} AND NOT $?: $? is tee's, and tee succeeds whatever the mesher did.
@@ -371,6 +373,13 @@ def instance_body(*, name: str, zone: str, machine: str, image: str, account: st
     meta = {"mesh-image": image, "input-uri": input_uri, "output-uri": output_uri, "engine": engine,
             "timeout": str(int(timeout)), "mesh-contract": str(MESH_EXCHANGE_VERSION),
             "startup-script": STARTUP_SCRIPT}
+    # THE LAYER FEATURE ANGLE, only when this side has been told one. Absent, `get` yields
+    # nothing, the container sees an empty value and the mesher keeps its shipped 120 - the
+    # same shape as `return-cell-budget` below. It is here rather than in the plan because it
+    # is a question being asked OF the engine, not a decision the planner made.
+    _angle = (os.environ.get("HEXERA_LAYER_FEATURE_ANGLE") or "").strip()
+    if _angle:
+        meta["layer-feature-angle"] = _angle
     # THIS SIDE'S CELL BUDGET, which is the one input `engines/return_scope` is missing when it
     # prices the archive it is about to send home (contracts/mesh_execution.RETURN_BUDGET_ENV -
     # job 0ff6f9e5's 283 M-cell plate priced its ceiling 17.7x too small and destroyed a 10.4 GB
