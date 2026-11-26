@@ -1041,6 +1041,32 @@
   "roots": []
  },
  {
+  "context": "agents/intake/plan_reply.py::_claims_set::search#2|NotAPublisher|not-a-publisher|",
+  "path": "agents/intake/plan_reply.py",
+  "qualname": "_claims_set",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 2,
+  "receiver": "_IF_BEFORE",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "agents/intake/plan_reply.py::_claims_set::search#3|NotAPublisher|not-a-publisher|",
+  "path": "agents/intake/plan_reply.py",
+  "qualname": "_claims_set",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 3,
+  "receiver": "_IF_AFTER",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "agents/intake/plan_reply.py::_count_check::search#1|NotAPublisher|not-a-publisher|",
   "path": "agents/intake/plan_reply.py",
   "qualname": "_count_check",

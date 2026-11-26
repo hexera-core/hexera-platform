@@ -280,7 +280,8 @@ _GUESS_SAID = re.compile(r"\b(?:click|pick|guess\w*|took (?:that|it|this) as|ass
 _CLICK = re.compile(r"\b(?:click|pick|select)\w*\b", re.I)
 #: a requirement kept for the run is said as kept, never as unreadable
 _UNREAD = re.compile(r"\b(?:couldn'?t|could not|can'?t|cannot|unable|didn'?t|did not)\b", re.I)
-_KEPT = re.compile(r"\b(?:kept|keep(?:ing)?|noted|saved|hold(?:ing)? on to|held)\b", re.I)
+_KEPT = re.compile(r"\b(?:kept|keep(?:ing)?|noted|noting|saved|hold(?:ing)? on to|held|remember\w*|in mind|"
+                   r"made a note|take note|taken note)\b", re.I)
 _COUNT_WORDS = {2: "two", 3: "three", 4: "four", 5: "five", 6: "six", 7: "seven", 8: "eight", 9: "nine", 10: "ten"}
 #: the picked faces, named the way people name them
 _PICKED_FACES = re.compile(r"\b(?:th(?:at|is|ose|ese|e) faces?|faces? you (?:picked|selected|clicked|chose)|"
@@ -391,8 +392,17 @@ def _kept_check(text: str, f: Mapping) -> str:
     return ""
 
 
+#: ... or said as a condition, not as done: "whether it could apply", "will say if it was applied", "may be applied"
+_IF_BEFORE = re.compile(r"(?:\bwhether|\bif)\b[^.;,]{0,40}$|"
+                        r"\b(?:may|might|could|would|can)(?:\s+not)?(?:\s+(?:be|have been|get|have))?\s*$", re.I)
+_IF_AFTER = re.compile(r"^[^.;,]{0,30}\b(?:if|whether|unless)\b", re.I)
+
+
 def _claims_set(text: str) -> bool:
-    return any(not _NEGATED.search(text[:m.start()]) for m in _SET_CLAIM.finditer(text))
+    """A claim that it IS or WAS set, applied, done or guaranteed (or a firm promise that it will be) - not one that
+    is negated ("it wasn't applied") or said as a condition ("the result will say if it was applied")."""
+    return any(not (_NEGATED.search(text[:m.start()]) or _IF_BEFORE.search(text[:m.start()])
+                    or _IF_AFTER.search(text[m.end():])) for m in _SET_CLAIM.finditer(text))
 
 
 def _count_check(text: str, f: Mapping) -> str:
@@ -454,6 +464,11 @@ def check(reply: str, f: Mapping, *, last_reply: str = "") -> str:
         why = _kept_check(text, f) if f.get("kept_for_planning") else ""
         if why:
             return why
+    elif f.get("kept_for_the_run") and not applied:
+        # kept for a run that reads it when the mesh is built: "noted", "the result will show whether it could apply
+        # it" are not claims - only that it is (or was) set, applied, done or guaranteed is
+        if _claims_set(text):
+            return "claims something was applied when nothing was (kept for the run)"
     elif not applied and _CLAIM.search(text):
         return "claims something was applied when nothing was"
     if f.get("kept_for_the_run") and (_UNREAD.search(text) or not _KEPT.search(text)):

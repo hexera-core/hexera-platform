@@ -155,3 +155,31 @@ def test_the_route_keeps_a_statement_and_answers_it_as_kept(monkeypatch):
     said = asyncio.run(PR.answer_owed(session, _done(), owner_id="u", session_repo=repo, db_factory=db_factory))
     assert said == PT.NOT_READ and "couldn't find a mesh setting" not in said
     assert repo.append_message.await_args.args[-1] == PT.NOT_READ
+
+
+# the guard: a condition or a future check is not a claim; only that it IS or WAS set, applied, done or guaranteed is
+
+QUALITY = {"text": "make it a good quality mesh please"}
+#: kept for a flow run's reader (no checklist row before the run), and kept for the planning (a parts checklist)
+FLOW, PARTS = {**_done(), "flow": True}, _done()
+
+
+@pytest.mark.parametrize("view,reply", [
+    # as the real model wrote it on the flow route, and the guard dropped it
+    (FLOW, "I've noted \"good quality mesh\" for the run. The result will show whether this mesher could apply it."),
+    (FLOW, "Noted. The result will say if it was applied."),
+    (FLOW, "Noted, it may be applied when the mesh is built."),
+    (FLOW, "I'll remember that for the planning."),
+    (FLOW, "Got it, I'll keep that in mind when the mesh is planned."),
+    (PARTS, "Okay, a good quality mesh. I'll keep that in mind when the mesh is planned, and the result will say if "
+            "it was applied."),
+    (PARTS, "Noted. I'll remember that for the planning, and the result will say whether it could be applied."),
+])
+def test_the_guard_passes_a_condition_and_any_way_of_saying_kept(view, reply):
+    assert PR.check(reply, PR.facts(QUALITY, view)) == ""
+
+
+@pytest.mark.parametrize("view", [FLOW, PARTS])
+@pytest.mark.parametrize("reply", ["I've applied that.", "Done, set on the whole part.", "That's guaranteed."])
+def test_the_guard_still_refuses_a_claim_that_it_was_set(view, reply):
+    assert PR.check(reply, PR.facts(QUALITY, view)).startswith("claims something was applied when nothing was")
