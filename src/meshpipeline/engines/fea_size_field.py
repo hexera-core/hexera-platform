@@ -34,6 +34,7 @@ which is nothing where the size is under about two-thirds of the wall (every rul
 """
 from __future__ import annotations
 
+import copy
 import math
 from dataclasses import dataclass
 
@@ -279,6 +280,13 @@ class SizeField:
         self.index = {n: k for k, n in enumerate(surface.names)}
         self.solid = _Distance(self.xyz, self.tris)
         self.groups = self._groups(zones)
+        # TIME-12: what this field's counts found, answered again to the bit (histogram): each count made, the
+        # finished ones, where those stopped on their cube budget stood (a recount with more goes on from there),
+        # and the surface rows at each coarsest size
+        self._done: dict = {}
+        self._whole: list = []
+        self._held: list[dict] = []
+        self._rows: dict[float, list] = {}
 
     def _tris_of(self, faces) -> np.ndarray:
         ks = [self.index[f] for f in faces if f in self.index]
@@ -407,24 +415,41 @@ class SizeField:
                   workers: int | None = None, max_cubes: int | None = None) -> Histogram:
         n = plan_workers() if workers is None else max(1, int(workers))
         cap = MAX_CUBES if max_cubes is None else int(max_cubes)
-        if n <= 1:
-            return self._histogram(coarsest=coarsest, per_h3=per_h3, stop_elements=stop_elements, pool=None,
-                                   max_cubes=cap)
+        at, stop = (float(coarsest), float(per_h3)), float(stop_elements)
+        # TIME-12: A COUNT THIS FIELD HAS MADE ANSWERS AGAIN, to the bit. Asked once more alike; or, finished, for any
+        # stop it never came near and as many cubes or more (no level of it stopped, and none would)
+        done = self._done.get((at, stop, cap))
+        if done is None:
+            done = next((h for a, z, m, h in self._whole if a == at and stop >= z and cap >= m), None)
+        if done is not None:
+            return copy.deepcopy(done)
+        # ...and one that stopped on its cube budget is gone on from, for a stop it never came near
+        held = None
+        for st in self._held:
+            if st["at"] == at and stop >= st["zones_only"] and cap >= st["max_cubes"]:
+                if held is None or st["max_cubes"] > held["max_cubes"]:
+                    held = st
         # PLAIN CHILD PROCESSES, never forked (the planner runs in a worker thread of an event loop) and
         # never multiprocessing's spawn (it re-imports the caller's main module, which a script without
-        # a main guard runs again): `python -m` this module, fed by pipes
-        pool = _Pool(self._spec, n)
+        # a main guard runs again): `python -m` this module, fed by pipes - started only when a level is
+        # measured
+        pool = _LazyPool(self._spec, n) if n > 1 else None
         try:
-            return self._histogram(coarsest=coarsest, per_h3=per_h3, stop_elements=stop_elements, pool=pool,
-                                   max_cubes=cap)
+            hist = self._histogram(coarsest=coarsest, per_h3=per_h3, stop_elements=stop_elements, pool=pool,
+                                   max_cubes=cap, held=held)
         finally:
-            pool.close()
+            if pool is not None:
+                pool.close()
+        self._done[(at, stop, cap)] = copy.deepcopy(hist)
+        return hist
 
     def _surface_rows(self, pool, coarsest: float) -> list[tuple[float, float, float]]:
         """PLAN-fea-31: every surface triangle of a face with a measured wall, at the zone size on it,
         binned by size and wall: [(size_m, wall_m, area_m2)]."""
         if not len(self.tris):
             return []
+        if float(coarsest) in self._rows:
+            return list(self._rows[float(coarsest)])
         wall_of = np.zeros(len(self.index) + 1)
         for name, k in self.index.items():
             wall_of[k] = self.walls.get(name, 0.0)
@@ -442,77 +467,124 @@ class SizeField:
         for a, b, v in zip(kh.tolist(), kt.astype(np.int64).tolist(), area.tolist(), strict=True):
             rows[(a, b)] = rows.get((a, b), 0.0) + v
         # each bin filed under its smallest size and its largest wall: never more than it holds
-        return sorted((float(BIN_RATIO ** a), float(WALL_BIN_RATIO ** (b + 1)) if b > -10**6 else 0.0, v)
-                      for (a, b), v in rows.items() if v > 0)
+        out = sorted((float(BIN_RATIO ** a), float(WALL_BIN_RATIO ** (b + 1)) if b > -10**6 else 0.0, v)
+                     for (a, b), v in rows.items() if v > 0)
+        self._rows[float(coarsest)] = list(out)
+        return out
 
     def _on(self, pool, what: str, p: np.ndarray, r: float):
         """self.signed(p) or self.sizes(p, r) - in slices on the workers when the level is big enough."""
         if pool is None or len(p) < PARALLEL_MIN_POINTS:
             return self.signed(p) if what == "signed" else self.sizes(p, r)
-        parts = pool.map(what, np.array_split(p, 4 * pool.n), r)
+        parts = pool.get().map(what, np.array_split(p, 4 * pool.n), r)
         if what == "signed":
             return np.concatenate(parts)
         return np.concatenate([a for a, _b in parts]), np.concatenate([b for _a, b in parts])
 
     def _histogram(self, *, coarsest: float, per_h3: float, stop_elements: float, pool,
-                   max_cubes: int = MAX_CUBES) -> Histogram:
+                   max_cubes: int = MAX_CUBES, held: dict | None = None) -> Histogram:
         """The volume at each zone size, from an octree over the part (see the module text).
         `coarsest` is the largest base size the plan may take: past it nothing is resolved finer.
-        Stops (complete=False) once the zones alone pass `stop_elements` or MAX_CUBES."""
-        lo, hi = self.xyz.min(axis=0), self.xyz.max(axis=0)
-        span = float((hi - lo).max())
-        e = min(span, coarsest)
-        n = np.maximum(1, np.ceil((hi - lo) / e).astype(int))
-        grid = np.stack(np.meshgrid(*[np.arange(k) for k in n], indexing="ij"), axis=-1).reshape(-1, 3)
-        centres = lo + (grid + 0.5) * e
-        sizes: list[np.ndarray] = []
-        vols: list[np.ndarray] = []
-        cubes = 0
-        zones_only = 0.0
-        complete = True
-        stopped = ""
+        Stops (complete=False) once the zones alone pass `stop_elements` or MAX_CUBES. `held`: where an
+        earlier count of this field stopped on its cube budget, gone on from (histogram)."""
         e_min = coarsest / 2.0 ** 14
         offsets = np.array([[i, j, k] for i in (-1, 1) for j in (-1, 1) for k in (-1, 1)], dtype=float)
-        while len(centres):
-            cubes += len(centres)
-            r = e * math.sqrt(3.0) / 2.0
-            sd = self._on(pool, "signed", centres, r)
-            keep = sd < r
-            centres, sd = centres[keep], sd[keep]
-            if not len(centres):
-                break
-            hz, need = self._on(pool, "sizes", centres, r)
-            want = np.minimum(need, coarsest)
-            # a cube wholly inside one part is resolved for every zone but that part's own size, which
-            # is the same all through it (PLAN-fea-17)
-            leaf = (e <= LEAF_SHARE * want) | (e <= e_min)
-            if leaf.any():
-                frac = np.clip(0.5 - sd[leaf] / e, 0.0, 1.0)
-                v = frac * e ** 3
-                sizes.append(hz[leaf])
-                vols.append(v)
-                fine = np.isfinite(hz[leaf])
-                zones_only += float(np.sum(v[fine] / np.minimum(hz[leaf][fine], coarsest) ** 3)) * per_h3
-            rest = centres[~leaf]
+        sizes: list[np.ndarray] = []
+        vols: list[np.ndarray] = []
+        complete = True
+        stopped = ""
+        at = (float(coarsest), float(per_h3))
+        if held is not None:
+            # TIME-12: A RECOUNT WITH MORE CUBES GOES ON FROM WHERE A COUNT OF THIS FIELD STOPPED on its cube
+            # budget: every level before it is the same to the bit, so counting it again from the first cube only
+            # repeats it (the full plan of a 6-part coil counted 3 M cubes, then 12 M from nothing)
+            e, cubes, zones_only = held["e"], held["cubes"], held["zones_only"]
+            sizes, vols = list(held["sizes"]), list(held["vols"])
+            rest, sd_rest, hz_rest = held["rest"], held["sd_rest"], held["hz_rest"]
+            centres = np.zeros((0, 3))
+        else:
+            lo, hi = self.xyz.min(axis=0), self.xyz.max(axis=0)
+            span = float((hi - lo).max())
+            e = min(span, coarsest)
+            n = np.maximum(1, np.ceil((hi - lo) / e).astype(int))
+            grid = np.stack(np.meshgrid(*[np.arange(k) for k in n], indexing="ij"), axis=-1).reshape(-1, 3)
+            centres = lo + (grid + 0.5) * e
+            cubes = 0
+            zones_only = 0.0
+            rest = None
+        while rest is not None or len(centres):
+            if rest is None:
+                cubes += len(centres)
+                r = e * math.sqrt(3.0) / 2.0
+                sd = self._on(pool, "signed", centres, r)
+                keep = sd < r
+                centres, sd = centres[keep], sd[keep]
+                if not len(centres):
+                    break
+                hz, need = self._on(pool, "sizes", centres, r)
+                want = np.minimum(need, coarsest)
+                # a cube wholly inside one part is resolved for every zone but that part's own size, which
+                # is the same all through it (PLAN-fea-17)
+                leaf = (e <= LEAF_SHARE * want) | (e <= e_min)
+                if leaf.any():
+                    frac = np.clip(0.5 - sd[leaf] / e, 0.0, 1.0)
+                    v = frac * e ** 3
+                    sizes.append(hz[leaf])
+                    vols.append(v)
+                    fine = np.isfinite(hz[leaf])
+                    zones_only += float(np.sum(v[fine] / np.minimum(hz[leaf][fine], coarsest) ** 3)) * per_h3
+                rest, sd_rest, hz_rest = centres[~leaf], sd[~leaf], hz[~leaf]
             if zones_only > stop_elements or cubes + 8 * len(rest) > max_cubes:
                 complete = not len(rest)
                 if not complete:
                     stopped = "elements" if zones_only > stop_elements else "cubes"
+                if stopped == "cubes" and max_cubes < HOLD_MAX_CUBES and \
+                        not any(st["at"] == at and st["max_cubes"] == int(max_cubes) for st in self._held):
+                    self._held.append({"at": at, "max_cubes": int(max_cubes), "e": e, "cubes": cubes,
+                                       "zones_only": zones_only, "sizes": list(sizes), "vols": list(vols),
+                                       "rest": rest, "sd_rest": sd_rest, "hz_rest": hz_rest})
                 if len(rest):
                     # STOPPED SHORT: the cubes not yet resolved are still counted, at the size their
                     # zones ask for - an unfinished histogram is a floor on the estimate, never zero
                     # (fea0221: the octree stopped before any leaf, the estimate read 0 elements and
                     # the time guard fell to its floor)
-                    sd_rest = sd[~leaf]
-                    sizes.append(hz[~leaf])
+                    sizes.append(hz_rest)
                     vols.append(np.clip(0.5 - sd_rest / e, 0.0, 1.0) * e ** 3)
                 break
             e /= 2.0
             centres = (rest[:, None, :] + offsets[None, :, :] * (e / 2.0)).reshape(-1, 3)
+            rest = None
         h = np.concatenate(sizes) if sizes else np.zeros(0)
         v = np.concatenate(vols) if vols else np.zeros(0)
-        return Histogram(rows=_binned(h, v), complete=complete, cubes=int(cubes), stopped=stopped,
+        hist = Histogram(rows=_binned(h, v), complete=complete, cubes=int(cubes), stopped=stopped,
                          surface=self._surface_rows(pool, coarsest))
+        if complete:
+            self._whole.append((at, zones_only, int(max_cubes), copy.deepcopy(hist)))
+        return hist
+
+
+#: the rule a field's kept counts follow (a count is never made twice, the answer the same to the bit)
+COUNTED_ONCE_RULE = "TIME-12"
+#: TIME-12: a count stopped on a cube budget of this many cubes or more is not held for a recount (nothing recounts
+#: past engines/fea_driver.MAX_CUBES_CEILING, and what it holds is the size of the count)
+HOLD_MAX_CUBES = 12_000_000
+
+
+class _LazyPool:
+    """A _Pool started when a level is first measured on it (a count answered from what it holds starts none)."""
+
+    def __init__(self, spec, n: int):
+        self.spec, self.n = spec, int(n)
+        self.pool: _Pool | None = None
+
+    def get(self) -> _Pool:
+        if self.pool is None:
+            self.pool = _Pool(self.spec, self.n)
+        return self.pool
+
+    def close(self) -> None:
+        if self.pool is not None:
+            self.pool.close()
 
 
 def plan_workers() -> int:

@@ -1074,15 +1074,20 @@ def walls_of(record: dict) -> dict[str, float]:
 
 def _histogram(surface, zone_list: list[dict], levers: list[dict], diag_m: float, *, limit: float | None = None,
                recount: bool = True, scale: float = 1.0, walls: dict[str, float] | None = None,
-               base_m: float | None = None):
+               base_m: float | None = None, fits_only: bool = False):
     """The zones' volume histogram (engines/fea_size_field). With `limit`, it is counted to 1.5 times it
     (never less than STOP_ELEMENTS), and a count that ran out of cubes under the limit is counted again
-    with more (MAX_CUBES_CEILING). `scale`: PLAN-fea-27's factor on the base size."""
+    with more (MAX_CUBES_CEILING). `scale`: PLAN-fea-27's factor on the base size. `fits_only` (TIME-12): the
+    caller reads only whether the plan fits, so the count stops as soon as the zones alone pass LIMIT_AIM of
+    the limit - past it the plan cannot fit (the estimate is never less than the zones' own count), and a plan
+    that fits never reaches that stop, so its histogram is the same to the bit."""
     from meshpipeline.engines import fea_size_field as SF
 
     field = SF.SizeField(surface, zone_list, growth=L.growth(levers), scale_to_m=1e-3, walls=walls)
     coarsest = float(base_m) if base_m else P.base_size(diag_m, scale)
     stop = STOP_ELEMENTS if limit is None else max(STOP_ELEMENTS, 1.5 * float(limit))
+    if fits_only and limit is not None:
+        stop = P.LIMIT_AIM * float(limit)
     cubes = SF.MAX_CUBES
     while True:
         hist = field.histogram(coarsest=coarsest, per_h3=P.PER_H3, stop_elements=stop, max_cubes=cubes)
@@ -1097,7 +1102,8 @@ def make_plan(record: dict, surface, diag_m: float, *, levers: list[dict] | None
               limit: int = P.ELEMENT_LIMIT, zone_floor_m: float | None = None, hist=None,
               through: float | None = None, ai: dict | None = None,
               zone_floors: dict[str, float] | None = None, recount: bool = True,
-              scale: float | None = None, beyond: float | None = None, sizes: dict | None = None) -> dict:
+              scale: float | None = None, beyond: float | None = None, sizes: dict | None = None,
+              fits_only: bool = False) -> dict:
     """The plan for this part, with the ladder's levers applied: the zones the rules ask for, the
     coarsest base the part allows, the estimate against `limit`. `zone_floor_m`: PLAN-fea-8's
     coarsening (the finest zones floored, never past their validity minimums); `hist`: the zones'
@@ -1106,7 +1112,9 @@ def make_plan(record: dict, surface, diag_m: float, *, levers: list[dict] | None
     kind -> floor), the low-stress zones first (COARSEN_ORDER). `scale`: PLAN-fea-27's one factor on
     every size (the base and every zone, the minimums re-applied) for the user's element count; beyond:
     PLAN-fea-30's factor past those minimums, as far as valid elements allow. sizes: PLAN-fea-29's sizes the
-    user asked for, part by part (engines/fea_part_sizes.per_part), held before any count moves the rest."""
+    user asked for, part by part (engines/fea_part_sizes.per_part), held before any count moves the rest.
+    fits_only: the caller reads only whether it fits (TIME-12, _histogram): a plan that does not fit may stop
+    counting early, and its estimate is then a floor."""
     levers = list(levers or [])
     zone_list, applied = FA.apply_zones(P.zones(record, tighten=L.tightened(levers)), _used(ai), record,
                                         diag_m=diag_m)
@@ -1135,7 +1143,7 @@ def make_plan(record: dict, surface, diag_m: float, *, levers: list[dict] | None
         zone_list = P.floored(zone_list, float(zone_floor_m), through or P.KEEP_THROUGH)
     if hist is None:
         hist = _histogram(surface, zone_list, levers, diag_m, limit=limit, recount=recount, scale=s,
-                          walls=walls_of(record), base_m=base_m)
+                          walls=walls_of(record), base_m=base_m, fits_only=fits_only)
     plan = P.finish(record, zone_list, hist, diag_m=diag_m, limit=limit, levers=levers, growth=growth,
                     scale=s, beyond=u, base_m=base_m)
     if controls:
@@ -1179,16 +1187,9 @@ COARSEN_ORDER: tuple[tuple[str, ...], ...] = (("round", "relief"), ("corner",), 
                                               ("hole", "fillet", "notch"))
 
 
-def _coarsen_group(record: dict, surface, diag_m: float, *, levers: list[dict], limit: int, ai, group,
-                   zone_list: list[dict], floors_done: dict[str, float], sizes: dict | None = None):
-    """One step of PLAN-fea-8's coarsening: the first floor for `group`'s zones (the others as `floors_done`
-    already floors them) under which the plan fits, found by halving the list of floors - each twice the
-    last, from the group's finest zone, while it still changes a zone's size - then one step back where
-    that still fits. Returns (the plan, the floors now in force, whether it fits), or None when no floor
-    changes the group."""
-    def floors_with(f: float) -> dict[str, float]:
-        return {**floors_done, **dict.fromkeys(group, f)}
-
+def _group_floors(zone_list: list[dict], floors_done: dict[str, float], group) -> list[float]:
+    """PLAN-fea-8's floors for `group`'s zones (the others as `floors_done` floors them): each twice the last, from
+    the group's finest zone, while it still changes a zone's size - the last is the group at its validity minimums."""
     base = [dict(z) for z in zone_list]
     for kind, f in sorted(floors_done.items()):
         base = P.floored(base, f, kinds=(kind,))
@@ -1202,6 +1203,45 @@ def _coarsen_group(record: dict, surface, diag_m: float, *, levers: list[dict], 
             break
         last = got
         floors.append(floor)
+    return floors
+
+
+def could_fit(record: dict, surface, diag_m: float, *, cap: int, levers: list[dict] | None = None,
+              ai: dict | None = None, sizes: dict | None = None) -> bool:
+    """PLAN-fea-22 / TIME-12: whether a plan under `cap` can fit at all - every kind coarsened to its validity
+    minimums, the plan PLAN-fea-8's coarsening ends on when no kind fits (choose_plan), counted only as far as it
+    takes to tell (fits_only). False: choose_plan under `cap` would end at the minimums, still over - the quicker
+    mesh would not be offered, so it need not be planned. (Exact as far as a coarser floor never counts more
+    elements than a finer one: the coarsening's own search reads the counts so too.)"""
+    levers = list(levers or [])
+    if FA.refines(_used(ai)):
+        ai = FA.without_refines(ai or {})       # AI-fea-5, as choose_plan coarsens
+    zone_list, _ = FA.apply_zones(P.zones(record, tighten=L.tightened(levers)), _used(ai), record, diag_m=diag_m)
+    if sizes:
+        zone_list = P.user_sized(zone_list, sizes)
+    floors_done: dict[str, float] = {}
+    for group in COARSEN_ORDER:
+        if not any(z["kind"] in group for z in zone_list):
+            continue
+        floors = _group_floors(zone_list, floors_done, group)
+        if floors:
+            floors_done = {**floors_done, **dict.fromkeys(group, floors[-1])}
+    plan = make_plan(record, surface, diag_m, levers=levers, limit=int(cap), ai=ai, sizes=sizes, recount=False,
+                     zone_floors=floors_done or None, fits_only=True)
+    return bool(plan["fits"])
+
+
+def _coarsen_group(record: dict, surface, diag_m: float, *, levers: list[dict], limit: int, ai, group,
+                   zone_list: list[dict], floors_done: dict[str, float], sizes: dict | None = None):
+    """One step of PLAN-fea-8's coarsening: the first floor for `group`'s zones (the others as `floors_done`
+    already floors them) under which the plan fits, found by halving the list of floors - each twice the
+    last, from the group's finest zone, while it still changes a zone's size - then one step back where
+    that still fits. Returns (the plan, the floors now in force, whether it fits), or None when no floor
+    changes the group."""
+    def floors_with(f: float) -> dict[str, float]:
+        return {**floors_done, **dict.fromkeys(group, f)}
+
+    floors = _group_floors(zone_list, floors_done, group)
     if not floors:
         return None
     tried: dict[int, dict] = {}
@@ -1209,7 +1249,7 @@ def _coarsen_group(record: dict, surface, diag_m: float, *, levers: list[dict], 
     def at(k: int) -> dict:
         if k not in tried:
             tried[k] = make_plan(record, surface, diag_m, levers=levers, limit=limit, ai=ai, sizes=sizes, recount=False,
-                                 zone_floors=floors_with(floors[k]))
+                                 zone_floors=floors_with(floors[k]), fits_only=True)
         return tried[k]
 
     if not at(len(floors) - 1)["fits"]:
@@ -1224,7 +1264,7 @@ def _coarsen_group(record: dict, surface, diag_m: float, *, levers: list[dict], 
             lo = mid + 1
     best, f = at(hi), floors[hi]
     finer = make_plan(record, surface, diag_m, levers=levers, limit=limit, ai=ai, sizes=sizes, zone_floors=floors_with(0.75 * f),
-                      recount=False)
+                      recount=False, fits_only=True)
     if finer["fits"]:
         best, f = finer, 0.75 * f
     return best, floors_with(f), True
@@ -1607,7 +1647,7 @@ def choose_plan(record: dict, surface, diag_m: float, *, levers: list[dict] | No
                     continue
                 others = {k: v for k, v in floors_done.items() if k not in back}
                 whole = make_plan(record, surface, diag_m, levers=levers, limit=limit, ai=ai, sizes=sizes, zone_floors=others,
-                                  recount=False)
+                                  recount=False, fits_only=True)
                 if whole["fits"]:
                     best, floors_done = whole, others          # this kind needs no coarsening at all
                     continue

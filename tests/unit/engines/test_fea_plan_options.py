@@ -27,6 +27,9 @@ def _options(monkeypatch, full: dict, quick: dict | None = None) -> dict:
         calls.append(cap)
         return quick if cap is not None else full
     monkeypatch.setattr(FD, "choose_plan", choose)
+    # TIME-12's short count before the quicker mesh is planned: these plans are made up, so it says "may fit" and the
+    # quicker mesh is planned as before (its skip is tested in test_fea_sizing_faster)
+    monkeypatch.setattr(FD, "could_fit", lambda *a, **k: True)
     out = PO.options({"faces": {}}, None, 0.1)
     # the quicker mesh is planned only when there is a choice to make, capped to the standard machine
     assert calls[0] is None and all(c == PO.standard_elements() for c in calls[1:])

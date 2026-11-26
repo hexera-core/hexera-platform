@@ -129,6 +129,16 @@ def run_guarded(args, *, timeout=None, stall_s: float | None = None, progress_pa
         # Re-raise with the partial output attached, exactly as subprocess.run does,
         # so callers reading exc.stdout / exc.stderr keep working.
         raise subprocess.TimeoutExpired(proc.args, timeout, output=stdout, stderr=stderr) from None
+    except BaseException:
+        # THE WAIT ITSELF WAS INTERRUPTED (a task's soft time limit, a stop): the child is in a session of its own,
+        # so nothing else would ever stop it - it is stopped with us (TIME-11: an FEA sizing child would keep a
+        # worker core busy after its task had given up on it)
+        _kill_process_group(proc)
+        try:
+            proc.wait(timeout=5)
+        except Exception:  # noqa: BLE001, S110 - reaped by the kernel when we end; the interruption goes on
+            pass
+        raise
     return subprocess.CompletedProcess(proc.args, proc.returncode, stdout, stderr)
 
 

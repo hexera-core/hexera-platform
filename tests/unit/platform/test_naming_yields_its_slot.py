@@ -32,7 +32,9 @@ def test_a_naming_that_could_only_wait_goes_back_behind_the_waiting_task(world):
     (again,) = world["queued"]
     assert again["kwargs"][tasks.NAMING_YIELDED] == 1
     assert again["task_id"] == "geometry-naming-s1"
-    assert (again["soft_time_limit"], again["time_limit"]) == (100, 120)
+    # the limits it was queued with: the naming's own plus the FEA sizing's (TIME-11)
+    assert (again["soft_time_limit"], again["time_limit"]) == gc.naming_task_limits("s1")
+    assert again["soft_time_limit"] > 100 and again["time_limit"] > 120
 
 
 def test_a_naming_runs_at_once_when_nothing_waits(world):

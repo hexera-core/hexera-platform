@@ -439,6 +439,56 @@ def fea_view(facts: dict | None, messages=None, *, live: bool = True) -> dict:
 PLAN_FACT_KEY = "fea_plan"
 PLAN_QUESTION = "Which mesh?"
 PLAN_FULL, PLAN_QUICKER = "full", "quicker"
+#: TIME-11: THE SIZING ALWAYS ENDS. Why it was not sized, in the stage's words (plan_view adds what the run does):
+#: stopped by its own clock (engines/fea_plan_options.BUDGET_S), or its worker gone (killed, its machine rolled)
+SIZING_OUT_OF_TIME = "Sizing the mesh did not finish in {minutes} minutes"
+SIZING_WORKER_GONE = "The worker sizing the mesh stopped before it finished"
+#: an ended naming task whose sizing marker is still on the check this long after it ended stored nothing (the
+#: result is written before the task ends: the grace only covers a reader that read the two a moment apart)
+SIZING_END_GRACE_S = 30.0
+#: the rule a settled sizing names on its fact
+SIZING_RULE = "TIME-11"
+
+
+def out_of_time_words(budget_s: float | None = None) -> str:
+    """TIME-11: the sizing stopped by its clock, in minutes."""
+    from meshpipeline.engines.fea_plan_options import BUDGET_S
+    seconds = BUDGET_S if budget_s is None else float(budget_s)
+    return SIZING_OUT_OF_TIME.format(minutes=max(1, round(seconds / 60.0)))
+
+
+def sizing_now(facts: dict | None, naming: dict | None, now: float) -> dict | None:
+    """TIME-11: the check's facts with a size choice still marked "sizing" settled when nothing will ever end it: past
+    the marker's own deadline (`until`: the sizing's clock and its margins - its worker would have stored the clock's
+    stop by then), or its worker gone (the naming task's record, `naming`: ended with the marker still on the check,
+    or its heartbeat quiet for application/geometry_progress.BEAT_STALE_S). Settled, it is "not sized" with why in
+    plain words (`stopped`: "clock" or "worker"), so the stage and the chat stop waiting and the run sizes it
+    itself. Pure; the same facts when nothing is settled."""
+    got = (facts or {}).get(PLAN_FACT_KEY)
+    if not isinstance(got, dict) or not got.get("sizing"):
+        return facts
+    stopped = ""
+    try:
+        until = float(got.get("until") or 0.0)
+    except (TypeError, ValueError):
+        until = 0.0
+    if until and now > until:
+        stopped = "clock"
+    elif isinstance(naming, dict):
+        ended = naming.get("ended_at")
+        if ended is not None:
+            try:
+                gone = now - float(ended) > SIZING_END_GRACE_S
+            except (TypeError, ValueError):
+                gone = False
+        else:
+            from meshpipeline.application import geometry_progress as gp
+            gone = gp.beating(naming, now) is False
+        stopped = "worker" if gone else ""
+    if not stopped:
+        return facts
+    why = out_of_time_words() if stopped == "clock" else SIZING_WORKER_GONE
+    return {**(facts or {}), PLAN_FACT_KEY: {"sized": False, "why": why, "stopped": stopped, "rule": SIZING_RULE}}
 
 
 def _elements_words(n: int, at_least: bool = False) -> str:
@@ -598,8 +648,12 @@ def planned_sizes(session_id: str, facts: dict | None = None) -> dict:
                  "why": SIZES_AT_RUN}
     try:
         if facts is None:
-            from meshpipeline.application.geometry_check import read_check
-            facts = (read_check(session_id) or {}).get("facts") or {}
+            # read as every reader reads the check (TIME-11): a sizing that will never end is not "still sizing"
+            from meshpipeline.application import geometry_progress as gp
+            from meshpipeline.application.geometry_check import naming_requested, read_check, time_boxed
+            stored = time_boxed(read_check(session_id), naming_requested(session_id),
+                                progress=gp.read_progress(session_id) or {})
+            facts = (stored or {}).get("facts") or {}
         got = (facts or {}).get(PLAN_FACT_KEY)
         if not isinstance(got, dict) or not got.get("sized"):
             if isinstance(got, dict) and got.get("sizing"):
@@ -983,5 +1037,5 @@ __all__ = ["TRY_ANYWAY", "declared_clean", "has_solid", "warnings", "FOLD_BACK",
            "QUESTION", "SHOWN_HOT_SPOTS", "GAP_JOIN_QUESTION", "DEFAULT_GAP_JOINS", "gap_words",
            "PAIR_NOTE", "confirmed_pairs", "pair_rows", "pairs_answer", "pairs_summary", "joint_counts", "joint_phrases", "joints_words", "FLOW_ONLY_KEYS", "without_flow_openings",
            "gap_joins_answer", "confirmed_gap_joins", "STAGE_FEA", "STAGE_FLOW", "STAGE_THERMAL", "WAY_OUT_SOLID", "assembly_view",
-           "blocker", "body_count", "sewn_body_count", "clean_details", "clean_line", "clean_words", "confirmed_connection", "connection_answer", "fea_view",
+           "SIZING_OUT_OF_TIME", "SIZING_WORKER_GONE", "blocker", "body_count", "sewn_body_count", "clean_details", "clean_line", "clean_words", "confirmed_connection", "connection_answer", "fea_view",
            "hot_spot_words", "in_unit", "measure_view", "not_solid_message", "parts_words", "stage_route"]
