@@ -239,7 +239,7 @@ def test_an_attempt_whose_only_ask_was_set_aside_is_never_silent(tmp_path, monke
     """G: 5b/5c had no tally and no "could not be applied" line - the report returned None with no row."""
     from meshpipeline.contracts import user_notes as UN
     said: list = []
-    monkeypatch.setattr(UN, "record_remark", lambda ws, line, by="": said.append(line))
+    monkeypatch.setattr(UN, "record_remark", lambda ws, line, by="", whole=False: said.append(line))
     sec = MR.section("used", requirements=MR.empty(),
                      dropped=['"refine the walls to level 2": this setting is for the whole mesh only: not applied'])
     MR.write(tmp_path, sec)

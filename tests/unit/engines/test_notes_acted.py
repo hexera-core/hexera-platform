@@ -173,7 +173,7 @@ def test_the_closing_line_counts_the_engine_as_met_and_says_the_tally_once(tmp_p
     quality = CR.attach(tmp_path, {"cells": 1000}, "snappy")
     assert [r["field"] for r in quality["requirements"]["rows"]] == ["engine"]
     remarks = read_remarks(tmp_path)
-    assert remarks == ["Of the 1 thing you asked for: 1 met."]
+    assert remarks == ["Of the 1 thing you asked for: 1 met. Meshed with snappyHexMesh: met."]
     base = fr.build_final_result(
         job_id="j", owner_id="u", status=fr.TerminalStatus.succeeded, engine="snappy",
         purpose="internal_cfd", dimensionality="3D", approved_snapshot_id="", executor_success=True,

@@ -2255,9 +2255,9 @@ def attach(workspace, quality: dict, engine: str) -> dict:
         # STD-2: the closing line says where the things asked came from ("From your settings: ..."); an ask the checks
         # set aside is a row of the report already, so it is not counted twice among the other things not applied
         others = max(0, len(MR.not_applied_words(sec)) - len(sec.get("dropped") or []))
-        said = MS.remark(sec, summary(rep, not_applied=others))
+        said = MR.closing(MS.remark(sec, summary(rep, not_applied=others)), rep)
         if said:
-            record_remark(Path(workspace), said, by=CONSUMER)
+            record_remark(Path(workspace), said, by=CONSUMER, whole=True)
     except Exception:  # noqa: BLE001
         logger.debug("cfd requirements: no remark", exc_info=True)
     return out
