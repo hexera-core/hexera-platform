@@ -40,11 +40,12 @@ def triangles(shape: Any, *, rel_deflection: float = 2e-3, max_triangles: int = 
     from OCP.BRep import BRep_Tool
     from OCP.BRepBndLib import BRepBndLib
     from OCP.BRepBuilderAPI import BRepBuilderAPI_Copy
-    from OCP.BRepMesh import BRepMesh_IncrementalMesh
     from OCP.TopAbs import TopAbs_FACE, TopAbs_REVERSED
     from OCP.TopExp import TopExp_Explorer
     from OCP.TopLoc import TopLoc_Location
     from OCP.TopoDS import TopoDS
+
+    from meshpipeline.cad.occ_box import incremental_mesh
 
     box = Bnd_Box()
     BRepBndLib.Add_s(shape, box)
@@ -56,7 +57,7 @@ def triangles(shape: Any, *, rel_deflection: float = 2e-3, max_triangles: int = 
     out: list[Tri] = []
     for _attempt in range(4):
         copy = BRepBuilderAPI_Copy(shape, True, False).Shape()
-        BRepMesh_IncrementalMesh(copy, deflection, False, 0.5, True)
+        incremental_mesh(copy, deflection, 0.5, relative=False, parallel=True)  # the guarded helper
         out = []
         exp = TopExp_Explorer(copy, TopAbs_FACE)
         while exp.More():
