@@ -444,3 +444,33 @@ def test_the_lane_bar_is_neutral_not_the_error_red(live):
       return {bar: getComputedStyle(bar).backgroundColor, accent};
     })()""")
     assert out["bar"] != out["accent"], "the running repair bar is drawn in the accent red"
+
+
+def test_a_run_may_skip_review_only_when_the_organisation_allows_it(live):
+    out = live.evaluate("""(async () => {
+      const { formHtml, readForm } = await import('/static/js/render/geometry_form.js');
+      const host = document.createElement('div'); document.body.appendChild(host);
+      host.innerHTML = formHtml({flow:'internal', openings:[], repair_auto_accept_allowed:false, repair_auto_accept:true});
+      const box = host.querySelector('.rc-auto-box');
+      const locked = {disabled: box.disabled, checked: box.checked, help: host.querySelector('.rc-auto .rc-opt-h').textContent};
+      host.querySelector('.rc-opt input[value="standalone"]').click();
+      locked.afterPick = box.disabled;
+      locked.body = readForm(host, {});
+      host.innerHTML = formHtml({flow:'internal', openings:[], repair_auto_accept_allowed:true});
+      const open = {disabled: host.querySelector('.rc-auto-box').disabled};
+      host.remove();
+      return {locked, open};
+    })()""")
+    assert out["locked"]["disabled"] and not out["locked"]["checked"] and out["locked"]["afterPick"]
+    assert "An admin can allow skipping it" in out["locked"]["help"]
+    assert out["locked"]["body"]["repair_auto_accept"] is False
+    assert out["open"]["disabled"] is False
+
+
+def test_a_repair_only_run_waiting_for_a_worker_says_so_on_its_lane(live):
+    out = live.evaluate("(async () => {" + LANE + """
+      Stage.repairOnly();
+      Stage.waiting('waiting for a worker to start (about 8 minutes)');
+      return lane().live;
+    })()""")
+    assert "mesh" not in out.lower(), out

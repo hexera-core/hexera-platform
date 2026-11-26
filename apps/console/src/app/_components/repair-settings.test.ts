@@ -35,8 +35,8 @@ test("a member who is not an admin sees the setting but cannot change it", () =>
 });
 
 test("the line under the switch follows the setting", () => {
-  assert.match(scopeLine({ auto_accept_repairs: true }), /accepts larger repairs automatically/);
-  assert.match(scopeLine({ auto_accept_repairs: false }), /ask before keeping larger repairs/);
+  assert.match(scopeLine({ auto_accept_repairs: true }), /may choose to skip the review/);
+  assert.match(scopeLine({ auto_accept_repairs: false }), /shows larger repairs for review/);
 });
 
 test("a failed save is said in plain words", () => {
