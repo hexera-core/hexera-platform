@@ -73,10 +73,11 @@ ELSEWHERE_WORDS = "put sizes for one part, or shell or solid, in a run's notes"
 # #
 
 def snapshot(text: str, reading: Mapping | None, *, updated_by: str = "", updated_at: str = "",
-             shell_elements: str = "quads") -> dict | None:
+             shell_elements: str = "quads", shell_elements_set: bool = False) -> dict | None:
     """What a run is dispatched with: the text, the reading kept at save time, who saved it and when, and the page's
-    switch when it says Triangles (STD-4; Quads, its default, is not carried). None with no words and the switch on
-    Quads (a run without a standard carries nothing at all)."""
+    switch when the user SET it (STD-4: Triangles, or Quads chosen - `shell_elements_set`, 0024; the switch left on
+    its default Quads is not carried, so the typed words decide). None with no words and the switch on Quads (a run
+    without a standard carries nothing at all)."""
     t = str(text or "").strip()
     tri = pick_of(shell_elements) == TRIANGLES
     if not t and not tri:
@@ -84,6 +85,9 @@ def snapshot(text: str, reading: Mapping | None, *, updated_by: str = "", update
     out: dict = {"text": t[:MAX_CHARS]}
     if tri:
         out["shell_elements"] = TRIANGLES
+    elif shell_elements_set and pick_of(shell_elements) == QUADS:
+        out["shell_elements"] = QUADS
+        out["shell_elements_set"] = True
     if isinstance(reading, Mapping) and isinstance(reading.get("arguments"), str) and reading.get("key"):
         out["reading"] = {"key": str(reading["key"]), "arguments": str(reading["arguments"])}
     if updated_by:
@@ -104,6 +108,15 @@ def standard_of(state: Mapping | None) -> dict | None:
 def switch_of(std: Mapping | None) -> str:
     """STD-4: the settings page's switch as a standard carries it: "triangles", else "quads" (its default)."""
     return TRIANGLES if pick_of((std or {}).get("shell_elements")) == TRIANGLES else QUADS
+
+
+def switch_chosen(std: Mapping | None) -> str:
+    """STD-4: the page's switch when the user SET it - "triangles" (never the default), "quads" chosen (carried with
+    `shell_elements_set`) - else "" (left at its default: the standard's typed words decide the element kind)."""
+    got = pick_of((std or {}).get("shell_elements"))
+    if got == TRIANGLES:
+        return TRIANGLES
+    return QUADS if got == QUADS and (std or {}).get("shell_elements_set") is True else ""
 
 
 def _state(text: str, user_id: str = "") -> dict:
@@ -438,8 +451,11 @@ async def decide(state: Mapping, *, route: str = "", job_id: str = "", run=None,
     except Exception as exc:  # noqa: BLE001 - the standard never fails a run
         logger.warning("meshing standard: not read (%s) - job_id=%s", type(exc).__name__, job_id)
         settings = MR.section("failed", source="rules", note=UNREAD_WORDS)
-    # STD-4: the page's switch is the settings' shell element kind
-    settings = switched(settings, switch_of(std))
+    # STD-4: the page's switch, when the user set it, is the settings' shell element kind (over their own words);
+    # left at its default it sets nothing aside - "tria mesh only" typed in the box is built
+    chosen = switch_chosen(std)
+    if chosen:
+        settings = switched(settings, chosen)
     left = max(0.0, float(wait_s) - (time.monotonic() - started))
     notes = await MR.decide(state, route=route, job_id=job_id, run=run, enabled=enabled, wait_s=left)
     return merge(settings, notes, route=route)
@@ -757,7 +773,7 @@ def merge(settings: Mapping | None, notes: Mapping, *, route: str = "") -> dict:
     if g_kept:
         sec["standard"]["guidance"] = [g["quote"] for g in g_kept]
     sec["lines"] = lines(MR.section("none") if std_off else settings, notes, out, told_s=told_s, told_n=told_n,
-                         guidance=g_kept)
+                         guidance=g_kept, route=route)
     if said_not_here:
         sec["standard"]["not_applied_here"] = said_not_here
         sec["standard_not_applied"] = said_not_here
@@ -802,7 +818,7 @@ def _flow_across(out: dict, source, not_the_notes) -> None:
 
 
 def lines(settings: Mapping, notes: Mapping, merged: Mapping, *, told_s=(), told_n=(),
-          guidance: list[dict] | None = None) -> list[str]:
+          guidance: list[dict] | None = None, route: str = "") -> list[str]:
     """Before meshing, in plain words: one line per value in force, said by where it came from, then what was not
     applied - the notes' lines exactly as the reader says them, the standard's marked as the standard's. `guidance`:
     the standard's lines kept as guidance for this run (STD-6; None: every such line, as the settings page says)."""
@@ -814,13 +830,20 @@ def lines(settings: Mapping, notes: Mapping, merged: Mapping, *, told_s=(), told
         out.append(str(notes.get("note") or MR.UNREAD_WORDS))
     rows = list(merged.get("rows") or [])
     unit = settings.get("stated_unit") if s_used else None
-    out += [f"From your settings: {r['asked']}." for r in rows if r.get("from") == "settings"]
+    def said(r: Mapping, whose: str) -> str:
+        # a row this route cannot take at all is never said as applied: the result's own reason, said now (STD-4)
+        why = MR.not_on_route(str(r.get("field") or ""), route)
+        if why:
+            return f"{MR.NOT_HERE_LEAD} ({'your ' + whose}): {r['asked']} - {why}."
+        return f"From your {whose}: {r['asked']}."
+
+    out += [said(r, "settings") for r in rows if r.get("from") == "settings"]
     if unit:
         out.append(f"From your settings: lengths with no unit are in {_UNIT_NAME[str(unit)]}.")
     if s_used:
         for _quote, *files in settings.get("solver_files") or []:
             out.append(f"From your settings: {' and '.join(files)} files - every FEA run delivers them.")
-    out += [f"From your notes: {r['asked']}." for r in rows if r.get("from") == "notes"]
+    out += [said(r, "notes") for r in rows if r.get("from") == "notes"]
     out += MR.strictness_words(merged)
     for sec in (settings, notes):
         if sec.get("status") == "used" and sec.get("source") == "saved" and sec.get("note"):
@@ -1067,6 +1090,7 @@ def stage_decisions(sec: Mapping | None, stage_name: str = "notes") -> list[dict
 
 __all__ = ["ELSEWHERE_WORDS", "MAX_CHARS", "OFF_WORDS", "PICKS", "QUADS", "RULE_MERGE", "RULE_NOTHING", "RULE_READ",
            "RULE_STAGE", "SAVE_WAIT_S", "SOURCE", "STAGE_KEY", "STATE_KEY", "TRIANGLES", "UNREAD_WORDS", "checked",
+           "switch_chosen", "switch_of",
            "decide", "decisions", "elements_of", "kept_reading", "key_of", "lines", "merge", "messages", "pick_of",
            "read", "read_at_save", "remark", "size_remark", "snapshot", "stage", "stage_decisions", "standard_of",
            "understood", "words_read"]

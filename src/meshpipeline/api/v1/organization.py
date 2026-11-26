@@ -50,6 +50,8 @@ class MeshingStandardIn(BaseModel):
     text: str = Field(default="", max_length=meshing_standard_service.MAX_CHARS)
     #: SHSTAGE-8: the page's one switch, a shell's elements for every run of the organisation
     shell_elements: Literal["quads", "triangles"] = "quads"
+    #: STD-4: true when the user set that switch on the page (left at its default, the typed words decide)
+    shell_elements_set: bool = False
 
 
 @router.get("/meshing-standard")
@@ -76,7 +78,7 @@ async def save_meshing_standard(body: MeshingStandardIn,
     try:
         got = await meshing_standard_service.save(
             owner_id=owner_id, organization_id=principal.organization_id, text=body.text,
-            sessions=get_db, shell_elements=body.shell_elements)
+            sessions=get_db, shell_elements=body.shell_elements, shell_elements_set=body.shell_elements_set)
     except meshing_standard_service.TooLong as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     if got is None:

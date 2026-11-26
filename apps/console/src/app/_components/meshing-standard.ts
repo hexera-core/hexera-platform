@@ -11,6 +11,8 @@ export type MeshingStandard = {
   status: "read" | "unread" | "empty";
   /** the page's one switch: a shell's elements for every run (SHSTAGE-8); Quads when the API leaves it out */
   shell_elements?: ShellElements;
+  /** whether the user set that switch; left at its default, the typed words decide (STD-4) */
+  shell_elements_set?: boolean;
   updated_by: string | null;
   updated_at: string | null;
 };

@@ -36,6 +36,7 @@ class _Row:
     updated_by: str
     updated_at: datetime
     shell_elements: str = "quads"
+    shell_elements_set: bool = False
 
 
 class _Store:
@@ -49,8 +50,10 @@ class _Store:
     async def get_for_organization(self, db, organization_id):
         return self.rows.get(organization_id)
 
-    async def put(self, db, *, organization_id, text, reading, updated_by, shell_elements="quads"):
-        self.rows[organization_id] = _Row(organization_id, text, reading, updated_by, NOW, shell_elements)
+    async def put(self, db, *, organization_id, text, reading, updated_by, shell_elements="quads",
+                  shell_elements_set=False):
+        self.rows[organization_id] = _Row(organization_id, text, reading, updated_by, NOW, shell_elements,
+                                          shell_elements_set)
         return self.rows[organization_id]
 
     async def clear(self, db, *, organization_id):
@@ -114,8 +117,8 @@ async def _put(text: str, principal: Principal | None = None):
 
 async def test_an_organisation_with_no_standard_reads_empty(store):
     got = await organization.read_meshing_standard(owner_id=OWNER, organization_id=str(OWN_ORG))
-    assert got == {"text": "", "lines": [], "status": "empty", "shell_elements": "quads", "updated_by": None,
-                   "updated_at": None}
+    assert got == {"text": "", "lines": [], "status": "empty", "shell_elements": "quads",
+                   "shell_elements_set": False, "updated_by": None, "updated_at": None}
 
 
 async def test_saving_reads_the_words_once_and_shows_what_was_understood(store, reader):
@@ -216,9 +219,25 @@ async def test_the_approval_carries_the_standard_only_when_there_is_one(store, r
 
 
 # ------------------------------------------------------------------ the page's one switch (SHSTAGE-8, STD-4)
-async def _put_kind(text: str, kind: str):
+async def _put_kind(text: str, kind: str, chosen: bool = False):
     return await organization.save_meshing_standard(
-        organization.MeshingStandardIn(text=text, shell_elements=kind), _console(), owner_id=OWNER)
+        organization.MeshingStandardIn(text=text, shell_elements=kind, shell_elements_set=chosen), _console(),
+        owner_id=OWNER)
+
+
+async def test_a_switch_the_user_set_to_quads_is_kept_and_dispatched_one_left_alone_is_not(store, reader):
+    # STD-4: left at its default (Quads) the switch is no choice - the typed words decide
+    got = await _put_kind(CRITERIA, "quads")
+    assert got["shell_elements_set"] is False and store.rows[OWN_ORG].shell_elements_set is False
+    assert "shell_elements" not in await MSS.for_dispatch(None, organization_id=str(OWN_ORG))
+    # set to Quads on the page: carried, so it sets aside a "triangles only" of the words
+    got = await _put_kind(CRITERIA, "quads", chosen=True)
+    assert got["shell_elements_set"] is True
+    snap = await MSS.for_dispatch(None, organization_id=str(OWN_ORG))
+    assert snap["shell_elements"] == "quads" and snap["shell_elements_set"] is True
+    # Triangles is never the default: always the user's
+    got = await _put_kind(CRITERIA, "triangles")
+    assert got["shell_elements_set"] is True
 
 
 async def test_the_shell_elements_switch_is_saved_with_the_standard_and_dispatched(store, reader):

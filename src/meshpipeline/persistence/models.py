@@ -976,6 +976,9 @@ class OrganizationMeshingStandard(Base):
     reading:    Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     #: SHSTAGE-8 (0021): the settings page's switch, a shell's elements for every run - "quads" | "triangles"
     shell_elements: Mapped[str] = mapped_column(String(16), nullable=False, server_default="quads")
+    #: STD-4 (0024): whether the user SET that switch - left at its default (Quads) it sets nothing aside, and the
+    #: standard's typed words decide a shell's elements
+    shell_elements_set: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
     #: who saved it last (their owner id, the lowercased email; cleared with the organisation on erasure)
     updated_by: Mapped[str] = mapped_column(String(320), nullable=False, server_default="")
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(),

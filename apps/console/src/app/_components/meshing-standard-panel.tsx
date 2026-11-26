@@ -18,6 +18,8 @@ export function MeshingStandardPanel({ standard }: { standard: MeshingStandard }
   const [saved, setSaved] = useState<MeshingStandard>(standard);
   const [draft, setDraft] = useState(standard.text);
   const [kind, setKind] = useState<ShellElements>(shellElementsOf(standard));
+  // STD-4: the switch speaks for the team only once someone sets it; left alone, the typed words decide
+  const [kindSet, setKindSet] = useState<boolean>(standard.shell_elements_set === true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -28,7 +30,7 @@ export function MeshingStandardPanel({ standard }: { standard: MeshingStandard }
       const response = await fetch("/api/v1/organization/meshing-standard", {
         method: "PUT",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ text: draft, shell_elements: kind }),
+        body: JSON.stringify({ text: draft, shell_elements: kind, shell_elements_set: kindSet }),
       });
       if (!response.ok) {
         setError(saveFailureMessage(response.status));
@@ -38,6 +40,7 @@ export function MeshingStandardPanel({ standard }: { standard: MeshingStandard }
       setSaved(body);
       setDraft(body.text);
       setKind(shellElementsOf(body));
+      setKindSet(body.shell_elements_set === true);
       router.refresh();
     } catch {
       setError(saveFailureMessage(0));
@@ -53,7 +56,10 @@ export function MeshingStandardPanel({ standard }: { standard: MeshingStandard }
       error={error}
       kind={kind}
       onChange={setDraft}
-      onKind={setKind}
+      onKind={(next) => {
+        setKind(next);
+        setKindSet(true);
+      }}
       onClear={() => setDraft("")}
       onSave={save}
       saved={saved}

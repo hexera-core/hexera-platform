@@ -2184,6 +2184,27 @@ def finish_report(rows: list[dict], n: int, definitions: str) -> dict:
 FLOW_FIELDS = ("near_wall", "local", "cells:target", "cells:ceiling", "cells:floor", *(f"layers:{w}" for w in LAYERS))
 
 
+#: STD-4: how a row this route cannot take is said before meshing (never "From your ...: ...", as if applied)
+NOT_HERE_LEAD = "Not for this mesh"
+_NO_LAYERS_HERE = "a solid or shell mesh has no boundary layers or wall cells; they are a CFD setting"
+
+
+def not_on_route(field: str, route: str) -> str:
+    """Why a row of `field` cannot be applied on this route at all - the same reason the result's row gives - else
+    "": on a solid or shell (route "fea") boundary layers and a size at the walls; on any route a control every one of
+    the route's lanes declares NotHere (contracts/mesh_controls: files in millimetres)."""
+    f = str(field or "")
+    if route == "fea" and (f == "near_wall" or f.startswith("layers:")):
+        return _NO_LAYERS_HERE
+    if f.startswith("control:") and route in ("fea", "flow"):
+        c = _MC.CONTROLS.get(f.split(":", 1)[1])
+        lanes = [ln for ln, (_e, r) in _MC.LANES.items() if r == route]
+        got = [c.lanes.get(ln) for ln in lanes] if c else []
+        if got and all(isinstance(x, _MC.NotHere) for x in got):
+            return str(got[0].why)  # type: ignore[union-attr]
+    return ""
+
+
 def elements_row(field: str, req: Mapping, n: int, kind: str) -> dict | None:
     """A flow field (FLOW_FIELDS) on a solid or a shell mesh of `n` elements: a count is measured against what
     was asked; a size in a place is the sizes-per-part step's; boundary layers and a size at the walls are not

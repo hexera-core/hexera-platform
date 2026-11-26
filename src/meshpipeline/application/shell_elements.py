@@ -70,13 +70,14 @@ def notes_kind(messages=None, notes=None) -> str:
 
 
 def settings_kind(standard: Mapping | None) -> str:
-    """The settings page's switch (STD-4), "quads" | "triangles"; "" with no standard (the control then starts on
-    Quads, the default)."""
+    """The settings' shell element kind (STD-4), "quads" | "triangles": the page's switch when the user set it, else
+    the kind the standard's own words name ("tria mesh only"), else "" (the control then starts on Quads, the
+    default)."""
     from meshpipeline.engines import meshing_standard as MS
 
     if not isinstance(standard, Mapping):
         return ""
-    return MS.switch_of(standard)
+    return MS.switch_chosen(standard) or said_in(str(standard.get("text") or ""))
 
 
 #: SHSTAGE-8: A FLIP ON THE STAGE AWAY FROM THESE SOURCES ASKS FIRST ("Your settings say Quads. Use Triangles for this
