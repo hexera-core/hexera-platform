@@ -1411,6 +1411,21 @@ def _source(ftw: dict) -> str:
     return f"Hexera gmsh engine + {ftw.get('version') or 'fTetWild'} (LAD-fea-9: {', '.join(ftw.get('parts') or [])})"
 
 
+def _start_exports(ws: Path, solid, deck: dict, ftw: dict):
+    """A single part's Nastran and Ansys files, started beside the deck (fea_writers.start_all: written in their own
+    processes while the mesh is measured); never raises - what cannot start is written at result(), as before."""
+    from meshpipeline.contracts.mesh_units import COMPLETED_MESH_UNIT
+    from meshpipeline.engines import fea_writers
+    names: dict[str, str] = deck.get("cad_face_names") or {}
+    units, source = str(COMPLETED_MESH_UNIT.value), _source(ftw)
+    kw = {"cad_names": names, "units": units, "source": source}
+    try:
+        return fea_writers.start_all(ws, solid, cad_names=names, units=units, source=source)
+    except Exception as exc:  # noqa: BLE001 - written one after the other instead
+        print(f"[GMSH-FEA] solver files written in this process ({type(exc).__name__})", file=sys.stderr)
+        return fea_writers.Started(Path(ws), [], kw, solid)
+
+
 def rung_volumes(run: dict, vols: list[int], part_volumes: dict[str, list[int]] | None) -> list[int]:
     """LAD-fea-9: the volumes fTetWild meshes - the parts the plan names (plan["mesh"]["ftetwild"]
     ["parts"]), every volume when it names none (a single part, or every part of an assembly)."""
@@ -2231,6 +2246,7 @@ def _mesh(workspace) -> int:
         rules: dict = {}
         shape: dict = {}
         solid = None
+        writing = None
         try:
             from meshpipeline.engines import fea_quality
             from meshpipeline.engines.gmsh.abaqus_deck import from_gmsh
@@ -2240,6 +2256,9 @@ def _mesh(workspace) -> int:
                 # MESH-8: an opened single part's faces keyed by the CAD's tags, so Face_k is the CAD's face k
                 from meshpipeline.engines.gmsh.abaqus_deck import retagged
                 solid = retagged(solid, single_skin_notes(ws)[0] or None)
+                # MESH ONCE, EXPORT MANY: the Nastran and Ansys files start now, each in its own process, while the
+                # mesh is measured below (fea_writers.start_all: the same bytes; collected after the measures)
+                writing = _start_exports(ws, solid, deck, ftw)
             rules = checks.measure(solid, plan, tags_by_name=face_tags if asm else None)
             # THE ELEMENTS AS THE SOLVERS JUDGE THEM (engines/fea_quality.py): the gate refuses an
             # inverted element (VER-1); the verdict holds the rest to the production limits (VER-2),
@@ -2269,12 +2288,9 @@ def _mesh(workspace) -> int:
         # deck's numbers and face names; the user picks one at download
         if not asm:                                    # an assembly's were written with its deck, above
             try:
-                from meshpipeline.contracts.mesh_units import COMPLETED_MESH_UNIT
-                from meshpipeline.engines import fea_writers
                 if solid is None:
                     raise ValueError("no internal mesh was read")
-                exports = fea_writers.write_all(ws, solid, cad_names=deck.get("cad_face_names") or {},
-                                                units=COMPLETED_MESH_UNIT.value, source=_source(ftw))
+                exports = (writing or _start_exports(ws, solid, deck, ftw)).result()
             except Exception as exc:  # noqa: BLE001 - the deck stands; a missing file is offered as missing
                 print(f"[GMSH-FEA] Nastran / Ansys files not written: {exc}", file=sys.stderr)
         if shape.get("fea_inverted"):

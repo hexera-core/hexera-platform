@@ -24,6 +24,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 import tempfile
 from pathlib import Path
 
@@ -53,13 +54,35 @@ def file_digest(path: Path | str) -> str:
     return h.hexdigest()
 
 
+#: A STEP file's lines that change every time the SAME solid is written (gmsh / OpenCASCADE's writer): the HEADER's
+#: write time (FILE_NAME) and the writer's per-process count in the product's name ("Open CASCADE STEP translator 7.8
+#: 2"). Measured 26 Nov on the knuckle staged twice: those three lines are the only difference, and they made every
+#: staging a new key - the plan step's measurement was never read back by the run (33 s of suspected-defect checks
+#: and the measurement again, every run: the 85-90 s "measure + plan" of feabench_lab/BENCH.md).
+_STEP_TRANSLATOR = re.compile(rb"(Open CASCADE STEP translator [0-9.]+) \d+")
+
+
+def solid_digest(path: Path | str) -> str:
+    """The digest of the SOLID in the file at `path`: its bytes, but for a STEP file without what changes each time
+    the same solid is written (its HEADER section and the writer's count, _STEP_TRANSLATOR) - so two stagings of
+    one part share one key. Any other file: its bytes (file_digest)."""
+    p = Path(path)
+    if p.suffix.lower() not in (".step", ".stp"):
+        return file_digest(p)
+    data = p.read_bytes()
+    at = data.find(b"\nDATA;")
+    body = data[at:] if at >= 0 else data
+    return hashlib.sha256(_STEP_TRANSLATOR.sub(rb"\1", body)).hexdigest()
+
+
 def key_for(path: Path | str, **reads) -> str:
-    """The cache key of a measurement of the file at `path` under `reads` (unit, ray budget, ...)."""
+    """The cache key of a measurement of the solid in the file at `path` (solid_digest) under `reads` (unit, ray
+    budget, ...)."""
     from meshpipeline.cad.fea_measure import VERSION
 
     extra = hashlib.sha256(json.dumps({"v": VERSION, "code": _code_stamp(), **reads}, sort_keys=True,
                                       default=str).encode()).hexdigest()[:16]
-    return f"{PREFIX}/{file_digest(path)}-{extra}.json"
+    return f"{PREFIX}/{solid_digest(path)}-{extra}.json"
 
 
 def load(key: str) -> dict | None:
@@ -105,4 +128,4 @@ def _plain(v):
     return str(v)
 
 
-__all__ = ["file_digest", "key_for", "load", "save"]
+__all__ = ["file_digest", "key_for", "load", "save", "solid_digest"]
