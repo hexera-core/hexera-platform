@@ -46,18 +46,39 @@ export function parkedCopy(review) {
 
 /* THE LANGUAGE RULE (core/repair_words.js): a defect is named in the customer's words and a proposed repair is said,
    never its operation's identifier. A code with no plain name is shown only if it reads as words. */
+/* the older check's defect codes, in the spec's plain names (seen on slug crsv5ui: SELF_INTERSECTION, SMALL_EDGE) */
+const CODE_WORDS = {
+  self_intersection: "intersecting surfaces", small_edge: "tiny or sliver feature",
+  small_face: "tiny or sliver feature", sliver_face: "tiny or sliver feature", free_edge: "hole or open surface",
+  open_shell: "hole or open surface", gap: "thin gap", invalid_tolerance: "damaged geometry", seam: "seam problem",
+};
+/** A defect code's plain name; a code neither table knows is "problem" - a code is never shown, humanised or not. */
 export function defectName(code) {
-  const c = String(code || "");
-  if (PROBLEM_WORDS[c.toLowerCase()]) return PROBLEM_WORDS[c.toLowerCase()];
-  const words = c.toLowerCase().replaceAll("_", " ").trim();
-  return words && isPlain(words) ? words : "problem";
+  const c = String(code || "").toLowerCase();
+  return PROBLEM_WORDS[c] || CODE_WORDS[c] || "problem";
 }
-const OP_WORDS = { sew: "sew the gap shut" };
+/* WHAT A PROPOSED REPAIR DOES, said: an operation is never named by its identifier, humanised or not */
+const OP_WORDS = {
+  sew: "sew the gap shut", heal_self_intersections: "separate the surfaces that cross",
+  fix_small_faces: "remove the tiny faces", remove_small_edges: "remove the tiny edge",
+  fill_planar_holes: "close the hole", fill_nonplanar_holes: "close the hole", close_wire_gaps: "close the gap",
+};
 function proposalLine(item) {
   const p = item.proposal;
   if (!p || !p.op) return "";
-  const said = OP_WORDS[p.op] || (isPlain(p.words) ? p.words : isPlain(p.op.replaceAll("_", " ")) ? p.op.replaceAll("_", " ") : "repair it");
+  const said = OP_WORDS[p.op] || (isPlain(p.words) ? p.words : "repair it");
   return `${said}${p.rationale && isPlain(p.rationale) ? " - " + p.rationale : ""}`;
+}
+
+/** A defect's measurements as a customer reads them: numbers only, under a plain name - never the face ids, the
+ *  fingerprints or index lists the check keeps for the engineer (those stay on the admin's page). */
+export function measurementRows(m) {
+  return Object.entries(m || {}).filter(([k, v]) => typeof v === "number" && Number.isFinite(v)
+    && !/(^|_)(id|ids|index|indices|fingerprint|fingerprints|count_internal)$/.test(k))
+    .map(([k, v]) => {
+      const mm = /_mm$/.test(k), name = k.replace(/_mm$/, "").replaceAll("_", " ");
+      return isPlain(name) ? [name, `${Number(v.toPrecision(3))}${mm ? " mm" : ""}`] : null;
+    }).filter(Boolean);
 }
 
 const ANSWER_WORDS = { accepted: "you accepted the fix", redirected: "you asked for something else",
@@ -331,8 +352,7 @@ export async function openReview(jobId, opts = {}) {
   function itemScreen(item) {
     const partner = partnerOf(item, everyItem), seen = historyLine(item);
     paintRail(); frame(item.camera, partner && partner.item ? partner.item.camera : null); say("");
-    const meas = Object.entries(item.measurements || {}).map(
-      ([k, v]) => `<li>${esc(k.replaceAll("_", " "))}: <b>${esc(v)}</b></li>`).join("");
+    const meas = measurementRows(item.measurements).map(([k, v]) => `<li>${esc(k)}: <b>${esc(v)}</b></li>`).join("");
     const prop = proposalLine(item);
     panel.innerHTML = `<div class="rv-step">${shownIdx} of ${shownTotal}</div>
       <article class="rv-item">

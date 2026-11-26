@@ -491,3 +491,18 @@ def test_the_panel_follows_a_repair_section_written_after_the_ending(live):
                   what="the newer repair section")
     text = live.evaluate(f"document.getElementById('repair-{JOB}').innerText")
     assert "Repair report (JSON)" in text and "No repair files were kept" not in text
+
+
+def test_the_review_says_a_defect_in_plain_words_never_its_ids(live):
+    # slug crsv5ui, 26 Nov: the review of a parked run listed "crossing faces: face:bcab39bc…" and
+    # "crossing face indices: 9,19,…", and said "the repair would heal self intersections"
+    out = live.evaluate("""(async () => {
+      const R = await import('/static/js/review/review.js');
+      return {names: [R.defectName('SELF_INTERSECTION'), R.defectName('SMALL_EDGE'), R.defectName('close_faces'),
+                      R.defectName('BRepCheck_NotClosed')],
+              meas: R.measurementRows({crossing_faces: 'face:bcab39bca49580af,face:627d858dd5e56134',
+                                       crossing_face_indices: '9,19,21', gap_mm: 0.0123456, face_ids: 3,
+                                       length_mm: 2})};
+    })()""")
+    assert out["names"] == ["intersecting surfaces", "tiny or sliver feature", "thin gap", "problem"]
+    assert out["meas"] == [["gap", "0.0123 mm"], ["length", "2 mm"]]
