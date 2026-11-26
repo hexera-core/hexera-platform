@@ -1,6 +1,7 @@
 # Responsibility: Declare the one way this product calls a language model, per agent role.
 # Owns: the round result, tool-call request and provider-attempt types, the repair-review tool schema and
-#       its typed refusal (ToolsUnsupported), plus the per-role entry points.
+#       its typed refusal (ToolsUnsupported), the priced reply and fail-closed refusal (UnpricedModel) of the
+#       repair_v4_propose call kind, plus the per-role entry points.
 # Boundaries: it defines the call shape; routing, retries and provider wire formats live in adapters/model_inference/.
 # Collaborates with: contracts/model_routing.py and agents/loop/ which drives these calls.
 from __future__ import annotations
@@ -107,6 +108,11 @@ class ModelRoundResult:
     input_tokens: int = 0
     cached_input_tokens: int = 0
     output_tokens: int = 0
+    cache_write_tokens: int = 0
+    """Input tokens the provider wrote to its prompt cache (a subset of input_tokens, billed above the
+    fresh-input rate). Zero for providers that report none."""
+    cache_write_30m_tokens: int = 0
+    """Of cache_write_tokens, those written at the 30-minute TTL; the remainder is priced at the 12-hour rate."""
     provider: ProviderAttemptInfo = ProviderAttemptInfo()
     failure_marker: str = ""
 
@@ -119,6 +125,12 @@ ModelReply = ModelRoundResult
 """What a native-tool round answers: text (`assistant_text`), or a typed `tool_calls` list.
 The SAME type every route already returns - a tool conversation is not a second result shape,
 so the decision cache, telemetry and failure markers hold for it unchanged."""
+
+
+class UnpricedModel(ModelInferenceError):
+    """No price is declared for a `provider:model`. Raised BEFORE the provider is dialled: an unpriced
+    model would meter at $0.00 and no spending cap could ever trip, so the call is refused instead.
+    The remedy is a `provider:model=<in>,<out>,<cached>` entry in MODEL_PRICE_OVERRIDES."""
 
 
 class ToolsUnsupported(ModelInferenceError):
@@ -193,12 +205,52 @@ class ModelRouter(Protocol):
         on_reasoning: ReasoningSink = None,
     ) -> ModelRoundResult: ...
 
+    # The v4 repair proposer: tools and images, priced per call (see ProposeReply). Its model is a
+    # `provider:model` key chosen by the caller, not a role route.
+    async def call_repair_v4_propose(
+        self, messages: Conversation, tools: list[ToolDefinition], *, route: str, job_id: str = "",
+        user_id: str = "", tool_choice: ToolChoice = "auto", cache_key: str = "",
+        max_output_tokens: int | None = None,
+    ) -> ProposeReply: ...
+
     # The search summarizer is respond-or-RAISE and calls no tools, but it returns the SAME
     # normalized result so no provider response object escapes the adapter on any route.
     async def call_summarizer_model(
         self, messages: Conversation, job_id: str = "",
     ) -> ModelRoundResult: ...
 
+
+@dataclass(frozen=True)
+class ProposeReply:
+    """One `repair_v4_propose` round: the normalized reply, what it cost, and which model answered.
+
+    `cost_usd` is computed where the price table lives (the router), from the provider's own usage
+    counts, with the model that ACTUALLY answered - so a caller that keeps a spending ledger never
+    needs the price table or the provider's response object. A failed round carries a marker in
+    `reply` and costs 0.0."""
+
+    reply: ModelReply
+    cost_usd: float
+    provider: str
+    model: str
+
+
+REPAIR_V4_PROPOSE_ROUTES: tuple[str, ...] = ("openai:gpt-6-astra", "openai:gpt-5.6-terra")
+"""The `provider:model` chain the v4 AI proposer may run on, strongest first. The second entry is the
+fallback when the first fails its probe (repair_v4.proposer.select_route). Not a role route: it is
+declared here, not in ROUTE_MATRIX, so it adds no per-role setting, spec or marker vocabulary."""
+
+REPAIR_V4_PROPOSE_MAX_OUTPUT_TOKENS = 4096
+"""The hard ceiling on one repair_v4_propose answer (hidden reasoning included). The router sends it as the
+request's output limit AND the proposer reserves against it, so the spending estimate is an upper bound on the
+output side by construction; change it here and both move together.
+
+MEASURED (derived from the tool schemas, no model call): the largest plausible `propose` call - 5 candidates, each
+with 30 targets, the largest params object any registered op accepts and a 400-character rationale, plus two
+`declare_unfixable` calls - is 6,485 characters, i.e. 1,850-2,600 tokens at 3.5-2.5 characters per token. A typical
+call (1-3 candidates, a handful of targets) is 300-500 tokens. 4096 covers the extreme call with ~1,500 tokens
+left for reasoning and a typical call with ~3,500. ASSUMED, not measured: how much hidden reasoning the model
+spends. If rounds come back truncated (`AIProposer.result()["truncated_rounds"]`), raise this."""
 
 _router: ModelRouter | None = None
 
@@ -284,3 +336,36 @@ async def call_reviewer_with_tools(
 
 async def call_summarizer_model(messages: Conversation, job_id: str = "") -> ModelRoundResult:
     return await _r().call_summarizer_model(messages=messages, job_id=job_id)
+
+
+async def call_repair_v4_propose(
+    messages: Conversation, tools: Sequence[ToolDefinition], *, route: str, job_id: str = "",
+    user_id: str = "", tool_choice: ToolChoice = "auto", cache_key: str = "",
+    max_output_tokens: int | None = None,
+) -> ProposeReply:
+    """One round of the v4 AI proposer: `route` is a `provider:model` from REPAIR_V4_PROPOSE_ROUTES.
+
+    Images ride in `messages` as `image_url` parts and tools are the neutral definitions; `job_id` is
+    passed through to telemetry. `cache_key` names the static prefix (system turn + tools) so the
+    provider can serve it from its prompt cache. Raises UnpricedModel, before dialling, when the model
+    has no declared price; raises ToolsUnsupported for a router written before this call kind."""
+    call = getattr(_r(), "call_repair_v4_propose", None)
+    if call is None:
+        raise ToolsUnsupported("the installed router has no repair_v4_propose call kind")
+    # `max_output_tokens` LOWERS the round's output allowance below REPAIR_V4_PROPOSE_MAX_OUTPUT_TOKENS (the proposer
+    # reserved exactly that much); it is passed only when set, so a router without the keyword is still called as before
+    extra = {} if max_output_tokens is None else {"max_output_tokens": int(max_output_tokens)}
+    reply: ProposeReply = await call(messages=messages, tools=list(tools), route=route, job_id=job_id,
+                                     user_id=user_id, tool_choice=tool_choice, cache_key=cache_key, **extra)
+    return reply
+
+
+def repair_v4_route_prices(route: str) -> tuple[float, float, float]:
+    """(fresh input, output, cached input) USD per 1M tokens for a `provider:model` repair_v4 route, from the
+    price table. Raises UnpricedModel (naming MODEL_PRICE_OVERRIDES) when none is declared. The proposer sizes
+    its reservations from THIS, so a cheaper model is not reserved at a dearer one's price."""
+    prices = getattr(_r(), "repair_v4_prices", None)
+    if prices is None:
+        raise ToolsUnsupported("the installed router cannot price a repair_v4_propose route")
+    result: tuple[float, float, float] = prices(route)
+    return result

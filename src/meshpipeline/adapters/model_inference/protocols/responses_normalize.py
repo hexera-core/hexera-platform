@@ -39,10 +39,15 @@ def usage_from(response: Any) -> Usage:
     if raw is None:
         return Usage()
     input_details = _get(raw, "input_tokens_details", None) or {}
+    ttl = _get(input_details, "cache_write_tokens_details", None) or {}
+    # cache writes are billed ABOVE the fresh-input rate (astra: $12.50/M at 30m vs $10/M), so dropping
+    # them under-records spend and makes every wave cap permissive by that margin.
     return Usage(
         input_tokens=int(_get(raw, "input_tokens", 0) or 0),
         cached_input_tokens=int(_get(input_details, "cached_tokens", 0) or 0),
         output_tokens=int(_get(raw, "output_tokens", 0) or 0),
+        cache_write_tokens=int(_get(input_details, "cache_write_tokens", 0) or 0),
+        cache_write_30m_tokens=int(_get(ttl, "ttl_30m_tokens", 0) or 0),
     )
 
 
@@ -154,5 +159,7 @@ def normalize(response: Any, target: RouteTarget, attempts: int) -> ModelRoundRe
         input_tokens=usage.input_tokens,
         cached_input_tokens=usage.cached_input_tokens,
         output_tokens=usage.output_tokens,
+        cache_write_tokens=usage.cache_write_tokens,
+        cache_write_30m_tokens=usage.cache_write_30m_tokens,
         provider=ProviderAttemptInfo(attempts=attempts, provider=target.provider,
                                      model=target.model))

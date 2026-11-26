@@ -217,7 +217,7 @@ async def _scoped_repair(state: PipelineState, *, focus_faces: tuple[int, ...]) 
     try:
         report = await asyncio.wait_for(
             asyncio.to_thread(repair_step_file, source, destination,
-                              goal=RepairGoal.meshing, focus_faces=focus_faces),
+                              goal=RepairGoal.meshing, focus_faces=focus_faces, engine="v3"),
             timeout=rcfg.CAD_REPAIR_TIMEOUT_S)
     except TimeoutError:
         logger.warning("node_repair_handback: the scoped repair exceeded %.1fs - the mesher's "

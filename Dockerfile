@@ -555,6 +555,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends libgmp10 libgom
     && rm -rf /var/lib/apt/lists/* \
     && ln -s /opt/ftetwild/bin/fTetWild /usr/local/bin/fTetWild \
     && fTetWild --help >/dev/null
+# NETGEN (ISOLATED) FOR THE CRS v5 CHECKER. The repair node runs in THIS image on the worker fleet, and
+# CRS v4/v5's clean-STEP verdict meshes on four meshers, one of them Netgen-via-OCC
+# (cad/repair_v4/verdict/netgen_member.py, which looks for /opt/netgen-env/bin/python). Without it every
+# full verdict is inconclusive and v5 always falls back to v3. The same isolated venv, hashes and smoke
+# as `mesh-toolchain`'s Netgen block; keep the two in step.
+COPY requirements/netgen.txt /tmp/netgen.txt
+RUN python3 -m venv /opt/netgen-env \
+    && /opt/netgen-env/bin/pip install --no-cache-dir --only-binary=:all: --require-hashes \
+         -r /tmp/netgen.txt \
+    && rm -f /tmp/netgen.txt \
+    && /opt/netgen-env/bin/python -c "import netgen.meshing; from netgen.occ import Glue, OCCGeometry; from netgen import config; print('netgen', config.version)" \
+    && printf '#!/bin/sh\nexec /opt/netgen-env/bin/python "$@"\n' > /usr/local/bin/netgen-python \
+    && chmod 755 /usr/local/bin/netgen-python
 # REPEATABLE PLANS: Python salts its string hash per process, so code that walks a set of names
 # can write patches or regions in another order on the next run. The worker plans meshes; it
 # serves no untrusted request parsing (the api stage keeps hash randomisation).

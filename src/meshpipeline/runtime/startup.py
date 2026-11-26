@@ -8,6 +8,7 @@ import meshpipeline.settings.env as env
 import meshpipeline.settings.policy as _policy
 import meshpipeline.settings.policy as polmod
 import meshpipeline.settings.runtime as rtmod
+from meshpipeline.adapters.model_inference import routes as _routes
 from meshpipeline.adapters.model_inference.routes import missing_provider_credentials
 from meshpipeline.agents.builder.settings import (
     BUILDER_LOOP_TIMEOUT,
@@ -42,6 +43,31 @@ from meshpipeline.settings.runtime import (
     OPENFOAM_COMMAND_TIMEOUT,
     WORKSPACE_BASE,
 )
+
+
+def check_models_priced(*, hardened: bool) -> None:
+    """Report callable models with no declared price; refuse to start only for the repair_v4 proposer chain.
+
+    An unpriced model meters at $0.00, so a spending cap on it can never trip. The proposer's route is the one
+    under a cap, so an unpriced model in ITS chain is a refusal in a hardened environment (a warning elsewhere).
+    Every legacy role route only WARNS: production posture is untouched, and those roles carry no cap that
+    depends on the meter. routing.execute refuses the proposer's call itself, per call, regardless of this."""
+    import warnings as _warnings
+
+    remedy = ("Add '<provider>:<model>=<in>,<out>,<cached>' (USD per 1M tokens) to MODEL_PRICE_OVERRIDES, "
+              "or point the route at a priced model.")
+    legacy = _routes.unpriced_role_models()
+    if legacy:
+        _warnings.warn("No price is declared for: " + ", ".join(legacy) + ". Their spend meters at $0.00. "
+                       + remedy, RuntimeWarning, stacklevel=3)
+    proposer = _routes.unpriced_proposer_models()
+    if not proposer:
+        return
+    message = ("No price is declared for the repair_v4 proposer model(s): " + ", ".join(proposer)
+               + ". Their spend could not be metered or capped, so calls to them are refused. " + remedy)
+    if hardened:
+        raise ConfigurationError(f"{message} - refusing to start.")
+    _warnings.warn(message, RuntimeWarning, stacklevel=3)
 
 
 def validate() -> None:
@@ -84,6 +110,7 @@ def validate() -> None:
                 f"ENV={ENV!r} is a hosted environment and requires a database: set DATABASE_URL "
                 "(a managed-Postgres connection string, e.g. Neon - carries its own credentials) "
                 "OR POSTGRES_PASSWORD for the POSTGRES_* parts.")
+        check_models_priced(hardened=True)
         _missing = missing_provider_credentials()
         if _missing:
             raise ConfigurationError(
@@ -114,6 +141,7 @@ def validate() -> None:
                 "MESH_API_KEY is empty - authentication is DISABLED on every route. "
                 "Set ENV=production to enforce auth at startup.",
                 RuntimeWarning, stacklevel=2)
+        check_models_priced(hardened=False)
         _missing = missing_provider_credentials()
         if _missing:
             _warnings.warn(

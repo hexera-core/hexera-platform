@@ -1,0 +1,9 @@
+held-out set: devtools/validation/corpora/v4/provisional_sample_task43/PROVISIONAL_heldout.json: 25 files, groups ['nist-ctc-02', 'nist-stc-10']
+probed files (rows+excluded): 800 | subset pool: 800
+held-out sha in probed: 0
+held-out group in subset pool: 0
+PROVISIONAL_dev_v2: 150 files; held-out sha overlap 0; held-out group overlap 0
+PROVISIONAL_clean_v2: 40 files; held-out sha overlap 0; held-out group overlap 0
+PROVISIONAL_dev_v1r: 30 files; held-out sha overlap 0; held-out group overlap 0
+PROVISIONAL_clean_v1r: 8 files; held-out sha overlap 0; held-out group overlap 0
+dev_v2 & clean_v2: 0 | v2 & v1: 0
