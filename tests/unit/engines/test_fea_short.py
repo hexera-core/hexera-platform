@@ -189,3 +189,9 @@ def test_a_valid_sized_mesh_too_big_to_build_twice_is_not_meshed_again(runout, t
     monkeypatch.setattr(A, "_mesh", invalid_when_sized)
     assert A.mesh(ws2) == 0
     assert len(built) == 2 and _q(ws2)["fea_short_edges"]["kept"] == "as drawn"
+
+
+def test_the_comparison_mesh_is_made_only_for_a_small_mesh():
+    """MESH-24, rulebook 98: a second whole mesh only up to 150,000 elements (the knuckle, 26 Nov: +36% and +44% of
+    the run); above that the valid sized mesh stands."""
+    assert A.SHORT_COMPARE_MAX_ELEMENTS == 150_000
