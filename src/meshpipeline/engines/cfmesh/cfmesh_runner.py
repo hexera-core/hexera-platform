@@ -445,7 +445,8 @@ def machine_for_plan(workspace, plan: dict | None, *, user_cells: int = 0) -> di
     """RUN-5 FOR cfMesh: where the case written in `workspace` runs, from its run plan - the Cloud
     Run job, or (its estimated time with the margin past the job's wall) the smallest VM, which has
     no such wall. RUN-9: a cell count the USER asked for (`user_cells`, their budget) past the
-    standard machine's runs on the VM whose memory carries it. Written into the workspace
+    standard machine's runs on the VM whose memory carries it. RUN-13: a plan of at least MM.SPEED_CELLS cells runs on
+    the speed machine (more cores), even when it fits the Cloud Run job. Written into the workspace
     (contracts/mesh_machine) and returned."""
     from meshpipeline.contracts import mesh_machine as MM
     from meshpipeline.contracts.native_time import CLOUD_RUN_WALL_S
@@ -465,8 +466,9 @@ def machine_for_plan(workspace, plan: dict | None, *, user_cells: int = 0) -> di
         # where its memory fits, never on a machine sized for its files alone (our other plans move for time only)
         decision = MM.for_cells(cells, why="the cells the plan comes to")
     seconds = (plan or {}).get("estimated_seconds")
+    # RUN-13: a plan of at least MM.SPEED_CELLS cells (its estimate, or the user's own count) runs on the speed machine
     decision = MM.for_time(decision, planned_s=float(seconds) if seconds else None,
-                           wall_s=float(CLOUD_RUN_WALL_S))
+                           wall_s=float(CLOUD_RUN_WALL_S), cells=float(max(cells, int(user_cells or 0))))
     MM.write(workspace, decision)
     if decision.get("where") == "gce":
         logger.warning("cfMesh run plan: %s", decision.get("words"))

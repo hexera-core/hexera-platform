@@ -422,6 +422,13 @@ def run_mesh(workspace: Any, *, engine: str, timeout: int) -> dict:
         raise
     _note_native_run(workspace, result)
     keep_native_logs(workspace, read_native_run(workspace))
+    try:
+        # RUN-10 / RUN-13: a VM that could not be started fell back (the next fast VM, or the Cloud Run job) - the workspace
+        # then says where the run really was, for RUN-5 / RUN-3 and the next pass (mesh_machine.adopt_ran_on)
+        from meshpipeline.contracts import mesh_machine
+        mesh_machine.adopt_ran_on(workspace, result)
+    except Exception:  # noqa: BLE001 - a record of where it ran never fails the run
+        pass
     return result
 
 

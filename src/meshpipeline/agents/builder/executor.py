@@ -188,6 +188,12 @@ class BuilderToolExecutor:
             await mesh_design.apublish(self._publish, job_id=self._context.job_id,
                                        workspace=self._context.workspace,
                                        planned=(prepared.planned, prepared.unit), attempt=self._mesh_seq)
+            # RUN-13: THE MACHINE IT RUNS ON, as FEA says it ("Meshing on a faster machine (16 cores)")
+            from meshpipeline.contracts import mesh_machine, narration
+            ws = self._context.workspace
+            await narration.astep(self._publish, "machine",
+                                  narration.machine_words(mesh_machine.read(ws) if ws else None),
+                                  op_id=f"machine:{self._mesh_seq}")
             await self._publish.ameshing(prepared.engine, prepared.cap, prepared.history,
                                          op_id=f"meshing:{self._mesh_seq}")
         from meshpipeline.contracts import mesh_progress

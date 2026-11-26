@@ -29,6 +29,7 @@ from meshpipeline.agents.builder.driver_run import (
 )
 from meshpipeline.contracts import execution_guard as _fence
 from meshpipeline.contracts.event_stream import (
+    EventStreamError,
     ExecutionEventPublisher,
     StaleExecutionPublish,
 )
@@ -413,18 +414,22 @@ def _plan_limit(ask) -> int | None:
 def _route_big(workspace: Path, budget: int, *, job_id: str = "", attempt: int = 0) -> dict | None:
     """RUN-9 (contracts/mesh_machine.route_cells): a pass planned to more cells than the standard machine is sized for
     - only ever the user's own count - runs on a VM that carries them, decided before it meshes, with no question.
-    The decision is written into the workspace the mesh executor ships; None when the pass fits the standard machine."""
+    RUN-13: a pass planned to at least mesh_machine.SPEED_CELLS cells (its budget) runs on the speed machine, even
+    when it fits the standard one. The decision is written into the workspace the mesh executor ships; None when the
+    pass fits the standard machine and is under the speed threshold."""
     from meshpipeline.contracts import mesh_machine as MM
     moved = MM.route_cells(workspace, int(budget), why="the cell count asked for")
     if moved and moved.get("where") == "gce":
-        logger.warning("snappy pass %d: %s (RUN-9) - job_id=%s", attempt, moved.get("words"), job_id)
+        rule = "RUN-13" if moved.get("why") in MM.FAST_WHYS else "RUN-9"
+        logger.warning("snappy pass %d: %s (%s) - job_id=%s", attempt, moved.get("words"), rule, job_id)
         try:
             from meshpipeline.contracts import decision_record as _dr
-            _dr.cite(str(job_id or ""), stage="snappy_machine", decided="big machine", value=moved.get("machine"),
-                     rule="RUN-9", inputs={"pass": attempt, "cells": int(budget)},
+            _dr.cite(str(job_id or ""), stage="snappy_machine",
+                     decided="faster machine" if rule == "RUN-13" else "big machine", value=moved.get("machine"),
+                     rule=rule, inputs={"pass": attempt, "cells": int(budget), "cpus": MM.cpus_of(moved)},
                      words=str(moved.get("words") or ""))
         except Exception:  # noqa: BLE001 - the why record never stops a mesh
-            logger.debug("RUN-9 not cited", exc_info=True)
+            logger.debug("%s not cited", rule, exc_info=True)
     return moved
 
 
@@ -821,6 +826,16 @@ async def _run_snappy_timed(R, workspace, cap, publish: ExecutionEventPublisher,
     # them all into the upload (see _native_payload_members).
     note_native_payload(workspace, _native_payload_members(workspace))
     _op = await _op_begin(publish, "run_native_mesher", run, native_attempt)
+    try:
+        # RUN-13: THE MACHINE IT RUNS ON, said as FEA says it ("Meshing on a faster machine (16 cores)")
+        from meshpipeline.contracts import mesh_machine as _MM
+        from meshpipeline.contracts import narration as _N
+        await _N.astep(publish, "machine", _N.machine_words(_MM.read(workspace)),
+                       op_id=f"{engine}:machine:{native_attempt}")
+    except EventStreamError:
+        raise
+    except Exception:  # noqa: BLE001 - a line not said never stops a mesh
+        logger.debug("machine line not said", exc_info=True)
     try:
         from meshpipeline.engines.mesh_history import estimate as _est
         await publish.ameshing(engine, cap, history=_est(engine, purpose))

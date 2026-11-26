@@ -51,19 +51,21 @@ logger = logging.getLogger(__name__)
 MESH_DETERMINISTIC: bool = bool_env("MESH_DETERMINISTIC", "true")
 
 #: Threads every native tool runs with (OpenMP, BLAS, VTK). The Cloud Run mesh job's size (8 vCPU),
-#: so a pinned run is no slower than an unpinned one there; never the host's core count.
+#: so a pinned run is no slower than an unpinned one there; never the host's core count. A container
+#: given a bigger CPU QUOTA (a mesh VM: gce_vm starts it with --cpus $(nproc)) runs that many instead,
+#: at most MAX_NATIVE_THREADS (machine_threads) - the same way snappy's ranks follow the machine.
 MESH_THREADS: int = int(optional_env("MESH_THREADS", "8") or "8")
 if MESH_THREADS < 1:
     raise ConfigurationError(f"MESH_THREADS must be at least 1, got {MESH_THREADS}")
 
-#: cfMesh's OpenMP threads. Blank = MESH_THREADS. "1" = strictly serial: the only setting under
-#: which cfMesh is bit-for-bit repeatable (its smoothers update points in place, in the order
-#: threads reach them), at several times the run time - a measured choice, not a default.
+#: cfMesh's OpenMP threads. Blank = the machine's (machine_threads). "1" = strictly serial: the only
+#: setting under which cfMesh is bit-for-bit repeatable (its smoothers update points in place, in the
+#: order threads reach them), at several times the run time - a measured choice, not a default.
 MESH_CFMESH_THREADS: str = optional_env("MESH_CFMESH_THREADS", "")
 
-#: snappyHexMesh's MPI ranks. Blank = the job's CPU quota (at most 12), or MESH_THREADS when the
-#: container has no quota - never the host's core count. Memory may still lower it (3 GiB a rank),
-#: and the stamp then says so.
+#: snappyHexMesh's MPI ranks. Blank = the job's CPU quota (at most snappy/native.RANKS_MAX, 64), or
+#: MESH_THREADS when the container has no quota - never the host's core count. Memory may still lower
+#: it (3 GiB a rank), and the stamp then says so.
 MESH_SNAPPY_RANKS: str = optional_env("MESH_SNAPPY_RANKS", "")
 
 #: The decomposition snappy's ranks are cut by (decomposeParDict `method`).
@@ -79,6 +81,10 @@ MESH_GMSH_THREADS: str = optional_env("MESH_GMSH_THREADS", "")
 #: (feabench_lab/BENCH.md): the fill took 180 s on 8 threads, 106 on 16, 83 on 32 - and 238 s on 64 (1.2 to 3 times
 #: slower than 32 across the three cases: the threads then span both sockets and share cores).
 MAX_GMSH_THREADS = 32
+#: RUN-13: NEVER MORE THAN THIS MANY OpenMP/BLAS/VTK threads for cfMesh and the other native tools, on any
+#: machine - the same 32 as the HXT fill above (past 32 the threads span both sockets of a 64-vCPU VM). cfMesh's own
+#: scaling was not measured (cfdbench_lab/BENCH.md: it built no mesh in those runs).
+MAX_NATIVE_THREADS = MAX_GMSH_THREADS
 GMSH_RANDOM_SEED = 1
 #: The hash seed native Python children run with (vmtk's pype, the snap-grid CLI).
 PYTHON_HASH_SEED = "0"
@@ -118,9 +124,22 @@ _SNAPPY_RANKS = _int_or_none(MESH_SNAPPY_RANKS, "MESH_SNAPPY_RANKS")
 
 # ------------------------------------------------------------------ what a run is pinned to ---
 def threads_for(engine: str) -> int:
-    """The OpenMP/BLAS/VTK threads `engine`'s native tools run with."""
+    """The OpenMP/BLAS/VTK threads `engine`'s native tools run with: MESH_CFMESH_THREADS for cfMesh when it is set
+    (a pin wins), else the machine's (machine_threads)."""
     if engine == "cfmesh" and _CFMESH_THREADS:
         return _CFMESH_THREADS
+    return machine_threads()
+
+
+def machine_threads() -> int:
+    """RUN-13: the OpenMP threads of THIS machine. The container's CPU QUOTA when it is above MESH_THREADS (a
+    mesh VM's container is given every vCPU as its quota, as snappy's ranks read it), at most MAX_NATIVE_THREADS; else
+    MESH_THREADS - the Cloud Run job (its quota is its 8 vCPUs), and any host with no quota. Never the host's core
+    count, so the count comes from the machine's configuration and is the same on every run of that machine type (the
+    stamp records it)."""
+    quota = cpu_quota()
+    if quota and quota > MESH_THREADS:
+        return min(int(quota), MAX_NATIVE_THREADS)
     return MESH_THREADS
 
 
@@ -446,10 +465,8 @@ def _meshpipeline_version() -> str | None:
         return None
 
 
-def job_cpus() -> int:
-    """The CPUs THE JOB may use - its cgroup quota (v2 cpu.max, else v1 cfs quota), never the host's
-    core count (Cloud Run hands the process a wide mask and os.cpu_count() reports the host); the
-    affinity mask, then os.cpu_count(), only when no quota is set."""
+def cpu_quota() -> int | None:
+    """The container's cgroup CPU QUOTA (v2 cpu.max, else v1 cfs quota) in whole CPUs; None when none is set."""
     from pathlib import Path as _P
 
     def read(path: str) -> str:
@@ -470,6 +487,16 @@ def job_cpus() -> int:
             return max(1, q // per)
     except ValueError:
         pass
+    return None
+
+
+def job_cpus() -> int:
+    """The CPUs THE JOB may use - its cgroup quota (cpu_quota), never the host's
+    core count (Cloud Run hands the process a wide mask and os.cpu_count() reports the host); the
+    affinity mask, then os.cpu_count(), only when no quota is set."""
+    quota = cpu_quota()
+    if quota:
+        return quota
     import os
     affinity = getattr(os, "sched_getaffinity", None)
     if affinity is not None:
@@ -557,7 +584,8 @@ def comparable(a: dict, b: dict) -> list[str]:
 
 
 __all__ = [
-    "GMSH_RANDOM_SEED", "GMSH_THREADS", "GUARD_TRIPS_FILE", "MAX_GMSH_THREADS", "MESH_CFMESH_THREADS", "MESH_GMSH_THREADS",
+    "GMSH_RANDOM_SEED", "GMSH_THREADS", "GUARD_TRIPS_FILE", "MAX_GMSH_THREADS", "MAX_NATIVE_THREADS",
+    "MESH_CFMESH_THREADS", "MESH_GMSH_THREADS", "cpu_quota", "machine_threads",
     "MESH_DETERMINISTIC", "MESH_SNAPPY_RANKS", "MESH_THREADS", "SNAPPY_DECOMPOSITION", "STAMP_FILE",
     "clear_guard_trips", "comparable", "drain_process_guard_trips", "drain_process_notes", "drop_attempt_start", "guard_trips", "mark_attempt_start",
     "native_environment",
