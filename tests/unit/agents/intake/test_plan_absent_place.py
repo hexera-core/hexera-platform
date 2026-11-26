@@ -105,11 +105,47 @@ def test_the_checklist_stays_not_set_and_the_reply_says_none_and_asks_for_a_clic
     assert PT.none_found(ASKED, card, note_id="n1")
 
 
-def test_the_reply_is_the_fixed_line_never_the_models():
+def test_the_facts_say_the_kind_asked_for_that_the_part_has_none_and_what_it_has():
+    f = PR.facts(ASKED, _card([ASKED]), note_id="n1")
+    assert f["none_found"] == [{"words": SAID, "kind_asked_for": "fillets", "the_part_has_none": True,
+                                "what_the_part_has": "10 holes and 4 notches", "nothing_was_set": True,
+                                "what_applies_it": "a click on the face they meant, then sending it again"}]
+    assert f["applied"] == []
+    assert "none_found" in PR.compose_system()
+
+
+@pytest.mark.parametrize("reply,why", [
+    ("This part has no fillets, just 10 holes and 4 notches, so I haven't set that anywhere. Click the face you "
+     "mean and send it again.", ""),
+    ("I couldn't find any fillets here - it has 10 holes and 4 notches - so nothing's set yet. Click the face you "
+     "mean and send that again.", ""),
+    ("I've set a finer mesh on the whole part.", "claims something was applied when nothing was"),
+    ("Okay, finer at the fillets. Click the face you mean and send it again.",
+     "a kind the part has none of, not said as none found"),
+    ("There are no fillets on this part, so I haven't set that anywhere.", "a kind the part has none of, and no click"),
+    ("There are no fillets on this part, so I've set it on the holes instead. Click a face if not.", "claims"),
+])
+def test_the_guard_wants_none_found_a_click_and_nothing_set(reply, why):
+    got = PR.check(reply, PR.facts(ASKED, _card([ASKED]), note_id="n1"))
+    assert got.startswith(why) if why else got == ""
+
+
+def test_the_reply_is_the_models_under_the_guard_with_the_code_line_as_its_fallback(monkeypatch):
     import asyncio
     card = _card([ASKED])
-    got = asyncio.run(PR.written(ASKED, card, note_id="n1"))
-    assert got["source"] == PR.SOURCE_FIXED and got["text"] == PT.reply_for(ASKED, card, note_id="n1")
+    plain = PT.reply_for(ASKED, card, note_id="n1")
+
+    def run(reply):
+        async def model(messages, *, job_id, user_id):
+            assert "none_found" in messages[1]["content"]
+            return reply
+        monkeypatch.setattr(PR, "_ask", model)
+        return asyncio.run(PR.written(ASKED, card, note_id="n1"))
+    good = ("I couldn't find any fillets on this part, it has 10 holes and 4 notches, so I haven't set that anywhere. "
+            "Click the face you mean and send it again.")
+    assert run(good) == {"text": good, "source": PR.SOURCE_MODEL, "raw": good, "why": ""}
+    bad = run("I've set a finer mesh on the whole part.")
+    assert bad["source"] == PR.SOURCE_FALLBACK and bad["text"] == plain
 
 
 def test_the_reply_leaves_the_ask_waiting_and_a_click_alone_applies_it_to_that_face():

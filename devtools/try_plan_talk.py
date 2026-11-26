@@ -135,6 +135,10 @@ REPLY_CASES = [
     ("words that set nothing, flow mesh", {"text": "make it a good quality mesh please"}, {**_done(), "flow": True},
      PLAN_LINE),
     ("a change to the CAD itself", {"text": "remove the small holes"}, _done(), PLAN_LINE),
+    # NOTE-23, as on deployed 91926483: a flat perforated panel (10 holes, 4 notches) has no fillets
+    ("a kind of place the part has none of", {"text": "finer at the fillets"},
+     _done(unsure=[{"quote": "finer at the fillets", "words": "finer at the fillets", "size": "finer",
+                    "none_of": "fillet", "found": "10 holes and 4 notches"}]), PLAN_LINE),
     # NOTE-21, as typed on the site: one hole named, a screenshot, no face picked, 11 holes on the part
     ("one hole named, eleven on the part, picture", {"text": "make it finer in this hole", "attachments": PIC},
      _done(unsure=[{"quote": "make it finer in this hole", "words": "make it finer in this hole", "size": "finer",

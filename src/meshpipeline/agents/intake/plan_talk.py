@@ -635,7 +635,7 @@ def none_line(u: Mapping) -> str:
 
 
 def none_found(note: Mapping, view: Mapping | None, *, note_id: str = "") -> bool:
-    """NOTE-23: this message has a phrase naming a kind of place the part has none of - its reply is said in code."""
+    """NOTE-23: this message has a phrase naming a kind of place the part has none of - `none_line` is its fallback."""
     return view is not None and any(none_line(u) for u in mine(note, view, note_id=note_id)[1])
 
 

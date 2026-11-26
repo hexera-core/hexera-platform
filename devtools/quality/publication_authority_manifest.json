@@ -1314,6 +1314,32 @@
   "roots": []
  },
  {
+  "context": "agents/intake/plan_reply.py::check::search#10|NotAPublisher|not-a-publisher|",
+  "path": "agents/intake/plan_reply.py",
+  "qualname": "check",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 10,
+  "receiver": "_NONE_SAID",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "agents/intake/plan_reply.py::check::search#11|NotAPublisher|not-a-publisher|",
+  "path": "agents/intake/plan_reply.py",
+  "qualname": "check",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 11,
+  "receiver": "_CLICK",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "agents/intake/plan_reply.py::check_answer::search#1|NotAPublisher|not-a-publisher|",
   "path": "agents/intake/plan_reply.py",
   "qualname": "check_answer",

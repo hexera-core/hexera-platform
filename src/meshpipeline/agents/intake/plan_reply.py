@@ -15,8 +15,9 @@ first person: "Sure, I've set 0.5 mm elements on Face 23." The words are the mod
   placed; and the plain sentence that says exactly that (plan_talk.reply_for);
 - the GUARD (`check`) refuses a reply that holds a number the facts do not, that names no place when something was
   applied (a face id, the picked faces by their count or as "those faces", a feature's noun or size, "the whole
-  mesh" all count), that gives a guessed place as certain, that claims something was applied when nothing was,
-  that cites a rule id, that runs past `MAX_CHARS`, or that exclaims; which check refused it is logged;
+  mesh" all count), that gives a guessed place as certain, that claims something was applied when nothing was (a
+  condition - "the result will say if it was applied" - is no claim), that does not say none was found and ask for
+  a click when the part has none of the kind asked for (NOTE-23), that cites a rule id, that runs past `MAX_CHARS`, or that exclaims; which check refused it is logged;
 - refused, failed, or slower than `TIMEOUT_S`: the plain sentence is said instead.
 """
 from __future__ import annotations
@@ -90,6 +91,14 @@ def facts(note: Mapping, view: Mapping | None, *, note_id: str = "") -> dict[str
         # one click asked for (how many there are, and what they are)
         "which_one": [{"words": str(u.get("words") or u.get("quote") or ""), "how_many_there_are": int(u["which_one"]),
                        "noun": str(u.get("noun") or "")} for u in unsure if PT.which_one_line(u)],
+        # NOTE-23: words that name a kind of place the part has none of: nothing set anywhere, a click applies them
+        "none_found": [{"words": str(u.get("words") or u.get("quote") or ""),
+                        "kind_asked_for": PT.plural(str(u.get("none_of") or "")),
+                        "the_part_has_none": True,
+                        "what_the_part_has": str(u.get("found") or ""),
+                        "nothing_was_set": True,
+                        "what_applies_it": "a click on the face they meant, then sending it again"}
+                       for u in unsure if PT.none_line(u)],
         "picture": picture,
         # NOTE-24: a count beside sizes the user typed - which one wins on this route; the result tells which held
         "count_may_not_hold": PT.count_clash(view, counts),
@@ -160,7 +169,9 @@ def _block_guess_and_picture() -> str:
             "click the spot on the model and send it again. If which_one lists words, they named ONE place and the "
             "part has that many: say how many there are, that you can't tell which one they mean (from the picture "
             "either, if one came), that you haven't set it anywhere yet, and ask them to click it on the model and send it "
-            "again. If a picture came, add ONE short clause, in your own "
+            "again. If none_found lists words, they asked for a kind of place the part has none of: say you couldn't "
+            "find any of that kind on this part and, briefly, what it does have, that you haven't set it anywhere, and "
+            "ask them to click the face they mean and send it again. If a picture came, add ONE short clause, in your own "
             "words, that you can't read the picture itself so you went by their words (or by the face they "
             "clicked); nothing more about the picture.\n")
 
@@ -238,7 +249,8 @@ PLAN_REPLY_PROMPT_BLOCKS: tuple = (
      _block_voice),
     ("facts_only", "only what the facts say; the place in its natural short form; no quality, counts, time or "
                    "promises; no number or claim the facts do not hold; no rule ids", _block_facts_only),
-    ("guess_and_picture", "a guess said as mine with how to correct it; words not placed said; a picture: kept, "
+    ("guess_and_picture", "a guess said as mine with how to correct it; words not placed said; a kind of place the "
+                          "part has none of: none found, what it has, nothing set, a click asked; a picture: kept, "
                           "not read, once", _block_guess_and_picture),
     ("count", "a whole-mesh count said with its typed number and bound, no place needed; beside typed sizes, which "
               "wins and that the result tells it, never a promise", _block_count),
@@ -278,6 +290,10 @@ _GUESS_SAID = re.compile(r"\b(?:click|pick|guess\w*|took (?:that|it|this) as|ass
                          r"somewhere else|elsewhere|different (?:spot|place|one)|meant)\b", re.I)
 #: NOTE-21: one place among several is asked for by a click
 _CLICK = re.compile(r"\b(?:click|pick|select)\w*\b", re.I)
+#: NOTE-23: a kind of place the part has none of, said as none found
+_NONE_SAID = re.compile(r"\b(?:couldn'?t find|could not find|can'?t find|cannot find|didn'?t find|did not find|"
+                        r"found no|find no|doesn'?t have|does not have|has no|have no|there (?:are|is) no|"
+                        r"there aren'?t|there isn'?t|no \w+(?: \w+)? (?:on|in) (?:this|the) part|none)\b", re.I)
 #: a requirement kept for the run is said as kept, never as unreadable
 _UNREAD = re.compile(r"\b(?:couldn'?t|could not|can'?t|cannot|unable|didn'?t|did not)\b", re.I)
 _KEPT = re.compile(r"\b(?:kept|keep(?:ing)?|noted|noting|saved|hold(?:ing)? on to|held|remember\w*|in mind|"
@@ -475,6 +491,14 @@ def check(reply: str, f: Mapping, *, last_reply: str = "") -> str:
         return "a kept requirement not said as kept"
     if f.get("which_one") and not _CLICK.search(text):
         return "one place among several, and no click asked for"
+    if f.get("none_found"):
+        # NOTE-23: a kind of place the part has none of - said as none found, a click asked for, nothing said as set
+        if not _NONE_SAID.search(text):
+            return "a kind the part has none of, not said as none found"
+        if not _CLICK.search(text):
+            return "a kind the part has none of, and no click asked for"
+        if not f.get("applied") and _claims_set(text):
+            return "claims something was applied when nothing was (none found)"
     return ""
 
 
@@ -504,8 +528,7 @@ async def written(note: Mapping, view: Mapping | None, *, note_id: str = "", las
     """`write`, with what happened on the way: {"text": what is said, "source", "raw": the model's reply as given,
     "why": the guard's refusal or the failure ("" when said as written)}. Never raises."""
     plain = PT.reply_for(note, view, note_id=note_id)
-    if PT.fixed_reply(note, view) or PT.none_found(note, view, note_id=note_id):
-        # (NOTE-23: a kind of place the part has none of is said exactly, in code - never a model's rewording)
+    if PT.fixed_reply(note, view):
         return {"text": plain, "source": SOURCE_FIXED, "raw": "", "why": ""}
     f = facts(note, view, note_id=note_id)
     try:
