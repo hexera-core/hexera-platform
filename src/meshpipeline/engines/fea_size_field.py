@@ -84,6 +84,9 @@ SIGNED_KEEP_CUBES = 20_000_000
 #: point it reports none for has a size at least this x (growth - 1) over what it needs - far past any rounding.
 #: None searches every point to its nearest sample, as before.
 EDGE_MARGIN_M: float | None = 1e-9
+#: TIME-12: a thin spot's balls are measured before its face, and the face only where the balls leave the size under
+#: what the point needs (False: the face first, as before; the same sizes either way)
+BALLS_FIRST = True
 
 
 @dataclass
@@ -555,6 +558,18 @@ class SizeField:
                 look = g.size + g1 * np.maximum(0.0, floor - g.reach) < need
                 if not look.any():
                     continue
+                ball = None
+                if g.balls is not None and BALLS_FIRST:
+                    # TIME-12: A THIN SPOT'S BALLS FIRST: its size is never under size + (growth - 1) x the distance
+                    # past its balls (it takes the larger of that and the face's law), so where that alone is not
+                    # under the need, the face is not measured - its size there could change nothing (exact: the
+                    # same monotone steps as the size itself)
+                    ball = g.balls(p[look])
+                    near = g.size + g1 * np.maximum(0.0, ball) < need[look]
+                    look[look] = near
+                    ball = ball[near]
+                    if not look.any():
+                        continue
                 q = p[look]
                 if g.faces is not None:
                     d = np.abs(g.faces(q))
@@ -562,7 +577,7 @@ class SizeField:
                     d = self._edge_reach(g, q, need[look])
                 past = d - g.reach
                 if g.balls is not None:
-                    past = np.maximum(past, g.balls(q))
+                    past = np.maximum(past, g.balls(q) if ball is None else ball)
                 hg = np.full(len(p), np.inf)
                 hg[look] = g.size + g1 * np.maximum(0.0, past)
                 h = np.minimum(h, hg)

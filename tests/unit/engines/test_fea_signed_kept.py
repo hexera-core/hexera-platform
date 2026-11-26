@@ -215,3 +215,35 @@ def test_a_corners_edges_searched_only_as_far_as_they_matter_give_the_same_sizes
         monkeypatch.setattr(SF, "EDGE_MARGIN_M", 1e-9)
         assert np.array_equal(bounded[0], every[0]) and np.array_equal(bounded[1], every[1])
     assert cut[0] > 1000                        # the limit did cut searches short
+
+
+@pytest.mark.parametrize("r", [0.0, 0.4e-3])
+def test_a_thin_spots_balls_first_give_the_same_sizes(r, monkeypatch):
+    surf, zones = _many()
+    field = SF.SizeField(surf, zones, growth=1.25)
+    spots = [g for g in field.groups if g.balls is not None]
+    assert len(spots) > 10
+    measured = [0]
+    for g in spots:
+        faces = g.faces
+
+        def counted(p, faces=faces):
+            measured[0] += len(p)
+            return faces(p)
+
+        g.faces = counted
+    rng = np.random.default_rng(3)
+    lo, hi = field.xyz.min(axis=0), field.xyz.max(axis=0)
+    span = hi - lo
+    near = field.xyz[rng.integers(0, len(field.xyz), 20_000)] + rng.normal(0.0, 0.3e-3, (20_000, 3))
+    for p in (lo - 0.1 * span + rng.random((30_000, 3)) * 1.2 * span, near):
+        before = measured[0]
+        first = field.sizes(p, r)
+        firsts = measured[0] - before
+        monkeypatch.setattr(SF, "BALLS_FIRST", False)
+        before = measured[0]
+        face = field.sizes(p, r)
+        faces_first = measured[0] - before
+        monkeypatch.setattr(SF, "BALLS_FIRST", True)
+        assert np.array_equal(first[0], face[0]) and np.array_equal(first[1], face[1])
+        assert firsts < faces_first
