@@ -506,3 +506,19 @@ def test_the_review_says_a_defect_in_plain_words_never_its_ids(live):
     })()""")
     assert out["names"] == ["intersecting surfaces", "tiny or sliver feature", "thin gap", "problem"]
     assert out["meas"] == [["gap", "0.0123 mm"], ["length", "2 mm"]]
+
+
+def test_the_headline_claims_only_what_was_delivered_and_a_reason_is_said_once(live):
+    # slug crsv5ui, 26 Nov, a real v5 job: a failed repair-only run said "Your repaired STEP file is ready" with no
+    # file, and the trace read "Couldn't fix this one: Couldn't fix this one: every repair we tried..."
+    out = live.evaluate("""(async () => {
+      const W = await import('/static/js/core/repair_words.js');
+      const r = {choice:'standalone', outcome:'partly_repaired', problems:[
+        {type:'close_faces', status:'fixed'},
+        {type:'low_quality', status:'not_fixed', reason_text:"Couldn't fix this one: every repair we tried either didn't hold"}]};
+      return {nofile: W.headlineOf(r, {hasFile:false}).sub, file: W.headlineOf(r, {hasFile:true}).sub,
+              trace: W.traceSentence(W.traceRows(r)[1])};
+    })()""")
+    assert "No repaired file was kept" in out["nofile"] and "ready" not in out["nofile"]
+    assert "Your repaired STEP file is ready" in out["file"]
+    assert out["trace"].count("Couldn't fix this one") == 1, out["trace"]

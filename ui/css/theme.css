@@ -1505,3 +1505,5 @@ button.rp-kind:focus-visible{outline:2px solid var(--accent-line,var(--accent));
 .rr-tab:focus-visible{outline:2px solid var(--accent-line,var(--accent));outline-offset:2px}
 /* a later run's result took the workbench over: this run's tab list goes with its two results */
 #workbench>.rr-tabs:has(+ .viewer[hidden] + .viewer[hidden]){display:none}
+/* a narrow canvas keeps its switches and legends; the mouse hint gives way */
+@container (max-width:760px){.rpv-hint{display:none}}
