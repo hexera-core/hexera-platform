@@ -233,6 +233,101 @@ def checked(arguments: str, text: str, *, route: str = "", key: str = "", source
 
 
 # #
+# the standard's design intent, handed to the run's AI steps as guidance (STD-6)
+# #
+
+RULE_GUIDANCE = "STD-6"
+#: how a line of the standard that is no setting is told, in the three places lines are told
+GUIDANCE_WORDS = MR.GUIDANCE_WORDS
+GUIDANCE_LEAD = MR.GUIDANCE_LEAD
+
+
+def guidance_split(sec: Mapping | None, route: str) -> tuple[list[dict], list[str]]:
+    """STD-6: the standard's lines that are no setting - what the reader filed as no mesh setting of ours ("we care
+    about fatigue at the fillets") and as not a mesh setting at all ("this goes into a crash model") - split by STD-5
+    into those for this run's kind of mesh ([{"quote", "instead"}], `instead` '' or the reader's hint) and the quotes
+    written for other kinds. ([], []) when the standard was not read."""
+    s = sec if isinstance(sec, Mapping) else {}
+    if s.get("status") != "used":
+        return [], []
+    req = s.get("requirements") if isinstance(s.get("requirements"), Mapping) else {}
+    got: list[dict] = [{"quote": str(q), "instead": ""} for q in s.get("not_applied") or [] if str(q or "").strip()]
+    for e in (req or {}).get("not_mesh") or []:
+        if isinstance(e, Mapping) and str(e.get("quote") or "").strip():
+            hint = str(e.get("instead") or "")
+            got.append({"quote": str(e["quote"]), "instead": "" if hint == MR.NOT_MESH_DEFAULT else hint})
+    kept: list[dict] = []
+    off: list[str] = []
+    for g in got:
+        if any(k["quote"] == g["quote"] for k in kept) or g["quote"] in off:
+            continue
+        (kept.append(g) if _fits(_kinds_of({"quote": g["quote"]}, req or {}), route) else off.append(g["quote"]))
+    return kept, off
+
+
+def guidance_line(g: Mapping, *, page: bool = False) -> str:
+    """STD-6 in plain words: 'From your settings, kept as guidance for the mesh planning: "..."' (on the settings
+    page without its lead); a hint of the reader's ("a time limit is not a setting yet ...") rides along."""
+    hint = f" ({g['instead']})" if g.get("instead") else ""
+    lead = GUIDANCE_WORDS[:1].upper() + GUIDANCE_WORDS[1:] if page else GUIDANCE_LEAD
+    return f'{lead}: "{MR._short(str(g.get("quote") or ""))}"{hint}.'
+
+
+def route_of(state: Mapping | None) -> str:
+    """The route a run's standard is read for: "fea" for a structural run (its saved purpose), else "flow"."""
+    from meshpipeline.engines.fea_review import is_fea
+
+    return "fea" if is_fea((state or {}).get("purpose")) else FLOW
+
+
+def _section_for_guidance(std: Mapping, route: str, state: Mapping) -> dict | None:
+    """The standard's section as the run read it, with no model call: the reading kept at save time, else the
+    decision cache's saved answer to the same question (a run that read it again at run time); None with neither."""
+    text = str(std.get("text") or "").strip()
+    kept = kept_reading(std, text)
+    if kept is None:
+        from meshpipeline.contracts.decision_cache import recorded_answer
+
+        tool = MR.tool()
+        rr = recorded_answer("builder", messages=messages(text), tools=[tool], tool_choice=MR._choice(tool),
+                             user_id=str((state or {}).get("user_id") or ""))
+        kept = MR._args_of(rr) if rr is not None else None
+    if kept is None:
+        return None
+    try:
+        return checked(kept, text, route=route)
+    except Exception:  # noqa: BLE001 - guidance is a courtesy: a run never fails on it
+        logger.warning("meshing standard: guidance not worked out", exc_info=True)
+        return None
+
+
+def guidance(state: Mapping | None, route: str | None = None) -> list[dict]:
+    """STD-6: the standard's lines that are no setting and are for this run's kind of mesh ([] with none)."""
+    std = standard_of(state)
+    if std is None or not str(std.get("text") or "").strip():
+        return []
+    r = route_of(state) if route is None else route
+    sec = _section_for_guidance(std, r, state or {})
+    return guidance_split(sec, r)[0] if sec else []
+
+
+def guidance_notes(state: Mapping | None, route: str | None = None) -> list:
+    """STD-6 THE NOTES A RUN'S AI STEPS READ: the run's own notes, with the standard's design intent (guidance())
+    as one note of its own put FIRST - labelled as the team's saved settings, so the run's words, after it, win
+    where they differ. No such line: the run's notes as stored, the same list (every prompt byte for byte as
+    before, STD-3)."""
+    own = list((state or {}).get("user_notes") or [])
+    lines = guidance(state, route)
+    if not lines:
+        return (state or {}).get("user_notes") or []
+    from meshpipeline.contracts import user_notes as un
+
+    # no capture time: the same standard gives the same note (the decision cache keys a step's round by its prompt)
+    return [{"text": "\n".join(str(g["quote"]) for g in lines), "source": un.SOURCE_TEAM, "turn": None, "at": ""},
+            *own]
+
+
+# #
 # the reading: kept at save time, reused at run time (STD-1)
 # #
 
@@ -541,6 +636,9 @@ def merge(settings: Mapping | None, notes: Mapping, *, route: str = "") -> dict:
     if s_used and n_used and settings.get("stated_unit"):
         _in_unit(N, str(settings["stated_unit"]), told_n, cells=route == FLOW)
     _reid(S, "s")
+    # STD-6: the standard's words that are no setting are guidance for this run's AI steps (guidance_notes), told as
+    # kept as guidance - those written for another kind of mesh are STD-5's, told with its line
+    g_kept, g_off = guidance_split(settings, route)
     # NOTE-12 is the run's notes': the standard's words that are no mesh setting stay with STD-1's own lines
     S.pop("not_mesh", None)
     for r in [*(S.get("rows") or []), *(S.get("strictness") or [])]:
@@ -553,10 +651,11 @@ def merge(settings: Mapping | None, notes: Mapping, *, route: str = "") -> dict:
     not_here = [r for r in S.get("rows") or [] if not _fits(_kinds_of(r, S), route)]
     for r in not_here:
         _drop_row(S, r)
-    std_off = bool(not_here) and not S.get("rows")
+    not_here += [{"asked": f'"{MR._short(q)}"', "quote": q} for q in g_off]
+    std_off = bool(not_here) and not S.get("rows") and not g_kept
     said_not_here = _not_here_words(S, not_here, route, everything=std_off)
     S.pop("applies_to", None)
-    if said_not_here and not S.get("rows") and not n_used:
+    if said_not_here and not S.get("rows") and not g_kept and not n_used:
         # nothing of it is for this mesh and the notes ask nothing: the run is the run with no standard, and told
         out_none = dict(notes) if notes.get("status") == "none" else dict(MR.section("none"))
         out_none["standard_not_applied"] = said_not_here
@@ -636,9 +735,9 @@ def merge(settings: Mapping | None, notes: Mapping, *, route: str = "") -> dict:
     n_dropped = list(notes.get("dropped") or []) if n_used else []
     s_dropped = list(settings.get("dropped") or []) if s_used and not std_off else []
     n_not = list(notes.get("not_applied") or []) if n_used else []
-    s_not = list(settings.get("not_applied") or []) if s_used and not std_off else []
+    # (the standard's words no setting matches are STD-6's guidance, told as kept - never as not applied)
     dropped = [*n_dropped, *told_n, *[f"from your settings - {d}" for d in (*s_dropped, *told_s)]]
-    not_applied = [*n_not, *[f"from your settings - {q}" for q in s_not]]
+    not_applied = list(n_not)
     sec = MR.section(status, requirements=out if status == "used" else None, dropped=dropped,
                      not_applied=not_applied, note=str(notes.get("note") or "") if n_used else "",
                      key=str(notes.get("key") or settings.get("key") or ""),
@@ -647,7 +746,10 @@ def merge(settings: Mapping | None, notes: Mapping, *, route: str = "") -> dict:
                        "key": settings.get("key"), "unit": settings.get("stated_unit"),
                        "overridden": [{"field": r.get("field"), "asked": r.get("asked")} for r in overridden],
                        "from": {str(r["id"]): r["from"] for r in out.get("rows") or []}}
-    sec["lines"] = lines(MR.section("none") if std_off else settings, notes, out, told_s=told_s, told_n=told_n)
+    if g_kept:
+        sec["standard"]["guidance"] = [g["quote"] for g in g_kept]
+    sec["lines"] = lines(MR.section("none") if std_off else settings, notes, out, told_s=told_s, told_n=told_n,
+                         guidance=g_kept)
     if said_not_here:
         sec["standard"]["not_applied_here"] = said_not_here
         sec["standard_not_applied"] = said_not_here
@@ -691,9 +793,11 @@ def _flow_across(out: dict, source, not_the_notes) -> None:
                               "it does not fit the cell count your notes ask for")
 
 
-def lines(settings: Mapping, notes: Mapping, merged: Mapping, *, told_s=(), told_n=()) -> list[str]:
+def lines(settings: Mapping, notes: Mapping, merged: Mapping, *, told_s=(), told_n=(),
+          guidance: list[dict] | None = None) -> list[str]:
     """Before meshing, in plain words: one line per value in force, said by where it came from, then what was not
-    applied - the notes' lines exactly as the reader says them, the standard's marked as the standard's."""
+    applied - the notes' lines exactly as the reader says them, the standard's marked as the standard's. `guidance`:
+    the standard's lines kept as guidance for this run (STD-6; None: every such line, as the settings page says)."""
     s_used, n_used = settings.get("status") == "used", notes.get("status") == "used"
     out: list[str] = []
     if not s_used and settings.get("status") not in (None, "none"):
@@ -722,14 +826,12 @@ def lines(settings: Mapping, notes: Mapping, merged: Mapping, *, told_s=(), told
     if s_used:
         out += [f"Not applied (your settings): {d}." for d in settings.get("dropped") or []]
         out += [f"Not applied (your settings): {d}." for d in told_s]
-        out += [f'Not applied (your settings): "{MR._short(q)}" - no mesh setting of ours matches it yet.'
-                for q in settings.get("not_applied") or []]
         out += [f'Not applied (your settings): "{MR._short(q)}" - {ELSEWHERE_WORDS}.'
                 for q in settings.get("elsewhere") or []]
-        # NOTE-12 for the standard: a line that is no mesh setting ("this goes into a crash model") is told, never lost
-        out += [f'{MR.NOT_MESH_LEAD} (your settings): "{MR._short(str(e.get("quote") or ""))}" - '
-                f'{e.get("instead") or MR.NOT_MESH_DEFAULT}.'
-                for e in (settings.get("requirements") or {}).get("not_mesh") or [] if isinstance(e, Mapping)]
+        # STD-6 (and NOTE-12 for the standard): a line that is no setting ("we care about fatigue at the fillets",
+        # "this goes into a crash model") is handed to the run's AI steps as guidance and told so, never lost
+        got = guidance_split(settings, "")[0] if guidance is None else guidance
+        out += [guidance_line(g) for g in got]
     return out
 
 
@@ -751,6 +853,9 @@ def understood(text: str, reading: Mapping | None) -> list[str]:
         r["from"] = "settings"
     out = []
     for line in lines(sec, MR.section("none"), merged):
+        if line.startswith(GUIDANCE_LEAD):
+            out.append(GUIDANCE_WORDS[:1].upper() + GUIDANCE_WORDS[1:] + line[len(GUIDANCE_LEAD):])
+            continue
         for lead in ("From your settings: ", "Not applied (your settings): ", f"{MR.NOT_MESH_LEAD} (your settings): "):
             if line.startswith(lead):
                 line = line[len(lead):]

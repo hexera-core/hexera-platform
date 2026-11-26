@@ -1872,6 +1872,9 @@ def strictness_unnamed(sec: Mapping | None) -> bool:
 
 #: NOTE-12: how a line that is no mesh setting starts
 NOT_MESH_LEAD = "Not a mesh setting"
+#: STD-6: how a line of the team's standard that is no setting is told (engines/meshing_standard.guidance_line)
+GUIDANCE_WORDS = "kept as guidance for the mesh planning"
+GUIDANCE_LEAD = f"From your settings, {GUIDANCE_WORDS}"
 
 
 def not_mesh_words(entries) -> list[str]:
@@ -1885,7 +1888,7 @@ def told_words(sec: Mapping | None) -> list[str]:
     with the result, so no ask of the notes disappears."""
     if not sec or sec.get("status") != "used":
         return []
-    return [w for w in words(sec) if w.startswith(("Not applied", NOT_MESH_LEAD))]
+    return [w for w in words(sec) if w.startswith(("Not applied", NOT_MESH_LEAD, GUIDANCE_LEAD))]
 
 
 def write(workspace, sec: Mapping | None) -> bool:

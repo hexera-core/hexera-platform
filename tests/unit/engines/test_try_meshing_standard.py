@@ -116,11 +116,12 @@ def test_a_contradiction_is_told_and_judged_ok(ran):
     assert any(w.startswith("Not applied (your settings)") for w in row["lines"])
 
 
-def test_design_intent_told_only_as_not_applied_is_a_miss(ran):
+def test_design_intent_kept_as_guidance_is_judged_ok(ran):
     _mod, _s, rows, said = ran
     row = rows[("D01", "solid")]
-    assert not row["ok"] and row["missed"] == ["guidance"] and row["told"] == "not applied"
-    assert any(s.startswith("MISS D01") for s in said)
+    # STD-6: the line is handed to the AI steps as guidance and told so
+    assert row["ok"] and row["missed"] == [] and "kept as guidance" in row["told"]
+    assert any(s.split()[:2] == ["OK", "D01"] for s in said)
 
 
 def test_a_structural_list_on_a_flow_mesh_is_judged_by_the_not_here_line(ran):
@@ -133,7 +134,7 @@ def test_totals_count_per_category_and_route(ran):
     mod, _s, rows, _said = ran
     out: list[str] = []
     t = mod.totals(list(rows.values()), out=out.append)
-    assert t["rows"] == len(rows) and t["route"]["solid"]["miss"] >= 1
+    assert t["rows"] == len(rows) and sum(t["route"]["solid"].values()) >= 1
     assert out[-1].startswith("all: ")
 
 

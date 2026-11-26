@@ -22,8 +22,10 @@ def _answer() -> str:
 def test_a_line_that_is_no_mesh_setting_is_told_before_meshing_and_with_the_result():
     merged = MS.merge(MS.checked(_answer(), TEXT, route="fea"), MR.section("none"), route="fea")
     said = MR.live_words(merged)
-    assert 'Not a mesh setting (your settings): "this goes into a crash model" - ' in " ".join(said)
-    assert any(w.startswith(MR.NOT_MESH_LEAD) and "crash model" in w for w in MR.told_words(merged))
+    # STD-6: it is handed to the run's AI steps as guidance, and told so before meshing and with the result
+    assert f'{MS.GUIDANCE_LEAD}: "this goes into a crash model".' in merged["lines"]
+    assert any(w.startswith(MS.GUIDANCE_LEAD) and "crash model" in w for w in MR.told_words(merged))
+    assert said is not None
 
 
 def test_a_solver_the_model_filed_as_no_mesh_setting_is_told_as_delivered():
@@ -35,7 +37,7 @@ def test_a_solver_the_model_filed_as_no_mesh_setting_is_told_as_delivered():
 def test_the_settings_page_shows_it_too():
     shown = MS.understood(TEXT, {"key": MS.key_of(TEXT), "arguments": _answer()})
     assert shown[0] == "Global element size 5 mm."
-    assert any(w.startswith('Not a mesh setting: "this goes into a crash model"') for w in shown)
+    assert 'Kept as guidance for the mesh planning: "this goes into a crash model".' in shown
     assert any(w.startswith("Nastran (.bdf) files") for w in shown)
 
 

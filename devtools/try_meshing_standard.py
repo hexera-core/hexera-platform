@@ -31,7 +31,7 @@ BANK = Path(__file__).with_name("settings_bank.json")
 #: the bank's routes -> the route a run reads the standard with (engines/fea_driver.read_requirements: "fea";
 #: engines/cfd_requirements.read_for_attempt: "flow")
 ROUTES = {"solid": "fea", "shell": "fea", "cfd": "flow"}
-GUIDANCE_KEY = "guidance"           # where a standard's design intent would be kept for the AI steps (none today)
+GUIDANCE_KEY = "guidance"           # the merged set's standard.guidance: the lines handed to the AI steps (STD-6)
 
 
 # #
@@ -108,9 +108,12 @@ def observed(merged: dict, settings: dict) -> dict:
             classes.add("solver_file")
         if w.startswith("Not a mesh setting"):
             classes.update(("told", "not_possible"))
+        if w.startswith(MS.GUIDANCE_LEAD):
+            # STD-6: handed to the run's AI steps (meshing_standard.guidance_notes) and told so
+            classes.update(("told", "guidance"))
     if off:
         classes.add("not_here")
-    if merged.get(GUIDANCE_KEY) or settings.get(GUIDANCE_KEY):
+    if (merged.get("standard") or {}).get(GUIDANCE_KEY) if isinstance(merged.get("standard"), dict) else False:
         classes.add("guidance")
     unit = (merged.get("standard") or {}).get("unit") if isinstance(merged.get("standard"), dict) else None
     return {"fields": fields, "strict": strict, "classes": classes, "lines": lines, "unit": unit,

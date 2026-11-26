@@ -45,6 +45,10 @@ SOURCE_CONSOLE = "console"
 #: the team's meshing standard (engines/meshing_standard): read by the notes' reader as a note of its own, never
 #: stored among a run's notes
 SOURCE_SETTINGS = "settings"
+#: STD-6: the standard's lines that are no setting (design intent, context), handed to a run's AI steps as guidance
+#: BEFORE the run's own notes (engines/meshing_standard.guidance_notes); never stored among a run's notes, and never
+#: shown to the standard's own reader (its question stays the one kept with the reading)
+SOURCE_TEAM = "team_settings"
 
 #: The file every attempt's workspace gets (verbatim notes, for any step that reads the workspace)
 NOTES_FILE = "user_notes.txt"
@@ -381,6 +385,9 @@ def _where(note: Mapping) -> str:
         return "typed in the notes box"
     if note.get("source") == SOURCE_SETTINGS:
         return "the team's meshing standard, from settings"
+    if note.get("source") == SOURCE_TEAM:
+        return ("your team's saved meshing settings - guidance for every run; where this run's own notes below say "
+                "otherwise, the run's notes win")
     return f"said in the chat, message {note['turn']}" if note.get("turn") else "said in the chat"
 
 
