@@ -11,6 +11,17 @@ from dataclasses import dataclass, field
 import numpy as np
 
 
+def _cross3(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """np.cross for 3-vectors (any leading shape, broadcast), written out: the same multiplications and subtractions
+    in the same order as numpy's own, so the same floats, without its axis handling (np.cross took more time in the
+    clean-up than the products it makes: 64,000 calls, 4.3 s on fr008)."""
+    a = np.asarray(a)
+    b = np.asarray(b)
+    a0, a1, a2 = a[..., 0], a[..., 1], a[..., 2]
+    b0, b1, b2 = b[..., 0], b[..., 1], b[..., 2]
+    return np.stack(np.broadcast_arrays(a1 * b2 - a2 * b1, a2 * b0 - a0 * b2, a0 * b1 - a1 * b0), axis=-1)
+
+
 @dataclass
 class ShellMesh:
     """A shell mesh, millimetres. Elements are numbered quads first, then triangles (1-based in the files)."""
@@ -44,9 +55,9 @@ class ShellMesh:
 def _normal(xyz: np.ndarray, conn: np.ndarray) -> np.ndarray:
     p = xyz[conn]
     if len(conn) == 4:
-        n = np.cross(p[2] - p[0], p[3] - p[1])
+        n = _cross3(p[2] - p[0], p[3] - p[1])
     else:
-        n = np.cross(p[1] - p[0], p[2] - p[0])
+        n = _cross3(p[1] - p[0], p[2] - p[0])
     return n / max(float(np.linalg.norm(n)), 1e-300)
 
 
@@ -132,11 +143,109 @@ def _corners_turn(xyz: np.ndarray, conn: list[int], normal: np.ndarray) -> bool:
     """Whether any corner of the element turns against `normal` (a corner Jacobian not positive)."""
     p = xyz[conn]
     k = len(conn)
-    return any(float(np.dot(np.cross(p[(j + 1) % k] - p[j], p[(j - 1) % k] - p[j]), normal)) <= 0.0 for j in range(k))
+    return any(float(np.dot(_cross3(p[(j + 1) % k] - p[j], p[(j - 1) % k] - p[j]), normal)) <= 0.0 for j in range(k))
+
+
+#: SHMESH-80: no clean-up step writes the same element twice (two elements on the same corners)
+TWIN_GUARD = True
+
+
+def _twins_after(elems: list[tuple[list[int], int]], to: np.ndarray) -> list[list[int]]:
+    """SHMESH-80: the groups of elements (indices into `elems`) that the merge `to` would leave on the same corners,
+    each group holding at least one element the merge changes (twins the input already held are not the merge's)."""
+    seen: dict[frozenset, list[int]] = {}
+    moved: set[int] = set()
+    for i, (conn, _f) in enumerate(elems):
+        c = [int(to[a]) for a in conn]
+        kept = [c[k] for k in range(len(c)) if c[k] != c[(k + 1) % len(c)]]
+        if len(kept) < 3 or len(set(kept)) != len(kept):
+            continue
+        seen.setdefault(frozenset(kept), []).append(i)
+        if c != conn:
+            moved.add(i)
+    return [ids for ids in seen.values() if len(ids) > 1 and moved.intersection(ids)]
+
+
+#: SHMESH-80b: a merge that would write two elements on the same corners is made, and the copies taken out as
+#: shell_quality.drop_twins takes them (left once or not at all), where that leaves no more free edges and no more
+#: edges held by three or more elements than the mesh had; only elsewhere is the merge undone (TWIN_GUARD). Undone
+#: everywhere, the guard left a 0.12 mm edge standing between two strips of a stamped sheet's fillet: 8 needle
+#: triangles under 20 degrees (worst 4.8) that no later step could take out, where the merge with its two twins
+#: dropped left none
+TWIN_DROP = True
+
+
+def _edge_load(quads: np.ndarray, trias: np.ndarray) -> tuple[int, int]:
+    """(edges held by one element, edges held by three or more)."""
+    held: dict[tuple[int, int], int] = {}
+    for conn in (quads, trias):
+        c = np.asarray(conn, dtype=np.int64)
+        if not len(c):
+            continue
+        k = c.shape[1]
+        for m in range(k):
+            a, b = c[:, m], c[:, (m + 1) % k]
+            for x, y in zip(np.minimum(a, b).tolist(), np.maximum(a, b).tolist(), strict=True):
+                held[(x, y)] = held.get((x, y), 0) + 1
+    return sum(1 for v in held.values() if v == 1), sum(1 for v in held.values() if v > 2)
+
+
+#: SHMESH-12d: two triangles of one face back to back whose far corners lie closer than an edge of theirs would have
+#: to be to merge (the shared edge read as their longest) are a quad folded flat: their far corners are merged as a
+#: short edge's ends are, and the two triangles go (the twins the merge writes, SHMESH-80b). gmsh left such a pair on
+#: sh0010 (corners 0.09 mm apart across a 2.88 mm edge, both triangles at 177 degrees): no edge of theirs is short,
+#: and a swap only makes two other needles, so no step took them out and the plate stayed past Nastran's limits
+FOLDED_PAIRS = True
+
+
+def _folded_pairs(xyz: np.ndarray, trias: np.ndarray, t_face: list[int], limit: np.ndarray
+                  ) -> list[tuple[float, int, int, int, int]]:
+    """SHMESH-12d: (distance, a, b, i, j) for the far corners a < b of each pair of triangles i, j of one face that
+    share an edge (theirs alone) and whose far corners are closer than the merge limit for an edge as long as the
+    shared one."""
+    users: dict[tuple[int, int], list[int]] = {}
+    T = np.asarray(trias, dtype=np.int64)
+    for i, c in enumerate(T.tolist()):
+        for k in range(3):
+            a, b = c[k], c[(k + 1) % 3]
+            users.setdefault((min(a, b), max(a, b)), []).append(i)
+    out = []
+    for (a, b), us in users.items():
+        if len(us) != 2 or t_face[us[0]] != t_face[us[1]]:
+            continue
+        p, q = (next(v for v in T[u].tolist() if v not in (a, b)) for u in us)
+        if p == q:
+            continue
+        f = t_face[us[0]]
+        d = float(np.linalg.norm(xyz[p] - xyz[q]))
+        m = max(SHORT_SHARE * float(limit[f]), min(float(limit[f]), SHORT_SHARE * float(np.linalg.norm(xyz[a] - xyz[b]))))
+        if d < m:
+            out.append((d, min(p, q), max(p, q), us[0], us[1]))
+    return out
 
 
 def collapse_short(xyz: np.ndarray, quads: np.ndarray, trias: np.ndarray, q_face: list[int], t_face: list[int],
                    limit: np.ndarray) -> tuple[np.ndarray, np.ndarray, list[int], list[int], int]:
+    """SHMESH-12 (_collapse_short), with SHMESH-80b: the twins a merge writes are dropped where the surface stays as
+    clean (no more free edges, no more edges held by three or more), and the merge undone only elsewhere."""
+    if TWIN_GUARD and TWIN_DROP:
+        from meshpipeline.engines.shell_quality import drop_twins
+
+        got = _collapse_short(xyz, quads, trias, q_face, t_face, limit, guard=False)
+        q2, t2, fq, ft, merged = got
+        if merged:
+            q3, t3, fq3, ft3, gone = drop_twins(q2, t2, fq, ft)
+            if not gone:
+                return got
+            free0, over0 = _edge_load(quads, trias)
+            free1, over1 = _edge_load(q3, t3)
+            if free1 <= free0 and over1 <= over0:
+                return q3, t3, fq3, ft3, merged
+    return _collapse_short(xyz, quads, trias, q_face, t_face, limit, guard=TWIN_GUARD)
+
+
+def _collapse_short(xyz: np.ndarray, quads: np.ndarray, trias: np.ndarray, q_face: list[int], t_face: list[int],
+                    limit: np.ndarray, *, guard: bool = True) -> tuple[np.ndarray, np.ndarray, list[int], list[int], int]:
     """SHMESH-12: merge the two ends of every element edge shorter than `limit[face]` (the smaller of its elements'
     faces' floors) and either than SHORT_SHARE of the longest edge of each element on it or than SHORT_SHARE of
     that floor. A cluster of merged nodes keeps the one most faces meet at (a junction or a corner holds its
@@ -157,8 +266,15 @@ def collapse_short(xyz: np.ndarray, quads: np.ndarray, trias: np.ndarray, q_face
             key = (a, b) if a < b else (b, a)
             lim[key] = min(lim.get(key, np.inf), max(SHORT_SHARE * float(limit[f]),
                                                       min(float(limit[f]), SHORT_SHARE * longest)))
-    short = sorted((float(np.linalg.norm(xyz[a] - xyz[b])), a, b) for (a, b), m in lim.items()
-                   if float(np.linalg.norm(xyz[a] - xyz[b])) < m)
+    # (each edge's length measured once: the same float the filter and the sort read)
+    short = sorted((d_, a, b) for (a, b), m in lim.items()
+                   for d_ in (float(np.linalg.norm(xyz[a] - xyz[b])),) if d_ < m)
+    folded: dict[int, tuple[int, int]] = {}       # (SHMESH-12d: each folded pair's triangles -> its far corners)
+    if FOLDED_PAIRS:
+        pairs = _folded_pairs(xyz, trias, t_face, limit)
+        short = sorted(set(short) | {(d, a, b) for d, a, b, _i, _j in pairs})
+        for _d, a, b, i, j in pairs:
+            folded[len(quads) + i] = folded[len(quads) + j] = (a, b)
     if not short:
         return quads, trias, list(q_face), list(t_face), 0
     parent = list(range(n))
@@ -186,13 +302,24 @@ def collapse_short(xyz: np.ndarray, quads: np.ndarray, trias: np.ndarray, q_face
     for round_ in range(FOLD_ROUNDS):
         bad_roots: set[int] = set()
         bad_nodes: set[int] = set()
-        for conn, _f in elems:
+        if guard:
+            # SHMESH-80: a merge that would make two elements one and the same (the same corners: two faces folded
+            # onto each other at a seam) is undone as a folded corner is - at the elements' own moved nodes, the last
+            # round their whole clusters
+            for ids in _twins_after(elems, to):
+                if FOLD_LOCAL and round_ < FOLD_ROUNDS - 1:
+                    bad_nodes |= {a for i in ids for a in elems[i][0] if int(to[a]) != a}
+                else:
+                    bad_roots |= {int(to[a]) for i in ids for a in elems[i][0]}
+        for e_i, (conn, _f) in enumerate(elems):
             c = [int(to[a]) for a in conn]
             if c == conn:
                 continue
             kept = [c[i] for i in range(len(c)) if c[i] != c[(i + 1) % len(c)]]
             if len(kept) < 3 or len(set(kept)) != len(kept):
                 continue
+            if e_i in folded and to[folded[e_i][0]] == to[folded[e_i][1]]:
+                continue        # (SHMESH-12d: a folded pair's triangle closes onto its twin; the two go together)
             before = _normal(xyz, np.array(conn))
             if float(np.dot(_normal(xyz, np.array(kept)), before)) <= 0.0:
                 bad_roots |= {int(to[a]) for a in conn}
@@ -209,6 +336,15 @@ def collapse_short(xyz: np.ndarray, quads: np.ndarray, trias: np.ndarray, q_face
             to[undo] = np.flatnonzero(undo)
         for a in sorted(bad_nodes):
             to[a] = a
+    if guard:
+        # SHMESH-80: the last round's undoing is checked too - whole clusters undone until no two elements are one
+        for _ in range(n):
+            groups = _twins_after(elems, to)
+            if not groups:
+                break
+            roots = {int(to[a]) for ids in groups for i in ids for a in elems[i][0]}
+            undo = np.isin(to, np.array(sorted(roots), dtype=np.int64))
+            to[undo] = np.flatnonzero(undo)
     merged = int((to != np.arange(n)).sum())
     if not merged:
         return quads, trias, list(q_face), list(t_face), 0

@@ -866,7 +866,7 @@ th,td{border-color:var(--border)}
 /* THE MARKS ON A STAGE'S PART (viewer/scene/marks.js): small flat dots of a fixed size on screen - never
    balls that grow with the part - with no shading, no white ring and no shadow. A hot spot is a stone dot;
    a join (where two parts meet) a stone ring; what the user should see (parts that pass into each other,
-   plates that do not meet) a muted red dot; a region that stays solid a muted amber one. What a mark is
+   plates that do not meet) a muted red dot; a region the shell leaves out a muted amber one. What a mark is
    shows beside it only when it is pointed at or chosen; the chosen one wears the crimson. Marks that would
    overlap at this zoom are one quiet chip with their count, which zooms in when clicked. */
 .vm{position:absolute;z-index:6;width:16px;height:16px;transform:translate(-50%,-50%);cursor:pointer;

@@ -277,6 +277,14 @@ def shell_facts_text(workspace) -> str:
              f"{', '.join(str(w) for w in (_m(q.get('fea')).get('walls_mm') or [])[:8]) or 'not set, in'} mm."]
     for _k, label, file, element, _t in SHELL_SOLVERS:
         lines.append(f"- {file} ({label}, {element}): " + ("written" if present(ws, file) else "MISSING") + ".")
+    from meshpipeline.cad.shell_words import left_out_words
+
+    left = left_out_words(dict(_m(_read(ws / "shell_run.json").get("left_out"))))
+    if left:
+        # SHSTAGE-9: what the shell leaves out is real and told to the user; the reviewer judges the shell as that
+        lines.append("- LEFT OUT OF THIS SHELL, and told to the user in the result and the decks: " + left
+                     + " These regions have no elements: that is what a shell of this part is, not a defect of the "
+                       "mesh; the result must never say they are meshed or kept solid.")
     from meshpipeline.engines.shell_delivery import user_limits, user_line
     mine = user_limits(q)
     if mine:

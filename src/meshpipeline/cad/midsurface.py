@@ -111,13 +111,32 @@ def _faces(shape) -> list:
     return [TopoDS.Face_s(m.FindKey(i)) for i in range(1, m.Extent() + 1)]
 
 
+#: SHELL-53: a face's area read once (the extraction asks the same faces' areas tens of thousands of times: 16,812
+#: readings, 65 s of a 1,451-face antenna cover). Kept by the face itself (OpenCASCADE's IsSame: the same face, either
+#: way round), so the answer is the one OpenCASCADE gave the first time
+_AREAS: dict[int, tuple] = {}
+AREAS_KEPT = 65536
+
+
 def _area(shape) -> float:
     from OCP.BRepGProp import BRepGProp
     from OCP.GProp import GProp_GProps
+    from OCP.TopAbs import TopAbs_FACE
 
+    face = shape.ShapeType() == TopAbs_FACE
+    key = hash(shape) if face else 0
+    if face:
+        got = _AREAS.get(key)
+        if got is not None and got[0].IsSame(shape):
+            return float(got[1])
     g = GProp_GProps()
     BRepGProp.SurfaceProperties_s(shape, g)
-    return abs(float(g.Mass()))
+    a = abs(float(g.Mass()))
+    if face:
+        if len(_AREAS) >= AREAS_KEPT:
+            _AREAS.clear()
+        _AREAS[key] = (shape, a)
+    return a
 
 
 def _volume(shape) -> float:
@@ -130,9 +149,20 @@ def _volume(shape) -> float:
 
 
 def _length(shape) -> float:
+    from OCP.BRep import BRep_Tool
     from OCP.BRepGProp import BRepGProp
     from OCP.GProp import GProp_GProps
+    from OCP.TopAbs import TopAbs_EDGE
+    from OCP.TopoDS import TopoDS
 
+    if shape.ShapeType() == TopAbs_EDGE:
+        e = TopoDS.Edge_s(shape)
+        if BRep_Tool.Degenerated_s(e) or not BRep_Tool.IsGeometric_s(e):
+            # SHELL-54: an edge with no 3D curve (a degenerated edge: a point a face's outline passes through) has no
+            # length - OpenCASCADE's linear properties read a curve that is not there and the process died (a hat
+            # rail's sewn mid-surface: a 4e-6 long degenerated edge on a flat face; the mesher's census of its edges
+            # ended in a segmentation fault)
+            return 0.0
     g = GProp_GProps()
     BRepGProp.LinearProperties_s(shape, g)
     return abs(float(g.Mass()))
@@ -353,6 +383,14 @@ def _in_face(face, p, tol) -> bool:
 QUICK_DEFLECTION = 0.005
 QUICK_CLEAR = 4.0
 QUICK_ANGLE = 0.35
+#: SHELL-52, NO QUICK TEST PAST ITS TRIANGLE BUDGET: a body's quick triangulation is first ESTIMATED from the one the
+#: pairing already made (cad/fea_measure): each face's triangles there times that tessellation's measured error over
+#: the quick deflection (a curved face's triangle count grows as one over its deflection: its chords' sag goes as
+#: their length squared; a flat face's does not grow), never fewer than it has. A body whose estimate passes
+#: QUICK_MAX_TRIANGLES is told by the exact classifier alone: a 1000 x 700 mm floor panel 0.9 mm thick asked for a
+#: copy meshed within 0.0045 mm (an estimated 200 million triangles: meshed at 0.2 mm it already took 318,000 and
+#: 1.9 GB), and the extraction process died. Any other body is read as before.
+QUICK_MAX_TRIANGLES = 2_000_000
 #: the three ray directions (fixed, off every axis and diagonal: a ray along a mesh edge or a face plane is rare)
 QUICK_RAYS = ((0.5376, 0.6232, 0.5679), (-0.7081, 0.2214, 0.6705), (0.1523, -0.8734, 0.4625))
 
@@ -445,18 +483,28 @@ class _QuickInside:
         return votes[0] if votes[0] == votes[1] == votes[2] else None
 
 
+def quick_triangles(surface, body_faces: list[int], wall_mm: float) -> float:
+    """SHELL-52: the estimated triangle count of a body's quick triangulation (QUICK_DEFLECTION of `wall_mm`), from the
+    pairing's labelled surface (cad/fea_features.Surface: its triangles per face and each face's measured deflection)."""
+    if surface.defl_mm is None or wall_mm <= 0:
+        return 0.0
+    counts = np.bincount(surface.label, minlength=len(surface.names))
+    d = QUICK_DEFLECTION * wall_mm
+    return float(sum(counts[k] * max(1.0, float(surface.defl_mm[k]) / d) for k in body_faces))
+
+
 class _Solid:
     """Is a point inside a body (or on its skin)? A point outside the body's box is outside without the classifier,
     a point clear of the skin is told by the body's triangulation (_QuickInside), and every point's state is kept:
     the joins and the edge census ask about the same points again and again."""
 
-    def __init__(self, solid, tol: float, wall: float | None = None):
+    def __init__(self, solid, tol: float, wall: float | None = None, quick: bool = True):
         from OCP.BRepClass3d import BRepClass3d_SolidClassifier
 
         self.c = BRepClass3d_SolidClassifier(solid)
         self.tol = tol
         self.quick = None
-        if wall is not None and wall > 0:
+        if wall is not None and wall > 0 and quick:
             try:
                 self.quick = _QuickInside(solid, QUICK_DEFLECTION * wall, tol)
             except Exception as exc:  # noqa: BLE001 - the exact classifier alone
@@ -599,6 +647,15 @@ def mid_faces(fa, fb, t: float, fuzzy: float) -> list:
 #: distance to B. A fitted mid-face is kept only when every point read on it lies as far from A as from B within
 #: FIDELITY_SHARE of the local thickness.
 FIT_SAMPLES = 17
+#: SHELL-55, A WALL IS READ WHERE ITS FACES FACE EACH OTHER: the even test (shell_pairs.even_wall) reads every point of
+#: the smaller face against the other face's whole surface, and on a funnel's two coaxial 45-degree cones 7.8 mm apart
+#: the points near the inner cone's narrow end found their foot past the outer cone's apex: "turned 90 degrees", no
+#: even wall, and the taper fit through those points was off its middle by 35% - the funnel had no wall at all. When
+#: a tapered pair's fitted mid-face cannot be made and the tapered reading (only the points whose foot lies on the
+#: other face itself) found the same thickness everywhere (within EVEN_SHARE) and the faces parallel there (within
+#: PAIR_DEG), the pair is an even wall, made as every even wall is (the overlap of the two half-offsets). A pair whose
+#: fitted mid-face is made, and every other pair, is read exactly as before.
+EVEN_WHERE_FACING = True
 #: a pair whose two faces are both narrower than four walls by this margin is not fitted (its mid-face would be
 #: rejected as narrower than four walls; the margin covers a mid-face a little wider than either face)
 FIT_WIDTH_SLACK = 1.5
@@ -1136,6 +1193,171 @@ def fitted_mid(fa, fb, t_hint: float, fuzzy: float, *, wall_wide: bool = False,
     return faces, float(lo), float(hi), float(np.mean(read)), ""
 
 
+# ---------------------------------------------------------------------- offset free-form skins ----
+#: SHELL-50, TWO FREE-FORM SKINS A WALL APART: a stamped or drawn panel's two skins are two B-spline faces about one
+#: wall apart (one made by offsetting the other, or both fitted through points a wall apart). Two things lost them:
+#:   - an even pair's mid-face is where its two half-offsets overlap (mid_faces): a Boolean common of two different
+#:     free-form surfaces lying on each other. On a 153 x 103-pole panel skin it ran past the 1800 s extraction
+#:     deadline (3 stamped panels of the board: no mesh);
+#:   - a skin pair that is not quite even (the skins fitted through points a wall apart wave between them: 1.44 to
+#:     1.59 mm on a 1.5 mm panel, their normals turning up to 9 degrees) is a tapered wall (SHELL-9), whose mid-face is
+#:     fitted through 17 x 17, then 33 x 33 midpoints; a bead or a swage narrower than that grid was missed and the fit
+#:     lay up to 65% of the wall off the middle: no mid-face (4 stamped panels: "no two faces run side by side").
+#: Such a pair - both faces open B-splines (or Beziers) - has its mid-face made as the OFFSET of one skin (the smaller,
+#: A) by half its mean wall toward the other: the offset carries every bead, dimple and swage of A exactly, however
+#: fine. It is bounded as a fitted mid-face is, in A's parameters (worked out flat, SHELL-9 and SHELL-42): A's own
+#: outline when B lies across all of A, else where A's outline and B's (projected onto A) overlap. It is kept only
+#: when every point read on it lies within OFFSET_OFF_MIDDLE of the middle of its wall (|dA - dB| / (dA + dB): the
+#: mid-face at most 5% of the wall off the middle, which moves a shell's bending stiffness about it by under 3%,
+#: 12 (e / t)^2) and the wall read on it varies by at most OFFSET_VARIES; an uneven pair's thickness is then carried
+#: point by point (SHELL-9b) as a fitted one's is. An even pair tries this first and the overlap of its two
+#: half-offsets after it; a tapered pair tries it after its fitted mid-face is off the middle.
+OFFSET_SKINS = True
+OFFSET_OFF_MIDDLE = 0.10
+OFFSET_VARIES = 0.15
+
+
+def open_bspline(face):
+    """SHELL-50: the face's surface (placed) as a B-spline when it is one (a Bezier is converted) and is open both
+    ways - not periodic, not closed; else None."""
+    from OCP.BRep import BRep_Tool
+    from OCP.Geom import Geom_BezierSurface, Geom_BSplineSurface
+    from OCP.GeomConvert import GeomConvert
+
+    s = BRep_Tool.Surface_s(face)
+    if isinstance(s, Geom_BezierSurface):
+        s = GeomConvert.SurfaceToBSplineSurface_s(s)
+    if not isinstance(s, Geom_BSplineSurface):
+        return None
+    if s.IsUPeriodic() or s.IsVPeriodic() or s.IsUClosed() or s.IsVClosed():
+        return None
+    return s
+
+
+#: SHELL-50c: an EVEN skin pair is read as an offset only when a skin has at least OFFSET_EVEN_POLES poles: the overlap
+#: of two half-offsets (mid_faces) stalled on 153 x 103 = 15,759-pole skins (past the 1800 s deadline) and meshes
+#: well on small ones (a hat rail's bends and joggles: read as offsets, their joins left points where an outline
+#: closed - degenerated edges on the flat faces beside them - and gmsh stopped on them), so a small even pair is read
+#: exactly as before
+OFFSET_EVEN_POLES = 5000
+
+
+def big_skins(fa, fb) -> bool:
+    """SHELL-50c: has either open B-spline skin at least OFFSET_EVEN_POLES poles?"""
+    for f in (fa, fb):
+        s = open_bspline(f)
+        if s is not None and s.NbUPoles() * s.NbVPoles() >= OFFSET_EVEN_POLES:
+            return True
+    return False
+
+
+def offset_skins(fa, fb) -> bool:
+    """SHELL-50: are faces fa, fb two open free-form skins (both open B-splines or Beziers)?"""
+    return OFFSET_SKINS and open_bspline(fa) is not None and open_bspline(fb) is not None
+
+
+def _unit_params(s, box):
+    """A copy of B-spline surface `s` whose parameters are its own scaled by `box` (u0, u1, v0, v1) to 0..1: its knots
+    moved by the same affine map, the surface itself unchanged."""
+    from OCP.TColStd import TColStd_Array1OfReal
+
+    c = s.Copy()
+    u0, u1, v0, v1 = box
+    for n, get, put, lo, span in ((c.NbUKnots(), c.UKnot, c.SetUKnots, u0, u1 - u0),
+                                  (c.NbVKnots(), c.VKnot, c.SetVKnots, v0, v1 - v0)):
+        arr = TColStd_Array1OfReal(1, n)
+        for i in range(1, n + 1):
+            arr.SetValue(i, (get(i) - lo) / span)
+        put(arr)
+    return c
+
+
+def _skin_walls(fa, fb, tol: float) -> tuple[list[float], list[tuple[float, float, float]]]:
+    """SHELL-50: the wall read from points of A (SHELL-40's grid) to their feet on B itself - [distances], and
+    [(u, v, side)] where `side` is +1 when B lies along A's surface normal (dU x dV) there, -1 against it."""
+    from OCP.BRep import BRep_Tool
+    from OCP.BRepAdaptor import BRepAdaptor_Surface
+    from OCP.BRepLProp import BRepLProp_SLProps
+    from OCP.GeomAdaptor import GeomAdaptor_Surface
+    from OCP.GeomLProp import GeomLProp_SLProps
+
+    sa = BRepAdaptor_Surface(fa, True)
+    raw = GeomAdaptor_Surface(BRep_Tool.Surface_s(fa))
+    proj = sp._projector(fb)
+    tol_b = max(BRep_Tool.Tolerance_s(fb), 1e-9)
+    walls, sides = [], []
+    for u, v in sp.face_grid(fa, sa, tol):
+        pa = BRepLProp_SLProps(sa, u, v, 1, 1e-9)
+        p = pa.Value()
+        proj.Perform(p)
+        if proj.NbPoints() < 1:
+            continue
+        ub, vb = proj.LowerDistanceParameters()
+        if not sp.foot_on_face(fb, ub, vb, tol_b):
+            continue
+        q = proj.NearestPoint()
+        g = GeomLProp_SLProps(raw.Surface(), u, v, 1, 1e-9)
+        if not g.IsNormalDefined():
+            continue
+        n = g.Normal()
+        d = (q.X() - p.X()) * n.X() + (q.Y() - p.Y()) * n.Y() + (q.Z() - p.Z()) * n.Z()
+        walls.append(float(proj.LowerDistance()))
+        sides.append((u, v, 1.0 if d > 0 else -1.0))
+    return walls, sides
+
+
+def offset_mid(fa, fb, t_hint: float, fuzzy: float) -> tuple[list, float, float, float, str]:
+    """SHELL-50: the mid-faces of two free-form skins fa (A, whose outline bounds it) and fb, as A's offset by half
+    their mean wall toward B ([] when none is kept, with why), and the wall's thinnest, thickest and mean over them
+    (own units). `t_hint`: the wall as the pair test read it."""
+    from OCP.BRep import BRep_Tool
+    from OCP.BRepLib import BRepLib
+    from OCP.BRepTools import BRepTools
+    from OCP.Geom import Geom_OffsetSurface
+
+    base = open_bspline(fa)
+    if base is None or open_bspline(fb) is None:
+        return [], 0.0, 0.0, 0.0, "the faces are not two open free-form skins"
+    box = BRepTools.UVBounds_s(fa)
+    u0, u1, v0, v1 = box
+    if not all(math.isfinite(x) for x in box) or u1 <= u0 or v1 <= v0:
+        return [], 0.0, 0.0, 0.0, "a face without bounds"
+    walls, sides = _skin_walls(fa, fb, max(BRep_Tool.Tolerance_s(fa), 1e-9))
+    if len(walls) < sp.TAPER_MIN_POINTS:
+        return [], 0.0, 0.0, 0.0, "too few points of the faces face each other"
+    lo_r, hi_r = min(walls), max(walls)
+    if lo_r <= 0 or hi_r > lo_r * (1.0 + OFFSET_VARIES):
+        return [], 0.0, 0.0, 0.0, f"the wall varies by {100 * (hi_r / lo_r - 1.0) if lo_r > 0 else math.inf:.0f}%"
+    side = [s for _u, _v, s in sides]
+    if abs(sum(side)) < len(side):
+        return [], 0.0, 0.0, 0.0, "the other face lies on both sides of it"
+    half = 0.5 * float(np.mean(walls))
+    surf = Geom_OffsetSurface(_unit_params(base, box), side[0] * half)
+    wires_a = _curves_of_a(fa, box)
+    if _covers(fb, fa):
+        region = _region_on(surf, wires_a)
+        faces = [region] if region is not None else []
+    else:
+        wires_b = _curves_of_b(fb, fa, box)
+        faces = _overlap_2d(wires_a, wires_b, surf, 1e-6) if wires_b is not None else []
+    faces = [f for f in faces if width_of(f) >= SLIVER_WALLS * t_hint]
+    if not faces:
+        return [], 0.0, 0.0, 0.0, "the two faces do not overlap"
+    for f in faces:
+        BRepLib.BuildCurves3d_s(f)
+    faces = [g for f in faces for g in _valid_faces(f)]
+    if not faces:
+        return [], 0.0, 0.0, 0.0, "the offset mid-face is not a valid face"
+    worst_rel, lo, hi = 0.0, lo_r, hi_r
+    for f in faces:
+        _w, rel, _n, flo, fhi = fitted_fidelity(f, fa, fb)
+        worst_rel = max(worst_rel, rel)
+        lo, hi = min(lo, flo), max(hi, fhi)
+    if worst_rel > OFFSET_OFF_MIDDLE:
+        return [], 0.0, 0.0, 0.0, f"the offset mid-surface is off the middle by {100 * worst_rel:.1f}% of the wall"
+    return faces, float(lo), float(hi), float(np.mean(walls)), ""
+
+
 # ----------------------------------------------------------------- every plate is a shell ----
 #: SHELL-23, EVERY PLATE IS A SHELL (10 Nov, the founder's call: a shell is only ever made because the user asked
 #: for one in words, and their request beats our accuracy minimums - warn, do not refuse). A sheet that fails
@@ -1185,6 +1407,10 @@ PLATE_BODY_QUICK = 0.0
 PAD_STEP_WALLS = 2.0
 PLATE_OPEN_GUARD = True
 PLATE_PASS_SLACK = 1.5
+#: SHELL-61: False - the plate passes are no longer skipped by the clock (True: as before, skipped with under
+#: PLATE_PASS_SLACK x the time spent left in the work budget); CLOSING_TIMED the same for SHELL-30 and SHELL-22
+PLATE_PASS_TIMED = False
+CLOSING_TIMED = False
 PLATE_FLAT_SHARE = 0.5
 PLATE_CURVE_WALLS = 2.0
 PLATE_METAL_SHARE = 0.9
@@ -1573,7 +1799,13 @@ def _box(shape) -> tuple[np.ndarray, np.ndarray]:
 def _near_box(p, box, reach: float) -> bool:
     """Is point p within `reach` of the box (a quick test before an exact distance)?"""
     lo, hi = box
-    return bool(np.all(p >= lo - reach) and np.all(p <= hi + reach))
+    # SHELL-53: three plain comparisons a side, not numpy's - the same answer, a fraction of the time (over a million
+    # calls on a 1,451-face part)
+    for i in range(3):
+        x = float(p[i])
+        if not (x >= float(lo[i]) - reach and x <= float(hi[i]) + reach):
+            return False
+    return True
 
 
 def _ordered_edges(wire, face) -> list:
@@ -3079,8 +3311,229 @@ def _regions(faces: list[int], neighbours: list[set[int]]) -> list[list[int]]:
     return out
 
 
+#: SHELL-56, A THICK REGION IS THICK METAL, NOT A SPECK: a body is mixed (thin walls and thick regions) when faces of
+#: it are thick or solid, and on 50 of the 334 board parts that made it so. On 8 of them every such region was a face
+#: or two of 0.04 to 562 mm2 against walls of 0.2 to 19 mm - a counterbore's seat, a 4 x 4 mm land, a dimple, a
+#: faceplate's 34 lands (0.06% of its surface) - and the part was told "a thick region stays solid" for nothing. No
+#: lump of metal thicker than its wall fits in so little surface: a boss two walls across and one wall high has about
+#: 9 walls squared of it. A region is THICK when its surface is at least SPECK_WALLS2 times the square of the
+#: thickest shell wall it touches (its faces' neighbours, else theirs, else the body's thickest shell wall); a region
+#: under that is a speck, counted in the body's row ("specks") and not listed among the regions that stay solid; a
+#: body all of whose regions are specks reads "shell". Read on the board, any floor from 4 to 6 walls squared turns
+#: the same 8 parts to shell (renders: each a plate with seats, lands or dimples), and keeps mixed every part whose
+#: bosses, lips, flanges, studs and cores show in its render. Reporting only: the mid-surface, its joins and the
+#: record's checks are made from the faces' roles exactly as before.
+SPECK_FLOOR = True
+SPECK_WALLS2 = 4.0
+
+
+def _shell_walls(pairs: list) -> dict[int, float]:
+    """Each face's thickest shell wall (mm), for the faces that are a side of one."""
+    shell_wall: dict[int, float] = {}
+    for p in pairs:
+        if p.shell and math.isfinite(p.thickness):
+            for k in (p.a, p.b):
+                shell_wall[k] = max(shell_wall.get(k, 0.0), float(p.thickness))
+    return shell_wall
+
+
+def _touching_wall(g: dict, index: dict, neighbours: list[set[int]], shell_wall: dict[int, float],
+                   default: float) -> float:
+    """The thickest shell wall a region of faces touches: its faces' neighbours', else theirs, else `default`."""
+    ring = {index[n] for n in g["faces"] if n in index}
+    for _depth in range(2):
+        ring = ring.union(*(neighbours[k] for k in ring))
+        near = [shell_wall[k] for k in ring if k in shell_wall]
+        if near:
+            return max(near)
+    return default
+
+
+def _drop_specks(bodies: list[dict], pairs: list, body_of: list[int], body_names: list[str], names: list[str],
+                 neighbours: list[set[int]]) -> None:
+    """SHELL-56 on the body rows (in place): each mixed body's regions under SPECK_WALLS2 x (the thickest shell wall
+    they touch)^2 are taken out of its solid regions and counted as specks; a body left with none reads shell."""
+    index = {n: k for k, n in enumerate(names)}
+    shell_wall = _shell_walls(pairs)
+    for row in bodies:
+        if row.get("verdict") != "mixed" or not row.get("solid_regions"):
+            continue
+        b = body_names.index(row["body"])
+        body_walls = [w for k, w in shell_wall.items() if body_of[k] == b]
+        if not body_walls:
+            continue
+        real: list[dict] = []
+        specks: list[dict] = []
+        for g in row["solid_regions"]:
+            wall = _touching_wall(g, index, neighbours, shell_wall, max(body_walls))
+            (real if float(g["area_mm2"]) >= SPECK_WALLS2 * wall * wall else specks).append(g)
+        if not specks:
+            continue
+        speck_area = float(sum(float(g["area_mm2"]) for g in specks))
+        row["specks"] = {"regions": len(specks), "area_mm2": _r(speck_area)}
+        if real:
+            row["solid_regions"] = real
+            continue
+        del row["solid_regions"]
+        row["verdict"] = "shell"
+        row["why"] = (f"every wall is a plate or a thin wall ({len(specks)} small face region"
+                      f"{'' if len(specks) == 1 else 's'} too small to hold metal thicker than the wall)")
+
+
+#: SHELL-60, HOW BIG WHAT A SHELL LEAVES OUT IS: a shell mesh has no element for a mixed body's thick regions (no
+#: solid is made beside a shell, SHSTAGE-7), nor for a body with no shell. To say so in numbers (SHSTAGE-9), each
+#: thick region gets its SIZE (its faces' box, mm, largest side first) and about how much METAL it holds (mm3): the
+#: points of a grid over the regions' boxes (grown by the body's thickest shell wall) that lie inside the body and
+#: more than half a wall from every sewn mid-face - metal no shell element stands for - each counted for the region
+#: whose box is nearest; a body with no shell gets its size (its volume is measured already). About THICK_POINTS
+#: points a body and THICK_WORK exact readings a part at most (each point's inside test and each distance to a
+#: mid-face counts one) - counted in work, never in seconds, so the record is the same on any machine under any load:
+#: past it a region's metal is not given (None) and the words say only its surface. Reporting only: the mid-surface,
+#: its joins and the record's checks are made exactly as before.
+THICK_MEASURE = True
+THICK_POINTS = 6000
+THICK_WORK = 60000
+
+
+def _box_gap_to(points: np.ndarray, lo: np.ndarray, hi: np.ndarray) -> np.ndarray:
+    """Each point's distance to the box (0 inside it)."""
+    return np.linalg.norm(np.maximum(np.maximum(lo - points, 0.0), points - hi), axis=1)
+
+
+def _thick_measure(solid, regions: list[list], walls: list[tuple], *, mm: float, work: list[int]) -> list[dict]:
+    """SHELL-60 for one body: [{"size_mm", "volume_mm3"}] per region (a list of the body's CAD faces); `walls` the
+    body's sewn mid-faces as (face, wall) in the shape's units. `work`: [the exact readings left to the part], spent
+    here; "volume_mm3" is None for every region when it runs out."""
+    from OCP.BRepClass3d import BRepClass3d_SolidClassifier
+    from OCP.gp import gp_Pnt
+    from OCP.TopAbs import TopAbs_IN
+
+    boxes = [_box(_compound(r)) for r in regions]
+    out: list[dict] = [{"size_mm": [_r(x * mm) for x in sorted((hi - lo).tolist(), reverse=True)],
+                        "volume_mm3": None} for lo, hi in boxes]
+    t_max = max((float(t) for _f, t in walls), default=0.0)
+    grown = [(lo - t_max, hi + t_max) for lo, hi in boxes]
+    total = sum(float(np.prod(hi - lo)) for lo, hi in grown)
+    if total <= 0 or not walls:
+        return out
+    h = (total / THICK_POINTS) ** (1.0 / 3.0)
+    origin = np.min(np.array([lo for lo, _hi in grown]), axis=0)
+    cells = []
+    for lo, hi in grown:
+        i0 = np.floor((lo - origin) / h).astype(np.int64)
+        i1 = np.ceil((hi - origin) / h).astype(np.int64)
+        axes = [np.arange(a, b) for a, b in zip(i0, i1, strict=True)]
+        cells.append(np.stack(np.meshgrid(*axes, indexing="ij"), axis=-1).reshape(-1, 3))
+    idx = np.unique(np.concatenate(cells), axis=0)
+    pts = origin + (idx + 0.5) * h
+    owner = np.argmin(np.stack([_box_gap_to(pts, lo, hi) for lo, hi in boxes], axis=1), axis=1)
+    wall_lo = np.array([_box(f)[0] for f, _t in walls])
+    wall_hi = np.array([_box(f)[1] for f, _t in walls])
+    half = np.array([0.5 * float(t) for _f, t in walls])
+    clf = BRepClass3d_SolidClassifier(solid)
+    tol = 1e-6 * h
+    counts = [0] * len(regions)
+    for p, k in zip(pts, owner, strict=True):
+        work[0] -= 1
+        if work[0] < 0:
+            return out
+        clf.Perform(gp_Pnt(*map(float, p)), tol)
+        if clf.State() != TopAbs_IN:
+            continue
+        gap = np.linalg.norm(np.maximum(np.maximum(wall_lo - p, 0.0), p - wall_hi), axis=1)
+        near = [int(j) for j in np.argsort(gap, kind="stable") if gap[j] <= half[j]]
+        carried = False
+        if near:
+            v = _vertex(p)
+            for j in near:
+                work[0] -= 1
+                if _dist(v, walls[j][0]) <= half[j] * (1.0 + 1e-6):
+                    carried = True
+                    break
+        if work[0] < 0:
+            return out
+        if not carried:
+            counts[int(k)] += 1
+    cell = (h * mm) ** 3
+    for row, c in zip(out, counts, strict=True):
+        row["volume_mm3"] = _r(c * cell)
+    return out
+
+
+#: SHELL-62, A THICK REGION HOLDS METAL: the faces a body's reading calls thick or solid make a thick region only when
+#: metal lies behind them that no shell wall carries. Measured (SHELL-60) on the board, four perforated plates (r0001,
+#: r0002, r0043, r0051: 3 to 9 regions each, 42 to 721 mm2) held 0 mm3 past half a wall of every mid-face - the
+#: side faces round their cut-outs, read thick - so a shell told "N thick regions are not in this shell mesh" and the
+#: shell + solid route stopped with "no thick region is left once the shell walls are taken out": the split was right
+#: and the reading wrong. A region whose measured metal is under BARE_DEPTH of the thickest shell wall it touches, times
+#: its surface, holds no thick metal: it is counted in the body's row as `bare` and is not listed among the regions
+#: left out; a body left with no region reads "shell". A region whose metal was not measured (SHELL-60's work ran
+#: out) stays a thick region. Reporting only, as SHELL-56: the faces' roles, the mid-surface, its joins and the
+#: record's checks are made exactly as before.
+BARE_FLOOR = True
+BARE_DEPTH = 0.1
+
+
+def _drop_bare(bodies: list[dict], pairs: list, body_of: list[int], body_names: list[str], names: list[str],
+               neighbours: list[set[int]]) -> None:
+    """SHELL-62 on the body rows (in place), after SHELL-60's measure."""
+    index = {n: k for k, n in enumerate(names)}
+    shell_wall = _shell_walls(pairs)
+    for row in bodies:
+        if row.get("verdict") != "mixed" or not row.get("solid_regions"):
+            continue
+        b = body_names.index(row["body"])
+        body_walls = [w for k, w in shell_wall.items() if body_of[k] == b]
+        if not body_walls:
+            continue
+        real: list[dict] = []
+        bare: list[dict] = []
+        for g in row["solid_regions"]:
+            metal = g.get("volume_mm3")
+            wall = _touching_wall(g, index, neighbours, shell_wall, max(body_walls))
+            (real if metal is None or float(metal) >= BARE_DEPTH * float(g["area_mm2"]) * wall else bare).append(g)
+        if not bare:
+            continue
+        row["bare"] = {"regions": len(bare), "area_mm2": _r(sum(float(g["area_mm2"]) for g in bare))}
+        if real:
+            row["solid_regions"] = real
+            continue
+        del row["solid_regions"]
+        row["verdict"] = "shell"
+        row["why"] = (f"every wall is a plate or a thin wall ({len(bare)} face region"
+                      f"{'' if len(bare) == 1 else 's'} read as thick hold no metal past the walls)")
+
+
+def _measure_left_out(bodies: list[dict], solids: list, faces: list, names: list[str], body_names: list[str],
+                      surface_faces: list, surface_owner: list[int], mids: list, mm: float) -> None:
+    """SHELL-60 on the body rows (in place): each kept thick region's "size_mm" and "volume_mm3", and each body with
+    no shell its "size_mm" - only on a part some body of which is a shell (else no shell mesh is made)."""
+    if not any(r.get("verdict") in ("shell", "mixed") for r in bodies):
+        return
+    work = [THICK_WORK]
+    index = {n: k for k, n in enumerate(names)}
+    for b, row in enumerate(bodies):
+        try:
+            if row.get("verdict") == "solid":
+                lo, hi = _box(solids[b])
+                row["size_mm"] = [_r(x * mm) for x in sorted((hi - lo).tolist(), reverse=True)]
+                continue
+            regs = row.get("solid_regions") or []
+            if not regs:
+                continue
+            b_ = body_names.index(row["body"])
+            walls = [(f, mids[k].t) for f, k in zip(surface_faces, surface_owner, strict=True) if mids[k].body == b_]
+            got = _thick_measure(solids[b_], [[faces[index[n]] for n in g["faces"] if n in index] for g in regs],
+                                 walls, mm=mm, work=work)
+            for g, m in zip(regs, got, strict=True):
+                g.update(m)
+        except Exception as exc:  # noqa: BLE001 - reporting only: the words then say the region's surface alone
+            logger.info("shell: the thick regions of %s were not measured (%s)", row.get("body"), type(exc).__name__)
+
+
 #: SHELL-6, NEVER FAIL: a region the mid-faces do not close - the part's faces within FALLBACK_WALLS times the
-#: thicker wall there of an open edge - is meshed SOLID and tied to the shell round it, and said so. A body the
+#: thicker wall there of an open edge - is named and placed, and said to be open (SHSTAGE-9: no solid is made for it
+#: beside a shell; the record once said it was meshed solid and tied, which no route does). A body the
 #: extraction cannot read at all is meshed solid whole. The record never stops a run.
 FALLBACK_WALLS = 3.0
 #: a join's sewn faces must hold the body's mid-faces' own area to within this share (SHELL-3)
@@ -3140,6 +3593,12 @@ def unsound_faces(images: list[list]) -> int:
 #: stopped from inside (no time budget reaches its Perform), and on a cone meeting a ring (fr018) it ran past 40
 #: minutes; no join of the training corpus comes near it. Where the system can fork, the join runs in a child
 #: process and is stopped at the deadline; the straight join then stands, and the record says so.
+#: SHELL-61 (TIME-1): the deadline is a GUARD, never a decision. At 300 s it decided: cen_s0094's join took 206 s
+#: and 299.1 s on two loaded lab machines and was stopped on a more loaded board run, so the part had two shells; it fired on five more
+#: board parts (r0031, r0228, r0527, s0084, fr018) whose joins take 191 to 474 s. At 1200 s only a join that never
+#: ends (fr018's cone into a ring: past 40 minutes) meets it - but then r0031, fr018 and s0084 took 1,933 to 2,593 s,
+#: past production's 1,800 s extraction deadline (meshed solid). Until the general join has a work budget (option 2),
+#: the stop stays at 300 s as deployed; each trip is said and recorded (engines/determinism.note_time_limit).
 JOIN_DEADLINE_S = 300.0
 
 #: SHELL-18, THE EXTRACTION'S WORK BUDGET: an extraction plans its work against EXTRACT_BUDGET_S seconds. The stages
@@ -3157,6 +3616,146 @@ EXTRACT_BUDGET_S = 1500.0
 EXTRACT_DEADLINE_S = 1800.0
 JOIN_RESERVE_S = 60.0
 JOIN_MIN_S = 30.0
+#: SHELL-61 (TIME-1): False - a general join is started whenever it is called for and stopped only at its own
+#: JOIN_DEADLINE_S, never by what is left of the work budget (that made a loaded machine skip it or cut it sooner,
+#: and so make another shell); True: as before
+JOIN_TIMED = False
+#: CANDIDATE, OFF (option 2 of SHELL-61's join choice, measured on the whole board before it is turned on): the
+#: straight join's closing passes (SHELL-35) first, kept without a general join when they leave it CLEAN (_closed_clean:
+#: nothing unjoined, no edge under SLIVER_EDGE_WALLS of the thinnest wall, and on a shell body the metal its faces
+#: hold within VOLUME_BAND of the body's); otherwise the joins are chosen as before (the general join the fallback)
+JOIN_CLOSE_FIRST = False
+SLIVER_EDGE_WALLS = 0.02
+#: ... and (CLEAN_ON_OWN) every face a wall owns lies within ON_OWN_WALLS of the thinnest wall of that wall's own surface
+CLEAN_ON_OWN = True
+ON_OWN_WALLS = 0.01
+#: SHELL-63, THE GENERAL JOIN STOPS ON ITS OWN SIGNS, NEVER ON THE CLOCK: JOIN_EARLY_TOL - a fuse that already widened
+#: a tolerance past what SHELL-12 allows stops before its re-sew; JOIN_STOP_AFTER - a way turned down for that is not
+#: tried again with the same walls (offsets re-made or not), and once a way could not be made no other way is tried.
+#: CANDIDATES, measured on the board.
+JOIN_EARLY_TOL = False
+JOIN_STOP_AFTER = False
+
+
+def _closed_first(straight, census: dict, mine: list, solid, fuzzy: float, *, mm: float, census_of, body: str,
+                  t_min: float, clock, verdict: str, volume: float):
+    """JOIN_CLOSE_FIRST: the straight join's closing passes, made in a FORKED CHILD - sewing widens the tolerances of
+    the shapes it is given, in place, so passes made here and then set aside changed the general join made after them
+    (29 board parts got other bytes for the same join) - and read back: ((fused, images, census, notes, each mid-face's
+    extensions), clean). Clean (_closed_clean), the straight join stands without a general join; otherwise the result is
+    kept for the end, where it IS the straight join's closing passes if the straight join stays (no second payment: on
+    the slowest board parts the passes took as long as the joins). The parent is never touched. Without fork, or when
+    the child fails or runs past JOIN_DEADLINE_S (said), None: the joins go on as before."""
+    import multiprocessing as mp
+    import os
+    import tempfile
+
+    if "fork" not in mp.get_all_start_methods():
+        return None
+    from OCP.BinTools import BinTools
+    from OCP.TopAbs import TopAbs_FACE, TopAbs_Orientation
+    from OCP.TopoDS import TopoDS, TopoDS_Shape
+
+    with tempfile.TemporaryDirectory(prefix="shell_close_") as tmp:
+        path = os.path.join(tmp, "closed.bin")
+        recv, send = mp.get_context("fork").Pipe(duplex=False)
+
+        def child() -> None:
+            try:
+                first_notes: list[str] = []
+                f, imgs, c = _closing_passes(straight[0], straight[1], census, mine, solid, fuzzy, mm=mm,
+                                             census_of=census_of, notes=first_notes, body=body, t_min=t_min,
+                                             clock=clock)
+                clean = _closed_clean(f, imgs, c, mine, verdict, volume, t_min)
+                BinTools.Write_s(f, path)
+                fmap = _map(f, TopAbs_FACE)
+                send.send(("clean" if clean else "unclean",
+                           ([[(fmap.FindIndex(x), int(x.Orientation())) for x in im] for im in imgs],
+                            c, first_notes, [list(m.extended) for m in mine])))
+            except BaseException as exc:  # noqa: BLE001 - told to the parent, which goes on as before
+                send.send(("error", f"{type(exc).__name__}: {exc}"))
+            finally:
+                send.close()
+                os._exit(0)
+
+        proc = mp.get_context("fork").Process(target=child, daemon=True)
+        proc.start()
+        send.close()
+        try:
+            if not recv.poll(JOIN_DEADLINE_S):
+                _clock_decided("the straight join's closing passes were stopped; the joins go on as before",
+                               body=body, limit_s=JOIN_DEADLINE_S)
+                return None
+            status, got = recv.recv()
+        except EOFError:
+            return None
+        finally:
+            if proc.is_alive():
+                proc.kill()
+            proc.join()
+            recv.close()
+        if status not in ("clean", "unclean"):
+            return None
+        fused = TopoDS_Shape()
+        if not BinTools.Read_s(fused, path):
+            return None
+    images, c, first_notes, ext = got
+    fmap = _map(fused, TopAbs_FACE)
+    return (fused, [[TopoDS.Face_s(fmap.FindKey(k)).Oriented(TopAbs_Orientation(o)) for k, o in im if k > 0]
+                     for im in images], c, first_notes, ext), status == "clean"
+
+
+def _closed_clean(fused, images: list[list], census: dict, mine: list, verdict: str, volume: float,
+                  t_min: float) -> bool:
+    """JOIN_CLOSE_FIRST: is a closed straight join clean enough to keep without trying the general join?"""
+    from OCP.BRep import BRep_Tool
+    from OCP.TopAbs import TopAbs_EDGE
+    from OCP.TopoDS import TopoDS
+
+    if _unjoined(census):
+        return False
+    edges = _map(fused, TopAbs_EDGE)
+    for i in range(1, edges.Extent() + 1):
+        e = TopoDS.Edge_s(edges.FindKey(i))
+        if not BRep_Tool.Degenerated_s(e) and _length(e) < SLIVER_EDGE_WALLS * t_min:
+            return False
+    if verdict == "shell" and volume > 0:
+        held = sum(_area(f) * m.t for m, imgs in zip(mine, images, strict=True) for f in imgs)
+        if not VOLUME_BAND[0] <= held / volume <= VOLUME_BAND[1]:
+            return False
+    # every face a wall owns lies on that wall's own surface: a closing strip in another wall's plane (SHELL-13's
+    # bridge from a channel's web up a flange) carries the wrong wall, and a grid cannot cut straight across the joint
+    # there (the structured mesher's channel lost three grids); the general join gives each wall its own strip
+    return not CLEAN_ON_OWN or all(_on_own_surface(f, m, t_min) for m, imgs in zip(mine, images, strict=True)
+                                   for f in imgs)
+
+
+def _on_own_surface(face, m, t_min: float) -> bool:
+    """JOIN_CLOSE_FIRST: does a face mid-face m owns lie on m's own surface (its middle within ON_OWN_WALLS of the
+    thinnest wall)? A surface the point cannot be projected onto reads as off it."""
+    from OCP.BRep import BRep_Tool
+    from OCP.GeomAPI import GeomAPI_ProjectPointOnSurf
+    from OCP.gp import gp_Pnt
+
+    p = _inner_point(face)
+    if p is None:
+        return True
+    try:
+        proj = GeomAPI_ProjectPointOnSurf(gp_Pnt(*map(float, p)), BRep_Tool.Surface_s(m.original))
+        return proj.NbPoints() > 0 and float(proj.LowerDistance()) <= ON_OWN_WALLS * t_min
+    except Exception:  # noqa: BLE001 - a surface that cannot be read: off it, so the join choice goes on as before
+        return False
+
+
+def _clock_decided(decision: str, **facts) -> None:
+    """SHELL-61: a clock changed what the extraction made - recorded in the run (engines/determinism, the stamp's
+    `time_limited`), as well as said in the record's notes. Never raises."""
+    try:
+        from meshpipeline.engines.determinism import note_time_limit
+
+        note_time_limit("shell_extraction", decision, **facts)
+    except Exception as exc:  # noqa: BLE001 - the note in the record still says it
+        logger.debug("shell: the time limit was not recorded (%s)", type(exc).__name__)
 
 
 class OutOfBudget(RuntimeError):
@@ -3183,8 +3782,30 @@ class _Clock:
             raise OutOfBudget(_budget_words(where, self.budget))
 
 
+def _join_tolerance(exc: BaseException) -> float | None:
+    """SHELL-63: the tolerance a general join stopped on (JoinTolerance, here or across its child's pipe), else None."""
+    text = str(exc)
+    if isinstance(exc, JoinTolerance):
+        text = "JoinTolerance: " + text
+    if not text.startswith("JoinTolerance: "):
+        return None
+    try:
+        return float(text.split(": ", 1)[1])
+    except ValueError:
+        return None
+
+
+def _join_failure(exc: BaseException) -> str:
+    """SHELL-61: why a general join was not made, in a few words for the record's note."""
+    if isinstance(exc, EOFError):
+        return "its process stopped without a result"
+    text = str(exc).split("\n")[0][:160]
+    return f"{type(exc).__name__}: {text}" if text else type(exc).__name__
+
+
 def _join_general_bounded(mine: list[_Mid], body_faces: list, solid: _Solid, *, t_max: float, fuzzy: float,
-                          remake: bool, patch_alone: bool, deadline_s: float | None = None):
+                          remake: bool, patch_alone: bool, deadline_s: float | None = None,
+                          tol_cap: float | None = None):
     """_join_general, run in a forked child stopped after `deadline_s` seconds (TimeoutError). The child hands back
     the fused shape (a binary BRep file: every number exact), each mid-face's faces as indices into it with their orientation, and the
     extensions each mid-face kept. Without fork (not Linux), the join runs here, unbounded."""
@@ -3195,7 +3816,7 @@ def _join_general_bounded(mine: list[_Mid], body_faces: list, solid: _Solid, *, 
     limit = JOIN_DEADLINE_S if deadline_s is None else deadline_s
     if "fork" not in mp.get_all_start_methods() or limit <= 0:
         return _join_general(mine, body_faces, solid, t_max=t_max, fuzzy=fuzzy, remake=remake,
-                             patch_alone=patch_alone)
+                             patch_alone=patch_alone, tol_cap=tol_cap)
     from OCP.BinTools import BinTools
     from OCP.TopAbs import TopAbs_FACE
     from OCP.TopoDS import TopoDS, TopoDS_Shape
@@ -3207,7 +3828,7 @@ def _join_general_bounded(mine: list[_Mid], body_faces: list, solid: _Solid, *, 
         def child() -> None:
             try:
                 fused, images = _join_general(mine, body_faces, solid, t_max=t_max, fuzzy=fuzzy, remake=remake,
-                                              patch_alone=patch_alone)
+                                              patch_alone=patch_alone, tol_cap=tol_cap)
                 BinTools.Write_s(fused, path)
                 fmap = _map(fused, TopAbs_FACE)
                 send.send(("ok", [[(fmap.FindIndex(f), int(f.Orientation())) for f in imgs] for imgs in images],
@@ -3267,8 +3888,28 @@ BRIDGE_WALLS = 1.0
 BRIDGE_SAMPLES = 4
 
 
-def _free_edges(face, others: list, tol: float) -> list:
-    """The edges of a face that no other face (in `others`) lies along (its middle point further than tol)."""
+def _geometry_box(shape) -> tuple[np.ndarray, np.ndarray]:
+    """SHELL-53: a box that holds the shape, read on its exact geometry (never on a mesh of it)."""
+    from OCP.Bnd import Bnd_Box
+    from OCP.BRepBndLib import BRepBndLib
+
+    b = Bnd_Box()
+    BRepBndLib.Add_s(shape, b, False)
+    x0, y0, z0, x1, y1, z1 = b.Get()
+    return np.array([x0, y0, z0]), np.array([x1, y1, z1])
+
+
+def _box_gap(a: tuple[np.ndarray, np.ndarray], b: tuple[np.ndarray, np.ndarray]) -> float:
+    """SHELL-53: how far apart two boxes are (0 when they touch or overlap): no point of one shape lies nearer than
+    this to the other."""
+    d = np.maximum(0.0, np.maximum(a[0] - b[1], b[0] - a[1]))
+    return float(np.linalg.norm(d))
+
+
+def _free_edges(face, others: list, tol: float, boxes: list | None = None) -> list:
+    """The edges of a face that no other face (in `others`) lies along (its middle point further than tol).
+    `boxes`: the others' geometry boxes (SHELL-53), when known - a face whose box the point is not within tol of is
+    not read."""
     from OCP.TopAbs import TopAbs_EDGE
     from OCP.TopoDS import TopoDS
 
@@ -3278,10 +3919,21 @@ def _free_edges(face, others: list, tol: float) -> list:
         e = TopoDS.Edge_s(emap.FindKey(i))
         if _length(e) <= tol:
             continue
-        mid = _vertex(_edge_points(e, 2)[1])
-        if not any(_dist(mid, o) <= tol for o in others):
+        p = _edge_points(e, 2)[1]
+        mid = _vertex(p)
+        near = others if boxes is None else [o for o, bx in zip(others, boxes, strict=True) if _near_box(p, bx, tol)]
+        if not any(_dist(mid, o) <= tol for o in near):
             out.append(e)
     return out
+
+
+#: SHELL-53, THE JOINS' DISTANCE READINGS SKIP WHAT A BOX ALREADY SETTLES: the bridges between fitted mid-faces
+#: (SHELL-10) read every free edge of every mid-face against every other mid-face, and each candidate pair of edges at
+#: ten points, with an exact distance each (BRepExtrema): on a 1,451-face antenna cover, hundreds of mid-faces, it ran
+#: for over 20 minutes. A face or an edge whose box lies farther than the reach (or the tolerance) is not read: no
+#: point of it can be nearer than its box, so the answer is the same, and a pair stops being read at its first point
+#: past the reach.
+BOX_PRUNE = True
 
 
 def bridges(mine: list[_Mid], solid: _Solid, fuzzy: float) -> list[tuple[int, int, object]]:
@@ -3295,24 +3947,43 @@ def bridges(mine: list[_Mid], solid: _Solid, fuzzy: float) -> list[tuple[int, in
         return out
     faces = [m.face for m in mine]
     tol = 10.0 * fuzzy
-    free = [_free_edges(f, faces[:i] + faces[i + 1:], tol) for i, f in enumerate(faces)]
+    boxes = [_geometry_box(f) for f in faces] if BOX_PRUNE else None
+    free = [_free_edges(f, faces[:i] + faces[i + 1:], tol, None if boxes is None else boxes[:i] + boxes[i + 1:])
+            for i, f in enumerate(faces)]
+    edge_boxes = [[_geometry_box(e) for e in fr] for fr in free] if BOX_PRUNE else None
+    points = [[_edge_points(e, BRIDGE_SAMPLES) for e in fr] for fr in free]
+
+    def gaps_within(pa, eb, pb, ea, reach: float) -> list[float] | None:
+        """The exact gaps of each edge's points to the other edge, or None at the first one past the reach."""
+        got = []
+        for x, other in [(x, eb) for x in pa] + [(x, ea) for x in pb]:
+            g = _dist(_vertex(x), other)
+            if g > reach:
+                return None
+            got.append(g)
+        return got
+
     used: set[tuple[int, int, int, int]] = set()
     for i, m in enumerate(mine):
         if not m.fitted:
             continue
         for a, ea in enumerate(free[i]):
-            pa = _edge_points(ea, BRIDGE_SAMPLES)
+            pa = points[i][a]
             for j, o in enumerate(mine):
                 if j == i:
                     continue
                 reach = BRIDGE_WALLS * max(m.t_max, o.t_max)
+                if boxes is not None and _box_gap(boxes[i], boxes[j]) > reach:
+                    continue
                 for b, eb in enumerate(free[j]):
                     key = (min(i, j), a if i < j else b, max(i, j), b if i < j else a)
                     if key in used:
                         continue
-                    pb = _edge_points(eb, BRIDGE_SAMPLES)
-                    gaps = [_dist(_vertex(x), eb) for x in pa] + [_dist(_vertex(x), ea) for x in pb]
-                    if max(gaps) > reach or max(gaps) <= tol:
+                    if edge_boxes is not None and _box_gap(edge_boxes[i][a], edge_boxes[j][b]) > reach:
+                        continue
+                    pb = points[j][b]
+                    gaps = gaps_within(pa, eb, pb, ea, reach)
+                    if gaps is None or max(gaps) <= tol:
                         continue
                     # the strip between them, its middle in the material
                     flip = (np.linalg.norm(pa[0] - pb[0]) + np.linalg.norm(pa[-1] - pb[-1])
@@ -3674,8 +4345,10 @@ def _closing_passes(fused, images, census, mine, solid, fuzzy, *, mm, census_of,
         return [np.asarray(q, float) / mm for q in _open_points(census)]
 
     def offered(timed: bool) -> bool:
+        # SHELL-61: a closing pass is made whenever an edge is open, never skipped for the time left (it was skipped
+        # SILENTLY with under JOIN_MIN_S left, so a slower machine left more edges open); CLOSING_TIMED: as before
         return (census["open_edges"] > 0 and census["open_edges"] <= len(_open_points(census))
-                and (not timed or clock.left() - JOIN_RESERVE_S >= JOIN_MIN_S))
+                and (not (timed and CLOSING_TIMED) or clock.left() - JOIN_RESERVE_S >= JOIN_MIN_S))
 
     def pass13():
         nonlocal fused, images, census
@@ -4202,11 +4875,22 @@ def drop_slivers(fused, images: list[list], walls: list[float]):
     return out, new, len(drop)
 
 
+class JoinTolerance(ValueError):
+    """SHELL-63: the general join's fuse widened a tolerance past what SHELL-12 allows; the join stops before its
+    re-sew. The message is the tolerance in the shape's units (read back across the forked child's pipe)."""
+
+
 def _join_general(mine: list[_Mid], body_faces: list, solid: _Solid, *, t_max: float, fuzzy: float,
-                  remake: bool = True, patch_alone: bool = True):
-    """The general join (join_body) and one more sew of what it kept: (fused shape, each mid-face's faces)."""
+                  remake: bool = True, patch_alone: bool = True, tol_cap: float | None = None):
+    """The general join (join_body) and one more sew of what it kept: (fused shape, each mid-face's faces).
+    `tol_cap` (SHELL-63): when the pieces the fuse kept already carry a tolerance over it, JoinTolerance is raised
+    before the re-sew (a sew never narrows a tolerance: SHELL-12 would turn the join down after it)."""
     fused, kept, owner_i, reached = join_body(mine, body_faces, solid, t_max=t_max, fuzzy=fuzzy, remake=remake,
                                               patch_alone=patch_alone)
+    if tol_cap is not None and kept:
+        tol = max(_max_tol(f) for f in kept)
+        if tol > tol_cap:
+            raise JoinTolerance(f"{tol!r}")
     for i, m in enumerate(mine):
         for other, area in reached[i]:
             m.extended.append({"to": None if other is None else mine[other].k, "area": area})
@@ -4286,7 +4970,7 @@ def fallback_regions(sewn_rows: list[dict], faces: list, names: list[str], body_
             near = sorted({k for q in g for k, box in mine
                            if _near_box(q, box, reach) and _dist(_vertex(q), faces[k]) <= reach})
             out.append({"body": row["body"], "faces": [names[k] for k in near], "at_mm": [_pt(q * mm) for q in g],
-                        "why": "the mid-faces do not meet here; this region is meshed solid and tied to the shell"})
+                        "why": "the mid-faces do not meet here: the shell has open edges here"})
     return out
 
 
@@ -5146,6 +5830,39 @@ def _joined(items: list[int], linked) -> dict[int, list[int]]:
     return groups
 
 
+#: SHELL-57, A WALL REGION IS AS WIDE AS ITS STEPS LET IT BE: a wall whose thickness changes in steps (a printed lid's
+#: 3.5 mm floor with 4 mm bands, a 0.5 mm step between them) is judged whole (SHELL-19), against its region's width -
+#: its CAD faces taken as one region (union_width). But the faces of the steps belong to no pair, so the bands' faces
+#: did not meet: each band's outline counted whole, and a 73 x 38 mm lid read 5.5 mm wide, "a bar or a block", no
+#: shell. The region's width is read with its STEP faces in it: a face of no pair of the region that meets two or
+#: more of the region's faces, no two of them the two sides of one wall (that is a rim, round the wall's edge), no
+#: wider (2 x area / perimeter) than the region's thickest wall, and itself the side of no wall - unless that wall
+#: is a sliver read across, narrower than it is thick (a 0.5 mm rib's two sides). A region without steps reads as
+#: before.
+REGION_STEPS = True
+
+
+def _region_steps(ks: set[int], reg: list[int], by_sheet: dict[int, list[int]], pairs: list, faces: list,
+                  neighbours: list[set[int]], t_u: float) -> set[int]:
+    """SHELL-57: the step faces of a wall region whose faces are `ks` (sheets `reg`), its thickest wall `t_u` (own
+    units)."""
+    sides = {frozenset((pairs[i].a, pairs[i].b)) for s in reg for i in by_sheet[s]}
+    # a face of a wall is never a step - except a wall read across a sliver narrower than it is thick (a 0.5 mm high
+    # rib's two sides, read across the rib): that is the step's own metal, not a wall
+    paired = {k for p in pairs if p.shell or not (p.width is not None and p.width < p.thickness)
+              for k in (p.a, p.b)}
+    out: set[int] = set()
+    for k in sorted(set().union(*(neighbours[j] for j in ks)) - ks - paired):
+        touch = sorted(neighbours[k] & ks)
+        if len(touch) < 2:
+            continue
+        if any(frozenset((a, b)) in sides for i, a in enumerate(touch) for b in touch[i + 1:]):
+            continue
+        if strip_width(faces[k]) <= t_u * (1.0 + 1e-9):
+            out.add(k)
+    return out
+
+
 def _wall_regions(pairs: list, mids: list, faces: list, neighbours: list[set[int]], body_of: list[int],
                   mm: float) -> None:
     """SHELL-19: sheets that fail SHELL-2 alone but pass it against their WALL REGION (the sheets of one body, any
@@ -5180,7 +5897,11 @@ def _wall_regions(pairs: list, mids: list, faces: list, neighbours: list[set[int
                 continue
             size = math.sqrt(sum(info[s]["area"] for s in reg))
             try:
-                width = union_width([faces[k] for k in sorted(set().union(*(info[s]["faces"] for s in reg)))]) * mm
+                in_region: set[int] = set().union(*(info[s]["faces"] for s in reg))
+                if REGION_STEPS:
+                    in_region |= _region_steps(in_region, reg, by_sheet, pairs, faces, neighbours,
+                                               max(info[s]["t"] for s in reg) / mm)
+                width = union_width([faces[k] for k in sorted(in_region)]) * mm
             except Exception:  # noqa: BLE001 - a region whose width cannot be read lends nothing
                 failed.update(s for s in reg if not info[s]["shell"])
                 continue
@@ -5200,16 +5921,65 @@ def _wall_regions(pairs: list, mids: list, faces: list, neighbours: list[set[int
                                 f"({size:.3g} mm across, {width:.3g} mm wide)")
 
 
+def has_slivers(record: dict) -> bool:
+    """SHELL-59: did the extraction drop sliver faces and sew across them (SHELL-16)?"""
+    return any("(SHELL-16)" in str(n) for n in record.get("notes") or [])
+
+
 def has_plates(record: dict) -> bool:
     """SHELL-26: does the record hold a wall made by SHELL-23 (a short plate) or SHELL-24 (a flat tapered plate)?"""
     return bool(_plate_bodies(record))
 
 
+#: SHELL-61, ONE THREAD, SO A FORKED JOIN IS A WHOLE COPY: the general join runs in a forked child (SHELL-11), and
+#: OpenCASCADE's parallel tessellation (cad/fea_measure through occ_box.incremental_mesh) had left its worker pool
+#: running in the extraction process - 15 threads on a 16-core machine (33 on a 32-core one), whatever the core
+#: pinning. A fork copies only the thread that forks: a child forked while a worker held a lock, or that used the
+#: pool it believes it has, could hang until the join's deadline or die - and a child that died was SAID NOTHING
+#: (the straight join stood). None was seen on the board runs measured; it is a hazard by construction, so the
+#: extraction now runs with the pool held to its calling thread (OSD_ThreadPool.Init(1): no worker threads at all),
+#: and the caller's pool is given back its size after. (The two mid-surfaces of cen_s0094 came from SHELL-11's
+#: deadline: see JOIN_DEADLINE_S.)
+ONE_THREAD = True
+
+
+class _OneThread:
+    """SHELL-61: OpenCASCADE's default thread pool held to the calling thread while the extraction runs."""
+
+    def __enter__(self):
+        self.was = 0
+        if not ONE_THREAD:
+            return self
+        try:
+            from OCP.OSD import OSD_ThreadPool
+
+            self.pool = OSD_ThreadPool.DefaultPool_s(1)
+            self.was = int(self.pool.NbThreads())
+            if self.was > 1:
+                self.pool.Init(1)
+        except Exception as exc:  # noqa: BLE001 - no pool to hold: the extraction runs as it is
+            logger.info("shell: the thread pool could not be held to one thread (%s)", type(exc).__name__)
+            self.was = 0
+        return self
+
+    def __exit__(self, *_exc) -> None:
+        if self.was > 1:
+            self.pool.Init(self.was)
+
+
 def extract(shape, *, mm_per_unit: float, names: list[str] | None = None,
-            budget_s: float | None = None, plates: bool = True) -> tuple[dict, object]:
+            budget_s: float | None = None, plates: bool = True, slivers: bool = True) -> tuple[dict, object]:
     """The shell record and the sewn mid-surface (a compound, the shape's own units) of an OpenCASCADE shape
     whose coordinates are `mm_per_unit` millimetres each. Never raises for a part it cannot shell: the record
-    says what was not shelled and why.
+    says what was not shelled and why. SHELL-61: run with OpenCASCADE's thread pool held to one thread."""
+    with _OneThread():
+        return _extract_passes(shape, mm_per_unit=mm_per_unit, names=names, budget_s=budget_s, plates=plates,
+                               slivers=slivers)
+
+
+def _extract_passes(shape, *, mm_per_unit: float, names: list[str] | None = None,
+                    budget_s: float | None = None, plates: bool = True, slivers: bool = True) -> tuple[dict, object]:
+    """extract()'s work (see there).
 
     SHELL-23's last guards: a body whose short plates hold under half its metal once joined is read again without
     them (PLATE_BODY_SHARE), and so is one whose short plates or flat flanges leave edges open, which keeps the
@@ -5218,34 +5988,33 @@ def extract(shape, *, mm_per_unit: float, names: list[str] | None = None,
     `plates` False (SHELL-26): the whole part is read as before SHELL-23 and SHELL-24 - the shell the mesher makes when
     a mesh of the short plates could not be made."""
     started = time.time()
+    keep = {} if slivers else {"slivers": False}       # SHELL-59: slivers kept, said only when asked
     clock = _Clock(budget_s)
     if not plates:
-        record, surface = _extract(shape, mm_per_unit=mm_per_unit, names=names, clock=clock, no_plate={ALL_BODIES: "mesh"})
+        record, surface = _extract(shape, mm_per_unit=mm_per_unit, names=names, clock=clock, **keep, no_plate={ALL_BODIES: "mesh"})
         record["seconds"] = round(time.time() - started, 2)
         return record, surface
-    record, surface = _extract(shape, mm_per_unit=mm_per_unit, names=names, clock=clock, no_plate={})
+    record, surface = _extract(shape, mm_per_unit=mm_per_unit, names=names, clock=clock, **keep, no_plate={})
     if PLATE_OPEN_GUARD and (EVERY_PLATE or FLAT_TAPER):
         opened = _open_by_body(record)
         low = _low_share(record)
         bad = sorted(b for b in _plate_bodies(record) if opened.get(b, 0) > 0 and b not in low)
-        # (another pass takes about as long as the first: only with that much of the work budget left, and half
-        # again - a part that needed most of its budget keeps its first reading)
-        spent = time.time() - started
-        need = PLATE_PASS_SLACK * spent + JOIN_MIN_S
-        if (low or bad) and clock.left() > need:
+        # SHELL-61: the passes are made whenever they are called for, never skipped for the time they might take (a
+        # part that needed most of its budget once kept its first reading SILENTLY, so a slower machine made another
+        # shell); the work budget's own stop (SHELL-18, OutOfBudget below) is the one guard, and it is said
+        if (low or bad) and PLATE_PASS_TIMED:
+            spent = time.time() - started
+            if clock.left() <= PLATE_PASS_SLACK * spent + JOIN_MIN_S:
+                low, bad = {}, []
+        if low or bad:
             try:
                 why = {**dict.fromkeys(bad, "loose"), **dict.fromkeys(low, "lump")}
-                trial = _extract(shape, mm_per_unit=mm_per_unit, names=names, clock=clock, no_plate=why)
+                trial = _extract(shape, mm_per_unit=mm_per_unit, names=names, clock=clock, **keep, no_plate=why)
                 better = sorted(b for b in bad if _open_by_body(trial[0]).get(b, 0) < opened[b])
                 out = sorted(set(low) | set(better))
                 if out and better != bad:
-                    if clock.left() > need:
-                        trial = _extract(shape, mm_per_unit=mm_per_unit, names=names, clock=clock,
-                                         no_plate={b: why[b] for b in out})
-                    elif low or sum(_open_by_body(trial[0]).values()) < sum(opened.values()):
-                        better = bad          # no time to give the others their plates back
-                    else:
-                        out = []
+                    trial = _extract(shape, mm_per_unit=mm_per_unit, names=names, clock=clock, **keep,
+                                     no_plate={b: why[b] for b in out})
                 if out:
                     record, surface = trial
                     left = _open_by_body(record)
@@ -5256,7 +6025,8 @@ def extract(shape, *, mm_per_unit: float, names: list[str] | None = None,
                     for b in better:
                         record["notes"].append(
                             f"{b}: its short plates would leave {opened[b]} edge(s) open where they meet its other "
-                            f"walls ({left.get(b, 0)} without them), so they stay solid, as before (SHELL-23).")
+                            f"walls ({left.get(b, 0)} without them), so they are read as thick metal, as before "
+                            "(SHELL-23).")
             except OutOfBudget:
                 # no time to read it again: the first reading stands, its open edges said
                 record["notes"].append("The work budget left no time to read the bodies with open edges again "
@@ -5270,7 +6040,7 @@ ALL_BODIES = "*"
 
 
 def _extract(shape, *, mm_per_unit: float, names: list[str] | None, clock: _Clock,
-             no_plate: dict[str, str]) -> tuple[dict, object]:
+             no_plate: dict[str, str], slivers: bool = True) -> tuple[dict, object]:
     """One pass of the extraction. `no_plate`: the bodies (by name) read without SHELL-23 and SHELL-24, as before
     those rules, each with why ("lump": its plates hold too little of it; "loose": they do not join)."""
     from OCP.BRepAdaptor import BRepAdaptor_Surface
@@ -5297,11 +6067,15 @@ def _extract(shape, *, mm_per_unit: float, names: list[str] | None, clock: _Cloc
         no_plate = dict.fromkeys(body_names, no_plate[ALL_BODIES])
     notes: list[str] = list(sew_notes)
     surface, _f, kinds = fm._brep_surface(shape, mm)
-    partners = sp.ray_partners(surface)
+    restored: set[tuple[int, int]] = set()
+    body_faces_of = [[k for k in range(len(faces)) if body_of[k] == b] for b in range(len(solids))]
+    partners = sp.ray_partners(surface, restored)
     diag_mm = float(surface.diag)
+    lying_floor_mm = sp.LYING_FLOOR_FRACTION * diag_mm
 
     # SHELL-1: the even wall pairs, confirmed on the exact faces (read from the smaller face)
     pairs: list[sp.Pair] = []
+    facing_even: dict[int, bool] = {}        # SHELL-55: a tapered pair that reads even where its faces face
     for (a, b), rays in partners.items():
         if body_of[a] != body_of[b] or body_of[a] < 0:
             continue
@@ -5312,6 +6086,9 @@ def _extract(shape, *, mm_per_unit: float, names: list[str] | None, clock: _Cloc
         except Exception as exc:  # noqa: BLE001 - a pair that cannot be read is no pair
             logger.debug("shell: pair %s/%s could not be read (%s)", names[a], names[b], exc)
             ok, t, spread, why = False, float("nan"), float("nan"), "the faces could not be read"
+        if (a, b) in restored and not (math.isfinite(t) and t > lying_floor_mm):
+            # SHELL-51: given back by the rays, but on the exact faces they lie on each other: no wall
+            ok, why = False, "the faces lie on each other"
         pair = sp.Pair(a=a, b=b, thickness=t, spread=spread, rays=rays, even=ok, why=why)
         # SHELL-9: a wall that is not even but turns little is a TAPERED wall, judged at its thickest point
         if not ok and ("not parallel" in why or "not even" in why):
@@ -5323,6 +6100,9 @@ def _extract(shape, *, mm_per_unit: float, names: list[str] | None, clock: _Cloc
             if tap:
                 pair.tapered, pair.t_min, pair.t_max, pair.thickness = True, lo, hi, hi
                 pair.why = f"a tapered wall, {lo:.3g} to {hi:.3g} mm"
+                # SHELL-55: read where the two faces face each other, the wall is even (made so below, when the
+                # taper's fitted mid-face cannot be made)
+                facing_even[len(pairs)] = hi <= lo * (1.0 + sp.EVEN_SHARE) and _turn <= sp.PAIR_DEG
         pairs.append(pair)
 
     # SHELL-2b: each even or tapered pair's WALL - the pairs of one thickness whose faces meet (as a sheet, before
@@ -5348,13 +6128,27 @@ def _extract(shape, *, mm_per_unit: float, names: list[str] | None, clock: _Cloc
             continue
         clock.check("making the mid-faces")
         t_u = p.thickness / mm
-        got = []
-        if p.even:
+        got: list = []
+        skins = offset_skins(faces[p.a], faces[p.b])
+        small_i, big_i = (p.a, p.b) if _area(faces[p.a]) <= _area(faces[p.b]) else (p.b, p.a)
+        fitted, lo_u, hi_u, mean_u = False, t_u, t_u, t_u
+        if p.even and skins and big_skins(faces[p.a], faces[p.b]):
+            # SHELL-50: two free-form skins: the offset of one, not a Boolean of two surfaces lying on each other
+            try:
+                got, o_lo, o_hi, o_mean, _why_o = offset_mid(faces[small_i], faces[big_i], t_u, 1e-4 * t_u)
+                if got and o_hi > o_lo * (1.0 + WALL_VARIES):
+                    # SHELL-50b: big skins that are not each other's exact offset (the wall read across them varies
+                    # by over WALL_VARIES): a mid-face like a fitted one - bridged to the mid-faces it continues
+                    # (SHELL-10), its wall carried point by point (SHELL-9b)
+                    fitted, lo_u, hi_u, mean_u = True, o_lo, o_hi, o_mean
+            except Exception as exc:  # noqa: BLE001 - the overlap of the half-offsets is tried, as before
+                logger.debug("shell: the offset mid-face of %s/%s failed (%s)", names[p.a], names[p.b], exc)
+                got = []
+        if p.even and not got:
             try:
                 got = mid_faces(faces[p.a], faces[p.b], t_u, 1e-4 * t_u)
             except Exception as exc:  # noqa: BLE001
                 logger.debug("shell: the mid-face of %s/%s failed (%s)", names[p.a], names[p.b], exc)
-        fitted, lo_u, hi_u, mean_u = False, t_u, t_u, t_u
         flat_datum = None
         if not got and p.tapered and FLAT_TAPER and body_names[body_of[p.a]] not in no_plate:
             # SHELL-24: a short tapered plate (a rolled flange) is one flat plate at its mean thickness
@@ -5384,7 +6178,30 @@ def _extract(shape, *, mm_per_unit: float, names: list[str] | None, clock: _Cloc
             except Exception as exc:  # noqa: BLE001
                 logger.debug("shell: the fitted mid-face of %s/%s failed (%s)", names[p.a], names[p.b], exc)
                 got, why_f = [], "the faces could not be read"
+            if not got and skins and p.tapered and why_f.startswith(FIT_OFF_MIDDLE):
+                # SHELL-50: two free-form skins whose fit missed their beads: the offset of one, read on both
+                try:
+                    got, lo_u, hi_u, mean_u, why_o = offset_mid(faces[small], faces[big], t_u, 1e-4 * t_u)
+                except Exception as exc:  # noqa: BLE001 - the fitted mid-face's reason stands
+                    logger.debug("shell: the offset mid-face of %s/%s failed (%s)", names[p.a], names[p.b], exc)
+                    got, why_o = [], "the faces could not be read"
+                if not got:
+                    why_f = f"{why_f}; {why_o}"
             fitted = bool(got)
+            if not got and p.tapered and EVEN_WHERE_FACING and facing_even.get(i):
+                # SHELL-55: no fitted mid-face, but the wall reads even where its faces face each other: an even
+                # wall, made as every even wall is
+                t_even = 0.5 * (float(p.t_min or p.thickness) + float(p.t_max or p.thickness))
+                try:
+                    got = mid_faces(faces[p.a], faces[p.b], t_even / mm, 1e-4 * t_even / mm)
+                except Exception as exc:  # noqa: BLE001 - the taper's reason stands
+                    logger.debug("shell: the even mid-face of %s/%s failed (%s)", names[p.a], names[p.b], exc)
+                    got = []
+                if got:
+                    p.even, p.tapered, p.thickness = True, False, t_even
+                    p.spread = (float(p.t_max or t_even) - float(p.t_min or t_even)) / max(float(p.t_max or t_even), 1e-12)
+                    p.why = ""
+                    t_u = t_even / mm
             if not got:
                 p.why = "the two faces do not overlap" if p.even else f"{p.why}; no mid-surface: {why_f}"
                 p.tapered = False
@@ -5499,7 +6316,8 @@ def _extract(shape, *, mm_per_unit: float, names: list[str] | None, clock: _Cloc
                 pr = pairs[i]
                 b = body_of[pr.a]
                 if b not in metal:
-                    metal[b] = _Solid(solids[b], 1e-3 * t / mm, wall=t / mm)
+                    metal[b] = _Solid(solids[b], 1e-3 * t / mm, wall=t / mm,
+                                      quick=quick_triangles(surface, body_faces_of[b], t) <= QUICK_MAX_TRIANGLES)
                 clock.check("reading the plates")
                 faces_i = [mids[k].face for k in pr.mids]
                 area_i = sum(_area(f) for f in faces_i)
@@ -5593,7 +6411,8 @@ def _extract(shape, *, mm_per_unit: float, names: list[str] | None, clock: _Cloc
         t_min = min(m.t for m in mine)
         fuzzy = min(max(SEW_SHARE * t_min, SEW_TOL_FACTOR * max(_max_tol(m.original) for m in mine)),
                     SEW_SHARE_MAX * t_min)
-        solid = _Solid(sol, 1e-3 * t_min, wall=t_min)
+        solid = _Solid(sol, 1e-3 * t_min, wall=t_min,
+                       quick=quick_triangles(surface, body_faces_of[b], t_min * mm) <= QUICK_MAX_TRIANGLES)
         body_faces = [faces[k] for k in range(len(faces)) if body_of[k] == b]
         t_max = max(pairs[i].thickness for i in range(len(pairs))
                     if (pairs[i].even or pairs[i].tapered) and body_of[pairs[i].a] == b and pairs[i].shell) / mm
@@ -5643,7 +6462,17 @@ def _extract(shape, *, mm_per_unit: float, names: list[str] | None, clock: _Cloc
         straight = _join_straight(mine, solid, fuzzy, notes, body_names[b])
         census = census_of(*straight)
         chosen, method, ext_straight = straight, "straight", [list(m.extended) for m in mine]
-        if _unjoined(census):
+        # JOIN_CLOSE_FIRST (candidate, measured on the board before it is turned on): the straight join's closing passes
+        # are made first, and a straight join they leave with nothing unjoined is kept without a general join
+        closed_first = None          # the straight join closed by its passes in a child (JOIN_CLOSE_FIRST)
+        clean = False
+        if JOIN_CLOSE_FIRST and _unjoined(census):
+            got_first = _closed_first(straight, census, mine, solid, fuzzy, mm=mm, census_of=census_of,
+                                      body=body_names[b], t_min=t_min, clock=clock,
+                                      verdict=bodies[b]["verdict"], volume=_volume(sol))
+            if got_first is not None:
+                closed_first, clean = got_first
+        if _unjoined(census) and not clean:
             for m in mine:
                 m.extended = []
             # the general join, and - when a mid-face is an offset surface, re-made as a B-spline to be grown past its
@@ -5658,10 +6487,22 @@ def _extract(shape, *, mm_per_unit: float, names: list[str] | None, clock: _Cloc
             free = any(isinstance(BRep_Tool.Surface_s(m.original), FREE_FORM) for m in mine)
             core = sum(_area(m.true_face) for m in mine)
             ext_general: list = []
+            stopped = ""
+            wide_remake: set = set()
             for remake, alone in [(r, a) for r in ((True, False) if offsets else (True,))
                                   for a in ((True, False) if free else (True,))]:
                 if method == "general" and _unjoined(census) == 0:
                     break
+                if stopped:
+                    # SHELL-63: a general join whose fuse failed is not tried again another way
+                    notes.append(f"{body_names[b]}: the general join was not tried another way: {stopped} (SHELL-63).")
+                    break
+                if remake in wide_remake:
+                    # SHELL-63: a way turned down by a check is not tried again with the same walls (re-made offsets or
+                    # not); the other walls are (a hat rail's third way, offsets not re-made, was kept)
+                    notes.append(f"{body_names[b]}: the general join was not tried again with the same walls: a way "
+                                 "with them was turned down (SHELL-63).")
+                    continue
                 # a variant joins differently only near the walls it treats differently: with the mid-faces in
                 # beside their patches, the free-form walls; without the re-making, the offset walls. It is tried
                 # only when an open edge left is within a grown patch's reach of such a wall - measured to the
@@ -5677,26 +6518,45 @@ def _extract(shape, *, mm_per_unit: float, names: list[str] | None, clock: _Cloc
                                           for q in (np.asarray(x, float) / mm for x in _open_points(census))
                                           for m in walls):
                         continue
-                left = clock.left() - JOIN_RESERVE_S
-                if left < JOIN_MIN_S:
-                    notes.append(f"{body_names[b]}: the work budget ({clock.budget:.0f} s) left no time for the general "
-                                 "join; the straight join stands (SHELL-18).")
-                    break
+                deadline = JOIN_DEADLINE_S
+                if JOIN_TIMED:
+                    left = clock.left() - JOIN_RESERVE_S
+                    if left < JOIN_MIN_S:
+                        notes.append(f"{body_names[b]}: the work budget ({clock.budget:.0f} s) left no time for the "
+                                     "general join; the straight join stands (SHELL-18).")
+                        break
+                    deadline = min(JOIN_DEADLINE_S, left)
                 for m in mine:
                     m.extended = []
                 try:
                     general = _join_general_bounded(mine, body_faces, solid, t_max=t_max, fuzzy=fuzzy, remake=remake,
-                                                    patch_alone=alone, deadline_s=min(JOIN_DEADLINE_S, left))
+                                                    patch_alone=alone, deadline_s=deadline,
+                                                    tol_cap=JOIN_TOL_WALLS * t_min if JOIN_EARLY_TOL else None)
                     census_g = census_of(*general)
                 except TimeoutError as exc:
                     notes.append(f"{body_names[b]}: {exc} (SHELL-11); the joins already made stand.")
+                    _clock_decided("the general join was stopped; the joins already made stand", body=body_names[b],
+                                   limit_s=deadline)
                     break
                 except Exception as exc:  # noqa: BLE001 - the straight join stands
                     logger.debug("shell: the general join failed on %s (%s)", body_names[b], exc)
+                    wide_tol = _join_tolerance(exc)
+                    if wide_tol is not None:
+                        # SHELL-63: stopped after its fuse, before its re-sew - what SHELL-12 would have turned down
+                        notes.append(f"{body_names[b]}: a general join left a tolerance of {wide_tol * mm:.3g} mm (over "
+                                     f"{JOIN_TOL_WALLS:g} of the thinnest wall) and was not used (SHELL-12).")
+                        if JOIN_STOP_AFTER:
+                            wide_remake.add(remake)
+                        continue
+                    # SHELL-61: never silent - a join that could not be made (its process died, OCC raised) is said
+                    notes.append(f"{body_names[b]}: a general join could not be made ({_join_failure(exc)}); the "
+                                 "joins already made stand (SHELL-11).")
+                    stopped = stopped or ("a way could not be made" if JOIN_STOP_AFTER else "")
                     continue
                 # a join must keep every mid-face whole: one that dropped mid-faces (a cyclone funnel's whole
                 # surface once came back empty, and so with no open edge) is no join
                 kept = sum(_area(f) for imgs in general[1] for f in imgs)
+                turned_down = True
                 if kept < (1.0 - JOIN_KEEP_SHARE) * core:
                     notes.append(f"{body_names[b]}: a general join lost {100 * (1 - kept / core):.0f}% of the "
                                  "mid-faces' area and was not used.")
@@ -5717,6 +6577,11 @@ def _extract(shape, *, mm_per_unit: float, names: list[str] | None, clock: _Cloc
                 elif _unjoined(census_g) < _unjoined(census):
                     chosen, method, census = general, "general", census_g
                     ext_general = [list(m.extended) for m in mine]
+                    turned_down = False
+                else:
+                    turned_down = False
+                if turned_down and JOIN_STOP_AFTER:
+                    wide_remake.add(remake)
             if method == "general":
                 for m, ext in zip(mine, ext_general, strict=True):
                     m.extended = ext
@@ -5726,10 +6591,19 @@ def _extract(shape, *, mm_per_unit: float, names: list[str] | None, clock: _Cloc
         fused, images = chosen
         if method == "general":
             _FUSE_FAILED[0] = False         # SHELL-34's shortcut is for the straight join's surface only
-        # SHELL-35: the passes that close what the joins left open, square corners first
-        fused, images, census = _closing_passes(fused, images, census, mine, solid, fuzzy, mm=mm, census_of=census_of,
-                                                notes=notes, body=body_names[b], t_min=t_min, clock=clock)
-        if SLIVERS:
+        if closed_first is not None and method == "straight":
+            # JOIN_CLOSE_FIRST: the straight join closed by its passes in a child, read back here - kept clean without
+            # a general join, or kept because no general join beat it: its passes are not made again
+            fused, images, census, first_notes, ext = closed_first
+            notes.extend(first_notes)
+            for m, e in zip(mine, ext, strict=True):
+                m.extended = list(e)
+        else:
+            # SHELL-35: the passes that close what the joins left open, square corners first
+            fused, images, census = _closing_passes(fused, images, census, mine, solid, fuzzy, mm=mm,
+                                                    census_of=census_of, notes=notes, body=body_names[b], t_min=t_min,
+                                                    clock=clock)
+        if SLIVERS and slivers:
             try:
                 cut = drop_slivers(fused, images, [m.t for m in mine])
             except Exception as exc:  # noqa: BLE001 - the join stands as made
@@ -5823,11 +6697,18 @@ def _extract(shape, *, mm_per_unit: float, names: list[str] | None, clock: _Cloc
               "faces_accounted": accounted, "volume": vol_ok}
     fallback = fallback_regions(sewn_rows, faces, names, body_of, body_names, pairs, mm)
     if fallback:
-        notes.append(f"{len(fallback)} region(s) where the mid-faces do not meet are meshed solid and tied to the "
-                     "shell there (SHELL-6).")
+        # SHSTAGE-9: nothing is meshed solid there (no solid is made beside a shell): the shell is open there
+        notes.append(f"{len(fallback)} region(s) where the mid-faces do not meet: the shell has open edges there "
+                     "(SHELL-6).")
     loose = sum(1 for k in range(len(faces)) if body_of[k] < 0)
     if loose:
         notes.append(f"{loose} face(s) belong to no solid body (a sheet beside the bodies); they are not shelled.")
+    if SPECK_FLOOR:
+        _drop_specks(bodies, pairs, body_of, body_names, names, neighbours)
+    if THICK_MEASURE:
+        _measure_left_out(bodies, solids, faces, names, body_names, surface_faces, surface_owner, mids, mm)
+        if BARE_FLOOR:
+            _drop_bare(bodies, pairs, body_of, body_names, names, neighbours)
     record = {"version": VERSION, "unit": "mm", "ratio": sp.SHELL_RATIO, "diag_mm": _r(diag_mm),
               "bodies": bodies,
               "pairs": [{"id": f"P{i + 1}", "faces": [names[p.a], names[p.b]], "thickness_mm": _r(p.thickness),
@@ -5861,7 +6742,8 @@ def solid_record(shape, why: str) -> dict:
 
 
 def extract_file(path: Path | str, out_dir: Path | str | None = None, *, mm_per_unit: float,
-                 budget_s: float | None = None, deadline_s: float | None = None, plates: bool = True) -> dict:
+                 budget_s: float | None = None, deadline_s: float | None = None, plates: bool = True,
+                 slivers: bool = True) -> dict:
     """Read a STEP, IGES or BREP file, extract its mid-surface, and (when `out_dir` is given) write
     shell.json and midsurface.brep there. SHELL-18: the work runs in a new Python process that reads the file itself,
     stopped after `deadline_s` s (EXTRACT_DEADLINE_S; <= 0: here, unbounded); a part stopped is meshed solid, told
@@ -5870,11 +6752,13 @@ def extract_file(path: Path | str, out_dir: Path | str | None = None, *, mm_per_
 
     limit = EXTRACT_DEADLINE_S if deadline_s is None else float(deadline_s)
     if limit <= 0:
-        return extract_path(str(path), None if out_dir is None else str(out_dir), mm_per_unit, budget_s, plates)
+        return extract_path(str(path), None if out_dir is None else str(out_dir), mm_per_unit, budget_s, plates,
+                            **({} if slivers else {"slivers": False}))
     with tempfile.TemporaryDirectory(prefix="shell_x_") as tmp:
         out = Path(out_dir) if out_dir is not None else Path(tmp)
         status, got = run_bounded(EXTRACT_ENTRY, {"path": str(path), "out_dir": str(out), "mm_per_unit": mm_per_unit,
-                                                  "budget_s": budget_s, "plates": bool(plates)}, limit)
+                                                  "budget_s": budget_s, "plates": bool(plates),
+                                                  **({} if slivers else {"slivers": False})}, limit)
         if status == "ok" and isinstance(got, dict):
             return got
         from meshpipeline.cad.scout import read_cad
@@ -5888,12 +6772,12 @@ def extract_file(path: Path | str, out_dir: Path | str | None = None, *, mm_per_
 
 
 def extract_path(path: str, out_dir: str | None, mm_per_unit: float, budget_s: float | None,
-                 plates: bool = True) -> dict:
+                 plates: bool = True, slivers: bool = True) -> dict:
     """SHELL-18: read the file and extract it here (the work of extract_file's bounded child)."""
     from meshpipeline.cad.scout import read_cad
 
     return _extract_and_write(read_cad(Path(path)), out_dir, mm_per_unit=mm_per_unit, budget_s=budget_s,
-                              plates=plates)
+                              plates=plates, **({} if slivers else {"slivers": False}))
 
 
 #: SHELL-18d: what the bounded child runs
@@ -5926,9 +6810,10 @@ def _write(record: dict, surface, out_dir) -> None:
     (out / RECORD_FILE).write_text(json.dumps(record, indent=1, sort_keys=True))
 
 
-def _extract_and_write(shape, out_dir, *, mm_per_unit: float, budget_s: float | None, plates: bool = True) -> dict:
+def _extract_and_write(shape, out_dir, *, mm_per_unit: float, budget_s: float | None, plates: bool = True,
+                       slivers: bool = True) -> dict:
     try:
-        record, surface = extract(shape, mm_per_unit=mm_per_unit, budget_s=budget_s, plates=plates)
+        record, surface = extract(shape, mm_per_unit=mm_per_unit, budget_s=budget_s, plates=plates, slivers=slivers)
     except OutOfBudget as exc:  # SHELL-18: told in numbers, the solid mesh delivered
         logger.warning("shell: %s; the part is meshed solid", exc)
         record, surface = solid_record(shape, str(exc)), _compound([])
@@ -5938,6 +6823,18 @@ def _extract_and_write(shape, out_dir, *, mm_per_unit: float, budget_s: float | 
             _compound([])
     _write(record, surface, out_dir)
     return record
+
+
+#: SHELL-61: numpy's BLAS / OpenMP pools start 15 worker threads during the wall pairing (16-core machine), so the
+#: process the general join is forked from held them all; the extraction's own process runs them on one thread
+SINGLE_THREAD_ENV = {"OPENBLAS_NUM_THREADS": "1", "OMP_NUM_THREADS": "1", "MKL_NUM_THREADS": "1"}
+
+
+def child_environment() -> dict[str, str]:
+    """SHELL-61: the environment of the extraction's bounded child: the caller's, BLAS and OpenMP on one thread."""
+    import os
+
+    return {**os.environ, **SINGLE_THREAD_ENV}
 
 
 def run_bounded(entry: str, kwargs: dict, deadline_s: float) -> tuple[str, object]:
@@ -5958,7 +6855,8 @@ def run_bounded(entry: str, kwargs: dict, deadline_s: float) -> tuple[str, objec
         args, res = os.path.join(tmp, "args.json"), os.path.join(tmp, "result.json")
         with open(args, "w") as fh:
             json.dump({**kwargs, "_import_path": [p for p in sys.path if p]}, fh)
-        proc = subprocess.Popen([sys.executable, "-c", _CHILD, entry, args, res], stdin=subprocess.DEVNULL)
+        proc = subprocess.Popen([sys.executable, "-c", _CHILD, entry, args, res], stdin=subprocess.DEVNULL,
+                                env=child_environment())
         try:
             proc.wait(timeout=deadline_s)
         except subprocess.TimeoutExpired:

@@ -32,9 +32,10 @@ def _verdicts(record: dict) -> dict[str, int]:
     return out
 
 
-#: SHELL-26: a shell made again without its short plates, because a mesh with them could not be made
-PLATES_OUT = ("The walls short for their thickness could not be meshed with the rest, so they stay solid and are not in "
-              "the shell files.")
+#: SHELL-26: a shell made again without its short plates, because a mesh with them could not be made (SHSTAGE-9: they
+#: are left out of the mesh - no solid is made beside a shell - and counted in what it leaves out)
+PLATES_OUT = ("The walls short for their thickness could not be meshed with the rest, so they are left out of this "
+              "shell mesh.")
 #: what a shell run with no shell says when the extraction gave no measured reason
 NO_WALL_WHY = "the part has no plate or thin wall to make a shell from"
 
@@ -65,12 +66,24 @@ def words(rec: dict) -> str:
                 "instead.")
     n, q, t = int(rec.get("elements") or 0), int(rec.get("quads") or 0), int(rec.get("trias") or 0)
     said = f"Shell mesh: {n:,} elements ({q:,} quads, {t:,} triangles) on the mid-surface"
+    gone = ((rec.get("quality") or {}).get("face_watch") or {}).get("words")
+    if gone:
+        said = f"{gone} {said}"      # SHMESH-74: faces left out are said first
+    from meshpipeline.engines.shell_delivery import cover_short, cover_words
+
+    if cover_short(rec.get("coverage")):
+        said = f"{cover_words(rec.get('coverage'))} {said}"      # MESH-1c: a shell short of the part, said first
     walls = rec.get("walls_mm") or []
     if walls:
         said += f", walls {min(walls):.3g} to {max(walls):.3g} mm" if len(walls) > 1 else f", wall {walls[0]:.3g} mm"
     said += ". Files: Nastran .bdf, CalculiX and Abaqus .inp, Ansys .cdb."
-    if rec.get("solid_bodies"):
-        said += f" {rec['solid_bodies']} part(s) or region(s) stay solid and are not in the shell files."
+    if rec.get("left_out"):
+        # SHSTAGE-9: what the mesh has no elements for, in numbers, and the way on
+        from meshpipeline.cad.shell_words import left_out_words
+
+        said += " " + left_out_words(rec["left_out"])
+    elif rec.get("solid_bodies"):
+        said += f" {rec['solid_bodies']} part(s) or region(s) are not in this shell mesh."
     if rec.get("open_edges"):
         said += f" The plates do not meet at {rec['open_edges']} edge(s): the shell has gaps there."
     if rec.get("advice"):
@@ -154,6 +167,30 @@ def parts_of(mesh, faces: list[dict]) -> list[dict]:
     return [{**p, "tags": tags.get(p["id"], [])} for p in parts_record(mesh)]
 
 
+#: SHELL-59, A SHELL THE MESHER COULD NOT MESH ACROSS ITS DROPPED SLIVERS IS READ AGAIN WITH THEM: SHELL-16 drops a sewn
+#: face narrower than a tenth of its wall and sews its neighbours across the gap, at 1.5 times the widest sliver. On a
+#: hat rail with a joggle (cen_s0111) ten slivers up to 0.23 mm wide went and the whole body was sewn again at 0.34 mm,
+#: and gmsh could not mesh the result ("Impossible to mesh periodic surface"); read with its slivers kept the same rail
+#: meshes (7,832 elements, valid, one piece). When the mesh fails with a ValueError on a surface SHELL-16 sewed, the part
+#: is extracted again with its slivers kept and meshed once more, and the record says so ("slivers_kept"). A part the
+#: mesher meshes the first time is made exactly as before.
+SLIVERS_AGAIN = True
+SLIVERS_KEPT = ("The narrow strips the extraction would have dropped were kept: the surface sewn across them could not "
+                "be meshed.")
+
+
+def _again(rec: dict, record: dict) -> None:
+    """The record's counts read again from a second extraction (SHELL-26, SHELL-59)."""
+    from meshpipeline.cad.shell_words import left_out
+
+    verdicts = _verdicts(record)
+    rec.update(bodies=verdicts,
+               open_edges=int(sum(int(r.get("open_edges") or 0) for r in record.get("sewn") or [])),
+               solid_bodies=int(verdicts.get("solid", 0)) + sum(len(b.get("solid_regions") or [])
+                                                                for b in record.get("bodies") or []),
+               left_out=left_out(record))
+
+
 def run(workspace: Path | str, step: Path | str, *, mm_per_unit: float, source: str = "",
         target: dict | None = None, requirements: dict | None = None) -> dict:
     """Extract, mesh and write the shell of `step` (coordinates `mm_per_unit` mm each) into `workspace`. `target`: the
@@ -173,11 +210,8 @@ def run(workspace: Path | str, step: Path | str, *, mm_per_unit: float, source: 
         out = ws / FOLDER
         out.mkdir(parents=True, exist_ok=True)
         record = ms.extract_file(step, out, mm_per_unit=mm_per_unit)
-        verdicts = _verdicts(record)
-        rec.update(bodies=verdicts, extract_s=round(time.time() - started, 1), advice=str(record.get("advice") or ""),
-                   open_edges=int(sum(int(r.get("open_edges") or 0) for r in record.get("sewn") or [])),
-                   solid_bodies=int(verdicts.get("solid", 0)) + sum(len(b.get("solid_regions") or [])
-                                                                    for b in record.get("bodies") or []))
+        rec.update(extract_s=round(time.time() - started, 1), advice=str(record.get("advice") or ""))
+        _again(rec, record)
         if not record.get("surface_faces"):
             rec["why"] = no_shell_why(record)
         else:
@@ -185,22 +219,40 @@ def run(workspace: Path | str, step: Path | str, *, mm_per_unit: float, source: 
             try:
                 mesh, applied = sa.mesh_run(out, mm_per_unit=mm_per_unit, target=target, requirements=requirements)
             except ValueError as exc:
-                # SHELL-26: a shell whose short plates the mesher could not close is made as before them, said
-                if not ms.has_plates(record):
+                if not (ms.has_plates(record) or (SLIVERS_AGAIN and ms.has_slivers(record))):
                     raise
-                record = ms.extract_file(step, out, mm_per_unit=mm_per_unit, plates=False)
-                verdicts = _verdicts(record)
-                rec.update(plates_left_out=PLATES_OUT, plates_mesh_error=str(exc)[:300], advice="",
-                           bodies=verdicts,
-                           open_edges=int(sum(int(r.get("open_edges") or 0) for r in record.get("sewn") or [])),
-                           solid_bodies=int(verdicts.get("solid", 0)) + sum(len(b.get("solid_regions") or [])
-                                                                            for b in record.get("bodies") or []))
-                if not record.get("surface_faces"):
-                    raise
-                mesh, applied = sa.mesh_run(out, mm_per_unit=mm_per_unit, target=target, requirements=requirements)
+                again = None
+                plates = True
+                if ms.has_plates(record):
+                    # SHELL-26: a shell whose short plates the mesher could not close is made as before them, said
+                    plates = False
+                    record = ms.extract_file(step, out, mm_per_unit=mm_per_unit, plates=False)
+                    rec.update(plates_left_out=PLATES_OUT, plates_mesh_error=str(exc)[:300], advice="")
+                    _again(rec, record)
+                    if not record.get("surface_faces"):
+                        raise
+                    try:
+                        again = sa.mesh_run(out, mm_per_unit=mm_per_unit, target=target, requirements=requirements)
+                    except ValueError as exc2:
+                        if not (SLIVERS_AGAIN and ms.has_slivers(record)):
+                            raise
+                        exc = exc2
+                if again is None:
+                    # SHELL-59: the surface sewn across its dropped slivers (SHELL-16) the mesher could not mesh: the
+                    # part is read again with its slivers kept, and meshed once more, said
+                    record = ms.extract_file(step, out, mm_per_unit=mm_per_unit, plates=plates, slivers=False)
+                    rec.update(slivers_kept=SLIVERS_KEPT, slivers_mesh_error=str(exc)[:300])
+                    _again(rec, record)
+                    if not record.get("surface_faces"):
+                        raise
+                    again = sa.mesh_run(out, mm_per_unit=mm_per_unit, target=target, requirements=requirements)
+                mesh, applied = again
             rec["mesh_s"] = round(time.time() - t1, 1)
             name_parts(mesh, ws)
-            exports = sw.write_all(ws, mesh, units="m", source=source)
+            from meshpipeline.cad.shell_words import left_out_lines
+
+            # SHSTAGE-9: every deck's header says what this mesh has no elements for (nothing when nothing is)
+            exports = sw.write_all(ws, mesh, units="m", source=source, notes=left_out_lines(rec.get("left_out")))
             # THE SHELL IS THE RESULT (engines/shell_delivery): the viewer's picture of it, one group per mid-face
             faces = write_msh(ws / MSH, mesh)
             xyz_m = mesh.xyz / 1000.0
@@ -213,6 +265,15 @@ def run(workspace: Path | str, step: Path | str, *, mm_per_unit: float, source: 
                        walls_mm=sorted({round(float(w), 3) for w in mesh.wall}),
                        quality=q if isinstance(q, dict) else None, exports={k: v for k, v in exports.items()
                                                                             if isinstance(v, dict)})
+            # MESH-1c: how much of the part the shell covers (its mid-surface: half the solid's face area, less the
+            # regions told as left out), against the upload when the driver staged less of it
+            from meshpipeline.engines import shell_delivery as SD
+
+            cov = SD.coverage(mesh, part_mm2=sum(float(b.get("area_mm2") or 0.0) for b in record.get("bodies") or []),
+                              mid=True, kept=SD.kept_share(ws, source),
+                              told_share=float((rec.get("left_out") or {}).get("area_share") or 0.0))
+            if cov:
+                rec["coverage"] = cov
             if isinstance(applied, dict) and isinstance(applied.get("target"), dict):
                 rec["target"] = applied["target"]
             if isinstance(applied, dict) and requirements:
@@ -226,7 +287,9 @@ def run(workspace: Path | str, step: Path | str, *, mm_per_unit: float, source: 
                 shutil.copyfile(out / name, ws / (name if name != ms.RECORD_FILE else "shell.json"))
     except Exception as exc:  # noqa: BLE001 - the solid mesh is still delivered; the reason is kept
         logger.warning("shell run: no shell mesh (%s: %s)", type(exc).__name__, str(exc)[:300])
-        rec.update(made=False, why=f"the shell mesh could not be made ({type(exc).__name__})")
+        from meshpipeline.engines.gmsh.shell_adapter import said_words
+
+        rec.update(made=False, why=said_words(exc) or f"the shell mesh could not be made ({type(exc).__name__})")
     rec["seconds"] = round(time.time() - started, 1)
     rec["words"] = words(rec)
     (ws / RECORD).write_text(json.dumps(rec, indent=1, sort_keys=True, default=float))
@@ -289,14 +352,41 @@ def main(argv: list[str] | None = None) -> int:
             return 0
     else:
         mm = float(args[2])
-    run(args[0], args[1], mm_per_unit=mm, source=Path(args[1]).name, target=target,
+    step = args[1]
+    if args[2] == "staged" and abs(mm - 1.0) > 1e-9:
+        # SHELL-18m: the staged solid (metres) is handed to the extraction and the mesher in millimetres
+        try:
+            step, mm = str(in_millimetres(Path(args[0]), Path(args[1]), mm)), 1.0
+        except Exception as exc:  # noqa: BLE001 - meshed in the staged unit, as before
+            logger.warning("shell run: the staged solid was not put in millimetres (%s)", type(exc).__name__)
+    run(args[0], step, mm_per_unit=mm, source=Path(args[1]).name, target=target,
         requirements=with_places(args[0], requirements_in(args[0])))
     return 0
+
+
+#: SHELL-18m: the staged solid in millimetres, beside it in the workspace
+MM_COPY = "staged_mm.brep"
+
+
+def in_millimetres(ws: Path, step: Path, mm_per_unit: float) -> Path:
+    """SHELL-18m: THE SHELL IS MADE ON THE PART IN MILLIMETRES, whatever unit it was staged in. The mid-surface
+    extraction and the shell mesher are built and proven on millimetre geometry (every lab and scoreboard run), and
+    the same part staged in metres came out otherwise: a thin casting's mid-surface kept 0.18 mm gaps and 0.22 mm
+    edges the millimetre reading has not, 2,296 elements where the lab made 3,815. Writes MM_COPY (the staged shape
+    scaled by `mm_per_unit`, its faces in the same order) and returns its path."""
+    from OCP.BRepTools import BRepTools
+
+    from meshpipeline.cad.fea_assembly import _scaled
+    from meshpipeline.cad.scout import read_cad
+
+    out = Path(ws) / MM_COPY
+    BRepTools.Write_s(_scaled(read_cad(step), float(mm_per_unit)), str(out))
+    return out
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
 
 
-__all__ = ["FILES", "MSH", "RECORD", "main", "name_parts", "parts_of", "read", "requirements_in", "run", "with_places",
+__all__ = ["FILES", "MM_COPY", "MSH", "RECORD", "in_millimetres", "main", "name_parts", "parts_of", "read", "requirements_in", "run", "with_places",
            "words", "write_msh"]

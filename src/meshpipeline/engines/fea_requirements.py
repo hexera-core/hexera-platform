@@ -58,6 +58,16 @@ def whole_sizes(sizes: Mapping[str, Mapping] | None, req: Mapping | None, part_i
             return out                      # a longest edge the rules' own sizes are already under: nothing to hold
     low = min(low, mid)
     entry = {"min_m": float(f"{low:.6g}"), "max_m": float(f"{2.0 * mid - low:.6g}"), "name": WHOLE, "whole": True}
+    if G is None:
+        # sized by edge lengths alone, the range is the rules' size held by them - not an ask: the plan says what
+        # was asked (engines/fea_plan.user_words)
+        entry["asked"] = " and ".join(f"a {w} edge of {float(v):g} mm" for w, v in (("shortest", lo), ("longest", hi))
+                                      if v is not None)
+    if lo is not None and any(r.get("field") == "min_edge" and r.get("strictness") == "flexible"
+                              for r in (req or {}).get("rows") or []):
+        # NOTE-14: a shortest edge the user said is flexible is a target: the zones the accuracy rules make finer (a
+        # round's elements, a thin wall's) keep their size under it; the part's own size still follows it
+        entry["min_flexible"] = True
     for pid in part_ids:
         out.setdefault(str(pid), dict(entry))
     return out
@@ -167,6 +177,12 @@ def report(mesh, req: Mapping | None, *, mm_per_unit: float = 1000.0, order: int
             got = {"applied": True, "measured": float(f"{typical:.6g}"),
                    "met": bool(n) and 0.5 * s["global_mm"] <= typical <= 1.5 * s["global_mm"],
                    "delivered": f"elements are about {MR._g(typical)} mm"}
+            xyz = np.asarray(getattr(mesh, "xyz", ()), dtype=float).reshape(-1, 3)
+            # NOTE-14: built far finer than asked - the same true thing the plan says, with why (finer_global)
+            fin = MR.finer_global(row, float(s["global_mm"]), typical,
+                                  float(np.max(np.ptp(xyz, axis=0))) * mm_per_unit if len(xyz) else 0.0)
+            if fin is not None:
+                got.update(fin)
         elif field in ("min_edge", "max_edge"):
             limit = float(s[f"{field}_mm"])
             v = lo if field == "min_edge" else hi
@@ -197,7 +213,7 @@ def report(mesh, req: Mapping | None, *, mm_per_unit: float = 1000.0, order: int
         else:  # quads_only, triangles_only, max_triangle_percent
             got = {"applied": False, "met": None, "delivered": "not applied - a solid is meshed with tetrahedra"}
         rows.append({"id": row["id"], "field": field, "asked": row["asked"], **got,
-                     **({"from": row["from"]} if row.get("from") else {})})
+                     **({"from": row["from"]} if row.get("from") else {}), **MR.carried(row)})
     return MR.finish_report(rows, n, DEFINITIONS)
 
 

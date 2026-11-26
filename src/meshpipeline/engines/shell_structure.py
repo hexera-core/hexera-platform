@@ -96,10 +96,46 @@ def _circle(xyz: np.ndarray) -> tuple[np.ndarray, float, np.ndarray] | None:
     return c, rm, n
 
 
+#: SHMESH-51: the whole rings of quads round a hole are counted out to this many
+RINGS_MAX = 4
+
+
+def _ring_count(loop: list[int], conns: list, node_els: dict[int, list[int]]) -> int:
+    """SHMESH-51: how many whole rings of quads lie round a hole, counted out from it: a ring is as many quads as the
+    hole has edges, each on the loop inside it by one edge (two corners side by side on it), their other corners one
+    closed loop of as many nodes, which the next ring starts from."""
+    on = set(loop)
+    used: set[int] = set()
+    n = len(loop)
+    k = 0
+    while k < RINGS_MAX:
+        touching = sorted({e for v in on for e in node_els.get(v, []) if e not in used})
+        if len(touching) != n:
+            break
+        far: dict[int, int] = {}
+        ok = True
+        for e in touching:
+            conn = conns[e].tolist()
+            ins = [i for i, v in enumerate(conn) if v in on]
+            if len(conn) != 4 or len(ins) != 2 or (ins[1] - ins[0]) % 4 not in (1, 3):
+                ok = False
+                break
+            for v in conn:
+                if v not in on:
+                    far[v] = far.get(v, 0) + 1
+        if not ok or len(far) != n or any(c != 2 for c in far.values()):
+            break
+        k += 1
+        used.update(touching)
+        on = set(far)
+    return k
+
+
 def holes(mesh: ShellMesh, pairs: np.ndarray | None = None, counts: np.ndarray | None = None) -> list[dict]:
     """Every hole of the mesh - a free-edge loop that is a circle - with: its diameter (mm), the elements round it,
     and whether they make a RING (a washer): each a quad on the hole by one edge, nothing touching it by a corner
-    alone, the quads' far corners on one circle (its diameter too)."""
+    alone, the quads' far corners on one circle (its diameter too); SHMESH-51: `rings`, the whole rings of quads
+    round it (_ring_count)."""
     if pairs is None or counts is None:
         pairs, counts, _inv = _edges(mesh)
     free = pairs[counts == 1]
@@ -136,7 +172,8 @@ def holes(mesh: ShellMesh, pairs: np.ndarray | None = None, counts: np.ndarray |
             outer = 2.0 * float(rr.mean())
         out.append({"centre": [float(f"{x:.6g}") for x in c], "diameter_mm": float(f"{2 * r:.4g}"),
                     "around": len(loop), "elements": len(touching), "ring": bool(ring),
-                    "ring_diameter_mm": float(f"{outer:.4g}") if ring and outer else None})
+                    "ring_diameter_mm": float(f"{outer:.4g}") if ring and outer else None,
+                    "rings": _ring_count(loop, conns, node_els) if ring else 0})
     return sorted(out, key=lambda h: (h["centre"], h["diameter_mm"]))
 
 
