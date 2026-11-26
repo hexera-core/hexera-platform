@@ -207,14 +207,43 @@ def _picked_row(row: Mapping, req: Mapping, entry: Mapping, mesh, *, places: Map
             "delivered": f"elements on {where} are about {MR._g(round(got, 2))} mm", **({"area": part} if part else {})}
 
 
+def _finer_row(row: Mapping, req: Mapping, finer: list, mesh, *, face_tags, mm_per_unit: float) -> dict | None:
+    """PLAN-fea-36: a place asked "finer" with no number, asked against built - what the plan did (half the mesh
+    round it, or kept at the rules' sizes, already finer than that) and the size measured on its faces. None when
+    the row is no such ask."""
+    def squash(t: str) -> str:
+        return "".join(ch for ch in str(t or "").lower() if ch.isalnum())
+
+    quote = next((str(e.get("quote") or "") for e in req.get("local") or [] if e.get("id") == row["id"]), "")
+    q = squash(quote or str(row.get("quote") or ""))
+    hit = next((r for r in finer if q and squash(str(r.get("quote") or ""))
+                and (q in squash(str(r["quote"])) or squash(str(r["quote"])) in q)), None)
+    if hit is None:
+        return None
+    around = (f"your {float(hit['around_mm']):.3g} mm" if hit.get("yours")
+              else f"the part's {float(hit['around_mm']):.3g} mm")
+    built = face_size_mm(mesh, hit.get("faces") or [], face_tags=face_tags, mm_per_unit=mm_per_unit)
+    there = f"; built about {MR._g(round(built, 3))} mm there" if built else ""
+    if hit.get("changed"):
+        said = f"made about {MR._g(float(hit['target_mm']))} mm there, half of {around}{there}"
+    else:
+        said = (f"kept at the {MR._g(float(hit['there_mm']))} mm the accuracy rules give there, already finer than "
+                f"half of {around}{there}; give a size to go finer")
+    return {"applied": True, "met": None, "delivered": said,
+            **({"measured": float(f"{built:.4g}")} if built else {}), "area": hit.get("id")}
+
+
 def report(mesh, req: Mapping | None, *, mm_per_unit: float = 1000.0, order: int = 2,
            applied: Mapping | None = None, through_wall: float | None = None,
-           places: Mapping | None = None, face_tags: Mapping[str, Iterable[int]] | None = None) -> dict | None:
+           places: Mapping | None = None, face_tags: Mapping[str, Iterable[int]] | None = None,
+           finer: Iterable[Mapping] | None = None) -> dict | None:
     """PLAN-fea-34: for every requirement read from the notes, what was asked and what the built solid mesh
     delivers (the shape of engines/shell_requirements.report). None with no requirement. `mm_per_unit`: the
     mesh's coordinates in millimetres each (the solid is meshed in metres). `applied`: what the plan's seam did with
     each control (the plan's "controls", NOTE-13), when the caller has the plan. `through_wall`: the fewest
-    elements measured through a wall of the plan (engines/fea_checks), which the count through the walls is held to."""
+    elements measured through a wall of the plan (engines/fea_checks), which the count through the walls is held to.
+    `finer`: the plan's places asked "finer" with no number (PLAN-fea-36, fea_part_sizes.finer_outcomes)."""
+    finer = list(finer or [])
     if not req or not req.get("rows"):
         return None
     m = _measures(mesh)
@@ -243,7 +272,11 @@ def report(mesh, req: Mapping | None, *, mm_per_unit: float = 1000.0, order: int
                     (f"not applied - no such place was found on the part{f' ({where})' if where else ''}"
                                   if (places or {}).get("status") == "used" else
                                   "not applied - the notes about parts were not read this run, so no place was sized")}
-        if flow is not None:
+        told = (_finer_row(row, req, finer, mesh, face_tags=face_tags, mm_per_unit=mm_per_unit)
+                if field == "local" and finer and sized is None and not picked else None)
+        if told is not None:
+            got = told
+        elif flow is not None:
             got = flow
         elif field.startswith("limit:"):
             got = _limit_row(limits[row["id"]], m, n)

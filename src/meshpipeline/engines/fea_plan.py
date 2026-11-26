@@ -599,6 +599,11 @@ def user_sized(zone_list: list[dict], sizes: Mapping[str, Mapping]) -> list[dict
         key = on[0] if on else (str(z.get("part") or "") if z.get("kind") == "part"
                                 else (_part_key((z.get("faces") or [""])[0]) or "Part_1"))
         want = sizes.get(key)
+        if on and want and want.get("kept") and float(z["size_m"]) > float(want.get("target_m") or 0.0) * (1 + 1e-9):
+            # PLAN-fea-36: an area asked finer that keeps the rules' sizes - a zone on it coarser than its target (a
+            # wall's through-thickness size on a fillet already finer) is sized as off the area: nothing refined
+            on, key = [], _part_key((z.get("faces") or [""])[0]) or "Part_1"
+            want = sizes.get(key)
         if not want:
             out.append(dict(z))
             continue
@@ -612,11 +617,17 @@ def user_sized(zone_list: list[dict], sizes: Mapping[str, Mapping]) -> list[dict
             # NOTE-14: under a flexible shortest edge a zone the rules make finer keeps its own size (the user said it
             # may go below it in places); only past the middle of the range is it brought down
             new = min(size, mid)
+        elif on and want.get("kept"):
+            # PLAN-fea-36: an area asked finer that the accuracy rules already size at or under half the mesh round it
+            # keeps the rules' sizes - never raised by a size for the whole mesh, never refined (the cast knuckle's 21
+            # fillets went from 0.47 mm to 0.14 mm and the mesh from 1 to 10 million elements, 25 Nov)
+            new = size
         elif on and want.get("scale"):
-            # PLAN-fea-36 on an area ("finer at the fillets"): each zone on it its OWN size halved (a wall's through-
-            # thickness size halved, not set to the fillet's 0.028 mm over the wall's 1.6 mm reach: 124 million
-            # elements on fea0254); "coarser" keeps what the accuracy rules make finer there
-            new = size * float(want["scale"]) if float(want["scale"]) < 1.0 else size
+            # PLAN-fea-36 on an area ("finer at the fillets"): finer than the mesh round it - a zone on it coarser than
+            # the target is brought to it, one already finer keeps its size (a wall's through-thickness size is never
+            # set to the fillet's 0.028 mm over the wall's 1.6 mm reach: 124 million elements on fea0254); "coarser"
+            # keeps what the accuracy rules make finer there
+            new = min(size, mid) if float(want["scale"]) < 1.0 else size
         else:
             new = min(max(size, lo), mid)
             vc = valid_cap(z)
@@ -627,6 +638,8 @@ def user_sized(zone_list: list[dict], sizes: Mapping[str, Mapping]) -> list[dict
         _accuracy(z, row, new)
         out.append(row)
     for k, v in areas.items():
+        if v.get("kept"):
+            continue                    # PLAN-fea-36: kept at the rules' sizes - no zone of its own
         lo, hi = float(v["min_m"]), float(v["max_m"])
         mid = 0.5 * (lo + hi)
         # a face picked on the model (NOTE-17, Pick_n) never shares its zone id with an area found (Feature_n)
@@ -1002,12 +1015,19 @@ def crossed_words(zs: list[dict], *, why: str) -> list[str]:
 def user_words(plan: Mapping) -> list[str]:
     """PLAN-fea-29 in plain words: each part the user sized, what it got, and what that leaves short."""
     sizes = plan.get("user_sizes") or {}
+    finer = plan.get("finer")
+    if finer is None and sizes:
+        from meshpipeline.engines.fea_part_sizes import finer_outcomes
+        finer = finer_outcomes(sizes)
+    # PLAN-fea-36: each area asked "finer" with no number - half the mesh round it, or kept at the rules' sizes
+    out: list[str] = [str(r["words"]) for r in finer or [] if r.get("words")]
     if not sizes:
-        return []
+        return out
     zs = list(plan.get("zones") or [])
-    out: list[str] = []
     by: dict[tuple[float, float], list[str]] = {}
     for pid, v in sizes.items():
+        if v.get("faces") and "target_m" in v:
+            continue                        # said above
         if v.get("scale"):
             # PLAN-fea-36: "finer" / "coarser" on a whole part, with no number
             # (an area asked so, NOTE-6: its own zone's size)

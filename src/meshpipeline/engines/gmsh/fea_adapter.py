@@ -2229,7 +2229,8 @@ def _mesh(workspace) -> int:
                     solid, wanted, order=order, applied=plan.get("controls"),
                     through_wall=(rules.get("through_wall") or {}).get("min") if rules else None,
                     places=plan.get("part_sizes") if isinstance(plan.get("part_sizes"), dict) else None,
-                    face_tags=face_tags if asm else None)
+                    face_tags=face_tags if asm else None,
+                    finer=plan.get("finer") if isinstance(plan.get("finer"), list) else None)
                 if mmg.get("targets"):
                     from meshpipeline.engines import fea_mmg as _mmg_told
                     asked_report = _mmg_told.tell(asked_report, mmg)

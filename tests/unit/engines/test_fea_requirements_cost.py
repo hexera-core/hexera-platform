@@ -58,11 +58,12 @@ def test_finer_at_the_fillets_is_costed_as_the_run_would_plan_it(bracket):
     run_plan = FD.choose_plan(record, surface, diag, sizes=sizes)
     assert got["after"]["elements"] == int(run_plan["estimate"]["elements"])
     assert got["before"]["elements"] == int(before["estimate"]["elements"])
-    assert got["after"]["elements"] > got["before"]["elements"]
+    # PLAN-fea-36, reading A: the 4 mm fillet is at 1.05 mm by its rules, under half of the 3 mm - it keeps that size
+    assert [(r["changed"], r["there_mm"], r["target_mm"]) for r in got["finer"]] == [(False, 1.047, 1.5)]
     assert got["factor"] == round(got["after"]["elements"] / got["before"]["elements"], 2)
     for r in (got["before"], got["after"]):
         assert r["where"] in ("cloud_run", "gce") and r["minutes"] >= 1 and r["budget_minutes"] >= 60   # LAD-fea-15's floor, an hour
-    assert got["words"].startswith("That takes the mesh from about ")
+    assert got["words"].startswith("That keeps the mesh at about ")      # 9,624 against the rules' 9,635
     assert "on the standard machine" in got["words"] and "minutes" in got["words"]
 
 

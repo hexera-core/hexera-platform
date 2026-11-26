@@ -212,24 +212,31 @@ def requirements_cost(record: dict, surface, diag_m: float, *, before: dict, ask
     count the notes name (fea_driver.element_target). Plans once (a size field histogram: seconds on a small part,
     minutes on a big one - run it where the stage's own sizing runs, `bounded`).
 
-    Returns {"before": row, "after": row, "factor": after / before elements, "bigger_machine": bool, "words": "..."}:
-    each row as the stage's (row(): elements, machine, where, standard, memory_gib, minutes = the upper end at the
-    part's slow fill rate, usual_minutes) plus budget_minutes (when the pass is stopped, LAD-fea-15)."""
+    Returns {"before": row, "after": row, "factor": after / before elements, "bigger_machine": bool, "words": "...",
+    "finer": [...]}: each row as the stage's (row(): elements, machine, where, standard, memory_gib, minutes = the
+    upper end at the part's slow fill rate, usual_minutes) plus budget_minutes (when the pass is stopped, LAD-fea-15);
+    "finer": per place asked "finer" with no number (PLAN-fea-36, fea_part_sizes.finer_outcomes): its target (half
+    the mesh round it), the size the rules already give it, whether it changed, and the plain line the run says."""
     from meshpipeline.engines import control_appliers as CA
+    from meshpipeline.engines import fea_ai as FA
     from meshpipeline.engines import fea_driver as FD
+    from meshpipeline.engines import fea_part_sizes as PS
 
-    sizes, _scaled, controls = FD.requirement_sizes(record, asked, part_sizes, diag_m)
+    sizes, scaled, controls = FD.requirement_sizes(record, asked, part_sizes, diag_m)
     rec = {**record, CA.RECORD_KEY: controls} if controls is not None else record
+    finer = PS.finer_outcomes(scaled)
+    if finer:
+        rec = {**rec, FA.SETTLED_KEY: PS.settled(scaled)}         # as drive puts it: the AI never refines there
     after_plan = FD.choose_plan(rec, surface, diag_m, ai=ai, target=target, sizes=sizes or None)
     b, a = _costed(record, before, "before"), _costed(rec, after_plan, "after")
     factor = a["elements"] / b["elements"] if b["elements"] else None
     bigger = a["memory_gib"] > b["memory_gib"] or (b["standard"] and not a["standard"])
     when = minutes_words(a["usual_minutes"], a["minutes"])
     words = (f"That takes the mesh from {_count_words(b['elements'])} to {_count_words(a['elements'])} elements, "
-             f"{_machine_words(a)}, {when}." if a["elements"] != b["elements"] else
+             f"{_machine_words(a)}, {when}." if _count_words(a["elements"]) != _count_words(b["elements"]) else
              f"That keeps the mesh at {_count_words(a['elements'])} elements, {_machine_words(a)}, {when}.")
     return {"before": b, "after": a, "factor": round(factor, 2) if factor else None, "bigger_machine": bool(bigger),
-            "words": words}
+            "words": words, "finer": finer}
 
 
 # #

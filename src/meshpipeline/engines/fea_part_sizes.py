@@ -72,6 +72,11 @@ def _zone_key(z: Mapping) -> str:
     return head if sep else "Part_1"
 
 
+def part_of_faces(faces) -> str:
+    """The part an area's faces lie in, keyed as the plan's sizes are (Part_1 for a single part)."""
+    return _zone_key({"faces": sorted(str(f) for f in faces)[:1]})
+
+
 def resolve_scales(sizes: Mapping[str, Mapping], zones, *, base_m: float,
                    whole: Mapping[str, Mapping] | None = None) -> dict[str, dict]:
     """PLAN-fea-36: each part asked "finer" or "coarser" with no number as a size band the plan holds
@@ -95,6 +100,12 @@ def resolve_scales(sizes: Mapping[str, Mapping], zones, *, base_m: float,
             given = (whole or {}).get(in_part)
             whole_m = (0.5 * (float(given["min_m"]) + float(given["max_m"])) if given and "min_m" in given
                        else float(part if part is not None else base_m))
+            if float(scale) < 1.0:
+                # "finer" at an area (Areen, 25 Nov, reading A): finer than the mesh AROUND it - half the size the
+                # plan has round the area - never under what the accuracy rules already give it
+                out[k] = _finer_area(v, faces, own, around_m=whole_m, scale=float(scale),
+                                     yours=bool(given and "min_m" in given))
+                continue
             base = min([float(z["size_m"]) for z in own] or [whole_m])
         else:
             own = [z for z in zs if _zone_key(z) == k]
@@ -109,6 +120,74 @@ def resolve_scales(sizes: Mapping[str, Mapping], zones, *, base_m: float,
                   "rule_m": float(f"{base:.6g}"), "quote": v.get("quote") or "", "rest": bool(v.get("rest")),
                   **({"faces": sorted(faces), "name": v.get("name") or k} if faces else {})}
     return out
+
+
+def _finer_area(v: Mapping, faces: set[str], own: list, *, around_m: float, scale: float, yours: bool) -> dict:
+    """PLAN-fea-36, "finer" at an area with no number (reading A, Areen 25 Nov: "finer than the mesh around it"): the
+    target is `scale` (half) times the size round the area (`around_m`: the user's own size for that part or the whole
+    mesh, else the plan's size for the part). The size already there is, face by face, the finest the accuracy rules
+    put on it (a hot spot's, a round's, a wall's), else the size round it. Every face of the area already at or under
+    the target: the area KEEPS the rules' sizes (`kept`) - nothing is refined, by this rule or by the AI
+    (fea_ai.apply_zones) - and the user is told so. Else the area gets the target, and what is already finer on it
+    keeps its size (engines/fea_plan.user_sized). Only a number the user types goes under the rules' sizes."""
+    target = around_m * scale
+    per_face = [min([float(z["size_m"]) for z in own if f in {str(x) for x in z.get("faces") or []}] + [around_m])
+                for f in sorted(faces)]
+    there, there_low = max(per_face), min(per_face)
+    kept = there <= target * (1 + 1e-6)
+    low = min([float(z["size_m"]) for z in own] + [target])
+    return {"min_m": float(f"{low:.6g}"), "max_m": float(f"{(target if kept else 2.0 * target - low):.6g}"),
+            "scale": scale, "rule_m": float(f"{there:.6g}"), "target_m": float(f"{target:.6g}"),
+            "there_m": float(f"{there:.6g}"), "there_low_m": float(f"{there_low:.6g}"),
+            "around_m": float(f"{around_m:.6g}"), "yours": yours, "kept": kept,
+            "quote": v.get("quote") or "", "rest": bool(v.get("rest")), "faces": sorted(faces),
+            "name": v.get("name") or ""}
+
+
+def _mm(v_m: float, digits: int = 2) -> str:
+    return f"{float(v_m) * 1e3:.{digits}g}"
+
+
+def finer_outcomes(scaled: Mapping[str, Mapping] | None) -> list[dict]:
+    """PLAN-fea-36: what came of each area asked "finer" with no number, from resolve_scales' entries - one row per
+    ask: {"id", "name", "quote", "faces", "target_mm" (half the size round it), "there_mm" (the size the accuracy
+    rules already give it; "there_low_mm" its finest), "around_mm", "yours" (the size round it is the user's own),
+    "changed" (False: it keeps the rules' sizes), "words"}. For the plan's words, the "From your notes" line, the
+    asked-against-built row and the plan step's chat. [] with none."""
+    out = []
+    for k, v in sorted((scaled or {}).items()):
+        if not (v.get("faces") and "target_m" in v):
+            continue
+        row = {"id": k, "name": str(v.get("name") or k), "quote": str(v.get("quote") or ""),
+               "faces": list(v.get("faces") or []), "target_mm": float(f"{float(v['target_m']) * 1e3:.4g}"),
+               "there_mm": float(f"{float(v['there_m']) * 1e3:.4g}"),
+               "there_low_mm": float(f"{float(v['there_low_m']) * 1e3:.4g}"),
+               "around_mm": float(f"{float(v['around_m']) * 1e3:.4g}"), "yours": bool(v.get("yours")),
+               "changed": not v.get("kept")}
+        row["words"] = finer_words(row)
+        out.append(row)
+    return out
+
+
+def finer_words(row: Mapping) -> str:
+    """One area's "finer" outcome in plain words (finer_outcomes' row)."""
+    around = (f"your {float(row['around_mm']):.3g} mm" if row.get("yours")
+              else f"the part's {float(row['around_mm']):.3g} mm")
+    if row.get("changed"):
+        return (f"You asked for finer elements at {row['name']}: the mesh there is now about "
+                f"{_mm(float(row['target_mm']) * 1e-3)} mm, half of {around}; what was already finer there keeps its "
+                "size.")
+    hi, lo = float(row["there_mm"]), float(row["there_low_mm"])
+    there = f"{_mm(lo * 1e-3)}-{_mm(hi * 1e-3)}" if lo < 0.9 * hi and _mm(lo * 1e-3) != _mm(hi * 1e-3) else _mm(hi * 1e-3)
+    return (f"You asked for finer elements at {row['name']}: the mesh there is already about {there} mm, finer than "
+            f"half of {around}, so it keeps that size. Give a size if you want it finer still.")
+
+
+def settled(scaled: Mapping[str, Mapping] | None) -> dict[str, dict]:
+    """AI-fea-1's guard (fea_ai.apply_zones, under fea_ai.SETTLED_KEY in the record): the areas asked "finer" with no
+    number, whose sizes this rule settles in code - area id -> {"faces", "words"}. {} with none."""
+    return {r["id"]: {"faces": r["faces"], "kept": not r["changed"], "words": r["words"]}
+            for r in finer_outcomes(scaled)}
 
 
 def words(ps: Mapping | None) -> list[str]:
@@ -140,5 +219,5 @@ def decisions(ps: Mapping | None) -> list[dict]:
     return out
 
 
-__all__ = ["CONSUMER", "RULE", "SCALES", "decide", "decisions", "part_table", "per_part", "resolve_scales", "section",
-           "sizes_of", "told", "with_picks", "words"]
+__all__ = ["CONSUMER", "RULE", "SCALES", "decide", "decisions", "finer_outcomes", "finer_words", "part_of_faces", "part_table",
+           "per_part", "resolve_scales", "section", "settled", "sizes_of", "told", "with_picks", "words"]
