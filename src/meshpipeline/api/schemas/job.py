@@ -99,6 +99,9 @@ class DisputeFlag(BaseModel):
     span: float | None = None    # view span around the spot (viewer-provided)
     patch: str = ""              # patch the click landed on, if known
     note: str = ""               # the user's concern at this spot
+    # the surface's outward normal at the spot (optional): of two faces equally near the mark (an edge), the one
+    # facing this way is the one meant (VER-10, cad/face_map.face_at)
+    normal: list[float] | None = Field(default=None, min_length=3, max_length=3)
 
 
 class DisputeIn(BaseModel):
@@ -131,10 +134,26 @@ class DisputeIn(BaseModel):
         return self
 
 
+class DisputeFace(BaseModel):
+    id: str                      # the engine's name for the CAD face (Face_k, Part_k_Face_j, Region_k)
+    label: str = ""              # the chip's plain words ("Face 12 · round Ø15 mm")
+
+
 class DisputeOut(BaseModel):
-    job_id: uuid.UUID            # the NEW dispute job (re-review -> rebuild)
-    dispute_of: uuid.UUID        # the disputed (parent) job
+    # the NEW job: for kind=change a new run of the same part with the change as a requirement (VER-9); for
+    # kind=review the re-review of the same mesh (VER-11); None for kind=ask (nothing could be tied to the part,
+    # nothing started)
+    job_id: uuid.UUID | None
+    dispute_of: uuid.UUID        # the finished (parent) job the request was made on
     flags: int
+    kind: str = "review"         # change | review | ask
+    # what to say in the chat, written by the model under the plan step's guard (VER-12); "" for kind=review
+    reply: str = ""
+    # the CAD faces each mark was tied to, in mark order (kind=change and ask)
+    faces: list[DisputeFace] = []
+    marks_not_on_the_part: list[int] = []    # 1-based mark numbers that tied no face
+    session_id: str | None = None            # the conversation the new run belongs to (the parent's)
+    last_run_minutes: int | None = None
 
 
 class CancelIn(BaseModel):

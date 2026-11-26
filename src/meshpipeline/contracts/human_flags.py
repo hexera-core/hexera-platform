@@ -64,6 +64,20 @@ def flags_of(user_dispute: Mapping | None) -> list[Mapping]:
     return [f for f in raw if isinstance(f, Mapping)]
 
 
+def mark_radius(flag: Mapping) -> float:
+    """The radius of the circle the user drew for a mark, in the mesh's unit: the viewer sends `span` = that radius
+    times the span factor (settings VIEWER_FLAG_SPAN_FACTOR); 0.0 when unknown."""
+    import math
+
+    from meshpipeline.settings import policy as polcfg
+    try:
+        span = float(flag.get("span") or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+    factor = float(polcfg.VIEWER_FLAG_SPAN_FACTOR or 0.0)
+    return span / factor if math.isfinite(span) and span > 0 and factor > 0 else 0.0
+
+
 def expected_ordinals(user_dispute: Mapping | None) -> tuple[int, ...]:
     # THE STABLE IDENTITY, and deliberately not a new database id. The route already preserves the
     # user's flag list in order inside `user_dispute`, that list is carried verbatim through the

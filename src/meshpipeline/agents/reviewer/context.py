@@ -424,8 +424,20 @@ def build_review_prompt(
             continue
         _note = str(f.get("note") or "").strip()[:300]
         _patch = str(f.get("patch") or "").strip()
+        # VER-11: THE MARK MUST BE SHOWABLE. The viewer names the face a click landed on as IT draws the mesh (an
+        # FEA mesh: one patch per CAD face, Face_k); the review session may know other names (Gmsh's physical
+        # groups: solid, free). Such a name was handed over as "[patch: Face_12]", the reviewer passed it as
+        # patch_name, every view was refused and the marks were never seen. A name the session cannot isolate is
+        # told as where the mark is, with the call to use - never as a name to isolate.
+        if _patch and renderable_patches is not None and _patch not in renderable_patches:
+            _where = (f"  [on {_patch} as the user's viewer names it - not a group in this review, so call "
+                      "go_to_coordinates exactly as given, without patch_name]")
+        else:
+            _where = f"  [patch: {_patch}]" if _patch else ""
+        _radius = HF.mark_radius(f)
         _line = (f"  flag {i}. {_loc}"
-                 + (f"  [patch: {_patch}]" if _patch else "")
+                 + _where
+                 + (f" (the marked circle's radius: {_radius:.3g} {mesh_units})" if _radius else "")
                  + (f" - the engineer's concern: {_note}" if _note else ""))
         # On the rebuild, the two facts that make this a COMPARISON rather than a fresh look: what
         # was measured on the mesh they disputed, and what the builder says it did about it.

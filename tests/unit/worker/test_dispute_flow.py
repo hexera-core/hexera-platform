@@ -409,10 +409,13 @@ def test_a_dispute_after_the_conversation_moved_on_inherits_the_runs_own_payload
         "intake_patches": [{"name": "wing", "type": "wall"}], "dimensionality": "3D",
         "purpose": "external_cfd", "input_kind": "body-surface"}
     client, dispatched, _ = _client(monkeypatch, parent, linked_session=False)
+    # VER-9: "finer wake please" is a change, so this is the new run's path (no model: the code sentence)
+    monkeypatch.setattr("meshpipeline.agents.intake.plan_reply._ask", _no_model)
     r = client.post(f"/api/v1/simulation/{parent.id}/dispute",
                     headers={"X-User-Id": "user-1"},
                     json={"comment": "finer wake please"})
     assert r.status_code == 202, r.text
+    assert "user_dispute" not in dispatched and dispatched["user_notes"][-1]["text"] == "finer wake please"
     assert dispatched["session_id"] == "sess-1"
     assert dispatched["intake_patches"] == [{"name": "wing", "type": "wall"}]
     assert dispatched["purpose"] == "external_cfd"
@@ -459,17 +462,34 @@ def test_dispute_endpoint_rejects_empty_dispute_and_unknown_job(monkeypatch):
     assert not dispatched
 
 
+async def _no_model(*_a, **_k):
+    raise RuntimeError("no model in unit tests")
+
+
 def test_dispute_endpoint_accepts_comment_only_change_request(monkeypatch):
-    # a dispute can be a plain change of heart - no flagged cells required
+    # a plain change of heart needs no marks - and since VER-9 it is a requirement of a new run, not a dispute
     parent = _succeeded_job()
     client, dispatched, _ = _client(monkeypatch, parent)
+    monkeypatch.setattr("meshpipeline.agents.intake.plan_reply._ask", _no_model)
     r = client.post(f"/api/v1/simulation/{parent.id}/dispute",
                     headers={"X-User-Id": "user-1"},
                     json={"comment": "I want finer resolution in the wake region"})
     assert r.status_code == 202, r.text
-    assert r.json()["flags"] == 0
-    assert dispatched["user_dispute"]["flags"] == []
-    assert "wake region" in dispatched["user_dispute"]["comment"]
+    assert r.json()["flags"] == 0 and r.json()["kind"] == "change"
+    assert "user_dispute" not in dispatched
+    assert dispatched["user_notes"][-1]["text"] == "I want finer resolution in the wake region"
+    assert r.json()["reply"].startswith("Noted.") and "new run" in r.json()["reply"]
+
+
+def test_a_doubt_with_no_marks_is_still_a_review_of_the_same_mesh(monkeypatch):
+    parent = _succeeded_job()
+    client, dispatched, _ = _client(monkeypatch, parent)
+    r = client.post(f"/api/v1/simulation/{parent.id}/dispute",
+                    headers={"X-User-Id": "user-1"},
+                    json={"comment": "the wake looks wrong, take another look"})
+    assert r.status_code == 202, r.text
+    assert r.json()["kind"] == "review"
+    assert "wake looks wrong" in dispatched["user_dispute"]["comment"]
 
 
 def test_dispute_endpoint_quota_gated(monkeypatch):

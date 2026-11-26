@@ -974,9 +974,25 @@ def faces_for(quote, notes) -> list | None:
     return _faces_in(_carrying(notes), quote)
 
 
+#: VER-10: words that say ONLY THERE ("nowhere else", "just that", "only here") - they beat a whole-mesh word, so
+#: "finer on this hole, NO where else, just that whole" (the owner's own words, "whole" for "hole") stays on the
+#: picked faces and never spreads over the whole mesh
+RULE_ONLY_THERE = "VER-10"
+_ONLY_THERE = re.compile(r"\b(?:no\s*where\s+else|not?\s+(?:any\s*where|elsewhere)|nothing\s+else|only|just\s+"
+                         r"(?:that|this|there|here|these|those|the\s+marked)|specifically)\b", re.I)
+
+
+def flow_sizes_picked_faces(engine: str) -> bool:
+    """NOTE-17: whether a FLOW engine sizes a picked face on its own triangles - only snappyHexMesh does
+    (snappy/part_levels.picked_surfaces); the others tell it with the next best (VER-12 says so up front)."""
+    return str(engine or "").strip().lower() == "snappy"
+
+
 def says_whole_mesh(quote) -> bool:
-    """Words that keep a size typed with a pick for the whole mesh all the same ("2 mm overall")."""
-    return bool(_WHOLE.search(str(quote or "")))
+    """Words that keep a size typed with a pick for the whole mesh all the same ("2 mm overall") - never when they
+    also say only there (RULE_ONLY_THERE)."""
+    words = str(quote or "")
+    return bool(_WHOLE.search(words)) and not _ONLY_THERE.search(words)
 
 
 def picked_for(quote, notes) -> list | None:
