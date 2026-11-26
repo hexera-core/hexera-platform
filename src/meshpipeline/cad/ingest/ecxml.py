@@ -100,6 +100,31 @@ SCHEMA_TAGS = frozenset({
 _CANONICAL_TAG = {t.lower(): t for t in sorted(SCHEMA_TAGS)}
 #: Objects the schema describes as two-dimensional (a plate, a face): their plane is the object.
 TWO_D = frozenset({"solid2dBlock", "source2dBlock", "grille", "rectangular2dFan"})
+#: WHY A KIND THAT IS NOT 2D NEEDS A REAL EXTENT ON EVERY AXIS. Four kinds carry a `plane` and are
+#: NOT in the 2D set - axial3dFan, printedCircuitBoard, solidCylinder and twoResistorModel - so a
+#: flat one of those is refused, and the bare message read as pedantry about a schema rule.
+#: MEASURED 2026-11-25: widening the zero-size set to admit them does not work - a flat
+#: printedCircuitBoard reaches `_occ_box` and raises Standard_DomainError out of OCC, because the
+#: fused build makes these with `_box_maker` and a box of no thickness is not a solid. (A flat
+#: grille is fine for the opposite reason: it goes to `_face_object` and never becomes a solid.)
+#: So the refusal is right and only its wording was wrong. Each of these says what the number is
+#: FOR, because a thermal tool that wrote a flat one meant something by it.
+_NEEDS_THICKNESS = {
+    "printedCircuitBoard": (" A board conducts through its thickness - an FR4 stack is "
+                            "orthotropic and the through-plane conductivity is the number that "
+                            "matters - so a board with no thickness is not a board. Give it its "
+                            "real thickness, or export it as a solid2dBlock, which may be flat."),
+    "twoResistorModel": (" A 2-resistor model's thetaJC leaves through its case face and thetaJB "
+                         "through its board face, which are opposite faces across its thickness; "
+                         "with no thickness those are one plane and the two paths cannot be told "
+                         "apart. Give the package its real height."),
+    "solidCylinder": (" Its <plane> is the cylinder's axis rather than a face, so it needs a real "
+                      "extent on every axis: the diameter across two of them and the length "
+                      "along the third."),
+    "axial3dFan": (" A 3D fan occupies a depth the air passes through, which is what separates it "
+                   "from the flat rectangular2dFan. Give it its real depth, or export it as a "
+                   "rectangular2dFan, which may be flat."),
+}
 #: Objects whose size may be zero on an axis (schema type sizeAllowZero). It is exactly the 2D set
 #: and is written as that set, not as a second list: a grille was left out of the second list when
 #: both were first written, so Flotherm's own grille - a face on a wall, with no thickness at all -
@@ -709,7 +734,16 @@ class _Reader:
             if kind in ZERO_SIZE_ALLOWED:
                 size = self.vec(el, "size", here, minimum=0.0)
             else:
-                size = self.vec(el, "size", here, minimum=0.0, exclusive=True)
+                try:
+                    size = self.vec(el, "size", here, minimum=0.0, exclusive=True)
+                except EcxmlError as exc:
+                    # `parse_number` builds the message and has no idea which object it is
+                    # reading, so the reason is appended HERE, where `kind` is in hand, rather
+                    # than threaded through vec -> number -> parse_number.
+                    extra = _NEEDS_THICKNESS.get(kind, "")
+                    if not extra:
+                        raise
+                    raise EcxmlError(f"{exc}.{extra}") from None
         noisy = self.noisy
         if "plane" in fields:
             plane = self.plane(el, here)
