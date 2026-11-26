@@ -66,7 +66,7 @@ def _drive(ws: Path, monkeypatch, reading: dict):
         return reading
 
     monkeypatch.setattr(FD.FA, "decide", ai)
-    monkeypatch.setattr(FD, "element_target", lambda _state, _ai: None)
+    monkeypatch.setattr(FD, "element_target", lambda _state, _ai, *_more: None)
     monkeypatch.setattr(MR, "decide", decide)
     monkeypatch.setattr(FD, "_cite", lambda job_id, entries: None)
     monkeypatch.setattr(runtime, "get_engine", lambda _n: SimpleNamespace(

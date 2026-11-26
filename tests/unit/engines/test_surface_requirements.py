@@ -431,7 +431,7 @@ def test_a_file_that_is_not_a_surface_carries_the_same_reading_on(tmp_path, monk
         return {}
 
     monkeypatch.setattr(FD.FA, "decide", no_ai)
-    monkeypatch.setattr(FD, "element_target", lambda _state, _ai: None)
+    monkeypatch.setattr(FD, "element_target", lambda _state, _ai, *_more: None)
     state = {"purpose": "structural", "user_notes": [{"id": "n1", "text": notes_of()}]}
     with pytest.raises(_Reached):
         asyncio.run(FD.drive(ws, state, job_id="t", publish=None, run=_Run()))

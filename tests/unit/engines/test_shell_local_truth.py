@@ -503,7 +503,7 @@ def _drive(ws: Path, monkeypatch, req: dict, notes: str, part_reading=None) -> l
         return part_reading
 
     monkeypatch.setattr(FD.FA, "decide", ai)
-    monkeypatch.setattr(FD, "element_target", lambda _state, _ai: None)
+    monkeypatch.setattr(FD, "element_target", lambda _state, _ai, *_more: None)
     monkeypatch.setattr(MR, "decide", decide)
     monkeypatch.setattr(FD.PS, "decide", parts)
     monkeypatch.setattr(FD, "_cite", lambda job_id, entries: None)
