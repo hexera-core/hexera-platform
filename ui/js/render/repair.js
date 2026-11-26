@@ -5,7 +5,8 @@
    click fetches a fresh link through render/download.js). Every sentence comes from core/repair_words.js; the 3D
    scene is viewer/repair_view.js. It decides no status and makes no claim about the mesh. */
 
-import { getGeometrySkin, getRepairReport, getRepairSurfaces } from "../api/endpoints.js";
+import { getGeometrySkin, getJob, getRepairReport, getRepairSurfaces } from "../api/endpoints.js";
+import { repairOf } from "../realtime/stream.js";
 import { esc, fmtBytes } from "../core/format.js";
 import { byType, countOf, flagLines, headlineOf, repairFiles, repairKeyNumbers, traceRows, traceSentence }
   from "../core/repair_words.js";
@@ -121,6 +122,18 @@ export function repairResultHtml(job, data) {
     </div>`;
 }
 
+/** THE JOB READ AGAIN, once, as the panel opens: the run's ending can reach the page before the repair's own
+ *  section and files are written beside it (seen on slug crsv5ui: a "ran: false" section and no files at the
+ *  ending, the whole section and the report a moment later). Answers the newer data, or the data it was given. */
+async function freshData(job, data, read = getJob) {
+  const j = await read(job, { throwOnError: false }).catch(() => null);
+  const repair = j && repairOf(j);
+  if (!repair) return data;
+  const files = (j.artifacts || []).map((a) => ({ id: a.id, type: a.artifact_type, label: a.label,
+    size: a.size_bytes, url: a.download_url }));
+  return { ...data, repair, files: files.length ? files : data.files };
+}
+
 /** The surfaces the view draws: the repair's own (original and repaired), else the checked part alone. */
 async function surfacesFor(job, data) {
   const s = await getRepairSurfaces(job).catch(() => null);
@@ -135,7 +148,7 @@ async function surfacesFor(job, data) {
  * result and takes the stage the way a delivered mesh does; beside a mesh it sits in the conversation, under the
  * run. Idempotent in the job id. Returns the element.
  */
-export function openRepairResult(job, anchorEl, data, { takeover = false, mount = null, tabWith = null } = {}) {
+export function openRepairResult(job, anchorEl, data, { takeover = false, mount = null, tabWith = null, read = getJob } = {}) {
   const existing = document.getElementById("repair-" + job);
   if (existing) return existing;
   const box = document.createElement("div");
@@ -163,12 +176,22 @@ export function openRepairResult(job, anchorEl, data, { takeover = false, mount 
   const host = box.querySelector(".rr-canvas");
   let view = null;
   const go = (id) => { if (view) view.focus(id); };
-  box.querySelectorAll(".rr-go").forEach((b) => { b.onclick = () => go(b.dataset.id); });
+  const bindBar = () => box.querySelectorAll(".rr-go").forEach((b) => { b.onclick = () => go(b.dataset.id); });
+  bindBar();
   host.addEventListener("repair-focus", (e) => {
     box.querySelectorAll(".rr-go").forEach((b) => b.classList.toggle("on", b.dataset.id === e.detail.id));
   });
   // the scene is read once the panel is on screen, as the mesh viewer's is
   const start = async () => {
+    // the side panel follows the job as it now stands, when that differs from what the ending carried
+    const now = read ? await freshData(job, data, read) : data;
+    if (now !== data && JSON.stringify([now.repair, now.files]) !== JSON.stringify([data.repair, data.files])) {
+      data = now;
+      const bar = document.createElement("div");
+      bar.innerHTML = repairResultHtml(job, data);
+      box.querySelector(".v-bar").replaceWith(bar.querySelector(".v-bar"));
+      bindFreshDownloads(box); bindReports(box, job); bindBar();
+    }
     try {
       const surfaces = await surfacesFor(job, data);
       const mountView = mount || (await import("../viewer/repair_view.js")).mountRepairView;

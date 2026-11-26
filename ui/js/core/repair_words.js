@@ -207,7 +207,8 @@ export function headlineOf(r) {
     case "unrepairable":
       return { cls: "fail", head: "We couldn't repair this CAD.", sub: "The reasons are listed below. Your original file is unchanged." };
     default:
-      return { cls: "notes", head: "Repair finished.", sub: `${fixed} of ${total} problems fixed.` };
+      return { cls: "notes", head: "Repair finished.",
+        sub: total ? `${fixed} of ${total} problems fixed.` : "No problems were found to fix." };
   }
 }
 
