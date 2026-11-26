@@ -149,7 +149,10 @@ def test_a_half_written_phase_mesh_is_not_a_partial(tmp_path):
 # ---------------------------------------------------------------- the payload
 
 
-def test_the_partial_says_what_it_is_and_is_not(tmp_path):
+def test_the_partial_says_what_it_is_and_is_not(tmp_path, monkeypatch):
+    # the machine's own free memory is not this test's subject (it is below MIN_MEMORY_ROOM late in a long run of
+    # the suite, and the frame is then rightly refused): the room is pinned
+    monkeypatch.setattr(prog, "_memory_room", lambda: 1.0)
     pm = _polymesh(tmp_path / "1")
     payload = prog.partial_payload(pm, units="mm")
     assert payload["kind"] == "polymesh" and payload["mesh_units"] == "mm"
@@ -160,7 +163,8 @@ def test_the_partial_says_what_it_is_and_is_not(tmp_path):
     json.dumps(payload)                                       # it travels as JSON
 
 
-def test_the_intermediate_is_deleted_the_moment_it_is_read(tmp_path):
+def test_the_intermediate_is_deleted_the_moment_it_is_read(tmp_path, monkeypatch):
+    monkeypatch.setattr(prog, "_memory_room", lambda: 1.0)      # (as above: not the machine's free memory)
     _polymesh(tmp_path / "1")
     payload = prog.take_castellated(tmp_path, units="mm")
     assert payload is not None

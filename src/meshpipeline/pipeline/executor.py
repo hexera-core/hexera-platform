@@ -553,6 +553,11 @@ async def node_executor(state: PipelineState) -> dict:
             # (gate_facts.missed_ports) - the same plan only loses it again (abc 00063401: twice, 47 min)
             from meshpipeline.engines.gate_facts import write_gate_facts
             write_gate_facts(workspace, _gate_key, failure_facts)
+        # CFDREQ-33 (engines/snapped_keep): the attempt's choice is made - its kept snapped mesh stays only for the
+        # relative retry that adds the layers to it
+        from meshpipeline.engines.snapped_keep import settle as _settle_snapped
+        _settle_snapped(workspace, refused_gate=None if _gates_ok else _gate_key,
+                        facts=failure_facts if not _gates_ok and isinstance(failure_facts, dict) else None)
 
         if executor_success:
             # WHAT THE MEASUREMENT SAYS, on the run's live line: the executor's own record of the

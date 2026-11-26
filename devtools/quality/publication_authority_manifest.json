@@ -5929,6 +5929,45 @@
   "roots": []
  },
  {
+  "context": "engines/snapped_keep.py::_block::search#1|NotAPublisher|not-a-publisher|",
+  "path": "engines/snapped_keep.py",
+  "qualname": "_block",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "re",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "engines/snapped_keep.py::_switches::search#1|NotAPublisher|not-a-publisher|",
+  "path": "engines/snapped_keep.py",
+  "qualname": "_switches",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "_SWITCHES",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "engines/snapped_keep.py::layers_on::search#1|NotAPublisher|not-a-publisher|",
+  "path": "engines/snapped_keep.py",
+  "qualname": "layers_on",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "re",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "engines/snappy/drivers.py::_build_internal_deterministic::error#1|NotAPublisher|not-a-publisher|",
   "path": "engines/snappy/drivers.py",
   "qualname": "_build_internal_deterministic",

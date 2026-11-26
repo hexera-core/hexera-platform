@@ -551,6 +551,11 @@ async def node_deliver_sound(state: PipelineState) -> dict:
                        "the last attempt failed; the best sound mesh of the run is delivered"))
     except Exception:  # noqa: BLE001 - a record never changes the delivery
         logger.debug("node_deliver_sound: why record not kept", exc_info=True)
+    # CFDREQ-33 (engines/snapped_keep): a kept snapped mesh never rides in a delivered workspace
+    from meshpipeline.engines.snapped_keep import drop as _drop_snapped
+    if best.get("workspace") and _drop_snapped(str(best.get("workspace"))):
+        logger.info("node_deliver_sound: the kept snapped mesh of attempt %s is removed before delivery - job_id=%s",
+                    best.get("attempt"), state.get("job_id"))
     logger.warning("node_deliver_sound: delivering attempt %s (%s) - the last attempt (%s) failed "
                    "at %s - job_id=%s", best.get("attempt"), best.get("engine"),
                    state.get("retry_count"), state.get("executor_failed_gate") or "finalize",

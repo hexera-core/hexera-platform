@@ -269,13 +269,13 @@ def _run_snappy_local(workspace, *, bashrc: str = _DEFAULT_BASHRC,
         return SizeBrake(ws / logname, budget, case_dir=ws, layers=layer_counts_of(ws))
 
     def _sh(cmd: str, logname: str, *, name: str = "", authoritative: bool = True,
-            expected: tuple[str, ...] = ()) -> ps.StageResult:
+            expected: tuple[str, ...] = (), append: bool = False) -> ps.StageResult:
         full = f"source {bashrc} >/dev/null 2>&1 && {cmd}"
         t0 = _time.time()
         rc, timed_out = 0, False
         brake = _brake_for(logname)
         try:
-            with (ws / logname).open("w") as fh:
+            with (ws / logname).open("a" if append else "w") as fh:
                 proc = run_guarded(["bash", "-lc", full], cwd=str(ws), env=_foam_env(),
                                    stdout=fh, stderr=subprocess.STDOUT,
                                    timeout=max(1.0, wall_at - _time.monotonic()),
@@ -321,6 +321,11 @@ def _run_snappy_local(workspace, *, bashrc: str = _DEFAULT_BASHRC,
         if oversize:
             # STOPPED BY THE SIZE BRAKE: headed far past the budget (its count, stage and ratio)
             out["oversize"] = oversize[-1]
+        from meshpipeline.engines.snapped_keep import read_reuse
+        _reuse = read_reuse(ws)
+        if _reuse:
+            # CFDREQ-33 (engines/snapped_keep): which path this snappyHexMesh ran - the layers only, or the whole mesh
+            out["layer_reuse"] = _reuse
         # quality and the volume export are measured HERE, beside the mesh (see _measure)
         timing = stage_timing(stages, snap_log, ranks=nproc)
         if (ws / "constant" / "polyMesh" / "owner").exists():
@@ -366,11 +371,54 @@ def _run_snappy_local(workspace, *, bashrc: str = _DEFAULT_BASHRC,
         (ws / "system" / "decomposeParDict").write_text(
             _HDR.format(cls="dictionary", obj="decomposeParDict")
             + f"numberOfSubdomains {nproc}; method scotch;\n")
-        dp = _sh("decomposePar -force", "decomposePar.log", expected=("processor0",))
-        timed_out = dp.timed_out
-        if dp.ok:
-            sm = _sh(f"mpirun --allow-run-as-root --oversubscribe -np {nproc} "
-                     "snappyHexMesh -overwrite -parallel", "snappyHexMesh.log")
+        # CFDREQ-33 amended (rulebook 116, engines/snapped_keep): THE RELATIVE RETRY ADDS ONLY THE LAYERS to the first
+        # attempt's kept snapped mesh; an attempt that may be followed by that retry keeps its snapped mesh
+        from meshpipeline.engines import snapped_keep as SK
+        _mpi = f"mpirun --allow-run-as-root --oversubscribe -np {nproc} snappyHexMesh -overwrite -parallel"
+        reuse = SK.read_reuse(ws) or {}
+        _ready, _why = SK.layers_only_ready(ws, nproc)
+        sm = None
+        timed_out = False
+        if _ready:
+            _t_r = _time.monotonic()
+            SK.unpack(ws)
+            with SK.stage_dict(ws, "layers"):
+                lo = _sh(_mpi, "snappyHexMesh.log")
+            if lo.ok or lo.timed_out or oversize or oom:
+                sm = lo
+                reuse = {**reuse, "path": "layers_only", "restart_s": round(_time.monotonic() - _t_r, 2)}
+            else:
+                # the kept mesh could not be read or extended: the whole mesh is built, as before
+                stages.remove(lo)
+                for pd in ws.glob("processor*"):
+                    shutil.rmtree(pd, ignore_errors=True)
+                reuse = {**reuse, "path": "full", "why": f"the layers-only run on the kept mesh exited {lo.rc}"}
+        elif _why:
+            reuse = {**reuse, "path": "full", "why": _why}
+        if sm is None:
+            _keep_now = SK.wants_keep(ws)
+            dp = _sh("decomposePar -force", "decomposePar.log", expected=("processor0",))
+            timed_out = dp.timed_out
+            if dp.ok and _keep_now:
+                # SPLIT: castellation and snapping (the snapped mesh written in binary, exactly as held), the snapped
+                # mesh kept aside until this attempt's layer verdict is known, then the layers on it
+                _key = SK.snap_key(ws)
+                with SK.stage_dict(ws, "snap", binary=True):
+                    sm = _sh(_mpi, "snappyHexMesh.log")
+                if sm.ok:
+                    kept = SK.keep(ws, nproc, _key)
+                    if kept:
+                        reuse = {**reuse, "kept": kept}
+                    with SK.stage_dict(ws, "layers"):
+                        sm = _sh(_mpi, "snappyHexMesh.log", append=True)
+            elif dp.ok:
+                sm = _sh(_mpi, "snappyHexMesh.log")
+            if reuse:
+                reuse.setdefault("path", "full")
+        if reuse:
+            SK.write_reuse(ws, reuse)
+            logger.info("snappy layer reuse: %s", reuse)
+        if sm is not None:
             timed_out = timed_out or sm.timed_out
             if sm.ok:
                 rp = _sh("reconstructParMesh -constant -mergeTol 1e-6",
@@ -388,7 +436,11 @@ def _run_snappy_local(workspace, *, bashrc: str = _DEFAULT_BASHRC,
         # numbered time directory and the runner can publish a frame of the castellated one while
         # snappy is still working. With the switch off this is `snappyHexMesh -overwrite`, exactly
         # as it has always been, and no branch below it runs.
+        from meshpipeline.engines import snapped_keep as SK
         from meshpipeline.engines.snappy import progressive as prog
+        if SK.drop(ws):
+            # a serial run keeps no snapped mesh and adds no layers to one (engines/snapped_keep): the whole mesh
+            SK.write_reuse(ws, {**(SK.read_reuse(ws) or {}), "path": "full", "why": "this run is serial"})
         snapshotting = prog.snapshots_enabled(nproc=nproc)
         sm = _sh(prog.snappy_command(nproc=nproc), "snappyHexMesh.log",
                  expected=() if snapshotting else ("constant/polyMesh/owner",))

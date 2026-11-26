@@ -177,6 +177,28 @@ def _sibling_plan_memory(workspace: Path) -> dict | None:
     return None
 
 
+#: The plan memory's record of the budget the plan asked for, beside the `max_cells` the render raised for its own
+#: boxes (the near wake, the near-body box, the gap boxes): a retry inherits this one, and the render prices the
+#: boxes in once more on it - never on top of a budget that already holds them.
+_PLAN_MAX_CELLS = "_plan_max_cells"
+
+
+def _say_layer_reuse(result, plan: dict, *, attempt: int, minutes: float, job_id) -> None:
+    """CFDREQ-33 (engines/snapped_keep): which path the relative retry's snappyHexMesh ran, in the log and the why
+    record."""
+    ran = dict((result.get("layer_reuse") if isinstance(result, dict) else None) or plan)
+    only = ran.get("path") == "layers_only"
+    words = ("the relative retry added only the layers to the first attempt's snapped mesh" if only else
+             f"the relative retry rebuilt the whole mesh: {ran.get('why') or 'no kept snapped mesh'}")
+    logger.info("snappy pass %d (relative retry): %s - %.1f min (job_id=%s)", attempt, words, minutes, job_id)
+    try:
+        from meshpipeline.contracts import decision_record as _dr
+        _dr.cite(str(job_id or ""), stage="snappy_layer_reuse", decided=str(ran.get("path")),
+                 value=ran.get("from"), rule="CFDREQ-33", inputs={"pass": attempt}, words=words)
+    except Exception:  # noqa: BLE001 - the why record never stops a mesh
+        logger.debug("CFDREQ-33 reuse not cited", exc_info=True)
+
+
 def _inherit_durable_plan_fields(strategy: dict, workspace: Path) -> dict:
     """Fields that are FACTS about the request - not per-attempt choices - must survive
     re-planning. A revised plan that omits reference_length_m silently changes the RULER the
@@ -193,7 +215,10 @@ def _inherit_durable_plan_fields(strategy: dict, workspace: Path) -> dict:
     for prev in _sibling_plan_memories(workspace):
         for k in list(missing):
             if prev.get(k) is not None:
-                out[k] = prev[k]
+                # THE PLAN'S BUDGET, never the one the render raised for its own boxes (_PLAN_MAX_CELLS): the render
+                # adds the near wake, the near-body box and the gap boxes on top of it again (00058385 went
+                # 4,000,000 -> 4,345,373 -> 4,690,746 over two attempts)
+                out[k] = (prev.get(_PLAN_MAX_CELLS) or prev[k]) if k == "max_cells" else prev[k]
                 missing.remove(k)
                 logger.info("revised plan omitted %s - inherited %r from a prior attempt", k,
                             prev[k])
@@ -716,6 +741,10 @@ def _native_payload_members(workspace) -> list[str]:
     # a FileNotFoundError traceback after meshing, and no internal-flow snappy mesh built there
     # was ever measured, so the resolution floor that reads the measure judged nothing.
     members += [f for f in REMOTE_WORKSPACE_FACTS if (ws / f).is_file()]
+    # CFDREQ-33 (engines/snapped_keep): the relative retry's kept snapped mesh, which its layers-only run starts from
+    from meshpipeline.engines.snapped_keep import KEEP_DIR, LAYERS_ONLY_FILE, REUSE_FILE
+    if (ws / LAYERS_ONLY_FILE).is_file() and (ws / KEEP_DIR).is_dir():
+        members += [LAYERS_ONLY_FILE, KEEP_DIR, *([REUSE_FILE] if (ws / REUSE_FILE).is_file() else [])]
     return members
 
 
@@ -1354,6 +1383,11 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
         if _learned_k:
             # RUN-8: priced on the wall the stopped pass measured (size_brake.learned_face_factor)
             strategy = {**strategy, "_wall_face_factor": float(_learned_k)}
+        if strategy.get(_PLAN_MAX_CELLS):
+            # a plan carried whole (the same plan again) holds the budget the render raised: the pass starts from the
+            # plan's own, and the render prices its boxes in on that once
+            _own = {k: v for k, v in strategy.items() if k != _PLAN_MAX_CELLS}
+            strategy = {**_own, "max_cells": int(strategy[_PLAN_MAX_CELLS])} if not _coarsened else _own
         previous_plan = strategy                       # remember for the next repair
         _policy = None                                 # this pass's local layer policy, if any
         _repairable = False                            # may a repair split this pass's wall?
@@ -1510,8 +1544,10 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
                                        job_id=str(job_id or ""))
             if int(summary.get("max_cells") or 0) > int(strategy.get("max_cells") or 0):
                 # the gap boxes raised snappy's cell ceiling: the plan memory carries the budget
-                # the pass really used, so an overshoot correction reads it right
-                strategy = {**strategy, "max_cells": int(summary["max_cells"])}
+                # the pass really used, so an overshoot correction reads it right - and the plan's own budget beside
+                # it (_PLAN_MAX_CELLS), which a retry inherits so the boxes are priced in once
+                strategy = {**strategy, "max_cells": int(summary["max_cells"]),
+                            _PLAN_MAX_CELLS: int(strategy.get(_PLAN_MAX_CELLS) or strategy.get("max_cells") or 0)}
                 _write_plan_memory(workspace, strategy)
             # the honest record travels with the case: the manifest reports the per-region
             # layer decisions this pass actually authored (stale records are removed)
@@ -1568,11 +1604,17 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
             # RUN (deterministic; Cloud Run Job / local) + user-facing instrumentation, under the
             # GUARD its planned cells give it (TIME-2) - the only clock, and it decides nothing
             _guard = pass_guard(_budget, job_id=job_id, attempt=attempt, workspace=workspace)
+            # CFDREQ-33 amended (rulebook 116): THE RELATIVE RETRY ADDS ONLY THE LAYERS to the previous attempt's
+            # kept snapped mesh when its castellation and snapping are this case's (engines/snapped_keep)
+            from meshpipeline.engines import snapped_keep as _SK
+            _reuse_plan = _SK.adopt(workspace)
             _t_mesh = _time.monotonic()
             result = await _run_snappy_on_its_machine(
                 R, workspace, publish, state.get("engine", "snappy"),
                 read_purpose(workspace), run=run, native_attempt=attempt)
             _mesh_minutes = (_time.monotonic() - _t_mesh) / 60.0
+            if _reuse_plan is not None:
+                _say_layer_reuse(result, _reuse_plan, attempt=attempt, minutes=_mesh_minutes, job_id=job_id)
             if result.get("case_contract_mismatch"):
                 # the pre-flight refused the case before snappyHexMesh started: the renderer
                 # did not write the approved patches, and a re-plan renders the same names. Stop
