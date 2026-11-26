@@ -305,6 +305,11 @@ def results(workspace) -> dict | None:
     if faces_said:
         # the same account in one short line, for the result screen (the whole sentence is in the plan words)
         extra["faces_short"] = faces_short(acc)
+    # RUN-11: where the run's time went (engines/fea_times), for the record and the report's table
+    from meshpipeline.engines import fea_times as TIMES
+    spent = TIMES.load(ws)
+    if spent:
+        extra["times"] = {**spent, "rows": TIMES.table_rows(spent)}
     return {**extra,
         "title": "FEA mesh",
         "summary": (f"{cells:,} quadratic tetrahedra (10-node), a solid mesh"

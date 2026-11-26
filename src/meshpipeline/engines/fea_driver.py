@@ -34,6 +34,7 @@ from meshpipeline.engines import fea_ai as FA
 from meshpipeline.engines import fea_ladder as L
 from meshpipeline.engines import fea_part_sizes as PS
 from meshpipeline.engines import fea_plan as P
+from meshpipeline.engines import fea_times as TIMES
 
 if TYPE_CHECKING:
     from meshpipeline.agents.builder.driver_run import BuilderDriverRun
@@ -1973,6 +1974,8 @@ async def _relayed_mesh(publish, ws: Path, *, seq: int, timeout, of: int | None 
     # THE NOUN IS THE ENGINE'S OWN (EngineSpec.counted_as): this path delivers an FEA deck, whose
     # count is in ELEMENTS - said whether or not the plan has an estimate to count them against.
     _unit = planned_live_count(ENGINE, ws)[1]
+    # RUN-11: a mesher run begins (its own steps follow in the run's step log)
+    TIMES.log(ws, "pass", "a mesher run")
     sink = None if publish is None or getattr(publish, "amesh_stage", None) is None else \
         mesh_progress.publishing_sink(publish, asyncio.get_running_loop(),
                                       op_prefix=mesh_progress.stage_op_prefix(ws, seq),
@@ -2687,6 +2690,8 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
     from meshpipeline.contracts.mesh_execution import note_native_pass, note_native_payload
 
     ws = Path(workspace)
+    # RUN-11: where the run's time goes, step by step (engines/fea_times)
+    TIMES.start(ws)
     if staged_solid(ws) is None:
         logger.warning("fea driver: no staged solid in %s - job_id=%s", ws, job_id)
         await run.fence("deliver builder outcome")
@@ -2786,6 +2791,7 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
         outcome = run.outcome(produced_deliverable=False, failure_marker=BUILD_FAILED)
         return False, BUILD_FAILED, outcome
 
+    TIMES.log(ws, "planning", "planning the element sizes")
     if skins and skins.get("origin"):
         _cite(job_id, [{"stage": "fea_plan", "decided": "skins left out", "rule": "MESH-8",
                         "value": sum(len(sk["faces"]) for sk in skins["skins"]), "inputs": {"skins": skins["skins"]},
@@ -3408,6 +3414,7 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
         await run.fence("deliver builder outcome")
         outcome = run.outcome(produced_deliverable=False, exhausted=False, failure_marker=GUARD_TRIP)
         return False, GUARD_TRIP, outcome
+    TIMES.log(ws, "delivering", "checking and delivering the mesh")
     closer_of_reaimed(passes, (first_plan.get("target") or {}).get("asked"))
     best, rule = L.best_pass(passes)
     _cite(job_id, [{"stage": "fea_ladder", "decided": "delivered pass", "value": best, "rule": "LAD-fea-5",
@@ -3438,6 +3445,12 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
         else:
             _refuse(ws, cause=FailureCause.MESH_QUALITY.value, gate=QUALITY_GATE,
                     text=ladder_words(passes, levers), **ladder_facts(ws, passes, levers))
+    # RUN-11: the run's times into its record (fea_times.json, read into the result and the report), and one line in
+    # the closing message when one step took most of the run
+    run_times = TIMES.write(ws)
+    if ok and TIMES.most_words(run_times):
+        from meshpipeline.contracts.user_notes import record_remark
+        record_remark(ws, TIMES.most_words(run_times), by="fea_times")
     await run.fence("deliver builder outcome")
     outcome = run.outcome(produced_deliverable=ok, exhausted=not ok, failure_marker="" if ok else BUILD_FAILED)
     return outcome.produced_deliverable, (outcome.terminal_value or BUILD_FAILED), outcome

@@ -45,6 +45,9 @@ def note_stage(ws: Path, key: str, label: str, *, n: int | None = None, of: int 
         (Path(ws) / STAGE_FILE).write_text(json.dumps(step))
     except OSError:
         pass
+    # RUN-11: the same step, on the same clock, in the run's step log (a re-note of the step is no new step)
+    from meshpipeline.engines import fea_times as TIMES
+    TIMES.log(ws, key, label, at=step["at"])
 
 
 class Ticker:
@@ -1838,13 +1841,17 @@ def mesh(workspace) -> int:
            f"exit {rc}" if rc != 0 else "no quality record")
     # the failed attempt's files go - never the mesher's own log, which the runner is still writing and the
     # watchdog reads (gmsh_runner.FEA_LOG); what the pass read comes back for the second attempt
+    from meshpipeline.engines import fea_times as TIMES
     for f in ws.iterdir():
-        if f.is_file() and f.name != _MESHER_LOG and before.get(f.name) != f.stat().st_mtime_ns:
+        # (nor the run's step log, RUN-11: the failed fill's time is the run's too)
+        if (f.is_file() and f.name not in (_MESHER_LOG, TIMES.LOG_FILE)
+                and before.get(f.name) != f.stat().st_mtime_ns):
             f.unlink()
     for f in (inputs.iterdir() if inputs.is_dir() else []):
         shutil.copy2(f, ws / f.name)
     print(f"[GMSH-FEA] the {first} fill failed ({why}) - the pass filled again with {other} ({HXT_RULE})",
           file=sys.stderr)
+    TIMES.log(ws, "refill", "filling again another way")
     _ALGO_3D[0] = other
     t1 = time.monotonic()
     try:
@@ -1910,12 +1917,16 @@ def _mesh_short(workspace) -> int:
     first = ws / "_mesh24_sized"
     shutil.rmtree(first, ignore_errors=True)
     first.mkdir()
+    from meshpipeline.engines.fea_times import LOG_FILE as _STEPS
     for f in ws.iterdir():
-        if f.is_file() and before.get(f.name) != f.stat().st_mtime_ns:
+        # (the run's step log stays: it is the whole run's, RUN-11)
+        if f.is_file() and f.name != _STEPS and before.get(f.name) != f.stat().st_mtime_ns:
             shutil.move(str(f), first / f.name)
     print(f"[GMSH-FEA] the mesh with short edges sized {'was not built' if rc else 'still misses an element limit'} - "
           f"meshed again with them as drawn, the better kept ({SHORT_RULE})", file=sys.stderr)
     _NO_SHORT[0] = True
+    from meshpipeline.engines import fea_times as TIMES
+    TIMES.log(ws, "comparison", "meshing again to compare")
     try:
         rc2 = _mesh_tiny(ws)
     finally:
@@ -2065,11 +2076,17 @@ def _mesh(workspace) -> int:
         # gmsh's own steps on what gmsh meshed (every volume, or the rung's other parts; none when
         # fTetWild takes every part)
         meshed = not rung or bool(built.get("gmsh_volumes"))
+        # RUN-11: how the solid was filled (the record's; the step's time is the step log's)
+        from meshpipeline.engines import fea_times as TIMES
+        TIMES.log(ws, "detail", fill={"algorithm": _FILLED[0], "threads": mesh_threads(run)})
         note_stage(ws, "optimising", "improving the elements")
         # MESH-10: no volume comes out of the optimiser with invalid elements it went in without
         from meshpipeline.engines.gmsh import optimise_guard
         optimised = optimise_guard.optimise(gmsh, "Netgen", int(run.get("optimise_passes") or 1) if meshed else 0,
                                             log_prefix="[GMSH-FEA]")
+        improving: list[dict] = [{"stage": "optimising", "name": "smoothing and swapping",
+                                  "changed": ("a volume it made worse was put back as filled" if optimised else
+                                              "the elements reshaped in place")}]
         # MESH-mmg-1: MMG improves the inside of a volume that still holds an element the limits would
         # note, its surface frozen - kept only when better, before the elements are curved
         mmg: dict = {}
@@ -2085,12 +2102,21 @@ def _mesh(workspace) -> int:
             except Exception as exc:  # noqa: BLE001 - the notes never fail a mesh
                 print(f"[GMSH-FEA] the notes' quality limits were not read for the quality pass: {exc}",
                       file=sys.stderr)
+            # RUN-11: the quality pass is a step of its own in the run's step log (the live line stays "improving")
+            TIMES.log(ws, "quality_pass", "improving the elements")
+            # MESH-mmg-2: the user's limits are chased within a share of the time the run has taken so far (the step
+            # log's first line is the run's start); without limits nothing reads it
+            steps = TIMES.read(ws) if mmg_targets else []
+            import time as _time
+            budget = fea_mmg.budget_for(_time.time() - float(steps[0]["at"]) if steps else None)
             try:
-                mmg = fea_mmg.improve(gmsh, vols, targets=mmg_targets or None)
+                mmg = fea_mmg.improve(gmsh, vols, targets=mmg_targets or None, budget_s=budget)
             except Exception as exc:  # noqa: BLE001 - a post-pass that cannot run leaves the gmsh mesh
                 mmg = {"rule": fea_mmg.RULE, "ran": False, "why": f"{type(exc).__name__}: {exc}"[:300]}
             if fea_mmg.words(mmg):
                 print(f"[GMSH-FEA] {fea_mmg.words(mmg)}", file=sys.stderr)
+            improving.append({"stage": "quality_pass", "name": "the quality pass", "changed": fea_mmg.changed(mmg)})
+        TIMES.log(ws, "detail", improving=improving)
         order = int((plan.get("element") or {}).get("order") or 2)
         settled: dict = {"straightened": 0, "set_aside": [], "cusp_places_m": [], "cusp_elements": 0,
                          "micro_used": [], "micro_elements": 0}

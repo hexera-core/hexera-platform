@@ -78,6 +78,16 @@ TIME_PER_ELEMENT_S = 5e-4
 MATCH_SHARE = 1e-9
 #: the elements mmg may change: those within this many layers of shared corners of a flagged one
 RINGS = 2
+#: MESH-mmg-2, the user's limits chased with diminishing returns: another round only while the last one made good at
+#: least this share of the elements still past them (113 -> 111 is 2%: it ends there) ...
+MIN_GAIN_SHARE = 0.10
+ROUNDS_RULE = "MESH-mmg-2"
+#: ... at most this many rounds ...
+MAX_ROUNDS = 3
+#: ... and all of them within this share of the time the run has taken when the pass begins (a round never gets
+#: less than ROUND_FLOOR_S; a round over its time is stopped and its volume kept as it was)
+TIME_SHARE = 0.25
+ROUND_FLOOR_S = 60.0
 
 
 def binary() -> str | None:
@@ -485,10 +495,21 @@ def _replace(gmsh, v: int, ntags: np.ndarray, out: dict) -> None:
     gmsh.model.mesh.addElementsByType(v, 4, list(range(next_el, next_el + len(tets))), tets.ravel().tolist())
 
 
-def improve(gmsh, vols, *, enabled: bool | None = None, exe: str | None = None, targets=None) -> dict:
+def budget_for(run_elapsed_s: float | None) -> float | None:
+    """MESH-mmg-2: the seconds the pass may spend chasing the user's limits - TIME_SHARE of the time the run has taken
+    so far, at least ROUND_FLOOR_S; None when the run's time is not known (the pass as before)."""
+    if run_elapsed_s is None:
+        return None
+    return max(ROUND_FLOOR_S, TIME_SHARE * float(run_elapsed_s))
+
+
+def improve(gmsh, vols, *, enabled: bool | None = None, exe: str | None = None, targets=None,
+            budget_s: float | None = None) -> dict:
     """MESH-mmg-1 on every listed volume of the current gmsh model (straight tetrahedra, before
     setOrder). `targets`: the user's own quality limits (targets_of; None or [] = none, and the pass is
-    exactly the one without them). Returns the record quality.json carries: {rule, ran, volumes: [...],
+    exactly the one without them). With targets the pass works in rounds (MESH-mmg-2): another round only while the
+    last one made good at least MIN_GAIN_SHARE of the elements still past the limits, at most MAX_ROUNDS, and all of
+    them within `budget_s` (budget_for). Returns the record quality.json carries: {rule, ran, volumes: [...],
     kept, seconds} (and `targets` when there are some) or {rule, ran: False, why}."""
     targets = list(targets or []) or None
     if not (ENABLED if enabled is None else enabled):
@@ -521,36 +542,89 @@ def improve(gmsh, vols, *, enabled: bool | None = None, exe: str | None = None, 
             rows.append({"volume": v, "before": before, "kept": False, "seconds": 0.0,
                          "why": "every element it is for has all its corners on the surface, which stays as meshed"})
             continue
-        # ONLY AROUND THE FLAGGED ELEMENTS: every element further than RINGS shared corners away is
-        # required, so it comes back exactly as it went in
-        free = around(tets, flagged(xyz, tets, targets), RINGS)
-        t1 = time.monotonic()
-        with tempfile.TemporaryDirectory(prefix="fea_mmg_") as td:
-            out = remesh(xyz, tris, refs, tets, exe=exe, workdir=Path(td), free=free,
-                         timeout=TIME_BASE_S + TIME_PER_ELEMENT_S * len(tets))
-        row: dict = {"volume": v, "mmg": True, "before": before, "free_elements": int(free.sum())}
-        if out["ok"]:
-            out = splice(xyz, tets, free, out, targets)
-        row["seconds"] = round(time.monotonic() - t1, 2)
-        if not out["ok"]:
-            rows.append({**row, "kept": False, "why": out["why"]})
-            continue
-        row.update(cavities=out["cavities"], cavities_improved=out["improved"])
-        if not out["improved"]:
-            rows.append({**row, "kept": False, "why": "no cavity came back better"})
-            continue
-        after = worst(out["xyz"], out["tets"], out["boundary_map"] >= 0, targets=targets)
-        keep, why = better(before, after)
-        if not keep and why == "no better":
-            # a cavity away from the volume's worst element came back better: kept, nothing is worse
-            keep, why = True, f"better inside {out['improved']} of {out['cavities']} cavities"
-        row.update(after=after, kept=keep, why=why)
-        if keep:
+        row: dict = {"volume": v, "mmg": True, "before": before}
+        rounds: list[dict] = []
+        cur = before
+        for k in range(MAX_ROUNDS if targets else 1):
+            # ONLY AROUND THE FLAGGED ELEMENTS: every element further than RINGS shared corners away is
+            # required, so it comes back exactly as it went in
+            free = around(tets, flagged(xyz, tets, targets), RINGS)
+            timeout = TIME_BASE_S + TIME_PER_ELEMENT_S * len(tets)
+            if targets and budget_s is not None:
+                # MESH-mmg-2: the user's limits are chased only within a share of the run's time
+                left = float(budget_s) - (time.monotonic() - t0)
+                if k and left < ROUND_FLOOR_S:
+                    row["stopped"] = "time"
+                    break
+                timeout = min(timeout, max(ROUND_FLOOR_S, left))
+            t1 = time.monotonic()
+            with tempfile.TemporaryDirectory(prefix="fea_mmg_") as td:
+                out = remesh(xyz, tris, refs, tets, exe=exe, workdir=Path(td), free=free, timeout=timeout)
+            if not rounds:
+                row["free_elements"] = int(free.sum())
+            if out["ok"]:
+                out = splice(xyz, tets, free, out, targets)
+            seconds = round(time.monotonic() - t1, 2)
+            row["seconds"] = round(float(row.get("seconds") or 0.0) + seconds, 2)
+            if not out["ok"]:
+                if not rounds:
+                    row.update(kept=False, why=out["why"])
+                if targets and str(out["why"]).startswith("mmg3d over"):
+                    row["stopped"] = "time"
+                break
+            if not rounds:
+                row.update(cavities=out["cavities"], cavities_improved=out["improved"])
+            if not out["improved"]:
+                if not rounds:
+                    row.update(kept=False, why="no cavity came back better")
+                break
+            after = worst(out["xyz"], out["tets"], out["boundary_map"] >= 0, targets=targets)
+            keep, why = better(cur, after)
+            if not keep and why == "no better":
+                # a cavity away from the volume's worst element came back better: kept, nothing is worse
+                keep, why = True, f"better inside {out['improved']} of {out['cavities']} cavities"
+            if not keep:
+                if not rounds:
+                    row.update(after=after, kept=False, why=why)
+                break
             _replace(gmsh, v, ntags, out)
+            row.update(after=after, kept=True, why=why)
+            rounds.append({"seconds": seconds, "past_before": int(cur.get("user_past") or 0),
+                           "past_after": int(after.get("user_past") or 0)})
+            if not targets:
+                break
+            # MESH-mmg-2: A ROUND THAT BUYS LITTLE ENDS THE PASS - fewer than MIN_GAIN_SHARE of the elements still past
+            # the user's limits made good (the owner, 26 Nov: "113 past it before, 111 after" for many minutes)
+            gain = rounds[-1]["past_before"] - rounds[-1]["past_after"]
+            if not rounds[-1]["past_after"]:
+                row["stopped"] = "none left"
+                break
+            if gain < MIN_GAIN_SHARE * rounds[-1]["past_before"]:
+                row["stopped"] = "little gained"
+                break
+            if k + 1 >= MAX_ROUNDS:
+                row["stopped"] = "rounds"
+                break
+            arrays = _volume_arrays(gmsh, v)
+            if arrays is None:
+                break
+            ntags, xyz, tets, tris, refs = arrays
+            on_b = np.zeros(len(xyz), dtype=bool)
+            on_b[np.unique(tris)] = True
+            cur = worst(xyz, tets, on_b, targets=targets)
+        if targets:
+            row["rounds"] = rounds
         rows.append(row)
     return {"rule": RULE, "ran": True, "volumes": rows, "kept": sum(1 for r in rows if r.get("kept")),
             "tried": sum(1 for r in rows if r.get("mmg")), "seconds": round(time.monotonic() - t0, 2),
-            **({"targets": targets} if targets else {})}
+            **({"targets": targets} if targets else {}),
+            **({"rounds_rule": ROUNDS_RULE} if targets else {}),
+            **({"budget_s": round(float(budget_s), 1)} if targets and budget_s is not None else {})}
+
+
+#: MESH-mmg-2: why the pass stopped while elements were still past the user's limits, in plain words
+STOP_WORDS = {"little gained": "it stopped there, as another round would have made few more good",
+              "time": "it stopped at the share of the run's time it may take"}
 
 
 def user_counts(record: dict) -> dict[str, tuple[int, int, bool]]:
@@ -596,9 +670,26 @@ def tell(report: dict | None, record: dict) -> dict | None:
         else:
             words = (f"the quality pass tried the {b:,} element{'s' if b != 1 else ''} past it and could not make "
                      "them better without moving the surface mesh, which stays as meshed")
+        stops = {str(r.get("stopped")) for r in record.get("volumes") or [] if r.get("stopped")}
+        if tried and b and stops & set(STOP_WORDS):
+            # MESH-mmg-2: why the pass stopped short of the limit
+            words += "; " + STOP_WORDS[sorted(stops & set(STOP_WORDS))[0]]
         row["lever"] = {"rule": RULE, "before": b, "after": a, "words": words}
         row["delivered"] = f"{row.get('delivered') or ''}; {words}".lstrip("; ")
     return report
+
+
+def changed(record: dict | None) -> str:
+    """RUN-11: what the pass changed, in plain words, for the run's "Where the time went" table."""
+    if not record or not record.get("ran"):
+        return "not run here"
+    if not record.get("tried"):
+        return "nothing to improve"
+    counts = user_counts(record)
+    past = "; ".join(f"{b:,} past your limit before, {a:,} after" for b, a, _t in counts.values() if b)
+    kept = int(record.get("kept") or 0)
+    head = (f"improved the inside of {kept} volume(s)" if kept else "tried, and kept the mesh as it was")
+    return f"{head}{f' ({past})' if past else ''}"
 
 
 def words(record: dict) -> str:
