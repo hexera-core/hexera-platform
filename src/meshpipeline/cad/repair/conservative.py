@@ -1097,8 +1097,10 @@ def _repair_via_v5(source: Path, destination: Path, *, deadline_s: float, profil
             report = _v3_run(source, destination, profile=profile, directives=directives, goal=goal,
                              focus_faces=focus_faces, auto_accept_mm=auto_accept_mm)
         except RepairRefused as refused:
+            from meshpipeline.cad.repair.ending import NOTHING_TO_REPAIR
             v3_contract = R.from_v3(choice=_choice_of(goal), delivered=False, seconds=_clock() - v3_started,
-                                 auto_accept_mm=auto_accept_mm)
+                                 auto_accept_mm=auto_accept_mm,
+                                 nothing_needed=refused.ending == NOTHING_TO_REPAIR)
             refused.measurements.update({"engine": "v3", "v5_failed": why, RESULT_V5_KEY: v3_contract.to_dict()})
             raise
         v3_contract = R.from_v3(choice=_choice_of(goal), delivered=True, seconds=_clock() - v3_started,

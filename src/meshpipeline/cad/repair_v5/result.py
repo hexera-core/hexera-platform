@@ -299,12 +299,13 @@ def from_v5(*, choice: str, input_verdict: Any, final_verdict: Any, delivered: b
 
 
 def from_v3(*, choice: str, delivered: bool, seconds: float, max_change_mm: float | None = None,
-            auto_accept_mm: float | None = None) -> RepairResultV5:
+            auto_accept_mm: float | None = None, nothing_needed: bool = False) -> RepairResultV5:
     """The contract for a run v3 finished after v5 failed (`engine` "v3"). v3 does not diagnose by class, so it lists
     no problems; the customer still learns whether their part was repaired."""
     needs_review, auto_accepted = review_of(delivered=delivered, max_change_mm=max_change_mm,
                                             threshold_mm=auto_accept_mm, flags=())
-    return RepairResultV5(engine="v3", choice=choice, outcome="repaired" if delivered else "unrepairable",
+    outcome = "repaired" if delivered else "unchanged" if nothing_needed else "unrepairable"
+    return RepairResultV5(engine="v3", choice=choice, outcome=outcome,
                           max_change_mm=max_change_mm, seconds=round(float(seconds), 1),
                           needs_review=needs_review, auto_accepted=auto_accepted)
 
