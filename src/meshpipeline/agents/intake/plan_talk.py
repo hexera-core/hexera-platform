@@ -382,8 +382,116 @@ def kept_line(text: str, faces: Iterable[Mapping] = ()) -> str:
     return f"Got it, I've kept {what}{where} for the mesh. {NO_CHECKLIST}"
 
 
+# #
+# NOTE-24: an element or cell count typed at the plan step is a checklist row
+# #
+#: a count typed at the plan step ("keep it under 1.5 million elements") is a row of the checklist, read in code
+COUNT_RULE = "NOTE-24"
+#: the number of a count and its multiplier as typed ("1.5 million", "800k", "500,000", "2M")
+_C_NUM = r"(?P<num>\d{1,3}(?:,\d{3})+|\d+(?:\.\d+)?)\s*(?P<mult>k|thousand|m|mil|mill?ion|millions|mio|b|bn|billion)?"
+_C_NOUN = r"(?P<noun>elements?|cells?|tets?|tetrahedra|hexes|hexahedra)"
+_C_BOUNDS = {
+    "ceiling": r"under|below|less than|fewer than|no more than|not more than|at most|max(?:imum)?|up to|within|"
+               r"cap(?:ped)? at|limit(?:ed)? to|not exceed(?:ing)?|no greater than|lower than",
+    "floor": r"over|above|more than|at least|min(?:imum)?|no fewer than|no less than|not less than|"
+             r"not fewer than",
+    "target": r"about|around|roughly|approximately|approx|circa|near|aim for|aiming for|target(?:ing)?|of|~",
+}
+_C_BOUND = "|".join(f"(?P<{k}>{v})" for k, v in _C_BOUNDS.items())
+#: "under 1.5 million elements", "about 800k elements", "max 500,000 elements" (the noun after the number)
+_COUNT_AFTER = re.compile(rf"(?:\b(?:{_C_BOUND})\s+)?(?<![\w.,]){_C_NUM}\s+{_C_NOUN}\b", re.I)
+#: "keep the element count under 1.5 million" (the noun before the number)
+_COUNT_BEFORE = re.compile(rf"\b(?:element|cell|mesh)\s+count\b(?:\s+(?:of|to|at|is|should|must|be|stays?|"
+                           rf"stay|kept|keep|it))*\s+(?:(?:{_C_BOUND})\s+)?(?<![\w.,]){_C_NUM}(?![\w.]|\s*(?:mm|cm|"
+                           rf"um|µm|inch|in\b|%))", re.I)
+_C_MULT = {"k": 1e3, "thousand": 1e3, "m": 1e6, "mil": 1e6, "milion": 1e6, "million": 1e6, "millions": 1e6,
+           "mio": 1e6, "b": 1e9, "bn": 1e9, "billion": 1e9}
+#: a range or a number being replaced is not one count (the run's reader reads a range; "instead of 8 million")
+_C_RANGE_BEFORE = re.compile(r"\d\s*(?:k|m|million|thousand)?\s*(?:-|–|to|and)\s*$", re.I)
+_C_REPLACED = re.compile(r"\b(?:instead of|rather than|from|not)\s+$", re.I)
+#: a bound written after the noun: "2M cells max", "500k elements or fewer"
+_C_AFTER_BOUND = {"ceiling": re.compile(r"^\s*(?:max(?:imum)?|at most|tops|or (?:less|fewer)|at the most)\b", re.I),
+                  "floor": re.compile(r"^\s*(?:min(?:imum)?|at least|or more)\b", re.I)}
+_C_RANGE_AFTER = re.compile(r"^\s*(?:-|–|to)\s*\d", re.I)
+#: the bound in the reply's words: "under", "at least", "about"
+_C_SAID = {"ceiling": "under", "floor": "at least", "target": "about"}
+_C_CARD = {"ceiling": "at most", "floor": "at least", "target": "about"}
+
+
+def count_asks(text: str) -> list[dict]:
+    """NOTE-24, IN CODE: the whole-mesh element or cell counts the words state - {"what": "ceiling" | "floor" |
+    "target", "value", "typed": the number as typed ("1.5 million"), "noun"} - none for a number that is not a count
+    ("3 mm elements", "2 elements through the wall"), a range ("700k-1.5M elements", "between 1 and 2 million") or a
+    number being replaced ("instead of 8 million"): those are the run's reader's alone. Pure."""
+    raw = " ".join(str(text or "").replace("’", "'").split())
+    if re.search(r"\bbetween\b", raw, re.I):
+        return []
+    out: list[dict] = []
+    seen: set[tuple] = set()
+    for pat in (_COUNT_AFTER, _COUNT_BEFORE):
+        for m in pat.finditer(raw):
+            num, mult = m.group("num"), (m.group("mult") or "")
+            start = m.start("num")
+            if _C_RANGE_BEFORE.search(raw[:start]) or _C_RANGE_AFTER.match(raw[m.end("mult" if mult else "num"):]):
+                return []
+            if _C_REPLACED.search(raw[:start]):
+                continue
+            try:
+                value = float(num.replace(",", "")) * _C_MULT.get(mult.casefold(), 1.0)
+            except ValueError:
+                continue
+            if value < 1000:
+                continue
+            what = next((k for k in _C_BOUNDS if m.group(k)), "") or next(
+                (k for k, p in _C_AFTER_BOUND.items() if p.match(raw[m.end():])), "target")
+            noun = str(m.groupdict().get("noun") or "elements").casefold()
+            if (what, int(value)) in seen:
+                continue
+            seen.add((what, int(value)))
+            typed = num + ((" " if len(mult) > 1 else "") + mult if mult else "")
+            out.append({"what": what, "value": int(value), "typed": typed,
+                        "noun": "cells" if noun.startswith("cell") else "elements"})
+    return out
+
+
+def count_rows(note: Mapping, *, flow: bool, note_id: str = "") -> list[dict]:
+    """NOTE-24: the checklist's rows for the counts one note states - the whole mesh, the bound and the number as
+    typed ("at most 1.5 million elements"; "cells" on a flow mesh) - stamped with the note's id. Pure."""
+    text = str(note.get("text") or "")
+    noun = "cells" if flow else "elements"
+    rows = []
+    for c in count_asks(text):
+        rows.append({"count": {**c, "noun": noun}, "quote": text, "words": " ".join(text.split())[:60],
+                     "size": f"{_C_CARD[c['what']]} {c['typed']} {noun}", "parts": [],
+                     "parts_text": "the whole mesh", **({"note": note_id} if note_id else {})})
+    return rows
+
+
+def count_line(row: Mapping) -> str:
+    """NOTE-24: the plain sentence for a count row: "I'll keep it under 1.5 million elements."."""
+    c = row.get("count") or {}
+    said = f"{c.get('typed')} {c.get('noun') or 'elements'}"
+    return {"ceiling": f"I'll keep it under {said}.", "floor": f"I'll make it at least {said}.",
+            "target": f"I'll aim for about {said}."}.get(str(c.get("what")), f"I'll aim for about {said}.")
+
+
+def count_clash(view: Mapping | None, rows: Iterable[Mapping]) -> str:
+    """NOTE-24: when this message's count meets a size the user typed (on the checklist), which one wins on this route,
+    in one plain sentence - the run decides and the result tells it (PLAN-fea-29 / SHMESH-24: the sizes typed are
+    built and the count moves only the rest; CFDREQ-3: on a flow mesh the count comes first). "" for no clash."""
+    counts = [r for r in rows if r.get("count")]
+    sized = [r for r in (view or {}).get("rows") or () if isinstance(r, Mapping) and not r.get("count")
+             and str(r.get("size") or "")[:1].isdigit()]
+    if not counts or not sized:
+        return ""
+    if (view or {}).get("flow"):
+        return ("If that can't hold with the sizes you typed, the count comes first and the result will say where the "
+                "sizes gave way.")
+    return "If that can't hold with the sizes you typed, your sizes win and the result will say so."
+
+
 #: a guessed place
-CLICK_IF_ELSEWHERE = "That's my guess from your words; click it on the model if you meant another spot."
+CLICK_IF_ELSEWHERE ="That's my guess from your words; click it on the model if you meant another spot."
 #: the most rows said in one reply
 MAX_SAID = 3
 
@@ -404,6 +512,8 @@ def face_words(faces: Iterable[Mapping]) -> str:
 
 def _what(row: Mapping) -> str:
     size = str(row.get("size") or "")
+    if row.get("count"):
+        return _cap(size)                 # NOTE-24: "At most 1.5 million elements"
     if size == "finer":
         return "Finer mesh"
     if size == "coarser":
@@ -617,6 +727,9 @@ def reply_for(note: Mapping, view: Mapping | None, *, note_id: str = "") -> str:
     if fixed:
         return fixed
     rows, unsure = mine(note, view, note_id=note_id)
+    # NOTE-24: a count is said on its own ("I'll keep it under 1.5 million elements."), with a clash told plainly
+    counts = [r for r in rows if r.get("count")]
+    rows = [r for r in rows if not r.get("count")]
     out: list[str] = []
     guessed = False
     done: list[str] = []
@@ -630,6 +743,10 @@ def reply_for(note: Mapping, view: Mapping | None, *, note_id: str = "") -> str:
         out.append(f"There are {len(rows) - MAX_SAID} more in the list.")
     if guessed:
         out.append(CLICK_IF_ELSEWHERE)
+    out += [count_line(r) for r in counts[:MAX_SAID]]
+    clash = count_clash(view, counts)
+    if clash:
+        out.append(clash)
     for u in unsure[:MAX_SAID]:
         what = str(u.get("words") or u.get("quote") or "").strip()
         out.append(which_one_line(u) or none_line(u) or f"I couldn't tell where “{what}” is. Click it on the model and send it again.")
@@ -701,6 +818,7 @@ def lines_mine(view: Mapping | None, text: str) -> list[str]:
 
 __all__ = ["ASK", "ASK_LINE", "BOTH", "CLICK_RULE", "GO", "HOLD", "HOLD_LINE", "INTAKE", "NOTE", "QUESTION",
            "QUESTION_RULE", "RULE", "WAITING", "about_the_mesh", "after_turn", "points_only", "waiting_ask",
-           "answers_another_question", "asked_last", "asks", "exact_go", "face_words", "fixed_reply", "lines_mine",
+           "answers_another_question", "asked_last", "asks", "COUNT_RULE", "count_asks", "count_clash",
+           "count_line", "count_rows", "exact_go", "face_words", "fixed_reply", "lines_mine",
            "mesh_question", "mine", "never_go", "none_found", "none_line", "pictures_of", "plain_face_rows", "plan_change", "plural", "reading",
            "reply_for", "requirement_content", "row_place", "row_what", "which_one_line"]

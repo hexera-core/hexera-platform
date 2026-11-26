@@ -271,6 +271,7 @@ def _view(session: Any, *, owner_id: str, start: bool) -> dict | None:
         own = getattr(session, "user_notes", None)
         got = with_notes(with_faces(rows_of(with_picks(sid, stored, seen["table"], notes), seen, sid), own), own) or {
             "status": "done", "rows": [], "unsure": []}
+        got = with_counts(got, own, flow=seen.get("route") == ROUTE_CFD) or got
         if str((stored.get("section") or {}).get("status") or "") == "failed":
             # the model step did not answer: said so plainly (the run reads the notes again)
             got = {**got, "failed": True}
@@ -289,6 +290,7 @@ def _view(session: Any, *, owner_id: str, start: bool) -> dict | None:
         old = with_notes(with_faces(rows_of(with_picks(sid, last, seen["table"], notes), seen, sid),
                                     getattr(session, "user_notes", None)), getattr(session, "user_notes", None))
         if old:
+            old = with_counts(old, getattr(session, "user_notes", None), flow=seen.get("route") == ROUTE_CFD) or old
             out = {**old, "status": status, "stale": True}
     return out
 
@@ -408,6 +410,32 @@ def with_notes(got: dict | None, user_notes) -> dict | None:
         return {**r, "note": hit} if hit else dict(r)
     return {**got, "rows": [stamp(r) for r in got.get("rows") or []],
             "unsure": [stamp(u) for u in got.get("unsure") or []]}
+
+
+#: NOTE-24: an element or cell count typed at the plan step is a row of the checklist
+COUNT_RULE = "NOTE-24"
+
+
+def with_counts(got: dict | None, user_notes, *, flow: bool) -> dict | None:
+    """NOTE-24: the count the user's notes state for the whole mesh ("keep it under 1.5 million elements") as a row of
+    the checklist - the newest note that states one (the run's readers keep the latest), stamped with its id - where
+    the run's own reader applies it: every flow mesh (CFDREQ-3), and the solid and shell meshes while their AI step
+    reads the notes (AI-fea-4, PLAN-fea-27, SHMESH-23; with it off the run applies no count, so none is shown). Pure
+    but for that switch."""
+    from meshpipeline.agents.intake import plan_talk as PT
+    from meshpipeline.contracts.user_notes import own_notes
+    if got is None:
+        return got
+    if not flow:
+        from meshpipeline.engines.fea_ai import FEA_AI
+        if not FEA_AI:
+            return got
+    rows: list[dict] = []
+    for n in reversed(own_notes(user_notes)):
+        rows = PT.count_rows(n, flow=flow, note_id=str(n.get("id") or ""))
+        if rows:
+            break
+    return {**got, "rows": [*(got.get("rows") or []), *rows]} if rows else got
 
 
 def note_id(user_notes, note: Mapping) -> str:

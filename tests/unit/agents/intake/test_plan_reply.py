@@ -39,7 +39,9 @@ def test_the_rule_id_is_cited():
 def test_the_prompt_carries_the_message_and_the_facts_and_is_composed_from_its_registry():
     msgs = PR.messages_for(NOTE, _done([ROW]), note_id="n2", last_reply="Here's the plan.")
     system, user = msgs[0]["content"], msgs[1]["content"]
-    assert [b[0] for b in PR.PLAN_REPLY_PROMPT_BLOCKS] == ["voice", "facts_only", "guess_and_picture", "examples", "language"]
+    names = [b[0] for b in PR.PLAN_REPLY_PROMPT_BLOCKS]
+    assert names[:3] == ["voice", "facts_only", "guess_and_picture"] and names[-2:] == ["examples", "language"]
+    assert "count" in names                                                     # NOTE-24
     assert system == PR.compose_system() and all(purpose and callable(b) for _, purpose, b in PR.PLAN_REPLY_PROMPT_BLOCKS)
     assert "first person" in system and "Never use a number that is not in the facts" in system
     body = json.loads(user.split("\n", 1)[1])

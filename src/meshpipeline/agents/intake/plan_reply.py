@@ -55,7 +55,17 @@ def facts(note: Mapping, view: Mapping | None, *, note_id: str = "") -> dict[str
     pictures = PT.pictures_of(note)
     rows, unsure = PT.mine(note, view, note_id=note_id) if view is not None else ([], [])
     applied = []
+    counts = [r for r in rows if r.get("count")]
+    for r in counts:
+        # NOTE-24: a count is the whole mesh's; the run sizes the mesh to it (said as typed, with its bound)
+        c = r.get("count") or {}
+        applied.append({"what": f"an element count for the whole mesh: {r.get('size')}",
+                        "count": {"bound": PT._C_CARD.get(str(c.get("what")), "about"),
+                                  "number_as_typed": str(c.get("typed") or ""), "noun": str(c.get("noun") or "")},
+                        "where": "the whole mesh", "place": "a count is always for the whole mesh"})
     for r in rows:
+        if r.get("count"):
+            continue
         where, how = PT.row_place(r)
         applied.append({"what": PT.row_what(r), "where": where,
                         "place": {"picked": "they clicked it on the model",
@@ -81,6 +91,12 @@ def facts(note: Mapping, view: Mapping | None, *, note_id: str = "") -> dict[str
         "which_one": [{"words": str(u.get("words") or u.get("quote") or ""), "how_many_there_are": int(u["which_one"]),
                        "noun": str(u.get("noun") or "")} for u in unsure if PT.which_one_line(u)],
         "picture": picture,
+        # NOTE-24: a count beside sizes the user typed - which one wins on this route; the result tells which held
+        "count_may_not_hold": PT.count_clash(view, counts),
+        # what the checklist already holds from their earlier messages (so the reply can speak like one who knows it)
+        "already_on_the_checklist": [{"what": PT.row_what(r), "where": PT.row_place(r)[0]}
+                                     for r in (view or {}).get("rows") or ()
+                                     if isinstance(r, Mapping) and r not in rows][:MAX_LISTED],
         "no_checklist": view is None and bool(text.strip()),
         # nothing reads it before the run on this route: kept, read when the mesh is built - never "couldn't read"
         "kept_for_the_run": PT.NO_CHECKLIST in PT.reply_for(note, view, note_id=note_id),
@@ -108,8 +124,8 @@ def _block_voice() -> str:
 
 def _block_facts_only() -> str:
     return ("Say ONLY what the FACTS say. Name the place naturally: 'Face 23', 'that face', 'the 3 faces you "
-            "picked', 'the 22 mm hole', 'the whole mesh'. Never mention mesh quality, element or cell counts, time, "
-            "or anything that will happen beyond the facts. Never use a number that is not in the facts. If nothing "
+            "picked', 'the 22 mm hole', 'the whole mesh'. Never mention mesh quality, time, an element or cell "
+            "count the facts do not hold, or anything that will happen beyond the facts. Never use a number that is not in the facts. If nothing "
             "was applied, do not say or suggest that anything was set: say plainly what you couldn't take and what "
             "they can do. Nothing has been meshed yet at this point: speak of what you've SET or what you'll do "
             "('I've set 1 mm on Face 23', 'I'll go finer at that hole'), never of a mesh already made ('I've made the "
@@ -128,6 +144,15 @@ def _block_guess_and_picture() -> str:
             "again. If a picture came, add ONE short clause, in your own "
             "words, that you can't read the picture itself so you went by their words (or by the face they "
             "clicked); nothing more about the picture.\n")
+
+
+def _block_count() -> str:
+    return ("If applied holds a count, they gave the whole mesh an element (or cell) count: say you'll size the mesh "
+            "to it, with their number as they typed it and its bound in plain words ('under 1.5 million elements', "
+            "'at least 2 million cells', 'about 800k elements'). A count needs no place. If count_may_not_hold says "
+            "something, the count may not fit with sizes they typed: say in a few natural words which one wins and "
+            "that the result will say if the count couldn't be held; never promise the count. You may mention what "
+            "is already_on_the_checklist when it helps, never as something this message set.\n")
 
 
 def _block_examples() -> str:
@@ -151,6 +176,11 @@ def _block_examples() -> str:
             "They: 'make it finer at this fillet' (picture; which_one: 7 fillets) -> 'There are 7 fillets on this "
             "part and I can't tell which one you mean from the picture, so I haven't set it yet. Click it on the "
             "model and send that again.'\n"
+            "They: 'keep it under 1.5 million elements' (applied: a count, at most 1.5 million elements) -> "
+            "'Will do, I'll keep the mesh under 1.5 million elements.'\n"
+            "They: 'about 800k elements' (applied: a count; count_may_not_hold: their 2 mm size wins) -> 'Okay, "
+            "I'll aim for about 800k elements. Your 2 mm size comes first, so if both can't fit, the result will "
+            "say so.'\n"
             "They: 'y+ of 1 on the walls please' (kept_for_the_run) -> 'Noted, y+ of 1 on the walls. The result "
             "will show whether this mesher could apply it.'\n"
             "They: 'make it look nice' (nothing applied) -> 'I couldn't find a mesh setting in that. Give me a size, "
@@ -171,6 +201,8 @@ PLAN_REPLY_PROMPT_BLOCKS: tuple = (
                    "promises; no number or claim the facts do not hold; no rule ids", _block_facts_only),
     ("guess_and_picture", "a guess said as mine with how to correct it; words not placed said; a picture: kept, "
                           "not read, once", _block_guess_and_picture),
+    ("count", "a whole-mesh count said with its typed number and bound, no place needed; beside typed sizes, which "
+              "wins and that the result tells it, never a promise", _block_count),
     ("examples", "four or five example exchanges in that voice", _block_examples),
     ("language", "the user's own language; plain text; at most 300 characters", _block_language),
 )
@@ -256,6 +288,38 @@ def _place_named(text: str, f: Mapping) -> bool:
     return False
 
 
+#: NOTE-24: a count's bound in the reply's words
+_BOUND_WORDS = {
+    "at most": re.compile(r"\b(?:under|below|at most|no more than|max\w*|less than|fewer than|cap\w*|within|"
+                          r"limit\w*|ceiling)\b", re.I),
+    "at least": re.compile(r"\b(?:at least|over|above|more than|min\w*|no fewer|no less|floor)\b", re.I),
+    "about": re.compile(r"\b(?:about|around|roughly|approximately|close to|near|aim\w*|target\w*)\b", re.I),
+}
+#: a count that may not hold, said as sure
+_SURE = re.compile(r"\b(?:guarantee\w*|promise\w*|for sure|definitely|no matter what|whatever happens)\b", re.I)
+#: ... and said as one that may give way: a condition, or who wins, or that the result tells it
+_MAY = re.compile(r"\b(?:if|may|might|could|can'?t|cannot|won'?t|unless|depend\w*|result|wins?|first|"
+                  r"gives? way|gave way|priority)\b", re.I)
+
+
+def _count_check(text: str, f: Mapping) -> str:
+    """NOTE-24: a count is said with its own number and bound, and - beside sizes it may not fit with - never as
+    sure. "" when the reply may be said."""
+    for a in f.get("applied") or ():
+        c = a.get("count")
+        if not isinstance(c, Mapping):
+            continue
+        if not _numbers(str(c.get("number_as_typed") or "")) <= _numbers(text):
+            return "the count not said as typed"
+        bound = str(c.get("bound") or "")
+        said = {k for k, pattern in _BOUND_WORDS.items() if re.search(pattern, text)}
+        if bound in _BOUND_WORDS and bound not in said and said:
+            return "a count said with another bound"
+    if f.get("count_may_not_hold") and (_SURE.search(text) or not _MAY.search(text)):
+        return "a count that may not hold said as sure"
+    return ""
+
+
 def check(reply: str, f: Mapping, *, last_reply: str = "") -> str:
     """Why a model-written reply may not be said ("" when it may), against the facts `f`. The checks, in order:
     empty; longer than MAX_CHARS; a rule id; an exclamation, filler or emoji; a number the facts do not hold; something
@@ -277,8 +341,12 @@ def check(reply: str, f: Mapping, *, last_reply: str = "") -> str:
         return f"a number not in the facts ({', '.join(stray)})"
     applied = list(f.get("applied") or ()) or list(f.get("flow_lines") or ())
     if f.get("applied"):
-        if not _place_named(text, f):
+        # (NOTE-24: a count is the whole mesh's by nature - it names no place)
+        if any(not a.get("count") for a in f["applied"]) and not _place_named(text, f):
             return "no place named"
+        why = _count_check(text, f)
+        if why:
+            return why
         if any(str(a.get("place") or "").startswith("YOUR guess") for a in f["applied"]) \
                 and not _GUESS_SAID.search(text):
             return "a guessed place not said as a guess"

@@ -67,6 +67,13 @@ def _row(text, size, *, faces=None, where="", picked=False, words=""):
     return r
 
 
+def _count(text, *, flow=False):
+    """NOTE-24: the checklist's count row for these words, as application/part_matches.with_counts makes it."""
+    from meshpipeline.agents.intake import plan_talk as PT
+    (row,) = PT.count_rows({"text": text}, flow=flow)
+    return row
+
+
 #: (title, the message as kept, the checklist's view for it, our last reply)
 REPLY_CASES = [
     ("one picked face, a size", {"text": "can you do a 0.5 mm mesh sizing in here?", "faces": [FACE23]},
@@ -106,6 +113,19 @@ REPLY_CASES = [
      None, PLAN_LINE),
     ("CFD no checklist: finer around the bend, picture", {"text": "finer around the bend", "attachments": PIC},
      None, PLAN_LINE),
+    # NOTE-24: a whole-mesh count (the first as typed on the site, FEA solid, one cast part)
+    ("a count, as typed on the site", {"text": "keep it under 1.5 million elements"},
+     _done([_count("keep it under 1.5 million elements")]), PLAN_LINE),
+    ("a count, about", {"text": "about 800k elements"}, _done([_count("about 800k elements")]), PLAN_LINE),
+    ("a count, flow mesh, at least", {"text": "at least 2 million cells"},
+     {**_done([_count("at least 2 million cells", flow=True)]), "flow": True}, PLAN_LINE),
+    ("a count, max", {"text": "max 500,000 elements"}, _done([_count("max 500,000 elements")]), PLAN_LINE),
+    ("a count beside a typed size (solid: the size wins)", {"text": "keep it under 1.5 million elements"},
+     _done([_row("use 3 mm everywhere", "3 mm", where="the whole model"),
+            _count("keep it under 1.5 million elements")]), "All right, 3 mm elements across the whole part."),
+    ("a count beside a typed size (flow: the count comes first)", {"text": "at least 2 million cells"},
+     {**_done([_row("use 3 mm everywhere", "3 mm", where="the whole model"),
+               _count("at least 2 million cells", flow=True)]), "flow": True}, PLAN_LINE),
     # NOTE-21, as typed on the site: one hole named, a screenshot, no face picked, 11 holes on the part
     ("one hole named, eleven on the part, picture", {"text": "make it finer in this hole", "attachments": PIC},
      _done(unsure=[{"quote": "make it finer in this hole", "words": "make it finer in this hole", "size": "finer",

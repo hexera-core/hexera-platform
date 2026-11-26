@@ -446,6 +446,10 @@ export const Stage = {
         +`<div class="rc-pm-row"><span class="rc-pm-dot"></span><span class="rc-pm-q" title="${esc(r.quote||'')}">${esc(r.words)}</span>`
         +`${r.size?`<span class="rc-pm-s">${esc(r.size)}</span>`:''}</div>`
         +`<div class="rc-pm-chips">${attHtml(null,r.faces,'')}</div></div>`;
+      // A COUNT FOR THE WHOLE MESH (NOTE-24): its words and the count; no parts to pick for it
+      if(r.count)return `<div class="rc-pm-item face" data-phrase="-1" style="--pm-c:${this._PM_COL[k%this._PM_COL.length]}">`
+        +`<div class="rc-pm-row"><span class="rc-pm-dot"></span><span class="rc-pm-q" title="${esc(r.quote||'')}">${esc(r.words)}</span>`
+        +`${r.size?`<span class="rc-pm-s">${esc(r.size)}</span>`:''}</div></div>`;
       const i=r.phrase,act=open===i,c=unsure?'#E3A23B':this._PM_COL[k%this._PM_COL.length];
       const ids=r.parts||[];
       const head=`<div class="rc-pm-row" role="button" tabindex="0" aria-pressed="${act}">`
