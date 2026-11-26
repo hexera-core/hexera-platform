@@ -149,6 +149,8 @@ def test_a_solver_writer_that_fails_leaves_the_others(tmp_path, monkeypatch):
         raise MemoryError("cdb")
 
     monkeypatch.setattr(fw, "write_cdb", broken)
+    # write_all reads its writers from the module's list, so the list is given the two stand-ins
+    monkeypatch.setattr(fw, "_WRITERS", (("nastran", "mesh.bdf", fw.write_bdf), ("ansys", "mesh.cdb", fw.write_cdb)))
     out = fw.write_all(tmp_path, mesh=None)
     assert out["nastran"] == {"file": "mesh.bdf"} and "MemoryError" in out["ansys"]["error"]
     assert (tmp_path / "mesh.bdf").exists() and not (tmp_path / "mesh.cdb").exists()
