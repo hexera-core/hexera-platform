@@ -314,6 +314,57 @@ def answers_another_question(text: str, last_line: str) -> bool:
     return bool(words) and _filler_only(words) and last.endswith("?") and last != ASK_LINE
 
 
+#: NOTE-18: a word that could ask to start - only a message holding one (or a yes, a hedge, a go asked back) is ever
+#: asked "Start the mesh now?"; "the part is cast aluminium" holds none and is kept (NOTE-25)
+_GO_WORD = re.compile(r"\b(?:go|proceed|start|begin|run|mesh|meshing|generate|ready|done|finished|send|ship|continue|"
+                      r"carry|kick|lets|everything|good|fine|happy|sorted|set|complete|wrapped)\b")
+
+
+def goish(text: str, *, consent: str = "") -> bool:
+    """NOTE-18: the words plausibly ask to start - a yes or a hedge to the consent reader ("ok", "sure", "maybe"), a go
+    asked back, filler only or opening on a filler ("alright, we're sorted"), or a go word anywhere. Only such a
+    message, when the go is not plain, is asked "Start the mesh now?"; any other statement is kept as a note and
+    answered as kept (NOTE-25)."""
+    words = _words(text)
+    if consent in ("approve", "ambiguous"):
+        return True
+    return bool(words) and (_filler_only(words) or words.split()[0] in _FILLER or _asked_go(text)
+                            or bool(_GO_WORD.search(words)))
+
+
+#: NOTE-18 / NOTE-25: context about the part, never a mesh setting and never a go: its material, its loads and
+#: supports, the solver it goes to
+_CONTEXT = re.compile(
+    r"\b(?:material|materials|alumin(?:i)?um|alu|alloy|alloys|steel|stainless|titanium|copper|brass|bronze|iron|"
+    r"cast|casting|forged|forging|machined|printed|plastic|abs|nylon|polymer|composite|carbon fibre|carbon fiber|"
+    r"rubber|magnesium|inconel|load|loads|loaded|loading|force|forces|pressure|torque|moment|moments|kn|newton|"
+    r"newtons|mpa|gpa|bolted|clamped|fixed|support|supports|supported|constraint|constraints|boundary conditions|"
+    r"solver|abaqus|ansys|nastran|calculix|ccx|femap|optistruct|hypermesh|ls dyna|lsdyna|comsol|code aster|marc|"
+    r"adina|solidworks simulation)\b")
+#: the plan words a statement about the analysis the plan already has may hold ("it's for a stress analysis")
+_ANALYSIS_WORDS = frozenset({"analysis", "static", "stress", "structural", "fea", "buckling", "vibration", "fatigue",
+                             "modal", "frequency", "frequencies", "harmonic"})
+
+
+def context_statement(text: str, *, analysis: str = "") -> bool:
+    """NOTE-18, IN CODE: a statement of context - the part's material, its loads or supports, the solver it goes to,
+    or the analysis the plan already has (`analysis`: the plan's FEA analysis key, "" when none is known) - with no
+    question in it, no engine named and no other plan word. Kept as a note and answered as kept (NOTE-25): never a go
+    ("we'll run this in Abaqus" names no start), never "Start the mesh now?", never a re-plan. An analysis other than
+    the plan's ("make it a modal analysis") is a change to the plan: the intake's, as before."""
+    from meshpipeline.application import purpose_map as pm
+
+    raw = str(text or "")
+    words = _words(raw)
+    if not words or "?" in raw or asks(raw) or _names_an_engine(raw):
+        return False
+    if any(m.group(0) not in _ANALYSIS_WORDS for m in _PLAN_WORDS.finditer(words)):
+        return False
+    if _PLAN_WORDS.search(words):
+        return bool(analysis) and pm.analysis_of(raw) in ("", analysis)
+    return bool(_CONTEXT.search(words))
+
+
 def _engines_named(text: str, selected: str = "") -> list[str]:
     from meshpipeline.agents.intake import vocabulary as _vocab
     try:

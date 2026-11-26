@@ -9,6 +9,7 @@ Run from the worktree, with the environment the app runs with:
     PYTHONPATH=src python devtools/try_plan_talk.py            # both parts
     PYTHONPATH=src python devtools/try_plan_talk.py --go       # the go reading only
     PYTHONPATH=src python devtools/try_plan_talk.py --replies  # the replies and the answers to questions only
+    PYTHONPATH=src python devtools/try_plan_talk.py --live     # the live path: message.accept, then the reply
 """
 from __future__ import annotations
 
@@ -19,6 +20,11 @@ import time
 
 PLAN_LINE = "Here's the plan. Tell me any mesh requirements here, then say go or press Proceed."
 ASKED_OTHER = "Do you want the fillets finer as well?"
+#: NOTE-18 / NOTE-25: statements of context, as typed on the live site (the first) - kept, answered as kept
+LIVE_STATEMENTS = ("the part is cast aluminium", "it's for a stress analysis of the bracket",
+                   "loads are about 5 kN on the bore", "we'll run this in Abaqus")
+#: the live path's yes words: they behave as before (a start, or "Start the mesh now?" when the model is unsure)
+LIVE_YES = ("ok", "sure", "yep let's do it")
 
 #: (message, our last line, what it should be) - "go" means it must start the run, "no go" that it must not,
 #: "question" that it is a question about the mesh, answered from the plan's numbers (NOTE-20)
@@ -46,6 +52,9 @@ GO_CASES: list[tuple[str, str, str]] = [
         "tell me the element size")],
     # NOTE-21's message as typed on the site (a screenshot came with it, no face picked): a requirement, never a go
     ("make it finer in this hole", PLAN_LINE, "no go"),
+    # NOTE-18 / NOTE-25: context about the part is kept as a note, never asked "Start the mesh now?" (the first as
+    # typed on the site, FEA solid, after three requirement messages)
+    *[(t, PLAN_LINE, "kept") for t in LIVE_STATEMENTS],
 ]
 
 FACE23 = {"id": "Face_23", "label": "Face 23 · round Ø19.8 mm"}
@@ -208,9 +217,10 @@ async def _go_part() -> tuple[int, int]:
     for text, last, want in GO_CASES:
         t0 = time.monotonic()
         got = await PG.read(text, consent=C.reading(text), last_line=last, asked=PT.asked_last(
-            [{"role": "assistant", "content": last}]), user_id="try-plan-talk", session_id="try")
+            [{"role": "assistant", "content": last}]), user_id="try-plan-talk", session_id="try", analysis="static")
         took = time.monotonic() - t0
-        ok = got.reading == PT.QUESTION if want == "question" else (got.reading == PT.GO) == (want == "go")
+        ok = got.reading == PT.QUESTION if want == "question" else got.reading == PT.NOTE if want == "kept" else (
+            got.reading == PT.GO) == (want == "go")
         right += ok
         print(f"{'ok ' if ok else 'BAD'} {took:5.2f}s  {text!r:58} last={'start?' if last == PT.ASK_LINE else 'q' if last == ASKED_OTHER else 'plan'}"
               f"  model={got.raw!r:14} -> {got.reading:7} (by {got.by}: {got.why}); want {want}")
@@ -244,22 +254,119 @@ async def _reply_part() -> tuple[int, int]:
     return said_by_model, len(REPLY_CASES) + len(ANSWER_CASES)
 
 
+#: the live site's transcript before the message: FEA solid, static stress, three requirement messages kept
+LIVE_TRANSCRIPT = [
+    {"role": "user", "content": "static stress analysis of this bracket"},
+    {"role": "assistant", "content": PLAN_LINE},
+    {"role": "user", "content": "use 3 mm overall"},
+    {"role": "assistant", "content": "I've set 3 mm elements across the whole part."},
+    {"role": "user", "content": "finer on the bore"},
+    {"role": "assistant", "content": "I've made the mesh finer at the bore (12 mm across)."},
+    {"role": "user", "content": "keep it under 1.5 million elements"},
+    {"role": "assistant", "content": "Will do, I'll keep the mesh under 1.5 million elements."},
+]
+
+
+async def _live_part() -> tuple[int, int]:
+    """THE LIVE PATH (agents/intake/message.accept, as the chat route calls it): the plan's approval live, an in-memory
+    session, the real go reader's model; a kept note is then answered by the reply writer as the route does
+    (agents/intake/plan_reply.written; the checklist took nothing from it). Nothing is stored."""
+    import logging
+    import uuid
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+
+    from meshpipeline.agents.intake import approval as ap
+    from meshpipeline.agents.intake import message as M
+    from meshpipeline.agents.intake import plan_reply as PR
+    from meshpipeline.agents.intake import plan_talk as PT
+
+    sid = uuid.UUID("00000000-0000-4000-8000-00000000feed")
+
+    class Repo:
+        def __init__(self) -> None:
+            self.session = SimpleNamespace(id=sid, owner_id="try-plan-talk", job_id=None,
+                                           messages=list(LIVE_TRANSCRIPT), user_notes=[], intake_gate={
+                                               "approval": {"status": "awaiting", "expires_at": time.time() + 600,
+                                                            "payload": {"mesh_engine": "gmsh"}}})
+            self.said: list[str] = []
+
+        async def get_for_update(self, _db, _sid):
+            return self.session
+
+        async def get_for_owner(self, _db, _sid, _owner):
+            return self.session
+
+        async def append_message(self, _db, _sid, role, content, extra=None):
+            self.session.messages.append({"role": role, "content": content, **(extra or {})})
+            if role == "assistant":
+                self.said.append(content)
+
+        async def set_intake_gate(self, _db, _sid, gate):
+            self.session.intake_gate = gate
+
+        async def set_user_notes(self, _db, _sid, notes):
+            self.session.user_notes = list(notes)
+
+        async def release_job(self, *_a):
+            return None
+
+    @asynccontextmanager
+    async def db():
+        async def commit():
+            return None
+        yield SimpleNamespace(commit=commit)
+
+    live_is = ap.is_live
+    ap.is_live = lambda a: bool(a)       # the in-memory approval stands for a live one; put back below
+    right = 0
+    cases = [*[(t, "kept") for t in LIVE_STATEMENTS], *[(t, "as before") for t in LIVE_YES]]
+    print("=" * 100 + "\nTHE LIVE PATH (agents/intake/message.accept, then the reply writer)\n" + "=" * 100)
+    try:
+        for text, want in cases:
+            repo = Repo()
+            t0 = time.monotonic()
+            out = await M.accept(M.InboundMessage(session_id=sid, owner_id="try-plan-talk", content=text),
+                                 session_repo=repo, db_factory=db, logger=logging.getLogger("try-plan-talk"))
+            shown = out.reply or ""
+            if out.status is M.MessageStatus.requirement and out.note:
+                got = await PR.written(out.note, {"status": "done", "rows": [], "unsure": []},
+                                       last_reply=LIVE_TRANSCRIPT[-1]["content"], session_id="try",
+                                       user_id="try-plan-talk")
+                shown = got["text"]
+            took = time.monotonic() - t0
+            if want == "kept":
+                ok = out.status is M.MessageStatus.requirement and PT.ASK_LINE not in repo.said
+            else:
+                ok = out.status in (M.MessageStatus.approve, M.MessageStatus.approval_deferred)
+            right += ok
+            print(f"{'ok ' if ok else 'BAD'} {took:5.2f}s  {text!r:46} -> {out.status.value:20} shown: {shown!r}"
+                  f"  (want {want})")
+    finally:
+        ap.is_live = live_is
+    return right, len(cases)
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--go", action="store_true", help="the go reading only")
     ap.add_argument("--replies", action="store_true", help="the replies only")
+    ap.add_argument("--live", action="store_true", help="the live path only (message.accept, then the reply)")
     args = ap.parse_args(argv)
     why = _configured()
     if why:
         print(f"No model is configured for the intake ({why}). Nothing was called.")
         return 0
     _install()
-    both = not (args.go or args.replies)
+    both = not (args.go or args.replies or args.live)
 
     async def run() -> None:
         if both or args.go:
             right, n = await _go_part()
             print(f"\ngo reading: {right}/{n} as wanted\n")
+        if both or args.live:
+            right, n = await _live_part()
+            print(f"\nlive path: {right}/{n} as wanted\n")
         if both or args.replies:
             by_model, n = await _reply_part()
             print(f"\nreplies and answers: {by_model}/{n} said as the model wrote them (the rest: the plain sentence)")

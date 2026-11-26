@@ -83,6 +83,28 @@ def is_change(comment: Any) -> bool:
     return bool(_CHANGE.search(words)) or PT.requirement_content(words)
 
 
+#: VER-9 / PLAN-fea-36: "finer" / "coarser" with no number, on a change request - the one step against the size the
+#: delivered mesh had at the marked faces
+_FINER_WORDS = re.compile(r"\b(?:finer|refine\w*|denser|smaller|more elements|more cells)\b", re.I)
+_COARSER_WORDS = re.compile(r"\b(?:coarser|coarsen\w*|bigger|larger|fewer elements|fewer cells)\b", re.I)
+SIZE_STEP_FINER = "about half the size the last mesh had there"
+SIZE_STEP_COARSER = "about twice the size the last mesh had there"
+
+
+def size_step(comment: Any) -> str:
+    """What a change request's words do to the size at the marked faces, in a few plain words: "finer" with no
+    number halves what the delivered mesh had there, "coarser" doubles it (PLAN-fea-36 on a change request); a typed
+    size (a number) is the size asked, said by its own words - "" then, and for words that set no size."""
+    words = _words(comment)
+    if not words or re.search(r"\d", words):
+        return ""
+    if _FINER_WORDS.search(words):
+        return SIZE_STEP_FINER
+    if _COARSER_WORDS.search(words):
+        return SIZE_STEP_COARSER
+    return ""
+
+
 def one_place_words(comment: Any) -> bool:
     """The words name one place in the singular ("this hole", "that edge")."""
     return bool(_ONE_PLACE.search(_words(comment)))
@@ -219,12 +241,14 @@ def separate_spots(marks: Sequence[MarkFaces]) -> int:
 
 
 # ------------------------------------------------------------------------------------- the new run ----
-def change_note(comment: str, faces: Sequence[Mapping]) -> dict:
+def change_note(comment: str, faces: Sequence[Mapping], *, of_job_id: str = "") -> dict:
     """The user's words as one more of their notes, carrying the faces the marks tie (NOTE-17): word for word
-    (NOTE-1), from the console."""
+    (NOTE-1), from the console - stamped with the finished run it was asked on (`change_of`, VER-9), so its "finer"
+    or "coarser" is against the size that run had at those faces (PLAN-fea-36), never the mesh round them."""
     from meshpipeline.contracts import user_notes as UN
 
-    return UN.make(str(comment or "")[:UN.MAX_NOTE_CHARS], source=UN.SOURCE_CONSOLE, faces=list(faces))
+    return UN.make(str(comment or "")[:UN.MAX_NOTE_CHARS], source=UN.SOURCE_CONSOLE, faces=list(faces),
+                   change_of=str(of_job_id or ""))
 
 
 def brief_line(comment: str, faces: Sequence[Mapping], *, of_job_id: str) -> str:
@@ -275,6 +299,8 @@ class ChangeFacts:
     one_place: bool = False
     flow_cannot_size_a_face: bool = False
     last_run_minutes: int | None = None
+    #: "about half the size the last mesh had there" (size_step), "" when the words set no such step
+    size_change: str = ""
 
     def where(self) -> str:
         labels = [str(f.get("label") or f.get("id")) for f in self.faces]
@@ -297,6 +323,8 @@ class ChangeFacts:
             out["applied"] = [{"what": "what their words ask", "where": self.where(),
                                "place": "they marked it on the model"}]
             out["nothing_else_changes"] = True
+            if self.size_change:
+                out["size_change_there"] = self.size_change
         elif self.kind == KIND_CHANGE:
             # no spot marked: the words are one more requirement of the new run, placed by the run's own reader
             # from the words (NOTE-2, NOTE-8) - kept, never said as set
@@ -325,7 +353,10 @@ def plain_reply(f: ChangeFacts) -> str:
     if f.kind == KIND_ASK:
         return ("I couldn't find the part under your marks, so nothing has started. Mark the spot on the part "
                 "itself and send it again.")
-    if f.faces:
+    if f.faces and f.size_change:
+        step = "coarser" if f.size_change == SIZE_STEP_COARSER else "finer"
+        out = [f"Got it: {step} on {f.where()} only, {f.size_change}, and nothing else changes."]
+    elif f.faces:
         out = [f"Got it: I'll make that change on {f.where()} only, and nothing else changes."]
     else:
         out = ["Noted. I've kept that as a requirement of the new run, and the result will say what came of it."]
@@ -353,6 +384,6 @@ def said_in_chat(comment: Any, *, marks: int, where: str = "") -> str:
 
 
 __all__ = ["KIND_ASK", "KIND_CHANGE", "KIND_REVIEW", "MAX_FACES", "RULE_CHANGE_RUN", "RULE_DOUBT_REVIEW",
-           "RULE_MARK_FACES", "RULE_REPLY", "SMALL_FACE_SHARE", "ChangeFacts", "MarkFaces", "brief_line",
+           "RULE_MARK_FACES", "RULE_REPLY", "SIZE_STEP_COARSER", "SIZE_STEP_FINER", "SMALL_FACE_SHARE", "ChangeFacts", "MarkFaces", "brief_line",
            "change_note", "change_payload", "faces_of", "is_change", "minutes_of", "one_place_words", "plain_reply",
-           "radius_of", "resolve_marks", "said_in_chat", "separate_spots"]
+           "radius_of", "resolve_marks", "said_in_chat", "separate_spots", "size_step"]

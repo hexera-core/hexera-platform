@@ -35,7 +35,9 @@ def _block_task() -> str:
             "new run of the same part is starting with that change as a requirement on the faces they marked, and "
             "nothing else changed. Say, in one or two short sentences: what you understood they want, where (the "
             "faces, in their natural short form), that nothing else changes, and that a new run is starting; if "
-            "last_run_took_minutes is there, add how long the last run took ('the last one took 29 min'). Speak of "
+            "last_run_took_minutes is there, add how long the last run took ('the last one took 29 min'). If "
+            "size_change_there is there, say it in those few words (for example 'about half the size the last "
+            "mesh had there'). Speak of "
             "what you'll do in the new run, never of a mesh already made. Never say the mesh meets their brief, "
             "passed or is fine: this is a change, not a review.\n")
 
