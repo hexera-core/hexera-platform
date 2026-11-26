@@ -98,6 +98,10 @@ def test_a_solid_run_with_both_takes_the_notes_size_and_keeps_the_standards_limi
 
 def test_a_solid_run_with_neither_is_the_run_it_was(tmp_path, monkeypatch):
     router = _ToolRouter()
+    # each run measures its part itself: the two stagings are one solid, so the second would read the first's
+    # measurement back (cad/fea_measure_cache) and skip its "Checking for defects" step - not what is compared here
+    from meshpipeline.cad import fea_measure_cache as MC
+    monkeypatch.setattr(MC, "load", lambda _key: None)
     a, b = _stage_solid(tmp_path, "a"), _stage_solid(tmp_path, "b")
     ok_a, _m, _c, said_a = _drive(a, monkeypatch, {"purpose": "structural"}, router)
     ok_b, _m, _c, said_b = _drive(b, monkeypatch, {"purpose": "structural", MS.STATE_KEY: None}, router)
