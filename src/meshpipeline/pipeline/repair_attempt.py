@@ -785,8 +785,12 @@ async def _attempt(state: PipelineState) -> dict:
             "summary": repair_report.summary,
             # CRS v5 BETA: which engine ran, and the result contract (repair_v5/result.py) the API and the UI read.
             # Absent on a v3-only or search run, so those records are unchanged key for key.
+            # The full technical trace (`v5_trace`, admin views only) and the progress it said ride
+            # beside it, never inside the customer text; v5_failed says why v3 ran instead.
             **({"engine": repair_report.diagnostics.get("engine", ""),
-                RESULT_V5_KEY: repair_report.diagnostics[RESULT_V5_KEY]}
+                RESULT_V5_KEY: repair_report.diagnostics[RESULT_V5_KEY],
+                **{k: repair_report.diagnostics[k] for k in ("v5_trace", "repair_progress", "v5_failed")
+                   if repair_report.diagnostics.get(k) is not None}}
                if repair_report.diagnostics.get(RESULT_V5_KEY) else {}),
             **goal_record,
         },
