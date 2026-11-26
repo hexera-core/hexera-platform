@@ -156,7 +156,7 @@ export async function openViewer(job,anchorEl,opts){
           <button class="v-btn" id="v-submit-${job}">Request a change…</button>
           <button class="v-btn v-quiet" id="v-clearbtn-${job}" disabled>Clear marks</button>
         </div>
-        <p class="v-cost">A change starts a new run. It takes a few minutes.</p>
+        <p class="v-cost">A change starts a new run.</p>
       </div></div>
     <div class="v-canvas" id="v-canvas-${job}">
       <div class="v-loading" id="v-load-${job}"><svg class="v-spin" viewBox="0 0 24 24" aria-hidden="true"><circle class="sp-arm" cx="12" cy="12" r="7.2"/><path class="sp-hd" d="M19.20 8.16L22.40 14.56L16.00 14.56Z"/><path class="sp-hd" d="M4.80 15.84L1.60 9.44L8.00 9.44Z"/></svg><div>Loading mesh…</div></div>
@@ -226,7 +226,7 @@ export async function openViewer(job,anchorEl,opts){
       const cr=await fetch('/api/v1/client-config',{headers:headers()}).catch(()=>null);
       if(cr&&cr.ok)Object.assign(uiCfg,(await cr.json()).viewer||{});
       const surf=await getSurface(job);
-      initViewer(job,surf,uiCfg);
+      initViewer(job,surf,uiCfg,{createdAt:opts.createdAt,endedAt:opts.endedAt});
       fillResult(surf);
       document.getElementById('v-load-'+job)?.remove();
     }catch(e){
@@ -246,7 +246,7 @@ export async function openViewer(job,anchorEl,opts){
   io.observe(box);
 }
 
-function initViewer(job,surf,uiCfg){
+function initViewer(job,surf,uiCfg,run={}){
   const host=document.getElementById('v-canvas-'+job);
   // the scene is the theme's viewer canvas, so the part sits on the same black as the page
   const sceneBg=themeRgb('--viewer-canvas',[0.02,0.02,0.02]);
@@ -868,7 +868,8 @@ function initViewer(job,surf,uiCfg){
   // ONE handler for the one action: with marks it sends them, with none it is the
   // plain conversation path (flags.map() is simply [] then).
   submitBtn.onclick=()=>flagDispute(job,
-    flags.map(f=>({x:f.x,y:f.y,z:f.z,span:f.span,patch:f.patch,note:f.note})));
+    flags.map(f=>({x:f.x,y:f.y,z:f.z,span:f.span,patch:f.patch,note:f.note})),
+    run);
 
   // engage the camera envelope (fit distance must be captured before caps apply)
   const _fp0=cam.getFocalPoint(),_cp0=cam.getPosition();

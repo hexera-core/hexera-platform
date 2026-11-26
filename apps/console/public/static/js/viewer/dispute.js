@@ -15,6 +15,7 @@
  */
 import { esc } from "../core/format.js";
 import { disputeReview } from "../api/endpoints.js";
+import { tookWords } from "./result_panel.js";
 
 let onRerun = () => {};
 /** Installed by the entrypoint: (newJobId, message, disputedJobId) -> void. The disputed run is
@@ -34,15 +35,23 @@ function modal(html) {
   return { el: m, close };
 }
 
-/** CASE A - the reviewer passed it but the user disagrees: re-review AND rebuild. */
-export function flagDispute(job, flags) {
+/** How long the last run took, to the minute ("29 min", "1 h 5 min", "40 s"); "" when the page does not hold its
+ *  start and end - then nothing is said about time (a fixed guess was wrong for most runs). */
+export function lastRunWords(run = {}) {
+  return tookWords(run.createdAt, run.endedAt).replace(/ min \d+ s$/, " min");
+}
+
+/** CASE A - the reviewer passed it but the user disagrees: re-review AND rebuild. `run` is the run on screen
+ *  ({createdAt, endedAt}), the time it took is said, and nothing else about time. */
+export function flagDispute(job, flags, run = {}) {
   const hasFlags = flags.length > 0;
+  const took = lastRunWords(run);
   const { el: m, close } = modal(`<div class="box"><h3>Re-review & rebuild this mesh?</h3>
     <div>${hasFlags
       ? `The reviewer will re-inspect the delivered mesh at your ${flags.length} flagged spot${flags.length > 1 ? "s" : ""},`
       : "No spots flagged - describe the change you want below (flagging exact spots is recommended when the issue is localized). The reviewer will evaluate your request against the delivered mesh,"}
     then the pipeline will <b>rebuild the mesh</b> and re-review it against your concerns plus all original criteria.</div>
-    <div style="margin-top:8px;color:var(--text-faint)">This is a full mesh run - typically 1-2 hours of compute.</div>
+    ${took ? `<div style="margin-top:8px;color:var(--text-faint)">The last run took ${took}.</div>` : ""}
     <textarea id="v-comment" placeholder="${hasFlags ? "Anything else the reviewer should know? (optional)" : "What should change? e.g. “I want finer resolution in the wake region” (required)"}"></textarea>
     <div class="row2"><button class="v-btn" id="v-cancel">Cancel</button>
     <button class="v-btn primary" id="v-go"${hasFlags ? "" : " disabled"}>Start re-review & rebuild</button></div></div>`);

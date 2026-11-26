@@ -260,3 +260,28 @@ def test_the_result_panel_never_scrolls_sideways(live, tmp_path, width):
     assert out["bar"][0] <= out["bar"][1], out
     assert out["page"][0] <= out["page"][1], out
     assert out["wide"] == [], out
+
+
+@pytest.mark.parametrize("times,want", [
+    ({"createdAt": "2026-11-25T10:00:00Z", "endedAt": "2026-11-25T10:29:22Z"}, "The last run took 29 min."),
+    ({}, ""),
+])
+def test_request_a_change_says_the_last_run_time_or_nothing_about_time(live, tmp_path, times, want):
+    # the owner, live: the dialog said "typically 1-2 hours of compute" and the panel "It takes a few minutes"
+    # beside a run of 29 min 22 s - both fixed text, both wrong; now the run's own time, in the dialog only
+    job = "rp-took" + ("1" if times else "0")
+    surf = _payload(tmp_path, shear=0.0)
+    _open(live, job, surf, {"metrics": {"pass": True}, "files": FILES[1:], "notes": [], **times})
+    got = live.evaluate(f"""(() => {{
+      const cost = document.querySelector('#viewer-{job} .v-cost').innerText.trim();
+      document.getElementById('v-submit-{job}').click();
+      const text = document.querySelector('.v-modal .box').innerText;
+      document.querySelector('.v-modal #v-cancel').click();
+      return {{cost, text}}; }})()""")
+    assert got["cost"] == "A change starts a new run.", got
+    assert "hour" not in got["text"] and "minutes" not in got["text"] and "compute" not in got["text"], got
+    if want:
+        assert want in got["text"], got
+    else:
+        assert "took" not in got["text"], got
+    assert_clean(live, "the request-a-change dialog")
