@@ -92,3 +92,29 @@ def test_the_result_screen_of_a_shell_run_is_the_shell(live, shell_payload):
     low = got["text"].lower()
     assert "tetra" not in low and "through the thinnest wall" not in low and "walls ok" not in low
     assert_clean(live, "a shell run's result screen")
+
+
+def test_a_shell_result_is_coloured_by_the_shells_own_measures(live, shell_payload):
+    # THE SAME CONTROL AS A FLOW MESH'S on a real shell run: one Colour by line, the shell's own measures in
+    # plain words, and a click recolours the real quads (one colour per element, never per triangle)
+    surf, _rec = shell_payload
+    qf = surf['quality_fields']
+    assert qf['noun'] == 'element'
+    job = 'shell-heat'
+    _open(live, job, surf)
+    h = f"window._vdbg['{job}:heat']"
+    got = live.evaluate(f'''(() => {{
+      const words = [...document.querySelectorAll('#v-heatctl-{job} a')].map(a => a.textContent);
+      const name = Object.keys({json.dumps(qf['patches'])})[0];
+      const before = {h}.colorOf(name, 0);
+      {h}.set('warp');
+      const warp = {h}.colorOf(name, 0);
+      {h}.set('skew');
+      const lg = document.querySelector('#viewer-{job} .v-legend');
+      return {{words, before, warp, skew: {h}.colorOf(name, 0), active: {h}.active(), legend: lg && lg.textContent}};
+    }})()''')
+    assert got['words'][:3] == ['aspect ratio', 'warp', 'skew'], got
+    assert 'Jacobian' in got['words'] and 'smallest corner angle' in got['words']
+    assert got['before'] is None and got['warp'] is not None and got['skew'] is not None
+    assert got['active'] == 'skew' and 'skew' in got['legend'] and 'limit' in got['legend']
+    assert_clean(live, 'the shell heatmap')

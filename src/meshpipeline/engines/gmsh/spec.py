@@ -91,8 +91,10 @@ def _viewer_surface():
         from pathlib import Path
         if (Path(workspace) / "fea_plan.json").exists():
             # AN FEA MESH (FEA build step 5): every CAD face its own clickable part, Face_k as the
-            # deck names it, and the FEA result block - FEA numbers, never a flow mesh's heatmap
+            # deck names it, and the FEA result block. Its heatmap is the FEA's own measures (the
+            # verdict's figures and limits, engines/fea_view_quality) - never a flow mesh's
             from meshpipeline.engines.fea_results import results, viewer_face_names
+            from meshpipeline.engines.fea_view_quality import attach as attach_fea_quality
             from meshpipeline.engines.shell_delivery import is_shell_workspace
             from meshpipeline.render.viewer_pack import polygon_response
             try:
@@ -100,8 +102,10 @@ def _viewer_surface():
                 # A DELIVERED SHELL IS QUADS: drawn as its real elements, so "Solid + edges" shows the
                 # quads it is - a triangle soup drew every quad with its diagonal, a triangle mesh to an
                 # engineer. A solid's surface is triangles and is served exactly as before.
-                resp = (polygon_response(mesh, roles, units, skip_names) if is_shell_workspace(workspace)
+                shell = is_shell_workspace(workspace)
+                resp = (polygon_response(mesh, roles, units, skip_names) if shell
                         else stl_response(surface_patches_of(mesh), roles, units, skip_names))
+                attach_fea_quality(resp, mesh, workspace, shell=shell)
             except Exception as exc:  # noqa: BLE001 - a valid FEA mesh is delivered without its view
                 import logging
 

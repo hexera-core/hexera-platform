@@ -55,7 +55,8 @@ def polygon_response(mesh: dict | None, roles: dict, units: str,
     if not out:
         return None
     # the same kind the triangle surface of a tetrahedral engine is served as: a delivered surface,
-    # not a polyMesh (whose cell statistics and heatmap it does not carry); each patch says its form
+    # not a polyMesh (whose cell statistics it does not carry; an FEA mesh's heatmap is added by its
+    # viewer hook, engines/fea_view_quality); each patch says its form
     return {"kind": "stl", "mesh_units": units, "patches": out}
 
 
