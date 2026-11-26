@@ -120,7 +120,8 @@ def test_words_that_are_no_mesh_requirement_are_said_so():
     note = {"text": "make it look nice"}
     other = {"quote": "2 mm on the frame rail", "size": "2 mm", "parts": ["Part_9"], "parts_text": "part 9"}
     got = PT.reply_for(note, _done([other]))
-    assert got == PT.NOT_READ and "size" in got and "finer or coarser" in got and "quality limit" in got
+    # NOTE-25: said like a person - kept in mind for the planning, no menu of what can be set
+    assert got == PT.NOT_READ and "keep that in mind" in got and "quality limit" not in got
 
 
 def test_a_phrase_it_could_not_place():

@@ -71,9 +71,8 @@ GOOD = [
     (GUESSED_NOTE, _done([GUESSED]), "n3", "Got it, finer mesh at the fillet. That place is my guess, so click the "
                                            "model if you meant somewhere else."),
     ({"text": "make it look nice", "source": "chat", "turn": 5}, _done(), "",
-     # NOTE-25: said as kept for the planning step, never turned away
-     "I can't put that on the checklist, but I've kept it for the mesh planning step to read as guidance. Give me "
-     "a size like 2 mm, or click a face on the model."),
+     # NOTE-25: said as kept in mind for the planning, never turned away
+     "Okay, you want it to look nice. I'll keep that in mind when the mesh is planned."),
     ({"text": "D'accord, 1 mm ici", "faces": [FACE32], "source": "chat", "turn": 6},
      _done([{**ROW, "quote": "1 mm ici"}]), "n2", "D'accord, 1 mm sur Face 32 (round Ø6 mm)."),
 ]

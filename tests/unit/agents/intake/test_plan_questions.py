@@ -194,7 +194,7 @@ def test_a_kept_message_that_asks_and_set_nothing_is_answered_as_a_question(monk
     msgs = [{"role": "assistant", "content": "Here's the plan."}, {"role": "user", "content": text}]
     notes = [{"text": text, "source": "chat", "turn": 1}]
     s = _session(msgs, notes)
-    assert PT.reply_for(notes[0], _done(), note_id="n1").startswith(PT.NOT_READ)     # what was said on d9d6183b
+    assert PT.reply_for(notes[0], _done(), note_id="n1") == PT.NOT_READ_MESH     # what was said on d9d6183b
     repo = MagicMock()
     repo.get_for_owner = AsyncMock(return_value=s)
     repo.append_message = AsyncMock(side_effect=lambda db, sid, role, t: msgs.append({"role": role, "content": t}))

@@ -108,10 +108,6 @@ def facts(note: Mapping, view: Mapping | None, *, note_id: str = "") -> dict[str
     }
 
 
-#: NOTE-25: what the checklist can hold, said after words it took nothing from
-CAN_SET = "a size ('2 mm'), finer or coarser somewhere, a quality limit, an element count, or a face clicked on the model"
-
-
 def _kept_facts(note: Mapping, view: Mapping | None, *, note_id: str = "") -> dict[str, Any]:
     """NOTE-25: for words the checklist took nothing from, what the run really does with them; {} otherwise."""
     if not PT.took_nothing(note, view, note_id=note_id):
@@ -120,12 +116,12 @@ def _kept_facts(note: Mapping, view: Mapping | None, *, note_id: str = "") -> di
         return {"not_by_meshing": "they ask for a change to the CAD itself (removing or filling features), which "
                                   "meshing cannot do: the mesh follows the part as it is. Their words are kept with "
                                   "the request, and the result will say it was not applied"}
+    asked = PT.asks_of_the_mesh(UN.said(note))
     return {"kept_for_planning": {
-        "kept": "their words are kept with the request, exactly as typed",
-        "not_on_the_checklist": "it is not something you can lock in as a number or show on the checklist",
-        "what_happens": "the mesh planning step reads their words as guidance when the mesh is built, and the "
-                        "result tells back what came of them: applied, the nearest, or not applied with the reason",
-        "what_you_can_set": CAN_SET}}
+        "what_happens": "nothing is set from these words now; they are kept, and you keep them in mind when the "
+                        "mesh is planned (the planning step reads them as guidance)",
+        "they_asked_something_of_the_mesh": asked,
+        **({"the_result": "the result will say what came of it"} if asked else {})}}
 
 
 # #
@@ -140,7 +136,7 @@ def _block_voice() -> str:
             "gets 'Sure', 'Yep' or 'Done'; a statement gets 'Okay', 'All right', 'Sounds good', 'Will do' or "
             "'Done', or no opener at all - just say what you did. Use 'Got it' rarely, and never when your last "
             "reply (it is given) opened with it. When you could NOT do it, or could not tell where, give no "
-            "acknowledgement at all: say it straight ('I couldn't tell where the lip is'). Then say what you set "
+            "acknowledgement at all (words you keep in mind for the planning are not that: see below): say it straight ('I couldn't tell where the lip is'). Then say what you set "
             "and where, in your own words, as short as it can be said. One or two short sentences. No exclamation "
             "marks, no emoji, no 'Certainly', no 'Great question', no 'As an AI'.\n")
 
@@ -150,7 +146,7 @@ def _block_facts_only() -> str:
             "picked', 'the 22 mm hole', 'the whole mesh'. Never mention mesh quality, time, an element or cell "
             "count the facts do not hold, or anything that will happen beyond the facts. Never use a number that is not in the facts. If nothing "
             "was applied, do not say or suggest that anything was set: say plainly what you couldn't take and what "
-            "they can do. Nothing has been meshed yet at this point: speak of what you've SET or what you'll do "
+            "they can do (kept_for_planning is different: see below). Nothing has been meshed yet at this point: speak of what you've SET or what you'll do "
             "('I've set 1 mm on Face 23', 'I'll go finer at that hole'), never of a mesh already made ('I've made the "
             "mesh finer' is wrong). If kept_for_the_run is true, nothing reads it before the run: say you've noted it (with "
             "the size and face from their message) and, in a few words of your own, that the result will show "
@@ -206,20 +202,26 @@ def _block_examples() -> str:
             "say so.'\n"
             "They: 'y+ of 1 on the walls please' (kept_for_the_run) -> 'Noted, y+ of 1 on the walls. The result "
             "will show whether this mesher could apply it.'\n"
-            "They: 'make it look nice' (kept_for_planning) -> 'That's not something I can put on the checklist, but "
-            "I've kept your words for the mesh planning step, which reads them as guidance, and the result will say "
-            "what came of them. If you want something exact, give me a size or click a face.'\n"
+            "They: 'the part is cast aluminium' (kept_for_planning) -> 'Got it, cast aluminium. I'll keep that in "
+            "mind when the mesh is planned.'\n"
+            "They: 'it's for a stress analysis' (kept_for_planning) -> 'Noted, it's for a stress analysis. I'll keep "
+            "that in mind for the mesh planning.'\n"
+            "They: 'make it a good quality mesh please' (kept_for_planning, they_asked_something_of_the_mesh) -> "
+            "'Okay, a good quality mesh. I'll keep that in mind when the mesh is planned, and the result will say "
+            "what came of it.'\n"
             "They: 'remove the small holes' (not_by_meshing) -> 'Removing holes is a change to the CAD itself, which "
             "meshing can't do, so the mesh keeps them. I've kept your note, and the result will say it wasn't "
             "applied.'\n")
 
 
 def _block_kept() -> str:
-    return ("If kept_for_planning is there, this message set nothing on the checklist. Say so plainly and kindly "
-            "in everyday words, that you've kept their words for the mesh planning step, which reads them as "
-            "guidance when the mesh is built, and that the result will say what came of them; then, in a few "
-            "words, what you can set if they want something exact. Never say it is set, applied, done or "
-            "guaranteed, and never use the words 'mesh setting'. If not_by_meshing is there, they asked for a "
+    return ("If kept_for_planning is there, this message set nothing and that is fine: answer like a person who "
+            "heard them, in ONE short sentence, two at most. A short opener fits here ('Got it', 'Noted', 'Okay'); "
+            "say what they told you in a few words of your own (never their whole sentence, never in quotation "
+            "marks) and that you'll keep it in mind when the mesh is planned. Only if "
+            "they_asked_something_of_the_mesh is true may you add that the result will say what came of it. No "
+            "list of what they can set, no 'checklist', no 'lock in', no 'mesh setting', and never say it is set, "
+            "applied, done or guaranteed. If not_by_meshing is there, they asked for a "
             "change to the CAD itself: say meshing can't do that, so the mesh follows the part as it is, and that "
             "you've kept their words and the result will say it wasn't applied.\n")
 
@@ -240,9 +242,9 @@ PLAN_REPLY_PROMPT_BLOCKS: tuple = (
                           "not read, once", _block_guess_and_picture),
     ("count", "a whole-mesh count said with its typed number and bound, no place needed; beside typed sizes, which "
               "wins and that the result tells it, never a promise", _block_count),
-    ("kept", "words that set nothing: said kept for the planning step, read as guidance, told back with the result, "
-             "and what can be set; a change to the CAD: meshing can't, kept, told; never 'set' or 'mesh setting'",
-     _block_kept),
+    ("kept", "words that set nothing: one or two short natural sentences - what they said, in my words, kept in "
+             "mind when the mesh is planned (the result told only when they asked something of the mesh); no menu, "
+             "no jargon; a change to the CAD: meshing can't, kept, told; never 'set'", _block_kept),
     ("examples", "four or five example exchanges in that voice", _block_examples),
     ("language", "the user's own language; plain text; at most 300 characters", _block_language),
 )
@@ -348,6 +350,45 @@ _SET_CLAIM = re.compile(r"\b(?:applied|applying|in place|locked in|i(?:'| ha)ve 
                         r"set at|set on|sized|guarantee\w*|will be (?:applied|set|used)|done)\b", re.I)
 _NEGATED = re.compile(r"(?:n't|n’t|\bnot|\bnever|\bno|\bcannot)\b[^.;]{0,25}$", re.I)
 _JARGON = re.compile(r"\bmesh settings?\b", re.I)
+#: NOTE-25: words kept for the planning are answered like a person: none of our form words, no menu of what can be set
+_FORM_WORDS = re.compile(r"\b(?:mesh settings?|checklist|lock(?:ed)? (?:it |that |this )?in)\b", re.I)
+_MENU = re.compile(r"\b(?:(?:i|you) can (?:set|give|type|click|pick|add)|click\w*|quality limit|element count|"
+                   r"if you want something)\b", re.I)
+_RESULT = re.compile(r"\bresults?\b", re.I)
+_QUOTED = re.compile(r"[\"“”]([^\"“”]+)[\"“”]")
+#: the most sentences a kept reply has (one more when a picture came, for its one clause)
+KEPT_SENTENCES = 2
+
+
+def _sentences(text: str) -> int:
+    return len([s for s in re.split(r"(?<=[.?])\s+", text.strip()) if s.strip()])
+
+
+def _quotes_them(text: str, f: Mapping) -> bool:
+    """Their words quoted back: a quoted span of three words or more that is their own sentence (or most of it)."""
+    said = " ".join(str((f.get("message") or {}).get("words") or "").casefold().split())
+    for m in _QUOTED.finditer(text):
+        span = " ".join(m.group(1).casefold().strip(" .,!?").split())
+        if len(span.split()) >= 3 and span in said:
+            return True
+    return False
+
+
+def _kept_check(text: str, f: Mapping) -> str:
+    """NOTE-25: a reply to words kept for the planning reads like a person: short, their words not quoted back, no
+    form words, no menu, and the result told only when they asked something of the mesh. "" when it may be said."""
+    kept = f.get("kept_for_planning") or {}
+    if _FORM_WORDS.search(text):
+        return "our form words ('checklist', 'lock in', 'mesh setting')"
+    if _MENU.search(text):
+        return "a list of what can be set"
+    if _sentences(text) > KEPT_SENTENCES + (1 if (f.get("message") or {}).get("pictures") else 0):
+        return "a kept note said in more than two sentences"
+    if _quotes_them(text, f):
+        return "their sentence quoted back"
+    if _RESULT.search(text) and not kept.get("they_asked_something_of_the_mesh"):
+        return "the result promised for plain context"
+    return ""
 
 
 def _claims_set(text: str) -> bool:
@@ -410,6 +451,9 @@ def check(reply: str, f: Mapping, *, last_reply: str = "") -> str:
             return "a kept note not said as kept"
         if _JARGON.search(text):
             return "our jargon ('mesh setting')"
+        why = _kept_check(text, f) if f.get("kept_for_planning") else ""
+        if why:
+            return why
     elif not applied and _CLAIM.search(text):
         return "claims something was applied when nothing was"
     if f.get("kept_for_the_run") and (_UNREAD.search(text) or not _KEPT.search(text)):

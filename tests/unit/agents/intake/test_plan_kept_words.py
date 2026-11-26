@@ -47,11 +47,24 @@ def test_a_statement_kept_at_the_plan_step_is_in_the_users_notes_and_in_the_runs
 def test_words_that_set_nothing_are_said_kept_never_turned_away(text):
     note = {"text": text}
     plain = PT.reply_for(note, _done())
-    assert plain == PT.NOT_READ and "kept your words" in plain and "mesh setting" not in plain
-    assert "couldn't find" not in plain and "size" in plain and "element count" in plain
+    # said like a person: kept in mind for the planning - no menu, no "checklist", no "lock in", no result promised
+    assert plain == PT.NOT_READ == "Noted. I'll keep that in mind when the mesh is planned."
+    for word in ("checklist", "lock in", "mesh setting", "couldn't find", "element count", "result"):
+        assert word not in plain
     f = PR.facts(note, _done())
-    assert f["kept_for_planning"]["what_happens"].startswith("the mesh planning step reads their words as guidance")
+    assert "keep them in mind when the mesh is planned" in f["kept_for_planning"]["what_happens"]
+    assert f["kept_for_planning"]["they_asked_something_of_the_mesh"] is False
     assert "applied" not in f or not f["applied"]
+    assert PR.check(PT.NOT_READ, f) == ""
+
+
+def test_words_that_ask_something_of_the_mesh_are_told_the_result_will_say():
+    note = {"text": "make it a good quality mesh please"}
+    plain = PT.reply_for(note, _done())
+    assert plain == PT.NOT_READ_MESH and "the result will say what came of it" in plain
+    f = PR.facts(note, _done())
+    assert f["kept_for_planning"]["they_asked_something_of_the_mesh"] is True
+    assert PR.check(PT.NOT_READ_MESH, f) == ""
 
 
 def test_a_change_to_the_cad_itself_is_told_meshing_cannot_make_it():
@@ -61,8 +74,7 @@ def test_a_change_to_the_cad_itself_is_told_meshing_cannot_make_it():
     assert "not_by_meshing" in PR.facts(note, _done()) and "kept_for_planning" not in PR.facts(note, _done())
 
 
-GOOD = ("That's not something I can put on the checklist, but I've kept your words for the mesh planning step, which "
-        "reads them as guidance, and the result will say what came of them.")
+GOOD = "Okay, noted. I'll keep that in mind when the mesh is planned."
 
 
 @pytest.mark.parametrize("reply,why", [
@@ -71,6 +83,13 @@ GOOD = ("That's not something I can put on the checklist, but I've kept your wor
     ("That's guaranteed in the planning step.", "claims something was applied when nothing was"),
     ("I couldn't find a mesh setting in that, but I've kept it.", "our jargon"),
     ("Okay, the planner will look at that.", "a kept note not said as kept"),
+    # NOTE-25 as the owner wants it: no form words, no menu, short, their words not quoted back
+    ("That isn't something I can lock in on the checklist, but I've kept it for mesh planning.", "our form words"),
+    ("I've kept that for the mesh planning. You can set a size, refinement, quality limit, element count, or click "
+     "a face.", "a list of what can be set"),
+    ("Noted. I'll keep that in mind. It goes to the planning step. The planner reads it.", "a kept note said in more"),
+    ("I've kept \"make it look nice\" for mesh planning.", "their sentence quoted back"),
+    ("Noted, I'll keep that in mind, and the result will say what came of it.", "the result promised for plain"),
 ])
 def test_the_guard_refuses_a_kept_note_said_as_applied_or_not_said_as_kept(reply, why):
     f = PR.facts({"text": "make it look nice"}, _done())
@@ -89,7 +108,7 @@ def test_the_reply_is_the_models_under_the_guard_with_the_kept_line_as_its_fallb
 
     def run(reply):
         async def model(messages, *, job_id, user_id):
-            assert "kept_for_planning" in messages[1]["content"] and "mesh planning step" in messages[0]["content"]
+            assert "kept_for_planning" in messages[1]["content"] and "keep it in mind" in messages[0]["content"]
             return reply
         monkeypatch.setattr(PR, "_ask", model)
         return asyncio.run(PR.written(note, _done()))

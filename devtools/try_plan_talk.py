@@ -130,6 +130,8 @@ REPLY_CASES = [
     ("words that set nothing: the analysis", {"text": "it's for a stress analysis of the bracket"}, _done(), PLAN_LINE),
     ("words that set nothing: the material", {"text": "the part is cast aluminium"}, _done(),
      "Will do, I'll keep the mesh under 1.5 million elements."),
+    ("words that set nothing, but ask something of the mesh", {"text": "make it a good quality mesh please"},
+     _done(), PLAN_LINE),
     ("words that set nothing, flow mesh", {"text": "make it a good quality mesh please"}, {**_done(), "flow": True},
      PLAN_LINE),
     ("a change to the CAD itself", {"text": "remove the small holes"}, _done(), PLAN_LINE),

@@ -350,12 +350,27 @@ STILL_READING = "Still reading that one. The list on the card will show it in a 
 READ_BEFORE_RUN = "Kept. I'll read it before the mesh starts."
 #: NOTE-25: words the checklist takes nothing from are kept for the run and said to be kept, never turned away
 KEPT_RULE = "NOTE-25"
-#: NOTE-25: the fallback when the checklist took nothing from a statement: the words are kept (NOTE-18), every route's
-#: planning step reads them as guidance (NOTE-2), and the result tells each ask back (NOTE-8, NOTE-12)
-NOT_READ = ("That isn't something I can lock in or show on the checklist, but I've kept your words for the mesh "
-            "planning step, which reads them as guidance, and the result will say what came of them. I can set a size "
-            "(\"2 mm\"), finer or coarser somewhere, a quality limit or an element count, or you can click a face on "
-            "the model.")
+#: NOTE-25: the fallback when the checklist took nothing from a statement: the words are kept (NOTE-18) and every
+#: route's planning step reads them as guidance (NOTE-2) - said the way a person says it, no list of what can be set
+NOT_READ = "Noted. I'll keep that in mind when the mesh is planned."
+#: ... when the words asked something of the mesh ("make it a good quality mesh please"): the result tells each ask
+#: back (NOTE-8, NOTE-12), and that is said too
+NOT_READ_MESH = "Noted. I'll keep that in mind when the mesh is planned, and the result will say what came of it."
+#: words that ask something of the mesh itself, beside the requirement words ("a nice mesh", "make the mesh good")
+_OF_THE_MESH = re.compile(r"\bmesh\w*\b", re.I)
+
+
+def asks_of_the_mesh(text: str) -> bool:
+    """NOTE-25: words that set nothing still ask something of the mesh ("make it a good quality mesh please") - the
+    result will say what came of them - rather than tell plain context ("the part is cast aluminium")."""
+    return requirement_content(text) or bool(_OF_THE_MESH.search(str(text or "")))
+
+
+def kept_reply(text: str) -> str:
+    """NOTE-25: the line said in code for words the checklist took nothing from."""
+    if geometry_edit(text):
+        return NOT_BY_MESHING
+    return NOT_READ_MESH if asks_of_the_mesh(text) else NOT_READ
 #: NOTE-25: a change to the CAD itself ("remove the small holes"): no mesh makes it, and that is said
 NOT_BY_MESHING = ("Removing or filling features changes the CAD itself, which meshing can't do, so the mesh follows "
                   "the part as it is. I've kept your words, and the result will say that wasn't applied.")
@@ -777,7 +792,7 @@ def reply_for(note: Mapping, view: Mapping | None, *, note_id: str = "") -> str:
         # reads them - "couldn't read that" would be false; elsewhere the checklist really took nothing
         kept = (view.get("flow") or view.get("notes_only")) and (faces or requirement_content(text))
         # NOTE-25: nothing on the checklist from it - kept for the run all the same, and said so
-        out.append(kept_line(text, faces) if kept else (NOT_BY_MESHING if geometry_edit(text) else NOT_READ))
+        out.append(kept_line(text, faces) if kept else kept_reply(text))
     if pictures:
         out.append(PICTURE_NOTE)
     return " ".join(out)
@@ -785,7 +800,7 @@ def reply_for(note: Mapping, view: Mapping | None, *, note_id: str = "") -> str:
 
 def took_nothing(note: Mapping, view: Mapping | None, *, note_id: str = "") -> bool:
     """NOTE-25: the checklist, read and done, took nothing from these words (no row, no phrase waiting, no flow line,
-    not a requirement kept for a flow run's reader) - the case `reply_for` answers with NOT_READ / NOT_BY_MESHING."""
+    not a requirement kept for a flow run's reader) - the case `reply_for` answers with `kept_reply`."""
     text = UN.said(note)
     if not _norm(text) or view is None or fixed_reply(note, view):
         return False
@@ -851,6 +866,6 @@ def lines_mine(view: Mapping | None, text: str) -> list[str]:
 __all__ = ["ASK", "ASK_LINE", "BOTH", "CLICK_RULE", "GO", "HOLD", "HOLD_LINE", "INTAKE", "NOTE", "QUESTION",
            "QUESTION_RULE", "RULE", "WAITING", "about_the_mesh", "after_turn", "points_only", "waiting_ask",
            "answers_another_question", "asked_last", "asks", "COUNT_RULE", "count_asks", "count_clash",
-           "count_line", "count_rows", "exact_go", "KEPT_RULE", "geometry_edit", "took_nothing", "face_words", "fixed_reply", "lines_mine",
+           "count_line", "count_rows", "exact_go", "KEPT_RULE", "asks_of_the_mesh", "geometry_edit", "kept_reply", "took_nothing", "face_words", "fixed_reply", "lines_mine",
            "mesh_question", "mine", "never_go", "none_found", "none_line", "pictures_of", "plain_face_rows", "plan_change", "plural", "reading",
            "reply_for", "requirement_content", "row_place", "row_what", "which_one_line"]
