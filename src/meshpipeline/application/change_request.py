@@ -342,7 +342,17 @@ def plain_reply(f: ChangeFacts) -> str:
     return " ".join(out)
 
 
+def said_in_chat(comment: Any, *, marks: int, where: str = "") -> str:
+    """The person's side of a change request as the conversation keeps it: their words as typed, then one plain
+    line for the marks ("2 spots marked: Face 12 · round Ø15 mm"), with the face labels the reply names."""
+    words = str(comment or "").strip()
+    if not marks:
+        return words
+    note = f"{marks} spot{'' if marks == 1 else 's'} marked" + (f": {where}" if where else "")
+    return f"{words}\n\n{note}" if words else note
+
+
 __all__ = ["KIND_ASK", "KIND_CHANGE", "KIND_REVIEW", "MAX_FACES", "RULE_CHANGE_RUN", "RULE_DOUBT_REVIEW",
            "RULE_MARK_FACES", "RULE_REPLY", "SMALL_FACE_SHARE", "ChangeFacts", "MarkFaces", "brief_line",
            "change_note", "change_payload", "faces_of", "is_change", "minutes_of", "one_place_words", "plain_reply",
-           "radius_of", "resolve_marks", "separate_spots"]
+           "radius_of", "resolve_marks", "said_in_chat", "separate_spots"]
