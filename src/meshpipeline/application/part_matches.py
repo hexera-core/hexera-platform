@@ -272,11 +272,14 @@ def _view(session: Any, *, owner_id: str, start: bool) -> dict | None:
         got = with_notes(with_faces(rows_of(with_picks(sid, stored, seen["table"], notes), seen, sid), own), own) or {
             "status": "done", "rows": [], "unsure": []}
         got = with_counts(got, own, flow=seen.get("route") == ROUTE_CFD) or got
+        got = with_cost(got, stored.get("cost"))
         if str((stored.get("section") or {}).get("status") or "") == "failed":
             # the model step did not answer: said so plainly (the run reads the notes again)
             got = {**got, "failed": True}
         lines = notes_lines(stored, notes=notes, facts=_acted_facts(session))
         if seen.get("route") == ROUTE_CFD:
+            # NOTE-24: a count the checklist shows as its own row is not listed again as the reader's line
+            lines = listed_once(lines, got.get("rows"))
             # a flow mesh: the run's own CFD reader reads every note again, so what is not in this checklist is
             # still kept for the run (the reply says it is kept, never that it was unreadable -
             # agents/intake/plan_talk.reply_for); `notes_only`: no parts to tie words to at all
@@ -436,6 +439,38 @@ def with_counts(got: dict | None, user_notes, *, flow: bool) -> dict | None:
         if rows:
             break
     return {**got, "rows": [*(got.get("rows") or []), *rows]} if rows else got
+
+
+def with_cost(got: dict, cost: Mapping | None) -> dict:
+    """NOTE-26: the cost of the checklist's sizes and count kept with the reading (application/plan_cost) on the view,
+    and the count row (NOTE-24) showing the element estimate the run would plan with them. Pure."""
+    if not got or not isinstance(cost, Mapping):
+        return got
+    from meshpipeline.agents.intake import plan_talk as PT
+    after = int((cost.get("after") or {}).get("elements") or 0)
+    rows = [({**r, "estimate": f"Planned: {PT.count_words(after)} elements"} if r.get("count") and after else r)
+            for r in got.get("rows") or []]
+    return {**got, "rows": rows, "cost": dict(cost)}
+
+
+#: NOTE-24: the CFD reader's line for a whole-mesh count ("From your notes: about 2 million cells.", or the team's
+#: settings' "From your settings: at most 8 million cells."), and its bound
+_COUNT_LINE = re.compile(r"^From your (?:notes|settings): (about|at most|at least) [\d.,]+(?: million)? "
+                         r"(?:cells|elements)\b")
+_COUNT_BOUND = {"target": "about", "ceiling": "at most", "floor": "at least"}
+
+
+def listed_once(lines: list[str], rows) -> list[str]:
+    """NOTE-24 on a flow mesh: ONE SETTING IS LISTED ONCE. A count typed at the plan step is a row of the checklist
+    (`with_counts`, read in code, as typed) and the CFD reader reads it too ("From your notes: about 2 million
+    cells."), so the checklist listed the same setting twice; a team's saved count of the same bound (Workspace >
+    Meshing, engines/meshing_standard) beside it is the same setting again. The row stays - it holds the typed value,
+    which wins - and the reader's count lines of that bound are left out. Pure."""
+    bounds = {_COUNT_BOUND.get(str((r.get("count") or {}).get("what"))) for r in rows or ()
+              if isinstance(r, Mapping) and r.get("count")}
+    if not bounds:
+        return list(lines)
+    return [w for w in lines if not ((m := _COUNT_LINE.match(str(w))) and m.group(1) in bounds)]
 
 
 def note_id(user_notes, note: Mapping) -> str:
@@ -719,6 +754,11 @@ def run_reading(*, session_id: str, key: str, user_notes=None, request_txt: str 
             logger.warning("part matches: the reading failed (%s) - session=%s", type(exc).__name__, session_id)
             section = PW.section("failed", note=PW.UNREAD_WORDS)
     notes_sec = notes_job.result() if notes_job is not None else None
+    # NOTE-26: what the checklist's sizes and count do to an FEA solid's plan, costed as the run would plan it
+    cost = None
+    if route == ROUTE_FEA and seen is not NOTES_ONLY:
+        from meshpipeline.application import plan_cost
+        cost = plan_cost.for_reading(session_id, section, user_notes)
     now = _read(session_id, MATCHES)
     if now is not None and now.get("key") not in (None, key):
         logger.info("part matches: the notes changed while they were read - this reading dropped - session=%s",
@@ -726,6 +766,7 @@ def run_reading(*, session_id: str, key: str, user_notes=None, request_txt: str 
         return {"status": "superseded"}
     _write(session_id, MATCHES, {"key": key, "status": "done", "at": time.time(), "section": section,
                                  **({"notes": notes_sec} if notes_sec is not None else {}),
+                                 **({"cost": cost} if cost is not None else {}),
                                  "seconds": round(time.time() - started, 1)})
     logger.info("part matches: read in %.1fs - %d row(s) - session=%s", time.time() - started,
                 len(section.get("entries") or []), session_id)

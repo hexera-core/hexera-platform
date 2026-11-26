@@ -1158,6 +1158,19 @@
   "roots": []
  },
  {
+  "context": "agents/intake/plan_reply.py::_cost_check::search#1|NotAPublisher|not-a-publisher|",
+  "path": "agents/intake/plan_reply.py",
+  "qualname": "_cost_check",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "_BIGGER",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "agents/intake/plan_reply.py::_count_check::search#1|NotAPublisher|not-a-publisher|",
   "path": "agents/intake/plan_reply.py",
   "qualname": "_count_check",

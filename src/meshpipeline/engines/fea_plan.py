@@ -1049,6 +1049,15 @@ def user_words(plan: Mapping) -> list[str]:
     for (lo, hi), ids in sorted(by.items()):
         own = [z for z in zs if z.get("user") in ids]
         finest = min([float(z["size_m"]) for z in own if z.get("kind") != "part"] or [0.5 * (lo + hi)])
+        # WHAT THE PARTS REALLY GOT: an area inside them sized on its own (NOTE-6, PLAN-fea-32/36 - "finer at the
+        # fillets", or a change asked on the delivered mesh, VER-9) holds its zones under its own key, so the part's
+        # zones alone said the size the mesh had before it ("nothing finer than 1.2 mm" beside a 0.6 mm area)
+        areas = {k: v for k, v in sizes.items() if v.get("faces")
+                 and (_part_key(sorted(str(f) for f in v["faces"])[0]) or "Part_1") in ids}
+        inside = [z for z in zs if z.get("user") in areas and float(z.get("size_m") or 0.0) > 0.0]
+        built = min([finest] + [float(z["size_m"]) for z in inside])
+        finer_area = next((str(areas[str(z["user"])].get("name") or z["user"]) for z in
+                           sorted(inside, key=lambda z: float(z["size_m"])) if built < finest * (1 - 1e-6)), "")
         rng = f"{lo * 1e3:.3g} mm" if abs(hi - lo) < 1e-12 else f"{lo * 1e3:.3g}-{hi * 1e3:.3g} mm"
         said = [str(sizes[i].get("name") or i) for i in ids[:8]]
         asked = ""
@@ -1060,7 +1069,8 @@ def user_words(plan: Mapping) -> list[str]:
         line = (f"You asked for {asked or f'{rng} elements'} on {', '.join(said)}"
                 f"{' and more' if len(ids) > 8 else ''}: {'its elements are' if asked else 'they are'} meshed at "
                 f"{0.5 * (lo + hi) * 1e3:.3g} mm, and nothing in them finer than "
-                f"{max(finest, 0.0) * 1e3:.3g} mm")
+                f"{max(built, 0.0) * 1e3:.3g} mm"
+                + (f" (at {finer_area}, where you asked for finer)" if finer_area else ""))
         across = max([float(z.get("diag_m") or 0.0) for z in own if z.get("kind") == "part"] or [0.0])
         if 0.0 < across < 3.0 * 0.5 * (lo + hi):
             # NOTE-14: a size larger than the part itself is no size it is meshed at - said as the result's row says it
