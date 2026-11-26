@@ -642,7 +642,7 @@ API: it logs that the directory is missing and leaves `/ui` and `/static` unmoun
 
 <!-- Regenerate: python -m meshpipeline.settings.inventory --reference -->
 
-Every supported setting (317 entries). `template` settings are the ones `.env.example` carries; `internal` are advanced controls deliberately kept out of it; `external` are supplied by the platform or a library rather than by editing `.env`.
+Every supported setting (341 entries). `template` settings are the ones `.env.example` carries; `internal` are advanced controls deliberately kept out of it; `external` are supplied by the platform or a library rather than by editing `.env`.
 
 | Setting | Exposure | Read by | Secret |
 |---|---|---|---|
@@ -719,6 +719,7 @@ Every supported setting (317 entries). `template` settings are the ones `.env.ex
 | `CAD_REPAIR_BUDGET_ATTEMPTS` | internal | app |  |
 | `CAD_REPAIR_CLOSE_WIRE_GAPS` | internal | app |  |
 | `CAD_REPAIR_ENABLED` | template | app |  |
+| `CAD_REPAIR_ENGINE` | internal | app |  |
 | `CAD_REPAIR_ESCALATE_REQUIRES_ATTEMPTS` | internal | app |  |
 | `CAD_REPAIR_FILL_NONPLANAR_HOLES` | internal | app |  |
 | `CAD_REPAIR_FILL_PLANAR_HOLES` | internal | app |  |
@@ -769,6 +770,29 @@ Every supported setting (317 entries). `template` settings are the ones `.env.ex
 | `CAD_REPAIR_TOLERANT_PROBE_TIMEOUT_S` | internal | app |  |
 | `CAD_REPAIR_TOURNAMENT` | internal | app |  |
 | `CAD_REPAIR_TOURNAMENT_K` | internal | app |  |
+| `CAD_REPAIR_V4_DEBUG_RECORD` | internal | app |  |
+| `CAD_REPAIR_V4_GUESS_PAIRS` | internal | app |  |
+| `CAD_REPAIR_V4_K_PROPOSE` | internal | app |  |
+| `CAD_REPAIR_V4_RECIPES` | internal | app |  |
+| `CAD_REPAIR_V4_RECIPES_URI` | internal | app |  |
+| `CRS_V4_EARLY_STOP` | internal | app |  |
+| `CRS_V4_PANEL_THREADS` | internal | app |  |
+| `CRS_V4_VERDICT_CACHE_URI` | internal | app |  |
+| `CRS_V5_AGENT` | internal | app |  |
+| `CRS_V5_COMMIT` | internal | app |  |
+| `CRS_V5_EVENT_LOG` | internal | app |  |
+| `CRS_V5_EVENT_STDOUT` | internal | app |  |
+| `CRS_V5_FALLBACK` | internal | app |  |
+| `CRS_V5_FILE_USD_CAP` | internal | app |  |
+| `CRS_V5_FILE_WALL_S` | internal | app |  |
+| `CRS_V5_FORCE_FAIL` | internal | app |  |
+| `CRS_V5_HEARTBEAT_S` | internal | app |  |
+| `CRS_V5_RUN_ID` | internal | app |  |
+| `CRS_V5_SEARCH_WALL_S` | internal | app |  |
+| `CRS_V5_SHARD` | internal | app |  |
+| `CRS_V5_VM` | internal | app |  |
+| `HEXERA_TEST_KERNEL_FNS` | internal | app |  |
+| `PYTEST_CURRENT_TEST` | external | app |  |
 | `CELERY_WORKER_CONCURRENCY` | template | compose |  |
 | `CONSOLE_SIGNUP_ENABLED` | template | app |  |
 | `CREDITS_PER_MESH_MINUTE` | template | app |  |
