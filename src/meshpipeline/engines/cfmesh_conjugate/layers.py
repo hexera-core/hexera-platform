@@ -315,7 +315,42 @@ BUFFER_CELLS_NO_EXTRUDE = 1
 #: AT 0 THIS ONE ENTRY DOMINATES THE DICT: `nLayerIter 4`, `slipFeatureAngle 90`,
 #: `featureAngle 180` and `nSmoothThickness 0` each give byte-identical output, because there is no
 #: displacement field left to smooth and no collision left to terminate.
-SMOOTH_SURFACE_NORMALS = 0
+#: AND THEN IT WAS MEASURED ON THE PART ITSELF, WHICH REFUTED THE SWEEP. Jobs 22ac7054 and
+#: b8f09ae9 are the same Corintis cold plate on the same plan, with this constant as the ONLY
+#: difference between them - the solid region came out at 192,087,711 cells in both, to the cell.
+#: Read off both runs' own conjugate_report.json, which is the production parser's reading and not
+#: a log scraped by hand:
+#:
+#:     nSmoothSurfaceNormals          5            0
+#:     coverage                90.6422%     90.7174%
+#:     layers kept of 3            2.00         2.00
+#:     thickness achieved         79.8%        79.9%
+#:     illegal faces                  8            8
+#:     fluid concave cells    1,340,185    2,341,980
+#:     fluid det < 0.001         71,529       79,295
+#:     fluid max skewness       3.53913        3.782
+#:     fluid max non-ortho      61.0276      61.5883
+#:     fluid max aspect         108.362      104.101
+#:     layer pass              2579.65 s    2717.94 s
+#:
+#: The three columns the sweep above was read down DID NOT MOVE: 0.075 of a coverage point, 0.1 of
+#: a thickness point, layers kept identical to two decimal places. What moved was a million extra
+#: concave cells, 7,766 more cells under the determinant floor, 6.9% more skewness and 138 extra
+#: seconds. So it is back at 5. The sweep is kept rather than deleted because it is now the thing
+#: that has to be explained.
+#:
+#: WHY THE RIG DID NOT TRANSFER, and this is the part to carry forward. b8f09ae9 instrumented what
+#: the extruder was ever OFFERED, which the earlier run did not record: it offered 91.1145% of the
+#: interface and kept 99.5641% of what it offered. Of the 9.28 missing points, 8.89 were declined
+#: up front by `featureAngle 120` and only 0.40 were offered and then lost over ten iterations of
+#: repair. A SMOOTHER ONLY ACTS ON A FACE THAT WAS OFFERED, so on this part no setting of these
+#: three can reach more than 0.40 of a point, whatever the sweep says. The rig - a clean 45-degree
+#: lattice with no port cuts, no mouths and no pinch-bridged metal - had almost nothing declined,
+#: so it put the whole of its coverage difference in the one place this part keeps 4% of it. The
+#: rig is wrong about this part in the other direction too: its 5-column predicts 75.18% coverage
+#: and 0.784 layers at three cells across, and the part measured 90.6422% and 2.00 at 3.91 across.
+#: THE COVERAGE LEVER ON THIS PART IS FEATURE_ANGLE, NOT ANY SMOOTHER.
+SMOOTH_SURFACE_NORMALS = 5
 SMOOTH_THICKNESS = 10
 SMOOTH_NORMALS = 0
 

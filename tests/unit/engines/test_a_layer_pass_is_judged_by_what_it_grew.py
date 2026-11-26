@@ -268,7 +268,7 @@ def test_the_surface_normals_are_smoothed_and_the_other_smoother_is_still_off():
     So the knob the old rule was written about was never the one doing the damage. On THAT plate 5
     is the optimum of 0/2/3/5/8/10 and the curve turns back up past it.
 
-    AND THAT PLATE IS TWO CELLS ACROSS, WHICH IS WHY IT IS NOW 0. Re-swept 2026-11-26 over channel
+    THAT PLATE IS TWO CELLS ACROSS, so it was re-swept 2026-11-26 over channel
     WIDTH, on a 45-degree diagonal lattice at this engine's own 201.3 um pitch and 25.1578 um cell
     with the 3x y-stretch, one knob off the shipped dict:
 
@@ -287,42 +287,52 @@ def test_the_surface_normals_are_smoothed_and_the_other_smoother_is_still_off():
     what the old sweep optimised. Job 22ac7054's part is 3.91 cells across its thin passages and
     10.50 across its broad ones, so hardly any of its interface is in the regime 5 was fitted in.
 
-    The module header already argued the mechanism and already had a measurement pointing this
-    way - "NEVER SMOOTH THE NORMALS ON A STAIRCASE", raising the three smoothers together cost
-    coverage at iteration 0, and the header says zeroing is "better still, and why that is not the
-    default here yet". The width sweep is the evidence that was missing.
+    AND THEN IT WAS MEASURED ON THE PART AND THE RIG LOST. Jobs 22ac7054 and b8f09ae9 are the
+    same cold plate on the same plan with this constant the only difference - identical solid
+    region, 192,087,711 cells in both. At 5: 90.6422% coverage, 2.00 layers, 79.8% thickness,
+    1,340,185 concave. At 0: 90.7174%, 2.00, 79.9%, 2,341,980 concave, and 138 seconds slower. The
+    three deliverable columns did not move and the concave count nearly doubled, so it is 5.
+
+    THE RIG COULD NOT HAVE TRANSFERRED, which is the lesson and not the excuse. b8f09ae9 recorded
+    what the extruder was ever offered: 91.1145% offered, 99.5641% of that kept. 8.89 of the 9.28
+    missing points were declined up front by `featureAngle 120` and 0.40 were lost in repair. A
+    smoother only acts on a face that was offered, so on this part these three knobs cannot reach
+    more than 0.40 of a point however they are set. The rig had almost nothing declined, which is
+    why it showed a 25-point coverage swing where the part has four tenths of one available.
 
     nSmoothThickness stays at 10: it smooths how THICK the stack is, not which way it points, so
-    the staircase argument never reached it and no measurement has moved it. At
-    nSmoothSurfaceNormals 0 it is inert anyway - nSmoothThickness 0 measured byte-identical.
+    the staircase argument never reached it and no measurement has moved it. (At
+    nSmoothSurfaceNormals 0 it was inert - nSmoothThickness 0 measured byte-identical there - but
+    the surface normals are smoothed again, so it is live.)
     """
-    assert L.SMOOTH_SURFACE_NORMALS == 0, (
-        "smoothing the normals on a staircase aims neighbouring prisms at each other, which is "
-        "the coverage loss, the thinning and the concave cells at once")
+    assert L.SMOOTH_SURFACE_NORMALS == 5, (
+        "0 was measured on the part and lost: same plan, same solid to the cell, 1,340,185 "
+        "concave cells at 5 against 2,341,980 at 0, for 0.075 of a coverage point")
     assert L.SMOOTH_NORMALS == 0, (
         "nSmoothNormals was measured to do nothing; turning it on buys nothing and is untested")
     assert L.SMOOTH_THICKNESS == 10
 
 
-def test_the_smoothing_is_off_because_it_was_swept_over_channel_width():
+def test_the_smoothing_was_swept_over_width_and_then_measured_on_the_part():
     """THE OPPOSITE FAILURE TO GUARD, which is re-fitting this constant on one geometry again.
 
-    The value shipped at 5 because a sweep on a two-across plate minimised the concave count
-    there. The replacement is not "0 is prettier": it is that over 2/3/4/6/10 cells across, 0 is
-    never worse on coverage, layers kept or thickness achieved, and from 4 across it reaches 100%,
-    3.00 of 3 and 100% while 5 reaches 76%, 0.81 and 47%. A future sweep that moves this must say
-    which WIDTHS it measured, because that is the axis the first sweep did not vary.
+    The value shipped at 5 from a sweep on a two-across plate that minimised the concave count
+    there. A width sweep then said 0 is never worse at 2/3/4/6/10 cells across and perfect from 4,
+    so it was changed to 0 and run on the part - where it bought 0.075 of a coverage point, moved
+    layers kept and thickness not at all, and nearly doubled the concave count. It is 5 again.
 
-    Pinned here rather than in prose: the two smoothers that aim the extrusion are both off, and
-    the one that only scales the stack is untouched.
+    SO THE BAR FOR MOVING IT IS NOW A RUN OF THE PART, not a rig: a rig with no port cuts, no
+    mouths and no pinch-bridged metal has almost no faces declined by `featureAngle`, and on the
+    real part 8.89 of the 9.28 missing coverage points are declined before any smoother is
+    consulted. Whoever moves this next has to show the two conjugate_report.json files.
     """
-    assert L.SMOOTH_SURFACE_NORMALS == 0
+    assert L.SMOOTH_SURFACE_NORMALS == 5
     assert L.SMOOTH_NORMALS == 0
     assert L.SMOOTH_THICKNESS == 10, (
         "nSmoothThickness scales the stack, it does not aim it; nothing has measured it")
     # and the dict the mesher reads carries all three, because a constant nothing renders is a note
     text = L.render_layers_dict(interface_patch=INTERFACE, interface_cell_m=BL8_CELL_M, **_geom())
-    for line in ("nSmoothSurfaceNormals       0;",
+    for line in ("nSmoothSurfaceNormals       5;",
                  "nSmoothNormals              0;",
                  "nSmoothThickness           10;"):
         assert line in text, line
@@ -348,7 +358,7 @@ def test_the_rendered_dict_carries_the_measured_values_not_just_the_constants():
     """The constants are only worth anything if they reach the dict snappyHexMesh reads."""
     text = L.render_layers_dict(interface_patch=INTERFACE, interface_cell_m=BL8_CELL_M,
                                 **_geom())
-    assert "nSmoothSurfaceNormals       0;" in text
+    assert "nSmoothSurfaceNormals       5;" in text
     assert "nSmoothNormals              0;" in text
     assert "nSmoothThickness           10;" in text
     assert "featureAngle              120;" in text
