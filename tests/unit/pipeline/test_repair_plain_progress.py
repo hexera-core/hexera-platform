@@ -188,6 +188,12 @@ def test_a_declined_v3_repair_claims_no_counts():
                      choice="meshing")
     assert sec["counts"] == {} and sec["outcome"] == "unrepairable"
     assert RR.summary_text(sec) == "Repair finished"
+    # ...the same for the engine's v3 fallback, whose contract lists no problems (found live)
+    sec = RR.section({"repair_attempt": {"attempted": False, "repair_result_v5": {
+        "engine": "v3", "outcome": "unrepairable", "problems": [], "seconds": 185.1}}},
+        choice="standalone")
+    assert sec["engine"] == "v3" and sec["counts"] == {}
+    assert RR.summary_text(sec) == "Repair finished"
     # ...and the run's own bypass survives a repair that made no review decision (found live)
     sec = RR.section({"repair_attempt": {"attempted": False, "outcome": "refused"},
                       "repair_goal": {"goal": "meshing", "auto_accept_repairs": True}},

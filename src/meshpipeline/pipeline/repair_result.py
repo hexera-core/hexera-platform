@@ -297,7 +297,10 @@ def _section(state: Mapping, *, choice: str) -> dict:
         "outcome": outcome if outcome in OUTCOMES else ("repaired" if problems and all(
             p["status"] == "fixed" for p in problems) else "unchanged"),
         "problems": problems,
-        "counts": _counts(problems),
+        # COUNTS ONLY WHERE THE ENGINE LISTED THE PROBLEMS: v5 lists every one it found (an empty
+        # list from v5 is a clean part); its v3 fallback lists none, and "0 found" from it would
+        # say "nothing needed fixing" about a part v3 refused (found on the personal slug)
+        "counts": _counts(problems) if problems or engine == "v5" else {},
         "meshers_passing": _count(result.get("meshers_passing")),
         "meshers_total": _count(result.get("meshers_total")),
         "max_change_mm": _num(result.get("max_change_mm")),
