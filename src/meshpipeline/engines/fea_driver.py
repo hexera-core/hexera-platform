@@ -789,6 +789,37 @@ def kept_plans(state) -> dict | None:
     return got if isinstance(got, dict) else None
 
 
+def requirement_sizes(record: dict, asked: dict | None, part_sizes: dict | None,
+                      diag_m: float) -> tuple[dict, dict, dict | None]:
+    """THE SIZES THE USER'S REQUIREMENTS SET, as the run applies them - the one copy, read by the run (drive) and by the
+    plan step's cost (requirements_cost): the sizes part by part and area by area from the parts reading (AI-fea-9,
+    PLAN-fea-29/32), a size for the WHOLE mesh on every part the user did not size (PLAN-fea-33), and a part or area
+    asked "finer" or "coarser" with no number sized from the rules' own sizes (PLAN-fea-36). Returns (the sizes, the
+    entries PLAN-fea-36 sized - for the why record - and the controls the notes set (NOTE-13) or None). Changes
+    nothing it is given."""
+    from meshpipeline.engines import mesh_requirements as MR
+
+    asked = asked or {}
+    sizes = PS.sizes_of(part_sizes)
+    # PLAN-fea-36: a whole part asked "finer" or "coarser" with no number is sized once the plan's own sizes are known
+    scaled = {k: v for k, v in sizes.items() if "scale" in v}
+    sizes = {k: v for k, v in sizes.items() if "scale" not in v}
+    if asked.get("status") != "none":
+        # PLAN-fea-33: a size the notes ask for the WHOLE mesh, held like the sizes per part (on every part the
+        # user did not size themselves)
+        from meshpipeline.engines import fea_requirements as FR
+        sizes = FR.whole_sizes(sizes, MR.requirements_of(asked), FR.part_ids(P.zones(record)),
+                               base_m=P.base_size(diag_m))
+    controls = None
+    if asked.get("status") == "used":
+        from meshpipeline.engines import control_appliers as CA
+        if CA.asked(MR.requirements_of(asked)):
+            controls = MR.requirements_of(asked)
+    if scaled:
+        sizes = {**sizes, **PS.resolve_scales(scaled, P.zones(record), base_m=P.base_size(diag_m), whole=sizes)}
+    return sizes, scaled, controls
+
+
 def size_choice(state, record: dict, surface, diag_m: float, *, levers, ceiling_s, ai, kept: dict | None,
                 key: str, target: dict | None = None, sizes: dict | None = None,
                 correction: float | None = None) -> tuple[dict, dict]:
@@ -2885,27 +2916,14 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
     if read_early is None:
         # NOTE-17: a size typed with faces picked on the model sizes those faces (re-checked on this surface)
         part_sizes = PS.with_picks(part_sizes, _MR.requirements_of(asked), surface)
-    sizes = PS.sizes_of(part_sizes)
     if read_early is None and part_sizes.get("status") != "none":
         _cite(job_id, PS.decisions(part_sizes))
-    # PLAN-fea-36: a whole part asked "finer" or "coarser" with no number is sized once the plan's own sizes are known
-    scaled = {k: v for k, v in sizes.items() if "scale" in v}
-    sizes = {k: v for k, v in sizes.items() if "scale" not in v}
-    if asked.get("status") != "none":
-        # PLAN-fea-33: a size the notes ask for the WHOLE mesh, held like the sizes per part (on every part the
-        # user did not size themselves)
-        from meshpipeline.engines import fea_requirements as FR
-        from meshpipeline.engines import mesh_requirements as MR
-        sizes = FR.whole_sizes(sizes, MR.requirements_of(asked), FR.part_ids(P.zones(record)),
-                               base_m=P.base_size(diag_m))
-    if asked.get("status") == "used":
+    sizes, scaled, controls = requirement_sizes(record, asked, part_sizes, diag_m)
+    if controls is not None:
         # NOTE-13: the controls the notes set ride with the record into every plan of the run (make_plan's one seam)
         from meshpipeline.engines import control_appliers as CA
-        from meshpipeline.engines import mesh_requirements as MR
-        if CA.asked(MR.requirements_of(asked)):
-            record[CA.RECORD_KEY] = MR.requirements_of(asked)
+        record[CA.RECORD_KEY] = controls
     if scaled:
-        sizes = {**sizes, **PS.resolve_scales(scaled, P.zones(record), base_m=P.base_size(diag_m), whole=sizes)}
         _cite(job_id, [{"stage": "fea_plan", "decided": "parts asked finer or coarser", "value": len(scaled),
                         "rule": "PLAN-fea-36", "inputs": {k: {"scale": v["scale"], "min_m": v["min_m"],
                                                               "max_m": v["max_m"]} for k, v in sizes.items()
