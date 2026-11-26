@@ -151,3 +151,41 @@ def test_a_sized_mesh_no_better_than_as_drawn_gives_way_to_it(runout, tmp_path, 
                         q["fea_short_edges"] else (1, 0.0))
     assert A.mesh(ws2) == 0
     assert "kept" not in _q(ws2)["fea_short_edges"] and _sha(ws2 / "mesh.inp") == _sha(on / "mesh.inp")
+
+
+def test_a_valid_sized_mesh_too_big_to_build_twice_is_not_meshed_again(runout, tmp_path, monkeypatch):
+    # a cast knuckle, 25 Nov: a valid sized mesh of 10.0M elements missed an element-quality row, was moved aside and
+    # the whole part meshed a second time as drawn, to keep the better - an hour or more for a comparison. Over
+    # SHORT_COMPARE_MAX_ELEMENTS the valid sized mesh stands, once, and the record says why
+    on, _off = runout
+    ws = _copy(on, tmp_path / "ws")
+    monkeypatch.setattr(SHORT, "BUDGET_FLOOR", 200_000)
+    monkeypatch.setattr(A, "_short_score", lambda q: (1, 0.0) if q.get("fea_short_edges") else (0, 0.0))
+    monkeypatch.setattr(A, "SHORT_COMPARE_MAX_ELEMENTS", 10)
+    built = []
+    real = A._mesh
+
+    def counted(w):
+        built.append(1)
+        return real(w)
+
+    monkeypatch.setattr(A, "_mesh", counted)
+    assert A.mesh(ws) == 0
+    assert len(built) == 1                                   # one mesh, never two
+    rec = _q(ws)["fea_short_edges"]
+    assert rec["kept"] == "sized" and rec["compared"] is False and rec["edges"] == 2
+    assert "not built a second time" in rec["why"]
+    assert _sha(ws / "mesh.inp") == _sha(on / "mesh.inp")       # the sized mesh, as built
+    assert not (ws / "_mesh24_sized").exists()
+    # an INVALID sized mesh is no comparison: it is meshed again as drawn at any size
+    ws2 = _copy(on, tmp_path / "ws2")
+    built.clear()
+
+    def invalid_when_sized(w):
+        built.append(1)
+        rc = real(w)
+        return 4 if (rc == 0 and _q(Path(w)).get("fea_short_edges") and len(built) == 1) else rc
+
+    monkeypatch.setattr(A, "_mesh", invalid_when_sized)
+    assert A.mesh(ws2) == 0
+    assert len(built) == 2 and _q(ws2)["fea_short_edges"]["kept"] == "as drawn"

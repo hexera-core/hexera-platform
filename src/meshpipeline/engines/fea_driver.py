@@ -789,6 +789,42 @@ def kept_plans(state) -> dict | None:
     return got if isinstance(got, dict) else None
 
 
+def requirement_sizes(record: dict, asked: dict | None, part_sizes: dict | None,
+                      diag_m: float) -> tuple[dict, dict, dict | None]:
+    """THE SIZES THE USER'S REQUIREMENTS SET, as the run applies them - the one copy, read by the run (drive) and by the
+    plan step's cost (requirements_cost): the sizes part by part and area by area from the parts reading (AI-fea-9,
+    PLAN-fea-29/32), a size for the WHOLE mesh on every part the user did not size (PLAN-fea-33), and a part or area
+    asked "finer" or "coarser" with no number sized from the rules' own sizes (PLAN-fea-36). Returns (the sizes, the
+    entries PLAN-fea-36 sized, each with what came of it - for the why record, fea_part_sizes.finer_outcomes and
+    .settled - and the controls the notes set (NOTE-13) or None). Changes nothing it is given."""
+    from meshpipeline.engines import mesh_requirements as MR
+
+    asked = asked or {}
+    sizes = PS.sizes_of(part_sizes)
+    # PLAN-fea-36: a whole part asked "finer" or "coarser" with no number is sized once the plan's own sizes are known
+    scaled = {k: v for k, v in sizes.items() if "scale" in v}
+    sizes = {k: v for k, v in sizes.items() if "scale" not in v}
+    if asked.get("status") != "none":
+        # PLAN-fea-33: a size the notes ask for the WHOLE mesh, held like the sizes per part (on every part the
+        # user did not size themselves)
+        from meshpipeline.engines import fea_requirements as FR
+        sizes = FR.whole_sizes(sizes, MR.requirements_of(asked), FR.part_ids(P.zones(record)),
+                               base_m=P.base_size(diag_m))
+    controls = None
+    if asked.get("status") == "used":
+        from meshpipeline.engines import control_appliers as CA
+        if CA.asked(MR.requirements_of(asked)):
+            controls = MR.requirements_of(asked)
+    if scaled:
+        scaled = PS.resolve_scales(scaled, P.zones(record), base_m=P.base_size(diag_m), whole=sizes)
+        sizes = {**sizes, **{k: v for k, v in scaled.items() if not v.get("kept")}}
+        # an area asked finer that keeps the rules' sizes (PLAN-fea-36) holds its zones against its part's size only
+        # when that part has one (a size for the whole mesh, or its own): with none, the rules' sizes stand as they are
+        sizes.update({k: v for k, v in scaled.items()
+                      if v.get("kept") and PS.part_of_faces(v.get("faces") or []) in sizes})
+    return sizes, scaled, controls
+
+
 def size_choice(state, record: dict, surface, diag_m: float, *, levers, ceiling_s, ai, kept: dict | None,
                 key: str, target: dict | None = None, sizes: dict | None = None,
                 correction: float | None = None) -> tuple[dict, dict]:
@@ -1676,7 +1712,10 @@ def built_remark(ws: Path, record: dict | None = None) -> None:
         line = BY_CHOICE_WORDS["count"]
     tell_count(ws, line)
     if plan.get("user_sizes") or (plan.get("part_sizes") or {}).get("status") not in (None, "none"):
-        said = P.user_words(plan)[:1] or PS.told(plan.get("part_sizes"), _requirements_of(plan))[:1]
+        # a place asked finer (PLAN-fea-36) has its own line already (fea_finer:<id>, said before meshing)
+        own = {str(r.get("words")) for r in plan.get("finer") or []}
+        said = ([w for w in P.user_words(plan) if w not in own][:1]
+                or PS.told(plan.get("part_sizes"), _requirements_of(plan))[:1])
         if plan.get("by_choice_failed") == "sizes":
             said = [BY_CHOICE_WORDS["sizes"]]
         if said:
@@ -2885,33 +2924,32 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
     if read_early is None:
         # NOTE-17: a size typed with faces picked on the model sizes those faces (re-checked on this surface)
         part_sizes = PS.with_picks(part_sizes, _MR.requirements_of(asked), surface)
-    sizes = PS.sizes_of(part_sizes)
     if read_early is None and part_sizes.get("status") != "none":
         _cite(job_id, PS.decisions(part_sizes))
-    # PLAN-fea-36: a whole part asked "finer" or "coarser" with no number is sized once the plan's own sizes are known
-    scaled = {k: v for k, v in sizes.items() if "scale" in v}
-    sizes = {k: v for k, v in sizes.items() if "scale" not in v}
-    if asked.get("status") != "none":
-        # PLAN-fea-33: a size the notes ask for the WHOLE mesh, held like the sizes per part (on every part the
-        # user did not size themselves)
-        from meshpipeline.engines import fea_requirements as FR
-        from meshpipeline.engines import mesh_requirements as MR
-        sizes = FR.whole_sizes(sizes, MR.requirements_of(asked), FR.part_ids(P.zones(record)),
-                               base_m=P.base_size(diag_m))
-    if asked.get("status") == "used":
+    sizes, scaled, controls = requirement_sizes(record, asked, part_sizes, diag_m)
+    if controls is not None:
         # NOTE-13: the controls the notes set ride with the record into every plan of the run (make_plan's one seam)
         from meshpipeline.engines import control_appliers as CA
-        from meshpipeline.engines import mesh_requirements as MR
-        if CA.asked(MR.requirements_of(asked)):
-            record[CA.RECORD_KEY] = MR.requirements_of(asked)
+        record[CA.RECORD_KEY] = controls
+    finer = PS.finer_outcomes(scaled)
     if scaled:
-        sizes = {**sizes, **PS.resolve_scales(scaled, P.zones(record), base_m=P.base_size(diag_m), whole=sizes)}
         _cite(job_id, [{"stage": "fea_plan", "decided": "parts asked finer or coarser", "value": len(scaled),
-                        "rule": "PLAN-fea-36", "inputs": {k: {"scale": v["scale"], "min_m": v["min_m"],
-                                                              "max_m": v["max_m"]} for k, v in sizes.items()
-                                                          if k in scaled},
-                        "words": "Each part asked finer or coarser with no number: its own size halved or doubled; "
-                                 "what the rules make finer in it keeps its size."}])
+                        "rule": "PLAN-fea-36", "inputs": {k: {key: v[key] for key in ("scale", "min_m", "max_m",
+                                                                                        "target_m", "there_m", "kept")
+                                                              if key in v} for k, v in scaled.items()},
+                        "words": "Each part asked finer or coarser with no number: its own size halved or doubled; a "
+                                 "place asked finer: half the size of the mesh round it, and what the rules already "
+                                 "make that fine keeps its size."}])
+    if finer:
+        # PLAN-fea-36 / AI-fea-1: the places asked finer are this rule's to size - the AI's refinements there are not
+        # applied (every plan of the run reads this from the record, fea_ai.apply_zones), and each is told at
+        # "Designing the mesh" and in the result's "From your notes" line
+        record[FA.SETTLED_KEY] = PS.settled(scaled)
+        from meshpipeline.contracts.user_notes import drop_remark, record_remark
+        if any(r.get("settled_by") for r in FA.apply_zones(P.zones(record), _used(ai), record, diag_m=diag_m)[1]):
+            drop_remark(ws, by="fea_ai")            # its remark spoke of refinements that are not made
+        for r in finer:
+            record_remark(ws, r["words"], by=f"fea_finer:{r['id']}")
     # A COUNT OR SIZES THE USER ASKED FOR NEVER FAIL THE RUN: when no pass builds a valid mesh of the plan their
     # choices made, the rules' own plan is meshed instead, and said (PLAN-fea-29)
     by_choice_failed = ""
@@ -2950,6 +2988,8 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
                     plan["words"] = [*(plan.get("words") or []), said["words"]]
                     plan["size_choice"] = said["inputs"] | {"value": said["value"]}
                 plan["part_sizes"] = part_sizes
+                if finer:
+                    plan["finer"] = finer            # PLAN-fea-36: what came of each place asked finer
                 if asked.get("status") != "none":
                     plan["requirements"] = asked
                 if by_choice_failed:
@@ -2982,6 +3022,8 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
                                                beyond=chosen.get("beyond"), sizes=chosen.get("sizes"))
                 plan["limit"] = chosen["limit"]
                 plan["part_sizes"] = part_sizes
+                if finer:
+                    plan["finer"] = finer
                 if asked.get("status") != "none":
                     plan["requirements"] = asked
                 if chosen.get("by_choice_failed"):
@@ -3272,6 +3314,12 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
                             "words": ("No pass built a valid mesh of the plan your " + ("sizes" if sizes else "element count")
                                       + " made, so the rules' own plan is meshed instead.")}])
             target, sizes = None, {}
+            if finer:
+                # PLAN-fea-36: a place asked finer is no longer sized as told - its line goes with the plan
+                from meshpipeline.contracts.user_notes import drop_remark as _drop_finer
+                for r in finer:
+                    _drop_finer(ws, by=f"fea_finer:{r['id']}")
+                finer = []
             n0, levers = len(passes), []
             continue
         break

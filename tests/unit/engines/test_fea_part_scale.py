@@ -66,19 +66,21 @@ AREA_ZONES = [{"id": "P1", "kind": "part", "part": "Part_1", "size_m": 0.003},
               {"id": "W9", "kind": "wall", "faces": ["Face_8", "Face_9"], "size_m": 0.0009}]
 
 
-def test_an_area_asked_finer_halves_each_of_its_own_sizes_and_says_so():
-    """Before, "finer" on an area was dropped (an area took a size, never a scale): fea0254's fillets got no zone.
-    Now each zone wholly on the area has its own size halved - the round's, and the wall's through-thickness size
-    (not the round's 0.028 mm over the wall's 1.6 mm, 124 million elements) - the area gets a zone of its own, and a
-    zone only partly on it keeps its size."""
+def test_an_area_the_rules_already_make_finer_than_half_the_mesh_round_it_keeps_its_sizes():
+    """Reading A (Areen, 25 Nov: "finer than the mesh around it"): fea0254's fillets are at 0.0554 mm by their rounds,
+    far under half of the part's 3 mm - so they keep the rules' sizes and get no zone of their own (before, each zone
+    on them was halved, and the knuckle's fillets went from 1 to 10 million elements). A zone on them coarser than the
+    target (the wall's through-thickness size) is sized as off the area, and the user is told."""
     sizes = PS.sizes_of(AREA_READING)
     assert sizes["Feature_2"]["scale"] == 0.5 and sizes["Feature_2"]["faces"] == ["Face_7", "Face_8"]
     sizes = PS.resolve_scales(sizes, AREA_ZONES, base_m=0.003)
-    assert math.isclose(sizes["Feature_2"]["rule_m"], 0.0000554) and math.isclose(sizes["Feature_2"]["min_m"], 0.0000277)
+    got = sizes["Feature_2"]
+    assert got["kept"] and math.isclose(got["target_m"], 0.0015) and math.isclose(got["there_m"], 0.0000554)
     zones = {z["id"]: z for z in P.user_sized(AREA_ZONES, sizes)}
-    assert math.isclose(zones["R7"]["size_m"], 0.0000277) and math.isclose(zones["W7"]["size_m"], 0.0004)
+    assert zones["R7"]["size_m"] == 0.0000554 and zones["R8"]["size_m"] == 0.0000554 and zones["W7"]["size_m"] == 0.0008
     assert zones["W9"]["size_m"] == 0.0009 and "user" not in zones["W9"] and zones["P1"]["size_m"] == 0.003
-    assert zones["U2"]["kind"] == "area" and math.isclose(zones["U2"]["size_m"], 0.0000277)
+    assert not [z for z in zones.values() if z["kind"] == "area"]
     words = P.user_words({"user_sizes": sizes, "zones": list(zones.values())})
-    assert words[0].startswith("You asked for finer elements on 2 rounded edges (fillets), radius 0.141 mm: its own "
-                               "size is halved, from 0.0554 mm to 0.0277 mm")
+    assert words[0] == ("You asked for finer elements at 2 rounded edges (fillets), radius 0.141 mm: the mesh there is "
+                        "already about 0.055 mm, finer than half of the part's 3 mm, so it keeps that size. Give a "
+                        "size if you want it finer still.")

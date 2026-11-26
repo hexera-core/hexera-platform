@@ -1754,6 +1754,13 @@ _SHORT_USED = [False]
 #: of the verdict (engines/verdict_limits.fea_limits)
 SHORT_HELD = ("elements_under_floor", "fea_min_scaled_jacobian", "fea_max_jacobian_ratio", "fea_max_aspect_ratio",
               "fea_min_dihedral_deg", "fea_max_dihedral_deg")
+#: MESH-24: THE COMPARISON IS NEVER A SECOND MESH OF MILLIONS. A VALID sized mesh that misses an element-quality row is
+#: meshed again as drawn only when it has at most this many elements - the second mesh costs about as long as the first
+#: (the as-drawn mesh differs from it only round the sized edges), and above this that is an hour or more thrown away
+#: half the time (a cast knuckle, 25 Nov: 10.0M elements built and written in 78 minutes, then a second full mesh of
+#: the same part started). An invalid or unbuilt sized mesh is meshed again as drawn at any size: that is no
+#: comparison but the part's only other way to a mesh.
+SHORT_COMPARE_MAX_ELEMENTS = 1_000_000
 
 
 def _short_score(q: dict) -> tuple[int, float]:
@@ -1871,7 +1878,8 @@ def _mesh_short(workspace) -> int:
     built), the same pass is meshed again with them as drawn, and the better of the two is kept (fewer
     element-quality rows missed, then the better worst scaled Jacobian; FEA corpus, 3 Nov: on a bonded
     assembly whose micro edges were sized, slivers moved just past the micro set-aside). A sized mesh that
-    meets every element limit is kept at once."""
+    meets every element limit is kept at once; so is a VALID one of more than SHORT_COMPARE_MAX_ELEMENTS - never two
+    full meshes of millions to keep one (its record says kept: sized, compared: false)."""
     import shutil
 
     ws = Path(workspace)
@@ -1886,6 +1894,16 @@ def _mesh_short(workspace) -> int:
     except (OSError, ValueError):
         q1 = {}
     if rc == 0 and q1 and _short_score(q1)[0] == 0:
+        return rc
+    if rc == 0 and q1 and int(q1.get("cells") or 0) > SHORT_COMPARE_MAX_ELEMENTS:
+        # valid, and too big to build twice: the sized mesh stands, held to every limit as any pass is, and the
+        # record says the comparison was not made and why
+        q1["fea_short_edges"] = {**(q1.get("fea_short_edges") or {}), "kept": "sized", "compared": False,
+                                 "why": f"a valid mesh of {int(q1['cells']):,} elements is not built a second time "
+                                        f"to compare (over {SHORT_COMPARE_MAX_ELEMENTS:,})"}
+        (ws / "quality.json").write_text(json.dumps(q1, indent=1))
+        print(f"[GMSH-FEA] the mesh with short edges sized misses an element limit, but at {int(q1['cells']):,} "
+              f"elements it is not meshed again as drawn to compare ({SHORT_RULE})", file=sys.stderr)
         return rc
     first = ws / "_mesh24_sized"
     shutil.rmtree(first, ignore_errors=True)
@@ -2211,7 +2229,8 @@ def _mesh(workspace) -> int:
                     solid, wanted, order=order, applied=plan.get("controls"),
                     through_wall=(rules.get("through_wall") or {}).get("min") if rules else None,
                     places=plan.get("part_sizes") if isinstance(plan.get("part_sizes"), dict) else None,
-                    face_tags=face_tags if asm else None)
+                    face_tags=face_tags if asm else None,
+                    finer=plan.get("finer") if isinstance(plan.get("finer"), list) else None)
                 if mmg.get("targets"):
                     from meshpipeline.engines import fea_mmg as _mmg_told
                     asked_report = _mmg_told.tell(asked_report, mmg)

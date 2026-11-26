@@ -166,6 +166,80 @@ def options_and_plans(record: dict, surface, diag_m: float, *, ai: dict | None =
 
 
 # #
+# WHAT THE USER'S REQUIREMENTS COST, said before the run (a cast knuckle, 25 Nov: "finer at the fillets" took a plan of
+# about 1 million elements to 10 million on the 128 GB machine, and nothing said so before the run)
+# #
+def _count_words(n: int) -> str:
+    if n >= 1_000_000:
+        m = n / 1_000_000.0
+        return f"about {m:.1f} million" if m < 10 else f"about {m:.0f} million"
+    return f"about {float(f'{max(n, 1):.2g}'):,.0f}"
+
+
+def _machine_words(r: dict) -> str:
+    return "on the standard machine" if r.get("standard") else \
+        f"on a larger machine ({float(r.get('memory_gib') or 0.0):g} GB)"
+
+
+def _costed(record: dict, plan: dict, key: str) -> dict:
+    """row() for the plan step: its machine also by time (RUN-5, contracts/mesh_machine.for_time, as the run decides
+    it), and the pass's own time limit (LAD-fea-15, fea_driver.pass_work)."""
+    from meshpipeline.contracts import mesh_machine as MM
+    from meshpipeline.engines import fea_driver as FD
+
+    r = row(record, plan, key)
+    process, files = FD.memory_need(float(r["elements"]))
+    machine = MM.choose(process_gib=process, workspace_gib=files, why="memory model")
+    rate, cls = FD.fill_rate(record)
+    machine = MM.for_time(machine, planned_s=FD.planned_seconds(plan, rate), wall_s=FD.ceiling_for(None))
+    work = FD.pass_work(plan, rate=rate, cls=cls, machine=machine)
+    r.update(where=machine["where"], machine=machine.get("machine"), standard=machine["where"] != "gce",
+             memory_gib=float(machine.get("memory_gib") or r.get("memory_gib") or 0.0),
+             budget_minutes=int(math.ceil(float(work["ceiling_s"]) / 60.0)))
+    return r
+
+
+def requirements_cost(record: dict, surface, diag_m: float, *, before: dict, asked: dict | None,
+                      part_sizes: dict | None, ai: dict | None = None, target: dict | None = None) -> dict:
+    """WHAT THE REQUIREMENTS DO TO THE MESH, BEFORE THE RUN: the plan the run would make with them (the run's own
+    sizing of them, fea_driver.requirement_sizes, and its own planner, fea_driver.choose_plan - the same estimate,
+    PLAN-fea-16 memory model, RUN-1/2/5 machine and LAD-fea-15 time the run uses; no number of its own), against
+    `before`, the plan without them (the stage's full-rules plan).
+
+    `asked`: the notes' reading (mesh_requirements' section, NOTE-7); `part_sizes`: the parts reading
+    (fea_part_sizes.decide's section, AI-fea-9: a size or "finer" in one named place); `ai`: the AI decision when one
+    was made (AI-fea-1's refinements count only then - the plan step has none unless it asked); `target`: an element
+    count the notes name (fea_driver.element_target). Plans once (a size field histogram: seconds on a small part,
+    minutes on a big one - run it where the stage's own sizing runs, `bounded`).
+
+    Returns {"before": row, "after": row, "factor": after / before elements, "bigger_machine": bool, "words": "...",
+    "finer": [...]}: each row as the stage's (row(): elements, machine, where, standard, memory_gib, minutes = the
+    upper end at the part's slow fill rate, usual_minutes) plus budget_minutes (when the pass is stopped, LAD-fea-15);
+    "finer": per place asked "finer" with no number (PLAN-fea-36, fea_part_sizes.finer_outcomes): its target (half
+    the mesh round it), the size the rules already give it, whether it changed, and the plain line the run says."""
+    from meshpipeline.engines import control_appliers as CA
+    from meshpipeline.engines import fea_ai as FA
+    from meshpipeline.engines import fea_driver as FD
+    from meshpipeline.engines import fea_part_sizes as PS
+
+    sizes, scaled, controls = FD.requirement_sizes(record, asked, part_sizes, diag_m)
+    rec = {**record, CA.RECORD_KEY: controls} if controls is not None else record
+    finer = PS.finer_outcomes(scaled)
+    if finer:
+        rec = {**rec, FA.SETTLED_KEY: PS.settled(scaled)}         # as drive puts it: the AI never refines there
+    after_plan = FD.choose_plan(rec, surface, diag_m, ai=ai, target=target, sizes=sizes or None)
+    b, a = _costed(record, before, "before"), _costed(rec, after_plan, "after")
+    factor = a["elements"] / b["elements"] if b["elements"] else None
+    bigger = a["memory_gib"] > b["memory_gib"] or (b["standard"] and not a["standard"])
+    when = minutes_words(a["usual_minutes"], a["minutes"])
+    words = (f"That takes the mesh from {_count_words(b['elements'])} to {_count_words(a['elements'])} elements, "
+             f"{_machine_words(a)}, {when}." if _count_words(a["elements"]) != _count_words(b["elements"]) else
+             f"That keeps the mesh at {_count_words(a['elements'])} elements, {_machine_words(a)}, {when}.")
+    return {"before": b, "after": a, "factor": round(factor, 2) if factor else None, "bigger_machine": bool(bigger),
+            "words": words, "finer": finer}
+
+
+# #
 # PLANNED ONCE: the plans kept for the run
 # #
 
@@ -303,8 +377,8 @@ def _main(argv: list[str]) -> int:
 
 
 __all__ = ["BUDGET_S", "FULL", "LOW_STRESS", "PLANS_FILE", "QUICKER", "bounded", "decide", "kept_plan",
-           "minutes_words", "options", "options_and_plans", "plan_staged", "planning_code", "plans_key", "row",
-           "stage_file", "standard_elements"]
+           "minutes_words", "options", "options_and_plans", "plan_staged", "planning_code", "plans_key",
+           "requirements_cost", "row", "stage_file", "standard_elements"]
 
 
 if __name__ == "__main__":
