@@ -408,3 +408,24 @@ def test_the_result_is_read_where_pr1_writes_it():
         problems=[{"id": "a", "type": "thin_gap", "status": "fixed", "change_mm": 0.01}],
         needs_review=False)}}, choice="meshing")
     assert sec["ran"] and sec["engine"] == "v5" and sec["problems"][0]["type"] == "close_faces"
+
+
+def test_a_line_the_node_and_the_engine_both_say_is_said_once(monkeypatch):
+    # found on the slug: "Checking your CAD" from the node, then again from the engine
+    import asyncio
+
+    said: list[dict] = []
+
+    async def _publish(job_id, line, *, seq):
+        said.append(dict(line))
+
+    monkeypatch.setattr(RP, "apublish", _publish)
+
+    async def _run():
+        lane = RP.Lane("job-1")
+        await lane.say(RP.progress(RP.CHECKING, RP.CHECKING_TEXT))
+        await lane.feed({"event": "repair_progress", "stage": "checking",
+                         "text": "Checking your CAD"})
+        await lane.feed({"event": "repair_progress", "stage": "verifying"})
+    asyncio.run(_run())
+    assert [s["text"] for s in said] == ["Checking your CAD", "Checking the repaired part"]

@@ -272,6 +272,11 @@ class Lane:
     async def say(self, line: Mapping[str, Any]) -> None:
         if leaks(str(line.get("text") or "")):
             return
+        key = (line.get("stage"), line.get("text"), line.get("problem_index"))
+        if self.said and key == (self.said[-1].get("stage"), self.said[-1].get("text"),
+                                 self.said[-1].get("problem_index")):
+            return              # the node and the engine both said it: once is enough
+        self.mapper._last = key
         self._seq += 1
         self.said.append(dict(line))
         await apublish(self.job_id, line, seq=self._seq)
