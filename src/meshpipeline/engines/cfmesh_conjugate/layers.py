@@ -894,6 +894,14 @@ def read_layer_log(text: str) -> dict:
         # finished at 90.6422% on iteration 10 - the whole of the 9.14% shortfall was the refusal
         # and 0.22 points was the repair.
         "offered_pct": (extruding[0][2] if extruding else None),
+        # WHAT THE MOVER DID WITH WHAT IT WAS GIVEN, which is the only part of coverage it
+        # controls. MEASURED on job cba7ac69: it kept 15,030,462 of the 15,066,630 faces it was
+        # offered - 99.7599% - while the raw coverage read 90.6422% against a 92% floor. The two
+        # numbers answer different questions and only the raw one was published, so a near
+        # perfect layer pass on a part whose interface mostly cannot carry prisms read exactly
+        # like a layer pass that had failed.
+        "kept_of_offered_pct": ((100.0 * float(extruding[-1][0]) / float(extruding[0][0]))
+                                if extruding and float(extruding[0][0]) else None),
         "coverage_by_iteration": [c for _a, _b, c in extruding],
         "faces_extruded": (extruding[-1][0] if extruding else None),
         "faces_offered": (extruding[-1][1] if extruding else None),
@@ -976,6 +984,10 @@ def shortfalls(report: dict, *, interface_patch: str, n_layers: int = 0,
                      f"surface turns by more than featureAngle {int(FEATURE_ANGLE)} degrees - and "
                      f"{lost:.2f} were offered and then lost over "
                      f"{int(got.get('iterations') or 0)} iteration(s) of repair")
+            keep = got.get("kept_of_offered_pct")
+            if keep is not None:
+                said += (f", so the pass kept {float(keep):.2f}% of every face it was given and "
+                         f"the rest of the gap is this part's own shape")
         out.append(said)
     thick = row.get("thickness_pct")
     if thick is not None and float(thick) < THICKNESS_FLOOR_PCT:

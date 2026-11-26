@@ -17,6 +17,9 @@
 from meshpipeline.engines.cfmesh_conjugate import layers as L
 
 #: The real figures, to the digit.
+#: A layer log with no Extruding lines at all: nothing to divide by.
+_NO_LAYERS = "Added 10 cells" + chr(10)
+
 LOG = """
 Extruding 15066630 out of 16582198 faces (90.8603%). Removed extrusion at 281058 faces.
 Extruding 15031050 out of 16582198 faces (90.6457%). Removed extrusion at 11332 faces.
@@ -75,3 +78,39 @@ def test_a_pass_that_lost_everything_to_the_mover_reads_that_way():
                                  n_layers=3, cells=33117875))
     assert "0.10 were never offered" in said, said
     assert "9.26 were offered and then lost" in said, said
+
+
+# ONE NUMBER WAS ANSWERING TWO QUESTIONS.
+#
+# COVERAGE_FLOOR_PCT 92.0 was placed just above the coverage of a run that was defective FOR NOT
+# FITTING ITS CELL - its own rationale says so: "the DEFECTIVE delivered run finished at 90.7146%,
+# so a floor under that would admit the run this module exists to refuse". Coverage was a proxy
+# for that fault, and job cba7ac69 lands at 90.6422% for an unrelated reason: the extruder
+# declined 1,515,568 faces where the lattice staircase turns. Of the faces it WAS given, the mover
+# kept 15,030,462 of 15,066,630 - 99.7599%. A near perfect layer pass on a part whose interface
+# mostly cannot carry prisms read exactly like a layer pass that had failed.
+
+
+def test_what_the_mover_kept_of_what_it_was_given_is_published():
+    r = _report()
+    assert round(float(r["kept_of_offered_pct"]), 4) == 99.7599, r.get("kept_of_offered_pct")
+
+
+def test_the_shortfall_says_the_mover_did_its_job(tmp_path):
+    said = " ".join(L.shortfalls(_report(), interface_patch="fluid_to_solid",
+                                 n_layers=3, cells=33117875))
+    assert "kept 99.76% of every face it was given" in said, said
+    assert "this part's own shape" in said, said
+
+
+def test_a_pass_that_really_did_fail_does_not_get_that_sentence():
+    # offered nearly everything and then lost it: the mover IS the problem, and the number says so.
+    log = LOG.replace("(90.8603%)", "(99.9000%)").replace("15066630", "16565616")
+    r = L.read_layer_log(log)
+    assert float(r["kept_of_offered_pct"]) < 91.0, r["kept_of_offered_pct"]
+    said = " ".join(L.shortfalls(r, interface_patch="fluid_to_solid", n_layers=3, cells=33117875))
+    assert "kept 90." in said or "kept 9" in said, said
+
+
+def test_no_extruding_lines_leaves_it_unpublished_rather_than_wrong():
+    assert L.read_layer_log(_NO_LAYERS)["kept_of_offered_pct"] is None
