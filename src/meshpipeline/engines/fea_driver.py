@@ -585,7 +585,7 @@ async def say_requirements(sec: dict, publish, *, told: tuple[str, ...] = ()) ->
     if sec.get("status") == "none":
         return
     for i, line in enumerate(MR.live_words(sec, told_elsewhere=told)):
-        await _N.asay(publish, line, op_id=f"fea:notes:{i}")
+        await _N.asay(publish, line, op_id=f"fea:notes:{i}", quoted=MR.live_quotes(line))
 
 
 def tell_count(ws: Path, line: str) -> None:

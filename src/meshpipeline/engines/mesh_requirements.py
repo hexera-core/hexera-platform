@@ -2379,6 +2379,18 @@ def _lines_of(sec: Mapping | None, fields: tuple[str, ...]) -> set[str]:
             if isinstance(r, Mapping) and str(r.get("field") or "").startswith(fields)}
 
 
+#: the lines that tell back the user's own words, quoted ("Not applied: "..." - ...")
+_TOLD_LEADS = ("Not applied", NOT_MESH_LEAD, GUIDANCE_LEAD)
+_QUOTED = re.compile(r'"([^"]+)"')
+
+
+def live_quotes(line: str) -> tuple[str, ...]:
+    """The user's own words a told line quotes (the narration guard judges only our words around them); () for any
+    other line - a line of ours that quotes nothing of the user's is judged whole."""
+    w = str(line or "")
+    return tuple(_QUOTED.findall(w)) if w.startswith(_TOLD_LEADS) else ()
+
+
 def live_words(sec: Mapping | None, *, told_elsewhere: tuple[str, ...] = ()) -> list[str]:
     """words(), fit for the live commentary (contracts/narration's guard takes no "=", "<", ">" or snake_case: a
     quote of the user's own line is said with those spelled out). At most MAX_LIVE lines. `told_elsewhere`: fields
