@@ -266,7 +266,14 @@ def join_occ(members: list[Member], dest: Path, scale: dict[int, float] | None =
     Interface_Static.SetCVal_s("write.step.unit", "MM")
     writer = STEPCAFControl_Writer()
     writer.SetNameMode(True)
-    if not writer.Transfer(doc, STEPControl_AsIs) or writer.Write(str(dest)) != IFSelect_RetDone:
+    # SPLIT, because the pin has to go between them: this used to be one `or`, and the header
+    # OpenCASCADE fills during `Transfer` carries the wall clock (ecxml_build.STEP_TIME_STAMP).
+    if not writer.Transfer(doc, STEPControl_AsIs):
+        raise AssemblyFilesError("The files could not be written as one assembly.")
+    from meshpipeline.cad.ingest.ecxml_build import _pin_step_time_stamp
+
+    _pin_step_time_stamp(writer.ChangeWriter().Model())
+    if writer.Write(str(dest)) != IFSelect_RetDone:
         raise AssemblyFilesError("The files could not be written as one assembly.")
 
 

@@ -1992,6 +1992,25 @@ def plan_region_names(model: EcxmlModel) -> tuple[str, ...]:
 
 
 # ------------------------------------------------------------------------------ STEP --------
+#: THE STEP HEADER'S TIME STAMP, PINNED. OpenCASCADE writes the wall clock into FILE_NAME, and on
+#: a 732,887-byte STEP built from the real customer ECXML that was the ONLY byte that differed
+#: between two runs: same entity count, same region names, same sidecar, a different second.
+#: Grepping the whole body for DATE|TIME|CALENDAR returns nothing, so this is the file's only
+#: clock.
+#:
+#: A FIXED EPOCH AND NOT A DERIVED DATE. The only date the input carries is its mtime, and the
+#: file the materializer hands over was downloaded moments earlier (`part.replace(dest)`), so an
+#: mtime stamp is the same wall clock under another name. A date derived from nothing true would
+#: be a false entry in a provenance field; 1970-01-01 is unmistakably synthetic, which is the
+#: point. The real provenance is the source's sha256, which the product already content-addresses
+#: and which belongs in the sidecar written beside this file, not in a header field a PLM importer
+#: may sort on.
+#:
+#: No `Interface_Static` key reaches this: the complete `write.step.*` set is assembly,
+#: nonmanifold, product.name, resource.name, schema, sequence, tessellated, unit and vertex.mode.
+STEP_TIME_STAMP = "1970-01-01T00:00:00"
+
+
 def write_named_step(named: list[tuple[str, object]], dest: Path) -> None:
     """The regions as one STEP, each a top-level shape carrying its name - the form
     cad/regions.components_of reads back - in millimetres, under a millimetre label."""
@@ -2014,8 +2033,27 @@ def write_named_step(named: list[tuple[str, object]], dest: Path) -> None:
     writer.SetNameMode(True)
     if not writer.Transfer(doc, STEPControl_AsIs):
         raise EcxmlError("the parts could not be written as STEP")
+    # THE HEADER DOES NOT EXIST UNTIL `Transfer` HAS RUN - that is what fills it, wall clock and
+    # all - so the pin goes here and not a line earlier. Pinned before the transfer it is silently
+    # overwritten and the file still looks right.
+    _pin_step_time_stamp(writer.ChangeWriter().Model())
     if writer.Write(str(dest)) != IFSelect_RetDone:
         raise EcxmlError("the STEP file could not be written")
+
+
+def _pin_step_time_stamp(model) -> None:
+    """Replace the wall clock OpenCASCADE put in FILE_NAME with `STEP_TIME_STAMP`.
+
+    `MakeHeader(model)` loads the model's own header entity by handle, so setting the stamp on it
+    mutates the model; `Apply` is kept for the case where the entity had to be created instead.
+    """
+    from OCP.APIHeaderSection import APIHeaderSection_MakeHeader
+    from OCP.TCollection import TCollection_HAsciiString
+
+    header = APIHeaderSection_MakeHeader(model)
+    header.SetTimeStamp(TCollection_HAsciiString(STEP_TIME_STAMP))
+    header.Apply(model)
+
 
 
 def ecxml_to_step(src: Path, dest: Path) -> tuple[EcxmlBuild, dict]:
