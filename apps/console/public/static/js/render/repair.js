@@ -5,7 +5,7 @@
    click fetches a fresh link through render/download.js). Every sentence comes from core/repair_words.js; the 3D
    scene is viewer/repair_view.js. It decides no status and makes no claim about the mesh. */
 
-import { getRepairSurfaces, getGeometrySkin } from "../api/endpoints.js";
+import { getGeometrySkin, getRepairReport, getRepairSurfaces } from "../api/endpoints.js";
 import { esc, fmtBytes } from "../core/format.js";
 import { byType, countOf, flagLines, headlineOf, repairFiles, repairKeyNumbers, traceRows, traceSentence }
   from "../core/repair_words.js";
@@ -27,8 +27,42 @@ export function repairDeliverables(files) {
 
 const attr = (s) => esc(s).replace(/"/g, "&quot;");
 
-function downloadsHtml(job, files) {
-  if (!files.length) return '<p class="rr-none">No repair files were kept for this run.</p>';
+/* THE REPORT, read from the run's own routes (/repair/report.html and .json) when it was not delivered as a file:
+   the same two entries either way, saved by a click as the mesh report is. */
+const REPORT_ROUTES = [["repair_report_html", "html", "Repair report (HTML)"],
+  ["repair_report", "json", "Repair report (JSON)"]];
+function reportButtons(files) {
+  return REPORT_ROUTES.filter(([t]) => !files.some((f) => f.type === t)).map(([, kind, name]) =>
+    `<a class="v-dlbtn rr-rep" href="#" role="button" data-kind="${kind}"><b>${esc(name)}</b>`
+    + `<span>${kind.toUpperCase()}</span></a>`).join("");
+}
+function bindReports(box, job) {
+  box.querySelectorAll(".rr-rep").forEach((a) => {
+    a.onclick = async (e) => {
+      e.preventDefault();
+      if (a.dataset.busy) return;
+      a.dataset.busy = "1";
+      const lbl = a.querySelector("span"), was = lbl.textContent;
+      lbl.textContent = "preparing…";
+      try {
+        const blob = await getRepairReport(job, a.dataset.kind);
+        const url = URL.createObjectURL(blob), link = document.createElement("a");
+        link.href = url;
+        link.download = `repair_report_${String(job).slice(0, 8)}.${a.dataset.kind}`;
+        document.body.appendChild(link); link.click(); link.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 10000);
+        lbl.textContent = was;
+      } catch {
+        lbl.textContent = "not available";
+        setTimeout(() => { lbl.textContent = was; }, 4000);
+      } finally { delete a.dataset.busy; }
+    };
+  });
+}
+
+function downloadsHtml(job, files, { reports = false } = {}) {
+  const extra = reports ? reportButtons(files) : "";
+  if (!files.length && !extra) return '<p class="rr-none">No repair files were kept for this run.</p>';
   return files.map((f, i) => {
     // The repaired geometry leads in the accent, the way the mesh case does in the viewer: it is
     // the thing the customer came for.
@@ -36,14 +70,14 @@ function downloadsHtml(job, files) {
     return `<a class="v-dlbtn${primary}" href="${attr(f.url || "#")}"${downloadAttrs(job, f)} download
                target="_blank" rel="noopener"><b>${esc(f.name || f.label || "File")}</b
                ><span>${fmtBytes(f.size)}</span></a>`;
-  }).join("");
+  }).join("") + extra;
 }
 
 /** The problems by plain type, one line each ("3 thin gaps: 2 fixed"). */
 export function typesHtml(r) {
   const rows = byType(r);
   if (!rows.length) return "";
-  return `<ul class="rr-types">${rows.map((t) => `<li><b>${esc(countOf(t.type, t.found))}</b>`
+  return `<ul class="rr-types">${rows.map((t) => `<li><b>${esc(countOf(t.type, t.found, t.typeText))}</b>`
     + `<span>${t.fixed === t.found ? "all fixed" : `${t.fixed} fixed`}</span></li>`).join("")}</ul>`;
 }
 
@@ -78,7 +112,7 @@ export function repairResultHtml(job, data) {
         <div class="rp-keys-host">${keyNumbersHtml(repairKeyNumbers(r))}</div>
         ${flagsHtml(r)}
       </div>
-      <div class="v-sec rr-dl"><div class="v-sec-h">Files</div><div class="v-dl">${downloadsHtml(job, files)}</div></div>
+      <div class="v-sec rr-dl"><div class="v-sec-h">Files</div><div class="v-dl">${downloadsHtml(job, files, { reports: r.ran !== false })}</div></div>
       ${typesHtml(r) ? `<div class="v-sec"><div class="v-sec-h">Problems found</div>${typesHtml(r)}</div>` : ""}
       ${traceHtml(r) ? `<div class="v-sec rp-lists">${traceHtml(r)}</div>` : ""}
     </div>
@@ -101,22 +135,29 @@ async function surfacesFor(job, data) {
  * result and takes the stage the way a delivered mesh does; beside a mesh it sits in the conversation, under the
  * run. Idempotent in the job id. Returns the element.
  */
-export function openRepairResult(job, anchorEl, data, { takeover = false, mount = null } = {}) {
+export function openRepairResult(job, anchorEl, data, { takeover = false, mount = null, tabWith = null } = {}) {
   const existing = document.getElementById("repair-" + job);
   if (existing) return existing;
   const box = document.createElement("div");
   box.className = "viewer rr-result";
   box.id = "repair-" + job;
-  box.setAttribute("role", "region");
   box.setAttribute("aria-label", "CAD repair result");
   box.innerHTML = repairResultHtml(job, data);
   bindFreshDownloads(box);
+  bindReports(box, job);
   const wb = document.getElementById("workbench"), app = document.getElementById("app");
-  if (takeover && wb && app) {
+  if (tabWith && tabWith.parentNode) {
+    // BESIDE A DELIVERED MESH: one "Mesh | Repair" switch over the two results, in the place the mesh took. The
+    // hidden tab's scene starts the first time it is shown (the observer below waits for it to be on screen).
+    tabWith.after(box);
+    box.hidden = true;
+    resultTabs(job, tabWith, box);
+  } else if (takeover && wb && app) {
+    box.setAttribute("role", "region");
     wb.querySelectorAll(".viewer").forEach((v) => { v.hidden = true; });
     wb.appendChild(box);
     app.classList.add("wb"); app.classList.remove("wb-collapsed");
-  } else if (anchorEl) anchorEl.after(box);
+  } else if (anchorEl) { box.setAttribute("role", "region"); anchorEl.after(box); }
   else return null;
 
   const host = box.querySelector(".rr-canvas");
@@ -146,6 +187,45 @@ export function openRepairResult(job, anchorEl, data, { takeover = false, mount 
     io.observe(box);
   } else start();
   return box;
+}
+
+/** The two results' switch: a tab list before them; each tab shows its result and hides the other. The arrow keys
+ *  move between the tabs, as a tab list's do. Returns the tab list. */
+export function resultTabs(job, meshBox, repairBox) {
+  const bar = document.createElement("div");
+  bar.className = "rr-tabs";
+  bar.id = "rr-tabs-" + job;
+  bar.setAttribute("role", "tablist");
+  bar.setAttribute("aria-label", "Results");
+  if (!meshBox.id) meshBox.id = "viewer-" + job;
+  bar.innerHTML = [["mesh", "Mesh", meshBox.id], ["repair", "Repair", repairBox.id]].map(([k, l, id], i) =>
+    `<button type="button" role="tab" class="rr-tab${i ? "" : " on"}" data-k="${k}" id="rr-tab-${k}-${attr(job)}"`
+    + ` aria-controls="${attr(id)}" aria-selected="${i ? "false" : "true"}" tabindex="${i ? -1 : 0}">${l}</button>`).join("");
+  meshBox.before(bar);
+  [meshBox, repairBox].forEach((b, i) => {
+    b.setAttribute("role", "tabpanel");
+    b.setAttribute("aria-labelledby", `rr-tab-${i ? "repair" : "mesh"}-${job}`);
+  });
+  const pick = (k, focus) => {
+    bar.querySelectorAll(".rr-tab").forEach((t) => {
+      const on = t.dataset.k === k;
+      t.classList.toggle("on", on);
+      t.setAttribute("aria-selected", on ? "true" : "false");
+      t.tabIndex = on ? 0 : -1;
+      if (on && focus) t.focus();
+    });
+    meshBox.hidden = k !== "mesh";
+    repairBox.hidden = k !== "repair";
+  };
+  bar.querySelectorAll(".rr-tab").forEach((t) => {
+    t.onclick = () => pick(t.dataset.k);
+    t.onkeydown = (e) => {
+      if (e.key !== "ArrowRight" && e.key !== "ArrowLeft") return;
+      e.preventDefault();
+      pick(t.dataset.k === "mesh" ? "repair" : "mesh", true);
+    };
+  });
+  return bar;
 }
 
 /** Draw the repair panel at `anchorEl` for a run with no typed repair section (an older run), or draw nothing and

@@ -329,3 +329,12 @@ export async function getRepairSurfaces(jobId) {
   if (!r.ok) return null;
   return r.json();
 }
+
+/** A repaired job's report as a file to save: `kind` is "html" (the page to read or print) or "json" (the same
+ *  facts, for a script). Resolves to a Blob; throws when the server has none for this run. */
+export async function getRepairReport(jobId, kind) {
+  const r = await apiFetch(`/api/v1/simulation/${jobId}/repair/report.${kind === "json" ? "json" : "html"}`,
+    { headers: headers() });
+  if (!r.ok) throw new Error(`repair report ${r.status}`);
+  return r.blob();
+}

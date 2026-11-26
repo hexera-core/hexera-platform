@@ -193,7 +193,10 @@ setResultHandler((data, anchor) => {
   }
   // REPAIR + MESH: the repair is shown as fully as the mesh, under the run, whatever the mesh came to (the failure
   // path above already drew it)
-  if (data.repair && surface !== "none") openRepairResult(job, anchor, data);
+  if (data.repair && surface !== "none") {
+    // beside the delivered mesh, as a "Repair" tab next to it (owner default 2026-11-26)
+    openRepairResult(job, anchor, data, { tabWith: document.getElementById("viewer-" + job) });
+  }
   // A QUIET WAY BACK to the defects the repair was unsure about, only when the run was delivered
   // and the server says it holds an offered review (it answers nothing otherwise).
   offerReview(job, anchor, { onRun: (r) => Stage.chat("assistant", r.said) });
