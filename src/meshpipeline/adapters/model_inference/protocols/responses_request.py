@@ -193,6 +193,9 @@ def build_request(
     if not spec.thinking_off:
         request["reasoning"] = dict(_REASONING_SUMMARY)
 
+    if spec.cache_key:
+        request["prompt_cache_key"] = spec.cache_key
+
     if tools:
         request["tools"] = to_responses_tools(tools)
         request["tool_choice"] = to_responses_tool_choice(tool_choice)

@@ -22,10 +22,11 @@ import math
 import sys
 from pathlib import Path
 
+from meshpipeline.engines import fea_mesh_config as FEA_MESH_CONFIG
 from meshpipeline.engines.gmsh import fea_tiny as TINY
 
 #: 3D algorithms the plan may name (gmsh's Mesh.Algorithm3D numbers).
-ALGORITHMS_3D = {"delaunay": 1, "hxt": 10}
+ALGORITHMS_3D = {"delaunay": 1, "hxt": FEA_MESH_CONFIG.HXT_ALGORITHM_3D}
 
 
 #: THE STEP THE FEA MESHER IS ON (engines/mesher_stage.py reads it for the live line; the runner's
@@ -119,6 +120,31 @@ def algorithm_3d(run: dict) -> str:
     return name if name in ALGORITHMS_3D else DEFAULT_ALGORITHM_3D
 
 
+def apply_global_options(gmsh, run: dict) -> None:
+    """The options every pass sets once, before any geometry: the job's cores, then `fea_mesh_config`'s
+    fixed production options, then the 3D fill the plan names (the plan's `algorithm3d`, else HXT)."""
+    # THE JOB'S CORES (Areen, 24 Oct; lab 24 Oct, 12 largest training parts run twice): gmsh's own
+    # parallel work (the optimiser, the curving) on every core, while the curve and surface meshing stay
+    # on ONE thread - their parallel versions are not repeatable (0/17 meshes the same twice at 8
+    # threads; and 3 of 5 on 22 Oct). The surfaces still use every core: MESH-23 meshes them in worker
+    # processes, the same mesh on any number (surface_mesh). MESH-25: the volume is filled by HXT on
+    # every core (Mesh.MaxNumThreads3D), speed over sameness - the fill may differ slightly run to run;
+    # on one thread (MESH_GMSH_THREADS=1, our tests) the mesh is the same to the byte.
+    threads = mesh_threads(run)
+    gmsh.option.setNumber("General.NumThreads", threads)
+    gmsh.option.setNumber("Mesh.MaxNumThreads3D", threads)
+    for key, value in FEA_MESH_CONFIG.fixed_options().items():
+        gmsh.option.setNumber(key, value)
+    gmsh.option.setNumber("Mesh.Algorithm3D", ALGORITHMS_3D.get(algorithm_3d(run), 1))
+
+
+def apply_surface_switch(gmsh, run: dict) -> None:
+    """Whether gmsh retries a stalled surface with another 2D algorithm, as `fea_mesh_config` has it."""
+    gmsh.option.setNumber(
+        "Mesh.AlgorithmSwitchOnFailure", FEA_MESH_CONFIG.algorithm_switch_on_failure(run.get("surface_switch"))
+    )
+
+
 #: MESH-25: the 3D algorithm a failed pass is filled again with (set by `mesh` around its second attempt)
 _ALGO_3D: list[str | None] = [None]
 #: MESH-25: whether the last build's size fields hold a size through a volume, and the algorithm it filled with
@@ -133,8 +159,8 @@ MESH_ADAPT = 1
 #: at most this many invalid elements are traced back to the surfaces they touch
 TRACE_BAD = 500
 #: the line the driver reads the surfaces a failed pass went wrong on from (LAD-fea-6)
-#: How exactly gmsh integrates 1/size along a curve to place its nodes (its default is 1e-9).
-LC_INTEGRATION_PRECISION = 1e-3
+#: How exactly gmsh integrates 1/size along a curve to place its nodes (engines/fea_mesh_config.py).
+LC_INTEGRATION_PRECISION = FEA_MESH_CONFIG.LC_INTEGRATION_PRECISION
 BAD_SURFACES = "[GMSH-FEA] BAD SURFACES:"
 #: The same surfaces as the CAD's face names (Face_k, or Part_k_Face_j for an assembly): what a
 #: suspected CAD defect is held against (MESH-2).
@@ -1652,7 +1678,7 @@ def _build(gmsh, ws: Path, plan: dict, geom: Path, asm: dict | None, sidecar: di
         surfaces = {abs(int(t)) for v in rest for _d, t in gmsh.model.getBoundary([(3, v)], oriented=False)} & surfaces
     # LAD-fea-8: after a surface stage that stalled, gmsh's first mesh of every face is kept (its repeats
     # dropped below, MESH-5) rather than thrown away for a MeshAdapt run that never ends
-    gmsh.option.setNumber("Mesh.AlgorithmSwitchOnFailure", 0 if run.get("surface_switch") is False else 1)
+    apply_surface_switch(gmsh, run)
     note_stage(ws, "surface", "meshing the surfaces")
     # gmsh's surface stage throws away every volume's mesh: the kept parts' are held aside through it, and no
     # node is numbered afresh meanwhile (the held elements name their curves' nodes by tag; the fill numbers all)
@@ -1975,30 +2001,7 @@ def _mesh(workspace) -> int:
     gmsh.initialize(interruptible=False)
     try:
         gmsh.option.setNumber("General.Terminal", 1)
-        # THE JOB'S CORES (Areen, 24 Oct; lab 24 Oct, 12 largest training parts run twice): gmsh's own
-        # parallel work (the optimiser, the curving) on every core, while the curve and surface meshing stay
-        # on ONE thread - their parallel versions are not repeatable (0/17 meshes the same twice at 8
-        # threads; and 3 of 5 on 22 Oct). The surfaces still use every core: MESH-23 meshes them in worker
-        # processes, the same mesh on any number (surface_mesh). MESH-25: the volume is filled by HXT on
-        # every core (Mesh.MaxNumThreads3D), speed over sameness - the fill may differ slightly run to run;
-        # on one thread (MESH_GMSH_THREADS=1, our tests) the mesh is the same to the byte.
-        threads = mesh_threads(run)
-        gmsh.option.setNumber("General.NumThreads", threads)
-        gmsh.option.setNumber("Mesh.MaxNumThreads1D", 1)
-        gmsh.option.setNumber("Mesh.MaxNumThreads2D", 1)
-        gmsh.option.setNumber("Mesh.MaxNumThreads3D", threads)
-        gmsh.option.setNumber("Mesh.RandomSeed", 1)
-        # THE CURVES MESHED IN SECONDS, NOT MINUTES (fc_folding_chair, 24 Oct: 979 s of a 1,064 s pass in
-        # 1D): gmsh integrates 1/size along every curve to its default precision of 1e-9, evaluating the
-        # whole size field each step; 1e-3 places the same nodes to a tenth of a percent (97,319 vs 97,484
-        # nodes after 2D) in 26 s
-        gmsh.option.setNumber("Mesh.LcIntegrationPrecision", LC_INTEGRATION_PRECISION)
-        gmsh.option.setNumber("Geometry.OCCBoundsUseStl", 1)
-        gmsh.option.setNumber("Mesh.MeshSizeMin", 0.0)
-        gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 0)
-        gmsh.option.setNumber("Mesh.MeshSizeFromPoints", 0)
-        gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 0)
-        gmsh.option.setNumber("Mesh.Algorithm3D", ALGORITHMS_3D.get(algorithm_3d(run), 1))
+        apply_global_options(gmsh, run)
         base = float(plan["base_size_m"])
         tick = Ticker(ws)
         # LAD-fea-9: the last rung's pass (plan["mesh"]["engine"] == "ftetwild", engines/fea_tetwild.py)

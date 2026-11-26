@@ -102,3 +102,19 @@ def missing_provider_credentials() -> list[str]:
     if p.WEB_SEARCH_ENABLED and p.WEB_SEARCH_PROVIDER == "tavily" and not p.TAVILY_API_KEY:
         missing.append("tavily web search (set TAVILY_API_KEY)")
     return missing
+
+
+def unpriced_role_models() -> list[str]:
+    """Configured role-route `provider:model`s with no declared price (they would meter at $0.00). Legacy roles:
+    reported, never a reason to refuse to start."""
+    from meshpipeline.adapters.inference_telemetry.pricing import unpriced_route_models
+    return unpriced_route_models()
+
+
+def unpriced_proposer_models() -> list[str]:
+    """The repair_v4 proposer chain's `provider:model`s with no declared price. These sit under a spending cap
+    that an unpriced model could never trip, so startup may refuse them (routing.execute is the per-call half)."""
+    from meshpipeline.adapters.inference_telemetry.pricing import unpriced_route_models
+    from meshpipeline.contracts import model_inference as mi
+    chain = tuple(mi.REPAIR_V4_PROPOSE_ROUTES)
+    return [k for k in unpriced_route_models(extra=chain) if k in chain]

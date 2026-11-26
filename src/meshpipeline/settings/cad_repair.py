@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import logging
 
-from meshpipeline.settings.env import bool_env, optional_env
+from meshpipeline.settings.env import ConfigurationError, bool_env, optional_env
 
 logger = logging.getLogger(__name__)
 
@@ -327,6 +327,70 @@ def _meshability_pass_posture() -> str:
 #: original, job-level escalation) is unchanged. "off" is byte-for-byte today: no pass, no file
 #: written on a refusal, no new measurement keys.
 CAD_REPAIR_MESHABILITY_PASS: str = _meshability_pass_posture()
+
+def kernel_test_fns_enabled() -> bool:
+    """Whether the v4 kernel-worker TEST functions (echo, sleep-forever, abort, the split-op test
+    ops) may register. Developer/test only, never set in production. Read at CALL time, not
+    import time: spawned workers import the package from scratch and must see the environment the
+    parent handed them, and a test that sets it after the settings module is imported must still
+    be honoured."""
+    return bool_env("HEXERA_TEST_KERNEL_FNS", "false")
+
+
+def running_under_pytest() -> bool:
+    """Whether this process is inside a pytest test. pytest sets PYTEST_CURRENT_TEST itself for the
+    duration of each test; nothing a deployment sets. It gates the test-only constructors (the v4
+    model ledger's `for_test`), so the read is fail-closed: unset OR blank is "not under pytest" and
+    the test door stays shut. Read at CALL time, so a test that clears it is honoured."""
+    return optional_env("PYTEST_CURRENT_TEST", "").strip() != ""
+
+
+def verdict_cache_uri() -> str:
+    """Where the v4 verdict cache lives when it must outlive the process: `gs://bucket/prefix` or a
+    directory, from CRS_V4_VERDICT_CACHE_URI. Unset OR blank (whitespace included) returns "", which
+    the caller reads as "no durable cache: one in-memory cache per process". The caller says so
+    loudly, because a process-local cache looks exactly like a working one. Read at CALL time."""
+    return optional_env("CRS_V4_VERDICT_CACHE_URI", "").strip()
+
+
+def recipes_enabled() -> bool:
+    """CAD_REPAIR_V4_RECIPES: whether the v4 search reads (and, on the dev split, writes) recipe memory
+    (`repair_v4.recipes`, design 5.10). Off by default so a dev wave can A/B it. Read at CALL time."""
+    return optional_env("CAD_REPAIR_V4_RECIPES", "false").strip().lower() in ("1", "true", "yes", "on")
+
+
+def recipes_uri() -> str:
+    """CAD_REPAIR_V4_RECIPES_URI: where recipe memory lives, `gs://bucket/prefix` (the eval bucket) or a directory.
+    Unset or blank returns ""; turning the memory on without a location is refused by its caller."""
+    return optional_env("CAD_REPAIR_V4_RECIPES_URI", "").strip()
+
+
+ENGINES: tuple[str, ...] = ("v3", "search")
+
+
+def _engine_posture_of(raw: str) -> str:
+    """The repair engine named by `raw`, STRICTLY: blank is "not configured" (v3); anything that
+    is not exactly a known engine, after trimming and case-folding, is refused - never coerced.
+
+    Strict because this switch decides WHICH ENGINE REWRITES A CUSTOMER'S GEOMETRY: a typo that
+    quietly fell back to v3 would hide that the operator's intent was not honoured, and one that
+    quietly selected `search` would run an engine nobody asked for."""
+    value = raw.strip().lower()
+    if not value:
+        return "v3"
+    if value in ENGINES:
+        return value
+    raise ConfigurationError(
+        f"Environment variable 'CAD_REPAIR_ENGINE' must be one of {', '.join(ENGINES)} - got {raw!r}.")
+
+
+#: WHICH ENGINE `repair_step_file` RUNS: `v3` (the conservative region-loop repair) or `search`
+#: (CRS v4, cad/repair_v4, which searches over kernel operations and is scored by one checker).
+#: DEFAULT `v3`, and production never sets it: v4 lives beside v3 until it beats it on the new
+#: benchmark, and only then does a separate change remove v3. The default is pinned by
+#: tests/unit/cad/repair_v4/test_engine_dispatch.py, which also parses the production block of
+#: the deploy workflow to prove it states no value.
+CAD_REPAIR_ENGINE: str = _engine_posture_of(optional_env("CAD_REPAIR_ENGINE", "v3"))
 
 #: The confidence below which the model's plan is not acted on and the rule planner's choice stands.
 CAD_REPAIR_LLM_PLANNER_MIN_CONFIDENCE: float = float(

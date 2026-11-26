@@ -1024,6 +1024,30 @@ def _passthrough(source: Path, destination: Path, exc: BaseException, *,
                                          deadline_s=deadline_s)
 
 
+def _repair_via_v4(source: Path, destination: Path, *, deadline_s: float) -> RepairReport:
+    """CAD_REPAIR_ENGINE=search: run CRS v4 and map its V4Result to the report every consumer reads.
+
+    Nothing of v3 runs. A delivered result is a report; anything else raises, exactly as a v3
+    run that kept nothing does, so the passthrough wrapper and every caller keep their meaning."""
+    import meshpipeline.cad.repair_v4 as v4
+
+    now = _clock()
+    budget = v4.Budget(wall_s=max(0.0, deadline_s - now), ops=int(rcfg.CAD_REPAIR_MAX_OPS),
+                      model_calls=0, model_usd=0.0)
+    try:
+        result = v4.repair_v4(str(source), str(destination), budget=budget, deadline_s=deadline_s)
+    except v4.SearchUnavailable as exc:
+        raise RepairUnavailable(str(exc)) from exc
+    facts = {"engine": "search", "verdict": dict(result.verdict_summary),
+             "trace_path": str(result.trace_path) if result.trace_path else None}
+    if not result.delivered:
+        raise RepairRefused("the v4 search kept no repair", measurements=facts)
+    return RepairReport(
+        defects=(), operations=(), summary="repaired by the v4 search engine",
+        measurements=(RepairMeasurement("engine", "search"),),
+        diagnostics=facts)
+
+
 def repair_step_file(source: Path, destination: Path, *,
                      profile: RepairProfile = RepairProfile.conservative,
                      directives: tuple[dict, ...] = (),
@@ -1046,6 +1070,8 @@ def repair_step_file(source: Path, destination: Path, *,
     deadline = _clock() + float(rcfg.CAD_REPAIR_TIMEOUT_S) - DEADLINE_MARGIN_S
 
     def run() -> RepairReport:
+        if rcfg.CAD_REPAIR_ENGINE == "search":
+            return _repair_via_v4(source, destination, deadline_s=deadline)
         return _repair_step_file(source, destination, profile=profile, directives=directives,
                                  goal=goal, focus_faces=focus_faces,
                                  auto_accept_mm=auto_accept_mm, deadline_s=deadline)

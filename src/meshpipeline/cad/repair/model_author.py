@@ -409,7 +409,7 @@ _PACKAGE_KEYS = frozenset({"intent", "plan", "cleared", "unchanged", "max_area_d
 
 
 def plan_entry(item: object, ctx: RegionContext, guards: PackageGuards, *,
-               clone: bool = False) -> tuple[dict, dict]:
+               clone: bool = False, cured_on_clone: bool = False) -> tuple[dict, dict]:
     """One plan entry as the session's plan item, and as recorded.
 
     `clone` says this entry will run on a DISPOSABLE SCRATCH COPY, never delivered. It drops the
@@ -419,6 +419,10 @@ def plan_entry(item: object, ctx: RegionContext, guards: PackageGuards, *,
     was being argued out of trying things on a copy that cannot ship. Everything else still
     holds, here and at delivery: a fingerprint must be a defect of this region, held geometry is
     untouchable, and a paired rim may not be filled.
+
+    `cured_on_clone` is DELIVERY-side and waives ONLY the answer table: the clone recorded that
+    the part meshes after these edits, a measured result the advisory table cannot outweigh. The
+    stage precondition and every safety rule above still apply.
     """
     if not isinstance(item, dict) or set(item) - {"op", "fingerprint", "defect_code"}:
         raise Refusal("a plan entry is not {op, fingerprint}")
@@ -443,7 +447,7 @@ def plan_entry(item: object, ctx: RegionContext, guards: PackageGuards, *,
     # A fingerprint can carry several codes: aim at the ones THIS operation answers, and refuse
     # only when that leaves nothing (never because another code sorts first).
     answered = [d for d in on if d.code in op.answers]
-    if not answered and not clone:
+    if not answered and not clone and not cured_on_clone:
         raise Refusal(f"op_does_not_answer: {name} does not answer a "
                        f"{on[0].code.value}", code="op_does_not_answer", defect=fp)
     # ON A CLONE an unanswered aim is still ATTEMPTED, against the code that sorts first: the
@@ -474,12 +478,17 @@ def plan_entry(item: object, ctx: RegionContext, guards: PackageGuards, *,
 
 
 def validate_package(body: object, ctx: RegionContext, guards: PackageGuards, *, label: str,
-                     model_calls: int = 1) -> tuple[TargetPackage, dict]:
+                     model_calls: int = 1,
+                     cured_on_clone: bool = False) -> tuple[TargetPackage, dict]:
     """The package a reply claims, validated, and the same claim as recorded.
 
     `label` goes in the rationale and `model_calls` in the budget, so a SECOND author reports
     itself rather than this one (an investigator spends many calls on one package). Everything
     else is the run's own policy, read per call.
+
+    `cured_on_clone` is the clone's record that the part meshes after this plan's edits
+    (`session.MESHES_AFTER_TARGET_REMAINS`). It lifts the op-answers-defect table and nothing
+    else: no op-answers-defect gate sits between a measured clean result and delivery.
     """
     if not isinstance(body, dict):
         raise Refusal("package is not an object")
@@ -495,7 +504,8 @@ def validate_package(body: object, ctx: RegionContext, guards: PackageGuards, *,
     if len(plan) > int(rcfg.CAD_REPAIR_MAX_OPS):
         raise Refusal(f"plan has {len(plan)} operations, past the run's "
                        f"{int(rcfg.CAD_REPAIR_MAX_OPS)}")
-    items, recorded = zip(*(plan_entry(item, ctx, guards) for item in plan), strict=True)
+    items, recorded = zip(*(plan_entry(item, ctx, guards, cured_on_clone=cured_on_clone)
+                          for item in plan), strict=True)
     cleared = _strings(body.get("cleared"))
     if cleared is None:
         raise Refusal("cleared is not a list of fingerprints")
