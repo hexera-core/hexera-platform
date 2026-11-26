@@ -53,6 +53,7 @@ def _state(sites: list[Site]) -> SearchState:
                    original="/w/s.brep")
     st = SearchState.__new__(SearchState)
     st.ws, st.sites, st.lineage, st.depth = ws, sites, (), 0  # type: ignore[attr-defined]
+    st.id, st.score, st.parent, st.via = "S0", None, None, None  # type: ignore[attr-defined]  (B21 reads them)
     return st
 
 
@@ -112,8 +113,15 @@ def test_defeature_comes_after_every_sites_own_rows_so_k_cuts_it_first() -> None
     assert any("(site S2," in c.rationale for c in cands[:first])  # S2's own rows are not behind S1's defeature
     tail = [c.params.get("source") for c in cands[first:]]
     assert tail[-1] == "recognised" and "on the part" in cands[-1].rationale   # the whole set is last
+    # under `k` the list is a FAIR SHARE across families (B19), so a cut at the own rows no longer drops defeature
+    # outright - but it never leads: every other family the sites asked for gets its first row before defeature
+    from meshpipeline.cad.repair_v4.search import _family_of
+
     g2, _ = _gen(FEATURES, whole=True)
-    assert all(c.op != "defeature" for c in g2.propose(_state(sites), first))   # k at the own rows: no defeature
+    cut = g2.propose(_state(sites), first)
+    k_def = next(i for i, c in enumerate(cut) if c.op == "defeature")
+    others = {_family_of(c.op) for c in cut if c.op != "defeature" and _family_of(c.op) != "remove"}
+    assert others <= {_family_of(c.op) for c in cut[:k_def]}, [c.op for c in cut]
 
 
 def _located(sid: str, kind: str, entities: list[str], failing: list[str], named: list[str]) -> Site:

@@ -279,10 +279,12 @@ def test_usd_ceiling_stops_calls():
     fake = Fake([bad, bad, bad, bad], cost=0.20)
     p = make(fake, ceiling=0.5, max_turns=10)
     assert p.propose(state([site("S1", "proximity")]), k=3) == []
-    assert len(fake.calls) == 2                      # $0.20 + $0.20; a third at ~$0.25 would breach $0.50
+    # ONE call: the first settles at $0.20, far over its estimate, and the ledger now scales every later estimate by
+    # the file's worst overrun (b2a4d5893: "file spend could pass the ceiling"), so a second no longer fits the $0.50
+    assert len(fake.calls) == 1
     assert p.stop_reason == "file_ceiling" and p.ai_capped
     assert p.propose(state([site("S1", "proximity")]), k=3) == []
-    assert len(fake.calls) == 2                      # and it stays stopped
+    assert len(fake.calls) == 1                      # and it stays stopped
 
 
 def test_wave_cap_is_shared_across_shards_and_marks_the_rest_ai_capped(tmp_path):
@@ -496,12 +498,14 @@ def test_every_registered_op_is_explained_in_the_catalogue_not_just_named():
     A new op without a summary fails here instead of reaching the model as a bare name."""
     from meshpipeline.cad.repair_v4.ops import REGISTRY
 
-    assert set(P.OP_SUMMARIES) == set(REGISTRY), (
-        f"missing: {sorted(set(REGISTRY) - set(P.OP_SUMMARIES))}; stale: {sorted(set(P.OP_SUMMARIES) - set(REGISTRY))}")
+    # every op the model is OFFERED is explained; v5 class-menu ops and `NOT_OFFERED` are never shown to it
+    offered = set(P.offered_ops())
+    assert offered <= set(P.OP_SUMMARIES) <= set(REGISTRY), (
+        f"missing: {sorted(offered - set(P.OP_SUMMARIES))}; stale: {sorted(set(P.OP_SUMMARIES) - set(REGISTRY))}")
     text = P.system_prompt(stage_names=())
     assert "(no summary)" not in text
-    for name, summary in P.OP_SUMMARIES.items():
-        assert f"- {name}: {summary}" in text, name
+    for name in sorted(offered):
+        assert f"- {name}: {P.OP_SUMMARIES[name]}" in text, name
     # the checker's SOFT codes must not be presented to the model as failing "valid"
     from meshpipeline.cad.repair_v4.verdict.valid import SOFT_CODES
     valid_para = text.split("1. Valid:")[1].split("2. Meshable:")[0].lower()
@@ -700,13 +704,16 @@ def test_first_call_reservation_on_both_models_with_the_real_prefix():
         usd, tokens = P.estimate_call_usd(p.messages, p._tools, prices=prices, output_tokens=LIMIT)
         out[name] = usd
         # C23 widened the top from 12,000 to 12,500: split_aligned's schema and one-line summary added ~120 tokens to
-        # the static prefix (12,115 measured). The dollar bands below are the ceiling this test guards.
-        assert 3000 < tokens < 12_500                       # prefix + observation, in estimated tokens
+        # the static prefix (12,115 measured). CRS v5 beta widened it to 13,000: the four v5 ops the model is offered
+        # (imprint_crossing, sew_gap, split_non_manifold, tweak) got their one-line summaries (12,565 measured).
+        # The dollar bands below are the ceiling this test guards.
+        assert 3000 < tokens < 13_000                       # prefix + observation, in estimated tokens
     # B21 widened the top of the astra band from 0.32 to 0.33: the chain hints added about 275 tokens to the
     # static prefix, which moved this reservation from $0.3218 to $0.3222 - a tenth of a percent, paid once per
     # file because the prefix is cached after the first call. The band still has to track the prefix, so if it
-    # grows again this test is the thing that says so.
-    assert 0.28 < out["astra"] < 0.33 and 0.05 < out["terra"] < 0.08
+    # grows again this test is the thing that says so. CRS v5 beta widened it to 0.34: the v5 ops' schemas and the
+    # four offered ops' summaries moved it to $0.3305 (well inside the beta's $5 per-file cap).
+    assert 0.28 < out["astra"] < 0.34 and 0.05 < out["terra"] < 0.08
     assert out["astra"] / out["terra"] > 3.5
 
 

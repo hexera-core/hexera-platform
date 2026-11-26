@@ -279,14 +279,21 @@ def test_a_slice_too_small_for_the_full_reservation_still_buys_the_first_turn(wi
     output allowance the remaining room can pay for, so the file gets its turn."""
     model_route.install_router()
     full = 4096 * 50 / 1e6                         # the output allowance alone, at this route's $50/M
-    ledger = WaveLedger.for_test(cap_usd=full * 0.6)  # the slice cannot hold a full-allowance reservation
+    # the slice holds the INPUT of a first turn plus 60% of the full output allowance: never a full-allowance
+    # reservation. (It was `full * 0.6` alone; the CRS v5 ops grew the static prefix past that, so the input is
+    # measured here rather than assumed small.)
+    sizing = _proposer(WaveLedger.for_test(cap_usd=100.0))
+    prefix_usd, _ = proposer_mod.estimate_call_usd(sizing.messages, sizing._tools, prices=sizing._prices,
+                                                   output_tokens=0)
+    cap = prefix_usd * 1.25 + full * 0.6
+    ledger = WaveLedger.for_test(cap_usd=cap)
     p = _proposer(ledger)
     out = p.propose(_state(), k=3)
     assert out and p.turns_used == 1 and p.stop_reason is None
     [req] = wire.requests
     assert proposer_mod.MIN_OUTPUT_TOKENS <= req["max_output_tokens"] < mi.REPAIR_V4_PROPOSE_MAX_OUTPUT_TOKENS
     [res] = [r for r in ledger._transact(lambda rows, _a: list(rows)) if r["t"] == "reserve"]
-    assert res["u"] / 1e6 <= full * 0.6                 # the reservation fits the slice it was taken from
+    assert res["u"] / 1e6 <= cap                       # the reservation fits the slice it was taken from
 
 
 def test_a_slice_that_cannot_afford_any_turn_records_a_distinct_stop_reason(wire):

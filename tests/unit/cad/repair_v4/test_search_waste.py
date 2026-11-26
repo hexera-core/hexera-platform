@@ -35,11 +35,13 @@ def _expanded(r: Any) -> list[str]:
 
 def _two_branches(depth_two_q: int) -> Scripted:
     """S0 proposes two tied children (S1, S2). S1, when expanded, proposes one child (S3) scoring `depth_two_q`."""
+    # `step` keeps each a DIFFERENT candidate: B20 drops a repeat of the same op, targets and params (in one proposal,
+    # or already run on the lineage), and these are meant as distinct moves that happen to score the same
     def script(s: Any) -> list:
         if s.depth == 0:
-            return [cand(10), cand(10)]
+            return [cand(10, step=1), cand(10, step=2)]
         if s.id == "S1":
-            return [cand(depth_two_q)]
+            return [cand(depth_two_q, step=3)]
         return []
     return Scripted(script)
 
@@ -111,7 +113,7 @@ def test_a_deeper_tie_chain_is_followed_to_its_end_before_a_shallow_sibling() ->
     def script(s: Any) -> list:
         if s.depth >= 3:
             return [cand(50)]
-        return [cand(_q(s.ws)), cand(_q(s.ws))]
+        return [cand(_q(s.ws), step=2 * s.depth), cand(_q(s.ws), step=2 * s.depth + 1)]   # distinct moves (B20)
     r = run([Scripted(script)], World(target=50), start=make_ws(0))
     spent = next(e for e in r.trace.events if e["kind"] == "stop")["spent"]["ops"]
     assert r.clean and spent == 2 + 2 + 2 + 1, spent  # 3 expansions of 2 siblings, then the one that cleans
@@ -216,7 +218,9 @@ def test_sew_is_not_proposed_on_a_state_that_carries_a_solid() -> None:
 def test_fills_orient_and_unknowns_are_never_suppressed_by_the_volume_facts() -> None:
     """Even a state that rules out make_volume and sew keeps its fill and its orient: neither is predicted."""
     got = _propose([_open({"loose": False, "any": False, "free_edges": 0}), _invalid()])
-    assert _ops(got) == ["fill_loop", "orient_and_close"], _ops(got)
+    # B19 orders the families by the site's kind (the invalid site prefers the shell family's orient); the claim is
+    # that neither is suppressed, not their order
+    assert sorted(_ops(got)) == ["fill_loop", "orient_and_close"], _ops(got)
 
 
 def test_a_dropped_proposal_is_counted_and_on_the_record() -> None:
@@ -228,7 +232,9 @@ def test_a_dropped_proposal_is_counted_and_on_the_record() -> None:
     gen.propose(state, 50)
     assert gen.skipped["make_volume_without_a_closable_shell"] == 1
     assert gen.skipped["sew_without_free_edges"] == 1
-    assert gen.skipped["identical_to_an_earlier_candidate"] == 2  # the second orient_and_close and the second make_volume
+    # B19: every family is offered at every kind, so the open and the invalid site now ask for more of the same shell
+    # rows; each repeat is dropped and counted, never proposed twice
+    assert gen.skipped["identical_to_an_earlier_candidate"] >= 2
     assert any("make_volume not proposed" in n for n in gen.notes)
 
 
@@ -239,5 +245,6 @@ def test_a_budget_of_k_is_spent_on_distinct_candidates() -> None:
                         sites=[_open({"loose": True, "any": True, "free_edges": 4}), _invalid()], depth=0,
                         parent=None, via=None)
     got = DetGenerator(diagonal=lambda w: 120.0).propose(state, 4)
-    assert _ops(got) == ["sew", "fill_loop", "make_volume", "orient_and_close"], _ops(got)
+    # four DISTINCT ops in the four slots (B19/B20 decide their order)
+    assert sorted(_ops(got)) == ["fill_loop", "make_volume", "orient_and_close", "sew"], _ops(got)
 

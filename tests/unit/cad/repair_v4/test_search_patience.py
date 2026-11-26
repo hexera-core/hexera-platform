@@ -36,7 +36,8 @@ def _open_site(holes: int, *, total: bool = True) -> Any:
 
 def _chain(length: int) -> Scripted:
     """`length` fills that each admit a NEW state of exactly the parent's score, then the volume that cleans it."""
-    return Scripted(lambda s: [cand(CLEAN_Q if s.depth >= length else _q(s.ws))])
+    # `step`: each fill is a DIFFERENT candidate (B20 prunes the same op+targets+params on one lineage)
+    return Scripted(lambda s: [cand(CLEAN_Q if s.depth >= length else _q(s.ws), step=s.depth)])
 
 
 def _stop(r: Any) -> dict:
@@ -101,14 +102,14 @@ def test_a_search_that_only_finds_duplicates_does_not_run_to_the_op_budget() -> 
 def test_new_tied_states_without_end_stop_on_the_op_budget_and_the_worst_case_is_the_op_count() -> None:
     """The backstop, stated as a test: tied states that go nowhere keep the search alive until the op budget cuts
     it off; patience cannot, by design (they are progress). So the worst case is `ops`, never unbounded."""
-    r = run([Scripted(lambda s: [cand(_q(s.ws))])], World(target=CLEAN_Q, sites_fn=_open_site(1)),
+    r = run([Scripted(lambda s: [cand(_q(s.ws), step=s.depth)])], World(target=CLEAN_Q, sites_fn=_open_site(1)),
             budget=Budget(wall_s=1000, ops=15, model_calls=0, model_usd=0.0))
     assert r.reason == "ops" and _stop(r)["spent"]["ops"] == 15 and not r.clean
 
 
 def test_new_tied_states_without_end_stop_on_the_wall_clock_too() -> None:
     ticks = iter(range(10_000))
-    r = run([Scripted(lambda s: [cand(_q(s.ws))])], World(target=CLEAN_Q, sites_fn=_open_site(1)),
+    r = run([Scripted(lambda s: [cand(_q(s.ws), step=s.depth)])], World(target=CLEAN_Q, sites_fn=_open_site(1)),
             budget=Budget(wall_s=30, ops=10_000, model_calls=0, model_usd=0.0), clock=lambda: float(next(ticks)))
     assert r.reason == "wall" or "wall" in str(r.reason), r.reason
 
@@ -148,5 +149,6 @@ def test_a_state_that_only_ties_a_parent_worse_than_the_best_is_not_progress() -
     """Found by `test_search.py::test_patience_stops_flat_search` on the first version of the rule, which compared a
     child with its PARENT: the child of a worse state that ties that worse state ran the search to the op budget. The
     reference is the best so far."""
-    r = run([Scripted(lambda s: [cand(0)])], World(target=CLEAN_Q, sites_fn=_open_site(1)), start=make_ws(5))
+    r = run([Scripted(lambda s: [cand(0, step=s.depth)])], World(target=CLEAN_Q, sites_fn=_open_site(1)),
+            start=make_ws(5))
     assert r.reason == "patience" and _stop(r)["spent"]["ops"] <= 4, (r.reason, _stop(r)["spent"])

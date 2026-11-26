@@ -101,7 +101,10 @@ class T18Op:
     params_schema = {
         "type": "object",
         "properties": {"q": {"type": "integer", "minimum": 0, "maximum": 100}, "to": {"type": "string"},
-                       "inc": {"type": "integer", "minimum": 0, "maximum": 100}, "dup": {"type": "boolean"}},
+                       "inc": {"type": "integer", "minimum": 0, "maximum": 100}, "dup": {"type": "boolean"},
+                       # a no-op tag: B20 prunes a candidate already run on the lineage (same op, targets, params),
+                       # so a script that means "the same move again, one level deeper" says which step it is
+                       "step": {"type": "integer", "minimum": 0}},
         "required": ["q"], "additionalProperties": False, "x-targets": {"kind": "face", "min": 0},
     }
 
@@ -1196,7 +1199,9 @@ def test_search_gives_the_deterministic_sweep_the_parts_diagonal() -> None:
     run([gen], World(sites_fn=lambda pool, ws, verdict: [held]), pool=Pool(), budget=Budget(
         wall_s=30.0, ops=2, model_calls=0, model_usd=0.0))
     assert "ws_diagonal" in calls
-    assert gen.notes == [], gen.notes  # a diagonal was found: nothing was withheld
+    # a diagonal was found: nothing was withheld for want of a size (the sweep's other notes - no aimed overlap op,
+    # no face for fix_poles - are about this site's shape, not the diagonal)
+    assert not [n for n in gen.notes if "diagonal" in n or "fill_loop" in n], gen.notes
 
 
 # --- Task 53: the op budget is charged per APPLIED op, for every arm --------------------------------------------

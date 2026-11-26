@@ -557,6 +557,70 @@ DET_UNREACHABLE_OPS: dict[str, str] = {
         "search starts from `run_staged` at the defaults. It also costs ONE op of budget while applying several, so "
         "giving det the macro would not level the comparison but move the unfairness (lane C3's finding for the "
         "owner: charge the macro by the ops it applied, or give both arms the macro)."),
+    # CRS v5 (steps 6-12, round 2): ops only a v5 class menu aims, and rescale, which no menu holds
+    "boolean_by_volume": (
+        "it is a CRS v5 class-menu op: the v5 tournament aims it with parameters computed from a measured "
+        "defect cause, and v4's deterministic sweep never proposes it, so the v4 search arms keep the surface "
+        "they were baselined on"),
+    "drop_duplicate_body": (
+        "it is a CRS v5 class-menu op: the v5 tournament aims it with parameters computed from a measured "
+        "defect cause, and v4's deterministic sweep never proposes it, so the v4 search arms keep the surface "
+        "they were baselined on"),
+    "fragment_drop_small": (
+        "it is a CRS v5 class-menu op: the v5 tournament aims it with parameters computed from a measured "
+        "defect cause, and v4's deterministic sweep never proposes it, so the v4 search arms keep the surface "
+        "they were baselined on"),
+    "rebuild_boundary_edge": (
+        "it is a CRS v5 class-menu op: the v5 tournament aims it with parameters computed from a measured "
+        "defect cause, and v4's deterministic sweep never proposes it, so the v4 search arms keep the surface "
+        "they were baselined on"),
+    "rebuild_seam": (
+        "it is a CRS v5 class-menu op: the v5 tournament aims it with parameters computed from a measured "
+        "defect cause, and v4's deterministic sweep never proposes it, so the v4 search arms keep the surface "
+        "they were baselined on"),
+    "sew_gap": (
+        "it is a CRS v5 class-menu op: the v5 tournament aims it with parameters computed from a measured "
+        "defect cause, and v4's deterministic sweep never proposes it, so the v4 search arms keep the surface "
+        "they were baselined on"),
+    "split_non_manifold": (
+        "it is a CRS v5 class-menu op: the v5 tournament aims it with parameters computed from a measured "
+        "defect cause, and v4's deterministic sweep never proposes it, so the v4 search arms keep the surface "
+        "they were baselined on"),
+    "imprint_crossing": (
+        "it is a CRS v5 class-menu op: the v5 tournament aims it with parameters computed from a measured "
+        "defect cause, and v4's deterministic sweep never proposes it, so the v4 search arms keep the surface "
+        "they were baselined on"),
+    "tweak": (
+        "it is a CRS v5 class-menu op: the v5 tournament aims it with parameters computed from a measured "
+        "defect cause, and v4's deterministic sweep never proposes it, so the v4 search arms keep the surface "
+        "they were baselined on (the conformal pass's misalignment move)"),
+    "merge_sliver": (
+        "it is a CRS v5 class-menu op: the v5 tournament aims it with parameters computed from a measured "
+        "defect cause, and v4's deterministic sweep never proposes it, so the v4 search arms keep the surface "
+        "they were baselined on"),
+    "collapse_edge": (
+        "it is a CRS v5 class-menu op: the v5 tournament aims it with parameters computed from a measured "
+        "defect cause, and v4's deterministic sweep never proposes it, so the v4 search arms keep the surface "
+        "they were baselined on"),
+    "drop_solid": (
+        "it is a CRS v5 class-menu op: the v5 tournament aims it with parameters computed from a measured "
+        "defect cause, and v4's deterministic sweep never proposes it, so the v4 search arms keep the surface "
+        "they were baselined on"),
+    "drop_sheet": (
+        "it is a CRS v5 class-menu op: the v5 tournament aims it with parameters computed from a measured "
+        "defect cause, and v4's deterministic sweep never proposes it, so the v4 search arms keep the surface "
+        "they were baselined on"),
+    "split_turn": (
+        "it is a CRS v5 class-menu op: the v5 tournament aims it with parameters computed from a measured "
+        "defect cause, and v4's deterministic sweep never proposes it, so the v4 search arms keep the surface "
+        "they were baselined on"),
+    "cut_knife": (
+        "it is a CRS v5 class-menu op: the v5 tournament aims it with parameters computed from a measured "
+        "defect cause, and v4's deterministic sweep never proposes it, so the v4 search arms keep the surface "
+        "they were baselined on"),
+    "rescale": (
+        "units are report-only (owner decision A, 2026-11-25): a wrong rescale silently corrupts a part's "
+        "real size, so rescale is in no menu and no generator proposes it"),
 }
 #: an edge is a rebuild candidate when its tolerance or its measured face-to-face gap exceeds this x diagonal: the
 #: normalise stage's own target (`stages.DEFAULTS["normalise"]["target_rel"]`), i.e. an edge the healer could not
@@ -905,7 +969,7 @@ class DetGenerator:
 
     def propose(self, state: SearchState, k: int) -> list[Candidate]:
         out: list[Candidate] = []
-        self._score_of[state.id] = getattr(state, "score", None)   # B21 (a test double may carry no score)
+        self._score_of[state.id] = state.score       # B21: so this state's children can tell their edge was kept
         sites = self.unfixable.filter(state.sites, state.lineage) if self.unfixable is not None else state.sites
         diag = self._diag_of(state.ws) if any(s.kind in ("sliver", "open") for s in sites) else None
         volume = next((v for s in sites if s.kind == "open" and isinstance(v := s.graph.get("volume"), dict)), None)
@@ -1438,6 +1502,10 @@ _OP_FAMILY: dict[str, str] = {
     "drop_sheet": "remove",
     # round 2 fix G (v5_class_only, the facet_crossing_local class's)
     "split_turn": "face_split", "cut_knife": "remove",
+    # v5 class-menu ops (never swept here) and rescale (in no menu): filed so the family map stays total
+    "boolean_by_volume": "body", "fragment_drop_small": "body", "drop_duplicate_body": "remove",
+    "rebuild_boundary_edge": "edge", "rebuild_seam": "edge", "sew_gap": "shell", "split_non_manifold": "shell",
+    "rescale": "condition",
 }
 #: what each site kind PREFERS, first; every other family follows in `_FAMILIES` order. Read off what each kind used
 #: to be the only one allowed (`oracle_face_grid.py` / `oracle_grid.py` list those gates), so a kind keeps exactly

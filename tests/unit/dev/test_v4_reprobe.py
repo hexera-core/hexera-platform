@@ -672,7 +672,8 @@ def test_a_row_with_no_counts_for_scoreboard_key_is_not_counted() -> None:
 @pytest.mark.parametrize("source", ["abc_fail", "abc_pass", "occt", "nist", "f360"])
 def test_a_quarantined_kind_is_refused_under_any_source_label(source) -> None:
     with pytest.raises(rp.QuarantinedKind):
-        rp.check_not_quarantined([Entry("abc_0001.seam_variant.3.step", _sha(1), source)])
+        # seam_variant was promoted to structural in CRS v5 step 5 (9f211df30); loose_reapprox is still quarantined
+        rp.check_not_quarantined([Entry("abc_0001.loose_reapprox.3.step", _sha(1), source)])
     with pytest.raises(rp.QuarantinedKind):
         rp.check_not_quarantined([Entry("renamed.step", _sha(1), source, group="x-tolerance_inflate-1")])
     rp.check_not_quarantined([Entry("00500400_seamless.step", _sha(2), source)])  # substring-safe
@@ -835,7 +836,8 @@ def test_face_delete_large_is_not_a_default_draw_but_is_an_admitted_kind() -> No
     assert "face_delete_large" not in inject.DEFAULT_KINDS and "face_delete_large" in inject.ADMITTED_KINDS
     assert inject.KIND_STATUS["face_delete_large"] == "declined_stratum"
     assert inject.EXPECTED_OUTCOME == {"face_delete_large": "correctly_declined",
-                                       "face_delete_inclined": "correctly_declined"}
+                                       "face_delete_inclined": "correctly_declined",
+                                       "sheet_body": "correctly_declined"}   # CRS v5 step 11: a genuine sheet
     assert "face_delete_large" not in rp.not_default_kinds()
     assert rp.injected_kind("part.face_delete_large.3.step") == "face_delete_large"   # not mistaken for face_delete
 

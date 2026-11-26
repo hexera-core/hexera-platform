@@ -219,6 +219,14 @@ OP_SUMMARIES: dict[str, str] = {
     "to_canonical": "snap the target faces' surfaces to exact planes/cylinders/cones/spheres/tori within tol_mm.",
     "unify_same_domain": "merge coplanar/co-surface faces and collinear edges (scope all, or only the targets), "
                          "keeping the `keep` edges. The inverse of a split.",
+    # CRS v5 ops the model is offered (registered without `v5_class_only`): what each DOES, from its own docstring
+    "imprint_crossing": "imprint the intersection curve of crossing faces on both faces. Targets: the crossing "
+                        "faces; the op finds each one's crossing partners itself (at most max_partners).",
+    "sew_gap": "sew the open part of the shape at tol_mm; closed solids are untouched.",
+    "split_non_manifold": "split every unit with a non-manifold edge (or the target solids) into manifold "
+                          "shells/solids.",
+    "tweak": "close a misalignment: translate the first target body by its closest-point vector onto the second, "
+             "when their nearest faces are parallel and the gap is at most max_mm. The move is the deviation.",
 }
 
 

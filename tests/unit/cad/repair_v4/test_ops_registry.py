@@ -117,8 +117,11 @@ def test_validate_call_rejects_wrong_kind_unknown_op_and_malformed_inputs() -> N
 
 
 def test_applies_to_reads_the_site_kind() -> None:
-    assert REGISTRY["split_by_proximity"].applies_to(_site("proximity"))
-    assert not REGISTRY["split_by_proximity"].applies_to(_site("open"))
+    # B19: split_by_proximity applies at ANY kind that names two or more faces (a pair to split), never by kind
+    two = _site("open")
+    two.entities = ["F1", "F2"]
+    assert REGISTRY["split_by_proximity"].applies_to(two)
+    assert not REGISTRY["split_by_proximity"].applies_to(_site("proximity"))     # one face: no pair
     assert REGISTRY["split_closed"].applies_to(_site("periodic"))
 
 

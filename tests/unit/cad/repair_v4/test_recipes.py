@@ -266,15 +266,19 @@ def _state(sites: list[Site]) -> Any:
     from meshpipeline.cad.repair_v4.workspace import Workspace
     ws = Workspace(brep_path="/x.brep", ids={"E7": "a", "E8": "b", "E9": "c", "E10": "d", "F1": "e"}, labels={},
                    history=[], original="/x.brep")
-    return SimpleNamespace(ws=ws, sites=sites, lineage=("S0",))
+    return SimpleNamespace(id="S0", score=None, parent=None, via=None, depth=0, ws=ws, sites=sites, lineage=("S0",))
 
 
 def test_det_generator_replays_recipes_first_on_the_sites_own_entities(tmp_path: Path) -> None:
     book = _book_from(_variants(), tmp_path)
     site = open_site(loop=("E7", "E8", "E9", "E10"))
     with_book = DetGenerator(recipes=book, diagonal=lambda ws: 123.0).propose(_state([site]), k=12)
-    assert with_book[0].op == "fill_loop" and with_book[0].targets == ["E7", "E8", "E9", "E10"]
-    assert "recipe" in with_book[0].rationale and "2 similar clean dev file" in with_book[0].rationale
+    # a replayed step leads its own op's rows; B20 then orders the ops by aimedness, so the part-wide `sew` replay
+    # (aimed at the site) can come ahead of the loop's fill (edges the site does not list) - both are replays
+    assert "recipe" in with_book[0].rationale
+    fill = next(c for c in with_book if c.op == "fill_loop")
+    assert fill.targets == ["E7", "E8", "E9", "E10"]
+    assert "recipe" in fill.rationale and "2 similar clean dev file" in fill.rationale
 
 
 def test_without_recipes_the_det_generator_is_unchanged(tmp_path: Path) -> None:

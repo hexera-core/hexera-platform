@@ -122,8 +122,9 @@ def test_a_contact_measured_on_any_site_kind_gets_its_ops() -> None:
 
 
 def test_the_near_miss_split_stays_proximitys_own() -> None:
-    """Its plan is sized from the gap, which only a near miss has, so a near pair on another kind must not get it."""
+    """B19 (owner priority 2026-11-24): a site's kind sets the ORDER of the families, never which are allowed, so a
+    near pair on another kind is offered the near-miss split too - but only a proximity site prefers it."""
     near = [{"a": "F1", "b": "F2", "dist_mm": 0.3, "touching": False}]
-    prox = {r[0] for r in _sweep(_site(kind="proximity", entities=["F1", "F2"], clashes=near))}
-    other = {r[0] for r in _sweep(_site(kind="sliver", entities=["F1", "F2"], clashes=near))}
-    assert "split_by_proximity" in prox and "split_by_proximity" not in other
+    prox = [r[0] for r in _sweep(_site(kind="proximity", entities=["F1", "F2"], clashes=near))]
+    other = [r[0] for r in _sweep(_site(kind="sliver", entities=["F1", "F2"], clashes=near))]
+    assert "split_by_proximity" in prox and "split_by_proximity" in other

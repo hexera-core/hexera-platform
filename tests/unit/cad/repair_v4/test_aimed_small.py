@@ -30,6 +30,7 @@ def _state(sites: list[Site], solid: bool = True) -> SearchState:
     st = SearchState.__new__(SearchState)
     st.ws = Workspace(brep_path="/w/s.brep", ids=ids, labels={}, history=[], original="/w/s.brep")  # type: ignore[attr-defined]
     st.sites, st.lineage, st.depth = sites, (), 0  # type: ignore[attr-defined]
+    st.id, st.score, st.parent, st.via = "S0", None, None, None  # type: ignore[attr-defined]  (B21 reads them)
     return st
 
 
@@ -47,10 +48,14 @@ EDGES = [("F5", "F9"), ("F5", "F7"), ("F9", "F7"), ("F9", "F11")]
 def test_at_a_low_quality_site_the_worst_sliver_comes_first_even_if_the_mesher_did_not_name_it() -> None:
     cands = _aimed(DetGenerator(diagonal=lambda ws: 100.0).propose(
         _state([_site("proximity", ["F5"], A11, EDGES, "low_quality")]), 999))
+    # B20 (owner priority 2026-11-24) re-sorts the rows within the family by AIMEDNESS: a row whose targets are the
+    # site's own faces (the face the mesher named) goes ahead of one that reaches into its neighbours. The worst
+    # sliver (F9, beside the named face) is still aimed at, both ways; it is no longer first.
     assert [(c.op, c.targets[0]) for c in cands] == [
-        ("unify_same_domain", "F9"), ("remove_small", "F9"), ("unify_same_domain", "F5"), ("remove_small", "F5")]
-    assert cands[0].targets == ["F9", "F11", "F5", "F7"] and cands[0].params == {"scope": "targets", "keep": []}
-    assert "beside the face the mesher named" in cands[0].rationale and "2995:1 sliver" in cands[0].rationale
+        ("remove_small", "F5"), ("unify_same_domain", "F9"), ("remove_small", "F9"), ("unify_same_domain", "F5")]
+    beside = next(c for c in cands if c.op == "unify_same_domain" and c.targets[0] == "F9")
+    assert beside.targets == ["F9", "F11", "F5", "F7"] and beside.params == {"scope": "targets", "keep": []}
+    assert "beside the face the mesher named" in beside.rationale and "2995:1 sliver" in beside.rationale
     assert all("F11" != c.targets[0] for c in cands)         # hop 2 is not the site
 
 
@@ -63,8 +68,8 @@ def test_where_the_mesher_named_the_defect_its_face_comes_first() -> None:
 
 def test_remove_small_is_aimed_with_a_limit_its_guard_accepts_and_only_on_a_solid() -> None:
     site = _site("proximity", ["F5"], A11, EDGES, "low_quality")
-    [rs, *_] = [c for c in _aimed(DetGenerator(diagonal=lambda ws: 100.0).propose(_state([site]), 999))
-                if c.op == "remove_small"]
+    [rs] = [c for c in _aimed(DetGenerator(diagonal=lambda ws: 100.0).propose(_state([site]), 999))
+            if c.op == "remove_small" and c.targets == ["F9"]]      # the worst sliver's row (B20 orders F5's first)
     length, width = 2995.0 * 0.01 / 0.1, 0.1
     assert abs(rs.params["max_width_mm"] - 1.05 * (length + width)) < 1e-9
     no_solid = _aimed(DetGenerator(diagonal=lambda ws: 100.0).propose(_state([site], solid=False), 999))
@@ -83,5 +88,9 @@ def test_nothing_is_aimed_without_a_mesher_location_or_a_narrow_face() -> None:
 def test_the_aimed_rows_come_before_the_sites_own_sweep() -> None:
     cands = DetGenerator(diagonal=lambda ws: 100.0).propose(
         _state([_site("proximity", ["F5"], A11, EDGES, "low_quality")]), 999)
-    first = [c.op for c in cands[:4]]
-    assert first == ["unify_same_domain", "remove_small", "unify_same_domain", "remove_small"]
+    # B19: a proximity site's PREFERRED families (near_faces, face_split, ...) come first, so "before the sweep" now
+    # holds within the small-face family: its four aimed rows lead every other small-face row the site gets
+    from meshpipeline.cad.repair_v4.search import _family_of
+
+    small = [c for c in cands if _family_of(c.op) == "small"]
+    assert len(_aimed(small[:4])) == 4, [(c.op, c.rationale) for c in small[:6]]

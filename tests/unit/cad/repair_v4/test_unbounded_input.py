@@ -32,6 +32,8 @@ class Pool:
             if self.unbounded is None:  # the kernel could not say: judge as before
                 return CallResult(ok=False, value=None, error="boom", status="error", seconds=0.1)
             return CallResult(ok=True, value={"unbounded": self.unbounded}, error=None, status="ok", seconds=0.1)
+        if fn == "valid_signed_volumes":   # lane C15's orientation check on the judged BREP: one positive solid
+            return CallResult(ok=True, value={"volumes": [1.0]}, error=None, status="ok", seconds=0.1)
         raise AssertionError(f"unexpected kernel call {fn}")
 
 
