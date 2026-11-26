@@ -227,6 +227,24 @@ def _compound(*shapes):
     return c
 
 
+def drilled_plates(holes: int = 30):
+    """THREE BODIES, TWO WITH MANY SMALL HOLES, like perforated parts in an assembly: two 6 mm plates end to end, each
+    drilled with a `holes` x `holes` grid of 2 mm holes at a 5 mm pitch, and a 20 mm bar against the far end (two
+    assembly pairs, each over a plain end face). 2 x holes^2 hot spots: the stage sizing's many-zone case (a customer
+    assembly had 1,764 - holes=30 gives 1,800), which the other fixtures (at most about 160) never reach."""
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
+
+    pitch, t = 5.0, 6.0
+    side = pitch * holes + pitch
+
+    def plate(x0: float):
+        tools = _compound(*[_cyl(x0 + pitch * (i + 1), pitch * (j + 1), -1.0, 1.0, t + 2.0)
+                            for i in range(holes) for j in range(holes)])
+        return BRepAlgoAPI_Cut(_box(x0, 0.0, 0.0, side, side, t), tools).Shape()
+
+    return _compound(plate(0.0), plate(side), _box(2 * side, 0.0, 0.0, 20.0, side, t))
+
+
 def touching_blocks(size: float = 10.0):
     """Two cubes of `size` mm side by side along x, sharing the face x = size: an assembly's two
     parts that TOUCH over one face (size x size mm)."""

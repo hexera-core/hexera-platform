@@ -163,6 +163,13 @@ def options(record: dict, surface, diag_m: float, *, ai: dict | None = None) -> 
 
 def options_and_plans(record: dict, surface, diag_m: float, *, ai: dict | None = None) -> tuple[dict, dict]:
     """The size choice and the plans it was read from ({"full": plan, "quicker": plan | None})."""
+    from meshpipeline.engines import fea_size_field as SF
+
+    with SF.sizing():          # TIME-12: both plans share the counting processes and the surface distances
+        return _options_and_plans(record, surface, diag_m, ai=ai)
+
+
+def _options_and_plans(record: dict, surface, diag_m: float, *, ai: dict | None = None) -> tuple[dict, dict]:
     from meshpipeline.engines import fea_driver as FD
 
     full_plan = FD.choose_plan(record, surface, diag_m, ai=ai)
