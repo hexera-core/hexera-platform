@@ -29,6 +29,8 @@ import { bindThermalPanel, thermalPanelHtml } from "./thermal_form.js";
 import { bindFeaPanel, feaPanelHtml, followAssembly, followClean, followMeasure, followMeshAs, followPlan } from "./fea_form.js";
 // the run box's live line: what the running row is doing now, in plain words
 import { countWords, createRunProgress } from "./run_progress.js";
+// the repair lane's words: every line it shows is built there, from the typed event
+import { progressLine } from "../core/repair_words.js";
 import { barWidth } from "./check_progress.js";
 // the closing message of a finished run, as a summary rather than a wall of lines
 import { outcomeHtml } from "./outcome.js";
@@ -128,7 +130,9 @@ export const Stage = {
     // one still counted as open).
     this._att=null;this._attSep=null;this._built=new Set();this._seq=0;this.meshBar=null;this._ended=false;
     // ...and so did the stopped clock and the last event's time
-    this.finished=false;this._evt=0;this._t1=0;Run.reset();},
+    this.finished=false;this._evt=0;this._t1=0;Run.reset();
+    // the repair lane and a repair-only run's shape are the run's own
+    this._rr=null;this._repairOnly=false;},
   // Fill the empty state's format line from the SERVER's capability description. Advisory and
   // best-effort: when capabilities are unavailable the line stays empty and the neutral lead
   // sentence still invites an upload, because the server is the authority on what it accepts.
@@ -717,7 +721,7 @@ export const Stage = {
     this._tick=setInterval(()=>{
       const c=p.querySelector('.proc-clock');
       if(c&&!this.finished)c.textContent=fmtDur(this.serverNow()-this.t0);
-      Object.values(this.rows||{}).forEach(r=>{if(r.state==='active')r.dur.textContent=fmtDur(this._capped(r.spent+Math.max(0,this.serverNow()-r.t0)));});
+      Object.values(this.rows||{}).concat(this._rr?[this._rr]:[]).forEach(r=>{if(r.state==='active')r.dur.textContent=fmtDur(this._capped(r.spent+Math.max(0,this.serverNow()-r.t0)));});
       if(!this.finished&&(this._lineTick=(this._lineTick||0)+1)%2===0)this.drawLive();
     },500);
     this.drawLive();
@@ -793,6 +797,8 @@ export const Stage = {
       // a row the run went past without a word (a pinned engine, an engine that designs nothing)
       // still shows, as done with nothing to do; its own words come from ROWS[].none at the end
       else if(j<i&&r.state==='todo'){r.state='done';r.skipped=true;r.tEnd=this.now();this.paint(r);this._drawSaid(r);}});
+    // the mesh rows start once the repair is over: its lane closes as the first of them opens
+    if(this._rr&&this._rr.state==='active'&&key!=='engine')this._repairClose();
     if(row.state!=='active'){
       Object.assign(row,{state:'active',t0:this.now(),tEnd:null,skipped:false,seq:++this._seq});
       if(row.mark==='back')row.mark=null;
@@ -806,6 +812,64 @@ export const Stage = {
     r.dur.textContent=fmtDur(this._capped(r.spent));if(this._activeKey===r.key)this._activeKey=null;
     this.paint(r);this._drawSaid(r);this.drawLive();},
   done(a){const r=this.rows&&this.rows[ROW_KEYS.includes(a)?a:(STAGE_ROW[a]||'')];if(r)this._close(r);},
+
+  /* THE REPAIR LANE. A run whose choice includes a CAD repair says, above the mesh's rows, what the repair is doing
+     - in the customer's words, from the typed `repair_progress` events (core/repair_words.js): the problems it
+     found, the one it is on ("Repairing a thin gap — problem 3 of 12") with a count and a bar, and how it ended.
+     It is a row like the others (the same dot, name, time, lines in view and steps folded), drawn only when a
+     repair runs, so a mesh-only run's box is the four rows it always was. */
+  _repairRow(){this.ensureProc();if(this._rr)return this._rr;
+    const d={key:'repair',title:'Repairing your CAD'};
+    const row=this._row(d);
+    // the lane leads the box: the repair runs before the mesh is designed
+    this.tl.insertBefore(row.el,this.tl.firstChild);
+    row.el.classList.add('rr-repair');
+    Object.assign(row,{agent:'repair',index:null,total:null,fixed:null,now:''});
+    this._rr=row;return row;},
+  repairProgress(ev){
+    const L=progressLine(ev);if(!L.text&&!L.step)return;
+    const row=this._repairRow();
+    if(L.total!=null)row.total=L.total;
+    if(L.index!=null)row.index=L.index;
+    if(L.fixed!=null)row.fixed=L.fixed;
+    if(row.state==='todo'&&!L.done){
+      // a mesh row the run had already opened (the engine chosen first) gives way to the repair
+      ROW_KEYS.forEach(k=>{const r=this.rows[k];if(r.state==='active')this._close(r);});
+      Object.assign(row,{state:'active',t0:this.now(),tEnd:null,seq:++this._seq});
+      row.dot.className='tl-dot active';}
+    row.worked=true;
+    if(L.step==='checking'&&L.total!=null)this._line(row,'found',L.text);
+    if(L.result&&L.result!=='fixed')row.worst=Math.max(row.worst,1);
+    // every word the repair said is a folded step; the same word twice is said once
+    if(L.text&&row.lastStep!==L.text){row.lastStep=L.text;this._step(row,`<div class="e-info">${esc(L.text)}</div>`);}
+    if(L.done){
+      if(row.total!=null&&row.fixed!=null&&row.fixed<row.total)row.worst=Math.max(row.worst,1);
+      this._line(row,'end',L.text);this._repairClose();}
+    else row.now=L.text||row.now;
+    this._repairCount(row);this._drawRepairLive();},
+  // the count beside the lane's name: the problem it is on while it runs, how many it fixed once it ended
+  _repairCount(row){
+    const t=row.total,i=row.index,f=row.fixed;
+    row.ct.textContent=row.state==='done'&&t!=null&&f!=null?`${f} of ${t} fixed`
+      :t?`${Math.min(i||0,t)} of ${t}`:'';},
+  _repairClose(){const r=this._rr;if(!r||r.state!=='active')return;
+    r.spent+=Math.max(0,this.now()-r.t0);r.state='done';r.tEnd=this.now();
+    r.dur.textContent=fmtDur(this._capped(r.spent));
+    this.paint(r);this._drawSaid(r);this._repairCount(r);this._drawRepairLive();},
+  // the lane's live line: what it is doing now, and a bar of problems done out of found
+  _drawRepairLive(){const r=this._rr;if(!r)return;const el=r.liveEl;
+    const on=r.state==='active'&&!this._ended&&!!r.now;
+    if(!on){el.hidden=true;el.innerHTML='';return;}
+    const w=r.total?Math.round(100*Math.max(0,Math.min(r.index||0,r.total))/r.total)+'%':'';
+    el.hidden=false;
+    el.innerHTML=`<span class="rr-now" role="status">${esc(r.now)}…</span>`
+      +(w?`<span class="rr-bar" role="progressbar" aria-label="Problems worked through" aria-valuemin="0" aria-valuemax="${r.total}" aria-valuenow="${Math.min(r.index||0,r.total)}"><i style="width:${w}"></i></span>`:'');},
+  /* A REPAIR-ONLY RUN ("Repair CAD only"): no mesh is built, so the box is the repair's lane alone, under a header
+     that says so. Said by the job's own choice (main.js, from the status poll or the result). */
+  repairOnly(){this.ensureProc();if(this._repairOnly)return;this._repairOnly=true;
+    this._repairRow();
+    ROW_KEYS.forEach(k=>{this.rows[k].el.hidden=true;});
+    const t=this.proc.querySelector('.proc-title');if(t&&!this._ended)t.textContent='Repairing your CAD';},
 
   /* WHAT A ROW SAYS, always in view: a few plain lines, each kept under a key so a newer word on the
      same thing replaces the older one instead of piling up. */
@@ -836,7 +900,7 @@ export const Stage = {
       row.hasMore=more>0;if(row.hasMore)row.chev.hidden=false;}
     else html+=lines.map(t=>`<p class="rr-line">${esc(t)}</p>`).join('');
     if(!html&&row.state==='done'&&(this._ended||row.skipped||row.key==='design')){
-      const d=rowDef(row.key),none=row.worked&&d.quiet?d.quiet:d.none;
+      const d=row.key==='repair'?{none:''}:rowDef(row.key),none=row.worked&&d.quiet?d.quiet:d.none;
       if(none)html=`<p class="rr-line none">${esc(none)}</p>`;}
     row.saidEl.innerHTML=html;},
   // a step under the row, folded away: the row's name opens them
@@ -849,6 +913,11 @@ export const Stage = {
      runs long, and a hairline bar when the mesher's count has an estimate beside it (render/run_progress). */
   drawLive(){if(!this.rows)return;
     const v=Run.view(),ended=this._ended;
+    // a repair-only run has no mesh rows in view: the wait is said on the repair lane until it starts
+    if(this._repairOnly){const r=this._rr;
+      if(r&&r.state==='todo'){r.now=!ended&&v.live?String(v.current||'').replace(/…$/,''):'';
+        r.liveEl.hidden=!r.now;r.liveEl.innerHTML=r.now?`<span class="rr-now" role="status">${esc(r.now)}…</span>`:'';}
+      return;}
     let key=null;
     if(!ended&&v.live)key=this._activeKey&&this.rows[this._activeKey].state==='active'?this._activeKey
       :(v.state==='queued'?(ROW_KEYS.find(k=>this.rows[k].state==='todo')||null):null);
@@ -1138,6 +1207,9 @@ export const Stage = {
     // review left points open is a warning on that review, not a failure.
     const rows=this.rows?ROW_KEYS.map(k=>this.rows[k]):[];
     const open=rows.filter(n=>n.state==='active');
+    // THE REPAIR LANE ends with the run: a lane still open when the run failed is where it stopped
+    if(this._rr&&this._rr.state==='active'){if(cancelled)this._rr.mark='ended';else if(failed)this._rr.mark='bad';}
+    if(data.repair&&data.repair.choice==='standalone')this.repairOnly();
     if(cancelled)open.forEach(n=>{n.mark='ended';});
     else if(failed&&!rows.some(n=>n.state!=='todo'&&this.markOf(n)==='bad'))open.forEach(n=>{n.mark='bad';});
     if(concerns&&this.rows&&this.rows.review.verdict==='FAIL')this.rows.review.mark='warn';
@@ -1148,6 +1220,7 @@ export const Stage = {
     {const t0=Date.parse(data.createdAt||''),t1=Date.parse(data.endedAt||'');
      Run.final({...data,concerns,notes,totalMs:t0>0&&t1>0?t1-t0:(this.t0?this.now()-this.t0:null)},this.now());}
     open.forEach(n=>this._close(n));
+    this._repairClose();
     this.clock(data.createdAt,data.endedAt);
     if(!this.finished){this.finished=true;
       const c=this.proc&&this.proc.querySelector('.proc-clock');if(c&&this.t0)c.textContent=fmtDur(this.serverNow()-this.t0);}
@@ -1166,7 +1239,8 @@ export const Stage = {
       else this._drawSaid(n);this.paint(n);});
     if(this.proc){this.proc.classList.add('done','r-'+outcome);   // the header's mark takes the verdict's colour
       // ONE STATEMENT OF THE ENDING: the title says it; the clock beside it is the run's one total time
-      this.proc.querySelector('.proc-title').textContent=concerns?'Mesh ready, with concerns':notes?'Mesh ready, with notes':data.pass?'Mesh ready':cancelled?'Run cancelled':'Run failed';
+      this.proc.querySelector('.proc-title').textContent=this._repairOnly?(data.pass?'Repair finished':cancelled?'Run cancelled':'Repair failed')
+        :concerns?'Mesh ready, with concerns':notes?'Mesh ready, with notes':data.pass?'Mesh ready':cancelled?'Run cancelled':'Run failed';
       this.proc.querySelector('#proc-sub').textContent=cancelled&&data.cancelReason?`reason: ${data.cancelReason}`:'';
       this.proc.dataset.attempts=att;
       const cb=this.proc.querySelector('#proc-cancel');if(cb)cb.hidden=true;}

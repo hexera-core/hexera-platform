@@ -368,13 +368,13 @@ def test_a_paired_defect_pins_and_names_its_partner(live):
     seam["items"][1]["camera"] = {"centroid_mm": [900.0, 250.0, 250.0], "normal": [0, 0, 1],
                                   "extent_mm": 100.0}
     _open(live, review={**review, "groups": [seam]})
-    assert "SEAM face 6" in _text(live, ".rv-partner"), _text(live, ".rv-partner")
+    assert "seam face 6" in _text(live, ".rv-partner"), _text(live, ".rv-partner")
     live.wait_for("window._vdbg && !!window._vdbg['review:" + JOB + "']", what="the viewport")
     mate = live.evaluate("window._vdbg['review:" + JOB + "'].partner()")
     for got, want in zip(mate, [0.9, 0.25, 0.25], strict=True):
         assert abs(got - want) < 1e-6, mate
     _click(live, ".rv-leave")                     # item 6, whose partner is item 5
-    assert "SEAM face 5" in _text(live, ".rv-partner"), _text(live, ".rv-partner")
+    assert "seam face 5" in _text(live, ".rv-partner"), _text(live, ".rv-partner")
     _click(live, ".rv-leave")
     _click(live, ".rv-onebyone")                  # item 7: its partner is not in the review
     assert "not in this review" in _text(live, ".rv-partner"), _text(live, ".rv-partner")
