@@ -156,10 +156,11 @@ def test_the_heatmap_colours_the_mesh_and_explains_a_face(live, tmp_path):
       document.querySelector('#viewer-{JOB} .v-probe [data-a=mark]').click();
       return {{markers: window._vdbg['{JOB}'].markers(),
                probeGone: !document.querySelector('#viewer-{JOB} .v-probe'),
-               submit: document.getElementById('v-submit-{JOB}').textContent}};
+               submit: document.getElementById('v-submit-{JOB}').textContent,
+               sendOff: document.getElementById('v-submit-{JOB}').disabled}};
     }})()""")
     assert marked["markers"] == 1 and marked["probeGone"]
-    assert "1 mark" in marked["submit"]
+    assert marked["submit"] == "Send change" and not marked["sendOff"], marked
 
     # aspect ratio: cell 0 is a unit cube and reads 1.00; checkMesh's bar (1000) is far above
     # the mesh's range, so the scale spans the mesh's own values and no limit tick is drawn

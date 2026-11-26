@@ -30,7 +30,7 @@ import { configureComposer, disableInput, enableInput, holdForRun, mountComposer
   offerNewRun, resumeSession, say, setPlaceholder, showRunFile } from "./shell/composer.js";
 import { intakeOrder, runOrder } from "./core/conversation.js";
 import { refreshHealth } from "./shell/settings.js";
-import { configureDispute } from "./viewer/dispute.js";
+import { configureDispute, revisionEnded, revisionOf, revisionStep } from "./viewer/dispute.js";
 import { offerReview, openParked } from "./review/review.js";
 import { openGeometryStage } from "./viewer/geometry_stage.js";
 import { dropPartsHost, endIntake, partsHost } from "./viewer/intake_view.js";
@@ -53,6 +53,8 @@ setNotifier({
 /* one event interpretation path, live and replayed alike */
 function onEvent(ev) {
   setState.laneCursor(dispatch(ev, Stage, getState.laneCursor()));
+  // a run revising a mesh on screen says its step on that mesh's progress line too
+  revisionStep(getState.jobId(), Stage.liveNow());
 }
 
 /* LIVE STEPS THAT CANNOT REACH THE PAGE. The run itself is fine - the poller still reads its
@@ -145,6 +147,8 @@ function parkedRun(job) {
    without moving the camera and without claiming anything about the delivered mesh. It is a
    progress nicety: when the route has nothing, the screen keeps what it had. */
 setMeshPartialHandler((phase, key) => {
+  // A REVISION KEEPS THE MESH IT REVISES ON SCREEN until its own is delivered
+  if (revisionOf(getState.jobId())) return;
   showMeshPartial(getState.jobId(), phase, key,
     { anchorEl: Stage.col(), sessionId: getState.sessionId() });
 });
@@ -157,6 +161,10 @@ setResultHandler((data, anchor) => {
   // terminal surface opens, and a frame still in flight can no longer land over it.
   dropMeshPartial(job);
   const surface = resultSurface(data);
+  // A REVISION'S MESH TAKES THE REVISED ONE'S PLACE, on its camera; a revision that delivered no
+  // mesh leaves the revised one where it is, usable again
+  const replaces = revisionOf(job);
+  revisionEnded(job);
   if (surface === "mesh") {
     // THE RESULT SURFACE IS THE MESH: open it inline, with the deliverables and the
     // flag -> re-review controls attached to the thing they describe.
@@ -167,12 +175,12 @@ setResultHandler((data, anchor) => {
         reasoning: data.reviewOutcome === "delivered_with_concerns" ? (data.reasoning || "") : "",
         // passed by the measured limits, with figures past a limit: listed as notes, as on the result screen
         withNotes: data.reviewOutcome === "passed_with_notes" ? (data.concerns || []) : null,
-        notes: data.notes || [] });
+        notes: data.notes || [], replaces });
   } else if (surface === "unreviewed") {
     openViewer(job, anchor,
       { metrics: { attempts: data.attempts, pass: false }, files: data.files || [],
         createdAt: data.createdAt, endedAt: data.endedAt,
-        unreviewed: true, findings: data.findings || [], reasoning: data.reasoning || "" });
+        unreviewed: true, findings: data.findings || [], reasoning: data.reasoning || "", replaces });
   } else {
     // A TERMINAL failure - no valid mesh was ever produced. Any mesh file left in the workspace
     // is structurally INVALID; showing it as "your mesh" would be a lie, and the outcome message
@@ -282,8 +290,10 @@ configureDispute({
   // A RE-REVIEW BELONGS TO THE DISPUTED RUN'S CONVERSATION, not to whatever session the page
   // holds now: a run opened by link, disputed after an upload of other geometry, has none, and
   // its "run again" must never reach that other geometry's session.
-  onRerun: (id, message, disputedJobId) => attachJob(id,
-    { message, origin: getState.runOrigin(disputedJobId) }),
+  // (a change names the conversation its run belongs to; when it does not, the disputed run's)
+  onRerun: (id, message, disputedJobId, sessionId) => attachJob(id,
+    { message, origin: sessionId || getState.runOrigin(disputedJobId) }),
+  say: (text) => Stage.chat("assistant", text),
 });
 
 /* what "stop this run" means: ask first, then the API. The ending arrives through the stream and

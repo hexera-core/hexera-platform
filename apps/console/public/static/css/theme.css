@@ -509,6 +509,11 @@ th,td{border-color:var(--border)}
 .v-brush input[type=range]{width:88px;accent-color:var(--stone)}
 .v-act{gap:8px}
 .v-cost{margin-top:10px;color:var(--text-faint);font:var(--fs-sm)/1.5 var(--sans)}
+.v-ask{display:block;box-sizing:border-box;width:100%;margin-top:10px;min-height:52px;resize:vertical;padding:8px 10px;
+  border:1px solid var(--border);border-radius:var(--r-md);background:var(--canvas);color:var(--text);
+  font:var(--fs-sm)/1.5 var(--sans)}
+.v-ask:focus{outline:none;border-color:var(--focus-edge)}
+.v-ask::placeholder{color:var(--text-faint)}
 
 /* A DELIVERED THERMAL MODEL: the file's parts as a table, the quality in words, the slices */
 .v-thermal:empty{display:none}
