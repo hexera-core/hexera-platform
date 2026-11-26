@@ -227,6 +227,52 @@ def _compound(*shapes):
     return c
 
 
+def drilled_plates(holes: int = 30):
+    """THREE BODIES, TWO WITH MANY SMALL HOLES, like perforated parts in an assembly: two 6 mm plates end to end, each
+    drilled with a `holes` x `holes` grid of 2 mm holes at a 5 mm pitch, and a 20 mm bar against the far end (two
+    assembly pairs, each over a plain end face). 2 x holes^2 hot spots: the stage sizing's many-zone case (a customer
+    assembly had 1,764 - holes=30 gives 1,800), which the other fixtures (at most about 160) never reach."""
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
+
+    pitch, t = 5.0, 6.0
+    side = pitch * holes + pitch
+
+    def plate(x0: float):
+        tools = _compound(*[_cyl(x0 + pitch * (i + 1), pitch * (j + 1), -1.0, 1.0, t + 2.0)
+                            for i in range(holes) for j in range(holes)])
+        return BRepAlgoAPI_Cut(_box(x0, 0.0, 0.0, side, side, t), tools).Shape()
+
+    return _compound(plate(0.0), plate(side), _box(2 * side, 0.0, 0.0, 20.0, side, t))
+
+
+def grooved_shaft(grooves: int = 150, rings: int = 40, per_ring: int = 40):
+    """THREE BODIES OF CURVED FACES, the many-hot-spot case on a surface that tessellates into many triangles (the
+    drilled plates are flat): a 40 mm shaft with `grooves` round grooves (torus cuts, 0.6 mm radius, 1.6 mm pitch) on
+    its free end, a sleeve (20.1 / 28 mm radius, 0.1 mm off the shaft: a small-gap pair) round its other part drilled
+    with `rings` x `per_ring` radial 2 mm holes, and a disc against the shaft's end (a touching pair). The defaults
+    give 3 bodies, 1,910 faces and 5,492 edges (a customer assembly: 3, 1,926 and 4,722)."""
+    import math
+
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeTorus
+    from OCP.gp import gp_Ax2, gp_Dir, gp_Pnt
+
+    r, sleeve_len, pitch = 20.0, 6.0 + 4.0 * rings, 1.6
+    length = sleeve_len + 10.0 + pitch * grooves
+    tori = _compound(*[BRepPrimAPI_MakeTorus(gp_Ax2(gp_Pnt(0, 0, sleeve_len + 10.0 + pitch * (k + 0.5)),
+                                                    gp_Dir(0, 0, 1)), r, 0.6).Shape() for k in range(grooves)])
+    shaft = BRepAlgoAPI_Cut(_cyl(0, 0, 0, r, length), tori).Shape()
+    holes = []
+    for i in range(rings):
+        for j in range(per_ring):
+            a = 2 * math.pi * (j + 0.5 * (i % 2)) / per_ring
+            d = (math.cos(a), math.sin(a), 0.0)
+            holes.append(_cyl(19.0 * d[0], 19.0 * d[1], 5.0 + 4.0 * i, 1.0, 11.0, axis=d))
+    tube = _cut(_cyl(0, 0, 0, 28.0, sleeve_len), _cyl(0, 0, -1.0, r + 0.1, sleeve_len + 2.0))
+    sleeve = BRepAlgoAPI_Cut(tube, _compound(*holes)).Shape()
+    return _compound(shaft, sleeve, _cyl(0, 0, length, 35.0, 10.0))
+
+
 def touching_blocks(size: float = 10.0):
     """Two cubes of `size` mm side by side along x, sharing the face x = size: an assembly's two
     parts that TOUCH over one face (size x size mm)."""

@@ -1573,6 +1573,17 @@ def target_plan(record: dict, surface, diag_m: float, *, levers: list[dict], ai:
 def choose_plan(record: dict, surface, diag_m: float, *, levers: list[dict] | None = None,
                 ceiling_s: float | None = None, ai: dict | None = None, target: dict | None = None,
                 sizes: dict | None = None, correction: float | None = None, cap: int | None = None) -> dict:
+    """_choose_plan, its passes sharing the counting processes and the surface distances (TIME-12)."""
+    from meshpipeline.engines import fea_size_field as SF
+
+    with SF.sizing():
+        return _choose_plan(record, surface, diag_m, levers=levers, ceiling_s=ceiling_s, ai=ai, target=target,
+                            sizes=sizes, correction=correction, cap=cap)
+
+
+def _choose_plan(record: dict, surface, diag_m: float, *, levers: list[dict] | None = None,
+                 ceiling_s: float | None = None, ai: dict | None = None, target: dict | None = None,
+                 sizes: dict | None = None, correction: float | None = None, cap: int | None = None) -> dict:
     """PLAN-fea-8, NEVER A STOP BEFORE MESHING (Areen, 21 Oct): the rules' own plan when it fits under
     the limit; else the finest zones coarsened until it fits, never past what keeps elements valid,
     what that leaves short named (resolution_short); else - every zone at its validity minimum and

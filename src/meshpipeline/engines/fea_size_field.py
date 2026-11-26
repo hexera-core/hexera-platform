@@ -36,6 +36,8 @@ from __future__ import annotations
 
 import copy
 import math
+import threading
+from contextlib import contextmanager
 from dataclasses import dataclass
 
 import numpy as np
@@ -70,6 +72,21 @@ SLAB_PER_AREA = 3.7
 SURFACE_PER_AREA = 2.8
 #: the surface rows' bins for the wall (a ratio between neighbours)
 WALL_BIN_RATIO = 1.1
+#: TIME-12: THE POINTS ARE MEASURED IN TILES of about this many (SizeField.sizes): a zone group is looked at only in
+#: the tiles it can still make finer, so a part with ~1,800 hot spots (as many groups) no longer costs every point
+#: x every group. 0 measures every point against every group's box, as before (the answer is the same to the bit).
+TILE_POINTS = 128
+#: TIME-12: THE SIGNED DISTANCE TO THE WHOLE SURFACE IS KEPT PER CUBE for one sizing (the geometry does not change
+#: between its passes, only the zones' sizes): at most this many cubes (16 bytes each: its key and its distance);
+#: past it, a cube not kept is measured as before. 0 keeps none (every cube measured each count, as before).
+SIGNED_KEEP_CUBES = 20_000_000
+#: TIME-12: a capped corner's edge distance is searched this far (metres) past where its size stops mattering, so a
+#: point it reports none for has a size at least this x (growth - 1) over what it needs - far past any rounding.
+#: None searches every point to its nearest sample, as before.
+EDGE_MARGIN_M: float | None = 1e-9
+#: TIME-12: a thin spot's balls are measured before its face, and the face only where the balls leave the size under
+#: what the point needs (False: the face first, as before; the same sizes either way)
+BALLS_FIRST = True
 
 
 @dataclass
@@ -147,6 +164,58 @@ class _Distance:
         return np.asarray(vtk_to_numpy(out), dtype=float).copy()
 
 
+class _SignedKept:
+    """TIME-12: the signed distance to the whole surface at the octree's cubes, kept for one sizing.
+
+    A cube is named by its octree level and its integer place at that level, on the grid its count started from (the
+    surface's box corner and the first cube's edge: the same in every pass of a sizing that keeps its coarsest size).
+    Every cube's centre is made from its parent's by the same arithmetic in every count, so a cube named alike has
+    the same centre to the bit, and its distance is the one measuring it again would give: kept distances are the
+    same floats. One sorted key array and its distances per (grid, level); at most `cap` cubes in all."""
+
+    def __init__(self, cap: int):
+        self.cap = int(cap)
+        self.kept: dict[tuple, tuple[np.ndarray, np.ndarray]] = {}
+        self.cubes = 0
+        self.hits = 0
+
+    @staticmethod
+    def keys(centres: np.ndarray, lo: np.ndarray, e: float, n: np.ndarray, level: int) -> np.ndarray | None:
+        """Each cube's integer place at its level, packed in one int64 (None: the level's grid does not fit)."""
+        m = np.asarray(n, dtype=np.int64) << int(level)
+        bits = [max(1, int(v - 1).bit_length()) for v in m.tolist()]
+        if sum(bits) > 62:
+            return None
+        ijk = np.clip(np.floor((centres - lo) / e).astype(np.int64), 0, m - 1)
+        return (ijk[:, 0] << (bits[1] + bits[2])) | (ijk[:, 1] << bits[2]) | ijk[:, 2]
+
+    def take(self, at: tuple, keys: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """The kept distances (NaN where not kept) and which cubes are not kept."""
+        out = np.full(len(keys), np.nan)
+        got = self.kept.get(at)
+        if got is None or not len(got[0]):
+            return out, np.ones(len(keys), dtype=bool)
+        k, v = got
+        pos = np.minimum(np.searchsorted(k, keys), len(k) - 1)
+        hit = k[pos] == keys
+        out[hit] = v[pos[hit]]
+        self.hits += int(hit.sum())
+        return out, ~hit
+
+    def put(self, at: tuple, keys: np.ndarray, sd: np.ndarray) -> None:
+        """Keep these cubes' distances (none of them kept yet), as many as the cap leaves room for."""
+        room = self.cap - self.cubes
+        if room <= 0 or not len(keys):
+            return
+        keys, sd = keys[:room], sd[:room]
+        self.cubes += len(keys)
+        got = self.kept.get(at)
+        if got is not None:
+            keys, sd = np.concatenate([got[0], keys]), np.concatenate([got[1], sd])
+        order = np.argsort(keys, kind="stable")
+        self.kept[at] = (keys[order], sd[order])
+
+
 class _BallDistance:
     """Distance past the nearest of a set of balls (0 inside one)."""
 
@@ -178,10 +247,11 @@ class _EdgeDistance:
         self.pts = np.unique(np.vstack(pts), axis=0)
         self.tree = cKDTree(self.pts)
 
-    def __call__(self, p: np.ndarray) -> np.ndarray:
+    def __call__(self, p: np.ndarray, bound: float = math.inf) -> np.ndarray:
+        """The distance to the nearest sample (inf where none lies within `bound`)."""
         if not len(p):
             return np.zeros(0)
-        d, _ = self.tree.query(p)
+        d, _ = self.tree.query(p, distance_upper_bound=bound) if math.isfinite(bound) else self.tree.query(p)
         return np.asarray(d, dtype=float)
 
 
@@ -278,8 +348,41 @@ class SizeField:
         self.tris = np.asarray(surface.tris)
         self.label = np.asarray(surface.label)
         self.index = {n: k for k, n in enumerate(surface.names)}
-        self.solid = _Distance(self.xyz, self.tris)
+        # TIME-12: within one sizing (sizing()) the surface does not change between passes, only the zones: the
+        # distance to the whole surface and to each set of triangles a group measures are built once and used again
+        # (the same arrays, so the same answers to the bit)
+        # (only the last field's are kept: a set no group of this field measures is let go)
+        scope = _scope()
+        kept = scope.dists
+        self._dists: dict[bytes, tuple] = {}
+        self._was: dict[bytes, tuple] = {}
+        # ...and so are each face's triangles and the segments two faces share (the surface's own), and the sampled
+        # edge distance of a capped corner group (its segments and spacing alike: the same tree, the same answers)
+        self._edge_sets: dict[tuple, _EdgeDistance] = {}
+        self._edge_was: dict[tuple, _EdgeDistance] = {}
+        self._shared: dict[tuple[int, int], tuple[np.ndarray, np.ndarray]]
+        if kept is not None and kept["scale"] == float(scale_to_m) and np.array_equal(kept["xyz"], self.xyz) \
+                and np.array_equal(kept["tris"], self.tris) and np.array_equal(kept["label"], self.label):
+            self.solid, self._was = kept["solid"], kept["sets"]
+            self._signed_kept: _SignedKept | None = kept.get("signed_kept") if SIGNED_KEEP_CUBES > 0 else None
+            self._face_tris, self._shared = kept["face_tris"], kept["shared"]
+            self._edge_was = kept["edge_sets"]
+        else:
+            self.solid = _Distance(self.xyz, self.tris)
+            self._signed_kept = None
+            order = np.argsort(self.label, kind="stable")
+            cut = np.searchsorted(self.label[order], np.arange(len(self.index) + 1))
+            self._face_tris = (order, cut)
+            self._shared = {}
+        # ...and so is the signed distance to it at every cube a count measured (_SignedKept: the same floats)
+        if self._signed_kept is None and SIGNED_KEEP_CUBES > 0:
+            self._signed_kept = _SignedKept(SIGNED_KEEP_CUBES)
+        if scope.depth:
+            scope.dists = {"scale": float(scale_to_m), "xyz": self.xyz, "tris": self.tris, "solid": self.solid,
+                           "sets": self._dists, "signed_kept": self._signed_kept, "label": self.label,
+                           "face_tris": self._face_tris, "shared": self._shared, "edge_sets": self._edge_sets}
         self.groups = self._groups(zones)
+        self._was, self._edge_was = {}, {}
         # TIME-12: what this field's counts found, answered again to the bit (histogram): each count made, the
         # finished ones, where those stopped on their cube budget stood (a recount with more goes on from there),
         # and the surface rows at each coarsest size
@@ -289,14 +392,26 @@ class SizeField:
         self._rows: dict[float, list] = {}
 
     def _tris_of(self, faces) -> np.ndarray:
-        ks = [self.index[f] for f in faces if f in self.index]
-        return np.flatnonzero(np.isin(self.label, ks)) if ks else np.zeros(0, dtype=np.int64)
+        """The faces' triangles, in the surface's order (as np.flatnonzero(np.isin(label, faces)), from each face's
+        own triangles found once per surface - it was a pass over every triangle for every group, every pass)."""
+        ks = sorted({self.index[f] for f in faces if f in self.index})
+        if not ks:
+            return np.zeros(0, dtype=np.int64)
+        order, cut = self._face_tris
+        return np.sort(np.concatenate([order[cut[k]:cut[k + 1]] for k in ks])).astype(np.int64, copy=False)
 
     def _edges_of(self, faces) -> tuple[np.ndarray, np.ndarray]:
-        """The segments two faces share: edges of the welded surface with a triangle of each."""
+        """The segments two faces share: edges of the welded surface with a triangle of each (found once per pair
+        of faces in a sizing: the surface's own)."""
         ks = [self.index[f] for f in faces[:2] if f in self.index]
         if len(ks) < 2:
             return np.zeros((0, 3)), np.zeros((0, 3))
+        got = self._shared.get((ks[0], ks[1]))
+        if got is None:
+            got = self._shared[(ks[0], ks[1])] = self._edges_found(ks)
+        return got
+
+    def _edges_found(self, ks: list[int]) -> tuple[np.ndarray, np.ndarray]:
         sides = []
         for k in ks:
             t = self.tris[self.label == k]
@@ -310,9 +425,14 @@ class SizeField:
 
     def _compact(self, idx: np.ndarray) -> tuple[_Distance, np.ndarray, np.ndarray]:
         """The distance to the triangles `idx` (their own vertices only) and their box."""
-        used, tris = np.unique(self.tris[idx], return_inverse=True)
-        pts = self.xyz[used]
-        return _Distance(pts, tris.reshape(-1, 3)), pts.min(axis=0), pts.max(axis=0)
+        key = np.asarray(idx, dtype=np.int64).tobytes()
+        got = self._dists.get(key) or self._was.get(key)
+        if got is None:
+            used, tris = np.unique(self.tris[idx], return_inverse=True)
+            pts = self.xyz[used]
+            got = (_Distance(pts, tris.reshape(-1, 3)), pts.min(axis=0), pts.max(axis=0))
+        self._dists[key] = got
+        return got
 
     def _groups(self, zones: list[dict]) -> list[_Group]:
         out = []
@@ -338,8 +458,11 @@ class SizeField:
                 if not len(aa):
                     continue
                 both = np.vstack([aa, bb])
-                out.append(_Group(g["size"], g["reach"], None, _EdgeDistance(aa, bb, EDGE_SAMPLE_SHARE * g["size"]),
-                                  lo=both.min(axis=0), hi=both.max(axis=0)))
+                spacing = EDGE_SAMPLE_SHARE * g["size"]
+                key = (aa.tobytes(), bb.tobytes(), float(spacing))
+                edge = self._edge_sets.get(key) or self._edge_was.get(key) or _EdgeDistance(aa, bb, spacing)
+                self._edge_sets[key] = edge
+                out.append(_Group(g["size"], g["reach"], None, edge, lo=both.min(axis=0), hi=both.max(axis=0)))
             else:
                 # ONE GROUP PER PART of an assembly (a face group spans every part with a zone of that
                 # size): each has its own box, so a point far from a part never measures its faces
@@ -365,10 +488,68 @@ class SizeField:
         SAME all through the part, so a cube lying `r` deep inside the part needs no finer look for
         it - only a cube across the part's boundary does (and every other zone, as always)."""
         p = np.asarray(p, dtype=float).reshape(-1, 3)
-        h = np.full(len(p), np.inf)
-        need = np.full(len(p), np.inf)
+        if TILE_POINTS > 0 and len(p) >= 2 * TILE_POINTS and len(self.groups) > 1 and self.growth >= 1.0:
+            return self._sizes_tiled(p, r)
+        return self._sizes_each(p, r)
+
+    def _sizes_tiled(self, p: np.ndarray, r: float) -> tuple[np.ndarray, np.ndarray]:
+        """sizes(), THE SAME TO THE BIT, a tile of points at a time (TIME-12). The points are sorted into tiles (a grid
+        over them, about TILE_POINTS each) and each tile keeps the largest size its points still need. A group is
+        measured only in the tiles where the floor its box gives the tile's box (never more than the floor at any of
+        its points: every step of it is monotone) is under that largest need; elsewhere no point of the tile would
+        pass sizes()'s own test, and an assembly part's base there is never finer than what the tile has (its size
+        is never under the floor). In the tiles kept, every point is tested and measured exactly as _sizes_each
+        does: each point's numbers are its own, so the sizes are the same to the bit."""
+        n = len(p)
+        lo, hi = p.min(axis=0), p.max(axis=0)
+        # a grid of near-cubic tiles over the points' box, about n / TILE_POINTS of them
+        span = np.maximum(hi - lo, 1e-3 * max(float((hi - lo).max()), 1e-30))     # a flat set: one tile thick
+        cell = (float(np.prod(span)) * TILE_POINTS / n) ** (1.0 / 3.0)
+        m = np.maximum(1, np.minimum(np.ceil(span / cell), 1 << 20)).astype(np.int64)
+        ijk = np.minimum(m - 1, ((p - lo) / span * m).astype(np.int64))
+        key = (ijk[:, 0] * m[1] + ijk[:, 1]) * m[2] + ijk[:, 2]
+        order = np.argsort(key, kind="stable")
+        key = key[order]
+        ps = p[order]
+        starts = np.flatnonzero(np.concatenate([[True], key[1:] != key[:-1]]))
+        counts = np.diff(np.concatenate([starts, [n]]))
+        tlo = np.minimum.reduceat(ps, starts, axis=0)
+        thi = np.maximum.reduceat(ps, starts, axis=0)
+        h = np.full(n, np.inf)
+        need = np.full(n, np.inf)
+        most = np.full(len(starts), np.inf)              # each tile's largest need: never under any of its points'
+        everyone = np.arange(n)
         g1 = self.growth - 1.0
         for g in self.groups:
+            if g.lo is not None and g.hi is not None:
+                floor = np.linalg.norm(np.maximum(0.0, np.maximum(g.lo - thi, tlo - g.hi)), axis=1)
+                sel = g.size + g1 * np.maximum(0.0, floor - g.reach) < most
+                if not sel.any():
+                    continue
+                c = counts[sel]
+                ends = np.cumsum(c)
+                idx = np.repeat(starts[sel] - (ends - c), c) + np.arange(int(ends[-1]))
+                first = ends - c
+            else:
+                sel, idx, first = slice(None), everyone, starts
+            hs, ns = self._sizes_each(ps[idx], r, h[idx], need[idx], (g,))
+            h[idx] = hs
+            need[idx] = ns
+            most[sel] = np.maximum.reduceat(ns, first)
+        out_h = np.empty(n)
+        out_need = np.empty(n)
+        out_h[order] = h
+        out_need[order] = need
+        return out_h, out_need
+
+    def _sizes_each(self, p: np.ndarray, r: float, h: np.ndarray | None = None, need: np.ndarray | None = None,
+                    groups=None) -> tuple[np.ndarray, np.ndarray]:
+        """sizes() for every point against every group's box (or `groups`, going on from `h` and `need`)."""
+        if h is None or need is None:
+            h = np.full(len(p), np.inf)
+            need = np.full(len(p), np.inf)
+        g1 = self.growth - 1.0
+        for g in self.groups if groups is None else groups:
             deep = None
             if g.lo is not None and g.hi is not None and not g.inside:
                 # PRUNED: the distance to the group's box is a floor on the distance to it, so where even
@@ -377,11 +558,26 @@ class SizeField:
                 look = g.size + g1 * np.maximum(0.0, floor - g.reach) < need
                 if not look.any():
                     continue
+                ball = None
+                if g.balls is not None and BALLS_FIRST:
+                    # TIME-12: A THIN SPOT'S BALLS FIRST: its size is never under size + (growth - 1) x the distance
+                    # past its balls (it takes the larger of that and the face's law), so where that alone is not
+                    # under the need, the face is not measured - its size there could change nothing (exact: the
+                    # same monotone steps as the size itself)
+                    ball = g.balls(p[look])
+                    near = g.size + g1 * np.maximum(0.0, ball) < need[look]
+                    look[look] = near
+                    ball = ball[near]
+                    if not look.any():
+                        continue
                 q = p[look]
-                d = np.abs(g.faces(q)) if g.faces is not None else g.edges(q)  # type: ignore[misc]
+                if g.faces is not None:
+                    d = np.abs(g.faces(q))
+                else:
+                    d = self._edge_reach(g, q, need[look])
                 past = d - g.reach
                 if g.balls is not None:
-                    past = np.maximum(past, g.balls(q))
+                    past = np.maximum(past, g.balls(q) if ball is None else ball)
                 hg = np.full(len(p), np.inf)
                 hg[look] = g.size + g1 * np.maximum(0.0, past)
                 h = np.minimum(h, hg)
@@ -393,6 +589,11 @@ class SizeField:
                 # parts must not measure every point against every part)
                 sd = np.linalg.norm(np.maximum(0.0, np.maximum(g.lo - p, p - g.hi)), axis=1)
                 box = sd <= 0.0
+                if g1 >= 0.0:
+                    # TIME-12: nor where a finer zone already holds the point to the part's own size or under it - the
+                    # part's size is never under its own anywhere (inside it is that size, outside it grows), so it
+                    # could change neither the size nor what the cube needs there: left at 0, it gives that size
+                    box &= need > g.size
                 if box.any():
                     sd[box] = g.faces(p[box])  # type: ignore[misc]
                 d = np.maximum(0.0, sd)
@@ -407,6 +608,27 @@ class SizeField:
             h = np.minimum(h, hg)
             need = np.minimum(need, hg if deep is None else np.where(deep, np.inf, hg))
         return h, need
+
+    def _edge_reach(self, g: _Group, q: np.ndarray, need: np.ndarray) -> np.ndarray:
+        """A capped corner group's distance at `q`, its tree searched only as far as it could still matter (TIME-12):
+        past reach + (need - size) / (growth - 1) the group's size is at least what the point needs, so it changes
+        neither the size nor the need there. The search goes EDGE_MARGIN_M past the farthest such point and returns
+        inf beyond (where the size would only be larger than the need: the same min, to the bit); within it, the
+        nearest sample is the one found without the limit, at the same distance."""
+        assert g.edges is not None
+        g1, margin = self.growth - 1.0, EDGE_MARGIN_M
+        if g1 <= 0.0 or margin is None:
+            return g.edges(q)
+        lim = g.reach + (need - g.size) / g1
+        free = ~np.isfinite(lim)
+        if free.all():
+            return g.edges(q)
+        d = np.empty(len(q))
+        if free.any():
+            d[free] = g.edges(q[free])
+        bound = max(0.0, float(lim[~free].max())) + margin
+        d[~free] = g.edges(q[~free], bound)
+        return d
 
     def signed(self, p: np.ndarray) -> np.ndarray:
         return self.solid(np.asarray(p, dtype=float).reshape(-1, 3))
@@ -434,12 +656,14 @@ class SizeField:
         # a main guard runs again): `python -m` this module, fed by pipes - started only when a level is
         # measured
         pool = _LazyPool(self._spec, n) if n > 1 else None
+        failed = True
         try:
             hist = self._histogram(coarsest=coarsest, per_h3=per_h3, stop_elements=stop_elements, pool=pool,
                                    max_cubes=cap, held=held)
+            failed = False
         finally:
             if pool is not None:
-                pool.close()
+                pool.close(failed=failed)
         self._done[(at, stop, cap)] = copy.deepcopy(hist)
         return hist
 
@@ -481,6 +705,21 @@ class SizeField:
             return np.concatenate(parts)
         return np.concatenate([a for a, _b in parts]), np.concatenate([b for _a, b in parts])
 
+    def _signed_at(self, pool, centres: np.ndarray, r: float, at: tuple, lo: np.ndarray, e: float,
+                   n: np.ndarray) -> np.ndarray:
+        """The signed distance at an octree level's cube centres: kept ones read back (TIME-12, _SignedKept: the same
+        floats), the rest measured and kept while the cap has room."""
+        kept = self._signed_kept
+        keys = None if kept is None else kept.keys(centres, lo, e, n, at[1])
+        if kept is None or keys is None:
+            return self._on(pool, "signed", centres, r)
+        sd, miss = kept.take(at, keys)
+        if miss.any():
+            got = np.asarray(self._on(pool, "signed", centres[miss], r), dtype=float)
+            sd[miss] = got
+            kept.put(at, keys[miss], got)
+        return sd
+
     def _histogram(self, *, coarsest: float, per_h3: float, stop_elements: float, pool,
                    max_cubes: int = MAX_CUBES, held: dict | None = None) -> Histogram:
         """The volume at each zone size, from an octree over the part (see the module text).
@@ -501,6 +740,7 @@ class SizeField:
             e, cubes, zones_only = held["e"], held["cubes"], held["zones_only"]
             sizes, vols = list(held["sizes"]), list(held["vols"])
             rest, sd_rest, hz_rest = held["rest"], held["sd_rest"], held["hz_rest"]
+            lo, n, level = held["lo"], held["n"], held["level"]
             centres = np.zeros((0, 3))
         else:
             lo, hi = self.xyz.min(axis=0), self.xyz.max(axis=0)
@@ -512,11 +752,14 @@ class SizeField:
             cubes = 0
             zones_only = 0.0
             rest = None
+            level = 0
+        # the grid this count's cubes are named on (_SignedKept): its corner, its first cube's edge and its shape
+        start = (np.asarray(lo, dtype=float).tobytes(), float(e) * 2.0 ** level, tuple(int(k) for k in n))
         while rest is not None or len(centres):
             if rest is None:
                 cubes += len(centres)
                 r = e * math.sqrt(3.0) / 2.0
-                sd = self._on(pool, "signed", centres, r)
+                sd = self._signed_at(pool, centres, r, (start, level), lo, e, n)
                 keep = sd < r
                 centres, sd = centres[keep], sd[keep]
                 if not len(centres):
@@ -542,7 +785,8 @@ class SizeField:
                         not any(st["at"] == at and st["max_cubes"] == int(max_cubes) for st in self._held):
                     self._held.append({"at": at, "max_cubes": int(max_cubes), "e": e, "cubes": cubes,
                                        "zones_only": zones_only, "sizes": list(sizes), "vols": list(vols),
-                                       "rest": rest, "sd_rest": sd_rest, "hz_rest": hz_rest})
+                                       "rest": rest, "sd_rest": sd_rest, "hz_rest": hz_rest, "lo": lo, "n": n,
+                                       "level": level})
                 if len(rest):
                     # STOPPED SHORT: the cubes not yet resolved are still counted, at the size their
                     # zones ask for - an unfinished histogram is a floor on the estimate, never zero
@@ -552,6 +796,7 @@ class SizeField:
                     vols.append(np.clip(0.5 - sd_rest / e, 0.0, 1.0) * e ** 3)
                 break
             e /= 2.0
+            level += 1
             centres = (rest[:, None, :] + offsets[None, :, :] * (e / 2.0)).reshape(-1, 3)
             rest = None
         h = np.concatenate(sizes) if sizes else np.zeros(0)
@@ -570,20 +815,71 @@ COUNTED_ONCE_RULE = "TIME-12"
 HOLD_MAX_CUBES = 12_000_000
 
 
+class _Scope(threading.local):
+    """One thread's sizing (sizing()): how deep, its counting processes, the last field's surface distances."""
+
+    depth = 0
+    pool: _Pool | None = None
+    dists: dict | None = None
+
+
+_SCOPES = _Scope()
+
+
+def _scope() -> _Scope:
+    return _SCOPES
+
+
+@contextmanager
+def sizing():
+    """TIME-12: ONE SIZING'S PASSES SHARE what does not change between them: the counting processes (started once,
+    each told the next pass's zones - it was 8 new processes for every count, each loading the field from nothing)
+    and the surface distances (the whole surface, and every set of triangles a group measures, kept from the last
+    field). Nested, the outermost one ends them. The answers are the same to the bit."""
+    scope = _scope()
+    scope.depth += 1
+    try:
+        yield
+    finally:
+        scope.depth -= 1
+        if scope.depth == 0:
+            pool, scope.pool, scope.dists = scope.pool, None, None
+            if pool is not None:
+                pool.close()
+
+
 class _LazyPool:
-    """A _Pool started when a level is first measured on it (a count answered from what it holds starts none)."""
+    """A _Pool started when a level is first measured on it (a count answered from what it holds starts none);
+    within sizing(), the sizing's own processes, told this field."""
 
     def __init__(self, spec, n: int):
         self.spec, self.n = spec, int(n)
         self.pool: _Pool | None = None
+        self.shared = False
 
     def get(self) -> _Pool:
         if self.pool is None:
-            self.pool = _Pool(self.spec, self.n)
+            scope = _scope()
+            if scope.depth and scope.pool is not None and scope.pool.n == self.n:
+                scope.pool.init(self.spec)
+                self.pool, self.shared = scope.pool, True
+            else:
+                self.pool = _Pool(self.spec, self.n)
+                if scope.depth:
+                    if scope.pool is not None:
+                        scope.pool.close()
+                    scope.pool, self.shared = self.pool, True
         return self.pool
 
-    def close(self) -> None:
-        if self.pool is not None:
+    def close(self, failed: bool = False) -> None:
+        if self.pool is None:
+            return
+        if self.shared and failed:
+            scope = _scope()
+            if scope.pool is self.pool:
+                scope.pool = None        # a pool a count failed on is not told another field
+            self.pool.close()
+        elif not self.shared:
             self.pool.close()
 
 
@@ -600,15 +896,33 @@ class _Pool:
     answer (pickles over the child's pipes), so no pipe fills while another waits."""
 
     def __init__(self, spec, n: int):
-        import pickle
         import subprocess
         import sys
+        from concurrent.futures import ThreadPoolExecutor
 
         self.n = int(n)
+        self._threads: ThreadPoolExecutor | None = None
+        self._sent: dict | None = None
         self.procs = [subprocess.Popen([sys.executable, "-m", "meshpipeline.engines.fea_size_field"],
                                        stdin=subprocess.PIPE, stdout=subprocess.PIPE) for _ in range(self.n)]
+        self.init(spec)
+
+    def init_message(self, spec) -> tuple:
+        """What tells the children this field: the zones, and the surface only when it is not the one they hold
+        (TIME-12: a sizing's passes share one surface; it was sent to every child for every pass)."""
+        surf, sent = spec[0], self._sent
+        if sent is not None and all(surf[k] is sent[k] for k in ("xyz", "tris", "label")) \
+                and surf["names"] == sent["names"]:
+            return ("init", (None, *spec[1:]))
+        self._sent = surf
+        return ("init", spec)
+
+    def init(self, spec) -> None:
+        """Each child builds this field (a child told a new one keeps the last one's surface distances)."""
+        import pickle
+        data = pickle.dumps(self.init_message(spec), protocol=pickle.HIGHEST_PROTOCOL)
         for proc in self.procs:
-            pickle.dump(("init", spec), proc.stdin, protocol=pickle.HIGHEST_PROTOCOL)  # type: ignore[arg-type]
+            proc.stdin.write(data)  # type: ignore[union-attr]
             proc.stdin.flush()  # type: ignore[union-attr]
 
     def _ask(self, proc, job):
@@ -630,12 +944,17 @@ class _Pool:
             for i in range(k, len(chunks), self.n):
                 out[i] = self._ask(proc, (what, chunks[i], r))
 
-        with ThreadPoolExecutor(max_workers=self.n) as ex:
-            list(ex.map(run, range(self.n)))
+        # one set of threads for the pool's life (TIME-12): they only wait on the children's pipes
+        if self._threads is None:
+            self._threads = ThreadPoolExecutor(max_workers=self.n)
+        list(self._threads.map(run, range(self.n)))
         return out
 
     def close(self) -> None:
         import pickle
+        if self._threads is not None:
+            self._threads.shutdown(wait=True)
+            self._threads = None
         for proc in self.procs:
             try:
                 pickle.dump(("stop", None), proc.stdin)  # type: ignore[arg-type]
@@ -650,8 +969,9 @@ class _Pool:
 
 
 def _serve() -> None:
-    """A child of _Pool: build the field once, then answer each slice until told to stop. Its answers go
-    on a private copy of stdout; anything else written to stdout goes to stderr."""
+    """A child of _Pool: build the field, then answer each slice until told to stop (told a new field within a sizing,
+    it builds that one, keeping the last one's surface distances). Its answers go on a private copy of stdout;
+    anything else written to stdout goes to stderr."""
     import os
     import pickle
     import sys
@@ -659,7 +979,9 @@ def _serve() -> None:
 
     out = os.fdopen(os.dup(1), "wb")
     os.dup2(2, 1)
+    _scope().depth = 1                  # the child lives for one pool: its fields share their surface distances
     field: SizeField | None = None
+    held: dict | None = None            # the surface it was last sent (a pass told only its zones keeps it)
     src = sys.stdin.buffer
     while True:
         try:
@@ -671,6 +993,9 @@ def _serve() -> None:
         try:
             if what == "init":
                 surf, zones, growth, scale = arg
+                surf = held = held if surf is None else surf
+                assert surf is not None
+                field = None            # the last field goes first (its surface distances stay, in the scope)
                 field = SizeField(SimpleNamespace(**surf), zones, growth=growth, scale_to_m=scale)
                 continue
             assert field is not None
@@ -720,7 +1045,7 @@ def surface_share(t: float, h: float, per_h3: float) -> float:
     return max(SURFACE_PER_AREA, slab)
 
 
-__all__ = ["Histogram", "SizeField", "elements", "group_zones"]
+__all__ = ["Histogram", "SizeField", "elements", "group_zones", "sizing"]
 
 
 if __name__ == "__main__":
