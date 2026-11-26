@@ -37,6 +37,8 @@ STAGES: dict[str, tuple[str, str]] = {
     "balancing":    ("check",   "Finishing up"),
     "splitting":    ("machine", "Splitting the work across processors"),
     "joining":      ("machine", "Joining the pieces back together"),
+    # RUN-10: the faster machine could not be started, so the run went to the standard one (cloud_run_client)
+    "machine_fallback": ("machine", "The faster machine was not available, so it meshes on the standard one"),
     "patches":      ("export",  "Naming the boundaries"),
     "checking":     ("check",   "Checking the cells"),
     "returning":    ("export",  "Sending the finished mesh back"),
@@ -96,15 +98,13 @@ def stage_words(key: str) -> tuple[str, str]:
 
 
 def machine_words(machine: dict | None) -> str:
-    """The machine sentence: "Meshing on a large machine (256 GB)", from the run's machine decision
-    (contracts/mesh_machine). Its name and route are internal; its size is what the user can weigh."""
-    m = machine or {}
-    try:
-        gib = float(m.get("memory_gib") or 0)
-    except (TypeError, ValueError):
-        gib = 0.0
-    size = f" ({gib:.0f} GB)" if gib > 0 else ""
-    return f"Meshing on a large machine{size}" if m.get("where") == "gce" else f"Meshing on a mesh machine{size}"
+    """The machine sentence: "Meshing on a 32-core machine", from the run's machine decision
+    (contracts/mesh_machine; RUN-10: a big FEA mesh is sent to more cores, so the cores are what the user can weigh).
+    Its name and route are internal."""
+    from meshpipeline.contracts.mesh_machine import cpus_of
+    n = cpus_of(machine)
+    article = "an" if str(n).startswith("8") or n in (11, 18) else "a"
+    return f"Meshing on {article} {n}-core machine"
 
 
 def still_words(words: str, elapsed_s: float) -> str:

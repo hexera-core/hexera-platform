@@ -1780,6 +1780,20 @@ FILL_RATES: dict[str, float] = {"simple": 1500.0, "moderate": 1100.0, "complex":
 #: machine their plan names: simple 1,650, moderate 2,490, complex 1,929), said beside the slow rate's upper end. A
 #: pass the ladder repeats takes longer; the stage says so.
 FEA_USUAL_FILL_RATES: dict[str, float] = {"simple": 1650.0, "moderate": 2400.0, "complex": 1900.0}
+#: RUN-10: THE RATES ABOVE ARE AN 8-CORE MACHINE'S (the lab VMs, the Cloud Run job). The time the plan step shows for a
+#: machine with more cores is shorter by (cores / FILL_RATE_CPUS) ** CORE_SPEEDUP_EXPONENT: less than linear, since the
+#: surface workers (MESH-23) split almost evenly but the HXT fill (MESH-25) and the deck writers do not. Measured (26 Nov)
+#: on the owner's 857,000-element solid: 41 minutes on the 8-core job, 14.6 on 16 laptop threads; to be measured on the
+#: 32-core VM. Only the SHOWN time: a pass's own budget (LAD-fea-15) stays at the 8-core rate, so no pass is ever cut
+#: sooner on a guessed speed-up.
+FILL_RATE_CPUS = 8
+CORE_SPEEDUP_EXPONENT = 0.5
+
+
+def rate_on(rate: float, machine: dict | None) -> float:
+    """A fill rate measured on FILL_RATE_CPUS cores, on the cores of `machine` (a mesh_machine decision)."""
+    from meshpipeline.contracts import mesh_machine as MM
+    return float(rate) * (max(1, MM.cpus_of(machine)) / FILL_RATE_CPUS) ** CORE_SPEEDUP_EXPONENT
 #: the class boundaries (CAD faces, hot spots); any micro detail makes a part complex
 SIMPLE_FACES, SIMPLE_SPOTS = 40, 20
 COMPLEX_FACES, COMPLEX_SPOTS = 200, 100
@@ -2300,6 +2314,21 @@ def _clear_outputs(ws: Path) -> None:
     BF.clear(ws)            # the last pass's record of kept files and its stand-ins (RUN-7)
 
 
+def _fell_back(ws: Path, job_id: str, n: int, machine: dict, result) -> dict:
+    """RUN-10: the machine a pass REALLY ran on. A VM that could not be started for a plan that fits the Cloud Run
+    mesh job ran there instead (adapters/mesh_execution, mesh_machine.fallback): its decision becomes the pass's, in
+    the workspace and the why record, so what follows (RUN-5's move off the job's wall, the record) reads where it
+    ran. Any other result leaves the machine as it was."""
+    from meshpipeline.contracts import mesh_machine as MM
+    ran = (result or {}).get("ran_on") if isinstance(result, dict) else None
+    if not isinstance(ran, dict) or ran.get("why") != "vm_unavailable" or machine.get("where") != "gce":
+        return machine
+    MM.write(ws, ran)
+    _cite(job_id, [{"stage": "fea_machine", "decided": "fell back", "value": "cloud_run", "rule": "RUN-10",
+                    "inputs": {"pass": n, "from": machine.get("machine")}, "words": str(ran.get("words") or "")}])
+    return dict(ran)
+
+
 async def _native(ws: Path, machine: dict, work: dict, job_id: str, n: int, run,
                   publish=None, of: int | None = None, *, escalate: bool = True) -> tuple[dict, dict, dict]:
     """One native pass on `machine`: RUN-3 (out of memory: one machine up) and RUN-5 (still working at
@@ -2311,6 +2340,7 @@ async def _native(ws: Path, machine: dict, work: dict, job_id: str, n: int, run,
 
     while True:
         result = await _relayed_mesh(publish, ws, seq=900 + n, timeout=work["ceiling_s"], of=of)
+        machine = _fell_back(ws, job_id, n, machine, result)
         if not escalate:
             return result, machine, work
         if _out_of_memory(result):
@@ -3095,13 +3125,18 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
                                                                                  "workspace_gib", "memory_gib")}
                             | {"pass": n}, "words": machine["words"]}])
             # RUN-5: AND BY TIME - a plan planned to pass the Cloud Run job's wall runs on a VM from the
-            # start, so it is never stopped by a limit it would only meet because of where it ran
-            timed = MM.for_time(machine, planned_s=planned_seconds(plan, rate), wall_s=ceiling_for(run))
+            # start, so it is never stopped by a limit it would only meet because of where it ran; RUN-10: AND FOR
+            # SPEED - a big plan runs on more cores (mesh_machine.SPEED_ELEMENTS / SPEED_MACHINE_NAME)
+            planned_n = float((plan.get("estimate") or {}).get("elements") or 0)
+            timed = MM.for_time(machine, planned_s=planned_seconds(plan, rate), wall_s=ceiling_for(run),
+                                elements=planned_n)
             if timed is not machine:
                 machine = timed
                 _cite(job_id, [{"stage": "fea_machine", "decided": "gce", "value": machine["machine"],
-                                "rule": "RUN-5", "inputs": {"pass": n, "planned_s": planned_seconds(plan, rate),
-                                                            "wall_s": ceiling_for(run)},
+                                "rule": "RUN-10" if machine.get("why") == "speed" else "RUN-5",
+                                "inputs": {"pass": n, "planned_s": planned_seconds(plan, rate),
+                                           "wall_s": ceiling_for(run), "elements": int(planned_n),
+                                           "cpus": MM.cpus_of(machine)},
                                 "words": machine["words"]}])
             MM.write(ws, machine)
             # PLAN-fea-13 / LAD-fea-15: watched for progress, and given the time its estimate allows (BUDGET_FACTOR
@@ -3130,6 +3165,7 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
                 result = await _relayed_mesh(publish, ws, seq=n * 10 + runs_here,
                                              timeout=work.get("wall_s") or work["ceiling_s"],
                                              of=int((plan.get("estimate") or {}).get("elements") or 0) or None)
+                machine = _fell_back(ws, job_id, n, machine, result)
                 if _out_of_memory(result):
                     # RUN-3: OUT OF MEMORY -> THE SAME PLAN ONE MACHINE UP (no lever, no coarsening, no
                     # re-plan), sized from the peak seen when there is one, up to the largest machine
@@ -3462,7 +3498,7 @@ def driver_for(state):
     return drive if applies(state) else None
 
 
-__all__ = ["shell_run_limits", "shell_env", "FEA_USUAL_FILL_RATES", "kept_plans", "memory_measured", "size_choice", "MIXED_GATE", "SHELL_RUN_LIMIT_S", "mesh_as_of", "shell_pass", "connection_of", "element_target", "target_plan", "prepare_assembly", "restage_tied", "BYTES_PER_ELEMENT", "MESH_JOB_MEMORY_GIB", "limit_facts", "memory_elements", "FILL_RATES", "FLOOR_STEPS", "WORKSPACE_BYTES_PER_ELEMENT", "memory_need", "MESH_JOB_LIMIT_S", "VM_CEILING_S", "attempt_left_s", "ceiling_for", "planned_seconds", "choose_plan",
+__all__ = ["rate_on", "FILL_RATE_CPUS", "CORE_SPEEDUP_EXPONENT", "shell_run_limits", "shell_env", "FEA_USUAL_FILL_RATES", "kept_plans", "memory_measured", "size_choice", "MIXED_GATE", "SHELL_RUN_LIMIT_S", "mesh_as_of", "shell_pass", "connection_of", "element_target", "target_plan", "prepare_assembly", "restage_tied", "BYTES_PER_ELEMENT", "MESH_JOB_MEMORY_GIB", "limit_facts", "memory_elements", "FILL_RATES", "FLOOR_STEPS", "WORKSPACE_BYTES_PER_ELEMENT", "memory_need", "MESH_JOB_LIMIT_S", "VM_CEILING_S", "attempt_left_s", "ceiling_for", "planned_seconds", "choose_plan",
            "complexity", "element_limit", "fill_rate", "watchdog_words", "BUILD_FAILED", "GUARD_TRIP", "NO_SOURCE", "QUALITY_GATE", "applies", "drive",
            "driver_for", "SOLIDIFY_LIMIT_S", "SOLIDIFY_RULE", "solidify_unfinished_words",
            "NOT_RUN", "NOT_RUN_GATE", "not_run", "not_run_words", "ladder_facts", "ladder_words", "make_plan", "measure_staged", "planned_work", "write_plan"]

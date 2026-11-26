@@ -84,8 +84,12 @@ def test_a_tenfold_plan_says_the_bigger_machine_and_the_time(monkeypatch):
     got = PO.requirements_cost(record, None, 0.43, before=before, asked=MR.section("none"), part_sizes=None)
     process, files = FD.memory_need(11_700_000)
     machine = MM.choose(process_gib=process, workspace_gib=files)
-    assert got["after"]["machine"] == machine["machine"] and got["bigger_machine"]
-    assert got["after"]["minutes"] == 195                     # 11.7M at the complex class's 1,000 a second
-    assert got["after"]["budget_minutes"] == 975              # LAD-fea-15: five times that (the run's 58,542 s)
-    assert got["words"] == ("That takes the mesh from about 1.0 million to about 12 million elements, on a larger "
-                            f"machine ({machine['memory_gib']:g} GB), usually about 1.7 hours, up to 3.2 hours.")
+    assert machine["machine"] == "n2-highmem-16"              # by memory alone; RUN-10 sends it to 32 cores
+    assert got["after"]["machine"] == "n2-highmem-32" and got["after"]["cpus"] == 32
+    # the 1 M plan before it was already on the 32 cores (RUN-10): the requirements need no bigger machine
+    assert got["before"]["machine"] == "n2-highmem-32" and not got["bigger_machine"]
+    # 11.7M at the complex class's 1,000 a second on 8 cores, twice that on 32 ((32/8) ** 0.5)
+    assert got["after"]["minutes"] == 98
+    assert got["after"]["budget_minutes"] == 975              # LAD-fea-15: five times the 8-core time, never less
+    assert got["words"] == ("That takes the mesh from about 1.0 million to about 12 million elements, on a 32-core "
+                            "machine, usually about 52 minutes, up to 1.6 hours.")

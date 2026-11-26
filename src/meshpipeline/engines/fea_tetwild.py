@@ -1351,6 +1351,11 @@ def rung_machine(elements: float, gmsh_gib: float, files_gib: float, *, margin: 
     else:
         fits = next((m for m in MM.MACHINES if need(m.cpus) <= MM.usable_gib(m)), MM.CEILING)
         decision = MM.choose(process_gib=need(fits.cpus), workspace_gib=files_gib, why="fTetWild memory model")
+    if float(elements) >= MM.SPEED_ELEMENTS:
+        # RUN-10: a big pass on at least the speed machine's cores, when its memory holds fTetWild's parts at that many
+        sped, fast = MM.for_time(decision, planned_s=None, wall_s=0.0, elements=float(elements)), MM.speed_machine()
+        if sped is not decision and need(fast.cpus) <= MM.usable_gib(fast):
+            decision = {**sped, "process_gib": round(need(fast.cpus), 2), "need_gib": round(need(fast.cpus), 2)}
     cpus = int(decision.get("cpus") or CLOUD_RUN_CPUS)
     decision["ftetwild"] = {"rule": MEMORY_RULE, "elements": int(max(0.0, float(elements))), "workers": cpus,
                             "ftetwild_gib": round(float(margin) * ftetwild_gib(elements, cpus), 2),

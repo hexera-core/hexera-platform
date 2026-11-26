@@ -50,7 +50,7 @@ LEAKY = [
 
 PLAIN = [
     "Filling the volume",
-    "Meshing on a large machine (256 GB)",
+    "Meshing on a 32-core machine",
     "The 26 fillets and 3 holes carry the stress, so they get the finest cells.",
     "Two parts sit 0.2 mm apart, which reads as a weld. Joining them.",
     "Quality looks good: worst element 0.25, every wall at least 2 cells thick.",
@@ -103,11 +103,14 @@ def test_an_unknown_stage_still_narrates_and_never_as_its_label():
     assert N.stage_words("brand_new_phase") == N.UNKNOWN_STAGE
 
 
-def test_the_machine_is_told_by_its_size_never_its_name():
+def test_the_machine_is_told_by_its_cores_never_its_name():
+    # RUN-10: a big FEA mesh goes to more cores, so the cores are what the line names
     assert N.machine_words({"where": "gce", "machine": "n2-highmem-32", "memory_gib": 256}) == \
-        "Meshing on a large machine (256 GB)"
-    assert N.machine_words({"where": "cloud_run", "memory_gib": 32}) == "Meshing on a mesh machine (32 GB)"
-    assert N.machine_words(None) == "Meshing on a mesh machine"
+        "Meshing on a 32-core machine"
+    assert N.machine_words({"where": "gce", "machine": "n2-highmem-16", "memory_gib": 128}) == \
+        "Meshing on a 16-core machine"
+    assert N.machine_words({"where": "cloud_run", "memory_gib": 32}) == "Meshing on an 8-core machine"
+    assert N.machine_words(None) == "Meshing on an 8-core machine"
     assert "n2" not in N.machine_words({"where": "gce", "machine": "n2-highmem-32", "memory_gib": 256})
 
 
@@ -228,7 +231,7 @@ def test_an_fea_pass_says_its_plan_its_machine_and_starts_the_mesh():
     machine = {"where": "gce", "machine": "n2-highmem-32", "memory_gib": 256}
     asyncio.run(FD._narrate_pass(rec, n=1, first=True, plan=plan, levers=[], machine=machine, budget_s=7200))
     assert [s["kind"] for s in rec.said] == ["say", "machine"]
-    assert rec.said[1]["text"] == "Meshing on a large machine (256 GB)"
+    assert rec.said[1]["text"] == "Meshing on a 32-core machine"
     assert rec.meshing == [(FD.ENGINE, 7200, "meshing:fea:1")]
     rec2 = _Rec()
     asyncio.run(FD._narrate_pass(rec2, n=2, first=False, plan=plan, levers=[{"words": "the sizes grow more gently."}],

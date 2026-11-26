@@ -97,20 +97,32 @@ def row(record: dict, plan: dict, key: str) -> dict:
 
     est = int((plan.get("estimate") or {}).get("elements") or 0)
     process, files = FD.memory_need(float(est))
-    machine = MM.choose(process_gib=process, workspace_gib=files, why="memory model")
+    memory = MM.choose(process_gib=process, workspace_gib=files, why="memory model")
     rate, cls = FD.fill_rate(record)
-    secs = FD.planned_seconds(plan, rate) or 0.0
-    usual = FD.planned_seconds(plan, FD.FEA_USUAL_FILL_RATES[cls]) or 0.0
+    # THE MACHINE THE RUN WILL USE, decided as the run decides it (fea_driver.drive): memory (RUN-1), time (RUN-5)
+    # and speed (RUN-10: a big plan on more cores) - and its time at THAT machine's cores (fea_driver.rate_on)
+    machine = MM.for_time(memory, planned_s=FD.planned_seconds(plan, rate), wall_s=FD.ceiling_for(None),
+                          elements=float(est))
+    secs = FD.planned_seconds(plan, FD.rate_on(rate, machine)) or 0.0
+    usual = FD.planned_seconds(plan, FD.rate_on(FD.FEA_USUAL_FILL_RATES[cls], machine)) or 0.0
     shorts = [z for z in plan.get("zones") or [] if z.get("short")]
     kinds = sorted({str(z["kind"]) for z in shorts})
     return {"key": key, "elements": est, "at_least": bool((plan.get("estimate") or {}).get("at_least")),
-            "where": machine["where"], "machine": machine.get("machine"),
-            "need_gib": round(float(machine.get("need_gib") or process), 1),
+            "where": machine["where"], "machine": machine.get("machine"), "cpus": MM.cpus_of(machine),
+            "need_gib": round(float(memory.get("need_gib") or process), 1),
             "memory_gib": float(machine.get("memory_gib") or 0.0),
-            "standard": machine["where"] != "gce", "minutes": int(math.ceil(secs / 60.0)),
+            # `standard`: it runs on the standard machine; `fits_standard`: its MEMORY fits it (PLAN-fea-22's choice
+            # is about memory - a plan sent to more cores for speed alone is no reason to offer a quicker mesh)
+            "standard": machine["where"] != "gce", "fits_standard": memory["where"] != "gce",
+            "minutes": int(math.ceil(secs / 60.0)),
             "usual_minutes": int(math.ceil(usual / 60.0)),
             "short_kinds": kinds, "short_zones": len(shorts), "short": list(plan.get("resolution_short") or [])[:6],
             "at_minimums": bool((plan.get("coarsened") or {}).get("at_minimums"))}
+
+
+def _fits(r: dict) -> bool:
+    """Whether a row's MEMORY fits the standard machine (a row kept from before RUN-10 has only `standard`)."""
+    return bool(r.get("fits_standard", r.get("standard")))
 
 
 def decide(record: dict, full_plan: dict, quicker_plan) -> tuple[dict, dict | None]:
@@ -120,12 +132,12 @@ def decide(record: dict, full_plan: dict, quicker_plan) -> tuple[dict, dict | No
     full = row(record, full_plan, FULL)
     out: dict = {"version": VERSION, "rule": "PLAN-fea-22", "full": full, "quicker": None, "choice": False,
                  "recommended": FULL}
-    if full["standard"]:
+    if _fits(full):
         out["why"] = "The full-rules mesh fits the standard machine: there is nothing to choose."
         return out, None
     qplan = quicker_plan() if callable(quicker_plan) else quicker_plan
     quick = row(record, qplan, QUICKER)
-    if not quick["standard"] or quick["at_minimums"]:
+    if not _fits(quick) or quick["at_minimums"]:
         out["why"] = ("Even with every zone at its validity minimum the mesh needs more than the standard machine, "
                       "so there is no quicker mesh: the full-rules one is made.")
         return out, qplan
@@ -139,13 +151,13 @@ def decide(record: dict, full_plan: dict, quicker_plan) -> tuple[dict, dict | No
         out.update(recommended=QUICKER,
                    why=(f"The quicker mesh coarsens only {_kinds_words(quick['short_kinds'])}. Every wall keeps its "
                         "elements through it and every fillet, hole and notch its rule size, so the stresses you "
-                        f"read are the same - {quick_time} on the standard machine instead of "
-                        f"{full_time} on a {full['memory_gib']:g} GiB one."))
+                        f"read are the same - {quick_time} {_machine_words(quick)} instead of "
+                        f"{full_time} {_machine_words(full)}."))
     else:
         out.update(recommended=FULL,
                    why=(f"The quicker mesh would leave {_kinds_words(gave_up)} short of their rules "
-                        f"({quick['short_zones']} zones). The full-rules mesh keeps them, on a {full['memory_gib']:g} "
-                        f"GiB machine, {full_time}."))
+                        f"({quick['short_zones']} zones). The full-rules mesh keeps them, {_machine_words(full)}, "
+                        f"{full_time}."))
     return out, qplan
 
 
@@ -177,25 +189,23 @@ def _count_words(n: int) -> str:
 
 
 def _machine_words(r: dict) -> str:
-    return "on the standard machine" if r.get("standard") else \
-        f"on a larger machine ({float(r.get('memory_gib') or 0.0):g} GB)"
+    """Where a row runs, as the run's live line says it (contracts/narration.machine_words): by its cores (RUN-10)."""
+    if r.get("standard"):
+        return "on the standard machine"
+    if r.get("cpus"):
+        return f"on a {int(r['cpus'])}-core machine"
+    return f"on a larger machine ({float(r.get('memory_gib') or 0.0):g} GB)"
 
 
 def _costed(record: dict, plan: dict, key: str) -> dict:
     """row() for the plan step: its machine also by time (RUN-5, contracts/mesh_machine.for_time, as the run decides
     it), and the pass's own time limit (LAD-fea-15, fea_driver.pass_work)."""
-    from meshpipeline.contracts import mesh_machine as MM
     from meshpipeline.engines import fea_driver as FD
 
-    r = row(record, plan, key)
-    process, files = FD.memory_need(float(r["elements"]))
-    machine = MM.choose(process_gib=process, workspace_gib=files, why="memory model")
+    r = row(record, plan, key)                       # its machine already as the run decides it (RUN-1/5/10)
     rate, cls = FD.fill_rate(record)
-    machine = MM.for_time(machine, planned_s=FD.planned_seconds(plan, rate), wall_s=FD.ceiling_for(None))
-    work = FD.pass_work(plan, rate=rate, cls=cls, machine=machine)
-    r.update(where=machine["where"], machine=machine.get("machine"), standard=machine["where"] != "gce",
-             memory_gib=float(machine.get("memory_gib") or r.get("memory_gib") or 0.0),
-             budget_minutes=int(math.ceil(float(work["ceiling_s"]) / 60.0)))
+    work = FD.pass_work(plan, rate=rate, cls=cls, machine={"where": r["where"], "machine": r["machine"]})
+    r.update(budget_minutes=int(math.ceil(float(work["ceiling_s"]) / 60.0)))
     return r
 
 
