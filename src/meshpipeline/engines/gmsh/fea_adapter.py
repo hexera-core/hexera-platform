@@ -1758,9 +1758,11 @@ SHORT_HELD = ("elements_under_floor", "fea_min_scaled_jacobian", "fea_max_jacobi
 #: meshed again as drawn only when it has at most this many elements - the second mesh costs about as long as the first
 #: (the as-drawn mesh differs from it only round the sized edges), and above this that is an hour or more thrown away
 #: half the time (a cast knuckle, 25 Nov: 10.0M elements built and written in 78 minutes, then a second full mesh of
-#: the same part started). An invalid or unbuilt sized mesh is meshed again as drawn at any size: that is no
-#: comparison but the part's only other way to a mesh.
-SHORT_COMPARE_MAX_ELEMENTS = 1_000_000
+#: the same part started). Rulebook 98: 150,000, not 1,000,000 - on the C5 knuckle (26 Nov) the second mesh added
+#: 36% ("3 mm overall", 367k elements) and 44% (and "finer at the holes", 728k) to the run, and the owner's
+#: 841k and 857k runs took 29 and 41 minutes against 14 for a 1M mesh built once. An invalid or unbuilt sized mesh
+#: is meshed again as drawn at any size: that is no comparison but the part's only other way to a mesh.
+SHORT_COMPARE_MAX_ELEMENTS = 150_000
 
 
 def _short_score(q: dict) -> tuple[int, float]:
