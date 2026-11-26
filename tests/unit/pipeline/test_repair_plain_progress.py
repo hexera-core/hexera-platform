@@ -354,6 +354,8 @@ def test_the_relay_publishes_typed_events_from_the_engines_thread(monkeypatch):
         ("repairing", "Couldn't fix this one — left as is", "left_as_is", "closed_periodic_face"),
         ("verifying", "Checking the repaired part", None, None)]
     _assert_plain(s["text"] for s in said)
+    # the engine's "Fixed" carries no number; the lane gives it the problem in hand (found live)
+    assert said[2]["problem_index"] == 1
 
 
 def test_the_wire_is_flat_for_the_console_and_nested_for_the_contract():

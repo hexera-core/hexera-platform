@@ -116,6 +116,7 @@ class ProgressMapper:
     _current: str | None = None
     _current_fixed: bool = False
     _last: tuple | None = None
+    _ready_index: int | None = None
 
     def feed(self, event: Mapping[str, Any]) -> list[dict]:
         try:
@@ -219,12 +220,15 @@ class ProgressMapper:
             return [progress(CHECKING, found_line(total) if total is not None else CHECKING_TEXT,
                              total=total)]
         if stage == REPAIRING:
-            if status == "fixed":
-                return [progress(REPAIRING, FIXED_TEXT, index=index, total=self.total, kind=kind,
-                                 result="fixed")]
-            if status in ("not_fixed", "left_as_is"):
-                return [progress(REPAIRING, NOT_FIXED_TEXT, index=index, total=self.total,
-                                 kind=kind, result=status)]
+            if status in ("fixed", "not_fixed", "left_as_is"):
+                # A RESULT LINE ends the turn of the problem in hand: the engine does not repeat
+                # its number, so the lane carries the one it took up (found on the slug)
+                index = index if index is not None else self._ready_index
+                text = FIXED_TEXT if status == "fixed" else NOT_FIXED_TEXT
+                return [progress(REPAIRING, text, index=index, total=self.total, kind=kind,
+                                 result=status)]
+            if index is not None:
+                self._ready_index = index
             return [progress(REPAIRING, repairing_line(kind, index, self.total), index=index,
                              total=self.total, kind=kind)]
         if stage == BROADER:
