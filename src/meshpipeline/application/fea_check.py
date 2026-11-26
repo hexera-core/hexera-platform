@@ -467,6 +467,9 @@ RETRY_WORDS = "A retry can take longer."
 def _machine_words(row: dict) -> str:
     if row.get("standard"):
         return "the standard machine"
+    if isinstance(row.get("cores"), int) and row["cores"] > 0:
+        from meshpipeline.contracts import mesh_machine as MM
+        return MM.phrase(row)                          # RUN-10: as the run's live line says it
     cpus = row.get("cpus")
     if isinstance(cpus, int) and cpus > 0:
         return f"a {cpus}-core machine"                # RUN-10: as the run's live line says it

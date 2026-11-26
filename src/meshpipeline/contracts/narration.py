@@ -39,6 +39,8 @@ STAGES: dict[str, tuple[str, str]] = {
     "joining":      ("machine", "Joining the pieces back together"),
     # RUN-10: the faster machine could not be started, so the run went to the standard one (cloud_run_client)
     "machine_fallback": ("machine", "The faster machine was not available, so it meshes on the standard one"),
+    # RUN-10: the fastest machine could not be started, so the run went to the next fast one (cloud_run_client)
+    "machine_fallback_vm": ("machine", "The fastest machine was not available, so it meshes on another fast one"),
     "patches":      ("export",  "Naming the boundaries"),
     "checking":     ("check",   "Checking the cells"),
     "returning":    ("export",  "Sending the finished mesh back"),
@@ -98,13 +100,11 @@ def stage_words(key: str) -> tuple[str, str]:
 
 
 def machine_words(machine: dict | None) -> str:
-    """The machine sentence: "Meshing on a 32-core machine", from the run's machine decision
-    (contracts/mesh_machine; RUN-10: a big FEA mesh is sent to more cores, so the cores are what the user can weigh).
-    Its name and route are internal."""
-    from meshpipeline.contracts.mesh_machine import cpus_of
-    n = cpus_of(machine)
-    article = "an" if str(n).startswith("8") or n in (11, 18) else "a"
-    return f"Meshing on {article} {n}-core machine"
+    """The machine sentence: "Meshing on a faster machine (16 cores)", from the run's machine decision
+    (contracts/mesh_machine.phrase; RUN-10: a big FEA mesh is sent to a faster machine, so its cores are what the user
+    can weigh). Its name and route are internal."""
+    from meshpipeline.contracts.mesh_machine import phrase
+    return f"Meshing on {phrase(machine)}"
 
 
 def still_words(words: str, elapsed_s: float) -> str:

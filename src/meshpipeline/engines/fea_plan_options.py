@@ -109,6 +109,7 @@ def row(record: dict, plan: dict, key: str) -> dict:
     kinds = sorted({str(z["kind"]) for z in shorts})
     return {"key": key, "elements": est, "at_least": bool((plan.get("estimate") or {}).get("at_least")),
             "where": machine["where"], "machine": machine.get("machine"), "cpus": MM.cpus_of(machine),
+            "cores": MM.cores_of(machine), "why": machine.get("why"),
             "need_gib": round(float(memory.get("need_gib") or process), 1),
             "memory_gib": float(machine.get("memory_gib") or 0.0),
             # `standard`: it runs on the standard machine; `fits_standard`: its MEMORY fits it (PLAN-fea-22's choice
@@ -192,8 +193,11 @@ def _machine_words(r: dict) -> str:
     """Where a row runs, as the run's live line says it (contracts/narration.machine_words): by its cores (RUN-10)."""
     if r.get("standard"):
         return "on the standard machine"
+    if r.get("cores"):
+        from meshpipeline.contracts import mesh_machine as MM
+        return f"on {MM.phrase(r)}"              # RUN-10: "on a faster machine (16 cores)"
     if r.get("cpus"):
-        return f"on a {int(r['cpus'])}-core machine"
+        return f"on a {int(r['cpus'])}-core machine"   # a row kept from before its cores were told
     return f"on a larger machine ({float(r.get('memory_gib') or 0.0):g} GB)"
 
 

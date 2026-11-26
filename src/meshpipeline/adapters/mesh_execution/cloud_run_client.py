@@ -722,26 +722,30 @@ def _start_or_fall_back(on_vm: bool, bucket_name: str, in_key: str, out_key: str
     (contracts/mesh_machine.fallback) that cannot be started - no CPU quota, no such machine free in any zone, no
     permission - runs on the job instead, said on the live line: never a failed run because a bigger machine was not
     there. A request whose answer never came (SubmissionIndeterminate: the VM may exist) is never fallen back from.
-    Returns (the operation, the Cloud Run decision it fell back to or None, the timeout it was started with)."""
-    try:
-        return _start(on_vm, bucket_name, in_key, out_key, engine=engine, timeout=timeout,
-                      operation_key=operation_key, machine=machine), None, timeout
-    except SubmissionIndeterminate:
-        raise
-    except Exception as exc:  # noqa: BLE001 - only a VM that fits the job falls back; anything else is raised
-        from meshpipeline.contracts import mesh_machine
-        fell = mesh_machine.fallback(machine) if on_vm else None
-        if fell is None:
+    The speed machine has one rung more first (mesh_machine.fallback): the next fast VM, then the job.
+    Returns (the operation, the decision it fell back to or None, the timeout it was started with)."""
+    from meshpipeline.contracts import mesh_machine, mesh_progress
+    fell: dict | None = None
+    while True:
+        try:
+            return _start(on_vm, bucket_name, in_key, out_key, engine=engine, timeout=timeout,
+                          operation_key=operation_key, machine=machine), fell, timeout
+        except SubmissionIndeterminate:
             raise
-        logger.warning("mesh for %s: the %s VM could not be started (%s: %s) - it runs on the Cloud Run mesh job "
-                       "instead (RUN-10)", engine, (machine or {}).get("machine"), type(exc).__name__,
-                       str(exc)[:300])
-        from meshpipeline.contracts import mesh_progress
-        from meshpipeline.contracts.native_time import CLOUD_RUN_WALL_S
-        mesh_progress.report({"key": "machine_fallback", "label": fell["words"]})
-        capped = int(min(int(timeout), CLOUD_RUN_WALL_S))
-        return _start(False, bucket_name, in_key, out_key, engine=engine, timeout=capped,
-                      operation_key=operation_key, machine=fell), fell, capped
+        except Exception as exc:  # noqa: BLE001 - only a VM with a rung below falls back; anything else is raised
+            nxt = mesh_machine.fallback(machine) if on_vm else None
+            if nxt is None:
+                raise
+            on_vm = nxt.get("where") == "gce"
+            logger.warning("mesh for %s: the %s VM could not be started (%s: %s) - it runs on %s instead (RUN-10)",
+                           engine, (machine or {}).get("machine"), type(exc).__name__, str(exc)[:300],
+                           f"a {nxt.get('machine')} VM" if on_vm else "the Cloud Run mesh job")
+            mesh_progress.report({"key": "machine_fallback_vm" if on_vm else "machine_fallback",
+                                  "label": nxt["words"]})
+            if not on_vm:
+                from meshpipeline.contracts.native_time import CLOUD_RUN_WALL_S
+                timeout = int(min(int(timeout), CLOUD_RUN_WALL_S))
+            machine = fell = nxt
 
 
 def run_mesh_remote(workspace, *, engine: str, timeout: int, operation_key: str) -> dict:
@@ -812,9 +816,10 @@ def _exchange(workspace, *, engine: str, timeout: int, operation_key: str,
                                                            timeout=timeout, operation_key=operation_key,
                                                            machine=machine)
             if fell is not None:
-                # RUN-10: on the Cloud Run job after all - waited for, stopped and told as a job run
-                on_vm, machine, ran_on = False, fell, fell
-                wait_s = timeout + 600
+                # RUN-10: on a rung below after all (the next fast VM, or the Cloud Run job) - waited for, stopped
+                # and told as a run there
+                on_vm, machine, ran_on = fell.get("where") == "gce", fell, fell
+                wait_s = timeout + 600 + (VM_START_S if on_vm else 0)
             # a run handed to its machine is the job moving on (contracts/progress_clock); from here
             # the remote's beacon says whether it still is
             from meshpipeline.contracts import progress_clock

@@ -74,6 +74,11 @@ GMSH_THREADS = 1
 #: own). Blank = every core the job has (its CPU quota, `job_cpus`): production, where the fill may differ slightly
 #: run to run. "1" = one thread, the same mesh to the byte - for our tests and sweep tools, never production.
 MESH_GMSH_THREADS: str = optional_env("MESH_GMSH_THREADS", "")
+#: MESH-25 / MESH-23: NEVER MORE THAN THIS MANY threads for the HXT fill and surface worker processes, on any machine
+#: (a memory-picked 64-vCPU VM still uses 32). Measured 26 Nov on the owner's part on a 64-vCPU n2-highmem-64
+#: (feabench_lab/BENCH.md): the fill took 180 s on 8 threads, 106 on 16, 83 on 32 - and 238 s on 64 (1.2 to 3 times
+#: slower than 32 across the three cases: the threads then span both sockets and share cores).
+MAX_GMSH_THREADS = 32
 GMSH_RANDOM_SEED = 1
 #: The hash seed native Python children run with (vmtk's pype, the snap-grid CLI).
 PYTHON_HASH_SEED = "0"
@@ -552,7 +557,7 @@ def comparable(a: dict, b: dict) -> list[str]:
 
 
 __all__ = [
-    "GMSH_RANDOM_SEED", "GMSH_THREADS", "GUARD_TRIPS_FILE", "MESH_CFMESH_THREADS", "MESH_GMSH_THREADS",
+    "GMSH_RANDOM_SEED", "GMSH_THREADS", "GUARD_TRIPS_FILE", "MAX_GMSH_THREADS", "MESH_CFMESH_THREADS", "MESH_GMSH_THREADS",
     "MESH_DETERMINISTIC", "MESH_SNAPPY_RANKS", "MESH_THREADS", "SNAPPY_DECOMPOSITION", "STAMP_FILE",
     "clear_guard_trips", "comparable", "drain_process_guard_trips", "drain_process_notes", "drop_attempt_start", "guard_trips", "mark_attempt_start",
     "native_environment",
