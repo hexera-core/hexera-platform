@@ -190,11 +190,14 @@ export const LEGEND = [
 ];
 
 /** The result's headline: {cls: pass|notes|fail, head, sub}, from the outcome and the choice. */
-export function headlineOf(r) {
+export function headlineOf(r, { hasFile = null, meshed = null } = {}) {
   const res = r || {}, probs = res.problems || [];
   const total = probs.length, fixed = probs.filter((p) => statusOf(p) === "fixed").length;
   const only = res.choice === "standalone";
-  const after = only ? "Your repaired STEP file is ready." : "The mesh was built from the repaired part.";
+  // WHAT THE HEADLINE MAY CLAIM (slug crsv5ui, 26 Nov: a failed repair-only job said "Your repaired STEP file is
+  // ready" with no file): a file only when one was delivered, a mesh only when the run passed
+  const after = only ? (hasFile === false ? "No repaired file was kept." : "Your repaired STEP file is ready.")
+    : (meshed === false ? "" : "The mesh was built from the repaired part.");
   switch (res.outcome) {
     case "repaired":
       return { cls: "pass", head: "CAD repaired.", sub: total ? `All ${total} problem${total === 1 ? "" : "s"} fixed. ${after}` : after };
@@ -305,7 +308,9 @@ export function traceRows(r) {
     const s = statusOf(p), w = didWords(p);
     const own = s === "left_as_is" ? "it was safer to leave it than to change the part"
       : s === "not_fixed" ? "no safe repair kept the part within the allowed change" : "";
-    const reason = s === "fixed" ? "" : plainOr(p.reason_text, own);
+    // the server's reason may already start with the result ("Couldn't fix this one: ..."): said once, not twice
+    const said = String(p.reason_text || "").replace(/^\s*(couldn['’]t fix this one|left as is|not fixed)\s*[:—-]\s*/i, "");
+    const reason = s === "fixed" ? "" : plainOr(said, own);
     return { n: i + 1, id: String(p.id ?? i + 1), status: s, problem: problemName(p.type, p.type_text), did: w.did,
       result: w.result, reason };
   });

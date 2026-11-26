@@ -109,7 +109,7 @@ export function repairResultHtml(job, data) {
   return `<div class="v-bar">
       <div class="v-sec v-head rp-head">
         <p class="rr-eyebrow">CAD repair${alongside ? " · used for your mesh" : ""}</p>
-        ${verdictHtml(headlineOf(r))}
+        ${verdictHtml(headlineOf(r, { hasFile: files.some((f) => f.type === "repaired_cad"), meshed: !!data.pass }))}
         <div class="rp-keys-host">${keyNumbersHtml(repairKeyNumbers(r))}</div>
         ${flagsHtml(r)}
       </div>

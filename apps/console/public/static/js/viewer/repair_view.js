@@ -50,7 +50,7 @@ export function repairViewChrome(job, repair, { hasBefore = false, hasDeviation 
     <div class="v-legend rpv-dev" hidden>
       <span class="lg-h"><b>${esc(dl.title)}</b></span>
       <span class="scale"><span class="ticks">
-        <span style="bottom:100%">${esc(dl.allowed != null ? `${Number((dl.allowed * 1.25).toPrecision(3))} mm` : "")}</span>
+        <span style="bottom:100%">${esc(dl.allowed != null ? `over ${Number(dl.allowed.toPrecision(3))} mm` : "")}</span>
         ${dl.allowed != null ? `<span class="lim" style="bottom:80%">${esc(dl.allowedText)}</span>` : ""}
         <span style="bottom:0">0 mm</span></span>
       <span class="bar" style="background:${GRADIENT}">${dl.allowed != null ? '<i style="bottom:80%"></i>' : ""}</span></span>
