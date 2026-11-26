@@ -400,17 +400,19 @@ def _run_snappy_local(workspace, *, bashrc: str = _DEFAULT_BASHRC,
             dp = _sh("decomposePar -force", "decomposePar.log", expected=("processor0",))
             timed_out = dp.timed_out
             if dp.ok and _keep_now:
-                # SPLIT: castellation and snapping (the snapped mesh written in binary, exactly as held), the snapped
-                # mesh kept aside until this attempt's layer verdict is known, then the layers on it
+                # ONE RUN, AS ALWAYS, ITS PHASES KEPT: without -overwrite each phase's mesh lands in its own time
+                # directory (written in binary, exactly as held); the snapped one is kept aside until this attempt's
+                # layer verdict is known and the layered one becomes the mesh. A run split in two (layers added to a
+                # read-back snapped mesh) folded cells on parts the one run meshes cleanly (00058385, ENGINEER 39)
                 _key = SK.snap_key(ws)
-                with SK.stage_dict(ws, "snap", binary=True):
-                    sm = _sh(_mpi, "snappyHexMesh.log")
+                with SK.stage_dict(ws, "as_authored", binary=True):
+                    sm = _sh(_mpi.replace(" -overwrite", ""), "snappyHexMesh.log")
                 if sm.ok:
-                    kept = SK.keep(ws, nproc, _key)
+                    _promoted, kept = SK.promote_phases(ws, nproc, _key)
                     if kept:
                         reuse = {**reuse, "kept": kept}
-                    with SK.stage_dict(ws, "layers"):
-                        sm = _sh(_mpi, "snappyHexMesh.log", append=True)
+                    if not _promoted:
+                        reuse = {**reuse, "why": "the layered mesh was not where the run writes it"}
             elif dp.ok:
                 sm = _sh(_mpi, "snappyHexMesh.log")
             if reuse:

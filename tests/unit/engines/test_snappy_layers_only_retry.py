@@ -67,8 +67,16 @@ class _Fake:
             rc = self._rc.pop(0) if self._rc else 0
             if rc == 0:
                 for n in range(2):
-                    _mesh(ws / f"processor{n}" / "constant" / "polyMesh")
+                    if "-overwrite" in line:
+                        _mesh(ws / f"processor{n}" / "constant" / "polyMesh")
+                    else:                       # each phase in its own time directory
+                        for t in ("1", "2", "3"):
+                            _mesh(ws / f"processor{n}" / t / "polyMesh")
+                            (ws / f"processor{n}" / t / "polyMesh" / "phase").write_text(t)
         elif "reconstructParMesh" in line or "blockMesh" in line:
+            if "reconstructParMesh" in line:
+                ph = ws / "processor0" / "constant" / "polyMesh" / "phase"
+                self.reconstructed = ph.read_text() if ph.is_file() else None
             _mesh(ws / "constant" / "polyMesh")
 
         class _Done:
@@ -96,17 +104,18 @@ def _first_attempt(tmp_path, native, monkeypatch) -> Path:
 
 def test_an_attempt_that_may_be_retried_relative_keeps_its_snapped_mesh(tmp_path, native, monkeypatch):
     ws, fake = _first_attempt(tmp_path, native, monkeypatch)
-    # castellation and snapping first, written in binary, then the layers on that mesh
-    assert len(fake.snappy) == 2
-    (d1, c1), (d2, c2) = fake.snappy
-    assert "castellatedMesh true; snap true; addLayers false;" in d1 and "writeFormat binary;" in c1
-    assert "castellatedMesh false; snap false; addLayers true;" in d2 and "writeFormat ascii;" in c2
-    # the authored files are put back, the snapped mesh is kept with its key, no processor dir is left at the root
-    assert (ws / "system" / "snappyHexMeshDict").read_text() == _METRES
+    # ONE run as authored, its phases kept (no -overwrite), written in binary
+    assert len(fake.snappy) == 1
+    (d1, c1), = fake.snappy
+    assert d1 == _METRES and "writeFormat binary;" in c1
+    snappy_line = next(c for c in fake.calls if "snappyHexMesh" in c)
+    assert "-overwrite" not in snappy_line and "-parallel" in snappy_line
+    # the snapped phase is kept with its key, the authored controlDict is back, nothing is left at the root
     assert "writeFormat ascii;" in (ws / "system" / "controlDict").read_text()
     rec = json.loads((ws / SK.KEEP_DIR / SK.KEY_FILE).read_text())
     assert rec["nproc"] == 2 and rec["key"] == SK.snap_key(ws)
-    assert (ws / SK.KEEP_DIR / "processor1" / "constant" / "polyMesh" / "owner").is_file()
+    assert (ws / SK.KEEP_DIR / "processor1" / "constant" / "polyMesh" / "phase").read_text() == "2"
+    assert fake.reconstructed == "3", "the layered phase is the mesh reconstructParMesh joins"
     assert not list(ws.glob("processor*"))
     assert SK.read_reuse(ws)["path"] == "full" and SK.read_reuse(ws)["kept"]["bytes"] > 0
 

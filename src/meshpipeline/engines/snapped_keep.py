@@ -1,7 +1,7 @@
 # Responsibility: Keep a snappyHexMesh attempt's snapped mesh until its layer verdict is known, so the relative retry adds only the layers.
 # Owns: the kept snapped mesh beside the attempt (KEEP_DIR), its key, the layers-only plan and the record of which path ran.
 # Boundaries: files in the attempt workspaces only; it decides nothing about the stack - the gate and the ladder do (CFDREQ-33).
-# Collaborates with: engines/snappy/native (splits the run, keeps, restarts), engines/snappy/drivers (adopts it on the retry),
+# Collaborates with: engines/snappy/native (keeps the phases, restarts), engines/snappy/drivers (adopts it on the retry),
 # pipeline/executor and pipeline/graph (drop it once the attempt's choice is made), engines/return_scope (leaves it out first).
 """THE RELATIVE RETRY ADDS ONLY THE LAYERS (CFDREQ-33 amended, rulebook 116).
 
@@ -10,9 +10,11 @@ with the stack on each wall face's own cells. That retry used to rebuild the who
 258 of its 387 minutes on the 24 external parts that ran it (ENGINEER 38), and they come out the same - the retry's
 case differs from the first one only in its layer stage.
 
-So an attempt whose dictionary may be written relative on the retry runs snappyHexMesh in two parts: castellation and
-snapping, then the layers. Between them the decomposed snapped mesh (processor*/constant/polyMesh, written in binary so
-it is the mesh snappyHexMesh held in memory, digit for digit) is copied aside here. When the layer gate refuses the
+So an attempt whose dictionary may be written relative on the retry runs its one snappyHexMesh without -overwrite and
+writing binary: each phase's mesh lands in its own time directory, digit for digit the mesh snappyHexMesh held. The
+layered one becomes the attempt's mesh as before, and the decomposed snapped one (processor*/2/polyMesh) is moved aside
+here (promote_phases). The run is not split: adding the layers to a read-back snapped mesh in a second run folded
+cells on parts the one run meshes cleanly (00058385: three passes layer-fatal, ENGINEER 39). When the layer gate refuses the
 stack in metres, the retry takes it over - only when its castellation and snapping inputs are the same (snap_key) and
 it runs on the same number of ranks - and runs snappyHexMesh with castellatedMesh and snap off, addLayers on. Every
 other case, and a kept mesh that is missing, incomplete or unreadable, rebuilds in full as before; the record
@@ -77,9 +79,59 @@ def layers_on(text: str) -> bool:
 def stage_text(text: str, stage: str) -> str:
     """The dictionary for one part of the split run: "snap" (castellation and snapping, no layers) or "layers"
     (the layers only, on the mesh in constant/polyMesh). Everything else is the dictionary as authored."""
+    if stage == "as_authored":
+        return text
     words = {"snap": "castellatedMesh true; snap true; addLayers false;",
              "layers": "castellatedMesh false; snap false; addLayers true;"}[stage]
     return _SWITCHES.sub(words, text, count=1)
+
+
+def _time_dirs(proc: Path) -> list[Path]:
+    out = [p for p in proc.iterdir() if p.is_dir() and re.fullmatch(r"[0-9]+(?:\.[0-9]+)?", p.name)]
+    return sorted(out, key=lambda p: float(p.name))
+
+
+def promote_phases(workspace, nproc: int, key: str) -> tuple[bool, dict | None]:
+    """After ONE snappyHexMesh run without -overwrite (castellated, snapped and layered meshes in processor*/1, 2, 3):
+    the layered mesh becomes processor*/constant/polyMesh (what reconstructParMesh -constant reads, as before), and the
+    snapped one is kept aside (KEEP_DIR). Returns (promoted, kept record or None). Not promoted - the layered mesh is
+    not where it should be - leaves no mesh in processor*/constant, so the run fails rather than deliver the
+    background box."""
+    ws = Path(workspace)
+    t0 = time.monotonic()
+    procs = sorted(p for p in ws.glob("processor*") if p.is_dir())
+    phases = [_time_dirs(p) for p in procs]
+    whole = (len(procs) == int(nproc) and bool(procs)
+             and all(t and (t[-1] / "polyMesh" / "owner").is_file() for t in phases))
+    keepable = whole and all(len(t) == 3 and (t[1] / "polyMesh" / "owner").is_file() for t in phases)
+    drop(ws)
+    try:
+        for p, t in zip(procs, phases, strict=True):
+            shutil.rmtree(p / "constant" / "polyMesh", ignore_errors=True)
+            if whole:
+                t[-1].joinpath("polyMesh").rename(p / "constant" / "polyMesh")
+            if keepable:
+                (ws / KEEP_DIR / p.name / "constant").mkdir(parents=True, exist_ok=True)
+                t[1].joinpath("polyMesh").rename(ws / KEEP_DIR / p.name / "constant" / "polyMesh")
+            for d in t:
+                shutil.rmtree(d, ignore_errors=True)
+    except OSError:
+        logger.warning("snappy: the phase meshes could not be put in place", exc_info=True)
+        drop(ws)
+        for p in procs:
+            shutil.rmtree(p / "constant" / "polyMesh", ignore_errors=True)
+        return False, None
+    if not keepable:
+        return whole, None
+    files = _files(ws / KEEP_DIR)
+    rec = {"key": key, "nproc": int(nproc), "files": files, "bytes": int(sum(files.values())),
+           "keep_s": round(time.monotonic() - t0, 2)}
+    try:
+        (ws / KEEP_DIR / KEY_FILE).write_text(json.dumps(rec))
+    except OSError:
+        drop(ws)
+        return True, None
+    return True, {k: v for k, v in rec.items() if k != "files"}
 
 
 def snap_key(workspace) -> str:
@@ -144,30 +196,6 @@ def stage_dict(workspace, stage: str, *, binary: bool = False) -> Iterator[None]
 def _files(root: Path) -> dict[str, int]:
     return {p.relative_to(root).as_posix(): p.stat().st_size for p in sorted(root.rglob("*")) if p.is_file()
             and p.name != KEY_FILE}
-
-
-def keep(workspace, nproc: int, key: str) -> dict | None:
-    """Copy the decomposed snapped mesh aside (KEEP_DIR), replacing an older one. Never raises; None when nothing
-    was kept. The record has its bytes and the seconds the copy took."""
-    ws = Path(workspace)
-    dst = ws / KEEP_DIR
-    t0 = time.monotonic()
-    try:
-        drop(ws)
-        procs = sorted(ws.glob("processor*"))
-        if len(procs) != int(nproc) or not all((p / "constant" / "polyMesh" / "owner").is_file() for p in procs):
-            return None
-        for p in procs:
-            shutil.copytree(p / "constant" / "polyMesh", dst / p.name / "constant" / "polyMesh")
-        files = _files(dst)
-        rec = {"key": key, "nproc": int(nproc), "files": files, "bytes": int(sum(files.values())),
-               "keep_s": round(time.monotonic() - t0, 2)}
-        (dst / KEY_FILE).write_text(json.dumps(rec))
-        return {k: v for k, v in rec.items() if k != "files"}
-    except OSError:
-        logger.warning("snappy: the snapped mesh could not be kept aside", exc_info=True)
-        drop(ws)
-        return None
 
 
 def _whole(keep_dir: Path) -> dict | None:
@@ -287,6 +315,6 @@ def unpack(workspace) -> None:
     drop(ws)
 
 
-__all__ = ["KEEP_DIR", "KEY_FILE", "LAYERS_ONLY_FILE", "REUSE_FILE", "adopt", "drop", "keep", "layers_on",
+__all__ = ["KEEP_DIR", "KEY_FILE", "LAYERS_ONLY_FILE", "REUSE_FILE", "adopt", "drop", "layers_on", "promote_phases",
            "layers_only_ready", "read_reuse", "settle", "snap_key", "stage_dict", "stage_text", "unpack",
            "wants_keep", "write_reuse"]
