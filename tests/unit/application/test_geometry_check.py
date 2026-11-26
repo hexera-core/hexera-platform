@@ -405,7 +405,7 @@ def test_a_naming_that_finds_no_scout_in_time_marks_its_request_withdrawn(monkey
     store = _NamingStore({f"sessions/{sid}/geometry_check/scout.json": json.dumps({"status": "pending"}).encode(),
                           f"sessions/{sid}/geometry_check/naming.json": json.dumps({"requested_at": 1.0, "purpose_text": "a pipe"}).encode()})
     monkeypatch.setattr(object_storage, "get_object_store", lambda: store)
-    monkeypatch.setattr(gc, "NAMING_WAIT_S", 0.0)
+    # the marker carries no queue time and no limits, so the scout it would wait for is long over
     result = gc.run_geometry_naming(session_id=sid, owner_id="o1", purpose_text="a pipe")
     assert result == {"status": "pending", "named": False}
     marker = json.loads(store.objects[f"sessions/{sid}/geometry_check/naming.json"])
@@ -556,7 +556,12 @@ def test_the_worker_tasks_take_the_limits_the_time_box_reads():
         return (opts["soft_time_limit"], opts["time_limit"]) if opts else (task.soft_time_limit, task.time_limit)
     assert limits(tasks.scout_geometry) == (gc.SCOUT_SOFT_LIMIT_S, gc.SCOUT_HARD_LIMIT_S)
     assert limits(tasks.name_geometry) == (gc.NAMING_SOFT_LIMIT_S, gc.NAMING_HARD_LIMIT_S)
-    assert gc.NAMING_WAIT_S < gc.NAMING_SOFT_LIMIT_S       # the naming withdraws before the worker ends it
+    # AND THE NAMING OUTLIVES THE SCOUT IT WAITS FOR, for every file the upload takes: its first
+    # act is to wait for the scout's full reading, so a limit sized without the scout's is a wait
+    # that cannot be won (test_the_naming_waits_on_the_scout_not_its_own_clock)
+    for size in (None, 200_000, 15_883_539, 45_857_044, 215_000_000):
+        over = gc.step_limits("scout", size)[1] + gc.STALE_MARGIN_S
+        assert gc.step_limits("naming", size)[0] - gc.NAMING_LANDING_S >= over, size
 
 
 def test_a_status_write_that_breaks_still_stores_a_failed_check(tmp_path, monkeypatch):

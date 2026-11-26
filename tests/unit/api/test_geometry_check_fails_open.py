@@ -485,6 +485,87 @@ async def test_a_slow_store_read_never_stalls_the_other_requests(served):
     assert ticks >= 30, ticks
 
 
+def _preview_check() -> dict:
+    """What the scout stores the moment the part is drawn, before it is measured: no openings and
+    no confidence in what the part is (geometry_check.preview_facts)."""
+    return {"status": "scouted", "named": False, "written_at": time.time(), "queued_at": time.time(),
+            "preview": gc.PREVIEW_RUNNING, "snapshots": [], "skin_key": _key("skin.json"),
+            "facts": {"size_mm": [177.5, 41.8, 101.0], "scale_to_m": 0.001, "input_kind": "solid-body",
+                      "flow": "external", "openings": [], "faces": [], "holes": [], "solids": 6,
+                      "confidence": {"input_kind": 0.0, "openings": 0.0}, "preview": True,
+                      "notes": ["the part is still being measured: its openings and the clean check follow"]},
+            "proposal": {"openings": [], "input_kind": "solid-body", "flow": "external"}}
+
+
+async def test_the_confirm_refuses_a_declaration_drawn_from_the_quick_drawing(served, monkeypatch):
+    """PRESSING PROCEED ON THE PREVIEW WROTE THE WRONG PART INTO THE CONVERSATION. The declaration
+    the confirm stores is read back by geometry_confirmation.declared_case to pick the purpose, and
+    from the quick drawing it says "the fluid flows around it. No openings: the fluid flows around
+    the whole body." - external CFD on a solid body - over the top of the cold plate its owner
+    asked for in their first message. Recorded in devlog_layers.md on 2026-11-14.
+
+    Refused BEFORE anything is written: the stored copy, the session's kind and patches and the
+    declaration all land together further down."""
+    store = served({"scout.json": _preview_check()}, geometry_interpretation_id=uuid.uuid4(),
+                   messages=[{"role": "user", "content": "a cold plate, conjugate heat transfer"}])
+    session = await route._owned_session(SID, "alice", "org-1")
+    _confirming(monkeypatch, session, {"interpretation_id": "i1", "geometry_source_id": "s1", "unit": "mm",
+                                       "scale_to_metres": 0.001, "basis": "file_declared", "evidence": "SI_UNIT"}, [])
+    body = route.ConfirmIn(input_kind="solid-body", flow="external", openings=[], scale_to_m=0.001, unit="mm")
+    with pytest.raises(HTTPException) as refused:
+        await route.confirm_check(SID, body, "alice", "org-1")
+    assert refused.value.status_code == 409 and refused.value.detail == route.PREVIEW_FIRST
+    assert _key("confirmed.json") not in store.objects
+    assert session.messages == [{"role": "user", "content": "a cold plate, conjugate heat transfer"}]
+    # AND AN FEA PART IS NOT REFUSED: its kind and flow are its words' to say and not the form's,
+    # so there is nothing on that panel the quick drawing has not measured. The product invites it
+    # in as many words (geometry_progress.PREVIEW_NOTE_FEA) and must not then refuse it.
+    served({"scout.json": _preview_check()},
+           messages=[{"role": "user", "content": "stress in this bracket under load"}])
+    out = await route.confirm_check(SID, body, "alice", "org-1")
+    assert out["ok"] is True and "input_kind solid-body" in out["message"]
+
+    # AND THE SAME ONCE THE NAMING HAS LANDED ON IT. `_land_named` pops `preview` off the record it
+    # writes, so a ready record built on the quick drawing says so only in `named_on_preview` -
+    # which is exactly the key this route never consulted.
+    named_on_it = {k: v for k, v in _preview_check().items() if k != "preview"}
+    named_on_it.update(status="ready", named=True, named_on_preview=True, vision={}, purpose_text="a cold plate")
+    # back to the flow route: `served` keeps the session it was last given, and the FEA words above
+    # would otherwise still be what the route is read from
+    store = served({"scout.json": named_on_it},
+                   messages=[{"role": "user", "content": "a cold plate, conjugate heat transfer"}])
+    with pytest.raises(HTTPException) as refused:
+        await route.confirm_check(SID, body, "alice", "org-1")
+    assert refused.value.status_code == 409 and refused.value.detail == route.PREVIEW_FIRST
+    assert _key("confirmed.json") not in store.objects
+
+
+async def test_a_kept_preview_is_still_the_users_way_on(served, monkeypatch):
+    """THE QUICK DRAWING IS THE ANSWER when the full reading is not coming: the scout failed or ran
+    out of time, kept_preview says so in the notes and asks for exactly this - "Check its size and
+    unit and press Proceed". Refusing it would strand the part."""
+    kept = gc.kept_preview(_preview_check(), gc.SCOUT_STOPPED)
+    served({"scout.json": kept}, geometry_interpretation_id=uuid.uuid4(), messages=[])
+    session = await route._owned_session(SID, "alice", "org-1")
+    _confirming(monkeypatch, session, {"interpretation_id": "i1", "geometry_source_id": "s1", "unit": "mm",
+                                       "scale_to_metres": 0.001, "basis": "file_declared", "evidence": "SI_UNIT"}, [])
+    out = await route.confirm_check(SID, route.ConfirmIn(input_kind="solid-body", flow="external", openings=[],
+                                                         scale_to_m=0.001, unit="mm"), "alice", "org-1")
+    assert out["ok"] is True and out["patches"] == []
+
+
+async def test_what_a_declaration_drawn_from_the_quick_drawing_says():
+    """The harm, in the two sentences it comes down to: the stage's own words for the preview, and
+    what the intake reads back out of them."""
+    from meshpipeline.application.geometry_confirmation import confirmation_message, declared_case
+
+    said = confirmation_message(route.ConfirmIn(input_kind="solid-body", flow="external", openings=[],
+                                                size_mm=[177.5, 41.8, 101.0], scale_to_m=0.001, unit="mm"))
+    assert "No openings: the fluid flows around the whole body." in said
+    assert declared_case([{"role": "user", "content": "a cold plate for conjugate heat transfer"},
+                          {"role": "assistant", "content": said}]) == ("external_cfd", "solid-body")
+
+
 async def test_through_a_part_with_no_inside_is_asked_about_not_meshed(served, monkeypatch):
     """INS-3: the check mapped no inside to flow through (a baffle plate, a solid magnet) and the
     user says the fluid flows through it with no openings on it. The stage asks the one plain

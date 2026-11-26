@@ -408,6 +408,19 @@ STILL_RUNNING = ("This geometry check is still running. It can be run again once
                  "which it does by itself when its time is up.")
 
 
+#: WHY A FLOW FORM CANNOT BE ANSWERED YET. The part is shown from its quick drawing before it is
+#: measured (geometry_check._Preview) - deliberately, so the stage opens in seconds - and that
+#: drawing carries no openings and no reading of what the part is. A confirmation built from it is
+#: written into the conversation as the USER'S declaration and read back by
+#: geometry_confirmation.declared_case to pick the purpose, so on a cold plate it says "the fluid
+#: flows around it. No openings: the fluid flows around the whole body." over the top of what the
+#: customer said themselves in their first message. Measured on ColdPlateAssembly_CLEAN.step and
+#: recorded in devlog_layers.md on 2026-11-14.
+PREVIEW_FIRST = ("Your part is still being measured - what is on the stage is the quick drawing, "
+                 "which has no openings on it yet. Give it a moment: the openings and the clean "
+                 "check land by themselves and the form fills in. Nothing is lost by waiting.")
+
+
 class RetryIn(BaseModel):
     #: the step to run again, which must be the one the check reports for a retry; left out, that one
     step: Literal["scout", "naming"] | None = None
@@ -568,6 +581,20 @@ async def confirm_check(session_id: uuid.UUID, body: ConfirmIn, owner_id: str = 
     body = body.model_copy(update={
         "check_mode": THERMAL_CHECK if _stored_check.get("check_mode") == THERMAL_CHECK
         else fea_check.STAGE_FEA if _fea else ""})
+    # THE FLOW FORM CANNOT BE ANSWERED FROM THE QUICK DRAWING (PREVIEW_FIRST). Of the three forms
+    # this route takes, only this one gets its kind and its flow from what the user pressed - and
+    # those are exactly the two things the preview has not measured, so the declaration it writes
+    # contradicts the part and, through declared_case, the user's own first message. An FEA part's
+    # kind and flow are its words' to say and not the form's (above), and a whole thermal model is
+    # read from its own file and never previewed at all, so neither is refused.
+    #
+    # Nothing has been written yet: the stored copy, the session's kind and patches and the
+    # declaration all go out together further down. A KEPT preview is not refused either - there
+    # the full reading is not coming and the quick drawing is the answer the product offers, and
+    # asks the user for exactly this (geometry_check.reading_still_to_land, kept_preview).
+    from meshpipeline.application.geometry_check import reading_still_to_land
+    if not body.check_mode and reading_still_to_land(_stored_check):
+        raise HTTPException(409, PREVIEW_FIRST)
     if body.check_mode == fea_check.STAGE_FEA:
         facts = _stored_check.get("facts") or {}
         blocked, _kind, way_out = fea_check.blocker(facts)

@@ -53,8 +53,13 @@ _FEA_DOING = {OPENINGS: "reading the surface", NAMING: "measuring the walls and 
 
 #: What the line says while the part is shown but still being measured, and once its full
 #: reading did not finish and the quick drawing stands.
-PREVIEW_NOTE = ("Your part is shown beside this chat - you can check it and press Proceed now; "
-                "its openings and the clean check follow when they are ready.")
+#: THE FLOW FORM IS NOT INVITED WHILE THE OPENINGS ARE STILL BEING LOOKED FOR. It used to say
+#: "you can check it and press Proceed now", and pressing it declared a part with no openings that
+#: the fluid flows around - which the confirm route now refuses (api/v1/geometry.PREVIEW_FIRST).
+#: An FEA part keeps the invitation (PREVIEW_NOTE_FEA): its kind and flow are not the form's to
+#: say, so there is nothing on that panel the quick drawing cannot answer.
+PREVIEW_NOTE = ("Your part is shown beside this chat - turn it and check its size and unit while "
+                "its openings and the clean check are found; the form fills in when they land.")
 PREVIEW_NOTE_FEA = ("Your part is shown beside this chat - you can check its size and unit and press "
                     "Proceed now; the clean check follows when it is ready.")
 KEPT_NOTE = ("The full check did not finish, so the part is shown from a quick drawing - check its size "

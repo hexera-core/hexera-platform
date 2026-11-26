@@ -55,8 +55,10 @@ def notes(monkeypatch):
 
 
 def _no_wait(monkeypatch):
-    """The deadline is already gone, so the wait decides on its first look."""
-    monkeypatch.setattr(GC, "NAMING_WAIT_S", 0.0)
+    """The deadline is already gone, so the wait decides on its first look. The records below carry
+    no `queued_at` and no `written_at`, which puts the SCOUT's own deadline at the epoch
+    (`scout_deadline`); the naming's own limit is set past as well, for the record that is missing
+    altogether and so has no scout deadline to read."""
     monkeypatch.setattr(GC, "naming_limits_for", lambda _sid: (0.0, 0.0))
 
 

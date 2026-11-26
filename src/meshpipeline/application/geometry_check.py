@@ -34,32 +34,66 @@ STATUS_FAILED, STATUS_UNSUPPORTED = "failed", "unsupported"
 #: holds the check to its own numbers - and while the worker's heartbeat is fresh a check is never
 #: called stuck at all. These numbers are only the backstop for a call that never returns.
 SCOUT_SOFT_LIMIT_S, SCOUT_HARD_LIMIT_S = 900, 1200
-NAMING_SOFT_LIMIT_S, NAMING_HARD_LIMIT_S = 600, 900
-#: What each megabyte of upload adds to a step's limits (reading, tessellating and measuring a
+#: What each megabyte of upload adds to the scout's limits (reading, tessellating and measuring a
 #: STEP grow with its size: about 1 s/MB to read, minutes for an assembly of hundreds of solids).
-SCOUT_S_PER_MB, NAMING_S_PER_MB = 60.0, 30.0
+SCOUT_S_PER_MB = 60.0
+#: THE NAMING'S OWN WORK, for a small file and per megabyte: the pictures fetched, the vision model
+#: asked, an FEA part's walls and hot spots measured. NOT what the naming step is allowed in all -
+#: its first act is to WAIT for the scout (`_wait_for_scout`), and a step that waits for another
+#: has to be allowed to outlive it. `step_limits` adds the two together.
+NAMING_WORK_S, NAMING_WORK_PER_MB = 600, 30.0
+#: How far past its soft limit a step runs before the worker kills it outright.
+SCOUT_MARGIN_S, NAMING_MARGIN_S = SCOUT_HARD_LIMIT_S - SCOUT_SOFT_LIMIT_S, 300
 #: The backstop's ceiling, whatever the size: a step past it is a call that will never return.
 LIMIT_CEILING_S = 6 * 3600
 #: How long past its hard limit a step is still believed to be running: queue time on a busy
 #: fleet, and clock skew between the API and the worker.
 STALE_MARGIN_S = 120.0
+#: Which step a retry runs again - needed by `step_limits` below, which sizes one from the other.
+RETRY_SCOUT, RETRY_NAMING = "scout", "naming"
 
 
 def step_limits(step: str, size_bytes: float | int | None) -> tuple[int, int]:
     """(soft, hard) seconds for a scout or naming step on a file this big: the small-file limits
-    plus `*_S_PER_MB` for every megabyte, hard a fixed margin past soft, under LIMIT_CEILING_S. A
-    file whose size is unknown gets the small-file limits."""
-    if step == RETRY_NAMING:
-        soft0, hard0, per_mb = NAMING_SOFT_LIMIT_S, NAMING_HARD_LIMIT_S, NAMING_S_PER_MB
-    else:
-        soft0, hard0, per_mb = SCOUT_SOFT_LIMIT_S, SCOUT_HARD_LIMIT_S, SCOUT_S_PER_MB
+    plus the per-megabyte rate for every megabyte, hard a fixed margin past soft, under
+    LIMIT_CEILING_S. A file whose size is unknown gets the small-file limits.
+
+    THE NAMING'S LIMIT IS DERIVED FROM THE SCOUT'S, never picked beside it. The naming's first act
+    is to wait for the scout's full reading, so what it needs is "however long the scout may still
+    take" plus "its own work": the scout's hard limit, the margin the read path allows a worker
+    past it (`time_boxed`), and NAMING_WORK_S on top.
+
+    TWO INDEPENDENTLY PICKED NUMBERS WAS THE WHOLE DEFECT, and it was arithmetic, not bad luck on
+    one file. The naming waited `NAMING_SOFT_LIMIT_S - 60` = 540 + 30/MB seconds while the scout's
+    own allowance was 900 + 60/MB, so the naming gave up on EVERY file whose scout spent more than
+    58% of its own allowance - by a margin that GROWS with the file (360 + 30/MB). On the first
+    customer assembly (ColdPlateAssembly_CLEAN.step, 15,883,539 bytes) the naming's wait was
+    1,016 s against a scout allowed 1,853 s and needing about 1,042 s, so it lost by ~26 s on
+    every run, named the preview, and published a proposal with no openings and no confidence in
+    the part's kind. Worse, winning that race by a second would not have helped: the wait took all
+    but 60 s of the naming's own limit, so the vision call had a minute before the worker killed
+    it. Both halves come from the same mistake - sizing the waiter's clock without the waited-on.
+    """
     try:
         mb = max(0.0, float(size_bytes or 0) / 1e6)
     except (TypeError, ValueError):
         mb = 0.0
-    extra = per_mb * mb
-    soft = int(min(soft0 + extra, LIMIT_CEILING_S - (hard0 - soft0)))
-    return soft, soft + (hard0 - soft0)
+    if step == RETRY_NAMING:
+        # the scout's whole allowance for the same file, and then the naming's own work
+        margin = NAMING_MARGIN_S
+        soft0 = SCOUT_HARD_LIMIT_S + STALE_MARGIN_S + NAMING_WORK_S
+        per_mb = SCOUT_S_PER_MB + NAMING_WORK_PER_MB
+    else:
+        margin, soft0, per_mb = SCOUT_MARGIN_S, SCOUT_SOFT_LIMIT_S, SCOUT_S_PER_MB
+    soft = int(min(soft0 + per_mb * mb, LIMIT_CEILING_S - margin))
+    return soft, soft + margin
+
+
+#: The naming's limits for a small file, as `step_limits` derives them: the names the task
+#: decorator (adapters/pipeline_execution/celery) and the time box read.
+NAMING_SOFT_LIMIT_S, NAMING_HARD_LIMIT_S = step_limits(RETRY_NAMING, None)
+#: What one megabyte of upload adds to them.
+NAMING_S_PER_MB = SCOUT_S_PER_MB + NAMING_WORK_PER_MB
 
 
 def limits_of(stored: dict | None, step: str = "scout") -> tuple[float, float]:
@@ -74,18 +108,38 @@ def limits_of(stored: dict | None, step: str = "scout") -> tuple[float, float]:
     except (TypeError, ValueError):
         soft, hard = float(soft0), float(hard0)
     return soft, hard
-#: How long the naming step waits for a scout that is still running before giving up. Under its
-#: own soft limit on purpose: a wait that outlived the limit was ended by the worker with a
-#: `failed` written over the scout's `pending`, instead of the request being withdrawn so the
-#: next chat turn can ask again once the scout has landed.
-NAMING_WAIT_S = float(NAMING_SOFT_LIMIT_S - 60)
+
+
+def scout_deadline(stored: dict | None) -> float:
+    """WHEN THE SCOUT CAN NO LONGER LAND ANYTHING, as one absolute time: it was queued at
+    `queued_at` (written on the pending marker and carried on to the preview), it is allowed its
+    own hard limit - sized to its file - and STALE_MARGIN_S past that for queue time on a busy
+    fleet and clock skew. One expression, so the naming that waits for the scout and the read path
+    that reports it cannot disagree about when the scout is over.
+
+    `written_at` STANDS IN for a record written before `queued_at` existed, which is what the read
+    path always used. On a PREVIEW that is the moment the quick drawing was stored, not the moment
+    the scout began - so a scout that took four minutes to draw was given four extra minutes to
+    finish, which it does not have. Never raises: an unreadable record is over now."""
+    s = stored or {}
+    since = s.get("queued_at")
+    if since is None:
+        since = s.get("written_at")
+    try:
+        return float(since or 0.0) + limits_of(s)[1] + STALE_MARGIN_S
+    except (TypeError, ValueError):
+        return 0.0
+#: How long the naming keeps back, once it stops waiting, to name what is stored and land it. The
+#: wait never eats into it: `_wait_for_scout` gives the scout every second its OWN limits allow and
+#: stops this much short of the naming's own limit whatever the scout's say. For every file under
+#: LIMIT_CEILING_S the scout's deadline is the one that binds, which is the point (`step_limits`).
+NAMING_LANDING_S = 60.0
 #: The plain reasons a time-boxed check reports, and the step a retry runs again.
 SCOUT_TOO_LONG = "the drawing took too long"
 NAMING_TOO_LONG = "the naming step did not answer"
 #: ...and when the worker stopped beating mid-step (killed, or its VM went away).
 SCOUT_STOPPED = "the worker drawing your part stopped"
 NAMING_STOPPED = "the worker naming your part stopped"
-RETRY_SCOUT, RETRY_NAMING = "scout", "naming"
 #: What write_status stamps on every record; what a re-store of a record leaves out.
 _STAMPED_KEYS = ("status", "written_at", "seconds", "session_id")
 #: What a failure adds to a record; what a retry takes off it again.
@@ -224,7 +278,7 @@ def time_boxed(stored: dict | None, requested: dict | None, now: float | None = 
         if beating is False:
             return {**stored, "status": STATUS_FAILED, "reason": SCOUT_STOPPED, "named": False,
                     "step": RETRY_SCOUT, "retry": RETRY_SCOUT}
-        if beating is None and at - since > limits_of(stored)[1] + STALE_MARGIN_S:
+        if beating is None and at > scout_deadline(stored):
             return {**stored, "status": STATUS_FAILED, "reason": SCOUT_TOO_LONG, "named": False,
                     "step": RETRY_SCOUT, "retry": RETRY_SCOUT, "timed_out": True}
     elif status == STATUS_SCOUTED and is_preview(stored):
@@ -232,10 +286,11 @@ def time_boxed(stored: dict | None, requested: dict | None, now: float | None = 
         # check's result: the quick drawing stands, said so, and the user goes on with it
         scout = rec.get("scout") if isinstance(rec.get("scout"), dict) else None
         beating = gp.beating(scout, at) if scout is not None else None
-        since = float(stored.get("written_at") or 0.0)
         if beating is False:
             return kept_preview(stored, SCOUT_STOPPED)
-        if beating is None and at - since > limits_of(stored)[1] + STALE_MARGIN_S:
+        # measured from when the scout was QUEUED, not from when this preview was stored: the
+        # drawing's own minutes are the scout's, and were being handed back to it (scout_deadline)
+        if beating is None and at > scout_deadline(stored):
             return kept_preview(stored, SCOUT_TOO_LONG)
     elif status == STATUS_SCOUTED and naming_pending(requested):
         asked = float((requested or {}).get("requested_at") or 0.0)
@@ -283,8 +338,10 @@ def start_scout(session_id: str, owner_id: str, *, source: dict, interpretation:
         # numbers (runtime/composition), and the time box reads them back from this marker
         size = (source or {}).get("size_bytes")
         soft, hard = step_limits(RETRY_SCOUT, size)
+        # WHEN THE SCOUT BEGAN, kept apart from `written_at`, which every later write restamps:
+        # it is the one point the scout's own deadline is measured from (`scout_deadline`)
         write_status(session_id, STATUS_PENDING, soft_limit_s=soft, hard_limit_s=hard,
-                     size_bytes=size)
+                     size_bytes=size, queued_at=time.time())
         marked = True
         if not enqueue_scout(session_id=session_id, owner_id=owner_id, source=source,
                              interpretation=interpretation):
@@ -466,20 +523,34 @@ def _run_scout(session_id: str, owner_id: str, source: dict, interpretation: dic
     result["seconds"] = round(time.time() - started, 1)
     if preview.record is not None and result.get("status") == STATUS_SCOUTED:
         moved_on = preview.moved_on()
-        if moved_on is not None and moved_on.get("status") == STATUS_READY and moved_on.get("named_on_preview"):
-            # the naming named the preview before this full reading landed: the full reading is
-            # merged under the naming's answer, never dropped
+        if moved_on is not None and built_on_preview(moved_on):
+            # A RECORD STANDING ON THE QUICK DRAWING where this measured reading belongs. The
+            # naming landed on the preview before the reading did (`named_on_preview`), or it
+            # failed over the preview's facts and the stage is offering a retry on them. Either way
+            # the measured part goes UNDERNEATH it rather than being dropped: the record's status,
+            # its reason and its way on are left exactly as they are, because that is what the user
+            # is acting on, and only the facts and the proposal are replaced.
+            #
+            # THIS USED TO ASK FOR `ready` AND `named_on_preview` TOGETHER, and the two other ways
+            # a preview record gets there both dropped the reading for good. One is the lost update
+            # this very branch exists to repair, read the other way round: the scout reads the
+            # store (still the preview, so `moved_on` is None), writes its reading, and the naming
+            # - which decided on the preview a moment earlier - writes `ready` over it and exits.
+            # The other is a naming that FAILED while the scout was still working, whose record
+            # carries the preview's facts for the retry to name: the retry then named the quick
+            # drawing again, over and over, with the measured reading already thrown away.
             full = {**result, "status": STATUS_SCOUTED}
             merged = merged_onto_full({k: v for k, v in moved_on.items() if k not in _STAMPED_KEYS},
                                       {"facts": (preview.record or {}).get("facts") or {}}, full)
-            stored = store_status(session_id, STATUS_READY, RETRY_NAMING, **merged)
+            merged.update({k: moved_on[k] for k in _FAILURE_KEYS if k in moved_on})
+            stored = store_status(session_id, str(moved_on.get("status")), RETRY_NAMING, **merged)
             tracker.finish(ok=True)
-            logger.info("geometry scout: the full reading merged under the naming - session=%s in %.1fs",
-                        session_id, result["seconds"])
+            logger.info("geometry scout: the full reading merged under the %s record - session=%s "
+                        "in %.1fs", moved_on.get("status"), session_id, result["seconds"])
             return stored
         if moved_on is not None:
-            # something else moved the check on (a failed naming the user is acting on): it is not
-            # replaced under them
+            # something else moved the check on, and it did so on the MEASURED part (a naming that
+            # read the full reading): it is not replaced under them
             tracker.finish(ok=True)
             logger.info("geometry scout: the full reading landed after the naming - kept the %s record, "
                         "session=%s in %.1fs", moved_on.get("status"), session_id, result["seconds"])
@@ -501,6 +572,37 @@ PREVIEW_RUNNING, PREVIEW_KEPT = "running", "kept"
 def is_preview(stored: dict | None) -> bool:
     """Whether the stored check is a preview the scout is still measuring."""
     return bool(stored) and (stored or {}).get("preview") == PREVIEW_RUNNING
+
+
+def built_on_preview(stored: dict | None) -> bool:
+    """Whether a stored record's facts are the PREVIEW's - the quick drawing, with `openings: []`
+    and `confidence.input_kind: 0.0` by construction (`preview_facts`) - rather than the scout's
+    full reading. True for the preview itself, for a `ready` record the naming landed on one
+    (`named_on_preview`), and for a naming that FAILED over one, whose facts the record keeps so
+    the stage can offer a retry. Pure.
+
+    THE QUESTION EVERY READER HAS TO BE ABLE TO ASK. A record built on the preview was
+    indistinguishable from a measured one to its callers, so the scout dropped its own full reading
+    rather than land it under one, and the confirm endpoint recorded a declaration drawn from it as
+    the user's own words."""
+    s = stored or {}
+    return (is_preview(s) or bool(s.get("named_on_preview"))
+            or bool((s.get("facts") or {}).get("preview")))
+
+
+def reading_still_to_land(stored: dict | None) -> bool:
+    """Whether a record is built on the preview AND the full reading is still coming - so nothing
+    on it may be confirmed, because the part has not been measured yet.
+
+    A KEPT PREVIEW IS NOT THIS CASE and must not be refused. There the full reading is not coming
+    at all (the scout failed or ran out of time) and the quick drawing IS the check's answer, said
+    so in the notes, with "Check its size and unit and press Proceed" (`kept_preview`) - the
+    deliberate way on. `preview_reason` is the key that survives the naming's write, so it is what
+    tells the two apart once `preview` itself has been popped off (`_land_named`)."""
+    s = stored or {}
+    if s.get("preview") == PREVIEW_KEPT or s.get("preview_reason"):
+        return False
+    return built_on_preview(s)
 
 
 class _Preview:
@@ -536,8 +638,10 @@ class _Preview:
             current = read_check(self.session_id)
             if current is not None and current.get("status") != STATUS_PENDING:
                 return                    # the check moved on meanwhile; the preview is not needed
-            # the limits the check was queued under stay on it: the time box reads them
-            record.update({k: current[k] for k in ("soft_limit_s", "hard_limit_s", "size_bytes")
+            # the limits the check was queued under stay on it, and WHEN it was queued with them:
+            # the time box reads both, and a preview restamps `written_at` (`scout_deadline`)
+            record.update({k: current[k] for k in ("soft_limit_s", "hard_limit_s", "size_bytes",
+                                                   "queued_at")
                            if current is not None and current.get(k) is not None})
             write_status(self.session_id, STATUS_SCOUTED, **record)
             self.record = record
@@ -2056,21 +2160,50 @@ def fea_measurements(stored: dict, facts: dict, interpretation: dict | None) -> 
 
 def _wait_for_scout(session_id: str) -> dict | None:
     """The stored scout, once it is no longer pending. The user's first answer can land while the
-    worker is still drawing; the naming waits rather than answering from nothing."""
-    # as long as this naming's own soft limit allows (sized to the file), less a minute to land
-    wait_s = max(NAMING_WAIT_S, float(naming_limits_for(session_id)[0] - 60))
-    deadline = time.time() + wait_s
+    worker is still drawing; the naming waits rather than answering from nothing.
+
+    IT WAITS ON THE SCOUT, NOT ON A CLOCK OF ITS OWN. What ends the wait is what ends the scout:
+    its heartbeat stopping (`geometry_progress.beating` - killed, or its VM went away), or its own
+    deadline passing (`scout_deadline`: the limits it was queued under, sized to its file, plus the
+    margin the read path allows it). Those are the same two tests `time_boxed` applies, so the
+    naming and the console cannot disagree about whether the part is still being measured.
+
+    THE CLOCK IT USED INSTEAD WAS ITS OWN SOFT LIMIT, which has nothing to do with how long the
+    scout takes, and lost to it by arithmetic on every file big enough to matter - see
+    `step_limits` for the numbers and the measured customer run. The naming's own limit is now
+    derived from the scout's, so the only wait it cuts short is one past LIMIT_CEILING_S."""
+    from meshpipeline.application import geometry_progress as gp
+
+    began = time.time()
+    # the naming's own limit for this file, less the time it needs to name what is stored and land
+    # it. The derivation in `step_limits` puts this beyond the scout's deadline for every file
+    # under the ceiling, so this bound exists for the one case that is past it.
+    own = began + float(naming_limits_for(session_id)[0]) - NAMING_LANDING_S
     while True:
         stored = read_check(session_id)
         # A PREVIEW is not the measured part: the scout is still at work on it, so the naming waits
         # for the full reading - and names the preview only if that does not come in time
         if stored is not None and stored.get("status") != STATUS_PENDING and not is_preview(stored):
             return stored
-        if time.time() >= deadline:
+        at = time.time()
+        scout = (gp.read_progress(session_id) or {}).get("scout")
+        scout = scout if isinstance(scout, dict) else None
+        # the same two reads `time_boxed` makes: a still-queued scout's record has to name the
+        # marker it started from, or it is an earlier attempt's and says nothing about this one
+        beating = (gp.beating(scout, at, marker=float(stored.get("written_at") or 0.0))
+                   if stored is not None and stored.get("status") == STATUS_PENDING
+                   else gp.beating(scout, at))
+        deadline = min(scout_deadline(stored), own) if stored is not None else own
+        if beating is False or at >= deadline:
             from meshpipeline.engines.determinism import note_time_limit
+            # WHOSE CLOCK ENDED IT, said in the record: the scout stopping is no clock at all, and
+            # the naming's own limit binding means the file is past LIMIT_CEILING_S
+            whose = ("the scout stopped beating" if beating is False
+                     else "the naming's own limit" if deadline >= own else "the scout's own limit")
             if stored is None or stored.get("status") == STATUS_PENDING:
                 note_time_limit("geometry_check.naming", "the naming stopped waiting for the scout",
-                                budget_s=float(wait_s))
+                                budget_s=max(0.0, deadline - began), waited_s=round(at - began, 1),
+                                ended_by=whose)
             else:
                 # GIVING UP ON A PREVIEW WAS THE ONE CASE THAT SAID NOTHING, and it is the case
                 # that reaches a customer. `determinism` exists to record "every time a wall clock
@@ -2096,7 +2229,8 @@ def _wait_for_scout(session_id: str) -> dict | None:
                     "geometry_check.naming",
                     "the naming stopped waiting and named the preview: the proposal is built from "
                     "the quick drawing, with no openings and no confidence in its kind",
-                    budget_s=float(wait_s))
+                    budget_s=max(0.0, deadline - began), waited_s=round(at - began, 1),
+                    ended_by=whose)
             return stored
         time.sleep(2.0)
 

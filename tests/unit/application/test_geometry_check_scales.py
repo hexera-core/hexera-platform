@@ -262,7 +262,6 @@ def test_pictures_that_cannot_be_drawn_never_fail_the_check(store, monkeypatch, 
 
 
 def test_the_naming_waits_for_the_full_reading_not_the_preview(store, monkeypatch):
-    monkeypatch.setattr(gc, "NAMING_WAIT_S", 0.0)
     monkeypatch.setattr(gc, "naming_limits_for", lambda sid: (120, 420))
     gc.write_status("n-1", "scouted", preview=gc.PREVIEW_RUNNING, facts={})
     calls = []
@@ -283,7 +282,13 @@ def test_the_progress_line_says_the_part_is_shown_while_it_is_measured():
     view = gp.progress_view(stored, None, _scout_record(beat_at=T0 + 40), now=T0 + 60,
                             scout_limit_s=900, naming_limit_s=600)
     assert view["state"] == "running" and view["live"] and view["preview"]
-    assert "press Proceed now" in view["note"]
+    # the flow form is not invited while the openings are still being looked for: pressing it
+    # declared a part with no openings, which the confirm route refuses (PREVIEW_FIRST)
+    assert "the form fills in when they land" in view["note"]
+    assert "press Proceed" not in view["note"]
+    fea = gp.progress_view(stored, None, _scout_record(beat_at=T0 + 40), now=T0 + 60, fea=True,
+                           scout_limit_s=900, naming_limit_s=600)
+    assert "press Proceed now" in fea["note"]        # an FEA panel asks nothing of the openings
 
 
 # ---------------------------------------------------------------------- the chat's hold ----
@@ -430,6 +435,78 @@ def test_a_full_reading_landing_after_the_naming_is_merged_under_its_answer(stor
     assert stored["status"] == "ready" and not stored.get("named_on_preview")
     assert stored["facts"]["fea_measure"] == {"measured": True}
     assert stored["facts"]["validity"]["kind"] != "unchecked"          # the full reading's clean check
+
+
+def test_a_record_built_on_the_preview_is_told_from_a_measured_one():
+    """THE QUESTION EVERY READER HAS TO BE ABLE TO ASK. A `ready` record the naming built on the
+    quick drawing carried `named_on_preview` and nothing else said so, and both of its readers
+    took it for a measured part: the scout dropped its own full reading rather than land it under
+    one, and the confirm endpoint wrote a declaration drawn from it into the conversation as the
+    user's own words."""
+    preview = _preview_record()
+    named_on_it = {"status": "ready", "named": True, "named_on_preview": True,
+                   "facts": {**preview["facts"], "preview": True}}
+    failed_on_it = {"status": "failed", "named": False, "reason": gc.NAMING_TOO_LONG,
+                    "retry": gc.RETRY_NAMING, "facts": {**preview["facts"], "preview": True}}
+    measured = {"status": "ready", "named": True, "facts": _full_facts()}
+    for record in (preview, named_on_it, failed_on_it):
+        assert gc.built_on_preview(record), record.get("status")
+        assert gc.reading_still_to_land(record), record.get("status")
+    assert not gc.built_on_preview(measured) and not gc.reading_still_to_land(measured)
+    assert not gc.built_on_preview(None) and not gc.reading_still_to_land(None)
+    # A KEPT PREVIEW IS THE ANSWER, not a part still being measured: the full reading is not
+    # coming at all and the product says so and offers Proceed (kept_preview). `preview_reason` is
+    # the key that survives the naming's write, so it is what tells the two apart afterwards.
+    kept = gc.kept_preview({**preview, "facts": {**preview["facts"], "preview": True}}, gc.SCOUT_STOPPED)
+    assert kept["preview"] == gc.PREVIEW_KEPT and gc.built_on_preview(kept)
+    assert not gc.reading_still_to_land(kept)
+    assert not gc.reading_still_to_land({"status": "ready", "named": True, "preview_reason": gc.SCOUT_STOPPED,
+                                         "facts": {**preview["facts"], "preview": True}})
+
+
+def test_the_preview_carries_the_queue_time_it_was_marked_with(store, monkeypatch, tmp_path):
+    """A PREVIEW RESTAMPS `written_at`, and the scout's deadline used to be read off that - so a
+    scout that spent minutes drawing the part was handed those minutes again. `queued_at` travels
+    from the pending marker onto the preview, so both records give the same deadline."""
+    from meshpipeline.contracts import geometry_check as seam
+
+    _triangle_check(monkeypatch, tmp_path)
+    seam.set_scout_enqueuer(lambda **kw: None)
+    try:
+        assert gc.start_scout("cfd-q", "o1", source=_triangle_source(), interpretation=None)
+    finally:
+        seam.set_scout_enqueuer(None)
+    marker = gc.read_check("cfd-q")
+    gc.run_geometry_check(session_id="cfd-q", owner_id="o1", source=_triangle_source())
+    shown = [rec for _k, rec in store.history if rec.get("preview") == gc.PREVIEW_RUNNING]
+    assert shown, "the part was never shown before it was measured"
+    assert shown[0]["queued_at"] == marker["queued_at"]
+    assert shown[0]["written_at"] >= shown[0]["queued_at"]
+    assert gc.scout_deadline(shown[0]) == gc.scout_deadline(marker)
+
+
+def test_the_full_reading_lands_under_a_naming_that_failed_on_the_preview(store, monkeypatch, tmp_path):
+    """A NAMING THAT FAILED OVER THE PREVIEW used to cost the measured part for good. Its record
+    keeps the preview's facts so the stage can offer a retry - and the scout, finding the check
+    moved on, kept that record and threw its own full reading away, so every retry named the quick
+    drawing again. The failure and its way on are the user's to act on and are left exactly as they
+    are; only the part underneath is replaced."""
+    _triangle_check(monkeypatch, tmp_path)
+    real_publish = gc._Preview.publish
+
+    def publish_then_fail(self, **kw):
+        real_publish(self, **kw)
+        current = gc.read_check(self.session_id)
+        gc.write_status(self.session_id, gc.STATUS_FAILED, timed_out=True,
+                        **gc._failed_record(gc.NAMING_TOO_LONG, gc.RETRY_NAMING, current))
+    monkeypatch.setattr(gc._Preview, "publish", publish_then_fail)
+    gc.write_status("m-5", "pending")
+    gc.run_geometry_check(session_id="m-5", owner_id="o1", source=_triangle_source())
+    stored = gc.read_check("m-5")
+    assert stored["status"] == "failed" and stored["reason"] == gc.NAMING_TOO_LONG
+    assert stored["retry"] == gc.RETRY_NAMING and stored["timed_out"] is True
+    assert stored["facts"]["validity"]["kind"] != "unchecked"       # the full reading's clean check
+    assert not gc.built_on_preview(stored), "the retry would name the quick drawing again"
 
 
 def test_the_naming_beats_while_it_works(store, monkeypatch):
