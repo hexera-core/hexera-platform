@@ -375,11 +375,13 @@ async def _settle(inbound: InboundMessage, db, *, gate: dict, locked, messages: 
             # the rest (3 s at most), the phrase reading standing in when it does not answer
             last_line = next((str(m.get("content") or "") for m in reversed(messages[:-1])
                               if isinstance(m, dict) and m.get("role") == "assistant"), "")
+            from meshpipeline.agents.intake import flow as _flow
             got = await PG.read(
                 inbound.content, carries=bool(inbound.attachments or inbound.faces),
                 asked=PT.asked_last(messages[:-1]),
                 consent=_consent.reading(inbound.content, named=(engine,) if engine else ()), engine=engine,
-                last_line=last_line, user_id=inbound.owner_id, session_id=str(inbound.session_id))
+                last_line=last_line, user_id=inbound.owner_id, session_id=str(inbound.session_id),
+                analysis=_flow.analysis_said(messages[:-1]))
             talk = got.reading
             logger.info("intake message: plan step read as %s (%s, by %s: %s) - session=%s", talk, PT.RULE, got.by,
                         got.why, inbound.session_id)

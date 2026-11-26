@@ -20,8 +20,10 @@ A phrase table cannot know every way of saying "I'm done here, mesh it". So:
 3. A GO STARTS THE RUN only when the model says go AND code found no requirement content, no negation ("not", "but",
    "first") and no plain "ok" to some other question. "wait" is held. A question about the mesh is answered from the
    plan's numbers, any other goes to the intake (or, for a go asked back, "Start the mesh now?"); a "requirement"
-   whose words ask a question is answered as a question (NOTE-20). Anything else is asked "Start the mesh now?" once - never "I couldn't read that
-   as a mesh requirement".
+   whose words ask a question is answered as a question (NOTE-20). Anything else that could ask to start (a yes, a
+   hedge, a go word: plan_talk.goish) is asked "Start the mesh now?" once; any other statement ("the part is cast
+   aluminium") is kept as a note and answered as kept (NOTE-25). Context about the part - its material, loads,
+   solver, or the plan's own analysis - is kept in code before any model is asked (plan_talk.context_statement).
 4. NO ANSWER (error, or slower than `TIMEOUT_S`, or an answer outside the set): the phrase reading
    (plan_talk.reading) decides; where it is unsure the go question is asked once.
 """
@@ -121,8 +123,9 @@ def _safe_go(text: str, last_line: str) -> bool:
 
 async def read(text: str, *, carries: bool = False, asked: bool = False, consent: str = "", engine: str = "",
                last_line: str = "", user_id: str = "", session_id: str = "", ask_fn=None,
-               timeout_s: float = TIMEOUT_S) -> Read:
-    """What one message at the plan step means (the module's docstring). Never raises."""
+               timeout_s: float = TIMEOUT_S, analysis: str = "") -> Read:
+    """What one message at the plan step means (the module's docstring). `analysis`: the plan's FEA analysis key
+    ("" when none is known). Never raises."""
     code = PT.reading(text, carries=carries, asked=asked, consent=consent, engine=engine)
     if code == PT.QUESTION:
         # NOTE-20: a question about the mesh, in question words (typos and no question mark included): ours to answer
@@ -131,6 +134,10 @@ async def read(text: str, *, carries: bool = False, asked: bool = False, consent
         return Read(code, BY_CODE, why="requirement content")
     if PT.exact_go(text):
         return Read(PT.GO, BY_CODE, why="the button's text")
+    if PT.context_statement(text, analysis=analysis):
+        # "the part is cast aluminium", "we'll run this in Abaqus", "it's for a stress analysis" (the plan's own
+        # analysis): kept and answered as kept (NOTE-25) - never a go, never "Start the mesh now?", never a re-plan
+        return Read(PT.NOTE, BY_CODE, why="context about the part")
     if not PT.words_of(text) or PT.plan_change(text):
         return Read(code, BY_CODE, why="no words" if not PT.words_of(text) else "a plan word")
     raw = ""
@@ -144,11 +151,17 @@ async def read(text: str, *, carries: bool = False, asked: bool = False, consent
     if PT.answers_another_question(text, last_line):
         # "ok" to a question of ours that was not "Start the mesh now?": the intake takes it as that answer
         other = PT.INTAKE
+    elif code == PT.INTAKE:
+        other = PT.INTAKE
+    elif not PT.goish(text, consent=consent):
+        # NOTE-18: "Start the mesh now?" only for words that could ask to start; a statement that is neither a
+        # requirement, a question, a hold nor a go is kept as a note and answered as kept (NOTE-25)
+        other = PT.NOTE
     else:
-        other = PT.INTAKE if asked or code == PT.INTAKE else PT.ASK
+        other = PT.INTAKE if asked else PT.ASK
     if not label:
-        # with no requirement in the words, a NOTE would answer "couldn't read that as a mesh requirement": the go
-        # question is asked instead, once (asked already, or an answer to another question: the intake answers)
+        # the phrase reading decides; where it is unsure of a go-ish message the go question is asked, once (asked
+        # already, or an answer to another question: the intake answers); a plain statement is kept (NOTE-25)
         got = other if code == PT.NOTE else code
         if got == PT.GO and not _safe_go(text, last_line):
             got = other

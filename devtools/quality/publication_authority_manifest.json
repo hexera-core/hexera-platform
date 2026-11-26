@@ -1561,6 +1561,32 @@
   "roots": []
  },
  {
+  "context": "agents/intake/plan_talk.py::context_statement::search#1|NotAPublisher|not-a-publisher|",
+  "path": "agents/intake/plan_talk.py",
+  "qualname": "context_statement",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "_PLAN_WORDS",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "agents/intake/plan_talk.py::context_statement::search#2|NotAPublisher|not-a-publisher|",
+  "path": "agents/intake/plan_talk.py",
+  "qualname": "context_statement",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 2,
+  "receiver": "_CONTEXT",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "agents/intake/plan_talk.py::count_asks::search#1|NotAPublisher|not-a-publisher|",
   "path": "agents/intake/plan_talk.py",
   "qualname": "count_asks",
@@ -1607,6 +1633,19 @@
   "method": "search",
   "ordinal": 1,
   "receiver": "_GEOMETRY_EDIT",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "agents/intake/plan_talk.py::goish::search#1|NotAPublisher|not-a-publisher|",
+  "path": "agents/intake/plan_talk.py",
+  "qualname": "goish",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "_GO_WORD",
   "authority": "NotAPublisher",
   "lifecycle": "not-a-publisher",
   "gated_required": false,
