@@ -259,7 +259,7 @@ export function repairKeyNumbers(r) {
   const vr = num(res.volume_ratio), sr = num(res.size_ratio);
   if (vr != null) out.push({ k: "Volume change", v: pct(vr) });
   if (sr != null) out.push({ k: "Size change", v: pct(sr) });
-  const took = secondsWords(res.seconds);
+  const took = Number(res.seconds) >= 1 ? secondsWords(res.seconds) : "";
   if (took) out.push({ k: "Time", v: took });
   return out;
 }
