@@ -317,7 +317,8 @@ async def written(note: Mapping, view: Mapping | None, *, note_id: str = "", las
     """`write`, with what happened on the way: {"text": what is said, "source", "raw": the model's reply as given,
     "why": the guard's refusal or the failure ("" when said as written)}. Never raises."""
     plain = PT.reply_for(note, view, note_id=note_id)
-    if PT.fixed_reply(note, view):
+    if PT.fixed_reply(note, view) or PT.none_found(note, view, note_id=note_id):
+        # (NOTE-23: a kind of place the part has none of is said exactly, in code - never a model's rewording)
         return {"text": plain, "source": SOURCE_FIXED, "raw": "", "why": ""}
     f = facts(note, view, note_id=note_id)
     try:

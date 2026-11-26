@@ -507,6 +507,11 @@ def _unsure_text(u: Mapping) -> str:
         noun = str(u.get("noun") or "place")
         nouns = noun + ("es" if noun.endswith(("ch", "sh", "s", "x")) else "s")
         return f"Not set yet: “{quote}” - there are {n} {nouns}, click the one you mean"
+    if u.get("none_of"):
+        # NOTE-23: a kind of place the part does not have - none found, the face asked for
+        noun = str(u["none_of"])
+        nouns = noun + ("es" if noun.endswith(("ch", "sh", "s", "x")) else "s")
+        return f"Not set yet: “{quote}” - no {nouns} on this part, click the face you mean"
     return f"Couldn't tell which part is “{quote}”"
 
 
@@ -531,7 +536,10 @@ def rows_of(reading: Mapping, seen: Mapping, session_id: str) -> dict | None:
                "text": _unsure_text(u), "size": size_words(u),
                # NOTE-21: one place named, several it could be - how many, and what they are
                **({"which_one": int(u["which_one"]), "noun": str(u.get("noun") or "")}
-                  if isinstance(u.get("which_one"), int) else {})}
+                  if isinstance(u.get("which_one"), int) else {}),
+               # NOTE-23: a kind of place the part does not have - which, and what it does have
+               **({"none_of": str(u["none_of"]), "noun": str(u["none_of"]), "found": str(u.get("found") or "")}
+                  if u.get("none_of") else {})}
               for u in reading.get("unsure") or []]
     if not rows and not unsure:
         return None

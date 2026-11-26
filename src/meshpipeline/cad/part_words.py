@@ -372,6 +372,20 @@ def _check(arguments: str, table: list[dict], notes: str,
         if unit not in UNITS_MM:
             dropped.append(f"{tag}: the unit {unit!r} is not a length unit, so nothing was applied for it")
             continue
+        absent = _absent_kind(quote, rows) if not why.startswith("picked by you") and not e.get("everything_else") \
+            else ""
+        if absent:
+            # NOTE-23: A KIND OF PLACE THIS PART DOES NOT HAVE ("finer at the fillets" on a flat panel with holes and
+            # notches) is never spread over the whole part: nothing is set, and the words wait for a click (NOTE-22)
+            found = found_words(rows)
+            if unsure is not None:
+                unsure.append({"phrase": i, "quote": quote, "ask": ask, "none_of": absent, "noun": absent,
+                               "found": found, "why": f"the words name {_plural(absent)} and the part has none",
+                               **({"min_mm": _g(lo * UNITS_MM[unit]), "max_mm": _g(hi * UNITS_MM[unit])}
+                                  if ask == "size" else {})})
+            dropped.append(f"{tag}: this part has no {_plural(absent)}" + (f" (it has {found})" if found else "")
+                           + ", so nothing was applied until you click the face you mean")
+            continue
         holes = _holes_named(quote, rows)
         tied_by_us = False
         if holes and (conf is None or conf < MIN_CONFIDENCE
@@ -510,6 +524,59 @@ _ONE_LEAD = r"\b(?:this|that|the|a|an|one|single)\s+(?:[\w.]+\s+){0,3}?"
 
 def _plural(noun: str) -> str:
     return noun + ("es" if noun.endswith(("ch", "sh", "s", "x")) else "s")
+
+
+#: NOTE-23: a kind of place the part does not have is never spread over the whole part (rulebook 92)
+NONE_HERE_RULE = "NOTE-23"
+#: NOTE-6's kinds of place as the user names them, singular or plural, and the area kinds (cad/part_features) that
+#: are one: (noun, words, kinds). A flange or a rib is a thin wall or a large flat face; a bend a rounded edge, a thin
+#: wall or a flat face (a bent sheet's legs) - any of them on the part and the words are read as before
+_KIND_WORDS = (
+    ("hole", r"holes?", HOLE_KINDS), ("bore", r"bores?", HOLE_KINDS), ("notch", r"notch(?:es)?", ("notch",)),
+    ("fillet", r"fillets?", ("fillets",)), ("boss", r"boss(?:es)?", ("bosses",)), ("shaft", r"shafts?", ("bosses",)),
+    ("thin wall", r"thin[\s-]*walls?", ("thin wall",)), ("flange", r"flanges?", ("thin wall", "flat face")),
+    ("rib", r"ribs?", ("thin wall", "flat face")), ("bend", r"bends?", ("fillets", "thin wall", "flat face")))
+#: what was found, as the reply names it: (area kinds, noun)
+_FOUND = ((("hole", "hole group"), "hole"), (("bore",), "bore"), (("notch",), "notch"), (("fillets",), "fillet"),
+          (("bosses",), "boss"))
+
+
+def _absent_kind(quote: str, rows: Mapping[str, Mapping]) -> str:
+    """NOTE-23: the kind of place the words name when this part has none of it ("fillet" for "finer at the fillets" on
+    a panel with only holes and notches); "" when the words name no kind, or one the part has, or when it cannot be
+    told: a model of more than one body (a part's own name may be the word, NOTE-4), faces not measured (the flow
+    route's staged STL has no CAD faces), the area list cut at its most, or a plate's thin walls (the plate itself)."""
+    named = [(noun, kinds) for noun, words, kinds in _KIND_WORDS if re.search(rf"\b{words}\b", str(quote or ""), re.I)]
+    bodies = [r for r in rows.values() if not r.get("feature")]
+    if not named or len(bodies) != 1 or not int(bodies[0].get("faces") or 0):
+        return ""
+    from meshpipeline.cad.part_features import MAX_FEATURES
+    have = {str(r.get("kind") or "") for r in rows.values() if r.get("feature")}
+    if sum(1 for r in rows.values() if r.get("feature")) >= MAX_FEATURES:
+        return ""
+    body = bodies[0]
+    name = str(body.get("name") or "")
+    sizes = [float(s) for s in body.get("size_mm") or () if _f(s)]
+    plate = bool(sizes) and float(_f(body.get("typical_wall_mm")) or 0.0) >= 0.5 * min(sizes)
+    for noun, kinds in named:
+        if have & set(kinds) or re.search(rf"\b{noun}", name, re.I) or (noun == "thin wall" and plate):
+            return ""
+    return named[0][0]
+
+
+def found_words(rows: Mapping[str, Mapping]) -> str:
+    """NOTE-23: the places the part does have, as the reply names them ("10 holes and 4 notches"); "" for none."""
+    out = []
+    for kinds, noun in _FOUND:
+        n = sum(int(c) if isinstance((c := r.get("count")), (int, float)) and c >= 1 else 1
+                for r in rows.values() if r.get("feature") and str(r.get("kind") or "") in kinds)
+        if n:
+            out.append(f"{n} {noun if n == 1 else _plural(noun)}")
+    if len(out) < 2:
+        return "".join(out)
+    return ", ".join(out[:-1]) + f" and {out[-1]}"
+
+
 #: the area kinds whose count is how many of them there are (a thin-wall area's count is its faces)
 _COUNTED_KINDS = ("hole", "hole group", "bore", "notch", "fillets", "bosses")
 _BIG = re.compile(r"\b(?:big|bigger|biggest|large|larger|largest|main|wide|widest)\b", re.I)

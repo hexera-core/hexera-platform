@@ -4199,6 +4199,32 @@
   ]
  },
  {
+  "context": "cad/part_words.py::_absent_kind::search#1|NotAPublisher|not-a-publisher|",
+  "path": "cad/part_words.py",
+  "qualname": "_absent_kind",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "re",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "cad/part_words.py::_absent_kind::search#2|NotAPublisher|not-a-publisher|",
+  "path": "cad/part_words.py",
+  "qualname": "_absent_kind",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 2,
+  "receiver": "re",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "cad/part_words.py::_holes_named::search#1|NotAPublisher|not-a-publisher|",
   "path": "cad/part_words.py",
   "qualname": "_holes_named",

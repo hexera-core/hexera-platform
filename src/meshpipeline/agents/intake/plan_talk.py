@@ -480,6 +480,22 @@ def which_one_line(u: Mapping) -> str:
             f"anywhere yet. Click it on the model and send that again.")
 
 
+def none_line(u: Mapping) -> str:
+    """NOTE-23: a phrase that names a kind of place this part has none of (the reader's `none_of`, and `found`: what
+    the part does have): nothing is set, and a click on the face meant is asked for. "" for any other phrase."""
+    noun = str(u.get("none_of") or "").strip()
+    if not noun:
+        return ""
+    found = str(u.get("found") or "").strip()
+    return (f"I couldn't find any {plural(noun)} on this part" + (f" (it has {found})" if found else "")
+            + ", so I haven't set that anywhere. Click the face you mean and send that again.")
+
+
+def none_found(note: Mapping, view: Mapping | None, *, note_id: str = "") -> bool:
+    """NOTE-23: this message has a phrase naming a kind of place the part has none of - its reply is said in code."""
+    return view is not None and any(none_line(u) for u in mine(note, view, note_id=note_id)[1])
+
+
 # #
 # NOTE-22: a click sent alone answers the one-place ask that waits for it
 # #
@@ -493,7 +509,7 @@ _POINTING = frozenset((
     "an", "please", "pls", "plz", "ok", "okay", "i", "mean", "meant", "yes", "yeah", "yep", "right", "exactly", "just",
     "on", "in", "at", "me", "my", "hole", "holes", "bore", "bores", "fillet", "fillets", "notch", "notches",
     "slot", "slots", "groove", "boss", "rib", "flange", "pocket", "chamfer", "cutout", "opening", "lip", "tab", "round",
-    "corner", "edge", "edges", "face", "faces", "wall", "spot", "place", "area", "surface", "bit"))
+    "corner", "edge", "edges", "face", "faces", "wall", "walls", "thin", "bend", "bends", "shaft", "shafts", "spot", "place", "area", "surface", "bit"))
 #: the most words a pointing message has
 _POINTING_MAX = 8
 
@@ -512,13 +528,15 @@ def waiting_ask(note: Mapping, view: Mapping | None, *, note_id: str = "") -> di
     when the next message is not a click. None when it left none, or more than one (one click answers one)."""
     if view is None:
         return None
-    asks = [u for u in mine(note, view, note_id=note_id)[1] if which_one_line(u)]
+    # (NOTE-23: a kind of place the part has none of waits for its click the same way, with n = 0)
+    asks = [u for u in mine(note, view, note_id=note_id)[1] if which_one_line(u) or none_line(u)]
     if len(asks) != 1:
         return None
     u = asks[0]
     words = " ".join(str(u.get("quote") or u.get("words") or "").split())
-    return {"words": words, "noun": str(u.get("noun") or ""), "n": int(u["which_one"]), "turns_left": 1} \
-        if words else None
+    n = u.get("which_one")
+    return {"words": words, "noun": str(u.get("noun") or u.get("none_of") or ""),
+            "n": int(n) if isinstance(n, int) else 0, "turns_left": 1} if words else None
 
 
 def after_turn(waiting: Mapping | None, *, text: str, faces: bool) -> tuple[str, dict | None]:
@@ -614,7 +632,7 @@ def reply_for(note: Mapping, view: Mapping | None, *, note_id: str = "") -> str:
         out.append(CLICK_IF_ELSEWHERE)
     for u in unsure[:MAX_SAID]:
         what = str(u.get("words") or u.get("quote") or "").strip()
-        out.append(which_one_line(u) or f"I couldn't tell where “{what}” is. Click it on the model and send it again.")
+        out.append(which_one_line(u) or none_line(u) or f"I couldn't tell where “{what}” is. Click it on the model and send it again.")
     flow = [_cap(x) for x in _lines_mine(view.get("lines") or (), said)][:MAX_SAID]
     if flow:
         # the flow reader's own lines: what a flow mesher applies depends on the mesher
@@ -684,5 +702,5 @@ def lines_mine(view: Mapping | None, text: str) -> list[str]:
 __all__ = ["ASK", "ASK_LINE", "BOTH", "CLICK_RULE", "GO", "HOLD", "HOLD_LINE", "INTAKE", "NOTE", "QUESTION",
            "QUESTION_RULE", "RULE", "WAITING", "about_the_mesh", "after_turn", "points_only", "waiting_ask",
            "answers_another_question", "asked_last", "asks", "exact_go", "face_words", "fixed_reply", "lines_mine",
-           "mesh_question", "mine", "never_go", "pictures_of", "plain_face_rows", "plan_change", "plural", "reading",
+           "mesh_question", "mine", "never_go", "none_found", "none_line", "pictures_of", "plain_face_rows", "plan_change", "plural", "reading",
            "reply_for", "requirement_content", "row_place", "row_what", "which_one_line"]
