@@ -70,7 +70,7 @@ def worst_points(site: Any, member: str | None) -> list[tuple[float, float, floa
             out.append(tuple(float(c) for c in p["xyz"][:3]))
         except (TypeError, ValueError):
             continue
-    return out
+    return out  # type: ignore[return-value]
 
 
 def measure(pool: Any, ws: Any, points: list, *, h_mm: float) -> dict | None:

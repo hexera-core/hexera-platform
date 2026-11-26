@@ -36,7 +36,7 @@ def attach_overlap_facts(defects: list[Defect], facts: dict | None, reverse: dic
     `reverse` maps (prefix, kernel index) -> stable id (`sites._reverse`). No answer: the defects unchanged."""
     if not facts:
         return defects
-    dups = {_pair_key(*ids) for ids in ([reverse.get(("B", int(i))), reverse.get(("B", int(j)))]
+    dups = {_pair_key(*ids) for ids in ([reverse.get(("B", int(i))), reverse.get(("B", int(j)))]  # type: ignore[arg-type]
                                         for i, j in facts.get("duplicates") or []) if all(ids)}
     common: dict[str, float] = {}
     for key, vol in (facts.get("common") or {}).items():

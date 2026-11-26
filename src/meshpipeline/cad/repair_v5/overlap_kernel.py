@@ -94,7 +94,7 @@ def _iter(lst: Any) -> list[Any]:
     try:
         return list(lst)
     except TypeError:
-        out = []
+        out = []  # type: ignore[var-annotated]
         it = lst.cbegin() if hasattr(lst, "cbegin") else None
         if it is None:
             return out

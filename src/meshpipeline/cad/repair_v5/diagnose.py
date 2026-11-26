@@ -355,7 +355,7 @@ def order(defects: list[Defect]) -> list[Defect]:
     def key(d: Defect) -> tuple[bool, int]:
         mesh_tier = d.kind != "validity" or d.code in QL.SOFT_CODES
         table = cost if mesh_tier else rank
-        return mesh_tier, table.get(d.cls or "unknown", len(table))
+        return mesh_tier, table.get(d.cls or "unknown", len(table))  # type: ignore[call-overload]
     return sorted(defects, key=key)
 
 
@@ -433,7 +433,7 @@ def _periodic(d: Defect, where: set[str], faults: list[F.Fault],
 
 def attach_faults(defects: list[Defect], faults: list[F.Fault], sites: dict[str, Site], *,
                   soft_codes: frozenset[str] = frozenset(),
-                  closed_faces: list[tuple[str, str | None]] = ()) -> list[Defect]:
+                  closed_faces: list[tuple[str, str | None]] = ()) -> list[Defect]:  # type: ignore[assignment]
     """`defects` with the detectors' `faults` (stable ids) put on them. Pure.
 
     - an invalid_brep_tolerance defect gets its fault KIND (which picks the rule seed: `brep_faults.KIND_REPAIRS`),
@@ -680,7 +680,7 @@ def diagnose(pool: Any, ws: Any, verdict: Any, sites: list[Site], defects: list[
             lineage = str(getattr(ws, "original", "") or "")
             ckey = (lineage, tuple(sorted(faces)), round(GAP_REACH_H * h_mm, 9))
             cacheable = pair_cache is not None and bool(faces and lineage)
-            hit = cached_pairs(pair_cache, ws, ckey, faces) if cacheable else None
+            hit = cached_pairs(pair_cache, ws, ckey, faces) if cacheable else None  # type: ignore[arg-type]
             if hit is not None:
                 pairs_of[site.id] = hit
             else:
@@ -688,7 +688,7 @@ def diagnose(pool: Any, ws: Any, verdict: Any, sites: list[Site], defects: list[
                                                         "faces": [ws.indices[f] for f in faces]}) if faces else None
                 pairs_of[site.id] = _translate_pairs((answer or {}).get("pairs", []), reverse)
                 if answer is not None and cacheable:
-                    store_pairs(pair_cache, ws, ckey, pairs_of[site.id])
+                    store_pairs(pair_cache, ws, ckey, pairs_of[site.id])  # type: ignore[arg-type]
         pairs = pairs_of[site.id]
         if d.kind == "mesher" and d.code in CLOSE_KINDS and not faces:
             # step 7: a failure that names no face is given the whole part's close pairs (one scan per file)
@@ -711,7 +711,7 @@ def diagnose(pool: Any, ws: Any, verdict: Any, sites: list[Site], defects: list[
     if shells:
         # v5 step 11: ONE shell measurement puts the open_shell_volume cause kind (gap / hole / sheet / ...) on them
         faces = sorted({ws.indices[e] for d in shells for e in d.entities if e[:1] == "F" and e in ws.indices})
-        out = S.attach_shell_causes(out, S.measure_shells(pool, ws, faces), reverse)
+        out = S.attach_shell_causes(out, S.measure_shells(pool, ws, faces), reverse)  # type: ignore[arg-type]
     unit = header_unit_of(source_step)
     faults, facts = measure_faults(pool, ws, header_unit=unit)
     soft = frozenset(str(getattr(f, "code", "")) for f in getattr(verdict.valid, "soft", ()) or ())

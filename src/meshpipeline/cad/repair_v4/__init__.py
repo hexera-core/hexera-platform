@@ -304,8 +304,9 @@ def _run_search(source: str, dest: str, *, budget: Budget, deadline_s: float) ->
             }
             # B22: what the state the gate just judged kept of the input, in the summary either way - a refusal
             # is reported, never silent (the row's `loss` field; `report.py` counts them)
-            if getattr(result, "best_loss", None) is not None:
-                summary["loss"] = result.best_loss.row()
+            best_loss = getattr(result, "best_loss", None)
+            if best_loss is not None:
+                summary["loss"] = best_loss.row()
             best = deliverable(result, input_verdict)
             if best is None:
                 return passthrough(summary, trace_path)

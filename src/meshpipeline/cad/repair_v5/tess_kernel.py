@@ -115,7 +115,7 @@ def halton_points(lo: Sequence[float], hi: Sequence[float], start: int, count: i
     out = []
     for i in range(start + 1, start + count + 1):
         u = (_radical_inverse(i, 2), _radical_inverse(i, 3), _radical_inverse(i, 5))
-        out.append(tuple(lo[k] + (hi[k] - lo[k]) * u[k] for k in range(3)))  # type: ignore[misc]
+        out.append(tuple(lo[k] + (hi[k] - lo[k]) * u[k] for k in range(3)))
     return out  # type: ignore[return-value]
 
 

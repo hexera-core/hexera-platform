@@ -142,7 +142,7 @@ def examine(candidates: Sequence[tuple[float, int, int]], measure: Callable[[int
     """(the measured pairs `measure` kept, how many were examined, truncated?) - candidates in order until
     `budget_s` of `clock` is spent. `measure(a, b)` returns the pair's row or None to drop it."""
     deadline = clock() + budget_s
-    found, examined = [], 0
+    found, examined = [], 0  # type: ignore[var-annotated]
     for _sep, a, b in candidates:
         if clock() > deadline:
             return found, examined, True

@@ -195,7 +195,7 @@ def _step_floor(sliver: Any, near: list[dict], fmap: Any, feature_deg: float) ->
     mid = props.CentreOfMass()
     faces = [TopoDS.Face_s(fmap.FindKey(n["face"])) for n in sides]
     normals = [_normal_at(f, mid) for f in faces]
-    if any(n is None for n in normals) or normals[0].Angle(normals[1]) * 57.29577951308232 > STEP_PARALLEL_DEG:
+    if any(n is None for n in normals) or normals[0].Angle(normals[1]) * 57.29577951308232 > STEP_PARALLEL_DEG:  # type: ignore[union-attr]
         return None
 
     def area(f: Any) -> float:
@@ -226,7 +226,7 @@ def _merge_sliver(payload: dict) -> dict:
     TopExp.MapShapes_s(old, TopAbs_FACE, fmap)
     TopExp.MapShapes_s(old, TopAbs_EDGE, emap)
     efmap = _ancestors(old, TopAbs_EDGE, TopAbs_FACE)
-    faces, into, partners, protected = [], {}, [], []
+    faces, into, partners, protected = [], {}, [], []  # type: ignore[var-annotated]
     for target in payload["targets"]:
         if target["type"] != "face":
             raise ValueError(f"{target['id']}: merge_sliver takes faces, not {target['type']}s")

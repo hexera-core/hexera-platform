@@ -193,12 +193,12 @@ def extra_rows(state: Any, diagonal_mm: float | None = None) -> list:
         if not faces:
             continue
         kind = getattr(site, "kind", "")
-        coarse = bool(((getattr(site, "graph", None) or {}).get("coarse") or {}))
+        coarse = bool((getattr(site, "graph", None) or {}).get("coarse") or {})
         aim = _aim(site)
         named = set(_located(site))
         diag = _diagonal_of(site, diagonal_mm)
 
-        def where(f: str) -> str:
+        def where(f: str, named: set = named) -> str:
             return "the mesher's own face" if f in named else "a face at the site"
 
         # --- split_angle: det's rungs at the kinds det forbids, and new rungs everywhere ----------------------

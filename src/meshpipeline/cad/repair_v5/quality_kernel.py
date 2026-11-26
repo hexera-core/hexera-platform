@@ -230,8 +230,8 @@ def quality_facts(shape: Any, *, e_mm: float, faces: list[int] | None = None, bu
             narrow.append({"face": i, "area_mm2": round(area, 9), "width_mm": round(width, 9),
                            "rs_width_mm": round(rs_width, 9), "solid": solid_of(face)})
     small_e.sort(key=lambda r: r["length_mm"])
-    small_f.sort(key=lambda r: r["area_mm2"])
-    narrow.sort(key=lambda r: r["width_mm"])
+    small_f.sort(key=lambda r: r["area_mm2"])  # type: ignore[arg-type, return-value]
+    narrow.sort(key=lambda r: r["width_mm"])  # type: ignore[arg-type, return-value]
     out["small_edges"], out["small_faces"], out["narrow_faces"] = (
         small_e[:max_items], small_f[:max_items], narrow[:max_items])
     out["counts"] = {"small_edges": len(small_e), "small_faces": len(small_f), "narrow_faces": len(narrow)}

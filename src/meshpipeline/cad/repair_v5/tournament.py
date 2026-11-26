@@ -678,7 +678,7 @@ class Tournament:
             return
         stop = ""
         for run in entered:
-            if not stop and self.deadline is not None and self.clock() >= self._deadline():
+            if not stop and self.deadline is not None and self.clock() >= (self._deadline() or self.deadline):
                 stop = "the class loop's wall"
             if not stop and self._file_wall_spent():
                 stop = "the file's wall"

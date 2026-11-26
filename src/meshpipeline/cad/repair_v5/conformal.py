@@ -231,7 +231,7 @@ class ConformalPass:
                  f"(<= {bound:.3g} mm), {len(overlapping)} overlapping; real-gap cap {cap:.3g} mm"
                  + (f" [measurement truncated: {measured['truncated']}]" if measured.get("truncated") else ""))
         step(f"conformal pass: {cause}; fuzzy steps {[float(f'{v:.3g}') for v in schedule]}")
-        current, records = ws, []
+        current, records = ws, []  # type: ignore[var-annotated]
 
         # 1. misalignment
         tweaked: set[int] = set()
@@ -393,7 +393,7 @@ class ConformalPass:
             return None
         try:
             after = self.judge.full(pool, current, self.original)
-        except (*Q.UNAVAILABLE, InconclusiveVerdict) as why:
+        except (*Q.UNAVAILABLE, InconclusiveVerdict) as why:  # type: ignore[misc]
             self._final(records, cause, True, "not_checked", f"the full check could not be had: {why}", step,
                         guarded.volume_change)
             return None
@@ -403,6 +403,6 @@ class ConformalPass:
             self._final(records, cause, True, "not_checked", "the full check was inconclusive", step,
                         guarded.volume_change)
             return None
-        keep, result, why = keep_decision(before, facts_of(after), None)
-        self._final(records, cause, True, result, why, step, guarded.volume_change)
+        keep, result, why = keep_decision(before, facts_of(after), None)  # type: ignore[misc]
+        self._final(records, cause, True, result, why, step, guarded.volume_change)  # type: ignore[misc]
         return (current, after) if keep else None

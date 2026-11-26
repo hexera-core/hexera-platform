@@ -3,8 +3,6 @@
 # Boundaries: hermetic; a fake pool and a minimal verdict.
 from __future__ import annotations
 
-from types import SimpleNamespace
-
 from meshpipeline.cad.repair_v4.verdict.assemble import Verdict, with_brep_orientation
 from meshpipeline.cad.repair_v4.verdict.valid import SOFT_CODES, ValidReport
 from meshpipeline.cad.repair_v4.worker_pool import CallResult

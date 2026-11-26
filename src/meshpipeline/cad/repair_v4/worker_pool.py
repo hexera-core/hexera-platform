@@ -143,7 +143,7 @@ def _event(fn_name: str, status: str, error: str | None, start: float, timeout_s
     fields = {"op": fn_name, "kernel_call": fn_name, "status": status, "timeout_s": timeout_s, "wall_s": seconds,
               "worker_pid": getattr(proc, "pid", None), "worker_exit_code": getattr(proc, "exitcode", None)}
     if status == "ok":
-        EV.emit("kernel_call", severity="DEBUG", **fields)
+        EV.emit("kernel_call", severity="DEBUG", **fields)  # type: ignore[arg-type]
     else:
         EV.emit("kernel_call_failed", severity="ERROR" if status == "crashed" else "WARNING", sync=True,
                 error=error, reason_key=f"kernel_{status}", **fields, **EV.memory())

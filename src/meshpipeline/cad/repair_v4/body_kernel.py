@@ -352,7 +352,9 @@ def _ids(payload: dict, kind: str, indices: list[int]) -> list[str]:
 def _debug_record_shapes(payload: dict, old: Any, new: Any, stages: list[tuple[Any, Any]]) -> None:
     import os
 
-    want = os.environ.get("CAD_REPAIR_V4_DEBUG_RECORD")
+    from meshpipeline.settings.env import optional_env
+
+    want = optional_env("CAD_REPAIR_V4_DEBUG_RECORD", "")
     if not want:
         return
     import sys

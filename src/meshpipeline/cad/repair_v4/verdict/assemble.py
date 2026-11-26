@@ -395,10 +395,10 @@ PANEL_THREADS_ENV = "CRS_V4_PANEL_THREADS"
 
 def full_panel_threads() -> int:
     """CRS_V4_PANEL_THREADS if set (1 = the serial panel), else DEFAULT_PANEL_THREADS."""
-    import os
+    from meshpipeline.settings.env import optional_env
 
     try:
-        return max(1, int(os.environ.get(PANEL_THREADS_ENV, str(DEFAULT_PANEL_THREADS))))
+        return max(1, int(optional_env("CRS_V4_PANEL_THREADS", "") or str(DEFAULT_PANEL_THREADS)))
     except ValueError:
         return DEFAULT_PANEL_THREADS
 

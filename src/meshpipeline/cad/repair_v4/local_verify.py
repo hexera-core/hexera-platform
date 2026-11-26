@@ -375,7 +375,7 @@ def verify_local(pool: WorkerPool, ws_before: Workspace, ws_after: Workspace, de
     # raised FileNotFoundError and lost the whole file (measured on jig: seam_variant on 00607178). The cached path,
     # written by the call that computed it, is the one meshed; whether it was exported is in the key.
     before, before_region = _remembered(
-        ("check", _brep_key(ws_before.brep_path), tuple(pre_payload["solids"]), overlap, defect.kind == "mesher"),
+        ("check", _brep_key(ws_before.brep_path), tuple(pre_payload["solids"]), overlap, defect.kind == "mesher"),  # type: ignore[arg-type]
         lambda: (_kernel(pool, "local_check", pre_payload, timeout_s), pre_payload["export"]))
 
     found_after = _findings(ws_after, after)
@@ -404,7 +404,7 @@ def verify_local(pool: WorkerPool, ws_before: Workspace, ws_after: Workspace, de
 
     pairs: list[PairResult] = []
     if overlap and located is not None and located.pairs:
-        live_overlaps = {ids: next((o for o in after["overlaps"]
+        live_overlaps = {ids: next((o for o in after["overlaps"]  # type: ignore[var-annotated]
                                     if tuple(sorted((bodies_after.get(o["pair"][0], ""),
                                                      bodies_after.get(o["pair"][1], "")))) == ids), {})
                          for c, ids in found_after if c == "body_overlap"}
@@ -416,7 +416,7 @@ def verify_local(pool: WorkerPool, ws_before: Workspace, ws_after: Workspace, de
     if defect.kind == "mesher" and defect.member:
         result = _mesh_region(pool, region, defect.member)
         gone = result.status == "pass"
-        before_result = _remembered(("mesh", _brep_key(ws_before.brep_path), tuple(pre_payload["solids"]),
+        before_result = _remembered(("mesh", _brep_key(ws_before.brep_path), tuple(pre_payload["solids"]),  # type: ignore[arg-type]
                                      defect.member),
                                     lambda: _mesh_region(pool, before_region, defect.member))
         detail.update(member=defect.member, member_status=result.status, member_error_kind=result.error_kind,
@@ -426,7 +426,7 @@ def verify_local(pool: WorkerPool, ws_before: Workspace, ws_after: Workspace, de
                       member_min_sicn=getattr(result, "min_sicn", None),
                       region_min_sicn_before=getattr(before_result, "min_sicn", None),
                       member_points=_located_points(result), region_points_before=_located_points(before_result))
-    _local_event(defect, gone, new_hard, detail, time.monotonic() - started)
+    _local_event(defect, gone, new_hard, detail, time.monotonic() - started)  # type: ignore[arg-type]
     return LocalResult(gone, new_hard, detail, round(time.monotonic() - started, 3), pairs)
 
 

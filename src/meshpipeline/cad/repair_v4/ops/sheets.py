@@ -95,14 +95,14 @@ def _units(shape: Any) -> list[tuple[str, Any, list[Any]]]:
     from OCP.TopAbs import TopAbs_FACE, TopAbs_SHELL, TopAbs_SOLID
     from OCP.TopExp import TopExp_Explorer
 
-    shells, exp = [], TopExp_Explorer(shape, TopAbs_SHELL, TopAbs_SOLID)
+    shells, exp = [], TopExp_Explorer(shape, TopAbs_SHELL, TopAbs_SOLID)  # type: ignore[var-annotated]
     while exp.More():
         if not any(exp.Current().IsSame(s) for s in shells):
             shells.append(exp.Current())
         exp.Next()
     out: list[tuple[str, Any, list[Any]]] = [(f"H{k}", s, _keys(_map(s, TopAbs_FACE)))
                                              for k, s in enumerate(shells, start=1)]
-    loose, exp = [], TopExp_Explorer(shape, TopAbs_FACE, TopAbs_SHELL)
+    loose, exp = [], TopExp_Explorer(shape, TopAbs_FACE, TopAbs_SHELL)  # type: ignore[var-annotated]
     while exp.More():
         if not any(exp.Current().IsSame(f) for f in loose):
             loose.append(exp.Current())

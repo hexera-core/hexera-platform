@@ -72,7 +72,7 @@ def predict(payload: dict) -> dict:
                     nodes.append(tri)
                     owner.append(face)
         n_focus = int(payload.get("n_focus") or len(boxes))
-        counts, where = self_crossings(tris, nodes, owner, focus=set(range(n_focus)) if n_focus < len(boxes)
+        counts, where = self_crossings(tris, nodes, owner, focus=set(range(n_focus)) if n_focus < len(boxes)  # type: ignore[arg-type]
                                        else None, cap=int(payload.get("cap") or 20_000))
         return {"pairs": [[i, j, n, [round(c, 6) for c in where[(i, j)]]] for (i, j), n in sorted(counts.items())],
                 "triangles": len(tris)}

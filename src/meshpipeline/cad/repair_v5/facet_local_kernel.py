@@ -276,7 +276,7 @@ def v5_local_cross(payload: dict) -> dict:
                                    TopoDS.Face_s(faces.FindKey(b))) for k in sorted(shared)[:4]]
             angles = [x for x in angles if x is not None]
             if angles:
-                row["edge_angle_deg"] = round(max(angles), 3)
+                row["edge_angle_deg"] = round(max(angles), 3)  # type: ignore[type-var, arg-type]
     crossed: dict[int, int] = {}
     for (a, b), row in rows.items():
         total = sum(row["by_member"].values())

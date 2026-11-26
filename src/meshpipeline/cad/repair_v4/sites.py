@@ -729,7 +729,7 @@ def _site_of(component: list[_Node], boxes: dict) -> Site:
     # the oracle's first 24 dev files; the search caught it and expanded BLIND, losing every site of the state)
     kind = next((k for k in _PRIORITY if k in kinds), "proximity")
     meshers = sorted({s for n in component for s in n.sources if s != "proximity"})
-    site = Site("", kind, entities, xyz[:20], meshers, None, {}, None)
+    site = Site("", kind, entities, xyz[:20], meshers, None, {}, None)  # type: ignore[arg-type]
     seen_notes: set[tuple] = set()
     failures: list[dict] = []
     located: list[dict] = []

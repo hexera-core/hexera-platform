@@ -49,7 +49,7 @@ def crossing_kind(row: dict, tol: float) -> str | None:
     area_a, area_b = float(row.get("area_a_mm2") or 0.0), float(row.get("area_b_mm2") or 0.0)
     if (row.get("surface_a") == row.get("surface_b") and max(area_a, area_b) > 0
             and abs(area_a - area_b) <= DUPLICATE_AREA_REL * max(area_a, area_b)
-            and float(row.get("box_dev_mm") if row.get("box_dev_mm") is not None else 1e300) <= tol):
+            and float(row.get("box_dev_mm") if row.get("box_dev_mm") is not None else 1e300) <= tol):  # type: ignore[arg-type]
         return "duplicate_faces"
     if (row.get("section_mm") or 0.0) > 0.0:
         return "true_crossing"
