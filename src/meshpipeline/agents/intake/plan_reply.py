@@ -102,6 +102,8 @@ def facts(note: Mapping, view: Mapping | None, *, note_id: str = "") -> dict[str
         "picture": picture,
         # NOTE-24: a count beside sizes the user typed - which one wins on this route; the result tells which held
         "count_may_not_hold": PT.count_clash(view, counts),
+        # NOTE-26: what what they set does to the mesh, when it is worth saying (application/plan_cost)
+        **_cost_facts(view, rows),
         # what the checklist already holds from their earlier messages (so the reply can speak like one who knows it)
         "already_on_the_checklist": [{"what": PT.row_what(r), "where": PT.row_place(r)[0]}
                                      for r in (view or {}).get("rows") or ()
@@ -115,6 +117,23 @@ def facts(note: Mapping, view: Mapping | None, *, note_id: str = "") -> dict[str
         # the plain sentence that says exactly this (plan_talk.reply_for): the guard's source of truth
         "plain_version_that_is_exactly_right": PT.reply_for(note, view, note_id=note_id),
     }
+
+
+def _cost_facts(view: Mapping | None, rows) -> dict[str, Any]:
+    """NOTE-26: the plan's size and time before and after what the user set, as the model may say it; {} when
+    nothing was set by this message or the change is too small to say (PT.cost_mine)."""
+    cost = PT.cost_mine(view, rows)
+    if not cost:
+        return {}
+    b, a = cost.get("before") or {}, cost.get("after") or {}
+    out: dict[str, Any] = {"elements_before": PT.count_words(b.get("elements")),
+                           "elements_after": PT.count_words(a.get("elements")),
+                           "needs_a_bigger_machine": bool(cost.get("bigger_machine")),
+                           "say_it_like": PT.cost_line(cost)}
+    tb, ta = PT.usual_minutes(b), PT.usual_minutes(a)
+    if tb and ta:
+        out.update(minutes_before=tb, minutes_after=ta)
+    return {"what_it_costs": out}
 
 
 def _kept_facts(note: Mapping, view: Mapping | None, *, note_id: str = "") -> dict[str, Any]:
@@ -183,6 +202,14 @@ def _block_count() -> str:
             "something, the count may not fit with sizes they typed: say in a few natural words which one wins and "
             "that the result will say if the count couldn't be held; never promise the count. You may mention what "
             "is already_on_the_checklist when it helps, never as something this message set.\n")
+
+
+def _block_cost() -> str:
+    return ("If what_it_costs is there, what they set changes how big the mesh will be: after saying what you set, add "
+            "ONE short plain sentence with the element count before and after, as the facts word it ('about 0.7 "
+            "million to about 2.9 million elements'), the minutes before and after when given ('roughly 25 minutes "
+            "instead of 8'), and that it needs a bigger machine only if needs_a_bigger_machine is true. say_it_like "
+            "is one way to say it. No warning tone, no 'are you sure', no advice to change it: just the cost.\n")
 
 
 def _block_examples() -> str:
@@ -254,6 +281,8 @@ PLAN_REPLY_PROMPT_BLOCKS: tuple = (
                           "not read, once", _block_guess_and_picture),
     ("count", "a whole-mesh count said with its typed number and bound, no place needed; beside typed sizes, which "
               "wins and that the result tells it, never a promise", _block_count),
+    ("cost", "what they set does to the mesh, when worth saying: elements and minutes before and after, a bigger "
+             "machine if needed, one plain sentence, no warning", _block_cost),
     ("kept", "words that set nothing: one or two short natural sentences - what they said, in my words, kept in "
              "mind when the mesh is planned (the result told only when they asked something of the mesh); no menu, "
              "no jargon; a change to the CAD: meshing can't, kept, told; never 'set'", _block_kept),
@@ -439,6 +468,22 @@ def _count_check(text: str, f: Mapping) -> str:
     return ""
 
 
+_BIGGER = re.compile(r"\b(?:bigger|larger|faster|more powerful)\s+machine\b", re.I)
+
+
+def _cost_check(text: str, f: Mapping) -> str:
+    """NOTE-26: a cost worth saying is said - the element count after, as the facts word it - and a bigger machine is
+    said only when it is needed. "" when the reply may be said."""
+    cost = f.get("what_it_costs")
+    if not isinstance(cost, Mapping):
+        return ""
+    if not _numbers(str(cost.get("elements_after") or "")) <= _numbers(text):
+        return "the cost not said"
+    if _BIGGER.search(text) and not cost.get("needs_a_bigger_machine"):
+        return "a bigger machine said when none is needed"
+    return ""
+
+
 def check(reply: str, f: Mapping, *, last_reply: str = "") -> str:
     """Why a model-written reply may not be said ("" when it may), against the facts `f`. The checks, in order:
     empty; longer than MAX_CHARS; a rule id; an exclamation, filler or emoji; a number the facts do not hold; something
@@ -463,7 +508,7 @@ def check(reply: str, f: Mapping, *, last_reply: str = "") -> str:
         # (NOTE-24: a count is the whole mesh's by nature - it names no place)
         if any(not a.get("count") for a in f["applied"]) and not _place_named(text, f):
             return "no place named"
-        why = _count_check(text, f)
+        why = _count_check(text, f) or _cost_check(text, f)
         if why:
             return why
         if any(str(a.get("place") or "").startswith("YOUR guess") for a in f["applied"]) \

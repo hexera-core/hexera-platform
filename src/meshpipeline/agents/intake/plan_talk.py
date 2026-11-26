@@ -574,6 +574,56 @@ def count_clash(view: Mapping | None, rows: Iterable[Mapping]) -> str:
     return "If that can't hold with the sizes you typed, your sizes win and the result will say so."
 
 
+#: NOTE-26: what a typed requirement costs, said at the plan step (application/plan_cost)
+COST_RULE = "NOTE-26"
+
+
+def count_words(n: float | None) -> str:
+    """An element count in plain words: "about 0.7 million", "about 12 million", "about 78,000"."""
+    n = int(n or 0)
+    if n >= 100_000:
+        m = n / 1_000_000.0
+        return f"about {m:.1f} million" if m < 10 else f"about {m:.0f} million"
+    return f"about {float(f'{max(n, 1):.2g}'):,.0f}"
+
+
+def minutes_words(m: float | None) -> str:
+    """A run's time in plain words: "8 minutes", "2.5 hours"."""
+    m = max(1, int(m or 0))
+    return f"{m} minute{'s' if m != 1 else ''}" if m < 90 else f"{m / 60.0:.1f} hours"
+
+
+def usual_minutes(side: Mapping) -> int:
+    return int(side.get("usual_minutes") or side.get("minutes") or 0)
+
+
+def cost_mine(view: Mapping | None, rows) -> dict | None:
+    """NOTE-26: the cost on the view (part_matches.with_cost) when this message set something and it is worth saying
+    (application/plan_cost.worth_saying: the count moves by more than a quarter, or a bigger machine); else None."""
+    cost = (view or {}).get("cost")
+    if not rows or not isinstance(cost, Mapping):
+        return None
+    from meshpipeline.application.plan_cost import worth_saying
+    return dict(cost) if worth_saying(cost) else None
+
+
+def cost_line(cost: Mapping) -> str:
+    """NOTE-26's plain sentence: "That takes it from about 0.7 million to about 2.9 million elements, so roughly 25
+    minutes instead of 8." - with "and it needs a bigger machine" when it does."""
+    b, a = cost.get("before") or {}, cost.get("after") or {}
+    was, now = count_words(b.get("elements")), count_words(a.get("elements"))
+    line = f"That takes it from {was} to {now} elements" if was != now else f"That keeps it at {now} elements"
+    tb, ta = usual_minutes(b), usual_minutes(a)
+    if tb and ta and tb != ta:
+        then = minutes_words(tb)
+        if ta < 90 and tb < 90:
+            then = str(max(1, tb))          # "25 minutes instead of 8"
+        line += f", so roughly {minutes_words(ta)} instead of {then}"
+    if cost.get("bigger_machine"):
+        line += ", and it needs a bigger machine" if was != now or (tb and ta and tb != ta) else ", but it needs a bigger machine"
+    return line + "."
+
+
 #: a guessed place
 CLICK_IF_ELSEWHERE ="That's my guess from your words; click it on the model if you meant another spot."
 #: the most rows said in one reply
@@ -831,6 +881,10 @@ def reply_for(note: Mapping, view: Mapping | None, *, note_id: str = "") -> str:
     clash = count_clash(view, counts)
     if clash:
         out.append(clash)
+    priced = cost_mine(view, rows or counts)
+    if priced:
+        # NOTE-26: what it does to the mesh, said before the run
+        out.append(cost_line(priced))
     for u in unsure[:MAX_SAID]:
         what = str(u.get("words") or u.get("quote") or "").strip()
         out.append(which_one_line(u) or none_line(u) or f"I couldn't tell where “{what}” is. Click it on the model and send it again.")

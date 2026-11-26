@@ -226,3 +226,23 @@ def test_parts_words_are_short():
 
 def test_the_flow_route_reads_with_the_snappy_consumer():
     assert PM._route_ask(PM.ROUTE_CFD)[0] == "snappy_part_levels"
+
+
+def test_the_reading_keeps_what_its_sizes_cost_and_the_card_shows_it(world, monkeypatch):
+    # NOTE-26: the FEA reading is costed on the worker as it lands, kept with it, and on the card's view
+    from meshpipeline.application import plan_cost
+    seen = []
+    cost = {"rule": "NOTE-26", "before": {"elements": 700_000}, "after": {"elements": 2_900_000},
+            "bigger_machine": False}
+    monkeypatch.setattr(plan_cost, "for_reading",
+                        lambda sid, section, notes: seen.append(section.get("status")) or cost)
+    PM.finalize(world.session)
+    _run_queued(world)
+    assert seen == ["used"]
+    assert PM.view(world.session)["cost"] == cost
+    # nothing costed (the stage did not size it): no cost on the view
+    monkeypatch.setattr(plan_cost, "for_reading", lambda *a: None)
+    world.session.user_notes = [{"id": "n2", "text": NOTE + " 2 mm on part 4.", "source": "console"}]
+    PM.finalize(world.session)
+    _run_queued(world)
+    assert "cost" not in PM.view(world.session)
