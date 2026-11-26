@@ -308,15 +308,22 @@ def _crs_ports_composed():
 
 
 @_pytest.fixture(autouse=True)
-def _repair_engine_is_v3_unless_a_test_says(monkeypatch):
+def _repair_engine_is_v3_unless_a_test_says():
     """CRS v5 beta: the PRODUCT default engine is v5 (settings/cad_repair.py). The unit tier's repair tests were
     written against v3's report, and a v5 run here would only fail to start a kernel pool and fall back to v3 - so
     every unit test runs the v3 engine unless it sets CAD_REPAIR_ENGINE itself. The default is pinned on its own
     (tests/unit/cad/repair_v4/test_engine_dispatch.py, in a fresh interpreter)."""
+    # NOT through `monkeypatch`: an autouse conftest fixture that requests it sets the monkeypatch instance up
+    # before every test module's own autouse fixtures, so its env changes would be undone only AFTER their
+    # teardowns - test_builder_settings's reload then ran with its bad value still set (main CI, a6a4c9bf1).
     import meshpipeline.settings.cad_repair as rcfg
 
-    monkeypatch.setattr(rcfg, "CAD_REPAIR_ENGINE", "v3")
-    yield
+    before = rcfg.CAD_REPAIR_ENGINE
+    rcfg.CAD_REPAIR_ENGINE = "v3"
+    try:
+        yield
+    finally:
+        rcfg.CAD_REPAIR_ENGINE = before
 
 
 @_pytest.fixture(autouse=True)
