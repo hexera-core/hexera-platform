@@ -724,8 +724,23 @@ def _resolution_short(plan: dict) -> list[str]:
     # before the mesh existed. The measured reading is min_cell_m, which foam_exec takes from
     # checkMesh's own minimum cell volume - and the manifest already keys this one honestly, as
     # `cells_across_asked`.
+    # WHOSE RULE IT IS, AND WHAT DECIDES INSTEAD. The bare count, under a ledger row whose
+    # label says "the fidelity asks for", reads as an unmet requirement whatever the job is.
+    # MEASURED, job 22ac7054's review of the real plate: it PASSED this axis on the coolant
+    # error (0.472 of its tolerance) and still raised a concern that "the resolution should not
+    # be represented as satisfying that flow-fidelity rule", because nothing it was shown said
+    # whose rule 13 is. It is a FLOW count - `engines/passage` measures it across a pipe, for a
+    # pressure drop and a coolant temperature rise - and this row is `gating=False` for a
+    # measured reason: the staircase runs show the count does not predict the coolant volume
+    # error on any one part (seven across came out fourteen times worse than six), so the bar
+    # that decides delivery is that error. SAYING BOTH IS NOT AN EXCUSE FOR THE NUMBER: the
+    # count is still reported unrounded, the error is still measured, and the error still gates.
+    # What changes is that the sentence no longer states a requirement it does not mean.
     return [f"the plan asked for {asked} cells across the narrowest passage{where}, where the "
-            f"flow rule asks for {PASSAGE_CELLS_ACROSS}"]
+            f"flow rule asks for {PASSAGE_CELLS_ACROSS} - a flow-fidelity count, for a pressure "
+            f"drop or a coolant temperature rise, and not the bar this delivery is decided on: "
+            f"that is the coolant's own measured volume error, because the count does not "
+            f"predict it on any one part"]
 
 
 def finalize(workspace_dir, intake_patches: list, engine: str, domain: str = "",

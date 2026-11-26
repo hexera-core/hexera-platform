@@ -230,7 +230,7 @@ CRITERIA_ROWS: tuple[Criterion, ...] = (
     ),
     Criterion(
         key="resolution_short",
-        label="Every passage has the cells across it the fidelity asks for", op="empty",
+        label="Every passage has the cells across it the flow fidelity asks for (reported, never gated)", op="empty",
         threshold=None, gating=False,
         rationale=(
             "ADVISORY ON PURPOSE, and the measurements are why. The product's flow rule is 13 "

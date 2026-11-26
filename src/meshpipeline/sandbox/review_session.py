@@ -440,6 +440,11 @@ class FrameInk:
     # asks the different question of whether there is a drawn cell to count a period IN.
     period_unmeasurable: bool = False
     max_lag_px: int = 0
+    # AND HOW FAR APART THE FRAME'S OWN INK RUNS STAND, which is the only figure that says what
+    # window WOULD hold an array when no period could be measured. Carried because the session
+    # reports the repair and not only the refusal: MIN_REPEATS of this spacing is the window that
+    # would let the same cut prove the array it is already drawn on.
+    run_spacing_px: float = 0.0
 
 
 def _png_header(blob: bytes) -> tuple[int, int, int, int, int] | None:
@@ -609,7 +614,8 @@ def _measure_png(path: Path) -> tuple[tuple[int, int], FrameInk] | None:
         repeat_axis=axis,
         cell_pitch_down_px=down_pitch,
         period_unmeasurable=bool(structure.get("period_unmeasurable")),
-        max_lag_px=int(structure.get("max_lag_px") or 0))
+        max_lag_px=int(structure.get("max_lag_px") or 0),
+        run_spacing_px=float(structure.get("run_spacing_px") or 0.0))
 
 
 def _cell_runs(lines, countable: int) -> tuple[int, int, float]:
@@ -1558,8 +1564,45 @@ class ArtifactResolver:
                 "cell - under the %.1f px a cell must be to be counted, so this frame cannot "
                 "satisfy region %r. A window of %s across would.",
                 key, cut.um_per_px, cut.cell_px, cell_m * 1e6, COUNTABLE_CELL_PX, region_id, want)
+        elif not ink.shows_structure and ink.period_unmeasurable and ink.run_spacing_px > 0.0:
+            # THE FRAME IS TOO NARROW FOR THE PITCH DRAWN IN IT, which is a different defect from
+            # the branch below and has the OPPOSITE repair. `period_unmeasurable` means the search
+            # could not test a lag as long as the spacing between this frame's own ink runs, which
+            # no periodic profile's period can be - so the array may be right there in the picture
+            # and unprovable at this width.
+            #
+            # MEASURED, job 22ac7054, the real plate: `along_the_flow`'s zoom reported its ink runs
+            # 394.0 px apart against the 212 px longest repeat a 1280 px profile can test, and the
+            # branch below told the review "whatever the cut landed on, it is not the passages
+            # region 'along_the_flow' exists to show". The detector's own words, quoted in that
+            # same line, said the structure was coarser than the frame could measure. Those two
+            # cannot both be read: one says the cut is in the wrong place, the other says the frame
+            # cannot tell.
+            #
+            # THE FRAME STILL DOES NOT SATISFY THE REGION, and that was never in doubt: six periods
+            # is what proves an array and this one cannot show them. What changes is that the repair
+            # named is the WINDOW and not the placement, so nobody is sent to move a cut that is
+            # already on the right thing - and the review is not handed a conclusion the pixels do
+            # not carry.
+            from meshpipeline.sandbox.picture_structure import MIN_REPEATS
+
+            want = (f"{ink.run_spacing_px * MIN_REPEATS * cut.m_per_px * 1e3:.2f} mm"
+                    if cut.m_per_px > 0.0 else "unknown without a window")
+            logger.warning(
+                "review session: %s is sized correctly for the cells and TOO NARROW FOR THE PITCH "
+                "IN IT: its own ink runs stand %.1f px apart along the %s axis, past the %d px "
+                "longest repeat a profile this size can test, so no period could be measured and "
+                "the %d a periodic array has to show cannot be counted (%d repeat(s), %.3f of a "
+                "perfect array)%s. That is the WINDOW and not the placement: the cut may be on the "
+                "passages and unable to prove it here. A window of %s across the %s axis would "
+                "hold %d of them. Region %r is not satisfied by this frame.",
+                key, ink.run_spacing_px, ink.repeat_axis or "unnamed", ink.max_lag_px,
+                MIN_REPEATS, ink.repeats, ink.strength,
+                f"; the side that drew it said: {cut.claimed_why}" if cut.claimed_why else "",
+                want, ink.repeat_axis or "repeat", MIN_REPEATS, region_id)
         elif not ink.shows_structure:
-            # NO PASSAGE ARRAY IN THE PIXELS, measured HERE. Logged apart from the two below
+            # NO PASSAGE ARRAY IN THE PIXELS, measured HERE, AND THE FRAME COULD MEASURE A PERIOD.
+            # The branch above takes the case where it could not. Logged apart from the two below
             # because the repair is a different one again: the window is right and the cells may
             # well be fine, the CUT IS IN THE WRONG PLACE. The detector's own words are quoted,
             # and the producer's are quoted beside them when it said anything, so an operator can
