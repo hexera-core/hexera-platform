@@ -53,7 +53,9 @@ def sizes_of(ps: Mapping | None) -> dict[str, dict]:
                 # an area asked "finer" or "coarser" ("make the mesh finer at the fillets"): its own faces' size
                 # halved or doubled (resolve_scales), held on its faces as a sized area is (PLAN-fea-32, -36)
                 out.setdefault(p, {"scale": scale, "quote": e.get("quote") or "", "rest": False,
-                                   "faces": list((ps.get("features") or {})[p]), "name": names.get(p) or p})
+                                   "faces": list((ps.get("features") or {})[p]), "name": names.get(p) or p,
+                                   # VER-9: asked on a delivered mesh ("Request a change"): against that mesh
+                                   **({"change_of": str(e["change_of"])} if e.get("change_of") else {})})
             else:
                 out.setdefault(p, {"scale": scale, "quote": e.get("quote") or "", "rest": p in e.get("rest_parts", [])})
     return out
@@ -100,6 +102,12 @@ def resolve_scales(sizes: Mapping[str, Mapping], zones, *, base_m: float,
             given = (whole or {}).get(in_part)
             whole_m = (0.5 * (float(given["min_m"]) + float(given["max_m"])) if given and "min_m" in given
                        else float(part if part is not None else base_m))
+            if v.get("change_of"):
+                # VER-9: asked on the DELIVERED mesh ("Request a change"): finer or coarser than what that mesh had
+                # at the marked faces - never the mesh round them (reading A is the plan step's)
+                out[k] = _changed_area(v, faces, zs, whole or {}, in_part=in_part, whole_m=whole_m,
+                                       scale=float(scale), yours=bool(given and "min_m" in given))
+                continue
             if float(scale) < 1.0:
                 # "finer" at an area (Areen, 25 Nov, reading A): finer than the mesh AROUND it - half the size the
                 # plan has round the area - never under what the accuracy rules already give it
@@ -144,6 +152,33 @@ def _finer_area(v: Mapping, faces: set[str], own: list, *, around_m: float, scal
             "name": v.get("name") or ""}
 
 
+def _changed_area(v: Mapping, faces: set[str], zones: list, whole: Mapping[str, Mapping], *, in_part: str,
+                  whole_m: float, scale: float, yours: bool) -> dict:
+    """PLAN-fea-36 ON A CHANGE REQUEST (VER-9): the person is looking at the delivered mesh and asks for it finer (or
+    coarser) THERE, so the reference is the size the finished run had at the marked faces - its plan there, rebuilt
+    from the same payload: the rules' zones held to the user's other sizes as that run held them
+    (engines/fea_plan.user_sized), face by face the finest zone on it, else its part's size. The target is that size
+    times `scale` (half for "finer", twice for "coarser") at the coarsest marked face; a zone on the area finer than
+    the target keeps its size. Nothing else in the plan changes. The accuracy rules set no finer bound of their own;
+    the plan's element limit (PLAN-fea-8) is the only one, and the result says what was built there."""
+    from meshpipeline.engines import fea_plan as P
+
+    planned = P.user_sized([dict(z) for z in zones], whole) if whole else [dict(z) for z in zones]
+    part_m = next((float(z["size_m"]) for z in planned if z.get("kind") == "part" and _zone_key(z) == in_part),
+                  whole_m)
+    per_face = [min([float(z["size_m"]) for z in planned
+                     if z.get("kind") != "part" and f in {str(x) for x in z.get("faces") or []}] + [part_m])
+                for f in sorted(faces)]
+    last, last_low = max(per_face), min(per_face)
+    target = last * scale
+    t = float(f"{target:.6g}")
+    return {"min_m": t, "max_m": t, "scale": scale, "change_of": str(v.get("change_of") or ""),
+            "rule_m": float(f"{last:.6g}"), "target_m": t, "there_m": float(f"{last:.6g}"),
+            "there_low_m": float(f"{last_low:.6g}"), "around_m": float(f"{whole_m:.6g}"), "yours": yours,
+            "kept": False, "quote": v.get("quote") or "", "rest": bool(v.get("rest")), "faces": sorted(faces),
+            "name": v.get("name") or ""}
+
+
 def _mm(v_m: float, digits: int = 2) -> str:
     return f"{float(v_m) * 1e3:.{digits}g}"
 
@@ -163,7 +198,8 @@ def finer_outcomes(scaled: Mapping[str, Mapping] | None) -> list[dict]:
                "there_mm": float(f"{float(v['there_m']) * 1e3:.4g}"),
                "there_low_mm": float(f"{float(v['there_low_m']) * 1e3:.4g}"),
                "around_mm": float(f"{float(v['around_m']) * 1e3:.4g}"), "yours": bool(v.get("yours")),
-               "changed": not v.get("kept")}
+               "changed": not v.get("kept"), "change": bool(v.get("change_of")),
+               "coarser": float(v.get("scale") or 0.5) > 1.0}
         row["words"] = finer_words(row)
         out.append(row)
     return out
@@ -171,6 +207,13 @@ def finer_outcomes(scaled: Mapping[str, Mapping] | None) -> list[dict]:
 
 def finer_words(row: Mapping) -> str:
     """One area's "finer" outcome in plain words (finer_outcomes' row)."""
+    if row.get("change"):
+        # VER-9: against the delivered mesh the person was looking at
+        hi, lo = float(row["there_mm"]), float(row["there_low_mm"])
+        last = f"{_mm(lo * 1e-3)}-{_mm(hi * 1e-3)}" if lo < 0.9 * hi and _mm(lo * 1e-3) != _mm(hi * 1e-3) \
+            else _mm(hi * 1e-3)
+        return (f"You asked for {'coarser' if row.get('coarser') else 'finer'} elements at {row['name']}: the last "
+                f"mesh had about {last} mm there; this one has about {_mm(float(row['target_mm']) * 1e-3)} mm.")
     around = (f"your {float(row['around_mm']):.3g} mm" if row.get("yours")
               else f"the part's {float(row['around_mm']):.3g} mm")
     if row.get("changed"):

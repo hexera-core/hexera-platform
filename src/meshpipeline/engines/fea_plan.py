@@ -617,6 +617,11 @@ def user_sized(zone_list: list[dict], sizes: Mapping[str, Mapping]) -> list[dict
             # NOTE-14: under a flexible shortest edge a zone the rules make finer keeps its own size (the user said it
             # may go below it in places); only past the middle of the range is it brought down
             new = min(size, mid)
+        elif on and want.get("change_of"):
+            # PLAN-fea-36 on a change request (VER-9): the area's target is half (or twice) the size the delivered mesh
+            # had there - a zone on it coarser than that is brought to it ("finer"), one finer keeps its size; asked
+            # coarser, a zone finer than the target is raised to it
+            new = min(size, mid) if float(want.get("scale") or 0.5) < 1.0 else max(size, mid)
         elif on and want.get("kept"):
             # PLAN-fea-36: an area asked finer that the accuracy rules already size at or under half the mesh round it
             # keeps the rules' sizes - never raised by a size for the whole mesh, never refined (the cast knuckle's 21

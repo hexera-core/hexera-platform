@@ -662,7 +662,10 @@ def _change_facts(flags: list[dict], comment: str, *, session_id: str, payload: 
         spots=CR.separate_spots(marks), one_place=CR.one_place_words(comment),
         flow_cannot_size_a_face=(bool(faces) and flow and bool(payload.get("mesh_engine"))
                                  and not MR.flow_sizes_picked_faces(str(payload.get("mesh_engine")))),
-        last_run_minutes=CR.minutes_of(started, ended))
+        last_run_minutes=CR.minutes_of(started, ended),
+        # PLAN-fea-36 on a change request: "finer" halves what the delivered mesh had at the marked faces (the FEA
+        # solid and shell routes); a flow mesh refines by its own levels, said by the result
+        size_change=CR.size_step(comment) if faces and not flow else "")
     return facts
 
 
@@ -747,7 +750,7 @@ async def _change_request(job_id: uuid.UUID, body: DisputeIn, *, owner_id: str, 
             # the same part at the same scale as the run the change was asked on (as a dispute child: never re-read)
             new_job.geometry_source_id = parent.geometry_source_id
             new_job.geometry_interpretation_id = parent.geometry_interpretation_id
-            note = CR.change_note(comment, facts.faces)
+            note = CR.change_note(comment, facts.faces, of_job_id=str(job_id))
             payload = CR.change_payload(parent_payload, job_id=str(new_job.id), note=note,
                                         brief=CR.brief_line(comment, facts.faces, of_job_id=str(job_id)))
             await db.commit()

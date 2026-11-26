@@ -224,7 +224,11 @@ def _finer_row(row: Mapping, req: Mapping, finer: list, mesh, *, face_tags, mm_p
               else f"the part's {float(hit['around_mm']):.3g} mm")
     built = face_size_mm(mesh, hit.get("faces") or [], face_tags=face_tags, mm_per_unit=mm_per_unit)
     there = f"; built about {MR._g(round(built, 3))} mm there" if built else ""
-    if hit.get("changed"):
+    if hit.get("change"):
+        # VER-9: against the delivered mesh the change was asked on
+        said = (f"made about {MR._g(float(hit['target_mm']))} mm there, {'twice' if hit.get('coarser') else 'half'} "
+                f"the {MR._g(float(hit['there_mm']))} mm the last mesh had there{there}")
+    elif hit.get("changed"):
         said = f"made about {MR._g(float(hit['target_mm']))} mm there, half of {around}{there}"
     else:
         said = (f"kept at the {MR._g(float(hit['there_mm']))} mm the accuracy rules give there, already finer than "

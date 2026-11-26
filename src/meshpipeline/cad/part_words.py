@@ -836,7 +836,9 @@ def with_picks(ps: Mapping | None, req: Mapping | None, surface) -> dict:
         got, why_not, _w = check(json.dumps({"phrases": [phrase]}), [row], quote)
         dropped.extend(d.replace(pid, where) for d in why_not)
         for g in got:
-            g.update(phrase=None, rule="NOTE-17", picked=kept)
+            g.update(phrase=None, rule="NOTE-17", picked=kept,
+                     # VER-9: asked on a delivered mesh - "finer" is against the size that run had here
+                     **({"change_of": str(e["change_of"])} if e.get("change_of") else {}))
             entries.append(g)
             table.append(row)
             features[pid] = kept

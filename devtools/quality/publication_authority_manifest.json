@@ -2784,6 +2784,45 @@
   "roots": []
  },
  {
+  "context": "application/change_request.py::size_step::search#1|NotAPublisher|not-a-publisher|",
+  "path": "application/change_request.py",
+  "qualname": "size_step",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "re",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "application/change_request.py::size_step::search#2|NotAPublisher|not-a-publisher|",
+  "path": "application/change_request.py",
+  "qualname": "size_step",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 2,
+  "receiver": "_FINER_WORDS",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "application/change_request.py::size_step::search#3|NotAPublisher|not-a-publisher|",
+  "path": "application/change_request.py",
+  "qualname": "size_step",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 3,
+  "receiver": "_COARSER_WORDS",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "application/chat_attachments.py::sniff::search#1|NotAPublisher|not-a-publisher|",
   "path": "application/chat_attachments.py",
   "qualname": "sniff",

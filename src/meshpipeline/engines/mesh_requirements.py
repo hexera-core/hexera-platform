@@ -968,6 +968,14 @@ def _faces_in(carrying: list[tuple[str, list]], quote) -> list | None:
     return next((f for text, f in carrying if len(q) >= 2 and q in text), None)
 
 
+def change_of(quote, notes) -> str:
+    """VER-9: the finished run the own note whose words hold `quote` was asked on ("Request a change"), or ""."""
+    from meshpipeline.contracts.user_notes import said
+    q = _squash(str(quote or ""))
+    return next((str(n.get("change_of") or "") for n in notes or ()
+                 if isinstance(n, Mapping) and n.get("faces") and len(q) >= 2 and q in _squash(said(n))), "")
+
+
 def faces_for(quote, notes) -> list | None:
     """NOTE-17: the faces picked with the own note whose words hold `quote` - the match bind_picks makes - or None.
     `notes` as bind_picks takes them."""
@@ -1030,6 +1038,10 @@ def bind_picks(req: dict, notes, *, cells: bool = False) -> dict:
         faces = faces_of(e.get("quote"))
         if faces:
             bind(e, faces)
+            # VER-9: words asked on a delivered mesh ("Request a change") carry the run they were asked on
+            job = change_of(e.get("quote"), notes)
+            if job:
+                e["change_of"] = job
     sizes = req.get("sizes") or {}
     if sizes.get("global_mm") is not None:
         r = next((r for r in req.get("rows") or () if r.get("field") == "global"), None)
@@ -2496,7 +2508,7 @@ async def decide(state: Mapping, *, route: str = "", job_id: str = "", run=None,
     return got if got is not None else without("invalid", "it gave no reading")
 
 
-__all__ = ["CONSUMER", "FILE", "KINDS", "KIND_WORDS", "kind_in_words", "MAX_LIVE", "asked_rows", "not_applied_words", "finish_report", "limit_row", "line", "live_words",
+__all__ = ["CONSUMER", "FILE", "KINDS", "KIND_WORDS", "kind_in_words", "MAX_LIVE", "asked_rows", "change_of", "not_applied_words", "finish_report", "limit_row", "line", "live_words",
            "pct", "report_words", "share_words", "summary", "MEASURES", "RULE_NOTHING", "RULE_NOT_APPLIED", "RULE_READ", "SHAPES", "SIZES", "SYSTEM",
            "TOOL", "UNITS_MM", "UNREAD_WORDS", "check", "decide", "decisions", "empty", "is_empty", "limit_words",
            "messages_for", "notes_text", "read", "requirements_of", "section", "tool", "wanted", "words", "write"]

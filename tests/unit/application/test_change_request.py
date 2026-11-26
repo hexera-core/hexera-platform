@@ -198,9 +198,13 @@ async def test_a_change_request_starts_a_new_run_without_asking_the_reviewer():
     assert "user_dispute" not in payload, "the change went to the reviewer as a dispute"
     assert payload["user_notes"][-1]["text"] == _OWNER_WORDS
     assert [f["id"] for f in payload["user_notes"][-1]["faces"]] == ["Face_1", "Face_2"]
-    # the model is down: the code sentence, which says where, that nothing else changes, the new run and its time
-    assert got["reply"] == ("Got it: I'll make that change on Face 1 · flat 100 × 100 mm, Face 2 · flat 10 × 10 mm "
-                            "only, and nothing else changes. Starting a new run; the last one took 29 min.")
+    # the model is down: the code sentence, which says where, the size step ("finer": half what the last mesh had
+    # there, PLAN-fea-36 on a change request), that nothing else changes, the new run and its time
+    assert got["reply"] == ("Got it: finer on Face 1 · flat 100 × 100 mm, Face 2 · flat 10 × 10 mm only, about half "
+                            "the size the last mesh had there, and nothing else changes. Starting a new run; the last "
+                            "one took 29 min.")
+    # VER-9: the note carries the run it was asked on, so "finer" is against that mesh
+    assert payload["user_notes"][-1]["change_of"] == str(_PARENT)
     assert "meets your brief" not in got["reply"]
 
 
