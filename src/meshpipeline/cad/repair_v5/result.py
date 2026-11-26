@@ -124,6 +124,20 @@ class RepairResultV5:
         out["flags"] = list(self.flags)
         return out
 
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> RepairResultV5:
+        """The contract back from `to_dict` (the v5 child process hands its result over as JSON)."""
+        problems = tuple(
+            Problem(id=str(p["id"]), type=str(p["type"]),
+                    location=Location(faces=tuple(p["location"].get("faces") or ()),
+                                      bodies=tuple(p["location"].get("bodies") or ()),
+                                      points=tuple((float(x[0]), float(x[1]), float(x[2]))
+                                                   for x in p["location"].get("points") or ())),
+                    status=str(p["status"]), reason_text=str(p["reason_text"]), change_mm=p.get("change_mm"))
+            for p in d.get("problems") or ())
+        return cls(**{**{k: v for k, v in d.items() if k not in ("problems", "flags")},
+                      "problems": problems, "flags": tuple(d.get("flags") or ())})
+
     @property
     def fixed(self) -> int:
         return sum(1 for p in self.problems if p.status == "fixed")
