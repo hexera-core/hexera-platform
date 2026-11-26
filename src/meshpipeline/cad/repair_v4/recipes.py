@@ -370,7 +370,7 @@ class GcsBackend:
     """Objects under `gs://bucket/prefix` (the eval bucket). `bucket` is injectable for tests."""
 
     def __init__(self, uri: str, *, bucket: Any = None) -> None:
-        from meshpipeline.adapters.mesh_execution.gcs_exchange import split_gs
+        from meshpipeline.contracts.gcs_buckets import split_gs
 
         self._bucket_name, prefix = split_gs(uri)
         self._prefix = prefix.strip("/")
@@ -378,8 +378,8 @@ class GcsBackend:
 
     def _b(self) -> Any:
         if self._bucket is None:
-            from meshpipeline.adapters.mesh_execution.gcs_exchange import storage_client
-            self._bucket = storage_client().bucket(self._bucket_name)
+            from meshpipeline.contracts import gcs_buckets
+            self._bucket = gcs_buckets.bucket(self._bucket_name)
         return self._bucket
 
     def _full(self, key: str) -> str:
@@ -395,11 +395,11 @@ class GcsBackend:
         return blob.download_as_text() if blob.exists() else None
 
     def put_if_absent(self, key: str, text: str) -> bool:
-        from google.api_core.exceptions import PreconditionFailed
+        from meshpipeline.contracts import gcs_buckets
         try:
             self._b().blob(self._full(key)).upload_from_string(text, content_type="application/json",
                                                                if_generation_match=0)
-        except PreconditionFailed:
+        except gcs_buckets.precondition_failed():
             return False
         return True
 

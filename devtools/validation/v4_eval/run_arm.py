@@ -350,6 +350,12 @@ def _prepare_model_route(args: argparse.Namespace, prov: dict, ledger: Any) -> s
     from meshpipeline.contracts.model_inference import REPAIR_V4_PROPOSE_ROUTES
 
     model_route.require_model_key()
+    # the engine reaches gs:// and the wave router through neutral ports; this process composes them
+    from meshpipeline.adapters.mesh_execution.gcs_exchange import bind_gcs_buckets
+    from meshpipeline.adapters.model_inference.crs_wave import wave_router_parts
+
+    bind_gcs_buckets()
+    model_route.set_wave_router_parts(wave_router_parts)
     model_route.install_router()
     routes = (args.route,) if args.route else REPAIR_V4_PROPOSE_ROUTES
     # the probe calls are paid: they are admitted and settled in THIS shard's ledger (Task 49's sixth gap)
@@ -761,6 +767,10 @@ def _events() -> Any:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    # the verdict cache, recipe memory and the wave ledger reach gs:// through contracts/gcs_buckets.py
+    from meshpipeline.adapters.mesh_execution.gcs_exchange import bind_gcs_buckets
+
+    bind_gcs_buckets()
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     prov: dict = {"label": f"{args.mode}/{args.shard}", "mode": args.mode, "shard": args.shard,

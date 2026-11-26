@@ -187,14 +187,14 @@ class GcsStore:
     """Objects under `gs://bucket/prefix` - the eval bucket."""
 
     def __init__(self, uri: str) -> None:
-        from meshpipeline.adapters.mesh_execution.gcs_exchange import split_gs
+        from meshpipeline.contracts.gcs_buckets import split_gs
 
         self._bucket, self._prefix = split_gs(uri)
 
     def _blob(self, key: str) -> Any:
-        from meshpipeline.adapters.mesh_execution.gcs_exchange import storage_client
+        from meshpipeline.contracts import gcs_buckets
 
-        return storage_client().bucket(self._bucket).blob(f"{self._prefix.rstrip('/')}/{key}")
+        return gcs_buckets.bucket(self._bucket).blob(f"{self._prefix.rstrip('/')}/{key}")
 
     def get(self, key: str) -> str | None:
         # NB: blob.exists() then download_as_text() with no error handling - a 403 (no get/list grant)
@@ -207,20 +207,20 @@ class GcsStore:
 
     def create_if_absent(self, key: str, text: str) -> bool:
         """GCS's atomic create: if_generation_match=0 succeeds only when no object exists."""
-        from google.api_core.exceptions import PreconditionFailed
+        from meshpipeline.contracts import gcs_buckets
 
         try:
             self._blob(key).upload_from_string(text, content_type="application/json", if_generation_match=0)
             return True
-        except PreconditionFailed:
+        except gcs_buckets.precondition_failed():
             return False
 
     def delete(self, key: str) -> None:
-        from google.api_core.exceptions import NotFound
+        from meshpipeline.contracts import gcs_buckets
 
         try:
             self._blob(key).delete()
-        except NotFound:
+        except gcs_buckets.not_found():
             pass
 
 

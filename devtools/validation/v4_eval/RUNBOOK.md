@@ -440,7 +440,7 @@ Two failure modes have cost real time in this sprint. Both are the harness, not 
 - **A bind-mounted checkout can make `git cat-file` report commits as missing**, which surfaces as
   3-4 spurious REFUSE failures in `tests/unit/dev/test_v4_fleet_launcher.py`. The cause is unknown:
   `safe.directory` and object-file permissions were both ruled out, and a
-  `git clone --no-hardlinks` bind-mounted the same way gives 22 passed, exit 0. Treat a REFUSE under
+  clone made with `--no-hardlinks` and bind-mounted the same way gives 22 passed, exit 0. Treat a REFUSE under
   a mount as a fault in the setup before debugging the launcher. Workaround: `cp -r` the checkout
   into the container, or clone inside it. It fails closed, so it costs time and cannot turn a
   failing gate into a passing one.

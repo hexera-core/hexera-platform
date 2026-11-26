@@ -128,6 +128,12 @@ def _setup(out: Path) -> Any:
     model_route.require_model_key()
     out.mkdir(parents=True, exist_ok=True)
     install_tap(out / "wire.jsonl")
+    # the engine reaches gs:// and the wave router through neutral ports; this process composes them
+    from meshpipeline.adapters.mesh_execution.gcs_exchange import bind_gcs_buckets
+    from meshpipeline.adapters.model_inference.crs_wave import wave_router_parts
+
+    bind_gcs_buckets()
+    model_route.set_wave_router_parts(wave_router_parts)
     model_route.install_router()
     inference_telemetry.set_inference_telemetry(None)
     return lane_ledger(out)

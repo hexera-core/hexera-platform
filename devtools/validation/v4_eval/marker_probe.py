@@ -156,7 +156,10 @@ def open_markers(spec: str) -> tuple[Any, str]:
     this host's ADC - what the shards use; backend id `gcs/<bucket>`), `minio` (MINIO_* env, kept for
     non-GCS deployments) or `localdir[-<mode>][@<ms>]:<dir>` (a directory, for the probe's own tests; `@<ms>` adds that many
     milliseconds of latency to every create, so two local processes can genuinely overlap - see the module docstring)."""
+    from meshpipeline.adapters.mesh_execution.gcs_exchange import bind_gcs_buckets
     from meshpipeline.cad.repair_v4.model_ledger import GcsObjectStore, ObjectMarkerStore
+
+    bind_gcs_buckets()
     if spec.startswith("gcs:") and len(spec) > 4:
         store = GcsObjectStore(spec[4:])
         return ObjectMarkerStore(store), store.backend_id

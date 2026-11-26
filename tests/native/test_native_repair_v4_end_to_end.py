@@ -126,6 +126,9 @@ def wire(monkeypatch: pytest.MonkeyPatch) -> Any:
     reset_breakers()
     w = Wire()
     monkeypatch.setattr(providers, "client_for", lambda target: w.client())
+    from meshpipeline.adapters.model_inference.crs_wave import wave_router_parts
+
+    model_route.set_wave_router_parts(wave_router_parts)
     model_route.install_router()  # the router a wave shard installs: CachingModelRouter over the real router
     inference_telemetry.set_inference_telemetry(None)
     yield w

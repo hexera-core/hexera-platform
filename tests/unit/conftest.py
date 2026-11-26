@@ -292,6 +292,22 @@ def _runtime_paths_are_test_owned(tmp_path):
 
 
 @_pytest.fixture(autouse=True)
+def _crs_ports_composed():
+    """The CRS engine reaches gs:// and the wave router through neutral ports (contracts/gcs_buckets.py,
+    cad/repair_v4/model_route.set_wave_router_parts); the unit tier composes the real adapters, as a wave does."""
+    try:
+        from meshpipeline.adapters.mesh_execution.gcs_exchange import bind_gcs_buckets
+        from meshpipeline.adapters.model_inference.crs_wave import wave_router_parts
+        from meshpipeline.cad.repair_v4 import model_route
+    except ImportError:
+        yield
+        return
+    bind_gcs_buckets()
+    model_route.set_wave_router_parts(wave_router_parts)
+    yield
+
+
+@_pytest.fixture(autouse=True)
 def _repair_engine_is_v3_unless_a_test_says(monkeypatch):
     """CRS v5 beta: the PRODUCT default engine is v5 (settings/cad_repair.py). The unit tier's repair tests were
     written against v3's report, and a v5 run here would only fail to start a kernel pool and fall back to v3 - so

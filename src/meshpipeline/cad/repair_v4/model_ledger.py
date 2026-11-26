@@ -146,8 +146,8 @@ class GcsObjectStore:
 
     def _b(self) -> Any:
         if self._bucket is None:
-            from google.cloud import storage  # in the mesh image via requirements/runtime.txt
-            self._bucket = storage.Client().bucket(self.bucket_name)
+            from meshpipeline.contracts import gcs_buckets  # bound by the process's composition
+            self._bucket = gcs_buckets.bucket(self.bucket_name)
         return self._bucket
 
     def exists(self, *, object_key: str) -> bool:
@@ -164,12 +164,12 @@ class GcsObjectStore:
                                 content_type: str | None = None) -> bool:
         """True if THIS call created the object, False if it already existed (HTTP 412). Any other error
         propagates: an unknown outcome is never reported as a win."""
-        from google.api_core.exceptions import PreconditionFailed
+        from meshpipeline.contracts import gcs_buckets
         try:
             self._b().blob(object_key).upload_from_string(
                 Path(local_path).read_bytes(), content_type=content_type or "application/octet-stream",
                 if_generation_match=0)
-        except PreconditionFailed:
+        except gcs_buckets.precondition_failed():
             return False
         return True
 
@@ -178,10 +178,10 @@ class GcsObjectStore:
         be able to delete a marker it relies on (that is what `LostShardLog` exists to catch). It is here for
         devtools/validation/v4_eval/marker_probe.py, which creates throwaway `_probe/` keys against the real wave
         bucket and has to take them away again."""
-        from google.api_core.exceptions import NotFound
+        from meshpipeline.contracts import gcs_buckets
         try:
             self._b().blob(object_key).delete()
-        except NotFound:
+        except gcs_buckets.not_found():
             if missing_ok:
                 return False
             raise

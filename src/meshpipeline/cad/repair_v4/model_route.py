@@ -37,6 +37,16 @@ def require_model_key(key: str | None = None) -> str:
     return key
 
 
+#: () -> (the real router module, a fresh capacity controller): composed by the process that runs a wave
+#: (`set_wave_router_parts(crs_wave.wave_router_parts)`), so this product module imports no adapter
+_wave_parts: Any = None
+
+
+def set_wave_router_parts(parts: Any) -> None:
+    global _wave_parts
+    _wave_parts = parts
+
+
 def install_router(*, inner: Any = None) -> Any:
     """Install the router the proposer's calls go through, and the capacity controller it admits against.
 
@@ -44,12 +54,14 @@ def install_router(*, inner: Any = None) -> Any:
     PROVIDER CLIENT beneath it, so the router's pricing, retry and normalisation all run for real. The wrapper is the
     same `CachingModelRouter` the API installs, whose `call_repair_v4_propose` forwards without recording (a replayed
     answer would cost $0 against the ledger). Returns the installed router."""
-    from meshpipeline.adapters.model_capacity.local import LocalCapacityController
-    from meshpipeline.adapters.model_inference import router as real_router
     from meshpipeline.contracts import model_capacity, model_inference
     from meshpipeline.contracts.decision_cache import CachingModelRouter
 
-    model_capacity.set_capacity_controller(LocalCapacityController())
+    if _wave_parts is None:
+        raise RuntimeError("install_router needs the wave's router parts composed first "
+                           "(model_route.set_wave_router_parts(adapters/model_inference/crs_wave.wave_router_parts))")
+    real_router, capacity_controller = _wave_parts()
+    model_capacity.set_capacity_controller(capacity_controller)
     installed = CachingModelRouter(inner if inner is not None else real_router, model_of=lambda step: "",
                                    store=_NoRecords(), mode="off")
     model_inference.set_model_router(installed)
