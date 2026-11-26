@@ -51,6 +51,10 @@ VERSION = 2
 #: run started before it is done takes the recommended mesh itself (lab, 28 Oct: on 4 vCPUs the 32 corpus parts
 #: offered a choice took 72-3,136 s to size; 29 of 32 within 1,800 s)
 BUDGET_S = 1800.0
+#: TIME-11: the sizing child stops itself this long after its parent's clock (`bounded` stops it at the clock
+#: itself; this only ends a child whose parent is gone), and runs at this lower CPU priority
+CHILD_GRACE_S = 60.0
+CHILD_NICE = 10
 #: the plans kept for the run (application/geometry_check stores it beside the check)
 PLANS_FILE = "fea_plans.json"
 _KIND_WORDS = {"round": "rounds kept for their shape", "relief": "raised or sunk lettering and texture",
@@ -251,11 +255,13 @@ def stage_file(src: Path, ws: Path, *, to_metres: float) -> None:
             gmsh.finalize()
 
 
-def bounded(src: Path, *, to_metres: float, budget_s: float = BUDGET_S, plans_out: Path | None = None) -> dict | None:
+def bounded(src: Path, *, to_metres: float, budget_s: float = BUDGET_S, plans_out: Path | None = None,
+            told: dict | None = None) -> dict | None:
     """The size choice for an uploaded CAD file, sized in a child process stopped `budget_s` after it starts, so a
     part whose planning takes longer never holds the check. With `plans_out`, the child keeps the plans there.
-    None when it was not sized (out of time, or it failed): the run then sizes it and takes the recommended mesh.
-    Never raises."""
+    None when it was not sized (out of time, or it failed): the run then sizes it and takes the recommended mesh;
+    `told["out_of_time"]` is set when its clock stopped it (TIME-11). The child also stops itself a little past
+    `budget_s` (`--limit-s`), so a parent killed meanwhile never leaves it running. Never raises."""
     import logging
     import os
     import subprocess
@@ -266,7 +272,8 @@ def bounded(src: Path, *, to_metres: float, budget_s: float = BUDGET_S, plans_ou
     log = logging.getLogger(__name__)
     here = str(Path(meshpipeline.__file__).resolve().parents[1])
     env = scrubbed_subprocess_env({"PYTHONPATH": os.pathsep.join(dict.fromkeys([here] + [p for p in sys.path if p]))})
-    cmd = [sys.executable, "-m", "meshpipeline.engines.fea_plan_options", str(src), "--to-metres", f"{to_metres!r}"]
+    cmd = [sys.executable, "-m", "meshpipeline.engines.fea_plan_options", str(src), "--to-metres", f"{to_metres!r}",
+           "--limit-s", f"{float(budget_s) + CHILD_GRACE_S:.0f}"]
     if plans_out:
         cmd += ["--plans-out", str(plans_out)]
     try:
@@ -274,6 +281,8 @@ def bounded(src: Path, *, to_metres: float, budget_s: float = BUDGET_S, plans_ou
         text = p.stdout or ""
     except subprocess.TimeoutExpired:
         log.info("fea plan options: not sized within %.0f s - sized when the mesh runs", budget_s)
+        if told is not None:
+            told["out_of_time"] = True
         return None
     except Exception as exc:  # noqa: BLE001 - the stage then says it is sized when the mesh runs
         log.warning("fea plan options: could not be sized (%s: %s)", type(exc).__name__, str(exc)[:200])
@@ -289,11 +298,23 @@ def bounded(src: Path, *, to_metres: float, budget_s: float = BUDGET_S, plans_ou
 
 
 def _main(argv: list[str]) -> int:
+    import os
+    import signal
     import tempfile
 
     src = Path(argv[0])
     to_metres = float(argv[argv.index("--to-metres") + 1]) if "--to-metres" in argv else 1e-3
     plans_out = Path(argv[argv.index("--plans-out") + 1]) if "--plans-out" in argv else None
+    # TIME-11: THE CHILD ENDS ITSELF a little past its parent's clock (SIGALRM's default action ends the process),
+    # so a parent killed meanwhile (its task's hard limit, its worker gone) never leaves it sizing on a worker core
+    if "--limit-s" in argv and hasattr(signal, "SIGALRM"):
+        signal.alarm(max(1, int(float(argv[argv.index("--limit-s") + 1]))))
+    # and it gives way to the worker's other slot and to the chat's own work on the same machine (its histogram
+    # and joins workers inherit it): a task the user waits on gets the cores first
+    try:
+        os.nice(CHILD_NICE)
+    except (AttributeError, OSError):
+        pass
     with tempfile.TemporaryDirectory(prefix="fea_plan_options_") as tmp:
         ws = Path(tmp)
         stage_file(src, ws, to_metres=to_metres)

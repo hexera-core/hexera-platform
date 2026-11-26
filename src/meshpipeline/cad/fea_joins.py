@@ -879,6 +879,16 @@ def _worker(spec_path: str, out_path: str) -> int:
     return 0
 
 
+class _OutOfTime(Exception):
+    """The measure's budget ran out inside a pair of parts (TIME-11)."""
+
+
+def _in_time(t0: float, budget_s: float) -> None:
+    """Raise _OutOfTime once the measure has run past its budget (read before each face pair)."""
+    if time.time() - t0 > budget_s:
+        raise _OutOfTime()
+
+
 def _measure(parts: list, *, tol: float, mm: float, budget_s: float, t0: float, out: Measured,
              only: set | None = None) -> Measured:
     from OCP.BRep import BRep_Tool
@@ -964,6 +974,7 @@ def _measure(parts: list, *, tol: float, mm: float, budget_s: float, t0: float, 
             flush: dict[tuple[int, int], float] = {}
             crossing: list[tuple[int, int, list[np.ndarray]]] = []
             for (a, b), dd in sorted(approx.items()):
+                _in_time(t0, budget_s)
                 pa, aa, ga, on_a = _facing(si, a, faces[i][a], sj, b, faces[j][b], limit, reach, tol, fine)
                 _pb, ab, _gb, on_b = _facing(sj, b, faces[j][b], si, a, faces[i][a], limit, reach, tol, fine)
                 if min(on_a, on_b) > 0:
@@ -1037,6 +1048,7 @@ def _measure(parts: list, *, tol: float, mm: float, budget_s: float, t0: float, 
                 for (a, b), dd in sorted(approx.items()):
                     if dd > limit + slack or sk_i.get(a) or sk_j.get(b):
                         continue
+                    _in_time(t0, budget_s)
                     dab, where_ab = _dist_at(faces[i][a], faces[j][b])
                     if within(dab, limit):
                         close.append((a, b, dab, where_ab))
@@ -1049,6 +1061,14 @@ def _measure(parts: list, *, tol: float, mm: float, budget_s: float, t0: float, 
                         line=True)
                 else:
                     out.near[(i, j)] = {"skin_only": skinned}
+        except _OutOfTime:
+            # TIME-11: THE BUDGET HOLDS INSIDE A PAIR TOO - one pair of a part of many faces is many face pairs, each
+            # measured point by point, and the budget was read only between part pairs (a 3-part assembly has 3).
+            # Past it, this pair is left unmeasured like the pairs never reached: the fuse's answer stands for them
+            out.joints.pop((i, j), None)
+            out.near.pop((i, j), None)
+            out.complete = False
+            break
         except Exception as exc:  # noqa: BLE001 - OpenCASCADE threw on this pair (StdFail_NotDone...)
             # ONE PAIR OPENCASCADE CANNOT MEASURE is that pair unmeasured: the fuse's answer stands for it,
             # and the rest of the assembly is measured as ever

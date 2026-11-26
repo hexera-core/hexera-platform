@@ -255,6 +255,14 @@ def time_boxed(stored: dict | None, requested: dict | None, now: float | None = 
         if beating is None and at - asked > limits_of(requested, RETRY_NAMING)[1] + STALE_MARGIN_S:
             return {**stored, "status": STATUS_FAILED, "reason": NAMING_TOO_LONG, "named": False,
                     "step": RETRY_NAMING, "retry": RETRY_NAMING, "timed_out": True}
+    elif status == STATUS_READY and isinstance(stored.get("facts"), dict):
+        # TIME-11: AN FEA SIZING THAT WILL NEVER END (its clock past, its worker gone) is served as not sized, so the
+        # stage and the chat stop waiting; the run sizes it itself, as the stage's line promises
+        from meshpipeline.application.fea_check import sizing_now
+        naming = rec.get("naming") if isinstance(rec.get("naming"), dict) else None
+        facts = sizing_now(stored["facts"], naming, at)
+        if facts is not stored["facts"]:
+            return {**stored, "facts": facts}
     return stored
 
 
@@ -1863,7 +1871,9 @@ def _name_after_wait(*, session_id: str, owner_id: str, purpose_text: str, inter
         if (facts[FACT_KEY].get("measured") and facts[FACT_KEY].get("basis") == "cad"
                 and not fea_blocker(facts)):
             sizing = uuid.uuid4().hex
-            facts[PLAN_FACT_KEY] = {"sizing": True, "token": sizing}
+            # TIME-11: the marker carries its own end - every reader settles it past that (fea_check.sizing_now)
+            facts[PLAN_FACT_KEY] = {"sizing": True, "token": sizing, "since": round(time.time(), 1),
+                                    "until": round(time.time() + sizing_deadline_s(), 1)}
         # SHSTAGE-1: SHELL OR SOLID, when the user's words say it: the word table, the model only for a
         # paraphrase (checked against the allowed values); the stage opens on it and never overrides it
         from meshpipeline.application import mesh_as
@@ -1960,6 +1970,14 @@ def naming_task_limits(session_id: str) -> tuple[int, int]:
     return soft + extra, hard + extra
 
 
+def sizing_deadline_s() -> float:
+    """TIME-11: how long after its marker is written a sizing can still store its own end: the sizing's clock, the
+    margin the task keeps for storing it, and the time box's own margin (STALE_MARGIN_S). Past it, every reader
+    settles a marker still saying "sizing" as stopped by its clock (application/fea_check.sizing_now)."""
+    from meshpipeline.engines.fea_plan_options import BUDGET_S
+    return float(BUDGET_S + SIZING_MARGIN_S + STALE_MARGIN_S)
+
+
 def size_fea_plan(session_id: str, stored: dict, interpretation: dict | None, *, token: str,
                   started: float) -> dict:
     """PLAN-fea-22: the size choice for the FEA part just shown (engines/fea_plan_options), planned as the run
@@ -1985,10 +2003,15 @@ def size_fea_plan(session_id: str, stored: dict, interpretation: dict | None, *,
                 if canonical.kind is GeometryKind.cad:
                     prepared, _note = _prepared_coordinates(canonical.path, interp_ref, ref)
                     kept = work / PO.PLANS_FILE
+                    told: dict = {}
                     options = PO.bounded(canonical.path, to_metres=float(prepared.to_metres), budget_s=budget,
-                                         plans_out=kept)
-                    got = {"sized": True, **options} if options else \
-                        {"sized": False, "why": "The mesh could not be sized in time before it runs"}
+                                         plans_out=kept, told=told)
+                    if options:
+                        got = {"sized": True, **options}
+                    elif told.get("out_of_time"):
+                        # TIME-11: stopped by its clock - said so, in minutes
+                        from meshpipeline.application.fea_check import out_of_time_words
+                        got = {"sized": False, "why": out_of_time_words(budget), "stopped": "clock"}
                     if options and kept.exists():
                         # PLANNED ONCE: the plans kept for the run (it reuses them when made for its staged solid)
                         from meshpipeline.contracts.object_storage import get_object_store

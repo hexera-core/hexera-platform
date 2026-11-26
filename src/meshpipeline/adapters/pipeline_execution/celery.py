@@ -122,8 +122,10 @@ def name_geometry(**kwargs) -> dict:
     # behind them until the user gave up on it). Its own scout still at work and another task in the queue,
     # it goes back to the end of the queue and the slot takes the next task; bounded, so it never starves.
     if yielded < NAMING_YIELD_MAX and scout_still_running(str(kwargs.get("session_id") or "")) and waiting() > 0:
-        from meshpipeline.application.geometry_check import naming_limits_for
-        soft, hard = naming_limits_for(str(kwargs.get("session_id") or ""))
+        # the same limits it was queued with (runtime/composition): the naming's own plus the FEA sizing that runs
+        # after the stage is shown - the naming's own alone stopped a yielded naming's sizing mid-way (TIME-11)
+        from meshpipeline.application.geometry_check import naming_task_limits
+        soft, hard = naming_task_limits(str(kwargs.get("session_id") or ""))
         name_geometry.apply_async(kwargs={**kwargs, NAMING_YIELDED: yielded + 1}, task_id=task_id,
                                   soft_time_limit=soft, time_limit=hard)
         logger.info("geometry naming: its scout is still running and a task is waiting - back in the queue "
