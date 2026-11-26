@@ -339,11 +339,13 @@ def test_a_repaired_standalone_job_ends_succeeded(live, tmp_path):
     assert decision.succeeded, decision
 
 
-def test_an_unrepairable_standalone_job_still_fails(live):
+def test_an_unrepairable_standalone_job_completes(live):
+    # CRS v5 beta (found by PR 3 on its slug): "Repair CAD only" that kept nothing is a finished
+    # job - the repair section says unchanged/unrepairable and why - never a failed one
     from meshpipeline.pipeline.repair_deliver import node_repair_deliver
     ended = asyncio.run(node_repair_deliver({"repair_attempt": {
         "attempted": True, "resolved": False, "stopped_because": "budget"}}))
-    assert not _terminal(_standalone_ended(ended)).succeeded
+    assert _terminal(_standalone_ended(ended)).succeeded
 
 
 def test_a_repaired_ending_with_no_file_is_no_success(live):

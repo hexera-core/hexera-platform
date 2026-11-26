@@ -464,10 +464,10 @@ def _done(state, out: dict) -> dict:
     counts = sec.get("counts") or {}
     text = (_WAITING_LINE if sec.get("waiting_for_review")
             else repair_result.summary_text(sec))
-    ran = bool(sec.get("ran"))
+    # ALWAYS BOTH NUMBERS on the last line (0 when none), so the lane can say "N of M fixed"
     return repair_progress.progress(repair_progress.DONE, text,
-                                    total=counts.get("found") if ran else None,
-                                    fixed=counts.get("fixed") if ran else None)
+                                    total=int(counts.get("found") or 0),
+                                    fixed=int(counts.get("fixed") or 0))
 
 
 def _review_decision(state, result: dict | None, directives) -> dict:
@@ -489,13 +489,17 @@ def _review_decision(state, result: dict | None, directives) -> dict:
     # the acceptances ride the STATE's directives (the planner's copy has them filtered out)
     accepted = repair_result.accepted_by_person(state.get("repair_directives") or (),
                                                 result or {})
+    declined = repair_result.left_by_person(state.get("repair_directives") or ())
     record = {"engine_result": dict(result) if result else None, "needs_review": needs,
               "review_bypass": bypass, "auto_accepted": bool(needs and bypass and not accepted),
-              "accepted_by_person": bool(needs and accepted), "waiting_for_review": False,
+              "accepted_by_person": bool(needs and accepted),
+              "declined_by_person": bool(needs and declined), "waiting_for_review": False,
               "applied": True, "choice": goal_request.choice_of(state)}
     if needs and not bypass and not accepted:
         record["applied"] = False
-        record["waiting_for_review"] = bool(rcfg.CAD_REPAIR_REVIEW_ENABLED)
+        # a person who LEFT a change on the review is not asked the same question again: the
+        # repair is not applied and the run goes on with the original
+        record["waiting_for_review"] = bool(rcfg.CAD_REPAIR_REVIEW_ENABLED) and not declined
     return record
 
 
@@ -660,9 +664,12 @@ async def _attempt(state: PipelineState, *, lane=None) -> dict:
                 "measurements": dict(exc.measurements)})
         except Exception:  # noqa: BLE001 - the corpus is never load-bearing for a run
             pass
-        minted = await asyncio.to_thread(
-            _mint, report=report, measured=dict(exc.measurements), source=source,
-            survivors_path=None)
+        # with the engine's result beside the refusal it is the review's only source, and a
+        # refusal applies nothing, so nothing waits (see the success path below)
+        minted = ({"repair_review_candidates": []} if exc.measurements.get(RESULT_V5_KEY)
+                  else await asyncio.to_thread(
+                      _mint, report=report, measured=dict(exc.measurements), source=source,
+                      survivors_path=None))
         declined = _declined(f"the repair was refused: {exc}", outcome="refused", route=advice.route,
                              detail={"measurements": exc.measurements},
                              returned=_returned(exc.measurements, destination))
@@ -698,7 +705,9 @@ async def _attempt(state: PipelineState, *, lane=None) -> dict:
         logger.info("node_repair_attempt: the repair changes the part past the allowance and no "
                     "review is available here - the original stands - job_id=%s", job_id)
         declined = _declined("the repair changes the part more than is applied without a "
-                             "person's approval, and review is off here",
+                             "person's approval, and "
+                             + ("the person left the change on the review"
+                                if decision.get("declined_by_person") else "review is off here"),
                              outcome="needs_review", route=advice.route,
                              returned=await _returned_untouched(source, job_id, name="returned"))
         declined["repair_attempt"]["result"] = decision
@@ -798,6 +807,12 @@ async def _attempt(state: PipelineState, *, lane=None) -> dict:
         minted = {"repair_review_candidates": repair_result.review_items(
                       decision.get("engine_result") or {}),
                   "repair_review_wait": True}
+    elif decision.get("engine_result"):
+        # THE ENGINE'S RESULT IS THE REVIEW'S ONLY SOURCE (CRS v5 beta): its waiting changes are
+        # the items, and only when it waits. The v3 per-defect items are not minted beside it -
+        # they parked a run the customer had told to skip review, and re-parked a re-run the
+        # person had already approved (found on PR 3's slug).
+        minted = {"repair_review_candidates": []}
     else:
         minted = await asyncio.to_thread(
             _mint, report=report,

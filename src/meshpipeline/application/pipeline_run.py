@@ -1348,7 +1348,8 @@ async def _run_async(req: JobRequest) -> dict:
                 # store is no success: the customer would be told "repaired" with nothing to
                 # download. Decided HERE, in the delivery branch, never in the report block above:
                 # that block is evidence and cannot move the status.
-                if not _standalone_handed_back:
+                # (a repair that kept nothing named no file: it completes, with nothing to lose)
+                if _standalone.get("path") and not _standalone_handed_back:
                     jlog.error("standalone repair: the repaired file was not delivered - the run "
                                "fails (job_id=%s)", job_id)
                     from meshpipeline.application.final_result import StatusDecision

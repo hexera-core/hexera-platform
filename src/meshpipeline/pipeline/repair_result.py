@@ -42,6 +42,9 @@ RESULT_ATTRS = ("repair_result_v5", "result_v5", "repair_result", "v5")
 #: It is NEVER handed to the repair planner: repair_attempt filters it out and reads it here.
 ACCEPT_OP = "accept_change"
 
+#: ...and the op a waiting change the person LEFT (or did not answer) travels as on the re-run.
+LEAVE_OP = "leave_change"
+
 #: The review item origin a waiting repair's items carry, so the review screen and the re-run can
 #: tell them from the rules planner's.
 REVIEW_ORIGIN = "change_review"
@@ -148,24 +151,34 @@ def accepted_ids(directives) -> frozenset[str]:
     return frozenset(out)
 
 
-def accepted_by_person(directives, result: Mapping | None = None) -> bool:
-    """Whether a person accepted EVERY change this result would apply past the allowance.
+def left_by_person(directives) -> bool:
+    """Whether, on this review re-run, a person left (or never answered) a waiting change."""
+    return any(isinstance(d, Mapping) and d.get("op") == LEAVE_OP for d in directives or ())
 
-    Item by item, never "some acceptance means all": the waiting items this result would raise
-    (`review_items`) must each have been accepted on the review re-run. One left or unanswered
-    item and the change is not applied - it waits again. Without a result, whether any
-    acceptance was given at all."""
+
+def accepted_by_person(directives, result: Mapping | None = None) -> bool:
+    """Whether a person accepted EVERY change waiting for them - never "some acceptance means all".
+
+    The review re-run carries an `accept_change` for each change accepted and a `leave_change` for
+    each one left or unanswered (api/v1/repair_review.run_review). Any leave and the repair is not
+    applied. With no leave, every waiting change was accepted - the person approved the repair,
+    whatever numbering the re-run's own result gives its problems (a re-run can find them in
+    another order). A directive set with acceptances but no leave marker at all (an older park)
+    is read item by item against this result's waiting items."""
     accepted = accepted_ids(directives)
-    if result is None:
-        return bool(accepted)
+    if left_by_person(directives) or not accepted:
+        return False
+    if result is None or any(isinstance(d, Mapping) and d.get("op") == ACCEPT_OP
+                             and d.get("item_id") for d in directives or ()):
+        return True
     waiting = {str(item["fingerprint"]) for item in review_items(result)}
     return bool(waiting) and waiting <= accepted
 
 
 def without_acceptances(directives) -> tuple:
-    """The directives the repair planner may play: a person's acceptance is not an operation."""
+    """The directives the repair planner may play: a person's accept or leave is not an operation."""
     return tuple(d for d in directives or () if not (isinstance(d, Mapping)
-                                                      and d.get("op") == ACCEPT_OP))
+                                                      and d.get("op") in (ACCEPT_OP, LEAVE_OP)))
 
 
 def review_items(result: Mapping) -> list[dict]:

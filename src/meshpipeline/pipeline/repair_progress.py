@@ -236,8 +236,10 @@ class ProgressMapper:
         if stage == VERIFYING:
             return [progress(VERIFYING, VERIFYING_TEXT, total=self.total)]
         if stage == DONE:
-            fixed = _int(ev.get("fixed") or ev.get("problems_fixed"))
-            return [progress(DONE, done_line(fixed, self.total), total=self.total, fixed=fixed)]
+            # THE ENGINE'S OWN "done" IS NOT THE LANE'S LAST LINE: the node says that one, counted
+            # from the run's result, with both numbers (pipeline/repair_attempt._done). Two "done"
+            # lines - the first without a count - was what the lane showed (found on the slug).
+            return []
         return []
 
 
