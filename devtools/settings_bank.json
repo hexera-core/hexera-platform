@@ -1,0 +1,1782 @@
+{
+ "about": "Lines an FEA or CFD engineer types in Settings > Workspace > Meshing (the team's meshing standard, STD-1..5). Each entry: text (one saved standard: a line, or a block), routes it is for (solid = FEA solid, shell = FEA shell, cfd = flow), expect (route -> outcomes; '*' = every route the entry names), category. Outcome mini-language (devtools/try_meshing_standard.py parses it): FIELD=VALUE (lengths in mm) e.g. global=5, min_edge=0.5, max_edge=10, growth=1.2, near_wall=1, thickness=2; limit:MEASURE<=V or >=V, optional /P%/OUTER for an allowance; strict:TARGET=hard|flexible; kind:quads_only|triangles_only|linear|quadratic|free_mesh|no_washers|structured, kind:tria%<=V; cells:target|ceiling|floor=N; layers:count|first_height|total_thickness|growth|y_plus=V; control:KEY=V (wall_elements, cells_across, surface_level, file_units); local:WHERE=V; unit=mm|cm|m|in|um (the stated unit). Classes: guidance (design intent: should reach the planner as guidance), notes (belongs in a run's notes: told so), not_possible (told not applied, with a reason), solver_file (told as delivered), not_here (STD-5: told as written for another kind of mesh), told (a contradiction or out-of-range value: told not applied). A|B means either is right.",
+ "lines": [
+  {
+   "id": "S01",
+   "category": "size",
+   "routes": [
+    "solid",
+    "shell"
+   ],
+   "text": "Global element size 5 mm",
+   "expect": {
+    "*": [
+     "global=5"
+    ]
+   }
+  },
+  {
+   "id": "S02",
+   "category": "size",
+   "routes": [
+    "solid",
+    "shell"
+   ],
+   "text": "global mesh size = 3mm",
+   "expect": {
+    "*": [
+     "global=3"
+    ]
+   }
+  },
+  {
+   "id": "S03",
+   "category": "size",
+   "routes": [
+    "solid",
+    "shell"
+   ],
+   "text": "elem size 0.25 in",
+   "expect": {
+    "*": [
+     "global=6.35"
+    ]
+   }
+  },
+  {
+   "id": "S04",
+   "category": "size",
+   "routes": [
+    "solid",
+    "shell"
+   ],
+   "text": "target element length 1.2 cm",
+   "expect": {
+    "*": [
+     "global=12"
+    ]
+   }
+  },
+  {
+   "id": "S05",
+   "category": "size",
+   "routes": [
+    "solid"
+   ],
+   "text": "Mesh size 0.004 m",
+   "expect": {
+    "*": [
+     "global=4"
+    ]
+   }
+  },
+  {
+   "id": "S06",
+   "category": "size",
+   "routes": [
+    "solid",
+    "shell"
+   ],
+   "text": "element size 4",
+   "expect": {
+    "*": [
+     "global=4"
+    ]
+   }
+  },
+  {
+   "id": "S07",
+   "category": "size",
+   "routes": [
+    "solid",
+    "shell"
+   ],
+   "text": "Min. element length > 0.5 x Global Size",
+   "expect": {
+    "*": [
+     "told"
+    ]
+   }
+  },
+  {
+   "id": "S08",
+   "category": "size",
+   "routes": [
+    "solid",
+    "shell"
+   ],
+   "text": "Global size 8 mm\nMin. element length > 0.5 x Global Size\nMax element length < 1.5x global size",
+   "expect": {
+    "*": [
+     "global=8",
+     "min_edge=4",
+     "max_edge=12"
+    ]
+   }
+  },
+  {
+   "id": "S09",
+   "category": "size",
+   "routes": [
+    "solid",
+    "shell"
+   ],
+   "text": "no element smaller than 0.5mm",
+   "expect": {
+    "*": [
+     "min_edge=0.5"
+    ]
+   }
+  },
+  {
+   "id": "S10",
+   "category": "size",
+   "routes": [
+    "solid",
+    "shell"
+   ],
+   "text": "max element size 10 mm",
+   "expect": {
+    "*": [
+     "max_edge=10"
+    ]
+   }
+  },
+  {
+   "id": "S11",
+   "category": "size",
+   "routes": [
+    "solid",
+    "shell"
+   ],
+   "text": "element sizes between 2 and 6 mm",
+   "expect": {
+    "*": [
+     "min_edge=2",
+     "max_edge=6"
+    ]
+   }
+  },
+  {
+   "id": "S12",
+   "category": "size",
+   "routes": [
+    "solid"
+   ],
+   "text": "size growth rate max 1.3",
+   "expect": {
+    "*": [
+     "growth=1.3"
+    ]
+   }
+  },
+  {
+   "id": "S13",
+   "category": "size",
+   "routes": [
+    "solid",
+    "cfd"
+   ],
+   "text": "elements may grow by no more than 20% from one to the next",
+   "expect": {
+    "*": [
+     "growth=1.2"
+    ]
+   }
+  },
+  {
+   "id": "S14",
+   "category": "size",
+   "routes": [
+    "shell"
+   ],
+   "text": "sheet thickness = 1.5 mm",
+   "expect": {
+    "*": [
+     "thickness=1.5"
+    ]
+   }
+  },
+  {
+   "id": "S15",
+   "category": "size",
+   "routes": [
+    "solid",
+    "shell"
+   ],
+   "text": "mesh size 500 microns",
+   "expect": {
+    "*": [
+     "global=0.5"
+    ]
+   }
+  },
+  {
+   "id": "S16",
+   "category": "size",
+   "routes": [
+    "solid",
+    "shell"
+   ],
+   "text": "elemnt size arround 2,5 mm",
+   "expect": {
+    "*": [
+     "global=2.5"
+    ]
+   }
+  },
+  {
+   "id": "U01",
+   "category": "units",
+   "routes": [
+    "solid",
+    "shell"
+   ],
+   "text": "All dimensions in inches.\nGlobal size 0.2\nMin size 0.05",
+   "expect": {
+    "*": [
+     "unit=in",
+     "global=5.08",
+     "min_edge=1.27"
+    ]
+   }
+  },
+  {
+   "id": "U02",
+   "category": "units",
+   "routes": [
+    "solid",
+    "shell",
+    "cfd"
+   ],
+   "text": "Units: mm",
+   "expect": {
+    "*": [
+     "unit=mm"
+    ]
+   }
+  },
+  {
+   "id": "U03",
+   "category": "units",
+   "routes": [
+    "cfd"
+   ],
+   "text": "units: m\nbase cell size 0.02\nfirst layer 1e-5",
+   "expect": {
+    "*": [
+     "unit=m",
+     "global=20",
+     "layers:first_height=0.01"
+    ]
+   }
+  },
+  {
+   "id": "U04",
+   "category": "units",
+   "routes": [
+    "solid",
+    "shell"
+   ],
+   "text": "global size 3/16\"",
+   "expect": {
+    "*": [
+     "global=4.7625"
+    ]
+   }
+  },
+  {
+   "id": "Q01",
+   "category": "quality",
+   "routes": [
+    "solid",
+    "shell"
+   ],
+   "text": "Aspect ratio < 5",
+   "expect": {
+    "*": [
+     "limit:aspect_ratio<=5"
+    ]
+   }
+  },
+  {
+   "id": "Q02",
+   "category": "quality",
+   "routes": [
+    "shell"
+   ],
+   "text": "Warpage < 15° (1% between 15° and 30° is acceptable)",
+   "expect": {
+    "*": [
+     "limit:warpage<=15/1%/30"
+    ]
+   }
+  },
+  {
+   "id": "Q03",
+   "category": "quality",
+   "routes": [
+    "solid",
+    "shell"
+   ],
+   "text": "Jacobian > 0.6",
+   "expect": {
+    "*": [
+     "limit:jacobian>=0.6"
+    ]
+   }
+  },
+  {
+   "id": "Q04",
+   "category": "quality",
+   "routes": [
+    "shell"
+   ],
+   "text": "skew angle max 45 deg",
+   "expect": {
+    "*": [
+     "limit:skew<=45"
+    ]
+   }
+  },
+  {
+   "id": "Q05",
+   "category": "quality",
+   "routes": [
+    "shell"
+   ],
+   "text": "Taper < 0.5",
+   "expect": {
+    "*": [
+     "limit:taper<=0.5"
+    ]
+   }
+  },
+  {
+   "id": "Q06",
+   "category": "quality",
+   "routes": [
+    "shell"
+   ],
+   "text": "Quad min angle > 45, quad max angle < 135",
+   "expect": {
+    "*": [
+     "limit:min_angle>=45",
+     "limit:max_angle<=135"
+    ]
+   }
+  },
+  {
+   "id": "Q07",
+   "category": "quality",
+   "routes": [
+    "shell"
+   ],
+   "text": "Tria min. angle 20 deg / tria max angle 120 deg",
+   "expect": {
+    "*": [
+     "limit:min_angle>=20",
+     "limit:max_angle<=120"
+    ]
+   }
+  },
+  {
+   "id": "Q08",
+   "category": "quality",
+   "routes": [
+    "solid"
+   ],
+   "text": "tet min dihedral angle at least 10°",
+   "expect": {
+    "*": [
+     "limit:min_angle>=10"
+    ]
+   }
+  },
+  {
+   "id": "Q09",
+   "category": "quality",
+   "routes": [
+    "cfd"
+   ],
+   "text": "maxNonOrtho 70",
+   "expect": {
+    "*": [
+     "limit:non_orthogonality<=70"
+    ]
+   }
+  },
+  {
+   "id": "Q10",
+   "category": "quality",
+   "routes": [
+    "cfd"
+   ],
+   "text": "max skewness 4",
+   "expect": {
+    "*": [
+     "limit:skewness<=4"
+    ]
+   }
+  },
+  {
+   "id": "Q11",
+   "category": "quality",
+   "routes": [
+    "cfd"
+   ],
+   "text": "min determinant 0.001",
+   "expect": {
+    "*": [
+     "limit:determinant>=0.001"
+    ]
+   }
+  },
+  {
+   "id": "Q12",
+   "category": "quality",
+   "routes": [
+    "cfd"
+   ],
+   "text": "orthogonal quality above 0.15",
+   "expect": {
+    "*": [
+     "limit:orthogonal_quality>=0.15"
+    ]
+   }
+  },
+  {
+   "id": "Q13",
+   "category": "quality",
+   "routes": [
+    "cfd"
+   ],
+   "text": "min cell volume 1e-15",
+   "expect": {
+    "*": [
+     "limit:min_volume>=1e-15"
+    ]
+   }
+  },
+  {
+   "id": "Q14",
+   "category": "quality",
+   "routes": [
+    "solid",
+    "shell"
+   ],
+   "text": "AR <= 10, 5% of elements may exceed it",
+   "expect": {
+    "*": [
+     "limit:aspect_ratio<=10/5%"
+    ]
+   }
+  },
+  {
+   "id": "Q15",
+   "category": "quality",
+   "routes": [
+    "shell"
+   ],
+   "text": "warpage over 10 degrees",
+   "expect": {
+    "*": [
+     "told"
+    ]
+   }
+  },
+  {
+   "id": "Q16",
+   "category": "quality",
+   "routes": [
+    "solid",
+    "shell"
+   ],
+   "text": "aspect ratio below 0.5",
+   "expect": {
+    "*": [
+     "told"
+    ]
+   }
+  },
+  {
+   "id": "Q17",
+   "category": "quality",
+   "routes": [
+    "solid",
+    "shell"
+   ],
+   "text": "Jacobian min 1.7",
+   "expect": {
+    "*": [
+     "told"
+    ]
+   }
+  },
+  {
+   "id": "Q18",
+   "category": "quality",
+   "routes": [
+    "shell"
+   ],
+   "text": "chordal deviation 0.1 mm",
+   "expect": {
+    "*": [
+     "not_possible"
+    ]
+   }
+  },
+  {
+   "id": "T01",
+   "category": "strictness",
+   "routes": [
+    "solid",
+    "shell"
+   ],
+   "text": "Aspect ratio < 5 - this is a hard limit",
+   "expect": {
+    "*": [
+     "limit:aspect_ratio<=5",
+     "strict:aspect_ratio=hard"
+    ]
+   }
+  },
+  {
+   "id": "T02",
+   "category": "strictness",
+   "routes": [
+    "solid",
+    "shell"
+   ],
+   "text": "min element size 1 mm if possible",
+   "expect": {
+    "*": [
+     "min_edge=1",
+     "strict:min_edge=flexible"
+    ]
+   }
+  },
+  {
+   "id": "T03",
+   "category": "strictness",
+   "routes": [
+    "shell"
+   ],
+   "text": "Warpage < 10\nJacobian > 0.7\nThese quality limits are guidelines, not hard rules.",
+   "expect": {
+    "*": [
+     "limit:warpage<=10",
+     "limit:jacobian>=0.7",
+     "strict:quality=flexible"
+    ]
+   }
+  },
+  {
+   "id": "T04",
+   "category": "strictness",
+   "routes": [
+    "solid",
+    "shell"
+   ],
+   "text": "never go below 0.3 mm element length",
+   "expect": {
+    "*": [
+     "min_edge=0.3",
+     "strict:min_edge=hard"
+    ]
+   }
+  },
+  {
+   "id": "T05",
+   "category": "strictness",
+   "routes": [
+    "cfd"
+   ],
+   "text": "max 10 million cells, strictly",
+   "expect": {
+    "*": [
+     "cells:ceiling=10000000",
+     "strict:count=hard"
+    ]
+   }
+  },
+  {
+   "id": "K01",
+   "category": "element_kind",
+   "routes": [
+    "shell"
+   ],
+   "text": "all quads, no trias",
+   "expect": {
+    "*": [
+     "kind:quads_only"
+    ]
+   }
+  },
+  {
+   "id": "K02",
+   "category": "element_kind",
+   "routes": [
+    "shell"
+   ],
+   "text": "tria mesh only",
+   "expect": {
+    "*": [
+     "kind:triangles_only"
+    ]
+   }
+  },
+  {
+   "id": "K03",
+   "category": "element_kind",
+   "routes": [
+    "shell"
+   ],
+   "text": "trias max 5% of shell elements",
+   "expect": {
+    "*": [
+     "kind:tria%<=5"
+    ]
+   }
+  },
+  {
+   "id": "K04",
+   "category": "element_kind",
+   "routes": [
+    "solid"
+   ],
+   "text": "second order tets (tet10)",
+   "expect": {
+    "*": [
+     "kind:quadratic"
+    ]
+   }
+  },
+  {
+   "id": "K05",
+   "category": "element_kind",
+   "routes": [
+    "solid",
+    "shell"
+   ],
+   "text": "linear elements only, first order",
+   "expect": {
+    "*": [
+     "kind:linear"
+    ]
+   }
+  },
+  {
+   "id": "K06",
+   "category": "element_kind",
+   "routes": [
+    "shell"
+   ],
+   "text": "washers round all bolt holes",
+   "expect": {
+    "*": [
+     "kind:structured"
+    ]
+   }
+  },
+  {
+   "id": "K07",
+   "category": "element_kind",
+   "routes": [
+    "shell"
+   ],
+   "text": "free mesh, no mapped faces",
+   "expect": {
+    "*": [
+     "kind:free_mesh"
+    ]
+   }
+  },
+  {
+   "id": "K08",
+   "category": "element_kind",
+   "routes": [
+    "shell"
+   ],
+   "text": "no washers please",
+   "expect": {
+    "*": [
+     "kind:no_washers"
+    ]
+   }
+  },
+  {
+   "id": "K09",
+   "category": "element_kind",
+   "routes": [
+    "solid"
+   ],
+   "text": "hex-dominant mesh preferred",
+   "expect": {
+    "*": [
+     "not_possible|guidance"
+    ]
+   }
+  },
+  {
+   "id": "K10",
+   "category": "element_kind",
+   "routes": [
+    "shell"
+   ],
+   "text": "CQUAD4 / CTRIA3",
+   "expect": {
+    "*": [
+     "guidance|not_possible|kind:linear"
+    ]
+   }
+  },
+  {
+   "id": "C01",
+   "category": "count",
+   "routes": [
+    "solid",
+    "shell"
+   ],
+   "text": "keep it under 2 million elements",
+   "expect": {
+    "*": [
+     "cells:ceiling=2000000|notes"
+    ]
+   }
+  },
+  {
+   "id": "C02",
+   "category": "count",
+   "routes": [
+    "cfd"
+   ],
+   "text": "max 8 million cells",
+   "expect": {
+    "*": [
+     "cells:ceiling=8000000"
+    ]
+   }
+  },
+  {
+   "id": "C03",
+   "category": "count",
+   "routes": [
+    "cfd"
+   ],
+   "text": "around 3M cells",
+   "expect": {
+    "*": [
+     "cells:target=3000000"
+    ]
+   }
+  },
+  {
+   "id": "C04",
+   "category": "count",
+   "routes": [
+    "cfd"
+   ],
+   "text": "at least 500k cells",
+   "expect": {
+    "*": [
+     "cells:floor=500000"
+    ]
+   }
+  },
+  {
+   "id": "C05",
+   "category": "count",
+   "routes": [
+    "solid"
+   ],
+   "text": "aim for about 800k elements",
+   "expect": {
+    "*": [
+     "cells:target=800000|notes"
+    ]
+   }
+  },
+  {
+   "id": "L01",
+   "category": "flow",
+   "routes": [
+    "cfd"
+   ],
+   "text": "5 prism layers",
+   "expect": {
+    "*": [
+     "layers:count=5"
+    ]
+   }
+  },
+  {
+   "id": "L02",
+   "category": "flow",
+   "routes": [
+    "cfd"
+   ],
+   "text": "y+ around 1",
+   "expect": {
+    "*": [
+     "layers:y_plus=1"
+    ]
+   }
+  },
+  {
+   "id": "L03",
+   "category": "flow",
+   "routes": [
+    "cfd"
+   ],
+   "text": "first layer height 0.02mm",
+   "expect": {
+    "*": [
+     "layers:first_height=0.02"
+    ]
+   }
+  },
+  {
+   "id": "L04",
+   "category": "flow",
+   "routes": [
+    "cfd"
+   ],
+   "text": "inflation growth rate 1.15",
+   "expect": {
+    "*": [
+     "layers:growth=1.15"
+    ]
+   }
+  },
+  {
+   "id": "L05",
+   "category": "flow",
+   "routes": [
+    "cfd"
+   ],
+   "text": "total BL thickness 3 mm",
+   "expect": {
+    "*": [
+     "layers:total_thickness=3"
+    ]
+   }
+  },
+  {
+   "id": "L06",
+   "category": "flow",
+   "routes": [
+    "cfd"
+   ],
+   "text": "first cell height 10 um",
+   "expect": {
+    "*": [
+     "layers:first_height=0.01"
+    ]
+   }
+  },
+  {
+   "id": "L07",
+   "category": "flow",
+   "routes": [
+    "cfd"
+   ],
+   "text": "no boundary layers",
+   "expect": {
+    "*": [
+     "layers:count=0"
+    ]
+   }
+  },
+  {
+   "id": "L08",
+   "category": "flow",
+   "routes": [
+    "cfd"
+   ],
+   "text": "at least 20 cells across every pipe",
+   "expect": {
+    "*": [
+     "control:cells_across=20"
+    ]
+   }
+  },
+  {
+   "id": "L09",
+   "category": "flow",
+   "routes": [
+    "cfd"
+   ],
+   "text": "surface refinement level 3",
+   "expect": {
+    "*": [
+     "control:surface_level=3"
+    ]
+   }
+  },
+  {
+   "id": "L10",
+   "category": "flow",
+   "routes": [
+    "cfd"
+   ],
+   "text": "wall cell size 1 mm",
+   "expect": {
+    "*": [
+     "near_wall=1"
+    ]
+   }
+  },
+  {
+   "id": "L11",
+   "category": "flow",
+   "routes": [
+    "cfd"
+   ],
+   "text": "base cell 20 mm, far-field cells max 0.5 m",
+   "expect": {
+    "*": [
+     "global=20",
+     "max_edge=500"
+    ]
+   }
+  },
+  {
+   "id": "L12",
+   "category": "flow",
+   "routes": [
+    "cfd"
+   ],
+   "text": "y+ < 5 at 30 m/s air, chord 0.5 m",
+   "expect": {
+    "*": [
+     "layers:y_plus=5"
+    ]
+   }
+  },
+  {
+   "id": "L13",
+   "category": "flow",
+   "routes": [
+    "cfd"
+   ],
+   "text": "refine the wake to 10 mm",
+   "expect": {
+    "*": [
+     "local:the wake=10|notes"
+    ]
+   }
+  },
+  {
+   "id": "W01",
+   "category": "control",
+   "routes": [
+    "solid"
+   ],
+   "text": "at least 3 elements through the thickness",
+   "expect": {
+    "*": [
+     "control:wall_elements=3"
+    ]
+   }
+  },
+  {
+   "id": "W02",
+   "category": "control",
+   "routes": [
+    "shell"
+   ],
+   "text": "4 elements through every wall",
+   "expect": {
+    "*": [
+     "control:wall_elements=4"
+    ]
+   }
+  },
+  {
+   "id": "P01",
+   "category": "elsewhere",
+   "routes": [
+    "solid",
+    "shell"
+   ],
+   "text": "2 mm elements at the bolt holes",
+   "expect": {
+    "*": [
+     "notes|local:the bolt holes=2"
+    ]
+   }
+  },
+  {
+   "id": "P02",
+   "category": "elsewhere",
+   "routes": [
+    "solid",
+    "shell"
+   ],
+   "text": "finer at the fillets",
+   "expect": {
+    "*": [
+     "notes|local:the fillets=0"
+    ]
+   }
+  },
+  {
+   "id": "P03",
+   "category": "elsewhere",
+   "routes": [
+    "solid",
+    "shell"
+   ],
+   "text": "always mesh sheet metal parts as shells",
+   "expect": {
+    "*": [
+     "notes|guidance"
+    ]
+   }
+  },
+  {
+   "id": "P04",
+   "category": "elsewhere",
+   "routes": [
+    "solid"
+   ],
+   "text": "castings get a solid mesh",
+   "expect": {
+    "*": [
+     "notes|guidance"
+    ]
+   }
+  },
+  {
+   "id": "F01",
+   "category": "solver_file",
+   "routes": [
+    "solid",
+    "shell"
+   ],
+   "text": "Nastran BDF output",
+   "expect": {
+    "*": [
+     "solver_file"
+    ]
+   }
+  },
+  {
+   "id": "F02",
+   "category": "solver_file",
+   "routes": [
+    "solid",
+    "shell"
+   ],
+   "text": "we use Abaqus",
+   "expect": {
+    "*": [
+     "solver_file|guidance"
+    ]
+   }
+  },
+  {
+   "id": "F03",
+   "category": "solver_file",
+   "routes": [
+    "solid",
+    "shell"
+   ],
+   "text": "export in mm",
+   "expect": {
+    "*": [
+     "control:file_units=mm|not_possible"
+    ]
+   }
+  },
+  {
+   "id": "F04",
+   "category": "solver_file",
+   "routes": [
+    "cfd"
+   ],
+   "text": "Fluent .msh format",
+   "expect": {
+    "*": [
+     "not_possible|solver_file"
+    ]
+   }
+  },
+  {
+   "id": "F05",
+   "category": "solver_file",
+   "routes": [
+    "solid",
+    "shell"
+   ],
+   "text": "LS-DYNA keyword deck",
+   "expect": {
+    "*": [
+     "not_possible"
+    ]
+   }
+  },
+  {
+   "id": "F06",
+   "category": "solver_file",
+   "routes": [
+    "solid",
+    "shell"
+   ],
+   "text": "node ids start at 100001",
+   "expect": {
+    "*": [
+     "not_possible"
+    ]
+   }
+  },
+  {
+   "id": "F07",
+   "category": "solver_file",
+   "routes": [
+    "solid",
+    "shell"
+   ],
+   "text": "Ansys cdb in metres",
+   "expect": {
+    "*": [
+     "solver_file|not_possible"
+    ]
+   }
+  },
+  {
+   "id": "X01",
+   "category": "contradiction",
+   "routes": [
+    "solid",
+    "shell"
+   ],
+   "text": "min element size 10 mm\nmax element size 5 mm",
+   "expect": {
+    "*": [
+     "told"
+    ]
+   }
+  },
+  {
+   "id": "X02",
+   "category": "contradiction",
+   "routes": [
+    "solid",
+    "shell"
+   ],
+   "text": "Global size 5 mm\nGlobal size 3 mm",
+   "expect": {
+    "*": [
+     "global=3"
+    ]
+   }
+  },
+  {
+   "id": "X03",
+   "category": "contradiction",
+   "routes": [
+    "shell"
+   ],
+   "text": "all quads\nup to 10% trias",
+   "expect": {
+    "*": [
+     "kind:tria%<=10|told"
+    ]
+   }
+  },
+  {
+   "id": "X04",
+   "category": "contradiction",
+   "routes": [
+    "cfd"
+   ],
+   "text": "first layer 2 mm\ntotal layer thickness 1 mm",
+   "expect": {
+    "*": [
+     "told"
+    ]
+   }
+  },
+  {
+   "id": "X05",
+   "category": "contradiction",
+   "routes": [
+    "cfd"
+   ],
+   "text": "at least 5M cells, at most 2M cells",
+   "expect": {
+    "*": [
+     "told"
+    ]
+   }
+  },
+  {
+   "id": "X06",
+   "category": "contradiction",
+   "routes": [
+    "cfd"
+   ],
+   "text": "no boundary layers\nfirst layer 0.01 mm",
+   "expect": {
+    "*": [
+     "told"
+    ]
+   }
+  },
+  {
+   "id": "R01",
+   "category": "out_of_range",
+   "routes": [
+    "solid",
+    "shell"
+   ],
+   "text": "global size 0 mm",
+   "expect": {
+    "*": [
+     "told"
+    ]
+   }
+  },
+  {
+   "id": "R02",
+   "category": "out_of_range",
+   "routes": [
+    "solid",
+    "shell"
+   ],
+   "text": "element size 500 m",
+   "expect": {
+    "*": [
+     "told"
+    ]
+   }
+  },
+  {
+   "id": "R03",
+   "category": "out_of_range",
+   "routes": [
+    "cfd"
+   ],
+   "text": "150 prism layers",
+   "expect": {
+    "*": [
+     "told"
+    ]
+   }
+  },
+  {
+   "id": "R04",
+   "category": "out_of_range",
+   "routes": [
+    "cfd"
+   ],
+   "text": "growth ratio 5",
+   "expect": {
+    "*": [
+     "told"
+    ]
+   }
+  },
+  {
+   "id": "R05",
+   "category": "out_of_range",
+   "routes": [
+    "solid",
+    "shell"
+   ],
+   "text": "skew under 200 deg",
+   "expect": {
+    "*": [
+     "told"
+    ]
+   }
+  },
+  {
+   "id": "D01",
+   "category": "design_intent",
+   "routes": [
+    "solid",
+    "shell"
+   ],
+   "text": "we care about fatigue at the fillets",
+   "expect": {
+    "*": [
+     "guidance"
+    ]
+   }
+  },
+  {
+   "id": "D02",
+   "category": "design_intent",
+   "routes": [
+    "solid",
+    "shell"
+   ],
+   "text": "this goes into a crash model",
+   "expect": {
+    "*": [
+     "guidance"
+    ]
+   }
+  },
+  {
+   "id": "D03",
+   "category": "design_intent",
+   "routes": [
+    "solid",
+    "shell",
+    "cfd"
+   ],
+   "text": "keep run time low",
+   "expect": {
+    "*": [
+     "guidance|not_possible"
+    ]
+   }
+  },
+  {
+   "id": "D04",
+   "category": "design_intent",
+   "routes": [
+    "solid",
+    "shell"
+   ],
+   "text": "our solver is Abaqus explicit",
+   "expect": {
+    "*": [
+     "guidance|solver_file"
+    ]
+   }
+  },
+  {
+   "id": "D05",
+   "category": "design_intent",
+   "routes": [
+    "solid"
+   ],
+   "text": "stress concentrations at holes and notches matter most to us",
+   "expect": {
+    "*": [
+     "guidance"
+    ]
+   }
+  },
+  {
+   "id": "D06",
+   "category": "design_intent",
+   "routes": [
+    "solid",
+    "shell"
+   ],
+   "text": "modal analysis mostly, so global stiffness matters more than local stress",
+   "expect": {
+    "*": [
+     "guidance"
+    ]
+   }
+  },
+  {
+   "id": "D07",
+   "category": "design_intent",
+   "routes": [
+    "cfd"
+   ],
+   "text": "we mostly run k-omega SST with low-Re wall treatment",
+   "expect": {
+    "*": [
+     "guidance"
+    ]
+   }
+  },
+  {
+   "id": "D08",
+   "category": "design_intent",
+   "routes": [
+    "cfd"
+   ],
+   "text": "pressure drop is the number we report",
+   "expect": {
+    "*": [
+     "guidance"
+    ]
+   }
+  },
+  {
+   "id": "D09",
+   "category": "design_intent",
+   "routes": [
+    "cfd"
+   ],
+   "text": "heat transfer at the walls is what we care about",
+   "expect": {
+    "*": [
+     "guidance"
+    ]
+   }
+  },
+  {
+   "id": "D10",
+   "category": "design_intent",
+   "routes": [
+    "solid",
+    "shell"
+   ],
+   "text": "parts are mostly stamped steel brackets 1-3 mm thick",
+   "expect": {
+    "*": [
+     "guidance"
+    ]
+   }
+  },
+  {
+   "id": "D11",
+   "category": "design_intent",
+   "routes": [
+    "solid",
+    "shell",
+    "cfd"
+   ],
+   "text": "prefer a coarser mesh for early design iterations",
+   "expect": {
+    "*": [
+     "guidance"
+    ]
+   }
+  },
+  {
+   "id": "D12",
+   "category": "design_intent",
+   "routes": [
+    "solid",
+    "shell"
+   ],
+   "text": "small fillets under 1 mm can be ignored",
+   "expect": {
+    "*": [
+     "guidance|not_possible"
+    ]
+   }
+  },
+  {
+   "id": "D13",
+   "category": "design_intent",
+   "routes": [
+    "solid",
+    "shell"
+   ],
+   "text": "contact between the bolted parts is modelled later in the solver",
+   "expect": {
+    "*": [
+     "guidance"
+    ]
+   }
+  },
+  {
+   "id": "D14",
+   "category": "design_intent",
+   "routes": [
+    "cfd"
+   ],
+   "text": "external aero on road cars, ground effect matters",
+   "expect": {
+    "*": [
+     "guidance"
+    ]
+   }
+  },
+  {
+   "id": "D15",
+   "category": "design_intent",
+   "routes": [
+    "solid",
+    "shell"
+   ],
+   "text": "the welds carry the load, mesh them with care",
+   "expect": {
+    "*": [
+     "guidance"
+    ]
+   }
+  },
+  {
+   "id": "D16",
+   "category": "design_intent",
+   "routes": [
+    "solid",
+    "shell"
+   ],
+   "text": "buckling of thin walls is the failure mode we check",
+   "expect": {
+    "*": [
+     "guidance"
+    ]
+   }
+  },
+  {
+   "id": "D17",
+   "category": "design_intent",
+   "routes": [
+    "cfd"
+   ],
+   "text": "transient LES later, so keep cells near isotropic in the wake",
+   "expect": {
+    "*": [
+     "guidance"
+    ]
+   }
+  },
+  {
+   "id": "D18",
+   "category": "design_intent",
+   "routes": [
+    "solid",
+    "shell",
+    "cfd"
+   ],
+   "text": "a good quality mesh matters more to us than speed",
+   "expect": {
+    "*": [
+     "guidance"
+    ]
+   }
+  },
+  {
+   "id": "D19",
+   "category": "design_intent",
+   "routes": [
+    "solid"
+   ],
+   "text": "results get compared with strain gauges at the mounting bosses",
+   "expect": {
+    "*": [
+     "guidance"
+    ]
+   }
+  },
+  {
+   "id": "D20",
+   "category": "design_intent",
+   "routes": [
+    "solid",
+    "shell"
+   ],
+   "text": "our parts are aluminium castings, material is set in the solver",
+   "expect": {
+    "*": [
+     "guidance|not_possible"
+    ]
+   }
+  },
+  {
+   "id": "D21",
+   "category": "design_intent",
+   "routes": [
+    "solid",
+    "shell",
+    "cfd"
+   ],
+   "text": "the mesh must be fine enough for a grid independence study to pass",
+   "expect": {
+    "*": [
+     "guidance"
+    ]
+   }
+  },
+  {
+   "id": "D22",
+   "category": "design_intent",
+   "routes": [
+    "cfd"
+   ],
+   "text": "flow separation behind the mirrors is the thing to capture",
+   "expect": {
+    "*": [
+     "guidance"
+    ]
+   }
+  },
+  {
+   "id": "H01",
+   "category": "sectioned",
+   "routes": [
+    "solid",
+    "shell"
+   ],
+   "text": "For shell meshes: quads only, warpage < 10.\nFor solid meshes: tet10, Jacobian > 0.5.",
+   "expect": {
+    "shell": [
+     "kind:quads_only",
+     "limit:warpage<=10"
+    ],
+    "solid": [
+     "kind:quadratic",
+     "limit:jacobian>=0.5"
+    ]
+   }
+  },
+  {
+   "id": "H02",
+   "category": "sectioned",
+   "routes": [
+    "solid",
+    "cfd"
+   ],
+   "text": "FEA: global size 4 mm, aspect ratio < 5\nCFD: base cell 10 mm, 5 prism layers, maxNonOrtho 65",
+   "expect": {
+    "solid": [
+     "global=4",
+     "limit:aspect_ratio<=5"
+    ],
+    "cfd": [
+     "global=10",
+     "layers:count=5",
+     "limit:non_orthogonality<=65"
+    ]
+   }
+  },
+  {
+   "id": "H03",
+   "category": "sectioned",
+   "routes": [
+    "solid",
+    "shell",
+    "cfd"
+   ],
+   "text": "General: at most 2 million cells or elements.\nShells: tria max 5%.",
+   "expect": {
+    "shell": [
+     "kind:tria%<=5",
+     "cells:ceiling=2000000|notes"
+    ],
+    "solid": [
+     "cells:ceiling=2000000|notes"
+    ],
+    "cfd": [
+     "cells:ceiling=2000000"
+    ]
+   }
+  },
+  {
+   "id": "H04",
+   "category": "not_here",
+   "routes": [
+    "cfd"
+   ],
+   "text": "Warpage < 15\nQuad min angle > 45\nTria min angle > 20\nJacobian > 0.6\nGlobal size 5 mm",
+   "expect": {
+    "*": [
+     "not_here"
+    ]
+   }
+  },
+  {
+   "id": "H05",
+   "category": "not_here",
+   "routes": [
+    "solid",
+    "shell"
+   ],
+   "text": "y+ ~ 1\n10 prism layers\nnon-ortho < 65",
+   "expect": {
+    "*": [
+     "not_here"
+    ]
+   }
+  },
+  {
+   "id": "SHEET1",
+   "category": "criteria_sheet",
+   "routes": [
+    "shell",
+    "solid"
+   ],
+   "text": "MESH QUALITY CRITERIA (rev C)\nGlobal Mesh Size = 5 mm\nMin. Element Length > 0.5 x Global Size\nMax. Element Length < 1.5 x Global Size\nAspect Ratio < 5 (2% between 5 and 10 is acceptable)\nWarpage < 15 deg (1% between 15 and 30 is acceptable)\nSkew < 45 deg\nJacobian > 0.6\nTaper < 0.5\nQuad Min. Angle > 45\nQuad Max. Angle < 135\nTria Min. Angle > 20\nTria Max. Angle < 120\nTrias < 5 % of shell elements\nNo washers required\nSize growth rate < 1.3",
+   "expect": {
+    "shell": [
+     "global=5",
+     "min_edge=2.5",
+     "max_edge=7.5",
+     "limit:aspect_ratio<=5/2%/10",
+     "limit:warpage<=15/1%/30",
+     "limit:skew<=45",
+     "limit:jacobian>=0.6",
+     "limit:taper<=0.5",
+     "limit:min_angle>=45",
+     "limit:max_angle<=135",
+     "limit:min_angle>=20",
+     "limit:max_angle<=120",
+     "kind:tria%<=5",
+     "kind:no_washers",
+     "growth=1.3"
+    ],
+    "solid": [
+     "global=5",
+     "min_edge=2.5",
+     "max_edge=7.5",
+     "limit:aspect_ratio<=5/2%/10",
+     "limit:jacobian>=0.6",
+     "growth=1.3"
+    ]
+   }
+  },
+  {
+   "id": "SHEET2",
+   "category": "criteria_sheet",
+   "routes": [
+    "cfd"
+   ],
+   "text": "CFD meshing guide v2\nunits: mm\nbase cell 16\nsurface cells 2\nmax cell 200\n8 prism layers\nfirst layer 0.01\ngrowth 1.2 in the layers\ny+ < 1\nmaxNonOrtho 65\nmax skewness 4\nmin determinant 0.001\nmax 12M cells\nat least 25 cells across pipes\nrefinement level 4 at the walls",
+   "expect": {
+    "*": [
+     "unit=mm",
+     "global=16",
+     "near_wall=2",
+     "max_edge=200",
+     "layers:count=8",
+     "layers:first_height=0.01",
+     "layers:growth=1.2",
+     "layers:y_plus=1",
+     "limit:non_orthogonality<=65",
+     "limit:skewness<=4",
+     "limit:determinant>=0.001",
+     "cells:ceiling=12000000",
+     "control:cells_across=25",
+     "control:surface_level=4"
+    ]
+   }
+  },
+  {
+   "id": "M01",
+   "category": "mixed",
+   "routes": [
+    "solid",
+    "shell"
+   ],
+   "text": "Global size 6 mm. We care about fatigue at the fillets. Export Nastran.",
+   "expect": {
+    "*": [
+     "global=6",
+     "guidance",
+     "solver_file"
+    ]
+   }
+  },
+  {
+   "id": "M02",
+   "category": "mixed",
+   "routes": [
+    "cfd"
+   ],
+   "text": "5 layers, y+ 30-100 with wall functions; we report drag",
+   "expect": {
+    "*": [
+     "layers:count=5",
+     "layers:y_plus=30",
+     "guidance"
+    ]
+   }
+  }
+ ]
+}

@@ -331,6 +331,8 @@ def test_the_settings_page_shows_each_line_exactly_as_a_run_says_it():
                            {"quote": "Units: inches", "kind": "mesh"}])
     assert MS.understood(text, {"key": "k", "arguments": json.dumps(answer)}) == [
         "Global element size 10.16 mm (0.4 inch).", "Lengths with no unit are in inches.",
+        # the reader's floor files "Nastran BDF please" as no mesh setting: told as delivered, never dropped
+        "Nastran (.bdf) files - every FEA run delivers them.",
         'Not applied: "3 elements through the flange thickness" - no mesh setting of ours matches it yet.']
     assert MS.understood("", reading) == [] and MS.understood(CRITERIA, None) == []
 

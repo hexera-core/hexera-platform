@@ -207,6 +207,15 @@ def checked(arguments: str, text: str, *, route: str = "", key: str = "", source
             if got:
                 files.append([q, *[f"{name} ({ext})" for name, ext in got]])
                 not_applied.remove(q)
+        # the model files "Nastran BDF output" as no mesh setting (its prompt: the solver the mesh is for): delivered too
+        nm = (req or {}).get("not_mesh") or []
+        for e in list(nm):
+            got = _solver_files(str(e.get("quote") or ""))
+            if got:
+                files.append([str(e.get("quote")), *[f"{name} ({ext})" for name, ext in got]])
+                nm.remove(e)
+        if not nm:
+            (req or {}).pop("not_mesh", None)
     sec = MR.section("used", requirements=req, dropped=dropped, not_applied=not_applied, key=key, source=source)
     sec["stated_unit"] = unit
     sec["elsewhere"] = _elsewhere(arguments, text)
@@ -708,6 +717,10 @@ def lines(settings: Mapping, notes: Mapping, merged: Mapping, *, told_s=(), told
                 for q in settings.get("not_applied") or []]
         out += [f'Not applied (your settings): "{MR._short(q)}" - {ELSEWHERE_WORDS}.'
                 for q in settings.get("elsewhere") or []]
+        # NOTE-12 for the standard: a line that is no mesh setting ("this goes into a crash model") is told, never lost
+        out += [f'{MR.NOT_MESH_LEAD} (your settings): "{MR._short(str(e.get("quote") or ""))}" - '
+                f'{e.get("instead") or MR.NOT_MESH_DEFAULT}.'
+                for e in (settings.get("requirements") or {}).get("not_mesh") or [] if isinstance(e, Mapping)]
     return out
 
 
@@ -729,10 +742,11 @@ def understood(text: str, reading: Mapping | None) -> list[str]:
         r["from"] = "settings"
     out = []
     for line in lines(sec, MR.section("none"), merged):
-        for lead in ("From your settings: ", "Not applied (your settings): "):
+        for lead in ("From your settings: ", "Not applied (your settings): ", f"{MR.NOT_MESH_LEAD} (your settings): "):
             if line.startswith(lead):
                 line = line[len(lead):]
-                line = (line[:1].upper() + line[1:]) if lead.startswith("From") else f"Not applied: {line}"
+                line = ((line[:1].upper() + line[1:]) if lead.startswith("From") else f"Not applied: {line}"
+                        if lead.startswith("Not applied") else f"{MR.NOT_MESH_LEAD}: {line}")
         out.append(line)
     return out
 
