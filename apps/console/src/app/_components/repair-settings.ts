@@ -20,7 +20,7 @@ export const REPAIR_TITLE = "CAD repair";
 export const REPAIR_INTRO =
   "When we repair your CAD, small fixes are kept automatically. Larger changes, like closing a gap, are shown to you before they are kept.";
 
-export const AUTO_LABEL = "Accept repairs automatically (skip review)";
+export const AUTO_LABEL = "Accept repairs without asking (skip review)";
 
 export const AUTO_HELP =
   "Larger repairs are kept without asking, for every run in this organisation. Each run records that it was accepted this way.";
