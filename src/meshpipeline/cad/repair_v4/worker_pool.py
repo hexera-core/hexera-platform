@@ -22,6 +22,7 @@ without OCP (the hermetic unit tier) the worker still starts and runs the non-OC
 
 from __future__ import annotations
 
+import contextlib
 import contextvars
 import logging
 import multiprocessing
@@ -149,6 +150,27 @@ def _event(fn_name: str, status: str, error: str | None, start: float, timeout_s
                 error=error, reason_key=f"kernel_{status}", **fields, **EV.memory())
 
 
+
+@contextlib.contextmanager
+def _children_allowed() -> Any:
+    """Let THIS process start the pool's kernel workers even when it is itself a daemonic process.
+
+    THE PRODUCT RUNS HERE INSIDE A CELERY PREFORK CHILD, which multiprocessing marks daemonic, and
+    `BaseProcess.start` refuses a daemonic parent ("daemonic processes are not allowed to have children").
+    Measured on the crsv5ship worker fleet: every v5 run fell back to v3 on exactly that assertion. The flag
+    guards against orphans at interpreter exit; the pool owns its workers' lifetime instead (`close()`
+    terminates them, and each worker is itself daemonic), so the parent's flag is lifted for the start
+    only and restored at once."""
+    config = getattr(multiprocessing.current_process(), "_config", None)
+    if not isinstance(config, dict) or not config.get("daemon"):
+        yield
+        return
+    config["daemon"] = False
+    try:
+        yield
+    finally:
+        config["daemon"] = True
+
 class WorkerPool:
     """`size` warm workers; `call` runs one registered function in an idle one.
 
@@ -183,7 +205,8 @@ class WorkerPool:
                 child_conn.close()
                 raise RuntimeError("pool is closed")
             try:
-                process.start()
+                with _children_allowed():
+                    process.start()
             except BaseException:
                 parent_conn.close()
                 child_conn.close()
