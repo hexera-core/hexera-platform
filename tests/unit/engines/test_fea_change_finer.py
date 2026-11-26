@@ -171,6 +171,27 @@ def test_coarser_on_a_change_request_is_twice_what_the_last_mesh_had_there(brack
     assert finer[0]["words"].startswith("You asked for coarser elements at the fillets: the last mesh had about")
 
 
+def _finest_line(plan: dict) -> str:
+    from meshpipeline.engines import fea_plan as P
+    return next(w for w in P.user_words(plan) if "nothing in them finer than" in w)
+
+
+def test_the_finest_size_line_says_what_the_change_run_built(bracket):
+    """The live slip: on the change request's run the line "... and nothing in them finer than X mm" still said the
+    last run's X - the marked place's zones are held under the area's own key, so the part's line never counted them -
+    although the change made that place finer. It says the new run's finest size now, and where it is."""
+    record, surface, diag = bracket
+    last, _ = _plan(record, surface, diag, _global(3.0), None)
+    plan, _finer = _plan(record, surface, diag, _global(3.0), _fillets(record))
+    was, now = _finest_line(last), _finest_line(plan)
+    finest = min(float(z["size_m"]) for z in plan["zones"] if z.get("kind") != "part")
+    assert f"nothing in them finer than {finest * 1e3:.3g} mm (at the fillets, where you asked for finer)" in now
+    assert now != was and "where you asked" not in was
+    # the last run's line is unchanged: it says that run's own finest size
+    last_finest = min(float(z["size_m"]) for z in last["zones"] if z.get("kind") != "part")
+    assert f"nothing in them finer than {last_finest * 1e3:.3g} mm" in was
+
+
 def test_a_typed_size_still_wins_on_a_change_request(bracket):
     record, surface, diag = bracket
     typed = {"ask": "size", "parts": ["Pick_1"], "min_mm": 0.2, "max_mm": 0.2, "quote": "0.2 mm here",
