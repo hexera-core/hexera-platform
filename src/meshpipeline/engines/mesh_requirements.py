@@ -1888,6 +1888,9 @@ def strictness_unnamed(sec: Mapping | None) -> bool:
 
 #: NOTE-12: how a line that is no mesh setting starts
 NOT_MESH_LEAD = "Not a mesh setting"
+#: STD-6: how a line of the team's standard that is no setting is told (engines/meshing_standard.guidance_line)
+GUIDANCE_WORDS = "kept as guidance for the mesh planning"
+GUIDANCE_LEAD = f"From your settings, {GUIDANCE_WORDS}"
 
 
 def not_mesh_words(entries) -> list[str]:
@@ -1901,7 +1904,7 @@ def told_words(sec: Mapping | None) -> list[str]:
     with the result, so no ask of the notes disappears."""
     if not sec or sec.get("status") != "used":
         return []
-    return [w for w in words(sec) if w.startswith(("Not applied", NOT_MESH_LEAD))]
+    return [w for w in words(sec) if w.startswith(("Not applied", NOT_MESH_LEAD, GUIDANCE_LEAD))]
 
 
 def write(workspace, sec: Mapping | None) -> bool:
@@ -2197,6 +2200,27 @@ def finish_report(rows: list[dict], n: int, definitions: str) -> dict:
 FLOW_FIELDS = ("near_wall", "local", "cells:target", "cells:ceiling", "cells:floor", *(f"layers:{w}" for w in LAYERS))
 
 
+#: STD-4: how a row this route cannot take is said before meshing (never "From your ...: ...", as if applied)
+NOT_HERE_LEAD = "Not for this mesh"
+_NO_LAYERS_HERE = "a solid or shell mesh has no boundary layers or wall cells; they are a CFD setting"
+
+
+def not_on_route(field: str, route: str) -> str:
+    """Why a row of `field` cannot be applied on this route at all - the same reason the result's row gives - else
+    "": on a solid or shell (route "fea") boundary layers and a size at the walls; on any route a control every one of
+    the route's lanes declares NotHere (contracts/mesh_controls: files in millimetres)."""
+    f = str(field or "")
+    if route == "fea" and (f == "near_wall" or f.startswith("layers:")):
+        return _NO_LAYERS_HERE
+    if f.startswith("control:") and route in ("fea", "flow"):
+        c = _MC.CONTROLS.get(f.split(":", 1)[1])
+        lanes = [ln for ln, (_e, r) in _MC.LANES.items() if r == route]
+        got = [c.lanes.get(ln) for ln in lanes] if c else []
+        if got and all(isinstance(x, _MC.NotHere) for x in got):
+            return str(got[0].why)  # type: ignore[union-attr]
+    return ""
+
+
 def elements_row(field: str, req: Mapping, n: int, kind: str) -> dict | None:
     """A flow field (FLOW_FIELDS) on a solid or a shell mesh of `n` elements: a count is measured against what
     was asked; a size in a place is the sizes-per-part step's; boundary layers and a size at the walls are not
@@ -2399,6 +2423,18 @@ def _lines_of(sec: Mapping | None, fields: tuple[str, ...]) -> set[str]:
     rows = ((sec or {}).get("requirements") or {}).get("rows") or [] if isinstance(sec, Mapping) else []
     return {f"From your {r.get('from') or 'notes'}: {r.get('asked')}." for r in rows
             if isinstance(r, Mapping) and str(r.get("field") or "").startswith(fields)}
+
+
+#: the lines that tell back the user's own words, quoted ("Not applied: "..." - ...")
+_TOLD_LEADS = ("Not applied", NOT_MESH_LEAD, GUIDANCE_LEAD)
+_QUOTED = re.compile(r'"([^"]+)"')
+
+
+def live_quotes(line: str) -> tuple[str, ...]:
+    """The user's own words a told line quotes (the narration guard judges only our words around them); () for any
+    other line - a line of ours that quotes nothing of the user's is judged whole."""
+    w = str(line or "")
+    return tuple(_QUOTED.findall(w)) if w.startswith(_TOLD_LEADS) else ()
 
 
 def live_words(sec: Mapping | None, *, told_elsewhere: tuple[str, ...] = ()) -> list[str]:

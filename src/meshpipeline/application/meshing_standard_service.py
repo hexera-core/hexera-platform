@@ -43,7 +43,7 @@ def _iso(value: Any) -> str | None:
 
 
 def view_of(text: str, reading: dict | None, *, updated_by: str = "", updated_at: Any = None,
-            shell_elements: str = MS.QUADS) -> dict:
+            shell_elements: str = MS.QUADS, shell_elements_set: bool = False) -> dict:
     """What the settings page shows: the words, one plain line per thing understood (as a run says it), and
     whether they were read ("read"), saved unread ("unread": each run reads them) or empty; and the page's one
     switch, a shell's elements (SHSTAGE-8: "quads" | "triangles")."""
@@ -52,6 +52,8 @@ def view_of(text: str, reading: dict | None, *, updated_by: str = "", updated_at
     return {"text": t, "lines": MS.understood(t, reading) if read else [],
             "status": "empty" if not t.strip() else ("read" if read else "unread"),
             "shell_elements": MS.pick_of(shell_elements) or MS.QUADS,
+            # STD-4: whether the user set the switch (left at its default, the typed words decide)
+            "shell_elements_set": bool(shell_elements_set) or MS.pick_of(shell_elements) == MS.TRIANGLES,
             "updated_by": updated_by or None, "updated_at": _iso(updated_at)}
 
 
@@ -67,20 +69,23 @@ async def view(db: AsyncSession, *, owner_id: str, organization_id: str) -> dict
     if row is None:
         return dict(EMPTY)
     return view_of(row.text, row.reading, updated_by=row.updated_by, updated_at=row.updated_at,
-                   shell_elements=row.shell_elements)
+                   shell_elements=row.shell_elements, shell_elements_set=bool(row.shell_elements_set))
 
 
 Reader = Callable[..., Awaitable[dict | None]]
 
 
 async def save(*, owner_id: str, organization_id: str, text: str, sessions,
-               read: Reader | None = None, shell_elements: str = MS.QUADS) -> dict | None:
+               read: Reader | None = None, shell_elements: str = MS.QUADS,
+               shell_elements_set: bool = False) -> dict | None:
     """Save the caller's organisation's standard and read it once (STD-1): the reading is kept with the words and
     every run reuses it while the words and the question stay the same. Empty words and Quads (the switch's
     default) clear the standard. `shell_elements`: the page's switch (SHSTAGE-8), "quads" | "triangles". None when
     the caller belongs to no organisation it can name. The model is asked OUTSIDE any transaction (it can take a
     minute), and its answer never decides whether the words are saved."""
     kind = MS.pick_of(shell_elements) or MS.QUADS
+    # STD-4: the switch counts as the user's only when they set it (Triangles can only be set)
+    chosen = bool(shell_elements_set) or kind == MS.TRIANGLES
     t = str(text or "").replace("\r\n", "\n").strip()
     if len(t) > MAX_CHARS:
         raise TooLong(f"The standard can be at most {MAX_CHARS:,} characters.")
@@ -98,10 +103,10 @@ async def save(*, owner_id: str, organization_id: str, text: str, sessions,
     reading = kept if kept is not None else (await (read or MS.read_at_save)(t, user_id=owner_id) if t else None)
     async with sessions() as db:
         saved = await standard_repo.put(db, organization_id=org, text=t, reading=reading, updated_by=owner_id,
-                                        shell_elements=kind)
+                                        shell_elements=kind, shell_elements_set=chosen)
         await db.commit()
         return view_of(saved.text, saved.reading, updated_by=saved.updated_by, updated_at=saved.updated_at,
-                       shell_elements=saved.shell_elements)
+                       shell_elements=saved.shell_elements, shell_elements_set=bool(saved.shell_elements_set))
 
 
 async def for_dispatch(db: AsyncSession, *, organization_id: str) -> dict | None:
@@ -114,7 +119,7 @@ async def for_dispatch(db: AsyncSession, *, organization_id: str) -> dict | None
     if row is None:
         return None
     return MS.snapshot(row.text, row.reading, updated_by=row.updated_by, updated_at=_iso(row.updated_at) or "",
-                       shell_elements=row.shell_elements)
+                       shell_elements=row.shell_elements, shell_elements_set=bool(row.shell_elements_set))
 
 
 __all__ = ["EMPTY", "MAX_CHARS", "TooLong", "for_dispatch", "save", "view", "view_of"]

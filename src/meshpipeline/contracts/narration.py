@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from typing import Any
 
 from meshpipeline.contracts.event_stream import EventStreamError
@@ -68,16 +69,23 @@ _LEAKS = [
 ]
 
 
-def leaks(text: str) -> bool:
-    """Whether `text` says something the user must never read (see _LEAKS)."""
+def leaks(text: str, *, quoted: Iterable[str] = ()) -> bool:
+    """Whether `text` says something the user must never read (see _LEAKS). The guard judges OUR words: `quoted` are
+    the user's own words the line quotes ("this goes into a crash model"), each between straight double quotes - those
+    quoted segments are theirs and are left out of the judgement; every other word of the line is judged as before."""
     line = str(text or "")
+    for q in quoted or ():
+        q = str(q or "")
+        if q:
+            line = line.replace(f'"{q}"', '""')
     return any(rx.findall(line) for rx in _LEAKS)
 
 
-def plain(text: str) -> str | None:
-    """`text` as one tidy line, or None when it is empty, too long, or fails the leak guard."""
+def plain(text: str, *, quoted: Iterable[str] = ()) -> str | None:
+    """`text` as one tidy line, or None when it is empty, too long, or fails the leak guard (`quoted`: the user's own
+    words the line quotes, see leaks)."""
     line = " ".join(str(text or "").split())
-    if not line or len(line) > MAX_CHARS or leaks(line):
+    if not line or len(line) > MAX_CHARS or leaks(line, quoted=[" ".join(str(q).split()) for q in quoted or ()]):
         return None
     return line
 
@@ -111,11 +119,11 @@ def _publisher(publish: Any):
 
 
 async def astep(publish: Any, kind: str, words: str, *, n: int | None = None, of: int | None = None,
-                unit: str = "", op_id: str = "") -> bool:
+                unit: str = "", op_id: str = "", quoted: Iterable[str] = ()) -> bool:
     """Publish a step row. False when nothing was said (no publisher, an unknown kind, a leaking line).
     A lost claim (EventStreamError) is raised, as at every fenced boundary; any other failure is swallowed:
     narration is a courtesy, never a reason to fail a run."""
-    line = plain(words)
+    line = plain(words, quoted=quoted)
     say = _publisher(publish)
     if say is None or line is None or kind not in KINDS:
         return False
@@ -128,9 +136,10 @@ async def astep(publish: Any, kind: str, words: str, *, n: int | None = None, of
     return True
 
 
-async def asay(publish: Any, text: str, *, op_id: str = "") -> bool:
-    """Publish one commentary line: what was decided and why, in the user's terms."""
-    return await astep(publish, "say", text, op_id=op_id)
+async def asay(publish: Any, text: str, *, op_id: str = "", quoted: Iterable[str] = ()) -> bool:
+    """Publish one commentary line: what was decided and why, in the user's terms (`quoted`: the user's own words it
+    quotes, never judged as ours - see leaks)."""
+    return await astep(publish, "say", text, op_id=op_id, quoted=quoted)
 
 
 # # what the FEA driver says as it decides

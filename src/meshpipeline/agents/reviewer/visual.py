@@ -208,7 +208,10 @@ async def node_reviewer(state: PipelineState) -> dict:
     # ride the brief the reviewer reads, and stay out of `brief_text`, the only text a finding may
     # quote to ask for a rebuild, so no note can fail a mesh (NOTE-3).
     from meshpipeline.contracts.user_notes import context_block
-    _notes = context_block(state.get("user_notes") or [], consumer="reviewer")
+
+    # STD-6: the team's saved design intent rides with them, first - context too, never a criterion
+    from meshpipeline.engines.meshing_standard import guidance_notes
+    _notes = context_block(guidance_notes(state), consumer="reviewer")
 
     inputs = VisualReviewInteractionInputs(
         job_id=job_id,

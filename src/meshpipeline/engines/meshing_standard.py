@@ -63,8 +63,9 @@ UNREAD_WORDS = ("Your team's meshing settings were not applied this run: the AI 
                 "answer.")
 OFF_WORDS = ("Your team's meshing settings were not applied this run: the AI step that reads them is switched "
              "off.")
-#: a standard's words for one part, a count, or shell or solid: the run's notes are where those are read
-ELSEWHERE_WORDS = "put sizes for one part, an element count, or shell or solid in a run's notes"
+#: a standard's words for one part, or shell or solid: the run's notes are where those are read (an element or cell
+#: count is the standard's own default for every run, STD-1)
+ELSEWHERE_WORDS = "put sizes for one part, or shell or solid, in a run's notes"
 
 
 # #
@@ -72,10 +73,11 @@ ELSEWHERE_WORDS = "put sizes for one part, an element count, or shell or solid i
 # #
 
 def snapshot(text: str, reading: Mapping | None, *, updated_by: str = "", updated_at: str = "",
-             shell_elements: str = "quads") -> dict | None:
+             shell_elements: str = "quads", shell_elements_set: bool = False) -> dict | None:
     """What a run is dispatched with: the text, the reading kept at save time, who saved it and when, and the page's
-    switch when it says Triangles (STD-4; Quads, its default, is not carried). None with no words and the switch on
-    Quads (a run without a standard carries nothing at all)."""
+    switch when the user SET it (STD-4: Triangles, or Quads chosen - `shell_elements_set`, 0024; the switch left on
+    its default Quads is not carried, so the typed words decide). None with no words and the switch on Quads (a run
+    without a standard carries nothing at all)."""
     t = str(text or "").strip()
     tri = pick_of(shell_elements) == TRIANGLES
     if not t and not tri:
@@ -83,6 +85,9 @@ def snapshot(text: str, reading: Mapping | None, *, updated_by: str = "", update
     out: dict = {"text": t[:MAX_CHARS]}
     if tri:
         out["shell_elements"] = TRIANGLES
+    elif shell_elements_set and pick_of(shell_elements) == QUADS:
+        out["shell_elements"] = QUADS
+        out["shell_elements_set"] = True
     if isinstance(reading, Mapping) and isinstance(reading.get("arguments"), str) and reading.get("key"):
         out["reading"] = {"key": str(reading["key"]), "arguments": str(reading["arguments"])}
     if updated_by:
@@ -103,6 +108,15 @@ def standard_of(state: Mapping | None) -> dict | None:
 def switch_of(std: Mapping | None) -> str:
     """STD-4: the settings page's switch as a standard carries it: "triangles", else "quads" (its default)."""
     return TRIANGLES if pick_of((std or {}).get("shell_elements")) == TRIANGLES else QUADS
+
+
+def switch_chosen(std: Mapping | None) -> str:
+    """STD-4: the page's switch when the user SET it - "triangles" (never the default), "quads" chosen (carried with
+    `shell_elements_set`) - else "" (left at its default: the standard's typed words decide the element kind)."""
+    got = pick_of((std or {}).get("shell_elements"))
+    if got == TRIANGLES:
+        return TRIANGLES
+    return QUADS if got == QUADS and (std or {}).get("shell_elements_set") is True else ""
 
 
 def _state(text: str, user_id: str = "") -> dict:
@@ -191,10 +205,57 @@ def _solver_files(quote: str) -> list[tuple[str, str]]:
     return [(name, ext) for name, rx, ext in _SOLVERS if re.search(rx, q, re.I)]
 
 
+#: the answer's lists whose entries quote one line each (the reader's tool): STD-5 sorts them by kind of mesh
+_KEEP_LISTS = ("other", "strictness")
+
+
+def _for_route(arguments: str, route: str) -> tuple[str, list[str]]:
+    """STD-5 BEFORE THE READER'S RULES: the entries of the answer whose own line is tagged for other kinds of mesh than
+    this run's ("CFD: base cell 10 mm" on a solid run) are set aside first, so the reader's "the later one wins" never
+    lets a flow line replace a structural one of the same field (H02: "FEA: global size 4 mm ... / CFD: base cell 10
+    mm" lost the 4 mm on a solid run). Returns (the answer for this route, the quotes set aside). Only a LINE's tag
+    sorts (the list's whole tag is merge()'s); no route, no tag, or nothing set aside: the answer itself."""
+    if route not in (FLOW, "fea"):
+        return arguments, []
+    try:
+        raw = json.loads(arguments or "")
+    except ValueError:
+        return arguments, []
+    tag = raw.get("applies_to") if isinstance(raw, dict) else None
+    lines_ = tag.get("lines") if isinstance(tag, Mapping) else None
+    if not lines_:
+        return arguments, []
+
+    def line_kinds(quote: str) -> list[str] | None:
+        rq = MR._squash(quote)
+        for ln in lines_:
+            lq = MR._squash(str((ln or {}).get("quote") or "")) if isinstance(ln, Mapping) else ""
+            if lq and rq and (lq in rq or rq in lq):
+                return list(ln.get("kinds") or ["any"])
+        return None
+
+    gone: list[str] = []
+    for k, v in list(raw.items()):
+        if k in _KEEP_LISTS or k == "applies_to" or not isinstance(v, list):
+            continue
+        kept = []
+        for e in v:
+            q = str(e.get("quote") or "") if isinstance(e, Mapping) else ""
+            kinds = line_kinds(q) if q else None
+            if kinds is not None and not _fits(kinds, route):
+                if q not in gone:
+                    gone.append(q)
+                continue
+            kept.append(e)
+        raw[k] = kept
+    return (json.dumps(raw), gone) if gone else (arguments, [])
+
+
 def checked(arguments: str, text: str, *, route: str = "", key: str = "", source: str = "") -> dict:
     """The standard's section from one answer of the model, checked by the reader's rules: the notes' section shape
     ("used", its requirements, what was dropped and not applied) and the unit it names, its words for elsewhere, and
     the solver files it names that every FEA run delivers."""
+    arguments, other_kinds = _for_route(arguments, route)
     req, dropped, not_applied = _check(arguments, text, route)
     unit = _stated_unit(arguments, text)
     if unit:
@@ -207,11 +268,127 @@ def checked(arguments: str, text: str, *, route: str = "", key: str = "", source
             if got:
                 files.append([q, *[f"{name} ({ext})" for name, ext in got]])
                 not_applied.remove(q)
+        # the model files "Nastran BDF output" as no mesh setting (its prompt: the solver the mesh is for): delivered too
+        nm = (req or {}).get("not_mesh") or []
+        for e in list(nm):
+            got = _solver_files(str(e.get("quote") or ""))
+            if got:
+                files.append([str(e.get("quote")), *[f"{name} ({ext})" for name, ext in got]])
+                nm.remove(e)
+        if not nm:
+            (req or {}).pop("not_mesh", None)
+    elsewhere = _elsewhere(arguments, text)
+    if route == "fea":
+        # STD-1: on the FEA routes only the run's notes are read for a size in one place (cad/part_words): the
+        # standard's is told to go there, never said as set and left unapplied. Its element COUNT stays: it is the
+        # default count of every run (engines/fea_driver.element_target, PLAN-fea-27 / SHMESH-23)
+        for row in [r for r in req.get("rows") or [] if r.get("field") == "local"]:
+            _drop_row(req, row)
+            if row.get("quote") and row["quote"] not in elsewhere:
+                elsewhere.append(str(row["quote"]))
     sec = MR.section("used", requirements=req, dropped=dropped, not_applied=not_applied, key=key, source=source)
     sec["stated_unit"] = unit
-    sec["elsewhere"] = _elsewhere(arguments, text)
+    sec["elsewhere"] = elsewhere
     sec["solver_files"] = files
+    if other_kinds:
+        # STD-5: told with merge()'s line, as the lines written for other kinds of mesh
+        sec["other_kinds"] = other_kinds
     return sec
+
+
+# #
+# the standard's design intent, handed to the run's AI steps as guidance (STD-6)
+# #
+
+RULE_GUIDANCE = "STD-6"
+#: how a line of the standard that is no setting is told, in the three places lines are told
+GUIDANCE_WORDS = MR.GUIDANCE_WORDS
+GUIDANCE_LEAD = MR.GUIDANCE_LEAD
+
+
+def guidance_split(sec: Mapping | None, route: str) -> tuple[list[dict], list[str]]:
+    """STD-6: the standard's lines that are no setting - what the reader filed as no mesh setting of ours ("we care
+    about fatigue at the fillets") and as not a mesh setting at all ("this goes into a crash model") - split by STD-5
+    into those for this run's kind of mesh ([{"quote", "instead"}], `instead` '' or the reader's hint) and the quotes
+    written for other kinds. ([], []) when the standard was not read."""
+    s = sec if isinstance(sec, Mapping) else {}
+    if s.get("status") != "used":
+        return [], []
+    req = s.get("requirements") if isinstance(s.get("requirements"), Mapping) else {}
+    got: list[dict] = [{"quote": str(q), "instead": ""} for q in s.get("not_applied") or [] if str(q or "").strip()]
+    for e in (req or {}).get("not_mesh") or []:
+        if isinstance(e, Mapping) and str(e.get("quote") or "").strip():
+            hint = str(e.get("instead") or "")
+            got.append({"quote": str(e["quote"]), "instead": "" if hint == MR.NOT_MESH_DEFAULT else hint})
+    kept: list[dict] = []
+    off: list[str] = []
+    for g in got:
+        if any(k["quote"] == g["quote"] for k in kept) or g["quote"] in off:
+            continue
+        (kept.append(g) if _fits(_kinds_of({"quote": g["quote"]}, req or {}), route) else off.append(g["quote"]))
+    return kept, off
+
+
+def guidance_line(g: Mapping, *, page: bool = False) -> str:
+    """STD-6 in plain words: 'From your settings, kept as guidance for the mesh planning: "..."' (on the settings
+    page without its lead); a hint of the reader's ("a time limit is not a setting yet ...") rides along."""
+    hint = f" ({g['instead']})" if g.get("instead") else ""
+    lead = GUIDANCE_WORDS[:1].upper() + GUIDANCE_WORDS[1:] if page else GUIDANCE_LEAD
+    return f'{lead}: "{MR._short(str(g.get("quote") or ""))}"{hint}.'
+
+
+def route_of(state: Mapping | None) -> str:
+    """The route a run's standard is read for: "fea" for a structural run (its saved purpose), else "flow"."""
+    from meshpipeline.engines.fea_review import is_fea
+
+    return "fea" if is_fea((state or {}).get("purpose")) else FLOW
+
+
+def _section_for_guidance(std: Mapping, route: str, state: Mapping) -> dict | None:
+    """The standard's section as the run read it, with no model call: the reading kept at save time, else the
+    decision cache's saved answer to the same question (a run that read it again at run time); None with neither."""
+    text = str(std.get("text") or "").strip()
+    kept = kept_reading(std, text)
+    if kept is None:
+        from meshpipeline.contracts.decision_cache import recorded_answer
+
+        tool = MR.tool()
+        rr = recorded_answer("builder", messages=messages(text), tools=[tool], tool_choice=MR._choice(tool),
+                             user_id=str((state or {}).get("user_id") or ""))
+        kept = MR._args_of(rr) if rr is not None else None
+    if kept is None:
+        return None
+    try:
+        return checked(kept, text, route=route)
+    except Exception:  # noqa: BLE001 - guidance is a courtesy: a run never fails on it
+        logger.warning("meshing standard: guidance not worked out", exc_info=True)
+        return None
+
+
+def guidance(state: Mapping | None, route: str | None = None) -> list[dict]:
+    """STD-6: the standard's lines that are no setting and are for this run's kind of mesh ([] with none)."""
+    std = standard_of(state)
+    if std is None or not str(std.get("text") or "").strip():
+        return []
+    r = route_of(state) if route is None else route
+    sec = _section_for_guidance(std, r, state or {})
+    return guidance_split(sec, r)[0] if sec else []
+
+
+def guidance_notes(state: Mapping | None, route: str | None = None) -> list:
+    """STD-6 THE NOTES A RUN'S AI STEPS READ: the run's own notes, with the standard's design intent (guidance())
+    as one note of its own put FIRST - labelled as the team's saved settings, so the run's words, after it, win
+    where they differ. No such line: the run's notes as stored, the same list (every prompt byte for byte as
+    before, STD-3)."""
+    own = list((state or {}).get("user_notes") or [])
+    lines = guidance(state, route)
+    if not lines:
+        return (state or {}).get("user_notes") or []
+    from meshpipeline.contracts import user_notes as un
+
+    # no capture time: the same standard gives the same note (the decision cache keys a step's round by its prompt)
+    return [{"text": "\n".join(str(g["quote"]) for g in lines), "source": un.SOURCE_TEAM, "turn": None, "at": ""},
+            *own]
 
 
 # #
@@ -324,8 +501,11 @@ async def decide(state: Mapping, *, route: str = "", job_id: str = "", run=None,
     except Exception as exc:  # noqa: BLE001 - the standard never fails a run
         logger.warning("meshing standard: not read (%s) - job_id=%s", type(exc).__name__, job_id)
         settings = MR.section("failed", source="rules", note=UNREAD_WORDS)
-    # STD-4: the page's switch is the settings' shell element kind
-    settings = switched(settings, switch_of(std))
+    # STD-4: the page's switch, when the user set it, is the settings' shell element kind (over their own words);
+    # left at its default it sets nothing aside - "tria mesh only" typed in the box is built
+    chosen = switch_chosen(std)
+    if chosen:
+        settings = switched(settings, chosen)
     left = max(0.0, float(wait_s) - (time.monotonic() - started))
     notes = await MR.decide(state, route=route, job_id=job_id, run=run, enabled=enabled, wait_s=left)
     return merge(settings, notes, route=route)
@@ -493,8 +673,11 @@ def _not_here_words(req: Mapping, not_here: list[dict], route: str, *, everythin
         return ""
     raw_tag = req.get("applies_to")
     tag: Mapping = raw_tag if isinstance(raw_tag, Mapping) else {}
-    kinds = [k for k in (tag.get("whole") or []) if k in _KIND_WORDS] or \
-        sorted({k for r in not_here for k in _kinds_of(r, req) if k in _KIND_WORDS})
+    # the kinds of the lines LEFT OUT, never every kind the list mentions ("5 lines ... are written for flow (CFD)
+    # meshes", not "for solid and flow (CFD)" on a solid run); none of this run's kind (a line that fits is not here)
+    left = sorted({k for r in not_here for k in _kinds_of(r, req) if k in _KIND_WORDS and not _fits([k], route)},
+                  key=list(_KIND_WORDS).index)
+    kinds = left or [k for k in (tag.get("whole") or []) if k in _KIND_WORDS and not _fits([k], route)]
     names = " and ".join(_KIND_WORDS[k] for k in kinds) or "other"
     here = "this flow mesh" if route == FLOW else "this solid or shell mesh"
     if everything:
@@ -523,6 +706,9 @@ def merge(settings: Mapping | None, notes: Mapping, *, route: str = "") -> dict:
     if s_used and n_used and settings.get("stated_unit"):
         _in_unit(N, str(settings["stated_unit"]), told_n, cells=route == FLOW)
     _reid(S, "s")
+    # STD-6: the standard's words that are no setting are guidance for this run's AI steps (guidance_notes), told as
+    # kept as guidance - those written for another kind of mesh are STD-5's, told with its line
+    g_kept, g_off = guidance_split(settings, route)
     # NOTE-12 is the run's notes': the standard's words that are no mesh setting stay with STD-1's own lines
     S.pop("not_mesh", None)
     for r in [*(S.get("rows") or []), *(S.get("strictness") or [])]:
@@ -535,10 +721,13 @@ def merge(settings: Mapping | None, notes: Mapping, *, route: str = "") -> dict:
     not_here = [r for r in S.get("rows") or [] if not _fits(_kinds_of(r, S), route)]
     for r in not_here:
         _drop_row(S, r)
-    std_off = bool(not_here) and not S.get("rows")
+    not_here += [{"asked": f'"{MR._short(q)}"', "quote": q} for q in g_off]
+    if s_used:
+        not_here += [{"asked": f'"{MR._short(q)}"', "quote": q} for q in settings.get("other_kinds") or []]
+    std_off = bool(not_here) and not S.get("rows") and not g_kept
     said_not_here = _not_here_words(S, not_here, route, everything=std_off)
     S.pop("applies_to", None)
-    if said_not_here and not S.get("rows") and not n_used:
+    if said_not_here and not S.get("rows") and not g_kept and not n_used:
         # nothing of it is for this mesh and the notes ask nothing: the run is the run with no standard, and told
         out_none = dict(notes) if notes.get("status") == "none" else dict(MR.section("none"))
         out_none["standard_not_applied"] = said_not_here
@@ -549,6 +738,13 @@ def merge(settings: Mapping | None, notes: Mapping, *, route: str = "") -> dict:
     overridden = [dict(r) for r in S.get("rows") or [] if _slot(r, S) in taken]
     for r in overridden:
         _drop_row(S, r)
+    if route == "fea" and any(str(r.get("field") or "").startswith("cells:") for r in N.get("rows") or []):
+        # STD-1: on a solid or a shell ONE count aims the plan (PLAN-fea-27): a count in the run's notes, of any kind,
+        # is the run's, and every count of the standard gives way to it - told, never dropped without a word
+        for r in [r for r in S.get("rows") or [] if str(r.get("field") or "").startswith("cells:")]:
+            told_s.append(f"{r['asked']} - your notes give the element count for this run")
+            overridden.append(dict(r))
+            _drop_row(S, r)
     out = copy.deepcopy(S)
     for k, v in N.items():
         if k == "rows":
@@ -618,9 +814,9 @@ def merge(settings: Mapping | None, notes: Mapping, *, route: str = "") -> dict:
     n_dropped = list(notes.get("dropped") or []) if n_used else []
     s_dropped = list(settings.get("dropped") or []) if s_used and not std_off else []
     n_not = list(notes.get("not_applied") or []) if n_used else []
-    s_not = list(settings.get("not_applied") or []) if s_used and not std_off else []
+    # (the standard's words no setting matches are STD-6's guidance, told as kept - never as not applied)
     dropped = [*n_dropped, *told_n, *[f"from your settings - {d}" for d in (*s_dropped, *told_s)]]
-    not_applied = [*n_not, *[f"from your settings - {q}" for q in s_not]]
+    not_applied = list(n_not)
     sec = MR.section(status, requirements=out if status == "used" else None, dropped=dropped,
                      not_applied=not_applied, note=str(notes.get("note") or "") if n_used else "",
                      key=str(notes.get("key") or settings.get("key") or ""),
@@ -629,7 +825,10 @@ def merge(settings: Mapping | None, notes: Mapping, *, route: str = "") -> dict:
                        "key": settings.get("key"), "unit": settings.get("stated_unit"),
                        "overridden": [{"field": r.get("field"), "asked": r.get("asked")} for r in overridden],
                        "from": {str(r["id"]): r["from"] for r in out.get("rows") or []}}
-    sec["lines"] = lines(MR.section("none") if std_off else settings, notes, out, told_s=told_s, told_n=told_n)
+    if g_kept:
+        sec["standard"]["guidance"] = [g["quote"] for g in g_kept]
+    sec["lines"] = lines(MR.section("none") if std_off else settings, notes, out, told_s=told_s, told_n=told_n,
+                         guidance=g_kept, route=route)
     if said_not_here:
         sec["standard"]["not_applied_here"] = said_not_here
         sec["standard_not_applied"] = said_not_here
@@ -673,9 +872,11 @@ def _flow_across(out: dict, source, not_the_notes) -> None:
                               "it does not fit the cell count your notes ask for")
 
 
-def lines(settings: Mapping, notes: Mapping, merged: Mapping, *, told_s=(), told_n=()) -> list[str]:
+def lines(settings: Mapping, notes: Mapping, merged: Mapping, *, told_s=(), told_n=(),
+          guidance: list[dict] | None = None, route: str = "") -> list[str]:
     """Before meshing, in plain words: one line per value in force, said by where it came from, then what was not
-    applied - the notes' lines exactly as the reader says them, the standard's marked as the standard's."""
+    applied - the notes' lines exactly as the reader says them, the standard's marked as the standard's. `guidance`:
+    the standard's lines kept as guidance for this run (STD-6; None: every such line, as the settings page says)."""
     s_used, n_used = settings.get("status") == "used", notes.get("status") == "used"
     out: list[str] = []
     if not s_used and settings.get("status") not in (None, "none"):
@@ -684,13 +885,20 @@ def lines(settings: Mapping, notes: Mapping, merged: Mapping, *, told_s=(), told
         out.append(str(notes.get("note") or MR.UNREAD_WORDS))
     rows = list(merged.get("rows") or [])
     unit = settings.get("stated_unit") if s_used else None
-    out += [f"From your settings: {r['asked']}." for r in rows if r.get("from") == "settings"]
+    def said(r: Mapping, whose: str) -> str:
+        # a row this route cannot take at all is never said as applied: the result's own reason, said now (STD-4)
+        why = MR.not_on_route(str(r.get("field") or ""), route)
+        if why:
+            return f"{MR.NOT_HERE_LEAD} ({'your ' + whose}): {r['asked']} - {why}."
+        return f"From your {whose}: {r['asked']}."
+
+    out += [said(r, "settings") for r in rows if r.get("from") == "settings"]
     if unit:
         out.append(f"From your settings: lengths with no unit are in {_UNIT_NAME[str(unit)]}.")
     if s_used:
         for _quote, *files in settings.get("solver_files") or []:
             out.append(f"From your settings: {' and '.join(files)} files - every FEA run delivers them.")
-    out += [f"From your notes: {r['asked']}." for r in rows if r.get("from") == "notes"]
+    out += [said(r, "notes") for r in rows if r.get("from") == "notes"]
     out += MR.strictness_words(merged)
     for sec in (settings, notes):
         if sec.get("status") == "used" and sec.get("source") == "saved" and sec.get("note"):
@@ -704,10 +912,12 @@ def lines(settings: Mapping, notes: Mapping, merged: Mapping, *, told_s=(), told
     if s_used:
         out += [f"Not applied (your settings): {d}." for d in settings.get("dropped") or []]
         out += [f"Not applied (your settings): {d}." for d in told_s]
-        out += [f'Not applied (your settings): "{MR._short(q)}" - no mesh setting of ours matches it yet.'
-                for q in settings.get("not_applied") or []]
         out += [f'Not applied (your settings): "{MR._short(q)}" - {ELSEWHERE_WORDS}.'
                 for q in settings.get("elsewhere") or []]
+        # STD-6 (and NOTE-12 for the standard): a line that is no setting ("we care about fatigue at the fillets",
+        # "this goes into a crash model") is handed to the run's AI steps as guidance and told so, never lost
+        got = guidance_split(settings, "")[0] if guidance is None else guidance
+        out += [guidance_line(g) for g in got]
     return out
 
 
@@ -729,10 +939,14 @@ def understood(text: str, reading: Mapping | None) -> list[str]:
         r["from"] = "settings"
     out = []
     for line in lines(sec, MR.section("none"), merged):
-        for lead in ("From your settings: ", "Not applied (your settings): "):
+        if line.startswith(GUIDANCE_LEAD):
+            out.append(GUIDANCE_WORDS[:1].upper() + GUIDANCE_WORDS[1:] + line[len(GUIDANCE_LEAD):])
+            continue
+        for lead in ("From your settings: ", "Not applied (your settings): ", f"{MR.NOT_MESH_LEAD} (your settings): "):
             if line.startswith(lead):
                 line = line[len(lead):]
-                line = (line[:1].upper() + line[1:]) if lead.startswith("From") else f"Not applied: {line}"
+                line = ((line[:1].upper() + line[1:]) if lead.startswith("From") else f"Not applied: {line}"
+                        if lead.startswith("Not applied") else f"{MR.NOT_MESH_LEAD}: {line}")
         out.append(line)
     return out
 
@@ -931,6 +1145,7 @@ def stage_decisions(sec: Mapping | None, stage_name: str = "notes") -> list[dict
 
 __all__ = ["ELSEWHERE_WORDS", "MAX_CHARS", "OFF_WORDS", "PICKS", "QUADS", "RULE_MERGE", "RULE_NOTHING", "RULE_READ",
            "RULE_STAGE", "SAVE_WAIT_S", "SOURCE", "STAGE_KEY", "STATE_KEY", "TRIANGLES", "UNREAD_WORDS", "checked",
+           "switch_chosen", "switch_of",
            "decide", "decisions", "elements_of", "kept_reading", "key_of", "lines", "merge", "messages", "pick_of",
            "read", "read_at_save", "remark", "size_remark", "snapshot", "stage", "stage_decisions", "standard_of",
            "understood", "words_read"]

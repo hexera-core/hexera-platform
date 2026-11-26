@@ -168,7 +168,7 @@ async def read_for_attempt(workspace, state, *, job_id: str = "", publish=None, 
         logger.debug("NOTE-10 not cited", exc_info=True)
     if publish is not None:
         for i, line in enumerate(MR.live_words(sec)):
-            await _N.asay(publish, line, op_id=f"cfd:notes:{i}")
+            await _N.asay(publish, line, op_id=f"cfd:notes:{i}", quoted=MR.live_quotes(line))
     return sec
 
 

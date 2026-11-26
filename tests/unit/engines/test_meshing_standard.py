@@ -282,10 +282,10 @@ def test_what_the_standard_says_of_one_part_or_no_setting_is_told_never_dropped(
                 "", None, router)
     words = MR.words(sec)
     assert words[0] == "From your settings: warpage under 15°."
-    assert ('Not applied (your settings): "Use 3 elements through the thickness" - no mesh setting of ours matches '
-            'it yet.') in words
+    # STD-6: a line no setting matches is handed to the AI steps as guidance, and told so - never "not applied"
+    assert f'{MS.GUIDANCE_LEAD}: "Use 3 elements through the thickness".' in words
     assert (f'Not applied (your settings): "3 mm on the bracket" - {MS.ELSEWHERE_WORDS}.') in words
-    assert len(MR.not_applied_words(sec)) == 2
+    assert len(MR.not_applied_words(sec)) == 1
 
 
 def test_a_solver_the_standard_names_is_told_as_delivered_on_the_fea_route(router):
@@ -296,8 +296,7 @@ def test_a_solver_the_standard_names_is_told_as_delivered_on_the_fea_route(route
     words = MR.words(_both(std, answer, "", None, router))
     assert words == ["From your settings: Nastran (.bdf) files - every FEA run delivers them.",
                      "From your settings: Abaqus (.inp) and Ansys (.cdb) files - every FEA run delivers them.",
-                     'Not applied (your settings): "Use Nastran GEOMCHECK limits" - no mesh setting of ours matches '
-                     'it yet.']
+                     f'{MS.GUIDANCE_LEAD}: "Use Nastran GEOMCHECK limits".']
     # the flow route delivers no solver deck: there it stays not applied
     sec = MS.checked(json.dumps(answer), std, route="flow")
     assert sec["solver_files"] == [] and len(sec["not_applied"]) == 3
@@ -331,7 +330,9 @@ def test_the_settings_page_shows_each_line_exactly_as_a_run_says_it():
                            {"quote": "Units: inches", "kind": "mesh"}])
     assert MS.understood(text, {"key": "k", "arguments": json.dumps(answer)}) == [
         "Global element size 10.16 mm (0.4 inch).", "Lengths with no unit are in inches.",
-        'Not applied: "3 elements through the flange thickness" - no mesh setting of ours matches it yet.']
+        # the reader's floor files "Nastran BDF please" as no mesh setting: told as delivered, never dropped
+        "Nastran (.bdf) files - every FEA run delivers them.",
+        'Kept as guidance for the mesh planning: "3 elements through the flange thickness".']
     assert MS.understood("", reading) == [] and MS.understood(CRITERIA, None) == []
 
 

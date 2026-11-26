@@ -266,7 +266,8 @@ def brief(record: Mapping, state: Mapping, zone_list: list[dict], *, diag_m: flo
     # calls - which zones matter, what to set aside, a budget they named. Only when there are some,
     # so a run without notes is shown exactly what it always was (the decision cache keys on it).
     from meshpipeline.contracts.user_notes import prompt_block
-    notes = prompt_block(s.get("user_notes") or [], consumer="fea_ai")
+    from meshpipeline.engines.meshing_standard import guidance_notes  # STD-6: the team's design intent first
+    notes = prompt_block(guidance_notes(s, route="fea"), consumer="fea_ai")
     if notes:
         out["user_notes"] = notes
         out["user_notes_fea"] = (
