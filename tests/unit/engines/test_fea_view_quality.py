@@ -164,3 +164,41 @@ def test_the_fea_viewer_hook_serves_the_heatmap_aligned_with_the_drawn_triangles
         assert got["count"] == p["tri_count"]
         sj = _f32(got["scaled_jacobian_b64"])
         assert len(sj) == p["tri_count"] and np.isfinite(sj).all() and (sj > 0).all()
+
+
+def test_a_mesh_kept_in_the_bucket_keeps_its_heatmap_on_the_thinned_view(tmp_path, monkeypatch):
+    # the stand-in is written while the volume is here; thinned, every drawn triangle takes the worst near it
+    from meshpipeline.engines.gmsh import viewer_surface as VS
+    gmsh.initialize(interruptible=False)
+    try:
+        gmsh.option.setNumber('General.Terminal', 0)
+        gmsh.model.add('box')
+        gmsh.model.occ.addBox(0, 0, 0, 1, 1, 1)
+        gmsh.model.occ.synchronize()
+        gmsh.model.addPhysicalGroup(2, [t for _d, t in gmsh.model.getEntities(2)])
+        gmsh.model.addPhysicalGroup(3, [1])
+        gmsh.option.setNumber('Mesh.MeshSizeMax', 0.15)
+        gmsh.model.mesh.generate(3)
+        gmsh.write(str(tmp_path / 'mesh.msh'))
+    finally:
+        gmsh.finalize()
+    mesh = VS.read_msh(tmp_path, by_face=True)
+    fields = FV.fields_for(mesh, tmp_path, shell=False)
+    monkeypatch.setattr(VS, 'VIEW_MAX_TRIANGLES', 200)
+    VS.save_viewer_mesh(tmp_path / 'stand_in.npz', mesh, fields)
+    monkeypatch.setattr('meshpipeline.engines.bucket_files.VIEWER_MESH_FILE', 'stand_in.npz')
+    shown = VS.load_viewer_mesh(tmp_path)
+    got = shown['quality_fields']
+    assert got['thinned'] and got['metrics'] == fields['metrics']
+    for name, polys in shown['patches']:
+        full = _f32(fields['patches'][name]['aspect_ratio_b64'])
+        thin = _f32(got['patches'][name]['aspect_ratio_b64'])
+        assert len(thin) == len(polys) < len(full)
+        assert np.nanmax(thin) == pytest.approx(full.max())
+
+
+def test_a_flat_tetrahedron_ships_as_the_worst_there_is_never_as_an_infinity_json_refuses():
+    pts = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [1, 1, 0]], dtype=float)      # all four in one plane
+    f = FV.solid_fields(pts, np.array([[0, 1, 2, 3]]), [('Face_1', [[0, 1, 2], [0, 1, 3]])], {})
+    json.dumps(f, allow_nan=False)
+    assert max(h['value'] for h in f['hotspots'] if h['metric'] == 'aspect_ratio') == FV.ENDLESS

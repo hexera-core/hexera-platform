@@ -83,7 +83,14 @@ def _metric(label: str, unit: str, limit: float, values: np.ndarray, n_over: int
     return out
 
 
+#: the value a degenerate element's endless figure (an aspect ratio of a flat tetrahedron) ships as: JSON holds
+#: no infinity, and the element must still read as the worst there is
+ENDLESS = 1.0e30
+
+
 def _hot(metric: str, values: np.ndarray, centres: np.ndarray, limit: float, low: bool, best: float) -> list[dict]:
+    values = np.nan_to_num(np.asarray(values, dtype=np.float64), nan=best if low else 0.0,
+                           posinf=ENDLESS, neginf=-ENDLESS)
     past = np.nonzero(values < limit if low else values > limit)[0]
     if not len(past):
         return []
@@ -240,7 +247,7 @@ def solid_fields(points, tets: Sequence[np.ndarray] | np.ndarray, patches: Seque
 
 #: (key, label, unit, quad figure, triangle figure, verdict figure of shell_quality.LIMITS, low, best, floor,
 #: requirement measure, its op) - the shell's measures as the result names them (engines/shell_delivery.LABELS)
-_SHELL = (
+_SHELL: tuple[tuple[Any, ...], ...] = (
     ("aspect_ratio", "aspect ratio", "", "aspect", "aspect", "aspect", False, None, 1.0, "aspect_ratio", "<="),
     ("warp", "warp", "°", "warp_deg", None, "warp_deg", False, None, 0.0, "warpage", "<="),
     ("skew", "skew", "°", "skew_deg", "skew_deg", "skew_deg", True, 90.0, None, "skew", ">="),
@@ -334,24 +341,70 @@ def shell_fields(points, patches: Sequence[tuple[str, Sequence]], quality: Mappi
 
 # ------------------------------------------------------------------------------- the hook ----
 
+def fields_for(mesh: Mapping | None, workspace, *, shell: bool, names: Sequence[str] | None = None) -> dict | None:
+    """The fields of a mesh in read_msh's by-face form (a solid needs its `tets`), against the workspace's
+    quality.json; None when there is nothing to colour."""
+    if not mesh or not mesh.get("patches"):
+        return None
+    import json
+    from pathlib import Path
+
+    try:
+        quality = json.loads((Path(workspace) / "quality.json").read_text())
+    except (OSError, ValueError):
+        quality = {}
+    if shell:
+        return shell_fields(mesh["points"], mesh["patches"], quality, names)
+    if not mesh.get("tets"):
+        return None
+    return solid_fields(mesh["points"], mesh["tets"], mesh["patches"], quality, names)
+
+
+def _centres(points: np.ndarray, polys: Sequence) -> np.ndarray:
+    return np.asarray([points[np.asarray(p, dtype=np.int64)].mean(axis=0) for p in polys], dtype=np.float64)
+
+
+def remap(fields: Mapping, full: Mapping, shown: Mapping) -> dict:
+    """`fields` of the `full` surface carried onto a thinned copy of it (`shown`, engines/gmsh/viewer_surface
+    .downsample): every drawn triangle takes the WORST value of the full surface's elements nearest it, so a
+    bad element is never thinned out of sight - the stand-in view of a mesh kept in the bucket."""
+    from scipy.spatial import cKDTree
+
+    full_p = np.asarray(full["points"], dtype=np.float64)
+    shown_p = np.asarray(shown["points"], dtype=np.float64)
+    full_by = dict(full["patches"])
+    metrics = fields.get("metrics") or {}
+    out_patches: dict[str, dict] = {}
+    for name, polys in shown["patches"]:
+        src = (fields.get("patches") or {}).get(name)
+        fpolys = full_by.get(name)
+        if not src or not fpolys or not polys:
+            continue
+        near = cKDTree(_centres(shown_p, polys)).query(_centres(full_p, fpolys))[1]
+        row: dict = {"count": len(polys)}
+        for key, md in metrics.items():
+            b = src.get(f"{key}_b64")
+            if not b:
+                continue
+            vals = np.frombuffer(base64.b64decode(b), dtype="<f4").astype(np.float64)
+            got = np.full(len(polys), np.nan)
+            (np.fmin if md.get("low") else np.fmax).at(got, near, vals)
+            row[f"{key}_b64"] = _b64(got)
+        out_patches[name] = row
+    return {**fields, "patches": out_patches, "thinned": True}
+
+
 def attach(resp: dict, mesh: Mapping | None, workspace, *, shell: bool) -> None:
     """Add `quality_fields` to an FEA viewer response, or leave it untouched (a heatmap is never worth the
-    mesh: every failure is logged and swallowed)."""
+    mesh: every failure is logged and swallowed). A mesh kept in the bucket brings the fields its stand-in was
+    written with (engines/bucket_files.write_stand_ins)."""
     try:
         if not resp or not mesh or not mesh.get("patches"):
             return
-        import json
-        from pathlib import Path
-
-        try:
-            quality = json.loads((Path(workspace) / "quality.json").read_text())
-        except (OSError, ValueError):
-            quality = {}
-        names = [p.get("name") for p in (resp.get("patches") or []) if isinstance(p, dict)]
-        if shell:
-            fields = shell_fields(mesh["points"], mesh["patches"], quality, names)
-        else:
-            fields = solid_fields(mesh["points"], mesh.get("tets") or [], mesh["patches"], quality, names)
+        fields = mesh.get("quality_fields")
+        if not fields:
+            names = [str(p["name"]) for p in (resp.get("patches") or []) if isinstance(p, dict) and p.get("name")]
+            fields = fields_for(mesh, workspace, shell=shell, names=names)
         if fields:
             resp["quality_fields"] = fields
     except Exception:  # noqa: BLE001 - a heatmap is never worth a delivery
@@ -359,4 +412,4 @@ def attach(resp: dict, mesh: Mapping | None, workspace, *, shell: bool) -> None:
 
 
 __all__ = ["MAX_ELEMENTS_MEASURED", "MAX_HOTSPOTS_PER_METRIC", "PERFECT_DIHEDRAL", "attach", "behind",
-           "shell_fields", "solid_fields", "user_limit"]
+           "fields_for", "remap", "shell_fields", "solid_fields", "user_limit"]

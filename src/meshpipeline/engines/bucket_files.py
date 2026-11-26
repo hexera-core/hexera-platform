@@ -224,7 +224,15 @@ def write_stand_ins(workspace) -> list[str]:
         from meshpipeline.engines.gmsh.viewer_surface import read_msh, save_viewer_mesh
         mesh = read_msh(ws, by_face=True, face_names=viewer_face_names(ws))
         if mesh:
-            save_viewer_mesh(ws / VIEWER_MESH_FILE, mesh)
+            fields = None
+            try:
+                # the heatmap, measured now while the volume is here (the worker will not have it)
+                from meshpipeline.engines.fea_view_quality import fields_for
+                from meshpipeline.engines.shell_delivery import is_shell_workspace
+                fields = fields_for(mesh, ws, shell=is_shell_workspace(ws))
+            except Exception:  # noqa: BLE001 - a heatmap is never worth the view
+                logger.warning("kept files: the viewer's heatmap was not measured", exc_info=True)
+            save_viewer_mesh(ws / VIEWER_MESH_FILE, mesh, fields)
             made.append(VIEWER_MESH_FILE)
     except Exception:  # noqa: BLE001 - a stand-in is a view, never a reason to lose the mesh
         logger.warning("kept files: the viewer's surface was not written", exc_info=True)
