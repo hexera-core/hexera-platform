@@ -1,5 +1,5 @@
 // Responsibility: The geometry check's "what should we do with your CAD?" choice - Repair + mesh, Repair CAD only,
-//                 Mesh only - and the run's "accept repairs automatically" box: drawn in every CAD form, read on confirm.
+//                 Mesh only - and the run's "accept repairs without asking" box: drawn in every CAD form, read on confirm.
 // Owns: the choice's markup and how a form's answer becomes the confirm body's `repair_goal` / `repair_auto_accept`.
 // Boundaries: words come from core/repair_words.js; the forms (render/geometry_form.js, render/fea_form.js) place it
 //             and their readers add what it reads to the body they already send. It decides no repair.
@@ -40,7 +40,7 @@ export function repairChoiceHtml(p) {
       <label class="rc-auto"${c.autoAcceptAllowed ? "" : ' title="Your organisation requires a review of larger repairs"'}>
         <input type="checkbox" class="rc-auto-box"${c.autoAccept && c.autoAcceptAllowed ? " checked" : ""}`
         + `${off || !c.autoAcceptAllowed ? " disabled" : ""}>
-        <span>Accept repairs automatically (skip review)
+        <span>Accept repairs without asking (skip review)
           <span class="rc-opt-h">Larger changes, like closing a gap, are normally shown to you before they are kept.</span></span>
       </label>
     </fieldset>`;
