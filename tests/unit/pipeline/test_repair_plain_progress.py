@@ -181,6 +181,15 @@ def test_the_section_and_report_never_say_an_engine_string():
     _assert_plain([page])
 
 
+def test_a_declined_v3_repair_claims_no_counts():
+    # found live on the personal slug: a refusal that parked 30 defects for review read
+    # "Repair finished: nothing needed fixing"
+    sec = RR.section({"repair_attempt": {"attempted": False, "outcome": "refused"}},
+                     choice="meshing")
+    assert sec["counts"] == {} and sec["outcome"] == "unrepairable"
+    assert RR.summary_text(sec) == "Repair finished"
+
+
 def test_mesh_only_has_no_repair():
     assert RR.section({}, choice="off") == {"choice": "off", "ran": False, "needs_review": False,
                                             "auto_accepted": False, "review_bypass": False}

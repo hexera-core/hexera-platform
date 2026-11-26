@@ -235,9 +235,11 @@ def _v3_section(attempt: Mapping) -> dict:
         outcome = "repaired"
     else:
         outcome = "partly_repaired" if kept else "unchanged"
-    total = kept + remaining
-    return {"engine": "v3", "outcome": outcome, "problems": [],
-            "counts": {"found": total, "fixed": kept, "not_fixed": remaining, "left_as_is": 0},
+    # COUNTS ONLY FROM A REPAIR THAT RAN: a declined one records no defect list of its own (its
+    # findings went to review items), and "0 found" beside "30 need an engineer's look" is false
+    counts = ({"found": kept + remaining, "fixed": kept, "not_fixed": remaining, "left_as_is": 0}
+              if attempt.get("attempted") else {})
+    return {"engine": "v3", "outcome": outcome, "problems": [], "counts": counts,
             "meshers_passing": None, "meshers_total": None, "max_change_mm": None,
             "allowed_change_mm": None, "volume_ratio": None, "size_ratio": None, "flags": [],
             "seconds": None, "spend_usd": None}
