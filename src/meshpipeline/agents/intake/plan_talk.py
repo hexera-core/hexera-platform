@@ -348,9 +348,27 @@ def asked_last(messages: Iterable[Mapping]) -> bool:
 STILL_READING = "Still reading that one. The list on the card will show it in a moment."
 #: not read now (the part still measured, or nothing to read it): the yes reads it first (NOTE-5)
 READ_BEFORE_RUN = "Kept. I'll read it before the mesh starts."
-#: nothing in the words is a mesh requirement we can apply
-NOT_READ = ("I couldn't find a mesh setting in that. You can give me a size (\"2 mm\"), finer or coarser somewhere, "
-            "a quality limit, or click a face on the model.")
+#: NOTE-25: words the checklist takes nothing from are kept for the run and said to be kept, never turned away
+KEPT_RULE = "NOTE-25"
+#: NOTE-25: the fallback when the checklist took nothing from a statement: the words are kept (NOTE-18), every route's
+#: planning step reads them as guidance (NOTE-2), and the result tells each ask back (NOTE-8, NOTE-12)
+NOT_READ = ("That isn't something I can lock in or show on the checklist, but I've kept your words for the mesh "
+            "planning step, which reads them as guidance, and the result will say what came of them. I can set a size "
+            "(\"2 mm\"), finer or coarser somewhere, a quality limit or an element count, or you can click a face on "
+            "the model.")
+#: NOTE-25: a change to the CAD itself ("remove the small holes"): no mesh makes it, and that is said
+NOT_BY_MESHING = ("Removing or filling features changes the CAD itself, which meshing can't do, so the mesh follows "
+                  "the part as it is. I've kept your words, and the result will say that wasn't applied.")
+#: "remove the small holes", "fill the slots", "suppress the fillets": a change to the part, not to its mesh
+_GEOMETRY_EDIT = re.compile(
+    r"\b(?:remove|removing|delete|deleting|fill|filling|suppress|suppressing|defeature|defeaturing|get rid of|"
+    r"take out|plug|erase)\b[^.?!]*\b(?:holes?|bores?|fillets?|chamfers?|features?|details?|bosses|ribs?|"
+    r"notch(?:es)?|slots?|threads?|logos?|text|engravings?|rounds?|pockets?|grooves?)\b", re.I)
+
+
+def geometry_edit(text: str) -> bool:
+    """NOTE-25: the words ask for a change to the part itself (removing or filling its features), which no mesh makes."""
+    return bool(_GEOMETRY_EDIT.search(str(text or "")))
 #: a picture with no words: what the product does with it (NOTE-16)
 PICTURE_ONLY = ("I've kept the picture. I don't read pictures myself, so tell me what you want there, for example "
                 "\"1 mm here\", or click the spot on the model.")
@@ -758,10 +776,24 @@ def reply_for(note: Mapping, view: Mapping | None, *, note_id: str = "") -> str:
         # NO CHECKLIST BEFORE THE RUN on this route (a flow model with no parts): the words are kept and the run
         # reads them - "couldn't read that" would be false; elsewhere the checklist really took nothing
         kept = (view.get("flow") or view.get("notes_only")) and (faces or requirement_content(text))
-        out.append(kept_line(text, faces) if kept else NOT_READ)
+        # NOTE-25: nothing on the checklist from it - kept for the run all the same, and said so
+        out.append(kept_line(text, faces) if kept else (NOT_BY_MESHING if geometry_edit(text) else NOT_READ))
     if pictures:
         out.append(PICTURE_NOTE)
     return " ".join(out)
+
+
+def took_nothing(note: Mapping, view: Mapping | None, *, note_id: str = "") -> bool:
+    """NOTE-25: the checklist, read and done, took nothing from these words (no row, no phrase waiting, no flow line,
+    not a requirement kept for a flow run's reader) - the case `reply_for` answers with NOT_READ / NOT_BY_MESHING."""
+    text = UN.said(note)
+    if not _norm(text) or view is None or fixed_reply(note, view):
+        return False
+    rows, unsure = mine(note, view, note_id=note_id)
+    if rows or unsure or _lines_mine(view.get("lines") or (), _norm(text)):
+        return False
+    faces = [f for f in note.get("faces") or () if isinstance(f, Mapping)]
+    return not ((view.get("flow") or view.get("notes_only")) and (faces or requirement_content(text)))
 
 
 #: a plain size in millimetres, the only number in the words ("1 mm on these too", "can you do 0.5mm here?")
@@ -819,6 +851,6 @@ def lines_mine(view: Mapping | None, text: str) -> list[str]:
 __all__ = ["ASK", "ASK_LINE", "BOTH", "CLICK_RULE", "GO", "HOLD", "HOLD_LINE", "INTAKE", "NOTE", "QUESTION",
            "QUESTION_RULE", "RULE", "WAITING", "about_the_mesh", "after_turn", "points_only", "waiting_ask",
            "answers_another_question", "asked_last", "asks", "COUNT_RULE", "count_asks", "count_clash",
-           "count_line", "count_rows", "exact_go", "face_words", "fixed_reply", "lines_mine",
+           "count_line", "count_rows", "exact_go", "KEPT_RULE", "geometry_edit", "took_nothing", "face_words", "fixed_reply", "lines_mine",
            "mesh_question", "mine", "never_go", "none_found", "none_line", "pictures_of", "plain_face_rows", "plan_change", "plural", "reading",
            "reply_for", "requirement_content", "row_place", "row_what", "which_one_line"]

@@ -126,6 +126,13 @@ REPLY_CASES = [
     ("a count beside a typed size (flow: the count comes first)", {"text": "at least 2 million cells"},
      {**_done([_row("use 3 mm everywhere", "3 mm", where="the whole model"),
                _count("at least 2 million cells", flow=True)]), "flow": True}, PLAN_LINE),
+    # NOTE-25: words that set nothing are kept for the planning step, and a change to the CAD is told plainly
+    ("words that set nothing: the analysis", {"text": "it's for a stress analysis of the bracket"}, _done(), PLAN_LINE),
+    ("words that set nothing: the material", {"text": "the part is cast aluminium"}, _done(),
+     "Will do, I'll keep the mesh under 1.5 million elements."),
+    ("words that set nothing, flow mesh", {"text": "make it a good quality mesh please"}, {**_done(), "flow": True},
+     PLAN_LINE),
+    ("a change to the CAD itself", {"text": "remove the small holes"}, _done(), PLAN_LINE),
     # NOTE-21, as typed on the site: one hole named, a screenshot, no face picked, 11 holes on the part
     ("one hole named, eleven on the part, picture", {"text": "make it finer in this hole", "attachments": PIC},
      _done(unsure=[{"quote": "make it finer in this hole", "words": "make it finer in this hole", "size": "finer",

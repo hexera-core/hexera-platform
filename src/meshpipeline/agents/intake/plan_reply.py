@@ -97,12 +97,35 @@ def facts(note: Mapping, view: Mapping | None, *, note_id: str = "") -> dict[str
         "already_on_the_checklist": [{"what": PT.row_what(r), "where": PT.row_place(r)[0]}
                                      for r in (view or {}).get("rows") or ()
                                      if isinstance(r, Mapping) and r not in rows][:MAX_LISTED],
+        # NOTE-25: nothing on the checklist from it - what really happens to the words (kept: NOTE-18; read by every
+        # route's planning step as guidance: NOTE-2; told back with the result: NOTE-8, NOTE-12)
+        **_kept_facts(note, view, note_id=note_id),
         "no_checklist": view is None and bool(text.strip()),
         # nothing reads it before the run on this route: kept, read when the mesh is built - never "couldn't read"
         "kept_for_the_run": PT.NO_CHECKLIST in PT.reply_for(note, view, note_id=note_id),
         # the plain sentence that says exactly this (plan_talk.reply_for): the guard's source of truth
         "plain_version_that_is_exactly_right": PT.reply_for(note, view, note_id=note_id),
     }
+
+
+#: NOTE-25: what the checklist can hold, said after words it took nothing from
+CAN_SET = "a size ('2 mm'), finer or coarser somewhere, a quality limit, an element count, or a face clicked on the model"
+
+
+def _kept_facts(note: Mapping, view: Mapping | None, *, note_id: str = "") -> dict[str, Any]:
+    """NOTE-25: for words the checklist took nothing from, what the run really does with them; {} otherwise."""
+    if not PT.took_nothing(note, view, note_id=note_id):
+        return {}
+    if PT.geometry_edit(UN.said(note)):
+        return {"not_by_meshing": "they ask for a change to the CAD itself (removing or filling features), which "
+                                  "meshing cannot do: the mesh follows the part as it is. Their words are kept with "
+                                  "the request, and the result will say it was not applied"}
+    return {"kept_for_planning": {
+        "kept": "their words are kept with the request, exactly as typed",
+        "not_on_the_checklist": "it is not something you can lock in as a number or show on the checklist",
+        "what_happens": "the mesh planning step reads their words as guidance when the mesh is built, and the "
+                        "result tells back what came of them: applied, the nearest, or not applied with the reason",
+        "what_you_can_set": CAN_SET}}
 
 
 # #
@@ -183,8 +206,22 @@ def _block_examples() -> str:
             "say so.'\n"
             "They: 'y+ of 1 on the walls please' (kept_for_the_run) -> 'Noted, y+ of 1 on the walls. The result "
             "will show whether this mesher could apply it.'\n"
-            "They: 'make it look nice' (nothing applied) -> 'I couldn't find a mesh setting in that. Give me a size, "
-            "or click a face and tell me what you want there.'\n")
+            "They: 'make it look nice' (kept_for_planning) -> 'That's not something I can put on the checklist, but "
+            "I've kept your words for the mesh planning step, which reads them as guidance, and the result will say "
+            "what came of them. If you want something exact, give me a size or click a face.'\n"
+            "They: 'remove the small holes' (not_by_meshing) -> 'Removing holes is a change to the CAD itself, which "
+            "meshing can't do, so the mesh keeps them. I've kept your note, and the result will say it wasn't "
+            "applied.'\n")
+
+
+def _block_kept() -> str:
+    return ("If kept_for_planning is there, this message set nothing on the checklist. Say so plainly and kindly "
+            "in everyday words, that you've kept their words for the mesh planning step, which reads them as "
+            "guidance when the mesh is built, and that the result will say what came of them; then, in a few "
+            "words, what you can set if they want something exact. Never say it is set, applied, done or "
+            "guaranteed, and never use the words 'mesh setting'. If not_by_meshing is there, they asked for a "
+            "change to the CAD itself: say meshing can't do that, so the mesh follows the part as it is, and that "
+            "you've kept their words and the result will say it wasn't applied.\n")
 
 
 def _block_language() -> str:
@@ -203,6 +240,9 @@ PLAN_REPLY_PROMPT_BLOCKS: tuple = (
                           "not read, once", _block_guess_and_picture),
     ("count", "a whole-mesh count said with its typed number and bound, no place needed; beside typed sizes, which "
               "wins and that the result tells it, never a promise", _block_count),
+    ("kept", "words that set nothing: said kept for the planning step, read as guidance, told back with the result, "
+             "and what can be set; a change to the CAD: meshing can't, kept, told; never 'set' or 'mesh setting'",
+     _block_kept),
     ("examples", "four or five example exchanges in that voice", _block_examples),
     ("language", "the user's own language; plain text; at most 300 characters", _block_language),
 )
@@ -302,6 +342,18 @@ _MAY = re.compile(r"\b(?:if|may|might|could|can'?t|cannot|won'?t|unless|depend\w
                   r"gives? way|gave way|priority)\b", re.I)
 
 
+#: NOTE-25: a claim that kept words were set (first person included), unless a negation stands just before it
+_SET_CLAIM = re.compile(r"\b(?:applied|applying|in place|locked in|i(?:'| ha)ve (?:set|made|added|put|applied|gone)|"
+                        r"i set|i(?:'| wi)ll (?:set|use|apply|make|put|add|go|hold)|is set|are set|now set|set to|"
+                        r"set at|set on|sized|guarantee\w*|will be (?:applied|set|used)|done)\b", re.I)
+_NEGATED = re.compile(r"(?:n't|n’t|\bnot|\bnever|\bno|\bcannot)\b[^.;]{0,25}$", re.I)
+_JARGON = re.compile(r"\bmesh settings?\b", re.I)
+
+
+def _claims_set(text: str) -> bool:
+    return any(not _NEGATED.search(text[:m.start()]) for m in _SET_CLAIM.finditer(text))
+
+
 def _count_check(text: str, f: Mapping) -> str:
     """NOTE-24: a count is said with its own number and bound, and - beside sizes it may not fit with - never as
     sure. "" when the reply may be said."""
@@ -350,7 +402,15 @@ def check(reply: str, f: Mapping, *, last_reply: str = "") -> str:
         if any(str(a.get("place") or "").startswith("YOUR guess") for a in f["applied"]) \
                 and not _GUESS_SAID.search(text):
             return "a guessed place not said as a guess"
-    if not applied and _CLAIM.search(text):
+    if f.get("kept_for_planning") or f.get("not_by_meshing"):
+        # NOTE-25: kept words are said as kept - never as set, applied or guaranteed, never in our jargon
+        if _claims_set(text):
+            return "claims something was applied when nothing was (a kept note)"
+        if not _KEPT.search(text):
+            return "a kept note not said as kept"
+        if _JARGON.search(text):
+            return "our jargon ('mesh setting')"
+    elif not applied and _CLAIM.search(text):
         return "claims something was applied when nothing was"
     if f.get("kept_for_the_run") and (_UNREAD.search(text) or not _KEPT.search(text)):
         return "a kept requirement not said as kept"
@@ -709,8 +769,7 @@ def asked_not_set(note: Mapping, view: Mapping | None, *, note_id: str = "") -> 
     """NOTE-20, THE SAFE SIDE OF "I couldn't find a mesh setting in that": a message kept as a requirement from which
     the checklist took nothing, whose words ask a question - it is answered as the question it is."""
     text = str(note.get("text") or "")
-    return bool(text.strip()) and view is not None and PT.asks(text) and PT.NOT_READ in PT.reply_for(
-        note, view, note_id=note_id)
+    return bool(text.strip()) and view is not None and PT.asks(text) and PT.took_nothing(note, view, note_id=note_id)
 
 
 async def answer_question(session: Any, view: Mapping | None, plan: Mapping | None, *, owner_id: str, session_repo,

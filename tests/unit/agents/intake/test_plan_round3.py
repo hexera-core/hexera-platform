@@ -197,7 +197,9 @@ NATURAL = [
     (GUESS, "Okay, I'll go finer in that hole. I took it as the 22 mm one, so click it on the model if you meant "
             "another spot. I keep the picture with your note, but I don't read pictures myself."),
     (WHOLE, "Will do, I'll hold skewness under 0.8 across the whole mesh."),
-    (NOTHING, "I couldn't find a mesh setting in that. Give me a size, or click a face and tell me what you want."),
+    # NOTE-25: words that set nothing are said as kept for the planning step
+    (NOTHING, "That's not something I can put on the checklist, but I've kept your words for the mesh planning step, "
+              "which reads them as guidance. Give me a size or click a face if you want something exact."),
 ]
 
 
