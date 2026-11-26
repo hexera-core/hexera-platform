@@ -17,7 +17,7 @@ export function choiceOf(p) {
     goal: choiceKey(q.repair_goal),
     fromChat: !!q.repair_goal && (q.repair_goal_source === "chat" || q.repair_goal_source === "intake"),
     autoAccept: !!q.repair_auto_accept,
-    // an organisation that turned automatic acceptance off for everyone leaves the box unavailable here
+    // the organisation's permission (Settings, Meshing): without it the box stays unavailable, and says why
     autoAcceptAllowed: q.repair_auto_accept_allowed !== false,
   };
 }
@@ -37,11 +37,13 @@ export function repairChoiceHtml(p) {
       <legend class="rc-k">What should we do with your CAD?</legend>
       ${said}
       <div class="rc-opts">${opts}</div>
-      <label class="rc-auto"${c.autoAcceptAllowed ? "" : ' title="Your organisation requires a review of larger repairs"'}>
-        <input type="checkbox" class="rc-auto-box"${c.autoAccept && c.autoAcceptAllowed ? " checked" : ""}`
+      <label class="rc-auto"${c.autoAcceptAllowed ? "" : ' data-locked="1"'}>
+        <input type="checkbox" class="rc-auto-box" aria-describedby="${id}-auto-help"${c.autoAccept && c.autoAcceptAllowed ? " checked" : ""}`
         + `${off || !c.autoAcceptAllowed ? " disabled" : ""}>
         <span>Accept repairs without asking (skip review)
-          <span class="rc-opt-h">Larger changes, like closing a gap, are normally shown to you before they are kept.</span></span>
+          <span class="rc-opt-h" id="${id}-auto-help">${c.autoAcceptAllowed
+            ? "Larger changes, like closing a gap, are normally shown to you before they are kept."
+            : "Your organisation shows larger repairs for review. An admin can allow skipping it in Settings, Meshing."}</span></span>
       </label>
     </fieldset>`;
 }
@@ -62,6 +64,6 @@ if (typeof document !== "undefined") {
     const t = e.target;
     if (!t || !t.matches || !t.matches('.rc-choice input[type="radio"]')) return;
     const box = t.closest(".rc-choice").querySelector(".rc-auto-box");
-    if (box && !box.closest(".rc-auto").title) box.disabled = t.value === "off";
+    if (box && !box.closest(".rc-auto").dataset.locked) box.disabled = t.value === "off";
   });
 }

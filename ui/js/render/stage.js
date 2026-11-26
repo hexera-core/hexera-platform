@@ -915,7 +915,8 @@ export const Stage = {
     const v=Run.view(),ended=this._ended;
     // a repair-only run has no mesh rows in view: the wait is said on the repair lane until it starts
     if(this._repairOnly){const r=this._rr;
-      if(r&&r.state==='todo'){r.now=!ended&&v.live?String(v.current||'').replace(/…$/,''):'';
+      // its own words: the mesh's live line names mesh rows ("Reviewing the mesh…") a repair-only run never has
+      if(r&&r.state==='todo'){r.now=!ended&&v.live?(v.state==='queued'?'Waiting for a worker':'Getting ready to check your CAD'):'';
         r.liveEl.hidden=!r.now;r.liveEl.innerHTML=r.now?`<span class="rr-now" role="status">${esc(r.now)}…</span>`:'';}
       return;}
     let key=null;
