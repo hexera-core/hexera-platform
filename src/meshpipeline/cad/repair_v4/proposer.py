@@ -70,8 +70,11 @@ MAX_INPUT_TOKENS = 120_000
 _GROWTH = 1.25
 _T = TypeVar("_T")
 
-#: the hard per-file model spend ceiling (spec 5.9); no proposer may be built above it
-FILE_USD_CEILING = 1.00
+#: the hard per-file model spend ceiling (spec 5.9); no proposer may be built above it. RAISED DELIBERATELY from $1
+#: to $5 for the CRS v5 beta (owner decision 2026-11-26: "$5 per file during the beta"). The cap a product run
+#: actually uses is the setting CRS_V5_FILE_USD_CAP (settings/cad_repair.py), validated against this ceiling; the
+#: evaluation arms keep their own $1 budgets (devtools/validation/v4_eval/evalspec.py).
+FILE_USD_CEILING = 5.00
 
 #: The AI's part in a file ended because the model could not be reached: MAX_CONSECUTIVE_FAILURES rounds in a row
 #: failed after the router's own retries (429, 5xx, timeouts, a throttle slot that never came). Infrastructure, not a

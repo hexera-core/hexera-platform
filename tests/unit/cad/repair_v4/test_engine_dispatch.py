@@ -1,4 +1,4 @@
-# Responsibility: Pin the CAD_REPAIR_ENGINE switch - the default is v3, an unknown value is rejected,
+# Responsibility: Pin the CAD_REPAIR_ENGINE switch - the default is v5 (beta), an unknown value is rejected,
 #                 `search` dispatches to repair_v4 and nothing else does, and the production block
 #                 of the deploy workflow never states the flag.
 # Boundaries: hermetic; reads settings, the inventory and deploy.yml, and runs `repair_step_file`
@@ -36,15 +36,16 @@ def _read_engine(value: str | None) -> subprocess.CompletedProcess:
         env=env, capture_output=True, text=True, cwd=ROOT)
 
 
-def test_default_engine_is_v3():
+def test_default_engine_is_v5_for_the_beta():
+    """Owner decision 2026-11-26 (CRS v5 beta UX spec): v5 is on for every user; v3 is its automatic fallback."""
     unset = _read_engine(None)
     assert unset.returncode == 0, unset.stderr
-    assert unset.stdout.strip() == "v3"
+    assert unset.stdout.strip() == "v5"
     blank = _read_engine("")
     assert blank.returncode == 0, blank.stderr
-    assert blank.stdout.strip() == "v3"
+    assert blank.stdout.strip() == "v5"
     entry = next(e for e in all_vars() if e.name == "CAD_REPAIR_ENGINE")
-    assert entry.default == "v3"
+    assert entry.default == "v5"
     assert entry.exposure == "internal"
 
 
@@ -55,7 +56,7 @@ def test_search_value_is_accepted(value):
     assert done.stdout.strip() == "search"
 
 
-@pytest.mark.parametrize("value", ["v4", "V5", "v3,search", "on", "true", "live"])
+@pytest.mark.parametrize("value", ["v4", "v6", "v3,search", "on", "true", "live"])
 def test_unknown_value_rejected(value):
     done = _read_engine(value)
     assert done.returncode != 0

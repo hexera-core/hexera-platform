@@ -1048,13 +1048,98 @@ def _repair_via_v4(source: Path, destination: Path, *, deadline_s: float) -> Rep
         diagnostics=facts)
 
 
+#: the RepairReport diagnostics key that carries the CRS v5 beta contract (`repair_v5.result.RepairResultV5.to_dict`)
+RESULT_V5_KEY = "repair_result_v5"
+#: ... and the one that carries v5's full technical trace for admin views (never shown to a customer)
+TRACE_V5_KEY = "v5_trace"
+
+
+def repair_timeout_s() -> float:
+    """How long a caller should wait for `repair_step_file`: with the v5 engine, v5's own file wall PLUS the v3
+    fallback's clock (CAD_REPAIR_TIMEOUT_S), so a v5 run that fails late still leaves v3 its whole budget."""
+    if rcfg.CAD_REPAIR_ENGINE == "v5":
+        return float(rcfg.CRS_V5_FILE_WALL_S) + float(rcfg.CAD_REPAIR_TIMEOUT_S)
+    return float(rcfg.CAD_REPAIR_TIMEOUT_S)
+
+
+def _v3_run(source: Path, destination: Path, *, profile: RepairProfile, directives: tuple[dict, ...],
+            goal: RepairGoal | None, focus_faces: tuple[int, ...], auto_accept_mm: float | None) -> RepairReport:
+    deadline = _clock() + float(rcfg.CAD_REPAIR_TIMEOUT_S) - DEADLINE_MARGIN_S
+    return _repair_step_file(source, destination, profile=profile, directives=directives, goal=goal,
+                             focus_faces=focus_faces, auto_accept_mm=auto_accept_mm, deadline_s=deadline)
+
+
+def _choice_of(goal: RepairGoal | None) -> str:
+    return "standalone" if goal is RepairGoal.standalone else "meshing"
+
+
+def _repair_via_v5(source: Path, destination: Path, *, deadline_s: float, profile: RepairProfile,
+                   directives: tuple[dict, ...], goal: RepairGoal | None, focus_faces: tuple[int, ...],
+                   auto_accept_mm: float | None, on_progress=None) -> RepairReport:
+    """CAD_REPAIR_ENGINE=v5 (the beta default): run CRS v5 and carry its `RepairResultV5` on the report.
+
+    V3 IS THE AUTOMATIC FALLBACK. If v5 RAISES - it could not measure the file, the pool died, or a v5 bug - v3 runs
+    on a fresh clock of its own and its report carries `engine: v3` plus why v5 did not finish (`v5_failed`). A v5 run
+    that measured the file and kept nothing is NOT a failure: it raises `RepairRefused` like any run that kept
+    nothing, with the contract on its measurements, and v3 is not asked to second-guess it."""
+    from meshpipeline.cad.repair_v5 import result as R
+    from meshpipeline.cad.repair_v5.engine import repair_file
+
+    started = _clock()
+    try:
+        run = repair_file(source, destination, deadline_s=deadline_s, choice=_choice_of(goal),
+                          auto_accept_mm=auto_accept_mm, on_progress=on_progress)
+    except Exception as exc:  # noqa: BLE001 - any v5 failure hands the file to v3, recorded
+        why = f"{type(exc).__name__}: {exc}"[:500]
+        logger.warning("repair_step_file: CRS v5 did not finish (%s) - running v3 instead", why)
+        v3_started = _clock()
+        try:
+            report = _v3_run(source, destination, profile=profile, directives=directives, goal=goal,
+                             focus_faces=focus_faces, auto_accept_mm=auto_accept_mm)
+        except RepairRefused as refused:
+            v3_contract = R.from_v3(choice=_choice_of(goal), delivered=False, seconds=_clock() - v3_started,
+                                 auto_accept_mm=auto_accept_mm)
+            refused.measurements.update({"engine": "v3", "v5_failed": why, RESULT_V5_KEY: v3_contract.to_dict()})
+            raise
+        v3_contract = R.from_v3(choice=_choice_of(goal), delivered=True, seconds=_clock() - v3_started,
+                             auto_accept_mm=auto_accept_mm)
+        return RepairReport(
+            defects=report.defects, operations=report.operations, summary=report.summary,
+            measurements=(*report.measurements, RepairMeasurement("engine", "v3"),
+                          RepairMeasurement("v5_failed", why)),
+            diagnostics={**dict(report.diagnostics), "engine": "v3", "v5_failed": why,
+                         "v5_seconds": round(_clock() - started, 1), RESULT_V5_KEY: v3_contract.to_dict()},
+            entities=report.entities)
+    contract = run.result.to_dict()
+    facts = {"engine": "v5", RESULT_V5_KEY: contract, TRACE_V5_KEY: run.trace, "repair_progress": run.progress}
+    if not run.delivered:
+        raise RepairRefused(
+            "CRS v5 kept no repair" if contract["outcome"] != "unchanged" else "CRS v5: nothing needed repairing",
+            measurements={**facts, "delivery_source": PASSTHROUGH_SOURCE})
+    fixed = run.result.fixed
+    return RepairReport(
+        defects=(), operations=(),
+        summary=f"repaired: {fixed} of {len(run.result.problems)} problems fixed",
+        measurements=(RepairMeasurement("engine", "v5"),
+                      RepairMeasurement("resolved", contract["outcome"] == "repaired"),
+                      RepairMeasurement("delivery_source", REPAIRED_SOURCE)),
+        diagnostics=facts)
+
+
 def repair_step_file(source: Path, destination: Path, *,
                      profile: RepairProfile = RepairProfile.conservative,
                      directives: tuple[dict, ...] = (),
                      goal: RepairGoal | None = None,
                      focus_faces: tuple[int, ...] = (),
-                     auto_accept_mm: float | None = None) -> RepairReport:
+                     auto_accept_mm: float | None = None,
+                     on_progress=None,
+                     engine: str | None = None) -> RepairReport:
     """Repair `source` into `destination`, or refuse (`_repair_step_file` says how).
+
+    `on_progress` (v5 only): called from the repair's thread with each plain `repair_progress` event
+    (`repair_v5.result.ProgressMapper`); the caller is responsible for crossing back to its own loop.
+    `engine` overrides CAD_REPAIR_ENGINE for this call (the mesher hand-back's scoped re-run pins `v3`: it aims at
+    named faces, which v5 does not take).
 
     WITH CAD_REPAIR_MESHABILITY_PASS=live, EVERY EXIT LEAVES A STEP AT `destination`: a refusal,
     an unavailable repair or an unexpected error first writes the upload's bytes there as a
@@ -1069,8 +1154,15 @@ def repair_step_file(source: Path, destination: Path, *,
     """
     deadline = _clock() + float(rcfg.CAD_REPAIR_TIMEOUT_S) - DEADLINE_MARGIN_S
 
+    chosen = engine or rcfg.CAD_REPAIR_ENGINE
+
     def run() -> RepairReport:
-        if rcfg.CAD_REPAIR_ENGINE == "search":
+        if chosen == "v5":
+            return _repair_via_v5(source, destination,
+                                  deadline_s=_clock() + float(rcfg.CRS_V5_FILE_WALL_S) - DEADLINE_MARGIN_S,
+                                  profile=profile, directives=directives, goal=goal, focus_faces=focus_faces,
+                                  auto_accept_mm=auto_accept_mm, on_progress=on_progress)
+        if chosen == "search":
             return _repair_via_v4(source, destination, deadline_s=deadline)
         return _repair_step_file(source, destination, profile=profile, directives=directives,
                                  goal=goal, focus_faces=focus_faces,

@@ -292,6 +292,18 @@ def _runtime_paths_are_test_owned(tmp_path):
 
 
 @_pytest.fixture(autouse=True)
+def _repair_engine_is_v3_unless_a_test_says(monkeypatch):
+    """CRS v5 beta: the PRODUCT default engine is v5 (settings/cad_repair.py). The unit tier's repair tests were
+    written against v3's report, and a v5 run here would only fail to start a kernel pool and fall back to v3 - so
+    every unit test runs the v3 engine unless it sets CAD_REPAIR_ENGINE itself. The default is pinned on its own
+    (tests/unit/cad/repair_v4/test_engine_dispatch.py, in a fresh interpreter)."""
+    import meshpipeline.settings.cad_repair as rcfg
+
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_ENGINE", "v3")
+    yield
+
+
+@_pytest.fixture(autouse=True)
 def _model_clock_starts_at_zero():
     """progress_clock's native-run seconds are process-wide; a test that ran a mesher must not shift
     model_time() for whichever test the shard runs next."""

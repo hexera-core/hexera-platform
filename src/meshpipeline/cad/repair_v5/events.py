@@ -38,6 +38,8 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any
 
+from meshpipeline.settings.env import optional_env
+
 ENV_PATH = "CRS_V5_EVENT_LOG"
 ENV_STDOUT = "CRS_V5_EVENT_STDOUT"
 ENV_HEARTBEAT = "CRS_V5_HEARTBEAT_S"
@@ -70,14 +72,45 @@ _state: dict[str, Any] = {"fd": None, "fd_pid": None, "path": None, "seq": 0, "t
 
 
 def log_path() -> str | None:
-    return os.environ.get(ENV_PATH) or None
+    return optional_env("CRS_V5_EVENT_LOG", "") or None
 
 
 def to_stdout() -> bool:
-    flag = os.environ.get(ENV_STDOUT)
-    if flag is not None:
-        return flag.strip().lower() not in ("", "0", "false", "no", "off")
+    flag = optional_env("CRS_V5_EVENT_STDOUT", "")
+    if flag.strip():
+        return flag.strip().lower() not in ("0", "false", "no", "off")
     return log_path() is not None
+
+
+def _run_labels() -> dict[str, str]:
+    """The run-level labels (`RUN_ENV`), each read by its literal name so the settings catalogue sees every one."""
+    found = {"run_id": optional_env("CRS_V5_RUN_ID", ""), "commit": optional_env("CRS_V5_COMMIT", ""),
+             "vm": optional_env("CRS_V5_VM", ""), "shard": optional_env("CRS_V5_SHARD", "")}
+    return {k: v for k, v in found.items() if v}
+
+
+#: in-process listeners (`add_listener`): each gets every event's record, log on or off. The product path uses one
+#: to turn the event stream into plain progress lines for the job (`repair_v5.result.ProgressMapper`).
+_listeners: list[Any] = []
+
+
+def add_listener(fn: Any) -> None:
+    """Call `fn(record)` for every later event of this process (the record `emit` would write). Never raises into
+    the run: a listener that fails is skipped for that event."""
+    with _lock:
+        _listeners.append(fn)
+
+
+def remove_listener(fn: Any) -> None:
+    with _lock:
+        try:
+            _listeners.remove(fn)
+        except ValueError:
+            pass
+
+
+def _active() -> bool:
+    return bool(_listeners) or enabled()
 
 
 def enabled() -> bool:
@@ -172,7 +205,8 @@ def memory() -> dict[str, Any]:
         except Exception:  # noqa: BLE001
             return {}
         return {"rss_hwm_mb": round(hwm / 1024, 1)}
-    tree, biggest, todo, seen = 0, None, _children(pid), set()
+    tree, biggest, todo = 0, None, _children(pid)
+    seen: set[int] = set()
     while todo and len(seen) < 256:
         c = todo.pop()
         if c in seen:
@@ -235,8 +269,8 @@ def _now_iso() -> str:
 
 
 def emit(event: str, /, *, severity: str = "INFO", sync: bool = False, **fields: Any) -> None:
-    """One event, written now. Never raises."""
-    if not enabled():
+    """One event, written now (and handed to every listener). Never raises."""
+    if not _active():
         return
     try:
         with _lock:
@@ -246,14 +280,19 @@ def emit(event: str, /, *, severity: str = "INFO", sync: bool = False, **fields:
                                    "severity": severity, "elapsed_s": round(now - _state["t0"], 3)}
             if _state["file_t0"] is not None:
                 rec["file_elapsed_s"] = round(now - _state["file_t0"], 3)
-            for key, env in RUN_ENV.items():
-                if os.environ.get(env):
-                    rec[key] = os.environ[env]
+            rec.update(_run_labels())
             rec.update(_state["ctx"])
             for k, v in fields.items():
                 rec[f"x_{k}" if k in CORE else k] = jsonable(v)
             if severity in ("ERROR", "CRITICAL"):
                 sync = True
+            listeners = list(_listeners)
+        for listener in listeners:
+            try:
+                listener(rec)
+            except Exception:  # noqa: BLE001 - a listener never breaks the run
+                pass
+        if enabled():
             _write(_encode(rec), sync=sync)
     except Exception:  # noqa: BLE001 - the log never breaks the run
         pass
@@ -326,7 +365,7 @@ def enter(phase: str, **fields: Any) -> None:
     """A phase transition: the context says `phase` from now on, and the event names the phase it ends and how long
     that ran (`prev_phase`, `prev_wall_s`), so per-phase wall time is a sum over these events. Of `fields`, the round,
     op, tier and defect keys move the context; the rest are this event's own."""
-    if not enabled():
+    if not _active():
         return
     with _lock:
         now = time.monotonic()
@@ -402,7 +441,7 @@ def _heartbeat_loop(stop: threading.Event, every: float) -> None:
 def start_heartbeat(every: float | None = None) -> None:
     if not enabled() or _state["hb"] is not None:
         return
-    every = float(os.environ.get(ENV_HEARTBEAT) or (every or DEFAULT_HEARTBEAT_S))
+    every = float(optional_env("CRS_V5_HEARTBEAT_S", "") or (every or DEFAULT_HEARTBEAT_S))
     if every <= 0:
         return
     stop = threading.Event()

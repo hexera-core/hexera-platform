@@ -143,6 +143,7 @@ from meshpipeline.cad.repair_v4.verdict.cache import VerdictCache, default_verdi
 from meshpipeline.cad.repair_v4.verdict.faithful import DeclaredIdError, FaithfulReport, check_faithful
 from meshpipeline.cad.repair_v4.verdict.valid import CheckerUnavailable, Finding, ValidReport
 from meshpipeline.cad.repair_v4.workspace import Diff, UnknownTarget, Workspace
+from meshpipeline.settings.env import optional_env
 
 #: the op name of the macro action: `params={"stage": name, "params": {...}}`, no targets
 RUN_STAGE = "run_stage"
@@ -649,7 +650,7 @@ K_PROPOSE_DEFAULT = 12
 
 def k_propose_setting(raw: str | None = None) -> int:
     """`K_PROPOSE_DEFAULT`, or CAD_REPAIR_V4_K_PROPOSE when it reads as a positive integer."""
-    text = os.environ.get("CAD_REPAIR_V4_K_PROPOSE", "") if raw is None else raw
+    text = optional_env("CAD_REPAIR_V4_K_PROPOSE", "") if raw is None else raw
     try:
         want = int(str(text).strip())
     except (TypeError, ValueError):
@@ -661,7 +662,7 @@ def k_propose_setting(raw: str | None = None) -> int:
 #: OFF by default. Dropping an UNMEASURED guess is the one rule in B20 that is defensible rather than provable - a
 #: guessed pair could in principle be the one that wins - so it is a flag, and `notes` says when it fires.
 #: CAD_REPAIR_V4_GUESS_PAIRS=1 restores the old behaviour.
-GUESS_PAIRS = os.environ.get("CAD_REPAIR_V4_GUESS_PAIRS", "") not in ("", "0", "false", "False")
+GUESS_PAIRS = optional_env("CAD_REPAIR_V4_GUESS_PAIRS", "") not in ("", "0", "false", "False")
 
 #: how many of a mesher's named faces one aimed overlap op may take. gmsh names two surfaces; a third would mean
 #: two failures merged into one site, and a wider target is a wider edit than the mesher asked for.
@@ -904,7 +905,7 @@ class DetGenerator:
 
     def propose(self, state: SearchState, k: int) -> list[Candidate]:
         out: list[Candidate] = []
-        self._score_of[state.id] = state.score       # B21: so this state's children can tell their edge was kept
+        self._score_of[state.id] = getattr(state, "score", None)   # B21 (a test double may carry no score)
         sites = self.unfixable.filter(state.sites, state.lineage) if self.unfixable is not None else state.sites
         diag = self._diag_of(state.ws) if any(s.kind in ("sliver", "open") for s in sites) else None
         volume = next((v for s in sites if s.kind == "open" and isinstance(v := s.graph.get("volume"), dict)), None)
@@ -2673,9 +2674,7 @@ def early_stop_enabled() -> bool:
     A third, `test_a_mixed_search_reports_both_counts_and_is_not_infrastructure_failed`, changes only a COUNT
     (inconclusive candidates that never ran), which would be legitimate to update - the two above would not.
     """
-    import os
-
-    return os.environ.get("CRS_V4_EARLY_STOP", "").strip().lower() in ("1", "true", "yes", "on")
+    return optional_env("CRS_V4_EARLY_STOP", "").strip().lower() in ("1", "true", "yes", "on")
 
 
 def _not_worse_than_seen(out: Any, evaluated: Any) -> bool:

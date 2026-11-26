@@ -28,6 +28,7 @@ it is there.
 from __future__ import annotations
 
 import collections
+import collections.abc
 import dataclasses
 import time
 from collections.abc import Callable, Sequence
@@ -200,7 +201,7 @@ def defects_of(verdict: Any, sites: Sequence[Site], ws: Any = None) -> list[Defe
             continue
         raw = tuple(getattr(finding, "entities", ()) or ())
         ents, bad = ids_of(raw)
-        site = next((by_entity[e] for e in (*ents, *raw) if e in by_entity), fallback)
+        site = next((by_entity[e] for e in (*ents, *raw) if e in by_entity), fallback)  # type: ignore[assignment]
         if site is None or (code, site.id) in seen:
             continue
         seen.add((code, site.id))
@@ -208,7 +209,7 @@ def defects_of(verdict: Any, sites: Sequence[Site], ws: Any = None) -> list[Defe
         if bad:
             # LOUD, and its own reason: never again indistinguishable from "the ids died in an earlier repair"
             measurement["unmapped_layer1_entities"] = list(bad)
-        out.append(Defect(id=site.id, kind=VALIDITY, code=code, entities=ents,
+        out.append(Defect(id=site.id, kind=VALIDITY, code=code, entities=ents,  # type: ignore[arg-type]
                           xyz=_points(site), box=_box(site), measurement=measurement))
     out.extend(_overlap_clusters([f for f in hard if str(getattr(f, "code", "")) == "body_overlap"],
                                  by_entity, fallback, ids_of))
@@ -223,7 +224,7 @@ def defects_of(verdict: Any, sites: Sequence[Site], ws: Any = None) -> list[Defe
             if not code or (code, site.id) in seen:
                 continue
             seen.add((code, site.id))
-            out.append(Defect(id=site.id, kind=MESHER, code=code, entities=faces or tuple(site.entities),
+            out.append(Defect(id=site.id, kind=MESHER, code=code, entities=faces or tuple(site.entities),  # type: ignore[arg-type]
                               member=str(failure.get("mesher") or "") or None, xyz=_points(site), box=_box(site),
                               measurement=_measure(site, faces or tuple(site.entities))))
     return order_defects(out)
@@ -252,7 +253,7 @@ def _overlap_clusters(findings: Sequence[Any], by_entity: dict[StableId, Site], 
     for finding in findings:
         ents, bad = ids_of(list(getattr(finding, "entities", ()) or ()))
         unmapped.extend(bad)
-        ents = list(ents)
+        ents = list(ents)  # type: ignore[assignment]
         for i, a in enumerate(ents):
             for b in ents[i + 1:]:
                 pairs.append((a, b) if a <= b else (b, a))
@@ -269,7 +270,7 @@ def _overlap_clusters(findings: Sequence[Any], by_entity: dict[StableId, Site], 
         measurement = _measure(site, bodies)
         if unmapped:
             measurement["unmapped_layer1_entities"] = sorted(set(map(str, unmapped)))
-        out.append(Defect(id=f"{site.id}:overlap:{root}", kind=VALIDITY, code="body_overlap", entities=bodies,
+        out.append(Defect(id=f"{site.id}:overlap:{root}", kind=VALIDITY, code="body_overlap", entities=bodies,  # type: ignore[arg-type]
                           pairs=tuple(sorted(cluster_pairs)), xyz=_points(site), box=_box(site),
                           measurement=measurement))
     return out
@@ -285,7 +286,7 @@ def _points(site: Site) -> tuple:
         if isinstance(p, dict):
             p = p.get("xyz")
         try:
-            out.append((float(p[0]), float(p[1]), float(p[2])))
+            out.append((float(p[0]), float(p[1]), float(p[2])))  # type: ignore[index]
         except (TypeError, ValueError, IndexError, KeyError):
             continue
     return tuple(out)
@@ -953,6 +954,30 @@ def _tied(kind: str, first: Repair, second: Repair) -> bool:
 # --- what the row says ---------------------------------------------------------------------------------------
 
 
+class _WhyCounter(collections.Counter):
+    """`SeqCounters.skipped_why`: a Counter that also writes the key it is counted under into the newest `skipped`
+    history entry that has no reason yet, so each skipped defect carries its own why (the counts are unchanged)."""
+
+    def __init__(self, initial: Any = None, /, *, history: list[dict[str, Any]] | None = None) -> None:
+        super().__init__()
+        self._history: list[dict[str, Any]] = history if history is not None else []
+        if initial:
+            # a mapping, or the (key, count) pairs `dataclasses.asdict` rebuilds a dict field from
+            super().update(dict(initial) if not isinstance(initial, collections.abc.Mapping) else initial)
+
+    def __setitem__(self, key: Any, value: Any) -> None:
+        if value > self.get(key, 0):
+            for entry in reversed(self._history):
+                if entry["what"] == "skipped":
+                    if entry["why"] is None:
+                        entry["why"] = key
+                    break
+        super().__setitem__(key, value)
+
+    def __reduce__(self) -> Any:   # pickles (and copies) as a plain Counter: the history link is per run
+        return (collections.Counter, (dict(self),))
+
+
 @dataclass
 class SeqCounters:
     """The row fields this arm owes (seq-arm-design.md, "what is measured")."""
@@ -984,7 +1009,7 @@ class SeqCounters:
     defects_left: int = 0
     sliced: bool = False
     #: seconds per phase of the loop (pre_round, sites, diagnose, repairs, full), for the row: where the wall went
-    phase_s: collections.Counter[str] = field(default_factory=collections.Counter)
+    phase_s: collections.defaultdict[str, float] = field(default_factory=lambda: collections.defaultdict(float))
     found: collections.Counter[str] = field(default_factory=collections.Counter)
     fixed: collections.Counter[str] = field(default_factory=collections.Counter)
     skipped: collections.Counter[str] = field(default_factory=collections.Counter)
@@ -999,10 +1024,21 @@ class SeqCounters:
     fixed_class: collections.Counter[str] = field(default_factory=collections.Counter)
     skipped_class: collections.Counter[str] = field(default_factory=collections.Counter)
 
+    #: every tally, in order, per defect: {"what": found|fixed|skipped|resolved|unskipped, "defect", "why"}. The
+    #: product's per-problem result (`repair_v5.result`) reads a defect's LAST entry; `why` is the `skipped_why` key
+    #: the same step counted (filled by `_WhyCounter` the moment it is counted)
+    history: list[dict[str, Any]] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        self.skipped_why = _WhyCounter(self.skipped_why, history=self.history)
+
     def tally(self, what: str, defect: Defect) -> None:
         getattr(self, what)[defect.code] += 1
         if defect.cls:
             getattr(self, f"{what}_class")[defect.cls] += 1
+        self.history.append({"what": what, "defect": defect, "why": None})
+        if what in ("fixed", "skipped"):
+            EV.emit("defect_result", what=what, **EV.defect_fields(defect))
 
     def row(self) -> dict[str, Any]:
         classes = ({"classes_found": dict(self.found_class), "classes_fixed": dict(self.fixed_class),
@@ -1025,6 +1061,7 @@ SLICE = "slice"
 
 def _untally_skip(counters: SeqCounters, defect: Defect, why: str) -> None:
     """Take back one `tally("skipped", defect)` and its `skipped_why[why]` (a defect queued for a second turn)."""
+    counters.history.append({"what": "unskipped", "defect": defect, "why": why})
     for counter, key in ((counters.skipped, defect.code), (counters.skipped_class, defect.cls),
                          (counters.skipped_why, why)):
         if key and counter.get(key):
@@ -1151,7 +1188,7 @@ def apply_repair(pool: Any, ws: Workspace, repair: Repair, defect: Defect, *, ti
     exists because the oracle's wins are chains whose FIRST step alone changes nothing measurable - verifying
     between the steps would throw away exactly those. The pair is kept or reverted as a unit.
     """
-    current, diffs, touched, used = ws, [], [], []
+    current, diffs, touched, used = ws, [], [], []  # type: ignore[var-annotated]
     here = defect
     # CRS v5 r2h: `timeout_s` bounds the WHOLE repair, not each kernel call in it: a two-step recipe, or an op that
     # retries its Boolean (round 2 D's robust Booleans: ~650 s on 3e7c2a1197c3's clusters), cannot add its calls'
@@ -1320,6 +1357,8 @@ def repair_sequentially(
             defects = [d for d in defects if d.cls != CHECKER_FAILED]
         for d in defects:
             counters.tally("found", d)
+        EV.emit("diagnosed", round=index, defects=len(defects),
+                classes=dict(collections.Counter(str(d.cls or d.code) for d in defects)))
         current = best
         diagnosed_on = best      # every defect in this list was diagnosed on THIS state
         phase_t = clock()
@@ -1360,7 +1399,8 @@ def repair_sequentially(
                                   step=into(this), timeout_s=local_timeout_s)
                     continue
                 defect = moved
-            EV.enter("tournament", **EV.defect_fields(defect))
+            EV.enter("tournament", problem_index=at, problem_total=len(queue), second_turn=second_turn,
+                     **EV.defect_fields(defect))
             if repair_defect is not None:
                 counters.sliced = False
                 current = repair_defect(pool, current, defect, counters=counters, step=into(this))
@@ -1469,6 +1509,8 @@ def _recheck_lost(pool: Any, diagnosed_on: Workspace, current: Workspace, defect
     counters.local_s += float(local.seconds or 0.0)
     if local.gone and not local.new_hard:
         counters.resolved_by_earlier_repair += 1
+        counters.history.append({"what": "resolved", "defect": defect, "why": None})
+        EV.emit("defect_result", what="resolved", **EV.defect_fields(defect))
         step(f"{defect_line(defect)} -> resolved_by_earlier_repair [nothing of it is left to locate; "
              f"re-checked: {local.line()}]")
         return

@@ -507,9 +507,11 @@ async def _attempt(state: PipelineState) -> dict:
     standalone = goal is RepairGoal.standalone
 
     from meshpipeline.cad.repair.conservative import (
+        RESULT_V5_KEY,
         RepairRefused,
         RepairUnavailable,
         repair_step_file,
+        repair_timeout_s,
         status_for,
     )
     # THE THRESHOLD CROSSES ONE SEAM THIS MODULE DOES NOT OWN. `repair_step_file` is where the
@@ -520,26 +522,38 @@ async def _attempt(state: PipelineState) -> dict:
     extra: dict = {}
     if threshold_mm is not None and _accepts(repair_step_file, "auto_accept_mm"):
         extra["auto_accept_mm"] = threshold_mm
+    # CRS v5 BETA: the repair's plain progress lines go onto the job's live stream as it runs
+    # (pipeline/repair_progress.py), and its clock is v5's file wall plus v3's (the automatic fallback's).
+    timeout_s = repair_timeout_s()
+    relay = None
+    if rcfg.CAD_REPAIR_ENGINE == "v5" and _accepts(repair_step_file, "on_progress"):
+        from meshpipeline.pipeline.repair_progress import ProgressRelay
+        relay = ProgressRelay(str(job_id)).start()
+        extra["on_progress"] = relay.push
     try:
         # OFF THE EVENT LOOP AND ON A CLOCK. ShapeFix on a real part is seconds of CPU with no
         # await points, and on a pathological one it can run past the job's remaining deadline -
         # delaying a mesh that was viable all along. The thread is abandoned on expiry (the kernel
         # offers no interruption point) and the run proceeds on the original.
-        repair_report = await asyncio.wait_for(
-            asyncio.to_thread(repair_step_file, source, destination,
-                              directives=directives, goal=goal, **extra),
-            timeout=rcfg.CAD_REPAIR_TIMEOUT_S)
+        try:
+            repair_report = await asyncio.wait_for(
+                asyncio.to_thread(repair_step_file, source, destination,
+                                  directives=directives, goal=goal, **extra),
+                timeout=timeout_s)
+        finally:
+            if relay is not None:
+                await relay.stop()
         for item in repair_report.measurements:
             if item.name == "investigation_trace" and isinstance(item.value, dict):
                 await _park_trace(str(job_id), {"investigation_trace": item.value})
     except TimeoutError:
         logger.warning("node_repair_attempt: the repair exceeded %.1fs - continuing on the "
-                       "original - job_id=%s", rcfg.CAD_REPAIR_TIMEOUT_S, job_id)
+                       "original - job_id=%s", timeout_s, job_id)
         from meshpipeline.engines.determinism import note_time_limit
         note_time_limit("cad_repair", "the repair ran past its time limit: the original file "
-                        "is meshed", budget_s=float(rcfg.CAD_REPAIR_TIMEOUT_S))
+                        "is meshed", budget_s=float(timeout_s))
         _shadow_row(job_id, shadow_plan, "not_executed")
-        return {**_declined(f"the repair exceeded {rcfg.CAD_REPAIR_TIMEOUT_S:.0f}s",
+        return {**_declined(f"the repair exceeded {timeout_s:.0f}s",
                             outcome="timeout", route=advice.route,
                             returned=await _returned_untouched(source, job_id, name="returned")),
                 **await _triage_only(report, source),
@@ -586,10 +600,14 @@ async def _attempt(state: PipelineState) -> dict:
         minted = await asyncio.to_thread(
             _mint, report=report, measured=dict(exc.measurements), source=source,
             survivors_path=None)
-        return {**_declined(f"the repair was refused: {exc}", outcome="refused", route=advice.route,
-                            detail={"measurements": exc.measurements},
-                            returned=_returned(exc.measurements, destination)),
-                **minted, **_outcome_state(outcomes)}
+        declined = _declined(f"the repair was refused: {exc}", outcome="refused", route=advice.route,
+                             detail={"measurements": exc.measurements},
+                             returned=_returned(exc.measurements, destination))
+        if exc.measurements.get(RESULT_V5_KEY):
+            # THE BETA CONTRACT (repair_v5/result.py), where the API and the UI read it, refused or not
+            declined["repair_attempt"][RESULT_V5_KEY] = exc.measurements[RESULT_V5_KEY]
+            declined["repair_attempt"]["engine"] = exc.measurements.get("engine", "")
+        return {**declined, **minted, **_outcome_state(outcomes)}
     except Exception as exc:  # noqa: BLE001 - a repair that breaks is never the file's fault
         _shadow_row(job_id, shadow_plan, "not_executed")
         logger.warning("node_repair_attempt: the repair failed (%s) - continuing on the original "
@@ -765,6 +783,11 @@ async def _attempt(state: PipelineState) -> dict:
             "measurements": _forwarded(measured),
             "defects_remaining": [dict(e) for e in repair_report.entities],
             "summary": repair_report.summary,
+            # CRS v5 BETA: which engine ran, and the result contract (repair_v5/result.py) the API and the UI read.
+            # Absent on a v3-only or search run, so those records are unchanged key for key.
+            **({"engine": repair_report.diagnostics.get("engine", ""),
+                RESULT_V5_KEY: repair_report.diagnostics[RESULT_V5_KEY]}
+               if repair_report.diagnostics.get(RESULT_V5_KEY) else {}),
             **goal_record,
         },
     }

@@ -1,6 +1,6 @@
 # Responsibility: v5's narrow AI role for `unknown` defects: a short DESCRIPTION of each, for the weekly review that
 #                 turns recurring unknowns into new classes. It never picks a class. One metered call per file.
-# Owns: `describe_unknown`, `DESCRIBE_TOOL`, `AI_FILE_CAP_USD`.
+# Owns: `describe_unknown`, `DESCRIBE_TOOL`, `AI_FILE_CAP_USD`, `FileDescriber` (one file's describer).
 # Boundaries: no geometry and no search. The call goes through v4's route and is admitted and settled on the file's
 #             `ModelLedger` (`model_route.metered_call`), so it shares the file's $1 cap with the search_ai fallback.
 #             Defects are the loop's frozen `local_verify.Defect`s: answers come back via `dataclasses.replace`.
@@ -98,3 +98,41 @@ def describe_unknown(defects: Sequence[Defect], *, ledger: Any, file_id: str, ro
               else {"description": got[_key(n)]} if _key(n) in got else {"error": "no answer for this defect"})
         out[i] = dataclasses.replace(out[i], ai={**ai, "route": route})
     return out
+
+
+class FileDescriber:
+    """`repair_v5`'s `ai_describe`: `describe_ai.describe_unknown` on the file's ledger, each unknown (id, code)
+    described ONCE per file (the loop re-diagnoses every round), its $ counted for the row."""
+
+    def __init__(self, ledger: Any, file_id: str, route: str, cap_usd: float) -> None:
+        self.ledger, self.file_id, self.route, self.cap_usd = ledger, file_id, route, cap_usd
+        self.spent_usd, self.calls = 0.0, 0
+        self.described: dict[tuple[str, str], dict] = {}
+
+    def __call__(self, defects: list) -> list:
+        from meshpipeline.cad.repair_v4.model_route import metered_call
+
+        known = [dataclasses.replace(d, ai=self.described[(d.id, d.code)])
+                 if d.cls == "unknown" and (d.id, d.code) in self.described else d for d in defects]
+        if not any(d.cls == "unknown" and d.ai is None for d in known):
+            return known
+        inner = metered_call(self.ledger, self.file_id, self.cap_usd, kind="v5_describe")
+
+        async def call(*a: Any, **kw: Any) -> Any:
+            self.calls += 1
+            priced = await inner(*a, **kw)
+            self.spent_usd += float(getattr(priced, "cost_usd", 0.0) or 0.0)
+            return priced
+
+        fresh = [d for d in known if not (d.cls == "unknown" and d.ai is not None)]
+        got = iter(describe_unknown(fresh, ledger=self.ledger, file_id=self.file_id, route=self.route,
+                                    cap_usd=self.cap_usd, call=call))
+        out = [d if d.cls == "unknown" and d.ai is not None else next(got) for d in known]
+        for d in out:
+            if d.cls == "unknown" and d.ai is not None:
+                self.described[(d.id, d.code)] = d.ai
+        return out
+
+    def summary(self) -> dict[str, Any]:
+        return {"calls": self.calls, "spent_usd": round(self.spent_usd, 5),
+                "described": [{"defect": f"{k[0]}|{k[1]}", **v} for k, v in list(self.described.items())[:20]]}

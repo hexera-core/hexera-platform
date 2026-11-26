@@ -582,44 +582,17 @@ def _switch(name: str) -> bool:
     return os.environ.get(name, "1").strip() not in ("0", "false", "off", "")
 
 
-class _V5Describe:
-    """`repair_v5`'s `ai_describe`: `describe_ai.describe_unknown` on the file's ledger, each unknown (id, code)
-    described ONCE per file (the loop re-diagnoses every round), its $ counted for the row."""
+def _v5_describe_cls() -> Any:
+    """`repair_v5.describe_ai.FileDescriber` (it moved into the engine so the product path shares it), imported late."""
+    from meshpipeline.cad.repair_v5.describe_ai import FileDescriber
 
-    def __init__(self, ledger: Any, file_id: str, route: str, cap_usd: float) -> None:
-        self.ledger, self.file_id, self.route, self.cap_usd = ledger, file_id, route, cap_usd
-        self.spent_usd, self.calls, self.described = 0.0, 0, {}
+    return FileDescriber
 
-    def __call__(self, defects: list) -> list:
-        import dataclasses
 
-        from meshpipeline.cad.repair_v4.model_route import metered_call
-        from meshpipeline.cad.repair_v5.describe_ai import describe_unknown
-
-        known = [dataclasses.replace(d, ai=self.described[(d.id, d.code)])
-                 if d.cls == "unknown" and (d.id, d.code) in self.described else d for d in defects]
-        if not any(d.cls == "unknown" and d.ai is None for d in known):
-            return known
-        inner = metered_call(self.ledger, self.file_id, self.cap_usd, kind="v5_describe")
-
-        async def call(*a: Any, **kw: Any) -> Any:
-            self.calls += 1
-            priced = await inner(*a, **kw)
-            self.spent_usd += float(getattr(priced, "cost_usd", 0.0) or 0.0)
-            return priced
-
-        fresh = [d for d in known if not (d.cls == "unknown" and d.ai is not None)]
-        got = iter(describe_unknown(fresh, ledger=self.ledger, file_id=self.file_id, route=self.route,
-                                    cap_usd=self.cap_usd, call=call))
-        out = [d if d.cls == "unknown" and d.ai is not None else next(got) for d in known]
-        for d in out:
-            if d.cls == "unknown" and d.ai is not None:
-                self.described[(d.id, d.code)] = d.ai
-        return out
-
-    def summary(self) -> dict[str, Any]:
-        return {"calls": self.calls, "spent_usd": round(self.spent_usd, 5),
-                "described": [{"defect": f"{k[0]}|{k[1]}", **v} for k, v in list(self.described.items())[:20]]}
+def __getattr__(name: str) -> Any:
+    if name == "_V5Describe":   # the old name, kept for the tests and any caller that still reaches for it
+        return _v5_describe_cls()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def _deliver_reserve(ph: Any) -> float | None:
@@ -684,7 +657,7 @@ def _v5_arm(*, pool: Any, ws: Any, start: Any, source: str, judge: Any, v_in: An
     agent = (AgentSource(pool=pool, ledger=ledger, file_id=entry.sha256, route=route, job_id=job_id,
                          file_cap_usd=arm.budget.model_usd, trace=trace)
              if route and _switch(V5_AGENT_ENV) else None)
-    describe = _V5Describe(ledger, entry.sha256, route, arm.budget.model_usd) if route else None
+    describe = _v5_describe_cls()(ledger, entry.sha256, route, arm.budget.model_usd) if route else None
     outcome = repair_v5(pool, start, source, judge=judge, sites_of=judge.sites, h_mm=h_mm, wall_s=budget.wall_s,
                         fallback=fallback if route and _switch(V5_FALLBACK_ENV) else None, clock=clock, trace=trace,
                         sources=(*T.DEFAULT_SOURCES, *((agent,) if agent is not None else ())), ai_describe=describe,

@@ -365,11 +365,12 @@ def recipes_uri() -> str:
     return optional_env("CAD_REPAIR_V4_RECIPES_URI", "").strip()
 
 
-ENGINES: tuple[str, ...] = ("v3", "search")
+DEFAULT_ENGINE = "v5"
+ENGINES: tuple[str, ...] = ("v3", "search", "v5")
 
 
 def _engine_posture_of(raw: str) -> str:
-    """The repair engine named by `raw`, STRICTLY: blank is "not configured" (v3); anything that
+    """The repair engine named by `raw`, STRICTLY: blank is "not configured" (the default); anything that
     is not exactly a known engine, after trimming and case-folding, is refused - never coerced.
 
     Strict because this switch decides WHICH ENGINE REWRITES A CUSTOMER'S GEOMETRY: a typo that
@@ -377,20 +378,49 @@ def _engine_posture_of(raw: str) -> str:
     quietly selected `search` would run an engine nobody asked for."""
     value = raw.strip().lower()
     if not value:
-        return "v3"
+        return DEFAULT_ENGINE
     if value in ENGINES:
         return value
     raise ConfigurationError(
         f"Environment variable 'CAD_REPAIR_ENGINE' must be one of {', '.join(ENGINES)} - got {raw!r}.")
 
 
-#: WHICH ENGINE `repair_step_file` RUNS: `v3` (the conservative region-loop repair) or `search`
-#: (CRS v4, cad/repair_v4, which searches over kernel operations and is scored by one checker).
-#: DEFAULT `v3`, and production never sets it: v4 lives beside v3 until it beats it on the new
-#: benchmark, and only then does a separate change remove v3. The default is pinned by
-#: tests/unit/cad/repair_v4/test_engine_dispatch.py, which also parses the production block of
-#: the deploy workflow to prove it states no value.
-CAD_REPAIR_ENGINE: str = _engine_posture_of(optional_env("CAD_REPAIR_ENGINE", "v3"))
+#: WHICH ENGINE `repair_step_file` RUNS: `v5` (CRS v5, cad/repair_v5: defect-class repair with the v4 search as its
+#: broader repair), `v3` (the conservative region-loop repair) or `search` (CRS v4 alone, cad/repair_v4).
+#: DEFAULT `v5` FOR THE CRS v5 BETA (owner decision 2026-11-26, docs/superpowers/specs/2026-11-26-crs-v5-beta-ux.md:
+#: the beta is on for every user). v3 stays the automatic fallback: a v5 run that RAISES (anything but a measured
+#: "nothing could be kept") is re-run on v3 and the report records it (`conservative._repair_via_v5`). Production
+#: never sets it; the default is pinned by tests/unit/cad/repair_v4/test_engine_dispatch.py.
+CAD_REPAIR_ENGINE: str = _engine_posture_of(optional_env("CAD_REPAIR_ENGINE", DEFAULT_ENGINE))
+
+
+#: CRS v5 BETA - the model spend cap per FILE, in US dollars, shared by everything v5 may pay for on one file (the
+#: broader repair's AI proposer, the agent entrants when on, and the description of unknown problems). Owner decision
+#: 2026-11-26: $5 per file during the beta. It is validated against `repair_v4.proposer.FILE_USD_CEILING` (the hard
+#: ceiling no proposer may be built above) when the run starts, so a value above it refuses the run, not the startup.
+CRS_V5_FILE_USD_CAP: float = float(optional_env("CRS_V5_FILE_USD_CAP", "5.0"))
+
+#: CRS v5: whether the AGENT entrant tier (model-proposed repairs inside a problem's tournament) runs. OFF for the
+#: beta: the rule and parameter entrants always run, and the agent tier is switched on only once it has been shown to
+#: beat them per class (owner, CRS v5 spec: "a source that doesn't beat the rule in a class is switched off").
+CRS_V5_AGENT: bool = bool_env("CRS_V5_AGENT", "false")
+
+#: CRS v5: whether the broader repair (the v4 AI search, from the best state) runs when the class repairs leave the
+#: part unclean. ON: it is what keeps v5 never worse than v4's search.
+CRS_V5_FALLBACK: bool = bool_env("CRS_V5_FALLBACK", "true")
+
+#: CRS v5: the whole file's wall, in seconds - read, heal, class repairs, broader repair and delivery. The measured
+#: dev waves ran 1800 s base. The node's outer clock is this plus CAD_REPAIR_TIMEOUT_S (the v3 fallback's own).
+CRS_V5_FILE_WALL_S: float = float(optional_env("CRS_V5_FILE_WALL_S", "1800"))
+
+#: CRS v5: the broader repair's search wall, in seconds (the class loop gets half of it on top). As measured: 600.
+CRS_V5_SEARCH_WALL_S: float = float(optional_env("CRS_V5_SEARCH_WALL_S", "600"))
+
+
+def v5_force_fail() -> bool:
+    """CRS_V5_FORCE_FAIL: a VERIFICATION HOOK - when on, the v5 engine raises before it reads the file, so the
+    automatic v3 fallback can be proved on a deployed environment. Never set in production. Read at CALL time."""
+    return optional_env("CRS_V5_FORCE_FAIL", "false").strip().lower() in ("1", "true", "yes", "on")
 
 #: The confidence below which the model's plan is not acted on and the rule planner's choice stands.
 CAD_REPAIR_LLM_PLANNER_MIN_CONFIDENCE: float = float(

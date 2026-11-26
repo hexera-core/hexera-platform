@@ -966,14 +966,14 @@ def test_a_non_finite_or_negative_model_usd_is_refused_by_the_driver(bad: float)
         run([Scripted(lambda s: [])], World(), budget=Budget(wall_s=1000, ops=1000, model_calls=1, model_usd=bad))
 
 
-@pytest.mark.parametrize("bad", [0.0, -0.5, float("inf"), float("nan"), 1.01, 50.0])
+@pytest.mark.parametrize("bad", [0.0, -0.5, float("inf"), float("nan"), 5.01, 50.0])
 def test_a_usd_ceiling_over_the_per_file_dollar_or_not_finite_is_refused_at_construction(bad: float) -> None:
     with pytest.raises(ValueError, match="usd_ceiling"):
         search.ai_generators(ROUTE, ledger=WaveLedger.for_test(cap_usd=10.0), max_turns=3, usd_ceiling=bad,
                              file_id="f", job_id="j", call=FakeModel([]), prices=ASTRA)
 
 
-@pytest.mark.parametrize("bad", [float("inf"), float("nan"), 0.0, -1.0, 1.01, 50.0])
+@pytest.mark.parametrize("bad", [float("inf"), float("nan"), 0.0, -1.0, 5.01, 50.0])
 def test_the_proposer_itself_refuses_a_non_finite_or_over_one_dollar_ceiling(bad: float) -> None:
     with pytest.raises(ValueError, match="usd_ceiling"):
         proposer(FakeModel([]), usd_ceiling=bad)
