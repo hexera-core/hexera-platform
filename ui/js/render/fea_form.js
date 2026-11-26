@@ -9,6 +9,7 @@
 // Boundaries: markup and a reading of it. No fluid, no openings, no flow axis and no stickers: an FEA part is
 // meshed as itself. It fetches nothing and starts no run; the stage and the card both use it, and confirming
 // is the callback they were handed.
+import { readRepairChoice, repairChoiceHtml } from "./repair_choice.js";
 import { esc } from "../core/format.js";
 import { bindUnit, shown, unitBoxHtml, unitChoiceHint, unitChoiceNeeded, unitOf } from "./geometry_form.js";
 
@@ -696,6 +697,7 @@ export function feaPanelHtml(f, p) {
       ${meshAsHtml(f.shell)}
       ${assemblyHtml(f.assembly)}
       ${planHtml(f.plan)}
+      ${repairChoiceHtml(p)}
       ${blocked ? `<div class="fea-blocked" role="alert">${esc(blocked)}</div>` : ""}
       <div class="gc-actions fea-foot"><button class="gc-proceed" type="button"${blocked ? " disabled" : ""} title="${attr(f.question || "Is this your part and are the units right?")}">Yes, proceed</button>
         <span class="gc-hint">${blocked ? esc(f.way_out || "Upload a single part to go on.") : "Right part, right unit?"}</span></div>
@@ -724,6 +726,7 @@ export function readFeaForm(root, p) {
   const upSel = root.closest ? root.closest(".gc-stage")?.querySelector(".v-up select") : null;
   const up = (upSel && upSel.value) || p.up_axis;
   if (up) body.up_axis = up;
+  Object.assign(body, readRepairChoice(root));
   return body;
 }
 
