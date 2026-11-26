@@ -14,7 +14,7 @@
 import { esc, fmtBytes } from "../core/format.js";
 import { getSurface } from "../api/endpoints.js";
 import { headers } from "../api/client.js";
-import { acceptMesh, flagDispute } from "./dispute.js";
+import { acceptMesh, sendChange } from "./dispute.js";
 import { VIEWER_FALLBACK } from "./config.js";
 // which conversation this run came from: the scope the way up is remembered against
 import { get as getState } from "../core/state.js";
@@ -110,6 +110,12 @@ function viewerToolsHtml(job,upAxis){
    falls back to its own job, as every run used to. */
 const upStore = (job) => upScope(job, getState.runOrigin(job));
 
+/* A REVISED MESH TAKES THE OLD ONE'S PLACE: each open view lends its camera, and the run that
+   revised it opens on that camera, the old view going as it opens (openViewer opts.replaces). */
+const _views={},_carried={};
+/** The camera of the open view of `job`, or null. */
+export function viewCamera(job){const v=_views[job];return v?v.camera():null;}
+
 export async function openViewer(job,anchorEl,opts){
   opts=opts||{};
   if(document.getElementById('viewer-'+job)){document.getElementById('viewer-'+job).scrollIntoView({behavior:'smooth'});return;}
@@ -148,15 +154,16 @@ export async function openViewer(job,anchorEl,opts){
         <div class="v-sec-h">Changes</div>
         <div class="v-row">
           <button class="v-btn" id="v-selbtn-${job}">Mark region</button>
+          <button class="v-btn v-quiet" id="v-clearbtn-${job}" disabled>Clear marks</button>
           <span class="v-brush" title="region size - scales with your zoom">Size
             <input type="range" id="v-brush-${job}" min="2" max="30" value="8" aria-label="region size">
             <span id="v-brushlbl-${job}"></span></span>
         </div>
+        <textarea class="v-ask" id="v-ask-${job}" rows="2" maxlength="2000" placeholder="What should change here?" aria-label="What should change here?"></textarea>
         <div class="v-row v-act">
-          <button class="v-btn" id="v-submit-${job}">Request a change…</button>
-          <button class="v-btn v-quiet" id="v-clearbtn-${job}" disabled>Clear marks</button>
+          <button class="v-btn primary" id="v-submit-${job}" disabled>Send change</button>
         </div>
-        <p class="v-cost">A change starts a new run. It takes a few minutes.</p>
+        <p class="v-cost" id="v-prog-${job}" role="status" hidden></p>
       </div></div>
     <div class="v-canvas" id="v-canvas-${job}">
       <div class="v-loading" id="v-load-${job}"><svg class="v-spin" viewBox="0 0 24 24" aria-hidden="true"><circle class="sp-arm" cx="12" cy="12" r="7.2"/><path class="sp-hd" d="M19.20 8.16L22.40 14.56L16.00 14.56Z"/><path class="sp-hd" d="M4.80 15.84L1.60 9.44L8.00 9.44Z"/></svg><div>Loading mesh…</div></div>
@@ -199,6 +206,8 @@ export async function openViewer(job,anchorEl,opts){
   // its context is not torn down under a still-running render. Without one (an embedding
   // page) the viewer opens inline after its anchor, as it always did.
   const _wb=document.getElementById('workbench'),_app=document.getElementById('app');
+  if(opts.replaces){const was=viewCamera(opts.replaces);if(was)_carried[job]=was;
+    delete _views[opts.replaces];document.getElementById('viewer-'+opts.replaces)?.remove();}
   if(_wb&&_app&&opts.takeover!==false){
     _wb.querySelectorAll('.viewer').forEach(v=>{v.hidden=true;});
     _wb.appendChild(box);
@@ -441,6 +450,7 @@ function initViewer(job,surf,uiCfg){
   const clearBtn=document.getElementById('v-clearbtn-'+job);
   const submitBtn=document.getElementById('v-submit-'+job);
   const flagsEl=document.getElementById('v-flags-'+job);
+  const askEl=document.getElementById('v-ask-'+job);let busy=false;
   const hintEl=document.getElementById('v-hint-'+job);
   const sizeEl=document.getElementById('v-brush-'+job);
   const sizeLbl=document.getElementById('v-brushlbl-'+job);
@@ -816,16 +826,9 @@ function initViewer(job,surf,uiCfg){
 
   function renderFlags(){flagsEl.style.display=flags.length?'':'none';
     clearBtn.disabled=!flags.length;
-    // ONE primary action whose meaning follows the state: with marks it sends them,
-    // without marks it is a plain free-text change request. (Two competing buttons
-    // made the with-marks / without-marks paths impossible to tell apart.)
-    submitBtn.textContent=flags.length
-      ?`Send ${flags.length} mark${flags.length>1?'s':''} for re-review`
-      :'Request a change…';
-    // with marks placed, sending them is the next step, so it takes the accent
-    submitBtn.classList.toggle('primary',flags.length>0);
-    flagsEl.innerHTML=flags.length
-      ?'<b>Marked regions</b><div class="v-fhint">The reviewer will inspect each marked spot on the delivered mesh. Add a note to say what looks wrong there.</div>':'';
+    // ONE button, Send change: marks, words, or both go; nothing at all keeps it off
+    syncSend();
+    flagsEl.innerHTML=flags.length?'<b>Marked regions</b>':'';
     flags.forEach((f,i)=>{
       if(f.el){f.el.textContent=String(i+1);
         f.el.title=f.note||'click to add a note';}
@@ -865,10 +868,19 @@ function initViewer(job,surf,uiCfg){
       if(f.el)f.el.remove();});
     flags.length=0;rw.render();renderFlags();};
 
-  // ONE handler for the one action: with marks it sends them, with none it is the
-  // plain conversation path (flags.map() is simply [] then).
-  submitBtn.onclick=()=>flagDispute(job,
-    flags.map(f=>({x:f.x,y:f.y,z:f.z,span:f.span,patch:f.patch,note:f.note})));
+  // SEND CHANGE: the marks and the words go to the back end as they stand. While a new run works
+  // the box and the button are held; this mesh stays on screen and usable, marks and all.
+  function syncSend(){submitBtn.disabled=busy||!(flags.length||askEl.value.trim());}
+  askEl.addEventListener('input',syncSend);
+  submitBtn.onclick=()=>{if(submitBtn.disabled)return;
+    sendChange(job,flags.map(f=>({x:f.x,y:f.y,z:f.z,span:f.span,patch:f.patch,note:f.note,
+      ...(f.nrm?{normal:Array.from(f.nrm)}:{})})),askEl.value.trim(),
+      {busy:on=>{busy=!!on;askEl.disabled=busy;syncSend();}});};
+  syncSend();
+  // the camera this view holds, for a revised mesh to open on
+  _views[job]={camera:()=>({position:cam.getPosition().slice(),focal:cam.getFocalPoint().slice(),
+    up:cam.getViewUp().slice(),angle:cam.getViewAngle(),scale:cam.getParallelScale(),
+    parallel:!!cam.getParallelProjection()})};
 
   // engage the camera envelope (fit distance must be captured before caps apply)
   const _fp0=cam.getFocalPoint(),_cp0=cam.getPosition();
@@ -879,6 +891,14 @@ function initViewer(job,surf,uiCfg){
   canvas.fit=fit;
   cam.onModified(clampCam);
   clampCam();                    // opening view = closest allowed to Fit
+  // A REVISED MESH OPENS WHERE THE LAST ONE WAS LOOKED AT: the same camera, kept from then on
+  const _was=_carried[job];delete _carried[job];
+  // (set whole, the clamp held off until it is: a half-set camera is clamped against itself)
+  if(_was){_clamping=true;
+    try{cam.setParallelProjection(_was.parallel);cam.setFocalPoint(..._was.focal);
+      cam.setPosition(..._was.position);cam.setViewUp(..._was.up);
+      cam.setViewAngle(_was.angle);cam.setParallelScale(_was.scale);}finally{_clamping=false;}
+    clampCam();canvas.touched=true;ren.resetCameraClippingRange();}
   rw.render();
 
   const statusEl=document.getElementById('v-status-'+job);

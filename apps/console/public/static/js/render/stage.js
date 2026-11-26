@@ -893,6 +893,8 @@ export const Stage = {
   bump(n){n.count++;n.chev.hidden=false;},
   scroll(n){n.body.scrollTop=n.body.scrollHeight;this.scrollBottom();},
 
+  // what the running run is doing now, in the live line's words ('' when no run is drawn)
+  liveNow(){return this.rows&&!this._ended?String(Run.view().current||''):'';},
   /* THE LIVE LINE, inside the row that is running: what it is doing now in plain words, a note when it
      runs long, and a hairline bar when the mesher's count has an estimate beside it (render/run_progress). */
   drawLive(){if(!this.rows)return;

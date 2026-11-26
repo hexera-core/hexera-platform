@@ -238,6 +238,20 @@ export async function wsTicket(jobId) {
   }
 }
 
+/** SEND CHANGE: the marks on a delivered mesh and the words typed beside them, on the dispute
+ *  route in rebuild mode (the server decides from the words whether it is a change or a doubt).
+ *  Answers `kind` ("change" | "review" | "ask"), Hexera's `reply` in words, the new run's `job_id`
+ *  (null for "ask": nothing started) and the conversation it belongs to (`session_id`). */
+export async function requestChange(jobId, { flags = [], comment = "" } = {}) {
+  const r = await apiFetch(`/api/v1/simulation/${jobId}/dispute`,
+    { method: "POST", headers: headers(),
+      body: JSON.stringify({ flags, comment: String(comment).slice(0, 2000), mode: "rebuild" }) });
+  if (!r.ok) throw await readError(r);
+  const d = await r.json();
+  return { kind: String(d.kind || ""), reply: String(d.reply || ""), job_id: d.job_id || null,
+           session_id: d.session_id || null };
+}
+
 /** Flag findings, or accept an unreviewed mesh against a stated bar. `mode` distinguishes
  *  them; both re-review the same mesh and return the new job. */
 export async function disputeReview(jobId, { flags = [], comment = "", mode } = {}) {
