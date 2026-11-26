@@ -398,3 +398,50 @@ def test_a_payload_without_fields_leaves_the_viewer_exactly_as_before(live, tmp_
     # the export needs no fields, only a polyMesh surface - it stays
     assert state == {"heat": False, "ctl": False, "legend": False, "vtk": True}
     assert_clean(live, "the viewer without quality fields")
+
+
+def _fea_solid_payload() -> dict:
+    # AN FEA SOLID'S OWN PAYLOAD: two tetrahedra on one face - a good one and a flat sliver - drawn as the
+    # gmsh FEA hook draws a solid (kind stl, one patch per CAD face), coloured by engines/fea_view_quality
+    from tests.unit.engines.test_fea_view_quality import BAD_SIDE, GOOD_SIDE, POINTS, TETS
+
+    from meshpipeline.engines.fea_view_quality import solid_fields
+    from meshpipeline.render.viewer_pack import stl_response
+    patches = [("Face_1", GOOD_SIDE), ("Face_2", BAD_SIDE)]
+    surf = stl_response({n: [[list(POINTS[i]) for i in t] for t in tris] for n, tris in patches}, {}, "m")
+    surf["quality_fields"] = solid_fields(POINTS, TETS, patches, {})
+    surf.update(is_mesh=True, cell_count=2, parts=[])
+    return surf
+
+
+def test_an_fea_solid_is_coloured_by_its_own_measures_with_the_same_control(live):
+    job = "fea-heat"
+    payload = _fea_solid_payload()
+    _open(live, payload, job)
+    h = f"window._vdbg['{job}:heat']"
+    state = live.evaluate(f"""(() => ({{metrics: {h}.metrics,
+      words: [...document.querySelectorAll('#v-heatctl-{job} a')].map(a => a.textContent)}}))()""")
+    assert state["metrics"] == ["aspect_ratio", "scaled_jacobian", "min_dihedral"]
+    assert state["words"] == ["aspect ratio", "scaled Jacobian", "angle between faces"]
+    # lower is worse for a scaled Jacobian: the sliver is past its limit and red, the good element calm
+    sj = payload["quality_fields"]["metrics"]["scaled_jacobian"]
+    after = live.evaluate(f"""(() => {{
+      {h}.set('scaled_jacobian');
+      const lg = document.querySelector('#viewer-{job} .v-legend');
+      return {{bad: {h}.colorOf('Face_2', 0), good: {h}.colorOf('Face_1', 0), legend: lg && lg.textContent,
+               probe: {h}.probe('Face_2', 0), card: document.querySelector('#viewer-{job} .v-probe').textContent}};
+    }})()""")
+    r, g, _b = after["bad"]
+    assert r > 120 and g < 60, after
+    assert after["good"] != after["bad"]
+    assert "scaled Jacobian" in after["legend"] and "0.20 limit" in after["legend"]
+    assert f"{sj['n_over']} element" in after["legend"] and "under" in after["legend"], after["legend"]
+    # the probe says the element's own number, turned back the right way up, and that it is under the limit
+    assert after["probe"]["values"]["scaled_jacobian"] == pytest.approx(sj["min"], abs=1e-4)
+    assert "under the 0.20 limit" in after["card"] and "likely" not in after["card"]
+    # Only bad cells greys the good element; another measure recolours
+    grey = live.evaluate(f"""(() => {{ {h}.only(true); const g = {h}.colorOf('Face_1', 0);
+      {h}.set('min_dihedral'); return {{g, active: {h}.active(), bad: {h}.colorOf('Face_2', 0)}}; }})()""")
+    assert grey["g"] == NEUTRAL and grey["active"] == "min_dihedral"
+    assert grey["bad"][0] > 120 and grey["bad"][1] < 60
+    assert_clean(live, "the FEA solid heatmap")

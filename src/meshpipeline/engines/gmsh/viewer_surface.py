@@ -42,11 +42,18 @@ def read_msh(workspace, *, by_face: bool = False, face_names: dict[int, str] | N
             return index_of[rows]
 
         cells: list = []
+        tets: list = []
         etypes, _tags, enodes = gmsh.model.mesh.getElements(3)
         for et, nodes in zip(etypes, enodes):
             block = corners(et, nodes)
             if block.shape[1] in (4, 5, 6, 8) and len(block):
                 cells.append(block)
+            if by_face and int(et) in (4, 11) and len(block):
+                # AN FEA MESH'S TETRAHEDRA WHOLE, midside nodes too, in the solver's node order - what
+                # engines/fea_quality measures, so the viewer's colours are the verdict's numbers
+                from meshpipeline.engines.gmsh.abaqus_deck import GMSH_TET10_TO_SOLVER
+                rows = np.asarray(nodes, dtype=np.int64).reshape(-1, 10 if int(et) == 11 else 4)
+                tets.append(index_of[rows[:, list(GMSH_TET10_TO_SOLVER)] if int(et) == 11 else rows])
 
         patches: list = []
         if by_face:
@@ -78,7 +85,7 @@ def read_msh(workspace, *, by_face: bool = False, face_names: dict[int, str] | N
             else:
                 patches.sort(key=lambda np_: int(np_[0].split("_")[1]))
             gmsh.model.remove()
-            return {"points": points, "cells": cells, "patches": patches}
+            return {"points": points, "cells": cells, "patches": patches, "tets": tets}
         for dim, ptag in gmsh.model.getPhysicalGroups(2):
             name = gmsh.model.getPhysicalName(dim, ptag) or f"group_{ptag}"
             polys: list = []
