@@ -19,6 +19,8 @@ const PAST = [140, 14, 18];
 
 /** The colour of a move of `v` mm against `allowed` mm, into out[o..o+2]. Pure, exported for the browser tier. */
 export function deviationColour(v, allowed, out = [0, 0, 0], o = 0) {
+  // -1 (or anything negative or missing) is a point the server could not measure: the body's own colour, never "0 mm"
+  if (!(Number(v) >= 0)) { for (let k = 0; k < 3; k++) out[o + k] = Math.round(BODY[k] * 255); return out; }
   const lim = allowed > 0 ? allowed : 1;
   const f = Math.max(0, Number(v) || 0) / lim;
   if (f > 1.0001) { out[o] = PAST[0]; out[o + 1] = PAST[1]; out[o + 2] = PAST[2]; return out; }
@@ -131,8 +133,10 @@ export async function mountRepairView(host, job, repair, surfaces) {
   const toSkin = (v) => (v / 1000) * (Number(main.rescaled_by) || 1);
   const probs = (repair && repair.problems) || [];
   const pins = [];
+  // where the server pinned each problem (its own point, else the centre of its first face), by id
+  const served = new Map(((surfaces && surfaces.pins) || []).map((q) => [String(q.id), q.point]));
   probs.forEach((p, i) => {
-    const at = pinPoint(p);
+    const at = pinPoint(p) || pinPoint({ location: { points: [served.get(String(p.id))] } });
     if (!at) return;
     const s = statusOf(p), n = i + 1;
     const el = document.createElement("button");
@@ -140,8 +144,8 @@ export async function mountRepairView(host, job, repair, surfaces) {
     el.className = `v-pin rp-pin ${s}`;
     el.textContent = String(n);
     el.dataset.id = String(p.id ?? n);
-    el.setAttribute("aria-label", `Problem ${n}: ${problemName(p.type)}, ${LEGEND.find((l) => l.key === s).label.toLowerCase()}`);
-    el.title = `${n}. ${problemName(p.type)} - ${LEGEND.find((l) => l.key === s).label.toLowerCase()}`;
+    el.setAttribute("aria-label", `Problem ${n}: ${problemName(p.type, p.type_text)}, ${LEGEND.find((l) => l.key === s).label.toLowerCase()}`);
+    el.title = `${n}. ${problemName(p.type, p.type_text)} - ${LEGEND.find((l) => l.key === s).label.toLowerCase()}`;
     host.appendChild(el);
     const w = at.map(toSkin);
     overlay.anchor(el, () => w);

@@ -151,17 +151,17 @@ LANE = """
 def test_the_repair_lane_reads_in_plain_words_with_a_count(live):
     out = live.evaluate("(async () => {" + LANE + """
       const seen = {};
-      ev({type:'repair_progress', stage:'checking'});
+      ev({type:'repair_progress', stage:'repair', step:'checking'});
       seen.checking = lane();
-      ev({type:'repair_progress', stage:'checking', problem_total:12});
+      ev({type:'repair_progress', stage:'repair', step:'checking', problem_total:12});
       seen.found = lane();
-      ev({type:'repair_progress', stage:'repairing', problem_index:3, problem_total:12, problem_type:'close_faces'});
+      ev({type:'repair_progress', stage:'repair', step:'repairing', problem_index:3, problem_total:12, problem_type:'close_faces'});
       seen.third = lane();
-      ev({type:'repair_progress', stage:'broader_repair', problem_index:9, problem_total:12});
+      ev({type:'repair_progress', stage:'repair', step:'broader_repair', problem_index:9, problem_total:12});
       seen.broader = lane();
-      ev({type:'repair_progress', stage:'verifying', problem_index:12, problem_total:12});
+      ev({type:'repair_progress', stage:'repair', step:'verifying', problem_index:12, problem_total:12});
       seen.verify = lane();
-      ev({type:'repair_progress', stage:'done', problem_total:12, problems_fixed:10});
+      ev({type:'repair_progress', stage:'repair', step:'done', problem_total:12, problems_fixed:10});
       seen.done = lane();
       ev({type:'stage', stage:'builder'});
       ev({type:'meshing', stage:'builder', engine:'cfmesh', budget_s:600});
@@ -195,8 +195,8 @@ def test_a_mesh_only_run_has_no_repair_lane_and_a_repair_only_run_has_only_it(li
       const noLane = lane() === null;
       Stage.newRun(); Stage.ensureProc();
       Stage.repairOnly();
-      ev({type:'repair_progress', stage:'checking', problem_total:2});
-      ev({type:'repair_progress', stage:'done', problem_total:2, problems_fixed:2});
+      ev({type:'repair_progress', stage:'repair', step:'checking', problem_total:2});
+      ev({type:'repair_progress', stage:'repair', step:'done', problem_total:2, problems_fixed:2});
       Stage.final({pass:true, attempts:0, repair:{choice:'standalone', problems:[]}});
       const shown = [...document.querySelectorAll('.proc')].pop();
       return {meshOnly, noLane,
@@ -290,7 +290,8 @@ def test_the_view_says_so_when_there_is_nothing_to_draw(live):
     live.wait_for(f"/isn't available/.test(document.getElementById('repair-{JOB}').textContent)",
                   what="the no-view message")
     text = live.evaluate(f"document.getElementById('repair-{JOB}').textContent")
-    assert "No repair files were kept" in text
+    # no file was delivered, but the report is still offered from the run's own routes
+    assert "Repair report (HTML)" in text and "Repair report (JSON)" in text
 
 
 # ----------------------------------------------------------- the language rule ----
@@ -365,13 +366,13 @@ def test_hostile_data_never_puts_an_internal_word_on_the_page(live):
     terms, ids = _terms(live)
     _open_result(live, {"pass": False, "repair": HOSTILE, "files": FILES})
     lane = live.evaluate("(async () => {" + LANE + """
-      ev({type:'repair_progress', stage:'checking', text:'Running tournament heat 1 of 3'});
-      ev({type:'repair_progress', stage:'repairing', problem_index:1, problem_total:4,
+      ev({type:'repair_progress', stage:'repair', step:'checking', text:'Running tournament heat 1 of 3'});
+      ev({type:'repair_progress', stage:'repair', step:'repairing', problem_index:1, problem_total:4,
           problem_type:'BRepCheck_NotClosed', text:'entrant rule_seed_close_faces'});
-      ev({type:'repair_progress', stage:'broader_repair', text:'fallback: search_ai'});
-      ev({type:'repair_progress', stage:'verifying', text:'conformal pass'});
-      ev({type:'repair_progress', stage:'done', text:'KeyError: heat'});
-      ev({type:'repair_progress', stage:'mystery', text:'TopoDS_Shape exception'});
+      ev({type:'repair_progress', stage:'repair', step:'broader_repair', text:'fallback: search_ai'});
+      ev({type:'repair_progress', stage:'repair', step:'verifying', text:'conformal pass'});
+      ev({type:'repair_progress', stage:'repair', step:'done', text:'KeyError: heat'});
+      ev({type:'repair_progress', stage:'repair', step:'mystery', text:'TopoDS_Shape exception'});
       return document.querySelector('.proc').textContent;
     })()""", timeout=60)
     page = live.evaluate(f"document.getElementById('repair-{JOB}').innerText")
@@ -381,3 +382,65 @@ def test_hostile_data_never_puts_an_internal_word_on_the_page(live):
     # the hostile reasons were replaced by the page's own plain words, and the unknown type has a plain name
     assert "problem we couldn't identify" in page.lower()
     assert "Repairing a problem we couldn't identify — problem 1 of 4" in lane
+
+
+# ------------------------------------------------- PR 2's wire and the owner's defaults ----
+
+def test_a_progress_event_nested_under_progress_is_read_too(live):
+    out = live.evaluate("""(async () => {
+      const { progressLine } = await import('/static/js/core/repair_words.js');
+      return progressLine({type:'repair_progress', stage:'repair',
+        progress:{stage:'repairing', problem_index:2, problem_total:5, problem_type:'surface_crossing'}}).text;
+    })()""")
+    assert out == "Repairing intersecting surfaces — problem 2 of 5"
+
+
+def test_unmeasured_points_are_not_coloured_as_no_move_and_the_v3_finish_is_not_said(live):
+    out = live.evaluate("""(async () => {
+      const { deviationColour } = await import('/static/js/viewer/repair_view.js');
+      const { flagLines, problemName } = await import('/static/js/core/repair_words.js');
+      return {unmeasured: deviationColour(-1, 0.1), zero: deviationColour(0, 0.1),
+              v3: flagLines({engine:'v3', flags:['engine_switched']}),
+              bypass: flagLines({review_bypass:true}),
+              named: problemName('a_new_class', 'Sharp edge'), hostile: problemName('a_new_class', 'rule_seed x')};
+    })()""")
+    assert out["unmeasured"] != out["zero"], "a point that was never measured reads as 'did not move'"
+    assert out["v3"] == [], "the customer was told which repair method finished the job"
+    assert out["bypass"] and "accepted automatically" in out["bypass"][0]
+    assert out["named"] == "sharp edge" and out["hostile"] == "problem we couldn't identify"
+
+
+def test_beside_a_mesh_the_repair_is_a_tab_next_to_it(live):
+    out = live.evaluate("(async () => {" + _network() + """
+      const { openRepairResult } = await import('/static/js/render/repair.js');
+      const host = document.createElement('div'); document.body.appendChild(host);
+      const mesh = document.createElement('div'); mesh.className = 'viewer'; mesh.id = 'viewer-tabbed';
+      host.appendChild(mesh);
+      openRepairResult('tabbed', null, {pass:true, repair: __REPAIR__, files: []}, {tabWith: mesh});
+      const repair = document.getElementById('repair-tabbed');
+      const tabs = () => [...document.querySelectorAll('#rr-tabs-tabbed [role=tab]')].map(
+        t => [t.textContent, t.getAttribute('aria-selected')]);
+      const first = {tabs: tabs(), mesh: mesh.hidden, repair: repair.hidden};
+      document.querySelector('#rr-tabs-tabbed [data-k=repair]').click();
+      const second = {tabs: tabs(), mesh: mesh.hidden, repair: repair.hidden};
+      const reports = [...repair.querySelectorAll('.rr-rep')].map(a => a.textContent);
+      return {first, second, reports};
+    })()""".replace("__REPAIR__", json.dumps(_repair())))
+    assert out["first"] == {"tabs": [["Mesh", "true"], ["Repair", "false"]], "mesh": False, "repair": True}
+    assert out["second"] == {"tabs": [["Mesh", "false"], ["Repair", "true"]], "mesh": True, "repair": False}
+    # no report was delivered as a file: both are offered from the run's own report routes
+    assert [r[:20] for r in out["reports"]] == ["Repair report (HTML)", "Repair report (JSON)"]
+
+
+def test_the_lane_bar_is_neutral_not_the_error_red(live):
+    out = live.evaluate("(async () => {" + LANE + """
+      ev({type:'repair_progress', stage:'repair', step:'repairing', problem_index:1, problem_total:4,
+          problem_type:'close_faces'});
+      const bar = document.querySelector('.rr-repair .rr-bar > i');
+      const probe = document.createElement('i');
+      probe.style.color = getComputedStyle(document.documentElement).getPropertyValue('--accent');
+      document.body.appendChild(probe);
+      const accent = getComputedStyle(probe).color; probe.remove();
+      return {bar: getComputedStyle(bar).backgroundColor, accent};
+    })()""")
+    assert out["bar"] != out["accent"], "the running repair bar is drawn in the accent red"

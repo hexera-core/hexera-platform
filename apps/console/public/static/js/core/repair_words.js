@@ -38,9 +38,11 @@ const PLURAL = {
   "problem we couldn't identify": "problems we couldn't identify",
 };
 
-/** The plain name of a problem type: always one of the table's, never the key itself. */
-export function problemName(type) {
-  return PROBLEM_WORDS[String(type || "")] || PROBLEM_WORDS.unknown;
+/** The plain name of a problem type: the table's for every type it knows. A type it does not know is named by the
+ *  server's own display words (`type_text`) only when they read as words; never by the key itself. */
+export function problemName(type, typeText) {
+  return PROBLEM_WORDS[String(type || "")] || (isPlain(typeText) ? String(typeText).trim().toLowerCase()
+    : PROBLEM_WORDS.unknown);
 }
 
 /** "a thin gap", "an area of damaged geometry" - the name with its article, for a sentence. */
@@ -52,8 +54,8 @@ export function aProblem(type) {
 }
 
 /** "3 thin gaps", "1 seam problem". */
-export function countOf(type, n) {
-  const one = problemName(type);
+export function countOf(type, n, typeText) {
+  const one = problemName(type, typeText);
   return `${n} ${n === 1 ? one : PLURAL[one] || one}`;
 }
 
@@ -142,7 +144,9 @@ export const RESULT_WORDS = {
 /** The lane's line for one `repair_progress` event: {text, index, total, step, done, fixed}. Built from the typed
  *  fields; the event's own `text` is used only where the typed fields cannot say it and it passes `isPlain`. */
 export function progressLine(ev) {
-  const e = ev || {}, step = stepOf(e);
+  // the same fields arrive flat and, whole, under `progress` (PR 2's wire): either is read
+  const nested = (ev && typeof ev.progress === "object" && ev.progress) || {};
+  const e = { ...nested, ...(ev || {}) }, step = stepOf(ev) || stepOf(nested);
   const index = num(e.problem_index), total = num(e.problem_total);
   const fixed = num(e.problems_fixed ?? e.fixed);
   const result = resultOf(e);
@@ -230,8 +234,9 @@ export function secondsWords(s) {
 export function byType(r) {
   const out = new Map();
   for (const p of (r || {}).problems || []) {
-    const name = problemName(p.type);
-    const row = out.get(name) || { type: PROBLEM_WORDS[p.type] ? p.type : "unknown", name, found: 0, fixed: 0 };
+    const name = problemName(p.type, p.type_text);
+    const row = out.get(name) || { type: PROBLEM_WORDS[p.type] ? p.type : "unknown", typeText: p.type_text, name,
+      found: 0, fixed: 0 };
     row.found += 1;
     if (statusOf(p) === "fixed") row.fixed += 1;
     out.set(name, row);
@@ -267,7 +272,6 @@ const FLAG_WORDS = {
   change_over_allowed: "At least one face moved further than the allowed change.",
   meshers_failing: "Not every meshing tool accepts the repaired part.",
   spend_capped: "The repair stopped early to stay within its time and cost limit.",
-  engine_switched: "A different repair method finished this job.",
 };
 export function flagLines(r) {
   const res = r || {}, out = [];
@@ -278,9 +282,9 @@ export function flagLines(r) {
     else if (typeof f === "object" && f && isPlain(f.text)) out.push(String(f.text).trim());
     else if (isPlain(key)) out.push(key);
   }
-  if (res.auto_accepted && !out.includes(FLAG_WORDS.auto_accepted)) out.push(FLAG_WORDS.auto_accepted);
-  // the job records which repair finished it; the customer is told only that it was a different method
-  if (res.engine === "v3" && !out.includes(FLAG_WORDS.engine_switched)) out.push(FLAG_WORDS.engine_switched);
+  if ((res.auto_accepted || res.review_bypass) && !out.includes(FLAG_WORDS.auto_accepted)) out.push(FLAG_WORDS.auto_accepted);
+  // WHICH REPAIR FINISHED THE JOB is the admin's to read (owner default 2026-11-26): a customer is not told
+  // that a second method took over, and no flag for it is ever said here
   return out;
 }
 
@@ -301,7 +305,7 @@ export function traceRows(r) {
     const own = s === "left_as_is" ? "it was safer to leave it than to change the part"
       : s === "not_fixed" ? "no safe repair kept the part within the allowed change" : "";
     const reason = s === "fixed" ? "" : plainOr(p.reason_text, own);
-    return { n: i + 1, id: String(p.id ?? i + 1), status: s, problem: problemName(p.type), did: w.did,
+    return { n: i + 1, id: String(p.id ?? i + 1), status: s, problem: problemName(p.type, p.type_text), did: w.did,
       result: w.result, reason };
   });
 }
