@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 import meshpipeline.settings.providers as provcfg
 import meshpipeline.settings.runtime as rtcfg
 from meshpipeline.contracts.pipeline_state import PipelineState
+from meshpipeline.errors import SystemFailure as _SystemFailure
 from meshpipeline.persistence.repositories.artifact_repository import ArtifactRepository
 from meshpipeline.persistence.repositories.job_repository import JobRepository
 from meshpipeline.settings import plans
@@ -266,6 +267,36 @@ class DisputeSeed:
                 state["request_txt"] = request.read_text(errors="replace")
 
 
+#: What the person is told when the mesh they asked about is no longer kept anywhere (VER-17).
+DISPUTE_MESH_GONE = ("I can't look at that mesh again: it is no longer kept, so there is nothing to check. "
+                     "Tell me what you want changed there (for example \"finer here\" or \"2 mm on this hole\") "
+                     "and send it, and I'll start a new run with it.")
+
+
+class DisputeMaterialGone(_SystemFailure):
+    """The mesh a second look was asked on is on no disk and not in the object store: a told outcome."""
+
+    user_message = DISPUTE_MESH_GONE
+
+
+def _restore_parent(parent_id: str, *, jlog):
+    """The parent's delivered attempt on this machine, brought back from its review seed when this worker
+    never had it (VER-17). None when there is no seed; a store that cannot be reached is ours, said so."""
+    from meshpipeline.application import review_seed
+    from meshpipeline.contracts.object_storage import StorageError, get_object_store
+    from meshpipeline.errors import classify_exception
+
+    try:
+        store = get_object_store()
+    except StorageError as exc:
+        jlog.warning("dispute of job %s: no object store to restore the mesh from (%s)", parent_id, exc)
+        return None
+    try:
+        return review_seed.restore(parent_id, store=store, jlog=jlog)
+    except Exception as exc:  # noqa: BLE001 - classified: an outage is retryable, a bad seed is ours
+        raise classify_exception(exc, "dispute_workspace") from exc
+
+
 def resolve_dispute_seed(user_dispute: Mapping, *, jlog) -> DisputeSeed:
     from meshpipeline.errors import FailureClass, SystemFailure
 
@@ -284,8 +315,10 @@ def resolve_dispute_seed(user_dispute: Mapping, *, jlog) -> DisputeSeed:
     parent_id = str(user_dispute.get("of_job_id", "")).strip()
     workspace = final_attempt_workspace(parent_id) if parent_id else None
     if workspace is None:
-        raise SystemFailure(
-            "dispute_workspace", FailureClass.INTERNAL,
+        # Not on this machine and not restored from the object store (seed_dispute_run tries that
+        # first): the mesh is gone. Told, never "something went wrong on our side" (VER-17).
+        raise DisputeMaterialGone(
+            "dispute_workspace", FailureClass.USER_INPUT,
             f"dispute of job {parent_id}: no reviewable workspace found "
             f"(purged or never delivered)")
     try:
@@ -316,9 +349,29 @@ def capture_dispute_context(job_id: str, seed: DisputeSeed, user_dispute: Mappin
         jlog.warning("dispute_context training event failed: %s", exc)
 
 
+async def refuse_dispute(session_factory, job_id: str, gone: DisputeMaterialGone, *, job_repo, jlog,
+                         publish) -> dict:
+    """End a second look whose mesh is kept nowhere (VER-17): the job row failed with the told class, and the
+    person told what happened and what to do - as the geometry refusal before it is (geometry_materializer)."""
+    from meshpipeline.application.geometry_materializer import _fail_job_row
+
+    jlog.warning("Dispute REJECT - %s (job_id=%s)", gone, job_id)
+    await _fail_job_row(session_factory, job_id, gone.failure_class, job_repo=job_repo, jlog=jlog)
+    try:
+        publish(gone.user_message)
+    except Exception:  # noqa: BLE001 - the refusal stands whether or not the line went out
+        pass
+    return {"job_id": job_id, "status": "failed", "reason": "dispute_mesh_gone"}
+
+
 async def seed_dispute_run(state: PipelineState, user_dispute: Mapping, *,
                            job_id: str, jlog,
                            publish: Callable[[int], Awaitable[None]]) -> DisputeSeed:
+    parent_id = str(user_dispute.get("of_job_id", "")).strip()
+    if parent_id and final_attempt_workspace(parent_id) is None:
+        # ANOTHER WORKER delivered it (the pool has several; a big mesh is sent home to whichever
+        # collected it, RUN-10): the delivery kept a seed of it in the object store (VER-17)
+        await asyncio.to_thread(_restore_parent, parent_id, jlog=jlog)
     seed = resolve_dispute_seed(user_dispute, jlog=jlog)
     capture_dispute_context(job_id, seed, user_dispute, jlog=jlog)
     state["user_dispute"] = dict(user_dispute)

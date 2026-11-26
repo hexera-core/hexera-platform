@@ -46,7 +46,9 @@ def _block_exceptions() -> str:
     return ("If no_marks is there, no spot was marked: say you've noted it for the new run and that the result "
             "will say what came of it; never say it is set or applied. "
             "If marks_not_on_the_part is there, say plainly that those marks are not on the part, so you left them "
-            "out. If one_place_words_several_spots is there, they named one place but marked several separate "
+            "out. If marks_not_used is there, say plainly that their marks were not used because the part's list "
+            "of faces is no longer kept, so the change goes from their words alone. "
+            "If one_place_words_several_spots is there, they named one place but marked several separate "
             "spots: say it goes on every spot they marked. If flow_limit is there, say in a few words that this "
             "flow mesher can't size one face on its own and the result will say what it did there. If "
             "what_happens says nothing starts, no new run starts: say you couldn't find the part under their marks "
@@ -89,6 +91,9 @@ _NEW_RUN = re.compile(r"\b(?:new run|re-?run|rebuild\w*|re-?mesh\w*|start(?:ing|
 _VERDICT = re.compile(r"\b(?:meets? your brief|passed|looks? (?:fine|good)|is fine|no change (?:is )?needed)\b",
                       re.I)
 _NOT_ON = re.compile(r"\b(?:not on|off|isn'?t on|wasn'?t on|weren'?t on|aren'?t on|outside|missed)\b", re.I)
+_MARKS_UNUSED = re.compile(r"\b(?:couldn'?t|could not|can'?t|cannot|didn'?t|did not|wasn'?t able to) "
+                           r"(?:use|read|tie|place|find)\b[^.]{0,30}\bmarks?\b|\bmarks?\b[^.]{0,30}\b(?:weren'?t|were "
+                           r"not|aren'?t|are not|isn'?t|is not|wasn'?t|was not|not) (?:used|tied|kept)", re.I)
 _MARK_AGAIN = re.compile(r"\b(?:mark|click|pick|select)\w*\b", re.I)
 _NOTHING_STARTED = re.compile(r"\b(?:nothing (?:has )?start|haven'?t started|didn'?t start|not started|no (?:new )?run)",
                               re.I)
@@ -114,6 +119,8 @@ def check(reply: str, facts: Mapping) -> str:
         return "no new run said"
     if facts.get("marks_not_on_the_part") and not _NOT_ON.search(text):
         return "a mark not on the part, not said"
+    if facts.get("marks_not_used") and not _MARKS_UNUSED.search(text):
+        return "marks that could not be used, not said"
     return ""
 
 

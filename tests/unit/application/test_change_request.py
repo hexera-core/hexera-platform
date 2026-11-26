@@ -153,8 +153,10 @@ def _parent():
                            geometry_source_id=None, geometry_interpretation_id=None, geometry_source=None)
 
 
-async def _post(body, *, no_model=True, chat=None, refuse=False):
+async def _post(body, *, no_model=True, chat=None, refuse=False, parent=None, face_map=None):
     sent = {}
+    parent = parent if parent is not None else _parent()
+    face_map = face_map if face_map is not None else (_plate(), 1.0)
 
     async def _dispatch(job_id, payload, **kw):
         sent["payload"] = payload
@@ -168,7 +170,7 @@ async def _post(body, *, no_model=True, chat=None, refuse=False):
     admit = (AsyncMock(side_effect=spend_gate.OutOfCredits("No credits left")) if refuse
              else AsyncMock(return_value="pro"))
     with patch.object(sim_module, "get_db", _fake_db), \
-            patch.object(sim_module.svc, "get_job", new=AsyncMock(return_value=_parent())), \
+            patch.object(sim_module.svc, "get_job", new=AsyncMock(return_value=parent)), \
             patch.object(sim_module.svc, "check_quotas", new=AsyncMock()), \
             patch.object(spend_gate, "admit", new=admit), \
             patch("meshpipeline.persistence.repositories.session_repository.SessionRepository.get_for_update",
@@ -177,7 +179,7 @@ async def _post(body, *, no_model=True, chat=None, refuse=False):
                   new=_row), \
             patch.object(dispute_operation, "claim", new=AsyncMock(return_value=None)), \
             patch.object(dispute_operation, "dispatch_or_record_failure", new=_dispatch), \
-            patch.object(face_pick, "current", return_value=(_plate(), 1.0)), \
+            patch.object(face_pick, "current", return_value=face_map), \
             patch("meshpipeline.persistence.repositories.job_repository.JobRepository.create",
                   new=AsyncMock(return_value=child)), \
             patch("meshpipeline.persistence.repositories.session_repository.SessionRepository.get_by_job_id",
@@ -226,6 +228,59 @@ async def test_a_doubt_still_goes_to_the_reviewer_as_before():
 
 
 _TWO_MARKS = [_mark(0.048, 0.045, 0.0, 0.005), _mark(0.048, 0.042, 0.0, 0.005)]
+
+
+# VER-17: whichever worker takes it, and whatever of the old run is no longer kept
+def _purged_parent(**kw):
+    p = _parent()
+    p.workspace_purged = True
+    for k, v in kw.items():
+        setattr(p, k, v)
+    return p
+
+
+async def test_a_change_still_starts_when_the_old_runs_mesh_is_no_longer_kept():
+    # a worker cleared its own copy (worker_disk marks the job purged): a change is a new run from the upload
+    resp, payload = await _post({"comment": _OWNER_WORDS, "flags": _TWO_MARKS}, parent=_purged_parent())
+    assert resp.status_code == 202, resp.text
+    assert resp.json()["kind"] == "change" and "user_dispute" not in payload
+
+
+async def test_a_change_on_an_upload_no_longer_kept_is_told_before_anything_starts():
+    gone = SimpleNamespace(purged_at=datetime(2026, 11, 20, tzinfo=UTC))
+    resp, payload = await _post({"comment": _OWNER_WORDS, "flags": _TWO_MARKS},
+                                parent=_purged_parent(geometry_source=gone))
+    assert resp.status_code == 409 and payload is None
+    assert resp.json()["detail"] == CR.UPLOAD_GONE and "Upload the file again" in CR.UPLOAD_GONE
+
+
+async def test_marks_that_cannot_be_tied_because_the_face_list_is_gone_still_start_the_change_and_say_so():
+    resp, payload = await _post({"comment": "make it finer here", "flags": _TWO_MARKS}, face_map=(None, 1.0))
+    assert resp.status_code == 202, resp.text
+    got = resp.json()
+    assert got["kind"] == "change" and got["job_id"] == str(_CHILD) and got["faces"] == []
+    assert payload["user_notes"][-1]["text"] == "make it finer here"
+    assert "Your marks were not used" in got["reply"] and "Starting a new run" in got["reply"]
+    facts = CR.ChangeFacts(kind=CR.KIND_CHANGE, words="finer here", marks=2, marks_lost=True)
+    assert change_reply.check(CR.plain_reply(facts), facts.as_dict()) == ""
+    assert change_reply.check("Got it, starting a new run with finer mesh.", facts.as_dict()) != ""
+
+
+async def test_a_second_look_at_a_mesh_kept_nowhere_is_told_in_plain_words():
+    from meshpipeline.application.job_service import DISPUTE_MESH_GONE
+    resp, payload = await _post({"comment": "I think this region is bad, look again", "flags": _TWO_MARKS},
+                                parent=_purged_parent(artifacts=[]))
+    assert resp.status_code == 409 and payload is None
+    assert resp.json()["detail"] == DISPUTE_MESH_GONE and "on our side" not in DISPUTE_MESH_GONE
+
+
+async def test_a_second_look_goes_ahead_when_the_seed_is_kept_though_a_worker_cleared_its_copy():
+    from meshpipeline.application.review_seed import SEED_LOGICAL_KEY
+    seed_row = SimpleNamespace(logical_key=SEED_LOGICAL_KEY)
+    resp, payload = await _post({"comment": "I think this region is bad, look again", "flags": _TWO_MARKS},
+                                parent=_purged_parent(artifacts=[seed_row]))
+    assert resp.status_code == 202, resp.text
+    assert payload["user_dispute"]["of_job_id"] == str(_PARENT)
 
 
 async def test_a_change_request_and_its_reply_are_kept_in_the_chat_with_the_new_run_on_the_users_turn():

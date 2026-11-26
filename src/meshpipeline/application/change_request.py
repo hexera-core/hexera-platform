@@ -37,6 +37,10 @@ KIND_CHANGE = "change"      # a new run with the requirement added
 KIND_REVIEW = "review"      # the reviewer looks again at the same mesh (the old dispute path)
 KIND_ASK = "ask"            # nothing could be tied to the part: nothing starts, we ask for the spot again
 
+#: VER-17: the new run is made from the upload; when the file is no longer kept nothing can start, and this is said
+UPLOAD_GONE = ("The file this run was made from is no longer kept, so I can't start a new run from it. "
+               "Upload the file again and ask for the change there.")
+
 #: a face other than the one under the mark is meant only when the whole face is about the mark's size: the
 #: wall of a hole or a fillet inside the circle, never a large face that merely passes under it
 SMALL_FACE_SHARE = 4.0
@@ -276,6 +280,12 @@ def change_payload(parent_payload: Mapping, *, job_id: str, note: Mapping, brief
     return build(**fields)
 
 
+def upload_gone(parent) -> bool:
+    """VER-17: the file the finished run was made from was removed after its retention period (its source row
+    keeps the record, the bytes are gone), so a new run of it cannot start."""
+    return getattr(getattr(parent, "geometry_source", None), "purged_at", None) is not None
+
+
 def minutes_of(started, ended) -> int | None:
     """The finished run's time in whole minutes (at least 1), or None when it is not known."""
     try:
@@ -301,6 +311,8 @@ class ChangeFacts:
     last_run_minutes: int | None = None
     #: "about half the size the last mesh had there" (size_step), "" when the words set no such step
     size_change: str = ""
+    #: VER-17: the upload's face list is no longer kept, so the marks could not be tied to faces
+    marks_lost: bool = False
 
     def where(self) -> str:
         labels = [str(f.get("label") or f.get("id")) for f in self.faces]
@@ -331,6 +343,11 @@ class ChangeFacts:
             out["kept_for_the_run"] = True
             out["no_marks"] = ("no spot was marked: their words are kept as a requirement of the new run, the run "
                                "places them from the words, and the result will say what came of it")
+        if self.marks_lost:
+            out["marks_not_used"] = ("the part's list of faces from the upload is no longer kept, so their marks could "
+                                     "not be tied to the part; the change goes ahead from their words alone - say "
+                                     "plainly that their marks were not used, and that they can name the place in words "
+                                     "if it matters")
         if self.untied:
             out["marks_not_on_the_part"] = {"which": self.untied,
                                             "said": "these marks are on no face of the part (off it, or on a cut "
@@ -360,6 +377,9 @@ def plain_reply(f: ChangeFacts) -> str:
         out = [f"Got it: I'll make that change on {f.where()} only, and nothing else changes."]
     else:
         out = ["Noted. I've kept that as a requirement of the new run, and the result will say what came of it."]
+    if f.marks_lost:
+        out.append("Your marks were not used: the part's list of faces from the upload is no longer kept, so the "
+                   "change goes from your words alone. Name the place in words if it matters.")
     if f.untied:
         n = len(f.untied)
         out.append(f"{'One mark is' if n == 1 else f'{n} marks are'} not on the part, so I left "
@@ -384,6 +404,7 @@ def said_in_chat(comment: Any, *, marks: int, where: str = "") -> str:
 
 
 __all__ = ["KIND_ASK", "KIND_CHANGE", "KIND_REVIEW", "MAX_FACES", "RULE_CHANGE_RUN", "RULE_DOUBT_REVIEW",
-           "RULE_MARK_FACES", "RULE_REPLY", "SIZE_STEP_COARSER", "SIZE_STEP_FINER", "SMALL_FACE_SHARE", "ChangeFacts", "MarkFaces", "brief_line",
+           "RULE_MARK_FACES", "RULE_REPLY", "SIZE_STEP_COARSER", "SIZE_STEP_FINER", "SMALL_FACE_SHARE", "UPLOAD_GONE",
+           "ChangeFacts", "MarkFaces", "brief_line",
            "change_note", "change_payload", "faces_of", "is_change", "minutes_of", "one_place_words", "plain_reply",
-           "radius_of", "resolve_marks", "said_in_chat", "separate_spots", "size_step"]
+           "radius_of", "resolve_marks", "said_in_chat", "separate_spots", "size_step", "upload_gone"]

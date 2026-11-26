@@ -609,8 +609,12 @@ async def get_mesh_report(job_id: uuid.UUID, owner_id: str = Depends(owner_dep),
 _DISPATCH_FAILED = "Failed to enqueue dispute job"
 
 
-async def _finished_parent(db, job_id: uuid.UUID, owner_id: str, organization_id: str):
-    """The finished run a dispute or a change request is made on, or the HTTP refusal that says why not."""
+async def _finished_parent(db, job_id: uuid.UUID, owner_id: str, organization_id: str, *,
+                           needs_the_mesh: bool = True):
+    """The finished run a dispute or a change request is made on, or the HTTP refusal that says why not.
+    `needs_the_mesh`: a second look (VER-11) looks at the delivered mesh; a change (VER-9) is a new run
+    from the upload and the settings, so a mesh no longer kept never stops it."""
+    from meshpipeline.application.review_seed import SEED_LOGICAL_KEY
     from meshpipeline.persistence.models import JobStatus as _JS
 
     parent = await svc.get_job(db, job_id, owner_id, organization_id=organization_id)
@@ -637,9 +641,12 @@ async def _finished_parent(db, job_id: uuid.UUID, owner_id: str, organization_id
         if not (_dv.get("mesh_available") and _dv.get("review")):
             raise HTTPException(409, "This run produced no valid mesh to review - "
                                      "describe the change in the chat instead")
-    if parent.workspace_purged:
-        raise HTTPException(409, "This job's mesh workspace has been purged and can "
-                                 "no longer be re-reviewed")
+    # A WORKER'S OWN COPY going (worker_disk marks it purged) is not the mesh going: the delivery kept a
+    # seed of it in the object store, and any worker restores it from there (VER-17)
+    _kept = any(str(getattr(a, "logical_key", "") or "") == SEED_LOGICAL_KEY for a in (getattr(parent, "artifacts", None) or []))
+    if needs_the_mesh and parent.workspace_purged and not _kept:
+        from meshpipeline.application.job_service import DISPUTE_MESH_GONE
+        raise HTTPException(409, DISPUTE_MESH_GONE)
     return parent
 
 
@@ -654,7 +661,10 @@ def _change_facts(flags: list[dict], comment: str, *, session_id: str, payload: 
     fm, scale = face_pick.current(session_id) if session_id and flags else (None, 1.0)
     marks = CR.resolve_marks(fm, flags, scale=scale, span_factor=polcfg.VIEWER_FLAG_SPAN_FACTOR)
     faces = CR.faces_of(marks)
-    kind = CR.KIND_ASK if flags and not faces else CR.KIND_CHANGE
+    # VER-17: the upload's face list no longer kept - the marks cannot be tied, which is no reason to stop a
+    # change the words still ask: it goes ahead from the words, and the reply says the marks were not used
+    marks_lost = bool(flags) and fm is None
+    kind = CR.KIND_ASK if flags and not faces and not marks_lost else CR.KIND_CHANGE
     flow = str(payload.get("purpose") or "") != FEA_PURPOSE
     facts = CR.ChangeFacts(
         kind=kind, words=" ".join(str(comment or "").split())[:600], faces=faces, marks=len(flags),
@@ -662,7 +672,7 @@ def _change_facts(flags: list[dict], comment: str, *, session_id: str, payload: 
         spots=CR.separate_spots(marks), one_place=CR.one_place_words(comment),
         flow_cannot_size_a_face=(bool(faces) and flow and bool(payload.get("mesh_engine"))
                                  and not MR.flow_sizes_picked_faces(str(payload.get("mesh_engine")))),
-        last_run_minutes=CR.minutes_of(started, ended),
+        last_run_minutes=CR.minutes_of(started, ended), marks_lost=marks_lost,
         # PLAN-fea-36 on a change request: "finer" halves what the delivered mesh had at the marked faces (the FEA
         # solid and shell routes); a flow mesh refines by its own levels, said by the result
         size_change=CR.size_step(comment) if faces and not flow else "")
@@ -710,7 +720,10 @@ async def _change_request(job_id: uuid.UUID, body: DisputeIn, *, owner_id: str, 
     flags = [f.model_dump(exclude_none=True) for f in body.flags]
     comment = (body.comment or "")[:2000]
     async with get_db() as db:
-        parent = await _finished_parent(db, job_id, owner_id, organization_id)
+        parent = await _finished_parent(db, job_id, owner_id, organization_id, needs_the_mesh=False)
+        if CR.upload_gone(parent):
+            # the new run is made from the upload; with the file gone there is nothing to make it from
+            raise HTTPException(409, CR.UPLOAD_GONE)
         parent_payload = parent.dispatch_payload if isinstance(parent.dispatch_payload, dict) else {}
         _intake = _parent_intake(await SessionRepository().get_by_job_id(db, job_id), parent_payload)
         if not (parent_payload.get("job_id") and parent_payload.get("owner_id")):

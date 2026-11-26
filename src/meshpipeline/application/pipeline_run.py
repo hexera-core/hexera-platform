@@ -730,13 +730,16 @@ async def _run_async(req: JobRequest) -> dict:
         # EXECUTION PREPARATION: resolve the checkpoint disposition and materialize the geometry.
         # Both failures - an unreadable checkpoint and unmaterializable geometry - are terminal
         # BEFORE execution and share one classified shape, so geometry_materializer owns them.
+        # The one closing a run refused before it begins says (a refused geometry here, a second look
+        # at a mesh kept nowhere below, VER-17).
+        _close_before_run = lambda msg: _pub(job_id).closing(msg, _terminal_event_id(job_id))  # noqa: E731
         _prep = await _gm.prepare_for_execution(
             AsyncSessionLocal,
             job_id=job_id, geometry_source=req.geometry_source,
             geometry_interpretation=req.geometry_interpretation,
             classify_checkpoint=_classify_checkpoint, checkpoint_thread=_ckpt_thread,
             job_repo=job_repo, jlog=jlog,
-            publish=lambda msg: _pub(job_id).closing(msg, _terminal_event_id(job_id)),
+            publish=_close_before_run,
             # an engine that reads the ECXML itself gets its parts placed, never fused
             engine=req.mesh_engine or "")
         if _prep.refusal is not None:
@@ -895,8 +898,17 @@ async def _run_async(req: JobRequest) -> dict:
                     await _i.anote(f"Re-reviewing the mesh at {flags} region(s) you flagged",
                                    op_id="dispute-opened")
 
-            await _js.seed_dispute_run(initial_state, req.user_dispute, job_id=job_id, jlog=jlog,
-                                       publish=_announce_dispute)
+            try:
+                await _js.seed_dispute_run(initial_state, req.user_dispute, job_id=job_id, jlog=jlog,
+                                           publish=_announce_dispute)
+            except _js.DisputeMaterialGone as _gone:
+                # VER-17: the mesh asked about is kept nowhere any more - told in plain words, with
+                # the way on, never as a failure on our side
+                _refusal = await _js.refuse_dispute(
+                    AsyncSessionLocal, job_id, _gone, job_repo=job_repo, jlog=jlog,
+                    publish=_close_before_run)
+                await _worker_engine.dispose()
+                return _refusal
 
         # WHO CHOSE THE ENGINE, read once from the approved submission the dispatch carries. The
         # fallback ladder moves only an engine the user did not name (pipeline/engine_fallback.py);

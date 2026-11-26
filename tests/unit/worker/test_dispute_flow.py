@@ -246,10 +246,11 @@ async def test_worker_seeds_dispute_state_from_parent_workspace(tmp_path, monkey
     assert captured["request_txt"] == "original CRM request"    # recovered from workspace
 
 
-async def test_worker_dispute_with_purged_parent_fails_as_system_failure(tmp_path, monkeypatch):
+async def test_worker_dispute_with_purged_parent_is_told_never_failed_as_ours(tmp_path, monkeypatch):
+    # VER-17: the mesh is on no disk and in no store - a told outcome with the way on, never "on our side"
     import meshpipeline.application.pipeline_run as wt
     _install_pub(monkeypatch, wt)
-    from meshpipeline.errors import SystemFailure
+    from meshpipeline.application.job_service import DISPUTE_MESH_GONE
     monkeypatch.setattr(rtcfg, "WORKSPACE_BASE", tmp_path)   # no parent dir exists
 
     import sqlalchemy.ext.asyncio as sa_aio
@@ -274,16 +275,25 @@ async def test_worker_dispute_with_purged_parent_fails_as_system_failure(tmp_pat
         async def get_for_owner(self, db, job_id, owner_id): return None
         async def transition(self, db, job_id, target, *, allow=None): return TransitionResult.applied
     monkeypatch.setattr(jr, "JobRepository", lambda: FakeRepo())
-    monkeypatch.setattr(wt, "_pub", lambda job_id, stage="outcome": FakePublisher(job_id, stage))
+    published: list = []
+
+    def _publisher(job_id, stage="outcome"):
+        p = FakePublisher(job_id, stage)
+        published.append(p)
+        return p
+
+    monkeypatch.setattr(wt, "_pub", _publisher)
     monkeypatch.setattr(wt, "_incr_delivery_count", lambda job_id: 1)
     install_durable_execution_fakes(monkeypatch, wt) # durable lease + outbox seams
     import meshpipeline.errors as failures
     monkeypatch.setattr(failures, "record_dead_letter", lambda *a, **k: None)
 
-    with pytest.raises(SystemFailure):
-        await wt._run_async(wt.JobRequest(
-            job_id=str(_uuid.uuid4()),
-            user_dispute={**_DISPUTE, "of_job_id": "gone-job"}))
+    out = await wt._run_async(wt.JobRequest(
+        job_id=str(_uuid.uuid4()),
+        user_dispute={**_DISPUTE, "of_job_id": str(_uuid.uuid4())}))
+    assert out["status"] == "failed" and out["reason"] == "dispute_mesh_gone", out
+    closings = [e["text"] for p in published for e in p.events if e.get("type") == "closing"]
+    assert closings == [DISPUTE_MESH_GONE], closings
 
 
 # API endpoint  #
