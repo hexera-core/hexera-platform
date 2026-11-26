@@ -206,6 +206,12 @@ def record_counts(record: dict) -> dict[str, int]:
     return out
 
 
+def _digest(value: Any) -> str:
+    """A short digest of a result (sorted JSON): equal digests, equal results."""
+    import hashlib
+    return hashlib.sha256(json.dumps(value, sort_keys=True, default=str).encode()).hexdigest()[:12]
+
+
 def table(timers: Timers, counts: dict[str, Any], *, total_s: float, state: str, where: list[str]) -> str:
     lines = ["", "FEA sizing, stage by stage (inclusive seconds; nested stages indented)", "-" * 78,
              f"{'stage':<60}{'seconds':>10}{'calls':>8}"]
@@ -231,6 +237,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--profile", type=Path, default=None, help="write the 25 heaviest functions (cProfile) here")
     ap.add_argument("--json", type=Path, default=None, help="also write the table's numbers here as JSON")
     ap.add_argument("--log", action="store_true", help="let the product's own log lines through (may name parts)")
+    ap.add_argument("--standard-gib", type=float, default=None,
+                    help="pretend the standard mesh job has this much memory (default: the product's own), so a "
+                         "small public part takes the path of a part too big for it: the quicker mesh is planned")
+    ap.add_argument("--keep", type=Path, default=None,
+                    help="write the size choice, both plans and the assembly's sidecar here as JSON, to compare two "
+                         "builds exactly (it holds the file's face names and places: public files only)")
     args = ap.parse_args(argv)
 
     # the product's log lines can carry names from the file: silent unless asked
@@ -240,6 +252,9 @@ def main(argv: list[str] | None = None) -> int:
 
     from meshpipeline.engines import fea_plan_options as PO
 
+    if args.standard_gib:
+        from meshpipeline.contracts import mesh_machine as MM
+        MM.CLOUD_RUN_GIB = float(args.standard_gib)
     limit = float(args.limit_s) if args.limit_s else float(PO.BUDGET_S)
     src = args.file.resolve()
     if not src.exists():
@@ -283,13 +298,33 @@ def main(argv: list[str] | None = None) -> int:
             return out
 
         FD.measure_staged = kept_measure
+        both = PO.options_and_plans
+
+        def kept_plans(*a, **k):
+            out = both(*a, **k)
+            record_box["plans"] = out[1]
+            return out
+
+        PO.options_and_plans = kept_plans
         try:
             if prof is not None:
                 prof.enable()
             PO.stage_file(src, ws, to_metres=float(args.to_metres))
             got = PO.plan_staged(ws, source_path=str(src))
-            counts["choice offered"] = bool(got.get("choice"))
+            record_box["options"] = got
+            counts["choice offered"] = "yes, two options" if got.get("choice") else "no, one option"
             counts["recommended"] = str(got.get("recommended") or "")
+            for key in (PO.FULL, PO.QUICKER):
+                if isinstance(got.get(key), dict):
+                    counts[f"{key} mesh: elements"] = int(got[key].get("elements") or 0)
+            # digests, to tell two builds gave the same answer without printing it (no names, no places)
+            counts["digest: the size choice"] = _digest(got)
+            for key, plan in (record_box.get("plans") or {}).items():
+                counts[f"digest: the {key} plan"] = _digest(plan) if plan is not None else "none"
+            from meshpipeline.cad import fea_assembly as A
+            if (ws / A.SIDECAR).exists():
+                record_box["sidecar"] = json.loads((ws / A.SIDECAR).read_text())
+                counts["digest: the interfaces"] = _digest(record_box["sidecar"].get("interfaces"))
         except LimitHit:
             state = f"stopped by the limit at {limit:.0f} s"
             code = 3
@@ -314,6 +349,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.json:
         args.json.write_text(json.dumps({"stages": timers.rows, "counts": counts, "total_s": round(total, 2),
                                          "state": state, "where": where}, indent=1, default=str))
+    if args.keep:
+        args.keep.write_text(json.dumps({k: record_box.get(k) for k in ("options", "plans", "sidecar")},
+                                        indent=1, sort_keys=True, default=str))
     if prof is not None:
         import io
         import pstats

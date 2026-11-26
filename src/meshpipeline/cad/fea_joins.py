@@ -257,12 +257,20 @@ def _area_of(t: np.ndarray) -> float:
 def _cells(tris: np.ndarray, size: float) -> list[np.ndarray]:
     """The triangles grouped by the cube of side `size` their centre lies in (each group's first is its
     sample), in a fixed order."""
+    order, starts, ends = _cell_index(tris, size)
+    return [order[s:e] for s, e in zip(starts.tolist(), ends.tolist(), strict=True)]
+
+
+def _cell_index(tris: np.ndarray, size: float) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """_cells as one array: (the triangles cell by cell, each cell's start in it, its end)."""
     key = np.floor(tris.mean(axis=1) / max(size, 1e-300)).astype(np.int64)
-    _u, inv = np.unique(key, axis=0, return_inverse=True)
-    inv = np.asarray(inv).ravel()
-    order = np.argsort(inv, kind="stable")
-    bounds = np.flatnonzero(np.diff(inv[order])) + 1
-    return np.split(order, bounds)
+    # TIME-12: the cells in the order of their cubes (x, then y, then z), each cell's triangles in their own order -
+    # one stable sort on the three keys (np.unique over rows took half the joins measure on a 7-part hinge)
+    order = np.lexsort((key[:, 2], key[:, 1], key[:, 0]))
+    starts = np.concatenate([[0], np.flatnonzero(np.any(np.diff(key[order], axis=0) != 0, axis=1)) + 1]) \
+        .astype(np.int64)
+    ends = np.append(starts[1:], len(order)).astype(np.int64)
+    return order, starts, ends
 
 
 def _split(tris: np.ndarray, longest: float, cap: int) -> np.ndarray:
@@ -462,24 +470,26 @@ def _facing(sa: _Surface, a: int, fa, sb: _Surface, b: int, fb, limit: float, re
     # read in cells of `step` (one sample a cell, standing for every triangle in it), only the cells
     # within the limit kept, and those read again in cells of the final spacing
     step = max(spacing, limit, math.sqrt(_area_of(tris) / SAMPLES_PER_PAIR))
-    cells = _cells(tris, step)
-    reps = np.array([c[0] for c in cells])
+    order, starts, ends = _cell_index(tris, step)
+    reps = order[starts]
     pts = tris[reps].mean(axis=1)
     ok_b, on_b, _n = _on_face(pts, fb, sb.uv.get(b))
     kd, _kk = their_tree.query(pts, k=1)
     # where the centre's projection misses face b (beyond its edge), its nearest point of face b
     dist = np.where(ok_b, np.linalg.norm(on_b - pts, axis=1), kd - (reach - limit))
-    near_cells = [c for c, dd in zip(cells, dist.tolist(), strict=True) if dd <= limit + 2.0 * step + tol]
-    if not near_cells:
+    near = dist <= limit + 2.0 * step + tol
+    if not near.any():
         return empty
-    tris = tris[np.concatenate(near_cells)]
+    # the near cells' triangles, cell by cell in their order (TIME-12: read off the one sort, no list of cells)
+    tris = tris[order[np.repeat(near, ends - starts)]]
     spacing = max(spacing, math.sqrt(_area_of(tris) / SAMPLES_PER_PAIR))
     tris = _split(tris, spacing, MAX_SAMPLES)
-    cells = _cells(tris, spacing)
+    order, starts, ends = _cell_index(tris, spacing)
     cr = np.cross(tris[:, 1] - tris[:, 0], tris[:, 2] - tris[:, 0])
     tri_area = 0.5 * np.linalg.norm(cr, axis=1)
-    reps = np.array([c[0] for c in cells])
-    area = np.array([float(tri_area[c].sum()) for c in cells])
+    reps = order[starts]
+    by_cell = tri_area[order]
+    area = np.array([float(by_cell[s:e].sum()) for s, e in zip(starts.tolist(), ends.tolist(), strict=True)])
     keep = area > 0
     pts, area = tris[reps[keep]].mean(axis=1), area[keep]
     ok_a, on_a, n_a = _on_face(pts, fa, sa.uv.get(a))
@@ -883,6 +893,28 @@ class _OutOfTime(Exception):
     """The measure's budget ran out inside a pair of parts (TIME-11)."""
 
 
+#: TIME-12: the slack on a face's box, as a share of the larger part's box diagonal (the boxes are OpenCASCADE's
+#: optimal ones, on the exact surfaces: this only covers their rounding)
+BOX_SLACK_SHARE = 1e-6
+
+
+def _far_apart(approx: dict, boxes_a: list, boxes_b: list, limit: float, tol: float, diag: float) -> set:
+    """PLAN-fea-18 / TIME-12: the face pairs whose boxes lie further apart than the gap limit (with the touch
+    tolerance and BOX_SLACK_SHARE to spare). Every distance the pair is measured by - a sample on one face to its
+    foot on the other, the faces' least distance - is at least their boxes' distance, so none of them can be
+    within the limit or touching: such a pair adds nothing to the joint, and is not measured point by point."""
+    if not approx:
+        return set()
+    keys = list(approx)
+    lo_a = np.array([boxes_a[a][0] for a, _b in keys])
+    hi_a = np.array([boxes_a[a][1] for a, _b in keys])
+    lo_b = np.array([boxes_b[b][0] for _a, b in keys])
+    hi_b = np.array([boxes_b[b][1] for _a, b in keys])
+    apart = np.linalg.norm(np.maximum(0.0, np.maximum(lo_a - hi_b, lo_b - hi_a)), axis=1)
+    reach = limit * (1.0 + LIMIT_RTOL) + 2.0 * tol + BOX_SLACK_SHARE * diag
+    return {k for k, d in zip(keys, apart.tolist(), strict=True) if d > reach}
+
+
 def _in_time(t0: float, budget_s: float) -> None:
     """Raise _OutOfTime once the measure has run past its budget (read before each face pair)."""
     if time.time() - t0 > budget_s:
@@ -970,11 +1002,14 @@ def _measure(parts: list, *, tol: float, mm: float, budget_s: float, t0: float, 
             min_area = MIN_JOIN_AREA_SHARE * min(diags[i], diags[j]) ** 2
             fine = max(min(limit / 2.0, math.sqrt(min_area) / 2.0), tol)
             slack = SAMPLE_SHARE * (diags[i] + diags[j]) + tol
+            far = _far_apart(approx, fboxes[i], fboxes[j], limit, tol, max(diags[i], diags[j]))
             seen: list[tuple[int, int, np.ndarray, np.ndarray, np.ndarray, float]] = []
             flush: dict[tuple[int, int], float] = {}
             crossing: list[tuple[int, int, list[np.ndarray]]] = []
             for (a, b), dd in sorted(approx.items()):
                 _in_time(t0, budget_s)
+                if (a, b) in far:
+                    continue
                 pa, aa, ga, on_a = _facing(si, a, faces[i][a], sj, b, faces[j][b], limit, reach, tol, fine)
                 _pb, ab, _gb, on_b = _facing(sj, b, faces[j][b], si, a, faces[i][a], limit, reach, tol, fine)
                 if min(on_a, on_b) > 0:
@@ -1046,7 +1081,7 @@ def _measure(parts: list, *, tol: float, mm: float, budget_s: float, t0: float, 
                 # joins whatever lies within it. A skin is no evidence here either.
                 close = []
                 for (a, b), dd in sorted(approx.items()):
-                    if dd > limit + slack or sk_i.get(a) or sk_j.get(b):
+                    if dd > limit + slack or sk_i.get(a) or sk_j.get(b) or (a, b) in far:
                         continue
                     _in_time(t0, budget_s)
                     dab, where_ab = _dist_at(faces[i][a], faces[j][b])

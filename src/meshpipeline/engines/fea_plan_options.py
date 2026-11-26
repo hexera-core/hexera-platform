@@ -128,8 +128,10 @@ def decide(record: dict, full_plan: dict, quicker_plan) -> tuple[dict, dict | No
         out["why"] = "The full-rules mesh fits the standard machine: there is nothing to choose."
         return out, None
     qplan = quicker_plan() if callable(quicker_plan) else quicker_plan
-    quick = row(record, qplan, QUICKER)
-    if not quick["standard"] or quick["at_minimums"]:
+    quick = row(record, qplan, QUICKER) if qplan is not None else None
+    if quick is None or not quick["standard"] or quick["at_minimums"]:
+        # (None: TIME-12 - even at every zone's validity minimum the mesh cannot fit the standard machine, told
+        # before the quicker mesh was planned: it would not be offered, so it was not made)
         out["why"] = ("Even with every zone at its validity minimum the mesh needs more than the standard machine, "
                       "so there is no quicker mesh: the full-rules one is made.")
         return out, qplan
@@ -164,8 +166,16 @@ def options_and_plans(record: dict, surface, diag_m: float, *, ai: dict | None =
     from meshpipeline.engines import fea_driver as FD
 
     full_plan = FD.choose_plan(record, surface, diag_m, ai=ai)
-    out, qplan = decide(record, full_plan,
-                        lambda: FD.choose_plan(record, surface, diag_m, ai=ai, cap=standard_elements()))
+
+    def quicker() -> dict | None:
+        # TIME-12: DECIDED BEFORE IT IS PAID FOR - a quicker mesh that cannot fit the standard machine even at every
+        # zone's validity minimum is never offered (decide), so it is told by one short count and not planned
+        cap = standard_elements()
+        if not FD.could_fit(record, surface, diag_m, cap=cap, ai=ai):
+            return None
+        return FD.choose_plan(record, surface, diag_m, ai=ai, cap=cap)
+
+    out, qplan = decide(record, full_plan, quicker)
     return out, {FULL: full_plan, QUICKER: qplan}
 
 
