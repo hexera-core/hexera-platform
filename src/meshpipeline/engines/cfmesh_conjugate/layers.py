@@ -280,7 +280,42 @@ BUFFER_CELLS_NO_EXTRUDE = 1
 #: WHAT IT COSTS ON ITS OWN is 8 to 12 faces with a small volume ratio, a failed check the
 #: baseline does not have. The thickness floor does not pay those off - `s5` with the floor at
 #: 0.80 still has 10 - and FEATURE_ANGLE does, which is why the two below are set together.
-SMOOTH_SURFACE_NORMALS = 5
+#: SWEPT AGAIN ON A PRODUCTION-DENSITY RIG, 2026-11-26, AND THE ANSWER IS 0. The table above was
+#: measured on the TWO-ACROSS plate, which its own heading says, and two across is the only channel
+#: width at which 5 wins anything. A 45-degree diagonal lattice at this engine's own pitch and cell
+#: - 201.3 um pitch, 25.1578 um cells, the 3x y-stretch, one knob off this dict - swept over width:
+#:
+#:     cells across    nSmoothSurfaceNormals 0          nSmoothSurfaceNormals 5
+#:                     cover layers thick concave       cover layers thick concave
+#:          2           100   2.81   97.6   1234        99.96  2.81   97.6    772
+#:          3           100   1.83   81.2    480        75.18  0.784  45.3    358
+#:          4           100   3.00  100.0      0        75.79  0.808  46.4    332
+#:          6           100   3.00  100.0      0        76.52  0.822  47.1    284
+#:         10           100   3.00  100.0      0        76.43  0.825  47.1    168
+#:
+#: Read DOWN the three columns that are the deliverable - coverage, layers kept of three, thickness
+#: achieved - and 0 is never worse at any width. From four cells across it is PERFECT and 5 throws
+#: away a quarter of the interface and over half the stack, at every width, forever. At two across
+#: the two are identical on all three and differ only in concave cells, which is what the old sweep
+#: optimised: job 22ac7054's part is 3.91 cells across its thin passages and 10.50 across its broad
+#: ones, so hardly any of its interface is in the regime the 5 was fitted in.
+#:
+#: WHY, AND IT IS THE OPPOSITE OF WHAT THIS BLOCK USED TO ARGUE. Neighbouring interface faces meet
+#: at 90 degrees. Unsmoothed, the prism off a step's top face goes up and the prism off its side
+#: face goes sideways: they DIVERGE. Smoothing averages the two normals toward the diagonal and the
+#: same two prisms then CONVERGE and collide - which is the concave cell AND the reason the mover
+#: un-extrudes, which is the coverage and the thickness. Smoothing is the cause, not the cure.
+#:
+#: AND THE COUNT IT WAS CHOSEN BY IS A DIAGNOSTIC. `checkConcaveCells` sits inside checkMesh's
+#: `if (allGeometry)` block, tests face CENTRES against face PLANES at a 1e-6 coplanarity
+#: tolerance, and its own source comment reads "Concave or planar face". The checks that decide
+#: whether a cell works in the FV scheme - checkFacePyramids, cell volumes, face areas - pass on
+#: job 22ac7054 in both regions.
+#:
+#: AT 0 THIS ONE ENTRY DOMINATES THE DICT: `nLayerIter 4`, `slipFeatureAngle 90`,
+#: `featureAngle 180` and `nSmoothThickness 0` each give byte-identical output, because there is no
+#: displacement field left to smooth and no collision left to terminate.
+SMOOTH_SURFACE_NORMALS = 0
 SMOOTH_THICKNESS = 10
 SMOOTH_NORMALS = 0
 

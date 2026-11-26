@@ -265,17 +265,67 @@ def test_the_surface_normals_are_smoothed_and_the_other_smoother_is_still_off():
         nSmoothNormals        0 -> 2    concave 37,677 -> 37,651     a tenth of a per cent
         nSmoothSurfaceNormals 0 -> 5    concave 37,677 -> 20,046     weight faces 209 -> 66
 
-    So the knob the old rule was written about was never the one doing the damage. 5 is the
-    optimum of 0/2/3/5/8/10 and the curve turns back up past it.
+    So the knob the old rule was written about was never the one doing the damage. On THAT plate 5
+    is the optimum of 0/2/3/5/8/10 and the curve turns back up past it.
+
+    AND THAT PLATE IS TWO CELLS ACROSS, WHICH IS WHY IT IS NOW 0. Re-swept 2026-11-26 over channel
+    WIDTH, on a 45-degree diagonal lattice at this engine's own 201.3 um pitch and 25.1578 um cell
+    with the 3x y-stretch, one knob off the shipped dict:
+
+        cells across    nSmoothSurfaceNormals 0          nSmoothSurfaceNormals 5
+                        cover layers thick concave       cover layers thick concave
+             2           100   2.81   97.6   1234        99.96  2.81   97.6    772
+             3           100   1.83   81.2    480        75.18  0.784  45.3    358
+             4           100   3.00  100.0      0        75.79  0.808  46.4    332
+             6           100   3.00  100.0      0        76.52  0.822  47.1    284
+            10           100   3.00  100.0      0        76.43  0.825  47.1    168
+
+    Read DOWN the three columns that are the deliverable - coverage, layers kept of three,
+    thickness achieved - and 0 is never worse at ANY width, while from four cells across it is
+    perfect and 5 discards a quarter of the interface and over half the stack at every width. At
+    two across the two are identical on all three and differ only in the concave count, which is
+    what the old sweep optimised. Job 22ac7054's part is 3.91 cells across its thin passages and
+    10.50 across its broad ones, so hardly any of its interface is in the regime 5 was fitted in.
+
+    The module header already argued the mechanism and already had a measurement pointing this
+    way - "NEVER SMOOTH THE NORMALS ON A STAIRCASE", raising the three smoothers together cost
+    coverage at iteration 0, and the header says zeroing is "better still, and why that is not the
+    default here yet". The width sweep is the evidence that was missing.
 
     nSmoothThickness stays at 10: it smooths how THICK the stack is, not which way it points, so
-    the staircase argument never reached it and no measurement has moved it.
+    the staircase argument never reached it and no measurement has moved it. At
+    nSmoothSurfaceNormals 0 it is inert anyway - nSmoothThickness 0 measured byte-identical.
     """
-    assert L.SMOOTH_SURFACE_NORMALS == 5, (
-        "the surface-normal smoother is the one lever that moves the concave count")
+    assert L.SMOOTH_SURFACE_NORMALS == 0, (
+        "smoothing the normals on a staircase aims neighbouring prisms at each other, which is "
+        "the coverage loss, the thinning and the concave cells at once")
     assert L.SMOOTH_NORMALS == 0, (
         "nSmoothNormals was measured to do nothing; turning it on buys nothing and is untested")
     assert L.SMOOTH_THICKNESS == 10
+
+
+def test_the_smoothing_is_off_because_it_was_swept_over_channel_width():
+    """THE OPPOSITE FAILURE TO GUARD, which is re-fitting this constant on one geometry again.
+
+    The value shipped at 5 because a sweep on a two-across plate minimised the concave count
+    there. The replacement is not "0 is prettier": it is that over 2/3/4/6/10 cells across, 0 is
+    never worse on coverage, layers kept or thickness achieved, and from 4 across it reaches 100%,
+    3.00 of 3 and 100% while 5 reaches 76%, 0.81 and 47%. A future sweep that moves this must say
+    which WIDTHS it measured, because that is the axis the first sweep did not vary.
+
+    Pinned here rather than in prose: the two smoothers that aim the extrusion are both off, and
+    the one that only scales the stack is untouched.
+    """
+    assert L.SMOOTH_SURFACE_NORMALS == 0
+    assert L.SMOOTH_NORMALS == 0
+    assert L.SMOOTH_THICKNESS == 10, (
+        "nSmoothThickness scales the stack, it does not aim it; nothing has measured it")
+    # and the dict the mesher reads carries all three, because a constant nothing renders is a note
+    text = L.render_layers_dict(interface_patch=INTERFACE, interface_cell_m=BL8_CELL_M, **_geom())
+    for line in ("nSmoothSurfaceNormals       0;",
+                 "nSmoothNormals              0;",
+                 "nSmoothThickness           10;"):
+        assert line in text, line
 
 
 def test_the_mover_may_stop_at_a_step_instead_of_carrying_a_layer_round_it():
@@ -298,7 +348,7 @@ def test_the_rendered_dict_carries_the_measured_values_not_just_the_constants():
     """The constants are only worth anything if they reach the dict snappyHexMesh reads."""
     text = L.render_layers_dict(interface_patch=INTERFACE, interface_cell_m=BL8_CELL_M,
                                 **_geom())
-    assert "nSmoothSurfaceNormals       5;" in text
+    assert "nSmoothSurfaceNormals       0;" in text
     assert "nSmoothNormals              0;" in text
     assert "nSmoothThickness           10;" in text
     assert "featureAngle              120;" in text
