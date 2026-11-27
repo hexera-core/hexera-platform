@@ -68,6 +68,9 @@ def whole_sizes(sizes: Mapping[str, Mapping] | None, req: Mapping | None, part_i
         # NOTE-14: a shortest edge the user said is flexible is a target: the zones the accuracy rules make finer (a
         # round's elements, a thin wall's) keep their size under it; the part's own size still follows it
         entry["min_flexible"] = True
+    elif lo is not None:
+        # VER-19: the shortest element the user's sizes allow - a spot asked finer on a delivered mesh stops at it
+        entry["floor_m"] = float(f"{float(lo) * 1e-3:.6g}")
     for pid in part_ids:
         out.setdefault(str(pid), dict(entry))
     return out

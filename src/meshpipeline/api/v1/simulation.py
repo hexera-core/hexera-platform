@@ -650,9 +650,11 @@ async def _finished_parent(db, job_id: uuid.UUID, owner_id: str, organization_id
     return parent
 
 
-def _change_facts(flags: list[dict], comment: str, *, session_id: str, payload: dict, started, ended):
-    """VER-10: the marks tied to the upload's own faces, and what will be said about it (application/change_request).
-    Reads the session's face map from the object store - call it off the event loop."""
+def _change_facts(flags: list[dict], comment: str, *, session_id: str, payload: dict, started, ended,
+                  review: bool = False):
+    """VER-10: the marks tied to the upload's own faces, and what will be said about it (application/change_request):
+    (the facts, the marks). `review`: a second look (VER-11, VER-18), which starts whatever the marks tie. Reads the
+    session's face map from the object store - call it off the event loop."""
     from meshpipeline.application import change_request as CR
     from meshpipeline.application import face_pick
     from meshpipeline.engines import mesh_requirements as MR
@@ -664,6 +666,12 @@ def _change_facts(flags: list[dict], comment: str, *, session_id: str, payload: 
     # VER-17: the upload's face list no longer kept - the marks cannot be tied, which is no reason to stop a
     # change the words still ask: it goes ahead from the words, and the reply says the marks were not used
     marks_lost = bool(flags) and fm is None
+    if review:
+        return CR.ChangeFacts(
+            kind=CR.KIND_REVIEW, words=" ".join(str(comment or "").split())[:600], faces=faces, marks=len(flags),
+            untied=[m.ordinal for m in marks if not m.tied] if not marks_lost else [],
+            spots=CR.separate_spots(marks), last_run_minutes=CR.minutes_of(started, ended),
+            marks_lost=marks_lost), marks
     kind = CR.KIND_ASK if flags and not faces and not marks_lost else CR.KIND_CHANGE
     flow = str(payload.get("purpose") or "") != FEA_PURPOSE
     facts = CR.ChangeFacts(
@@ -676,7 +684,7 @@ def _change_facts(flags: list[dict], comment: str, *, session_id: str, payload: 
         # PLAN-fea-36 on a change request: "finer" halves what the delivered mesh had at the marked faces (the FEA
         # solid and shell routes); a flow mesh refines by its own levels, said by the result
         size_change=CR.size_step(comment) if faces and not flow else "")
-    return facts
+    return facts, marks
 
 
 async def _rerun_base(db, parent, intake: _ParentIntake, payload: dict, *, owner_id: str,
@@ -731,9 +739,9 @@ async def _change_request(job_id: uuid.UUID, body: DisputeIn, *, owner_id: str, 
             # child is built from - the session or the payload's intake, the part at its scale, the standard
             parent_payload = await _rerun_base(db, parent, _intake, parent_payload, owner_id=owner_id,
                                                organization_id=organization_id)
-        facts = await asyncio.to_thread(_change_facts, flags, comment, session_id=_intake.session_id,
-                                        payload=parent_payload, started=getattr(parent, "started_at", None),
-                                        ended=getattr(parent, "ended_at", None))
+        facts, _marks = await asyncio.to_thread(_change_facts, flags, comment, session_id=_intake.session_id,
+                                                payload=parent_payload, started=getattr(parent, "started_at", None),
+                                                ended=getattr(parent, "ended_at", None))
 
         def _out(new_id, text: str) -> DisputeOut:
             return DisputeOut(job_id=new_id, dispute_of=job_id, flags=len(body.flags), kind=facts.kind, reply=text,
@@ -804,8 +812,6 @@ async def dispute_job(job_id: uuid.UUID, body: DisputeIn, owner_id: str = Depend
                       plan: str = Depends(plan_dep),
                       organization_id: str = Depends(org_dep)):
     from meshpipeline.application import change_request, dispute_operation
-    from meshpipeline.persistence.repositories.job_repository import JobRepository
-    from meshpipeline.persistence.repositories.session_repository import SessionRepository
 
     if not body.flags and not (body.comment or "").strip():
         raise HTTPException(422, "Flag at least one region or describe the change you want")
@@ -836,10 +842,47 @@ async def dispute_job(job_id: uuid.UUID, body: DisputeIn, owner_id: str = Depend
         await _keep_in_chat(out, said_by_them, owner_id=owner_id)
         return out
 
+    out, said_by_them = await _second_look(job_id, body, user_dispute, mode=_mode, owner_id=owner_id, plan=plan,
+                                           organization_id=organization_id, operation=_operation)
+    await _keep_in_chat(out, said_by_them, owner_id=owner_id)
+    return out
+
+
+async def _second_look(job_id: uuid.UUID, body: DisputeIn, user_dispute: dict, *, mode: str, owner_id: str, plan: str,
+                       organization_id: str, operation: str) -> tuple[DisputeOut, str]:
+    """VER-11 / VER-18: a second look at the delivered mesh at the marks, then the rebuild. The new run is the finished
+    run's own payload (every setting, typed note and picked face it was asked) with the dispute added and each mark's
+    faces in it, so the rebuild keeps all of it and makes the mesh finer at the marks when the second look finds
+    nothing past a limit there. The reply is the model's under the change reply's guard, the code sentence its
+    fallback (VER-12), never empty."""
+    from meshpipeline.agents.intake import change_reply
+    from meshpipeline.application import change_request as CR
+    from meshpipeline.application import dispute_operation
+    from meshpipeline.persistence.repositories.job_repository import JobRepository
+    from meshpipeline.persistence.repositories.session_repository import SessionRepository
+
+    flags = [f.model_dump(exclude_none=True) for f in body.flags]
     job_repo = JobRepository()
-    session_repo = SessionRepository()
     async with get_db() as db:
         parent = await _finished_parent(db, job_id, owner_id, organization_id)
+        parent_payload = parent.dispatch_payload if isinstance(parent.dispatch_payload, dict) else {}
+        # Parent intake context: patches/dimensionality/brief from the session while it is still linked to this
+        # run, else from the run's own dispatch payload (see _parent_intake)
+        _intake = _parent_intake(await SessionRepository().get_by_job_id(db, job_id), parent_payload)
+        if not (parent_payload.get("job_id") and parent_payload.get("owner_id")):
+            parent_payload = await _rerun_base(db, parent, _intake, parent_payload, owner_id=owner_id,
+                                               organization_id=organization_id)
+        facts, marks = await asyncio.to_thread(_change_facts, flags, body.comment or "", session_id=_intake.session_id,
+                                               payload=parent_payload, started=getattr(parent, "started_at", None),
+                                               ended=getattr(parent, "ended_at", None), review=True)
+        said_by_them = CR.said_in_chat(body.comment, marks=len(flags), where=facts.where())
+
+        def _out(new_id, text: str) -> DisputeOut:
+            return DisputeOut(job_id=new_id, dispute_of=job_id, flags=len(body.flags), kind=facts.kind, reply=text,
+                              faces=[DisputeFace(id=str(f["id"]), label=str(f.get("label") or ""))
+                                     for f in facts.faces],
+                              marks_not_on_the_part=facts.untied, session_id=_intake.session_id or None,
+                              last_run_minutes=facts.last_run_minutes)
 
         # IS THIS OPERATION ALREADY DONE? Asked before the quota check on purpose: a repeat creates
         # nothing, so it must not be refused for capacity, and it must not consume any. A child that
@@ -851,11 +894,11 @@ async def dispute_job(job_id: uuid.UUID, body: DisputeIn, owner_id: str = Depend
         # widening its predicate is not needed for isolation - only application-layer files this
         # task does not touch would benefit, and that is a design question for later work, not a
         # missed site.
-        _replay = await dispute_operation.claim(db, owner_id=owner_id, key=_operation)
+        _replay = await dispute_operation.claim(db, owner_id=owner_id, key=operation)
         if _replay is not None:
             if _replay.launch_failed:
                 raise HTTPException(500, _DISPATCH_FAILED)
-            return DisputeOut(job_id=_replay.job_id, dispute_of=job_id, flags=len(body.flags))
+            return _out(_replay.job_id, CR.plain_reply(facts)), said_by_them
 
         try:
             # A DISPUTE IS A NEW RUN and is charged like one, so it passes the same credit gate as
@@ -869,57 +912,23 @@ async def dispute_job(job_id: uuid.UUID, body: DisputeIn, owner_id: str = Depend
         except ValueError as exc:
             raise HTTPException(429, str(exc)) from exc
 
-        # Parent intake context: patches/dimensionality/brief from the session while it is still
-        # linked to this run, else from the run's own dispatch payload (see _parent_intake);
-        # request.txt is recovered from the parent workspace by the worker.
-        _intake = _parent_intake(await session_repo.get_by_job_id(db, job_id),
-                                 parent.dispatch_payload)
-
         new_job = await job_repo.create(db, owner_id=owner_id, organization_id=organization_id)
         # The child IS the operation's durable record. Written in the same transaction that creates
         # it, under the claim's lock, so the row and its identity become visible together.
-        new_job.dispute_operation_key = _operation
+        new_job.dispute_operation_key = operation
         new_job.geometry_source_id = parent.geometry_source_id
         # A dispute re-runs the parent's geometry, so it inherits the parent's SCALE unchanged -
         # never a fresh reading. Re-resolving would let a correction recorded after the disputed
         # run silently change the size of the very result the user is disputing.
         new_job.geometry_interpretation_id = parent.geometry_interpretation_id
-        _parent_interpretation = None
-        if parent.geometry_interpretation_id:
-            from meshpipeline.persistence.repositories.geometry_interpretation_repository import (
-                GeometryInterpretationRepository,
-            )
-            _parent_interpretation = await GeometryInterpretationRepository().get_for_owner(
-                db, parent.geometry_interpretation_id, owner_id,
-                organization_id=organization_id)
         await db.commit()
 
     try:
-        from meshpipeline.application.dispatch_contract import build as _build_dispatch
-        from meshpipeline.contracts.geometry_source import (
-            GeometryInterpretationRef,
-            GeometrySourceRef,
-        )
-        # THE TEAM'S MESHING STANDARD the disputed run was meshed under (engines/meshing_standard): the
-        # re-run keeps it, so it is held to the same standing requirements as the mesh it answers
-        _standard = (parent.dispatch_payload or {}).get("meshing_standard")             if isinstance(parent.dispatch_payload, dict) else None
-        _payload = _build_dispatch(**({"meshing_standard": _standard} if _standard else {}), **{
-            "job_id":           str(new_job.id),
-            "owner_id":         owner_id,
-            "geometry_source":  (GeometrySourceRef.from_row(parent.geometry_source).to_payload()
-                                 if parent.geometry_source else None),
-            "geometry_interpretation": (
-                GeometryInterpretationRef.from_domain(_parent_interpretation).to_payload()
-                if parent.geometry_source and _parent_interpretation else None),
-            "session_id":       _intake.session_id,
-            "request_txt":      "",   # worker recovers the parent's request.txt
-            "review_brief_txt": _amended_brief(_intake, _mode, body.comment),
-            "intake_patches":   list(_intake.intake_patches),
-            "dimensionality":   _intake.dimensionality,
-            "purpose":          _intake.purpose,
-            "input_kind":       _intake.input_kind,
-            "user_dispute":     user_dispute,
-        })
+        # VER-18: THE FINISHED RUN'S OWN PAYLOAD - every saved setting as applied, typed note, picked face and
+        # count it was asked - with the dispute and each mark's faces (the rebuild's "finer there", marked_spots)
+        _dispute = {**user_dispute, "marks": CR.marks_of(marks)} if mode == "rebuild" else dict(user_dispute)
+        _payload = CR.review_payload(parent_payload, job_id=str(new_job.id), user_dispute=_dispute,
+                                     brief=_amended_brief(_intake, mode, body.comment))
         # The child is already committed, deliberately, so a worker that takes the message
         # immediately can see the job it names. The authority below owns the consequence: it
         # dispatches inside its own session scope - `db` above closed at the commit, and a
@@ -929,15 +938,15 @@ async def dispute_job(job_id: uuid.UUID, body: DisputeIn, owner_id: str = Depend
         # it records a durable launch failure if the broker never took the message, so the child
         # cannot sit pending forever against the owner's quota.
         await dispute_operation.dispatch_or_record_failure(
-            new_job.id, _payload, parent_job_id=job_id, key=_operation)
+            new_job.id, _payload, parent_job_id=job_id, key=operation)
     except Exception as exc:
         raise HTTPException(500, _DISPATCH_FAILED) from exc
 
-    out = DisputeOut(job_id=new_job.id, dispute_of=job_id, flags=len(body.flags),
-                     session_id=_intake.session_id or None)
-    # a review says nothing of its own today (reply ""), so this keeps nothing until it does
-    await _keep_in_chat(out, change_request.said_in_chat(body.comment, marks=len(body.flags)), owner_id=owner_id)
-    return out
+    if mode == "accept":
+        # the same mesh judged again against the bar they stated: nothing is rebuilt, so nothing of a rebuild is said
+        return _out(new_job.id, CR.ACCEPT_REPLY), said_by_them
+    said = await change_reply.written(facts.as_dict(), session_id=_intake.session_id, user_id=owner_id)
+    return _out(new_job.id, said["text"]), said_by_them
 
 
 @router.post("/{job_id}/cancel", response_model=CancelOut)

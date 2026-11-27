@@ -221,13 +221,39 @@ async def test_a_doubt_still_goes_to_the_reviewer_as_before():
     resp, payload = await _post({"comment": "I think this region is bad, look again",
                                  "flags": [_mark(0.048, 0.045, 0.0, 0.005)]})
     assert resp.status_code == 202, resp.text
-    assert resp.json()["kind"] == "review" and resp.json()["reply"] == ""
+    got = resp.json()
+    # VER-18: never an empty reply - where the second look goes, what the rebuild does, the rest kept
+    assert got["kind"] == "review" and got["reply"].startswith("I'll take a second look at the spot you marked on")
+    assert "finer mesh at that spot" in got["reply"] and "keep everything else you asked for" in got["reply"]
+    assert [f["id"] for f in got["faces"]] == ["Face_1", "Face_2"] and got["last_run_minutes"] == 29
     assert payload["user_dispute"]["comment"] == "I think this region is bad, look again"
     from meshpipeline.pipeline.graph import route_after_engine_select
     assert route_after_engine_select({"user_dispute": payload["user_dispute"]}) == "node_reviewer"
 
 
 _TWO_MARKS = [_mark(0.048, 0.045, 0.0, 0.005), _mark(0.048, 0.042, 0.0, 0.005)]
+
+
+async def test_marks_with_no_words_rebuild_with_everything_the_first_run_was_asked():
+    """VER-18, the live case (dev, 26 Nov: 8b79fdb2 -> 31e51296): one mark, no words. The second look's run is the
+    finished run's own payload - its typed notes, the saved settings as applied, the engine - with the dispute and the
+    mark's faces added, so the rebuild keeps them all and can make the mesh finer at the mark."""
+    resp, payload = await _post({"comment": "", "mode": "rebuild", "flags": _TWO_MARKS[:1]})
+    assert resp.status_code == 202, resp.text
+    got = resp.json()
+    assert got["kind"] == "review" and got["reply"] and got["last_run_minutes"] == 29
+    assert [f["id"] for f in got["faces"]] == ["Face_1", "Face_2"]
+    first = _parent_payload()
+    assert [n["text"] for n in payload["user_notes"]] == [n["text"] for n in first["user_notes"]]
+    assert payload["meshing_standard"] == first["meshing_standard"] and payload["mesh_engine"] == "gmsh"
+    assert payload["purpose"] == first["purpose"] and payload["job_id"] == str(_CHILD)
+    marks = payload["user_dispute"]["marks"]
+    assert [m["ordinal"] for m in marks] == [1] and [f["id"] for f in marks[0]["faces"]] == ["Face_1", "Face_2"]
+    assert all("sig" in f for f in marks[0]["faces"]), "the rebuild re-checks each face on its own surface"
+    # what the rebuild asks: the first run's own requirements stay, and one "finer" at the mark
+    from meshpipeline.engines import marked_spots as MS
+    req = MS.with_marks({"local": [{"id": "r1", "what": "size", "mm": 3.0}]}, {"user_dispute": payload["user_dispute"]})
+    assert [(e["id"], e["what"]) for e in req["local"]] == [("r1", "size"), ("mark_1", "finer")]
 
 
 # VER-17: whichever worker takes it, and whatever of the old run is no longer kept
@@ -312,13 +338,16 @@ async def test_a_refused_request_keeps_nothing_in_the_chat():
     assert chat.messages == []
 
 
-async def test_a_doubt_with_no_reply_and_a_repeat_of_a_kept_change_keep_nothing_more():
+async def test_a_doubt_keeps_its_turn_and_a_repeat_of_a_kept_change_keeps_nothing_more():
     chat = _chat()
     await _post({"comment": "I think this region is bad, look again", "flags": _TWO_MARKS[:1]}, chat=chat)
-    assert chat.messages == []
-    await _post({"comment": _OWNER_WORDS, "flags": _TWO_MARKS}, chat=chat)
-    await _post({"comment": _OWNER_WORDS, "flags": _TWO_MARKS}, chat=chat)
+    # VER-18: a second look says what it will do, so its turn is kept like a change's
     assert [m["role"] for m in chat.messages] == ["user", "assistant"]
+    assert chat.messages[-1]["content"].startswith("I'll take a second look")
+    other = _chat()
+    await _post({"comment": _OWNER_WORDS, "flags": _TWO_MARKS}, chat=other)
+    await _post({"comment": _OWNER_WORDS, "flags": _TWO_MARKS}, chat=other)
+    assert [m["role"] for m in other.messages] == ["user", "assistant"]
 
 
 def test_the_reviewer_is_handed_marks_it_can_show(tmp_path):

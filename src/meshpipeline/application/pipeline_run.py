@@ -530,8 +530,18 @@ from meshpipeline.application.dispatch_types import register_run_entry  # noqa: 
 
 
 def _notes_remarks(final_state) -> list:
-    """The 'From your notes' lines the delivered attempt's steps left (contracts/user_notes);
-    [] for a run with no notes. Never raises: a remark is never worth a run."""
+    """The 'From your notes' lines the delivered attempt's steps left (contracts/user_notes), then a line for each
+    spot marked for a second look that no step spoke of (VER-18, engines/marked_spots); [] for a run with neither.
+    Never raises: a remark is never worth a run."""
+    said = _remarks_of_notes(final_state)
+    try:
+        from meshpipeline.engines.marked_spots import result_lines
+        return [*said, *result_lines(final_state, said)]
+    except Exception:  # noqa: BLE001 - best effort (NOTE-3)
+        return said
+
+
+def _remarks_of_notes(final_state) -> list:
     if not final_state.get("user_notes") and not final_state.get("meshing_standard"):
         return []
     try:

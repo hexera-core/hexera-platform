@@ -52,7 +52,11 @@ def _block_exceptions() -> str:
             "spots: say it goes on every spot they marked. If flow_limit is there, say in a few words that this "
             "flow mesher can't size one face on its own and the result will say what it did there. If "
             "what_happens says nothing starts, no new run starts: say you couldn't find the part under their marks "
-            "and ask them to mark the spot on the part itself and send it again.\n")
+            "and ask them to mark the spot on the part itself and send it again. "
+            "If second_look is there, they asked for a SECOND LOOK, not a change: say you'll take a second look at "
+            "the spot they marked (where), and that then you'll rebuild - with a finer mesh at that spot if nothing "
+            "there is past a limit - keeping everything else they asked for; never say what the second look will "
+            "find, and never say the mesh is fine.\n")
 
 
 def _block_examples() -> str:
@@ -91,6 +95,8 @@ _NEW_RUN = re.compile(r"\b(?:new run|re-?run|rebuild\w*|re-?mesh\w*|start(?:ing|
 _VERDICT = re.compile(r"\b(?:meets? your brief|passed|looks? (?:fine|good)|is fine|no change (?:is )?needed)\b",
                       re.I)
 _NOT_ON = re.compile(r"\b(?:not on|off|isn'?t on|wasn'?t on|weren'?t on|aren'?t on|outside|missed)\b", re.I)
+_SECOND_LOOK = re.compile(r"\b(?:second look|look again|another look|re-?check|re-?inspect\w*|look (?:closely|"
+                          r"carefully) at)\b", re.I)
 _MARKS_UNUSED = re.compile(r"\b(?:couldn'?t|could not|can'?t|cannot|didn'?t|did not|wasn'?t able to) "
                            r"(?:use|read|tie|place|find)\b[^.]{0,30}\bmarks?\b|\bmarks?\b[^.]{0,30}\b(?:weren'?t|were "
                            r"not|aren'?t|are not|isn'?t|is not|wasn'?t|was not|not) (?:used|tied|kept)", re.I)
@@ -117,6 +123,8 @@ def check(reply: str, facts: Mapping) -> str:
         return ""
     if not _NEW_RUN.search(text):
         return "no new run said"
+    if facts.get("second_look") and not _SECOND_LOOK.search(text):
+        return "a second look asked, not said"
     if facts.get("marks_not_on_the_part") and not _NOT_ON.search(text):
         return "a mark not on the part, not said"
     if facts.get("marks_not_used") and not _MARKS_UNUSED.search(text):

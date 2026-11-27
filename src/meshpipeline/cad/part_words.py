@@ -822,6 +822,9 @@ def with_picks(ps: Mapping | None, req: Mapping | None, surface) -> dict:
         shown = [labels[ids.index(f)] if ids.index(f) < len(labels) and labels[ids.index(f)] else f for f in kept]
         where = (f"the face you picked ({shown[0]})" if len(kept) == 1 else
                  f"the {len(kept)} faces you picked ({'; '.join(shown[:3])}{'; ...' if len(shown) > 3 else ''})")
+        if e.get("marked"):
+            # VER-18: a spot marked on the delivered mesh for a second look, not a face picked at the plan step
+            where = f"the spot you marked ({'; '.join(shown[:2])}{'; ...' if len(shown) > 2 else ''})"
         row = {"id": pid, "feature": True, "kind": "picked", "name": where, "in_part": _part_of(kept[0]),
                "faces": len(kept), **({"diag_mm": _g(diag)} if diag > 0 else {})}
         ask = _PICK_ASK.get(str(e.get("what") or "size"), "size")
@@ -838,7 +841,10 @@ def with_picks(ps: Mapping | None, req: Mapping | None, surface) -> dict:
         for g in got:
             g.update(phrase=None, rule="NOTE-17", picked=kept,
                      # VER-9: asked on a delivered mesh - "finer" is against the size that run had here
-                     **({"change_of": str(e["change_of"])} if e.get("change_of") else {}))
+                     **({"change_of": str(e["change_of"])} if e.get("change_of") else {}),
+                     # VER-18: the mark it answers, and what the second look found there
+                     **({"marked": int(e["marked"]), "finding": str(e.get("finding") or ""),
+                         "marked_where": "; ".join(shown[:2])} if e.get("marked") else {}))
             entries.append(g)
             table.append(row)
             features[pid] = kept

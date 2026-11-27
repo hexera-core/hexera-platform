@@ -41,6 +41,10 @@ KIND_ASK = "ask"            # nothing could be tied to the part: nothing starts,
 UPLOAD_GONE = ("The file this run was made from is no longer kept, so I can't start a new run from it. "
                "Upload the file again and ask for the change there.")
 
+#: VER-18: an accepted mesh is judged again against the bar the person stated; nothing is rebuilt
+ACCEPT_REPLY = ("I'll check the same mesh again against what you said is good enough for your study, and tell you "
+                "what it finds. Nothing is rebuilt.")
+
 #: a face other than the one under the mark is meant only when the whole face is about the mark's size: the
 #: wall of a hole or a fillet inside the circle, never a large face that merely passes under it
 SMALL_FACE_SHARE = 4.0
@@ -280,6 +284,27 @@ def change_payload(parent_payload: Mapping, *, job_id: str, note: Mapping, brief
     return build(**fields)
 
 
+def review_payload(parent_payload: Mapping, *, job_id: str, user_dispute: Mapping, brief: str) -> dict:
+    """VER-18: a second look's dispatch payload - the finished run's own payload, exactly as a change's is (the
+    confirmed setup, the saved settings as read then, every typed note and picked face, the count), with the
+    dispute added and the review brief as amended. Before (dev, 26 Nov: 8b79fdb2 -> 31e51296) it was a fresh payload
+    of the intake fields alone: the rebuild after the second look dropped "3mm global cell size", "2 mm on this face"
+    and "finer in/around the holes" and meshed at the saved 6 mm."""
+    from meshpipeline.application.dispatch_contract import build
+
+    fields = copy.deepcopy({k: v for k, v in dict(parent_payload or {}).items() if k != "schema_version"})
+    fields["job_id"] = str(job_id)
+    fields["user_dispute"] = copy.deepcopy(dict(user_dispute))
+    fields["review_brief_txt"] = brief
+    return build(**fields)
+
+
+def marks_of(marks: Sequence[MarkFaces]) -> list[dict]:
+    """VER-18: each tied mark's faces ({ordinal, faces: [{id, label, sig}]}), carried in the dispute so the rebuild
+    after the second look can make the mesh finer there (engines/marked_spots)."""
+    return [{"ordinal": m.ordinal, "faces": [dict(f) for f in m.faces]} for m in marks if m.tied]
+
+
 def upload_gone(parent) -> bool:
     """VER-17: the file the finished run was made from was removed after its retention period (its source row
     keeps the record, the bytes are gone), so a new run of it cannot start."""
@@ -328,10 +353,19 @@ class ChangeFacts:
             "what_happens": {KIND_CHANGE: "a new run of the same part starts now, with their words as a requirement "
                                           "on the faces they marked and nothing else changed",
                              KIND_ASK: "nothing starts: no mark is on the part, so we ask them to mark the spot on "
-                                       "the part again"}[self.kind],
+                                       "the part again",
+                             KIND_REVIEW: "a second look at the delivered mesh starts now, at the spots they marked; "
+                                          "then it is rebuilt: what the second look finds there is fixed, and if it "
+                                          "finds nothing past a limit the mesh is made finer at those spots (about "
+                                          "half the size it had there); everything else they asked for is kept"
+                             }[self.kind],
             "marks": self.marks,
         }
-        if self.kind == KIND_CHANGE and self.faces:
+        if self.kind == KIND_REVIEW:
+            out["second_look"] = {"where": self.where() or "where they marked it",
+                                  "finer_there_if_nothing_found": bool(self.faces),
+                                  "everything_else_kept": True}
+        elif self.kind == KIND_CHANGE and self.faces:
             out["applied"] = [{"what": "what their words ask", "where": self.where(),
                                "place": "they marked it on the model"}]
             out["nothing_else_changes"] = True
@@ -343,7 +377,11 @@ class ChangeFacts:
             out["kept_for_the_run"] = True
             out["no_marks"] = ("no spot was marked: their words are kept as a requirement of the new run, the run "
                                "places them from the words, and the result will say what came of it")
-        if self.marks_lost:
+        if self.marks_lost and self.kind == KIND_REVIEW:
+            out["marks_not_used"] = ("the part's list of faces from the upload is no longer kept, so their marks could "
+                                     "not be tied to faces: the second look still goes to the marks, but nothing is "
+                                     "made finer there unless it finds something - say plainly the marks were not tied")
+        elif self.marks_lost:
             out["marks_not_used"] = ("the part's list of faces from the upload is no longer kept, so their marks could "
                                      "not be tied to the part; the change goes ahead from their words alone - say "
                                      "plainly that their marks were not used, and that they can name the place in words "
@@ -370,6 +408,8 @@ def plain_reply(f: ChangeFacts) -> str:
     if f.kind == KIND_ASK:
         return ("I couldn't find the part under your marks, so nothing has started. Mark the spot on the part "
                 "itself and send it again.")
+    if f.kind == KIND_REVIEW:
+        return _plain_review(f)
     if f.faces and f.size_change:
         step = "coarser" if f.size_change == SIZE_STEP_COARSER else "finer"
         out = [f"Got it: {step} on {f.where()} only, {f.size_change}, and nothing else changes."]
@@ -393,6 +433,28 @@ def plain_reply(f: ChangeFacts) -> str:
     return " ".join(out)
 
 
+def _plain_review(f: ChangeFacts) -> str:
+    """VER-18: the second look's code sentence - where it looks, what the rebuild does, that the rest is kept."""
+    many = f.spots > 1
+    if f.faces:
+        out = [f"I'll take a second look at the {'spots' if many else 'spot'} you marked on {f.where()}.",
+               f"If nothing there is past a limit, I'll rebuild with a finer mesh at {'those spots' if many else 'that spot'}"
+               " and keep everything else you asked for."]
+    else:
+        out = ["I'll take a second look at the mesh where you marked it, then rebuild it, keeping everything else you "
+               "asked for."]
+    if f.marks_lost:
+        out.append("Your marks were not tied to faces: the part's list of faces from the upload is no longer kept, so "
+                   "nothing will be made finer there unless the second look finds something.")
+    if f.untied:
+        n = len(f.untied)
+        out.append(f"{'One mark is' if n == 1 else f'{n} marks are'} not on the part, so nothing will be made finer "
+                   f"{'there' if n == 1 else 'at them'}.")
+    if f.last_run_minutes:
+        out.append(f"The last run took {f.last_run_minutes} min.")
+    return " ".join(out)
+
+
 def said_in_chat(comment: Any, *, marks: int, where: str = "") -> str:
     """The person's side of a change request as the conversation keeps it: their words as typed, then one plain
     line for the marks ("2 spots marked: Face 12 · round Ø15 mm"), with the face labels the reply names."""
@@ -403,8 +465,9 @@ def said_in_chat(comment: Any, *, marks: int, where: str = "") -> str:
     return f"{words}\n\n{note}" if words else note
 
 
-__all__ = ["KIND_ASK", "KIND_CHANGE", "KIND_REVIEW", "MAX_FACES", "RULE_CHANGE_RUN", "RULE_DOUBT_REVIEW",
+__all__ = ["ACCEPT_REPLY", "KIND_ASK", "KIND_CHANGE", "KIND_REVIEW", "MAX_FACES", "RULE_CHANGE_RUN", "RULE_DOUBT_REVIEW",
            "RULE_MARK_FACES", "RULE_REPLY", "SIZE_STEP_COARSER", "SIZE_STEP_FINER", "SMALL_FACE_SHARE", "UPLOAD_GONE",
            "ChangeFacts", "MarkFaces", "brief_line",
-           "change_note", "change_payload", "faces_of", "is_change", "minutes_of", "one_place_words", "plain_reply",
-           "radius_of", "resolve_marks", "said_in_chat", "separate_spots", "size_step", "upload_gone"]
+           "change_note", "change_payload", "faces_of", "is_change", "marks_of", "minutes_of", "one_place_words",
+           "plain_reply", "radius_of", "resolve_marks", "review_payload", "said_in_chat", "separate_spots", "size_step",
+           "upload_gone"]
