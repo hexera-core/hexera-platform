@@ -369,6 +369,18 @@ async def _settle(inbound: InboundMessage, db, *, gate: dict, locked, messages: 
         if still:
             gate[PT.WAITING] = still
         from meshpipeline.agents.intake import flow as _flow
+        if not (inbound.attachments or inbound.faces) and _flow.conditions_kept_at_plan(inbound.content, messages):
+            # CFDREQ-37 (rulebook 122): "OK" TO THE CONDITIONS THE PLAN ASSUMED keeps them and starts nothing - the
+            # plan stands, one turn further on, and its own line is the answer (Proceed or a go starts it)
+            gate["approval"] = {**(ap.defer(approval) or {}), "expires_at": time.time() + ap.APPROVAL_TTL_S}
+            await session_repo.set_intake_gate(db, inbound.session_id, gate)
+            await session_repo.append_message(db, inbound.session_id, "assistant", ap.PROCEED_ASK)
+            logger.info("intake message: OK to the assumed flow conditions - kept (CFDREQ-37) - session=%s",
+                        inbound.session_id)
+            return MessageOutcome(
+                status=MessageStatus.approval_deferred, reply=ap.PROCEED_ASK, awaiting_confirmation=True,
+                transition=GateTransition(change=GateChange.approval_deferred, revision=revision,
+                                          approval_status=ap.AWAITING))
         if not (inbound.attachments or inbound.faces) and _flow.conditions_changed_at_plan(inbound.content, messages):
             # CFDREQ-37: FLOW CONDITIONS TYPED AT THE PLAN CARD ("make it 50 m/s", the "Resolve the wall" button)
             # redo the plan with them - the card, the plan's conditions sentence and the run then carry what was
@@ -1200,6 +1212,10 @@ async def persist_turn(inbound: InboundMessage, result: dict, *, session_repo,
         _reply = _reply_of(result) if not result.get("api_failure") else ""
         if _reply.strip():
             await session_repo.append_message(db, inbound.session_id, "assistant", _reply)
+            _then = str(result.get("then_ask") or "").strip()
+            if _then:
+                # CFDREQ-37: the conditions the plan assumed, asked as one more message under the plan's
+                await session_repo.append_message(db, inbound.session_id, "assistant", _then)
         for key, setter in _REQUIREMENT_WRITES:
             value = result.get(key)
             if value:

@@ -312,11 +312,14 @@ async def chat_message(body: ChatMessageIn, owner_id: str = Depends(owner_dep),
                                                   organization_id=organization_id)
     from meshpipeline.application.purpose_map import choices_for
     _reply = _extract_reply(result)
+    _then = str(result.get("then_ask") or "") if _reply.strip() else ""
     return ChatResponse(
         session_id=session_id,
         reply=_reply,
         # the buttons under the application's own question (a purpose question; never a cell count)
         choices=choices_for(_reply),
+        # the conditions the plan assumed, asked under its card (CFDREQ-37)
+        then={"reply": _then, "choices": choices_for(_then)} if _then else None,
         awaiting_confirmation=bool(_sess.request_txt) and _sess.job_id is None,
         brief=await _brief(_sess, owner_id),
         # re-projected for the mode running NOW: a session written under raw must

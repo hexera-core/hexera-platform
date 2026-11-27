@@ -90,8 +90,10 @@ def how_given(messages: Iterable[Any], *, first_plan: bool) -> tuple[str, list[s
     else:
         latest_counts = latest in flow._condition_words(msgs)
     asked = [i for i, m in enumerate(msgs) if m.get("role") == "assistant" and flow.is_conditions_question(m.get("content"))]
-    # the first message after the question is its answer
-    answering = bool(asked) and [i for i, _t in users if i > asked[-1]] == [at]
+    # the first message after the question is its answer - unless the question stood under a plan (CFDREQ-37,
+    # rulebook 122): words typed at the plan card are an answer only when they give conditions themselves
+    answering = (bool(asked) and [i for i, _t in users if i > asked[-1]] == [at]
+                 and not flow.asked_after_plan(msgs, asked[-1]))
     if latest_counts and (answering or _carries_conditions(latest)):
         return TYPED, [latest]
     if not asked and first_plan:

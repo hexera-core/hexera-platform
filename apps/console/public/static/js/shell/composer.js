@@ -287,6 +287,9 @@ export async function watchGeometryCheck(sessionId) {
       if (reply.next.reply && !startsRun(reply.next)) deps.chat("assistant", reply.next.reply);
       deps.choices(reply.next.choices || [], sendText);
       deps.brief(reply.next.brief);
+      // ONE MORE MESSAGE AFTER THE PLAN (CFDREQ-37): the flow conditions the plan assumed, asked under the card
+      if (reply.next.then && reply.next.then.reply) {
+        deps.chat("assistant", reply.next.then.reply); deps.choices(reply.next.then.choices || [], sendText); }
       if (reply.next.done && reply.next.job_id) { disableInput(); deps.onJobStarted(reply.next.job_id); }
     }
     return reply;
@@ -495,6 +498,8 @@ async function sendText(txt, { again = false, extra = null } = {}) {
     if (!startsRun(d) && !d.reply_later) deps.chat("assistant", d.reply);
     deps.choices(d.choices || [], sendText);
     deps.brief(d.brief);
+    // ONE MORE MESSAGE AFTER THE PLAN (CFDREQ-37): the flow conditions the plan assumed, asked under the card
+    if (d.then && d.then.reply) { deps.chat("assistant", d.then.reply); deps.choices(d.then.choices || [], sendText); }
     if (d.reply_later) deps.replyLater(waiting);
     // THE FLOW THE USER SAID (the flow-kind question's buttons): the open stage's form takes it before Proceed
     if (d.stage_flow && _stage && _stage.preset) _stage.preset(d.stage_flow);

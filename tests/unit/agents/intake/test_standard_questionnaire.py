@@ -3,7 +3,8 @@
 """THE STANDARD QUESTIONNAIRE, LOCKED (agents/intake/flow).
 
     FEA           purpose -> stage -> confirmed -> analysis -> plan -> started
-    CFD           purpose -> stage -> confirmed -> flow_question -> plan -> started
+    CFD           purpose -> stage -> confirmed -> plan -> flow_question -> started  (CFDREQ-37, rulebook 122: the
+                  conditions are asked under the plan, which stands on their proposal; OK keeps them)
 
 Each case below is one way a user (or a model) could take a chat off that sequence. The assertion is
 on step ids, never prose, so a future change that adds a question, repeats a step, skips one, falls
@@ -434,54 +435,59 @@ CASES = {
                                      ("say", "Static stress"), ("say", "Proceed")], "", [P, ANS, PC, S, C, A, PL, ST]),
     # CFD internal
     "cfd_internal_standard": ([("say", "water flowing through this elbow"), ("stage", INTERNAL_DECL),
-                               ("say", "OK"), ("say", "Proceed")], "", [P, S, C, F, PL, ST]),
+                               ("say", "OK"), ("say", "Proceed")], "", [P, S, C, PL, F, PL, ST]),
     "cfd_internal_resolve_the_wall": ([("say", "water flowing through this elbow"), ("stage", INTERNAL_DECL),
-                                       ("say", "Resolve the wall (y⁺ ≈ 1)"), ("say", "Proceed")], "", [P, S, C, F, PL, ST]),
+                                       ("say", "Resolve the wall (y⁺ ≈ 1)"), ("say", "Proceed")], "", [P, S, C, PL, F, PL, ST]),
     "cfd_internal_own_values": ([("say", "water flowing through this elbow"), ("stage", INTERNAL_DECL),
-                                 ("say", "no, oil at 3 m/s"), ("say", "Proceed")], "", [P, S, C, F, PL, ST]),
+                                 ("say", "no, oil at 3 m/s"), ("say", "Proceed")], "", [P, S, C, PL, F, PL, ST]),
     "cfd_internal_conditions_early": ([("say", "CFD of water through this elbow at 2 m/s"), ("stage", INTERNAL_DECL),
                                        ("say", "Proceed")], "", [P, S, C, PL, ST]),
     "cfd_internal_off_script_at_flow": ([("say", "water flowing through this elbow"), ("stage", INTERNAL_DECL),
                                          ("say", "what is y+?"), ("say", "OK"), ("say", "Proceed")],
-                                        "", [P, S, C, F, ANS, F, PL, ST]),
+                                        # the question under the plan stays open over the answer: the OK keeps
+                                        # the conditions, and the plan's line answers it
+                                        "", [P, S, C, PL, F, ANS, PL, PL, ST]),
     "cfd_internal_model_misbehaves": ([("say", "water flowing through this elbow"), ("stage", INTERNAL_DECL),
-                                       ("say", "OK"), ("say", "Proceed")], "cfd_second_question", [P, S, C, F, PL, ST]),
+                                       ("say", "OK"), ("say", "Proceed")], "cfd_second_question", [P, S, C, PL, F, PL, ST]),
     "cfd_off_script_at_plan": ([("say", "water flowing through this elbow"), ("stage", INTERNAL_DECL),
                                 ("say", "OK"), ("say", "how many cells will it have?"), ("say", "Proceed")],
                                # NOTE-20: a question about the mesh's count is answered from the plan's numbers; the
                                # plan stands on the card, so it is not shown again before the Proceed
-                               "", [P, S, C, F, PL, ANS, ST]),
+                               "", [P, S, C, PL, F, PL, ANS, ST]),
     "cfd_question_with_the_plan_due": ([("say", "CFD of water through this elbow at 2 m/s"), ("stage", INTERNAL_DECL),
                                         ("say", "hmm"), ("say", "Proceed")], "", [P, S, C, PL, PL, ST]),
     # a change of analysis after the stage: the stage opens again on the new route, nothing asked in chat
     "fea_then_cfd_after_stage": ([("say", "FEA"), ("stage", FEA_DECL), ("say", "actually it is CFD, air flowing through it"),
                                   ("stage", INTERNAL_DECL), ("say", "OK"), ("say", "Proceed")],
-                                 "", [P, S, A, S, C, F, PL, ST]),
+                                 "", [P, S, A, S, C, PL, F, PL, ST]),
     "cfd_then_fea_after_stage": ([("say", "water flowing through this elbow"), ("stage", INTERNAL_DECL),
                                   ("say", "now a static stress analysis of the same part"), ("stage", FEA_DECL),
-                                  ("say", "Proceed")], "", [P, S, F, S, C, PL, ST]),
+                                  ("say", "Proceed")], "", [P, S, PL, F, S, C, PL, ST]),
     "cfd_change_of_mind_at_the_plan": ([("say", "water flowing through this elbow"), ("stage", INTERNAL_DECL),
                                         ("say", "OK"), ("say", "actually I want a structural FEA of it"),
                                         ("stage", FEA_DECL), ("say", "Static stress"), ("say", "Proceed")],
-                                       "", [P, S, F, PL, S, C, A, PL, ST]),
+                                       "", [P, S, PL, F, PL, S, C, A, PL, ST]),
     # CFD external
     "cfd_external_standard": ([("say", "external aero over this car"), ("stage", EXTERNAL_DECL), ("say", "OK"),
-                               ("say", "Proceed")], "", [P, S, C, F, PL, ST]),
+                               ("say", "Proceed")], "", [P, S, C, PL, F, PL, ST]),
+    # the question never holds the run: Proceed with it unanswered starts on the assumed conditions
+    "cfd_external_proceed_without_answering": ([("say", "external aero over this car"), ("stage", EXTERNAL_DECL),
+                                                ("say", "Proceed")], "", [P, S, C, PL, F, ST]),
     "cfd_external_hedge_then_yes": ([("say", "external aero over this car"), ("stage", EXTERNAL_DECL),
                                      ("say", "OK"), ("say", "hmm, maybe"), ("say", "yes")],
-                                    "", [P, S, C, F, PL, PL, ST]),
+                                    "", [P, S, C, PL, F, PL, PL, ST]),
     # through or around: asked once the naming has landed, only when still undecided and no words decided it
     "cfd_flow_kind_undecided": ([("say", "CFD please"), ("named", BAR), ("say", THROUGH),
                                  ("stage", INTERNAL_DECL), ("say", "OK"), ("say", "Proceed")],
-                                "", [P, S, FK, S, C, F, PL, ST]),
+                                "", [P, S, FK, S, C, PL, F, PL, ST]),
     "cfd_flow_kind_undecided_around": ([("say", "CFD please"), ("named", BAR), ("say", AROUND),
                                         ("stage", EXTERNAL_DECL), ("say", "OK"), ("say", "Proceed")],
-                                       "", [P, S, FK, S, C, F, PL, ST]),
+                                       "", [P, S, FK, S, C, PL, F, PL, ST]),
     "cfd_flow_kind_said_first": ([("say", "CFD of the air flowing around this part"), ("named", BAR),
                                   ("stage", EXTERNAL_DECL), ("say", "OK"), ("say", "Proceed")],
-                                 "", [P, S, C, F, PL, ST]),
+                                 "", [P, S, C, PL, F, PL, ST]),
     "cfd_flow_kind_shape_decides": ([("say", "CFD please"), ("named", BODY), ("stage", EXTERNAL_DECL),
-                                     ("say", "OK"), ("say", "Proceed")], "", [P, S, C, F, PL, ST]),
+                                     ("say", "OK"), ("say", "Proceed")], "", [P, S, C, PL, F, PL, ST]),
 }
 
 
@@ -605,12 +611,14 @@ async def test_a_change_of_analysis_after_the_stage_opens_the_stage_again(monkey
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("script,open_step,buttons", [
-    ([("say", "FEA"), ("stage", FEA_DECL)], A, True),
-    ([("say", "water flowing through this elbow"), ("stage", INTERNAL_DECL)], F, True),
-    ([("say", "FEA"), ("stage", FEA_DECL), ("say", "Static stress")], PL, False),
+@pytest.mark.parametrize("script,open_step,buttons,plan", [
+    ([("say", "FEA"), ("stage", FEA_DECL)], A, True, False),
+    # CFDREQ-37 (rulebook 122): the conditions question stands under the plan, so the card is there too
+    ([("say", "water flowing through this elbow"), ("stage", INTERNAL_DECL)], F, True, True),
+    ([("say", "FEA"), ("stage", FEA_DECL), ("say", "Static stress")], PL, False, True),
 ])
-async def test_a_reload_mid_intake_serves_the_conversation_and_its_open_step(monkeypatch, script, open_step, buttons):
+async def test_a_reload_mid_intake_serves_the_conversation_and_its_open_step(monkeypatch, script, open_step, buttons,
+                                                                            plan):
     # the page restores an unfinished conversation from the history: its messages, the open step's
     # buttons, and the plan card when a plan stands (ui/js/main.js openSession, one drawing path)
     from meshpipeline.api.v1 import chat as chatmod
@@ -618,7 +626,7 @@ async def test_a_reload_mid_intake_serves_the_conversation_and_its_open_step(mon
     history = await chatmod.get_chat_history(SID, owner_id="alice", organization_id="")
     assert flow.steps(history["messages"])[-1] == open_step
     assert bool(history["choices"]) is buttons
-    assert (history["brief"] or {}).get("proceed_ask") == (ap.PROCEED_ASK if open_step == PL else None)
+    assert (history["brief"] or {}).get("proceed_ask") == (ap.PROCEED_ASK if plan else None)
     assert history["job_id"] is None
 
 
@@ -642,10 +650,11 @@ async def test_the_plan_card_carries_its_proceed_and_the_history_never_shows_the
 
 @pytest.mark.asyncio
 async def test_the_stage_turn_needs_no_model_so_a_model_failure_cannot_silence_it(monkeypatch):
-    for decl, nxt in ((INTERNAL_DECL, F), (FEA_DECL, A)):
+    # (CFD: the plan, then the conditions question under it - CFDREQ-37, rulebook 122)
+    for decl, nxt in ((INTERNAL_DECL, [PL, F]), (FEA_DECL, [A])):
         world = await _run(monkeypatch, [("say", "water flowing through this elbow" if decl != FEA_DECL else "FEA"),
                                          ("stage", decl)], bad="fails")
-        assert world.errors == [] and flow.steps(world.session.messages) == [P, S, C, nxt]
+        assert world.errors == [] and flow.steps(world.session.messages) == [P, S, C, *nxt]
 
 
 def test_the_stage_turn_is_the_applications_in_every_reader():

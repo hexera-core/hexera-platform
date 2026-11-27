@@ -1576,7 +1576,14 @@ async def node_intake(state: PipelineState) -> dict:
             if _f:
                 _ack = await _SA.sentence(_f, session_id=_ctx.session_id, user_id=_ctx.owner_id)
                 assistant_text = _SA.before_plan_line(assistant_text, _ack)
+    _then_ask = ""
     if (_exec_state.submit_args and _mode != flow.MODE_FREE and not fea_path(_exec_state)
+            and flow.cfd_declared(_said) and assistant_text.rstrip().endswith(ap.PROCEED_ASK)
+            and flow.conditions_ask_after_plan(_said)):
+        # CFDREQ-37 (rulebook 122): THE CONDITIONS ARE ASKED AFTER THE PLAN - the plan stands on the proposal, and one
+        # more message, under the card, says what it assumed, with its two buttons; nothing waits on it
+        _then_ask = flow.conditions_question(_said)
+    elif (_exec_state.submit_args and _mode != flow.MODE_FREE and not fea_path(_exec_state)
             and flow.cfd_declared(_said) and assistant_text.rstrip().endswith(ap.PROCEED_ASK)):
         # CFDREQ-37: THE CONDITIONS THE USER TYPED ARE SAID BACK before the plan line - the values the plan
         # really carries, in a sentence the model writes under a guard (the plain sentence when it cannot)
@@ -1614,7 +1621,11 @@ async def node_intake(state: PipelineState) -> dict:
             _requirements.domain, _requirements.mesh_engine, _requirements.engine_params,
             _requirements.dimensionality, len(_requirements.intake_patches),
             len(_requirements.request_txt), len(_requirements.review_brief_txt), job_id)
-        return turn.completed_patch(_ctx, _record, _requirements, _exec_state.user_notes)
+        _done = turn.completed_patch(_ctx, _record, _requirements, _exec_state.user_notes)
+        if _then_ask:
+            # stored as its own message after the plan's (agents/intake/message.persist_turn), sent as `then`
+            _done["then_ask"] = _then_ask
+        return _done
 
     if (_ctx.approval is not None and not _turn_moved_the_summary(_exec_state)
             and ap.revivable(_ctx.approval, user_msg_count=_ctx.user_msg_count)):
