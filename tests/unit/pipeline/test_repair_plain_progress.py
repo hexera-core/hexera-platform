@@ -212,7 +212,13 @@ def test_a_change_past_the_allowance_needs_review_and_becomes_items():
     result = _result()
     assert RR.needs_review(result)
     assert RR.needs_review({"max_change_mm": 0.5, "allowed_change_mm": 0.1})
-    assert not RR.needs_review({"needs_review": False, "max_change_mm": 9, "allowed_change_mm": 1})
+    # the measured change decides even when the engine said no (PR 3's job: 0.274 vs 0.05 mm)
+    assert RR.needs_review({"needs_review": False, "max_change_mm": 0.274,
+                            "allowed_change_mm": 0.05, "outcome": "partly_repaired"})
+    # ...but a repair that kept nothing changed nothing
+    assert not RR.needs_review({"needs_review": False, "max_change_mm": 9,
+                                "allowed_change_mm": 1, "outcome": "unrepairable"})
+    assert not RR.needs_review({"max_change_mm": 0.01, "allowed_change_mm": 0.05})
     items = RR.review_items(result)
     assert [i["fingerprint"] for i in items] == ["p1"]
     assert items[0]["proposal"]["op"] == RR.ACCEPT_OP and items[0]["entity_index"] == 12
@@ -290,7 +296,9 @@ def test_the_review_decision(monkeypatch, bypass, accepted, review_on, applied, 
 
 def test_nothing_past_the_allowance_is_simply_applied(monkeypatch):
     from meshpipeline.pipeline.repair_attempt import _review_decision
-    got = _review_decision({}, _result(needs_review=False), ())
+    # within the allowance: largest change 0.04 mm, allowed 0.1 mm, no problem past it
+    got = _review_decision({}, _result(needs_review=False, max_change_mm=0.04, problems=[
+        {"id": "p1", "type": "close_faces", "status": "fixed", "change_mm": 0.04}]), ())
     assert got["applied"] and not got["needs_review"] and not got["auto_accepted"]
 
 

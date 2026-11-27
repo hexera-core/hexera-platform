@@ -124,9 +124,14 @@ def needs_review(result: Mapping | None) -> bool:
     own `needs_review`, or - when it does not say - any fixed problem moved past the allowance."""
     if not result:
         return False
-    said = result.get("needs_review")
-    if isinstance(said, bool):
-        return said
+    # THE MEASURED CHANGE DECIDES, whatever the engine's own flag says: the engine judges review
+    # against the run's DECLARED threshold, which is usually none, so a 0.274 mm change against a
+    # 0.05 mm allowance came back `needs_review: false` (found on PR 3's slug). A change past the
+    # allowance always waits for a person unless the run carries the bypass.
+    if result.get("needs_review") is True:
+        return True
+    if str(result.get("outcome") or "") in ("unchanged", "unrepairable"):
+        return False            # nothing was kept, so nothing changed the part
     allowed = _num(result.get("allowed_change_mm"))
     biggest = _num(result.get("max_change_mm"))
     if biggest is not None and allowed is not None and biggest > allowed:
@@ -247,21 +252,31 @@ def _mm(value: float | None) -> str:
     return f"{value:.3g} mm"
 
 
-def _problem(raw: Mapping, allowed_mm: float | None) -> dict:
+def _point_list(raw: Any) -> list[list[float]]:
+    return [[float(c) for c in p][:3] for p in (raw or ())
+            if isinstance(p, (list, tuple)) and len(p) >= 3
+            and all(_num(c) is not None for c in p[:3])][:50]
+
+
+def _problem(raw: Mapping, allowed_mm: float | None, pins: Mapping | None = None) -> dict:
     status = str(raw.get("status") or "")
     status = status if status in STATUSES else "not_fixed"
     kind = type_key(raw.get("type"))
     location = _sub(raw, "location")
     change = _num(raw.get("change_mm"))
+    pid = str(raw.get("id") or "")
+    points = _point_list(location.get("points"))
+    if not points and pins and pid in pins:
+        # A PROBLEM LOCATED ONLY BY FACES OR BODIES gets their centre (application/repair_viewer
+        # pins), so every problem the console lists can be pinned in the 3D view
+        points = _point_list([pins[pid]])
     return {
-        "id": str(raw.get("id") or ""),
+        "id": pid,
         "type": kind,
         "type_text": type_words(kind),
         "location": {"faces": [str(f) for f in (location.get("faces") or ())][:200],
                      "bodies": [str(b) for b in (location.get("bodies") or ())][:50],
-                     "points": [[float(c) for c in p][:3] for p in (location.get("points") or ())
-                                if isinstance(p, (list, tuple)) and len(p) >= 3
-                                and all(_num(c) is not None for c in p[:3])][:50]},
+                     "points": points},
         "status": status,
         "reason_text": plain(raw.get("reason_text"), STATUS_WORDS[status]),
         "change_mm": change,
@@ -275,6 +290,27 @@ def _flag(value: Any) -> str | None:
     text = " ".join(str(value or "").split())
     text = FLAG_WORDS.get(text, text)
     return text if text and not leaks(text) else None
+
+
+#: Why the volume changed, when the repair joined overlapping parts: the overlap was counted once
+#: per part before, so a smaller volume is the same material counted once - not damage.
+OVERLAP_VOLUME_REASON = ("The volume changed because overlapping parts were joined: the space "
+                         "they shared was counted twice before")
+
+
+def _flags(raw: Any, problems: list[dict], volume_ratio: float | None = None) -> list[str]:
+    """The result's flags in plain words; a volume LOSS explained when the part had overlapping
+    parts (PR 3's job: -16% read as damage, but it was the double-counted overlap joined - by the
+    overlap's own repair or by the broader one, so the problem's status does not decide it)."""
+    joined = (volume_ratio is not None and volume_ratio < 1.0
+              and any(p.get("type") == "overlap_self_intersection" for p in problems))
+    out: list[str] = []
+    for value in raw if isinstance(raw, (list, tuple)) else ():
+        text = (OVERLAP_VOLUME_REASON if joined and str(value) == "volume_changed"
+                else _flag(value))
+        if text and text not in out:
+            out.append(text)
+    return out
 
 
 def _counts(problems: list[dict]) -> dict:
@@ -354,7 +390,8 @@ def _section(state: Mapping, *, choice: str) -> dict:
     if not result:
         return {**out, **_v3_section(attempt)}
     allowed = _num(result.get("allowed_change_mm"))
-    problems = [_problem(p, allowed) for p in result.get("problems") or ()
+    pins = _sub(state, "repair_pins")
+    problems = [_problem(p, allowed, pins) for p in result.get("problems") or ()
                 if isinstance(p, Mapping)]
     outcome = str(result.get("outcome") or "")
     engine = str(result.get("engine") or "v5")
@@ -373,7 +410,7 @@ def _section(state: Mapping, *, choice: str) -> dict:
         "allowed_change_mm": allowed,
         "volume_ratio": _num(result.get("volume_ratio")),
         "size_ratio": _num(result.get("size_ratio")),
-        "flags": [f for f in (_flag(x) for x in result.get("flags") or ()) if f],
+        "flags": _flags(result.get("flags") or (), problems, _num(result.get("volume_ratio"))),
         "seconds": _num(result.get("seconds")),
         "spend_usd": _num(result.get("spend_usd")),
     })

@@ -150,3 +150,59 @@ def test_the_engines_own_done_line_is_not_the_lanes(monkeypatch):
                          "text": "Repair finished"})
     asyncio.run(_run())
     assert said == []
+
+
+# ---------------------------------------------------------------- PR 3's real v5 job c8f5dc5b
+
+def test_a_change_past_the_allowance_waits_although_the_engine_said_no(monkeypatch):
+    # 0.274 mm against 0.05 mm allowed came back needs_review false: the measured change decides
+    result = _result(needs_review=False, max_change_mm=0.274, allowed_change_mm=0.05)
+    got = _decision(monkeypatch, [], result)
+    assert got["needs_review"] and got["waiting_for_review"] and not got["applied"]
+
+
+def test_a_volume_loss_from_joined_overlaps_says_why():
+    state = {"repair_attempt": {"attempted": True, "result": {"engine_result": _result(
+        volume_ratio=0.838, flags=["volume_changed"], problems=[
+            {"id": "p1", "type": "overlap_self_intersection", "status": "not_fixed"}])}}}
+    sec = RR.section(state, choice="standalone")
+    assert sec["flags"] == [RR.OVERLAP_VOLUME_REASON]
+    plain_vol = RR.section({"repair_attempt": {"attempted": True, "result": {"engine_result":
+        _result(volume_ratio=0.838, flags=["volume_changed"])}}}, choice="standalone")
+    assert plain_vol["flags"] == ["The part's volume changed noticeably"]
+
+
+def test_a_problem_with_only_bodies_gets_the_viewers_pin():
+    state = {"repair_pins": {"p5": [1.0, 2.0, 3.0]},
+             "repair_attempt": {"attempted": True, "result": {"engine_result": _result(problems=[
+                 {"id": "p5", "type": "overlap_self_intersection", "status": "not_fixed",
+                  "location": {"faces": [], "bodies": ["B2"], "points": []}}])}}}
+    sec = RR.section(state, choice="meshing")
+    assert sec["problems"][0]["location"]["points"] == [[1.0, 2.0, 3.0]]
+
+
+def test_the_lanes_first_lines_carry_numbers_and_the_engines_steps_stay_plain(monkeypatch):
+    # PR 1's ProgressMapper, fed raw v5 records whose defect turns carry NO problem number
+    from meshpipeline.cad.repair_v5.result import ProgressMapper as EngineMapper
+    engine = EngineMapper()
+    records = [{"event": "v5_start"}, {"event": "diagnosed", "defects": 3},
+               {"event": "phase", "phase": "conformal"},
+               {"event": "phase", "phase": "tournament", "defect_class": "close_faces"},
+               {"event": "defect_result", "defect_class": "close_faces", "what": "fixed"},
+               {"event": "phase", "phase": "tournament", "defect_class": "low_quality"},
+               {"event": "defect_result", "defect_class": "low_quality", "what": "skipped"},
+               {"event": "diagnosed", "defects": 1},
+               {"event": "phase", "phase": "tournament", "defect_class": "surface_crossing"}]
+    plain_events = [e for e in (engine(r) for r in records) if e]
+    lines = RP.map_events([{**e, "event": "repair_progress"} for e in plain_events])
+    texts = [ln["text"] for ln in lines]
+    assert texts == ["Checking your CAD", "Found 3 problems to fix",
+                     "Lining up parts that should touch",
+                     "Repairing a thin gap — problem 1 of 3", "Fixed",
+                     "Repairing a tiny or sliver feature — problem 2 of 3",
+                     "Couldn't fix this one — left as is",
+                     "Checking again: 1 problem left",
+                     "Repairing intersecting surfaces — problem 1 of 1"]
+    fixed_line = lines[4]
+    assert fixed_line["problem_index"] == 1 and fixed_line["problems_fixed"] == 1
+    assert all("couldn't identify" not in t for t in texts)

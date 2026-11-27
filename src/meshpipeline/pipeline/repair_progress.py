@@ -117,6 +117,7 @@ class ProgressMapper:
     _current_fixed: bool = False
     _last: tuple | None = None
     _ready_index: int | None = None
+    _ready_fixed: int = 0
 
     def feed(self, event: Mapping[str, Any]) -> list[dict]:
         try:
@@ -217,18 +218,37 @@ class ProgressMapper:
             elif said.startswith(("Couldn't fix", "Left as is")):
                 status = "left_as_is"
         if stage == CHECKING:
+            if total is not None and self._ready_index:
+                # A LATER LOOK (the engine checks again after a round): the problems left are
+                # numbered afresh, "problem 1 of 3"
+                self._ready_index = 0
+                return [progress(CHECKING, f"Checking again: {_problems(total)} left",
+                                 total=total, fixed=self._ready_fixed)]
             return [progress(CHECKING, found_line(total) if total is not None else CHECKING_TEXT,
                              total=total)]
         if stage == REPAIRING:
             if status in ("fixed", "not_fixed", "left_as_is"):
                 # A RESULT LINE ends the turn of the problem in hand: the engine does not repeat
-                # its number, so the lane carries the one it took up (found on the slug)
-                index = index if index is not None else self._ready_index
+                # its number, so the lane carries the one it took up, and a running count of the
+                # problems fixed so far (found on the slugs)
+                index = index if index is not None else (self._ready_index or None)
+                if status == "fixed":
+                    self._ready_fixed += 1
                 text = FIXED_TEXT if status == "fixed" else NOT_FIXED_TEXT
                 return [progress(REPAIRING, text, index=index, total=self.total, kind=kind,
-                                 result=status)]
-            if index is not None:
-                self._ready_index = index
+                                 result=status, fixed=self._ready_fixed)]
+            if kind is None and index is None:
+                # NOT A PROBLEM'S TURN but a step the engine names in plain words ("Lining up
+                # parts that should touch"): said as it is - never "Repairing a problem we
+                # couldn't identify", which is what the lane's first lines read (PR 3's slug)
+                return ([progress(REPAIRING, said, total=self.total)]
+                        if said and not leaks(said) and not said.startswith("Repairing") else [])
+            # A PROBLEM TAKEN UP: the engine's number when it gives one, else the lane counts, so
+            # every repairing line reads "Repairing a thin gap - problem 3 of 12" from the first
+            index = index if index is not None else (self._ready_index or 0) + 1
+            self._ready_index = index
+            if self.total is not None and index > self.total:
+                self.total = index
             return [progress(REPAIRING, repairing_line(kind, index, self.total), index=index,
                              total=self.total, kind=kind)]
         if stage == BROADER:

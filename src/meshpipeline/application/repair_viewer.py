@@ -180,10 +180,34 @@ def _face_number(value: object) -> int | None:
     return int(digits) if digits else None
 
 
-def pins(section: Mapping, xyz, tris, face_of) -> list[dict]:
+def bodies_of_faces(shape, faces: list) -> list[int]:
+    """The 1-based solid each face belongs to, in the shape's solid order (0: in no solid)."""
+    from OCP.TopAbs import TopAbs_FACE, TopAbs_SOLID
+    from OCP.TopExp import TopExp
+    from OCP.TopTools import TopTools_IndexedDataMapOfShapeListOfShape, TopTools_IndexedMapOfShape
+
+    solids = TopTools_IndexedMapOfShape()
+    TopExp.MapShapes_s(shape, TopAbs_SOLID, solids)
+    owner = TopTools_IndexedDataMapOfShapeListOfShape()
+    TopExp.MapShapesAndAncestors_s(shape, TopAbs_FACE, TopAbs_SOLID, owner)
+    out: list[int] = []
+    for face in faces:
+        if owner.Contains(face) and owner.FindFromKey(face).Size():
+            out.append(int(solids.FindIndex(owner.FindFromKey(face).First())))
+        else:
+            out.append(0)
+    return out
+
+
+def pins(section: Mapping, xyz, tris, face_of, body_of_face: list[int] | None = None) -> list[dict]:
     """The problems pinned where they were found: the engine's own point when it gave one, else
-    the centre of the first named face's triangles on the ORIGINAL surface."""
+    the centre of the first named face's triangles on the ORIGINAL surface, else the centre of
+    the first named body's - so a problem located only by faces or bodies still gets a pin
+    (PR 3's job: a problem with bodies but no points could not be pinned)."""
+    import numpy as np
     out: list[dict] = []
+    tri_body = (np.array([body_of_face[int(f) - 1] if 0 < int(f) <= len(body_of_face) else 0
+                          for f in face_of]) if body_of_face else None)
     for p in section.get("problems") or ():
         if not isinstance(p, Mapping):
             continue
@@ -194,9 +218,11 @@ def pins(section: Mapping, xyz, tris, face_of) -> list[dict]:
                 point = [float(c) for c in q[:3]]
                 break
         if point is None and len(tris):
-            for f in location.get("faces") or ():
-                n = _face_number(f)
-                mask = face_of == n if n is not None else None
+            for name, owner in ([(f, face_of) for f in location.get("faces") or ()]
+                                + ([(b, tri_body) for b in location.get("bodies") or ()]
+                                   if tri_body is not None else [])):
+                n = _face_number(name)
+                mask = owner == n if n is not None else None
                 if mask is not None and mask.any():
                     centre = xyz[tris[mask].ravel()].mean(axis=0)
                     point = [float(c) for c in centre]
@@ -204,7 +230,8 @@ def pins(section: Mapping, xyz, tris, face_of) -> list[dict]:
         out.append({"id": str(p.get("id") or ""), "type": p.get("type"),
                     "type_text": p.get("type_text"), "status": p.get("status"),
                     "text": p.get("reason_text"), "point": point,
-                    "faces": list(location.get("faces") or [])[:20]})
+                    "faces": list(location.get("faces") or [])[:20],
+                    "bodies": list(location.get("bodies") or [])[:20]})
     return out
 
 
@@ -215,11 +242,15 @@ def build(original: Path, repaired: Path | None, section: Mapping) -> dict:
     from meshpipeline.cad.repair.brep import _read_shape
 
     before = _read_shape(Path(original))
-    xyz0, tri0, face0, _ = faces_and_triangles(before)
+    xyz0, tri0, face0, faces0 = faces_and_triangles(before)
+    try:
+        body_of_face = bodies_of_faces(before, faces0)
+    except Exception:  # noqa: BLE001 - no body pins is fewer pins, never no view
+        body_of_face = []
     payload: dict[str, Any] = {"version": VERSION,
                                "original": surface_block(xyz0, tri0, face0, name="original"),
                                "repaired": None,
-                               "pins": pins(section, xyz0, tri0, face0),
+                               "pins": pins(section, xyz0, tri0, face0, body_of_face),
                                "deviation": {"by_face": {}, "max_mm": None,
                                              "allowed_mm": section.get("allowed_change_mm"),
                                              "measured": False}}
@@ -227,25 +258,39 @@ def build(original: Path, repaired: Path | None, section: Mapping) -> dict:
         return payload
     after = _read_shape(Path(repaired))
     xyz1, tri1, face1, faces1 = faces_and_triangles(after)
-    try:
-        by_face, complete = face_deviation(before, after, faces1)
-    except Exception as exc:  # noqa: BLE001 - no field is better than a wrong one
-        logger.warning("repair viewer: the deviation field was not measured (%s)",
-                       type(exc).__name__)
-        by_face, complete = {}, False
 
-    def _moved(face: int) -> float:
-        value = by_face.get(face)
-        return -1.0 if value is None else float(value)
+    def _field(a, b, faces_b) -> tuple[dict[int, float | None], bool]:
+        try:
+            return face_deviation(a, b, faces_b)
+        except Exception as exc:  # noqa: BLE001 - no field is better than a wrong one
+            logger.warning("repair viewer: a deviation field was not measured (%s)",
+                           type(exc).__name__)
+            return {}, False
 
-    per_point = np.array([_moved(int(f)) for f in point_faces(len(xyz1), tri1, face1)],
-                         dtype=np.float32)
-    known = [v for v in by_face.values() if v is not None]
-    payload["repaired"] = surface_block(xyz1, tri1, face1, name="repaired", per_point=per_point)
+    # BOTH WAYS. How far each repaired face sits from the upload says where surface MOVED; how far
+    # each original face sits from the repaired part says where surface was REMOVED or JOINED -
+    # which no repaired face can show (fused overlapping parts: the outer skin did not move, the
+    # shared walls went). One-way, PR 3's job read ~0 mm beside a 0.274 mm change.
+    by_face, complete = _field(before, after, faces1)
+    by_face0, complete0 = _field(after, before, faces0)
+
+    def _per_point(field: dict[int, float | None], n_points: int, tris, faces) -> Any:
+        def _moved(face: int) -> float:
+            value = field.get(face)
+            return -1.0 if value is None else float(value)
+        return np.array([_moved(int(f)) for f in point_faces(n_points, tris, faces)],
+                        dtype=np.float32)
+
+    known = [v for v in (*by_face.values(), *by_face0.values()) if v is not None]
+    payload["original"] = surface_block(xyz0, tri0, face0, name="original",
+                                        per_point=_per_point(by_face0, len(xyz0), tri0, face0))
+    payload["repaired"] = surface_block(xyz1, tri1, face1, name="repaired",
+                                        per_point=_per_point(by_face, len(xyz1), tri1, face1))
     payload["deviation"] = {"by_face": {str(k): v for k, v in by_face.items()},
+                            "by_face_original": {str(k): v for k, v in by_face0.items()},
                             "max_mm": max(known) if known else None,
                             "allowed_mm": section.get("allowed_change_mm"),
-                            "measured": bool(complete and by_face)}
+                            "measured": bool(complete and complete0 and (by_face or by_face0))}
     return payload
 
 
@@ -301,6 +346,14 @@ async def deliver(session_factory, *, job_id: str, state: Mapping, section: Mapp
             if not built:
                 logger.warning("repair viewer: not built for job %s", job_id)
                 return ""
+            # THE PIN POINTS BACK ONTO THE RUN, so the job's repair section names a point for a
+            # problem the engine located only by faces or bodies (pipeline/repair_result reads it)
+            if isinstance(state, dict):
+                with contextlib.suppress(Exception):
+                    state["repair_pins"] = {
+                        str(p["id"]): p["point"]
+                        for p in json.loads(path.read_text()).get("pins") or ()
+                        if p.get("id") and p.get("point")}
             from meshpipeline.application.repair_report_delivery import _deliver_file
             from meshpipeline.artifact_keys import repair_viewer_key
             from meshpipeline.persistence.models import ArtifactType
