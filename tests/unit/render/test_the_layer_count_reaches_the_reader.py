@@ -90,6 +90,12 @@ VIEWERS = ("ui/js/viewer/viewer.js",
 SERVED = "ui/js/viewer/viewer.js"
 
 
+#: EVERY LAYER FIGURE A READER CAN BE SHOWN, derived from the producers rather than typed out here.
+#: Shared with the two browser guards in tests/ui, which held the same list and drifted the same
+#: way - see tests/layer_keys for the measurement that forced it.
+from tests.layer_keys import published_layer_keys as _published_layer_keys  # noqa: E402
+
+
 def test_the_layer_count_reaches_the_payload():
     """Zero is an answer. Dropping it is not."""
     q = quality(MANIFEST)
@@ -133,14 +139,21 @@ def test_the_viewer_names_each_one_rather_than_dumping_it_under_other():
         for k in ("near_wall_layers", "near_wall_levels", "near_wall_cell_m",
                   "interface_faces_fluid"):
             assert k in src, f"{rel} does not mention {k}"
-        # AND THE TWELVE THE BACKEND PUBLISHES ABOUT THE LAYER PASS ITSELF. A key this build has
+        # AND EVERY ONE THE BACKEND PUBLISHES ABOUT THE LAYER PASS ITSELF. A key this build has
         # no name for still reaches the user - in the catch-all "Other" group, labelled with its
         # own key spelled out - so "it reaches them" and "it is an answer" are different tests.
         # The console's copy knew NONE of these until 2026-11-17 while serving its own run page.
-        for k in ("near_wall_layers_asked", "near_wall_layers_measured", "layer_coverage_pct",
-                  "layer_thickness_pct", "layer_thickness_m", "layer_faces_in_error",
-                  "layer_cells_added", "layer_iterations", "layer_patch", "layer_short",
-                  "layer_floors_unjudged", "layer_floors_total"):
+        #
+        # READ OFF THE PRODUCER AND NOT TYPED OUT HERE, which is the whole point of this edit.
+        # This list WAS twelve literal names, and so were the two in tests/ui - and when 0248dcfb
+        # moved the engine's first layer floor onto `layer_kept_of_offered_pct` and published that
+        # figure and `layer_offered_pct` beside coverage, all three lists stayed at twelve and all
+        # three tests passed while the customer's panel drew both new figures in the Other group
+        # as "layer offered pct 97.23". A guard against drift that has to be edited in step with
+        # the thing it guards is not a guard. `finalize._LAYER_FIGURES` is the authority for what
+        # travels into the manifest, and `mesh_facts._FLOAT_METRICS`/`_INT_METRICS` for what
+        # survives into the payload, so the intersection is exactly what a reader can be shown.
+        for k in _published_layer_keys():
             assert k in src, (
                 f"{rel} has no name for {k}, so it draws it in the Other group under its raw key")
 

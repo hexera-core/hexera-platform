@@ -220,7 +220,13 @@ def test_the_console_copy_draws_the_measured_count_against_the_ask(page, console
         f"and the figures its three missed floors are drawn on are not on the page:\n{text}")
     assert "fell short" in text, (
         f"nothing on the console's panel says these sentences are shortfalls:\n{text}")
-    for raw in ("layer coverage pct", "near wall layers measured", "layer short"):
+    # EVERY PUBLISHED LAYER FIGURE, AND THE LIST IS DERIVED. It was three literal spellings; the
+    # two figures 0248dcfb added were not among them, so this test passed while the console drew
+    # "layer offered pct 97.23" in its Other group. See tests/layer_keys.
+    from tests.layer_keys import published_layer_keys
+
+    for key in published_layer_keys():
+        raw = key.replace("_", " ")
         assert raw not in text, (
             f"{raw!r} is drawn under its own raw key name, which is what the Other group does to "
             f"a figure this build has no label for:\n{text}")

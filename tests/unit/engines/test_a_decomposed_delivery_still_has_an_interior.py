@@ -336,7 +336,16 @@ def test_a_rank_whose_turn_comes_after_the_budget_is_spent_never_runs(
         assert FE.export_volume_vtk(ws, all_regions=True, region=REGION, timeout=150.0) is None
     assert [c["timeout"] for c in foam.calls] == [150.0, 50.0], (
         "the third rank's turn came with nothing left and it had to not start")
-    assert "ran out of the export" in caplog.text
+    assert "ran out of its 150 s" in caplog.text and "never started" in caplog.text, caplog.text
+    # AND IT MUST NOT SEND A READER TO A FILE THAT DOES NOT EXIST. foamToVTK never ran for that
+    # rank, so there is no `foamToVTK_processorN.log` and the generic "... has what it printed"
+    # sentence would be false. This assertion is the whole of why `_NeverStarted` is its own type.
+    assert "foamToVTK stopped on" not in caplog.text, caplog.text
+    assert "has what it printed" not in caplog.text, caplog.text
+    for rank in sorted(ws.glob("processor*")):
+        assert not (ws / f"foamToVTK_{rank.name}.log").exists() or rank.name in (
+            "processor0", "processor1"), (
+            f"{rank.name} has a log and never ran")
     assert not (ws / "VTK" / REGION / FE.MERGED_TIME_DIRNAME).exists()
 
 

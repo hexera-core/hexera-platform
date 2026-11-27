@@ -888,13 +888,24 @@ def _volume_from_ranks(ws: Path, ranks: list, region: str, *, bashrc: str,
         `stem.split("_")[0]`, so the customer's line still reads foamToVTK."""
         return ws / f"{stem}_{rank.name}.log"
 
+    class _NeverStarted(RuntimeError):
+        """THE BUDGET RAN OUT BEFORE THIS RANK, which is not foamToVTK stopping.
+
+        A DISTINCT TYPE BECAUSE THE SENTENCE HAS TO BE DISTINCT. The serial path this replaced had
+        a separate message for exactly this case and it claimed no log, correctly: at this point
+        foamToVTK has not run and `foamToVTK_<rank>.log` has not been created, so reporting it
+        through the generic handler told a reader to go and read a file that does not exist. That
+        is the rule `sandbox/safe_exec` states for itself - "a timeout, a signal and a non-zero
+        exit are distinct outcomes and stay distinct" - and a run that never started is a fourth.
+        """
+
     def _export(rank) -> Path:
         """One rank's cells, as the largest finished piece it wrote. Raises on any failure, with
         the rank named - the caller turns that into the None the serial path returns."""
         left = float(timeout) - (time.monotonic() - started)
         if left <= 0.0:
-            raise RuntimeError(f"ran out of the export's {float(timeout):.0f} s before "
-                               f"{rank.name} could start")
+            raise _NeverStarted(f"the volume export ran out of its {float(timeout):.0f} s before "
+                                f"{rank.name}, which never started")
         cmd = (f"source {bashrc} >/dev/null 2>&1 && "
                f"foamToVTK -case '{rank}' -region {region} -constant {NO_FIELD_TIME} "
                f"{RANK_EXPORT_FLAGS} -overwrite -name {RANK_VTK_DIRNAME}")
@@ -937,6 +948,11 @@ def _volume_from_ranks(ws: Path, ranks: list, region: str, *, bashrc: str,
                 rank = futures[fut]
                 try:
                     done[rank] = fut.result()
+                except _NeverStarted as exc:
+                    # NO LOG TO POINT AT, so none is named. See `_NeverStarted`.
+                    logger.error("%s; the mesh stands, but the review will have no interior to cut",
+                                 exc)
+                    return None
                 except Exception as exc:   # noqa: BLE001 - subprocess timeout types vary
                     logger.error("foamToVTK stopped on %s (%s); the mesh stands, but the review "
                                  "will have no interior to cut and %s has what it printed",

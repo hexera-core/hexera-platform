@@ -1376,7 +1376,8 @@ function initViewer(job,surf,uiCfg){
                   'low_quality_tet_faces',
                   'near_wall_layers','near_wall_levels','near_wall_cell_m',
                   'near_wall_layers_asked','near_wall_layers_measured',
-                  'layer_coverage_pct','layer_thickness_pct','layer_thickness_m',
+                  'layer_coverage_pct','layer_offered_pct','layer_kept_of_offered_pct',
+                  'layer_thickness_pct','layer_thickness_m',
                   'layer_faces_in_error','layer_cells_added','layer_iterations',
                   'layer_patch','layer_short',
                   'layer_floors_unjudged','layer_floors_total',
@@ -1585,13 +1586,26 @@ function initViewer(job,surf,uiCfg){
                     has('layer_patch')?`, on ${esc(String(q.layer_patch))}`:''}`)
             : isNum(asked)?`${show(asked)} asked for`:''));
     }
-    /* HOW WELL THE STACK GREW. Four figures, and not one of them is a bar: this panel states
+    /* HOW WELL THE STACK GREW. Six figures, and not one of them is a bar: this panel states
        what was measured and leaves every floor to `layer_short` below, which carries
-       `layers.shortfalls`' own sentences with its own numbers already in them. Restating 92.0,
+       `layers.shortfalls`' own sentences with its own numbers already in them. Restating 95.0,
        75.0, 0.75 and 200.0 here would give one quantity a second reader on the far side of an
        HTTP boundary, which is the mistake this engine has already paid for once. */
     if(has('layer_coverage_pct'))wall.push(row('layer_coverage_pct','Layer coverage','%',
       has('layer_patch')?`of ${esc(String(q.layer_patch))}`:'of the layered surface'));
+    /* AND THE TWO FIGURES THAT SAY WHICH HALF OF THE GAP IS WHICH, because coverage alone cannot
+       and a reader who cannot tell them apart reads a part's shape as a defect. Of the plate's
+       9.36 missing points, 9.14 were never OFFERED - the extruder declines a face where the
+       surface turns by more than featureAngle, which is this part's own geometry - and 0.22 were
+       offered and then lost by the mover. They arrived in the payload with commit 0248dcfb, which
+       moved the engine's first floor onto `layer_kept_of_offered_pct`, and they landed in the
+       catch-all "Other" group under their raw key names: "layer offered pct 97.23". That is the
+       page this file's own header forbids and the exact failure it had already paid for once.
+       BESIDE COVERAGE AND NOT INSTEAD OF IT - the three are one sentence read downwards. */
+    if(has('layer_offered_pct'))wall.push(row('layer_offered_pct','Layer faces offered','%',
+      'of the surface was offered to the layer pass at all'));
+    if(has('layer_kept_of_offered_pct'))wall.push(
+      row('layer_kept_of_offered_pct','Layer faces kept','%','of the faces it was offered'));
     if(has('layer_thickness_pct'))wall.push(row('layer_thickness_pct','Layer thickness','%',
       has('layer_thickness_m')?`of the thickness asked for, ${len(q.layer_thickness_m)} grown`
                               :'of the thickness asked for'));

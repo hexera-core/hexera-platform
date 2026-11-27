@@ -233,15 +233,27 @@ def test_the_measured_layer_count_is_drawn_against_the_ask_on_one_row(live):
 
 
 def test_no_layer_figure_is_left_in_the_other_group_under_its_raw_key(live):
-    """THE DEFECT, stated as the thing a reader sees: ten keys in a bucket called Other, named
-    `layer coverage pct` and `near wall layers measured`."""
+    """THE DEFECT, stated as the thing a reader sees: keys in a bucket called Other, named
+    `layer coverage pct` and `near wall layers measured`.
+
+    THE LIST IS READ OFF THE PRODUCER, not typed here, and that is a correction rather than a
+    tidy-up. It was ten literal names; commit 0248dcfb moved this engine's first layer floor onto
+    `layer_kept_of_offered_pct`, published it and `layer_offered_pct`, and this test went on
+    passing while the panel drew both in the Other group as "layer offered pct 97.23". A guard
+    against drift that has to be edited in step with the thing it guards is not a guard. See
+    `tests/unit/render/test_the_layer_count_reaches_the_reader.published_layer_keys`.
+    """
+    from tests.layer_keys import published_layer_keys
+
     q = _payload_quality(REAL_LOG)
     _open(live, _payload(q))
     text = _facts(live)
-    for key in ("near_wall_layers_asked", "near_wall_layers_measured", "layer_coverage_pct",
-                "layer_thickness_pct", "layer_thickness_m", "layer_faces_in_error",
-                "layer_cells_added", "layer_iterations", "layer_patch", "layer_short"):
-        assert key in q, f"{key} is not in the payload, so this test is measuring nothing"
+    for key in published_layer_keys():
+        if key not in q:
+            # A FIGURE THIS LOG DID NOT PRODUCE IS NOT A MISSING LABEL. `layer_floors_unjudged` and
+            # `layer_floors_total` are published only on a partly readable log, and REAL_LOG is a
+            # whole one; the unit-level guard above holds the viewer to naming them either way.
+            continue
         where = _group_of(live, key)
         assert where != "Other", (
             f"{key} is drawn in the panel's Other group, under its raw key name, away from the "
@@ -252,6 +264,15 @@ def test_no_layer_figure_is_left_in_the_other_group_under_its_raw_key(live):
     assert _group_of(live, "near_wall_layers_measured") in ("", "At the wall"), (
         "the flag that says whether the layer count is a measurement or an intention has to be "
         "on the row it qualifies, not in a group of its own")
+    # AND THE TWO THAT SAY WHICH HALF OF THE GAP IS WHICH GO BESIDE COVERAGE, not merely somewhere
+    # that is not Other. The three are one sentence read downwards - 97.23% of the surface was
+    # offered, 91.11% of what was offered kept its layers, 88.58% ended up covered - and a reader
+    # who finds them in different groups has to do that arithmetic themselves, which is the thing
+    # the figures exist to spare them.
+    for key in ("layer_offered_pct", "layer_kept_of_offered_pct"):
+        assert key in q, f"{key} is not in the payload, so this is measuring nothing"
+        assert _group_of(live, key) == _group_of(live, "layer_coverage_pct"), (
+            f"{key} is not in the same group as layer_coverage_pct:\n{text}")
 
 
 def test_the_panel_no_longer_tells_this_customer_a_prism_stack_does_not_fit(live):
