@@ -40,7 +40,28 @@ from meshpipeline.application.geometry_confirmation import (  # noqa: E402
 class ConfirmedOpening(BaseModel):
     id: int
     name: str = Field(min_length=1, max_length=40)
-    role: Literal["inlet", "outlet", "not_an_opening"]
+    #: `opening` IS A ROLE A CUSTOMER MAY CONFIRM, and until now it was one the card could offer
+    #: and nobody could send back. MEASURED on session 11091006 (2026-11-27): the geometry check
+    #: offered mouth_1 and mouth_2 as `opening` - correctly, because this plate's two hose mouths
+    #: open into coolant spaces that do not connect, so neither is an inlet or an outlet of
+    #: anything - and pressing Proceed on that card returned HTTP 422, "Input should be 'inlet',
+    #: 'outlet' or 'not_an_opening'". The product proposed a state its own API refused.
+    #:
+    #: THE TWO WORDS THAT WERE AVAILABLE BOTH SAY SOMETHING FALSE about such a mouth. `inlet` and
+    #: `outlet` claim a flow path the surface does not have, which is what
+    #: `fluid_passages.ports_on_one_passage` refuses a run for (job 44362085, four and a half
+    #: minutes after Proceed). `not_an_opening` is "a hole or a face the fluid does not pass", and
+    #: the fluid passes through both of these.
+    #:
+    #: IT IS NOT A NEW WORD. `cfmesh_conjugate/mouths.port_rows` already types every mouth
+    #: `opening` as mouth_1, mouth_2 when nothing is declared, and says so: "the unassigned shape
+    #: this customer's two mouths have already been shipped under as port_a and port_b".
+    #: `contracts/patch_names` maps it, and `geometry_confirmation.patches_from` carries it through
+    #: as `{"type": "opening"}`, which `plan.ports_from` reads as no port pair - the same None it
+    #: returns for a declaration with no ports in it at all. Job 606af55e reached that path the
+    #: only way that was possible before this, by declaring every sticker `not_an_opening` and
+    #: shipping `patches: []`, and meshed this plate to 279,286,964 cells.
+    role: Literal["inlet", "outlet", "opening", "not_an_opening"]
     centroid_mm: list[float] | None = None
     diameter_mm: float | None = None
     width_mm: float | None = None
