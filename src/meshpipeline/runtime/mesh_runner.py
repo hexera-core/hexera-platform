@@ -157,7 +157,22 @@ def run(input_uri: str, output_uri: str, engine: str, timeout: int, contract: st
         with tempfile.TemporaryDirectory(prefix="mesh_refused_") as empty:
             upload_result(output_uri, empty, refused)
         return refused
+    # WHAT THE MACHINE'S WHOLE LIFE WENT ON, so the next reader does not have to subtract.
+    #
+    # THIS EXISTS BECAUSE 1,284 s OF JOB 606af55e COULD NOT BE ACCOUNTED FOR. That run's VM leg was
+    # 7,705 s from "runs on a n2-highmem-64 VM" to "rc=0", and everything the run wrote down came to
+    # 6,421 s of it: 4,303.4 s of mesh stages (conjugate_report.json `seconds`), 377 s of boundary
+    # index, 549.6 s of rank exports, 69 s deciding what rides home, 53 s of review surface, and the
+    # 1,069 s between the mesher's own "returning" beacon and the result being collected. The rest -
+    # the boot, the image pull, this download, writing mesh.msh and the manifest, and the gaps - was
+    # twenty-one minutes that nothing measured, and twenty-one minutes is a lever nobody can pull.
+    #
+    # THREE NUMBERS AND NOT A PROFILE. `elapsed_seconds` already says how long the engine ran; what
+    # was missing is what happened either side of it, which is this process's own business and
+    # nobody else's.
+    _t_start = time.monotonic()
     ws = download_workspace(input_uri)
+    _t_ready = time.monotonic()
     stop, returning = threading.Event(), threading.Event()
     beacon = threading.Thread(target=_beacon, args=(ws, output_uri, stop), kwargs={"returning": returning},
                               daemon=True)
@@ -184,6 +199,16 @@ def run(input_uri: str, output_uri: str, engine: str, timeout: int, contract: st
         # for a run that had already stopped.
         returning.set()
         result.pop("workspace_tar", None)
+        _t_engine = time.monotonic()
+        if isinstance(result, dict):
+            # WRITTEN BEFORE THE UPLOAD, so it travels inside the archive the upload sends. The
+            # upload's own cost is the one piece this cannot carry - it is still being paid when
+            # these bytes are sealed - and the home side already has it, as the gap between the
+            # mesher's "returning" beacon and the moment it collects the result.
+            result["vm_seconds"] = {
+                "input": round(_t_ready - _t_start, 1),
+                "engine_and_scope": round(_t_engine - _t_ready, 1),
+            }
         upload_result(output_uri, ws, result)
     finally:
         stop.set()

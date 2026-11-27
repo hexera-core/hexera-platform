@@ -4,6 +4,7 @@
 # Collaborates with: the six engine runners and adapters/mesh_execution/local.py.
 from __future__ import annotations
 
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any
@@ -211,6 +212,53 @@ def run_engine_local(workspace: Any, *, engine: str, timeout: int) -> dict:
     # measure passes alone are 14,921 s of silence against a PROGRESS_GRACE_S of 1,020. See
     # WATCH_EVERY_S.
     with watching_progress(workspace, phase=RETURN_PHASE):
+        # THE CUSTOMER'S BUNDLE IS BUILT HERE, ON THE MACHINE THAT HAS THE MESH, and then the parts
+        # only the bundle needed stay behind. See engines/bundled_delivery for the measurement: of
+        # the 124 GB job 606af55e sent home, 123 GB was the eight `processor*` trees, and the only
+        # thing at home that reads them is the tar that packs them into that bundle. Since 4558f0cc
+        # put the cells INTO the bundle, packing it at home means compressing 123 GB through a
+        # 4.0-CPU quota - about nineteen more minutes on every run - so this is what makes that fix
+        # affordable rather than a tuning change.
+        #
+        # BEFORE `scope_return` AND NOT AFTER, which is the whole reason it is in this block rather
+        # than beside the upload: that measure decides what rides home by compressing the workspace,
+        # and measuring a workspace that is about to lose 123 GB would price a return that never
+        # happens - and could give up the volume export to fit a ceiling it already clears.
+        #
+        # A FAILURE HERE CHANGES NOTHING. The workspace goes home exactly as it does today and the
+        # uploader builds the bundle itself, which is the behaviour this replaces. An economy may
+        # never cost a mesh that is already built, and this runs after one has been.
+        # AND EVERY STEP OF IT IS TIMED, for the reason `runtime/mesh_runner.run` gives where it
+        # times the machine's life: 1,284 s of job 606af55e's VM leg was unaccounted for, and an
+        # unmeasured window is a lever nobody can pull. These three are the whole of what happens
+        # between the engine returning and the archive being written.
+        _spent: dict = {}
+        if isinstance(out, dict) and int(out.get("rc", -1)) == 0:
+            _t = time.monotonic()
+            try:
+                from meshpipeline.engines.bundled_delivery import (
+                    build_bundle,
+                    narrow,
+                    worth_building,
+                )
+                from meshpipeline.engines.registry import get_spec
+                _spec = get_spec(engine)
+                # ONLY WHERE IT BUYS SOMETHING, which is the engine declaring `packed_only`. This
+                # function is shared by every engine and the other five gain nothing from packing
+                # here - they would pay a second compression pass and leave nothing behind for it.
+                _rec = build_bundle(workspace, _spec) if worth_building(_spec) else None
+                if _rec:
+                    out["bundled_delivery"] = {"bundle": _rec.get("bundle"),
+                                               "bytes": _rec.get("bytes"),
+                                               "cells": _rec.get("cells"),
+                                               "left_behind": narrow(workspace, _spec)}
+            except Exception:  # noqa: BLE001 - the bundle is also built at home; this is an economy
+                import logging
+                logging.getLogger(__name__).warning(
+                    "the deliverable bundle could not be built on the mesher; the workspace goes "
+                    "home whole and the uploader will build it there", exc_info=True)
+            _spent["bundle"] = round(time.monotonic() - _t, 1)
+        _t = time.monotonic()
         try:
             from meshpipeline.engines.return_scope import scope_return
             # THE RESULT TRAVELS WITH IT so the MEASURED cell count raises the ceiling: the mesher
@@ -222,8 +270,10 @@ def run_engine_local(workspace: Any, *, engine: str, timeout: int) -> dict:
             logging.getLogger(__name__).warning("return scope failed; the workspace goes as it is",
                                                 exc_info=True)
             scope = None
+        _spent["scope"] = round(time.monotonic() - _t, 1)
         if scope and isinstance(out, dict):
             out["return_scope"] = scope
+        _t = time.monotonic()
         if isinstance(out, dict):
             # WHAT IS SENT HOME, MEASURED: the worker sizes the bounded extraction of an FEA mesh by
             # these bytes (sandbox/result_limits.result_extraction_limits), so a
@@ -234,6 +284,8 @@ def run_engine_local(workspace: Any, *, engine: str, timeout: int) -> dict:
                 out["returned_bytes"] = returned_bytes(workspace)
             except Exception:  # noqa: BLE001 - a measurement, never a reason to fail a run
                 pass
+            _spent["measure"] = round(time.monotonic() - _t, 1)
+            out["return_seconds"] = _spent
     return out
 
 

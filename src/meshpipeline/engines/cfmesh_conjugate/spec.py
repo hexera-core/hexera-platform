@@ -423,10 +423,14 @@ SPEC = EngineSpec(
                 # actually having a mesh.
                 M("processor*", kind="glob", required=False),
                 # THE SOLVER SCAFFOLD `solver_case.write_solver_case` already writes on the
-                # VM - 0/fluid/{T,U,p_rgh,p}, 0/solid/T and its own README, which names every
+                # VM - 0/fluid/{T,U,p,p_rgh}, 0/solid/T and its own README, which names every
                 # patch as the mesh names it and writes the coupled condition out in full.
-                # Thirteen files, eight of which were shipping under constant/ and system/
-                # while the five field files and the README were left behind.
+                # THIRTEEN FILES, SEVEN AND SIX, counted by running it rather than by reading it:
+                # seven were already shipping under constant/ and system/ (the two
+                # thermophysicalProperties, constant/g, and fvSchemes + fvSolution for each
+                # region) and SIX were left behind, which is everything under `0/` - the five
+                # field files and the README. An earlier version of this comment said "eight ...
+                # and the five field files and the README", which is fourteen and the wrong split.
                 M("0", kind="dir", required=False),
                 M("conjugate_report.json"),
                 M("conjugate_plan.json"),
@@ -439,6 +443,12 @@ SPEC = EngineSpec(
             # constant/<region>/polyMesh and a decomposed one from processor*/.
             must_contain=("*/polyMesh/points", "*/polyMesh/faces",
                           "*/polyMesh/owner", "*/polyMesh/neighbour"),
+            # AND ONCE THE BUNDLE HOLDS THEM, THE RANK TREES NEED NOT TRAVEL. They are 123 GB of
+            # job 606af55e's 124 GB and the only thing at home that read them was the tar above.
+            # See engines/bundled_delivery for the other five home-side readers that were checked
+            # and for the one that was found - `gates.meshed_regions`, which now reads the verified
+            # bundle's own member names when the trees are not there.
+            packed_only=("processor*",),
         ),
         downstream=DownstreamTarget(
             solvers=("chtMultiRegionFoam (conjugate heat transfer)",),

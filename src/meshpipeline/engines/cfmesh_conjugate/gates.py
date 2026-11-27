@@ -51,18 +51,40 @@ def meshed_regions(ws: Path) -> list[str]:
     part way through writing, and a parallel splitMeshRegions writes its ranks independently -
     so "some rank has cells" is exactly the state that must not pass. Requiring all of them
     restores the original guarantee rather than weakening it to fit the new shape.
+
+    ...OR, WHEN THE RANKS ARE NOT HERE, FROM INSIDE THE BUNDLE THAT CARRIES THEM. This gate runs at
+    home (pipeline/executor.run_gates) and it was the ONE home-side reader of `processor*`, which is
+    why `engines/bundled_delivery` writes a record rather than simply leaving the trees behind: the
+    mesher now packs the customer's bundle where the mesh already is, so of job 606af55e's 124 GB
+    only about a gigabyte needs to travel. The record is read off the VERIFIED archive's own member
+    names, which is a stronger statement than this directory check - a directory holding an `owner`
+    file proves the mesher wrote one, while a member inside the bundle proves the customer is
+    getting it - and `cells_delivered` answers only while the recorded bundle is still there at its
+    recorded size, so a record that outlived its bundle speaks for nothing and this refuses instead.
     """
     base = ws / "constant"
     if not base.is_dir():
         return []
     ranks = sorted((d for d in ws.glob("processor*") if d.is_dir() and d.name[9:].isdigit()),
                    key=lambda d: int(d.name[9:]))
+    # THE FILESYSTEM FIRST, ALWAYS. A workspace that still has its own cells is judged on them and
+    # nothing about this gate moves; `cells_delivered` is None for every such workspace.
+    bundled: dict[str, list[str]] = {}
+    every_rank: set[str] = set()
+    if not ranks:
+        from meshpipeline.engines.bundled_delivery import cells_delivered
+        bundled = cells_delivered(ws) or {}
+        # EVERY RANK THE BUNDLE KNOWS OF is the union over its regions, computed once. A region
+        # listed for some of them and not the others is the half-written state this gate exists to
+        # refuse, wherever the cells are read from. A merged delivery records one rank, named "".
+        every_rank = {r for names in bundled.values() for r in names}
 
     def _has_cells(name: str) -> bool:
         if (base / name / "polyMesh" / "owner").is_file():
             return True
-        return bool(ranks) and all(
-            (r / "constant" / name / "polyMesh" / "owner").is_file() for r in ranks)
+        if ranks:
+            return all((r / "constant" / name / "polyMesh" / "owner").is_file() for r in ranks)
+        return bool(every_rank) and set(bundled.get(name) or ()) == every_rank
 
     return sorted(d.name for d in base.iterdir()
                   if d.is_dir() and d.name != "polyMesh" and _has_cells(d.name))

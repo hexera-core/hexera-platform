@@ -325,6 +325,36 @@ def _build_plan(job_id: uuid.UUID, workspace: Path, scratch: list[Path],
     verify_workspace_contract(workspace, spec)
     _recipe = spec.deliverable
 
+    # THE ONE THE MESHER ALREADY PACKED, IF IT PACKED ONE. `engines/bundled_delivery` builds this
+    # bundle on the machine that has the mesh, for the reason its header measures: of the 124 GB job
+    # 606af55e sent home, 123 GB was the per-rank trees that exist in this workspace only so that
+    # this loop can pack them, and compressing them here means doing it through a 4.0-CPU quota -
+    # about nineteen minutes a run now that the cells are in the bundle at all.
+    #
+    # IT IS STILL VERIFIED HERE, below, by exactly the same `verify_archive` call: a file found in a
+    # workspace is evidence and not authority, and this is the side that answers to the customer.
+    # `bundled_file` checks the record names this engine's own bundle and that the file is there at
+    # the size that was recorded, so another engine's archive cannot be delivered under this label.
+    _ready = None
+    try:
+        from meshpipeline.engines.bundled_delivery import bundled_file
+        _ready = bundled_file(workspace, spec)
+    except Exception:  # noqa: BLE001 - a missing or unreadable record means "build it here"
+        _ready = None
+    if _ready is not None:
+        verify_archive(_ready, spec)
+        logger.info("artifact_uploader: delivering the bundle the mesher packed (%d bytes) - %s",
+                    _ready.stat().st_size, _ready.name)
+        # THE SAME ORDER AS THE OTHER PATH - viewer, then bundle - because the plan is delivered in
+        # order and the two paths must produce the same delivery, not merely the same artifacts.
+        plan.extend(_viewer_plan(job_id, workspace, spec, scratch))
+        plan.append(_Planned(ArtifactType.mesh_bundle, ArtifactType.mesh_bundle.value,
+                             f"jobs/{job_id}/{_recipe.bundle}",
+                             "application/gzip", _ready,
+                             required=is_required_class(spec.name,
+                                                        ArtifactType.mesh_bundle.value)))
+        return plan
+
     _fd, _tmpname = tempfile.mkstemp(prefix="bundle_", suffix=".tar.gz", dir=str(workspace))
     os.close(_fd)
     _tmp = Path(_tmpname)
@@ -397,9 +427,25 @@ def _build_plan(job_id: uuid.UUID, workspace: Path, scratch: list[Path],
     verify_archive(_tmp, spec)
     scratch.append(_tmp)
 
-    # The VIEWER payload, rendered here because this process owns the engine workspace. The API
-    # has no workspace in a hosted deployment, so anything it needs to show must become durable
-    # before this one is cleaned up.
+    plan.extend(_viewer_plan(job_id, workspace, spec, scratch))
+    plan.append(_Planned(ArtifactType.mesh_bundle, ArtifactType.mesh_bundle.value,
+                         f"jobs/{job_id}/{_recipe.bundle}",
+                         "application/gzip", _tmp,
+                         required=is_required_class(spec.name,
+                                                    ArtifactType.mesh_bundle.value)))
+    return plan
+
+
+def _viewer_plan(job_id: uuid.UUID, workspace: Path, spec, scratch: list[Path]) -> list[_Planned]:
+    """The VIEWER payload, rendered here because this process owns the engine workspace. The API has
+    no workspace in a hosted deployment, so anything it needs to show must become durable before
+    this one is cleaned up.
+
+    ITS OWN FUNCTION so that both bundle paths produce it identically. `_build_plan` either packs
+    the bundle here or delivers the one the mesher packed (engines/bundled_delivery), and a viewer
+    payload built on only one of those two paths is a mesh delivered without a view.
+    """
+    from meshpipeline.application.artifact_policy import is_required_class
     from meshpipeline.application.viewer_payload import (
         VIEWER_LOGICAL_KEY,
         ViewerPayloadError,
@@ -424,17 +470,11 @@ def _build_plan(job_id: uuid.UUID, workspace: Path, scratch: list[Path],
     _vpath = Path(_vname)
     _vpath.write_text(json.dumps(_payload, sort_keys=True, default=str))
     scratch.append(_vpath)
-    plan.append(_Planned(ArtifactType.viewer_data, VIEWER_LOGICAL_KEY,
-                         f"jobs/{job_id}/{VIEWER_LOGICAL_KEY}.json",
-                         "application/json", _vpath,
-                         required=is_required_class(spec.name, VIEWER_LOGICAL_KEY,
-                                                    "structural" if _fea else "")))
-    plan.append(_Planned(ArtifactType.mesh_bundle, ArtifactType.mesh_bundle.value,
-                         f"jobs/{job_id}/{_recipe.bundle}",
-                         "application/gzip", _tmp,
-                         required=is_required_class(spec.name,
-                                                    ArtifactType.mesh_bundle.value)))
-    return plan
+    return [_Planned(ArtifactType.viewer_data, VIEWER_LOGICAL_KEY,
+                     f"jobs/{job_id}/{VIEWER_LOGICAL_KEY}.json",
+                     "application/json", _vpath,
+                     required=is_required_class(spec.name, VIEWER_LOGICAL_KEY,
+                                                "structural" if _fea else ""))]
 
 
 def _orphan_descriptor(p: _Planned, stored, delivery_attempt: int) -> OrphanObject:

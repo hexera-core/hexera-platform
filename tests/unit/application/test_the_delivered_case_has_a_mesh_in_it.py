@@ -118,9 +118,11 @@ def test_the_rank_count_is_not_written_into_the_recipe(tmp_path):
 
 
 def test_the_solver_scaffold_travels_when_the_vm_wrote_one(tmp_path):
-    """`solver_case.write_solver_case` writes 0/fluid/{T,U,p_rgh,p}, 0/solid/T and a README on the
-    VM. Eight of its thirteen files were shipping under constant/ and system/; the five field files
-    and the README were left behind, so the case arrived without the fields it documents."""
+    """`solver_case.write_solver_case` writes 0/fluid/{T,U,p,p_rgh}, 0/solid/T and a README on the
+    VM. It writes thirteen files, counted by running it: SEVEN were already shipping under
+    constant/ and system/ (the two thermophysicalProperties, constant/g, and fvSchemes + fvSolution
+    for each region) and SIX were left behind - everything under `0/`, which is the five field
+    files and the README. So the case arrived without the fields its own README documents."""
     ws = _case(tmp_path / "ws", ranks=4)
     (ws / "0" / "fluid").mkdir(parents=True)
     (ws / "0" / "fluid" / "T").write_text("x")

@@ -142,6 +142,21 @@ class Deliverable:
     # Abaqus deck has no `owner` file and must not be held to one. Empty means "no content
     # rule", which is every engine that has not stated one.
     must_contain: tuple[str, ...] = ()
+    # WHICH MEMBERS ONLY THE BUNDLE NEEDED, as globs, so they can stay on the machine that packed it.
+    #
+    # MEASURED, job 606af55e: of the 124 GB that came home, 123 GB was the eight `processor*` trees,
+    # and the only thing at home that read them was the tar that packs them into this bundle. With
+    # the cells now IN the bundle (see must_contain above), packing it at home means compressing
+    # those 123 GB through a 4.0-CPU quota - about nineteen minutes a run - so `engines/dispatch`
+    # packs it on the mesher and `engines/bundled_delivery.narrow` leaves these behind.
+    #
+    # ENGINE-DECLARED, AND EMPTY MEANS NOTHING IS LEFT BEHIND, which is every engine that has not
+    # stated otherwise. Only the engine can know that a member has no other reader: for this one,
+    # `exact_surface` reads the boundary-index sidecar rather than the cells, the index and quality
+    # writers run on the mesher, and `delivered_regions` globs `constant/*` - all checked, and
+    # recorded in bundled_delivery's own header, along with the one home-side reader that was found
+    # and what was done about it.
+    packed_only: tuple[str, ...] = ()
     # WHAT THE USER IS DOWNLOADING, in their words ("OpenFOAM case", "Abaqus deck").
     # Engine-declared, because the engine is what produces it - the UI used to hardcode
     # "OpenFOAM case" for every engine, which quietly mislabelled gmsh's Abaqus deck.
