@@ -428,3 +428,35 @@ def write_passages_with_a_transverse_join(path, width: int = 1280, height: int =
     path.parent.mkdir(parents=True, exist_ok=True)
     im.save(path, format="PNG")
     return path
+
+
+def write_passages_in_groups_of_three(path, width: int = 1280, height: int = 960, *,
+                                      cells_px: int = 4, period_px: int = 62, duty: float = 0.5,
+                                      short_share: float = 0.55):
+    """PASSAGES AT ONE PITCH WITH A GROUP-OF-THREE SUPER-STRUCTURE OVER THEM, which is what a
+    diagonal lattice draws as once the frame is magnified enough to resolve it.
+
+    Every passage stands `period_px` from the next - so the ink's own runs are PERFECTLY REGULAR
+    and their median IS the pitch - but every third one reaches only `short_share` of the frame's
+    height, so the ink profile summed down the columns repeats every THREE pitches rather than
+    every one. Autocorrelation then peaks at 3p outright, not in a tie with p.
+
+    THIS IS THE SHAPE THAT COST JOB 606af55e ITS REVIEW. That run's through_the_plate zoom measured
+    21 run spacings of 62.0 px with a spread of 0.016 and a correlation peak at lag 185 - 2.98
+    times the spacing - and published 603.92 um as the period of a part whose passages were
+    measured at 100.63 um, so a clean picture of 21 passages was refused for showing "a different
+    feature of the same part".
+    """
+    from PIL import Image, ImageDraw
+
+    w, h = int(width), int(height)
+    im = Image.new("RGB", (w, h), BACKGROUND)
+    d = ImageDraw.Draw(im)
+    run = max(1, int(round(int(period_px) * float(duty))))
+    short = max(1, int(round(h * float(short_share))))
+    for k, bx in enumerate(range(0, w, int(period_px))):
+        tall = h if k % 3 else short
+        _grid(d, [bx, 0, min(bx + run - 1, w - 1), tall - 1], int(cells_px))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    im.save(path, format="PNG")
+    return path

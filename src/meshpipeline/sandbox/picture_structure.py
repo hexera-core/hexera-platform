@@ -312,6 +312,44 @@ ACF_MIN = 0.40
 #: was measured to refuse.
 PERIOD_MATCH = 2.5
 
+#: HOW CLOSE A LAG HAS TO BE TO A WHOLE MULTIPLE OF THE RUN SPACING to be read as its harmonic
+#: rather than as a period of its own. Job 606af55e's through_the_plate zoom measured a peak at
+#: lag 185 against a 62.0 px spacing, which is 2.98, and the synthetic frame built from it
+#: (`write_passages_in_groups_of_three`) reads 186 against 62.0, exactly 3.00. A tenth of a period
+#: is room for both; a lag at 2.5x or 3.4x of the spacing is not a harmonic of it and keeps the lag.
+HARMONIC_TOLERANCE = 0.1
+#: ...AND HOW ALIKE THE SPACINGS HAVE TO BE for their median to be believed over the lag. `spread`
+#: is (p90 - p10) / median, so this says the middle eight tenths of the spacings sit within a
+#: quarter of the median.
+#:
+#: THIS IS THE BAR THAT DOES THE WORK, and the measured numbers say why it rather than the multiple
+#: test above. Job 606af55e's frame read a spread of 0.016 - 21 spacings, every one alike - and the
+#: synthetic one reads 0.000. The doublet fins this must not disturb read 0.612, and their lag of
+#: 49 px against a 24.5 px median is a whole multiple too, EXACTLY 2.00, so the multiple test alone
+#: would have believed the median that was measured the hard way to be wrong. Regularity is what
+#: separates the two cases, and it separates them by a factor of forty.
+SPACING_REGULAR = 0.25
+
+
+def is_harmonic(lag: float, spacing: float, spread: float) -> bool:
+    """Whether a correlation peak at `lag` is a harmonic of a run spacing rather than a period.
+
+    A profile periodic at p is periodic at 2p and 3p as well, and the smallest-lag-at-the-peak
+    rule in `_profile_period` only orders those when they TIE - a part with a group-of-three
+    super-structure correlates BETTER at 3p than at p, so the peak lands on the harmonic outright.
+
+    Two conditions, and the measured cases show both are needed: the lag divides by the spacing a
+    whole number of times (within HARMONIC_TOLERANCE), AND the spacings are alike enough
+    (SPACING_REGULAR) for their median to be worth believing. The doublet fins of job 0ff6f9e5
+    satisfy the first exactly and fail the second.
+    """
+    med, lag = float(spacing), float(lag)
+    if med <= 0.0 or lag <= 0.0 or float(spread) > SPACING_REGULAR:
+        return False
+    ratio = lag / med
+    whole = round(ratio)
+    return whole >= 2 and abs(ratio - whole) <= HARMONIC_TOLERANCE
+
 #: HOW MUCH OF THE FRAME THE REPEAT ITSELF HAS TO REACH ACROSS, as a fraction of the frame.
 #:
 #: WHY AN INK FRACTION IS THE WRONG INSTRUMENT FOR THIS, measured 2026-11-17 through the
@@ -1001,6 +1039,27 @@ def _profile_period(profile, *, min_period_px: float = MIN_PERIOD_PX, metal=None
             # eight times the passages, and it is refused. The run spacing stays published beside
             # it because it is what a reader counting marks on a scan row would get.
             out["period_px"] = float(lag)
+            # ...UNLESS THE LAG IS A HARMONIC OF A REGULAR SPACING, which is the same mistake in
+            # the other direction and cost job 606af55e its review. A profile periodic at p is
+            # periodic at 2p and 3p, and the smallest-lag-at-the-peak rule above only orders them
+            # when they TIE: a part with a group-of-three super-structure correlates better at 3p
+            # than at p, so the peak lands on the harmonic outright.
+            #
+            # MEASURED, that job's through_the_plate zoom: 21 run spacings of 62.0 px with a
+            # spread of 0.016 - every one alike - and a peak at lag 185, which is 2.98 times the
+            # spacing. 62 px at that frame's 3.2645 um/px is 202.4 um, the plate's real passage
+            # pitch; 185 px is 603.92 um, and the ratio test saw six times the plan's 100.631 um
+            # feature pitch and called a clean picture of 21 passages "a different feature of the
+            # same part". It only appeared once the zoom window was sized from the post-layer cell,
+            # which is what made the super-structure resolvable at all.
+            #
+            # WHAT TELLS THE TWO CASES APART IS ALREADY ON THE FRAME, and `is_harmonic` holds the
+            # arithmetic: the doublet fins alternate short and long spacings, so their median lies
+            # and `spread` is of order one (0.612 measured); this plate's spacings are all alike at
+            # 0.016. Note that the doublets' lag is a whole multiple of their median TOO, exactly
+            # 2.00, so regularity rather than the multiple is what does the separating here.
+            if is_harmonic(lag, med, out["spread"]):
+                out["period_px"] = round(med, 2)
     # AND THE SPAN OF THE PART THAT REPEATS, which needs the period and so cannot be settled
     # before it. The wall is measured INSIDE that span for the reason the margins of a frame are
     # not walls, and now for a second one: the ink either side of the repeat is not the repeat.
@@ -1110,6 +1169,8 @@ def wall_in_cells(bare_run_px: float, drawn_cell_px: float) -> float:
     return b / c
 
 
-__all__ = ["ACF_MIN", "EXTENT_MIN", "INK_MAX", "MIN_PERIOD_PX", "MIN_REPEATS", "PERIOD_MATCH",
-           "PLAN_CELLS_ACROSS_A_WALL", "SCAN_AXES", "WALL_CELLS_MIN", "ink_structure",
+__all__ = ["ACF_MIN", "EXTENT_MIN", "HARMONIC_TOLERANCE", "INK_MAX", "MIN_PERIOD_PX",
+           "MIN_REPEATS", "PERIOD_MATCH",
+           "PLAN_CELLS_ACROSS_A_WALL", "SCAN_AXES", "SPACING_REGULAR", "WALL_CELLS_MIN",
+           "ink_structure", "is_harmonic",
            "period_in_cells", "period_matches", "wall_in_cells", "worst_contrast"]
