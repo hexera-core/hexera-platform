@@ -8,6 +8,7 @@ import logging
 import pathlib
 import tarfile
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 
 import meshpipeline.parallel_gzip as parallel_gzip
 
@@ -138,32 +139,59 @@ def _bundle_beside(ws: pathlib.Path) -> dict | None:
     return rec
 
 
+def _upload(gcs, bucket: str, key: str, path: pathlib.Path) -> None:
+    gcs.bucket(bucket).blob(key, chunk_size=RESULT_UPLOAD_CHUNK_BYTES) \
+        .upload_from_filename(str(path), content_type="application/gzip",
+                              timeout=RESULT_UPLOAD_TIMEOUT_S)
+
+
 def upload_result(output_uri: str, workspace: str, result: dict) -> None:
     gcs = storage_client()
     out_bucket, out_key = split_gs(output_uri)
     ws = pathlib.Path(workspace)
     beside = _bundle_beside(ws)
-    with tempfile.TemporaryDirectory(prefix="mesh_out_", dir=str(ws.parent)) as tmp:
-        archive = pathlib.Path(tmp) / "output.tar.gz"
-        write_result_archive(ws, archive,
-                             skip=frozenset({str(beside["bundle"])}) if beside else frozenset())
-        gcs.bucket(out_bucket).blob(out_key, chunk_size=RESULT_UPLOAD_CHUNK_BYTES) \
-            .upload_from_filename(str(archive), content_type="application/gzip",
-                                  timeout=RESULT_UPLOAD_TIMEOUT_S)
     from meshpipeline.artifact_keys import bundle_key_beside, result_key_beside
-    if beside is not None:
-        # BEFORE THE RESULT DOCUMENT, always. The result is what the home side reads to learn
-        # there is a second object, so an upload that died between them must leave a result that
-        # does not promise one - the home side would then find the bundle missing from BOTH
-        # places and read a delivered mesh as hollow.
+
+    # THE BUNDLE GOES WHILE THE ARCHIVE IS STILL BEING WRITTEN. It is 23.1 GB against the
+    # archive's ~1 GB, and it is a finished, verified, renamed file the moment `build_bundle`
+    # returns - so the whole of the archive's gzip pass and its own upload fit inside the
+    # bundle's transfer instead of queueing behind it. Nothing after this point touches those
+    # bytes: `narrow` deletes the processor trees and `write_result_archive` is told to skip the
+    # bundle by name.
+    #
+    # ONE THREAD AND NOT A POOL, because there is exactly one object and the join has to be
+    # unconditional - see where it is awaited.
+    pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="bundleup") if beside else None
+    sending = None
+    bundle_key = ""
+    if beside is not None and pool is not None:
         bundle_key = bundle_key_beside(out_key)
-        gcs.bucket(out_bucket).blob(bundle_key, chunk_size=RESULT_UPLOAD_CHUNK_BYTES) \
-            .upload_from_filename(str(ws / str(beside["bundle"])),
-                                  content_type="application/gzip",
-                                  timeout=RESULT_UPLOAD_TIMEOUT_S)
-        result = {**result, "bundle_beside": {**beside, "key": bundle_key}}
-        logger.info("the %s bundle (%s bytes) travels beside the archive as %s",
-                    beside.get("bundle"), beside.get("bytes"), bundle_key)
+        sending = pool.submit(_upload, gcs, out_bucket, bundle_key,
+                              ws / str(beside["bundle"]))
+    try:
+        with tempfile.TemporaryDirectory(prefix="mesh_out_", dir=str(ws.parent)) as tmp:
+            archive = pathlib.Path(tmp) / "output.tar.gz"
+            write_result_archive(
+                ws, archive,
+                skip=frozenset({str(beside["bundle"])}) if beside else frozenset())
+            _upload(gcs, out_bucket, out_key, archive)
+        if sending is not None:
+            # BEFORE THE RESULT DOCUMENT, always, and this `result()` is what enforces it. The
+            # result is what the home side reads to learn there is a second object, so an upload
+            # that died must leave a result that does not promise one - the home side would then
+            # find the bundle missing from BOTH places and read a delivered mesh as hollow. A
+            # failed upload raises HERE, out of `upload_result`, exactly as it did when this was
+            # a straight-line call.
+            sending.result()
+            result = {**result, "bundle_beside": {**beside, "key": bundle_key}}
+            logger.info("the %s bundle (%s bytes) travelled beside the archive as %s",
+                        beside.get("bundle"), beside.get("bytes"), bundle_key)
+    finally:
+        # `wait=False` with nothing to cancel: the one future is either joined above or the
+        # archive raised, and a run whose archive failed must not be held by 23 GB nobody will
+        # read. The process is about to end either way.
+        if pool is not None:
+            pool.shutdown(wait=False, cancel_futures=True)
     res_key = result_key_beside(out_key)
     gcs.bucket(out_bucket).blob(res_key).upload_from_string(
         json.dumps(result), content_type="application/json")

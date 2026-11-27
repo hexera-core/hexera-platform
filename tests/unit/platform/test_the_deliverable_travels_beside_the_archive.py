@@ -138,9 +138,15 @@ def test_the_key_does_not_depend_on_the_engine_s_naming():
 
 # ---------------------------------------------------------------- the wiring, both sides
 
-def test_the_uploader_sends_the_bundle_before_it_promises_it():
+def test_the_uploader_joins_the_bundle_before_it_promises_it():
     """The result is what tells home a second object exists. Promise last, or a half-finished
-    upload leaves home looking for a bundle that is in neither place."""
+    upload leaves home looking for a bundle that is in neither place.
+
+    The upload runs on its own thread now, so the ORDERING LIVES IN THE JOIN rather than in the
+    call: `sending.result()` is what makes a failed upload raise before the result is written.
+    The behaviour itself is pinned by `test_a_bundle_upload_that_fails_raises_and_promises_nothing`;
+    this reads the shape so the join cannot be dropped while those still pass on a fast machine.
+    """
     import inspect
 
     from meshpipeline.adapters.mesh_execution import gcs_exchange as GX
@@ -148,9 +154,10 @@ def test_the_uploader_sends_the_bundle_before_it_promises_it():
     src = inspect.getsource(GX.upload_result)
     assert "_bundle_beside(ws)" in src
     assert "skip=frozenset({str(beside[\"bundle\"])})" in src
-    upload = src.index("upload_from_filename(str(ws / str(beside[\"bundle\"]))")
+    assert src.index("pool.submit(_upload") < src.index("write_result_archive("),         "the bundle should start before the archive is written"
+    join = src.index("sending.result()")
     promise = src.index('"bundle_beside"')
-    assert upload < promise, "the bundle must be uploaded before the result names it"
+    assert join < promise, "a failed bundle upload must raise before the result names it"
     assert promise < src.index("res_key"), "and the result document is written last"
 
 
@@ -173,3 +180,118 @@ def test_the_home_side_refuses_a_name_that_cannot_be_a_file():
 
     src = inspect.getsource(CRC)
     assert '"/" in _name' in src and '_name in (".", "..")' in src
+
+
+# ---------------------------------------------------------------- the bundle goes first
+
+class _Blob:
+    """Records what was uploaded, when, and how long it took - the order is the subject."""
+
+    def __init__(self, store, key):
+        self._store, self._key = store, key
+
+    def upload_from_filename(self, path, **_k):
+        import time
+        self._store.append(("file", self._key, time.perf_counter()))
+        hold = self._store.holds.get(self._key, 0.0)
+        if self._store.fails == self._key:
+            raise RuntimeError(f"the upload failed: {self._key}")
+        if hold:
+            time.sleep(hold)
+        self._store.append(("done", self._key, time.perf_counter()))
+
+    def upload_from_string(self, body, **_k):
+        import time
+        self._store.append(("json", self._key, time.perf_counter()))
+        self._store.documents[self._key] = body
+
+
+class _Store(list):
+    def __init__(self):
+        super().__init__()
+        self.holds: dict = {}
+        self.fails = ""
+        self.documents: dict = {}
+
+    def bucket(self, _name):
+        return self
+
+    def blob(self, key, **_k):
+        return _Blob(self, key)
+
+
+@pytest.fixture
+def exchange(monkeypatch, ws):
+    from meshpipeline.adapters.mesh_execution import gcs_exchange as GX
+
+    store = _Store()
+    monkeypatch.setattr(GX, "storage_client", lambda: store)
+    return store, ws
+
+
+def _keys(store, kind):
+    return [k for w, k, _t in store if w == kind]
+
+
+def test_the_bundle_starts_uploading_before_the_archive_is_even_written(exchange):
+    """It is 23.1 GB against the archive's ~1 GB. Queueing it behind the archive's gzip pass
+    spends the whole of that pass doing nothing with the wire."""
+    from meshpipeline.adapters.mesh_execution import gcs_exchange as GX
+
+    store, ws = exchange
+    store.holds["jobs/j/bundle.tar.gz"] = 0.30
+    GX.upload_result("gs://bkt/jobs/j/output.tar.gz", str(ws), {"rc": 0})
+    started = _keys(store, "file")
+    assert started[0] == "jobs/j/bundle.tar.gz", "the archive still goes first"
+    assert "jobs/j/output.tar.gz" in started
+
+
+def test_the_archive_finishes_inside_the_bundle_s_transfer(exchange):
+    from meshpipeline.adapters.mesh_execution import gcs_exchange as GX
+
+    store, ws = exchange
+    store.holds["jobs/j/bundle.tar.gz"] = 0.40
+    GX.upload_result("gs://bkt/jobs/j/output.tar.gz", str(ws), {"rc": 0})
+    at = {(w, k): t for w, k, t in store}
+    # the archive's own upload completed before the bundle's did - i.e. it overlapped
+    assert at[("done", "jobs/j/output.tar.gz")] < at[("done", "jobs/j/bundle.tar.gz")]
+
+
+def test_the_result_document_is_written_last_and_names_the_bundle(exchange):
+    from meshpipeline.adapters.mesh_execution import gcs_exchange as GX
+
+    store, ws = exchange
+    GX.upload_result("gs://bkt/jobs/j/output.tar.gz", str(ws), {"rc": 0})
+    assert _keys(store, "json") == ["jobs/j/result.json"]
+    assert store.index(("json", "jobs/j/result.json",
+                        [t for w, k, t in store
+                         if (w, k) == ("json", "jobs/j/result.json")][0])) == len(store) - 1
+    doc = json.loads(store.documents["jobs/j/result.json"])
+    assert doc["bundle_beside"]["key"] == "jobs/j/bundle.tar.gz"
+    assert doc["bundle_beside"]["bundle"] == BUNDLE
+
+
+def test_a_bundle_upload_that_fails_raises_and_promises_nothing(exchange):
+    """THE INVARIANT THE OVERLAP MUST NOT BREAK. A result that names a bundle which is not there
+    makes the home side look for it in both places and read a delivered mesh as hollow."""
+    from meshpipeline.adapters.mesh_execution import gcs_exchange as GX
+
+    store, ws = exchange
+    store.fails = "jobs/j/bundle.tar.gz"
+    with pytest.raises(RuntimeError, match="the upload failed"):
+        GX.upload_result("gs://bkt/jobs/j/output.tar.gz", str(ws), {"rc": 0})
+    assert store.documents == {}, "a result document was written for a bundle that never landed"
+
+
+def test_a_workspace_with_no_bundle_uploads_exactly_two_objects(exchange, tmp_path):
+    """No pool, no second object, and the same two writes as before any of this."""
+    from meshpipeline.adapters.mesh_execution import gcs_exchange as GX
+
+    store, _ws = exchange
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    (plain / "faces").write_text("x")
+    GX.upload_result("gs://bkt/jobs/j/output.tar.gz", str(plain), {"rc": 0})
+    assert _keys(store, "file") == ["jobs/j/output.tar.gz"]
+    doc = json.loads(store.documents["jobs/j/result.json"])
+    assert "bundle_beside" not in doc
