@@ -299,14 +299,80 @@ def test_a_layer_termination_is_spread_over_more_than_one_face():
     assert f"nBufferCellsNoExtrude       {L.BUFFER_CELLS_NO_EXTRUDE};" in _dict_text()
 
 
-def test_the_repair_iterations_are_still_all_there():
-    """The buffer is not a licence to stop early. The same sweep measured what stopping early
-    costs: the illegal-face trajectory with the buffer runs 1608, 216, 136, 76, 74, 74, 50, 52,
-    2, 2 - so cutting `nLayerIter` to 3 would leave 76 illegal faces instead of 2 to save time
-    this chain does not need, having come in at 35.5 minutes against a 60-minute target."""
+def test_the_repair_iterations_stop_after_the_first_relaxed_one():
+    """FOUR, AND THE FOURTH IS THE FIRST RELAXED ONE.
+
+    This used to assert ten, on a two-across plate's trajectory - 1608, 216, 136, 76, 74, 74,
+    50, 52, 2, 2 - where stopping at three left 76 illegal faces instead of 2. That reading was
+    about THREE, which is a different dictionary (see below), and it was taken on a rig.
+
+    ON THE PART, job b8f09ae9 (279,294,127 cells), from its own snappyHexMesh.log:
+
+        iteration   0        1       2       3       4       5       6       7       8       9
+        illegal  372431   14094      79      48      38      30      26      26       9       8
+        coverage 91.1145 90.7214 90.7198 90.7191 90.7186 90.7183 90.7180 90.7178 90.7175 90.7174
+
+    Iterations 4 to 9 are six tenths of the pass. They take illegal faces 38 -> 8 and coverage
+    DOWN 0.0017 of a point. 48 faces over 279 M cells is 0.17 per million against
+    ILLEGAL_PER_MILLION_CEILING 200.0, the only ceiling this module judges the count by.
+
+    THIS IS NOT A TRADE, because repair only ever removes layers: coverage falls monotonically
+    from iteration 0 in all twelve variants of
+    runs/layer_sweep-two_scale_plate_ported-2a-L3.json, so four finishes HIGHER than ten.
+
+    AND IT IS NOT AN EXTRAPOLATION. `nLayerIter` is only the loop bound in snappyLayerDriver.C,
+    the relaxed switch reads only `iteration` and `nRelaxedIter`, and the one `break` reads only
+    `nTotChanged` - so iterations 0-3 above ARE the four-iteration run on the real part.
+    """
     text = _dict_text()
-    assert "nLayerIter                 10;" in text
-    assert "nRelaxedIter                3;" in text
+    assert L.LAYER_ITER == 4
+    assert L.N_RELAXED_ITER == 3
+    assert f"nLayerIter                 {L.LAYER_ITER:>2};" in text
+    assert f"nRelaxedIter                {L.N_RELAXED_ITER};" in text
+
+
+def test_four_is_above_the_relaxed_count_so_the_relaxed_dictionary_is_still_read():
+    """THREE IS NOT ONE LESS THAN FOUR HERE - IT IS A DIFFERENT DICTIONARY.
+
+    snappyLayerDriver picks the quality bar with
+    `iteration < nRelaxedIter ? motionDict : motionDict.subDict("relaxed")`. At nLayerIter 3 with
+    nRelaxedIter 3 that ternary never selects the relaxed sub-dictionary, so RELAXED_SHAPE is
+    still written to the file and never read, and OpenFOAM validates neither against the other
+    and prints no warning. The clamp in `_layer_iter` refuses it for that reason, which is why
+    the guard is `>` and not `>=`.
+    """
+    assert L.LAYER_ITER > L.N_RELAXED_ITER
+    # the relaxed block is still rendered, so the one relaxed iteration has something to read
+    assert "relaxed" in _dict_text()
+
+
+def test_the_iteration_count_is_settable_without_a_deploy():
+    """The one number in this dictionary that could not be measured on the real geometry without
+    a code change, which is exactly what LAYER_FEATURE_ANGLE_ENV exists to avoid for the angle.
+    Out of range or unreadable, the shipped value stands - and at or below nRelaxedIter is out of
+    range, because it silently deletes the relaxed phase."""
+    import os
+    from importlib import reload
+
+    def _with(value):
+        old = os.environ.get(L.LAYER_ITER_ENV)
+        os.environ[L.LAYER_ITER_ENV] = value
+        try:
+            return reload(L).LAYER_ITER
+        finally:
+            if old is None:
+                os.environ.pop(L.LAYER_ITER_ENV, None)
+            else:
+                os.environ[L.LAYER_ITER_ENV] = old
+            reload(L)
+
+    assert _with("6") == 6
+    assert _with("10") == 10
+    assert _with("3") == L.LAYER_ITER_DEFAULT, "at nRelaxedIter the relaxed phase never runs"
+    assert _with("0") == L.LAYER_ITER_DEFAULT
+    assert _with("11") == L.LAYER_ITER_DEFAULT
+    assert _with("banana") == L.LAYER_ITER_DEFAULT
+    assert _with("1e999") == L.LAYER_ITER_DEFAULT
 
 
 def test_the_case_guard_still_accepts_both_dictionaries():

@@ -406,6 +406,85 @@ def _feature_angle() -> int:
 
 FEATURE_ANGLE = _feature_angle()
 
+#: HOW MANY TIMES THE MOVER MAY REPAIR WHAT IT GREW, and until now this was a bare literal in the
+#: renderer with no name, no comment and no override - the only number in this dictionary that
+#: could not be measured on the real part without a deploy.
+#:
+#: FOUR, NOT TEN. Every figure below is labelled with the job it came from, because two runs of
+#: this plate differ by twelve thousand cells and their numbers have been mixed up before.
+#:
+#:   JOB b8f09ae9 (279,294,127 cells), its own snappyHexMesh.log, ten iterations:
+#:     iteration   0        1       2       3       4       5       6       7       8       9
+#:     illegal  372431   14094      79      48      38      30      26      26       9       8
+#:     coverage 91.1145 90.7214 90.7198 90.7191 90.7186 90.7183 90.7180 90.7178 90.7175 90.7174
+#:
+#: Iterations 4 to 9 take illegal faces from 38 to 8 and coverage DOWN by 0.0017 of a point, for
+#: six tenths of the pass. At four iterations this run would have finished on 48 illegal faces -
+#: 0.17 per million against `ILLEGAL_PER_MILLION_CEILING` 200.0, which is 0.09% of the only
+#: ceiling this module judges the count by - and at a coverage 0.0017 points HIGHER than it did.
+#:
+#: REPAIR ONLY EVER REMOVES LAYERS. That is the part that makes this a straight win rather than a
+#: trade. Coverage falls monotonically from iteration 0 in all twelve variants recorded in
+#: runs/layer_sweep-two_scale_plate_ported-2a-L3.json; for `fa120_s5`, which is the shipped pair,
+#: the curve is 96.0322 95.6901 95.6640 95.6356 95.6119 95.5850 95.5645 95.5471 95.5424 95.5376,
+#: so truncating at four FINISHES 0.098 of a point higher. The iterations buy exactly one thing,
+#: a lower illegal count, and they pay for it in layers.
+#:
+#: AND IT CANNOT REACH THE COVERAGE FLOOR ANYWAY. `COVERAGE_FLOOR_PCT` is 92.0 and both runs of
+#: this plate finish at 90.64 / 90.72, because 8.89 of the 9.28 missing points are declined up
+#: front by `featureAngle` and never offered to the mover at all (job b8f09ae9: offered 91.1145%,
+#: kept 99.5641% of what it offered). No number of repair iterations can recover a face that was
+#: never extruded.
+#:
+#: THE DEFERRAL THAT HELD THIS AT TEN IS SPENT. Commit 47a5293e left it at ten on purpose and said
+#: why: "the time lever waits for a production layer-pass time measured with the smoothing off,
+#: rather than two variables moving at once". 82c39ff2 put `SMOOTH_SURFACE_NORMALS` back to 5
+#: after the part refuted the rig, so there is one variable again, and the production time at 5 is
+#: on record - job 22ac7054's layer pass at 2579.65 s, of which 47a5293e measures 25 of 44.9
+#: minutes as the relaxed phase.
+#:
+#: WHAT THIS DOES NOT CLAIM. The saving is an estimate, not a measurement of a four-iteration run.
+#: Iterations are not equal cost: the floor sweep at :111-123 measures four at 69 s against ten at
+#: 122 s, and runs/layer_sweep-two_scale_plate_ported-2a-L3.json gives five at 51.81 s against ten
+#: at 85.5-87.1 s, so the marginal iteration is about half the average one and the six dropped
+#: iterations are 43-56% of the pass rather than 60%.
+#:
+#: IT IS VERIFIABLE WITHOUT RE-MESHING, and that is why four is safe to ship. `nLayerIter` appears
+#: in snappyLayerDriver.C only as the loop bound - `for (label iteration = 0; iteration <
+#: nLayerIter; iteration++)` - the relaxed switch reads only `iteration` and `nRelaxedIter`, and
+#: the single `break` reads only `nTotChanged`. So iterations 0-3 of a ten-iteration log ARE the
+#: four-iteration run, exactly, and the table above is that run's result on the real part.
+LAYER_ITER_ENV = "HEXERA_LAYER_ITER"
+LAYER_ITER_DEFAULT = 4
+
+#: WHEN THE STRICT QUALITY BAR GIVES WAY TO `relaxed`. Promoted out of the renderer beside
+#: `LAYER_ITER` because the two are read against each other and must never be set apart.
+N_RELAXED_ITER = 3
+
+
+def _layer_iter() -> int:
+    import os
+
+    raw = (os.environ.get(LAYER_ITER_ENV) or "").strip()
+    if not raw:
+        return LAYER_ITER_DEFAULT
+    try:
+        # OverflowError as well as ValueError, for the same reason as `_feature_angle`.
+        got = int(float(raw))
+    except (ValueError, OverflowError):
+        return LAYER_ITER_DEFAULT
+    # AT OR BELOW `nRelaxedIter` THE RELAXED PHASE NEVER RUNS, AND NOTHING SAYS SO.
+    # snappyLayerDriver picks the quality bar with
+    # `iteration < nRelaxedIter ? motionDict : motionDict.subDict("relaxed")`, so nLayerIter <=
+    # nRelaxedIter means that ternary never selects the relaxed sub-dictionary and `RELAXED_SHAPE`
+    # below becomes dead text that is still written to disk. layerParameters.C validates neither
+    # against the other and prints no warning. Three is therefore NOT one less than four here; it
+    # is a different dictionary, and the clamp refuses it.
+    return got if N_RELAXED_ITER < got <= 10 else LAYER_ITER_DEFAULT
+
+
+LAYER_ITER = _layer_iter()
+
 #: HOW MUCH OF THE INTERFACE HAS TO END UP LAYERED. The measured run finished at 95.553% after ten
 #: outer iterations; the DEFECTIVE delivered run finished at 90.7146%, so a floor under that would
 #: admit the run this module exists to refuse.
@@ -802,8 +881,8 @@ def render_layers_dict(*, interface_patch: str, interface_cell_m: float, n_layer
         "    nRelaxIter                  5;",
         # A LAYER THAT STOPS, STOPS GRADUALLY. See BUFFER_CELLS_NO_EXTRUDE.
         f"    nBufferCellsNoExtrude       {BUFFER_CELLS_NO_EXTRUDE};",
-        "    nLayerIter                 10;",
-        "    nRelaxedIter                3;",
+        f"    nLayerIter                 {LAYER_ITER:>2};",
+        f"    nRelaxedIter                {N_RELAXED_ITER};",
         "}",
         "meshQualityControls",
         "{",
@@ -1161,6 +1240,7 @@ __all__ = ["LAYER_CASE", "LAYER_STAGE", "LayerError", "MAX_GLOBAL_CELLS", "MAX_L
            "BUFFER_CELLS_NO_EXTRUDE", "N_SURFACE_LAYERS", "EXPANSION_RATIO", "FEATURE_ANGLE",
            "FIRST_LAYER_FRACTION", "MAX_STACK_FRACTION",
            "SMOOTH_SURFACE_NORMALS", "SMOOTH_THICKNESS", "SMOOTH_NORMALS", "COVERAGE_FLOOR_PCT",
+           "LAYER_ITER", "LAYER_ITER_DEFAULT", "LAYER_ITER_ENV", "N_RELAXED_ITER",
            "THICKNESS_FLOOR_PCT", "LAYERS_FLOOR_FRACTION", "ILLEGAL_PER_MILLION_CEILING",
            "LAYER_FLOORS", "floors_unjudged",
            "LAYER_PEAK_MARGIN", "max_layers", "interface_cell_m", "geometry_for", "stack_thickness_m", "cells_multiplier", "coolant_multiplier", "WHOLE_MESH_PER_LAYER",

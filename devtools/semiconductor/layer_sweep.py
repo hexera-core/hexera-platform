@@ -170,7 +170,10 @@ def v4(text: str, cell: float) -> str:
 
 def v5(text: str, cell: float) -> str:
     """Stop where the delivered run stopped improving, before the relaxed phase begins."""
-    return _sub1(text, "    nLayerIter                 10;",
+    # The shipped value is now 4 (layers.LAYER_ITER), so this sweep's source line moved with
+    # it. 3 is still what the variant measures, and 3 is exactly what the product's own clamp
+    # refuses - it deletes the relaxed phase - which is the thing worth measuring here.
+    return _sub1(text, "    nLayerIter                  4;",
                  "    nLayerIter                  3;", "v5 nLayerIter")
 
 
