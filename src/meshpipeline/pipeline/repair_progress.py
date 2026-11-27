@@ -295,6 +295,11 @@ class Lane:
         self._seq = 0
         self.said: list[dict] = []
 
+    @property
+    def spoke(self) -> bool:
+        """Whether the lane has said anything yet (its closing line is said only after an opening one)."""
+        return self._seq > 0
+
     async def say(self, line: Mapping[str, Any]) -> None:
         if leaks(str(line.get("text") or "")):
             return

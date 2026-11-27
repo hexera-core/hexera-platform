@@ -437,9 +437,11 @@ async def node_repair_attempt(state: PipelineState) -> dict:
     job_id = str(state.get("job_id", "unknown"))
     # THE PLAIN PROGRESS LANE (CRS v5 beta): "Checking your CAD" now, the engine's own steps while
     # it repairs (`_attempt` tails its event log), and the closing count once the result is read.
+    # "Checking your CAD" is said by `_attempt` once there is a file it may repair, not here: a run
+    # whose deployment has repair switched off, or that has nothing to act on, opens no repair lane
+    # (seen on slug crsv5ui with CAD_REPAIR_ENABLED=false: every run showed "Checking your CAD" /
+    # "Repair finished: 0 of 0"), and publishes nothing a test harness without a stream owner refuses.
     lane = repair_progress.Lane(job_id)
-    await lane.say(repair_progress.progress(repair_progress.CHECKING,
-                                            repair_progress.CHECKING_TEXT))
     out = await _attempt(state, lane=lane)
     record = out.get("repair_attempt") or {}
     if (record.get("result") or {}).get("waiting_for_review"):
@@ -447,7 +449,8 @@ async def node_repair_attempt(state: PipelineState) -> dict:
     else:
         await repair_words.asay(job_id, repair_words.repair_check_words(state, out))
     await repair_receipt.apublish(job_id, repair_receipt.repair_receipt_rows(state, out))
-    await lane.say(_done(state, out))
+    if lane.spoke:
+        await lane.say(_done(state, out))
     return out
 
 
@@ -528,6 +531,12 @@ async def _attempt(state: PipelineState, *, lane=None) -> dict:
     if source.suffix.lower() not in _REPAIRABLE_SUFFIXES:
         return _declined(f"the bounded repair does not rewrite {source.suffix.lower()} files",
                          outcome="format")
+
+    # THE REPAIR LANE OPENS HERE: repair is on, and there is a file it may rewrite
+    if lane is not None:
+        from meshpipeline.pipeline import repair_progress
+        await lane.say(repair_progress.progress(repair_progress.CHECKING,
+                                                repair_progress.CHECKING_TEXT))
 
     engine = str(state.get("engine", "") or "")
     advice = recommend(repair_status=str(state.get("repair_status", "") or ""),

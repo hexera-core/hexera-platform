@@ -439,3 +439,31 @@ def test_a_line_the_node_and_the_engine_both_say_is_said_once(monkeypatch):
         await lane.feed({"event": "repair_progress", "stage": "verifying"})
     asyncio.run(_run())
     assert [s["text"] for s in said] == ["Checking your CAD", "Checking the repaired part"]
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_a_run_with_nothing_to_repair_opens_no_repair_lane(monkeypatch, enabled):
+    # found on slug crsv5ui: with repair switched off every run still said "Checking your CAD" and
+    # "Repair finished: 0 of 0"; and main's integration tier failed on the same unconditional line
+    # (StaleExecutionPublish in a graph run with no stream owner). Nothing to act on: no lane at all.
+    import asyncio
+
+    import meshpipeline.pipeline.repair_attempt as RA
+    import meshpipeline.pipeline.repair_receipt as RCPT
+    import meshpipeline.pipeline.repair_words as RW
+
+    said: list[dict] = []
+
+    async def _publish(job_id, line, *, seq):
+        said.append(dict(line))
+
+    async def _quiet(*a, **k):
+        return None
+
+    monkeypatch.setattr(RP, "apublish", _publish)
+    monkeypatch.setattr(RW, "asay", _quiet)
+    monkeypatch.setattr(RCPT, "apublish", _quiet)
+    monkeypatch.setattr(RA.rcfg, "CAD_REPAIR_ENABLED", enabled)
+    state = {"job_id": "job-off", "repair_report": {"defects": [{"code": "gap"}]} if enabled else {}}
+    asyncio.run(RA.node_repair_attempt(state))
+    assert said == [], said
