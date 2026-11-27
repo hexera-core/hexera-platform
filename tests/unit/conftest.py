@@ -541,10 +541,14 @@ def _compose_test_adapters():
 
 
 @_pytest.fixture(autouse=True)
-def _no_live_step_ack(monkeypatch):
+def _no_live_step_ack():
     """CFDREQ-37: the sentence that says a typed answer back is asked of the intake's model from inside the chat's
     own turn; in the unit tier no live model is ever asked - the code's sentence is said, unless a test hands the
-    call its own stand-in (step_ack._ask = step_ack._ask_model routes it to a patched call_intake_model)."""
+    call its own stand-in (step_ack._ask = step_ack._ask_model routes it to a patched call_intake_model).
+
+    Set and put back by hand, NOT through `monkeypatch`: an autouse conftest fixture that requests monkeypatch
+    sets it up before a module's own autouse fixtures, so the test's environment changes are undone only AFTER
+    their teardown - test_builder_settings reloads its settings in teardown and met the bad values still set."""
     try:
         from meshpipeline.agents.intake import step_ack
     except Exception:  # noqa: BLE001 - a tier that cannot import the intake needs no guard
@@ -553,8 +557,12 @@ def _no_live_step_ack(monkeypatch):
 
     async def _none(*a, **k):
         raise RuntimeError("no live model in the unit tier")
-    monkeypatch.setattr(step_ack, "_ask", _none)
-    yield
+    was = step_ack._ask
+    step_ack._ask = _none
+    try:
+        yield
+    finally:
+        step_ack._ask = was
 
 
 from tests.capture_authority import CAPTURE_OWNER  # re-exported for the suites
