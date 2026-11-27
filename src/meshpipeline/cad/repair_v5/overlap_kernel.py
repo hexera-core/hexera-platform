@@ -467,7 +467,7 @@ def _fragment_drop_small_once(payload: dict) -> dict:
             frag = _general_fragment(args, fuzzy)
             pm = _maps(frag.Shape())["solid"]
             pieces = [pm.FindKey(i) for i in range(1, pm.Extent() + 1)]
-            bad = BK._degenerate(args, pieces, BK.zero_volume_mm3(diag))
+            bad = BK._degenerate(args, pieces, BK.zero_volume_mm3(diag), fuzzy_mm=fuzzy)
             if bad is not None:
                 return BK._declined("fragment_degenerate", **bad)
             stages = [(frag.History(), None)]

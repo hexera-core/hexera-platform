@@ -768,7 +768,7 @@ def _fuse(payload: dict) -> dict:
     if len(new_solids) >= len(targets):
         return _declined("nothing_to_fuse", detail="the bodies do not touch or overlap: nothing merged",
                          bodies=len(targets))
-    bad = _degenerate(targets, new_solids, zero_volume_mm3(part_diagonal(payload, old)))
+    bad = _degenerate(targets, new_solids, zero_volume_mm3(part_diagonal(payload, old)), fuzzy_mm=fuzzy)
     if bad is not None:
         return _declined("fuse_degenerate", **bad)
     params = {"bodies": payload.get("body_ids", []), "fuzzy_mm": fuzzy,
