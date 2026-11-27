@@ -66,11 +66,39 @@ def test_the_run_stamp_names_the_standard_by_a_digest_only(tmp_path):
     assert "meshing_standard" not in rr.build("j", {"openfoam_workspace": str(tmp_path)})
 
 
-def test_a_dispute_rerun_keeps_the_standard_its_parent_was_meshed_under():
-    import inspect
+async def test_a_dispute_rerun_keeps_the_standard_its_parent_was_meshed_under(monkeypatch):
+    """STD-3 on both reruns of a finished run (VER-9's change, VER-11 / VER-18's second look): the new run is meshed
+    under the standard its parent was meshed under, as the parent's payload holds it - never the team's standard as
+    saved now, though it changed since. Driven through the dispute route, and through the field set a rerun is built
+    from when the parent's own payload is gone."""
+    from types import SimpleNamespace as NS
+
+    from tests.unit.application import test_change_request as TCR
 
     from meshpipeline.api.v1 import simulation
+    from meshpipeline.application import meshing_standard_service
 
-    src = inspect.getsource(simulation)
-    assert '(parent.dispatch_payload or {}).get("meshing_standard")' in src
-    assert '**({"meshing_standard": _standard} if _standard else {})' in src
+    current = {**STANDARD, "text": "Global Mesh Size = 4 mm", "updated_at": "2026-11-27T08:00:00+00:00"}
+
+    async def _current(*a, **k):
+        raise AssertionError(f"a rerun read the team's standard as saved now ({current['text']})")
+
+    monkeypatch.setattr(meshing_standard_service, "for_dispatch", _current)
+    kinds = []
+    for body in ({"comment": TCR._OWNER_WORDS, "flags": TCR._TWO_MARKS},           # a change: a new run
+                 {"comment": "", "flags": TCR._TWO_MARKS[:1]}):                    # a second look, then the rebuild
+        parent = TCR._parent()
+        parent.dispatch_payload = {**parent.dispatch_payload, "meshing_standard": dict(STANDARD)}
+        resp, payload = await TCR._post(body, parent=parent)
+        assert resp.status_code == 202, resp.text
+        assert payload["meshing_standard"] == STANDARD, (resp.json()["kind"], payload.get("meshing_standard"))
+        kinds.append(resp.json()["kind"])
+    assert kinds == ["change", "review"]
+    # the parent's payload gone (retention) but its standard kept: the rerun's fields carry that one
+    intake = simulation._ParentIntake(session_id="s")
+    parent = NS(id="p", geometry_interpretation_id=None, geometry_source=None)
+    base = await simulation._rerun_base(None, parent, intake, {"meshing_standard": dict(STANDARD)}, owner_id="u",
+                                        organization_id="o")
+    assert base["meshing_standard"] == STANDARD
+    assert "meshing_standard" not in await simulation._rerun_base(None, parent, intake, {}, owner_id="u",
+                                                                  organization_id="o")
