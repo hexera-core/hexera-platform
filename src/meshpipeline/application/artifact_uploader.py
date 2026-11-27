@@ -189,7 +189,15 @@ def verify_workspace_contract(workspace: Path, spec) -> None:
             f"{spec.name}: deliverable contract not satisfied - " + "; ".join(problems))
 
 
-def verify_archive(path: Path, spec) -> None:
+def verify_archive(path: Path, spec) -> list[str]:
+    """...and RETURNS the member names it had to read anyway.
+
+    WHY IT RETURNS THEM. Listing a gzip member is a whole decompression pass, and a caller that
+    wants the names has no way to know this call already made one. `engines/bundled_delivery`
+    did not know, opened the finished bundle a second time and inflated all 123 GB of its
+    contents again - about 300 s on the delivered plate, for a list this function already held.
+    Returning it costs nothing and is ignored safely by every caller that does not want it.
+    """
     d = spec.deliverable
     if not path.exists() or path.stat().st_size == 0:
         raise BundleContractError(f"{spec.name}: archive is empty")
@@ -226,6 +234,7 @@ def verify_archive(path: Path, spec) -> None:
             f"a {d.label} and no mesh inside it")
     if f"{d.prefix}/{d.marker}" not in present:
         raise BundleContractError(f"{spec.name}: archive does not carry the declared marker")
+    return names
 
 
 def is_fea_workspace(workspace: Path) -> bool:

@@ -81,13 +81,37 @@ BUNDLE_RECORD = "mesh_bundle.json"
 #: statement `gates.meshed_regions` makes. `owner` and not `points`: a rank holds points for a patch
 #: it merely borders, while `owner` is one label per cell.
 CELLS_FILE = "owner"
-#: How much is read at a time to digest the bundle. The bundle is tens of gigabytes, so it is
-#: digested in a stream and never held in memory.
-_DIGEST_BLOCK = 8 * 1024 * 1024
-
-
 def record_path(workspace) -> Path:
     return Path(workspace) / BUNDLE_RECORD
+
+
+class _Hashed:
+    """A write-only passthrough that digests every byte on its way to the file.
+
+    NOT A BUFFER AND NOT A TEE. It holds nothing: each `write` updates the digest and goes
+    straight through, so the bundle is never in memory twice, and a write that fails leaves the
+    digest as meaningless as the file - which is correct, because the caller discards both.
+
+    IT NEVER CLOSES WHAT IT WAS HANDED. The file has its own `with`, outside this one; a
+    passthrough that closed it would close it before ParallelGzipWriter had flushed its last
+    block.
+    """
+
+    def __init__(self, fh, digest):
+        self._fh, self._digest = fh, digest
+
+    def write(self, data) -> int:
+        self._digest.update(data)
+        return self._fh.write(data)
+
+    def flush(self) -> None:
+        self._fh.flush()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc) -> None:
+        self.flush()
 
 
 def worth_building(spec) -> bool:
@@ -176,8 +200,12 @@ def build_bundle(workspace, spec) -> dict | None:
     # (`returned_bytes["largest"]` -> `result_extraction_limits`). An economy that cannot complete
     # must cost nothing at all, and a half-written archive in a delivered workspace is not nothing.
     tmp = out.with_name(out.name + ".part")
+    sha = hashlib.sha256()
     try:
-        with tmp.open("wb") as fh, \
+        # HASHED ON THE WAY OUT, never read back. The digest is over the COMPRESSED bytes, which
+        # are exactly the bytes handed to the file, so taking them in flight is the same number
+        # for nothing: reading 23.1 GiB off disk again for it measures 22 s at 1,134 MB/s.
+        with tmp.open("wb") as _raw, _Hashed(_raw, sha) as fh, \
                 ParallelGzipWriter(fh, level=BUNDLE_ARCHIVE_LEVEL,
                                    worker_count=workers(job_cpus())) as gz, \
                 tarfile.open(fileobj=gz, mode="w|") as tf:
@@ -185,16 +213,13 @@ def build_bundle(workspace, spec) -> dict | None:
                 src = Path(workspace) / rel
                 if src.exists():
                     tf.add(src, arcname=f"{recipe.prefix}/{rel}", filter=_norm)
-        verify_archive(tmp, spec)
-        # READ ONCE MORE FOR THE RECORD, from the same file that was just verified. Listing a gzip
-        # member is a whole decompression pass, which is why it happens HERE - on the machine that
-        # has the mesh and the cores - and never at home.
-        with tarfile.open(tmp) as tf:
-            cells = cells_in_archive(tf.getnames(), recipe.prefix)
-        sha = hashlib.sha256()
-        with tmp.open("rb") as fh:
-            for block in iter(lambda: fh.read(_DIGEST_BLOCK), b""):
-                sha.update(block)
+        # ONE INFLATE, NOT TWO, and the second one was mine. `verify_archive` has to read every
+        # member header to check the paths, so it already holds the list this record wants -
+        # asking the file for it again walks the tar headers a SECOND time, and walking the
+        # headers of a gzip member means inflating the whole stream: 123 GB of contents, about
+        # 300 s on this plate, for bytes that had just been read. It still happens HERE, on the
+        # machine that has the mesh and the cores, and never at home.
+        cells = cells_in_archive(verify_archive(tmp, spec), recipe.prefix)
         tmp.replace(out)
     finally:
         # `missing_ok`: the ordinary path renamed it away, and this is the one line that runs on
