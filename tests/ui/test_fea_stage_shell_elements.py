@@ -63,8 +63,16 @@ def test_a_shell_line_carries_one_quads_or_triangles_choice_and_a_free_flip(live
 
 
 def test_a_flip_away_from_the_settings_asks_first_and_no_puts_it_back(live):
+    # STD-4: a switch left at its default says nothing about the elements, so a flip asks nothing
+    sid = "elunset"
+    _open(live, sid, _check(_with(_ready(), {"text": "Global size 10 mm"})))
+    assert _el(live, sid)["checked"] == "quads"
+    _flip(live, sid, "triangles")
+    s = _el(live, sid)
+    assert s["ask"] == "" and s["checked"] == "triangles"
+    # a standard whose switch the user SET on Quads: a flip away asks first
     sid = "elsettings"
-    std = {"text": "Global size 10 mm"}             # a standard, its switch on Quads
+    std = {"text": "Global size 10 mm", "shell_elements": "quads", "shell_elements_set": True}
     _open(live, sid, _check(_with(_ready(), std)))
     assert _el(live, sid)["checked"] == "quads"
     _flip(live, sid, "triangles")

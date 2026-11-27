@@ -82,6 +82,14 @@ def _enqueue_shell_check(**kwargs) -> None:
                                      soft_time_limit=SHELL_CHECK_LIMIT_S + 120, time_limit=SHELL_CHECK_LIMIT_S + 180)
 
 
+def _enqueue_sizing_watch(**kwargs) -> None:
+    from meshpipeline.adapters.pipeline_execution.celery import watch_fea_sizing
+    # TIME-21: the next look at a sizing on a VM, `countdown` seconds from now (held by the worker that takes it, not
+    # by a pool slot, until then)
+    countdown = int(kwargs.pop("countdown", 0) or 0)
+    watch_fea_sizing.apply_async(kwargs=kwargs, countdown=countdown)
+
+
 def _route_model(step: str) -> str:
     """The model a step's route asks (the decision cache keys by it: a new model is a new key)."""
     if step == "builder":
@@ -159,6 +167,11 @@ def install_adapters() -> None:
     geometry_check.set_naming_enqueuer(_enqueue_geometry_naming)
     geometry_check.set_part_words_enqueuer(_enqueue_part_words)
     geometry_check.set_shell_check_enqueuer(_enqueue_shell_check)
+    # TIME-21: a big FEA sizing on a VM of its own (the big-machine route), and the watch that brings it back
+    from meshpipeline.adapters.mesh_execution.fea_sizing_vm import VmSizing
+    from meshpipeline.contracts import fea_sizing_remote
+    fea_sizing_remote.set_sizing_remote(VmSizing())
+    fea_sizing_remote.set_watch_enqueuer(_enqueue_sizing_watch)
     # where a waiting check stands in its queue, for the console's line ("queued behind 2 other checks")
     from meshpipeline.adapters.pipeline_execution.geometry_running import queue_state as _geometry_queue_state
     geometry_check.set_queue_reader(_geometry_queue_state)

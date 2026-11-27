@@ -29,7 +29,6 @@ PLAN_LINE = "Here's the plan. Tell me any mesh requirements here, then say go or
 BRIEF = {"purpose": "structural", "purpose_label": "Structural (FEA)", "engine": "gmsh", "engine_label": "Gmsh",
          "label": "Tube static stress", "user_notes": [], "proceed_ask": PLAN_LINE,
          "checks": [{"label": "Closed solid", "status": "pass"}]}
-SHOTS = "/home/areen/intake_pick_lab/shots"
 ODD: list = []        # the last look's samples that were not the colour of their kind (for the failure message)
 ORDER = ["Part_1", *[f"Feature_{k}" for k in range(1, 9)]]   # the part, and each face as an area inside it
 
@@ -214,9 +213,13 @@ def _wait_view(live) -> None:
 
 
 def _shot(live, name: str) -> None:
+    """With HEXERA_SHOTS set, the page is kept there as <name> for a person to look at; nothing otherwise."""
+    out = os.environ.get("HEXERA_SHOTS")
+    if not out:
+        return
     data = live._send("Page.captureScreenshot", {"format": "png"})["data"]
-    os.makedirs(SHOTS, exist_ok=True)
-    with open(os.path.join(SHOTS, name), "wb") as fh:
+    os.makedirs(out, exist_ok=True)
+    with open(os.path.join(out, name), "wb") as fh:
         fh.write(base64.b64decode(data))
 
 

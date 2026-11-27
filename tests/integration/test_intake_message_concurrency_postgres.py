@@ -205,7 +205,6 @@ async def test_3b_a_message_with_no_live_approval_invalidates_nothing(SessionLoc
     "change the engine to snappy",             # engine
     "actually the purpose is external flow",   # purpose
     "make it 2D instead",                      # dimensionality
-    "use a finer mesh please",                 # fidelity
 ])
 async def test_4_5_every_kind_of_correction_invalidates(SessionLocal, correction):
     sid, _, _ = await _seed(SessionLocal)
@@ -214,6 +213,19 @@ async def test_4_5_every_kind_of_correction_invalidates(SessionLocal, correction
     assert out.transition.invalidated_approval, f"{correction!r} left the approval live"
     assert after["approval_live"] is False
     assert await _dispatch(SessionLocal, sid) != "dispatched"
+
+
+async def test_4_5b_a_mesh_requirement_is_kept_and_the_plan_waits_for_a_fresh_go(SessionLocal):
+    # NOTE-18: "finer" is a requirement kept as the user's note, not a plan change: the plan stands, but the
+    # message that said it can never start the run - only a NEXT message read as a go can
+    sid, _, _ = await _seed(SessionLocal)
+    out = await _accept(SessionLocal, sid, "use a finer mesh please")
+    after = await _state(SessionLocal, sid)
+    assert out.status is msg.MessageStatus.requirement
+    assert out.transition.change is msg.GateChange.approval_deferred
+    assert (out.note or {}).get("text") == "use a finer mesh please"
+    assert await _dispatch(SessionLocal, sid) != "dispatched", "the old approval started a run on a correction"
+    assert after["jobs"] == 0 and after["linked_job"] is None
 
 
 async def test_6_the_user_selected_engine_is_never_changed_by_the_message_authority(SessionLocal):

@@ -474,6 +474,10 @@ def sizing_now(facts: dict | None, naming: dict | None, now: float) -> dict | No
         until = 0.0
     if until and now > until:
         stopped = "clock"
+    elif got.get("where"):
+        # TIME-21: SIZED AWAY FROM THE NAMING TASK (on a VM, or by its watch after the VM failed it): that task has
+        # ended by design, so only the marker's own clock settles it
+        stopped = ""
     elif isinstance(naming, dict):
         ended = naming.get("ended_at")
         if ended is not None:

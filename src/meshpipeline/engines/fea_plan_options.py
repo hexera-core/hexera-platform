@@ -391,12 +391,13 @@ def stage_file(src: Path, ws: Path, *, to_metres: float) -> None:
 
 
 def bounded(src: Path, *, to_metres: float, budget_s: float = BUDGET_S, plans_out: Path | None = None,
-            told: dict | None = None) -> dict | None:
+            told: dict | None = None, workers_cap: int | None = None) -> dict | None:
     """The size choice for an uploaded CAD file, sized in a child process stopped `budget_s` after it starts, so a
     part whose planning takes longer never holds the check. With `plans_out`, the child keeps the plans there.
     None when it was not sized (out of time, or it failed): the run then sizes it and takes the recommended mesh;
     `told["out_of_time"]` is set when its clock stopped it (TIME-11). The child also stops itself a little past
-    `budget_s` (`--limit-s`), so a parent killed meanwhile never leaves it running. Never raises."""
+    `budget_s` (`--limit-s`), so a parent killed meanwhile never leaves it running. `workers_cap` (TIME-21, a sizing
+    VM only): its counting processes may be that many instead of fea_size_field.MAX_WORKERS. Never raises."""
     import logging
     import os
     import subprocess
@@ -411,6 +412,8 @@ def bounded(src: Path, *, to_metres: float, budget_s: float = BUDGET_S, plans_ou
            "--limit-s", f"{float(budget_s) + CHILD_GRACE_S:.0f}"]
     if plans_out:
         cmd += ["--plans-out", str(plans_out)]
+    if workers_cap:
+        cmd += ["--workers-cap", str(int(workers_cap))]
     try:
         p = run_guarded(cmd, env=env, capture_output=True, text=True, timeout=float(budget_s))
         text = p.stdout or ""
@@ -432,6 +435,58 @@ def bounded(src: Path, *, to_metres: float, budget_s: float = BUDGET_S, plans_ou
     return None
 
 
+# #
+# TIME-21: A BIG SIZING ON A MACHINE OF ITS OWN - the same sizing (`bounded`, the same child, the same code) run from
+# a packed folder: the check's canonical file and its unit go in, the size choice and the kept plans come back
+# #
+#: the packed inputs (the file's name in the folder, its metre scale, the sizing's clock) and what comes back
+PACKED_FILE = "fea_sizing.json"
+OPTIONS_FILE = "fea_options.json"
+
+
+def pack(src: Path, ws: Path, *, to_metres: float, budget_s: float) -> Path:
+    """The sizing's inputs in `ws`: the file under its own name (the assembly reads its part names from it, so the
+    name is kept as the check's) and PACKED_FILE. Returns `ws`."""
+    import shutil
+
+    ws = Path(ws)
+    ws.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(src, ws / Path(src).name)
+    (ws / PACKED_FILE).write_text(json.dumps({"version": VERSION, "file": Path(src).name,
+                                              "to_metres": float(to_metres), "budget_s": float(budget_s)}))
+    return ws
+
+
+def run_packed(ws: Path, *, workers_cap: int | None = None) -> dict:
+    """Size the part packed in `ws` (pack) exactly as the check sizes it (`bounded`: the same child, its clock, the
+    plans kept in ws/PLANS_FILE), and write OPTIONS_FILE: {"options": the size choice or None, "out_of_time",
+    "planning_code" (the code that sized it: a result from other code is never used), "workers" (the counting
+    processes it had: as many as the machine holds, fea_size_field.machine_workers), "seconds"}. The input file is
+    removed (it need not travel back). `workers_cap`: that count instead of the machine's (tests). Never raises."""
+    import time
+
+    ws = Path(ws)
+    started = time.time()
+    told: dict = {}
+    options = None
+    from meshpipeline.engines.determinism import job_cpus
+    from meshpipeline.engines.fea_size_field import machine_workers
+    cap = int(workers_cap) if workers_cap else machine_workers()
+    try:
+        spec = json.loads((ws / PACKED_FILE).read_text())
+        src = ws / Path(str(spec["file"])).name
+        options = bounded(src, to_metres=float(spec["to_metres"]), budget_s=float(spec["budget_s"]),
+                          plans_out=ws / PLANS_FILE, told=told, workers_cap=cap)
+        src.unlink(missing_ok=True)
+    except Exception as exc:  # noqa: BLE001 - not sized: said in the result, the worker sizes it
+        told["error"] = f"{type(exc).__name__}: {str(exc)[:200]}"
+    out = {"options": options, "out_of_time": bool(told.get("out_of_time")), "error": told.get("error", ""),
+           "planning_code": planning_code(), "workers": max(1, min(cap, job_cpus())),
+           "seconds": round(time.time() - started, 1)}
+    (ws / OPTIONS_FILE).write_text(json.dumps(out))
+    return out
+
+
 def _main(argv: list[str]) -> int:
     import os
     import signal
@@ -440,6 +495,10 @@ def _main(argv: list[str]) -> int:
     src = Path(argv[0])
     to_metres = float(argv[argv.index("--to-metres") + 1]) if "--to-metres" in argv else 1e-3
     plans_out = Path(argv[argv.index("--plans-out") + 1]) if "--plans-out" in argv else None
+    if "--workers-cap" in argv:
+        # TIME-21: on a sizing VM the counting processes follow the machine (fea_size_field.machine_workers)
+        from meshpipeline.engines.fea_size_field import set_workers_cap
+        set_workers_cap(int(argv[argv.index("--workers-cap") + 1]))
     # TIME-11: THE CHILD ENDS ITSELF a little past its parent's clock (SIGALRM's default action ends the process),
     # so a parent killed meanwhile (its task's hard limit, its worker gone) never leaves it sizing on a worker core
     if "--limit-s" in argv and hasattr(signal, "SIGALRM"):
@@ -458,9 +517,10 @@ def _main(argv: list[str]) -> int:
     return 0
 
 
-__all__ = ["BUDGET_S", "FULL", "LOW_STRESS", "PLANS_FILE", "STAND_FILE", "QUICKER", "bounded", "decide", "kept_plan",
-           "minutes_words", "options", "options_and_plans", "plan_staged", "planning_code", "plans_key",
-           "nothing_to_choose", "requirements_cost", "requirements_plan", "row", "stage_file", "standard_elements"]
+__all__ = ["BUDGET_S", "FULL", "LOW_STRESS", "OPTIONS_FILE", "PACKED_FILE", "PLANS_FILE", "STAND_FILE", "QUICKER",
+           "bounded", "decide", "kept_plan", "minutes_words", "options", "options_and_plans", "pack", "plan_staged",
+           "planning_code", "plans_key", "nothing_to_choose", "requirements_cost", "requirements_plan", "row",
+           "run_packed", "stage_file", "standard_elements"]
 
 
 if __name__ == "__main__":

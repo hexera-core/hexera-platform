@@ -6,6 +6,7 @@ import json
 import logging
 import threading
 import time
+from pathlib import Path
 
 from fastapi import FastAPI
 
@@ -234,6 +235,15 @@ def contract_refusal(contract: str) -> dict | None:
                          "so nothing was meshed")}
 
 
+def run_sizing(ws: str, *, workers_cap: int | None = None) -> dict:
+    """TIME-21: the FEA sizing packed in `ws` (engines/fea_plan_options.run_packed), as a run's result: rc 0 when it
+    sized the part; what it made is in `fea_sizing` and its plans in the returned workspace."""
+    from meshpipeline.engines.fea_plan_options import run_packed
+    got = run_packed(Path(ws), workers_cap=workers_cap)
+    return {"rc": 0 if got.get("options") else 1, "timed_out": bool(got.get("out_of_time")), "fea_sizing": got,
+            "log_tail": str(got.get("error") or "")}
+
+
 def run(input_uri: str, output_uri: str, engine: str, timeout: int, contract: str = "") -> dict:
     from meshpipeline.adapters.mesh_execution.gcs_exchange import download_workspace, upload_result
     from meshpipeline.engines.dispatch import run_engine_local
@@ -271,7 +281,12 @@ def run(input_uri: str, output_uri: str, engine: str, timeout: int, contract: st
         snapshots.start()
     try:
         try:
-            result = run_engine_local(ws, engine=engine, timeout=int(timeout))
+            from meshpipeline.contracts.fea_sizing_remote import SIZING_ENGINE
+            if engine == SIZING_ENGINE:
+                # TIME-21: AN FEA SIZING sent here from the geometry check - the same sizing, not a mesh
+                result = run_sizing(ws)
+            else:
+                result = run_engine_local(ws, engine=engine, timeout=int(timeout))
         finally:
             # the mesher is done; the beacon goes on pulsing while the result is sent back, so the
             # waiting worker never takes a long upload for a remote that is gone

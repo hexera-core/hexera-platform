@@ -93,9 +93,10 @@ _NEVER_GO = re.compile(r"\b(?:not|no|nope|don|dont|wait|hold|stop|cancel|later|y
 _HOLD = re.compile(r"\b(?:wait|hold|hang on|stop|not yet|later|not ready|one (?:sec|second|moment|minute)|"
                    r"(?:dont|do not|don t) (?:proceed|start|go|mesh|run|begin|continue))\b|^(?:no|nope|not now)$")
 
-#: a mesh requirement in the words: a number, or a word about sizes, density, quality or element kind
+#: a mesh requirement in the words: a number, or a word about sizes, density, quality or element kind. The digit of
+#: "2d" / "3d" is no number: "make it 2D instead" changes the plan (a plan word below), never a note kept beside it
 _REQUIREMENT = re.compile(
-    r"\d|\b(?:mm|cm|um|µm|micron|microns|finer|coarser|coarse|refine|refined|refinement|refining|dense|denser|"
+    r"(?!\b[23]d\b)\d|\b(?:mm|cm|um|µm|micron|microns|finer|coarser|coarse|refine|refined|refinement|refining|dense|denser|"
     r"density|resolution|resolve|size|sizes|sizing|sized|element|elements|cell|cells|layer|layers|inflation|quality|"
     r"skew|skewness|aspect|jacobian|warp|warpage|growth|spacing|curvature|tet|tets|tetra|hex|"
     r"hexes|hexa|quad|quads|triangles|tris|quadratic|linear|yplus|smooth|smoother|gradual|transition)\b")

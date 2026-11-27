@@ -55,12 +55,31 @@ READINGS = [
     ("how long will this take?", QUESTION),
     ("use cfMesh instead", INTAKE),
     ("actually this is an external flow", INTAKE),
+    # the "2" of "2D" is no size: a dimensionality change re-plans, never a note beside a 3D plan
+    ("make it 2D instead", INTAKE),
+    ("use a finer mesh please", NOTE),
 ]
 
 
 @pytest.mark.parametrize("text,want", READINGS)
 def test_what_a_message_at_the_plan_step_means(text, want):
     assert PT.reading(text, consent=C.reading(text)) == want, text
+
+
+async def test_a_dimensionality_change_at_the_plan_step_withdraws_the_plan_with_no_model_asked():
+    # message._settle on a live plan: an INTAKE reading falls through to ap.classify, and a correction there
+    # invalidates the approval - "make it 2D instead" was kept as a note (its "2" read as a size) and the 3D plan stood
+    from meshpipeline.agents.intake import approval as ap
+    from meshpipeline.agents.intake import plan_go as PG
+
+    async def no_model(*a, **k):
+        raise AssertionError("the model was asked")
+    text = "make it 2D instead"
+    got = await PG.read(text, consent=C.reading(text, named=("gmsh",)), engine="gmsh", ask_fn=no_model)
+    assert (got.reading, got.by) == (INTAKE, PG.BY_CODE)
+    assert ap.classify(text, engine="gmsh") == ap.CORRECTION_INTENT
+    finer = await PG.read("use a finer mesh please", engine="gmsh", ask_fn=no_model)
+    assert (finer.reading, finer.by) == (NOTE, PG.BY_CODE), "NOTE-18: finer is a requirement kept as a note"
 
 
 def test_the_table_is_long_enough_and_covers_every_reading():
