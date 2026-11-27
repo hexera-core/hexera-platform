@@ -574,9 +574,20 @@ def _read_binary_stl(path: Path) -> np.ndarray:
 
 
 #: How long a bounded measurement may take before the child is killed and the caller carries on
-#: without traits. Shorter than the caller's own patience on purpose: `measured_choice.rank_in_time`
-#: waits MEASURE_WAIT_S for the whole recommendation, and a child still running past that is work
-#: nobody is waiting for any more.
+#: without traits.
+#:
+#: LONGER THAN THE CALLER'S OWN PATIENCE, ON PURPOSE, AND THIS COMMENT USED TO SAY THE
+#: OPPOSITE. It read "Shorter than the caller's own patience on purpose ... a child still
+#: running past that is work nobody is waiting for any more", which is not what ships and not
+#: what the design needs: `measured_choice.rank_in_time` waits MEASURE_WAIT_S (45 s) and this
+#: child runs to 120 s, so a turn that runs out of patience leaves the child measuring and the
+#: answer CACHED for the next turn. That caching is stated in measured_choice's own module
+#: docstring and is the only thing that makes a bounded wait safe. The work is not wasted; it
+#: is one turn early.
+#:
+#: The ordering is pinned by test_the_budget_is_over_the_callers_own_patience, because when it
+#: inverts, the turn either waits for a child that has already been killed or names an engine
+#: nobody measured - and job b8f09ae9 is what the second one looks like.
 MEASURE_CHILD_BUDGET_S = 120.0
 
 

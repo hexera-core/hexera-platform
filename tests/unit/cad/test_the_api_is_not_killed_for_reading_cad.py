@@ -79,12 +79,52 @@ def test_a_file_that_is_not_there_comes_back_as_traits_that_say_so(tmp_path):
     assert any("not there" in n for n in got.notes), got.notes
 
 
-def test_the_budget_is_under_the_callers_own_patience():
-    """`measured_choice.rank_in_time` waits MEASURE_WAIT_S for the whole recommendation. A child
-    still running past that is work nobody is waiting for."""
+def test_the_budget_is_over_the_callers_own_patience():
+    """THE ORDERING, AND ITS NAME AND ITS REASON USED TO DISAGREE WITH IT.
+
+    This was `test_the_budget_is_under_the_callers_own_patience` and asserted
+    `MEASURE_CHILD_BUDGET_S >= MEASURE_WAIT_S` - child OVER caller - with the message "a child
+    that is killed before the caller gives up wastes the measurement", which argues for the
+    assertion, while the name and `MEASURE_CHILD_BUDGET_S`'s own comment both argued for the
+    other direction. Four places in the repo disagreed and the assertion was the one that was
+    right about what ships.
+
+    WHICH WAY IS CORRECT, and it is the assertion: the child keeps measuring after this side
+    gives up, so a turn that runs out of patience leaves a cached answer for the next turn -
+    `measured_choice`'s module docstring says exactly that, and it is what makes a bounded
+    wait safe. If the caller waited LONGER than the child can run, it would sit waiting for a
+    process that had already been killed.
+
+    THE GAP IS NOT SPARE ROOM. It is how long a measurement may take without the turn that
+    needs it ever seeing the answer, and on job b8f09ae9 that gap was 15 s against a 41-44 s
+    file: the intake named an engine nobody had measured. MEASURE_WAIT_S is now 45 s, over the
+    measured cost of the first customer assembly, and the test below pins it there.
+    """
     from meshpipeline.agents.intake.measured_choice import MEASURE_WAIT_S
-    assert MEASURE_CHILD_BUDGET_S >= MEASURE_WAIT_S, (
-        "a child that is killed before the caller gives up wastes the measurement")
+    assert MEASURE_CHILD_BUDGET_S > MEASURE_WAIT_S, (
+        "the child must outlive the caller's patience, or the turn waits on a dead process; "
+        "the child going on after the caller gives up is what fills the cache for next turn")
+
+
+#: ColdPlateAssembly_CLEAN.step, 15,883,539 bytes, the first customer assembly. 41.3 s and
+#: 42.7 s measured through `shape_traits.measure_file` on 2026-11-26, and 44 s end to end in
+#: `measure_file_bounded`'s own docstring from 2026-10-30.
+FIRST_CUSTOMER_ASSEMBLY_MEASURE_S = 44.0
+
+
+def test_the_callers_patience_covers_a_real_customer_assembly():
+    """THE TEST JOB b8f09ae9 NEEDED. At MEASURE_WAIT_S 15.0 the turn gave up 29 s before the
+    answer existed, fell back to the no-recommendation template, and let the model name
+    snappyHexMesh multi-region for a brazed cold plate - while that same job's engine_ladder
+    recorded order_recommended "cfmesh_conjugate", order_source "measured".
+
+    Lowering this under the measured cost of a real file is how that happens, so it costs a
+    measurement to do it.
+    """
+    from meshpipeline.agents.intake.measured_choice import MEASURE_WAIT_S
+    assert MEASURE_WAIT_S > FIRST_CUSTOMER_ASSEMBLY_MEASURE_S, (
+        "a turn that cannot wait for the first customer assembly to be measured will name an "
+        "engine nobody measured, which is what it did on job b8f09ae9")
 
 
 def test_the_child_entry_writes_an_answer_a_caller_can_read(tmp_path):

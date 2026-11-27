@@ -25,7 +25,35 @@ from collections.abc import Iterable, Mapping, Sequence
 logger = logging.getLogger(__name__)
 
 #: How long a turn waits for the geometry to be measured before going on without it.
-MEASURE_WAIT_S = 15.0
+#:
+#: FORTY-FIVE, BECAUSE FIFTEEN NAMED AN ENGINE NOBODY HAD MEASURED. On job b8f09ae9 the api log
+#: reads
+#:
+#:     12:45:31  Intake: the geometry is still being measured - no engine recommendation this turn
+#:     12:45:37  propose_engine_selection(engine="snappyHexMesh multi-region")
+#:     12:45:52  time limit changed a decision: {'where': 'intake.recommendation', 'budget_s': 15.0}
+#:
+#: and the message that reached the customer was `engine_selection.render_selection_statement` -
+#: the template used when there is NO measured recommendation - carrying the model's own guess, on
+#: a brazed cold plate whose coolant is sealed inside the metal.
+#:
+#: NOTHING WAS WRONG WITH THE RANKING. That job's own final_result.engine_ladder records
+#: order_recommended "cfmesh_conjugate", order_source "measured", and when a recommendation is in
+#: hand the executor replaces the model's pick with it and says so. The answer existed 25 s after
+#: the proposal was made.
+#:
+#: MEASURED, ColdPlateAssembly_CLEAN.step, 15,883,539 bytes, 2026-11-26: 41.3 s and 42.7 s on two
+#: runs through `shape_traits.measure_file`. The same file is recorded at 44 s end to end in
+#: `measure_file_bounded`'s own docstring, from 2026-10-30. Fifteen was never going to reach it,
+#: and it is the first customer assembly this product was built for.
+#:
+#: IT STAYS UNDER THE CHILD'S OWN BUDGET, which is the invariant that matters and the one four
+#: places in this repo disagreed about. `shape_traits.MEASURE_CHILD_BUDGET_S` is 120 s and the
+#: child keeps measuring after this side gives up, so a turn that runs out of patience still
+#: leaves a cached answer for the next one - which is what the module docstring above describes
+#: and what makes a bounded wait safe at all. A wait LONGER than 120 s would make this side the
+#: one that waits for a dead child, and a two-minute chat turn besides.
+MEASURE_WAIT_S = 45.0
 
 
 def staged_upload(session_id: str, source_ref=None) -> str:
@@ -187,8 +215,14 @@ async def rank_in_time(*, timeout_s: float = MEASURE_WAIT_S, **kw):
         return await asyncio.wait_for(asyncio.to_thread(rank, in_child=True, **kw),
                                       timeout=timeout_s)
     except TimeoutError:
-        logger.info("Intake: the geometry is still being measured - no engine recommendation "
-                    "this turn")
+        # WITH THE BUDGET IN IT, because this line could not tell a turn that gave up early
+        # from a file that genuinely cannot be measured in the time a turn has - and those
+        # need opposite fixes. It is a WARNING because of what follows it: with no measured
+        # recommendation, nothing constrains the engine the model names, and on job b8f09ae9
+        # what it named was wrong.
+        logger.warning("Intake: the geometry is still being measured after %.0fs - no engine "
+                       "recommendation this turn, so nothing measured constrains the engine "
+                       "the model names", float(timeout_s))
         from meshpipeline.engines.determinism import note_time_limit
         note_time_limit("intake.recommendation", "no measured engine recommendation this turn: "
                         "the measurement was not ready", budget_s=float(timeout_s))
