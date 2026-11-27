@@ -65,10 +65,6 @@ CHUNK_BYTES = 64 * 1024 * 1024
 NO_PATCH = 0xFFFF
 
 _HEADER_ASCII_RE = re.compile(rb"format\s+ascii\s*;")
-#: A face record's corner COUNT - the integer immediately before its bracket. Matching only this,
-#: rather than the record and its contents, is what lets the ids be parsed in one call for the
-#: whole chunk instead of one call per face.
-_SIZE_RE = re.compile(rb"(\d+)\s*\(")
 
 
 class IndexUnavailable(RuntimeError):
@@ -171,12 +167,11 @@ def _stream_boundary_faces(path: Path, first_face: int, n_faces: int):
             pos += idx + 1
             break
 
-        # THREE C-LEVEL PASSES PER CHUNK, NOT A PYTHON LOOP PER FACE. The customer plate's fluid
-        # side has 13,181,685 boundary faces; a regex match and a one-face `np.fromstring` each is
-        # 13 M round trips through the interpreter and was the whole cost of this pass. Instead:
-        # every integer in the chunk comes out in one `fromstring`, the corner COUNTS come out in
-        # one `findall`, and the counts then say exactly which of those integers were counts - so
-        # the connectivity is the rest of them, removed by index and never looked at one at a time.
+        # C-LEVEL PASSES PER CHUNK, NOT A PYTHON LOOP PER FACE. The customer plate's fluid side
+        # has 13,181,685 boundary faces; a regex match and a one-face `np.fromstring` each is
+        # 13 M round trips through the interpreter and was the whole cost of this pass. Every
+        # integer in the chunk now comes out of one `fromstring`, and the loop below says which
+        # of them were corner counts without reading the text a second time - see its own note.
         all_sizes: list = []
         all_conn: list = []
         got = 0
@@ -195,28 +190,52 @@ def _stream_boundary_faces(path: Path, first_face: int, n_faces: int):
             carry = buf[cut + 1:]
             body = buf[:cut + 1]
 
-            ks = _SIZE_RE.findall(body)
-            if not ks:
+            # ONE PASS OVER THE TEXT, NOT TWO. `np.fromstring` below already yields every
+            # digit run in the chunk, in order, because `table` turns the brackets into spaces
+            # and a face id is never negative - so the corner counts are ALREADY IN `v` and the
+            # regex pass that used to find them was reading the same bytes a second time.
+            #
+            # A CORNER COUNT IS THE DIGIT RUN A '(' FOLLOWS, which `searchsorted` resolves for
+            # every bracket at once. MEASURED on a 29.0 MiB chunk of 900,000 quad records: the
+            # regex body runs at 12.6 MB/s and this at 49.8 MB/s, 3.96x, with the sizes and
+            # connectivity arrays EQUAL on quads, triangles, mixed widths, whitespace runs
+            # inside a record, newlines inside a record, and one, two or a tab's worth of
+            # whitespace before the bracket - which is the `\s*` the old regex allowed and
+            # cfMesh never writes. At this plate's 71,851,833 boundary faces that is about
+            # 144 s off a 380 s index.
+            #
+            # AND NOT A NEXT-NON-WHITESPACE TABLE, which is the other way to allow that `\s*`:
+            # on a 64 MiB chunk it is a 256 MB temporary on its own, against a CHUNK_BYTES
+            # chosen so that two arrays beside it do not run a worker out of memory.
+            arr = np.frombuffer(body, dtype=np.uint8)
+            pad = np.zeros(arr.size + 2, dtype=np.int8)
+            pad[1:-1] = (arr >= 0x30) & (arr <= 0x39)
+            run_end = np.flatnonzero(np.diff(pad) == -1)     # exclusive ends, in `arr` coords
+            open_at = np.flatnonzero(arr == 0x28)            # '('
+            if run_end.size == 0 or open_at.size == 0:
                 continue
-            sizes_c = np.fromiter((int(k) for k in ks), dtype=np.int64, count=len(ks))
-            if sizes_c.size and int(sizes_c.max()) > 255:
+            k = np.searchsorted(run_end, open_at, side="right") - 1
+            k = k[k >= 0]
+            if k.size == 0:
+                continue
+            v = np.fromstring(body.translate(table), dtype=np.int64, sep=" ")  # noqa: NPY201
+            # only as many records as are still wanted
+            take = min(k.size, n_faces - got)
+            if take <= 0:
+                break
+            if int(k[take - 1]) >= v.size:
+                raise IndexUnavailable(
+                    f"{path.name}: a face record's count is not among the integers read from it")
+            sizes_c = v[k[:take]]
+            if int(sizes_c.max()) > 255:
                 raise IndexUnavailable(
                     f"{path.name}: a face has {int(sizes_c.max())} corners, over this index's 255")
-            # only as many records as are still wanted
-            take = min(sizes_c.size, n_faces - got)
-            sizes_c = sizes_c[:take]
-            v = np.fromstring(body.translate(table), dtype=np.int64, sep=" ")  # noqa: NPY201
-            # record i's count sits at index cumsum(sizes)[i-1] + i, because the counts are
-            # interleaved with the ids they introduce
-            csum = np.cumsum(sizes_c)
-            prefix_at = np.concatenate(([0], csum[:-1] + np.arange(1, take))) if take else \
-                np.empty(0, dtype=np.int64)
-            need = int(csum[-1]) + take if take else 0
-            if v.size < need:
-                raise IndexUnavailable(
-                    f"{path.name}: {v.size} integers where {need} were declared by the counts")
-            conn_c = np.delete(v[:need], prefix_at)
-            if conn_c.size != (int(csum[-1]) if take else 0):
+            # everything up to the NEXT record's count, less the counts themselves, is ids
+            end_run = int(k[take]) if take < k.size else v.size
+            keep = np.ones(end_run, dtype=bool)
+            keep[k[:take]] = False
+            conn_c = v[:end_run][keep]
+            if conn_c.size != int(sizes_c.sum()):
                 raise IndexUnavailable(f"{path.name}: connectivity does not match its own counts")
             all_sizes.append(sizes_c.astype(np.uint8))
             all_conn.append(conn_c.astype(np.uint32))
