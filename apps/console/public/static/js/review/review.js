@@ -21,6 +21,8 @@
 import { getReview, postReviewDecision, postReviewRun } from "../api/endpoints.js";
 import { getGeometrySkin } from "../api/endpoints.js";
 import { esc } from "../core/format.js";
+import { PROBLEM_WORDS, isPlain } from "../core/repair_words.js";
+import { getRepairSurfaces } from "../api/endpoints.js";
 import { b64f32, b64u32, loadVtk } from "../viewer/geometry_stage.js";
 import { mountCanvas } from "../viewer/scene/canvas.js";
 import { makeOverlay } from "../viewer/scene/overlay.js";
@@ -42,11 +44,41 @@ export function parkedCopy(review) {
     + "is as it was except for the repairs it was sure of.";
 }
 
-const OP_WORDS = { sew: "sew the gap shut" };
+/* THE LANGUAGE RULE (core/repair_words.js): a defect is named in the customer's words and a proposed repair is said,
+   never its operation's identifier. A code with no plain name is shown only if it reads as words. */
+/* the older check's defect codes, in the spec's plain names (seen on slug crsv5ui: SELF_INTERSECTION, SMALL_EDGE) */
+const CODE_WORDS = {
+  self_intersection: "intersecting surfaces", small_edge: "tiny or sliver feature",
+  small_face: "tiny or sliver feature", sliver_face: "tiny or sliver feature", free_edge: "hole or open surface",
+  open_shell: "hole or open surface", gap: "thin gap", invalid_tolerance: "damaged geometry", seam: "seam problem",
+};
+/** A defect code's plain name; a code neither table knows is "problem" - a code is never shown, humanised or not. */
+export function defectName(code) {
+  const c = String(code || "").toLowerCase();
+  return PROBLEM_WORDS[c] || CODE_WORDS[c] || "problem";
+}
+/* WHAT A PROPOSED REPAIR DOES, said: an operation is never named by its identifier, humanised or not */
+const OP_WORDS = {
+  sew: "sew the gap shut", heal_self_intersections: "separate the surfaces that cross",
+  fix_small_faces: "remove the tiny faces", remove_small_edges: "remove the tiny edge",
+  fill_planar_holes: "close the hole", fill_nonplanar_holes: "close the hole", close_wire_gaps: "close the gap",
+};
 function proposalLine(item) {
   const p = item.proposal;
   if (!p || !p.op) return "";
-  return `${OP_WORDS[p.op] || p.op.replaceAll("_", " ")}${p.rationale ? " - " + p.rationale : ""}`;
+  const said = OP_WORDS[p.op] || (isPlain(p.words) ? p.words : "repair it");
+  return `${said}${p.rationale && isPlain(p.rationale) ? " - " + p.rationale : ""}`;
+}
+
+/** A defect's measurements as a customer reads them: numbers only, under a plain name - never the face ids, the
+ *  fingerprints or index lists the check keeps for the engineer (those stay on the admin's page). */
+export function measurementRows(m) {
+  return Object.entries(m || {}).filter(([k, v]) => typeof v === "number" && Number.isFinite(v)
+    && !/(^|_)(id|ids|index|indices|fingerprint|fingerprints|count_internal)$/.test(k))
+    .map(([k, v]) => {
+      const mm = /_mm$/.test(k), name = k.replace(/_mm$/, "").replaceAll("_", " ");
+      return isPlain(name) ? [name, `${Number(v.toPrecision(3))}${mm ? " mm" : ""}`] : null;
+    }).filter(Boolean);
 }
 
 const ANSWER_WORDS = { accepted: "you accepted the fix", redirected: "you asked for something else",
@@ -73,7 +105,7 @@ export function historyLine(item) {
 function partnerOf(item, all) {
   if (!item.pairing_key) return null;
   const inReview = all.find((i) => i.id !== item.id && i.pairing_key === item.pairing_key);
-  if (inReview) return { item: inReview, line: `paired with ${inReview.defect_code} `
+  if (inReview) return { item: inReview, line: `paired with ${defectName(inReview.defect_code)} `
     + `${inReview.entity_type} ${inReview.entity_index} - it is pinned too, in the other colour.` };
   const named = item.pairing_key.startsWith("pair:") ? []
     : item.pairing_key.split(",").filter((f) => f && f !== item.fingerprint);
@@ -122,7 +154,7 @@ async function mountView(host, sessionId, jobId) {
   const { ren, rw, apiRW, cam } = canvas;
   const scale = canvas.setRenderScale;
   const overlay = makeOverlay(canvas);
-  (surf.patches || []).forEach((pt) => {
+  const addSkin = (skin) => (skin.patches || []).map((pt) => {
     let pts, polys, normals = null;
     if (pt.polys_b64) { pts = b64f32(pt.points_b64); polys = b64u32(pt.polys_b64);
       if (pt.normals_b64) normals = b64f32(pt.normals_b64); }
@@ -139,7 +171,28 @@ async function mountView(host, sessionId, jobId) {
     const pr = actor.getProperty(); pr.setColor(...BODY); pr.setInterpolationToPhong();
     pr.setAmbient(0.32); pr.setDiffuse(0.76); pr.setSpecular(0.12); pr.setSpecularPower(20);
     ren.addActor(actor);
+    return actor;
   });
+  const beforeActors = addSkin(surf);
+  /* BEFORE AND AFTER. When the repair's own surfaces are there (the part as it would be with the repairs it is
+     asking about), the view switches between the part as uploaded and the part repaired, on the same camera. */
+  const rs = await getRepairSurfaces(jobId).catch(() => null);
+  const afterActors = rs && rs.repaired ? addSkin(rs.repaired) : [];
+  afterActors.forEach((a) => a.setVisibility(false));
+  if (afterActors.length) {
+    host.insertAdjacentHTML("beforeend", `<div class="rpv-ctl rv-ba"><div class="rpv-seg" role="group" aria-label="Before or after the repair">`
+      + `<button type="button" class="rpv-opt on" data-v="before" aria-pressed="true">Before</button>`
+      + `<button type="button" class="rpv-opt" data-v="after" aria-pressed="false">After</button></div></div>`);
+    host.querySelectorAll(".rv-ba .rpv-opt").forEach((b) => {
+      b.onclick = () => {
+        const after = b.dataset.v === "after";
+        beforeActors.forEach((a) => a.setVisibility(!after)); afterActors.forEach((a) => a.setVisibility(after));
+        host.querySelectorAll(".rv-ba .rpv-opt").forEach((o) => {
+          const on = o === b; o.classList.toggle("on", on); o.setAttribute("aria-pressed", on ? "true" : "false"); });
+        rw.render();
+      };
+    });
+  }
   cam.azimuth(45); cam.elevation(25); ren.resetCamera(); rw.render();
   const bs = ren.computeVisiblePropBounds();
   const diag = Math.max(Math.hypot(bs[1] - bs[0], bs[3] - bs[2], bs[5] - bs[4]), 1e-9);
@@ -193,6 +246,7 @@ async function mountView(host, sessionId, jobId) {
   window._vdbg["review:" + jobId] = {
     focal: () => cam.getFocalPoint(), pin: () => at, partner: () => mateAt,
     visible: () => (place() ? 1 : 0),
+    beforeAfter: () => afterActors.length > 0,
     camera: () => cam.getPosition(),
   };
   return { show, stop() { overlay.stop(); canvas.ro.disconnect(); delete window._vdbg["review:" + jobId]; } };
@@ -258,7 +312,7 @@ export async function openReview(jobId, opts = {}) {
   function paintRail() {
     $(".rv-rail ol").innerHTML = groups.map((g, i) => {
       const cls = i < gi || (phase === "done") ? "done" : i === gi ? "current" : "todo";
-      return `<li class="${cls}" data-group="${esc(g.group_key)}"><b>${esc(g.defect_code)}</b>`
+      return `<li class="${cls}" data-group="${esc(g.group_key)}"><b>${esc(defectName(g.defect_code))}</b>`
         + `<span>${plural(g.count, "defect", "defects")}</span></li>`;
     }).join("");
     $(".rv-unanswered").textContent = unansweredLine(unanswered(groups));
@@ -298,13 +352,12 @@ export async function openReview(jobId, opts = {}) {
   function itemScreen(item) {
     const partner = partnerOf(item, everyItem), seen = historyLine(item);
     paintRail(); frame(item.camera, partner && partner.item ? partner.item.camera : null); say("");
-    const meas = Object.entries(item.measurements || {}).map(
-      ([k, v]) => `<li>${esc(k.replaceAll("_", " "))}: <b>${esc(v)}</b></li>`).join("");
+    const meas = measurementRows(item.measurements).map(([k, v]) => `<li>${esc(k)}: <b>${esc(v)}</b></li>`).join("");
     const prop = proposalLine(item);
     panel.innerHTML = `<div class="rv-step">${shownIdx} of ${shownTotal}</div>
       <article class="rv-item">
-        <h2>${esc(item.defect_code)} <small>${esc(item.entity_type)} ${esc(item.entity_index)}</small></h2>
-        <p class="rv-msg">${esc(item.message)}</p>
+        <h2>${esc(defectName(item.defect_code))} <small>${esc(item.entity_type)} ${esc(item.entity_index)}</small></h2>
+        <p class="rv-msg">${esc(isPlain(item.message) ? item.message : "We found a problem here.")}</p>
         ${meas ? `<ul class="rv-meas">${meas}</ul>` : ""}
         ${prop ? `<p class="rv-prop">the repair would ${esc(prop)}</p>`
           : "<p class=\"rv-prop\">nothing was proposed for this one.</p>"}

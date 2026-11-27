@@ -1425,3 +1425,85 @@ button.rp-kind:focus-visible{outline:2px solid var(--accent-line,var(--accent));
 .tl-node.open .rr-dec .rr-count{display:none}
 .rr-dec .rr-count{color:var(--text-faint)}
 .rr-dec .rr-count::before{display:none}
+
+/* ------------------------------------------------------------ CAD repair ---- */
+/* THE CHOICE in the geometry check (render/repair_choice.js): the form's own rows and hint type, three options */
+.rc-choice{margin:14px 0 0;padding:14px 0 0;border:0;border-top:1px solid var(--divider);min-width:0}
+.rc-choice>legend{float:left;width:100%;padding:0;margin-bottom:8px;color:var(--text);font:600 var(--fs-md)/1.3 var(--sans)}
+.rc-said{clear:both;margin:0 0 8px;color:var(--text-faint);font-size:var(--fs-sm)}
+.rc-opts{clear:both;display:flex;flex-direction:column;gap:6px}
+.rc-opt,.rc-auto{display:flex;align-items:flex-start;gap:10px;padding:8px 10px;border:1px solid var(--divider);
+  border-radius:var(--r-md,8px);cursor:pointer;color:var(--text);font-size:var(--fs-md);line-height:1.4}
+.rc-opt:hover{border-color:var(--border-strong)}
+.rc-opt:has(input:checked){border-color:var(--border-bright,var(--border-strong));background:var(--surface-2)}
+.rc-opt input,.rc-auto input{margin-top:3px;accent-color:var(--accent)}
+.rc-opt input:focus-visible,.rc-auto input:focus-visible{outline:2px solid var(--accent-line,var(--accent));outline-offset:2px}
+.rc-opt-t{display:flex;flex-direction:column;gap:2px;min-width:0}
+.rc-opt-t b{font-weight:600}
+.rc-opt-h{display:block;color:var(--text-faint);font-size:var(--fs-sm)}
+.rc-auto{margin-top:8px;border-style:dashed}
+.rc-auto:has(input:disabled){opacity:.55;cursor:default}
+
+/* THE REPAIR LANE (render/stage.js): a row like the others; its count sits beside its name */
+.rr-repair .tl-name .ct{color:var(--text-muted);font-variant-numeric:tabular-nums}
+
+/* THE REPAIR RESULT (render/repair.js): the viewer's frame, side panel and canvas */
+.rr-eyebrow{margin:0;color:var(--text-faint);font-size:var(--fs-xs);letter-spacing:.04em;text-transform:uppercase}
+.rr-flags{margin:0;padding-left:18px;color:var(--text-muted);font-size:var(--fs-sm);line-height:1.5}
+.rr-dl .v-dl{display:flex;flex-direction:column;gap:6px}
+.rr-none{margin:0;color:var(--text-faint);font-size:var(--fs-sm)}
+.rr-types{list-style:none;margin:0;padding:0}
+.rr-types li{display:flex;justify-content:space-between;gap:10px;padding:6px 0;border-top:1px solid var(--divider);font-size:var(--fs-md)}
+.rr-types li:first-child{border-top:0}
+.rr-types b{font-weight:500}
+.rr-types span{color:var(--text-faint);font-size:var(--fs-sm)}
+.rr-trace{list-style:none;margin:0;padding:0 8px 8px}
+.rr-go{display:flex;align-items:baseline;gap:8px;width:100%;padding:7px 4px;border:0;border-top:1px solid var(--divider);
+  background:none;color:var(--text-muted);font:inherit;font-size:var(--fs-sm);line-height:1.45;text-align:left;cursor:pointer;border-radius:var(--r-sm,6px)}
+.rr-trace li:first-child .rr-go{border-top:0}
+.rr-go:hover,.rr-go.on{color:var(--text)}
+.rr-go:focus-visible{outline:2px solid var(--accent-line,var(--accent));outline-offset:1px}
+.rr-n{flex:none;min-width:18px;color:var(--text-faint);font-variant-numeric:tabular-nums}
+.rr-t{min-width:0}
+.rr-canvas{position:relative}
+
+/* the pins and their legend: one colour per result, dark ink on each for contrast */
+.rpv-dot{flex:none;display:inline-block;width:10px;height:10px;border-radius:50%;background:var(--text-faint);transform:translateY(1px)}
+.rpv-dot.fixed,.rp-pin.fixed{background:var(--ok)}
+.rpv-dot.not_fixed,.rp-pin.not_fixed{background:var(--danger)}
+.rpv-dot.left_as_is,.rp-pin.left_as_is{background:var(--warn)}
+.rp-pin{color:#111;font:600 11px/18px var(--sans);padding:0 4px}
+.rp-pin.sel{outline:2px solid #fff;outline-offset:2px}
+.rp-pin:focus-visible{outline:2px solid #fff;outline-offset:2px}
+.rp-pin[hidden]{display:none!important}
+.rpv-ctl{position:absolute;left:12px;top:12px;z-index:9;display:flex;flex-wrap:wrap;gap:8px}
+.rpv-seg{display:inline-flex;border:1px solid var(--border);border-radius:8px;overflow:hidden;background:var(--background)}
+.rpv-opt{padding:6px 10px;border:0;border-left:1px solid var(--border);background:none;color:var(--text-muted);
+  font:inherit;font-size:var(--fs-sm);cursor:pointer}
+.rpv-opt:first-child{border-left:0}
+.rpv-opt.on{background:var(--surface-2);color:var(--text)}
+.rpv-opt:disabled{opacity:.45;cursor:default}
+.rpv-opt:focus-visible{outline:2px solid var(--accent-line,var(--accent));outline-offset:-2px}
+.rpv-legend{position:absolute;left:12px;bottom:12px;z-index:9;display:flex;gap:12px;padding:6px 10px;
+  border:1px solid var(--border);border-radius:8px;background:var(--background);color:var(--text-muted);font-size:var(--fs-sm)}
+.rpv-legend[hidden]{display:none}
+.rpv-legend span{display:inline-flex;align-items:center;gap:6px}
+.rpv-dev[hidden]{display:none}
+.rpv-hint{position:absolute;left:auto;right:12px;top:12px;bottom:auto;max-width:40%;z-index:9}
+/* the panel's downloads sit inside the side bar, whose bold ink would otherwise hide the primary button's label */
+.rr-result .v-dlbtn.primary b{color:var(--primary-ink)}
+/* the lane's bar is progress, not trouble: the neutral ink, never the accent's red */
+.rr-repair .rr-bar>i{background:var(--primary)}
+/* MESH | REPAIR: the two results' tab list, in the segmented look of the viewer's own switches */
+.rr-tabs{display:flex;gap:0;margin:14px 0 -6px;padding:0}
+#workbench>.rr-tabs{flex:none;margin:0;padding:8px 12px;border-bottom:1px solid var(--border);background:var(--background)}
+.rr-tab{padding:7px 16px;border:1px solid var(--border);border-left-width:0;background:var(--background);color:var(--text-muted);
+  font:inherit;font-size:var(--fs-md);cursor:pointer}
+.rr-tab:first-child{border-left-width:1px;border-radius:8px 0 0 8px}
+.rr-tab:last-child{border-radius:0 8px 8px 0}
+.rr-tab.on{background:var(--surface-2);color:var(--text)}
+.rr-tab:focus-visible{outline:2px solid var(--accent-line,var(--accent));outline-offset:2px}
+/* a later run's result took the workbench over: this run's tab list goes with its two results */
+#workbench>.rr-tabs:has(+ .viewer[hidden] + .viewer[hidden]){display:none}
+/* a narrow canvas keeps its switches and legends; the mouse hint gives way */
+@container (max-width:760px){.rpv-hint{display:none}}
