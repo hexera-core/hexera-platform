@@ -114,6 +114,31 @@ def _foam_that_writes(cells_per_rank: int = 1000, *, skip: str = "", raises: boo
     return fake
 
 
+def _a_hundred_seconds_a_rank(monkeypatch, foam):
+    """One worker, and a clock that moves only when a rank is exported - 100 s per rank.
+
+    BOTH HALVES ARE NEEDED TO SEE A SHARED BUDGET AT ALL. Run the ranks four at a time and they
+    read the clock at the same instant and all get the same figure, which proves nothing either
+    way; so the pool is forced down to one and the exports are put in a line. And a clock driven by
+    the NUMBER OF CALLS to `monotonic` would be nondeterministic here, because the worker thread
+    and the main loop both read it and the interleaving is the pool's business - so the fake export
+    is what advances it, and every reader in between sees the same time.
+    """
+    clock = [0.0]
+
+    def fake(cmd, **kw):
+        try:
+            return foam(cmd, **kw)
+        finally:
+            clock[0] += 100.0
+
+    fake.calls = foam.calls          # type: ignore[attr-defined]
+    monkeypatch.setattr(FE, "run_guarded", fake)
+    monkeypatch.setattr(FE, "export_workers", lambda n: 1)
+    monkeypatch.setattr(FE.time, "monotonic", lambda: clock[0])
+    return fake
+
+
 @pytest.fixture
 def pv_patched(monkeypatch):
     """The merge runs for real against a fake pyvista, through the import the code actually uses."""
@@ -135,15 +160,43 @@ def test_a_decomposed_delivery_does_not_take_the_serial_command(tmp_path, monkey
         assert f"-region {REGION}" in call["cmd"]
 
 
-def test_every_rank_is_exported_in_rank_order(tmp_path, monkeypatch, pv_patched):
-    """All of them, and in order: a mesh missing rank 5 is not the mesh that was delivered."""
+def test_every_rank_is_exported(tmp_path, monkeypatch, pv_patched):
+    """All of them: a mesh missing rank 5 is not the mesh that was delivered.
+
+    THE SET AND NOT THE SEQUENCE, because the ranks are exported several at a time now and the
+    order they reach `run_guarded` in is the thread pool's business. What must still be ordered is
+    the MERGE, which is asserted on its own below - that is where order changes the bytes.
+    """
     ws = _lay_out_a_decomposed_delivery(tmp_path, ranks=4)
     foam = _foam_that_writes()
     monkeypatch.setattr(FE, "run_guarded", foam)
     assert FE.export_volume_vtk(ws, all_regions=True, region=REGION)
     cases = [c["cmd"].split("-case '", 1)[1].split("'", 1)[0] for c in foam.calls]
-    assert [Path(c).name for c in cases] == ["processor0", "processor1", "processor2",
-                                             "processor3"]
+    assert sorted(Path(c).name for c in cases) == ["processor0", "processor1", "processor2",
+                                                   "processor3"]
+
+
+def test_the_pieces_are_merged_in_rank_order(tmp_path, monkeypatch):
+    """The ranks FINISH in whatever order they finish; they are MERGED in rank order.
+
+    This is the one place concurrency could have changed the delivered bytes. `pieces` is built by
+    indexing `done` with `ranks`, not by appending as futures complete, and this is the assertion
+    that says so: the reads happen in processor0..3 order however the exports raced.
+    """
+    ws = _lay_out_a_decomposed_delivery(tmp_path, ranks=4)
+    read: list[str] = []
+
+    class _Recording:
+        @staticmethod
+        def read(path: str) -> _FakeMesh:
+            read.append(Path(path).parts[-5])          # processorN/VTKRANK/fluid/<time>/internal
+            return _FakeMesh(int(Path(path).read_text(encoding="utf-8").strip() or 0))
+
+    import meshpipeline.sandbox.backend as backend
+    monkeypatch.setattr(backend, "pv", _Recording(), raising=False)
+    monkeypatch.setattr(FE, "run_guarded", _foam_that_writes())
+    assert FE.export_volume_vtk(ws, all_regions=True, region=REGION)
+    assert read == ["processor0", "processor1", "processor2", "processor3"], read
 
 
 def test_a_merged_delivery_still_takes_the_command_it_was_measured_with(tmp_path, monkeypatch):
@@ -223,12 +276,20 @@ def test_a_rank_that_exported_nothing_is_not_half_a_mesh(tmp_path, monkeypatch, 
 
 def test_a_rank_that_stops_never_raises_out_of_the_export(tmp_path, monkeypatch, pv_patched,
                                                           caplog):
-    """A review aid may never cost a mesh that is already built."""
+    """A review aid may never cost a mesh that is already built.
+
+    THE RANK IS NAMED, AND WHICH ONE IS THE POOL'S BUSINESS. Every rank raises here, and the first
+    failure the loop observes is whichever future completes first - so the assertion is that a rank
+    is named at all, which is the thing that was missing when job 110daca9's review was lost without
+    a line about it. `test_a_rank_that_exported_nothing_is_not_half_a_mesh` names a specific rank,
+    because there exactly one fails.
+    """
     ws = _lay_out_a_decomposed_delivery(tmp_path)
     monkeypatch.setattr(FE, "run_guarded", _foam_that_writes(raises=True))
     with caplog.at_level(logging.ERROR):
         assert FE.export_volume_vtk(ws, all_regions=True, region=REGION) is None
-    assert "processor0" in caplog.text
+    assert any(f"processor{r}" in caplog.text for r in range(3)), caplog.text
+    assert "the mesh stands" in caplog.text
 
 
 def test_a_decomposed_case_with_no_region_named_runs_nothing(tmp_path, monkeypatch, caplog):
@@ -243,14 +304,100 @@ def test_a_decomposed_case_with_no_region_named_runs_nothing(tmp_path, monkeypat
 
 
 def test_the_ranks_share_one_timeout(tmp_path, monkeypatch, pv_patched):
-    """Eight exports inside one budget, not eight budgets: the run's life is derived from it."""
+    """Four exports inside one budget, not four budgets: every rank's life is derived from it.
+
+    DRIVEN THROUGH ONE WORKER AND A CLOCK THAT IS TOLD WHAT TIME IT IS, because that is the only
+    way the sequence is observable at all now - run four at a time and they all read the clock at
+    the same instant and all get the same budget, which proves nothing either way. One worker and a
+    clock advancing 100 s a call puts the four exports in a line, and then a budget that failed to
+    carry over would show up as a figure growing back.
+    """
     ws = _lay_out_a_decomposed_delivery(tmp_path, ranks=4)
-    foam = _foam_that_writes()
-    monkeypatch.setattr(FE, "run_guarded", foam)
+    foam = _a_hundred_seconds_a_rank(monkeypatch, _foam_that_writes())
     assert FE.export_volume_vtk(ws, all_regions=True, region=REGION, timeout=600.0)
     seen = [c["timeout"] for c in foam.calls]
-    assert seen[0] <= 600.0
+    assert seen == [600.0, 500.0, 400.0, 300.0], seen
     assert seen == sorted(seen, reverse=True), f"the budget must not grow back: {seen}"
+    assert seen[-1] < seen[0], f"a fresh budget per rank would be four 600s: {seen}"
+
+
+def test_a_rank_whose_turn_comes_after_the_budget_is_spent_never_runs(
+        tmp_path, monkeypatch, pv_patched, caplog):
+    """The budget is a bound on the PASS and not on each rank, so it has to be able to stop one.
+
+    Same single worker, same told clock, and a budget of 150 s against 100 s a rank: the first rank
+    runs, the second runs with 50 s left, and the third's turn arrives with nothing left. It must
+    not start, and the export must come back None with the rank named rather than publish three
+    quarters of a coolant.
+    """
+    ws = _lay_out_a_decomposed_delivery(tmp_path, ranks=4)
+    foam = _a_hundred_seconds_a_rank(monkeypatch, _foam_that_writes())
+    with caplog.at_level(logging.ERROR):
+        assert FE.export_volume_vtk(ws, all_regions=True, region=REGION, timeout=150.0) is None
+    assert [c["timeout"] for c in foam.calls] == [150.0, 50.0], (
+        "the third rank's turn came with nothing left and it had to not start")
+    assert "ran out of the export" in caplog.text
+    assert not (ws / "VTK" / REGION / FE.MERGED_TIME_DIRNAME).exists()
+
+
+def test_the_ranks_are_exported_at_the_same_time(tmp_path, monkeypatch, pv_patched):
+    """THE CHANGE ITSELF. Eight ranks one after another was 549.6 s on job b8f09ae9, of which
+    540.81 s was summed rank time - no concurrency at all, on a 64-core machine.
+
+    Asserted by observation and not by a clock: each fake export blocks on a barrier that only
+    releases once all four have arrived, so the call can only return if all four were in flight
+    together. A serial loop deadlocks here, which is the strongest form this can take.
+    """
+    import threading
+
+    ws = _lay_out_a_decomposed_delivery(tmp_path, ranks=4)
+    writes = _foam_that_writes()
+    gate = threading.Barrier(4, timeout=30)
+
+    def fake(cmd, **kw):
+        gate.wait()                      # BrokenBarrierError on timeout -> the test fails, not hangs
+        return writes(cmd, **kw)
+
+    monkeypatch.setattr(FE, "run_guarded", fake)
+    monkeypatch.setattr(FE, "export_workers", lambda n: n)
+    assert FE.export_volume_vtk(ws, all_regions=True, region=REGION)
+    assert len(writes.calls) == 4
+
+
+def test_the_concurrency_is_bounded_by_the_cores_and_by_the_free_memory(monkeypatch):
+    """`export_workers` is the whole bound, and both halves of it are load-bearing.
+
+    foamToVTK is single-threaded, so the cores say how many make progress; measured at 8.2-8.4 GiB
+    of peak RSS a rank (job b8f09ae9's eight exports), the free memory says how many fit. The mesh
+    VM is 64 cores and 512 GiB, where the cores bind - a small box is the other way round, and this
+    function is reached on a FAILURE path, so taking the machine down for a review aid would be the
+    worst trade available.
+    """
+    gib = 1024 ** 3
+    monkeypatch.setattr(FE, "memory_in_use", lambda: None)
+    monkeypatch.setattr(FE, "job_cpus", lambda: 64)
+    assert FE.export_workers(8) == 8, "the measured VM runs all eight"
+    assert FE.export_workers(1) == 1, "never more workers than there are ranks"
+    monkeypatch.setattr(FE, "job_cpus", lambda: 4)
+    assert FE.export_workers(8) == 4, "four cores, four at a time"
+    # 100 GiB free at 9 GiB a rank is eleven, which does not bind at four cores...
+    monkeypatch.setattr(FE, "memory_in_use", lambda: (412 * gib, 512 * gib))
+    assert FE.export_workers(8) == 4
+    # ...and 20 GiB free is two, which does.
+    monkeypatch.setattr(FE, "memory_in_use", lambda: (492 * gib, 512 * gib))
+    assert FE.export_workers(8) == 2
+    # A box with nothing spare still runs one: a serial export is what this replaced, and it is
+    # better than no interior for the review.
+    monkeypatch.setattr(FE, "memory_in_use", lambda: (512 * gib, 512 * gib))
+    assert FE.export_workers(8) == 1
+    # And a cgroup that cannot be read is not a bound of zero.
+    monkeypatch.setattr(FE, "memory_in_use", lambda: None)
+    monkeypatch.setattr(FE, "job_cpus", _raises)
+    assert FE.export_workers(8) == 8
+
+
+def _raises():
+    raise OSError("no cgroup here")
 
 
 def test_the_export_asks_for_neither_fields_nor_boundary(tmp_path, monkeypatch, pv_patched):

@@ -8,11 +8,14 @@ import re
 import shutil
 import subprocess
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import meshpipeline.settings.runtime as rtcfg
 from meshpipeline.contracts.native_time import STALL_WINDOW_S
+from meshpipeline.engines.determinism import job_cpus
 from meshpipeline.render.boundary_quality import CHECKMESH_WRITE_FIELDS
+from meshpipeline.sandbox.liveness import memory_in_use
 from meshpipeline.sandbox.safe_exec import run_guarded
 
 logger = logging.getLogger(__name__)
@@ -767,9 +770,9 @@ def prefer_finished(time_dirs: list) -> list:
 #:
 #: NOT `foamToVTK -parallel`, which native.py rules out by name - "every consumer of its output is
 #: written for the serial layout". A processorN directory IS a serial case, though: its
-#: `constant/<region>/polyMesh` is a complete mesh. So each rank is exported on its own, serially,
-#: and the pieces are merged into the single serial-layout file every consumer already expects.
-#: Nothing downstream learns that the delivery was decomposed.
+#: `constant/<region>/polyMesh` is a complete mesh. So each rank is exported on its own, several at
+#: a time (see `export_workers`), and the pieces are merged into the single serial-layout file every
+#: consumer already expects. Nothing downstream learns that the delivery was decomposed.
 #:
 #: NOT `reconstructParMesh` either, and that is the dangerous option rather than the slow one: it
 #: writes `constant/<region>/polyMesh`, which on a decomposed delivery is the PUBLISHED patch
@@ -790,6 +793,49 @@ def prefer_finished(time_dirs: list) -> list:
 #: bytes of RSS per cell. Sizing this pass off the ratio would have priced it at ten times what it
 #: costs and skipped it on a machine that fits it easily.
 RANK_VTK_DIRNAME = "VTKRANK"
+
+#: WHAT ONE RANK'S EXPORT COSTS IN MEMORY WHILE IT RUNS, which is the second of the two things that
+#: bound how many may run at once. MEASURED off job b8f09ae9's own eight exports, every one of them
+#: between 8,409,064 and 8,606,344 kB of peak RSS - so 9 GiB, rounded up from the worst of them.
+#:
+#: THIS IS NOT THE SAME NUMBER AS THE MERGE'S. `VOLUME_READ_RSS_RATIO` and the note on
+#: RANK_VTK_DIRNAME above price the HOME side reading a finished piece back, which is about 100 to
+#: 190 bytes of RSS per cell. This is foamToVTK itself holding one rank's mesh and writing it out,
+#: and the two run at different times, so neither bounds the other.
+RANK_EXPORT_PEAK_BYTES = 9 * 1024**3
+
+
+def export_workers(n_ranks: int) -> int:
+    """How many ranks may export at once: never more than there are, never more than the job's own
+    cores, and never more than the free memory holds at `RANK_EXPORT_PEAK_BYTES` apiece.
+
+    BOTH BOUNDS ARE REAL AND NEITHER IMPLIES THE OTHER. foamToVTK is a single-threaded process, so
+    the cores say how many make progress; at 9 GiB apiece the memory says how many fit. The mesh VM
+    has 64 cores and 512 GiB, where cores bind; a 4-CPU 8 GiB box is the other way round and would
+    be driven into the OOM killer by a core-only bound - and this function is reached on a failure
+    path (a review aid), so taking the machine down for it would be the worst possible trade.
+
+    Memory that cannot be read is memory that is not used as a bound: `memory_in_use` returns None
+    off a cgroup it cannot see, and then the cores decide alone, which is what the measured VM does
+    anyway.
+    """
+    want = max(1, int(n_ranks))
+    try:
+        cores = int(job_cpus())
+    except Exception:                      # noqa: BLE001 - a bound that cannot be read is no bound
+        cores = want
+    out = max(1, min(want, max(1, cores)))
+    seen = memory_in_use()
+    if seen is not None:
+        used, limit = seen
+        fits = int(max(0, limit - used) // RANK_EXPORT_PEAK_BYTES)
+        if fits < out:
+            logger.info("exporting %d rank(s) at a time and not %d: %.1f GiB free at %.0f GiB a "
+                        "rank", max(1, fits), out, max(0, limit - used) / 1024**3,
+                        RANK_EXPORT_PEAK_BYTES / 1024**3)
+            out = max(1, fits)
+    return out
+
 
 #: WHAT THE MERGED EXPORT IS CALLED. The trailing `_0` is load-bearing and not decoration:
 #: `export_volume_vtk.newest` reads the index off `name.rpartition("_")` to sort `_10` after `_9`,
@@ -835,40 +881,76 @@ def _volume_from_ranks(ws: Path, ranks: list, region: str, *, bashrc: str,
     """
     log = ws / EXPORT_LOG
     started = time.monotonic()
-    pieces: list[Path] = []
-    # ONE LOG FOR THE WHOLE PASS, appended rank by rank, for the reason the serial export writes
-    # to a file at all: `runtime/mesh_runner._output_mark` counts a *.log whose size moves as the
-    # run making progress, and eight silent exports in a row is 22 minutes of a dead-looking job.
-    with log.open("w", encoding="utf-8") as fh:
-        for rank in ranks:
-            left = float(timeout) - (time.monotonic() - started)
-            if left <= 0.0:
-                logger.error("the volume export ran out of its %.0f s before %s; the mesh stands "
-                             "and the review will have no interior to cut", float(timeout),
-                             rank.name)
-                return None
-            fh.write(f"\n----- {rank.name} -----\n")
+    stem = Path(EXPORT_LOG).stem
+
+    def _rank_log(rank) -> Path:
+        """This rank's own log. `mesher_stage.read_stage` derives the tool from
+        `stem.split("_")[0]`, so the customer's line still reads foamToVTK."""
+        return ws / f"{stem}_{rank.name}.log"
+
+    def _export(rank) -> Path:
+        """One rank's cells, as the largest finished piece it wrote. Raises on any failure, with
+        the rank named - the caller turns that into the None the serial path returns."""
+        left = float(timeout) - (time.monotonic() - started)
+        if left <= 0.0:
+            raise RuntimeError(f"ran out of the export's {float(timeout):.0f} s before "
+                               f"{rank.name} could start")
+        cmd = (f"source {bashrc} >/dev/null 2>&1 && "
+               f"foamToVTK -case '{rank}' -region {region} -constant {NO_FIELD_TIME} "
+               f"{RANK_EXPORT_FLAGS} -overwrite -name {RANK_VTK_DIRNAME}")
+        with _rank_log(rank).open("w", encoding="utf-8") as rfh:
+            run_guarded(["bash", "-lc", cmd], cwd=str(ws), env=_foam_env(),
+                        stdout=rfh, stderr=subprocess.STDOUT, timeout=left,
+                        stall_s=STALL_WINDOW_S)
+        got = sorted((rank / RANK_VTK_DIRNAME / region).glob("*/internal.vtu"))
+        keep = set(prefer_finished([p.parent for p in got]))
+        got = [p for p in got if p.parent in keep]
+        if not got:
+            raise RuntimeError(f"{rank.name} exported no cells for region {region!r} - "
+                               f"{_rank_log(rank).name} has what foamToVTK printed")
+        return max(got, key=lambda p: p.stat().st_size)
+
+    # CONCURRENTLY, AND THE SEQUENCE WAS NEVER ABOUT CORRECTNESS. The ranks partition the region's
+    # cells with no overlap and each writes into its own case directory, so there is nothing shared
+    # to serialise; the old loop's own comment says it was shaped for progress visibility. Measured
+    # on job b8f09ae9: eight ranks one after another took 549.6 s of which 540.81 s was summed rank
+    # time, on a machine with 64 cores and 512 GiB, at 8.2 GiB peak a rank.
+    #
+    # EACH RANK WRITES ITS OWN LOG, which is the precondition rather than a nicety: eight writers
+    # appending to one handle interleave into garbage. `_output_mark` globs `*.log` so the beacon
+    # still sees movement, and `mesher_stage` splits the stem on "_" so the stage still reads
+    # foamToVTK - the same convention `checkMesh_fluid.log` already uses.
+    #
+    # BOUNDED BY THE JOB'S CORES AND BY ITS FREE MEMORY, both of which `export_workers` reads; the
+    # measured VM has 64 cores and 512 GiB so all eight run, and a small box runs fewer rather than
+    # meeting the OOM killer on a failure path.
+    done: dict = {}
+    pool = ThreadPoolExecutor(max_workers=export_workers(len(ranks)),
+                              thread_name_prefix="rankvtk")
+    try:
+        with log.open("w", encoding="utf-8") as fh:
+            fh.write(f"exporting region {region!r} from {len(ranks)} rank(s), concurrently; "
+                     f"each rank's own output is in {stem}_<rank>.log\n")
             fh.flush()
-            cmd = (f"source {bashrc} >/dev/null 2>&1 && "
-                   f"foamToVTK -case '{rank}' -region {region} -constant {NO_FIELD_TIME} "
-                   f"{RANK_EXPORT_FLAGS} -overwrite -name {RANK_VTK_DIRNAME}")
-            try:
-                run_guarded(["bash", "-lc", cmd], cwd=str(ws), env=_foam_env(),
-                            stdout=fh, stderr=subprocess.STDOUT, timeout=left,
-                            stall_s=STALL_WINDOW_S)
-            except Exception as exc:    # noqa: BLE001 - subprocess timeout types vary by caller
-                logger.error("foamToVTK stopped on %s (%s); the mesh stands, but the review will "
-                             "have no interior to cut and %s has what it printed",
-                             rank.name, exc, log.name)
-                return None
-            got = sorted((rank / RANK_VTK_DIRNAME / region).glob("*/internal.vtu"))
-            keep = set(prefer_finished([p.parent for p in got]))
-            got = [p for p in got if p.parent in keep]
-            if not got:
-                logger.error("%s exported no cells for region %r - %s has what foamToVTK printed",
-                             rank.name, region, log.name)
-                return None
-            pieces.append(max(got, key=lambda p: p.stat().st_size))
+            futures = {pool.submit(_export, r): r for r in ranks}
+            for fut in as_completed(futures):
+                rank = futures[fut]
+                try:
+                    done[rank] = fut.result()
+                except Exception as exc:   # noqa: BLE001 - subprocess timeout types vary
+                    logger.error("foamToVTK stopped on %s (%s); the mesh stands, but the review "
+                                 "will have no interior to cut and %s has what it printed",
+                                 rank.name, exc, _rank_log(rank).name)
+                    return None
+                fh.write(f"----- {rank.name} finished after "
+                         f"{time.monotonic() - started:.1f}s -----\n")
+                fh.flush()
+    finally:
+        # `wait=False` with the futures cancelled: a rank that has already failed must not hold the
+        # run while seven others finish work nobody will merge.
+        pool.shutdown(wait=False, cancel_futures=True)
+    # IN `ranks` ORDER, not completion order, so the merged bytes are what the serial path made.
+    pieces: list[Path] = [done[r] for r in ranks]
 
     out_dir = ws / "VTK" / region / MERGED_TIME_DIRNAME
     try:
