@@ -440,6 +440,14 @@ for comp in app mesh console admin; do
     IMAGE_ID["${comp}"]=""
     record "image build (${comp}: Dockerfile target ${TARGET[$comp]})" failed 1 \
       "see ${WORK}/build-${comp}.log"
+    # THE WHY, WHERE IT CAN BE READ. The log lives in a temporary directory on the runner and
+    # nothing uploads it, so "see <path>" was all a failed CI build ever said (the mesh image,
+    # 27 Nov: two failures, no cause visible). Its tail and the runner's free disk go to the job log.
+    echo "---- last 60 lines of build-${comp}.log ----"
+    tail -n 60 "${WORK}/build-${comp}.log" 2>/dev/null || true
+    echo "---- disk free at the failure ----"
+    df -h / /var/lib/docker 2>/dev/null || df -h / 2>/dev/null || true
+    echo "---- end ----"
   fi
 done
 
