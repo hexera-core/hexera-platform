@@ -235,11 +235,11 @@ def contract_refusal(contract: str) -> dict | None:
                          "so nothing was meshed")}
 
 
-def run_sizing(ws: str) -> dict:
+def run_sizing(ws: str, *, workers_cap: int | None = None) -> dict:
     """TIME-21: the FEA sizing packed in `ws` (engines/fea_plan_options.run_packed), as a run's result: rc 0 when it
     sized the part; what it made is in `fea_sizing` and its plans in the returned workspace."""
     from meshpipeline.engines.fea_plan_options import run_packed
-    got = run_packed(Path(ws))
+    got = run_packed(Path(ws), workers_cap=workers_cap)
     return {"rc": 0 if got.get("options") else 1, "timed_out": bool(got.get("out_of_time")), "fea_sizing": got,
             "log_tail": str(got.get("error") or "")}
 

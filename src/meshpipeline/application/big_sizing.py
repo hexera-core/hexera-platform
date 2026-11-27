@@ -15,8 +15,8 @@ a few minutes had several hundred hot spots or several hundred thousand triangle
 had neither. A record with no triangle count (measured before it was kept) is predicted from its hot spots.
 
 THE LINE: predicted over THRESHOLD_S on the worker. A VM costs about 90 s to start, its image pull and the hand-back
-about as much again, and the sizing there is about three times faster (8 counting processes on whole cores against
-4 vCPUs): it wins past about 4 minutes, and it frees the worker's slot besides.
+about as much again, and the sizing there is about three times faster (whole cores, and as many counting processes
+as the machine holds: engines/fea_size_field.machine_workers, 32 on the speed machine, against 4 vCPUs): it wins past about 4 minutes, and it frees the worker's slot besides.
 """
 from __future__ import annotations
 

@@ -216,7 +216,72 @@ def test_the_mesh_container_runs_the_sizing_for_its_engine(monkeypatch, tmp_path
     monkeypatch.setattr(gcs_exchange, "upload_result", lambda uri, w, result: sent.update(result=result))
     monkeypatch.setattr(gcs_exchange, "upload_progress", lambda *a, **k: None)
     monkeypatch.setattr(dispatch, "run_engine_local", lambda *a, **k: pytest.fail("a mesher was started"))
-    monkeypatch.setattr(PO, "run_packed", lambda w: {"options": {"full": {}}, "out_of_time": False,
+    monkeypatch.setattr(PO, "run_packed", lambda w, **k: {"options": {"full": {}}, "out_of_time": False,
                                                      "planning_code": "c", "workers": 8, "seconds": 1.0})
     got = R.run("gs://b/in", "gs://b/out", seam.SIZING_ENGINE, 1620)
     assert got["rc"] == 0 and got["fea_sizing"]["options"] == {"full": {}} and sent["result"] is got
+
+
+# # TIME-21: on the VM the counting processes follow the machine; the worker keeps its cap
+
+
+def test_on_a_sizing_vm_the_counting_processes_follow_the_machine():
+    from meshpipeline.engines import fea_size_field as SF
+    assert SF.machine_workers(cpus=32, mem_gib=128) == 32                     # c2d-standard-32
+    assert SF.machine_workers(cpus=16, mem_gib=128) == 16                     # n2-highmem-16
+    assert SF.machine_workers(cpus=64, mem_gib=512) == SF.VM_MAX_WORKERS      # the hard ceiling
+    assert SF.machine_workers(cpus=32, mem_gib=32) == int((32 * SF.MEMORY_SHARE - SF.PARENT_GIB) // SF.CHILD_GIB)
+    assert SF.machine_workers(cpus=32, mem_gib=8) == SF.MAX_WORKERS           # never fewer than the worker's own
+    assert SF.machine_workers(cpus=4, mem_gib=8) == 4
+
+
+def test_the_worker_keeps_its_cap_and_the_vm_lifts_it(monkeypatch):
+    from meshpipeline.engines import determinism
+    from meshpipeline.engines import fea_size_field as SF
+    monkeypatch.setattr(determinism, "job_cpus", lambda: 32)
+    try:
+        SF.set_workers_cap(None)
+        assert SF.plan_workers() == SF.MAX_WORKERS == 8
+        SF.set_workers_cap(32)
+        assert SF.plan_workers() == 32
+    finally:
+        SF.set_workers_cap(None)
+
+
+def test_only_the_vms_sizing_tells_its_child_to_follow_the_machine(monkeypatch, tmp_path):
+    import subprocess
+
+    import meshpipeline.sandbox.safe_exec as SE
+    from meshpipeline.engines import fea_plan_options as PO
+    from meshpipeline.engines import fea_size_field as SF
+    cmds: list = []
+
+    def ran(cmd, **kw):
+        cmds.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, stdout='{"full": {}}\n', stderr="")
+
+    monkeypatch.setattr(SE, "run_guarded", ran)
+    monkeypatch.setattr(SF, "machine_workers", lambda **kw: 32)
+    PO.bounded(tmp_path / "p.step", to_metres=1e-3, budget_s=100.0)          # the worker's sizing
+    ws = PO.pack(_ws(tmp_path) / "geometry.step", tmp_path / "vm", to_metres=1e-3, budget_s=100.0)
+    got = PO.run_packed(ws)                                                   # the VM's
+    assert "--workers-cap" not in cmds[0]
+    assert cmds[1][cmds[1].index("--workers-cap") + 1] == "32"
+    from meshpipeline.engines.determinism import job_cpus
+    assert got["workers"] == min(32, job_cpus())
+
+
+def test_the_child_takes_the_cap(monkeypatch, tmp_path):
+    import os
+
+    from meshpipeline.engines import fea_plan_options as PO
+    from meshpipeline.engines import fea_size_field as SF
+    seen: dict = {}
+    monkeypatch.setattr(os, "nice", lambda n: None)
+    monkeypatch.setattr(PO, "stage_file", lambda *a, **k: None)
+    monkeypatch.setattr(PO, "plan_staged", lambda *a, **k: seen.setdefault("cap", SF._WORKERS_CAP) and {"full": {}})
+    try:
+        assert PO._main([str(tmp_path / "p.step"), "--workers-cap", "24"]) == 0
+    finally:
+        SF.set_workers_cap(None)
+    assert seen["cap"] == 24
