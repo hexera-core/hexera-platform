@@ -93,7 +93,7 @@ def test_a_sizing_run_as_the_vm_runs_it_gives_the_workers_answer(tmp_path):
     cpus = sorted(os.sched_getaffinity(0))
     if len(cpus) < 2:
         pytest.skip("needs two CPUs to size with two process counts")
-    here = cpus[:4] if len(cpus) >= 4 else cpus[:1]
+    here = cpus[:min(4, len(cpus) - 1)]  # always fewer than the VM's count, also on a 4-CPU runner
     # the VM's count follows the machine: here every CPU this machine has, past the worker's cap of 8 where it can
     on_worker, plans_worker, workers_here, got, plans_vm = _as_worker_and_as_vm(
         tmp_path, fx.drilled_plates(4), here=here, there=cpus, cap=len(cpus))
