@@ -476,3 +476,108 @@ def test_the_part_is_measured_once_for_the_costings_of_one_upload(monkeypatch, t
     assert calls == [1] and second[0] == {"faces": {}}
     PC._measured("s1", {**stored, "source": {"x": 2}}, tmp_path)         # another upload: measured again
     assert calls == [1, 1]
+
+
+class _RequestRouter(_ModelRouter):
+    """As _ModelRouter, but the AI step refines the fillet only when the request it is shown holds the typed words -
+    as on the site, where the intake's request grows with the conversation, so the same "nothing typed" question
+    asked again later is not the same question."""
+
+    async def call_builder_model(self, messages, tools=None, tool_choice="auto", job_id="", user_id="",
+                                 parallel_tool_calls=None, on_reasoning=None):
+        if tools and tools[0]["function"]["name"] == FA.TOOL_DECISION:
+            self.refine = GLOBAL in json.dumps(messages)
+        return await super().call_builder_model(messages, tools, tool_choice, job_id, user_id, parallel_tool_calls,
+                                                on_reasoning)
+
+
+def test_the_site_path_card_poll_then_first_message_says_one_count(monkeypatch, part, tmp_path):
+    """THE SITE'S OWN ENTRY POINTS, in the site's order (the knuckle, 27 Nov): a reading made before the stage had
+    sized the part; the check's poll (api/v1/geometry._with_stand) asking for the card's count on the worker; the
+    card drawn (fea_check.fea_view); then the first chat message (part_matches.finalize -> the worker's reading and
+    cost), with the intake's request by then holding the typed words. The card, the first line's "from" and a run
+    started with nothing typed say one count."""
+    import asyncio
+    from types import SimpleNamespace
+
+    from meshpipeline.api.v1 import geometry as G
+    from meshpipeline.application import fea_check as FC
+    from meshpipeline.application import geometry_check as GC
+    from meshpipeline.cad.fea_measure import FACT_KEY
+    from meshpipeline.contracts import geometry_check as CGC
+    from meshpipeline.contracts import object_storage
+    _wire(monkeypatch, part)
+    _router(monkeypatch, _RequestRouter())
+    store = _Store()
+    monkeypatch.setattr(object_storage, "get_object_store", lambda: store)
+    sid = "s1"
+    sized = _sized_facts(part)
+    facts = {"scale_to_m": 0.001, FACT_KEY: {PM.PARTS_KEY: {"route": "fea", "table": part["table"], "pictures": []}}}
+    check = {"status": "ready", "session_id": sid, "source": {"x": 1}, "facts": facts}
+    monkeypatch.setattr(GC, "read_check", lambda s: check)
+    monkeypatch.setattr(PC, "stage_sized", lambda s: bool((check["facts"].get(FC.PLAN_FACT_KEY) or {}).get("sized")))
+    # the worker runs what is queued at once
+    monkeypatch.setattr(CGC, "_part_words_enqueuer", lambda **kw: PM.run_reading(**kw))
+
+    async def reader(ws, table, pictures, state, **kw):
+        n = len([x for x in state.get("user_notes") or [] if x.get("source") == "chat"])
+        return _reading(part["table"], n) if n else PW.section("used")
+    monkeypatch.setattr(PW, "ask", reader)
+
+    async def standard_of(org):
+        return _standard()
+    monkeypatch.setattr(G, "_meshing_standard_of", standard_of)
+    session = SimpleNamespace(id=sid, user_notes=[{"id": "n0", "text": "it is a steering knuckle", "source": "console"}],
+                              request_txt="FEA mesh of a steering knuckle", owner_id="u1", messages=[],
+                              intake_gate={})
+    # 1. a reading before the stage sized the part
+    PM.finalize(session, owner_id="u1", standard=_standard())
+    # 2. sized; the check's poll asks for the card's count, then draws the card
+    check["facts"] = {**facts, **sized}
+    first_poll = asyncio.run(G._with_stand(sid, check["facts"], session, "u1", "org"))
+    assert "stand" not in first_poll[FC.PLAN_FACT_KEY]          # asked for; the next poll shows it
+    shown = asyncio.run(G._with_stand(sid, check["facts"], session, "u1", "org"))
+    card = FC.plan_view(shown)
+    held = PC.stand_for(sid, check["facts"], _standard())
+    assert held, "the card's count was not planned"
+    count = held["side"]["elements"]
+    words = card.get("words") or card["options"][0]["words"]
+    assert f"about {count:,} elements" in words, words
+    assert card["why"].startswith(PO.nothing_to_choose(held["row"]))
+    # 3. the first message: the intake's request now holds the typed words
+    session.user_notes = [*session.user_notes, {"id": "n1", "text": GLOBAL, "source": "chat", "turn": 1}]
+    session.request_txt = f"FEA mesh of a steering knuckle; {GLOBAL}"
+    PM.finalize(session, owner_id="u1", standard=_standard())
+    cost = PM.view(session, owner_id="u1")["cost"]
+    assert cost["before"]["elements"] == count, (cost["before"], count)
+    assert PT.cost_line(cost).startswith(f"That takes it from {PT.count_words(count)} to ")
+    # 4. a run started with nothing typed prints the card's count
+    ws = _stage(knuckle_like(), tmp_path / "now")
+    planned: list[dict] = []
+    real = FD.size_choice
+
+    def first(*a, **k):
+        plan, said = real(*a, **k)
+        planned.append(plan)
+        return plan, said
+    monkeypatch.setattr(FD, "size_choice", first)
+    state = {"purpose": "structural", "user_id": "u1", "user_notes": [], MS.STATE_KEY: _standard(),
+             "request_txt": "FEA mesh of a steering knuckle; anything",
+             "fea_plans_object": GC.check_object_key(sid, PO.PLANS_FILE)}
+    _ok, marker, _cited, _said = _drive(ws, monkeypatch, state, _RequestRouter())
+    assert planned and int(planned[0]["estimate"]["elements"]) == count, marker
+
+
+def test_nothing_typed_before_is_the_card_count():
+    assert PC.nothing_typed(("base", None))
+    kept = PC.inputs({"status": "used", "entries": []}, None, [{"id": "n0", "text": "it is cast", "source": "console"}])
+    assert PC.nothing_typed(("planned", kept))
+    typed = PC.inputs({"status": "used", "entries": [{"ask": "size"}]}, None, [])
+    assert not PC.nothing_typed(("planned", typed)) and not PC.nothing_typed(("chained", {"elements": 5}))
+
+
+def test_the_why_follows_the_machine_the_count_names():
+    assert PO.nothing_to_choose({"standard": True}) == "The full-rules mesh fits the standard machine: there is nothing to choose."
+    said = PO.nothing_to_choose({"standard": False, "cores": 16, "where": "gce", "machine": "c2d-standard-32"})
+    assert said.startswith("The full-rules mesh fits in the standard machine's memory, so there is nothing to choose; "
+                           "it runs on ") and said.endswith(" to finish sooner.")

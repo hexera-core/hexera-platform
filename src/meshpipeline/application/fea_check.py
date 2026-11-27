@@ -567,8 +567,13 @@ def plan_view(facts: dict | None) -> dict | None:
     options = [_option(full, PLAN_FULL, rec)]
     if got.get("choice") and isinstance(got.get("quicker"), dict):
         options.append(_option(got["quicker"], PLAN_QUICKER, rec))
+    why = str(got.get("why") or "")
+    if len(options) == 1 and why:
+        # the sentence follows the machine the shown count names (the count for "go now" may be the stand's)
+        from meshpipeline.engines.fea_plan_options import nothing_to_choose
+        why = nothing_to_choose(full)
     out: dict = {"state": "sized", "choice": len(options) > 1, "recommended": rec,
-                 "why": " ".join(w for w in (str(got.get("why") or ""), RETRY_WORDS) if w),
+                 "why": " ".join(w for w in (why, RETRY_WORDS) if w),
                  "question": PLAN_QUESTION, "options": options}
     if len(options) == 1:
         out["words"] = (f"{_elements_words(int(full.get('elements') or 0), bool(full.get('at_least')))} on "

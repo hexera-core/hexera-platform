@@ -127,6 +127,18 @@ def before_of(previous: Mapping | None) -> tuple[str, Any]:
     return "planned", inputs(previous.get("section"), None, [])
 
 
+def nothing_typed(before: tuple[str, Any]) -> bool:
+    """Whether the plan before this message (before_of's answer) is the plan with nothing typed: no reading before, or
+    one whose words set nothing to cost (`wanted`: no size, no area, no count, no requirement the notes' reading
+    holds). Pure."""
+    how, got = before
+    if how == "base":
+        return True
+    if how != "planned" or not isinstance(got, Mapping):
+        return False
+    return not wanted(got.get("section"), _counts(got.get("user_notes")), got.get("asked"))
+
+
 def _ai(record: dict, diag_m: float, asked: Mapping | None, ai_state: Mapping, *, job_id: str) -> tuple[dict, str]:
     """THE RUN'S AI STEP, asked now (engines/fea_ai.decide, AI-fea-1..9: its refinements, what it sets aside, the count
     it reads from the words) on the brief the run builds - (its section, its answer as given: handed to the run with
@@ -267,8 +279,12 @@ def for_reading(session_id: str, section: Mapping | None, user_notes, *, asked: 
         stored = read_check(session_id) or {}
         before = before_of(previous)
         standard = (ai_state or {}).get("meshing_standard")
-        if before[0] == "base":
-            # THE STAGE CARD'S COUNT (stand): what the card shows for "go now" is the first line's "from" - one number
+        if nothing_typed(before):
+            # THE STAGE CARD'S COUNT (stand): what the card shows for "go now" is the first line's "from" - one number.
+            # Read whenever the plan before this message had nothing typed - no reading before it, or one of words that
+            # set nothing (the knuckle, 27 Nov: a reading made before the stage was sized came before the first
+            # message, so "before" was planned again - its AI step asked anew, on a request that by then held the
+            # typed words - and said "from about 1.1 million" under a card showing 866,295)
             held = stand_for(session_id, stored.get("facts"), standard)
             if held is not None:
                 before = ("chained", dict(held["side"]))
@@ -479,5 +495,5 @@ def stand(session_id: str, *, standard: Mapping | None = None, owner_id: str = "
 
 
 __all__ = ["NOTHING", "RULE", "STAND_FILE", "WORTH_SAYING", "before_of", "costed", "for_reading",
-           "inputs", "keep_stand", "planned", "sizing_key", "stage_sized", "stand", "stand_for",
+           "inputs", "keep_stand", "nothing_typed", "planned", "sizing_key", "stage_sized", "stand", "stand_for",
            "stand_wanted", "standard_key", "target_of", "wanted", "worth_saying"]

@@ -128,6 +128,16 @@ def row(record: dict, plan: dict, key: str) -> dict:
             "at_minimums": bool((plan.get("coarsened") or {}).get("at_minimums"))}
 
 
+def nothing_to_choose(full: dict) -> str:
+    """Why there is no choice, true to the machine the full-rules mesh names: it fits the standard machine's memory -
+    and when RUN-10 sends it to a faster machine to finish sooner, that is said too (the C5 knuckle's card: "fits the
+    standard machine" over "on a faster machine (16 cores)")."""
+    if full.get("standard", True):
+        return "The full-rules mesh fits the standard machine: there is nothing to choose."
+    return (f"The full-rules mesh fits in the standard machine's memory, so there is nothing to choose; it runs "
+            f"{_machine_words(full)} to finish sooner.")
+
+
 def _fits(r: dict) -> bool:
     """Whether a row's MEMORY fits the standard machine (a row kept from before RUN-10 has only `standard`)."""
     return bool(r.get("fits_standard", r.get("standard")))
@@ -141,7 +151,7 @@ def decide(record: dict, full_plan: dict, quicker_plan) -> tuple[dict, dict | No
     out: dict = {"version": VERSION, "rule": "PLAN-fea-22", "full": full, "quicker": None, "choice": False,
                  "recommended": FULL}
     if _fits(full):
-        out["why"] = "The full-rules mesh fits the standard machine: there is nothing to choose."
+        out["why"] = nothing_to_choose(full)
         return out, None
     qplan = quicker_plan() if callable(quicker_plan) else quicker_plan
     quick = row(record, qplan, QUICKER) if qplan is not None else None
@@ -450,7 +460,7 @@ def _main(argv: list[str]) -> int:
 
 __all__ = ["BUDGET_S", "FULL", "LOW_STRESS", "PLANS_FILE", "STAND_FILE", "QUICKER", "bounded", "decide", "kept_plan",
            "minutes_words", "options", "options_and_plans", "plan_staged", "planning_code", "plans_key",
-           "requirements_cost", "requirements_plan", "row", "stage_file", "standard_elements"]
+           "nothing_to_choose", "requirements_cost", "requirements_plan", "row", "stage_file", "standard_elements"]
 
 
 if __name__ == "__main__":
