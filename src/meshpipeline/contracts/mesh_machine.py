@@ -1,6 +1,6 @@
-# Responsibility: Say WHERE a mesh runs - the Cloud Run mesh job, or a Compute Engine VM sized to fit - from the memory the plan needs, or (RUN-9) from a flow plan's cell count past the standard machine's, before anything is meshed; and one size up when a run still runs out of memory.
+# Responsibility: Say WHERE a mesh runs - the Cloud Run mesh job, or a Compute Engine VM sized to fit - from the memory the plan needs, or (RUN-9) from a flow plan's cell count past the standard machine's, or from a big FEA (RUN-10) or flow (RUN-13) plan's size, for speed, before anything is meshed; and one size up when a run still runs out of memory.
 # Boundaries: engine-neutral and pure: no provider call. A driver writes the decision into its workspace; the mesh executor (adapters/mesh_execution) reads it and dispatches there.
-# Collaborates with: engines/fea_driver.py (writes it from the FEA memory model), engines/snappy/drivers.py and engines/cfmesh/cfmesh_runner.py (a user's cell count, RUN-9), adapters/mesh_execution/cloud_run_client.py and gce_vm.py (read it, run there), docs/RULES.md RUN-1..9.
+# Collaborates with: engines/fea_driver.py (writes it from the FEA memory model), engines/snappy/drivers.py and engines/cfmesh/cfmesh_runner.py (a user's cell count, RUN-9; a big flow plan, RUN-13), adapters/mesh_execution/cloud_run_client.py and gce_vm.py (read it, run there), docs/RULES.md RUN-1..10, RUN-13.
 """THE MACHINE A MESH RUNS ON (Areen, 24 Oct: a bigger machine replaces shrinking a mesh to fit).
 
 The plan is sized by the accuracy rules alone. Its memory need is then routed:
@@ -15,7 +15,9 @@ The plan is sized by the accuracy rules alone. Its memory need is then routed:
 If a run still runs out of memory, the SAME plan is run again one machine up (step_up), up to the
 largest. And TIME (RUN-5): the Cloud Run job stops every run at its wall, so a plan planned to pass it
 runs on a VM from the start (for_time), and a run that met the wall still working runs again there
-(off_the_wall) - a VM has no wall; the progress watchdog stops a stuck mesher on it. The decision travels in the workspace (MACHINE_FILE) with its numbers and its words.
+(off_the_wall) - a VM has no wall; the progress watchdog stops a stuck mesher on it. And SPEED (RUN-10, RUN-13): a big
+FEA or flow plan runs on a VM with more cores even when it fits the job's memory (for_time), and falls back to the job when
+that VM cannot be started (fallback). The decision travels in the workspace (MACHINE_FILE) with its numbers and its words.
 """
 from __future__ import annotations
 
@@ -31,11 +33,19 @@ MACHINE_FILE = "mesh_machine.json"
 class Machine:
     name: str           # the Compute Engine machine type
     memory_gib: float   # its memory
-    cpus: int
+    cpus: int           # its vCPUs: the threads a mesher can run there (engines/determinism.job_cpus reads them)
+
+    @property
+    def cores(self) -> int:
+        """Its CORES, as the user is told them: a Compute Engine vCPU is one hyperthread, two to a core on every type
+        named here (n2, m1, c2d; lscpu on the benchmark VMs, 26 Nov: n2-highmem-64 32 cores, c2d-highmem-32 16)."""
+        return max(1, self.cpus // 2)
 
 
 #: THE CLOUD RUN MESH JOB'S MEMORY (deploy/gcp MESH_MEMORY, the same on dev and prod).
 CLOUD_RUN_GIB = 32.0
+#: ITS CORES (deploy/gcp MESH_CPU: `gcloud run jobs describe dev-areen-mesh` says cpu 8).
+CLOUD_RUN_CPUS = 8
 #: What one run may use of a machine's memory: the OS, the container runtime and the runner keep the rest.
 USABLE_SHARE = 0.9
 #: THE VMs, smallest first: memory-optimised, enough cores for the mesher's threads. The last is the
@@ -56,7 +66,8 @@ def usable_gib(machine: Machine | None) -> float:
 
 
 def _by_name(name: str | None) -> Machine | None:
-    return next((m for m in MACHINES if m.name == name), None)
+    # the memory ladder, and RUN-10's speed machine (kept apart from it: memory never picks it)
+    return next((m for m in (*MACHINES, SPEED_MACHINE) if m.name == name), None)
 
 
 #: The files a flow mesh writes per cell, with room: a polyMesh is about 185-205 bytes a cell raw
@@ -131,19 +142,155 @@ def _smallest_holding(previous: dict) -> Machine:
     return next((m for m in MACHINES if process <= usable_gib(m)), CEILING)
 
 
-def for_time(decision: dict, *, planned_s: float | None, wall_s: float) -> dict:
+#: RUN-10: A BIG FEA MESH RUNS ON MORE CORES (Areen, 26 Nov: "cost is not an issue, give it more cores if we can"). The
+#: measurement behind it: the owner's 857,000-element solid took 41 minutes on the 8-core Cloud Run job, 7 minutes
+#: (nothing typed) and 14.6 minutes (his requirements) on a 16-thread laptop - the surface workers (MESH-23) and the
+#: HXT fill (MESH-25) use every core the machine has. At or above SPEED_ELEMENTS planned elements the plan runs on
+#: SPEED_MACHINE even when it fits the Cloud Run job's memory. Below it, the Cloud Run job as before: a small mesh is
+#: done before a VM has booted and pulled the image (about 90 seconds before the mesher starts, measured 26 Nov).
+#: SPEED_ELEMENTS is to be tuned from measured runs on the VM.
+SPEED_ELEMENTS = 300_000
+#: THE MACHINE RUN-10 SENDS A BIG PLAN TO: compute-optimised, 32 vCPUs (16 cores), 128 GB - kept APART from the memory
+#: ladder (MACHINES): memory never picks it, and a plan needing more than its usable memory runs on the ladder's machine.
+#: Measured 26 Nov on the owner's part (~775,000-795,000 second-order tetrahedra, 3.5 GB peak; feabench_lab/BENCH.md):
+#: only the HXT fill gains from threads (180 s at 8, 106 at 16, 83 at 32 - and 1.2 to 3 times SLOWER at 64), so the whole
+#: run is 426 s on 8 n2 threads, 354 on 16, 331 on 32, 487 on 64; c2d's fill is 10-15% quicker than n2's at equal threads
+#: (with typed sizes and finer holes 599 s against n2's 671 at 32). A 32-thread machine is the most that pays; c2d is the
+#: quickest of them, and 3.5 GB needs no highmem.
+SPEED_MACHINE = Machine("c2d-standard-32", 128.0, 32)
+SPEED_MACHINE_NAME = SPEED_MACHINE.name
+#: THE NEXT RUNG when the speed machine cannot be started (c2d has a smaller quota: 100 vCPUs in the region): the
+#: benchmark's next best (354 s on 16 threads against 331 on 32), then - for a plan that fits it - the Cloud Run job.
+SPEED_FALLBACK_NAME = "n2-highmem-16"
+
+#: RUN-13: RUN-10 FOR A FLOW MESH (Areen, 26 Nov: give CFD the same machine as FEA): a snappyHexMesh or cfMesh plan of
+#: at least this many PLANNED cells runs on SPEED_MACHINE too, even when it fits the Cloud Run job, with the same fallback
+#: ladder. snappy's planned cells are its pass's cell budget (the plan's own `_plan_cells`); cfMesh's its run plan's
+#: estimate. Measured 26 Nov (cfdbench_lab/BENCH.md, 8 -> 16 -> 32 CPUs, the same mesh at every size to 0.07%): the
+#: whole job 1.66x / 1.83x on a 1.78 M external part, 1.37x / 1.55x on a 5.76 M internal part that takes three attempts,
+#: 0.96x / 0.94x (no gain) on a 5.15 M external part - snapping and layers scale, castellation balancing, the wrap,
+#: Python preparation and the checks do not. No cell count marks where it starts to pay; 1.5 M sits under the smallest
+#: part that gained. To be tuned from runs on the site.
+SPEED_CELLS = 1_500_000
+
+
+def speed_machine() -> Machine:
+    return SPEED_MACHINE
+
+
+def speed_fallback() -> Machine:
+    m = _by_name(SPEED_FALLBACK_NAME)
+    assert m is not None, f"RUN-10 names {SPEED_FALLBACK_NAME}, which is not one of MACHINES"
+    return m
+
+
+def cores_of(decision: dict | None) -> int:
+    """The CORES the user is told for the machine `decision` names (Machine.cores); a VM type not listed, half its
+    vCPUs. The Cloud Run job's are its CPUs (CLOUD_RUN_CPUS), and it is told as the standard machine (phrase)."""
+    d = decision or {}
+    if d.get("where") != "gce":
+        return CLOUD_RUN_CPUS
+    m = _by_name(d.get("machine"))
+    return m.cores if m is not None else max(1, cpus_of(d) // 2)
+
+
+#: The decisions told as the FASTER machine: RUN-10's speed machine, and its rung when it could not be started.
+FAST_WHYS = frozenset({"speed", "speed_fallback"})
+
+
+def phrase(decision: dict | None) -> str:
+    """WHERE A RUN MESHES, as the user is told it - never a machine type: "the standard machine" (the Cloud Run job),
+    "a faster machine (16 cores)" (RUN-10), "a 16-core machine" (a VM picked for memory or time)."""
+    d = decision or {}
+    if d.get("where") != "gce":
+        return "the standard machine"
+    n = cores_of(d)
+    if d.get("why") in FAST_WHYS:
+        return f"a faster machine ({n} cores)"
+    return f"{'an' if str(n).startswith('8') or n in (11, 18) else 'a'} {n}-core machine"
+
+
+def cpus_of(decision: dict | None) -> int:
+    """The vCPUs (threads) of the machine `decision` names: the VM's, or the Cloud Run job's (no decision, or Cloud
+    Run)."""
+    d = decision or {}
+    if d.get("where") == "gce":
+        m = _by_name(d.get("machine"))
+        if m is not None:
+            return m.cpus
+        try:
+            return max(1, int(d.get("cpus") or CLOUD_RUN_CPUS))
+        except (TypeError, ValueError):
+            return CLOUD_RUN_CPUS
+    return CLOUD_RUN_CPUS
+
+
+def for_time(decision: dict, *, planned_s: float | None, wall_s: float, elements: float | None = None,
+             cells: float | None = None) -> dict:
     """RUN-5, BEFORE MESHING: a plan the Cloud Run mesh job would hold in memory but whose planned
     time (with TIME_MARGIN) passes the job's wall (`wall_s`: Cloud Run stops every run there, a limit
     no setting removes) runs on the smallest VM that holds it instead - a VM has no such wall, and the
-    progress watchdog (PLAN-fea-13) is what stops a stuck mesher there. Any other decision is returned
-    unchanged."""
-    if decision.get("where") != "cloud_run" or not planned_s or float(planned_s) * TIME_MARGIN <= float(wall_s):
+    progress watchdog (PLAN-fea-13) is what stops a stuck mesher there.
+
+    RUN-10, AND FOR SPEED: an FEA plan of `elements` at or above SPEED_ELEMENTS runs on SPEED_MACHINE (more threads, a
+    shorter run), even when it fits the Cloud Run job's memory. The memory rule wins when the plan's mesher needs more
+    than the speed machine's usable memory (its own machine, from the ladder). A FLOW plan of `cells` planned cells at
+    or above SPEED_CELLS the same (RUN-13). Neither given: no speed rule. Any other decision is returned
+    unchanged.
+
+    A decision moved here off a plan that FITS the Cloud Run job carries `cloud_fits`: if the VM cannot be started,
+    the run falls back to the job (fallback) rather than failing."""
+    fast_fea = elements is not None and float(elements) >= SPEED_ELEMENTS
+    fast = fast_fea or (cells is not None and float(cells) >= SPEED_CELLS)
+    process = float(decision.get("process_gib") or 0.0)
+    holds = process <= usable_gib(SPEED_MACHINE)          # the speed machine's memory holds the mesher
+    if fast_fea or cells is None:
+        fast_words = (f"About {float(elements or 0):,.0f} elements: it runs on a faster machine "
+                      f"({SPEED_MACHINE.cores} cores) instead of the standard one - a big mesh fills much sooner there.")
+    else:
+        fast_words = (f"About {_mcells(float(cells))} cells: it runs on a faster machine ({SPEED_MACHINE.cores} cores) "
+                      "instead of the standard one - a big flow mesh is built sooner there.")
+    if decision.get("where") != "cloud_run":
+        if fast and holds and decision.get("machine") != SPEED_MACHINE_NAME:
+            return _on_a_vm(decision, SPEED_MACHINE, words=fast_words, why="speed")
+        return decision                         # the memory rule's machine is bigger (or no speed rule)
+    late = bool(planned_s) and float(planned_s or 0.0) * TIME_MARGIN > float(wall_s)
+    if not fast and not late:
         return decision
     machine = _smallest_holding(decision)
-    words = (f"At this part's slowest measured speed it takes about {float(planned_s) / 60:.0f} minutes, and "
-             f"the Cloud Run mesh job stops every run at {float(wall_s) / 60:.0f} minutes, so it runs on a "
-             f"{machine.name} VM ({machine.memory_gib:.0f} GiB), which has no such limit.")
-    return _on_a_vm(decision, machine, words=words, why="time")
+    if fast and holds:
+        machine = SPEED_MACHINE
+    if late:
+        words = (f"At this part's slowest measured speed it takes about {float(planned_s or 0.0) / 60:.0f} minutes, and "
+                 f"the Cloud Run mesh job stops every run at {float(wall_s) / 60:.0f} minutes, so it runs on a "
+                 f"{machine.name} VM ({machine.memory_gib:.0f} GiB), which has no such limit.")
+        why = "time"
+    else:
+        words, why = fast_words, "speed"
+    return {**_on_a_vm(decision, machine, words=words, why=why), "cloud_fits": True}
+
+
+def fallback(decision: dict | None) -> dict | None:
+    """RUN-10, WHEN THE VM CANNOT BE STARTED (no quota, no such machine free in any zone, no permission): a plan that
+    fits the Cloud Run mesh job (`cloud_fits`, set by for_time) runs there instead, said - never a failed run because
+    a bigger machine was not there. None for a plan that needs the VM's memory (it would only run out on the job).
+
+    THE SPEED MACHINE HAS ONE RUNG MORE before the job (its type has the smaller quota): SPEED_FALLBACK_NAME, the
+    benchmark's next best, when its memory holds the mesher - then, from there, the job as above."""
+    d = decision or {}
+    process, files = float(d.get("process_gib") or 0.0), float(d.get("workspace_gib") or 0.0)
+    if d.get("where") == "gce" and d.get("machine") == SPEED_MACHINE_NAME and process <= usable_gib(speed_fallback()):
+        nxt = speed_fallback()
+        words = (f"The fastest machine could not be started just now, so it meshes on another fast one ({nxt.cores} "
+                 "cores) instead - a little slower, the same mesh.")
+        return {**_on_a_vm(d, nxt, words=words, why="speed_fallback"),
+                **({"cloud_fits": True} if d.get("cloud_fits") else {})}
+    if d.get("where") != "gce" or not d.get("cloud_fits"):
+        return None
+    words = ("The faster machine could not be started just now, so it meshes on the standard machine instead "
+             "(slower, the same mesh).")
+    return _decision(None, process, files, need=process + files, words=words, why="vm_unavailable",
+                     stepped_from=str(d.get("machine") or ""))
 
 
 def off_the_wall(decision: dict | None) -> dict | None:
@@ -234,20 +381,49 @@ def ceiling_cells() -> int:
 
 def route_cells(workspace, cells: float, *, why: str = "cell count") -> dict | None:
     """RUN-9 BEFORE MESHING: a plan of more cells than the standard machine is sized for runs on a VM that carries
-    them - written into the workspace, where the mesh executor reads it (adapters/mesh_execution). The decision there
-    already when it is as big or bigger (a run that stepped up) is kept. None when the plan fits the standard machine
-    (nothing is written: the run is the one it always was)."""
-    if float(cells or 0.0) <= normal_cells():
+    them - written into the workspace, where the mesh executor reads it (adapters/mesh_execution). RUN-13: a
+    plan of at least SPEED_CELLS planned cells runs on the speed machine (for_time with `cells`) - even when it fits
+    the standard machine - unless its memory needs the ladder's bigger machine. The decision there already when it is
+    as big or bigger (a run that stepped up, or the speed machine's own rung) is kept, and so is the standard machine
+    a pass just FELL BACK to (`vm_unavailable`) for a plan that fits it: the VM that could not be started is not asked
+    for again on every pass. None when the plan fits the standard machine and is under SPEED_CELLS (nothing is
+    written: the run is the one it always was)."""
+    n = float(cells or 0.0)
+    if n <= normal_cells() and n < SPEED_CELLS:
         return None
-    want = for_cells(cells, why=why)
+    want = for_time(for_cells(n, why=why), planned_s=None, wall_s=0.0, cells=n)
     have = read(workspace)
     if have and have.get("where") == "gce" and usable_gib(_by_name(have.get("machine"))) >= usable_gib(
             _by_name(want.get("machine"))):
+        return have
+    if have and have.get("why") == "vm_unavailable" and want.get("cloud_fits"):
         return have
     write(workspace, want)
     return want
 
 
-__all__ = ["CEILING", "CLOUD_RUN_GIB", "FLOW_GIB_PER_MCELL", "MACHINES", "MACHINE_FILE", "TIME_MARGIN", "Machine",
+#: The decisions a run FELL BACK to when its VM could not be started (fallback): the machine it really ran on.
+FELL_BACK_WHYS = frozenset({"vm_unavailable", "speed_fallback"})
+
+
+def adopt_ran_on(workspace, result) -> dict | None:
+    """RUN-10 / RUN-13, AFTER A RUN: the machine a run REALLY ran on. A VM that could not be started fell back
+    (fallback) to the next fast VM or the Cloud Run job, and the mesh executor says where in the result (`ran_on`); that
+    decision becomes
+    the workspace's, so what follows - RUN-5's move off the Cloud Run wall, RUN-3's step up, the next pass's route -
+    reads where the run was, not where it was meant to be. Returns it, or None when the run ran where it was sent."""
+    ran = result.get("ran_on") if isinstance(result, dict) else None
+    if not isinstance(ran, dict) or ran.get("why") not in FELL_BACK_WHYS:
+        return None
+    have = read(workspace) or {}
+    if have.get("machine") == ran.get("machine") and have.get("where") == ran.get("where"):
+        return None
+    write(workspace, dict(ran))
+    return dict(ran)
+
+
+__all__ = ["CEILING", "CLOUD_RUN_CPUS", "CLOUD_RUN_GIB", "FELL_BACK_WHYS", "SPEED_CELLS", "SPEED_ELEMENTS",
+           "SPEED_MACHINE_NAME", "adopt_ran_on", "cpus_of", "fallback",
+           "speed_machine", "SPEED_MACHINE", "SPEED_FALLBACK_NAME", "speed_fallback", "cores_of", "phrase", "FAST_WHYS", "FLOW_GIB_PER_MCELL", "MACHINES", "MACHINE_FILE", "TIME_MARGIN", "Machine",
            "ceiling_cells", "ceiling_gib", "cells_carried", "choose", "for_cells", "for_time", "normal_cells",
            "off_the_wall", "read", "route_cells", "step_up", "usable_gib", "write"]

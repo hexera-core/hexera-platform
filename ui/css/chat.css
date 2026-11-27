@@ -117,3 +117,48 @@
 /* WHAT HEXERA DECIDED AND WHY: short plain sentences above the live step, as the run decides */
 .gp-said{display:flex;flex-direction:column;gap:5px;margin-bottom:4px;padding-left:var(--gp-text,24px)}
 .gp-say{margin:0;max-width:68ch;font-size:var(--fs-base);line-height:1.55;color:var(--text-bright);text-wrap:pretty}
+
+/* THE CHIP ROW under the chat box and the notes box (js/shell/chips.js): files attached and faces picked. Hidden
+   until there is one; one quiet line of small chips, each with its own remove. */
+.box-chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
+.box-chips[hidden]{display:none}
+.box-chip{display:inline-flex;align-items:center;gap:6px;max-width:240px;height:32px;padding:0 4px 0 6px;
+  border:1px solid var(--border);border-radius:var(--r-md);background:var(--surface-2);color:var(--text);font-size:12px;
+  position:relative;overflow:hidden}
+.box-chip-thumb{width:28px;height:24px;object-fit:cover;border-radius:3px;display:block}
+.box-chip-label{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.box-chip-x{border:0;background:none;color:var(--text-muted,inherit);cursor:pointer;padding:0 4px;font-size:11px;line-height:1}
+.box-chip-x:hover{color:var(--text-bright)}
+/* a picked face looks the same wherever it shows (under the box, in the user's bubble, on a saved note): the chip
+   with a small dot in the colour the face is lit in on the model */
+.box-chip-face::before{content:"";flex:none;width:7px;height:7px;border-radius:50%;background:var(--accent)}
+.box-chip.att-face{padding-right:8px}
+.box-chip.is-pending::after{content:"";position:absolute;left:0;bottom:0;height:2px;width:40%;background:var(--accent-text);
+  animation:box-chip-go 1.1s linear infinite}
+@keyframes box-chip-go{from{transform:translateX(-100%)}to{transform:translateX(250%)}}
+@media (prefers-reduced-motion:reduce){.box-chip.is-pending::after{animation:none;width:100%;opacity:.5}}
+
+/* THE PAPER-CLIP in each box (js/shell/attach.js): a quiet icon before the words, the box's one extra element */
+.attach-clip{flex:none;display:inline-flex;align-items:center;justify-content:center;width:32px;height:42px;padding:0;
+  border:0;border-radius:8px;background:none;color:var(--text-faint);cursor:pointer;transition:color .12s,background .12s}
+.attach-clip:hover:not(:disabled){color:var(--text);background:var(--surface-2)}
+.attach-clip:disabled{opacity:.4;cursor:default}
+.attach-over{box-shadow:inset 0 0 0 1px var(--focus-edge);border-radius:var(--r-md)}
+/* the chat box's chips and its one plain line sit under the box, as wide as it */
+#input-bar>.box-chips,#input-bar>.box-msg{max-width:1060px;margin-left:auto;margin-right:auto}
+#input-bar>.box-chips,#input-bar>.box-msg{padding-left:40px}
+#app.wb #input-bar>.box-chips,#app.wb #input-bar>.box-msg{max-width:none}
+/* the clip narrows the notes box: its one-line placeholder never shows a sideways scrollbar */
+.box-msg{margin-top:4px;color:var(--danger);font-size:var(--fs-sm)}
+.box-msg:empty{display:none}
+/* what a message or a note carried: the picture itself, large enough to read (at most 240 x 180, by its own shape,
+   never stretched past its size; 242 = 240 + the frame's two 1 px sides), a chip per file; each opens the stored file */
+.att-list{display:flex;flex-wrap:wrap;gap:6px;margin:2px 0 6px}
+.im.user .att-list{justify-content:flex-end;max-width:78%}
+.rc-note .att-list{margin:4px 0 2px}
+.att-img{display:block;align-self:flex-start;max-width:min(242px,100%);line-height:0;border:1px solid var(--border);border-radius:var(--r-md);overflow:hidden;cursor:zoom-in}
+.att-img img{display:block;width:auto;height:auto;max-width:100%;max-height:180px;background:var(--surface-2)}
+.att-img img:not([src]){width:72px;height:54px}
+.att-file{text-decoration:none;cursor:pointer;padding:0 10px}
+.att-img:hover,.att-file:hover{border-color:var(--border-strong)}
+.att-gone{opacity:.5;pointer-events:none}

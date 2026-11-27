@@ -1,7 +1,7 @@
-// Responsibility: Carry the two answers to a delivered mesh - flag it for rebuild, or accept it against a bar.
+// Responsibility: Carry the two answers to a delivered mesh - send a change to it, or accept it against a bar.
 // Boundaries: it reports through one injected callback; what starting the new run means belongs to the entrypoint.
 
-/* The two ways a user can answer a delivered mesh: flag it for rebuild, or accept it against
+/* The two ways a user can answer a delivered mesh: send a change to it, or accept it against
  * a bar they state.
  *
  * Both were duplicated - `confirmDispute` lived in viewer.js and `acceptMesh` in review.js,
@@ -14,12 +14,17 @@
  * composed those pieces, and is written once there instead of twice here.
  */
 import { esc } from "../core/format.js";
-import { disputeReview } from "../api/endpoints.js";
+import { disputeReview, requestChange } from "../api/endpoints.js";
 
 let onRerun = () => {};
-/** Installed by the entrypoint: (newJobId, message, disputedJobId) -> void. The disputed run is
- *  named so the new one can belong to the same conversation - not to whatever the page holds. */
-export function configureDispute({ onRerun: fn } = {}) { onRerun = fn || (() => {}); }
+let say = () => {};
+/** Installed by the entrypoint: onRerun (newJobId, message, disputedJobId, sessionId?) -> void, and say
+ *  (text) -> void for Hexera's words in the chat. The disputed run is named so the new one can
+ *  belong to the same conversation - not to whatever the page holds. */
+export function configureDispute({ onRerun: fn, say: s } = {}) {
+  onRerun = fn || (() => {});
+  say = s || (() => {});
+}
 
 function modal(html) {
   const m = document.createElement("div");
@@ -34,40 +39,60 @@ function modal(html) {
   return { el: m, close };
 }
 
-/** CASE A - the reviewer passed it but the user disagrees: re-review AND rebuild. */
-export function flagDispute(job, flags) {
-  const hasFlags = flags.length > 0;
-  const { el: m, close } = modal(`<div class="box"><h3>Re-review & rebuild this mesh?</h3>
-    <div>${hasFlags
-      ? `The reviewer will re-inspect the delivered mesh at your ${flags.length} flagged spot${flags.length > 1 ? "s" : ""},`
-      : "No spots flagged - describe the change you want below (flagging exact spots is recommended when the issue is localized). The reviewer will evaluate your request against the delivered mesh,"}
-    then the pipeline will <b>rebuild the mesh</b> and re-review it against your concerns plus all original criteria.</div>
-    <div style="margin-top:8px;color:var(--text-faint)">This is a full mesh run - typically 1-2 hours of compute.</div>
-    <textarea id="v-comment" placeholder="${hasFlags ? "Anything else the reviewer should know? (optional)" : "What should change? e.g. “I want finer resolution in the wake region” (required)"}"></textarea>
-    <div class="row2"><button class="v-btn" id="v-cancel">Cancel</button>
-    <button class="v-btn primary" id="v-go"${hasFlags ? "" : " disabled"}>Start re-review & rebuild</button></div></div>`);
-
-  const go = m.querySelector("#v-go");
-  if (!hasFlags) {
-    const ta = m.querySelector("#v-comment");
-    ta.addEventListener("input", () => { go.disabled = !ta.value.trim(); });
+/** CASE A - SEND CHANGE: the marks and the words, sent from the result panel as they stand.
+ *  The back end answers in words, which the chat shows as Hexera's; when it started a new run,
+ *  this mesh stays on screen and usable with a slim progress line, until that run ends: its mesh
+ *  then takes this one's place (the entrypoint's result handler), or, if it failed or was
+ *  stopped, this mesh simply stays. When no run started (a question back, a mark it could not
+ *  place), the marks and the words stay so the person can adjust and send again. */
+export async function sendChange(job, flags, comment, { busy = () => {} } = {}) {
+  busy(true);
+  let d;
+  try {
+    d = await requestChange(job, { flags, comment });
+  } catch (e) {
+    busy(false);
+    say("I could not send that change: " + e.message);
+    return;
   }
-  m.querySelector("#v-cancel").onclick = close;
-  go.onclick = async () => {
-    const comment = m.querySelector("#v-comment").value || "";
-    go.disabled = true;
-    try {
-      const d = await disputeReview(job, { flags, comment });
-      close();
-      document.getElementById("viewer-" + job)?.remove();
-      onRerun(d.job_id,
-        `Re-review started for your flagged region${flags.length > 1 ? "s" : ""}. New job: \`${d.job_id}\``,
-        job);
-    } catch (e) {
-      go.disabled = false;
-      alert("Could not start the re-review: " + e.message);
-    }
-  };
+  // a second look at the same mesh comes back without words of its own: one plain line stands in
+  say(d.reply || (d.job_id ? LOOK_AGAIN : ""));
+  if (!d.job_id) { busy(false); return; }
+  revisions.set(d.job_id, { from: job, busy });
+  progress(job, PROGRESS);
+  onRerun(d.job_id, "", job, d.session_id);
+}
+
+const LOOK_AGAIN = "I'll look again at the spots you marked, then rebuild the mesh.";
+
+const PROGRESS = "Rebuilding with your change...";
+/* the new run's id -> the view it revises */
+const revisions = new Map();
+
+function progress(job, text) {
+  const el = document.getElementById("v-prog-" + job);
+  if (!el) return;
+  el.hidden = !text;
+  el.textContent = text || "";
+}
+
+/** The job a running revision revises, or null. */
+export function revisionOf(job) { const r = revisions.get(job); return r ? r.from : null; }
+
+/** The new run's current step, on the old view's progress line. */
+export function revisionStep(job, step) {
+  const r = revisions.get(job);
+  if (r) progress(r.from, step ? `${PROGRESS} ${step}` : PROGRESS);
+}
+
+/** The new run ended. A delivered mesh has already taken the old view's place; otherwise the old
+ *  view is free again, its marks and words where they were. */
+export function revisionEnded(job) {
+  const r = revisions.get(job);
+  if (!r) return;
+  revisions.delete(job);
+  progress(r.from, "");
+  r.busy(false);
 }
 
 /** CASE B - the reviewer held it back, and the user states a bar it should be judged against.

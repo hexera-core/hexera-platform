@@ -277,8 +277,10 @@ def build_brief(session: Any, *, part_matches: dict | None = None) -> dict[str, 
     brief["submitted"] = bool(getattr(session, "intake_submitted", False))
     # THE USER'S OWN NOTES, as typed (contracts/user_notes): listed on the card under the plan, with
     # the box that adds one. Words only - never where they were captured or when.
+    # with the files attached (by name: never their read text) and the faces picked
     from meshpipeline.contracts.user_notes import clean as _clean_notes
-    brief["user_notes"] = [{"id": n["id"], "text": n["text"], "source": n["source"]}
+    from meshpipeline.contracts.user_notes import shown as _shown
+    brief["user_notes"] = [{"id": n["id"], "text": n["text"], "source": n["source"], **_shown(n)}
                            for n in _clean_notes(getattr(session, "user_notes", None))]
     # NOTE-4 BEFORE APPROVAL: which parts the notes mean, for the user to see (and fix) before Approve. Every row's
     # quote is the user's own words (cad/part_words reads the notes only), so the notes listed are theirs alone -

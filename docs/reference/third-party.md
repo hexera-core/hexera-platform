@@ -29,6 +29,15 @@ licenses, see `requirements/runtime.txt` and the `Dockerfile`, and are not vendo
 - **Used by:** `src/meshpipeline/engines/fea_tetwild.py` (rule LAD-fea-9 in `docs/RULES.md`), and the
   repair ladder's tier 2b tolerant probe on the worker (`src/meshpipeline/cad/repair/tolerant_probe.py`).
 
+## pypdf, installed into the API image (not vendored here)
+
+- **Project:** pypdf - <https://github.com/py-pdf/pypdf>.
+- **Licence:** BSD 3-Clause. Pure Python, no compiled code and no runtime dependencies on Python 3.11+.
+- **What we ship:** the unmodified `pypdf 7.1.1` wheel from PyPI (`requirements/runtime.txt`).
+- **Used by:** `src/meshpipeline/application/chat_attachments.py`, which reads only the text of a PDF the user
+  attaches in the chat or notes box (rule NOTE-16), under page, character and time caps. PyMuPDF is not used
+  (AGPL).
+
 ## Netgen, installed into the mesh image (not vendored here)
 
 - **Project:** Netgen (Joachim Schöberl, TU Wien), the mesher of NGSolve - <https://github.com/NGSolve/netgen>.

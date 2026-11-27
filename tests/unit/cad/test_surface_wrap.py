@@ -171,5 +171,8 @@ def test_an_opening_the_wrap_cannot_keep_is_placed_not_refused():
     moved = res.report.get("openings_moved") or []
     assert [m["opening"] for m in moved] == ["outlet_2"]
     assert moved[0]["moved_m"] < 0.03
+    # LAD-cfd-14: where it is drawn travels with it, so a placement farther than its own size (0.4 mm here) is read
+    assert abs(moved[0]["drawn_centre_m"][0] - 0.03) < 1e-3
+    assert [q["opening"] for q in sw.moved_beyond_own_size(res.report)] == ["outlet_2"]
     one, _two, many = sw.edge_counts(res.faces)
     assert one == 0 and many == 0

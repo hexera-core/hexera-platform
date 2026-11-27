@@ -138,6 +138,7 @@ Pygments==2.20.0
 PyGObject==3.42.1
 PyJWT==2.3.0
 pyparsing==3.3.2
+pypdf==7.1.1
 pytest==9.0.3
 pytest-asyncio==1.4.0
 python-apt==2.4.0+ubuntu4.1

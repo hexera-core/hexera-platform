@@ -162,6 +162,9 @@ def install_adapters() -> None:
     # where a waiting check stands in its queue, for the console's line ("queued behind 2 other checks")
     from meshpipeline.adapters.pipeline_execution.geometry_running import queue_state as _geometry_queue_state
     geometry_check.set_queue_reader(_geometry_queue_state)
+    # NOTE-17: the face map the check kept, for a run to re-check the faces the user picked (cad/face_map)
+    from meshpipeline.application.face_pick import current as _face_map_of
+    geometry_check.set_face_map_reader(_face_map_of)
     mesh_execution.set_mesh_executor(build_mesh_executor())
     # BIG RESULTS STAY IN THE EXCHANGE BUCKET (RUN-7): delivery streams them from there. Only a
     # remote run keeps a file, so a local stack never calls these.

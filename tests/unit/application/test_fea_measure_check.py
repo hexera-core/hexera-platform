@@ -155,9 +155,9 @@ def test_a_surface_file_keeps_its_reading_with_the_measurement_and_opens_the_sta
     view = fea_check.fea_view(facts, [{"role": "user", "content": "stress, 2 mm thick"}])
     assert view["can_proceed"] and view["clean_short"] == "A surface, not a solid" and view["bodies_sewn"] == 2
     assert "assembly" not in view and view["measure"] is None
-    # before this the same facts stopped the stage
+    # without the reading the same facts stop the stage (SURF-18: saying the reading is missing, never "coming")
     old = {**facts, FACT_KEY: {k: v for k, v in rec.items() if k != surface_check.KEY}}
-    assert fea_check.blocker(old)[1] == "surface"
+    assert fea_check.blocker(old)[1] == "surface_unread"
 
     rec, facts = check(sx.bracket(), "bracket.igs", sx.write_iges)
     assert rec[surface_check.KEY]["kind"] == "surface" and fea_check.blocker(facts) == ("", "", "")

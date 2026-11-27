@@ -26,6 +26,11 @@ def mesh_artifact_key(job: str) -> str:
     return f"{_PREFIX}/{job}/mesh.msh"
 
 
+def review_seed_key(job: str) -> str:
+    """What a second look at the delivered mesh needs, kept so any worker can take it (VER-17)."""
+    return f"{_PREFIX}/{job}/review_seed.tar.gz"
+
+
 def export_key(job: str, file_name: str) -> str:
     """One solver file of an FEA mesh (mesh once, export many): jobs/<job>/exports/<file>."""
     return f"{_PREFIX}/{job}/exports/{file_name}"

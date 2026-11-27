@@ -23,6 +23,9 @@ DECIDE_AT = 0.6
 PICTURE_MARGIN = 0.15
 
 RULE_WORDS, RULE_GEOMETRY, RULE_PICTURES, RULE_UNDECIDED, RULE_FILE = "FLOW-1", "FLOW-2", "FLOW-3", "FLOW-4", "FLOW-5"
+#: FLOW-9: the undecided case whose best guess is flow through the part - its faces read a body, its inside-space map
+#: finds a way through it with two mouths or more
+RULE_THROUGH_GUESS, THROUGH_CASE = "FLOW-9", "map_disagrees"
 
 
 def _rx(*parts: str) -> re.Pattern:
@@ -137,7 +140,7 @@ STRAIGHT, OFF_LINE = 0.95, 0.25
 #: docs/RULES.md FLOW-2), rounded down; under DECIDE_AT the kind is undecided.
 SURE = {"cavity": 0.85, "passage_wall": 0.9, "fluid_body": 0.8, "straight_passage": 0.7, "body": 0.8,
         "body_with_ends": 0.7, "solids_with_ends": 0.65, "rotor": 0.75,
-        "scene": 0.7, "closed_surfaces": 0.65, "lumen": 0.65}
+        "scene": 0.7, "closed_surfaces": 0.65, "lumen": 0.65, "perforated": 0.7}
 #: A straight solid's widest flat end SPANS its cross-section when it is this share of the cross-section's
 #: wider side or more: a passage's end is its whole section; a body on a support bulges far past it.
 SPANS = 0.8
@@ -216,6 +219,14 @@ def _geometry(facts: dict) -> Reading:
         return Reading(INTERNAL, SURE["cavity"], f"the parts close off a space inside them at {n} openings", "cavity")
     if body == "rotor" or overruled == "rotor":
         return Reading(EXTERNAL, SURE["rotor"], "it is blades round a hub", "rotor")
+    # INS-23: MANY SHORT HOLES THROUGH A THIN PLATE - a sieve, a tube sheet, a grille in a duct's face - are
+    # there for the fluid to pass; the stage asks the user to confirm it (application/geometry_check)
+    perf: dict = facts["perforated"] if isinstance(facts.get("perforated"), dict) else {}
+    if perf.get("proposed"):
+        what = "a grille" if perf.get("kind") == "grille" else "a perforated plate"
+        return Reading(INTERNAL, SURE["perforated"], f"it has {int(_num(perf.get('holes')))} short holes side by side "
+                                                     f"through a thin plate: {what} the fluid flows through",
+                       "perforated")
     # A SHEET: nothing inside it, neither metal nor fluid - a duct's wall, a body's skin and a single
     # boundary patch all look alike. A flat patch has no thickness at all.
     flat = size[2] > 0.0 and size[0] <= 1e-6 * size[2]
@@ -360,6 +371,10 @@ def _decide(facts: dict, words: str, vision: dict | None) -> dict:
                 if geo.kind in (INTERNAL, EXTERNAL) else f"the shape alone cannot tell: {geo.reason}")
     best = geo.kind if geo.kind in (INTERNAL, EXTERNAL) else (str(facts.get("flow_scout") or facts.get("flow") or "")
                                                               or INTERNAL)
+    if geo.case == THROUGH_CASE:
+        # FLOW-9: faces that read a body while the map finds a way through it with two mouths or more - drawn as flow
+        # through it until the user says (still asked, FLOW-4): the way through is what the fluid has to pass
+        best = INTERNAL
     # FLOW-1: THE USER'S STATED WORDS WIN, whatever the shape says (the shape's reading is kept as a reason)
     if said.tier == "said":
         reasons = [f"you said {_quote(said.words)}"]
@@ -400,7 +415,10 @@ def _decide(facts: dict, words: str, vision: dict | None) -> dict:
     if kind == UNDECIDED:
         rule = RULE_UNDECIDED
         by = "guess"
-    return _record(kind, best if kind == UNDECIDED else kind, conf, by, rule, reasons, geo, facts, said_kind)
+    out = _record(kind, best if kind == UNDECIDED else kind, conf, by, rule, reasons, geo, facts, said_kind)
+    if kind == UNDECIDED and geo.case == THROUGH_CASE and best == INTERNAL:
+        out["guess_rule"] = RULE_THROUGH_GUESS
+    return out
 
 
 def answer(record: dict, facts: dict, text: str) -> dict:

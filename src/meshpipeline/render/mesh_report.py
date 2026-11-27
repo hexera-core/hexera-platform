@@ -358,6 +358,12 @@ def _faces(fea: Mapping) -> str:
     return "".join(out)
 
 
+def _times(fea: Mapping) -> str:
+    """RUN-11: where the run's time went - the rows engines/fea_times.table_rows made, as they are."""
+    rows = [[_e(str(c)) for c in _l(r)] for r in _l(_m(fea.get("times")).get("rows")) if len(_l(r)) == 2]
+    return _table(("Step", "Time"), rows, "times") if rows else ""
+
+
 def _download(fea: Mapping) -> str:
     dl = _m(fea.get("download"))
     rows = [[_e(c.get("file") or ""), _e(c.get("words") or "")] for c in (_m(x) for x in _l(dl.get("contains")))]
@@ -423,6 +429,7 @@ def mesh_report_html(payload: Mapping[str, Any] | None) -> str:
         ("solvers", "Per solver", _solvers(fea) if fea else ""),
         ("faces", "Faces", _faces(fea) if fea else ""),
         ("files", "What the download holds", _download(fea) if fea else ""),
+        ("time", "Where the time went", _times(fea) if fea else ""),
     ]
     body = "".join(_section(t, b, sid) for sid, t, b in sections)
     nav = "".join(f'<a href="#{sid}">{_e(t)}</a>' for sid, t, b in sections if b)

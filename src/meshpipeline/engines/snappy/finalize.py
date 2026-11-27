@@ -126,7 +126,16 @@ def finalize(workspace_dir: str, intake_patches: list, engine: str, domain: str 
                            + ". snappyHexMesh did not finish writing the mesh (a killed, "
                              "timed-out or cancelled run leaves a partial polyMesh); "
                              "re-run the mesh.")}
+    # EACH STEP TIMED: the steps after the mesher are minutes a customer waits too (as in the cfMesh
+    # finalize)
+    import time as _time
+    _t0 = _time.monotonic()
+    _laps: dict = {}
+
+    def _lap(name: str) -> None:
+        _laps[name] = round(_time.monotonic() - _t0 - sum(_laps.values()), 1)
     q = R.check_mesh(ws)
+    _lap("check_mesh")
     if internal_flow:
         # WHICH under-resolved passages the flow can go round (engines/passage_flow.py): read here,
         # on the mesh that came home, only when the measure beside it put the narrowest wall under
@@ -134,6 +143,14 @@ def finalize(workspace_dir: str, intake_patches: list, engine: str, domain: str 
         # tube bank's gaps are told on the delivered mesh instead of refusing it (job 02ed0d14).
         from meshpipeline.engines.passage_flow import passage_flow_of_polymesh
         q.update(passage_flow_of_polymesh(ws, q))
+        # ...and the pass's gap plan (engines/gap_sizing), so the delivery's note on the gaps it
+        # set aside names how many places, the narrowest and the cells that would resolve them
+        from meshpipeline.engines.gap_sizing import quality_plan
+        q.update(quality_plan(ws))
+        # ...and where its cells went, by the refinement and the rule that asked for them
+        # (engines/snappy/cell_record): how a mesh shows it is not over-spent (rulebook 75)
+        from meshpipeline.engines.snappy.cell_record import of_workspace as _cells_of
+        q.update(_cells_of(ws))
     # NEAR-WALL PRISM LAYER COVERAGE - a MEASURED number, not a visual: a ~1e-4 m layer band
     # on a metre-scale body is invisible in any whole-body render, so the reviewer must judge
     # the layer axis from this figure (it otherwise mistook an unresolvable near-wall region
@@ -168,6 +185,8 @@ def finalize(workspace_dir: str, intake_patches: list, engine: str, domain: str 
                     if _lc.get("cells_with_layers") is not None:
                         q["layer_cells_with"] = _lc["cells_with_layers"]
                         q["layer_cells_targeted"] = _lc["cells_targeted"]
+                    if _lc.get("faces_extruded_pct") is not None:
+                        q["layer_faces_extruded_pct"] = _lc["faces_extruded_pct"]
                 elif _walls:
                     q["layer_coverage_pct"] = min(v["coverage_pct"] for v in _walls.values())
                     q["layer_coverage_source"] = "per_patch_min"
@@ -274,11 +293,13 @@ def finalize(workspace_dir: str, intake_patches: list, engine: str, domain: str 
             patch_entities.setdefault(_pn, [])
     # export the VOLUME mesh (foamToVTK) so the reviewer can slice it to see boundary
     # layers / internal refinement; body bbox from the input STL for inspection regions.
+    _lap("layers_and_review_mesh")
     volume_path = None
     try:
         volume_path = R.export_volume_vtk(ws)
     except Exception:
         logger.exception("Executor: foamToVTK volume export failed (non-fatal)")
+    _lap("volume_vtk")
     # The DELIVERABLE surface: the faces this run actually produced, converted from the VTK
     # boundary the export above leaves beside the volume. Distinct from the review mesh built
     # earlier, which re-exports the CAD the mesher snapped TO - the right thing for the reviewer to
@@ -354,6 +375,9 @@ def finalize(workspace_dir: str, intake_patches: list, engine: str, domain: str 
                     q["surface_deviation"] = _sd
         except Exception:
             logger.exception("Executor: surface-deviation metric failed (non-fatal)")
+    _lap("surface_and_deviation")
+    q["finalize_s"] = dict(_laps)
+    logger.info("snappy finalize steps (s): %s", _laps)
     # The far-field box the builder PREPARED (recorded by prepare_surface) -
     # the A1 domain-extent gate measures this, not the octree-padded mesh bounds.
     requested_box = None

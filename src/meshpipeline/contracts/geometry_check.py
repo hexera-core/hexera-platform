@@ -117,3 +117,31 @@ def queue_state(task_id: str) -> dict | None:
         logger.info("geometry queue state unavailable (%s) for %s", type(exc).__name__, task_id)
         return None
     return got if isinstance(got, dict) else None
+
+
+FaceMapReader = Callable[[str], Any]
+"""NOTE-17: the face map the geometry check kept for a session: reader(session_id) -> (cad/face_map.FaceMap or
+None, the skin's unit over the map's) - the run-time re-check of a picked face (cad/face_map.same_face) for an
+engine, which must not read the check itself."""
+
+_face_map_reader: FaceMapReader | None = None
+
+
+def set_face_map_reader(reader: FaceMapReader | None) -> None:
+    global _face_map_reader
+    _face_map_reader = reader
+
+
+def face_map(session_id: str) -> tuple[Any, float]:
+    """(the session's face map, its scale) or (None, 1.0) when none was kept, nothing is configured, or it could
+    not be read. Never raises: a picked face that cannot be re-checked is told, never guessed."""
+    if _face_map_reader is None or not session_id:
+        return None, 1.0
+    try:
+        got = _face_map_reader(str(session_id))
+    except Exception as exc:  # noqa: BLE001 - the pick is told as not re-checked, never a failed run
+        logger.info("face map unavailable (%s) for %s", type(exc).__name__, session_id)
+        return None, 1.0
+    if not isinstance(got, tuple) or len(got) != 2:
+        return None, 1.0
+    return got[0], float(got[1] or 1.0)

@@ -94,5 +94,4 @@ def test_the_closing_line_counts_every_line_the_user_wrote():
              "outside_pct": 0.016},
             *[{"field": f"limit:{m}", "asked": m, "met": True} for m in "abcdefg"]]
     said = MR.summary({"rows": rows})
-    assert said == ("Of the 10 things you asked for: 8 met; 2 edge-length targets: 0.57% of elements have an edge "
-                    "shorter than you asked, 0.016% of elements have an edge longer than you asked.")
+    assert said == "Of the 10 things you asked for: 8 met; 2 edge-length targets."

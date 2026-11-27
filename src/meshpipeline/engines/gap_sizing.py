@@ -349,6 +349,25 @@ def read_record(workspace) -> dict | None:
     return d if isinstance(d, dict) else None
 
 
+#: The quality-record key the delivered mesh carries its gap plan under (quality_plan below).
+QUALITY_KEY = "gap_plan"
+#: The plan's facts the delivery's narrow-gap note quotes: how many narrow spots, the narrowest and
+#: where, the count aimed at, and the cells the rule's mesh needs against the run's limit.
+_QUALITY_FIELDS = ("status", "spots", "narrowest_m", "where_m", "rule_cells_across", "target",
+                   "needed", "limit", "resolution_short", "route_big")
+
+
+def quality_plan(workspace) -> dict:
+    """{QUALITY_KEY: the gap plan's facts} for the delivered mesh's quality record, or {} when the
+    pass planned no narrow spot. The plan is written beside the case before meshing; carried into
+    the quality record it reaches the delivery, whose note on narrow gaps the flow can go round
+    names the places, the narrowest and the cells that would resolve them (rulebook 75)."""
+    rec = read_record(workspace)
+    if not rec or not rec.get("spots"):
+        return {}
+    return {QUALITY_KEY: {k: rec.get(k) for k in _QUALITY_FIELDS if k in rec}}
+
+
 def accepted_floor(workspace, engine_params) -> float | None:
     """The floor a resolution gate holds this mesh to when the approved run accepted fewer cells
     across its narrowest spots - read from the run's own gap record - or None (the rule's floor)."""
@@ -510,6 +529,6 @@ def estimate_from_traits(traits, *, limit: int | None = None) -> GapEstimate | N
 
 __all__ = ["ACCEPTED_FEWER", "BUDGET_HEADROOM", "CEILING_SLACK", "FITS", "FLOOR_SHARE", "FULL_RULE", "GAP_CELLS_ACROSS",
            "GAP_FLOOR_CELLS", "GAP_RECORD", "LIMITED", "MIN_ACCEPTED_CELLS", "NARROW_GAPS_PARAM", "NARROW_GAPS_PARAM_SPEC", "NO_NARROW",
-           "OVER_LIMIT", "PLAN_BOX_SHARE", "RAISED", "WITHIN_LIMIT", "GapEstimate", "GapPlan", "accepted_floor",
-           "accepted_fewer", "box_cost", "estimate_from_traits", "fill_cells", "plan_gaps",
-           "read_record"]
+           "OVER_LIMIT", "PLAN_BOX_SHARE", "QUALITY_KEY", "RAISED", "WITHIN_LIMIT", "GapEstimate", "GapPlan",
+           "accepted_floor", "accepted_fewer", "box_cost", "estimate_from_traits", "fill_cells", "plan_gaps",
+           "quality_plan", "read_record"]

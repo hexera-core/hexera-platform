@@ -145,7 +145,10 @@ def measure_order(state: Mapping) -> dict:
             # the rule that put the recommended engine first (fitness ENG-2/3/4), for the record
             "order_rule": getattr(rec.fit_of(rec.engine), "rule", "") or "",
             "order_table": rec.table_version,
-            "order_reasons": {f.engine: f.reason for f in rec.fits}, **counted}
+            "order_reasons": {f.engine: f.reason for f in rec.fits},
+            # each engine whose own declared turf marks this case weak or outside (ENG-10 never moves a run to one)
+            "order_turf": {f.engine: f.turf for f in rec.fits if getattr(f, "turf", "") in ("weak", "outside")},
+            **counted}
 
 
 async def seed_measured_order(state: Mapping, *, timeout_s: float = ORDER_WAIT_S) -> dict:
@@ -256,6 +259,327 @@ _REASON_BY_CAUSE: dict[FailureCause, str] = {
 _REASON_REVIEW = "the mesh did not pass review"
 _REASON_CONCERNS = "its mesh passed every check, and the review left concerns"
 _REASON_GENERIC = "it did not produce a mesh that passed its checks"
+
+
+# #
+# LAD-cfd-8: a retry changes what was refused, or it does not run
+# #
+
+#: The rule (docs/RULES.md, rulebook 75).
+LAD_RETRY_BEARS = "LAD-cfd-8"
+
+#: WHAT THE NEXT ATTEMPT ON THE SAME ENGINE CHANGES, per blocking gate, for the engines whose plan is
+#: rules-made (the snappy driver, the cfMesh writer): {gate: {engine: the lever, in words}}. An engine
+#: missing from a gate's row has nothing to change for what that gate refused - its retry rebuilds
+#: the same case (the RM3 wave absorber: a production-grade 6.7 M-cell mesh refused by cad_fidelity,
+#: rebuilt for 87 minutes with only its cell budget moved and refused again). A gate not listed, and
+#: an engine whose builder is a model reading the gate's words, keeps the ladder as it was.
+GATE_LEVERS: dict[str, dict[str, str]] = {
+    # broken cells move to another engine at once (classify); folds are repaired where they were
+    # found, a broken pass is coarsened, and widespread skew turns the plan strict
+    "quality_floor": {"snappy": "the layer folds repaired where they were found, or a stricter plan",
+                      "cfmesh": "cfMesh's own rescue and optimiser"},
+    # the opening that came out the wrong size is refined one level finer at the opening, read from
+    # the gate's facts (GATE_FACTS_FILE) on the next attempt
+    "port_areas": {"snappy": "the missed opening refined one level finer",
+                   "cfmesh": "the missed opening given half its cell"},
+    # no rules-made plan has a lever for a mesh that does not follow the CAD, for a trial solve that
+    # did not converge, or for a boundary type the intake decides
+    "cad_fidelity": {},
+    "solvability": {},
+    "boundary_types": {},
+    # CFDREQ-27: snappyHexMesh lays a wall-function layer on its snapped wall cells, a third of the cell at the
+    # median, and no layer-stage setting lifts them (measured: 69-81% of the wall still under a jump) - the next
+    # engine builds it
+    "wall_function_layer": {},
+    # CFDREQ-28: snappyHexMesh drops a layer wherever it would fold a cell, and its layer-stage levers (the band, the
+    # cap, the buffer cells) did not keep a resolved or laminar stack on real bodies - the next engine builds it
+    # (cfMesh splits its wall cell into the layers). A rebuild on the same engine lays the same stack again
+    # (CFDREQ-33 amended: one exception, a stack written in metres that may be written on each face's own cells -
+    # lever_bears, LAYER_STACK_RELATIVE_LEVER)
+    "layer_stack": {},
+}
+#: CFDREQ-33 amended (rulebook 113): snappyHexMesh's one answer to a layer-stack refusal - the same plan, the stack
+#: sized on each wall face's own cells (relativeSizes true), only after the stack in metres was refused
+LAYER_STACK_RELATIVE_LEVER: dict[str, str] = {"snappy": "the same stack sized on each wall face's own cells"}
+#: A gate whose refusal its cause's words would misname (cad_fidelity shares PATCH_NOT_CAPTURED).
+_REASON_BY_GATE: dict[str, str] = {
+    "cad_fidelity": "its mesh did not follow your CAD closely enough",
+    "port_areas": "an opening came out a different size from the one you confirmed",
+    "wall_function_layer": "its wall-function first layer sat under much thinner cells over too much of the wall",
+    "layer_stack": "its boundary-layer stack was kept on too little of the wall",
+}
+#: The engines whose next attempt is planned by rules alone (GATE_LEVERS speaks for them).
+RULES_PLANNED = frozenset({"snappy", "cfmesh"})
+#: THE REFUSALS A SOUND MESH MAY STILL BE DELIVERED ON, as a concern, when no retry can change them:
+#: the mesh is valid and solves, and misses a bar of ours - how closely it follows the CAD, an
+#: opening's built area, its cells' shape inside the solver's hard limits, a short trial solve.
+DELIVERABLE_GATES = frozenset({"cad_fidelity", "port_areas", "quality_floor", "solvability", "wall_function_layer",
+                               "layer_stack"})
+#: A mesh that misses more than this share of the wetted CAD - or whose wall lies off the CAD on
+#: more than it - is not the user's part any more: refused as it always was, never delivered.
+NOT_THE_PART_SHARE = 0.5
+#: Non-orthogonality a solver cannot take (OpenFOAM's practical bound, the board's CB-V3a).
+SOLVER_HARD_NON_ORTHO = 85.0
+#: The quality bars that measure plain cell shape (engines/*/criteria.py keys).
+SHAPE_CHECKS = frozenset({"skew_fraction", "max_skewness", "max_non_ortho"})
+
+
+#: THE RULE for a valid mesh past the solver's hard non-orthogonality (docs/RULES.md): kept as the run's last
+#: resort, delivered with concerns and its number, ranked under every mesh inside the bar.
+LAD_PAST_HARD = "LAD-cfd-11"
+#: The engines whose next attempt changes a mesh past SOLVER_HARD_NON_ORTHO: snappy repairs its layer folds where
+#: they were found or turns the plan strict; cfMesh's rescue optimises the cells. Any other engine - VMTK's tet fill
+#: (abc 00096107 at 86.6, 00160152 at 86.5: cfMesh meshed the same part at 40.5), gmsh, Netgen - rebuilds the same
+#: shape, so the run moves to the next engine at once (LAD-cfd-11).
+HARD_NON_ORTHO_LEVERS: dict[str, str] = {
+    "snappy": "the layer folds repaired where they were found, or a stricter plan",
+    "cfmesh": "cfMesh's own rescue and optimiser"}
+
+
+def past_hard_non_ortho(facts: Mapping | None) -> float | None:
+    """The worst non-orthogonality a quality refusal measured past SOLVER_HARD_NON_ORTHO (its `checks` row
+    max_non_ortho), None when the refusal was not that."""
+    f = facts if isinstance(facts, Mapping) else {}
+    for c in f.get("checks") or ():
+        if isinstance(c, Mapping) and c.get("key") == "max_non_ortho":
+            n = _num_of(c.get("measured"))
+            if n is not None and n > SOLVER_HARD_NON_ORTHO:
+                return n
+    return None
+
+
+def lever_bears(gate: str, engine: str, facts: Mapping | None = None) -> bool:
+    """Whether the next attempt on `engine` changes anything that bears on what `gate` refused
+    (GATE_LEVERS). True for a gate or an engine the table does not speak for - except a quality refusal
+    past the solver's hard non-orthogonality (LAD-cfd-11), which only HARD_NON_ORTHO_LEVERS' engines change."""
+    if str(gate or "") == "quality_floor" and past_hard_non_ortho(facts) is not None:
+        return str(engine or "") in HARD_NON_ORTHO_LEVERS
+    if str(gate or "") == "layer_stack" and isinstance(facts, Mapping) and facts.get("relative_next") is True:
+        # CFDREQ-33 amended (rulebook 113): a stack written in metres that may be written on each face's own cells -
+        # snappyHexMesh's next attempt writes it so (LAYER_STACK_RELATIVE_LEVER); that one's refusal moves the run on
+        return str(engine or "") in LAYER_STACK_RELATIVE_LEVER
+    row = GATE_LEVERS.get(str(gate or ""))
+    if row is None or str(engine or "") not in RULES_PLANNED:
+        return True
+    return str(engine) in row
+
+
+def refused_as_wrong_region(state: Mapping) -> bool:
+    """The attempt that just failed meshed another region than the fluid (engines/cad_fidelity.wrong_region),
+    or bound its openings to other faces than the ones the user confirmed (region_check's bound_elsewhere): the
+    STAGING's reading, which every engine and the wrap rung share - no engine and no wrap rung runs on the same
+    staging after it (LAD-cfd-8)."""
+    facts = state.get("executor_failure_facts")
+    if state.get("executor_success") or not isinstance(facts, Mapping):
+        return False
+    return bool(facts.get("wrong_region")) or _bound_elsewhere(facts)
+
+
+def _bound_elsewhere(facts: Mapping) -> bool:
+    misses = [m for m in facts.get("misses") or () if isinstance(m, Mapping)]
+    return bool(misses) and all(m.get("bound_elsewhere") for m in misses)
+
+
+#: CFDREQ-27: the refusals that never move an EXTERNAL run to another engine. Once cfMesh refined the external wake
+#: (CFDREQ-28) it became the same external mesh, and the wall-function gate sent bodies to it for nothing (abc 00000646:
+#: 3.8 min more, the same mesh delivered); the layer stack's own gate (layer_stack) still moves them
+EXTERNAL_STAYS = frozenset({"wall_function_layer"})
+
+
+def stays_on_external(state: Mapping) -> bool:
+    """CFDREQ-27: the attempt that just failed is an external flow refused by a gate in EXTERNAL_STAYS - the ladder
+    keeps the run on its engine and the sound mesh is delivered with the refusal said."""
+    from meshpipeline.engines.capability import flow_of
+    if state.get("executor_success"):
+        return False
+    return (str(state.get("executor_failed_gate") or "") in EXTERNAL_STAYS
+            and flow_of(state.get("purpose", "")) == "external")
+
+
+def refusal_without_lever(state: Mapping) -> bool:
+    """The attempt that just failed was refused by a gate this engine's next attempt cannot answer."""
+    if state.get("executor_success"):
+        return False
+    gate = str(state.get("executor_failed_gate") or "")
+    facts = state.get("executor_failure_facts")
+    return bool(gate) and not lever_bears(gate, str(state.get("engine") or ""),
+                                          facts if isinstance(facts, Mapping) else None)
+
+
+def deliverable_refusal(gate: str, quality: Mapping | None, facts: Mapping | None) -> dict | None:
+    """The concern a sound mesh refused by `gate` is delivered with when no retry can change the
+    refusal (LAD-cfd-8): {"kind", "gate", "words", "way_on"} - the finding first, in plain words with
+    its number, then what to change or type for the better mesh. None when the refusal is not one a
+    mesh may be delivered on: not in DELIVERABLE_GATES, broken cells, past the solver's hard limits,
+    or not the user's part any more."""
+    q = quality if isinstance(quality, Mapping) else {}
+    f = facts if isinstance(facts, Mapping) else {}
+    if gate not in DELIVERABLE_GATES or q.get("fatal") or f.get("fatal"):
+        return None
+    if gate == "cad_fidelity":
+        rec = _map(q.get("cad_fidelity"))
+        surf = _map(rec.get("surface"))
+        c2m, m2c = _map(surf.get("cad_to_mesh")), _map(surf.get("mesh_to_cad"))
+        vol = _map(rec.get("volume"))
+        missed = _share(c2m.get("cad_missed_share"))
+        off = _share(m2c.get("wall_off_share"))
+        verr = abs(_share(vol.get("error")))
+        if max(missed, off, verr) > NOT_THE_PART_SHARE or not (missed or off or verr):
+            return None
+        from meshpipeline.engines.cad_fidelity import REBUILD
+        verdict = _map(rec.get("verdicts"))
+        by_volume = verdict.get("volume") == REBUILD and REBUILD not in (verdict.get("cad_to_mesh"),
+                                                                          verdict.get("mesh_to_cad"))
+        words = (f"The mesh's {vol.get('what') or 'fluid'} volume is {verr * 100:.1f}% off your CAD's"
+                 if by_volume
+                 else f"About {missed * 100:.1f}% of your CAD surface the flow reaches is more than two "
+                      "cells from the mesh" if missed >= off else
+                 f"About {off * 100:.1f}% of the mesh's wall lies more than a cell off your CAD surface")
+        return {"kind": GATE_CONCERN, "gate": gate, "words": words + ": thin parts or small details "
+                "there may be missing from the mesh",
+                "way_on": "ask for finer cells at the walls in your notes (a size in mm), or mesh the "
+                          "part with its thin details removed"}
+    if gate == "port_areas":
+        misses = [m for m in f.get("misses") or () if isinstance(m, Mapping)]
+        if not misses:
+            return None
+        said = "; ".join(f"opening '{m.get('name')}' was built at {_mm2(m.get('delivered_m2'))} against "
+                         f"the {_mm2(m.get('expected_m2'))} confirmed" for m in misses)
+        elsewhere = all(m.get("bound_elsewhere") for m in misses)
+        return {"kind": GATE_CONCERN, "gate": gate, "words": said[0].upper() + said[1:] + (
+                    ": the mesh's opening is another face than the one you confirmed (a smaller hole inside it, "
+                    "or a face beside it)" if elsewhere else ""),
+                "way_on": "check the opening on the geometry stage - its outline, or the size you typed "
+                          "for it - and run again"}
+    if gate == "quality_floor":
+        # only PLAIN cell shape: a missing wall, a crashed or timed-out build, missing layers, or an
+        # unmeasured bar is refused as it always was
+        failed = {str((c or {}).get("key")) for c in f.get("checks") or () if isinstance(c, Mapping)}
+        if not failed or not failed <= SHAPE_CHECKS or f.get("unmeasured"):
+            return None
+        nonortho = _num_of(q.get("max_non_ortho"))
+        if nonortho is None:
+            return None
+        if nonortho > SOLVER_HARD_NON_ORTHO:
+            # LAD-cfd-11: A VALID MESH PAST THE SOLVER'S HARD BAR IS THE LAST RESORT, NEVER NOTHING. checkMesh calls
+            # it valid (no fatal defect), so it is kept - ranked under every mesh inside the bar
+            # (resolution_policy._refused_order) - and delivered with its number only when no engine built one
+            # inside it
+            return {"kind": GATE_CONCERN, "gate": gate, "past_hard_non_ortho": round(nonortho, 2),
+                    "words": (f"The worst cell face is {nonortho:.1f} degrees off orthogonal, past the "
+                              f"{SOLVER_HARD_NON_ORTHO:.0f} degrees a CFD solver can usually correct; no engine built "
+                              "this part inside that, so this valid mesh is delivered as the best there was"),
+                    "way_on": "run the solver with non-orthogonal correctors (3 or more) and limited (corrected 0.33) "
+                              "laplacian and gradient schemes, or ask for finer cells at the walls in your notes"}
+        skew = _num_of(q.get("skew_fraction")) or 0.0
+        return {"kind": GATE_CONCERN, "gate": gate,
+                "words": (f"Some cells are more skewed than we deliver as a clean mesh: worst "
+                          f"non-orthogonality {nonortho:.0f} degrees, {skew * 100:.2g}% of the faces past our "
+                          "skew bar"),
+                "way_on": "run the solver with non-orthogonal correctors (2 or more), or ask for finer "
+                          "cells at the walls in your notes"}
+    if gate == "solvability":
+        res, its = _num_of(f.get("residual")), _num_of(f.get("iters"))
+        how = (f" (its residual was {res:.2g} after {its:.0f} iterations)"
+               if res is not None and its is not None else "")
+        return {"kind": GATE_CONCERN, "gate": gate,
+                "words": (f"The short trial solve of the pressure equation on this mesh did not "
+                          f"converge{how}, although every cell check passed"),
+                "way_on": "start your solver with lower relaxation factors; if it still does not "
+                          "converge, ask for a finer mesh in your notes"}
+    if gate == "wall_function_layer":
+        # CFDREQ-27: the sound mesh kept when no other engine built a better one - its number said
+        jump = _num_of(f.get("under_jump_pct"))
+        if jump is None:
+            return None
+        return {"kind": GATE_CONCERN, "gate": gate,
+                "words": (f"The wall-function first layer sits under a cell more than twice thinner on {jump:.0f}% "
+                          "of the wall, so the y+ there is not the wall function's"),
+                "way_on": "ask for a resolved wall (y+ about 1) in your notes, or name cfMesh as the engine"}
+    if gate == "layer_stack":
+        # CFDREQ-28: the sound mesh kept when no other engine kept more of the stack - its share said
+        cover = _num_of(f.get("coverage_pct"))
+        if cover is None:
+            return None
+        n = _num_of(f.get("layers"))
+        return {"kind": GATE_CONCERN, "gate": gate,
+                "words": (f"The {int(n) if n else ''}{'-layer ' if n else ''}boundary-layer stack stands on {cover:.0f}% "
+                          "of the wall, so elsewhere the wall has fewer cells across its boundary layer than planned"),
+                "way_on": "ask for fewer layers or a thicker first layer in your notes, or name cfMesh as the engine"}
+    return None
+
+
+#: The caveat kind a sound mesh delivered on a refusal no retry could change carries (LAD-cfd-8).
+GATE_CONCERN = "gate_concern"
+
+#: The rule that chooses between sound meshes the same gate refused (docs/RULES.md).
+LAD_NEAREST_THE_BAR = "LAD-cfd-9"
+
+
+def gate_distance(gate: str, quality: Mapping | None, facts: Mapping | None) -> float | None:
+    """How far a sound mesh `gate` refused is from that gate's bar, in the gate's own unit (0 at the bar), so
+    two meshes the same gate refused are chosen by it, never by ladder order (LAD-cfd-9): port_areas - the
+    worst opening's log area ratio past PORT_AREA_BAND (or past DECLARED_FAR_BAND for a port bound
+    elsewhere); cad_fidelity - the largest of the missed share, the off share and the volume error past
+    NOT_THE_PART_SHARE's verdict (a plain share); quality_floor - degrees of worst non-orthogonality; the trial
+    solve - decades of residual. None when the gate's facts do not measure it."""
+    import math
+    q = quality if isinstance(quality, Mapping) else {}
+    f = facts if isinstance(facts, Mapping) else {}
+    if gate == "port_areas":
+        from meshpipeline.engines.region_check import DECLARED_FAR_BAND, PORT_AREA_BAND
+        worst: float | None = None
+        for m in f.get("misses") or ():
+            r = _num_of(m.get("ratio")) if isinstance(m, Mapping) else None
+            if r is None or r <= 0:
+                continue
+            lo, hi = DECLARED_FAR_BAND if m.get("bound_elsewhere") else PORT_AREA_BAND
+            d = max(math.log(lo / r), math.log(r / hi), 0.0)
+            worst = d if worst is None else max(worst, d)
+        return worst
+    if gate == "cad_fidelity":
+        rec = _map(q.get("cad_fidelity"))
+        surf = _map(rec.get("surface"))
+        vals = [_num_of(_map(surf.get("cad_to_mesh")).get("cad_missed_share")),
+                _num_of(_map(surf.get("mesh_to_cad")).get("wall_off_share")),
+                _num_of(_map(rec.get("volume")).get("error"))]
+        got = [abs(v) for v in vals if v is not None]
+        return max(got) if got else None
+    if gate == "quality_floor":
+        return _num_of(q.get("max_non_ortho"))
+    if gate == "solvability":
+        res = _num_of(f.get("residual"))
+        return math.log10(res) if res is not None and res > 0 else None
+    if gate == "layer_stack":
+        # CFDREQ-28: percent of the wall short of the layer row's share
+        from meshpipeline.engines.cfd_requirements import STACK_KEPT_PCT
+        cover = _num_of(f.get("coverage_pct"))
+        return max(0.0, STACK_KEPT_PCT - cover) if cover is not None else None
+    return None
+
+
+
+
+def _map(v: object) -> Mapping:
+    return v if isinstance(v, Mapping) else {}
+
+
+def _share(v: object) -> float:
+    n = _num_of(v)
+    return n if n is not None else 0.0
+
+
+def _num_of(v: object) -> float | None:
+    import math
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return None
+    return float(v) if math.isfinite(float(v)) else None
+
+
+def _mm2(m2: object) -> str:
+    n = _num_of(m2)
+    return f"{n * 1e6:,.0f} mm2" if n is not None else "an unmeasured area"
 
 
 # #
@@ -690,6 +1014,23 @@ def classify(state: Mapping) -> Failure | None:
         # no setting of this engine brings it inside one job, so the run moves to the next engine at
         # once - the same case again would only be estimated over again
         return Failure(ENGINE, cause.value, _REASON_BY_CAUSE[cause], stopped)
+    if gate == "port_areas" and _bound_elsewhere(facts):
+        # the staging bound the openings to other faces than the ones confirmed: every engine stages them the same
+        return Failure(NEVER, cause.value, "its openings were bound to other faces than the ones you confirmed - "
+                       "every engine stages them the same way", stopped)
+    if facts.get("wrong_region"):
+        # THE WRONG REGION (LAD-cfd-8 applied to the region): a mesh of the part's metal or the space outside it
+        # is the staging's region, and every engine and the wrap rung mesh the same staging - another would mesh
+        # the same wrong region (the siphoned box: four hours of it). The run stops with the reason and the way on
+        return Failure(NEVER, cause.value, "its mesh filled the part's metal or the space outside it, not the "
+                       "fluid - every engine meshes the same staged region", stopped)
+    if kind == FIXABLE and gate and not lever_bears(gate, str(state.get("engine") or ""), facts):
+        # NOTHING THIS ENGINE CHANGES BEARS ON THE REFUSAL (LAD-cfd-8): its next attempt would rebuild
+        # the same case, so the run moves to the next engine at once - or, with none, the sound mesh
+        # is delivered with the refusal said (route_after_executor)
+        return Failure(ENGINE, cause.value,
+                       f"{_REASON_BY_GATE.get(gate, _REASON_BY_CAUSE[cause])}, and nothing its next "
+                       "attempt changes bears on that", stopped)
     broken = broken_cells(facts)
     if broken and kind != NEVER:
         # A BROKEN MESH (checkMesh's fatal defects: negative-volume cells, faces pointing the wrong
@@ -945,6 +1286,19 @@ def decide(state: Mapping, *, record: Mapping, now: float | None = None) -> Deci
     open_rungs = [r for r in ladder({**state, "engine_ladder": record})
                   if r.same_contract and r.engine not in tried
                   and not _measures_its_input(r.engine)]
+    if open_rungs and stays_on_external(state):
+        # CFDREQ-27 on an external flow: the run is never moved (as before cfMesh refined the external wake) - the
+        # sound mesh is delivered with the refusal said (rulebook 98)
+        open_rungs = []
+    _facts = state.get("executor_failure_facts")
+    _past_hard = past_hard_non_ortho(_facts if isinstance(_facts, Mapping) else None) is not None
+    if not open_rungs and refusal_without_lever(state) and not _past_hard:
+        # LAD-cfd-8: a sound mesh the gate refused is better than another KIND of mesh; with no
+        # same-contract engine left, the route delivers it with the refusal said. Not past the solver's hard
+        # non-orthogonality (LAD-cfd-11): that mesh is only the last resort, so the next ranked engine is tried
+        # first even with another kind of mesh (SW-16, below), and the kept mesh is delivered if none does better
+        return Decision(why="no untried engine delivers the approved mesh, and nothing this engine "
+                            "changes bears on the refusal", failure=failure)
     if not open_rungs and (failure.kind == ENGINE or failure.cause in _NO_MESH_CAUSES):
         # SW-16: THE SYSTEM'S OWN PICK MADE NO MESH, OR A BROKEN ONE (may_switch_on_its_own,
         # above: never a user-named engine). The next engine in the same ranking (ENG-5) takes the
@@ -976,6 +1330,16 @@ def decide(state: Mapping, *, record: Mapping, now: float | None = None) -> Deci
     left = bcfg.MAX_BUILDER_RETRIES + 1 - int(state.get("retry_count", 0) or 0)
     if left < 1:
         return Decision(why="no regular attempt is left", failure=failure)
+    if (failure.kind == FIXABLE and str(state.get("executor_failed_gate") or "") == "layer_stack"
+            and isinstance(_facts, Mapping) and lever_bears("layer_stack", engine, _facts)
+            and _facts.get("relative_next") is True):
+        # CFDREQ-33 amended (rulebook 113): THE STACK IN METRES WAS REFUSED - the same plan with the stack on each
+        # face's own cells is tried before the next engine, even on the run's last regular attempt. Measured why
+        # (ENGINEER 36, testlab-5): with the next engine first, 00008746 / 00039088 / 00058385 went to cfMesh and ended
+        # concerns, where the relative stack passes them (85.6 / 80.6 / 88.2% cover)
+        return Decision(why="a measured check failed - this engine's own levers are tried first (SW-5): the layer "
+                            "stack in metres was refused, so the same stack goes on each wall face's own cells "
+                            "before the next engine (CFDREQ-33)", failure=failure)
     if failure.kind == FIXABLE and not _levers_spent(record, engine) and left > len(open_rungs):
         # LEVERS FIRST, WHERE THERE IS ROOM FOR THEM: a retry with this engine's own levers must
         # still leave every untried rung an attempt. When it would not, it spends the run's last
@@ -998,6 +1362,11 @@ def decide(state: Mapping, *, record: Mapping, now: float | None = None) -> Deci
                           if isinstance(state.get("executor_failure_facts"), Mapping) else None)
     return Decision(switch_to=target, why=(
         "this engine's mesh of this shape came out broken" if failure.kind == ENGINE and broken else
+        # SW-17 (LAD-cfd-8): it built a mesh; a check refused it and nothing its next pass changes
+        # bears on that check
+        (f"the mesh was built but a check refused it and another pass on this engine could not "
+         f"change that (the {state.get('executor_failed_gate')} check)")
+        if failure.kind == ENGINE and refusal_without_lever(state) else
         "this engine could not build a mesh" if failure.kind == ENGINE else
         "the same failure repeated here" if _repeats(record, engine, failure) else
         "the shared attempts go to the untried engine"), failure=failure)

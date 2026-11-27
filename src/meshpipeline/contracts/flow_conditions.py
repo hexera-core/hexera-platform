@@ -127,12 +127,11 @@ def sizing_words(c: Mapping) -> str:
     return f"the first layer is sized for y⁺ ≈ {c['y_plus']:g}, inside 30–300, at that speed"
 
 
-#: what the plan says of a wall treatment the user only accepted (the proposal's wall functions): no ask of theirs, so
-#: the mesher's own relative layers - which it grows on the whole wall - stay (job 07fd516d: an absolute y+ 50 first
-#: layer 1.35 mm under 1.72 mm wall cells grew on 5.7% of the wall)
-PROPOSED_WORDS = ("the layers keep the mesher's own sizing, which it grows on the whole wall; their first cell is "
-                  "usually finer than wall functions want (y⁺ about 10-20, under 30-300) - give a first layer "
-                  "height or a y⁺ in the notes to land it in the band")
+#: what the plan says of a wall treatment the user only accepted (the proposal's wall functions): CFDREQ-13 sizes the
+#: first layer for them as for a chosen one, fitted to the wall cells (engines/cfd_requirements.wall_fit)
+PROPOSED_WORDS = ("the first layer is sized for wall functions (its cell centre at y⁺ about 50) at that speed; where "
+                  "the cells a passage needs at the wall are too fine for that, the wall is resolved instead (y⁺ about "
+                  "1), and the result says which")
 #: how the plan says what the user left to the proposal (agents/intake/flow), read back by `accepted`
 ACCEPTED_LEAD = "Left to the application's proposal, which the user accepted:"
 _ACCEPTED = re.compile(re.escape(ACCEPTED_LEAD) + r"([^.]*)\.")
@@ -154,6 +153,26 @@ def accepted(request_txt: str) -> set[str]:
     return {w.strip() for w in m.group(1).split(",") if w.strip()} if m else set()
 
 
+#: the rest of the conditions sentence after its wall words: what the first layer does, to the sentence's full stop
+#: (a decimal point is no full stop)
+_SENTENCE_REST = re.compile(r"(?:[^.]|\.(?=\S))*\.?")
+
+
+def without(request_txt: str) -> str:
+    """The summary with its conditions sentence and its what-was-left-to-the-proposal clause taken out (a summary
+    that carries none: as it is). Read back by `read` as None."""
+    text = str(request_txt or "")
+    m = _SENTENCE.search(text)
+    if m:
+        end = m.end()
+        rest = _SENTENCE_REST.match(text, end) if text[end - 1] == ";" else None
+        if rest is not None:
+            end = rest.end()
+        text = text[:m.start()] + text[end:]
+    text = _ACCEPTED.sub("", text)
+    return " ".join(text.split())
+
+
 def read(request_txt: str, patches: Iterable[Mapping] | None = None) -> dict | None:
     """The conditions the plan carries (`conditions`, with `wall_said`: whether the user chose the wall treatment
     rather than accepting the proposal), or None when the summary has no such sentence (a plan the model wrote in its
@@ -169,4 +188,4 @@ def read(request_txt: str, patches: Iterable[Mapping] | None = None) -> dict | N
 
 __all__ = ["ACCEPTED_LEAD", "FLOWS", "FLUIDS", "MASS_FLOWS", "NU", "PROPOSED_WORDS", "RHO", "RULE", "SPEED", "SPEEDS",
            "WALL_FUNCTIONS", "WALL_RESOLVED", "WALL_WORDS", "WALL_Y_PLUS", "accepted", "conditions", "fluid_key", "read",
-           "sentence", "sizing_words", "speed_ms"]
+           "sentence", "sizing_words", "speed_ms", "without"]

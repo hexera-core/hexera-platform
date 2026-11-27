@@ -642,7 +642,7 @@ API: it logs that the directory is missing and leaves `/ui` and `/static` unmoun
 
 <!-- Regenerate: python -m meshpipeline.settings.inventory --reference -->
 
-Every supported setting (341 entries). `template` settings are the ones `.env.example` carries; `internal` are advanced controls deliberately kept out of it; `external` are supplied by the platform or a library rather than by editing `.env`.
+Every supported setting (342 entries). `template` settings are the ones `.env.example` carries; `internal` are advanced controls deliberately kept out of it; `external` are supplied by the platform or a library rather than by editing `.env`.
 
 | Setting | Exposure | Read by | Secret |
 |---|---|---|---|
@@ -921,6 +921,7 @@ Every supported setting (341 entries). `template` settings are the ones `.env.ex
 | `ALEMBIC_CONFIG` | external | app |  |
 | `CLOUD_RUN_EXECUTION` | external | app |  |
 | `GOOGLE_APPLICATION_CREDENTIALS` | external | app |  |
+| `HEXERA_SHELL_RUN_CAP` | external | app |  |
 | `HEXERA_SHELL_RUN_END` | external | app |  |
 | `MESH_SOURCE_TREE` | external | app |  |
 | `PIPELINE_EXECUTION_ID` | external | app |  |

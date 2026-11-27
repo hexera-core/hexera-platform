@@ -460,7 +460,10 @@ def deliverable_sound(state: Mapping) -> dict | None:
     background (lab gr-br2: 4 of 8 rungs) - never makes the delivery worse. None when there is
     none."""
     best: dict | None = None
-    for row in [r for r in (state.get(SOUND_KEY) or ()) if isinstance(r, Mapping)]:
+    rows = [r for r in (state.get(SOUND_KEY) or ()) if isinstance(r, Mapping)]
+    # CFDREQ-28: meshes of two engines are chosen by the product's own verdict (_beats)
+    ctx = verdict_context(state) if len({str(r.get("engine") or "") for r in rows}) > 1 else None
+    for row in rows:
         ws = str(row.get("workspace") or "")
         if not ws:
             continue
@@ -471,9 +474,260 @@ def deliverable_sound(state: Mapping) -> dict | None:
         q = manifest.get("quality") if isinstance(manifest, dict) else None
         if isinstance(q, dict) and q.get("fatal"):
             continue
-        if best is None or resolution_of(row) >= resolution_of(best):
-            best = {**dict(row), "manifest": manifest}
+        # LAD-cfd-8: a mesh a gate refused (kept deliverable, `refused`) ranks under every mesh no gate
+        # refused, whatever its resolution - the best by the measured limits, never simply the last
+        cand = {**dict(row), "manifest": manifest}
+        if best is None or _beats(cand, best, ctx):
+            best = cand
     return best
+
+
+#: LAD-cfd-9: two refusals by the same gate this close (engine_fallback.gate_distance, in the gate's own
+#: unit: log of the area ratio past the band, a share of the CAD, decades of residual) are as far off as
+#: each other - the choice goes on to quality and the wall ask. abc 00001167: 0.438 and 0.447 of the inlet
+#: are 0.021 apart past the 0.6 edge, noise of the staging, not a better mesh.
+GATE_DISTANCE_TIE = 0.05
+#: ...and two layer coverages this many points apart are the same answer to the wall ask.
+COVERAGE_TIE_PCT = 5.0
+#: Non-orthogonality a solver cannot take (the same bar as engine_fallback.SOLVER_HARD_NON_ORTHO).
+_HARD_NON_ORTHO = 85.0
+
+
+#: THE RULE (docs/RULES.md CFDREQ-28, amended in rulebook 112): when a run holds meshes from two engines - a gate
+#: moved it on - it ends on the better of them by the product's own measured verdict, and a kept mesh is always
+#: handed back when the next engine fails, is refused or runs out of time.
+ENGINE_BETTER_OF_TWO = "CFDREQ-28"
+
+#: CFDREQ-28: two meshes whose worst missed row is missed by shares of its limit this close are missed alike
+#: (a hundredth of the limit: 0.8 of 80% coverage, 0.7 degrees of 70)
+MISS_TIE = 0.01
+
+#: The refusals whose measure is already a row of the verdict (verdict_limits): their concern is that row, not
+#: a second, separate requirement missed - CFDREQ-28's layer_stack is the layer row (layer_coverage_pct, 80%)
+GATES_THAT_ARE_ROWS = frozenset({"layer_stack"})
+
+
+def near_misses(caveats) -> int:
+    """The stated requirements a delivered mesh near-missed, as the verdict counts them (requirement_near_misses):
+    every caveat but our own notes (NOTE_KINDS) and a refusal whose measure is already a verdict row
+    (GATES_THAT_ARE_ROWS) - one shortfall is one missed row, never two."""
+    return sum(1 for c in caveats or () if isinstance(c, Mapping) and c.get("kind") not in NOTE_KINDS
+               and str(c.get("gate") or "") not in GATES_THAT_ARE_ROWS)
+
+
+def _row_miss(row: Mapping) -> float:
+    """How far a missed verdict row is past its limit, as a share of that limit (1.0 when it is not a number)."""
+    m, lim = _num(row.get("measured")), _num(row.get("limit"))
+    if m is None or lim is None:
+        return 1.0
+    scale = abs(lim) if lim else 1.0
+    if str(row.get("op")) in (">=", ">"):
+        return max(0.0, lim - m) / scale
+    return max(0.0, m - lim) / scale
+
+
+def verdict_standing(entry: Mapping, *, topology: str, layers_planned: bool) -> dict | None:
+    """CFDREQ-28: one sound mesh of the run as the product's own measured verdict reads it (engines/verdict_limits
+    and contracts/decision_record.verdict, the rows terminal assembly reads): {"outcome", "rank", "missed",
+    "worst"} - rank 0 pass, 1 concerns, 2 anything else; `missed` the rows it misses (key, measured, limit); `worst`
+    the largest of their misses as a share of the row's limit. None when its manifest cannot be read."""
+    manifest = entry.get("manifest")
+    if not isinstance(manifest, Mapping) or not isinstance(manifest.get("quality"), Mapping):
+        return None
+    try:
+        from meshpipeline.contracts import decision_record as dr
+        from meshpipeline.engines import verdict_limits as vl
+        inputs = vl.inputs_for(engine=str(entry.get("engine") or ""), topology=topology, manifest=manifest,
+                               valid=True, layers_planned=layers_planned,
+                               requirement_near_misses=near_misses(entry.get("requirement_caveats")))
+        outcome, _rule = dr.verdict(inputs)
+        missed = [dict(r) for r in dr.missed_limits(inputs)]
+    except Exception:  # noqa: BLE001 - a mesh the verdict cannot read is chosen as before
+        logger.debug("resolution policy: verdict standing not read", exc_info=True)
+        return None
+    return {"outcome": outcome, "rank": {"pass": 0, "concerns": 1}.get(str(outcome), 2),
+            "missed": [{k: r.get(k) for k in ("key", "label", "measured", "op", "limit")} for r in missed],
+            "worst": max((_row_miss(r) for r in missed), default=0.0)}
+
+
+def standing_order(a: Mapping, b: Mapping) -> int:
+    """CFDREQ-28's plain order of two meshes by the measured verdict: +1 when `a` is the better, -1 when `b` is,
+    0 when they tie. Pass beats concerns beats anything else; of two with concerns, the one missing fewer rows;
+    then the one whose worst missed row is missed by less (a share of its own limit, MISS_TIE apart)."""
+    if a["rank"] != b["rank"]:
+        return 1 if a["rank"] < b["rank"] else -1
+    if len(a["missed"]) != len(b["missed"]):
+        return 1 if len(a["missed"]) < len(b["missed"]) else -1
+    if abs(float(a["worst"]) - float(b["worst"])) > MISS_TIE:
+        return 1 if a["worst"] < b["worst"] else -1
+    return 0
+
+
+def verdict_context(state: Mapping) -> dict:
+    """What the verdict needs that is the run's, not one mesh's: the flow topology (the purpose's) and whether the
+    approved plan builds layers (the same for every mesh of the run, so read off any of their records: a planned
+    count, or a measured coverage)."""
+    from meshpipeline.engines.purposes import topology_of
+    try:
+        topology = str(state.get("flow_topology") or topology_of(str(state.get("purpose") or "")) or "")
+    except Exception:  # noqa: BLE001 - an unknown purpose reads as no topology
+        topology = ""
+    planned = False
+    for row in [r for r in (state.get(SOUND_KEY) or ()) if isinstance(r, Mapping)]:
+        q = _manifest_quality(str(row.get("workspace") or ""))
+        if (_num(q.get("layers_requested")) or 0) >= 1 or _num(q.get("layer_coverage_pct")) is not None:
+            planned = True
+    return {"topology": topology, "layers_planned": planned}
+
+
+def _manifest_quality(ws: str) -> Mapping:
+    try:
+        m = json.loads((Path(ws) / "mesh_manifest.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    q = m.get("quality") if isinstance(m, Mapping) else None
+    return q if isinstance(q, Mapping) else {}
+
+
+def _by_verdict(a: Mapping, b: Mapping, ctx: Mapping | None) -> int | None:
+    """CFDREQ-28 between meshes of TWO ENGINES: +1 / -1 by standing_order, and on a tie the first (the cheaper,
+    it was built before the gate moved the run) is kept. None when both are one engine's, or either cannot be read -
+    the order below decides, as it always did."""
+    if not ctx or str(a.get("engine") or "") == str(b.get("engine") or ""):
+        return None
+    pa, pb = _past_hard(a), _past_hard(b)
+    if pa != pb:
+        # LAD-cfd-11 first: a mesh past the solver's hard non-orthogonality is the last resort, whatever it misses
+        return -1 if pa else 1
+    sa = a.get("standing") or verdict_standing(a, **ctx)
+    sb = b.get("standing") or verdict_standing(b, **ctx)
+    if not sa or not sb:
+        return None
+    got = standing_order(sa, sb)
+    if got:
+        return got
+    if a.get("refused") and str(a.get("refused")) == str(b.get("refused")):
+        # the same gate refused both and the verdict reads them alike: the one nearer that gate's bar (LAD-cfd-9)
+        return None
+    return 1 if int(a.get("attempt") or 0) < int(b.get("attempt") or 0) else -1
+
+
+def engine_choice(state: Mapping) -> dict | None:
+    """CFDREQ-28: when the run's sound meshes come from more than one engine, the one it ends on
+    (deliverable_sound) and the best mesh of another engine it was chosen over, each with its standing, and the one
+    plain line that says which was not chosen and why. None when every sound mesh is one engine's."""
+    rows = [r for r in (state.get(SOUND_KEY) or ()) if isinstance(r, Mapping)]
+    if len({str(r.get("engine") or "") for r in rows}) < 2:
+        return None
+    best = deliverable_sound(state)
+    if best is None:
+        return None
+    ctx = verdict_context(state)
+    others = []
+    for row in rows:
+        if str(row.get("engine") or "") == str(best.get("engine") or ""):
+            continue
+        try:
+            manifest = json.loads((Path(str(row.get("workspace") or "")) / "mesh_manifest.json")
+                                  .read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(manifest, dict):
+            continue
+        cand = {**dict(row), "manifest": manifest}
+        cand["standing"] = verdict_standing(cand, **ctx)
+        others.append(cand)
+    if not others:
+        return None
+    sb = verdict_standing(best, **ctx)
+    other = others[0]
+    for o in others[1:]:
+        if o.get("standing") and other.get("standing") and standing_order(o["standing"], other["standing"]) > 0:
+            other = o
+    return {"best": best, "other": other, "rule": ENGINE_BETTER_OF_TWO,
+            "line": choice_line(best, sb, other, other.get("standing"))}
+
+
+def _missed_words(s: Mapping | None) -> str:
+    if not s:
+        return "its checks could not be read"
+    rows = s.get("missed") or []
+    if not rows:
+        return "it passed every check"
+    said = "; ".join(f"{r.get('label') or r.get('key')} {_g(r.get('measured'))} against {_g(r.get('limit'))}"
+                     for r in rows[:3])
+    return f"it missed {len(rows)} check{'s' if len(rows) != 1 else ''} ({said})"
+
+
+def _g(v: Any) -> str:
+    n = _num(v)
+    return f"{n:.3g}" if n is not None else str(v)
+
+
+def choice_line(best: Mapping, sb: Mapping | None, other: Mapping, so: Mapping | None) -> str:
+    """The one plain line on the result: the mesh not chosen, and why (CFDREQ-28)."""
+    from meshpipeline.engines.registry import engine_label
+    tie = sb is not None and so is not None and standing_order(sb, so) == 0
+    return (f"the {engine_label(str(other.get('engine') or ''))} mesh of attempt {other.get('attempt')} was not "
+            f"chosen: {_missed_words(so)}, and this one "
+            + ("measures the same and was built first" if tie else
+               _missed_words(sb).replace("it ", "", 1)))
+
+
+def _beats(a: Mapping, b: Mapping, ctx: Mapping | None = None) -> bool:
+    """Whether sound mesh `a` (the newer) is delivered over `b`. MESHES OF TWO ENGINES go by the product's own
+    measured verdict first, the first one on a tie (CFDREQ-28, _by_verdict). A mesh no gate refused beats a
+    refused one; two unrefused ones go by resolution, the newer on a tie (LAD-cfd-3). TWO REFUSED ONES (LAD-cfd-9)
+    never go by ladder order: when the same gate refused both, the one nearer its bar first; then resolution;
+    then inside the solver's hard non-orthogonality; then the wall ask (layer coverage); then the lower
+    worst non-orthogonality; only then the newer."""
+    by = _by_verdict(a, b, ctx)
+    if by is not None:
+        return by > 0
+    ra, rb = bool(a.get("refused")), bool(b.get("refused"))
+    if ra != rb:
+        return rb
+    if not ra:
+        return resolution_of(a) >= resolution_of(b)
+    for cmp in _refused_order(a, b):
+        if cmp:
+            return cmp > 0
+    return True
+
+
+def _refused_order(a: Mapping, b: Mapping):
+    """+1 where `a` is the better refused mesh on that count, -1 where `b` is, 0 where they tie. A mesh past
+    the solver's hard non-orthogonality ranks under every mesh inside it, before anything else (LAD-cfd-11):
+    it is kept only as the last resort."""
+    pa, pb = _past_hard(a), _past_hard(b)
+    yield 0 if pa == pb else (-1 if pa else 1)
+    da, db = _num(a.get("refused_distance")), _num(b.get("refused_distance"))
+    if (str(a.get("refused")) == str(b.get("refused")) and da is not None and db is not None
+            and abs(da - db) > GATE_DISTANCE_TIE):
+        yield 1 if da < db else -1
+    res_a, res_b = resolution_of(a), resolution_of(b)
+    yield 0 if res_a == res_b else (1 if res_a > res_b else -1)
+    na, nb = _quality_num(a, "max_non_ortho"), _quality_num(b, "max_non_ortho")
+    ia = na is not None and na <= _HARD_NON_ORTHO
+    ib = nb is not None and nb <= _HARD_NON_ORTHO
+    yield 0 if ia == ib else (1 if ia else -1)
+    ca, cb = _quality_num(a, "layer_coverage_pct"), _quality_num(b, "layer_coverage_pct")
+    if ca is not None and cb is not None and abs(ca - cb) > COVERAGE_TIE_PCT:
+        yield 1 if ca > cb else -1
+    if na is not None and nb is not None and na != nb:
+        yield 1 if na < nb else -1
+
+
+def _past_hard(entry: Mapping) -> bool:
+    """The sound mesh's worst non-orthogonality is measured past the solver's hard bar (LAD-cfd-11)."""
+    n = _quality_num(entry, "max_non_ortho")
+    return n is not None and n > _HARD_NON_ORTHO
+
+
+def _quality_num(entry: Mapping, key: str) -> float | None:
+    manifest = entry.get("manifest")
+    q = manifest.get("quality") if isinstance(manifest, Mapping) else None
+    return _num(q.get(key)) if isinstance(q, Mapping) else None
 
 
 def better_earlier_sound(state: Mapping) -> dict | None:
@@ -589,7 +843,8 @@ def note_lines(c: Mapping) -> list[str]:
     return lines
 
 
-__all__ = ["CELL_LIMIT_PROVES", "ROOM_SHARE", "cite_plan",
+__all__ = ["CELL_LIMIT_PROVES", "ROOM_SHARE", "cite_plan", "ENGINE_BETTER_OF_TWO", "GATES_THAT_ARE_ROWS", "MISS_TIE",
+           "choice_line", "engine_choice", "near_misses", "standing_order", "verdict_context", "verdict_standing",
            "gate_cell_limit", "LADDER_FILE", "LAD_AFTER_SWITCH", "LAD_CELL_LIMIT", "LAD_DELIVER_SOUND", "LAD_RUNG",
            "NOTE_GATES", "NOTE_KINDS", "OVER_CELL_LIMIT", "PLAN_GAP_LOCAL", "PLAN_PORTS",
            "PLAN_ROUTE_BIG", "PORT_CELLS_ACROSS", "RESOLUTION_SHORT", "RUNG_CAP", "RUNG_FACTORS",

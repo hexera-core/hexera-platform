@@ -37,6 +37,8 @@ STATE_KEY = "cfd_wrap"
 RULE_RUNG = "LAD-cfd-5"
 RULE_DISTANCE = "LAD-cfd-6"
 RULE_REPORT = "LAD-cfd-7"
+#: LAD-cfd-12: no wrap after an opening was lost to a narrow gap (the wrap closes small gaps, so it closes that one)
+RULE_NO_WRAP_PORT_GAP = "LAD-cfd-12"
 #: The engines that mesh a wrapped surface, in the rung's own order: the two flow engines that build
 #: body-fitted hex-dominant meshes with layers from any closed surface, then gmsh's tetrahedra
 #: filled straight against the skin's own triangles (no remesh, no layers: the DEGRADED step that
@@ -95,6 +97,12 @@ def why_not(state: Mapping, *, now: float | None = None) -> str:
     if state.get("geometry_unsuitable_reason") and set(facts.get("phases") or ()) - {"measured"}:
         return "the request asks for something these engines cannot build: a wrap changes nothing about that"
     from meshpipeline.pipeline import engine_fallback as lad
+    if facts.get("port_region_dropped"):
+        # LAD-cfd-12: an opening reaches the rest of its passage only through a gap narrower than the mesher's cells
+        # (abc 63401's outlet_3: a 0.25-0.5 mm slit). The wrap bridges small gaps by design, so it closes that
+        # one and the opening is cut off on the wrapped surface too (c2e8_p30a: attempts 2 and 3, both failed)
+        return ("an opening was lost to a narrow gap in its passage, and a wrap closes small gaps, so it would "
+                "close that one too")
     if lad.refused_by_design(state):
         return "the engines refuse this kind of file by design: a wrap changes nothing about that"
     if not rung_steps(state):
@@ -217,6 +225,9 @@ async def node_cfd_wrap(state) -> dict:
            "failure": prev.get("failure") if prev.get("tried") else failed,
            "steps": steps, "step": step, "done": done,
            "degraded": engine == DEGRADED_ENGINE}
+    judged = prev.get("judged") if prev.get("tried") else judged_refusal(state)
+    if judged:
+        rec["judged"] = judged
     try:
         from meshpipeline.contracts import decision_record as dr
         dr.cite(job_id, stage="engine_ladder", decided="wrap rung", value=engine, rule=RULE_RUNG,
@@ -257,6 +268,52 @@ async def node_cfd_wrap(state) -> dict:
         STATE_KEY: rec,
         **lad._ladder_step(state, attempt=attempt, switch_to=engine),
     }
+
+
+#: LAD-cfd-13: the run's last JUDGED refusal stays its final word when the wrap rung ends without a mesh
+RULE_JUDGED_STANDS = "LAD-cfd-13"
+_JUDGED_KEYS = ("executor_failed_gate", "executor_failure_cause", "executor_failure_facts", "executor_output")
+
+
+def _judged(state: Mapping) -> bool:
+    """The attempt in `state` failed on a check that judged a mesh it built (engine_fallback.GATE_LEVERS: cell shape,
+    an opening's size, the CAD check, the trial solve, a boundary type) - not on a mesh that never came out."""
+    from meshpipeline.pipeline.engine_fallback import GATE_LEVERS
+    return (not state.get("executor_success")
+            and str(state.get("executor_failed_gate") or "") in GATE_LEVERS)
+
+
+def judged_refusal(state: Mapping) -> dict | None:
+    """The refusal the wrap rung starts after, kept when a check judged a mesh it built (LAD-cfd-13), else None."""
+    if not _judged(state):
+        return None
+    facts = state.get("executor_failure_facts")
+    return {"engine": str(state.get("engine") or ""), "attempt": int(state.get("retry_count", 0) or 0),
+            "executor_failed_gate": str(state.get("executor_failed_gate") or ""),
+            "executor_failure_cause": str(state.get("executor_failure_cause") or ""),
+            "executor_failure_facts": dict(facts) if isinstance(facts, Mapping) else {},
+            "executor_output": str(state.get("executor_output") or "")}
+
+
+def with_judged_refusal(state: Mapping) -> dict:
+    """THE JUDGED REFUSAL STAYS THE FINAL WORD (LAD-cfd-13): a run whose wrap rung ended without a mesh, after a check
+    had refused a mesh the run built, ends on that check's refusal - never on the wrap's own unjudged failure (abc
+    99768: "About 55.0% of your CAD surface is not reached by the mesh" became "constant/polyMesh is incomplete").
+    A wrapped mesh that was itself judged keeps its own refusal. `state` unchanged (a copy) otherwise."""
+    out = dict(state)
+    rec = record(state)
+    judged = rec.get("judged")
+    if not rec.get("tried") or not isinstance(judged, Mapping) or _judged(state) or state.get("executor_success"):
+        return out
+    wrap_failure = str(state.get("executor_output") or "").strip()
+    out.update({k: judged.get(k) for k in _JUDGED_KEYS})
+    out["executor_failure_facts"] = {**dict(judged.get("executor_failure_facts") or {}),
+                                     "judged_stands": RULE_JUDGED_STANDS,
+                                     "wrap_failure": wrap_failure[:600]}
+    logger.warning("cfd wrap: %s - the wrap rung left no judged mesh; the run ends on %s's refusal of attempt %s - "
+                   "job_id=%s", RULE_JUDGED_STANDS, judged.get("executor_failed_gate"), judged.get("attempt"),
+                   state.get("job_id"))
+    return out
 
 
 # ----------------------------------------------------------------- the request, the report --

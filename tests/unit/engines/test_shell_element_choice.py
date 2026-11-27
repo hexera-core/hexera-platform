@@ -60,7 +60,10 @@ def test_the_stage_starts_on_the_notes_else_the_settings_switch_else_quads():
     tri_said = [{"role": "user", "content": "shell please, use triangles for shells"}]
     assert SE.start(tri_said, standard=_std("quads", "Global size 10 mm")) == {"value": "triangles", "from": "notes"}
     assert SE.start([], standard=_std("triangles")) == {"value": "triangles", "from": "settings"}
-    assert SE.start([], standard=_std("quads", "Global size 10 mm")) == {"value": "quads", "from": "settings"}
+    # STD-4: a switch left at its default Quads is no choice of the settings' (the typed words decide); set, it is
+    assert SE.start([], standard=_std("quads", "Global size 10 mm")) == {"value": "quads", "from": "default"}
+    chosen = MS.snapshot("Global size 10 mm", None, shell_elements="quads", shell_elements_set=True)
+    assert SE.start([], standard=chosen) == {"value": "quads", "from": "settings"}
     assert SE.start([], standard=None) == {"value": "quads", "from": "default"}
 
 

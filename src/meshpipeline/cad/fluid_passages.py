@@ -138,6 +138,20 @@ POCKET_SHARE = 0.01
 #: At most this many separate passages are meshed in one job (a shell-and-tube bundle's tubes);
 #: past it the file is a set of parts better meshed one by one, and the user is told so.
 MAX_PASSAGES = 24
+#: INS-40: the rule a passage with no inlet is left unmeshed (and told) under, beside a passage that has one
+NO_INLET_RULE = "INS-40"
+#: INS-40: the way out the user is given for a cavity no inlet opens into
+NO_INLET_WAY_OUT = "mark one of them as an inlet, or remove them, then run again"
+
+
+def no_inlet_words(p: Passage) -> str:
+    """INS-40: THE ONE SENTENCE for a separate passage no declared inlet opens into: its openings, that it was not
+    meshed and why, and the way out."""
+    names = ", ".join(p.ports)
+    one = len(p.ports) == 1
+    return (f"{names} {'sits' if one else 'sit'} in a separate cavity that no inlet opens into (about "
+            f"{p.volume * 1e6:.3g} cm3, not joined to the passage with the inlet), so no flow can enter it and it "
+            f"was not meshed: {NO_INLET_WAY_OUT}")
 
 
 @dataclass
@@ -150,18 +164,27 @@ class PassagePlan:
     left_out: list[Passage]
     stranded: dict[str, str]           # port name -> why it opens into nothing meshable
     reading: PassageReading
+    #: INS-40: the separate passages no declared inlet opens into, while another passage has an inlet and an
+    #: outlet - not meshed (no flow can enter them), and their openings told (no_inlet_words)
+    no_inlet: list[Passage] = field(default_factory=list)
 
     @property
     def several(self) -> bool:
         return len(self.meshed) > 1
 
+    def not_meshed(self) -> dict[str, str]:
+        """INS-40: {opening: the sentence the user is told} for every opening of a passage left unmeshed for
+        having no inlet - the openings the delivered mesh does not hold, told, never silently met."""
+        return {n: no_inlet_words(p) for p in self.no_inlet for n in p.ports}
+
     def as_dict(self) -> dict:
         return {"passages": [p.as_dict() for p in self.meshed],
                 "left_out": [p.as_dict() for p in self.left_out],
+                "no_inlet": [p.as_dict() for p in self.no_inlet], "not_meshed": self.not_meshed(),
                 "stranded": dict(self.stranded), "read": self.reading.read, "reason": self.reading.reason}
 
     def notes(self) -> list[str]:
-        out = []
+        out = [no_inlet_words(p) for p in self.no_inlet]
         if self.several:
             out.append(f"the confirmed openings lie on {len(self.meshed)} separate passages that do not "
                        "connect; each is meshed, and the mesh holds them side by side: "
@@ -227,7 +250,15 @@ def plan_passages(reading: PassageReading, *, inlet_names: tuple[str, ...] = ())
     inlets = set(inlet_names)
     meshed.sort(key=lambda p: (not (set(p.ports) & inlets), -p.volume))
     left_out = [p for p in reading.passages if not p.ports]
-    return PassagePlan(meshed=meshed, left_out=left_out, stranded=stranded, reading=reading)
+    # INS-40: A PASSAGE NO INLET OPENS INTO is not meshed while another passage carries an inlet and an outlet:
+    # no flow can enter it, so its cells would only cost time (abc 63401: 10 M cells and 11 minutes for a
+    # 34 cm3 tube of an assembly that held two outlets and nothing else). Its openings are told, with the way
+    # out. When no passage has both, the plan is unchanged and the existing words and refusals decide.
+    no_inlet: list[Passage] = []
+    if inlets and len(meshed) > 1 and any(set(p.ports) & inlets and set(p.ports) - inlets for p in meshed):
+        no_inlet = [p for p in meshed if not set(p.ports) & inlets]
+        meshed = [p for p in meshed if set(p.ports) & inlets]
+    return PassagePlan(meshed=meshed, left_out=left_out, stranded=stranded, reading=reading, no_inlet=no_inlet)
 
 
 def passage_surfaces(plan: PassagePlan) -> list[dict[str, list]]:
@@ -394,6 +425,33 @@ def staged_passage_count(ws) -> int | None:
     return len(passages) if isinstance(passages, list) and passages else None
 
 
+def openings_not_meshed(ws) -> dict[str, str]:
+    """INS-40: {opening: the sentence the user was told} for the declared openings the attempt's own staging left
+    unmeshed for sitting in a cavity no inlet opens into (PASSAGES_READ_FILE); {} when there are none or no
+    reading. The one list the gates, the manifest and the verdict hold the delivered mesh to."""
+    import json
+
+    try:
+        rec = json.loads((Path(ws) / PASSAGES_READ_FILE).read_text())
+    except (OSError, TypeError, ValueError):
+        return {}
+    told = rec.get("not_meshed") if isinstance(rec, dict) and rec.get("read") else None
+    return {str(k): str(v) for k, v in told.items()} if isinstance(told, dict) else {}
+
+
+def passages_side_by_side(ws) -> int:
+    """VER-13: how many separate passages the case was meshed as, side by side (1 + the further passages its
+    PASSAGES_FILE lists; 1 for a case of one)."""
+    import json
+
+    try:
+        rec = json.loads((Path(ws) / PASSAGES_FILE).read_text())
+    except (OSError, TypeError, ValueError):
+        return 1
+    runs = rec.get("runs") if isinstance(rec, dict) else None
+    return 1 + len(runs) if isinstance(runs, list) else 1
+
+
 def _piece_labels(F: np.ndarray, n_verts: int) -> np.ndarray:
     from scipy.sparse import coo_matrix
     from scipy.sparse.csgraph import connected_components
@@ -439,6 +497,8 @@ def _winding(T: np.ndarray, p: np.ndarray) -> float:
     return float(np.sum(2.0 * np.arctan2(num, den))) / (4.0 * math.pi)
 
 
-__all__ = ["INSIDE_WINDING", "MAX_PASSAGES", "MAX_PIECES", "PASSAGES_FILE", "PASSAGES_READ_FILE", "POCKET_SHARE", "Passage", "PassagePlan", "PassageReading",
-           "passage_count", "passage_surface_files", "passage_surfaces", "plan_passages", "plan_staged",
-           "read_passages", "staged_passage_count", "stranded_openings", "write_passage"]
+__all__ = ["INSIDE_WINDING", "MAX_PASSAGES", "MAX_PIECES", "NO_INLET_RULE", "NO_INLET_WAY_OUT", "PASSAGES_FILE",
+           "PASSAGES_READ_FILE", "POCKET_SHARE", "Passage", "PassagePlan", "PassageReading", "no_inlet_words",
+           "openings_not_meshed", "passage_count", "passage_surface_files", "passage_surfaces", "passages_side_by_side",
+           "plan_passages", "plan_staged", "read_passages", "staged_passage_count", "stranded_openings",
+           "write_passage"]

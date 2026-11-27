@@ -188,8 +188,10 @@ def test_an_engine_that_cannot_mesh_the_shape_moves_to_the_same_contract_engine(
 
 
 @pytest.mark.parametrize("gate,cause", [
+    # (a trial solve that did not converge is no longer here: no rules-made plan has a lever for it,
+    # so LAD-cfd-8 moves the run at once - tests/unit/pipeline/test_retry_bears_on_refusal.py)
     ("quality_floor", "mesh_quality"), ("resolution_floor", "under_resolved"),
-    ("solvability", "not_solvable"), ("manifest_valid", "cell_budget"),
+    ("manifest_valid", "cell_budget"),
     ("manifest_valid", "patch_not_captured"), ("", "")])
 def test_a_small_failure_never_switches(quiet, monkeypatch, gate, cause):
     # A SMALL FAILURE - one measured check missed on the first try, or nothing the gates measured
@@ -300,12 +302,14 @@ def test_cfmesh_and_snappy_are_the_same_contract_both_ways_inside_a_passage():
 
 def test_an_engine_that_does_not_refine_the_wake_is_not_the_same_external_mesh():
     # the approved snappyHexMesh plan of an external flow builds graded wake boxes on its own
-    # (DeliveredMesh.wake_refinement); cfMesh declares none, so moving there is an offer that says
-    # so - never a silent switch to a mesh with no wake
+    # (DeliveredMesh.wake_refinement); an engine that declares none (gmsh) is an offer that says
+    # so - never a silent switch to a mesh with no wake. CFDREQ-28: cfMesh's external case now
+    # refines the wake from the same shared plan, so it is the same mesh
     down = {r.engine: r for r in lad.ladder(_external(engine="snappy"))}
-    assert not down["cfmesh"].same_contract
-    assert any("wake" in c for c in down["cfmesh"].changes)
+    assert down["cfmesh"].same_contract
+    assert not any("wake" in c for c in down["cfmesh"].changes)
     assert not down["gmsh"].same_contract
+    assert any("wake" in c for c in down["gmsh"].changes)
     assert lad.REQ_WAKE in lad.plan_requirements(_external(engine="snappy"))
     # a brief that wants no wake refinement holds no engine to it
     assert lad.REQ_WAKE not in lad.plan_requirements(_external(
@@ -780,15 +784,15 @@ def test_a_layer_failure_on_one_hex_engine_offers_the_other_first_inside_a_passa
                    reviewer_axis_findings=[{"axis_key": "prism_layer_coverage", "passed": False}])
     offer = lad.final_record(st, succeeded=False, system_failure=False)["offer"]
     assert offer["kind"] == "engine" and offer["engine"] == "cfmesh" and offer["same_contract"]
-    # outside a body the approved snappyHexMesh plan refines the wake, which cfMesh does not:
-    # cfMesh is no longer "the same mesh", so fewer layers on snappy comes first
+    # outside a body too, since cfMesh refines the external wake as the approved snappyHexMesh
+    # plan does (CFDREQ-28): the same mesh from cfMesh is the first offer, before fewer layers
     ext = lad.final_record(_external(engine="snappy", retry_count=2, executor_success=True,
                                      executor_failed_gate="", reviewer_verdict="FAIL",
                                      request_txt="External aero, 8 prism layers.",
                                      reviewer_axis_findings=[{"axis_key": "prism_layer_coverage",
                                                               "passed": False}]),
                            succeeded=False, system_failure=False)["offer"]
-    assert ext["kind"] == "fewer_layers"
+    assert ext["kind"] == "engine" and ext["engine"] == "cfmesh" and ext["same_contract"]
 
 
 # a broken mesh moves on (e2e sweep 2026-10-17: cfMesh broke 7 of 8 DrivAer cars)

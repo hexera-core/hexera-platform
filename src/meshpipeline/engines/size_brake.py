@@ -149,17 +149,80 @@ def case_budget(workspace) -> int | None:
     return max(budget, background_cells(workspace))
 
 
+#: castellation's end in snappyHexMesh's log, after the castellated mesh is written ("Mesh refined in = N s.";
+#: each refinement iteration prints "Refined mesh in = ..." instead)
+_CAST_END = re.compile(r"(?m)^\s*Mesh refined in\s*=")
+#: one patch of a polyMesh/boundary file: its name, type and face count
+_BOUNDARY_PATCH = re.compile(r"(?s)\n\s*\"?([^\s{}\"]+)\"?\s*\{\s*type\s+(\w+);.*?nFaces\s+(\d+);")
+#: the per-patch layer counts of a snappyHexMeshDict (addLayersControls' layers block)
+_LAYERS_ENTRY = re.compile(r"\"?([^\s{}\";]+)\"?\s*\{\s*nSurfaceLayers\s+(\d+)\s*;")
+#: the stage name of a with-layers count read off the castellated mesh's own wall (RUN-12)
+CASTELLATED_WALL = "castellated wall"
+
+
+def layer_counts_of(workspace) -> dict[str, int]:
+    """{patch name or pattern: layers} from the case's snappyHexMeshDict ({} when it has none)."""
+    try:
+        text = (Path(workspace) / "system" / "snappyHexMeshDict").read_text(errors="replace")
+    except OSError:
+        return {}
+    block = text.split("addLayersControls", 1)[-1] if "addLayersControls" in text else ""
+    return {name: int(n) for name, n in _LAYERS_ENTRY.findall(block) if int(n) > 0}
+
+
+def castellated_layer_cells(case_dir, layers: dict[str, int]) -> tuple[int, int] | None:
+    """(the wall faces that take layers, the cells those layers add) on the castellated mesh snappyHexMesh wrote to
+    the case (processor*/constant/polyMesh/boundary, or constant/polyMesh/boundary on one rank). None when no
+    boundary file is there or no patch takes layers."""
+    root = Path(case_dir)
+    files = sorted(root.glob("processor*/constant/polyMesh/boundary")) or [root / "constant" / "polyMesh" / "boundary"]
+    faces = cells = 0
+    read = False
+    for f in files:
+        try:
+            text = f.read_text(errors="replace")
+        except OSError:
+            continue
+        read = True
+        for name, kind, n in _BOUNDARY_PATCH.findall(text):
+            if kind.startswith("processor"):
+                continue
+            k = next((v for pat, v in layers.items() if pat == name or _matches(pat, name)), 0)
+            if k:
+                faces += int(n)
+                cells += int(n) * int(k)
+    return (faces, cells) if read and faces else None
+
+
+def _matches(pattern: str, name: str) -> bool:
+    try:
+        return re.fullmatch(pattern, name) is not None
+    except re.error:
+        return False
+
+
 class SizeBrake:
     """A `watch` for sandbox/safe_exec.run_guarded: called while snappyHexMesh runs, it reads the new
     part of its log and returns a reason (and keeps `tripped`) once a printed count passes the
-    margin. Reads only what was appended since the last call, so a long log costs nothing."""
+    margin. Reads only what was appended since the last call, so a long log costs nothing.
+
+    AT CASTELLATION'S END (RUN-12), given `case_dir` and the case's `layers`: the castellated mesh is on disk, so its
+    wall's faces say what the layers will add - the with-layers count snappy prints only after snapping. A pass
+    that will be thrown away stops before it snaps (RM5's first pass: 21 of its 44 minutes were castellation, then
+    14 snapping a mesh the brake stopped)."""
 
     def __init__(self, log_path, budget: int, *, margin: float = SIZE_BRAKE_MARGIN,
-                 counts=SNAPPY_COUNTS) -> None:
+                 counts=SNAPPY_COUNTS, case_dir=None, layers: dict[str, int] | None = None) -> None:
         self.log_path, self.budget, self.margin = Path(log_path), int(budget), float(margin)
         self.counts = tuple(counts)
+        self.case_dir = Path(case_dir) if case_dir is not None else None
+        self.layers = dict(layers or {})
         self._offset, self._carry = 0, ""
         self.tripped: dict | None = None
+        #: every count read so far, by stage (the last of each): a stop on the with-layers count
+        #: carries the castellated count beside it, so the re-plan can tell the wall's layer cells
+        #: from the rest (learned_face_factor)
+        self.seen: dict[str, int] = {}
 
     def _new_text(self) -> str:
         try:
@@ -182,11 +245,29 @@ class SizeBrake:
             margin = max(self.margin, own) if own else self.margin
             for raw in rx.findall(text):
                 cells = int(float(raw))
+                self.seen[stage] = cells
                 if cells > margin * self.budget:
                     self.tripped = {"stage": stage, "cells": cells, "budget": self.budget,
-                                    "margin": margin, "ratio": round(cells / self.budget, 2)}
+                                    "margin": margin, "ratio": round(cells / self.budget, 2),
+                                    **({"castellated": self.seen["castellated"]}
+                                       if stage != "castellated" and "castellated" in self.seen else {})}
                     return (f"the mesh {stage} reads {cells:,} cells, {cells / self.budget:.1f} times its "
                             f"budget of {self.budget:,}")
+        if self.case_dir is not None and self.layers and "castellated" in self.seen and _CAST_END.search(text):
+            got = castellated_layer_cells(self.case_dir, self.layers)
+            if got is not None:
+                faces, added = got
+                cells = self.seen["castellated"] + added
+                self.seen[CASTELLATED_WALL] = cells
+                margin = max(self.margin, SIZE_BRAKE_LAYER_MARGIN)
+                if cells > margin * self.budget:
+                    # read as the with-layers count (learned_face_factor), from the castellated wall
+                    self.tripped = {"stage": "with layers", "source": CASTELLATED_WALL, "cells": cells,
+                                    "budget": self.budget, "margin": margin, "ratio": round(cells / self.budget, 2),
+                                    "castellated": self.seen["castellated"], "wall_faces": faces}
+                    return (f"the mesh with layers comes to {cells:,} cells on its castellated wall ({faces:,} "
+                            f"faces), {cells / self.budget:.1f} times its budget of {self.budget:,} - stopped "
+                            "before snapping")
         return None
 
 
@@ -199,6 +280,47 @@ class SizeBrake:
 SIZE_BRAKE_STEP = 0.5
 
 
+#: THE WALL'S LAYER CELLS, LEARNED FROM A STOPPED PASS (RUN-8). A plan prices its layers at one cell
+#: per wall face per layer, its wall faces about the wall area over the wall cell squared
+#: (snappy_runner.final_estimate). On an assembly of many parts with sharp edges, snappy's own wall
+#: holds several times that: the feature edges are refined two levels finer, sixteen faces to one.
+#: The RM5 surge flap's first pass read 3.12 M castellated cells and 11.65 M with its 17 layers -
+#: 0.50 M wall faces where its plan had priced at most 0.15 M - so its plan never knew it was over, and
+#: the floor pricing (rulebook 75) never fired. A pass stopped on its with-layers count has told the
+#: run what its wall really holds: (with layers - castellated) / layers. The re-plan's estimate
+#: multiplies the plan's wall faces by that over what the plan had priced, never less than 1 and
+#: never more than LEARNED_FACE_FACTOR_MAX.
+LEARNED_FACE_FACTOR_MAX = 25.0
+
+
+def learned_face_factor(tripped: dict | None, plan: dict | None) -> float | None:
+    """How many times the wall faces the stopped pass's plan priced its wall really held: from the
+    brake's stop on the with-layers count (its castellated count beside it) and the plan record's
+    priced wall faces and layer count (PLAN_CELLS_FILE: wall_faces_est, layers_est). None when the
+    stop was not on the with-layers count or either side is missing."""
+    try:
+        t, p = dict(tripped or {}), dict(plan or {})
+        if t.get("stage") != "with layers":
+            return None
+        ideal, cast = float(t.get("cells") or 0), float(t.get("castellated") or 0)
+        faces, n = float(p.get("wall_faces_est") or 0), int(p.get("layers_est") or 0)
+        if ideal <= cast or cast <= 0 or faces <= 0 or n <= 0:
+            return None
+        return float(min(LEARNED_FACE_FACTOR_MAX, max(1.0, (ideal - cast) / n / faces)))
+    except (TypeError, ValueError):
+        return None
+
+
+def plan_record(workspace) -> dict:
+    """The case's plan record (PLAN_CELLS_FILE), {} when it cannot be read."""
+    import json
+    try:
+        rec = json.loads((Path(workspace) / PLAN_CELLS_FILE).read_text())
+        return rec if isinstance(rec, dict) else {}
+    except (OSError, ValueError, TypeError):
+        return {}
+
+
 def scaled_budget_factor(tripped: dict) -> float:
     """The factor the next pass's castellation budget is cut by: SIZE_BRAKE_STEP (half), or less of
     a cut when the run was only a little over - never deeper than half in one pass."""
@@ -208,6 +330,7 @@ def scaled_budget_factor(tripped: dict) -> float:
     return max(SIZE_BRAKE_STEP, min(0.9, SIZE_BRAKE_TARGET * budget / cells))
 
 
-__all__ = ["BRAKE_RELEASED", "BRAKE_RULE", "SIZE_BRAKE_STEP", "PLAN_CELLS_FILE", "CFMESH_COUNTS",
+__all__ = ["BRAKE_RELEASED", "BRAKE_RULE", "CASTELLATED_WALL", "castellated_layer_cells", "layer_counts_of", "LEARNED_FACE_FACTOR_MAX", "SIZE_BRAKE_STEP", "PLAN_CELLS_FILE",
+           "CFMESH_COUNTS", "learned_face_factor", "plan_record",
            "SIZE_BRAKE_MARGIN", "SIZE_BRAKE_LAYER_MARGIN", "SIZE_BRAKE_TARGET", "SNAPPY_COUNTS",
            "SizeBrake", "background_cells", "case_budget", "release_brake", "scaled_budget_factor"]

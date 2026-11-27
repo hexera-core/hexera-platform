@@ -42,11 +42,18 @@ def read_msh(workspace, *, by_face: bool = False, face_names: dict[int, str] | N
             return index_of[rows]
 
         cells: list = []
+        tets: list = []
         etypes, _tags, enodes = gmsh.model.mesh.getElements(3)
         for et, nodes in zip(etypes, enodes):
             block = corners(et, nodes)
             if block.shape[1] in (4, 5, 6, 8) and len(block):
                 cells.append(block)
+            if by_face and int(et) in (4, 11) and len(block):
+                # AN FEA MESH'S TETRAHEDRA WHOLE, midside nodes too, in the solver's node order - what
+                # engines/fea_quality measures, so the viewer's colours are the verdict's numbers
+                from meshpipeline.engines.gmsh.abaqus_deck import GMSH_TET10_TO_SOLVER
+                rows = np.asarray(nodes, dtype=np.int64).reshape(-1, 10 if int(et) == 11 else 4)
+                tets.append(index_of[rows[:, list(GMSH_TET10_TO_SOLVER)] if int(et) == 11 else rows])
 
         patches: list = []
         if by_face:
@@ -78,7 +85,7 @@ def read_msh(workspace, *, by_face: bool = False, face_names: dict[int, str] | N
             else:
                 patches.sort(key=lambda np_: int(np_[0].split("_")[1]))
             gmsh.model.remove()
-            return {"points": points, "cells": cells, "patches": patches}
+            return {"points": points, "cells": cells, "patches": patches, "tets": tets}
         for dim, ptag in gmsh.model.getPhysicalGroups(2):
             name = gmsh.model.getPhysicalName(dim, ptag) or f"group_{ptag}"
             polys: list = []
@@ -177,12 +184,20 @@ def downsample(mesh: dict, max_triangles: int = VIEW_MAX_TRIANGLES) -> dict:
             "downsampled": {"triangles": total, "shown": sum(len(p) for _n, p in out_patches)}}
 
 
-def save_viewer_mesh(path: Path, mesh: dict) -> None:
+def save_viewer_mesh(path: Path, mesh: dict, quality_fields: dict | None = None) -> None:
     """`mesh` (read_msh's by-face form) as the viewer needs it once the volume is gone: the points
     the surface uses and every patch's polygons - no volume cells (an FEA view draws none) - thinned
-    to VIEW_MAX_TRIANGLES when the surface is bigger (downsample)."""
+    to VIEW_MAX_TRIANGLES when the surface is bigger (downsample). `quality_fields`: the heatmap of
+    the full surface (engines/fea_view_quality), measured while the volume was here; kept with the
+    stand-in, carried onto the thinned triangles when it is thinned (each takes the worst near it)."""
+    import json
+
     import numpy as np
+    full = mesh
     mesh = downsample(mesh, VIEW_MAX_TRIANGLES)
+    if quality_fields and mesh is not full:
+        from meshpipeline.engines.fea_view_quality import remap
+        quality_fields = remap(quality_fields, full, mesh)
     sizes: list[int] = []
     nodes: list[int] = []
     names: list[str] = []
@@ -201,7 +216,8 @@ def save_viewer_mesh(path: Path, mesh: dict) -> None:
                             sizes=np.asarray(sizes, dtype=np.int64),
                             nodes=np.asarray(inverse, dtype=np.int64).reshape(-1),
                             full_triangles=np.asarray(
-                                [int((mesh.get("downsampled") or {}).get("triangles") or 0)], dtype=np.int64))
+                                [int((mesh.get("downsampled") or {}).get("triangles") or 0)], dtype=np.int64),
+                            quality_fields=np.asarray(json.dumps(quality_fields) if quality_fields else ""))
 
 
 def load_viewer_mesh(workspace: Path) -> dict | None:
@@ -216,6 +232,7 @@ def load_viewer_mesh(workspace: Path) -> dict | None:
         with np.load(p, allow_pickle=False) as d:
             points, names, counts = d["points"], [str(n) for n in d["names"]], d["counts"]
             sizes, nodes = d["sizes"], d["nodes"]
+            fields = str(d["quality_fields"]) if "quality_fields" in d.files else ""
         patches: list = []
         at = node_at = 0
         for name, count in zip(names, counts):
@@ -225,7 +242,9 @@ def load_viewer_mesh(workspace: Path) -> dict | None:
                 node_at += int(s)
             at += int(count)
             patches.append((name, polys))
-        return {"points": points, "cells": [], "patches": patches}
+        import json
+        return {"points": points, "cells": [], "patches": patches,
+                **({"quality_fields": json.loads(fields)} if fields else {})}
     except Exception as exc:  # noqa: BLE001 - the viewer degrades, it never fails a job
         logger.warning("gmsh viewer stand-in unreadable: %s", exc)
         return {}

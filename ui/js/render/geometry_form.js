@@ -262,6 +262,18 @@ export function readLeaks(root, p) {
   return on.checked ? Math.max(0, typed(num(size.value, 0), p)) : 0;
 }
 
+/** A PERFORATED PLATE OR A GRILLE (INS-23): the check proposes the plate's two sides (or one lid over the
+ *  grille) as the openings and asks, in one line with three answers, whether the flow goes through the holes.
+ *  The stage swaps the openings for the answer (geometry_stage: bindPerforated). */
+export function perforatedHtml(p) {
+  const pf = p && p.perforated;
+  if (!pf || !pf.question) return "";
+  const k = Number(p.perforated_answer || 0);
+  const opts = (pf.answers || []).map((a, i) =>
+    `<label><input class="gc-perf-a" type="radio" name="gc-perf" value="${i}"${i === k ? " checked" : ""}> ${esc(a)}</label>`).join(" ");
+  return `<div class="rc-row gc-perf"><div class="rc-k">Holes</div><div class="rc-v"><div class="gc-note">${esc(pf.question)}</div>${opts}</div></div>`;
+}
+
 /** The form for one proposal: the kind and flow selects, the openings table, the notes, and the
  *  one action. Every row carries its opening id so the reader can find it again. */
 export function formHtml(p) {
@@ -281,6 +293,7 @@ export function formHtml(p) {
   return `<div class="rc-row"><div class="rc-k">The file is</div><div class="rc-v">${sel("gc-sel gc-kind", KIND, p.input_kind)}</div></div>
     <div class="rc-row"><div class="rc-k">The file's unit</div><div class="rc-v">${unitBoxHtml(p)}</div></div>
     <div class="rc-row"><div class="rc-k">The fluid flows</div><div class="rc-v">${sel("gc-sel gc-flow", [["internal", "through the part"], ["external", "around the part"]], p.flow)}</div></div>
+    ${perforatedHtml(p)}
     <div class="gc-int"${p.flow === "external" ? " hidden" : ""}>
     ${p.openings_reason ? `<div class="gc-note gc-why">${esc(sentence(p.openings_reason))}</div>` : ""}
     ${rows ? `<table class="gc-table">${tableHead()}<tbody>${rows}</tbody></table>`

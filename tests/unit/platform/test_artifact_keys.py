@@ -80,7 +80,11 @@ def test_upload_result_writes_the_output_tar_and_the_marker_beside_it(monkeypatc
     assert result_key(job) in written, f"the completion marker is not beside the output: {written}"
     # the marker really is the completion signal the pipeline parses
     marker_bytes, ctype = sink[result_key(job)]
-    assert json.loads(marker_bytes) == {"rc": 0} and ctype == "application/json"
+    marker = json.loads(marker_bytes)
+    assert marker["rc"] == 0 and ctype == "application/json"
+    # ...and it carries the way home's own timings (packing and sending the workspace), nothing else
+    assert set(marker) == {"rc", "exchange_s"}
+    assert set(marker["exchange_s"]) == {"archive_s", "upload_s", "archive_bytes"}
 
 
 # behavioural: the uploader publishes the mesh under its key

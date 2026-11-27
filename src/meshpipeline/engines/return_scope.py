@@ -104,6 +104,18 @@ def scope_return(workspace, *, ceiling: int | None = None) -> dict | None:
     estimate = raw_bytes(ws)
     if estimate > HEADROOM * cap:
         estimate = estimate_archive_bytes(ws)
+    kept_out: dict | None = None
+    from meshpipeline.engines.snapped_keep import KEEP_DIR
+    if estimate > HEADROOM * cap and (ws / KEEP_DIR).is_dir():
+        # FIRST, THE KEPT SNAPPED MESH (engines/snapped_keep): it only saves the relative retry its castellation and
+        # snapping, which then rebuilds in full - never a file the delivery or a gate reads
+        _kb = [p for p in (ws / KEEP_DIR).rglob("*") if p.is_file()]
+        share = sum(compressed_size(p) for p in _kb)
+        kept_out = {"dir": KEEP_DIR + "/", "bytes": int(sum(p.stat().st_size for p in _kb)), "archive_bytes_est": share}
+        shutil.rmtree(ws / KEEP_DIR, ignore_errors=True)
+        estimate -= share
+        logger.warning("return scope: the kept snapped mesh (%.0f MB) is left out; a relative retry rebuilds in full",
+                       kept_out["bytes"] / 1e6)
     if estimate > HEADROOM * cap:
         # only a file the estimate holds can bring it down: one sent home on its own (RUN-7) never
         # rides in the archive, so leaving it out would save the archive nothing and lose the
@@ -120,11 +132,11 @@ def scope_return(workspace, *, ceiling: int | None = None) -> dict | None:
                              "bytes": p.stat().st_size, "archive_bytes_est": share})
             p.unlink(missing_ok=True)
             estimate -= share
-    if not removed and not left_out:
+    if not removed and not left_out and kept_out is None:
         return None
     record = {"ceiling_bytes": cap, "archive_bytes_est": int(estimate),
               "scratch_removed": removed, "left_out": left_out,
-              "fits": estimate <= cap}
+              "fits": estimate <= cap, **({"snapped_mesh_left_out": kept_out} if kept_out else {})}
     if left_out:
         what = "the volume export the reviewer slices was"
         if any(not x["file"].endswith("internal.vtu") for x in left_out):

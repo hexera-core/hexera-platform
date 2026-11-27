@@ -108,7 +108,7 @@ def test_a_zone_name_fluent_cannot_read_is_made_safe_and_the_rest_of_the_file_is
              b"(39 (11 wall motorBike_frame:016_16)())\n(39 (12 symmetry front)())\n")
     msh = tmp_path / "mesh.msh"
     msh.write_bytes(body + names)
-    n, renamed = CE._zip_fluent(msh, tmp_path / "f.zip", "mesh.msh")
+    n, renamed, _types = CE._zip_fluent(msh, tmp_path / "f.zip", "mesh.msh")
     with zipfile.ZipFile(tmp_path / "f.zip") as zf:
         out = zf.read("mesh.msh")
     assert out.startswith(body) and n == (tmp_path / "f.zip").stat().st_size
@@ -320,6 +320,10 @@ def test_every_engine_run_writes_its_exports_before_it_goes_home(tmp_path, monke
     out = D.run_engine_local(ws, engine="netgen", timeout=600)
     assert out["cfd_exports"] == {"files": {"x": {}}}
     assert seen["engine"] == "netgen" and 590 < seen["left_s"] <= 600
+    # the steps after the mesher are timed and ride home with the result (12.8 unlogged minutes on
+    # the CFD board's tube bank, 20 Nov)
+    assert set(out["post_mesh_s"]) == {"mesher_s", "exports_s", "return_scope_s"}
+    assert all(v >= 0.0 for v in out["post_mesh_s"].values())
 
 
 def test_a_big_export_stays_in_the_bucket_and_one_too_big_to_send_home_is_left_out(tmp_path, monkeypatch):

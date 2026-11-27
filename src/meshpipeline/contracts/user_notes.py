@@ -45,6 +45,10 @@ SOURCE_CONSOLE = "console"
 #: the team's meshing standard (engines/meshing_standard): read by the notes' reader as a note of its own, never
 #: stored among a run's notes
 SOURCE_SETTINGS = "settings"
+#: STD-6: the standard's lines that are no setting (design intent, context), handed to a run's AI steps as guidance
+#: BEFORE the run's own notes (engines/meshing_standard.guidance_notes); never stored among a run's notes, and never
+#: shown to the standard's own reader (its question stays the one kept with the reading)
+SOURCE_TEAM = "team_settings"
 
 #: The file every attempt's workspace gets (verbatim notes, for any step that reads the workspace)
 NOTES_FILE = "user_notes.txt"
@@ -197,10 +201,96 @@ def is_skip(text: Any) -> bool:
     return bool(t) and bool(_SKIP.match(t))
 
 
-def make(text: str, *, source: str, turn: int | None = None, at: str = "") -> dict:
-    """One note: the user's words exactly as typed (only cut past MAX_NOTE_CHARS)."""
-    return {"text": str(text)[:MAX_NOTE_CHARS], "source": source,
-            "turn": int(turn) if turn is not None else None, "at": at or _now()}
+#: WHAT A NOTE MAY CARRY BESIDE ITS WORDS: the files the user attached and the faces they picked on the model. Each
+#: is a list of plain rows, kept only with the keys below (never a picture's bytes or a data URL: those are built
+#: from the stored file when a model is called), and only when the note has one - a note without them is as before.
+#: An attached text file (PDF, .txt, .md, .csv) also keeps its read TEXT on the row, so every reader sees it as the
+#: user's own words and a number written only in the file passes the quote rule (NOTE-7, NOTE-16). That text never
+#: goes back to the browser: shown() takes it off.
+ATTACHMENT_KEYS = ("id", "kind", "name", "mime", "bytes", "pages", "chars", "cut", "width", "height", "text")
+FACE_KEYS = ("id", "label", "sig")
+#: the most of one file's text a row keeps (application/chat_attachments.MAX_CHARS, held equal by a test)
+ATTACHED_TEXT_MAX = 40_000
+
+
+def _rows(raw: Any, keys: Sequence[str]) -> list[dict]:
+    rows = [{k: r[k] for k in keys if k in r} for r in raw or () if isinstance(r, Mapping) and str(r.get("id") or "")]
+    for r in rows:
+        if "text" in r:
+            r["text"] = str(r["text"] or "")[:ATTACHED_TEXT_MAX]
+            if not r["text"]:
+                del r["text"]
+    return rows
+
+
+def carried(note: Any) -> dict:
+    """The attachments and faces a stored note or message carries, cleaned ({} with none)."""
+    if not isinstance(note, Mapping):
+        return {}
+    out = {}
+    for key, keys in (("attachments", ATTACHMENT_KEYS), ("faces", FACE_KEYS)):
+        rows = _rows(note.get(key), keys)
+        if rows:
+            out[key] = rows
+    return out
+
+
+def shown(note: Any) -> dict:
+    """What a note or message carries, as the BROWSER may see it: carried() without an attached file's read text
+    (the file itself opens from its own route)."""
+    out = carried(note)
+    if out.get("attachments"):
+        out["attachments"] = [{k: v for k, v in a.items() if k != "text"} for a in out["attachments"]]
+    return out
+
+
+def for_browser(message: Any) -> Any:
+    """One stored chat message as the browser receives it: an attachment row loses its read text, the rest is
+    as stored."""
+    if not isinstance(message, Mapping) or not message.get("attachments"):
+        return message
+    return {**message, **shown(message)}
+
+
+#: NOTE-22: a click sent alone after we asked "which one?" answers the words still waiting for it
+RULE_CLICK_ANSWERS = "NOTE-22"
+#: the most of the earlier words one click answers that a note keeps
+MAX_ANSWERS_CHARS = 300
+
+
+def _answers(raw: Any) -> dict:
+    words = " ".join(str(raw or "").split())[:MAX_ANSWERS_CHARS]
+    return {"answers": words} if words else {}
+
+
+#: VER-9: a note written by "Request a change" on a delivered mesh carries the finished run it was asked on
+#: (`change_of`): its "finer" / "coarser" is against the size that run had at the marked faces (PLAN-fea-36)
+RULE_CHANGE_OF = "VER-9"
+
+
+def _change_of(raw: Any) -> dict:
+    job = str(raw or "").strip()[:64]
+    return {"change_of": job} if job else {}
+
+
+def make(text: str, *, source: str, turn: int | None = None, at: str = "",
+         attachments: Iterable[Any] = (), faces: Iterable[Any] = (), answers: str = "", change_of: str = "") -> dict:
+    """One note: the user's words exactly as typed (only cut past MAX_NOTE_CHARS), with the files they attached and
+    the faces they picked when it has them (a note of a picture alone has no words). `answers` (NOTE-22): the user's
+    earlier words a click sent alone answers ("make it finer in this hole"), kept beside the words, never in them."""
+    return {"text": str(text or "")[:MAX_NOTE_CHARS], "source": source,
+            "turn": int(turn) if turn is not None else None, "at": at or _now(),
+            **carried({"attachments": list(attachments or ()), "faces": list(faces or ())}), **_answers(answers),
+            **_change_of(change_of)}
+
+
+def said(note: Any) -> str:
+    """NOTE-22: the words a note stands for - its own words, then the earlier words its click answers - the words
+    the picked faces are bound to (engines/mesh_requirements.picked_for) and its rows are found by."""
+    if not isinstance(note, Mapping):
+        return ""
+    text, answers = str(note.get("text") or ""), str(note.get("answers") or "")
+    return f"{text} {answers}".strip() if answers else text
 
 
 def clicked(text: Any, asked: Any, offered: Callable[[str], Iterable[Mapping]] | None) -> bool:
@@ -234,12 +324,14 @@ def capture(messages: Iterable[Any], quotes: Sequence[Any] = (), *, consumer: st
     with no number in it: "FEA shell mesh" was kept as a note and the solid AI remarked on it on a shell run with
     nothing typed (round 4, L1)."""
     _reader(consumer)
-    turns, turn, asked_before, clicks = [], 0, "", set()
+    turns, turn, asked_before, clicks, with_files = [], 0, "", set(), {}
     for m in _own(messages):
         if m.get("role") == "user":
             turn += 1
             text = str(m.get("content") or "")
             turns.append((turn, text))
+            if carried(m):
+                with_files[turn] = m
             if clicked(text, asked_before, offered) or (
                     route_question is not None and route_question(asked_before)
                     and not any(ch.isdigit() for ch in text)):
@@ -260,18 +352,25 @@ def capture(messages: Iterable[Any], quotes: Sequence[Any] = (), *, consumer: st
             unmatched.append(str(q))
         elif not is_skip(hit[1]) and hit[0] not in clicks:
             picked[hit[0]] = hit[1]
-    return [make(text, source=SOURCE_CHAT, turn=t) for t, text in sorted(picked.items())], unmatched
+    # A MESSAGE THAT CARRIES FILES OR PICKED FACES is always kept (NOTE-16): what the user attached or picked is
+    # what they asked about, and the readers see it only as a note
+    for t, m in with_files.items():
+        if t not in clicks:
+            picked.setdefault(t, str(m.get("content") or ""))
+    return [make(text, source=SOURCE_CHAT, turn=t, **carried(with_files.get(t)))
+            for t, text in sorted(picked.items())], unmatched
 
 
 def clean(raw: Any) -> list[dict]:
     """Stored notes as notes: anything that is not one is left out, and the ids are numbered."""
     out = []
     for n in raw or ():
-        if isinstance(n, Mapping) and str(n.get("text") or "").strip():
-            out.append({"text": str(n["text"])[:MAX_NOTE_CHARS],
+        if isinstance(n, Mapping) and (str(n.get("text") or "").strip() or carried(n)):
+            out.append({"text": str(n.get("text") or "")[:MAX_NOTE_CHARS],
                         "source": str(n.get("source") or SOURCE_CHAT),
                         "turn": n.get("turn") if isinstance(n.get("turn"), int) else None,
-                        "at": str(n.get("at") or "")})
+                        "at": str(n.get("at") or ""), **carried(n), **_answers(n.get("answers")),
+                        **_change_of(n.get("change_of"))})
     return [{"id": f"n{i}", **n} for i, n in enumerate(out, start=1)]
 
 
@@ -280,7 +379,9 @@ def merge(existing: Any, new: Any) -> list[dict]:
     never reworded; the first capture keeps its time."""
     out, seen = [], set()
     for n in [*clean(existing), *clean(new)]:
-        key = (n["source"], n["turn"] if n["source"] == SOURCE_CHAT else None, _norm(n["text"]))
+        key = (n["source"], n["turn"] if n["source"] == SOURCE_CHAT else None, _norm(n["text"]),
+               tuple(str(a["id"]) for a in n.get("attachments") or ()),
+               tuple(str(f["id"]) for f in n.get("faces") or ()))
         if key not in seen:
             seen.add(key)
             out.append(n)
@@ -296,6 +397,9 @@ def _where(note: Mapping) -> str:
         return "typed in the notes box"
     if note.get("source") == SOURCE_SETTINGS:
         return "the team's meshing standard, from settings"
+    if note.get("source") == SOURCE_TEAM:
+        return ("your team's saved meshing settings - guidance for every run; where this run's own notes below say "
+                "otherwise, the run's notes win")
     return f"said in the chat, message {note['turn']}" if note.get("turn") else "said in the chat"
 
 
@@ -305,13 +409,27 @@ def own_notes(notes: Any) -> list[dict]:
     return clean([n for n in clean(notes) if not system_written(n.get("text"))])
 
 
+def _carried_lines(note: Mapping) -> str:
+    """Under a note's words: the files attached with it and the faces picked with it, by the names the user sees."""
+    lines = [f"[attached: {a.get('name') or a['id']}]" + (
+        f"\n(the file's text - the user's own words)\n<<<\n{a['text']}\n>>>" if a.get("text") else "")
+        for a in note.get("attachments") or ()]
+    faces = [f"{f['id']} ({f['label']})" if f.get("label") else str(f["id"]) for f in note.get("faces") or ()]
+    if faces:
+        lines.append("[picked on the model: " + ", ".join(faces) + "]")
+    if note.get("answers"):
+        # NOTE-22: the click answers the user's earlier words, which are for these faces
+        lines.append(f"[this click answers the user's earlier words: “{note['answers']}”]")
+    return "".join("\n" + line for line in lines)
+
+
 def render(notes: Any, *, limit: int | None = None) -> str:
     """The notes as a model reads them: each verbatim between markers. `limit` cuts the text (the
     full notes stay in user_notes.txt)."""
     rows = clean(notes)
     if not rows:
         return ""
-    text = "\n\n".join(f"[{n['id']}] ({_where(n)})\n<<<\n{n['text']}\n>>>" for n in rows)
+    text = "\n\n".join(f"[{n['id']}] ({_where(n)})\n<<<\n{n['text']}\n>>>{_carried_lines(n)}" for n in rows)
     if limit is not None and len(text) > limit:
         text = text[:limit] + f"\n... (cut here; the full notes are in {NOTES_FILE})"
     return text
@@ -411,11 +529,13 @@ REMARK_DESCRIPTION = (
     "mesher does not remove features)'. Leave it out if you did nothing with them.")
 
 
-def record_remark(workspace: Any, remark: Any, *, by: str) -> None:
+def record_remark(workspace: Any, remark: Any, *, by: str, whole: bool = False) -> None:
     """Keep a step's one-line remark in the workspace (replacing that step's earlier one). Best
-    effort: a remark that cannot be kept is lost, and nothing else is affected (NOTE-3)."""
+    effort: a remark that cannot be kept is lost, and nothing else is affected (NOTE-3). A remark is
+    cut at MAX_REMARK_CHARS unless `whole` (the asked-against-built list: every ask is read)."""
     import json
-    text = " ".join(str(remark or "").split())[:MAX_REMARK_CHARS]
+    text = " ".join(str(remark or "").split())
+    text = text if whole else text[:MAX_REMARK_CHARS]
     if not workspace or not text:
         return
     path = Path(workspace) / REMARKS_FILE
@@ -482,11 +602,11 @@ def result_lines(remarks: Sequence[Any], *, consumer: str = "delivery") -> list[
             for r in remarks or () if str(r).strip()]
 
 
-__all__ = ["COMMON_CONSUMERS", "CONSUMERS", "ENGINE_CONSUMERS", "GUIDANCE", "NOTES_FILE",
+__all__ = ["ATTACHED_TEXT_MAX", "ATTACHMENT_KEYS", "FACE_KEYS", "carried", "for_browser", "shown", "COMMON_CONSUMERS", "CONSUMERS", "ENGINE_CONSUMERS", "GUIDANCE", "NOTES_FILE",
            "QUESTION", "REMARKS_FILE", "REMARK_DESCRIPTION", "ROUTE_CONSUMERS", "RULE_EVERY_ROUTE",
            "RULE_NEVER_FAILS", "RULE_VERBATIM", "SOURCE_CHAT", "SOURCE_CONSOLE", "SOURCE_SETTINGS", "answer",
            "answers_now", "asked", "capture", "chat_block", "clean", "clicked", "context_block", "drop_remark", "is_skip", "make",
-           "merge", "own_notes",
+           "merge", "own_notes", "MAX_ANSWERS_CHARS", "RULE_CHANGE_OF", "RULE_CLICK_ANSWERS", "said",
            "prompt_block", "SYSTEM_LEADS", "system_written",
            "read_remarks", "record_remark", "render", "result_lines", "workspace_block",
            "write_file"]

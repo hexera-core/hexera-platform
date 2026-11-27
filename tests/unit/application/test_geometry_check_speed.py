@@ -145,7 +145,22 @@ def test_the_clean_check_begun_beside_the_scout_is_used_when_it_answered():
     assert gc.clean_verdict(None, None, started=_Done(verdict)) == verdict
 
 
-def test_a_child_that_gave_no_answer_is_judged_in_process(monkeypatch):
+def test_a_child_that_gave_no_answer_is_not_judged_again_in_process(monkeypatch):
+    """TIME-9: a check begun beside the scout that stopped with no answer is said as not finished; running it again
+    in the scout's own process had no limit (a crash there, or 13+ minutes of stitching, held the scout)."""
+    from meshpipeline.application import geometry_check as gc
+    from meshpipeline.cad import validity
+
+    def _never(*a, **k):
+        raise AssertionError("not judged again in-process")
+    monkeypatch.setattr(validity, "check_canonical", _never)
+    v = gc.clean_verdict(None, None, started=_Done(None))
+    assert v["clean"] is None and v["kind"] == "unchecked" and v["rule"] == "TIME-9"
+    assert v["stopped"] is True and v["timed_out"] is False
+    assert v["summary"] == gc.unfinished_verdict()["summary"]
+
+
+def test_a_check_that_could_not_start_beside_the_scout_is_judged_in_process(monkeypatch):
     from meshpipeline.application import geometry_check as gc
     from meshpipeline.cad import validity
 
@@ -153,7 +168,7 @@ def test_a_child_that_gave_no_answer_is_judged_in_process(monkeypatch):
         def as_dict(self):
             return {"clean": True, "kind": "brep", "reasons": []}
     monkeypatch.setattr(validity, "check_canonical", lambda uploaded, canonical: _Report())
-    assert gc.clean_verdict(None, None, started=_Done(None))["clean"] is True
+    assert gc.clean_verdict(None, None, started=None)["clean"] is True
 
 
 def test_the_early_fluid_split_is_used_only_for_its_own_task(tmp_path, monkeypatch):

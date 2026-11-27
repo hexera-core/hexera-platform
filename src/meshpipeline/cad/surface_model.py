@@ -740,10 +740,71 @@ def classify(sheets: list[dict], *, said_shell: bool = False, closed_skin: bool 
         return "surface", f"it holds no solid and its faces do not close: the open edges span {pct} of the surface", \
             _r(share)
     if said_shell:
-        return ("surface", f"its faces do not close (the open edges span {pct} of the surface), and a shell was "
-                           "asked for", _r(share))
+        # said plainly: a part drawn as a solid whose faces nearly close is told it has gaps, not only "a surface"
+        return ("surface", f"its faces nearly close but have gaps between them (the open edges span {pct} of the "
+                           "surface), so they are no solid, and a shell was asked for", _r(share))
     return ("gap", f"its faces nearly close: the open edges span {pct} of the surface - a gap in a closed skin "
                    "rather than the edge of a sheet", _r(share))
+
+
+def without_debris(sewn: Sewn, sheets: list[dict], *, mm_per_unit: float, element_mm: float | None = None,
+                   wall_mm: float | None = None) -> tuple[Sewn, list[dict], dict | None]:
+    """SURF-16: LOOSE DEBRIS left out of a surface part: (the sewn faces without it, its sheets measured again, what
+    was left out - None when nothing was). A sheet is debris when it is not the largest sheet, it is smaller across
+    (the diagonal of its faces' box) than one element of the mesh - the user's size when they asked one, else the
+    run's own (surface_mend.run_element_mm of the largest sheet: what SURF-12 closes gaps by) -, no other sheet's free
+    edge comes within a tenth of its size (surface_clean.GAP_FACE: then it is a patch cut off by a gap, which SURF-8
+    may join), and all such sheets together cover less than one element's square. A loose face that small is no part of the structure the mesh can
+    show: at the size of the rest it would be meshed by less than one element, and sized as its own sheet (SURF-5,
+    a wall of its size over 300) it sets the whole mesh's smallest size (SHMESH-2's floor is half the smallest wall):
+    four 0.3 mm stray patches beside a 400 mm sheet put the floor at 0.0003 mm and the mesh ran past its limit. A
+    sheet as large as one element is kept and meshed."""
+    from meshpipeline.cad import midsurface as ms
+    from meshpipeline.cad import surface_mend as smd
+
+    if len(sheets) < 2:
+        return sewn, sheets, None
+    mm = float(mm_per_unit)
+    big = max(range(len(sheets)), key=lambda s: (float(sheets[s].get("area_mm2") or 0.0), -s))
+    element = float(element_mm) if element_mm else smd.run_element_mm([sheets[big]], wall_mm)
+    if not element or element <= 0:
+        return sewn, sheets, None
+    from OCP.BRepExtrema import BRepExtrema_DistShapeShape
+
+    from meshpipeline.cad import surface_clean as sc
+
+    free = [sc._free([sewn.faces[k] for k in ks])[0] for ks in sewn.sheets]
+    out, across = [], []
+    for s, ks in enumerate(sewn.sheets):
+        if s == big:
+            continue
+        boxes = [ms._box(sewn.faces[k]) for k in ks]
+        lo = np.min([b[0] for b in boxes], axis=0)
+        hi = np.max([b[1] for b in boxes], axis=0)
+        size = float(np.linalg.norm(hi - lo)) * mm
+        if size >= element:
+            continue
+        # ... and it is no patch cut off by a gap: another sheet's free edge within a tenth of its own size of its own
+        # (the narrowest gap SURF-8 may join it across, surface_clean.GAP_FACE) - a hole's wall written a hair apart
+        # from its rim is part of the part
+        rims = [e for o, es in enumerate(free) if o != s for e in es]
+        if free[s] and rims:
+            d = BRepExtrema_DistShapeShape(ms._compound(free[s]), ms._compound(rims))
+            if not (d.IsDone() and d.NbSolution()) or float(d.Value()) * mm <= sc.GAP_FACE * size:
+                continue
+        out.append(s)
+        across.append(size)
+    area = sum(float(sheets[s].get("area_mm2") or 0.0) for s in out)
+    if not out or area >= element * element:
+        return sewn, sheets, None
+    gone = {k for s in out for k in sewn.sheets[s]}
+    faces = [f for k, f in enumerate(sewn.faces) if k not in gone]
+    names = [n for k, n in enumerate(sewn.names) if k not in gone]
+    kept = Sewn(faces, names, _sheets(faces), sewn.tol, sewn.diag)
+    loose = {"sheets": len(out), "faces": len(gone), "widest_mm": _r(max(across)), "area_mm2": _r(area),
+             "element_mm": _r(element), "element_from": "asked" if element_mm else "run",
+             "names": sorted((sewn.names[k] for k in gone), key=lambda n: int(n.split("_")[-1]))[:MAX_PLACES]}
+    return kept, measure(kept, mm_per_unit=mm_per_unit), loose
 
 
 def read(shape, *, mm_per_unit: float, said_shell: bool = False, stitch: bool = True,
@@ -807,6 +868,12 @@ def read(shape, *, mm_per_unit: float, said_shell: bool = False, stitch: bool = 
         # SURF-8 / SURF-10: THE CLEAN-UP, only once the file is known to be a surface part (what kind of file it is
         # was read above from the file as written: a closed skin with a crack is still a closed skin with a crack)
         cleaned = {"duplicates": len(twice), "duplicate_faces": [f"Face_{k + 1}" for k in twice][:MAX_PLACES]}
+        # SURF-16: LOOSE DEBRIS - a sheet of its own smaller across than one element of the mesh is left out (told),
+        # before anything is cleaned or sized: its sizing wall would set the whole mesh's floor (SURF-5, SHMESH-2)
+        sewn, sheets, loose = without_debris(sewn, sheets, mm_per_unit=mm_per_unit, element_mm=element_mm,
+                                             wall_mm=wall_mm)
+        if loose:
+            cleaned["loose"] = loose
         if stitch:
             first = len(open_places(sewn, mm_per_unit=mm_per_unit))
             if mend:

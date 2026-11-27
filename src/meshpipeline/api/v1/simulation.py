@@ -16,6 +16,7 @@ from meshpipeline.api.schemas.job import (
     ArtifactOut,
     CancelIn,
     CancelOut,
+    DisputeFace,
     DisputeIn,
     DisputeOut,
     DownloadLinkOut,
@@ -710,14 +711,209 @@ async def get_repair_report(job_id: uuid.UUID, owner_id: str = Depends(owner_dep
 _DISPATCH_FAILED = "Failed to enqueue dispute job"
 
 
+async def _finished_parent(db, job_id: uuid.UUID, owner_id: str, organization_id: str, *,
+                           needs_the_mesh: bool = True):
+    """The finished run a dispute or a change request is made on, or the HTTP refusal that says why not.
+    `needs_the_mesh`: a second look (VER-11) looks at the delivered mesh; a change (VER-9) is a new run
+    from the upload and the settings, so a mesh no longer kept never stops it."""
+    from meshpipeline.application.review_seed import SEED_LOGICAL_KEY
+    from meshpipeline.persistence.models import JobStatus as _JS
+
+    parent = await svc.get_job(db, job_id, owner_id, organization_id=organization_id)
+    if not parent:
+        raise HTTPException(404, "Job not found")
+    # A FAILED run that still produced a mesh is disputable too: the retry loop
+    # gave up, but the mesh exists and the user is entitled to judge it (that is
+    # the whole point of the human-in-the-loop). Only a run with NOTHING to look
+    # at is refused.
+    if parent.status == _JS.cancelled:
+        raise HTTPException(409, "This run was cancelled, so there is no mesh to review - "
+                                 "start a new run in the chat instead")
+    if parent.status not in (_JS.succeeded, _JS.failed):
+        raise HTTPException(409, "This job has not finished yet")
+    if parent.status == _JS.failed:
+        # A failed run is disputable ONLY if its final mesh actually reached the
+        # reviewer - which is proof the EXECUTOR GATES PASSED (route_after_executor
+        # sends a gate-failing mesh straight to the outcome, never to the reviewer).
+        # So a stored verdict is the gate-validity certificate. Without it the mesh
+        # is invalid, and no amount of user acceptance may deliver it: the reviewer's
+        # quality bar is amendable, the gates are NOT.
+        _dv = await _viewer_data_or_empty(job_id, owner_id, db,
+                                          organization_id=organization_id)
+        if not (_dv.get("mesh_available") and _dv.get("review")):
+            raise HTTPException(409, "This run produced no valid mesh to review - "
+                                     "describe the change in the chat instead")
+    # A WORKER'S OWN COPY going (worker_disk marks it purged) is not the mesh going: the delivery kept a
+    # seed of it in the object store, and any worker restores it from there (VER-17)
+    _kept = any(str(getattr(a, "logical_key", "") or "") == SEED_LOGICAL_KEY for a in (getattr(parent, "artifacts", None) or []))
+    if needs_the_mesh and parent.workspace_purged and not _kept:
+        from meshpipeline.application.job_service import DISPUTE_MESH_GONE
+        raise HTTPException(409, DISPUTE_MESH_GONE)
+    return parent
+
+
+def _change_facts(flags: list[dict], comment: str, *, session_id: str, payload: dict, started, ended,
+                  review: bool = False):
+    """VER-10: the marks tied to the upload's own faces, and what will be said about it (application/change_request):
+    (the facts, the marks). `review`: a second look (VER-11, VER-18), which starts whatever the marks tie. Reads the
+    session's face map from the object store - call it off the event loop."""
+    from meshpipeline.application import change_request as CR
+    from meshpipeline.application import face_pick
+    from meshpipeline.engines import mesh_requirements as MR
+    from meshpipeline.engines.fea_review import FEA_PURPOSE
+
+    fm, scale = face_pick.current(session_id) if session_id and flags else (None, 1.0)
+    marks = CR.resolve_marks(fm, flags, scale=scale, span_factor=polcfg.VIEWER_FLAG_SPAN_FACTOR)
+    faces = CR.faces_of(marks)
+    # VER-17: the upload's face list no longer kept - the marks cannot be tied, which is no reason to stop a
+    # change the words still ask: it goes ahead from the words, and the reply says the marks were not used
+    marks_lost = bool(flags) and fm is None
+    if review:
+        return CR.ChangeFacts(
+            kind=CR.KIND_REVIEW, words=" ".join(str(comment or "").split())[:600], faces=faces, marks=len(flags),
+            untied=[m.ordinal for m in marks if not m.tied] if not marks_lost else [],
+            spots=CR.separate_spots(marks), last_run_minutes=CR.minutes_of(started, ended),
+            marks_lost=marks_lost), marks
+    kind = CR.KIND_ASK if flags and not faces and not marks_lost else CR.KIND_CHANGE
+    flow = str(payload.get("purpose") or "") != FEA_PURPOSE
+    facts = CR.ChangeFacts(
+        kind=kind, words=" ".join(str(comment or "").split())[:600], faces=faces, marks=len(flags),
+        untied=[m.ordinal for m in marks if not m.tied] if faces else [],
+        spots=CR.separate_spots(marks), one_place=CR.one_place_words(comment),
+        flow_cannot_size_a_face=(bool(faces) and flow and bool(payload.get("mesh_engine"))
+                                 and not MR.flow_sizes_picked_faces(str(payload.get("mesh_engine")))),
+        last_run_minutes=CR.minutes_of(started, ended), marks_lost=marks_lost,
+        # PLAN-fea-36 on a change request: "finer" halves what the delivered mesh had at the marked faces (the FEA
+        # solid and shell routes); a flow mesh refines by its own levels, said by the result
+        size_change=CR.size_step(comment) if faces and not flow else "")
+    return facts, marks
+
+
+async def _rerun_base(db, parent, intake: _ParentIntake, payload: dict, *, owner_id: str,
+                      organization_id: str) -> dict:
+    """The fields a re-run of `parent` is dispatched with when its own payload is gone: exactly what a dispute
+    child is built from (the intake context, the upload at the parent's scale, the team's standard)."""
+    from meshpipeline.contracts.geometry_source import GeometryInterpretationRef, GeometrySourceRef
+
+    interpretation = None
+    if parent.geometry_interpretation_id:
+        from meshpipeline.persistence.repositories.geometry_interpretation_repository import (
+            GeometryInterpretationRepository,
+        )
+        interpretation = await GeometryInterpretationRepository().get_for_owner(
+            db, parent.geometry_interpretation_id, owner_id, organization_id=organization_id)
+    standard = payload.get("meshing_standard")
+    return {**({"meshing_standard": standard} if standard else {}),
+            "job_id": str(parent.id), "owner_id": owner_id,
+            "geometry_source": (GeometrySourceRef.from_row(parent.geometry_source).to_payload()
+                                if parent.geometry_source else None),
+            "geometry_interpretation": (GeometryInterpretationRef.from_domain(interpretation).to_payload()
+                                        if parent.geometry_source and interpretation else None),
+            "session_id": intake.session_id, "request_txt": "", "review_brief_txt": intake.review_brief_txt,
+            "intake_patches": list(intake.intake_patches), "dimensionality": intake.dimensionality,
+            "purpose": intake.purpose, "input_kind": intake.input_kind,
+            "user_notes": list(payload.get("user_notes") or [])}
+
+
+async def _change_request(job_id: uuid.UUID, body: DisputeIn, *, owner_id: str, plan: str, organization_id: str,
+                          operation: str) -> tuple[DisputeOut, str]:
+    """VER-9: a change asked on a finished mesh starts a NEW run of the same part with the change as a requirement
+    on the marked faces; the reviewer reviews that new mesh afterwards, as any mesh. Nothing tied to the part:
+    nothing starts, and the reply asks for the spot again. The reply is the model's, under the plan step's guard
+    (VER-12). Returned with the person's side as the conversation keeps it (CR.said_in_chat)."""
+    from meshpipeline.agents.intake import change_reply
+    from meshpipeline.application import change_request as CR
+    from meshpipeline.application import dispute_operation
+    from meshpipeline.persistence.repositories.job_repository import JobRepository
+    from meshpipeline.persistence.repositories.session_repository import SessionRepository
+
+    flags = [f.model_dump(exclude_none=True) for f in body.flags]
+    comment = (body.comment or "")[:2000]
+    async with get_db() as db:
+        parent = await _finished_parent(db, job_id, owner_id, organization_id, needs_the_mesh=False)
+        if CR.upload_gone(parent):
+            # the new run is made from the upload; with the file gone there is nothing to make it from
+            raise HTTPException(409, CR.UPLOAD_GONE)
+        parent_payload = parent.dispatch_payload if isinstance(parent.dispatch_payload, dict) else {}
+        _intake = _parent_intake(await SessionRepository().get_by_job_id(db, job_id), parent_payload)
+        if not (parent_payload.get("job_id") and parent_payload.get("owner_id")):
+            # a run whose own payload is gone (retention clears it) or was never whole: the same fields a dispute
+            # child is built from - the session or the payload's intake, the part at its scale, the standard
+            parent_payload = await _rerun_base(db, parent, _intake, parent_payload, owner_id=owner_id,
+                                               organization_id=organization_id)
+        facts, _marks = await asyncio.to_thread(_change_facts, flags, comment, session_id=_intake.session_id,
+                                                payload=parent_payload, started=getattr(parent, "started_at", None),
+                                                ended=getattr(parent, "ended_at", None))
+
+        def _out(new_id, text: str) -> DisputeOut:
+            return DisputeOut(job_id=new_id, dispute_of=job_id, flags=len(body.flags), kind=facts.kind, reply=text,
+                              faces=[DisputeFace(id=str(f["id"]), label=str(f.get("label") or ""))
+                                     for f in facts.faces],
+                              marks_not_on_the_part=facts.untied, session_id=_intake.session_id or None,
+                              last_run_minutes=facts.last_run_minutes)
+
+        said_by_them = CR.said_in_chat(comment, marks=len(flags), where=facts.where())
+        if facts.kind == CR.KIND_ASK:
+            new_job = None
+        else:
+            _replay = await dispute_operation.claim(db, owner_id=owner_id, key=operation)
+            if _replay is not None:
+                if _replay.launch_failed:
+                    raise HTTPException(500, _DISPATCH_FAILED)
+                return _out(_replay.job_id, CR.plain_reply(facts)), said_by_them
+            try:
+                _billed_plan = await spend_gate.admit(db, owner_id=owner_id, organization_id=organization_id)
+                await svc.check_quotas(db, owner_id, plan=plan or _billed_plan)
+            except spend_gate.OutOfCredits as exc:
+                raise HTTPException(402, str(exc)) from exc
+            except ValueError as exc:
+                raise HTTPException(429, str(exc)) from exc
+            new_job = await JobRepository().create(db, owner_id=owner_id, organization_id=organization_id)
+            new_job.dispute_operation_key = operation
+            # the same part at the same scale as the run the change was asked on (as a dispute child: never re-read)
+            new_job.geometry_source_id = parent.geometry_source_id
+            new_job.geometry_interpretation_id = parent.geometry_interpretation_id
+            note = CR.change_note(comment, facts.faces, of_job_id=str(job_id))
+            payload = CR.change_payload(parent_payload, job_id=str(new_job.id), note=note,
+                                        brief=CR.brief_line(comment, facts.faces, of_job_id=str(job_id)))
+            await db.commit()
+
+    if new_job is not None:
+        try:
+            await dispute_operation.dispatch_or_record_failure(new_job.id, payload, parent_job_id=job_id,
+                                                               key=operation)
+        except Exception as exc:
+            raise HTTPException(500, _DISPATCH_FAILED) from exc
+    said = await change_reply.written(facts.as_dict(), session_id=_intake.session_id, user_id=owner_id)
+    return _out(new_job.id if new_job is not None else None, said["text"]), said_by_them
+
+
+async def _keep_in_chat(out: DisputeOut, said_by_them: str, *, owner_id: str) -> None:
+    """The request and its reply kept in the session's conversation, so a reload draws both (GET /chat/history);
+    the intake authority writes them (message.keep_change_request). Nothing without a reply. The run has started
+    whatever happens here, so a failure to keep the turn is logged, never answered as a failed request."""
+    from meshpipeline.agents.intake import message as msg
+    from meshpipeline.persistence.repositories.session_repository import SessionRepository
+
+    if not (out.reply or "").strip() or not out.session_id:
+        return
+    try:
+        session_id = uuid.UUID(str(out.session_id))
+    except ValueError:
+        return
+    try:
+        await msg.keep_change_request(session_id, owner_id, said=said_by_them, reply=out.reply,
+                                      job_id=str(out.job_id) if out.job_id else "",
+                                      session_repo=SessionRepository(), db_factory=get_db)
+    except Exception:
+        logger.exception("change request: could not keep the turn in session %s's chat", session_id)
+
+
 @router.post("/{job_id}/dispute", response_model=DisputeOut, status_code=202)
 async def dispute_job(job_id: uuid.UUID, body: DisputeIn, owner_id: str = Depends(owner_dep),
                       plan: str = Depends(plan_dep),
                       organization_id: str = Depends(org_dep)):
-    from meshpipeline.application import dispute_operation
-    from meshpipeline.persistence.models import JobStatus as _JS
-    from meshpipeline.persistence.repositories.job_repository import JobRepository
-    from meshpipeline.persistence.repositories.session_repository import SessionRepository
+    from meshpipeline.application import change_request, dispute_operation
 
     if not body.flags and not (body.comment or "").strip():
         raise HTTPException(422, "Flag at least one region or describe the change you want")
@@ -741,36 +937,54 @@ async def dispute_job(job_id: uuid.UUID, body: DisputeIn, owner_id: str = Depend
     }
     _operation = dispute_operation.operation_key(owner_id, job_id, user_dispute)
 
+    if _mode == "rebuild" and change_request.is_change(body.comment):
+        # VER-9: words that ask for a change are a requirement of a NEW run - never a review of the old mesh
+        out, said_by_them = await _change_request(job_id, body, owner_id=owner_id, plan=plan,
+                                                  organization_id=organization_id, operation=_operation)
+        await _keep_in_chat(out, said_by_them, owner_id=owner_id)
+        return out
+
+    out, said_by_them = await _second_look(job_id, body, user_dispute, mode=_mode, owner_id=owner_id, plan=plan,
+                                           organization_id=organization_id, operation=_operation)
+    await _keep_in_chat(out, said_by_them, owner_id=owner_id)
+    return out
+
+
+async def _second_look(job_id: uuid.UUID, body: DisputeIn, user_dispute: dict, *, mode: str, owner_id: str, plan: str,
+                       organization_id: str, operation: str) -> tuple[DisputeOut, str]:
+    """VER-11 / VER-18: a second look at the delivered mesh at the marks, then the rebuild. The new run is the finished
+    run's own payload (every setting, typed note and picked face it was asked) with the dispute added and each mark's
+    faces in it, so the rebuild keeps all of it and makes the mesh finer at the marks when the second look finds
+    nothing past a limit there. The reply is the model's under the change reply's guard, the code sentence its
+    fallback (VER-12), never empty."""
+    from meshpipeline.agents.intake import change_reply
+    from meshpipeline.application import change_request as CR
+    from meshpipeline.application import dispute_operation
+    from meshpipeline.persistence.repositories.job_repository import JobRepository
+    from meshpipeline.persistence.repositories.session_repository import SessionRepository
+
+    flags = [f.model_dump(exclude_none=True) for f in body.flags]
     job_repo = JobRepository()
-    session_repo = SessionRepository()
     async with get_db() as db:
-        parent = await svc.get_job(db, job_id, owner_id, organization_id=organization_id)
-        if not parent:
-            raise HTTPException(404, "Job not found")
-        # A FAILED run that still produced a mesh is disputable too: the retry loop
-        # gave up, but the mesh exists and the user is entitled to judge it (that is
-        # the whole point of the human-in-the-loop). Only a run with NOTHING to look
-        # at is refused.
-        if parent.status == _JS.cancelled:
-            raise HTTPException(409, "This run was cancelled, so there is no mesh to review - "
-                                     "start a new run in the chat instead")
-        if parent.status not in (_JS.succeeded, _JS.failed):
-            raise HTTPException(409, "This job has not finished yet")
-        if parent.status == _JS.failed:
-            # A failed run is disputable ONLY if its final mesh actually reached the
-            # reviewer - which is proof the EXECUTOR GATES PASSED (route_after_executor
-            # sends a gate-failing mesh straight to the outcome, never to the reviewer).
-            # So a stored verdict is the gate-validity certificate. Without it the mesh
-            # is invalid, and no amount of user acceptance may deliver it: the reviewer's
-            # quality bar is amendable, the gates are NOT.
-            _dv = await _viewer_data_or_empty(job_id, owner_id, db,
-                                              organization_id=organization_id)
-            if not (_dv.get("mesh_available") and _dv.get("review")):
-                raise HTTPException(409, "This run produced no valid mesh to review - "
-                                         "describe the change in the chat instead")
-        if parent.workspace_purged:
-            raise HTTPException(409, "This job's mesh workspace has been purged and can "
-                                     "no longer be re-reviewed")
+        parent = await _finished_parent(db, job_id, owner_id, organization_id)
+        parent_payload = parent.dispatch_payload if isinstance(parent.dispatch_payload, dict) else {}
+        # Parent intake context: patches/dimensionality/brief from the session while it is still linked to this
+        # run, else from the run's own dispatch payload (see _parent_intake)
+        _intake = _parent_intake(await SessionRepository().get_by_job_id(db, job_id), parent_payload)
+        if not (parent_payload.get("job_id") and parent_payload.get("owner_id")):
+            parent_payload = await _rerun_base(db, parent, _intake, parent_payload, owner_id=owner_id,
+                                               organization_id=organization_id)
+        facts, marks = await asyncio.to_thread(_change_facts, flags, body.comment or "", session_id=_intake.session_id,
+                                               payload=parent_payload, started=getattr(parent, "started_at", None),
+                                               ended=getattr(parent, "ended_at", None), review=True)
+        said_by_them = CR.said_in_chat(body.comment, marks=len(flags), where=facts.where())
+
+        def _out(new_id, text: str) -> DisputeOut:
+            return DisputeOut(job_id=new_id, dispute_of=job_id, flags=len(body.flags), kind=facts.kind, reply=text,
+                              faces=[DisputeFace(id=str(f["id"]), label=str(f.get("label") or ""))
+                                     for f in facts.faces],
+                              marks_not_on_the_part=facts.untied, session_id=_intake.session_id or None,
+                              last_run_minutes=facts.last_run_minutes)
 
         # IS THIS OPERATION ALREADY DONE? Asked before the quota check on purpose: a repeat creates
         # nothing, so it must not be refused for capacity, and it must not consume any. A child that
@@ -782,11 +996,11 @@ async def dispute_job(job_id: uuid.UUID, body: DisputeIn, owner_id: str = Depend
         # widening its predicate is not needed for isolation - only application-layer files this
         # task does not touch would benefit, and that is a design question for later work, not a
         # missed site.
-        _replay = await dispute_operation.claim(db, owner_id=owner_id, key=_operation)
+        _replay = await dispute_operation.claim(db, owner_id=owner_id, key=operation)
         if _replay is not None:
             if _replay.launch_failed:
                 raise HTTPException(500, _DISPATCH_FAILED)
-            return DisputeOut(job_id=_replay.job_id, dispute_of=job_id, flags=len(body.flags))
+            return _out(_replay.job_id, CR.plain_reply(facts)), said_by_them
 
         try:
             # A DISPUTE IS A NEW RUN and is charged like one, so it passes the same credit gate as
@@ -800,57 +1014,23 @@ async def dispute_job(job_id: uuid.UUID, body: DisputeIn, owner_id: str = Depend
         except ValueError as exc:
             raise HTTPException(429, str(exc)) from exc
 
-        # Parent intake context: patches/dimensionality/brief from the session while it is still
-        # linked to this run, else from the run's own dispatch payload (see _parent_intake);
-        # request.txt is recovered from the parent workspace by the worker.
-        _intake = _parent_intake(await session_repo.get_by_job_id(db, job_id),
-                                 parent.dispatch_payload)
-
         new_job = await job_repo.create(db, owner_id=owner_id, organization_id=organization_id)
         # The child IS the operation's durable record. Written in the same transaction that creates
         # it, under the claim's lock, so the row and its identity become visible together.
-        new_job.dispute_operation_key = _operation
+        new_job.dispute_operation_key = operation
         new_job.geometry_source_id = parent.geometry_source_id
         # A dispute re-runs the parent's geometry, so it inherits the parent's SCALE unchanged -
         # never a fresh reading. Re-resolving would let a correction recorded after the disputed
         # run silently change the size of the very result the user is disputing.
         new_job.geometry_interpretation_id = parent.geometry_interpretation_id
-        _parent_interpretation = None
-        if parent.geometry_interpretation_id:
-            from meshpipeline.persistence.repositories.geometry_interpretation_repository import (
-                GeometryInterpretationRepository,
-            )
-            _parent_interpretation = await GeometryInterpretationRepository().get_for_owner(
-                db, parent.geometry_interpretation_id, owner_id,
-                organization_id=organization_id)
         await db.commit()
 
     try:
-        from meshpipeline.application.dispatch_contract import build as _build_dispatch
-        from meshpipeline.contracts.geometry_source import (
-            GeometryInterpretationRef,
-            GeometrySourceRef,
-        )
-        # THE TEAM'S MESHING STANDARD the disputed run was meshed under (engines/meshing_standard): the
-        # re-run keeps it, so it is held to the same standing requirements as the mesh it answers
-        _standard = (parent.dispatch_payload or {}).get("meshing_standard")             if isinstance(parent.dispatch_payload, dict) else None
-        _payload = _build_dispatch(**({"meshing_standard": _standard} if _standard else {}), **{
-            "job_id":           str(new_job.id),
-            "owner_id":         owner_id,
-            "geometry_source":  (GeometrySourceRef.from_row(parent.geometry_source).to_payload()
-                                 if parent.geometry_source else None),
-            "geometry_interpretation": (
-                GeometryInterpretationRef.from_domain(_parent_interpretation).to_payload()
-                if parent.geometry_source and _parent_interpretation else None),
-            "session_id":       _intake.session_id,
-            "request_txt":      "",   # worker recovers the parent's request.txt
-            "review_brief_txt": _amended_brief(_intake, _mode, body.comment),
-            "intake_patches":   list(_intake.intake_patches),
-            "dimensionality":   _intake.dimensionality,
-            "purpose":          _intake.purpose,
-            "input_kind":       _intake.input_kind,
-            "user_dispute":     user_dispute,
-        })
+        # VER-18: THE FINISHED RUN'S OWN PAYLOAD - every saved setting as applied, typed note, picked face and
+        # count it was asked - with the dispute and each mark's faces (the rebuild's "finer there", marked_spots)
+        _dispute = {**user_dispute, "marks": CR.marks_of(marks)} if mode == "rebuild" else dict(user_dispute)
+        _payload = CR.review_payload(parent_payload, job_id=str(new_job.id), user_dispute=_dispute,
+                                     brief=_amended_brief(_intake, mode, body.comment))
         # The child is already committed, deliberately, so a worker that takes the message
         # immediately can see the job it names. The authority below owns the consequence: it
         # dispatches inside its own session scope - `db` above closed at the commit, and a
@@ -860,11 +1040,15 @@ async def dispute_job(job_id: uuid.UUID, body: DisputeIn, owner_id: str = Depend
         # it records a durable launch failure if the broker never took the message, so the child
         # cannot sit pending forever against the owner's quota.
         await dispute_operation.dispatch_or_record_failure(
-            new_job.id, _payload, parent_job_id=job_id, key=_operation)
+            new_job.id, _payload, parent_job_id=job_id, key=operation)
     except Exception as exc:
         raise HTTPException(500, _DISPATCH_FAILED) from exc
 
-    return DisputeOut(job_id=new_job.id, dispute_of=job_id, flags=len(body.flags))
+    if mode == "accept":
+        # the same mesh judged again against the bar they stated: nothing is rebuilt, so nothing of a rebuild is said
+        return _out(new_job.id, CR.ACCEPT_REPLY), said_by_them
+    said = await change_reply.written(facts.as_dict(), session_id=_intake.session_id, user_id=owner_id)
+    return _out(new_job.id, said["text"]), said_by_them
 
 
 @router.post("/{job_id}/cancel", response_model=CancelOut)

@@ -1234,12 +1234,11 @@ def _load(task: dict):
         if shape is None:
             raise ExtractionError(why)
         return shape
+    from OCP.STEPControl import STEPControl_Reader
+
     from meshpipeline.cad.cad_tessellate import is_iges
-    if is_iges(src):
-        from OCP.IGESControl import IGESControl_Reader as Reader
-    else:
-        from OCP.STEPControl import STEPControl_Reader as Reader
-    reader = Reader()
+    from meshpipeline.cad.iges_read import iges_reader
+    reader = iges_reader() if is_iges(src) else STEPControl_Reader()
     if reader.ReadFile(str(src)) != IFSelect_RetDone:
         raise ExtractionError(f"the file could not be read as CAD ({src.name})")
     reader.TransferRoots()

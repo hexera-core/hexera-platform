@@ -51,8 +51,15 @@ VERSION = 2
 #: run started before it is done takes the recommended mesh itself (lab, 28 Oct: on 4 vCPUs the 32 corpus parts
 #: offered a choice took 72-3,136 s to size; 29 of 32 within 1,800 s)
 BUDGET_S = 1800.0
+#: TIME-11: the sizing child stops itself this long after its parent's clock (`bounded` stops it at the clock
+#: itself; this only ends a child whose parent is gone), and runs at this lower CPU priority
+CHILD_GRACE_S = 60.0
+CHILD_NICE = 10
 #: the plans kept for the run (application/geometry_check stores it beside the check)
 PLANS_FILE = "fea_plans.json"
+#: NOTE-26: the stage card's count for nothing typed, and the AI step's answer it was planned with, kept beside them
+#: (application/plan_cost.stand; the run reads the answer: fea_driver.plan_step_ai)
+STAND_FILE = "fea_stand.json"
 _KIND_WORDS = {"round": "rounds kept for their shape", "relief": "raised or sunk lettering and texture",
                "corner": "capped sharp corners (their stress never settles however fine)", "wall": "walls",
                "wall_spot": "thin spots", "part": "the parts' own sizes", "hole": "holes", "fillet": "fillets",
@@ -97,20 +104,43 @@ def row(record: dict, plan: dict, key: str) -> dict:
 
     est = int((plan.get("estimate") or {}).get("elements") or 0)
     process, files = FD.memory_need(float(est))
-    machine = MM.choose(process_gib=process, workspace_gib=files, why="memory model")
+    memory = MM.choose(process_gib=process, workspace_gib=files, why="memory model")
     rate, cls = FD.fill_rate(record)
-    secs = FD.planned_seconds(plan, rate) or 0.0
-    usual = FD.planned_seconds(plan, FD.FEA_USUAL_FILL_RATES[cls]) or 0.0
+    # THE MACHINE THE RUN WILL USE, decided as the run decides it (fea_driver.drive): memory (RUN-1), time (RUN-5)
+    # and speed (RUN-10: a big plan on more cores) - and its time at THAT machine's cores (fea_driver.rate_on)
+    machine = MM.for_time(memory, planned_s=FD.planned_seconds(plan, rate), wall_s=FD.ceiling_for(None),
+                          elements=float(est))
+    secs = FD.planned_seconds(plan, FD.rate_on(rate, machine)) or 0.0
+    usual = FD.planned_seconds(plan, FD.rate_on(FD.FEA_USUAL_FILL_RATES[cls], machine)) or 0.0
     shorts = [z for z in plan.get("zones") or [] if z.get("short")]
     kinds = sorted({str(z["kind"]) for z in shorts})
     return {"key": key, "elements": est, "at_least": bool((plan.get("estimate") or {}).get("at_least")),
-            "where": machine["where"], "machine": machine.get("machine"),
-            "need_gib": round(float(machine.get("need_gib") or process), 1),
+            "where": machine["where"], "machine": machine.get("machine"), "cpus": MM.cpus_of(machine),
+            "cores": MM.cores_of(machine), "why": machine.get("why"),
+            "need_gib": round(float(memory.get("need_gib") or process), 1),
             "memory_gib": float(machine.get("memory_gib") or 0.0),
-            "standard": machine["where"] != "gce", "minutes": int(math.ceil(secs / 60.0)),
+            # `standard`: it runs on the standard machine; `fits_standard`: its MEMORY fits it (PLAN-fea-22's choice
+            # is about memory - a plan sent to more cores for speed alone is no reason to offer a quicker mesh)
+            "standard": machine["where"] != "gce", "fits_standard": memory["where"] != "gce",
+            "minutes": int(math.ceil(secs / 60.0)),
             "usual_minutes": int(math.ceil(usual / 60.0)),
             "short_kinds": kinds, "short_zones": len(shorts), "short": list(plan.get("resolution_short") or [])[:6],
             "at_minimums": bool((plan.get("coarsened") or {}).get("at_minimums"))}
+
+
+def nothing_to_choose(full: dict) -> str:
+    """Why there is no choice, true to the machine the full-rules mesh names: it fits the standard machine's memory -
+    and when RUN-10 sends it to a faster machine to finish sooner, that is said too (the C5 knuckle's card: "fits the
+    standard machine" over "on a faster machine (16 cores)")."""
+    if full.get("standard", True):
+        return "The full-rules mesh fits the standard machine: there is nothing to choose."
+    return (f"The full-rules mesh fits in the standard machine's memory, so there is nothing to choose; it runs "
+            f"{_machine_words(full)} to finish sooner.")
+
+
+def _fits(r: dict) -> bool:
+    """Whether a row's MEMORY fits the standard machine (a row kept from before RUN-10 has only `standard`)."""
+    return bool(r.get("fits_standard", r.get("standard")))
 
 
 def decide(record: dict, full_plan: dict, quicker_plan) -> tuple[dict, dict | None]:
@@ -120,12 +150,14 @@ def decide(record: dict, full_plan: dict, quicker_plan) -> tuple[dict, dict | No
     full = row(record, full_plan, FULL)
     out: dict = {"version": VERSION, "rule": "PLAN-fea-22", "full": full, "quicker": None, "choice": False,
                  "recommended": FULL}
-    if full["standard"]:
-        out["why"] = "The full-rules mesh fits the standard machine: there is nothing to choose."
+    if _fits(full):
+        out["why"] = nothing_to_choose(full)
         return out, None
     qplan = quicker_plan() if callable(quicker_plan) else quicker_plan
-    quick = row(record, qplan, QUICKER)
-    if not quick["standard"] or quick["at_minimums"]:
+    quick = row(record, qplan, QUICKER) if qplan is not None else None
+    if quick is None or not _fits(quick) or quick["at_minimums"]:
+        # (None: TIME-12 - even at every zone's validity minimum the mesh cannot fit the standard machine, told
+        # before the quicker mesh was planned: it would not be offered, so it was not made)
         out["why"] = ("Even with every zone at its validity minimum the mesh needs more than the standard machine, "
                       "so there is no quicker mesh: the full-rules one is made.")
         return out, qplan
@@ -139,13 +171,13 @@ def decide(record: dict, full_plan: dict, quicker_plan) -> tuple[dict, dict | No
         out.update(recommended=QUICKER,
                    why=(f"The quicker mesh coarsens only {_kinds_words(quick['short_kinds'])}. Every wall keeps its "
                         "elements through it and every fillet, hole and notch its rule size, so the stresses you "
-                        f"read are the same - {quick_time} on the standard machine instead of "
-                        f"{full_time} on a {full['memory_gib']:g} GiB one."))
+                        f"read are the same - {quick_time} {_machine_words(quick)} instead of "
+                        f"{full_time} {_machine_words(full)}."))
     else:
         out.update(recommended=FULL,
                    why=(f"The quicker mesh would leave {_kinds_words(gave_up)} short of their rules "
-                        f"({quick['short_zones']} zones). The full-rules mesh keeps them, on a {full['memory_gib']:g} "
-                        f"GiB machine, {full_time}."))
+                        f"({quick['short_zones']} zones). The full-rules mesh keeps them, {_machine_words(full)}, "
+                        f"{full_time}."))
     return out, qplan
 
 
@@ -157,12 +189,119 @@ def options(record: dict, surface, diag_m: float, *, ai: dict | None = None) -> 
 
 def options_and_plans(record: dict, surface, diag_m: float, *, ai: dict | None = None) -> tuple[dict, dict]:
     """The size choice and the plans it was read from ({"full": plan, "quicker": plan | None})."""
+    from meshpipeline.engines import fea_size_field as SF
+
+    with SF.sizing():          # TIME-12: both plans share the counting processes and the surface distances
+        return _options_and_plans(record, surface, diag_m, ai=ai)
+
+
+def _options_and_plans(record: dict, surface, diag_m: float, *, ai: dict | None = None) -> tuple[dict, dict]:
     from meshpipeline.engines import fea_driver as FD
 
     full_plan = FD.choose_plan(record, surface, diag_m, ai=ai)
-    out, qplan = decide(record, full_plan,
-                        lambda: FD.choose_plan(record, surface, diag_m, ai=ai, cap=standard_elements()))
+
+    def quicker() -> dict | None:
+        # TIME-12: DECIDED BEFORE IT IS PAID FOR - a quicker mesh that cannot fit the standard machine even at every
+        # zone's validity minimum is never offered (decide), so it is told by one short count and not planned
+        cap = standard_elements()
+        if not FD.could_fit(record, surface, diag_m, cap=cap, ai=ai):
+            return None
+        return FD.choose_plan(record, surface, diag_m, ai=ai, cap=cap)
+
+    out, qplan = decide(record, full_plan, quicker)
     return out, {FULL: full_plan, QUICKER: qplan}
+
+
+# #
+# WHAT THE USER'S REQUIREMENTS COST, said before the run (a cast knuckle, 25 Nov: "finer at the fillets" took a plan of
+# about 1 million elements to 10 million on the 128 GB machine, and nothing said so before the run)
+# #
+def _count_words(n: int) -> str:
+    if n >= 1_000_000:
+        m = n / 1_000_000.0
+        return f"about {m:.1f} million" if m < 10 else f"about {m:.0f} million"
+    return f"about {float(f'{max(n, 1):.2g}'):,.0f}"
+
+
+def _machine_words(r: dict) -> str:
+    """Where a row runs, as the run's live line says it (contracts/narration.machine_words): by its cores (RUN-10)."""
+    if r.get("standard"):
+        return "on the standard machine"
+    if r.get("cores"):
+        from meshpipeline.contracts import mesh_machine as MM
+        return f"on {MM.phrase(r)}"              # RUN-10: "on a faster machine (16 cores)"
+    if r.get("cpus"):
+        return f"on a {int(r['cpus'])}-core machine"   # a row kept from before its cores were told
+    return f"on a larger machine ({float(r.get('memory_gib') or 0.0):g} GB)"
+
+
+def _costed(record: dict, plan: dict, key: str) -> dict:
+    """row() for the plan step: its machine also by time (RUN-5, contracts/mesh_machine.for_time, as the run decides
+    it), and the pass's own time limit (LAD-fea-15, fea_driver.pass_work)."""
+    from meshpipeline.engines import fea_driver as FD
+
+    r = row(record, plan, key)                       # its machine already as the run decides it (RUN-1/5/10)
+    rate, cls = FD.fill_rate(record)
+    work = FD.pass_work(plan, rate=rate, cls=cls, machine={"where": r["where"], "machine": r["machine"]})
+    r.update(budget_minutes=int(math.ceil(float(work["ceiling_s"]) / 60.0)))
+    return r
+
+
+def requirements_plan(record: dict, surface, diag_m: float, *, asked: dict | None, part_sizes: dict | None,
+                      ai: dict | None = None, target: dict | None = None, state: dict | None = None,
+                      kept: dict | None = None, key: str = "") -> tuple[dict, dict, list]:
+    """THE PLAN THE RUN WOULD MAKE with these requirements, by the run's own steps and nothing else: its inputs
+    (fea_driver.requirement_inputs - the picked faces, the sizes, the controls the notes and the team's standard set,
+    the places asked finer) and its own first planning (fea_driver.size_choice - the user's sizes or count planned;
+    with neither, the size picked on the stage or the recommended one, the stage's kept plans reused when they were
+    made for this solid and this code). `state`: the run's own (its fea_plan_choice). Returns (the record as
+    planned, the plan, the places asked finer - fea_part_sizes.finer_outcomes)."""
+    from meshpipeline.engines import fea_driver as FD
+
+    given = FD.requirement_inputs(record, asked, part_sizes, surface, diag_m)
+    plan, _said = FD.size_choice(state or {}, given["record"], surface, diag_m, levers=[],
+                                 ceiling_s=FD.ceiling_for(None), ai=ai, kept=kept, key=key, target=target,
+                                 sizes=given["sizes"] or None)
+    return given["record"], plan, given["finer"]
+
+
+def requirements_cost(record: dict, surface, diag_m: float, *, before: dict | None, asked: dict | None,
+                      part_sizes: dict | None, ai: dict | None = None, target: dict | None = None,
+                      state: dict | None = None, kept: dict | None = None, key: str = "") -> dict:
+    """WHAT THE REQUIREMENTS DO TO THE MESH, BEFORE THE RUN: the plan the run would make with them
+    (requirements_plan - the run's own inputs and planning; the same estimate, PLAN-fea-16 memory model, RUN-1/2/5
+    machine and LAD-fea-15 time the run uses; no number of its own), against `before`: the plan as it stood before
+    them - a plan (its row is made here), a row already made (the cost of the reading before this one, NOTE-26), or
+    None when it is not known (then "before" is None and nothing is compared).
+
+    `asked`: the notes' reading (mesh_requirements' section, NOTE-7); `part_sizes`: the parts reading
+    (fea_part_sizes.decide's section, AI-fea-9: a size or "finer" in one named place); `ai`: the AI decision when one
+    was made (AI-fea-1's refinements count only then - the plan step has none unless it asked); `target`: an element
+    count the notes name (fea_driver.element_target). Plans once (a size field histogram: seconds on a small part,
+    minutes on a big one - run it where the stage's own sizing runs, `bounded`).
+
+    Returns {"before": row, "after": row, "factor": after / before elements, "bigger_machine": bool, "words": "...",
+    "finer": [...]}: each row as the stage's (row(): elements, machine, where, standard, memory_gib, minutes = the
+    upper end at the part's slow fill rate, usual_minutes) plus budget_minutes (when the pass is stopped, LAD-fea-15);
+    "finer": per place asked "finer" with no number (PLAN-fea-36, fea_part_sizes.finer_outcomes): its target (half
+    the mesh round it), the size the rules already give it, whether it changed, and the plain line the run says."""
+    rec, after_plan, finer = requirements_plan(record, surface, diag_m, asked=asked, part_sizes=part_sizes, ai=ai,
+                                               target=target, state=state, kept=kept, key=key)
+    a = _costed(rec, after_plan, "after")
+    if before is None:
+        return {"before": None, "after": a, "factor": None, "bigger_machine": False,
+                "words": f"That puts the mesh at {_count_words(a['elements'])} elements, {_machine_words(a)}.",
+                "finer": finer}
+    b = dict(before) if "elements" in before else _costed(record, before, "before")
+    factor = a["elements"] / b["elements"] if b.get("elements") else None
+    bigger = (float(a["memory_gib"]) > float(b.get("memory_gib") or 0.0) or
+              (bool(b.get("standard")) and not a["standard"]))
+    when = minutes_words(a["usual_minutes"], a["minutes"])
+    words = (f"That takes the mesh from {_count_words(b['elements'])} to {_count_words(a['elements'])} elements, "
+             f"{_machine_words(a)}, {when}." if _count_words(a["elements"]) != _count_words(b["elements"]) else
+             f"That keeps the mesh at {_count_words(a['elements'])} elements, {_machine_words(a)}, {when}.")
+    return {"before": b, "after": a, "factor": round(factor, 2) if factor else None, "bigger_machine": bool(bigger),
+            "words": words, "finer": finer}
 
 
 # #
@@ -235,8 +374,11 @@ def stage_file(src: Path, ws: Path, *, to_metres: float) -> None:
         gmsh.option.setNumber("General.Terminal", 0)
         gmsh.model.add("plan_options")
         gmsh.option.setNumber("Geometry.OCCScaling", float(to_metres))
+        from meshpipeline.cad.iges_read import gmsh_import_path
         try:
-            gmsh.model.occ.importShapes(str(src))
+            # an IGES reaches gmsh as the product's own reading of it (cad/iges_read), as the run stages it
+            with gmsh_import_path(src) as imported:
+                gmsh.model.occ.importShapes(str(imported))
         finally:
             gmsh.option.setNumber("Geometry.OCCScaling", 1.0)
         gmsh.model.occ.synchronize()
@@ -248,11 +390,13 @@ def stage_file(src: Path, ws: Path, *, to_metres: float) -> None:
             gmsh.finalize()
 
 
-def bounded(src: Path, *, to_metres: float, budget_s: float = BUDGET_S, plans_out: Path | None = None) -> dict | None:
+def bounded(src: Path, *, to_metres: float, budget_s: float = BUDGET_S, plans_out: Path | None = None,
+            told: dict | None = None) -> dict | None:
     """The size choice for an uploaded CAD file, sized in a child process stopped `budget_s` after it starts, so a
     part whose planning takes longer never holds the check. With `plans_out`, the child keeps the plans there.
-    None when it was not sized (out of time, or it failed): the run then sizes it and takes the recommended mesh.
-    Never raises."""
+    None when it was not sized (out of time, or it failed): the run then sizes it and takes the recommended mesh;
+    `told["out_of_time"]` is set when its clock stopped it (TIME-11). The child also stops itself a little past
+    `budget_s` (`--limit-s`), so a parent killed meanwhile never leaves it running. Never raises."""
     import logging
     import os
     import subprocess
@@ -263,7 +407,8 @@ def bounded(src: Path, *, to_metres: float, budget_s: float = BUDGET_S, plans_ou
     log = logging.getLogger(__name__)
     here = str(Path(meshpipeline.__file__).resolve().parents[1])
     env = scrubbed_subprocess_env({"PYTHONPATH": os.pathsep.join(dict.fromkeys([here] + [p for p in sys.path if p]))})
-    cmd = [sys.executable, "-m", "meshpipeline.engines.fea_plan_options", str(src), "--to-metres", f"{to_metres!r}"]
+    cmd = [sys.executable, "-m", "meshpipeline.engines.fea_plan_options", str(src), "--to-metres", f"{to_metres!r}",
+           "--limit-s", f"{float(budget_s) + CHILD_GRACE_S:.0f}"]
     if plans_out:
         cmd += ["--plans-out", str(plans_out)]
     try:
@@ -271,6 +416,8 @@ def bounded(src: Path, *, to_metres: float, budget_s: float = BUDGET_S, plans_ou
         text = p.stdout or ""
     except subprocess.TimeoutExpired:
         log.info("fea plan options: not sized within %.0f s - sized when the mesh runs", budget_s)
+        if told is not None:
+            told["out_of_time"] = True
         return None
     except Exception as exc:  # noqa: BLE001 - the stage then says it is sized when the mesh runs
         log.warning("fea plan options: could not be sized (%s: %s)", type(exc).__name__, str(exc)[:200])
@@ -286,11 +433,23 @@ def bounded(src: Path, *, to_metres: float, budget_s: float = BUDGET_S, plans_ou
 
 
 def _main(argv: list[str]) -> int:
+    import os
+    import signal
     import tempfile
 
     src = Path(argv[0])
     to_metres = float(argv[argv.index("--to-metres") + 1]) if "--to-metres" in argv else 1e-3
     plans_out = Path(argv[argv.index("--plans-out") + 1]) if "--plans-out" in argv else None
+    # TIME-11: THE CHILD ENDS ITSELF a little past its parent's clock (SIGALRM's default action ends the process),
+    # so a parent killed meanwhile (its task's hard limit, its worker gone) never leaves it sizing on a worker core
+    if "--limit-s" in argv and hasattr(signal, "SIGALRM"):
+        signal.alarm(max(1, int(float(argv[argv.index("--limit-s") + 1]))))
+    # and it gives way to the worker's other slot and to the chat's own work on the same machine (its histogram
+    # and joins workers inherit it): a task the user waits on gets the cores first
+    try:
+        os.nice(CHILD_NICE)
+    except (AttributeError, OSError):
+        pass
     with tempfile.TemporaryDirectory(prefix="fea_plan_options_") as tmp:
         ws = Path(tmp)
         stage_file(src, ws, to_metres=to_metres)
@@ -299,9 +458,9 @@ def _main(argv: list[str]) -> int:
     return 0
 
 
-__all__ = ["BUDGET_S", "FULL", "LOW_STRESS", "PLANS_FILE", "QUICKER", "bounded", "decide", "kept_plan",
-           "minutes_words", "options", "options_and_plans", "plan_staged", "planning_code", "plans_key", "row",
-           "stage_file", "standard_elements"]
+__all__ = ["BUDGET_S", "FULL", "LOW_STRESS", "PLANS_FILE", "STAND_FILE", "QUICKER", "bounded", "decide", "kept_plan",
+           "minutes_words", "options", "options_and_plans", "plan_staged", "planning_code", "plans_key",
+           "nothing_to_choose", "requirements_cost", "requirements_plan", "row", "stage_file", "standard_elements"]
 
 
 if __name__ == "__main__":

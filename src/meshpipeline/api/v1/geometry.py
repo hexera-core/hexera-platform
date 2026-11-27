@@ -3,7 +3,8 @@
 # A check is served through the application's time box, so a step whose worker died reads as
 # failed with a reason and a way on (a retry, or the chat), never as a spinner that never ends.
 # Boundaries: transport. It reads and writes the check's stored objects and the session's declared
-# fields; it judges nothing, draws nothing and calls no model.
+# fields; it judges nothing, draws nothing and calls no model itself (a requirement's reply that comes with the
+# parts checklist's poll is the intake's own, agents/intake/plan_reply).
 from __future__ import annotations
 
 import asyncio
@@ -283,6 +284,30 @@ def _take_back(store, object_key: str, *, ours: bytes, earlier: bytes | None, se
         logger.warning("geometry check: could not take back the stored confirmation - session_id=%s", session_id)
 
 
+async def _with_stand(session_id: str, facts, session, owner_id: str, organization_id: str):
+    """NOTE-26: the check's facts with the stage card's count for nothing typed (application/plan_cost.stand) when it
+    is kept for this sizing and this team standard; when it is not, it is asked for (once a while) and the facts are
+    served as they are. Never raises."""
+    from meshpipeline.application import fea_check
+    got = (facts or {}).get(fea_check.PLAN_FACT_KEY) if isinstance(facts, dict) else None
+    if not isinstance(got, dict) or not got.get("sized"):
+        return facts
+    try:
+        from meshpipeline.application import part_matches as PM
+        from meshpipeline.application import plan_cost
+        standard = await _meshing_standard_of(organization_id)
+        held = await asyncio.to_thread(plan_cost.stand_for, session_id, facts, standard)
+        if held is None:
+            await asyncio.to_thread(PM.enqueue_stand, session_id, facts, owner_id=owner_id,
+                                    request_txt=str(getattr(session, "request_txt", "") or ""), standard=standard)
+            return facts
+        return {**facts, fea_check.PLAN_FACT_KEY: {**got, "stand": dict(held.get("row") or held["side"])}}
+    except Exception as exc:  # noqa: BLE001 - the card shows the sizing's own count
+        logger.warning("geometry check: the card's count was not read (%s) - session_id=%s", type(exc).__name__,
+                       session_id)
+        return facts
+
+
 async def _meshing_standard_of(organization_id: str) -> dict | None:
     """SHSTAGE-8: the team's meshing standard, for where a shell's element choice starts (its kept reading only:
     no model is asked); None with none, or when it cannot be read (the control then starts on the notes or Quads)."""
@@ -353,15 +378,20 @@ async def get_check(session_id: uuid.UUID, owner_id: str = Depends(owner_dep),
     payload["route"] = fea_check.stage_route(payload, getattr(session, "messages", None))
     if payload["route"] == fea_check.STAGE_FEA:
         # the part, its unit and size (the proposal), its bodies and the clean check - no flow form
-        payload["fea"] = await asyncio.to_thread(fea_check.fea_view, payload.get("facts"),
-                                                 getattr(session, "messages", None))
+        # SURF-18: a file with no solid still being read as a surface waits while the check runs (`live`)
+        _live = fea_check.check_live(payload)
+        # NOTE-26: the card's count for "go now" is the count such a run plans (with the team's standard and the AI
+        # step's decision): kept, it is shown; not yet, it is asked for on the geometry worker
+        _facts = await _with_stand(str(session_id), payload.get("facts"), session, owner_id, organization_id)
+        payload["fea"] = await asyncio.to_thread(fea_check.fea_view, _facts,
+                                                 getattr(session, "messages", None), live=_live)
         # SHSTAGE-2: A SHELL ONLY WHEN THE USER'S WORDS ASKED FOR ONE - the shell check as it stands (started now when
         # it was asked for after the naming); nothing at all for a solid, the stage from before shell existed
         from meshpipeline.application import shell_check
         _msgs = getattr(session, "messages", None)
         # SURF-6: A FILE THAT IS A SURFACE is a shell by what it is: its one line, and no mid-surface to extract
         from meshpipeline.application import surface_check
-        _shell = surface_check.view(payload.get("facts"), _msgs)
+        _shell = surface_check.view(payload.get("facts"), _msgs, live=_live)
         if _shell is None:
             try:
                 await asyncio.to_thread(shell_check.start_if_asked, str(session_id), owner_id,
@@ -665,10 +695,23 @@ async def get_check_parts(session_id: uuid.UUID, owner_id: str = Depends(owner_d
                           organization_id: str = Depends(org_dep)) -> dict:
     """The parts checklist on the request card (NOTE-4 before approval): which parts the notes mean.
     {"status": "none"} when the notes name no part; "waiting" / "reading" while it is worked out; "done" with
-    the rows, the parts and a link to the picture."""
+    the rows, the parts and a link to the picture. NOTE-19: once the reading has landed, the reply still owed to the
+    user's last requirement is written and kept, and handed back here as `reply` (the send did not wait for it)."""
     session = await _owned_session(session_id, owner_id, organization_id)
     from meshpipeline.application import part_matches as PM
     got = await asyncio.to_thread(lambda: PM.view(session, owner_id=owner_id))
+    if not got or got.get("status") not in ("reading", "waiting"):
+        from meshpipeline.agents.intake import plan_reply as PR
+        from meshpipeline.persistence.repositories.session_repository import SessionRepository
+        from meshpipeline.persistence.session import get_db
+        reply = await PR.answer_owed(session, got, owner_id=owner_id, session_repo=SessionRepository(),
+                                     db_factory=get_db, organization_id=organization_id)
+        # NOTE-26: the count line, its own message after the reply, once the cost of the notes as they stand lands
+        count = await PR.count_owed(session, owner_id=owner_id, session_repo=SessionRepository(),
+                                    db_factory=get_db, organization_id=organization_id)
+        if reply or count:
+            return {**(got or {"status": "none"}), **({"reply": reply} if reply else {}),
+                    **({"count_line": count} if count else {})}
     return got or {"status": "none"}
 
 
@@ -707,8 +750,12 @@ async def finalize_check_parts(session_id: uuid.UUID, owner_id: str = Depends(ow
     session = await _owned_session(session_id, owner_id, organization_id)
     if session.job_id is not None:
         raise HTTPException(409, "The run has already started, so its notes cannot change.")
+    from meshpipeline.application import meshing_standard_service as MSS
     from meshpipeline.application import part_matches as PM
-    got = await asyncio.to_thread(lambda: PM.finalize(session, owner_id=owner_id))
+    from meshpipeline.persistence.session import get_db
+    # NOTE-26: the reading costs what was typed with the team's standard the run will be dispatched with
+    standard = await MSS.for_reading(get_db, organization_id=organization_id)
+    got = await asyncio.to_thread(lambda: PM.finalize(session, owner_id=owner_id, **PM.with_standard(standard)))
     return got or {"status": "none"}
 
 
@@ -725,6 +772,36 @@ async def pick_check_parts(session_id: uuid.UUID, body: PartPickIn, owner_id: st
     got = await asyncio.to_thread(lambda: PM.pick(session, body.phrase, body.parts))
     if got is None:
         raise HTTPException(409, "Your notes changed since this list was made. Press Finalize notes, then pick again.")
+    return got
+
+
+class FaceAtIn(BaseModel):
+    #: where the viewer's ray met the part's skin (metres, the skin's own coordinates), and the skin's normal there
+    point_m: list[float] = Field(min_length=3, max_length=3)
+    normal: list[float] | None = Field(default=None, min_length=3, max_length=3)
+
+    @field_validator("point_m", "normal")
+    @classmethod
+    def _finite(cls, v):
+        import math
+        if v is not None and not all(math.isfinite(x) for x in v):
+            raise ValueError("must be finite numbers")
+        return v
+
+
+@router.post("/{session_id}/check/faces/at")
+async def check_face_at(session_id: uuid.UUID, body: FaceAtIn, owner_id: str = Depends(owner_dep),
+                        organization_id: str = Depends(org_dep)) -> dict:
+    """NOTE-17: the face under a click on the settled stage - its engine name (Face_k, Part_k_Face_j, Region_k), the
+    chip's plain words ("Face 12 · round Ø20 mm"), its signature and its triangles to highlight; {"id": null} when the
+    click is on no face. 404 when the check kept no face map; 409 once the run started."""
+    session = await _owned_session(session_id, owner_id, organization_id)
+    if session.job_id is not None:
+        raise HTTPException(409, "The run has already started, so faces cannot be picked for it.")
+    from meshpipeline.application import face_pick
+    got = await asyncio.to_thread(face_pick.face_at, str(session_id), body.point_m, body.normal)
+    if got is None:
+        raise HTTPException(404, "Faces cannot be picked on this part.")
     return got
 
 
@@ -823,7 +900,8 @@ async def confirm_check(session_id: uuid.UUID, body: ConfirmIn, owner_id: str = 
         else fea_check.STAGE_FEA if _fea else ""})
     if body.check_mode == fea_check.STAGE_FEA:
         facts = _stored_check.get("facts") or {}
-        blocked, _kind, way_out = fea_check.blocker(facts, session.messages)
+        _live = fea_check.check_live(_stored_check)
+        blocked, _kind, way_out = fea_check.blocker(facts, session.messages, live=_live)
         if blocked:
             # VERSION 1 MESHES ONE CLOSED SOLID AT A TIME: no guessing at how parts connect, and no
             # solid mesh of a surface - said with the way on, never a silent failure later
@@ -857,7 +935,7 @@ async def confirm_check(session_id: uuid.UUID, body: ConfirmIn, owner_id: str = 
         # form's: it has no pick), else a solid as before shell existed. The run never waits on the user after this.
         from meshpipeline.application import shell_check, surface_check
         # SURF-6: a surface file is a shell by what it is, at the thickness the user's words gave (None: not set)
-        _view = surface_check.view(facts, session.messages)
+        _view = surface_check.view(facts, session.messages, live=_live)
         if _view is None:
             try:
                 await asyncio.to_thread(shell_check.start_if_asked, str(session_id), owner_id, facts=facts,

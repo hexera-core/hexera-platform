@@ -6,7 +6,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from meshpipeline.engines.vmtk.rims import bound_edges, rim_edges
+from meshpipeline.engines.vmtk.rims import _halve_long_edges, bound_edges, rim_edges
 
 
 def _square(side=1.0):
@@ -153,6 +153,83 @@ def test_a_closed_sheet_has_no_rim_to_cut_but_keeps_its_bounds():
     _sound(p2, t2, up=False)
     length, owners = _edge_stats(p2, t2)
     assert length.max() <= 2.0 + 1e-9 and owners.min() == 2
+
+
+def _sliver_pipe(radius=0.028, length=1.0, n=38):
+    """An open pipe tessellated the way OCP does a straight bore: n strips round it, each one
+    quad the whole length cut along its diagonal into two slivers (4.6 mm by 1 m here)."""
+    t = 2.0 * np.pi * np.arange(n) / n
+    ring = np.stack([radius * np.cos(t), radius * np.sin(t), np.zeros(n)], axis=1)
+    pts = np.concatenate([ring, ring + [0.0, 0.0, length]])
+    i = np.arange(n)
+    j = (i + 1) % n
+    tri = np.concatenate([np.stack([i, j, n + j], 1), np.stack([i, n + j, n + i], 1)])
+    return pts, tri
+
+
+def _oriented(tri):
+    """every edge used at most once in each direction: one winding over the whole sheet"""
+    d = np.concatenate([tri[:, [0, 1]], tri[:, [1, 2]], tri[:, [2, 0]]])
+    return len(np.unique(d, axis=0)) == len(d)
+
+
+def _rim_points(pts, tri):
+    fi, li = rim_edges(tri, len(pts))
+    return np.unique(np.concatenate([tri[fi, li], tri[fi, (li + 1) % 3]]))
+
+
+def test_a_sliver_tessellated_pipe_is_laddered_not_exploded():
+    # TIME-17: abc 00168427 (a 4 m pipe, 56 mm bore) came from OCP as 284 slivers and left the
+    # halving as 2,868,474 triangles. Halved, each 1 m sliver here becomes 3**7 = 2187 needles
+    # (about 118 x area / h^2 for the pipe); laddered, 2 x 2**7 - 1 = 255 - its strip is the
+    # CAD's own 4.6 mm wide, so that is 14 x area / h^2, and under the triangles vmtk's own
+    # remesh makes of it at its target edge (0.15 x the radius).
+    radius, length, h_wall, h_rim = 0.028, 1.0, 0.0112, 0.00466
+    pts, tri = _sliver_pipe(radius, length)
+    area = _areas(pts, tri).sum()
+    p2, t2 = bound_edges(pts, tri, h_wall=h_wall, h_rim=h_rim)
+    assert len(t2) <= 16.0 * area / h_wall ** 2
+    assert len(t2) <= area / (0.433 * (0.15 * radius) ** 2)
+    _sound(p2, t2, up=False)
+    assert _oriented(t2)
+    length_e, owners = _edge_stats(p2, t2)
+    assert length_e.max() <= h_wall * (1 + 1e-9)
+    assert _areas(p2, t2).sum() == pytest.approx(area)
+    # the rims are the CAD's: the same 2 x 38 points, nothing added, nothing moved
+    assert (p2[:len(pts)] == pts).all()
+    assert set(_rim_points(p2, t2).tolist()) == set(range(len(pts)))
+    assert _rim_length(p2, t2)[1] == 2 * 38
+
+
+def test_a_needle_beside_a_halved_triangle_shares_its_points():
+    # a fat triangle and a needle on one long edge: the fat one is halved, the needle laddered
+    # on the very midpoints the halving put on that edge - no T-junction, the rim as it was
+    pts = np.array([[0, 0, 0], [8, 0, 0], [4, -6, 0], [8, 0.3, 0]], dtype=float)
+    tri = np.array([[0, 2, 1], [0, 1, 3]])           # fat below the x axis, needle above
+    p2, t2 = bound_edges(pts, tri, h_wall=1.01, h_rim=100.0)
+    _sound(p2, t2)
+    assert _oriented(t2)
+    perimeter = (np.linalg.norm(pts[2] - pts[0]) + np.linalg.norm(pts[1] - pts[2])
+                 + np.linalg.norm(pts[3] - pts[1]) + np.linalg.norm(pts[0] - pts[3]))
+    assert _rim_length(p2, t2)[0] == pytest.approx(perimeter)
+    assert _areas(p2, t2).sum() == pytest.approx(_areas(pts, tri).sum())
+    # move 1 alone: a ladder of 8 rungs (2 x 8 - 1); halved, it was 3**3 = 27 (move 2 then fans
+    # the tip, which stands on the rim, as it always has)
+    p1, t1 = _halve_long_edges(pts, tri, 1.01)
+    assert (p1[t1][:, :, 1] > 1e-12).any(axis=1).sum() == 2 * 8 - 1
+    assert len(t1) == 64 + 15
+
+
+def test_a_sliver_wider_than_the_bound_is_split_once_then_laddered():
+    # all three edges long: the four-way split first, then its children are needles
+    pts = np.array([[0, 0, 0], [64, 0, 0], [0, 2, 0]], dtype=float)
+    tri = np.array([[0, 1, 2]])
+    p2, t2 = bound_edges(pts, tri, h_wall=1.5, h_rim=100.0)
+    _sound(p2, t2)
+    assert _oriented(t2)
+    assert _edge_stats(p2, t2)[0].max() <= 1.5 * (1 + 1e-9)
+    assert _areas(p2, t2).sum() == pytest.approx(64.0)
+    assert len(t2) <= 4 * 63 + 16                   # four ladders of 63; halved: 4 x 3**5 = 972
 
 
 @pytest.mark.parametrize("bad", [0.0, -1.0, float("nan"), float("inf")])

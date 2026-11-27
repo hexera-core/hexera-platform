@@ -96,18 +96,60 @@ function storageRefusal(status) {
   return "storage did not accept the file (" + status + "). Try again";
 }
 
-export async function sendMessage(sessionId, content) {
+/* WHAT A MESSAGE OR NOTE CARRIES BESIDE ITS WORDS (shell/chips.js payload): the ids of the files attached and the
+   faces picked on the model, {id, label}. Sent only when there are some, so a plain message is as before. */
+function carried({ attachments = [], faces = [] } = {}) {
+  const out = {};
+  if (attachments.length) out.attachments = attachments;
+  if (faces.length) out.faces = faces.map((f) => ({ id: f.id, label: f.label || "" }));
+  return out;
+}
+
+export async function sendMessage(sessionId, content, extra = {}) {
   const r = await apiFetch("/api/v1/chat/message",
-    { method: "POST", headers: headers(), body: JSON.stringify({ session_id: sessionId, content }) });
+    { method: "POST", headers: headers(),
+      body: JSON.stringify({ session_id: sessionId, content, ...carried(extra) }) });
   if (!r.ok) throw await readError(r);
   return r.json();
 }
 
 /** The console's notes box: the user's own text, kept word for word beside the session's other
- *  notes. Resolves to {session_id, brief} - the card as it now stands. */
-export async function addNote(sessionId, text) {
+ *  notes, with the files attached and faces picked ({attachments, faces}). Resolves to {session_id, brief} - the
+ *  card as it now stands. */
+export async function addNote(sessionId, text, extra = {}) {
   const r = await apiFetch("/api/v1/chat/notes",
-    { method: "POST", headers: headers(), body: JSON.stringify({ session_id: sessionId, text }) });
+    { method: "POST", headers: headers(),
+      body: JSON.stringify({ session_id: sessionId, text, ...carried(extra) }) });
+  if (!r.ok) throw await readError(r);
+  return r.json();
+}
+
+/** One file attached to the chat or the notes box: resolves to the stored row {id, kind: "image" | "text", name,
+ *  mime, bytes, pages?, chars?, cut?, width?, height?}. Throws with the server's one plain line (too big, not a
+ *  picture or a text file, a PDF with no text). */
+export async function uploadAttachment(sessionId, file) {
+  const fd = new FormData();
+  fd.append("session_id", sessionId);
+  fd.append("file", file, file.name || "pasted.png");
+  const r = await apiFetch("/api/v1/chat/attachments", { method: "POST", headers: formHeaders(), body: fd });
+  if (!r.ok) throw await readError(r);
+  return r.json();
+}
+
+/** A stored attachment as a local object URL (a thumbnail, or the file opened full size): the route is owner-scoped,
+ *  so it is fetched with the session's headers. The caller revokes the URL when the picture goes. */
+export async function attachmentBlobUrl(sessionId, attachmentId) {
+  const r = await apiFetch(`/api/v1/chat/attachments/${sessionId}/${attachmentId}`, { headers: formHeaders() });
+  if (!r.ok) throw await readError(r);
+  return URL.createObjectURL(await r.blob());
+}
+
+/** The face under a click on the settled model: {id, label, sig, highlight} or null when the click is off the part
+ *  (application/face_pick). `point` and `normal` are the hit on the drawn skin, in metres. */
+export async function faceAt(sessionId, point, normal) {
+  const r = await apiFetch(`/api/v1/geometry/${sessionId}/check/faces/at`,
+    { method: "POST", headers: headers(), body: JSON.stringify({ point_m: point, normal }) });
+  if (r.status === 404) return null;
   if (!r.ok) throw await readError(r);
   return r.json();
 }
@@ -194,6 +236,20 @@ export async function wsTicket(jobId) {
   } catch {
     return null;
   }
+}
+
+/** SEND CHANGE: the marks on a delivered mesh and the words typed beside them, on the dispute
+ *  route in rebuild mode (the server decides from the words whether it is a change or a doubt).
+ *  Answers `kind` ("change" | "review" | "ask"), Hexera's `reply` in words, the new run's `job_id`
+ *  (null for "ask": nothing started) and the conversation it belongs to (`session_id`). */
+export async function requestChange(jobId, { flags = [], comment = "" } = {}) {
+  const r = await apiFetch(`/api/v1/simulation/${jobId}/dispute`,
+    { method: "POST", headers: headers(),
+      body: JSON.stringify({ flags, comment: String(comment).slice(0, 2000), mode: "rebuild" }) });
+  if (!r.ok) throw await readError(r);
+  const d = await r.json();
+  return { kind: String(d.kind || ""), reply: String(d.reply || ""), job_id: d.job_id || null,
+           session_id: d.session_id || null };
 }
 
 /** Flag findings, or accept an unreviewed mesh against a stated bar. `mode` distinguishes

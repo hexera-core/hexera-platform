@@ -251,13 +251,84 @@ def write_all(workspace, mesh: SolidMesh, *, cad_names: dict[str, str] | None = 
     ws = Path(workspace)
     prep = prepare(mesh)
     out: dict = {}
-    for solver, name, write in (("nastran", "mesh.bdf", write_bdf), ("ansys", "mesh.cdb", write_cdb)):
-        try:
-            out[solver] = write(ws / name, prep, cad_names=cad_names, units=units, source=source)
-        except Exception as exc:  # noqa: BLE001 - a missing solver file is a note, never a lost mesh
-            (ws / name).unlink(missing_ok=True)
-            out[solver] = {"error": f"{type(exc).__name__}: {exc}"[:300]}
+    for solver, name, write in _WRITERS:
+        out[solver] = _write_one(ws, name, write, prep, cad_names=cad_names, units=units, source=source)
     return out
+
+
+def _write_one(ws: Path, name: str, write, prep: Prepared, **kw) -> dict:
+    try:
+        return write(ws / name, prep, **kw)
+    except Exception as exc:  # noqa: BLE001 - a missing solver file is a note, never a lost mesh
+        (ws / name).unlink(missing_ok=True)
+        return {"error": f"{type(exc).__name__}: {exc}"[:300]}
+
+
+#: the solver files beside the deck: (solver, file, writer)
+_WRITERS = (("nastran", "mesh.bdf", write_bdf), ("ansys", "mesh.cdb", write_cdb))
+
+
+class Started:
+    """write_all's files being written in forked processes (start_all); result() waits and returns write_all's dict."""
+
+    def __init__(self, ws: Path, procs: list, kw: dict, mesh: SolidMesh | None = None):
+        self._ws, self._procs, self._kw, self._mesh = ws, procs, kw, mesh
+
+    def result(self) -> dict:
+        if self._mesh is not None:                 # no fork here: written now, in this process, as write_all does
+            return write_all(self._ws, self._mesh, **self._kw)
+        out: dict = {}
+        for solver, name, proc, conn in self._procs:
+            got = None
+            try:
+                if conn.poll(None):
+                    got = conn.recv()
+            except (EOFError, OSError):
+                got = None
+            proc.join()
+            if not isinstance(got, dict):
+                (self._ws / name).unlink(missing_ok=True)
+                got = {"error": f"the {solver} writer stopped (exit {proc.exitcode})"}
+            out[solver] = got
+        return out
+
+
+def _child(conn, ws: Path, name: str, write, mesh: SolidMesh, kw: dict) -> None:
+    try:
+        conn.send(_write_one(ws, name, write, prepare(mesh), **kw))
+    finally:
+        conn.close()
+
+
+def start_all(workspace, mesh: SolidMesh, *, cad_names: dict[str, str] | None = None, units: str = "m",
+              source: str = "") -> Started:
+    """write_all, IN THE BACKGROUND: each solver file written by its own forked process (the same writer, the same
+    bytes), while the caller measures the mesh; Started.result() waits for them. Measured 26 Nov on the knuckle
+    (775,829 second-order tetrahedra): the two files took 14.6 s one after the other (numbering 1.3, .bdf 7.1, .cdb 6.1)
+    on top of the plan rules and element checks (12.8 s); side by side the stage waits only for the longest. Where a
+    process cannot be forked, they are written at result(), one after the other, as before."""
+    import multiprocessing as mp
+
+    ws = Path(workspace)
+    kw = {"cad_names": cad_names, "units": units, "source": source}
+    try:
+        ctx = mp.get_context("fork")
+    except ValueError:
+        return Started(ws, [], kw, mesh)
+    procs: list = []
+    try:
+        for solver, name, write in _WRITERS:
+            recv, send = ctx.Pipe(duplex=False)
+            proc = ctx.Process(target=_child, args=(send, ws, name, write, mesh, kw), daemon=True)
+            proc.start()
+            send.close()
+            procs.append((solver, name, proc, recv))
+    except OSError:                                 # no process to fork into: written at result(), as before
+        for _s, _n, proc, _c in procs:
+            proc.kill()
+            proc.join()
+        return Started(ws, [], kw, mesh)
+    return Started(ws, procs, kw)
 
 
 # #
@@ -363,4 +434,4 @@ def read_cdb(path: Path | str) -> ReadBack:
 
 
 __all__ = ["EXPORT_ARTIFACTS", "NOT_TESTED", "Prepared", "ReadBack", "SOLVERS", "ansys_name", "prepare", "unique_ansys_name", "read_bdf", "read_cdb",
-           "write_all", "write_bdf", "write_cdb"]
+           "write_all", "write_bdf", "write_cdb", "start_all", "Started"]

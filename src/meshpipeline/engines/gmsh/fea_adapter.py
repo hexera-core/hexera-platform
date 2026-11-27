@@ -46,6 +46,9 @@ def note_stage(ws: Path, key: str, label: str, *, n: int | None = None, of: int 
         (Path(ws) / STAGE_FILE).write_text(json.dumps(step))
     except OSError:
         pass
+    # RUN-11: the same step, on the same clock, in the run's step log (a re-note of the step is no new step)
+    from meshpipeline.engines import fea_times as TIMES
+    TIMES.log(ws, key, label, at=step["at"])
 
 
 class Ticker:
@@ -97,18 +100,19 @@ SECOND_ATTEMPT = True
 
 
 def mesh_threads(run: dict) -> int:
-    """The mesher's thread count: the plan's `threads`, else DEFAULT_THREADS; 0 = every core the job has."""
+    """The mesher's thread count: the plan's `threads`, else DEFAULT_THREADS; 0 = every core the job has - and never
+    more than determinism.MAX_GMSH_THREADS (MESH-25 / MESH-23: 32; 64 threads measured slower than 32)."""
+    from meshpipeline.engines.determinism import MAX_GMSH_THREADS, gmsh_threads
     raw = (run or {}).get("threads")
     try:
         n = int(DEFAULT_THREADS if raw is None else raw)
     except (TypeError, ValueError):
         n = 1
-    if n > 0:
-        return n
-    # every core THE JOB HAS (its CPU quota), never the host's: Cloud Run's os.cpu_count() is the host's - or
-    # MESH_GMSH_THREADS when set (1: our tests, the repeatable HXT fill)
-    from meshpipeline.engines.determinism import gmsh_threads
-    return gmsh_threads()
+    if n <= 0:
+        # every core THE JOB HAS (its CPU quota), never the host's: Cloud Run's os.cpu_count() is the host's - or
+        # MESH_GMSH_THREADS when set (1: our tests, the repeatable HXT fill)
+        n = gmsh_threads()
+    return max(1, min(n, MAX_GMSH_THREADS))
 
 
 def algorithm_3d(run: dict) -> str:
@@ -1433,6 +1437,21 @@ def _source(ftw: dict) -> str:
     return f"Hexera gmsh engine + {ftw.get('version') or 'fTetWild'} (LAD-fea-9: {', '.join(ftw.get('parts') or [])})"
 
 
+def _start_exports(ws: Path, solid, deck: dict, ftw: dict):
+    """A single part's Nastran and Ansys files, started beside the deck (fea_writers.start_all: written in their own
+    processes while the mesh is measured); never raises - what cannot start is written at result(), as before."""
+    from meshpipeline.contracts.mesh_units import COMPLETED_MESH_UNIT
+    from meshpipeline.engines import fea_writers
+    names: dict[str, str] = deck.get("cad_face_names") or {}
+    units, source = str(COMPLETED_MESH_UNIT.value), _source(ftw)
+    kw = {"cad_names": names, "units": units, "source": source}
+    try:
+        return fea_writers.start_all(ws, solid, cad_names=names, units=units, source=source)
+    except Exception as exc:  # noqa: BLE001 - written one after the other instead
+        print(f"[GMSH-FEA] solver files written in this process ({type(exc).__name__})", file=sys.stderr)
+        return fea_writers.Started(Path(ws), [], kw, solid)
+
+
 def rung_volumes(run: dict, vols: list[int], part_volumes: dict[str, list[int]] | None) -> list[int]:
     """LAD-fea-9: the volumes fTetWild meshes - the parts the plan names (plan["mesh"]["ftetwild"]
     ["parts"]), every volume when it names none (a single part, or every part of an assembly)."""
@@ -1780,6 +1799,15 @@ _SHORT_USED = [False]
 #: of the verdict (engines/verdict_limits.fea_limits)
 SHORT_HELD = ("elements_under_floor", "fea_min_scaled_jacobian", "fea_max_jacobian_ratio", "fea_max_aspect_ratio",
               "fea_min_dihedral_deg", "fea_max_dihedral_deg")
+#: MESH-24: THE COMPARISON IS NEVER A SECOND MESH OF MILLIONS. A VALID sized mesh that misses an element-quality row is
+#: meshed again as drawn only when it has at most this many elements - the second mesh costs about as long as the first
+#: (the as-drawn mesh differs from it only round the sized edges), and above this that is an hour or more thrown away
+#: half the time (a cast knuckle, 25 Nov: 10.0M elements built and written in 78 minutes, then a second full mesh of
+#: the same part started). Rulebook 98: 150,000, not 1,000,000 - on the C5 knuckle (26 Nov) the second mesh added
+#: 36% ("3 mm overall", 367k elements) and 44% (and "finer at the holes", 728k) to the run, and the owner's
+#: 841k and 857k runs took 29 and 41 minutes against 14 for a 1M mesh built once. An invalid or unbuilt sized mesh
+#: is meshed again as drawn at any size: that is no comparison but the part's only other way to a mesh.
+SHORT_COMPARE_MAX_ELEMENTS = 150_000
 
 
 def _short_score(q: dict) -> tuple[int, float]:
@@ -1855,13 +1883,17 @@ def mesh(workspace) -> int:
            f"exit {rc}" if rc != 0 else "no quality record")
     # the failed attempt's files go - never the mesher's own log, which the runner is still writing and the
     # watchdog reads (gmsh_runner.FEA_LOG); what the pass read comes back for the second attempt
+    from meshpipeline.engines import fea_times as TIMES
     for f in ws.iterdir():
-        if f.is_file() and f.name != _MESHER_LOG and before.get(f.name) != f.stat().st_mtime_ns:
+        # (nor the run's step log, RUN-11: the failed fill's time is the run's too)
+        if (f.is_file() and f.name not in (_MESHER_LOG, TIMES.LOG_FILE)
+                and before.get(f.name) != f.stat().st_mtime_ns):
             f.unlink()
     for f in (inputs.iterdir() if inputs.is_dir() else []):
         shutil.copy2(f, ws / f.name)
     print(f"[GMSH-FEA] the {first} fill failed ({why}) - the pass filled again with {other} ({HXT_RULE})",
           file=sys.stderr)
+    TIMES.log(ws, "refill", "filling again another way")
     _ALGO_3D[0] = other
     t1 = time.monotonic()
     try:
@@ -1897,7 +1929,8 @@ def _mesh_short(workspace) -> int:
     built), the same pass is meshed again with them as drawn, and the better of the two is kept (fewer
     element-quality rows missed, then the better worst scaled Jacobian; FEA corpus, 3 Nov: on a bonded
     assembly whose micro edges were sized, slivers moved just past the micro set-aside). A sized mesh that
-    meets every element limit is kept at once."""
+    meets every element limit is kept at once; so is a VALID one of more than SHORT_COMPARE_MAX_ELEMENTS - never two
+    full meshes of millions to keep one (its record says kept: sized, compared: false)."""
     import shutil
 
     ws = Path(workspace)
@@ -1913,15 +1946,29 @@ def _mesh_short(workspace) -> int:
         q1 = {}
     if rc == 0 and q1 and _short_score(q1)[0] == 0:
         return rc
+    if rc == 0 and q1 and int(q1.get("cells") or 0) > SHORT_COMPARE_MAX_ELEMENTS:
+        # valid, and too big to build twice: the sized mesh stands, held to every limit as any pass is, and the
+        # record says the comparison was not made and why
+        q1["fea_short_edges"] = {**(q1.get("fea_short_edges") or {}), "kept": "sized", "compared": False,
+                                 "why": f"a valid mesh of {int(q1['cells']):,} elements is not built a second time "
+                                        f"to compare (over {SHORT_COMPARE_MAX_ELEMENTS:,})"}
+        (ws / "quality.json").write_text(json.dumps(q1, indent=1))
+        print(f"[GMSH-FEA] the mesh with short edges sized misses an element limit, but at {int(q1['cells']):,} "
+              f"elements it is not meshed again as drawn to compare ({SHORT_RULE})", file=sys.stderr)
+        return rc
     first = ws / "_mesh24_sized"
     shutil.rmtree(first, ignore_errors=True)
     first.mkdir()
+    from meshpipeline.engines.fea_times import LOG_FILE as _STEPS
     for f in ws.iterdir():
-        if f.is_file() and before.get(f.name) != f.stat().st_mtime_ns:
+        # (the run's step log stays: it is the whole run's, RUN-11)
+        if f.is_file() and f.name != _STEPS and before.get(f.name) != f.stat().st_mtime_ns:
             shutil.move(str(f), first / f.name)
     print(f"[GMSH-FEA] the mesh with short edges sized {'was not built' if rc else 'still misses an element limit'} - "
           f"meshed again with them as drawn, the better kept ({SHORT_RULE})", file=sys.stderr)
     _NO_SHORT[0] = True
+    from meshpipeline.engines import fea_times as TIMES
+    TIMES.log(ws, "comparison", "meshing again to compare")
     try:
         rc2 = _mesh_tiny(ws)
     finally:
@@ -2048,11 +2095,17 @@ def _mesh(workspace) -> int:
         # gmsh's own steps on what gmsh meshed (every volume, or the rung's other parts; none when
         # fTetWild takes every part)
         meshed = not rung or bool(built.get("gmsh_volumes"))
+        # RUN-11: how the solid was filled (the record's; the step's time is the step log's)
+        from meshpipeline.engines import fea_times as TIMES
+        TIMES.log(ws, "detail", fill={"algorithm": _FILLED[0], "threads": mesh_threads(run)})
         note_stage(ws, "optimising", "improving the elements")
         # MESH-10: no volume comes out of the optimiser with invalid elements it went in without
         from meshpipeline.engines.gmsh import optimise_guard
         optimised = optimise_guard.optimise(gmsh, "Netgen", int(run.get("optimise_passes") or 1) if meshed else 0,
                                             log_prefix="[GMSH-FEA]")
+        improving: list[dict] = [{"stage": "optimising", "name": "smoothing and swapping",
+                                  "changed": ("a volume it made worse was put back as filled" if optimised else
+                                              "the elements reshaped in place")}]
         # MESH-mmg-1: MMG improves the inside of a volume that still holds an element the limits would
         # note, its surface frozen - kept only when better, before the elements are curved
         mmg: dict = {}
@@ -2068,12 +2121,21 @@ def _mesh(workspace) -> int:
             except Exception as exc:  # noqa: BLE001 - the notes never fail a mesh
                 print(f"[GMSH-FEA] the notes' quality limits were not read for the quality pass: {exc}",
                       file=sys.stderr)
+            # RUN-11: the quality pass is a step of its own in the run's step log (the live line stays "improving")
+            TIMES.log(ws, "quality_pass", "improving the elements")
+            # MESH-mmg-2: the user's limits are chased within a share of the time the run has taken so far (the step
+            # log's first line is the run's start); without limits nothing reads it
+            steps = TIMES.read(ws) if mmg_targets else []
+            import time as _time
+            budget = fea_mmg.budget_for(_time.time() - float(steps[0]["at"]) if steps else None)
             try:
-                mmg = fea_mmg.improve(gmsh, vols, targets=mmg_targets or None)
+                mmg = fea_mmg.improve(gmsh, vols, targets=mmg_targets or None, budget_s=budget)
             except Exception as exc:  # noqa: BLE001 - a post-pass that cannot run leaves the gmsh mesh
                 mmg = {"rule": fea_mmg.RULE, "ran": False, "why": f"{type(exc).__name__}: {exc}"[:300]}
             if fea_mmg.words(mmg):
                 print(f"[GMSH-FEA] {fea_mmg.words(mmg)}", file=sys.stderr)
+            improving.append({"stage": "quality_pass", "name": "the quality pass", "changed": fea_mmg.changed(mmg)})
+        TIMES.log(ws, "detail", improving=improving)
         order = int((plan.get("element") or {}).get("order") or 2)
         settled: dict = {"straightened": 0, "set_aside": [], "cusp_places_m": [], "cusp_elements": 0,
                          "micro_used": [], "micro_elements": 0}
@@ -2187,6 +2249,7 @@ def _mesh(workspace) -> int:
         rules: dict = {}
         shape: dict = {}
         solid = None
+        writing = None
         try:
             from meshpipeline.engines import fea_quality
             from meshpipeline.engines.gmsh.abaqus_deck import from_gmsh
@@ -2196,6 +2259,9 @@ def _mesh(workspace) -> int:
                 # MESH-8: an opened single part's faces keyed by the CAD's tags, so Face_k is the CAD's face k
                 from meshpipeline.engines.gmsh.abaqus_deck import retagged
                 solid = retagged(solid, single_skin_notes(ws)[0] or None)
+                # MESH ONCE, EXPORT MANY: the Nastran and Ansys files start now, each in its own process, while the
+                # mesh is measured below (fea_writers.start_all: the same bytes; collected after the measures)
+                writing = _start_exports(ws, solid, deck, ftw)
             rules = checks.measure(solid, plan, tags_by_name=face_tags if asm else None)
             # THE ELEMENTS AS THE SOLVERS JUDGE THEM (engines/fea_quality.py): the gate refuses an
             # inverted element (VER-1); the verdict holds the rest to the production limits (VER-2),
@@ -2213,7 +2279,9 @@ def _mesh(workspace) -> int:
                 asked_report = fea_requirements.report(
                     solid, wanted, order=order, applied=plan.get("controls"),
                     through_wall=(rules.get("through_wall") or {}).get("min") if rules else None,
-                    places=plan.get("part_sizes") if isinstance(plan.get("part_sizes"), dict) else None)
+                    places=plan.get("part_sizes") if isinstance(plan.get("part_sizes"), dict) else None,
+                    face_tags=face_tags if asm else None,
+                    finer=plan.get("finer") if isinstance(plan.get("finer"), list) else None)
                 if mmg.get("targets"):
                     from meshpipeline.engines import fea_mmg as _mmg_told
                     asked_report = _mmg_told.tell(asked_report, mmg)
@@ -2223,12 +2291,9 @@ def _mesh(workspace) -> int:
         # deck's numbers and face names; the user picks one at download
         if not asm:                                    # an assembly's were written with its deck, above
             try:
-                from meshpipeline.contracts.mesh_units import COMPLETED_MESH_UNIT
-                from meshpipeline.engines import fea_writers
                 if solid is None:
                     raise ValueError("no internal mesh was read")
-                exports = fea_writers.write_all(ws, solid, cad_names=deck.get("cad_face_names") or {},
-                                                units=COMPLETED_MESH_UNIT.value, source=_source(ftw))
+                exports = (writing or _start_exports(ws, solid, deck, ftw)).result()
             except Exception as exc:  # noqa: BLE001 - the deck stands; a missing file is offered as missing
                 print(f"[GMSH-FEA] Nastran / Ansys files not written: {exc}", file=sys.stderr)
         if shape.get("fea_inverted"):

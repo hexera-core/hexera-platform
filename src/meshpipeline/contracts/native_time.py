@@ -33,10 +33,61 @@ def wall_s(machine: dict | None = None) -> int:
     return VM_WALL_S if (machine or {}).get("where") == "gce" else CLOUD_RUN_WALL_S
 
 
+#: THE RULE (docs/RULES.md CFDREQ-28, rulebook 112): a run that already holds a kept mesh hands it back inside its
+#: own time - the next engine's native run ends by the run's anchored deadline less HANDBACK_RESERVE_S, never at a
+#: machine's wall past it (abc 00025560: cfMesh ran into the wall clock and the kept mesh was lost).
+HANDBACK_RULE = "CFDREQ-28"
+#: What handing the kept mesh back takes after the stop: the executor, the review, the exports and the upload.
+HANDBACK_RESERVE_S = 1800
+#: The least a held native run is given (it still starts, and is stopped as a guard trip if it cannot finish).
+HANDBACK_MIN_S = 60
+#: The workspace file that holds the hand-back time (written by the builder when the run holds a kept mesh).
+HANDBACK_FILE = "handback_by.json"
+
+
+def hold_for_handback(workspace, by_epoch: float | None) -> None:
+    """Write (or, with None, remove) the time by which this attempt's native runs must end so a kept mesh can be
+    handed back (CFDREQ-28). Never raises."""
+    import json
+    from pathlib import Path
+    try:
+        p = Path(workspace) / HANDBACK_FILE
+        if by_epoch is None:
+            p.unlink(missing_ok=True)
+        else:
+            p.write_text(json.dumps({"by_epoch": float(by_epoch), "rule": HANDBACK_RULE}), encoding="utf-8")
+    except (OSError, TypeError, ValueError):
+        pass
+
+
+def handback_cap(workspace, *, now: float | None = None) -> int | None:
+    """The seconds a native run started now may take so the kept mesh is still handed back (CFDREQ-28): None when
+    the run holds no kept mesh (no HANDBACK_FILE)."""
+    import json
+    import time
+    from pathlib import Path
+    try:
+        by = float(json.loads((Path(workspace) / HANDBACK_FILE).read_text(encoding="utf-8"))["by_epoch"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    return max(HANDBACK_MIN_S, int(by - (time.time() if now is None else now)))
+
+
 def wall_for(workspace) -> int:
-    """The wall for the run written in `workspace` (its mesh_machine.json, if any)."""
+    """The wall for the run written in `workspace` (its mesh_machine.json, if any) - no later than the kept mesh's
+    hand-back time when the run holds one (CFDREQ-28, handback_cap)."""
     from meshpipeline.contracts import mesh_machine
-    return wall_s(mesh_machine.read(workspace))
+    wall = wall_s(mesh_machine.read(workspace))
+    held = handback_cap(workspace)
+    return wall if held is None else min(wall, held)
+
+
+def held_short_of_the_wall(workspace) -> bool:
+    """The run's cap is the kept mesh's hand-back time, not the machine's wall: a run stopped there is out of the
+    run's time, and moving it to a bigger machine would only spend more (CFDREQ-28)."""
+    from meshpipeline.contracts import mesh_machine
+    held = handback_cap(workspace)
+    return held is not None and held < wall_s(mesh_machine.read(workspace))
 
 
 def stopped_at_the_wall(result) -> bool:
@@ -57,7 +108,11 @@ def run_off_the_wall(workspace, run_once: Callable[[int], dict], *, engine: str,
     from meshpipeline.contracts import mesh_machine as MM
     log = logging.getLogger(__name__)
     while True:
+        held = held_short_of_the_wall(workspace)
         result = run_once(wall_for(workspace))
+        if held and stopped_at_the_wall(result):
+            # CFDREQ-28: stopped at the kept mesh's hand-back time - the run's time, not the machine's wall
+            return result
         if isinstance(result, dict) and result.get("out_of_memory"):
             # RUN-3: stopped before the machine ran out of memory - the SAME case one machine up that
             # also holds what it used (nothing coarsened); None on the largest, and it is handed back
@@ -83,5 +138,7 @@ def run_off_the_wall(workspace, run_once: Callable[[int], dict], *, engine: str,
             log.debug("%s not cited", rule, exc_info=True)
 
 
-__all__ = ["CLOUD_RUN_MARGIN_S", "CLOUD_RUN_TASK_TIMEOUT_S", "CLOUD_RUN_WALL_S", "STALL_WINDOW_S",
-           "VM_WALL_S", "run_off_the_wall", "stopped_at_the_wall", "wall_for", "wall_s"]
+__all__ = ["CLOUD_RUN_MARGIN_S", "CLOUD_RUN_TASK_TIMEOUT_S", "CLOUD_RUN_WALL_S", "HANDBACK_FILE", "HANDBACK_MIN_S",
+           "HANDBACK_RESERVE_S", "HANDBACK_RULE", "STALL_WINDOW_S", "VM_WALL_S", "handback_cap",
+           "held_short_of_the_wall", "hold_for_handback", "run_off_the_wall", "stopped_at_the_wall", "wall_for",
+           "wall_s"]

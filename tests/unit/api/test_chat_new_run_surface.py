@@ -90,12 +90,14 @@ def test_a_re_review_belongs_to_the_disputed_runs_conversation():
     dispute = (UI / "js" / "viewer" / "dispute.js").read_text()
     assert dispute.count("onRerun(d.job_id,") == 2
     for call in dispute.split("onRerun(d.job_id,")[1:]:
-        assert call.split(");", 1)[0].rstrip().endswith("job"), (
-            "a re-review no longer says which run it disputes")
+        # the disputed run is always named (third argument); a change may also name the conversation its new
+        # run belongs to, which is the disputed run's own session
+        args = [a.strip() for a in call.split(");", 1)[0].split(",")]
+        assert "job" in args[-2:], "a re-review no longer says which run it disputes"
     main = (UI / "js" / "main.js").read_text()
     wiring = main.split("configureDispute({", 1)[1].split("\n});", 1)[0]
-    assert "onRerun: (id, message, disputedJobId) => attachJob(id," in wiring
-    assert "origin: getState.runOrigin(disputedJobId)" in wiring
+    assert "onRerun: (id, message, disputedJobId, sessionId) => attachJob(id," in wiring
+    assert "origin: sessionId || getState.runOrigin(disputedJobId)" in wiring
 
 
 def test_an_answer_about_a_run_the_page_has_left_is_dropped():

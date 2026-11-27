@@ -29,6 +29,7 @@ from meshpipeline.agents.builder.driver_run import (
 )
 from meshpipeline.contracts import execution_guard as _fence
 from meshpipeline.contracts.event_stream import (
+    EventStreamError,
     ExecutionEventPublisher,
     StaleExecutionPublish,
 )
@@ -177,6 +178,57 @@ def _sibling_plan_memory(workspace: Path) -> dict | None:
     return None
 
 
+#: The plan memory's record of the budget the plan asked for, beside the `max_cells` the render raised for its own
+#: boxes (the near wake, the near-body box, the gap boxes): a retry inherits this one, and the render prices the
+#: boxes in once more on it - never on top of a budget that already holds them.
+_PLAN_MAX_CELLS = "_plan_max_cells"
+
+
+def _say_layer_reuse(result, plan: dict, *, attempt: int, minutes: float, job_id) -> None:
+    """CFDREQ-33 (engines/snapped_keep): which path the relative retry's snappyHexMesh ran, in the log and the why
+    record."""
+    ran = dict((result.get("layer_reuse") if isinstance(result, dict) else None) or plan)
+    only = ran.get("path") == "layers_only"
+    words = ("the relative retry added only the layers to the first attempt's snapped mesh" if only else
+             f"the relative retry rebuilt the whole mesh: {ran.get('why') or 'no kept snapped mesh'}")
+    logger.info("snappy pass %d (relative retry): %s - %.1f min (job_id=%s)", attempt, words, minutes, job_id)
+    try:
+        from meshpipeline.contracts import decision_record as _dr
+        _dr.cite(str(job_id or ""), stage="snappy_layer_reuse", decided=str(ran.get("path")),
+                 value=ran.get("from"), rule="CFDREQ-33", inputs={"pass": attempt}, words=words)
+    except Exception:  # noqa: BLE001 - the why record never stops a mesh
+        logger.debug("CFDREQ-33 reuse not cited", exc_info=True)
+
+
+#: The refusal's tag when the mesh machine could not start snappyHexMesh's parallel run (parallel_stages.launch_failure)
+LAUNCH_FAILED_TAG = "[MESH_LAUNCH_FAILED]"
+
+
+async def _stop_on_launch_failure(workspace: Path, result, publish: ExecutionEventPublisher, *, attempt: int,
+                                  job_id) -> bool:
+    """THE MESHER NEVER STARTED (engines/snappy/native, `launch_failed`): the machine could not start the parallel
+    run, so nothing about the plan was tried and no re-plan can change it. The passes stop on the first one, the
+    reason told as ours (RUN_INFRASTRUCTURE) - never as a boundary the mesh lost. Job c06bb745 (27 Nov) re-planned
+    an unstarted run nine times over 34 minutes and ended on "the wall came out with no faces". True when it
+    stopped them."""
+    why = str((result or {}).get("launch_failed") or "") if isinstance(result, dict) else ""
+    if not why:
+        return False
+    from meshpipeline.contracts import mesh_machine as _MM
+    from meshpipeline.contracts.failure_cause import FailureCause
+    machine = (_MM.read(workspace) or {}).get("machine") or "the standard mesh job"
+    logger.error("snappy pass %d: the mesh machine (%s) could not start snappyHexMesh - %s - the passes stop "
+                 "(job_id=%s)", attempt, machine, why, job_id)
+    await publish.aerror(f"The mesh machine could not start the mesher - {why}. Nothing was meshed, and nothing "
+                         "about your part caused it.", op_id=f"snappy:launch-failed:{attempt}")
+    PreflightRefusal(
+        gate="finalize", cause=FailureCause.RUN_INFRASTRUCTURE.value,
+        builder_text=f"{LAUNCH_FAILED_TAG} {why}",
+        facts={"engine": "snappyHexMesh", "launch_failed": why, "machine": machine, "ours": True,
+               "deterministic": False, "pass": int(attempt)}).write(workspace)
+    return True
+
+
 def _inherit_durable_plan_fields(strategy: dict, workspace: Path) -> dict:
     """Fields that are FACTS about the request - not per-attempt choices - must survive
     re-planning. A revised plan that omits reference_length_m silently changes the RULER the
@@ -193,7 +245,10 @@ def _inherit_durable_plan_fields(strategy: dict, workspace: Path) -> dict:
     for prev in _sibling_plan_memories(workspace):
         for k in list(missing):
             if prev.get(k) is not None:
-                out[k] = prev[k]
+                # THE PLAN'S BUDGET, never the one the render raised for its own boxes (_PLAN_MAX_CELLS): the render
+                # adds the near wake, the near-body box and the gap boxes on top of it again (00058385 went
+                # 4,000,000 -> 4,345,373 -> 4,690,746 over two attempts)
+                out[k] = (prev.get(_PLAN_MAX_CELLS) or prev[k]) if k == "max_cells" else prev[k]
                 missing.remove(k)
                 logger.info("revised plan omitted %s - inherited %r from a prior attempt", k,
                             prev[k])
@@ -388,18 +443,22 @@ def _plan_limit(ask) -> int | None:
 def _route_big(workspace: Path, budget: int, *, job_id: str = "", attempt: int = 0) -> dict | None:
     """RUN-9 (contracts/mesh_machine.route_cells): a pass planned to more cells than the standard machine is sized for
     - only ever the user's own count - runs on a VM that carries them, decided before it meshes, with no question.
-    The decision is written into the workspace the mesh executor ships; None when the pass fits the standard machine."""
+    RUN-13: a pass planned to at least mesh_machine.SPEED_CELLS cells (its budget) runs on the speed machine, even
+    when it fits the standard one. The decision is written into the workspace the mesh executor ships; None when the
+    pass fits the standard machine and is under the speed threshold."""
     from meshpipeline.contracts import mesh_machine as MM
     moved = MM.route_cells(workspace, int(budget), why="the cell count asked for")
     if moved and moved.get("where") == "gce":
-        logger.warning("snappy pass %d: %s (RUN-9) - job_id=%s", attempt, moved.get("words"), job_id)
+        rule = "RUN-13" if moved.get("why") in MM.FAST_WHYS else "RUN-9"
+        logger.warning("snappy pass %d: %s (%s) - job_id=%s", attempt, moved.get("words"), rule, job_id)
         try:
             from meshpipeline.contracts import decision_record as _dr
-            _dr.cite(str(job_id or ""), stage="snappy_machine", decided="big machine", value=moved.get("machine"),
-                     rule="RUN-9", inputs={"pass": attempt, "cells": int(budget)},
+            _dr.cite(str(job_id or ""), stage="snappy_machine",
+                     decided="faster machine" if rule == "RUN-13" else "big machine", value=moved.get("machine"),
+                     rule=rule, inputs={"pass": attempt, "cells": int(budget), "cpus": MM.cpus_of(moved)},
                      words=str(moved.get("words") or ""))
         except Exception:  # noqa: BLE001 - the why record never stops a mesh
-            logger.debug("RUN-9 not cited", exc_info=True)
+            logger.debug("%s not cited", rule, exc_info=True)
     return moved
 
 
@@ -716,12 +775,18 @@ def _native_payload_members(workspace) -> list[str]:
     # a FileNotFoundError traceback after meshing, and no internal-flow snappy mesh built there
     # was ever measured, so the resolution floor that reads the measure judged nothing.
     members += [f for f in REMOTE_WORKSPACE_FACTS if (ws / f).is_file()]
+    # CFDREQ-33 (engines/snapped_keep): the relative retry's kept snapped mesh, which its layers-only run starts from
+    from meshpipeline.engines.snapped_keep import KEEP_DIR, LAYERS_ONLY_FILE, REUSE_FILE
+    if (ws / LAYERS_ONLY_FILE).is_file() and (ws / KEEP_DIR).is_dir():
+        members += [LAYERS_ONLY_FILE, KEEP_DIR, *([REUSE_FILE] if (ws / REUSE_FILE).is_file() else [])]
     return members
 
 
 #: Workspace fact files the REMOTE side of a native snappy run reads (engines/snappy/native.py).
 #: Each must travel in the submission payload, or the remote reads a workspace without it.
-REMOTE_WORKSPACE_FACTS: tuple[str, ...] = ("flow_topology",)
+#: port_declaration.json and request.txt: the confirmed boundaries and the flow conditions, which the Fluent export
+#: types its zones from (engines/cfd_exports.fluent_types)
+REMOTE_WORKSPACE_FACTS: tuple[str, ...] = ("flow_topology", "port_declaration.json", "request.txt")
 
 
 def plan_refinements(*, surface_level=None, wake: bool = False, boxes: int = 0,
@@ -791,6 +856,16 @@ async def _run_snappy_timed(R, workspace, cap, publish: ExecutionEventPublisher,
     note_native_payload(workspace, _native_payload_members(workspace))
     _op = await _op_begin(publish, "run_native_mesher", run, native_attempt)
     try:
+        # RUN-13: THE MACHINE IT RUNS ON, said as FEA says it ("Meshing on a faster machine (16 cores)")
+        from meshpipeline.contracts import mesh_machine as _MM
+        from meshpipeline.contracts import narration as _N
+        await _N.astep(publish, "machine", _N.machine_words(_MM.read(workspace)),
+                       op_id=f"{engine}:machine:{native_attempt}")
+    except EventStreamError:
+        raise
+    except Exception:  # noqa: BLE001 - a line not said never stops a mesh
+        logger.debug("machine line not said", exc_info=True)
+    try:
         from meshpipeline.engines.mesh_history import estimate as _est
         await publish.ameshing(engine, cap, history=_est(engine, purpose))
     except StaleExecutionPublish:
@@ -849,11 +924,23 @@ async def _run_snappy_on_its_machine(R, workspace, publish: ExecutionEventPublis
     the same case, on a VM, which has no such wall - nothing coarsened. What reaches the caller as
     timed out is then only a STUCK run (stalled) or one that met even a VM's wall, and only those
     pull the re-plan-smaller lever."""
+    import time as _time
+
     from meshpipeline.contracts import mesh_machine as MM
     from meshpipeline.contracts.native_time import wall_for
     while True:
+        _t0 = _time.monotonic()
         result = await _run_snappy_timed(R, workspace, wall_for(workspace), publish, engine, purpose,
                                          run=run, native_attempt=native_attempt)
+        # THE WAY HOME, TIMED: the pass's whole wait against what the mesher and its exports took
+        # where it ran (engines/dispatch post_mesh_s) - the rest is the workspace packed, sent and
+        # unpacked (5.3 of 13 minutes on a resolved-wall car on the CFD board, 21 Nov)
+        _stamps = result.get("post_mesh_s") if isinstance(result, dict) else None
+        if isinstance(_stamps, dict):
+            _whole = _time.monotonic() - _t0
+            _there = sum(float(v) for v in _stamps.values() if isinstance(v, (int, float)))
+            logger.info("snappy pass %d: %.0f s in all - %.0f s where it ran (%s), %.0f s on the way home",
+                        native_attempt, _whole, _there, _stamps, max(0.0, _whole - _there))
         if result.get("out_of_memory"):
             # RUN-3: stopped before the machine ran out of memory (sandbox/safe_exec.MemoryExpired) -
             # the same case one machine up that also holds what it used
@@ -910,6 +997,28 @@ def confirmed_margins(strategy: dict, requested: dict | None, ruler_m: float | N
                     ", ".join(f"{k} {old}->{new}" for k, (old, new) in changed.items()))
     margin.update(stated)
     return {**(strategy or {}), "domain_margin": margin}
+
+
+#: PLAN-cfd-6: the record of a far field widened for blockage, beside the case
+BLOCKAGE_FILE = "far_field_blockage.json"
+
+
+def _say_blockage(workspace, rec: dict) -> None:
+    """PLAN-cfd-6: a far field widened for blockage is said (the run log) and kept beside the case; a box left as
+    planned removes a stale record."""
+    import json as _json
+
+    from meshpipeline.engines.far_field import blockage_words
+    p = Path(workspace) / BLOCKAGE_FILE
+    try:
+        if rec:
+            words = blockage_words(rec)
+            logger.warning("far field: %s", words)
+            p.write_text(_json.dumps({**rec, "words": words}, indent=1))
+        elif p.exists():
+            p.unlink()
+    except OSError:
+        logger.debug("blockage record not kept", exc_info=True)
 
 
 def _domain_preflight(state, analysis: dict, dmin, dmax, *,
@@ -1133,6 +1242,7 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
     _cavity_cache: dict = {}
     _part_cache: dict = {}
     _field_cache: dict = {}
+    _frontal_cache: dict = {}
 
     # SYMMETRY (3D external) comes in two shapes, told apart by how many patches were declared:
     # ONE is a half-model, cut on a plane, meshed on one side; TWO is a 2.5D slab - an extruded
@@ -1313,6 +1423,15 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
         strategy, _coarsened = _coarsen_after_timeout(_timeout_ref, strategy, internal=False)
         if _plan_cells:
             strategy = {**strategy, "_plan_cells": _plan_cells}
+        _learned_k = (_timeout_ref or {}).get("_wall_face_factor")
+        if _learned_k:
+            # RUN-8: priced on the wall the stopped pass measured (size_brake.learned_face_factor)
+            strategy = {**strategy, "_wall_face_factor": float(_learned_k)}
+        if strategy.get(_PLAN_MAX_CELLS):
+            # a plan carried whole (the same plan again) holds the budget the render raised: the pass starts from the
+            # plan's own, and the render prices its boxes in on that once
+            _own = {k: v for k, v in strategy.items() if k != _PLAN_MAX_CELLS}
+            strategy = {**_own, "max_cells": int(strategy[_PLAN_MAX_CELLS])} if not _coarsened else _own
         previous_plan = strategy                       # remember for the next repair
         _policy = None                                 # this pass's local layer policy, if any
         _repairable = False                            # may a repair split this pass's wall?
@@ -1361,6 +1480,12 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
                 if _lim is not None:
                     strategy = {**strategy, "_cell_limit": int(_lim)}
             strategy = {**strategy, "max_cells": _budget}
+            if not strategy.get("_plan_cells"):
+                # RUN-8: THE PLAN'S BUDGET IS THE FIRST PASS'S. A plan that names no budget (the rules
+                # plan: max_cells None) left _plan_cells unset, so each re-plan's record carried the
+                # budget the last trip had just cut, and the brake measured every pass against a
+                # smaller one: RM5 read 2.9x of 4 M, then 5.2x of 2 M, 4.5x of 1 M - a spiral
+                strategy = {**strategy, "_plan_cells": int(_budget)}
             # RUN-9: a count past the standard machine runs on a bigger one, decided before it meshes
             _route_big(workspace, max(_budget, int(strategy.get("_cell_limit") or 0)), job_id=job_id,
                        attempt=attempt)
@@ -1375,10 +1500,17 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
                                          state.get("reference_length_m"))
             # the approved ruler travels with the box it sizes - the same length the extent
             # gate will judge the delivered box in (see domain_from_strategy)
+            # PLAN-cfd-6: the cross-section widened for blockage, from the body's own frontal area (read once)
+            if "areas" not in _frontal_cache:
+                from meshpipeline.engines.far_field import projected_areas_of
+                _frontal_cache["areas"] = projected_areas_of(workspace / "input.stl")
+            _blockage: dict = {}
             dmin, dmax = R.domain_from_strategy(analysis, strategy, symmetry,
                                                 flow_axis=state.get("flow_axis"),
                                                 ruler_m=state.get("reference_length_m"),
-                                                ground=bool(_ground), contact=_contact, floor=_floor)
+                                                ground=bool(_ground), contact=_contact, floor=_floor,
+                                                frontal_m2=_frontal_cache["areas"], blockage=_blockage)
+            _say_blockage(workspace, _blockage)
             # DOMAIN PRE-FLIGHT, before the box is written: the post-mesh extent gate measures
             # exactly this prepared box, so a box it would block is known now. Re-plan instead of
             # meshing it (nothing is written yet, so the previous pass's files stay as they were).
@@ -1456,8 +1588,10 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
                                        job_id=str(job_id or ""))
             if int(summary.get("max_cells") or 0) > int(strategy.get("max_cells") or 0):
                 # the gap boxes raised snappy's cell ceiling: the plan memory carries the budget
-                # the pass really used, so an overshoot correction reads it right
-                strategy = {**strategy, "max_cells": int(summary["max_cells"])}
+                # the pass really used, so an overshoot correction reads it right - and the plan's own budget beside
+                # it (_PLAN_MAX_CELLS), which a retry inherits so the boxes are priced in once
+                strategy = {**strategy, "max_cells": int(summary["max_cells"]),
+                            _PLAN_MAX_CELLS: int(strategy.get(_PLAN_MAX_CELLS) or strategy.get("max_cells") or 0)}
                 _write_plan_memory(workspace, strategy)
             # the honest record travels with the case: the manifest reports the per-region
             # layer decisions this pass actually authored (stale records are removed)
@@ -1489,7 +1623,8 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
                             + f"{summary['n_layers']} wall layers"
                             + _sealed_note(_cavities)
                             + (f"; {summary['wake_note']}" if summary.get("wake_note") else "")
-                            + (f"; {summary['gap_note']}" if summary.get("gap_note") else ""),
+                            + (f"; {summary['gap_note']}" if summary.get("gap_note") else "")
+                            + (f"; {summary['size_note']}" if summary.get("size_note") else ""),
                     op_id=f"snappy:carving:{attempt}")
             # THE PLAN, as the run's live line shows it: how big, how many wall layers, where finer
             await publish.aplan(cells=strategy.get("max_cells"), layers=summary.get("n_layers"),
@@ -1513,17 +1648,25 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
             # RUN (deterministic; Cloud Run Job / local) + user-facing instrumentation, under the
             # GUARD its planned cells give it (TIME-2) - the only clock, and it decides nothing
             _guard = pass_guard(_budget, job_id=job_id, attempt=attempt, workspace=workspace)
+            # CFDREQ-33 amended (rulebook 116): THE RELATIVE RETRY ADDS ONLY THE LAYERS to the previous attempt's
+            # kept snapped mesh when its castellation and snapping are this case's (engines/snapped_keep)
+            from meshpipeline.engines import snapped_keep as _SK
+            _reuse_plan = _SK.adopt(workspace)
             _t_mesh = _time.monotonic()
             result = await _run_snappy_on_its_machine(
                 R, workspace, publish, state.get("engine", "snappy"),
                 read_purpose(workspace), run=run, native_attempt=attempt)
             _mesh_minutes = (_time.monotonic() - _t_mesh) / 60.0
+            if _reuse_plan is not None:
+                _say_layer_reuse(result, _reuse_plan, attempt=attempt, minutes=_mesh_minutes, job_id=job_id)
             if result.get("case_contract_mismatch"):
                 # the pre-flight refused the case before snappyHexMesh started: the renderer
                 # did not write the approved patches, and a re-plan renders the same names. Stop
                 # - the executor ends the job on the recorded refusal.
                 logger.error("snappy pass %d: case refused by the patch-contract pre-flight - "
                              "job_id=%s: %s", attempt, job_id, result.get("log_tail"))
+                return False
+            if await _stop_on_launch_failure(workspace, result, publish, attempt=attempt, job_id=job_id):
                 return False
             _meshed_any = True
             if result.get("timed_out"):
@@ -1545,6 +1688,17 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
                                _over.get("budget"), job_id)
                 _timeout_ref = {**strategy, "_why": "oversize", "_oversize": _over,
                                 "_budget_factor": scaled_budget_factor(_over)}
+                # RUN-8: what the stopped pass's wall really held, against what its plan priced - the
+                # re-plan's estimate (and the body-at-its-floor pricing) works from that, never again
+                # from a count three times under what snappyHexMesh builds
+                from meshpipeline.engines.size_brake import learned_face_factor, plan_record
+                _k = learned_face_factor(_over, plan_record(workspace))
+                if _k is not None:
+                    _k = max(_k, float(strategy.get("_wall_face_factor") or 1.0))
+                    _timeout_ref["_wall_face_factor"] = _k
+                    logger.warning("snappy pass %d: the wall holds %.1f times the faces its plan priced "
+                                   "(%s castellated, %s with its layers) - the re-plan is priced on that "
+                                   "(job_id=%s)", attempt, _k, _over.get("castellated"), _over.get("cells"), job_id)
                 _timeout_case = _case_snapshot(workspace)
                 _write_timed_out_plan(workspace, _timeout_ref)
             # --- JUDGE (deterministic bar) --- past the post-native fence, so this generation
@@ -1946,6 +2100,40 @@ def _near_band(gated: dict | None, R, *, wall_cell: float, budget_cells: float, 
     return (depth, note, True) if note else (default, "", False)
 
 
+#: The thickest wall-function first layer, as a share of the cell it grows into, that leaves the cell
+#: behind it no thinner than the layer itself. snappyHexMesh makes room for a layer by pushing the
+#: snapped wall into its first cell, so a layer of share s leaves that cell (1 - s): on the CFD board's
+#: tube bank a 1.48 mm layer in 2.47 mm band cells (0.6) left the next cell 0.96 mm at the median and
+#: 0.36 mm at the 5th percentile - thinner than the layer on 49% of the wall (20 Nov).
+WALL_FUNCTION_BAND_SHARE = 0.4
+
+
+def _wall_function_band_off(ask, *, wall_cell: float, bore_D: float) -> str:
+    """Why this pass has no near-wall band, or "" to keep it (rulebook 75). A wall-function first
+    layer (CFDREQ-13's, its height as that rule works it out - from the conditions' y+, or the
+    user's own) more than WALL_FUNCTION_BAND_SHARE of the band's cells (half the wall cell) grows
+    into the wall cell instead: the band is a cells-across tool, and the narrow passages that need
+    finer cells get them from the gap plan, sized at the cell the wall then has."""
+    if ask is None or getattr(ask, "treatment", None) != "functions" or wall_cell <= 0.0:
+        return ""
+    try:
+        h = ask.first_m
+        if h is None and ask.y_plus is not None:
+            from meshpipeline.engines.cfd_requirements import y_plus_height
+            h, _missing, how = y_plus_height(float(ask.y_plus), ask.req.get("physics"),
+                                             length_m=bore_D, length_from="the bore")
+            if how.get("laminar"):
+                return ""
+        if h is None or float(h) <= WALL_FUNCTION_BAND_SHARE * 0.5 * wall_cell:
+            return ""
+    except Exception:  # noqa: BLE001 - a band we cannot judge stays as planned
+        logger.warning("near-wall band: the wall-function first layer was not read", exc_info=True)
+        return ""
+    return (f"no near-wall band: a wall-function first layer about {_mm(float(h))} high would squash "
+            f"the {_mm(0.5 * wall_cell)} band cells it grows into, so it grows into the "
+            f"{_mm(wall_cell)} wall cells; narrow passages keep their own refinement")
+
+
 #: A mesh whose wall is under the floor on more than this share of its points is coarse as a
 #: whole: the retry refines the part, not boxes round most of it.
 LOCAL_RETRY_MAX_SHARE = 0.5
@@ -2173,6 +2361,7 @@ async def _separate_fluid(R, workspace: Path, state, source_path: str, *, job_id
 
     from meshpipeline.cad.internal_surface import is_cad
     from meshpipeline.engines.port_binding import declaration_targets
+    from meshpipeline.engines.workspace_facts import fluid_solid_of
 
     patches = state.get("intake_patches") or []
     kind = str(state.get("input_kind") or "").strip()
@@ -2194,7 +2383,7 @@ async def _separate_fluid(R, workspace: Path, state, source_path: str, *, job_id
     try:
         return await _asyncio.to_thread(
             R.tessellate_internal, source_path, Path(workspace) / "_internal_stls",
-            fluid_solid=(kind == "fluid-domain"), prepared=_prepared,
+            fluid_solid=fluid_solid_of(kind), prepared=_prepared,
             declared_ports=declaration_targets(patches))
     except (_fence.StaleWorkerFenced, StaleExecutionPublish, _PortBindError):
         raise
@@ -2245,8 +2434,9 @@ def _one_passage(workspace: Path, srcs: dict, wall_key: str, declaration: list) 
                "mesh each passage as a file of its own.")
     if why:
         raise InternalSurfaceError(why)
-    if not plan.left_out:
+    if not plan.left_out and not plan.no_inlet:
         return srcs
+    # INS-40: a passage no inlet opens into is off the staged surface too (told in the plan's notes)
     logger.info("internal build: %s", "; ".join(plan.notes()))
     return write_passage(passage_surfaces(plan)[0], Path(workspace) / "_passages" / "p0")
 
@@ -2488,6 +2678,9 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
             cells_across, surface_level, feature_level = _ask_internal_sizes(
                 _ask, bore_D=float(bore_D), cells_across=cells_across, surface_level=surface_level,
                 feature_level=feature_level)
+            # CFDREQ-18: in wall-function mode the wall cell is chosen with the first layer the y+ gives
+            from meshpipeline.engines import cfd_requirements as _CRb
+            cells_across = _CRb.wall_function_bore_cells(_ask, bore_D=float(bore_D), cells_across=cells_across)
             # NOTE-13: the controls the user's words set (cells across the bore, the wall's level) - one loop
             _knobs = _ask.controls({"internal": True, "cells_across": cells_across, "surface_level": surface_level,
                                     "feature_level": feature_level})
@@ -2515,6 +2708,13 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
             _gated_plan if _local is not None else None, R, wall_cell=_wall_cell,
             budget_cells=_budget, n_layers=n_layers, field=_passage_field, wall_stl=_wall_stl,
             bore_D=bore_D, t=t)
+        if _band_m > 0.0 and not (_local is not None and _gated_plan):
+            # ...unless a WALL-FUNCTION first layer would squash the band's cells (rulebook 75): it
+            # grows into the wall's own cells instead, and the narrow passages keep their cells
+            # across by their own refinement (the gap plan below is sized at that cell)
+            _off = _wall_function_band_off(_ask, wall_cell=_wall_cell, bore_D=float(bore_D))
+            if _off:
+                _band_m, _band_note, _band_set = 0.0, _off, True
         if _band_note:
             logger.info("internal pass %d: %s - job_id=%s", attempt, _band_note, job_id)
         _near_cell = _wall_cell / 2.0 if _band_m > 0.0 else _wall_cell
@@ -2577,12 +2777,19 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
             from meshpipeline.cad.stl_io import read_stl_triangles as _read_tris
             from meshpipeline.cad.thin_features import thin_refinement_boxes as _thin_boxes
             if _wall_stl.exists():
+                # CFDREQ-24: in wall-function mode the thin spots' cells are held where the first
+                # layer stands on them without a jump, as far as capturing the feature allows
+                from meshpipeline.engines import cfd_requirements as _CRt
+                _keep = _CRt.wall_function_keep_cell(_ask, bore_D=float(bore_D), wall_cell_m=_wall_cell)
                 # the extra levels may spend at most half the run's cell budget: a thin feature
                 # is captured locally, never by re-meshing the whole part at the finest level
                 _thin_regions = _thin_boxes(
                     _read_tris(_wall_stl), cell_m=_wall_cell,
                     budget_cells=max(50_000, int(strategy.get("thin_budget")
-                                                 or 0.5 * _planned_budget)))
+                                                 or 0.5 * _planned_budget)),
+                    keep_cell_m=_keep)
+                if _layer_note := str(getattr(_thin_regions, "layer_note", "") or ""):
+                    logger.info("internal pass %d: %s - job_id=%s", attempt, _layer_note, job_id)
         except Exception:  # noqa: BLE001 - a measurement is an optimisation, never fatal
             logger.exception("internal build: thin-feature probe failed - continuing without "
                              "local thin refinement - job_id=%s", job_id)
@@ -2590,7 +2797,8 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
         # what the probe left out to keep the budget (cad/thin_features.ThinRegions); a plain
         # list carries none
         _thin_note = str(getattr(_thin_regions, "note", "") or "")
-        if _thin_regions or _thin_note:
+        # CFDREQ-29: thin spots left unrefined for the wall-function layer are told too (layer_note)
+        if _thin_regions or _thin_note or str(getattr(_thin_regions, "layer_note", "") or ""):
             # the thinnest REAL reading among the regions refined (or found, when none could be):
             # faces lying on each other are filtered out by the probe and never reach this text
             _t_min = (min(float(r.get("thinnest_m") or 0.0) for r in _thin_regions)
@@ -2601,7 +2809,8 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
                 + ("not refined locally" if not _thin_regions
                    else "refining locally so it is captured" if not _thin_note
                    else "refining locally as far as the cell budget allows")
-                + (f" ({_thin_note})" if _thin_note else ""),
+                + (f" ({_thin_note})" if _thin_note else "")
+                + (f"; {_ln}" if (_ln := str(getattr(_thin_regions, "layer_note", "") or "")) else ""),
                 op_id=f"internal:thin-feature:{attempt}")
         # NARROW PASSAGES, against the cell at the wall too (the gap plan above): what is refined
         # where, and what the budget became - or, over the limit, how far the limit lets them be
@@ -2633,6 +2842,11 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
                     (workspace / ".sealed_ports.json").read_text()))
             except Exception:  # noqa: BLE001 - absent on a clean first attempt
                 _sealed_before = set()
+            # LAD-cfd-8: an opening the port-area gate refused on the attempt before (its facts,
+            # carried) is refined one level finer, as a sealed one is - the lever its retry answers with
+            from meshpipeline.engines.gate_facts import missed_ports
+            _missed = missed_ports(workspace)
+            _sealed_before |= {k for k, n in prep["names"].items() if k in _missed or n in _missed}
             summary = R.render_internal_case(
                 workspace, names=prep["names"], features=prep["features"],
                 wall_key=_wall_key,
@@ -2683,6 +2897,8 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
             if result.get("case_contract_mismatch"):
                 logger.error("internal pass %d: case refused by the patch-contract pre-flight - "
                              "job_id=%s: %s", attempt, job_id, result.get("log_tail"))
+                return False
+            if await _stop_on_launch_failure(workspace, result, publish, attempt=attempt, job_id=job_id):
                 return False
             if result.get("timed_out"):
                 # THE GUARD STOPPED THE PASS (TIME-3): no coarser re-plan - the passes stop, and

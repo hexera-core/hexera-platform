@@ -443,7 +443,10 @@ def configure_mesh(workspace, *, strategy: dict, wall_patch: str = "",
     from meshpipeline.engines import cfd_requirements as CR
     _ask = CR.Ask.of(ws, "vmtk")
     if _ask is not None:
-        s = CR.vmtk_spec(_ask, s)
+        # CFDREQ-13: the vessel's median radius is the reference its layer stack is a share of
+        _staged = read_staging(ws) or {}
+        _r = (_staged.get("radius_m") or {}).get("median") if isinstance(_staged.get("radius_m"), dict) else None
+        s = CR.vmtk_spec(_ask, s, radius_m=float(_r) if _r else None)
     # THE RESOLUTION LADDER'S RUNG (engines/resolution_policy, LAD-cfd-1): a retry after a sound
     # fill short of the floor puts `factor` times the cells across every passage - the edge factor
     # is the local radius' share, so the fill stays local to each passage's own width (PLAN-cfd-1)
@@ -579,11 +582,18 @@ def _unstaged_refusal(ws: Path) -> dict | None:
 # run (isolated subprocess)
 
 def _native_payload_members(workspace) -> list[str]:
-    """What the remote vmtk pype consumes: the spec (argv is built from it there) and the staged
-    lumen. Everything else in the attempt's workspace is local-only or a PRIOR pass's output
-    (mesh.vtu, centerlines.vtp, the distance surface, log.vmtk) that must not ride along."""
+    """What the remote vmtk pype consumes: the spec (argv is built from it there), the staged
+    lumen, and the staging record - the declared ports, by which the delivered OpenFOAM case names
+    each cap after the opening the user confirmed (export_openfoam_case). Without the record every
+    cap rode home as cap_N (the CFD board, 20 Nov: a transition duct's inlet and outlet were cap_3 and
+    cap_2 in the OpenFOAM, Fluent and EnSight files). Everything else in the attempt's workspace is
+    local-only or a PRIOR pass's output (mesh.vtu, centerlines.vtp, the distance surface, log.vmtk)
+    that must not ride along."""
+    from meshpipeline.engines.vmtk.lumen_staging import STAGING_FACT
     ws = Path(workspace)
-    return [n for n in ("vmtk_spec.json", _LUMEN, "lumen_open.vtp") if (ws / n).exists()]
+    # the confirmed boundaries and the flow conditions, which the Fluent export types its zones from
+    return [n for n in ("vmtk_spec.json", _LUMEN, "lumen_open.vtp", STAGING_FACT, "port_declaration.json",
+                        "request.txt") if (ws / n).exists()]
 
 
 def run_cartesian_mesh(workspace, *, timeout: int, context=None) -> dict:
@@ -1119,6 +1129,8 @@ def export_openfoam_case(workspace, *, bashrc: str = rtcfg.OPENFOAM_BASHRC,
                            "%s): %s", proc.returncode, missing, (proc.stdout or "")[-600:])
             shutil.rmtree(case / "constant" / "polyMesh", ignore_errors=True)
             return None
+        # gmshToFoam types every patch "patch": the lumen wall is a wall in the case the user opens
+        _type_wall(case / "constant" / "polyMesh" / "boundary", names[_WALL_ENTITY])
         return _OPENFOAM_CASE
     except subprocess.TimeoutExpired:
         note_guard_trip("vmtk.export", guard_s=float(timeout))
@@ -1126,6 +1138,21 @@ def export_openfoam_case(workspace, *, bashrc: str = rtcfg.OPENFOAM_BASHRC,
     except Exception:  # noqa: BLE001 - the .vtu is the mesh; the case is a convenience
         logger.exception("vmtk: OpenFOAM case export failed")
         return None
+
+
+def _type_wall(boundary: Path, wall: str) -> None:
+    """The `wall` patch of a polyMesh boundary file typed wall (gmshToFoam writes every patch as a patch)."""
+    import re
+    try:
+        text = boundary.read_text()
+    except OSError:
+        return
+    pat = re.compile(r"(\b" + re.escape(wall) + r"\s*\{[^}]*?\btype\s+)patch(\s*;)(?:(\s*physicalType\s+)patch(\s*;))?",
+                     re.S)
+    new = pat.sub(lambda m: m.group(1) + "wall" + m.group(2) + ((m.group(3) + "wall" + m.group(4)) if m.group(3) else ""),
+                  text, count=1)
+    if new != text:
+        boundary.write_text(new)
 
 
 _CONTROL_DICT = """FoamFile
@@ -1469,7 +1496,16 @@ def check_mesh(workspace) -> dict:
     except OSError as exc:
         logger.warning("vmtk check_mesh: could not write layer_report.json: %s", exc)
     ok = (not fatal) and cells > 0 and (min_quality is None or min_quality > QUALITY_FLOOR)
+    # VER-2: THE SAME NON-ORTHOGONALITY EVERY ENGINE IS JUDGED BY - checkMesh's, measured on the tets (the
+    # board read 00160152 at 86.5 degrees where this record had no such number at all)
+    try:
+        non_ortho = tet_non_orthogonality(tets)
+    except Exception as exc:  # noqa: BLE001 - evidence; an unmeasured angle is said as unmeasured
+        logger.warning("vmtk check_mesh: non-orthogonality not measured: %s", exc)
+        non_ortho = {}
     return {"cells": cells, "fatal": fatal, "min_quality": min_quality,
+            "max_non_ortho": non_ortho.get("max"), "non_ortho_mean": non_ortho.get("mean"),
+            "non_ortho_faces_over_70": non_ortho.get("over_70"),
             "layer_coverage": layer_coverage, "mesh_ok": ok,
             # the reviewer's context reads the OpenFOAM engines' key for the same fact
             "layer_coverage_pct": layer_coverage,
@@ -1479,6 +1515,39 @@ def check_mesh(workspace) -> dict:
             "reoriented_tets": n_reoriented,
             "layer_tets": int(layer_mask.sum()) if layer_mask is not None else 0,
             "layer_min_quality": layer_min_quality}
+
+
+def tet_non_orthogonality(tets) -> dict:
+    """VER-2 on a tetrahedral mesh, as OpenFOAM's checkMesh reads it once the mesh is a polyMesh: on every face two
+    tets share, the angle between the face's normal and the line from one tet's centre to the other's (a tet's
+    centre is its vertex mean, as OpenFOAM's). {"max", "mean", "over_70", "faces"} in degrees; {} with no shared
+    face. Boundary faces have no neighbour and are not judged, as in checkMesh."""
+    import numpy as np
+    cells = tets.cells_dict.get(_VTK_TETRA) if hasattr(tets, "cells_dict") else None
+    if cells is None or not len(cells):
+        return {}
+    cells = np.asarray(cells, dtype=np.int64)
+    pts = np.asarray(tets.points, dtype=np.float64)
+    centre = pts[cells].mean(axis=1)
+    local = np.array([[0, 1, 2], [0, 1, 3], [0, 2, 3], [1, 2, 3]])
+    faces = cells[:, local].reshape(-1, 3)
+    owner = np.repeat(np.arange(len(cells)), 4)
+    key = np.sort(faces, axis=1)
+    order = np.lexsort((key[:, 2], key[:, 1], key[:, 0]))
+    k = key[order]
+    same = np.all(k[1:] == k[:-1], axis=1)
+    i = np.nonzero(same)[0]
+    if not len(i):
+        return {}
+    a, b = order[i], order[i + 1]
+    f = faces[a]
+    n = np.cross(pts[f[:, 1]] - pts[f[:, 0]], pts[f[:, 2]] - pts[f[:, 0]])
+    d = centre[owner[b]] - centre[owner[a]]
+    cos = np.abs(np.einsum("ij,ij->i", n, d)) / np.maximum(np.linalg.norm(n, axis=1) * np.linalg.norm(d, axis=1),
+                                                            1e-300)
+    ang = np.degrees(np.arccos(np.clip(cos, 0.0, 1.0)))
+    return {"max": round(float(ang.max()), 4), "mean": round(float(ang.mean()), 4),
+            "over_70": int((ang > 70.0).sum()), "faces": int(len(ang))}
 
 
 _LAYER_ARRAY = "BoundaryLayer"   # cell data on mesh.vtu: 1 = a boundary-layer tet, 0 = anything else

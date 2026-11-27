@@ -517,6 +517,17 @@ def _attempt_tripped(workspace) -> bool:
     return bool(launched and launched[-1].get("timed_out"))
 
 
+def _said(res: dict) -> str:
+    """What a run result says about itself: its log tail, else its own reason (a result that ran no mesher - the
+    lab's or a router's refusal, {"rc": 1, "error": ...} - carries no tail; it ended run_mesh with a KeyError and the
+    run with no mesh and no reason, abc 00063401 on the lab, 23 Nov)."""
+    for key in ("log_tail", "error", "reason", "message"):
+        v = res.get(key)
+        if v:
+            return str(v)
+    return ""
+
+
 def _guard_verdict(ctx: BuilderToolContext, engine: str, cap: int, broken: list[str],
                    log_tail, *, stalled: bool = False) -> dict:
     """A run its guard clock stopped (TIME-3): recorded beside the case as a guard trip, said to
@@ -638,6 +649,60 @@ def _run_and_judge(ctx: BuilderToolContext, prepared: PreparedMeshRun) -> dict:
                              "end your turn now; the run moves on to the next engine, which builds the "
                              "layers the plan asks for."),
                 "log_tail": res.get("log_tail", "")}
+    if res.get("untangle_not_converging"):
+        # TIME-20: cartesianMesh stopped on its own counts - its untangling was not converging. The same plan
+        # tangles the same way, so the run moves on to the next engine (as VMTK's layers above)
+        from meshpipeline.contracts.failure_cause import FailureCause
+        from meshpipeline.engines.preflight import PreflightRefusal
+        _u = dict(res["untangle_not_converging"])
+        _words = str(_u.get("words") or "cfMesh was not untangling the mesh")
+        logger.warning("run_mesh: %s", _words)
+        PreflightRefusal(
+            gate="finalize", cause=FailureCause.ENGINE_CRASHED.value,
+            builder_text=f"[CFMESH_UNTANGLE_NOT_CONVERGING] {_words}",
+            facts={"untangle_not_converging": True, "deterministic": True, "rule": _u.get("rule"),
+                   "meshers_started": 1}).write(workspace)
+        return {"success": False, "untangle_not_converging": _u, HANDS_OFF: True,
+                "guidance": (f"Not meshed: {_words}. Do NOT run_mesh again and do NOT reconfigure - end your "
+                             "turn now; the run moves on to the next engine."),
+                "log_tail": res.get("log_tail", "")}
+    if res.get("fidelity_first"):
+        # TIME-15: the mesh as built misses more of the CAD than a rescue can bring back - not rescued, and refused in
+        # the CAD check's own words; that refusal stands over the mesh on disk (pipeline/executor)
+        from meshpipeline.engines.cfmesh.rescue import fidelity_first_refusal
+        _r = fidelity_first_refusal(dict(res["fidelity_first"]))
+        _r.write(workspace)
+        logger.warning("run_mesh: %s", _r.builder_text)
+        return {"success": False, "fidelity_first": dict(res["fidelity_first"]), HANDS_OFF: True,
+                "guidance": (f"Not delivered: {_r.builder_text}. Do NOT run_mesh again and do NOT reconfigure - end "
+                             "your turn now."),
+                "log_tail": res.get("log_tail", "")}
+    from meshpipeline.engines.cfmesh.native import PORT_REGION_DROPPED
+    if not res.get("timed_out") and PORT_REGION_DROPPED in str(res.get("log_tail") or ""):
+        # INS-29: AN OPENING LANDED IN A REGION THE MESHER DROPPED, after the passage was meshed finer: the same
+        # plan drops it again (abc 63401 and 99768 ran it three times), so no attempt repeats it
+        from meshpipeline.contracts.failure_cause import FailureCause
+        from meshpipeline.engines.preflight import PreflightRefusal
+        _line = next((ln for ln in str(res.get("log_tail") or "").splitlines() if PORT_REGION_DROPPED in ln), "")
+        logger.warning("run_mesh: %s", _line)
+        # INS-36: a mesh WAS built - refused in the plan-time stop's own words (the opening, the narrowest gap on its
+        # way, what was built, the ways out), and that refusal stands over the mesh (never a manifest error)
+        # reached through the engine seam (get_engine): only an engine that drops a region declares it
+        _after_build = getattr(R, "after_build_refusal", None)
+        _after = _after_build(workspace) if callable(_after_build) else None
+        if _after is not None:
+            _after.write(workspace)
+            _line = _after.builder_text.removeprefix("[PORT_REGION_DROPPED] ")
+        else:
+            PreflightRefusal(
+                gate="finalize", cause=FailureCause.PATCH_NOT_CAPTURED.value,
+                builder_text=f"[PORT_REGION_DROPPED] {_line}",
+                facts={"port_region_dropped": True, "deterministic": True, "ladder_exhausted": True,
+                       "meshers_started": 1}).write(workspace)
+        return {"success": False, HANDS_OFF: True,
+                "guidance": (f"Not meshed: {_line}. Do NOT run_mesh again and do NOT reconfigure - end your "
+                             "turn now."),
+                "log_tail": res.get("log_tail", "")}
     if res["timed_out"] or _attempt_tripped(workspace):
         # THE RUN'S GUARD CLOCK TRIPPED - the run itself, or a step inside it (its stamp says
         # which). An infrastructure stop (TIME-3): the attempt ends and is replayed as it was.
@@ -654,7 +719,7 @@ def _run_and_judge(ctx: BuilderToolContext, prepared: PreparedMeshRun) -> dict:
         _rq = res.get("remote_quality") or {}
         _over_cap = "over the" in str(res.get("log_tail")) and "cap" in str(res.get("log_tail"))
         return {"success": False, "system_failure": not _over_cap, "rc": -3,
-                "log_tail": res["log_tail"], "remote_quality": _rq,
+                "log_tail": _said(res), "remote_quality": _rq,
                 "guidance": ((f"The mesh RAN ({_rq.get('cells')} cells) but its result archive "
                               "exceeded the exchange's size cap on the way back. Reduce the cell "
                               "budget and the refinement so the delivered mesh fits, then "
@@ -664,7 +729,7 @@ def _run_and_judge(ctx: BuilderToolContext, prepared: PreparedMeshRun) -> dict:
                               "run_mesh again unchanged; if it fails the same way again, STOP."))}
     if res["rc"] == -3:
         return {"success": False, "system_failure": True, "rc": -3,
-                "log_tail": res["log_tail"],
+                "log_tail": _said(res),
                 "guidance": ("The REMOTE MESH RUNNER failed (cloud infrastructure), not your "
                              "mesh spec. Do NOT change the configuration in response to this. "
                              "Call run_mesh again unchanged; if it fails the same way again, "
@@ -705,5 +770,5 @@ def _run_and_judge(ctx: BuilderToolContext, prepared: PreparedMeshRun) -> dict:
                            f"of this shape is broken. Do NOT run_mesh again and do NOT reconfigure "
                            f"- end your turn now. The run moves on to {nxt}, which builds the "
                            "same approved mesh.")
-    out["log_tail"] = "" if ok else res["log_tail"]
+    out["log_tail"] = "" if ok else _said(res)
     return out

@@ -246,10 +246,11 @@ async def test_worker_seeds_dispute_state_from_parent_workspace(tmp_path, monkey
     assert captured["request_txt"] == "original CRM request"    # recovered from workspace
 
 
-async def test_worker_dispute_with_purged_parent_fails_as_system_failure(tmp_path, monkeypatch):
+async def test_worker_dispute_with_purged_parent_is_told_never_failed_as_ours(tmp_path, monkeypatch):
+    # VER-17: the mesh is on no disk and in no store - a told outcome with the way on, never "on our side"
     import meshpipeline.application.pipeline_run as wt
     _install_pub(monkeypatch, wt)
-    from meshpipeline.errors import SystemFailure
+    from meshpipeline.application.job_service import DISPUTE_MESH_GONE
     monkeypatch.setattr(rtcfg, "WORKSPACE_BASE", tmp_path)   # no parent dir exists
 
     import sqlalchemy.ext.asyncio as sa_aio
@@ -274,16 +275,25 @@ async def test_worker_dispute_with_purged_parent_fails_as_system_failure(tmp_pat
         async def get_for_owner(self, db, job_id, owner_id): return None
         async def transition(self, db, job_id, target, *, allow=None): return TransitionResult.applied
     monkeypatch.setattr(jr, "JobRepository", lambda: FakeRepo())
-    monkeypatch.setattr(wt, "_pub", lambda job_id, stage="outcome": FakePublisher(job_id, stage))
+    published: list = []
+
+    def _publisher(job_id, stage="outcome"):
+        p = FakePublisher(job_id, stage)
+        published.append(p)
+        return p
+
+    monkeypatch.setattr(wt, "_pub", _publisher)
     monkeypatch.setattr(wt, "_incr_delivery_count", lambda job_id: 1)
     install_durable_execution_fakes(monkeypatch, wt) # durable lease + outbox seams
     import meshpipeline.errors as failures
     monkeypatch.setattr(failures, "record_dead_letter", lambda *a, **k: None)
 
-    with pytest.raises(SystemFailure):
-        await wt._run_async(wt.JobRequest(
-            job_id=str(_uuid.uuid4()),
-            user_dispute={**_DISPUTE, "of_job_id": "gone-job"}))
+    out = await wt._run_async(wt.JobRequest(
+        job_id=str(_uuid.uuid4()),
+        user_dispute={**_DISPUTE, "of_job_id": str(_uuid.uuid4())}))
+    assert out["status"] == "failed" and out["reason"] == "dispute_mesh_gone", out
+    closings = [e["text"] for p in published for e in p.events if e.get("type") == "closing"]
+    assert closings == [DISPUTE_MESH_GONE], closings
 
 
 # API endpoint  #
@@ -409,10 +419,13 @@ def test_a_dispute_after_the_conversation_moved_on_inherits_the_runs_own_payload
         "intake_patches": [{"name": "wing", "type": "wall"}], "dimensionality": "3D",
         "purpose": "external_cfd", "input_kind": "body-surface"}
     client, dispatched, _ = _client(monkeypatch, parent, linked_session=False)
+    # VER-9: "finer wake please" is a change, so this is the new run's path (no model: the code sentence)
+    monkeypatch.setattr("meshpipeline.agents.intake.plan_reply._ask", _no_model)
     r = client.post(f"/api/v1/simulation/{parent.id}/dispute",
                     headers={"X-User-Id": "user-1"},
                     json={"comment": "finer wake please"})
     assert r.status_code == 202, r.text
+    assert "user_dispute" not in dispatched and dispatched["user_notes"][-1]["text"] == "finer wake please"
     assert dispatched["session_id"] == "sess-1"
     assert dispatched["intake_patches"] == [{"name": "wing", "type": "wall"}]
     assert dispatched["purpose"] == "external_cfd"
@@ -459,17 +472,34 @@ def test_dispute_endpoint_rejects_empty_dispute_and_unknown_job(monkeypatch):
     assert not dispatched
 
 
+async def _no_model(*_a, **_k):
+    raise RuntimeError("no model in unit tests")
+
+
 def test_dispute_endpoint_accepts_comment_only_change_request(monkeypatch):
-    # a dispute can be a plain change of heart - no flagged cells required
+    # a plain change of heart needs no marks - and since VER-9 it is a requirement of a new run, not a dispute
     parent = _succeeded_job()
     client, dispatched, _ = _client(monkeypatch, parent)
+    monkeypatch.setattr("meshpipeline.agents.intake.plan_reply._ask", _no_model)
     r = client.post(f"/api/v1/simulation/{parent.id}/dispute",
                     headers={"X-User-Id": "user-1"},
                     json={"comment": "I want finer resolution in the wake region"})
     assert r.status_code == 202, r.text
-    assert r.json()["flags"] == 0
-    assert dispatched["user_dispute"]["flags"] == []
-    assert "wake region" in dispatched["user_dispute"]["comment"]
+    assert r.json()["flags"] == 0 and r.json()["kind"] == "change"
+    assert "user_dispute" not in dispatched
+    assert dispatched["user_notes"][-1]["text"] == "I want finer resolution in the wake region"
+    assert r.json()["reply"].startswith("Noted.") and "new run" in r.json()["reply"]
+
+
+def test_a_doubt_with_no_marks_is_still_a_review_of_the_same_mesh(monkeypatch):
+    parent = _succeeded_job()
+    client, dispatched, _ = _client(monkeypatch, parent)
+    r = client.post(f"/api/v1/simulation/{parent.id}/dispute",
+                    headers={"X-User-Id": "user-1"},
+                    json={"comment": "the wake looks wrong, take another look"})
+    assert r.status_code == 202, r.text
+    assert r.json()["kind"] == "review"
+    assert "wake looks wrong" in dispatched["user_dispute"]["comment"]
 
 
 def test_dispute_endpoint_quota_gated(monkeypatch):

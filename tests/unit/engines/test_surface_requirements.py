@@ -257,7 +257,9 @@ def _untimed(record: dict) -> dict:
     """The run record without its wall-clock fields: what "the same run" must reproduce."""
     out = {k: v for k, v in record.items() if k not in _TIMINGS}
     if isinstance(out.get("quality"), dict):
-        out["quality"] = {k: v for k, v in out["quality"].items() if k != "passes_s"}
+        # ("clock": the mesh's time limit as priced from the rate this machine was measured to mesh at - SHMESH-21e;
+        # on a busy machine two runs of the same mesh measure different rates)
+        out["quality"] = {k: v for k, v in out["quality"].items() if k not in ("passes_s", "clock")}
     return out
 
 
@@ -429,7 +431,7 @@ def test_a_file_that_is_not_a_surface_carries_the_same_reading_on(tmp_path, monk
         return {}
 
     monkeypatch.setattr(FD.FA, "decide", no_ai)
-    monkeypatch.setattr(FD, "element_target", lambda _state, _ai: None)
+    monkeypatch.setattr(FD, "element_target", lambda _state, _ai, *_more: None)
     state = {"purpose": "structural", "user_notes": [{"id": "n1", "text": notes_of()}]}
     with pytest.raises(_Reached):
         asyncio.run(FD.drive(ws, state, job_id="t", publish=None, run=_Run()))

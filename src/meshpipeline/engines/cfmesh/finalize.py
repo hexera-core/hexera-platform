@@ -2,6 +2,7 @@
 # Boundaries: delivery means every required member of the declared bundle is present.
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 
@@ -33,7 +34,7 @@ def census_quality(ws: Path, intake_patches: list) -> dict:
     Willis) shipped with no figure at all. When layers were asked and the mesh cannot be
     measured, the record says why instead of saying nothing."""
     from meshpipeline.engines.ground_plane import is_ground
-    from meshpipeline.engines.layer_census import census, requested_layers_for
+    from meshpipeline.engines.layer_census import census, height_quality, planned_first_of, requested_layers_for
 
     target, stated, in_dict = requested_layers_for(ws)
     if target <= 0:
@@ -43,7 +44,7 @@ def census_quality(ws: Path, intake_patches: list) -> dict:
              and not is_ground(str(p.get("name")), "wall")]
     out: dict = {"layers_requested": target, "layers_stated": stated or None,
                  "layers_in_meshdict": in_dict}
-    per, why = census(ws / "constant" / "polyMesh", target, walls)
+    per, why = census(ws / "constant" / "polyMesh", target, walls, planned_first_m=planned_first_of(ws))
     if not per:
         out["layer_coverage_source"] = "unmeasured"
         out["layer_census_note"] = why or "no wall patch of the contract is in the mesh"
@@ -53,6 +54,13 @@ def census_quality(ws: Path, intake_patches: list) -> dict:
     out["layer_coverage_pct"] = round(sum(v["coverage_pct"] * v["faces"]
                                           for v in per.values()) / max(faces, 1), 2)
     out["layer_coverage_source"] = "census"
+    # CFDREQ-14: a layer is the one asked only at the height asked - the coverage is counted there, and the
+    # count by shape alone is kept beside it
+    tall = height_quality(per)
+    if tall.get("layer_coverage_basis") == "height":
+        out["layer_coverage_shape_pct"] = out["layer_coverage_pct"]
+        out["layer_coverage_pct"] = tall["layer_coverage_at_plan_pct"]
+    out.update(tall)
     out["layers_mean"] = round(sum(v["mean_layers"] * v["area_m2"] for v in per.values()) / area, 3)
     out["layer_area_full_pct"] = round(100.0 * sum(v["area_with_full_layers"] * v["area_m2"]
                                                    for v in per.values()) / area, 2)
@@ -63,7 +71,8 @@ def census_quality(ws: Path, intake_patches: list) -> dict:
             "area_with_full_layers": v["area_with_full_layers"],
             "area_with_any_layer": v["area_with_any_layer"],
             "layers_by_area": v["layers_by_area"], "first_layer_m": v["first_layer_m"],
-            "stack_m": v["stack_m"], "growth": v["growth"]}
+            "stack_m": v["stack_m"], "growth": v["growth"],
+            "first_cell_m": v.get("first_cell_m"), "area_at_plan": v.get("area_at_plan")}
         for n, v in per.items()}
     return out
 
@@ -82,12 +91,25 @@ def finalize(workspace_dir: str, intake_patches: list, engine: str, domain: str 
     incomplete = delivery_problem(ws)
     if incomplete:
         return {"success": False, "stdout": "", "stderr": "", "output": incomplete}
+    # EACH STEP TIMED: the steps after the mesher are minutes a customer waits too (7.1 between the
+    # mesher handing back and submit_mesh on a coronary tree, the CFD board, 21 Nov)
+    import time as _time
+    _t0 = _time.monotonic()
+    _laps: dict = {}
+
+    def _lap(name: str) -> None:
+        _laps[name] = round(_time.monotonic() - _t0 - sum(_laps.values()), 1)
     q = R.check_mesh(ws)
+    _lap("check_mesh")
     if internal_flow:
         # which under-resolved passages the flow can go round - read only when the measure put the
         # narrowest wall under the floor (engines/passage_flow.py, as in the snappy finalize)
         from meshpipeline.engines.passage_flow import passage_flow_of_polymesh
         q.update(passage_flow_of_polymesh(ws, q))
+        # ...and the gap plan, for the delivery's note (as in the snappy finalize)
+        from meshpipeline.engines.gap_sizing import quality_plan
+        q.update(quality_plan(ws))
+        _lap("passage_flow")
     # NEAR-WALL PRISM LAYER COVERAGE - a MEASURED number, not a visual: a ~1e-4 m layer band
     # on a metre-scale body is invisible in any whole-body render, so the reviewer must judge
     # the layer axis from this figure (it otherwise mistook an unresolvable near-wall region
@@ -123,11 +145,15 @@ def finalize(workspace_dir: str, intake_patches: list, engine: str, domain: str 
             for _k in ("layer_coverage_pct", "layer_coverage_source", "layer_census_note",
                        "per_patch_layers", "layers_mean", "layer_area_full_pct",
                        "layer_area_any_pct", "layers_requested", "layers_stated",
-                       "layers_in_meshdict"):
+                       "layers_in_meshdict", "layer_coverage_shape_pct", "layer_coverage_basis",
+                       "layer_first_planned_m", "layer_area_at_plan_pct", "layer_coverage_at_plan_pct",
+                       "layer_first_cell_m", "layer_first_vs_plan", "layer_area_first_at_plan_pct",
+                       "layer_area_under_jump_pct", "layer_next_over_first"):
                 q.pop(_k, None)
             q.update(census_quality(ws, intake_patches))
     except Exception:
         logger.exception("finalize: layer census failed (non-fatal)")
+    _lap("layers")
     patch_entities, bbox = {}, (0.0,) * 6
     _review_tris: dict = {}   # per-patch triangles → precomputed reviewer camera views
     # The review surface the vision reviewer renders is built from the geometry THIS ENGINE
@@ -158,6 +184,7 @@ def finalize(workspace_dir: str, intake_patches: list, engine: str, domain: str 
             patch_entities, bbox = R.build_review_msh(ws, _solids)
         except Exception:
             logger.exception("Executor: review-mesh build failed (non-fatal)")
+    _lap("review_mesh")
     # When an engine's review surface covers only the BODY (snappy: the far-field / symmetry
     # patches live in the blockMesh boundary, not the triSurface), declare the mesh's real
     # patches so the manifest matches the mesh AND the contract (the added ones carry no
@@ -172,6 +199,7 @@ def finalize(workspace_dir: str, intake_patches: list, engine: str, domain: str 
         volume_path = R.export_volume_vtk(ws)
     except Exception:
         logger.exception("Executor: foamToVTK volume export failed (non-fatal)")
+    _lap("volume_vtk")
     # The DELIVERABLE surface: the faces this run actually produced, converted from the VTK
     # boundary the export above leaves beside the volume. Distinct from the review mesh built
     # earlier, which re-exports the CAD the mesher snapped TO - the right thing for the reviewer to
@@ -181,6 +209,13 @@ def finalize(workspace_dir: str, intake_patches: list, engine: str, domain: str 
         build_surface_msh(ws)
     except Exception:
         logger.exception("Executor: surface deliverable export failed (non-fatal)")
+    # CFDREQ-28: THE WAKE REFINEMENT an external case authored (engines/wake_region.py), read as snappyHexMesh's is
+    try:
+        _w = json.loads((ws / "wake_refinement.json").read_text())
+        if isinstance(_w, dict):
+            q["wake_refinement"] = _w
+    except (OSError, ValueError):
+        pass
     # each boundary's AREA, off the same VTK boundary: the shared port-area gate holds every
     # inlet/outlet to the opening the user declared (engines/region_check.py)
     try:
@@ -195,6 +230,7 @@ def finalize(workspace_dir: str, intake_patches: list, engine: str, domain: str 
             q["port_openings_m2"] = _openings
     except Exception:
         logger.exception("Executor: patch areas not measured (non-fatal)")
+    _lap("surface_and_areas")
     body_bbox = None
     try:
         _bi = R.inspect_stl(ws)
@@ -236,6 +272,9 @@ def finalize(workspace_dir: str, intake_patches: list, engine: str, domain: str 
                     q["surface_deviation"] = _sd
         except Exception:
             logger.exception("Executor: surface-deviation metric failed (non-fatal)")
+    _lap("surface_deviation")
+    q["finalize_s"] = dict(_laps)
+    logger.info("cfMesh finalize steps (s): %s", _laps)
     # The far-field box the builder PREPARED (recorded by prepare_surface) -
     # the domain-extent gate measures this, not the octree-padded mesh bounds.
     requested_box = None

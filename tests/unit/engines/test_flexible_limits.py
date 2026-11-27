@@ -136,8 +136,8 @@ def test_a_flexible_limit_outside_in_places_is_told_never_not_met():
     row = rep["rows"][0]
     assert row["met"] is None and row["flexible"] is True and row["excess"] == 0 and rep["missed"] == 0
     assert MR.line(row) == "Warpage under 15°: flexible - 1.2% of elements (12) are past it, the worst 22°."
-    assert MR.summary(rep) == ("Of the 1 thing you asked for: 0 met; 1 flexible limit: 1.2% of elements outside "
-                               "warpage under 15°.")
+    assert MR.summary(rep) == "Of the 1 thing you asked for: 0 met; 1 flexible limit."
+    assert MR.asks_said(rep) == "Warpage under 15°: flexible - 1.2% of elements (12) are past it, the worst 22°."
     # no limit of the verdict (neither met nor missed); the result's table tells it, "Flexible" with its share
     assert MR.asked_rows({"requirements": rep}) == []
     asked = MR.asked_rows({"requirements": rep}, told=True)

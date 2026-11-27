@@ -223,14 +223,21 @@ def view(session: Any, *, owner_id: str = "") -> dict | None:
         return None
 
 
-def finalize(session: Any, *, owner_id: str = "") -> dict | None:
+def finalize(session: Any, *, owner_id: str = "", standard: Mapping | None = None) -> dict | None:
     """THE USER FINALIZED THEIR NOTES: the reading of the user's notes as they stand now
-    is started - unless it already runs or is done - and the card's view is answered. Never raises."""
+    is started - unless it already runs or is done - and the card's view is answered. `standard`: the team's saved
+    meshing standard (application/meshing_standard_service.for_reading), handed to the reading for the cost of an
+    FEA solid's requirements (NOTE-26). Never raises."""
     try:
-        return _view(session, owner_id=owner_id, start=True)
+        return _view(session, owner_id=owner_id, start=True, standard=standard)
     except Exception as exc:  # noqa: BLE001 - nothing read; the run reads the notes itself
         logger.warning("part matches: the notes were not read (%s: %s)", type(exc).__name__, str(exc)[:200])
         return None
+
+
+def with_standard(standard: Mapping | None) -> dict:
+    """finalize's `standard` argument, given only when there is one (a session with no team standard reads as before)."""
+    return {"standard": dict(standard)} if isinstance(standard, Mapping) else {}
 
 
 def before_run(session: Any, *, owner_id: str = "") -> str:
@@ -240,7 +247,7 @@ def before_run(session: Any, *, owner_id: str = "") -> str:
     return "read" if got and got.get("status") == "reading" else "go"
 
 
-def _view(session: Any, *, owner_id: str, start: bool) -> dict | None:
+def _view(session: Any, *, owner_id: str, start: bool, standard: Mapping | None = None) -> dict | None:
     from meshpipeline.application.geometry_check import read_check
     sid = str(getattr(session, "id", "") or "")
     notes = notes_of(getattr(session, "user_notes", None), getattr(session, "request_txt", None))
@@ -265,20 +272,38 @@ def _view(session: Any, *, owner_id: str, start: bool) -> dict | None:
     if start and (not current or lapsed):
         if enqueue_reading(sid, key, getattr(session, "user_notes", None), getattr(session, "request_txt", None),
                            owner_id=owner_id or str(getattr(session, "owner_id", "") or ""), previous=stored,
-                           notes_only=seen is NOTES_ONLY):
+                           notes_only=seen is NOTES_ONLY, standard=standard):
             stored, current = _read(sid, MATCHES), True
     if current and stored is not None and stored.get("status") == "done":
-        got = rows_of(with_picks(sid, stored, seen["table"], notes), seen, sid) or {"status": "done", "rows": [],
-                                                                                    "unsure": []}
+        own = getattr(session, "user_notes", None)
+        got = with_notes(with_faces(rows_of(with_picks(sid, stored, seen["table"], notes), seen, sid), own), own) or {
+            "status": "done", "rows": [], "unsure": []}
+        got = with_counts(got, own, flow=seen.get("route") == ROUTE_CFD) or got
+        got = with_cost(got, stored.get("cost"))
+        if stored.get("cost_pending"):
+            # NOTE-26: the cost is still being worked out - the console keeps asking, and its line follows the reply
+            got = {**got, "cost_pending": True}
+        if str((stored.get("section") or {}).get("status") or "") == "failed":
+            # the model step did not answer: said so plainly (the run reads the notes again)
+            got = {**got, "failed": True}
         lines = notes_lines(stored, notes=notes, facts=_acted_facts(session))
+        if seen.get("route") == ROUTE_CFD:
+            # NOTE-24: a count the checklist shows as its own row is not listed again as the reader's line
+            lines = listed_once(lines, got.get("rows"))
+            # a flow mesh: the run's own CFD reader reads every note again, so what is not in this checklist is
+            # still kept for the run (the reply says it is kept, never that it was unreadable -
+            # agents/intake/plan_talk.reply_for); `notes_only`: no parts to tie words to at all
+            got = {**got, "flow": True, **({"notes_only": True} if seen is NOTES_ONLY else {})}
         return {**got, "lines": lines} if lines else got
     # NOT READ FOR THESE WORDS (yet): the last reading's rows stay on the card until the new one lands
     status = "reading" if current and stored is not None and stored.get("status") == "reading" else "ready"
     out: dict[str, Any] = {"status": status}
     last = stored if stored is not None and stored.get("status") == "done" else (stored or {}).get("previous")
     if isinstance(last, dict) and last.get("status") == "done":
-        old = rows_of(with_picks(sid, last, seen["table"], notes), seen, sid)
+        old = with_notes(with_faces(rows_of(with_picks(sid, last, seen["table"], notes), seen, sid),
+                                    getattr(session, "user_notes", None)), getattr(session, "user_notes", None))
         if old:
+            old = with_counts(old, getattr(session, "user_notes", None), flow=seen.get("route") == ROUTE_CFD) or old
             out = {**old, "status": status, "stale": True}
     return out
 
@@ -344,6 +369,134 @@ def with_picks(session_id: str, stored: Mapping, table: list[dict], notes: str) 
     return reading
 
 
+def with_faces(got: dict | None, user_notes) -> dict | None:
+    """NOTE-17 on the checklist before approval: a row read from words sent with faces picked on the model shows
+    those faces as its place ("2 mm · the face you picked (Face 12 · round Ø15 mm)"), as the run applies it
+    (engines/mesh_requirements.bind_picks, cad/part_words.with_picks), not the parts or areas the reader tied the
+    words to: the one rule both call is mesh_requirements.picked_for. A phrase the reader could not place is placed by
+    the pick. Left as read: words that say the whole mesh. A face row is not re-tied to parts. Pure."""
+    from meshpipeline.contracts.user_notes import own_notes
+    from meshpipeline.engines import mesh_requirements as MR
+    if not got:
+        return got
+    notes = [n for n in own_notes(user_notes) if n.get("faces")]
+    if not notes:
+        return got
+
+    def faces_of(r: Mapping) -> list | None:
+        return MR.picked_for(str(r.get("quote") or ""), notes)
+
+    def face_row(r: Mapping, faces: list) -> dict:
+        row = {k: v for k, v in r.items() if k not in ("lit", "text", "picked", "rest")}
+        return {**row, "parts": [], "picked": True, "parts_text": MR.picked_where(faces),
+                "faces": [{"id": str(f.get("id") or ""), "label": str(f.get("label") or f.get("id") or "")}
+                          for f in faces]}
+
+    rows, unsure = [], []
+    for r in got.get("rows") or []:
+        f = faces_of(r)
+        rows.append(face_row(r, f) if f else r)
+    for u in got.get("unsure") or []:
+        f = faces_of(u) if u.get("size") else None
+        if f:
+            rows.append(face_row(u, f))
+        else:
+            unsure.append(u)
+    return {**got, "rows": whole_or_rest(rows), "unsure": unsure}
+
+
+def with_notes(got: dict | None, user_notes) -> dict | None:
+    """NOTE-19: each row and each phrase not placed carries `note`, the id of the user's note it was read from (the
+    newest note its quote stands in, by the reader's own word-for-word test, cad/part_words.quoted_in - the test that
+    let the row onto the card), so a reply finds the rows of its own message by id, not by matching words again.
+    Pure; a row no note holds is left without one."""
+    from meshpipeline.cad import part_words as PW
+    from meshpipeline.contracts.user_notes import own_notes, said
+    if not got or not (got.get("rows") or got.get("unsure")):
+        return got
+    # a click that answers earlier words (NOTE-22) holds them: the row they make on its faces is that message's
+    notes = [(str(n.get("id") or ""), said(n)) for n in own_notes(user_notes)]
+
+    def stamp(r: Mapping) -> dict:
+        quote = str(r.get("quote") or "")
+        hit = next((i for i, text in reversed(notes) if PW.quoted_in(quote, text)), "")
+        return {**r, "note": hit} if hit else dict(r)
+    return {**got, "rows": [stamp(r) for r in got.get("rows") or []],
+            "unsure": [stamp(u) for u in got.get("unsure") or []]}
+
+
+#: NOTE-24: an element or cell count typed at the plan step is a row of the checklist
+COUNT_RULE = "NOTE-24"
+
+
+def with_counts(got: dict | None, user_notes, *, flow: bool) -> dict | None:
+    """NOTE-24: the count the user's notes state for the whole mesh ("keep it under 1.5 million elements") as a row of
+    the checklist - the newest note that states one (the run's readers keep the latest), stamped with its id - where
+    the run's own reader applies it: every flow mesh (CFDREQ-3), and the solid and shell meshes while their AI step
+    reads the notes (AI-fea-4, PLAN-fea-27, SHMESH-23; with it off the run applies no count, so none is shown). Pure
+    but for that switch."""
+    from meshpipeline.agents.intake import plan_talk as PT
+    from meshpipeline.contracts.user_notes import own_notes
+    if got is None:
+        return got
+    if not flow:
+        from meshpipeline.engines.fea_ai import FEA_AI
+        if not FEA_AI:
+            return got
+    rows: list[dict] = []
+    for n in reversed(own_notes(user_notes)):
+        rows = PT.count_rows(n, flow=flow, note_id=str(n.get("id") or ""))
+        if rows:
+            break
+    return {**got, "rows": [*(got.get("rows") or []), *rows]} if rows else got
+
+
+def with_cost(got: dict, cost: Mapping | None) -> dict:
+    """NOTE-26: the cost of the checklist's sizes and count kept with the reading (application/plan_cost) on the view,
+    and the count row (NOTE-24) showing the element estimate the run would plan with them. Pure."""
+    if not got or not isinstance(cost, Mapping):
+        return got
+    after = int((cost.get("after") or {}).get("elements") or 0)
+    if not after:
+        return got              # (a reading with nothing to cost keeps only its marker, plan_cost.NOTHING)
+    from meshpipeline.agents.intake import plan_talk as PT
+    rows = [({**r, "estimate": f"Planned: {PT.count_words(after)} elements"} if r.get("count") and after else r)
+            for r in got.get("rows") or []]
+    return {**got, "rows": rows, "cost": dict(cost)}
+
+
+#: NOTE-24: the CFD reader's line for a whole-mesh count ("From your notes: about 2 million cells.", or the team's
+#: settings' "From your settings: at most 8 million cells."), and its bound
+_COUNT_LINE = re.compile(r"^From your (?:notes|settings): (about|at most|at least) [\d.,]+(?: million)? "
+                         r"(?:cells|elements)\b")
+_COUNT_BOUND = {"target": "about", "ceiling": "at most", "floor": "at least"}
+
+
+def listed_once(lines: list[str], rows) -> list[str]:
+    """NOTE-24 on a flow mesh: ONE SETTING IS LISTED ONCE. A count typed at the plan step is a row of the checklist
+    (`with_counts`, read in code, as typed) and the CFD reader reads it too ("From your notes: about 2 million
+    cells."), so the checklist listed the same setting twice; a team's saved count of the same bound (Workspace >
+    Meshing, engines/meshing_standard) beside it is the same setting again. The row stays - it holds the typed value,
+    which wins - and the reader's count lines of that bound are left out. Pure."""
+    bounds = {_COUNT_BOUND.get(str((r.get("count") or {}).get("what"))) for r in rows or ()
+              if isinstance(r, Mapping) and r.get("count")}
+    if not bounds:
+        return list(lines)
+    return [w for w in lines if not ((m := _COUNT_LINE.match(str(w))) and m.group(1) in bounds)]
+
+
+def note_id(user_notes, note: Mapping) -> str:
+    """The id among the user's own notes of one kept note (a chat note by its source and turn, else by its text)."""
+    from meshpipeline.contracts.user_notes import own_notes
+    for n in reversed(own_notes(user_notes)):
+        if note.get("turn") is not None and n.get("source") == note.get("source") and n.get("turn") == note.get("turn"):
+            return str(n.get("id") or "")
+    for n in reversed(own_notes(user_notes)):
+        if str(n.get("text") or "") == str(note.get("text") or "") and n.get("source") == note.get("source"):
+            return str(n.get("id") or "")
+    return ""
+
+
 def _num(pid: str) -> str:
     return str(pid).rsplit("_", 1)[-1]
 
@@ -379,6 +532,17 @@ def _where(e: Mapping, ids: list[str], names: dict[str, str], one_part: bool) ->
         areas = [p for p in ids if p in names]
         return "the whole part" + (f", {parts_words(areas, names)}" if areas else "")
     return parts_words(ids, names)
+
+
+WHOLE_PART, REST_OF_PART = "the whole part", "the rest of the part"
+
+
+def whole_or_rest(rows: list[dict]) -> list[dict]:
+    """On a single part, a size the reader put on everything else (`rest`) is "the rest of the part" only when another
+    row of the checklist sizes a place of its own (an area, a picked face); alone it is "the whole part" (the C5
+    knuckle, 26 Nov: "3 mm elements on the rest of the part" for the first size typed). Pure."""
+    others = any(not r.get("rest") and not r.get("count") and r.get("size") for r in rows)
+    return [({**r, "parts_text": REST_OF_PART if others else WHOLE_PART} if r.get("rest") else r) for r in rows]
 
 
 def _part_words(ids: list[str]) -> str:
@@ -421,6 +585,22 @@ def _short(quote: str, n: int = 60) -> str:
     return q if len(q) <= n else q[: n - 1].rstrip() + "…"
 
 
+def _unsure_text(u: Mapping) -> str:
+    """The card's line for a phrase not placed: which part was unclear, or (NOTE-21) which one of several places."""
+    quote = _short(u.get("quote") or "", 40)
+    n = u.get("which_one")
+    if isinstance(n, int) and n > 1:
+        noun = str(u.get("noun") or "place")
+        nouns = noun + ("es" if noun.endswith(("ch", "sh", "s", "x")) else "s")
+        return f"Not set yet: “{quote}” - there are {n} {nouns}, click the one you mean"
+    if u.get("none_of"):
+        # NOTE-23: a kind of place the part does not have - none found, the face asked for
+        noun = str(u["none_of"])
+        nouns = noun + ("es" if noun.endswith(("ch", "sh", "s", "x")) else "s")
+        return f"Not set yet: “{quote}” - no {nouns} on this part, click the face you mean"
+    return f"Couldn't tell which part is “{quote}”"
+
+
 def rows_of(reading: Mapping, seen: Mapping, session_id: str) -> dict | None:
     """The card's rows from a checked reading: one per phrase that holds ("frame rail → part 9 → 3–4 mm"), one
     line per phrase the model could not place ("Couldn't tell which part is 'X'"); None when the notes name no
@@ -437,12 +617,20 @@ def rows_of(reading: Mapping, seen: Mapping, session_id: str) -> dict | None:
         rows.append({"phrase": e.get("phrase"), "words": _short(e.get("quote") or ""),
                      "quote": e.get("quote") or "", "parts": ids,
                      "parts_text": _where(e, ids, names, one_part),
-                     "size": size_words(e), "picked": e.get("why") == "picked by you"})
+                     "size": size_words(e), "picked": e.get("why") == "picked by you",
+                     **({"rest": True} if one_part and e.get("rest_parts") and not e.get("parts") else {})})
     unsure = [{"phrase": u.get("phrase"), "words": _short(u.get("quote") or ""), "quote": u.get("quote") or "",
-               "text": f"Couldn't tell which part is “{_short(u.get('quote') or '', 40)}”", "size": size_words(u)}
+               "text": _unsure_text(u), "size": size_words(u),
+               # NOTE-21: one place named, several it could be - how many, and what they are
+               **({"which_one": int(u["which_one"]), "noun": str(u.get("noun") or "")}
+                  if isinstance(u.get("which_one"), int) else {}),
+               # NOTE-23: a kind of place the part does not have - which, and what it does have
+               **({"none_of": str(u["none_of"]), "noun": str(u["none_of"]), "found": str(u.get("found") or "")}
+                  if u.get("none_of") else {})}
               for u in reading.get("unsure") or []]
     if not rows and not unsure:
         return None
+    rows = whole_or_rest(rows)
     # WHAT A ROW COVERS on the picture: its parts, and the areas inside them no other row sized (a part's size holds
     # on its holes and fillets too, unless they were named for their own) - so "the rest of the part" lights the
     # whole rest of it
@@ -505,7 +693,8 @@ def card_picture(session_id: str, name: str) -> bytes | None:
 
 
 def enqueue_reading(session_id: str, key: str, user_notes, request_txt, *, owner_id: str = "",
-                    previous: Mapping | None = None, notes_only: bool = False) -> bool:
+                    previous: Mapping | None = None, notes_only: bool = False,
+                    standard: Mapping | None = None) -> bool:
     """Mark the reading of `key` as begun and hand it to the geometry worker. False when nothing runs it.
     `previous`: the last reading, whose rows the card keeps showing until this one lands. `notes_only`: a flow model
     with no parts to tie the words to (NOTES-CFD-1): the worker reads the notes alone."""
@@ -517,7 +706,10 @@ def enqueue_reading(session_id: str, key: str, user_notes, request_txt, *, owner
                                      **({"previous": dict(last)} if isinstance(last, Mapping) else {})})
         return enqueue_part_words(session_id=session_id, key=key, owner_id=owner_id,
                                   user_notes=json.loads(json.dumps(list(user_notes or []), default=str)),
-                                  request_txt=str(request_txt or ""))
+                                  request_txt=str(request_txt or ""),
+                                  # NOTE-26: the team's standard, for the cost of an FEA solid's requirements
+                                  **({"meshing_standard": json.loads(json.dumps(dict(standard), default=str))}
+                                     if isinstance(standard, Mapping) else {}))
     except Exception as exc:  # noqa: BLE001 - no reading before approval; the run reads the notes itself
         logger.warning("part matches: the reading was not queued (%s) - session=%s", type(exc).__name__, session_id)
         return False
@@ -537,10 +729,36 @@ def _route_ask(route: str) -> tuple[str, str, bool]:
     return PS.CONSUMER, PS.PURPOSE, bool(FEA_AI)
 
 
-def run_reading(*, session_id: str, key: str, user_notes=None, request_txt: str = "", owner_id: str = "") -> dict:
+def read_fea_notes(state: Mapping, session_id: str) -> tuple[dict, dict] | None:
+    """NOTE-26: the notes read as the solid run reads them (engines/fea_driver.read_requirements: meshing_standard
+    .decide on the FEA route, then fea_driver.requirements_section) - and the team's standard alone - for the cost of
+    what was typed. One model call for the notes (the standard's reading kept at save time is reused), on the worker.
+    None when they could not be read (the cost is then not said). Never raises."""
+    from meshpipeline.engines import fea_driver as FD
+    from meshpipeline.engines import meshing_standard as MS
+    from meshpipeline.engines.fea_ai import FEA_AI
+    try:
+        read, base = asyncio.run(MS.decide_and_base(state, route="fea", job_id=f"notes-{session_id}",
+                                                    enabled=FEA_AI))
+        return FD.requirements_section(read, state), FD.requirements_section(base, state)
+    except Exception as exc:  # noqa: BLE001 - no cost said; the run reads the notes itself
+        logger.warning("part matches: the notes were not read for the cost (%s) - session=%s", type(exc).__name__,
+                       session_id)
+        return None
+
+
+def run_reading(*, session_id: str, key: str, user_notes=None, request_txt: str = "", owner_id: str = "",
+                meshing_standard: Mapping | None = None, stand: bool = False) -> dict:
     """THE WORKER'S STEP: the model asked once on the check's parts table and pictures; the checked reading stored
     with its key - unless the notes changed meanwhile (a newer reading is queued; this one is dropped). Never
-    raises: a reading that fails is stored as such (the card then shows nothing; the run reads again)."""
+    raises: a reading that fails is stored as such (the card then shows nothing; the run reads again).
+    `meshing_standard`: the team's saved standard as a run is dispatched with it (engines/meshing_standard.snapshot),
+    for the cost of an FEA solid's requirements (NOTE-26). `stand`: no reading - the stage card's count for nothing
+    typed (application/plan_cost.stand), on the same worker queue."""
+    if stand:
+        from meshpipeline.application import plan_cost
+        got = plan_cost.stand(session_id, standard=meshing_standard, owner_id=owner_id, request_txt=request_txt)
+        return {"status": "stand", "elements": int(((got or {}).get("side") or {}).get("elements") or 0)}
     from meshpipeline.application.geometry_check import read_check
     from meshpipeline.cad import part_words as PW
     from meshpipeline.contracts.object_storage import get_object_store
@@ -551,10 +769,34 @@ def run_reading(*, session_id: str, key: str, user_notes=None, request_txt: str 
         if not (_read(session_id, MATCHES) or {}).get("notes_only"):
             return {"status": "none"}
         seen = NOTES_ONLY
-    state = {"user_notes": list(user_notes or []), "request_txt": request_txt or "", "user_id": owner_id}
+    # session_id: the user's own pictures with their notes are read from it (NOTE-16, contracts/user_pictures)
+    state = {"user_notes": list(user_notes or []), "request_txt": request_txt or "", "user_id": owner_id,
+             "session_id": str(session_id or "")}
     route = str(seen.get("route") or ROUTE_FEA)
     consumer, purpose, enabled = _route_ask(route)
     started = time.time()
+    # NOTES-CFD-1: on the flow route the notes themselves are read too, as the run's CFD reader reads them - in a
+    # thread of its own, beside the parts reading (the two model calls are independent; one after the other they
+    # cost their sum, side by side the longer of the two)
+    notes_job = fea_job = None
+    if route == ROUTE_CFD:
+        import concurrent.futures
+        pool = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="notes-read")
+        notes_job = pool.submit(read_notes, state, session_id)
+        pool.shutdown(wait=False)
+    elif seen is not NOTES_ONLY:
+        # NOTE-26: the cost plans with what the run plans with - the notes read with the team's standard, as the run
+        # reads them - so they are read too, beside the parts reading (side by side: the longer of the two). EVERY
+        # reading of an FEA part keeps them, sized or not: the reading after it plans "before" from them (the C5
+        # knuckle, 27 Nov: a reading made before the stage had sized the part kept none, and the first requirement's
+        # count line had no "before", so it was never said)
+        import concurrent.futures
+        fea_state: dict[str, Any] = dict(state)
+        if isinstance(meshing_standard, Mapping):
+            fea_state["meshing_standard"] = dict(meshing_standard)
+        pool = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="fea-notes-read")
+        fea_job = pool.submit(read_fea_notes, fea_state, session_id)
+        pool.shutdown(wait=False)
     if seen is NOTES_ONLY:
         section = PW.section("none", note="no parts to tie the words to")
     elif not enabled:
@@ -579,19 +821,71 @@ def run_reading(*, session_id: str, key: str, user_notes=None, request_txt: str 
         except Exception as exc:  # noqa: BLE001 - nothing read; the run asks again
             logger.warning("part matches: the reading failed (%s) - session=%s", type(exc).__name__, session_id)
             section = PW.section("failed", note=PW.UNREAD_WORDS)
-    # NOTES-CFD-1: on the flow route the notes themselves are read too, as the run's CFD reader reads them
-    notes_sec = read_notes(state, session_id) if route == ROUTE_CFD else None
+    notes_sec = notes_job.result() if notes_job is not None else None
+    # NOTE-26: the notes read with the team's standard, kept with the reading so the reading after it can plan the
+    # plan as it stood before it (plan_cost.before_of) - notes that could not be read are no cost at all (one without
+    # the standard and the picked faces would be the wrong number)
+    fea_notes = fea_job.result() if fea_job is not None else None
+    fea_inputs = None
+    if fea_notes is not None:
+        from meshpipeline.application import plan_cost
+        fea_inputs = plan_cost.inputs(section, fea_notes[0], user_notes)
     now = _read(session_id, MATCHES)
     if now is not None and now.get("key") not in (None, key):
         logger.info("part matches: the notes changed while they were read - this reading dropped - session=%s",
                     session_id)
         return {"status": "superseded"}
+    previous = (now or {}).get("previous")
+    # THE REPLY NEVER WAITS FOR THE COST (NOTE-26): the reading is kept now, the cost after it - its line follows the
+    # reply as its own message when it lands (agents/intake/plan_reply.count_owed)
     _write(session_id, MATCHES, {"key": key, "status": "done", "at": time.time(), "section": section,
                                  **({"notes": notes_sec} if notes_sec is not None else {}),
+                                 **({"fea_inputs": fea_inputs, "cost_pending": True} if fea_inputs is not None else {}),
                                  "seconds": round(time.time() - started, 1)})
     logger.info("part matches: read in %.1fs - %d row(s) - session=%s", time.time() - started,
                 len(section.get("entries") or []), session_id)
+    if fea_notes is not None:
+        from meshpipeline.application import plan_cost
+        ai_state = {k: v for k, v in fea_state.items() if k != "user_notes"}
+        cost = plan_cost.for_reading(session_id, section, user_notes, asked=fea_notes[0], base_asked=fea_notes[1],
+                                     previous=previous if isinstance(previous, Mapping) else None, ai_state=ai_state)
+        keep_cost(session_id, key, cost)
     return {"status": "done", "entries": len(section.get("entries") or [])}
+
+
+def enqueue_stand(session_id: str, facts: Mapping | None, *, owner_id: str = "", request_txt: str = "",
+                  standard: Mapping | None = None) -> bool:
+    """NOTE-26: plan the stage card's count for nothing typed on the geometry worker (plan_cost.stand) when the stage
+    sized the part and none is kept for this sizing and standard - asked at most once a while. Never raises."""
+    from meshpipeline.application import plan_cost
+    try:
+        if not plan_cost.stand_wanted(session_id, facts, standard):
+            return False
+        from meshpipeline.contracts.geometry_check import enqueue_part_words
+        return enqueue_part_words(session_id=session_id, owner_id=owner_id, user_notes=[], request_txt=request_txt,
+                                  key=f"stand-{plan_cost.sizing_key(facts)}-{plan_cost.standard_key(standard)}",
+                                  stand=True, **({"meshing_standard": json.loads(json.dumps(dict(standard),
+                                                                                             default=str))}
+                                                 if isinstance(standard, Mapping) else {}))
+    except Exception as exc:  # noqa: BLE001 - the card shows the sizing's own count
+        logger.warning("part matches: the card's count was not asked for (%s) - session=%s", type(exc).__name__,
+                       session_id)
+        return False
+
+
+def keep_cost(session_id: str, key: str, cost: Mapping | None) -> bool:
+    """NOTE-26: the cost of a reading kept with it - only while the notes are still the ones it read (a newer
+    requirement's reading has its own: a stale count is never kept, so never said). False when it was not kept."""
+    now = _read(session_id, MATCHES)
+    if now is None or now.get("key") != key or now.get("status") != "done":
+        logger.info("part matches: the notes changed while they were costed - this cost dropped - session=%s",
+                    session_id)
+        return False
+    got = {k: v for k, v in now.items() if k != "cost_pending"}
+    if cost is not None:
+        got["cost"] = dict(cost)
+    _write(session_id, MATCHES, got)
+    return True
 
 
 # #
@@ -616,7 +910,8 @@ def pick(session: Any, phrase: int, parts: list[str]) -> dict | None:
     kept = dict(picks.get("picks") or {}) if picks.get("key") == key else {}
     kept[str(int(phrase))] = [str(p) for p in parts if str(p) in ids]
     _write(sid, PICKS, {"key": key, "picks": kept, "at": time.time()})
-    return rows_of(with_picks(sid, stored, seen["table"], notes), seen, sid)
+    return with_faces(rows_of(with_picks(sid, stored, seen["table"], notes), seen, sid),
+                      getattr(session, "user_notes", None))
 
 
 def notes_for_run(session_id: str, user_notes, request_txt) -> dict | None:
@@ -649,13 +944,48 @@ def for_run(session_id: str, user_notes, request_txt) -> dict | None:
         if stored.get("key") != key_of(notes, seen["table"]):
             return None
         reading = with_picks(session_id, stored, seen["table"], notes)
-        return reading if reading.get("status") == "used" else None
+        if reading.get("status") != "used":
+            return None
+        args = str((stored.get("cost") or {}).get("ai_args") or "")
+        # NOTE-26: the AI step's decision made when these words were costed goes with them, so the run plans the count
+        # the user was told (engines/fea_driver.plan_step_ai; checked again on the run's own part)
+        return {**reading, "ai_args": args} if args else reading
     except Exception as exc:  # noqa: BLE001 - the run reads the notes itself
         logger.warning("part matches: the reading was not handed to the run (%s)", type(exc).__name__)
         return None
 
 
+#: NOTE-26: the reading whose count line was said (one line per reading, never one for notes since changed)
+COUNT_SAID = "part_cost_said.json"
+
+
+def count_owed(session: Any) -> dict | None:
+    """NOTE-26: the cost of the reading of the notes as they stand, when it has landed and its line is not said yet:
+    {"key", "cost"}; None otherwise (still costing, nothing to say, said, or the notes changed). Never raises."""
+    try:
+        from meshpipeline.application.geometry_check import read_check
+        sid = str(getattr(session, "id", "") or "")
+        seen = parts_seen(read_check(sid))
+        stored = _read(sid, MATCHES)
+        if seen is None or stored is None or stored.get("status") != "done" or not stored.get("cost"):
+            return None
+        notes = notes_of(getattr(session, "user_notes", None), getattr(session, "request_txt", None))
+        if stored.get("key") != key_of(notes, seen["table"]):
+            return None
+        if (_read(sid, COUNT_SAID) or {}).get("key") == stored["key"]:
+            return None
+        return {"key": stored["key"], "cost": dict(stored["cost"])}
+    except Exception as exc:  # noqa: BLE001 - no line said
+        logger.warning("part matches: the count line was not looked up (%s)", type(exc).__name__)
+        return None
+
+
+def count_said(session_id: str, key: str) -> None:
+    """NOTE-26: the count line of the reading `key` was said (or had nothing to say): it is never said again."""
+    _write(session_id, COUNT_SAID, {"key": key, "at": time.time()})
+
+
 __all__ = ["CARD_PICTURES", "CARD_VIEWS", "MODEL", "NOTES_ONLY", "before_run", "finalize", "flow_route", "notes_lines",
            "read_notes", "card_picture", "model_bytes", "readable", "MATCHES", "PARTS_KEY", "PICKS", "PICTURE_NAMES", "ROUTE_CFD", "ROUTE_FEA", "copy_parts",
            "enqueue_reading", "for_run", "key_of", "notes_of", "parts_seen", "parts_words", "pick", "picture_keys",
-           "rows_of", "run_reading", "size_words", "store_parts", "view", "with_picks"]
+           "rows_of", "run_reading", "size_words", "store_parts", "view", "with_faces", "with_picks"]

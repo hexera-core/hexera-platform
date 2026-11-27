@@ -14,7 +14,7 @@
 import { esc, fmtBytes } from "../core/format.js";
 import { getSurface } from "../api/endpoints.js";
 import { headers } from "../api/client.js";
-import { acceptMesh, flagDispute } from "./dispute.js";
+import { acceptMesh, sendChange } from "./dispute.js";
 import { VIEWER_FALLBACK } from "./config.js";
 // which conversation this run came from: the scope the way up is remembered against
 import { get as getState } from "../core/state.js";
@@ -110,6 +110,12 @@ function viewerToolsHtml(job,upAxis){
    falls back to its own job, as every run used to. */
 const upStore = (job) => upScope(job, getState.runOrigin(job));
 
+/* A REVISED MESH TAKES THE OLD ONE'S PLACE: each open view lends its camera, and the run that
+   revised it opens on that camera, the old view going as it opens (openViewer opts.replaces). */
+const _views={},_carried={};
+/** The camera of the open view of `job`, or null. */
+export function viewCamera(job){const v=_views[job];return v?v.camera():null;}
+
 export async function openViewer(job,anchorEl,opts){
   opts=opts||{};
   if(document.getElementById('viewer-'+job)){document.getElementById('viewer-'+job).scrollIntoView({behavior:'smooth'});return;}
@@ -148,15 +154,16 @@ export async function openViewer(job,anchorEl,opts){
         <div class="v-sec-h">Changes</div>
         <div class="v-row">
           <button class="v-btn" id="v-selbtn-${job}">Mark region</button>
+          <button class="v-btn v-quiet" id="v-clearbtn-${job}" disabled>Clear marks</button>
           <span class="v-brush" title="region size - scales with your zoom">Size
             <input type="range" id="v-brush-${job}" min="2" max="30" value="8" aria-label="region size">
             <span id="v-brushlbl-${job}"></span></span>
         </div>
+        <textarea class="v-ask" id="v-ask-${job}" rows="2" maxlength="2000" placeholder="What should change here?" aria-label="What should change here?"></textarea>
         <div class="v-row v-act">
-          <button class="v-btn" id="v-submit-${job}">Request a change…</button>
-          <button class="v-btn v-quiet" id="v-clearbtn-${job}" disabled>Clear marks</button>
+          <button class="v-btn primary" id="v-submit-${job}" disabled>Send change</button>
         </div>
-        <p class="v-cost">A change starts a new run. It takes a few minutes.</p>
+        <p class="v-cost" id="v-prog-${job}" role="status" hidden></p>
       </div></div>
     <div class="v-canvas" id="v-canvas-${job}">
       <div class="v-loading" id="v-load-${job}"><svg class="v-spin" viewBox="0 0 24 24" aria-hidden="true"><circle class="sp-arm" cx="12" cy="12" r="7.2"/><path class="sp-hd" d="M19.20 8.16L22.40 14.56L16.00 14.56Z"/><path class="sp-hd" d="M4.80 15.84L1.60 9.44L8.00 9.44Z"/></svg><div>Loading mesh…</div></div>
@@ -199,6 +206,8 @@ export async function openViewer(job,anchorEl,opts){
   // its context is not torn down under a still-running render. Without one (an embedding
   // page) the viewer opens inline after its anchor, as it always did.
   const _wb=document.getElementById('workbench'),_app=document.getElementById('app');
+  if(opts.replaces){const was=viewCamera(opts.replaces);if(was)_carried[job]=was;
+    delete _views[opts.replaces];document.getElementById('viewer-'+opts.replaces)?.remove();}
   if(_wb&&_app&&opts.takeover!==false){
     _wb.querySelectorAll('.viewer').forEach(v=>{v.hidden=true;});
     _wb.appendChild(box);
@@ -441,6 +450,7 @@ function initViewer(job,surf,uiCfg){
   const clearBtn=document.getElementById('v-clearbtn-'+job);
   const submitBtn=document.getElementById('v-submit-'+job);
   const flagsEl=document.getElementById('v-flags-'+job);
+  const askEl=document.getElementById('v-ask-'+job);let busy=false;
   const hintEl=document.getElementById('v-hint-'+job);
   const sizeEl=document.getElementById('v-brush-'+job);
   const sizeLbl=document.getElementById('v-brushlbl-'+job);
@@ -816,16 +826,9 @@ function initViewer(job,surf,uiCfg){
 
   function renderFlags(){flagsEl.style.display=flags.length?'':'none';
     clearBtn.disabled=!flags.length;
-    // ONE primary action whose meaning follows the state: with marks it sends them,
-    // without marks it is a plain free-text change request. (Two competing buttons
-    // made the with-marks / without-marks paths impossible to tell apart.)
-    submitBtn.textContent=flags.length
-      ?`Send ${flags.length} mark${flags.length>1?'s':''} for re-review`
-      :'Request a change…';
-    // with marks placed, sending them is the next step, so it takes the accent
-    submitBtn.classList.toggle('primary',flags.length>0);
-    flagsEl.innerHTML=flags.length
-      ?'<b>Marked regions</b><div class="v-fhint">The reviewer will inspect each marked spot on the delivered mesh. Add a note to say what looks wrong there.</div>':'';
+    // ONE button, Send change: marks, words, or both go; nothing at all keeps it off
+    syncSend();
+    flagsEl.innerHTML=flags.length?'<b>Marked regions</b>':'';
     flags.forEach((f,i)=>{
       if(f.el){f.el.textContent=String(i+1);
         f.el.title=f.note||'click to add a note';}
@@ -865,10 +868,19 @@ function initViewer(job,surf,uiCfg){
       if(f.el)f.el.remove();});
     flags.length=0;rw.render();renderFlags();};
 
-  // ONE handler for the one action: with marks it sends them, with none it is the
-  // plain conversation path (flags.map() is simply [] then).
-  submitBtn.onclick=()=>flagDispute(job,
-    flags.map(f=>({x:f.x,y:f.y,z:f.z,span:f.span,patch:f.patch,note:f.note})));
+  // SEND CHANGE: the marks and the words go to the back end as they stand. While a new run works
+  // the box and the button are held; this mesh stays on screen and usable, marks and all.
+  function syncSend(){submitBtn.disabled=busy||!(flags.length||askEl.value.trim());}
+  askEl.addEventListener('input',syncSend);
+  submitBtn.onclick=()=>{if(submitBtn.disabled)return;
+    sendChange(job,flags.map(f=>({x:f.x,y:f.y,z:f.z,span:f.span,patch:f.patch,note:f.note,
+      ...(f.nrm?{normal:Array.from(f.nrm)}:{})})),askEl.value.trim(),
+      {busy:on=>{busy=!!on;askEl.disabled=busy;syncSend();}});};
+  syncSend();
+  // the camera this view holds, for a revised mesh to open on
+  _views[job]={camera:()=>({position:cam.getPosition().slice(),focal:cam.getFocalPoint().slice(),
+    up:cam.getViewUp().slice(),angle:cam.getViewAngle(),scale:cam.getParallelScale(),
+    parallel:!!cam.getParallelProjection()})};
 
   // engage the camera envelope (fit distance must be captured before caps apply)
   const _fp0=cam.getFocalPoint(),_cp0=cam.getPosition();
@@ -879,6 +891,14 @@ function initViewer(job,surf,uiCfg){
   canvas.fit=fit;
   cam.onModified(clampCam);
   clampCam();                    // opening view = closest allowed to Fit
+  // A REVISED MESH OPENS WHERE THE LAST ONE WAS LOOKED AT: the same camera, kept from then on
+  const _was=_carried[job];delete _carried[job];
+  // (set whole, the clamp held off until it is: a half-set camera is clamped against itself)
+  if(_was){_clamping=true;
+    try{cam.setParallelProjection(_was.parallel);cam.setFocalPoint(..._was.focal);
+      cam.setPosition(..._was.position);cam.setViewUp(..._was.up);
+      cam.setViewAngle(_was.angle);cam.setParallelScale(_was.scale);}finally{_clamping=false;}
+    clampCam();canvas.touched=true;ren.resetCameraClippingRange();}
   rw.render();
 
   const statusEl=document.getElementById('v-status-'+job);
@@ -1050,14 +1070,23 @@ function initViewer(job,surf,uiCfg){
   (function heatmap(){
     const qf=surf.quality_fields;
     if(!qf||!qf.patches||!qf.metrics||!window.vtk)return;
-    const META={non_ortho:{b64:'non_ortho_b64'},
-                skewness:{b64:'skewness_b64'},
-                aspect_ratio:{b64:'aspect_ratio_b64'}};
-    const avail=Object.keys(META).filter(m=>qf.metrics[m]);
+    /* every measure the payload carries, in its order (a flow mesh's three; an FEA mesh's own).
+       A measure where LOWER is worse (`low`: a scaled Jacobian, an angle) is turned over once here -
+       held as its distance from a perfect element (`best` minus the value) - so the one ramp, the
+       areas and "Only bad cells" read every measure the same way; fmt() turns it back for the eye. */
+    const M={};
+    Object.keys(qf.metrics).forEach(m=>{const md=qf.metrics[m];if(!md||typeof md.limit!=='number')return;
+      M[m]=md.low?{...md,limit:md.best-md.limit,max:md.best-(md.min==null?md.limit:md.min),floor:0,scale_to:0}:md;});
+    const avail=Object.keys(M);
+    const flip=(m,v)=>M[m].low?M[m].best-v:v;
+    const HOT=(qf.hotspots||[]).filter(h=>M[h.metric]).map(h=>({...h,value:flip(h.metric,h.value)}));
+    // the word for what one coloured face stands for: a flow mesh's face, an FEA mesh's element
+    const NOUN=qf.noun||'face';
     // decode once. An array that does not match the polygon count is dropped, not trusted:
     // a misaligned field would paint every face with its neighbour's number.
     entries.forEach(en=>{const p=qf.patches[en.patch];en.q={};if(!p)return;
-      avail.forEach(m=>{if(!p[META[m].b64])return;const a=b64f32(p[META[m].b64]);
+      avail.forEach(m=>{const k=m+'_b64';if(!p[k])return;const a=b64f32(p[k]);
+        if(M[m].low)for(let i=0;i<a.length;i++)a[i]=M[m].best-a[i];
         if(a.length===en.nCells)en.q[m]=a;});
       if(p.cell_faces_b64){const cf=b64u8(p.cell_faces_b64);if(cf.length===en.nCells)en.cellFaces=cf;}});
     if(!entries.some(en=>Object.keys(en.q).length))return;
@@ -1071,7 +1100,7 @@ function initViewer(job,surf,uiCfg){
        colour is the surface's own - nothing is drawn on top of the mesh. */
     const STOPS=[[0,[110,109,101]],[0.5,[175,174,162]],[0.8,[236,180,92]],[1.0,[226,44,44]]];
     const PAST=[140,14,18];
-    function ramp(m){const md=qf.metrics[m],lim=md.limit||1,lo=md.floor||0;
+    function ramp(m){const md=M[m],lim=md.limit||1,lo=md.floor||0;
       // a metric whose bar sits far above everything the mesh has (aspect ratio: checkMesh's
       // 1000 against layers at 10 to 50) spans its colours over the mesh's own range instead,
       // and the bar is drawn as a tick only when it falls inside that range
@@ -1089,7 +1118,9 @@ function initViewer(job,surf,uiCfg){
       // the same stops as fractions of the bar, for the colour bar a snapshot draws
       const stops=pts.map(([v,c])=>[(v-lo)/((hi-lo)||1),c]);
       return {color,hi,lo,open,css,stops,limitPct:pc(lim),limitFrac:(lim-lo)/((hi-lo)||1)};}
-    function fmt(m,v){const u=qf.metrics[m].unit||'';return (u==='°'?v.toFixed(1):v.toFixed(2))+u;}
+    function fmt(m,v){const u=M[m].unit||'';v=flip(m,v);return (u==='°'?v.toFixed(1):v.toFixed(2))+u;}
+    // a measure where lower is worse is past its limit UNDER it: the words follow the measure
+    const pastWord=m=>M[m].low?'under':'over',insideWord=m=>M[m].low?'over':'under';
 
     /* PROBLEM AREAS. The faces over the bar, and those near it (80% of it and up), gathered into
        places, so a mesh with three bad corners reads as three areas and not as a few hundred faces.
@@ -1173,14 +1204,14 @@ function initViewer(job,surf,uiCfg){
       return words.slice(0,2).join(' · ')||'middle';}
 
     function buildAreas(m){
-      const md=qf.metrics[m],lim=md.limit,out={list:[],total:0,offScreen:false};
+      const md=M[m],lim=md.limit,out={list:[],total:0,offScreen:false};
       if(!(lim>0))return out;
       const cut=NEAR*lim,vis=shown(),vi=new Set(vis);
       // a part that is not on screen still decides whether the whole mesh is clear
       entries.forEach(en=>{if(vi.has(en)||out.offScreen)return;const v=en.q[m];
         if(v)for(let i=0;i<v.length;i++)if(v[i]>=cut){out.offScreen=true;break;}});
       const onScreen=h=>!h.patch||vis.some(en=>en.patch===h.patch);
-      const hot=(qf.hotspots||[]).filter(h=>h.metric===m&&h.value>lim);
+      const hot=HOT.filter(h=>h.metric===m&&h.value>lim);
       if(hot.some(h=>!onScreen(h)))out.offScreen=true;
       const hs=hot.filter(onScreen);
       let n=0;vis.forEach(en=>{const v=en.q[m];if(v)for(let i=0;i<v.length;i++)if(v[i]>=cut)n++;});
@@ -1392,20 +1423,20 @@ function initViewer(job,surf,uiCfg){
         b.setAttribute('aria-pressed',String(Number(b.dataset.index)===selArea));});}
 
     // the worst value, to the precision that tells it apart from the limit
-    function fmtWorst(m,v){const md=qf.metrics[m],u=md.unit||'';
+    function fmtWorst(m,v){const md=M[m],u=md.unit||'',x=flip(m,v);
       const dv=Math.abs(v-md.limit),dp=u==='°'?(dv<0.01?3:dv<0.1?2:1):(dv<0.001?4:dv<0.01?3:2);
-      return v.toFixed(dp)+u;}
+      return x.toFixed(dp)+u;}
     function areasHtml(m){
       const S=areaSet;
       if(!S.list.length)return `<div class="v-areas"><p class="ar-none">`
         +(S.offScreen?'No problem areas on the parts shown'
                      :'No problem areas: every cell is well inside the limit')+`</p></div>`;
-      const count=a=>[a.over?`<span class="ar-over">${a.over.toLocaleString()} over the limit</span>`:'',
+      const count=a=>[a.over?`<span class="ar-over">${a.over.toLocaleString()} ${pastWord(m)} the limit</span>`:'',
                       a.near?`${a.near.toLocaleString()} near`+(a.over?'':' the limit'):''].filter(Boolean).join(' · ');
       return `<div class="v-areas" role="group" aria-label="Problem areas">`
         +`<div class="ar-h"><span class="ar-ht">Problem areas</span>`
           +`<button class="v-only" type="button" aria-pressed="${onlyBad}" `
-          +`title="Grey out every face below ${esc(fmt(m,NEAR*qf.metrics[m].limit))} (80% of the limit)">Only bad cells</button></div>`
+          +`title="Grey out every ${NOUN} ${M[m].low?'above':'below'} ${esc(fmt(m,NEAR*M[m].limit))} (80% of the way to the limit)">Only bad cells</button></div>`
         +S.list.map(a=>`<button class="v-area" type="button" data-index="${a.index}" aria-pressed="${a.index===selArea}" `
             +`title="Go to area ${a.index+1}">`
           +`<span class="ar-i">${a.index+1}</span>`
@@ -1432,7 +1463,7 @@ function initViewer(job,surf,uiCfg){
     /* ONLY BAD CELLS: every face below 80% of the bar goes one flat grey, so the clusters stand
        out at full view; off, the scale's colours come back. A viewer's preference - nothing in
        the payload changes. */
-    function paintFaces(m,rp){const cut=m?NEAR*qf.metrics[m].limit:0;
+    function paintFaces(m,rp){const cut=m?NEAR*M[m].limit:0;
       entries.forEach(en=>{const mp=en.actor.getMapper();
         if(rp&&en.q[m]){
           const v=en.q[m],rgb=new Uint8Array(v.length*3);
@@ -1468,7 +1499,7 @@ function initViewer(job,surf,uiCfg){
       edgeCol=rp?_EDGE_HEAT:_EDGE;
       if(repaintParts)repaintParts();
       else entries.forEach(en=>{en.actor.getProperty().setEdgeColor(edgeCol[0],edgeCol[1],edgeCol[2]);});
-      if(rp){const md=qf.metrics[m];
+      if(rp){const md=M[m];
         legend=document.createElement('div');legend.className='v-legend';
         // an instrument scale: the bar stands upright beside the viewport, the limit is a
         // tick with its value, the top of the bar is a third past the limit; the problem areas
@@ -1478,11 +1509,11 @@ function initViewer(job,surf,uiCfg){
           +`<span class="scale"><span class="ticks">`
             +`<span style="bottom:100%">${esc(fmt(m,rp.hi))}</span>`
             +(rp.open?'':`<span class="lim" style="bottom:${rp.limitPct}">${esc(fmt(m,md.limit))} limit</span>`)
-            +`<span style="bottom:0">${rp.lo?esc(fmt(m,rp.lo)):'0'}</span></span>`
+            +`<span style="bottom:0">${rp.lo||M[m].low?esc(fmt(m,rp.lo)):'0'}</span></span>`
           +`<span class="bar" style="background:${rp.css}">${rp.open?'':`<i style="bottom:${rp.limitPct}"></i>`}</span></span>`
-          +`<span class="mxv">max ${esc(fmt(m,md.max||0))}</span>`
+          +`<span class="mxv">${md.low?'worst':'max'} ${esc(fmt(m,md.max||0))}</span>`
           +(md.n_over
-             ?`<span class="over">${md.n_over.toLocaleString()} face${md.n_over!==1?'s':''} over</span>`
+             ?`<span class="over">${md.n_over.toLocaleString()} ${NOUN}${md.n_over!==1?'s':''} ${pastWord(m)}</span>`
              :rp.open?`<span class="ok">none near the ${esc(fmt(m,md.limit))} bar</span>`
                      :`<span class="ok">none over</span>`)
           +areasHtml(m);
@@ -1493,8 +1524,8 @@ function initViewer(job,surf,uiCfg){
         host.appendChild(legend);}
       if(!markMode&&!measuring)hintEl.textContent=rp?HEAT_HINT:MOUSE_HINT;
       // the colour bar a snapshot can carry: the same name, stops and limit as the one on screen
-      barSpec=rp?{label:qf.metrics[m].label.replace(/^./,c=>c.toUpperCase()),stops:rp.stops,
-        ticks:[[1,fmt(m,rp.hi)]].concat(rp.open?[]:[[rp.limitFrac,fmt(m,qf.metrics[m].limit)+' limit',true]])
+      barSpec=rp?{label:M[m].label.replace(/^./,c=>c.toUpperCase()),stops:rp.stops,
+        ticks:[[1,fmt(m,rp.hi)]].concat(rp.open?[]:[[rp.limitFrac,fmt(m,M[m].limit)+' limit',true]])
           .concat([[0,rp.lo?fmt(m,rp.lo):'0']])}:null;
       if(onMetric)onMetric(m);
       document.querySelectorAll(`#v-heatctl-${job} a`).forEach(c=>{
@@ -1506,7 +1537,7 @@ function initViewer(job,surf,uiCfg){
       const ctl=document.createElement('div');ctl.className='v-heatctl';ctl.id='v-heatctl-'+job;
       // tabindex: a link with no href is never a Tab stop; Enter and Space work it (main.js, role="button")
       ctl.innerHTML='Colour by '+avail.map(m=>
-        `<a data-metric="${m}" role="button" tabindex="0" aria-pressed="false">${esc(qf.metrics[m].label)}</a>`).join(' · ');
+        `<a data-metric="${m}" role="button" tabindex="0" aria-pressed="false">${esc(M[m].label)}</a>`).join(' · ');
       ctl.querySelectorAll('a').forEach(a=>{a.onclick=()=>setMetric(a.dataset.metric);});
       shield(ctl);host.appendChild(ctl);}
 
@@ -1533,21 +1564,21 @@ function initViewer(job,surf,uiCfg){
       hideProbe();
       const role=((surf.patches||[]).find(p=>p.name===en.patch)||{}).type||'';
       const cf=en.cellFaces?en.cellFaces[cid]:null;
-      const have=avail.filter(m=>en.q[m]);
-      const over=have.filter(m=>en.q[m][cid]>qf.metrics[m].limit);
+      const have=avail.filter(m=>en.q[m]&&Number.isFinite(en.q[m][cid]));
+      const over=have.filter(m=>en.q[m][cid]>M[m].limit);
       lastProbe={patch:en.patch,cell:cid,cellFaces:cf,over,
-                 values:Object.fromEntries(have.map(m=>[m,en.q[m][cid]]))};
+                 values:Object.fromEntries(have.map(m=>[m,flip(m,en.q[m][cid])]))};
       const rows=have.map(m=>probeRow(m,en.q[m][cid])).join('');
       probeEl=document.createElement('div');probeEl.className='v-probe';
       probeEl.innerHTML=`<div class="pk">${esc(en.patch)} · face ${cid.toLocaleString()}</div>`
         +`<div class="pr-rows">${rows}</div>`
         +(cf!=null?`<div class="pr-cell">cell behind it: ${cf}-face ${shapeOf(cf)}</div>`:'')
-        +(over.length?`<div class="why">likely: ${esc(why(cf,role))}</div>`:'');
+        +(over.length&&cf!=null?`<div class="why">likely: ${esc(why(cf,role))}</div>`:'');
       probeActs(()=>placeMarker(en,cid));}
     // one reading: what it is, its value, and where it sits against the gate's bar
-    function probeRow(m,v){const md=qf.metrics[m],bad=v>md.limit;
+    function probeRow(m,v){const md=M[m],bad=v>md.limit;
       return `<div class="pr"><span class="pr-k">${esc(md.label)}</span><span class="pr-v">${esc(fmt(m,v))}</span>`
-        +`<span class="pr-s ${bad?'over':'ok'}">${bad?'over':'under'} the ${esc(fmt(m,md.limit))} limit</span></div>`;}
+        +`<span class="pr-s ${bad?'over':'ok'}">${bad?pastWord(m):insideWord(m)} the ${esc(fmt(m,md.limit))} limit</span></div>`;}
     host.addEventListener('pointerup',e=>{
       if(markMode||measuring||!activeMetric||!downXY)return;
       if(e.target&&e.target.closest&&e.target.closest(ON_CANVAS_UI))return;
@@ -1577,7 +1608,7 @@ function initViewer(job,surf,uiCfg){
       colorOf:(patch,cid)=>{const en=entries.find(t=>t.patch===patch);if(!en)return null;
         const sc=en.pd.getCellData().getScalars();if(!sc||!en.actor.getMapper().getScalarVisibility())return null;
         const a=sc.getData();return [a[cid*3],a[cid*3+1],a[cid*3+2]];}};
-    heatApi={metrics:avail.map(m=>[m,String(qf.metrics[m].label||m).replace(/^./,c=>c.toUpperCase())]),set:setMetric};
+    heatApi={metrics:avail.map(m=>[m,String(M[m].label||m).replace(/^./,c=>c.toUpperCase())]),set:setMetric};
   })();
 
   /* THE TOOLBAR. View, Section, Parts, Measure and Snapshot each open one small overlay over the

@@ -150,3 +150,29 @@ def test_an_ai_that_submits_keeps_its_mesh(tmp_path, monkeypatch):
 def test_builder_ai_off_builds_by_the_rules_plan_and_asks_no_model(tmp_path, monkeypatch):
     out, seen = _run(tmp_path, monkeypatch, _down, builder_ai=False)
     assert seen == ["rules"] and out.api_failure == ""
+
+
+def test_an_attempt_the_engine_handed_on_is_not_built_again_by_the_rules_plan(tmp_path, monkeypatch):
+    # AIG-4 (abc 63401): run_mesh ended the AI's turn on a dropped opening (HANDS_OFF); the rules plan then ran
+    # the same plan into the same failure. Now the attempt ends there and the ladder decides what comes next.
+    import json
+
+    async def _handed(kw):
+        kw["tool_calls_out"].append({"tool": "run_mesh", "args": {}, "raw_output": json.dumps(
+            {"success": False, "hands_off": True, "guidance": "Not meshed: outlet_3 has no faces"})})
+        return "", []
+
+    out, seen = _run(tmp_path, monkeypatch, _handed)
+    assert seen == ["ai"] and not out.api_failure
+
+
+def test_a_run_mesh_that_did_not_hand_on_still_gets_the_rules_plan(tmp_path, monkeypatch):
+    import json
+
+    async def _failed(kw):
+        kw["tool_calls_out"].append({"tool": "run_mesh", "args": {}, "raw_output": json.dumps(
+            {"success": False, "guidance": "lower max_cells"})})
+        return "", []
+
+    _, seen = _run(tmp_path, monkeypatch, _failed)
+    assert seen == ["ai", "rules"]

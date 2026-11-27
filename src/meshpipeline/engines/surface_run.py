@@ -46,8 +46,22 @@ SIZING_AGAIN = (2.0, 4.0)
 #: SURF-4: a thickness past this share of its sheet's size is said (shell theory holds to about 1/10, SHELL-2);
 #: the user's number still stands
 THICK_SHARE = 0.1
-#: the run's time limit, seconds (sewing is seconds; the shell mesh is bounded by its own deadline, SHMESH-21)
+#: the run's time limit, seconds (sewing is seconds; the shell mesh is bounded by its own deadline, SHMESH-21) - its
+#: usual stop: SHMESH-21e moves it out to a shell mesh priced longer, up to RUN_CAP_S
 RUN_LIMIT_S = 1800
+#: SHMESH-21e: the most the surface run is given (no solid to fall back to: up to 0.8 of what the attempt has left,
+#: as the usual stop) - the Cloud Run job's wall less its margin (fea_driver.ceiling_for, 13,800 s)
+RUN_CAP_S = 13_800
+
+
+def run_limits(left_s: float | None) -> tuple[float, float]:
+    """SURF-3 / SHMESH-21e: (the surface run's usual stop, its hard cap), seconds: RUN_LIMIT_S and RUN_CAP_S, each at
+    most 0.8 of what the attempt has left (the usual stop at least 120 s, the cap never under it)."""
+    limit, cap = float(RUN_LIMIT_S), float(RUN_CAP_S)
+    if left_s is not None:
+        limit = max(120.0, min(limit, 0.8 * left_s))
+        cap = min(cap, 0.8 * left_s)
+    return limit, max(limit, cap)
 SURFACE_LINE = "This file is a surface, not a solid. It is meshed as a shell"
 #: with no thickness given: what the stage says before the run, and what the result says after it
 NO_THICKNESS_YET = ('No thickness given yet. Add it to your notes (for example "1.2 mm thick"), or set it later in '
@@ -71,8 +85,12 @@ def words(rec: dict) -> str:
     """What the surface run made, in plain words, for the decision record and the result."""
     s = rec.get("surface") or {}
     if not rec.get("made"):
-        return (f"This file is a surface, not a solid, so it can only be meshed as a shell - and the shell mesh could "
-                f"not be made: {rec.get('why') or 'it could not be made'}.")
+        # SURF-8: with no mesh, what the clean-up did and what is still open are said too (the gaps, the widest, the
+        # words that close them when a tolerance was tried and closed them) - before, only the reason was
+        cleaned = s.get("cleaned") if isinstance(s.get("cleaned"), dict) else None
+        told = (clean_words(cleaned) + gap_words(int(cleaned.get("open_places") or 0), cleaned)) if cleaned else []
+        return " ".join([f"This file is a surface, not a solid, so it can only be meshed as a shell - and the shell "
+                         f"mesh could not be made: {rec.get('why') or 'it could not be made'}.", *told])
     n, q, t = int(rec.get("elements") or 0), int(rec.get("quads") or 0), int(rec.get("trias") or 0)
     gone = ((rec.get("quality") or {}).get("face_watch") or {}).get("words")
     from meshpipeline.engines.shell_delivery import cover_short, cover_words
@@ -224,6 +242,17 @@ def clean_words(cleaned: dict | None, closing: dict | None = None) -> list[str]:
     if c.get("duplicates"):
         n = int(c["duplicates"])
         out.append(f"{_count(n, 'face was', 'faces were')} in the file twice: the second copy of {'it' if n == 1 else 'each'} is left out.")
+    loose = c.get("loose") or {}
+    if loose.get("faces"):
+        # SURF-16: loose debris left out, never silently
+        n, k = int(loose["faces"]), int(loose.get("sheets") or 1)
+        size = ("the element size you asked for" if loose.get("element_from") == "asked"
+                else "one element of this mesh")
+        out.append(f"Left out {_count(n, 'loose face')} ({_count(k, 'stray piece')}, "
+                   f"{'' if k == 1 else 'the largest '}{_gap(float(loose.get('widest_mm') or 0.0))} across, "
+                   f"{float(loose.get('area_mm2') or 0.0):.2g} mm2 in all): smaller than {size} "
+                   f"({_gap(float(loose.get('element_mm') or 0.0))}), they are stray bits of the export, not part "
+                   "of the sheet.")
     in_mesh = int((closing or {}).get("closed") or 0)
     if c.get("closed_places") or in_mesh:
         # SURF-8: said in PLACES, the count the record and gap_words use: places before - closed = places after.
@@ -253,12 +282,25 @@ def clean_words(cleaned: dict | None, closing: dict | None = None) -> list[str]:
                    f" (each change is listed in the run's record).")
     if m.get("off"):
         out.append("No surface was changed, as your notes asked.")
+    if m.get("stopped_s"):
+        # SURF-17: the clock stopped the changes; the places not tried are stitched or closed in the mesh if they can be
+        k = int(m.get("untried") or 0)
+        out.append(f"Changing the surfaces to make them meet did not finish in {int(smd_limit_min())} minutes, so "
+                   f"{_count(k, 'place was', 'places were')} not tried: they are stitched or closed in the mesh where "
+                   "they can be. The mesh goes ahead.")
     if c.get("fell_back"):
         out.append(f"Stitching up to {_gap(c['limit_mm'])}, as your notes asked, would have left more open than the "
                    f"usual {_gap(c.get('rule_mm') or 0.0)}, so the usual result is kept.")
     if c.get("stitch") == "off":
         out.append("Nothing was stitched, as your notes asked.")
     return out
+
+
+def smd_limit_min() -> float:
+    """SURF-17: the clock on making the surfaces meet, in minutes."""
+    from meshpipeline.cad.surface_mend import MEND_LIMIT_S
+
+    return MEND_LIMIT_S / 60.0
 
 
 def gap_words(n: int, cleaned: dict | None) -> list[str]:
@@ -667,9 +709,20 @@ def closed_skin_no_wall(record: dict | None) -> bool:
                                 for b in bodies)
 
 
-def closed_skin_check(ws: Path) -> bool:
+#: TIME-10 (rulebook 77): THE CLOSED-SKIN CHECK STOPS AT THIS MANY SECONDS. It runs the whole mid-surface extraction
+#: before any meshing starts, and the shell run extracts again after it with its own limit: a public 1,220-face IGES
+#: cover kept it 1,968 s, to the extraction's own 1,800 s limit, and the answer was "not a skin". Stopped, the file is
+#: not read as a skin: it goes on to the shell run as the solid its surfaces close round, and the run says so
+CLOSED_SKIN_LIMIT_S = 300.0
+CLOSED_SKIN_UNFINISHED = ("The check of whether your file's surfaces are only a skin, with no wall inside, did not "
+                          f"finish in {CLOSED_SKIN_LIMIT_S / 60:g} minutes, so they are meshed as the solid they close "
+                          "round. The mesh goes ahead.")
+
+
+def closed_skin_check(ws: Path, told: dict | None = None) -> bool:
     """SURF-14: the staged solid (made from the file's closed surfaces, MESH-1) read by the mid-surface extraction
-    alone, in a process of its own: True when no body has a wall a shell could stand for."""
+    alone, in a process of its own: True when no body has a wall a shell could stand for. TIME-10: the extraction is
+    stopped at CLOSED_SKIN_LIMIT_S; it is then False and `told` (when given) gets "unfinished"."""
     from meshpipeline.cad import midsurface as ms
     from meshpipeline.engines.fea_driver import staged_mm_per_unit
     from meshpipeline.engines.fea_plan import STAGED_SOLIDS
@@ -678,10 +731,16 @@ def closed_skin_check(ws: Path) -> bool:
     if step is None:
         return False
     try:
-        return closed_skin_no_wall(ms.extract_file(step, None, mm_per_unit=staged_mm_per_unit(step)))
+        record = ms.extract_file(step, None, mm_per_unit=staged_mm_per_unit(step), deadline_s=CLOSED_SKIN_LIMIT_S)
     except Exception as exc:  # noqa: BLE001 - read as before: the solid route
         logger.warning("surface run: the closed skin could not be read (%s)", type(exc).__name__)
         return False
+    stopped = f"ran past {CLOSED_SKIN_LIMIT_S:.0f} s and was stopped"
+    if any(stopped in str(b.get("why") or "") for b in (record or {}).get("bodies") or []):
+        if told is not None:
+            told["unfinished"] = CLOSED_SKIN_LIMIT_S
+        return False
+    return closed_skin_no_wall(record)
 
 
 def closed_skin_words(rec: dict | None) -> str:
@@ -723,15 +782,17 @@ def thickness_for(state):
 
 
 async def surface_pass(ws: Path, state, *, job_id: str, run=None, target: dict | None = None, cite=None,
-                       left_s: float | None = None, closed_skin: bool = False) -> dict | None:
+                       left_s: float | None = None, closed_skin: bool = False, env: dict | None = None) -> dict | None:
     """SURF-3: the FEA driver's step for a file with no solid whose faces do not close. Reads the user's thickness
     (SURF-4), runs the surface run in a process of its own and cites what it found. Returns the run's record when
     the file IS a surface part (made or not - there is no solid to fall back to), None when it is not (the driver
-    carries on as before)."""
+    carries on as before). `env`: the environment the run's process gets (fea_driver.shell_env; the run's stops are
+    added to it, SHMESH-31g/21e); None: this process's, no stops told."""
     import asyncio
     import subprocess
 
     from meshpipeline.engines.fea_plan import STAGED_SOLIDS
+    from meshpipeline.engines.gmsh import shell_adapter as sa
 
     step = next((ws / n for n in STAGED_SOLIDS if (ws / n).exists()), None)
     if step is None:
@@ -750,20 +811,20 @@ async def surface_pass(ws: Path, state, *, job_id: str, run=None, target: dict |
                                                          if k in target} if target and target.get("elements") else None,
             "stitch": not sewing.off, "sew_mm": sewing.mm, "holes_mm": sewing.holes_mm,
             "mend": not sewing.keep_surfaces, **({"closed_skin": True} if closed_skin else {})}
-    limit = float(RUN_LIMIT_S)
-    if left_s is not None:
-        limit = max(120.0, min(limit, 0.8 * left_s))
+    limit, cap = run_limits(left_s)
     try:
-        proc = await asyncio.to_thread(
-            subprocess.run, [sys.executable, "-m", __name__, str(ws), str(step), "staged", json.dumps(args)],
-            capture_output=True, text=True, timeout=limit, check=False)
+        # (SHMESH-31g/21e: the shell mesh is told this run's stops; one priced longer moves the stop out, never past
+        # `cap`)
+        proc, _allowed = await asyncio.to_thread(
+            sa.run_following, [sys.executable, "-m", __name__, str(ws), str(step), "staged", json.dumps(args)],
+            base_s=limit, cap_s=cap, folder=ws, env=env)
         rec = read(ws)
         if not rec:
             rec = {"made": False, "surface": {"kind": "unread"},
                    "why": f"the surface run stopped (exit {proc.returncode})"}
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as exc:
         rec = {"made": False, "surface": {"kind": "surface"},
-               "why": f"it took longer than the {int(limit) // 60} minutes allowed"}
+               "why": sa.run_stopped_words(float(exc.timeout or limit), ws)}
     except Exception as exc:  # noqa: BLE001 - not a surface run: the driver carries on as before
         logger.warning("surface run: not started (%s)", type(exc).__name__)
         return None
@@ -871,6 +932,6 @@ if __name__ == "__main__":
     raise SystemExit(main())
 
 
-__all__ = ["GATE", "NO_THICKNESS", "NO_THICKNESS_YET", "READING", "SIZING_AGAIN", "SIZING_DIVISIONS", "clean_words",
+__all__ = ["RUN_CAP_S", "run_limits", "CLOSED_SKIN_LIMIT_S", "CLOSED_SKIN_UNFINISHED", "GATE", "NO_THICKNESS", "NO_THICKNESS_YET", "READING", "SIZING_AGAIN", "SIZING_DIVISIONS", "clean_words",
            "closed_skin_check", "closed_skin_no_wall", "closed_skin_words", "deck_notes", "gap_words", "is_surface", "line", "main", "read", "requirements_in", "run", "said_shell",
            "sizing_wall", "stitch_for", "surface_pass", "thickness_for", "words"]

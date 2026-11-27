@@ -324,13 +324,19 @@ def _params_of(state: Mapping, best: Candidate) -> dict:
 
 def select(state: Mapping) -> dict:
     """The final state to derive the run's outcome from: the given one, or the same run moved onto
-    its best valid mesh. Fail-safe: anything unreadable keeps the given state."""
+    its best valid mesh. Fail-safe: anything unreadable keeps the given state. With no mesh to move onto, a run
+    whose wrap rung ended without one ends on the last refusal a check JUDGED (pipeline/cfd_wrap, LAD-cfd-13)."""
     out = dict(state)
     if state.get("user_dispute"):
         return out
     pool = candidates(state)
     if not pool:
-        return out
+        try:
+            from meshpipeline.pipeline.cfd_wrap import with_judged_refusal
+            return with_judged_refusal(out)
+        except Exception:  # noqa: BLE001 - fail-safe, as every other read here
+            logger.warning("review_delivery: the judged refusal could not be read back", exc_info=True)
+            return out
     best = min(pool, key=rank_key)
     from meshpipeline.pipeline import engine_fallback as _lad
     if best.current:

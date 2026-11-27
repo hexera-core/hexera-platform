@@ -8,9 +8,9 @@ Every chat is the same short questionnaire. The application asks every step in f
 answers, and submits the plan itself; the model only answers what the user asks off-script (and reads
 a correction to a plan that stands):
 
-    FEA           purpose -> stage -> confirmed -> analysis        -> plan -> started
-    CFD external  purpose -> stage -> confirmed -> flow_conditions -> plan -> started
-    CFD internal  purpose -> stage -> confirmed -> flow_conditions -> plan -> started
+    FEA           purpose -> stage -> confirmed -> analysis -> plan            -> started
+    CFD external  purpose -> stage -> confirmed -> plan     -> flow_conditions -> started
+    CFD internal  purpose -> stage -> confirmed -> plan     -> flow_conditions -> started
 
 `purpose`         "Geometry received. What are you meshing this for?" (the upload's greeting)
 `purpose_clarify` the one two-button question when the words did not say CFD or FEA (or cooling)
@@ -23,11 +23,14 @@ a correction to a plan that stands):
                   part, its unit and (internal flow) its openings; the chat box is closed while it is up.
 `confirmed`       the short "Confirmed: <part>" card the panel's Proceed leaves in the chat
 `analysis`        FEA: "What will you analyze?" with its buttons
-`flow_conditions` CFD: what flows and how fast, with the wall treatment, as one proposal - "OK" or
-                  "Resolve the wall (y⁺ ≈ 1)" buttons, or the user's own words. The mesh uses exactly
-                  these: the fluid and its speed size the first cell at the wall, and the wall
-                  treatment (wall functions, y⁺ 30–300, or a resolved wall, y⁺ ≈ 1) sets the layers - the plan
-                  carries them as one sentence the run reads back (contracts/flow_conditions, CFDREQ-8).
+`flow_conditions` CFD, asked AFTER the plan (CFDREQ-37, rulebook 122): the plan is built on the proposal - what
+                  flows, how fast, the wall treatment - and one more message says what it assumed, with
+                  "OK" or "Resolve the wall (y⁺ ≈ 1)" buttons. Nothing waits on it: Proceed or a go runs
+                  the proposal; OK keeps it; the button or the user's own words redo the plan. The mesh
+                  uses exactly these: the fluid and its speed size the first cell at the wall, and the
+                  wall treatment (wall functions, y⁺ 30–300, or a resolved wall, y⁺ ≈ 1) sets the layers -
+                  the plan carries them as one sentence the run reads back (contracts/flow_conditions,
+                  CFDREQ-8). (Asked before the plan only when the application cannot build the plan.)
 `plan`            the plan card - the mesh plan, the notes box, and Proceed - under one fixed line
 `started`         the run starts
 
@@ -65,7 +68,7 @@ ROUTE_FEA, ROUTE_CFD = "fea", "cfd"
 #: The standard sequence of each route (FEA; CFD external and internal share one shape).
 STANDARD: dict[str, tuple[str, ...]] = {
     ROUTE_FEA: (PURPOSE, STAGE, CONFIRMED, ANALYSIS, PLAN, STARTED),
-    ROUTE_CFD: (PURPOSE, STAGE, CONFIRMED, FLOW_QUESTION, PLAN, STARTED),
+    ROUTE_CFD: (PURPOSE, STAGE, CONFIRMED, PLAN, FLOW_QUESTION, STARTED),
 }
 
 _DIGIT = re.compile(r"\d")
@@ -82,10 +85,13 @@ def _found(rx: re.Pattern, text: Any) -> re.Match | None:
 # ------------------------------------------------------------- the CFD questions, fixed words ----
 
 #: THE FLOW-CONDITIONS QUESTION's two leads (one per flow kind) - fixed; only the proposal in it
-#: follows a fluid or speed the user already named.
-EXTERNAL_LEAD = "What flows around it, and how fast?"
-INTERNAL_LEAD = "What flows through it, and how fast?"
-_PROPOSAL = " I'd go with {fluid} at {speed}{inlet}, with {wall} - OK, or tell me what to change."
+#: follows a fluid or speed the user already named. It comes under the plan, which is built on it.
+EXTERNAL_LEAD = "For the flow around it, I've assumed"
+INTERNAL_LEAD = "For the flow through it, I've assumed"
+_PROPOSAL = " {fluid} at {speed}{inlet}, with {wall} - OK, or tell me what to change."
+#: the leads while the question came before the plan (rulebook 121 and earlier): a stored conversation still reads
+EARLIER_LEADS = ("What flows around it, and how fast?", "What flows through it, and how fast?")
+_LEADS = (EXTERNAL_LEAD, INTERNAL_LEAD, *EARLIER_LEADS)
 #: the wall treatments' words and the plan's conditions sentence are contracts/flow_conditions' (CFDREQ-8): the run
 #: reads the same sentence back, so what the plan says is what the mesh uses
 WALL_FUNCTIONS = _FC.WALL_FUNCTIONS
@@ -122,7 +128,7 @@ def conditions_question(messages: Iterable[Any]) -> str:
 
 def is_conditions_question(text: Any) -> bool:
     t = str(text or "").strip()
-    return any(t.startswith(lead) or ("\n\n" + lead) in t for lead in (EXTERNAL_LEAD, INTERNAL_LEAD))
+    return any(t.startswith(lead) or ("\n\n" + lead) in t for lead in _LEADS)
 
 
 def step_choices(reply: Any) -> list[dict]:
@@ -169,8 +175,12 @@ def step_of(text: Any) -> tuple[str, ...]:
         return (CONFIRMED,)
     if t == msg.READING_FIRST_REPLY:
         return (READING,)
+    from meshpipeline.agents.intake import plan_talk as PT
+    if t in (PT.ASK_LINE, PT.HOLD_LINE):
+        # NOTE-18: the one go question is the plan step asking again, in fewer words; "not starting yet" is too
+        return (PLAN,)
     if is_conditions_question(t):
-        return (FLOW_QUESTION,) if any(t.startswith(lead) for lead in (EXTERNAL_LEAD, INTERNAL_LEAD)) \
+        return (FLOW_QUESTION,) if any(t.startswith(lead) for lead in _LEADS) \
             else (ANSWER, FLOW_QUESTION)
     lines = [(q, PURPOSE_CLARIFY) for q in pm.QUESTIONS.values()]
     lines += [(FLOW_KIND_QUESTION, FLOW_KIND), (pm.ANALYSIS_QUESTION, ANALYSIS), (plan_line(), PLAN)]
@@ -217,10 +227,20 @@ def route_of(messages: Iterable[Any]) -> str:
 def read_messages(messages: Iterable[Any]) -> list[tuple[dict, tuple[str, ...]]]:
     """Each message with the step(s) it is: () for a user's."""
     out: list[tuple[dict, tuple[str, ...]]] = []
+    said = ""
     for m in messages or ():
         if not isinstance(m, dict):
             continue
-        out.append((m, step_of(m.get("content")) if m.get("role") == "assistant" else ()))
+        if m.get("role") != "assistant":
+            said = str(m.get("content") or "") if m.get("role") == "user" else said
+            out.append((m, ()))
+            continue
+        got = step_of(m.get("content"))
+        if got == (ANSWER, PLAN) and not asks_something(said) and "?" not in str(m.get("content") or ""):
+            # CFDREQ-37: the conditions said back before the plan line, after words that asked nothing, are the
+            # plan step's own lead (agents/intake/conditions_reply) - never an answer to a question
+            got = (PLAN,)
+        out.append((m, got))
     return out
 
 
@@ -354,6 +374,91 @@ def flow_conditions(messages: Iterable[Any], *, answered_only: bool = True) -> d
     return out
 
 
+#: a temperature as people type it, read as part of the conditions (it is said back as not used: CFDREQ-37)
+_TEMPERATURE = re.compile(r"-?\d+(?:[.,]\d+)?\s*(?:°\s*[CFK]|º\s*[CFK]|deg\w*(?:\s*[CF]\b)?|celsius|fahrenheit|"
+                          r"kelvin)", re.I)
+
+
+def conditions_given(text: Any) -> bool:
+    """CFDREQ-37: the words give a flow condition - a fluid, a speed (or flow rate), a wall treatment - or are the
+    "Resolve the wall" button; never a question."""
+    t = str(text or "").strip()
+    if not t or asks_something(t):
+        return False
+    return t == CONDITIONS_CHOICES[1][1] or any(_found(rx, t) is not None
+                                                for rx in (_FLUIDS, _SPEED, _RESOLVED, _FUNCTIONS))
+
+
+def conditions_only(text: Any) -> bool:
+    """The words give flow conditions and nothing else for the model to read ("make it 50 m/s", "no, oil at 3 m/s"):
+    a plan redone for them is the application's, as the first plan was. "water at 3 m/s and 2 mm cells" is not."""
+    t = str(text or "")
+    if not conditions_given(t):
+        return False
+    rest = t
+    for rx in (_TEMPERATURE, _SPEED, _FLUIDS, _RESOLVED, _FUNCTIONS):
+        rest = rx.sub(" ", rest)
+    # a bare number left over ("air, 40, wall functions") is no mesh requirement: it is said back as not read
+    return _found(_SPECIFIC, _BARE_NUMBER.sub(" ", rest)) is None
+
+
+_BARE_NUMBER = re.compile(r"\d+(?:[.,]\d+)?")
+
+
+def conditions_changed_at_plan(text: Any, messages: Iterable[Any]) -> bool:
+    """CFDREQ-37: words typed at the plan card of a CFD part that give flow conditions: the plan is redone with them,
+    so the card, the plan's conditions sentence and the run all carry what was typed - never kept as a note beside an
+    old sentence. Only words that are conditions and nothing else: "finer around the air intake" names no fluid, and
+    "50 m/s and 2 mm cells" stays a note the run reads whole (the speed in it still wins at the run)."""
+    msgs = [m for m in messages or () if isinstance(m, dict)]
+    if not cfd_declared(msgs):
+        return False
+    if conditions_only(text):
+        return True
+    # the answer to the question standing under the plan may carry more ("air, 40, wall functions"): a speed or a
+    # wall treatment in it makes it the answer - a fluid word alone ("finer around the air intake") never does
+    t = str(text or "")
+    return conditions_open(msgs[:-1]) and conditions_given(t) and any(
+        _found(rx, t) is not None for rx in (_SPEED, _RESOLVED, _FUNCTIONS))
+
+
+#: "OK" to the conditions the plan assumed - kept as they are (never "yes" or "go ahead": those start the run)
+_KEEP = re.compile(r"^\s*(ok|okay|fine|sounds good|looks good|that'?s fine|correct|default|use (?:the )?defaults?|"
+                   r"keep (?:it|them|that|those|the defaults?))\b[.! ]*$", re.I)
+
+
+def conditions_asked(messages: Iterable[Any]) -> bool:
+    return any(isinstance(m, dict) and m.get("role") == "assistant" and is_conditions_question(m.get("content"))
+               for m in messages or ())
+
+
+def conditions_open(messages: Iterable[Any]) -> bool:
+    """The conditions question was asked and nothing the user said since answers it."""
+    msgs = [m for m in messages or () if isinstance(m, dict)]
+    return conditions_asked(msgs) and not conditions_answered(msgs)
+
+
+def conditions_kept_at_plan(text: Any, messages: Iterable[Any]) -> bool:
+    """CFDREQ-37: "OK" (the button or the words) to the conditions question standing under the plan: the assumed
+    conditions are kept and nothing starts - the plan line is the answer. `messages` ends with this message."""
+    msgs = [m for m in messages or () if isinstance(m, dict)]
+    return cfd_declared(msgs) and conditions_open(msgs[:-1]) and _found(_KEEP, str(text or "").strip()) is not None
+
+
+def asked_after_plan(messages: Iterable[Any], at: int) -> bool:
+    """Whether the conditions question at index `at` came under a plan (the message before it is the plan's)."""
+    msgs = list(messages or ())
+    before = next((m for m in reversed(msgs[:at]) if isinstance(m, dict) and m.get("role") == "assistant"), None)
+    return before is not None and _ends_with(before.get("content"), plan_line())
+
+
+def conditions_ask_after_plan(messages: Iterable[Any]) -> bool:
+    """CFDREQ-37 (rulebook 122): the conditions question follows this plan - a CFD part was confirmed, the question
+    was never asked, and the words do not already settle the conditions (a fluid and its speed named)."""
+    msgs = [m for m in messages or () if isinstance(m, dict)]
+    return cfd_declared(msgs) and not conditions_asked(msgs) and not conditions_answered(msgs)
+
+
 def conditions_answered(messages: Iterable[Any]) -> bool:
     """Whether the CFD conditions are settled: the fixed question was answered (any answer that asks
     nothing: "OK", a button, the user's own values), or the user named a fluid and its speed already."""
@@ -370,11 +475,18 @@ def conditions_answered(messages: Iterable[Any]) -> bool:
 
 
 def conditions_due(messages: Iterable[Any]) -> bool:
-    """The flow-conditions step is next: a CFD part (through or around it) was confirmed on the stage,
-    the question was never asked, and the words do not already settle the conditions."""
+    """The flow-conditions question is asked BEFORE any plan only off the stage's own turn: on the turn the stage's
+    Proceed runs, a declaration the application can plan from gets its plan first and the question under it
+    (`conditions_ask_after_plan`, CFDREQ-37); a conversation that left that turn without a plan (the plan could not
+    be built, the flow direction was left open) is asked as before. A CFD part was confirmed, the question was
+    never asked, and the words do not settle the conditions."""
     msgs = [m for m in messages or () if isinstance(m, dict)]
-    return (cfd_declared(msgs) and not any(m.get("role") == "assistant" and is_conditions_question(m.get("content"))
-                                           for m in msgs) and not conditions_answered(msgs))
+    return conditions_ask_after_plan(msgs) and not _plan_first(msgs)
+
+
+def _plan_first(msgs: list) -> bool:
+    """The stage's own turn on a declaration the application can plan from: the plan comes before the question."""
+    return latest_user(msgs) == _stage_continue() and _found(_PLANNABLE, latest_declaration(msgs)) is not None
 
 
 def cfd_declared(messages: Iterable[Any]) -> bool:
@@ -472,11 +584,12 @@ def fea_plan_due(messages: Iterable[Any], *, approval_live: bool) -> bool:
 
 
 def cfd_plan_due(messages: Iterable[Any], *, approval_live: bool) -> bool:
-    """The CFD route's plan is the next step: a flow part is confirmed on the stage, its conditions
-    are settled, and no plan stands yet."""
+    """The CFD route's plan is the next step: a flow part is confirmed on the stage, no plan stands yet, and its
+    conditions are settled - or this is the stage's own turn, where the plan is built on the proposal and the
+    question follows it (CFDREQ-37, rulebook 122)."""
     msgs = [m for m in messages or () if isinstance(m, dict)]
-    return cfd_declared(msgs) and not approval_live and conditions_answered(msgs) \
-        and _found(_PLANNABLE, latest_declaration(msgs)) is not None
+    return cfd_declared(msgs) and not approval_live and _found(_PLANNABLE, latest_declaration(msgs)) is not None \
+        and (conditions_answered(msgs) or _plan_first(msgs))
 
 
 def plan_due(messages: Iterable[Any], *, approval_live: bool) -> bool:
@@ -608,6 +721,45 @@ _MARGINS = re.compile(r"Far-field margins in reference lengths: ([\d.]+) upstrea
 _KIND = re.compile(r"input_kind (body-surface|fluid-domain|solid-body); the fluid flows (through|around) it\.")
 
 
+_OPENINGS = re.compile(r"Openings: ([^\n]*?)\.(?: |$)")
+_OPENING_ROW = re.compile(r"^([^\s;(]+) \((inlet|outlet)\)")
+_ACROSS = re.compile(r"(\d+(?:\.\d+)?) mm across")
+_CENTRE_BODY = re.compile(r"round a (\d+(?:\.\d+)?) mm centre body")
+_WIDE = re.compile(r", (\d+(?:\.\d+)?) x (\d+(?:\.\d+)?) mm")
+_AT = re.compile(r"at \((-?\d+(?:\.\d+)?), (-?\d+(?:\.\d+)?), (-?\d+(?:\.\d+)?)\) mm")
+
+
+def _with_declared_openings(patches: list[dict], declaration: str) -> list[dict]:
+    """A plan REDONE for an internal flow (CFDREQ-37: conditions typed at the plan card) is built from the patches the
+    first plan stored, which keep only each opening's name and role; its size and place are the stage's, written in
+    the declaration ("inlet (inlet), 40 mm across at (0, 0, 0) mm"). Each inlet or outlet with neither is given them
+    back from there, by name - so the redone plan binds the openings exactly as the first one did."""
+    rows = _found(_OPENINGS, declaration)
+    if not rows:
+        return patches
+    said: dict[str, dict] = {}
+    for row in rows.group(1).split("; "):
+        head = _OPENING_ROW.match(row.strip())
+        if not head:
+            continue
+        got: dict = {}
+        if (m := _found(_ACROSS, row)):
+            got["diameter_mm"] = float(m.group(1))
+            if (c := _found(_CENTRE_BODY, row)):
+                got["inner_diameter_mm"] = float(c.group(1))
+        elif (m := _found(_WIDE, row)):
+            got.update(width_mm=float(m.group(1)), height_mm=float(m.group(2)))
+        if (m := _found(_AT, row)):
+            got["near_mm"] = [float(v) for v in m.groups()]
+        said[head.group(1)] = got
+    out = []
+    for p in patches:
+        known = any(p.get(k) for k in ("diameter_mm", "area_mm2", "width_mm", "near_mm"))
+        extra = said.get(str(p.get("name"))) if p.get("type") in ("inlet", "outlet") and not known else None
+        out.append({**p, **extra} if extra else p)
+    return out
+
+
 def cfd_case(messages, intake_patches) -> dict | None:
     """What the CFD plan is built from: the purpose, the kind, the patches and (external flow) the
     far field, all as the user confirmed them on the stage. None when the declaration does not carry
@@ -618,7 +770,7 @@ def cfd_case(messages, intake_patches) -> dict | None:
     if not kind:
         return None
     if kind.group(2) == "through":
-        patches = [dict(p) for p in intake_patches or () if isinstance(p, dict)]
+        patches = _with_declared_openings([dict(p) for p in intake_patches or () if isinstance(p, dict)], text)
         if not any(p.get("type") == "inlet" for p in patches) or not any(p.get("type") == "outlet" for p in patches):
             return None
         return {"purpose": "internal_cfd", "input_kind": kind.group(1), "patches": patches, "extra": {}}
@@ -708,9 +860,19 @@ def with_conditions_sentence(messages, args: dict) -> dict:
     if not cfd_declared(msgs) or not conditions_answered(msgs):
         return args
     patches = [p for p in args.get("patches") or () if isinstance(p, dict)]
-    if _FC.read(request, patches) is not None:
-        return args
     got = flow_conditions(msgs)
+    stored = _FC.read(request, patches)
+    if stored is not None:
+        # CFDREQ-37: a summary that carries the conditions keeps them - unless what the user said last differs (a
+        # summary the model redid in its own words after "make it 50 m/s" copied the old sentence): what was typed
+        # gets built, so the sentence is rewritten with it
+        stale = ((got["said_fluid"] and _FC.fluid_key(got["fluid"]) != stored["fluid"])
+                 or (got["said_speed"] and " ".join(got["speed"].split()).lower()
+                     != " ".join(str(stored["speed_words"]).split()).lower())
+                 or (got["said_wall"] and got["wall"] != stored["wall"]))
+        if not stale:
+            return args
+        request = _FC.without(request)
     said = _FC.sentence(got["fluid"], got["speed"], got["wall"], internal=flow_kind_of(msgs) == "internal",
                         patches=patches, wall_said=bool(got["said_wall"]))
     return {**args, "request_txt": f"{request.rstrip()} {said}{_left_to_proposal(got)}".strip()}
@@ -763,7 +925,9 @@ def turn_mode(messages, *, approval_live: bool, plan_was_shown: bool) -> str:
     if asks_something(latest):
         return MODE_ANSWER_THEN_PLAN if due else MODE_ANSWER
     if due:
-        if plan_was_shown and cfd_declared(msgs) and not plain_step_answer(latest) and not _found(_OK, latest):
+        if plan_was_shown and cfd_declared(msgs) and not plain_step_answer(latest) and not _found(_OK, latest) \
+                and not conditions_only(latest):
+            # (flow conditions alone - "make it 50 m/s" - are read in code: the application redoes the plan, CFDREQ-37)
             return MODE_READ_THEN_PLAN
         return MODE_PLAN
     if fea_declared(msgs) and not analysis_said(msgs) and not approval_live:
@@ -905,6 +1069,9 @@ __all__ = ["ANALYSIS", "ANSWER", "CONDITIONS_CHOICES", "CONFIRMED", "EXTERNAL_LE
            "PURPOSE_CLARIFY", "READING", "ROUTE_CFD", "ROUTE_FEA", "STAGE", "STANDARD", "STARTED", "UNIT",
            "ScriptedPlanTurn", "analysis_said", "asks_something", "cfd_case", "cfd_declared", "cfd_plan_due",
            "cfd_submission", "closed_with", "conditions_answered", "conditions_due", "conditions_question",
+           "EARLIER_LEADS", "asked_after_plan", "conditions_ask_after_plan", "conditions_asked",
+           "conditions_changed_at_plan", "conditions_given", "conditions_kept_at_plan", "conditions_only",
+           "conditions_open",
            "fea_part_words", "fea_plan_due", "fea_submission", "flow_conditions", "flow_kind_of",
            "flow_kind_question_due", "geometry_flow_facts", "geometry_flow_kind", "is_conditions_question",
            "latest_declaration", "latest_user", "owned", "plain_step_answer", "plan_due", "plan_line",

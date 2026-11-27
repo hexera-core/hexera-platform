@@ -65,14 +65,12 @@ def tessellate_to_stl(geom_path, out_stl, *, prepared=None, angular_deflection: 
         return out_stl
     from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
     from OCP.IFSelect import IFSelect_RetDone
+    from OCP.STEPControl import STEPControl_Reader
     from OCP.StlAPI import StlAPI_Writer
 
+    from meshpipeline.cad.iges_read import iges_reader
     from meshpipeline.cad.occ_box import mesh_to_size
-    if is_iges(geom_path):
-        from OCP.IGESControl import IGESControl_Reader as _Reader
-    else:
-        from OCP.STEPControl import STEPControl_Reader as _Reader
-    reader = _Reader()
+    reader = iges_reader() if is_iges(geom_path) else STEPControl_Reader()
     if reader.ReadFile(str(geom_path)) != IFSelect_RetDone:
         raise RuntimeError(f"OpenCASCADE could not read CAD file: {geom_path.name}")
     reader.TransferRoots()
@@ -404,6 +402,86 @@ def stands_in_opening(opening: dict, normal, area: float, centroid, outer_wh=Non
     return True
 
 
+#: docs/RULES.md id: a hole that crosses a periodic face's seam is a hole of that face, as an inner wire is
+SEAM_HOLE_RULE = "INS-21"
+#: ...when its loop keeps off the face's own ends by this share of the face's span along the axis
+SEAM_HOLE_MARGIN = 0.01
+
+
+def seam_holes(face) -> list:
+    """INS-21: THE HOLES OF A PERIODIC FACE THAT CROSS ITS SEAM. A side hole drilled through a tube is an inner
+    wire of the tube's cylindrical face - unless it crosses the face's seam (the line where the cylinder's
+    parameter wraps round): then the seam is cut in two, the hole's rim joins the face's one boundary wire, and
+    no scan of inner wires sees it. The staging never sealed it, and the bore leaked to the outside through it
+    (batch 2, an inner tube of a tank). Here the face's boundary edges other than its seam are chained into
+    closed loops; a loop that keeps off the face's ends along the non-periodic parameter (its whole range inside
+    the face's own, by SEAM_HOLE_MARGIN of it) is a hole of the face, returned as a wire; the end circles of
+    the tube are not (they lie on its ends). [] for a face with no seam, or one that is periodic both ways."""
+    from OCP.BRep import BRep_Tool
+    from OCP.BRepAdaptor import BRepAdaptor_Curve2d, BRepAdaptor_Surface
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeWire
+    from OCP.BRepTools import BRepTools
+    from OCP.TopAbs import TopAbs_EDGE
+    from OCP.TopExp import TopExp, TopExp_Explorer
+    from OCP.TopoDS import TopoDS
+
+    surf = BRepAdaptor_Surface(face)
+    up, vp = surf.IsUPeriodic(), surf.IsVPeriodic()
+    if up == vp:
+        return []                                 # no seam, or a torus-like face periodic both ways
+    edges: list = []
+    seams = 0
+    # the OUTER wire only: a hole clear of the seam is an inner wire of its own, sealed as such already
+    ex = TopExp_Explorer(BRepTools.OuterWire_s(face), TopAbs_EDGE)
+    while ex.More():
+        e = TopoDS.Edge_s(ex.Current())
+        ex.Next()
+        if any(e.IsSame(x) for x in edges):
+            continue
+        if BRep_Tool.IsClosed_s(e, face):
+            seams += 1
+            continue
+        edges.append(e)
+    if not seams or len(edges) < 2:
+        return []
+    umin, umax, vmin, vmax = BRepTools.UVBounds_s(face)
+    lo, hi = (vmin, vmax) if up else (umin, umax)
+    span = hi - lo
+    if span <= 0.0:
+        return []
+    out, left = [], list(edges)
+    while left:
+        loop = [left.pop(0)]
+        v0, v1 = TopExp.FirstVertex_s(loop[0]), TopExp.LastVertex_s(loop[0])
+        grown = True
+        while grown and not v1.IsSame(v0):
+            grown = False
+            for k, e in enumerate(left):
+                a, b = TopExp.FirstVertex_s(e), TopExp.LastVertex_s(e)
+                if a.IsSame(v1) or b.IsSame(v1):
+                    v1 = b if a.IsSame(v1) else a
+                    loop.append(left.pop(k))
+                    grown = True
+                    break
+        if not v1.IsSame(v0) or len(loop) < 2:
+            continue                              # an end circle (one closed edge), or no loop at all
+        ps = []
+        for e in loop:
+            c2 = BRepAdaptor_Curve2d(e, face)
+            f0, f1 = c2.FirstParameter(), c2.LastParameter()
+            for k in range(9):
+                p = c2.Value(f0 + (f1 - f0) * k / 8.0)
+                ps.append(p.Y() if up else p.X())
+        if min(ps) - lo <= SEAM_HOLE_MARGIN * span or hi - max(ps) <= SEAM_HOLE_MARGIN * span:
+            continue                              # it reaches the face's end: the face's own rim
+        mk = BRepBuilderAPI_MakeWire()
+        for e in loop:
+            mk.Add(e)
+        if mk.IsDone():
+            out.append(mk.Wire())
+    return out
+
+
 def _ring_membrane(ring: list) -> list:
     """Membrane triangles spanning one closed rim ring.
 
@@ -728,6 +806,212 @@ def _fluid_union(shape, solids: list, declared_ports: list):
         return shape, solids, []
 
 
+#: docs/RULES.md ids of the staging decisions this module makes
+CAVITY_SEED_RULE = "INS-14"           # a body's flow is the cavity its disc ports open into
+PORTS_MISS_INSIDE_RULE = "INS-16"     # declared disc ports the inside never reaches are refused
+HELD_TO_DECLARATION_RULE = "INS-19"   # a port whose mouth is on no flat face is staged the surface way
+NO_FACE_NEAR_RULE = "INS-25"          # a port no staged opening comes near is staged the surface way
+BORE_MOUTH_RULE = "INS-26"            # the port cap is the mouth: a ring round its bore is wall
+#: INS-26: a coaxial hole in front of a port's bore is its counterbore (the mouth) up to this many bore widths across
+#: (application/geometry_check.COUNTERBORE_WIDTH, the check's own reading of the same mouth)
+COUNTERBORE_WIDTH = 2.5
+#: INS-26: a declared size agrees with an outline in this band (engines/region_check.SIZE_AGREES_BAND)
+SIZE_AGREES_LO, SIZE_AGREES_HI = 0.75, 1.25
+#: INS-25: a located port whose nearest staged flat-face opening lies more than this many of the port's own widths
+#: away, and is not decisively nearer than the next, has no flat face of its own (several ports through one face).
+NO_FACE_NEAR_WIDTHS = 2.0
+
+
+class FlatFacesMissPort(RuntimeError):
+    """INS-19: the B-rep staging's flat faces hold no opening where (and as big as) a declared port says;
+    not the user's to settle - the drivers stage the part's surface instead, which reads every loop."""
+
+
+def held_to_declaration(openings: dict, declared: list | None, bbox_min, bbox_max) -> None:
+    """INS-19: THE FLAT FACES HELD TO THE DECLARATION BEFORE ANY BINDING. B-rep staging takes only flat faces as
+    ports, so a port whose mouth is not on one (a nozzle's rounded lip, a tube's dome) was staged as some other
+    flat face, and the binding then refused the user's declaration after the staging: "the nearest detected
+    opening is 70 mm away", "points at an opening of 26 mm2 while the port declares 2978 mm2" (batch 4). The
+    binder's own location rule (engines/port_binding.bind_ports, rule 2) is run here on the staged openings, step
+    for step: located ports in name order, each taking the nearest opening not yet taken; that opening must lie
+    within HINT_MAX_BBOX_FRACTION of the part's diagonal and, when the port has a size, measure within
+    LOCATED_RATIO of it by one of its measures. A port that fails either raises FlatFacesMissPort - a staging
+    fault, not a declaration one - so the driver stages the surface instead. A port the binder would refuse for
+    another reason (two openings equally near) ends the check: the binder says it, unchanged. So no staging the
+    binder would bind is ever refused here."""
+    from meshpipeline.engines.port_binding import HINT_MARGIN, HINT_MAX_BBOX_FRACTION, _located_size_agrees
+
+    diag = math.dist(tuple(bbox_min), tuple(bbox_max))
+    pool = {k: (float(r["area"]), tuple(r["centroid"]), r.get("opening")) for k, r in sorted(openings.items())}
+    located = sorted((p for p in declared or [] if p.get("near_m")), key=lambda p: str(p.get("name")))
+    if len(pool) < len(declared or []) or diag <= 0.0:
+        return                                    # the binder's own count refusal comes first (rule 1)
+    for p in located:
+        if not pool:
+            return
+        near = tuple(p["near_m"])
+        ranked = sorted(pool.items(), key=lambda kv: math.dist(near, kv[1][1]))
+        key, (area, cen, opening) = ranked[0]
+        d1 = math.dist(near, cen)
+        d2 = math.dist(near, ranked[1][1][1]) if len(ranked) > 1 else math.inf
+        if d1 > HINT_MAX_BBOX_FRACTION * diag:
+            raise FlatFacesMissPort(
+                f"{HELD_TO_DECLARATION_RULE}: declared port {p.get('name')!r} lies {d1 * 1000.0:.1f} mm from the "
+                f"nearest flat-face opening the B-rep staging found ({key}): its mouth is on no flat face, so the "
+                "part's surface is staged instead")
+        if d1 > HINT_MARGIN * d2:
+            # INS-25: NOT DECISIVE BECAUSE NOTHING IS NEAR. Several ports through one flat face (a manifold's four
+            # top ports in its one top face, batch 4) are one staged opening at most: the B-rep staging takes one
+            # hole per face. The ports left over then stand 2.7 of their widths from the nearest staged opening, two
+            # openings about as far, and the binder refused "does not decisively pick one opening". A port no
+            # staged opening comes within NO_FACE_NEAR_WIDTHS of its own width has no flat face of its own: the
+            # part's surface is staged instead, which reads every hole. Two openings near the port are still
+            # the binder's to settle.
+            want = p.get("area_m2")
+            width = 2.0 * math.sqrt(float(want) / math.pi) if want else float(p.get("d_m") or 0.0)
+            if width > 0.0 and d1 > NO_FACE_NEAR_WIDTHS * width:
+                raise FlatFacesMissPort(
+                    f"{NO_FACE_NEAR_RULE}: declared port {p.get('name')!r} lies {d1 * 1000.0:.1f} mm from the nearest "
+                    f"flat-face opening the B-rep staging found ({key}), {d1 / width:.1f} of its widths, and as far "
+                    "from others: it has no flat face of its own, so the part's surface is staged instead")
+            return                                # not decisive: the binder's to say
+        want = p.get("area_m2")
+        if want and not _located_size_agrees(area, opening, float(want)):
+            raise FlatFacesMissPort(
+                f"{HELD_TO_DECLARATION_RULE}: declared port {p.get('name')!r} ({float(want) * 1e6:.0f} mm2) is nearest "
+                f"the flat face {key}, which measures {area * 1e6:.1f} mm2: its mouth is on no flat face, so the "
+                "part's surface is staged instead")
+        del pool[key]
+
+
+def mouth_sealed(sealed: list, mouths: list, declared: list | None) -> None:
+    """INS-26: A CONFIRMED MOUTH IS NEVER SEALED. B-rep staging takes only flat faces as ports and seals every other
+    hole of the shell into the wall. Where a port's mouth is a hole in a curved face (63643's two side slots, the
+    top of 102521's nozzle) the nearest flat face behind it was staged as the port - a slot's ceiling, a step in the
+    bore - and the mouth the user confirmed was sealed shut, the mesh's outlet a piece of wall. A located declared
+    port whose own place holds a sealed hole of about its size (its centre within half the port's width, its area
+    within MOUTH_SEALED_RATIO either way), nearer than every staged port mouth, raises FlatFacesMissPort: the part's
+    surface is staged instead, which reads every hole. `sealed` are the staging's sealed openings ({area, centroid},
+    m), `mouths` the staged ports' mouth centres (m)."""
+    for p in declared or []:
+        near, want = p.get("near_m") if isinstance(p, dict) else None, p.get("area_m2") if isinstance(p, dict) else None
+        if not near or not want:
+            continue
+        width = 2.0 * math.sqrt(float(want) / math.pi)
+        staged = min((math.dist(tuple(near), tuple(c)) for c in mouths), default=math.inf)
+        for s in sealed:
+            d = math.dist(tuple(near), tuple(s["centroid"]))
+            ratio = float(s["area"]) / float(want)
+            if d <= 0.5 * width and d < staged and 1.0 / MOUTH_SEALED_RATIO <= ratio <= MOUTH_SEALED_RATIO:
+                raise FlatFacesMissPort(
+                    f"{BORE_MOUTH_RULE}: declared port {p.get('name')!r} has its mouth at a hole the B-rep staging "
+                    f"sealed ({float(s['area']) * 1e6:.1f} mm2, {d * 1000.0:.1f} mm from it; the nearest flat-face "
+                    f"port is {staged * 1000.0:.1f} mm away): its mouth is on no flat face, so the part's surface is "
+                    "staged instead")
+
+
+#: INS-26: a sealed hole is a declared port's mouth when its area is within this factor of the port's, either way
+MOUTH_SEALED_RATIO = 2.0
+
+
+def _facing(n) -> str:
+    """A direction in words: the axis it runs along ("+z"), or the vector when it runs along none."""
+    k = max(range(3), key=lambda i: abs(n[i]))
+    if abs(n[k]) >= 0.9:
+        return f"{'+' if n[k] > 0 else '-'}{'xyz'[k]}"
+    return "(" + ", ".join(f"{v:.2f}" for v in n) + ")"
+
+
+def _check_skin(geom_path, prepared):
+    """The part's skin exactly as the geometry check draws it (cad/scout.write_view_stl, metres, each face
+    wound outward), as triangles (n, 3, 3): the inside map read on it is the map the proposal was made from."""
+    import tempfile
+
+    import numpy as np
+
+    from meshpipeline.cad.scout import write_view_stl
+    from meshpipeline.cad.stl_io import read_stl_triangles
+    with tempfile.TemporaryDirectory() as tmp:
+        skin = write_view_stl(Path(geom_path), Path(tmp) / "skin.stl", prepared=prepared)
+        return np.asarray(read_stl_triangles(skin), dtype=float).reshape(-1, 3, 3)
+
+
+def mouths_the_ports_miss(tris, ports: list) -> list[dict] | None:
+    """INS-16: THE DECLARED DISC PORTS HELD TO THE INSIDE MAP. `tris` is the solid's skin (n, 3, 3) in
+    metres; `ports` one (centroid, outward normal, radius) per declared port, each a flat disc of the solid.
+    When the map finds space inside the part that opens to the outside (a passage with its mouths) and no
+    port is one of those mouths, the mouths are returned - each {centroid_mm, normal, diameter_mm} - for the
+    refusal to offer; else None (no passage: the solid may be the fluid itself, a rod the user called a body;
+    or a port is a mouth). A mouth is a port's when it faces the same way within the port's footprint."""
+    import numpy as np
+
+    from meshpipeline.cad.inside_space import read_inside_or_none
+    from meshpipeline.cad.open_ends import surface
+
+    mesh = surface(tris)
+    imap = read_inside_or_none(mesh) if mesh is not None else None
+    if imap is None:
+        return None
+    mouths = [m for m in imap.mouths if any(imap.pockets[p].passage for p in m.pockets)]
+    if not mouths:
+        return None
+    for c, n, r in ports:
+        c, n = np.asarray(c, dtype=float), np.asarray(n, dtype=float)
+        for m in mouths:
+            reach = max(float(r), 0.5 * m.diameter) + 2.0 * imap.h
+            rel = np.asarray(m.centroid, dtype=float) - c
+            along = float(rel @ n)
+            lateral = float(np.linalg.norm(rel - along * n))
+            if float(np.asarray(m.normal) @ n) >= 0.7 and lateral <= reach and abs(along) <= reach:
+                return None
+    mouths.sort(key=lambda m: -m.area)
+    return [{"centroid_mm": [round(float(v) * 1000.0, 1) + 0.0 for v in m.centroid],     # never a "-0"
+             "normal": [round(float(v), 3) for v in m.normal],
+             "diameter_mm": round(m.diameter * 1000.0, 1)} for m in mouths]
+
+
+def ports_miss_the_inside(names: list[str], mouths: list[dict]) -> str:
+    """INS-16: the refusal, in the user's words, with the map's mouths as the way on."""
+    where = "; ".join(f"a {m['diameter_mm']:g} mm opening at ({', '.join(f'{v:g}' for v in m['centroid_mm'])}) mm "
+                      f"facing {_facing(m['normal'])}" for m in mouths[:6])
+    more = f" and {len(mouths) - 6} more" if len(mouths) > 6 else ""
+    one = len(mouths) == 1
+    return (f"the declared openings ({', '.join(names)}) are flat ends of solid material: no space inside the part "
+            f"reaches them, so there is no fluid behind them to mesh. The space inside this part opens at "
+            f"{len(mouths)} place{'' if one else 's'}: {where}{more}. "
+            + ("With only one opening the fluid has no way through the part: if the flow goes around it, run it as "
+               "flow around the part; if it goes through, mark its real inlet and outlet on the picture."
+               if one else "Mark the inlet and outlets there on the picture, then run again."))
+
+
+#: docs/RULES.md: a perforated plate's openings are its two sides; a grille's, one lid over it
+PERFORATION_RULE = "INS-23"
+
+
+def _with_perforation_sleeve(shape, declared_ports: list):
+    """INS-23: when the part is a perforated plate or a grille (cad/perforated.read_perforation) and the declared
+    ports sit at the ends of its sleeve - the user confirmed "flow goes through the holes" - the part is staged
+    with the sleeve fused to it: a tube of wall round the plate's outline (both sides) or the grille's lid circle
+    (out from its face), whose open far ends are the ports. Otherwise, the part as it is."""
+    from meshpipeline.cad.perforated import read_perforation, sleeve_ends_declared, with_sleeve
+
+    try:
+        perf = read_perforation(shape)
+        if perf is None or not sleeve_ends_declared(perf, declared_ports):
+            return shape
+        sleeved = with_sleeve(shape, perf)
+    except Exception as exc:  # noqa: BLE001 - the part as drawn; the binding says what it cannot match
+        logger.warning("tessellate_internal (%s): the sleeve could not be built (%s: %s)", PERFORATION_RULE,
+                       type(exc).__name__, str(exc)[:200])
+        return shape
+    if sleeved is None:
+        logger.warning("tessellate_internal (%s): the sleeve did not fuse to the part", PERFORATION_RULE)
+        return shape
+    logger.info("tessellate_internal (%s): %s of %d holes staged in a sleeve %.1f mm past it, its ends the ports",
+                PERFORATION_RULE, perf.kind, perf.holes, perf.sleeve * 1000.0)
+    return sleeved
+
+
 def _tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflection: float = 0.2,
                         linear_deflection: float | None = None,
                         opening_faces: list[int] | None = None,
@@ -764,17 +1048,18 @@ def _tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflectio
     geom_path = Path(geom_path)
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    if is_iges(geom_path):
-        from OCP.IGESControl import IGESControl_Reader as _Reader
-    else:
-        from OCP.STEPControl import STEPControl_Reader as _Reader
-    reader = _Reader()
+    from OCP.STEPControl import STEPControl_Reader
+
+    from meshpipeline.cad.iges_read import iges_reader
+    reader = iges_reader() if is_iges(geom_path) else STEPControl_Reader()
     if reader.ReadFile(str(geom_path)) != IFSelect_RetDone:
         raise RuntimeError(f"OpenCASCADE could not read CAD file: {geom_path.name}")
     reader.TransferRoots()
     shape = reader.OneShape()
     trsf = _occ_to_metres(prepared)
     shape = BRepBuilderAPI_Transform(shape, trsf, True).Shape()
+    if declared_ports and fluid_solid is not True:
+        shape = _with_perforation_sleeve(shape, declared_ports)
 
     # EVERY SOLID OF THE FILE. A file can hold several: an annular passage's pipe and the centre
     # rod modelled as a body of its own (all ten annular corpus parts), an insert, a baffle, a
@@ -870,26 +1155,67 @@ def _tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflectio
             pts.pop()
         return pts
 
-    def _inner_opening(f):
-        """What the largest inner wire of a planar face encloses - the OPENING an
-        annular (ring) face rims: {"area_m2", "centroid", "wh_m"}. None for a
-        single-wire face (a solid-model disc IS its own opening) and when no inner rim
-        is measurable on the triangulation. Largest wins because the biggest hole of a
-        flanged end face is the bore; the small ones around it are bolt holes."""
+    def _mouth_wire(f):
+        """(wire, measure) of the inner wire of a planar face that rims its OPENING - the largest, because the
+        biggest hole of a flanged end face is the bore and the small ones round it are bolt holes; (None, None)
+        for a single-wire face and when no inner rim is measurable on the triangulation."""
         wires = _wires_of(f)
         if len(wires) < 2:
-            return None
+            return None, None
         outer_w = BRepTools.OuterWire_s(f)
-        best = None
+        best: tuple = (None, None)
         for wire in wires:
             if wire.IsSame(outer_w):
                 continue
             measured = _rim_measure(_rim_polyline(f, wire))
             if measured is None:
                 continue
-            if best is None or measured["area_m2"] > best["area_m2"]:
-                best = measured
+            if best[1] is None or measured["area_m2"] > best[1]["area_m2"]:
+                best = (wire, measured)
         return best
+
+    def _inner_opening(f):
+        """What the largest inner wire of a planar face encloses - the OPENING an
+        annular (ring) face rims: {"area_m2", "centroid", "wh_m"}. None for a
+        single-wire face (a solid-model disc IS its own opening) and when no inner rim
+        is measurable on the triangulation (_mouth_wire)."""
+        return _mouth_wire(f)[1]
+
+    def _opening_record(pi):
+        # the face's own measure, plus - for an annular (ring) port face - what its inner
+        # wire encloses: the OPENING the declaration talks about, which downstream size
+        # matching may use where the ring's metal area cannot (engines/port_binding)
+        rec = {"area": round(_face_props(faces[pi])[0], 8),
+               "centroid": [round(v, 6) for v in _face_props(faces[pi])[1]]}
+        prof = _inner_opening(faces[pi])
+        if prof is not None:
+            rec["opening"] = {"area": round(prof["area_m2"], 8),
+                              "centroid": [round(v, 6) for v in prof["centroid"]],
+                              "wh": [round(v, 6) for v in prof["wh_m"]]}
+            filled = _filled_area(pi, prof)
+            if filled > 0.0:
+                # a body standing in the bore (a centre rod) shows a flat face inside the
+                # inner wire: the flow crosses the opening less that face (port_binding)
+                rec["opening"]["filled"] = round(filled, 8)
+        return rec
+
+    def _filled_area(pi, prof) -> float:
+        """Area of the other flat faces standing in a ring face's inner wire, in its plane
+        (stands_in_opening: the geometry check's scout reads an opening the same way)."""
+        ax = BRepAdaptor_Surface(faces[pi]).Plane().Axis().Direction()
+        n = (ax.X(), ax.Y(), ax.Z())
+        total = 0.0
+        for j, fj in enumerate(faces):
+            if j == pi or BRepAdaptor_Surface(fj).GetType() != GeomAbs_Plane:
+                continue
+            a, c = _face_props(fj)
+            if not stands_in_opening(prof, n, a, c):
+                continue
+            # the cheap tests passed: does the face's own outer rim fit inside the opening?
+            rim = _rim_measure(_rim_polyline(fj, BRepTools.OuterWire_s(fj)))
+            if stands_in_opening(prof, n, a, c, rim["wh_m"] if rim else None):
+                total += a
+        return total
 
     wall_idx: list[int] = []
     open_idx: list[int] = []
@@ -1081,12 +1407,29 @@ def _tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflectio
             # staged ports 1.5-1.8x the declared annulus, 140 edges used three times), which only
             # a lucky seed or fill kept out of the mesh. The ring face is the whole lid.
             return []
+        if port_i in front_mouths:
+            # INS-26: a counterbore's floor: the port is the cap over the hole in front, the floor and its bore
+            # are the port's neck (open to the fluid)
+            j, wire, _meas, _depth = front_mouths[port_i]
+            cap = _cap_for_wire(BRepAdaptor_Surface(faces[j]).Plane(), wire)
+            if cap is not None:
+                port_bored.add(port_i)
+                return [cap]
+            logger.error("tessellate_internal: could not cap the counterbore mouth of port face %d - its floor's "
+                         "bore is capped instead", port_i)
+            del front_mouths[port_i]
         outer_w = BRepTools.OuterWire_s(f)
         pln = BRepAdaptor_Surface(f).Plane()
         host = _owner(f)
+        # INS-26: when the bore is the mouth, only the bore is capped as the port; the face's other holes (bolt
+        # holes round a flange's bore) are no part of the opening
+        mouth_w = _mouth_wire(f)[0] if port_i in bore_mouths else None
         caps = []
         for wire in wires:
             if wire.IsSame(outer_w):
+                continue
+            if mouth_w is not None and not wire.IsSame(mouth_w):
+                _seal_beside_mouth(port_i, f, pln, wire)
                 continue
             cap = _cap_for_wire(pln, wire)
             if cap is None:
@@ -1185,6 +1528,128 @@ def _tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflectio
         return False
 
     # #
+    # INS-26: THE PORT CAP IS THE MOUTH, NOTHING MORE. A body's port face is often the metal end ring round its
+    # bore. The ring was written into the port STL beside the bore's cap, so the port patch was the opening AND
+    # the ring: a tube end's 11-518 mm2 of metal (63643's 8.98 mm bore, the test tank's outer tube 2,823 mm2
+    # staged against its 2,287 mm2 bore) - the port_areas gate, which judges the bore, refused every mesh, and
+    # vmtk read two rims in one plane. Which outline the flow crosses is read here exactly as the gate reads it
+    # (engines/region_check.flow_area_m2, against the size the nearest declared port states), and a ring round
+    # its own bore (concentric, a centre body standing in it or not) is always its metal: when the bore is the
+    # mouth, the cap of the bore alone (less any body standing in it) is the port, the ring goes to the wall,
+    # and the face's other holes are sealed into the wall (or left to the port whose mouth they rim). A face
+    # whose hole is off its centre and does not fit the declared size (a flange plate's cut-out round another
+    # solid's end, a lid with a pin hole) is the opening, as before.
+    # #
+    from meshpipeline.engines.region_check import _concentric, flow_area_m2
+
+    diag_m = math.dist((x0, y0, z0), (x1, y1, z1))
+
+    def _typed_size(pi) -> float | None:
+        # the size the nearest located declared port states, within a quarter of the part's diagonal
+        prof = _inner_opening(faces[pi])
+        c = tuple(prof["centroid"]) if prof is not None else _face_props(faces[pi])[1]
+        best = None
+        for p in declared_ports or []:
+            near = p.get("near_m") if isinstance(p, dict) else None
+            if not near or not p.get("area_m2"):
+                continue
+            d = math.dist(tuple(near), c)
+            if d <= 0.25 * diag_m and (best is None or d < best[0]):
+                best = (d, float(p["area_m2"]))
+        return best[1] if best else None
+
+    def _bore_is_mouth(pi) -> bool:
+        if fluid_solid is True or len(_wires_of(faces[pi])) < 2:
+            return False
+        rec = _opening_record(pi)
+        op = rec.get("opening")
+        if not op:
+            return False
+        if _concentric(rec, op, float(op["area"])):
+            return True                       # a ring round its own bore (a centre body may stand in it)
+        lid = flow_area_m2(rec, bore=True, typed=_typed_size(pi))
+        inner = float(op["area"])
+        filled = float(op.get("filled") or 0.0)
+        left = inner - filled if filled < inner else inner
+        return lid is not None and any(math.isclose(lid, v, rel_tol=1e-9) for v in (inner, left))
+
+    def _seal_beside_mouth(pi, f, pln, wire):
+        # a hole of a port face beside its bore: another declared port's own mouth stays open for that port;
+        # anything else (a bolt hole) is sealed into the wall, as an undeclared opening is
+        pts = _rim_polyline(f, wire)
+        frame = _newell_frame(pts) if len(pts) >= 3 else None
+        hole = _rim_measure(pts) if frame is not None else None
+        if frame is not None and hole is not None and _is_port_mouth(frame[1], frame[0], hole["area_m2"]):
+            return
+        cap = _cap_for_wire(pln, wire)
+        if cap is None:
+            return
+        g = GProp_GProps(); BRepGProp.SurfaceProperties_s(cap, g)
+        undeclared_caps.append(cap)
+        c = frame[1] if frame is not None else _face_props(cap)[1]
+        sealed_openings.append({"face": pi, "area": round(g.Mass(), 8), "centroid": [round(v, 6) for v in c]})
+        logger.info("tessellate_internal (%s): port face %d - a %.1f mm^2 hole beside its bore is no part of the "
+                    "opening; sealed into the wall", BORE_MOUTH_RULE, pi, g.Mass() * 1e6)
+
+    bore_mouths = {pi for pi in (inlet_i, *outlet_ids) if _bore_is_mouth(pi)}
+
+    # #
+    # INS-26: A COUNTERBORE'S FLOOR IS NO MOUTH. A port drilled with a counterbore (the GL45 cap's three 5.9 mm
+    # holes over 3 mm bores) has two coaxial flat rims: the counterbore's top in the face, which is the mouth the
+    # user confirmed, and its floor's ring round the bore behind it. The floor is a face of its own, so it was
+    # staged as the port: its 3 mm bore capped, 7 mm2 where 27 mm2 was confirmed, the counterbore left out of the
+    # fluid. When the declared size fits not the bore but a hole of a flat face in front of it - same axis,
+    # facing the same way, open air between, no wider than COUNTERBORE_WIDTH times the bore (a counterbore, not
+    # a recess the port sits in) - that hole is capped as the port; the floor and its bore are the port's neck.
+    # #
+    def _mouth_in_front(pi):
+        prof = _inner_opening(faces[pi])
+        typed = _typed_size(pi)
+        if prof is None or not typed:
+            return None
+        bore_a = float(prof["area_m2"])
+        if SIZE_AGREES_LO <= bore_a / typed <= SIZE_AGREES_HI:
+            return None                                   # the bore is the mouth confirmed
+        f = faces[pi]
+        ax = BRepAdaptor_Surface(f).Plane().Axis().Direction()
+        n = [ax.X(), ax.Y(), ax.Z()]
+        if f.Orientation() == TopAbs_REVERSED:
+            n = [-v for v in n]                           # out of the floor's material: toward the mouth
+        c0 = prof["centroid"]
+        r0 = _m.sqrt(bore_a / _m.pi)
+        best = None
+        for j in wall_idx:
+            fj = faces[j]
+            hj = BRepAdaptor_Surface(fj)
+            if hj.GetType() != GeomAbs_Plane:
+                continue
+            aj = hj.Plane().Axis().Direction()
+            if abs(aj.X() * n[0] + aj.Y() * n[1] + aj.Z() * n[2]) < 0.99:
+                continue
+            outer_j = BRepTools.OuterWire_s(fj)
+            for wire in _wires_of(fj):
+                if wire.IsSame(outer_j):
+                    continue
+                m = _rim_measure(_rim_polyline(fj, wire))
+                if m is None:
+                    continue
+                a = float(m["area_m2"])
+                if not (bore_a < a <= COUNTERBORE_WIDTH ** 2 * bore_a):
+                    continue
+                if not SIZE_AGREES_LO <= a / typed <= SIZE_AGREES_HI:
+                    continue
+                rel = [m["centroid"][k] - c0[k] for k in range(3)]
+                along = sum(rel[k] * n[k] for k in range(3))
+                lateral = _m.sqrt(max(sum(v * v for v in rel) - along * along, 0.0))
+                if along <= 0.0 or lateral > 0.25 * r0:
+                    continue
+                if not _clear_line(tuple(c0[k] + 1e-3 * r0 * n[k] for k in range(3)), tuple(m["centroid"])):
+                    continue
+                if best is None or along > best[3]:
+                    best = (j, wire, m, along)          # the outermost: the mouth in the face
+        return best
+
+    # #
     # PORT-MOUTH NEIGHBOURHOOD. A flanged mouth is rimmed by SEVERAL coaxial ring faces:
     # the duct wall's end ring (the chosen port face) plus flange annuli around and just
     # behind the very same hole. Once the port face is chosen the flange faces are wall,
@@ -1253,18 +1718,36 @@ def _tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflectio
                 return True
         return False
 
+    front_mouths: dict = {}           # INS-26: counterbore floor port face -> (face, wire, measure, depth) of its mouth
+    for k, pi in enumerate((inlet_i, *outlet_ids)):
+        found = _mouth_in_front(pi) if pi in bore_mouths else None
+        if found is None:
+            continue
+        front_mouths[pi] = found
+        jn = BRepAdaptor_Surface(faces[found[0]]).Plane().Axis().Direction()
+        mouth_frames[k] = (tuple(found[2]["centroid"]), (jn.X(), jn.Y(), jn.Z()),
+                           _m.sqrt(max(float(found[2]["area_m2"]), 0.0) / _m.pi))
+        logger.info("tessellate_internal (%s): port face %d is a counterbore's floor - its mouth is the %.1f mm^2 "
+                    "hole of face %d, %.1f mm in front", BORE_MOUTH_RULE, pi, found[2]["area_m2"] * 1e6,
+                    found[0], found[3] * 1000.0)
+
     undeclared_caps: list = []        # OCC cap faces (planar hosts) -> the wall group
     undeclared_membranes: list = []   # raw membrane triangles (curved hosts) -> wall.stl
     sealed_openings: list[dict] = []
     for wi in wall_idx:
         wf = faces[wi]
         wires = _wires_of(wf)
-        if len(wires) < 2:
-            continue                  # no holes - the overwhelmingly common wall face
-        outer_w = BRepTools.OuterWire_s(wf)
         host = BRepAdaptor_Surface(wf)
         host_planar = host.GetType() == GeomAbs_Plane
-        for wire in wires:
+        # INS-21: a hole across a periodic face's seam is part of the face's outer wire, not an inner one
+        across_seam = [] if host_planar else seam_holes(wf)
+        if len(wires) < 2 and not across_seam:
+            continue                  # no holes - the overwhelmingly common wall face
+        if across_seam:
+            logger.info("tessellate_internal (%s): face %d holds %d hole(s) across its seam", SEAM_HOLE_RULE, wi,
+                        len(across_seam))
+        outer_w = BRepTools.OuterWire_s(wf)
+        for wire in [*wires, *across_seam]:
             if wire.IsSame(outer_w):
                 continue
             pts = _rim_polyline(wf, wire)
@@ -1318,6 +1801,11 @@ def _tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflectio
     for nm in outlet_names:
         stls[nm] = out_dir / f"{nm}.stl"
     port_caps = {pi: _mouth_caps(pi) for pi in (inlet_i, *outlet_ids)}
+    # a ring whose bore was capped is wall; one whose bore could not be capped stays the port, as before
+    ring_walls = [pi for pi in (inlet_i, *outlet_ids) if pi in bore_mouths and port_caps[pi]]
+    if ring_walls:
+        logger.info("tessellate_internal (%s): %d port face(s) are rings round their bore - the bore's cap is the "
+                    "port, the ring is wall: %s", BORE_MOUTH_RULE, len(ring_walls), ring_walls)
 
     # verified interior point for locationInMesh. WHICH region is the flow comes first:
     #   * a declared fluid domain, or an undeclared solid: the solid IS the flow (a duct modeled
@@ -1340,10 +1828,10 @@ def _tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflectio
         # closed region), not the annulus round it. The lid and the solid's side wall meet edge
         # to edge without them.
         wall_idx = [i for i in wall_idx if i not in lidded_ends]
-    _write_group(wall_idx, stls["wall"], extra_faces=undeclared_caps)
-    _write_group([inlet_i], stls["inlet"], extra_faces=port_caps[inlet_i])
+    _write_group([*wall_idx, *ring_walls], stls["wall"], extra_faces=undeclared_caps)
+    _write_group([] if inlet_i in ring_walls else [inlet_i], stls["inlet"], extra_faces=port_caps[inlet_i])
     for nm, oi in zip(outlet_names, outlet_ids):
-        _write_group([oi], stls[nm], extra_faces=port_caps[oi])
+        _write_group([] if oi in ring_walls else [oi], stls[nm], extra_faces=port_caps[oi])
     if undeclared_membranes:
         write_stl_binary(stls["wall"],
                          read_stl_triangles(stls["wall"]) + undeclared_membranes)
@@ -1394,8 +1882,125 @@ def _tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflectio
         v = [n[1] * u[2] - n[2] * u[1], n[2] * u[0] - n[0] * u[2], n[0] * u[1] - n[1] * u[0]]
         return u, v
 
+    def _mouth_probe_rings():
+        # One ring of (point, the mouth point it is reached from, the mouth's radius) per port
+        # and depth, best first. Each port's mouth - the centre of the opening its ring rims,
+        # or of the disc itself - is stepped along the port axis at decreasing depth, on the
+        # axis and then off it, out to 0.95 of the radius: a centre body can fill the axis and
+        # most of the mouth (the annular corpus family's rods span 0.61-0.90 of the bore).
+        # BOTH ways along the axis: which side is in is for the verification to prove, never
+        # for a normal's sign to assume.
+        offsets = [(0.0, 0.0)] + [(f * a, f * b) for f in (0.5, 0.8, 0.9, 0.95)
+                                  for a, b in ((1.0, 0.0), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0))]
+        for pi in (inlet_i, *outlet_ids):
+            f = faces[pi]
+            prof = _inner_opening(f)
+            if prof is not None:
+                c, area = tuple(prof["centroid"]), float(prof["area_m2"])
+            else:
+                area, c = _face_props(f)
+            r = _m.sqrt(max(area, 0.0) / _m.pi)
+            ax = BRepAdaptor_Surface(f).Plane().Axis().Direction()
+            n = [ax.X(), ax.Y(), ax.Z()]
+            u, v = _plane_basis(n)
+            for depth in (0.5, 0.3, 0.15):
+                ring = []
+                for a, b in offsets:
+                    mouth = tuple(c[k] + r * (a * u[k] + b * v[k]) for k in range(3))
+                    for sign in (1.0, -1.0):
+                        ring.append((tuple(mouth[k] + sign * depth * r * n[k]
+                                           for k in range(3)), mouth, r))
+                yield ring
+
+    def _capped_cavity():
+        # THE CAPPED CAVITY. A real machined part - a rocket nozzle, a flanged elbow - is METAL
+        # with a channel through it, and the flow is the region its wall closes with the port
+        # caps. The old search stepped from the inlet toward the outlet and took the first
+        # point not in the metal. On a bent duct that line leaves the channel at once:
+        # bend_elbow_021 (a 162.64-degree elbow, the outlet almost beside the inlet) was seeded
+        # 0.5 mm upstream of its own inlet cap - not in the metal, but in the exterior - and
+        # the carve kept the exterior void. A point is taken here only when it is PROVEN in the
+        # cavity, against the surface the mesher reads: not in the metal, reached from a port's
+        # cap in a straight line that crosses nothing, and closed in - every ray from it stops
+        # on the staged surface, where from the exterior some ray reaches open space. The cap
+        # divides exactly those two regions, so a point that passes is in the flow. The metal
+        # is EVERY solid of the file: a centre rod modelled as a solid of its own (annular_004)
+        # is closed in by the staged surface too, and the first solid alone would not see it.
+        metal = []
+        se = TopExp_Explorer(shape, TopAbs_SOLID)
+        while se.More():
+            metal.append(BRepClass3d_SolidClassifier(TopoDS.Solid_s(se.Current())))
+            se.Next()
+
+        def _in_metal(p) -> bool:
+            for cls in metal:
+                cls.Perform(gp_Pnt(*p), 1e-9)
+                if cls.State() == TopAbs_IN:
+                    return True
+            return False
+
+        carve = CarveRays([t for p in stls.values() for t in read_stl_triangles(p)])
+        best: tuple | None = None
+        for ring in _mouth_probe_rings():
+            for cand, mouth, r_mouth in ring:
+                p = tuple(round(x, 6) for x in cand)        # judged as it is written
+                if _in_metal(p) or not carve.clear_between(mouth, p):
+                    continue
+                clearance = carve.enclosed_clearance(p)
+                if clearance is None or clearance < 0.02 * r_mouth:
+                    continue                                 # open space, or on a wall
+                if best is None or clearance > best[1]:
+                    best = (p, clearance)
+                if clearance >= 0.25 * r_mouth:
+                    break                                    # well clear of every wall
+            if best is not None:
+                break          # the clearest proven point of the first ring that holds one
+        if best is not None:
+            found = best[0]
+            logger.info(
+                "tessellate_internal: seed (%.6f, %.6f, %.6f) m proven in the capped cavity - "
+                "outside the metal, straight in from a port cap, closed in on every ray "
+                "(nearest surface %.1f mm)", *found, best[1] * 1000.0)
+            return found
+        return None
+
     interior: tuple | None = None
-    if not hollow_wall:
+    cavity_seeded = False
+    if not hollow_wall and fluid_solid is False:
+        # INS-14: A BODY'S FLOW IS THE CAVITY ITS PORTS OPEN INTO, WHEN ONE IS PROVEN. A solid declared a
+        # body whose ports are plain discs was taken for a rod the user called a body, and seeded in
+        # its metal - a box with a cavity behind its port lids was meshed as its walls (the siphoned
+        # box, c2_sib1: 81% of the mesh wall off the CAD). A point proven in a cavity the staged surface
+        # closes, straight in from a port cap, outside the metal, is the flow; a rod has none (every
+        # point is its metal or the open air) and is seeded in the solid as before.
+        interior = _capped_cavity()
+        cavity_seeded = interior is not None
+        if cavity_seeded:
+            logger.info("tessellate_internal (%s): the body is seeded in the cavity its ports open into, at %s",
+                        CAVITY_SEED_RULE, interior)
+    if interior is None and fluid_solid is not True and not port_bored and (
+            fluid_solid is False or _capped_cavity() is None):
+        # INS-16: DISC PORTS THE INSIDE NEVER REACHES. A body whose declared ports are all flat discs of its
+        # solid, with no cavity behind them, would be seeded in its own metal below - right for a rod the
+        # user called a body (no space inside it at all), wrong for a part with space inside that opens
+        # elsewhere: an open cup with solid rod stubs, its stubs' ends declared, was meshed as its metal for
+        # hours (the siphoned box). When the inside map finds such space and no declared port is one of its
+        # mouths, the declaration is refused with the mouths offered as the way on.
+        def _out_normal(f):
+            ax = BRepAdaptor_Surface(f).Plane().Axis().Direction()
+            n = [ax.X(), ax.Y(), ax.Z()]
+            return [-v for v in n] if f.Orientation() == TopAbs_REVERSED else n
+        frames = []
+        for pi in (inlet_i, *outlet_ids):
+            area, c = _face_props(faces[pi])
+            frames.append((c, _out_normal(faces[pi]), _m.sqrt(max(area, 0.0) / _m.pi)))
+        missed = mouths_the_ports_miss(_check_skin(geom_path, prepared), frames)
+        if missed:
+            from meshpipeline.engines.port_binding import BindError
+            logger.info("tessellate_internal (%s): no declared disc port is a mouth of the inside map",
+                        PORTS_MISS_INSIDE_RULE)
+            raise BindError(ports_miss_the_inside(["inlet", *outlet_names], missed))
+    if not hollow_wall and interior is None:
         # Candidates, cheapest-first: each solid's volume centroid, then each port centroid nudged
         # inward along its (oriented) normal.
         candidates = []
@@ -1468,85 +2073,8 @@ def _tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflectio
             "outside the solid (a hole through the part?); the mesh would have been of the "
             "void, not the flow")
 
-    def _mouth_probe_rings():
-        # One ring of (point, the mouth point it is reached from, the mouth's radius) per port
-        # and depth, best first. Each port's mouth - the centre of the opening its ring rims,
-        # or of the disc itself - is stepped along the port axis at decreasing depth, on the
-        # axis and then off it, out to 0.95 of the radius: a centre body can fill the axis and
-        # most of the mouth (the annular corpus family's rods span 0.61-0.90 of the bore).
-        # BOTH ways along the axis: which side is in is for the verification to prove, never
-        # for a normal's sign to assume.
-        offsets = [(0.0, 0.0)] + [(f * a, f * b) for f in (0.5, 0.8, 0.9, 0.95)
-                                  for a, b in ((1.0, 0.0), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0))]
-        for pi in (inlet_i, *outlet_ids):
-            f = faces[pi]
-            prof = _inner_opening(f)
-            if prof is not None:
-                c, area = tuple(prof["centroid"]), float(prof["area_m2"])
-            else:
-                area, c = _face_props(f)
-            r = _m.sqrt(max(area, 0.0) / _m.pi)
-            ax = BRepAdaptor_Surface(f).Plane().Axis().Direction()
-            n = [ax.X(), ax.Y(), ax.Z()]
-            u, v = _plane_basis(n)
-            for depth in (0.5, 0.3, 0.15):
-                ring = []
-                for a, b in offsets:
-                    mouth = tuple(c[k] + r * (a * u[k] + b * v[k]) for k in range(3))
-                    for sign in (1.0, -1.0):
-                        ring.append((tuple(mouth[k] + sign * depth * r * n[k]
-                                           for k in range(3)), mouth, r))
-                yield ring
-
-    if interior is None:
-        # THE CAPPED CAVITY. A real machined part - a rocket nozzle, a flanged elbow - is METAL
-        # with a channel through it, and the flow is the region its wall closes with the port
-        # caps. The old search stepped from the inlet toward the outlet and took the first
-        # point not in the metal. On a bent duct that line leaves the channel at once:
-        # bend_elbow_021 (a 162.64-degree elbow, the outlet almost beside the inlet) was seeded
-        # 0.5 mm upstream of its own inlet cap - not in the metal, but in the exterior - and
-        # the carve kept the exterior void. A point is taken here only when it is PROVEN in the
-        # cavity, against the surface the mesher reads: not in the metal, reached from a port's
-        # cap in a straight line that crosses nothing, and closed in - every ray from it stops
-        # on the staged surface, where from the exterior some ray reaches open space. The cap
-        # divides exactly those two regions, so a point that passes is in the flow. The metal
-        # is EVERY solid of the file: a centre rod modelled as a solid of its own (annular_004)
-        # is closed in by the staged surface too, and the first solid alone would not see it.
-        metal = []
-        se = TopExp_Explorer(shape, TopAbs_SOLID)
-        while se.More():
-            metal.append(BRepClass3d_SolidClassifier(TopoDS.Solid_s(se.Current())))
-            se.Next()
-
-        def _in_metal(p) -> bool:
-            for cls in metal:
-                cls.Perform(gp_Pnt(*p), 1e-9)
-                if cls.State() == TopAbs_IN:
-                    return True
-            return False
-
-        carve = CarveRays([t for p in stls.values() for t in read_stl_triangles(p)])
-        best: tuple | None = None
-        for ring in _mouth_probe_rings():
-            for cand, mouth, r_mouth in ring:
-                p = tuple(round(x, 6) for x in cand)        # judged as it is written
-                if _in_metal(p) or not carve.clear_between(mouth, p):
-                    continue
-                clearance = carve.enclosed_clearance(p)
-                if clearance is None or clearance < 0.02 * r_mouth:
-                    continue                                 # open space, or on a wall
-                if best is None or clearance > best[1]:
-                    best = (p, clearance)
-                if clearance >= 0.25 * r_mouth:
-                    break                                    # well clear of every wall
-            if best is not None:
-                break          # the clearest proven point of the first ring that holds one
-        if best is not None:
-            interior = best[0]
-            logger.info(
-                "tessellate_internal: seed (%.6f, %.6f, %.6f) m proven in the capped cavity - "
-                "outside the metal, straight in from a port cap, closed in on every ray "
-                "(nearest surface %.1f mm)", *interior, best[1] * 1000.0)
+    if interior is None and not (fluid_solid is False and not hollow_wall):
+        interior = _capped_cavity()           # (a body's cavity was searched first, above)
     if interior is None:
         raise RuntimeError(
             "could not locate a point in the flow for locationInMesh - every point tried is in "
@@ -1555,57 +2083,56 @@ def _tessellate_internal(geom_path, out_dir, *, prepared=None, angular_deflectio
 
     n_wall_faces = sum(len(read_stl_triangles(stls["wall"])) for _ in [0])
 
-    def _opening_record(pi):
-        # the face's own measure, plus - for an annular (ring) port face - what its inner
-        # wire encloses: the OPENING the declaration talks about, which downstream size
-        # matching may use where the ring's metal area cannot (engines/port_binding)
-        rec = {"area": round(_face_props(faces[pi])[0], 8),
-               "centroid": [round(v, 6) for v in _face_props(faces[pi])[1]]}
-        prof = _inner_opening(faces[pi])
-        if prof is not None:
-            rec["opening"] = {"area": round(prof["area_m2"], 8),
-                              "centroid": [round(v, 6) for v in prof["centroid"]],
-                              "wh": [round(v, 6) for v in prof["wh_m"]]}
-            filled = _filled_area(pi, prof)
-            if filled > 0.0:
-                # a body standing in the bore (a centre rod) shows a flat face inside the
-                # inner wire: the flow crosses the opening less that face (port_binding)
-                rec["opening"]["filled"] = round(filled, 8)
-        return rec
-
-    def _filled_area(pi, prof) -> float:
-        """Area of the other flat faces standing in a ring face's inner wire, in its plane
-        (stands_in_opening: the geometry check's scout reads an opening the same way)."""
-        ax = BRepAdaptor_Surface(faces[pi]).Plane().Axis().Direction()
-        n = (ax.X(), ax.Y(), ax.Z())
-        total = 0.0
-        for j, fj in enumerate(faces):
-            if j == pi or BRepAdaptor_Surface(fj).GetType() != GeomAbs_Plane:
-                continue
-            a, c = _face_props(fj)
-            if not stands_in_opening(prof, n, a, c):
-                continue
-            # the cheap tests passed: does the face's own outer rim fit inside the opening?
-            rim = _rim_measure(_rim_polyline(fj, BRepTools.OuterWire_s(fj)))
-            if stands_in_opening(prof, n, a, c, rim["wh_m"] if rim else None):
-                total += a
-        return total
-
+    # INS-19: every located declared port must find its opening among the flat faces staged here
+    staged_openings = {"inlet": _opening_record(inlet_i),
+                       **{nm: _opening_record(oi) for nm, oi in zip(outlet_names, outlet_ids)}}
+    for nm, pi in zip(["inlet", *outlet_names], (inlet_i, *outlet_ids)):
+        if pi in ring_walls:
+            # INS-26: what the port STL is - the mouth's cap - is the area the flow crosses (region_check reads
+            # "flow_area" first), so the gate judges the mesh against the mouth staged
+            lid = 0.0
+            for cf in port_caps[pi]:
+                g = GProp_GProps(); BRepGProp.SurfaceProperties_s(cf, g)
+                lid += g.Mass()
+            staged_openings[nm]["flow_area"] = round(lid, 10)
+            if pi in front_mouths:
+                fm = front_mouths[pi][2]
+                staged_openings[nm]["mouth"] = {"area": round(float(fm["area_m2"]), 8),
+                                                "centroid": [round(v, 6) for v in fm["centroid"]]}
+    mouth_sealed(sealed_openings, [fr[0] for fr in mouth_frames], declared_ports)
+    # INS-26: A CAP BEHIND THE MOUTH. A nozzle whose bore runs on past its last flat face to a lip with no flat face
+    # (102521: a step 10.7 mm inside the 8.9 mm tip) had the step's bore capped as the port - the nozzle's last
+    # stretch cut off, the mouth the user confirmed left out. A located declared port that stands on a staged port's
+    # axis more than half its own width beyond that port's cap, open air between, has its mouth on no flat face.
+    for p in declared_ports or []:
+        near, want = p.get("near_m"), p.get("area_m2")
+        if not near or not want:
+            continue
+        width = 2.0 * math.sqrt(float(want) / math.pi)
+        fr = min(mouth_frames, key=lambda f: math.dist(tuple(near), f[0]))
+        rel = [near[k] - fr[0][k] for k in range(3)]
+        along = abs(sum(rel[k] * fr[1][k] for k in range(3)))
+        lateral = math.sqrt(max(sum(v * v for v in rel) - along * along, 0.0))
+        if along > 0.5 * width and lateral <= 0.5 * width and _clear_line(fr[0], tuple(near)):
+            raise FlatFacesMissPort(
+                f"{BORE_MOUTH_RULE}: declared port {p.get('name')!r} lies {along * 1000.0:.1f} mm beyond the nearest "
+                "staged port's cap along its bore: the cap is behind the mouth and the mouth is on no flat face, so "
+                "the part's surface is staged instead")
+    held_to_declaration(staged_openings, declared_ports, (x0, y0, z0), (x1, y1, z1))
     return {
         "stls": {k: str(v) for k, v in stls.items()},
         "interior_point": [round(v, 6) for v in interior],
         "bbox_min": [round(v, 6) for v in (x0, y0, z0)],
         "bbox_max": [round(v, 6) for v in (x1, y1, z1)],
-        "openings": {
-            "inlet": _opening_record(inlet_i),
-            **{nm: _opening_record(oi) for nm, oi in zip(outlet_names, outlet_ids)}},
+        "openings": staged_openings,
         "n_wall_faces": n_wall_faces,
         # WHAT THE WALL IS: the fluid's own boundary - a solid declared the fluid domain, or one
         # whose ports are plain discs, not rings round a bore - or (False) possibly the metal skin
         # of a hollow wall (bore, outer skin, flange faces). A reader of the wall's passages reads
         # the first whole and keeps only the cavity's skin of the second
         # (engines/passage.passage_field_of_stls).
-        "wall_bounds_fluid": bool(fluid_solid is True or (not hollow_wall and not port_bored)),
+        "wall_bounds_fluid": bool(fluid_solid is True or (not hollow_wall and not port_bored and not cavity_seeded)),
+        "cavity_seeded": bool(cavity_seeded),
         # what was sealed into the wall beyond the declared ports, for manifests and
         # user-facing evidence: undeclared shell openings (B-rep holes nothing fills)
         # and open rim rings (gaps the tessellator itself left in the staged surface)

@@ -29,9 +29,17 @@ MAX_VOXELS = 8_000_000
 #: At most this many sealed spaces are named (largest first).
 MAX_CAVITIES = 32
 
-#: The rasteriser's sample budget (points laid on the triangles); a surface needing more is not
-#: read - the case is then authored exactly as before.
+#: The rasteriser's sample budget (points laid on the triangles); a surface needing more at the
+#: planned voxel is read at a coarser one (INS-27).
 MAX_SAMPLES = 150_000_000
+
+#: At most this many spaces (largest first) are tested for being sealed, and at most this many
+#: voxels of their boxes measured for depth; smaller spaces past either are left unnamed (INS-27).
+MAX_REGION_TESTS = 4 * MAX_CAVITIES
+MAX_DEPTH_VOXELS = 4 * MAX_VOXELS
+
+#: docs/RULES.md: the reading is bounded by its work, never by a clock
+SEALED_WORK_RULE = "INS-27"
 
 
 @dataclass(frozen=True)
@@ -71,7 +79,7 @@ def _note_overdue(budget_s: float | None) -> None:
 
 def read_cavities(tris, *, cell_m: float, gap_cells: float = SEAL_GAP_CELLS,
                   min_cells: float = MIN_CAVITY_CELLS, max_voxels: int = MAX_VOXELS,
-                  budget_s: float | None = 120.0) -> CavityReading | None:
+                  budget_s: float | None = None) -> CavityReading | None:
     """The sealed spaces of an EXTERNAL body and the far-field-wetted side of each face.
 
     A hollow model - a 3D-printing shell, a car body modelled as skins with panel gaps, a
@@ -91,8 +99,16 @@ def read_cavities(tris, *, cell_m: float, gap_cells: float = SEAL_GAP_CELLS,
     was already apart (the inside of a solid, a properly closed void) is left alone - the mesher
     never reaches it. Each face's sides are then read a little past the grown wall.
 
-    None when the reading cannot be made (no triangles, a degenerate cell, no scipy, over
-    budget): the caller then meshes exactly as before."""
+    INS-27: THE READING IS BOUNDED BY ITS WORK, NEVER BY A CLOCK. Its work is planned up front:
+    at most MAX_VOXELS voxels (the voxel coarsened to fit), at most MAX_SAMPLES samples laid on
+    the triangles (the voxel coarsened again to fit), at most MAX_REGION_TESTS spaces tested and
+    MAX_DEPTH_VOXELS voxels measured for depth. It had a 120 s clock of its own as well, and an
+    external marine body (abc_ext 3962: 546 triangles, a 1 s reading on a quiet machine) ran past
+    it on a loaded one: the trip threw away the production-grade mesh the attempt then made. With
+    no `budget_s` (every caller) there is no clock; the attempt's own guards still stand.
+
+    None when the reading cannot be made (no triangles, a degenerate cell, no scipy): the caller
+    then meshes exactly as before."""
     from meshpipeline.engines.passage_flow import EvidenceOverdue
     try:
         return _read_cavities(tris, cell_m=cell_m, gap_cells=gap_cells, min_cells=min_cells,
@@ -137,14 +153,23 @@ def _read_cavities(tris, *, cell_m: float, gap_cells: float, min_cells: float, m
         return None
     shape = tuple(int(d) for d in dims)
     origin = lo - (r + 4) * h
-    # the rasteriser samples every triangle every h/3: bound that work up front, since it checks
-    # its deadline only between batches of similar triangles
+    # the rasteriser samples every triangle every h/3: that work is bounded up front - a surface
+    # that needs more than MAX_SAMPLES at this voxel is read at a coarser one (INS-27)
     tf_ = T[finite]
     area = 0.5 * float(np.linalg.norm(np.cross(tf_[:, 1] - tf_[:, 0], tf_[:, 2] - tf_[:, 0]),
                                       axis=1).sum())
-    if 2.0 * area / (h / 3.0) ** 2 + 4.0 * len(tf_) > MAX_SAMPLES:
-        logger.info("sealed cavities: surface too large to read within budget - skipped")
+    if 4.0 * len(tf_) >= MAX_SAMPLES:
+        logger.info("sealed cavities: %d triangles - more than the reading's samples allow; skipped", len(tf_))
         return None
+    samples = 2.0 * area / (h / 3.0) ** 2 + 4.0 * len(tf_)
+    if samples > MAX_SAMPLES:
+        h *= 1.01 * math.sqrt((samples - 4.0 * len(tf_)) / (MAX_SAMPLES - 4.0 * len(tf_)))
+        r = max(1, int(round(0.5 * seal_gap / h)))
+        dims = np.ceil((hi - lo) / h).astype(np.int64) + 2 * (r + 4)
+        shape = tuple(int(d) for d in dims)
+        origin = lo - (r + 4) * h
+        logger.info("sealed cavities: the surface is read at a %.3g m voxel to stay within %d samples",
+                    h, MAX_SAMPLES)
     blocked = _rasterize(origin, h, shape, tf_, deadline=deadline)
 
     six = ndimage.generate_binary_structure(3, 1)
@@ -164,13 +189,23 @@ def _read_cavities(tris, *, cell_m: float, gap_cells: float, min_cells: float, m
     min_vox = float(min_cells) * (cell / h) ** 3
     sizes = np.bincount(closed.ravel(), minlength=n_closed + 1)
     objects = ndimage.find_objects(closed)
-    for rid in np.argsort(-sizes):
+    tested = depth_voxels = 0
+    for rid in np.argsort(-sizes, kind="stable"):
         rid = int(rid)
-        if rid in (0, far) or sizes[rid] < min_vox:
+        if rid in (0, far):
             continue
+        if sizes[rid] < min_vox:
+            break                                   # largest first: every space after is smaller
         sl = objects[rid - 1]
         if sl is None:
             continue
+        box_voxels = int(np.prod([s.stop - s.start for s in sl]))
+        if tested >= MAX_REGION_TESTS or depth_voxels + box_voxels > MAX_DEPTH_VOXELS:
+            logger.info("sealed cavities: %d spaces tested, %d voxels measured - the smaller spaces are left "
+                        "unnamed (INS-27)", tested, depth_voxels)
+            break
+        tested += 1
+        depth_voxels += box_voxels
         region = closed[sl] == rid
         # reached by the far field before the narrow gaps were closed? A space that was already
         # apart is the inside of a solid or a properly closed void - the mesher never gets there

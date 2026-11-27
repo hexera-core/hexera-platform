@@ -6,6 +6,7 @@ from __future__ import annotations
 import enum
 import time
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -26,6 +27,14 @@ class InboundMessage:
     #: the same tenant as the message itself. Empty for a principal that names no organisation,
     #: which stamps owner_id alone; see persistence/repositories/tenant_scope.
     organization_id: str = ""
+    #: WHAT THE MESSAGE CARRIES BESIDE ITS WORDS (contracts/user_notes.carried): the files the user attached, as
+    #: their stored rows, and the faces they picked on the model. Kept on the user's turn; empty for most messages.
+    attachments: tuple[dict, ...] = ()
+    faces: tuple[dict, ...] = ()
+
+    def carried(self) -> dict:
+        from meshpipeline.contracts.user_notes import carried
+        return carried({"attachments": list(self.attachments), "faces": list(self.faces)})
 
 
 class MessageStatus(str, enum.Enum):
@@ -60,6 +69,11 @@ class MessageStatus(str, enum.Enum):
     #: a bare yes with no plan awaiting it: never the model's - our fixed line with the true state, and the plan
     #: offered again when there is one (a run that did not start, a plan that expired)
     yes_nothing_pending = "yes_nothing_pending"
+    #: THE PLAN STEP'S CONVERSATION (NOTE-18): a mesh requirement typed in the chat while the plan stands - kept as a
+    #: note; the route reads it for the checklist and answers with what was taken in (agents/intake/plan_talk)
+    requirement = "requirement"
+    #: a question about the mesh at the plan step (NOTE-20): nothing kept; the route answers it from the plan's numbers
+    plan_question = "plan_question"
     #: the session does not exist for this owner
     not_found = "not_found"
 
@@ -135,6 +149,8 @@ class MessageOutcome:
     #: THE STAGE'S FORM, SET FROM THE CHAT: a flow the user stated while the stage waits on Proceed (the
     #: flow-kind question's buttons, FLOW-1) - {"flow", "input_kind"} for "The fluid flows" and "The file is"
     stage_flow: dict | None = None
+    #: the note a requirement message was kept as (NOTE-18): its words, files and faces
+    note: dict | None = None
 
     @property
     def answered(self) -> bool:
@@ -246,8 +262,13 @@ async def accept(inbound: InboundMessage, *, session_repo, db_factory, logger,
         # afterwards and appending again would count this message twice and produce a revision
         # that matches no conversation that ever existed.
         messages = list(getattr(locked, "messages", None) or [])
-        await session_repo.append_message(db, inbound.session_id, "user", inbound.content)
-        messages.append({"role": "user", "content": inbound.content})
+        # only the files THIS session holds are carried, as their kept rows (application/chat_attachments)
+        extra = await _with_text(locked, _carried_here(locked, inbound.attachments, inbound.faces))
+        if extra:
+            await session_repo.append_message(db, inbound.session_id, "user", inbound.content, extra=extra)
+        else:
+            await session_repo.append_message(db, inbound.session_id, "user", inbound.content)
+        messages.append({"role": "user", "content": inbound.content, **extra})
         revision = _revision(messages)
 
         gate = dict(getattr(locked, "intake_gate", None) or {})
@@ -334,8 +355,72 @@ async def _settle(inbound: InboundMessage, db, *, gate: dict, locked, messages: 
     approval = gate.get("approval")
     if ap.is_live(approval):
         # the summary's own engine, named in the answer, is part of the yes, not a change
-        intent = ap.classify(inbound.content,
-                             engine=str(((approval or {}).get("payload") or {}).get("mesh_engine") or ""))
+        engine = str(((approval or {}).get("payload") or {}).get("mesh_engine") or "")
+        intent = ap.classify(inbound.content, engine=engine)
+        # THE PLAN STEP IS A CONVERSATION (NOTE-18): a plain "go" in any words starts the run; a requirement is kept
+        # and answered with what the checklist took; a go asked back is asked once; the rest is the intake's
+        from meshpipeline.agents.intake import consent as _consent
+        from meshpipeline.agents.intake import plan_go as PG
+        from meshpipeline.agents.intake import plan_talk as PT
+        # NOTE-22: A CLICK SENT ALONE ANSWERS THE ONE-PLACE ASK THAT WAITS ("which hole?"): faces with no words or only
+        # pointing words take the waiting words; words of the user's own win and drop it; anything else keeps it one
+        # more turn at most (every write of the gate below stores what is left)
+        answers, still = PT.after_turn(gate.pop(PT.WAITING, None), text=inbound.content, faces=bool(inbound.faces))
+        if still:
+            gate[PT.WAITING] = still
+        from meshpipeline.agents.intake import flow as _flow
+        if not (inbound.attachments or inbound.faces) and _flow.conditions_kept_at_plan(inbound.content, messages):
+            # CFDREQ-37 (rulebook 122): "OK" TO THE CONDITIONS THE PLAN ASSUMED keeps them and starts nothing - the
+            # plan stands, one turn further on, and its own line is the answer (Proceed or a go starts it)
+            gate["approval"] = {**(ap.defer(approval) or {}), "expires_at": time.time() + ap.APPROVAL_TTL_S}
+            await session_repo.set_intake_gate(db, inbound.session_id, gate)
+            await session_repo.append_message(db, inbound.session_id, "assistant", ap.PROCEED_ASK)
+            logger.info("intake message: OK to the assumed flow conditions - kept (CFDREQ-37) - session=%s",
+                        inbound.session_id)
+            return MessageOutcome(
+                status=MessageStatus.approval_deferred, reply=ap.PROCEED_ASK, awaiting_confirmation=True,
+                transition=GateTransition(change=GateChange.approval_deferred, revision=revision,
+                                          approval_status=ap.AWAITING))
+        if not (inbound.attachments or inbound.faces) and _flow.conditions_changed_at_plan(inbound.content, messages):
+            # CFDREQ-37: FLOW CONDITIONS TYPED AT THE PLAN CARD ("make it 50 m/s", the "Resolve the wall" button)
+            # redo the plan with them - the card, the plan's conditions sentence and the run then carry what was
+            # typed, and the new plan's message says it back - never a note kept beside the old sentence
+            talk, intent = PT.INTAKE, ap.CORRECTION_INTENT
+            logger.info("intake message: flow conditions at the plan step - the plan is redone with them (CFDREQ-37) "
+                        "- session=%s", inbound.session_id)
+        elif _ours(inbound.content, messages):
+            talk = PT.INTAKE
+        else:
+            # "GO" READ ROBUSTLY: code decides the safe cases; the intake's model is asked one small question for
+            # the rest (3 s at most), the phrase reading standing in when it does not answer
+            last_line = next((str(m.get("content") or "") for m in reversed(messages[:-1])
+                              if isinstance(m, dict) and m.get("role") == "assistant"), "")
+            from meshpipeline.agents.intake import flow as _flow
+            got = await PG.read(
+                inbound.content, carries=bool(inbound.attachments or inbound.faces),
+                asked=PT.asked_last(messages[:-1]),
+                consent=_consent.reading(inbound.content, named=(engine,) if engine else ()), engine=engine,
+                last_line=last_line, user_id=inbound.owner_id, session_id=str(inbound.session_id),
+                analysis=_flow.analysis_said(messages[:-1]))
+            talk = got.reading
+            logger.info("intake message: plan step read as %s (%s, by %s: %s) - session=%s", talk, PT.RULE, got.by,
+                        got.why, inbound.session_id)
+            if got.by == PG.BY_MODEL and talk != PT.GO and intent == ap.APPROVE_INTENT:
+                # the model read it as no start: the yes-words reader may not start it either
+                intent = ap.QUESTION_INTENT
+        if talk in (PT.NOTE, PT.BOTH) and uc.stated_unit(inbound.content) is not None:
+            # A UNIT NAMED BESIDE A REQUEST ("the file is in metres, and make the mesh finer"): the turn answers
+            # both, as it did before the plan step became a conversation - a requirement's reply says only what
+            # the checklist took, and would pass over the unit
+            talk = PT.INTAKE
+        if talk == PT.GO:
+            intent = ap.APPROVE_INTENT
+        if talk == PT.BOTH:
+            # "use cfMesh at 2 mm": the size is kept as the user's requirement now, and the turn goes on to the
+            # intake, which switches the plan as it always did (the note is not kept twice: capture keys it alike)
+            await _keep_requirement(inbound, db, locked=locked, messages=messages, session_repo=session_repo)
+            logger.info("intake message: a requirement with a plan change - kept, and the plan changes (%s) - "
+                        "session=%s", PT.RULE, inbound.session_id)
         if uc.needs_confirmation(locked):
             # THE UNIT BEFORE THE RUN. A run cannot start on a file whose scale nobody has named
             # (application/dispatch_contract refuses the pair), so an approval given while the
@@ -359,6 +444,38 @@ async def _settle(inbound: InboundMessage, db, *, gate: dict, locked, messages: 
                     status=MessageStatus.approval_deferred, reply=reply, awaiting_confirmation=True,
                     transition=GateTransition(change=GateChange.approval_deferred, revision=revision,
                                               approval_status=ap.AWAITING))
+        if talk in (PT.NOTE, PT.ASK, PT.HOLD, PT.QUESTION):
+            # the plan stands, one turn further on, and stays fresh while the user talks it through
+            gate["approval"] = {**(ap.defer(approval) or {}), "expires_at": time.time() + ap.APPROVAL_TTL_S}
+            if talk == PT.QUESTION:
+                # NOTE-20: a question about the mesh - nothing kept, nothing started; the route answers it from the
+                # numbers the product holds before the run (agents/intake/plan_reply.answer_question)
+                await session_repo.set_intake_gate(db, inbound.session_id, gate)
+                logger.info("intake message: a question about the mesh at the plan step (%s) - session=%s",
+                            PT.QUESTION_RULE, inbound.session_id)
+                return MessageOutcome(
+                    status=MessageStatus.plan_question, awaiting_confirmation=True,
+                    transition=GateTransition(change=GateChange.approval_deferred, revision=revision,
+                                              approval_status=ap.AWAITING))
+            if talk in (PT.ASK, PT.HOLD):
+                # asked once whether to start; or "wait": nothing starts, nothing is kept, and we say so
+                line = PT.ASK_LINE if talk == PT.ASK else PT.HOLD_LINE
+                await session_repo.set_intake_gate(db, inbound.session_id, gate)
+                await session_repo.append_message(db, inbound.session_id, "assistant", line)
+                return MessageOutcome(
+                    status=MessageStatus.approval_deferred, reply=line, awaiting_confirmation=True,
+                    transition=GateTransition(change=GateChange.approval_deferred, revision=revision,
+                                              approval_status=ap.AWAITING))
+            note = await _keep_requirement(inbound, db, locked=locked, messages=messages, session_repo=session_repo,
+                                           answers=answers)
+            await session_repo.set_intake_gate(db, inbound.session_id, gate)
+            logger.info("intake message: a requirement at the plan step, kept as a note (%s%s) - session=%s",
+                        PT.RULE, f", a click answering the waiting ask: {PT.CLICK_RULE}" if answers else "",
+                        inbound.session_id)
+            return MessageOutcome(
+                status=MessageStatus.requirement, awaiting_confirmation=True, note=note,
+                transition=GateTransition(change=GateChange.approval_deferred, revision=revision,
+                                          approval_status=ap.AWAITING))
         if intent == ap.APPROVE_INTENT and not (approval or {}).get("notes_read_first") \
                 and await notes_unread(inbound, locked):
             # A YES BEFORE THE NOTES WERE FINALIZED (NOTE-5): the words are read now - the card shows
@@ -585,6 +702,23 @@ def analysis_question_due(messages: list) -> bool:
     return not pm.analysis_of("\n".join(said))
 
 
+def typed_purpose_answer(content: str, messages: list) -> bool:
+    """CFDREQ-37: the message is a typed answer to the purpose question - the upload's "What are you meshing this
+    for?" or the one two-button question - never a click on its buttons, the stage's own turn, or a question."""
+    from meshpipeline.agents.intake import flow
+    from meshpipeline.application import purpose_map as pm
+    from meshpipeline.application.geometry_hold import CONTINUE_TEXT
+
+    t = str(content or "").strip()
+    if not t or t == CONTINUE_TEXT or flow.asks_something(t) or t in {
+            c["send"] for q in pm.QUESTIONS.values() for c in pm.choices_for(q)}:
+        return False
+    asked = next((str(m.get("content") or "").strip() for m in reversed(messages[:-1])
+                  if isinstance(m, dict) and m.get("role") == "assistant"), "")
+    return asked.endswith("What are you meshing this for?") or any(
+        asked == q or asked.endswith("\n\n" + q) for q in pm.QUESTIONS.values())
+
+
 async def _settle_fea_analysis(inbound: InboundMessage, db, *, messages: list, revision: str,
                                session_repo, logger) -> MessageOutcome | None:
     """THE FEA PATH'S ONE REQUIRED QUESTION, asked by the application with its buttons once the
@@ -682,6 +816,13 @@ async def _settle_stated_flow(inbound: InboundMessage, db, *, messages: list, re
     if record is None:
         return None
     reply = gh.hold_reply(False, "", reading)
+    if inbound.content.strip() not in {send for _l, send in flow.FLOW_KIND_CHOICES}:
+        # CFDREQ-37: A TYPED ANSWER IS SAID BACK - the flow the stage's form takes, in one short sentence the model
+        # writes under a guard (the plain one when it cannot); a click on one of the two buttons adds nothing
+        from meshpipeline.agents.intake import step_ack as SA
+        ack = await SA.sentence(SA.facts(SA.FLOW_KIND, words=inbound.content, flow=str(record.get("flow") or "")),
+                                session_id=str(inbound.session_id), user_id=inbound.owner_id)
+        reply = SA.before_stage_line(reply, ack)
     await session_repo.append_message(db, inbound.session_id, "assistant", reply)
     logger.info("intake message: the user said the flow goes %s it (%s) - the stage's form takes it - session=%s",
                 "through" if record.get("flow") == "internal" else "around", record.get("rule"), inbound.session_id)
@@ -777,6 +918,17 @@ async def _settle_geometry_hold(inbound: InboundMessage, db, *, locked, messages
     reply = gh.hold_reply(thermal, headline, reading)
     if note:
         reply = f"{reply} {note}"
+    if reading is not None and typed_purpose_answer(inbound.content, messages):
+        # CFDREQ-37: A TYPED ANSWER TO "WHAT ARE YOU MESHING THIS FOR?" IS SAID BACK - what the stage is opened
+        # under (the route, and the flow or the analysis when the words gave it), before the stage line, in one
+        # short sentence the model writes under a guard; the naming is already queued, so the stage never waits on it
+        from meshpipeline.agents.intake import step_ack as SA
+        from meshpipeline.application import purpose_map as pm
+        said = await SA.sentence(SA.facts(
+            SA.PURPOSE, words=inbound.content, route=reading.route, flow=reading.topology,
+            analysis=reading.analysis, analysis_label=pm.ANALYSIS_LABELS.get(reading.analysis, "")),
+            session_id=session_id, user_id=inbound.owner_id)
+        reply = SA.before_stage_line(reply, said)
     try:
         await session_repo.append_message(db, inbound.session_id, "assistant", reply)
     except Exception:
@@ -1060,6 +1212,10 @@ async def persist_turn(inbound: InboundMessage, result: dict, *, session_repo,
         _reply = _reply_of(result) if not result.get("api_failure") else ""
         if _reply.strip():
             await session_repo.append_message(db, inbound.session_id, "assistant", _reply)
+            _then = str(result.get("then_ask") or "").strip()
+            if _then:
+                # CFDREQ-37: the conditions the plan assumed, asked as one more message under the plan's
+                await session_repo.append_message(db, inbound.session_id, "assistant", _then)
         for key, setter in _REQUIREMENT_WRITES:
             value = result.get(key)
             if value:
@@ -1089,6 +1245,33 @@ async def persist_turn(inbound: InboundMessage, result: dict, *, session_repo,
         await db.commit()
 
 
+async def keep_change_request(session_id: uuid.UUID, owner_id: str, *, said: str, reply: str, job_id: str = "",
+                              session_repo, db_factory) -> bool:
+    """A change request sent from the result view, kept in the conversation like any turn, so a reload draws it:
+    the person's words with their marks as the user's turn, carrying the new run's id when one started (the same
+    mark the plan step's "go" turn gets when its run is linked, so the run's box attaches after it), then the
+    reply as the assistant's. Nothing without a reply.
+
+    ONE TRANSACTION UNDER THE SESSION'S ROW LOCK, the lock a message and a confirmation take: two requests sent
+    close together each append their pair whole, one after the other, never interleaved and never one lost to
+    the other's read-modify-write of the message list. A repeat of a request already kept (the same new run)
+    adds nothing. Returns whether the pair was written."""
+    reply = (reply or "").strip()
+    if not reply:
+        return False
+    async with db_factory() as db:
+        locked = await session_repo.get_for_update(db, session_id)
+        if locked is None or locked.owner_id != owner_id:
+            return False
+        if job_id and any(isinstance(m, dict) and m.get("job_id") == job_id
+                          for m in getattr(locked, "messages", None) or []):
+            return False
+        await session_repo.append_message(db, session_id, "user", said, extra={"job_id": job_id} if job_id else None)
+        await session_repo.append_message(db, session_id, "assistant", reply)
+        await db.commit()
+    return True
+
+
 class NoteStatus(str, enum.Enum):
 
     added = "added"
@@ -1098,12 +1281,14 @@ class NoteStatus(str, enum.Enum):
 
 
 async def add_console_note(session_id: uuid.UUID, owner_id: str, text: str, *, session_repo,
-                           db_factory, organization_id: str = "") -> tuple[NoteStatus, Any]:
+                           db_factory, organization_id: str = "", attachments: Sequence[dict] = (),
+                           faces: Sequence[dict] = ()) -> tuple[NoteStatus, Any]:
     """THE CONSOLE'S NOTES BOX (contracts/user_notes, NOTE-1): the user's text kept exactly as
-    typed beside the session's other notes. Returns (status, the session as it now stands). Not
+    typed beside the session's other notes, with the files they attached and the faces they picked (a note of a
+    picture alone has no words). Returns (status, the session as it now stands). Not
     while a run is linked - the note could no longer reach it."""
     from meshpipeline.contracts.user_notes import SOURCE_CONSOLE, make
-    if not str(text or "").strip():
+    if not str(text or "").strip() and not attachments and not faces:
         return NoteStatus.empty, None
     async with db_factory() as db:
         session = await session_repo.get_for_owner(db, session_id, owner_id,
@@ -1112,11 +1297,72 @@ async def add_console_note(session_id: uuid.UUID, owner_id: str, text: str, *, s
             return NoteStatus.not_found, None
         if getattr(session, "job_id", None):
             return NoteStatus.running, session
-        await session_repo.set_user_notes(db, session_id, [make(text, source=SOURCE_CONSOLE)])
+        extra = await _with_text(session, _carried_here(session, attachments, faces))
+        if not str(text or "").strip() and not extra:
+            return NoteStatus.empty, None
+        await session_repo.set_user_notes(db, session_id, [make(text, source=SOURCE_CONSOLE, **extra)])
         await db.commit()
         fresh = await session_repo.get_for_owner(db, session_id, owner_id,
                                                  organization_id=organization_id)
     return NoteStatus.added, fresh
+
+
+def _ours(content: str, messages: list) -> bool:
+    """A turn the application wrote in the user's name (the stage's Proceed), or a click on a button we offered under
+    our last message: never a requirement of the user's (contracts/user_notes.capture leaves both out too)."""
+    from meshpipeline.application.purpose_map import choices_for
+    from meshpipeline.contracts.user_notes import clicked, system_written
+    if system_written(content):
+        return True
+    asked = next((str(m.get("content") or "") for m in reversed(messages[:-1])
+                  if isinstance(m, dict) and m.get("role") == "assistant"), "")
+    return clicked(content, asked, choices_for)
+
+
+async def _keep_requirement(inbound: InboundMessage, db, *, locked, messages: list, session_repo,
+                            answers: str = "") -> dict:
+    """NOTE-18: a requirement typed in the chat at the plan step, kept as the user's note exactly as typed, with the
+    files and faces the turn carries - the chat note of that turn (contracts/user_notes.capture keys it the same way,
+    so a later capture of the same turn is not kept twice). `answers` (NOTE-22): the earlier words its click sent
+    alone answers, kept beside its own. Returns the note."""
+    from meshpipeline.contracts.user_notes import SOURCE_CHAT, make, system_written
+    turn = sum(1 for m in messages if isinstance(m, dict) and m.get("role") == "user" and not m.get("_synthetic")
+               and not system_written(m.get("content")))
+    last = messages[-1] if messages and isinstance(messages[-1], dict) else {}
+    note = make(inbound.content, source=SOURCE_CHAT, turn=turn, attachments=list(last.get("attachments") or ()),
+                faces=list(last.get("faces") or ()), answers=answers)
+    await session_repo.set_user_notes(db, inbound.session_id, [note])
+    return note
+
+
+async def keep_one_place_ask(db, session: Any, waiting: dict, *, session_repo) -> None:
+    """NOTE-22: the one-place ask a reply has just said ("which hole?") waits with the plan-step state - the session's
+    intake gate, written here as every gate change is - so a click sent alone next answers it (and a page reload
+    keeps it). Called with the reply's own transaction (agents/intake/plan_reply.answer_owed)."""
+    from meshpipeline.agents.intake import plan_talk as PT
+    gate = dict(getattr(session, "intake_gate", None) or {})
+    gate[PT.WAITING] = dict(waiting)
+    await session_repo.set_intake_gate(db, session.id, gate)
+
+
+def _carried_here(session: Any, attachments: Sequence[Any], faces: Sequence[Any]) -> dict:
+    """What a message or note carries, kept: the attachment ids the session holds, as their public rows (an id it
+    does not hold is dropped), and the faces as sent (contracts/user_notes.carried)."""
+    from meshpipeline.application.chat_attachments import resolve
+    from meshpipeline.contracts.user_notes import carried
+    rows = resolve(session, attachments) if attachments else []
+    return carried({"attachments": rows, "faces": list(faces or ())})
+
+
+async def _with_text(session: Any, extra: dict) -> dict:
+    """An attached text file's read text on its row (NOTE-16): the readers take it as the user's own words. Read
+    from the store in a thread; a file whose text cannot be read now keeps its row without it."""
+    if not extra.get("attachments"):
+        return extra
+    import asyncio
+
+    from meshpipeline.application.chat_attachments import with_text
+    return {**extra, "attachments": await asyncio.to_thread(with_text, session, extra["attachments"])}
 
 
 def _reply_of(result: dict) -> str:
@@ -1125,5 +1371,5 @@ def _reply_of(result: dict) -> str:
 
 
 __all__ = ["STILL_RUNNING_REPLY", "GateChange", "GateTransition", "InboundMessage", "NoteStatus",
-           "add_console_note", "ask_flow_kind",
+           "add_console_note", "ask_flow_kind", "keep_one_place_ask",
            "MessageOutcome", "MessageStatus", "PreviousRun", "accept", "persist_turn"]

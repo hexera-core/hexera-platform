@@ -129,6 +129,16 @@ def run_guarded(args, *, timeout=None, stall_s: float | None = None, progress_pa
         # Re-raise with the partial output attached, exactly as subprocess.run does,
         # so callers reading exc.stdout / exc.stderr keep working.
         raise subprocess.TimeoutExpired(proc.args, timeout, output=stdout, stderr=stderr) from None
+    except BaseException:
+        # THE WAIT ITSELF WAS INTERRUPTED (a task's soft time limit, a stop): the child is in a session of its own,
+        # so nothing else would ever stop it - it is stopped with us (TIME-11: an FEA sizing child would keep a
+        # worker core busy after its task had given up on it)
+        _kill_process_group(proc)
+        try:
+            proc.wait(timeout=5)
+        except Exception:  # noqa: BLE001, S110 - reaped by the kernel when we end; the interruption goes on
+            pass
+        raise
     return subprocess.CompletedProcess(proc.args, proc.returncode, stdout, stderr)
 
 
@@ -445,11 +455,40 @@ _DENIED_OS_ATTRS = {"system", "popen", "fork", "forkpty", "spawn", "spawnl",
                     "execlpe", "execv", "execve", "execvp", "execvpe"}
 
 
+def _writable_dir(path: str) -> bool:
+    return bool(path) and os.path.isdir(path) and os.access(path, os.W_OK | os.X_OK)
+
+
+def usable_tmpdir(env: dict) -> dict:
+    """A TMPDIR a child process can write in. Python quietly falls back to /tmp when TMPDIR is not
+    writable; OpenMPI does not - it makes its session folder there and `mpirun` stops before any rank
+    starts. The mesh VM ran its container as the image's user with TMPDIR=/work, a folder owned by
+    root (job c06bb745, 27 Nov: "A call to mkdir was unable to create the desired directory:
+    /work/ompi.<host>.1000 - Permission denied"), so every parallel snappyHexMesh there failed and
+    the background box came back as the mesh. An unusable TMPDIR is replaced by the folder Python
+    itself chose (tempfile.gettempdir), which it has proved writable."""
+    tmp = env.get("TMPDIR")
+    if tmp is None or _writable_dir(tmp):
+        return env
+    import tempfile
+    usable = tempfile.gettempdir()
+    if not _writable_dir(usable) or os.path.realpath(usable) == os.path.realpath(tmp):
+        return env
+    if tmp not in _TMPDIR_SAID:
+        _TMPDIR_SAID.add(tmp)
+        logger.warning("TMPDIR %s is not writable by this process: child processes use %s", tmp, usable)
+    return {**env, "TMPDIR": usable}
+
+
+#: the unusable TMPDIRs already said in the log (once each)
+_TMPDIR_SAID: set[str] = set()
+
+
 def scrubbed_subprocess_env(extra: dict | None = None) -> dict:
     base = {k: v for k, v in os.environ.items() if not _SECRET_ENV_RE.search(k)}
     if extra:
         base.update(extra)
-    return base
+    return usable_tmpdir(base)
 
 
 def scan_python_source(source: str, *, filename: str = "<model-code>") -> str | None:

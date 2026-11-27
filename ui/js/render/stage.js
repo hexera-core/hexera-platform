@@ -15,6 +15,7 @@
  * stage <-> viewer cycle.
  */
 import { esc, fmtDur, mdBlock } from "../core/format.js";
+import * as chips from "../shell/chips.js";
 import { prettyText } from "../core/engineering_text.js";
 import { attemptsLabel, reasoningHeader } from "../core/events.js";
 // the run box's four rows and which backend stage feeds which: the one table, for every route
@@ -88,6 +89,17 @@ export function plainReasoning(text){
   if(!text||looksLikeJson(text))return '';
   return String(text).replace(/\*\*([^*]+)\*\*/g,'$1').trim();}
 
+/** WHAT A MESSAGE OR A NOTE CARRIES, as the user sees it: a small thumbnail per picture and a chip per file, each
+ *  opening the stored file (shell/attach.js fills the thumbnail and opens it), then a chip per face picked. `sid` is
+ *  the conversation the files belong to (a run's page shows its own session's). '' with none. */
+export function attHtml(rows,faces,sid){
+  const sidA=sid?` data-sid="${esc(sid)}"`:'';
+  const a=(rows||[]).filter(r=>r&&r.id).map(r=>r.kind==='image'
+    ?`<a class="att att-img" href="#" data-att="${esc(r.id)}"${sidA} title="${esc(r.name||'')}"><img alt="${esc(r.name||'picture')}"></a>`
+    :`<a class="box-chip att att-file" href="#" data-att="${esc(r.id)}"${sidA}><span class="box-chip-label">${esc(r.name||'file')}</span></a>`);
+  const f=(faces||[]).filter(x=>x&&(x.label||x.id)).map(x=>`<span class="box-chip box-chip-face att-face" title="${esc(x.label||x.id)}"><span class="box-chip-label">${esc(x.label||x.id)}</span></span>`);
+  return a.length+f.length?`<div class="att-list">${a.join('')}${f.join('')}</div>`:'';}
+
 export const Stage = {
   // The empty state names no formats. It used to say "(STL or STEP)" while the server accepted
   // four, so a user holding a .vtp or .iges read that their file was unsupported and never tried
@@ -103,6 +115,7 @@ export const Stage = {
     seatUploadButton();
     this._followScroll();
     clearInterval(this._tick);this.proc=null;this._briefEl=null;this._briefSig='';
+    const bar=document.getElementById('plan-bar');if(bar)bar.remove();
     this._reset();},
   /* A RUN STARTS IN THE CONVERSATION. Nothing said so far is cleared: the last run's box (if any) stays where it
      is, finished, and gives up the live ids; the plan card stays as approved, without the notes box the run can
@@ -113,16 +126,16 @@ export const Stage = {
     const p=this.proc;
     if(p){p.querySelectorAll('[id]').forEach(e=>e.removeAttribute('id'));
       const cb=p.querySelector('.proc-cancel');if(cb){cb.hidden=true;cb.onclick=null;}}
-    const b=this._briefEl;
-    if(b){b.querySelectorAll('.rc-notes-box,.rc-fin-btn,.rc-go').forEach(e=>e.remove());
-      const pm=b.querySelector('.rc-pm');if(pm)pm.onclick=pm.onkeydown=pm.onmouseover=pm.onmouseleave=null;}
+    // the plan bar (the list and Proceed) belongs to the plan step: the run's own account says what was applied
+    const bar=document.getElementById('plan-bar');if(bar)bar.remove();
     this.proc=null;this._briefEl=null;this._briefSig='';
     this._reset();},
   // what belongs to one run, cleared for the next
   _reset(){
     this.nodes={};this.rows=null;this._activeKey=null;this._building=false;this._ev=null;this._unit='';this.proc=null;this.tl=null;
     // the run started (or a new conversation): the card's model gives its GL context back
-    clearTimeout(this._pmTimer);if(this._pmDrop)this._pmDrop();this._pm=null;this._pmOpen=null;this._pmHover=null;this._pmHoverPart=null;this._pm3dFailed=false;
+    clearTimeout(this._pmTimer);if(this._pmDrop)this._pmDrop();this._pm=null;
+    if(this._pmWaiting&&this._pmWaiting.remove)this._pmWaiting.remove();this._pmWaiting=null;this._pmOpen=null;this._pmHover=null;this._pmHoverPart=null;this._pm3dFailed=false;
     if(this._pmSaves){this._pmSaves.forEach(t=>clearTimeout(t));this._pmSaves.clear();}
     // A NEW RUN STARTS CLEAN. The attempt the last run ended on, the attempts that built and a
     // mesh bar a run left open when it ended mid-mesh all belonged to that run: kept, the next
@@ -159,10 +172,16 @@ export const Stage = {
   // Assistant text is shown as an engineer prints it (prettyText): y⁺ = 30–300 rather than the
   // \(y^+=30\text{–}300\) an older stored reply may carry, and 40 m/s never split across a line.
   // The user's own words are shown exactly as they typed them.
-  chat(role,text,who){this.clearEmpty();const g=document.createElement('div');g.className='im '+(role==='user'?'user':'assistant');
-    if(role==='user')g.innerHTML=`<div class="who">${esc(who||'You')}</div><div class="bub">${mdBlock(text)}</div>`;
+  // `extra`: what a user's message carried ({attachments, faces, sid}) - drawn above their words, or alone
+  chat(role,text,who,extra){this.clearEmpty();const g=document.createElement('div');g.className='im '+(role==='user'?'user':'assistant');
+    if(role==='user'){const att=extra?attHtml(extra.attachments,extra.faces,extra.sid):'';
+      g.innerHTML=`<div class="who">${esc(who||'You')}</div>${att}${String(text||'').trim()||!att?`<div class="bub">${mdBlock(text)}</div>`:''}`;}
     else g.innerHTML=`<div class="who">${esc(who||'Hexera')}</div><div class="txt">${mdBlock(prettyText(displayText(text)))}</div>`;
-    this.col().appendChild(g);this.scrollBottom(role==='user');},
+    this.col().appendChild(g);this.scrollBottom(role==='user');return g;},
+  // A REPLY ON ITS WAY (NOTE-18): a quiet "Reading…" where it will be; the composer removes it when it comes
+  pending(){this.clearEmpty();const g=document.createElement('div');g.className='im assistant im-pending';
+    g.innerHTML='<div class="who">Hexera</div><div class="txt" role="status">Reading…</div>';
+    this.col().appendChild(g);this.scrollBottom(true);return g;},
   // THE CLOSING ACCOUNT of a finished run, in the same voice as every other turn (render/outcome.js)
   outcome(text,opts){this.clearEmpty();const g=document.createElement('div');g.className='im assistant';
     g.innerHTML=`<div class="who">Hexera</div><div class="txt">${outcomeHtml(displayText(text),opts)}</div>`;
@@ -205,50 +224,77 @@ export const Stage = {
       return `<div class="rc-ck${good?'':(unknown?' unk':' bad')}">`
         +`<span class="ic">${good?'✓':(unknown?'?':'✕')}</span>`
         +`<span>${esc(c.label)}${c.detail?` <span class="rc-d">${esc(c.detail)}</span>`:''}</span></div>`;}).join('');
-    // THE USER'S OWN NOTES, exactly as typed (a pasted spec keeps its lines), and the box that adds
-    // one. Guidance for the mesh, never a check: the plan above is what is approved.
-    // A short list, then one quiet line that grows as it is used: Enter adds, Shift+Enter starts a line.
-    const items=(b.user_notes||[]).map(n=>`<li class="rc-note">${esc(n.text)}</li>`).join('');
-    const notes=items?`<ul class="rc-notes-list">${items}</ul>`:'';
-    const box=addNote?`<div class="rc-notes-box"><div class="rc-notes-row"><textarea class="rc-notes-in" rows="1" maxlength="20000"
-        aria-label="Add a note" placeholder="Add a note, or paste a spec…"></textarea>
-        <button type="button" class="rc-notes-add" disabled>Add</button></div>
-        <span class="rc-notes-msg" role="status"></span></div>`:'';
-    // THE PLAN STEP'S ONE BUTTON: the plan stands for approval (the server says so with its line), so
-    // Proceed sits at the card's foot, under the notes - a press says "Proceed" in the chat, as a typed yes would
-    const goRow=b.proceed_ask&&go?'<div class="rc-fin"><button type="button" class="gc-proceed rc-go">Proceed</button></div>':'';
+    // THE PLAN STEP IS A CONVERSATION (NOTE-18): requirements are typed in the chat box, each answered there, and
+    // the card keeps ONE live list of what will be applied (the checklist, `.rc-pm`) - the user's own words are
+    // already in the conversation, so they are not listed again here
+    const live=!!(b.proceed_ask||(b.user_notes||[]).length);
     const html=`<div class="who">Hexera · your request, as understood</div>
       <div class="req-card${(b.checks||[]).every(c=>c.status==='pass')?' ok':''}">
         ${thermal?`<div class="rc-h">Job sheet</div><p class="rc-sheet">${esc(b.job_sheet)}</p>`
           :'<div class="rc-h">Mesh plan</div>'}${rows}
         ${ck?`<div class="rc-h rc-h2">Checked</div>${ck}`:''}
-        ${notes||box?`<div class="rc-h rc-h2">Your notes</div>${notes}${box}<div class="rc-pm"></div>`:''}
-        ${goRow}
       </div>`;
     if(this._briefEl){this._briefEl.innerHTML=html;}
     else{this.clearEmpty();
       const g=document.createElement('div');g.className='im assistant';g.innerHTML=html;
-      this.col().appendChild(g);this._briefEl=g;}
-    // the plan's Proceed is the card's own button now: the line is never said again under the card
+      // ONE CARD, WHERE IT WAS: live it follows the plan line; a reload draws the conversation first, so the card
+      // goes back under that line, not under the last reply
+      const line=b.proceed_ask&&[...this.col().querySelectorAll(':scope > .im.assistant .txt')].reverse()
+        .find(t=>t.textContent.trim()===String(b.proceed_ask).trim());
+      const at=line&&line.closest('.im');
+      if(at)at.after(g);else this.col().appendChild(g);
+      this._briefEl=g;}
+    // WHAT WILL BE APPLIED, AND PROCEED, STAY IN REACH: one slim bar pinned just above the chat box at this step
+    // (`_planBar`) holds the live list and the plan's one Proceed - not the card, which scrolls away
+    this._planBar(live,b.proceed_ask&&go?go:null);
     this._partMatches(b.part_matches,parts,'');
-    const goBtn=this._briefEl.querySelector('.rc-go');
-    if(goBtn)goBtn.onclick=()=>{if(goBtn.disabled)return;goBtn.disabled=true;go();};
-    const add=this._briefEl.querySelector('.rc-notes-add');
-    const inp=this._briefEl.querySelector('.rc-notes-in');
-    if(add&&inp){
-      const msg=this._briefEl.querySelector('.rc-notes-msg');
-      // the box is one line until it holds more: it grows with what is typed or pasted
-      const fit=()=>{inp.style.height='';if(inp.value)inp.style.height=Math.min(inp.scrollHeight+2,240)+'px';
-        add.disabled=!inp.value.trim();};
-      inp.addEventListener('input',fit);
-      const send=async()=>{
-        const text=inp.value;if(!text.trim()||add.dataset.busy)return;
-        add.dataset.busy='1';add.disabled=true;msg.textContent='';
-        try{this._briefSig='';await addNote(text);}
-        catch(e){delete add.dataset.busy;add.disabled=false;msg.textContent=(e&&e.message)||'The note was not saved.';}};
-      add.onclick=send;
-      inp.addEventListener('keydown',(e)=>{if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing){e.preventDefault();send();}});}
     this.scrollBottom();},
+
+  /* THE PLAN BAR (NOTE-18): "3 requirements ▾ ........ Proceed", pinned above the chat box while the plan stands. The
+     count opens the list in place (each row: the words, the size, its face or part chips with their x); with no
+     requirement yet it is a quiet hint and the Proceed button. `go`: Proceed's press, or null (no Proceed). */
+  _planBar(live,go){
+    let bar=document.getElementById('plan-bar');
+    if(!live){if(bar)bar.remove();return;}
+    if(!bar){
+      bar=document.createElement('div');bar.id='plan-bar';
+      bar.innerHTML='<div class="pb-list" hidden><div class="rc-pm"></div></div>'
+        +'<div class="pb-line"><button type="button" class="pb-count" aria-expanded="false"></button>'
+        +'<span class="pb-hint"></span><button type="button" class="gc-proceed rc-go">Proceed</button></div>';
+      const host=document.getElementById('input-bar');
+      if(host)host.insertBefore(bar,host.firstChild);else document.body.appendChild(bar);
+      const count=bar.querySelector('.pb-count'),list=bar.querySelector('.pb-list');
+      count.onclick=()=>{const open=list.hidden;list.hidden=!open;count.setAttribute('aria-expanded',String(open));};}
+    const goBtn=bar.querySelector('.rc-go');
+    goBtn.hidden=!go;goBtn.disabled=false;
+    goBtn.onclick=()=>{if(goBtn.disabled||!go)return;goBtn.disabled=true;go();};
+    this._pbLine();},
+
+  // the bar's line: how many requirements will be applied (the list's rows), or the quiet hint
+  _pbLine(){
+    const bar=document.getElementById('plan-bar');if(!bar)return;
+    const m=this._pm,n=m?(m.rows||[]).length+(m.unsure||[]).length||(m.lines||[]).length:0;
+    const count=bar.querySelector('.pb-count'),hint=bar.querySelector('.pb-hint'),list=bar.querySelector('.pb-list');
+    const reading=!!(m&&m.status==='reading');
+    count.hidden=!n;
+    if(n)count.innerHTML=`<span>${n} requirement${n===1?'':'s'}</span><span class="pb-chev" aria-hidden="true"></span>`;
+    if(!n){list.hidden=true;count.setAttribute('aria-expanded','false');}
+    hint.textContent=reading?'Reading…':(n?'':'Type any mesh requirement below, or press Proceed.');},
+
+  // the plan bar's list element (the checklist lives there at the plan step)
+  _pmEl(){const bar=document.getElementById('plan-bar');return bar&&bar.querySelector('.rc-pm');},
+
+  /* A REPLY THAT COMES LATER (NOTE-19): the send answered before the reading landed; "Reading…" stays where the
+     reply will be, and the card's poll of the reading brings the reply, which takes its place */
+  replyLater(el){
+    if(this._pmWaiting&&this._pmWaiting!==el&&this._pmWaiting.remove)this._pmWaiting.remove();
+    this._pmWaiting=el||null;
+    if(this._pmPoll)this._pmPoll();},
+  _pmSay(text){
+    const w=this._pmWaiting;this._pmWaiting=null;
+    if(!text){if(w&&w.remove)w.remove();return;}
+    const g=this.chat('assistant',text);
+    if(w&&w.parentNode){w.parentNode.insertBefore(g,w);w.remove();}},
 
   /* THE PARTS YOUR NOTES MEAN, under the notes, before the yes: a row per size request ("frame rail · 3–4 mm")
      in its colour with its parts as small chips ("Part 7 · Bracket ✕"), and a row per phrase that could not be
@@ -260,26 +306,38 @@ export const Stage = {
      `parts`: {get(), pick(phrase, ids), picture(name), model(), mount(host, model, opts), host(), drop(host)}. */
   _partMatches(m,parts,ask){
     clearTimeout(this._pmTimer);
-    const el=this._briefEl&&this._briefEl.querySelector('.rc-pm');
+    const el=this._pmEl();
     if(!el)return;
     this._pm=m||null;this._pmParts=parts||null;this._pmAskLine=ask||'';
-    const draw=()=>{this._pmDrawIn(el);this._pmPaint(el);};
+    // the faces the requirements hold, once the reading is done: a sent face's mark on the model goes with its row
+    const marks=()=>{const m=this._pm,p=this._pmParts;
+      if(m&&m.status==='done'&&p&&p.faces)p.faces([...(m.rows||[]),...(m.unsure||[])].flatMap(r=>(r.faces||[]).map(f=>f.id)));};
+    const draw=()=>{this._pmDrawIn(el);this._pmPaint(el);this._pbLine();marks();};
     this._pmDraw=draw;
     draw();
-    // WHILE THE NOTES ARE READ the card follows the reading; once it lands after Finalize notes, the approval
-    // question is said again under the card (the user answers it in the chat, as always)
+    // WHILE THE NOTES ARE READ the list follows the reading; a reply still owed to the user's last requirement
+    // (NOTE-19) comes with the poll once the reading lands, and takes the place of "Reading…". NOTE-26: while what
+    // the requirements cost is still being worked out (`cost_pending`) the poll goes on, and the count line comes
+    // with it as its own message under the reply
     this._pmPoll=()=>{
       clearTimeout(this._pmTimer);
+      if(!parts)return;
       const t0=Date.now();
+      let tries=0;
       const poll=async()=>{
         let got=null;try{got=await parts.get();}catch{/* try again */}
         if(got)this._pm=got.status==='none'?null:got;
+        if(got&&got.reply)this._pmSay(got.reply);
+        if(got&&got.count_line)this.chat('assistant',got.count_line);
         draw();
-        const busy=this._pm&&(this._pm.status==='reading'||this._pm.status==='waiting');
-        if((busy||!got)&&Date.now()-t0<8*60e3){this._pmTimer=setTimeout(poll,3000);return;}
+        const busy=this._pm&&(this._pm.status==='reading'||this._pm.status==='waiting'||!!this._pm.cost_pending);
+        // the reading landed but its reply is not in yet: asked a few more times, then "Reading…" goes
+        const owed=!busy&&got&&this._pmWaiting&&++tries<4;
+        if((busy||!got||owed)&&Date.now()-t0<8*60e3){this._pmTimer=setTimeout(poll,busy?3000:1500);return;}
+        if(this._pmWaiting)this._pmSay('');
         this._pmAsked();};
       this._pmTimer=setTimeout(poll,2500);};
-    if(m&&(m.status==='reading'||m.status==='waiting')&&parts)this._pmPoll();
+    if(((m&&(m.status==='reading'||m.status==='waiting'||m.cost_pending))||this._pmWaiting)&&parts)this._pmPoll();
     const rowOf=(i)=>{const m=this._pm;return m&&[...(m.rows||[]),...(m.unsure||[])].find(x=>x.phrase===i);};
     // a part put in or taken out of a row: the chip follows at once, the pick is kept at once (one save per row),
     // and the card is redrawn from the server's checked answer once every row's save is in
@@ -309,9 +367,8 @@ export const Stage = {
       const r=(this._pm&&this._pm.rows||[]).find(x=>(x.parts||[]).includes(id));
       if(r){this._pmOpen=r.phrase;this._pmHoverPart=null;draw();}};
     el.onclick=(e)=>{
-      if(e.target.closest('.rc-fin-btn')){this._pmFinalize();return;}
       const m=this._pm;if(!m||m.status!=='done')return;
-      const item=e.target.closest('.rc-pm-item');if(!item)return;
+      const item=e.target.closest('.rc-pm-item');if(!item||item.classList.contains('face'))return;
       const i=Number(item.dataset.phrase);
       const x=e.target.closest('.rc-pm-x');
       if(x){this._pmToggle(x.dataset.part,i);return;}
@@ -336,7 +393,7 @@ export const Stage = {
     const m=this._pm;
     if(!m){el.innerHTML='';this._pmDrop();return;}     // nothing to read: nothing at all
     if(!el.querySelector('.rc-pm-top'))
-      el.innerHTML='<div class="rc-pm-top"></div><div class="rc-pm-body" hidden><div class="rc-pm-h">In your notes</div><div class="rc-pm-rows"></div><span class="rc-pm-msg" role="status"></span></div>';
+      el.innerHTML='<div class="rc-pm-top"></div><div class="rc-pm-body" hidden><div class="rc-pm-h">What will be applied</div><div class="rc-pm-rows"></div><span class="rc-pm-msg" role="status"></span></div>';
     const top=el.querySelector('.rc-pm-top'),body=el.querySelector('.rc-pm-body'),rowsEl=el.querySelector('.rc-pm-rows');
     top.innerHTML=this._pmHtml(m);
     const has=!!m&&((m.rows||[]).length+(m.unsure||[]).length>0);
@@ -356,21 +413,7 @@ export const Stage = {
     if(this._pmFig&&!this._pmFigOut&&this._pmFig.parentNode!==body)body.insertBefore(this._pmFig,rowsEl);
     rowsEl.innerHTML=this._pmRowsHtml(m);},
 
-  /* FINALIZE NOTES: the parts the words name are read now (the first answer and every note); the card follows */
-  async _pmFinalize(){
-    const parts=this._pmParts,btn=this._briefEl&&this._briefEl.querySelector('.rc-fin-btn');
-    if(!parts||!parts.finalize||(btn&&btn.disabled))return;
-    if(btn)btn.disabled=true;
-    let got=null;
-    try{got=await parts.finalize();}
-    catch(e){if(btn){btn.disabled=false;const msg=this._briefEl.querySelector('.rc-fin-msg');if(msg)msg.textContent=(e&&e.message)||'Not started. Try again.';}return;}
-    this._pmAskDue=true;
-    this._pm=got&&got.status!=='none'?got:null;
-    if(this._pmDraw)this._pmDraw();
-    if(this._pm&&(this._pm.status==='reading'||this._pm.status==='waiting'))this._pmPoll();
-    else this._pmAsked();},
-
-  // the approval question, said once under the card when a Finalize notes has been read
+  // the approval question, said once under the card when a reading the user waited on has landed
   _pmAsked(){
     if(!this._pmAskDue)return;
     this._pmAskDue=false;
@@ -387,8 +430,7 @@ export const Stage = {
 
   _pmHtml(m){
     if(m&&m.status==='reading')return '<div class="rc-pm-wait" role="status">Reading your notes…</div>';
-    if(m&&m.status==='ready')return '<div class="rc-fin"><span class="rc-fin-msg" role="status"></span>'
-      +'<button type="button" class="gc-proceed rc-fin-btn">Finalize notes</button></div>';
+    // NOTE-18: nothing to press - each message is read as it is sent, and a "go" reads what is left first
     // what the notes were read as on a flow mesh (NOTES-CFD-1): the CFD reader's own lines, "From your notes: ..."
     if(m&&m.status==='done'&&(m.lines||[]).length)
       return `<ul class="rc-pm-lines">${m.lines.map(l=>`<li>${esc(l)}</li>`).join('')}</ul>`;
@@ -406,6 +448,17 @@ export const Stage = {
     const open=this._pmOpen;
     const onModel=!!this._pmFig;
     const row=(r,k,unsure)=>{
+      // A ROW FOR A PICKED FACE (NOTE-17): the size and the face's own chip; it is the face's, never re-tied to parts
+      if(r.faces&&r.faces.length)return `<div class="rc-pm-item face" data-phrase="-1" style="--pm-c:${this._PM_COL[k%this._PM_COL.length]}">`
+        +`<div class="rc-pm-row"><span class="rc-pm-dot"></span><span class="rc-pm-q" title="${esc(r.quote||'')}">${esc(r.words)}</span>`
+        +`${r.size?`<span class="rc-pm-s">${esc(r.size)}</span>`:''}</div>`
+        +`<div class="rc-pm-chips">${attHtml(null,r.faces,'')}</div></div>`;
+      // A COUNT FOR THE WHOLE MESH (NOTE-24): its words and the count; no parts to pick for it
+      if(r.count)return `<div class="rc-pm-item face" data-phrase="-1" style="--pm-c:${this._PM_COL[k%this._PM_COL.length]}">`
+        +`<div class="rc-pm-row"><span class="rc-pm-dot"></span><span class="rc-pm-q" title="${esc(r.quote||'')}">${esc(r.words)}</span>`
+        +`${r.size?`<span class="rc-pm-s">${esc(r.size)}</span>`:''}</div>`
+        // NOTE-26: the element estimate the run would plan with what is on the checklist
+        +`${r.estimate?`<div class="rc-pm-est">${esc(r.estimate)}</div>`:''}</div>`;
       const i=r.phrase,act=open===i,c=unsure?'#E3A23B':this._PM_COL[k%this._PM_COL.length];
       const ids=r.parts||[];
       const head=`<div class="rc-pm-row" role="button" tabindex="0" aria-pressed="${act}">`
@@ -909,6 +962,8 @@ export const Stage = {
   bump(n){n.count++;n.chev.hidden=false;},
   scroll(n){n.body.scrollTop=n.body.scrollHeight;this.scrollBottom();},
 
+  // what the running run is doing now, in the live line's words ('' when no run is drawn)
+  liveNow(){return this.rows&&!this._ended?String(Run.view().current||''):'';},
   /* THE LIVE LINE, inside the row that is running: what it is doing now in plain words, a note when it
      runs long, and a hairline bar when the mesher's count has an estimate beside it (render/run_progress). */
   drawLive(){if(!this.rows)return;

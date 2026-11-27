@@ -86,8 +86,9 @@ FILE = "mesh_requirements.json"
 #: how long the one reading may take before nothing is applied (the same as the other FEA decision)
 TIMEOUT_S = 180.0
 MIN_WAIT_S = 20.0
-#: the most of the user's words one reading is shown (a pasted criteria sheet fits many times over)
-MAX_CHARS = 8000
+#: the most of the user's words one reading is shown (a pasted criteria sheet fits many times over; an attached
+#: spec's text is part of them, NOTE-16 - past this the notes are cut with a told line)
+MAX_CHARS = 24000
 
 #: millimetres per unit the user may state
 UNITS_MM = {"mm": 1.0, "cm": 10.0, "m": 1000.0, "in": 25.4, "um": 1e-3}
@@ -399,16 +400,30 @@ def wanted(state: Mapping) -> bool:
     return bool(notes_text(state).strip())
 
 
-def messages_for(state: Mapping, *, route: str = "") -> list[dict]:
-    """What the model is shown, as plain data in a fixed order (the decision cache keys the round by it)."""
+def sees_pictures() -> bool:
+    """Whether this step's model route declares vision (NOTE-16): only then is it shown the user's pictures."""
+    from meshpipeline.agents.builder.settings import BUILDER_ROUTE
+    from meshpipeline.contracts.model_routing import Capability
+    return Capability.MULTIMODAL in BUILDER_ROUTE.required_capabilities
+
+
+def messages_for(state: Mapping, *, route: str = "", vision: bool = False) -> list[dict]:
+    """What the model is shown, as plain data in a fixed order (the decision cache keys the round by it). With
+    `vision` (the route sees pictures), the user's own pictures follow the words, each after a line naming its
+    note (contracts/user_pictures; blocking - the store); without, the request is exactly as before."""
     from meshpipeline.contracts.user_notes import own_notes, prompt_block
 
     s = state or {}
+    notes = own_notes(s.get("user_notes") or [])
     shown = {"mesh_for": route,
-             "user_notes": prompt_block(own_notes(s.get("user_notes") or []), consumer="mesh_requirements",
-                                        limit=MAX_CHARS)}
+             "user_notes": prompt_block(notes, consumer="mesh_requirements", limit=MAX_CHARS)}
+    text = json.dumps(shown, sort_keys=True, separators=(",", ":"))
+    pictures: list[dict] = []
+    if vision:
+        from meshpipeline.contracts.user_pictures import content_parts
+        pictures = content_parts(notes, s.get("session_id"))
     return [{"role": "system", "content": SYSTEM},
-            {"role": "user", "content": json.dumps(shown, sort_keys=True, separators=(",", ":"))}]
+            {"role": "user", "content": [{"type": "text", "text": text}, *pictures] if pictures else text}]
 
 
 # #
@@ -924,6 +939,120 @@ def check(arguments: str, notes: str, route: str = "") -> tuple[dict, list[str],
         return _check(arguments, notes, route=str(route or ""))
     except Exception as exc:  # noqa: BLE001 - a malformed answer is the model's, never the run's
         return empty(), [f"the reading did not fit the schema ({type(exc).__name__}): nothing applied"], []
+
+
+# #
+# NOTE-17: what is typed with faces picked on the model is for those faces
+# #
+RULE_PICKED = "NOTE-17"
+#: words that say a size typed with a pick is for the whole mesh all the same
+_WHOLE = re.compile(r"\b(?:global(?:ly)?|whole|overall|everywhere|entire|all\s+over|everything|rest\s+of)\b", re.I)
+
+
+def picked_where(faces) -> str:
+    """The place as the user saw it: "the face you picked (Face 12 · round Ø15 mm)"."""
+    labels = [str(f.get("label") or f.get("id") or "") for f in faces or ()]
+    head = "the face you picked" if len(labels) == 1 else f"the {len(labels)} faces you picked"
+    return f"{head} ({'; '.join(labels[:3])}{'; ...' if len(labels) > 3 else ''})"
+
+
+def _carrying(notes) -> list[tuple[str, list]]:
+    # the note's own words and (NOTE-22) the earlier words its click answers
+    from meshpipeline.contracts.user_notes import said
+    return [(_squash(said(n)), list(n.get("faces") or ()))
+            for n in notes or () if isinstance(n, Mapping) and n.get("faces")]
+
+
+def _faces_in(carrying: list[tuple[str, list]], quote) -> list | None:
+    q = _squash(str(quote or ""))
+    return next((f for text, f in carrying if len(q) >= 2 and q in text), None)
+
+
+def change_of(quote, notes) -> str:
+    """VER-9: the finished run the own note whose words hold `quote` was asked on ("Request a change"), or ""."""
+    from meshpipeline.contracts.user_notes import said
+    q = _squash(str(quote or ""))
+    return next((str(n.get("change_of") or "") for n in notes or ()
+                 if isinstance(n, Mapping) and n.get("faces") and len(q) >= 2 and q in _squash(said(n))), "")
+
+
+def faces_for(quote, notes) -> list | None:
+    """NOTE-17: the faces picked with the own note whose words hold `quote` - the match bind_picks makes - or None.
+    `notes` as bind_picks takes them."""
+    return _faces_in(_carrying(notes), quote)
+
+
+#: VER-10: words that say ONLY THERE ("nowhere else", "just that", "only here") - they beat a whole-mesh word, so
+#: "finer on this hole, NO where else, just that whole" (the owner's own words, "whole" for "hole") stays on the
+#: picked faces and never spreads over the whole mesh
+RULE_ONLY_THERE = "VER-10"
+_ONLY_THERE = re.compile(r"\b(?:no\s*where\s+else|not?\s+(?:any\s*where|elsewhere)|nothing\s+else|only|just\s+"
+                         r"(?:that|this|there|here|these|those|the\s+marked)|specifically)\b", re.I)
+
+
+def flow_sizes_picked_faces(engine: str) -> bool:
+    """NOTE-17: whether a FLOW engine sizes a picked face on its own triangles - snappyHexMesh and cfMesh do
+    (engines/cfd_requirements.snappy_picked / cfmesh_picked, CFDREQ-34); the others tell it with the next best
+    (VER-12 says so up front)."""
+    return str(engine or "").strip().lower() in ("snappy", "cfmesh")
+
+
+def says_whole_mesh(quote) -> bool:
+    """Words that keep a size typed with a pick for the whole mesh all the same ("2 mm overall") - never when they
+    also say only there (RULE_ONLY_THERE)."""
+    words = str(quote or "")
+    return bool(_WHOLE.search(words)) and not _ONLY_THERE.search(words)
+
+
+def picked_for(quote, notes) -> list | None:
+    """NOTE-17, THE ONE RULE the run (bind_picks) and the checklist (application/part_matches.with_faces) both use:
+    words in a note sent with faces picked are for those faces - whatever place the words name - unless they say
+    the whole mesh. The faces, or None."""
+    return None if says_whole_mesh(quote) else faces_for(quote, notes)
+
+
+def bind_picks(req: dict, notes, *, cells: bool = False) -> dict:
+    """NOTE-17: a size or a refinement typed in a note (or a chat message kept as one) sent with faces picked on the
+    model is for THOSE faces (picked_for). A place entry gets the faces, whatever place its words name ("here", "the
+    bore"); a global size typed with a pick becomes a size on those faces, never the global size; words that say the
+    whole mesh are left as written. Done in code from the note that carries the faces - the model is never asked which face "here" is.
+    `notes`: the user's own notes (contracts/user_notes.own_notes), each with its `faces` [{id, label, sig}]."""
+    carrying = _carrying(notes)
+    if not carrying or not isinstance(req, dict):
+        return req
+
+    def faces_of(quote) -> list | None:
+        return None if says_whole_mesh(quote) else _faces_in(carrying, quote)
+
+    def bind(e: dict, faces: list) -> None:
+        where = picked_where(faces)
+        # the signatures go with the ids: the run re-checks each face is still the one picked (cad/face_map.same_face)
+        e.update(where=where, faces=[str(f.get("id")) for f in faces], labels=[str(f.get("label") or "") for f in faces],
+                 sigs=[f.get("sig") for f in faces], rule=RULE_PICKED)
+        for r in req.get("rows") or ():
+            if r.get("id") == e.get("id"):
+                r["field"] = "local"
+                r["asked"] = _local_words(where, str(e.get("what") or "size"), e.get("mm"), cells=cells)
+
+    req.setdefault("local", [])
+    for e in req["local"]:
+        faces = faces_of(e.get("quote"))
+        if faces:
+            bind(e, faces)
+            # VER-9: words asked on a delivered mesh ("Request a change") carry the run they were asked on
+            job = change_of(e.get("quote"), notes)
+            if job:
+                e["change_of"] = job
+    sizes = req.get("sizes") or {}
+    if sizes.get("global_mm") is not None:
+        r = next((r for r in req.get("rows") or () if r.get("field") == "global"), None)
+        faces = faces_of(r["quote"]) if r else None
+        if r and faces:
+            e = {"id": r["id"], "where": "", "what": "size", "mm": float(sizes["global_mm"]), "quote": r["quote"]}
+            sizes["global_mm"] = None
+            req["local"].append(e)
+            bind(e, faces)
+    return req
 
 
 #: a count of elements through or across something ("3 elements through the thickness", "two rows across the flange")
@@ -1772,6 +1901,9 @@ def strictness_unnamed(sec: Mapping | None) -> bool:
 
 #: NOTE-12: how a line that is no mesh setting starts
 NOT_MESH_LEAD = "Not a mesh setting"
+#: STD-6: how a line of the team's standard that is no setting is told (engines/meshing_standard.guidance_line)
+GUIDANCE_WORDS = "kept as guidance for the mesh planning"
+GUIDANCE_LEAD = f"From your settings, {GUIDANCE_WORDS}"
 
 
 def not_mesh_words(entries) -> list[str]:
@@ -1785,7 +1917,7 @@ def told_words(sec: Mapping | None) -> list[str]:
     with the result, so no ask of the notes disappears."""
     if not sec or sec.get("status") != "used":
         return []
-    return [w for w in words(sec) if w.startswith(("Not applied", NOT_MESH_LEAD))]
+    return [w for w in words(sec) if w.startswith(("Not applied", NOT_MESH_LEAD, GUIDANCE_LEAD))]
 
 
 def write(workspace, sec: Mapping | None) -> bool:
@@ -2081,6 +2213,27 @@ def finish_report(rows: list[dict], n: int, definitions: str) -> dict:
 FLOW_FIELDS = ("near_wall", "local", "cells:target", "cells:ceiling", "cells:floor", *(f"layers:{w}" for w in LAYERS))
 
 
+#: STD-4: how a row this route cannot take is said before meshing (never "From your ...: ...", as if applied)
+NOT_HERE_LEAD = "Not for this mesh"
+_NO_LAYERS_HERE = "a solid or shell mesh has no boundary layers or wall cells; they are a CFD setting"
+
+
+def not_on_route(field: str, route: str) -> str:
+    """Why a row of `field` cannot be applied on this route at all - the same reason the result's row gives - else
+    "": on a solid or shell (route "fea") boundary layers and a size at the walls; on any route a control every one of
+    the route's lanes declares NotHere (contracts/mesh_controls: files in millimetres)."""
+    f = str(field or "")
+    if route == "fea" and (f == "near_wall" or f.startswith("layers:")):
+        return _NO_LAYERS_HERE
+    if f.startswith("control:") and route in ("fea", "flow"):
+        c = _MC.CONTROLS.get(f.split(":", 1)[1])
+        lanes = [ln for ln, (_e, r) in _MC.LANES.items() if r == route]
+        got = [c.lanes.get(ln) for ln in lanes] if c else []
+        if got and all(isinstance(x, _MC.NotHere) for x in got):
+            return str(got[0].why)  # type: ignore[union-attr]
+    return ""
+
+
 def elements_row(field: str, req: Mapping, n: int, kind: str) -> dict | None:
     """A flow field (FLOW_FIELDS) on a solid or a shell mesh of `n` elements: a count is measured against what
     was asked; a size in a place is the sizes-per-part step's; boundary layers and a size at the walls are not
@@ -2188,11 +2341,37 @@ def asked_rows(quality: Mapping | None, *, source: str = "your notes", told: boo
     return out
 
 
-def summary(rep: Mapping | None, *, kind: str = "mesh", limit: int = 380, not_applied: int = 0) -> str:
-    """The one line the closing message carries ("From your notes: ..."): how many of the things asked for are
-    met, and the ones that are not with how far off each is - as many as fit `limit` characters (the result and
-    the mesh report list every one) - and how many things the notes say about the mesh that no setting of ours
-    matches (`not_applied`, NOTE-8). "" with nothing to say."""
+def ask_said(r: Mapping) -> str:
+    """One ask of the closing message's list: what was asked, where it came from, its outcome in the result's own
+    words, and what was built ("Aspect ratio under 5 (from your notes): not fully met - 0.0163% of elements (137) are
+    over 5."). An ask with nothing to judge it by says its status (`told_status`: "nearest there is", "target, not
+    met", ...)."""
+    said = line(r)
+    built = str(r.get("delivered") or "")
+    if r.get("met") in (True, False) or not built:
+        return said
+    head = said[:len(said) - len(built) - 3]        # line(): "<asked><from>: <delivered>."
+    status = told_status(r)[1].lower()
+    built = built.replace("a target - ", "", 1)     # the status says so
+    return f"{head}: {built}." if built.lower().startswith(status) else f"{head}: {status} - {built}."
+
+
+def asks_said(rep: Mapping | None) -> str:
+    """Every ask of the report, one after another (`ask_said`); "" with none. Said after `summary` in the closing
+    message, whole: the user reads each thing asked for with its outcome."""
+    return " ".join(ask_said(r) for r in (rep or {}).get("rows") or [] if isinstance(r, Mapping) and r.get("asked"))
+
+
+def closing(said: str, rep: Mapping | None) -> str:
+    """The closing message's requirements remark: the short count line (`summary`, led by where the asks came
+    from), then every ask with its outcome (`asks_said`). Recorded whole (contracts/user_notes.record_remark)."""
+    return " ".join(x for x in (said, asks_said(rep) if said else "") if x)
+
+
+def summary(rep: Mapping | None, *, kind: str = "mesh", not_applied: int = 0) -> str:
+    """The short line the closing message carries ("From your notes: ..."): how many of the things asked for there
+    are, by outcome (counts only; `closing` adds each ask with what was built), and how many things the notes say
+    about the mesh that no setting of ours matches (`not_applied`, NOTE-8). "" with nothing to say."""
     rows = list((rep or {}).get("rows") or [])
     extra = (f"{not_applied} other thing{'' if not_applied == 1 else 's'} your notes say about the mesh could not "
              "be applied (listed with the result)") if not_applied else ""
@@ -2214,46 +2393,29 @@ def summary(rep: Mapping | None, *, kind: str = "mesh", limit: int = 380, not_ap
     # a size asked on a piece of a part that is no face of its own, set on the whole part (SHMESH-52)
     nearest = [r for r in rows if r.get("met") is None and r.get("nearest") and r.get("applied") is not False]
     n = len(rows)
+    # COUNTS ONLY: the line is short and whole; each ask with what was built is said after it (`asks_said`, in the
+    # same remark, never cut) - a line carrying the first asks' figures was cut mid-sentence at 400 characters
     out = f"Of the {n} thing{'' if n == 1 else 's'} you asked for: {len(met)} met"
     if missed:
         out += f", {len(missed)} not fully met"
-        shown = 0
-        for r in missed:
-            more = f"{': ' if not shown else '; '}{r['asked']} ({r['delivered']})"
-            if len(out) + len(more) > limit - 90:
-                break
-            out, shown = out + more, shown + 1
-        if shown < len(missed):
-            out += f"{'; and ' if shown else ': '}{len(missed) - shown} more, listed on the result"
-    def outside(r: Mapping) -> str:
-        if r.get("field") in ("min_edge", "max_edge"):
-            return (f"{r.get('outside_pct'):g}% of elements have an edge "
-                    f"{'shorter' if r.get('field') == 'min_edge' else 'longer'} than you asked")
-        return f"{r.get('outside_pct'):g}% of elements outside {r['asked']}"
-
     edges = [r for r in targets if r.get("field") in ("min_edge", "max_edge") and not r.get("flexible")]
     if edges:
-        shares = [outside(r) for r in edges if r.get("outside")]
-        out += (f"; {len(edges)} edge-length target{'' if len(edges) == 1 else 's'}"
-                + (": " + ", ".join(shares) if shares else ""))
+        out += f"; {len(edges)} edge-length target{'' if len(edges) == 1 else 's'}"
     flexible = [r for r in targets if r not in edges]
     if flexible:
-        # NOTE-14: a limit the user said is flexible (an edge length too), told with the share outside it -
-        # information, never "not met"
-        shares = [outside(r) for r in flexible if r.get("outside_pct") is not None and r.get("outside")]
-        out += (f"; {len(flexible)} flexible limit{'' if len(flexible) == 1 else 's'}"
-                + (": " + ", ".join(shares) if shares else ""))
+        # NOTE-14: a limit the user said is flexible (an edge length too) - information, never "not met"
+        out += f"; {len(flexible)} flexible limit{'' if len(flexible) == 1 else 's'}"
     if settings:
         out += f"; {len(settings)} applied as {'a setting' if len(settings) == 1 else 'settings'}"
     if nearest:
-        out += f"; {len(nearest)} applied to the whole part, the nearest there is"
+        out += f"; {len(nearest)} nearest there is"
     if finer:
-        out += "; " + "; ".join(f"{r['asked']}: {r['delivered']}" for r in finer[:2])
+        out += f"; {len(finer)} finer than asked"
     if layered:
         out += (f"; {len(layered)} limit{'' if len(layered) == 1 else 's'} for even cells told, not judged, on a mesh "
                 "with prism layers")
     if aside:
-        out += f"; {len(aside)} could not be applied to a {kind} mesh (listed on the result)"
+        out += f"; {len(aside)} could not be applied to a {kind} mesh"
     if extra:
         out += f". {extra}"
     return out + "."
@@ -2274,6 +2436,18 @@ def _lines_of(sec: Mapping | None, fields: tuple[str, ...]) -> set[str]:
     rows = ((sec or {}).get("requirements") or {}).get("rows") or [] if isinstance(sec, Mapping) else []
     return {f"From your {r.get('from') or 'notes'}: {r.get('asked')}." for r in rows
             if isinstance(r, Mapping) and str(r.get("field") or "").startswith(fields)}
+
+
+#: the lines that tell back the user's own words, quoted ("Not applied: "..." - ...")
+_TOLD_LEADS = ("Not applied", NOT_MESH_LEAD, GUIDANCE_LEAD)
+_QUOTED = re.compile(r'"([^"]+)"')
+
+
+def live_quotes(line: str) -> tuple[str, ...]:
+    """The user's own words a told line quotes (the narration guard judges only our words around them); () for any
+    other line - a line of ours that quotes nothing of the user's is judged whole."""
+    w = str(line or "")
+    return tuple(_QUOTED.findall(w)) if w.startswith(_TOLD_LEADS) else ()
 
 
 def live_words(sec: Mapping | None, *, told_elsewhere: tuple[str, ...] = ()) -> list[str]:
@@ -2318,7 +2492,7 @@ async def decide(state: Mapping, *, route: str = "", job_id: str = "", run=None,
     "used", or why nothing was applied. Never raises (but a fenced worker's stale publish)."""
     if not enabled or not wanted(state):
         return section("none")
-    msgs = messages_for(state, route=route)
+    msgs = await asyncio.to_thread(messages_for, state, route=route, vision=sees_pictures())
     t = tool()
     key = _key(msgs, t)
     notes = notes_text(state)
@@ -2329,6 +2503,9 @@ async def decide(state: Mapping, *, route: str = "", job_id: str = "", run=None,
         if args is None:
             return None
         req, dropped, not_applied = check(args, notes, route)
+        # NOTE-17: what was typed with picked faces is for those faces (never the global size)
+        from meshpipeline.contracts.user_notes import own_notes
+        req = bind_picks(req, own_notes((state or {}).get("user_notes") or []), cells=route == FLOW)
         return section("used", requirements=req, dropped=dropped, not_applied=not_applied, key=key, source=source)
 
     def without(status: str, why: str) -> dict:
@@ -2368,7 +2545,7 @@ async def decide(state: Mapping, *, route: str = "", job_id: str = "", run=None,
     return got if got is not None else without("invalid", "it gave no reading")
 
 
-__all__ = ["CONSUMER", "FILE", "KINDS", "KIND_WORDS", "kind_in_words", "MAX_LIVE", "asked_rows", "not_applied_words", "finish_report", "limit_row", "line", "live_words",
+__all__ = ["CONSUMER", "FILE", "KINDS", "KIND_WORDS", "kind_in_words", "MAX_LIVE", "asked_rows", "change_of", "not_applied_words", "finish_report", "limit_row", "line", "live_words",
            "pct", "report_words", "share_words", "summary", "MEASURES", "RULE_NOTHING", "RULE_NOT_APPLIED", "RULE_READ", "SHAPES", "SIZES", "SYSTEM",
            "TOOL", "UNITS_MM", "UNREAD_WORDS", "check", "decide", "decisions", "empty", "is_empty", "limit_words",
            "messages_for", "notes_text", "read", "requirements_of", "section", "tool", "wanted", "words", "write"]

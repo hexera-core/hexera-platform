@@ -100,8 +100,9 @@ def test_a_size_far_larger_than_the_part_says_asked_built_and_why():
     assert got == {"met": None, "finer_than_asked": True,
                    "delivered": "elements are about 0.95 mm, finer than the 10 mm asked: your part is 13 mm across, so "
                                 "its walls, holes and curves need smaller elements to keep their shape"}
-    assert MR.summary({"rows": [{**row, "applied": True, **got}]}) == (
-        "Of the 1 thing you asked for: 0 met; global element size 10 mm: " + got["delivered"] + ".")
+    rep = {"rows": [{**row, "applied": True, **got}]}
+    assert MR.summary(rep) == "Of the 1 thing you asked for: 0 met; 1 finer than asked."
+    assert MR.asks_said(rep) == "Global element size 10 mm: finer than asked - " + got["delivered"] + "."
     assert MR.finer_global({**row, "strictness": "hard"}, 10.0, 0.95, 13.0)["met"] is False
     assert MR.finer_global(row, 10.0, 6.0, 300.0) is None                # near the size asked: the row as it was
 

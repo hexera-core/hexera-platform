@@ -123,16 +123,23 @@ def _after_guard_trip(state: PipelineState) -> str:
     """TIME-3, decided from counts alone: replay the attempt, or end the run as ran out of time.
     The decision is cited in the run's why record."""
     from meshpipeline.contracts import decision_record as dr
-    from meshpipeline.contracts.work_limits import GUARD_REPLAYS, after_trip, trip_words
+    from meshpipeline.contracts.work_limits import (
+        GUARD_REPLAYS,
+        TIME_SAME_ON_REPLAY,
+        after_trip,
+        trip_words,
+    )
     trip = guard_trip_of(state)
     inputs = {"replays": int(state.get("guard_replay_count", 0) or 0), "allowed": GUARD_REPLAYS,
-              "where": str(trip.get("where") or "")}
+              "where": str(trip.get("where") or ""), "same_on_replay": trip.get("same_on_replay") is True}
     outcome, rule = after_trip(inputs)
     dr.cite(str(state.get("job_id") or ""), stage=dr.STAGE_GUARD, decided="after_trip",
             value=outcome, rule=rule, inputs=inputs, source=dr.SOURCE_GUARD_CLOCK,
             words=(f"{trip_words(trip)}: "
                    + ("the attempt is run again as it was (an infrastructure stop)."
                       if outcome == "replay" else
+                      "that step does the same planned work on the same mesh when run again, so it is not "
+                      "run again and the run ends as ran out of time." if rule == TIME_SAME_ON_REPLAY else
                       "it already had its replay, so the run ends as ran out of time.")))
     return outcome
 
@@ -304,6 +311,12 @@ def _sound_or_end(
                        "built a sound mesh → node_deliver_sound (LAD-cfd-3) - job_id=%s",
                        state.get("job_id"))
         return "node_deliver_sound"
+    from meshpipeline.pipeline.engine_fallback import refused_as_wrong_region
+    if refused_as_wrong_region(state):
+        # LAD-cfd-8 applied to the region: a wrapped copy of the same staging meshes the same wrong region
+        logger.warning("route_after_executor: the mesh filled another region than the fluid - no wrap rung on "
+                       "the same staging (LAD-cfd-8) → END - job_id=%s", state.get("job_id"))
+        return _END
     if _wrap.wanted(state):
         logger.warning("route_after_executor: every engine failed on the surface as drawn, and "
                        "no attempt built a sound mesh → node_cfd_wrap (LAD-cfd-5) - job_id=%s",
@@ -373,6 +386,14 @@ def route_after_executor(
                 return "node_classifier"
             logger.info("route_after_executor: no rung after the switch (%s) - job_id=%s", why,
                         state.get("job_id"))
+        if not state.get("user_dispute") and _rp.engine_choice(state) is not None:
+            # THE BETTER OF TWO ENGINES' MESHES (CFDREQ-28): a gate moved the run on and both engines built a
+            # sound mesh - the run ends on the better by the product's own measured verdict (the first on a
+            # tie), and the one not chosen is said on the result
+            logger.warning("route_after_executor: sound meshes from two engines → node_deliver_sound, the better "
+                           "by the measured verdict (%s) - job_id=%s", _rp.ENGINE_BETTER_OF_TWO,
+                           state.get("job_id"))
+            return "node_deliver_sound"
         if caveats and _rp.better_earlier_sound(state) is not None:
             # THE BEST SOUND MESH IS DELIVERED (LAD-cfd-3): this attempt's rung came out with
             # fewer cells across the narrowest gap than an earlier sound mesh of the run
@@ -392,6 +413,15 @@ def route_after_executor(
     # coarser plan, no other engine. The same attempt is replayed once; a second trip ends the run
     # as ran out of time.
     if guard_trip_of(state):
+        from meshpipeline.engines import resolution_policy as _rp
+        if not state.get("user_dispute") and _rp.deliverable_sound(state) is not None:
+            # A KEPT MESH IS HANDED BACK WHEN THE NEXT ATTEMPT RUNS OUT OF TIME (CFDREQ-28): a replay would spend
+            # the same time again with a mesh already in hand (abc 00025560: cfMesh ran into the wall clock and
+            # the kept snappyHexMesh mesh was never delivered)
+            logger.warning("route_after_executor: a guard clock stopped the attempt and the run holds a kept "
+                           "sound mesh → node_deliver_sound (%s) - job_id=%s", _rp.ENGINE_BETTER_OF_TWO,
+                           state.get("job_id"))
+            return "node_deliver_sound"
         if _after_guard_trip(state) == "replay":
             return "node_guard_replay"
         logger.warning("route_after_executor: a guard clock stopped the attempt again after its "
@@ -417,7 +447,8 @@ def route_after_executor(
         # THE WRAP RUNG IS THE LAST (LAD-cfd-5): a failure on the wrapped surface moves to the
         # rung's next engine on the same skin; with none left the run ends - on an earlier sound
         # mesh when there is one, else on the failure
-        if _wrap.next_step(state):
+        from meshpipeline.pipeline.engine_fallback import refused_as_wrong_region
+        if _wrap.next_step(state) and not refused_as_wrong_region(state):
             logger.warning("route_after_executor: the wrapped surface did not mesh on %s → the "
                            "rung's next engine - job_id=%s", state.get("engine"), state.get("job_id"))
             return "node_cfd_wrap"
@@ -444,6 +475,30 @@ def route_after_executor(
             "route_after_executor: executor FAIL with cause %r, which another attempt cannot "
             "change - not retrying (attempt=%d/%d) → END - job_id=%s",
             _cause, retry_count, bcfg.BUILDER_MAX_TOTAL_ATTEMPTS, state.get("job_id"))
+        return _sound_or_end(state)
+
+    # A RETRY CHANGES WHAT WAS REFUSED, OR IT DOES NOT RUN (LAD-cfd-8): a gate this engine's next
+    # attempt has nothing to answer with (engine_fallback.GATE_LEVERS) moves the run to the next engine
+    # at once when one delivers the approved mesh; with none, the run's best sound mesh - this one,
+    # delivered with the refusal said, unless an earlier one is better - is delivered, never rebuilt
+    from meshpipeline.pipeline.engine_fallback import refusal_without_lever, refused_as_wrong_region
+    if refused_as_wrong_region(state) and not state.get("user_dispute"):
+        # ...and a mesh of another region than the fluid is the staging's: no retry, no engine, no wrap
+        logger.warning("route_after_executor: the refusal is the staging's (the mesh filled another region than "
+                       "the fluid, or its openings were bound to other faces than the ones confirmed) - every "
+                       "engine stages it the same way, so no other runs; the sound mesh, if any, is delivered with "
+                       "the refusal said (LAD-cfd-8) - job_id=%s", state.get("job_id"))
+        return _sound_or_end(state)
+    if refusal_without_lever(state) and not state.get("user_dispute"):
+        if retry_count <= bcfg.MAX_BUILDER_RETRIES and another_engine_takes_over(state):
+            logger.info("route_after_executor: %s refused the mesh and this engine has nothing to "
+                        "change for it - another engine takes over (LAD-cfd-8) → classifier - "
+                        "job_id=%s", state.get("executor_failed_gate"), state.get("job_id"))
+            return "node_classifier"
+        logger.warning("route_after_executor: %s refused the mesh, no retry can change that and no "
+                       "other engine delivers the approved mesh - the run's best sound mesh, if any, "
+                       "is delivered with the refusal said (LAD-cfd-8) - job_id=%s",
+                       state.get("executor_failed_gate"), state.get("job_id"))
         return _sound_or_end(state)
 
     if retry_count <= bcfg.MAX_BUILDER_RETRIES:
@@ -489,9 +544,17 @@ async def node_deliver_sound(state: PipelineState) -> dict:
         "rule": _rp.LAD_DELIVER_SOUND,
         "why": ((f"attempt {state.get('retry_count')} resolved the narrowest gap less well than "
                  f"attempt {best.get('attempt')}") if _last_sound else
+                (f"the {best.get('refused')} check refused attempt {best.get('attempt')}'s sound mesh, "
+                 "and no retry or other engine could change that (LAD-cfd-8)") if best.get("refused") else
                 (f"attempt {state.get('retry_count')} did not pass the automatic checks, and "
                  f"attempt {best.get('attempt')} built a sound mesh")),
         "short_of": [str(c.get("kind")) for c in best.get("requirement_caveats") or []]}
+    _choice = _rp.engine_choice(state)
+    if _choice is not None:
+        # CFDREQ-28: the mesh of the other engine that was not chosen, and why, in one plain line
+        _why = str(ladder["delivered_from"].get("why") or "")
+        ladder["delivered_from"].update(
+            why=(_choice["line"] if _last_sound else f"{_why}; {_choice['line']}"), choice_rule=_choice["rule"])
     try:
         from meshpipeline.contracts import decision_record as dr
         dr.cite(str(state.get("job_id") or ""), stage="resolution_ladder", decided="delivered sound",
@@ -504,6 +567,11 @@ async def node_deliver_sound(state: PipelineState) -> dict:
                        "the last attempt failed; the best sound mesh of the run is delivered"))
     except Exception:  # noqa: BLE001 - a record never changes the delivery
         logger.debug("node_deliver_sound: why record not kept", exc_info=True)
+    # CFDREQ-33 (engines/snapped_keep): a kept snapped mesh never rides in a delivered workspace
+    from meshpipeline.engines.snapped_keep import drop as _drop_snapped
+    if best.get("workspace") and _drop_snapped(str(best.get("workspace"))):
+        logger.info("node_deliver_sound: the kept snapped mesh of attempt %s is removed before delivery - job_id=%s",
+                    best.get("attempt"), state.get("job_id"))
     logger.warning("node_deliver_sound: delivering attempt %s (%s) - the last attempt (%s) failed "
                    "at %s - job_id=%s", best.get("attempt"), best.get("engine"),
                    state.get("retry_count"), state.get("executor_failed_gate") or "finalize",

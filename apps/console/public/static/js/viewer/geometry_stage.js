@@ -28,6 +28,7 @@ import { bindFeaPanel, bindMeasure, effectiveMeshAs, feaPanelHtml, followAssembl
   lightSpotRow, shellLegendHtml, shellMarks, showsShell, wallColour } from "../render/fea_form.js";
 import { bindThermalPanel, partDetails, thermalPanelHtml, watts } from "../render/thermal_form.js";
 import { circleThrough, clickIndex, firstHit, snapAt } from "./open_ends.js";
+import { attachView, bindStage, hitOn, isClick, pickAt, ready as facePickReady } from "./face_pick.js";
 import { b64f32, b64u32, loadVtk } from "./scene/vtk_load.js";
 import { mountCanvas } from "./scene/canvas.js";
 import { makeOverlay } from "./scene/overlay.js";
@@ -280,6 +281,36 @@ export async function openGeometryStage(sessionId, d, confirm, opts) {
     return null;
   }
 
+  /* A PERFORATED PLATE OR A GRILLE (INS-23): the three answers to "Flow goes through the holes?". Yes keeps the
+     plate's two sides (or the grille's one lid) as the openings; "each hole is its own passage" brings back the
+     openings as read hole by hole; "around it" turns the flow to around the part. The pins follow the rows. */
+  function bindPerforated() {
+    const pf = p.perforated;
+    if (!pf) return;
+    if (!plateOpenings) plateOpenings = (p.openings || []).map((o) => ({ ...o }));
+    form.querySelectorAll(".gc-perf-a").forEach((r) => { r.onchange = () => {
+      const k = Number(r.value);
+      p.perforated_answer = k;
+      const flowSel = form.querySelector(".gc-flow");
+      if (k === 2) {
+        if (flowSel) { flowSel.value = "external"; flowSel.dispatchEvent(new Event("change", { bubbles: true })); }
+        return;
+      }
+      const want = (k === 1 ? pf.holes_openings || [] : plateOpenings).map((o) => ({ ...o }));
+      p.flow = "internal";
+      if (p.user_set && "flow" in p.user_set) p.user_set.flow = "internal";
+      p.openings = [];
+      form.innerHTML = formHtml(p);
+      if (scene) scene.rebind();               // the pins of the openings swapped out go first
+      p.openings = want;
+      form.innerHTML = formHtml(p);
+      applyFlow(form); bindUnit(panel, p); bindAxis(form, p); noteDrawn(form); bindProceed(); bindPerforated();
+      if (scene) scene.rebind();
+    }; });
+  }
+  let plateOpenings = null;
+  bindPerforated();
+
   function bindProceed() {
     const btn = form.querySelector(".gc-proceed"), hint = form.querySelector(".gc-hint");
     btn.onclick = async () => {
@@ -352,7 +383,7 @@ export async function openGeometryStage(sessionId, d, confirm, opts) {
         Object.assign(p, incoming, chosen, answered, p.user_set);
         panel.querySelector(".gc-lead").innerHTML = leadHtml(p);
         form.innerHTML = formHtml(p);
-        applyFlow(form); bindUnit(panel, p); bindAxis(form, p); noteDrawn(form); bindProceed(); scene.rebind();
+        applyFlow(form); bindUnit(panel, p); bindAxis(form, p); noteDrawn(form); bindProceed(); bindPerforated(); scene.rebind();
         shown = "";
       } else {
         if (p2.faces) p.faces = p2.faces;
@@ -404,7 +435,7 @@ export async function openGeometryStage(sessionId, d, confirm, opts) {
       }
       panel.querySelector(".gc-lead").innerHTML = leadHtml(p);
       form.innerHTML = formHtml(p);
-      applyFlow(form); bindUnit(panel, p); bindAxis(form, p); noteDrawn(form); bindProceed(); scene.rebind();
+      applyFlow(form); bindUnit(panel, p); bindAxis(form, p); noteDrawn(form); bindProceed(); bindPerforated(); scene.rebind();
       shown = "ready"; showBanner("");
     } else {
       const key = "failed|" + (d2.reason || "");
@@ -880,6 +911,17 @@ function initScene(sessionId, box, surf, p) {
     if (measuring) measureAt(e.clientX, e.clientY);
     else addAt(rayAt(e.clientX, e.clientY));
   }, true);
+  /* THE FACE PICK (viewer/face_pick.js): once the stage is settled, a plain click on the part names the face there
+     and lights it; adding an opening and measuring keep the click while they are on */
+  bindStage(sessionId, box, () => skins.map((s) => s.pd));
+  const detachPick = attachView({ ren, rw, skin: () => skins.map((s) => s.pd) });
+  let toolAtDown = false;              // read at the press: the click that ends adding an opening is not a pick
+  host.addEventListener("pointerdown", () => { toolAtDown = addMode || measuring; }, true);
+  host.addEventListener("pointerup", (e) => {
+    if (toolAtDown || addMode || measuring || !facePickReady() || e.button > 0 || !isClick(downXY, [e.clientX, e.clientY])) return;
+    if (e.target && e.target.closest && e.target.closest(".vm,.vm-group,.vt,.v-ov")) return;
+    pickAt(hitOn(clicksNow(), rayAt(e.clientX, e.clientY)));
+  }, true);
 
   /* MEASURING: two clicks on the part draw a thin line between them, a dot at each end and the
      distance beside it, in the unit the sizes are shown in. A click within a few pixels of a
@@ -1120,7 +1162,7 @@ function initScene(sessionId, box, surf, p) {
     background: () => ren.getBackground().slice(),
   };
   return {
-    stop: () => { watch.disconnect(); marks.stop(); overlay.stop(); canvas.ro.disconnect(); clearDecor(); clearMeasure(); document.removeEventListener("keydown", onKey); delete window._vdbg["gstage:" + sessionId]; },
+    stop: () => { detachPick(); watch.disconnect(); marks.stop(); overlay.stop(); canvas.ro.disconnect(); clearDecor(); clearMeasure(); document.removeEventListener("keydown", onKey); delete window._vdbg["gstage:" + sessionId]; },
     rebind, refresh: refreshExternal, setSpots, setShell, showShell,
   };
 }

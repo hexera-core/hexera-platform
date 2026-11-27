@@ -164,8 +164,11 @@ def _stage_here(gmsh, geom_path, out_stl: Path, factor: float, *, extras: bool, 
         # that rebuilds every curve, and on the Toyota Supra STEP it stopped staging with
         # "Geom_TrimmedCurve::parameters out of range" before any mesher ran (2026-10-04).
         gmsh.option.setNumber("Geometry.OCCScaling", float(factor))
+        # an IGES reaches gmsh as the product's own reading of it (cad/iges_read: B-splines kept whole)
+        from meshpipeline.cad.iges_read import gmsh_import_path
         try:
-            gmsh.model.occ.importShapes(str(geom_path))
+            with gmsh_import_path(geom_path) as imported:
+                gmsh.model.occ.importShapes(str(imported))
         finally:
             gmsh.option.setNumber("Geometry.OCCScaling", 1.0)
         gmsh.model.occ.synchronize()

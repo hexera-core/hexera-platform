@@ -255,6 +255,14 @@ def time_boxed(stored: dict | None, requested: dict | None, now: float | None = 
         if beating is None and at - asked > limits_of(requested, RETRY_NAMING)[1] + STALE_MARGIN_S:
             return {**stored, "status": STATUS_FAILED, "reason": NAMING_TOO_LONG, "named": False,
                     "step": RETRY_NAMING, "retry": RETRY_NAMING, "timed_out": True}
+    elif status == STATUS_READY and isinstance(stored.get("facts"), dict):
+        # TIME-11: AN FEA SIZING THAT WILL NEVER END (its clock past, its worker gone) is served as not sized, so the
+        # stage and the chat stop waiting; the run sizes it itself, as the stage's line promises
+        from meshpipeline.application.fea_check import sizing_now
+        naming = rec.get("naming") if isinstance(rec.get("naming"), dict) else None
+        facts = sizing_now(stored["facts"], naming, at)
+        if facts is not stored["facts"]:
+            return {**stored, "facts": facts}
     return stored
 
 
@@ -798,7 +806,8 @@ def _scout(*, session_id: str, owner_id: str, source: dict, interpretation: dict
         facts["part_name"] = part_name(fetched, ref.original_filename)
         # the upload's own file name, for a stage that names a whole assembly (application/fea_check)
         facts["file_name"] = file_stem_name(ref.original_filename)
-        if facts["validity"].get("clean") is not True and facts["validity"].get("kind") != "unchecked":
+        if facts["validity"].get("clean") is not True and (facts["validity"].get("kind") != "unchecked"
+                                                          or facts["validity"].get("rule") == CLEAN_CHECK_RULE):
             facts["notes"].append(facts["validity"]["summary"])
         # a thermal model's physics (ECXML: materials, powers, fans, vents...), kept whole beside
         # the session's check so a later solver step - or the user - has all of it
@@ -863,7 +872,7 @@ def _start_clean_verdict(uploaded: Path, canonical, work: Path):
         from meshpipeline.cad.validity import canonical_task
 
         handle = Beside("meshpipeline.cad.validity", canonical_task(uploaded, canonical), work / "clean_check",
-                        name="clean_check")
+                        name="clean_check", timeout_s=CLEAN_CHECK_LIMIT_S)
         return handle if handle.proc is not None else None
     except Exception as exc:  # noqa: BLE001 - judged in-process instead
         logger.info("geometry check: the clean check could not start beside the scout (%s)", type(exc).__name__)
@@ -897,17 +906,49 @@ def early_validity(session_id: str, sha256: str) -> dict | None:
     return got["validity"]
 
 
+#: TIME-9: THE CLEAN CHECK'S TIME LIMIT, seconds from its start. A 9.8 MB IGES of 231 spline faces kept two
+#: workers' cores busy for 13+ minutes in its stitching while the user waited on "Designing the mesh"; read
+#: as it is read now (cad/iges_read) the same file is checked in seconds. Past the limit the child is stopped,
+#: the upload goes on, and the verdict says the check did not finish: never "clean", never "not clean".
+CLEAN_CHECK_LIMIT_S = 120.0
+CLEAN_CHECK_RULE = "TIME-9"
+#: What the user is told then (the stage shows it as "Not checked: ...", fea_check.declared_clean).
+CLEAN_CHECK_UNFINISHED = ("The check of this file did not finish in {minutes}, so it is not known whether it "
+                          "is clean. The mesh goes ahead.")
+
+
+def unfinished_verdict(limit_s: float = CLEAN_CHECK_LIMIT_S, *, timed_out: bool = True) -> dict:
+    """The clean verdict of a check that did not finish (TIME-9): stopped at its time limit (`timed_out`), or its
+    child stopped with no answer inside it. Not checked, said in plain words - the same words either way."""
+    from meshpipeline.cad.validity import unchecked
+
+    minutes = max(1, round(float(limit_s) / 60.0))
+    words = CLEAN_CHECK_UNFINISHED.format(minutes=f"{minutes} minute{'s' if minutes > 1 else ''}")
+    out = dict(unchecked(words, time.time()).as_dict())
+    out.update(clean=None, timed_out=bool(timed_out), seconds=round(float(limit_s), 2), rule=CLEAN_CHECK_RULE)
+    if not timed_out:
+        out["stopped"] = True
+    return out
+
+
 def clean_verdict(uploaded: Path, canonical, started=None) -> dict:
     """THE CLEAN CONTRACT on the upload (cad/validity): clean yes or no, and every reason with
     where on the part it is. A file this calls clean is one the product promises to mesh, so a
     clean file that then fails is a product bug, never the user's. It informs and never refuses:
     a file that is not clean still goes on, with the reasons said. Never fails the scout.
     `started` is the same check begun beside the scout (_start_clean_verdict): its answer stands
-    when it gave one; else the file is judged here."""
+    when it gave one. A check begun there that gave none - out of time, or its child stopped without an
+    answer (a kernel crash, a kill) - is said as not finished (TIME-9) and never run again here, where
+    nothing bounds it. Only a check that could not be started beside the scout is judged here."""
     if started is not None:
         answer = started.result()
         if isinstance(answer, dict) and "clean" in answer and "error" not in answer:
             return answer
+        limit = float(getattr(started, "timeout_s", None) or CLEAN_CHECK_LIMIT_S)
+        timed_out = isinstance(answer, dict) and bool(answer.get("timed_out"))
+        logger.warning("geometry check: the clean check %s - said as not checked",
+                       f"did not finish in {limit:.0f} s" if timed_out else "stopped without an answer")
+        return unfinished_verdict(limit, timed_out=timed_out)
     try:
         from meshpipeline.cad.validity import check_canonical
 
@@ -1252,6 +1293,8 @@ def _scout_exact(local_path: Path, work: Path, interp_ref, ref, on_skin=None) ->
     # searched for them
     declared = {"declared_openings": True} if _thermal_sidecar(local_path) is not None else {}
     facts = scout_cad(local_path, prepared=prepared, shape=shape, **declared).as_dict()
+    if not declared:
+        facts = read_joined(facts, local_path, prepared, shape)
     # THE FLUID INSIDE THE PARTS, begun now beside the rest (cad/beside): the same child the reading
     # below waits for, so it works while the skin's holes are found
     early_fluid = None
@@ -1261,14 +1304,50 @@ def _scout_exact(local_path: Path, work: Path, interp_ref, ref, on_skin=None) ->
                                          scale=occ_scale_transform(prepared).ScaleFactor())
     try:
         return _scout_exact_rest(facts, skin, local_path, work, interp_ref, prepared, unit_note, scale_to_m,
-                                 declared, early_fluid)
+                                 declared, early_fluid, shape=shape)
     finally:
         if early_fluid is not None:
             early_fluid.close()
 
 
+def read_joined(facts: dict, local_path: Path, prepared, shape) -> dict:
+    """INS-11: a file of several closed solids whose own reading finds no fluid body to flow through
+    (fewer than two openings, or a body in a flow) is read once more with the solids that touch face
+    to face joined into the one body they model (cad/scout.joined_solids). That reading is kept only
+    when it finds what the parts alone hid - the fluid's own volume, its flat ends the mouths - and it
+    says so; otherwise the parts' own reading stands, unchanged. The file is never changed."""
+    from meshpipeline.cad.scout import joined_solids, scout_cad
+
+    ports = [o for o in facts.get("openings") or [] if o.get("role") in ("inlet", "outlet")]
+    if int(facts.get("solids") or 0) < 2 or (facts.get("flow") == "internal" and len(ports) >= 2):
+        return facts
+    try:
+        joined, how = joined_solids(shape)
+        if joined is None:
+            facts["joined_solids"] = how
+            return facts
+        again = scout_cad(local_path, prepared=prepared, shape=joined, joined_regions=True).as_dict()
+    except Exception as exc:  # noqa: BLE001 - the parts' own reading stands
+        logger.warning("geometry check: the touching solids could not be read as one (%s: %s)",
+                       type(exc).__name__, str(exc)[:200])
+        return facts
+    found = [o for o in again.get("openings") or [] if o.get("role") in ("inlet", "outlet")]
+    # the fluid's own volume: its openings are its own flat ends
+    ends = len(found) >= 2 and all(o.get("kind") == "disc" for o in found)
+    if again.get("flow") != "internal" or again.get("input_kind") != "fluid-domain" or not ends:
+        facts["joined_solids"] = {**how, "kept": False, "why": "joined, they read as no fluid body either"}
+        return facts
+    n = int(facts.get("solids") or 0)
+    again["solids"] = n                # it IS that many solids; they are read as the one body they make
+    again["joined_solids"] = {**how, "kept": True}
+    again.setdefault("notes", []).append(
+        f"its {n} solids touch face to face and make one body, so they are read as one: the fluid's own "
+        f"volume, its {len(found)} flat ends the openings (INS-11)")
+    return again
+
+
 def _scout_exact_rest(facts: dict, skin: Path, local_path: Path, work: Path, interp_ref, prepared, unit_note,
-                      scale_to_m: float, declared: dict, early_fluid) -> tuple[dict, Path]:
+                      scale_to_m: float, declared: dict, early_fluid, shape=None) -> tuple[dict, Path]:
     from meshpipeline.application import geometry_progress as gp
     from meshpipeline.cad.fluid_volume_check import read_fluid_volume, wants_fluid_volume
     from meshpipeline.cad.normalise import occ_scale_transform
@@ -1285,14 +1364,109 @@ def _scout_exact_rest(facts: dict, skin: Path, local_path: Path, work: Path, int
     facts["holes"] = skin_holes(skin, facts)
     if not declared:
         map_openings(facts)
+        flat_hole_mouths(facts)
         # AN ASSEMBLY'S FLUID is the space inside its parts, closed off where it meets the outside
         # (cad/fluid_volume_check): its openings are what the user confirms, not every flat face
         if wants_fluid_volume(facts):
             read_fluid_volume(facts, local_path, work=work, kind="cad",
                               scale=occ_scale_transform(prepared).ScaleFactor(), started=early_fluid)
         read_whole_shape(facts, skin)
+        if shape is not None and facts.get("openings_from") != "fluid_volume":
+            perforated_openings(facts, shape, prepared)
+        # FLOW-9: a part read as a body the map finds a way through is asked, with that way's mouths proposed
+        through_part_openings(facts)
     settle_flow_kind(facts)
     return facts, skin
+
+
+#: docs/RULES.md: a perforated plate's openings are its two sides; a grille's, one lid over it
+PERFORATED_RULE = "INS-23"
+#: The stage's question and its three answers (INS-23), in these words
+PERFORATED_ANSWERS = ("Yes", "No, each hole is its own passage", "No, the flow goes around it")
+
+
+def perforated_statement(perf: dict) -> str:
+    """What INS-23 read, in plain words: "This looks like a perforated plate: 39 holes of 1.4 mm through a 5 mm
+    plate." - the holes' size as one number when they are one size, else their range."""
+    def mm(v) -> str:
+        return f"{float(v):.2g}" if float(v) < 10 else f"{float(v):.0f}"
+    lo, hi = float(perf.get("hole_min_mm") or perf["hole_mm"]), float(perf.get("hole_max_mm") or perf["hole_mm"])
+    size = mm(perf["hole_mm"]) if hi <= 1.1 * lo else f"{mm(lo)} to {mm(hi)}"
+    what = "a grille" if perf.get("kind") == "grille" else "a perforated plate"
+    return f"This looks like {what}: {int(perf['holes'])} holes of {size} mm through a {mm(perf['thickness_mm'])} mm plate."
+
+
+def perforated_question(perf: dict) -> str:
+    """INS-23's question, in these words: "This looks like a perforated plate: 39 holes of 1.4 mm through a 5 mm
+    plate. Flow goes through the holes?"."""
+    return f"{perforated_statement(perf)} Flow goes through the holes?"
+
+
+def perforated_openings(facts: dict, shape, prepared=None) -> None:
+    """INS-23, A PERFORATED PLATE'S OPENINGS ARE ITS TWO SIDES; A GRILLE'S, ONE LID OVER IT (cad/perforated).
+    Many short holes side by side through a thin plate were proposed hole by hole - a fan duct's 12 grille slots
+    as 12 outlets, which surface staging then leaked through - or not at all past 16 (INS-13), and a free sieve
+    as two holes on one face. Now, when the part's faces hold such a perforation, the proposal is the plate's two
+    sides (a free plate: a sleeve of the plate's outline runs a few pitches past each side, inlet at one end,
+    outlet at the other) or one lid over the grille's whole outline (a grille in a face of the part's inside: the
+    other openings stay, the holes become that one opening, the bars wall inside the fluid). The stage asks the
+    user to confirm it (perforated_question, PERFORATED_ANSWERS); the openings as proposed before are kept for
+    "No, each hole is its own passage". `shape` is the CAD part as read (`prepared` scales it to metres) or, with
+    `prepared` None, a triangle part's skin sewn into a solid, in metres already. Never fails the scout."""
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
+
+    from meshpipeline.cad.normalise import occ_scale_transform
+    from meshpipeline.cad.perforated import read_perforation
+
+    try:
+        if prepared is not None:
+            shape = BRepBuilderAPI_Transform(shape, occ_scale_transform(prepared), True).Shape()
+        perf = read_perforation(shape)
+    except Exception as exc:  # noqa: BLE001 - the reading as it stands
+        logger.warning("geometry check: the perforation could not be read (%s: %s)", type(exc).__name__, str(exc)[:200])
+        return
+    if perf is None:
+        return
+    rec = perf.as_dict()
+    widths = [2.0 * math.sqrt(a / math.pi) * 1000.0 for a in perf.hole_areas]
+    if widths:
+        rec["hole_min_mm"], rec["hole_max_mm"] = round(min(widths), 3), round(max(widths), 3)
+    before = [dict(o) for o in facts.get("openings") or []]
+    centres = rec.pop("hole_centres_mm")
+    half = 0.5 * float(rec["hole_mm"])
+    # a proposed opening that is one of the perforation's holes, in the plate's face
+    def is_hole(o: dict) -> bool:
+        c = [float(v) for v in o.get("centroid_mm") or []]
+        return len(c) == 3 and any(math.dist(c, h) <= max(half, 0.5 * float(o.get("diameter_mm") or 0.0))
+                                   for h in centres)
+
+    def opening(e: dict, role: str) -> dict:
+        round_outline = abs(perf.radius - math.sqrt(perf.area / math.pi)) <= 0.02 * perf.radius
+        return {"face": -1, "role": role, "kind": "ring", "shape": "circle" if round_outline else "other",
+                "confidence": 0.7, "centroid_m": [v / 1000.0 for v in e["centroid_mm"]],
+                "centroid_mm": e["centroid_mm"], "normal": e["normal"], "area_m2": round(e["area_mm2"] * 1e-6, 12),
+                "area_mm2": e["area_mm2"], "diameter_mm": e["diameter_mm"], "on_extremity": True,
+                "clear_ahead": True, "from_perforation": True}
+    if perf.kind == "plate":
+        front, back = rec["ends"]
+        new = [{**opening(front, "inlet"), "name": "inlet"}, {**opening(back, "outlet"), "name": "outlet"}]
+    else:
+        kept = [o for o in before if not (o.get("role") in ("inlet", "outlet") and is_hole(o))]
+        kept = [o for o in kept if not (o.get("role") == "not_an_opening" and is_hole(o))]
+        ports = [o for o in kept if o.get("role") in ("inlet", "outlet")]
+        new = [*kept, {**opening(rec["ends"][0], "outlet" if ports else "inlet"), "name": "grille"}]
+    for k, o in enumerate(new, start=1):
+        o["id"] = k
+    if not any(o.get("role") == "inlet" for o in new):
+        max((o for o in new if o.get("role") == "outlet"), key=lambda o: float(o.get("area_mm2") or 0.0))["role"] = "inlet"
+    rec.update(proposed=True, holes_openings=before)
+    facts["perforated"] = rec
+    facts["openings"] = new
+    facts["input_kind"] = "body-surface"
+    facts.setdefault("notes", []).append(
+        f"{perforated_statement(rec)} Its openings are proposed as "
+        + ("the plate's two sides" if perf.kind == "plate" else "one lid over the grille, the bars wall inside the flow")
+        + f" ({PERFORATED_RULE})")
 
 
 def read_whole_shape(facts: dict, skin: Path) -> None:
@@ -1362,6 +1536,13 @@ def vet_openings(facts: dict, skin: Path) -> None:
         max(kept, key=lambda o: float(o.get("area_mm2") or 0.0))["role"] = "inlet"
 
 
+#: docs/RULES.md ids of the opening decisions made below
+SOLID_END_RULE = "INS-15"            # a flat end no space reaches is no opening
+FLAT_HOLE_RULE = "INS-13"            # a passage opens where its bore meets a flat face
+HOLE_THROUGH_FLUID_RULE = "INS-18"   # a hole through a body of fluid is no opening
+TESSELLATION_GAP_RULE = "INS-22"     # a gap in a CAD solid's tessellation is no opening
+
+
 def vet_by_map(facts: dict, imap) -> None:
     """A CAD PART'S OPENINGS HELD TO ITS MAP (INS-2): an opening the faces read whose outside - a
     few cubes out along the way the fluid would leave by it - is the part's own inside, not the
@@ -1373,6 +1554,12 @@ def vet_by_map(facts: dict, imap) -> None:
     from meshpipeline.cad.inside_space import MIN_ACROSS
     if not imap.passages():
         return
+    # INS-15: a part read as a body (not as the fluid itself) whose map finds space inside it - or read as
+    # the fluid, while the space inside it that opens to the outside is more than its own volume: a vessel's
+    # wall round its contents, not a body of fluid with a hole in it
+    body = str(facts.get("input_kind") or "") != "fluid-domain" or \
+        sum(p.volume for p in imap.passages()) > imap.enclosed_volume
+    solid_ends = 0
     for o in facts.get("openings") or []:
         if o.get("role") not in ("inlet", "outlet"):
             continue
@@ -1387,9 +1574,172 @@ def vet_by_map(facts: dict, imap) -> None:
             facts.setdefault("notes", []).append(
                 f"opening {o.get('id')} ({o.get('name')}) is proposed as not an opening: it is a step inside the "
                 "passage, and the space beyond it is the part's own inside, not the outside")
+            continue
+        # INS-15: A FLAT END NO SPACE REACHES is no opening of the space inside a body: behind it is the
+        # part's own material all the way (a solid rod stub's end on a cup's side), so the fluid inside
+        # the part never gets there. The part's inside opens where its map's mouths are (map_openings).
+        if body and o.get("kind") == "disc" and all(
+                w == "shell" for w in imap.where([c - k * imap.h * n for k in (2.0, 3.0, 4.5)])):
+            o["role"] = "not_an_opening"
+            solid_ends += 1
+    if solid_ends:
+        facts.setdefault("notes", []).append(
+            f"{solid_ends} flat end(s) of solid material are proposed as not openings: no space inside the part "
+            "reaches them, so the fluid inside it could never get there; the space inside it opens where its "
+            f"inside-space map finds mouths ({SOLID_END_RULE})")
     kept = [o for o in facts.get("openings") or [] if o.get("role") in ("inlet", "outlet")]
     if kept and not any(o.get("role") == "inlet" for o in kept):
         max(kept, key=lambda o: float(o.get("area_mm2") or 0.0))["role"] = "inlet"
+
+
+#: INS-13: a passage's mouth is moved out to the flat face's hole of the same bore when that hole lies
+#: no farther out than this many of its own widths, the mouth inside its footprint.
+FLAT_HOLE_REACH = 4.0
+#: ...and the mouth on that hole's axis, within this share of its width.
+FLAT_HOLE_AXIS = 0.15
+#: INS-24: a coaxial hole out in front of a mouth's own flat hole, open air between, is that bore's counterbore -
+#: the opening - when it is no wider than this many times the mouth's hole (the GL45 cap's 5.9 mm port over its
+#: 3 mm bore: 1.96).
+COUNTERBORE_WIDTH = 2.5
+
+
+def flat_holes_by_map(facts: dict, holes: list[dict], imap) -> None:
+    """INS-13, A PASSAGE OPENS WHERE ITS BORE MEETS A FLAT FACE. The map reads a mouth where a bore's
+    loop is tightest: down a threaded port that is the thread's run-out, a 1 mm loop facing sideways
+    (GL45 cap: three 'outlets' no staging could find), while the port opens through a 5.9 mm hole in
+    the cap's top face. Each of the map's passage mouths (`holes`, marked passage) is given the flat
+    face hole of its own bore (the CAD's exact holes, every hole of every flat face: cad/scout
+    `flat_holes`) when that hole faces out to the open air and the mouth lies on its axis: the hole
+    the mouth is, in its own plane; else (a mouth no flat hole is) the outermost hole set back no more
+    than FLAT_HOLE_REACH of its widths, no narrower than the mouth, with only open air between them
+    (neither material nor the passage: the hole is out from the mouth, never its bore's other end). A hole that opens no passage - a bolt hole, a blind dimple -
+    is never one (its mouth is a side pocket's). Annotates each such hole with `flat_hole`."""
+    import numpy as np
+
+    flats = [h for h in facts.get("flat_holes") or [] if h.get("centroid_m") and h.get("normal")]
+    if not flats or not holes:
+        return
+    for h in holes:
+        if not h.get("passage", True) or not h.get("centroid_m"):
+            continue
+        m = np.asarray(h["centroid_m"], dtype=float)
+        mn = np.asarray(h.get("normal") or [0.0, 0.0, 0.0], dtype=float)
+        dm = float(h.get("diameter_mm") or 0.0) / 1000.0
+        same, out = None, None
+        for k, f in enumerate(flats):
+            c, n = np.asarray(f["centroid_m"], dtype=float), np.asarray(f["normal"], dtype=float)
+            d = float(f.get("diameter_mm") or 0.0) / 1000.0
+            if d <= 0 or dm > 1.1 * d or float(mn @ n) < -0.5:
+                continue                              # narrower than the mouth, or the bore's other end
+            rel = m - c
+            along = float(rel @ n)
+            lateral = float(np.linalg.norm(rel - along * n))
+            # ONE BORE: the mouth on the hole's own axis (a port opening off-axis into a wide recess's
+            # floor is that port, not the recess)
+            if lateral > FLAT_HOLE_AXIS * d or along > 0.05 * d or along < -FLAT_HOLE_REACH * d:
+                continue
+            if "out" not in imap.where([c + s * imap.h * n for s in (2.0, 3.0)]):
+                continue                              # the hole does not face the open air
+            if along >= -2.0 * imap.h:
+                if dm >= 0.7 * d:
+                    same = k                          # the mouth IS this hole, in its own plane
+                continue
+            path = imap.where([c + t * rel for t in (0.2, 0.4, 0.6, 0.8)])
+            if "shell" in path or "pocket" in path[:3]:
+                continue                              # material between (another bore), or the passage
+                #                                       itself: the hole is not OUT from the mouth (the
+                #                                       last sample sits at the mouth's own cap)
+            if out is None or along < out[0]:
+                out = (along, k)                      # the outermost flat hole of the bore
+        # the hole the mouth is, else - for a mouth no flat hole is (a thread's run-out) - the
+        # outermost flat hole of its bore
+        pick = same if same is not None else (out[1] if out is not None else None)
+        if same is not None and out is not None and float(flats[out[1]].get("diameter_mm") or 0.0) <= \
+                COUNTERBORE_WIDTH * float(flats[same].get("diameter_mm") or 0.0):
+            # INS-24: A MOUTH AT A COUNTERBORE'S FLOOR opens where the counterbore meets the face. A threaded
+            # counterbore's own rim is no clean loop, so the map's mouth is the bore's step at its floor - the hole
+            # it is, in its plane (GL45 cap: 3 mm at z = 3, its 5.9 mm port hole at z = 9 open air in front of it).
+            # The outermost coaxial hole, open air all the way out and no wider than COUNTERBORE_WIDTH of the step,
+            # is the opening; a recess far wider than the hole in its floor is not its counterbore.
+            pick = out[1]
+        if pick is not None:
+            h["flat_hole"] = pick
+
+
+def flat_hole_mouths(facts: dict) -> None:
+    """INS-13: a CAD part whose faces gave two openings or more keeps them, and every other passage
+    mouth of the map that is a flat face's hole (flat_holes_by_map) is proposed beside them: a cap's
+    three port holes in one top face are never read by the faces (its holes are a sliver of the face,
+    and only its largest is measured), while its three stubs below are - and the ports were staged
+    with their top ends sealed. Only the FAR END OF A PROPOSED OPENING'S BORE is added: a hole whose
+    axis runs back to a proposed opening facing the other way (the cap's top hole over its stub). A
+    hole into the side of a passage (a screw hole through a tube's wall) stays out, as before; so does
+    a mouth no exact hole explains, and everything on a part read as a body in a flow."""
+    ops = facts.get("openings") or []
+    ports_now = [o for o in ops if o.get("role") in ("inlet", "outlet")]
+    if len(ports_now) < 2 or facts.get("flow") != "internal":
+        return
+    # INS-18: A HOLE THROUGH A BODY OF FLUID IS NO OPENING. A part read as the fluid itself (a fluid domain)
+    # whose map finds space through it no bigger than its own volume is fluid with something solid passing
+    # through it - a flange's bolt holes, a boss's bore - and those holes are where the fluid is not, never
+    # where it enters or leaves. Proposed beside its ends (a flange face proposed as one wide disc reaches
+    # every bolt hole's axis), they were declared ports no flat end of the fluid could meet ("declared 6
+    # ports but only 3 openings were detected", two batch-4 pipe fittings). A vessel read as fluid (its open
+    # space more than its volume, INS-15) keeps them.
+    inside = facts.get("inside") or {}
+    if str(facts.get("input_kind") or "") == "fluid-domain" and \
+            float(inside.get("open_mm3") or 0.0) <= float(inside.get("enclosed_mm3") or 0.0):
+        logger.debug("flat_hole_mouths (%s): a part read as fluid adds no hole of its own", HOLE_THROUGH_FLUID_RULE)
+        return
+
+    def far_end(f: dict) -> bool:
+        c, n = f["centroid_mm"], f["normal"]
+        d = float(f.get("diameter_mm") or 0.0)
+        for o in ports_now:
+            oc, on = o.get("centroid_mm"), o.get("normal")
+            if not oc or not on or sum(a * b for a, b in zip(n, on)) > -0.9:
+                continue                                # not facing the other way on one axis
+            rel = [a - b for a, b in zip(oc, c)]
+            along = sum(a * b for a, b in zip(rel, n))
+            lateral = math.sqrt(max(sum(a * a for a in rel) - along * along, 0.0))
+            if along < 0 and lateral <= 0.5 * max(d, float(o.get("diameter_mm") or 0.0)):
+                return True
+        return False
+    from meshpipeline.cad.scout import MAX_OPENINGS
+
+    flats = facts.get("flat_holes") or []
+    new: list[dict] = []
+    for h in facts.get("holes") or []:
+        k = h.get("flat_hole")
+        if not h.get("passage", True) or k is None or not 0 <= int(k) < len(flats):
+            continue
+        f = flats[int(k)]
+        c, d = f["centroid_mm"], float(f.get("diameter_mm") or 0.0)
+        if any(o.get("centroid_mm") and math.dist(o["centroid_mm"], c) <= max(0.5 * d, 1e-9) for o in [*ops, *new]):
+            continue                                    # the faces read it already
+        if not far_end(f):
+            continue                                    # a hole into a passage's side, not a bore's end
+        new.append({"face": int(f.get("face", -1)), "role": "outlet", "kind": "ring", "shape": "circle",
+                    "confidence": 0.6, "centroid_m": f["centroid_m"], "centroid_mm": c, "normal": f["normal"],
+                    "area_m2": round(float(f["area_mm2"]) * 1e-6, 12), "area_mm2": f["area_mm2"],
+                    "diameter_mm": d, "on_extremity": True, "clear_ahead": True, "from_flat_hole": True})
+    ports = len([o for o in ops if o.get("role") in ("inlet", "outlet")])
+    if new and ports + len(new) > MAX_OPENINGS:
+        # a perforated face (a sieve, a heat-exchanger face) is not a part with ports to name: the
+        # scout's own rule (MAX_OPENINGS); its holes stay on the stage to click
+        facts.setdefault("notes", []).append(
+            f"{len(new)} more holes in its flat faces open its passages - a perforated face, more than "
+            f"{MAX_OPENINGS} openings - so they are not proposed one by one ({FLAT_HOLE_RULE})")
+        return
+    for o in new:
+        nid = max([int(q.get("id") or 0) for q in ops] or [0]) + 1
+        ops.append({"id": nid, "name": f"outlet_{nid}", **o})
+    added = len(new)
+    if added:
+        facts["openings"] = ops
+        facts.setdefault("notes", []).append(
+            f"{added} more opening(s): holes in a flat face that open the part's passages, as its inside-space map "
+            f"reads them ({FLAT_HOLE_RULE})")
 
 
 def map_openings(facts: dict) -> None:
@@ -1402,7 +1752,29 @@ def map_openings(facts: dict) -> None:
     if len(ports) >= 2 or len(mouths) < 2 or not (facts.get("inside") or {}).get("has_inside"):
         return
     side = [h for h in facts.get("holes") or [] if not h.get("passage", True)]
-    mouths = sorted(mouths, key=lambda h: -float(h.get("area_mm2") or 0.0))
+    # INS-13: a mouth the map read down a bore is the flat face's hole of that bore, measured exactly
+    flats, used, moved = facts.get("flat_holes") or [], set(), 0
+    exact = []
+    for h in mouths:
+        k = h.get("flat_hole")
+        if k is None or not 0 <= int(k) < len(flats):
+            exact.append(h)
+            continue
+        if int(k) in used:
+            continue                      # two loops of one bore: one opening
+        used.add(int(k))
+        f = flats[int(k)]
+        round_hole = abs(float(f.get("width_mm") or 0) - float(f.get("height_mm") or 0)) <= 0.1 * float(
+            f.get("width_mm") or 1.0)
+        exact.append({**{key: h[key] for key in ("confidence",) if key in h},
+                      "kind": "ring", "shape": "circle" if round_hole else "other",
+                      "centroid_m": f["centroid_m"], "centroid_mm": f["centroid_mm"], "normal": f["normal"],
+                      "area_mm2": f["area_mm2"], "diameter_mm": f["diameter_mm"],
+                      **({} if round_hole else {"width_mm": f["width_mm"], "height_mm": f["height_mm"]})})
+        moved += int(any(abs(a - b) > 1e-6 for a, b in zip(h.get("centroid_mm") or [], f["centroid_mm"])))
+    mouths = sorted(exact, key=lambda h: -float(h.get("area_mm2") or 0.0))
+    if len(mouths) < 2:
+        return
     out: list[dict] = []
     for k, h in enumerate([*mouths, *side], start=1):
         is_side = k > len(mouths)
@@ -1423,6 +1795,126 @@ def map_openings(facts: dict) -> None:
     facts.setdefault("notes", []).append(
         f"the part's faces gave {len(ports)} opening(s); its inside-space map found {len(mouths)} mouth(s) of its "
         "passages, proposed as the openings (measured on the drawn skin: close, not exact)")
+    if moved:
+        facts["notes"].append(f"{moved} of them read down a bore (a thread's run-out, a counterbore) are the hole "
+                              "where that bore meets the part's flat face, measured exactly (INS-13)")
+
+
+#: docs/RULES.md: a part read as a body that the map finds a way through is proposed as flow through it, asked
+THROUGH_GUESS_RULE = "FLOW-9"
+#: FLOW-9: a face-read opening IS a mouth of the map when its centre lies within this share of the wider one's width
+#: of the mouth's, it faces the same way (normals' dot at least MOUTH_FACING) and its size is within MOUTH_SIZE of it
+MOUTH_NEAR, MOUTH_FACING, MOUTH_SIZE = 0.5, 0.9, 1.25
+
+
+def _mouth_hole_exact(h: dict, flats: list) -> dict:
+    """A mouth of the map as the opening it is: the flat face's hole of its bore, measured exactly, when the map
+    tied it to one (INS-13), else the mouth as the map read it on the drawn skin."""
+    k = h.get("flat_hole")
+    if k is None or not 0 <= int(k) < len(flats):
+        return h
+    f = flats[int(k)]
+    round_hole = abs(float(f.get("width_mm") or 0) - float(f.get("height_mm") or 0)) <= 0.1 * float(
+        f.get("width_mm") or 1.0)
+    return {**{key: h[key] for key in ("confidence", "passage_mouths") if key in h},
+            "kind": "ring", "shape": "circle" if round_hole else "other", "flat_hole": int(k),
+            "centroid_m": f["centroid_m"], "centroid_mm": f["centroid_mm"], "normal": f["normal"],
+            "area_mm2": f["area_mm2"], "diameter_mm": f["diameter_mm"],
+            **({} if round_hole else {"width_mm": f["width_mm"], "height_mm": f["height_mm"]})}
+
+
+def _is_mouth(o: dict, m: dict) -> bool:
+    """A face-read opening that is this mouth: a hole (never a flat end's whole disc of metal), centred on it,
+    facing the same way, about its size."""
+    if o.get("kind") == "disc" or not o.get("centroid_mm") or not m.get("centroid_mm"):
+        return False
+    do, dm = float(o.get("diameter_mm") or 0.0), float(m.get("diameter_mm") or 0.0)
+    if do <= 0.0 or dm <= 0.0 or max(do, dm) > MOUTH_SIZE * min(do, dm):
+        return False
+    if sum(a * b for a, b in zip(o.get("normal") or [0, 0, 0], m.get("normal") or [0, 0, 0])) < MOUTH_FACING:
+        return False
+    return math.dist(o["centroid_mm"], m["centroid_mm"]) <= MOUTH_NEAR * max(do, dm)
+
+
+def through_part_openings(facts: dict) -> None:
+    """FLOW-9, A BODY THE MAP FINDS A WAY THROUGH IS PROPOSED WITH THE WAY'S MOUTHS. A part whose faces read as a body
+    in a flow while its inside-space map finds a passage with two mouths or more (FLOW-2's "faces that read a body
+    where the map finds a way through") is asked, its best guess flow through it (application/flow_kind); its
+    openings are then the mouths of those passages - the flat face's hole of each bore, measured exactly - never
+    the flat ends' whole discs of metal round them (an end plug's 56 mm end face over its 16 mm bore). Face-read
+    openings that are those mouths stay as read; a flat end's disc and a blind hole's mouth (a side pocket of the
+    map: a bolt hole) are kept as not openings, for the stage's click; any other hole the faces read stays proposed
+    after the mouths (the map may not see it). Openings that already are the mouths are left as they are. Never
+    fails the scout."""
+    from meshpipeline.application.flow_kind import THROUGH_CASE, geometry_reading
+    try:
+        if geometry_reading(facts).case != THROUGH_CASE:
+            return
+        flats = facts.get("flat_holes") or []
+        mouths, used = [], set()
+        for h in facts.get("holes") or []:
+            if not h.get("passage", True) or int(h.get("passage_mouths") or 0) < 2:
+                continue
+            k = h.get("flat_hole")
+            if k is not None and int(k) in used:
+                continue                                  # two loops of one bore: one opening
+            if k is not None:
+                used.add(int(k))
+            mouths.append(_mouth_hole_exact(h, flats))
+        if len(mouths) < 2:
+            return
+        ops = [o for o in facts.get("openings") or [] if isinstance(o, dict)]
+        ports = [o for o in ops if o.get("role") in ("inlet", "outlet")]
+        match: dict[int, dict | None] = {}
+        kept_ids: set[int] = set()
+        for i, m in enumerate(mouths):
+            o = next((o for o in ports if id(o) not in kept_ids and _is_mouth(o, m)), None)
+            match[i] = o
+            if o is not None:
+                kept_ids.add(id(o))
+        # a face-read opening no mouth of the way is: a flat end's disc of metal, or the mouth of a blind side pocket
+        # (a bolt hole), is set aside; any other hole the faces read stays proposed (the map may not see it)
+        blind = [h for h in facts.get("holes") or [] if not h.get("passage", True)]
+        aside_ids = {id(o) for o in ports if id(o) not in kept_ids
+                     and (o.get("kind") == "disc" or any(_is_mouth(o, h) for h in blind))}
+        if all(match.values()) and not aside_ids:
+            return                                         # the faces read the mouths already
+        new: list[dict] = []
+        for i, m in sorted(enumerate(mouths), key=lambda im: -float(im[1].get("area_mm2") or 0.0)):
+            o = match[i]
+            if o is not None:
+                new.append(dict(o))
+                continue
+            o = {"face": int(flats[int(m["flat_hole"])].get("face", -1)) if m.get("flat_hole") is not None else -1,
+                 "kind": "rim" if m.get("kind") == "rim" else "ring", "shape": m.get("shape") or "other",
+                 "confidence": float(m.get("confidence") or 0.6),
+                 "centroid_m": list(m.get("centroid_m") or []), "centroid_mm": list(m.get("centroid_mm") or []),
+                 "normal": list(m.get("normal") or []),
+                 "area_m2": round(float(m.get("area_mm2") or 0.0) * 1e-6, 12),
+                 "area_mm2": float(m.get("area_mm2") or 0.0), "diameter_mm": m.get("diameter_mm"),
+                 "on_extremity": True, "clear_ahead": True, "from_map": True}
+            for key in ("width_mm", "height_mm", "inner_diameter_mm", "flow_area_mm2"):
+                if m.get(key) is not None:
+                    o[key] = m[key]
+            new.append(o)
+        n_mouths = len(new)
+        new += [dict(o) for o in ports if id(o) not in kept_ids and id(o) not in aside_ids]
+        n = len(new)
+        for k, o in enumerate(new, start=1):
+            o["id"], o["role"] = k, "inlet" if k == 1 else "outlet"
+            o["name"] = "inlet" if k == 1 else "outlet" if n == 2 else f"outlet_{k - 1}"
+        aside = [{**o, "role": "not_an_opening"} for o in ports if id(o) in aside_ids]
+        rest = [dict(o) for o in ops if o.get("role") not in ("inlet", "outlet")]
+        for k, o in enumerate([*aside, *rest], start=n + 1):
+            o["id"] = k
+        facts["openings"] = [*new, *aside, *rest]
+        facts.setdefault("notes", []).append(
+            f"its faces read as a body, but its inside-space map finds a way through it: the {n_mouths} mouths of that "
+            f"way are proposed as its openings, for you to confirm ({THROUGH_GUESS_RULE})"
+            + (f"; {len(aside)} flat end(s) of metal or blind hole(s) are proposed as not openings" if aside else ""))
+    except Exception as exc:  # noqa: BLE001 - the openings as read stand
+        logger.warning("geometry check: the map's mouths could not be proposed (%s: %s)", type(exc).__name__,
+                       str(exc)[:200])
 
 
 def skin_holes(skin: Path, facts: dict | None = None) -> list[dict]:
@@ -1442,6 +1934,25 @@ def skin_holes(skin: Path, facts: dict | None = None) -> list[dict]:
         mesh = surface(tris)
         found = find_holes(mesh=mesh) if mesh is not None else []
         holes = [h.as_dict() for h in found]
+        if facts is not None and mesh is not None:
+            # FLOW-9: how many mouths the passage a hole opens has (the map is read once per surface): a mouth of
+            # a way through the part (two mouths or more) is what a part read as a body proposes when asked
+            pockets = getattr(inside_map(mesh), "pockets", None) or []
+            for h, d in zip(found, holes):
+                if d.get("passage", True) and 0 <= int(h.pocket) < len(pockets):
+                    d["passage_mouths"] = len(pockets[int(h.pocket)].mouths)
+        if facts is not None and int(facts.get("solids") or 0) >= 1:
+            # INS-22: A GAP IN A CAD SOLID'S TESSELLATION IS NO OPENING. The B-rep closes the solid, so an open
+            # rim of its skin is where OpenCASCADE left a face bare (a sliver it gives "null triangulation")
+            # or faces meet unwelded - never a hole in the part. Read as a mouth it was proposed as an
+            # opening 0.34 mm across, its centre 60 mm off the part (a sliver loop's centroid), and no
+            # staging could match it (batch 4, a nozzle). A CAD part's openings are its faces' loops.
+            gaps = [h for h in holes if h.get("kind") == "rim"]
+            if gaps:
+                holes = [h for h in holes if h.get("kind") != "rim"]
+                facts.setdefault("notes", []).append(
+                    f"{len(gaps)} gap(s) in the drawn skin of this solid are where its tessellation left a face "
+                    f"bare, not holes in the part, and are not proposed as openings ({TESSELLATION_GAP_RULE})")
         if facts is not None:
             imap = inside_map(mesh) if mesh is not None else None
             facts["inside"] = imap.facts() if imap is not None else {"rule": "INS-1", "mapped": False}
@@ -1453,9 +1964,13 @@ def skin_holes(skin: Path, facts: dict | None = None) -> list[dict]:
                     # tessellation's faces meet unwelded, not gaps in the part
                     health["open_edges_not_openings"] = 0
                     health["from"] = "cad solids"
+                    if (facts.get("joined_solids") or {}).get("joined"):
+                        # INS-11: closed solids that touch face to face are one body, never loose pieces
+                        health["pieces"] = 1
                 facts["surface"] = health
             if imap is not None:
                 vet_by_map(facts, imap)
+                flat_holes_by_map(facts, holes, imap)
         return holes
     except Exception as exc:  # noqa: BLE001 - a click aid, never a reason to fail the check
         logger.warning("geometry check: the skin's holes could not be read (%s: %s)", type(exc).__name__, exc)
@@ -1506,6 +2021,18 @@ def _scout_triangles(local_path: Path, work: Path, interp_ref, ref,
             # the extracted openings bound the fluid by construction; the skin's own passages
             # (several parts' skins together) say nothing about them
             facts = hold_openings_to_the_staging(facts, local_path, skin, scale)
+            # INS-23: a triangle part's skin sewn into a solid is read for a perforated plate or a grille as a
+            # CAD part's faces are (after the vetting, which holds the hole-by-hole openings to the staging)
+            try:
+                from meshpipeline.cad.perforated import solid_from_triangles
+                from meshpipeline.cad.scout_mesh import read_triangles
+
+                sewn = solid_from_triangles(read_triangles(Path(skin)))
+            except Exception as exc:  # noqa: BLE001 - the reading as it stands
+                logger.warning("geometry check: the skin could not be sewn (%s: %s)", type(exc).__name__, str(exc)[:200])
+                sewn = None
+            if sewn is not None:
+                perforated_openings(facts, sewn)
     settle_flow_kind(facts)
     return facts, skin
 
@@ -1822,13 +2349,17 @@ def _name_after_wait(*, session_id: str, owner_id: str, purpose_text: str, inter
         from meshpipeline.cad.fea_measure import FACT_KEY
 
         facts[FACT_KEY] = fea_measurements(stored, facts, interpretation, early=early, owner_id=owner_id)
+        # NOTE-17: the faces a click on the settled stage can pick
+        keep_face_map(session_id, stored, facts, interpretation)
         # PLAN-fea-22: A CAD PART'S MESH IS SIZED once the stage is shown (the size choice lands on it after)
         from meshpipeline.application.fea_check import PLAN_FACT_KEY
         sizing = ""
         if (facts[FACT_KEY].get("measured") and facts[FACT_KEY].get("basis") == "cad"
                 and not fea_blocker(facts)):
             sizing = uuid.uuid4().hex
-            facts[PLAN_FACT_KEY] = {"sizing": True, "token": sizing}
+            # TIME-11: the marker carries its own end - every reader settles it past that (fea_check.sizing_now)
+            facts[PLAN_FACT_KEY] = {"sizing": True, "token": sizing, "since": round(time.time(), 1),
+                                    "until": round(time.time() + sizing_deadline_s(), 1)}
         # SHSTAGE-1: SHELL OR SOLID, when the user's words say it: the word table, the model only for a
         # paraphrase (checked against the allowed values); the stage opens on it and never overrides it
         from meshpipeline.application import mesh_as
@@ -1881,7 +2412,9 @@ def _name_after_wait(*, session_id: str, owner_id: str, purpose_text: str, inter
     # NOTE-5 ON THE FLOW ROUTE: a surface of several named parts (or a CAD file of several solids) keeps its parts
     # for the checklist before approval, as the FEA route's measurement does
     _keep_flow_parts(session_id, stored, facts, interpretation)
-    proposal = _proposal(facts, vision, words=purpose_text)
+    # NOTE-17: the faces a click on the settled stage can pick
+    keep_face_map(session_id, stored, facts, interpretation)
+    proposal =_proposal(facts, vision, words=purpose_text)
     # THE FLOW KIND THE INTAKE READS (facts["flow_kind"]): now with the user's words and the pictures - and
     # what the part is (facts["understanding"]), the same the stage shows
     stamp_flow_kind(facts, proposal["flow_kind"])
@@ -1923,6 +2456,14 @@ def naming_task_limits(session_id: str) -> tuple[int, int]:
     return soft + extra, hard + extra
 
 
+def sizing_deadline_s() -> float:
+    """TIME-11: how long after its marker is written a sizing can still store its own end: the sizing's clock, the
+    margin the task keeps for storing it, and the time box's own margin (STALE_MARGIN_S). Past it, every reader
+    settles a marker still saying "sizing" as stopped by its clock (application/fea_check.sizing_now)."""
+    from meshpipeline.engines.fea_plan_options import BUDGET_S
+    return float(BUDGET_S + SIZING_MARGIN_S + STALE_MARGIN_S)
+
+
 def size_fea_plan(session_id: str, stored: dict, interpretation: dict | None, *, token: str,
                   started: float) -> dict:
     """PLAN-fea-22: the size choice for the FEA part just shown (engines/fea_plan_options), planned as the run
@@ -1948,10 +2489,15 @@ def size_fea_plan(session_id: str, stored: dict, interpretation: dict | None, *,
                 if canonical.kind is GeometryKind.cad:
                     prepared, _note = _prepared_coordinates(canonical.path, interp_ref, ref)
                     kept = work / PO.PLANS_FILE
+                    told: dict = {}
                     options = PO.bounded(canonical.path, to_metres=float(prepared.to_metres), budget_s=budget,
-                                         plans_out=kept)
-                    got = {"sized": True, **options} if options else \
-                        {"sized": False, "why": "The mesh could not be sized in time before it runs"}
+                                         plans_out=kept, told=told)
+                    if options:
+                        got = {"sized": True, **options}
+                    elif told.get("out_of_time"):
+                        # TIME-11: stopped by its clock - said so, in minutes
+                        from meshpipeline.application.fea_check import out_of_time_words
+                        got = {"sized": False, "why": out_of_time_words(budget), "stopped": "clock"}
                     if options and kept.exists():
                         # PLANNED ONCE: the plans kept for the run (it reuses them when made for its staged solid)
                         from meshpipeline.contracts.object_storage import get_object_store
@@ -2172,6 +2718,49 @@ def _fea_measure_cad(path: Path, interp_ref, ref):
         if len(names) == len(surface.names):
             surface.names = list(names)
     return shape, record, surface
+
+
+def keep_face_map(session_id: str, stored: dict, facts: dict, interpretation: dict | None) -> None:
+    """NOTE-17: THE FACE MAP of every upload (cad/face_map), kept beside the check as faces.npz so a click on the
+    settled stage can name the face under it (application/face_pick): a CAD file's faces as the FEA deck numbers
+    them (Face_k, Part_k_Face_j), a triangle file's smooth regions (Region_k), in the skin's coordinates. Bounded:
+    a part over cad/face_map.MAX_TRIANGLES keeps none. Never fails the naming."""
+    started = time.time()
+    try:
+        from meshpipeline.application import face_pick
+        from meshpipeline.cad import face_map as FM
+        from meshpipeline.cad.ingest import canonicalise
+        from meshpipeline.contracts.geometry_source import GeometryInterpretationRef, GeometrySourceRef
+        from meshpipeline.contracts.intake_formats import GeometryKind
+
+        if not session_id or not isinstance(stored.get("source"), dict):
+            return
+        ref = GeometrySourceRef.from_payload(stored["source"])
+        scale = float(facts.get("scale_to_m") or 0.001)
+        with tempfile.TemporaryDirectory(prefix="face_map_") as tmp:
+            work = Path(tmp)
+            fetched = _fetch(ref, work)
+            _too_big(fetched)
+            canonical = canonicalise(fetched, work, stem="geometry", ecxml_form="placed")
+            if canonical.kind is GeometryKind.cad:
+                from meshpipeline.cad.normalise import occ_scale_transform
+                from meshpipeline.cad.scout import read_cad
+
+                interp_ref = GeometryInterpretationRef.from_payload(interpretation) if interpretation else None
+                prepared, _note = _prepared_coordinates(canonical.path, interp_ref, ref)
+                mm_per_unit = 1000.0 * float(occ_scale_transform(prepared).ScaleFactor())
+                fm = FM.from_cad(read_cad(canonical.path), mm_per_unit=mm_per_unit, scale_to_m=scale)
+            else:
+                from meshpipeline.cad.scout_mesh import read_triangles
+
+                fm = FM.from_triangles(read_triangles(canonical.path) * scale * 1000.0, scale_to_m=scale)
+        kept = face_pick.keep(session_id, fm)
+        if kept is not None:
+            kept["seconds"] = round(time.time() - started, 2)
+            facts[face_pick.FACT_KEY] = kept
+    except Exception as exc:  # noqa: BLE001 - no face pick, never a failed naming
+        logger.info("geometry naming: no face map kept (%s: %s)", type(exc).__name__, str(exc)[:200])
+    logger.info("geometry naming: face map in %.1fs", time.time() - started)
 
 
 def _keep_flow_parts(session_id: str, stored: dict, facts: dict, interpretation: dict | None) -> None:
@@ -3055,6 +3644,13 @@ def _proposal(facts: dict, vision: dict | None, words: str = "") -> dict:
         if isinstance(facts.get("surface"), dict):
             proposal["surface"] = dict(facts["surface"])
         proposal["flow_question"] = flow_question(facts["inside"], proposal["openings"], facts.get("surface"))
+    # A PERFORATED PLATE OR A GRILLE (INS-23): its sides (or one lid over it) are proposed as its openings, and the
+    # stage asks the user to confirm it - "No, each hole is its own passage" brings back the openings as read before
+    perf: dict = facts["perforated"] if isinstance(facts.get("perforated"), dict) else {}
+    if perf.get("proposed"):
+        proposal["perforated"] = {"rule": PERFORATED_RULE, "kind": perf.get("kind"),
+                                  "question": perforated_question(perf), "answers": list(PERFORATED_ANSWERS),
+                                  "holes_openings": [dict(o) for o in perf.get("holes_openings") or []]}
     # THE LEAKS (INS-8): the openings above assume them closed; the stage proposes closing every one
     # up to the size proposed here, a switch the user can turn off or a size they can change
     if isinstance(facts.get("leaks"), dict) and facts["leaks"].get("found"):

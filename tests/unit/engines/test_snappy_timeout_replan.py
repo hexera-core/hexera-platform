@@ -563,3 +563,36 @@ def test_a_pass_its_guard_stops_never_re_plans_the_gap_ceiling(internal, monkeyp
     _ws, (ok, _value, _outcome), _pub = internal.go()
     assert ok is False and internal.runs == [1]
     assert len(calls) == 1 and calls[0][1] is None, calls
+
+
+def test_a_plan_that_names_no_budget_is_braked_against_its_first_pass_budget_and_learns_its_wall(
+        external, monkeypatch):
+    """RUN-8 on the RM5 surge flap: the rules plan names no budget (max_cells None), and every re-plan's
+    record carried the budget the last stop had just cut (2.9x of 4 M, 5.2x of 2 M, 4.5x of 1 M). The
+    pass after a stop on the with-layers count is measured against the first pass's budget and priced
+    on the wall the stopped pass measured."""
+    import meshpipeline.engines.snappy.snappy_runner as R
+    from meshpipeline.engines import size_brake as SB
+    seen: list[dict] = []
+    stub = R.render_snappy_case
+
+    def _render(workspace, *, strategy, **k):
+        seen.append(dict(strategy))
+        out = stub(workspace, strategy=strategy, **k)
+        (Path(workspace) / SB.PLAN_CELLS_FILE).write_text(json.dumps(
+            {"plan_cells": int(strategy.get("_plan_cells") or strategy.get("max_cells")),
+             "wall_faces_est": 150_000, "layers_est": 17}))
+        return out
+
+    monkeypatch.setattr(R, "render_snappy_case", _render)
+    _same_plan_every_time(monkeypatch, {"approach": "rules plan", "max_cells": None, "n_layers": 5}, [])
+    external.first = {"rc": -1, "timed_out": False,
+                      "oversize": {"stage": "with layers", "cells": 11_649_400, "castellated": 3_124_294,
+                                   "budget": 4_000_000, "margin": 2.0, "ratio": 2.91}}
+    ws, (ok, _value, _outcome), _pub = external.go()
+    assert ok is True and external.runs == [1, 2]
+    first, second = seen[0], seen[1]
+    assert second["_plan_cells"] == first["_plan_cells"] == first["max_cells"]
+    assert second["max_cells"] < first["max_cells"]
+    k = second["_wall_face_factor"]
+    assert abs(k - (11_649_400 - 3_124_294) / 17 / 150_000) < 1e-6

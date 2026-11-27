@@ -736,10 +736,10 @@ INVENTORY: list[Group] = [
 
     Group("Repeatability", note="INTERNAL. Same clean file in, same result out (engines/determinism.py, contracts/decision_cache.py). Every native run is stamped with what it ran under (reproducibility.json beside the mesh); every AI decision is keyed by what the model was shown.", vars=[
         EnvVar("MESH_DETERMINISTIC", "true", kind="bool", exposure="internal", help="pin native threads, snappy's MPI ranks and Python's hash order; off = the host decides, as before"),
-        EnvVar("MESH_THREADS", "8", kind="int", exposure="internal", help="OpenMP/BLAS/VTK threads of every native run (the Cloud Run mesh job's vCPUs), never the host's core count"),
+        EnvVar("MESH_THREADS", "8", kind="int", exposure="internal", help="OpenMP/BLAS/VTK threads of every native run (the Cloud Run mesh job's vCPUs), never the host's core count; a container with a bigger CPU quota (a mesh VM) uses its quota instead, at most 32"),
         EnvVar("MESH_GMSH_THREADS", "", kind="int", exposure="internal", help="an FEA solid's gmsh threads (the HXT volume fill, the optimiser, the curving); blank = every core the job has (production: the fill may differ slightly run to run, MESH-25). 1 = one thread, the same mesh to the byte: tests and sweep tools only. Every other gmsh step is on one thread whatever this says"),
-        EnvVar("MESH_CFMESH_THREADS", "", kind="int", exposure="internal", help="cfMesh's OpenMP threads; blank = MESH_THREADS. 1 = strictly serial, the only bit-repeatable cfMesh, at several times the run time"),
-        EnvVar("MESH_SNAPPY_RANKS", "", kind="int", exposure="internal", help="snappyHexMesh MPI ranks; blank = the job's CPU quota (at most 12), else MESH_THREADS; memory may still lower it (recorded in the stamp)"),
+        EnvVar("MESH_CFMESH_THREADS", "", kind="int", exposure="internal", help="cfMesh's OpenMP threads; blank = the machine's (MESH_THREADS, or a mesh VM's CPU quota, at most 32). 1 = strictly serial, the only bit-repeatable cfMesh, at several times the run time"),
+        EnvVar("MESH_SNAPPY_RANKS", "", kind="int", exposure="internal", help="snappyHexMesh MPI ranks; blank = the job's CPU quota (at most 64), else MESH_THREADS; memory may still lower it (recorded in the stamp)"),
         EnvVar("AI_DECISION_CACHE", "reuse", exposure="internal", help="off | record | reuse: reuse answers a model round asked before (same step, model, prompt hash, inputs, owner) from its record"),
     ]),
 
@@ -792,6 +792,7 @@ INVENTORY: list[Group] = [
         EnvVar("GOOGLE_APPLICATION_CREDENTIALS", "", kind="path", exposure="external", consumer="app", help="Compose mounts GOOGLE_ADC_FILE here and points google-auth at it"),
         EnvVar("PROMETHEUS_MULTIPROC_DIR", "", kind="path", exposure="external", consumer="app", help="prometheus_client's own variable; set by the worker entrypoint"),
         EnvVar("ALEMBIC_CONFIG", "", kind="path", exposure="external", consumer="app", help="alembic's own variable; the migration wrapper honours it when set"),
+        EnvVar("HEXERA_SHELL_RUN_CAP", "", kind="float", exposure="external", consumer="app", help="set by the FEA driver / the surface run for one shell or surface run (engines/gmsh/shell_adapter.py run_following), never in .env: the most that run can be given, in seconds since the epoch; a shell mesh priced past its usual limit is given its price up to this (SHMESH-21e). Unset = no cap but the price"),
         EnvVar("HEXERA_SHELL_RUN_END", "", kind="float", exposure="external", consumer="app", help="set by the FEA driver for one shell-mesh run (engines/fea_driver.py shell_pass), never in .env: when that run is stopped, in seconds since the epoch; the shell mesh starts no pass that cannot finish before it (SHMESH-31g). Unset = the shell mesh's own limit only"),
     ]),
     Group("Inference overrides", note="Two structured settings, each one declared name. They replace the MODEL_PRICE_<PROVIDER>_<MODEL> and MODEL_BUDGET_<DOMAIN> namespaces, where the variable NAME was built from provider and model data: so the supported surface was unlistable and a typo was indistinguishable from an unsupported setting.", vars=[

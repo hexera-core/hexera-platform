@@ -35,6 +35,9 @@ CARRY_FILES = (
     # the CFD wrap rung (pipeline/cfd_wrap, cad/surface_wrap): the surface as drawn beside its
     # wrap, so a later attempt on the rung wraps the drawn surface again, never the wrap
     "input.unwrapped.stl", "cfd_wrap_report.json",
+    # LAD-cfd-8: the levers a refused attempt leaves its successor - the ports castellation sealed
+    # (engines/snappy/drivers) and the refused gate's facts (pipeline/engine_fallback.GATE_FACTS_FILE)
+    ".sealed_ports.json", "gate_facts.json",
 )
 
 
@@ -163,7 +166,8 @@ def _context_files(workspace: Path, state, source_path: str) -> tuple[str, str]:
                    "reference_length_m": state.get("reference_length_m"),
                    "flow_axis": state.get("flow_axis")},
         input_kind=str(state.get("input_kind") or ""),
-        user_notes=list(state.get("user_notes") or []),
+        # STD-6: the team's saved design intent first, then the run's own notes (user_notes.txt, the snappy planner's)
+        user_notes=list(_guidance_notes(state)),
         leak_closing=state.get("leak_closing") or None,
     )
 
@@ -185,11 +189,18 @@ def _opening(workspace: Path, state, *, engine: str, source_path: str) -> list:
     return messages
 
 
+def _guidance_notes(state) -> list:
+    """The notes the builder's steps read: the run's own, after the team's saved design intent (STD-6,
+    engines/meshing_standard.guidance_notes); the run's notes as stored when the standard holds none."""
+    from meshpipeline.engines.meshing_standard import guidance_notes
+    return guidance_notes(state)
+
+
 def user_notes_note(workspace: Path, state) -> str:
     """THE USER'S OWN NOTES for the model-led builder (contracts/user_notes, NOTE-2): where the full
     text is, the notes themselves, and that submit_mesh answers each requirement. '' with none."""
     from meshpipeline.contracts import user_notes as un
-    block = un.prompt_block(state.get("user_notes") or [], consumer="builder_model")
+    block = un.prompt_block(_guidance_notes(state), consumer="builder_model")
     if not block:
         return ""
     # NOTE-13: the asks the rules decide over this attempt's mesh (its reading of the notes, CFDREQ-1): the model does

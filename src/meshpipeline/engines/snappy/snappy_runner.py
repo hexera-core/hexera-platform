@@ -88,6 +88,8 @@ logger = logging.getLogger(__name__)
 
 #: The wake's refinement boxes are named <_WAKE_BOX><tier> in the dictionary's geometry.
 _WAKE_BOX = "wakeTier"
+#: PLAN-cfd-7: the refinement box round the body (engines/wake_region.plan_near_body)
+_NEAR_BOX = "nearBody"
 #: The workspace record of the wake a pass authored (read into the manifest by finalize).
 WAKE_FACT = "wake_refinement.json"
 
@@ -522,7 +524,36 @@ def domain_from_strategy(analysis: dict, strategy: dict | None = None,
                          ruler_m: float | None = None,
                          ground: bool = False,
                          contact: GroundContact | None = None,
-                         floor: tuple[int, str] = DEFAULT_FLOOR) -> tuple[list, list]:
+                         floor: tuple[int, str] = DEFAULT_FLOOR,
+                         frontal_m2=None, blockage: dict | None = None) -> tuple[list, list]:
+    """The far-field box. `frontal_m2`: the body's projected areas along x, y, z (far_field.projected_areas) - with
+    it the box's cross-section is widened until the body blocks at most 3% of it (PLAN-cfd-6), the planned margins
+    kept as the minimum, the record put in `blockage`; None: the box as the margins give it."""
+    dmin, dmax, i_s, ref = _domain_box(analysis, strategy, symmetry, flow_axis, ruler_m, ground, contact, floor)
+    if frontal_m2 is not None:
+        from meshpipeline.engines.far_field import grow_for_blockage
+        fixed: set = set()
+        if symmetry and symmetry.get("slab"):
+            fixed |= {(int(symmetry["axis"]), "min"), (int(symmetry["axis"]), "max")}
+        elif symmetry:
+            fixed.add((int(symmetry["axis"]), str(symmetry["side"])))
+        if ground:
+            fixed.add((int(floor[0]), str(floor[1])))
+        try:
+            rec = grow_for_blockage(dmin, dmax, i_s, float(frontal_m2[i_s]), fixed=fixed, ruler_m=ref)
+        except (TypeError, ValueError, IndexError):
+            rec = None
+        if rec is not None:
+            logger.info("far field: widened %.4g m on each open side for blockage %.3g -> %.3g",
+                        rec["grown_m"], rec["blockage_before"], rec["blockage"])
+            if blockage is not None:
+                blockage.update(rec)
+    return dmin, dmax
+
+
+def _domain_box(analysis: dict, strategy, symmetry, flow_axis, ruler_m, ground, contact,
+                floor) -> tuple[list, list, int, float]:
+    """(domain_min, domain_max, the streamwise axis, the ruler the margins multiply) - the box the margins give."""
     bmin, bmax, L = analysis["bbox_min"], analysis["bbox_max"], analysis["L"]
     if ground and flow_axis and flow_axis.strip().lower()[-1:] == "xyz"[int(floor[0])]:
         raise ValueError(f"a ground plane lies across {'xyz'[int(floor[0])]}, so the flow cannot "
@@ -570,9 +601,10 @@ def domain_from_strategy(analysis: dict, strategy: dict | None = None,
                 dmax[axx] = symmetry["pos"]
         if ground:
             _lay_floor(dmin, bmin, contact, dmax=dmax, bmax=bmax, floor=floor)
-        return dmin, dmax
+        return dmin, dmax, i_s, float(ref)
 
     roles = axis_roles(analysis, symmetry)
+    i_s, ref = 0, float(L)
     if roles is None:
         dmin = [bmin[0] - up * L, bmin[1] - side * L, bmin[2] - vert * L]
         dmax = [bmax[0] + dn * L, bmax[1] + side * L, bmax[2] + vert * L]
@@ -614,7 +646,7 @@ def domain_from_strategy(analysis: dict, strategy: dict | None = None,
             dmax[ax] = symmetry["pos"]
     if ground:
         _lay_floor(dmin, bmin, contact, dmax=dmax, bmax=bmax, floor=floor)
-    return dmin, dmax
+    return dmin, dmax, i_s, float(ref)
 
 
 #: The background box's budget: total cells before refinement, and a per-axis sanity bound.
@@ -696,9 +728,11 @@ def castellated_estimate(*, area: float | None, divisions, base_cell: float, sur
 #: times (1 + layers x the share of it that touches the wall), the share read from the plan's own
 #: numbers: wall faces about area / wall cell^2, against castellated_estimate.
 def final_estimate(*, castellated: float | None, budget: int, area: float | None, wall_cell: float,
-                   n_layers: int) -> float | None:
+                   n_layers: int, face_factor: float = 1.0) -> float | None:
     """The cells the finished mesh comes to: the castellated mesh (castellated_estimate, held to
-    the budget snappyHexMesh stops refining at) and its layers. None when it cannot be estimated."""
+    the budget snappyHexMesh stops refining at) and its layers. None when it cannot be estimated.
+    `face_factor`: how many times area / wall cell^2 the wall's faces really are, when a stopped pass
+    of this case has measured it (size_brake.learned_face_factor); 1 before any pass has."""
     try:
         a = float(area)  # type: ignore[arg-type]
     except (TypeError, ValueError):
@@ -706,8 +740,13 @@ def final_estimate(*, castellated: float | None, budget: int, area: float | None
     if castellated is None or castellated <= 0 or not (a > 0.0) or wall_cell <= 0.0:
         return None
     built = min(float(castellated), float(budget))
-    wall_share = min(1.0, (a / wall_cell ** 2) / float(castellated))
+    wall_share = min(1.0, max(1.0, float(face_factor or 1.0)) * (a / wall_cell ** 2) / float(castellated))
     return built * (1.0 + max(0, int(n_layers)) * wall_share)
+
+
+#: snappyHexMesh's buffer of cells of each level between two levels (the dicts' nCellsBetweenLevels): the width
+#: of the feature band the wall's faces are priced with (engines/snappy/wall_price, RUN-12).
+NCELLS_BETWEEN_LEVELS = 3
 
 
 #: The castellation budget is never cut under this share of the plan's: snappyHexMesh stops refining
@@ -848,6 +887,19 @@ def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analy
             _ask, base_actual, floor=floor, level=smax, flevel=flevel, regions=surface_regions or [],
             part_levels=bool(part_sizes and (part_sizes.get("reading") or {}).get("status") == "used"))
         wake = _user_wake(_ask, wake, wall_cell=base_actual / 2 ** smax)
+    _wake_level = smax
+    if _ask is not None:
+        # CFDREQ-17: in wall-function mode the wall's cells and the first layer are chosen together - the wall is
+        # coarsened (never past the sealing floor, nor under 100 cells along the body) until the y+ 50 first layer
+        # fits under its cells; the wake keeps the wall's planned level
+        from meshpipeline.engines import cfd_requirements as _CRw
+        _lv_wf = _CRw.wall_function_level(_ask, base_actual, level=smax, floor=floor)
+        if _lv_wf < smax:
+            logger.info("render_snappy_case: wall level %d -> %d so the wall-function first layer fits (%s)",
+                        smax, _lv_wf, _ask.wall_level_note)
+            smax = _lv_wf
+            smin = min(smin, smax)
+            flevel = max(flevel, smax)
     if deficit:
         logger.info("render_snappy_case: clamp deficit=%d → levels bumped (base_assumed=%.4g "
                     "base_actual=%.4g surf=%d feat=%d) to hold absolute wall resolution",
@@ -985,6 +1037,18 @@ def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analy
         _band = PL.BAND_CELLS * float(base_actual) / 2 ** int(_plevel)
         _part_geom += f" {_pf}.stl {{ type triSurfaceMesh; name {_pf}; }}"
         _part_refine += f" {_pf} {{ mode distance; levels (({_band:.6g} {int(_plevel)})); }}"
+    # CFDREQ-34: a size typed with faces picked on the body - each picked place's own surface refines the cells
+    # within a few of its cells (a distance refinement: never a patch, the body's layers stay as planned)
+    _picked_lv: list[int] = []
+    if _ask is not None:
+        from meshpipeline.engines import cfd_requirements as _CRp
+        # the wall's own cell is the near band's (CFDREQ-36 prices the picked face against the wall as built)
+        for _pk in _CRp.snappy_picked(_ask, ws, base_m=base_actual, wall_level=int(max(smax, near_band_level)),
+                                      hard_max=_HARD_MAX_LEVEL, box=(analysis["bbox_min"], analysis["bbox_max"]),
+                                      layers=max([n_layers, *layer_counts.values()])):
+            _part_geom += f" {_pk['file']} {{ type triSurfaceMesh; name {_pk['name']}; }}"
+            _part_refine += f" {_pk['name']} {{ mode distance; levels (({_pk['distance_m']:.6g} {_pk['level']})); }}"
+            _picked_lv.append(int(_pk["level"]))
     # ONE ENTRY PER REGION, by the patch's real name. snappyHexMesh names a region patch after the
     # region itself, not <surface>_<region>: a pattern built on the surface name matches nothing,
     # and OpenFOAM says so in the log and then adds no layers at all - a wall-resolved case would
@@ -997,7 +1061,7 @@ def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analy
                    else _n_for(surface_name) > 0)
     # minVol from the mesh's own finest wall cell (layer_min_vol): the feature/near-band level
     _finest = (min(ext[i] / max(div[i], 1) for i in range(3))
-               / (2 ** max(smax, flevel, near_band_level)))
+               / (2 ** max(smax, flevel, near_band_level, *_picked_lv)))
     _min_vol = layer_min_vol(_finest, n_layers=max([n_layers, *layer_counts.values()]),
                              min_thickness_rel=_min_thick)
     # THE WAKE (engines/wake_region.py). Graded boxes behind the body, along the flow, each one
@@ -1010,7 +1074,7 @@ def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analy
     if wake is not None:
         _wake = plan_wake(body_min=analysis["bbox_min"], body_max=analysis["bbox_max"],
                           domain_min=domain_min, domain_max=domain_max,
-                          flow_axis=wake.flow_axis, base_cell=base_actual, surface_level=smax,
+                          flow_axis=wake.flow_axis, base_cell=base_actual, surface_level=_wake_level,
                           budget_cells=max_cells, knobs=wake.knobs, ruler_m=wake.ruler_m,
                           grounded=bool(ground), floor=ground_floor,
                           # what the body itself costs, so the wake never starves the wall's
@@ -1020,6 +1084,29 @@ def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analy
                               base_cell=base_actual, surface_level=smax,
                               near=(b0d, near_band_level), far=(b1d, max(1, smin - 1))))
         logger.info("render_snappy_case: %s", _wake.summary())
+    # PLAN-cfd-7: BESIDE THE BODY, a box at 50 cells per wake length; it and a protected near wake past the wake's
+    # share are paid for - the budget raised by what they cost, within one job's limit, never past a count of the user's
+    _near = None
+    _near_geom = _near_refine = ""
+    if _wake is not None and _wake.scale_m > 0:
+        from meshpipeline.engines.wake_region import plan_near_body
+        _near = plan_near_body(body_min=analysis["bbox_min"], body_max=analysis["bbox_max"], domain_min=domain_min,
+                               domain_max=domain_max, scale_m=_wake.scale_m, base_cell=base_actual,
+                               surface_level=_wake_level)
+        if _near is not None:
+            _near_geom = f" {_NEAR_BOX} {{ type searchableBox; min {vf(_near.box_min)}; max {vf(_near.box_max)}; }}"
+            _near_refine = f" {_NEAR_BOX} {{ mode inside; levels ((1e15 {_near.level})); }}"
+            logger.info("render_snappy_case: near-body box at level %d (cells %.3g mm, about %.2g M)",
+                        _near.level, _near.cell_m * 1e3, _near.cells / 1e6)
+        _extra = (_wake.raised if _wake.near else 0.0) + (_near.cells if _near is not None else 0.0)
+        if _extra > 0 and not (_ask is not None and _ask.user_budget()):
+            import meshpipeline.settings.policy as _pol_w
+            _lim = int(strategy.get("_cell_limit") or _pol_w.CELL_HARD_LIMIT)
+            _was_cells = max_cells
+            max_cells = int(min(float(_lim), float(max_cells) + _extra))
+            if max_cells > _was_cells:
+                logger.info("render_snappy_case: cell budget %d -> %d for the near wake and the near-body box",
+                            _was_cells, max_cells)
     _wake_tiers = list(_wake.tiers) if _wake is not None else []
     _wake_geom = "".join(
         f" {_WAKE_BOX}{k} {{ type searchableBox; min {vf(t.box_min)}; max {vf(t.box_max)}; }}"
@@ -1062,13 +1149,59 @@ def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analy
     # the size brake's margin gets a castellation budget that leaves room for them - decided here,
     # before the mesher runs, instead of stopped by the brake after hours of it
     from meshpipeline.engines.size_brake import SIZE_BRAKE_MARGIN
+    _cast_est = castellated_estimate(
+        area=analysis.get("surface_area"), divisions=div, base_cell=base_actual,
+        surface_level=smax, near=(b0d, near_band_level), far=(b1d, max(1, smin - 1)))
+    _n_lay_est = max([n_layers, *layer_counts.values()]) if _any_layers else 0
+    # the wall's faces as a stopped pass of this case measured them (RUN-8, size_brake.learned_face_factor) - and,
+    # before any pass has, as the case will refine them (RUN-12): the area at the surface level plus the feature
+    # edges' band at the feature level (engines/snappy/wall_price). The learned count, when there is one, decides
+    _face_learned = max(1.0, float(strategy.get("_wall_face_factor") or 1.0))
+    _face_priced, _feat_len = 1.0, 0.0
+    if _face_learned <= 1.0 and _n_lay_est > 0:
+        from meshpipeline.engines.snappy import wall_price as _wp
+        _face_priced, _feat_len = _wp.priced_face_factor(
+            ws / "constant" / "triSurface" / f"{surface_name}.stl", area=analysis.get("surface_area"),
+            wall_cell=base_actual / (2 ** smax), surface_level=smax, feature_level=flevel,
+            included_angle=_wp.included_angle_of(ws), n_between=NCELLS_BETWEEN_LEVELS)
+    _face_k = max(_face_learned, _face_priced)
     _final = final_estimate(
-        castellated=castellated_estimate(
-            area=analysis.get("surface_area"), divisions=div, base_cell=base_actual,
-            surface_level=smax, near=(b0d, near_band_level), far=(b1d, max(1, smin - 1))),
+        castellated=_cast_est,
         budget=max_cells, area=analysis.get("surface_area"), wall_cell=base_actual / (2 ** smax),
-        n_layers=max([n_layers, *layer_counts.values()]) if _any_layers else 0)
+        n_layers=_n_lay_est, face_factor=_face_k)
+    # THE BODY'S OWN MESH, PRICED BEFORE IT RUNS (rulebook 75). The wall sits at the coarsest level
+    # that seals the body (`floor`, above) unless the plan asked finer: no budget makes it coarser. A
+    # budget under what that mesh comes to with its layers only cut snappy's refinement short of
+    # sealing it, and the size brake then threw the pass away and re-planned a smaller budget that
+    # could not change the body either: the RM5 surge flap (8.1 M cells with its layers at the floor
+    # against a 4 M plan) ran four passes of 20-107 minutes to the 4-hour cap and delivered nothing
+    # (the CFD board's failure hunt, 21 Nov). So a body at its floor is planned at what it needs -
+    # within one job's limit, else at the limit with its castellation kept whole (a sound mesh over
+    # it is delivered as it is, LAD-cfd-4) - and the brake measures the run against that need.
+    _size_note = ""
+    _need = final_estimate(castellated=_cast_est, budget=10 ** 12, area=analysis.get("surface_area"),
+                           wall_cell=base_actual / (2 ** smax), n_layers=_n_lay_est, face_factor=_face_k)
+    _at_floor = smax <= floor
+    # ... whatever else the notes ask: only a COUNT the user set stands against it (CFDREQ-3). Held to
+    # "no requirements at all", a wall-function or y+ request (RM5's "OK" mode) turned the pricing off
+    _their_count = _ask is not None and bool(_ask.user_budget())
+    if _need is not None and _at_floor and _need > SIZE_BRAKE_MARGIN * max_cells and not _their_count:
+        import meshpipeline.settings.policy as _pol_e
+        _hard = int(_pol_e.CELL_HARD_LIMIT)
+        _was = max_cells
+        max_cells = int(min(max(float(max_cells), _need), float(_hard)))
+        _final = final_estimate(castellated=_cast_est, budget=max_cells, area=analysis.get("surface_area"),
+                                wall_cell=base_actual / (2 ** smax), n_layers=_n_lay_est, face_factor=_face_k)
+        _size_note = (f"the body meshed at the coarsest wall cells that seal it ({base_actual / 2 ** smax * 1e3:.3g} mm) "
+                      f"comes to about {_need / 1e6:.3g} M cells with its layers, more than the {_was / 1e6:.3g} M "
+                      f"planned: it is meshed at that"
+                      + (f" (over the {_hard / 1e6:.3g} M one job builds: delivered as it is)" if _need > _hard else ""))
+        logger.warning("render_snappy_case: %s", _size_note)
     cast_cells = castellation_budget(max_cells, _final, margin=SIZE_BRAKE_MARGIN)
+    if _size_note and _cast_est:
+        # never cut short of the body's own castellated mesh: a cut stopped short of sealing it leaves
+        # the run no wall at all (RM5: 211,680 cells, no wall faces)
+        cast_cells = max(cast_cells, int(min(float(_cast_est), float(max_cells))))
     # the PLAN's budget, beside the case: what the size brake measures the run against
     from meshpipeline.engines.size_brake import PLAN_CELLS_FILE
     (ws / PLAN_CELLS_FILE).parent.mkdir(parents=True, exist_ok=True)
@@ -1087,11 +1220,25 @@ def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analy
     if _ask is not None and (_ask.user_budget() or getattr(_ask, "raised", False)):
         # CFDREQ-3: the budget the user's count or sizes set is the plan the brake measures against
         _plan_rec["plan_cells"] = int(_planned_cells)
-    if max_cells > _planned_cells:
+    if max_cells > _planned_cells and not (_size_note and _gap is None):
         _gap_cells = int(max_cells - _planned_cells)
         _plan_rec = {"plan_cells": _plan_rec["plan_cells"] + _gap_cells,
                      "planned_cells": _plan_rec["plan_cells"], "gap_cells": _gap_cells}
-    (ws / PLAN_CELLS_FILE).write_text(json.dumps(_plan_rec))
+    if _size_note and _need:
+        # the brake measures the run against what the body at its floor needs: it stops a run that
+        # runs away from its own plan, never one doing what the plan priced
+        _plan_rec = {**_plan_rec, "plan_cells": max(int(_plan_rec["plan_cells"]), int(_need)),
+                     "body_needs": int(_need)}
+    # what the plan priced the wall's layers on, so a pass the brake stops can be read against it
+    try:
+        _wf = float(analysis.get("surface_area") or 0.0) / (base_actual / (2 ** smax)) ** 2
+    except (TypeError, ValueError, ZeroDivisionError):
+        _wf = 0.0
+    if _wf > 0 and _n_lay_est > 0:
+        _plan_rec = {**_plan_rec, "wall_faces_est": int(_wf), "layers_est": int(_n_lay_est),
+                     **({"wall_face_factor": round(_face_k, 3)} if _face_k > 1.0 else {}),
+                     **({"wall_faces_priced": int(_wf * _face_priced), "feature_length_m": round(_feat_len, 3)}
+                        if _face_priced > 1.0 else {})}
     if cast_cells != max_cells and _final:
         logger.info("render_snappy_case: the finished mesh is estimated at %.3g cells with its layers, "
                     "%.1f times the %d budget - castellation budget %d", _final, _final / max_cells,
@@ -1100,11 +1247,11 @@ def render_snappy_case(workspace, *, surface_name: str, feature_file: str, analy
     _shm = (
         _HDR.format(cls="dictionary", obj="snappyHexMeshDict") + f"""
 castellatedMesh true; snap true; addLayers {'true' if _any_layers else 'false'};
-geometry {{ {surface_name}.stl {{ type triSurfaceMesh; name {surface_name};{_geo_regions} }}{_wake_geom}{_gap_geom}{_part_geom} }}
+geometry {{ {surface_name}.stl {{ type triSurfaceMesh; name {surface_name};{_geo_regions} }}{_wake_geom}{_near_geom}{_gap_geom}{_part_geom} }}
 castellatedMeshControls {{ maxLocalCells {cast_cells}; maxGlobalCells {cast_cells}; minRefinementCells 10;
-  maxLoadUnbalance 0.10; nCellsBetweenLevels 3; features ( {{ file "{feature_file}"; level {flevel}; }}{_contact_feature} );
+  maxLoadUnbalance 0.10; nCellsBetweenLevels {NCELLS_BETWEEN_LEVELS}; features ( {{ file "{feature_file}"; level {flevel}; }}{_contact_feature} );
   refinementSurfaces {{ {surface_name} {{ level ({smin} {smax});{_ref_regions} }} }} resolveFeatureAngle {ang:.0f};
-  refinementRegions {{ {surface_name} {{ mode distance; levels (({b0d:.6g} {near_band_level}) ({b1d:.6g} {max(1, smin - 1)})); }}{_wake_refine}{_gap_refine}{_part_refine} }}
+  refinementRegions {{ {surface_name} {{ mode distance; levels (({b0d:.6g} {near_band_level}) ({b1d:.6g} {max(1, smin - 1)})); }}{_wake_refine}{_near_refine}{_gap_refine}{_part_refine} }}
   locationInMesh {vf(loc)}; allowFreeStandingZoneFaces true;{_outside} }}
 snapControls {{ nSmoothPatch 3; tolerance 2.0; nSolveIter 50; nRelaxIter 8; nFeatureSnapIter 15;
   implicitFeatureSnap false; explicitFeatureSnap true; multiRegionFeatureSnap false; }}
@@ -1122,8 +1269,33 @@ mergeTolerance 1e-6; debug 0;
 """)
     if _ask is not None:
         from meshpipeline.engines import cfd_requirements as CR
-        _shm = CR.snappy_dict(_ask, _shm, wall_cell_m=base_actual / (2 ** smax))
+        # THE RESOLVED WALL'S STACK ROUND A BODY TOO (CFDREQ-9's bridge, rulebook 75): a y+ 1 first layer
+        # far thinner than the wall cells gets the layers that carry it out to them, as the internal case
+        # always did. Without it the plan's 5 layers of 0.034 mm under ~5 mm wall cells made a 0.25 mm
+        # stack whose last layer was 1/70 of the cell it met; snappyHexMesh threw the layers away on most
+        # of the wall (the CFD board: 13 resolved bodies with layers on 0-44% of the wall, y+ <= 1 on
+        # 0-9%; ahmed_variant_007 13%, a wind-tunnel juncture model 0%)
+        _body_cell = base_actual / (2 ** smax)
+        # CFDREQ-33 amended (rulebook 113): the stack in metres first; written on each face's own cells only on the
+        # attempt after that one's layer-stack refusal (gate_facts.relative_stack_next)
+        from meshpipeline.engines.gate_facts import relative_stack_next
+        _shm = CR.snappy_dict(_ask, _shm, wall_cell_m=_body_cell, relative_ok=True,  # CFDREQ-33
+                              relative_now=relative_stack_next(ws),
+                              bridge=_layer_bridge_room(ws / "constant" / "triSurface" / f"{surface_name}.stl",
+                                                        _body_cell, max_cells,
+                                                        narrowest_gap_m=(_gap.record().get("narrowest_m")
+                                                                         if _gap is not None and _gap.spots
+                                                                         else None)),
+                              band=True)
+        _band = (getattr(_ask, "fallback", None) or {}).get("band")
+        if _band and _band.get("cells"):
+            # CFDREQ-23: the laminar wall's near-wall band is cells the plan asks for on purpose - the brake
+            # measures the run against the plan with them
+            _plan_rec = {**_plan_rec, "plan_cells": int(_plan_rec["plan_cells"]) + int(_band["cells"]),
+                         "laminar_band_cells": int(_band["cells"])}
         _ask.write(ws)
+    # written once the requirements have priced their own cells (CFDREQ-23's band) into it
+    (ws / PLAN_CELLS_FILE).write_text(json.dumps(_plan_rec))
     (ws / "system" / "snappyHexMeshDict").write_text(_shm)
     # SYNTHETIC CLASS REGIONS ARE A MESHING DEVICE, NOT A DELIVERABLE. The layer policy splits
     # a monolithic wall into <wall>_thin / <wall>_razor so each class can carry its own layer
@@ -1182,7 +1354,10 @@ mergeTolerance 1e-6; debug 0;
     # manifest); a pass without one leaves no stale record behind
     _wr = ws / WAKE_FACT
     if _wake is not None:
-        out["wake"] = _wake.record()
+        _wrec = _wake.record()
+        if _near is not None:
+            _wrec["near_body"] = _near.record()
+        out["wake"] = _wrec
         out["wake_note"] = _wake.summary()
         _wr.write_text(json.dumps(out["wake"]))
     elif _wr.exists():
@@ -1191,6 +1366,8 @@ mergeTolerance 1e-6; debug 0;
         out["gap_plan"] = _gap.record()
         out["gap_note"] = _gap.words(base_actual / (2 ** smax), auto=True)
         _gap.write(ws)
+    if _size_note:
+        out["size_note"] = _size_note[0].upper() + _size_note[1:]
     if _part_lv["regions"] or _part_lv["refine"] or _part_lv["words"]:
         # PLAN-cfd-4: the parts the notes sized, and how (the driver says it and records it)
         out["part_levels"] = {"regions": {k: list(v) for k, v in _part_lv["regions"].items()},
@@ -1496,12 +1673,15 @@ def _wetted_area(tri, cap_stls) -> float | None:
 class _LayerBridge(Mapping):
     """CFDREQ-9's {"faces", "room"}, the faces read only when a bridge is asked for (the wetted test casts rays)."""
 
-    def __init__(self, area_of, layer_cell: float, room: float):
+    def __init__(self, area_of, layer_cell: float, room: float, stack_cap: float | None = None):
         self._area_of, self._cell, self._room, self._faces = area_of, float(layer_cell), float(room), None
+        self._cap = stack_cap
 
     def __getitem__(self, key):
         if key == "room":
             return self._room
+        if key == "stack_cap":
+            return self._cap
         if key == "faces":
             if self._faces is None:
                 self._faces = self._area_of() / (self._cell * self._cell)
@@ -1509,14 +1689,33 @@ class _LayerBridge(Mapping):
         raise KeyError(key)
 
     def __iter__(self):
-        return iter(("faces", "room"))
+        return iter(("faces", "room", "stack_cap"))
 
     def __len__(self) -> int:
-        return 2
+        return 3
+
+
+def _narrowest_planned_gap(ws: Path) -> float | None:
+    """The narrowest gap the case's gap plan found (engines/gap_sizing's record beside the case), or None."""
+    from meshpipeline.engines.gap_sizing import read_record
+    rec = read_record(ws) or {}
+    v = rec.get("narrowest_m")
+    return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0 else None
+
+
+def stack_cap(layer_cell: float, narrowest_gap_m: float | None) -> float:
+    """CFDREQ-9, THE STACK'S CEILING (rulebook 75): a resolved wall's stack no thicker than the cells it grows into,
+    nor than STACK_GAP_SHARE of the narrowest gap the plan found - past either, snappyHexMesh cuts the stack where the
+    surface curves or the gap is narrow and thickens the first layer to keep what is left."""
+    from meshpipeline.engines.cfd_requirements import STACK_GAP_SHARE
+    cap = float(layer_cell)
+    if narrowest_gap_m and narrowest_gap_m > 0:
+        cap = min(cap, STACK_GAP_SHARE * float(narrowest_gap_m))
+    return cap
 
 
 def _layer_bridge_room(wall_stl: Path, layer_cell: float, max_cells: int,
-                       cap_stls: list[Path] | None = None) -> Mapping | None:
+                       cap_stls: list[Path] | None = None, narrowest_gap_m: float | None = None) -> Mapping | None:
     """CFDREQ-9: what a first layer far thinner than the wall cells may spend on more layers - the WETTED wall's
     faces at `layer_cell` (its area over the cell's: the outer skin of a hollow part gets no cell, s_duct_004's whole
     skin read 2.5 times the 101,205 faces snappy made and held a y+ 1 ask at 15 layers) and half the pass's budget as
@@ -1531,7 +1730,8 @@ def _layer_bridge_room(wall_stl: Path, layer_cell: float, max_cells: int,
         def area() -> float:
             wet = _wetted_area(tri, cap_stls or [])
             return min(whole, wet) if wet else whole
-        return _LayerBridge(area, layer_cell, LAYER_BRIDGE_ROOM * float(max_cells))
+        return _LayerBridge(area, layer_cell, LAYER_BRIDGE_ROOM * float(max_cells),
+                            stack_cap(layer_cell, narrowest_gap_m))
     except Exception:  # noqa: BLE001 - no bridge is the plan's own layer count, never a lost pass
         logger.warning("render_internal_case: the wall's area was not read - the plan's layer count stands",
                        exc_info=True)
@@ -1668,6 +1868,27 @@ def render_internal_case(workspace, *, names: dict, features: dict, interior_poi
                  f"name {_dr['name']}; }} ")
         thin_refine += (f"{_dr['name']} {{ mode distance; "
                         f"levels (({float(_dr['distance_m']):.6g} {_lvl})); }} ")
+    # CFDREQ-34: a size typed with faces picked on the model - each picked place's own surface (picked_<n>.stl)
+    # refines the cells within a few of its cells; a distance refinement, so never a patch and the wall's layers stay
+    _picked: list[dict] = []
+    _layer_bridge = None
+    if _ask is not None:
+        from meshpipeline.engines import cfd_requirements as _CRp
+        # CFDREQ-9 / CFDREQ-36: the layer bridge snappy_dict sizes the y+ stack with below, read once - the picked
+        # face is priced with the stack the dict will write (the elbow: 16 layers, not the plan's 3)
+        _layer_bridge = _layer_bridge_room(ws / "constant" / "triSurface" / f"{names[wall_key]}.stl",
+                                           base_actual / (2 ** near_level), max_cells,
+                                           [ws / "constant" / "triSurface" / f"{n}.stl"
+                                            for k, n in names.items() if k != wall_key],
+                                           narrowest_gap_m=_narrowest_planned_gap(ws))
+        _stack = _CRp.snappy_layers_written(_ask, n_layers, wall_cell_m=base_actual / (2 ** near_level),
+                                            bridge=_layer_bridge, last_rel=last_rel)
+        # the wall's own cell is the near band's (CFDREQ-36 prices the picked face against the wall as built)
+        _picked = _CRp.snappy_picked(_ask, ws, base_m=base_actual, wall_level=int(max(smax, near_level)),
+                                     hard_max=_HARD_MAX_LEVEL, box=(bbox_min, bbox_max), layers=_stack)
+    for _pk in _picked:
+        geom += f"{_pk['name']} {{ type triSurfaceMesh; file \"{_pk['file']}\"; name {_pk['name']}; }} "
+        thin_refine += f"{_pk['name']} {{ mode distance; levels (({_pk['distance_m']:.6g} {_pk['level']})); }} "
     # a small port's rim must be feature-snapped at least as finely as its surface is
     # refined, or snapping re-opens the very cells the refinement just won
     feat_entries = "".join(
@@ -1701,7 +1922,7 @@ def render_internal_case(workspace, *, names: dict, features: dict, interior_poi
     # millimetres across has layer cells far below the tutorials' absolute 1e-13 m^3
     _top = max([smax, flevel, near_level, *port_lvls.values(),
                 *(min(_HARD_MAX_LEVEL, smin + int(r.get("level_bump", 1)))
-                  for r in [*_thin, *_dist])])
+                  for r in [*_thin, *_dist]), *(int(_pk["level"]) for _pk in _picked)])
     _min_vol = layer_min_vol(min(dext[i] / max(div[i], 1) for i in range(3)) / (2 ** _top),
                              n_layers=n_layers, min_thickness_rel=0.05)
     _shm = (
@@ -1731,13 +1952,33 @@ mergeTolerance 1e-6; debug 0;
         from meshpipeline.engines import cfd_requirements as CR
         # the cells the layers grow into: the near-wall band's, one level finer than the wall's, where there is one
         _layer_cell = base_actual / (2 ** near_level)
-        _shm = CR.snappy_dict(_ask, _shm, wall_cell_m=_layer_cell,
-                              bridge=_layer_bridge_room(ws / "constant" / "triSurface" / f"{wall}.stl",
-                                                        _layer_cell, max_cells,
-                                                        [ws / "constant" / "triSurface" / f"{n}.stl"
-                                                         for k, n in names.items() if k != wall_key]))
+        # the same bridge the picked face was priced with (CFDREQ-36: one source for the stack)
+        _shm = CR.snappy_dict(_ask, _shm, wall_cell_m=_layer_cell, bridge=_layer_bridge)
         _ask.write(ws)
     (ws / "system" / "snappyHexMeshDict").write_text(_shm)
+    # WHERE THE CELLS WILL GO (engines/snappy/cell_record, rulebook 75): every refinement this dict
+    # asks for, with its level and the rule behind it; the mesher's log says what each level cost
+    from meshpipeline.engines.snappy import cell_record as CRec
+
+    def _cell(lv: int) -> float:
+        return base_actual / (2 ** lv)
+    _plan = [CRec.entry("wall", smin, "cells across the bore (the plan's cells_across_diameter)",
+                        cell_m=_cell(smin)),
+             CRec.entry("seed bubble", smin, "INS-4", cell_m=_cell(smin)),
+             CRec.entry("feature edges", flevel, "feature edges (includedAngle 30)", cell_m=_cell(flevel))]
+    if near_dist > 0.0:
+        _plan.append(CRec.entry("near-wall band", near_level, "near-wall band (8 wall cells deep)",
+                                cell_m=_cell(near_level)))
+    for p in names:
+        if p != wall_key:
+            _lv = port_lvls.get(p, port_level)
+            _plan.append(CRec.entry(f"opening {names[p]}", _lv, "PLAN-cfd-2", cell_m=_cell(_lv)))
+    for _r in [*_thin, *_dist]:
+        _lv = min(_HARD_MAX_LEVEL, smin + int(_r.get("level_bump", 1)))
+        _thin_plate = "thinnest_m" in _r
+        _plan.append(CRec.entry("thin plates" if _thin_plate else "narrow passages", _lv,
+                                "thin-feature probe" if _thin_plate else "PLAN-cfd-1", cell_m=_cell(_lv)))
+    CRec.write_plan(ws, _plan, base_cell_m=base_actual, n_layers=n_layers, max_cells=max_cells)
     return {"divisions": div, "surface_level": [smin, smax], "feature_level": flevel,
             "near_band_m": round(near_dist, 6), "near_band_level": near_level,
             "location_in_mesh": [round(x, 9) for x in location], "max_cells": max_cells,

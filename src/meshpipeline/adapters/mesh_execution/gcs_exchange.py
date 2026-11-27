@@ -156,9 +156,12 @@ def upload_result(output_uri: str, workspace: str, result: dict) -> None:
             import logging
             logging.getLogger(__name__).warning("keeping the big files in the bucket failed; the "
                                                 "workspace goes home whole", exc_info=True)
+    import time
+
     from meshpipeline.contracts.mesh_execution import EXCHANGE_GZIP_LEVEL
     with tempfile.TemporaryDirectory(prefix="mesh_out_", dir=str(ws.parent)) as tmp:
         archive = pathlib.Path(tmp) / "output.tar.gz"
+        _t0 = time.monotonic()
         with tarfile.open(name=str(archive), mode="w:gz",
                           compresslevel=EXCHANGE_GZIP_LEVEL) as tf:
             # Same rule as the input side: children only, so no "." member is written. The local
@@ -166,9 +169,15 @@ def upload_result(output_uri: str, workspace: str, result: dict) -> None:
             # the run just as surely - one step later, after the mesh has already been paid for.
             for child in sorted(ws.iterdir()):
                 tf.add(str(child), arcname=child.name)
+        _t1 = time.monotonic()
         gcs.bucket(out_bucket).blob(out_key, chunk_size=RESULT_UPLOAD_CHUNK_BYTES) \
             .upload_from_filename(str(archive), content_type="application/gzip",
                                   timeout=RESULT_UPLOAD_TIMEOUT_S)
+        # THE WAY HOME, TIMED (engines/dispatch post_mesh_s is the step before): packing and sending
+        # the workspace are part of every run's minutes, and were not on any record
+        result["exchange_s"] = {"archive_s": round(_t1 - _t0, 1),
+                                "upload_s": round(time.monotonic() - _t1, 1),
+                                "archive_bytes": int(archive.stat().st_size)}
     from meshpipeline.artifact_keys import result_key_beside
     res_key = result_key_beside(out_key)
     gcs.bucket(out_bucket).blob(res_key).upload_from_string(

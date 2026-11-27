@@ -3,9 +3,12 @@
 # Boundaries: engine-neutral geometry on points and triangles; it knows no engine, no mesher and no gate.
 from __future__ import annotations
 
+import logging
 import math
 
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 #: After the ray cast, every point takes the SMALLEST radius found within this many times its
 #: own radius. A ray along the normal reads the gap in one direction only: on a wide flat duct
@@ -35,6 +38,28 @@ CHORD_MIN_FACING = 0.7
 #: away - a passage the mesh barely spans, which the resolution floor exists to refuse - also
 #: shares vertices with the point's triangles on so thin a passage, and must still be read.
 FOLD_REACH = 0.5
+#: THE CHORDS ARE PLANNED WORK, NEVER A SURFACE'S SIZE (TIME-7). A ray costs 1-8 ms in the OBB tree
+#: (engines/radius_chords), and the field cast one per wall point, plus one per face at a sharp edge on a single
+#: core: a self-intersecting fuel tank (thingi10k 96777, VMTK staging, run cfd3_ins16_20262775) sat 81 minutes
+#: in it. At most this many points are read by their own ray - an even share of them, one in every k by index -
+#: and the rest take the reading of their nearest read point, as a ray that reads nothing already did. A
+#: passage is read by every point along both of its walls, so it keeps its reading. 250,000 rays are at most
+#: about 4 minutes on 8 cores at 8 ms a ray.
+MAX_POINT_RAYS = 250_000
+#: ...and at most this many faces at sharp edges read along their own normal, on one core (about 3 minutes at
+#: 8 ms a ray), an even share of them too.
+MAX_SHARP_RAYS = 25_000
+#: In a sampled cast, the read points that vote on a reading: the point and its nearest read points, as a
+#: 1-ring of a regular triangulation (itself and six).
+RING_SAMPLED = 7
+
+
+def every_kth(n: int, cap: int) -> np.ndarray:
+    """An even share of range(n) of at most `cap` indices (all of them under the cap)."""
+    if n <= cap:
+        return np.arange(n)
+    k = -(-n // cap)
+    return np.arange(0, n, k)
 
 
 def local_radius(points: np.ndarray, faces: np.ndarray, interior_point, r_lo: float,
@@ -79,8 +104,10 @@ def local_radius(points: np.ndarray, faces: np.ndarray, interior_point, r_lo: fl
                          > 0).mean() > 0.5:
         n = -n
         fn = -fn
+    from meshpipeline.engines.radius_chords import tree_tolerance
     obb = vtk.vtkOBBTree()
     obb.SetDataSet(mesh)
+    obb.SetTolerance(tree_tolerance(pts))          # never VTK's absolute 0.01 (radius_chords)
     obb.BuildLocator()
     reach = 4.0 * r_hi
     hits = vtk.vtkPoints()
@@ -92,7 +119,13 @@ def local_radius(points: np.ndarray, faces: np.ndarray, interior_point, r_lo: fl
     # one ray per point along its inward normal, on every core the run may use
     # (engines/radius_chords: the same rays into the same tree, so the same readings as one core)
     from meshpipeline.engines.radius_chords import cast_all
-    first, r = cast_all(np.asarray(mesh.points, dtype=float), f, n, fn, ring, fold, eps, reach)
+    rays = every_kth(len(pts), MAX_POINT_RAYS)
+    if len(rays) < len(pts):
+        logger.info("radius field: %d of %d wall points read by their own ray (one in %d), the rest from the "
+                    "nearest read point - planned work, MAX_POINT_RAYS", len(rays), len(pts),
+                    -(-len(pts) // MAX_POINT_RAYS))
+    first, r = cast_all(np.asarray(mesh.points, dtype=float), f, n, fn, ring, fold, eps, reach,
+                        indices=(None if len(rays) == len(pts) else rays))
     # SHARP EDGES ARE READ ALONG EACH SIDE'S OWN NORMAL. A point on a sharp edge has an averaged
     # normal that points along neither face, and a SHORT narrow passage has no other points:
     # an orifice bore 9 mm long, a sharp throat, a step's lip carry vertices only on their two
@@ -119,7 +152,12 @@ def local_radius(points: np.ndarray, faces: np.ndarray, interior_point, r_lo: fl
         loc.BuildLocator()
         cp = [0.0, 0.0, 0.0]
         cid, sid, d2 = vtk.reference(0), vtk.reference(0), vtk.reference(0.0)
-        for t in np.flatnonzero(sharp[f].any(axis=1)):
+        at_sharp = np.flatnonzero(sharp[f].any(axis=1))
+        if len(at_sharp) > MAX_SHARP_RAYS:
+            logger.info("radius field: %d of %d faces at sharp edges read along their own normal - planned "
+                        "work, MAX_SHARP_RAYS", len(every_kth(len(at_sharp), MAX_SHARP_RAYS)), len(at_sharp))
+            at_sharp = at_sharp[every_kth(len(at_sharp), MAX_SHARP_RAYS)]
+        for t in at_sharp:
             hits.Reset()
             ids.Reset()
             if obb.IntersectWithLine(cent[t] - fn[t] * eps, cent[t] - fn[t] * reach, hits, ids) \
@@ -144,7 +182,24 @@ def local_radius(points: np.ndarray, faces: np.ndarray, interior_point, r_lo: fl
     # (46.6 mm under blade_row_passage_001's shroud, every neighbour 92 mm) goes; a narrow
     # passage, read by every point along both of its walls, stays. Before the borrow below, so
     # a lone reading cannot first hand itself to its unread neighbours.
-    r = _ring_median(r, ring)
+    if len(rays) < len(pts):
+        # a sampled cast: each read point is voted on by its RING_SAMPLED nearest read points, the ring of the
+        # points that were asked (an unasked neighbour read nothing because it was not asked, not because the
+        # passage is open there)
+        sub = np.asarray(rays, dtype=np.int64)
+        loc = vtk.vtkPointLocator()
+        loc.SetDataSet(pv.PolyData(pts[sub]))
+        loc.BuildLocator()
+        idl = vtk.vtkIdList()
+        near: list[frozenset] = []
+        for j in range(len(sub)):
+            loc.FindClosestNPoints(RING_SAMPLED, pts[sub[j]].tolist(), idl)
+            near.append(frozenset(int(idl.GetId(q)) for q in range(idl.GetNumberOfIds())))
+        rs = _ring_median(r[sub], near)
+        r = np.full(len(pts), np.nan)
+        r[sub] = rs
+    else:
+        r = _ring_median(r, ring)
     miss = np.isnan(r)
     if miss.all():
         return np.full(len(pts), float(r_lo))

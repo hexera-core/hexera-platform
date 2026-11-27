@@ -189,10 +189,10 @@ def test_a_car_body_surface_is_told_it_is_not_a_solid_with_the_way_on():
     # a STEP of faces with no solid entity, whose faces close (the clean check says so): read as the solid
     # they bound (MESH-1; the FEA staging makes the closed shells solids) - no stop
     ({"solids": 0, "source_format": "step", "validity": {"clean": True, "kind": "brep", "reasons": []}}, ""),
-    # a STEP of open shells
+    # a STEP of open shells, before its surface reading is made: it waits for it, with no way out (SURF-18)
     ({"solids": 0, "source_format": "step",
       "validity": {"clean": False, "kind": "brep", "reasons": [{"code": "open_shell", "severity": "error"}]}},
-     "surface"),
+     "surface_reading"),
     # three clean solids: an assembly, meshed - no stop (design 14)
     ({"solids": 3, "source_format": "step", "validity": {"clean": True, "kind": "brep", "reasons": []}}, ""),
     # three solids that pass into each other: interference between parts is a meshing choice - no stop
@@ -214,4 +214,4 @@ def test_a_car_body_surface_is_told_it_is_not_a_solid_with_the_way_on():
 ])
 def test_what_stops_version_1_is_read_the_same_for_every_format(facts, kind):
     blocked, got, way_out = fea_check.blocker(facts)
-    assert got == kind and bool(blocked) == bool(kind) and bool(way_out) == bool(kind)
+    assert got == kind and bool(blocked) == bool(kind) and bool(way_out) == bool(kind and kind != "surface_reading")

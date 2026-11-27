@@ -263,28 +263,69 @@ def _restaged(ws: Path, intake_patches) -> Surface | None:
     src = ws / "input.stl"
     if not src.exists() or not intake_patches:
         return None
+    # the same file and openings stage the same boundary: every attempt of a run (each engine) asks for it, and
+    # one staging is a minute or more (batch 7 abc 00145189: 225 s in the cfMesh attempt's gate, after 209 s in
+    # the snappy attempt's) - staged once per process, a failure included
+    import hashlib
+    key = (hashlib.sha1(src.read_bytes()).hexdigest(),
+           json.dumps(list(intake_patches), sort_keys=True, default=str), read_input_kind(ws))
+    if key in _RESTAGED:
+        return _RESTAGED[key]
     out = Path(tempfile.mkdtemp(prefix="cad_fidelity_"))
+    got: Surface | None = None
     try:
-        if read_stl(src).n > MAX_RESTAGE_TRIANGLES:
-            return None
-        rec = stage_internal_surface(src, out, intake_patches=list(intake_patches),
-                                     input_kind=read_input_kind(ws))
-        fb = Path(str(rec.get("fluid_boundary") or ""))
-        return read_stl(fb) if fb.exists() else None
+        if read_stl(src).n <= MAX_RESTAGE_TRIANGLES:
+            rec = stage_internal_surface(src, out, intake_patches=list(intake_patches),
+                                         input_kind=key[2])
+            fb = Path(str(rec.get("fluid_boundary") or ""))
+            got = read_stl(fb) if fb.exists() else None
     except Exception:  # noqa: BLE001 - the shared staging could not close it: say so, not guess
         logger.info("fidelity: the fluid boundary could not be staged for the check", exc_info=True)
-        return None
     finally:
         shutil.rmtree(out, ignore_errors=True)
+    if len(_RESTAGED) >= 4:
+        _RESTAGED.pop(next(iter(_RESTAGED)))
+    _RESTAGED[key] = got
+    return got
 
 
-def cad_reference(workspace, flow: str, intake_patches=None) -> tuple[Surface, str, bool]:
+#: _restaged's results this process, by (input.stl's digest, the openings, the input kind)
+_RESTAGED: dict[tuple[str, str, str], Surface | None] = {}
+
+
+#: VER-14: the rule a staged surface holding the wall's both sides is not taken as the fluid's own boundary
+BOTH_SIDES_RULE = "VER-14"
+
+
+def both_sides(s: Surface) -> bool:
+    """VER-14: whether a staged surface holds BOTH SIDES of the wall - the part's whole surface with
+    the openings' lids on - told by an edge three or more triangles share (at each lid's rim the bore,
+    the part's end face and the lid meet). The fluid's own boundary has none. Held to such a surface,
+    an internal mesh "misses" the outside of the wall it never meets: batch 7, cfMesh, abc 00188110 and
+    00189603 - "49% / 27% of your CAD surface is not reached" on meshes that miss 0.0% of the fluid's
+    boundary (199 cm2 of reference round 100 cm2 of fluid wall; 349 round 174). False when it cannot
+    be read (held to all of it, as before)."""
+    if not s.n:
+        return False
+    try:
+        surf = _polydata(s).clean(tolerance=1e-9, absolute=False)
+        edges = surf.extract_feature_edges(boundary_edges=False, non_manifold_edges=True,
+                                           feature_edges=False, manifold_edges=False)
+        return bool(edges.n_cells)
+    except Exception:  # noqa: BLE001 - what cannot be read keeps the whole surface held
+        return False
+
+
+def cad_reference(workspace, flow: str, intake_patches=None, cell: float = 0.0) -> tuple[Surface, str, bool]:
     """The CAD surface the mesh should follow, in metres, where it came from, and whether it is
-    the FLUID'S OWN closed boundary (only then can the mesh be held to all of it and to its
-    volume). Internal flow, in this order: the closed fluid boundary the staging wrote
-    (fluid_boundary.stl; cfMesh's geom.stl), every further passage included; else the same staged
-    afresh from the metre surface; else the staged parts (the wall and the lids), which hold the
-    mesh's wall to the CAD but also bound the metal. External flow: the body.
+    the FLUID'S side of the wall (only then can the mesh be held to all of it). Internal flow, in
+    this order: the closed fluid boundary the staging wrote (fluid_boundary.stl; cfMesh's geom.stl),
+    every further passage included; else the fluid's side of the staged parts, the space the lids
+    close off from the outside air, read at the mesh's wall cell `cell` (wetted_side, VER-15); else
+    the fluid boundary staged afresh from the metre surface; else the staged parts (the wall and the
+    lids), which hold the mesh's wall to the CAD but also bound the metal - the share not reached is
+    then not judged, and says so (VER-16). A staged surface that holds the wall's both sides
+    (both_sides, VER-14) is not the fluid's own boundary. External flow: the body.
     (empty, "", False) when none is on disk."""
     ws = Path(workspace)
     if flow == "internal":
@@ -295,16 +336,48 @@ def cad_reference(workspace, flow: str, intake_patches=None) -> tuple[Surface, s
             # every passage, so it is never added to them
             return (join([read_stl(q) for q in [ws / "geom.stl", *further]]),
                     "staged fluid boundary, every passage", True)
+        from meshpipeline.cad.fluid_passages import openings_not_meshed
+        if openings_not_meshed(ws):
+            # INS-40: a cavity no inlet opens into was left unmeshed and told: the mesh is held to the passage it
+            # was staged for (the staging's own surface of it - snappy's _passages/p0; cfMesh reads p0 into its
+            # geom.stl and removes it), never to the whole staged boundary
+            first = sorted((ws / "_passages" / "p0").glob("*.stl")) or (
+                [ws / "geom.stl"] if (ws / "geom.stl").exists() else [])
+            if first:
+                return join([read_stl(q) for q in first]), "staged fluid boundary, the passage meshed", True
         whole = [q for q in (ws / "_internal_stls" / "fluid_boundary.stl",
                              ws / "fluid_boundary.stl", ws / "geom.stl") if q.exists()]
-        if whole:
-            return read_stl(whole[0]), "staged fluid boundary", True
+        staged = read_stl(whole[0]) if whole else None
+        if staged is not None and not both_sides(staged):
+            return staged, "staged fluid boundary", True
+        # VER-14: the staged surface is the part's whole surface with the lids on (cfMesh's geom.stl on a
+        # pipe: the outside of the wall too), or only its parts are on disk. VER-15: held FIRST to the fluid's
+        # side of that same surface - the space the confirmed openings' lids close off from the outside air,
+        # the region the engine was staged to mesh. A re-staging from the metre surface takes another path
+        # (the B-rep's lids are not the surface path's) and can close another region: batch 7 abc 00157383,
+        # the inlet lid 2 mm inside the bore on a 57 mm loop, not the confirmed 61.07 mm mouth; abc 00131564,
+        # the part's metal (23.0 cm3 against the 59.8 cm3 fluid the engine meshed). It is the next reading
+        # only when the fluid's side cannot be told (a lid with outside air on both sides).
+        named = {q.stem: q for q in sorted((ws / "_internal_stls").glob("*.stl"))
+                 if q.name != "fluid_boundary.stl"}
+        lids = [str(p.get("name")) for p in intake_patches or []
+                if isinstance(p, Mapping) and p.get("name") and str(p.get("type") or "wall") != "wall"]
+        if named and lids:
+            try:
+                wet = wetted_side({n: read_stl(q) for n, q in named.items()}, lids, cell)
+            except Exception:  # noqa: BLE001 - a reading that could not be made is the next reading's turn
+                logger.warning("fidelity: %s the fluid's side of the staged surface was not read",
+                               WETTED_SIDE_RULE, exc_info=True)
+                wet = None
+            if wet is not None:
+                return wet, WETTED_SIDE_SOURCE, True
         fb = _restaged(ws, intake_patches)
         if fb is not None:
             return fb, "fluid boundary staged from your file", True
-        parts = sorted((ws / "_internal_stls").glob("*.stl"))
-        if parts:
-            return join([read_stl(q) for q in parts]), "staged part surface and lids", False
+        if staged is not None:
+            return staged, "staged part surface and lids", False
+        if named:
+            return join([read_stl(q) for q in named.values()]), "staged part surface and lids", False
     if (ws / "input.stl").exists():
         return read_stl(ws / "input.stl"), "the uploaded geometry (metres)", True
     return _empty(), "", False
@@ -357,6 +430,71 @@ def _raster_count(c: np.ndarray, h: float) -> tuple[np.ndarray, int]:
     return k, int(((k + 1) * (k + 2) // 2).sum())
 
 
+def wetted_skin(cad: Surface, cell: float):
+    """Which points of the CAD the FAR FIELD WETS once gaps narrower than the mesh can carry flow
+    through are closed: a function points (n,3) -> bool (n,), or None when it cannot be told. The
+    reading is the sealed-cavities step's own (engines/sealed_cavities.read_cavities, at the mesh's
+    wall cell): the same faces the mesher was told it would reach. An assembly's parts that touch, or
+    stand a gap apart that no cell crosses, carry faces inside it that the flow never reaches; a CAD
+    whose parts do not quite close lets outer_skin's finer flood in there, and they were counted as
+    CAD surface the mesh missed - the RM3 wave absorber, two production-grade meshes refused at
+    "14.6% not reached" where the far field wets 12,303 of its 15,648 faces (rulebook 75)."""
+    if not cad.n or not cell > 0:
+        return None
+    try:
+        from scipy.spatial import cKDTree
+
+        from meshpipeline.engines.sealed_cavities import read_cavities
+        tris = cad.corners()
+        rd = read_cavities(tris, cell_m=float(cell))
+        if rd is None:
+            return None
+        wet = np.asarray(rd.wet_sides) != 0
+        if len(wet) != len(tris) or wet.all() or not wet.any():
+            return None
+        tree = cKDTree(tris.mean(axis=1))
+    except Exception:  # noqa: BLE001 - a reading we cannot make leaves outer_skin's alone
+        logger.warning("fidelity: the wetted faces were not read", exc_info=True)
+        return None
+
+    def wetted(points: np.ndarray) -> np.ndarray:
+        _d, j = tree.query(np.asarray(points, dtype=float))
+        return wet[np.asarray(j, dtype=np.int64)]
+    return wetted
+
+
+#: A far-field wetting reading that keeps less than this share of the outer skin is a failed reading, not an
+#: assembly: the outer skin is what the air touches, and the faces the far field wets at the mesh's scale are most of
+#: it on every assembly read (RM3: 12,303 of 15,648 faces). Below it the outer skin alone is held, and said.
+WETTED_MIN_OF_OUTER = 0.3
+
+
+def sane_skin(cad: Surface, outer, wetted):
+    """(skin, note): both_skins(outer, wetted), unless the wetted reading keeps under WETTED_MIN_OF_OUTER of the
+    outer skin's area - then the outer skin alone, with the note saying so ("" when nothing was set aside)."""
+    if outer is None or wetted is None or not cad.n:
+        return both_skins(outer, wetted), ""
+    c, a = cad.centroids(), cad.areas()
+    o = np.asarray(outer(c), dtype=bool)
+    if not o.any():
+        return both_skins(outer, wetted), ""
+    kept = float(a[o & np.asarray(wetted(c), dtype=bool)].sum() / max(a[o].sum(), 1e-300))
+    if kept < WETTED_MIN_OF_OUTER:
+        return outer, (f"the far-field wetting reading kept {kept * 100:.0f}% of the outer skin, under the "
+                       f"{WETTED_MIN_OF_OUTER * 100:.0f}% any assembly reads: held to the whole outer skin instead")
+    return both_skins(outer, wetted), ""
+
+
+def both_skins(a, b):
+    """The CAD points both readings call skin (either one alone when the other could not be made)."""
+    if a is None or b is None:
+        return a if b is None else b
+
+    def both(points: np.ndarray) -> np.ndarray:
+        return np.asarray(a(points), dtype=bool) & np.asarray(b(points), dtype=bool)
+    return both
+
+
 def outer_skin(cad: Surface, cell: float):
     """Which points of the CAD the OUTSIDE AIR touches: a function points (n,3) -> bool (n,), or
     None when it cannot be told. The CAD is drawn into a voxel grid (cell <= SKIN_VOXEL_OF_CELL of
@@ -365,9 +503,144 @@ def outer_skin(cad: Surface, cell: float):
     where solids touch or overlap, faces inside another solid and a sealed cavity's walls are
     not; a surface with a hole lets the air in, so everything stays counted (the old reading).
     Orientation-free: it needs no solid to be closed or wound one way."""
-    if not cad.n or not cell > 0:
+    drawn = _drawn(cad, cell)
+    if drawn is None:
         return None
     from scipy import ndimage
+    solid, origin, h, dims = drawn
+    labels, _ = ndimage.label(~solid)          # faces-only (6-) connectivity: air never leaks
+    air = labels == labels[0, 0, 0]            # through an edge or corner the surface was drawn on
+    del labels
+    near = ndimage.binary_dilation(air, structure=np.ones((3, 3, 3), dtype=bool),
+                                   iterations=SKIN_BAND_VOXELS)
+
+    def touched(points: np.ndarray) -> np.ndarray:
+        idx = np.clip(np.floor((np.asarray(points, dtype=float) - origin) / h).astype(np.int64),
+                      0, dims - 1)
+        return near[idx[:, 0], idx[:, 1], idx[:, 2]]
+    return touched
+
+
+#: VER-15: the source a mesh is held to when it is the fluid's side of the engine's own staged surface
+WETTED_SIDE_SOURCE = "the fluid's side of the staged surface"
+#: VER-15: the rule that reads it
+WETTED_SIDE_RULE = "VER-15"
+#: VER-16: the rule a share not reached that could not be judged is a concern under, never met
+NOT_JUDGED_RULE = "VER-16"
+#: VER-15: how far off a lid, in voxels, the space it closes is looked for (the first free voxel either side)
+LID_PROBE_VOXELS = (1.5, 2.5, 3.5, 5.0)
+#: VER-15: the nearest faces searched for the one across a thin wall, and how square across the wall it must lie
+ACROSS_NEIGHBOURS = 32
+ACROSS_COS = 0.7
+
+
+def wetted_side(parts: Mapping[str, Surface], lids, cell: float) -> Surface | None:
+    """VER-15: the FLUID'S SIDE of the surface the engine was staged with - the part's surface and the lids on
+    the confirmed openings (`parts`: patch name -> surface; `lids`: the opening names). The surface is drawn
+    into outer_skin's voxel grid; the free space a lid closes off from the outside air (the first free voxel
+    off either side of each lid triangle that is not the air) is the fluid; every face within SKIN_BAND_VOXELS
+    of it is kept - the bore, its walls and the lids - and the outside of the part is not. A wall thinner than
+    the band keeps its outer face too, which lies within a cell of the bore. None when it cannot be told: no
+    lid, a lid with outside air on both sides (the passage leaks), or a reading that keeps nothing."""
+    lid_names = [n for n in lids if n in parts and parts[n].n]
+    if not lid_names or not cell > 0:
+        return None
+    whole = join(list(parts.values()))
+    drawn = _drawn(whole, cell)
+    if drawn is None:
+        return None
+    from scipy import ndimage
+    solid, origin, h, dims = drawn
+    labels, _ = ndimage.label(~solid)
+    air = labels[0, 0, 0]
+
+    def label_at(p: np.ndarray) -> np.ndarray:
+        idx = np.floor((p - origin) / h).astype(np.int64)
+        inside = np.all((idx >= 0) & (idx < dims), axis=1)
+        idx = np.clip(idx, 0, dims - 1)
+        out = labels[idx[:, 0], idx[:, 1], idx[:, 2]]
+        return np.where(inside, out, air)
+    fluid: set[int] = set()
+    for name in lid_names:
+        lid = parts[name]
+        c, a = lid.centroids(), lid.areas()
+        nrm = np.cross(lid.corners()[:, 1] - lid.corners()[:, 0], lid.corners()[:, 2] - lid.corners()[:, 0])
+        nrm /= np.maximum(np.linalg.norm(nrm, axis=1, keepdims=True), 1e-300)
+        got = np.zeros(len(c), dtype=np.int64)
+        for k in LID_PROBE_VOXELS:
+            for sign in (1.0, -1.0):
+                lab = label_at(c + sign * k * h * nrm)
+                take = (got == 0) & (lab != 0) & (lab != air)
+                got[take] = lab[take]
+        if not (got != 0).any():
+            return None                       # outside air both sides of this lid: the passage leaks
+        votes = np.bincount(got[got != 0], weights=a[got != 0])
+        fluid.add(int(np.argmax(votes)))
+    is_fluid = np.isin(labels, sorted(fluid))
+    near = ndimage.binary_dilation(is_fluid, structure=np.ones((3, 3, 3), dtype=bool), iterations=SKIN_BAND_VOXELS)
+    cen = whole.centroids()
+    idx = np.clip(np.floor((cen - origin) / h).astype(np.int64), 0, dims - 1)
+    keep = near[idx[:, 0], idx[:, 1], idx[:, 2]]
+    nrm = np.cross(whole.corners()[:, 1] - whole.corners()[:, 0], whole.corners()[:, 2] - whole.corners()[:, 0])
+    nrm /= np.maximum(np.linalg.norm(nrm, axis=1, keepdims=True), 1e-300)
+    # THE FLUID IN FRONT OF THE FACE, not beside it: a face by the fluid is kept when the first free voxel off
+    # it along its normal, one side or the other, is the fluid. The part's end face round a lid lies in the
+    # lid's plane, beside the fluid inside the rim, with the air in front and the metal behind (batch 7 cfMesh
+    # meshes read 1.0-1.1% "not reached" on such annuli, 0.5-0.9 mm outside the rim): with the air on one side
+    # and no fluid on either it is dropped. A face with the metal or nothing read on both sides is kept.
+    band = np.flatnonzero(keep)
+    side = np.zeros((len(band), 2), dtype=np.int64)
+    for k in LID_PROBE_VOXELS:
+        for s, sign in enumerate((1.0, -1.0)):
+            lab = label_at(cen[band] + sign * k * h * nrm[band])
+            take = (side[:, s] == 0) & (lab != 0)
+            side[take, s] = lab[take]
+    wet_side = np.isin(side, sorted(fluid))
+    keep[band[~wet_side.any(axis=1) & (side == air).any(axis=1)]] = False
+    both = np.zeros(whole.n, dtype=bool)
+    both[band[wet_side.any(axis=1) & (side == air).any(axis=1)]] = True
+    if both.any():
+        # A WALL THINNER THAN THE PROBE: off its bore face and off its outer face alike, one side reads the fluid
+        # and the other the air (the grid is coarsened to fit the budget, so a voxel can be wider than the wall).
+        # Each such face looks AWAY from the face across the wall from it: the bore face sees the fluid, the outer
+        # face the air, which is dropped. A face with no face across it is kept.
+        from scipy.spatial import cKDTree
+        tree = cKDTree(cen)
+        reach = (SKIN_BAND_VOXELS + 1) * h
+        amb = np.flatnonzero(both)
+        dist, nb = tree.query(cen[amb], k=min(ACROSS_NEIGHBOURS, whole.n), distance_upper_bound=reach)
+        dist, nb = np.atleast_2d(dist), np.atleast_2d(nb)
+        for row, f in enumerate(amb):
+            ok = np.isfinite(dist[row]) & (nb[row] != f) & (nb[row] < whole.n)
+            if not ok.any():
+                continue
+            g = nb[row][ok]
+            v = cen[g] - cen[f]
+            cos = (v @ nrm[f]) / np.maximum(np.linalg.norm(v, axis=1), 1e-300)
+            across = np.abs(cos) > ACROSS_COS
+            if not across.any():
+                continue
+            j = int(np.flatnonzero(across)[0])          # the nearest face across the wall
+            mid = int(label_at((0.5 * (cen[f] + cen[g[j]]))[None, :])[0])
+            if mid != 0 and mid != air:
+                continue                                 # across the fluid (a narrow channel), not the metal
+            away = -np.sign(cos[j]) * nrm[f]
+            for k in LID_PROBE_VOXELS:
+                seen = int(label_at((cen[f] + k * h * away)[None, :])[0])
+                if seen == 0:
+                    continue
+                keep[f] = seen != air
+                break
+    if not keep.any():
+        return None
+    return Surface(whole.points, whole.tris[keep], whole.cell_size[keep])
+
+
+def _drawn(cad: Surface, cell: float):
+    """outer_skin's voxel grid with `cad` drawn into it: (solid (bool grid), origin, voxel edge, dims), or None
+    when the surface is empty or does not fit the budget."""
+    if not cad.n or not cell > 0:
+        return None
     c = cad.corners()
     lo, hi = cad.points.min(axis=0), cad.points.max(axis=0)
     span = np.maximum(hi - lo, 1e-12)
@@ -395,17 +668,7 @@ def outer_skin(cad: Surface, cell: float):
                  + v * (t[:, 2] - t[:, 0])[:, None, :]).reshape(-1, 3)
             idx = np.clip(np.floor((p - origin) / h).astype(np.int64), 0, dims - 1)
             solid[idx[:, 0], idx[:, 1], idx[:, 2]] = True
-    labels, _ = ndimage.label(~solid)          # faces-only (6-) connectivity: air never leaks
-    air = labels == labels[0, 0, 0]            # through an edge or corner the surface was drawn on
-    del labels
-    near = ndimage.binary_dilation(air, structure=np.ones((3, 3, 3), dtype=bool),
-                                   iterations=SKIN_BAND_VOXELS)
-
-    def touched(points: np.ndarray) -> np.ndarray:
-        idx = np.clip(np.floor((np.asarray(points, dtype=float) - origin) / h).astype(np.int64),
-                      0, dims - 1)
-        return near[idx[:, 0], idx[:, 1], idx[:, 2]]
-    return touched
+    return solid, origin, h, dims
 
 
 def _area_samples(s: Surface, rng) -> tuple[np.ndarray, np.ndarray]:
@@ -621,7 +884,9 @@ def measure(workspace, *, intake_patches, manifest: Mapping | None = None,
                 "why": "a shell mesh lies on the part's mid-surface, not on its outer surface"}
     try:
         patches = mesh_patches(ws)
-        cad, source, fluid_side = cad_reference(ws, flow, intake_patches)
+        _sizes = join(list(patches.values())).cell_size
+        cad, source, fluid_side = cad_reference(ws, flow, intake_patches,
+                                                cell=float(np.median(_sizes)) if len(_sizes) else 0.0)
     except Exception as exc:  # noqa: BLE001
         logger.warning("fidelity: surfaces unreadable", exc_info=True)
         return {**rec, "verdict": UNMEASURED, "why": f"surfaces unreadable ({type(exc).__name__})"}
@@ -635,6 +900,19 @@ def measure(workspace, *, intake_patches, manifest: Mapping | None = None,
         body_names = [n for n, s in patches.items()
                       if roles.get(n, "wall") == "wall" and n.lower() not in _GROUND_NAMES
                       and _on_box_share(s, lo, hi) < 0.9]
+        # THE BODY'S BOUNDARY NOT READ IS A FAILED MEASUREMENT, NEVER A 100% MISS. RM5 (c2_rm5 attempt 2): a
+        # production-grade snappy mesh with 285,321 faces on its wall patch 'body' was measured with no body patch
+        # read (patches_compared []): the CAD was held to the far field and the ground alone and read "100.0% of
+        # your CAD surface is not reached", and the gate threw the mesh away.
+        faces = manifest.get("patch_face_counts") or {}
+        declared = sorted(str(n) for n, ty in roles.items() if ty == "wall" and str(n).lower() not in _GROUND_NAMES
+                          and int(faces.get(n) or 0) > 0)
+        if not body_names and declared:
+            logger.warning("fidelity: the wall patch(es) %s carry faces but were not read from the mesh on disk "
+                           "(read: %s) - not measured", declared, sorted(patches))
+            return {**rec, "verdict": UNMEASURED,
+                    "why": (f"the mesh's wall {', '.join(declared)} was not read from the mesh on disk (read: "
+                            f"{', '.join(sorted(patches)) or 'nothing'})")}
     else:
         # an internal fluid, a fluid domain, a solid: its whole boundary is the staged surface
         body_names = list(patches)
@@ -649,8 +927,13 @@ def measure(workspace, *, intake_patches, manifest: Mapping | None = None,
         # an internal mesh must reach the whole fluid boundary, so all of it is counted
         skin = None
         if flow == "external" and fluid_side and wall.n:
-            # the outside air's skin, on a grid finer than the mesh's own wall faces
-            skin = outer_skin(cad, float(np.median(wall.cell_size)))
+            # the outside air's skin, on a grid finer than the mesh's own wall faces - and only the
+            # faces the far field wets at the mesh's own scale (wetted_skin)
+            _cell = float(np.median(wall.cell_size))
+            skin, _skin_note = sane_skin(cad, outer_skin(cad, _cell), wetted_skin(cad, _cell))
+            if _skin_note:
+                logger.warning("fidelity: %s", _skin_note)
+                rec["skin_note"] = _skin_note
         dist = surface_distance(wall, allb, cad if fluid_side else _empty(),
                                 box=(lo, hi) if flow == "external" else None, skin=skin)
         if not fluid_side:
@@ -672,13 +955,21 @@ def measure(workspace, *, intake_patches, manifest: Mapping | None = None,
         miss = float(c2m["cad_missed_share"])
         verdicts["cad_to_mesh"] = (REBUILD if miss > CAD_MISSED_REBUILD else
                                    CONCERN if miss > CAD_MISSED_CONCERN else PASS)
+    elif flow == "internal" and not fluid_side and m2c:
+        # VER-16: NO UNJUDGED PASS. The fluid's side of the wall could not be told (no closed fluid boundary,
+        # no lid that closes the fluid off, no re-staging): whether the mesh reaches all of it is not judged,
+        # and a check not made is never read as met - batch 7 abc 00157702 passed with it unjudged
+        verdicts["cad_to_mesh"] = CONCERN
+        dist["cad_to_mesh_not_judged"] = NOT_JUDGED_RULE
 
     # 2. volume
     vol: dict = {}
     try:
         # solids that touch or overlap: their summed volume counts the overlap twice
         joined = float(c2m.get("cad_hidden_share") or 0.0) > HIDDEN_VOLUME_LIMIT
-        cad_v = enclosed_volume(cad) if fluid_side and not joined else None
+        # VER-15: the fluid's side of the staged surface keeps a thin wall's outer face too: not a closed surface
+        wet = source == WETTED_SIDE_SOURCE
+        cad_v = enclosed_volume(cad) if fluid_side and not joined and not wet else None
         if flow == "external":
             mesh_v = outward_volume(wall)
             mesh_v = -mesh_v if mesh_v is not None else None   # wall faces point into the body
@@ -701,6 +992,7 @@ def measure(workspace, *, intake_patches, manifest: Mapping | None = None,
         else:
             vol["why"] = ("the staged CAD surface is not the fluid's own boundary"
                           if not fluid_side else
+                          "the fluid's side of the staged surface is not a closed surface" if wet else
                           "the CAD's solids touch or overlap inside the body, so their summed "
                           "volume is not the volume the body displaces" if joined else
                           "the CAD surface is not closed" if not cad_v else
@@ -755,7 +1047,11 @@ def concerns(rec: Mapping) -> list[str]:
                    "more than one cell away from your CAD surface (the worst spot is "
                    f"{float(m.get('max_cells', 0)):.1f} cells away). Sharp edges or small details "
                    "there may be rounded off.")
-    if v.get("cad_to_mesh") in (CONCERN, REBUILD):
+    if v.get("cad_to_mesh") in (CONCERN, REBUILD) and s.get("cad_to_mesh_not_judged"):
+        # VER-16: a check not made, said as that
+        out.append("Whether the mesh reaches all of your CAD surface was not judged: the fluid's side of the "
+                   "wall could not be told from your file and its openings, so this check is not counted as met.")
+    elif v.get("cad_to_mesh") in (CONCERN, REBUILD):
         m = s.get("cad_to_mesh") or {}
         out.append(f"About {float(m.get('cad_missed_share', 0)) * 100:.1f}% of your CAD surface is "
                    f"not reached by the mesh (more than {MISS_CELLS:g} cells away). Thin parts or "
@@ -784,6 +1080,37 @@ def record_into_manifest(workspace, rec: Mapping) -> None:
         logger.warning("fidelity: the record could not be written into the manifest", exc_info=True)
 
 
+#: A WRONG REGION, not a fidelity miss: more of the mesh's wall than this lies more than a cell off the fluid's own
+#: surface...
+WRONG_REGION_OFF_SHARE = 0.5
+#: ...and its median wall face lies this many cells off it: a mesh that misses a surface lies a cell or two off it;
+#: one of another region lies tens of cells off (the siphoned box's mesh of its metal: 81%, a median of 30 to 47)
+WRONG_REGION_MEDIAN_CELLS = 5.0
+
+
+def wrong_region(rec: Mapping) -> str:
+    """An internal mesh of another region than the fluid - the part's metal, or the space outside it - said in
+    plain words with its numbers; "" for any other record. Measured against the FLUID's own closed boundary
+    only: a reference that also bounds the metal cannot tell."""
+    if rec.get("flow") != "internal" or not str(rec.get("cad_source") or "").startswith(
+            ("staged fluid", "fluid boundary", WETTED_SIDE_SOURCE)):
+        return ""
+    raw = rec.get("surface")
+    surf: Mapping = raw if isinstance(raw, Mapping) else {}
+    raw = surf.get("mesh_to_cad")
+    m2c: Mapping = raw if isinstance(raw, Mapping) else {}
+    o, m = m2c.get("wall_off_share"), m2c.get("p50_cells")
+    if not isinstance(o, (int, float)) or not isinstance(m, (int, float)):
+        return ""
+    off, p50 = float(o), float(m)
+    if off <= WRONG_REGION_OFF_SHARE or p50 <= WRONG_REGION_MEDIAN_CELLS:
+        return ""
+    far = m2c.get("max_m")
+    tail = f", up to {float(far) * 1e3:.0f} mm" if isinstance(far, (int, float)) else ""
+    return (f"the mesh filled the part's metal or the space outside it, not the fluid: {off * 100:.0f}% of its "
+            f"wall lies more than one cell off the fluid's surface, half of it more than {p50:.0f} cells away{tail}")
+
+
 def gate_cad_fidelity(ctx) -> tuple[bool, str]:
     """THE SHARED GATE, run last: measure, record the numbers in the manifest, and refuse only a
     mesh that is not the part (a REBUILD verdict) while CAD_FIDELITY_RETRY_ENABLED. A concern passes
@@ -800,10 +1127,21 @@ def gate_cad_fidelity(ctx) -> tuple[bool, str]:
         if rec.get("verdict") != REBUILD or not polcfg.CAD_FIDELITY_RETRY_ENABLED:
             return True, ""
         said = " ".join(concerns(rec))
+        region = wrong_region(rec)
     except Exception:  # noqa: BLE001 - a measurement that broke is evidence missing, never a crash
         logger.warning("fidelity: the check could not run - the mesh is not judged by it",
                        exc_info=True)
         return True, ""
+    if region:
+        # THE WRONG REGION (LAD-cfd-8, rulebook 75): not a mesh that misses the fluid's surface here and
+        # there, but one of another region - the part's metal, or the space outside it
+        detail = region
+        return False, refuse(
+            f"[FIDELITY] {detail}. Check the openings on the geometry stage: the fluid is the space your "
+            "inlets and outlets open into. If the part itself is the fluid (a duct modelled as a solid), "
+            "say so in your notes. Every engine meshes the same staged region, so no other engine was tried.",
+            FailureCause.PATCH_NOT_CAPTURED, detail=detail, wrong_region=True,
+            fidelity={k: rec.get(k) for k in ("verdicts", "surface", "volume")})
     detail = f"the mesh does not follow your CAD: {said}"
     return False, refuse(
         f"[FIDELITY] {detail} The mesh is sound but it is not the part. Rebuild it so its "
@@ -816,7 +1154,8 @@ def gate_cad_fidelity(ctx) -> tuple[bool, str]:
 __all__ = ["CAD_MISSED_CONCERN", "CAD_MISSED_REBUILD", "CONCERN", "OPENING_BAND", "PASS",
            "REBUILD", "RECORD_KEY", "UNMEASURED", "VOLUME_CONCERN_EXTERNAL",
            "VOLUME_CONCERN_INTERNAL", "VOLUME_REBUILD", "WALL_OFF_CONCERN", "WALL_OFF_REBUILD",
-           "Surface", "cad_reference", "concerns", "enclosed_volume", "gate_cad_fidelity", "join",
+           "WRONG_REGION_MEDIAN_CELLS", "WRONG_REGION_OFF_SHARE", "wrong_region",
+           "BOTH_SIDES_RULE", "WETTED_SIDE_RULE", "WETTED_SIDE_SOURCE", "Surface", "both_sides", "wetted_side", "cad_reference", "concerns", "enclosed_volume", "gate_cad_fidelity", "join",
            "outer_skin",
            "measure", "mesh_patches", "outward_volume", "read_stl", "record_into_manifest",
            "surface_distance"]

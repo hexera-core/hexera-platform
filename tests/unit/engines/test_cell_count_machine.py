@@ -43,7 +43,8 @@ def test_a_count_within_the_standard_machine_stays_there_and_past_it_goes_to_a_v
 
 
 def test_route_cells_writes_the_vm_only_for_a_plan_past_the_standard_machine(tmp_path):
-    assert MM.route_cells(tmp_path, 5e6) is None and MM.read(tmp_path) is None     # nothing written: as always
+    # under RUN-13's speed threshold nothing is written: as always (at or past it, the speed machine: RUN-13)
+    assert MM.route_cells(tmp_path, MM.SPEED_CELLS - 1) is None and MM.read(tmp_path) is None
     moved = MM.route_cells(tmp_path, 16e6)
     assert moved["where"] == "gce" and MM.read(tmp_path) == moved
     # a bigger machine already chosen (a run that stepped up after running out of memory) is kept
@@ -88,12 +89,17 @@ def test_snappy_plans_the_users_count_and_routes_it_before_meshing(tmp_path):
     assert D._plan_limit(ask) == 16_000_000 and D._plan_limit(None) is None
     moved = D._route_big(tmp_path, 16_000_000, job_id="", attempt=1)
     assert moved["where"] == "gce" and MM.read(tmp_path)["machine"] == moved["machine"]
-    # the founder's 3 M: the standard machine, nothing written
+    # the founder's 3 M: within the standard machine's memory, so no big machine - but past RUN-13's speed
+    # threshold, so the faster one (it still fits the job, and falls back to it)
     small = _ask(3e6)
     assert D._ask_budget(small, 8_000_000, None) == 3_000_000 and D._plan_limit(small) == 3_000_000
     other = tmp_path / "small"
     other.mkdir()
-    assert D._route_big(other, 3_000_000) is None and MM.read(other) is None
+    fast = D._route_big(other, 3_000_000)
+    assert fast["machine"] == MM.SPEED_MACHINE_NAME and fast["cloud_fits"] and MM.read(other) == fast
+    tiny = tmp_path / "tiny"
+    tiny.mkdir()
+    assert D._route_big(tiny, 1_000_000) is None and MM.read(tiny) is None
 
 
 def test_an_overshoot_of_a_big_count_is_corrected_against_the_count_not_the_standard_machine():
@@ -126,12 +132,16 @@ def test_cfmesh_runs_a_users_count_past_the_standard_machine_on_a_vm(tmp_path):
     from meshpipeline.engines.cfmesh import cfmesh_runner as R
     plan = {"estimated_cells": 15_000_000, "estimated_seconds": 60.0}
     d = R.machine_for_plan(tmp_path, plan, user_cells=16_000_000)
-    assert d["where"] == "gce" and d["why"] == "the cell count asked for"
-    # our own plan of the same size is only moved for time, as before
+    # past the standard machine: a VM - the speed machine (RUN-13), whose memory holds 16 M, not the 8-vCPU ladder one
+    assert d["where"] == "gce" and d["machine"] == MM.SPEED_MACHINE_NAME and not d.get("cloud_fits")
+    # our own plan of the same size fits the job's memory; RUN-13 sends it to the faster machine, said, with the job
+    # to fall back to
     other = tmp_path / "ours"
     other.mkdir()
-    assert R.machine_for_plan(other, plan)["where"] == "cloud_run"
-    assert R.machine_for_plan(other, plan, user_cells=5_000_000)["where"] == "cloud_run"
+    ours = R.machine_for_plan(other, plan)
+    assert ours["machine"] == MM.SPEED_MACHINE_NAME and ours["cloud_fits"]
+    assert R.machine_for_plan(other, {"estimated_cells": 1_000_000, "estimated_seconds": 60.0},
+                              user_cells=1_200_000)["where"] == "cloud_run"
 
 
 def test_the_delivered_notes_name_the_users_count_and_how_to_ask_for_more():
@@ -166,4 +176,6 @@ def test_nothing_said_changes_nothing(tmp_path):
     # no count in the notes: no Ask, no limit, nothing written - the run is the one it always was
     from meshpipeline.engines.snappy import drivers as D
     assert CR.Ask.of(tmp_path, "snappy") is None and D._plan_limit(None) is None
-    assert D._route_big(tmp_path, 8_000_000) is None and not (tmp_path / MM.MACHINE_FILE).exists()
+    assert D._route_big(tmp_path, 1_000_000) is None and not (tmp_path / MM.MACHINE_FILE).exists()
+    # (a plan of our own at or past RUN-13's speed threshold runs on the faster machine, said - see
+    # test_cfd_speed_machine)

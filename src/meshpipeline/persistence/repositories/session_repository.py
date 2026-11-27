@@ -83,11 +83,13 @@ class SessionRepository:
         return result.scalar_one_or_none()
 
     async def append_message(self, db: AsyncSession, session_id: uuid.UUID,
-                              role: str, content: str) -> None:
+                              role: str, content: str, *, extra: dict | None = None) -> None:
+        """One turn appended. `extra`: what a user's turn carries beside its words (its attachments and picked
+        faces, contracts/user_notes.carried) - plain rows, never a file's bytes."""
         s = await self.get_internal(db, session_id)
         if s:
             msgs = list(s.messages or [])
-            msgs.append({"role": role, "content": content})
+            msgs.append({"role": role, "content": content, **(extra or {})})
             s.messages = msgs
 
     async def set_messages(self, db: AsyncSession, session_id: uuid.UUID,
@@ -152,6 +154,22 @@ class SessionRepository:
         s = await self.get_internal(db, session_id)
         if s:
             s.domain = domain
+
+    async def add_attachment(self, db: AsyncSession, session_id: uuid.UUID, owner_id: str, attachment_id: str,
+                             entry: dict, *, most: int) -> str:
+        """One attached file's entry added to the session's index (application/chat_attachments), under the
+        session row lock: "added", or why not - "not_found" (no such session of this owner), "running" (a run is
+        linked), "full" (the index already holds `most`)."""
+        s = await self.get_for_update(db, session_id)
+        if s is None or s.owner_id != owner_id:
+            return "not_found"
+        if s.job_id:
+            return "running"
+        index = dict(s.attachments or {})
+        if len(index) >= most:
+            return "full"
+        s.attachments = {**index, attachment_id: dict(entry)}
+        return "added"
 
     async def set_user_notes(self, db: AsyncSession, session_id: uuid.UUID,
                              notes: list) -> None:

@@ -479,8 +479,12 @@ def check(workspace, engine: str) -> tuple[list[str], CaseBoundary | None]:
     No contract (a direct dispatch), or an engine/path this does not judge: ([], None). A covered
     case that cannot be read is a problem in itself - the early diagnosis is the point, and a case
     whose boundary nobody can state is not one to spend a run on."""
+    from meshpipeline.cad.fluid_passages import openings_not_meshed
     from meshpipeline.engines.workspace_facts import contract_patches
-    declared = contract_patches(workspace)
+    # INS-40: an opening the staging left unmeshed (a cavity no inlet opens into) is not written, by design, and
+    # was told before meshing - the case is held to the openings it was staged for
+    told = openings_not_meshed(workspace)
+    declared = [p for p in contract_patches(workspace) if str(p.get("name")) not in told]
     if not declared:
         return [], None
     try:

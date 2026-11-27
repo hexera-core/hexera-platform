@@ -506,6 +506,21 @@ def _build_plan(job_id: uuid.UUID, workspace: Path, scratch: list[Path],
                                                       ArtifactType.mesh_bundle.value))
 
     plan.append(_bundle)
+
+    # THE REVIEW SEED (VER-17): what a second look at this mesh needs, so it works on any worker - this
+    # attempt sits only on this machine's disk. Internal: the viewer_data class is never offered for
+    # download. Optional: a seed that cannot be made never costs the user their mesh.
+    from meshpipeline.application import review_seed
+    from meshpipeline.artifact_keys import review_seed_key
+    _sfd, _sname = tempfile.mkstemp(prefix="review_seed_", suffix=".tgz", dir=str(workspace))
+    os.close(_sfd)
+    _seed = Path(_sname)
+    scratch.append(_seed)
+    # this delivery's own scratch files (their names are random) stay out, so a repeated delivery of
+    # the same attempt stores the same bytes and never trips the conflict guard
+    if review_seed.pack(str(job_id), workspace, _seed, skip=scratch):
+        plan.append(_Planned(ArtifactType.viewer_data, review_seed.SEED_LOGICAL_KEY,
+                             review_seed_key(str(job_id)), "application/gzip", _seed, required=False))
     return plan
 
 

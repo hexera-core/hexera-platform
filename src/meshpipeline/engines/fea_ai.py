@@ -15,7 +15,8 @@ tool call against a strict schema:
 The rules turn it into sizes (AI-fea-n, docs/RULES.md):
 
   AI-fea-1  refine: a hot spot 10 elements per quarter-turn and 4 through the wall beside it; a wall 3
-            through; a round 6 per quarter-turn (as a hot spot). Never finer than half the rule's own size.
+            through; a round 6 per quarter-turn (as a hot spot). Never finer than half the rule's own size. Never
+            on a place the user asked "finer" with no number: PLAN-fea-36 sizes it (not applied, said).
   AI-fea-2  coarser: a hot spot keeps only its shape (4 per quarter-turn, 2 through the wall); a sharp
             corner is capped at half its wall. Walls and rounds are at their minimum already.
   AI-fea-3  set aside: a hot spot no larger than 2% of the part is meshed as coarser; a wall never.
@@ -67,6 +68,15 @@ REFINE_STRESS_WALL = 4
 REFINE_WALL = 3
 REFINE_ROUND_PER_QUARTER = 6
 REFINE_FLOOR = 0.5
+#: AI-fea-1 / PLAN-fea-36: where the run's record names the areas the user asked "finer" with no number
+#: (fea_part_sizes.settled) - their sizes are settled by that rule in code, so a refinement of a zone lying on one is
+#: not applied (the cast knuckle's fillets, 25 Nov: "User requested finer fillets." took them from 6 to 10 per
+#: quarter-turn, and PLAN-fea-36 halved that again)
+SETTLED_KEY = "fea_finer_settled"
+#: what the model is told of them (only with the user's notes in the brief)
+SETTLED_FACT = ("A place the notes ask finer with no number (\"finer at the fillets\") is sized by the rules, not by "
+                "you: half the size of the mesh round it, never under what the rules already give it - a zone there "
+                "is not refined for that word (such a refine is not applied). Only a number the user types goes finer.")
 #: AI-fea-2
 COARSER_CORNER_DIVISIONS = 2
 #: AI-fea-3
@@ -256,7 +266,8 @@ def brief(record: Mapping, state: Mapping, zone_list: list[dict], *, diag_m: flo
     # calls - which zones matter, what to set aside, a budget they named. Only when there are some,
     # so a run without notes is shown exactly what it always was (the decision cache keys on it).
     from meshpipeline.contracts.user_notes import prompt_block
-    notes = prompt_block(s.get("user_notes") or [], consumer="fea_ai")
+    from meshpipeline.engines.meshing_standard import guidance_notes  # STD-6: the team's design intent first
+    notes = prompt_block(guidance_notes(s, route="fea"), consumer="fea_ai")
     if notes:
         out["user_notes"] = notes
         out["user_notes_fea"] = (
@@ -264,7 +275,7 @@ def brief(record: Mapping, state: Mapping, zone_list: list[dict], *, diag_m: flo
             "qualifies (it is meshed coarser and kept - the mesh never removes geometry); a region "
             "they care about is a zone to refine; an element count they named is target_elements (a range: target_min and target_max); supports, "
             "loads, load histories and joints between parts are theirs to set in their solver on the "
-            "named faces (joints may be suggested). Say in notes_remark what you did with them.")
+            "named faces (joints may be suggested). Say in notes_remark what you did with them. " + SETTLED_FACT)
         done = [str(a) for a in s.get(RULES_ASKS_KEY) or [] if str(a).strip()]
         if done:
             # NOTE-13: every ask the rules decide (applied, the nearest, set aside, no setting of ours), so the remark
@@ -478,11 +489,24 @@ def apply_zones(zone_list: list[dict], decision: Mapping | None, record: Mapping
     feats = dict(decision.get("features") or {})
     applied: list[dict] = []
     out: list[dict] = []
+    # PLAN-fea-36: the areas asked "finer" with no number - sized by that rule, never refined here
+    settled = {str(f): a for a in (record.get(SETTLED_KEY) or {}).values() for f in a.get("faces") or []}
     for z in zone_list:
         z = dict(z)
         zid = str(z["id"])
         before = float(z["size_m"])
         choice, why = None, ""
+        zf = [str(f) for f in z.get("faces") or []]
+        area = settled.get(zf[0]) if zf and all(f in settled for f in zf) else None
+        p0 = pri.get(zid)
+        if area is not None and p0 and p0["priority"] == "refine" and not (feats.get(zid) or {}).get("action") == "set_aside":
+            applied.append({"id": zid, "choice": "refine", "done": False, "reason": p0["reason"], "rule": "AI-fea-1",
+                            "settled_by": "PLAN-fea-36",
+                            "words": f"{zid}: not refined - your notes ask finer there, and the rules size that place "
+                                     + ("(it is already finer than half the mesh round it, so it keeps its size)"
+                                        if area.get("kept") else "(half the size of the mesh round it)")})
+            out.append(z)
+            continue
         f = feats.get(zid)
         if f and f["action"] == "set_aside":
             r = _f(z.get("radius_m"))
@@ -591,6 +615,11 @@ def words(ai: Mapping | None, plan: Mapping | None = None) -> list[str]:
                       "element limit then made the finest zones coarser, as it does for any plan (named below)."
                       if coarsened else
                       "; every wall still has at least 2 elements through it and every round at least 4 per quarter-turn."))
+    held = [a for a in ai.get("applied") or [] if a.get("settled_by")]
+    if held:
+        # PLAN-fea-36: the places the notes ask finer with no number are the rules' to size
+        out.append(f"{len(held)} refinement(s) the AI asked for where your notes ask finer were not applied: the "
+                   "rules size those places (said in the line about them).")
     if ai.get("refines_dropped"):
         out.append(f"The {len(ai['refines_dropped'])} refinement(s) asked for would take the mesh over its element "
                    "limit, so they were left out: the limit never costs the rules' own minimums for an extra.")
@@ -620,7 +649,8 @@ def decisions(ai: Mapping | None) -> list[dict]:
     for a in ai.get("applied") or []:
         out.append({"stage": "fea_ai", "decided": f"{a['choice']} {a['id']}", "value": bool(a.get("done")),
                     "rule": a.get("rule") or "AI-fea-5", "source": SOURCE_AI_LEVER,
-                    "inputs": {k: a.get(k) for k in ("reason", "before_m", "after_m") if a.get(k) is not None},
+                    "inputs": {k: a.get(k) for k in ("reason", "before_m", "after_m", "settled_by")
+                               if a.get(k) is not None},
                     "words": str(a.get("words") or "")})
     if ai.get("refines_dropped"):
         out.append({"stage": "fea_ai", "decided": "refinements left out", "value": len(ai["refines_dropped"]),
@@ -689,10 +719,14 @@ def _key(messages: list[dict], tool: dict) -> str:
 
 
 async def decide(record: Mapping, state: Mapping, zone_list: list[dict], *, diag_m: float, limit: int,
-                 job_id: str = "", run=None, enabled: bool | None = None, wait_s: float = TIMEOUT_S) -> dict:
+                 job_id: str = "", run=None, enabled: bool | None = None, wait_s: float = TIMEOUT_S,
+                 kept: str | None = None, told: dict | None = None) -> dict:
     """The `ai` section for this part: the checked decision ("used"), or why the rules' own plan
     goes ahead ("off", "no_time", "failed", "invalid") - never an exception (AI-fea-6). `wait_s`:
-    the most the attempt can give the model, after the meshing it still has to do."""
+    the most the attempt can give the model, after the meshing it still has to do.
+    `kept`: the answer the AI gave when the plan step costed these same words (NOTE-26, application/plan_cost) -
+    checked against THIS part's brief by the same rules and used when it holds, so the count told before the run is
+    the run's own; no model is asked then. `told`: receives {"args": the answer as given} when one is used."""
     if not (FEA_AI if enabled is None else enabled):
         return section(None, [], status="off", note="")
     b = brief(record, state, zone_list, diag_m=diag_m, limit=limit)
@@ -700,6 +734,16 @@ async def decide(record: Mapping, state: Mapping, zone_list: list[dict], *, diag
     tool = decision_tool(with_notes="user_notes" in b)
     key = _key(msgs, tool)
     user_id = str((state or {}).get("user_id") or "")
+    if kept:
+        held, held_problems = validate(str(kept), b)
+        if held is not None:
+            logger.info("fea ai: the decision made when the plan was costed is used (NOTE-26) - job_id=%s", job_id)
+            if told is not None:
+                told["args"] = str(kept)
+            out = section(held, [], status="used", key=key, problems=held_problems)
+            out["source"] = "plan step"
+            return out
+        logger.info("fea ai: the plan step's decision does not hold on this part - asked again - job_id=%s", job_id)
 
     def _without_the_model(status: str, why: str, problems: list[str] | None = None) -> dict:
         """AI-fea-6: the AI did not give a usable decision just now - its SAVED decision for this
@@ -710,6 +754,8 @@ async def decide(record: Mapping, state: Mapping, zone_list: list[dict], *, diag
         if args_saved is not None:
             saved, saved_problems = validate(args_saved, b)
             if saved is not None:
+                if told is not None:
+                    told["args"] = args_saved
                 logger.info("fea ai: %s - the saved decision for this part is used - job_id=%s", why, job_id)
                 out = section(saved, [], status="used", key=key, problems=saved_problems,
                               note=f"The AI was not available just now ({why}); its saved decision for this "
@@ -744,6 +790,8 @@ async def decide(record: Mapping, state: Mapping, zone_list: list[dict], *, diag
     decision, problems = validate(args, b)
     if decision is None:
         return _without_the_model("invalid", problems[0], problems)
+    if told is not None:
+        told["args"] = args
     return section(decision, [], status="used", key=key, problems=problems)
 
 
@@ -788,6 +836,6 @@ async def choose_lever(options: list[dict], facts: Mapping, *, ai: Mapping | Non
     return chosen, {"status": "used", "picked": pick, "reason": reason, "options": ids}
 
 
-__all__ = ["ANALYSES", "FEA_AI", "KEEP_MIN", "REFINE_FLOOR", "SET_ASIDE_MAX", "apply_zones", "brief",
+__all__ = ["ANALYSES", "FEA_AI", "KEEP_MIN", "REFINE_FLOOR", "SETTLED_FACT", "SETTLED_KEY", "SET_ASIDE_MAX", "apply_zones", "brief",
            "refines", "without_refines", "choose_lever", "decide", "decision_tool", "decisions", "lever_tool", "messages_for",
            "section", "validate", "words"]

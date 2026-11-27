@@ -13,7 +13,7 @@ from datetime import UTC, datetime
 from sqlalchemy import and_, delete, exists, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from meshpipeline.application import audit, billing_service
+from meshpipeline.application import audit, billing_service, chat_attachments
 from meshpipeline.application.job_cancel import CancelResult
 from meshpipeline.application.maintenance.geometry_retention import (
     SOURCE_REQUIRING_STATES,
@@ -136,6 +136,10 @@ async def export_account(db: AsyncSession, *, owner_id: str, organization_id: st
                                  .where(OrganizationMeshingStandard.organization_id == parsed))
         tables["organization_meshing_standards"] = rows
 
+    # THE FILES ATTACHED in the chat or notes box (NOTE-16), each session's listed in one place
+    attached = [{"session_id": s.get("id"), **row} for s in tables.get(ChatSession.__tablename__) or []
+                for row in chat_attachments.exported(s.get("attachments"))]
+
     audit.record("privacy.export", actor=str(user.id) if user else "",
                  organization_id=organization_id, detail={"truncated": bool(truncated)})
     return {
@@ -144,10 +148,12 @@ async def export_account(db: AsyncSession, *, owner_id: str, organization_id: st
         "user": _row(user) if user is not None else None,
         "organization": organization,
         "tables": tables,
+        "attached_files": attached,
         "truncated_tables": truncated,
         "not_included": {
-            "stored_files": "listed by key in geometry_sources and artifacts; download each "
-                            "from the console while the account is active",
+            "stored_files": "listed by key in geometry_sources and artifacts, and the files attached in "
+                            "the chat or notes box in attached_files; download each from the console while "
+                            "the account is active",
             "identity_platform": "your sign-in record is held by Google Identity Platform on "
                                  "our behalf and is deleted with your account",
             "payment_details": "card details are held by Stripe, never by Hexera",
@@ -211,6 +217,13 @@ async def request_erasure(db: AsyncSession, *, owner_id: str, organization_id: s
         messages=[], request_txt=None, review_brief_txt=None, intake_patches=None,
         user_notes=None, llm_metadata=[], engine_params=None, intake_gate=None,
         domain=None))).rowcount
+    # THE FILES THE USER ATTACHED (NOTE-16): the names they gave them go now, with the rest of what they wrote.
+    # The index keeps only each file's object keys: the sweep deletes the bytes by them, the store cannot list.
+    held = (await db.execute(select(ChatSession.id, ChatSession.attachments).where(
+        _belongs(ChatSession), ChatSession.attachments.is_not(None)))).all()
+    for session_id, index in held:
+        await db.execute(update(ChatSession).where(ChatSession.id == session_id)
+                         .values(attachments=chat_attachments.erased_index(index)))
 
     pseudonym = erased_owner(parsed)
     for model in OWNER_SCOPED:
@@ -353,7 +366,8 @@ async def _nothing_remains(db: AsyncSession, org_id: uuid.UUID) -> bool:
 
 #: The geometry check's fixed records under `sessions/<id>/geometry_check/`. The pictures are not
 #: fixed-named; their keys are read out of scout.json below.
-_CHECK_RECORDS = ("scout.json", "naming.json", "confirmed.json", "skin.json", "upright.png")
+_CHECK_RECORDS = ("scout.json", "naming.json", "confirmed.json", "skin.json", "upright.png",
+                  "faces.npz")  # NOTE-17: the face map (application/face_pick)
 
 
 async def _erase_bytes(db: AsyncSession, store, org_id: uuid.UUID, at: datetime) -> None:
@@ -402,7 +416,9 @@ async def _erase_bytes(db: AsyncSession, store, org_id: uuid.UUID, at: datetime)
         # the parts checklist's pictures and records (application/part_matches)
         from meshpipeline.application import part_matches as _pm
         picture_keys.extend(_pm.picture_keys(sid))
-        picture_keys.extend(check_object_key(sid, n) for n in (_pm.MATCHES, _pm.PICKS))
+        picture_keys.extend(check_object_key(sid, n) for n in (_pm.MATCHES, _pm.PICKS, _pm.COUNT_SAID))
+        # the files the user attached in the chat or notes box, by the keys the session's index kept (NOTE-16)
+        picture_keys.extend(chat_attachments.object_keys(session))
         for key in picture_keys + [check_object_key(sid, name) for name in _CHECK_RECORDS]:
             if key:
                 _delete_if_present(store, key)

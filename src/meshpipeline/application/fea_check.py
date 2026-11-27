@@ -310,12 +310,21 @@ def warnings(facts: dict | None) -> list[str]:
     return out
 
 
-def blocker(facts: dict | None, messages=None) -> tuple[str, str, str]:
-    """(what stops version 1, its kind - "surface" | "gap" | "self_overlap" | "", the way on) for the stage
-    and the confirmation alike. Several bodies are no stop: an assembly is meshed (design 14); a body
+def check_live(stored: dict | None) -> bool:
+    """Whether the stored check is still running (pending or scouted): its FEA measurement may still come."""
+    from meshpipeline.application.geometry_check import STATUS_PENDING, STATUS_SCOUTED
+
+    return str((stored or {}).get("status") or "") in (STATUS_PENDING, STATUS_SCOUTED)
+
+
+def blocker(facts: dict | None, messages=None, *, live: bool = True) -> tuple[str, str, str]:
+    """(what stops version 1, its kind - "surface" | "gap" | "surface_reading" | "surface_unread" | "", the way on)
+    for the stage and the confirmation alike. Several bodies are no stop: an assembly is meshed (design 14); a body
     that crosses itself is (it needs CAD repair; detected only, never healed). A CAD FILE THAT IS A SURFACE
     (application/surface_check, SURF-1) is no stop either: it is meshed as a shell. `messages`: the
-    conversation, for a shell or a thickness said after the check."""
+    conversation, for a shell or a thickness said after the check. SURF-18: a CAD file with no solid whose surface
+    reading is still to come (`live`: the check is still running) waits ("surface_reading", no way out to give);
+    one whose measurement ended with no reading says what stopped it ("surface_unread") - never "coming"."""
     from meshpipeline.application import surface_check
 
     if surface_check.is_surface(facts, messages):
@@ -328,6 +337,11 @@ def blocker(facts: dict | None, messages=None) -> tuple[str, str, str]:
     # "needs CAD repair" (engines/fea_driver)
     surface = not_solid_message(facts)
     if surface:
+        if surface_check.reading_pending(facts, live=live):
+            return surface_check.PENDING_WORDS, surface_check.PENDING_KIND, ""
+        unread = surface_check.unread_why(facts, live=live)
+        if unread:
+            return surface_check.UNREAD_WORDS.format(why=unread), surface_check.UNREAD_KIND, surface_check.UNREAD_WAY_OUT
         return surface, "surface", WAY_OUT_SOLID
     return "", "", ""
 
@@ -377,27 +391,33 @@ def clean_details(said: str, clean: bool | None, found: list[str]) -> list[str]:
     return out
 
 
-def fea_view(facts: dict | None, messages=None) -> dict:
+def fea_view(facts: dict | None, messages=None, *, live: bool = True) -> dict:
     """What the FEA stage shows beside the part (the size and unit come with the proposal); for an
-    assembly also its parts, their interfaces and the connection question."""
+    assembly also its parts, their interfaces and the connection question. SURF-18: while a CAD file with no solid
+    is still being read as a surface, `waiting` says so and Proceed waits - no stop and no way out is shown."""
+    from meshpipeline.application import surface_check
+
     clean, said = clean_words(facts)
-    blocked, kind, way_out = blocker(facts, messages)
-    found = [] if blocked else warnings(facts)
+    blocked, kind, way_out = blocker(facts, messages, live=live)
+    waiting = ""
+    if kind == surface_check.PENDING_KIND:
+        waiting, blocked = blocked, ""
+    found = [] if blocked or waiting else warnings(facts)
     details = clean_details(said, clean, found)
     if found:
         said = f"{said} {' '.join(found)}".strip()
     out = {"question": QUESTION, "bodies": body_count(facts), "pieces": piece_count(facts),
            "clean": clean, "clean_summary": said, "single_part_only": blocked, "blocked_kind": kind, "way_out": way_out,
-           "can_proceed": not blocked, "warnings": found, "measure": measure_view(facts),
-           "clean_short": clean_line(facts, clean, blocked, found), "clean_details": details,
+           "can_proceed": not (blocked or waiting), "waiting": waiting, "warnings": found,
+           "measure": None if waiting else measure_view(facts),
+           "clean_short": surface_check.PENDING_SHORT if waiting else clean_line(facts, clean, blocked, found),
+           "clean_details": details,
            # THE PANEL'S TITLE: an assembly is named after its file - the first part's own name would read as the
            # whole (a bolt's name over an 11-part assembly); "" leaves the stage its own
            "title": str((facts or {}).get("file_name") or "") if (body_count(facts) or 0) > 1 else ""}
     sewn = sewn_body_count(facts)
     if sewn is not None:
         out["bodies_sewn"] = sewn
-    from meshpipeline.application import surface_check
-
     if surface_check.is_surface(facts, messages):
         # SURF-6: A SURFACE'S OPEN EDGES ARE ITS OWN - the check row says what the file is, not that it is broken;
         # and the solid measurement (a thinnest wall, hot spots to refine) is not said of a sheet: it has no wall
@@ -405,10 +425,10 @@ def fea_view(facts: dict | None, messages=None) -> dict:
         out.update(surface_check.clean_view(facts) or {})
         out["measure"] = None
     # several closed solids: an assembly, with its one question (a surface that is no solid stops first)
-    asm = None if blocked else assembly_view(facts)
+    asm = None if blocked or waiting else assembly_view(facts)
     if asm is not None:
         out["assembly"] = asm
-    plan = None if blocked else plan_view(facts)
+    plan = None if blocked or waiting else plan_view(facts)
     if plan is not None:
         out["plan"] = plan
     return out
@@ -419,6 +439,56 @@ def fea_view(facts: dict | None, messages=None) -> dict:
 PLAN_FACT_KEY = "fea_plan"
 PLAN_QUESTION = "Which mesh?"
 PLAN_FULL, PLAN_QUICKER = "full", "quicker"
+#: TIME-11: THE SIZING ALWAYS ENDS. Why it was not sized, in the stage's words (plan_view adds what the run does):
+#: stopped by its own clock (engines/fea_plan_options.BUDGET_S), or its worker gone (killed, its machine rolled)
+SIZING_OUT_OF_TIME = "Sizing the mesh did not finish in {minutes} minutes"
+SIZING_WORKER_GONE = "The worker sizing the mesh stopped before it finished"
+#: an ended naming task whose sizing marker is still on the check this long after it ended stored nothing (the
+#: result is written before the task ends: the grace only covers a reader that read the two a moment apart)
+SIZING_END_GRACE_S = 30.0
+#: the rule a settled sizing names on its fact
+SIZING_RULE = "TIME-11"
+
+
+def out_of_time_words(budget_s: float | None = None) -> str:
+    """TIME-11: the sizing stopped by its clock, in minutes."""
+    from meshpipeline.engines.fea_plan_options import BUDGET_S
+    seconds = BUDGET_S if budget_s is None else float(budget_s)
+    return SIZING_OUT_OF_TIME.format(minutes=max(1, round(seconds / 60.0)))
+
+
+def sizing_now(facts: dict | None, naming: dict | None, now: float) -> dict | None:
+    """TIME-11: the check's facts with a size choice still marked "sizing" settled when nothing will ever end it: past
+    the marker's own deadline (`until`: the sizing's clock and its margins - its worker would have stored the clock's
+    stop by then), or its worker gone (the naming task's record, `naming`: ended with the marker still on the check,
+    or its heartbeat quiet for application/geometry_progress.BEAT_STALE_S). Settled, it is "not sized" with why in
+    plain words (`stopped`: "clock" or "worker"), so the stage and the chat stop waiting and the run sizes it
+    itself. Pure; the same facts when nothing is settled."""
+    got = (facts or {}).get(PLAN_FACT_KEY)
+    if not isinstance(got, dict) or not got.get("sizing"):
+        return facts
+    stopped = ""
+    try:
+        until = float(got.get("until") or 0.0)
+    except (TypeError, ValueError):
+        until = 0.0
+    if until and now > until:
+        stopped = "clock"
+    elif isinstance(naming, dict):
+        ended = naming.get("ended_at")
+        if ended is not None:
+            try:
+                gone = now - float(ended) > SIZING_END_GRACE_S
+            except (TypeError, ValueError):
+                gone = False
+        else:
+            from meshpipeline.application import geometry_progress as gp
+            gone = gp.beating(naming, now) is False
+        stopped = "worker" if gone else ""
+    if not stopped:
+        return facts
+    why = out_of_time_words() if stopped == "clock" else SIZING_WORKER_GONE
+    return {**(facts or {}), PLAN_FACT_KEY: {"sized": False, "why": why, "stopped": stopped, "rule": SIZING_RULE}}
 
 
 def _elements_words(n: int, at_least: bool = False) -> str:
@@ -447,6 +517,12 @@ RETRY_WORDS = "A retry can take longer."
 def _machine_words(row: dict) -> str:
     if row.get("standard"):
         return "the standard machine"
+    if isinstance(row.get("cores"), int) and row["cores"] > 0:
+        from meshpipeline.contracts import mesh_machine as MM
+        return MM.phrase(row)                          # RUN-10: as the run's live line says it
+    cpus = row.get("cpus")
+    if isinstance(cpus, int) and cpus > 0:
+        return f"a {cpus}-core machine"                # RUN-10: as the run's live line says it
     gib = row.get("memory_gib")
     return f"a {gib:g} GiB machine" if isinstance(gib, (int, float)) and gib else "a bigger machine"
 
@@ -478,12 +554,26 @@ def plan_view(facts: dict | None) -> dict | None:
         return {"state": "not_sized", "words": (got.get("why") or "The mesh is sized when it runs") + ": "
                 "the run sizes it and takes the recommended mesh, without waiting for you."}
     full = got.get("full") or {}
+    stand = got.get("stand") if isinstance(got.get("stand"), dict) else None
+    if stand and (not got.get("choice") or got.get("recommended") != PLAN_QUICKER):
+        # NOTE-26: THE COUNT A RUN STARTED NOW WOULD PLAN (application/plan_cost.stand: the team's standard and the AI
+        # step's decision with it, the function the first count line's "from" and the run use) - the card and the
+        # chat never state two counts for the same mesh (the C5 knuckle: "about 883,835" here, "from about 1.1
+        # million" in the chat)
+        full = {**full, **{k: v for k, v in stand.items() if k in (
+            "elements", "at_least", "where", "machine", "cpus", "cores", "memory_gib", "standard", "minutes",
+            "usual_minutes")}}
     rec = PLAN_QUICKER if got.get("recommended") == PLAN_QUICKER else PLAN_FULL
     options = [_option(full, PLAN_FULL, rec)]
     if got.get("choice") and isinstance(got.get("quicker"), dict):
         options.append(_option(got["quicker"], PLAN_QUICKER, rec))
+    why = str(got.get("why") or "")
+    if len(options) == 1 and why:
+        # the sentence follows the machine the shown count names (the count for "go now" may be the stand's)
+        from meshpipeline.engines.fea_plan_options import nothing_to_choose
+        why = nothing_to_choose(full)
     out: dict = {"state": "sized", "choice": len(options) > 1, "recommended": rec,
-                 "why": " ".join(w for w in (str(got.get("why") or ""), RETRY_WORDS) if w),
+                 "why": " ".join(w for w in (why, RETRY_WORDS) if w),
                  "question": PLAN_QUESTION, "options": options}
     if len(options) == 1:
         out["words"] = (f"{_elements_words(int(full.get('elements') or 0), bool(full.get('at_least')))} on "
@@ -536,6 +626,86 @@ def confirmed_plan_choice(session_id: str) -> str:
         return ""
     v = str((record or {}).get("fea_plan") or "").strip().lower() if isinstance(record, dict) else ""
     return v if v in (PLAN_FULL, PLAN_QUICKER) else ""
+
+
+#: NOTE-20: what is said when the product holds no planned size before the run, by why (one sentence each: what is
+#: not known yet, and when it will be)
+SIZES_AT_RUN = ("The overall element size is worked out from the measured part when the mesh is built, so I'll have "
+                "it, and the element count, once the run starts.")
+SIZES_BEING_PLANNED = ("The check is still sizing the mesh, so the overall element size and the element count will "
+                       "be on the stage in a moment.")
+#: the zone kinds of the FEA plan (engines/fea_plan.zones) in the words the answer names them by
+_ZONE_WORDS = {"wall": "the thin walls", "wall_spot": "thin spots in a wall", "corner": "the sharp inside corners",
+               "round": "the rounded edges", "relief": "the raised or sunk detail", "fillet": "the fillets",
+               "hole": "the holes", "notch": "the notches", "groove": "the grooves", "area": "an area you named"}
+
+
+def _g(v: float) -> float:
+    return float(f"{float(v):.3g}")
+
+
+def _kept_plans(session_id: str) -> dict:
+    """The plans the check's sizing kept for the run (PLAN-fea-22, engines/fea_plan_options.PLANS_FILE), or {}."""
+    import json
+
+    from meshpipeline.contracts.object_storage import get_object_store
+    try:
+        got = json.loads(get_object_store().get_bytes(object_key=plans_object_key(session_id)))
+    except Exception:  # noqa: BLE001 - none kept: the sizes are said as not known yet
+        return {}
+    return got if isinstance(got, dict) else {}
+
+
+def planned_sizes(session_id: str, facts: dict | None = None) -> dict:
+    """NOTE-20: THE NUMBERS THE PRODUCT ALREADY HOLDS about the mesh before it runs, for the plan step's answer to a
+    question about it: from the check's own sizing (PLAN-fea-22, made before the user's requirements) the plan's base
+    size (`coarsest_mm`), an assembly's part sizes (`parts_mm`, PLAN-fea-17), the finest zone and what it is
+    (`finest_mm`, `finest_where`), the element estimate and the time in the stage's own words (`elements`, `time`);
+    `step`: the one step "finer" / "coarser" with no number takes (PLAN-fea-36). Nothing estimated here. When none is
+    held, `known` is False and `why` says in one sentence what is not known yet and when it will be. Never raises."""
+    from meshpipeline.engines.fea_part_sizes import SCALES
+    out: dict = {"known": False, "step": {"finer": SCALES["refine"], "coarser": SCALES["coarsen"]},
+                 "why": SIZES_AT_RUN}
+    try:
+        if facts is None:
+            # read as every reader reads the check (TIME-11): a sizing that will never end is not "still sizing"
+            from meshpipeline.application import geometry_progress as gp
+            from meshpipeline.application.geometry_check import naming_requested, read_check, time_boxed
+            stored = time_boxed(read_check(session_id), naming_requested(session_id),
+                                progress=gp.read_progress(session_id) or {})
+            facts = (stored or {}).get("facts") or {}
+        got = (facts or {}).get(PLAN_FACT_KEY)
+        if not isinstance(got, dict) or not got.get("sized"):
+            if isinstance(got, dict) and got.get("sizing"):
+                out["why"] = SIZES_BEING_PLANNED
+            return out
+        pick = confirmed_plan_choice(session_id) or str(got.get("recommended") or PLAN_FULL)
+        chosen, full = got.get(pick), got.get("full")
+        row: dict = chosen if isinstance(chosen, dict) else full if isinstance(full, dict) else {}
+        plan = _kept_plans(session_id).get(pick if isinstance(got.get(pick), dict) else PLAN_FULL)
+        plan = plan if isinstance(plan, dict) else {}
+        n = int(row.get("elements") or 0)
+        if n:
+            out["elements"] = _elements_words(n, bool(row.get("at_least")))
+        t = _time_words(row.get("minutes"), row.get("usual_minutes"))
+        if t:
+            out["time"] = t
+        if plan.get("base_size_m"):
+            out["coarsest_mm"] = _g(float(plan["base_size_m"]) * 1e3)
+        zones = [z for z in plan.get("zones") or [] if isinstance(z, dict) and z.get("size_m")]
+        parts = sorted(_g(float(z["size_m"]) * 1e3) for z in zones if z.get("kind") == "part")
+        if len(parts) > 1:
+            out["parts_mm"] = [parts[0], parts[-1]]
+        fine = min((z for z in zones if z.get("kind") != "part"), key=lambda z: float(z["size_m"]), default=None)
+        if fine is not None:
+            out["finest_mm"] = _g(float(fine["size_m"]) * 1e3)
+            out["finest_where"] = _ZONE_WORDS.get(str(fine.get("kind") or ""), f"the {fine.get('kind')}s")
+        if any(k in out for k in ("elements", "coarsest_mm")):
+            out.update(known=True, before_requirements=True)
+            out.pop("why", None)
+    except Exception:  # noqa: BLE001 - not known: said as not known yet, never a made-up number
+        return {"known": False, "step": out["step"], "why": SIZES_AT_RUN}
+    return out
 
 
 def assembly_view(facts: dict | None) -> dict | None:
@@ -887,5 +1057,5 @@ __all__ = ["TRY_ANYWAY", "declared_clean", "has_solid", "warnings", "FOLD_BACK",
            "QUESTION", "SHOWN_HOT_SPOTS", "GAP_JOIN_QUESTION", "DEFAULT_GAP_JOINS", "gap_words",
            "PAIR_NOTE", "confirmed_pairs", "pair_rows", "pairs_answer", "pairs_summary", "joint_counts", "joint_phrases", "joints_words", "FLOW_ONLY_KEYS", "without_flow_openings",
            "gap_joins_answer", "confirmed_gap_joins", "STAGE_FEA", "STAGE_FLOW", "STAGE_THERMAL", "WAY_OUT_SOLID", "assembly_view",
-           "blocker", "body_count", "sewn_body_count", "clean_details", "clean_line", "clean_words", "confirmed_connection", "connection_answer", "fea_view",
+           "SIZING_OUT_OF_TIME", "SIZING_WORKER_GONE", "blocker", "body_count", "sewn_body_count", "clean_details", "clean_line", "clean_words", "confirmed_connection", "connection_answer", "fea_view",
            "hot_spot_words", "in_unit", "measure_view", "not_solid_message", "parts_words", "stage_route"]

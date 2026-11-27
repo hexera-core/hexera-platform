@@ -68,6 +68,9 @@ def whole_sizes(sizes: Mapping[str, Mapping] | None, req: Mapping | None, part_i
         # NOTE-14: a shortest edge the user said is flexible is a target: the zones the accuracy rules make finer (a
         # round's elements, a thin wall's) keep their size under it; the part's own size still follows it
         entry["min_flexible"] = True
+    elif lo is not None:
+        # VER-19: the shortest element the user's sizes allow - a spot asked finer on a delivered mesh stops at it
+        entry["floor_m"] = float(f"{float(lo) * 1e-3:.6g}")
     for pid in part_ids:
         out.setdefault(str(pid), dict(entry))
     return out
@@ -141,14 +144,113 @@ def _placed(row: Mapping, req: Mapping, places: Mapping) -> bool:
     return False
 
 
+def _picked_entry(row: Mapping, req: Mapping, places: Mapping | None) -> Mapping | None:
+    """NOTE-17: the parts reader's entry that sized the faces picked for this row (cad/part_words.with_picks)."""
+    def squash(t: str) -> str:
+        return "".join(ch for ch in str(t or "").lower() if ch.isalnum())
+
+    quote = next((str(e.get("quote") or "") for e in req.get("local") or [] if e.get("id") == row["id"]), "")
+    q = squash(quote or str(row.get("quote") or ""))
+    for e in (places or {}).get("entries") or []:
+        if e.get("rule") == "NOTE-17" and e.get("picked") and q and squash(str(e.get("quote") or "")) == q:
+            return e
+    return None
+
+
+def _not_picked(row: Mapping, req: Mapping, places: Mapping | None, where: str) -> str:
+    """NOTE-17: why nothing was set on the faces picked for this row, in the parts reader's own words."""
+    quote = next((str(e.get("quote") or "") for e in req.get("local") or [] if e.get("id") == row["id"]), "")
+    why = next((str(d).split(": ", 1)[-1] for d in (places or {}).get("dropped") or []
+                if quote and str(d).startswith(f'"{" ".join(quote.split())[:300]}"')), "")
+    return (f"not applied - {why}" if why else
+            f"not applied - {where or 'the face you picked'} is not on the model as meshed, so nothing was set there "
+            "(no other face was guessed)")
+
+
+def face_size_mm(mesh, faces: Iterable[str], *, face_tags: Mapping[str, Iterable[int]] | None = None,
+                 mm_per_unit: float = 1000.0) -> float | None:
+    """The typical element size ON the named CAD faces of a built solid (the median edge of the boundary triangles
+    meshed on them, corner nodes), in mm; None when none of them holds a triangle. A single part's Face_k is CAD tag k
+    (the mesh is keyed by the CAD's own tags); an assembly's names need `face_tags`."""
+    tags: list[int] = []
+    for f in faces:
+        if face_tags and f in face_tags:
+            tags.extend(int(t) for t in face_tags[f])
+        elif str(f).startswith("Face_") and str(f)[5:].isdigit():
+            tags.append(int(str(f)[5:]))
+    tris = [np.asarray(mesh.faces[t])[:, :3] for t in tags if t in (mesh.faces or {}) and len(mesh.faces[t])]
+    if not tris:
+        return None
+    ids = np.asarray(mesh.node_ids)
+    index = np.full(int(ids.max()) + 1, -1, dtype=np.int64)
+    index[ids] = np.arange(len(ids))
+    t = index[np.concatenate(tris).astype(np.int64)]
+    xyz = np.asarray(mesh.xyz, dtype=float)
+    edges = np.concatenate([np.linalg.norm(xyz[t[:, b]] - xyz[t[:, a]], axis=1) for a, b in ((0, 1), (1, 2), (2, 0))])
+    return float(np.median(edges)) * mm_per_unit
+
+
+def _picked_row(row: Mapping, req: Mapping, entry: Mapping, mesh, *, places: Mapping, face_tags,
+                mm_per_unit: float) -> dict:
+    """NOTE-17: a size on the faces picked on the model, asked against what was built on them (named by the faces
+    still on the model; one no longer there is told by the parts reader's own line)."""
+    from meshpipeline.cad.part_words import PICK
+
+    local: Mapping = next((e for e in req.get("local") or [] if e.get("id") == row["id"]), {})
+    part = next((p for p in entry.get("parts") or [] if str(p).startswith(PICK)), "")
+    where = next((str(r.get("name") or "") for r in places.get("parts") or [] if r.get("id") == part), "")
+    where = where or str(local.get("where") or "the face you picked")
+    got = face_size_mm(mesh, entry.get("picked") or [], face_tags=face_tags, mm_per_unit=mm_per_unit)
+    if got is None:
+        return {"applied": True, "met": None, "delivered": f"set on {where}; not measured on the built mesh",
+                **({"area": part} if part else {})}
+    asked = local.get("mm")
+    met = None if asked is None else bool(0.5 * float(asked) <= got <= 1.5 * float(asked))
+    return {"applied": True, "met": met, "measured": float(f"{got:.4g}"),
+            "delivered": f"elements on {where} are about {MR._g(round(got, 2))} mm", **({"area": part} if part else {})}
+
+
+def _finer_row(row: Mapping, req: Mapping, finer: list, mesh, *, face_tags, mm_per_unit: float) -> dict | None:
+    """PLAN-fea-36: a place asked "finer" with no number, asked against built - what the plan did (half the mesh
+    round it, or kept at the rules' sizes, already finer than that) and the size measured on its faces. None when
+    the row is no such ask."""
+    def squash(t: str) -> str:
+        return "".join(ch for ch in str(t or "").lower() if ch.isalnum())
+
+    quote = next((str(e.get("quote") or "") for e in req.get("local") or [] if e.get("id") == row["id"]), "")
+    q = squash(quote or str(row.get("quote") or ""))
+    hit = next((r for r in finer if q and squash(str(r.get("quote") or ""))
+                and (q in squash(str(r["quote"])) or squash(str(r["quote"])) in q)), None)
+    if hit is None:
+        return None
+    around = (f"your {float(hit['around_mm']):.3g} mm" if hit.get("yours")
+              else f"the part's {float(hit['around_mm']):.3g} mm")
+    built = face_size_mm(mesh, hit.get("faces") or [], face_tags=face_tags, mm_per_unit=mm_per_unit)
+    there = f"; built about {MR._g(round(built, 3))} mm there" if built else ""
+    if hit.get("change"):
+        # VER-9: against the delivered mesh the change was asked on
+        said = (f"made about {MR._g(float(hit['target_mm']))} mm there, {'twice' if hit.get('coarser') else 'half'} "
+                f"the {MR._g(float(hit['there_mm']))} mm the last mesh had there{there}")
+    elif hit.get("changed"):
+        said = f"made about {MR._g(float(hit['target_mm']))} mm there, half of {around}{there}"
+    else:
+        said = (f"kept at the {MR._g(float(hit['there_mm']))} mm the accuracy rules give there, already finer than "
+                f"half of {around}{there}; give a size to go finer")
+    return {"applied": True, "met": None, "delivered": said,
+            **({"measured": float(f"{built:.4g}")} if built else {}), "area": hit.get("id")}
+
+
 def report(mesh, req: Mapping | None, *, mm_per_unit: float = 1000.0, order: int = 2,
            applied: Mapping | None = None, through_wall: float | None = None,
-           places: Mapping | None = None) -> dict | None:
+           places: Mapping | None = None, face_tags: Mapping[str, Iterable[int]] | None = None,
+           finer: Iterable[Mapping] | None = None) -> dict | None:
     """PLAN-fea-34: for every requirement read from the notes, what was asked and what the built solid mesh
     delivers (the shape of engines/shell_requirements.report). None with no requirement. `mm_per_unit`: the
     mesh's coordinates in millimetres each (the solid is meshed in metres). `applied`: what the plan's seam did with
     each control (the plan's "controls", NOTE-13), when the caller has the plan. `through_wall`: the fewest
-    elements measured through a wall of the plan (engines/fea_checks), which the count through the walls is held to."""
+    elements measured through a wall of the plan (engines/fea_checks), which the count through the walls is held to.
+    `finer`: the plan's places asked "finer" with no number (PLAN-fea-36, fea_part_sizes.finer_outcomes)."""
+    finer = list(finer or [])
     if not req or not req.get("rows"):
         return None
     m = _measures(mesh)
@@ -160,15 +262,28 @@ def report(mesh, req: Mapping | None, *, mm_per_unit: float = 1000.0, order: int
     for row in req["rows"]:
         field = str(row["field"])
         flow = MR.elements_row(field, req, n, "solid") if field in MR.FLOW_FIELDS else None
-        if field == "local" and places is not None and not _placed(row, req, places):
+        picked = field == "local" and any(e.get("faces") for e in req.get("local") or [] if e.get("id") == row["id"])
+        sized = _picked_entry(row, req, places) if picked else None
+        if sized is not None and places is not None:
+            # NOTE-17: the faces picked on the model were sized as their own area: asked against built on them
+            flow = _picked_row(row, req, sized, mesh, places=places, face_tags=face_tags, mm_per_unit=mm_per_unit)
+        elif picked or (field == "local" and places is not None and not _placed(row, req, places)):
             # NOTE-6: a size in one named place the parts reader tied to no part or area of this one: nothing was set
             # there, so never "applied as a setting" ("make the mesh finer at the fillets", fea0254, round 4: J)
             where = next((str(e.get("where") or "") for e in req.get("local") or [] if e.get("id") == row["id"]), "")
             flow = {"applied": False, "met": None,
-                    "delivered": (f"not applied - no such place was found on the part{f' ({where})' if where else ''}"
-                                  if places.get("status") == "used" else
+                    # NOTE-17: no face picked for it is on the model as meshed, or the size did not hold there (the
+                    # parts reader's own line says which): never another face
+                    "delivered": _not_picked(row, req, places, where)
+                    if picked else
+                    (f"not applied - no such place was found on the part{f' ({where})' if where else ''}"
+                                  if (places or {}).get("status") == "used" else
                                   "not applied - the notes about parts were not read this run, so no place was sized")}
-        if flow is not None:
+        told = (_finer_row(row, req, finer, mesh, face_tags=face_tags, mm_per_unit=mm_per_unit)
+                if field == "local" and finer and sized is None and not picked else None)
+        if told is not None:
+            got = told
+        elif flow is not None:
             got = flow
         elif field.startswith("limit:"):
             got = _limit_row(limits[row["id"]], m, n)

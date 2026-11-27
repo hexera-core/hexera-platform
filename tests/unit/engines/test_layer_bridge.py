@@ -187,10 +187,15 @@ def test_the_internal_case_bridges_from_the_cells_its_layers_grow_into(tmp_path)
     assert summary["near_band_level"] > summary["surface_level"][1] and cell < 0.006
     # bridged from the band's cells (half the wall level's), with the wall's own area for the room
     n = int(_num(text, "nSurfaceLayers"))
-    assert abs(n - CR.layer_bridge(FIRST_MM * 1e-3, cell, n_plan=5, growth=1.2, last_rel=0.3)[0]) <= 1 and n > 15
+    n_b, _f, stack = CR.layer_bridge(FIRST_MM * 1e-3, cell, n_plan=5, growth=1.2, last_rel=0.3)
+    # the bridged stack is thicker than the cells it grows into, so it is capped there from the asked first
+    # height (CFDREQ-9 on a curved wall, rulebook 75) - fewer layers than the bridge, still far more than 5
+    n_c, g_c, _s, _l = CR.capped_stack(FIRST_MM * 1e-3, cell, stack, cell, 1.2)
+    assert stack > cell and abs(n - n_c) <= 1 and 5 < n < n_b
+    assert abs(_num(text, "firstLayerThickness") - FIRST_MM * 1e-3) < 1e-12
     assert _num(text, "minDeterminant", inside="relaxed") < 0.001
     row = ask.rows[ask.rid("layers:first_height")]
-    assert f"{n} layers (not our usual 5)" in row["built"]
+    assert f"{n} layers, each" in row["built"] and "a thicker stack is not kept" in row["built"]
     # nothing asked: the case it always wrote
     ws2 = tmp_path / "bare"
     (ws2 / "system").mkdir(parents=True)
@@ -249,3 +254,34 @@ def test_the_room_counts_only_the_wall_the_fluid_touches():
     assert n == 18 and (n - 5) * 113_680 <= 2_500_000
     assert CR.layer_bridge(2.066e-5, 0.00238, n_plan=5, growth=1.2, last_rel=0.3, faces=235_911,
                            room=2_500_000)[0] == 15
+
+
+# CFDREQ-15: a resolved stack is not taken back for face twist in the layer stage
+
+def test_a_deep_resolved_stack_is_kept_without_the_layer_stage_twist_bar():
+    """The duct transition_005 and the aircraft abc 00049961 replays: twist under 0.02 was most of pass 0's refused
+    faces, and each one cost a cone of layer cells round it (64.2 -> 83.1% and 76.5 -> 98.3% of the layer cells with
+    the layer stage's twist bar off)."""
+    text = CR.snappy_dict(_first(), DICT, wall_cell_m=CELL_M, bridge={"faces": 110_000, "room": 3_000_000})
+    assert _num(text, "nSurfaceLayers") == 21
+    assert _num(text, "minTwist", inside="relaxed") == -1
+    # snapping and the final check keep our own bar; the buffer is not touched
+    main = re.sub(r"relaxed\s*\{[^}]*\}", "", text)
+    assert _num(main, "minTwist") == 0.02
+    assert "nBufferCellsNoExtrude -1" not in text
+
+
+def test_a_shallow_or_wall_function_stack_keeps_the_twist_bar():
+    # the user's own 5 layers: not a deep stack
+    text = CR.snappy_dict(_first(count=5), DICT, wall_cell_m=CELL_M, bridge={"faces": 110_000, "room": 3_000_000})
+    assert _num(text, "minTwist", inside="relaxed") is None
+    # a thick (wall-function) first layer is fitted to few layers: unchanged
+    text = CR.snappy_dict(_first(1.348), DICT, wall_cell_m=0.001716, bridge={"faces": 50_000, "room": 3_000_000})
+    assert _num(text, "minTwist", inside="relaxed") is None
+    # the decision reads the dict's final count, and a wall-function stack of any depth keeps the bar
+    deep = DICT.replace("nSurfaceLayers 5;", "nSurfaceLayers 10;")
+    assert _num(CR._layer_twist(_first(), deep, resolved=False), "minTwist", inside="relaxed") is None
+    assert _num(CR._layer_twist(_first(), deep, resolved=True), "minTwist", inside="relaxed") == -1
+    six = DICT.replace("nSurfaceLayers 5;", "nSurfaceLayers 6;")
+    assert _num(CR._layer_twist(_first(), six, resolved=True), "minTwist", inside="relaxed") == -1
+    assert _num(CR._layer_twist(_first(), DICT, resolved=True), "minTwist", inside="relaxed") is None

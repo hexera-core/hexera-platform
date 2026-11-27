@@ -69,7 +69,7 @@ def test_a_flanged_tube_stages_its_bore_alone(tmp_path):
     assert out is not None
     tris = {k: _read(v) for k, v in out.items()}
     disc = math.pi * 0.020 ** 2
-    assert whole_inlet > 1.5 * disc                      # the carve's cap spans the mouth
+    assert whole_inlet == pytest.approx(disc, rel=0.02)  # the carve's cap is the mouth (INS-26)
     for port in ("inlet", "outlet"):
         assert _area(tris[port]) == pytest.approx(disc, rel=0.02)
     surface = np.concatenate(list(tris.values()))

@@ -61,7 +61,7 @@ def test_a_run_headed_past_its_budget_with_its_layers_trips_before_the_layers(tm
     reason = brake()
     assert reason and "with layers" in reason
     assert brake.tripped == {"stage": "with layers", "cells": 13_076_800, "budget": 2_000_000,
-                             "margin": 2.0, "ratio": 6.54}
+                             "margin": 2.0, "ratio": 6.54, "castellated": 2_001_224}
 
 
 def test_a_castellated_mesh_far_past_its_budget_trips_at_once(tmp_path):
@@ -279,3 +279,42 @@ def test_a_released_case_has_no_budget_and_is_never_braked(tmp_path):
     assert rec["plan_cells"] == 2_000_000 and rec[SB.BRAKE_RELEASED]
     assert SB.case_budget(tmp_path) is None
     assert SB.BRAKE_RULE == "RUN-8"
+
+
+# RUN-8: THE WALL A STOPPED PASS MEASURED
+
+_RM5_LOG = ("Refined mesh : cells:3124294  faces:10110581  points:3879161  unbalance:0.0088\n"
+            "Snapped mesh : cells:3124294  faces:10011072  points:3786745  unbalance:0.0088\n"
+            "Ideal layer addition : cells:1.16494e+07  unbalance:0.706544\n")
+
+
+def test_a_stop_on_the_with_layers_count_carries_the_castellated_count(tmp_path):
+    log = tmp_path / "snappyHexMesh.log"
+    log.write_text(_RM5_LOG)
+    brake = SB.SizeBrake(log, 4_000_000)
+    assert brake()
+    assert brake.tripped["stage"] == "with layers" and brake.tripped["castellated"] == 3_124_294
+
+
+def test_the_learned_factor_is_the_measured_wall_over_the_priced_one():
+    # RM5 pass 1: 17 layers; (11.65 M - 3.12 M) / 17 = 0.50 M wall faces against 0.15 M priced
+    t = {"stage": "with layers", "cells": 11_649_400, "castellated": 3_124_294, "budget": 4_000_000}
+    k = SB.learned_face_factor(t, {"wall_faces_est": 150_000, "layers_est": 17})
+    assert k is not None and abs(k - (11_649_400 - 3_124_294) / 17 / 150_000) < 1e-9
+    # nothing learned from a castellated stop, a missing count, or a record without the priced wall
+    assert SB.learned_face_factor({**t, "stage": "castellated"}, {"wall_faces_est": 1, "layers_est": 1}) is None
+    assert SB.learned_face_factor({k_: v for k_, v in t.items() if k_ != "castellated"},
+                                  {"wall_faces_est": 150_000, "layers_est": 17}) is None
+    assert SB.learned_face_factor(t, {}) is None
+    # never under 1 (a plan that over-priced is not made cheaper by it), never past the cap
+    assert SB.learned_face_factor(t, {"wall_faces_est": 10 ** 9, "layers_est": 17}) == 1.0
+    assert SB.learned_face_factor(t, {"wall_faces_est": 1, "layers_est": 17}) == SB.LEARNED_FACE_FACTOR_MAX
+
+
+def test_the_estimate_takes_the_learned_wall():
+    from meshpipeline.engines.snappy import snappy_runner as R
+    base = R.final_estimate(castellated=3.4e6, budget=10 ** 12, area=1.0, wall_cell=0.0025, n_layers=17)
+    k3 = R.final_estimate(castellated=3.4e6, budget=10 ** 12, area=1.0, wall_cell=0.0025, n_layers=17,
+                          face_factor=3.0)
+    assert base is not None and k3 is not None
+    assert abs((k3 - 3.4e6) - 3.0 * (base - 3.4e6)) < 1.0

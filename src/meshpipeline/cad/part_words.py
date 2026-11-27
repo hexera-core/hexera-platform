@@ -273,16 +273,22 @@ def wanted(state: Mapping) -> bool:
 
 def messages_for(state: Mapping, table: list[dict], pictures: list[Path], *, consumer: str,
                  purpose: str = "") -> list[dict]:
+    """What the reader is sent: the notes and the parts table, the parts' pictures, then the user's own pictures
+    (NOTE-16: the newest few, each after a line naming the note it came with - contracts/user_pictures; their data
+    URLs exist only here, in the request). Blocking (the pictures are read)."""
     from meshpipeline.contracts.user_notes import own_notes, prompt_block
+    from meshpipeline.contracts.user_pictures import content_parts
     s = state or {}
+    notes = own_notes(s.get("user_notes") or [])
     text = {"mesh_for": purpose,
-            "user_notes": prompt_block(own_notes(s.get("user_notes") or []), consumer=consumer),
+            "user_notes": prompt_block(notes, consumer=consumer),
             "parts": table,
             "pictures": [p.stem for p in pictures]}
     content: list[dict] = [{"type": "text", "text": json.dumps(text, sort_keys=True, separators=(",", ":"))}]
     for p in pictures:
         content.append({"type": "image_url", "image_url": {
             "url": "data:image/png;base64," + base64.b64encode(Path(p).read_bytes()).decode("ascii")}})
+    content += content_parts(notes, s.get("session_id"))
     return [{"role": "system", "content": SYSTEM}, {"role": "user", "content": content}]
 
 
@@ -296,6 +302,12 @@ _NUM = re.compile(r"\d+(?:[.,]\d+)?|\.\d+")
 
 def _norm(text: str) -> str:
     return " ".join(_DASHES.sub("-", str(text or "")).casefold().split())
+
+
+def quoted_in(quote: str, text: str) -> bool:
+    """The reader's own word-for-word test (`check`): whether a phrase's quote stands in a text."""
+    q = _norm(quote)
+    return bool(q) and q in _norm(text)
 
 
 def _numbers(text: str) -> list[float]:
@@ -360,9 +372,25 @@ def _check(arguments: str, table: list[dict], notes: str,
         if unit not in UNITS_MM:
             dropped.append(f"{tag}: the unit {unit!r} is not a length unit, so nothing was applied for it")
             continue
+        absent = _absent_kind(quote, rows) if not why.startswith("picked by you") and not e.get("everything_else") \
+            else ""
+        if absent:
+            # NOTE-23: A KIND OF PLACE THIS PART DOES NOT HAVE ("finer at the fillets" on a flat panel with holes and
+            # notches) is never spread over the whole part: nothing is set, and the words wait for a click (NOTE-22)
+            found = found_words(rows)
+            if unsure is not None:
+                unsure.append({"phrase": i, "quote": quote, "ask": ask, "none_of": absent, "noun": absent,
+                               "found": found, "why": f"the words name {_plural(absent)} and the part has none",
+                               **({"min_mm": _g(lo * UNITS_MM[unit]), "max_mm": _g(hi * UNITS_MM[unit])}
+                                  if ask == "size" else {})})
+            dropped.append(f"{tag}: this part has no {_plural(absent)}" + (f" (it has {found})" if found else "")
+                           + ", so nothing was applied until you click the face you mean")
+            continue
         holes = _holes_named(quote, rows)
+        tied_by_us = False
         if holes and (conf is None or conf < MIN_CONFIDENCE
                       or not any(str(p) in rows for p in e.get("parts") or [])):
+            tied_by_us = True
             # NOTE-6: words about the holes are tied by our own hole finding, the same every run: every area of the
             # hole kinds (holes, hole groups, bores). A reader unsure whether "the holes" meant the one bore it saw
             # left a place that exists on the part "could not be applied" (fea0184, m483 round 10)
@@ -398,6 +426,23 @@ def _check(arguments: str, table: list[dict], notes: str,
         if not ids and not rest:
             dropped.append(f"{tag}: it named no part, so nothing was applied for it")
             continue
+        one = _one_place(quote) if why != "picked by you" and not rest else ""
+        if one:
+            # NOTE-21: WORDS THAT NAME ONE PLACE ("this hole", "that fillet") are never spread over several. Our own
+            # hole tie is narrowed by what the words say (a part, a size, big or small); one candidate left is set as
+            # before, several the words do not tell apart wait for one click - nothing is applied for them
+            if tied_by_us:
+                ids = _told_apart(ids, rows, quote)
+            n = _candidates(ids, rows)
+            if n > 1:
+                if unsure is not None:
+                    unsure.append({"phrase": i, "quote": quote, "ask": ask, "which_one": n, "noun": one,
+                                   "why": f"the words name one {one} and the part has {n} they do not tell apart",
+                                   **({"min_mm": _g(lo * UNITS_MM[unit]), "max_mm": _g(hi * UNITS_MM[unit])}
+                                      if ask == "size" else {})})
+                dropped.append(f"{tag}: it names one {one} and there are {n} it could be, so nothing was applied "
+                               "until you click the one you mean")
+                continue
         entry: dict[str, Any] = {"phrase": i, "parts": [], "everything_else": rest, "ask": ask, "quote": quote, "why": why,
                  "confidence": round(float(conf), 2),
                  **({"min_mm": _g(lo_mm), "max_mm": _g(hi_mm), "unit": unit, "asked": [lo, hi]} if ask == "size" else {})}
@@ -466,6 +511,121 @@ def _holes_named(quote: str, rows: Mapping[str, Mapping]) -> list[str]:
     if not _HOLE_WORDS.search(str(quote or "")):
         return []
     return [str(i) for i, r in rows.items() if r.get("feature") and str(r.get("kind") or "") in HOLE_KINDS]
+
+
+#: NOTE-21: words that name ONE place are never spread over several (rulebook 88)
+ONE_PLACE_RULE = "NOTE-21"
+#: the places of a part people name one at a time (cad/part_features' areas and their everyday names)
+#: (a feature's own name first: "the round hole" names a hole; the shape words only when no feature is named)
+_PLACE_NOUNS = (("hole", "bore", "fillet", "notch", "slot", "groove", "boss", "rib", "flange", "pocket", "chamfer",
+                 "cutout", "opening", "lip", "tab"), ("round", "corner", "edge", "face", "wall"))
+_ONE_LEAD = r"\b(?:this|that|the|a|an|one|single)\s+(?:[\w.]+\s+){0,3}?"
+
+
+def _plural(noun: str) -> str:
+    return noun + ("es" if noun.endswith(("ch", "sh", "s", "x")) else "s")
+
+
+#: NOTE-23: a kind of place the part does not have is never spread over the whole part (rulebook 92)
+NONE_HERE_RULE = "NOTE-23"
+#: NOTE-6's kinds of place as the user names them, singular or plural, and the area kinds (cad/part_features) that
+#: are one: (noun, words, kinds). A flange or a rib is a thin wall or a large flat face; a bend a rounded edge, a thin
+#: wall or a flat face (a bent sheet's legs) - any of them on the part and the words are read as before
+_KIND_WORDS = (
+    ("hole", r"holes?", HOLE_KINDS), ("bore", r"bores?", HOLE_KINDS), ("notch", r"notch(?:es)?", ("notch",)),
+    ("fillet", r"fillets?", ("fillets",)), ("boss", r"boss(?:es)?", ("bosses",)), ("shaft", r"shafts?", ("bosses",)),
+    ("thin wall", r"thin[\s-]*walls?", ("thin wall",)), ("flange", r"flanges?", ("thin wall", "flat face")),
+    ("rib", r"ribs?", ("thin wall", "flat face")), ("bend", r"bends?", ("fillets", "thin wall", "flat face")))
+#: what was found, as the reply names it: (area kinds, noun)
+_FOUND = ((("hole", "hole group"), "hole"), (("bore",), "bore"), (("notch",), "notch"), (("fillets",), "fillet"),
+          (("bosses",), "boss"))
+
+
+def _absent_kind(quote: str, rows: Mapping[str, Mapping]) -> str:
+    """NOTE-23: the kind of place the words name when this part has none of it ("fillet" for "finer at the fillets" on
+    a panel with only holes and notches); "" when the words name no kind, or one the part has, or when it cannot be
+    told: a model of more than one body (a part's own name may be the word, NOTE-4), faces not measured (the flow
+    route's staged STL has no CAD faces), the area list cut at its most, or a plate's thin walls (the plate itself)."""
+    named = [(noun, kinds) for noun, words, kinds in _KIND_WORDS if re.search(rf"\b{words}\b", str(quote or ""), re.I)]
+    bodies = [r for r in rows.values() if not r.get("feature")]
+    if not named or len(bodies) != 1 or not int(bodies[0].get("faces") or 0):
+        return ""
+    from meshpipeline.cad.part_features import MAX_FEATURES
+    have = {str(r.get("kind") or "") for r in rows.values() if r.get("feature")}
+    if sum(1 for r in rows.values() if r.get("feature")) >= MAX_FEATURES:
+        return ""
+    body = bodies[0]
+    name = str(body.get("name") or "")
+    sizes = [float(s) for s in body.get("size_mm") or () if _f(s)]
+    plate = bool(sizes) and float(_f(body.get("typical_wall_mm")) or 0.0) >= 0.5 * min(sizes)
+    for noun, kinds in named:
+        if have & set(kinds) or re.search(rf"\b{noun}", name, re.I) or (noun == "thin wall" and plate):
+            return ""
+    return named[0][0]
+
+
+def found_words(rows: Mapping[str, Mapping]) -> str:
+    """NOTE-23: the places the part does have, as the reply names them ("10 holes and 4 notches"); "" for none."""
+    out = []
+    for kinds, noun in _FOUND:
+        n = sum(int(c) if isinstance((c := r.get("count")), (int, float)) and c >= 1 else 1
+                for r in rows.values() if r.get("feature") and str(r.get("kind") or "") in kinds)
+        if n:
+            out.append(f"{n} {noun if n == 1 else _plural(noun)}")
+    if len(out) < 2:
+        return "".join(out)
+    return ", ".join(out[:-1]) + f" and {out[-1]}"
+
+
+#: the area kinds whose count is how many of them there are (a thin-wall area's count is its faces)
+_COUNTED_KINDS = ("hole", "hole group", "bore", "notch", "fillets", "bosses")
+_BIG = re.compile(r"\b(?:big|bigger|biggest|large|larger|largest|main|wide|widest)\b", re.I)
+_SMALL = re.compile(r"\b(?:small|smaller|smallest|little|tiny|narrow|narrowest)\b", re.I)
+
+
+def _one_place(quote: str) -> str:
+    """NOTE-21: the noun when the words name ONE place ("this hole", "that fillet", "the notch here", "the 22 mm
+    hole"); "" when they name none or several ("the holes", "all holes", "every fillet", "each hole")."""
+    q = str(quote or "")
+    for nouns in _PLACE_NOUNS:
+        m = re.search(_ONE_LEAD + r"(" + "|".join(nouns) + r")\b", q, re.I)
+        if m:
+            noun = m.group(1).casefold()
+            many = re.search(rf"\b{_plural(noun)}\b", q, re.I) or re.search(
+                rf"\b(?:all|every|each|both|any)\s+(?:[\w.]+\s+){{0,3}}?{noun}\b", q, re.I)
+            return "" if many else noun
+    return ""
+
+
+def _candidates(ids: list[str], rows: Mapping[str, Mapping]) -> int:
+    """How many places the ids are: a hole group or a fillet group counts its members; any other row is one."""
+    n = 0
+    for p in ids:
+        r = rows.get(p) or {}
+        c = r.get("count") if r.get("feature") and str(r.get("kind") or "") in _COUNTED_KINDS else 1
+        n += int(c) if isinstance(c, (int, float)) and c >= 1 else 1
+    return n
+
+
+def _told_apart(ids: list[str], rows: Mapping[str, Mapping], quote: str) -> list[str]:
+    """NOTE-21: the candidates the words tell apart: those in the part the words name ("in part 2"), those whose own
+    size is a number in the words ("the 22 mm hole"), the biggest or the smallest when the words say so. The ids as
+    they were when the words say none of these."""
+    q = str(quote or "")
+    cands = list(ids)
+    part = re.search(r"\bpart\s*(\d+)\b", q, re.I)
+    if part:
+        cands = [p for p in cands if str((rows.get(p) or {}).get("in_part") or "").rsplit("_", 1)[-1] == part.group(1)]
+    nums = set(_numbers(q))
+    if nums:
+        sized = [p for p in cands if nums & set(_numbers(str((rows.get(p) or {}).get("name") or "")))]
+        cands = sized or cands
+    if len(cands) > 1 and (_BIG.search(q) or _SMALL.search(q)):
+        size = {p: float((rows.get(p) or {}).get("diag_mm") or 0.0) for p in cands}
+        pick = max(size.values()) if _BIG.search(q) else min(size.values())
+        ends = [p for p in cands if size[p] == pick]
+        cands = ends if len(ends) == 1 else cands
+    return cands
 
 
 def _by_geometry(ids: list[str], rows: Mapping[str, Mapping]) -> tuple[list[str], bool]:
@@ -589,6 +749,116 @@ def from_stored(stored: Mapping | None, table: list[dict]) -> dict | None:
                    phrases=stored.get("phrases") or [], unsure=stored.get("unsure") or [])
 
 
+# #
+# NOTE-17: the faces the user picked on the model, as areas of their own
+# #
+PICK = "Pick_"
+_PICK_ASK = {"size": "size", "finer": "refine", "coarser": "coarsen"}
+GONE_WORDS = "is no longer on the model as meshed, so nothing was applied there (no other face was guessed)"
+
+
+def _unit_of(mm: float, quote: str) -> tuple[float, str]:
+    """(the number the user wrote, its unit) for a size the requirements hold in millimetres: the unit whose number
+    is in their words ("0.1 in" is 2.54 mm), else millimetres."""
+    nums = _numbers(quote)
+    for unit, k in UNITS_MM.items():
+        v = float(mm) / k
+        if any(abs(v - n) <= 1e-6 * max(1.0, abs(n)) for n in nums):
+            return v, unit
+    return float(mm), "mm"
+
+
+def with_picks(ps: Mapping | None, req: Mapping | None, surface) -> dict:
+    """NOTE-17: the reading `ps` with each size typed with faces picked on the model (engines/mesh_requirements
+    .bind_picks: a `local` entry with `faces` and their `sigs`) as an area of its own, `Pick_n` (`feature`, its
+    faces in `features`, `in_part`), and an entry tied to it with the user's quote and numbers, checked by the same
+    rules as any other (`check`: quote in the words, numbers in the quote, size sane for the area). Each picked face
+    is kept only when it is still the face picked on THIS run's own surface (cad/face_map.same_face: its area and
+    centre); one that is not is told, never guessed. The user's pick wins over the reader on the same words: an entry
+    the reader tied to a whole part for those words is dropped (a size typed with a pick is never the part's).
+    Pure; never raises; `ps` unchanged when nothing was picked."""
+    picks = [e for e in (req or {}).get("local") or [] if isinstance(e, Mapping) and e.get("faces")]
+    if not picks:
+        return dict(ps) if ps is not None else section("none")
+    try:
+        from meshpipeline.cad import face_map as FM
+        fm = FM.from_surface(surface, scale_to_m=1.0)
+    except Exception as exc:  # noqa: BLE001 - no surface to re-check against: every pick told, none guessed
+        logger.warning("part words: picked faces not re-checked (%s)", type(exc).__name__)
+        fm = None
+    ps = dict(ps or {})
+    used = ps.get("status") == "used"
+    entries = [dict(e) for e in ps.get("entries") or []] if used else []
+    table = [dict(r) for r in ps.get("parts") or []] if used else []
+    features = dict(ps.get("features") or {})
+    dropped = list(ps.get("dropped") or []) if used else []
+    said = list(ps.get("words") or []) if used else ([str(ps.get("note"))] if ps.get("note") and
+                                                     ps.get("status") not in (None, "none") else [])
+    quotes = {_norm(str(e.get("quote") or "")) for e in picks}
+    # the pick wins on its own words: the reader's entry for the same words sized a whole part
+    entries = [e for e in entries if not any(q and (q in _norm(str(e.get("quote") or "")) or
+                                                    _norm(str(e.get("quote") or "")) in q) for q in quotes)]
+    for n, e in enumerate(picks, 1):
+        pid = f"{PICK}{n}"
+        ids = [str(f) for f in e.get("faces") or []]
+        sigs = list(e.get("sigs") or [])
+        labels = list(e.get("labels") or [])
+        quote = " ".join(str(e.get("quote") or "").split())[:300]
+        kept: list[str] = []
+        gone: list[str] = []
+        for i, f in enumerate(ids):
+            sig = sigs[i] if i < len(sigs) and isinstance(sigs[i], Mapping) else None
+            ok = fm is not None and sig is not None and FM.same_face(fm, f, dict(sig))
+            (kept if ok else gone).append(f)
+        for f in gone:
+            label = labels[ids.index(f)] if ids.index(f) < len(labels) and labels[ids.index(f)] else f
+            dropped.append(f'"{quote}": the face you picked ({label}) {GONE_WORDS}')
+        if not kept or fm is None:
+            continue
+        import numpy as np
+        sel = np.isin(fm.label, [fm.names.index(f) for f in kept])
+        pts = fm.xyz[np.unique(fm.tris[sel])].astype(float) * 1000.0
+        diag = float(np.linalg.norm(pts.max(axis=0) - pts.min(axis=0))) if len(pts) else 0.0
+        shown = [labels[ids.index(f)] if ids.index(f) < len(labels) and labels[ids.index(f)] else f for f in kept]
+        where = (f"the face you picked ({shown[0]})" if len(kept) == 1 else
+                 f"the {len(kept)} faces you picked ({'; '.join(shown[:3])}{'; ...' if len(shown) > 3 else ''})")
+        if e.get("marked"):
+            # VER-18: a spot marked on the delivered mesh for a second look, not a face picked at the plan step
+            where = f"the spot you marked ({'; '.join(shown[:2])}{'; ...' if len(shown) > 2 else ''})"
+        row = {"id": pid, "feature": True, "kind": "picked", "name": where, "in_part": _part_of(kept[0]),
+               "faces": len(kept), **({"diag_mm": _g(diag)} if diag > 0 else {})}
+        ask = _PICK_ASK.get(str(e.get("what") or "size"), "size")
+        phrase: dict[str, Any] = {"quote": quote, "ask": ask, "parts": [pid], "everything_else": False,
+                                  "confidence": 1.0, "why": "picked by you on the model"}
+        if ask == "size":
+            if e.get("mm") is None:
+                dropped.append(f'"{quote}": no size was read from it, so nothing was applied there')
+                continue
+            v, unit = _unit_of(float(e["mm"]), quote)
+            phrase.update(min=v, max=v, unit=unit)
+        got, why_not, _w = check(json.dumps({"phrases": [phrase]}), [row], quote)
+        dropped.extend(d.replace(pid, where) for d in why_not)
+        for g in got:
+            g.update(phrase=None, rule="NOTE-17", picked=kept,
+                     # VER-9: asked on a delivered mesh - "finer" is against the size that run had here
+                     **({"change_of": str(e["change_of"])} if e.get("change_of") else {}),
+                     # VER-18: the mark it answers, and what the second look found there
+                     **({"marked": int(e["marked"]), "finding": str(e.get("finding") or ""),
+                         "marked_where": "; ".join(shown[:2])} if e.get("marked") else {}))
+            entries.append(g)
+            table.append(row)
+            features[pid] = kept
+    # a phrase that waited for a click (NOTE-21) is placed by the pick on its words (NOTE-22): no longer unplaced
+    unsure = [u for u in (ps.get("unsure") or [] if used else [])
+              if not (isinstance(u, Mapping) and _norm(str(u.get("quote") or "")) in quotes)]
+    out = section("used", entries=entries, dropped=dropped, words=said, table=table,
+                  pictures=ps.get("pictures") or [], note=str(ps.get("note") or ""), key=str(ps.get("key") or ""),
+                  source=str(ps.get("source") or "picked on the model"), phrases=ps.get("phrases") or [],
+                  unsure=unsure)
+    out["features"] = features
+    return out
+
+
 def _key(messages: list[dict], tool: dict) -> str:
     import hashlib
     return hashlib.sha256(json.dumps({"m": messages, "t": tool}, sort_keys=True).encode()).hexdigest()[:16]
@@ -629,6 +899,24 @@ def table_of(record: Mapping, surface) -> tuple[list[dict], dict[str, list[str]]
     return table, faces_of, shown
 
 
+def _as_run(kept: dict | None, faces_of: Mapping) -> dict | None:
+    """A reading kept on this run's parts (from_stored) with the faces of each area inside them, as decide hands it
+    to the plan: an area's entry ("finer at the holes") sizes those faces only with them."""
+    if kept is not None:
+        kept["features"] = dict(faces_of)
+    return kept
+
+
+def as_run(stored: Mapping | None, record: Mapping, surface) -> dict | None:
+    """THE READING MADE BEFORE APPROVAL AS THE RUN TAKES IT (decide, without asking anything): its entries kept on the
+    parts this part has, with the faces of each area. The plan step's cost (application/plan_cost, NOTE-26) plans with
+    it, so an area asked finer or sized is costed on its faces (the checklist's own reading keeps no faces: the C5
+    knuckle's "finer in/around the holes" was costed as a part named Feature_n that does not exist, and changed
+    nothing). None when nothing of it is usable."""
+    table, faces_of, _shown = table_of(record, surface)
+    return _as_run(from_stored(stored, table), faces_of) if table else None
+
+
 async def decide(ws: Path, record: Mapping, surface, state: Mapping, *, consumer: str, purpose: str = "",
                  job_id: str = "", run=None, enabled: bool = True, wait_s: float = TIMEOUT_S) -> dict:
     """NOTE-4's section for this run: "none" (no words to read, or the AI off), "used" (the checked entries,
@@ -642,9 +930,8 @@ async def decide(ws: Path, record: Mapping, surface, state: Mapping, *, consumer
         return section("none", note="no parts could be measured")
     # THE READING MADE BEFORE APPROVAL (the stage's checklist, as the user left it) is the one used: the user saw
     # it and approved it. The model is asked again only when there is none.
-    stored = from_stored((state or {}).get("part_matches"), table)
+    stored = _as_run(from_stored((state or {}).get("part_matches"), table), faces_of)
     if stored is not None:
-        stored["features"] = dict(faces_of)
         return stored
     pictures = await asyncio.to_thread(draw, ws, shown, table)
     got = await ask(ws, table, pictures, state, consumer=consumer, purpose=purpose, job_id=job_id, run=run,
@@ -657,7 +944,7 @@ async def ask(ws: Path | None, table: list[dict], pictures: list[Path], state: M
               purpose: str = "", job_id: str = "", run=None, wait_s: float = TIMEOUT_S) -> dict:
     """The model asked on a parts table and its pictures, already made (decide's second half; the geometry check's
     step before approval calls it on what it measured). Never raises (but a fenced worker's stale publish)."""
-    msgs = messages_for(state, table, pictures, consumer=consumer, purpose=purpose)
+    msgs = await asyncio.to_thread(messages_for, state, table, pictures, consumer=consumer, purpose=purpose)
     tool = size_tool()
     key = _key(msgs, tool)
     notes = notes_text(state)
@@ -744,6 +1031,6 @@ def decisions(ps: Mapping | None, stage: str = "notes") -> list[dict]:
              "words": " ".join(words(ps)[:3])}]
 
 
-__all__ = ["ASKS", "MIN_CONFIDENCE", "PART_FINEST", "PICTURES_DIR", "RULE", "SYSTEM", "TOOL", "UNREAD_WORDS", "UNITS_MM",
+__all__ = ["ASKS", "as_run", "MIN_CONFIDENCE", "PART_FINEST", "PICTURES_DIR", "RULE", "SYSTEM", "TOOL", "UNREAD_WORDS", "UNITS_MM",
            "ask", "check", "check_record", "decide", "decisions", "draw", "from_stored", "messages_for", "notes_text",
-           "part_table", "per_part", "picked", "section", "size_tool", "wanted", "words"]
+           "part_table", "per_part", "picked", "section", "size_tool", "wanted", "with_picks", "words"]

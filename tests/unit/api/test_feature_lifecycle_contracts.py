@@ -129,6 +129,8 @@ def test_the_served_routes_are_exactly_the_supported_set():
         ("GET", "/api/v1/chat/history/{session_id}"),
         ("POST", "/api/v1/chat/message"),
         ("POST", "/api/v1/chat/notes"),          # the console's notes box, kept word for word
+        ("POST", "/api/v1/chat/attachments"),    # a picture or text file attached in either box (NOTE-16)
+        ("GET", "/api/v1/chat/attachments/{session_id}/{attachment_id}"),  # owner only, never sniffed
         ("GET", "/api/v1/client-config"),
         ("GET", "/api/v1/credits"),
         ("GET", "/api/v1/credits/history"),      # the org's credit ledger, keyset paged
@@ -220,6 +222,7 @@ def test_the_served_routes_are_exactly_the_supported_set():
         ("GET", "/api/v1/geometry/{session_id}/check/parts/{name}.png"),  # the checklist card's pictures
         ("GET", "/api/v1/geometry/{session_id}/check/parts/model"),  # the checklist's model, turned in 3D
         ("POST", "/api/v1/geometry/{session_id}/check/parts/finalize"),  # Finalize notes: read the parts they name
+        ("POST", "/api/v1/geometry/{session_id}/check/faces/at"),  # NOTE-17: the face under a click on the stage
         ("GET", "/api/v1/geometry/{session_id}/check/shell-surface"),  # SHSTAGE-4: the mid-surface over the part
         ("POST", "/api/v1/geometry/{session_id}/check/retry"),    # run the scout or the naming again
         ("POST", "/api/v1/ws/ticket"),

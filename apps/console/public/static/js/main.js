@@ -13,7 +13,7 @@
  * loads this module, and this module is the only thing index.html loads.
  */
 import { apiFetch, setNotifier, useIdentity } from "./api/client.js";
-import { addNote, finalizePartMatches, getChatHistory, getJob, getPartMatches, getPartModel,
+import { finalizePartMatches, getChatHistory, getJob, getPartMatches, getPartModel,
   getPartPicture, pickPartMatch } from "./api/endpoints.js";
 import { dispatch, resultSurface } from "./core/events.js";
 import { beginRun, get as getState, isTerminalStatus, set as setState, waitingCopy }
@@ -30,11 +30,12 @@ import { configureComposer, disableInput, enableInput, holdForRun, mountComposer
   offerNewRun, resumeSession, say, setPlaceholder, showRunFile } from "./shell/composer.js";
 import { intakeOrder, runOrder } from "./core/conversation.js";
 import { refreshHealth } from "./shell/settings.js";
-import { configureDispute } from "./viewer/dispute.js";
+import { configureDispute, revisionEnded, revisionOf, revisionStep } from "./viewer/dispute.js";
 import { offerReview, openParked } from "./review/review.js";
 import { openGeometryStage } from "./viewer/geometry_stage.js";
 import { dropPartsHost, endIntake, partsHost } from "./viewer/intake_view.js";
 import { mountPartsView } from "./viewer/parts_view.js";
+import { keepMarks } from "./viewer/face_pick.js";
 import { savedUp } from "./viewer/view_controls.js";
 import { openViewer } from "./viewer/viewer.js";
 import { dropMeshPartial, showMeshPartial } from "./viewer/mesh_partial.js";
@@ -52,6 +53,8 @@ setNotifier({
 /* one event interpretation path, live and replayed alike */
 function onEvent(ev) {
   setState.laneCursor(dispatch(ev, Stage, getState.laneCursor()));
+  // a run revising a mesh on screen says its step on that mesh's progress line too
+  revisionStep(getState.jobId(), Stage.liveNow());
 }
 
 /* LIVE STEPS THAT CANNOT REACH THE PAGE. The run itself is fine - the poller still reads its
@@ -146,6 +149,8 @@ function parkedRun(job) {
    without moving the camera and without claiming anything about the delivered mesh. It is a
    progress nicety: when the route has nothing, the screen keeps what it had. */
 setMeshPartialHandler((phase, key) => {
+  // A REVISION KEEPS THE MESH IT REVISES ON SCREEN until its own is delivered
+  if (revisionOf(getState.jobId())) return;
   showMeshPartial(getState.jobId(), phase, key,
     { anchorEl: Stage.col(), sessionId: getState.sessionId() });
 });
@@ -158,6 +163,10 @@ setResultHandler((data, anchor) => {
   // terminal surface opens, and a frame still in flight can no longer land over it.
   dropMeshPartial(job);
   const surface = resultSurface(data);
+  // A REVISION'S MESH TAKES THE REVISED ONE'S PLACE, on its camera; a revision that delivered no
+  // mesh leaves the revised one where it is, usable again
+  const replaces = revisionOf(job);
+  revisionEnded(job);
   // "REPAIR CAD ONLY": the repaired part IS the result. It takes the stage the way a delivered mesh does, and there
   // is no mesh to open.
   if (data.repair && data.repair.choice === "standalone") {
@@ -175,12 +184,12 @@ setResultHandler((data, anchor) => {
         reasoning: data.reviewOutcome === "delivered_with_concerns" ? (data.reasoning || "") : "",
         // passed by the measured limits, with figures past a limit: listed as notes, as on the result screen
         withNotes: data.reviewOutcome === "passed_with_notes" ? (data.concerns || []) : null,
-        notes: data.notes || [] });
+        notes: data.notes || [], replaces });
   } else if (surface === "unreviewed") {
     openViewer(job, anchor,
       { metrics: { attempts: data.attempts, pass: false }, files: data.files || [],
         createdAt: data.createdAt, endedAt: data.endedAt,
-        unreviewed: true, findings: data.findings || [], reasoning: data.reasoning || "" });
+        unreviewed: true, findings: data.findings || [], reasoning: data.reasoning || "", replaces });
   } else {
     // A TERMINAL failure - no valid mesh was ever produced. Any mesh file left in the workspace
     // is structurally INVALID; showing it as "your mesh" would be a lie, and the outcome message
@@ -236,14 +245,6 @@ function openBox(id, { sessionId = null } = {}) {
   Stage.ensureProc();
 }
 
-/* THE NOTES BOX under the plan: the user's own text, kept as typed; the card redraws with it */
-async function addBriefNote(text) {
-  const d = await addNote(getState.sessionId(), text);
-  Stage.brief(d.brief, addBriefNote, briefParts, proceedPlan);
-  // "use cfMesh" in a note chooses the engine as it does in the chat: said there for the user
-  if (d.say) say(d.say);
-}
-
 /* THE PARTS CHECKLIST under the notes: which parts the notes mean, and the user's fix for one phrase */
 const briefParts = {
   get: () => getPartMatches(getState.sessionId()),
@@ -258,6 +259,8 @@ const briefParts = {
   drop: (el) => dropPartsHost(el),
   // Finalize notes: the parts the words name are read now
   finalize: () => finalizePartMatches(getState.sessionId()),
+  // the faces the requirements hold: the sent faces' marks on the model follow them
+  faces: (ids) => keepMarks(ids),
 };
 
 /* THE CONVERSATION IN THE ADDRESS: an upload's session is named in the URL (?session=<id>) until a run takes the
@@ -269,8 +272,11 @@ function rememberSession(id) {
 configureComposer({
   sessionStarted: (id) => rememberSession(id),
   notice: Notice,
-  chat: (role, text) => Stage.chat(role, text),
-  brief: (b) => Stage.brief(b, addBriefNote, briefParts, proceedPlan),
+  // the user's bubble is handed back: a refused send that carried files takes it away again
+  chat: (role, text, extra) => Stage.chat(role, text, undefined, extra),
+  pending: () => Stage.pending(),
+  replyLater: (el) => Stage.replyLater(el),
+  brief: (b) => Stage.brief(b, null, briefParts, proceedPlan),
   // a yes before Finalize notes: wait (a minute at most) for the reading the server started
   notesRead: async () => {
     const t0 = Date.now();
@@ -299,8 +305,10 @@ configureDispute({
   // A RE-REVIEW BELONGS TO THE DISPUTED RUN'S CONVERSATION, not to whatever session the page
   // holds now: a run opened by link, disputed after an upload of other geometry, has none, and
   // its "run again" must never reach that other geometry's session.
-  onRerun: (id, message, disputedJobId) => attachJob(id,
-    { message, origin: getState.runOrigin(disputedJobId) }),
+  // (a change names the conversation its run belongs to; when it does not, the disputed run's)
+  onRerun: (id, message, disputedJobId, sessionId) => attachJob(id,
+    { message, origin: sessionId || getState.runOrigin(disputedJobId) }),
+  say: (text) => Stage.chat("assistant", text),
 });
 
 /* what "stop this run" means: ask first, then the API. The ending arrives through the stream and
@@ -367,9 +375,12 @@ async function openSession(sessionId) {
     return;
   }
   if (history.job_id) { openRun(history.job_id); return; }
-  for (const item of intakeOrder(history.messages)) Stage.chat(item.role, item.text);
+  for (const item of intakeOrder(history.messages)) Stage.chat(item.role, item.text, undefined, withSid(item, sessionId));
   resumeSession(sessionId, history);
 }
+
+/* what a stored turn carried, with the conversation its files belong to (their thumbnails are fetched from it) */
+function withSid(item, sid) { return item.extra ? { ...item.extra, sid } : null; }
 
 /* A RUN OPENED BY LINK - a reload, or the run re-opened from the sidebar. It draws what the page showed live, in
    the same order: the conversation the run came from, up to the message that started it (an earlier run of the
@@ -393,7 +404,7 @@ async function openRun(runId) {
   for (const item of runOrder(history?.messages, runId)) {
     if (item.current) await showRun(runId, job);
     else if (item.run) await showPastRun(item.run);
-    else Stage.chat(item.role, item.text);
+    else Stage.chat(item.role, item.text, undefined, withSid(item, job.session_id));
   }
 }
 

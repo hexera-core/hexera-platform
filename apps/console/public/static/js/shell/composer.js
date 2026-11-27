@@ -15,6 +15,8 @@ import { ASSEMBLY_UPLOAD_MAX_BYTES, confirmGeometryCheck, getGeometryCheck, retr
 import { acceptAttribute, isOfferable, loadIntakeFormats, refusalCopy, shortSupportedCopy, supportedCopy }
   from "./intake_formats.js";
 import { get as getState, set as setState } from "../core/state.js";
+import * as chips from "./chips.js";
+import { idle, mountAttach, say as sayUnder, sentRows } from "./attach.js";
 
 
 const MAX_INPUT_HEIGHT = 140;
@@ -24,6 +26,10 @@ const $ = (id) => document.getElementById(id);
 let deps = {
   notice: { show() {}, },
   chat() {},
+  // a quiet "Reading…" where the reply will be, while a message is answered (returns what to remove)
+  pending() { return null; },
+  // NOTE-19: the reply comes later, with the card's poll of the reading - "Reading…" is handed over until then
+  replyLater(el) { if (el && el.remove) el.remove(); },
   brief() {},
   onJobStarted() {},
   // advisory: the empty state's format line, filled from the server's capability description
@@ -37,7 +43,7 @@ let deps = {
   // the buttons under an application question (what the mesh is for, an FEA part's analysis
   // type), and the function that sends the picked answer
   choices() {},
-  // resolves once the notes' reading has landed (or after a minute): a yes given before Finalize notes waits on it
+  // resolves once the notes' reading has landed (or after a minute): a yes given before the notes were read waits on it
   notesRead() { return Promise.resolve(); },
   // the upload opened a session: the page's address names it, so a reload reopens the conversation
   sessionStarted() {},
@@ -281,6 +287,9 @@ export async function watchGeometryCheck(sessionId) {
       if (reply.next.reply && !startsRun(reply.next)) deps.chat("assistant", reply.next.reply);
       deps.choices(reply.next.choices || [], sendText);
       deps.brief(reply.next.brief);
+      // ONE MORE MESSAGE AFTER THE PLAN (CFDREQ-37): the flow conditions the plan assumed, asked under the card
+      if (reply.next.then && reply.next.then.reply) {
+        deps.chat("assistant", reply.next.then.reply); deps.choices(reply.next.then.choices || [], sendText); }
       if (reply.next.done && reply.next.job_id) { disableInput(); deps.onJobStarted(reply.next.job_id); }
     }
     return reply;
@@ -306,6 +315,14 @@ export async function watchGeometryCheck(sessionId) {
       deps.checkProgress(null, { offline: true, retry: rowRetry });
     }
     if (d && d.confirmed) {
+      // A RELOAD AT THE PLAN STEP: the check was answered before this page was opened - the part is drawn again,
+      // settled, so it is beside the plan and its faces can be picked (without it the parts model alone was drawn,
+      // and a click on it could only turn it)
+      if (!stage && !stageFailed && d.skin && (d.thermal || d.route)) {
+        stageKind = kindOf(d);
+        stage = _stage = await deps.geometryCheck(sessionId, d, confirmFn, retryFn);
+        if (stage === null) stageFailed = true;
+      }
       // answered, on the stage or the card, whatever the naming did afterwards
       // the part stays on the stage, settled, beside the rest of the intake (viewer/intake_view.js)
       _checkState = "done"; _stageOpen = false; releaseHold(); if (stage) (stage.settle || stage.release)();
@@ -446,26 +463,48 @@ function startsRun(d) { return !!(d && d.done && d.job_id); }
 
 async function send() {
   const inp = $("chat-input");
-  await sendText(inp.value.trim());
+  // a file still uploading: the send waits for it (its chip shows it going)
+  if (chips.busy("chat")) await idle("chat");
+  await sendText(inp.value.trim(), { extra: chips.payload("chat") });
 }
 
-async function sendText(txt, { again = false } = {}) {
+/* `extra`: what the message carries beside its words - the files attached and faces picked under the box
+   (shell/chips.js payload); with either, the words may be empty. A button's own words carry nothing. */
+async function sendText(txt, { again = false, extra = null } = {}) {
   const inp = $("chat-input");
   const sessionId = getState.sessionId();
-  if (!txt || !sessionId) return;
+  const carries = !!(extra && (extra.attachments.length || extra.faces.length));
+  if ((!txt && !carries) || !sessionId) return;
+  // the chips this message carries (chips.payload's own rule): only they go once it is in
+  const carried = carries ? chips.items("chat").filter((i) => !i.pending && i.value != null).map((i) => i.key) : [];
   clearNewRunOffer();
   inp.value = ""; autoResize(inp);
-  if (!again) deps.chat("user", txt);
+  // the user's bubble shows what they attached, as the conversation will show it after a reload
+  const shown = carries ? { attachments: sentRows("chat"), faces: extra.faces, sid: sessionId } : null;
+  const bubble = again ? null : deps.chat("user", txt, shown);
   disableInput();
+  // THE REPLY IS ON ITS WAY (NOTE-18): a requirement at the plan step is read before it is answered - a quiet
+  // "Reading…" stands where the reply will be, and goes whatever comes back
+  const waiting = again ? null : deps.pending();
   try {
-    const d = await sendMessage(sessionId, txt);
-    if (!startsRun(d)) deps.chat("assistant", d.reply);
+    // NOTE-19: a reading that takes longer than the send waits: the send answers at once, "Reading…" stays, and
+    // the reply comes with the card's poll of the reading (no request is held open for it)
+    const d = await sendMessage(sessionId, txt, extra || {}).then(
+      (r) => { if (waiting && waiting.remove && !(r && r.reply_later)) waiting.remove(); return r; },
+      (err) => { if (waiting && waiting.remove) waiting.remove(); throw err; });
+    // the chips go only once the message is in: a refused send keeps the pictures, files and faces - and a face
+    // picked while "Reading…" stood stays under the box for the next message
+    if (carries) { chips.clear("chat", { keys: carried }); sayUnder("chat", ""); }
+    if (!startsRun(d) && !d.reply_later) deps.chat("assistant", d.reply);
     deps.choices(d.choices || [], sendText);
     deps.brief(d.brief);
+    // ONE MORE MESSAGE AFTER THE PLAN (CFDREQ-37): the flow conditions the plan assumed, asked under the card
+    if (d.then && d.then.reply) { deps.chat("assistant", d.then.reply); deps.choices(d.then.choices || [], sendText); }
+    if (d.reply_later) deps.replyLater(waiting);
     // THE FLOW THE USER SAID (the flow-kind question's buttons): the open stage's form takes it before Proceed
     if (d.stage_flow && _stage && _stage.preset) _stage.preset(d.stage_flow);
     if (d.yes_after_reading && !again) {
-      // A YES BEFORE THE NOTES WERE FINALIZED: the card shows the reading and the parts it finds, and the same
+      // A YES BEFORE THE NOTES WERE READ: the card shows the reading and the parts it finds, and the same
       // yes is sent again once it lands (a minute at most) - the run then starts, never asked twice
       await deps.notesRead();
       if (getState.sessionId() === sessionId) return sendText(txt, { again: true });
@@ -480,7 +519,13 @@ async function sendText(txt, { again = false } = {}) {
     else if (_stageOpen || String(d.reply || "").startsWith(DRAWING_PREFIX)) holdForDrawing();
     else enableInput();
   } catch (e) {
-    if (e.status !== 401) {
+    if (carries) {
+      // A SEND THAT CARRIED SOMETHING, REFUSED: the words go back in the box, the chips stay, the server's one line
+      // under the box - the user fixes it and sends again (no bubble left for a message that was not taken)
+      if (bubble && bubble.remove) bubble.remove();
+      inp.value = txt; autoResize(inp);
+      if (e.status !== 401) sayUnder("chat", (e && e.message) || "That was not sent. Try again.");
+    } else if (e.status !== 401) {
       deps.chat("assistant", "Could not send that: " + e.message + ". Try again.");
     }
     if (_stageOpen) holdForDrawing(); else enableInput();
@@ -535,6 +580,10 @@ export function mountComposer() {
   });
 
   $("send-btn").addEventListener("click", send);
+  // THE CHIP ROW under the chat box: files attached and faces picked, empty and hidden until there is one
+  chips.mount("chat", $("input-inner"), { input: $("chat-input") });
+  // the paper-clip, Ctrl+V of a picture and a drop on the box (shell/attach.js), for the chat box and the notes box
+  mountAttach();
   $("chat-input").addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
   });

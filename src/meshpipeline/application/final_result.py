@@ -808,6 +808,9 @@ def _render_outcome(fr: FinalResult) -> str:
                          if kinds == {WRAPPED_SURFACE}
                          else "Delivered with a note on how closely it follows your CAD:"
                          if kinds == {CAD_FIDELITY}
+                         else "Delivered with concerns - one of our checks did not pass, and no "
+                              "rebuild could change that:"
+                         if GATE_CONCERN in kinds
                          else "Delivered with stated deviations:")
             for c in shown:
                 kind = (c or {}).get("kind") or "domain_extent"
@@ -863,13 +866,19 @@ def _render_outcome(fr: FinalResult) -> str:
                     lines.extend(note_lines(c))
                 elif kind == CAD_FIDELITY:
                     lines.extend(_cad_fidelity_lines(c))
+                elif kind == GATE_CONCERN:
+                    # LAD-cfd-8: a sound mesh a check refused, delivered because no retry could
+                    # change the refusal - the finding first, then the way on
+                    lines.append(f"  - {str(c.get('words') or 'one of our checks refused this mesh')}.")
+                    if c.get("way_on"):
+                        lines.append(f"    To get a better mesh: {c.get('way_on')}.")
                 else:
                     lines.append("  - a stated deviation of an unrecognized kind "
                                  "(see the result record)")
             # the narrow-gap note says everything it needs in its own lines; the closing speaks
             # for the rest
             core = kinds - {NARROW_PASSAGES, PHYSICAL_SCALE, _RESOLUTION_SHORT, _OVER_CELL_LIMIT,
-                            WRAPPED_SURFACE, CAD_FIDELITY}
+                            WRAPPED_SURFACE, CAD_FIDELITY, GATE_CONCERN}
             if WRAPPED_SURFACE in kinds and not core:
                 from meshpipeline.pipeline.cfd_wrap import WRAPPED_SURFACE_CLOSING
                 lines.append(WRAPPED_SURFACE_CLOSING)
@@ -1421,8 +1430,10 @@ def _near_misses(caveats) -> int:
     (engines/resolution_policy: fewer cells across the narrowest gap than the floor, more cells
     than one job is sized for) are not requirement near-misses: the narrowest gap is its own
     production limit (passage_cells_across), and a mesh's size is not a fault."""
-    from meshpipeline.engines.resolution_policy import NOTE_KINDS
-    return sum(1 for c in caveats or () if (c or {}).get("kind") not in NOTE_KINDS)
+    # ...nor is a refusal whose measure is already a row of the verdict (CFDREQ-28's layer stack is the layer row):
+    # one shortfall, one missed row - the same count the engine choice reads (resolution_policy.near_misses)
+    from meshpipeline.engines.resolution_policy import near_misses
+    return near_misses(caveats)
 
 
 def measured_verdict(outcome: RunOutcome) -> dict | None:
@@ -1726,6 +1737,10 @@ def cad_fidelity_record(outcome: RunOutcome, *, size_caveat: Mapping | None = No
 #: delivery says which gaps fell short and by how much.
 NARROW_PASSAGES = "narrow_passages"
 
+#: The caveat kind of a sound mesh a check refused, delivered because no retry or other engine could
+#: change the refusal (pipeline/engine_fallback.GATE_CONCERN, LAD-cfd-8).
+GATE_CONCERN = "gate_concern"
+
 
 def narrow_passage_caveat(outcome: RunOutcome) -> dict | None:
     """THE one predicate for the narrow-gap note, read at terminal assembly from the delivered
@@ -1742,8 +1757,16 @@ def narrow_passage_caveat(outcome: RunOutcome) -> dict | None:
         return None
     raw = v.side.get("cells_across")
     cells: Mapping = raw if isinstance(raw, Mapping) else {}
+    # THE PLAN'S OWN FACTS (engines/gap_sizing.quality_plan), when the pass planned narrow spots:
+    # how many places, the narrowest and where, the count aimed at, and the cells that would
+    # resolve them - the choice the note gives the user (rulebook 75)
+    raw_plan = q.get("gap_plan")
+    plan: Mapping = raw_plan if isinstance(raw_plan, Mapping) else {}
     return {"kind": NARROW_PASSAGES, "floor": v.floor,
             "cells_across": cells.get("p05"), "cells_across_min": cells.get("min"),
+            "spots": plan.get("spots"), "spot_narrowest_m": plan.get("narrowest_m"),
+            "spot_where_m": plan.get("where_m"), "aim": plan.get("rule_cells_across"),
+            "cells_needed": plan.get("needed"), "cell_limit": plan.get("limit"),
             "width_m": v.side.get("width_m"),
             "narrowest_width_m": v.side.get("narrowest_width_m"),
             "share": v.side.get("under_floor_share"),
@@ -1876,7 +1899,25 @@ def _narrow_passage_lines(c: Mapping) -> list[str]:
         if main_x is not None:
             way += f", with about {main_x:.1f} or more cells across it"
     lines.append(way + ". So the mesh is delivered.")
-    lines.append("    If the flow in these gaps matters to you, ask for a finer mesh.")
+    # THE PLACES AND THE WAY TO RESOLVE THEM, from the pass's own gap plan (rulebook 75): never a
+    # set-aside without how many, the narrowest, what we aim for and the count that gets it
+    spots, aim = n(c.get("spots")), n(c.get("aim")) or 13.0
+    need, limit = n(c.get("cells_needed")), n(c.get("cell_limit"))
+    narrow = _mm_text(c.get("spot_narrowest_m"))
+    where = c.get("spot_where_m")
+    if spots:
+        at = (f" at ({', '.join(f'{float(v) * 1000:.0f}' for v in where)}) mm"
+              if isinstance(where, (list, tuple)) and len(where) == 3 else "")
+        lines.append(f"    The mesh plan found {spots:.0f} narrow place(s)"
+                     + (f", the narrowest {narrow} across{at}" if narrow else "")
+                     + f". We aim for {aim:g} cells across every gap.")
+    if need and (limit is None or need > limit):
+        from meshpipeline.contracts.mesh_machine import normal_cells
+        lines.append(f"    To get {aim:g} cells across all of them, ask for about "
+                     f"{need / 1e6:.3g} million cells in your notes"
+                     + (" - that mesh runs on a bigger machine." if need > normal_cells() else "."))
+    else:
+        lines.append("    If the flow in these gaps matters to you, ask for a finer mesh.")
     return lines
 
 

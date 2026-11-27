@@ -84,31 +84,32 @@ def test_no_parts_in_the_notes_shows_nothing(live):
     assert out == 0
 
 
-def test_finalize_notes_reads_then_shows_the_rows_and_asks_to_proceed(live):
+def test_a_reading_the_card_is_handed_shows_then_the_rows_with_no_finalize_button(live):
+    """NOTE-18: each message at the plan step is read as it is sent - the card has no Finalize notes; a reading still
+    going when the reply came is followed ("Reading your notes…"), then its rows, and nothing is said again."""
     out = live.evaluate("""(async () => {
       const { Stage } = await import('/static/js/render/stage.js');
       Stage.mount();
       const done = __VIEW__;
-      let fin = 0;
-      const parts = {get: async () => (fin ? done : {status: 'ready'}),
-                     finalize: async () => { fin++; return {status: 'reading'}; }, pick: async () => done};
+      let polls = 0;
+      const parts = {get: async () => { polls++; return done; }, pick: async () => done};
       Stage.brief({purpose:'structural', engine:'gmsh', user_notes:[{text:'3-4 mm for the frame rail'}],
-                   proceed_ask: 'Shall I proceed with mesh generation?', part_matches:{status:'ready'}},
-                  async () => {}, parts);
-      const before = {btn: [...document.querySelectorAll('.rc-fin-btn')].map(b => b.textContent),
-                      rows: document.querySelectorAll('.rc-pm-row').length};
-      document.querySelector('.rc-fin-btn').click();
+                   proceed_ask: 'Shall I proceed with mesh generation?', part_matches:{status:'ready'}}, null, parts);
+      const before = {btn: document.querySelectorAll('.rc-fin-btn').length, rows: document.querySelectorAll('.rc-pm-row').length,
+                      text: document.querySelector('.req-card').innerText};
+      Stage.brief({purpose:'structural', engine:'gmsh', user_notes:[{text:'3-4 mm for the frame rail'}],
+                   proceed_ask: 'Shall I proceed with mesh generation?', part_matches:{status:'reading'}}, null, parts);
       await new Promise(r => setTimeout(r, 100));
       const wait = (document.querySelector('.rc-pm-wait') || {}).textContent;
       await new Promise(r => setTimeout(r, 3200));
       const lines = [...document.querySelectorAll('#cc .im .txt')].map(t => t.textContent.trim());
-      return {before, fin, wait, rows: document.querySelectorAll('.rc-pm-row').length,
+      return {before, polls, wait, rows: document.querySelectorAll('.rc-pm-row').length,
               btn: document.querySelectorAll('.rc-fin-btn').length, lines};
     })()""".replace("__VIEW__", VIEW), timeout=30)
-    assert out["before"] == {"btn": ["Finalize notes"], "rows": 0}, "nothing is read until the user finalizes"
-    assert out["fin"] == 1 and out["wait"] == "Reading your notes…"
+    assert out["before"]["btn"] == 0 and out["before"]["rows"] == 0, out
+    assert "Finalize notes" not in out["before"]["text"], out
+    assert out["polls"] >= 1 and out["wait"] == "Reading your notes…"
     assert out["rows"] == 2 and out["btn"] == 0
-    # the plan's Proceed is the card's own button (agents/intake/flow PLAN): nothing is said again
     assert out["lines"] == [], "the plan step is never asked twice"
 
 
@@ -253,6 +254,8 @@ def test_the_picture_tints_a_rows_parts_and_a_click_on_it_picks_a_part(live):
                      picture: async (n) => (n === 'card_a' ? shaded : ids)};
       Stage.brief({purpose: 'structural', engine: 'gmsh', user_notes: [{text: 'the rail'}], part_matches: done},
                   async () => {}, parts);
+      // the list lives in the plan bar above the chat box (NOTE-18): opened, as the user opens it
+      document.querySelector('#plan-bar .pb-count').click();
       await new Promise(r => setTimeout(r, 400));
       const px = (x) => { const c = document.querySelector('.rc-pm-pic');
         return [...c.getContext('2d').getImageData(x, 5, 1, 1).data].slice(0, 3); };
@@ -271,33 +274,26 @@ def test_the_picture_tints_a_rows_parts_and_a_click_on_it_picks_a_part(live):
     assert out["picks"] == [[0, ["Part_1", "Part_2"]]], "a click on the picture adds the part under it"
 
 
-def test_a_flow_card_finalizes_its_notes_and_shows_how_they_were_read(live):
-    """NOTES-CFD-1: a CFD request card with notes and no parts to name has the same Finalize notes; pressing it shows
-    "Reading your notes…", then the CFD reader's lines, then the approval question under the card - as on FEA."""
+def test_a_flow_card_shows_how_its_notes_were_read_with_no_finalize_button(live):
+    """NOTES-CFD-1 with NOTE-18: a CFD request card with notes and no parts to name follows its reading - "Reading your
+    notes…", then the CFD reader's lines - as on FEA, with no Finalize notes to press."""
     out = live.evaluate("""(async () => {
       const { Stage } = await import('/static/js/render/stage.js');
       Stage.mount();
-      let fin = 0;
       const done = {status: 'done', rows: [], unsure: [],
                     lines: ['From your notes: 5 boundary layers on the wall.', 'From your notes: at most 2 million cells.']};
-      const parts = {get: async () => (fin ? done : {status: 'ready'}),
-                     finalize: async () => { fin++; return {status: 'reading'}; }, pick: async () => null};
+      const parts = {get: async () => done, pick: async () => null};
       Stage.brief({purpose: 'internal flow', engine: 'snappy', user_notes: [{text: '5 layers, under 2M cells'}],
-                   proceed_ask: 'Shall I proceed with mesh generation?', part_matches: {status: 'ready'}},
-                  async () => {}, parts);
-      const before = {btn: [...document.querySelectorAll('.rc-fin-btn')].map(b => b.textContent),
-                      primary: document.querySelector('.rc-fin-btn').classList.contains('gc-proceed')};
-      document.querySelector('.rc-fin-btn').click();
+                   proceed_ask: 'Shall I proceed with mesh generation?', part_matches: {status: 'reading'}}, null, parts);
       await new Promise(r => setTimeout(r, 100));
       const wait = (document.querySelector('.rc-pm-wait') || {}).textContent;
       await new Promise(r => setTimeout(r, 3200));
-      return {before, fin, wait, btn: document.querySelectorAll('.rc-fin-btn').length,
+      return {wait, btn: document.querySelectorAll('.rc-fin-btn').length,
               lines: [...document.querySelectorAll('.rc-pm-lines li')].map(l => l.textContent),
               rows: document.querySelectorAll('.rc-pm-row').length,
               said: [...document.querySelectorAll('#cc .im .txt')].map(t => t.textContent.trim()).pop()};
     })()""", timeout=30)
-    assert out["before"] == {"btn": ["Finalize notes"], "primary": True}, "the same button as on FEA"
-    assert out["fin"] == 1 and out["wait"] == "Reading your notes…"
+    assert out["wait"] == "Reading your notes…"
     assert out["btn"] == 0 and out["rows"] == 0
     assert out["lines"] == ["From your notes: 5 boundary layers on the wall.", "From your notes: at most 2 million cells."]
     assert out.get("said") is None, "the plan step is never asked twice, as on FEA"

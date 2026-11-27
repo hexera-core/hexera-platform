@@ -14,6 +14,7 @@ import functools
 import json
 import logging
 import math
+import re
 import time
 from collections import Counter
 from pathlib import Path
@@ -37,6 +38,15 @@ ALGORITHM = 6
 RECOMBINATION = 1
 #: SHMESH-42: the 2D algorithm for flat faces left free (None: ALGORITHM)
 PLANE_ALGORITHM: int | None = None
+#: SHMESH-21g: gmsh's Blossom recombination grows far faster than the elements on ONE big face of algorithm 6's
+#: triangles (gmsh 4.15, the 1200 x 800 plate's face alone, one core: 23k quads 10 s, 69k 603 s, 138k 357 s; the
+#: product's 200k plate made no mesh in 900 s, all of it in gmsh's 2D mesh); on Frontal-Delaunay-for-quads' (8)
+#: right triangles the same Blossom stays near the elements (21k 7 s, 63k 33 s, 125k 102 s, 250k 219 s) with every
+#: element a quad and a better mean quality (0.92 against 0.85). A flat face left free planned past BIG_FLAT_FACE
+#: elements is meshed by BIG_FLAT_ALGORITHM; under it every face meshes exactly as before. Flat faces only: 8 left
+#: B-spline mid-surfaces 7 times coarser than their size (above). 0: off
+BIG_FLAT_FACE = 30_000
+BIG_FLAT_ALGORITHM = 8
 #: SHMESH-49k: gmsh's algorithm for a round plate's paved band (None: the default)
 POLAR_BAND_ALGORITHM: int | None = None
 #: SHMESH-10: cut every quad past Nastran's own limits into two triangles
@@ -139,8 +149,26 @@ OFFSETS_AS_SPLINES = True
 #: SHMESH-20: the most elements a shell plan may ask for (area / size^2 summed over its faces; gmsh makes about 1,000
 #: a second here, and its counts run 0.4 to 3.3 times the plan's on the corpus)
 PLANNED_MAX = 1.5e6
-#: SHMESH-21: a shell mesh is stopped after this long (0: unbounded)
+#: SHMESH-21: a shell mesh is stopped after this long (0: unbounded) - since rulebook 80 the FLOOR of its limit: a mesh
+#: whose work is priced longer (SHMESH-21e) is given its price
 MESH_DEADLINE_S = 900.0
+#: SHMESH-21e: THE LIMIT FOLLOWS THE WORK - a shell mesh's work is priced at PRICE_FACTOR times its planned elements at
+#: MESH_RATE a second (SHMESH-20's measure), or PRICE_FACTOR times its first whole mesh's measured seconds once one is
+#: made (this part's own rate and count), whichever is longer (TIME-2: a guard is 3x the cost); a price past
+#: MESH_DEADLINE_S is the mesh's limit, from its start, never past the run's hard cap (SHELL_CAP_ENV). A plan of 1.5M
+#: elements (PLANNED_MAX) is priced at 7,500 s: under the old 900 s it could not finish one mesh.
+#: The book rate is the slowest whole-path rate measured on the big plate after SHMESH-21g (test VM, one core, first
+#: whole mesh: 20k 1,700 / 56k 1,300 / 108k 1,380 / 215k 930 / 473k 620 elements a second), rounded down to 600
+#: (1,000 before: the 473k plate took 764 s against a 1,350 s price, a margin of 1.8 where TIME-2 asks 3)
+MESH_RATE = 600.0
+PRICE_FACTOR = 3.0
+#: SHMESH-21f: A STUCK FACE IS STILL CAUGHT - while a limit runs past MESH_DEADLINE_S, a face gmsh's output shows it
+#: on (the parent reads "Meshing surface N" in the watched child's output: a new surface is progress) for longer than
+#: PRICE_FACTOR times its own planned elements at the slowest rate known (MESH_RATE or this run's measured one,
+#: _face_rate), and never under FACE_HELD_FLOOR_S, trips SHMESH-71's watchdog (its ladder, then left out, said).
+#: Rulebook 85: once gmsh says its 2D mesh is done no face is on (FACE_PHASES) - the wait after it is no face's.
+#: A watched child only: an unwatched one is held to the floor's limit
+FACE_HELD_FLOOR_S = 300.0
 #: SHMESH-17: two triangles of a face that together make a quad inside Nastran's own limits are joined into it
 PAIR_TRIAS = True
 #: SHMESH-18: a triangle walked through at most WALK_DEPTH quads of its face to meet another (0: off)
@@ -764,6 +792,21 @@ def _not_worse(applied: dict, past_n: int, other: dict, other_n: int) -> bool:
     m_a = int(((applied.get("quality") or {}).get("structure") or {}).get("mapped_faces") or 0)
     m_b = int(((other.get("quality") or {}).get("structure") or {}).get("mapped_faces") or 0)
     return a[2] <= b[2] and a[3] <= b[3] and m_a >= GUARD_MAPPED * m_b
+
+
+def big_flat_faces(gmsh, tag_of: dict[int, int], facts: list[dict], rows: list[dict], mm: float,
+                   skip: set[int] | frozenset = frozenset()) -> dict[int, int]:
+    """SHMESH-21g: the flat faces (gmsh tag -> fact index) not in `skip` (grids, mapped) planned past BIG_FLAT_FACE
+    elements (area over size squared, as face_planned.json): meshed by BIG_FLAT_ALGORITHM. None under the gate."""
+    out: dict[int, int] = {}
+    for t in sorted(tag_of):
+        k = tag_of[t]
+        size = float(rows[k].get("size_mm") or 0.0)
+        if t in skip or size <= 0.0 or float(facts[k]["area"]) * mm * mm / size ** 2 <= BIG_FLAT_FACE:
+            continue
+        if gmsh.model.getType(2, t) == "Plane":
+            out[t] = k
+    return out
 
 
 def _generate(gmsh, tag_of: dict[int, int]) -> None:
@@ -2171,12 +2214,15 @@ def _fate_load(d: Path) -> None:
     _FACE_FATE["remake_s"] = max(float(_FACE_FATE["remake_s"]), float(row.get("remake_s") or 0.0))
 
 
-def _watch_tags(tag_of: dict[int, int], facts: list[dict]) -> None:
+def _watch_tags(tag_of: dict[int, int], facts: list[dict], planned: dict[int, float] | None = None) -> None:
     """SHMESH-71: in a watched child, the face behind each gmsh surface tag (written before every 2D mesh: tags change
-    from pass to pass), for the parent to name the face gmsh stops on."""
+    from pass to pass), for the parent to name the face gmsh stops on. SHMESH-21f: `planned`, each tag's planned
+    elements, for the parent to price how long gmsh may stay on it."""
     d = _WATCH_DIR[0]
     if d is None:
         return
+    if planned is not None:
+        (Path(d) / "face_planned.json").write_text(json.dumps({int(t): float(n) for t, n in planned.items()}))
     rows = {int(t): [list(map(float, facts[k]["centroid"])), float(facts[k]["area"])] for t, k in tag_of.items()}
     (Path(d) / "tags.json").write_text(json.dumps(rows))
     try:
@@ -2189,9 +2235,16 @@ def _watch_tags(tag_of: dict[int, int], facts: list[dict]) -> None:
         pass
 
 
+#: SHMESH-21f: the gmsh lines after which no face is being meshed (its 2D mesh done; a phase of the whole mesh): the
+#: wait that follows is no face's (False: the last "Meshing surface" line stays current until the next, as before)
+FACE_PHASES = True
+_NO_FACE_LINE = re.compile(r"Done meshing [123]D|Meshing [123]D\.\.\.|Optimizing mesh|Recombining 2D mesh")
+
+
 def _watch_read(d: Path, seen: dict) -> tuple[int, float] | None:
     """SHMESH-71: (the surface gmsh is meshing, seconds on it) from the child's gmsh output; the deepest recovery
-    level on it is kept in `seen` (the reading between calls). None while nothing was read."""
+    level on it is kept in `seen` (the reading between calls). None while nothing was read, or while no face is on
+    (SHMESH-21f: after gmsh's 2D mesh is done, or in a phase of the whole mesh)."""
     import re
 
     try:
@@ -2205,7 +2258,17 @@ def _watch_read(d: Path, seen: dict) -> tuple[int, float] | None:
         m = re.search(r"Meshing surface (\d+)", line)
         if m:
             if int(m.group(1)) != seen.get("tag"):
+                if seen.get("tag") is not None:
+                    # (SHMESH-21e: the surfaces gmsh moved past - this mesh's measured progress)
+                    seen.setdefault("done", set()).add(int(seen["tag"]))
                 seen.update(tag=int(m.group(1)), since=time.monotonic(), level=0, curves=set())
+            continue
+        if FACE_PHASES and seen.get("tag") is not None and _NO_FACE_LINE.search(line):
+            # SHMESH-21f: gmsh's 2D mesh is done, or a phase of the whole mesh began: no face is on any more. What
+            # follows (our own clean-up and pairing of the whole mesh: 278 s after a 28 s 2D mesh on cen_s0195) is no
+            # face's time - the last surface meshed was blamed for it and left out
+            seen.setdefault("done", set()).add(int(seen["tag"]))
+            seen.update(tag=None, since=time.monotonic(), level=0, curves=set())
             continue
         m = re.search(r"in the 1D mesh \(curves ([\d ]+)\)", line) or re.search(r"on curve (\d+)", line)
         if m and seen.get("tag") is not None:
@@ -2244,19 +2307,30 @@ def mesh_shell(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log:
         return _mesh_shell(brep, record, mm_per_unit=mm_per_unit, log=log, target=target, correction=correction,
                            requirements=requirements)
     allowed = _deadline_s()                     # (SHMESH-31g: what is left of the run's outer stop, at most 900 s)
+    # SHMESH-21e: the clock the forked runs share (they inherit it at the fork): it moves out to the work's price
+    _CLOCK.update(t0=time.monotonic(), base=allowed, allowed=allowed, price=None, planned=None, first_s=None,
+                  built=None, capped=False, rate_seen=None, outer=Path(brep).parent / CLOCK_FILE)
     # SHMESH-21b: the whole meshes the forked runs make are kept in hand here; the best is delivered at the stop
     with tempfile.TemporaryDirectory(prefix="shell_best_") as bdir:
         _SO_FAR.update(dir=bdir if BEST_SO_FAR else None, mine=None, file=None, label="the first path", t0=time.time())
         try:
-            return _mesh_shell_watched(brep, record, mm_per_unit=mm_per_unit, log=log, target=target,
-                                       correction=correction, requirements=requirements, allowed=allowed)
+            out = _mesh_shell_watched(brep, record, mm_per_unit=mm_per_unit, log=log, target=target,
+                                      correction=correction, requirements=requirements, allowed=allowed)
+            out[1].setdefault("quality", {})["clock"] = _clock_view()
+            if _CLOCK.get("first_s") and int(_CLOCK.get("built") or 0) >= RATE_MIN_ELEMENTS:
+                # (SHMESH-21e: this part's measured rate prices its next mesh in this run)
+                rate = float(_CLOCK["built"]) / max(float(_CLOCK["first_s"]), 1e-3)
+                _RATE_SEEN["rate"] = min(rate, float(_RATE_SEEN.get("rate") or rate))
+            return out
         except _PastLimit as exc:
-            got = _so_far_deliver(bdir, requirements, allowed, str(exc)) if BEST_SO_FAR else None
+            got = _so_far_deliver(bdir, requirements, float(_CLOCK["allowed"]), str(exc)) if BEST_SO_FAR else None
             if got is None:
                 raise
+            got[1].setdefault("quality", {})["clock"] = _clock_view()
             return got
         finally:
             _SO_FAR.update(dir=None, mine=None, file=None, label="the first path")
+            _CLOCK.update(t0=None, base=None, allowed=None, outer=None)
 
 
 def _mesh_shell_watched(brep, record, *, mm_per_unit, log, target, correction, requirements,
@@ -2267,9 +2341,15 @@ def _mesh_shell_watched(brep, record, *, mm_per_unit, log, target, correction, r
 
     trips = 0
     started = time.monotonic()
+    if _CLOCK.get("allowed") is None:
+        _CLOCK.update(t0=started, base=allowed, allowed=allowed)
     while True:
         watch = FACE_WATCH and trips < FACE_WATCH_TRIPS
         t_child = time.monotonic()
+        if not watch:
+            # SHMESH-21f: an unwatched child has no sign of progress to read: held to the floor's limit
+            _CLOCK["allowed"] = float(_CLOCK["base"])
+        allowed = float(_CLOCK["allowed"])      # (SHMESH-21e: moved out by the work's price, read at each child)
         with tempfile.TemporaryDirectory(prefix="shell_watch_") as wdir:
             back = _mesh_shell_child(brep, record, mm_per_unit=mm_per_unit, target=target, correction=correction,
                                      requirements=requirements, watch_dir=wdir if watch else None,
@@ -2296,7 +2376,7 @@ def _mesh_shell_watched(brep, record, *, mm_per_unit, log, target, correction, r
                     _FACE_FATE["curves"].append(ck)
                 rung = 1 if not now else 2
             took = time.monotonic() - t_child
-            left = allowed - (time.monotonic() - started)
+            left = float(_CLOCK["allowed"]) - (time.monotonic() - started)
             if rung > len(FACE_LADDER) or _FACE_FATE["ladder_spent"] or left < 2.0 * took:
                 # (past its last rung; or no rung made a face this run; or no time for a rung and the mesh after it)
                 if rung > len(FACE_LADDER):
@@ -2357,11 +2437,15 @@ def _mesh_shell_child(brep, record, *, mm_per_unit, target, correction, requirem
     seen: dict = {}
     try:
         while True:
+            if watch_dir is not None:
+                # SHMESH-21e: the child priced its work: the deadline moves out by what the clock gained
+                deadline += _clock_take(Path(watch_dir))
             left = deadline - (time.monotonic() - t0)
             if left <= 0:
-                raise _PastLimit(f"the shell mesh ran past {MESH_DEADLINE_S / 60:.0f} minutes and was stopped "
-                                 "(SHMESH-21)")
+                raise _PastLimit(past_limit_words(float(_CLOCK.get("allowed") or deadline), _CLOCK))
             if recv.poll(min(left, FACE_WATCH_POLL) if watch_dir is not None else left):
+                if watch_dir is not None:
+                    _clock_take(Path(watch_dir))        # (SHMESH-21e: the work it was priced on, for the record)
                 return recv.recv()
             if watch_dir is None:
                 continue
@@ -2376,8 +2460,11 @@ def _mesh_shell_child(brep, record, *, mm_per_unit, target, correction, requirem
             now = _watch_read(Path(watch_dir), seen)
             if now is None:
                 continue
+            # SHMESH-21e: the rate this part's faces are measured to mesh at prices the work again
+            deadline += _progress_take(Path(watch_dir), seen)
             tag, held = now
-            if (FACE_WATCH_S is not None and held > FACE_WATCH_S) or int(seen.get("level", 0)) >= FACE_WATCH_LEVEL:
+            if ((FACE_WATCH_S is not None and held > FACE_WATCH_S) or int(seen.get("level", 0)) >= FACE_WATCH_LEVEL
+                    or _face_stuck(Path(watch_dir), tag, held)):
                 try:
                     rows = json.loads((Path(watch_dir) / "tags.json").read_text())
                 except (OSError, ValueError):
@@ -2414,19 +2501,298 @@ SHELL_END_ENV = "HEXERA_SHELL_RUN_END"
 END_MARGIN_S = 60.0
 
 
-def _deadline_s() -> float:
-    """SHMESH-31g: the seconds this shell mesh may take from now - MESH_DEADLINE_S, or less where the run's outer stop
-    (SHELL_END_ENV) comes sooner (never under 1 s)."""
+#: SHMESH-21e: the run's HARD CAP (seconds since the epoch, set beside SHELL_END_ENV by the runner): what the job can
+#: give the shell run at most (fea_driver.shell_pass: half of what the attempt has left, the machine's wall; the
+#: surface run: its share). SHELL_END_ENV is the run's usual stop; a mesh priced past it is given its price up to
+#: this cap, and the runner's stop follows (run_following). Unset: no cap but the price
+SHELL_CAP_ENV = "HEXERA_SHELL_RUN_CAP"
+#: SHMESH-21e: where a shell mesh says when it must now be done (beside its surface file), for the runner's stop
+CLOCK_FILE = "shell_clock.json"
+#: SHMESH-21e: the shell mesh's clock in this process: its start (monotonic), today's limit (`base`, SHMESH-21/31g),
+#: the limit in force (`allowed`, seconds from the start), and the work it was priced on
+_CLOCK: dict[str, Any] = {"t0": None, "base": None, "allowed": None, "price": None, "planned": None, "first_s": None,
+                          "built": None, "capped": False, "outer": None}
+
+
+def _env_end(name: str) -> float | None:
+    """SHMESH-31g/21e: a runner's stop (seconds since the epoch) from the environment; None when unset or unread."""
     from meshpipeline.settings.env import optional_env
 
-    allowed = float(MESH_DEADLINE_S)
+    # (each name read as written, for the settings inventory's check)
+    raw = (optional_env("HEXERA_SHELL_RUN_CAP", "") if name == SHELL_CAP_ENV
+           else optional_env("HEXERA_SHELL_RUN_END", ""))
     try:
-        end = float(optional_env("HEXERA_SHELL_RUN_END", "") or "nan")
+        end = float(raw or "nan")
     except ValueError:
-        end = float("nan")
-    if end == end:
+        return None
+    return end if end == end else None
+
+
+def _deadline_s() -> float:
+    """SHMESH-31g: the seconds this shell mesh may take from now - MESH_DEADLINE_S, or less where the run's outer stop
+    (SHELL_END_ENV) comes sooner (never under 1 s). SHMESH-21e moves it out once the work is priced (_priced_total)."""
+    allowed = float(MESH_DEADLINE_S)
+    end = _env_end(SHELL_END_ENV)
+    if end is not None:
         allowed = min(allowed, end - time.time() - END_MARGIN_S)
     return max(1.0, allowed)
+
+
+def mesh_price_s(planned: float | None, first_s: float | None = None, rate: float | None = None) -> float:
+    """SHMESH-21e: the seconds a shell mesh's work is priced at - PRICE_FACTOR x its planned elements at MESH_RATE,
+    or PRICE_FACTOR x its first whole mesh's measured seconds where that is longer. `rate`: elements a second
+    measured on this part (its faces as gmsh meshes them, or a whole mesh this run made before, _RATE_SEEN): the
+    planned elements are priced at it where it is slower than MESH_RATE."""
+    seen = [r for r in (rate, _RATE_SEEN.get("rate")) if r]
+    at = min([MESH_RATE, *seen])
+    price = PRICE_FACTOR * max(float(planned or 0.0), 0.0) / at
+    if first_s:
+        price = max(price, PRICE_FACTOR * float(first_s))
+    return price
+
+
+#: SHMESH-21e: the slowest rate (elements a second) a whole shell mesh made in THIS process measured - a shell or
+#: surface run's own process meshes one part (its retries, its re-aim, SURF-5's re-sizing), so the next mesh of the
+#: part is priced at what this part was measured to do, not only at MESH_RATE
+_RATE_SEEN: dict[str, float | None] = {"rate": None}
+#: ... from a mesh of at least this many elements (a small mesh's seconds are mostly its set-up, not its rate)
+RATE_MIN_ELEMENTS = 20_000
+#: SHMESH-21e: the faces gmsh is seen to finish price the mesh while it runs, once PROGRESS_SHARE of the planned
+#: elements are done and PROGRESS_MIN_S have passed: rate = the planned elements of the faces finished over the
+#: seconds from the first of them to the start of the face now on (a face gmsh stays on never lowers it - a stuck
+#: face is SHMESH-21f's)
+PROGRESS_SHARE = 0.05
+PROGRESS_MIN_S = 30.0
+
+
+def _clock_outer() -> None:
+    """SHMESH-21e: the runner told when the shell mesh must now be done (CLOCK_FILE beside the surface file)."""
+    outer = _CLOCK.get("outer")
+    if outer is None or _CLOCK.get("t0") is None:
+        return
+    try:
+        end = time.time() + float(_CLOCK["allowed"]) - (time.monotonic() - float(_CLOCK["t0"]))
+        Path(outer).write_text(json.dumps({**_clock_view(), "end": end}))
+    except OSError:
+        pass
+
+
+def _progress_take(watch_dir: Path, seen: dict) -> float:
+    """SHMESH-21e: in the parent, the seconds the watched child's measured progress adds to the limit (0 when none):
+    the rate its finished faces meshed at (face_planned.json, the surfaces gmsh moved past in `seen`) prices the
+    whole plan again (mesh_price_s); a longer price moves the limit out (never past the cap), told to the runner."""
+    if _CLOCK.get("allowed") is None or _CLOCK.get("t0") is None:
+        return 0.0
+    p = watch_dir / "face_planned.json"
+    try:
+        mtime = p.stat().st_mtime
+        if mtime != seen.get("fp_mtime"):
+            # (a new 2D mesh: tags change from pass to pass - its faces are counted from the face now on)
+            seen.update(fp_mtime=mtime, fp=json.loads(p.read_text()), done=set(), first_at=seen.get("since"))
+    except (OSError, ValueError):
+        return 0.0
+    fp, done = seen.get("fp") or {}, seen.get("done") or set()
+    total = sum(float(v) for v in fp.values())
+    n_done = sum(float(fp.get(str(t), 0.0)) for t in done)
+    span = float(seen.get("since") or 0.0) - float(seen.get("first_at") or seen.get("since") or 0.0)
+    if total <= 0 or n_done < PROGRESS_SHARE * total or span < PROGRESS_MIN_S:
+        return 0.0
+    rate = n_done / span
+    planned = max(float(_CLOCK.get("planned") or 0.0), total)
+    price = mesh_price_s(planned, _CLOCK.get("first_s"), rate=rate)
+    total_s, capped = _priced_total(price, float(_CLOCK["base"]), time.monotonic() - float(_CLOCK["t0"]))
+    _CLOCK["rate_seen"] = round(rate, 1)
+    gain = total_s - float(_CLOCK["allowed"])
+    if gain <= 0:
+        return 0.0
+    _CLOCK.update(allowed=total_s, price=price, capped=capped)
+    logger.info("shell mesh: faces measured at %.0f elements a second; the limit is now %.0f s (SHMESH-21e)",
+                rate, total_s)
+    _clock_outer()
+    return gain
+
+
+def _priced_total(price: float, base: float, since_s: float) -> tuple[float, bool]:
+    """SHMESH-21e: (the seconds from the shell mesh's start it may take, whether the run's hard cap held it): `base`
+    (today's limit) unless the price runs past MESH_DEADLINE_S - then the price, never past SHELL_CAP_ENV less
+    END_MARGIN_S (`since_s`: seconds since the mesh started), never under `base`."""
+    if MESH_DEADLINE_S <= 0 or price <= max(float(base), float(MESH_DEADLINE_S)):
+        return float(base), False
+    total, capped = float(price), False
+    cap = _env_end(SHELL_CAP_ENV)
+    if cap is not None and cap - time.time() - END_MARGIN_S + since_s < total:
+        total, capped = cap - time.time() - END_MARGIN_S + since_s, True
+    return max(float(base), total), capped
+
+
+def _reprice(planned: float | None = None, first_s: float | None = None, built: int | None = None) -> None:
+    """SHMESH-21e: in a watched shell mesh child, its work priced again - on the largest plan made so far and, once a
+    first whole mesh stands, its measured seconds - and the run's clock (_RUN's end) moved out to it; the parent reads
+    the new limit from the watch folder (_clock_take). Nothing in an unwatched child (SHMESH-21f) or with no clock."""
+    if _CLOCK.get("t0") is None or _WATCH_DIR[0] is None or _RUN.get("end") is None:
+        return
+    if planned is not None:
+        _CLOCK["planned"] = max(float(_CLOCK.get("planned") or 0.0), float(planned))
+    if first_s is not None and _CLOCK.get("first_s") is None:
+        _CLOCK.update(first_s=float(first_s), built=int(built or 0) or None)
+    price = mesh_price_s(_CLOCK.get("planned"), _CLOCK.get("first_s"))
+    since = time.monotonic() - float(_CLOCK["t0"])
+    total, capped = _priced_total(price, float(_CLOCK["base"]), since)
+    _CLOCK.update(price=price, capped=capped)
+    if total > float(_CLOCK["allowed"]):
+        _CLOCK["allowed"] = total
+        _RUN["end"] = max(float(_RUN["end"]), float(_CLOCK["t0"]) + total)
+    try:
+        (Path(_WATCH_DIR[0]) / CLOCK_FILE).write_text(json.dumps(_clock_view()))
+    except OSError:
+        pass
+
+
+def _clock_view() -> dict:
+    """SHMESH-21e: the clock as the record keeps it (seconds)."""
+    c = _CLOCK
+    return {"rule": "SHMESH-21e", "floor_s": float(MESH_DEADLINE_S), "base_s": c.get("base"),
+            "limit_s": None if c.get("allowed") is None else round(float(c["allowed"]), 1),
+            "price_s": None if c.get("price") is None else round(float(c["price"]), 1),
+            "planned": None if c.get("planned") is None else int(c["planned"]),
+            "first_s": None if c.get("first_s") is None else round(float(c["first_s"]), 1),
+            "built": c.get("built"), "capped": bool(c.get("capped")), "rate": MESH_RATE, "factor": PRICE_FACTOR,
+            "rate_seen": c.get("rate_seen"), "rate_before": _RATE_SEEN.get("rate")}
+
+
+def _clock_take(watch_dir: Path) -> float:
+    """SHMESH-21e: in the parent, the seconds a watched child's priced clock gained since last read (0 when none);
+    the new limit is kept (_CLOCK), the work it was priced on with it, and the runner is told when the shell mesh
+    must now be done (CLOCK_FILE beside the surface file, run_following)."""
+    try:
+        got = json.loads((watch_dir / CLOCK_FILE).read_text())
+    except (OSError, ValueError):
+        return 0.0
+    if _CLOCK.get("allowed") is None or got.get("limit_s") is None:
+        return 0.0
+    price = max(float(got.get("price_s") or 0.0), float(_CLOCK.get("price") or 0.0)) or None
+    _CLOCK.update(price=price, planned=got.get("planned"), first_s=got.get("first_s"),
+                  built=got.get("built"), capped=bool(got.get("capped")) or bool(_CLOCK.get("capped")))
+    gain = float(got["limit_s"]) - float(_CLOCK["allowed"])
+    if gain <= 0:
+        return 0.0
+    _CLOCK["allowed"] = float(got["limit_s"])
+    _clock_outer()
+    return gain
+
+
+def _face_stuck(watch_dir: Path, tag: int, held: float) -> bool:
+    """SHMESH-21f: while the limit runs past MESH_DEADLINE_S, whether gmsh has been on surface `tag` longer than its own
+    price (PRICE_FACTOR x its planned elements at the slowest rate known - MESH_RATE, or the planned elements a second
+    this run was measured to mesh at (_face_rate) - at least FACE_HELD_FLOOR_S)."""
+    if _CLOCK.get("allowed") is None or float(_CLOCK["allowed"]) <= max(float(_CLOCK["base"]), MESH_DEADLINE_S):
+        return False
+    if held <= FACE_HELD_FLOOR_S:
+        return False
+    try:
+        n = float(json.loads((watch_dir / "face_planned.json").read_text()).get(str(tag)) or 0.0)
+    except (OSError, ValueError, AttributeError):
+        n = 0.0
+    return held > max(FACE_HELD_FLOOR_S, PRICE_FACTOR * n / _face_rate())
+
+
+def _face_rate() -> float:
+    """SHMESH-21f: the planned elements a second a face is priced at - MESH_RATE, or slower where this run measured
+    slower: its plan over its first whole mesh's seconds, the faces gmsh was seen to finish (rate_seen). A face is
+    never held to a rate faster than the run's own (a big curved face whose pairing is slow is inside its price)."""
+    rates = [float(MESH_RATE)]
+    planned, first_s = _CLOCK.get("planned"), _CLOCK.get("first_s")
+    if planned and first_s and float(first_s) > 0:
+        rates.append(float(planned) / float(first_s))
+    if _CLOCK.get("rate_seen"):
+        rates.append(float(_CLOCK["rate_seen"]))
+    return max(1e-3, min(rates))
+
+
+def run_env(base_s: float, cap_s: float, now: float | None = None) -> dict[str, str]:
+    """SHMESH-31g/21e: the two stops a runner gives its shell run - its usual one and the hard cap."""
+    t = time.time() if now is None else now
+    return {SHELL_END_ENV: f"{t + base_s:.3f}", SHELL_CAP_ENV: f"{t + max(base_s, cap_s):.3f}"}
+
+
+def outer_end(started: float, base_s: float, cap_s: float, folder: Path | str) -> float:
+    """SHMESH-21e: when a runner stops its shell run (seconds since the epoch): `base_s` after `started`, or later where
+    a shell mesh in `folder` (any CLOCK_FILE in it or one level down) must be done later - plus END_MARGIN_S for what
+    follows the mesh, as SHMESH-31g keeps it - never past `cap_s`."""
+    end = started + base_s
+    root = Path(folder)
+    for p in (root / CLOCK_FILE, *root.glob(f"*/{CLOCK_FILE}")):
+        try:
+            got = float(json.loads(p.read_text()).get("end") or 0.0)
+        except (OSError, ValueError, AttributeError):
+            continue
+        end = max(end, got + END_MARGIN_S)
+    return min(end, started + max(base_s, cap_s))
+
+
+def run_following(argv: list[str], *, base_s: float, cap_s: float, folder: Path | str,
+                  env: dict | None = None, poll_s: float = 5.0):
+    """SHMESH-21e: a shell run in its own process, stopped at outer_end - its usual stop, moved out when the shell
+    mesh's limit follows its work, never past the hard cap: the runner's stop never cuts below the mesh's own limit.
+    Returns (the finished process's CompletedProcess, the seconds it was allowed); past the stop, the process is
+    killed and subprocess.TimeoutExpired raised with `timeout` the seconds it was allowed. `env`: the whole
+    environment the run gets (the caller forwards its own), the two stops added (run_env); None: this process's
+    environment as it is, no stops told (the shell mesh's own limit only)."""
+    import subprocess
+
+    started = time.time()
+    for p in (Path(folder) / CLOCK_FILE, *Path(folder).glob(f"*/{CLOCK_FILE}")):
+        try:
+            p.unlink()                          # (a clock left by an earlier run says nothing of this one)
+        except OSError:
+            pass
+    full = None if env is None else {**env, **run_env(base_s, cap_s, started)}
+    proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=full)
+    while True:
+        end = outer_end(started, base_s, cap_s, folder)
+        wait = min(poll_s, end - time.time())
+        try:
+            out, err = proc.communicate(timeout=max(0.01, wait))
+            return subprocess.CompletedProcess(argv, proc.returncode, out, err), end - started
+        except subprocess.TimeoutExpired:
+            if time.time() < end:
+                continue
+            proc.kill()
+            proc.communicate()
+            raise subprocess.TimeoutExpired(argv, end - started) from None
+
+
+def run_stopped_words(allowed_s: float, folder: Path | str) -> str:
+    """SHMESH-21e: what the user reads when a runner stopped its shell run from outside (run_following): how long it
+    was given, the shell mesh's plan when one was priced (CLOCK_FILE), and the way on."""
+    planned, capped = None, False
+    root = Path(folder)
+    for p in (root / CLOCK_FILE, *root.glob(f"*/{CLOCK_FILE}")):
+        try:
+            got = json.loads(p.read_text())
+        except (OSError, ValueError):
+            continue
+        planned, capped = got.get("planned") or planned, bool(got.get("capped")) or capped
+    mesh = f"its shell mesh, about {int(planned):,} elements planned" if planned else "its shell mesh"
+    held = ", all the time this job had left for it" if capped else ""
+    return (f"it took longer than the {_minutes(allowed_s)} allowed{held} (reading the part, then {mesh}) and was "
+            "stopped; a larger element size makes a smaller mesh that finishes sooner")
+
+
+def _minutes(s: float) -> str:
+    return f"{s / 60:.0f} minutes" if s >= 60 else f"{s:.0f} s"
+
+
+def past_limit_words(allowed: float, clock: dict | None = None) -> str:
+    """SHMESH-21/21e: what the user reads when the shell mesh is stopped with no whole mesh made: how long it ran, the
+    work it was priced on, and the way on (a larger element size). The neighbouring words' rule id kept."""
+    c = clock or {}
+    planned = c.get("planned")
+    asked = f" (about {int(planned):,} elements planned)" if planned else ""
+    held = (" - all the time this job had left for it" if c.get("capped") else "")
+    # (SHMESH-12b's marker: the runs tell these words, not the error's class name)
+    return (f"{SAID}the shell mesh{asked} ran for its {_minutes(allowed)}{held} and was stopped before it made a whole mesh; "
+            "a larger element size makes a smaller mesh that finishes sooner (SHMESH-21)")
 
 
 def _limit() -> float | None:
@@ -2618,9 +2984,16 @@ def _so_far_deliver(folder: Path | str, requirements: dict | None, allowed: floa
         "rule": "SHMESH-21b", "reached": True, "limit_s": round(float(allowed), 1), "meshes_made": int(made),
         "delivered": c["name"], "delivered_mesh": int(c["n"]), "made_at_s": c["at_s"], "stopped": stopped[:200],
         "why": f"the shell mesh reached its time limit after {made} whole mesh(es); the best made so far is delivered"}
-    mesh.notes.append(f"The shell mesh reached its time limit ({minutes}{unit}) after {made} whole mesh(es) and was "
-                      f"stopped; the best mesh made so far (mesh {c['n']} of {made}: {c['name']}) is delivered "
-                      "(SHMESH-21b).")
+    # SHMESH-21e: what was asked (the planned elements), how long it ran, what is delivered, and the way on
+    planned = _CLOCK.get("planned")
+    asked = f" for about {int(planned):,} planned elements" if planned else ""
+    held = " (all the time this job had left for it)" if _CLOCK.get("capped") else ""
+    applied["quality"]["time_limit"].update(planned=None if not planned else int(planned),
+                                            capped=bool(_CLOCK.get("capped")))
+    mesh.notes.append(f"The shell mesh reached its time limit ({minutes}{unit}{asked}){held} after {made} whole "
+                      f"mesh(es) and was stopped; the best mesh made so far (mesh {c['n']} of {made}: {c['name']}, "
+                      f"{int(mesh.n_elements):,} elements) is delivered. A larger element size makes a smaller mesh "
+                      "that finishes sooner (SHMESH-21b).")
     logger.warning("shell mesh: stopped at its time limit after %d whole meshes; mesh %d (%s) delivered (SHMESH-21b)",
                    made, c["n"], c["name"])
     try:
@@ -2904,7 +3277,11 @@ def _mesh_shell(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log
     SHMESH-31b: the run's clock starts here (and stops when it returns); #435's mesh is made only while it fits in
     the time left (priced at the first mesh's own time, and bounded), and never once a spot pass was cut off - the
     mesh made stands, told."""
-    _RUN.update(end=time.monotonic() + _deadline_s() if MESH_DEADLINE_S > 0 else None, first_s=None, cut=False)
+    end = time.monotonic() + _deadline_s() if MESH_DEADLINE_S > 0 else None
+    if end is not None and _CLOCK.get("t0") is not None and _CLOCK.get("allowed") is not None:
+        # (SHMESH-21e: a forked run of mesh_shell keeps the parent's one clock - its start, the limit in force)
+        end = float(_CLOCK["t0"]) + float(_CLOCK["allowed"])
+    _RUN.update(end=end, first_s=None, cut=False)
     _SPOT_COST["s"] = None
     try:
         return _mesh_shell_timed(brep, record, mm_per_unit=mm_per_unit, log=log, target=target,
@@ -4065,6 +4442,8 @@ def _mesh_path_made(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0,
                 if _RUN.get("first_s") is None:
                     # (SHMESH-31b: what a whole mesh more costs - this path's time to its first mesh)
                     _RUN["first_s"] = time.monotonic() - started
+                    # (SHMESH-21e: and the limit follows this part's own measured mesh)
+                    _reprice(first_s=_RUN["first_s"], built=int(mesh.n_elements))
             except _Redraw:
                 passes.append(["holes drawn again", round(time.monotonic() - t_pass, 1)])
                 continue
@@ -4441,7 +4820,7 @@ def _mesh_path_made(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0,
             applied["quality"]["own_size_stopped"] = bool(spot_stopped or spot_late)
             if spot_stopped or spot_late:
                 mesh.notes.append("Meshing finer at the spots past the solver's own limits would have run past the "
-                                  f"shell mesh's {MESH_DEADLINE_S / 60:.0f} minutes, so it was "
+                                  f"shell mesh's {_minutes(float(_CLOCK.get('allowed') or MESH_DEADLINE_S))}, so it was "
                                   + ("stopped" if spot_stopped else "not started")
                                   + " and the best mesh made before it is delivered (SHMESH-31b).")
             elif left + spot_left + spot_trimmed:
@@ -4755,6 +5134,12 @@ def _mesh_once_core(brep: Path, record: dict, owners: list[str], mm: float, log:
         places = _place_sizes(rows, owners, record, requirements, facts, mm)
     if places is not None and places.get("applied"):
         planned = places["planned"]
+        if (sizing is not None and sizing.get("low_mm") is not None and places.get("finest_mm")
+                and ((requirements or {}).get("sizes") or {}).get("min_edge_mm") is None):
+            # SHMESH-52: the low end of a global size's band (half of it) is no shortest edge the user typed: a place
+            # asked finer is meshed at what was asked, never held at the band's low end (a picked face asked 2 mm
+            # under a global 8 mm came out 4.08 mm, NOTE-17)
+            sizing["low_mm"] = min(float(sizing["low_mm"]), 0.5 * float(places["finest_mm"]))
     # SHMESH-27 (the user's sizes only): a face narrower than their size is sized to its own width
     # (SHMESH-51o65: the faces whose stretched size went back keep today's sizing)
     along_skip = frozenset(k for k, o in enumerate(owners) if o in NARROW_SKIP)
@@ -4780,6 +5165,7 @@ def _mesh_once_core(brep: Path, record: dict, owners: list[str], mm: float, log:
         raise ValueError(f"the shell mesh plan asks for about {planned / 1e6:.1f} million elements over {len(facts)} "
                          f"faces, past the {PLANNED_MAX / 1e6:.1f} million a shell mesh is made of in the time allowed "
                          "(SHMESH-20)")
+    _reprice(planned=planned)               # (SHMESH-21e: the limit follows the plan)
     gmsh.initialize(["-noenv"], readConfigFiles=False)
     try:
         gmsh.option.setNumber("General.Terminal", 0)
@@ -4886,6 +5272,20 @@ def _mesh_once_core(brep: Path, record: dict, owners: list[str], mm: float, log:
             elif per_turn:
                 h0 = min(h0, max(2 * math.pi * r_mm / per_turn, mesh_min))
             return min(h0, rows[k]["size_mm"])
+
+        def edge_own(c: int) -> tuple[float, float, list[str]] | None:
+            # SHMESH-52c: the size the mesh would have had along curve c (the plan's size round a hole of the faces
+            # it bounds, else their size), the most it can take (those faces' size - their own size field meets it -
+            # and SR.HOLE_PER_TURN round a hole), and their mid-faces; None when no face of the plan bounds it
+            ks = sorted({tag_of[int(s)] for s in gmsh.model.getAdjacencies(1, abs(int(c)))[0] if int(s) in tag_of})
+            if not ks:
+                return None
+            plate = min(float(rows[k]["size_mm"]) for k in ks)
+            r = _arc_radius(gmsh, abs(int(c)))
+            if r is None:
+                return plate, plate, [owners[k] for k in ks]
+            own = min(hole_size(r * mm, k) for k in ks)
+            return own, min(plate, 2 * math.pi * r * mm / SR.HOLE_PER_TURN), [owners[k] for k in ks]
         washers: list = []
         washers_planned: list = []          # SHMESH-45k: every washer planned, built or not
         washer_skipped: dict[str, int] = {}
@@ -4921,6 +5321,15 @@ def _mesh_once_core(brep: Path, record: dict, owners: list[str], mm: float, log:
                 low_mm=(sizing or {}).get("low_mm"), high_mm=(sizing or {}).get("high_mm"),
                 low_soft=not _edge_hard(requirements)[0], low_soft_off=_under_low_off(no_cut))
             washers_planned = list(washers)
+            if places is not None and places.get("applied") and any(p.get("edge") for p in places.get("places") or []):
+                # SHMESH-52b: a hole the user asked a size at is meshed free, that size graded out from its edge (a
+                # ring holds its own count round the hole: a bore asked 1 mm under 8 mm came out 4.56 mm)
+                asked_at = {c for cs in _edge_place_curves(gmsh, places, (requirements or {}).get("places"), mm, float(
+                    np.median([r["wall_mm"] for r in rows])), own_of=edge_own).values() for c in cs}
+                for w in [w for w in washers if asked_at & {abs(int(c)) for c in w.hole}]:
+                    w.info.update(washer=False, why="a size you asked is set at this hole")
+                    washer_skipped[w.info["why"]] = washer_skipped.get(w.info["why"], 0) + 1
+                    washers.remove(w)
             # SHMESH-45f: square holes take a square ring (mapped below); never gridded nor polar
             squares = [w for w in washers if w.corners] if ST.MAPPED and ST.SQUARES else []
             for w in washers:
@@ -5356,6 +5765,31 @@ def _mesh_once_core(brep: Path, record: dict, owners: list[str], mm: float, log:
         # 5,392 faces made 5,392 constant fields (sh0048: its 1D mesh alone ran past 30 minutes). The same sizes.
         const_by: dict[float, list[int]] = {}
         arcs_by: dict[float, list[int]] = {}
+        edge_sized: dict[float, list[int]] = {}
+        coarse_at: set[int] = set()
+        if places is not None and places.get("applied"):
+            # SHMESH-52b: a place the shell makes an edge of (a hole's bore, the plate's edge wall) is sized on the
+            # curves lying on it, graded out as an arc's size is
+            edge_sized = _edge_place_curves(gmsh, places, (requirements or {}).get("places"), mm,
+                                            float(np.median([r["wall_mm"] for r in rows])), own_of=edge_own)
+            # SHMESH-52c: a curve asked coarser keeps no finer arc size of ours (it is the size asked, at most the
+            # plate's and 8 round a hole); a finer one is meshed at what it was given, under the wall's floor too
+            coarse_at = {c for p in places.get("places") or [] if p.get("edge") and p.get("ask") == "coarsen"
+                         for c in p.get("curves") or []}
+            # ... and holds its count: gmsh's own curvature sizing (PER_TURN a turn) would keep a small hole as
+            # fine as before whatever its field says (a 5 mm hole asked coarser stayed at 0.98 mm, 16 a turn)
+            set_of = {c: h for h, cs in edge_sized.items() for c in cs}
+            for c_co in sorted(coarse_at & set(set_of)):
+                lo_c, hi_c = gmsh.model.getParametrizationBounds(1, c_co)
+                xyz_c = np.asarray(gmsh.model.getValue(1, c_co, list(np.linspace(lo_c[0], hi_c[0], 65))),
+                                   dtype=float).reshape(-1, 3)
+                length = float(np.linalg.norm(np.diff(xyz_c, axis=0), axis=1).sum()) * mm
+                gmsh.model.mesh.setTransfiniteCurve(c_co, max(1, math.ceil(length / set_of[c_co] - 1e-6)) + 1)
+            scaled = [float(p["set_mm"]) for p in places.get("places") or []
+                      if p.get("edge") and p.get("scale") and p.get("set_mm")]
+            if scaled and 0.5 * min(scaled) < size_floor:
+                size_floor = 0.5 * min(scaled)
+                gmsh.option.setNumber("Mesh.MeshSizeMin", size_floor / mm)
         for t, k in sorted(tag_of.items()):
             const_by.setdefault(float(rows[k]["size_mm"]), []).append(t)
             if "curve_mm" in rows[k]:
@@ -5363,7 +5797,7 @@ def _mesh_once_core(brep: Path, record: dict, owners: list[str], mm: float, log:
                 # and wider arcs keep the face's size (one small hole no longer refines the whole rim)
                 for _d, c in gmsh.model.getBoundary([(2, t)], oriented=False):
                     r = _arc_radius(gmsh, abs(c))
-                    if r is None or abs(c) in washer_holes:
+                    if r is None or abs(c) in washer_holes or abs(c) in coarse_at:
                         continue
                     h0, _rule = plan_rules.curve_size(r * mm, wall=rows[k]["wall_mm"])
                     h0 *= sz
@@ -5380,6 +5814,8 @@ def _mesh_once_core(brep: Path, record: dict, owners: list[str], mm: float, log:
                         h0 = SR.curved_size(r * mm, 0.0, floor=0.0, rule=rows[k]["size_mm"], per_turn=SR.HOLE_PER_TURN)
                     if h0 < rows[k]["size_mm"]:
                         arcs_by.setdefault(float(f"{h0:.6g}"), []).append(abs(c))
+        for h, curves in edge_sized.items():
+            arcs_by.setdefault(h, []).extend(curves)
         if short_edges is not None:
             for h, curves in short_edges["by_size"].items():
                 arcs_by.setdefault(h, []).extend(curves)
@@ -5489,6 +5925,11 @@ def _mesh_once_core(brep: Path, record: dict, owners: list[str], mm: float, log:
             for t in sorted(tag_of):
                 if gmsh.model.getType(2, t) == "Plane" and t not in grids and t not in mapped:
                     gmsh.model.mesh.setAlgorithm(2, t, PLANE_ALGORITHM)
+        if BIG_FLAT_FACE and kind != "triangles":
+            # SHMESH-21g: a big flat face left free is meshed by the quad-aligned algorithm (Blossom scales on it)
+            for t, k in big_flat_faces(gmsh, tag_of, facts, rows, mm, skip=set(grids) | set(mapped) | {w.annulus for w in rings}).items():
+                gmsh.model.mesh.setAlgorithm(2, t, BIG_FLAT_ALGORITHM)
+                rows[k]["big_flat"] = BIG_FLAT_ALGORITHM
         if POLAR_BAND_ALGORITHM is not None and polar_faces_made:
             # SHMESH-49k: a round plate's free cells (the band inside its bolt circle) paved by this algorithm
             for t in sorted(tag_of):
@@ -5501,7 +5942,8 @@ def _mesh_once_core(brep: Path, record: dict, owners: list[str], mm: float, log:
         for c_f, n_f in sorted(fine_curves.items()):
             # SHMESH-71: the curve rung - a curve gmsh named meshed finer (its two faces mesh to it)
             gmsh.model.mesh.setTransfiniteCurve(c_f, n_f + 1)
-        _watch_tags(tag_of, facts)
+        _watch_tags(tag_of, facts, {t: float(facts[k]["area"]) * mm * mm / float(rows[k]["size_mm"]) ** 2
+                                    for t, k in tag_of.items() if float(rows[k].get("size_mm") or 0) > 0})
         _generate(gmsh, tag_of)
         node_tags, coords, _p = gmsh.model.mesh.getNodes()
         tags = np.asarray(node_tags, dtype=np.int64)
@@ -9284,6 +9726,44 @@ def _place_sizes(rows: list[dict], owners: list[str], record: dict, requirements
     return got
 
 
+def _edge_place_curves(gmsh, applied: dict, source: dict | None, mm: float, wall_mm: float,
+                       own_of=None) -> dict[float, list[int]]:
+    """SHMESH-52b: {size (mm): curves} - for each edge place of `applied` (engines/shell_places.plan), the model's curves
+    lying on its CAD face (its triangles kept in `source`, the reading), within shell_places.EDGE_TOL_WALL of the
+    wall. Each place is told what was found (shell_places.edge_found): its curves' points, or not applied, with why.
+    SHMESH-52c: a "finer" / "coarser" place's curves take the size `own_of(curve)` says the mesh would have had there
+    -> (own mm, the most it can take mm, the plate's mid-faces), or None - halved or doubled (shell_places.edge_scaled)."""
+    from meshpipeline.engines import shell_places as SP
+
+    out: dict[float, list[int]] = {}
+    edge = [(j, p) for j, p in enumerate(applied.get("places") or []) if p.get("edge")]
+    if not edge:
+        return out
+    pts: dict[int, np.ndarray] = {}
+    for _d, c in gmsh.model.getEntities(1):
+        lo, hi = gmsh.model.getParametrizationBounds(1, c)
+        if not len(lo) or hi[0] <= lo[0]:
+            continue
+        xyz = gmsh.model.getValue(1, c, list(np.linspace(lo[0], hi[0], SP.EDGE_SAMPLES)))
+        pts[int(c)] = np.asarray(xyz, dtype=float).reshape(-1, 3) * mm
+    for j, p in edge:
+        t = ((source or {}).get("entries") or [])[p["entry"]]["targets"][p["target"]]
+        curves = SP.edge_curves(pts, t.get("tris_mm") or [], SP.EDGE_TOL_WALL * wall_mm)
+        SP.edge_found(applied, j, [pts[c] for c in curves], t)
+        if curves and p.get("scale"):
+            got = [(c, own_of(c)) for c in curves] if own_of is not None else []
+            keep = [(c, g) for c, g in got if g is not None]
+            if not keep:
+                SP.edge_found(applied, j, None, t)          # no face of the plate meets it: not applied, as before
+                continue
+            for h, cs in SP.edge_scaled(applied, j, [c for c, _g in keep], [g[0] for _c, g in keep],
+                                        [g[1] for _c, g in keep], [m for _c, g in keep for m in g[2]]).items():
+                out.setdefault(h, []).extend(cs)
+        elif curves:
+            out.setdefault(float(f"{float(p['set_mm']):.6g}"), []).extend(curves)
+    return out
+
+
 def _projector(facts: list[dict], on_face: np.ndarray, mm: float):
     """SHMESH-14c: project(nodes, points) - each point laid onto its node's own curved face's surface (the closest
     point; mm in and out). Nodes of flat faces (on_face -1) are left as given (the middle of coplanar points stays
@@ -9571,4 +10051,4 @@ def element_turn_deg(radius_mm: float, size_mm: float) -> float:
     return math.degrees(size_mm / radius_mm) if radius_mm > 0 else 0.0
 
 
-__all__ = ["ALGORITHM", "PER_TURN", "mesh_run", "mesh_shell"]
+__all__ = ["MESH_RATE", "PRICE_FACTOR", "FACE_HELD_FLOOR_S", "SHELL_CAP_ENV", "CLOCK_FILE", "mesh_price_s", "run_env", "outer_end", "run_following", "run_stopped_words", "past_limit_words", "ALGORITHM", "PER_TURN", "mesh_run", "mesh_shell"]

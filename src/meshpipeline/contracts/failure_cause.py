@@ -525,8 +525,23 @@ def _describe(cause: object, facts: Mapping | None = None, *,
     if c is FailureCause.CONTRACT_MISMATCH:
         return _contract(f)
     if c is FailureCause.PATCH_NOT_CAPTURED:
+        stop = clean_reason(f.get("plan_stop"))
+        if stop:
+            # INS-32: the plan stopped before meshing - an opening reaches its passage only through
+            # a gap whose cells do not fit the limit: said in the plan's own words, with its ways out
+            # INS-36: the same words for a mesh that was built and still lost the opening
+            lead = "The mesh was not delivered" if f.get("after_build") else "The plan stopped before meshing"
+            return (f"{lead}: {stop}.",
+                    str(f.get("ways_out") or "") or "Widen or close that gap in the CAD, allow more "
+                    "cells, or drop that opening.")
         patches = [str(p) for p in (f.get("patches") or [])]
         detail = clean_reason(f.get("detail"))
+        if detail and f.get("fidelity") is not None and not patches and not f.get("wrong_region"):
+            # THE CAD CHECK REFUSED THE MESH (cad_fidelity shares this cause): said as that check's own finding, never
+            # as "a boundary did not come out of the mesher"
+            return (f"The mesh was not delivered: {detail[0].lower() + detail[1:]}.",
+                    "Ask for finer cells at the walls in your notes (a size in mm), or mesh the part with its thin "
+                    "details removed.")
         what = (f"The mesher lost the boundary {_names(patches)}: it came out with no faces, "
                 "usually because it is smaller than the cells around it."
                 if patches else
@@ -626,6 +641,13 @@ def _describe(cause: object, facts: Mapping | None = None, *,
                 "run may take, so no complete mesh came back.",
                 f"Ask for less detail (for example 'standard' instead of 'max') and {_RUN_AGAIN}.")
     if c is FailureCause.RUN_INFRASTRUCTURE:
+        if f.get("launch_failed"):
+            # THE MESHER NEVER STARTED on the machine it was sent to (job c06bb745: told as "the mesher lost the
+            # boundary 'wall'" after nine passes of an unstarted run)
+            return (f"The mesh machine could not start the mesher ({f.get('launch_failed')}), so nothing was meshed. "
+                    "Nothing about your part caused it.",
+                    f"You can run it again ({_RUN_AGAIN}). If it stops the same way, tell us - the mesh machine's "
+                    "setup is ours to fix.")
         big = f.get("too_big_for_worker")
         if isinstance(big, Mapping):
             need = _as_number(big.get("need_bytes")) or 0.0

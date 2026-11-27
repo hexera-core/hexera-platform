@@ -21,16 +21,18 @@ class MeshingStandardRepository:
         return await db.get(OrganizationMeshingStandard, organization_id)
 
     async def put(self, db: AsyncSession, *, organization_id: uuid.UUID, text: str, reading: dict | None,
-                  updated_by: str, shell_elements: str = "quads") -> OrganizationMeshingStandard:
+                  updated_by: str, shell_elements: str = "quads",
+                  shell_elements_set: bool = False) -> OrganizationMeshingStandard:
         # ONE ROW PER ORGANISATION, written in one statement: two members saving at once leave the last save,
         # whole - never one's text with the other's reading.
         stmt = insert(OrganizationMeshingStandard).values(
             organization_id=organization_id, text=text, reading=reading, updated_by=updated_by[:320],
-            shell_elements=shell_elements)
+            shell_elements=shell_elements, shell_elements_set=bool(shell_elements_set))
         stmt = stmt.on_conflict_do_update(
             index_elements=[OrganizationMeshingStandard.organization_id],
             set_={"text": stmt.excluded.text, "reading": stmt.excluded.reading,
                   "shell_elements": stmt.excluded.shell_elements,
+                  "shell_elements_set": stmt.excluded.shell_elements_set,
                   "updated_by": stmt.excluded.updated_by, "updated_at": func.now()})
         await db.execute(stmt)
         await db.flush()
