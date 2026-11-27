@@ -108,8 +108,18 @@ class Briefing:
 class DeliverableMember:
 
     path: str                 # workspace-relative; never absolute, never traversing
-    kind: str = "file"        # "file" | "dir"
+    kind: str = "file"        # "file" | "dir" | "glob"
     required: bool = True     # absent required member = the bundle is not deliverable
+
+    # A GLOB, BECAUSE A DECOMPOSED MESH DOES NOT KNOW HOW MANY PIECES IT IS IN. The conjugate
+    # engine delivers its regions across `plan.ranks` processor directories and that count is
+    # chosen per run (`ranks_for`), so no literal list of members can name them: a recipe
+    # written for `processor0..7` would silently ship seven eighths of a mesh on a 9-rank run
+    # and nothing on a serial one. `kind="glob"` expands against the workspace, and a REQUIRED
+    # glob needs at least one match.
+    @property
+    def is_glob(self) -> bool:
+        return self.kind == "glob"
 
 
 @dataclass(frozen=True)
@@ -118,10 +128,42 @@ class Deliverable:
     bundle: str               # object name of the tar.gz
     prefix: str               # arcname prefix inside the tar
     members: tuple[DeliverableMember, ...]
+    # WHAT THE BUNDLE HAS TO HAVE INSIDE IT, as glob patterns matched against the archive's
+    # own member names - at least one match each, or the archive is refused.
+    #
+    # THIS EXISTS BECAUSE A CASE WITH NO MESH IN IT PASSED. `verify_archive` checked the
+    # member paths, the prefix, the links and the marker, and nothing about content - so
+    # cfmesh_conjugate shipped job b8f09ae9's "OpenFOAM case" containing 1.99 GB of viewer
+    # sidecars, a decimated boundary surface and two 400-byte patch tables, with zero points,
+    # faces, owner or neighbour for either region. The member list was satisfied: `constant`
+    # and `system` both existed. They just did not hold a mesh any more.
+    #
+    # Engine-declared, because only the engine knows what its own format must carry: gmsh's
+    # Abaqus deck has no `owner` file and must not be held to one. Empty means "no content
+    # rule", which is every engine that has not stated one.
+    must_contain: tuple[str, ...] = ()
     # WHAT THE USER IS DOWNLOADING, in their words ("OpenFOAM case", "Abaqus deck").
     # Engine-declared, because the engine is what produces it - the UI used to hardcode
     # "OpenFOAM case" for every engine, which quietly mislabelled gmsh's Abaqus deck.
     label: str = "Mesh case"
+
+    def expand(self, workspace) -> tuple[str, ...]:
+        """Every member's real workspace-relative path, globs resolved, sorted.
+
+        ONE implementation, used by the tar builder and by the contract check, because two
+        would be two answers to "what is in the bundle" - which is how a bundle with no mesh
+        in it came to satisfy its own contract.
+        """
+        from pathlib import Path as _P
+
+        ws = _P(workspace)
+        out: list[str] = []
+        for m in self.members:
+            if m.is_glob:
+                out.extend(sorted(p.relative_to(ws).as_posix() for p in ws.glob(m.path)))
+            elif (ws / m.path).exists():
+                out.append(m.path)
+        return tuple(sorted(set(out)))
 
     @property
     def required(self) -> tuple[str, ...]:

@@ -113,10 +113,12 @@
       "timed_out"
     ],
     "deliverable": [
+      "0",
       "conjugate_plan.json",
       "conjugate_report.json",
       "constant",
       "mesh.msh",
+      "processor*",
       "system"
     ],
     "deliverable_kind": "Deliverable",

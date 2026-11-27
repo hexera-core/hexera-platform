@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import fnmatch
 import hashlib
 import json
 import logging
@@ -149,6 +150,18 @@ def _member_ok(workspace: Path, member) -> str:
     rel = member.path
     if rel.startswith("/") or ".." in Path(rel).parts:
         return f"{rel}: declared path is not workspace-relative"
+    # A GLOB HAS NO LITERAL TARGET. `processor*` never `exists()`, so checking it as a path
+    # would report every decomposed delivery as missing its own mesh. A required glob is
+    # satisfied by at least one match, and each match is then held to the same rules.
+    if getattr(member, "is_glob", False):
+        hits = sorted(workspace.glob(rel))
+        if not hits:
+            return f"{rel}: nothing matches"
+        root = workspace.resolve()
+        for hit in hits:
+            if not str(hit.resolve()).startswith(str(root)):
+                return f"{hit.name}: resolves outside the workspace (symlink escape)"
+        return ""
     target = workspace / rel
     if not target.exists():
         return f"{rel}: missing"
@@ -191,11 +204,26 @@ def verify_archive(path: Path, spec) -> None:
                 raise BundleContractError(
                     f"{spec.name}: archive member outside the declared prefix: {ti.name}")
     present = set(names)
-    missing = [m.path for m in d.members if m.required
+    missing = [m.path for m in d.members if m.required and not m.is_glob
                and f"{d.prefix}/{m.path}" not in present]
+    # A REQUIRED GLOB NEEDS A MATCH, not an exact name: `processor*` is satisfied by
+    # processor0..N and by nothing else, and the count is per-run.
+    missing += [m.path for m in d.members if m.required and m.is_glob
+                and not fnmatch.filter(present, f"{d.prefix}/{m.path}")]
     if missing:
         raise BundleContractError(
             f"{spec.name}: archive is missing required member(s): {', '.join(missing)}")
+    # ...AND WHAT IT HAS TO HAVE INSIDE IT. The member list is about paths and says nothing
+    # about content: job b8f09ae9 shipped an "OpenFOAM case" whose `constant` and `system`
+    # both existed and which contained no points, faces, owner or neighbour for either
+    # region - 1.99 GB of viewer sidecars and a decimated surface. This is the engine's own
+    # statement of what its format must carry (Deliverable.must_contain).
+    hollow = [pat for pat in d.must_contain
+              if not fnmatch.filter(present, f"{d.prefix}/{pat}")]
+    if hollow:
+        raise BundleContractError(
+            f"{spec.name}: the archive carries no {', '.join(hollow)} - it has the shape of "
+            f"a {d.label} and no mesh inside it")
     if f"{d.prefix}/{d.marker}" not in present:
         raise BundleContractError(f"{spec.name}: archive does not carry the declared marker")
 
@@ -359,7 +387,10 @@ def _build_plan(job_id: uuid.UUID, workspace: Path, scratch: list[Path],
             ParallelGzipWriter(_fh, level=BUNDLE_ARCHIVE_LEVEL,
                                worker_count=workers(job_cpus())) as _gz, \
             tarfile.open(fileobj=_gz, mode="w|") as _ctar:
-        for _rel in sorted(m.path for m in _recipe.members):
+        # `expand` resolves glob members against the workspace, which is how a decomposed
+        # mesh's `processor*` trees get in: the rank count is chosen per run, so no literal
+        # member list can name them. Non-glob members are unchanged, present-or-skipped.
+        for _rel in _recipe.expand(workspace):
             _cp = workspace / _rel
             if _cp.exists():              # optional members ship when present
                 _ctar.add(_cp, arcname=f"{_recipe.prefix}/{_rel}", filter=_norm)

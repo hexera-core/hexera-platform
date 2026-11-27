@@ -412,10 +412,33 @@ SPEC = EngineSpec(
             members=(
                 M("constant", kind="dir"),
                 M("system", kind="dir"),
+                # THE CELLS. On this engine's decomposed delivery the mesh IS the per-rank
+                # trees: `constant/<region>/polyMesh` carries the patch table and the viewer
+                # sidecars and no points, faces, owner or neighbour at all. Without this the
+                # customer's "OpenFOAM case" is 1.99 GB of sidecars and a decimated surface -
+                # which is what job b8f09ae9 shipped. A GLOB because the rank count is chosen
+                # per run by `ranks_for`, so no literal list can name them; `required=False`
+                # because a MERGED delivery has no processor directories and carries its cells
+                # in `constant` instead, and `must_contain` below is what holds both paths to
+                # actually having a mesh.
+                M("processor*", kind="glob", required=False),
+                # THE SOLVER SCAFFOLD `solver_case.write_solver_case` already writes on the
+                # VM - 0/fluid/{T,U,p_rgh,p}, 0/solid/T and its own README, which names every
+                # patch as the mesh names it and writes the coupled condition out in full.
+                # Thirteen files, eight of which were shipping under constant/ and system/
+                # while the five field files and the README were left behind.
+                M("0", kind="dir", required=False),
                 M("conjugate_report.json"),
                 M("conjugate_plan.json"),
                 M("mesh.msh", required=False),
             ),
+            # WHAT A CONJUGATE CASE HAS TO HAVE INSIDE IT, whichever path delivered it. The
+            # member list is about paths and cannot see content: `constant` and `system` both
+            # existed on job b8f09ae9 and the bundle still had no mesh in it. One match each,
+            # anywhere under the prefix, so a merged delivery satisfies them from
+            # constant/<region>/polyMesh and a decomposed one from processor*/.
+            must_contain=("*/polyMesh/points", "*/polyMesh/faces",
+                          "*/polyMesh/owner", "*/polyMesh/neighbour"),
         ),
         downstream=DownstreamTarget(
             solvers=("chtMultiRegionFoam (conjugate heat transfer)",),
