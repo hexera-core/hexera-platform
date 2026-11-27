@@ -6512,9 +6512,9 @@
   "roots": []
  },
  {
-  "context": "engines/fea_driver.py::read_requirements::stage#1|NotAPublisher|not-a-publisher|",
+  "context": "engines/fea_driver.py::requirements_section::stage#1|NotAPublisher|not-a-publisher|",
   "path": "engines/fea_driver.py",
-  "qualname": "read_requirements",
+  "qualname": "requirements_section",
   "semantic": "stage",
   "method": "stage",
   "ordinal": 1,

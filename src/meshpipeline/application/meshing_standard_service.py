@@ -122,4 +122,17 @@ async def for_dispatch(db: AsyncSession, *, organization_id: str) -> dict | None
                        shell_elements=row.shell_elements, shell_elements_set=bool(row.shell_elements_set))
 
 
-__all__ = ["EMPTY", "MAX_CHARS", "TooLong", "for_dispatch", "save", "view", "view_of"]
+async def for_reading(sessions, *, organization_id: str) -> dict | None:
+    """The standard as for_dispatch gives it, for the plan step's reading of the user's words (NOTE-26: what a typed
+    requirement costs is planned with the standard the run will be dispatched with). `sessions`: the database
+    session factory. None when there is none or it cannot be read - never raises (the cost then plans without it)."""
+    if not organization_id:
+        return None
+    try:
+        async with sessions() as db:
+            return await for_dispatch(db, organization_id=organization_id)
+    except Exception:  # noqa: BLE001 - a setting never fails a reply
+        return None
+
+
+__all__ = ["EMPTY", "MAX_CHARS", "TooLong", "for_dispatch", "for_reading", "save", "view", "view_of"]

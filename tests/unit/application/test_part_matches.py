@@ -235,14 +235,19 @@ def test_the_reading_keeps_what_its_sizes_cost_and_the_card_shows_it(world, monk
     cost = {"rule": "NOTE-26", "before": {"elements": 700_000}, "after": {"elements": 2_900_000},
             "bigger_machine": False}
     monkeypatch.setattr(plan_cost, "for_reading",
-                        lambda sid, section, notes: seen.append(section.get("status")) or cost)
-    PM.finalize(world.session)
+                        lambda sid, section, notes, **kw: seen.append(section.get("status")) or cost)
+    standard = {"text": "Max element size 6 mm."}
+    PM.finalize(world.session, standard=standard)
+    assert world.queued[-1]["meshing_standard"] == standard        # the team's standard goes with the reading
     _run_queued(world)
     assert seen == ["used"]
     assert PM.view(world.session)["cost"] == cost
-    # nothing costed (the stage did not size it): no cost on the view
-    monkeypatch.setattr(plan_cost, "for_reading", lambda *a: None)
+    # the next reading is costed against this one: its "before" is this one's "after" (the replies chain)
+    got: dict = {}
+    monkeypatch.setattr(plan_cost, "for_reading", lambda *a, **kw: got.update(kw) and None)
     world.session.user_notes = [{"id": "n2", "text": NOTE + " 2 mm on part 4.", "source": "console"}]
     PM.finalize(world.session)
     _run_queued(world)
+    assert (got["previous"] or {}).get("cost") == cost
+    # nothing costed (the stage did not size it): no cost on the view
     assert "cost" not in PM.view(world.session)

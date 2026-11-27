@@ -120,8 +120,9 @@ def facts(note: Mapping, view: Mapping | None, *, note_id: str = "") -> dict[str
 
 
 def _cost_facts(view: Mapping | None, rows) -> dict[str, Any]:
-    """NOTE-26: the plan's size and time before and after what the user set, as the model may say it; {} when
-    nothing was set by this message or the change is too small to say (PT.cost_mine)."""
+    """NOTE-26: the plan's element count before and after what the user set, as the model may say it - no minutes
+    (application/plan_cost: no time model held covers the whole wait); {} when nothing was set by this message or the
+    change is too small to say (PT.cost_mine)."""
     cost = PT.cost_mine(view, rows)
     if not cost:
         return {}
@@ -130,9 +131,6 @@ def _cost_facts(view: Mapping | None, rows) -> dict[str, Any]:
                            "elements_after": PT.count_words(a.get("elements")),
                            "needs_a_bigger_machine": bool(cost.get("bigger_machine")),
                            "say_it_like": PT.cost_line(cost)}
-    tb, ta = PT.usual_minutes(b), PT.usual_minutes(a)
-    if tb and ta:
-        out.update(minutes_before=tb, minutes_after=ta)
     return {"what_it_costs": out}
 
 
@@ -207,8 +205,8 @@ def _block_count() -> str:
 def _block_cost() -> str:
     return ("If what_it_costs is there, what they set changes how big the mesh will be: after saying what you set, add "
             "ONE short plain sentence with the element count before and after, as the facts word it ('about 0.7 "
-            "million to about 2.9 million elements'), the minutes before and after when given ('roughly 25 minutes "
-            "instead of 8'), and that it needs a bigger machine only if needs_a_bigger_machine is true. say_it_like "
+            "million to about 2.9 million elements'), and that it needs a bigger machine only if "
+            "needs_a_bigger_machine is true. Never a time or a number of minutes: the facts hold none. say_it_like "
             "is one way to say it. No warning tone, no 'are you sure', no advice to change it: just the cost.\n")
 
 
@@ -281,7 +279,7 @@ PLAN_REPLY_PROMPT_BLOCKS: tuple = (
                           "not read, once", _block_guess_and_picture),
     ("count", "a whole-mesh count said with its typed number and bound, no place needed; beside typed sizes, which "
               "wins and that the result tells it, never a promise", _block_count),
-    ("cost", "what they set does to the mesh, when worth saying: elements and minutes before and after, a bigger "
+    ("cost", "what they set does to the mesh, when worth saying: elements before and after (no minutes), a bigger "
              "machine if needed, one plain sentence, no warning", _block_cost),
     ("kept", "words that set nothing: one or two short natural sentences - what they said, in my words, kept in "
              "mind when the mesh is planned (the result told only when they asked something of the mesh); no menu, "

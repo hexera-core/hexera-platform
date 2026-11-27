@@ -223,14 +223,21 @@ def view(session: Any, *, owner_id: str = "") -> dict | None:
         return None
 
 
-def finalize(session: Any, *, owner_id: str = "") -> dict | None:
+def finalize(session: Any, *, owner_id: str = "", standard: Mapping | None = None) -> dict | None:
     """THE USER FINALIZED THEIR NOTES: the reading of the user's notes as they stand now
-    is started - unless it already runs or is done - and the card's view is answered. Never raises."""
+    is started - unless it already runs or is done - and the card's view is answered. `standard`: the team's saved
+    meshing standard (application/meshing_standard_service.for_reading), handed to the reading for the cost of an
+    FEA solid's requirements (NOTE-26). Never raises."""
     try:
-        return _view(session, owner_id=owner_id, start=True)
+        return _view(session, owner_id=owner_id, start=True, standard=standard)
     except Exception as exc:  # noqa: BLE001 - nothing read; the run reads the notes itself
         logger.warning("part matches: the notes were not read (%s: %s)", type(exc).__name__, str(exc)[:200])
         return None
+
+
+def with_standard(standard: Mapping | None) -> dict:
+    """finalize's `standard` argument, given only when there is one (a session with no team standard reads as before)."""
+    return {"standard": dict(standard)} if isinstance(standard, Mapping) else {}
 
 
 def before_run(session: Any, *, owner_id: str = "") -> str:
@@ -240,7 +247,7 @@ def before_run(session: Any, *, owner_id: str = "") -> str:
     return "read" if got and got.get("status") == "reading" else "go"
 
 
-def _view(session: Any, *, owner_id: str, start: bool) -> dict | None:
+def _view(session: Any, *, owner_id: str, start: bool, standard: Mapping | None = None) -> dict | None:
     from meshpipeline.application.geometry_check import read_check
     sid = str(getattr(session, "id", "") or "")
     notes = notes_of(getattr(session, "user_notes", None), getattr(session, "request_txt", None))
@@ -265,7 +272,7 @@ def _view(session: Any, *, owner_id: str, start: bool) -> dict | None:
     if start and (not current or lapsed):
         if enqueue_reading(sid, key, getattr(session, "user_notes", None), getattr(session, "request_txt", None),
                            owner_id=owner_id or str(getattr(session, "owner_id", "") or ""), previous=stored,
-                           notes_only=seen is NOTES_ONLY):
+                           notes_only=seen is NOTES_ONLY, standard=standard):
             stored, current = _read(sid, MATCHES), True
     if current and stored is not None and stored.get("status") == "done":
         own = getattr(session, "user_notes", None)
@@ -377,7 +384,7 @@ def with_faces(got: dict | None, user_notes) -> dict | None:
         return MR.picked_for(str(r.get("quote") or ""), notes)
 
     def face_row(r: Mapping, faces: list) -> dict:
-        row = {k: v for k, v in r.items() if k not in ("lit", "text", "picked")}
+        row = {k: v for k, v in r.items() if k not in ("lit", "text", "picked", "rest")}
         return {**row, "parts": [], "picked": True, "parts_text": MR.picked_where(faces),
                 "faces": [{"id": str(f.get("id") or ""), "label": str(f.get("label") or f.get("id") or "")}
                           for f in faces]}
@@ -392,7 +399,7 @@ def with_faces(got: dict | None, user_notes) -> dict | None:
             rows.append(face_row(u, f))
         else:
             unsure.append(u)
-    return {**got, "rows": rows, "unsure": unsure}
+    return {**got, "rows": whole_or_rest(rows), "unsure": unsure}
 
 
 def with_notes(got: dict | None, user_notes) -> dict | None:
@@ -446,8 +453,10 @@ def with_cost(got: dict, cost: Mapping | None) -> dict:
     and the count row (NOTE-24) showing the element estimate the run would plan with them. Pure."""
     if not got or not isinstance(cost, Mapping):
         return got
-    from meshpipeline.agents.intake import plan_talk as PT
     after = int((cost.get("after") or {}).get("elements") or 0)
+    if not after:
+        return got              # (a reading with nothing to cost keeps only its marker, plan_cost.NOTHING)
+    from meshpipeline.agents.intake import plan_talk as PT
     rows = [({**r, "estimate": f"Planned: {PT.count_words(after)} elements"} if r.get("count") and after else r)
             for r in got.get("rows") or []]
     return {**got, "rows": rows, "cost": dict(cost)}
@@ -522,6 +531,17 @@ def _where(e: Mapping, ids: list[str], names: dict[str, str], one_part: bool) ->
     return parts_words(ids, names)
 
 
+WHOLE_PART, REST_OF_PART = "the whole part", "the rest of the part"
+
+
+def whole_or_rest(rows: list[dict]) -> list[dict]:
+    """On a single part, a size the reader put on everything else (`rest`) is "the rest of the part" only when another
+    row of the checklist sizes a place of its own (an area, a picked face); alone it is "the whole part" (the C5
+    knuckle, 26 Nov: "3 mm elements on the rest of the part" for the first size typed). Pure."""
+    others = any(not r.get("rest") and not r.get("count") and r.get("size") for r in rows)
+    return [({**r, "parts_text": REST_OF_PART if others else WHOLE_PART} if r.get("rest") else r) for r in rows]
+
+
 def _part_words(ids: list[str]) -> str:
     nums = sorted({int(_num(p)) for p in ids if _num(p).isdigit()})
     if not nums:
@@ -594,7 +614,8 @@ def rows_of(reading: Mapping, seen: Mapping, session_id: str) -> dict | None:
         rows.append({"phrase": e.get("phrase"), "words": _short(e.get("quote") or ""),
                      "quote": e.get("quote") or "", "parts": ids,
                      "parts_text": _where(e, ids, names, one_part),
-                     "size": size_words(e), "picked": e.get("why") == "picked by you"})
+                     "size": size_words(e), "picked": e.get("why") == "picked by you",
+                     **({"rest": True} if one_part and e.get("rest_parts") and not e.get("parts") else {})})
     unsure = [{"phrase": u.get("phrase"), "words": _short(u.get("quote") or ""), "quote": u.get("quote") or "",
                "text": _unsure_text(u), "size": size_words(u),
                # NOTE-21: one place named, several it could be - how many, and what they are
@@ -606,6 +627,7 @@ def rows_of(reading: Mapping, seen: Mapping, session_id: str) -> dict | None:
               for u in reading.get("unsure") or []]
     if not rows and not unsure:
         return None
+    rows = whole_or_rest(rows)
     # WHAT A ROW COVERS on the picture: its parts, and the areas inside them no other row sized (a part's size holds
     # on its holes and fillets too, unless they were named for their own) - so "the rest of the part" lights the
     # whole rest of it
@@ -668,7 +690,8 @@ def card_picture(session_id: str, name: str) -> bytes | None:
 
 
 def enqueue_reading(session_id: str, key: str, user_notes, request_txt, *, owner_id: str = "",
-                    previous: Mapping | None = None, notes_only: bool = False) -> bool:
+                    previous: Mapping | None = None, notes_only: bool = False,
+                    standard: Mapping | None = None) -> bool:
     """Mark the reading of `key` as begun and hand it to the geometry worker. False when nothing runs it.
     `previous`: the last reading, whose rows the card keeps showing until this one lands. `notes_only`: a flow model
     with no parts to tie the words to (NOTES-CFD-1): the worker reads the notes alone."""
@@ -680,7 +703,10 @@ def enqueue_reading(session_id: str, key: str, user_notes, request_txt, *, owner
                                      **({"previous": dict(last)} if isinstance(last, Mapping) else {})})
         return enqueue_part_words(session_id=session_id, key=key, owner_id=owner_id,
                                   user_notes=json.loads(json.dumps(list(user_notes or []), default=str)),
-                                  request_txt=str(request_txt or ""))
+                                  request_txt=str(request_txt or ""),
+                                  # NOTE-26: the team's standard, for the cost of an FEA solid's requirements
+                                  **({"meshing_standard": json.loads(json.dumps(dict(standard), default=str))}
+                                     if isinstance(standard, Mapping) else {}))
     except Exception as exc:  # noqa: BLE001 - no reading before approval; the run reads the notes itself
         logger.warning("part matches: the reading was not queued (%s) - session=%s", type(exc).__name__, session_id)
         return False
@@ -700,10 +726,31 @@ def _route_ask(route: str) -> tuple[str, str, bool]:
     return PS.CONSUMER, PS.PURPOSE, bool(FEA_AI)
 
 
-def run_reading(*, session_id: str, key: str, user_notes=None, request_txt: str = "", owner_id: str = "") -> dict:
+def read_fea_notes(state: Mapping, session_id: str) -> tuple[dict, dict] | None:
+    """NOTE-26: the notes read as the solid run reads them (engines/fea_driver.read_requirements: meshing_standard
+    .decide on the FEA route, then fea_driver.requirements_section) - and the team's standard alone - for the cost of
+    what was typed. One model call for the notes (the standard's reading kept at save time is reused), on the worker.
+    None when they could not be read (the cost is then not said). Never raises."""
+    from meshpipeline.engines import fea_driver as FD
+    from meshpipeline.engines import meshing_standard as MS
+    from meshpipeline.engines.fea_ai import FEA_AI
+    try:
+        read, base = asyncio.run(MS.decide_and_base(state, route="fea", job_id=f"notes-{session_id}",
+                                                    enabled=FEA_AI))
+        return FD.requirements_section(read, state), FD.requirements_section(base, state)
+    except Exception as exc:  # noqa: BLE001 - no cost said; the run reads the notes itself
+        logger.warning("part matches: the notes were not read for the cost (%s) - session=%s", type(exc).__name__,
+                       session_id)
+        return None
+
+
+def run_reading(*, session_id: str, key: str, user_notes=None, request_txt: str = "", owner_id: str = "",
+                meshing_standard: Mapping | None = None) -> dict:
     """THE WORKER'S STEP: the model asked once on the check's parts table and pictures; the checked reading stored
     with its key - unless the notes changed meanwhile (a newer reading is queued; this one is dropped). Never
-    raises: a reading that fails is stored as such (the card then shows nothing; the run reads again)."""
+    raises: a reading that fails is stored as such (the card then shows nothing; the run reads again).
+    `meshing_standard`: the team's saved standard as a run is dispatched with it (engines/meshing_standard.snapshot),
+    for the cost of an FEA solid's requirements (NOTE-26)."""
     from meshpipeline.application.geometry_check import read_check
     from meshpipeline.cad import part_words as PW
     from meshpipeline.contracts.object_storage import get_object_store
@@ -723,12 +770,24 @@ def run_reading(*, session_id: str, key: str, user_notes=None, request_txt: str 
     # NOTES-CFD-1: on the flow route the notes themselves are read too, as the run's CFD reader reads them - in a
     # thread of its own, beside the parts reading (the two model calls are independent; one after the other they
     # cost their sum, side by side the longer of the two)
-    notes_job = None
+    notes_job = fea_job = None
     if route == ROUTE_CFD:
         import concurrent.futures
         pool = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="notes-read")
         notes_job = pool.submit(read_notes, state, session_id)
         pool.shutdown(wait=False)
+    elif seen is not NOTES_ONLY:
+        from meshpipeline.application import plan_cost
+        if plan_cost.stage_sized(session_id):
+            # NOTE-26: the cost plans with what the run plans with - the notes read with the team's standard, as the
+            # run reads them - so they are read too, beside the parts reading (side by side: the longer of the two)
+            import concurrent.futures
+            fea_state: dict[str, Any] = dict(state)
+            if isinstance(meshing_standard, Mapping):
+                fea_state["meshing_standard"] = dict(meshing_standard)
+            pool = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="fea-notes-read")
+            fea_job = pool.submit(read_fea_notes, fea_state, session_id)
+            pool.shutdown(wait=False)
     if seen is NOTES_ONLY:
         section = PW.section("none", note="no parts to tie the words to")
     elif not enabled:
@@ -754,11 +813,19 @@ def run_reading(*, session_id: str, key: str, user_notes=None, request_txt: str 
             logger.warning("part matches: the reading failed (%s) - session=%s", type(exc).__name__, session_id)
             section = PW.section("failed", note=PW.UNREAD_WORDS)
     notes_sec = notes_job.result() if notes_job is not None else None
-    # NOTE-26: what the checklist's sizes and count do to an FEA solid's plan, costed as the run would plan it
+    # NOTE-26: what the checklist's sizes and count do to an FEA solid's plan, costed as the run would plan it,
+    # against the plan as it stood before this message: the reading before this one (kept with this one's marker)
     cost = None
     if route == ROUTE_FEA and seen is not NOTES_ONLY:
         from meshpipeline.application import plan_cost
-        cost = plan_cost.for_reading(session_id, section, user_notes)
+        fea_notes = fea_job.result() if fea_job is not None else None
+        if fea_job is None or fea_notes is not None:
+            # (notes that could not be read are no cost at all: one without the standard and the picked faces
+            # would be the wrong number)
+            asked, base = fea_notes if fea_notes is not None else (None, None)
+            previous = (_read(session_id, MATCHES) or {}).get("previous")
+            cost = plan_cost.for_reading(session_id, section, user_notes, asked=asked, base_asked=base,
+                                         previous=previous if isinstance(previous, Mapping) else None)
     now = _read(session_id, MATCHES)
     if now is not None and now.get("key") not in (None, key):
         logger.info("part matches: the notes changed while they were read - this reading dropped - session=%s",

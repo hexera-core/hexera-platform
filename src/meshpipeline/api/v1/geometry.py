@@ -692,8 +692,12 @@ async def finalize_check_parts(session_id: uuid.UUID, owner_id: str = Depends(ow
     session = await _owned_session(session_id, owner_id, organization_id)
     if session.job_id is not None:
         raise HTTPException(409, "The run has already started, so its notes cannot change.")
+    from meshpipeline.application import meshing_standard_service as MSS
     from meshpipeline.application import part_matches as PM
-    got = await asyncio.to_thread(lambda: PM.finalize(session, owner_id=owner_id))
+    from meshpipeline.persistence.session import get_db
+    # NOTE-26: the reading costs what was typed with the team's standard the run will be dispatched with
+    standard = await MSS.for_reading(get_db, organization_id=organization_id)
+    got = await asyncio.to_thread(lambda: PM.finalize(session, owner_id=owner_id, **PM.with_standard(standard)))
     return got or {"status": "none"}
 
 

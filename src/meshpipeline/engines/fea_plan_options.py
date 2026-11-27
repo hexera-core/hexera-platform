@@ -234,12 +234,32 @@ def _costed(record: dict, plan: dict, key: str) -> dict:
     return r
 
 
-def requirements_cost(record: dict, surface, diag_m: float, *, before: dict, asked: dict | None,
-                      part_sizes: dict | None, ai: dict | None = None, target: dict | None = None) -> dict:
-    """WHAT THE REQUIREMENTS DO TO THE MESH, BEFORE THE RUN: the plan the run would make with them (the run's own
-    sizing of them, fea_driver.requirement_sizes, and its own planner, fea_driver.choose_plan - the same estimate,
-    PLAN-fea-16 memory model, RUN-1/2/5 machine and LAD-fea-15 time the run uses; no number of its own), against
-    `before`, the plan without them (the stage's full-rules plan).
+def requirements_plan(record: dict, surface, diag_m: float, *, asked: dict | None, part_sizes: dict | None,
+                      ai: dict | None = None, target: dict | None = None, state: dict | None = None,
+                      kept: dict | None = None, key: str = "") -> tuple[dict, dict, list]:
+    """THE PLAN THE RUN WOULD MAKE with these requirements, by the run's own steps and nothing else: its inputs
+    (fea_driver.requirement_inputs - the picked faces, the sizes, the controls the notes and the team's standard set,
+    the places asked finer) and its own first planning (fea_driver.size_choice - the user's sizes or count planned;
+    with neither, the size picked on the stage or the recommended one, the stage's kept plans reused when they were
+    made for this solid and this code). `state`: the run's own (its fea_plan_choice). Returns (the record as
+    planned, the plan, the places asked finer - fea_part_sizes.finer_outcomes)."""
+    from meshpipeline.engines import fea_driver as FD
+
+    given = FD.requirement_inputs(record, asked, part_sizes, surface, diag_m)
+    plan, _said = FD.size_choice(state or {}, given["record"], surface, diag_m, levers=[],
+                                 ceiling_s=FD.ceiling_for(None), ai=ai, kept=kept, key=key, target=target,
+                                 sizes=given["sizes"] or None)
+    return given["record"], plan, given["finer"]
+
+
+def requirements_cost(record: dict, surface, diag_m: float, *, before: dict | None, asked: dict | None,
+                      part_sizes: dict | None, ai: dict | None = None, target: dict | None = None,
+                      state: dict | None = None, kept: dict | None = None, key: str = "") -> dict:
+    """WHAT THE REQUIREMENTS DO TO THE MESH, BEFORE THE RUN: the plan the run would make with them
+    (requirements_plan - the run's own inputs and planning; the same estimate, PLAN-fea-16 memory model, RUN-1/2/5
+    machine and LAD-fea-15 time the run uses; no number of its own), against `before`: the plan as it stood before
+    them - a plan (its row is made here), a row already made (the cost of the reading before this one, NOTE-26), or
+    None when it is not known (then "before" is None and nothing is compared).
 
     `asked`: the notes' reading (mesh_requirements' section, NOTE-7); `part_sizes`: the parts reading
     (fea_part_sizes.decide's section, AI-fea-9: a size or "finer" in one named place); `ai`: the AI decision when one
@@ -252,20 +272,17 @@ def requirements_cost(record: dict, surface, diag_m: float, *, before: dict, ask
     upper end at the part's slow fill rate, usual_minutes) plus budget_minutes (when the pass is stopped, LAD-fea-15);
     "finer": per place asked "finer" with no number (PLAN-fea-36, fea_part_sizes.finer_outcomes): its target (half
     the mesh round it), the size the rules already give it, whether it changed, and the plain line the run says."""
-    from meshpipeline.engines import control_appliers as CA
-    from meshpipeline.engines import fea_ai as FA
-    from meshpipeline.engines import fea_driver as FD
-    from meshpipeline.engines import fea_part_sizes as PS
-
-    sizes, scaled, controls = FD.requirement_sizes(record, asked, part_sizes, diag_m)
-    rec = {**record, CA.RECORD_KEY: controls} if controls is not None else record
-    finer = PS.finer_outcomes(scaled)
-    if finer:
-        rec = {**rec, FA.SETTLED_KEY: PS.settled(scaled)}         # as drive puts it: the AI never refines there
-    after_plan = FD.choose_plan(rec, surface, diag_m, ai=ai, target=target, sizes=sizes or None)
-    b, a = _costed(record, before, "before"), _costed(rec, after_plan, "after")
-    factor = a["elements"] / b["elements"] if b["elements"] else None
-    bigger = a["memory_gib"] > b["memory_gib"] or (b["standard"] and not a["standard"])
+    rec, after_plan, finer = requirements_plan(record, surface, diag_m, asked=asked, part_sizes=part_sizes, ai=ai,
+                                               target=target, state=state, kept=kept, key=key)
+    a = _costed(rec, after_plan, "after")
+    if before is None:
+        return {"before": None, "after": a, "factor": None, "bigger_machine": False,
+                "words": f"That puts the mesh at {_count_words(a['elements'])} elements, {_machine_words(a)}.",
+                "finer": finer}
+    b = dict(before) if "elements" in before else _costed(record, before, "before")
+    factor = a["elements"] / b["elements"] if b.get("elements") else None
+    bigger = (float(a["memory_gib"]) > float(b.get("memory_gib") or 0.0) or
+              (bool(b.get("standard")) and not a["standard"]))
     when = minutes_words(a["usual_minutes"], a["minutes"])
     words = (f"That takes the mesh from {_count_words(b['elements'])} to {_count_words(a['elements'])} elements, "
              f"{_machine_words(a)}, {when}." if _count_words(a["elements"]) != _count_words(b["elements"]) else
@@ -430,7 +447,7 @@ def _main(argv: list[str]) -> int:
 
 __all__ = ["BUDGET_S", "FULL", "LOW_STRESS", "PLANS_FILE", "QUICKER", "bounded", "decide", "kept_plan",
            "minutes_words", "options", "options_and_plans", "plan_staged", "planning_code", "plans_key",
-           "requirements_cost", "row", "stage_file", "standard_elements"]
+           "requirements_cost", "requirements_plan", "row", "stage_file", "standard_elements"]
 
 
 if __name__ == "__main__":
