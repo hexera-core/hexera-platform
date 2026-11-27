@@ -372,8 +372,11 @@ INVENTORY: list[Group] = [
                help="repair a file in the run when triage can point at the defect, instead of only reporting it"),
         EnvVar("CAD_REPAIR_TIMEOUT_S", "120", kind="float", exposure="internal",
                help="seconds the run waits for a repair before going on without it; the kernel itself cannot be interrupted"),
-        EnvVar("CAD_INSPECT_TIMEOUT_S", "25", kind="float", exposure="internal",
-               help="seconds inspection may spend on one file before the run goes on without it"),
+        EnvVar("CAD_INSPECT_TIMEOUT_S", "60", kind="float", exposure="internal",
+               help="the floor under the seconds inspection may spend on one file before the run "
+                    "goes on without it"),
+        EnvVar("CAD_INSPECT_SECONDS_PER_MB", "4.0", kind="float", exposure="internal",
+               help="seconds of inspection a megabyte of CAD is worth, above that floor"),
         EnvVar("CAD_INSPECT_MAX_BYTES", str(80 * 1024 * 1024), kind="int", exposure="internal",
                help="files larger than this are not inspected; an operator looks at them instead"),
         EnvVar("CAD_REPAIR_MAX_DEVIATION_RATIO", "0.001", kind="float", exposure="internal",

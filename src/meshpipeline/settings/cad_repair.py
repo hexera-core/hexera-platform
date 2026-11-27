@@ -82,16 +82,54 @@ CAD_REPAIR_HEAL_SELF_INTERSECTIONS: bool = bool_env("CAD_REPAIR_HEAL_SELF_INTERS
 CAD_REPAIR_MAX_HOLE_SPAN_RATIO: float = float(
     optional_env("CAD_REPAIR_MAX_HOLE_SPAN_RATIO", "0.75"))
 
-#: Seconds inspection may spend on one file before the run goes on without it. Inspection is
-#: EVIDENCE and runs on every mesh-intended job, so a pathological part must not spend a run's
-#: deadline proving it is pathological. The work is handed to a thread and abandoned on expiry:
-#: OpenCASCADE offers no interruption point, so the thread finishes in the background while the
-#: run proceeds on the original geometry with an inconclusive report.
-CAD_INSPECT_TIMEOUT_S: float = float(optional_env("CAD_INSPECT_TIMEOUT_S", "25"))
+#: THE FLOOR under the seconds inspection may spend on one file before the run goes on without it.
+#: Inspection is EVIDENCE and runs on every mesh-intended job, so a pathological part must not spend
+#: a run's deadline proving it is pathological. The work is handed to a thread and abandoned on
+#: expiry: OpenCASCADE offers no interruption point, so the thread finishes in the background while
+#: the run proceeds on the original geometry with an inconclusive report.
+#:
+#: SIXTY, NOT TWENTY-FIVE, AND THE OLD NUMBER NEVER INSPECTED THE CUSTOMER'S PART AT ALL. Twenty-five
+#: carried no measurement, and every run of the Corintis cold plate has silently reported
+#: `service_failure: inspection_timed_out` - job 606af55e logged "node_repair_inspect: inspection
+#: exceeded 25.0s - continuing without it" at 08:06:38, 43 s into the job. MEASURED 2026-11-27, in
+#: the worker's real configuration (a container with a 4.0-CPU quota and 32 visible cores), on
+#: /home/rehaan/corintis_in/ColdPlateAssembly_CLEAN.step at 15,883,539 bytes, five runs:
+#:
+#:     wall   33.91  38.61  40.63  36.66 s    and 42.77 s with the OpenCASCADE threads pinned
+#:     cpu    33.83  38.56  40.62  36.64 s
+#:
+#: CPU EQUALS WALL IN EVERY RUN, so this is not the thread pathology commit 7267ba38 fixed - the
+#: inspection is single-threaded and simply takes about 38 s. It finds 8,194 located problems across
+#: two kinds (small_edge and small_face, both warnings), at 0.53 GiB of peak RSS. So the agent was
+#: doing real work and throwing it away four seconds before it finished, on every single run.
+#:
+#: AND IT SCALES WITH THE FILE, which is why there is a rate below rather than one larger constant.
+#: 38 s at 15.9 MB is 2.4 s a megabyte, and `CAD_INSPECT_MAX_BYTES` admits 80 MB - so a constant
+#: generous enough for the largest part this bound allows would be a four-minute hole in every run,
+#: and one tight enough for a small part is what we had. The floor covers this plate with 1.6x
+#: headroom; the rate covers the rest.
+CAD_INSPECT_TIMEOUT_S: float = float(optional_env("CAD_INSPECT_TIMEOUT_S", "60"))
+
+#: ...AND WHAT A MEGABYTE OF IT IS WORTH, so the bound means "this part is pathologically slow"
+#: rather than "this part is big". Measured above at 2.4 s/MB; 4.0 gives 1.7x headroom and puts the
+#: 80 MB ceiling at 320 s. A run that spends that much is a run whose evidence was worth having -
+#: the alternative is the state this replaces, where the time was spent and the answer discarded.
+CAD_INSPECT_SECONDS_PER_MB: float = float(optional_env("CAD_INSPECT_SECONDS_PER_MB", "4.0"))
 
 #: Files larger than this are not inspected at all. Reading a very large STEP costs seconds before
 #: anything is measured, and a part that big is one an operator should look at anyway.
 CAD_INSPECT_MAX_BYTES: int = int(optional_env("CAD_INSPECT_MAX_BYTES", str(80 * 1024 * 1024)))
+
+
+def inspect_budget_s(size_bytes: int) -> float:
+    """How long inspection may spend on a file this big: the floor, or the rate, whichever is more.
+
+    ONE PLACE, because the node that enforces the budget and the report that discloses it must name
+    the same number - the old code read the constant twice and a scaled budget read in one place and
+    not the other would tell a customer their part was given a bound it was not.
+    """
+    return max(CAD_INSPECT_TIMEOUT_S,
+               CAD_INSPECT_SECONDS_PER_MB * (max(0, int(size_bytes)) / (1024.0 * 1024.0)))
 
 #: Seconds the run will WAIT for a repair before going on without it. Not a limit on the kernel:
 #: OpenCASCADE offers no interruption point, so the thread finishes in the background while the

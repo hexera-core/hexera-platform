@@ -69,22 +69,27 @@ async def node_repair_inspect(state: PipelineState) -> dict:
             engine=state.get("engine", "") or "",
         )
 
+    # SIZED FROM THE FILE IN FRONT OF IT, because a constant was the whole defect: at 25 s every run
+    # of the Corintis plate reported `inspection_timed_out` four seconds before an inspection that
+    # takes about 38 s on it would have finished (measured five times, cpu equal to wall each time -
+    # see settings/cad_repair.CAD_INSPECT_TIMEOUT_S). The size is already known here; `size` is read
+    # above for the MAX_BYTES bound.
+    budget = rcfg.inspect_budget_s(size)
     try:
         # OFF THE EVENT LOOP AND ON A CLOCK. The kernel has no await points and no interruption
         # point, so the work goes to a thread and is ABANDONED on expiry - the thread finishes in
         # the background while the run proceeds. Evidence must never spend a run's deadline.
-        result = await asyncio.wait_for(asyncio.to_thread(_inspect),
-                                        timeout=rcfg.CAD_INSPECT_TIMEOUT_S)
+        result = await asyncio.wait_for(asyncio.to_thread(_inspect), timeout=budget)
     except TimeoutError:
-        logger.warning("node_repair_inspect: inspection exceeded %.1fs - continuing without it "
-                       "- job_id=%s", rcfg.CAD_INSPECT_TIMEOUT_S, job_id)
+        logger.warning("node_repair_inspect: inspection exceeded %.1fs on %d bytes - continuing "
+                       "without it - job_id=%s", budget, size, job_id)
         from meshpipeline.engines.determinism import note_time_limit
         note_time_limit("cad_inspect", "the inspection ran past its time limit: repair "
-                        "status inconclusive", budget_s=float(rcfg.CAD_INSPECT_TIMEOUT_S))
+                        "status inconclusive", budget_s=float(budget))
         return {
             "repair_status": RepairStatus.inconclusive.value,
             "repair_report": {"service_failure": "inspection_timed_out",
-                              "timeout_seconds": rcfg.CAD_INSPECT_TIMEOUT_S},
+                              "timeout_seconds": budget},
         }
     except Exception as exc:  # noqa: BLE001 - inspection never decides a run's outcome
         # THE DETAIL GOES TO THE OPERATOR LOG, NOT THE CUSTOMER'S REPORT. An exception's text can
