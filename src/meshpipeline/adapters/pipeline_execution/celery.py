@@ -154,6 +154,32 @@ def read_part_words(**kwargs) -> dict:
         return run_reading(**kwargs)
 
 
+def _sizing_limits() -> tuple[int, int]:
+    from meshpipeline.application.geometry_check import SIZING_MARGIN_S
+    from meshpipeline.engines.fea_plan_options import BUDGET_S
+    return int(BUDGET_S + SIZING_MARGIN_S), int(BUDGET_S + SIZING_MARGIN_S + 60)
+
+
+@celery_app.task(
+    name="worker.tasks.watch_fea_sizing",
+    bind=False,
+    max_retries=0,
+    acks_late=True,
+    # a look takes a moment; the limits are for the sizing it runs here when the VM failed it (TIME-21)
+    soft_time_limit=_sizing_limits()[0],
+    time_limit=_sizing_limits()[1],
+)
+def watch_fea_sizing(**kwargs) -> dict:
+    # TIME-21: ONE LOOK AT A BIG FEA SIZING ON A VM OF ITS OWN (application/big_sizing.watch). The naming task gave
+    # its slot back when it sent the sizing away; this look takes a slot for a moment, queues the next one, and stores
+    # the result when it lands - or sizes it here, as before, when the VM failed it.
+    from meshpipeline.adapters.pipeline_execution.geometry_running import running
+    from meshpipeline.application.big_sizing import watch
+    with running(_task_id(watch_fea_sizing, f"fea-sizing-{kwargs.get('session_id', '')}")):
+        return {"status": watch(str(kwargs.get("session_id") or ""), str(kwargs.get("token") or ""),
+                                dict(kwargs.get("handle") or {}), kwargs.get("interpretation"))}
+
+
 #: the naming's yields so far (a task argument the naming body never sees), and how many it may make: each
 #: one lets a waiting task run first, so a busy queue can never keep a naming from its turn for long
 NAMING_YIELDED = "naming_yielded"

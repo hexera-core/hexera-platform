@@ -2383,7 +2383,7 @@ def _name_after_wait(*, session_id: str, owner_id: str, purpose_text: str, inter
         landed = _land_named(session_id, result, stored)
         logger.info("geometry naming %s - session=%s (an FEA part: nothing to name)", landed["status"], session_id)
         if sizing and landed.get("status") == STATUS_READY:
-            size_fea_plan(session_id, stored, interpretation, token=sizing, started=started)
+            size_fea_plan(session_id, stored, interpretation, token=sizing, started=started, record=facts[FACT_KEY])
         return landed
 
     with tempfile.TemporaryDirectory(prefix=f"geometry_naming_{session_id[:8]}_") as tmp:
@@ -2465,15 +2465,18 @@ def sizing_deadline_s() -> float:
 
 
 def size_fea_plan(session_id: str, stored: dict, interpretation: dict | None, *, token: str,
-                  started: float) -> dict:
+                  started: float, record: dict | None = None, away: bool = True, why: str = "") -> dict:
     """PLAN-fea-22: the size choice for the FEA part just shown (engines/fea_plan_options), planned as the run
     plans it in a child stopped within the naming's own time, and stored on the check - unless the check moved on
-    meanwhile (a new naming, a new unit: its marker's token is no longer this one). Never raises; returns what it
-    stored (the options, or why they were not sized)."""
-    from meshpipeline.application.fea_check import PLAN_FACT_KEY
+    meanwhile (a new naming, a new unit: its marker's token is no longer this one). TIME-21: a part whose sizing is
+    predicted long on this worker (`record`: the check's measurement) is sized on a VM instead, when one can be had
+    (`away`): then this returns at once, its queue slot free, and the sizing's watch stores it when it lands
+    (application/big_sizing). Never raises; returns what it stored (the options, or why they were not sized)."""
+    from meshpipeline.application import big_sizing as BS
     from meshpipeline.engines import fea_plan_options as PO
 
     budget = PO.BUDGET_S
+    t0 = time.time()
     got: dict = {"sized": False, "why": "The mesh could not be sized before it runs"}
     if budget > 0:
         try:
@@ -2488,6 +2491,11 @@ def size_fea_plan(session_id: str, stored: dict, interpretation: dict | None, *,
                 canonical = canonicalise(_fetch(ref, work), work, stem="geometry", ecxml_form="placed")
                 if canonical.kind is GeometryKind.cad:
                     prepared, _note = _prepared_coordinates(canonical.path, interp_ref, ref)
+                    # TIME-21: A BIG SIZING ON A MACHINE OF ITS OWN, when it would be long here and one can be had
+                    if away and BS.send_away(session_id, canonical.path, to_metres=float(prepared.to_metres),
+                                             budget_s=budget, token=token, record=record,
+                                             interpretation=interpretation):
+                        return {"sizing": True, "where": BS.ON_VM}
                     kept = work / PO.PLANS_FILE
                     told: dict = {}
                     options = PO.bounded(canonical.path, to_metres=float(prepared.to_metres), budget_s=budget,
@@ -2506,6 +2514,19 @@ def size_fea_plan(session_id: str, stored: dict, interpretation: dict | None, *,
         except Exception as exc:  # noqa: BLE001 - the run sizes it; the stage says so
             logger.warning("geometry check: the FEA mesh was not sized (%s: %s)", type(exc).__name__, str(exc)[:200])
             got = {"sized": False, "why": "The mesh could not be sized before it runs"}
+    # TIME-21: where it was sized, and what was predicted (the same record wherever it ran)
+    got = {**got, "sized_on": BS.why_record(record, where="worker", seconds=time.time() - t0, why=why)}
+    store_plan_fact(session_id, token, lambda _mark: got)
+    logger.info("geometry check: FEA size choice %s - session=%s", "sized" if got.get("sized") else "not sized",
+                session_id)
+    return got
+
+
+def store_plan_fact(session_id: str, token: str, make) -> bool:
+    """The check's size choice (PLAN-fea-22's fact) replaced by `make(the marker)`, only while the check is READY
+    and its marker is still this sizing's (`token`): a check that moved on meanwhile (a new naming, a new unit) is
+    never written over. True when it was written. Never raises."""
+    from meshpipeline.application.fea_check import PLAN_FACT_KEY
     try:
         current = read_check(session_id)
         facts = dict((current or {}).get("facts") or {})
@@ -2513,15 +2534,14 @@ def size_fea_plan(session_id: str, stored: dict, interpretation: dict | None, *,
         if not current or current.get("status") != STATUS_READY or not isinstance(mark, dict) \
                 or mark.get("token") != token:
             logger.info("geometry check: the FEA size choice is stale (the check moved on) - session=%s", session_id)
-            return got
-        facts[PLAN_FACT_KEY] = got
+            return False
+        facts[PLAN_FACT_KEY] = make(dict(mark))
         write_status(session_id, STATUS_READY, **{**{k: v for k, v in current.items() if k not in _STAMPED_KEYS},
                                                   "facts": facts})
+        return True
     except Exception:  # noqa: BLE001 - the stage then keeps saying it is sizing; the run sizes it
         logger.exception("geometry check: the FEA size choice could not be stored - session=%s", session_id)
-    logger.info("geometry check: FEA size choice %s - session=%s", "sized" if got.get("sized") else "not sized",
-                session_id)
-    return got
+        return False
 
 
 def _land_named(session_id: str, result: dict, named_from: dict) -> dict:
@@ -2717,6 +2737,8 @@ def _fea_measure_cad(path: Path, interp_ref, ref):
         names = global_face_names(shape)
         if len(names) == len(surface.names):
             surface.names = list(names)
+    # TIME-21: how big the surface the sizing measures against is (application/big_sizing.predicted_worker_s)
+    record["surface_triangles"] = int(len(surface.tris))
     return shape, record, surface
 
 

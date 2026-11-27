@@ -881,6 +881,10 @@ async def _run_async(req: JobRequest) -> dict:
         # PLANNED ONCE: where the stage kept the plans it made (the run reuses them for this very staged solid)
         from meshpipeline.application.fea_check import plans_object_key
         initial_state["fea_plans_object"] = plans_object_key(str(session_id or ""))
+        # TIME-21: a sizing still on a VM of its own is given up now (the run sizes the mesh itself, as when it starts
+        # first) and its VM released; where the stage's sizing ran is cited in the why record
+        from meshpipeline.application.big_sizing import at_run_start as _sizing_at_run_start
+        await asyncio.to_thread(_sizing_at_run_start, str(session_id or ""), str(job_id or ""))
         # NOTE-4: the notes tied to parts on the request card before approval, with the parts the user picked
         from meshpipeline.application.part_matches import for_run as _part_matches
         initial_state["part_matches"] = await asyncio.to_thread(
