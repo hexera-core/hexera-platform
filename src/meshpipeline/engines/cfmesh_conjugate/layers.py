@@ -634,6 +634,14 @@ def floors_unjudged(grown: dict) -> tuple[str, ...]:
 _EXTRUDING = re.compile(r"Extruding\s+(\d+)\s+out of\s+(\d+)\s+faces\s+\(([\d.]+)%\)")
 _ADDED = re.compile(r"Added\s+(\d+)\s+out of\s+(\d+)\s+cells\s+\(([\d.]+)%\)")
 _LAYER_ROW = re.compile(r"^\s*(\S+)\s+(\d+)\s+(\d+)\s+([\d.]+)\s+([\d.eE+-]+)\s+([\d.]+)\s*$")
+#: The faces the mover took BACK on an iteration, printed on the end of that iteration's own
+#: `Extruding` line. Reading it is the only way to tell a face that was never offered from one
+#: that was offered and then removed, which `offered_pct` alone cannot do - see its note.
+_REMOVED = re.compile(r"Removed extrusion at\s+(\d+)\s+faces")
+#: The mechanism that dominates the up-front loss on a staircase interface, named by
+#: `displacementMedialAxis` under "Removing isolated regions". 2,371,211 on the delivered
+#: plate at featureAngle 120, and 0 on the same part at 180.
+_ISOLATED = re.compile(r"Number of isolated points extrusion stopped\s*:\s*(\d+)")
 _ILLEGAL = re.compile(r"Finished meshing with (\d+) illegal faces")
 _SECONDS = re.compile(r"Layers added in = ([\d.]+) s")
 
@@ -1102,6 +1110,11 @@ def read_layer_log(text: str) -> dict:
     body = str(text or "")
     extruding = [(int(a), int(b), float(c)) for a, b, c in _EXTRUDING.findall(body)]
     added = [(int(a), int(b), float(c)) for a, b, c in _ADDED.findall(body)]
+    removed = [int(n) for n in _REMOVED.findall(body)]
+    isolated = [int(n) for n in _ISOLATED.findall(body)]
+    # THE WHOLE PATCH, from the `out of M` the mover prints beside its own count.
+    _all_faces = float(extruding[0][1]) if extruding else 0.0
+    _removed_0 = float(removed[0]) if removed else 0.0
     table = {}
     for line in body.splitlines():
         m = _LAYER_ROW.match(line)
@@ -1118,23 +1131,81 @@ def read_layer_log(text: str) -> dict:
     return {
         "iterations": len(extruding),
         "coverage_pct": (extruding[-1][2] if extruding else None),
-        # WHAT THE MOVER WAS EVER OFFERED. The first `Extruding N out of M` line is the decision
-        # the extruder makes BEFORE it moves anything: every face where the surface turns by more
-        # than `featureAngle` is refused up front. The last line is what survived ten iterations
-        # of repair. The two are different questions and only the second was ever published, so a
-        # coverage shortfall read as "the mover failed" when it was mostly "the engine declined".
-        # MEASURED on job cba7ac69's 16,582,198-face interface: offered 90.8603% on iteration 1,
-        # finished at 90.6422% on iteration 10 - the whole of the 9.14% shortfall was the refusal
-        # and 0.22 points was the repair.
+        # WHAT WAS STILL EXTRUDING AFTER ITERATION 0 HAD TAKEN ITS SHARE BACK - which is NOT
+        # "what the mover was ever offered", and this comment used to say it was.
+        #
+        # THE LINE ITSELF REFUTES THE OLD READING. Iteration 0 of the delivered plate prints
+        # "Extruding 15066630 out of 16582198 faces (90.8603%). Removed extrusion at 281058
+        # faces." - so 281,058 of the 1,515,568 faces missing from that count were offered and
+        # then removed ON THAT LINE, not declined before anything moved. The claim that "every
+        # face where the surface turns by more than featureAngle is refused up front" is not what
+        # the log says either: featureAngle's own action is printed as "Set displacement to zero
+        # for points on 102 feature edges" - 102 edges - while the mechanism that actually empties
+        # the interface is named three lines above, "Removing isolated regions ... Number of
+        # isolated points extrusion stopped : 2371211".
+        #
+        # AND THE ADDED LINE SETTLES IT ARITHMETICALLY, on the 2.84 run rather than this one.
+        # bl8's iteration 0 prints "Extruding 16153727 out of 16619777" and, on the next line,
+        # "Added 49859331 out of 49859331 cells (100%)". 49,859,331 is 3 x 16,619,777 exactly -
+        # three layers on EVERY face - while 3 x 16,153,727 is only 48,461,181. The Added line
+        # therefore cannot be describing the face set printed above it: the Extruding count is
+        # the state going into the next addition.
+        #
+        # SO THE HONEST DECOMPOSITION OF THE DELIVERED PLATE'S 9.14 MISSING POINTS is 7.4448
+        # never offered, 1.6949 removed at iteration 0, and 0.2181 over iterations 1-9 -
+        # published below as `never_offered_pct`, `removed_first_iter_pct` and the difference.
+        # The old comment attributed 9.14 to the part's shape and 0.22 to the mover, which moved
+        # about 1.7 points from the pass onto the part.
+        #
+        # THE FIGURE IS UNCHANGED, and deliberately: `KEPT_OF_OFFERED_FLOOR_PCT` is calibrated on
+        # it, and quietly redefining a number a floor is drawn on is how a bar stops meaning
+        # anything. What changes is that the report now also carries what this one cannot see.
         "offered_pct": (extruding[0][2] if extruding else None),
-        # WHAT THE MOVER DID WITH WHAT IT WAS GIVEN, which is the only part of coverage it
-        # controls. MEASURED on job cba7ac69: it kept 15,030,462 of the 15,066,630 faces it was
-        # offered - 99.7599% - while the raw coverage read 90.6422% against a 92% floor. The two
-        # numbers answer different questions and only the raw one was published, so a near
-        # perfect layer pass on a part whose interface mostly cannot carry prisms read exactly
-        # like a layer pass that had failed.
+        # WHAT THE MOVER DID FROM ITERATION 1 ONWARD, which is less than it sounds like.
+        # MEASURED on job cba7ac69: 15,030,462 of 15,066,630 - 99.7599%.
+        #
+        # ITS DENOMINATOR IS ITERATION 0's POST-REMOVAL COUNT, so the largest single loss of the
+        # whole pass happens BEFORE the number starts counting. On the delivered plate 99.7599%
+        # is reported for a pass that put 1.9972 of the 3 asked layers into the mesh: measured
+        # against what was actually on the patch it is 15,030,462 / 16,582,198 = 90.64%. The
+        # 95.0 floor therefore cannot fail a run that loses a third of its stack at iteration 0,
+        # which is exactly what this part does - `cells_added_first_iter_pct` is 69.3895%.
+        #
+        # THAT IS A GAP IN THE BAR AND NOT AN ERROR IN THE NUMBER: 99.7599% is a true statement
+        # about iterations 1-9. It is left as it is, and the figures that see the other part of
+        # the pass are published beside it rather than folded into it.
         "kept_of_offered_pct": ((100.0 * float(extruding[-1][0]) / float(extruding[0][0]))
                                 if extruding and float(extruding[0][0]) else None),
+        # ------------------------------------------------------------------ WHERE IT WENT
+        # THREE DEPTHS, NOT ONE, because one number cannot say which of three things happened.
+        # `layers_in_mesh` (the patch row, what snappyHexMesh prints) averages over EVERY patch
+        # face including the ones that got nothing; `layers_per_extruded_face` averages over the
+        # faces that kept a stack; `layers_at_iteration_0` is the first of those before any
+        # repair ran. On the delivered plate they read 1.9972 / 2.2034 / 2.0817, which says the
+        # stack was already two cells deep before the first repair and that ten iterations of
+        # repair cost 0.09 of a layer. No floor in this module looks at the third number, and it
+        # is the one that moved: the same part at featureAngle 180 reads 3.000 at iteration 0.
+        "layers_at_iteration_0": ((added[0][0] / _all_faces)
+                                  if added and _all_faces else None),
+        "layers_per_extruded_face": ((added[-1][0] / float(extruding[-1][0]))
+                                     if added and extruding and extruding[-1][0] else None),
+        "cells_added_first_iter": (added[0][0] if added else None),
+        "cells_added_first_iter_pct": (added[0][2] if added else None),
+        # THE TWO CAUSES OF A MISSING FACE, told apart. `never_offered` is the patch less what was
+        # extruding less what was removed on that same line - the faces nothing ever tried to
+        # move. `removed_first_iter` were offered and taken back.
+        "faces_on_patch": (int(_all_faces) if _all_faces else None),
+        "faces_removed_first_iter": (int(_removed_0) if removed else None),
+        "faces_never_offered": ((int(_all_faces) - extruding[0][0] - int(_removed_0))
+                                if extruding and _all_faces else None),
+        "never_offered_pct": ((100.0 * (_all_faces - extruding[0][0] - _removed_0) / _all_faces)
+                              if extruding and _all_faces else None),
+        "removed_first_iter_pct": ((100.0 * _removed_0 / _all_faces)
+                                   if removed and _all_faces else None),
+        # THE MECHANISM, in its own words. The research doc keys its whole boundary-layer finding
+        # to this counter (a 2:1 refinement transition sitting ON the layer patch), and it is 0 on
+        # every run of this part that kept its stack.
+        "isolated_points_stopped": (isolated[0] if isolated else None),
         "coverage_by_iteration": [c for _a, _b, c in extruding],
         "faces_extruded": (extruding[-1][0] if extruding else None),
         "faces_offered": (extruding[-1][1] if extruding else None),
