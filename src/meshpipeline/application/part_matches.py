@@ -780,17 +780,18 @@ def run_reading(*, session_id: str, key: str, user_notes=None, request_txt: str 
         notes_job = pool.submit(read_notes, state, session_id)
         pool.shutdown(wait=False)
     elif seen is not NOTES_ONLY:
-        from meshpipeline.application import plan_cost
-        if plan_cost.stage_sized(session_id):
-            # NOTE-26: the cost plans with what the run plans with - the notes read with the team's standard, as the
-            # run reads them - so they are read too, beside the parts reading (side by side: the longer of the two)
-            import concurrent.futures
-            fea_state: dict[str, Any] = dict(state)
-            if isinstance(meshing_standard, Mapping):
-                fea_state["meshing_standard"] = dict(meshing_standard)
-            pool = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="fea-notes-read")
-            fea_job = pool.submit(read_fea_notes, fea_state, session_id)
-            pool.shutdown(wait=False)
+        # NOTE-26: the cost plans with what the run plans with - the notes read with the team's standard, as the run
+        # reads them - so they are read too, beside the parts reading (side by side: the longer of the two). EVERY
+        # reading of an FEA part keeps them, sized or not: the reading after it plans "before" from them (the C5
+        # knuckle, 27 Nov: a reading made before the stage had sized the part kept none, and the first requirement's
+        # count line had no "before", so it was never said)
+        import concurrent.futures
+        fea_state: dict[str, Any] = dict(state)
+        if isinstance(meshing_standard, Mapping):
+            fea_state["meshing_standard"] = dict(meshing_standard)
+        pool = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="fea-notes-read")
+        fea_job = pool.submit(read_fea_notes, fea_state, session_id)
+        pool.shutdown(wait=False)
     if seen is NOTES_ONLY:
         section = PW.section("none", note="no parts to tie the words to")
     elif not enabled:

@@ -109,8 +109,9 @@ def inputs(section: Mapping | None, asked: Mapping | None, user_notes) -> dict:
 def before_of(previous: Mapping | None) -> tuple[str, Any]:
     """Where "before" comes from, given the reading before this one: ("chained", its after) when its costing landed;
     ("planned", its inputs) when it did not, or had nothing to cost - planned here from what it was read with;
-    ("base", None) when there was none (the plan the team's standard alone makes); ("unknown", None) for a reading
-    kept before its inputs were. Pure."""
+    ("base", None) when there was none (the plan the team's standard alone makes); a reading kept without its inputs is
+    planned from its parts reading with the standard alone. Never "not known": the first count line always has its
+    "before". Pure."""
     if not isinstance(previous, Mapping) or previous.get("status") != "done":
         return "base", None
     cost = previous.get("cost")
@@ -120,7 +121,10 @@ def before_of(previous: Mapping | None) -> tuple[str, Any]:
         return "planned", dict(previous["fea_inputs"])
     if isinstance(cost, Mapping) and cost.get("status") == NOTHING:
         return "base", None
-    return "unknown", None
+    # a reading kept without what it was read with (made before every FEA reading kept it, or its notes could not be
+    # read): planned from its parts reading with the team's standard alone - the C5 knuckle, 27 Nov: this answered
+    # "not known", so the first requirement's count line had no "before" and was never said
+    return "planned", inputs(previous.get("section"), None, [])
 
 
 def _ai(record: dict, diag_m: float, asked: Mapping | None, ai_state: Mapping, *, job_id: str) -> tuple[dict, str]:
@@ -182,7 +186,8 @@ def costed(record: dict, surface, diag_m: float, *, before: tuple[str, Any], sec
     if how == "chained":
         b = dict(got)
     elif how == "planned":
-        b = planned(record, surface, diag_m, section=got.get("section"), asked=got.get("asked"),
+        prior = got.get("asked") if isinstance(got.get("asked"), Mapping) else base_asked
+        b = planned(record, surface, diag_m, section=got.get("section"), asked=prior,
                     user_notes=got.get("user_notes"), **common)["side"]
     elif how == "base":
         b = planned(record, surface, diag_m, section=None,

@@ -317,5 +317,60 @@ def test_where_before_comes_from():
     assert PC.before_of({"status": "done", "cost": {"after": {"elements": 5}}}) == ("chained", {"elements": 5})
     kept = PC.inputs({"status": "used"}, None, [])
     assert PC.before_of({"status": "done", "fea_inputs": kept}) == ("planned", kept)
-    assert PC.before_of({"status": "done"}) == ("unknown", None)
+    # a reading kept without what it was read with: planned from its parts reading with the standard alone
+    assert PC.before_of({"status": "done", "section": {"status": "none"}}) == (
+        "planned", PC.inputs({"status": "none"}, None, []))
     assert not PC.worth_saying({"before": None, "after": {"elements": 9}})
+
+
+@pytest.mark.parametrize("earlier", [
+    None,                                                               # the first reading of the conversation
+    {"status": "done", "section": {"status": "none"}},                  # a reading made before the stage had sized it
+])
+def test_the_first_requirement_has_its_count_line(monkeypatch, part, earlier):
+    """The C5 knuckle on the site, 27 Nov: the first message ("3mm global cell size") got no count line - its cost read
+    {"before": null, "after": 358,634}: the reading before it had been made before the stage sized the part, kept
+    nothing it was read with, and "before" was "not known". With a saved team standard and a sized stage, the first
+    line is "from <the standard's own plan> to <the plan with the 3 mm>"."""
+    _wire(monkeypatch, part)
+    _router(monkeypatch, _ModelRouter(refine=True))
+    notes = _notes(part["face"], 1)
+    asked, base = PM.read_fea_notes(_state(notes), "s1")
+    ai_state = {"user_id": "u1", MS.STATE_KEY: _standard()}
+    cost = PC.for_reading("s1", _reading(part["table"], 1), notes, asked=asked, base_asked=base, previous=earlier,
+                          ai_state=ai_state)
+    assert cost and cost["before"], cost
+    alone = PC.planned(part["record"], part["surface"], part["diag"], section=None, asked=base, user_notes=[],
+                       ai_state=ai_state, state={"fea_plan_choice": ""}, kept={}, key="")["side"]
+    assert cost["before"]["elements"] == alone["elements"]
+    view = PM.with_cost({"status": "done", "rows": [{"note": "n1", "quote": GLOBAL, "size": "3 mm",
+                                                     "parts": ["Part_1"], "parts_text": PM.WHOLE_PART}],
+                         "unsure": []}, cost)
+    line = PT.cost_line(PT.cost_mine(view, PT.mine({"text": GLOBAL}, view, note_id="n1")[0]) or {})
+    assert line.startswith("That takes it from about ") and line.endswith(" elements.")
+
+
+def test_every_reading_of_an_fea_part_keeps_what_it_was_read_with(world_unsized):
+    """The reading made before the stage sized the part keeps the notes it was read with, so the next one can plan."""
+    stored = world_unsized
+    assert stored["status"] == "done" and isinstance(stored.get("fea_inputs"), dict)
+    assert not (stored.get("cost") or {}).get("after") and not stored.get("cost_pending")
+
+
+@pytest.fixture
+def world_unsized(monkeypatch):
+    """One reading run on the worker for an FEA part the stage has not sized yet (the store and the parts faked)."""
+    store: dict = {}
+    monkeypatch.setattr(PM, "_read", lambda sid, name: store.get(name))
+    monkeypatch.setattr(PM, "_write", lambda sid, name, payload: store.__setitem__(name, payload))
+    from meshpipeline.application import geometry_check as GC
+    monkeypatch.setattr(GC, "read_check", lambda sid: {"facts": {}})
+    monkeypatch.setattr(PM, "parts_seen", lambda check: {"route": PM.ROUTE_FEA, "table": [{"id": "Part_1"}],
+                                                         "pictures": []})
+    monkeypatch.setattr(PM, "_route_ask", lambda route: ("c", "p", False))
+    asked = MR.section("none")
+    monkeypatch.setattr(PM, "read_fea_notes", lambda state, sid: (asked, asked))
+    monkeypatch.setattr(PC, "stage_sized", lambda sid: False)
+    store[PM.MATCHES] = {"key": "k1", "status": "reading"}
+    PM.run_reading(session_id="s1", key="k1", user_notes=[{"id": "n1", "text": "it is cast", "source": "chat"}])
+    return store[PM.MATCHES]
