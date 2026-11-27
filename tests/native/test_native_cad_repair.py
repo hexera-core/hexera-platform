@@ -21,6 +21,9 @@ pytest.importorskip("OCP.ShapeFix", reason="the CAD kernel is a native-tier depe
 @pytest.fixture(autouse=True)
 def _opted_in(monkeypatch):
     monkeypatch.setattr(rcfg, "CAD_REPAIR_ENABLED", True)
+    # THESE TESTS ARE ABOUT THE v3 CONSERVATIVE REPAIR (its loop, caps and report keys). Since the CRS v5 beta
+    # (#540) `CAD_REPAIR_ENGINE` defaults to v5, so the engine they exercise is named here, not inherited.
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_ENGINE", "v3")
     monkeypatch.setattr(rcfg, "CAD_REPAIR_MAX_DEVIATION_RATIO", 0.001)
     monkeypatch.setattr(rcfg, "CAD_REPAIR_MAX_TOLERANCE_MM", 0.1)
     monkeypatch.setattr(rcfg, "CAD_REPAIR_ALLOW_FACE_REMOVAL", False)
@@ -81,9 +84,16 @@ def test_a_tolerance_cap_of_zero_refuses_the_kernels_own_output(tmp_path, monkey
     assert not out.exists()
 
 
-def test_the_switch_is_checked_before_the_kernel_is_touched(tmp_path, monkeypatch):
+# THE SWITCH AND THE PROFILE BELONG TO THE SEAM, so they hold for EVERY engine behind it. Under the v5 default they
+# were skipped: v5 ran the kernel on a deployment that had not opted in, and answered "nothing needed repairing".
+ENGINES = ("v3", "v5", "search")
+
+
+@pytest.mark.parametrize("engine", ENGINES)
+def test_the_switch_is_checked_before_the_kernel_is_touched(tmp_path, monkeypatch, engine):
     source = write_step(tmp_path / "box.step", "MM")
     monkeypatch.setattr(rcfg, "CAD_REPAIR_ENABLED", False)
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_ENGINE", engine)
 
     with pytest.raises(RepairUnavailable, match="CAD_REPAIR_ENABLED"):
         repair_step_file(source, tmp_path / "out.step")
@@ -91,8 +101,10 @@ def test_the_switch_is_checked_before_the_kernel_is_touched(tmp_path, monkeypatc
     assert not (tmp_path / "out.step").exists()
 
 
-def test_only_the_conservative_profile_runs_here(tmp_path):
+@pytest.mark.parametrize("engine", ENGINES)
+def test_only_the_conservative_profile_runs_here(tmp_path, monkeypatch, engine):
     source = write_step(tmp_path / "box.step", "MM")
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_ENGINE", engine)
     with pytest.raises(RepairUnavailable, match="operator"):
         repair_step_file(source, tmp_path / "out.step", profile=RepairProfile.mesh_ready)
 

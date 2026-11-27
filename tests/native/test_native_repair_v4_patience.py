@@ -19,9 +19,11 @@ from tests.native._v4_flush_patch_part import write_flush_patch_box, write_three
 import meshpipeline.cad.repair_v4 as v4  # noqa: E402
 
 #: ops the three-hole repair needs. Measured: 70 under Task 46's breadth-first order of tied states; 14 once the search
-#: goes deep on ties and stops proposing what the state rules out (Task 47; clean at 14, `ops` at 13). Not a widened
-#: engine budget: the exact number the repair costs, so a regression in waste fails this test.
-OPS_FOR_THREE_HOLES = 14
+#: goes deep on ties and stops proposing what the state rules out (Task 47); 15 once B20's lineage prune stopped
+#: dropping a candidate an ancestor ran as a SIBLING (it ran on other geometry; `orient_and_close` now runs once on the
+#: first filled state). Not a widened engine budget: the exact number the repair costs, so a regression in waste fails
+#: this test (tests/native/test_native_repair_v4_waste.py pins it from both sides).
+OPS_FOR_THREE_HOLES = 15
 
 
 def _run(source: Path, tmp: Path, monkeypatch: pytest.MonkeyPatch, *, ops: int = 12,

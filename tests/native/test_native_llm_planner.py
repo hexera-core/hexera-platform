@@ -24,6 +24,8 @@ from meshpipeline.contracts.geometry_source import MaterializedGeometry
 @pytest.fixture(autouse=True)
 def _opted_in(monkeypatch):
     settings = {
+        # the rules/LLM planner is v3's; since the CRS v5 beta (#540) the default engine is v5, so it is named here
+        "CAD_REPAIR_ENGINE": "v3",
         "CAD_REPAIR_ENABLED": True, "CAD_REPAIR_AUTONOMOUS": True,
         "CAD_REPAIR_REVIEW_ENABLED": True, "CAD_REPAIR_MAX_DEVIATION_RATIO": 0.001,
         "CAD_REPAIR_MAX_TOLERANCE_MM": 0.1, "CAD_REPAIR_ALLOW_FACE_REMOVAL": False,

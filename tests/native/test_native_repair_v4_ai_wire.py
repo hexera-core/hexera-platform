@@ -62,9 +62,13 @@ def test_a_file_never_spends_past_its_ceiling_even_when_the_budget_asks_for_more
         defect_step: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, wire: Wire) -> None:
     import time
 
+    from meshpipeline.cad.repair_v4.proposer import FILE_USD_CEILING
+
     monkeypatch.setattr(v4, "ARM", "search_ai")
+    # ASK FOR MORE THAN THE CEILING, whatever the ceiling is: it was $1 when this test said `5.0`, and the CRS v5 beta
+    # (#540) raised it to $5 on purpose, so a literal $5 now asks for exactly the ceiling and is (rightly) allowed.
     with pytest.raises(ValueError, match="usd_ceiling"):  # AIProposer's own (0, FILE_USD_CEILING] guard
         v4.repair_v4(defect_step, str(tmp_path / "o.step"),
-                     budget=v4.Budget(wall_s=60.0, ops=4, model_calls=2, model_usd=5.0),
+                     budget=v4.Budget(wall_s=60.0, ops=4, model_calls=2, model_usd=FILE_USD_CEILING * 2),
                      deadline_s=time.monotonic() + 200.0)
     assert not wire.requests

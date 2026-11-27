@@ -91,7 +91,12 @@ def made(clean, tmp_path_factory):
 
 
 def test_the_real_constants_refuse_every_quarantined_kind(clean, tmp_path):
-    assert set(inj.QUARANTINED_KINDS) == {"loose_reapprox", "tolerance_inflate", "seam_variant", "precision_truncate"}
+    # THE STATUSES AS `inject.KIND_EVIDENCE` RECORDS THEM after the CRS v5 probes (#540): seam_variant was promoted on
+    # a demonstrated mesher failure, and the v5 steps added kinds on both sides. Pinned as literals on purpose, so a
+    # status that changes without its evidence fails here.
+    assert set(inj.QUARANTINED_KINDS) == {"loose_reapprox", "tolerance_inflate", "precision_truncate", "periodic_no_seam", "units_scale",
+            "unbounded_plane", "misalignment", "shaft_in_bore", "floating_solid", "duplicate_faces", "inside_out",
+            "non_manifold_edge"}
     for kind in (*inj.QUARANTINED_KINDS, "pcurve_corrupt"):
         with pytest.raises(gen.RefusedKind):
             gen.generate([clean], kinds=[kind], seeds=[0], out_dir=tmp_path, base_url="https://b", backend=inj)

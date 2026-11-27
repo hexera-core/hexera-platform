@@ -132,6 +132,9 @@ def test_a_located_gmsh_failure_gets_a_defeature_of_exactly_the_face_it_named(po
     gen.bind_pool(pool)
     state = SearchState.__new__(SearchState)
     state.ws, state.sites, state.lineage, state.depth = ws, [site], (), 0  # type: ignore[attr-defined]
+    # a start state as `propose` reads it since B21 (it records each state's score for its children, and asks the
+    # state's own parent edge whether it opened a chain): no parent, no edge, no score yet
+    state.id, state.score, state.via, state.parent = "S0", None, None, None  # type: ignore[attr-defined]
     rows = [c for c in gen.propose(state, 999) if c.op == "defeature"]
     assert rows and rows[0].params["source"] == "located" and rows[0].targets == named
     new, diff = REGISTRY["defeature"].apply(pool, ws.fork(), named, dict(rows[0].params), timeout_s=120)
