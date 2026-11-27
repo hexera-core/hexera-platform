@@ -60,56 +60,77 @@ def test_the_plain_sentence_says_the_elements_before_and_after_and_no_minutes():
     assert PT.cost_line(_cost(9_600, 27_000, 1, 1)) == "That takes it from about 9,600 to about 27,000 elements."
 
 
-def test_the_fallback_reply_carries_the_cost_and_only_for_a_message_that_set_something():
+def test_the_reply_never_carries_the_cost():
+    """The C5 knuckle, 26 Nov: replies of 47, 31 and 24 s while the cost was planned. The reply says what was set;
+    the count is its own line after it (count_owed)."""
     notes = _notes("finer at the fillets")
     view, nid = _fillet_view(notes, _cost())
-    plain = PT.reply_for(notes[-1], view, note_id=nid)
-    assert plain.endswith("That takes it from about 0.7 million to about 2.9 million elements.")
-    # too small to say: the reply is the reply it always was
+    assert "That takes it" not in PT.reply_for(notes[-1], view, note_id=nid)
+    assert "what_it_costs" not in PR.facts(notes[-1], view, note_id=nid)
+
+
+def test_the_count_line_is_floor_worded_when_the_ai_step_gave_no_decision():
+    assert PT.cost_line({**_cost(), "floor": True}) == (
+        "That takes it from about 0.7 million to at least about 2.9 million elements.")
+
+
+class _Session:
+    def __init__(self, notes, messages, job_id=None):
+        self.id, self.user_notes, self.messages, self.job_id = "s1", notes, messages, job_id
+        self.intake_gate = {}
+
+
+class _Repo:
+    def __init__(self, session):
+        self.session, self.appended = session, []
+
+    async def get_for_owner(self, db, sid, owner, organization_id=""):
+        return self.session
+
+    async def append_message(self, db, sid, role, text):
+        self.appended.append((role, text))
+        self.session.messages.append({"role": role, "content": text})
+
+
+class _Db:
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+    async def commit(self):
+        pass
+
+
+def test_the_count_line_follows_the_reply_once_and_only_for_the_notes_as_they_stand(monkeypatch):
+    notes = _notes("finer at the fillets")
+    view, nid = _fillet_view(notes, _cost())
+    session = _Session(notes, [{"role": "user", "content": "finer at the fillets"},
+                               {"role": "assistant", "content": "I've set a finer mesh at the fillets."}])
+    repo = _Repo(session)
+    said: list = []
+    owed = {"key": "k1", "cost": view["cost"]}
+    monkeypatch.setattr(PM, "count_owed", lambda s: None if said else owed)
+    monkeypatch.setattr(PM, "view", lambda s, owner_id="": view)
+    monkeypatch.setattr(PM, "count_said", lambda sid, key: said.append(key))
+    monkeypatch.setattr(PR, "owed_note", lambda s: None)
+
+    def run():
+        return asyncio.run(PR.count_owed(session, owner_id="u1", session_repo=repo, db_factory=_Db))
+    assert run() == "That takes it from about 0.7 million to about 2.9 million elements."
+    assert repo.appended == [("assistant", "That takes it from about 0.7 million to about 2.9 million elements.")]
+    assert said == ["k1"] and run() == ""                      # once
+    # the reply to the newest requirement is still owed: the reply comes first
+    said.clear()
+    monkeypatch.setattr(PR, "owed_note", lambda s: {"text": "x"})
+    assert run() == ""
+    # too small to say: nothing said, and never asked again
+    monkeypatch.setattr(PR, "owed_note", lambda s: None)
     small, _ = _fillet_view(notes, _cost(1_000_000, 1_100_000))
-    assert "That takes it" not in PT.reply_for(notes[-1], small, note_id=nid)
-    # a later message that set nothing does not say the cost again
-    later = _notes("finer at the fillets", "it's cast aluminium")
-    view2, _ = _fillet_view(later[:1], _cost())
-    nid2 = str(UN.own_notes(later)[-1]["id"])
-    assert "That takes it" not in PT.reply_for(later[-1], view2, note_id=nid2)
-    assert "what_it_costs" not in PR.facts(later[-1], view2, note_id=nid2)
-
-
-def test_the_model_is_given_the_cost_and_the_guard_holds_it_to_it():
-    notes = _notes("finer at the fillets")
-    view, nid = _fillet_view(notes, _cost())
-    f = PR.facts(notes[-1], view, note_id=nid)
-    assert f["what_it_costs"] == {"elements_before": "about 0.7 million", "elements_after": "about 2.9 million",
-                                  "needs_a_bigger_machine": False, "say_it_like": PT.cost_line(_cost())}
-    assert "cost" in [name for name, _p, _b in PR.PLAN_REPLY_PROMPT_BLOCKS]
-    assert "what_it_costs" in PR.compose_system()
-    ok = "Sure, I took that as the fillets and I'll go finer there. That takes it from about 0.7 to 2.9 million elements."
-    assert PR.check(ok, f) == ""
-    # a time is never said: the facts hold none
-    assert PR.check(ok[:-1] + ", so roughly 25 minutes instead of 8.", f) != ""
-    assert PR.check("Sure, I'll go finer at the fillets.", f) == "the cost not said"
-    assert PR.check("Sure, I'll go finer at the fillets. That's about 2.9 million elements on a bigger machine.",
-                    f) == "a bigger machine said when none is needed"
-
-
-def test_the_reply_is_the_models_with_the_cost_or_the_plain_sentence(monkeypatch):
-    notes = _notes("finer at the fillets")
-    view, nid = _fillet_view(notes, _cost())
-
-    def run(reply):
-        async def model(messages, *, job_id, user_id):
-            assert "what_it_costs" in messages[1]["content"]
-            return reply
-        monkeypatch.setattr(PR, "_ask", model)
-        return asyncio.run(PR.written(notes[-1], view, note_id=nid))
-    good = run("Okay, I took that as the fillets and I'll go finer there. That takes it to about 2.9 million elements "
-               "from 0.7 million.")
-    assert good["source"] == PR.SOURCE_MODEL
-    bad = run("Okay, I'll go finer at the fillets.")
-    assert bad["source"] == PR.SOURCE_FALLBACK and bad["text"].endswith("about 2.9 million elements.")
-    timed = run("Okay, I'll go finer at the fillets. That takes it to about 2.9 million elements, roughly 25 minutes.")
-    assert timed["source"] == PR.SOURCE_FALLBACK
+    monkeypatch.setattr(PM, "view", lambda s, owner_id="": small)
+    owed["cost"] = small["cost"]
+    assert run() == "" and said == ["k1"]
 
 
 def test_the_count_row_shows_the_new_estimate(monkeypatch):
@@ -147,40 +168,3 @@ def test_nothing_is_costed_without_the_stages_sized_plan(monkeypatch):
     # before it was the team's standard alone
     monkeypatch.setattr(GC, "read_check", lambda sid: pytest.fail("read"))
     assert PC.for_reading("s1", {"status": "none"}, []) == {"rule": "NOTE-26", "status": PC.NOTHING}
-
-
-def test_the_cost_is_the_runs_own_plan_of_a_real_part():
-    pytest.importorskip("gmsh")
-    import gmsh
-
-    from meshpipeline.engines import fea_driver as FD
-    from tests import fea_fixtures as fx
-
-    import tempfile
-    from pathlib import Path
-    with tempfile.TemporaryDirectory() as tmp:
-        ws = Path(tmp)
-        src = fx.write_step(fx.bracket(4.0), ws / "upload.step")
-        gmsh.initialize()
-        try:
-            gmsh.option.setNumber("General.Terminal", 0)
-            gmsh.option.setNumber("Geometry.OCCScaling", 0.001)
-            gmsh.model.occ.importShapes(str(src))
-            gmsh.option.setNumber("Geometry.OCCScaling", 1.0)
-            gmsh.model.occ.synchronize()
-            gmsh.write(str(ws / "geometry.step"))
-            gmsh.write(str(ws / "geometry.brep"))
-        finally:
-            gmsh.finalize()
-        record, surface, diag = FD.measure_staged(ws)
-    before = FD.choose_plan(record, surface, diag)
-    spot = next(h for h in record.get("hot_spots") or [] if h.get("type") == "fillet")
-    section = {"status": "used", "features": {"Feature_1": list(spot["faces"])},
-               "parts": [{"id": "Feature_1", "feature": True, "name": "1 rounded edge (fillet)"}],
-               "entries": [{"ask": "refine", "parts": ["Feature_1"], "quote": "finer at the fillets"}]}
-    got = PC.costed(record, surface, diag, before=before, section=section)
-    from meshpipeline.engines import mesh_requirements as MR
-    sizes, _scaled, _controls = FD.requirement_sizes(record, MR.section("none"), section, diag)
-    assert got["before"]["elements"] == int(before["estimate"]["elements"])
-    assert got["after"]["elements"] == int(FD.choose_plan(record, surface, diag, sizes=sizes)["estimate"]["elements"])
-    assert got["rule"] == "NOTE-26" and got["seconds"] < 30

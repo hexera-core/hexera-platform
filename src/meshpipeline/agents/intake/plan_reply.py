@@ -103,7 +103,7 @@ def facts(note: Mapping, view: Mapping | None, *, note_id: str = "") -> dict[str
         # NOTE-24: a count beside sizes the user typed - which one wins on this route; the result tells which held
         "count_may_not_hold": PT.count_clash(view, counts),
         # NOTE-26: what what they set does to the mesh, when it is worth saying (application/plan_cost)
-        **_cost_facts(view, rows),
+        # (NOTE-26: what it costs is never in the reply - its own line follows it, count_owed)
         # what the checklist already holds from their earlier messages (so the reply can speak like one who knows it)
         "already_on_the_checklist": [{"what": PT.row_what(r), "where": PT.row_place(r)[0]}
                                      for r in (view or {}).get("rows") or ()
@@ -666,6 +666,58 @@ async def answer_owed(session: Any, view: Mapping | None, *, owner_id: str, sess
             return ""
 
 
+def _last_chat_note(session: Any) -> dict | None:
+    from meshpipeline.contracts.user_notes import SOURCE_CHAT
+    notes: list[dict] = [dict(n) for n in getattr(session, "user_notes", None) or [] if isinstance(n, Mapping)
+                         and n.get("source") == SOURCE_CHAT]
+    return max(notes, key=lambda n: int(n.get("turn") or 0)) if notes else None
+
+
+async def count_owed(session: Any, *, owner_id: str, session_repo, db_factory, organization_id: str = "") -> str:
+    """NOTE-26: THE COUNT LINE, ITS OWN MESSAGE AFTER THE REPLY. The reply to a requirement never waits for its cost
+    (the C5 knuckle, 26 Nov: replies of 47, 31 and 24 s while it was planned); once the cost of the notes AS THEY
+    STAND lands (application/part_matches.count_owed - a cost of notes since changed is never kept), its plain line
+    ("That takes it from about 0.9 million to about 0.4 million elements.") is kept in the conversation and handed
+    back, once - when the reply to the newest requirement is said, the run has not started, and the move is worth
+    saying (plan_talk.cost_mine). "" otherwise. Never raises."""
+    from meshpipeline.application import part_matches as PM
+    sid = str(getattr(session, "id", "") or "")
+    if not sid:
+        return ""
+    lock = _LOCKS.setdefault(sid, asyncio.Lock())
+    async with lock:
+        try:
+            async with db_factory() as db:
+                fresh = await session_repo.get_for_owner(db, session.id, owner_id, organization_id=organization_id)
+            if fresh is None or getattr(fresh, "job_id", None) is not None or owed_note(fresh) is not None:
+                return ""                     # the run started, or the reply to the newest requirement comes first
+            got = await asyncio.to_thread(PM.count_owed, fresh)
+            if not got:
+                return ""
+            note = _last_chat_note(fresh)
+            view = await asyncio.to_thread(lambda: PM.view(fresh, owner_id=owner_id))
+            nid = PM.note_id(getattr(fresh, "user_notes", None), note) if note else ""
+            rows = PT.mine(note, view, note_id=nid)[0] if note and view else []
+            cost = PT.cost_mine(view, rows) if view and view.get("cost") == got["cost"] else None
+            if not cost:
+                await asyncio.to_thread(PM.count_said, sid, got["key"])      # nothing worth saying: never asked again
+                return ""
+            line = PT.cost_line(cost)
+            async with db_factory() as db:
+                again = await session_repo.get_for_owner(db, session.id, owner_id, organization_id=organization_id)
+                if again is None or owed_note(again) is not None or getattr(again, "job_id", None) is not None:
+                    return ""
+                await session_repo.append_message(db, session.id, "assistant", line)
+                await db.commit()
+            await asyncio.to_thread(PM.count_said, sid, got["key"])
+            logger.info("plan reply: the count line said (%s) - session=%s", PT.COST_RULE, sid)
+            return line
+        except Exception as exc:  # noqa: BLE001 - the next poll tries again
+            logger.warning("plan reply: count line not said (%s: %s) - session=%s", type(exc).__name__,
+                           str(exc)[:200], sid)
+            return ""
+
+
 # #
 # NOTE-20: a question about the mesh, answered from the numbers the product holds before the run
 # #
@@ -936,7 +988,7 @@ def last_reply_of(messages: Sequence[Any]) -> str:
     return ""
 
 
-__all__ = ["MAX_ANSWER_CHARS", "MAX_CHARS", "PLAN_ANSWER_PROMPT_BLOCKS", "PLAN_REPLY_PROMPT_BLOCKS", "QUESTION_RULE",
+__all__ = ["count_owed", "MAX_ANSWER_CHARS", "MAX_CHARS", "PLAN_ANSWER_PROMPT_BLOCKS", "PLAN_REPLY_PROMPT_BLOCKS", "QUESTION_RULE",
            "RULE", "SOURCE_FALLBACK", "SOURCE_FIXED", "SOURCE_MODEL", "TIMEOUT_S", "answer_messages", "answer_plain",
            "answer_question", "answered", "asked_not_set", "check", "check_answer", "compose_answer_system",
            "compose_system", "facts", "last_reply_of", "messages_for", "question_facts", "write"]

@@ -652,8 +652,12 @@ async def get_check_parts(session_id: uuid.UUID, owner_id: str = Depends(owner_d
         from meshpipeline.persistence.session import get_db
         reply = await PR.answer_owed(session, got, owner_id=owner_id, session_repo=SessionRepository(),
                                      db_factory=get_db, organization_id=organization_id)
-        if reply:
-            return {**(got or {"status": "none"}), "reply": reply}
+        # NOTE-26: the count line, its own message after the reply, once the cost of the notes as they stand lands
+        count = await PR.count_owed(session, owner_id=owner_id, session_repo=SessionRepository(),
+                                    db_factory=get_db, organization_id=organization_id)
+        if reply or count:
+            return {**(got or {"status": "none"}), **({"reply": reply} if reply else {}),
+                    **({"count_line": count} if count else {})}
     return got or {"status": "none"}
 
 

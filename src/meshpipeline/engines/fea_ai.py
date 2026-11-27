@@ -719,10 +719,14 @@ def _key(messages: list[dict], tool: dict) -> str:
 
 
 async def decide(record: Mapping, state: Mapping, zone_list: list[dict], *, diag_m: float, limit: int,
-                 job_id: str = "", run=None, enabled: bool | None = None, wait_s: float = TIMEOUT_S) -> dict:
+                 job_id: str = "", run=None, enabled: bool | None = None, wait_s: float = TIMEOUT_S,
+                 kept: str | None = None, told: dict | None = None) -> dict:
     """The `ai` section for this part: the checked decision ("used"), or why the rules' own plan
     goes ahead ("off", "no_time", "failed", "invalid") - never an exception (AI-fea-6). `wait_s`:
-    the most the attempt can give the model, after the meshing it still has to do."""
+    the most the attempt can give the model, after the meshing it still has to do.
+    `kept`: the answer the AI gave when the plan step costed these same words (NOTE-26, application/plan_cost) -
+    checked against THIS part's brief by the same rules and used when it holds, so the count told before the run is
+    the run's own; no model is asked then. `told`: receives {"args": the answer as given} when one is used."""
     if not (FEA_AI if enabled is None else enabled):
         return section(None, [], status="off", note="")
     b = brief(record, state, zone_list, diag_m=diag_m, limit=limit)
@@ -730,6 +734,16 @@ async def decide(record: Mapping, state: Mapping, zone_list: list[dict], *, diag
     tool = decision_tool(with_notes="user_notes" in b)
     key = _key(msgs, tool)
     user_id = str((state or {}).get("user_id") or "")
+    if kept:
+        held, held_problems = validate(str(kept), b)
+        if held is not None:
+            logger.info("fea ai: the decision made when the plan was costed is used (NOTE-26) - job_id=%s", job_id)
+            if told is not None:
+                told["args"] = str(kept)
+            out = section(held, [], status="used", key=key, problems=held_problems)
+            out["source"] = "plan step"
+            return out
+        logger.info("fea ai: the plan step's decision does not hold on this part - asked again - job_id=%s", job_id)
 
     def _without_the_model(status: str, why: str, problems: list[str] | None = None) -> dict:
         """AI-fea-6: the AI did not give a usable decision just now - its SAVED decision for this
@@ -740,6 +754,8 @@ async def decide(record: Mapping, state: Mapping, zone_list: list[dict], *, diag
         if args_saved is not None:
             saved, saved_problems = validate(args_saved, b)
             if saved is not None:
+                if told is not None:
+                    told["args"] = args_saved
                 logger.info("fea ai: %s - the saved decision for this part is used - job_id=%s", why, job_id)
                 out = section(saved, [], status="used", key=key, problems=saved_problems,
                               note=f"The AI was not available just now ({why}); its saved decision for this "
@@ -774,6 +790,8 @@ async def decide(record: Mapping, state: Mapping, zone_list: list[dict], *, diag
     decision, problems = validate(args, b)
     if decision is None:
         return _without_the_model("invalid", problems[0], problems)
+    if told is not None:
+        told["args"] = args
     return section(decision, [], status="used", key=key, problems=problems)
 
 
