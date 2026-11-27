@@ -203,9 +203,9 @@ def repair_goal_of(session: Any) -> str:
             return said
     for message in reversed(getattr(session, "messages", None) or []):
         text = str(message.get("content") if isinstance(message, dict) else message or "")
-        said = re.findall(r"\(repair_goal (standalone|off)\)", text)
-        if said:
-            return str(said[-1])
+        declared = re.findall(r"\(repair_goal (standalone|off)\)", text)
+        if declared:
+            return str(declared[-1])
     return "meshing"
 
 
