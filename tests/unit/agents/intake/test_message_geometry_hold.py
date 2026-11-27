@@ -46,11 +46,13 @@ async def _settle(monkeypatch, *, applies, queued: bool = True, messages=None):
 async def test_the_first_answer_is_held_with_the_users_words_handed_to_the_naming(monkeypatch):
     outcome, repo, handed = await _settle(monkeypatch, applies="queue")
     assert outcome.status is msg.MessageStatus.geometry_hold and outcome.answered
-    assert outcome.reply == gh.HOLD_REPLY
+    # CFDREQ-37: the typed answer is said back first (the code's sentence: no model in the unit tier), then the line
+    said = gh.DRAWING_MARK + " Okay, a CFD mesh with the flow through the part. Checking your part - confirm it on "         "the right and press Proceed."
+    assert outcome.reply == said
     assert handed["session_id"] == str(SID) and handed["owner_id"] == "alice"
     assert handed["purpose"] == "water through this elbow" and handed["interpretation"] is None
     repo.append_message.assert_awaited_once()
-    assert repo.append_message.await_args.args[2:] == ("assistant", gh.HOLD_REPLY)
+    assert repo.append_message.await_args.args[2:] == ("assistant", said)
 
 
 @pytest.mark.asyncio

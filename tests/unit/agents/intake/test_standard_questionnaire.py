@@ -538,6 +538,8 @@ async def test_a_changed_analysis_is_the_one_the_new_plan_carries(monkeypatch):
     assert world.session.domain == "Bracket Buckling FEA"
     assert "buckling analysis" in world.session.request_txt
     assert world.session.messages[-1]["content"].startswith("Changed from the last summary")
+    # CFDREQ-37: the typed analysis is said back before the plan line (the code's sentence: no model here)
+    assert "\n\nOkay, a buckling analysis.\n\n" + ap.PROCEED_ASK in world.session.messages[-1]["content"]
 
 
 @pytest.mark.asyncio

@@ -368,6 +368,41 @@ def flow_conditions(messages: Iterable[Any], *, answered_only: bool = True) -> d
     return out
 
 
+#: a temperature as people type it, read as part of the conditions (it is said back as not used: CFDREQ-37)
+_TEMPERATURE = re.compile(r"-?\d+(?:[.,]\d+)?\s*(?:°\s*[CFK]|º\s*[CFK]|deg\w*(?:\s*[CF]\b)?|celsius|fahrenheit|"
+                          r"kelvin)", re.I)
+
+
+def conditions_given(text: Any) -> bool:
+    """CFDREQ-37: the words give a flow condition - a fluid, a speed (or flow rate), a wall treatment - or are the
+    "Resolve the wall" button; never a question."""
+    t = str(text or "").strip()
+    if not t or asks_something(t):
+        return False
+    return t == CONDITIONS_CHOICES[1][1] or any(_found(rx, t) is not None
+                                                for rx in (_FLUIDS, _SPEED, _RESOLVED, _FUNCTIONS))
+
+
+def conditions_only(text: Any) -> bool:
+    """The words give flow conditions and nothing else for the model to read ("make it 50 m/s", "no, oil at 3 m/s"):
+    a plan redone for them is the application's, as the first plan was. "water at 3 m/s and 2 mm cells" is not."""
+    t = str(text or "")
+    if not conditions_given(t):
+        return False
+    rest = t
+    for rx in (_TEMPERATURE, _SPEED, _FLUIDS, _RESOLVED, _FUNCTIONS):
+        rest = rx.sub(" ", rest)
+    return _found(_SPECIFIC, rest) is None
+
+
+def conditions_changed_at_plan(text: Any, messages: Iterable[Any]) -> bool:
+    """CFDREQ-37: words typed at the plan card of a CFD part that give flow conditions: the plan is redone with them,
+    so the card, the plan's conditions sentence and the run all carry what was typed - never kept as a note beside an
+    old sentence. Only words that are conditions and nothing else: "finer around the air intake" names no fluid, and
+    "50 m/s and 2 mm cells" stays a note the run reads whole (the speed in it still wins at the run)."""
+    return cfd_declared(messages) and conditions_only(text)
+
+
 def conditions_answered(messages: Iterable[Any]) -> bool:
     """Whether the CFD conditions are settled: the fixed question was answered (any answer that asks
     nothing: "OK", a button, the user's own values), or the user named a fluid and its speed already."""
@@ -622,6 +657,45 @@ _MARGINS = re.compile(r"Far-field margins in reference lengths: ([\d.]+) upstrea
 _KIND = re.compile(r"input_kind (body-surface|fluid-domain|solid-body); the fluid flows (through|around) it\.")
 
 
+_OPENINGS = re.compile(r"Openings: ([^\n]*?)\.(?: |$)")
+_OPENING_ROW = re.compile(r"^([^\s;(]+) \((inlet|outlet)\)")
+_ACROSS = re.compile(r"(\d+(?:\.\d+)?) mm across")
+_CENTRE_BODY = re.compile(r"round a (\d+(?:\.\d+)?) mm centre body")
+_WIDE = re.compile(r", (\d+(?:\.\d+)?) x (\d+(?:\.\d+)?) mm")
+_AT = re.compile(r"at \((-?\d+(?:\.\d+)?), (-?\d+(?:\.\d+)?), (-?\d+(?:\.\d+)?)\) mm")
+
+
+def _with_declared_openings(patches: list[dict], declaration: str) -> list[dict]:
+    """A plan REDONE for an internal flow (CFDREQ-37: conditions typed at the plan card) is built from the patches the
+    first plan stored, which keep only each opening's name and role; its size and place are the stage's, written in
+    the declaration ("inlet (inlet), 40 mm across at (0, 0, 0) mm"). Each inlet or outlet with neither is given them
+    back from there, by name - so the redone plan binds the openings exactly as the first one did."""
+    rows = _found(_OPENINGS, declaration)
+    if not rows:
+        return patches
+    said: dict[str, dict] = {}
+    for row in rows.group(1).split("; "):
+        head = _OPENING_ROW.match(row.strip())
+        if not head:
+            continue
+        got: dict = {}
+        if (m := _found(_ACROSS, row)):
+            got["diameter_mm"] = float(m.group(1))
+            if (c := _found(_CENTRE_BODY, row)):
+                got["inner_diameter_mm"] = float(c.group(1))
+        elif (m := _found(_WIDE, row)):
+            got.update(width_mm=float(m.group(1)), height_mm=float(m.group(2)))
+        if (m := _found(_AT, row)):
+            got["near_mm"] = [float(v) for v in m.groups()]
+        said[head.group(1)] = got
+    out = []
+    for p in patches:
+        known = any(p.get(k) for k in ("diameter_mm", "area_mm2", "width_mm", "near_mm"))
+        extra = said.get(str(p.get("name"))) if p.get("type") in ("inlet", "outlet") and not known else None
+        out.append({**p, **extra} if extra else p)
+    return out
+
+
 def cfd_case(messages, intake_patches) -> dict | None:
     """What the CFD plan is built from: the purpose, the kind, the patches and (external flow) the
     far field, all as the user confirmed them on the stage. None when the declaration does not carry
@@ -632,7 +706,7 @@ def cfd_case(messages, intake_patches) -> dict | None:
     if not kind:
         return None
     if kind.group(2) == "through":
-        patches = [dict(p) for p in intake_patches or () if isinstance(p, dict)]
+        patches = _with_declared_openings([dict(p) for p in intake_patches or () if isinstance(p, dict)], text)
         if not any(p.get("type") == "inlet" for p in patches) or not any(p.get("type") == "outlet" for p in patches):
             return None
         return {"purpose": "internal_cfd", "input_kind": kind.group(1), "patches": patches, "extra": {}}
@@ -722,9 +796,19 @@ def with_conditions_sentence(messages, args: dict) -> dict:
     if not cfd_declared(msgs) or not conditions_answered(msgs):
         return args
     patches = [p for p in args.get("patches") or () if isinstance(p, dict)]
-    if _FC.read(request, patches) is not None:
-        return args
     got = flow_conditions(msgs)
+    stored = _FC.read(request, patches)
+    if stored is not None:
+        # CFDREQ-37: a summary that carries the conditions keeps them - unless what the user said last differs (a
+        # summary the model redid in its own words after "make it 50 m/s" copied the old sentence): what was typed
+        # gets built, so the sentence is rewritten with it
+        stale = ((got["said_fluid"] and _FC.fluid_key(got["fluid"]) != stored["fluid"])
+                 or (got["said_speed"] and " ".join(got["speed"].split()).lower()
+                     != " ".join(str(stored["speed_words"]).split()).lower())
+                 or (got["said_wall"] and got["wall"] != stored["wall"]))
+        if not stale:
+            return args
+        request = _FC.without(request)
     said = _FC.sentence(got["fluid"], got["speed"], got["wall"], internal=flow_kind_of(msgs) == "internal",
                         patches=patches, wall_said=bool(got["said_wall"]))
     return {**args, "request_txt": f"{request.rstrip()} {said}{_left_to_proposal(got)}".strip()}
@@ -777,7 +861,9 @@ def turn_mode(messages, *, approval_live: bool, plan_was_shown: bool) -> str:
     if asks_something(latest):
         return MODE_ANSWER_THEN_PLAN if due else MODE_ANSWER
     if due:
-        if plan_was_shown and cfd_declared(msgs) and not plain_step_answer(latest) and not _found(_OK, latest):
+        if plan_was_shown and cfd_declared(msgs) and not plain_step_answer(latest) and not _found(_OK, latest) \
+                and not conditions_only(latest):
+            # (flow conditions alone - "make it 50 m/s" - are read in code: the application redoes the plan, CFDREQ-37)
             return MODE_READ_THEN_PLAN
         return MODE_PLAN
     if fea_declared(msgs) and not analysis_said(msgs) and not approval_live:

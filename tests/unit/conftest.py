@@ -540,6 +540,23 @@ def _compose_test_adapters():
     yield
 
 
+@_pytest.fixture(autouse=True)
+def _no_live_step_ack(monkeypatch):
+    """CFDREQ-37: the sentence that says a typed answer back is asked of the intake's model from inside the chat's
+    own turn; in the unit tier no live model is ever asked - the code's sentence is said, unless a test hands the
+    call its own stand-in (step_ack._ask = step_ack._ask_model routes it to a patched call_intake_model)."""
+    try:
+        from meshpipeline.agents.intake import step_ack
+    except Exception:  # noqa: BLE001 - a tier that cannot import the intake needs no guard
+        yield
+        return
+
+    async def _none(*a, **k):
+        raise RuntimeError("no live model in the unit tier")
+    monkeypatch.setattr(step_ack, "_ask", _none)
+    yield
+
+
 from tests.capture_authority import CAPTURE_OWNER  # re-exported for the suites
 
 

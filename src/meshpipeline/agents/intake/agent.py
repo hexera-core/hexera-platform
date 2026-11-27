@@ -1567,6 +1567,15 @@ async def node_intake(state: PipelineState) -> dict:
         if _note and _note not in assistant_text and not any(
                 _note in str(m.get("content") or "") for m in _said if isinstance(m, dict)):
             assistant_text = f"{_note}\n\n{assistant_text}"
+        if _mode != flow.MODE_FREE and assistant_text.rstrip().endswith(ap.PROCEED_ASK):
+            # CFDREQ-37: A TYPED ANALYSIS IS SAID BACK ("a modal one please" to "What will you analyze?", or "make
+            # it buckling" at the plan) - the analysis the plan carries, before the plan's lines, in one short
+            # sentence the model writes under a guard; a click on an analysis button adds nothing
+            from meshpipeline.agents.intake import step_ack as _SA
+            _f = _SA.analysis_facts(_said, _exec_state.submit_args)
+            if _f:
+                _ack = await _SA.sentence(_f, session_id=_ctx.session_id, user_id=_ctx.owner_id)
+                assistant_text = _SA.before_plan_line(assistant_text, _ack)
     if (_exec_state.submit_args and _mode != flow.MODE_FREE and not fea_path(_exec_state)
             and flow.cfd_declared(_said) and assistant_text.rstrip().endswith(ap.PROCEED_ASK)):
         # CFDREQ-37: THE CONDITIONS THE USER TYPED ARE SAID BACK before the plan line - the values the plan

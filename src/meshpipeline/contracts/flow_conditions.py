@@ -153,6 +153,26 @@ def accepted(request_txt: str) -> set[str]:
     return {w.strip() for w in m.group(1).split(",") if w.strip()} if m else set()
 
 
+#: the rest of the conditions sentence after its wall words: what the first layer does, to the sentence's full stop
+#: (a decimal point is no full stop)
+_SENTENCE_REST = re.compile(r"(?:[^.]|\.(?=\S))*\.?")
+
+
+def without(request_txt: str) -> str:
+    """The summary with its conditions sentence and its what-was-left-to-the-proposal clause taken out (a summary
+    that carries none: as it is). Read back by `read` as None."""
+    text = str(request_txt or "")
+    m = _SENTENCE.search(text)
+    if m:
+        end = m.end()
+        rest = _SENTENCE_REST.match(text, end) if text[end - 1] == ";" else None
+        if rest is not None:
+            end = rest.end()
+        text = text[:m.start()] + text[end:]
+    text = _ACCEPTED.sub("", text)
+    return " ".join(text.split())
+
+
 def read(request_txt: str, patches: Iterable[Mapping] | None = None) -> dict | None:
     """The conditions the plan carries (`conditions`, with `wall_said`: whether the user chose the wall treatment
     rather than accepting the proposal), or None when the summary has no such sentence (a plan the model wrote in its
@@ -168,4 +188,4 @@ def read(request_txt: str, patches: Iterable[Mapping] | None = None) -> dict | N
 
 __all__ = ["ACCEPTED_LEAD", "FLOWS", "FLUIDS", "MASS_FLOWS", "NU", "PROPOSED_WORDS", "RHO", "RULE", "SPEED", "SPEEDS",
            "WALL_FUNCTIONS", "WALL_RESOLVED", "WALL_WORDS", "WALL_Y_PLUS", "accepted", "conditions", "fluid_key", "read",
-           "sentence", "sizing_words", "speed_ms"]
+           "sentence", "sizing_words", "speed_ms", "without"]

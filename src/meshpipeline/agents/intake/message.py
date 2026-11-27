@@ -368,7 +368,15 @@ async def _settle(inbound: InboundMessage, db, *, gate: dict, locked, messages: 
         answers, still = PT.after_turn(gate.pop(PT.WAITING, None), text=inbound.content, faces=bool(inbound.faces))
         if still:
             gate[PT.WAITING] = still
-        if _ours(inbound.content, messages):
+        from meshpipeline.agents.intake import flow as _flow
+        if not (inbound.attachments or inbound.faces) and _flow.conditions_changed_at_plan(inbound.content, messages):
+            # CFDREQ-37: FLOW CONDITIONS TYPED AT THE PLAN CARD ("make it 50 m/s", the "Resolve the wall" button)
+            # redo the plan with them - the card, the plan's conditions sentence and the run then carry what was
+            # typed, and the new plan's message says it back - never a note kept beside the old sentence
+            talk, intent = PT.INTAKE, ap.CORRECTION_INTENT
+            logger.info("intake message: flow conditions at the plan step - the plan is redone with them (CFDREQ-37) "
+                        "- session=%s", inbound.session_id)
+        elif _ours(inbound.content, messages):
             talk = PT.INTAKE
         else:
             # "GO" READ ROBUSTLY: code decides the safe cases; the intake's model is asked one small question for
@@ -682,6 +690,23 @@ def analysis_question_due(messages: list) -> bool:
     return not pm.analysis_of("\n".join(said))
 
 
+def typed_purpose_answer(content: str, messages: list) -> bool:
+    """CFDREQ-37: the message is a typed answer to the purpose question - the upload's "What are you meshing this
+    for?" or the one two-button question - never a click on its buttons, the stage's own turn, or a question."""
+    from meshpipeline.agents.intake import flow
+    from meshpipeline.application import purpose_map as pm
+    from meshpipeline.application.geometry_hold import CONTINUE_TEXT
+
+    t = str(content or "").strip()
+    if not t or t == CONTINUE_TEXT or flow.asks_something(t) or t in {
+            c["send"] for q in pm.QUESTIONS.values() for c in pm.choices_for(q)}:
+        return False
+    asked = next((str(m.get("content") or "").strip() for m in reversed(messages[:-1])
+                  if isinstance(m, dict) and m.get("role") == "assistant"), "")
+    return asked.endswith("What are you meshing this for?") or any(
+        asked == q or asked.endswith("\n\n" + q) for q in pm.QUESTIONS.values())
+
+
 async def _settle_fea_analysis(inbound: InboundMessage, db, *, messages: list, revision: str,
                                session_repo, logger) -> MessageOutcome | None:
     """THE FEA PATH'S ONE REQUIRED QUESTION, asked by the application with its buttons once the
@@ -779,6 +804,13 @@ async def _settle_stated_flow(inbound: InboundMessage, db, *, messages: list, re
     if record is None:
         return None
     reply = gh.hold_reply(False, "", reading)
+    if inbound.content.strip() not in {send for _l, send in flow.FLOW_KIND_CHOICES}:
+        # CFDREQ-37: A TYPED ANSWER IS SAID BACK - the flow the stage's form takes, in one short sentence the model
+        # writes under a guard (the plain one when it cannot); a click on one of the two buttons adds nothing
+        from meshpipeline.agents.intake import step_ack as SA
+        ack = await SA.sentence(SA.facts(SA.FLOW_KIND, words=inbound.content, flow=str(record.get("flow") or "")),
+                                session_id=str(inbound.session_id), user_id=inbound.owner_id)
+        reply = SA.before_stage_line(reply, ack)
     await session_repo.append_message(db, inbound.session_id, "assistant", reply)
     logger.info("intake message: the user said the flow goes %s it (%s) - the stage's form takes it - session=%s",
                 "through" if record.get("flow") == "internal" else "around", record.get("rule"), inbound.session_id)
@@ -874,6 +906,17 @@ async def _settle_geometry_hold(inbound: InboundMessage, db, *, locked, messages
     reply = gh.hold_reply(thermal, headline, reading)
     if note:
         reply = f"{reply} {note}"
+    if reading is not None and typed_purpose_answer(inbound.content, messages):
+        # CFDREQ-37: A TYPED ANSWER TO "WHAT ARE YOU MESHING THIS FOR?" IS SAID BACK - what the stage is opened
+        # under (the route, and the flow or the analysis when the words gave it), before the stage line, in one
+        # short sentence the model writes under a guard; the naming is already queued, so the stage never waits on it
+        from meshpipeline.agents.intake import step_ack as SA
+        from meshpipeline.application import purpose_map as pm
+        said = await SA.sentence(SA.facts(
+            SA.PURPOSE, words=inbound.content, route=reading.route, flow=reading.topology,
+            analysis=reading.analysis, analysis_label=pm.ANALYSIS_LABELS.get(reading.analysis, "")),
+            session_id=session_id, user_id=inbound.owner_id)
+        reply = SA.before_stage_line(reply, said)
     try:
         await session_repo.append_message(db, inbound.session_id, "assistant", reply)
     except Exception:

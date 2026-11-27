@@ -339,6 +339,11 @@ async def said_back(messages: Iterable[Any], submit_args: Mapping, reply: str, *
         return reply
     got = await written(f, session_id=session_id, user_id=user_id, ask_fn=ask_fn)
     head, sep, line = str(reply or "").rpartition("\n\n")
+    from meshpipeline.agents.intake import approval as ap
+    if head.strip() in {ap.changed_line(["the written requirements"], since_run=s) for s in (False, True)}:
+        # a plan redone for the conditions alone: the sentence says what changed, in plain words - never
+        # "Changed from the last summary: the written requirements." above it
+        return f"{got['text']}\n\n{line}"
     return (f"{head}\n\n{got['text']}\n\n{line}" if sep and head.strip() else f"{got['text']}\n\n{reply}")
 
 
