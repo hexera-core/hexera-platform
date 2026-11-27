@@ -49,6 +49,16 @@ def result_key_beside(output_object_key: str) -> str:
     return output_object_key.rsplit("/", 1)[0] + "/result.json"
 
 
+def bundle_key_beside(output_object_key: str) -> str:
+    """Where the customer's bundle goes when it travels BESIDE the workspace archive.
+
+    A FIXED NAME AND NOT THE ENGINE'S. The engine names the file inside the workspace; this is
+    only the object it is carried in, and keeping it fixed means the exchange layer never has to
+    learn an engine's naming to find it. The result document carries the real name.
+    """
+    return output_object_key.rsplit("/", 1)[0] + "/bundle.tar.gz"
+
+
 def progress_key_beside(output_object_key: str) -> str:
     """Where a running remote mesher says which stage it is at (runtime/mesh_runner's beacon)."""
     return output_object_key.rsplit("/", 1)[0] + "/progress.json"

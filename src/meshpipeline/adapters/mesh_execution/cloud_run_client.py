@@ -705,6 +705,22 @@ def _exchange(workspace, *, engine: str, timeout: int, operation_key: str,
             _archive = Path(_tmp) / "result.tar.gz"
             bucket.blob(out_key).download_to_filename(str(_archive))
             safe_extract_tar(path=_archive, dest=str(ws), limits=result_extraction_limits(result))
+        # THE DELIVERABLE, WHEN IT TRAVELLED ON ITS OWN. It is already a verified gzip archive, so
+        # it is not put through the workspace tar: see `gcs_exchange._bundle_beside`. It lands at
+        # the name the record gives it, which is where every reader of the bundle already looks -
+        # `engines/bundled_delivery.bundle_record` then checks its size, as it does on the mesher.
+        #
+        # AFTER THE EXTRACTION AND NEVER BEFORE: safe_extract moves the members over the workspace
+        # only once the whole archive has extracted, so a bundle written first would be collateral
+        # of a refused archive.
+        _beside = result.get("bundle_beside")
+        if isinstance(_beside, dict):
+            _name, _key = str(_beside.get("bundle") or ""), str(_beside.get("key") or "")
+            if not _name or "/" in _name or _name in (".", "..") or not _key:
+                return _fail(engine, "the result promises a bundle beside it under a name that "
+                                     "cannot be a file in the workspace")
+            bucket.blob(_key).download_to_filename(str(ws / _name))
+            logger.info("collected the bundle beside the archive: %s -> %s", _key, _name)
         # Built BEFORE the exchange is released: this is the last thing that can raise, so the
         # objects must still exist while it happens.
         # The reference travels back so the submission authority can record what was accepted.

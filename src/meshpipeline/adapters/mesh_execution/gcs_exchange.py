@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 import pathlib
 import tarfile
 import tempfile
 
 import meshpipeline.parallel_gzip as parallel_gzip
+
+logger = logging.getLogger(__name__)
 
 
 def storage_client():
@@ -75,7 +78,8 @@ def upload_progress(output_uri: str, stage: dict) -> None:
 
 
 def write_result_archive(workspace: str | pathlib.Path,
-                         archive: str | pathlib.Path) -> int:
+                         archive: str | pathlib.Path,
+                         skip: frozenset[str] = frozenset()) -> int:
     """Write the returned archive exactly as the mesher sends it, and say how big it came out.
 
     Separate from the upload, and named, because the measure that decides what goes INTO it
@@ -97,21 +101,69 @@ def write_result_archive(workspace: str | pathlib.Path,
         # worker extracts this through the identical safe_extract, so a "." root here fails
         # the run just as surely - one step later, after the mesh has already been paid for.
         for child in sorted(ws.iterdir()):
+            # WHAT TRAVELS ON ITS OWN IS NOT PUT IN HERE TWICE. `skip` holds the customer's
+            # bundle, which is already a gzip archive: compressing it again gains nothing and
+            # costs a whole pass over it at RESULT_ARCHIVE_LEVEL, plus a second copy on disk.
+            if child.name in skip:
+                continue
             tf.add(str(child), arcname=child.name)
     return out.stat().st_size
+
+
+def _bundle_beside(ws: pathlib.Path) -> dict | None:
+    """The engine's finished bundle, when there is one, as the record that describes it.
+
+    THE BUNDLE IS ALREADY AN ARCHIVE. `engines/bundled_delivery` builds it on the mesher so the
+    cells travel once, at BUNDLE_ARCHIVE_LEVEL, verified, with its sha256 in the record. Putting
+    that file inside `output.tar.gz` compresses 23 GB of gzip output a second time - which gains
+    nothing by definition - and writes it to disk again on the way. It goes as its own object.
+
+    None for every run without one, which is every engine that declares no `packed_only` and
+    every failure path (those call this with an empty workspace), and the archive is then written
+    exactly as it always was.
+    """
+    try:
+        from meshpipeline.engines.bundled_delivery import bundle_record
+        rec = bundle_record(ws)
+    except Exception:                 # noqa: BLE001 - an unreadable record sends the old way
+        logger.warning("the bundle record could not be read; the archive carries everything",
+                       exc_info=True)
+        return None
+    if not isinstance(rec, dict):
+        return None
+    name = str(rec.get("bundle") or "")
+    # the record's own rule, restated where the name is about to become a path
+    if not name or "/" in name or not (ws / name).is_file():
+        return None
+    return rec
 
 
 def upload_result(output_uri: str, workspace: str, result: dict) -> None:
     gcs = storage_client()
     out_bucket, out_key = split_gs(output_uri)
     ws = pathlib.Path(workspace)
+    beside = _bundle_beside(ws)
     with tempfile.TemporaryDirectory(prefix="mesh_out_", dir=str(ws.parent)) as tmp:
         archive = pathlib.Path(tmp) / "output.tar.gz"
-        write_result_archive(ws, archive)
+        write_result_archive(ws, archive,
+                             skip=frozenset({str(beside["bundle"])}) if beside else frozenset())
         gcs.bucket(out_bucket).blob(out_key, chunk_size=RESULT_UPLOAD_CHUNK_BYTES) \
             .upload_from_filename(str(archive), content_type="application/gzip",
                                   timeout=RESULT_UPLOAD_TIMEOUT_S)
-    from meshpipeline.artifact_keys import result_key_beside
+    from meshpipeline.artifact_keys import bundle_key_beside, result_key_beside
+    if beside is not None:
+        # BEFORE THE RESULT DOCUMENT, always. The result is what the home side reads to learn
+        # there is a second object, so an upload that died between them must leave a result that
+        # does not promise one - the home side would then find the bundle missing from BOTH
+        # places and read a delivered mesh as hollow.
+        bundle_key = bundle_key_beside(out_key)
+        gcs.bucket(out_bucket).blob(bundle_key, chunk_size=RESULT_UPLOAD_CHUNK_BYTES) \
+            .upload_from_filename(str(ws / str(beside["bundle"])),
+                                  content_type="application/gzip",
+                                  timeout=RESULT_UPLOAD_TIMEOUT_S)
+        result = {**result, "bundle_beside": {**beside, "key": bundle_key}}
+        logger.info("the %s bundle (%s bytes) travels beside the archive as %s",
+                    beside.get("bundle"), beside.get("bytes"), bundle_key)
     res_key = result_key_beside(out_key)
     gcs.bucket(out_bucket).blob(res_key).upload_from_string(
         json.dumps(result), content_type="application/json")
