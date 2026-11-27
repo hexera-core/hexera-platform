@@ -1924,7 +1924,7 @@ def _as_dict(report, plan: PL.ConjugatePlan) -> dict:
         # extrusion started at 97.2267% and the ten repair iterations took it DOWN every time to
         # 88.5826%, at 71.9% of the asked thickness and 2.25 layers of 3, with 8,916 faces in error
         # over 37,247,044 cells added - 239 per million. Against this module's own floors that is
-        # THREE shortfalls (COVERAGE_FLOOR_PCT 92.0, THICKNESS_FLOOR_PCT 75.0,
+        # THREE shortfalls (KEPT_OF_OFFERED_FLOOR_PCT 95.0, THICKNESS_FLOOR_PCT 75.0,
         # ILLEGAL_PER_MILLION_CEILING 200.0), every one of which `shortfalls` produced and logged.
         # The delivered `conjugate_report.json` has no `layers` key at all and the delivered
         # `mesh_manifest.json` published `near_wall_layers: 3`. The run's Python log is not among

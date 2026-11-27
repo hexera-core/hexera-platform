@@ -430,7 +430,8 @@ FEATURE_ANGLE = _feature_angle()
 #: so truncating at four FINISHES 0.098 of a point higher. The iterations buy exactly one thing,
 #: a lower illegal count, and they pay for it in layers.
 #:
-#: AND IT CANNOT REACH THE COVERAGE FLOOR ANYWAY. `COVERAGE_FLOOR_PCT` is 92.0 and both runs of
+#: AND IT COULD NOT REACH THE OLD COVERAGE FLOOR ANYWAY, which is why that floor is gone: it was
+#: `COVERAGE_FLOOR_PCT` 92.0 and both runs of
 #: this plate finish at 90.64 / 90.72, because 8.89 of the 9.28 missing points are declined up
 #: front by `featureAngle` and never offered to the mover at all (job b8f09ae9: offered 91.1145%,
 #: kept 99.5641% of what it offered). No number of repair iterations can recover a face that was
@@ -485,10 +486,38 @@ def _layer_iter() -> int:
 
 LAYER_ITER = _layer_iter()
 
-#: HOW MUCH OF THE INTERFACE HAS TO END UP LAYERED. The measured run finished at 95.553% after ten
-#: outer iterations; the DEFECTIVE delivered run finished at 90.7146%, so a floor under that would
-#: admit the run this module exists to refuse.
-COVERAGE_FLOOR_PCT = 92.0
+#: HOW MUCH OF WHAT THE EXTRUDER OFFERED KEPT ITS LAYERS - the figure that measures the PASS.
+#:
+#: THIS REPLACES A COVERAGE FLOOR THAT JUDGED THE PART'S SHAPE. `COVERAGE_FLOOR_PCT` was 92.0,
+#: and its own comment said where that came from: "the measured run finished at 95.553% ... the
+#: DEFECTIVE delivered run finished at 90.7146%, so a floor under that would admit the run this
+#: module exists to refuse" - a number reverse-engineered to sit just above one bad run.
+#:
+#: WHAT THE BAR WAS WRITTEN WITHOUT. Job b8f09ae9 recorded, for the first time, what the
+#: extruder was ever OFFERED: offered 91.1145% of the interface, covered 90.7174%, kept
+#: 99.5641% of what it offered. So of the 9.28 points of missing coverage, 8.89 were declined
+#: up front - `featureAngle` refuses a face where the surface turns by more than
+#: FEATURE_ANGLE degrees - and 0.40 were offered and then lost over ten iterations of repair.
+#: The 8.89 is a property of THIS PART'S SHAPE and no setting of the layer pass can move it,
+#: which is why both good runs of this plate sit under 92% (90.6422% and 90.7174%) and why a
+#: day was spent on smoothers that could never have reached it.
+#:
+#: NINETY-FIVE, from two measured points and one known failure. Job b8f09ae9 kept 99.5641% of
+#: every face it was given and job cba7ac69 kept 99.7599% (see the FEATURE_ANGLE note below),
+#: so the floor clears both by four points. And it still catches the failure that was actually
+#: seen: on the width rig at `SMOOTH_SURFACE_NORMALS` 5 nearly every face was offered and only
+#: about three quarters kept their layers, which is a mover failing rather than a part's shape.
+#:
+#: COVERAGE IS STILL PUBLISHED AND STILL CITABLE - `layer_coverage_pct` travels into the
+#: manifest and the reviewer's ledger as it always did, now with `layer_offered_pct` and
+#: `layer_kept_of_offered_pct` beside it so a reader can tell the two causes apart. What stops
+#: is treating it as a bar.
+#:
+#: ABSENT ON AN OLDER RUN, AND THAT IS NOT A FAILURE. `offered_pct` and `kept_of_offered_pct`
+#: only exist on runs whose log was read by the instrumentation that produced them; a report
+#: without them is judged on the floors that do not need them, exactly as a report with no
+#: coverage figure always was.
+KEPT_OF_OFFERED_FLOOR_PCT = 95.0
 #: ...AND HOW MUCH OF THE ASKED STACK HAS TO SURVIVE. The measured run achieved 2.84 of 3 layers at
 #: 94.6% of the requested thickness. Thinning is the mover's only repair and it manufactures
 #: hairline cells, so a stack that came back much thinner than it was asked for is the failure that
@@ -516,7 +545,7 @@ ILLEGAL_PER_MILLION_CEILING = 200.0
 #: NO THRESHOLD IS RESTATED HERE and none can be: these are the INPUTS. Whether a floor was MET is
 #: `shortfalls`' own business, computed once, against the pass's own `cells_added`.
 LAYER_FLOORS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("coverage", ("layer_coverage_pct",)),                 # COVERAGE_FLOOR_PCT
+    ("faces kept of those offered", ("layer_kept_of_offered_pct",)),  # KEPT_OF_OFFERED_FLOOR_PCT
     ("thickness", ("layer_thickness_pct",)),               # THICKNESS_FLOOR_PCT
     ("layers kept", ("layers_in_mesh",)),                  # LAYERS_FLOOR_FRACTION
     # BOTH NUMBERS, because `shortfalls` skips this one on `int(cells) > 0` and a face count with
@@ -1145,30 +1174,28 @@ def shortfalls(report: dict, *, interface_patch: str, n_layers: int = 0,
     got = dict(report or {})
     row = (got.get("patches") or {}).get(str(interface_patch)) or {}
     out: list[str] = []
+    # WHAT THE PASS DID WITH WHAT IT WAS GIVEN, which is the only part of the coverage figure the
+    # pass controls. A face the extruder never offered is `featureAngle` declining to grow a prism
+    # where the surface turns, and that is the part's shape; a face it offered and then lost is the
+    # mover failing, which more iterations or a thinner stack might fix. The old bar compared the
+    # two added together against 92% and so reported a shape as a defect - see
+    # KEPT_OF_OFFERED_FLOOR_PCT.
     cover = got.get("coverage_pct")
-    if cover is not None and float(cover) < COVERAGE_FLOOR_PCT:
-        said = (f"covered {float(cover):.4f}% of the interface against the "
-                f"{COVERAGE_FLOOR_PCT:g}% this engine aims at; the measured run of the other part "
-                f"reached 95.553% and the run that was refused for not fitting its cell reached "
-                f"90.7146%")
-        # WHERE THE SHORTFALL CAME FROM, because the two causes ask for different things. A face
-        # the extruder never offered is `featureAngle` declining to grow a prism where the surface
-        # turns - raising the angle would recover it and cost quality. A face it offered and then
-        # lost is the mover failing, which more iterations or a thinner stack might fix. Without
-        # this the reader sees one number under a floor and cannot tell which.
-        offered = got.get("offered_pct")
-        if offered is not None:
+    offered = got.get("offered_pct")
+    keep = got.get("kept_of_offered_pct")
+    if keep is not None and float(keep) < KEPT_OF_OFFERED_FLOOR_PCT:
+        said = (f"kept {float(keep):.2f}% of the faces the extruder offered it, against the "
+                f"{KEPT_OF_OFFERED_FLOOR_PCT:g}% this engine aims at; the measured runs of this "
+                f"part kept 99.5641% and 99.7599%")
+        if cover is not None and offered is not None:
             never = 100.0 - float(offered)
             lost = float(offered) - float(cover)
-            said += (f". Of the {100.0 - float(cover):.2f} points missing, {never:.2f} were never "
-                     f"offered to the layer pass at all - the extruder declines a face where the "
-                     f"surface turns by more than featureAngle {int(FEATURE_ANGLE)} degrees - and "
-                     f"{lost:.2f} were offered and then lost over "
+            said += (f". It covered {float(cover):.4f}% of the interface in the end: of the "
+                     f"{100.0 - float(cover):.2f} points missing, {never:.2f} were never offered "
+                     f"to the layer pass at all - the extruder declines a face where the surface "
+                     f"turns by more than featureAngle {int(FEATURE_ANGLE)} degrees, which is this "
+                     f"part's own shape - and {lost:.2f} were offered and then lost over "
                      f"{int(got.get('iterations') or 0)} iteration(s) of repair")
-            keep = got.get("kept_of_offered_pct")
-            if keep is not None:
-                said += (f", so the pass kept {float(keep):.2f}% of every face it was given and "
-                         f"the rest of the gap is this part's own shape")
         out.append(said)
     thick = row.get("thickness_pct")
     if thick is not None and float(thick) < THICKNESS_FLOOR_PCT:
@@ -1221,6 +1248,12 @@ def measured(report: dict, *, interface_patch: str) -> dict:
     row = (got.get("patches") or {}).get(str(interface_patch)) or {}
     out = {
         "layer_coverage_pct": got.get("coverage_pct"),
+        # THE TWO THAT TELL THE PART FROM THE PASS. Coverage alone cannot: 90.7174% is a good
+        # pass on a part whose shape declines 8.89 points of its own interface, and it is also
+        # what a broken mover would report on a part that declined nothing. See
+        # KEPT_OF_OFFERED_FLOOR_PCT.
+        "layer_offered_pct": got.get("offered_pct"),
+        "layer_kept_of_offered_pct": got.get("kept_of_offered_pct"),
         "layer_cells_added": got.get("cells_added"),
         "layer_faces_in_error": got.get("illegal_faces"),
         "layer_seconds": got.get("seconds"),
@@ -1239,7 +1272,8 @@ __all__ = ["LAYER_CASE", "LAYER_STAGE", "LayerError", "MAX_GLOBAL_CELLS", "MAX_L
            "MIN_THICKNESS_OF_STACK",
            "BUFFER_CELLS_NO_EXTRUDE", "N_SURFACE_LAYERS", "EXPANSION_RATIO", "FEATURE_ANGLE",
            "FIRST_LAYER_FRACTION", "MAX_STACK_FRACTION",
-           "SMOOTH_SURFACE_NORMALS", "SMOOTH_THICKNESS", "SMOOTH_NORMALS", "COVERAGE_FLOOR_PCT",
+           "SMOOTH_SURFACE_NORMALS", "SMOOTH_THICKNESS", "SMOOTH_NORMALS",
+           "KEPT_OF_OFFERED_FLOOR_PCT",
            "LAYER_ITER", "LAYER_ITER_DEFAULT", "LAYER_ITER_ENV", "N_RELAXED_ITER",
            "THICKNESS_FLOOR_PCT", "LAYERS_FLOOR_FRACTION", "ILLEGAL_PER_MILLION_CEILING",
            "LAYER_FLOORS", "floors_unjudged",

@@ -613,8 +613,16 @@ def test_a_pass_that_kept_no_layers_at_all_misses_the_layers_floor_in_the_record
     catch it, and the record came back one sentence short of the truth.
 
     MEASURED, SYNTHETIC. The log below is GOOD_LOG's table with the layer count, the thickness and
-    the coverage taken to zero and 90,000 illegal faces left behind. All FOUR floors are missed;
-    before this change the list had THREE sentences and the silent one was the layer count itself.
+    the coverage taken to zero and 90,000 illegal faces left behind. THREE of the four floors are
+    missed; before the defect was fixed the list had TWO sentences and the silent one was the
+    layer count itself.
+
+    THE FOURTH CANNOT BE MISSED BY THIS LOG, and that is correct rather than a gap. The floor
+    that replaced the coverage one is KEPT_OF_OFFERED_FLOOR_PCT - of the faces the extruder
+    OFFERED, how many kept their layers - and taking every `Extruding` line to 0.0001% makes a
+    pass that was offered almost nothing and kept all of it, which is 100%. A pass that grew
+    nothing is what `complain` refuses outright (the test above), not something a floor on the
+    mover's success rate should pretend to catch.
 
     `complain` does refuse such a run inside the mesher (the test above holds that, and it is why
     this was never a defect in a DELIVERED mesh) - but the report can reach `finalize` across a
@@ -629,7 +637,7 @@ def test_a_pass_that_kept_no_layers_at_all_misses_the_layers_floor_in_the_record
     assert any("kept 0.00 layers of the 3" in s for s in short), (
         "a pass that grew no layers at all is not reported as missing this engine's layers "
         f"floor, which is the floor it missed by the whole of it: {short!r}")
-    assert len(short) == len(L.LAYER_FLOORS), (
+    assert len(short) == len(L.LAYER_FLOORS) - 1, (
         f"four floors were missed and the record names {len(short)}: {short!r}")
 
 
@@ -712,8 +720,8 @@ def test_the_roster_has_one_entry_for_each_floor_shortfalls_evaluates():
     """A FIFTH FLOOR WITH NO ENTRY HERE WOULD BE INVISIBLE, and a stale entry would be a floor
     claimed on every run that nothing judges. The count is the contract between the two."""
     assert len(L.LAYER_FLOORS) == 4, L.LAYER_FLOORS
-    assert [n for n, _ in L.LAYER_FLOORS] == ["coverage", "thickness", "layers kept",
-                                              "faces in error"]
+    assert [n for n, _ in L.LAYER_FLOORS] == ["faces kept of those offered", "thickness",
+                                              "layers kept", "faces in error"]
     # every key named here is a key `measured` actually produces, under that spelling
     produced = set(L.measured(L.read_layer_log(GOOD_LOG), interface_patch=INTERFACE))
     for name, keys in L.LAYER_FLOORS:
@@ -726,15 +734,37 @@ def test_layers_on_the_wrong_patch_are_not_layers_on_the_interface():
     assert "no layer table row" in said and "fluid_to_solid" in said
 
 
-def test_the_coverage_floor_sits_above_the_run_that_was_refused():
-    """The measured run finished at 95.553%; the DEFECTIVE delivered run finished at 90.7146%. A
-    floor under that would say nothing about the very run this module exists to catch."""
-    assert 90.7146 < L.COVERAGE_FLOOR_PCT < 95.553
+def test_the_floor_is_on_what_the_pass_kept_not_on_what_the_part_allowed():
+    """THE COVERAGE FLOOR WAS FITTED TO THE WRONG QUANTITY, and this test used to pin it there.
+
+    It asserted `90.7146 < COVERAGE_FLOOR_PCT < 95.553` - a floor placed between the measured
+    run and the defective one, because "a floor under that would say nothing about the very run
+    this module exists to catch".
+
+    WHAT THAT MISSED. Job b8f09ae9 recorded what the extruder was ever OFFERED: 91.1145% of the
+    interface, of which it kept 99.5641%. Of the 9.28 points of coverage missing, 8.89 were
+    declined up front - a face whose surface turns more than FEATURE_ANGLE degrees is never
+    offered a prism - and only 0.40 were offered and then lost. The 8.89 is the part's own
+    shape and no setting of the pass moves it, so both good runs of this plate sat under 92%
+    (90.6422% and 90.7174%). The defective run was not defective for its coverage either: it
+    was refused for not fitting its cell, which the thickness and faces-in-error floors catch.
+
+    So the floor is on the share the pass CONTROLS, and it is still a real bar - a mover offered
+    everything that keeps three quarters of it fails, which is what the width rig at
+    SMOOTH_SURFACE_NORMALS 5 did.
+    """
+    assert not hasattr(L, "COVERAGE_FLOOR_PCT"), "the floor is back on the wrong quantity"
+    for kept in (99.5641, 99.7599):      # both measured runs of this part, with margin
+        assert kept > L.KEPT_OF_OFFERED_FLOOR_PCT
+    bad = {"coverage_pct": 75.0, "offered_pct": 100.0, "kept_of_offered_pct": 75.0,
+           "iterations": 10, "patches": {}}
+    said = L.shortfalls(bad, interface_patch=INTERFACE, n_layers=3, cells=102_536_327)
+    assert [s for s in said if "offered it" in s], said
+    # and the run that WAS refused is still not refused by `complain`, which is only ever about
+    # nothing growing at all - the thickness and faces-in-error floors are what caught it
     thin = GOOD_LOG.replace("(95.553%)", "(90.7146%)")
     got = L.read_layer_log(thin)
     assert L.complain(got, interface_patch=INTERFACE, n_layers=3, cells=102_536_327) == ""
-    short = L.shortfalls(got, interface_patch=INTERFACE, n_layers=3, cells=102_536_327)
-    assert any("90.7146" in s for s in short), short
 
 
 # ---------------------------------------------------------------- what gets published

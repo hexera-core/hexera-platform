@@ -25,7 +25,7 @@ see that anything had fallen short. A change whose whole purpose is to stop publ
 as a measurement cannot ship while its one user-facing reader publishes a figure the mesh does not
 have.
 
-THE FOUR FLOORS ARE `cfmesh_conjugate/layers.py`'s OWN - COVERAGE_FLOOR_PCT 92.0,
+THE FOUR FLOORS ARE `cfmesh_conjugate/layers.py`'s OWN - KEPT_OF_OFFERED_FLOOR_PCT 95.0,
 THICKNESS_FLOOR_PCT 75.0, LAYERS_FLOOR_FRACTION 0.75, ILLEGAL_PER_MILLION_CEILING 200.0 - and they
 are imported here rather than restated, because this engine has already paid once for one quantity
 with two readers that disagreed. The test that all four can be checked FROM THE PAYLOAD is what the
@@ -46,7 +46,6 @@ import pathlib
 import pytest
 
 from meshpipeline.engines.cfmesh_conjugate.layers import (
-    COVERAGE_FLOOR_PCT,
     ILLEGAL_PER_MILLION_CEILING,
     LAYERS_FLOOR_FRACTION,
     THICKNESS_FLOOR_PCT,
@@ -192,7 +191,13 @@ def test_all_four_of_this_engines_layer_floors_can_be_checked_from_the_payload_a
     assert not missing, (
         "the payload cannot be checked against this engine's own floors - a reader would have to "
         f"open the manifest to find out whether the run met them: {missing}")
-    assert p["layer_coverage_pct"] < COVERAGE_FLOOR_PCT, "coverage, 88.5826% against 92.0"
+    # COVERAGE IS PUBLISHED AND IS NO LONGER A BAR, which is this engine's own finding rather
+    # than a loosening. Coverage is two things added: faces `featureAngle` declined to offer,
+    # which is the part's shape, and faces offered and then lost, which is the mover. Job
+    # b8f09ae9 measured the split - 91.1145% offered, 99.5641% of that kept - so of 9.28
+    # missing points 8.89 were never the pass's to grow. The bar is on what it KEPT now; the
+    # figure still has to reach the reader, which is what this file is about.
+    assert p["layer_coverage_pct"] == 88.5826, "the measured coverage still reaches the reader"
     assert p["layer_thickness_pct"] < THICKNESS_FLOOR_PCT, "thickness, 71.9% against 75.0"
     per_million = p["layer_faces_in_error"] * 1e6 / p["layer_cells_added"]
     assert round(per_million) == 239 and per_million > ILLEGAL_PER_MILLION_CEILING, (
@@ -213,8 +218,10 @@ def test_the_shortfall_itself_reaches_the_reader():
         "the lines that say which of this engine's own floors the run missed do not reach the "
         f"viewer's reader at all, so the panel shows a layer count and no verdict: {short!r}")
     joined = " ".join(short)
-    for bar in (f"{COVERAGE_FLOOR_PCT:g}", f"{THICKNESS_FLOOR_PCT:g}",
-                f"{ILLEGAL_PER_MILLION_CEILING:g}"):
+    # The floors this payload actually trips. It predates the offered/kept instrumentation so it
+    # carries no `layer_kept_of_offered_pct`, and an unmeasured advisory figure must not read as
+    # a miss - which is pinned in test_the_layer_coverage_figure_is_citable.
+    for bar in (f"{THICKNESS_FLOOR_PCT:g}", f"{ILLEGAL_PER_MILLION_CEILING:g}"):
         assert bar in joined, (bar, joined)
 
 

@@ -235,7 +235,7 @@ def test_the_shortfall_against_this_engines_own_floors_is_published(case):  # no
     short = q.get("layer_short")
     assert short and len(short) == 3, f"three floors were missed on the real plate: {short!r}"
     joined = " ".join(short)
-    assert "88.5826%" in joined and f"{LY.COVERAGE_FLOOR_PCT:g}%" in joined
+    assert "of the interface against" not in joined, joined
     assert "71.9%" in joined and f"{LY.THICKNESS_FLOOR_PCT:g}%" in joined
     assert "239 per million" in joined and f"{LY.ILLEGAL_PER_MILLION_CEILING:g}" in joined
 
@@ -305,9 +305,9 @@ def test_the_floors_are_the_layers_modules_own(case):  # noqa: F811
 
     rationale = next((c.rationale for c in CRITERIA_ROWS if c.key == "layer_short"), "")
     assert rationale, "no layer_short criterion is declared, so no row names the floors at all"
-    for bar in (f"{LY.COVERAGE_FLOOR_PCT:g}", f"{LY.THICKNESS_FLOOR_PCT:g}",
+    for bar in (f"{LY.KEPT_OF_OFFERED_FLOOR_PCT:g}", f"{LY.THICKNESS_FLOOR_PCT:g}",
                 f"{LY.ILLEGAL_PER_MILLION_CEILING:g}"):
         assert bar in rationale, (bar, rationale)
     src = Path(F.__file__).read_text()
-    assert "COVERAGE_FLOOR_PCT =" not in src and "THICKNESS_FLOOR_PCT =" not in src, (
+    assert "KEPT_OF_OFFERED_FLOOR_PCT =" not in src and "THICKNESS_FLOOR_PCT =" not in src, (
         "finalize has restated a floor that lives in layers.py")

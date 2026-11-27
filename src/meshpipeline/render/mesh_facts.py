@@ -92,10 +92,19 @@ _FLOAT_METRICS: Final[tuple[str, ...]] = (
     # not caution, it is a third figure: the ask was 3, the mesh has 2.25, and `_as_int` published
     # 2 to the one panel a customer reads.
     "near_wall_layers",
-    # HOW WELL IT GREW, against `layers.COVERAGE_FLOOR_PCT` 92.0 and `THICKNESS_FLOOR_PCT` 75.0.
-    # The plate came back at 88.5826% and 71.9%, under both. These two, the pair of counts above
-    # and the ask are every number this engine draws its own four floors on, so a reader can check
-    # all four from the payload without opening the manifest.
+    # HOW WELL IT GREW, against `layers.KEPT_OF_OFFERED_FLOOR_PCT` 95.0 and
+    # `THICKNESS_FLOOR_PCT` 75.0. These, the pair of counts above and the ask are every number
+    # this engine draws its own four floors on, so a reader can check all four from the payload
+    # without opening the manifest.
+    #
+    # THE FIRST FLOOR MOVED, AND THE PANEL HAD TO MOVE WITH IT. It was COVERAGE_FLOOR_PCT 92.0,
+    # and coverage turned out to be two things added together: the faces `featureAngle` declined
+    # to offer, which is the part's shape, and the faces offered and then lost, which is the
+    # mover. Job b8f09ae9 measured the split - 91.1145% offered, 99.5641% of that kept - so of
+    # 9.28 missing points 8.89 were never the pass's to grow. `layer_kept_of_offered_pct` is
+    # the figure the floor is drawn on now, and `layer_offered_pct` is what makes the other two
+    # readable, so BOTH travel: a panel showing only the sum is the page this engine already
+    # paid for once, where a good pass and a failed one printed the same number.
     #
     # `layer_coverage_pct` IS THE ONE OF THESE WITH MORE THAN ONE PRODUCER, and it was grepped
     # before it was read: cfmesh_conjugate, cfmesh, snappy, snappy_multiregion and vmtk all write
@@ -108,6 +117,7 @@ _FLOAT_METRICS: Final[tuple[str, ...]] = (
     # `layers_stated`, `layers_mean`) and are mostly ASKS - the field this change exists to stop
     # publishing as a result. Carrying those needs its own measurement, not this edit.
     "layer_coverage_pct", "layer_thickness_pct",
+    "layer_offered_pct", "layer_kept_of_offered_pct",
     # and the stack as a LENGTH, beside `near_wall_cell_m`: 1.09e-05 m on the plate. A percentage
     # of an ask says nothing about what it resolves.
     "layer_thickness_m",

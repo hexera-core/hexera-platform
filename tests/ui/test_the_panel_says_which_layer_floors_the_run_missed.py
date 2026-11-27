@@ -186,7 +186,7 @@ def test_the_three_floors_the_real_plate_missed_are_each_said_on_the_panel(live)
     assert _rows_for(live, "layer_short") == 3, (
         "the three sentences that say which of this engine's own floors the run missed are not "
         f"three rows on the panel; the whole panel reads:\n{text}")
-    for mark in (f"{LY.COVERAGE_FLOOR_PCT:g}%", f"{LY.THICKNESS_FLOOR_PCT:g}%",
+    for mark in (f"{LY.KEPT_OF_OFFERED_FLOOR_PCT:g}%", f"{LY.THICKNESS_FLOOR_PCT:g}%",
                  f"{LY.ILLEGAL_PER_MILLION_CEILING:g}"):
         assert mark in text, (
             f"a reader cannot see the floor {mark} this run fell under, although the sentence "
@@ -395,23 +395,35 @@ def test_the_panel_counts_the_floors_that_were_judged_and_not_the_keys_that_arri
     figure beside it, which is that same missing denominator said twice. SURFACE only; no interior
     is cut here."""
     q = _payload_quality(ZERO_LAYER_LOG)
-    assert len(q["layer_short"]) == 3, "the premise: three floors were missed"
+    # TWO, not three: the coverage floor is gone (the bar is on what the pass KEPT of what
+    # it was offered - layers.KEPT_OF_OFFERED_FLOOR_PCT) and this fixture carries no
+    # illegal-face count to divide, so thickness and layers-kept are what is left.
+    assert len(q["layer_short"]) == 2, "the premise: two floors were missed"
     assert q["layer_faces_in_error"] == 90000 and q["layer_cells_added"] == 0, (
         "the premise: the face count was read and its denominator is zero")
     _open(live, _payload(q))
     text = _facts(live)
-    assert ("3 of the 4 floors this engine judges a layer pass by were judged on what this "
+        # TWO, not three. The floor that replaced the coverage one is drawn on
+    # `layer_kept_of_offered_pct` (layers.KEPT_OF_OFFERED_FLOOR_PCT), which this
+    # all-zero log cannot produce - so it joins "faces in error" as unjudged, and the
+    # payload reports layer_floors_unjudged ["faces kept of those offered",
+    # "faces in error"] against layer_floors_total 4. Computed from the shipped
+    # producers, not guessed.
+    assert ("2 of the 4 floors this engine judges a layer pass by were judged on what this "
             "pass measured") in text, (
         "the panel tells this reader the pass was judged by all four of this engine's layer "
-        f"floors, when three of the four tests are the only ones that ran:\n{text}")
+        f"floors, when two of the four tests are the only ones that ran:\n{text}")
     assert "4 of the 4 floors" not in text, (
         f"and four of four is still claimed somewhere on the page:\n{text}")
     row = _row_text(live, "layer_floors_unjudged")
     assert "faces in error" in row and "not judged" in row, (
         "the floor whose test never ran is not named as one nothing judged; that row reads "
         f"{row!r} and the whole panel:\n{text}")
-    # and the three real misses are still said, which is what a rule about zeroes would have cost
-    assert _rows_for(live, "layer_short") == 3, f"the three shortfall rows moved:\n{text}"
+    # and the real misses are still said, which is what a rule about zeroes would have
+    # cost. TWO on this all-zero log: the floor that replaced the coverage one is drawn
+    # on `layer_kept_of_offered_pct`, which this log cannot produce, so it is UNJUDGED
+    # rather than missed - which the row above has just asserted by name.
+    assert _rows_for(live, "layer_short") == 2, "the shortfall rows moved: " + text
     assert "fell short" in text, f"and their heading is no longer the verdict:\n{text}"
     assert_clean(live, "the viewer with a zero-layer pass")
 

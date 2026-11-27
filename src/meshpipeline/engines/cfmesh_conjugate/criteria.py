@@ -9,7 +9,7 @@ from meshpipeline.contracts.review_evidence import (
     TargetKind,
 )
 from meshpipeline.engines.cfmesh_conjugate.layers import (
-    COVERAGE_FLOOR_PCT as _COVERAGE_FLOOR_PCT,
+    KEPT_OF_OFFERED_FLOOR_PCT as _KEPT_FLOOR_PCT,
 )
 from meshpipeline.engines.openfoam_criteria import (
     FATAL_TOPOLOGY as _FATAL_TOPOLOGY,
@@ -145,7 +145,8 @@ CRITERIA_ROWS: tuple[Criterion, ...] = (
         threshold=None, gating=False,
         rationale=(
             "REPORTED, NOT GATED, AND THE CHOICE IS DELIBERATE. The bars are "
-            "`cfmesh_conjugate/layers`' own - COVERAGE_FLOOR_PCT 92.0, THICKNESS_FLOOR_PCT 75.0, "
+            "`cfmesh_conjugate/layers`' own - KEPT_OF_OFFERED_FLOOR_PCT 95.0, "
+            "THICKNESS_FLOOR_PCT 75.0, "
             "LAYERS_FLOOR_FRACTION 0.75, ILLEGAL_PER_MILLION_CEILING 200.0 - and this row is the "
             "one place a miss is said where a reader and the reviewer both see it. It is not "
             "gating for the reason `layers.shortfalls` states: the layer pass MOVES the only copy "
@@ -173,7 +174,7 @@ CRITERIA_ROWS: tuple[Criterion, ...] = (
         rationale=(
             "THE DENOMINATOR UNDER THE ROW ABOVE, and without it that row read a verdict on one "
             "floor as a verdict on four. `layers.shortfalls` evaluates four floors - "
-            "COVERAGE_FLOOR_PCT, THICKNESS_FLOOR_PCT, LAYERS_FLOOR_FRACTION and "
+            "KEPT_OF_OFFERED_FLOOR_PCT, THICKNESS_FLOOR_PCT, LAYERS_FLOOR_FRACTION and "
             "ILLEGAL_PER_MILLION_CEILING - and guards each on its own input, which for three of "
             "them is the presence of a figure and for the faces-in-error one is a POSITIVE count "
             "of cells added, because that test is a ratio. So a log it could read only part of "
@@ -200,7 +201,7 @@ CRITERIA_ROWS: tuple[Criterion, ...] = (
     Criterion(
         key="layer_coverage_pct",
         label="How much of the conjugate interface the prism layers covered",
-        op=">=", threshold=_COVERAGE_FLOOR_PCT, gating=False,
+        op=">", threshold=0.0, gating=False,
         rationale=(
             "THE SAME FIGURE `layer_short` ALREADY JUDGES, DECLARED AS A BAR SO THE REVIEW CAN "
             "CITE IT. `layer_short` is an `empty` row: it carries the miss as a SENTENCE in its "
@@ -213,10 +214,19 @@ CRITERIA_ROWS: tuple[Criterion, ...] = (
             "90.6422% of the 16,582,198-face interface and kept 2.00 of 3 layers, the review "
             "failed the near-interface axis on exactly that, and the only citable metric on file "
             "was non-orthogonality - a true number about a different property. "
-            "THE THRESHOLD IS `layers.COVERAGE_FLOOR_PCT` ITSELF, imported and not restated, and "
-            "the comparison is the one `layers.shortfalls` makes (`coverage < FLOOR` is the "
-            "shortfall), so the two cannot disagree - including at exactly 92.0, which a `>` row "
-            "would fail while `shortfalls` called it a pass. "
+            "THE BAR IS NO LONGER 92% AND THE ROW IS STILL HERE, which is the whole point. The "
+            "threshold was `layers.COVERAGE_FLOOR_PCT`, 92.0, a number its own comment says was "
+            "placed just above one defective run's 90.7146%. Job b8f09ae9 then measured what the "
+            "extruder was ever OFFERED: it offered 91.1145% of the interface and KEPT 99.5641% of "
+            "that, so of the 9.28 points of missing coverage 8.89 were declined up front by "
+            "`featureAngle` and 0.40 were lost in repair. The 8.89 is this part's own shape and no "
+            "setting of the layer pass can move it - which is why both good runs of the plate sit "
+            "under 92% (90.6422% and 90.7174%). A bar there reported a shape as a defect. "
+            "SO THE BAR ON THE PASS IS THE ROW BELOW, `layer_kept_of_offered_pct` against "
+            "`layers.KEPT_OF_OFFERED_FLOOR_PCT`, and the only requirement left on coverage itself "
+            "is that it is positive: a pass that covered nothing grew no layers, which "
+            "`layers.complain` refuses outright. The figure stays declared because the reviewer "
+            "has to be able to cite it. "
             "NOT GATING, for the reason the two rows above are not: the layer pass has already "
             "moved the only copy of the coolant mesh and rewritten it in place, so refusing on a "
             "coverage miss throws away a finished mesh nothing else has anything against. "
@@ -226,6 +236,32 @@ CRITERIA_ROWS: tuple[Criterion, ...] = (
             "`engines/cfmesh` and `engines/snappy_multiregion` have both declared this key since "
             "they were written; this engine produced the figure (`layers.py`'s "
             "`layer_coverage_pct`) and declared no bar on it."),
+        evidence_url=_OF_MESH_VALIDITY,
+    ),
+    Criterion(
+        key="layer_kept_of_offered_pct",
+        label="How many of the faces the extruder offered kept their prism layers",
+        op=">=", threshold=_KEPT_FLOOR_PCT, gating=False,
+        rationale=(
+            "THE PART OF THE COVERAGE FIGURE THE LAYER PASS ACTUALLY CONTROLS. Coverage is two "
+            "things added together: the faces `featureAngle` declined to offer, which is the "
+            "part's shape, and the faces that were offered and then lost, which is the mover. "
+            "The row above used to compare the sum against 92% and so reported a shape as a "
+            "defect on every run of a real cold plate. "
+            "MEASURED, two runs of the same plate: job b8f09ae9 offered 91.1145% of its "
+            "16,582,198-face interface and kept 99.5641% of what it offered; job cba7ac69 kept "
+            "99.7599%. The floor of 95.0 clears both by four points. "
+            "AND IT STILL CATCHES A REAL FAILURE, which is what a bar is for: on the width rig "
+            "at `layers.SMOOTH_SURFACE_NORMALS` 5 nearly every face was offered and only about "
+            "three quarters kept their layers - a mover failing, which the old coverage bar "
+            "would have scored the same as a part that simply declines 9% of its own interface. "
+            "NOT GATING, for the reason every layer row here is not: the pass has already moved "
+            "the only copy of the coolant mesh and rewritten it in place, so refusing throws "
+            "away a finished mesh nothing else has anything against. "
+            "ABSENT ON AN OLDER RUN AND THAT IS NOT A FAILURE: `offered_pct` and "
+            "`kept_of_offered_pct` exist only on runs read by the instrumentation that produced "
+            "them, and `eligibility.advisory_gaps` records an unmeasured advisory number as a "
+            "stated gap rather than as missing evidence."),
         evidence_url=_OF_MESH_VALIDITY,
     ),
     Criterion(
@@ -298,6 +334,15 @@ REVIEW_AXES: tuple[ReviewAxis, ...] = (
         requires=(HardGateRequirement("interface"),
                   MetricRequirement("max_non_ortho"),
                   MetricRequirement("layer_coverage_pct"),
+                  # ...AND THE SHARE OF IT THE PASS ACTUALLY CONTROLS, declared here for
+                  # exactly the reason above: a criterion alone does not reach the ledger.
+                  # `collect_deterministic_evidence` files what `plan.required_metric_keys`
+                  # asks for, and that set is built from these `requires` and nothing else -
+                  # so declaring the bar in CRITERIA_ROWS without declaring the key here
+                  # left `ledger.usable_metric("layer_kept_of_offered_pct")` returning None
+                  # and a finding unable to cite the one number the pass is judged on. That
+                  # is the same defect this comment block was written about, one row down.
+                  MetricRequirement("layer_kept_of_offered_pct"),
                   RenderTargetRequirement(TargetKind.REGION, "region:*")),
         evidence_url=_OF_MESH_VALIDITY,
     ),

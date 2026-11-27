@@ -102,6 +102,7 @@
       "interface_ok",
       "layer_coverage_pct",
       "layer_floors_unjudged",
+      "layer_kept_of_offered_pct",
       "layer_short",
       "max_non_ortho",
       "max_skewness",

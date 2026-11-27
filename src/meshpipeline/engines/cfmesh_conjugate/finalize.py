@@ -517,7 +517,8 @@ def _near_wall(plan: dict, grown: dict | None = None) -> dict:
 #: THE MEASURED LAYER FIGURES THAT TRAVEL INTO THE MANIFEST, keyed as `layers.measured` names
 #: them so the two sides cannot drift. Published only when the pass measured them: an absent
 #: figure is a figure nobody took, and a 0.0 reads as a measurement of nothing grown.
-_LAYER_FIGURES = ("layer_coverage_pct", "layer_thickness_pct", "layer_thickness_m",
+_LAYER_FIGURES = ("layer_coverage_pct", "layer_offered_pct", "layer_kept_of_offered_pct",
+                  "layer_thickness_pct", "layer_thickness_m",
                   "layer_faces_in_error", "layer_cells_added", "layer_iterations",
                   "layer_seconds", "layer_patch", "layers_asked", "layers_in_mesh")
 

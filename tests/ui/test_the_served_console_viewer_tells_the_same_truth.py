@@ -267,10 +267,16 @@ def test_the_console_copy_counts_the_floors_it_judged_and_not_the_keys_it_got(pa
     _open_console(page, console_url, _surface(_payload_quality(ZERO_LAYER_LOG)))
     text = _facts(page)
     assert "delivered mesh" in text, f"there is no panel to read:\n{text}"
-    assert ("3 of the 4 floors this engine judges a layer pass by were judged on what this "
+        # TWO, not three. The floor that replaced the coverage one is drawn on
+    # `layer_kept_of_offered_pct` (layers.KEPT_OF_OFFERED_FLOOR_PCT), which this
+    # all-zero log cannot produce - so it joins "faces in error" as unjudged, and the
+    # payload reports layer_floors_unjudged ["faces kept of those offered",
+    # "faces in error"] against layer_floors_total 4. Computed from the shipped
+    # producers, not guessed.
+    assert ("2 of the 4 floors this engine judges a layer pass by were judged on what this "
             "pass measured") in text, (
         "the copy the console's run page serves tells a reader this pass was judged by all four "
-        f"of this engine's layer floors, when three of the tests ran:\n{text}")
+        f"of this engine's layer floors, when two of the tests ran:\n{text}")
     assert "4 of the 4 floors" not in text, (
         f"and four of four is still claimed somewhere on the page:\n{text}")
     assert "not judged at all" in text, (

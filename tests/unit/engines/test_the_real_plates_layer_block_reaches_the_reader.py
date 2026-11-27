@@ -128,7 +128,9 @@ def test_the_reader_carries_everything_the_four_floors_are_judged_on():
     assert not missing, (
         f"the plate missed three of this engine's four floors and the payload carries none of the "
         f"numbers those floors are drawn on: {missing}")
-    assert p["layer_coverage_pct"] < LY.COVERAGE_FLOOR_PCT
+    # the figure, published; the floor it used to be compared against is gone - the bar is on
+    # what the pass KEPT of what it was offered now (layers.KEPT_OF_OFFERED_FLOOR_PCT)
+    assert p["layer_coverage_pct"] == 88.5826
     assert p["layer_thickness_pct"] < LY.THICKNESS_FLOOR_PCT
     assert round(p["layer_faces_in_error"] * 1e6 / p["layer_cells_added"]) == 239
     floor = LY.LAYERS_FLOOR_FRACTION * p["near_wall_layers_asked"]
@@ -143,7 +145,9 @@ def test_the_three_lines_the_plate_was_short_by_reach_the_reader():
         "the shortfall the engine already computed stops at the viewer's reader, so the one place "
         f"a customer looks shows a layer count with no verdict on it: {short!r}")
     joined = " ".join(short)
-    assert "88.5826%" in joined and f"{LY.COVERAGE_FLOOR_PCT:g}%" in joined
+    # no coverage sentence: this log predates the offered/kept instrumentation, so the floor
+    # that replaced the coverage one cannot be evaluated on it and must not read as a miss
+    assert "of the interface against" not in joined, joined
     assert "71.9%" in joined and f"{LY.THICKNESS_FLOOR_PCT:g}%" in joined
     assert "239 per million" in joined and f"{LY.ILLEGAL_PER_MILLION_CEILING:g}" in joined
     assert _payload(REAL_LOG).get("layer_patch") == FLUID_TO_SOLID
@@ -156,7 +160,7 @@ def test_a_pass_that_met_every_floor_reaches_the_reader_as_an_empty_list():
     assert p.get("layer_short") == [], (
         f"an empty shortfall does not survive the reader: {p.get('layer_short')!r}")
     assert p.get("near_wall_layers") == pytest.approx(2.84)
-    assert p["layer_coverage_pct"] > LY.COVERAGE_FLOOR_PCT
+    assert p["layer_coverage_pct"] > 0, "layers grew somewhere, the only bar left on it"
     assert p["layer_thickness_pct"] > LY.THICKNESS_FLOOR_PCT
 
 

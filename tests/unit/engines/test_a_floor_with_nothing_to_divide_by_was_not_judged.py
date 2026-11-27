@@ -88,7 +88,10 @@ def test_the_tally_counts_the_floors_that_were_judged_and_not_the_keys_that_were
     produced a verdict on this pass and the fourth could not, so the tally is three."""
     pub = _published(ZERO_LAYER_LOG)
     judged = pub["layer_floors_total"] - len(pub["layer_floors_unjudged"])
-    assert judged == 3, (
+    # TWO, not three: the floor that replaced the coverage one is drawn on
+    # `layer_kept_of_offered_pct`, which an all-zero log cannot produce, so it joins
+    # "faces in error" as a floor nothing could judge. See layers.KEPT_OF_OFFERED_FLOOR_PCT.
+    assert judged == 2, (
         "the payload says this pass was judged by "
         f"{judged} of {pub['layer_floors_total']} floors, and only three of its tests ran: "
         f"{pub['layer_floors_unjudged']!r}")
@@ -103,10 +106,14 @@ def test_the_three_floors_a_zero_layer_pass_misses_at_zero_are_still_judged_at_z
     judge" would have silenced the three real misses to close the fourth. Only a DENOMINATOR is
     treated this way."""
     pub = _published(ZERO_LAYER_LOG)
-    assert pub["layer_floors_unjudged"] == ["faces in error"], (
+    assert pub["layer_floors_unjudged"] == ["faces kept of those offered",
+                                            "faces in error"], (
         f"a floor that was judged at zero is reported as unjudged: {pub['layer_floors_unjudged']!r}")
-    assert len(pub["layer_short"]) == 3, pub["layer_short"]
-    assert any("covered 0.0000%" in s for s in pub["layer_short"]), pub["layer_short"]
+    # TWO. The coverage sentence is gone with the coverage floor: a pass offered 0.0000% and
+    # keeping all of it is not a mover failing, which is what the floor that replaced it
+    # measures. "nothing grew at all" is `layers.complain`'s job, not a floor's.
+    assert len(pub["layer_short"]) == 2, pub["layer_short"]
+    assert not any("of the interface against" in s for s in pub["layer_short"])
     assert any("0.0% of the thickness" in s for s in pub["layer_short"]), pub["layer_short"]
     assert any("kept 0.00 layers of the 3" in s for s in pub["layer_short"]), pub["layer_short"]
 
