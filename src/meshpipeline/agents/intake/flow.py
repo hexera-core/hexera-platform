@@ -221,10 +221,20 @@ def route_of(messages: Iterable[Any]) -> str:
 def read_messages(messages: Iterable[Any]) -> list[tuple[dict, tuple[str, ...]]]:
     """Each message with the step(s) it is: () for a user's."""
     out: list[tuple[dict, tuple[str, ...]]] = []
+    said = ""
     for m in messages or ():
         if not isinstance(m, dict):
             continue
-        out.append((m, step_of(m.get("content")) if m.get("role") == "assistant" else ()))
+        if m.get("role") != "assistant":
+            said = str(m.get("content") or "") if m.get("role") == "user" else said
+            out.append((m, ()))
+            continue
+        got = step_of(m.get("content"))
+        if got == (ANSWER, PLAN) and not asks_something(said) and "?" not in str(m.get("content") or ""):
+            # CFDREQ-37: the conditions said back before the plan line, after words that asked nothing, are the
+            # plan step's own lead (agents/intake/conditions_reply) - never an answer to a question
+            got = (PLAN,)
+        out.append((m, got))
     return out
 
 

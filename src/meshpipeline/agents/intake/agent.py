@@ -1567,6 +1567,14 @@ async def node_intake(state: PipelineState) -> dict:
         if _note and _note not in assistant_text and not any(
                 _note in str(m.get("content") or "") for m in _said if isinstance(m, dict)):
             assistant_text = f"{_note}\n\n{assistant_text}"
+    if (_exec_state.submit_args and _mode != flow.MODE_FREE and not fea_path(_exec_state)
+            and flow.cfd_declared(_said) and assistant_text.rstrip().endswith(ap.PROCEED_ASK)):
+        # CFDREQ-37: THE CONDITIONS THE USER TYPED ARE SAID BACK before the plan line - the values the plan
+        # really carries, in a sentence the model writes under a guard (the plain sentence when it cannot)
+        from meshpipeline.agents.intake import conditions_reply
+        assistant_text = await conditions_reply.said_back(
+            _said, _exec_state.submit_args, assistant_text, first_plan=not state.get("request_txt"),
+            session_id=_ctx.session_id, user_id=_ctx.owner_id)
     # a picture the model did not see is said by the application, in one line, never left to the model
     assistant_text = _with_no_vision_line(assistant_text, state_messages, shown=_pictures_shown)
     _had_usage = bool(_in_tokens or _out_tokens)

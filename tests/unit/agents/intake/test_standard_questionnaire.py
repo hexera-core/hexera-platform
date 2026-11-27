@@ -123,6 +123,9 @@ class _Model:
 
     def __init__(self, bad: str = ""):
         self.bad, self.done_bad, self.calls = bad, False, 0
+        # CFDREQ-37: the sentence that says typed conditions back is written by the model too - it decides no step,
+        # so it is counted apart; what it answers ("" = nothing usable: the plain sentence is said)
+        self.reply_calls, self.said_back = 0, ""
 
     def _misbehave(self, kind):
         if self.bad == kind and not self.done_bad:
@@ -130,7 +133,14 @@ class _Model:
             return True
         return False
 
-    async def __call__(self, *, messages, job_id, user_id, name, tools):
+    async def __call__(self, *, messages, job_id, user_id, name, tools=None):
+        from meshpipeline.agents.intake import conditions_reply
+        if name == conditions_reply.MODEL_NAME:
+            self.reply_calls += 1
+            return _resp(text=self.said_back)
+        if tools is None:
+            # (any other call without tools is not this stand-in's to answer: it fails, as it always did)
+            raise TypeError("the stand-in intake model takes tools")
         self.calls += 1
         if self.bad == "fails":
             raise RuntimeError("the model is down")
@@ -355,8 +365,9 @@ class World:
         return [*read, ST] if self.dispatched else read
 
 
-async def _run(monkeypatch, script, *, bad=""):
+async def _run(monkeypatch, script, *, bad="", said_back=""):
     world = World(monkeypatch, _Model(bad))
+    world.model.said_back = said_back
     world.answers = []
     for kind, value in script:
         if kind == "say":
