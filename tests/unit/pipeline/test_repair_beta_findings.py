@@ -104,6 +104,15 @@ def test_render_message_uses_the_repair_wording_for_a_standalone_job():
     assert "couldn't repair" in text and not _MESHERS.search(text)
 
 
+def test_a_standalone_run_waiting_for_review_is_not_a_completed_job():
+    # found on the slug: the kept-nothing fix made a WAITING standalone run read succeeded
+    from meshpipeline.application.final_result import _standalone_delivery
+    goal = {"repair_goal": {"goal": "standalone"}}
+    assert _standalone_delivery({**goal, "repair_review_wait": True}) is None
+    assert _standalone_delivery({**goal, "repair_delivery": {"outcome": "unrepairable"}}) == {
+        "outcome": "unrepairable"}
+
+
 def _schema():
     from meshpipeline.application import final_result
     return max(final_result._READABLE_SCHEMA_VERSIONS)

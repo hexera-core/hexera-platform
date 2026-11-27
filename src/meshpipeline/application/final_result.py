@@ -1122,6 +1122,10 @@ def _standalone_delivery(state: Mapping) -> dict | None:
         asked = from_state(state)
         if asked is None or asked.goal is not RepairGoal.standalone:
             return None
+        if state.get("repair_review_wait"):
+            # A STANDALONE RUN THAT STOPPED FOR A PERSON never reached its ending: it is not a
+            # completed repair job but one waiting for review (it parks; found on the slug)
+            return None
         delivery = state.get("repair_delivery")
         return dict(delivery) if isinstance(delivery, Mapping) else {}
     except Exception:  # noqa: BLE001 - an unreadable goal is today's run
