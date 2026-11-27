@@ -532,6 +532,38 @@ else
   KEEP_WORK=1
 fi
 
+# THE FAILING UI TESTS, IN THE JOB LOG. The native tiers were given this on 2026-10-23 and the
+# reason is written over `_tier_failures` below: "a red tier that names no test sent someone
+# reproducing the whole gate to learn one test id". The UI tier never got it.
+#
+# WHAT A READER USED TO GET. `-q` prints no test ids, so `tail -3` of the log is the count line
+# and pytest's warnings footer: a red Gate C said "3 failed, 120 passed" and nothing about WHICH
+# three. The full log is in the scratch directory, which `_remove_work` deletes unless KEEP_WORK
+# is set - and the branch that would have told you to keep it is the branch that sets it, one line
+# AFTER the record is written, so the run that failed had already thrown the answer away.
+#
+# `-rfEs` IS WHAT MAKES THE IDS EXIST AT ALL. Without the `f` and `E` the summary carries only
+# skips, so there is nothing for this to grep; the flag and this function are one change.
+_ui_failures() {    # every FAILED / ERROR line, indented, to stderr - for the job log
+  local log="${WORK}/ui-browser.log"
+  [ -f "${log}" ] || return 0
+  grep -aE '^(FAILED|ERROR) ' "${log}" | head -50 | sed 's/^/     /' >&2 || true
+}
+
+_ui_named_failures() {    # one line for the record: the count, then the test ids
+  local log="${WORK}/ui-browser.log" named
+  [ -f "${log}" ] || { printf 'no UI log was written'; return 0; }
+  named="$(grep -aE '^(FAILED|ERROR) ' "${log}" | sed -E 's/^(FAILED|ERROR) +//' \
+           | cut -d' ' -f1 | head -8 | tr '\n' ' ')"
+  if [ -n "${named}" ]; then
+    printf '%s  -  %s' "$(tail -1 "${log}")" "${named}"
+  else
+    # A COLLECTION ERROR NAMES NO TEST, and neither does a crash before the summary. The last
+    # lines are then all there is, which is what this used to print unconditionally.
+    printf '%s' "$(tail -3 "${log}" | tr '\n' ' ')"
+  fi
+}
+
 UI_C="amp-rel-${STAMP}-ui"
 UI_BROWSER_C="amp-rel-${STAMP}-browser"
 # Pinned by digest-bearing tag, like every other service image here. Test-only: nothing in the
@@ -683,13 +715,14 @@ have compared the artifact's browser against the checkout's backend"
     docker rm -f -v "${UI_C}" >/dev/null 2>&1
   elif UI_BROWSER_BASE_URL="http://${UI_BROWSER_HOST:-127.0.0.1}:${UI_PORT}" UI_EVENT_VOCABULARY="${UI_VOCAB}" \
        CHROME_CDP_URL="${UI_CDP}" \
-       "${GATE_PY}" -m pytest -q -rs -p no:cacheprovider tests/ui \
+       "${GATE_PY}" -m pytest -q -rfEs -p no:cacheprovider tests/ui \
          >"${WORK}/ui-browser.log" 2>&1; then
     record "UI behaviour + real-browser smoke (from the app image)" passed 1 \
       "$(tail -1 "${WORK}/ui-browser.log")  [Mounts=[] Binds=null] [${UI_BROWSER_NOTE}]"
   else
     record "UI behaviour + real-browser smoke (from the app image)" failed 1 \
-      "$(tail -3 "${WORK}/ui-browser.log" | tr '\n' ' ')"
+      "$(_ui_named_failures)"
+    _ui_failures
     KEEP_WORK=1
   fi
   docker rm -f -v "${UI_C}" >/dev/null 2>&1
