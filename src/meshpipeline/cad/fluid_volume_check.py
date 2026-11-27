@@ -238,6 +238,7 @@ def fold(facts: dict, answer: dict) -> None:
                          for k in range(len(passages)))
         notes.append(f"the parts close it into {len(passages)} spaces that do not connect ({rows}) - a "
                      "valve drawn shut, or a part sealing the passage; each space is meshed on its own")
+        _unname_a_severed_pair(openings, space_of, notes)
     blind = [o for o in openings if not o.get("clear_ahead")]
     for o in blind:
         # NOT "CHECK IT ON THE PICTURE", which is the one place this cannot be checked: the
@@ -255,6 +256,53 @@ def fold(facts: dict, answer: dict) -> None:
     if small:
         notes.append(f"{small} small opening{'s' if small != 1 else ''} of the space (taps, vents) "
                      "sealed into the wall: add one on the picture to make it an opening")
+
+
+def _unname_a_severed_pair(openings: list[dict], space_of: dict, notes: list) -> None:
+    """A proposed inlet and outlet in DIFFERENT spaces are not a flow pair, so stop proposing them.
+
+    MEASURED, job 44362085 (2026-11-27), the whole product on ColdPlateAssembly_CLEAN.step. Intake
+    read the part correctly and said so in its own notes - "the parts close it into 2 spaces that do
+    not connect (space 1: openings 1, 3; space 2: opening 2)" - and then proposed opening 1 as the
+    inlet and opening 2 as the outlet, which are the two it had just said do not connect. I accepted
+    that proposal unedited, as a customer would, and the engine refused four minutes later:
+
+        refusing to start - the inlet and the outlet open into different pieces of the coolant,
+        0.580 mm apart at their closest, and no face joins them: inlet opens into a piece of
+        52,140.3 mm3 and outlet into one of 1,496.8 mm3, out of 2 the surface is in. Nothing can
+        flow from one to the other, so no mesh of this surface can be solved however well it is
+        built.
+
+    The engine is right and `fluid_passages.ports_on_one_passage` is the right place for the hard
+    refusal - its own note says it "costs milliseconds on a surface that costs hours to mesh". What
+    was wrong is that the proposal the customer is asked to confirm contradicted the sentence
+    printed directly above it, on the same card, from the same measurement.
+
+    SO THE MOUTHS GO BACK TO BEING UNNAMED, which is a path with a delivered mesh behind it rather
+    than a new state: with no inlet and no outlet role among the port patches, `plan.ports_from`
+    returns None, `mouths.port_rows` takes its `not roles` branch and types every mouth `opening`
+    as `mouth_1`, `mouth_2` - exactly what job 606af55e did, which meshed this plate to 279,286,964
+    cells and delivered it. The geometry is unchanged and nothing is hidden: the note below says
+    which mouths were unnamed and why, and the customer can still name a pair on the stage if they
+    know something the surface does not show.
+
+    NOT A REFUSAL HERE, deliberately. A severed circuit is a fact about the part, and the part is
+    still worth meshing - "a sealed part is still worth meshing", as `ports_from` puts it. Refusing
+    at intake would deny a customer the mesh over a flow claim nobody has to make.
+    """
+    ports = [o for o in openings if str(o.get("role") or "") in ("inlet", "outlet")]
+    spaces = {int(space_of[o["id"]]) for o in ports if o.get("id") in space_of}
+    if len(ports) < 2 or len(spaces) < 2:
+        return
+    said = ", ".join(f"{o.get('name')} ({o.get('role')})" for o in ports)
+    for o in ports:
+        o["role"] = "opening"
+        o["name"] = f"mouth_{o['id']}"
+    notes.append(
+        f"so {said} are left unnamed: they open into different spaces and nothing can flow from "
+        "one to the other, which no mesh of this surface can fix. Every mouth is delivered as an "
+        "unassigned opening and the metal and the coolant are still meshed together; name a pair "
+        "on the stage if one space really is fed and drained.")
 
 
 def _openings(proposed: list) -> tuple[list[dict], dict[int, int]]:
