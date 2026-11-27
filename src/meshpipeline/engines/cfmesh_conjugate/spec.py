@@ -255,8 +255,24 @@ HOME_TURF = (
     # `coolant_inside is False` above, and a split that has not run leaves BOTH rows silent, which
     # is the neutral verdict it should be. The run-time refusals are the real guard either way
     # (driver.coolant_sits_inside, and the eight gates).
-    TurfRow("cells_across_at_budget", "<", 4.0, "weak",
-            "The cell budget puts fewer than 4 cells across the narrowest passage. Measured on "
+    # THE THRESHOLD MATCHES ITS OWN EVIDENCE NOW. It was `< 4.0`, and the sentence beside it
+    # cites a measurement taken at 2 AND 3 cells across - so the fourth cell was an
+    # extrapolation, and `weak` is the heaviest instrument in this file: home_turf.verdict
+    # lets one weak row beat every home row, which is exactly why the `closed` row above was
+    # removed. Keeping it at 4.0 demoted the only engine that can mesh a sealed cold plate for
+    # being one hundredth of a cell short of a bar nothing had measured.
+    #
+    # IT DID NOT FIRE ON THE JOB IT LOOKED LIKE IT FIRED ON, and that is worth recording so
+    # nobody chases it again. On job b8f09ae9 `cells_across_at_budget` is ABSENT from the
+    # facts - fitness.py only sets it when traits.narrow_vs_volume is truthy, and the measured
+    # traits of ColdPlateAssembly_CLEAN.step give narrow_vs_volume None. The 3.91 in that
+    # run's log is a DIFFERENT quantity: the conjugate planner's own
+    # `sizing_basis` - the planned cell against the thin passages - which never reaches
+    # home_turf. The same plan file also records cells_across 10 against a narrowest_m of
+    # 2112 um, so two numbers called "cells across" were measured against two different
+    # passages in one run.
+    TurfRow("cells_across_at_budget", "<=", 3.0, "weak",
+            "The cell budget puts 3 or fewer cells across the narrowest passage. Measured on "
             "eleven cold plates, the coolant's volume error at 2 and 3 cells across runs to 27% "
             "and 32%, which no claim about the coolant survives."),
 )
@@ -405,7 +421,29 @@ SPEC = EngineSpec(
             solvers=("chtMultiRegionFoam (conjugate heat transfer)",),
         ),
         # cut-cell hexes: the octree's own cells everywhere except where a passage wall crosses
-        # one, and those are cut to the wall. No prism layers.
+        # one, and those are cut to the wall.
+        #
+        # `prism_layers=False` IS NOT "THIS ENGINE CANNOT GROW LAYERS" - IT GROWS THEM. The
+        # comment here used to read "No prism layers", which is plainly false:
+        # engines/cfmesh_conjugate/layers.py renders an addLayersControls dictionary and runs
+        # snappyHexMesh over the split mesh, and on job b8f09ae9 that pass ran for 2,717.94 s
+        # and put 2.00 layers of the 3 asked for on fluid_to_solid, 33,130,216 cells added.
+        #
+        # WHAT THE FIELD MEANS IS NARROWER, and on that reading False is the honest answer.
+        # base.py:159 defines it as "can deliver the near-wall prism layers a brief asks for,
+        # RELIABLY", and the fallback ladder reads it to decide whether another engine
+        # delivers what the approved one would have. EngineSpec is frozen and nothing rewrites
+        # delivered_mesh per run, so it is a static capability claim. Against that:
+        #   * the pass is OFF unless the deployment asks - determinism.py ships
+        #     CONJUGATE_LAYERS at "0";
+        #   * it is skipped outright on a serial plan (layers.serial_complaint), and
+        #     `ranks_for` returns 1 for every part in the corpus - job b8f09ae9 only got
+        #     layers because its plan came out at 8 ranks;
+        #   * when it does run it is not reliable: 2.00 of 3 layers, 79.9% of the asked
+        #     thickness, 90.7174% coverage against the 92% the engine aims at.
+        # So the claim stays False and the comment stops contradicting the module next door.
+        # Making it True would need a third state - a predicate the ladder can ask, keyed on
+        # CONJUGATE_LAYERS and plan.ranks - not a bare flip.
         delivered_mesh=DeliveredMesh(cells="hex-dominant", walls="body-fitted",
                                      prism_layers=False),
         run_policy=RunPolicy(

@@ -159,6 +159,31 @@ HOME_TURF = (
     TurfRow("closed", "is", False, "weak",
             "A solid that is not closed cannot become a region of its own; gaps or overlaps between "
             "solids keep the interfaces from matching."),
+    # THE COOLANT HAS TO BE A BODY IN THE FILE, and until now this engine never said so.
+    #
+    # `home_turf.verdict` returns home whenever no outside and no weak row holds, so with no
+    # coolant row at all this engine read HOME on a brazed cold plate whose coolant is sealed
+    # space inside the metal - a part it cannot mesh. Its own descriptor says it needs a clean
+    # multi-solid assembly whose regions share conformal faces, and its intake advisories ask
+    # the user which of the solids is the fluid. On a sealed circuit there is no fluid solid to
+    # name: the space has to be extracted first, and extracting it is the other engine's
+    # entire job.
+    #
+    # THIS IS THE MIRROR OF cfmesh_conjugate's OWN ROW, which declares that engine `outside`
+    # when the fluid IS already a body (its spec.py, `coolant_inside is False`). The two
+    # engines split that fact between them and only one side of it was written down, so the
+    # ranking on a sealed plate was coming out right for a reason unrelated to the coolant -
+    # on the Corintis plate it was the `closed` row above, which `closed` reads off a welded
+    # tessellation and gets wrong on almost any assembly with fittings.
+    #
+    # SILENT WHEN NOTHING MEASURED IT. `coolant_inside` is only in the facts once the
+    # extraction has run; absent, this row does not hold and the verdict is unchanged.
+    TurfRow("coolant_inside", "is", True, "outside",
+            "The coolant is the space sealed inside the parts, not a body in the file, so there "
+            "is no fluid solid to make a region of - that space has to be extracted first. Mesh "
+            "it with the conjugate cfMesh engine, which cuts the coolant out of the metal "
+            "itself.",
+            flow="multi-region"),
 )
 
 
