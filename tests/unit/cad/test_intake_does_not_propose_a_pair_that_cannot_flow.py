@@ -142,3 +142,37 @@ def test_three_ports_across_two_spaces_are_all_unnamed():
     _unname_a_severed_pair(ops, {1: 0, 2: 1, 3: 0}, notes)
     assert [o["role"] for o in ops] == ["opening"] * 3, [o["role"] for o in ops]
     assert [o["name"] for o in ops] == ["mouth_1", "mouth_2", "mouth_3"]
+
+
+def test_a_blind_mouth_is_left_for_the_rule_that_owns_it():
+    """THE REGRESSION THIS RULE CAUSED ONCE, measured on session 127b5292.
+
+    `geometry_check.vet_by_reach` runs after this and demotes a mouth with the part straight ahead
+    of it to `not_an_opening` - but only one still carrying a PORT role. Sweeping the 11.8 mm lid
+    port up here took it to `opening`, which that rule then leaves alone, so it reached the card as
+    an opening on a capped bore: a patch the engine plans and cuts for nothing. Job 606af55e did
+    that and lived - `port_patches_planned` ["mouth_1","mouth_2","mouth_3"] against
+    `port_patches_dropped` ["mouth_1"] - so it costs a dropped zero-face patch, not a run.
+    """
+    ops = [{"id": 1, "name": "inlet", "role": "inlet", "reaches_outside": True},
+           {"id": 2, "name": "outlet_1", "role": "outlet", "reaches_outside": True},
+           {"id": 3, "name": "outlet_2", "role": "outlet", "reaches_outside": False}]
+    notes: list = []
+    _unname_a_severed_pair(ops, SEVERED_SPACES, notes)
+    assert [o["role"] for o in ops] == ["opening", "opening", "outlet"], (
+        "the blind mouth was swept up and will not reach vet_by_reach as a port")
+    assert ops[2]["name"] == "outlet_2", "and its name is not this rule's to change either"
+    # the two it DID unname are still unnamed, and the note names only those two
+    assert "outlet_2" not in notes[0], notes[0]
+    assert "inlet (inlet)" in notes[0] and "outlet_1 (outlet)" in notes[0], notes[0]
+
+
+def test_a_mouth_with_no_reach_field_is_still_unnamed():
+    """`reaches_outside` is absent on a record nobody rayed, and absent is not "blind" - the same
+    distinction `test_an_opening_record_with_no_reach_field_at_all_is_not_held_back` makes about
+    the other rule."""
+    ops = [{"id": 1, "name": "inlet", "role": "inlet"},
+           {"id": 2, "name": "outlet", "role": "outlet"}]
+    notes: list = []
+    _unname_a_severed_pair(ops, {1: 0, 2: 1}, notes)
+    assert [o["role"] for o in ops] == ["opening", "opening"]

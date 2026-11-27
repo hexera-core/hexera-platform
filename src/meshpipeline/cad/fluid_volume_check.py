@@ -290,7 +290,19 @@ def _unname_a_severed_pair(openings: list[dict], space_of: dict, notes: list) ->
     still worth meshing - "a sealed part is still worth meshing", as `ports_from` puts it. Refusing
     at intake would deny a customer the mesh over a flow claim nobody has to make.
     """
-    ports = [o for o in openings if str(o.get("role") or "") in ("inlet", "outlet")]
+    # A BLIND MOUTH IS NOT A CANDIDATE PORT AND IS NOT THIS RULE'S TO TOUCH. `geometry_check.
+    # vet_by_reach` runs after this and demotes a mouth measured with the part straight ahead of it
+    # to `not_an_opening` - but only one still carrying a PORT role, so demoting it here to
+    # `opening` would shield it from the rule that owns it.
+    #
+    # MEASURED on session 127b5292: with the 11.8 mm lid port swept up by this rule it arrived on
+    # the card as `mouth_3 / opening` instead of `not_an_opening`, which is a patch the engine then
+    # plans and cuts on a capped bore. Job 606af55e did exactly that - `port_patches_planned`
+    # ["mouth_1", "mouth_2", "mouth_3"], `port_patches_dropped` ["mouth_1"] - and still delivered,
+    # so it costs a dropped zero-face patch rather than a run. Cheap, and still worth not doing.
+    ports = [o for o in openings
+             if str(o.get("role") or "") in ("inlet", "outlet")
+             and o.get("reaches_outside") is not False]
     spaces = {int(space_of[o["id"]]) for o in ports if o.get("id") in space_of}
     if len(ports) < 2 or len(spaces) < 2:
         return
