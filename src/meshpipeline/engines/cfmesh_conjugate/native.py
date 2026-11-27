@@ -1006,6 +1006,7 @@ def _render_cuts(ws: Path, cuts: list[dict], *, volume: str | None, cells: int =
         return out
 
     t0 = time.monotonic()
+    mesh = None
     try:
         # THE HOME SIDE'S OWN RENDER SETTINGS, imported rather than restated. `sandbox/backend`
         # pins VTK to Mesa's software rasteriser with no X server, and those four environment
@@ -1071,7 +1072,10 @@ def _render_cuts(ws: Path, cuts: list[dict], *, volume: str | None, cells: int =
     # whose three whole frames drew would still have deleted the 10.4 GB interior, leaving a
     # review with no artifact it could reach a verdict from at all.
     if out.get("usable"):
-        _drop_cut_volume(src, out, ceiling=ceiling)
+        # MESH AND CUTS GO IN, so the drop can write a slab instead of nothing. `mesh` is the
+        # interior already in memory and `cuts` carry the frames that say which planes went
+        # unanswered; re-reading a 2.15 GiB .vtu to find that out would cost more than the slab.
+        _drop_cut_volume(src, out, ceiling=ceiling, mesh=mesh, cuts=cuts)
     elif out["rendered"]:
         out["volume_kept"] = (
             f"{out['rendered']} frame(s) drew and none of them holds the periodic structure its "
@@ -1170,7 +1174,8 @@ def _rematch(cut: dict, *, root: Path, expect_period_m: float) -> None:
                            exc_info=True)
 
 
-def _drop_cut_volume(src: Path, out: dict, *, ceiling: int = 0) -> None:
+def _drop_cut_volume(src: Path, out: dict, *, ceiling: int = 0,
+                     mesh=None, cuts: list[dict] | None = None) -> None:
     """Give back the fluid interior, once the pictures of it exist AND it is too big to be read.
 
     IT IS DEAD WEIGHT THE MOMENT THE CUTS ARE DRAWN, at this plate's size. The interior is
@@ -1217,6 +1222,15 @@ def _drop_cut_volume(src: Path, out: dict, *, ceiling: int = 0) -> None:
                 f"{cap / 2**30:.2f} GiB a 16 GiB worker can read, so it travels home as well as "
                 "the pictures: a volume the reviewer can re-aim beats six fixed frames")
             return
+        # THE THIRD OPTION, AND IT IS THE ONE THIS CODE WAS MISSING. Above the ceiling the choice
+        # here used to be between a file nothing at home can open and no interior at all, and it
+        # took the second. On job 40e4e578 that is exactly what happened: `usable` went above zero
+        # for the first time (the harmonic fix), this branch ran for the first time, 2.15 GiB went,
+        # and the reviewer reported `region 'across_the_flow' was not produced` about a mesh that
+        # was built, gated and delivered. A slab at the plane whose frame could not answer is the
+        # SAME evidence at a size the home worker can read.
+        if _reduce_to_review_slabs(src, out, cap=cap, mesh=mesh, cuts=cuts):
+            return
         src.unlink()
     except OSError:
         logger.warning("conjugate: could not drop %s after the cuts were drawn", src,
@@ -1229,6 +1243,130 @@ def _drop_cut_volume(src: Path, out: dict, *, ceiling: int = 0) -> None:
         f"file at home would take about {freed * VOLUME_READ_RSS_RATIO / 2**30:.0f} GiB of RSS in "
         "a worker capped at 16")
     logger.info("conjugate: %s", out["volume_dropped"])
+
+
+#: HOW THICK A REVIEW SLAB IS, in planned cells either side of the plane. The region asks how
+#: many cells lie along a row IN the plane, so the normal direction only has to hold enough cells
+#: for that row to sit in a real volume rather than on a surface. Four is two either side.
+REVIEW_SLAB_CELLS = 4
+
+#: WHEN THE PLANNED CELL IS NOT ON THE FRAME, a slab still has to have a thickness, and a zero one
+#: clips to nothing. The in-plane window over this is a cell-sized guess of last resort.
+SLAB_FALLBACK_WINDOW_FRACTION = 200.0
+
+
+def _slab_box(cut: dict, frame: dict, *, thickness_m: float) -> list[float] | None:
+    """One cut's plane as a box: the whole frame in-plane, a few cells thick along the normal."""
+    normal = [float(v) for v in (cut.get("normal") or [])]
+    origin = [float(v) for v in (cut.get("origin") or [])]
+    win = list(frame.get("window_m") or [])
+    centre = list(frame.get("centre_m") or [])
+    if len(normal) != 3 or len(origin) != 3 or len(win) != 2 or len(centre) != 2:
+        return None
+    axis = max(range(3), key=lambda k: abs(normal[k]))
+    pa = cut.get("plane_axes") or [k for k in range(3) if k != axis]
+    ah, av = int(pa[0]), int(pa[1])
+    half = max(float(thickness_m), 0.0) / 2.0
+    if half <= 0.0:
+        return None
+    box = _window_box(centre, ah, av, float(win[0]), float(win[1]))
+    box[2 * axis], box[2 * axis + 1] = origin[axis] - half, origin[axis] + half
+    return box
+
+
+def _refused_planes(cuts: list[dict] | None) -> list[tuple[dict, dict, float]]:
+    """(cut, whole frame, planned cell) for every cut whose zoom frame cannot answer its question.
+
+    A ZOOM THAT SHOWS THE STRUCTURE NEEDS NO INTERIOR, which is why this reads `shows_structure`
+    off the frame's own `content` block and not `rendered` or `usable`. Those count frames; this
+    asks, per cut, whether the picture of THAT cut answered what the cut exists for. A region whose
+    picture did is evidence already and buys the deletion honestly.
+    """
+    want: list[tuple[dict, dict, float]] = []
+    for cut in cuts or ():
+        frames = list(cut.get("frames") or ())
+        zoom = next((f for f in frames if f.get("scope") == "zoom"), None)
+        if zoom is None:
+            continue
+        content = zoom.get("content")
+        if isinstance(content, dict) and content.get("shows_structure"):
+            continue
+        whole = next((f for f in frames if f.get("scope") == "whole"), zoom)
+        cell = float(zoom.get("feature_m") or 0.0)
+        if cell <= 0.0:
+            win = list(whole.get("window_m") or [])
+            cell = (min(float(win[0]), float(win[1])) / SLAB_FALLBACK_WINDOW_FRACTION
+                    if len(win) == 2 else 0.0)
+        if cell > 0.0:
+            want.append((cut, whole, cell))
+    return want
+
+
+def _reduce_to_review_slabs(src: Path, out: dict, *, cap: int,
+                            mesh=None, cuts: list[dict] | None = None) -> bool:
+    """Replace an unopenable interior with a slab at each unanswered plane. True when one fit.
+
+    NON-FATAL IN EVERY DIRECTION, like the rest of this aid: False on anything at all, and the
+    caller then does what it did before, which is to unlink. A review aid may never cost a mesh.
+    """
+    planes = _refused_planes(cuts)
+    if mesh is None or not planes:
+        return False
+    # THE SUFFIX HAS TO SURVIVE, because pyvista picks its writer off the extension and
+    # refuses ".slab" outright - which the non-fatal handler below then turns into a
+    # silent fallback to deleting the interior. Keep the real suffix last.
+    tmp = src.with_name(src.stem + ".slab" + src.suffix)
+    try:
+        merged = None
+        kept: list[str] = []
+        for cut, whole, cell in planes:
+            box = _slab_box(cut, whole, thickness_m=cell * REVIEW_SLAB_CELLS)
+            if box is None:
+                continue
+            # `crinkle=True` BECAUSE THE REVIEWER COUNTS CELLS. A plain clip cuts the
+            # cells it crosses and tetrahedralises them: measured on a 64,000-cell grid,
+            # a 1/20 slab came back with 64,000 cells and the same mesh crinkled came
+            # back with 6,400. Handing a region whose question is "how many cells lie
+            # across this passage" a volume of clip fragments would be answered
+            # precisely and wrongly. Whole cells also store 9.6x smaller here.
+            piece = mesh.clip_box(box, invert=False, crinkle=True)
+            if not piece.n_cells:
+                continue
+            merged = piece if merged is None else merged.merge(piece)
+            kept.append(str(cut.get("name") or "?"))
+        if merged is None or not merged.n_cells:
+            return False
+        merged.save(str(tmp))
+        size = int(tmp.stat().st_size)
+        if size > cap:
+            out["volume_slab_refused"] = (
+                f"a slab at {', '.join(kept)} came to {size / 2**20:.0f} MiB, over the "
+                f"{cap / 2**20:.0f} MiB a 16 GiB worker can read, so the interior went after all")
+            logger.warning("conjugate: %s", out["volume_slab_refused"])
+            return False
+        cells = int(merged.n_cells)
+        tmp.replace(src)
+    except Exception:                   # noqa: BLE001 - a review aid may never cost a built mesh
+        logger.warning("conjugate: the review slab could not be written; the interior is handled "
+                       "as it was before", exc_info=True)
+        return False
+    finally:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+    # SAID AS WHAT IT IS, because the reviewer reasons about what it is handed. Calling a slab
+    # "the volume" would let a verdict rest on a completeness the file does not have.
+    out["volume_reduced_bytes"] = size
+    out["volume_reduced_cells"] = cells
+    out["volume_reduced"] = (
+        f"the fluid interior was too big to open at home, so what travels is a slab "
+        f"{REVIEW_SLAB_CELLS} cells thick at the plane(s) whose frames could not answer "
+        f"({', '.join(kept)}): {cells:,} cells, {size / 2**20:.0f} MiB. It is a slab and not the "
+        "whole interior - the reviewer can re-aim along the row, which is what those regions ask, "
+        "and cannot inspect anywhere else in the part")
+    logger.info("conjugate: %s", out["volume_reduced"])
+    return True
 
 
 def _window_box(centre, ah: int, av: int, win_h: float, win_v: float) -> list[float]:
