@@ -166,6 +166,49 @@ def fitted_metres_per_pixel(extent_h: float, extent_v: float, *, width_px: int =
                float(extent_v) / max(1, int(height_px)))
 
 
+def drawn_cell_m(cell_m: float | None, *, layer_thickness_m: float | None = None,
+                 layers_in_mesh: float | None = None) -> float:
+    """The cell the picture is ACTUALLY drawn at, which is not the cell the plan pinned.
+
+    THIS IS THE NUMBER JOB b8f09ae9 FAILED ITS WHOLE REVIEW OVER. The zoom window was sized from
+    the plan cell here and the reader divided by the plan cell on the far side of the container
+    boundary, so the claim "a cell is four pixels across" was a pure scale identity that could not
+    be wrong - and the picture drew something else. A layer pass puts its stack INSIDE the
+    interface cell, so what is left of that cell at the wall, and what the picture therefore shows
+    as its repeating pitch, is the cell MINUS the stack:
+
+        job b8f09ae9: 2.51578e-05 - 1.21e-05 = 1.30578e-05 m
+
+    MEASURED, not derived. At that job's 6.289450e-06 m/px the plan cell claims 4.0000 px and the
+    integer-pixel scan of the real PNG read a repeat pitch of 2.0 px. 1.30578e-05 is 2.076 px,
+    which IS the measurement. 4.00 was outside CELL_PITCH_TOLERANCE 1.5 - band [2.667, 6.0] - and
+    2.076 is inside it. Nothing about the tolerance changes; the claim stops being a lie.
+
+    AND IT IS A ONE-PIXEL KNIFE EDGE, which is why this is a named function and not an inline
+    subtraction. Jobs 22ac7054 and cba7ac69 are the same mesh as each other (279,281,786 cells)
+    and read a pitch of 3.0 px against the same 4.00 claim - inside the band - and PASSED. Their
+    PNG is 459,927 B against b8f09ae9's 452,410 B, and m_per_px, cell_px, ink_fraction, period_px,
+    repeats, strength, extent and both bare runs agree to six decimals. Two nearly identical
+    meshes fell on opposite sides of an integer because the yardstick was wrong for all three.
+
+    NO LAYERS, NO CHANGE. Without a measured layer pass there is no stack inside the cell and the
+    plan cell is the right answer, so this returns it untouched - which leaves every other engine
+    and every unlayered run of this one byte-identical.
+    """
+    cell = float(cell_m or 0.0)
+    if not (cell > 0.0):
+        return 0.0
+    grown = float(layers_in_mesh or 0.0)
+    stack = float(layer_thickness_m or 0.0)
+    if not (grown > 0.0 and stack > 0.0):
+        return cell
+    # A STACK THAT ATE ITS WHOLE CELL IS NOT A MEASUREMENT OF ONE. MIN_THICKNESS_OF_STACK keeps a
+    # real stack well under its cell (0.8 of it at most), so a non-positive remainder means the
+    # two figures came from different runs - and a zero window renders as a divide by zero at the
+    # camera. The plan cell stands, exactly as it does when no pass ran.
+    return cell - stack if stack < cell else cell
+
+
 def zoom_window(feature_m: float, *, width_px: int = FRAME_W, height_px: int = FRAME_H,
                 pixels: int = CELL_PIXELS) -> tuple[float, float, float]:
     """The window a cut must be drawn in for `feature_m` to be `pixels` pixels across.
@@ -200,7 +243,8 @@ def _box(lo, hi) -> tuple[list[float], list[float], list[float]] | None:
 
 def review_slices(lo, hi, *, inlet: str = "", outlet: str = "", cell_m: float | None = None,
                   fine_lo=None, fine_hi=None, repeat_axis: int | None = None,
-                  width_px: int = FRAME_W, height_px: int = FRAME_H) -> list[dict]:
+                  width_px: int = FRAME_W, height_px: int = FRAME_H,
+                  drawn_m: float | None = None) -> list[dict]:
     """The three cuts, as engines/manifest publishes an inspection region.
 
     WHAT EACH ONE IS FOR, because a slice nobody can say the purpose of is a slice a reviewer
@@ -286,7 +330,14 @@ def review_slices(lo, hi, *, inlet: str = "", outlet: str = "", cell_m: float | 
     # assumed: `zoom_window` returns a zero scale for anything that is not a positive length, so
     # a missing cell leaves `zmpp` at 0.0 and the gate below publishes no zoom at all.
     cell = float(cell_m or 0.0)
-    zw, zh, zmpp = zoom_window(cell, width_px=width_px, height_px=height_px)
+    # THE WINDOW IS SIZED FROM WHAT WILL BE DRAWN, AND `feature_m` STILL REPORTS THE PLAN.
+    # `drawn_m` is `drawn_cell_m(...)` above - the plan cell less the layer stack sitting
+    # inside it - and it is what makes the frame's own claim checkable. `feature_m` is left as
+    # the plan cell on purpose: native._expected_pitch_m derives the part's repeat pitch as
+    # `feature_m * CELL_PIXELS` and re-aims the planes off it, so moving that key would
+    # silently move the yardstick the cuts are placed by.
+    drawn = float(drawn_m or 0.0) or cell
+    zw, zh, zmpp = zoom_window(drawn, width_px=width_px, height_px=height_px)
 
     def _cut(name: str, axis: int, label: str, why: str) -> dict:
         origin = list(mid)
@@ -317,8 +368,11 @@ def review_slices(lo, hi, *, inlet: str = "", outlet: str = "", cell_m: float | 
                 # SAID AS WHAT IT IS. `cell_m` is the PLANNED cell; this mesh's own cells span
                 # 7.787 um to 678.88 um, a factor of 87, so "the mesh's 25.16 um cell" would be a
                 # claim about the mesh that the mesh does not support.
-                "why_frame": (f"sized so a cell of the PLANNED size ({cell * 1e6:.4f} um) is "
-                              f"{CELL_PIXELS} pixels across, which is what counting cells needs"),
+                "why_frame": (f"sized so a cell of {drawn * 1e6:.4f} um is {CELL_PIXELS} "
+                              f"pixels across, which is what counting cells needs"
+                              + ("" if drawn == cell else
+                                 f" - that is the planned {cell * 1e6:.4f} um cell less the "
+                                 f"layer stack grown inside it")),
                 "window_m": [zw, zh],
                 "centre_m": [mid[ah], mid[av]],
                 "centre_source": placed_from,
@@ -326,6 +380,10 @@ def review_slices(lo, hi, *, inlet: str = "", outlet: str = "", cell_m: float | 
                 "um_per_pixel": round(zmpp * 1e6, 4),
                 "feature_m": cell,
                 "feature_pixels": CELL_PIXELS,
+                # WHAT THE READER MUST DIVIDE BY, published on the frame rather than left to
+                # be recomputed from `quality` on the far side of the container boundary -
+                # because that recomputation is precisely what made the claim an identity.
+                "drawn_cell_m": drawn,
             })
         return {"name": name, "kind": "slice", "normal": normal, "origin": origin,
                 "clip_box": list(frame), "label": label, "why": why,

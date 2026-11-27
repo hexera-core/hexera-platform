@@ -273,7 +273,8 @@ def _run_conjugate_local(workspace, *, bashrc: str = _DEFAULT_BASHRC,
         if _pass == TAIL_REVIEW:
             body["review"] = _review_aids(ws, bashrc=bashrc, refused=_no_mesh or _fatal,
                                           cells=int(report.fluid.cells + report.solid.cells),
-                                          budget_left_s=_left(), plan=plan)
+                                          budget_left_s=_left(), plan=plan,
+                                          layers=dict(getattr(report, "layers", None) or {}))
         else:
             body["boundary_index"] = _boundary_indexes(ws, budget_left_s=_left())
         # AFTER EACH, NOT AFTER BOTH. The report on disk is what a run that is killed between
@@ -1653,7 +1654,8 @@ def _fine_zone(plan) -> tuple[list | None, list | None]:
 
 
 def _review_aids(ws: Path, *, bashrc: str, refused: bool = False, cells: int = 0,
-                 budget_left_s: float | None = None, plan=None) -> dict:
+                 budget_left_s: float | None = None, plan=None,
+                 layers: dict | None = None) -> dict:
     """The per-region volume and the two-region surface, for the reviewer, and what they are.
 
     WHAT THEY ARE IS RECORDED HERE because finalize runs on the other side of the container
@@ -1799,6 +1801,10 @@ def _review_aids(ws: Path, *, bashrc: str, refused: bool = False, cells: int = 0
     # `_render_cuts` then records the exported volume's own bounds beside them, so a reader can
     # see both the box the cuts were placed from and the box they were drawn against.
     try:
+        from meshpipeline.engines.cfmesh_conjugate.conjugate import FLUID_TO_SOLID
+        from meshpipeline.engines.cfmesh_conjugate.slices import (
+            drawn_cell_m as slices_drawn_cell_m,
+        )
         from meshpipeline.engines.cfmesh_conjugate.slices import review_slices
 
         lo = getattr(plan, "block_lo", None) if plan is not None else None
@@ -1815,11 +1821,24 @@ def _review_aids(ws: Path, *, bashrc: str, refused: bool = False, cells: int = 0
             out["cuts_placed_from"] = ("the plan's fine zone (conjugate_plan.stretch_zones[0])"
                                        if fine_lo else "the plan's block (it names no fine zone)")
 
+            # WHAT THE ZOOM FRAMES WILL ACTUALLY DRAW, which is not the cell the plan pinned.
+            # The layer stack sits INSIDE the interface cell, so the picture shows what is
+            # left of that cell. Passing it here is what lets the frame state a claim the
+            # reader can check instead of a scale identity it cannot - see
+            # slices.drawn_cell_m, and job b8f09ae9, which lost its whole review to the
+            # difference. The row is the interface patch's own measured one; anything
+            # missing leaves the plan cell in place.
+            _plan_cell = float(getattr(plan, "fine_cell_pinned_m", 0.0) or 0.0)
+            _row = ((layers or {}).get("patches") or {}).get(FLUID_TO_SOLID) or {}
+            _drawn = slices_drawn_cell_m(_plan_cell,
+                                         layer_thickness_m=_row.get("thickness_m"),
+                                         layers_in_mesh=_row.get("mesh_layers"))
+
             def _slices(repeat_axis: int | None = None):
                 return review_slices(lo, hi,
                                      inlet=getattr(plan, "inlet", "") or "",
                                      outlet=getattr(plan, "outlet", "") or "",
-                                     cell_m=float(getattr(plan, "fine_cell_pinned_m", 0.0) or 0.0),
+                                     cell_m=_plan_cell, drawn_m=_drawn,
                                      fine_lo=fine_lo, fine_hi=fine_hi, repeat_axis=repeat_axis)
 
             cuts = _slices()

@@ -1498,6 +1498,26 @@ class ArtifactResolver:
                         "of %s - not offered", region_id, scope, list(CUT_FRAMES))
             return None
         key = f"inspection_regions.{region_id}.frames.{scope}"
+        # THE FRAME'S OWN STATEMENT OF WHAT IT WAS DRAWN AT BEATS THE PLAN'S.
+        #
+        # `cell_m` arrives from `_mesh_cell_m`, which reads `quality.near_wall_cell_m` - a
+        # plan figure, `background_cell_m / 2**levels`, with no knowledge of the layer pass.
+        # On a layered interface the stack sits inside that cell and the picture draws what is
+        # left of it, so measuring the picture's pitch against the plan cell compares two
+        # different lengths. Job b8f09ae9 lost its whole review on that difference: measured
+        # pitch 2.0 px against a claimed 4.00, one integer outside the band, while two earlier
+        # runs of the same part read 3.0 and passed.
+        #
+        # THIS LOOSENS NOTHING. CELL_PITCH_TOLERANCE is untouched and the upper side - a frame
+        # drawn COARSER than it claims, which is the magnification lie - is still refused. The
+        # producer computes this key from its own measured layer figures, and a frame that
+        # states nothing keeps the plan cell exactly as before.
+        stated_cell_m = _finite_positive(raw.get("drawn_cell_m"))
+        if stated_cell_m and stated_cell_m != cell_m:
+            logger.info("review session: %s was drawn at %.4f um, not the plan's %.4f um - "
+                        "measuring it against what it was drawn at", key,
+                        stated_cell_m * 1e6, float(cell_m or 0.0) * 1e6)
+            cell_m = stated_cell_m
         path_raw = next((raw[k] for k in _PATH_KEYS
                          if isinstance(raw.get(k), str) and raw[k].strip()), None)
         if path_raw is None:
