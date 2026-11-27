@@ -113,6 +113,9 @@ def test_a_low_quality_point_beside_a_sliver_gets_both_ops_aimed_at_the_sliver(p
     gen.bind_pool(pool)
     state = SearchState.__new__(SearchState)
     state.ws, state.sites, state.lineage, state.depth = ws, sites, (), 0  # type: ignore[attr-defined]
+    # a start state as `propose` reads it since B21 (it records each state's score for its children, and asks the
+    # state's own parent edge whether it opened a chain): no parent, no edge, no score yet
+    state.id, state.score, state.via, state.parent = "S0", None, None, None  # type: ignore[attr-defined]
     aimed = [c for c in gen.propose(state, 999) if c.op in ("unify_same_domain", "remove_small")
              and "beside the face the mesher named" in c.rationale]
     assert [c.op for c in aimed[:2]] == ["unify_same_domain", "remove_small"]

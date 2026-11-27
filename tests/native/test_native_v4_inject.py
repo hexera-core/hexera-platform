@@ -553,9 +553,16 @@ def test_inapplicable_kind_is_refused_not_faked(tmp_path):
 
 
 def test_quarantine_is_explicit_and_labelled(cases):
-    assert set(inj.QUARANTINED_KINDS) == {"loose_reapprox", "tolerance_inflate", "seam_variant", "precision_truncate"}
+    # THE STATUSES AS `inject.KIND_EVIDENCE` RECORDS THEM after the CRS v5 probes (#540): seam_variant was promoted on
+    # a demonstrated mesher failure, and the v5 steps added kinds on both sides. Pinned as literals on purpose, so a
+    # status that changes without its evidence fails here.
+    assert set(inj.QUARANTINED_KINDS) == {"loose_reapprox", "tolerance_inflate", "precision_truncate", "periodic_no_seam", "units_scale",
+            "unbounded_plane", "misalignment", "shaft_in_bore", "floating_solid", "duplicate_faces", "inside_out",
+            "non_manifold_edge"}
     assert not set(inj.DEFAULT_KINDS) & set(inj.QUARANTINED_KINDS) and "pcurve_corrupt" not in inj.DEFAULT_KINDS
-    assert set(inj.DEFAULT_KINDS) == {"unsew_perturb", "small_entities", "face_delete", "assembly_overlap", "iges_roundtrip"}
+    assert set(inj.DEFAULT_KINDS) == {"unsew_perturb", "seam_variant", "small_entities", "face_delete", "assembly_overlap",
+            "iges_roundtrip", "pole_degenerate", "bad_spline", "duplicate_body", "thin_wall", "sliver_face", "true_crossing",
+            "edge_through_face", "self_intersecting_face", "knife_lens"}
     for kind, case in cases.items():
         assert case.label["status"] == inj.KIND_STATUS[kind]
 

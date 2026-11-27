@@ -999,7 +999,11 @@ def test_the_search_ai_arm_reaches_the_ai_proposer_and_the_search_det_arm_cannot
         file_id="f", job_id="j", call=model, prices=ASTRA)
     assert isinstance(ai, AIProposer) and ai in gens
     r = run(gens, World(), patience=50)
-    assert len(model.calls) >= 1 and _q(r.best) == 3 and r.ai[0]["spent_usd"] > 0
+    # THE AI's MOVE (q=3) IS ON THE BEST PATH. The deterministic finalise may then build one step on it (q=4): it was
+    # tried on the start state as a sibling, and a sibling's candidate is no longer pruned from another branch.
+    assert len(model.calls) >= 1 and r.ai[0]["spent_usd"] > 0
+    assert any(d.op == "t18_set" and d.params.get("q") == 3 for d in r.best.history), r.best.history
+    assert _q(r.best) >= 3
 
     det_gens, none = search.arm_generators("search_det")
     assert none is None and not any(isinstance(g, AIProposer) for g in det_gens)

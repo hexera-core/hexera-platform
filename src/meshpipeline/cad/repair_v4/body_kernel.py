@@ -635,7 +635,7 @@ def _conformalise(payload: dict) -> dict:
     result_solids = _maps(frag.Shape())["solid"]
     new_solids = [result_solids.FindKey(i) for i in range(1, result_solids.Extent() + 1)]
     new_solids, dropped = _drop_zero_volume(new_solids, zero_volume_mm3(part))
-    bad = _degenerate(targets, new_solids, zero_volume_mm3(part))
+    bad = _degenerate(targets, new_solids, zero_volume_mm3(part), fuzzy_mm=fuzzy)
     if bad is not None:
         return _declined("cut_degenerate" if keeper is not None else "fragment_degenerate", **bad)
     if dropped["history"] is not None:
@@ -701,7 +701,7 @@ def _remove_duplicate_faces(payload: dict) -> dict:
                    op="remove_duplicate_faces", params=params, start=start, must_merge=pairs)
 
 
-def _degenerate(targets: list[Any], result: list[Any], eps: float) -> dict | None:
+def _degenerate(targets: list[Any], result: list[Any], eps: float, fuzzy_mm: float = 0.0) -> dict | None:
     """Why a Boolean's result cannot be the UNION of `targets`, or None. A union is never smaller than its largest
     member nor larger than the sum of its members, and no solid has negative signed volume (an inside-out solid).
 
@@ -720,6 +720,12 @@ def _degenerate(targets: list[Any], result: list[Any], eps: float) -> dict | Non
     # involved (relative ~1e-7 measured), not with the zero-volume floor: an exact fragment of f9501251fb30's 7 bodies
     # came out 0.11 mm3 over their 927,163.93 mm3 sum (1.2e-7) and was refused as "not a union" by the 0.084 mm3 floor
     bound = max(eps, UNION_REL_TOL * hi)
+    # A FUZZY Boolean may move each surface by up to `fuzzy_mm` to glue what lies within it (closing a 1e-4 mm STEP
+    # rounding gap adds that gap's volume), so its real union can differ from the bounds by at most fuzzy x the
+    # targets' area. C15's broken fuse lost 99.9% of the part, far outside that; a gap closed within the fidelity
+    # bound is not. Zero fuzzy adds nothing, so every exact Boolean is judged exactly as before.
+    if fuzzy_mm > 0.0:
+        bound += fuzzy_mm * sum(_area(t) for t in targets)
     if total < lo - bound or total > hi + bound:
         return {"why": "the result is not a union of the targets", "result_mm3": total, "largest_target_mm3": lo,
                 "sum_of_targets_mm3": hi}
@@ -762,7 +768,7 @@ def _fuse(payload: dict) -> dict:
     if len(new_solids) >= len(targets):
         return _declined("nothing_to_fuse", detail="the bodies do not touch or overlap: nothing merged",
                          bodies=len(targets))
-    bad = _degenerate(targets, new_solids, zero_volume_mm3(part_diagonal(payload, old)))
+    bad = _degenerate(targets, new_solids, zero_volume_mm3(part_diagonal(payload, old)), fuzzy_mm=fuzzy)
     if bad is not None:
         return _declined("fuse_degenerate", **bad)
     params = {"bodies": payload.get("body_ids", []), "fuzzy_mm": fuzzy,

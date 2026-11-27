@@ -30,3 +30,37 @@ def test_the_broken_fuse_of_00510567_is_still_refused() -> None:
 def test_a_real_loss_beyond_rounding_is_refused() -> None:
     targets = [1000.0, 500.0]
     assert body_kernel._degenerate(targets, [999.9], 1e-9) is not None  # under the largest target by 1e-4
+
+
+# ---- a FUZZY Boolean may move each surface by up to fuzzy_mm: its bound widens by fuzzy x the targets' area ----------
+
+@pytest.fixture
+def numeric_areas(monkeypatch):
+    # each target here is a 10 mm cube: 600 mm2 of surface
+    monkeypatch.setattr(body_kernel, "_area", lambda v: 600.0)
+
+
+def test_a_fuzzy_fragment_that_closes_a_rounding_gap_is_a_union(numeric_areas) -> None:
+    """Two 10 mm cubes 1e-4 mm apart, fragmented at fuzzy 1e-3: the gap's 0.01 mm3 joins the result. Exactly, that is
+    5x over the 2e-3 mm3 rounding bound; the fuzzy allowance (1e-3 x 1200 mm2 = 1.2 mm3) covers it."""
+    targets, result = [1000.0, 1000.0], [1000.0, 1000.01]
+    eps = body_kernel.zero_volume_mm3(24.5)
+    assert body_kernel._degenerate(targets, result, eps) is not None, "the exact bound must still refuse it"
+    assert body_kernel._degenerate(targets, result, eps, fuzzy_mm=1e-3) is None
+
+
+def test_a_fuzzy_result_outside_the_widened_bound_is_still_refused(numeric_areas) -> None:
+    # 1.2 mm3 of allowance; 2 mm3 over the sum is not what a 1e-3 mm glue can do
+    assert body_kernel._degenerate([1000.0, 1000.0], [2002.0], 1e-9, fuzzy_mm=1e-3) is not None
+    assert body_kernel._degenerate([1000.0, 1000.0], [997.0], 1e-9, fuzzy_mm=1e-3) is not None
+
+
+def test_the_broken_fuse_of_00510567_is_still_refused_at_fuzzy(numeric_areas) -> None:
+    targets = [6000.0] * 7 + [5870.0]
+    bad = body_kernel._degenerate(targets, [0.14, 19.6, 0.02, 13.5], body_kernel.zero_volume_mm3(40.0), fuzzy_mm=0.01)
+    assert bad is not None and "not a union" in bad["why"]
+
+
+def test_zero_fuzzy_adds_nothing_and_never_measures_area(monkeypatch) -> None:
+    monkeypatch.setattr(body_kernel, "_area", lambda v: pytest.fail("an exact Boolean measured area"))
+    assert body_kernel._degenerate([1000.0, 500.0], [999.9], 1e-9, fuzzy_mm=0.0) is not None

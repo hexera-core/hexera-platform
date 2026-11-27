@@ -2153,7 +2153,8 @@ def search(
     best = s0
     seen = {_fingerprint(start)}
     #: B20: state id -> the candidate keys already RUN there, and the (op, targets) that declined `no_change`
-    #: there. Read over the whole lineage, so a descendant never pays again for its ancestors' answers.
+    #: there. `no_change` is read over the whole lineage, so a descendant never pays again for its ancestors'
+    #: answers; `tried` only for the state itself (the lineage's APPLIED ops are read from each state's `via`).
     tried: dict[str, set[str]] = {}
     no_change: dict[str, set[str]] = {}
     #: per state: how much AIMED work was offered, tried and cleaned there (`AimedProgress`). Summed over a
@@ -2293,6 +2294,12 @@ def search(
             #  * an exact duplicate (same op, same targets, same params) already run on this lineage cannot reach a
             #    new state: the ops are deterministic, so the same call on the same geometry gives the same result,
             #    and `_fingerprint` would discard it AFTER paying for the op and a cheap verdict.
+            #    "On this lineage" means APPLIED on the path to this state (an ancestor's `via`, or this state's own),
+            #    or already run HERE. A sibling's candidate an ancestor ran is NOT on this path: it ran on the
+            #    ancestor's geometry, not this state's, so it can still reach a new state. Pruning it left a
+            #    three-hole part unable to fill its second hole after its first (`exhausted` at 5 ops).
+            applied_here = {_candidate_key(_candidate_of(by_id[sid])) for sid in state.lineage
+                            if sid in by_id and by_id[sid].via} | tried.get(state.id, set())
             #  * an op that already declined `no_change` on exactly these targets on this lineage declined because
             #    it found nothing to change there; nothing between then and now changed those targets, because a
             #    state that changed them would be a different lineage.
@@ -2302,7 +2309,7 @@ def search(
             for gi, c in valid:
                 ckey, tkey = _candidate_key(c), _target_key(c)
                 why = None
-                if any(ckey in tried.get(sid, ()) for sid in state.lineage):
+                if ckey in applied_here:
                     why = "already_run_on_this_lineage"
                 elif any(tkey in no_change.get(sid, ()) for sid in state.lineage):
                     why = "no_change_on_these_targets_already"
