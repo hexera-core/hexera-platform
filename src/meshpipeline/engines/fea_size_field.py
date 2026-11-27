@@ -883,11 +883,65 @@ class _LazyPool:
             self.pool.close()
 
 
+#: TIME-21: ON A SIZING VM OF ITS OWN the counting processes follow the machine (machine_workers) instead of
+#: MAX_WORKERS - its CPU quota, bounded by its memory and by this hard ceiling (the speed machine's 32 vCPUs). Set for
+#: one sizing by the sizing's own process (engines/fea_plan_options `--workers-cap`); None everywhere else.
+VM_MAX_WORKERS = 32
+#: what one counting process is given of the machine's memory: it holds the whole surface (its vtk locator) and each
+#: pass's zone groups. Measured: about 0.5 GB on the lab's parts, 2 GB on the largest (grooved_shaft at 1.7 M
+#: triangles, sizing round 4); this is that largest one and a quarter more
+CHILD_GIB = 2.5
+#: what the sizing's own process is given: 4 GB measured after the measure on drilled_plates(30) (round 4), the kept
+#: signed distance at its cap (SIGNED_KEEP_CUBES x 16 bytes = 0.32 GB) and a little more
+PARENT_GIB = 4.5
+#: of the machine's memory, what a sizing may use (contracts/mesh_machine.USABLE_SHARE: the OS and the container
+#: runtime keep the rest)
+MEMORY_SHARE = 0.9
+_WORKERS_CAP: int | None = None
+
+
+def set_workers_cap(cap: int | None) -> None:
+    """TIME-21: this process's counting processes may be as many as `cap` (machine_workers) instead of MAX_WORKERS;
+    None puts MAX_WORKERS back. The answer is the same to the bit whatever the count (TIME-12)."""
+    global _WORKERS_CAP
+    _WORKERS_CAP = max(1, int(cap)) if cap else None
+
+
+def memory_gib() -> float:
+    """The memory this process may use, in GiB: the container's cgroup limit when it has one, else the machine's."""
+    from pathlib import Path as _P
+    try:
+        raw = _P("/sys/fs/cgroup/memory.max").read_text().strip()
+        if raw and raw != "max":
+            return int(raw) / 1024.0 ** 3
+    except (OSError, ValueError):
+        pass
+    try:
+        for line in _P("/proc/meminfo").read_text().splitlines():
+            if line.startswith("MemTotal:"):
+                return int(line.split()[1]) / 1024.0 ** 2
+    except (OSError, ValueError, IndexError):
+        pass
+    return 0.0
+
+
+def machine_workers(*, cpus: int | None = None, mem_gib: float | None = None) -> int:
+    """TIME-21: how many counting processes a sizing on a machine of its own may use: its CPU quota (as the snappy
+    ranks and the cfMesh threads read it: engines/determinism.job_cpus), at most as many as its memory holds
+    (MEMORY_SHARE of it, less PARENT_GIB, CHILD_GIB each) and at most VM_MAX_WORKERS - never fewer than the worker's
+    own (MAX_WORKERS, or its CPUs when fewer). c2d-standard-32 (32 vCPUs, 128 GB): 32; n2-highmem-16: 16."""
+    from meshpipeline.engines.determinism import job_cpus
+    cpus = job_cpus() if cpus is None else int(cpus)
+    mem = memory_gib() if mem_gib is None else float(mem_gib)
+    by_memory = int((mem * MEMORY_SHARE - PARENT_GIB) // CHILD_GIB)
+    return max(1, min(cpus, max(min(MAX_WORKERS, cpus), min(VM_MAX_WORKERS, by_memory))))
+
+
 def plan_workers() -> int:
     """How many processes the histogram may use: the job's CPU quota (never the host's cores), at
-    most MAX_WORKERS."""
+    most MAX_WORKERS - or, on a sizing VM (set_workers_cap, TIME-21), at most its cap."""
     from meshpipeline.engines.determinism import job_cpus
-    return max(1, min(MAX_WORKERS, job_cpus()))
+    return max(1, min(_WORKERS_CAP or MAX_WORKERS, job_cpus()))
 
 
 class _Pool:
