@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import meshpipeline.engines.determinism as det
@@ -550,48 +551,17 @@ def _index_regions(ws: Path, regions, out: dict, *, deadline: float | None) -> N
         write_index_decomposed,
     )
 
-    for name, polymesh in regions:
+    def _one(name, polymesh, decomposed: bool) -> dict:
+        """One region's sidecar, on its own thread.
+
+        IT TOUCHES NOTHING ANOTHER THREAD TOUCHES. `write_index` writes under this region's own
+        `polyMesh/<INDEX_DIRNAME>` (boundary_index.index_dir) and `_boundary_quality` reads this
+        region's own boundary; the one question that must be answered identically for both
+        sidecars - `index_is_decomposed` - is settled in the loop below, before either starts,
+        and handed in. Nothing here writes to `out`; the caller does that with the result.
+        """
         t0 = time.monotonic()
         try:
-            # WHICH MESH THIS REGION ACTUALLY IS, decided ONCE here and handed to both sidecars.
-            # They are numbered against each other face for face, so an index built from the
-            # ranks beside a quality array reduced from a serial mesh would paint one mesh's
-            # numbers on another's faces and look entirely plausible. One question, one answer,
-            # both callers.
-            #
-            # A DECOMPOSED REGION IS NOT A SPECIAL CASE OF A SMALL ONE. With
-            # CONJUGATE_MERGE_REGIONS=0 the region's polyMesh holds the patch table
-            # `_publish_decomposed_boundaries` wrote and no cells at all, so `write_index` would
-            # refuse it by name and the detail window would refuse every region of the delivery.
-            decomposed = index_is_decomposed(ws, polymesh)
-            # THE DECLARED COUNT IS RIGHT EITHER WAY, which is why the budget arithmetic below is
-            # untouched: the published boundary file carries the ranks' summed counts, so
-            # `_patch_rows` reads the same number for a decomposed region that a merged one has.
-            declared = sum(int(p["n_faces"]) for p in _patch_rows(polymesh))
-            if declared > INDEX_SKIP_ABOVE_FACES:
-                out["regions"][name or "mesh"] = {
-                    "ok": False,
-                    "why": (f"{declared:,} boundary faces is over the {INDEX_SKIP_ABOVE_FACES:,} "
-                            "this will index in a mesh job"),
-                }
-                logger.warning("conjugate: boundary index skipped for %s - %s faces", name,
-                               format(declared, ","))
-                continue
-            want = declared * INDEX_SECONDS_PER_FACE
-            left = None if deadline is None else max(0.0, deadline - time.monotonic())
-            if left is not None and want > left:
-                # SAID AS THE RESOURCE IT IS, not as an index that failed. The mesh is on disk and
-                # what ran out is the run's time; a reader has to be able to tell that apart from
-                # a write_index that broke, which the branch below reports.
-                out["regions"][name or "mesh"] = {
-                    "ok": False,
-                    "why": (f"{declared:,} boundary faces price at about {want:.0f}s and the "
-                            f"run's budget has {left:.0f}s left, so no index was built for this "
-                            "region (the detail window will refuse to open it)"),
-                }
-                logger.error("conjugate: boundary index not started for %s - %s", name,
-                             out["regions"][name or "mesh"]["why"])
-                continue
             # SAME PRICE PER FACE for the two paths, and that is measured rather than assumed
             # equal: the ascii read is the cost, and a decomposed region's ranks between them
             # scan exactly the internal faces a merged one scans in a single file. The binary
@@ -599,7 +569,7 @@ def _index_regions(ws: Path, regions, out: dict, *, deadline: float | None) -> N
             # stays the ceiling for both and no second constant is invented for this path.
             meta = (write_index_decomposed(ws, region=name) if decomposed
                     else write_index(polymesh, region=name))
-            out["regions"][name or "mesh"] = {
+            return {
                 "ok": True,
                 "faces": int(meta["n_faces"]),
                 "points": int(meta["n_points"]),
@@ -618,8 +588,90 @@ def _index_regions(ws: Path, regions, out: dict, *, deadline: float | None) -> N
             # refuse, and a reader of this report should be able to see which one and why.
             logger.warning("conjugate: the boundary index failed for %s (non-fatal)", name,
                            exc_info=True)
+            return {"ok": False, "why": str(exc), "seconds": round(time.monotonic() - t0, 1)}
+
+    # WHICH REGIONS ARE WORTH STARTING, decided serially and before any of them starts, because
+    # these are the decisions that have to see each other: the skip ceiling, the budget, and
+    # which mesh each region actually is.
+    todo: list = []
+    for name, polymesh in regions:
+        t0 = time.monotonic()
+        try:
+            # WHICH MESH THIS REGION ACTUALLY IS, decided ONCE here and handed to both sidecars.
+            # They are numbered against each other face for face, so an index built from the
+            # ranks beside a quality array reduced from a serial mesh would paint one mesh's
+            # numbers on another's faces and look entirely plausible. One question, one answer,
+            # both callers - and now also one answer per region BEFORE either thread starts, so
+            # two concurrent builds cannot disagree about it.
+            #
+            # A DECOMPOSED REGION IS NOT A SPECIAL CASE OF A SMALL ONE. With
+            # CONJUGATE_MERGE_REGIONS=0 the region's polyMesh holds the patch table
+            # `_publish_decomposed_boundaries` wrote and no cells at all, so `write_index` would
+            # refuse it by name and the detail window would refuse every region of the delivery.
+            decomposed = index_is_decomposed(ws, polymesh)
+            # THE DECLARED COUNT IS RIGHT EITHER WAY: the published boundary file carries the
+            # ranks' summed counts, so `_patch_rows` reads the same number for a decomposed
+            # region that a merged one has.
+            declared = sum(int(p["n_faces"]) for p in _patch_rows(polymesh))
+        except Exception as exc:          # noqa: BLE001
+            logger.warning("conjugate: could not size the boundary index for %s (non-fatal)",
+                           name, exc_info=True)
             out["regions"][name or "mesh"] = {"ok": False, "why": str(exc),
                                               "seconds": round(time.monotonic() - t0, 1)}
+            continue
+        if declared > INDEX_SKIP_ABOVE_FACES:
+            out["regions"][name or "mesh"] = {
+                "ok": False,
+                "why": (f"{declared:,} boundary faces is over the {INDEX_SKIP_ABOVE_FACES:,} "
+                        "this will index in a mesh job"),
+            }
+            logger.warning("conjugate: boundary index skipped for %s - %s faces", name,
+                           format(declared, ","))
+            continue
+        want = declared * INDEX_SECONDS_PER_FACE
+        left = None if deadline is None else max(0.0, deadline - time.monotonic())
+        # PRICED AGAINST THE WHOLE REMAINING BUDGET, for every region, which is right BECAUSE
+        # they now run together: the pair costs the slower of the two and not their sum, so
+        # charging the second region for the first one's time would refuse an index that fits.
+        if left is not None and want > left:
+            # SAID AS THE RESOURCE IT IS, not as an index that failed. The mesh is on disk and
+            # what ran out is the run's time; a reader has to be able to tell that apart from a
+            # write_index that broke, which `_one` reports.
+            out["regions"][name or "mesh"] = {
+                "ok": False,
+                "why": (f"{declared:,} boundary faces price at about {want:.0f}s and the "
+                        f"run's budget has {left:.0f}s left, so no index was built for this "
+                        "region (the detail window will refuse to open it)"),
+            }
+            logger.error("conjugate: boundary index not started for %s - %s", name,
+                         out["regions"][name or "mesh"]["why"])
+            continue
+        todo.append((name, polymesh, decomposed))
+
+    if not todo:
+        return
+    if len(todo) == 1:
+        _name, _pm, _dec = todo[0]
+        out["regions"][_name or "mesh"] = _one(_name, _pm, _dec)
+        return
+
+    # AT ONCE, ON THREADS, AND THE THREADS WERE NOT OBVIOUS. The ascii read is the whole cost of
+    # this pass, and while it went through `re.findall` the GIL made concurrency worthless -
+    # measured 1.04x on two threads. `render/boundary_index` no longer uses a regex, and
+    # `np.fromstring` releases the GIL: re-measured on two files in the plate's own proportion
+    # (1.3M and 1.7M records, 98.0 MiB), serial 1.21 s, two threads 0.61 s (1.99x), two
+    # PROCESSES 0.67 s (1.80x, paying for the pickling). So threads, and the earlier
+    # "processes, decided" answer belonged to the earlier code.
+    #
+    # MEMORY IS THE OBJECTION AND IT DOES NOT BITE HERE. The pair peaked at 25.0 GiB of 512 run
+    # one after the other; holding both regions' arrays at once is twice that at worst, on a box
+    # chosen for 512. `engines/dispatch.watching_progress` reads the whole process tree, so the
+    # threads' CPU still counts as a sign of life against PROGRESS_GRACE_S.
+    with ThreadPoolExecutor(max_workers=len(todo), thread_name_prefix="bndidx") as pool:
+        futures = {pool.submit(_one, n, p, d): n for n, p, d in todo}
+        for fut in as_completed(futures):
+            _n = futures[fut]
+            out["regions"][_n or "mesh"] = fut.result()
 
 
 def _boundary_quality(polymesh: Path, *, region: str, case: Path | None = None) -> dict:
