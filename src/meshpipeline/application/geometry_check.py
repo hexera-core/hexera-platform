@@ -2779,7 +2779,11 @@ def _proposal(facts: dict, vision: dict | None) -> dict:
         o = by_id.get(int(named.get("id", -1)))
         if o is None or o.get("declared_by"):
             continue
-        if named.get("name"):
+        # THE NAME IS HELD WITH THE ROLE, or the card reads "inlet" on a mouth typed `opening`.
+        # Functionally the role is what travels - `plan.ports_from` keys off it and would carry no
+        # port pair either way - but a mouth called inlet that is not one is the card contradicting
+        # itself again, which is the defect this whole guard exists to stop.
+        if named.get("name") and not o.get("severed_from_pair"):
             o["name"] = str(named["name"]).strip()[:40]
         # A RAY OUTRANKS A RENDER ON THE ONE QUESTION A RENDER CANNOT ANSWER. `vet_by_reach`
         # has already taken the port role off a mouth measured with the part itself in front of
@@ -2788,6 +2792,14 @@ def _proposal(facts: dict, vision: dict | None) -> dict:
         # scored 0.5. Only a mouth the measurement demoted is protected: where the vetting left
         # the role alone there is nothing here to undo.
         held = o.get("reaches_outside") is False and o.get("role") == "not_an_opening"
+        # ...AND A CONNECTIVITY READING OUTRANKS A RENDER FOR THE SAME REASON. No picture of a
+        # bonded plate shows that two of its mouths open into coolant spaces 0.580 mm apart with no
+        # face joining them; the split measured it (`fluid_volume_check._unname_a_severed_pair`,
+        # which unnames the pair and marks it). Measured on session d2aa5820: without this the
+        # scout demoted all three mouths and said so in the notes, and the card still offered
+        # `inlet` and `outlet` at 0.65 - a pair the engine then refuses to mesh, which is the whole
+        # thing that unnaming them exists to prevent.
+        held = held or bool(o.get("severed_from_pair"))
         if named.get("role") in ("inlet", "outlet", "not_an_opening") and not held:
             o["role"] = named["role"]
         said = round(float(named.get("confidence", o.get("confidence", 0.5))), 2)

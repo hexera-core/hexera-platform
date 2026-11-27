@@ -281,3 +281,78 @@ def test_either_role_is_held_back_on_a_blind_mouth(role):
     facts = _facts(openings)
     gc.vet_by_reach(facts)
     assert _roles(facts)[1] == "not_an_opening"
+
+
+# -------------------- and the pictures may not undo the CONNECTIVITY measurement either ----
+#
+# THE SECOND CASE OF THE SAME PRINCIPLE, measured on session d2aa5820 (2026-11-27), this plate,
+# driven as a customer end to end. `cad/fluid_volume_check._unname_a_severed_pair` had demoted all
+# three mouths and said so in the notes - "they open into different spaces and nothing can flow
+# from one to the other" - and the card the customer was shown STILL read inlet and outlet, at 0.65
+# instead of the 0.98 and 0.96 the vision step gives unopposed, because `_merge` runs after the
+# scout and hands any of the three enum words straight back.
+#
+# A render cannot see this any more than it can see a capped bore: no picture of a bonded plate
+# shows that two of its mouths open into coolant spaces 0.580 mm apart with no face joining them.
+# The previous run of this part, job 44362085, was refused by the engine 4 minutes 32 seconds after
+# the customer pressed Proceed on exactly that pair.
+
+
+def _severed(openings=None) -> dict:
+    """The plate's mouths as the split leaves them once it has found the circuit severed: unnamed,
+    typed `opening`, and MARKED - which is the only thing `_merge` can key off."""
+    ops = [dict(o, name=f"mouth_{o['id']}", role="opening", severed_from_pair=True)
+           for o in (openings or PLATE[:2])]
+    return _facts(ops + [dict(PLATE[2])])
+
+
+def test_the_pictures_cannot_put_a_port_pair_back_on_a_severed_circuit():
+    """THE DEFECT. Without the hold the card offers the pair the engine refuses to mesh."""
+    p = gc._merge(_severed(), _vision())
+    by_id = {o["id"]: o for o in p["openings"]}
+    assert by_id[1]["role"] == "opening", "the render handed the inlet role back"
+    assert by_id[2]["role"] == "opening", "the render handed the outlet role back"
+    # THE PAIR IS WHAT MATTERS, not every mouth on the card. `plan.ports_from` needs BOTH an inlet
+    # and an outlet role to return a PortPlan at all, so a single remaining port role cannot make
+    # the pair the engine refuses - and mouth 3 here is deliberately unmarked, because the reach
+    # vetting is what deals with it and the two rules must not be tangled together.
+    held = [o for o in p["openings"] if o.get("severed_from_pair")]
+    assert len(held) == 2, held
+    assert not [o for o in held if o["role"] in ("inlet", "outlet")], (
+        "a port the split had unnamed reached the card as a port again")
+
+
+def test_the_held_mouth_keeps_its_own_name_too():
+    """A mouth called `inlet` and typed `opening` is the card contradicting itself again. The role
+    is what travels - `plan.ports_from` keys off it - but the name is what a person reads."""
+    p = gc._merge(_severed(), _vision())
+    by_id = {o["id"]: o for o in p["openings"]}
+    assert by_id[1]["name"] == "mouth_1" and by_id[2]["name"] == "mouth_2", (
+        [o["name"] for o in p["openings"]])
+
+
+def test_an_unmarked_mouth_is_named_by_the_pictures_exactly_as_before():
+    """THE HALF THAT KEEPS EVERY OTHER PART WORKING. The mark is what holds a mouth; a plate whose
+    circuit is whole carries no mark and the naming step decides as it always has."""
+    p = gc._merge(_facts(), _vision())
+    by_id = {o["id"]: o for o in p["openings"]}
+    assert by_id[1]["role"] == "inlet" and by_id[1]["name"] == "inlet"
+    assert by_id[2]["role"] == "outlet" and by_id[2]["name"] == "outlet_1"
+
+
+def test_the_mark_alone_holds_it_whatever_the_reach_fields_say():
+    """THE TWO RULES ANSWER DIFFERENT QUESTIONS and neither leans on the other. The blind hold is
+    `reaches_outside is False and role == "not_an_opening"`; this one is the mark, and a severed
+    mouth that reaches the outside perfectly well - which both 8 mm hose mouths of this plate do -
+    has none of the blind rule's conditions. If the mark did not hold on its own, every severed
+    pair on a part with no blind bore would go straight back to being a port pair.
+    """
+    ops = [dict(PLATE[0], name="mouth_1", role="opening", severed_from_pair=True,
+                reaches_outside=True, clear_ahead=True),
+           dict(PLATE[1], name="mouth_2", role="opening", severed_from_pair=True,
+                reaches_outside=True, clear_ahead=True)]
+    p = gc._merge(_facts(ops), _vision())
+    by_id = {o["id"]: o for o in p["openings"]}
+    assert by_id[1]["role"] == "opening" and by_id[2]["role"] == "opening", (
+        [(o["id"], o["role"]) for o in p["openings"]])
+    assert by_id[1]["name"] == "mouth_1" and by_id[2]["name"] == "mouth_2"

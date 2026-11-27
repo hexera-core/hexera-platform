@@ -298,6 +298,16 @@ def _unname_a_severed_pair(openings: list[dict], space_of: dict, notes: list) ->
     for o in ports:
         o["role"] = "opening"
         o["name"] = f"mouth_{o['id']}"
+        # MARKED, BECAUSE THE PICTURES NAME THE MOUTHS AFTER THIS RUNS AND WILL HAND THE ROLE
+        # STRAIGHT BACK. Measured on session d2aa5820: this function demoted all three mouths and
+        # said so in the notes, and the proposal the customer was then shown still read inlet and
+        # outlet - at confidence 0.65 rather than the 0.98 and 0.96 the vision step gives
+        # unopposed, but a port pair all the same. `geometry_check._fold_vision` protects a mouth
+        # the MEASUREMENT demoted from the render that cannot see what the measurement saw; it had
+        # one such case (a blind bore, which a render cannot tell from an open one) and this is the
+        # second of exactly the same kind - no picture of this plate shows that two mouths open
+        # into spaces 0.580 mm apart with no face joining them.
+        o["severed_from_pair"] = True
     notes.append(
         f"so {said} are left unnamed: they open into different spaces and nothing can flow from "
         "one to the other, which no mesh of this surface can fix. Every mouth is delivered as an "
