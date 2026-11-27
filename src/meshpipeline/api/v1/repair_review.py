@@ -472,6 +472,14 @@ async def run_review(job_id: uuid.UUID, owner_id: str = Depends(owner_dep),
                          key=lambda i: (i.decided_at is None, i.decided_at))
         directives = _replay_directives(park.kept_operations)
         directives += [d for item in decided for d in _engineer_directives(item, items)]
+        # A WAITING REPAIR CHANGE NOT ACCEPTED - left, or never answered - travels as a leave
+        # (pipeline/repair_result.py), so the re-run applies the repair only when the person
+        # accepted every change, and does not ask them again about one they declined
+        from meshpipeline.pipeline.repair_result import LEAVE_OP, REVIEW_ORIGIN
+        directives += [{"op": LEAVE_OP, "targets": [str(i.fingerprint)], "item_id": str(i.id),
+                        "source": "engineer"}
+                       for i in items if getattr(i, "origin", "") == REVIEW_ORIGIN
+                       and i.state != "accepted"]
 
         # The status CAS first: of two racing runs only one wins, and only it closes the park.
         if await job_repo.transition(db, job_id, JobStatus.pending) != TransitionResult.applied:

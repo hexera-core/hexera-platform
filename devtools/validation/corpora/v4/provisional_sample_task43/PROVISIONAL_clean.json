@@ -1,0 +1,438 @@
+{
+ "PROVISIONAL": "PROVISIONAL, DRAWN FROM A LOCAL SAMPLE OF THE CLEARED POOL. For the T2 smoke only. The real splits must come from the full re-probe; do not use these for any reported number.",
+ "excluded_no_solids": 2,
+ "excluded_unbounded": 4,
+ "excluded_uncounted": 0,
+ "files": [
+  {
+   "family": "",
+   "first_failing_layer": null,
+   "group": null,
+   "kind": null,
+   "kind_status": null,
+   "name": "00611614/00611614_dc895f3def431f6a458ec669_step_001.step",
+   "sha256": "c7b32ea0f1c8fa43cd35084d5634e99265c88d13957d2329031d67e0833fcbd1",
+   "source": "abc_pass",
+   "verdict_summary": {
+    "clean": true,
+    "counts_for_scoreboard": true,
+    "faithful": true,
+    "hard": [],
+    "out_of_scope": false,
+    "panel": [
+     {
+      "error_kind": null,
+      "min_sicn": 0.02397339803601337,
+      "name": "gmsh_prod",
+      "status": "pass"
+     },
+     {
+      "error_kind": null,
+      "min_sicn": 0.02064078151527385,
+      "name": "gmsh_default",
+      "status": "pass"
+     },
+     {
+      "error_kind": null,
+      "min_sicn": 0.12521659536351498,
+      "name": "gmsh_alt",
+      "status": "pass"
+     },
+     {
+      "error_kind": null,
+      "min_sicn": 0.09756990306469321,
+      "name": "netgen_occ",
+      "status": "pass"
+     }
+    ],
+    "soft": [],
+    "tier": "full",
+    "valid": true
+   }
+  },
+  {
+   "family": "",
+   "first_failing_layer": null,
+   "group": null,
+   "kind": null,
+   "kind_status": null,
+   "name": "00614313/00614313_760137e15b9b924e8339e428_step_003.step",
+   "sha256": "a3dc0dd4b7d092e7245273e0bd3e3d0f26505af233433acde267e284bc2b39d3",
+   "source": "abc_pass",
+   "verdict_summary": {
+    "clean": true,
+    "counts_for_scoreboard": true,
+    "faithful": true,
+    "hard": [],
+    "out_of_scope": false,
+    "panel": [
+     {
+      "error_kind": null,
+      "min_sicn": 0.06023027203101483,
+      "name": "gmsh_prod",
+      "status": "pass"
+     },
+     {
+      "error_kind": null,
+      "min_sicn": 0.04359321568322206,
+      "name": "gmsh_default",
+      "status": "pass"
+     },
+     {
+      "error_kind": null,
+      "min_sicn": 0.08744167388920947,
+      "name": "gmsh_alt",
+      "status": "pass"
+     },
+     {
+      "error_kind": null,
+      "min_sicn": 0.13438975388678434,
+      "name": "netgen_occ",
+      "status": "pass"
+     }
+    ],
+    "soft": [],
+    "tier": "full",
+    "valid": true
+   }
+  },
+  {
+   "family": "",
+   "first_failing_layer": null,
+   "group": null,
+   "kind": null,
+   "kind_status": null,
+   "name": "00614204/00614204_19a2c877657141b8642cd25a_step_000.step",
+   "sha256": "d77ea9a558b257cde4d9f53df1d3f83c2aac2cbf1fdacba5a9646df62c4ad8e8",
+   "source": "abc_pass",
+   "verdict_summary": {
+    "clean": true,
+    "counts_for_scoreboard": true,
+    "faithful": true,
+    "hard": [],
+    "out_of_scope": false,
+    "panel": [
+     {
+      "error_kind": null,
+      "min_sicn": 0.022866013496214654,
+      "name": "gmsh_prod",
+      "status": "pass"
+     },
+     {
+      "error_kind": null,
+      "min_sicn": 0.01599306296479811,
+      "name": "gmsh_default",
+      "status": "pass"
+     },
+     {
+      "error_kind": null,
+      "min_sicn": 0.019549642395105208,
+      "name": "gmsh_alt",
+      "status": "pass"
+     },
+     {
+      "error_kind": null,
+      "min_sicn": 0.21279213579592895,
+      "name": "netgen_occ",
+      "status": "pass"
+     }
+    ],
+    "soft": [
+     "small_edge"
+    ],
+    "tier": "full",
+    "valid": true
+   }
+  },
+  {
+   "family": "",
+   "first_failing_layer": null,
+   "group": null,
+   "kind": null,
+   "kind_status": null,
+   "name": "00618126/00618126_eed06e13c321a7668162e7fb_step_003.step",
+   "sha256": "c2bfeb3e732ad39bc203fa1a86ec76b13962d045cb84d8db896a447000770dcd",
+   "source": "abc_pass",
+   "verdict_summary": {
+    "clean": true,
+    "counts_for_scoreboard": true,
+    "faithful": true,
+    "hard": [],
+    "out_of_scope": false,
+    "panel": [
+     {
+      "error_kind": null,
+      "min_sicn": 0.4153446485284758,
+      "name": "gmsh_prod",
+      "status": "pass"
+     },
+     {
+      "error_kind": null,
+      "min_sicn": 0.3109033887185915,
+      "name": "gmsh_default",
+      "status": "pass"
+     },
+     {
+      "error_kind": null,
+      "min_sicn": 0.2223177744568674,
+      "name": "gmsh_alt",
+      "status": "pass"
+     },
+     {
+      "error_kind": null,
+      "min_sicn": 0.2338769721228601,
+      "name": "netgen_occ",
+      "status": "pass"
+     }
+    ],
+    "soft": [],
+    "tier": "full",
+    "valid": true
+   }
+  },
+  {
+   "family": "",
+   "first_failing_layer": null,
+   "group": null,
+   "kind": null,
+   "kind_status": null,
+   "name": "00613113/00613113_9ce269b97ce9e5e8567623b3_step_000.step",
+   "sha256": "0b21edaaf3055fd916c1ad1158ab2186a3ecae0238ab1ff7ac4d3ca178d6bd37",
+   "source": "abc_pass",
+   "verdict_summary": {
+    "clean": true,
+    "counts_for_scoreboard": true,
+    "faithful": true,
+    "hard": [],
+    "out_of_scope": false,
+    "panel": [
+     {
+      "error_kind": null,
+      "min_sicn": 0.3776555178249795,
+      "name": "gmsh_prod",
+      "status": "pass"
+     },
+     {
+      "error_kind": null,
+      "min_sicn": 0.3448617017426105,
+      "name": "gmsh_default",
+      "status": "pass"
+     },
+     {
+      "error_kind": null,
+      "min_sicn": 0.2920954797461297,
+      "name": "gmsh_alt",
+      "status": "pass"
+     },
+     {
+      "error_kind": null,
+      "min_sicn": 0.21342087220969155,
+      "name": "netgen_occ",
+      "status": "pass"
+     }
+    ],
+    "soft": [],
+    "tier": "full",
+    "valid": true
+   }
+  },
+  {
+   "family": "",
+   "first_failing_layer": null,
+   "group": null,
+   "kind": null,
+   "kind_status": null,
+   "name": "00616927/00616927_a9f937f458ff727ccf9860e9_step_007.step",
+   "sha256": "8dfc38ac974236460e9d638269a7037010bcc05fe8216f43baeaac37cfb9d886",
+   "source": "abc_pass",
+   "verdict_summary": {
+    "clean": true,
+    "counts_for_scoreboard": true,
+    "faithful": true,
+    "hard": [],
+    "out_of_scope": false,
+    "panel": [
+     {
+      "error_kind": null,
+      "min_sicn": 0.3492248848996769,
+      "name": "gmsh_prod",
+      "status": "pass"
+     },
+     {
+      "error_kind": null,
+      "min_sicn": 0.022309526801044248,
+      "name": "gmsh_default",
+      "status": "pass"
+     },
+     {
+      "error_kind": null,
+      "min_sicn": 0.18143257317999234,
+      "name": "gmsh_alt",
+      "status": "pass"
+     },
+     {
+      "error_kind": null,
+      "min_sicn": 0.10801056919246353,
+      "name": "netgen_occ",
+      "status": "pass"
+     }
+    ],
+    "soft": [],
+    "tier": "full",
+    "valid": true
+   }
+  },
+  {
+   "family": "",
+   "first_failing_layer": null,
+   "group": null,
+   "kind": null,
+   "kind_status": null,
+   "name": "00615185/00615185_16e07d02e605cdd2f9bc3eb3_step_002.step",
+   "sha256": "58d9b29c913f82d0063e47082799b090c6ba93d843cf4881f6a9a3d9f3be6701",
+   "source": "abc_pass",
+   "verdict_summary": {
+    "clean": true,
+    "counts_for_scoreboard": true,
+    "faithful": true,
+    "hard": [],
+    "out_of_scope": false,
+    "panel": [
+     {
+      "error_kind": null,
+      "min_sicn": 0.41158548839880327,
+      "name": "gmsh_prod",
+      "status": "pass"
+     },
+     {
+      "error_kind": null,
+      "min_sicn": 0.31263641145720916,
+      "name": "gmsh_default",
+      "status": "pass"
+     },
+     {
+      "error_kind": null,
+      "min_sicn": 0.2981418904840492,
+      "name": "gmsh_alt",
+      "status": "pass"
+     },
+     {
+      "error_kind": null,
+      "min_sicn": 0.3848223431804705,
+      "name": "netgen_occ",
+      "status": "pass"
+     }
+    ],
+    "soft": [],
+    "tier": "full",
+    "valid": true
+   }
+  },
+  {
+   "family": "",
+   "first_failing_layer": null,
+   "group": "nist-ftc-11",
+   "kind": null,
+   "kind_status": null,
+   "name": "NIST-PMI-STEP-Files/AP203 geometry only/nist_ftc_11_asme1_rb.stp",
+   "sha256": "a5abfea460499dc31bc812aca68917948a117565fea4f5a080e36eb32f39650d",
+   "source": "nist",
+   "verdict_summary": {
+    "clean": true,
+    "counts_for_scoreboard": true,
+    "faithful": true,
+    "hard": [],
+    "out_of_scope": false,
+    "panel": [
+     {
+      "error_kind": null,
+      "min_sicn": 0.15938716337419395,
+      "name": "gmsh_prod",
+      "status": "pass"
+     },
+     {
+      "error_kind": null,
+      "min_sicn": 0.13381669889368303,
+      "name": "gmsh_default",
+      "status": "pass"
+     },
+     {
+      "error_kind": null,
+      "min_sicn": 0.28640668700584554,
+      "name": "gmsh_alt",
+      "status": "pass"
+     },
+     {
+      "error_kind": null,
+      "min_sicn": 0.29540928898371116,
+      "name": "netgen_occ",
+      "status": "pass"
+     }
+    ],
+    "soft": [],
+    "tier": "full",
+    "valid": true
+   }
+  }
+ ],
+ "seed": 20261122,
+ "shortfall": {},
+ "split": "clean",
+ "strata": {
+  "clean": {
+   "abc_pass": 7,
+   "nist": 1
+  },
+  "clean_from_cheap_fail": {
+   "count": 0
+  },
+  "dev": {
+   "panel/other/abc_fail": 8,
+   "panel/other/abc_pass": 4,
+   "panel/other/nist": 2,
+   "panel/periodic_surface/abc_fail": 1,
+   "valid/body_overlap/abc_fail": 5,
+   "valid/body_overlap/abc_pass": 1,
+   "valid/body_overlap/occt": 1,
+   "valid/brep_invalid/abc_fail": 1,
+   "valid/brep_invalid/occt": 1,
+   "valid/open_shell/abc_fail": 2,
+   "valid/open_shell/nist": 1,
+   "valid/self_intersection/abc_fail": 2,
+   "valid/self_intersection/occt": 1
+  },
+  "failing_population": {
+   "panel/other/abc_fail": 17,
+   "panel/other/abc_pass": 10,
+   "panel/other/nist": 4,
+   "panel/periodic_surface/abc_fail": 2,
+   "valid/body_overlap/abc_fail": 12,
+   "valid/body_overlap/abc_pass": 2,
+   "valid/body_overlap/occt": 1,
+   "valid/brep_invalid/abc_fail": 1,
+   "valid/brep_invalid/occt": 1,
+   "valid/open_shell/abc_fail": 3,
+   "valid/open_shell/abc_pass": 1,
+   "valid/open_shell/nist": 3,
+   "valid/round_trip_invalid/abc_fail": 1,
+   "valid/round_trip_invalid/occt": 1,
+   "valid/self_intersection/abc_fail": 4,
+   "valid/self_intersection/occt": 3
+  },
+  "heldout": {
+   "panel/other/abc_fail": 6,
+   "panel/other/abc_pass": 4,
+   "panel/other/nist": 1,
+   "panel/periodic_surface/abc_fail": 1,
+   "valid/body_overlap/abc_fail": 5,
+   "valid/body_overlap/abc_pass": 1,
+   "valid/open_shell/abc_fail": 1,
+   "valid/open_shell/abc_pass": 1,
+   "valid/open_shell/nist": 1,
+   "valid/round_trip_invalid/abc_fail": 1,
+   "valid/round_trip_invalid/occt": 1,
+   "valid/self_intersection/abc_fail": 1,
+   "valid/self_intersection/occt": 1
+  }
+ }
+}

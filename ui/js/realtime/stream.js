@@ -241,5 +241,17 @@ export function terminalResult(job, outcomeText) {
     concerns: job.review_concerns || [],
     // the AI reviewer's notes, each labelled "Reviewer note" - shown, never a verdict
     notes: job.review_notes || [],
+    // THE CAD REPAIR, typed (contract RepairResultV5): shown whenever a repair ran, beside the mesh or as the result
+    repair: repairOf(job),
+    // the conversation the run came from: its checked part is what the repair view draws when it has nothing newer
+    sessionId: job.session_id || "",
   };
+}
+
+/** The job's repair section with its choice filled in, or null when no repair ran (a "Mesh only" run, an older run).
+ *  The choice is the repair's own when it says one, else the job's `repair_goal`. */
+export function repairOf(job) {
+  const r = job && (job.repair || job.repair_result);
+  if (!r || typeof r !== "object") return null;
+  return { ...r, choice: r.choice || job.repair_goal || "meshing", problems: Array.isArray(r.problems) ? r.problems : [] };
 }

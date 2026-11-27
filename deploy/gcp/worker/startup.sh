@@ -106,6 +106,10 @@ for pair in "deployment-id:DEPLOYMENT_ID" \
             "cad-repair-mesh-handback:CAD_REPAIR_MESH_HANDBACK" \
             "cad-repair-standalone-jobs:CAD_REPAIR_STANDALONE_JOBS" \
             "cad-repair-investigation-trace:CAD_REPAIR_INVESTIGATION_TRACE" \
+            "cad-repair-engine:CAD_REPAIR_ENGINE" \
+            "crs-v5-file-usd-cap:CRS_V5_FILE_USD_CAP" \
+            "crs-v5-event-stdout:CRS_V5_EVENT_STDOUT" \
+            "crs-v5-force-fail:CRS_V5_FORCE_FAIL" \
             "verdict-by-limits:VERDICT_BY_LIMITS" \
             "mesh-progressive-snapshot-enabled:MESH_PROGRESSIVE_SNAPSHOT_ENABLED" \
             "mesh-snappy-ranks:MESH_SNAPPY_RANKS"; do

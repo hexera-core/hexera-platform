@@ -495,6 +495,54 @@ def confirmed_leak_closing(session_id: str) -> dict | None:
     return leak_closing_of(record)
 
 
+#: CRS v5 beta, Decision 1: the declaration's words for the form's repair choice, as the intake
+#: reads them. The default ("Repair + mesh") is not said: it is the run every job has always been.
+REPAIR_CHOICE_WORDS = {
+    "standalone": "Repair: repair the CAD only (repair_goal standalone) - deliver the fixed STEP, "
+                  "no mesh.",
+    "off": "Repair: mesh only (repair_goal off) - no repair check and no repair.",
+}
+REPAIR_BYPASS_WORDS = "Repairs are accepted without review (auto_accept_repairs)."
+
+
+def repair_choice_sentence(choice: str | None, auto_accept: bool = False) -> str:
+    """The declaration's repair sentence, or "" for the default choice without a bypass."""
+    said = REPAIR_CHOICE_WORDS.get(str(choice or ""), "")
+    if auto_accept and choice != "off":
+        said = f"{said} {REPAIR_BYPASS_WORDS}".strip()
+    return said
+
+
+def confirmed_repair_goal(session_id: str) -> dict:
+    """The repair choice the user confirmed on the stage: {"goal": meshing|standalone|off,
+    "auto_accept_repairs": bool} - {} when the form said nothing or it cannot be read (the run
+    is then "Repair + mesh", the default). The bypass is AS ASKED: the approval checks the
+    organisation's permission again before it reaches a payload."""
+    import json
+
+    if not session_id:
+        return {}
+    from meshpipeline.application.geometry_check import check_object_key
+    from meshpipeline.contracts.object_storage import get_object_store
+    try:
+        record = json.loads(get_object_store().get_bytes(
+            object_key=check_object_key(session_id, "confirmed.json")))
+    except Exception:  # noqa: BLE001 - unknown is the default choice, never a refusal
+        return {}
+    if not isinstance(record, dict):
+        return {}
+    goal = record.get("repair_goal")
+    bypass = record.get("repair_auto_accept") is True
+    if goal not in ("meshing", "standalone", "off"):
+        goal = None
+    if goal is None and not bypass:
+        return {}
+    out: dict = {"goal": goal or "meshing"}
+    if bypass and goal != "off":
+        out["auto_accept_repairs"] = True
+    return out
+
+
 def confirmed_up_axis(session_id: str) -> str:
     """Which way is up in the file, as the user confirmed it on the stage ("+z", "-y", ...): the
     ground is laid under it (INS-9). "" when nothing was confirmed or it cannot be read - the run

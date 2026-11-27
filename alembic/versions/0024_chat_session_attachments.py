@@ -3,16 +3,16 @@
 #             order-safe for the image: deploy runs migrations first, then rolls the image. The
 #             previous image is unaffected by the extra column.
 
-# Revision ID: 0023_chat_session_attachments
-# Revises: 0022_returned_cad_hints
+# Revision ID: 0024_chat_session_attachments
+# Revises: 0023_repair_bypass_and_viewer
 from __future__ import annotations
 
 import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import postgresql
 
-revision = "0023_chat_session_attachments"
-down_revision = "0022_returned_cad_hints"
+revision = "0024_chat_session_attachments"
+down_revision = "0023_repair_bypass_and_viewer"
 branch_labels = None
 depends_on = None
 

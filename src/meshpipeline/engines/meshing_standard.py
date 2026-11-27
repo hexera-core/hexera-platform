@@ -75,7 +75,7 @@ ELSEWHERE_WORDS = "put sizes for one part, or shell or solid, in a run's notes"
 def snapshot(text: str, reading: Mapping | None, *, updated_by: str = "", updated_at: str = "",
              shell_elements: str = "quads", shell_elements_set: bool = False) -> dict | None:
     """What a run is dispatched with: the text, the reading kept at save time, who saved it and when, and the page's
-    switch when the user SET it (STD-4: Triangles, or Quads chosen - `shell_elements_set`, 0024; the switch left on
+    switch when the user SET it (STD-4: Triangles, or Quads chosen - `shell_elements_set`, 0025; the switch left on
     its default Quads is not carried, so the typed words decide). None with no words and the switch on Quads (a run
     without a standard carries nothing at all)."""
     t = str(text or "").strip()

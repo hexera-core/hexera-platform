@@ -32,7 +32,8 @@ PLAN:       Final = "plan"        # the mesh the run will build: cells, wall lay
 MESH_STAGE: Final = "mesh_stage"  # what the running mesher is doing now, as it reports it
 NARRATE:    Final = "narrate"     # a step row or a commentary line, in plain words (contracts/narration)
 MESH_PARTIAL: Final = "mesh_partial"  # a boundary surface of the mesh-so-far exists: where it is, and of which phase
-RECEIPT:    Final = "receipt"     # what a stage did, as rows of measured fact - including what it refused
+REPAIR_PROGRESS: Final = "repair_progress"  # where the CAD repair is, in plain words (pipeline/repair_progress)
+RECEIPT:   Final = "receipt"     # what a stage did, as rows of measured fact - including what it refused
 VERDICT:    Final = "verdict"     # the reviewer's decision
 CLOSING:    Final = "closing"     # the run's final word to the user
 
@@ -40,7 +41,12 @@ EVENT_TYPES: Final[frozenset[str]] = frozenset({
     STAGE, ATTEMPT, NOTE, CHECK, ACTION, SEARCH, FILE,
     SCREENSHOT, MESHING, MESHED, VERDICT, CLOSING,
     REASONING, RATIONALE, TOOL_CALL, TOOL_RESULT, PLAN, MESH_STAGE, NARRATE, RECEIPT,
-    MESH_PARTIAL,
+    MESH_PARTIAL, REPAIR_PROGRESS,
+})
+
+#: Where a repair is, as `repair_progress` says it (CRS v5 beta spec "Contract").
+REPAIR_PROGRESS_STAGES: Final[frozenset[str]] = frozenset({
+    "checking", "repairing", "broader_repair", "verifying", "done",
 })
 
 # A reasoning operation's lifecycle. One id, one card, three possible ends.
@@ -279,6 +285,47 @@ def narrate(stage_: str, kind: str, text: str, n: int | None = None, of: int | N
     if unit:
         data["unit"] = scrub_text(str(unit), limit=24)
     return UiEvent(NARRATE, stage_, data)
+
+
+def repair_progress(stage_: str, progress: dict[str, Any]) -> UiEvent:
+    """Where the CAD repair is: `{"progress": {stage, problem_index, problem_total, problem_type,
+    text}}` on the repair lane (CRS v5 beta spec "Contract").
+
+    NESTED UNDER `progress` because the wire already spends the top-level `stage` on the pipeline
+    lane ("repair"); the spec's `stage` (checking | repairing | broader_repair | verifying | done)
+    is the repair's own, and must not overwrite the lane the console files the event under.
+
+    The text has been made by pipeline/repair_progress from its own templates; it is checked
+    against the leak guard (contracts/repair_plain) here once more and REFUSED (ValueError) rather
+    than published if it names anything internal - the callers swallow the refusal, so a bad line
+    is dropped, never shown.
+    """
+    from meshpipeline.contracts.repair_plain import leaks as _leaks
+    from meshpipeline.trace.sanitizer import scrub_text
+
+    step = str(progress.get("stage") or "")
+    if step not in REPAIR_PROGRESS_STAGES:
+        raise ValueError(f"{step!r} is not a repair progress stage")
+    text = " ".join(str(progress.get("text") or "").split())
+    if not text or _leaks(text):
+        raise ValueError("a repair progress line must be plain words")
+
+    def _count(value: Any) -> int | None:
+        return None if value is None or isinstance(value, bool) else int(value)
+
+    kind = progress.get("problem_type")
+    result = progress.get("result")
+    data = {"stage": step, "problem_index": _count(progress.get("problem_index")),
+            "problem_total": _count(progress.get("problem_total")),
+            "problem_type": None if kind is None else scrub_text(str(kind), limit=40),
+            "text": scrub_text(text, limit=160)}
+    extra = {"result": result if result in ("fixed", "not_fixed", "left_as_is") else None,
+             "problems_fixed": _count(progress.get("problems_fixed"))}
+    # FLAT FOR THE CONSOLE, NESTED FOR THE CONTRACT: the same fields at the top level, the step
+    # under `step` (the wire's `stage` stays the lane), and the spec's object whole in `progress`
+    flat = {k: v for k, v in data.items() if k != "stage"}
+    return UiEvent(REPAIR_PROGRESS, stage_, {**flat, **extra, "step": step,
+                                             "progress": {**data, **extra}})
 
 
 #: A receipt is a RECORD, not a report. Twelve rows is what a reader takes in without scrolling,

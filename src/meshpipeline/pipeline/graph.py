@@ -240,11 +240,20 @@ def route_after_builder(
     return "node_executor"
 
 
-def route_after_engine_select(state: PipelineState) -> Literal["node_repair_inspect", "node_reviewer"]:
+def route_after_engine_select(
+    state: PipelineState,
+) -> Literal["node_repair_inspect", "node_reviewer", "node_geometry_admission"]:
     if state.get("user_dispute") and not state.get("reviewer_verdict"):
         logger.info("route_after_engine_select: dispute run → re-review delivered mesh first "
                     "- job_id=%s", state.get("job_id"))
         return "node_reviewer"
+    # "MESH ONLY" (the customer's three-way choice, pipeline/repair_goal.py): no repair check and
+    # no repair - straight to the admission gate, which judges the file as it was uploaded.
+    from meshpipeline.pipeline.repair_goal import repair_off
+    if repair_off(state):
+        logger.info("route_after_engine_select: mesh only → no repair check - job_id=%s",
+                    state.get("job_id"))
+        return "node_geometry_admission"
     # A normal run inspects the input for CAD defects (evidence), then the admission gate judges
     # it (the decision). The dispute bypass above is untouched: a re-review of a mesh already
     # delivered has nothing to inspect on the way in.
@@ -253,8 +262,11 @@ def route_after_engine_select(state: PipelineState) -> Literal["node_repair_insp
 
 def route_after_repair_attempt(
     state: PipelineState,
-) -> Literal["node_repair_deliver", "node_geometry_admission"]:
-    """A STANDALONE repair job ends with the repair; every other run goes on to be meshed.
+) -> Literal["node_repair_deliver", "node_geometry_admission", "__end__"]:
+    """A STANDALONE repair job ends with the repair; every other run goes on to be meshed - unless
+    the repair WAITS FOR A PERSON (CRS v5 beta): a change past the auto-accept threshold, with no
+    review bypass on the run, ends the run here so the terminal path parks it in pending_review
+    with the changes as review items (pipeline/repair_attempt.py sets `repair_review_wait`).
 
     Spec amendment 1: three entry points, ONE loop, and only the finishing verdict differs. A
     standalone job's verdict is kernel-clean plus a fast meshability score plus the semantic
@@ -265,6 +277,10 @@ def route_after_repair_attempt(
     """
     from meshpipeline.pipeline.repair_goal import from_state
 
+    if state.get("repair_review_wait"):
+        logger.info("route_after_repair_attempt: the repair waits for a person's review → end "
+                    "and park - job_id=%s", state.get("job_id"))
+        return _END
     asked = from_state(state)
     if asked is not None and asked.goal is RepairGoal.standalone:
         logger.info("route_after_repair_attempt: standalone repair job → deliver the repair, no "
@@ -760,7 +776,9 @@ def build_graph(checkpointer):
     b.add_conditional_edges(
         "node_engine_select",
         route_after_engine_select,
-        {"node_repair_inspect": "node_repair_inspect", "node_reviewer": "node_reviewer"},
+        {"node_repair_inspect": "node_repair_inspect", "node_reviewer": "node_reviewer",
+         # "Mesh only": the customer chose no repair (pipeline/repair_goal.py)
+         "node_geometry_admission": "node_geometry_admission"},
     )
     # INSPECT, THEN FIX, THEN JUDGE. Inspection is evidence and the attempt refuses rather than
     # ending a run, so both have a single unconditional edge and the admission gate still decides -
@@ -774,7 +792,9 @@ def build_graph(checkpointer):
         "node_repair_attempt",
         route_after_repair_attempt,
         {"node_repair_deliver": "node_repair_deliver",
-         "node_geometry_admission": "node_geometry_admission"},
+         "node_geometry_admission": "node_geometry_admission",
+         # a repair past the auto-accept threshold waits for a person: the run parks
+         END: END},
     )
     # THE STANDALONE JOB'S END. The node states the ending; the orchestrator's terminal path
     # delivers the bytes and the report it named, because that is where this worker's fence is.

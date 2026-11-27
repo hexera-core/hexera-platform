@@ -62,14 +62,22 @@ class RouteExhausted(Exception):
 
 class Usage:
 
-    __slots__ = ("input_tokens", "cached_input_tokens", "output_tokens", "ttft_s")
+    __slots__ = ("input_tokens", "cached_input_tokens", "output_tokens", "ttft_s",
+                 "cache_write_tokens", "cache_write_30m_tokens")
 
     def __init__(self, input_tokens: int = 0, cached_input_tokens: int = 0,
-                 output_tokens: int = 0, ttft_s: float | None = None) -> None:
+                 output_tokens: int = 0, ttft_s: float | None = None,
+                 cache_write_tokens: int = 0, cache_write_30m_tokens: int = 0) -> None:
         self.input_tokens = input_tokens
         self.cached_input_tokens = cached_input_tokens
         self.output_tokens = output_tokens
         self.ttft_s = ttft_s
+        # Tokens the provider wrote to its prompt cache on this call, a SUBSET of input_tokens (like the
+        # cached ones) billed above the fresh-input rate. `cache_write_30m_tokens` is the part the
+        # provider says was written at the 30-minute TTL; the rest of the total is billed at the dearer
+        # 12-hour rate, so an unattributed write can only over-count.
+        self.cache_write_tokens = cache_write_tokens
+        self.cache_write_30m_tokens = min(cache_write_30m_tokens, cache_write_tokens)
 
 
 def _backoff(route: ModelRoute, category: FailureCategory, attempt: int) -> float:
@@ -78,6 +86,38 @@ def _backoff(route: ModelRoute, category: FailureCategory, attempt: int) -> floa
     if j <= 0:
         return raw
     return max(0.0, raw * (1.0 + random.uniform(-j, j)))
+
+
+#: The longest Retry-After this router will wait for between attempts (the OpenAI SDK applies the same 60 s bound
+#: to its own retries). A longer one is waited for this long; the next attempt then reports what it gets.
+RETRY_AFTER_MAX_S = 60.0
+
+
+def _retry_after_s(exc: BaseException | None) -> float | None:
+    """The provider's own Retry-After on the failed response (`retry-after-ms`, else `retry-after` seconds), or None.
+    Present on temporary 429s and 503s; OpenAI documents it as the MINIMUM wait."""
+    headers = getattr(getattr(exc, "response", None), "headers", None)
+    if headers is None:
+        return None
+    for name, scale in (("retry-after-ms", 1000.0), ("retry-after", 1.0)):
+        try:
+            value = float(headers.get(name)) / scale
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            return min(value, RETRY_AFTER_MAX_S)
+    return None
+
+
+def _retry_delay(route: ModelRoute, category: FailureCategory, attempt: int, cause: BaseException | None) -> float:
+    """The jittered backoff, but never shorter than the provider's Retry-After (plus up to `jitter` of it, so a
+    fleet told the same Retry-After does not come back in the same instant)."""
+    delay = _backoff(route, category, attempt)
+    if category in (FailureCategory.RATE_LIMIT, FailureCategory.SERVICE_UNAVAILABLE, FailureCategory.OVERLOAD):
+        after = _retry_after_s(cause)
+        if after is not None:
+            delay = max(delay, after * (1.0 + random.uniform(0.0, max(route.retry.jitter, 0.0))))
+    return delay
 
 
 class _Budget:
@@ -144,6 +184,15 @@ async def execute(
         is_standby = index > 0
         reason = _selection_reason(is_standby, last_category, route)
         last_target = target
+
+        # FAIL CLOSED ON PRICE, before anything is dialled or admitted, for a route that asked for it
+        # (ModelRoute.require_price: its caller enforces a spending cap, which an unpriced model - metered
+        # at $0.00 - could never trip). Raises UnpricedModel, naming MODEL_PRICE_OVERRIDES. It is not a
+        # RouteExhausted, so no retry or failover is tried: a standby would be as unpriced, and a missing
+        # price is a configuration defect.
+        if route.require_price:
+            from meshpipeline.adapters.inference_telemetry.pricing import require_price
+            require_price(target.provider, target.model)
 
         breaker = _breaker_for(target)
         if not breaker.allow():
@@ -271,9 +320,15 @@ async def _attempt_target(route, target, invoke, classify, budget: _Budget):
         # declared.
         attempt_timeout = budget.cap(route.timeout_s)
         if budget.expired():
+            # `attempt` ATTEMPTS WERE MADE, and when the budget died during admission that is
+            # zero. This count is what RouteExhausted.attempts carries into
+            # ProviderAttemptInfo, the wave ledger and the report, so rounding it up to 1
+            # would attribute a call no provider ever received - the same fiction as an
+            # unreached model's row written as conclusive. The admission path above already
+            # reports attempts=0 for the same condition; these two must agree.
             return (None, FailureCategory.TIMEOUT,
                     f"route deadline {route.total_deadline_s}s exhausted after {attempt} attempt(s)",
-                    attempt or 1, usage, time.monotonic() - t0, started, cause)
+                    attempt, usage, time.monotonic() - t0, started, cause)
         try:
             result, usage = await asyncio.wait_for(invoke(target), timeout=attempt_timeout)
             return result, None, "", attempt + 1, usage, time.monotonic() - t0, started, None
@@ -291,7 +346,7 @@ async def _attempt_target(route, target, invoke, classify, budget: _Budget):
             return (None, category, detail, attempt + 1, usage, time.monotonic() - t0, started,
                     cause)
         if attempt < route.retry.max_attempts - 1:
-            delay = budget.cap(_backoff(route, category, attempt))
+            delay = budget.cap(_retry_delay(route, category, attempt, cause))
             if budget.expired():
                 break
             await asyncio.sleep(delay)

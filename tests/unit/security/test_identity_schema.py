@@ -29,9 +29,10 @@ _ADDED_BY_LATER_REVISIONS: dict[str, set[str]] = {
     # 0006_stripe_billing. See that revision for why the billing identity belongs on the tenant row.
     # 0019_signup_claims_and_erasure adds the erasure lifecycle: requested when the owner asked,
     # erased when the sweep has also removed the stored bytes.
+    # 0023_repair_bypass_and_viewer adds the CRS v5 beta's review-bypass permission (admins).
     "organizations": {"stripe_customer_id", "stripe_subscription_id", "plan",
                       "subscription_status", "current_period_end",
-                      "erasure_requested_at", "erased_at"},
+                      "erasure_requested_at", "erased_at", "repair_auto_accept_allowed"},
     # 0019_signup_claims_and_erasure: the organisation name typed at sign-up, held until the
     # address is verified and the organisation exists, then cleared.
     "users": {"pending_organization_name"},

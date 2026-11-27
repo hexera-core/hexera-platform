@@ -20,7 +20,7 @@ import { beginRun, get as getState, isTerminalStatus, set as setState, waitingCo
   from "./core/state.js";
 import { CheckProgress } from "./render/check_progress.js";
 import { Notice } from "./render/notice.js";
-import { openRepairPanel } from "./render/repair.js";
+import { openRepairPanel, openRepairResult } from "./render/repair.js";
 import { Stage, closeLightbox, openLightbox, setCancelHandler, setMeshPartialHandler, setResultHandler }
   from "./render/stage.js";
 import { configure as configureStream, lastSeq, replay, start as startStream, terminalResult }
@@ -113,6 +113,8 @@ configureStream({
   onStatus: (job) => {
     Stage.waiting(waitingCopy(job) || (streamDown ? STREAM_DOWN_SUB : ""));
     Stage.clock(job.created_at);
+    // "Repair CAD only": the box is the repair's lane alone, from the first status on
+    if ((job.repair_goal || (job.repair || {}).choice) === "standalone") Stage.repairOnly();
     parkedRun(job);
   },
   onPollTrouble: () => Notice.hold("poll",
@@ -165,6 +167,13 @@ setResultHandler((data, anchor) => {
   // mesh leaves the revised one where it is, usable again
   const replaces = revisionOf(job);
   revisionEnded(job);
+  // "REPAIR CAD ONLY": the repaired part IS the result. It takes the stage the way a delivered mesh does, and there
+  // is no mesh to open.
+  if (data.repair && data.repair.choice === "standalone") {
+    openRepairResult(job, anchor, data, { takeover: true });
+    offerReview(job, anchor, { onRun: (r) => Stage.chat("assistant", r.said) });
+    return;
+  }
   if (surface === "mesh") {
     // THE RESULT SURFACE IS THE MESH: open it inline, with the deliverables and the
     // flag -> re-review controls attached to the thing they describe.
@@ -190,6 +199,12 @@ setResultHandler((data, anchor) => {
     // a deliverable in its own right and it exists whatever the mesher went on to do - so it is
     // handed over here rather than withheld because a later stage failed.
     openRepairPanel(job, anchor, data);
+  }
+  // REPAIR + MESH: the repair is shown as fully as the mesh, under the run, whatever the mesh came to (the failure
+  // path above already drew it)
+  if (data.repair && surface !== "none") {
+    // beside the delivered mesh, as a "Repair" tab next to it (owner default 2026-11-26)
+    openRepairResult(job, anchor, data, { tabWith: document.getElementById("viewer-" + job) });
   }
   // A QUIET WAY BACK to the defects the repair was unsure about, only when the run was delivered
   // and the server says it holds an offered review (it answers nothing otherwise).

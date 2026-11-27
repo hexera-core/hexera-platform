@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import logging
 
-from meshpipeline.settings.env import bool_env, optional_env
+from meshpipeline.settings.env import ConfigurationError, bool_env, optional_env
 
 logger = logging.getLogger(__name__)
 
@@ -327,6 +327,100 @@ def _meshability_pass_posture() -> str:
 #: original, job-level escalation) is unchanged. "off" is byte-for-byte today: no pass, no file
 #: written on a refusal, no new measurement keys.
 CAD_REPAIR_MESHABILITY_PASS: str = _meshability_pass_posture()
+
+def kernel_test_fns_enabled() -> bool:
+    """Whether the v4 kernel-worker TEST functions (echo, sleep-forever, abort, the split-op test
+    ops) may register. Developer/test only, never set in production. Read at CALL time, not
+    import time: spawned workers import the package from scratch and must see the environment the
+    parent handed them, and a test that sets it after the settings module is imported must still
+    be honoured."""
+    return bool_env("HEXERA_TEST_KERNEL_FNS", "false")
+
+
+def running_under_pytest() -> bool:
+    """Whether this process is inside a pytest test. pytest sets PYTEST_CURRENT_TEST itself for the
+    duration of each test; nothing a deployment sets. It gates the test-only constructors (the v4
+    model ledger's `for_test`), so the read is fail-closed: unset OR blank is "not under pytest" and
+    the test door stays shut. Read at CALL time, so a test that clears it is honoured."""
+    return optional_env("PYTEST_CURRENT_TEST", "").strip() != ""
+
+
+def verdict_cache_uri() -> str:
+    """Where the v4 verdict cache lives when it must outlive the process: `gs://bucket/prefix` or a
+    directory, from CRS_V4_VERDICT_CACHE_URI. Unset OR blank (whitespace included) returns "", which
+    the caller reads as "no durable cache: one in-memory cache per process". The caller says so
+    loudly, because a process-local cache looks exactly like a working one. Read at CALL time."""
+    return optional_env("CRS_V4_VERDICT_CACHE_URI", "").strip()
+
+
+def recipes_enabled() -> bool:
+    """CAD_REPAIR_V4_RECIPES: whether the v4 search reads (and, on the dev split, writes) recipe memory
+    (`repair_v4.recipes`, design 5.10). Off by default so a dev wave can A/B it. Read at CALL time."""
+    return optional_env("CAD_REPAIR_V4_RECIPES", "false").strip().lower() in ("1", "true", "yes", "on")
+
+
+def recipes_uri() -> str:
+    """CAD_REPAIR_V4_RECIPES_URI: where recipe memory lives, `gs://bucket/prefix` (the eval bucket) or a directory.
+    Unset or blank returns ""; turning the memory on without a location is refused by its caller."""
+    return optional_env("CAD_REPAIR_V4_RECIPES_URI", "").strip()
+
+
+DEFAULT_ENGINE = "v5"
+ENGINES: tuple[str, ...] = ("v3", "search", "v5")
+
+
+def _engine_posture_of(raw: str) -> str:
+    """The repair engine named by `raw`, STRICTLY: blank is "not configured" (the default); anything that
+    is not exactly a known engine, after trimming and case-folding, is refused - never coerced.
+
+    Strict because this switch decides WHICH ENGINE REWRITES A CUSTOMER'S GEOMETRY: a typo that
+    quietly fell back to v3 would hide that the operator's intent was not honoured, and one that
+    quietly selected `search` would run an engine nobody asked for."""
+    value = raw.strip().lower()
+    if not value:
+        return DEFAULT_ENGINE
+    if value in ENGINES:
+        return value
+    raise ConfigurationError(
+        f"Environment variable 'CAD_REPAIR_ENGINE' must be one of {', '.join(ENGINES)} - got {raw!r}.")
+
+
+#: WHICH ENGINE `repair_step_file` RUNS: `v5` (CRS v5, cad/repair_v5: defect-class repair with the v4 search as its
+#: broader repair), `v3` (the conservative region-loop repair) or `search` (CRS v4 alone, cad/repair_v4).
+#: DEFAULT `v5` FOR THE CRS v5 BETA (owner decision 2026-11-26, docs/superpowers/specs/2026-11-26-crs-v5-beta-ux.md:
+#: the beta is on for every user). v3 stays the automatic fallback: a v5 run that RAISES (anything but a measured
+#: "nothing could be kept") is re-run on v3 and the report records it (`conservative._repair_via_v5`). Production
+#: never sets it; the default is pinned by tests/unit/cad/repair_v4/test_engine_dispatch.py.
+CAD_REPAIR_ENGINE: str = _engine_posture_of(optional_env("CAD_REPAIR_ENGINE", DEFAULT_ENGINE))
+
+
+#: CRS v5 BETA - the model spend cap per FILE, in US dollars, shared by everything v5 may pay for on one file (the
+#: broader repair's AI proposer, the agent entrants when on, and the description of unknown problems). Owner decision
+#: 2026-11-26: $5 per file during the beta. It is validated against `repair_v4.proposer.FILE_USD_CEILING` (the hard
+#: ceiling no proposer may be built above) when the run starts, so a value above it refuses the run, not the startup.
+CRS_V5_FILE_USD_CAP: float = float(optional_env("CRS_V5_FILE_USD_CAP", "5.0"))
+
+#: CRS v5: whether the AGENT entrant tier (model-proposed repairs inside a problem's tournament) runs. OFF for the
+#: beta: the rule and parameter entrants always run, and the agent tier is switched on only once it has been shown to
+#: beat them per class (owner, CRS v5 spec: "a source that doesn't beat the rule in a class is switched off").
+CRS_V5_AGENT: bool = bool_env("CRS_V5_AGENT", "false")
+
+#: CRS v5: whether the broader repair (the v4 AI search, from the best state) runs when the class repairs leave the
+#: part unclean. ON: it is what keeps v5 never worse than v4's search.
+CRS_V5_FALLBACK: bool = bool_env("CRS_V5_FALLBACK", "true")
+
+#: CRS v5: the whole file's wall, in seconds - read, heal, class repairs, broader repair and delivery. The measured
+#: dev waves ran 1800 s base. The node's outer clock is this plus CAD_REPAIR_TIMEOUT_S (the v3 fallback's own).
+CRS_V5_FILE_WALL_S: float = float(optional_env("CRS_V5_FILE_WALL_S", "1800"))
+
+#: CRS v5: the broader repair's search wall, in seconds (the class loop gets half of it on top). As measured: 600.
+CRS_V5_SEARCH_WALL_S: float = float(optional_env("CRS_V5_SEARCH_WALL_S", "600"))
+
+
+def v5_force_fail() -> bool:
+    """CRS_V5_FORCE_FAIL: a VERIFICATION HOOK - when on, the v5 engine raises before it reads the file, so the
+    automatic v3 fallback can be proved on a deployed environment. Never set in production. Read at CALL time."""
+    return optional_env("CRS_V5_FORCE_FAIL", "false").strip().lower() in ("1", "true", "yes", "on")
 
 #: The confidence below which the model's plan is not acted on and the rule planner's choice stands.
 CAD_REPAIR_LLM_PLANNER_MIN_CONFIDENCE: float = float(

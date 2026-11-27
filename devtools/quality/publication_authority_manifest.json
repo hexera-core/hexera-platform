@@ -234,6 +234,19 @@
   "roots": []
  },
  {
+  "context": "adapters/event_stream/redis.py::JobPublisher.repair_progress::repair_progress#1|NotAPublisher|not-a-publisher|",
+  "path": "adapters/event_stream/redis.py",
+  "qualname": "JobPublisher.repair_progress",
+  "semantic": "repair_progress",
+  "method": "repair_progress",
+  "ordinal": 1,
+  "receiver": "E",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "adapters/event_stream/redis.py::JobPublisher.screenshot::screenshot#1|NotAPublisher|not-a-publisher|",
   "path": "adapters/event_stream/redis.py",
   "qualname": "JobPublisher.screenshot",
@@ -448,6 +461,32 @@
   "semantic": "error",
   "method": "error",
   "ordinal": 3,
+  "receiver": "logger",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "adapters/model_inference/router.py::call_repair_v4_propose::error#1|NotAPublisher|not-a-publisher|",
+  "path": "adapters/model_inference/router.py",
+  "qualname": "call_repair_v4_propose",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 1,
+  "receiver": "logger",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "adapters/model_inference/router.py::call_repair_v4_propose::error#2|NotAPublisher|not-a-publisher|",
+  "path": "adapters/model_inference/router.py",
+  "qualname": "call_repair_v4_propose",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 2,
   "receiver": "logger",
   "authority": "NotAPublisher",
   "lifecycle": "not-a-publisher",
@@ -3537,6 +3576,21 @@
   ]
  },
  {
+  "context": "application/execution_publisher.py::OwnershipCheckedPublisher.arepair_progress::repair_progress#1|InternalEmitter|internal-emitter|application/execution_publisher.py::OwnershipCheckedPublisher",
+  "path": "application/execution_publisher.py",
+  "qualname": "OwnershipCheckedPublisher.arepair_progress",
+  "semantic": "repair_progress",
+  "method": "repair_progress",
+  "ordinal": 1,
+  "receiver": "self._inner",
+  "authority": "InternalEmitter",
+  "lifecycle": "internal-emitter",
+  "gated_required": false,
+  "roots": [
+   "application/execution_publisher.py::OwnershipCheckedPublisher"
+  ]
+ },
+ {
   "context": "application/execution_publisher.py::OwnershipCheckedPublisher.ascreenshot::screenshot#1|InternalEmitter|internal-emitter|application/execution_publisher.py::OwnershipCheckedPublisher",
   "path": "application/execution_publisher.py",
   "qualname": "OwnershipCheckedPublisher.ascreenshot",
@@ -5274,6 +5328,58 @@
   "method": "search",
   "ordinal": 6,
   "receiver": "_MESHING_SURFACE",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "cad/repair_v4/verdict/netgen_occ_script.py::_named_face::search#1|NotAPublisher|not-a-publisher|",
+  "path": "cad/repair_v4/verdict/netgen_occ_script.py",
+  "qualname": "_named_face",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "re",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "cad/repair_v5/brep_faults.py::step_length_unit::search#1|NotAPublisher|not-a-publisher|",
+  "path": "cad/repair_v5/brep_faults.py",
+  "qualname": "step_length_unit",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "_SI",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "cad/repair_v5/engine.py::_run.fallback::search#1|NotAPublisher|not-a-publisher|",
+  "path": "cad/repair_v5/engine.py",
+  "qualname": "_run.fallback",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "S",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "cad/repair_v5/result.py::is_plain::search#1|NotAPublisher|not-a-publisher|",
+  "path": "cad/repair_v5/result.py",
+  "qualname": "is_plain",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "INTERNAL_WORDS",
   "authority": "NotAPublisher",
   "lifecycle": "not-a-publisher",
   "gated_required": false,
@@ -8757,6 +8863,21 @@
   ]
  },
  {
+  "context": "pipeline/repair_progress.py::apublish::repair_progress#1|ExecutionEventPublisher|execution-owned|pipeline/repair_progress.py::execution_publisher",
+  "path": "pipeline/repair_progress.py",
+  "qualname": "apublish",
+  "semantic": "repair_progress",
+  "method": "arepair_progress",
+  "ordinal": 1,
+  "receiver": "pub",
+  "authority": "ExecutionEventPublisher",
+  "lifecycle": "execution-owned",
+  "gated_required": true,
+  "roots": [
+   "pipeline/repair_progress.py::execution_publisher"
+  ]
+ },
+ {
   "context": "pipeline/repair_receipt.py::apublish::receipt#1|ExecutionEventPublisher|execution-owned|pipeline/repair_receipt.py::execution_publisher",
   "path": "pipeline/repair_receipt.py",
   "qualname": "apublish",
@@ -8947,6 +9068,32 @@
   "method": "error",
   "ordinal": 1,
   "receiver": "logger",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "runtime/startup.py::check_models_priced::warn#1|NotAPublisher|not-a-publisher|",
+  "path": "runtime/startup.py",
+  "qualname": "check_models_priced",
+  "semantic": "warn",
+  "method": "warn",
+  "ordinal": 1,
+  "receiver": "_warnings",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "runtime/startup.py::check_models_priced::warn#2|NotAPublisher|not-a-publisher|",
+  "path": "runtime/startup.py",
+  "qualname": "check_models_priced",
+  "semantic": "warn",
+  "method": "warn",
+  "ordinal": 2,
+  "receiver": "_warnings",
   "authority": "NotAPublisher",
   "lifecycle": "not-a-publisher",
   "gated_required": false,

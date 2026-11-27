@@ -35,6 +35,9 @@ class SamplingSpec:
     presence_penalty: float | None = None
     stream: bool = False
     thinking_off: bool = False
+    #: names the static prefix of a request so a provider that supports it can route repeat calls to
+    #: the same prompt cache (OpenAI's `prompt_cache_key`). "" = not asked for.
+    cache_key: str = ""
 
 
 def spec_for(role: str) -> SamplingSpec:

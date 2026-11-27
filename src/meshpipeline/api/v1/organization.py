@@ -88,3 +88,49 @@ async def save_meshing_standard(body: MeshingStandardIn,
                  detail={"chars": len(got["text"]), "read": got["status"] == "read",
                          "shell_elements": got.get("shell_elements")})
     return got
+
+
+_KEY_CANNOT_SET_REPAIR = ("API keys cannot change the repair settings. Sign in to the console as "
+                          "the organisation's owner to change them.")
+
+
+class RepairSettingsIn(BaseModel):
+    #: CRS v5 beta "Bypass permission": whether runs MAY auto-accept repairs and skip the review
+    #: screen. Off (the default) means every change past the auto-accept threshold waits for review.
+    auto_accept_repairs: bool
+
+
+@router.get("/repair-settings")
+async def read_repair_settings(owner_id: Annotated[str, Depends(owner_dep)] = "",
+                               organization_id: Annotated[str, Depends(org_dep)] = "") -> dict:
+    """The organisation's repair settings, and whether this caller (its owner) may change them."""
+    from meshpipeline.application import repair_settings
+    async with get_db() as db:
+        got = await repair_settings.view(db, owner_id=owner_id, organization_id=organization_id)
+    if got is None:
+        raise HTTPException(status_code=404, detail=_NO_ORGANISATION)
+    return got
+
+
+@router.put("/repair-settings")
+async def save_repair_settings(body: RepairSettingsIn,
+                               principal: Annotated[Principal, Depends(principal_dep)],
+                               owner_id: str = Depends(owner_dep)) -> dict:
+    """Allow (or stop allowing) this organisation's runs to auto-accept repairs. The organisation's
+    owner only, from a console session; recorded in the audit log."""
+    from meshpipeline.application import repair_settings
+    if principal.credential is Credential.api_key:
+        raise HTTPException(status_code=403, detail=_KEY_CANNOT_SET_REPAIR)
+    try:
+        async with get_db() as db:
+            got = await repair_settings.set_bypass_allowed(
+                db, owner_id=owner_id, organization_id=principal.organization_id,
+                allowed=body.auto_accept_repairs)
+    except repair_settings.NotAllowed as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    if got is None:
+        raise HTTPException(status_code=404, detail=_NO_ORGANISATION)
+    audit.record("repair_settings.saved", actor="console",
+                 organization_id=principal.organization_id,
+                 detail={"auto_accept_repairs": got["auto_accept_repairs"]})
+    return got

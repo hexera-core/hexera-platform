@@ -90,6 +90,14 @@ class JobStatus_(BaseModel):
     # off the dispatch payload that has carried it since the run launched. None for a job that
     # did not come out of an intake conversation (an API-key run has nothing to reread).
     session_id: str | None = None
+    # THE REPAIR, AS FULLY AS THE MESH (CRS v5 beta, Decision 2; pipeline/repair_result.section):
+    # `choice` (meshing | standalone | off), `ran`, `engine`, `outcome`, `problems` (each {id,
+    # type, type_text, location {faces, bodies, points}, status, reason_text, change_mm,
+    # over_allowed}), `counts`, `meshers_passing`/`meshers_total`, `max_change_mm`,
+    # `allowed_change_mm`, `volume_ratio`, `size_ratio`, `flags`, `seconds`, `spend_usd`,
+    # `needs_review`, `auto_accepted`, `review_bypass`, `waiting_for_review`. Plain words only.
+    # Before the run ends it carries the choice the run was dispatched with and `ran: false`.
+    repair: dict | None = None
 
 
 class DisputeFlag(BaseModel):

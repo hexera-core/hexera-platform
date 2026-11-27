@@ -486,7 +486,8 @@ def engine_provenance_event(approved: dict) -> dict:
 
 
 def _build_dispatch_payload(*, job_id, owner_id: str, session_id, session, snapshot: dict,
-                            source_ref, interp_ref, meshing_standard: dict | None = None) -> dict:
+                            source_ref, interp_ref, meshing_standard: dict | None = None,
+                            repair_goal: dict | None = None) -> dict:
     from meshpipeline.application.approved_patch_contract import ApprovedPatchContract
     from meshpipeline.application.dispatch_contract import build as build_dispatch
     from meshpipeline.contracts.user_notes import merge as _merge_notes
@@ -500,7 +501,11 @@ def _build_dispatch_payload(*, job_id, owner_id: str, session_id, session, snaps
     # THE TEAM'S MESHING STANDARD (engines/meshing_standard), as it stands at approval. Carried only when the
     # organisation has one, so a run without it dispatches exactly the payload it always did (STD-3).
     extra = {**({"user_notes": notes} if notes else {}),
-             **({"meshing_standard": dict(meshing_standard)} if meshing_standard else {})}
+             **({"meshing_standard": dict(meshing_standard)} if meshing_standard else {}),
+             # THE CUSTOMER'S REPAIR CHOICE (CRS v5 beta, Decision 1): carried only when it is not
+             # the default "Repair + mesh" or carries the review bypass, so a run without one
+             # dispatches exactly the payload it always did
+             **({"repair_goal": dict(repair_goal)} if repair_goal else {})}
     return build_dispatch(**extra, **{
         "job_id": str(job_id),
         "geometry_source": source_ref.to_payload(),
@@ -631,6 +636,48 @@ async def _meshing_standard(sessions, organization_id: str, *, logger) -> dict |
         return None
 
 
+def repair_goal_for(approved: dict, confirmed: dict, *, bypass_allowed: bool) -> dict:
+    """The repair choice a run is dispatched with, or {} for the default ("Repair + mesh").
+
+    THE CHAT HAS THE LAST WORD ON THE CHOICE: the intake carries the form's choice into its
+    submission, and a later "just fix my STEP" / "mesh only" in the conversation changes it there
+    (`repair_goal` on the approved payload). The review BYPASS is the form's only - a permission is
+    never inferred from prose - and it is carried only when the organisation allows it."""
+    from meshpipeline.pipeline.repair_goal import CHOICE_OFF, CHOICES, DEFAULT_CHOICE
+    said = str(approved.get("repair_goal") or "").strip().lower()
+    goal = said if said in CHOICES else str(confirmed.get("goal") or DEFAULT_CHOICE)
+    bypass = bool(confirmed.get("auto_accept_repairs")) and bypass_allowed and goal != CHOICE_OFF
+    if goal == DEFAULT_CHOICE and not bypass:
+        return {}
+    return {"goal": goal, **({"auto_accept_repairs": True} if bypass else {})}
+
+
+async def _repair_goal(sessions, organization_id: str, session_id, approved: dict, *,
+                       logger) -> dict:
+    """The run's repair choice (`repair_goal_for`), with the organisation's bypass permission read
+    now. Never fails the approval: an unreadable confirmation or setting is the default choice
+    without a bypass (review required)."""
+    import asyncio
+
+    from meshpipeline.application.geometry_confirmation import confirmed_repair_goal
+    try:
+        confirmed = await asyncio.to_thread(confirmed_repair_goal, str(session_id))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("approval: the confirmed repair choice could not be read (%s)",
+                       type(exc).__name__)
+        confirmed = {}
+    allowed = False
+    if confirmed.get("auto_accept_repairs") and organization_id:
+        try:
+            from meshpipeline.application import repair_settings
+            async with sessions() as db:
+                allowed = await repair_settings.bypass_allowed(db, organization_id=organization_id)
+        except Exception as exc:  # noqa: BLE001 - a setting never fails an approval
+            logger.warning("approval: the repair settings could not be read (%s) - review "
+                           "required", type(exc).__name__)
+    return repair_goal_for(approved, confirmed, bypass_allowed=allowed)
+
+
 async def confirm_pending_approval(session, session_repo, owner_id: str, session_id, *,
                                    logger, organization_id: str = "", sessions=None,
                                    job_service=None, job_repo=None,
@@ -680,10 +727,12 @@ async def confirm_pending_approval(session, session_repo, owner_id: str, session
 
     try:
         standard = await _meshing_standard(sessions, organization_id, logger=logger)
+        repair_goal = await _repair_goal(sessions, organization_id, session_id,
+                                         builder_payload(snapshot), logger=logger)
         payload = _build_dispatch_payload(
             job_id=job_id, owner_id=owner_id, session_id=session_id, session=session,
             snapshot=snapshot, source_ref=source_ref, interp_ref=interp_ref,
-            meshing_standard=standard)
+            meshing_standard=standard, repair_goal=repair_goal)
         assert_payload_matches_approval(payload, snapshot, source_ref, logger=logger)
         # Persist the run snapshot on the job record, then launch the configured backend
         # (celery locally; a one-shot hosted pipeline job). Reconstructable from the job id alone.

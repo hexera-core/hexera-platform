@@ -102,6 +102,10 @@ class ArtifactType(str, PyEnum):
     # THE MESH-SIZE HINTS SIDECAR beside a returned or repaired STEP (`crs-mesh-hints/1`,
     # cad/repair/mesh_hints.py): an ADDITION to the STEP, never instead of it. Added by revision 0022.
     mesh_hints       = "mesh_hints"
+    # THE REPAIR VIEWER'S PAYLOAD (application/repair_viewer.py): the original and the repaired CAD
+    # as surfaces, the problems pinned where they were found and how far each face moved. What the
+    # console's repair view draws, never a download. Added by revision 0023.
+    repair_viewer    = "repair_viewer"
 
 
 
@@ -312,7 +316,7 @@ class ChatSession(Base):
     # notes question, the messages the intake quoted as requirements, and the console's notes box -
     # never a model's rewrite. [{text, source, turn, at}]; NULL until there is one.
     user_notes:        Mapped[list | None]    = mapped_column(JSONB, nullable=True)
-    # THE FILES THE USER ATTACHED in the chat box or the notes box (application/chat_attachments, NOTE-16):
+    # THE FILES THE USER ATTACHED in the chat box or the notes box (application/chat_attachments, NOTE-16; 0024):
     # {id: {kind, name, mime, bytes, object_key, text_key?, sha256, at, ...}} - never the bytes. The index erasure
     # reads, since the object store cannot list a session's keys. NULL until there is one.
     attachments:       Mapped[dict | None]    = mapped_column(JSONB, nullable=True)
@@ -951,6 +955,12 @@ class Organization(Base):
                                                                   nullable=True)
     erased_at:            Mapped[datetime | None] = mapped_column(DateTime(timezone=True),
                                                                   nullable=True)
+    #: THE REPAIR REVIEW BYPASS PERMISSION (0023, CRS v5 beta): whether a run of this organisation
+    #: may be dispatched with "auto-accept repairs (skip review)". Only the organisation's owner
+    #: sets it (api/v1/organization.py); off means every change past the auto-accept threshold
+    #: waits for the review screen.
+    repair_auto_accept_allowed: Mapped[bool] = mapped_column(Boolean, nullable=False,
+                                                             server_default=text("false"))
 
     __table_args__: tuple = (
         Index("ix_organizations_erasure_pending", "erasure_requested_at",
@@ -976,7 +986,7 @@ class OrganizationMeshingStandard(Base):
     reading:    Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     #: SHSTAGE-8 (0021): the settings page's switch, a shell's elements for every run - "quads" | "triangles"
     shell_elements: Mapped[str] = mapped_column(String(16), nullable=False, server_default="quads")
-    #: STD-4 (0024): whether the user SET that switch - left at its default (Quads) it sets nothing aside, and the
+    #: STD-4 (0025): whether the user SET that switch - left at its default (Quads) it sets nothing aside, and the
     #: standard's typed words decide a shell's elements
     shell_elements_set: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
     #: who saved it last (their owner id, the lowercased email; cleared with the organisation on erasure)

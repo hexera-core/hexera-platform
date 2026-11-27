@@ -183,7 +183,7 @@ def test_dispose_is_called_only_by_a_view_that_owns_its_scene():
     canvas, and stops its own drawing first, may call `dispose()`: the parts checklist's 3D view
     (parts_view.js stops its overlay, then disposes). Other code releases that view through the
     view's own `dispose`, never the canvas directly."""
-    allowed = {"ui/js/viewer/parts_view.js"}
+    allowed = {"ui/js/viewer/parts_view.js", "ui/js/viewer/repair_view.js"}
     callers = []
     for path in sorted((REPO / "ui" / "js").rglob("*.js")):
         rel = path.relative_to(REPO).as_posix()

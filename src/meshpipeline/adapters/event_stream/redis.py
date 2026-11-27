@@ -236,6 +236,9 @@ class JobPublisher:
     def mesh_partial(self, phase: str, object_key: str, op_id: str = "") -> None:
         self._emit_keyed(E.mesh_partial(self.agent, phase, object_key), op_id)
 
+    def repair_progress(self, progress: dict, op_id: str = "") -> None:
+        self._emit_keyed(E.repair_progress(self.agent, progress), op_id)
+
     def narrate(self, kind: str, text: str, *, n: int | None = None, of: int | None = None,
                 unit: str = "", op_id: str = "") -> None:
         self._emit_keyed(E.narrate(self.agent, kind, text, n, of, unit), op_id)

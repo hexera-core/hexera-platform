@@ -183,6 +183,15 @@ def test_the_served_routes_are_exactly_the_supported_set():
         # THE TEAM'S MESHING STANDARD (the console's Meshing settings), the caller's own organisation's
         ("GET", "/api/v1/organization/meshing-standard"),
         ("PUT", "/api/v1/organization/meshing-standard"),   # console session only; read once on save
+        # CRS v5 beta "Bypass permission": whether the organisation's runs may auto-accept repairs
+        # (the console's Meshing settings, PR 3); owner only, console session only, audited
+        ("GET", "/api/v1/organization/repair-settings"),
+        ("PUT", "/api/v1/organization/repair-settings"),
+        # CRS v5 beta, Decision 2: the repair view (original + repaired CAD, pins, deviation) and
+        # the repair report as HTML and JSON - the console's repair result (PR 3)
+        ("GET", "/api/v1/simulation/{job_id}/repair/surfaces"),
+        ("GET", "/api/v1/simulation/{job_id}/repair/report.html"),
+        ("GET", "/api/v1/simulation/{job_id}/repair/report.json"),
         ("GET", "/api/v1/simulation"),           # the tenant's run list, keyset paged
         ("GET", "/api/v1/simulation/{job_id}"),
         # a NEW download link for one deliverable, minted at click time; its life scales with size

@@ -73,7 +73,8 @@ def test_a_standalone_run_whose_repaired_file_was_not_stored_is_not_succeeded():
     standalone = standalone[:standalone.index("else:")]
     # the repaired file IS a standalone job's deliverable: decided in the delivery branch (not the
     # evidence block above it), failing the run, and through _decision so the two cannot disagree
-    assert "if not _standalone_handed_back:" in standalone
+    # (only when a repaired file was named: a repair that kept nothing completes - CRS v5 beta)
+    assert 'if _standalone.get("path") and not _standalone_handed_back:' in standalone
     assert "StatusDecision(JobStatus.failed, FailedReason.api_failure)" in standalone
     assert "final_status, _failed_reason = _decision.status, _decision.failed_reason" in standalone
     # and a standalone run never falls through to the mesh workspace delivery

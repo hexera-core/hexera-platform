@@ -51,6 +51,9 @@ LIBRARY_CONTRACTS = {
     # Forwards the parent's environment to the shell mesh child, plus that run's own stop time
     # (HEXERA_SHELL_RUN_END, SHMESH-31g) - a per-run argument, not a developer setting.
     "engines/fea_driver.py",
+    # Forwards the parent's environment to the CRS v5 child (runtime/crs_v5_child.py), plus that run's own
+    # event-log path - a per-run argument, not a developer setting. It obeys no setting from it.
+    "cad/repair_v5/engine.py",
 }
 
 

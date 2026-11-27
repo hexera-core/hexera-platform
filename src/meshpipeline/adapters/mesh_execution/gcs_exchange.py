@@ -21,6 +21,15 @@ def storage_client():
     return storage.Client(project=project) if project else storage.Client()
 
 
+def bind_gcs_buckets() -> None:
+    """Compose the CRS repair stores' gs:// port (contracts/gcs_buckets.py) onto this client."""
+    from google.api_core.exceptions import NotFound, PreconditionFailed
+
+    from meshpipeline.contracts import gcs_buckets
+
+    gcs_buckets.bind(lambda name: storage_client().bucket(name), PreconditionFailed, NotFound)
+
+
 def split_gs(uri: str) -> tuple[str, str]:
     if not uri.startswith("gs://"):
         raise ValueError(f"not a gs:// uri: {uri}")

@@ -140,6 +140,10 @@ def install_adapters() -> None:
     event_stream.set_publisher_factory(JobPublisher)
     event_stream.set_subscription_factory(RedisEventSubscription)
     object_storage.set_object_store(build_object_store())
+    # THE CRS REPAIR STORES' gs:// PORT (contracts/gcs_buckets.py): the verdict cache when
+    # CRS_V4_VERDICT_CACHE_URI names a bucket. Binding opens nothing; a store asks for a bucket only when used.
+    from meshpipeline.adapters.mesh_execution.gcs_exchange import bind_gcs_buckets
+    bind_gcs_buckets()
     search.set_web_search_provider(build_web_search_provider())
     # BILLING IS OPTIONAL, and it is the only capability here that is. Every other port has a local
     # implementation that works with no credential; charging money has none, so a deployment with no
