@@ -376,6 +376,7 @@ def _measure(session_id: str, stored: Mapping, work: Path) -> tuple[dict, Any, f
 # #
 #: where it is kept, beside the stage's kept plans (the run finds it there: fea_driver.plan_step_ai)
 from meshpipeline.engines.fea_plan_options import STAND_FILE  # noqa: E402
+
 #: a planning of it asked for and not landed is asked again after this long
 STAND_PENDING_S = 900.0
 
@@ -390,6 +391,7 @@ def sizing_key(facts: Mapping | None) -> str:
     """Which sizing of the stage a count belongs to (a new check, a new unit: a new sizing); "" when not sized."""
     import hashlib
     import json
+
     from meshpipeline.application import fea_check as FC
     got = (facts or {}).get(FC.PLAN_FACT_KEY)
     if not isinstance(got, Mapping) or not got.get("sized"):
@@ -405,6 +407,7 @@ def _stand_key(session_id: str, name: str = STAND_FILE) -> str:
 
 def _read_json(key: str) -> dict | None:
     import json
+
     from meshpipeline.contracts.object_storage import get_object_store
     try:
         got = json.loads(get_object_store().get_bytes(object_key=key))

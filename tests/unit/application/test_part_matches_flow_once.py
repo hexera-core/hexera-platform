@@ -6,12 +6,13 @@ from __future__ import annotations
 
 import json
 
-from meshpipeline.application import geometry_check as gc
-from meshpipeline.application import part_matches as PM
 from tests.unit.application.test_part_matches import SID, TABLE, world  # noqa: F401 - the fixture
 
+from meshpipeline.application import geometry_check as gc
+from meshpipeline.application import part_matches as PM
 
-def _flow_world(world, notes_sec: dict, text: str):
+
+def _flow_world(world, notes_sec: dict, text: str):  # noqa: F811
     """The world as a flow (CFD) model whose notes were read: the CFD reader's section stored with the reading."""
     from meshpipeline.contracts import user_notes as UN
     check = {"status": "ready", "session_id": SID, "facts": {PM.PARTS_KEY: {"route": "cfd", "table": TABLE}}}
@@ -31,7 +32,7 @@ def _cells_read(*rows) -> dict:
     return MR.section("used", requirements=req)
 
 
-def test_a_cell_count_typed_on_a_flow_mesh_is_listed_once(world):
+def test_a_cell_count_typed_on_a_flow_mesh_is_listed_once(world):  # noqa: F811
     # the slip: the count typed at the plan step was a checklist row (NOTE-24, read in code) AND the CFD reader's
     # line ("From your notes: about 2 million cells.") - the same setting listed twice; the typed row stays
     got = _flow_world(world, _cells_read(("cells:target", "about 2 million cells", ""),
@@ -41,7 +42,7 @@ def test_a_cell_count_typed_on_a_flow_mesh_is_listed_once(world):
     assert got["lines"] == ["From your notes: cells of 0.5 mm at the walls."]
 
 
-def test_a_saved_team_count_and_a_typed_one_are_listed_once_with_the_typed_value(world):
+def test_a_saved_team_count_and_a_typed_one_are_listed_once_with_the_typed_value(world):  # noqa: F811
     # Workspace > Meshing says about 5 million cells; the chat says about 2 million: one count, the typed one
     from meshpipeline.engines import meshing_standard as MS
     merged = MS.merge(_cells_read(("cells:target", "about 5 million cells", "")),

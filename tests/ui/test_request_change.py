@@ -167,7 +167,7 @@ def test_a_failed_run_leaves_the_old_mesh_and_says_so(live, tmp_path):
     live.wait_for(f"document.querySelector('#cc .proc') && !document.getElementById('v-prog-{OLD}').hidden",
                   what="the run under way")
     _finish(live, "failed", "The new run could not build the mesh: the finer cells did not fit.")
-    live.wait_for(f"document.getElementById('cc').innerText.includes('the finer cells did not fit')",
+    live.wait_for("document.getElementById('cc').innerText.includes('the finer cells did not fit')",
                   timeout=30, what="the failure in the chat")
     p = _panel(live, OLD)
     assert p["shown"] and not p["progress"] and not p["sendOff"] and p["markers"] == 1, p
