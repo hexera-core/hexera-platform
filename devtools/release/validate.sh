@@ -265,6 +265,31 @@ declare -A IMAGE_ID=() IMAGE_TAG=()
 PRODUCT_VERSION="$(sed -n 's/^__version__[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' \
   "${REPO_ROOT}/src/meshpipeline/__init__.py" | head -1)"
 
+#: WHICH CHECKOUT THESE IMAGES WERE BUILT FROM, stamped INTO them so a running container can
+#: be identified later. Dockerfile declares `ARG MESH_SOURCE_TREE=unknown` and promotes it to
+#: an ENV in both `runtime-base` and `mesh`, so an image built without this build-arg carries
+#: the literal string "unknown" - and that is what every image this gate has ever published
+#: carried, because `_build_image` passed only APP_VERSION.
+#:
+#: MEASURED, 2026-11-27: the mesh image behind the Cloud Run job dev-rehaan-mesh
+#: (mesh@sha256:8788eec1dd..., published by this gate from commit 8a22538f) reported
+#: MESH_SOURCE_TREE=unknown. So nothing could say which tree a deployed mesh VM was running,
+#: and tests/native/assert_mesh_image_current.sh - which EVERY native tier runs first - refuses
+#: "unknown" outright, meaning the one gate that exists to prove "this image is the checkout
+#: you are testing" could not be satisfied by any released image.
+#:
+#: FROM THE SAME AUTHORITY THE Makefile USES, deliberately. `mesh-image` stamps
+#: $(SOURCE_DIGEST) = tests/integration/source_digest.sh, and that script is also what the
+#: freshness check recomputes to compare against. A second digest here would be a second
+#: answer to one question - which is the thing source_digest.sh's own header warns about.
+#: It reads the WORKING FILES, not the committed tree, which is why it is correct to run it
+#: here: this gate has already refused a dirty tree above, so the two agree by construction.
+SOURCE_TREE="$(bash "${REPO_ROOT}/tests/integration/source_digest.sh")"
+if [ -z "${SOURCE_TREE}" ]; then
+  bad "the working-tree digest could not be computed, so no image could be identified"
+  exit 1
+fi
+
 # THE LAYER CACHE. Opt-in, and never load-bearing: RELEASE_BUILD_CACHE names a registry PREFIX
 # (a cache ref per component is derived from it), and everything below degrades to the plain
 # `docker build` this gate has always run if it is unset, if buildx is unavailable, or if no
@@ -308,6 +333,7 @@ _build_image() {  # _build_image <component> <tag>
   local comp="$1" tag="$2" cache
   if [ -z "${BUILDER}" ]; then
     docker build --target "${TARGET[$comp]}" --build-arg APP_VERSION="${PRODUCT_VERSION}" \
+      --build-arg MESH_SOURCE_TREE="${SOURCE_TREE}" \
       -t "${tag}" . >"${WORK}/build-${comp}.log" 2>&1
     return $?
   fi
@@ -323,8 +349,15 @@ _build_image() {  # _build_image <component> <tag>
   for extra in ${RELEASE_BUILD_CACHE_FROM:-}; do
     from_args+=(--cache-from "type=registry,ref=${extra}-${comp}")
   done
+  # BOTH PATHS OR NEITHER. These two are the same build with and without a layer cache, and a
+  # stamp on only one of them would make an image identifiable or not depending on whether a
+  # buildx builder happened to come up - which is exactly the kind of difference nobody would
+  # look for. `console` and `admin` derive from node rather than from `base`, so they do not
+  # declare this ARG and docker notes it as unconsumed; that note is cheaper than coupling
+  # this loop to which targets the Dockerfile stamps.
   docker buildx build --builder "${BUILDER}" \
     --target "${TARGET[$comp]}" --build-arg APP_VERSION="${PRODUCT_VERSION}" \
+    --build-arg MESH_SOURCE_TREE="${SOURCE_TREE}" \
     "${from_args[@]}" \
     --cache-to "type=registry,ref=${cache},mode=max,ignore-error=true" \
     --load -t "${tag}" . >"${WORK}/build-${comp}.log" 2>&1
