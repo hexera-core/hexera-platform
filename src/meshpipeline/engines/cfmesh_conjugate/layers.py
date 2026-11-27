@@ -444,11 +444,34 @@ FEATURE_ANGLE = _feature_angle()
 #: on record - job 22ac7054's layer pass at 2579.65 s, of which 47a5293e measures 25 of 44.9
 #: minutes as the relaxed phase.
 #:
-#: WHAT THIS DOES NOT CLAIM. The saving is an estimate, not a measurement of a four-iteration run.
-#: Iterations are not equal cost: the floor sweep at :111-123 measures four at 69 s against ten at
-#: 122 s, and runs/layer_sweep-two_scale_plate_ported-2a-L3.json gives five at 51.81 s against ten
-#: at 85.5-87.1 s, so the marginal iteration is about half the average one and the six dropped
-#: iterations are 43-56% of the pass rather than 60%.
+#: WHAT THIS DID NOT CLAIM, AND WHAT THE PRODUCTION RUN THEN MEASURED. This note used to read "the
+#: saving is an estimate, not a measurement of a four-iteration run", with the sweeps putting the
+#: marginal iteration at about half the average one and the six dropped iterations at 43-56% of the
+#: pass rather than 60%. JOB 606af55e (2026-11-27, 279,286,964 cells) is that run:
+#:
+#:     layer pass    2,717.94 s at ten iterations (job b8f09ae9)
+#:                   1,846.8  s at four           (job 606af55e)
+#:                   --------
+#:                     871.1  s saved, 32.1% of the pass - inside the 43-56% band, at its low end
+#:
+#: AND THE PREDICTED TABLE HELD, which is the part that matters more than the seconds. Projected
+#: from b8f09ae9's own ten-iteration log, four iterations would finish on 48 illegal faces at a
+#: coverage of 90.7191; 606af55e finished on 49 at 90.6438, on a mesh with twelve thousand more
+#: cells. Its own four rows are
+#:
+#:     iteration     0        1       2       3
+#:     illegal    561959   14008      74      49
+#:     coverage   90.8603 90.6457 90.6446 90.6438
+#:     per 1e6     16279     422    2.23    1.48      against ILLEGAL_PER_MILLION_CEILING 200.0
+#:
+#: SO WHY NOT THREE. Because the clamp below is not an off-by-one and the table makes it look like
+#: one: iteration 2 ends on 74 illegal faces, 2.23 per million, ninety times inside the ceiling, and
+#: it would cost about 145 s less. What it would also do is end the pass before iteration 3, which
+#: is the ONLY RELAXED ITERATION - `N_RELAXED_ITER` is 3 and snappyLayerDriver selects the relaxed
+#: sub-dictionary with `iteration < nRelaxedIter ? motionDict : relaxed`. On this plate the relaxed
+#: pass is worth 25 illegal faces out of 8,140 s of job; on a part whose strict iterations leave
+#: thousands it is the only escape there is. One plate is not a reason to delete the escape, so the
+#: value stays at four and this paragraph is here so the next reader does not have to re-derive it.
 #:
 #: IT IS VERIFIABLE WITHOUT RE-MESHING, and that is why four is safe to ship. `nLayerIter` appears
 #: in snappyLayerDriver.C only as the loop bound - `for (label iteration = 0; iteration <
