@@ -163,10 +163,19 @@ async def _requirement_reply(outcome, session_repo, owner_id: str, session_id, o
     async with get_db() as db:
         held = await session_repo.get_for_owner(db, session_id, owner_id, organization_id=organization_id)
     held = _require_session(held, session_id)
-    view = await asyncio.to_thread(lambda: PM.finalize(held, owner_id=owner_id))
+    from meshpipeline.application import meshing_standard_service as MSS
+    from meshpipeline.application import plan_cost
+    # NOTE-26: the reading costs what was typed with the team's standard the run will be dispatched with
+    standard = await MSS.for_reading(get_db, organization_id=organization_id)
+    view = await asyncio.to_thread(lambda: PM.finalize(held, owner_id=owner_id, **PM.with_standard(standard)))
     from meshpipeline.agents.intake import plan_talk as PT
     note = PR.owed_note(held)
     quick = PT.plain_face_rows(note) if note is not None else None
+    sized: bool = bool(quick) and await asyncio.to_thread(plan_cost.stage_sized, str(session_id))
+    if sized:
+        # NOTE-26: an FEA solid the stage sized - what the picked face's size does to the mesh is costed with the
+        # reading, so the reply waits for it like any other (the short way had no cost to say)
+        quick = None
     if quick and view is not None and view.get("status") == "reading" and not view.get("failed"):
         # THE SHORT WAY: faces picked and one plain size - where and what are known now, so the reply is written at
         # once while the reading (started above) fills the card's list
@@ -204,7 +213,9 @@ async def _question_reply(session_repo, owner_id: str, session_id, organization_
     async with get_db() as db:
         held = await session_repo.get_for_owner(db, session_id, owner_id, organization_id=organization_id)
     held = _require_session(held, session_id)
-    view = await asyncio.to_thread(lambda: PM.finalize(held, owner_id=owner_id))
+    from meshpipeline.application import meshing_standard_service as MSS
+    standard = await MSS.for_reading(get_db, organization_id=organization_id)
+    view = await asyncio.to_thread(lambda: PM.finalize(held, owner_id=owner_id, **PM.with_standard(standard)))
     t0 = time.monotonic()
     while view and view.get("status") == "reading" and time.monotonic() - t0 < REQUIREMENT_READ_WAIT_S:
         await asyncio.sleep(REQUIREMENT_POLL_S)

@@ -16,6 +16,7 @@ from meshpipeline.application import part_matches as PM
 from meshpipeline.application import plan_cost as PC
 from meshpipeline.contracts import user_notes as UN
 from meshpipeline.engines import fea_ai
+from meshpipeline.engines import mesh_requirements as MR
 
 
 def _cost(before=700_000, after=2_900_000, tb=8, ta=25, bigger=False):
@@ -51,12 +52,11 @@ def test_it_is_said_only_when_worth_saying(before, after, bigger, said):
     assert not PC.worth_saying(None) and not PC.worth_saying({"before": {"elements": 0}, "after": {"elements": 5}})
 
 
-def test_the_plain_sentence_says_elements_and_minutes_before_and_after():
-    assert PT.cost_line(_cost()) == ("That takes it from about 0.7 million to about 2.9 million elements, so roughly "
-                                     "25 minutes instead of 8.")
+def test_the_plain_sentence_says_the_elements_before_and_after_and_no_minutes():
+    # no minutes: the time models held do not cover the whole wait (the C5 knuckle: "3 minutes", 8.5 taken)
+    assert PT.cost_line(_cost()) == "That takes it from about 0.7 million to about 2.9 million elements."
     assert PT.cost_line(_cost(1_000_000, 10_400_000, 9, 96, bigger=True)) == (
-        "That takes it from about 1.0 million to about 10 million elements, so roughly 1.6 hours instead of 9 "
-        "minutes, and it needs a bigger machine.")
+        "That takes it from about 1.0 million to about 10 million elements, and it needs a bigger machine.")
     assert PT.cost_line(_cost(9_600, 27_000, 1, 1)) == "That takes it from about 9,600 to about 27,000 elements."
 
 
@@ -64,8 +64,7 @@ def test_the_fallback_reply_carries_the_cost_and_only_for_a_message_that_set_som
     notes = _notes("finer at the fillets")
     view, nid = _fillet_view(notes, _cost())
     plain = PT.reply_for(notes[-1], view, note_id=nid)
-    assert plain.endswith("That takes it from about 0.7 million to about 2.9 million elements, so roughly 25 "
-                          "minutes instead of 8.")
+    assert plain.endswith("That takes it from about 0.7 million to about 2.9 million elements.")
     # too small to say: the reply is the reply it always was
     small, _ = _fillet_view(notes, _cost(1_000_000, 1_100_000))
     assert "That takes it" not in PT.reply_for(notes[-1], small, note_id=nid)
@@ -82,13 +81,13 @@ def test_the_model_is_given_the_cost_and_the_guard_holds_it_to_it():
     view, nid = _fillet_view(notes, _cost())
     f = PR.facts(notes[-1], view, note_id=nid)
     assert f["what_it_costs"] == {"elements_before": "about 0.7 million", "elements_after": "about 2.9 million",
-                                  "needs_a_bigger_machine": False, "minutes_before": 8, "minutes_after": 25,
-                                  "say_it_like": PT.cost_line(_cost())}
+                                  "needs_a_bigger_machine": False, "say_it_like": PT.cost_line(_cost())}
     assert "cost" in [name for name, _p, _b in PR.PLAN_REPLY_PROMPT_BLOCKS]
     assert "what_it_costs" in PR.compose_system()
-    ok = ("Sure, I took that as the fillets and I'll go finer there. That takes it from about 0.7 to 2.9 million elements, so roughly 25 "
-          "minutes instead of 8.")
+    ok = "Sure, I took that as the fillets and I'll go finer there. That takes it from about 0.7 to 2.9 million elements."
     assert PR.check(ok, f) == ""
+    # a time is never said: the facts hold none
+    assert PR.check(ok[:-1] + ", so roughly 25 minutes instead of 8.", f) != ""
     assert PR.check("Sure, I'll go finer at the fillets.", f) == "the cost not said"
     assert PR.check("Sure, I'll go finer at the fillets. That's about 2.9 million elements on a bigger machine.",
                     f) == "a bigger machine said when none is needed"
@@ -104,11 +103,13 @@ def test_the_reply_is_the_models_with_the_cost_or_the_plain_sentence(monkeypatch
             return reply
         monkeypatch.setattr(PR, "_ask", model)
         return asyncio.run(PR.written(notes[-1], view, note_id=nid))
-    good = run("Okay, I took that as the fillets and I'll go finer there. That takes it to about 2.9 million elements from 0.7 million, "
-               "roughly 25 minutes instead of 8.")
+    good = run("Okay, I took that as the fillets and I'll go finer there. That takes it to about 2.9 million elements "
+               "from 0.7 million.")
     assert good["source"] == PR.SOURCE_MODEL
     bad = run("Okay, I'll go finer at the fillets.")
-    assert bad["source"] == PR.SOURCE_FALLBACK and bad["text"].endswith("roughly 25 minutes instead of 8.")
+    assert bad["source"] == PR.SOURCE_FALLBACK and bad["text"].endswith("about 2.9 million elements.")
+    timed = run("Okay, I'll go finer at the fillets. That takes it to about 2.9 million elements, roughly 25 minutes.")
+    assert timed["source"] == PR.SOURCE_FALLBACK
 
 
 def test_the_count_row_shows_the_new_estimate(monkeypatch):
@@ -126,6 +127,12 @@ def test_a_count_becomes_the_runs_target():
     assert PC.target_of(rows) == {"elements": 1_500_000, "mode": "at_most", "quote": "", "source": "notes"}
     assert PC.target_of([]) is None
     assert PC.wanted(None, rows) and not PC.wanted({"status": "none"}, [])
+    # a requirement only the notes' own reading holds (a size on a picked face) is costed too; the standard's alone is not
+    req = {**MR.empty(), "rows": [{"id": "r1", "field": "local", "from": "notes"}],
+           "local": [{"id": "r1", "what": "size", "mm": 2.0, "faces": ["Face_6"]}]}
+    assert PC.wanted({"status": "none"}, [], MR.section("used", requirements=req))
+    std = {**req, "rows": [{"id": "s1", "field": "local", "from": "settings"}]}
+    assert not PC.wanted({"status": "none"}, [], MR.section("used", requirements=std))
     assert PC.wanted({"status": "used", "entries": [{"ask": "refine"}]}, [])
 
 
@@ -136,9 +143,10 @@ def test_nothing_is_costed_without_the_stages_sized_plan(monkeypatch):
     monkeypatch.setattr(PC, "_measured", lambda *a, **k: called.append(1))
     section = {"status": "used", "entries": [{"ask": "refine", "parts": ["Feature_1"]}]}
     assert PC.for_reading("s1", section, []) is None and not called
-    # and nothing to cost: not even the check is read
+    # and nothing to cost: not even the check is read - the reading keeps a marker, so the next one knows the plan
+    # before it was the team's standard alone
     monkeypatch.setattr(GC, "read_check", lambda sid: pytest.fail("read"))
-    assert PC.for_reading("s1", {"status": "none"}, []) is None
+    assert PC.for_reading("s1", {"status": "none"}, []) == {"rule": "NOTE-26", "status": PC.NOTHING}
 
 
 def test_the_cost_is_the_runs_own_plan_of_a_real_part():

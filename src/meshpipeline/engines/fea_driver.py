@@ -548,13 +548,7 @@ async def read_requirements(ws: Path, state, *, job_id: str, run=None, publish=N
     # STD-1..3: the notes merged with the team's meshing standard (settings < notes, field by field); with no
     # standard this is the notes' own reading, exactly as before
     read = await MS.decide(state or {}, route="fea", job_id=job_id, run=run, enabled=FA.FEA_AI, wait_s=ai_wait_s(run))
-    # STD-4: a shell's elements picked on the stage (Quads | Triangles) are the last word on that one field; no
-    # pick (the control left where it started, or a solid run): the section as read, the same object
-    sec = MS.stage(read, (state or {}).get(MS.STAGE_KEY)) if mesh_as_of(state) != "solid" else read
-    # NOTE-15: what the notes say that the product acted on outside the reading (the engine they name, the kind of
-    # mesh, the unit) is never told or counted as not applied
-    from meshpipeline.engines import notes_acted as NA
-    sec = NA.apply(sec, MR.notes_text(state or {}), NA.facts_of(state))
+    sec = requirements_section(read, state)
     MR.write(ws, sec)
     if MR.strictness_unnamed(sec):
         # NOTE-14: a note on how strict the limits are that names none the user set: one fixed plain line on the
@@ -575,6 +569,21 @@ async def read_requirements(ws: Path, state, *, job_id: str, run=None, publish=N
     if say:
         await say_requirements(sec, publish, told=told)
     return sec
+
+
+def requirements_section(read: dict, state) -> dict:
+    """The notes' reading merged with the team's standard (meshing_standard.decide) as the run applies it - the one
+    copy, read by the run (read_requirements) and by the plan step's cost (application/plan_cost, NOTE-26)."""
+    from meshpipeline.engines import mesh_requirements as MR
+    from meshpipeline.engines import meshing_standard as MS
+    from meshpipeline.engines import notes_acted as NA
+
+    # STD-4: a shell's elements picked on the stage (Quads | Triangles) are the last word on that one field; no
+    # pick (the control left where it started, or a solid run): the section as read, the same object
+    sec = MS.stage(read, (state or {}).get(MS.STAGE_KEY)) if mesh_as_of(state) != "solid" else read
+    # NOTE-15: what the notes say that the product acted on outside the reading (the engine they name, the kind of
+    # mesh, the unit) is never told or counted as not applied
+    return NA.apply(sec, MR.notes_text(state or {}), NA.facts_of(state))
 
 
 async def say_requirements(sec: dict, publish, *, told: tuple[str, ...] = ()) -> None:
@@ -824,6 +833,31 @@ def requirement_sizes(record: dict, asked: dict | None, part_sizes: dict | None,
         sizes.update({k: v for k, v in scaled.items()
                       if v.get("kept") and PS.part_of_faces(v.get("faces") or []) in sizes})
     return sizes, scaled, controls
+
+
+def requirement_inputs(record: dict, asked: dict | None, part_sizes: dict | None, surface, diag_m: float, *,
+                       picks: bool = True) -> dict:
+    """WHAT THE PLANNER IS GIVEN FROM THE USER'S REQUIREMENTS - the one copy, used by the run (drive, before its first
+    planning) and by the plan step's cost (fea_plan_options.requirements_plan, NOTE-26), so the count said in the
+    chat and the count the run plans come from the same inputs: the parts reading with the faces picked on the model
+    (NOTE-17, `picks`: not yet applied), the sizes (requirement_sizes), and what rides with the record into every plan
+    - the controls the notes and the team's standard set (NOTE-13: a growth rate, elements through the walls) and the
+    places asked finer that this rule sizes (PLAN-fea-36). Changes nothing it is given. Returns {"part_sizes",
+    "sizes", "scaled", "controls", "finer", "record": the record the planner is given}."""
+    from meshpipeline.engines import control_appliers as CA
+    from meshpipeline.engines import mesh_requirements as MR
+
+    if picks:
+        part_sizes = PS.with_picks(part_sizes, MR.requirements_of(asked or {}), surface)
+    sizes, scaled, controls = requirement_sizes(record, asked, part_sizes, diag_m)
+    finer = PS.finer_outcomes(scaled)
+    rec = dict(record)
+    if controls is not None:
+        rec[CA.RECORD_KEY] = controls
+    if finer:
+        rec[FA.SETTLED_KEY] = PS.settled(scaled)
+    return {"part_sizes": part_sizes, "sizes": sizes, "scaled": scaled, "controls": controls, "finer": finer,
+            "record": rec}
 
 
 def size_choice(state, record: dict, surface, diag_m: float, *, levers, ceiling_s, ai, kept: dict | None,
@@ -3066,17 +3100,19 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
     # model from the parts' facts and pictures, checked by the rules; nothing applied when it cannot be read
     part_sizes = (read_early if read_early is not None else
                   await PS.decide(ws, record, surface, state or {}, job_id=job_id, run=run, wait_s=ai_wait_s(run)))
-    if read_early is None:
-        # NOTE-17: a size typed with faces picked on the model sizes those faces (re-checked on this surface)
-        part_sizes = PS.with_picks(part_sizes, _MR.requirements_of(asked), surface)
+    # THE PLANNER'S INPUTS FROM THE REQUIREMENTS, as the plan step's cost takes them (requirement_inputs, NOTE-26).
+    # NOTE-17: a size typed with faces picked on the model sizes those faces (re-checked on this surface) - here
+    # unless the shell's early reading applied them
+    given = requirement_inputs(record, asked, part_sizes, surface, diag_m, picks=read_early is None)
+    part_sizes = given["part_sizes"]
     if read_early is None and part_sizes.get("status") != "none":
         _cite(job_id, PS.decisions(part_sizes))
-    sizes, scaled, controls = requirement_sizes(record, asked, part_sizes, diag_m)
+    sizes, scaled, controls = given["sizes"], given["scaled"], given["controls"]
     if controls is not None:
         # NOTE-13: the controls the notes set ride with the record into every plan of the run (make_plan's one seam)
         from meshpipeline.engines import control_appliers as CA
-        record[CA.RECORD_KEY] = controls
-    finer = PS.finer_outcomes(scaled)
+        record[CA.RECORD_KEY] = given["record"][CA.RECORD_KEY]
+    finer = given["finer"]
     if scaled:
         _cite(job_id, [{"stage": "fea_plan", "decided": "parts asked finer or coarser", "value": len(scaled),
                         "rule": "PLAN-fea-36", "inputs": {k: {key: v[key] for key in ("scale", "min_m", "max_m",

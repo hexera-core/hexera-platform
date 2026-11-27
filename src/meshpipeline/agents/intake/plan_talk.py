@@ -608,19 +608,14 @@ def cost_mine(view: Mapping | None, rows) -> dict | None:
 
 
 def cost_line(cost: Mapping) -> str:
-    """NOTE-26's plain sentence: "That takes it from about 0.7 million to about 2.9 million elements, so roughly 25
-    minutes instead of 8." - with "and it needs a bigger machine" when it does."""
+    """NOTE-26's plain sentence: "That takes it from about 0.7 million to about 2.9 million elements." - with "and it
+    needs a bigger machine" when it does. The element count only: no minutes (application/plan_cost - the time models
+    held do not cover the whole wait, and the C5 knuckle's "3 minutes" took 8.5)."""
     b, a = cost.get("before") or {}, cost.get("after") or {}
     was, now = count_words(b.get("elements")), count_words(a.get("elements"))
     line = f"That takes it from {was} to {now} elements" if was != now else f"That keeps it at {now} elements"
-    tb, ta = usual_minutes(b), usual_minutes(a)
-    if tb and ta and tb != ta:
-        then = minutes_words(tb)
-        if ta < 90 and tb < 90:
-            then = str(max(1, tb))          # "25 minutes instead of 8"
-        line += f", so roughly {minutes_words(ta)} instead of {then}"
     if cost.get("bigger_machine"):
-        line += ", and it needs a bigger machine" if was != now or (tb and ta and tb != ta) else ", but it needs a bigger machine"
+        line += ", and it needs a bigger machine" if was != now else ", but it needs a bigger machine"
     return line + "."
 
 

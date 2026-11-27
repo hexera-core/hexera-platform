@@ -488,9 +488,18 @@ async def decide(state: Mapping, *, route: str = "", job_id: str = "", run=None,
                  wait_s: float = MR.TIMEOUT_S) -> dict:
     """THE ONE CALL every route makes where it read the notes: the notes' section (engines/mesh_requirements.decide,
     exactly as before) merged with the team's standard. No standard: the notes' section itself (STD-3)."""
+    return (await decide_and_base(state, route=route, job_id=job_id, run=run, enabled=enabled, wait_s=wait_s))[0]
+
+
+async def decide_and_base(state: Mapping, *, route: str = "", job_id: str = "", run=None, enabled: bool = True,
+                          wait_s: float = MR.TIMEOUT_S) -> tuple[dict, dict]:
+    """decide(), and the same standard merged with NO notes: (what the run applies, what it would apply had the user
+    typed nothing). NOTE-26 costs a typed requirement against the second when nothing typed was costed before it.
+    The standard is read once for both; no standard: (the notes' section, an empty one)."""
     std = standard_of(state)
     if std is None:
-        return await MR.decide(state, route=route, job_id=job_id, run=run, enabled=enabled, wait_s=wait_s)
+        got = await MR.decide(state, route=route, job_id=job_id, run=run, enabled=enabled, wait_s=wait_s)
+        return got, MR.section("none")
     started = time.monotonic()
     user_id = str((state or {}).get("user_id") or "")
     try:
@@ -508,7 +517,7 @@ async def decide(state: Mapping, *, route: str = "", job_id: str = "", run=None,
         settings = switched(settings, chosen)
     left = max(0.0, float(wait_s) - (time.monotonic() - started))
     notes = await MR.decide(state, route=route, job_id=job_id, run=run, enabled=enabled, wait_s=left)
-    return merge(settings, notes, route=route)
+    return merge(settings, notes, route=route), merge(settings, MR.section("none"), route=route)
 
 
 # #
@@ -667,6 +676,22 @@ def _fits(kinds: list[str], route: str) -> bool:
     return "cfd" in kinds if route == FLOW else bool({"shell", "solid"} & set(kinds))
 
 
+def _once(rows: list[dict]) -> list[dict]:
+    """STD-5: each saved line listed once. One line of the standard can come back twice - as a setting the reader
+    read from it and as the same words filed as guidance or another kind of mesh's ("3 boundary layers, growth 1.2"
+    and "3 boundary layers, growth 1.2." in one list, 26 Nov) - so lines whose words are the same but for spacing,
+    case, quote marks and a closing full stop are one; the first is kept."""
+    seen: set[str] = set()
+    out = []
+    for r in rows:
+        k = MR._squash(str(r.get("asked") or r.get("quote") or "")).rstrip(".")
+        if k and k in seen:
+            continue
+        seen.add(k)
+        out.append(r)
+    return out
+
+
 def _not_here_words(req: Mapping, not_here: list[dict], route: str, *, everything: bool) -> str:
     """STD-5 in plain words, said once: the standard (or its lines) written for other kinds of mesh, not applied."""
     if not not_here:
@@ -724,6 +749,7 @@ def merge(settings: Mapping | None, notes: Mapping, *, route: str = "") -> dict:
     not_here += [{"asked": f'"{MR._short(q)}"', "quote": q} for q in g_off]
     if s_used:
         not_here += [{"asked": f'"{MR._short(q)}"', "quote": q} for q in settings.get("other_kinds") or []]
+    not_here = _once(not_here)
     std_off = bool(not_here) and not S.get("rows") and not g_kept
     said_not_here = _not_here_words(S, not_here, route, everything=std_off)
     S.pop("applies_to", None)
@@ -1146,6 +1172,6 @@ def stage_decisions(sec: Mapping | None, stage_name: str = "notes") -> list[dict
 __all__ = ["ELSEWHERE_WORDS", "MAX_CHARS", "OFF_WORDS", "PICKS", "QUADS", "RULE_MERGE", "RULE_NOTHING", "RULE_READ",
            "RULE_STAGE", "SAVE_WAIT_S", "SOURCE", "STAGE_KEY", "STATE_KEY", "TRIANGLES", "UNREAD_WORDS", "checked",
            "switch_chosen", "switch_of",
-           "decide", "decisions", "elements_of", "kept_reading", "key_of", "lines", "merge", "messages", "pick_of",
+           "decide", "decide_and_base", "decisions", "elements_of", "kept_reading", "key_of", "lines", "merge", "messages", "pick_of",
            "read", "read_at_save", "remark", "size_remark", "snapshot", "stage", "stage_decisions", "standard_of",
            "understood", "words_read"]
