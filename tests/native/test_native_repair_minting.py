@@ -19,6 +19,9 @@ pytest.importorskip("OCP.ShapeFix", reason="the CAD kernel is a native-tier depe
 @pytest.fixture(autouse=True)
 def _opted_in(monkeypatch):
     monkeypatch.setattr(rcfg, "CAD_REPAIR_ENABLED", True)
+    # THESE TESTS ARE ABOUT THE v3 CONSERVATIVE REPAIR (its loop, caps and report keys). Since the CRS v5 beta
+    # (#540) `CAD_REPAIR_ENGINE` defaults to v5, so the engine they exercise is named here, not inherited.
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_ENGINE", "v3")
     monkeypatch.setattr(rcfg, "CAD_REPAIR_MAX_DEVIATION_RATIO", 0.001)
     monkeypatch.setattr(rcfg, "CAD_REPAIR_MAX_TOLERANCE_MM", 0.1)
 

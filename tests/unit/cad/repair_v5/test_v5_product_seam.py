@@ -13,6 +13,14 @@ from meshpipeline.cad.repair.contracts import RepairMeasurement, RepairReport
 from meshpipeline.cad.repair_v5.result import RepairResultV5
 
 
+@pytest.fixture(autouse=True)
+def _seam_opted_in(monkeypatch):
+    # `repair_step_file` refuses BEFORE choosing an engine unless the deployment opted in (the seam's switch,
+    # tests/native/test_native_cad_repair.py proves it for every engine). These tests are about what happens after
+    # that, with the engines stubbed, so they run as an opted-in deployment.
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_ENABLED", True)
+
+
 def _contract(outcome: str = "repaired") -> RepairResultV5:
     return RepairResultV5(engine="v5", choice="meshing", outcome=outcome, meshers_passing=4, meshers_total=4,
                           spend_usd=0.12)

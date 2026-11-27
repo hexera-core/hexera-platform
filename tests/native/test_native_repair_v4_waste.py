@@ -170,32 +170,42 @@ def _stop(events: list[dict]) -> dict:
     return next(e for e in events if e.get("kind") == "stop")
 
 
-def test_a_three_hole_part_costs_fourteen_ops_and_wastes_none_of_the_declines_that_were_predictable(
+#: ops the three-hole repair costs. 14 under Task 47; 15 once B20's lineage prune stopped dropping a candidate an
+#: ANCESTOR ran as a sibling (it ran on the ancestor's geometry, not this state's): `orient_and_close` now runs once on
+#: the first filled state, where it is new work. With the over-broad prune the part never repaired (`exhausted`, 5 ops).
+OPS_FOR_THREE_HOLES = 15
+
+
+def test_a_three_hole_part_costs_fifteen_ops_and_wastes_none_of_the_declines_that_were_predictable(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     source = write_three_hole_box(tmp_path / "three.step")
-    events = _run(source, tmp_path, monkeypatch, ops=14)
+    events = _run(source, tmp_path, monkeypatch, ops=OPS_FOR_THREE_HOLES)
     stop = _stop(events)
-    assert stop["reason"] == "clean" and stop["spent"]["ops"] == 14, stop
+    assert stop["reason"] == "clean" and stop["spent"]["ops"] == OPS_FOR_THREE_HOLES, stop
     cands = [e for e in events if e.get("kind") == "candidate"]
     expansions = [e for e in events if e.get("kind") == "expand"]
     wasted = [(e["op"], e["outcome"]) for e in cands if e["outcome"] in ("rejected", "duplicate")]
     # Before Task 47: 70 ops, 20 make_volume declines, 6 fill duplicates, 10 sew declines, 14 orient duplicates.
     assert ("make_volume", "rejected") not in wasted, wasted
     assert ("fill_loop", "duplicate") not in wasted, wasted
-    assert len(wasted) <= 4, wasted  # what is left is the sew declines and one orient no-op: discovered, not predicted
-    assert len(cands) / len(expansions) <= 3.5, (len(cands), len(expansions))
+    # what is left is one sew decline per filled depth (each on new geometry, so an earlier decline does not carry)
+    # and one orient no-op on the start: discovered, not predicted
+    assert len(wasted) <= 5, wasted
+    # PROPOSALS THAT COST SOMETHING: a candidate B20 pruned is recorded but never run, so it is not counted here
+    ran = [e for e in cands if e["outcome"] != "pruned"]
+    assert len(ran) / len(expansions) <= 3.5, (len(ran), len(expansions))
 
 
-def test_twelve_ops_is_not_enough_for_the_three_hole_part(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_one_op_short_is_not_enough_for_the_three_hole_part(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Pins the figure from below too: if the op count were ever lower, the test above would not notice.
 
-    Lane C5 moved the floor from 14 to 13 by ORDER alone: the members that fail without a place now make a coarse
-    `open` site, which sorts before layer 1's own, so the last expansion proposes `make_volume` before its
-    `orient_and_close`, and a 13-op budget cuts the batch after the repair instead of before it. The same 14
-    candidates run at a 14-op budget (the test above)."""
+    Lane C5 moved the floor by ORDER alone: the members that fail without a place make a coarse `open` site, which
+    sorts before layer 1's own, so the last expansion proposes `make_volume` before its `orient_and_close`, and the
+    last op of the budget is the repair. One op short cuts that batch before the repair; the floor itself delivers."""
     source = write_three_hole_box(tmp_path / "three.step")
-    stop = _stop(_run(source, tmp_path, monkeypatch, ops=12))
-    assert stop["reason"] == "ops" and stop["spent"]["ops"] == 12, stop
-    at_13 = _stop(_run(source, tmp_path, monkeypatch, ops=13))
-    assert at_13["reason"] == "clean" and at_13["spent"]["ops"] == 13, at_13
+    short = OPS_FOR_THREE_HOLES - 1
+    stop = _stop(_run(source, tmp_path, monkeypatch, ops=short))
+    assert stop["reason"] == "ops" and stop["spent"]["ops"] == short, stop
+    at_floor = _stop(_run(source, tmp_path, monkeypatch, ops=OPS_FOR_THREE_HOLES))
+    assert at_floor["reason"] == "clean" and at_floor["spent"]["ops"] == OPS_FOR_THREE_HOLES, at_floor
 

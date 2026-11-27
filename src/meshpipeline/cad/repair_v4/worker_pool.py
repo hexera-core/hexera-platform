@@ -22,14 +22,17 @@ without OCP (the hermetic unit tier) the worker still starts and runs the non-OC
 
 from __future__ import annotations
 
+import contextlib
 import contextvars
 import logging
 import multiprocessing
 import os
 import queue
 import signal
+import sys
 import threading
 import time
+from collections.abc import Iterator
 from dataclasses import dataclass
 from multiprocessing.connection import Connection
 from multiprocessing.process import BaseProcess
@@ -78,6 +81,32 @@ def _worker_main(conn: Connection) -> None:
         except Exception as exc:  # a raising kernel call is a result, not a dead worker
             EV.failure("kernel_exception", exc, op=fn_name)   # the traceback the reply's one line cannot carry
             conn.send(("error", req_id, f"{type(exc).__name__}: {exc}"))
+
+
+@contextlib.contextmanager
+def _main_script_hidden() -> Iterator[None]:
+    """Start a worker WITHOUT re-running the caller's script in it.
+
+    A spawned child re-executes the parent's `__main__` file (multiprocessing's `init_main_from_path`) before its
+    target runs, so a plain script that calls `repair_v4()` at module level, with no `if __name__ == "__main__":`
+    guard, starts the repair again inside every worker and the pool dies with EOFError. A worker needs nothing from
+    `__main__`: its target is `_worker_main` in this module and it moves only JSON-serialisable dicts. So while the
+    child is being prepared, a script `__main__` (one with no module spec; `python -m` callers are imported by name
+    and are left alone) hides its `__file__`, and the child starts from this module alone."""
+    with _MAIN_LOCK:   # two pools spawning on two threads must not restore each other's hidden path early
+        main = sys.modules.get("__main__")
+        path = getattr(main, "__file__", None) if main is not None else None
+        if main is None or path is None or getattr(main, "__spec__", None) is not None:
+            yield
+            return
+        del main.__file__
+        try:
+            yield
+        finally:
+            main.__file__ = path
+
+
+_MAIN_LOCK = threading.Lock()
 
 
 class _Worker:
@@ -183,7 +212,8 @@ class WorkerPool:
                 child_conn.close()
                 raise RuntimeError("pool is closed")
             try:
-                process.start()
+                with _main_script_hidden():
+                    process.start()
             except BaseException:
                 parent_conn.close()
                 child_conn.close()

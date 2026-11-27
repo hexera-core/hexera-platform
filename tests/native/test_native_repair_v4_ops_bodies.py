@@ -399,7 +399,9 @@ def test_fragment_never_resolves_an_overlap_by_adding_bodies(pool: WorkerPool, t
 def test_fuse_is_its_own_op_never_a_conformalise_mode(pool: WorkerPool, tmp_path: Path) -> None:
     """Lane C7: the no-fuse rule is gone, and fuse is an op of its own (tests/native/test_native_repair_v4_c7_body_ops.py),
     not a hidden mode of conformalise."""
-    assert [op.name for op in OPS] == ["conformalise", "remove_duplicate_faces", "fuse", "trim_unbounded"]
+    # rescale (v5 step 5, units) and tweak (v5 step 6, misalignment) joined the body ops in the CRS v5 import (#540)
+    assert [op.name for op in OPS] == ["conformalise", "remove_duplicate_faces", "fuse", "trim_unbounded",
+                                       "rescale", "tweak"]
     assert "fuse" not in Conformalise.params_schema["properties"]["mode"]["pattern"]
     ws = _overlap_ws(pool, tmp_path, 0.05)
     with pytest.raises(ValueError):

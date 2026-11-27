@@ -43,6 +43,13 @@ def _ledger() -> Any:
         return sys.modules[name]
     # model_ledger imports only the standard library, so it is loaded by path: the launcher host needs no install
     path = REPO / "src" / "meshpipeline" / "cad" / "repair_v4" / "model_ledger.py"
+    if not path.exists():
+        # NO SOURCE TREE BESIDE THIS FILE: the native tier mounts devtools/ into the mesh image, which runs the
+        # INSTALLED distribution and has no src/. There the module is importable, so the installed one is the table.
+        from meshpipeline.cad.repair_v4 import model_ledger
+
+        sys.modules[name] = model_ledger
+        return model_ledger
     spec = importlib.util.spec_from_file_location(name, path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)

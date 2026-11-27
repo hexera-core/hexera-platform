@@ -23,6 +23,15 @@ from meshpipeline.cad.repair import (
 )
 from meshpipeline.cad.repair.contracts import RepairReport
 
+
+@pytest.fixture(autouse=True)
+def _seam_opted_in(monkeypatch):
+    # `repair_step_file` refuses BEFORE choosing an engine unless the deployment opted in (the seam's switch,
+    # tests/native/test_native_cad_repair.py proves it for every engine). These tests are about what happens after
+    # that, with the engines stubbed, so they run as an opted-in deployment.
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_ENABLED", True)
+
+
 LIMIT_S = 420.0
 #: What a hints child may overrun its wall by: killed at it, then reaped (`bounded_child._REAP_S`).
 REAP_S = 5.0

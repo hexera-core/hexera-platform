@@ -19,6 +19,14 @@ import meshpipeline.settings.cad_repair as rcfg
 from meshpipeline.cad.repair import conservative, region_loop
 
 
+@pytest.fixture(autouse=True)
+def _seam_opted_in(monkeypatch):
+    # `repair_step_file` refuses BEFORE choosing an engine unless the deployment opted in (the seam's switch,
+    # tests/native/test_native_cad_repair.py proves it for every engine). These tests are about what happens after
+    # that, with the engines stubbed, so they run as an opted-in deployment.
+    monkeypatch.setattr(rcfg, "CAD_REPAIR_ENABLED", True)
+
+
 @pytest.fixture
 def gap_on(monkeypatch):
     monkeypatch.setattr(rcfg, "CAD_REPAIR_RESOLVE_SUB_MESH_GAP", True)

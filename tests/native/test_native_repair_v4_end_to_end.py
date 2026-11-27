@@ -351,12 +351,15 @@ def test_repair_v4_is_callable_from_a_script_without_a_main_guard(defect_step: s
     import subprocess
 
     script = tmp_path / "noguard.py"
+    # A WALL THE PANEL CAN ANSWER IN. At 30 s the four-member panel (Netgen joined it with CRS v5, #540) gave no
+    # candidate a verdict, and "measured nothing" is reported as checker infrastructure - the same SearchUnavailable
+    # the spawn exposure raises, so a too-short wall would hide whether the exposure is fixed. 120 s delivers on jig.
     script.write_text(
         "import time\nimport meshpipeline.cad.repair_v4 as v4\n"
         f"r = v4.repair_v4({defect_step!r}, {str(tmp_path / 'ng_out.step')!r},"
-        " budget=v4.Budget(wall_s=30, ops=2, model_calls=0, model_usd=0.0), deadline_s=time.monotonic() + 120)\n"
+        " budget=v4.Budget(wall_s=120, ops=2, model_calls=0, model_usd=0.0), deadline_s=time.monotonic() + 240)\n"
         "print('DONE', r.delivered)\n")
-    proc = subprocess.run([sys.executable, str(script)], capture_output=True, text=True, timeout=240,
+    proc = subprocess.run([sys.executable, str(script)], capture_output=True, text=True, timeout=400,
                           env={**os.environ, "PYTHONPATH": str(_HERE.parents[2] / "src")})
     assert "DONE" in proc.stdout, (
         "repair_v4() called from a module without an `if __name__ == '__main__':` guard fails: "

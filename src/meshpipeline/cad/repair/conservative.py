@@ -1128,6 +1128,18 @@ def _repair_via_v5(source: Path, destination: Path, *, deadline_s: float, profil
         diagnostics=facts)
 
 
+def _refuse_unless_opted_in(profile: RepairProfile) -> None:
+    """Raise RepairUnavailable unless this deployment opted in and the profile is one that runs unattended."""
+    if not rcfg.CAD_REPAIR_ENABLED:
+        # REFUSED BEFORE ANY KERNEL CALL. A deployment that has not opted in cannot mutate a
+        # customer's CAD by any path through this module.
+        raise RepairUnavailable(
+            "CAD repair is switched off in this deployment (CAD_REPAIR_ENABLED)")
+    if profile is not RepairProfile.conservative:
+        raise RepairUnavailable(
+            f"only the conservative profile is implemented; {profile.value} needs an operator")
+
+
 def repair_step_file(source: Path, destination: Path, *,
                      profile: RepairProfile = RepairProfile.conservative,
                      directives: tuple[dict, ...] = (),
@@ -1159,6 +1171,10 @@ def repair_step_file(source: Path, destination: Path, *,
     chosen = engine or rcfg.CAD_REPAIR_ENGINE
 
     def run() -> RepairReport:
+        # THE SWITCH AND THE PROFILE ARE THE SEAM'S, not one engine's: they are checked before ANY engine is chosen,
+        # so a deployment that has not opted in cannot mutate a customer's CAD through v5 or the v4 search either.
+        # `_repair_step_file` checks them again for its direct callers; the answer is the same one.
+        _refuse_unless_opted_in(profile)
         if chosen == "v5":
             return _repair_via_v5(source, destination,
                                   deadline_s=_clock() + float(rcfg.CRS_V5_FILE_WALL_S) - DEADLINE_MARGIN_S,
@@ -1223,14 +1239,7 @@ def _repair_step_file(source: Path, destination: Path, *,
     deadline, not out of the margin the after-checks and the STEP write need, and records its
     verdict under `measurements["goal"]`.
     """
-    if not rcfg.CAD_REPAIR_ENABLED:
-        # REFUSED BEFORE ANY KERNEL CALL. A deployment that has not opted in cannot mutate a
-        # customer's CAD by any path through this module.
-        raise RepairUnavailable(
-            "CAD repair is switched off in this deployment (CAD_REPAIR_ENABLED)")
-    if profile is not RepairProfile.conservative:
-        raise RepairUnavailable(
-            f"only the conservative profile is implemented; {profile.value} needs an operator")
+    _refuse_unless_opted_in(profile)
     if focus_faces and rcfg.CAD_REPAIR_REGION_LOOP != "live":
         # A FOCUS IS THE REGION DRIVER'S TO HONOUR, and that is decided BEFORE the file is read.
         # The operation-at-a-time driver walks the whole shape and has no region to scope to, so
