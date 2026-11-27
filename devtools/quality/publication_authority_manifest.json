@@ -6759,6 +6759,19 @@
   "roots": []
  },
  {
+  "context": "engines/marked_spots.py::figures::search#1|NotAPublisher|not-a-publisher|",
+  "path": "engines/marked_spots.py",
+  "qualname": "figures",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "re",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "engines/mesh_requirements.py::_check::search#1|NotAPublisher|not-a-publisher|",
   "path": "engines/mesh_requirements.py",
   "qualname": "_check",

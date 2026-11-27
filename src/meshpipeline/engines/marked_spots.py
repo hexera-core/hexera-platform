@@ -52,28 +52,88 @@ def _finding(state: Mapping | None, ordinal: int) -> Mapping | None:
     return None
 
 
-def _short(text: str, n: int = 220) -> str:
-    from meshpipeline.contracts import engineering_text
+#: The quality figures a note may name, as the result screen names them (engines/fea_quality.LIMITS): (how the
+#: reviewer may write it, the plain name, the result screen's key, the unit said after the number). Nothing else the
+#: second look wrote - render settings, field names, its own sentences - ever reaches the note.
+_MEASURES = (
+    (r"scaled[\s_-]*jacobian", "worst scaled Jacobian", "fea_min_scaled_jacobian", ""),
+    (r"jacobian[\s_-]*ratio", "worst Jacobian ratio", "fea_max_jacobian_ratio", ""),
+    (r"aspect[\s_-]*ratio", "worst aspect ratio", "fea_max_aspect_ratio", ""),
+    (r"(?:min(?:imum)?|smallest)[\s_-]*dihedral(?:[\s_-]*(?:angle|deg))*", "smallest angle between two faces",
+     "fea_min_dihedral_deg", " degrees"),
+    (r"(?:max(?:imum)?|largest)[\s_-]*dihedral(?:[\s_-]*(?:angle|deg))*", "largest angle between two faces",
+     "fea_max_dihedral_deg", " degrees"),
+)
+#: the number written after a measure's name, with a few short words between ("aspect ratio max 3.2", "aspect_ratio = 3.2")
+_NUMBER = (r"(?:\s*(?:=|:|\b(?:max(?:imum)?|min(?:imum)?|worst|of|is|was|at|about|here|there)\b))*"
+           r"\s*(-?\d+(?:\.\d+)?(?:e-?\d+)?)(?![\w.])")
 
-    w = " ".join(engineering_text.plain(str(text or "")).split()).rstrip(".")
-    return w if len(w) <= n else w[: n - 3].rstrip() + "..."
+
+def _limits(state: Mapping | None) -> dict[str, tuple[str, float]]:
+    """The result screen's limits for this mesh's elements: key -> (op, limit)."""
+    from meshpipeline.engines.fea_quality import limits_for
+
+    q = ((state or {}).get("mesh_manifest") or {}).get("quality") if isinstance(state, Mapping) else None
+    order = (q or {}).get("element_order") if isinstance(q, Mapping) else None
+    try:
+        rows = limits_for(int(order) if isinstance(order, (int, float)) and not isinstance(order, bool) else 2)
+    except Exception:  # noqa: BLE001 - no limits known: no figure is named
+        return {}
+    return {k: (op, float(lim)) for k, _lab, op, lim, _src in rows}
+
+
+def _past(op: str, value: float, limit: float) -> bool:
+    return value < limit if op == ">=" else value > limit
+
+
+def figures(text: str, state: Mapping | None = None) -> list[dict]:
+    """The quality figures the second look wrote that a user can read, each once, in the order written:
+    {name, value, limit, unit, past}. [] when it wrote none the result screen names."""
+    import re
+
+    limits = _limits(state)
+    found: list[tuple[int, dict]] = []
+    seen: set[str] = set()
+    for pattern, name, key, unit in _MEASURES:
+        if key not in limits or key in seen:
+            continue
+        m = re.search(r"\b" + pattern + _NUMBER, str(text or ""), re.I)
+        if not m:
+            continue
+        try:
+            value = float(m.group(1))
+        except ValueError:
+            continue
+        op, limit = limits[key]
+        seen.add(key)
+        found.append((m.start(), {"name": name, "value": value, "limit": limit, "unit": unit,
+                                  "past": _past(op, value, limit)}))
+    return [f for _i, f in sorted(found, key=lambda t: t[0])]
+
+
+def _figure_words(f: Mapping) -> str:
+    return f"{f['name']} there {float(f['value']):.3g}{f['unit']}, limit {float(f['limit']):.3g}{f['unit']}"
 
 
 def finding_words(state: Mapping | None, ordinal: int) -> str:
-    """What the second look found at one mark, in a few plain words."""
+    """What the second look found at one mark, in plain words: nothing past a limit (with at most two figures the
+    result screen names, "worst aspect ratio there 3.2, limit 20"), or the measure past its limit with its value and
+    the limit. Never the second look's own text (VER-18)."""
     f = _finding(state, ordinal)
     if f is None:
         return "the second look gave no finding of its own there"
     status = str(f.get("status") or "")
-    measured = _short(str(f.get("measurements") or ""), 120)
-    seen = _short(str(f.get("observation") or ""))
+    figs = figures(" ".join(str(f.get(k) or "") for k in ("measurements", "observation")), state)
     if status == "confirmed":
-        return "the second look found a problem there" + (f": {seen}" if seen else "") + (
-            f" ({measured})" if measured else "")
+        past = [x for x in figs if x["past"]]
+        if past:
+            return "the second look found a problem there: " + "; ".join(_figure_words(x) for x in past[:2])
+        return "the second look found a problem there"
     if status == "not_confirmed":
-        return "the second look found nothing past a limit there" + (f" ({measured})" if measured else "")
-    why = _short(str(f.get("explanation") or ""), 160)
-    return "the second look could not judge it there" + (f" ({why})" if why else "")
+        within = [x for x in figs if not x["past"]][:2]
+        return "the second look found nothing past a limit there" + (
+            " (" + "; ".join(_figure_words(x) for x in within) + ")" if within else "")
+    return "the second look could not judge it there"
 
 
 def with_marks(req: Mapping | None, state: Mapping | None) -> dict | None:
@@ -130,5 +190,5 @@ def result_lines(state: Mapping | None, said: list[str]) -> list[str]:
     return out
 
 
-__all__ = ["LEAD", "MARK_QUOTE", "RULE", "changed_words", "finding_words", "result_lines", "spot_words",
+__all__ = ["LEAD", "MARK_QUOTE", "RULE", "changed_words", "figures", "finding_words", "result_lines", "spot_words",
            "tied_marks", "with_marks"]

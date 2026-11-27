@@ -19,14 +19,15 @@ def _state(**kw) -> dict:
     d.update(kw)
     return {"user_dispute": d, "dispute_flag_findings": [
         {"ordinal": 1, "status": "not_confirmed", "observation": "elements look even", "explanation": "",
-         "measurements": "min Jacobian 0.82"}]}
+         "measurements": "aspect ratio max 3.2 at the hole; scaled Jacobian 0.64"}]}
 
 
 def test_each_mark_on_the_part_is_one_finer_ask_against_the_delivered_mesh():
     req = MS.with_marks(None, _state())
     (e,) = req["local"]
     assert e["what"] == "finer" and e["faces"] == ["Face_2"] and e["change_of"] == PARENT and e["marked"] == 1
-    assert e["finding"] == "the second look found nothing past a limit there (min Jacobian 0.82)"
+    assert e["finding"] == ("the second look found nothing past a limit there (worst aspect ratio there 3.2, limit 20; "
+                            "worst scaled Jacobian there 0.64, limit 0.01)")
     # the user's own requirements stay as they were
     own = {"local": [{"id": "r1", "what": "size", "mm": 2.0, "faces": ["Face_9"]}], "sizes": {"global_mm": 3.0}}
     both = MS.with_marks(own, _state())
@@ -51,9 +52,28 @@ def test_every_mark_no_step_spoke_of_is_told_with_what_the_second_look_found():
 def test_a_confirmed_finding_is_said_as_found():
     st = _state()
     st["dispute_flag_findings"] = [{"ordinal": 1, "status": "confirmed", "observation": "two slivers at the hole edge",
-                                    "explanation": "", "measurements": "min Jacobian 0.31"}]
-    assert MS.finding_words(st, 1) == ("the second look found a problem there: two slivers at the hole edge "
-                                       "(min Jacobian 0.31)")
+                                    "explanation": "", "measurements": "aspect_ratio = 31.5; jacobian ratio 4"}]
+    assert MS.finding_words(st, 1) == "the second look found a problem there: worst aspect ratio there 31.5, limit 20"
+    st["dispute_flag_findings"][0]["measurements"] = "sicn_low_fraction = 0.002"
+    assert MS.finding_words(st, 1) == "the second look found a problem there"
+
+
+def test_the_note_never_carries_the_second_looks_own_wording():
+    """The live note (dev, 26 Nov) put the reviewer's raw text in brackets, render settings and a field name, cut off
+    with "...". Only figures the result screen names reach it; with none, the plain sentence alone."""
+    raw = ("Marked-circle radius 0.00576 m; centered inspection span 0.0144 m; close render magnification 8x; "
+           "sicn_low_fraction = 0.0012 over 41 elements in view; elements look even round the bore")
+    st = _state()
+    st["dispute_flag_findings"] = [{"ordinal": 1, "status": "not_confirmed", "observation": raw, "explanation": raw,
+                                    "measurements": raw}]
+    said = MS.finding_words(st, 1)
+    assert said == "the second look found nothing past a limit there"
+    line = MS.result_lines(st, [])[0]
+    for internal in ("radius", "span", "render", "magnification", "sicn", "_", "...", "0.00576", "("):
+        assert internal not in line, (internal, line)
+    st["dispute_flag_findings"][0]["measurements"] = raw + "; worst aspect ratio 2.7"
+    assert MS.finding_words(st, 1) == ("the second look found nothing past a limit there (worst aspect ratio there "
+                                       "2.7, limit 20)")
 
 
 def test_the_second_looks_reply_is_never_empty_and_passes_the_guard():
@@ -181,7 +201,8 @@ def test_a_marked_spot_with_no_words_is_made_finer_there_and_told(bracket):
     assert _at(plan, FACE) == pytest.approx(0.5 * _at(last, FACE), rel=1e-3)
     (row,) = [r for r in finer if r.get("marked")]
     assert row["words"] == ("From your marks: spot 1, on Face 2 · flat - the second look found nothing past a limit "
-                            "there (min Jacobian 0.82); the last mesh had about 1.5 mm there, this one has about "
+                            "there (worst aspect ratio there 3.2, limit 20; worst scaled Jacobian there 0.64, "
+                            "limit 0.01); the last mesh had about 1.5 mm there, this one has about "
                             "0.75 mm.")
     # nothing else of the first run's plan changes
     now = {z["id"]: float(z["size_m"]) for z in plan["zones"]}
