@@ -748,12 +748,17 @@ def read_fea_notes(state: Mapping, session_id: str) -> tuple[dict, dict] | None:
 
 
 def run_reading(*, session_id: str, key: str, user_notes=None, request_txt: str = "", owner_id: str = "",
-                meshing_standard: Mapping | None = None) -> dict:
+                meshing_standard: Mapping | None = None, stand: bool = False) -> dict:
     """THE WORKER'S STEP: the model asked once on the check's parts table and pictures; the checked reading stored
     with its key - unless the notes changed meanwhile (a newer reading is queued; this one is dropped). Never
     raises: a reading that fails is stored as such (the card then shows nothing; the run reads again).
     `meshing_standard`: the team's saved standard as a run is dispatched with it (engines/meshing_standard.snapshot),
-    for the cost of an FEA solid's requirements (NOTE-26)."""
+    for the cost of an FEA solid's requirements (NOTE-26). `stand`: no reading - the stage card's count for nothing
+    typed (application/plan_cost.stand), on the same worker queue."""
+    if stand:
+        from meshpipeline.application import plan_cost
+        got = plan_cost.stand(session_id, standard=meshing_standard, owner_id=owner_id, request_txt=request_txt)
+        return {"status": "stand", "elements": int(((got or {}).get("side") or {}).get("elements") or 0)}
     from meshpipeline.application.geometry_check import read_check
     from meshpipeline.cad import part_words as PW
     from meshpipeline.contracts.object_storage import get_object_store
@@ -846,6 +851,26 @@ def run_reading(*, session_id: str, key: str, user_notes=None, request_txt: str 
                                      previous=previous if isinstance(previous, Mapping) else None, ai_state=ai_state)
         keep_cost(session_id, key, cost)
     return {"status": "done", "entries": len(section.get("entries") or [])}
+
+
+def enqueue_stand(session_id: str, facts: Mapping | None, *, owner_id: str = "", request_txt: str = "",
+                  standard: Mapping | None = None) -> bool:
+    """NOTE-26: plan the stage card's count for nothing typed on the geometry worker (plan_cost.stand) when the stage
+    sized the part and none is kept for this sizing and standard - asked at most once a while. Never raises."""
+    from meshpipeline.application import plan_cost
+    try:
+        if not plan_cost.stand_wanted(session_id, facts, standard):
+            return False
+        from meshpipeline.contracts.geometry_check import enqueue_part_words
+        return enqueue_part_words(session_id=session_id, owner_id=owner_id, user_notes=[], request_txt=request_txt,
+                                  key=f"stand-{plan_cost.sizing_key(facts)}-{plan_cost.standard_key(standard)}",
+                                  stand=True, **({"meshing_standard": json.loads(json.dumps(dict(standard),
+                                                                                             default=str))}
+                                                 if isinstance(standard, Mapping) else {}))
+    except Exception as exc:  # noqa: BLE001 - the card shows the sizing's own count
+        logger.warning("part matches: the card's count was not asked for (%s) - session=%s", type(exc).__name__,
+                       session_id)
+        return False
 
 
 def keep_cost(session_id: str, key: str, cost: Mapping | None) -> bool:

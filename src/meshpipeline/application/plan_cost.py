@@ -165,7 +165,8 @@ def planned(record: dict, surface, diag_m: float, *, section: Mapping | None, as
     rec, plan, _finer = PO.requirements_plan(record, surface, diag_m, asked=asked, part_sizes=used, ai=ai,
                                              target=FD.element_target(st, ai, asked), state=dict(state), kept=kept,
                                              key=key)
-    return {"side": _side(PO._costed(rec, plan, "plan")), "ai_args": args, "ai_used": ai.get("status") == "used"}
+    row = PO._costed(rec, plan, "plan")
+    return {"side": _side(row), "row": row, "ai_args": args, "ai_used": ai.get("status") == "used"}
 
 
 def costed(record: dict, surface, diag_m: float, *, before: tuple[str, Any], section: Mapping | None,
@@ -189,17 +190,19 @@ def costed(record: dict, surface, diag_m: float, *, before: tuple[str, Any], sec
         prior = got.get("asked") if isinstance(got.get("asked"), Mapping) else base_asked
         b = planned(record, surface, diag_m, section=got.get("section"), asked=prior,
                     user_notes=got.get("user_notes"), **common)["side"]
-    elif how == "base":
-        b = planned(record, surface, diag_m, section=None,
-                    asked=base_asked if base_asked is not None else MR.section("none"), user_notes=[],
-                    **common)["side"]
+    base: dict | None = None
+    if how == "base":
+        base = planned(record, surface, diag_m, section=None,
+                       asked=base_asked if base_asked is not None else MR.section("none"), user_notes=[], **common)
+        b = base["side"]
     a = after["side"]
     factor = a["elements"] / b["elements"] if b and b.get("elements") else None
     bigger = bool(b) and (float(a.get("memory_gib") or 0.0) > float((b or {}).get("memory_gib") or 0.0)
                           or (bool((b or {}).get("standard")) and not a.get("standard")))
     return {"rule": RULE, "before": b, "after": a, "factor": round(factor, 2) if factor else None,
             "bigger_machine": bool(bigger), "ai_args": after["ai_args"],
-            "floor": bool(FEA_AI) and not after["ai_used"], "seconds": round(time.time() - t0, 2)}
+            "floor": bool(FEA_AI) and not after["ai_used"], "seconds": round(time.time() - t0, 2),
+            **({"base": base} if base is not None else {})}
 
 
 def stage_sized(session_id: str) -> bool:
@@ -263,12 +266,23 @@ def for_reading(session_id: str, section: Mapping | None, user_notes, *, asked: 
         from meshpipeline.application.geometry_check import read_check
         stored = read_check(session_id) or {}
         before = before_of(previous)
+        standard = (ai_state or {}).get("meshing_standard")
+        if before[0] == "base":
+            # THE STAGE CARD'S COUNT (stand): what the card shows for "go now" is the first line's "from" - one number
+            held = stand_for(session_id, stored.get("facts"), standard)
+            if held is not None:
+                before = ("chained", dict(held["side"]))
         state = {"fea_plan_choice": FC.confirmed_plan_choice(session_id)}
         with tempfile.TemporaryDirectory(prefix="plan_cost_") as tmp:
             record, surface, diag_m, key = _measured(session_id, stored, Path(tmp))
             got = costed(record, surface, diag_m, before=before, section=section, asked=asked, user_notes=user_notes,
                          base_asked=base_asked, ai_state=dict(ai_state or {}), state=state,
                          kept=FC._kept_plans(session_id), key=key, job_id=f"cost-{session_id}")
+        base = got.pop("base", None)
+        if base is not None:
+            # planned here first: the card shows it too from now on (and a run started with nothing typed uses its AI
+            # step's decision)
+            keep_stand(session_id, stored.get("facts"), standard, base)
         logger.info("plan cost: %s -> %d elements in %.1fs (%s, before %s) - session=%s",
                     (got["before"] or {}).get("elements"), got["after"]["elements"], got["seconds"], RULE, before[0],
                     session_id)
@@ -278,7 +292,37 @@ def for_reading(session_id: str, section: Mapping | None, user_notes, *, asked: 
         return None
 
 
+#: THE PART AS MEASURED, kept on the worker between costings of the same upload (a big part takes tens of seconds to
+#: stage and measure; the knuckle's first count line came 74 s after its reply): (session, source, unit, answers) ->
+#: (when, record, surface, diag, key); a few parts, for a while
+_MEASURED: dict[str, tuple] = {}
+MEASURED_KEEP_S = 1800.0
+MEASURED_MAX = 4
+
+
 def _measured(session_id: str, stored: Mapping, work: Path) -> tuple[dict, Any, float, str]:
+    """The uploaded part staged and measured as the run stages it (_measure), kept on the worker for the next costing
+    of the same upload with the same answers (the record is handed out as a copy: planning never changes the kept
+    one)."""
+    import copy
+    import json
+
+    from meshpipeline.application import fea_check as FC
+    k = json.dumps([session_id, stored.get("source"), (stored.get("facts") or {}).get("scale_to_m"),
+                    FC.confirmed_connection(session_id), FC.confirmed_gap_joins(session_id)], sort_keys=True,
+                   default=str)
+    now = time.time()
+    for old in [x for x, v in _MEASURED.items() if now - v[0] > MEASURED_KEEP_S]:
+        _MEASURED.pop(old, None)
+    if k not in _MEASURED:
+        while len(_MEASURED) >= MEASURED_MAX:
+            _MEASURED.pop(min(_MEASURED, key=lambda x: _MEASURED[x][0]))
+        _MEASURED[k] = (now, *_measure(session_id, stored, work))
+    _at, record, surface, diag_m, key = _MEASURED[k]
+    return copy.deepcopy(record), surface, diag_m, key
+
+
+def _measure(session_id: str, stored: Mapping, work: Path) -> tuple[dict, Any, float, str]:
     """The uploaded part staged and measured as the run stages it (fea_plan_options.plan_staged: read at the check's
     unit, closed shells as solids, an assembly prepared with the user's answers), and the key the stage's kept plans
     must have been made for (fea_plan_options.plans_key, as fea_driver.drive reads it before anything restages)."""
@@ -311,5 +355,129 @@ def _measured(session_id: str, stored: Mapping, work: Path) -> tuple[dict, Any, 
     return record, surface, diag_m, key
 
 
-__all__ = ["NOTHING", "RULE", "WORTH_SAYING", "before_of", "costed", "for_reading", "inputs", "planned",
-           "stage_sized", "target_of", "wanted", "worth_saying"]
+# #
+# THE STAGE CARD'S COUNT: the plan a run started now would make, nothing typed (NOTE-26)
+# #
+#: where it is kept, beside the stage's kept plans (the run finds it there: fea_driver.plan_step_ai)
+from meshpipeline.engines.fea_plan_options import STAND_FILE  # noqa: E402
+#: a planning of it asked for and not landed is asked again after this long
+STAND_PENDING_S = 900.0
+
+
+def standard_key(standard: Mapping | None) -> str:
+    """Which team standard a count was made with ("" for none: engines/meshing_standard.snapshot_key)."""
+    from meshpipeline.engines.meshing_standard import snapshot_key
+    return snapshot_key(standard)
+
+
+def sizing_key(facts: Mapping | None) -> str:
+    """Which sizing of the stage a count belongs to (a new check, a new unit: a new sizing); "" when not sized."""
+    import hashlib
+    import json
+    from meshpipeline.application import fea_check as FC
+    got = (facts or {}).get(FC.PLAN_FACT_KEY)
+    if not isinstance(got, Mapping) or not got.get("sized"):
+        return ""
+    return hashlib.sha256(json.dumps({k: v for k, v in got.items() if k != "stand"}, sort_keys=True,
+                                     default=str).encode()).hexdigest()[:16]
+
+
+def _stand_key(session_id: str, name: str = STAND_FILE) -> str:
+    from meshpipeline.application.geometry_check import check_object_key
+    return check_object_key(session_id, name)
+
+
+def _read_json(key: str) -> dict | None:
+    import json
+    from meshpipeline.contracts.object_storage import get_object_store
+    try:
+        got = json.loads(get_object_store().get_bytes(object_key=key))
+    except Exception:  # noqa: BLE001 - none kept
+        return None
+    return got if isinstance(got, dict) else None
+
+
+def stand_for(session_id: str, facts: Mapping | None, standard: Mapping | None) -> dict | None:
+    """The count kept for the card when it was made for this sizing and this team standard, else None. Never
+    raises."""
+    try:
+        got = _read_json(_stand_key(session_id))
+        sk = sizing_key(facts)
+        if not got or not sk or got.get("sizing") != sk or got.get("standard") != standard_key(standard):
+            return None
+        return got if isinstance(got.get("side"), Mapping) and int(got["side"].get("elements") or 0) > 0 else None
+    except Exception:  # noqa: BLE001 - the card shows the sizing's own count
+        return None
+
+
+def keep_stand(session_id: str, facts: Mapping | None, standard: Mapping | None, base: Mapping) -> None:
+    """Keep `planned`'s answer for nothing typed as the card's count. Best effort."""
+    from meshpipeline.application.geometry_check import _store_json
+    try:
+        _store_json(_stand_key(session_id), {"rule": RULE, "sizing": sizing_key(facts),
+                                             "standard": standard_key(standard), "side": dict(base["side"]),
+                                             "row": {k: v for k, v in dict(base.get("row") or {}).items()
+                                                     if not isinstance(v, (dict, list)) or k == "short_kinds"},
+                                             "ai_args": str(base.get("ai_args") or ""), "at": time.time()})
+    except Exception as exc:  # noqa: BLE001 - the card keeps the sizing's own count
+        logger.warning("plan cost: the card's count was not kept (%s) - session=%s", type(exc).__name__, session_id)
+
+
+def stand_wanted(session_id: str, facts: Mapping | None, standard: Mapping | None) -> bool:
+    """Whether the card's count for nothing typed should be planned now: the stage sized the part, none is kept for
+    this sizing and standard, and none was asked for a moment ago (it is marked asked). Never raises."""
+    from meshpipeline.application.geometry_check import _store_json
+    try:
+        sk = sizing_key(facts)
+        if not sk or stand_for(session_id, facts, standard) is not None:
+            return False
+        mark = _read_json(_stand_key(session_id, "fea_stand_asked.json")) or {}
+        want = f"{sk}:{standard_key(standard)}"
+        if mark.get("for") == want and time.time() - float(mark.get("at") or 0) < STAND_PENDING_S:
+            return False
+        _store_json(_stand_key(session_id, "fea_stand_asked.json"), {"for": want, "at": time.time()})
+        return True
+    except Exception:  # noqa: BLE001 - not asked: the card shows the sizing's own count
+        return False
+
+
+def stand(session_id: str, *, standard: Mapping | None = None, owner_id: str = "", request_txt: str = "") -> dict | None:
+    """THE WORKER'S STEP for the card: the count a run started now would plan with nothing typed - `planned` with the
+    team's standard alone and the AI step's decision on the run's brief (the same function, the same inputs as the
+    first count line's "from" and as the run) - kept (keep_stand) for the card, the first line and the run. None when
+    not sized or not planned. Never raises."""
+    try:
+        from meshpipeline.application import fea_check as FC
+        from meshpipeline.application.geometry_check import read_check
+        from meshpipeline.engines import fea_driver as FD
+        from meshpipeline.engines import meshing_standard as MS
+        from meshpipeline.engines.fea_ai import FEA_AI
+
+        stored = read_check(session_id) or {}
+        if not stage_sized(session_id) or stand_for(session_id, stored.get("facts"), standard) is not None:
+            return None
+        import asyncio
+        state = {"user_notes": [], "user_id": owner_id, "request_txt": request_txt,
+                 **({MS.STATE_KEY: dict(standard)} if isinstance(standard, Mapping) else {})}
+        _read, base_read = asyncio.run(MS.decide_and_base(state, route="fea", job_id=f"stand-{session_id}",
+                                                          enabled=FEA_AI))
+        base_asked = FD.requirements_section(base_read, state)
+        ai_state = {k: v for k, v in state.items() if k != "user_notes"}
+        with tempfile.TemporaryDirectory(prefix="plan_stand_") as tmp:
+            record, surface, diag_m, key = _measured(session_id, stored, Path(tmp))
+            got = planned(record, surface, diag_m, section=None, asked=base_asked, user_notes=[], ai_state=ai_state,
+                          state={"fea_plan_choice": FC.confirmed_plan_choice(session_id)},
+                          kept=FC._kept_plans(session_id), key=key, job_id=f"stand-{session_id}")
+        keep_stand(session_id, stored.get("facts"), standard, got)
+        logger.info("plan cost: the card's count %d elements (%s) - session=%s", got["side"]["elements"], RULE,
+                    session_id)
+        return got
+    except Exception as exc:  # noqa: BLE001 - the card shows the sizing's own count
+        logger.warning("plan cost: the card's count not planned (%s: %s) - session=%s", type(exc).__name__,
+                       str(exc)[:200], session_id)
+        return None
+
+
+__all__ = ["NOTHING", "RULE", "STAND_FILE", "WORTH_SAYING", "before_of", "costed", "for_reading",
+           "inputs", "keep_stand", "planned", "sizing_key", "stage_sized", "stand", "stand_for",
+           "stand_wanted", "standard_key", "target_of", "wanted", "worth_saying"]

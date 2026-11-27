@@ -275,6 +275,30 @@ def _take_back(store, object_key: str, *, ours: bytes, earlier: bytes | None, se
         logger.warning("geometry check: could not take back the stored confirmation - session_id=%s", session_id)
 
 
+async def _with_stand(session_id: str, facts, session, owner_id: str, organization_id: str):
+    """NOTE-26: the check's facts with the stage card's count for nothing typed (application/plan_cost.stand) when it
+    is kept for this sizing and this team standard; when it is not, it is asked for (once a while) and the facts are
+    served as they are. Never raises."""
+    from meshpipeline.application import fea_check
+    got = (facts or {}).get(fea_check.PLAN_FACT_KEY) if isinstance(facts, dict) else None
+    if not isinstance(got, dict) or not got.get("sized"):
+        return facts
+    try:
+        from meshpipeline.application import part_matches as PM
+        from meshpipeline.application import plan_cost
+        standard = await _meshing_standard_of(organization_id)
+        held = await asyncio.to_thread(plan_cost.stand_for, session_id, facts, standard)
+        if held is None:
+            await asyncio.to_thread(PM.enqueue_stand, session_id, facts, owner_id=owner_id,
+                                    request_txt=str(getattr(session, "request_txt", "") or ""), standard=standard)
+            return facts
+        return {**facts, fea_check.PLAN_FACT_KEY: {**got, "stand": dict(held.get("row") or held["side"])}}
+    except Exception as exc:  # noqa: BLE001 - the card shows the sizing's own count
+        logger.warning("geometry check: the card's count was not read (%s) - session_id=%s", type(exc).__name__,
+                       session_id)
+        return facts
+
+
 async def _meshing_standard_of(organization_id: str) -> dict | None:
     """SHSTAGE-8: the team's meshing standard, for where a shell's element choice starts (its kept reading only:
     no model is asked); None with none, or when it cannot be read (the control then starts on the notes or Quads)."""
@@ -347,7 +371,10 @@ async def get_check(session_id: uuid.UUID, owner_id: str = Depends(owner_dep),
         # the part, its unit and size (the proposal), its bodies and the clean check - no flow form
         # SURF-18: a file with no solid still being read as a surface waits while the check runs (`live`)
         _live = fea_check.check_live(payload)
-        payload["fea"] = await asyncio.to_thread(fea_check.fea_view, payload.get("facts"),
+        # NOTE-26: the card's count for "go now" is the count such a run plans (with the team's standard and the AI
+        # step's decision): kept, it is shown; not yet, it is asked for on the geometry worker
+        _facts = await _with_stand(str(session_id), payload.get("facts"), session, owner_id, organization_id)
+        payload["fea"] = await asyncio.to_thread(fea_check.fea_view, _facts,
                                                  getattr(session, "messages", None), live=_live)
         # SHSTAGE-2: A SHELL ONLY WHEN THE USER'S WORDS ASKED FOR ONE - the shell check as it stands (started now when
         # it was asked for after the naming); nothing at all for a solid, the stage from before shell existed

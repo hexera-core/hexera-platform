@@ -554,6 +554,15 @@ def plan_view(facts: dict | None) -> dict | None:
         return {"state": "not_sized", "words": (got.get("why") or "The mesh is sized when it runs") + ": "
                 "the run sizes it and takes the recommended mesh, without waiting for you."}
     full = got.get("full") or {}
+    stand = got.get("stand") if isinstance(got.get("stand"), dict) else None
+    if stand and (not got.get("choice") or got.get("recommended") != PLAN_QUICKER):
+        # NOTE-26: THE COUNT A RUN STARTED NOW WOULD PLAN (application/plan_cost.stand: the team's standard and the AI
+        # step's decision with it, the function the first count line's "from" and the run use) - the card and the
+        # chat never state two counts for the same mesh (the C5 knuckle: "about 883,835" here, "from about 1.1
+        # million" in the chat)
+        full = {**full, **{k: v for k, v in stand.items() if k in (
+            "elements", "at_least", "where", "machine", "cpus", "cores", "memory_gib", "standard", "minutes",
+            "usual_minutes")}}
     rec = PLAN_QUICKER if got.get("recommended") == PLAN_QUICKER else PLAN_FULL
     options = [_option(full, PLAN_FULL, rec)]
     if got.get("choice") and isinstance(got.get("quicker"), dict):

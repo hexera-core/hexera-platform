@@ -97,6 +97,15 @@ def snapshot(text: str, reading: Mapping | None, *, updated_by: str = "", update
     return out
 
 
+def snapshot_key(std: Mapping | None) -> str:
+    """Which saved standard a count was planned with: a digest of its words, kept reading and switch ("" for none)."""
+    import hashlib
+    if not isinstance(std, Mapping):
+        return ""
+    return hashlib.sha256(json.dumps({"t": std.get("text"), "r": std.get("reading"), "s": std.get("shell_elements")},
+                                     sort_keys=True, default=str).encode()).hexdigest()[:16]
+
+
 def standard_of(state: Mapping | None) -> dict | None:
     """The standard the run was dispatched with, or None when it has none (STD-3)."""
     got = (state or {}).get(STATE_KEY)
@@ -1173,5 +1182,5 @@ __all__ = ["ELSEWHERE_WORDS", "MAX_CHARS", "OFF_WORDS", "PICKS", "QUADS", "RULE_
            "RULE_STAGE", "SAVE_WAIT_S", "SOURCE", "STAGE_KEY", "STATE_KEY", "TRIANGLES", "UNREAD_WORDS", "checked",
            "switch_chosen", "switch_of",
            "decide", "decide_and_base", "decisions", "elements_of", "kept_reading", "key_of", "lines", "merge", "messages", "pick_of",
-           "read", "read_at_save", "remark", "size_remark", "snapshot", "stage", "stage_decisions", "standard_of",
+           "read", "read_at_save", "remark", "size_remark", "snapshot", "snapshot_key", "stage", "stage_decisions", "standard_of",
            "understood", "words_read"]

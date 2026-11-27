@@ -374,3 +374,105 @@ def world_unsized(monkeypatch):
     store[PM.MATCHES] = {"key": "k1", "status": "reading"}
     PM.run_reading(session_id="s1", key="k1", user_notes=[{"id": "n1", "text": "it is cast", "source": "chat"}])
     return store[PM.MATCHES]
+
+
+class _Store:
+    """The object store, in memory."""
+
+    def __init__(self):
+        self.objects: dict[str, bytes] = {}
+
+    def upload_file(self, *, local_path, object_key):
+        from pathlib import Path
+        self.objects[object_key] = Path(local_path).read_bytes()
+
+    def get_bytes(self, *, object_key):
+        if object_key not in self.objects:
+            raise KeyError(object_key)
+        return self.objects[object_key]
+
+
+def _sized_facts(part) -> dict:
+    """The check's facts with the stage's own sizing of the part (PLAN-fea-22), as the card shows it."""
+    from meshpipeline.application import fea_check as FC
+    card, _plans = PO.options_and_plans(part["record"], part["surface"], part["diag"])
+    return {FC.PLAN_FACT_KEY: {"sized": True, **card}}
+
+
+def test_the_card_the_first_line_and_a_run_started_now_say_one_count(monkeypatch, part, tmp_path):
+    """The C5 knuckle, 27 Nov: the card said "about 883,835 elements" and the first count line "from about 1.1
+    million". The card's count was the stage's sizing without the team's standard and the AI step's decision; a run
+    started with nothing typed plans with both. Now the card shows the count planned with them (plan_cost.stand), the
+    first line's "from" is that count, and a run started now prints it as "Estimated before meshing"."""
+    from meshpipeline.application import fea_check as FC
+    from meshpipeline.contracts import object_storage
+    _wire(monkeypatch, part)
+    _router(monkeypatch, _ModelRouter(refine=True))
+    store = _Store()
+    monkeypatch.setattr(object_storage, "get_object_store", lambda: store)
+    facts = _sized_facts(part)
+    from meshpipeline.application import geometry_check as GC
+    monkeypatch.setattr(GC, "read_check", lambda sid: {"source": {"x": 1}, "facts": facts})
+    sizing_only = int(facts[FC.PLAN_FACT_KEY]["full"]["elements"])
+    got = PC.stand("s1", standard=_standard(), owner_id="u1")
+    assert got and got["ai_args"]
+    held = PC.stand_for("s1", facts, _standard())
+    assert held["side"]["elements"] == got["side"]["elements"] != sizing_only
+    # the card shows it
+    view = FC.plan_view({FC.PLAN_FACT_KEY: {**facts[FC.PLAN_FACT_KEY], "stand": held["row"]}})
+    count = f"{held['side']['elements']:,}"
+    assert count in view["options"][0]["words"] or count in view.get("words", ""), view
+    # the first message's line starts from it
+    notes = _notes(part["face"], 1)
+    asked, base = PM.read_fea_notes(_state(notes), "s1")
+    cost = PC.for_reading("s1", _reading(part["table"], 1), notes, asked=asked, base_asked=base, previous=None,
+                          ai_state={"user_id": "u1", MS.STATE_KEY: _standard()})
+    assert cost["before"]["elements"] == held["side"]["elements"]
+    # a run started now, nothing typed: the AI step's decision the card was planned with is the run's, and the run's
+    # "Estimated before meshing" is the card's count (the model would have answered differently in the run)
+    ws = _stage(knuckle_like(), tmp_path / "now")
+    planned: list[dict] = []
+    real = FD.size_choice
+
+    def first(*a, **k):
+        plan, said = real(*a, **k)
+        planned.append(plan)
+        return plan, said
+    monkeypatch.setattr(FD, "size_choice", first)
+    state = {"purpose": "structural", "user_id": "u1", "user_notes": [], MS.STATE_KEY: _standard(),
+             "fea_plans_object": GC.check_object_key("s1", PO.PLANS_FILE)}
+    _ok, marker, _cited, _said = _drive(ws, monkeypatch, state, _ModelRouter(refine=False))
+    assert planned, marker
+    assert int(planned[0]["estimate"]["elements"]) == held["side"]["elements"]
+    words = [w for w in json.loads((ws / "fea_plan.json").read_text()).get("words") or []
+             if w.startswith("Estimated before meshing")]
+    assert words and f"about {count} elements" in words[0], words
+
+
+def test_the_card_count_is_asked_for_once_and_follows_its_sizing_and_standard(monkeypatch, part):
+    from meshpipeline.contracts import object_storage
+    store = _Store()
+    monkeypatch.setattr(object_storage, "get_object_store", lambda: store)
+    facts = _sized_facts(part)
+    assert PC.stand_wanted("s1", facts, _standard())
+    assert not PC.stand_wanted("s1", facts, _standard())                 # asked a moment ago
+    PC.keep_stand("s1", facts, _standard(), {"side": {"elements": 9}, "row": {"elements": 9}, "ai_args": ""})
+    assert PC.stand_for("s1", facts, _standard())["side"]["elements"] == 9
+    assert PC.stand_for("s1", facts, None) is None                       # another standard: planned again
+    assert PC.stand_for("s1", {}, _standard()) is None                   # not sized
+
+
+def test_the_part_is_measured_once_for_the_costings_of_one_upload(monkeypatch, tmp_path):
+    from meshpipeline.application import fea_check as FC
+    calls: list = []
+    monkeypatch.setattr(PC, "_measure", lambda sid, stored, work: calls.append(1) or ({"faces": {}}, "S", 0.2, "k"))
+    monkeypatch.setattr(FC, "confirmed_connection", lambda sid: "")
+    monkeypatch.setattr(FC, "confirmed_gap_joins", lambda sid: True)
+    monkeypatch.setattr(PC, "_MEASURED", {})
+    stored = {"source": {"x": 1}, "facts": {"scale_to_m": 0.001}}
+    first = PC._measured("s1", stored, tmp_path)
+    first[0]["faces"]["changed"] = True                                  # planning never changes the kept one
+    second = PC._measured("s1", stored, tmp_path)
+    assert calls == [1] and second[0] == {"faces": {}}
+    PC._measured("s1", {**stored, "source": {"x": 2}}, tmp_path)         # another upload: measured again
+    assert calls == [1, 1]

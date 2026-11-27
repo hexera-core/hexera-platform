@@ -573,9 +573,27 @@ async def read_requirements(ws: Path, state, *, job_id: str, run=None, publish=N
 
 def plan_step_ai(state) -> str | None:
     """NOTE-26: the AI's answer made when the plan step costed the words as they stand (the reading the user saw,
-    state part_matches, its `ai_args`), or None."""
+    state part_matches, its `ai_args`); with nothing typed, the one the stage card's count was planned with
+    (application/plan_cost.STAND_FILE, kept beside the stage's plans - state fea_plans_object - for the team standard
+    this run carries), so the card's count is the run's; or None. Checked again on the run's part (fea_ai.decide)."""
     got = ((state or {}).get("part_matches") or {}).get("ai_args")
-    return str(got) if isinstance(got, str) and got.strip() else None
+    if isinstance(got, str) and got.strip():
+        return str(got)
+    from meshpipeline.contracts.user_notes import own_notes
+    plans = str((state or {}).get("fea_plans_object") or "")
+    if own_notes((state or {}).get("user_notes") or []) or "/" not in plans:
+        return None
+    try:
+        from meshpipeline.contracts.object_storage import get_object_store
+        from meshpipeline.engines import meshing_standard as MS
+        from meshpipeline.engines.fea_plan_options import STAND_FILE
+        kept = json.loads(get_object_store().get_bytes(object_key=plans.rsplit("/", 1)[0] + "/" + STAND_FILE))
+        if not isinstance(kept, dict) or kept.get("standard") != MS.snapshot_key(MS.standard_of(state)):
+            return None
+        args = kept.get("ai_args")
+        return str(args) if isinstance(args, str) and args.strip() else None
+    except Exception:  # noqa: BLE001 - none kept: the run asks its AI step itself
+        return None
 
 
 def requirements_section(read: dict, state) -> dict:

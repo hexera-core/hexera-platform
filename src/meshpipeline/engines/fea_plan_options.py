@@ -57,6 +57,9 @@ CHILD_GRACE_S = 60.0
 CHILD_NICE = 10
 #: the plans kept for the run (application/geometry_check stores it beside the check)
 PLANS_FILE = "fea_plans.json"
+#: NOTE-26: the stage card's count for nothing typed, and the AI step's answer it was planned with, kept beside them
+#: (application/plan_cost.stand; the run reads the answer: fea_driver.plan_step_ai)
+STAND_FILE = "fea_stand.json"
 _KIND_WORDS = {"round": "rounds kept for their shape", "relief": "raised or sunk lettering and texture",
                "corner": "capped sharp corners (their stress never settles however fine)", "wall": "walls",
                "wall_spot": "thin spots", "part": "the parts' own sizes", "hole": "holes", "fillet": "fillets",
@@ -445,7 +448,7 @@ def _main(argv: list[str]) -> int:
     return 0
 
 
-__all__ = ["BUDGET_S", "FULL", "LOW_STRESS", "PLANS_FILE", "QUICKER", "bounded", "decide", "kept_plan",
+__all__ = ["BUDGET_S", "FULL", "LOW_STRESS", "PLANS_FILE", "STAND_FILE", "QUICKER", "bounded", "decide", "kept_plan",
            "minutes_words", "options", "options_and_plans", "plan_staged", "planning_code", "plans_key",
            "requirements_cost", "requirements_plan", "row", "stage_file", "standard_elements"]
 
