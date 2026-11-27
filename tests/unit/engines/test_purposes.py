@@ -13,9 +13,16 @@ def test_purposes_declare_expected_role_vocabularies():
         "wall", "farfield", "symmetry", "empty"}
     assert set(get_purpose("internal_cfd").boundary_roles) == {
         "wall", "inlet", "outlet", "symmetry", "empty"}
-    # CHT declares the external contract; the fluid-solid interfaces are DERIVED, not asked
+    # CHT declares the external contract; the fluid-solid interfaces are DERIVED, not asked.
+    #
+    # `opening` IS PART OF THAT EXTERNAL CONTRACT and not an interface. It is the answer for a
+    # mouth the customer will not name - a hole that connects the coolant to the outside whose
+    # direction nobody has decided, which on this cold plate is the honest reading of a severed
+    # pair and of a bore the lid caps. It is listed here because `agents/intake/validation`
+    # SILENTLY DROPS a patch whose role is not in this set, so a vocabulary half-added is worse
+    # than not added: the card showed the role, the confirm API took it, and the patch vanished.
     assert set(get_purpose("conjugate_heat_transfer").boundary_roles) == {
-        "inlet", "outlet", "wall", "external", "symmetry", "empty"}
+        "inlet", "outlet", "opening", "wall", "external", "symmetry", "empty"}
     # the ordered union dedups the roles shared across purposes (wall/symmetry/empty)
     u = roles_for_purposes(("external_cfd", "internal_cfd"))
     assert set(u) == {"wall", "farfield", "symmetry", "empty", "inlet", "outlet"}

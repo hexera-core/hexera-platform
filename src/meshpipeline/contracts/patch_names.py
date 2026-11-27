@@ -246,8 +246,15 @@ def _suffixed(base: str, n: int) -> str:
 
 #: Every role any purpose routes on - a typed type already in this set is never re-read. Kept in
 #: step with engines/purposes.py by tests/unit/contracts/test_approved_equals_delivered.py.
-ALL_ROLES: frozenset[str] = frozenset({"wall", "inlet", "outlet", "farfield", "symmetry",
-                                       "empty", "fixed", "load", "contact", "free", "external"})
+#: `opening` is a MOUTH NOBODY NAMED: a hole that connects the fluid to the outside whose
+#: direction no one has decided. Without it here, `_settle_roles` reaches `known = ALL_ROLES`
+#: with `allowed=None`, does not recognise the word, and sends it to `canonical_role` - so the
+#: one role a customer can give for a severed pair or a capped bore is the one role the default
+#: vocabulary does not know. This is the seventh place the word had to be added; see
+#: engines/purposes.py and the intake prompt, schema and validation.
+ALL_ROLES: frozenset[str] = frozenset({"wall", "inlet", "outlet", "opening", "farfield",
+                                       "symmetry", "empty", "fixed", "load", "contact", "free",
+                                       "external"})
 
 
 def _settle_roles(patches: list, allowed) -> tuple[list, list[Retype]]:
