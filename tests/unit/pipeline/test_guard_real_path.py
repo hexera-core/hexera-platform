@@ -108,24 +108,20 @@ def test_the_measure_guard_is_planned_from_the_mesh_boundary(tmp_path, monkeypat
 
 
 def test_the_measure_runs_under_its_planned_guard_not_the_old_fixed_one(tmp_path, monkeypatch):
+    """TIME-16: the measure runs in a child the guard stops (_bounded); the guard it is given is the
+    one its planned work sets (measure_guard), never the old fixed 240 s."""
     write_row_of_hexes(tmp_path / "constant" / "polyMesh")
     seen = {}
 
-    class _Deadline:
-        def __init__(self, s):
-            seen["s"] = s
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *a):
-            return False
-    monkeypatch.setattr(P, "measure_deadline", _Deadline)
+    def _recording_bounded(fn, *args, budget_s, what="passage measure"):
+        seen["fn"], seen["s"] = fn, budget_s
+        return fn(*args)
+    monkeypatch.setattr(P, "_bounded", _recording_bounded)
     monkeypatch.setattr(P, "measure_guard", lambda _pm: W.PlannedWork(
         where="passage.measure", unit="boundary faces", amount=302_492.0,
         rate=P.PASSAGE_MEASURE_FACES_PER_S, floor_s=240.0, ceiling_s=3600.0))
     P.passage_of_polymesh(tmp_path)
-    assert seen["s"] == 3600.0
+    assert seen["fn"] is P._measure_polymesh and seen["s"] == 3600.0
 
 
 # #
@@ -156,17 +152,20 @@ def test_a_measure_past_its_guard_on_the_mesh_job_keeps_the_valid_mesh(tmp_path,
     assert X._guard_trip({"engine": "cfmesh"}, tmp_path) == {}
 
 
-def test_a_measure_inside_a_worker_thread_never_arms_its_clock(tmp_path, monkeypatch):
+def test_a_measure_inside_a_worker_thread_is_stopped_at_its_guard_too(tmp_path, monkeypatch):
     """Why the 721-file benchmark could not see it: the lab harness ran the native run inside the
-    builder's thread, where the measure's SIGALRM clock never arms, so every measure ran to its
-    end. The deployed mesh job runs it in its main thread (the test above)."""
+    builder's thread, where the old SIGALRM clock never armed, so every measure ran to its end.
+    Since TIME-16 the measure runs in a forked child the guard stops, so a worker thread's measure
+    is stopped at its guard just as the mesh job's main thread's is (the test above)."""
     write_row_of_hexes(tmp_path / "constant" / "polyMesh")
-    _slow_measure(monkeypatch, seconds=1.5)
-    out: dict = {}
-    th = threading.Thread(target=lambda: out.update(P.passage_of_polymesh(tmp_path)))
+    _slow_measure(monkeypatch)
+    out: dict = {"ran": True}
+    th = threading.Thread(target=lambda: out.update(P.passage_of_polymesh(tmp_path), ran=False))
+    t0 = time.monotonic()
     th.start()
     th.join()
-    assert out == {"passage_radius": {"median": 0.5}}
+    assert time.monotonic() - t0 < 2.9, "the measure's guard did not arm in a worker thread"
+    assert out == {"ran": False}, "the measure stopped at its guard gives no reading"
 
 
 def test_a_run_stopped_at_its_guard_on_the_mesh_job_is_replayed_then_ours(tmp_path, monkeypatch,

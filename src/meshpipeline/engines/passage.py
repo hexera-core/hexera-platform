@@ -962,13 +962,25 @@ def _bounded(fn, *args, budget_s: float, what: str = "passage measure"):
     return out
 
 
+#: TIME-16: the longest the guard waits for a stopped measure's stack dump before it kills the child. faulthandler
+#: writes the dump from its C signal handler in milliseconds; the wait ends as soon as the dump stops growing.
+STACK_DUMP_WAIT_S = 2.0
+
+
 def _say_where(proc, where: str, what: str = "passage measure") -> None:
     """Log the innermost frames of a measure stopped at its guard (TIME-16), so the slow step is named. A frame
     inside a C call shows the Python line that made the call (faulthandler dumps from its C signal handler)."""
     import os
     try:
         os.kill(proc.pid, signal.SIGUSR1)
-        time.sleep(2.0)
+        # wait for the dump, not a fixed STACK_DUMP_WAIT_S: done once it is written and has stopped growing
+        deadline, last = time.monotonic() + STACK_DUMP_WAIT_S, -1
+        while time.monotonic() < deadline:
+            time.sleep(0.05)
+            size = os.path.getsize(where)
+            if size and size == last:
+                break
+            last = size
         lines = [ln.strip() for ln in Path(where).read_text(errors="replace").splitlines() if ln.strip()]
     except OSError:
         return
