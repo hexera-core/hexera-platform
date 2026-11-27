@@ -641,6 +641,13 @@ def _describe(cause: object, facts: Mapping | None = None, *,
                 "run may take, so no complete mesh came back.",
                 f"Ask for less detail (for example 'standard' instead of 'max') and {_RUN_AGAIN}.")
     if c is FailureCause.RUN_INFRASTRUCTURE:
+        if f.get("launch_failed"):
+            # THE MESHER NEVER STARTED on the machine it was sent to (job c06bb745: told as "the mesher lost the
+            # boundary 'wall'" after nine passes of an unstarted run)
+            return (f"The mesh machine could not start the mesher ({f.get('launch_failed')}), so nothing was meshed. "
+                    "Nothing about your part caused it.",
+                    f"You can run it again ({_RUN_AGAIN}). If it stops the same way, tell us - the mesh machine's "
+                    "setup is ours to fix.")
         big = f.get("too_big_for_worker")
         if isinstance(big, Mapping):
             need = _as_number(big.get("need_bytes")) or 0.0

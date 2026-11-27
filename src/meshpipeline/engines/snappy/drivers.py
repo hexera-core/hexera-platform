@@ -200,6 +200,35 @@ def _say_layer_reuse(result, plan: dict, *, attempt: int, minutes: float, job_id
         logger.debug("CFDREQ-33 reuse not cited", exc_info=True)
 
 
+#: The refusal's tag when the mesh machine could not start snappyHexMesh's parallel run (parallel_stages.launch_failure)
+LAUNCH_FAILED_TAG = "[MESH_LAUNCH_FAILED]"
+
+
+async def _stop_on_launch_failure(workspace: Path, result, publish: ExecutionEventPublisher, *, attempt: int,
+                                  job_id) -> bool:
+    """THE MESHER NEVER STARTED (engines/snappy/native, `launch_failed`): the machine could not start the parallel
+    run, so nothing about the plan was tried and no re-plan can change it. The passes stop on the first one, the
+    reason told as ours (RUN_INFRASTRUCTURE) - never as a boundary the mesh lost. Job c06bb745 (27 Nov) re-planned
+    an unstarted run nine times over 34 minutes and ended on "the wall came out with no faces". True when it
+    stopped them."""
+    why = str((result or {}).get("launch_failed") or "") if isinstance(result, dict) else ""
+    if not why:
+        return False
+    from meshpipeline.contracts import mesh_machine as _MM
+    from meshpipeline.contracts.failure_cause import FailureCause
+    machine = (_MM.read(workspace) or {}).get("machine") or "the standard mesh job"
+    logger.error("snappy pass %d: the mesh machine (%s) could not start snappyHexMesh - %s - the passes stop "
+                 "(job_id=%s)", attempt, machine, why, job_id)
+    await publish.aerror(f"The mesh machine could not start the mesher - {why}. Nothing was meshed, and nothing "
+                         "about your part caused it.", op_id=f"snappy:launch-failed:{attempt}")
+    PreflightRefusal(
+        gate="finalize", cause=FailureCause.RUN_INFRASTRUCTURE.value,
+        builder_text=f"{LAUNCH_FAILED_TAG} {why}",
+        facts={"engine": "snappyHexMesh", "launch_failed": why, "machine": machine, "ours": True,
+               "deterministic": False, "pass": int(attempt)}).write(workspace)
+    return True
+
+
 def _inherit_durable_plan_fields(strategy: dict, workspace: Path) -> dict:
     """Fields that are FACTS about the request - not per-attempt choices - must survive
     re-planning. A revised plan that omits reference_length_m silently changes the RULER the
@@ -1637,6 +1666,8 @@ async def _build_snappy_deterministic(workspace: Path, state: PipelineState, *, 
                 logger.error("snappy pass %d: case refused by the patch-contract pre-flight - "
                              "job_id=%s: %s", attempt, job_id, result.get("log_tail"))
                 return False
+            if await _stop_on_launch_failure(workspace, result, publish, attempt=attempt, job_id=job_id):
+                return False
             _meshed_any = True
             if result.get("timed_out"):
                 # THE GUARD STOPPED THE PASS (TIME-3): no coarser re-plan - the passes stop, and
@@ -2866,6 +2897,8 @@ async def _build_internal_deterministic(workspace: Path, state: PipelineState, *
             if result.get("case_contract_mismatch"):
                 logger.error("internal pass %d: case refused by the patch-contract pre-flight - "
                              "job_id=%s: %s", attempt, job_id, result.get("log_tail"))
+                return False
+            if await _stop_on_launch_failure(workspace, result, publish, attempt=attempt, job_id=job_id):
                 return False
             if result.get("timed_out"):
                 # THE GUARD STOPPED THE PASS (TIME-3): no coarser re-plan - the passes stop, and

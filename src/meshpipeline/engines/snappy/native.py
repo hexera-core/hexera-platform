@@ -321,6 +321,14 @@ def _run_snappy_local(workspace, *, bashrc: str = _DEFAULT_BASHRC,
         if oversize:
             # STOPPED BY THE SIZE BRAKE: headed far past the budget (its count, stage and ratio)
             out["oversize"] = oversize[-1]
+        _launch = ps.launch_failure(snap_log) if out.get("rc") not in (0, None) else None
+        if _launch:
+            # THE PARALLEL RUN NEVER STARTED (OpenMPI's own words): no snappyHexMesh ran, so constant/polyMesh is
+            # blockMesh's background box - never sent home as a mesh to be judged ("the wall came out with no
+            # faces", job c06bb745), and the driver ends the attempt on this reason instead of re-planning it
+            out["launch_failed"] = _launch
+            shutil.rmtree(ws / "constant" / "polyMesh", ignore_errors=True)
+            logger.error("snappy: %s", _launch)
         from meshpipeline.engines.snapped_keep import read_reuse
         _reuse = read_reuse(ws)
         if _reuse:

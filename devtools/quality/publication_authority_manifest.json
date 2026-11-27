@@ -8080,6 +8080,34 @@
   ]
  },
  {
+  "context": "engines/snappy/drivers.py::_stop_on_launch_failure::error#1|NotAPublisher|not-a-publisher|",
+  "path": "engines/snappy/drivers.py",
+  "qualname": "_stop_on_launch_failure",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 1,
+  "receiver": "logger",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "engines/snappy/drivers.py::_stop_on_launch_failure::error#2|ExecutionEventPublisher|execution-owned|engines/snappy/drivers.py::parameter",
+  "path": "engines/snappy/drivers.py",
+  "qualname": "_stop_on_launch_failure",
+  "semantic": "error",
+  "method": "aerror",
+  "ordinal": 2,
+  "receiver": "publish",
+  "authority": "ExecutionEventPublisher",
+  "lifecycle": "execution-owned",
+  "gated_required": true,
+  "roots": [
+   "engines/snappy/drivers.py::parameter"
+  ]
+ },
+ {
   "context": "engines/snappy/finalize.py::_polymesh_boundary_foam_types::search#1|NotAPublisher|not-a-publisher|",
   "path": "engines/snappy/finalize.py",
   "qualname": "_polymesh_boundary_foam_types",
@@ -8145,6 +8173,19 @@
   "roots": []
  },
  {
+  "context": "engines/snappy/native.py::_run_snappy_local._finish::error#1|NotAPublisher|not-a-publisher|",
+  "path": "engines/snappy/native.py",
+  "qualname": "_run_snappy_local._finish",
+  "semantic": "error",
+  "method": "error",
+  "ordinal": 1,
+  "receiver": "logger",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "engines/snappy/parallel_stages.py::BenignCondition.matches::search#1|NotAPublisher|not-a-publisher|",
   "path": "engines/snappy/parallel_stages.py",
   "qualname": "BenignCondition.matches",
@@ -8152,6 +8193,19 @@
   "method": "search",
   "ordinal": 1,
   "receiver": "self.pattern",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
+  "context": "engines/snappy/parallel_stages.py::launch_failure::search#1|NotAPublisher|not-a-publisher|",
+  "path": "engines/snappy/parallel_stages.py",
+  "qualname": "launch_failure",
+  "semantic": "search",
+  "method": "search",
+  "ordinal": 1,
+  "receiver": "_MPI_LAUNCH_FAILED",
   "authority": "NotAPublisher",
   "lifecycle": "not-a-publisher",
   "gated_required": false,

@@ -82,6 +82,10 @@ end_vm() {
 }
 trap end_vm EXIT
 mkdir -p /mnt/stateful_partition/work /mnt/stateful_partition/dockercfg
+# the mesh container runs as the image's own user, not root: the workspace folder (its TMPDIR) must be
+# writable by it, or OpenMPI cannot make its session folder and every parallel snappyHexMesh stops at
+# once (job c06bb745: "/work/ompi.<host>.1000 - Permission denied")
+chmod 1777 /mnt/stateful_partition/work
 export HOME=/mnt/stateful_partition/dockercfg
 PULLED=""
 run_one() {
@@ -147,13 +151,24 @@ done
 
 @dataclass(frozen=True)
 class VmReference:
-    """projects/{p}/zones/{z}/instances/{name} - what a cancel deletes."""
+    """projects/{p}/zones/{z}/instances/{name} - what a cancel deletes - and, for a VM HELD for its job (RUN-4),
+    the run it was handed (`run`: run_id): one held VM takes several runs of its job."""
     instance_name: str
+    run: str = ""
 
     @property
     def operation_name(self) -> str:
-        # what the claim records as the provider reference: the instance, said as a GCE resource
-        return f"gce:{self.instance_name}"
+        # what the claim records as the provider reference: the instance, said as a GCE resource. Each claim's
+        # reference is unique (uq_native_submission_claims_provider_reference), so a held VM's names its run too:
+        # without it every pass after the first on the job's VM was refused at its claim (job c06bb745, 27 Nov:
+        # "UniqueViolation ... provider_reference ... instances/mesh-big-fdf694fcb8a6c332ca27 already exists")
+        return f"gce:{self.instance_name}" + (f"#{self.run}" if self.run else "")
+
+
+def run_id(output_uri: str) -> str:
+    """The id of one run (the `mesh-run` value's first field): its output's, so the same run handed over twice is
+    run once."""
+    return hashlib.sha256(output_uri.encode()).hexdigest()[:16]
 
 
 def instance_name(operation_key: str, machine: str, holder: str = "") -> str:
@@ -174,7 +189,7 @@ def run_value(*, input_uri: str, output_uri: str, engine: str, timeout: int, con
               ranks: str, image: str) -> str:
     """The `mesh-run` metadata value the VM reads a run from (STARTUP_SCRIPT), one request for all of it. Its
     id is the run's output: the same run handed over twice is run once."""
-    rid = hashlib.sha256(output_uri.encode()).hexdigest()[:16]
+    rid = run_id(output_uri)
     return "|".join([rid, input_uri, output_uri, engine, str(int(timeout)), contract,
                      "true" if snapshots else "false", ranks, image])
 
@@ -534,11 +549,13 @@ def trigger_vm(*, input_uri: str, output_uri: str, engine: str, timeout: int, op
     renew_job_hold(holder, force=True)
     meta = run_metadata(image=image, input_uri=input_uri, output_uri=output_uri, engine=engine, timeout=timeout)
     held, free = _held_vm(name, holder, machine, meta=meta, timeout=timeout, disk_gb=disk_gb)
+    # the job's VM takes many runs: each one's reference names its run (VmReference.operation_name)
+    from dataclasses import replace
     if held is not None:
-        return held
+        return replace(held, run=run_id(output_uri))
     if free:
         try:
-            return insert(name=name, holder=holder)
+            return replace(insert(name=name, holder=holder), run=run_id(output_uri))
         except _NameTaken:
             pass
     logger.warning("mesh for %s runs on a %s VM of its own: the one job %s holds is busy or not yet gone",

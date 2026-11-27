@@ -55,6 +55,27 @@ class BenignCondition:
 _BENIGN_PARALLEL_CONDITIONS: tuple[BenignCondition, ...] = ()
 
 
+#: OpenMPI's own words when `mpirun` could not start its ranks at all - snappyHexMesh never ran, so the mesh on
+#: disk is blockMesh's background box and nothing a re-plan changes can help (job c06bb745, 27 Nov: the mesh VM's
+#: TMPDIR was not writable, "orte_init failed", and nine passes re-planned an empty box)
+_MPI_LAUNCH_FAILED = re.compile(
+    r"A call to mkdir was unable to create the desired directory:\s*Directory:\s*(?P<dir>\S+)\s*Error:\s*(?P<err>[^\n]+)"
+    r"|(?P<orte>orte_init failed|orte_session_dir failed|ompi_rte_init failed|PMIx_Init failed"
+    r"|mpirun was unable to launch the specified application|There are not enough slots available)")
+
+
+def launch_failure(log_text: str) -> str | None:
+    """The reason in plain words when OpenMPI could not start the parallel run (`mpirun`'s own output in
+    the stage's log), else None. A run that started and then failed is not one: its ranks wrote the log."""
+    m = _MPI_LAUNCH_FAILED.search(log_text or "")
+    if not m:
+        return None
+    if m.group("dir"):
+        return (f"the parallel mesher could not start: OpenMPI could not create its working folder "
+                f"{m.group('dir')} ({m.group('err').strip()})")
+    return f"the parallel mesher could not start: OpenMPI stopped before any rank ran ({m.group('orte')})"
+
+
 def polymesh_complete(ws: Path, *, since: float | None = None) -> tuple[bool, list[str]]:
     poly = Path(ws) / "constant" / "polyMesh"
     problems: list[str] = []

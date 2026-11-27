@@ -170,6 +170,9 @@ def refusal_stands_over_mesh(refusal) -> bool:
     the CAD check's refusal of a mesh as built that missed more of the CAD than a rescue could bring back (it was not
     rescued, so its cells were never meant to be judged)."""
     facts = getattr(refusal, "facts", None) or {}
+    if facts.get("launch_failed"):
+        # the mesher never started (engines/snappy/drivers._stop_on_launch_failure): whatever is on disk is no mesh
+        return True
     return bool(facts.get("after_build") and (facts.get("port_region_dropped") or facts.get("fidelity_first")))
 
 
