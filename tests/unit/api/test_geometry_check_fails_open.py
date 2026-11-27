@@ -52,6 +52,11 @@ class _Store:
         return f"https://pictures/{object_key}"
 
 
+#: CRS v5 beta: the repair choice every proposal carries for the form (api/v1/geometry.get_check) -
+#: the default, with no organisation allowing the review bypass
+_REPAIR_CHOICE_DEFAULT = {"repair_goal": "meshing", "repair_goal_source": "default",
+                          "repair_auto_accept": False, "repair_auto_accept_allowed": False}
+
 def _key(name: str) -> str:
     return f"sessions/{SID}/geometry_check/{name}"
 
@@ -133,7 +138,8 @@ async def test_a_scouted_check_with_no_naming_asked_is_served_for_the_stage_to_o
     assert d["status"] == "scouted" and d["named"] is False and d["naming_requested"] is False
     assert d["skin"] is True and d["unit_needed"] is False and "facts" not in d
     # the scale the numbers were read under, and the unit they are read in, on whose word
-    assert d["proposal"] == {"openings": [], "scale_to_m": 0.001, "unit": "mm", "unit_basis": "assumed"}
+    assert d["proposal"] == {"openings": [], "scale_to_m": 0.001, "unit": "mm", "unit_basis": "assumed",
+                             **_REPAIR_CHOICE_DEFAULT}
 
 
 async def test_the_unit_the_session_holds_is_served_beside_the_sizes(served, monkeypatch):
@@ -177,7 +183,8 @@ async def test_a_naming_that_never_answered_reads_as_failed_and_keeps_the_part_f
     d = await route.get_check(SID, "alice", "org-1")
     assert d["status"] == "failed" and d["reason"] == gc.NAMING_TOO_LONG and d["retry"] == "naming"
     assert d["skin"] is True and d["naming_requested"] is True
-    assert d["proposal"] == {"openings": [], "scale_to_m": 0.001, "unit": "mm", "unit_basis": "assumed"}
+    assert d["proposal"] == {"openings": [], "scale_to_m": 0.001, "unit": "mm", "unit_basis": "assumed",
+                             **_REPAIR_CHOICE_DEFAULT}
 
 
 async def test_a_naming_that_gave_up_waiting_for_the_scout_is_not_reported_as_running(served):

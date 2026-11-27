@@ -65,6 +65,8 @@ NOT_LIVE: Final = "posture_off"
 NOT_A_CAD_DEFECT: Final = "not_a_cad_defect_refusal"
 ALREADY_HANDED_BACK: Final = "already_handed_back"
 NO_FACES: Final = "no_faces_named"
+#: The customer chose "Mesh only" (pipeline/repair_goal.py): no repair of any kind, this one too.
+REPAIR_OFF: Final = "repair_off"
 
 #: The gates MESH-2 can arrive under. BOTH are the same refusal: `engines/fea_driver` writes it as
 #: `fea_cad_defect`, and `pipeline/executor` keeps that gate when no mesh reached the disk but
@@ -144,6 +146,9 @@ def wanted(state: PipelineState) -> tuple[bool, str]:
     """
     if posture() != LIVE:
         return False, NOT_LIVE
+    from meshpipeline.pipeline.repair_goal import repair_off
+    if repair_off(state):
+        return False, REPAIR_OFF
     defect = cad_defect_of(state)
     if not defect:
         return False, NOT_A_CAD_DEFECT

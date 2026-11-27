@@ -183,6 +183,32 @@ def build_checks(brief: dict[str, Any]) -> list[dict[str, Any]]:
     return checks
 
 
+_REPAIR_LABELS = {"meshing": "Repair + mesh", "standalone": "Repair CAD only", "off": "Mesh only"}
+
+
+def repair_goal_of(session: Any) -> str:
+    """The run's repair choice as the card should show it: the intake's (the approval or the
+    pending submission's `repair_goal`, set from the chat), else the geometry check's (its
+    declaration's `repair_goal` word), else "meshing" - the same precedence the approval uses."""
+    import re
+    gate = getattr(session, "intake_gate", None)
+    gate = gate if isinstance(gate, dict) else {}
+    for key in ("approval", "pending"):
+        raw_snap = gate.get(key)
+        snap: dict = raw_snap if isinstance(raw_snap, dict) else {}
+        raw_payload = snap.get("payload")
+        payload: dict = raw_payload if isinstance(raw_payload, dict) else {}
+        said = str(payload.get("repair_goal") or "").strip().lower()
+        if said in _REPAIR_LABELS:
+            return said
+    for message in reversed(getattr(session, "messages", None) or []):
+        text = str(message.get("content") if isinstance(message, dict) else message or "")
+        declared = re.findall(r"\(repair_goal (standalone|off)\)", text)
+        if declared:
+            return str(declared[-1])
+    return "meshing"
+
+
 def _is_fea(purpose: Any) -> bool:
     from meshpipeline.engines import fea_review
     return bool(fea_review.is_fea(purpose))
@@ -237,6 +263,15 @@ def build_brief(session: Any, *, part_matches: dict | None = None) -> dict[str, 
     # THE CELL-LIMIT ANSWER IN WORDS on the card, never the parameter's own ("narrow gaps: within_limit")
     if brief.get("engine_params") and not brief.get("engine_params_label"):
         brief["engine_params_label"] = _clean(_params_words(brief["engine_params"]))
+    # THE REPAIR CHOICE (CRS v5 beta, Decision 1): "Repair CAD only" is a repair plan, not a mesh
+    # plan - the card says which, and what the run will do, so the console can draw it as such
+    goal = repair_goal_of(session)
+    brief["repair_goal"] = goal
+    brief["repair_goal_label"] = _REPAIR_LABELS[goal]
+    if goal == "standalone":
+        brief["repair_plan"] = ["Check your CAD for problems that stop it meshing",
+                                "Repair what can be repaired safely",
+                                "Hand back the repaired STEP with a repair report - no mesh is made"]
     # absent stays absent: a field Intake never settled is not a blank row
     brief = {k: v for k, v in brief.items() if v is not None}
     brief["submitted"] = bool(getattr(session, "intake_submitted", False))

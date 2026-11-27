@@ -234,6 +234,19 @@
   "roots": []
  },
  {
+  "context": "adapters/event_stream/redis.py::JobPublisher.repair_progress::repair_progress#1|NotAPublisher|not-a-publisher|",
+  "path": "adapters/event_stream/redis.py",
+  "qualname": "JobPublisher.repair_progress",
+  "semantic": "repair_progress",
+  "method": "repair_progress",
+  "ordinal": 1,
+  "receiver": "E",
+  "authority": "NotAPublisher",
+  "lifecycle": "not-a-publisher",
+  "gated_required": false,
+  "roots": []
+ },
+ {
   "context": "adapters/event_stream/redis.py::JobPublisher.screenshot::screenshot#1|NotAPublisher|not-a-publisher|",
   "path": "adapters/event_stream/redis.py",
   "qualname": "JobPublisher.screenshot",
@@ -2279,6 +2292,21 @@
   "qualname": "OwnershipCheckedPublisher.areceipt",
   "semantic": "receipt",
   "method": "receipt",
+  "ordinal": 1,
+  "receiver": "self._inner",
+  "authority": "InternalEmitter",
+  "lifecycle": "internal-emitter",
+  "gated_required": false,
+  "roots": [
+   "application/execution_publisher.py::OwnershipCheckedPublisher"
+  ]
+ },
+ {
+  "context": "application/execution_publisher.py::OwnershipCheckedPublisher.arepair_progress::repair_progress#1|InternalEmitter|internal-emitter|application/execution_publisher.py::OwnershipCheckedPublisher",
+  "path": "application/execution_publisher.py",
+  "qualname": "OwnershipCheckedPublisher.arepair_progress",
+  "semantic": "repair_progress",
+  "method": "repair_progress",
   "ordinal": 1,
   "receiver": "self._inner",
   "authority": "InternalEmitter",
@@ -6895,6 +6923,21 @@
   "gated_required": true,
   "roots": [
    "pipeline/graph.py::execution_publisher"
+  ]
+ },
+ {
+  "context": "pipeline/repair_progress.py::apublish::repair_progress#1|ExecutionEventPublisher|execution-owned|pipeline/repair_progress.py::execution_publisher",
+  "path": "pipeline/repair_progress.py",
+  "qualname": "apublish",
+  "semantic": "repair_progress",
+  "method": "arepair_progress",
+  "ordinal": 1,
+  "receiver": "pub",
+  "authority": "ExecutionEventPublisher",
+  "lifecycle": "execution-owned",
+  "gated_required": true,
+  "roots": [
+   "pipeline/repair_progress.py::execution_publisher"
   ]
  },
  {

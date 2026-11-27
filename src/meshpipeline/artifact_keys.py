@@ -67,6 +67,11 @@ def mesh_hints_key(job: str, digest: str) -> str:
     return f"{_PREFIX}/{job}/mesh-hints-{digest[:16]}.json"
 
 
+def repair_viewer_key(job: str, digest: str) -> str:
+    """Where the repair viewer's payload (application/repair_viewer.py) lives. Content-addressed."""
+    return f"{_PREFIX}/{job}/repair-viewer-{digest[:16]}.json"
+
+
 def result_key_beside(output_object_key: str) -> str:
     return output_object_key.rsplit("/", 1)[0] + "/result.json"
 

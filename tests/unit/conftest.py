@@ -431,6 +431,9 @@ class FakePublisher:
     def mesh_partial(self, phase, object_key, op_id="") -> None:
         self._rec("mesh_partial", phase=phase, object_key=object_key, op_id=op_id)
 
+    def repair_progress(self, progress, op_id="") -> None:
+        self._rec("repair_progress", progress=dict(progress), op_id=op_id)
+
     # A PROTOCOL METHOD THIS DOUBLE IS MISSING IS A TEST FAILURE, NEVER A SILENT PASS.
     #
     # Every `a<name>` wrapper in application/execution_publisher.py calls straight through to

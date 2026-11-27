@@ -255,6 +255,10 @@ def repair_check_words(state: Mapping, out: Mapping) -> str | None:
         if said:
             return _with_review(f"{said}; {_ORIGINAL}")
         return _with_review(f"Nothing could be repaired safely; {_ORIGINAL}")
+    if outcome == "needs_review":
+        # CRS v5 beta "Bypass permission": a fix past the allowance, no bypass, no review here
+        return _with_review("Some fixes would change your part more than is applied without "
+                            f"your approval; {_ORIGINAL}")
     if outcome == "not_promoted":
         return _with_review(f"The repaired file failed our checks; {_ORIGINAL}")
     if outcome == "not_proved":

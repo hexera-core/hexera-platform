@@ -123,10 +123,14 @@ class PipelineState(TypedDict):
     # replayed, then the engineer's decisions. Empty on every run that did not resume from a park.
     repair_directives: list[dict]
     # WHAT THIS RUN IS FINISHING FOR, as the job was dispatched asking for it (pipeline/
-    # repair_goal.py): {"goal": "standalone"|"meshing", "auto_accept_deviation_mm": float|None}.
-    # Empty on every run that declared none - which is byte-for-byte today's run - and inert
-    # unless CAD_REPAIR_STANDALONE_JOBS is exactly `live`.
+    # repair_goal.py): {"goal": "meshing"|"standalone"|"off", "auto_accept_deviation_mm":
+    # float|None, "auto_accept_repairs": bool}. Empty on every run that declared none - which is
+    # byte-for-byte today's run ("Repair + mesh").
     repair_goal: dict
+    # TRUE WHEN THE REPAIR WAITS FOR A PERSON (CRS v5 beta): a change past the auto-accept
+    # threshold on a run without the review bypass. The graph ends the run after the repair node
+    # and the terminal path parks it in pending_review with the changes as review items.
+    repair_review_wait: bool
     # A STANDALONE REPAIR JOB'S ENDING (pipeline/repair_deliver.py): the outcome word, the goal's
     # finishing verdict, and the repaired file the orchestrator's terminal path hands back. Must be
     # declared, or the graph drops it between that node and the delivery it names. Empty on a

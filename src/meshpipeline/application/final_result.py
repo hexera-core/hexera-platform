@@ -196,6 +196,13 @@ class FinalResult:
     # and never a check (NOTE-3). Added without a schema bump: it defaults to [] and an older
     # reader ignores the key.
     notes_remarks: list = field(default_factory=list)
+    # THE REPAIR, AS THE CUSTOMER SEES IT (CRS v5 beta, pipeline/repair_result.section): the
+    # three-way choice, the engine's result in plain words (problems, counts, largest change vs
+    # allowed, meshers passing, volume and size change, flags, time), and whether it needed a
+    # review, waited for one, or was auto-accepted under the run's bypass. Served as the job API's
+    # `repair` section. Added without a schema bump: it defaults to {} and an older reader ignores
+    # the key.
+    repair: dict = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         # THE invariant, enforced at construction so no path can violate it.
@@ -257,7 +264,8 @@ class FinalResult:
             review_left=(dict(d["review_left"])
                          if isinstance(d.get("review_left"), Mapping) else {}),
             review_truncated=int(d.get("review_truncated", 0) or 0),
-            notes_remarks=[str(r) for r in (d.get("notes_remarks") or []) if str(r).strip()])
+            notes_remarks=[str(r) for r in (d.get("notes_remarks") or []) if str(r).strip()],
+            repair=(dict(d["repair"]) if isinstance(d.get("repair"), Mapping) else {}))
 
 
 # WHAT A CRASH STILL KNOWS.
@@ -664,6 +672,12 @@ def with_repair_lineage(fr: FinalResult, record: Mapping | None) -> FinalResult:
     return dataclasses.replace(fr, repair_lineage=dict(record or {}))
 
 
+def with_repair(fr: FinalResult, section: Mapping | None) -> FinalResult:
+    """The repair as the customer sees it (pipeline/repair_result.section), kept on the record."""
+    import dataclasses
+    return dataclasses.replace(fr, repair=dict(section or {}))
+
+
 def with_review_parked(fr: FinalResult, count: int) -> FinalResult:
     """Mark this result as the record of a run parked for review on `count` things."""
     import dataclasses
@@ -711,6 +725,10 @@ def render_message(fr: FinalResult) -> str:
     success that another engine built, which one and why; on a mesh failure, the one offer."""
     if fr.review_parked > 0 and fr.status == TerminalStatus.failed:
         return _render_parked(fr.review_parked)
+    repair = fr.repair if isinstance(fr.repair, Mapping) else {}
+    if repair.get("choice") == "standalone" and fr.status != TerminalStatus.cancelled:
+        # "REPAIR CAD ONLY" meshed nothing: its closing is the repair's, never a mesher's
+        return render_standalone(repair)
     text = _render_outcome(fr)
     # THE USER'S OWN NOTES: what the build did with them, in the steps' own one plain line
     from meshpipeline.contracts.user_notes import result_lines
@@ -735,6 +753,28 @@ def render_message(fr: FinalResult) -> str:
             and str(offer.get("text") or "").strip()):
         return "\n".join((text, str(offer["text"]).strip()))
     return text
+
+
+def render_standalone(repair: Mapping) -> str:
+    """The closing of a "Repair CAD only" job, in the repair's own words (CRS v5 beta): what came
+    of the repair and what the customer holds. Never a mesher's name - none ran."""
+    raw = repair.get("counts")
+    counts: Mapping = raw if isinstance(raw, Mapping) else {}
+    found, fixed = counts.get("found"), counts.get("fixed")
+    tally = (f": {fixed} of {found} problems fixed"
+             if isinstance(found, int) and isinstance(fixed, int) and found else "")
+    outcome = str(repair.get("outcome") or "")
+    if outcome == "repaired":
+        return (f"Your CAD was repaired{tally}. Download the repaired STEP and the repair report "
+                "below.")
+    if outcome == "partly_repaired":
+        return (f"Your CAD was partly repaired{tally}. Download the repaired STEP below; the "
+                "repair report says what was left as is and why.")
+    if outcome == "unchanged":
+        return ("Your CAD was checked and nothing needed changing. Your original STEP is "
+                "handed back below.")
+    return ("We couldn't repair your CAD automatically, so it is unchanged. Your original STEP "
+            "is handed back below, and the repair report says what we found.")
 
 
 def _render_outcome(fr: FinalResult) -> str:
@@ -1081,6 +1121,10 @@ def _standalone_delivery(state: Mapping) -> dict | None:
         from meshpipeline.pipeline.repair_goal import from_state
         asked = from_state(state)
         if asked is None or asked.goal is not RepairGoal.standalone:
+            return None
+        if state.get("repair_review_wait"):
+            # A STANDALONE RUN THAT STOPPED FOR A PERSON never reached its ending: it is not a
+            # completed repair job but one waiting for review (it parks; found on the slug)
             return None
         delivery = state.get("repair_delivery")
         return dict(delivery) if isinstance(delivery, Mapping) else {}
@@ -1902,10 +1946,19 @@ def derive_terminal_status(outcome: RunOutcome, *, job_id: str, jlog) -> StatusD
         if d.get("outcome") == REPAIRED and d.get("path"):
             jlog.info("terminal status: standalone repair delivered (job_id=%s)", job_id)
             return StatusDecision(JobStatus.succeeded, None)
-        jlog.info("terminal status: standalone repair ended %s - not delivered (job_id=%s)",
-                  d.get("outcome") or "with no ending", job_id)
-        # no repair-specific FailedReason exists (it is a DB enum); the run produced no deliverable
-        return StatusDecision(JobStatus.failed, FailedReason.mesh_generation)
+        if d.get("outcome") == REPAIRED:
+            # "repaired" with no file to hand back: the customer would be told repaired with
+            # nothing to download - that is ours to fail, never a completed job
+            jlog.info("terminal status: standalone repair claims repaired with no file "
+                      "(job_id=%s)", job_id)
+            return StatusDecision(JobStatus.failed, FailedReason.mesh_generation)
+        # A REPAIR THAT KEPT NOTHING IS STILL A FINISHED JOB (CRS v5 beta): the customer asked for
+        # their CAD to be checked and repaired, it was, and the answer - unchanged or could not be
+        # repaired, and why - is the job's repair section, with their STEP handed back. It is not a
+        # failure of the service; only an upload that lost a repaired file is (pipeline_run).
+        jlog.info("terminal status: standalone repair ended %s - completed with nothing repaired "
+                  "(job_id=%s)", d.get("outcome") or "with no ending", job_id)
+        return StatusDecision(JobStatus.succeeded, None)
 
     if limits_decide_for(outcome) and _limits_apply(outcome):
         # THE MEASURED LIMITS DECIDE (docs/RULES.md VER-1..4). Every gate passed on this mesh; the

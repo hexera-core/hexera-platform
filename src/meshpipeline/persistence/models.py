@@ -102,6 +102,10 @@ class ArtifactType(str, PyEnum):
     # THE MESH-SIZE HINTS SIDECAR beside a returned or repaired STEP (`crs-mesh-hints/1`,
     # cad/repair/mesh_hints.py): an ADDITION to the STEP, never instead of it. Added by revision 0022.
     mesh_hints       = "mesh_hints"
+    # THE REPAIR VIEWER'S PAYLOAD (application/repair_viewer.py): the original and the repaired CAD
+    # as surfaces, the problems pinned where they were found and how far each face moved. What the
+    # console's repair view draws, never a download. Added by revision 0023.
+    repair_viewer    = "repair_viewer"
 
 
 
@@ -947,6 +951,12 @@ class Organization(Base):
                                                                   nullable=True)
     erased_at:            Mapped[datetime | None] = mapped_column(DateTime(timezone=True),
                                                                   nullable=True)
+    #: THE REPAIR REVIEW BYPASS PERMISSION (0023, CRS v5 beta): whether a run of this organisation
+    #: may be dispatched with "auto-accept repairs (skip review)". Only the organisation's owner
+    #: sets it (api/v1/organization.py); off means every change past the auto-accept threshold
+    #: waits for the review screen.
+    repair_auto_accept_allowed: Mapped[bool] = mapped_column(Boolean, nullable=False,
+                                                             server_default=text("false"))
 
     __table_args__: tuple = (
         Index("ix_organizations_erasure_pending", "erasure_requested_at",

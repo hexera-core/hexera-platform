@@ -41,6 +41,8 @@ def _v5_on(monkeypatch):
     # the lane's closing line and receipt are other modules' concern (and need a bound execution)
     monkeypatch.setattr("meshpipeline.pipeline.repair_words.asay", quiet)
     monkeypatch.setattr("meshpipeline.pipeline.repair_receipt.apublish", quiet)
+    # ...and so is the typed `repair_progress` lane (pipeline/repair_progress.Lane)
+    monkeypatch.setattr("meshpipeline.pipeline.repair_progress.apublish", quiet)
 
 
 def test_a_delivered_v5_repair_carries_the_contract_trace_and_progress(tmp_path, monkeypatch):

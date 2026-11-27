@@ -78,7 +78,10 @@ def plan_review(state: dict, *, status: JobStatus,
     if (not items and not outcomes) or status not in (JobStatus.failed, JobStatus.succeeded):
         return None
     truncated = max(int(state.get("repair_review_truncated") or 0), 0)
-    if status == JobStatus.succeeded or not items:
+    # "AUTO-ACCEPT REPAIRS (SKIP REVIEW)" (CRS v5 beta): the customer, allowed by their
+    # organisation, told this run not to stop for a review - its items are recorded, never parked
+    from meshpipeline.pipeline.repair_goal import bypass_review
+    if status == JobStatus.succeeded or not items or bypass_review(state):
         return ReviewPlan(items=items, outcomes=outcomes, truncated=truncated)
     return ReviewPlan(items=items, outcomes=outcomes, park=True, truncated=truncated,
                       kept_operations=kept_operations(state),
