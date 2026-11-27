@@ -312,7 +312,9 @@ export const Stage = {
     this._pmDraw=draw;
     draw();
     // WHILE THE NOTES ARE READ the list follows the reading; a reply still owed to the user's last requirement
-    // (NOTE-19) comes with the poll once the reading lands, and takes the place of "Reading…"
+    // (NOTE-19) comes with the poll once the reading lands, and takes the place of "Reading…". NOTE-26: while what
+    // the requirements cost is still being worked out (`cost_pending`) the poll goes on, and the count line comes
+    // with it as its own message under the reply
     this._pmPoll=()=>{
       clearTimeout(this._pmTimer);
       if(!parts)return;
@@ -322,15 +324,16 @@ export const Stage = {
         let got=null;try{got=await parts.get();}catch{/* try again */}
         if(got)this._pm=got.status==='none'?null:got;
         if(got&&got.reply)this._pmSay(got.reply);
+        if(got&&got.count_line)this.chat('assistant',got.count_line);
         draw();
-        const busy=this._pm&&(this._pm.status==='reading'||this._pm.status==='waiting');
+        const busy=this._pm&&(this._pm.status==='reading'||this._pm.status==='waiting'||!!this._pm.cost_pending);
         // the reading landed but its reply is not in yet: asked a few more times, then "Reading…" goes
         const owed=!busy&&got&&this._pmWaiting&&++tries<4;
         if((busy||!got||owed)&&Date.now()-t0<8*60e3){this._pmTimer=setTimeout(poll,busy?3000:1500);return;}
         if(this._pmWaiting)this._pmSay('');
         this._pmAsked();};
       this._pmTimer=setTimeout(poll,2500);};
-    if(((m&&(m.status==='reading'||m.status==='waiting'))||this._pmWaiting)&&parts)this._pmPoll();
+    if(((m&&(m.status==='reading'||m.status==='waiting'||m.cost_pending))||this._pmWaiting)&&parts)this._pmPoll();
     const rowOf=(i)=>{const m=this._pm;return m&&[...(m.rows||[]),...(m.unsure||[])].find(x=>x.phrase===i);};
     // a part put in or taken out of a row: the chip follows at once, the pick is kept at once (one save per row),
     // and the card is redrawn from the server's checked answer once every row's save is in

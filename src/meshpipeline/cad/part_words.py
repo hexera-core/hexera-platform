@@ -899,6 +899,24 @@ def table_of(record: Mapping, surface) -> tuple[list[dict], dict[str, list[str]]
     return table, faces_of, shown
 
 
+def _as_run(kept: dict | None, faces_of: Mapping) -> dict | None:
+    """A reading kept on this run's parts (from_stored) with the faces of each area inside them, as decide hands it
+    to the plan: an area's entry ("finer at the holes") sizes those faces only with them."""
+    if kept is not None:
+        kept["features"] = dict(faces_of)
+    return kept
+
+
+def as_run(stored: Mapping | None, record: Mapping, surface) -> dict | None:
+    """THE READING MADE BEFORE APPROVAL AS THE RUN TAKES IT (decide, without asking anything): its entries kept on the
+    parts this part has, with the faces of each area. The plan step's cost (application/plan_cost, NOTE-26) plans with
+    it, so an area asked finer or sized is costed on its faces (the checklist's own reading keeps no faces: the C5
+    knuckle's "finer in/around the holes" was costed as a part named Feature_n that does not exist, and changed
+    nothing). None when nothing of it is usable."""
+    table, faces_of, _shown = table_of(record, surface)
+    return _as_run(from_stored(stored, table), faces_of) if table else None
+
+
 async def decide(ws: Path, record: Mapping, surface, state: Mapping, *, consumer: str, purpose: str = "",
                  job_id: str = "", run=None, enabled: bool = True, wait_s: float = TIMEOUT_S) -> dict:
     """NOTE-4's section for this run: "none" (no words to read, or the AI off), "used" (the checked entries,
@@ -912,9 +930,8 @@ async def decide(ws: Path, record: Mapping, surface, state: Mapping, *, consumer
         return section("none", note="no parts could be measured")
     # THE READING MADE BEFORE APPROVAL (the stage's checklist, as the user left it) is the one used: the user saw
     # it and approved it. The model is asked again only when there is none.
-    stored = from_stored((state or {}).get("part_matches"), table)
+    stored = _as_run(from_stored((state or {}).get("part_matches"), table), faces_of)
     if stored is not None:
-        stored["features"] = dict(faces_of)
         return stored
     pictures = await asyncio.to_thread(draw, ws, shown, table)
     got = await ask(ws, table, pictures, state, consumer=consumer, purpose=purpose, job_id=job_id, run=run,
@@ -1014,6 +1031,6 @@ def decisions(ps: Mapping | None, stage: str = "notes") -> list[dict]:
              "words": " ".join(words(ps)[:3])}]
 
 
-__all__ = ["ASKS", "MIN_CONFIDENCE", "PART_FINEST", "PICTURES_DIR", "RULE", "SYSTEM", "TOOL", "UNREAD_WORDS", "UNITS_MM",
+__all__ = ["ASKS", "as_run", "MIN_CONFIDENCE", "PART_FINEST", "PICTURES_DIR", "RULE", "SYSTEM", "TOOL", "UNREAD_WORDS", "UNITS_MM",
            "ask", "check", "check_record", "decide", "decisions", "draw", "from_stored", "messages_for", "notes_text",
            "part_table", "per_part", "picked", "section", "size_tool", "wanted", "with_picks", "words"]

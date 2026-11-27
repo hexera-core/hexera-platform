@@ -613,7 +613,11 @@ def cost_line(cost: Mapping) -> str:
     held do not cover the whole wait, and the C5 knuckle's "3 minutes" took 8.5)."""
     b, a = cost.get("before") or {}, cost.get("after") or {}
     was, now = count_words(b.get("elements")), count_words(a.get("elements"))
-    line = f"That takes it from {was} to {now} elements" if was != now else f"That keeps it at {now} elements"
+    if cost.get("floor"):
+        # the run's AI step gave no decision when this was costed: it may still refine when the run starts
+        line = f"That takes it from {was} to at least {now} elements"
+    else:
+        line = f"That takes it from {was} to {now} elements" if was != now else f"That keeps it at {now} elements"
     if cost.get("bigger_machine"):
         line += ", and it needs a bigger machine" if was != now else ", but it needs a bigger machine"
     return line + "."
@@ -876,10 +880,7 @@ def reply_for(note: Mapping, view: Mapping | None, *, note_id: str = "") -> str:
     clash = count_clash(view, counts)
     if clash:
         out.append(clash)
-    priced = cost_mine(view, rows or counts)
-    if priced:
-        # NOTE-26: what it does to the mesh, said before the run
-        out.append(cost_line(priced))
+    # (NOTE-26: what it does to the mesh is its own line after this one - plan_reply.count_owed)
     for u in unsure[:MAX_SAID]:
         what = str(u.get("words") or u.get("quote") or "").strip()
         out.append(which_one_line(u) or none_line(u) or f"I couldn't tell where “{what}” is. Click it on the model and send it again.")

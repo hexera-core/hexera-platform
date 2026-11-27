@@ -416,7 +416,7 @@ async def _erase_bytes(db: AsyncSession, store, org_id: uuid.UUID, at: datetime)
         # the parts checklist's pictures and records (application/part_matches)
         from meshpipeline.application import part_matches as _pm
         picture_keys.extend(_pm.picture_keys(sid))
-        picture_keys.extend(check_object_key(sid, n) for n in (_pm.MATCHES, _pm.PICKS))
+        picture_keys.extend(check_object_key(sid, n) for n in (_pm.MATCHES, _pm.PICKS, _pm.COUNT_SAID))
         # the files the user attached in the chat or notes box, by the keys the session's index kept (NOTE-16)
         picture_keys.extend(chat_attachments.object_keys(session))
         for key in picture_keys + [check_object_key(sid, name) for name in _CHECK_RECORDS]:

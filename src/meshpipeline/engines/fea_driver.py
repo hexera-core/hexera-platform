@@ -571,6 +571,13 @@ async def read_requirements(ws: Path, state, *, job_id: str, run=None, publish=N
     return sec
 
 
+def plan_step_ai(state) -> str | None:
+    """NOTE-26: the AI's answer made when the plan step costed the words as they stand (the reading the user saw,
+    state part_matches, its `ai_args`), or None."""
+    got = ((state or {}).get("part_matches") or {}).get("ai_args")
+    return str(got) if isinstance(got, str) and got.strip() else None
+
+
 def requirements_section(read: dict, state) -> dict:
     """The notes' reading merged with the team's standard (meshing_standard.decide) as the run applies it - the one
     copy, read by the run (read_requirements) and by the plan step's cost (application/plan_cost, NOTE-26)."""
@@ -3014,9 +3021,12 @@ async def drive(workspace, state, *, job_id: str, publish: ExecutionEventPublish
     if asked is None:
         asked = await read_requirements(ws, state, job_id=job_id, run=run, publish=publish, say=False)
     from meshpipeline.engines import mesh_requirements as _MR
+    # NOTE-26: the decision the AI made when the plan step costed these same words rides with the reading the user
+    # saw (application/part_matches.for_run); checked on this part, it is this run's - so the count told then is
+    # the count planned now
     ai = await FA.decide(record, FA.with_rules_asks(state or {}, asked), P.zones(record),
                          diag_m=diag_m, limit=element_limit(record)[0], job_id=job_id, run=run,
-                         wait_s=ai_wait_s(run))
+                         wait_s=ai_wait_s(run), kept=plan_step_ai(state))
     # what the AI did with the user's notes, kept for the result's "From your notes" line
     # - only when the rules decided none of the notes' asks (NOTE-13; a strictness is theirs too, NOTE-14): beside the
     # rules' own lines a model's sentence could only say them again, or wrongly (A6, round 12)

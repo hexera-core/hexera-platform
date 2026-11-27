@@ -1,44 +1,48 @@
-# Responsibility: NOTE-26, WHAT A TYPED REQUIREMENT COSTS, said at the plan step of an FEA solid: the plan the run
-#       would make with every requirement so far (engines/fea_plan_options.requirements_plan - the run's own inputs
-#       and planning, no number of its own) against the plan as it stood just before this message, kept beside the
-#       checklist's reading so the reply and the count row can say it.
-# Boundaries: runs on the geometry worker inside the checklist's reading (application/part_matches.run_reading),
-#       never on a request; it stores nothing itself and never fails the reading - what cannot be costed is None.
-# Collaborates with: application/part_matches.py (calls it with the reading before this one, keeps the result, shows
-#       it), application/fea_check.py (the stage's sizing, its kept plans, the confirmed answers),
-#       application/geometry_check.py (the upload, the unit), engines/fea_plan_options.py and engines/fea_driver.py
-#       (staging, measuring, the run's planning inputs and planning), engines/meshing_standard.py (the notes read with
-#       the team's standard, as the run reads them), agents/intake/plan_talk.py (the plain sentence) and
-#       agents/intake/plan_reply.py (the model's facts).
+# Responsibility: NOTE-26, WHAT A TYPED REQUIREMENT COSTS, said at the plan step of an FEA solid: the count the run
+#       would plan with every requirement so far (`planned` - the run's own inputs, its AI step's decision and its own
+#       planning, no number of its own) against the count as it stood just before this message, kept beside the
+#       checklist's reading for the count line that follows the reply.
+# Boundaries: runs on the geometry worker after the checklist's reading is kept (application/part_matches.run_reading),
+#       never on a request and never before the reply; it stores nothing itself and never fails the reading - what
+#       cannot be costed is None.
+# Collaborates with: application/part_matches.py (calls it with the reading before this one, keeps the result only
+#       for the notes it read, hands the AI step's answer to the run), application/fea_check.py (the stage's sizing,
+#       its kept plans, the confirmed answers), application/geometry_check.py (the upload, the unit),
+#       cad/part_words.py (the reading as the run takes it), engines/fea_ai.py (the AI step), engines/fea_plan_options.py
+#       and engines/fea_driver.py (staging, measuring, the run's planning inputs and planning), engines/meshing_standard
+#       (the notes read with the team's standard), agents/intake/plan_talk.py (the plain line) and
+#       agents/intake/plan_reply.py (count_owed: the line said after the reply).
 """WHAT A TYPED REQUIREMENT COSTS (NOTE-26).
 
 A cast knuckle, 25 Nov: "finer at the fillets" took a plan of about 1 million elements to 10 million on the 128 GB
-machine - a 96-minute run - and nothing said so before the run. Now, when the checklist's reading of the user's words
-lands, the plan the run would make with them is costed as the run would plan it, and kept with the reading.
+machine - a 96-minute run - and nothing said so before the run. Now, once the checklist's reading of the user's words
+is kept, the count the run would plan with them is worked out as the run would plan it, and said as its own line
+after the reply.
 
-THE SAME INPUTS AS THE RUN (26 Nov, the C5 knuckle: said "about 0.4 million", built 0.65-0.74 million). The cost
-plans with what the run plans with: the notes read with the team's saved standard (engines/meshing_standard, as
-fea_driver.read_requirements reads them - the saved growth rate and sizes, and a size typed with a face picked on the
-model, NOTE-17, which only that reading carries), the parts reading, the count the checklist shows (NOTE-24, else the
-standard's), the size picked on the stage and the stage's kept plans - through fea_driver.requirement_inputs and
-fea_driver.size_choice, the run's own first planning. What the run adds after the cost: its AI step's own
-refinements (AI-fea-1), decided when it starts.
+THE NUMBER IS THE RUN'S "Estimated before meshing" (the C5 knuckle, 26 Nov: the chat's last count about 0.4 million,
+the run's estimate 857,032). Costed with the run's own steps on the run's own inputs: the notes read with the team's
+saved standard (as fea_driver.read_requirements reads them, a size on a picked face with them); the parts reading AS
+THE RUN TAKES IT (cad/part_words.as_run: each area with its faces - the check's own reading keeps none, and "finer
+in/around the holes" was costed as parts named Feature_n that do not exist, so it changed nothing and had no line);
+the AI step's decision (engines/fea_ai.decide on the run's brief - asked here, and its answer handed to the run with
+the reading, so the run plans with the same one: fea_driver.plan_step_ai); the count the run aims at
+(fea_driver.element_target); the size picked on the stage and the stage's kept plans - through
+fea_driver.requirement_inputs and fea_driver.size_choice. When the AI step gives no decision here, the run may still
+refine, so the count is said as "at least".
 
-BEFORE IS THE PLAN AS IT STOOD JUST BEFORE THIS MESSAGE (the same knuckle: "finer at the holes" was told "from 0.9 to
-0.4 million" - the first reply's numbers again - because "before" was always the stage's plan with nothing typed and
-"after" every requirement so far). Each message gets one reading; "before" is the reading before this one's "after"
-(`previous`), so the replies chain: after(1) == before(2) == ... With no reading before (or one that had nothing to
-cost) it is the plan the run would make with the team's standard alone; after a reading whose costing failed it is
-not known and only the new count is kept.
+BEFORE IS THE COUNT AS IT STOOD JUST BEFORE THIS MESSAGE: the reading before this one's "after" when its cost landed;
+else planned here from what that reading was read with (kept with it: `inputs`); with no reading before, the count
+the team's standard alone makes. So the lines chain: after(1) == before(2) == ...
 
 THE ELEMENT COUNT ONLY, NO MINUTES. The time models the product holds (fea_driver.FEA_USUAL_FILL_RATES, the lab's whole
 runs) do not cover the queue, the machine starting, the quality passes the ladder repeats or the reviewer, and the
-knuckle's "3 minutes" took 8.5. A number that far off is worse than none, so none is said (the guard refuses a reply
-with a number the facts do not hold).
+knuckle's "3 minutes" took 8.5. A number that far off is worse than none, so none is said.
 
-Measured on the test parts (tests/fea_fixtures, 26 Nov, WSL laptop): one planning took 0.06-2.2 s (a 78,000-element
-shaft the slowest), so it runs inline in the reading. A big part's plan takes longer; the reply never waits past its
-own limit for the reading (NOTE-19: it then comes with the card's poll).
+NEVER BEFORE THE REPLY (the knuckle's replies took 47, 31 and 24 s while the cost was planned inside the reading): the
+reading is kept first and answered; the cost lands after it and its line follows as its own message. A cost of notes
+that changed meanwhile is never kept, so never said. Measured 26 Nov on a part of the knuckle's shape (11 holes in 4
+sizes, about 0.24 million elements, WSL laptop, the model faked): 1.4-2.7 s a costing; the model's own answer for the
+AI step comes on top of that.
 """
 from __future__ import annotations
 
@@ -85,7 +89,7 @@ def _side(r: Mapping) -> dict:
 
 
 def target_of(count_rows) -> dict | None:
-    """The run's element target from the checklist's count row (NOTE-24), or None."""
+    """The element count the checklist's count row states (NOTE-24), as a target, or None."""
     for r in count_rows or ():
         c = (r or {}).get("count") or {}
         n = int(c.get("value") or 0)
@@ -94,50 +98,103 @@ def target_of(count_rows) -> dict | None:
     return None
 
 
-def _target(count_rows, asked: Mapping | None) -> dict | None:
-    """The count the run aims at: the notes' (the checklist's row), else the team's saved one (STD-1)."""
-    from meshpipeline.engines import fea_driver as FD
-    return target_of(count_rows) or FD.settings_count(dict(asked) if isinstance(asked, Mapping) else None)
+def inputs(section: Mapping | None, asked: Mapping | None, user_notes) -> dict:
+    """What one reading costs with, kept with it (part_matches.run_reading) so the reading after it can plan "before"
+    from it even when its own costing has not landed: the parts reading, the notes read with the standard, the notes."""
+    return {"section": dict(section) if isinstance(section, Mapping) else None,
+            "asked": dict(asked) if isinstance(asked, Mapping) else None,
+            "user_notes": [dict(n) for n in user_notes or [] if isinstance(n, Mapping)]}
 
 
-def before_of(previous: Mapping | None) -> tuple[str, dict | None]:
-    """Where "before" comes from, given the reading before this one: ("chained", its after) when it was costed;
-    ("base", None) when there was none or it had nothing to cost (the plan before is the standard's alone); ("unknown",
-    None) when its costing failed. Pure."""
+def before_of(previous: Mapping | None) -> tuple[str, Any]:
+    """Where "before" comes from, given the reading before this one: ("chained", its after) when its costing landed;
+    ("planned", its inputs) when it did not, or had nothing to cost - planned here from what it was read with;
+    ("base", None) when there was none (the plan the team's standard alone makes); ("unknown", None) for a reading
+    kept before its inputs were. Pure."""
     if not isinstance(previous, Mapping) or previous.get("status") != "done":
         return "base", None
     cost = previous.get("cost")
     if isinstance(cost, Mapping) and int((cost.get("after") or {}).get("elements") or 0) > 0:
         return "chained", dict(cost["after"])
+    if isinstance(previous.get("fea_inputs"), Mapping):
+        return "planned", dict(previous["fea_inputs"])
     if isinstance(cost, Mapping) and cost.get("status") == NOTHING:
         return "base", None
     return "unknown", None
 
 
-def costed(record: dict, surface, diag_m: float, *, before: dict | None, section: Mapping | None,
-           asked: Mapping | None = None, count_rows=(), base_asked: Mapping | None = None,
-           state: Mapping | None = None, kept: dict | None = None, key: str = "") -> dict:
-    """The cost kept with the reading, from a measured part: {"rule", "before" (elements, where it runs; None when
-    not known), "after", "factor", "bigger_machine", "seconds"}. `before`: the plan before as a costed row (the
-    reading before this one's after), or None - then, given `base_asked`, the plan with the team's standard alone is
-    planned here, else "before" is not known. Raises what the planner raises (the caller keeps no cost then)."""
+def _ai(record: dict, diag_m: float, asked: Mapping | None, ai_state: Mapping, *, job_id: str) -> tuple[dict, str]:
+    """THE RUN'S AI STEP, asked now (engines/fea_ai.decide, AI-fea-1..9: its refinements, what it sets aside, the count
+    it reads from the words) on the brief the run builds - (its section, its answer as given: handed to the run with
+    the reading, so the run plans with this same decision). The rules' own plan when it is off or gives none."""
+    import asyncio
+
+    from meshpipeline.engines import fea_ai as FA
+    from meshpipeline.engines import fea_driver as FD
+    from meshpipeline.engines import fea_plan as P
+
+    told: dict = {}
+    ai = asyncio.run(FA.decide(record, FA.with_rules_asks(dict(ai_state), asked), P.zones(record), diag_m=diag_m,
+                               limit=FD.element_limit(record)[0], job_id=job_id, told=told))
+    return ai, (str(told.get("args") or "") if ai.get("status") == "used" else "")
+
+
+def planned(record: dict, surface, diag_m: float, *, section: Mapping | None, asked: Mapping | None, user_notes,
+            ai_state: Mapping, state: Mapping, kept: dict | None, key: str, job_id: str = "") -> dict:
+    """THE COUNT THE RUN WOULD PLAN for one set of requirements - the run's own steps with the run's own inputs, and
+    nothing else: the reading as the run takes it (cad/part_words.as_run: each area with its faces), the notes read
+    with the team's standard (`asked`), the AI step's decision on the run's brief (`_ai`), the count the run aims at
+    (fea_driver.element_target, with that decision), and the run's own first planning (fea_plan_options
+    .requirements_plan: fea_driver.requirement_inputs + size_choice). The number is the one the run's report prints as
+    "Estimated before meshing" (engines/fea_plan: its plan's estimate). Returns {"side": the costed row, "ai_args",
+    "ai_used"}."""
+    from meshpipeline.cad import part_words as PW
+    from meshpipeline.engines import fea_driver as FD
     from meshpipeline.engines import fea_plan_options as PO
     from meshpipeline.engines import mesh_requirements as MR
 
-    t0 = time.time()
-    used = dict(section) if isinstance(section, Mapping) and section.get("status") == "used" else None
     asked = dict(asked) if isinstance(asked, Mapping) else MR.section("none")
-    run = dict(state or {})
-    if before is None and base_asked is not None:
-        base = dict(base_asked)
-        _rec, plan, _f = PO.requirements_plan(record, surface, diag_m, asked=base, part_sizes=None,
-                                              target=_target((), base), state=run, kept=kept, key=key)
-        before = PO._costed(_rec, plan, "before")
-    got = PO.requirements_cost(record, surface, diag_m, before=before, asked=asked, part_sizes=used,
-                               target=_target(count_rows, asked), state=run, kept=kept, key=key)
-    return {"rule": RULE, "before": _side(got["before"]) if got.get("before") else None, "after": _side(got["after"]),
-            "factor": got.get("factor"), "bigger_machine": bool(got.get("bigger_machine")),
-            "seconds": round(time.time() - t0, 2)}
+    used = (PW.as_run(section, record, surface)
+            if isinstance(section, Mapping) and section.get("status") == "used" else None)
+    st = {**dict(ai_state), "user_notes": [dict(n) for n in user_notes or [] if isinstance(n, Mapping)]}
+    ai, args = _ai(record, diag_m, asked, st, job_id=job_id)
+    rec, plan, _finer = PO.requirements_plan(record, surface, diag_m, asked=asked, part_sizes=used, ai=ai,
+                                             target=FD.element_target(st, ai, asked), state=dict(state), kept=kept,
+                                             key=key)
+    return {"side": _side(PO._costed(rec, plan, "plan")), "ai_args": args, "ai_used": ai.get("status") == "used"}
+
+
+def costed(record: dict, surface, diag_m: float, *, before: tuple[str, Any], section: Mapping | None,
+           asked: Mapping | None, user_notes, base_asked: Mapping | None, ai_state: Mapping, state: Mapping,
+           kept: dict | None = None, key: str = "", job_id: str = "") -> dict:
+    """The cost kept with the reading: {"rule", "before" (None when not known), "after", "factor", "bigger_machine",
+    "ai_args" (the AI step's answer, for the run), "floor" (the AI step gave no decision now: the run may still
+    refine, so the count is said as "at least"), "seconds"}. `before`: before_of's answer. Raises what the planner
+    raises."""
+    from meshpipeline.engines import mesh_requirements as MR
+    from meshpipeline.engines.fea_ai import FEA_AI
+
+    t0 = time.time()
+    common: dict[str, Any] = {"ai_state": ai_state, "state": state, "kept": kept, "key": key, "job_id": job_id}
+    after = planned(record, surface, diag_m, section=section, asked=asked, user_notes=user_notes, **common)
+    how, got = before
+    b: dict | None = None
+    if how == "chained":
+        b = dict(got)
+    elif how == "planned":
+        b = planned(record, surface, diag_m, section=got.get("section"), asked=got.get("asked"),
+                    user_notes=got.get("user_notes"), **common)["side"]
+    elif how == "base":
+        b = planned(record, surface, diag_m, section=None,
+                    asked=base_asked if base_asked is not None else MR.section("none"), user_notes=[],
+                    **common)["side"]
+    a = after["side"]
+    factor = a["elements"] / b["elements"] if b and b.get("elements") else None
+    bigger = bool(b) and (float(a.get("memory_gib") or 0.0) > float((b or {}).get("memory_gib") or 0.0)
+                          or (bool((b or {}).get("standard")) and not a.get("standard")))
+    return {"rule": RULE, "before": b, "after": a, "factor": round(factor, 2) if factor else None,
+            "bigger_machine": bool(bigger), "ai_args": after["ai_args"],
+            "floor": bool(FEA_AI) and not after["ai_used"], "seconds": round(time.time() - t0, 2)}
 
 
 def stage_sized(session_id: str) -> bool:
@@ -161,6 +218,20 @@ def _notes_asked(asked: Mapping | None) -> bool:
     return any(r.get("from", "notes") == "notes" for r in req.get("rows") or [])
 
 
+def _counts(user_notes) -> list[dict]:
+    """The count the checklist shows (NOTE-24: the newest note that states one), while the AI step reads the notes."""
+    from meshpipeline.agents.intake import plan_talk as PT
+    from meshpipeline.contracts.user_notes import own_notes
+    from meshpipeline.engines.fea_ai import FEA_AI
+    if not FEA_AI:
+        return []
+    for n in reversed(own_notes(user_notes)):
+        rows = PT.count_rows(n, flow=False, note_id=str(n.get("id") or ""))
+        if rows:
+            return rows
+    return []
+
+
 def wanted(section: Mapping | None, count_rows, asked: Mapping | None = None) -> bool:
     """Whether there is anything to cost: a size or a finer/coarser the parts reading set, a count, or a requirement
     the notes' own reading holds (a size, a growth rate, a size on a picked face)."""
@@ -170,41 +241,31 @@ def wanted(section: Mapping | None, count_rows, asked: Mapping | None = None) ->
 
 
 def for_reading(session_id: str, section: Mapping | None, user_notes, *, asked: Mapping | None = None,
-                base_asked: Mapping | None = None, previous: Mapping | None = None) -> dict | None:
-    """THE WORKER'S STEP: the cost of this reading for the session's FEA part - every requirement so far against the
-    plan as it stood before this message (`previous`: the reading before this one, see before_of) - or
-    {"status": NOTHING} (nothing to cost), or None (not an FEA part the stage sized, or it could not be costed).
-    `asked`, `base_asked`: the notes read with the team's standard, and the standard alone
-    (meshing_standard.decide_and_base, then fea_driver.requirements_section). Never raises."""
-    from meshpipeline.agents.intake import plan_talk as PT
-    from meshpipeline.contracts.user_notes import own_notes
-
+                base_asked: Mapping | None = None, previous: Mapping | None = None,
+                ai_state: Mapping | None = None) -> dict | None:
+    """THE WORKER'S STEP, after the reading is kept (the reply never waits for it): the cost of this reading for the
+    session's FEA part - every requirement so far against the plan as it stood before this message (`previous`: the
+    reading before this one, see before_of) - or {"status": NOTHING} (nothing to cost), or None (not an FEA part the
+    stage sized, or it could not be costed). `asked`, `base_asked`: the notes read with the team's standard, and the
+    standard alone (meshing_standard.decide_and_base, then fea_driver.requirements_section). `ai_state`: what the
+    run's AI step is shown besides the notes (the request, the owner, the standard). Never raises."""
     try:
-        from meshpipeline.engines.fea_ai import FEA_AI
-        counts: list[dict] = []
-        if FEA_AI:
-            # the count the checklist shows (NOTE-24: the newest note that states one), as the run's target
-            for n in reversed(own_notes(user_notes)):
-                counts = PT.count_rows(n, flow=False, note_id=str(n.get("id") or ""))
-                if counts:
-                    break
-        if not wanted(section, counts, asked):
+        if not wanted(section, _counts(user_notes), asked):
             return {"rule": RULE, "status": NOTHING}
         if not stage_sized(session_id):
             return None
         from meshpipeline.application import fea_check as FC
         from meshpipeline.application.geometry_check import read_check
         stored = read_check(session_id) or {}
-        how, before = before_of(previous)
+        before = before_of(previous)
         state = {"fea_plan_choice": FC.confirmed_plan_choice(session_id)}
         with tempfile.TemporaryDirectory(prefix="plan_cost_") as tmp:
             record, surface, diag_m, key = _measured(session_id, stored, Path(tmp))
-            got = costed(record, surface, diag_m, before=before, section=section, asked=asked, count_rows=counts,
-                         base_asked=(base_asked if base_asked is not None else {"status": "none"})
-                         if how == "base" else None,
-                         state=state, kept=FC._kept_plans(session_id), key=key)
+            got = costed(record, surface, diag_m, before=before, section=section, asked=asked, user_notes=user_notes,
+                         base_asked=base_asked, ai_state=dict(ai_state or {}), state=state,
+                         kept=FC._kept_plans(session_id), key=key, job_id=f"cost-{session_id}")
         logger.info("plan cost: %s -> %d elements in %.1fs (%s, before %s) - session=%s",
-                    (got["before"] or {}).get("elements"), got["after"]["elements"], got["seconds"], RULE, how,
+                    (got["before"] or {}).get("elements"), got["after"]["elements"], got["seconds"], RULE, before[0],
                     session_id)
         return got
     except Exception as exc:  # noqa: BLE001 - no cost said; the run plans and tells it
@@ -245,5 +306,5 @@ def _measured(session_id: str, stored: Mapping, work: Path) -> tuple[dict, Any, 
     return record, surface, diag_m, key
 
 
-__all__ = ["NOTHING", "RULE", "WORTH_SAYING", "before_of", "costed", "for_reading", "stage_sized", "target_of",
-           "wanted", "worth_saying"]
+__all__ = ["NOTHING", "RULE", "WORTH_SAYING", "before_of", "costed", "for_reading", "inputs", "planned",
+           "stage_sized", "target_of", "wanted", "worth_saying"]

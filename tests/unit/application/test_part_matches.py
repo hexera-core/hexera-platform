@@ -233,21 +233,36 @@ def test_the_reading_keeps_what_its_sizes_cost_and_the_card_shows_it(world, monk
     from meshpipeline.application import plan_cost
     seen = []
     cost = {"rule": "NOTE-26", "before": {"elements": 700_000}, "after": {"elements": 2_900_000},
-            "bigger_machine": False}
-    monkeypatch.setattr(plan_cost, "for_reading",
-                        lambda sid, section, notes, **kw: seen.append(section.get("status")) or cost)
+            "bigger_machine": False, "ai_args": '{"analysis": "static"}'}
+    asked = {"status": "none"}
+    monkeypatch.setattr(plan_cost, "stage_sized", lambda sid: True)
+    monkeypatch.setattr(PM, "read_fea_notes", lambda state, sid: seen.append(state.get("meshing_standard"))
+                        or (asked, asked))
+    views: list = []
+
+    def costing(sid, section, notes, **kw):
+        # the reading is kept BEFORE it is costed: the reply never waits for the cost, and the card asks again
+        views.append(PM.view(world.session))
+        seen.append(section.get("status"))
+        return cost
+    monkeypatch.setattr(plan_cost, "for_reading", costing)
     standard = {"text": "Max element size 6 mm."}
     PM.finalize(world.session, standard=standard)
     assert world.queued[-1]["meshing_standard"] == standard        # the team's standard goes with the reading
     _run_queued(world)
-    assert seen == ["used"]
-    assert PM.view(world.session)["cost"] == cost
-    # the next reading is costed against this one: its "before" is this one's "after" (the replies chain)
+    assert seen == [standard, "used"]
+    assert views[0]["status"] == "done" and views[0].get("cost_pending") and "cost" not in views[0]
+    got_view = PM.view(world.session)
+    assert got_view["cost"] == cost and not got_view.get("cost_pending")
+    # the AI step's decision made when it was costed goes to the run with the reading
+    assert PM.for_run(SID, world.session.user_notes, "")["ai_args"] == cost["ai_args"]
+    # the next reading is costed against this one: its "before" is this one's "after" (the lines chain)
     got: dict = {}
     monkeypatch.setattr(plan_cost, "for_reading", lambda *a, **kw: got.update(kw) and None)
     world.session.user_notes = [{"id": "n2", "text": NOTE + " 2 mm on part 4.", "source": "console"}]
     PM.finalize(world.session)
     _run_queued(world)
     assert (got["previous"] or {}).get("cost") == cost
-    # nothing costed (the stage did not size it): no cost on the view
-    assert "cost" not in PM.view(world.session)
+    assert (got["previous"] or {}).get("fea_inputs", {}).get("asked") == asked
+    # nothing costed: no cost on the view, and nothing pending
+    assert "cost" not in PM.view(world.session) and not PM.view(world.session).get("cost_pending")
