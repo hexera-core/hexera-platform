@@ -87,7 +87,21 @@ PURPOSES: dict[str, Purpose] = {
         label="Conjugate heat transfer (coupled fluid + solid regions)",
         # user-declared external contract; the fluid<->solid interfaces are DERIVED
         # (splitMeshRegions auto-creates the coupled mappedWall patches), not asked for.
-        boundary_roles=("inlet", "outlet", "wall", "external", "symmetry", "empty"),
+        # `opening` IS PART OF THIS VOCABULARY AND NOT A GAP IN IT. A cooled solid can have a
+        # mouth the coolant reaches that is the inlet or the outlet OF NOTHING: the Corintis plate
+        # closes its coolant into two spaces 0.580 mm apart with no face joining them, so naming
+        # either 8 mm hose mouth a port claims a flow path the part does not have, and
+        # `fluid_passages.ports_on_one_passage` refuses the run for it before the mesher starts
+        # (job 44362085, four and a half minutes after the user pressed Proceed).
+        #
+        # THE ENGINE ALREADY SPEAKS IT. `cfmesh_conjugate/mouths.port_rows` types an undeclared
+        # mouth `opening` as mouth_1, mouth_2 and `plan.ports_from` reads a declaration with no
+        # inlet and no outlet as no port plan at all - which is the state job 606af55e delivered
+        # 279,286,964 cells in. What was missing is the word in THIS tuple: `intake/validation`
+        # keeps only a patch whose role is in the submitted purpose's set and drops the rest
+        # SILENTLY, so an `opening` the geometry card had offered and the customer had confirmed
+        # left the submission without a word anywhere.
+        boundary_roles=("inlet", "outlet", "opening", "wall", "external", "symmetry", "empty"),
         requires_mesh_kind="multiregion-volume",  # coupled fluid + solid meshes in one case
         flow_kind="multi-region",
         review_axes=_CHT_AXES,

@@ -149,7 +149,14 @@ def _submit(patches):
 
 def test_the_roles_the_block_names_are_exactly_the_purposes_own():
     declared = set(PURPOSES[CHT].boundary_roles)
-    assert declared == {"inlet", "outlet", "wall", "external", "symmetry", "empty"}
+    # `opening` JOINED THIS SET on 2026-11-27, and it is the one role here that is not a claim
+    # about where the coolant goes: a mouth the coolant reaches that the geometry check
+    # deliberately did not name, because this plate's coolant is in two spaces 0.580 mm apart
+    # with no face joining them, so neither 8 mm hose mouth is the inlet or the outlet OF
+    # anything. `intake/validation` keeps only a patch whose role is in this tuple and drops the
+    # rest SILENTLY, so until the word was here an `opening` the card had offered and the
+    # customer had confirmed left the submission without a word anywhere.
+    assert declared == {"inlet", "outlet", "opening", "wall", "external", "symmetry", "empty"}
     assert "farfield" not in declared
     for role in declared:
         assert role in BLOCK, f"the block never mentions the role {role!r} this purpose declares"

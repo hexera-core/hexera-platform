@@ -32,6 +32,11 @@ def test_submit_requirements_declares_patches_array():
         "wall", "inlet", "outlet", "farfield", "symmetry", "empty",
         "fixed", "load", "contact", "free",
         "external",   # conjugate_heat_transfer: the solid's external thermal-BC faces
+        # conjugate_heat_transfer: a mouth the coolant reaches that is the inlet or outlet OF
+        # NOTHING, because the part's coolant is in spaces that do not connect. The schema admits
+        # every purpose's roles; `intake/validation` holds a submission to the submitted purpose's
+        # own set.
+        "opening",
     }
 
 

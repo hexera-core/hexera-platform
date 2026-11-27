@@ -730,7 +730,12 @@ def normalise_submission(args: dict) -> SubmittedRequirements:
         name, role = (p.get("name") or "").strip(), (p.get("type") or "").strip()
         if name and role in allowed_roles:
             entry = {"name": name, "type": role}
-            if role in ("inlet", "outlet"):
+            # AN `opening` IS A MOUTH AND CARRIES A MOUTH'S FIELDS. It is the same hole in the same
+            # face as an inlet; the only difference is that nobody claimed which way the coolant
+            # goes through it. The engine binds a declared mouth to the surface BY POSITION
+            # (`mouths.port_rows` with `named`), so dropping its size and centre here would leave
+            # the customer's own name on the card and a mouth the mesher had to find for itself.
+            if role in ("inlet", "outlet", "opening"):
                 entry.update({k: p[k] for k in PORT_DETAIL_FIELDS
                               if p.get(k) is not None and p.get(k) != []})
             patches.append(entry)
