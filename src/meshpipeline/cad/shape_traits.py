@@ -649,6 +649,12 @@ def measure_file_bounded(path, *, budget_s: float = MEASURE_CHILD_BUDGET_S,
 
     p = Path(path)
     task = {"path": str(p), **{k: v for k, v in kw.items() if k != "workdir"}}
+    # ...AND HOW MANY CPUS IT MAY USE. `main` has honoured this key since the pool cap was
+    # added and nothing ever set it, so every measurement has run with a pool sized from the
+    # host. See occ_box.CAD_OMP_THREADS for what that costs.
+    if not int(task.get("threads") or 0):
+        from meshpipeline.engines.determinism import job_cpus
+        task["threads"] = int(job_cpus() or 0)
     if kw.get("workdir"):
         task["workdir"] = str(kw["workdir"])
     task["patches"] = [dict(x) for x in (kw.get("patches") or ()) if isinstance(x, Mapping)]
@@ -742,6 +748,12 @@ def main(argv: list[str]) -> int:
     to the CPUs this job may use when the task says so: the pool sizes itself from the HOST's core
     count and no environment variable reaches it."""
     import json
+
+    # BEFORE THE OCP IMPORT BELOW - see occ_box.CAD_OMP_THREADS. The pool cap alone is not
+    # enough: each remaining pool thread still opens a host-wide OpenMP team.
+    from meshpipeline.cad.occ_box import pin_threads
+
+    pin_threads()
 
     task = json.loads(Path(argv[0]).read_text())
     threads = int(task.get("threads") or 0)

@@ -2322,6 +2322,15 @@ def run_bounded(task: dict, work, timeout_s: float) -> dict:
     import sys
     from pathlib import Path
 
+    # THE CHILD IS TOLD HOW MANY CPUS IT MAY HAVE, which nothing used to tell it. `main` has
+    # honoured a `threads` key since the pool cap was added, and no producer ever passed one -
+    # I read the live spec out of a real run to be sure: {"task": "propose", "source": ...,
+    # "scale": 0.001, "kind": "cad"}. So every split has run with a pool sized from the host
+    # core count. Set here rather than at each of the three call sites, because this is the one
+    # door they all go through, and only when the caller has not said otherwise.
+    if not int(task.get("threads") or 0):
+        from meshpipeline.engines.determinism import job_cpus
+        task = {**task, "threads": int(job_cpus() or 0)}
     work = Path(work)
     work.mkdir(parents=True, exist_ok=True)
     spec, out = work / "fluid_volume_task.json", work / "fluid_volume_answer.json"
@@ -2584,6 +2593,13 @@ def _child(task: dict) -> dict:
 
 
 def main(argv: list[str]) -> int:
+    # BEFORE THE OCP IMPORT BELOW, which is where libgomp loads. The OSD pool cap on its own
+    # left each remaining pool thread opening a host-wide OpenMP team: 2,100 s of CPU against
+    # 2,511 s unpinned, where both knobs together measured 53 s. See occ_box.CAD_OMP_THREADS.
+    from meshpipeline.cad.occ_box import pin_threads
+
+    pin_threads()
+
     import json
     from pathlib import Path
 

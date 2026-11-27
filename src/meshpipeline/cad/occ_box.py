@@ -186,6 +186,89 @@ def _usable(value) -> float | None:
     return v if math.isfinite(v) and v > 0.0 else None
 
 
+#: The OpenMP team size every CAD process is pinned to, and ONE is not a typo.
+#:
+#: OpenCASCADE already parallelises through its own pool (OSD_Parallel, which is what
+#: `incremental_mesh(parallel=True)` below uses). The OpenMP teams nested INSIDE those pool threads
+#: add contention and no work, and OCP is linked against libgomp, so they default to the host's
+#: core count - twice over.
+#:
+#: MEASURED, 2026-11-27, geometry check on the real customer plate (15.9 MB STEP, 6 solids,
+#: 9,226 faces), on a container whose cgroup allows 4.0 CPUs while nproc reports 32:
+#:
+#:     config                       wall       cpu    cores
+#:     as shipped                 95.54 s  2511.69 s   26.3
+#:     OMP_NUM_THREADS=8          64.35 s   416.01 s    6.5
+#:     OMP_NUM_THREADS=4          45.98 s   154.70 s    3.4
+#:     OMP_NUM_THREADS=1          41.41 s    53.39 s    1.3
+#:     OSD_ThreadPool(4) only    103.08 s  2100.67 s   20.4
+#:
+#: More threads is monotonically slower and one is the best of them. 2,517 CPU-seconds through a
+#: 4.0-CPU gate is a 629 s floor, which is where the 709.5 s a customer waited came from.
+#:
+#: PINNING ONLY THE OSD POOL IS NOT ENOUGH, and this repo already does that in two places
+#: (`shape_traits.main`, `fluid_volume.main`): it cuts the number of threads but each remaining one
+#: still opens a 32-wide OpenMP team, which is the 2,100 s row. Both knobs, or neither works.
+#:
+#: IT HAS TO BE SET BEFORE libgomp LOADS. libgomp reads OMP_NUM_THREADS when it initialises, so
+#: setting it afterwards does nothing - measured: `omp_set_num_threads(1)` through ctypes made
+#: `omp_get_max_threads()` return 1 and still burned 2,476.97 s, because the parallel regions are
+#: entered from OpenCASCADE's own threads, which inherit the global default. Nothing in
+#: `meshpipeline` imports OCP at module level (690 imports, every one inside a function), so
+#: calling this from a process entry point is early enough.
+#:
+#: `setdefault`, so an operator who sets it themselves is left alone.
+CAD_OMP_THREADS = "1"
+
+
+def pin_threads() -> dict[str, str]:
+    """Pin this process's OpenMP teams before OpenCASCADE is imported. Returns what it set.
+
+    Call it from a process ENTRY POINT - see CAD_OMP_THREADS for why afterwards does not work. Safe
+    to call more than once and safe to call in a process that never touches CAD.
+    """
+    import os
+
+    want = {
+        "OMP_NUM_THREADS": CAD_OMP_THREADS,
+        # the count asked is the count used; no runtime-chosen team sizes
+        "OMP_DYNAMIC": "FALSE",
+        # the same reasoning for the other libraries that read a thread count from the environment,
+        # named here rather than left to chance. `determinism.native_environment` pins this same
+        # set for a native mesh run, and this is the CAD side of the same rule.
+        "OPENBLAS_NUM_THREADS": CAD_OMP_THREADS,
+        "MKL_NUM_THREADS": CAD_OMP_THREADS,
+        "VTK_SMP_MAX_THREADS": CAD_OMP_THREADS,
+    }
+    return {k: v for k, v in want.items() if os.environ.setdefault(k, v) == v}
+
+
+def pin_pool(threads: int = 0) -> int:
+    """Size OpenCASCADE's OWN thread pool to the CPUs this job may have, and return the number.
+
+    This is the parallelism that WORKS - `pin_threads` removes the nested OpenMP teams that fight
+    it. The pool sizes itself from the host's core count and no environment variable reaches it,
+    which is why it has to be set in code; `engines/determinism.job_cpus` is the one place that
+    knows the cgroup quota. 0 and a failure are both "leave it alone": a thread cap is never worth
+    failing a read for.
+    """
+    n = int(threads or 0)
+    if n <= 0:
+        try:
+            from meshpipeline.engines.determinism import job_cpus
+            n = int(job_cpus() or 0)
+        except Exception:                    # noqa: BLE001 - a thread cap is never the failure
+            return 0
+    if n <= 0:
+        return 0
+    try:
+        from OCP.OSD import OSD_ThreadPool
+        OSD_ThreadPool.DefaultPool_s(n)
+    except Exception:                        # noqa: BLE001 - as above
+        return 0
+    return n
+
+
 def incremental_mesh(shape, linear_deflection, angular_deflection, *, relative: bool = False,
                      parallel: bool = True) -> float:
     """BRepMesh_IncrementalMesh with parameters OpenCascade will accept, whatever the unit state:

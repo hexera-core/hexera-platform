@@ -1,5 +1,17 @@
 # Responsibility: Start the pipeline worker: bind adapters per fork, and own the worker's logging, metrics and shutdown lifecycle.
 # Boundaries: a process entry point.
+#
+# BEFORE ANYTHING ELSE: pin OpenMP. This is a process entry point and cad/occ_box.pin_threads
+# has to run before libgomp initialises, which happens on the first OpenCASCADE import -
+# lazily, from inside a task. Every queue this module serves (simulation_jobs,
+# geometry_checks, utility) reads CAD somewhere, and on the geometry worker leaving it unset
+# cost 2,517 CPU-seconds of contention for 150 seconds of work. See occ_box.CAD_OMP_THREADS
+# for the sweep. Deliberately above the celery imports: an import that pulled in OCP would
+# make this too late, and nothing here should depend on the order of two imports.
+from meshpipeline.cad.occ_box import pin_threads as _pin_threads
+
+_pin_threads()
+
 from celery import bootsteps
 from celery.signals import (
     setup_logging,
