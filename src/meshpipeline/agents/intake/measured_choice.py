@@ -358,9 +358,19 @@ def choice_payload(gate) -> dict | None:
     """WHAT THE CONSOLE DRAWS under the open engine question: the engine proposed, and every
     engine that can take the file with its fit, its reason and the reply that picks it. None
     unless the question is open and was asked with a measured recommendation."""
-    from meshpipeline.agents.intake.engine_selection import PROPOSED, state_of
+    # READ THE STORED STATE, NOT THE CLOCK, because the console draws the buttons for a question
+    # that is still on the screen. `state_of` reports an expired proposal as NO_SELECTION, so on
+    # the run this was measured on (job f55ef23e) the engine question was still the last thing the
+    # customer could see while the API served `engine_choice: null` and `choices: []` beside it:
+    # the question, with nothing left to click. The model does not withdraw a question when it
+    # times out - it is open until it is answered or asked again, and that is what PROPOSED means
+    # here. `engine_selection._answerable` decides whether a click is honoured, and it honours the
+    # direct reply to an expired proposal, so a button drawn here is a button that works.
+    from meshpipeline.agents.intake.engine_selection import NO_SELECTION, PROPOSED
     sel = gate.get("selection") if isinstance(gate, Mapping) else None
-    if state_of(sel) != PROPOSED or not isinstance(sel, Mapping):
+    if not isinstance(sel, Mapping):
+        return None
+    if str(sel.get("state") or NO_SELECTION) != PROPOSED:
         return None
     rec = sel.get("recommendation")
     if not isinstance(rec, Mapping) or not rec.get("fits"):

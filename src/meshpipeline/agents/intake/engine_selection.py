@@ -387,12 +387,55 @@ def _confirmed(sel: dict, revision: str) -> dict:
             "expires_at": time.time() + CONFIRMED_TTL_S}
 
 
+def _is_the_direct_reply(sel, user_msg_count) -> bool:
+    """Whether this user message is the one immediately after the question was asked.
+
+    THE ONLY PRINCIPLED TEST OF STALENESS THERE IS HERE, and the reason the clock does not get to
+    overrule it. `proposed_msg_count` is the user-message count at the moment the question was
+    put; the answer to it is the next user message and nothing else. If the user said anything in
+    between, the conversation moved on and the proposal really is stale. If they said nothing, the
+    question is still the last thing on their screen, whatever the clock says.
+    """
+    if user_msg_count is None or not isinstance(sel, dict):
+        return False
+    if "proposed_msg_count" not in sel:
+        return False
+    return int(user_msg_count) == int(sel["proposed_msg_count"]) + 1
+
+
 def _answerable(sel: dict | None, *, session_id: str, owner_id: str,
                 user_msg_count: int | None) -> tuple[bool, str]:
     st = state_of(sel)
+    # A SLOW ANSWER IS STILL AN ANSWER, and throwing one away cost a customer their turn.
+    #
+    # MEASURED, job f55ef23e, 2026-11-28. The engine question was put at 06:16:46 and the customer
+    # answered "OK" at 06:32:50 - sixty-four seconds past `PROPOSED_TTL_S`, which is 900.
+    # `state_of` read the proposal as NO_SELECTION, this function answered "no engine selection is
+    # awaiting confirmation", and the model then asked the IDENTICAL question again. The log:
+    #     06:16:46 engine selection PROPOSED engine=cfmesh_conjugate
+    #     06:33:13 WARNING confirm rejected - no engine selection is awaiting confirmation
+    #     06:33:18 engine selection PROPOSED engine=cfmesh_conjugate
+    # From the customer's side nothing happened at all: they answered the question on their screen
+    # and were asked it again word for word, with nothing to say their answer had been discarded.
+    # Someone who reads the card, looks at their part and thinks for a quarter of an hour is doing
+    # nothing wrong.
+    #
+    # WHY THE CLOCK WAS NEVER THE GUARD. `PROPOSED_TTL_S` is commented "a proposal the user never
+    # answers goes stale", and the count test below says exactly that, precisely: a proposal is
+    # stale when the user has SAID SOMETHING ELSE since it was put. For the message that directly
+    # answers the question the clock adds nothing except the chance to lose the answer. So an
+    # expired proposal is answerable by its direct reply, and by nothing else.
+    #
+    # WHAT IS NOT RELAXED. Session and owner are still checked below, and they are what keeps an
+    # answer inside the conversation it belongs to - the clock never did that. An expired
+    # CONFIRMED selection stays expired, because `stored` is only consulted for PROPOSED: that is
+    # `CONFIRMED_TTL_S` doing its own job, which is to stop a selection outliving a long
+    # conversation, and `test_lifecycle_states_and_expiry` pins it.
+    stored = str(sel.get("state") or NO_SELECTION) if isinstance(sel, dict) else NO_SELECTION
+    slow_but_direct = (stored == PROPOSED and _is_the_direct_reply(sel, user_msg_count))
     if st == CONFIRMED:
         return False, "that engine selection is already confirmed"
-    if st != PROPOSED or not sel:
+    if (st != PROPOSED and not slow_but_direct) or not sel:
         return False, ("no engine selection is awaiting confirmation - call "
                        "propose_engine_selection first and let the user answer")
     if sel.get("session") != session_id or sel.get("owner") != owner_id:
