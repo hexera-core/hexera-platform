@@ -1381,6 +1381,28 @@ class ConjugateReport:
     #: as having used a bigger build's memory, and the fitted bytes-per-cell would be fitted on
     #: that.
     peak_rss_bytes: int = 0
+    #: THE HIGH-WATER MARK AROUND INDIVIDUAL STAGES, keyed as `seconds` is.
+    #:
+    #: WHY IT EXISTS. checkMesh on the two regions is a measured 652 s and 878 s at 182 M cells -
+    #: the second largest item in the whole tail - and they run one after the other over two
+    #: meshes that share nothing. The obvious saving is to run them together, and the one thing
+    #: that decides whether that is safe is memory: three whole-region checks at once OOM-killed
+    #: the solid arm on a 768 GB box, and an OOM here destroys a mesh that is already built. The
+    #: figure needed to decide has never been recorded, so the decision has never been more than
+    #: a guess. `peak_rss_bytes` cannot answer it either - it is one mark around the whole build.
+    #:
+    #: WHAT A NUMBER IN HERE MEANS, exactly. `children_peak_rss_bytes` reads
+    #: RUSAGE_CHILDREN.ru_maxrss, which is a cumulative maximum over every child this process has
+    #: ever reaped rather than a per-child figure (see `children_peak_rss_bytes`). So a RISE
+    #: across a stage is a LOWER BOUND on that stage's own peak, and no rise means the stage
+    #: stayed under a high-water mark something earlier had already set. A stage that did not
+    #: raise the mark is absent from this dict rather than recorded as zero.
+    #:
+    #: AND THE TEST IT IS FOR IS A SUFFICIENT ONE, not an exact one: each region's own peak is at
+    #: most the observed mark, so two of them at once are at most twice it. If twice the larger
+    #: mark fits in the box with the rest of the chain, concurrency is safe without knowing the
+    #: two peaks apart.
+    stage_peak_rss_bytes: dict = field(default_factory=dict)
     #: WHAT THE LAYER PASS GREW, from its own log, or {} when none was asked for. The ASKED count
     #: lives in the plan and is a DIFFERENT number: the measured run asked for three and got 2.84
     #: of them, over 94.6% of the requested thickness on 95.553% of the interface. A delivery that
@@ -2290,8 +2312,10 @@ def build(workspace, *, block_stl: str = "constant/triSurface/block.stl",
     (ws / "constant" / REGION_PROPERTIES).write_text(region_properties())
 
     reports = {}
+    stage_peaks: dict = {}
     for name in (FLUID_REGION, SOLID_REGION):
         t0 = time.monotonic()
+        _rss0 = children_peak_rss_bytes()
         # write_fields: checkMesh writes down the per-cell numbers it has already worked out, so
         # the viewer can colour a face with the measurement rather than a second implementation
         # of it. +15.1% on this call, and its verdict is byte-identical (foam_exec.check_mesh).
@@ -2310,6 +2334,13 @@ def build(workspace, *, block_stl: str = "constant/triSurface/block.stl",
                              timeout_s=float(min(CHECK_TIMEOUT_S,
                                                  _left(f"checkMesh on {name}"))))
         seconds[f"checkMesh:{name}"] = round(time.monotonic() - t0, 1)
+        # SEE `stage_peak_rss_bytes`. Only a rise is recorded, because only a rise says anything.
+        _rss1 = children_peak_rss_bytes()
+        if _rss1 > _rss0:
+            stage_peaks[f"checkMesh:{name}"] = int(_rss1)
+            logger.info("conjugate: checkMesh on %s raised the children's peak to %.1f GiB; two "
+                        "of these at once would need at most %.1f GiB of the box",
+                        name, _rss1 / 2**30, 2.0 * _rss1 / 2**30)
         reports[name] = read_region(quality, name)
         polymesh = ws / "constant" / name / "polyMesh"
         if (polymesh / "boundary").is_file():
@@ -2320,6 +2351,7 @@ def build(workspace, *, block_stl: str = "constant/triSurface/block.stl",
                           ports=ports, seconds=seconds,
                           patch_names={f: n for f, (n, _r) in (patch_names or {}).items()},
                           peak_rss_bytes=rss_after if rss_after > rss_before else 0,
+                          stage_peak_rss_bytes=dict(stage_peaks),
                           layers=dict(layer_report))
     rep.interface_faces_fluid = interface_faces(rep.fluid.patches, FLUID_TO_SOLID)
     rep.interface_faces_solid = interface_faces(rep.solid.patches, SOLID_TO_FLUID)
