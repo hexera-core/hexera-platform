@@ -1376,13 +1376,63 @@ def _slab_box(cut: dict, frame: dict, *, thickness_m: float) -> list[float] | No
     return box
 
 
+def _zoom_discharges_its_region(zoom: dict) -> bool:
+    """Whether this zoom is the evidence its region needs - the READER's bar, not a weaker one.
+
+    `shows_structure` IS NOT THAT BAR, AND BELIEVING IT WAS LEFT THE OBLIGED PLANE WITH NO SLAB.
+    What discharges a region is `review_session.ResolvedCut.counts_cells`, which is
+    `cell_px >= COUNTABLE_CELL_PX and shows_cells` - and `shows_cells` ends at
+    `wall_in_cells(ink.bare_run_min_px, repeat_pitch_px) >= WALL_CELLS_MIN`. A frame can show a
+    perfectly regular structure and still have NO METAL in it, and a picture with no wall in it
+    cannot be a picture of a wall.
+
+    MEASURED on job 40e4e578, from its own mesh_manifest.json:
+
+        frame                      shows_structure   bare_run_min_px   counts_cells
+        across_the_flow   zoom     True              0.0               False
+        through_the_plate zoom     True              30.0              True
+
+    `across_the_flow`'s zoom resolves cells - 333 on its best row at 4.0 px - and the reader's own
+    words for it are "the NARROWEST metal between two passages is 0.0 px - 0.00 cell(s) ... No
+    column of this frame along that axis is bare, so there is no metal in it at all - this is a
+    field of coolant, whatever its section does."
+
+    WHAT THE TWO BARS COST TOGETHER. `expand_region_targets` offers a region only when the volume
+    is available or one of its frames `counts_cells`, and the engine obliges
+    `region:across_the_flow`. So the reader needed an interior at exactly the plane whose zoom
+    `shows_structure` told this function to delete it at. Four jobs - 40e4e578, 606af55e,
+    b8f09ae9, 110daca9 - delivered a mesh, a bundle and a viewer with
+    `review_execution: failed_to_complete`, refused before the model was asked anything.
+
+    ONE RULE, NOT A SECOND COPY OF IT. `slices.py` imports these from
+    `sandbox/picture_structure` with the note that they moved there "verbatim, so the side that
+    DRAWS a frame and the side" that reads it cannot drift apart. This function had drifted; it
+    now asks the same question with the same constants.
+
+    THE ASYMMETRY DECIDES THE DEFAULT. A slab that was not needed costs disk, bounded by `cap`.
+    A slab that was needed and not built costs the verdict on a finished mesh. So anything this
+    cannot show to be sufficient evidence is treated as refused.
+    """
+    from meshpipeline.sandbox.picture_structure import WALL_CELLS_MIN, wall_in_cells
+
+    content = zoom.get("content")
+    if not isinstance(content, dict) or not content.get("shows_structure"):
+        return False
+    # The drawn cell on the axis the structure repeats on. The producer sizes its zoom so one
+    # planned cell is exactly `feature_pixels` across, which is COUNTABLE_CELL_PX by construction;
+    # an absent one is silence, and silence is not evidence.
+    cell_px = float(zoom.get("feature_pixels") or 0.0)
+    wall = wall_in_cells(content.get("bare_run_min_px"), cell_px)
+    return wall >= WALL_CELLS_MIN
+
+
 def _refused_planes(cuts: list[dict] | None) -> list[tuple[dict, dict, float]]:
     """(cut, whole frame, planned cell) for every cut whose zoom frame cannot answer its question.
 
-    A ZOOM THAT SHOWS THE STRUCTURE NEEDS NO INTERIOR, which is why this reads `shows_structure`
-    off the frame's own `content` block and not `rendered` or `usable`. Those count frames; this
-    asks, per cut, whether the picture of THAT cut answered what the cut exists for. A region whose
-    picture did is evidence already and buys the deletion honestly.
+    A ZOOM THAT DISCHARGES ITS REGION NEEDS NO INTERIOR - see `_zoom_discharges_its_region` for
+    which bar that is and why `shows_structure` alone was the wrong one. This asks, per cut,
+    whether the picture of THAT cut answered what the cut exists for. A region whose picture did
+    is evidence already and buys the deletion honestly.
     """
     want: list[tuple[dict, dict, float]] = []
     for cut in cuts or ():
@@ -1390,8 +1440,7 @@ def _refused_planes(cuts: list[dict] | None) -> list[tuple[dict, dict, float]]:
         zoom = next((f for f in frames if f.get("scope") == "zoom"), None)
         if zoom is None:
             continue
-        content = zoom.get("content")
-        if isinstance(content, dict) and content.get("shows_structure"):
+        if _zoom_discharges_its_region(zoom):
             continue
         whole = next((f for f in frames if f.get("scope") == "whole"), zoom)
         cell = float(zoom.get("feature_m") or 0.0)
