@@ -3526,6 +3526,25 @@ def _spot_price() -> float:
     return max(float(_RUN.get("first_s") or 0.0), float(_SPOT_COST.get("s") or 0.0))
 
 
+#: SHMESH-31j: A LATER SPOT PASS IS PRICED ABOVE THE ONE BEFORE IT. A spot pass that follows a kept one re-meshes the
+#: finer mesh that one made, with the spots still past grown and new ones joined, so it costs more than the pass
+#: measured: it is priced at SHMESH-31h's price times the growth the last pass made (its mesh's elements over those of
+#: the mesh it started from), never less than PRICE_MARGIN above it. One the time left does not cover is not started,
+#: said as before (SHMESH-31b). cen_s0195 (a tank with a cone roof): the first spot pass took 271 s and grew the mesh
+#: 52,951 -> 62,509 elements (1.18 times); the second, priced at 305 s with 307 s left, ran to the deadline and was
+#: stopped - nothing kept, the mesh delivered as it stood before it, 307 s later. False: priced as SHMESH-31h, as before
+SPOT_LATER_PRICED = True
+
+
+def _later_spot_price(grown: float) -> float:
+    """SHMESH-31j: the price of a spot pass that follows a kept one whose mesh grew `grown` times (its elements over
+    those of the mesh it started from)."""
+    base = _spot_price()
+    if not SPOT_LATER_PRICED:
+        return base
+    return base * max(1.0 + PRICE_MARGIN, float(grown))
+
+
 def _short_mend(xyz, Q, T, q_face, t_face, node_kind, node_edge, vertex_edges, lim, low: float,
                 high: float | None, forced_curves: set[int], movable, project, hard_long, price: float,
                 requirements: dict | None, tri_ok: bool = True):
@@ -5217,6 +5236,7 @@ def _mesh_path_made(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0,
             first_n = float(mesh.n_elements)            # (SHMESH-31b: the runaway guard against the first mesh)
             readd, went_h0 = True, False
             reserve, deferred = 0.0, False
+            grown = 0.0                     # (SHMESH-31j: how much the last kept spot pass grew the mesh; 0: none yet)
             if past and requirements and OWN_SIZE_RETRIES:
                 # SHMESH-21d: the first path keeps back the time of the first meshes owed after it; while the run
                 # chooses first, the spot passes wait for the mesh kept
@@ -5241,16 +5261,19 @@ def _mesh_path_made(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0,
                                                                float(b[3]) if len(b) > 3 else 0.0, False) for b in past]
                 readd = True
                 t_pass = time.monotonic()
+                n_from = float(mesh.n_elements)
                 # SHMESH-31b: the plan kept to SPOT_PLAN_MULT times the mesh it re-makes, and the pass to the time
                 # left before the deadline less what must follow (past it, the best mesh so far is kept); a pass that
                 # cannot finish in it (priced at the first mesh's own time) is not started
                 budget = SPOT_PLAN_MULT * first_n
-                # (SHMESH-31h: priced at the first mesh, or the longest spot pass measured; SHMESH-21d: with the
-                # first meshes owed after this path kept back)
-                if not _affords(_spot_price() + reserve):
+                # (SHMESH-31h: priced at the first mesh, or the longest spot pass measured; SHMESH-31j: after a kept
+                # spot pass, times the growth it made; SHMESH-21d: with the first meshes owed after this path kept
+                # back)
+                price_ = _later_spot_price(grown) if grown else _spot_price()
+                if not _affords(price_ + reserve):
                     if reserve and _affords(reserve):
                         # SHMESH-21d: the meshes to compare still fit, the spot pass with them does not: choose first
-                        _choose_start(f"the spot pass ({_spot_price():.0f} s) and the {_CHOOSE.get('owed')} "
+                        _choose_start(f"the spot pass ({price_:.0f} s) and the {_CHOOSE.get('owed')} "
                                       f"mesh(es) to compare ({reserve:.0f} s) would not fit in the time left")
                         deferred = True
                         passes.append(["finer at spots: waits, the meshes to compare first (SHMESH-21d)", 0.0])
@@ -5304,6 +5327,7 @@ def _mesh_path_made(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0,
                 if any(v > ST.POLAR_TRIAS and v > applied.get("_polar_trias", {}).get(k, 0)
                        for k, v in applied2.get("_polar_trias", {}).items()):
                     break
+                grown = float(again.n_elements) / max(n_from, 1.0)       # (SHMESH-31j: the next pass's price)
                 mesh, applied, past, past_n = again, applied2, past2, n2
                 applied["quality"]["own_size_spots"] = len(own) - trimmed2
                 spot_left, spot_trimmed = left2, trimmed2
