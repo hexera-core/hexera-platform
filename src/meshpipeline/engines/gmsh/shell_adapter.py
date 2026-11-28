@@ -188,6 +188,36 @@ LC_PRECISION = 1e-3
 #: least STRIP_LONG times its ends
 MAP_STRIPS = True
 STRETCH_MAX = 5.0
+#: SHMESH-101: under the user's aspect target, a mapped strip one element across is stretched along it to
+#: STRIP_AIM_SHARE of that target (not ASPECT_SHARE = 0.9 of it): its quads measured past the target on skewed and
+#: tapered strips (round 6 census: 99.5% of the elements held by a structure were in mapped strips). Never under a
+#: shortest edge the user typed; at most STRIP_AIM_ADD_MAX elements added a mesh (the strips past it keep the plan,
+#: told); never on a face sized in a named place (SHMESH-52)
+#: OFF since round 13 (rule row "candidate"): on the public board (173 parts, base 4c2c9122 side by side) the finer
+#: counts stayed in the delivered mesh on 12 parts (3 better on some row, 2 worse, no part to pass) and were safe only
+#: through the keep check below, a whole second mesh on 42 parts that cost 2,622 of the branch's 3,919 extra seconds
+STRIP_AIM_RULE = "SHMESH-101"
+STRIP_AIM = False
+STRIP_AIM_SHARE = 0.6
+STRIP_AIM_ADD_MAX = 20000
+#: SHMESH-101 (round 7): a strip narrower than the shortest edge, planned to be closed (SHMESH-60) but left open (its
+#: closing refused), was mapped along at the neighbours' size: aspect about G / its width. Such strips are meshed
+#: again, in one more pass while time is left, as open strips: one row across, along max(edge floor, STRIP_AIM_SHARE
+#: x the aspect target x the width). The edge floor is the user's shortest edge when they TYPED one (it holds; a strip
+#: it keeps past the target is told, with the edge that would clear it); when the shortest edge is our own default
+#: (BAND x the global size), the floor is STRIP_FLOOR_SHARE of the global size (told). OFF since round 13 with the
+#: rest of SHMESH-101: it never acted on the public board (0 of 173 parts), so it has no measured gain
+STRIP_OPEN = False
+STRIP_OPEN_PASSES = 1
+STRIP_FLOOR_SHARE = 0.2
+#: SHMESH-101 (round 8): the finer strip counts are kept on a part only where no quality row of it is worse with them
+#: than in the mesh as planned (that mesh made again with STRIP_AIM off, SHMESH-76's candidates, when time allows);
+#: else the part keeps the plan, told (round 7: 12 parts worse on some row, 6 past the noise floor). Round 9: the
+#: same check on SHMESH-36's #435 mesh when that is kept (_aim_check_classic); the round 8 re-count is removed
+STRIP_AIM_KEEP = True
+AIM_OFF_NAME = "without the finer strip counts (SHMESH-101)"
+_OPEN_STRIPS: list = []     # (centre, area) of the strips whose closing was refused in this shell mesh
+_OPEN_PASSES: list = [0]    # (the passes made again for them in this shell mesh)
 MAP_FLAT = False
 STRETCH_FLAT = 1.0
 STRIP_ALIKE = 0.05
@@ -426,6 +456,15 @@ _AIMS_NOW: list = [()]
 _YIELDED = [0]
 #: SHMESH-75: this mesh's few-row strips in a count conflict and what became of them (sizes and counts only)
 _STRIP_LOG: list = []
+#: SHMESH-101 census (measuring only, with shell_quality_passes.CENSUS on): fact index of each mapped strip ->
+#: its width, the length SHMESH-101 aims for, its count along and the line that set that count (quality.strip_census)
+_STRIP_WHY: dict = {}
+#: round 10 census (measuring only, with shell_quality_passes.CENSUS on): fact index of each face narrower than its
+#: size -> its width, kind and, across each curve, its neighbour and how they meet (quality.sliver_geo)
+_SLIVER_GEO: dict = {}
+#: SHMESH-78/79 census (measuring only, CENSUS on): fact index of each face mapped on its corners -> the rule that
+#: mapped it, its corner angles, its sides' lengths and planned counts (quality.corner_census)
+_CORNER_WHY: dict = {}
 #: the record of why each four-sided face was left free by _map_strips (quality.free_why; sizes, counts, angles)
 _FREE_WHY: dict = {}
 _YIELD_OFF = [False]
@@ -513,6 +552,10 @@ class _Redraw(Exception):
 
 class _Restep(Exception):
     """SHMESH-73: planned steps that could not be made: the pass is made again with those faces free."""
+
+
+class _Reopen(Exception):
+    """SHMESH-101: narrow strips whose closing was refused: the pass is made again with them meshed as open strips."""
 
 
 class _Unmap(Exception):
@@ -1019,6 +1062,138 @@ def _corner_turns(gmsh, t: int, sides) -> list[float]:
     return turns
 
 
+def _aspect_target(sizing: dict | None) -> float | None:
+    """SHMESH-101: the quad aspect target in force - the user's (their stretch over ASPECT_SHARE), else the usual
+    target the passes aim at (_AIMS_NOW), else None."""
+    if sizing is not None and sizing.get("stretch") is not None:
+        return max(1.0, float(sizing["stretch"]) / SR.ASPECT_SHARE)
+    got = [float(t_) for sh_, k_, _op, t_, _o, _s in _AIMS_NOW[0] if sh_ == "quad" and k_ == "aspect"]
+    return min(got) if got else None
+
+
+def _strip_edge_floor(sizing: dict | None) -> tuple[float | None, bool]:
+    """SHMESH-101: (the shortest edge mm a narrow strip's elements along it keep, whether the user typed it). Typed,
+    it holds. Our own default (BAND x the global size): STRIP_FLOOR_SHARE x the global size, never over it."""
+    s_ = sizing or {}
+    low_ = s_.get("low_mm")
+    if low_ is None:
+        return None, False
+    if s_.get("low_typed", True):
+        return float(low_), True
+    g_ = s_.get("global_mm")
+    g_ = float(g_) if g_ is not None else float(low_) / SR.BAND[0]
+    return min(float(low_), STRIP_FLOOR_SHARE * g_), False
+
+
+def _sliver_census(gmsh, tag_of: dict[int, int], rows: list[dict], mm: float, structured: set[int]) -> None:
+    """Round 10 census (measuring only, CENSUS on): each face narrower than its size (width = 2 area / perimeter) -
+    its width, size and surface kind; across each of its curves the faces there, and for one neighbour the angle
+    between their normals at the curve's middle, the distance from the face's own middle to the neighbour's surface
+    (0: one surface the CAD split) and the curve's kind - into _SLIVER_GEO. Never costs the mesh."""
+    for t, k in sorted(tag_of.items()):
+        try:
+            curves = sorted({abs(c) for _d, c in gmsh.model.getBoundary([(2, t)], oriented=False)})
+            per = sum(float(gmsh.model.occ.getMass(1, c)) for c in curves) * mm
+            area = float(gmsh.model.occ.getMass(2, t)) * mm * mm
+            w = 2.0 * area / max(per, 1e-300)
+            size = float(rows[k]["size_mm"])
+            if not curves or w >= size:
+                continue
+            lo, hi = gmsh.model.getParametrizationBounds(2, t)
+            mid = [0.5 * (lo[0] + hi[0]), 0.5 * (lo[1] + hi[1])]
+            p_t = np.asarray(gmsh.model.getValue(2, t, mid), dtype=float)
+            nbs = []
+            for c in curves:
+                up = [int(f) for f in gmsh.model.getAdjacencies(1, c)[0] if int(f) != t]
+                L = float(gmsh.model.occ.getMass(1, c)) * mm
+                one: dict = {"len_mm": round(L, 3), "faces": len(up) + 1}
+                if len(up) == 1 and up[0] in tag_of:
+                    n = up[0]
+                    a_, b_ = gmsh.model.getParametrizationBounds(1, c)
+                    q = np.asarray(gmsh.model.getValue(1, c, [0.5 * (a_[0] + b_[0])]), dtype=float)
+                    nr = []
+                    for f in (t, n):
+                        uv = gmsh.model.getParametrization(2, f, list(q))
+                        v = np.asarray(gmsh.model.getNormal(f, list(uv)), dtype=float)
+                        nr.append(v / max(float(np.linalg.norm(v)), 1e-300))
+                    on = np.asarray(gmsh.model.getClosestPoint(2, n, list(p_t))[0], dtype=float)
+                    kn = tag_of[n]
+                    one.update({"nb": int(kn), "dot": round(abs(float(nr[0] @ nr[1])), 5),
+                                "off_mm": round(float(np.linalg.norm(on - p_t)) * mm, 4),
+                                "nb_w": abs(float(rows[kn]["wall_mm"]) - float(rows[k]["wall_mm"]))
+                                > 0.01 * float(rows[k]["wall_mm"]),
+                                "nb_struct": n in structured, "nb_place": "place" in rows[kn],
+                                "nb_kind": gmsh.model.getType(2, n)})
+                nbs.append(one)
+            _SLIVER_GEO[k] = {"w_mm": round(w, 3), "size_mm": round(size, 3), "kind": gmsh.model.getType(2, t),
+                              "struct": t in structured, "place": "place" in rows[k], "curves": nbs}
+        except Exception as exc:  # noqa: BLE001 - measuring only
+            _SLIVER_GEO[k] = {"failed": f"{type(exc).__name__}: {str(exc)[:120]}"}
+
+
+def _strip_census(k: int, sizing: dict | None, la: tuple, lb: tuple, n_a: int, n_b: int, steps: list,
+                  aim_how: str, mm: float) -> None:
+    """SHMESH-101 census (measuring only, CENSUS on): a mapped strip's width, the length SHMESH-101 aims for, the count
+    along it, and which line set that count (the last of `steps` to change it; the plan's own reason, `aim_how`,
+    when none did) - into _STRIP_WHY. Never costs the mesh."""
+    try:
+        tgt_ = _aspect_target(sizing)
+        seg_w = max(lb) / max(1, n_b)
+        aim_w = max(1.0, STRIP_AIM_SHARE * tgt_) * seg_w if tgt_ is not None else None
+        want_ = max(1, math.ceil(max(la) / aim_w - 1e-9)) if aim_w else None
+        why_n = "plan"
+        for (_s0, n0), (s1, n1) in zip(steps, steps[1:], strict=False):
+            if n1 != n0:
+                why_n = s1
+        if want_ is None:
+            why_n = "no aspect target in force"
+        elif n_a >= want_:
+            why_n = "met its aim"
+        elif why_n == "plan":
+            why_n = aim_how if aim_how != "aimed" else "aim no shorter than the plan's"
+        _STRIP_WHY[k] = {"w_mm": round(seg_w * mm, 3), "len_mm": round(max(la) * mm, 2),
+                         "aim_mm": round(aim_w * mm, 3) if aim_w else None, "want": want_, "n": int(n_a),
+                         "n_b": int(n_b), "why": why_n, "aim_how": aim_how,
+                         "steps": [[s_, int(v_)] for s_, v_ in steps]}
+    except Exception as exc:  # noqa: BLE001 - measuring only
+        _STRIP_WHY[k] = {"failed": f"{type(exc).__name__}: {str(exc)[:120]}"}
+
+
+def _rows_worse(a: dict, b: dict, past_more: int = 0) -> list[str]:
+    """SHMESH-101 (round 8): the quality rows on which mesh record `a` is worse than `b`, in plain words - a row `b`
+    meets that `a` misses, or more elements past it (beyond, then outside); `past_more` > 0: `a` has that many more
+    elements past the solver's own limits."""
+    theirs = {r.get("id"): r for r in ((b.get("requirements") or {}).get("rows") or [])}
+    out = []
+    for r in (a.get("requirements") or {}).get("rows") or []:
+        o = theirs.get(r.get("id"))
+        if o is None:
+            continue
+        name = str(r.get("name") or r.get("field") or r.get("id"))
+        if o.get("met") is not False and r.get("met") is False:
+            out.append(f"{name} not met")
+            continue
+        for key in ("beyond", "outside"):
+            x, y = r.get(key), o.get(key)
+            if isinstance(x, (int, float)) and isinstance(y, (int, float)) and x != y:
+                if x > y:
+                    out.append(f"{name}: {int(x)} element(s) past against {int(y)}")
+                break
+    if past_more > 0:
+        out.append(f"{past_more} more element(s) past the solver's own limits")
+    return out
+
+
+def _time_for_pass() -> bool:
+    """SHMESH-101: another whole pass fits before the run's clock: what this run has spent so far, once more."""
+    end = _RUN.get("end")
+    if end is None:
+        return True
+    now = time.monotonic()
+    spent = now - float(_FACE_FATE.get("t0") or now)
+    return float(end) - now > 1.25 * spent + 30.0
+
+
 def _map_strips(gmsh, tag_of: dict[int, int], rows: list[dict], mm: float,
                 sizing: dict | None = None, fine_at: dict[int, float] | None = None,
                 counts_out: dict[int, int] | None = None, held: set[int] | frozenset = frozenset(),
@@ -1027,7 +1202,9 @@ def _map_strips(gmsh, tag_of: dict[int, int], rows: list[dict], mm: float,
                 not_thin: set[int] | frozenset = frozenset(),
                 transitions_out: dict | None = None,
                 no_step: set[int] | frozenset = frozenset(),
-                no_fit: set[int] | frozenset = frozenset()) -> dict[int, tuple[tuple[int, ...], float]]:
+                no_fit: set[int] | frozenset = frozenset(),
+                aim_out: dict | None = None,
+                keep_open: set[int] | frozenset = frozenset()) -> dict[int, tuple[tuple[int, ...], float]]:
     """SHMESH-16: every narrow four-sided strip (a bend, a flange, a strip between holes: its two long sides alike in
     length, its two ends alike, the long sides at least STRIP_LONG times the ends) is meshed as a mapped grid of
     quads - its planned size across it, and along it the size of the faces beside its long sides, at most
@@ -1042,6 +1219,10 @@ def _map_strips(gmsh, tag_of: dict[int, int], rows: list[dict], mm: float,
     low: Any = (sizing or {}).get("low_mm")
     high: Any = (sizing or {}).get("high_mm")
     nout: dict = narrow_out if narrow_out is not None else {}
+    from meshpipeline.engines.gmsh import shell_quality_passes as QP_
+    cen_on = bool(QP_.CENSUS)
+    _STRIP_WHY.clear()
+    _CORNER_WHY.clear()
 
     def even(n: int, length: float) -> int:
         if not n % 2 or (low is not None and length * mm / (n + 1) < low):
@@ -1181,6 +1362,11 @@ def _map_strips(gmsh, tag_of: dict[int, int], rows: list[dict], mm: float,
         pts = [abs(int(p_)) for _d, p_ in gmsh.model.getBoundary([(1, end[0])], oriented=False)]
         corner_tags[t] = [tip, *pts]
         out[t] = (tuple(l1 + l2), max(L1, L2) / n_a)
+        if cen_on:
+            # (map census, measuring only)
+            _CORNER_WHY[int(k)] = {"rule": "SHMESH-69 taper", "corners": 3, "sides_mm": [round(x_ * mm, 2) for x_ in
+                                                                                       (L1, L2, E)],
+                                   "counts": [n_a, n_a, n_b]}
         return True
     def tri_plan(t: int, cl: list, at: list, verts: list, turns_: list) -> bool:
         """SHMESH-79: counts for a three-cornered face's sides (even sum, each under the other two), inside the edges."""
@@ -1246,6 +1432,11 @@ def _map_strips(gmsh, tag_of: dict[int, int], rows: list[dict], mm: float,
                 plan[c] = x_
         count.update(plan)
         _TRI_PLAN[t] = (chains_, n_, [verts[i] for i in at])
+        if cen_on:
+            # (SHMESH-79 census, measuring only)
+            _CORNER_WHY[int(tag_of[t])] = {"rule": "SHMESH-79", "corners": 3, "corners_deg": [round(x_, 1) for x_ in inner_],
+                                           "sides_mm": [round(x_ * mm, 2) for x_ in L], "counts": list(n_),
+                                           "curves": len(cl)}
         return True
 
     def corner_four(t: int) -> bool:
@@ -1345,6 +1536,12 @@ def _map_strips(gmsh, tag_of: dict[int, int], rows: list[dict], mm: float,
         corner_tags[t] = [verts[i] for i in at]
         out[t] = (tuple(chains_[0] + chains_[2]), max(L[0], L[2]) / ns[0])
         _CORNER_MERGED[0] += 1
+        if cen_on:
+            # (SHMESH-78 census, measuring only)
+            _CORNER_WHY[int(tag_of[t])] = {"rule": "SHMESH-78", "corners": 4, "corners_deg": [round(x_, 1) for x_ in inner],
+                                           "sides_mm": [round(x_ * mm, 2) for x_ in L],
+                                           "counts": [ns[0], ns[1], ns[0], ns[1]], "aspect": round(aspect_, 2),
+                                           "curves": len(cl), "chain_curves": [len(ch) for ch in chains_]}
         return True
 
     for t, k in sorted(tag_of.items()):
@@ -1496,6 +1693,23 @@ def _map_strips(gmsh, tag_of: dict[int, int], rows: list[dict], mm: float,
             along_t = min(beside) if beside else size_of[t]
             if high is not None:
                 along_t = min(along_t, 0.98 * high / mm)
+            open_aim = None
+            if (STRIP_OPEN and t in keep_open and aim_out is not None
+                    and "SHMESH-52" not in str(rows[k].get("rule", ""))):
+                # SHMESH-101: its closing was refused in an earlier pass: an open strip, one row across, its elements
+                # along it aimed at STRIP_AIM_SHARE of the aspect target of its own width (not the neighbours' size)
+                target_ = _aspect_target(sizing)
+                floor_, typed_ = _strip_edge_floor(sizing)
+                if target_ is not None and floor_ is not None:
+                    w_ = max(lb)
+                    aim_ = max(floor_ / mm, STRIP_AIM_SHARE * target_ * w_)
+                    if aim_ < along_t * (1.0 - 1e-9):
+                        add_ = math.ceil(max(la) / aim_ - 1e-9) - math.ceil(max(la) / along_t - 1e-9)
+                        if aim_out.get("added", 0) + add_ <= STRIP_AIM_ADD_MAX:
+                            open_aim = (aim_, w_ * mm, floor_, typed_, target_, add_)
+                            along_t = aim_
+                        else:
+                            aim_out["over"] = aim_out.get("over", 0) + 1
             if fine_at:
                 near = min((fine_at.get(p, math.inf) for c in sides for p in ends[c]), default=math.inf)
                 if near * plan_rules.GROWTH < along_t * mm:
@@ -1511,20 +1725,74 @@ def _map_strips(gmsh, tag_of: dict[int, int], rows: list[dict], mm: float,
             for c in b:
                 count[c] = 1
             out[t] = (tuple(a), max(la) / n_a)
+            if cen_on:
+                # (map census, measuring only)
+                _CORNER_WHY[int(k)] = {"rule": "SHMESH-60 narrow" + (" open" if open_aim is not None else ""),
+                                       "corners": 4, "sides_mm": [round(x_ * mm, 2) for x_ in (*la, *lb)],
+                                       "counts": [n_a, n_a, 1, 1],
+                                       "corners_deg": [round(180.0 - x_, 1) for x_ in _corner_turns(gmsh, t, sides)]}
+            if open_aim is not None and aim_out is not None:
+                # (an open strip: not closed after meshing; what it did, for the notes and the record)
+                aim_, w_mm, floor_, typed_, target_, add_ = open_aim
+                aim_out["open"] = aim_out.get("open", 0) + 1
+                aim_out["strips"] = aim_out.get("strips", 0) + 1
+                if n_a < math.ceil(max(la) / aim_ - 1e-9):
+                    aim_out["open_held"] = aim_out.get("open_held", 0) + 1   # (a side counted already: kept)
+                else:
+                    aim_out["added"] = aim_out.get("added", 0) + max(0, add_)
+                aim_out["finest_mm"] = min(aim_out.get("finest_mm", math.inf), max(la) / n_a * mm)
+                if max(la) / n_a * mm < float(low) * (1.0 - 1e-9):
+                    aim_out["under_default"] = aim_out.get("under_default", 0) + 1
+                    aim_out["floor_mm"] = floor_
+                if floor_ > target_ * w_mm:
+                    # (no element along it meets the aspect target without going under that floor)
+                    key_ = "typed_blocks" if typed_ else "floor_blocks"
+                    aim_out[key_] = aim_out.get(key_, 0) + int(n_a)
+                    aim_out[key_ + "_narrowest_mm"] = min(aim_out.get(key_ + "_narrowest_mm", math.inf), w_mm)
+                    aim_out[key_ + "_target"] = target_
+                continue
             nout[t] = (tuple(a), tuple(b), float(max(lb) * mm))
             continue
         stretch = STRETCH_FLAT if flat and not user_flat else STRETCH_MAX
         if sizing is not None and sizing.get("stretch") is not None:
             stretch = min(stretch, max(1.0, float(sizing["stretch"])))
         along = min([stretch * across] + beside)
+        # (census: why SHMESH-101's aim is or is not this strip's plan)
+        aim_how = "no sizing"
         if sizing is None:
             along = max(along, across)
         else:
             # SHMESH-24: a strip narrower than the user's size has one element across it, as wide as the strip:
             # its length is held to the user's aspect ratio of THAT width, and under their longest edge
             seg = max(lb) / max(1, math.ceil(max(lb) / across - 1e-9))
+            aim_how = "no aspect target typed"
             if sizing.get("stretch") is not None and SR.STRIP_ASPECT:
                 along = min(along, max(1.0, float(sizing["stretch"])) * seg)
+                aim_how = ("wider than its size" if max(lb) > across * (1.0 + 1e-9) else
+                           "a user-sized face (SHMESH-52)" if "SHMESH-52" in str(rows[k].get("rule", "")) else
+                           "rule off" if not (STRIP_AIM and aim_out is not None) else "aimed")
+                if STRIP_AIM and aim_out is not None and max(lb) <= across * (1.0 + 1e-9) \
+                        and "SHMESH-52" not in str(rows[k].get("rule", "")):
+                    # SHMESH-101: a strip one element across (narrower than the size) aims its elements at
+                    # STRIP_AIM_SHARE of the user's aspect target along it, not at the target itself: a quad of a
+                    # skewed or tapered strip made at 0.9 x the target measured past it. Never under the user's
+                    # shortest edge (SHMESH-63 below), and the elements it adds held to STRIP_AIM_ADD_MAX a mesh
+                    aim = max(1.0, STRIP_AIM_SHARE * float(sizing["stretch"]) / SR.ASPECT_SHARE) * seg
+                    if low is not None and aim < low / mm * (1.0 - 1e-9):
+                        aim_how = ("clamped up to the shortest edge (typed)" if sizing.get("low_typed", True)
+                                   else "clamped up to the shortest edge (default 0.5 G)")
+                    if low is not None:
+                        aim = max(aim, low / mm)
+                    if aim < along * (1.0 - 1e-9):
+                        add = math.ceil(max(la) / aim - 1e-9) - math.ceil(max(la) / along - 1e-9)
+                        if aim_out.get("added", 0) + add <= STRIP_AIM_ADD_MAX:
+                            along = aim
+                            aim_out["strips"] = aim_out.get("strips", 0) + 1
+                            aim_out["added"] = aim_out.get("added", 0) + max(0, add)
+                            aim_out["finest_mm"] = min(aim_out.get("finest_mm", math.inf), aim * mm)
+                        else:
+                            aim_out["over"] = aim_out.get("over", 0) + 1
+                            aim_how = "the 20,000 added cap"
             if high is not None:
                 along = min(along, 0.98 * high / mm)
             along = max(along, min(across, seg))
@@ -1538,6 +1806,7 @@ def _map_strips(gmsh, tag_of: dict[int, int], rows: list[dict], mm: float,
                 continue
         n_b = max(1, math.ceil(max(lb) / across - 1e-9))
         n_a = max(1, math.ceil(max(la) / along - 1e-9))
+        steps_: list = [("plan", n_a)]        # (census: each line that sets the count along, and the count it set)
         if low is not None and STRIP_LOW:
             # SHMESH-63: never more segments than leave each over the user's shortest edge where fewer can (a 1.5 mm
             # bend's 2.36 mm arc held to a tenth of a 4 mm size off the arc took 2 rows of 1.18 mm; one row stands
@@ -1547,8 +1816,10 @@ def _map_strips(gmsh, tag_of: dict[int, int], rows: list[dict], mm: float,
             if high is not None and UNEQUAL_FEASIBLE:
                 # (and never so few that the long side's segments pass the user's longest edge)
                 n_a = max(n_a, int(math.ceil(max(la) * mm / (0.98 * high) - 1e-9)))
+            steps_.append(("the shortest edge's count cap (SHMESH-63)", n_a))
         if EVEN:
             n_a, n_b = even(n_a, min(la) if UNEQUAL_FEASIBLE else max(la)), even(n_b, min(lb) if UNEQUAL_FEASIBLE else max(lb))
+            steps_.append(("made even", n_a))
         k_p = {prefer[c] for c in a if c in prefer} if prefer else set()
         if len(k_p) == 1:
             # SHMESH-51o16: a strip whose long side faces a two-ring bolt box's side across one cell takes the box's
@@ -1557,8 +1828,11 @@ def _map_strips(gmsh, tag_of: dict[int, int], rows: list[dict], mm: float,
             if ((high is None or max(la) * mm / k_ <= 0.98 * high) and (low is None or min(la) * mm / k_ >= low)
                     and max(la) / k_ <= stretch * across + 1e-12):
                 n_a = k_
+                steps_.append(("the bolt box's count (prefer)", n_a))
         n_a = yielded(t, a, la, n_a, max(1, math.ceil(max(la) / along - 1e-9)))
+        steps_.append(("yielded to a few-row neighbour (yielded)", n_a))
         n_a = count.get(a[0], count.get(a[1], n_a))
+        steps_.append(("a neighbour strip's count taken over", n_a))
         n_b = count.get(b[0], count.get(b[1], n_b))
         if any(count.get(c, n_a) != n_a for c in a) or any(count.get(c, n_b) != n_b for c in b):
             why_("a side already counted otherwise", wants=[n_a, n_b])
@@ -1584,6 +1858,12 @@ def _map_strips(gmsh, tag_of: dict[int, int], rows: list[dict], mm: float,
             count[c] = n_b
         out[t] = (tuple(a), max(la) / n_a)
         _FREE_WHY.pop(t, None)
+        if cen_on:
+            # (census: the count along against SHMESH-101's aim, and the line that set it)
+            _strip_census(int(k), sizing, la, lb, n_a, n_b, steps_, aim_how, mm)
+            _CORNER_WHY[int(k)] = {"rule": "SHMESH-16 general" + (" fit" if fits else ""), "corners": 4,
+                                   "sides_mm": [round(x_ * mm, 2) for x_ in (*la, *lb)], "counts": [n_a, n_a, n_b, n_b],
+                                   "corners_deg": [round(180.0 - x_, 1) for x_ in _corner_turns(gmsh, t, sides)]}
         if thin is None and FIT_MAP and sizing is not None and (
                 abs(la[0] - la[1]) > NARROW_ALIKE * max(la) or abs(lb[0] - lb[1]) > NARROW_ALIKE * max(lb)
                 or min(la) < STRIP_LONG * max(lb)):
@@ -1666,6 +1946,9 @@ def _map_strips(gmsh, tag_of: dict[int, int], rows: list[dict], mm: float,
         if transitions_out:
             counts_out.update({c: count[c] for v_ in transitions_out.values() for c in (v_[0], v_[1], *v_[2])
                                if c in count})
+    if cen_on:
+        for t_ in out:
+            _CORNER_WHY.setdefault(int(tag_of[t_]), {"rule": "unlogged"})
     for t in sorted(out):
         if t in corner_tags:
             gmsh.model.mesh.setTransfiniteSurface(t, cornerTags=corner_tags[t])
@@ -2283,6 +2566,126 @@ def _watch_read(d: Path, seen: dict) -> tuple[int, float] | None:
 
 def _step_reset() -> None:
     _STEP_FAILED.clear()
+    _OPEN_STRIPS.clear()
+    _OPEN_PASSES[0] = 0
+
+
+#: SHMESH-100: THE TIME LEFT GOES TO QUALITY - a mesh made with a measured figure past its limit in force (the user's
+#: line, our usual target while they set none, Nastran's own) while time is left under the run's limit is worked on
+#: where those elements stand (engines/gmsh/shell_quality_passes: free nodes moved in their flat face's plane or on
+#: their curved face's CAD surface, boundary nodes along a straight stretch or on their CAD curve, two triangles'
+#: diagonal turned), each pass kept only when the worst figure past its limit improves and no figure in force gets
+#: worse past it; passes go on while kept, up to the clock (the run's limit less TIME_MARGIN_S) or PASS_SHARE of the
+#: time left, with the best mesh kept. A mesh
+#: inside its limits is delivered exactly as made; off, every mesh is
+QUALITY_PASSES_RULE = "SHMESH-100"
+QUALITY_PASSES = True
+
+
+def _held_of(mesh: ShellMesh) -> np.ndarray:
+    """SHMESH-100: each node's hold (a node of a structure: rings, bands, grid cells, mapped strips), all held when the
+    mesh does not carry it (nothing of a mesh of unknown structure is moved)."""
+    held = getattr(mesh, "held", None)
+    if held is None or len(held) != len(mesh.xyz):
+        return np.ones(len(mesh.xyz), dtype=bool)
+    return np.asarray(held, dtype=bool)
+
+
+#: SHMESH-100 (census): the structure that holds a node, by number (0: none). Measuring only: nothing reads it to
+#: decide; the census names which structure holds each held element
+HELD_KINDS = ("", "ring", "box band", "transition cell", "three-corner blocks", "stepped strip", "round plate band",
+              "grid cell", "mapped strip", "narrow close", "other made")
+
+
+def _held_kind_of(mesh: ShellMesh) -> np.ndarray:
+    """SHMESH-100: each node's held kind (HELD_KINDS index), zeros when the mesh does not carry it."""
+    hk = getattr(mesh, "held_kind", None)
+    if hk is None or len(hk) != len(mesh.xyz):
+        return np.zeros(len(mesh.xyz), dtype=np.int8)
+    return np.asarray(hk, dtype=np.int8)
+
+
+def _held_kinds(n: int, quads: np.ndarray, q_face: list[int], n_made: int | None,
+                spans: list[tuple[int, int, int]], grid_k: set[int], mapped_k: set[int],
+                pinned: np.ndarray) -> np.ndarray:
+    """SHMESH-100 (census): (n,) int8 - for each pinned node, the structure that pins it (HELD_KINDS): the made node's
+    own (`spans`: node ranges a ring, band or cell added), the grid cell or mapped strip its quad's face is, else
+    "other made"."""
+    node_k = np.zeros(n, dtype=np.int8)
+    if n_made is not None and n_made < n:
+        node_k[n_made:] = HELD_KINDS.index("other made")
+    for a, b, k in spans:
+        node_k[a:min(b, n)] = k
+    out = np.zeros(n, dtype=np.int8)
+    if len(quads):
+        qn = np.asarray(quads, dtype=np.int64)
+        qk = node_k[np.clip(qn, 0, n - 1)].max(axis=1)
+        qf = np.asarray(q_face, dtype=np.int64)[:len(qn)]
+        if grid_k:
+            qk[np.isin(qf, np.fromiter(sorted(grid_k), dtype=np.int64))] = HELD_KINDS.index("grid cell")
+        if mapped_k:
+            qk[np.isin(qf, np.fromiter(sorted(mapped_k), dtype=np.int64))] = HELD_KINDS.index("mapped strip")
+        for k in sorted(set(qk.tolist()) - {0}):
+            out[np.unique(qn[qk == k])] = k
+    rest = (out == 0) & (node_k > 0)
+    out[rest] = node_k[rest]
+    pin = np.zeros(n, dtype=bool)
+    pin[:min(n, len(pinned))] = np.asarray(pinned, dtype=bool)[:n]
+    out[~pin] = 0
+    return out
+
+
+def _quality_passes(out: tuple[ShellMesh, dict], requirements: dict | None, *, brep: Path | str | None = None,
+                    mm_per_unit: float = 1.0) -> tuple[ShellMesh, dict]:
+    """SHMESH-100: the extra quality passes on the mesh mesh_shell made, under the run's clock (_CLOCK: its start and
+    the limit in force). Untouched when the passes are off, the run has no clock, or no figure is past its limit; a
+    failure of the passes never costs the mesh (the mesh made is delivered, the failure recorded). With the mid-surface
+    `brep`, they run in a forked child of their own that reads it again (gmsh, its own session): nodes of curved faces
+    and on curved boundary stretches move on the CAD there."""
+    import os
+
+    from meshpipeline.engines.gmsh import shell_quality_passes as QP
+
+    mesh, applied = out
+    if not QUALITY_PASSES or _CLOCK.get("t0") is None or _CLOCK.get("allowed") is None:
+        return out
+    deadline = float(_CLOCK["t0"]) + float(_CLOCK["allowed"]) - TIME_MARGIN_S
+    mesh.held = _held_of(mesh)  # type: ignore[attr-defined]
+
+    def on_cad():
+        from meshpipeline.engines.gmsh import shell_cad_projector as CP
+
+        try:
+            ctx = CP.opened(Path(str(brep)), float(mm_per_unit))
+            proj = ctx.__enter__()
+        except Exception as exc:  # noqa: BLE001 - the CAD not read again: flat faces only, as before
+            logger.info("shell mesh: the mid-surface was not read again for the quality passes (%s)", exc)
+            return QP.run(mesh, applied, requirements, deadline=deadline)
+        try:
+            return QP.run(mesh, applied, requirements, deadline=deadline, project=proj,
+                          remesher=CP.PatchMesher(proj.g))
+        finally:
+            ctx.__exit__(None, None, None)
+
+    try:
+        if brep is not None and QP.ON_CAD and Path(str(brep)).is_file() and hasattr(os, "fork") \
+                and time.monotonic() < deadline:
+            mesh2, applied2, rec = _bounded(on_cad, deadline - time.monotonic() + 0.5 * TIME_MARGIN_S)
+        else:
+            mesh2, applied2, rec = QP.run(mesh, applied, requirements, deadline=deadline)
+    except Exception as exc:  # noqa: BLE001 - an extra pass must never cost the mesh made
+        logger.info("shell mesh: the extra quality passes failed (%s)", exc)
+        applied.setdefault("quality", {})["quality_passes"] = {"rule": QUALITY_PASSES_RULE, "kept": 0,
+                                                               "failed": f"{type(exc).__name__}: {str(exc)[:200]}"}
+        return out
+    if rec is None:
+        return out
+    q = applied2.setdefault("quality", {})
+    q["quality_passes"] = rec
+    if isinstance(q.get("passes"), list) and isinstance(q.get("passes_s"), list):
+        q["passes"].append(f"extra quality passes ({QUALITY_PASSES_RULE})")
+        q["passes_s"].append(float(rec.get("seconds") or 0.0))
+    return mesh2, applied2
 
 
 def mesh_shell(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log: list | None = None,
@@ -2316,6 +2719,8 @@ def mesh_shell(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log:
         try:
             out = _mesh_shell_watched(brep, record, mm_per_unit=mm_per_unit, log=log, target=target,
                                       correction=correction, requirements=requirements, allowed=allowed)
+            # SHMESH-100: the time left under the run's limit goes to the figures past their limits
+            out = _quality_passes(out, requirements, brep=brep, mm_per_unit=mm_per_unit)
             out[1].setdefault("quality", {})["clock"] = _clock_view()
             if _CLOCK.get("first_s") and int(_CLOCK.get("built") or 0) >= RATE_MIN_ELEMENTS:
                 # (SHMESH-21e: this part's measured rate prices its next mesh in this run)
@@ -3341,11 +3746,66 @@ def _mesh_shell_timed(brep: Path | str, record: dict, *, mm_per_unit: float = 1.
             "why": why, "standing": {this["mesh"]: list(s_new), that["mesh"]: list(s_old)},
             "by_line": _by_line(this, that)}
     if keep_old:
+        old_c, applied_c, old_c_n = _aim_check_classic(classic_path, old, applied_old, old_n, kept)
+        if applied_c is not applied_old:
+            # (#435's mesh as planned stands against this PR's mesh again: SHMESH-36's own order)
+            s_n2 = _standing(applied, past_n, applied_c, requirements)
+            keep_old = _standing(applied_c, old_c_n, applied, requirements) < s_n2
+            if MIXED_BY_SHARE and s_n2[0] == _standing(applied_c, old_c_n, applied, requirements)[0] and \
+                    _each_worse(applied, applied_c):
+                keep_old = _mixed_key(applied_c, requirements) < _mixed_key(applied, requirements)
+            kept["kept"] = that["mesh"] if keep_old else this["mesh"]
+            kept["strip_aim_check"]["then"] = kept["kept"]
+        old, applied_old, old_n = old_c, applied_c, old_c_n
+    if keep_old:
         mesh, applied = old, applied_old
         applied["quality"]["classic"] = True
     applied["kept"] = kept
     _record_short_edge(brep, mm_per_unit, mesh, applied)
     return mesh, applied
+
+
+def _aim_check_classic(classic_path, old: ShellMesh, applied_old: dict, old_n: int, kept: dict):
+    """SHMESH-101 (round 9): #435's mesh, when SHMESH-36 keeps it, never passed SHMESH-76's candidates, so the keep
+    check there never saw its finer strip counts (round 8: cen_s0163, aspect 1,400 -> 2,868 past, no record). The same
+    check here: when the finer counts acted on it, it is made again with them off, and the finer counts are kept only
+    where no quality row is worse with them; else that mesh is kept, told. Recorded in kept["strip_aim_check"]."""
+    sa_ = ((applied_old.get("quality") or {}).get("structure") or {}).get("strip_aim") or {}
+    if not (STRIP_AIM_KEEP and sa_.get("strips")):
+        return old, applied_old, old_n
+    chk: dict = {"mesh": "#435's steps " + AIM_OFF_NAME}
+    kept["strip_aim_check"] = chk
+    # (and in the mesh's own record, which the run's record keeps: quality.structure.strip_aim_check)
+    applied_old.setdefault("quality", {}).setdefault("structure", {})["strip_aim_check"] = chk
+    if _RUN.get("cut") or not _affords(_RUN.get("first_s")):
+        chk["made"] = "not started: no time left for a whole mesh more"
+        return old, applied_old, old_n
+    g_ = globals()
+
+    def plain_path():
+        saved = g_["STRIP_AIM"]
+        g_["STRIP_AIM"] = False
+        try:
+            return classic_path()
+        finally:
+            g_["STRIP_AIM"] = saved
+
+    t_c = time.monotonic()
+    try:
+        other, applied_o, other_n = _bounded(plain_path, _limit())
+    except (ValueError, _Periodic) as exc:
+        chk["made"] = f"failed ({type(exc).__name__})"
+        return old, applied_old, old_n
+    chk["seconds"] = round(time.monotonic() - t_c, 1)
+    worse = _rows_worse(applied_old, applied_o, old_n - other_n)
+    chk.update(kept=bool(worse), worse=worse[:6])
+    if not worse:
+        return old, applied_old, old_n
+    other.notes.append("The finer counts along narrow strips were tried and left as planned on this part: with them, "
+                       f"{'; '.join(worse[:3])} ({STRIP_AIM_RULE}).")
+    applied_o["quality"].setdefault("structure", {})["strip_aim_left"] = worse[:6]
+    applied_o["quality"]["structure"]["strip_aim_check"] = chk
+    return other, applied_o, other_n
 
 
 #: SHMESH-48l2: a pass whose only outcome is a redraw stops once its rings are built (False: made whole, as before)
@@ -3536,10 +3996,16 @@ def _yield_rest(brep, record, kw: dict, mesh, applied, past_n, last_s: float, ti
     # then on fewer triangles
     for name, off in (("without the steps", {"TRANSITIONS": False}),
                       ("without the steps, the fit-mapping off on its faces past a line", {"TRANSITIONS": False}),
-                      ("without the steps and the fit-mapping", {"TRANSITIONS": False, "FIT_MAP": False})):
+                      ("without the steps and the fit-mapping", {"TRANSITIONS": False, "FIT_MAP": False}),
+                      (AIM_OFF_NAME, {"STRIP_AIM": False})):
         q_ = best[2]["quality"]
         per_face = "on its faces" in name
-        if per_face:
+        aim_try = name == AIM_OFF_NAME
+        if aim_try:
+            # SHMESH-101 (round 8): the mesh as planned, without the finer strip counts, when they acted
+            sa_ = (q_.get("structure") or {}).get("strip_aim") or {}
+            acted = bool(STRIP_AIM_KEEP and sa_.get("strips"))
+        elif per_face:
             # (SHMESH-77 judged per face: the fit faces whose own elements were past a line, free; the rest kept)
             acted = bool(q_.get("fit_bad"))
         else:
@@ -3549,10 +4015,17 @@ def _yield_rest(brep, record, kw: dict, mesh, applied, past_n, last_s: float, ti
             continue
         if not may_start(name):
             continue
-        saved = {n_: g_[n_] for n_ in off}
-        _YIELD_OFF[0] = True
+        yield_off = True
         _fit_ex = [(np.asarray(c_, dtype=float), float(a_)) for c_, a_ in q_["fit_bad"]] if per_face else []
-        if per_face:
+        if aim_try:
+            # (the mesh kept so far, made again exactly, with only the finer strip counts off)
+            r_b = recipes.get(best[0], ({}, False, None, None, False))
+            off = {**r_b[0], "STRIP_AIM": False}
+            yield_off = bool(r_b[1])
+            _fit_ex = list(r_b[2] or [])
+        saved = {n_: g_[n_] for n_ in off}
+        _YIELD_OFF[0] = yield_off
+        if per_face or _fit_ex:
             _FIT_EXCLUDE[:] = list(_fit_ex)
         t_c = time.monotonic()
         try:
@@ -3561,6 +4034,10 @@ def _yield_rest(brep, record, kw: dict, mesh, applied, past_n, last_s: float, ti
                 other, applied_o, other_n = _narrow_kept_path(brep, record, **{**kw, "log": None})
         except (ValueError, _Periodic) as exc:
             logger.info("shell mesh: no mesh %s to compare (%s)", name, exc)
+            if aim_try:
+                # (SHMESH-101 round 9: a keep check that made no mesh is recorded, never silent)
+                skipped.append({"mesh": name, "price_s": round(time.monotonic() - t_c, 1),
+                                "why": f"failed ({type(exc).__name__})"})
             continue
         finally:
             _YIELD_OFF[0] = False
@@ -3579,13 +4056,23 @@ def _yield_rest(brep, record, kw: dict, mesh, applied, past_n, last_s: float, ti
                     **({"steps": q__["strip_steps"]} if q__.get("strip_steps") else {})}
 
         pool.append((name, other, applied_o, other_n))
-        recipes[name] = (dict(off), True, list(_fit_ex) if per_face else None, None, False)
+        recipes[name] = (dict(off), yield_off, list(_fit_ex) if (per_face or _fit_ex) else None, None, False)
         first_secs[name] = float(last_s)
-        tried.append({"mesh": name, "against": best[0], "kept": theirs < mine, "this": list(theirs),
+        take = theirs < mine
+        if aim_try:
+            # SHMESH-101 (round 8): the finer counts are kept only where no row of the part is worse with them than
+            # in the mesh as planned; else the part's strips are left as planned, and told
+            worse_rows = _rows_worse(a_b, applied_o, p_b - other_n)
+            take = bool(worse_rows)
+            if take:
+                other.notes.append("The finer counts along narrow strips were tried and left as planned on this part: "
+                                   f"with them, {'; '.join(worse_rows[:3])} ({STRIP_AIM_RULE}).")
+                applied_o["quality"].setdefault("structure", {})["strip_aim_left"] = worse_rows[:6]
+        tried.append({"mesh": name, "against": best[0], "kept": take, "this": list(theirs),
                       "that": list(mine), "this_did": did(applied_o["quality"]), "that_did": did(a_b["quality"]),
                       "seconds": round(last_s, 1)})
         seen.append(applied_o["quality"])
-        if theirs < mine:
+        if take:
             applied_o["quality"]["strip_log"] = applied_o["quality"].get("strip_log") or q_.get("strip_log")
             best = (name, other, applied_o, other_n)
     seen_q = [q_c for q_c in seen if q_c is not None]
@@ -3850,6 +4337,9 @@ def _face_keep(best: tuple, pool: list, requirements) -> tuple | None:
     keep0 = np.flatnonzero(~np.isin(m0.face_of, list(swapped)))
     xyz = [m0.xyz]
     nw = [m0.node_wall] if m0.node_wall is not None else None
+    # (SHMESH-100: each node's hold - a structure's node - carried from the mesh it came from)
+    hd = [np.array(_held_of(m0))]
+    hk_all = [np.array(_held_kind_of(m0))]
     n_nodes = len(m0.xyz)
     at0 = {tuple(np.round(m0.xyz[v] / POS_TOL).astype(np.int64).tolist()): v for v in range(len(m0.xyz))}
     quads, trias, qa, ta = [], [], [], []      # (nodes, (source mesh, element index))
@@ -3869,10 +4359,13 @@ def _face_keep(best: tuple, pool: list, requirements) -> tuple | None:
             key = tuple(np.round(m1.xyz[v] / POS_TOL).astype(np.int64).tolist())
             if key in bpos:
                 remap[v] = at0[key]
+                hd[0][at0[key]] |= bool(_held_of(m1)[v])
             else:
                 remap[v] = n_nodes
                 n_nodes += 1
                 xyz.append(m1.xyz[v][None, :])
+                hd.append(np.array([bool(_held_of(m1)[v])]))
+                hk_all.append(np.array([_held_kind_of(m1)[v]], dtype=np.int8))
                 if nw is not None:
                     nw.append(np.asarray([(m1.node_wall[v] if m1.node_wall is not None else m0.wall[0])]))
         for e in els1.tolist():
@@ -3916,6 +4409,8 @@ def _face_keep(best: tuple, pool: list, requirements) -> tuple | None:
                             if m0.zoffs is not None else None),
                      notes=list(m0.notes), part_names=dict(m0.part_names))
     mesh.face_of = np.array([int(m_.face_of[e]) for m_, e in src], dtype=np.int64)  # type: ignore[attr-defined]
+    mesh.held = np.concatenate(hd)[used_all]  # type: ignore[attr-defined]
+    mesh.held_kind = np.concatenate(hk_all)[used_all]  # type: ignore[attr-defined]
     applied = copy.deepcopy(a0)
     q = applied.setdefault("quality", {})
     q.update(shell_quality.measure(mesh))
@@ -4565,6 +5060,9 @@ def _mesh_path_made(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0,
             except _Restep:
                 passes.append(["steps freed", round(time.monotonic() - t_pass, 1)])
                 continue
+            except _Reopen:
+                passes.append(["narrow strips left open meshed again (SHMESH-101)", round(time.monotonic() - t_pass, 1)])
+                continue
             except _Unmap as u:
                 refusal_log.extend({"pass": len(passes) + 1, "cell_freed_first": True, **t_}
                                    for t_ in getattr(u, "told", None) or [])
@@ -5077,6 +5575,9 @@ def _mesh_once_core(brep: Path, record: dict, owners: list[str], mm: float, log:
     finer than the user's, graded back out. `spot_budget` (SHMESH-31b): the elements the boxes may plan, worst first."""
     _YIELDED[0] = 0
     _STRIP_LOG.clear()
+    _STRIP_WHY.clear()
+    _SLIVER_GEO.clear()
+    _CORNER_WHY.clear()
     _FREE_WHY.clear()
     _FIT_MAPPED[0] = 0
     _FIT_FACES.clear()
@@ -5480,7 +5981,9 @@ def _mesh_once_core(brep: Path, record: dict, owners: list[str], mm: float, log:
         strip_counts: dict[int, int] = {}
         thin_strips: dict[int, tuple] = {}
         strip_steps: dict[int, tuple] = {}     # SHMESH-73: strips whose rows step between two counts
-        mapped = (_map_strips(gmsh, tag_of, rows, mm, sizing,
+        strip_aim: dict = {}                   # SHMESH-101: the strips aimed finer along, and what it added
+        mapped = (_map_strips(gmsh, tag_of, rows, mm, sizing, aim_out=strip_aim,
+                              keep_open=_no_step(tag_of, facts, _OPEN_STRIPS) if _OPEN_STRIPS else frozenset(),
                               fine_at=short_edges["fine_at"] if short_edges and FEATURE_UNMAP else None,
                               counts_out=strip_counts,
                               held=frozenset(box_wish_long & set(box_wish)) if ST.BOX_HOLDS else frozenset(),
@@ -5944,6 +6447,10 @@ def _mesh_once_core(brep: Path, record: dict, owners: list[str], mm: float, log:
             gmsh.model.mesh.setTransfiniteCurve(c_f, n_f + 1)
         _watch_tags(tag_of, facts, {t: float(facts[k]["area"]) * mm * mm / float(rows[k]["size_mm"]) ** 2
                                     for t, k in tag_of.items() if float(rows[k].get("size_mm") or 0) > 0})
+        from meshpipeline.engines.gmsh import shell_quality_passes as QP_c
+        if QP_c.CENSUS:
+            # (round 10 census, measuring only: the faces narrower than their size and how they meet their neighbours)
+            _sliver_census(gmsh, tag_of, rows, mm, set(mapped) | set(grids) | {w.annulus for w in rings})
         _generate(gmsh, tag_of)
         node_tags, coords, _p = gmsh.model.mesh.getNodes()
         tags = np.asarray(node_tags, dtype=np.int64)
@@ -6184,6 +6691,7 @@ def _mesh_once_core(brep: Path, record: dict, owners: list[str], mm: float, log:
             raise pending
         quads, trias, q_face, t_face = [], [], [], []
         n_made = len(xyz)       # (SHMESH-83: nodes from here on are a ring's, a band's or a cell's own)
+        made_spans: list[tuple[int, int, int]] = []     # (SHMESH-100 census: which structure added which nodes)
         # SHMESH-39: each washer's annulus takes the washer's own ring of quads in place of gmsh's mesh there
         ring_of = {}
         ring_nodes: set[int] = set()        # (SHMESH-62: the rings' nodes, never merged for a short edge)
@@ -6199,6 +6707,7 @@ def _mesh_once_core(brep: Path, record: dict, owners: list[str], mm: float, log:
                     washer_skipped.get("its ring could not be built (gmsh's mesh kept there)", 0) + 1)
                 continue
             ring_of[w.annulus] = w
+            made_spans.append((len(xyz), len(xyz) + len(pts), HELD_KINDS.index("ring")))
             xyz = np.vstack([xyz, pts])
             ring_nodes.update(int(x) for x in np.unique(ring))
             quads.append(ring)
@@ -6220,6 +6729,7 @@ def _mesh_once_core(brep: Path, record: dict, owners: list[str], mm: float, log:
                 w.info["box_band"] = "made"
                 box_done.add(w.box)
                 band_nodes.update(int(x) for x in np.unique(quads_x))
+                made_spans.append((len(xyz), len(xyz) + len(pts_x), HELD_KINDS.index("box band")))
                 xyz = np.vstack([xyz, pts_x])
                 band_quads.append(np.asarray(quads_x, dtype=np.int64))
                 quads.append(quads_x)
@@ -6245,6 +6755,7 @@ def _mesh_once_core(brep: Path, record: dict, owners: list[str], mm: float, log:
                         logger.info("shell mesh: a transition cell was left paved (SHMESH-51o42: %s)", counts_t)
                         continue
                 trans_done.add(t_t)
+                made_spans.append((len(xyz), len(xyz) + len(pts_t), HELD_KINDS.index("transition cell")))
                 xyz = np.vstack([xyz, pts_t])
                 quads.append(quads_t)
                 q_face += [tag_of[t_t]] * len(quads_t)
@@ -6285,6 +6796,7 @@ def _mesh_once_core(brep: Path, record: dict, owners: list[str], mm: float, log:
                 continue
             trans_done.add(t_r)
             tri_made.append(t_r)
+            made_spans.append((len(xyz), len(xyz) + len(pts_r), HELD_KINDS.index("three-corner blocks")))
             xyz = np.vstack([xyz, pts_r])
             quads.append(quads_r)
             q_face += [tag_of[t_r]] * len(quads_r)
@@ -6304,6 +6816,7 @@ def _mesh_once_core(brep: Path, record: dict, owners: list[str], mm: float, log:
             step_why.append({"strip": int(t_s), "made": True, "quads": int(len(quads_s)), **kept_s})
             trans_done.add(t_s)
             steps_made.append(t_s)
+            made_spans.append((len(xyz), len(xyz) + len(pts_s), HELD_KINDS.index("stepped strip")))
             xyz = np.vstack([xyz, pts_s])
             quads.append(quads_s)
             q_face += [tag_of[t_s]] * len(quads_s)
@@ -6322,6 +6835,7 @@ def _mesh_once_core(brep: Path, record: dict, owners: list[str], mm: float, log:
                 logger.info("shell mesh: a round plate's band was paved (%s)", exc)
                 continue
             band_done.add(t_b)
+            made_spans.append((len(xyz), len(xyz) + len(pts_b), HELD_KINDS.index("round plate band")))
             xyz = np.vstack([xyz, pts_b])
             quads.append(quads_b)
             q_face += [tag_of[t_b]] * len(quads_b)
@@ -6477,17 +6991,32 @@ def _mesh_once_core(brep: Path, record: dict, owners: list[str], mm: float, log:
             xyz, Q, T, q_face, t_face, close_pairs, facts, mm, limits=lim, high_mm=(sizing or {}).get("high_mm"))
         if new_nodes:
             at_n = np.asarray(new_nodes, dtype=np.int64)
+            made_spans.extend((int(v), int(v) + 1, HELD_KINDS.index("narrow close")) for v in at_n.tolist())
             movable[at_n] = False
             on_face[at_n] = -1
             on_line[at_n] = False
             node_kind[at_n] = shell_quality.AT_VERTEX
             node_edge[at_n] = -1
+    if STRIP_OPEN and closing and sizing is not None and _aspect_target(sizing) is not None:
+        # SHMESH-101: strips planned to close whose closing was refused keep the neighbours' size along a width under
+        # the shortest edge; while time is left, the pass is made again with them meshed as open strips
+        shut_ = set(narrow_closed)
+        open_now = [t for t in closing if len(thin_strips[t]) == 3 and tag_of[t] not in shut_]
+        if open_now and _OPEN_PASSES[0] < STRIP_OPEN_PASSES and _time_for_pass():
+            _OPEN_PASSES[0] += 1
+            for t in open_now:
+                f_o = facts[tag_of[t]]
+                _OPEN_STRIPS.append((np.asarray(f_o["centroid"], dtype=float), float(f_o["area"])))
+            raise _Reopen()
     # SHMESH-84: the user's edge lines go with the limits in force (the relaxing and the mend count them apart)
     lim = shell_quality.with_edges(lim, ((sizing or {}).get("low_mm"), _low_tolerant(sizing, requirements),
                                          (sizing or {}).get("high_mm"), _high_tolerant(sizing, requirements)))
     # SHMESH-83: the nodes no repair moves or cuts round (rings, bands, grid cells, mapped strips, transition cells)
     structured = {tag_of[t] for t in set(grids) | set(mapped) if t in tag_of}
     pinned = shell_repair.pinned_nodes(len(xyz), Q, q_face, n_made, band_nodes, structured)
+    held_kind = _held_kinds(len(xyz), Q, q_face, n_made, made_spans,
+                            {tag_of[t] for t in set(grids) if t in tag_of},
+                            {tag_of[t] for t in set(mapped) if t in tag_of}, pinned)
     # SHMESH-86b: and the mend spends no allowance on those faces, nor on a washer's or band's own
     held_faces = structured | ({q_face[i] for i in np.flatnonzero(pinned[Q].any(axis=1))} if len(Q) else set())
     held_q = np.isin(np.asarray(q_face, dtype=np.int64), np.fromiter(sorted(held_faces), dtype=np.int64)) if len(Q) \
@@ -6756,7 +7285,15 @@ def _mesh_once_core(brep: Path, record: dict, owners: list[str], mm: float, log:
     used = np.unique(np.concatenate([Q.ravel(), T.ravel()]))
     remap = np.full(len(xyz), -1, dtype=np.int64)
     remap[used] = np.arange(len(used))
+    # SHMESH-100: the nodes no repair moves (SHMESH-83's pinned: rings, bands, grid cells, mapped strips, transition
+    # cells) are carried on the mesh, so the extra quality passes keep every structure as made
+    held_n = np.zeros(len(xyz), dtype=bool)
+    held_n[:min(len(pinned), len(xyz))] = np.asarray(pinned, dtype=bool)[:len(xyz)]
+    kind_n = np.zeros(len(xyz), dtype=np.int8)
+    kind_n[:min(len(held_kind), len(xyz))] = held_kind[:len(xyz)]
     Q, T, xyz = remap[Q], remap[T], xyz[used]
+    held_n = held_n[used]
+    kind_n = kind_n[used]
     node_why = [node_why[int(u)] for u in used]
     face_of = np.array(q_face + t_face, dtype=np.int64)
     seam_due = ST.RESEAT and any(not any(float(np.linalg.norm(np.asarray(c, dtype=float) - w.centre)) <= 0.25 * w.r
@@ -7289,6 +7826,8 @@ def _mesh_once_core(brep: Path, record: dict, owners: list[str], mm: float, log:
     mesh = ShellMesh(xyz=xyz, quads=Q, trias=T, wall=wall, mid=mid_of, part=part)
     # (SHMESH-91: each element's sewn face, for the per-face keep across candidate meshes)
     mesh.face_of = np.asarray(face_of, dtype=np.int64).copy()  # type: ignore[attr-defined]
+    mesh.held = held_n  # type: ignore[attr-defined]
+    mesh.held_kind = kind_n  # type: ignore[attr-defined]
     # groups: one per wall pair (its CAD faces), one per part
     for m in sorted(set(mid_of), key=lambda s: int(s.split("_")[1])):
         name = "+".join(mids[m]["faces"])
@@ -7335,6 +7874,15 @@ def _mesh_once_core(brep: Path, record: dict, owners: list[str], mm: float, log:
         quality["strip_yield"] = int(_YIELDED[0])
     if _STRIP_LOG:
         quality["strip_log"] = [dict(r_) for r_ in _STRIP_LOG[:60]]
+    if _SLIVER_GEO:
+        # (round 10 census, measuring only: CENSUS on)
+        quality["sliver_geo"] = {str(k_): dict(v_) for k_, v_ in _SLIVER_GEO.items()}
+    if _STRIP_WHY:
+        # (SHMESH-101 census, measuring only: CENSUS on)
+        quality["strip_census"] = {str(k_): dict(v_) for k_, v_ in _STRIP_WHY.items()}
+    if _CORNER_WHY:
+        # (SHMESH-78/79 census, measuring only: CENSUS on)
+        quality["corner_census"] = {str(k_): dict(v_) for k_, v_ in _CORNER_WHY.items()}
     if _FIT_MAPPED[0]:
         quality["fit_mapped"] = int(_FIT_MAPPED[0])
     if fit_bad:
@@ -7390,6 +7938,29 @@ def _mesh_once_core(brep: Path, record: dict, owners: list[str], mm: float, log:
     if grids or mapped:
         mesh.notes.append(f"Mapped quads (a regular grid) on {len(grids) + len(mapped)} of {len(tag_of) - len(rings)} "
                           "face(s): every face with four sides (SHMESH-40).")
+    if strip_aim.get("strips"):
+        # SHMESH-101: told in plain words, with what it added
+        opened = (f" ({strip_aim['open']} of them narrower than the shortest edge and left open, not closed)"
+                  if strip_aim.get("open") else "")
+        under = ("" if not strip_aim.get("under_default") else
+                 f" {strip_aim['under_default']} of them went under the shortest edge we chose for you (you typed "
+                 f"none), down to no less than {strip_aim['floor_mm']:.3g} mm.")
+        mesh.notes.append(f"{strip_aim['strips']} narrow strip(s) were meshed finer along than the plan{opened}, down "
+                          f"to {strip_aim['finest_mm']:.3g} mm, so their elements keep their shape: about "
+                          f"{strip_aim.get('added', 0)} element(s) more ({STRIP_AIM_RULE}).{under}")
+    for blk_k, blk_who in (("typed_blocks", "your shortest edge"), ("floor_blocks", "our lowest edge")):
+        if strip_aim.get(blk_k):
+            # SHMESH-101: what the shortest edge kept past the aspect target, and the edge that would clear it
+            w_n = float(strip_aim[blk_k + "_narrowest_mm"])
+            t_n = float(strip_aim[blk_k + "_target"])
+            mesh.notes.append(f"{strip_aim[blk_k]} element(s) on narrow strips (narrowest {w_n:.3g} mm wide) stay past "
+                              f"the aspect target {t_n:.3g}: {blk_who} is kept. A shortest edge of {t_n * w_n:.3g} mm "
+                              f"or less would let them meet it ({STRIP_AIM_RULE}).")
+        quality.setdefault("structure", {})["strip_aim"] = {k_: (round(v_, 4) if isinstance(v_, float) else v_)
+                                                           for k_, v_ in strip_aim.items()}
+    if strip_aim.get("over"):
+        mesh.notes.append(f"{strip_aim['over']} more narrow strip(s) kept the plan's length along them: meshing them "
+                          f"finer too would have added over {STRIP_AIM_ADD_MAX} elements ({STRIP_AIM_RULE}).")
     under_h = [h for h in hole_lines if h.get("rings_under_shortest_edge") and h.get("planned_rows", 0) >= 2]
     if under_h and (sizing or {}).get("low_mm") is not None:
         # SHMESH-51o59: the two rings let under the user's flexible shortest edge, and the short edges they bring

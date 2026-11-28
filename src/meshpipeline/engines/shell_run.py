@@ -100,6 +100,9 @@ def words(rec: dict) -> str:
         said += f" The plates do not meet at {rec['open_edges']} edge(s): the shell has gaps there."
     if rec.get("advice"):
         said += f" {rec['advice']}"       # SHELL-23: walls short for their thickness
+    passes = ((rec.get("quality") or {}).get("quality_passes") or {}).get("words")
+    if passes:
+        said += f" {passes}"              # SHMESH-100: what the extra quality passes did with the time left
     if rec.get("plates_left_out"):
         said += f" {rec['plates_left_out']}"      # SHELL-26
     from meshpipeline.engines.shell_plan import count_words
