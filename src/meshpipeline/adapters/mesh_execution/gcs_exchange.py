@@ -139,7 +139,63 @@ def _bundle_beside(ws: pathlib.Path) -> dict | None:
     return rec
 
 
+#: ABOVE THIS, A SEQUENTIAL CHUNKED UPLOAD IS THE WRONG SHAPE. `upload_from_filename` with a
+#: `chunk_size` is a RESUMABLE upload: one HTTP request per chunk, strictly in order, each paying
+#: its own round trip. MEASURED on job f55ef23e, whose deliverable is 23,109,660,219 bytes: the
+#: VM->GCS hop took about 842 s, which is 27.4 MB/s, and 23.1 GB in 16 MiB chunks is 1,378
+#: sequential requests. The same bundle came back down at 54.7 MB/s on a single-stream
+#: `download_to_filename`. Neither figure is the network: a GCE VM writes to GCS in the same
+#: region far faster than that, and the whole 139.2-minute run spent 22.4 minutes moving this one
+#: file three times.
+#:
+#: SO A BUNDLE THIS SIZE GOES UP IN PARALLEL. `transfer_manager.upload_chunks_concurrently` is the
+#: SDK's own answer - an XML multipart upload, parts in flight together, assembled server side -
+#: and `google-cloud-storage==2.18.2` is pinned in both `requirements/runtime.txt` (the mesh
+#: image, which is the side that pays the 842 s) and the worker's environment, so it is available
+#: wherever this runs.
+#:
+#: THE SMALL CASE KEEPS THE OLD PATH, deliberately. Multipart has a per-upload cost - it creates
+#: an upload id, sends parts, then asks for a compose - and it leaves orphaned parts behind if it
+#: dies mid-flight, where a resumable upload leaves nothing. For an archive of a few hundred MB
+#: (the layered lumens of verify-7fix came back at 566-696 MB) the sequential path is already
+#: fast enough and strictly simpler, so the threshold buys the parallel machinery only where it
+#: has been measured to matter.
+PARALLEL_UPLOAD_FLOOR_BYTES = 2 * 1024 * 1024 * 1024
+#: Parts of this size, so a 23.1 GB bundle is 145 of them rather than 1,378. GCS caps a multipart
+#: upload at 10,000 parts, which this clears by two orders of magnitude at any size the mesher can
+#: produce.
+PARALLEL_UPLOAD_PART_BYTES = 160 * 1024 * 1024
+#: How many parts are in flight. The mesher's VM has the cores; this is deliberately modest
+#: because the far side of this call is a network and not the CPU, and because an upload that
+#: saturates the NIC while the chain still has work to do helps nothing.
+PARALLEL_UPLOAD_WORKERS = 8
+
+
 def _upload(gcs, bucket: str, key: str, path: pathlib.Path) -> None:
+    """The archive up to GCS - in parallel parts once it is big enough to be worth it.
+
+    NON-FATAL IN THE PARALLEL DIRECTION ONLY. A failure inside the multipart path falls back to
+    the sequential one rather than failing the run: the mesh is the deliverable and is never lost
+    over the way its bytes travel. The reverse is not true - if the sequential path fails there is
+    nothing to fall back to and the error is the answer.
+    """
+    size = path.stat().st_size if path.is_file() else 0
+    if size >= PARALLEL_UPLOAD_FLOOR_BYTES:
+        try:
+            from google.cloud.storage import transfer_manager
+
+            blob = gcs.bucket(bucket).blob(key)
+            blob.content_type = "application/gzip"
+            transfer_manager.upload_chunks_concurrently(
+                str(path), blob,
+                chunk_size=PARALLEL_UPLOAD_PART_BYTES,
+                max_workers=PARALLEL_UPLOAD_WORKERS)
+            logger.info("sent %s (%.1f GiB) in parallel parts of %d MiB", key,
+                        size / 2 ** 30, PARALLEL_UPLOAD_PART_BYTES // 2 ** 20)
+            return
+        except Exception as exc:                 # noqa: BLE001 - the mesh never dies for this
+            logger.warning("the parallel upload of %s did not take (%s: %s); "
+                           "sending it in sequence instead", key, type(exc).__name__, exc)
     gcs.bucket(bucket).blob(key, chunk_size=RESULT_UPLOAD_CHUNK_BYTES) \
         .upload_from_filename(str(path), content_type="application/gzip",
                               timeout=RESULT_UPLOAD_TIMEOUT_S)

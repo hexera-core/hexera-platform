@@ -160,6 +160,54 @@ def return_budget_overrides() -> list[dict]:
 _UPLOAD_CHUNK_BYTES = 16 * 1024 * 1024
 _UPLOAD_TIMEOUT_S = 300
 
+#: COMING BACK DOWN, ONE STREAM IS THE WRONG SHAPE TOO. `download_to_filename` opens a single
+#: ranged GET and reads it end to end. MEASURED on job f55ef23e, whose deliverable is
+#: 23,109,660,219 bytes: the GCS->worker hop took 422.61 s, which is 54.7 MB/s, inside a run whose
+#: whole envelope was 139.2 minutes and which spent 22.4 of those minutes moving this one file
+#: three times. A single TCP stream to GCS does not reach the link's capacity on its own, and the
+#: fix is the SDK's own: `transfer_manager.download_chunks_concurrently` issues the ranges
+#: together and writes them into one file.
+#:
+#: THE SMALL CASE KEEPS THE SINGLE STREAM. The workspace archive beside this is tens of MB and the
+#: parallel path would only add thread setup; the threshold buys the machinery where it has been
+#: measured to matter, which is the deliverable bundle.
+_PARALLEL_DOWNLOAD_FLOOR_BYTES = 2 * 1024 * 1024 * 1024
+_PARALLEL_DOWNLOAD_PART_BYTES = 160 * 1024 * 1024
+_PARALLEL_DOWNLOAD_WORKERS = 8
+
+
+def _fetch(blob, dest: str) -> None:
+    """One GCS object onto local disk, in parallel ranges once it is big enough to be worth it.
+
+    NON-FATAL IN THE PARALLEL DIRECTION ONLY, like the upload side: a failure inside the
+    concurrent path falls back to the single stream, because the mesh is the deliverable and is
+    never lost over the way its bytes travel. `download_chunks_concurrently` needs the blob's
+    size, so the metadata is reloaded first; a blob whose size cannot be read takes the plain
+    path, which does not need it.
+    """
+    size = 0
+    try:
+        blob.reload()
+        size = int(blob.size or 0)
+    except Exception as exc:                     # noqa: BLE001 - size is an optimisation only
+        logger.debug("could not size %s before downloading (%s)", blob.name, type(exc).__name__)
+    if size >= _PARALLEL_DOWNLOAD_FLOOR_BYTES:
+        try:
+            from google.cloud.storage import transfer_manager
+
+            transfer_manager.download_chunks_concurrently(
+                blob, dest,
+                chunk_size=_PARALLEL_DOWNLOAD_PART_BYTES,
+                max_workers=_PARALLEL_DOWNLOAD_WORKERS)
+            logger.info("collected %s (%.1f GiB) in parallel ranges of %d MiB",
+                        blob.name, size / 2 ** 30, _PARALLEL_DOWNLOAD_PART_BYTES // 2 ** 20)
+            return
+        except Exception as exc:                 # noqa: BLE001
+            logger.warning("the parallel download of %s did not take (%s: %s); "
+                           "fetching it in one stream instead",
+                           blob.name, type(exc).__name__, exc)
+    blob.download_to_filename(dest)
+
 
 class _Abandoned(Exception):
     """The run stopped waiting before the remote finished; the message says why."""
@@ -703,7 +751,7 @@ def _exchange(workspace, *, engine: str, timeout: int, operation_key: str,
             return {**_room, "ran_on": ran_on}
         with tempfile.TemporaryDirectory(prefix="mesh_result_", dir=str(ws.parent)) as _tmp:
             _archive = Path(_tmp) / "result.tar.gz"
-            bucket.blob(out_key).download_to_filename(str(_archive))
+            _fetch(bucket.blob(out_key), str(_archive))
             safe_extract_tar(path=_archive, dest=str(ws), limits=result_extraction_limits(result))
         # THE DELIVERABLE, WHEN IT TRAVELLED ON ITS OWN. It is already a verified gzip archive, so
         # it is not put through the workspace tar: see `gcs_exchange._bundle_beside`. It lands at
@@ -719,7 +767,7 @@ def _exchange(workspace, *, engine: str, timeout: int, operation_key: str,
             if not _name or "/" in _name or _name in (".", "..") or not _key:
                 return _fail(engine, "the result promises a bundle beside it under a name that "
                                      "cannot be a file in the workspace")
-            bucket.blob(_key).download_to_filename(str(ws / _name))
+            _fetch(bucket.blob(_key), str(ws / _name))
             logger.info("collected the bundle beside the archive: %s -> %s", _key, _name)
         # Built BEFORE the exchange is released: this is the last thing that can raise, so the
         # objects must still exist while it happens.
