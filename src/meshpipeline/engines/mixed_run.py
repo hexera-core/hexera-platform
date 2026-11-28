@@ -410,11 +410,25 @@ def build(step: Path | str, out: Path, *, mm_per_unit: float, rec: dict, require
         q.update(shell_quality.measure(joined.shell))
         if q.get("valid") is False:
             raise _Stop("the shell elements at the join are not valid")
+    if rec.get("requirements"):
+        # SHMESH-26 on the shell delivered: asked against delivered measured again with the join's elements in it
+        rec["requirements"] = joined_requirements(joined.shell, requirements, applied, rec["requirements"])
     rec.update(regions=split.cores, shell_quality=q if isinstance(q, dict) else None,
                solid_quality={k: sq.get(k) for k in ("elements", "valid", "fatal") if k in sq})
     if not REACH_GATE:
         advice()            # MIXED-20: the advice, read once the mesh is made
     return joined
+
+
+def joined_requirements(shell, requirements: dict | None, applied, before: dict | None) -> dict | None:
+    """SHMESH-26 on a joined mesh (MIXED-13): the requirement report made again on the shell elements delivered - the
+    overlap quads the join adds (SHLINK-4) and the triangles MIXED-22 cuts them into with them - by the same sizing
+    and places the shell part was planned with; `before` (the shell part's own report) when there is none to make."""
+    from meshpipeline.engines import shell_requirements as SR
+
+    a = applied if isinstance(applied, dict) else {}
+    again = SR.report(shell, requirements, a.get("sizing"), places=a.get("places")) if requirements else None
+    return again if again is not None else before
 
 
 class _Stop(Exception):

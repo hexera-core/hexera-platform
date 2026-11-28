@@ -2636,7 +2636,7 @@ def _held_kinds(n: int, quads: np.ndarray, q_face: list[int], n_made: int | None
 
 
 def _quality_passes(out: tuple[ShellMesh, dict], requirements: dict | None, *, brep: Path | str | None = None,
-                    mm_per_unit: float = 1.0) -> tuple[ShellMesh, dict]:
+                    mm_per_unit: float = 1.0, mids: dict[str, dict] | None = None) -> tuple[ShellMesh, dict]:
     """SHMESH-100: the extra quality passes on the mesh mesh_shell made, under the run's clock (_CLOCK: its start and
     the limit in force). Untouched when the passes are off, the run has no clock, or no figure is past its limit; a
     failure of the passes never costs the mesh (the mesh made is delivered, the failure recorded). With the mid-surface
@@ -2681,6 +2681,11 @@ def _quality_passes(out: tuple[ShellMesh, dict], requirements: dict | None, *, b
     if rec is None:
         return out
     q = applied2.setdefault("quality", {})
+    if mids and getattr(mesh2, "node_wall", None) is not None:
+        # SHELL-9b after SHMESH-100: a node the passes moved on a varying wall has its wall read again where it stands
+        redone = node_walls_again(mesh2, mids, np.asarray(mesh.xyz, dtype=float))
+        if redone:
+            q["walls_read_again"] = redone
     q["quality_passes"] = rec
     if isinstance(q.get("passes"), list) and isinstance(q.get("passes_s"), list):
         q["passes"].append(f"extra quality passes ({QUALITY_PASSES_RULE})")
@@ -2720,7 +2725,8 @@ def mesh_shell(brep: Path | str, record: dict, *, mm_per_unit: float = 1.0, log:
             out = _mesh_shell_watched(brep, record, mm_per_unit=mm_per_unit, log=log, target=target,
                                       correction=correction, requirements=requirements, allowed=allowed)
             # SHMESH-100: the time left under the run's limit goes to the figures past their limits
-            out = _quality_passes(out, requirements, brep=brep, mm_per_unit=mm_per_unit)
+            out = _quality_passes(out, requirements, brep=brep, mm_per_unit=mm_per_unit,
+                                  mids={m["id"]: m for m in (record or {}).get("mids") or []})
             out[1].setdefault("quality", {})["clock"] = _clock_view()
             if _CLOCK.get("first_s") and int(_CLOCK.get("built") or 0) >= RATE_MIN_ELEMENTS:
                 # (SHMESH-21e: this part's measured rate prices its next mesh in this run)
@@ -10548,6 +10554,43 @@ def node_walls(mesh: ShellMesh, mids: dict[str, dict]) -> int:
     if np.any(mesh.node_wall[used] <= 0):
         raise ValueError("a node of a varying wall came out with no wall (SHELL-9b)")
     return int(varies.sum())
+
+
+def node_walls_again(mesh: ShellMesh, mids: dict[str, dict], before_xyz: np.ndarray | None) -> int:
+    """SHELL-9b after SHMESH-100: the wall of each node of a varying mid-face that the quality passes moved, read
+    again where it now stands by node_walls' own measure (every node, when a re-made patch renumbered them: the
+    nodes kept read the same as before); the rest untouched. Returns how many nodes were read again."""
+    if mesh.node_wall is None:
+        return 0
+    xyz = np.asarray(mesh.xyz, dtype=float)
+    if before_xyz is not None and len(before_xyz) == len(xyz):
+        moved = np.any(xyz != np.asarray(before_xyz, dtype=float), axis=1)
+    else:
+        moved = np.ones(len(xyz), dtype=bool)
+    if not moved.any():
+        return 0
+    mid_of = np.array(mesh.mid)
+    total = np.zeros(len(xyz))
+    count = np.zeros(len(xyz))
+    for m in sorted(set(mesh.mid), key=lambda x: int(x.split("_")[1])):
+        row = mids.get(m) or {}
+        lo, hi = row.get("thickness_range_mm", [row.get("thickness_mm"), row.get("thickness_mm")])
+        samples = np.asarray(row.get("wall_samples_mm") or [], dtype=float).reshape(-1, 4)
+        if not (lo and hi and hi > lo * (1.0 + WALL_VARIES)) or len(samples) < 3:
+            continue
+        els = np.flatnonzero(mid_of == m)
+        nodes = np.unique(np.concatenate([mesh.element_nodes(int(e)) for e in els]))
+        nodes = nodes[moved[nodes]]
+        if len(nodes):
+            total[nodes] += _wall_at(xyz[nodes], samples)
+            count[nodes] += 1.0
+    redo = count > 0
+    if not redo.any():
+        return 0
+    nw = np.asarray(mesh.node_wall, dtype=float).copy()
+    nw[redo] = total[redo] / count[redo]
+    mesh.node_wall = nw
+    return int(redo.sum())
 
 
 def element_offsets(mesh: ShellMesh, mids: dict[str, dict]) -> int:
