@@ -1037,7 +1037,10 @@ def render_cfmesh_case(workspace, *, surface_file: str, wall_patch: str,
         _wake_rec = _wp.record()
         # the same record snappyHexMesh's case leaves (its finalize reads it into the quality record)
         (ws / "wake_refinement.json").write_text(json.dumps(_wake_rec, indent=2))
-        _wake_boxes = [{"name": f"wake{i}", "type": "box", "cellSize": t.cell_m,
+        # each box on its octree level nudged up, as the wall's is (snap_to_octree): cfMesh refines a cell while it is
+        # larger than the size asked, so an exact max_cell / 2^n went one level finer - 8x the box's cells, the
+        # octree at 1.85 M on a 0.42 M plan and the size brake stopping v0.2.11's native metre-scale runs
+        _wake_boxes = [{"name": f"wake{i}", "type": "box", "cellSize": snap_to_octree(max_cell, t.cell_m),
                         "centre": [0.5 * (t.box_min[k] + t.box_max[k]) for k in range(3)],
                         "lengthX": t.box_max[0] - t.box_min[0], "lengthY": t.box_max[1] - t.box_min[1],
                         "lengthZ": t.box_max[2] - t.box_min[2]} for i, t in enumerate(_wp.tiers)]
